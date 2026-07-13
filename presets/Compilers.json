@@ -1,0 +1,34 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 23,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "Msvc",
+            "hidden": true, 
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "cl.exe",
+                "CMAKE_CXX_COMPILER": "cl.exe"
+            }
+        },
+        {
+            "name": "Clang",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++"
+            }
+        },
+        {
+            "name": "Gcc",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++"
+            }
+        }
+    ]
+}

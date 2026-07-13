@@ -1,0 +1,12 @@
+// TurboMedia Android mobile staging metadata.
+//
+// The imported Android sources are kept here for API adaptation work. They are
+// not yet a buildable Android library in this repository because the JNI and
+// hardware codec layers still reference the older TurboWebRTC media APIs.
+
+tasks.register('mobileStagingStatus') {
+    doLast {
+        println 'TurboMedia Android mobile sources are staged only.'
+        println 'Adapt capture, codec, and JNI bindings before enabling the Android library build.'
+    }
+}

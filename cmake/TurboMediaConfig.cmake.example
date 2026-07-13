@@ -1,0 +1,214 @@
+# TurboMedia CMake 配置示例
+#
+# 将此文件复制为 TurboMediaConfig.cmake 并根据需要修改
+
+# ============================================================================
+# 基本配置
+# ============================================================================
+
+# 构建类型
+set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type")
+
+# 安装前缀
+set(CMAKE_INSTALL_PREFIX "/usr/local" CACHE PATH "Install prefix")
+
+# ============================================================================
+# 编解码器配置
+# ============================================================================
+
+# H.264 编解码器
+option(TURBO_MEDIA_ENABLE_H264 "Enable H.264 codec" ON)
+
+# H.264 实现选择：libx264 或 openh264
+set(TURBO_MEDIA_H264_IMPL "libx264" CACHE STRING "H.264 implementation")
+set_property(CACHE TURBO_MEDIA_H264_IMPL PROPERTY STRINGS "libx264" "openh264")
+
+# H.265 编解码器
+option(TURBO_MEDIA_ENABLE_H265 "Enable H.265 codec" ON)
+
+# Opus 音频编解码器
+option(TURBO_MEDIA_ENABLE_OPUS "Enable Opus codec" ON)
+
+# VP8/VP9 编解码器
+option(TURBO_MEDIA_ENABLE_VPX "Enable VP8/VP9 codec" OFF)
+
+# ============================================================================
+# 容器格式配置
+# ============================================================================
+
+# FLV 容器
+option(TURBO_MEDIA_ENABLE_FLV "Enable FLV muxer/demuxer" ON)
+
+# MP4 容器
+option(TURBO_MEDIA_ENABLE_MP4 "Enable MP4 muxer/demuxer" ON)
+
+# MKV/WebM 容器
+option(TURBO_MEDIA_ENABLE_MKV "Enable MKV muxer/demuxer" OFF)
+
+# MPEG-TS/PS 容器
+option(TURBO_MEDIA_ENABLE_MPEG "Enable MPEG-TS/PS muxer/demuxer" ON)
+
+# ============================================================================
+# 流媒体协议配置
+# ============================================================================
+
+# HLS 协议
+option(TURBO_MEDIA_ENABLE_HLS "Enable HLS streaming" ON)
+
+# DASH 协议
+option(TURBO_MEDIA_ENABLE_DASH "Enable DASH streaming" OFF)
+
+# RTMP 协议
+option(TURBO_MEDIA_ENABLE_RTMP "Enable RTMP streaming" ON)
+
+# HTTP-FLV 协议
+option(TURBO_MEDIA_ENABLE_HTTP_FLV "Enable HTTP-FLV streaming" ON)
+
+# ============================================================================
+# 网络传输配置
+# ============================================================================
+
+# CoroNet 路径（如果不在标准路径）
+# set(TurboNet_DIR "/path/to/turbonet/lib/cmake" CACHE PATH "TurboNet CMake dir")
+
+# TurboHTTP 路径（如果不在标准路径）
+# set(TurboHTTP_DIR "/path/to/turbohttp/lib/cmake" CACHE PATH "TurboHTTP CMake dir")
+
+# ============================================================================
+# 其他功能配置
+# ============================================================================
+
+# FFmpeg 支持（通用播放器）
+option(TURBO_MEDIA_ENABLE_FFMPEG "Enable FFmpeg player" OFF)
+
+# RTSP 协议支持
+option(TURBO_MEDIA_ENABLE_RTSP "Enable RTSP protocol" OFF)
+
+# 移动平台支持
+option(BUILD_MOBILE "Build mobile platform targets" OFF)
+
+# ============================================================================
+# 开发选项
+# ============================================================================
+
+# 构建示例程序
+option(BUILD_EXAMPLES "Build example programs" ON)
+
+# 构建测试
+option(BUILD_TESTS "Build test suite" ON)
+
+# 启用地址消毒器（调试模式）
+cmake_dependent_option(
+    ENABLE_ASAN "Enable Address Sanitizer" ON
+    "CMAKE_BUILD_TYPE STREQUAL Debug" OFF
+)
+
+# ============================================================================
+# 外部库路径配置（如果需要手动指定）
+# ============================================================================
+
+# x264
+# set(X264_INCLUDE_DIR "/usr/local/include" CACHE PATH "x264 include directory")
+# set(X264_LIBRARY "/usr/local/lib/libx264.a" CACHE FILEPATH "x264 library")
+
+# x265
+# set(X265_INCLUDE_DIR "/usr/local/include" CACHE PATH "x265 include directory")
+# set(X265_LIBRARY "/usr/local/lib/libx265.a" CACHE FILEPATH "x265 library")
+
+# libde265
+# set(LIBDE265_INCLUDE_DIR "/usr/local/include" CACHE PATH "libde265 include directory")
+# set(LIBDE265_LIBRARY "/usr/local/lib/libde265.a" CACHE FILEPATH "libde265 library")
+
+# Opus
+# set(OPUS_INCLUDE_DIR "/usr/local/include" CACHE PATH "Opus include directory")
+# set(OPUS_LIBRARY "/usr/local/lib/libopus.a" CACHE FILEPATH "Opus library")
+
+# libvpx
+# set(VPX_INCLUDE_DIR "/usr/local/include" CACHE PATH "libvpx include directory")
+# set(VPX_LIBRARY "/usr/local/lib/libvpx.a" CACHE FILEPATH "libvpx library")
+
+# ============================================================================
+# 平台特定配置
+# ============================================================================
+
+if(WIN32)
+    # Windows 特定配置
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    
+elseif(APPLE)
+    # macOS/iOS 特定配置
+    if(IOS)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0")
+    else()
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15")
+    endif()
+    
+elseif(ANDROID)
+    # Android 特定配置
+    set(ANDROID_PLATFORM "android-21")
+    set(ANDROID_STL "c++_shared")
+    
+endif()
+
+# ============================================================================
+# 编译器标志
+# ============================================================================
+
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    # GCC/Clang 优化选项
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -march=native")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g -O0")
+    
+    # 警告选项
+    add_compile_options(
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Wno-unused-parameter
+    )
+    
+elseif(MSVC)
+    # MSVC 优化选项
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /GL")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Od /Zi")
+    
+    # 警告选项
+    add_compile_options(
+        /W4
+        /wd4100  # 未引用的形参
+    )
+    
+endif()
+
+# ============================================================================
+# 输出配置摘要
+# ============================================================================
+
+message(STATUS "")
+message(STATUS "TurboMedia Configuration:")
+message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Install Prefix: ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "")
+message(STATUS "Codecs:")
+message(STATUS "  H.264: ${TURBO_MEDIA_ENABLE_H264}")
+message(STATUS "  H.265: ${TURBO_MEDIA_ENABLE_H265}")
+message(STATUS "  Opus: ${TURBO_MEDIA_ENABLE_OPUS}")
+message(STATUS "  VPX: ${TURBO_MEDIA_ENABLE_VPX}")
+message(STATUS "")
+message(STATUS "Containers:")
+message(STATUS "  FLV: ${TURBO_MEDIA_ENABLE_FLV}")
+message(STATUS "  MP4: ${TURBO_MEDIA_ENABLE_MP4}")
+message(STATUS "  MKV: ${TURBO_MEDIA_ENABLE_MKV}")
+message(STATUS "  MPEG: ${TURBO_MEDIA_ENABLE_MPEG}")
+message(STATUS "")
+message(STATUS "Streaming:")
+message(STATUS "  HLS: ${TURBO_MEDIA_ENABLE_HLS}")
+message(STATUS "  DASH: ${TURBO_MEDIA_ENABLE_DASH}")
+message(STATUS "  RTMP: ${TURBO_MEDIA_ENABLE_RTMP}")
+message(STATUS "  HTTP-FLV: ${TURBO_MEDIA_ENABLE_HTTP_FLV}")
+message(STATUS "")
+message(STATUS "Development:")
+message(STATUS "  Examples: ${BUILD_EXAMPLES}")
+message(STATUS "  Tests: ${BUILD_TESTS}")
+message(STATUS "  ASAN: ${ENABLE_ASAN}")
+message(STATUS "")

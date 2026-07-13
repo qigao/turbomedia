@@ -1,0 +1,8 @@
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  add_subdirectory(ios)
+elseif(ANDROID)
+  add_subdirectory(android)
+else()
+  add_subdirectory(ios)
+  add_subdirectory(android)
+endif()

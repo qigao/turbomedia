@@ -1,0 +1,255 @@
+/**
+ * @file server.c
+ * @brief Signaling server wrapper implementation
+ */
+
+#include "signaling_server/server.h"
+#include "signaling_server/config.h"
+#include "http_api.h"
+#include <tlog.h>
+#include <platform.h>
+#include <turbo_coro_context.h>
+#include <stdlib.h>
+#include <string.h>
+#ifdef ENABLE_RTC_CCXML_WORKFLOW
+#include "ccxml_adapter.h"
+#endif
+
+/**
+ * Signaling server instance
+ */
+struct signaling_server_s {
+    signaling_server_config_t config;
+    webrtc_signaling_server_t *ws_server;
+    http_api_server_t *http_server;
+    turbo_loop_t *loop;
+    int running;
+#ifdef ENABLE_RTC_CCXML_WORKFLOW
+    ccxml_adapter_t *ccxml;
+#endif
+};
+
+/**
+ * Generate node ID if not provided
+ */
+static char *generate_node_id(void) {
+    static char node_id[64];
+    uint64_t timestamp = turbo_monotonic_ms();
+    int pid = turbo_getpid();
+    
+    snprintf(node_id, sizeof(node_id), "node-%d-%llu", pid, 
+             (unsigned long long)timestamp);
+    
+    return node_id;
+}
+
+/**
+ * Create signaling server instance
+ */
+signaling_server_t *signaling_server_create(const signaling_server_config_t *config) {
+    signaling_server_t *server = NULL;
+    
+    /* Validate configuration */
+    if (signaling_server_config_validate(config) != 0) {
+        TLOG_ERROR("Invalid configuration");
+        return NULL;
+    }
+    
+    /* Allocate server */
+    server = (signaling_server_t *)calloc(1, sizeof(signaling_server_t));
+    if (!server) {
+        TLOG_ERROR("Failed to allocate server");
+        return NULL;
+    }
+    
+    /* Copy configuration */
+    memcpy(&server->config, config, sizeof(signaling_server_config_t));
+    
+    /* Generate node ID if not provided */
+    if (!server->config.node_id) {
+        server->config.node_id = generate_node_id();
+        TLOG_INFO("Generated node ID: {}", server->config.node_id);
+    }
+    
+    /* Create event loop */
+    server->loop = turbo_loop_create();
+    if (!server->loop) {
+        TLOG_ERROR("Failed to create event loop");
+        free(server);
+        return NULL;
+    }
+    
+    /* Create WebRTC signaling server */
+    webrtc_signaling_config_t ws_config = {
+        .host = server->config.ws_host,
+        .port = (uint16_t)server->config.ws_port,
+        .use_tls = server->config.ws_use_tls,
+        .cert_file = server->config.ws_cert_file,
+        .key_file = server->config.ws_key_file,
+        .max_peers = server->config.max_peers,
+        .max_rooms = server->config.max_rooms,
+        .peer_timeout_ms = server->config.peer_timeout_ms,
+        .jwt_enabled = server->config.jwt_enabled,
+        .jwt_secret = server->config.jwt_secret,
+        .jwt_algo = server->config.jwt_algorithm
+    };
+    
+    server->ws_server = webrtc_signaling_create(server->loop, &ws_config);
+    if (!server->ws_server) {
+        TLOG_ERROR("Failed to create WebRTC signaling server");
+        free(server);
+        return NULL;
+    }
+    
+    server->running = 0;
+    server->http_server = NULL;
+    
+    TLOG_INFO("Signaling server created successfully");
+    
+#ifdef ENABLE_RTC_CCXML_WORKFLOW
+    if (server->config.ccxml_enabled) {
+        const char *ccxml_xml = "<ccxml version=\"1.0\" xmlns=\"http://www.w3.org/2005/02/ccxml\"><eventprocessor><transition event=\"connection.alerting\"><accept/></transition></eventprocessor></ccxml>";
+        server->ccxml = ccxml_adapter_create(server, ccxml_xml);
+    }
+#endif
+
+    return server;
+}
+
+/**
+ * Start signaling server
+ */
+int signaling_server_start(signaling_server_t *server) {
+    if (!server) {
+        return -1;
+    }
+    
+    /* Start WebSocket server */
+    if (webrtc_signaling_start(server->ws_server) != 0) {
+        TLOG_ERROR("Failed to start WebSocket server");
+        return -1;
+    }
+    
+    server->running = 1;
+    
+    TLOG_INFO("WebSocket server listening on {}:{}", 
+              server->config.ws_host, 
+              server->config.ws_port);
+    
+    /* Start HTTP API server */
+    if (server->config.http_enabled) {
+        http_api_config_t http_conf = {
+            .host = server->config.http_host,
+            .port = server->config.http_port,
+            .auth_enabled = 0,
+            .admin_token = NULL
+        };
+        server->http_server = http_api_create(server->loop, &http_conf, server->ws_server);
+        if (server->http_server) {
+             if (http_api_start(server->http_server) != 0) {
+                 TLOG_ERROR("Failed to start HTTP API server");
+             } else {
+                 TLOG_INFO("HTTP API server started on port {}", server->config.http_port);
+             }
+        } else {
+             TLOG_ERROR("Failed to create HTTP API server");
+        }
+    }
+
+    /* TODO: Connect to Redis (Phase 4) */
+    if (server->config.redis_enabled) {
+        TLOG_WARN("Redis integration not yet implemented (Phase 4)");
+    }
+    
+    return 0;
+}
+
+/**
+ * Run signaling server (blocks until stopped)
+ */
+int signaling_server_run(signaling_server_t *server) {
+    if (!server || !server->running) {
+        return -1;
+    }
+    
+    TLOG_INFO("Entering event loop...");
+
+    webrtc_signaling_run(server->ws_server, TURBO_RUN_DEFAULT);
+
+    TLOG_INFO("Event loop exited");
+    return 0;
+}
+
+/**
+ * Stop signaling server
+ */
+void signaling_server_stop(signaling_server_t *server) {
+    if (!server) {
+        return;
+    }
+    
+    TLOG_INFO("Stopping signaling server...");
+    
+    server->running = 0;
+    
+    /* Stop WebSocket server */
+    if (server->ws_server) {
+        webrtc_signaling_stop(server->ws_server);
+    }
+    
+    /* Stop HTTP API server */
+    if (server->http_server) {
+        http_api_stop(server->http_server);
+    }
+    
+    /* Stop event loop */
+    if (server->loop) {
+        turbo_loop_stop(server->loop);
+    }
+    
+    TLOG_INFO("Signaling server stopped");
+}
+
+/**
+ * Destroy signaling server instance
+ */
+void signaling_server_destroy(signaling_server_t *server) {
+    if (!server) {
+        return;
+    }
+    
+    TLOG_INFO("Destroying signaling server...");
+    
+    /* Ensure server is stopped */
+    if (server->running) {
+        signaling_server_stop(server);
+    }
+    
+    /* Destroy WebSocket server */
+    if (server->ws_server) {
+        webrtc_signaling_destroy(server->ws_server);
+        server->ws_server = NULL;
+    }
+    
+    /* Destroy HTTP API server */
+    if (server->http_server) {
+        http_api_destroy(server->http_server);
+        server->http_server = NULL;
+    }
+    
+    /* Close event loop */
+    if (server->loop) {
+        turbo_loop_destroy(server->loop);
+        server->loop = NULL;
+    }
+    
+    /* Free server */
+#ifdef ENABLE_RTC_CCXML_WORKFLOW
+    if (server->ccxml) {
+        ccxml_adapter_destroy(server->ccxml);
+    }
+#endif
+    free(server);
+    
+    TLOG_INFO("Signaling server destroyed");
+}

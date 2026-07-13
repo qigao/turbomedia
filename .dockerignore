@@ -1,0 +1,8 @@
+build/
+.git/
+.vs/
+.vscode/
+bin/
+lib/
+*.log
+vcpkg_installed/

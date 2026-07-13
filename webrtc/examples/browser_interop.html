@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TurboNet WebRTC Browser Interop Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .status.disconnected { background: #ffebee; color: #c62828; }
+        .status.connecting { background: #fff3e0; color: #ef6c00; }
+        .status.connected { background: #e8f5e9; color: #2e7d32; }
+        textarea {
+            width: 100%;
+            min-height: 150px;
+            font-family: monospace;
+            font-size: 12px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .log {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 2px 0;
+            padding: 2px 5px;
+        }
+        .log-entry.info { color: #1976d2; }
+        .log-entry.success { color: #388e3c; }
+        .log-entry.error { color: #d32f2f; }
+        .log-entry.warning { color: #f57c00; }
+        input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 14px;
+        }
+        .message-box {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .message-box input {
+            flex: 1;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 TurboNet WebRTC Browser Interoperability Test</h1>
+    
+    <div class="container">
+        <h2>Connection Status</h2>
+        <div id="status" class="status disconnected">Disconnected</div>
+        <div id="ice-status">ICE: Not started</div>
+        <div id="dtls-status">DTLS: Not started</div>
+        <div id="channel-status">DataChannel: Not created</div>
+    </div>
+    
+    <div class="container">
+        <h2>Step 1: Create Offer</h2>
+        <p>Click to create a WebRTC offer. Wait for ICE gathering to complete, then paste the SDP into the C application.</p>
+        <button id="createOfferBtn" onclick="createOffer()">Create Offer</button>
+        <h3>Local SDP (paste into C application):</h3>
+        <textarea id="localSdp" readonly></textarea>
+        <button onclick="copyToClipboard('localSdp')">Copy to Clipboard</button>
+    </div>
+    
+    <div class="container">
+        <h2>Step 2: Set Remote Answer</h2>
+        <p>Paste the SDP answer or the full C console block containing `BEGIN SDP ANSWER` here:</p>
+        <textarea id="remoteSdp" placeholder="Paste remote SDP here..."></textarea>
+        <button id="setAnswerBtn" onclick="setRemoteAnswer()" disabled>Set Remote Answer</button>
+    </div>
+    
+    <div class="container">
+        <h2>Step 3: Exchange ICE Candidates</h2>
+        <p>Paste ICE candidates or the full candidate log from the C application:</p>
+        <textarea id="remoteCandidates" placeholder="Paste remote candidates here..."></textarea>
+        <button onclick="addRemoteCandidates()">Add Remote Candidates</button>
+        <h3>Local Candidates (paste into C application):</h3>
+        <div id="localCandidates" class="log"></div>
+    </div>
+    
+    <div class="container">
+        <h2>Step 4: Send Messages</h2>
+        <div class="message-box">
+            <input type="text" id="messageInput" placeholder="Type a message..." disabled>
+            <button id="sendBtn" onclick="sendMessage()" disabled>Send</button>
+        </div>
+        <h3>Message Log:</h3>
+        <div id="messageLog" class="log"></div>
+    </div>
+    
+    <div class="container">
+        <h2>Debug Log</h2>
+        <div id="debugLog" class="log"></div>
+    </div>
+
+    <script>
+        let pc = null;
+        let dataChannel = null;
+        const ANSI_ESCAPE_RE = /\u001b\[[0-9;]*m/g;
+        
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('debugLog');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(message);
+        }
+        
+        function updateStatus(status, text) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = `status ${status}`;
+            statusDiv.textContent = text;
+        }
+        
+        function logMessage(message, sent = false) {
+            const logDiv = document.getElementById('messageLog');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + (sent ? 'info' : 'success');
+            entry.textContent = `${sent ? '→' : '←'} ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function stripAnsi(text) {
+            return text.replace(ANSI_ESCAPE_RE, '');
+        }
+
+        function extractSdp(text) {
+            const lines = stripAnsi(text).split(/\r?\n/);
+            const begin = lines.findIndex((line) => line.includes('BEGIN SDP ANSWER'));
+            const end = lines.findIndex((line) => line.includes('END SDP ANSWER'));
+            const source = begin >= 0 ? lines.slice(begin + 1, end >= 0 ? end : undefined) : lines;
+            const sdpLines = [];
+            let started = false;
+
+            for (const rawLine of source) {
+                const line = rawLine.replace(/\r/g, '').trim();
+                if (!line) {
+                    continue;
+                }
+
+                if (!started) {
+                    if (line.startsWith('v=')) {
+                        started = true;
+                        sdpLines.push(line);
+                    }
+                    continue;
+                }
+
+                if (/^[a-z]=/i.test(line)) {
+                    sdpLines.push(line);
+                    continue;
+                }
+
+                break;
+            }
+
+            return sdpLines.length > 0 ? sdpLines.join('\r\n') + '\r\n' : '';
+        }
+
+        function extractCandidates(text) {
+            return stripAnsi(text)
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter((line) => line.startsWith('candidate:'));
+        }
+        
+        async function createOffer() {
+            try {
+                log('Creating RTCPeerConnection...', 'info');
+                
+                const config = {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                };
+                
+                pc = new RTCPeerConnection(config);
+                
+                // ICE candidate handler
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        const candidateDiv = document.getElementById('localCandidates');
+                        const entry = document.createElement('div');
+                        entry.className = 'log-entry info';
+                        entry.textContent = event.candidate.candidate;
+                        candidateDiv.appendChild(entry);
+                        log(`ICE candidate: ${event.candidate.candidate}`, 'info');
+                    } else {
+                        log('ICE gathering complete', 'success');
+                        document.getElementById('ice-status').textContent = 'ICE: Gathering complete';
+                        if (pc && pc.localDescription) {
+                            document.getElementById('localSdp').value = pc.localDescription.sdp;
+                            log('Local SDP updated with gathered candidates', 'success');
+                        }
+                    }
+                };
+                
+                // ICE connection state
+                pc.oniceconnectionstatechange = () => {
+                    log(`ICE connection state: ${pc.iceConnectionState}`, 'info');
+                    document.getElementById('ice-status').textContent = `ICE: ${pc.iceConnectionState}`;
+                    
+                    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                        updateStatus('connected', 'ICE Connected');
+                    } else if (pc.iceConnectionState === 'failed') {
+                        updateStatus('disconnected', 'ICE Failed');
+                        log('ICE connection failed', 'error');
+                    }
+                };
+                
+                // Connection state
+                pc.onconnectionstatechange = () => {
+                    log(`Connection state: ${pc.connectionState}`, 'info');
+                    
+                    if (pc.connectionState === 'connected') {
+                        updateStatus('connected', 'Connected');
+                        document.getElementById('dtls-status').textContent = 'DTLS: Connected';
+                    } else if (pc.connectionState === 'failed') {
+                        updateStatus('disconnected', 'Connection Failed');
+                    }
+                };
+                
+                // Create data channel
+                log('Creating data channel...', 'info');
+                dataChannel = pc.createDataChannel('test-channel', {
+                    ordered: true
+                });
+                
+                dataChannel.onopen = () => {
+                    log('DataChannel opened!', 'success');
+                    document.getElementById('channel-status').textContent = 'DataChannel: Open';
+                    document.getElementById('messageInput').disabled = false;
+                    document.getElementById('sendBtn').disabled = false;
+                    
+                    // Send initial message
+                    const msg = 'Hello from browser!';
+                    dataChannel.send(msg);
+                    logMessage(msg, true);
+                };
+                
+                dataChannel.onmessage = (event) => {
+                    log(`Received: ${event.data}`, 'success');
+                    logMessage(event.data, false);
+                };
+                
+                dataChannel.onerror = (error) => {
+                    log(`DataChannel error: ${error}`, 'error');
+                };
+                
+                dataChannel.onclose = () => {
+                    log('DataChannel closed', 'warning');
+                    document.getElementById('channel-status').textContent = 'DataChannel: Closed';
+                    document.getElementById('messageInput').disabled = true;
+                    document.getElementById('sendBtn').disabled = true;
+                };
+                
+                // Create offer
+                log('Creating offer...', 'info');
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                document.getElementById('localSdp').value = pc.localDescription.sdp;
+                document.getElementById('setAnswerBtn').disabled = false;
+                
+                log('Offer created successfully', 'success');
+                log('Wait for ICE gathering complete before copying SDP to the C answerer', 'warning');
+                updateStatus('connecting', 'Waiting for answer...');
+                
+            } catch (error) {
+                log(`Error: ${error.message}`, 'error');
+                updateStatus('disconnected', 'Error');
+            }
+        }
+        
+        async function setRemoteAnswer() {
+            try {
+                const answerBox = document.getElementById('remoteSdp');
+                const sdp = extractSdp(answerBox.value);
+                if (!sdp) {
+                    alert('Please paste the remote SDP or the full C console block containing it');
+                    return;
+                }
+
+                if (answerBox.value.trim() !== sdp.trim()) {
+                    answerBox.value = sdp;
+                    log('Extracted SDP answer from pasted console output', 'info');
+                }
+                
+                log('Setting remote answer...', 'info');
+                
+                const answer = {
+                    type: 'answer',
+                    sdp: sdp
+                };
+                
+                await pc.setRemoteDescription(answer);
+                log('Remote answer set successfully', 'success');
+                updateStatus('connecting', 'Connecting...');
+                
+            } catch (error) {
+                log(`Error setting remote answer: ${error.message}`, 'error');
+            }
+        }
+        
+        async function addRemoteCandidates() {
+            try {
+                const candidateBox = document.getElementById('remoteCandidates');
+                const lines = extractCandidates(candidateBox.value);
+                if (lines.length === 0) {
+                    alert('Please paste remote candidates or the full candidate log from the C application');
+                    return;
+                }
+
+                candidateBox.value = lines.join('\n');
+                let added = 0;
+                
+                for (const line of lines) {
+                    try {
+                        const candidate = {
+                            candidate: line,
+                            sdpMid: '0',
+                            sdpMLineIndex: 0
+                        };
+                        
+                        await pc.addIceCandidate(candidate);
+                        added++;
+                        log(`Added ICE candidate: ${line.substring(0, 50)}...`, 'info');
+                    } catch (e) {
+                        log(`Failed to add candidate: ${e.message}`, 'warning');
+                    }
+                }
+                
+                log(`Added ${added} remote candidates`, 'success');
+                
+            } catch (error) {
+                log(`Error adding candidates: ${error.message}`, 'error');
+            }
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message) return;
+            
+            if (dataChannel && dataChannel.readyState === 'open') {
+                dataChannel.send(message);
+                logMessage(message, true);
+                input.value = '';
+            } else {
+                log('DataChannel not open', 'error');
+            }
+        }
+        
+        function copyToClipboard(elementId) {
+            const element = document.getElementById(elementId);
+            element.select();
+            document.execCommand('copy');
+            log('Copied to clipboard', 'success');
+        }
+        
+        // Allow Enter key to send message
+        document.getElementById('messageInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+        
+        log('Browser interop test ready', 'success');
+        log('Click "Create Offer" to start', 'info');
+    </script>
+</body>
+</html>
