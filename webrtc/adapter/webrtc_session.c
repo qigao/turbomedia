@@ -1,48 +1,48 @@
-#include "turbo_media_rtc.h"
-#include "rtc_peer_backend.h"
+#include "turbo_media_webrtc.h"
+#include "turbo_media_webrtc_backend.h"
 
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define TURBO_MEDIA_RTC_MAX_TRACKS 8
-#define TURBO_MEDIA_RTC_RTP_HEADER_SIZE 12
+#define TURBO_MEDIA_WEBRTC_MAX_TRACKS 8
+#define TURBO_MEDIA_WEBRTC_RTP_HEADER_SIZE 12
 
 typedef struct {
     int track_id;
-    turbo_media_rtc_backend_track_t *track;
+    turbo_media_webrtc_backend_track_t *track;
     char codec_name[TURBO_MEDIA_MAX_CODEC_NAME_LEN];
-} turbo_media_rtc_track_binding_t;
+} turbo_media_webrtc_track_binding_t;
 
-struct turbo_media_rtc_session_s {
+struct turbo_media_webrtc_session_s {
     turbo_media_server_runtime_t *runtime;
-    turbo_media_rtc_role_t role;
+    turbo_media_webrtc_role_t role;
     turbo_media_source_key_t key;
-    const turbo_media_rtc_backend_ops_t *backend;
-    turbo_media_rtc_backend_peer_t *peer;
+    const turbo_media_webrtc_backend_ops_t *backend;
+    turbo_media_webrtc_backend_peer_t *peer;
     turbo_media_protocol_session_t *protocol_session;
-    turbo_media_rtc_track_binding_t tracks[TURBO_MEDIA_RTC_MAX_TRACKS];
+    turbo_media_webrtc_track_binding_t tracks[TURBO_MEDIA_WEBRTC_MAX_TRACKS];
     size_t track_count;
-    turbo_media_rtc_peer_state_t state;
+    turbo_media_webrtc_peer_state_t state;
     int last_error;
     int replay_cached;
     int remove_source_on_close;
     int closing;
-    turbo_media_rtc_ice_candidate_cb on_ice_candidate;
-    turbo_media_rtc_state_cb on_state;
+    turbo_media_webrtc_ice_candidate_cb on_ice_candidate;
+    turbo_media_webrtc_state_cb on_state;
     void *user_data;
 };
 
-static int rtc_backend_valid(const turbo_media_rtc_backend_ops_t *backend) {
+static int rtc_backend_valid(const turbo_media_webrtc_backend_ops_t *backend) {
     return backend && backend->create && backend->destroy &&
            backend->add_send_track && backend->set_remote_offer &&
            backend->create_answer && backend->add_ice_candidate &&
            backend->start_track && backend->send_rtp && backend->pump;
 }
 
-static int rtc_role_valid(turbo_media_rtc_role_t role) {
-    return role == TURBO_MEDIA_RTC_ROLE_PUBLISHER ||
-           role == TURBO_MEDIA_RTC_ROLE_PLAYER;
+static int rtc_role_valid(turbo_media_webrtc_role_t role) {
+    return role == TURBO_MEDIA_WEBRTC_ROLE_PUBLISHER ||
+           role == TURBO_MEDIA_WEBRTC_ROLE_PLAYER;
 }
 
 static int rtc_codec_equal(const char *lhs, const char *rhs) {
@@ -66,12 +66,12 @@ static const uint8_t *rtc_rtp_payload(const uint8_t *packet,
     size_t offset;
     size_t extension_words;
 
-    if (!packet || packet_len < TURBO_MEDIA_RTC_RTP_HEADER_SIZE ||
+    if (!packet || packet_len < TURBO_MEDIA_WEBRTC_RTP_HEADER_SIZE ||
         (packet[0] >> 6) != 2) {
         return NULL;
     }
 
-    offset = TURBO_MEDIA_RTC_RTP_HEADER_SIZE + (size_t)(packet[0] & 0x0F) * 4;
+    offset = TURBO_MEDIA_WEBRTC_RTP_HEADER_SIZE + (size_t)(packet[0] & 0x0F) * 4;
     if (offset > packet_len) return NULL;
 
     if ((packet[0] & 0x10) != 0) {
@@ -176,9 +176,9 @@ static int rtc_packet_is_keyframe(const char *codec_name,
     return 0;
 }
 
-static turbo_media_rtc_track_binding_t *rtc_find_binding_by_track(
-    turbo_media_rtc_session_t *session,
-    turbo_media_rtc_backend_track_t *track) {
+static turbo_media_webrtc_track_binding_t *rtc_find_binding_by_track(
+    turbo_media_webrtc_session_t *session,
+    turbo_media_webrtc_backend_track_t *track) {
     size_t i;
 
     for (i = 0; i < session->track_count; ++i) {
@@ -187,8 +187,8 @@ static turbo_media_rtc_track_binding_t *rtc_find_binding_by_track(
     return NULL;
 }
 
-static turbo_media_rtc_track_binding_t *rtc_find_binding_by_id(
-    turbo_media_rtc_session_t *session,
+static turbo_media_webrtc_track_binding_t *rtc_find_binding_by_id(
+    turbo_media_webrtc_session_t *session,
     int track_id) {
     size_t i;
 
@@ -198,16 +198,16 @@ static turbo_media_rtc_track_binding_t *rtc_find_binding_by_id(
     return NULL;
 }
 
-static int rtc_store_binding(turbo_media_rtc_session_t *session,
+static int rtc_store_binding(turbo_media_webrtc_session_t *session,
                              int track_id,
-                             turbo_media_rtc_backend_track_t *track,
+                             turbo_media_webrtc_backend_track_t *track,
                              const char *codec_name) {
-    turbo_media_rtc_track_binding_t *binding;
+    turbo_media_webrtc_track_binding_t *binding;
 
     if (!session || !track || !codec_name || !codec_name[0]) {
         return TURBO_MEDIA_ERR_INVALID;
     }
-    if (session->track_count >= TURBO_MEDIA_RTC_MAX_TRACKS) {
+    if (session->track_count >= TURBO_MEDIA_WEBRTC_MAX_TRACKS) {
         return TURBO_MEDIA_ERR_FULL;
     }
     if (rtc_find_binding_by_id(session, track_id)) return TURBO_MEDIA_ERR_EXISTS;
@@ -221,7 +221,7 @@ static int rtc_store_binding(turbo_media_rtc_session_t *session,
 }
 
 static int rtc_backend_track_to_media(
-    const turbo_media_rtc_backend_track_info_t *backend_track,
+    const turbo_media_webrtc_backend_track_info_t *backend_track,
     turbo_media_track_info_t *track) {
     if (!backend_track || !track || backend_track->track_id < 0 ||
         !backend_track->codec_name[0]) {
@@ -230,9 +230,9 @@ static int rtc_backend_track_to_media(
 
     memset(track, 0, sizeof(*track));
     track->track_id = backend_track->track_id;
-    if (backend_track->type == TURBO_MEDIA_RTC_BACKEND_TRACK_AUDIO) {
+    if (backend_track->type == TURBO_MEDIA_WEBRTC_BACKEND_TRACK_AUDIO) {
         track->type = TURBO_MEDIA_TRACK_AUDIO;
-    } else if (backend_track->type == TURBO_MEDIA_RTC_BACKEND_TRACK_VIDEO) {
+    } else if (backend_track->type == TURBO_MEDIA_WEBRTC_BACKEND_TRACK_VIDEO) {
         track->type = TURBO_MEDIA_TRACK_VIDEO;
     } else {
         return TURBO_MEDIA_ERR_INVALID;
@@ -251,7 +251,7 @@ static int rtc_backend_track_to_media(
 
 static int rtc_media_track_to_backend(
     const turbo_media_track_info_t *track,
-    turbo_media_rtc_backend_track_info_t *backend_track) {
+    turbo_media_webrtc_backend_track_info_t *backend_track) {
     if (!track || !backend_track || track->track_id < 0 || !track->codec_name[0]) {
         return TURBO_MEDIA_ERR_INVALID;
     }
@@ -259,9 +259,9 @@ static int rtc_media_track_to_backend(
     memset(backend_track, 0, sizeof(*backend_track));
     backend_track->track_id = track->track_id;
     if (track->type == TURBO_MEDIA_TRACK_AUDIO) {
-        backend_track->type = TURBO_MEDIA_RTC_BACKEND_TRACK_AUDIO;
+        backend_track->type = TURBO_MEDIA_WEBRTC_BACKEND_TRACK_AUDIO;
     } else if (track->type == TURBO_MEDIA_TRACK_VIDEO) {
-        backend_track->type = TURBO_MEDIA_RTC_BACKEND_TRACK_VIDEO;
+        backend_track->type = TURBO_MEDIA_WEBRTC_BACKEND_TRACK_VIDEO;
     } else {
         return TURBO_MEDIA_ERR_INVALID;
     }
@@ -277,7 +277,7 @@ static int rtc_media_track_to_backend(
     return TURBO_MEDIA_OK;
 }
 
-static int rtc_open_publisher(turbo_media_rtc_session_t *session) {
+static int rtc_open_publisher(turbo_media_webrtc_session_t *session) {
     turbo_media_protocol_session_config_t config;
 
     memset(&config, 0, sizeof(config));
@@ -292,8 +292,8 @@ static int rtc_open_publisher(turbo_media_rtc_session_t *session) {
 static int rtc_player_frame_cb(turbo_media_source_t *source,
                                const turbo_media_frame_t *frame,
                                void *user_data) {
-    turbo_media_rtc_session_t *session = (turbo_media_rtc_session_t *)user_data;
-    turbo_media_rtc_track_binding_t *binding;
+    turbo_media_webrtc_session_t *session = (turbo_media_webrtc_session_t *)user_data;
+    turbo_media_webrtc_track_binding_t *binding;
     int rc;
 
     (void)source;
@@ -309,7 +309,7 @@ static int rtc_player_frame_cb(turbo_media_source_t *source,
     return TURBO_MEDIA_OK;
 }
 
-static int rtc_open_player(turbo_media_rtc_session_t *session) {
+static int rtc_open_player(turbo_media_webrtc_session_t *session) {
     turbo_media_protocol_session_config_t config;
 
     if (session->protocol_session) return TURBO_MEDIA_OK;
@@ -325,19 +325,19 @@ static int rtc_open_player(turbo_media_rtc_session_t *session) {
 }
 
 static void rtc_backend_state(void *user_data, int state_value) {
-    turbo_media_rtc_session_t *session = (turbo_media_rtc_session_t *)user_data;
-    turbo_media_rtc_peer_state_t state;
+    turbo_media_webrtc_session_t *session = (turbo_media_webrtc_session_t *)user_data;
+    turbo_media_webrtc_peer_state_t state;
     size_t i;
     int rc = TURBO_MEDIA_OK;
 
-    if (!session || session->closing || state_value < TURBO_MEDIA_RTC_PEER_NEW ||
-        state_value > TURBO_MEDIA_RTC_PEER_CLOSED) {
+    if (!session || session->closing || state_value < TURBO_MEDIA_WEBRTC_PEER_NEW ||
+        state_value > TURBO_MEDIA_WEBRTC_PEER_CLOSED) {
         return;
     }
 
-    state = (turbo_media_rtc_peer_state_t)state_value;
-    if (state == TURBO_MEDIA_RTC_PEER_CONNECTED &&
-        session->role == TURBO_MEDIA_RTC_ROLE_PLAYER) {
+    state = (turbo_media_webrtc_peer_state_t)state_value;
+    if (state == TURBO_MEDIA_WEBRTC_PEER_CONNECTED &&
+        session->role == TURBO_MEDIA_WEBRTC_ROLE_PLAYER) {
         for (i = 0; i < session->track_count; ++i) {
             if (session->backend->start_track(session->tracks[i].track) != 0) {
                 rc = TURBO_MEDIA_ERR_STATE;
@@ -347,7 +347,7 @@ static void rtc_backend_state(void *user_data, int state_value) {
         if (rc == TURBO_MEDIA_OK) rc = rtc_open_player(session);
         if (rc != TURBO_MEDIA_OK) {
             session->last_error = rc;
-            state = TURBO_MEDIA_RTC_PEER_FAILED;
+            state = TURBO_MEDIA_WEBRTC_PEER_FAILED;
         }
     }
 
@@ -356,7 +356,7 @@ static void rtc_backend_state(void *user_data, int state_value) {
 }
 
 static void rtc_backend_ice_candidate(void *user_data, const char *candidate) {
-    turbo_media_rtc_session_t *session = (turbo_media_rtc_session_t *)user_data;
+    turbo_media_webrtc_session_t *session = (turbo_media_webrtc_session_t *)user_data;
 
     if (!session || session->closing || !candidate) return;
     if (session->on_ice_candidate) {
@@ -366,14 +366,14 @@ static void rtc_backend_ice_candidate(void *user_data, const char *candidate) {
 
 static int rtc_backend_remote_track(
     void *user_data,
-    turbo_media_rtc_backend_track_t *backend_track,
-    const turbo_media_rtc_backend_track_info_t *backend_info) {
-    turbo_media_rtc_session_t *session = (turbo_media_rtc_session_t *)user_data;
+    turbo_media_webrtc_backend_track_t *backend_track,
+    const turbo_media_webrtc_backend_track_info_t *backend_info) {
+    turbo_media_webrtc_session_t *session = (turbo_media_webrtc_session_t *)user_data;
     turbo_media_track_info_t track;
     int rc;
 
     if (!session || session->closing ||
-        session->role != TURBO_MEDIA_RTC_ROLE_PUBLISHER) {
+        session->role != TURBO_MEDIA_WEBRTC_ROLE_PUBLISHER) {
         return TURBO_MEDIA_ERR_STATE;
     }
 
@@ -391,17 +391,17 @@ static int rtc_backend_remote_track(
 }
 
 static int rtc_backend_rtp(void *user_data,
-                           turbo_media_rtc_backend_track_t *backend_track,
+                           turbo_media_webrtc_backend_track_t *backend_track,
                            const uint8_t *packet,
                            size_t packet_len) {
-    turbo_media_rtc_session_t *session = (turbo_media_rtc_session_t *)user_data;
-    turbo_media_rtc_track_binding_t *binding;
+    turbo_media_webrtc_session_t *session = (turbo_media_webrtc_session_t *)user_data;
+    turbo_media_webrtc_track_binding_t *binding;
     turbo_media_frame_t frame;
     uint32_t timestamp;
     int rc;
 
     if (!session || session->closing || !session->protocol_session ||
-        !packet || packet_len < TURBO_MEDIA_RTC_RTP_HEADER_SIZE) {
+        !packet || packet_len < TURBO_MEDIA_WEBRTC_RTP_HEADER_SIZE) {
         return TURBO_MEDIA_ERR_INVALID;
     }
     binding = rtc_find_binding_by_track(session, backend_track);
@@ -426,7 +426,7 @@ static int rtc_backend_rtp(void *user_data,
     return rc;
 }
 
-static int rtc_add_player_tracks(turbo_media_rtc_session_t *session) {
+static int rtc_add_player_tracks(turbo_media_webrtc_session_t *session) {
     turbo_media_source_t *source;
     size_t track_count;
     size_t i;
@@ -440,8 +440,8 @@ static int rtc_add_player_tracks(turbo_media_rtc_session_t *session) {
     track_count = turbo_media_source_track_count(source);
     for (i = 0; i < track_count; ++i) {
         turbo_media_track_info_t track;
-        turbo_media_rtc_backend_track_info_t backend_info;
-        turbo_media_rtc_backend_track_t *backend_track = NULL;
+        turbo_media_webrtc_backend_track_info_t backend_info;
+        turbo_media_webrtc_backend_track_t *backend_track = NULL;
 
         rc = turbo_media_source_get_track_at(source, i, &track);
         if (rc != TURBO_MEDIA_OK) return rc;
@@ -463,15 +463,15 @@ static int rtc_add_player_tracks(turbo_media_rtc_session_t *session) {
     return added > 0 ? TURBO_MEDIA_OK : TURBO_MEDIA_ERR_NOT_FOUND;
 }
 
-int turbo_media_rtc_session_create_with_backend(
-    const turbo_media_rtc_session_config_t *config,
-    const turbo_media_rtc_backend_ops_t *backend,
+int turbo_media_webrtc_session_create_with_backend(
+    const turbo_media_webrtc_session_config_t *config,
+    const turbo_media_webrtc_backend_ops_t *backend,
     char *answer_sdp,
     size_t answer_sdp_capacity,
     size_t *answer_sdp_length,
-    turbo_media_rtc_session_t **session) {
-    turbo_media_rtc_backend_config_t backend_config;
-    turbo_media_rtc_session_t *created;
+    turbo_media_webrtc_session_t **session) {
+    turbo_media_webrtc_backend_config_t backend_config;
+    turbo_media_webrtc_session_t *created;
     int rc;
 
     if (!config || !config->runtime || !rtc_role_valid(config->role) ||
@@ -485,20 +485,20 @@ int turbo_media_rtc_session_create_with_backend(
 
     *session = NULL;
     if (answer_sdp_length) *answer_sdp_length = 0;
-    created = (turbo_media_rtc_session_t *)calloc(1, sizeof(*created));
+    created = (turbo_media_webrtc_session_t *)calloc(1, sizeof(*created));
     if (!created) return TURBO_MEDIA_ERR_NOMEM;
 
     created->runtime = config->runtime;
     created->role = config->role;
     created->backend = backend;
-    created->state = TURBO_MEDIA_RTC_PEER_NEW;
+    created->state = TURBO_MEDIA_WEBRTC_PEER_NEW;
     created->replay_cached = config->replay_cached;
     created->remove_source_on_close = config->remove_source_on_close;
     created->on_ice_candidate = config->on_ice_candidate;
     created->on_state = config->on_state;
     created->user_data = config->user_data;
 
-    rc = turbo_media_rtc_source_key(config->default_vhost,
+    rc = turbo_media_webrtc_source_key(config->default_vhost,
                                     config->resource_path,
                                     config->query,
                                     &created->key);
@@ -522,7 +522,7 @@ int turbo_media_rtc_session_create_with_backend(
         goto cleanup;
     }
 
-    if (created->role == TURBO_MEDIA_RTC_ROLE_PUBLISHER) {
+    if (created->role == TURBO_MEDIA_WEBRTC_ROLE_PUBLISHER) {
         rc = rtc_open_publisher(created);
     } else {
         rc = rtc_add_player_tracks(created);
@@ -548,28 +548,11 @@ int turbo_media_rtc_session_create_with_backend(
 
 cleanup:
     created->last_error = rc;
-    turbo_media_rtc_session_destroy(created);
+    turbo_media_webrtc_session_destroy(created);
     return rc;
 }
 
-#ifdef TURBO_MEDIA_HAS_TURBORTC_BACKEND
-int turbo_media_rtc_session_create(
-    const turbo_media_rtc_session_config_t *config,
-    char *answer_sdp,
-    size_t answer_sdp_capacity,
-    size_t *answer_sdp_length,
-    turbo_media_rtc_session_t **session) {
-    return turbo_media_rtc_session_create_with_backend(
-        config,
-        turbo_media_rtc_turbortc_backend(),
-        answer_sdp,
-        answer_sdp_capacity,
-        answer_sdp_length,
-        session);
-}
-#endif
-
-void turbo_media_rtc_session_destroy(turbo_media_rtc_session_t *session) {
+void turbo_media_webrtc_session_destroy(turbo_media_webrtc_session_t *session) {
     if (!session || session->closing) return;
 
     session->closing = 1;
@@ -581,12 +564,12 @@ void turbo_media_rtc_session_destroy(turbo_media_rtc_session_t *session) {
         turbo_media_server_protocol_session_close(session->protocol_session);
         session->protocol_session = NULL;
     }
-    session->state = TURBO_MEDIA_RTC_PEER_CLOSED;
+    session->state = TURBO_MEDIA_WEBRTC_PEER_CLOSED;
     free(session);
 }
 
-int turbo_media_rtc_session_add_ice_candidate(
-    turbo_media_rtc_session_t *session,
+int turbo_media_webrtc_session_add_ice_candidate(
+    turbo_media_webrtc_session_t *session,
     const char *candidate) {
     if (!session || session->closing || !session->peer ||
         !candidate || !candidate[0]) {
@@ -599,7 +582,7 @@ int turbo_media_rtc_session_add_ice_candidate(
     return TURBO_MEDIA_OK;
 }
 
-int turbo_media_rtc_session_pump(turbo_media_rtc_session_t *session) {
+int turbo_media_webrtc_session_pump(turbo_media_webrtc_session_t *session) {
     if (!session || session->closing || !session->peer) {
         return TURBO_MEDIA_ERR_INVALID;
     }
@@ -611,17 +594,17 @@ int turbo_media_rtc_session_pump(turbo_media_rtc_session_t *session) {
     return session->last_error;
 }
 
-turbo_media_rtc_peer_state_t turbo_media_rtc_session_state(
-    const turbo_media_rtc_session_t *session) {
-    return session ? session->state : TURBO_MEDIA_RTC_PEER_CLOSED;
+turbo_media_webrtc_peer_state_t turbo_media_webrtc_session_state(
+    const turbo_media_webrtc_session_t *session) {
+    return session ? session->state : TURBO_MEDIA_WEBRTC_PEER_CLOSED;
 }
 
-int turbo_media_rtc_session_last_error(
-    const turbo_media_rtc_session_t *session) {
+int turbo_media_webrtc_session_last_error(
+    const turbo_media_webrtc_session_t *session) {
     return session ? session->last_error : TURBO_MEDIA_ERR_INVALID;
 }
 
-const turbo_media_source_key_t *turbo_media_rtc_session_key(
-    const turbo_media_rtc_session_t *session) {
+const turbo_media_source_key_t *turbo_media_webrtc_session_key(
+    const turbo_media_webrtc_session_t *session) {
     return session && !session->closing ? &session->key : NULL;
 }

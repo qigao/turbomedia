@@ -10,13 +10,19 @@
 static void init_test_server(webrtc_signaling_server_t *server) {
   memset(server, 0, sizeof(*server));
   turbo_mutex_init(&server->mutex);
-  server->local_peers = PeerMap_init();
-  server->local_rooms = RoomMap_init();
+  TEST_ASSERT_EQUAL_INT(
+      TURBO_OK,
+      turbo_hash_map_init(&server->local_peers, sizeof(tstr_t), sizeof(webrtc_peer_t *),
+                          webrtc_str_hash, webrtc_str_equal, NULL));
+  TEST_ASSERT_EQUAL_INT(
+      TURBO_OK,
+      turbo_hash_map_init(&server->local_rooms, sizeof(tstr_t), sizeof(webrtc_room_t *),
+                          webrtc_str_hash, webrtc_str_equal, NULL));
 }
 
 static void destroy_test_server(webrtc_signaling_server_t *server) {
-  PeerMap_drop(&server->local_peers);
-  RoomMap_drop(&server->local_rooms);
+  turbo_hash_map_destroy(&server->local_peers);
+  turbo_hash_map_destroy(&server->local_rooms);
   turbo_mutex_destroy(&server->mutex);
 }
 

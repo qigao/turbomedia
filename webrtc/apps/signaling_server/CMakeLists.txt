@@ -45,7 +45,7 @@ target_include_directories(signaling_server
 target_link_libraries(signaling_server
   PRIVATE
     ${SIGNALING_SERVER_LIBS}
-    webrtc_signaling
+    TurboMedia::WebRTCSignaling
     TurboNet::Utils
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>

@@ -7,6 +7,7 @@
 
 #include "platform.h"
 #include "tlog.h"
+#include "turbo_hash.h"
 #include "turbo_parser.h"
 #include "turbo_str.h"
 
@@ -58,13 +59,11 @@ struct webrtc_room_s {
   webrtc_room_t *prev;
 };
 
-static int webrtc_str_eq(const tstr_t *a, const tstr_t *b) {
-  return strcmp(*a, *b) == 0;
-}
-
-static size_t webrtc_str_hash(const tstr_t *k) {
-  const char *str = *k;
+static size_t webrtc_str_hash(const void *key, size_t key_size, void *ctx) {
+  const char *str = *(const char *const *)key;
   size_t hash = 14695981039346656037ULL;
+  (void)key_size;
+  (void)ctx;
   while (*str) {
     hash ^= (unsigned char)*str++;
     hash *= 1099511628211ULL;
@@ -72,21 +71,13 @@ static size_t webrtc_str_hash(const tstr_t *k) {
   return hash;
 }
 
-#define i_type PeerMap
-#define i_key tstr_t
-#define i_no_clone
-#define i_eq webrtc_str_eq
-#define i_hash webrtc_str_hash
-#define i_val webrtc_peer_t *
-#include <stc/hmap.h>
-
-#define i_type RoomMap
-#define i_key tstr_t
-#define i_no_clone
-#define i_eq webrtc_str_eq
-#define i_hash webrtc_str_hash
-#define i_val webrtc_room_t *
-#include <stc/hmap.h>
+static bool webrtc_str_equal(const void *left, const void *right, size_t key_size, void *ctx) {
+  const char *left_str = *(const char *const *)left;
+  const char *right_str = *(const char *const *)right;
+  (void)key_size;
+  (void)ctx;
+  return strcmp(left_str, right_str) == 0;
+}
 
 typedef struct {
   webrtc_signaling_server_t *server;
@@ -129,8 +120,8 @@ struct webrtc_signaling_server_s {
   coro_socket_t *listener;
   webrtc_signaling_config_t config;
 
-  PeerMap local_peers;
-  RoomMap local_rooms;
+  turbo_hash_map_t local_peers;
+  turbo_hash_map_t local_rooms;
 
   webrtc_peer_t *peers_head;
   webrtc_peer_t *peers_tail;
@@ -238,13 +229,15 @@ static tstr_t generate_peer_id_locked(webrtc_signaling_server_t *server) {
 }
 
 static webrtc_peer_t *find_peer_by_id_locked(webrtc_signaling_server_t *server, const char *id) {
-  const PeerMap_value *res = PeerMap_get(&server->local_peers, (tstr_t)id);
-  return res ? res->second : NULL;
+  webrtc_peer_t *const *peer =
+      (webrtc_peer_t *const *)turbo_hash_map_get_const(&server->local_peers, &id);
+  return peer ? *peer : NULL;
 }
 
 static webrtc_room_t *find_room_locked(webrtc_signaling_server_t *server, const char *id) {
-  const RoomMap_value *res = RoomMap_get(&server->local_rooms, (tstr_t)id);
-  return res ? res->second : NULL;
+  webrtc_room_t *const *room =
+      (webrtc_room_t *const *)turbo_hash_map_get_const(&server->local_rooms, &id);
+  return room ? *room : NULL;
 }
 
 static webrtc_room_t *create_room_locked(webrtc_signaling_server_t *server, const char *id) {
@@ -264,6 +257,11 @@ static webrtc_room_t *create_room_locked(webrtc_signaling_server_t *server, cons
     free(room);
     return NULL;
   }
+  if (turbo_hash_map_put(&server->local_rooms, &room->id, &room) != TURBO_OK) {
+    tstr_free(room->id);
+    free(room);
+    return NULL;
+  }
   if (server->rooms_tail) {
     server->rooms_tail->next = room;
     room->prev = server->rooms_tail;
@@ -273,13 +271,12 @@ static webrtc_room_t *create_room_locked(webrtc_signaling_server_t *server, cons
     server->rooms_head = room;
   }
 
-  RoomMap_insert(&server->local_rooms, room->id, room);
   server->room_count++;
   return room;
 }
 
 static void destroy_room_locked(webrtc_signaling_server_t *server, webrtc_room_t *room) {
-  RoomMap_erase(&server->local_rooms, room->id);
+  turbo_hash_map_remove(&server->local_rooms, &room->id, NULL);
   if (room->prev) {
     room->prev->next = room->next;
   }
@@ -449,7 +446,7 @@ static void remove_peer_from_room_locked(webrtc_signaling_server_t *server, webr
 
 static void remove_peer_locked(webrtc_signaling_server_t *server, webrtc_peer_t *peer) {
   if (peer->id) {
-    PeerMap_erase(&server->local_peers, peer->id);
+    turbo_hash_map_remove(&server->local_peers, &peer->id, NULL);
   }
 
   remove_peer_from_room_locked(server, peer);
@@ -1433,6 +1430,13 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   peer->recv_buffer_len = recv_buffer_len;
   peer->recv_buffer_cap = recv_buffer_cap;
   peer->last_activity = turbo_monotonic_ms();
+  if (turbo_hash_map_put(&server->local_peers, &peer->id, &peer) != TURBO_OK) {
+    turbo_mutex_unlock(&server->mutex);
+    tstr_free(peer->id);
+    free(peer->recv_buffer);
+    free(peer);
+    return;
+  }
   peer->prev = server->peers_tail;
   if (server->peers_tail) {
     server->peers_tail->next = peer;
@@ -1442,7 +1446,6 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
     server->peers_head = peer;
   }
   server->peer_count++;
-  PeerMap_insert(&server->local_peers, peer->id, peer);
   coro_socket_set_user_data(client, server);
   coro_socket_set_timeout(client, 1000);
   turbo_mutex_unlock(&server->mutex);
@@ -1539,8 +1542,23 @@ webrtc_signaling_server_t *webrtc_signaling_create(void *loop,
   }
 
   turbo_mutex_init(&server->mutex);
-  server->local_peers = PeerMap_init();
-  server->local_rooms = RoomMap_init();
+  if (turbo_hash_map_init(&server->local_peers, sizeof(tstr_t), sizeof(webrtc_peer_t *),
+                          webrtc_str_hash, webrtc_str_equal, NULL) != TURBO_OK ||
+      turbo_hash_map_init(&server->local_rooms, sizeof(tstr_t), sizeof(webrtc_room_t *),
+                          webrtc_str_hash, webrtc_str_equal, NULL) != TURBO_OK) {
+    turbo_hash_map_destroy(&server->local_peers);
+    turbo_hash_map_destroy(&server->local_rooms);
+    turbo_mutex_destroy(&server->mutex);
+    if (server->cleanup_timer) {
+      turbo_timer_destroy(server->cleanup_timer);
+    }
+    coro_context_destroy(server->ctx);
+    if (server->owns_loop) {
+      turbo_loop_destroy(server->loop);
+    }
+    free(server);
+    return NULL;
+  }
 
   if (config->use_tls && (config->cert_file || config->key_file)) {
     TLOG_WARN("Custom TLS certificate configuration is not wired into CoroNet signaling yet");
@@ -1650,8 +1668,8 @@ void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
   if (server->ctx) {
     coro_context_destroy(server->ctx);
   }
-  PeerMap_drop(&server->local_peers);
-  RoomMap_drop(&server->local_rooms);
+  turbo_hash_map_destroy(&server->local_peers);
+  turbo_hash_map_destroy(&server->local_rooms);
   turbo_mutex_destroy(&server->mutex);
   if (server->owns_loop && server->loop) {
     turbo_loop_destroy(server->loop);

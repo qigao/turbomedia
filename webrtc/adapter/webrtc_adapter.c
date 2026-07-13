@@ -1,8 +1,8 @@
-#include "turbo_media_rtc.h"
+#include "turbo_media_webrtc.h"
 
 #include <string.h>
 
-#define TURBO_MEDIA_RTC_DEFAULT_VHOST "default"
+#define TURBO_MEDIA_WEBRTC_DEFAULT_VHOST "default"
 
 static const char *rtc_nonempty_or_default(const char *value, const char *fallback) {
     return value && value[0] ? value : fallback;
@@ -112,7 +112,7 @@ static int rtc_source_key_from_query(
     if (used_query) *used_query = 1;
     return turbo_media_source_key_init(
         key,
-        found_vhost ? vhost : rtc_nonempty_or_default(default_vhost, TURBO_MEDIA_RTC_DEFAULT_VHOST),
+        found_vhost ? vhost : rtc_nonempty_or_default(default_vhost, TURBO_MEDIA_WEBRTC_DEFAULT_VHOST),
         app,
         stream);
 }
@@ -153,12 +153,12 @@ static int rtc_source_key_from_path(
 
     return turbo_media_source_key_init(
         key,
-        rtc_nonempty_or_default(default_vhost, TURBO_MEDIA_RTC_DEFAULT_VHOST),
+        rtc_nonempty_or_default(default_vhost, TURBO_MEDIA_WEBRTC_DEFAULT_VHOST),
         app,
         stream);
 }
 
-int turbo_media_rtc_source_key(
+int turbo_media_webrtc_source_key(
     const char *default_vhost,
     const char *resource_path,
     const char *query,

@@ -10,7 +10,6 @@
 
 #include "ice_integration.h"
 #include "turbo_datachannel.h"
-#include "turbo_datachannel_internal.h"
 #include "ice/turbo_ice.h"
 #include "tlog.h"
 
@@ -30,7 +29,8 @@ struct ice_integration_ctx_s {
     /* Callbacks */
     void (*on_ice_candidate)(const char *candidate_sdp, void *user_data);
     void (*on_ice_state_change)(ice_state_t state, void *user_data);
-    void *user_data;
+    void *candidate_user_data;
+    void *state_user_data;
 
     /* Connection management */
     turbo_timer_t *connection_timer;
@@ -66,6 +66,7 @@ static void on_reconnect_timer(turbo_timer_t *timer);
 static void on_ice_connected_post(void *arg1, void *arg2);
 static void start_gathering_task(coro_t *co, void *arg);
 static void start_connectivity_checks_task(coro_t *co, void *arg);
+static void send_ice_datagram(void *transport, const void *data, size_t len);
 
 static int start_connectivity_checks_if_ready(ice_integration_ctx_t *ctx);
 static void stop_and_destroy_timer(turbo_timer_t **timer_ptr);
@@ -88,7 +89,11 @@ ice_integration_ctx_t *ice_integration_create(
     const char **turn_credentials,
     int turn_count
 ) {
-    if (!peer) return NULL;
+    if (!peer || stun_count < 0 || turn_count < 0 ||
+        (stun_count > 0 && !stun_servers) ||
+        (turn_count > 0 && !turn_servers)) {
+        return NULL;
+    }
 
     
     ice_integration_ctx_t *ctx = calloc(1, sizeof(ice_integration_ctx_t));
@@ -101,7 +106,7 @@ ice_integration_ctx_t *ice_integration_create(
     
     /* Configure ICE agent */
     ice_config_t ice_cfg = ice_default_config();
-    ice_cfg.is_controlling = peer->ctx->is_server ? 0 : 1;
+    ice_cfg.is_controlling = turbo_dc_peer_is_dtls_server(peer) ? 0 : 1;
 
     ice_cfg.aggressive_nomination = 1;
     ice_cfg.use_mdns_candidates = 0;  /* Disable mDNS until resolution is implemented */
@@ -178,8 +183,17 @@ ice_integration_ctx_t *ice_integration_create(
     }
 
     
-    /* Attach ICE agent to peer */
-    turbo_dc_peer_set_ice_agent(peer, ctx->ice_agent);
+    if (turbo_dc_peer_set_external_transport(
+            peer, ctx->ice_agent, send_ice_datagram) != 0) {
+        ice_callbacks_t empty_callbacks = {0};
+        ice_agent_set_callbacks(ctx->ice_agent, &empty_callbacks);
+        stop_and_destroy_timer(&ctx->connection_timer);
+        stop_and_destroy_timer(&ctx->reconnect_timer);
+        ice_agent_destroy(ctx->ice_agent);
+        coro_context_destroy(ctx->ice_ctx);
+        free(ctx);
+        return NULL;
+    }
     
     return ctx;
 }
@@ -192,14 +206,15 @@ void ice_integration_destroy(ice_integration_ctx_t *ctx) {
 
     ctx->on_ice_candidate = NULL;
     ctx->on_ice_state_change = NULL;
-    ctx->user_data = NULL;
+    ctx->candidate_user_data = NULL;
+    ctx->state_user_data = NULL;
     ctx->peer_connect_pending = 0;
 
     stop_and_destroy_timer(&ctx->connection_timer);
     stop_and_destroy_timer(&ctx->reconnect_timer);
 
     if (ctx->peer) {
-        turbo_dc_peer_set_ice_agent(ctx->peer, NULL);
+        turbo_dc_peer_set_external_transport(ctx->peer, NULL, NULL);
     }
     
     if (ctx->ice_agent) {
@@ -229,7 +244,7 @@ void ice_integration_on_candidate(ice_integration_ctx_t *ctx,
                                    void *user_data) {
     if (ctx) {
         ctx->on_ice_candidate = callback;
-        ctx->user_data = user_data;
+        ctx->candidate_user_data = user_data;
     }
 }
 
@@ -241,7 +256,7 @@ void ice_integration_on_state_change(ice_integration_ctx_t *ctx,
                                       void *user_data) {
     if (ctx) {
         ctx->on_ice_state_change = callback;
-        ctx->user_data = user_data;
+        ctx->state_user_data = user_data;
     }
 }
 
@@ -470,7 +485,7 @@ static void on_ice_state_changed(turbo_ice_agent_t *agent, ice_state_t old_state
     
     /* Notify application */
     if (ctx->on_ice_state_change) {
-        ctx->on_ice_state_change(new_state, ctx->user_data);
+        ctx->on_ice_state_change(new_state, ctx->state_user_data);
     }
 }
 
@@ -491,9 +506,6 @@ static void on_ice_connected_post(void *arg1, void *arg2) {
     peer_state = turbo_dc_peer_get_state(ctx->peer);
     if (peer_state == TURBO_DC_STATE_NEW) {
         turbo_dc_peer_connect(ctx->peer);
-    } else if (peer_state == TURBO_DC_STATE_CONNECTING &&
-               !ctx->peer->dtls.handshake_done) {
-        dtls_process_handshake(ctx->peer);
     }
 }
 
@@ -526,7 +538,7 @@ static void on_ice_candidate_discovered(turbo_ice_agent_t *agent,
         
         /* Trickle to application for signaling */
         if (ctx->on_ice_candidate) {
-            ctx->on_ice_candidate(candidate_sdp, ctx->user_data);
+            ctx->on_ice_candidate(candidate_sdp, ctx->candidate_user_data);
         }
     }
 }
@@ -536,8 +548,11 @@ static void on_ice_data_received(turbo_ice_agent_t *agent, const void *data,
     (void)agent;
     ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)user_data;
     
-    /* Feed to DataChannel DTLS layer */
-    turbo_dc_peer_feed_ice_data(ctx->peer, data, len);
+    turbo_dc_peer_feed_transport_data(ctx->peer, data, len);
+}
+
+static void send_ice_datagram(void *transport, const void *data, size_t len) {
+    (void)ice_agent_send((turbo_ice_agent_t *)transport, data, len);
 }
 
 static void on_connection_timeout(turbo_timer_t *timer) {

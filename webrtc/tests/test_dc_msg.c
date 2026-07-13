@@ -80,7 +80,7 @@ void test_parse_ltv_empty_message(void) {
     TEST_ASSERT_EQUAL(0x00, turbo_ltv_type(msg));
     TEST_ASSERT_EQUAL(0, turbo_ltv_value_len(msg));
 
-    free(msg);
+    turbo_free_ltv(&msg);
 }
 
 void test_parse_ltv_with_payload(void) {
@@ -96,7 +96,7 @@ void test_parse_ltv_with_payload(void) {
     TEST_ASSERT_EQUAL(5, turbo_ltv_value_len(msg));
     TEST_ASSERT_EQUAL_MEMORY("hello", turbo_ltv_value(msg), 5);
 
-    free(msg);
+    turbo_free_ltv(&msg);
 }
 
 /* ============================================================================
@@ -133,7 +133,7 @@ void test_stream_feed_complete(void) {
     TEST_ASSERT_EQUAL(0x33, turbo_ltv_type(msg));
     TEST_ASSERT_EQUAL(4, turbo_ltv_value_len(msg));
 
-    free(msg);
+    turbo_free_ltv(&msg);
     turbo_dc_msg_stream_destroy(stream);
 }
 
@@ -155,7 +155,7 @@ void test_stream_feed_fragmented(void) {
     TEST_ASSERT_NOT_NULL(msg);
     TEST_ASSERT_EQUAL(0x44, turbo_ltv_type(msg));
 
-    free(msg);
+    turbo_free_ltv(&msg);
     turbo_dc_msg_stream_destroy(stream);
 }
 
@@ -177,7 +177,7 @@ void test_stream_reset(void) {
     TEST_ASSERT_EQUAL(1, rc);
     TEST_ASSERT_NOT_NULL(msg);
 
-    free(msg);
+    turbo_free_ltv(&msg);
     turbo_dc_msg_stream_destroy(stream);
 }
 

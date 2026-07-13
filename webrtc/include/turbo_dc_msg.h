@@ -79,7 +79,7 @@ static inline int turbo_dc_send_raw(turbo_dc_channel_t *channel,
  *       if (turbo_dc_parse_ltv(data, len, &msg) == 0) {
  *           uint8_t type = turbo_ltv_type(msg);
  *           // handle type...
- *           turbo_free_ltv(msg);
+ *           turbo_free_ltv(&msg);
  *       }
  *   }
  */

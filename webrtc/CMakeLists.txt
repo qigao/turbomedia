@@ -63,6 +63,53 @@ target_link_libraries(
           TurboNet::Asn1Parser
           roaring::roaring)
 
+add_library(turbo_media_webrtc SHARED)
+turbo_media_configure_component(turbo_media_webrtc WebRTC)
+turbo_media_add_component_alias(turbo_media_webrtc TurboMedia::WebRTC)
+target_sources(
+  turbo_media_webrtc
+  PRIVATE adapter/webrtc_adapter.c
+          adapter/webrtc_session.c
+          src/ice_integration.c)
+target_include_directories(
+  turbo_media_webrtc
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:include>)
+target_link_libraries(
+  turbo_media_webrtc
+  PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel TurboNet::Ice)
+target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
+
+add_library(turbo_media_webrtc_signaling SHARED)
+turbo_media_configure_component(turbo_media_webrtc_signaling WebRTCSignaling)
+turbo_media_add_component_alias(turbo_media_webrtc_signaling
+                                TurboMedia::WebRTCSignaling)
+target_sources(
+  turbo_media_webrtc_signaling
+  PRIVATE src/signaling/webrtc_signaling.c
+          src/signaling/http_api.c)
+target_include_directories(
+  turbo_media_webrtc_signaling
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:include>
+  PRIVATE ${TURBO_MEDIA_IRIS_INCLUDE_DIR}
+          ${Stb_INCLUDE_DIR})
+target_link_libraries(
+  turbo_media_webrtc_signaling
+  PUBLIC TurboNet::CoroNet TurboHttp::Iris
+  PRIVATE TurboUtils::Core
+          TurboUtils::Parser
+          OpenSSL::Crypto)
+target_compile_definitions(turbo_media_webrtc_signaling
+                           PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
+
+add_library(turbo_media_rtc INTERFACE)
+turbo_media_add_component_alias(turbo_media_rtc TurboMedia::RTC)
+set_target_properties(turbo_media_rtc PROPERTIES EXPORT_NAME RTC)
+target_link_libraries(
+  turbo_media_rtc
+  INTERFACE TurboMedia::WebRTC TurboMedia::DataChannel TurboMedia::SDP)
+
 if(BUILD_TESTS)
   add_subdirectory(tests)
 endif()

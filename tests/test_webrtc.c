@@ -1,10 +1,10 @@
-#include "turbo_media_rtc.h"
-#include "../rtc/rtc_peer_backend.h"
+#include "turbo_media_webrtc.h"
+#include "turbo_media_webrtc_backend.h"
 #include <tinytest.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef TURBO_MEDIA_HAS_RTC
+#ifdef TURBO_MEDIA_HAS_WEBRTC
 
 #define CHECK_KEY(key, expected_vhost, expected_app, expected_stream) \
     do {                                                             \
@@ -32,25 +32,25 @@ typedef struct {
     uint8_t last_sent_byte;
 } rtc_fake_state_t;
 
-struct turbo_media_rtc_backend_track_s {
-    turbo_media_rtc_backend_track_info_t info;
+struct turbo_media_webrtc_backend_track_s {
+    turbo_media_webrtc_backend_track_info_t info;
 };
 
-struct turbo_media_rtc_backend_peer_s {
-    turbo_media_rtc_backend_config_t config;
-    turbo_media_rtc_backend_track_t tracks[8];
+struct turbo_media_webrtc_backend_peer_s {
+    turbo_media_webrtc_backend_config_t config;
+    turbo_media_webrtc_backend_track_t tracks[8];
     size_t track_count;
 };
 
 static rtc_fake_state_t rtc_fake;
-static turbo_media_rtc_backend_peer_t *rtc_fake_peer;
+static turbo_media_webrtc_backend_peer_t *rtc_fake_peer;
 
-static turbo_media_rtc_backend_peer_t *rtc_fake_create(
-    const turbo_media_rtc_backend_config_t *config) {
-    turbo_media_rtc_backend_peer_t *peer;
+static turbo_media_webrtc_backend_peer_t *rtc_fake_create(
+    const turbo_media_webrtc_backend_config_t *config) {
+    turbo_media_webrtc_backend_peer_t *peer;
 
     if (!config) return NULL;
-    peer = (turbo_media_rtc_backend_peer_t *)calloc(1, sizeof(*peer));
+    peer = (turbo_media_webrtc_backend_peer_t *)calloc(1, sizeof(*peer));
     if (!peer) return NULL;
     peer->config = *config;
     rtc_fake.create_count++;
@@ -58,7 +58,7 @@ static turbo_media_rtc_backend_peer_t *rtc_fake_create(
     return peer;
 }
 
-static void rtc_fake_destroy(turbo_media_rtc_backend_peer_t *peer) {
+static void rtc_fake_destroy(turbo_media_webrtc_backend_peer_t *peer) {
     if (!peer) return;
     rtc_fake.destroy_count++;
     if (rtc_fake_peer == peer) rtc_fake_peer = NULL;
@@ -66,9 +66,9 @@ static void rtc_fake_destroy(turbo_media_rtc_backend_peer_t *peer) {
 }
 
 static int rtc_fake_add_send_track(
-    turbo_media_rtc_backend_peer_t *peer,
-    const turbo_media_rtc_backend_track_info_t *info,
-    turbo_media_rtc_backend_track_t **track) {
+    turbo_media_webrtc_backend_peer_t *peer,
+    const turbo_media_webrtc_backend_track_info_t *info,
+    turbo_media_webrtc_backend_track_t **track) {
     if (!peer || !info || !track || peer->track_count >= 8) return -1;
     peer->tracks[peer->track_count].info = *info;
     *track = &peer->tracks[peer->track_count++];
@@ -76,18 +76,18 @@ static int rtc_fake_add_send_track(
     return 0;
 }
 
-static int rtc_fake_set_remote_offer(turbo_media_rtc_backend_peer_t *peer,
+static int rtc_fake_set_remote_offer(turbo_media_webrtc_backend_peer_t *peer,
                                      const char *offer_sdp) {
-    turbo_media_rtc_backend_track_t *track;
+    turbo_media_webrtc_backend_track_t *track;
 
     if (!peer || !offer_sdp || strcmp(offer_sdp, RTC_TEST_OFFER) != 0) return -1;
-    if (rtc_fake.mode != TURBO_MEDIA_RTC_ROLE_PUBLISHER) return 0;
+    if (rtc_fake.mode != TURBO_MEDIA_WEBRTC_ROLE_PUBLISHER) return 0;
     if (peer->track_count >= 8) return -1;
 
     track = &peer->tracks[peer->track_count++];
     memset(track, 0, sizeof(*track));
     track->info.track_id = 0;
-    track->info.type = TURBO_MEDIA_RTC_BACKEND_TRACK_VIDEO;
+    track->info.type = TURBO_MEDIA_WEBRTC_BACKEND_TRACK_VIDEO;
     strcpy(track->info.codec_name, "h264");
     track->info.payload_type = 102;
     track->info.clock_rate = 90000;
@@ -95,7 +95,7 @@ static int rtc_fake_set_remote_offer(turbo_media_rtc_backend_peer_t *peer,
         peer->config.user_data, track, &track->info);
 }
 
-static int rtc_fake_create_answer(turbo_media_rtc_backend_peer_t *peer,
+static int rtc_fake_create_answer(turbo_media_webrtc_backend_peer_t *peer,
                                   char *answer_sdp,
                                   size_t answer_sdp_capacity,
                                   size_t *answer_sdp_length) {
@@ -111,20 +111,20 @@ static int rtc_fake_create_answer(turbo_media_rtc_backend_peer_t *peer,
     return 0;
 }
 
-static int rtc_fake_add_ice_candidate(turbo_media_rtc_backend_peer_t *peer,
+static int rtc_fake_add_ice_candidate(turbo_media_webrtc_backend_peer_t *peer,
                                       const char *candidate) {
     if (!peer || !candidate || strcmp(candidate, "candidate:remote") != 0) return -1;
     rtc_fake.ice_count++;
     return 0;
 }
 
-static int rtc_fake_start_track(turbo_media_rtc_backend_track_t *track) {
+static int rtc_fake_start_track(turbo_media_webrtc_backend_track_t *track) {
     if (!track) return -1;
     rtc_fake.start_track_count++;
     return 0;
 }
 
-static int rtc_fake_send_rtp(turbo_media_rtc_backend_track_t *track,
+static int rtc_fake_send_rtp(turbo_media_webrtc_backend_track_t *track,
                              const uint8_t *packet,
                              size_t packet_len) {
     if (!track || !packet || packet_len == 0 || rtc_fake.fail_send) return -1;
@@ -135,18 +135,18 @@ static int rtc_fake_send_rtp(turbo_media_rtc_backend_track_t *track,
     return 0;
 }
 
-static int rtc_fake_pump(turbo_media_rtc_backend_peer_t *peer) {
+static int rtc_fake_pump(turbo_media_webrtc_backend_peer_t *peer) {
     if (!peer) return -1;
     rtc_fake.pump_count++;
     if (rtc_fake.emit_connected) {
         rtc_fake.emit_connected = 0;
         peer->config.on_state(
-            peer->config.user_data, TURBO_MEDIA_RTC_PEER_CONNECTED);
+            peer->config.user_data, TURBO_MEDIA_WEBRTC_PEER_CONNECTED);
     }
     return 0;
 }
 
-static const turbo_media_rtc_backend_ops_t rtc_fake_ops = {
+static const turbo_media_webrtc_backend_ops_t rtc_fake_ops = {
     rtc_fake_create,
     rtc_fake_destroy,
     rtc_fake_add_send_track,
@@ -190,10 +190,10 @@ static int rtc_capture_frame(turbo_media_source_t *source,
 typedef struct {
     int ice_count;
     int state_count;
-    turbo_media_rtc_peer_state_t last_state;
+    turbo_media_webrtc_peer_state_t last_state;
 } rtc_event_capture_t;
 
-static void rtc_capture_ice(turbo_media_rtc_session_t *session,
+static void rtc_capture_ice(turbo_media_webrtc_session_t *session,
                             const char *candidate,
                             void *user_data) {
     rtc_event_capture_t *capture = (rtc_event_capture_t *)user_data;
@@ -203,8 +203,8 @@ static void rtc_capture_ice(turbo_media_rtc_session_t *session,
     capture->ice_count++;
 }
 
-static void rtc_capture_state(turbo_media_rtc_session_t *session,
-                              turbo_media_rtc_peer_state_t state,
+static void rtc_capture_state(turbo_media_webrtc_session_t *session,
+                              turbo_media_webrtc_peer_state_t state,
                               void *user_data) {
     rtc_event_capture_t *capture = (rtc_event_capture_t *)user_data;
 
@@ -225,16 +225,16 @@ static turbo_media_track_info_t rtc_h264_track(void) {
     return track;
 }
 
-static void rtc_reset_fake(turbo_media_rtc_role_t mode) {
+static void rtc_reset_fake(turbo_media_webrtc_role_t mode) {
     memset(&rtc_fake, 0, sizeof(rtc_fake));
     rtc_fake.mode = mode;
     rtc_fake.last_sent_track_id = -1;
     rtc_fake_peer = NULL;
 }
 
-suite("turbo_media_rtc") {
+suite("turbo_media_webrtc") {
     before_each() {
-        rtc_reset_fake(TURBO_MEDIA_RTC_ROLE_PUBLISHER);
+        rtc_reset_fake(TURBO_MEDIA_WEBRTC_ROLE_PUBLISHER);
     }
 
     section("source keys") {
@@ -243,7 +243,7 @@ suite("turbo_media_rtc") {
 
             memset(&key, 0, sizeof(key));
             check_int_eq(
-                turbo_media_rtc_source_key("default", "/live/cam", NULL, &key),
+                turbo_media_webrtc_source_key("default", "/live/cam", NULL, &key),
                 TURBO_MEDIA_OK);
             CHECK_KEY(key, "default", "live", "cam");
         }
@@ -253,7 +253,7 @@ suite("turbo_media_rtc") {
 
             memset(&key, 0, sizeof(key));
             check_int_eq(
-                turbo_media_rtc_source_key(
+                turbo_media_webrtc_source_key(
                     "default",
                     "/ignored/path",
                     "vhost=edge&app=live&stream=cam",
@@ -267,7 +267,7 @@ suite("turbo_media_rtc") {
 
             memset(&key, 0, sizeof(key));
             check_int_eq(
-                turbo_media_rtc_source_key("default", "/live/cam", "app=live", &key),
+                turbo_media_webrtc_source_key("default", "/live/cam", "app=live", &key),
                 TURBO_MEDIA_ERR_INVALID);
         }
 
@@ -276,7 +276,7 @@ suite("turbo_media_rtc") {
 
             memset(&key, 0, sizeof(key));
             check_int_eq(
-                turbo_media_rtc_source_key("default", "/live", NULL, &key),
+                turbo_media_webrtc_source_key("default", "/live", NULL, &key),
                 TURBO_MEDIA_ERR_INVALID);
         }
     }
@@ -284,8 +284,8 @@ suite("turbo_media_rtc") {
     section("session bridge") {
         it("publishes remote WebRTC RTP through ServerRuntime") {
             turbo_media_server_runtime_t *runtime;
-            turbo_media_rtc_session_config_t config;
-            turbo_media_rtc_session_t *session = NULL;
+            turbo_media_webrtc_session_config_t config;
+            turbo_media_webrtc_session_t *session = NULL;
             turbo_media_protocol_session_t *player = NULL;
             turbo_media_protocol_session_config_t player_config;
             turbo_media_source_t *source = NULL;
@@ -309,14 +309,14 @@ suite("turbo_media_rtc") {
 
             memset(&config, 0, sizeof(config));
             config.runtime = runtime;
-            config.role = TURBO_MEDIA_RTC_ROLE_PUBLISHER;
+            config.role = TURBO_MEDIA_WEBRTC_ROLE_PUBLISHER;
             config.resource_path = "/live/cam";
             config.remote_offer_sdp = RTC_TEST_OFFER;
             config.remove_source_on_close = 1;
             config.on_ice_candidate = rtc_capture_ice;
             config.on_state = rtc_capture_state;
             config.user_data = &events;
-            check_int_eq(turbo_media_rtc_session_create_with_backend(
+            check_int_eq(turbo_media_webrtc_session_create_with_backend(
                              &config, &rtc_fake_ops, answer, sizeof(answer),
                              &answer_length, &session),
                          TURBO_MEDIA_OK);
@@ -325,7 +325,7 @@ suite("turbo_media_rtc") {
             check_size_eq(answer_length, strlen(RTC_TEST_ANSWER));
             check_int_eq(events.ice_count, 1);
 
-            key = *turbo_media_rtc_session_key(session);
+            key = *turbo_media_webrtc_session_key(session);
             check_int_eq(turbo_media_server_runtime_find_source(runtime, &key, &source),
                          TURBO_MEDIA_OK);
             check_size_eq(turbo_media_source_track_count(source), 1);
@@ -351,15 +351,15 @@ suite("turbo_media_rtc") {
             check_long_eq(capture.pts, 90000);
             check_true(capture.is_keyframe);
 
-            check_int_eq(turbo_media_rtc_session_add_ice_candidate(
+            check_int_eq(turbo_media_webrtc_session_add_ice_candidate(
                              session, "candidate:remote"),
                          TURBO_MEDIA_OK);
             check_int_eq(rtc_fake.ice_count, 1);
-            check_int_eq(turbo_media_rtc_session_pump(session), TURBO_MEDIA_OK);
+            check_int_eq(turbo_media_webrtc_session_pump(session), TURBO_MEDIA_OK);
             check_int_eq(rtc_fake.pump_count, 1);
 
             turbo_media_server_protocol_session_close(player);
-            turbo_media_rtc_session_destroy(session);
+            turbo_media_webrtc_session_destroy(session);
             check_int_eq(rtc_fake.destroy_count, 1);
             check_int_eq(turbo_media_server_runtime_find_source(runtime, &key, &source),
                          TURBO_MEDIA_ERR_NOT_FOUND);
@@ -370,8 +370,8 @@ suite("turbo_media_rtc") {
             turbo_media_server_runtime_t *runtime;
             turbo_media_protocol_session_t *publisher = NULL;
             turbo_media_protocol_session_config_t publisher_config;
-            turbo_media_rtc_session_config_t config;
-            turbo_media_rtc_session_t *session = NULL;
+            turbo_media_webrtc_session_config_t config;
+            turbo_media_webrtc_session_t *session = NULL;
             turbo_media_track_info_t track = rtc_h264_track();
             turbo_media_frame_t frame;
             turbo_media_source_key_t key;
@@ -384,7 +384,7 @@ suite("turbo_media_rtc") {
                 0x65, 0x99
             };
 
-            rtc_reset_fake(TURBO_MEDIA_RTC_ROLE_PLAYER);
+            rtc_reset_fake(TURBO_MEDIA_WEBRTC_ROLE_PLAYER);
             memset(&events, 0, sizeof(events));
             runtime = turbo_media_server_runtime_create(NULL);
             check_not_null(runtime);
@@ -413,13 +413,13 @@ suite("turbo_media_rtc") {
 
             memset(&config, 0, sizeof(config));
             config.runtime = runtime;
-            config.role = TURBO_MEDIA_RTC_ROLE_PLAYER;
+            config.role = TURBO_MEDIA_WEBRTC_ROLE_PLAYER;
             config.resource_path = "/live/cam";
             config.remote_offer_sdp = RTC_TEST_OFFER;
             config.replay_cached = 1;
             config.on_state = rtc_capture_state;
             config.user_data = &events;
-            check_int_eq(turbo_media_rtc_session_create_with_backend(
+            check_int_eq(turbo_media_webrtc_session_create_with_backend(
                              &config, &rtc_fake_ops, answer, sizeof(answer),
                              NULL, &session),
                          TURBO_MEDIA_OK);
@@ -427,11 +427,11 @@ suite("turbo_media_rtc") {
             check_int_eq(rtc_fake.send_count, 0);
 
             rtc_fake.emit_connected = 1;
-            check_int_eq(turbo_media_rtc_session_pump(session), TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_rtc_session_state(session),
-                         TURBO_MEDIA_RTC_PEER_CONNECTED);
+            check_int_eq(turbo_media_webrtc_session_pump(session), TURBO_MEDIA_OK);
+            check_int_eq(turbo_media_webrtc_session_state(session),
+                         TURBO_MEDIA_WEBRTC_PEER_CONNECTED);
             check_int_eq(events.state_count, 1);
-            check_int_eq(events.last_state, TURBO_MEDIA_RTC_PEER_CONNECTED);
+            check_int_eq(events.last_state, TURBO_MEDIA_WEBRTC_PEER_CONNECTED);
             check_int_eq(rtc_fake.start_track_count, 1);
             check_int_eq(rtc_fake.send_count, 1);
             check_int_eq(rtc_fake.last_sent_track_id, 0);
@@ -444,7 +444,7 @@ suite("turbo_media_rtc") {
             check_int_eq(rtc_fake.send_count, 2);
             check_int_eq(rtc_fake.last_sent_byte, 0xAA);
 
-            turbo_media_rtc_session_destroy(session);
+            turbo_media_webrtc_session_destroy(session);
             packet[sizeof(packet) - 1] = 0xBB;
             check_int_eq(turbo_media_server_protocol_session_publish(publisher, &frame),
                          TURBO_MEDIA_OK);
@@ -458,15 +458,15 @@ suite("turbo_media_rtc") {
             turbo_media_server_runtime_t *runtime;
             turbo_media_protocol_session_t *publisher = NULL;
             turbo_media_protocol_session_config_t publisher_config;
-            turbo_media_rtc_session_config_t config;
-            turbo_media_rtc_session_t *session = NULL;
+            turbo_media_webrtc_session_config_t config;
+            turbo_media_webrtc_session_t *session = NULL;
             turbo_media_track_info_t track = rtc_h264_track();
             turbo_media_frame_t frame;
             turbo_media_source_key_t key;
             char answer[64];
             uint8_t packet[14] = {0x80, 0xE6};
 
-            rtc_reset_fake(TURBO_MEDIA_RTC_ROLE_PLAYER);
+            rtc_reset_fake(TURBO_MEDIA_WEBRTC_ROLE_PLAYER);
             runtime = turbo_media_server_runtime_create(NULL);
             check_not_null(runtime);
             check_int_eq(turbo_media_source_key_init(&key, "default", "live", "cam"),
@@ -483,15 +483,15 @@ suite("turbo_media_rtc") {
 
             memset(&config, 0, sizeof(config));
             config.runtime = runtime;
-            config.role = TURBO_MEDIA_RTC_ROLE_PLAYER;
+            config.role = TURBO_MEDIA_WEBRTC_ROLE_PLAYER;
             config.resource_path = "/live/cam";
             config.remote_offer_sdp = RTC_TEST_OFFER;
-            check_int_eq(turbo_media_rtc_session_create_with_backend(
+            check_int_eq(turbo_media_webrtc_session_create_with_backend(
                              &config, &rtc_fake_ops, answer, sizeof(answer),
                              NULL, &session),
                          TURBO_MEDIA_OK);
             rtc_fake.emit_connected = 1;
-            check_int_eq(turbo_media_rtc_session_pump(session), TURBO_MEDIA_OK);
+            check_int_eq(turbo_media_webrtc_session_pump(session), TURBO_MEDIA_OK);
 
             memset(&frame, 0, sizeof(frame));
             frame.track_id = 0;
@@ -500,10 +500,10 @@ suite("turbo_media_rtc") {
             rtc_fake.fail_send = 1;
             check_int_eq(turbo_media_server_protocol_session_publish(publisher, &frame),
                          TURBO_MEDIA_ERR_STATE);
-            check_int_eq(turbo_media_rtc_session_last_error(session),
+            check_int_eq(turbo_media_webrtc_session_last_error(session),
                          TURBO_MEDIA_ERR_STATE);
 
-            turbo_media_rtc_session_destroy(session);
+            turbo_media_webrtc_session_destroy(session);
             turbo_media_server_protocol_session_close(publisher);
             turbo_media_server_runtime_destroy(runtime);
         }
@@ -512,7 +512,7 @@ suite("turbo_media_rtc") {
 
 #else
 
-suite("turbo_media_rtc") {
+suite("turbo_media_webrtc") {
     section("disabled") {
         it("is not built when RTC is disabled") {
             check_true(1);

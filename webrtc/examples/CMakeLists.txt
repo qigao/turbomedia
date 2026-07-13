@@ -58,9 +58,9 @@ endif()
 # Signaling Server Example
 # =============================================================================
 
-if(TARGET TurboMedia::RTCSignaling)
+if(TARGET TurboMedia::WebRTCSignaling)
   add_executable(rtc_server signaling_server.c)
-  target_link_libraries(rtc_server PRIVATE TurboMedia::RTCSignaling
+  target_link_libraries(rtc_server PRIVATE TurboMedia::WebRTCSignaling
                                            TurboMedia::SDP)
   set_target_properties(rtc_server PROPERTIES FOLDER webrtc/examples)
 endif()

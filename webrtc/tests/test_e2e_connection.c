@@ -350,10 +350,10 @@ void tearDown(void) {
     /* Clear ICE agent references from peers BEFORE destroying ICE
      * This prevents use-after-free when peer tries to send via destroyed agent */
     if (g_ctx.peer_a) {
-        turbo_dc_peer_set_ice_agent(g_ctx.peer_a, NULL);
+        turbo_dc_peer_set_external_transport(g_ctx.peer_a, NULL, NULL);
     }
     if (g_ctx.peer_b) {
-        turbo_dc_peer_set_ice_agent(g_ctx.peer_b, NULL);
+        turbo_dc_peer_set_external_transport(g_ctx.peer_b, NULL, NULL);
     }
     
     /* Cleanup ICE */

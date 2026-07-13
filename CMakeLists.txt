@@ -31,10 +31,6 @@ if(TURBO_MEDIA_ENABLE_RTSP)
   endif()
 endif()
 
-if(TURBO_MEDIA_ENABLE_RTC)
-  include(rtc/CMakeLists.txt)
-endif()
-
 if(BUILD_MOBILE)
   add_subdirectory(media/mobile)
 endif()

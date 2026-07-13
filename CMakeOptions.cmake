@@ -36,21 +36,9 @@ option(TURBO_MEDIA_ENABLE_HTTP_FLV "Build HTTP-FLV streaming support" OFF)
 # Other options
 option(TURBO_MEDIA_ENABLE_FFMPEG "Build FFmpeg-backed universal player support" OFF)
 option(TURBO_MEDIA_ENABLE_RTSP "Build RTSP control-plane support with CoroNet, re2c and lemon" OFF)
-option(TURBO_MEDIA_ENABLE_WEBRTC "Build WebRTC SDP and DataChannel protocol support" OFF)
-option(TURBO_MEDIA_ENABLE_RTC "Build RTC/WebRTC adapter support" OFF)
-option(TURBO_MEDIA_RTC_BACKEND_TURBORTC
-       "Use TurboRTC::MediaEngine as the RTC peer backend" OFF)
+option(TURBO_MEDIA_ENABLE_WEBRTC
+       "Build WebRTC SDP, DataChannel, and ServerRuntime bridge support" OFF)
 option(TURBO_MEDIA_ENABLE_LEGACY_RTSP_TRANSPORT "Build legacy transport/rtsp sources" OFF)
-
-if(TURBO_MEDIA_RTC_BACKEND_TURBORTC AND NOT TURBO_MEDIA_ENABLE_RTC)
-  message(FATAL_ERROR
-          "TURBO_MEDIA_RTC_BACKEND_TURBORTC requires TURBO_MEDIA_ENABLE_RTC=ON")
-endif()
-
-if(TURBO_MEDIA_ENABLE_RTC AND NOT TURBO_MEDIA_ENABLE_WEBRTC)
-  set(TURBO_MEDIA_ENABLE_WEBRTC ON CACHE BOOL
-      "Build WebRTC SDP and DataChannel protocol support" FORCE)
-endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 

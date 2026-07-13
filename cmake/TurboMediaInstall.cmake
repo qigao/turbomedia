@@ -31,6 +31,8 @@ set(TURBO_MEDIA_COMPONENT_TARGETS
     turbo_media_player
     turbo_media_sdp
     turbo_media_datachannel
+    turbo_media_webrtc
+    turbo_media_webrtc_signaling
     turbo_media_rtc)
 
 foreach(TURBO_MEDIA_COMPONENT_TARGET IN LISTS TURBO_MEDIA_COMPONENT_TARGETS)
@@ -64,9 +66,18 @@ install(
          "${CMAKE_CURRENT_SOURCE_DIR}/streamer/include/turbo_streamer.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
-if(TARGET turbo_media_rtc)
+if(TARGET turbo_media_webrtc)
   install(
-    FILES "${CMAKE_CURRENT_SOURCE_DIR}/rtc/include/turbo_media_rtc.h"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_media_webrtc.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_media_webrtc_backend.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/ice_integration.h"
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
+
+if(TARGET turbo_media_webrtc_signaling)
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/webrtc_signaling.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/http_api.h"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 endif()
 

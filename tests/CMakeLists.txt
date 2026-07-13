@@ -37,11 +37,11 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
       continue()  # 跳过未启用的 RTSP 测试
     endif()
     list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core TurboMedia::Server)
-  elseif(TEST_NAME MATCHES "rtc")
-    if(NOT TURBO_MEDIA_ENABLE_RTC)
+  elseif(TEST_NAME STREQUAL "test_webrtc")
+    if(NOT TURBO_MEDIA_ENABLE_WEBRTC)
       continue()
     endif()
-    list(APPEND TEST_LINK_LIBS TurboMedia::RTC TurboMedia::Core TurboMedia::Server)
+    list(APPEND TEST_LINK_LIBS TurboMedia::WebRTC TurboMedia::Core TurboMedia::Server)
   else()
     # 其他测试按组件链接，避免依赖已移除的兼容聚合库。
     list(

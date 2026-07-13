@@ -17,6 +17,36 @@ if(TURBO_MEDIA_ENABLE_WEBRTC)
   find_package(OpenSSL REQUIRED)
   find_package(unofficial-usrsctp CONFIG REQUIRED)
   find_package(roaring CONFIG REQUIRED)
+
+  set(TURBO_MEDIA_TURBONET_HINTS)
+  if(TURBONET_ROOT)
+    list(APPEND TURBO_MEDIA_TURBONET_HINTS "${TURBONET_ROOT}")
+  endif()
+  find_package(TurboNet CONFIG REQUIRED HINTS ${TURBO_MEDIA_TURBONET_HINTS})
+  if(NOT TARGET TurboNet::Ice)
+    message(FATAL_ERROR
+            "TURBO_MEDIA_ENABLE_WEBRTC requires a TurboNet package exporting TurboNet::Ice")
+  endif()
+
+  set(TURBO_MEDIA_TURBOHTTP_HINTS)
+  if(TURBOHTTP_ROOT)
+    list(APPEND TURBO_MEDIA_TURBOHTTP_HINTS "${TURBOHTTP_ROOT}")
+  endif()
+  list(APPEND TURBO_MEDIA_TURBOHTTP_HINTS
+       "C:/projects/cpp/external/pkgs/turbohttp"
+       "${PROJECT_SOURCE_DIR}/../../TurboHTTP/build")
+  find_package(TurboHttp CONFIG REQUIRED HINTS ${TURBO_MEDIA_TURBOHTTP_HINTS})
+  if(NOT TARGET TurboHttp::Iris)
+    message(FATAL_ERROR
+            "TURBO_MEDIA_ENABLE_WEBRTC requires a TurboHttp package exporting TurboHttp::Iris")
+  endif()
+  find_path(
+    TURBO_MEDIA_IRIS_INCLUDE_DIR
+    NAMES iris_app.h
+    HINTS ${TURBO_MEDIA_TURBOHTTP_HINTS}
+          "C:/projects/cpp/TurboHTTP/iris/include"
+    PATH_SUFFIXES include include/iris iris/include
+    REQUIRED)
 endif()
 
 find_path(MINIAUDIO_INCLUDE_DIRS NAMES miniaudio.h REQUIRED)
