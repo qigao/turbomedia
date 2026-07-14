@@ -95,7 +95,12 @@ CXX_C_API webrtc_signaling_server_t *webrtc_signaling_create(
 CXX_C_API int webrtc_signaling_start(webrtc_signaling_server_t *server);
 
 /**
- * @brief Stop signaling server
+ * @brief Start asynchronous signaling server shutdown
+ *
+ * Stops accepting new connections and wakes active peers. The listener and
+ * accepted connection tasks remain owned by CoroNet until destroy drains them.
+ * This function is thread-safe; listener shutdown is posted to the owning
+ * coroutine context.
  */
 CXX_C_API void webrtc_signaling_stop(webrtc_signaling_server_t *server);
 
@@ -103,12 +108,16 @@ CXX_C_API void webrtc_signaling_stop(webrtc_signaling_server_t *server);
  * @brief Drive the server's coroutine context for one iteration.
  *
  * Higher-level wrappers that embed the signaling server in their own main loop
- * should use this instead of polling the raw backend loop directly.
+ * should use this instead of polling the raw backend loop directly. Call from
+ * the coroutine context owner thread only.
  */
 CXX_C_API int webrtc_signaling_run(webrtc_signaling_server_t *server, turbo_run_mode_t mode);
 
 /**
- * @brief Destroy signaling server
+ * @brief Destroy signaling server after draining all CoroNet connection tasks
+ *
+ * Call from the coroutine context owner thread after concurrent run calls have
+ * returned.
  */
 CXX_C_API void webrtc_signaling_destroy(webrtc_signaling_server_t *server);
 

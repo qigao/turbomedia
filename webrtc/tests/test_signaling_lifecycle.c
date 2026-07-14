@@ -58,7 +58,25 @@ void test_http_api_rejects_invalid_configuration(void) {
   webrtc_signaling_destroy(signaling);
 }
 
+void test_signaling_native_websocket_listener_stops_and_restarts(void) {
+  webrtc_signaling_config_t config = {0};
+  webrtc_signaling_server_t *server = NULL;
+
+  config.host = "127.0.0.1";
+  config.port = 0;
+  config.peer_timeout_ms = 1000;
+
+  server = webrtc_signaling_create(NULL, &config);
+  TEST_ASSERT_NOT_NULL(server);
+  TEST_ASSERT_EQUAL_INT(0, webrtc_signaling_start(server));
+  webrtc_signaling_stop(server);
+  TEST_ASSERT_EQUAL_INT(0, webrtc_signaling_start(server));
+  webrtc_signaling_stop(server);
+  webrtc_signaling_destroy(server);
+}
+
 spec("test_signaling_lifecycle") {
   TT_TEST(test_signaling_and_http_api_instances_have_independent_lifecycles);
   TT_TEST(test_http_api_rejects_invalid_configuration);
+  TT_TEST(test_signaling_native_websocket_listener_stops_and_restarts);
 }

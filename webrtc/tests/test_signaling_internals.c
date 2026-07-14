@@ -92,19 +92,8 @@ void test_json_string_maybe_escape_escapes_room_names(void) {
   tstr_free(owned);
 }
 
-void test_ws_build_accept_key_matches_rfc_example(void) {
-  unsigned char accept_key[64];
-
-  memset(accept_key, 0, sizeof(accept_key));
-
-  TEST_ASSERT_EQUAL_INT(0, ws_build_accept_key("dGhlIHNhbXBsZSBub25jZQ==", accept_key,
-                                               sizeof(accept_key)));
-  TEST_ASSERT_EQUAL_STRING("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", (const char *)accept_key);
-}
-
 spec("test_signaling_internals") {
   TT_TEST(test_remove_peer_from_room_clears_room_links);
   TT_TEST(test_json_string_maybe_escape_skips_plain_candidate_strings);
   TT_TEST(test_json_string_maybe_escape_escapes_room_names);
-  TT_TEST(test_ws_build_accept_key_matches_rfc_example);
 }

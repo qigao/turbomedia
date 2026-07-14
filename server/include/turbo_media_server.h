@@ -205,6 +205,15 @@ CXX_C_API int turbo_media_server_rtsp_open_record(
     int remove_source_on_close,
     turbo_media_protocol_session_t **session);
 
+CXX_C_API int turbo_media_server_rtsp_open_record_tracks(
+    turbo_media_server_runtime_t *runtime,
+    const char *vhost,
+    const char *uri,
+    const turbo_media_track_info_t *tracks,
+    size_t track_count,
+    int remove_source_on_close,
+    turbo_media_protocol_session_t **session);
+
 CXX_C_API int turbo_media_server_rtsp_open_play(
     turbo_media_server_runtime_t *runtime,
     const char *vhost,
@@ -224,7 +233,7 @@ CXX_C_API int turbo_media_server_rtsp_publish_interleaved(
 #ifdef TURBO_MEDIA_HAS_RTSP
 typedef struct {
     const char *vhost;
-    const char *session_id;
+    const char *session_id; /* Optional prefix; each RTSP connection gets a unique suffix. */
     size_t default_rtp_channel_count;
     int remove_source_on_close;
     int replay_cached;

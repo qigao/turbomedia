@@ -650,29 +650,52 @@ int turbo_media_server_rtsp_open_record(turbo_media_server_runtime_t *runtime,
                                         size_t rtp_channel_count,
                                         int remove_source_on_close,
                                         turbo_media_protocol_session_t **session) {
-    turbo_media_source_key_t key;
     turbo_media_track_info_t tracks[TURBO_MEDIA_RTSP_MAX_RUNTIME_CHANNELS];
     size_t i;
-    int rc;
 
     if (rtp_channel_count == 0 ||
         rtp_channel_count > TURBO_MEDIA_RTSP_MAX_RUNTIME_CHANNELS) {
         return TURBO_MEDIA_ERR_INVALID;
     }
 
-    rc = turbo_media_server_rtsp_source_key(vhost, uri, &key);
-    if (rc != TURBO_MEDIA_OK) return rc;
-
     for (i = 0; i < rtp_channel_count; ++i) {
         turbo_media_server_default_rtsp_track(&tracks[i], (int)i);
     }
+
+    return turbo_media_server_rtsp_open_record_tracks(runtime,
+                                                       vhost,
+                                                       uri,
+                                                       tracks,
+                                                       rtp_channel_count,
+                                                       remove_source_on_close,
+                                                       session);
+}
+
+int turbo_media_server_rtsp_open_record_tracks(
+    turbo_media_server_runtime_t *runtime,
+    const char *vhost,
+    const char *uri,
+    const turbo_media_track_info_t *tracks,
+    size_t track_count,
+    int remove_source_on_close,
+    turbo_media_protocol_session_t **session) {
+    turbo_media_source_key_t key;
+    int rc;
+
+    if (!tracks || track_count == 0 ||
+        track_count > TURBO_MEDIA_RTSP_MAX_RUNTIME_CHANNELS) {
+        return TURBO_MEDIA_ERR_INVALID;
+    }
+
+    rc = turbo_media_server_rtsp_source_key(vhost, uri, &key);
+    if (rc != TURBO_MEDIA_OK) return rc;
 
     return turbo_media_server_open_session_with_key(runtime,
                                                     TURBO_MEDIA_PROTOCOL_RTSP,
                                                     TURBO_MEDIA_PROTOCOL_ROLE_PUBLISHER,
                                                     &key,
                                                     tracks,
-                                                    rtp_channel_count,
+                                                    track_count,
                                                     NULL,
                                                     NULL,
                                                     0,

@@ -6,6 +6,7 @@
 #include "sys/atomic.h"
 #include "sys/locker.h"
 #include "list.h"
+#include "platform.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,5 +50,28 @@ static inline int sip_transport_isreliable2(const char* protocol)
 }
 
 extern struct sip_gc_t s_gc;
+
+static inline int sip_random_u32(uint32_t* value)
+{
+	if (!value)
+		return -1;
+	return turbo_secure_random(value, sizeof(*value));
+}
+
+static inline int sip_random_u31(int* value)
+{
+	uint32_t random_value;
+	if (!value || 0 != sip_random_u32(&random_value))
+		return -1;
+	*value = (int)(random_value & 0x7FFFFFFFU);
+	return 0;
+}
+
+static inline int sip_random_u64(uint64_t* value)
+{
+	if (!value)
+		return -1;
+	return turbo_secure_random(value, sizeof(*value));
+}
 
 #endif /* !_sip_internal_h_ */

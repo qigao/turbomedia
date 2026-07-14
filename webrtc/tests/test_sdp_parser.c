@@ -264,6 +264,31 @@ void test_find_functions(void) {
     TEST_ASSERT_EQUAL_STRING("1", video->mid);
 }
 
+void test_generate_ice_credentials(void) {
+    static const char alphabet[] =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    char first_ufrag[17];
+    char first_pwd[33];
+    char second_ufrag[17];
+    char second_pwd[33];
+
+    sdp_generate_ice_credentials(
+        first_ufrag, sizeof(first_ufrag), first_pwd, sizeof(first_pwd));
+    sdp_generate_ice_credentials(
+        second_ufrag, sizeof(second_ufrag), second_pwd, sizeof(second_pwd));
+
+    TEST_ASSERT_EQUAL_size_t(sizeof(first_ufrag) - 1, strlen(first_ufrag));
+    TEST_ASSERT_EQUAL_size_t(sizeof(first_pwd) - 1, strlen(first_pwd));
+    TEST_ASSERT_EQUAL_size_t(strlen(first_ufrag), strspn(first_ufrag, alphabet));
+    TEST_ASSERT_EQUAL_size_t(strlen(first_pwd), strspn(first_pwd, alphabet));
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(first_ufrag, second_ufrag));
+    TEST_ASSERT_NOT_EQUAL(0, strcmp(first_pwd, second_pwd));
+
+    strcpy(first_pwd, "not-empty");
+    sdp_generate_ice_credentials(NULL, 0, first_pwd, sizeof(first_pwd));
+    TEST_ASSERT_EQUAL_STRING("", first_pwd);
+}
+
 spec("test_sdp_parser") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
@@ -276,4 +301,5 @@ spec("test_sdp_parser") {
   TT_TEST(test_generate_sdp);
   TT_TEST(test_roundtrip);
   TT_TEST(test_find_functions);
+  TT_TEST(test_generate_ice_credentials);
 }

@@ -2,8 +2,19 @@
 
 include(CMakeFindDependencyMacro)
 
+if(NOT TARGET TurboUtils::Core)
+  find_dependency(TurboUtils CONFIG)
+endif()
+
 if(@TURBO_MEDIA_ENABLE_WEBRTC@ AND NOT TARGET OpenSSL::Crypto)
   find_dependency(OpenSSL)
+endif()
+
+if(@TURBO_MEDIA_ENABLE_WEBRTC@ AND NOT TARGET libSRTP::srtp2)
+  find_package(libSRTP CONFIG QUIET)
+  if(NOT TARGET libSRTP::srtp2)
+    find_dependency(libsrtp CONFIG)
+  endif()
 endif()
 
 if(@TurboNet_FOUND@)
@@ -43,6 +54,7 @@ if(_TurboMedia_need_webrtc_signaling_deps AND NOT TARGET TurboHttp::Iris)
 endif()
 
 set(TurboMedia_Media_FOUND TRUE)
+set(TurboMedia_Crypto_FOUND FALSE)
 set(TurboMedia_RTSP_FOUND FALSE)
 set(TurboMedia_WebRTC_FOUND FALSE)
 set(TurboMedia_WebRTCSignaling_FOUND FALSE)
@@ -68,6 +80,10 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaTargets.cmake")
 
+if(TARGET TurboMedia::Crypto)
+  set(TurboMedia_Crypto_FOUND TRUE)
+endif()
+
 if(TARGET TurboMedia::RTSP)
   set(TurboMedia_RTSP_FOUND TRUE)
 endif()
@@ -81,7 +97,7 @@ if(TARGET TurboMedia::WebRTCSignaling)
   set(TurboMedia_WebRTCSignaling_FOUND TRUE)
 endif()
 
-if(TARGET TurboMedia::RTC AND TurboMedia_WebRTC_FOUND)
+if(TARGET TurboMedia::RTC AND TurboMedia_WebRTC_FOUND AND TurboMedia_Crypto_FOUND)
   set(TurboMedia_RTC_FOUND TRUE)
 endif()
 

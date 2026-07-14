@@ -9,8 +9,8 @@
 #define TEST_PASS() check_true(1)
 #define TEST_FAIL() __BDD_CHECK__(0, "forced failure")
 #define TEST_FAIL_MESSAGE(msg) __BDD_CHECK__(0, "%s", (msg))
-#define TEST_IGNORE() tt_skip("Test was skipped")
-#define TEST_IGNORE_MESSAGE(msg) tt_skip(msg)
+#define TEST_IGNORE() TEST_FAIL_MESSAGE("Test precondition is unavailable")
+#define TEST_IGNORE_MESSAGE(msg) TEST_FAIL_MESSAGE(msg)
 
 #define TEST_ASSERT_TRUE(actual) check_true(actual)
 #define TEST_ASSERT_FALSE(actual) check_false(actual)

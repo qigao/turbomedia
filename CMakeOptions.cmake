@@ -38,7 +38,6 @@ option(TURBO_MEDIA_ENABLE_FFMPEG "Build FFmpeg-backed universal player support" 
 option(TURBO_MEDIA_ENABLE_RTSP "Build RTSP control-plane support with CoroNet, re2c and lemon" OFF)
 option(TURBO_MEDIA_ENABLE_WEBRTC
        "Build WebRTC SDP, DataChannel, and ServerRuntime bridge support" OFF)
-option(TURBO_MEDIA_ENABLE_LEGACY_RTSP_TRANSPORT "Build legacy transport/rtsp sources" OFF)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 

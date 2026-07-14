@@ -3,9 +3,8 @@
 #include "sip-header.h"
 #include "sip-dialog.h"
 #include "sip-internal.h"
-#include "sys/system.h"
 #include "cstringext.h"
-#include "uuid.h"
+#include "turbo_uuid.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -151,12 +150,15 @@ int sip_message_clone(struct sip_message_t* msg, const struct sip_message_t* clo
 int sip_message_init(struct sip_message_t* msg, const char* method, const char* uri, const char* from, const char* to)
 {
 	char tag[16];
-	char callid[128];
+	char callid[TURBO_UUID_STRING_SIZE];
+	turbo_uuid_t callid_uuid;
+	uint32_t tag_value;
 	struct cstring_t u, f, t;
 	struct sip_contact_t contact;
 
-	memset(callid, 0, sizeof(callid));
-	uuid_generate(callid); // TODO: callid @ host
+	if (turbo_uuid_v4_generate(&callid_uuid) != TURBO_OK ||
+		turbo_uuid_format(&callid_uuid, callid, sizeof(callid)) != TURBO_OK)
+		return -1;
 	sip_message_copy(msg, &u, uri);
 	sip_message_copy(msg, &t, to);
 	sip_message_copy(msg, &f, from);
@@ -169,8 +171,9 @@ int sip_message_init(struct sip_message_t* msg, const char* method, const char* 
 
 	if (!cstrvalid(&msg->from.tag))
 	{
-        // TODO tag random
-		snprintf(tag, sizeof(tag), "%u", (unsigned int)system_clock());
+		if (0 != sip_random_u32(&tag_value))
+			return -1;
+		snprintf(tag, sizeof(tag), "%08x", (unsigned int)tag_value);
 		sip_message_copy(msg, &msg->from.tag, tag);
 		sip_message_add_param(&msg->from.params, "tag", &msg->from.tag);
 	}
@@ -185,7 +188,8 @@ int sip_message_init(struct sip_message_t* msg, const char* method, const char* 
 	// For non-REGISTER requests outside of a dialog, the sequence number 
 	// value is arbitrary. The sequence number value MUST be expressible 
 	// as a 32-bit unsigned integer and MUST be less than 2**31
-	msg->cseq.id = rand();
+	if (0 != sip_random_u31(&msg->cseq.id))
+		return -1;
 	msg->maxforwards = SIP_MAX_FORWARDS;
 
 	sip_contact_free(&contact);
@@ -258,6 +262,7 @@ int sip_message_init3(struct sip_message_t* msg, const struct sip_message_t* req
 {
 	int i;
 	char tag[16];
+	uint32_t tag_value;
 	struct sip_uri_t uri;
 	struct sip_via_t via;
 	//struct sip_contact_t contact;
@@ -293,8 +298,9 @@ int sip_message_init3(struct sip_message_t* msg, const struct sip_message_t* req
 	msg->ptr.ptr = sip_contact_clone(msg->ptr.ptr, msg->ptr.end, &msg->to, &req->to);
 	if (!cstrvalid(&msg->to.tag))
 	{
-        // TODO tag random
-		snprintf(tag, sizeof(tag), "%u", (unsigned int)system_clock());
+		if (0 != sip_random_u32(&tag_value))
+			return -1;
+		snprintf(tag, sizeof(tag), "%08x", (unsigned int)tag_value);
 		sip_message_copy(msg, &msg->to.tag, tag);
 		sip_message_add_param(&msg->to.params, "tag", &msg->to.tag);
 	}

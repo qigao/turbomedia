@@ -102,7 +102,7 @@ static void print_version(void) {
     printf("Platform: %s\n", PLATFORM_NAME);
     printf("\n");
     printf("Features:\n");
-    printf("  - WebSocket signaling (netcore)\n");
+    printf("  - WebSocket signaling (CoroNet)\n");
     printf("  - JWT authentication (cjwt)\n");
     printf("  - HTTP management API (Iris)\n");
     printf("  - Redis clustering (hiredis)\n");

@@ -7,6 +7,7 @@
  */
 
 #include "turbo_sdp.h"
+#include "platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -442,18 +443,46 @@ void sdp_generate_session_id(char *buffer, size_t size) {
   stbsp_snprintf(buffer, size, "%llu", (unsigned long long)time(NULL));
 }
 
+static int sdp_fill_ice_credential(char *output, size_t output_size) {
+  static const char alphabet[] =
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  enum { RANDOM_BATCH_SIZE = 32, ACCEPT_LIMIT = 248 };
+  uint8_t random_bytes[RANDOM_BATCH_SIZE];
+  size_t random_offset = RANDOM_BATCH_SIZE;
+  size_t output_offset = 0;
+
+  if (!output || output_size < 2) return -1;
+
+  while (output_offset + 1 < output_size) {
+    uint8_t value;
+
+    if (random_offset == RANDOM_BATCH_SIZE) {
+      if (turbo_secure_random(random_bytes, sizeof(random_bytes)) != 0) {
+        memset(random_bytes, 0, sizeof(random_bytes));
+        return -1;
+      }
+      random_offset = 0;
+    }
+
+    value = random_bytes[random_offset++];
+    if (value >= ACCEPT_LIMIT) continue;
+    output[output_offset++] = alphabet[value % (sizeof(alphabet) - 1)];
+  }
+
+  output[output_offset] = '\0';
+  memset(random_bytes, 0, sizeof(random_bytes));
+  return 0;
+}
+
 void sdp_generate_ice_credentials(char *ufrag, size_t ufrag_size, char *pwd, size_t pwd_size) {
-  const char *chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  if (ufrag && ufrag_size > 0) ufrag[0] = '\0';
+  if (pwd && pwd_size > 0) pwd[0] = '\0';
 
-  for (size_t i = 0; i < ufrag_size - 1; i++) {
-    ufrag[i] = chars[rand() % 62];
+  if (sdp_fill_ice_credential(ufrag, ufrag_size) != 0 ||
+      sdp_fill_ice_credential(pwd, pwd_size) != 0) {
+    if (ufrag && ufrag_size > 0) ufrag[0] = '\0';
+    if (pwd && pwd_size > 0) pwd[0] = '\0';
   }
-  ufrag[ufrag_size - 1] = '\0';
-
-  for (size_t i = 0; i < pwd_size - 1; i++) {
-    pwd[i] = chars[rand() % 62];
-  }
-  pwd[pwd_size - 1] = '\0';
 }
 
 /* =============================================================================

@@ -840,7 +840,7 @@ int main(int argc, char **argv) {
 
     if (remote_offer.audio_media && remote_offer.audio_codec) {
         memset(&track_config, 0, sizeof(track_config));
-        track_config.type = TURBO_MEDIA_TRACK_AUDIO;
+        track_config.type = TURBO_RTC_MEDIA_TRACK_AUDIO;
         track_config.direction = g_receive_mode ? TURBO_MEDIA_DIRECTION_RECVONLY : TURBO_MEDIA_DIRECTION_SENDONLY;
         track_config.codec = sdp_audio_codec_to_turbo(remote_offer.audio_codec);
         track_config.audio.sample_rate = AUDIO_SAMPLE_RATE;
@@ -875,7 +875,7 @@ int main(int argc, char **argv) {
         g_selected_video_codec = sdp_codec_to_turbo(remote_offer.video_codec);
 
         memset(&track_config, 0, sizeof(track_config));
-        track_config.type = TURBO_MEDIA_TRACK_VIDEO;
+        track_config.type = TURBO_RTC_MEDIA_TRACK_VIDEO;
         track_config.direction = g_receive_mode ? TURBO_MEDIA_DIRECTION_RECVONLY : TURBO_MEDIA_DIRECTION_SENDONLY;
         track_config.codec = g_selected_video_codec;
         track_config.video.width = FRAME_WIDTH;

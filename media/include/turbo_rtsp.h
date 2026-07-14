@@ -367,6 +367,12 @@ CXX_C_API turbo_rtsp_server_t *turbo_rtsp_server_create(
     void *user_data);
 
 CXX_C_API int turbo_rtsp_server_start(turbo_rtsp_server_t *server);
+/**
+ * @brief Begin asynchronous server shutdown.
+ *
+ * Active connections and pending TCP/TLS/WebSocket admission tasks are
+ * cancelled. turbo_rtsp_server_destroy() waits for their completion.
+ */
 CXX_C_API void turbo_rtsp_server_stop(turbo_rtsp_server_t *server);
 CXX_C_API void turbo_rtsp_server_destroy(turbo_rtsp_server_t *server);
 

@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 
+if(POLICY CMP0144)
+  cmake_policy(SET CMP0144 NEW)
+endif()
+
 project(
   TurboMedia
   VERSION 1.0.0
   LANGUAGES C)
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include(CMakeOptions.cmake)
@@ -13,6 +18,7 @@ add_subdirectory(tools)
 include(FindTools)
 
 include(cmake/TurboMediaDependencies.cmake)
+add_subdirectory(vendor/monocypher EXCLUDE_FROM_ALL)
 include(cmake/TurboMediaComponentTargets.cmake)
 
 if(BUILD_TESTS)

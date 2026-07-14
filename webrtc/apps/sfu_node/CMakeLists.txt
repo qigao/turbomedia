@@ -22,10 +22,10 @@ target_include_directories(sfu_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 set(SFU_NODE_LIBS
   TurboRTC::Conference
-  TurboRTC::MediaEngine
+  TurboMedia::RTC
   TurboRTC::Recorder
   TurboHttp::Iris
-  TurboNet::Utils)
+  TurboUtils::Core)
 
 if(ENABLE_RTC_SCXML_WORKFLOW)
   list(APPEND SFU_NODE_LIBS TurboRTC::RtcSessionWorkflow)
@@ -63,7 +63,7 @@ target_link_libraries(
   test_sfu_node_app
   PRIVATE ${SFU_NODE_LIBS}
           TurboHttp::HttpClient
-          TurboNet::TinyTest
+          TurboUtils::TinyTest
           $<$<PLATFORM_ID:Linux>:m>
           $<$<PLATFORM_ID:Linux>:pthread>)
 

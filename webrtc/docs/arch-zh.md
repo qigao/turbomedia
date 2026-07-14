@@ -78,7 +78,8 @@ struct turbo_dc_peer_s {
     turbo_dc_context_t *ctx;           // 父上下文
     struct dtls_session_s *dtls;       // DTLS 会话
     struct socket *sctp_socket;        // SCTP 套接字 (usrsctp)
-    turbo_netcore_element_t *transport; // 底层传输 (TCP/UDP/KCP)
+    void *transport;                    // CoroNet stream/datagram 或外部传输
+    const dc_transport_ops_t *transport_ops;
 
     turbo_dc_state_t state;            // 连接状态
 
@@ -101,8 +102,9 @@ NEW → CONNECTING → CONNECTED → DISCONNECTING → CLOSED
 ```
 
 **传输集成：**
-- UDP/TCP/KCP: 直接 netcore 元素
-- ICE: 通过 `turbo_dc_peer_feed_ice_data()` 从 ICE 代理传入数据
+- UDP/TCP：使用 CoroNet `turbo_datagram_t` / `turbo_stream_t`
+- ICE：通过 `turbo_dc_peer_set_external_transport()` 挂接外部所有的 datagram 传输
+- KCP：当前安装的 CoroNet 包未公开所需传输 API，因此明确拒绝
 
 ---
 
@@ -319,8 +321,9 @@ usrsctp_close(peer->sctp_socket);
 // 3. 销毁 DTLS 会话
 dtls_session_destroy(peer->dtls);
 
-// 4. 关闭传输
-turbo_netcore_close(peer->transport);
+// 4. 关闭并销毁所选传输策略
+peer->transport_ops->close(peer);
+peer->transport_ops->destroy(peer);
 
 // 5. 释放对端
 free(peer);
@@ -330,14 +333,14 @@ free(peer);
 
 ## 线程模型
 
-**单线程设计：**
-- 所有回调运行在与 netcore 循环相同的线程
-- SCTP 定时器必须从主线程周期性调用
-- 不需要锁
+**传输所有权：**
+- TCP/UDP 操作通过 `coro_post()` 投递到 context 专属的 CoroNet 线程
+- CoroNet 在该 owner 线程驱动 DTLS 定时器与传输回调
+- ICE 由外部持有，并通过传输适配器送入 datagram
 
 **多线程支持：**
-- 如从多线程调用 API，用户必须同步
-- 建议：使用消息队列到主线程
+- 公开生命周期 API 通过 `coro_post()` 同步传输操作
+- 回调中不得重入销毁其所属 peer
 
 ---
 

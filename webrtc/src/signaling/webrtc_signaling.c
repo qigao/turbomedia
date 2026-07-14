@@ -14,9 +14,6 @@
 #include <CoroNet/turbo_coro_context.h>
 #include <CoroNet/turbo_coro_socket.h>
 
-#include <openssl/evp.h>
-#include <openssl/sha.h>
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +21,11 @@
 typedef struct peer_message_s peer_message_t;
 typedef struct webrtc_room_s webrtc_room_t;
 
-static const char WS_GUID[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+enum {
+  SIGNALING_WS_HANDSHAKE_TIMEOUT_MS = 5000,
+  SIGNALING_PEER_IO_TIMEOUT_MS = 1000,
+  SIGNALING_CLEANUP_INTERVAL_MS = 1000
+};
 
 struct peer_message_s {
   char *json;
@@ -43,10 +44,6 @@ struct webrtc_peer_s {
   webrtc_peer_t *prev_in_room;
   peer_message_t *outbox_head;
   peer_message_t *outbox_tail;
-  unsigned char *recv_buffer;
-  size_t recv_buffer_len;
-  size_t recv_buffer_cap;
-  int waiting_for_recv;
   int closing;
 };
 
@@ -61,14 +58,8 @@ struct webrtc_room_s {
 
 static size_t webrtc_str_hash(const void *key, size_t key_size, void *ctx) {
   const char *str = *(const char *const *)key;
-  size_t hash = 14695981039346656037ULL;
   (void)key_size;
-  (void)ctx;
-  while (*str) {
-    hash ^= (unsigned char)*str++;
-    hash *= 1099511628211ULL;
-  }
-  return hash;
+  return turbo_hash_bytes(str, strlen(str), ctx);
 }
 
 static bool webrtc_str_equal(const void *left, const void *right, size_t key_size, void *ctx) {
@@ -133,11 +124,61 @@ struct webrtc_signaling_server_s {
   uint64_t next_peer_sequence;
 
   int running;
+  int stop_posted;
   turbo_timer_t *cleanup_timer;
   turbo_mutex_t mutex;
 };
 
-static int ws_send_text(coro_socket_t *socket, const char *json);
+static void signaling_stop_listener_post_cb(void *arg1, void *arg2) {
+  webrtc_signaling_server_t *server = (webrtc_signaling_server_t *)arg1;
+  coro_socket_t *listener = (coro_socket_t *)arg2;
+
+  if (listener) {
+    (void)coro_socket_server_stop(listener);
+  }
+
+  turbo_mutex_lock(&server->mutex);
+  server->stop_posted = 0;
+  turbo_mutex_unlock(&server->mutex);
+}
+
+static void signaling_drain_listener(webrtc_signaling_server_t *server) {
+  coro_socket_t *listener;
+  int stop_posted;
+
+  if (!server || !server->listener) {
+    return;
+  }
+
+  listener = server->listener;
+  turbo_mutex_lock(&server->mutex);
+  stop_posted = server->stop_posted;
+  turbo_mutex_unlock(&server->mutex);
+
+  if (!stop_posted) {
+    (void)coro_socket_server_stop(listener);
+  }
+
+  for (;;) {
+    turbo_mutex_lock(&server->mutex);
+    stop_posted = server->stop_posted;
+    turbo_mutex_unlock(&server->mutex);
+    if (!stop_posted && coro_socket_server_is_stopped(listener)) {
+      break;
+    }
+    coro_context_run(server->ctx, TURBO_RUN_ONCE);
+  }
+
+  coro_socket_destroy(listener);
+  server->listener = NULL;
+}
+
+static int signaling_send_text(coro_socket_t *socket, const char *json) {
+  if (!socket || !json || json[0] == '\0') {
+    return TURBO_EINVAL;
+  }
+  return coro_socket_send_ws_text(socket, json, strlen(json));
+}
 
 static tstr_t escape_json_string(const char *str) {
   tstr_t s = tstr_new();
@@ -307,7 +348,7 @@ static void free_outbox_locked(webrtc_peer_t *peer) {
 }
 
 static void wake_peer_locked(webrtc_peer_t *peer) {
-  if (peer->socket && peer->waiting_for_recv) {
+  if (peer->socket) {
     coro_socket_interrupt_wait(peer->socket, 0);
   }
 }
@@ -466,7 +507,6 @@ static void remove_peer_locked(webrtc_signaling_server_t *server, webrtc_peer_t 
   server->peer_count--;
 
   free_outbox_locked(peer);
-  free(peer->recv_buffer);
   if (peer->id) {
     tstr_free(peer->id);
   }
@@ -491,7 +531,7 @@ static int flush_peer_outbox(webrtc_peer_t *peer) {
       return 0;
     }
 
-    if (ws_send_text(peer->socket, msg->json) != 0) {
+    if (signaling_send_text(peer->socket, msg->json) != 0) {
       free(msg->json);
       free(msg);
       return -1;
@@ -505,456 +545,6 @@ static int flush_peer_outbox(webrtc_peer_t *peer) {
 static void close_peer_locked(webrtc_peer_t *peer) {
   peer->closing = 1;
   wake_peer_locked(peer);
-}
-
-static int ws_buffer_reserve(unsigned char **buffer, size_t *capacity, size_t needed) {
-  unsigned char *new_buffer = NULL;
-  size_t new_capacity = 0;
-
-  if (needed <= *capacity) {
-    return 0;
-  }
-
-  new_capacity = *capacity ? *capacity : 1024;
-  while (new_capacity < needed) {
-    new_capacity *= 2;
-  }
-
-  new_buffer = (unsigned char *)realloc(*buffer, new_capacity);
-  if (!new_buffer) {
-    return TURBO_ENOMEM;
-  }
-
-  *buffer = new_buffer;
-  *capacity = new_capacity;
-  return 0;
-}
-
-static int ws_buffer_append(unsigned char **buffer, size_t *length, size_t *capacity,
-                            const void *data, size_t data_len) {
-  int rc = 0;
-
-  if (data_len == 0) {
-    return 0;
-  }
-
-  rc = ws_buffer_reserve(buffer, capacity, *length + data_len);
-  if (rc != 0) {
-    return rc;
-  }
-
-  memcpy(*buffer + *length, data, data_len);
-  *length += data_len;
-  return 0;
-}
-
-static void ws_buffer_consume(unsigned char *buffer, size_t *length, size_t consumed) {
-  if (consumed >= *length) {
-    *length = 0;
-    return;
-  }
-
-  memmove(buffer, buffer + consumed, *length - consumed);
-  *length -= consumed;
-}
-
-static int ws_ascii_eq_ci(const char *a, const char *b) {
-  unsigned char ca = 0;
-  unsigned char cb = 0;
-
-  while (*a && *b) {
-    ca = (unsigned char)*a++;
-    cb = (unsigned char)*b++;
-    if (ca >= 'A' && ca <= 'Z') {
-      ca = (unsigned char)(ca - 'A' + 'a');
-    }
-    if (cb >= 'A' && cb <= 'Z') {
-      cb = (unsigned char)(cb - 'A' + 'a');
-    }
-    if (ca != cb) {
-      return 0;
-    }
-  }
-
-  return *a == '\0' && *b == '\0';
-}
-
-static int ws_ascii_eq_n_ci(const char *a, const char *b, size_t n) {
-  size_t i = 0;
-
-  for (i = 0; i < n; ++i) {
-    unsigned char ca = (unsigned char)a[i];
-    unsigned char cb = (unsigned char)b[i];
-    if (ca >= 'A' && ca <= 'Z') {
-      ca = (unsigned char)(ca - 'A' + 'a');
-    }
-    if (cb >= 'A' && cb <= 'Z') {
-      cb = (unsigned char)(cb - 'A' + 'a');
-    }
-    if (ca != cb) {
-      return 0;
-    }
-  }
-
-  return 1;
-}
-
-static size_t ws_find_double_crlf(const unsigned char *buffer, size_t length) {
-  size_t i = 0;
-
-  if (length < 4) {
-    return SIZE_MAX;
-  }
-
-  for (i = 0; i + 3 < length; ++i) {
-    if (buffer[i] == '\r' && buffer[i + 1] == '\n' && buffer[i + 2] == '\r' &&
-        buffer[i + 3] == '\n') {
-      return i;
-    }
-  }
-
-  return SIZE_MAX;
-}
-
-static const char *ws_trim_left(const char *value) {
-  while (*value == ' ' || *value == '\t') {
-    value++;
-  }
-  return value;
-}
-
-static int ws_find_header_value(const char *request, const char *name, char *out, size_t out_size) {
-  const char *line = request;
-  size_t name_len = strlen(name);
-
-  while (line && *line) {
-    const char *line_end = strstr(line, "\r\n");
-    const char *colon = strchr(line, ':');
-    size_t value_len = 0;
-
-    if (!line_end) {
-      line_end = line + strlen(line);
-    }
-    if (line_end == line) {
-      break;
-    }
-
-    if (colon && colon < line_end) {
-      size_t header_len = (size_t)(colon - line);
-      if (header_len == name_len && ws_ascii_eq_n_ci(line, name, name_len)) {
-        const char *value = ws_trim_left(colon + 1);
-        while (line_end > value && (line_end[-1] == ' ' || line_end[-1] == '\t')) {
-          line_end--;
-        }
-        value_len = (size_t)(line_end - value);
-        if (value_len + 1 > out_size) {
-          return TURBO_EMSGSIZE;
-        }
-        memcpy(out, value, value_len);
-        out[value_len] = '\0';
-        return 0;
-      }
-    }
-
-    line = strstr(line, "\r\n");
-    if (!line) {
-      break;
-    }
-    line += 2;
-  }
-
-  return TURBO_ENOENT;
-}
-
-static int ws_send_frame(coro_socket_t *socket, unsigned char opcode, const void *payload,
-                         size_t payload_len) {
-  unsigned char header[10];
-  unsigned char small_frame[2048];
-  size_t header_len = 0;
-  size_t total_len = 0;
-
-  header[header_len++] = (unsigned char)(0x80u | (opcode & 0x0Fu));
-  if (payload_len < 126) {
-    header[header_len++] = (unsigned char)payload_len;
-  } else if (payload_len <= 0xFFFFu) {
-    header[header_len++] = 126;
-    header[header_len++] = (unsigned char)((payload_len >> 8) & 0xFFu);
-    header[header_len++] = (unsigned char)(payload_len & 0xFFu);
-  } else {
-    header[header_len++] = 127;
-    header[header_len++] = 0;
-    header[header_len++] = 0;
-    header[header_len++] = 0;
-    header[header_len++] = 0;
-    header[header_len++] = (unsigned char)((payload_len >> 24) & 0xFFu);
-    header[header_len++] = (unsigned char)((payload_len >> 16) & 0xFFu);
-    header[header_len++] = (unsigned char)((payload_len >> 8) & 0xFFu);
-    header[header_len++] = (unsigned char)(payload_len & 0xFFu);
-  }
-
-  total_len = header_len + payload_len;
-  if (payload_len > 0 && total_len <= sizeof(small_frame)) {
-    memcpy(small_frame, header, header_len);
-    memcpy(small_frame + header_len, payload, payload_len);
-    return coro_socket_send(socket, (const char *)small_frame, total_len);
-  }
-
-  if (coro_socket_send(socket, (const char *)header, header_len) != 0) {
-    return -1;
-  }
-  if (payload_len > 0 && coro_socket_send(socket, (const char *)payload, payload_len) != 0) {
-    return -1;
-  }
-
-  return 0;
-}
-
-static int ws_send_text(coro_socket_t *socket, const char *json) {
-  return ws_send_frame(socket, 0x1u, json, strlen(json));
-}
-
-static int ws_build_accept_key(const char *client_key, unsigned char *accept_b64,
-                               size_t accept_b64_size) {
-  char accept_source[128];
-  int len = 0;
-  unsigned char accept_sha1[SHA_DIGEST_LENGTH];
-
-  if (!client_key || !accept_b64 || accept_b64_size < 29) {
-    return TURBO_EINVAL;
-  }
-
-  len = snprintf(accept_source, sizeof(accept_source), "%s%s", client_key, WS_GUID);
-  if (len < 0 || (size_t)len >= sizeof(accept_source)) {
-    return TURBO_EPROTO;
-  }
-
-  SHA1((const unsigned char *)accept_source, (size_t)len, accept_sha1);
-  if (EVP_EncodeBlock(accept_b64, accept_sha1, SHA_DIGEST_LENGTH) <= 0) {
-    return TURBO_EPROTO;
-  }
-
-  return 0;
-}
-
-static int ws_server_handshake(coro_socket_t *socket, unsigned char **buffer, size_t *buffer_len,
-                               size_t *buffer_cap) {
-  char request_key[96];
-  char request_protocol[128];
-  size_t header_end = SIZE_MAX;
-  char *request = NULL;
-  char *recv_data = NULL;
-  size_t recv_len = 0;
-  int rc = 0;
-
-  for (;;) {
-    size_t request_len = 0;
-    unsigned char accept_b64[64];
-    tstr_t response = NULL;
-
-    header_end = ws_find_double_crlf(*buffer, *buffer_len);
-    if (header_end == SIZE_MAX) {
-      recv_data = NULL;
-      recv_len = 0;
-      rc = coro_socket_recv(socket, &recv_data, &recv_len);
-      if (rc != 0) {
-        if (recv_data) {
-          coro_socket_free_recv(recv_data);
-        }
-        return rc;
-      }
-      if (!recv_data || recv_len == 0) {
-        continue;
-      }
-      rc = ws_buffer_append(buffer, buffer_len, buffer_cap, recv_data, recv_len);
-      coro_socket_free_recv(recv_data);
-      if (rc != 0) {
-        return rc;
-      }
-      if (*buffer_len > 65536) {
-        return TURBO_EMSGSIZE;
-      }
-      continue;
-    }
-
-    request_len = header_end + 4;
-    request = (char *)malloc(request_len + 1);
-    if (!request) {
-      return TURBO_ENOMEM;
-    }
-    memcpy(request, *buffer, request_len);
-    request[request_len] = '\0';
-
-    if (strncmp(request, "GET ", 4) != 0) {
-      free(request);
-      return TURBO_EPROTO;
-    }
-    if (ws_find_header_value(request, "Sec-WebSocket-Key", request_key,
-                             sizeof(request_key)) != 0) {
-      free(request);
-      return TURBO_EPROTO;
-    }
-
-    request_protocol[0] = '\0';
-    ws_find_header_value(request, "Sec-WebSocket-Protocol", request_protocol,
-                         sizeof(request_protocol));
-    if (request_protocol[0] != '\0' && !ws_ascii_eq_ci(request_protocol, "webrtc-signaling")) {
-      free(request);
-      return TURBO_EPROTO;
-    }
-
-    rc = ws_build_accept_key(request_key, accept_b64, sizeof(accept_b64));
-    if (rc != 0) {
-      free(request);
-      return rc;
-    }
-
-    response = tstr_new();
-    response = tstr_cat(response,
-                        "HTTP/1.1 101 Switching Protocols\r\n"
-                        "Upgrade: websocket\r\n"
-                        "Connection: Upgrade\r\n"
-                        "Sec-WebSocket-Accept: ");
-    response = tstr_cat(response, (const char *)accept_b64);
-    response = tstr_cat(response, "\r\n");
-    if (request_protocol[0] != '\0') {
-      response = tstr_cat(response, "Sec-WebSocket-Protocol: ");
-      response = tstr_cat(response, request_protocol);
-      response = tstr_cat(response, "\r\n");
-    }
-    response = tstr_cat(response, "\r\n");
-
-    if (coro_socket_send(socket, response, strlen(response)) != 0) {
-      tstr_free(response);
-      free(request);
-      return -1;
-    }
-
-    tstr_free(response);
-    free(request);
-    ws_buffer_consume(*buffer, buffer_len, request_len);
-    return 0;
-  }
-}
-
-static int ws_recv_text_message(coro_socket_t *socket, unsigned char **buffer, size_t *buffer_len,
-                                size_t *buffer_cap, char **message, size_t *message_len) {
-  char *recv_data = NULL;
-  size_t recv_len = 0;
-  int rc = 0;
-
-  *message = NULL;
-  *message_len = 0;
-
-  for (;;) {
-    if (*buffer_len >= 2) {
-      const unsigned char *frame = *buffer;
-      unsigned char opcode = (unsigned char)(frame[0] & 0x0Fu);
-      int fin = (frame[0] & 0x80u) != 0;
-      int masked = (frame[1] & 0x80u) != 0;
-      uint64_t payload_len = (uint64_t)(frame[1] & 0x7Fu);
-      size_t header_len = 2;
-      size_t i = 0;
-      unsigned char mask[4];
-
-      if (!fin) {
-        return TURBO_EPROTO;
-      }
-      if (!masked) {
-        return TURBO_EPROTO;
-      }
-
-      if (payload_len == 126) {
-        if (*buffer_len < 4) {
-          payload_len = UINT64_MAX;
-        } else {
-          payload_len = ((uint64_t)frame[2] << 8) | (uint64_t)frame[3];
-          header_len = 4;
-        }
-      } else if (payload_len == 127) {
-        if (*buffer_len < 10) {
-          payload_len = UINT64_MAX;
-        } else {
-          payload_len = ((uint64_t)frame[2] << 56) | ((uint64_t)frame[3] << 48) |
-                        ((uint64_t)frame[4] << 40) | ((uint64_t)frame[5] << 32) |
-                        ((uint64_t)frame[6] << 24) | ((uint64_t)frame[7] << 16) |
-                        ((uint64_t)frame[8] << 8) | (uint64_t)frame[9];
-          header_len = 10;
-        }
-      }
-
-      if (payload_len == UINT64_MAX) {
-        goto need_more_data;
-      }
-      if (payload_len > SIZE_MAX - (header_len + 4)) {
-        return TURBO_EMSGSIZE;
-      }
-      if (*buffer_len < header_len + 4 + (size_t)payload_len) {
-        goto need_more_data;
-      }
-
-      memcpy(mask, frame + header_len, 4);
-      if (opcode == 0x8u) {
-        ws_buffer_consume(*buffer, buffer_len, header_len + 4 + (size_t)payload_len);
-        return TURBO_EOF;
-      }
-      if (opcode == 0x9u) {
-        for (i = 0; i < (size_t)payload_len; ++i) {
-          (*buffer)[header_len + 4 + i] ^= mask[i % 4];
-        }
-        ws_send_frame(socket, 0xAu, *buffer + header_len + 4, (size_t)payload_len);
-        ws_buffer_consume(*buffer, buffer_len, header_len + 4 + (size_t)payload_len);
-        continue;
-      }
-      if (opcode == 0xAu) {
-        ws_buffer_consume(*buffer, buffer_len, header_len + 4 + (size_t)payload_len);
-        continue;
-      }
-      if (opcode != 0x1u && opcode != 0x2u) {
-        return TURBO_EPROTO;
-      }
-
-      *message = (char *)malloc((size_t)payload_len + 1);
-      if (!*message) {
-        return TURBO_ENOMEM;
-      }
-      for (i = 0; i < (size_t)payload_len; ++i) {
-        (*message)[i] =
-            (char)(frame[header_len + 4 + i] ^ mask[i % 4]);
-      }
-      (*message)[payload_len] = '\0';
-      *message_len = (size_t)payload_len;
-      ws_buffer_consume(*buffer, buffer_len, header_len + 4 + (size_t)payload_len);
-      return 0;
-    }
-
-need_more_data:
-    recv_data = NULL;
-    recv_len = 0;
-    rc = coro_socket_recv(socket, &recv_data, &recv_len);
-    if (rc == TURBO_ETIMEDOUT && *buffer_len == 0) {
-      return rc;
-    }
-    if (rc != 0) {
-      if (recv_data) {
-        coro_socket_free_recv(recv_data);
-      }
-      return rc;
-    }
-    if (!recv_data || recv_len == 0) {
-      if (*buffer_len == 0) {
-        return 0;
-      }
-      continue;
-    }
-    rc = ws_buffer_append(buffer, buffer_len, buffer_cap, recv_data, recv_len);
-    coro_socket_free_recv(recv_data);
-    if (rc != 0) {
-      return rc;
-    }
-    if (*buffer_len > 1024 * 1024) {
-      return TURBO_EMSGSIZE;
-    }
-  }
 }
 
 static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t *peer,
@@ -1380,9 +970,7 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   char *data = NULL;
   size_t len = 0;
   int recv_status = 0;
-  unsigned char *recv_buffer = NULL;
-  size_t recv_buffer_len = 0;
-  size_t recv_buffer_cap = 0;
+  int is_text = 0;
   tstr_t leave_msg = NULL;
 
   if (!server || !client) {
@@ -1394,21 +982,9 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
     return;
   }
 
-  coro_socket_set_timeout(client, 5000);
-  recv_status = ws_server_handshake(client, &recv_buffer, &recv_buffer_len, &recv_buffer_cap);
-  if (recv_status != 0) {
-    free(recv_buffer);
-    if (recv_status != TURBO_EOF && recv_status != TURBO_ETIMEDOUT) {
-      TLOG_ERROR("Failed to complete accepted WebSocket handshake: {} ({})", recv_status,
-                 turbo_strerror(recv_status));
-    }
-    return;
-  }
-
   turbo_mutex_lock(&server->mutex);
   if (server->config.max_peers > 0 && server->peer_count >= server->config.max_peers) {
     turbo_mutex_unlock(&server->mutex);
-    free(recv_buffer);
     return;
   }
 
@@ -1421,19 +997,14 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   peer->id = generate_peer_id_locked(server);
   if (!peer->id) {
     turbo_mutex_unlock(&server->mutex);
-    free(recv_buffer);
     free(peer);
     return;
   }
   peer->socket = client;
-  peer->recv_buffer = recv_buffer;
-  peer->recv_buffer_len = recv_buffer_len;
-  peer->recv_buffer_cap = recv_buffer_cap;
   peer->last_activity = turbo_monotonic_ms();
   if (turbo_hash_map_put(&server->local_peers, &peer->id, &peer) != TURBO_OK) {
     turbo_mutex_unlock(&server->mutex);
     tstr_free(peer->id);
-    free(peer->recv_buffer);
     free(peer);
     return;
   }
@@ -1447,7 +1018,7 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   }
   server->peer_count++;
   coro_socket_set_user_data(client, server);
-  coro_socket_set_timeout(client, 1000);
+  coro_socket_set_timeout(client, SIGNALING_PEER_IO_TIMEOUT_MS);
   turbo_mutex_unlock(&server->mutex);
   for (;;) {
     if (flush_peer_outbox(peer) != 0) {
@@ -1463,10 +1034,8 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
 
     data = NULL;
     len = 0;
-    peer->waiting_for_recv = 1;
-    recv_status = ws_recv_text_message(client, &peer->recv_buffer, &peer->recv_buffer_len,
-                                       &peer->recv_buffer_cap, &data, &len);
-    peer->waiting_for_recv = 0;
+    is_text = 0;
+    recv_status = coro_socket_recv_ws(client, &data, &len, &is_text);
     if (recv_status == TURBO_ETIMEDOUT) {
       continue;
     }
@@ -1476,6 +1045,11 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
     if (!data || len == 0) {
       continue;
     }
+    if (!is_text) {
+      coro_socket_free_recv(data);
+      data = NULL;
+      break;
+    }
 
     turbo_mutex_lock(&server->mutex);
     if (!peer->closing) {
@@ -1483,12 +1057,12 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
     }
     turbo_mutex_unlock(&server->mutex);
 
-    free(data);
+    coro_socket_free_recv(data);
     data = NULL;
   }
 
   if (data) {
-    free(data);
+    coro_socket_free_recv(data);
   }
 
   turbo_mutex_lock(&server->mutex);
@@ -1579,6 +1153,10 @@ int webrtc_signaling_start(webrtc_signaling_server_t *server) {
     return -1;
   }
 
+  if (server->listener) {
+    signaling_drain_listener(server);
+  }
+
   if (server->config.use_tls) {
     socket_type = CORO_SOCKET_TLS;
   } else if (server->config.host && strchr(server->config.host, ':')) {
@@ -1590,16 +1168,20 @@ int webrtc_signaling_start(webrtc_signaling_server_t *server) {
     return -1;
   }
 
-  if (coro_socket_listen_on(server->listener, server->config.host ? server->config.host : "0.0.0.0",
-                            server->config.port, signaling_client_handler, server) != 0) {
-    coro_socket_destroy(server->listener);
-    server->listener = NULL;
+  coro_socket_set_timeout(server->listener, SIGNALING_WS_HANDSHAKE_TIMEOUT_MS);
+  if (coro_socket_listen_ws(server->listener,
+                            server->config.host ? server->config.host : "0.0.0.0",
+                            server->config.port, server->config.use_tls,
+                            signaling_client_handler, server) != 0) {
+    signaling_drain_listener(server);
     return -1;
   }
 
   server->running = 1;
   if (server->config.peer_timeout_ms > 0 && server->cleanup_timer) {
-    turbo_timer_start(server->cleanup_timer, on_cleanup_timer, 1000, 1000);
+    turbo_timer_start(server->cleanup_timer, on_cleanup_timer,
+                      SIGNALING_CLEANUP_INTERVAL_MS,
+                      SIGNALING_CLEANUP_INTERVAL_MS);
   }
 
   TLOG_INFO("Signaling server listening on {}://{}:{}", server->config.use_tls ? "wss" : "ws",
@@ -1609,8 +1191,11 @@ int webrtc_signaling_start(webrtc_signaling_server_t *server) {
 
 void webrtc_signaling_stop(webrtc_signaling_server_t *server) {
   webrtc_peer_t *peer = NULL;
+  coro_socket_t *listener = NULL;
+  int post_stop = 0;
+  int rc;
 
-  if (!server || !server->running) {
+  if (!server) {
     return;
   }
 
@@ -1619,48 +1204,62 @@ void webrtc_signaling_stop(webrtc_signaling_server_t *server) {
   }
 
   turbo_mutex_lock(&server->mutex);
+  if (!server->running) {
+    turbo_mutex_unlock(&server->mutex);
+    return;
+  }
   server->running = 0;
   for (peer = server->peers_head; peer; peer = peer->next) {
     close_peer_locked(peer);
   }
+  if (server->listener && !server->stop_posted) {
+    listener = server->listener;
+    server->stop_posted = 1;
+    post_stop = 1;
+  }
   turbo_mutex_unlock(&server->mutex);
 
-  if (server->listener) {
-    coro_socket_destroy(server->listener);
-    server->listener = NULL;
+  if (post_stop) {
+    rc = coro_post(server->ctx, signaling_stop_listener_post_cb, server, listener);
+    if (rc != TURBO_OK) {
+      turbo_mutex_lock(&server->mutex);
+      server->stop_posted = 0;
+      turbo_mutex_unlock(&server->mutex);
+      TLOG_ERROR("Failed to post signaling listener stop: {}", rc);
+    }
   }
 }
 
 int webrtc_signaling_run(webrtc_signaling_server_t *server, turbo_run_mode_t mode) {
+  int running;
+  int stop_posted;
+
   if (!server || !server->ctx) {
     return 0;
+  }
+
+  turbo_mutex_lock(&server->mutex);
+  running = server->running;
+  stop_posted = server->stop_posted;
+  turbo_mutex_unlock(&server->mutex);
+  if (!running && !stop_posted && server->listener &&
+      !coro_socket_server_is_stopped(server->listener)) {
+    (void)coro_socket_server_stop(server->listener);
   }
 
   return coro_context_run(server->ctx, mode);
 }
 
 void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
-  webrtc_peer_t *peer = NULL;
-  webrtc_peer_t *next = NULL;
-
   if (!server) {
     return;
   }
 
   webrtc_signaling_stop(server);
 
-  turbo_mutex_lock(&server->mutex);
-  peer = server->peers_head;
-  while (peer) {
-    next = peer->next;
-    if (peer->socket) {
-      coro_socket_destroy(peer->socket);
-      peer->socket = NULL;
-    }
-    remove_peer_locked(server, peer);
-    peer = next;
+  if (server->listener) {
+    signaling_drain_listener(server);
   }
-  turbo_mutex_unlock(&server->mutex);
 
   if (server->cleanup_timer) {
     turbo_timer_destroy(server->cleanup_timer);

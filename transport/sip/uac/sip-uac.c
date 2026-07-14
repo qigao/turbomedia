@@ -257,6 +257,7 @@ int sip_uac_send(struct sip_uac_transaction_t* t, const void* sdp, int bytes, st
 int sip_uac_transaction_via(struct sip_uac_transaction_t* t, char *via, int nvia, char *contact, int ncontact)
 {
 	int r;
+	uint64_t branch_id;
 	char dns[128];
 	char local[128];
 	char remote[256]; // destination/router
@@ -285,7 +286,11 @@ int sip_uac_transaction_via(struct sip_uac_transaction_t* t, char *via, int nvia
 	// Via
 	// Via: SIP/2.0/UDP erlang.bell-telephone.com:5060;branch=z9hG4bK87asdks7
 	// Via: SIP/2.0/UDP first.example.com:4000;ttl=16;maddr=224.2.0.1;branch=z9hG4bKa7c6a8dlze.1
-	r = snprintf(via, nvia, "SIP/2.0/%s %s;branch=%s%p%d%s", protocol, dns, SIP_BRANCH_PREFIX, t, rand(), sip_transport_isreliable2(protocol)?"":";rport");
+	if (0 != sip_random_u64(&branch_id))
+		return -1;
+	r = snprintf(via, nvia, "SIP/2.0/%s %s;branch=%s%016llx%s", protocol, dns,
+		SIP_BRANCH_PREFIX, (unsigned long long)branch_id,
+		sip_transport_isreliable2(protocol)?"":";rport");
 	if (r < 0 || r >= nvia)
 		return -1; // ENOMEM
 

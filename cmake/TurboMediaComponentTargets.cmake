@@ -73,6 +73,21 @@ target_include_directories(
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/core/include>
          $<INSTALL_INTERFACE:include>)
 target_sources(turbo_media_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/media_source.c)
+target_link_libraries(turbo_media_core PRIVATE TurboUtils::Core)
+
+add_library(turbo_media_crypto SHARED)
+turbo_media_configure_component(turbo_media_crypto Crypto)
+turbo_media_add_component_alias(turbo_media_crypto TurboMedia::Crypto)
+target_include_directories(
+  turbo_media_crypto
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/crypto/include>
+         $<INSTALL_INTERFACE:include>
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor/monocypher)
+target_sources(turbo_media_crypto PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/crypto/monocypher_crypto.c)
+target_link_libraries(
+  turbo_media_crypto
+  PUBLIC TurboUtils::Core
+  PRIVATE TurboMediaVendor::Monocypher)
 
 add_library(turbo_media_codec SHARED)
 turbo_media_configure_component(turbo_media_codec Codec)
@@ -237,7 +252,8 @@ endif()
 
 find_package(Threads QUIET)
 if(TARGET TurboNet::CoroNet)
-  target_link_libraries(turbo_media_transport PUBLIC TurboNet::CoroNet TurboUtils::Parser)
+  target_link_libraries(turbo_media_transport PUBLIC TurboNet::CoroNet TurboUtils::Parser
+                                              PRIVATE TurboUtils::Core)
 else()
   set(TURBO_MEDIA_TURBONET_HINTS)
   if(TURBONET_ROOT)
@@ -248,7 +264,8 @@ else()
        "${PROJECT_SOURCE_DIR}/../turbonet")
   find_package(TurboNet QUIET PATHS ${TURBO_MEDIA_TURBONET_HINTS})
   if(TurboNet_FOUND)
-    target_link_libraries(turbo_media_transport PUBLIC TurboNet::CoroNet TurboUtils::Parser)
+    target_link_libraries(turbo_media_transport PUBLIC TurboNet::CoroNet TurboUtils::Parser
+                                                PRIVATE TurboUtils::Core)
   endif()
 endif()
 
@@ -270,32 +287,24 @@ if(TURBO_MEDIA_ENABLE_RTP)
   target_compile_definitions(turbo_media_transport PUBLIC TURBO_MEDIA_HAS_RTP)
 endif()
 
-if(TURBO_MEDIA_ENABLE_LEGACY_RTSP_TRANSPORT)
-  file(GLOB_RECURSE TURBO_MEDIA_RTSP_TRANSPORT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/transport/rtsp/*.c)
-  target_sources(turbo_media_transport PRIVATE ${TURBO_MEDIA_RTSP_TRANSPORT_SOURCES})
-  target_include_directories(
-    turbo_media_transport
-    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/transport/rtsp>
-           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/transport/rtsp/include>
-           $<INSTALL_INTERFACE:include/turbomedia/transport/rtsp>
-           $<INSTALL_INTERFACE:include/turbomedia/transport/rtsp/include>)
-  target_compile_definitions(turbo_media_transport PUBLIC TURBO_MEDIA_HAS_RTSP)
-endif()
-
 if(TURBO_MEDIA_ENABLE_SIP)
   file(GLOB_RECURSE TURBO_MEDIA_SIP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/transport/sip/*.c)
   target_sources(turbo_media_transport PRIVATE ${TURBO_MEDIA_SIP_SOURCES})
   target_include_directories(
     turbo_media_transport
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/transport/sip
-           ${CMAKE_CURRENT_SOURCE_DIR}/transport/sip/include)
-  target_compile_definitions(turbo_media_transport PUBLIC TURBO_MEDIA_HAS_SIP)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/transport/sip
+            ${CMAKE_CURRENT_SOURCE_DIR}/transport/sip/include)
+  target_compile_definitions(turbo_media_transport PRIVATE TURBO_MEDIA_HAS_SIP)
+  target_link_libraries(turbo_media_transport PRIVATE TurboUtils::Core)
 endif()
 
 add_library(turbo_media_server SHARED)
 turbo_media_configure_component(turbo_media_server Server)
 turbo_media_add_component_alias(turbo_media_server TurboMedia::Server)
-target_link_libraries(turbo_media_server PUBLIC turbo_media_core turbo_media_transport)
+target_link_libraries(
+  turbo_media_server
+  PUBLIC turbo_media_core turbo_media_transport
+  PRIVATE TurboUtils::Core)
 target_include_directories(
   turbo_media_server
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/server/include>

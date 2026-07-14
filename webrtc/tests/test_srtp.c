@@ -1,0 +1,240 @@
+#include "tinytest_compat.h"
+#include "turbo_rtp.h"
+#include "turbo_srtp.h"
+#include <string.h>
+
+static void fill_keying_material(srtp_keying_material_t *keys) {
+  memset(keys, 0, sizeof(*keys));
+  keys->key_len = 16;
+  keys->salt_len = 14;
+
+  for (size_t i = 0; i < keys->key_len; ++i) {
+    keys->client_key[i] = (uint8_t)(0x10 + i);
+    keys->server_key[i] = (uint8_t)(0x80 + i);
+  }
+  for (size_t i = 0; i < keys->salt_len; ++i) {
+    keys->client_salt[i] = (uint8_t)(0x20 + i);
+    keys->server_salt[i] = (uint8_t)(0x90 + i);
+  }
+}
+
+static size_t build_test_rtp_packet(uint8_t *buffer, size_t buffer_len, uint16_t seq,
+                                    uint32_t timestamp, uint32_t ssrc) {
+  rtp_packet_t pkt;
+  static const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02};
+  int len = rtp_packet_build(&pkt, RTP_PT_VP8, seq, timestamp, ssrc, 1, payload, sizeof(payload),
+                             buffer, buffer_len);
+  TEST_ASSERT_GREATER_THAN(0, len);
+  return (size_t)len;
+}
+
+static size_t build_test_rtcp_packet(uint8_t *buffer, size_t buffer_len) {
+  rtcp_compound_t compound;
+  rtcp_compound_init(&compound, buffer, buffer_len);
+  TEST_ASSERT_EQUAL_INT(0, rtcp_compound_add_pli(&compound, 0x11223344u, 0x55667788u));
+  return rtcp_compound_finish(&compound);
+}
+
+void test_srtp_dtls_client_sender_to_server_receiver(void) {
+  srtp_keying_material_t keys;
+  srtp_session_config_t sender_cfg;
+  srtp_session_config_t receiver_cfg;
+  srtp_session_t *sender;
+  srtp_session_t *receiver;
+  uint8_t packet[RTP_MAX_PACKET + SRTP_MAX_TRAILER_LEN];
+  size_t len;
+
+  fill_keying_material(&keys);
+
+  sender_cfg = (srtp_session_config_t){
+      .is_sender = 1,
+      .is_dtls_client = 1,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+  receiver_cfg = (srtp_session_config_t){
+      .is_sender = 0,
+      .is_dtls_client = 0,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+
+  sender = srtp_session_create(&sender_cfg);
+  receiver = srtp_session_create(&receiver_cfg);
+  TEST_ASSERT_NOT_NULL(sender);
+  TEST_ASSERT_NOT_NULL(receiver);
+
+  len = build_test_rtp_packet(packet, sizeof(packet), 321, 90000, 0x12345678u);
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtp_protect(sender, packet, &len, sizeof(packet)));
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtp_unprotect(receiver, packet, &len));
+  TEST_ASSERT_EQUAL_size_t(RTP_HEADER_SIZE + 6, len);
+
+  srtp_session_destroy(receiver);
+  srtp_session_destroy(sender);
+}
+
+void test_srtp_dtls_server_sender_to_client_receiver(void) {
+  srtp_keying_material_t keys;
+  srtp_session_config_t sender_cfg;
+  srtp_session_config_t receiver_cfg;
+  srtp_session_t *sender;
+  srtp_session_t *receiver;
+  uint8_t packet[RTP_MAX_PACKET + SRTP_MAX_TRAILER_LEN];
+  size_t len;
+
+  fill_keying_material(&keys);
+
+  sender_cfg = (srtp_session_config_t){
+      .is_sender = 1,
+      .is_dtls_client = 0,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+  receiver_cfg = (srtp_session_config_t){
+      .is_sender = 0,
+      .is_dtls_client = 1,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+
+  sender = srtp_session_create(&sender_cfg);
+  receiver = srtp_session_create(&receiver_cfg);
+  TEST_ASSERT_NOT_NULL(sender);
+  TEST_ASSERT_NOT_NULL(receiver);
+
+  len = build_test_rtp_packet(packet, sizeof(packet), 654, 180000, 0x87654321u);
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtp_protect(sender, packet, &len, sizeof(packet)));
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtp_unprotect(receiver, packet, &len));
+  TEST_ASSERT_EQUAL_size_t(RTP_HEADER_SIZE + 6, len);
+
+  srtp_session_destroy(receiver);
+  srtp_session_destroy(sender);
+}
+
+void test_srtcp_dtls_server_sender_to_client_receiver(void) {
+  srtp_keying_material_t keys;
+  srtp_session_config_t sender_cfg;
+  srtp_session_config_t receiver_cfg;
+  srtp_session_t *sender;
+  srtp_session_t *receiver;
+  uint8_t packet[256];
+  size_t len;
+
+  fill_keying_material(&keys);
+
+  sender_cfg = (srtp_session_config_t){
+      .is_sender = 1,
+      .is_dtls_client = 0,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+  receiver_cfg = (srtp_session_config_t){
+      .is_sender = 0,
+      .is_dtls_client = 1,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+
+  sender = srtp_session_create(&sender_cfg);
+  receiver = srtp_session_create(&receiver_cfg);
+  TEST_ASSERT_NOT_NULL(sender);
+  TEST_ASSERT_NOT_NULL(receiver);
+
+  len = build_test_rtcp_packet(packet, sizeof(packet));
+  TEST_ASSERT_GREATER_THAN(0, len);
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtcp_protect(sender, packet, &len, sizeof(packet)));
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtcp_unprotect(receiver, packet, &len));
+  TEST_ASSERT_EQUAL_size_t(12, len);
+
+  srtp_session_destroy(receiver);
+  srtp_session_destroy(sender);
+}
+
+void test_srtcp_dtls_client_sender_to_server_receiver(void) {
+  srtp_keying_material_t keys;
+  srtp_session_config_t sender_cfg;
+  srtp_session_config_t receiver_cfg;
+  srtp_session_t *sender;
+  srtp_session_t *receiver;
+  uint8_t packet[256];
+  size_t len;
+
+  fill_keying_material(&keys);
+
+  sender_cfg = (srtp_session_config_t){
+      .is_sender = 1,
+      .is_dtls_client = 1,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+  receiver_cfg = (srtp_session_config_t){
+      .is_sender = 0,
+      .is_dtls_client = 0,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+
+  sender = srtp_session_create(&sender_cfg);
+  receiver = srtp_session_create(&receiver_cfg);
+  TEST_ASSERT_NOT_NULL(sender);
+  TEST_ASSERT_NOT_NULL(receiver);
+
+  len = build_test_rtcp_packet(packet, sizeof(packet));
+  TEST_ASSERT_GREATER_THAN(0, len);
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtcp_protect(sender, packet, &len, sizeof(packet)));
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtcp_unprotect(receiver, packet, &len));
+  TEST_ASSERT_EQUAL_size_t(12, len);
+
+  srtp_session_destroy(receiver);
+  srtp_session_destroy(sender);
+}
+
+void test_srtp_shutdown_waits_for_active_sessions(void) {
+  srtp_keying_material_t keys;
+  srtp_session_config_t sender_cfg;
+  srtp_session_config_t receiver_cfg;
+  srtp_session_t *sender;
+  srtp_session_t *receiver;
+  uint8_t packet[RTP_MAX_PACKET + SRTP_MAX_TRAILER_LEN];
+  size_t len;
+
+  fill_keying_material(&keys);
+  sender_cfg = (srtp_session_config_t){
+      .is_sender = 1,
+      .is_dtls_client = 1,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+  receiver_cfg = (srtp_session_config_t){
+      .is_sender = 0,
+      .is_dtls_client = 0,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+
+  sender = srtp_session_create(&sender_cfg);
+  receiver = srtp_session_create(&receiver_cfg);
+  TEST_ASSERT_NOT_NULL(sender);
+  TEST_ASSERT_NOT_NULL(receiver);
+
+  srtp_lib_shutdown();
+  len = build_test_rtp_packet(packet, sizeof(packet), 77, 48000, 0x10203040u);
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtp_protect(sender, packet, &len, sizeof(packet)));
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtp_unprotect(receiver, packet, &len));
+
+  srtp_session_destroy(receiver);
+  srtp_session_destroy(sender);
+
+  sender = srtp_session_create(&sender_cfg);
+  TEST_ASSERT_NOT_NULL(sender);
+  srtp_session_destroy(sender);
+  srtp_lib_shutdown();
+}
+
+spec("test_srtp") {
+  TT_TEST(test_srtp_dtls_client_sender_to_server_receiver);
+  TT_TEST(test_srtp_dtls_server_sender_to_client_receiver);
+  TT_TEST(test_srtcp_dtls_server_sender_to_client_receiver);
+  TT_TEST(test_srtcp_dtls_client_sender_to_server_receiver);
+  TT_TEST(test_srtp_shutdown_waits_for_active_sessions);
+}

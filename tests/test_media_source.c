@@ -2,7 +2,10 @@
 #include <tinytest.h>
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+
+#define REGISTRY_STRESS_SOURCE_COUNT 128
 
 #define REQUIRE_OK(expr)                    \
     do {                                    \
@@ -270,6 +273,45 @@ suite("turbo_media_source") {
             REQUIRE_OK(turbo_media_registry_remove(registry, &key));
             check_size_eq(turbo_media_registry_count(registry), 0);
             check_null(turbo_media_registry_find(registry, &key));
+
+            turbo_media_registry_destroy(registry);
+        }
+
+        it("indexes many stream keys and preserves removal semantics") {
+            turbo_media_source_config_t config = small_source_config();
+            turbo_media_source_key_t keys[REGISTRY_STRESS_SOURCE_COUNT];
+            turbo_media_source_t *sources[REGISTRY_STRESS_SOURCE_COUNT];
+            turbo_media_registry_t *registry =
+                turbo_media_registry_create(REGISTRY_STRESS_SOURCE_COUNT);
+            size_t i;
+
+            REQUIRE_NOT_NULL(registry);
+            memset(sources, 0, sizeof(sources));
+
+            for (i = 0; i < REGISTRY_STRESS_SOURCE_COUNT; ++i) {
+                char stream[TURBO_MEDIA_MAX_STREAM_LEN];
+                snprintf(stream, sizeof(stream), "camera-%zu", i);
+                REQUIRE_OK(turbo_media_source_key_init(&keys[i], "default", "live", stream));
+                REQUIRE_OK(turbo_media_registry_get_or_create(
+                    registry, &keys[i], &config, &sources[i]));
+            }
+
+            check_size_eq(turbo_media_registry_count(registry),
+                          REGISTRY_STRESS_SOURCE_COUNT);
+            for (i = 0; i < REGISTRY_STRESS_SOURCE_COUNT; ++i) {
+                check_ptr_eq(turbo_media_registry_find(registry, &keys[i]), sources[i]);
+            }
+
+            for (i = 0; i < REGISTRY_STRESS_SOURCE_COUNT; i += 2) {
+                REQUIRE_OK(turbo_media_registry_remove(registry, &keys[i]));
+                check_null(turbo_media_registry_find(registry, &keys[i]));
+            }
+
+            check_size_eq(turbo_media_registry_count(registry),
+                          REGISTRY_STRESS_SOURCE_COUNT / 2);
+            for (i = 1; i < REGISTRY_STRESS_SOURCE_COUNT; i += 2) {
+                check_ptr_eq(turbo_media_registry_find(registry, &keys[i]), sources[i]);
+            }
 
             turbo_media_registry_destroy(registry);
         }

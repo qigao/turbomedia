@@ -23,24 +23,6 @@ if(TURBO_MEDIA_ENABLE_RTP)
   target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_RTP)
 endif()
 
-# RTSP Transport
-if(TURBO_MEDIA_ENABLE_RTSP)
-  # RTSP 核心实现（递归包含所有子目录）
-  file(GLOB_RECURSE RTSP_SOURCES ${CMAKE_CURRENT_LIST_DIR}/rtsp/*.c)
-  target_sources(turbo_media PRIVATE ${RTSP_SOURCES})
-  
-  target_include_directories(turbo_media PUBLIC
-    ${CMAKE_CURRENT_LIST_DIR}/rtsp
-    ${CMAKE_CURRENT_LIST_DIR}/rtsp/include)
-  
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_RTSP)
-  
-  # 链接 CoroNet
-  if(TARGET TurboNet::CoroNet)
-    target_link_libraries(turbo_media PRIVATE TurboNet::CoroNet)
-  endif()
-endif()
-
 # SIP Transport
 if(TURBO_MEDIA_ENABLE_SIP)
   # SIP 核心实现（递归包含所有子目录）

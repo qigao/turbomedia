@@ -264,6 +264,14 @@ static void dc_transport_thread_main(void *arg) {
     coro_context_run(ctx->transport_ctx, TURBO_RUN_DEFAULT);
 }
 
+static void dc_transport_stop_post(void *arg1, void *arg2) {
+    coro_context_t *transport_ctx = (coro_context_t *)arg1;
+    (void)arg2;
+
+    coro_context_set_persistent(transport_ctx, 0);
+    coro_context_stop(transport_ctx);
+}
+
 static void dc_sync_post_runner(void *arg1, void *arg2) {
     dc_sync_post_t *sync = (dc_sync_post_t *)arg1;
     (void)arg2;
@@ -925,6 +933,7 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
         coro_context_set_persistent(ctx->transport_ctx, 1);
         if (turbo_thread_create(&ctx->transport_thread, dc_transport_thread_main, ctx) != 0) {
             dc_set_context_error(ctx, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to start CoroNet transport thread");
+            coro_context_set_persistent(ctx->transport_ctx, 0);
             coro_context_destroy(ctx->transport_ctx);
             ctx->transport_ctx = NULL;
             sctp_global_cleanup();
@@ -940,11 +949,19 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
 }
 
 void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
+    int stop_rc;
+
     if (!ctx) return;
 
-    if (ctx->transport_ctx) {
-        coro_context_set_persistent(ctx->transport_ctx, 0);
-        coro_context_stop(ctx->transport_ctx);
+    if (ctx->transport_ctx && ctx->transport_thread_started) {
+        stop_rc = coro_post(ctx->transport_ctx,
+                            dc_transport_stop_post,
+                            ctx->transport_ctx,
+                            NULL);
+        if (stop_rc != TURBO_OK) {
+            TLOG_ERROR("Failed to post DataChannel transport stop: {}", stop_rc);
+            coro_context_stop(ctx->transport_ctx);
+        }
     }
     if (ctx->transport_thread_started) {
         turbo_thread_join(&ctx->transport_thread);
@@ -952,6 +969,7 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
         ctx->transport_thread_started = 0;
     }
     if (ctx->transport_ctx) {
+        coro_context_set_persistent(ctx->transport_ctx, 0);
         coro_context_destroy(ctx->transport_ctx);
         ctx->transport_ctx = NULL;
     }

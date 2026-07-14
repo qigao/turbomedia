@@ -44,9 +44,10 @@ int sip_dialog_init_uac(struct sip_dialog_t* dialog, const struct sip_message_t*
 	dialog->ptr = sip_contact_clone(dialog->ptr, end, &dialog->local.uri, &msg->from);
 	dialog->ptr = sip_contact_clone(dialog->ptr, end, &dialog->remote.uri, &msg->to);
 	dialog->local.id = msg->cseq.id;
-	dialog->local.rseq = rand();
-	dialog->remote.id = rand();
-	dialog->remote.rseq = rand();
+	if (0 != sip_random_u31(&dialog->local.rseq) ||
+		0 != sip_random_u31(&dialog->remote.id) ||
+		0 != sip_random_u31(&dialog->remote.rseq))
+		return -1;
 
 	//assert(1 == sip_contacts_count(&msg->contacts));
 	contact = sip_contacts_get(&msg->contacts, 0);
@@ -82,10 +83,16 @@ int sip_dialog_init_uas(struct sip_dialog_t* dialog, const struct sip_message_t*
 	dialog->ptr = cstring_clone(dialog->ptr, end, &dialog->callid, msg->callid.p, msg->callid.n);
     dialog->ptr = sip_contact_clone(dialog->ptr, end, &dialog->local.uri, &msg->to);
     dialog->ptr = sip_contact_clone(dialog->ptr, end, &dialog->remote.uri, &msg->from);
-    dialog->local.id = rand();
-	dialog->local.rseq = rand();
+    if (0 != sip_random_u31(&dialog->local.id) ||
+		0 != sip_random_u31(&dialog->local.rseq))
+		return -1;
     dialog->remote.id = msg->cseq.id;
-	dialog->remote.rseq = 0==msg->rseq ? rand() : msg->rseq;
+	if (0 == msg->rseq) {
+		if (0 != sip_random_u31(&dialog->remote.rseq))
+			return -1;
+	} else {
+		dialog->remote.rseq = msg->rseq;
+	}
     
     //assert(1 == sip_contacts_count(&msg->contacts));
     contact = sip_contacts_get(&msg->contacts, 0);

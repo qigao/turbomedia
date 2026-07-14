@@ -1,4 +1,5 @@
 #include "turbo_media_source.h"
+#include "turbo_hash.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -40,8 +41,7 @@ struct turbo_media_source_s {
 };
 
 struct turbo_media_registry_s {
-    turbo_media_source_t **sources;
-    size_t source_count;
+    turbo_hash_map_t sources;
     size_t max_sources;
 };
 
@@ -62,7 +62,17 @@ static int turbo_media_copy_text(char *dst, size_t dst_size, const char *src) {
 }
 
 static int turbo_media_key_valid(const turbo_media_source_key_t *key) {
-    return key && key->vhost[0] != '\0' && key->app[0] != '\0' && key->stream[0] != '\0';
+    return key && key->vhost[0] != '\0' && key->app[0] != '\0' && key->stream[0] != '\0' &&
+           memchr(key->vhost, '\0', sizeof(key->vhost)) != NULL &&
+           memchr(key->app, '\0', sizeof(key->app)) != NULL &&
+           memchr(key->stream, '\0', sizeof(key->stream)) != NULL;
+}
+
+static int turbo_media_normalize_key(turbo_media_source_key_t *normalized,
+                                     const turbo_media_source_key_t *key) {
+    if (!normalized || !turbo_media_key_valid(key)) return TURBO_MEDIA_ERR_INVALID;
+
+    return turbo_media_source_key_init(normalized, key->vhost, key->app, key->stream);
 }
 
 static void turbo_media_free_track(turbo_media_track_state_t *track) {
@@ -237,10 +247,11 @@ int turbo_media_source_key_equal(const turbo_media_source_key_t *lhs,
 
 turbo_media_source_t *turbo_media_source_create(const turbo_media_source_key_t *key,
                                                 const turbo_media_source_config_t *config) {
+    turbo_media_source_key_t normalized_key;
     turbo_media_source_config_t normalized;
     turbo_media_source_t *source;
 
-    if (!turbo_media_key_valid(key)) return NULL;
+    if (turbo_media_normalize_key(&normalized_key, key) != TURBO_MEDIA_OK) return NULL;
 
     memset(&normalized, 0, sizeof(normalized));
     if (config) normalized = *config;
@@ -255,7 +266,7 @@ turbo_media_source_t *turbo_media_source_create(const turbo_media_source_key_t *
     source = (turbo_media_source_t *)calloc(1, sizeof(*source));
     if (!source) return NULL;
 
-    source->key = *key;
+    source->key = normalized_key;
     source->config = normalized;
     source->state = TURBO_MEDIA_SOURCE_IDLE;
     source->next_subscription_id = 1;
@@ -463,6 +474,7 @@ int turbo_media_source_get_stats(const turbo_media_source_t *source,
 
 turbo_media_registry_t *turbo_media_registry_create(size_t max_sources) {
     turbo_media_registry_t *registry;
+    int rc;
 
     max_sources = turbo_media_default_size(max_sources,
                                            TURBO_MEDIA_REGISTRY_DEFAULT_MAX_SOURCES);
@@ -470,9 +482,20 @@ turbo_media_registry_t *turbo_media_registry_create(size_t max_sources) {
     registry = (turbo_media_registry_t *)calloc(1, sizeof(*registry));
     if (!registry) return NULL;
 
-    registry->sources = (turbo_media_source_t **)calloc(max_sources,
-                                                        sizeof(*registry->sources));
-    if (!registry->sources) {
+    rc = turbo_hash_map_init(&registry->sources,
+                             sizeof(turbo_media_source_key_t),
+                             sizeof(turbo_media_source_t *),
+                             NULL,
+                             NULL,
+                             NULL);
+    if (rc != TURBO_OK) {
+        free(registry);
+        return NULL;
+    }
+
+    rc = turbo_hash_map_reserve(&registry->sources, max_sources);
+    if (rc != TURBO_OK) {
+        turbo_hash_map_destroy(&registry->sources);
         free(registry);
         return NULL;
     }
@@ -486,79 +509,87 @@ void turbo_media_registry_destroy(turbo_media_registry_t *registry) {
 
     if (!registry) return;
 
-    for (i = 0; i < registry->source_count; ++i) {
-        turbo_media_source_destroy(registry->sources[i]);
+    for (i = 0; i < turbo_hash_map_capacity(&registry->sources); ++i) {
+        turbo_media_source_t *const *source =
+            (turbo_media_source_t *const *)turbo_hash_map_value_at_const(
+                &registry->sources, i);
+        if (source) turbo_media_source_destroy(*source);
     }
 
-    free(registry->sources);
+    turbo_hash_map_destroy(&registry->sources);
     free(registry);
 }
 
 turbo_media_source_t *turbo_media_registry_find(const turbo_media_registry_t *registry,
                                                 const turbo_media_source_key_t *key) {
-    size_t i;
+    turbo_media_source_key_t normalized_key;
+    turbo_media_source_t *const *source;
 
-    if (!registry || !turbo_media_key_valid(key)) return NULL;
-
-    for (i = 0; i < registry->source_count; ++i) {
-        if (turbo_media_source_key_equal(&registry->sources[i]->key, key)) {
-            return registry->sources[i];
-        }
+    if (!registry || turbo_media_normalize_key(&normalized_key, key) != TURBO_MEDIA_OK) {
+        return NULL;
     }
 
-    return NULL;
+    source = (turbo_media_source_t *const *)turbo_hash_map_get_const(&registry->sources,
+                                                                     &normalized_key);
+    return source ? *source : NULL;
 }
 
 int turbo_media_registry_get_or_create(turbo_media_registry_t *registry,
                                        const turbo_media_source_key_t *key,
                                        const turbo_media_source_config_t *config,
                                        turbo_media_source_t **source) {
+    turbo_media_source_key_t normalized_key;
     turbo_media_source_t *found;
+    turbo_media_source_t *const *existing;
+    int rc;
 
-    if (!registry || !turbo_media_key_valid(key) || !source) {
+    if (!registry || !source ||
+        turbo_media_normalize_key(&normalized_key, key) != TURBO_MEDIA_OK) {
         return TURBO_MEDIA_ERR_INVALID;
     }
 
-    found = turbo_media_registry_find(registry, key);
-    if (found) {
-        *source = found;
+    existing = (turbo_media_source_t *const *)turbo_hash_map_get_const(&registry->sources,
+                                                                       &normalized_key);
+    if (existing) {
+        *source = *existing;
         return TURBO_MEDIA_OK;
     }
 
-    if (registry->source_count >= registry->max_sources) {
+    if (turbo_hash_map_size(&registry->sources) >= registry->max_sources) {
         return TURBO_MEDIA_ERR_FULL;
     }
 
-    found = turbo_media_source_create(key, config);
+    found = turbo_media_source_create(&normalized_key, config);
     if (!found) return TURBO_MEDIA_ERR_NOMEM;
 
-    registry->sources[registry->source_count++] = found;
+    rc = turbo_hash_map_put(&registry->sources, &normalized_key, &found);
+    if (rc != TURBO_OK) {
+        turbo_media_source_destroy(found);
+        return rc == TURBO_ENOMEM ? TURBO_MEDIA_ERR_NOMEM : TURBO_MEDIA_ERR_INVALID;
+    }
+
     *source = found;
     return TURBO_MEDIA_OK;
 }
 
 int turbo_media_registry_remove(turbo_media_registry_t *registry,
                                 const turbo_media_source_key_t *key) {
-    size_t i;
+    turbo_media_source_key_t normalized_key;
+    turbo_media_source_t *source = NULL;
+    int rc;
 
-    if (!registry || !turbo_media_key_valid(key)) return TURBO_MEDIA_ERR_INVALID;
-
-    for (i = 0; i < registry->source_count; ++i) {
-        if (turbo_media_source_key_equal(&registry->sources[i]->key, key)) {
-            turbo_media_source_destroy(registry->sources[i]);
-            if (i + 1 < registry->source_count) {
-                memmove(&registry->sources[i],
-                        &registry->sources[i + 1],
-                        (registry->source_count - i - 1) * sizeof(registry->sources[0]));
-            }
-            registry->source_count--;
-            return TURBO_MEDIA_OK;
-        }
+    if (!registry || turbo_media_normalize_key(&normalized_key, key) != TURBO_MEDIA_OK) {
+        return TURBO_MEDIA_ERR_INVALID;
     }
 
-    return TURBO_MEDIA_ERR_NOT_FOUND;
+    rc = turbo_hash_map_remove(&registry->sources, &normalized_key, &source);
+    if (rc == TURBO_ENOENT) return TURBO_MEDIA_ERR_NOT_FOUND;
+    if (rc != TURBO_OK) return TURBO_MEDIA_ERR_INVALID;
+
+    turbo_media_source_destroy(source);
+    return TURBO_MEDIA_OK;
 }
 
 size_t turbo_media_registry_count(const turbo_media_registry_t *registry) {
-    return registry ? registry->source_count : 0;
+    return registry ? turbo_hash_map_size(&registry->sources) : 0;
 }

@@ -20,8 +20,9 @@ set_target_properties(dc_benchmark PROPERTIES FOLDER webrtc/examples)
 
 add_executable(rtc_signaled_peer signaled_peer.c)
 target_link_libraries(rtc_signaled_peer PRIVATE TurboMedia::DataChannel TurboMedia::SDP
-                                               TurboUtils::Parser TurboNet::CoroNet
-                                               TurboUtils::Core)
+                                               TurboUtils::Parser TurboNet::CoroNet TurboNet::Ice
+                                               TurboUtils::Core
+                                               $<$<PLATFORM_ID:Windows>:ws2_32>)
 set_target_properties(rtc_signaled_peer PROPERTIES FOLDER webrtc/examples)
 
 # ICE + DataChannel example (if ICE module is available)
@@ -34,23 +35,18 @@ if(TARGET turbo_ice OR TARGET TurboNet::Ice)
   target_link_libraries(
     dc_ice_example PRIVATE TurboMedia::DataChannel ${TURBORTC_WEBRTC_ICE_TARGET} TurboUtils::Core)
   target_include_directories(dc_ice_example
-                             PRIVATE ${CMAKE_SOURCE_DIR}/ice/include)
+                             PRIVATE ${Stb_INCLUDE_DIR})
   set_target_properties(dc_ice_example PROPERTIES FOLDER webrtc/examples)
 
   add_executable(browser_interop browser_interop.c)
   target_link_libraries(
-    browser_interop PRIVATE TurboMedia::DataChannel ${TURBORTC_WEBRTC_ICE_TARGET} TurboMedia::SDP
-                            TurboUtils::Core)
-  target_include_directories(browser_interop
-                             PRIVATE ${CMAKE_SOURCE_DIR}/ice/include)
+    browser_interop PRIVATE TurboMedia::WebRTC TurboUtils::Core)
   set_target_properties(browser_interop PROPERTIES FOLDER webrtc/examples)
 
   add_executable(browser_media_interop browser_media_interop.c)
   target_link_libraries(
-    browser_media_interop PRIVATE TurboMedia::DataChannel ${TURBORTC_WEBRTC_ICE_TARGET}
-                                  TurboMedia::SDP TurboRTC::MediaEngine TurboUtils::Core)
-  target_include_directories(browser_media_interop
-                             PRIVATE ${CMAKE_SOURCE_DIR}/ice/include)
+    browser_media_interop PRIVATE TurboMedia::RTC TurboMedia::WebRTC
+                                  TurboNet::Ice TurboUtils::Core)
   set_target_properties(browser_media_interop PROPERTIES FOLDER webrtc/examples)
 endif()
 

@@ -1,13 +1,6 @@
-# 查找 TurboNet 依赖
+# 查找测试框架依赖
 if(NOT TARGET TurboUtils::TinyTest)
-  set(TURBO_MEDIA_TURBONET_HINTS)
-  if(TURBONET_ROOT)
-    list(APPEND TURBO_MEDIA_TURBONET_HINTS "${TURBONET_ROOT}")
-  endif()
-  list(APPEND TURBO_MEDIA_TURBONET_HINTS
-       "${PROJECT_SOURCE_DIR}/../turbonet/build"
-       "${PROJECT_SOURCE_DIR}/../turbonet")
-  find_package(TurboNet CONFIG REQUIRED PATHS ${TURBO_MEDIA_TURBONET_HINTS})
+  find_package(TurboUtils CONFIG REQUIRED HINTS ${TURBO_MEDIA_TURBOUTILS_HINTS})
 endif()
 
 # 共享测试辅助源文件
@@ -37,6 +30,12 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
       continue()  # 跳过未启用的 RTSP 测试
     endif()
     list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core TurboMedia::Server)
+    if(TEST_NAME STREQUAL "test_rtsp")
+      find_package(OpenSSL REQUIRED)
+      list(APPEND TEST_LINK_LIBS OpenSSL::Crypto)
+    endif()
+  elseif(TEST_NAME STREQUAL "test_crypto")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Crypto)
   elseif(TEST_NAME STREQUAL "test_webrtc")
     if(NOT TURBO_MEDIA_ENABLE_WEBRTC)
       continue()

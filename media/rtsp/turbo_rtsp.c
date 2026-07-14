@@ -9,7 +9,10 @@
 #include "disruptor.h"
 #include "platform.h"
 
+#include <openssl/evp.h>
+
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +30,7 @@
 #define TURBO_RTSP_CLIENT_FRAME_QUEUE_CAPACITY 64
 #define TURBO_RTSP_AUTH_VALUE_BUFFER_SIZE 1024
 #define TURBO_RTSP_MD5_HEX_LEN 32
+#define TURBO_RTSP_MD5_DIGEST_LEN 16
 #define TURBO_RTSP_CLIENT_H264_RTP_MAX_PAYLOAD 1200u
 #define TURBO_RTSP_CLIENT_H264_RTP_PACKET_SIZE \
     (TURBO_RTSP_RTP_HEADER_SIZE + TURBO_RTSP_CLIENT_H264_RTP_MAX_PAYLOAD)
@@ -34,8 +38,7 @@
 #define TURBO_RTSP_CLIENT_H264_RTP_INITIAL_SEQ 1u
 #define TURBO_RTSP_CLIENT_H264_RTP_INITIAL_TIMESTAMP 0u
 #define TURBO_RTSP_CLIENT_RTCP_COMPOUND_BUFFER_SIZE 1500u
-#define TURBO_RTSP_SERVER_DESTROY_DRAIN_MS 3000u
-#define TURBO_RTSP_SERVER_DESTROY_PRERUN_TICKS 8
+#define TURBO_RTSP_DIGEST_CNONCE_BYTES 16u
 
 typedef struct {
     char realm[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
@@ -45,13 +48,6 @@ typedef struct {
     int has_qop;
     int qop_auth;
 } turbo_rtsp_digest_challenge_t;
-
-typedef struct {
-    uint32_t state[4];
-    uint64_t bit_len;
-    uint8_t buffer[64];
-    size_t buffer_len;
-} turbo_rtsp_md5_ctx_t;
 
 typedef struct {
     uint8_t channel;
@@ -83,7 +79,7 @@ struct turbo_rtsp_server_s {
     int port;
     uint64_t client_timeout_ms;
     int started;
-    int active_handlers;
+    int stopping;
 };
 
 struct turbo_rtsp_session_s {
@@ -113,6 +109,8 @@ struct turbo_rtsp_client_s {
     char auth_username[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     char auth_password[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     turbo_rtsp_auth_scheme_t auth_preferred;
+    char digest_nonce[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
+    uint32_t digest_nonce_count;
     char presentation_uri[TURBO_RTSP_MAX_URI_LEN];
     char session_id[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     turbo_rtsp_session_header_t session;
@@ -318,154 +316,6 @@ static int turbo_rtsp_ascii_ieq_n(
         }
     }
     return 1;
-}
-
-static uint32_t turbo_rtsp_md5_rotl(uint32_t value, uint32_t shift) {
-    return (value << shift) | (value >> (32u - shift));
-}
-
-static uint32_t turbo_rtsp_md5_load_le32(const uint8_t *bytes) {
-    return ((uint32_t)bytes[0]) |
-           ((uint32_t)bytes[1] << 8) |
-           ((uint32_t)bytes[2] << 16) |
-           ((uint32_t)bytes[3] << 24);
-}
-
-static void turbo_rtsp_md5_store_le32(uint8_t *bytes, uint32_t value) {
-    bytes[0] = (uint8_t)(value & 0xffu);
-    bytes[1] = (uint8_t)((value >> 8) & 0xffu);
-    bytes[2] = (uint8_t)((value >> 16) & 0xffu);
-    bytes[3] = (uint8_t)((value >> 24) & 0xffu);
-}
-
-static void turbo_rtsp_md5_transform(turbo_rtsp_md5_ctx_t *ctx, const uint8_t block[64]) {
-    static const uint32_t s[64] = {
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
-    static const uint32_t k[64] = {
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
-        0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
-        0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
-        0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
-        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
-        0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
-        0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
-        0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
-        0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391};
-    uint32_t m[16];
-    uint32_t a = ctx->state[0];
-    uint32_t b = ctx->state[1];
-    uint32_t c = ctx->state[2];
-    uint32_t d = ctx->state[3];
-    size_t i = 0;
-
-    for (i = 0; i < 16; ++i) {
-        m[i] = turbo_rtsp_md5_load_le32(block + (i * 4));
-    }
-
-    for (i = 0; i < 64; ++i) {
-        uint32_t f = 0;
-        uint32_t g = 0;
-        uint32_t tmp = d;
-
-        if (i < 16) {
-            f = (b & c) | (~b & d);
-            g = (uint32_t)i;
-        } else if (i < 32) {
-            f = (d & b) | (~d & c);
-            g = (uint32_t)((5 * i + 1) & 0x0f);
-        } else if (i < 48) {
-            f = b ^ c ^ d;
-            g = (uint32_t)((3 * i + 5) & 0x0f);
-        } else {
-            f = c ^ (b | ~d);
-            g = (uint32_t)((7 * i) & 0x0f);
-        }
-
-        d = c;
-        c = b;
-        b = b + turbo_rtsp_md5_rotl(a + f + k[i] + m[g], s[i]);
-        a = tmp;
-    }
-
-    ctx->state[0] += a;
-    ctx->state[1] += b;
-    ctx->state[2] += c;
-    ctx->state[3] += d;
-}
-
-static void turbo_rtsp_md5_init(turbo_rtsp_md5_ctx_t *ctx) {
-    memset(ctx, 0, sizeof(*ctx));
-    ctx->state[0] = 0x67452301u;
-    ctx->state[1] = 0xefcdab89u;
-    ctx->state[2] = 0x98badcfeu;
-    ctx->state[3] = 0x10325476u;
-}
-
-static void turbo_rtsp_md5_update(
-    turbo_rtsp_md5_ctx_t *ctx,
-    const uint8_t *data,
-    size_t len) {
-    size_t offset = 0;
-
-    ctx->bit_len += (uint64_t)len * 8u;
-    if (ctx->buffer_len > 0) {
-        const size_t need = 64 - ctx->buffer_len;
-        const size_t copy_len = len < need ? len : need;
-        memcpy(ctx->buffer + ctx->buffer_len, data, copy_len);
-        ctx->buffer_len += copy_len;
-        offset += copy_len;
-        if (ctx->buffer_len == 64) {
-            turbo_rtsp_md5_transform(ctx, ctx->buffer);
-            ctx->buffer_len = 0;
-        }
-    }
-
-    while (offset + 64 <= len) {
-        turbo_rtsp_md5_transform(ctx, data + offset);
-        offset += 64;
-    }
-
-    if (offset < len) {
-        ctx->buffer_len = len - offset;
-        memcpy(ctx->buffer, data + offset, ctx->buffer_len);
-    }
-}
-
-static void turbo_rtsp_md5_final(turbo_rtsp_md5_ctx_t *ctx, uint8_t digest[16]) {
-    uint8_t length_bytes[8];
-    size_t i = 0;
-
-    for (i = 0; i < 8; ++i) {
-        length_bytes[i] = (uint8_t)((ctx->bit_len >> (8 * i)) & 0xffu);
-    }
-
-    ctx->buffer[ctx->buffer_len++] = 0x80u;
-    if (ctx->buffer_len > 56) {
-        while (ctx->buffer_len < 64) {
-            ctx->buffer[ctx->buffer_len++] = 0;
-        }
-        turbo_rtsp_md5_transform(ctx, ctx->buffer);
-        ctx->buffer_len = 0;
-    }
-    while (ctx->buffer_len < 56) {
-        ctx->buffer[ctx->buffer_len++] = 0;
-    }
-    memcpy(ctx->buffer + 56, length_bytes, sizeof(length_bytes));
-    turbo_rtsp_md5_transform(ctx, ctx->buffer);
-
-    for (i = 0; i < 4; ++i) {
-        turbo_rtsp_md5_store_le32(digest + (i * 4), ctx->state[i]);
-    }
 }
 
 static int turbo_rtsp_control_transport_is_ws(turbo_rtsp_control_transport_t transport) {
@@ -895,18 +745,6 @@ static void turbo_rtsp_notify_session_close(turbo_rtsp_session_t *session) {
     }
 }
 
-static void turbo_rtsp_server_begin_handler(turbo_rtsp_server_t *server) {
-    if (server) {
-        server->active_handlers++;
-    }
-}
-
-static void turbo_rtsp_server_end_handler(turbo_rtsp_server_t *server) {
-    if (server && server->active_handlers > 0) {
-        server->active_handlers--;
-    }
-}
-
 static void turbo_rtsp_client_handler(coro_socket_t *client, void *arg) {
     turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)arg;
     turbo_rtsp_session_t session;
@@ -920,7 +758,9 @@ static void turbo_rtsp_client_handler(coro_socket_t *client, void *arg) {
     session.server = server;
     session.client = client;
 
-    turbo_rtsp_server_begin_handler(server);
+    if (!server || server->stopping) {
+        return;
+    }
 
     coro_socket_set_timeout(client, server->client_timeout_ms);
 
@@ -1006,27 +846,18 @@ cleanup:
     turbo_rtsp_notify_session_close(&session);
     free(pending);
     turbo_rtsp_session_clear_udp(&session);
-    turbo_rtsp_server_end_handler(server);
 }
 
-static void turbo_rtsp_server_drain_handlers(turbo_rtsp_server_t *server) {
-    uint64_t deadline = 0;
-    int prerun_ticks = TURBO_RTSP_SERVER_DESTROY_PRERUN_TICKS;
-
-    if (!server || !server->ctx) {
+static void turbo_rtsp_server_drain_listener(turbo_rtsp_server_t *server) {
+    if (!server || !server->ctx || !server->listener) {
         return;
     }
 
-    deadline = turbo_monotonic_ms() + TURBO_RTSP_SERVER_DESTROY_DRAIN_MS;
-    while (turbo_monotonic_ms() < deadline) {
-        if (server->active_handlers <= 0 && prerun_ticks <= 0) {
-            break;
-        }
-        if (prerun_ticks > 0) {
-            prerun_ticks--;
-        }
+    while (!coro_socket_server_is_stopped(server->listener)) {
         coro_context_run(server->ctx, TURBO_RUN_ONCE);
     }
+    coro_socket_destroy(server->listener);
+    server->listener = NULL;
 }
 
 turbo_rtsp_server_t *turbo_rtsp_server_create(
@@ -1084,11 +915,17 @@ int turbo_rtsp_server_start(turbo_rtsp_server_t *server) {
     if (server->started) {
         return 0;
     }
+    if (server->listener) {
+        turbo_rtsp_server_drain_listener(server);
+    }
+
+    server->stopping = 0;
 
     server->listener = turbo_rtsp_control_socket_create(server->ctx, server->control_transport);
     if (!server->listener) {
         return -1;
     }
+    coro_socket_set_timeout(server->listener, server->client_timeout_ms);
 
     if (turbo_rtsp_control_transport_is_ws(server->control_transport)) {
         rc = coro_socket_listen_ws(
@@ -1107,8 +944,8 @@ int turbo_rtsp_server_start(turbo_rtsp_server_t *server) {
             server);
     }
     if (rc != 0) {
-        coro_socket_destroy(server->listener);
-        server->listener = NULL;
+        (void)coro_socket_server_stop(server->listener);
+        turbo_rtsp_server_drain_listener(server);
         return -1;
     }
 
@@ -1117,12 +954,14 @@ int turbo_rtsp_server_start(turbo_rtsp_server_t *server) {
 }
 
 void turbo_rtsp_server_stop(turbo_rtsp_server_t *server) {
-    if (!server || !server->listener) {
+    if (!server) {
         return;
     }
 
-    coro_socket_destroy(server->listener);
-    server->listener = NULL;
+    server->stopping = 1;
+    if (server->listener) {
+        (void)coro_socket_server_stop(server->listener);
+    }
     server->started = 0;
 }
 
@@ -1132,7 +971,7 @@ void turbo_rtsp_server_destroy(turbo_rtsp_server_t *server) {
     }
 
     turbo_rtsp_server_stop(server);
-    turbo_rtsp_server_drain_handlers(server);
+    turbo_rtsp_server_drain_listener(server);
     free(server);
 }
 
@@ -1707,8 +1546,8 @@ static int turbo_rtsp_client_auth_configured(const turbo_rtsp_client_t *client) 
 }
 
 static int turbo_rtsp_md5_hex(const char *value, char hex[TURBO_RTSP_MD5_HEX_LEN + 1]) {
-    turbo_rtsp_md5_ctx_t ctx;
-    uint8_t digest[16];
+    uint8_t digest[TURBO_RTSP_MD5_DIGEST_LEN];
+    unsigned int digest_len = 0;
     static const char digits[] = "0123456789abcdef";
     size_t i = 0;
 
@@ -1716,11 +1555,18 @@ static int turbo_rtsp_md5_hex(const char *value, char hex[TURBO_RTSP_MD5_HEX_LEN
         return -1;
     }
 
-    turbo_rtsp_md5_init(&ctx);
-    turbo_rtsp_md5_update(&ctx, (const uint8_t *)value, strlen(value));
-    turbo_rtsp_md5_final(&ctx, digest);
+    if (EVP_Digest(
+            value,
+            strlen(value),
+            digest,
+            &digest_len,
+            EVP_md5(),
+            NULL) != 1 ||
+        digest_len != TURBO_RTSP_MD5_DIGEST_LEN) {
+        return -1;
+    }
 
-    for (i = 0; i < 16; ++i) {
+    for (i = 0; i < TURBO_RTSP_MD5_DIGEST_LEN; ++i) {
         hex[i * 2] = digits[(digest[i] >> 4) & 0x0f];
         hex[i * 2 + 1] = digits[digest[i] & 0x0f];
     }
@@ -2048,23 +1894,24 @@ static int turbo_rtsp_append_digest_part(
 }
 
 static int turbo_rtsp_client_build_digest_auth(
-    const turbo_rtsp_client_t *client,
+    turbo_rtsp_client_t *client,
     turbo_rtsp_method_t method,
     const char *uri,
     const turbo_rtsp_digest_challenge_t *challenge,
     char *value,
     size_t value_size) {
     const char *method_name = turbo_rtsp_client_method_name(method);
-    const char *nc = "00000001";
+    unsigned char cnonce_bytes[TURBO_RTSP_DIGEST_CNONCE_BYTES];
+    char nc[9];
     char ha1_input[TURBO_RTSP_AUTH_VALUE_BUFFER_SIZE];
     char ha2_input[TURBO_RTSP_AUTH_VALUE_BUFFER_SIZE];
     char response_input[TURBO_RTSP_AUTH_VALUE_BUFFER_SIZE];
-    char cnonce_input[TURBO_RTSP_AUTH_VALUE_BUFFER_SIZE];
     char ha1[TURBO_RTSP_MD5_HEX_LEN + 1];
     char ha2[TURBO_RTSP_MD5_HEX_LEN + 1];
     char response[TURBO_RTSP_MD5_HEX_LEN + 1];
     char cnonce[TURBO_RTSP_MD5_HEX_LEN + 1];
     size_t offset = 0;
+    size_t i = 0;
     int len = 0;
 
     if (!turbo_rtsp_client_auth_configured(client) ||
@@ -2073,6 +1920,22 @@ static int turbo_rtsp_client_build_digest_auth(
         !challenge ||
         !value ||
         value_size == 0) {
+        return -1;
+    }
+
+    if (strcmp(client->digest_nonce, challenge->nonce) != 0) {
+        turbo_rtsp_safe_copy(
+            client->digest_nonce,
+            sizeof(client->digest_nonce),
+            challenge->nonce);
+        client->digest_nonce_count = 0;
+    }
+    if (client->digest_nonce_count == UINT32_MAX) {
+        return -1;
+    }
+    client->digest_nonce_count++;
+    len = snprintf(nc, sizeof(nc), "%08x", client->digest_nonce_count);
+    if (len != 8) {
         return -1;
     }
 
@@ -2094,19 +1957,15 @@ static int turbo_rtsp_client_build_digest_auth(
         return -1;
     }
 
-    len = snprintf(
-        cnonce_input,
-        sizeof(cnonce_input),
-        "%s:%s:%s:%s:%s",
-        client->auth_username,
-        challenge->realm,
-        challenge->nonce,
-        uri,
-        nc);
-    if (len < 0 || (size_t)len >= sizeof(cnonce_input) ||
-        turbo_rtsp_md5_hex(cnonce_input, cnonce) != 0) {
+    if (turbo_secure_random(cnonce_bytes, sizeof(cnonce_bytes)) != 0) {
         return -1;
     }
+    for (i = 0; i < sizeof(cnonce_bytes); ++i) {
+        static const char digits[] = "0123456789abcdef";
+        cnonce[i * 2u] = digits[(cnonce_bytes[i] >> 4) & 0x0f];
+        cnonce[i * 2u + 1u] = digits[cnonce_bytes[i] & 0x0f];
+    }
+    cnonce[sizeof(cnonce_bytes) * 2u] = '\0';
 
     if (challenge->has_qop) {
         len = snprintf(
@@ -2927,6 +2786,8 @@ void turbo_rtsp_client_close(turbo_rtsp_client_t *client) {
     client->recording = 0;
     client->playing = 0;
     client->session_id[0] = '\0';
+    client->digest_nonce[0] = '\0';
+    client->digest_nonce_count = 0;
     memset(&client->session, 0, sizeof(client->session));
     client->presentation_uri[0] = '\0';
     client->recv_len = 0;

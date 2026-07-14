@@ -98,18 +98,49 @@ target_link_libraries(
   turbo_media_webrtc_signaling
   PUBLIC TurboNet::CoroNet TurboHttp::Iris
   PRIVATE TurboUtils::Core
-          TurboUtils::Parser
-          OpenSSL::Crypto)
+          TurboUtils::Parser)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 
-add_library(turbo_media_rtc INTERFACE)
+set(TURBO_MEDIA_RTC_SOURCES
+    src/rtc/rtp/rtp_packet.c
+    src/rtc/rtp/rtcp_packet.c
+    src/rtc/rtp/rtp_session.c
+    src/rtc/rtp/rtp_history.c
+    src/rtc/rtp/twcc.c
+    src/rtc/rtp/simulcast.c
+    src/rtc/rtp/nack.c
+    src/rtc/srtp/srtp_session.c
+    src/rtc/media/jitter_buffer.c
+    src/rtc/media/turbo_media_engine.c)
+
+add_library(turbo_media_rtc SHARED)
+turbo_media_configure_component(turbo_media_rtc RTC)
 turbo_media_add_component_alias(turbo_media_rtc TurboMedia::RTC)
-set_target_properties(turbo_media_rtc PROPERTIES EXPORT_NAME RTC)
+target_sources(turbo_media_rtc PRIVATE ${TURBO_MEDIA_RTC_SOURCES})
+target_include_directories(
+  turbo_media_rtc
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:include>
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/rtc/media)
 target_link_libraries(
   turbo_media_rtc
-  INTERFACE TurboMedia::WebRTC TurboMedia::DataChannel TurboMedia::SDP)
+  PUBLIC TurboMedia::WebRTC
+         TurboMedia::DataChannel
+         TurboMedia::SDP
+         TurboMedia::Crypto
+  PRIVATE TurboMedia::Codec
+          TurboMedia::Device
+          TurboUtils::Core
+          OpenSSL::SSL
+          OpenSSL::Crypto
+          libSRTP::srtp2)
+target_compile_definitions(turbo_media_rtc PUBLIC TURBO_MEDIA_HAS_RTC)
 
 if(BUILD_TESTS)
   add_subdirectory(tests)
+endif()
+
+if(BUILD_EXAMPLES)
+  add_subdirectory(examples)
 endif()

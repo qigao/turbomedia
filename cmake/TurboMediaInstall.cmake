@@ -21,6 +21,7 @@ endif()
 
 set(TURBO_MEDIA_COMPONENT_TARGETS
     turbo_media_core
+    turbo_media_crypto
     turbo_media_server
     turbo_media_codec
     turbo_media_muxer
@@ -57,13 +58,14 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/media/include/turbo_codec.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/media/include/turbo_player.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/media/include/turbo_rtsp.h"
-         "${CMAKE_CURRENT_SOURCE_DIR}/media/include/turbo_export.h"
-         "${CMAKE_CURRENT_SOURCE_DIR}/core/include/turbo_media_source.h"
-         "${CMAKE_CURRENT_SOURCE_DIR}/server/include/turbo_media_server.h"
-         "${CMAKE_CURRENT_SOURCE_DIR}/muxer/include/turbo_muxer.h"
-         "${CMAKE_CURRENT_SOURCE_DIR}/demuxer/include/turbo_demuxer.h"
-         "${CMAKE_CURRENT_SOURCE_DIR}/network/include/turbo_transport.h"
-         "${CMAKE_CURRENT_SOURCE_DIR}/streamer/include/turbo_streamer.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/media/include/turbo_export.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/crypto/include/turbo_media_crypto.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/core/include/turbo_media_source.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/server/include/turbo_media_server.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/muxer/include/turbo_muxer.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/demuxer/include/turbo_demuxer.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/network/include/turbo_transport.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/streamer/include/turbo_streamer.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 if(TARGET turbo_media_webrtc)
@@ -88,6 +90,16 @@ if(TARGET turbo_media_datachannel)
           "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_dc_msg.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_sdp.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_srtp_defs.h"
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
+
+if(TARGET turbo_media_rtc)
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_media_engine.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_rtp.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_nack.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_simulcast.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/webrtc/include/turbo_srtp.h"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 endif()
 

@@ -112,6 +112,9 @@
         {
             "name": "win-dev-user",
             "configurePreset": "win-dev-user",
+            "environment": {
+                "PATH": "C:/projects/cpp/external/pkgs/turbonet/bin;C:/projects/cpp/external/pkgs/turboutils/bin;${sourceDir}/vcpkg_installed/x64-windows/debug/bin;$penv{PATH}"
+            },
             "execution": {
                 "noTestsAction": "error",
                 "stopOnFailure": false
@@ -123,6 +126,9 @@
         {
             "name": "win-release-user",
             "configurePreset": "win-release-user",
+            "environment": {
+                "PATH": "C:/projects/cpp/external/pkgs/turbonet/bin;C:/projects/cpp/external/pkgs/turboutils/bin;${sourceDir}/vcpkg_installed/x64-windows/bin;$penv{PATH}"
+            },
             "execution": {
                 "noTestsAction": "error",
                 "stopOnFailure": false

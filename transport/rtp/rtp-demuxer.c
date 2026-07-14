@@ -132,8 +132,9 @@ struct rtp_demuxer_t* rtp_demuxer_create(int jitter, int frequency, int payload,
     rtp = (struct rtp_demuxer_t*)calloc(1, sizeof(*rtp));
     if(!rtp)
         return NULL;
-    
-    if(0 != rtp_demuxer_init(rtp, jitter, frequency, payload, encoding))
+
+    if(0 != rtp_ssrc_generate(&rtp->ssrc) ||
+       0 != rtp_demuxer_init(rtp, jitter, frequency, payload, encoding))
     {
         rtp_demuxer_destroy(&rtp);
         return NULL;
@@ -142,7 +143,6 @@ struct rtp_demuxer_t* rtp_demuxer_create(int jitter, int frequency, int payload,
     rtp->onpkt = onpkt;
     rtp->param = param;
     rtp->clock = rtpclock();
-    rtp->ssrc = rtp_ssrc();
     rtp->max = RTP_PAYLOAD_MAX_SIZE;
     return rtp;
 }

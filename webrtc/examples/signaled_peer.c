@@ -18,9 +18,6 @@
 #include "turbo_sdp.h"
 #include <CoroNet/turbo_coro_context.h>
 #include <CoroNet/turbo_coro_socket.h>
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/sha.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -106,9 +103,6 @@ typedef struct {
 
   signal_message_t *outbox_head;
   signal_message_t *outbox_tail;
-  unsigned char *signal_recv_buffer;
-  size_t signal_recv_buffer_len;
-  size_t signal_recv_buffer_cap;
 
   sdp_session_t remote_sdp;
   int have_remote_sdp;
@@ -187,469 +181,6 @@ static void maybe_stop_context(app_state_t *app) {
 
   app->context_stop_requested = 1;
   coro_context_stop(app->ctx);
-}
-
-static int ws_ascii_eq_n_ci(const char *a, const char *b, size_t n) {
-  size_t i;
-  for (i = 0; i < n; ++i) {
-    unsigned char ca = (unsigned char)a[i];
-    unsigned char cb = (unsigned char)b[i];
-    if (ca >= 'A' && ca <= 'Z') {
-      ca = (unsigned char)(ca - 'A' + 'a');
-    }
-    if (cb >= 'A' && cb <= 'Z') {
-      cb = (unsigned char)(cb - 'A' + 'a');
-    }
-    if (ca != cb) {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-static int ws_ascii_eq_ci(const char *a, const char *b) {
-  size_t len_a = strlen(a);
-  size_t len_b = strlen(b);
-  return len_a == len_b && ws_ascii_eq_n_ci(a, b, len_a);
-}
-
-static const char *ws_trim_left(const char *value) {
-  while (*value == ' ' || *value == '\t') {
-    value++;
-  }
-  return value;
-}
-
-static size_t ws_find_double_crlf(const unsigned char *buffer, size_t length) {
-  size_t i;
-
-  if (length < 4) {
-    return SIZE_MAX;
-  }
-
-  for (i = 0; i + 3 < length; ++i) {
-    if (buffer[i] == '\r' && buffer[i + 1] == '\n' && buffer[i + 2] == '\r' &&
-        buffer[i + 3] == '\n') {
-      return i;
-    }
-  }
-
-  return SIZE_MAX;
-}
-
-static int ws_find_header_value(const char *request, const char *name, char *out, size_t out_size) {
-  const char *line = request;
-  size_t name_len = strlen(name);
-
-  while (line && *line) {
-    const char *line_end = strstr(line, "\r\n");
-    const char *colon = strchr(line, ':');
-    size_t value_len = 0;
-
-    if (!line_end) {
-      line_end = line + strlen(line);
-    }
-    if (line_end == line) {
-      break;
-    }
-
-    if (colon && colon < line_end) {
-      size_t header_len = (size_t)(colon - line);
-      if (header_len == name_len && ws_ascii_eq_n_ci(line, name, name_len)) {
-        const char *value = ws_trim_left(colon + 1);
-        while (line_end > value && (line_end[-1] == ' ' || line_end[-1] == '\t')) {
-          line_end--;
-        }
-        value_len = (size_t)(line_end - value);
-        if (value_len + 1 > out_size) {
-          return TURBO_EMSGSIZE;
-        }
-        memcpy(out, value, value_len);
-        out[value_len] = '\0';
-        return 0;
-      }
-    }
-
-    line = strstr(line, "\r\n");
-    if (!line) {
-      break;
-    }
-    line += 2;
-  }
-
-  return TURBO_ENOENT;
-}
-
-static int ws_buffer_reserve(unsigned char **buffer, size_t *capacity, size_t needed) {
-  unsigned char *new_buffer = NULL;
-  size_t new_capacity = *capacity ? *capacity : 1024;
-
-  if (needed <= *capacity) {
-    return 0;
-  }
-
-  while (new_capacity < needed) {
-    new_capacity *= 2;
-  }
-
-  new_buffer = (unsigned char *)realloc(*buffer, new_capacity);
-  if (!new_buffer) {
-    return TURBO_ENOMEM;
-  }
-
-  *buffer = new_buffer;
-  *capacity = new_capacity;
-  return 0;
-}
-
-static int ws_buffer_append(unsigned char **buffer, size_t *length, size_t *capacity,
-                            const void *data, size_t data_len) {
-  int rc = 0;
-
-  if (data_len == 0) {
-    return 0;
-  }
-
-  rc = ws_buffer_reserve(buffer, capacity, *length + data_len);
-  if (rc != 0) {
-    return rc;
-  }
-
-  memcpy(*buffer + *length, data, data_len);
-  *length += data_len;
-  return 0;
-}
-
-static void ws_buffer_consume(unsigned char *buffer, size_t *length, size_t consumed) {
-  if (consumed >= *length) {
-    *length = 0;
-    return;
-  }
-
-  memmove(buffer, buffer + consumed, *length - consumed);
-  *length -= consumed;
-}
-
-static int ws_send_frame(coro_socket_t *socket, unsigned char opcode, const void *payload,
-                         size_t payload_len, int masked) {
-  unsigned char header[14];
-  unsigned char mask[4];
-  size_t header_len = 0;
-  unsigned char *buffer = NULL;
-  int rc = 0;
-  size_t i = 0;
-
-  header[header_len++] = (unsigned char)(0x80u | (opcode & 0x0Fu));
-  if (payload_len < 126) {
-    header[header_len++] = (unsigned char)((masked ? 0x80u : 0) | payload_len);
-  } else if (payload_len <= 0xFFFFu) {
-    header[header_len++] = (unsigned char)((masked ? 0x80u : 0) | 126u);
-    header[header_len++] = (unsigned char)((payload_len >> 8) & 0xFFu);
-    header[header_len++] = (unsigned char)(payload_len & 0xFFu);
-  } else {
-    header[header_len++] = (unsigned char)((masked ? 0x80u : 0) | 127u);
-    header[header_len++] = 0;
-    header[header_len++] = 0;
-    header[header_len++] = 0;
-    header[header_len++] = 0;
-    header[header_len++] = (unsigned char)((payload_len >> 24) & 0xFFu);
-    header[header_len++] = (unsigned char)((payload_len >> 16) & 0xFFu);
-    header[header_len++] = (unsigned char)((payload_len >> 8) & 0xFFu);
-    header[header_len++] = (unsigned char)(payload_len & 0xFFu);
-  }
-
-  if (masked) {
-    if (RAND_bytes(mask, (int)sizeof(mask)) != 1) {
-      return TURBO_EIO;
-    }
-    memcpy(header + header_len, mask, sizeof(mask));
-    header_len += sizeof(mask);
-  }
-
-  buffer = (unsigned char *)malloc(header_len + payload_len);
-  if (!buffer) {
-    return TURBO_ENOMEM;
-  }
-  memcpy(buffer, header, header_len);
-  if (payload_len > 0 && payload) {
-    memcpy(buffer + header_len, payload, payload_len);
-    if (masked) {
-      for (i = 0; i < payload_len; ++i) {
-        buffer[header_len + i] ^= mask[i % 4];
-      }
-    }
-  }
-
-  rc = coro_socket_send(socket, (const char *)buffer, header_len + payload_len);
-  free(buffer);
-  return rc;
-}
-
-static int ws_send_text(coro_socket_t *socket, const char *json) {
-  return ws_send_frame(socket, 0x1u, json, strlen(json), 1);
-}
-
-static int ws_client_handshake(app_state_t *app, const char *request_host, const char *path,
-                               const char *protocol) {
-  unsigned char raw_key[16];
-  unsigned char key_b64[32];
-  unsigned char accept_sha1[SHA_DIGEST_LENGTH];
-  unsigned char accept_b64[64];
-  char accept_source[256];
-  char expected_accept[64];
-  char response_accept[64];
-  char response_protocol[128];
-  char *request = NULL;
-  char *response = NULL;
-  char *recv_data = NULL;
-  size_t recv_len = 0;
-  size_t header_end = SIZE_MAX;
-  int rc = 0;
-
-  if (RAND_bytes(raw_key, (int)sizeof(raw_key)) != 1) {
-    return TURBO_EIO;
-  }
-  EVP_EncodeBlock(key_b64, raw_key, (int)sizeof(raw_key));
-
-  request = dup_printf(
-      "GET %s HTTP/1.1\r\n"
-      "Host: %s\r\n"
-      "Upgrade: websocket\r\n"
-      "Connection: Upgrade\r\n"
-      "Sec-WebSocket-Key: %s\r\n"
-      "Sec-WebSocket-Version: 13\r\n"
-      "Sec-WebSocket-Protocol: %s\r\n"
-      "\r\n",
-      (path && path[0] != '\0') ? path : "/", request_host, (const char *)key_b64,
-      (protocol && protocol[0] != '\0') ? protocol : "webrtc-signaling");
-  if (!request) {
-    return TURBO_ENOMEM;
-  }
-
-  rc = coro_socket_send(app->signal_socket, request, strlen(request));
-  free(request);
-  if (rc != 0) {
-    return rc;
-  }
-
-  for (;;) {
-    header_end = ws_find_double_crlf(app->signal_recv_buffer, app->signal_recv_buffer_len);
-    if (header_end != SIZE_MAX) {
-      size_t response_len = header_end + 4;
-      response = (char *)malloc(response_len + 1);
-      if (!response) {
-        return TURBO_ENOMEM;
-      }
-      memcpy(response, app->signal_recv_buffer, response_len);
-      response[response_len] = '\0';
-      break;
-    }
-
-    recv_data = NULL;
-    recv_len = 0;
-    rc = coro_socket_recv(app->signal_socket, &recv_data, &recv_len);
-    if (rc != 0) {
-      if (recv_data) {
-        coro_socket_free_recv(recv_data);
-      }
-      return rc;
-    }
-    if (!recv_data || recv_len == 0) {
-      continue;
-    }
-    rc = ws_buffer_append(&app->signal_recv_buffer, &app->signal_recv_buffer_len,
-                          &app->signal_recv_buffer_cap, recv_data, recv_len);
-    coro_socket_free_recv(recv_data);
-    if (rc != 0) {
-      return rc;
-    }
-    if (app->signal_recv_buffer_len > 65536) {
-      return TURBO_EMSGSIZE;
-    }
-  }
-
-  if (strncmp(response, "HTTP/1.1 101", 12) != 0 && strncmp(response, "HTTP/1.0 101", 12) != 0) {
-    free(response);
-    return TURBO_EPROTO;
-  }
-  if (ws_find_header_value(response, "Sec-WebSocket-Accept", response_accept,
-                           sizeof(response_accept)) != 0) {
-    free(response);
-    return TURBO_EPROTO;
-  }
-  snprintf(accept_source, sizeof(accept_source), "%s%s", (const char *)key_b64,
-           "258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-  SHA1((const unsigned char *)accept_source, strlen(accept_source), accept_sha1);
-  EVP_EncodeBlock(accept_b64, accept_sha1, SHA_DIGEST_LENGTH);
-  snprintf(expected_accept, sizeof(expected_accept), "%s", (const char *)accept_b64);
-  if (strcmp(response_accept, expected_accept) != 0) {
-    free(response);
-    return TURBO_EPROTO;
-  }
-
-  response_protocol[0] = '\0';
-  if (protocol && protocol[0] != '\0' &&
-      ws_find_header_value(response, "Sec-WebSocket-Protocol", response_protocol,
-                           sizeof(response_protocol)) == 0 &&
-      !ws_ascii_eq_ci(response_protocol, protocol)) {
-    free(response);
-    return TURBO_EPROTO;
-  }
-
-  free(response);
-  ws_buffer_consume(app->signal_recv_buffer, &app->signal_recv_buffer_len, header_end + 4);
-  return 0;
-}
-
-static int ws_recv_message(app_state_t *app, char **message, size_t *message_len) {
-  char *recv_data = NULL;
-  size_t recv_len = 0;
-  int rc = 0;
-
-  *message = NULL;
-  *message_len = 0;
-
-  for (;;) {
-    if (app->signal_recv_buffer_len >= 2) {
-      const unsigned char *frame = app->signal_recv_buffer;
-      unsigned char opcode = (unsigned char)(frame[0] & 0x0Fu);
-      int fin = (frame[0] & 0x80u) != 0;
-      int masked = (frame[1] & 0x80u) != 0;
-      uint64_t payload_len = (uint64_t)(frame[1] & 0x7Fu);
-      size_t header_len = 2;
-      size_t i = 0;
-      unsigned char mask[4];
-
-      if (!fin) {
-        return TURBO_EPROTO;
-      }
-
-      if (payload_len == 126) {
-        if (app->signal_recv_buffer_len < 4) {
-          payload_len = UINT64_MAX;
-        } else {
-          payload_len = ((uint64_t)frame[2] << 8) | (uint64_t)frame[3];
-          header_len = 4;
-        }
-      } else if (payload_len == 127) {
-        if (app->signal_recv_buffer_len < 10) {
-          payload_len = UINT64_MAX;
-        } else {
-          payload_len = ((uint64_t)frame[2] << 56) | ((uint64_t)frame[3] << 48) |
-                        ((uint64_t)frame[4] << 40) | ((uint64_t)frame[5] << 32) |
-                        ((uint64_t)frame[6] << 24) | ((uint64_t)frame[7] << 16) |
-                        ((uint64_t)frame[8] << 8) | (uint64_t)frame[9];
-          header_len = 10;
-        }
-      }
-
-      if (payload_len == UINT64_MAX) {
-        goto need_more_data;
-      }
-      tracef_app(app, "ws_recv_message frame opcode=0x%x fin=%d masked=%d header_len=%zu payload_len=%llu buffer_len=%zu",
-                 (unsigned)opcode, fin, masked, header_len,
-                 (unsigned long long)payload_len, app->signal_recv_buffer_len);
-      if (payload_len > SIZE_MAX - (header_len + (masked ? 4 : 0))) {
-        return TURBO_EMSGSIZE;
-      }
-      if (app->signal_recv_buffer_len <
-          header_len + (masked ? 4 : 0) + (size_t)payload_len) {
-        goto need_more_data;
-      }
-
-      if (masked) {
-        memcpy(mask, frame + header_len, 4);
-      }
-
-      if (opcode == 0x8u) {
-        ws_buffer_consume(app->signal_recv_buffer, &app->signal_recv_buffer_len,
-                          header_len + (masked ? 4 : 0) + (size_t)payload_len);
-        return TURBO_EOF;
-      }
-      if (opcode == 0x9u) {
-        const unsigned char *payload = frame + header_len + (masked ? 4 : 0);
-        unsigned char *pong = NULL;
-
-        pong = (unsigned char *)malloc((size_t)payload_len);
-        if (!pong) {
-          return TURBO_ENOMEM;
-        }
-        memcpy(pong, payload, (size_t)payload_len);
-        if (masked) {
-          for (i = 0; i < (size_t)payload_len; ++i) {
-            pong[i] ^= mask[i % 4];
-          }
-        }
-        ws_send_frame(app->signal_socket, 0xAu, pong, (size_t)payload_len, 1);
-        free(pong);
-        ws_buffer_consume(app->signal_recv_buffer, &app->signal_recv_buffer_len,
-                          header_len + (masked ? 4 : 0) + (size_t)payload_len);
-        continue;
-      }
-      if (opcode == 0xAu) {
-        ws_buffer_consume(app->signal_recv_buffer, &app->signal_recv_buffer_len,
-                          header_len + (masked ? 4 : 0) + (size_t)payload_len);
-        continue;
-      }
-      if (opcode != 0x1u && opcode != 0x2u) {
-        return TURBO_EPROTO;
-      }
-
-      *message = (char *)malloc((size_t)payload_len + 1);
-      if (!*message) {
-        return TURBO_ENOMEM;
-      }
-      memcpy(*message, frame + header_len + (masked ? 4 : 0), (size_t)payload_len);
-      if (masked) {
-        for (i = 0; i < (size_t)payload_len; ++i) {
-          (*message)[i] ^= mask[i % 4];
-        }
-      }
-      (*message)[payload_len] = '\0';
-      *message_len = (size_t)payload_len;
-      ws_buffer_consume(app->signal_recv_buffer, &app->signal_recv_buffer_len,
-                        header_len + (masked ? 4 : 0) + (size_t)payload_len);
-      return 0;
-    }
-
-need_more_data:
-    recv_data = NULL;
-    recv_len = 0;
-    rc = coro_socket_recv(app->signal_socket, &recv_data, &recv_len);
-    if (rc == TURBO_ETIMEDOUT && app->signal_recv_buffer_len == 0) {
-      return rc;
-    }
-    if (rc != 0) {
-      if (recv_data) {
-        coro_socket_free_recv(recv_data);
-      }
-      if (rc == TURBO_ETIMEDOUT) {
-        tracef_app(app, "ws_recv_message timeout with partial buffer_len=%zu",
-                   app->signal_recv_buffer_len);
-        continue;
-      }
-      return rc;
-    }
-    if (!recv_data || recv_len == 0) {
-      if (app->signal_recv_buffer_len == 0) {
-        return 0;
-      }
-      tracef_app(app, "ws_recv_message empty recv with partial buffer_len=%zu",
-                 app->signal_recv_buffer_len);
-      continue;
-    }
-    rc = ws_buffer_append(&app->signal_recv_buffer, &app->signal_recv_buffer_len,
-                          &app->signal_recv_buffer_cap, recv_data, recv_len);
-    tracef_app(app, "ws_recv_message append recv_len=%zu buffer_len=%zu rc=%d", recv_len,
-               app->signal_recv_buffer_len, rc);
-    coro_socket_free_recv(recv_data);
-    if (rc != 0) {
-      return rc;
-    }
-    if (app->signal_recv_buffer_len > 1024 * 1024) {
-      return TURBO_EMSGSIZE;
-    }
-  }
 }
 
 static void copy_json_string(json_value_t *value, char *buffer, size_t buffer_size) {
@@ -843,7 +374,8 @@ static int flush_signal_outbox(app_state_t *app) {
     }
 
     TLOG_INFO("Sending signaling message: {}", msg->json);
-    if (app->signal_socket && ws_send_text(app->signal_socket, msg->json) != 0) {
+    if (app->signal_socket &&
+        coro_socket_send_ws_text(app->signal_socket, msg->json, strlen(msg->json)) != 0) {
       free(msg->json);
       free(msg);
       return -1;
@@ -1724,6 +1256,7 @@ static void signal_task(coro_t *co, void *arg) {
   app_state_t *app = (app_state_t *)arg;
   char *data = NULL;
   size_t len = 0;
+  int is_text = 0;
   int rc;
   (void)co;
 
@@ -1735,18 +1268,10 @@ static void signal_task(coro_t *co, void *arg) {
   }
 
   coro_socket_set_timeout(app->signal_socket, 5000);
-  rc = coro_socket_connect(app->signal_socket, app->signal_host, app->signal_port);
+  rc = coro_socket_connect_ws_ex(app->signal_socket, app->signal_host, app->signal_port,
+                                 app->signal_path, app->use_tls, "webrtc-signaling");
   if (rc != 0) {
-    TLOG_ERROR("Failed to connect to signaling server: {} ({})", rc, turbo_strerror(rc));
-    coro_socket_destroy(app->signal_socket);
-    app->signal_socket = NULL;
-    app_request_stop(app);
-    goto done;
-  }
-
-  rc = ws_client_handshake(app, app->signal_host, app->signal_path, "webrtc-signaling");
-  if (rc != 0) {
-    TLOG_ERROR("Failed WebSocket handshake with signaling server: {} ({})", rc,
+    TLOG_ERROR("Failed to connect to signaling WebSocket: {} ({})", rc,
                turbo_strerror(rc));
     coro_socket_destroy(app->signal_socket);
     app->signal_socket = NULL;
@@ -1785,43 +1310,51 @@ static void signal_task(coro_t *co, void *arg) {
 
     data = NULL;
     len = 0;
-    rc = ws_recv_message(app, &data, &len);
+    is_text = 0;
+    rc = coro_socket_recv_ws(app->signal_socket, &data, &len, &is_text);
     if (!app->running) {
       if (data) {
-        free(data);
+        coro_socket_free_recv(data);
       }
       break;
     }
 
     if (rc == TURBO_ETIMEDOUT) {
+      if (data) {
+        coro_socket_free_recv(data);
+      }
       continue;
     }
     if (rc != 0) {
       TLOG_ERROR("Signaling socket receive failed: {} ({})", rc, turbo_strerror(rc));
       if (data) {
-        free(data);
+        coro_socket_free_recv(data);
       }
       break;
     }
 
     if (!data || len == 0) {
+      if (data) {
+        coro_socket_free_recv(data);
+      }
       continue;
     }
 
+    if (!is_text) {
+      TLOG_ERROR("Signaling server sent a non-text WebSocket message");
+      coro_socket_free_recv(data);
+      break;
+    }
+
     process_signaling_message(app, data, len);
-    free(data);
+    coro_socket_free_recv(data);
   }
 
   app->ws_connected = 0;
   if (app->signal_socket) {
-    ws_send_frame(app->signal_socket, 0x8u, "", 0, 1);
     coro_socket_destroy(app->signal_socket);
     app->signal_socket = NULL;
   }
-  free(app->signal_recv_buffer);
-  app->signal_recv_buffer = NULL;
-  app->signal_recv_buffer_len = 0;
-  app->signal_recv_buffer_cap = 0;
 
   app_request_stop(app);
 
@@ -1963,10 +1496,6 @@ int main(int argc, char **argv) {
     coro_socket_destroy(app.signal_socket);
     app.signal_socket = NULL;
   }
-  free(app.signal_recv_buffer);
-  app.signal_recv_buffer = NULL;
-  app.signal_recv_buffer_len = 0;
-  app.signal_recv_buffer_cap = 0;
   free_signal_outbox(&app);
   if (app.dc_peer) {
     turbo_dc_peer_destroy(app.dc_peer);

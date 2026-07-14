@@ -6,6 +6,12 @@
     "stb",
     "libyuv",
     "openssl",
+    {
+      "name": "libsrtp",
+      "features": [
+        "openssl"
+      ]
+    },
     "roaring",
     "usrsctp"
   ],

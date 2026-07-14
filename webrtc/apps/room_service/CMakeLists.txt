@@ -46,7 +46,7 @@ set(ROOM_SERVICE_LIBS
     TurboRTC::Conference
     TurboHttp::HttpClient
     TurboHttp::Iris
-    TurboNet::Utils)
+    TurboUtils::Core)
 
 if(ENABLE_RTC_SCXML_WORKFLOW)
   list(APPEND ROOM_SERVICE_LIBS TurboRTC::RtcSessionWorkflow)
@@ -99,12 +99,12 @@ target_include_directories(test_room_service_app
 target_link_libraries(test_room_service_app
   PRIVATE
     TurboRTC::Conference
-    TurboRTC::MediaEngine
+    TurboMedia::RTC
     TurboRTC::Recorder
     TurboHttp::HttpClient
     TurboHttp::Iris
-    TurboNet::Utils
-    TurboNet::TinyTest
+    TurboUtils::Core
+    TurboUtils::TinyTest
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>
 )

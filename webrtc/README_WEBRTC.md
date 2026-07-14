@@ -182,7 +182,7 @@ WebRTC Peer
   ├── turbo_datachannel (DataChannel)
   │     ├── SCTP (传输层)
   │     ├── DTLS (加密层)
-  │     └── turbo_netcore (网络核心)
+  │     └── TurboNet::CoroNet (TCP/UDP 与协程事件循环)
   │
   ├── turbo_media (音视频)
   │     ├── turbo_capture (采集)

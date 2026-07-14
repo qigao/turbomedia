@@ -2,7 +2,7 @@
 
 ## Overview
 
-TurboNet's WebRTC DataChannel implementation provides peer-to-peer data communication with multiple transport options. The architecture follows a layered design with clear separation of concerns.
+TurboMedia's WebRTC DataChannel implementation provides peer-to-peer data communication over TurboNet::CoroNet transports. The architecture follows a layered design with clear separation of concerns.
 
 ## Layer Stack
 
@@ -78,7 +78,8 @@ struct turbo_dc_peer_s {
     turbo_dc_context_t *ctx;           // Parent context
     struct dtls_session_s *dtls;       // DTLS session
     struct socket *sctp_socket;        // SCTP socket (usrsctp)
-    turbo_netcore_element_t *transport; // Underlying transport (TCP/UDP/KCP)
+    void *transport;                    // CoroNet stream/datagram or external transport
+    const dc_transport_ops_t *transport_ops;
 
     turbo_dc_state_t state;            // Connection state
 
@@ -101,8 +102,9 @@ NEW → CONNECTING → CONNECTED → DISCONNECTING → CLOSED
 ```
 
 **Transport Integration:**
-- UDP/TCP/KCP: Direct netcore element
-- ICE: Feeds data from ICE agent via `turbo_dc_peer_feed_ice_data()`
+- UDP/TCP: CoroNet `turbo_datagram_t` / `turbo_stream_t`
+- ICE: Externally owned datagram transport attached with `turbo_dc_peer_set_external_transport()`
+- KCP: rejected until the installed CoroNet package exposes the required transport API
 
 ---
 
@@ -319,8 +321,9 @@ usrsctp_close(peer->sctp_socket);
 // 3. Destroy DTLS session
 dtls_session_destroy(peer->dtls);
 
-// 4. Close transport
-turbo_netcore_close(peer->transport);
+// 4. Close and destroy the selected transport strategy
+peer->transport_ops->close(peer);
+peer->transport_ops->destroy(peer);
 
 // 5. Free peer
 free(peer);
@@ -330,14 +333,14 @@ free(peer);
 
 ## Threading Model
 
-**Single-threaded by design:**
-- All callbacks run in the same thread as netcore loop
-- SCTP timer must be called periodically from main thread
-- No locks needed
+**Transport ownership:**
+- Direct TCP/UDP operations are posted to the context's dedicated CoroNet thread
+- CoroNet drives DTLS timers and transport callbacks on that owner thread
+- ICE remains externally owned and feeds datagrams through the transport adapter
 
 **Multi-threading support:**
-- User must synchronize if calling API from multiple threads
-- Recommended: Use message queue to main thread
+- Public lifetime calls synchronize transport work through `coro_post()`
+- Callbacks must not destroy their owning peer reentrantly
 
 ---
 

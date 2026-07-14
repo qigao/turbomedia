@@ -1,4 +1,5 @@
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 set(TURBO_MEDIA_TURBONET_HINTS)
 if(TURBONET_ROOT)
@@ -63,7 +64,8 @@ target_include_directories(
 
 target_link_libraries(
   turbo_media_rtsp
-  PUBLIC TurboNet::CoroNet TurboNet::Utils)
+  PUBLIC TurboNet::CoroNet TurboUtils::Core
+  PRIVATE OpenSSL::Crypto)
 if(WIN32)
   target_link_libraries(turbo_media_rtsp PRIVATE ws2_32)
 endif()

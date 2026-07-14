@@ -1,5 +1,5 @@
 /**
- * turbo_datachannel.h - WebRTC Data Channel over netcore
+ * turbo_datachannel.h - WebRTC Data Channel over CoroNet
  *
  * Architecture:
  *   Application
@@ -10,12 +10,12 @@
  *       ↓
  *   DTLS (OpenSSL) - encryption
  *       ↓
- *   Transport: netcore (UDP/TCP/KCP) or ICE (NAT traversal)
+ *   Transport: CoroNet (UDP/TCP/KCP) or ICE (NAT traversal)
  *
  * Transport modes:
- * - UDP (default): Direct UDP via netcore
- * - TCP: Direct TCP via netcore
- * - KCP: Reliable UDP via netcore KCP
+ * - UDP (default): Direct UDP via CoroNet
+ * - TCP: Direct TCP via CoroNet
+ * - KCP: Reliable UDP via CoroNet KCP
  * - ICE: ICE agent for NAT traversal (requires signaling)
  */
 
@@ -50,9 +50,9 @@ typedef void (*turbo_dc_transport_data_cb)(void *user_data,
 
 /* Transport type */
 typedef enum {
-    TURBO_DC_TRANSPORT_UDP = 0,   /* Direct UDP via netcore (default) */
-    TURBO_DC_TRANSPORT_TCP,       /* Direct TCP via netcore */
-    TURBO_DC_TRANSPORT_KCP,       /* Reliable UDP via netcore KCP */
+    TURBO_DC_TRANSPORT_UDP = 0,   /* Direct UDP via CoroNet (default) */
+    TURBO_DC_TRANSPORT_TCP,       /* Direct TCP via CoroNet */
+    TURBO_DC_TRANSPORT_KCP,       /* Reliable UDP via CoroNet KCP */
     TURBO_DC_TRANSPORT_ICE        /* ICE for NAT traversal */
 } turbo_dc_transport_t;
 
