@@ -1,5 +1,9 @@
 function(turbo_media_add_webrtc_test name)
-  add_executable(${name} ${ARGN})
+  if(ANDROID AND NOT BUILD_TESTING)
+    add_executable(${name} EXCLUDE_FROM_ALL ${ARGN})
+  else()
+    add_executable(${name} ${ARGN})
+  endif()
   target_include_directories(
     ${name}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
@@ -12,7 +16,9 @@ function(turbo_media_add_webrtc_test name)
             TurboUtils::TinyTest
             TurboUtils::Core
             TurboUtils::Parser)
-  add_test(NAME ${name} COMMAND ${name})
+  if(NOT ANDROID OR BUILD_TESTING)
+    add_test(NAME ${name} COMMAND ${name})
+  endif()
   set_target_properties(
     ${name}
     PROPERTIES FOLDER "turbomedia/tests/webrtc"

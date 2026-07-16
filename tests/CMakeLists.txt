@@ -20,6 +20,10 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   if(TEST_NAME STREQUAL "test_mobile_optimizer" AND NOT ANDROID)
     continue()
   endif()
+
+  if(TEST_NAME STREQUAL "test_android_capture" AND NOT ANDROID)
+    continue()
+  endif()
   
   # 根据测试类型确定链接库
   set(TEST_LINK_LIBS TurboUtils::TinyTest)
@@ -36,6 +40,8 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     endif()
   elseif(TEST_NAME STREQUAL "test_crypto")
     list(APPEND TEST_LINK_LIBS TurboMedia::Crypto)
+  elseif(TEST_NAME STREQUAL "test_mobile_optimizer")
+    list(APPEND TEST_LINK_LIBS turbo_media_android)
   elseif(TEST_NAME STREQUAL "test_webrtc")
     if(NOT TURBO_MEDIA_ENABLE_WEBRTC)
       continue()
@@ -58,7 +64,11 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   
   # 创建可执行目标
   set(TEST_TARGET_NAME turbo_media_${TEST_NAME})
-  add_executable(${TEST_TARGET_NAME} ${TEST_SOURCE} ${TEST_HELPER_SOURCES})
+  if(ANDROID AND NOT BUILD_TESTING)
+    add_executable(${TEST_TARGET_NAME} EXCLUDE_FROM_ALL ${TEST_SOURCE} ${TEST_HELPER_SOURCES})
+  else()
+    add_executable(${TEST_TARGET_NAME} ${TEST_SOURCE} ${TEST_HELPER_SOURCES})
+  endif()
   
   # 链接库
   target_link_libraries(${TEST_TARGET_NAME} PRIVATE ${TEST_LINK_LIBS})
@@ -69,11 +79,13 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
   
-  # 添加测试
-  add_test(NAME ${TEST_TARGET_NAME} COMMAND ${TEST_TARGET_NAME})
-  set_tests_properties(${TEST_TARGET_NAME} PROPERTIES 
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
+  # Android 交叉编译目标由 tools/android-test.ps1 在设备上运行。
+  if(NOT ANDROID OR BUILD_TESTING)
+    add_test(NAME ${TEST_TARGET_NAME} COMMAND ${TEST_TARGET_NAME})
+    set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+  endif()
   
   message(STATUS "Added test: ${TEST_TARGET_NAME}")
 endforeach()

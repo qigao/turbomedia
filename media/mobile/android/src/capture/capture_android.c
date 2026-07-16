@@ -156,6 +156,11 @@ int turbo_capture_list_screens(turbo_capture_device_t *devices, int max_count) {
     return 1;
 }
 
+int turbo_capture_list_gpu_devices(turbo_capture_device_t *devices, int max_count) {
+    if (!devices || max_count <= 0) return TURBO_CAPTURE_ERR_NOMEM;
+    return 0;
+}
+
 turbo_capture_t *turbo_audio_capture_create(const char *device_id,
                                             const turbo_audio_capture_config_t *config) {
     (void)device_id;
@@ -263,6 +268,49 @@ void turbo_screen_capture_set_callback(turbo_capture_t *capture,
     if (!capture || capture->type != TURBO_CAPTURE_TYPE_SCREEN) return;
     capture->video_cb = cb;
     capture->user_data = user_data;
+}
+
+int turbo_video_capture_get_control_range(turbo_capture_t *capture,
+                                          turbo_camera_control_t control,
+                                          turbo_camera_control_range_t *range) {
+    (void)capture;
+    (void)control;
+    if (!range) return TURBO_CAPTURE_ERR_DEVICE;
+    memset(range, 0, sizeof(*range));
+    return TURBO_CAPTURE_ERR_UNSUPPORTED;
+}
+
+int turbo_video_capture_set_control(turbo_capture_t *capture,
+                                    turbo_camera_control_t control,
+                                    int value) {
+    (void)capture;
+    (void)control;
+    (void)value;
+    return TURBO_CAPTURE_ERR_UNSUPPORTED;
+}
+
+int turbo_video_capture_get_control(turbo_capture_t *capture,
+                                    turbo_camera_control_t control,
+                                    int *value) {
+    (void)capture;
+    (void)control;
+    if (value) *value = 0;
+    return TURBO_CAPTURE_ERR_UNSUPPORTED;
+}
+
+int turbo_video_capture_set_crop(turbo_capture_t *capture,
+                                 const turbo_video_crop_t *crop) {
+    (void)capture;
+    (void)crop;
+    return TURBO_CAPTURE_ERR_UNSUPPORTED;
+}
+
+int turbo_video_capture_get_crop(turbo_capture_t *capture,
+                                 turbo_video_crop_t *crop) {
+    (void)capture;
+    if (!crop) return TURBO_CAPTURE_ERR_DEVICE;
+    memset(crop, 0, sizeof(*crop));
+    return TURBO_CAPTURE_ERR_UNSUPPORTED;
 }
 
 int turbo_capture_start(turbo_capture_t *capture) {

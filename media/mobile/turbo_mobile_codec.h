@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "turbo_export.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,22 +45,22 @@ struct turbo_mobile_codec_s {
     void (*destroy)(turbo_mobile_codec_t *codec);
 };
 
-turbo_mobile_codec_t *turbo_mobile_codec_android_hw_h264_create(bool is_encoder,
-                                                                int width,
-                                                                int height,
-                                                                int bitrate);
+CXX_C_API turbo_mobile_codec_t *turbo_mobile_codec_android_hw_h264_create(bool is_encoder,
+                                                                          int width,
+                                                                          int height,
+                                                                          int bitrate);
 
-turbo_mobile_codec_t *turbo_mobile_codec_ios_hw_h264_create(bool is_encoder,
-                                                            int width,
-                                                            int height,
-                                                            int bitrate,
-                                                            int fps);
+CXX_C_API turbo_mobile_codec_t *turbo_mobile_codec_ios_hw_h264_create(bool is_encoder,
+                                                                      int width,
+                                                                      int height,
+                                                                      int bitrate,
+                                                                      int fps);
 
-turbo_mobile_codec_t *turbo_mobile_codec_ios_hw_hevc_create(bool is_encoder,
-                                                            int width,
-                                                            int height,
-                                                            int bitrate,
-                                                            int fps);
+CXX_C_API turbo_mobile_codec_t *turbo_mobile_codec_ios_hw_hevc_create(bool is_encoder,
+                                                                      int width,
+                                                                      int height,
+                                                                      int bitrate,
+                                                                      int fps);
 
 #ifdef __cplusplus
 }

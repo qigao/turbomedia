@@ -48,20 +48,13 @@ if(TURBO_MEDIA_ENABLE_WEBRTC)
     message(FATAL_ERROR
             "TURBO_MEDIA_ENABLE_WEBRTC requires a TurboHttp package exporting TurboHttp::Iris")
   endif()
-  find_path(
-    TURBO_MEDIA_IRIS_INCLUDE_DIR
-    NAMES iris_app.h
-    HINTS ${TURBO_MEDIA_TURBOHTTP_HINTS}
-          "C:/projects/cpp/TurboHTTP/iris/include"
-    PATH_SUFFIXES include include/iris iris/include
-    REQUIRED)
 endif()
 
 find_path(MINIAUDIO_INCLUDE_DIRS NAMES miniaudio.h REQUIRED)
 find_path(Stb_INCLUDE_DIR NAMES stb_sprintf.h stb_image_write.h REQUIRED)
 find_package(libyuv CONFIG REQUIRED)
 
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT ANDROID)
   find_package(Threads REQUIRED)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)

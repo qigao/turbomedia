@@ -7,6 +7,7 @@
 #include <android/log.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define LOG_TAG "MobileOpt"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -53,6 +54,21 @@ static mobile_optimizer_t g_optimizer = {
     .enable_hardware_codec = true,
     .enable_simulcast = true
 };
+
+static int clamp_percent(int value) {
+    if (value < 0) return 0;
+    if (value > 100) return 100;
+    return value;
+}
+
+static network_type_t parse_network_type(const char *type) {
+    if (!type || !type[0]) return NETWORK_UNKNOWN;
+    if (strcasecmp(type, "wifi") == 0) return NETWORK_WIFI;
+    if (strcasecmp(type, "4g") == 0 || strcasecmp(type, "lte") == 0) return NETWORK_4G;
+    if (strcasecmp(type, "3g") == 0) return NETWORK_3G;
+    if (strcasecmp(type, "2g") == 0) return NETWORK_2G;
+    return NETWORK_UNKNOWN;
+}
 
 static void update_optimization_settings(mobile_optimizer_t* opt) {
     // Determine power mode
@@ -129,25 +145,14 @@ static void update_optimization_settings(mobile_optimizer_t* opt) {
 }
 
 void turbo_mobile_optimizer_update_battery(int level, bool charging) {
-    g_optimizer.battery_level = level;
+    g_optimizer.battery_level = clamp_percent(level);
     g_optimizer.is_charging = charging;
     update_optimization_settings(&g_optimizer);
 }
 
 void turbo_mobile_optimizer_update_network(const char* type, int signal_strength) {
-    if (strcmp(type, "WIFI") == 0) {
-        g_optimizer.network_type = NETWORK_WIFI;
-    } else if (strcmp(type, "4G") == 0 || strcmp(type, "LTE") == 0) {
-        g_optimizer.network_type = NETWORK_4G;
-    } else if (strcmp(type, "3G") == 0) {
-        g_optimizer.network_type = NETWORK_3G;
-    } else if (strcmp(type, "2G") == 0) {
-        g_optimizer.network_type = NETWORK_2G;
-    } else {
-        g_optimizer.network_type = NETWORK_UNKNOWN;
-    }
-    
-    g_optimizer.signal_strength = signal_strength;
+    g_optimizer.network_type = parse_network_type(type);
+    g_optimizer.signal_strength = clamp_percent(signal_strength);
     update_optimization_settings(&g_optimizer);
 }
 

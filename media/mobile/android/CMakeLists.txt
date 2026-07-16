@@ -8,10 +8,6 @@ set(TURBO_MEDIA_ANDROID_NATIVE_SOURCES
     ${TURBO_MEDIA_MOBILE_ROOT}/turbo_mobile_codec.h
     ${TURBO_MEDIA_MOBILE_ROOT}/turbo_mobile.h
     ${TURBO_MEDIA_ANDROID_ROOT}/src/jni/turbo_media_jni.c
-    ${TURBO_MEDIA_ANDROID_ROOT}/src/capture/capture_android.c
-    ${TURBO_MEDIA_ANDROID_ROOT}/src/capture/capture_video_android.c
-    ${TURBO_MEDIA_ANDROID_ROOT}/src/capture/capture_audio_android.c
-    ${TURBO_MEDIA_ANDROID_ROOT}/src/capture/capture_screen_android.c
     ${TURBO_MEDIA_ANDROID_ROOT}/src/codec/hardware_codec_android.c
     ${TURBO_MEDIA_ANDROID_ROOT}/src/mobile/mobile_optimizations.c
     ${TURBO_MEDIA_ANDROID_ROOT}/src/mobile/battery_monitor.c
@@ -39,23 +35,26 @@ if(ANDROID)
   add_library(
     turbo_media_android
     SHARED
-    ${TURBO_MEDIA_ROOT}/playback/miniaudio_impl.c
     ${TURBO_MEDIA_ANDROID_NATIVE_SOURCES})
+  add_library(TurboMedia::Android ALIAS turbo_media_android)
 
   target_include_directories(
     turbo_media_android
-    PUBLIC ${TURBO_MEDIA_MOBILE_ROOT}
+    PUBLIC $<BUILD_INTERFACE:${TURBO_MEDIA_MOBILE_ROOT}>
+           $<BUILD_INTERFACE:${TURBO_MEDIA_ROOT}/include>
+           $<INSTALL_INTERFACE:include>
     PRIVATE ${TURBO_MEDIA_ANDROID_ROOT}/src
             ${TURBO_MEDIA_ROOT}/playback
             ${MINIAUDIO_INCLUDE_DIRS})
 
-  target_compile_definitions(turbo_media_android PRIVATE TURBO_MEDIA_ANDROID=1)
+  target_compile_definitions(turbo_media_android PRIVATE TURBO_MEDIA_ANDROID=1 SHARED_CXX)
   target_compile_options(
     turbo_media_android
     PRIVATE -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden)
 
   target_link_libraries(
     turbo_media_android
+    PUBLIC TurboMedia::Device
     PRIVATE ${log-lib}
             ${android-lib}
             ${OpenSLES-lib}
@@ -66,6 +65,7 @@ if(ANDROID)
   set_target_properties(
     turbo_media_android
     PROPERTIES FOLDER "turbomedia/mobile"
+               EXPORT_NAME Android
                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/libs/${ANDROID_ABI}")
 else()
   project(TurboMediaAndroidStaging NONE)

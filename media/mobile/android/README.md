@@ -231,32 +231,36 @@ engine.setVideoFramerate(targetFps);
 ```java
 import com.turbonet.media.ScreenCapture;
 
-ScreenCapture screenCapture = new ScreenCapture();
+ScreenCapture screenCapture = new ScreenCapture(this);
+screenCapture.setCallback(new ScreenCapture.ScreenCaptureCallback() {
+    @Override
+    public void onPermissionGranted() {
+        if (!screenCapture.start()) {
+            // Handle native/VirtualDisplay startup failure.
+        }
+    }
 
-// Request permission (shows system dialog)
-screenCapture.requestPermission(activity, REQUEST_CODE);
+    @Override public void onPermissionDenied() { }
+    @Override public void onStarted() { }
+    @Override public void onStopped() { }
+    @Override public void onError(String error) { }
+});
 
-// In onActivityResult:
+// Shows the system MediaProjection consent dialog.
+screenCapture.requestPermission(this);
+
 @Override
 protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-    if (requestCode == REQUEST_CODE && resultCode == RESULT_OK) {
-        screenCapture.initialize(resultCode, data);
-        
-        screenCapture.setFrameCallback(new ScreenCapture.FrameCallback() {
-            @Override
-            public void onFrame(byte[] data, int width, int height, long timestamp) {
-                // Encode and send
-            }
-        });
-        
-        screenCapture.start();
-    }
+    super.onActivityResult(requestCode, resultCode, data);
+    screenCapture.onActivityResult(requestCode, resultCode, data);
 }
 
-// Stop
 screenCapture.stop();
 screenCapture.destroy();
 ```
+
+`start()` must only be called after `onPermissionGranted()`. `destroy()` releases the
+VirtualDisplay, stops MediaProjection, and destroys the native ImageReader context.
 
 ## Architecture
 

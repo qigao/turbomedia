@@ -245,9 +245,9 @@ target_include_directories(
          $<INSTALL_INTERFACE:include>)
 target_sources(turbo_media_transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/network/transport_coronet.c)
 
-if(TARGET TurboHTTP::http_client)
+if(TARGET TurboHttp::HttpClient)
   target_sources(turbo_media_transport PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/network/transport_http.c)
-  target_link_libraries(turbo_media_transport PUBLIC TurboHTTP::http_client)
+  target_link_libraries(turbo_media_transport PUBLIC TurboHttp::HttpClient)
 endif()
 
 find_package(Threads QUIET)
@@ -331,8 +331,8 @@ if(TURBO_MEDIA_ENABLE_HLS)
             ${TURBO_MEDIA_HLS_SOURCES})
   target_include_directories(turbo_media_streamer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/streamer/hls)
   target_compile_definitions(turbo_media_streamer PUBLIC TURBO_MEDIA_HAS_HLS)
-  if(TARGET TurboHTTP::http_client)
-    target_link_libraries(turbo_media_streamer PRIVATE TurboHTTP::http_client)
+  if(TARGET TurboHttp::HttpClient)
+    target_link_libraries(turbo_media_streamer PRIVATE TurboHttp::HttpClient)
   endif()
 endif()
 
@@ -345,8 +345,8 @@ if(TURBO_MEDIA_ENABLE_DASH)
             ${TURBO_MEDIA_DASH_SOURCES})
   target_include_directories(turbo_media_streamer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/streamer/dash)
   target_compile_definitions(turbo_media_streamer PUBLIC TURBO_MEDIA_HAS_DASH)
-  if(TARGET TurboHTTP::http_client)
-    target_link_libraries(turbo_media_streamer PRIVATE TurboHTTP::http_client)
+  if(TARGET TurboHttp::HttpClient)
+    target_link_libraries(turbo_media_streamer PRIVATE TurboHttp::HttpClient)
   endif()
 endif()
 
@@ -380,8 +380,33 @@ target_include_directories(turbo_media_device PRIVATE ${MINIAUDIO_INCLUDE_DIRS} 
 target_sources(
   turbo_media_device
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/media/playback/miniaudio_impl.c
-          ${CMAKE_CURRENT_SOURCE_DIR}/media/playback/turbo_playback.c
-          ${CMAKE_CURRENT_SOURCE_DIR}/media/capture/capture_audio_miniaudio.c)
+          ${CMAKE_CURRENT_SOURCE_DIR}/media/playback/turbo_playback.c)
+
+if(ANDROID)
+  target_sources(
+    turbo_media_device
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/media/mobile/android/src/capture/capture_android.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/media/mobile/android/src/capture/capture_video_android.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/media/mobile/android/src/capture/capture_audio_android.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/media/mobile/android/src/capture/capture_screen_android.c)
+  find_library(TURBO_MEDIA_ANDROID_LOG_LIBRARY log REQUIRED)
+  find_library(TURBO_MEDIA_ANDROID_LIBRARY android REQUIRED)
+  find_library(TURBO_MEDIA_ANDROID_OPENSL_LIBRARY OpenSLES REQUIRED)
+  find_library(TURBO_MEDIA_ANDROID_MEDIA_LIBRARY mediandk REQUIRED)
+  find_library(TURBO_MEDIA_ANDROID_CAMERA_LIBRARY camera2ndk REQUIRED)
+  target_link_libraries(
+    turbo_media_device
+    PRIVATE ${TURBO_MEDIA_ANDROID_LOG_LIBRARY}
+            ${TURBO_MEDIA_ANDROID_LIBRARY}
+            ${TURBO_MEDIA_ANDROID_OPENSL_LIBRARY}
+            ${TURBO_MEDIA_ANDROID_MEDIA_LIBRARY}
+            ${TURBO_MEDIA_ANDROID_CAMERA_LIBRARY}
+            ${CMAKE_DL_LIBS})
+else()
+  target_sources(
+    turbo_media_device
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/media/capture/capture_audio_miniaudio.c)
+endif()
 
 if(WIN32)
   target_sources(
@@ -419,7 +444,7 @@ elseif(APPLE)
             ${COREGRAPHICS_FRAMEWORK}
             ${COREVIDEO_FRAMEWORK}
             ${IOSURFACE_FRAMEWORK})
-else()
+elseif(NOT ANDROID)
   target_sources(
     turbo_media_device
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/media/capture/capture_linux.c

@@ -6,6 +6,10 @@ if(NOT TARGET TurboUtils::Core)
   find_dependency(TurboUtils CONFIG)
 endif()
 
+if(@TurboHttp_FOUND@ AND NOT TARGET TurboHttp::HttpClient)
+  find_dependency(TurboHttp CONFIG)
+endif()
+
 if(@TURBO_MEDIA_ENABLE_WEBRTC@ AND NOT TARGET OpenSSL::Crypto)
   find_dependency(OpenSSL)
 endif()

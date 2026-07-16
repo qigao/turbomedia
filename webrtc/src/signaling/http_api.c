@@ -4,9 +4,9 @@
  */
 
 #include "http_api.h"
-#include <iris_app.h>
-#include <server.h>
-#include <router.h>
+#include <iris/iris_app.h>
+#include <iris/server.h>
+#include <iris/router.h>
 #include <platform.h>
 #include <tlog.h>
 #include <turbo_coro_context.h>

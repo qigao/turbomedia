@@ -24,6 +24,7 @@ extern void android_screen_destroy(android_screen_ctx_t *ctx);
 extern int android_screen_start(android_screen_ctx_t *ctx, jobject media_projection);
 extern int android_screen_stop(android_screen_ctx_t *ctx);
 extern ANativeWindow *android_screen_get_surface(android_screen_ctx_t *ctx);
+extern uint64_t android_screen_get_frame_count(android_screen_ctx_t *ctx);
 
 static jlong ptr_to_jlong(void *ptr) {
     return (jlong)(uintptr_t)ptr;
@@ -99,6 +100,17 @@ Java_com_turbonet_media_ScreenCapture_nativeStop(JNIEnv *env,
     if (!screen) return JNI_FALSE;
 
     return android_screen_stop(screen) == 0 ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_turbonet_media_ScreenCapture_nativeGetFrameCount(JNIEnv *env,
+                                                          jobject thiz,
+                                                          jlong handle) {
+    (void)env;
+    (void)thiz;
+
+    android_screen_ctx_t *screen = (android_screen_ctx_t *)jlong_to_ptr(handle);
+    return (jlong)android_screen_get_frame_count(screen);
 }
 
 JNIEXPORT void JNICALL

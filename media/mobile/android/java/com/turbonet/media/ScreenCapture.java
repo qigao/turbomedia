@@ -17,7 +17,7 @@ import android.view.Surface;
  */
 public class ScreenCapture {
     static {
-        System.loadLibrary("turbonet_media_android");
+        System.loadLibrary("turbo_media_android");
     }
     
     private static final int REQUEST_CODE_SCREEN_CAPTURE = 1001;
@@ -157,7 +157,14 @@ public class ScreenCapture {
             }
             
             // Notify native
-            nativeStart(nativeHandle);
+            if (!nativeStart(nativeHandle)) {
+                virtualDisplay.release();
+                virtualDisplay = null;
+                if (callback != null) {
+                    callback.onError("Failed to start native screen capture");
+                }
+                return false;
+            }
             
             if (callback != null) {
                 callback.onStarted();
@@ -177,21 +184,25 @@ public class ScreenCapture {
      * Stop screen capture
      */
     public void stop() {
-        if (virtualDisplay != null) {
-            virtualDisplay.release();
-            virtualDisplay = null;
+        boolean wasActive = virtualDisplay != null || mediaProjection != null;
+        VirtualDisplay display = virtualDisplay;
+        MediaProjection projection = mediaProjection;
+        virtualDisplay = null;
+        mediaProjection = null;
+
+        if (display != null) {
+            display.release();
         }
         
-        if (mediaProjection != null) {
-            mediaProjection.stop();
-            mediaProjection = null;
+        if (projection != null) {
+            projection.stop();
         }
         
         if (nativeHandle != 0) {
             nativeStop(nativeHandle);
         }
         
-        if (callback != null) {
+        if (wasActive && callback != null) {
             callback.onStopped();
         }
     }
@@ -225,6 +236,10 @@ public class ScreenCapture {
     public int getHeight() {
         return height;
     }
+
+    long getCapturedFrameCountForTest() {
+        return nativeHandle != 0 ? nativeGetFrameCount(nativeHandle) : 0;
+    }
     
     @Override
     protected void finalize() throws Throwable {
@@ -238,6 +253,7 @@ public class ScreenCapture {
     private native Surface nativeGetSurface(long handle);
     private native boolean nativeStart(long handle);
     private native boolean nativeStop(long handle);
+    private native long nativeGetFrameCount(long handle);
     
     // Static helper for request code
     public static int getRequestCode() {

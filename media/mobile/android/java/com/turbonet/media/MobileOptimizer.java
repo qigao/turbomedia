@@ -14,7 +14,7 @@ import android.content.IntentFilter;
  */
 public class MobileOptimizer {
     static {
-        System.loadLibrary("turbonet_media_android");
+        System.loadLibrary("turbo_media_android");
     }
     
     public enum NetworkType {

@@ -92,8 +92,7 @@ target_include_directories(
   turbo_media_webrtc_signaling
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<INSTALL_INTERFACE:include>
-  PRIVATE ${TURBO_MEDIA_IRIS_INCLUDE_DIR}
-          ${Stb_INCLUDE_DIR})
+  PRIVATE ${Stb_INCLUDE_DIR})
 target_link_libraries(
   turbo_media_webrtc_signaling
   PUBLIC TurboNet::CoroNet TurboHttp::Iris

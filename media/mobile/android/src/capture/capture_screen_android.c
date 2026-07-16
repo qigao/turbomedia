@@ -6,8 +6,12 @@
  */
 #include <android/log.h>
 #include <jni.h>
+#include <libyuv/convert.h>
+#include <limits.h>
 #include <media/NdkImageReader.h>
 #include <media/NdkImage.h>
+#include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -22,6 +26,7 @@
 typedef struct android_screen_ctx_t {
     AImageReader *image_reader;
     ANativeWindow *image_reader_window;
+    AImageReader_ImageListener image_listener;
     
     /* Configuration */
     int width;
@@ -30,6 +35,7 @@ typedef struct android_screen_ctx_t {
     
     /* State */
     int capturing;
+    atomic_uint_fast64_t frame_count;
     
     /* Java objects (passed from JNI) */
     jobject media_projection;  /* MediaProjection instance */
@@ -58,78 +64,102 @@ static void on_image_available(void *context, AImageReader *reader) {
     }
     
     /* Get image properties */
-    int32_t format;
-    AImage_getFormat(image, &format);
-    
+    int32_t format = 0;
     int32_t width, height;
-    AImage_getWidth(image, &width);
-    AImage_getHeight(image, &height);
-    
-    int64_t timestamp;
-    AImage_getTimestamp(image, &timestamp);
+    int64_t timestamp = 0;
+
+    if (AImage_getFormat(image, &format) != AMEDIA_OK ||
+        AImage_getWidth(image, &width) != AMEDIA_OK ||
+        AImage_getHeight(image, &height) != AMEDIA_OK ||
+        AImage_getTimestamp(image, &timestamp) != AMEDIA_OK ||
+        format != AIMAGE_FORMAT_RGBA_8888 || width <= 0 || height <= 0) {
+        LOGE("Invalid screen image metadata");
+        AImage_delete(image);
+        return;
+    }
     
     /* Get RGBA plane (screen capture is typically RGBA) */
     uint8_t *rgba_data = NULL;
     int rgba_len = 0;
-    AImage_getPlaneData(image, 0, &rgba_data, &rgba_len);
-    
-    /* Convert RGBA to I420 for encoding */
-    size_t i420_size = width * height * 3 / 2;
+    int32_t rgba_stride = 0;
+    int32_t rgba_pixel_stride = 0;
+    if (width > INT_MAX / 4) {
+        LOGE("Screen frame width exceeds RGBA stride range");
+        AImage_delete(image);
+        return;
+    }
+
+    if (AImage_getPlaneData(image, 0, &rgba_data, &rgba_len) != AMEDIA_OK ||
+        AImage_getPlaneRowStride(image, 0, &rgba_stride) != AMEDIA_OK ||
+        AImage_getPlanePixelStride(image, 0, &rgba_pixel_stride) != AMEDIA_OK ||
+        !rgba_data || rgba_len < 0 || rgba_stride < width * 4 || rgba_pixel_stride != 4) {
+        LOGE("Invalid RGBA screen image plane");
+        AImage_delete(image);
+        return;
+    }
+
+    size_t rgba_row_tail = (size_t)width * 4u;
+    size_t prior_rows = (size_t)(height - 1);
+    if ((prior_rows > 0u &&
+         (size_t)rgba_stride > (SIZE_MAX - rgba_row_tail) / prior_rows) ||
+        (size_t)width > SIZE_MAX / (size_t)height) {
+        LOGE("Screen frame dimensions exceed image buffer bounds");
+        AImage_delete(image);
+        return;
+    }
+
+    size_t required_rgba_size = (size_t)rgba_stride * prior_rows + rgba_row_tail;
+    if ((size_t)rgba_len < required_rgba_size) {
+        LOGE("RGBA screen image plane is smaller than its declared strides");
+        AImage_delete(image);
+        return;
+    }
+
+    size_t y_size = (size_t)width * (size_t)height;
+    size_t uv_width = ((size_t)width + 1u) / 2u;
+    size_t uv_height = ((size_t)height + 1u) / 2u;
+    size_t uv_size = uv_width * uv_height;
+    if (uv_size > (SIZE_MAX - y_size) / 2u) {
+        LOGE("Screen frame dimensions overflow I420 buffer size");
+        AImage_delete(image);
+        return;
+    }
+
+    size_t i420_size = y_size + 2u * uv_size;
     uint8_t *i420_data = (uint8_t *)malloc(i420_size);
-    
-    if (i420_data && rgba_data) {
-        /* Simple RGBA to I420 conversion */
+    if (i420_data) {
         uint8_t *y = i420_data;
-        uint8_t *u = y + width * height;
-        uint8_t *v = u + (width * height / 4);
-        
-        for (int i = 0; i < height; i++) {
-            for (int j = 0; j < width; j++) {
-                int rgba_idx = (i * width + j) * 4;
-                int y_idx = i * width + j;
-                
-                uint8_t r = rgba_data[rgba_idx];
-                uint8_t g = rgba_data[rgba_idx + 1];
-                uint8_t b = rgba_data[rgba_idx + 2];
-                
-                /* RGB to Y */
-                y[y_idx] = (uint8_t)((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                
-                /* Subsample for U and V */
-                if (i % 2 == 0 && j % 2 == 0) {
-                    int uv_idx = (i / 2) * (width / 2) + (j / 2);
-                    
-                    /* RGB to U */
-                    u[uv_idx] = (uint8_t)((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                    
-                    /* RGB to V */
-                    v[uv_idx] = (uint8_t)((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                }
+        uint8_t *u = y + y_size;
+        uint8_t *v = u + uv_size;
+
+        int convert_result = ABGRToI420(rgba_data, rgba_stride,
+                                        y, width,
+                                        u, (int)uv_width,
+                                        v, (int)uv_width,
+                                        width, height);
+        if (convert_result == 0) {
+            atomic_fetch_add_explicit(&ctx->frame_count, 1u, memory_order_relaxed);
+            if (ctx->on_frame) {
+                ctx->on_frame(ctx->user_data, i420_data, i420_size,
+                              width, height, timestamp / 1000);  /* ns to us */
             }
+        } else {
+            LOGE("Failed to convert screen frame to I420: %d", convert_result);
         }
-        
-        /* Call user callback */
-        if (ctx->on_frame) {
-            ctx->on_frame(ctx->user_data, i420_data, i420_size,
-                         width, height, timestamp / 1000);  /* ns to us */
-        }
-        
+
         free(i420_data);
     }
     
     AImage_delete(image);
 }
 
-static AImageReader_ImageListener image_listener = {
-    .context = NULL,
-    .onImageAvailable = on_image_available,
-};
-
 /* =============================================================================
  * Screen Capture Management
  * ============================================================================= */
 
 android_screen_ctx_t *android_screen_create(int width, int height, int framerate) {
+    if (width <= 0 || height <= 0 || framerate <= 0) return NULL;
+
     android_screen_ctx_t *ctx = (android_screen_ctx_t *)calloc(1, sizeof(android_screen_ctx_t));
     if (!ctx) return NULL;
     
@@ -137,6 +167,9 @@ android_screen_ctx_t *android_screen_create(int width, int height, int framerate
     ctx->height = height;
     ctx->framerate = framerate;
     ctx->capturing = 0;
+    atomic_init(&ctx->frame_count, 0u);
+    ctx->image_listener.context = ctx;
+    ctx->image_listener.onImageAvailable = on_image_available;
     
     /* Create image reader for RGBA format */
     media_status_t status = AImageReader_new(
@@ -153,11 +186,22 @@ android_screen_ctx_t *android_screen_create(int width, int height, int framerate
     }
     
     /* Set image listener */
-    image_listener.context = ctx;
-    AImageReader_setImageListener(ctx->image_reader, &image_listener);
+    status = AImageReader_setImageListener(ctx->image_reader, &ctx->image_listener);
+    if (status != AMEDIA_OK) {
+        LOGE("Failed to set screen image listener: %d", status);
+        AImageReader_delete(ctx->image_reader);
+        free(ctx);
+        return NULL;
+    }
     
     /* Get image reader window */
-    AImageReader_getWindow(ctx->image_reader, &ctx->image_reader_window);
+    status = AImageReader_getWindow(ctx->image_reader, &ctx->image_reader_window);
+    if (status != AMEDIA_OK || !ctx->image_reader_window) {
+        LOGE("Failed to get screen image reader surface: %d", status);
+        AImageReader_delete(ctx->image_reader);
+        free(ctx);
+        return NULL;
+    }
     
     LOGI("Screen capture created: %dx%d @ %dfps", width, height, framerate);
     
@@ -220,4 +264,8 @@ void android_screen_set_callback(android_screen_ctx_t *ctx,
 
 ANativeWindow *android_screen_get_surface(android_screen_ctx_t *ctx) {
     return ctx ? ctx->image_reader_window : NULL;
+}
+
+uint64_t android_screen_get_frame_count(android_screen_ctx_t *ctx) {
+    return ctx ? atomic_load_explicit(&ctx->frame_count, memory_order_relaxed) : 0u;
 }

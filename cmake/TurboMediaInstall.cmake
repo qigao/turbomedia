@@ -29,6 +29,7 @@ set(TURBO_MEDIA_COMPONENT_TARGETS
     turbo_media_transport
     turbo_media_streamer
     turbo_media_device
+    turbo_media_android
     turbo_media_player
     turbo_media_sdp
     turbo_media_datachannel
@@ -67,6 +68,13 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/network/include/turbo_transport.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/streamer/include/turbo_streamer.h"
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+if(TARGET turbo_media_android)
+  install(
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/media/mobile/turbo_mobile.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/media/mobile/turbo_mobile_codec.h"
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
 
 if(TARGET turbo_media_webrtc)
   install(
