@@ -87,16 +87,22 @@ static int vpx_ensure_packet_buf(vpx_encoder_ctx_t *ctx, int index, size_t neede
 
 static void *vpx_create_encoder_internal(const void *config, int is_vp9) {
     const turbo_video_codec_config_t *cfg = (const turbo_video_codec_config_t *)config;
-    if (!cfg) return NULL;
+    enum { VPX_MAX_FRAMERATE = 240 };
+    if (!cfg || cfg->width <= 0 || cfg->width > TURBO_VIDEO_MAX_WIDTH ||
+        cfg->height <= 0 || cfg->height > TURBO_VIDEO_MAX_HEIGHT ||
+        cfg->framerate <= 0 || cfg->framerate > VPX_MAX_FRAMERATE ||
+        cfg->bitrate < 0 || cfg->keyframe_interval < 0 || cfg->threads < 0) {
+        return NULL;
+    }
 
     vpx_encoder_ctx_t *ctx = (vpx_encoder_ctx_t *)calloc(1, sizeof(vpx_encoder_ctx_t));
     if (!ctx) return NULL;
 
     ctx->is_encoder_ctx = 1;
     ctx->is_vp9 = is_vp9;
-    ctx->width = cfg->width > 0 ? cfg->width : 640;
-    ctx->height = cfg->height > 0 ? cfg->height : 480;
-    ctx->framerate = cfg->framerate > 0 ? cfg->framerate : 30;
+    ctx->width = cfg->width;
+    ctx->height = cfg->height;
+    ctx->framerate = cfg->framerate;
     ctx->bitrate = cfg->bitrate > 0 ? cfg->bitrate : 1000000;
     ctx->keyframe_interval = cfg->keyframe_interval > 0 ? cfg->keyframe_interval : 60;
 

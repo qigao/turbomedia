@@ -34,16 +34,16 @@ int sip_uas_onoptions(struct sip_uas_transaction_t* t, const struct sip_message_
 
 	int i;
 	struct sip_param_t param;
-	const struct cstring_t* header;
+	const tstr_v* header;
 	
 	for (i = 0; i < sizeof(headers) / sizeof(headers[0]); i++)
 	{
 		header = sip_message_get_header_by_name(req, headers[i]);
 		if (!header) continue;
-		param.name.p = headers[i];
-		param.name.n = strlen(headers[i]);
-		param.value.p = header->p;
-		param.value.n = header->n;
+		param.name.data = headers[i];
+		param.name.len = strlen(headers[i]);
+		param.value.data = header->data;
+		param.value.len = header->len;
 		sip_params_push(&t->reply->headers, &param);
 	}
 

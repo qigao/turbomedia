@@ -1,13 +1,6 @@
 # Sanitizer configuration module
 # Supports: AddressSanitizer, UndefinedBehaviorSanitizer, ThreadSanitizer, LeakSanitizer, MemorySanitizer
 
-# Options for enabling sanitizers
-option(ENABLE_SANITIZER_ADDRESS "Enable AddressSanitizer" OFF)
-option(ENABLE_SANITIZER_UNDEFINED "Enable UndefinedBehaviorSanitizer" OFF)
-option(ENABLE_SANITIZER_LEAK "Enable LeakSanitizer" OFF)
-option(ENABLE_SANITIZER_THREAD "Enable ThreadSanitizer" OFF)
-option(ENABLE_SANITIZER_MEMORY "Enable MemorySanitizer (Clang only)" OFF)
-
 # Global sanitizer setup (applies to all targets)
 if(ENABLE_SANITIZER_ADDRESS OR ENABLE_SANITIZER_UNDEFINED OR ENABLE_SANITIZER_LEAK OR 
    ENABLE_SANITIZER_THREAD OR ENABLE_SANITIZER_MEMORY)
@@ -42,7 +35,7 @@ if(ENABLE_SANITIZER_ADDRESS OR ENABLE_SANITIZER_UNDEFINED OR ENABLE_SANITIZER_LE
 
     if(ENABLE_SANITIZER_UNDEFINED)
         if(MSVC)
-            message(WARNING "UndefinedBehaviorSanitizer is not supported by MSVC")
+            message(FATAL_ERROR "UndefinedBehaviorSanitizer is not supported by MSVC")
         else()
             list(APPEND SANITIZER_COMPILE_FLAGS -fsanitize=undefined -fno-omit-frame-pointer)
             list(APPEND SANITIZER_LINK_FLAGS -fsanitize=undefined)
@@ -55,7 +48,7 @@ if(ENABLE_SANITIZER_ADDRESS OR ENABLE_SANITIZER_UNDEFINED OR ENABLE_SANITIZER_LE
 
     if(ENABLE_SANITIZER_LEAK)
         if(MSVC)
-            message(WARNING "LeakSanitizer is not supported by MSVC")
+            message(FATAL_ERROR "LeakSanitizer is not supported by MSVC")
         else()
             list(APPEND SANITIZER_COMPILE_FLAGS -fsanitize=leak -fno-omit-frame-pointer)
             list(APPEND SANITIZER_LINK_FLAGS -fsanitize=leak)
@@ -64,7 +57,7 @@ if(ENABLE_SANITIZER_ADDRESS OR ENABLE_SANITIZER_UNDEFINED OR ENABLE_SANITIZER_LE
 
     if(ENABLE_SANITIZER_THREAD)
         if(MSVC)
-            message(WARNING "ThreadSanitizer is not supported by MSVC")
+            message(FATAL_ERROR "ThreadSanitizer is not supported by MSVC")
         else()
             list(APPEND SANITIZER_COMPILE_FLAGS -fsanitize=thread -fno-omit-frame-pointer)
             list(APPEND SANITIZER_LINK_FLAGS -fsanitize=thread)
@@ -76,7 +69,7 @@ if(ENABLE_SANITIZER_ADDRESS OR ENABLE_SANITIZER_UNDEFINED OR ENABLE_SANITIZER_LE
             message(FATAL_ERROR "MemorySanitizer is only supported by Clang")
         endif()
         if(MSVC)
-            message(WARNING "MemorySanitizer is not supported by MSVC")
+            message(FATAL_ERROR "MemorySanitizer is not supported by MSVC")
         else()
             list(APPEND SANITIZER_COMPILE_FLAGS -fsanitize=memory -fno-omit-frame-pointer -fsanitize-memory-track-origins)
             list(APPEND SANITIZER_LINK_FLAGS -fsanitize=memory)

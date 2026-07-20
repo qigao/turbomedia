@@ -3,7 +3,7 @@
 #ifdef TURBO_MEDIA_HAS_RTSP
 
 #include "rtsp_parser_internal.h"
-#include "rtsp_grammar_gen.h"
+#include "turbo_rtsp_grammar_gen.h"
 
 #include <ctype.h>
 #include <stdarg.h>

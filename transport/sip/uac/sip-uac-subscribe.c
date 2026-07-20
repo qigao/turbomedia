@@ -11,7 +11,7 @@ int sip_uac_subscribe_onreply(struct sip_uac_transaction_t* t, const struct sip_
 {
 	int r;
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 	struct sip_subscribe_t* subscribe;
 
 	if (reply->u.s.code < 200)
@@ -42,7 +42,7 @@ int sip_uac_subscribe_onreply(struct sip_uac_transaction_t* t, const struct sip_
 		// It's user due to remove subscribe on expires 0 
 		//// delete subscribe if expires is 0
 		//h = sip_message_get_header_by_name(t->req, "Expires");
-		//if (h && 0 == cstrtol(h, NULL, 10))
+		//if (h && 0 == sip_sv_to_long(h, NULL, 10))
 		//{
 		//	sip_subscribe_remove(t->agent, subscribe);
 		//	assert(1 == subscribe->ref);
@@ -61,7 +61,7 @@ int sip_uac_notify_onreply(struct sip_uac_transaction_t* t, const struct sip_mes
 	// NOTICE: ignore notify before subscribe created
 	r = t->onreply(t->param, reply, t, reply->u.s.code);
 
-	//if (0 == cstrcmp(&reply->substate.state, SIP_SUBSCRIPTION_STATE_TERMINATED))
+	//if (0 == sip_sv_compare_cstr(&reply->substate.state, SIP_SUBSCRIPTION_STATE_TERMINATED))
 	//	sip_subscribe_remove(t->agent, subscribe);
 
 	return r;

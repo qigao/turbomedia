@@ -7,7 +7,7 @@ set -e
 ANDROID_NDK="${ANDROID_NDK:-$HOME/Android/Sdk/ndk/25.2.9519653}"
 ANDROID_API=24
 BUILD_TYPE="${BUILD_TYPE:-Release}"
-ABIS="${ABIS:-arm64-v8a armeabi-v7a x86_64 x86}"
+ABIS="${ABIS:-arm64-v8a x86_64 x86}"
 
 # Colors
 RED='\033[0;31m'

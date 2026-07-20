@@ -56,8 +56,8 @@ static int sip_header_contact_star(struct sip_contact_t* c)
 {
 	sip_params_init(&c->uri.headers);
 	sip_params_init(&c->uri.parameters);
-	c->uri.host.p = "*";
-	c->uri.host.n = 1;
+	c->uri.host.data = "*";
+	c->uri.host.len = 1;
 	return 0;
 }
 
@@ -103,10 +103,10 @@ int sip_header_contact(const char* s, const char* end, struct sip_contact_t* c)
 	if ('<' == *p)
 	{
 		// [ display-name ]
-		c->nickname.p = s;
-		c->nickname.n = p - s;
-		cstrtrim(&c->nickname, " \t");
-		cstrtrim(&c->nickname, "\""); // "nickname" => nickname
+		c->nickname.data = s;
+		c->nickname.len = p - s;
+		sip_sv_trim(&c->nickname, " \t");
+		sip_sv_trim(&c->nickname, "\""); // "nickname" => nickname
 
 		s = p + 1;
 		p = s < end ? strchr(s, '>') : NULL;
@@ -134,18 +134,18 @@ int sip_header_contact(const char* s, const char* end, struct sip_contact_t* c)
 		for (i = 0; i < sip_params_count(&c->params); i++)
 		{
 			param = sip_params_get(&c->params, i);
-			if (0 == cstrcmp(&param->name, "tag"))
+			if (0 == sip_sv_compare_cstr(&param->name, "tag"))
 			{
-				c->tag.p = param->value.p;
-				c->tag.n = param->value.n;
+				c->tag.data = param->value.data;
+				c->tag.len = param->value.len;
 			}
-			else if (0 == cstrcmp(&param->name, "q"))
+			else if (0 == sip_sv_compare_cstr(&param->name, "q"))
 			{
-				c->q = cstrtod(&param->value, NULL);
+				c->q = sip_sv_to_double(&param->value, NULL);
 			}
-			else if (0 == cstrcmp(&param->name, "expires"))
+			else if (0 == sip_sv_compare_cstr(&param->name, "expires"))
 			{
-				c->expires = (int64_t)cstrtoll(&param->value, NULL, 10);
+				c->expires = (int64_t)sip_sv_to_long_long(&param->value, NULL, 10);
 			}
 		}
 	}
@@ -189,18 +189,18 @@ int sip_contacts_match_any(const struct sip_contacts_t* contacts)
 	for (i = 0; i < sip_contacts_count(contacts); i++)
 	{
 		contact = sip_contacts_get(contacts, i);
-		if (0 == cstrcmp(&contact->uri.host, "*"))
+		if (0 == sip_sv_compare_cstr(&contact->uri.host, "*"))
 			return 1;
 	}
 	return 0;
 }
 
-static int sip_nickname_check(const struct cstring_t* s)
+static int sip_nickname_check(const tstr_v* s)
 {
 	size_t i;
-	for (i = 0; i < s->n; i++)
+	for (i = 0; i < s->len; i++)
 	{
-		if (!isalnum(s->p[i]))
+		if (!isalnum(s->data[i]))
 			return 0;
 	}
 	return 1;
@@ -214,13 +214,13 @@ int sip_contact_write(const struct sip_contact_t* c, char* data, const char* end
 	const char* quote;
 
 	p = data;
-	if (cstrvalid(&c->nickname) && p < end)
+	if (sip_sv_valid(&c->nickname) && p < end)
 	{
 		quote = sip_nickname_check(&c->nickname) ? "" : "\"";
-		p += snprintf(p, end - p, "%s%.*s%s ", quote, (int)c->nickname.n, c->nickname.p, quote);
+		p += snprintf(p, end - p, "%s%.*s%s ", quote, (int)c->nickname.len, c->nickname.data, quote);
 	}
 
-	if (0 == cstrcmp(&c->uri.host, "*"))
+	if (0 == sip_sv_compare_cstr(&c->uri.host, "*"))
 	{
 		if (p < end) *p++ = '*';
 	}
@@ -245,7 +245,7 @@ int sip_contact_write(const struct sip_contact_t* c, char* data, const char* end
 	return (int)(p - data);
 }
 
-//const struct cstring_t* sip_contact_tag(const struct sip_contact_t* contact)
+//const tstr_v* sip_contact_tag(const struct sip_contact_t* contact)
 //{
 //	return sip_params_find_string(&contact->params, "tag");
 //}
@@ -263,28 +263,28 @@ void sip_header_contact_test(void)
 	s = "\"Mr.Watson\" <sip:watson@worcester.bell-telephone.com>;q=0.7; expires=3600,\"Mr.Watson\" <mailto:watson@bell-telephone.com> ;q=0.1";
 	assert(0 == sip_header_contacts(s, s + strlen(s), &contacts) && 2 == sip_contacts_count(&contacts));
 	c = sip_contacts_get(&contacts, 0);
-	assert(0 == cstrcmp(&c->nickname, "Mr.Watson") && 0 == cstrcmp(&c->uri.scheme, "sip") && 0 == cstrcmp(&c->uri.host, "watson@worcester.bell-telephone.com") && 0 == sip_params_count(&c->uri.headers) && 0 == sip_params_count(&c->uri.parameters));
+	assert(0 == sip_sv_compare_cstr(&c->nickname, "Mr.Watson") && 0 == sip_sv_compare_cstr(&c->uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&c->uri.host, "watson@worcester.bell-telephone.com") && 0 == sip_params_count(&c->uri.headers) && 0 == sip_params_count(&c->uri.parameters));
 	assert(2 == sip_params_count(&c->params));
-	assert(0 == cstrcmp(&sip_params_get(&c->params, 0)->name, "q") && 0 == cstrcmp(&sip_params_get(&c->params, 0)->value, "0.7"));
-	assert(0 == cstrcmp(&sip_params_get(&c->params, 1)->name, "expires") && 0 == cstrcmp(&sip_params_get(&c->params, 1)->value, "3600"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 0)->name, "q") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 0)->value, "0.7"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 1)->name, "expires") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 1)->value, "3600"));
 	assert(c->q == 0.7 && c->expires == 3600);
 	c = sip_contacts_get(&contacts, 1);
-	assert(0 == cstrcmp(&c->nickname, "Mr.Watson") && 0 == cstrcmp(&c->uri.scheme, "mailto") && 0 == cstrcmp(&c->uri.host, "watson@bell-telephone.com") && 0 == sip_params_count(&c->uri.headers) && 0 == sip_params_count(&c->uri.parameters));
-	assert(1 == sip_params_count(&c->params) && 0 == cstrcmp(&sip_params_get(&c->params, 0)->name, "q") && 0 == cstrcmp(&sip_params_get(&c->params, 0)->value, "0.1"));
+	assert(0 == sip_sv_compare_cstr(&c->nickname, "Mr.Watson") && 0 == sip_sv_compare_cstr(&c->uri.scheme, "mailto") && 0 == sip_sv_compare_cstr(&c->uri.host, "watson@bell-telephone.com") && 0 == sip_params_count(&c->uri.headers) && 0 == sip_params_count(&c->uri.parameters));
+	assert(1 == sip_params_count(&c->params) && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 0)->name, "q") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 0)->value, "0.1"));
 	assert(1 == sip_params_count(&c->params) && c->q == 0.1);
 	sip_contacts_free(&contacts);
 
 	s = "<sips:bob@192.0.2.4>;expires=60";
 	assert(0 == sip_header_contact(s, s + strlen(s), &contact));
-	assert(0 == contact.nickname.n && 0 == cstrcmp(&contact.uri.scheme, "sips") && 0 == cstrcmp(&contact.uri.host, "bob@192.0.2.4") && 0 == sip_params_count(&contact.uri.headers) && 0 == sip_params_count(&contact.uri.parameters));
-	assert(1 == sip_params_count(&contact.params) && 0 == cstrcmp(&sip_params_get(&contact.params, 0)->name, "expires") && 0 == cstrcmp(&sip_params_get(&contact.params, 0)->value, "60"));
+	assert(0 == contact.nickname.len && 0 == sip_sv_compare_cstr(&contact.uri.scheme, "sips") && 0 == sip_sv_compare_cstr(&contact.uri.host, "bob@192.0.2.4") && 0 == sip_params_count(&contact.uri.headers) && 0 == sip_params_count(&contact.uri.parameters));
+	assert(1 == sip_params_count(&contact.params) && 0 == sip_sv_compare_cstr(&sip_params_get(&contact.params, 0)->name, "expires") && 0 == sip_sv_compare_cstr(&sip_params_get(&contact.params, 0)->value, "60"));
 	assert(1 == sip_params_count(&contact.params) && contact.expires == 60);
 	assert(sip_contact_write(&contact, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_contact_free(&contact);
 
 	s = "\"<sip:joe@big.org>\" <sip:joe@really.big.com>";
 	assert(0 == sip_header_contact(s, s + strlen(s), &contact));
-	assert(0 == cstrcmp(&contact.nickname, "<sip:joe@big.org>") && 0 == cstrcmp(&contact.uri.scheme, "sip") && 0 == cstrcmp(&contact.uri.host, "joe@really.big.com") && 0 == sip_params_count(&contact.uri.headers) && 0 == sip_params_count(&contact.uri.parameters));
+	assert(0 == sip_sv_compare_cstr(&contact.nickname, "<sip:joe@big.org>") && 0 == sip_sv_compare_cstr(&contact.uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&contact.uri.host, "joe@really.big.com") && 0 == sip_params_count(&contact.uri.headers) && 0 == sip_params_count(&contact.uri.parameters));
 	assert(sip_contact_write(&contact, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_contact_free(&contact);
 	
@@ -296,9 +296,9 @@ void sip_header_contact_test(void)
 	// TO/FROM
 	s = "Alice <sip:alice@atlanta.com>;tag=1928301774";
 	assert(0 == sip_header_contact(s, s + strlen(s), &contact));
-	assert(0 == cstrcmp(&contact.nickname, "Alice") && 0 == cstrcmp(&contact.uri.scheme, "sip") && 0 == cstrcmp(&contact.uri.host, "alice@atlanta.com") && 0 == sip_params_count(&contact.uri.headers) && 0 == sip_params_count(&contact.uri.parameters));
-	assert(1 == sip_params_count(&contact.params) && 0 == cstrcmp(&sip_params_get(&contact.params, 0)->name, "tag") && 0 == cstrcmp(&sip_params_get(&contact.params, 0)->value, "1928301774"));
-	assert(1 == sip_params_count(&contact.params) && 0 == cstrcmp(&contact.tag, "1928301774"));
+	assert(0 == sip_sv_compare_cstr(&contact.nickname, "Alice") && 0 == sip_sv_compare_cstr(&contact.uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&contact.uri.host, "alice@atlanta.com") && 0 == sip_params_count(&contact.uri.headers) && 0 == sip_params_count(&contact.uri.parameters));
+	assert(1 == sip_params_count(&contact.params) && 0 == sip_sv_compare_cstr(&sip_params_get(&contact.params, 0)->name, "tag") && 0 == sip_sv_compare_cstr(&sip_params_get(&contact.params, 0)->value, "1928301774"));
+	assert(1 == sip_params_count(&contact.params) && 0 == sip_sv_compare_cstr(&contact.tag, "1928301774"));
 	assert(sip_contact_write(&contact, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_contact_free(&contact);
 
@@ -306,20 +306,20 @@ void sip_header_contact_test(void)
 	sip_contacts_init(&contacts);
 	assert(0 == sip_header_contacts(s, s + strlen(s), &contacts) && 2 == sip_contacts_count(&contacts));
 	c = sip_contacts_get(&contacts, 0);
-	assert(0 == cstrcmp(&c->nickname, "alice") && 0 == cstrcmp(&c->uri.scheme, "sip") && 0 == cstrcmp(&c->uri.host, "alice@192.168.1.10:63254") && 0 == sip_params_count(&c->uri.headers) && 0 == sip_params_count(&c->uri.parameters));
-	assert(3 == sip_params_count(&c->params) && 0 == cstrcmp(&sip_params_get(&c->params, 0)->name, "+sip.instance") && 0 == cstrcmp(&sip_params_get(&c->params, 0)->value, "\"<urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923>\""));
-	assert(0 == cstrcmp(&sip_params_get(&c->params, 1)->name, "+org.linphone.specs") && 0 == cstrcmp(&sip_params_get(&c->params, 1)->value, "\"groupchat,lime\""));
-	assert(0 == cstrcmp(&sip_params_get(&c->params, 2)->name, "pub-gruu") && 0 == cstrcmp(&sip_params_get(&c->params, 2)->value, "\"sip:alice@sip.linphone.org;gr=urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923\""));
+	assert(0 == sip_sv_compare_cstr(&c->nickname, "alice") && 0 == sip_sv_compare_cstr(&c->uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&c->uri.host, "alice@192.168.1.10:63254") && 0 == sip_params_count(&c->uri.headers) && 0 == sip_params_count(&c->uri.parameters));
+	assert(3 == sip_params_count(&c->params) && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 0)->name, "+sip.instance") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 0)->value, "\"<urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923>\""));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 1)->name, "+org.linphone.specs") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 1)->value, "\"groupchat,lime\""));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 2)->name, "pub-gruu") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 2)->value, "\"sip:alice@sip.linphone.org;gr=urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923\""));
 	c = sip_contacts_get(&contacts, 1);
-	assert(0 == cstrcmp(&c->nickname, "alice") && 0 == cstrcmp(&c->uri.scheme, "sip") && 0 == cstrcmp(&c->uri.host, "alice@192.168.1.11:40736") && 0 == sip_params_count(&c->uri.headers) && 5 == sip_params_count(&c->uri.parameters));
-	assert(0 == cstrcmp(&sip_params_get(&c->uri.parameters, 0)->name, "app-id") && 0 == cstrcmp(&sip_params_get(&c->uri.parameters, 0)->value, "929724111839"));
-	assert(0 == cstrcmp(&sip_params_get(&c->uri.parameters, 1)->name, "pn-type") && 0 == cstrcmp(&sip_params_get(&c->uri.parameters, 1)->value, "firebase"));
-	assert(0 == cstrcmp(&sip_params_get(&c->uri.parameters, 2)->name, "pn-timeout") && 0 == cstrcmp(&sip_params_get(&c->uri.parameters, 2)->value, "0"));
-	assert(0 == cstrcmp(&sip_params_get(&c->uri.parameters, 3)->name, "pn-tok") && 0 == cstrcmp(&sip_params_get(&c->uri.parameters, 3)->value, "dJ1uwpidM_0:APA91bF9KIATqa4LvyLWfpS83XB380FItpoIjYlUwYmRltm00hcBz7Dnb8N-xm943HVBmu8efwa5qxADOFsNd25xZlpKxlvsJSH3-WKQISwV8bCpSNAVdRJyRsggjSVmQmiD2wsQfg9d"));
-	assert(0 == cstrcmp(&sip_params_get(&c->uri.parameters, 4)->name, "pn-silent") && 0 == cstrcmp(&sip_params_get(&c->uri.parameters, 4)->value, "1"));
-	assert(3 == sip_params_count(&c->params) && 0 == cstrcmp(&sip_params_get(&c->params, 0)->name, "+sip.instance") && 0 == cstrcmp(&sip_params_get(&c->params, 0)->value, "\"<urn:uuid:3789dd53-f7ae-00b7-b6f8-0350e404d446>\""));
-	assert(0 == cstrcmp(&sip_params_get(&c->params, 1)->name, "+org.linphone.specs") && 0 == cstrcmp(&sip_params_get(&c->params, 1)->value, "\"groupchat,lime\""));
-	assert(0 == cstrcmp(&sip_params_get(&c->params, 2)->name, "pub-gruu") && 0 == cstrcmp(&sip_params_get(&c->params, 2)->value, "\"sip:alice@sip.linphone.org;gr=urn:uuid:3789dd53-f7ae-00b7-b6f8-0350e404d446\""));
+	assert(0 == sip_sv_compare_cstr(&c->nickname, "alice") && 0 == sip_sv_compare_cstr(&c->uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&c->uri.host, "alice@192.168.1.11:40736") && 0 == sip_params_count(&c->uri.headers) && 5 == sip_params_count(&c->uri.parameters));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 0)->name, "app-id") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 0)->value, "929724111839"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 1)->name, "pn-type") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 1)->value, "firebase"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 2)->name, "pn-timeout") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 2)->value, "0"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 3)->name, "pn-tok") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 3)->value, "dJ1uwpidM_0:APA91bF9KIATqa4LvyLWfpS83XB380FItpoIjYlUwYmRltm00hcBz7Dnb8N-xm943HVBmu8efwa5qxADOFsNd25xZlpKxlvsJSH3-WKQISwV8bCpSNAVdRJyRsggjSVmQmiD2wsQfg9d"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 4)->name, "pn-silent") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->uri.parameters, 4)->value, "1"));
+	assert(3 == sip_params_count(&c->params) && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 0)->name, "+sip.instance") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 0)->value, "\"<urn:uuid:3789dd53-f7ae-00b7-b6f8-0350e404d446>\""));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 1)->name, "+org.linphone.specs") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 1)->value, "\"groupchat,lime\""));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 2)->name, "pub-gruu") && 0 == sip_sv_compare_cstr(&sip_params_get(&c->params, 2)->value, "\"sip:alice@sip.linphone.org;gr=urn:uuid:3789dd53-f7ae-00b7-b6f8-0350e404d446\""));
 	assert(sip_contact_write(c, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s+227, p));
 	sip_contacts_free(&contacts);
 }

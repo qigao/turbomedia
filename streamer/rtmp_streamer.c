@@ -5,15 +5,21 @@
  */
 #include "turbo_streamer.h"
 #include "turbo_transport.h"
+#include "rtmp_streamer_internal.h"
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+#include <stdint.h>
 
 #ifdef TURBO_MEDIA_HAS_RTMP
 
 #include "rtmp-client.h"
+#include "amf0.h"
 #include "CoroNet/turbo_coro_context.h"
 #include "CoroNet/turbo_coro_socket.h"
+
+static const char RTMP_METADATA_TITLE[] = "title";
+static const char RTMP_METADATA_AUTHOR[] = "author";
+static const char RTMP_METADATA_EVENT[] = "onMetaData";
 
 /* =============================================================================
  * RTMP Streamer 上下文
@@ -56,6 +62,148 @@ typedef struct {
     int published;
     
 } rtmp_streamer_ctx_t;
+
+static int rtmp_metadata_field_size(size_t name_size, size_t value_size, size_t *field_size) {
+    size_t length_size;
+
+    if (!field_size || name_size > UINT16_MAX || value_size > UINT32_MAX) return -1;
+    length_size = value_size < ((size_t)UINT16_MAX + 1U) ? 2U : 4U;
+    if (value_size > SIZE_MAX - name_size - length_size - 3U) return -1;
+    *field_size = name_size + value_size + length_size + 3U;
+    return 0;
+}
+
+static int rtmp_streamer_send_metadata(rtmp_streamer_ctx_t *ctx) {
+    const size_t event_size = sizeof(RTMP_METADATA_EVENT) - 1U;
+    size_t payload_size = 1U + 2U + event_size + 1U + 3U;
+    size_t field_size;
+    uint8_t *payload;
+    uint8_t *ptr;
+    const uint8_t *end;
+    int result;
+
+    if (!ctx || !ctx->rtmp) return -1;
+    if (!ctx->metadata_title && !ctx->metadata_author) return 0;
+
+    if (ctx->metadata_title) {
+        if (rtmp_metadata_field_size(sizeof(RTMP_METADATA_TITLE) - 1U,
+                                     strlen(ctx->metadata_title), &field_size) != 0 ||
+            field_size > SIZE_MAX - payload_size) {
+            return -1;
+        }
+        payload_size += field_size;
+    }
+    if (ctx->metadata_author) {
+        if (rtmp_metadata_field_size(sizeof(RTMP_METADATA_AUTHOR) - 1U,
+                                     strlen(ctx->metadata_author), &field_size) != 0 ||
+            field_size > SIZE_MAX - payload_size) {
+            return -1;
+        }
+        payload_size += field_size;
+    }
+
+    payload = (uint8_t *)malloc(payload_size);
+    if (!payload) return -1;
+    ptr = payload;
+    end = payload + payload_size;
+
+    ptr = AMFWriteString(ptr, end, RTMP_METADATA_EVENT, event_size);
+    ptr = ptr ? AMFWriteObject(ptr, end) : NULL;
+    if (ptr && ctx->metadata_title) {
+        ptr = AMFWriteNamedString(ptr, end, RTMP_METADATA_TITLE,
+                                  sizeof(RTMP_METADATA_TITLE) - 1U,
+                                  ctx->metadata_title, strlen(ctx->metadata_title));
+    }
+    if (ptr && ctx->metadata_author) {
+        ptr = AMFWriteNamedString(ptr, end, RTMP_METADATA_AUTHOR,
+                                  sizeof(RTMP_METADATA_AUTHOR) - 1U,
+                                  ctx->metadata_author, strlen(ctx->metadata_author));
+    }
+    ptr = ptr ? AMFWriteObjectEnd(ptr, end) : NULL;
+    if (!ptr || ptr != end) {
+        free(payload);
+        return -1;
+    }
+
+    result = rtmp_client_push_script(ctx->rtmp, payload, payload_size, 0);
+    free(payload);
+    return result == 0 ? 0 : -1;
+}
+
+static char *rtmp_metadata_copy(const char *value) {
+    size_t size;
+    char *copy;
+
+    if (!value) return NULL;
+    size = strlen(value);
+    if (size == SIZE_MAX) return NULL;
+    copy = (char *)malloc(size + 1U);
+    if (!copy) return NULL;
+    memcpy(copy, value, size + 1U);
+    return copy;
+}
+
+int turbo_rtmp_streamer_set_metadata(void *ctx_ptr, const char *key, const char *value) {
+    rtmp_streamer_ctx_t *ctx = (rtmp_streamer_ctx_t *)ctx_ptr;
+    char **slot;
+    char *old_value;
+    char *new_value;
+
+    if (!ctx || !key || !value) return -1;
+    if (strcmp(key, RTMP_METADATA_TITLE) == 0) {
+        slot = &ctx->metadata_title;
+    } else if (strcmp(key, RTMP_METADATA_AUTHOR) == 0) {
+        slot = &ctx->metadata_author;
+    } else {
+        return -1;
+    }
+
+    new_value = rtmp_metadata_copy(value);
+    if (!new_value) return -1;
+    old_value = *slot;
+    *slot = new_value;
+
+    if (ctx->connected && rtmp_streamer_send_metadata(ctx) != 0) {
+        *slot = old_value;
+        free(new_value);
+        return -1;
+    }
+
+    free(old_value);
+    return 0;
+}
+
+static int rtmp_client_send_data(void *param, const void *header, size_t header_size,
+                                 const void *payload, size_t payload_size) {
+    rtmp_streamer_ctx_t *ctx = (rtmp_streamer_ctx_t *)param;
+    int sent;
+
+    if (header_size > 0) {
+        sent = turbo_transport_send(ctx->transport, (const uint8_t *)header, header_size);
+        if (sent != (int)header_size) return -1;
+    }
+    if (payload_size > 0) {
+        sent = turbo_transport_send(ctx->transport, (const uint8_t *)payload, payload_size);
+        if (sent != (int)payload_size) return -1;
+    }
+    return (int)(header_size + payload_size);
+}
+
+static int rtmp_client_ignore_media(void *param, const void *data, size_t size,
+                                    uint32_t timestamp) {
+    (void)param;
+    (void)data;
+    (void)size;
+    (void)timestamp;
+    return 0;
+}
+
+static const struct rtmp_client_handler_t s_rtmp_client_handler = {
+    rtmp_client_send_data,
+    rtmp_client_ignore_media,
+    rtmp_client_ignore_media,
+    rtmp_client_ignore_media
+};
 
 /* =============================================================================
  * RTMP URL 解析
@@ -274,7 +422,7 @@ static int rtmp_streamer_connect_impl(void *ctx_ptr) {
     }
     
     /* 创建 RTMP 客户端 */
-    ctx->rtmp = rtmp_client_create(app, stream, ctx->url, RTMP_CLIENT_PUBLISH);
+    ctx->rtmp = rtmp_client_create(app, stream, ctx->url, ctx, &s_rtmp_client_handler);
     free(app);
     free(stream);
     
@@ -282,9 +430,17 @@ static int rtmp_streamer_connect_impl(void *ctx_ptr) {
         return -1;
     }
     
-    /* TODO: RTMP 握手 */
-    /* rtmp_client_start(ctx->rtmp) */
-    
+    ret = rtmp_client_start(ctx->rtmp, 0);
+    while (0 == ret && rtmp_client_getstate(ctx->rtmp) < 4) {
+        uint8_t *data = NULL;
+        size_t size = 0;
+        ret = turbo_transport_recv(ctx->transport, &data, &size);
+        if (ret > 0) ret = rtmp_client_input(ctx->rtmp, data, size);
+        turbo_transport_free_recv(ctx->transport, data);
+    }
+    if (ret != 0) return -1;
+
+    if (rtmp_streamer_send_metadata(ctx) != 0) return -1;
     ctx->connected = 1;
     
     return 0;
@@ -299,7 +455,7 @@ static int rtmp_streamer_disconnect_impl(void *ctx_ptr) {
     
     /* 停止推流 */
     if (ctx->published && ctx->rtmp) {
-        /* rtmp_client_stop(ctx->rtmp) */
+        if (0 != rtmp_client_stop(ctx->rtmp)) return -1;
     }
     
     /* 断开连接 */
@@ -349,13 +505,18 @@ static int rtmp_streamer_write_packet_impl(void *ctx_ptr,
     
     /* 开始推流（首次）*/
     if (!ctx->published) {
-        /* rtmp_client_publish(ctx->rtmp) */
         ctx->published = 1;
     }
     
-    /* 发送数据包 */
-    /* 这里需要调用 librtmp 的发送函数 */
-    /* rtmp_client_send_video/audio(ctx->rtmp, packet->data, packet->size, packet->pts) */
+    if (packet->stream_id == 0) {
+        if (0 != rtmp_client_push_video(ctx->rtmp, packet->data, packet->size,
+                                        (uint32_t)packet->pts)) return -1;
+    } else if (packet->stream_id == 1) {
+        if (0 != rtmp_client_push_audio(ctx->rtmp, packet->data, packet->size,
+                                        (uint32_t)packet->pts)) return -1;
+    } else {
+        return -1;
+    }
     
     ctx->stats.bytes_sent += packet->size;
     ctx->stats.packets_sent++;
@@ -391,7 +552,7 @@ const turbo_streamer_ops_t turbo_rtmp_streamer_ops = {
     .disconnect = rtmp_streamer_disconnect_impl,
     .add_stream = rtmp_streamer_add_stream_impl,
     .write_packet = rtmp_streamer_write_packet_impl,
-    .read_packet = NULL,  /* TODO: 实现拉流 */
+    .read_packet = NULL,
     .get_stats = rtmp_streamer_get_stats_impl,
     .set_event_callback = rtmp_streamer_set_event_callback_impl
 };

@@ -43,37 +43,33 @@ typedef struct {
     int frame_size;         /* Samples per frame for PLC */
 } opus_decoder_ctx_t;
 
+static int opus_config_valid(const turbo_audio_codec_config_t *cfg) {
+    if (!cfg || (cfg->sample_rate != 8000 && cfg->sample_rate != 12000 &&
+                 cfg->sample_rate != 16000 && cfg->sample_rate != 24000 &&
+                 cfg->sample_rate != 48000))
+        return 0;
+    if (cfg->channels < 1 || cfg->channels > 2 || cfg->bitrate < 0 ||
+        (cfg->frame_size_ms != 10 && cfg->frame_size_ms != 20 &&
+         cfg->frame_size_ms != 40 && cfg->frame_size_ms != 60) ||
+        cfg->complexity < 0 || cfg->complexity > 10)
+        return 0;
+    return 1;
+}
+
 /* =============================================================================
  * Encoder Functions
  * ============================================================================= */
 
 static void *opus_create_encoder(const void *config) {
     const turbo_audio_codec_config_t *cfg = (const turbo_audio_codec_config_t *)config;
-    if (!cfg) return NULL;
+    if (!opus_config_valid(cfg)) return NULL;
 
     opus_encoder_ctx_t *ctx = (opus_encoder_ctx_t *)calloc(1, sizeof(opus_encoder_ctx_t));
     if (!ctx) return NULL;
 
-    /* Validate sample rate */
     int sample_rate = cfg->sample_rate;
-    if (sample_rate != 8000 && sample_rate != 12000 &&
-        sample_rate != 16000 && sample_rate != 24000 &&
-        sample_rate != 48000) {
-        sample_rate = 48000;
-    }
-
-    /* Validate channels */
     int channels = cfg->channels;
-    if (channels < 1 || channels > 2) {
-        channels = 1;
-    }
-
-    /* Calculate frame size in samples */
     int frame_size_ms = cfg->frame_size_ms;
-    if (frame_size_ms != 10 && frame_size_ms != 20 &&
-        frame_size_ms != 40 && frame_size_ms != 60) {
-        frame_size_ms = 20;
-    }
     int frame_size = (sample_rate * frame_size_ms) / 1000;
 
     /* Create encoder */
@@ -96,9 +92,6 @@ static void *opus_create_encoder(const void *config) {
 
     /* Configure complexity */
     int complexity = cfg->complexity;
-    if (complexity < 0 || complexity > 10) {
-        complexity = 5;
-    }
     opus_encoder_ctl(ctx->encoder, OPUS_SET_COMPLEXITY(complexity));
 
     /* Configure FEC */
@@ -164,29 +157,14 @@ static int turbo_opus_encode(void *ctx_ptr,
 
 static void *opus_create_decoder(const void *config) {
     const turbo_audio_codec_config_t *cfg = (const turbo_audio_codec_config_t *)config;
+    if (!opus_config_valid(cfg)) return NULL;
 
     opus_decoder_ctx_t *ctx = (opus_decoder_ctx_t *)calloc(1, sizeof(opus_decoder_ctx_t));
     if (!ctx) return NULL;
 
-    /* Use config values or defaults */
-    int sample_rate = 48000;
-    int channels = 1;
-    int frame_size_ms = 20;
-
-    if (cfg) {
-        if (cfg->sample_rate == 8000 || cfg->sample_rate == 12000 ||
-            cfg->sample_rate == 16000 || cfg->sample_rate == 24000 ||
-            cfg->sample_rate == 48000) {
-            sample_rate = cfg->sample_rate;
-        }
-        if (cfg->channels >= 1 && cfg->channels <= 2) {
-            channels = cfg->channels;
-        }
-        if (cfg->frame_size_ms == 10 || cfg->frame_size_ms == 20 ||
-            cfg->frame_size_ms == 40 || cfg->frame_size_ms == 60) {
-            frame_size_ms = cfg->frame_size_ms;
-        }
-    }
+    int sample_rate = cfg->sample_rate;
+    int channels = cfg->channels;
+    int frame_size_ms = cfg->frame_size_ms;
 
     /* Create decoder */
     int error;

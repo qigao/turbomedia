@@ -18,6 +18,9 @@ void hls_m3u8_destroy(hls_m3u8_t* m3u8);
 /// EXT-X-MAP
 int hls_m3u8_set_x_map(hls_m3u8_t* m3u8, const char* name);
 
+/// Set EXT-X-PLAYLIST-TYPE to VOD/EVENT, or clear it with NULL for live.
+int hls_m3u8_set_playlist_type(hls_m3u8_t* m3u8, const char* type);
+
 ///@param[in] pts present timestamp (millisecond)
 ///@param[in] duration segment duration (millisecond)
 ///@param[in] discontinuity 1-EXT-X-DISCONTINUITY flag, 0-ignore

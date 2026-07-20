@@ -5,9 +5,8 @@
 #include "sip-timer.h"
 #include "sip-message.h"
 #include "sip-transport.h"
-#include "sys/atomic.h"
-#include "sys/locker.h"
-#include "list.h"
+#include "sip-atomic.h"
+#include "turbo_thread.h"
 
 #define UDP_PACKET_SIZE (4*1024) //1440
 
@@ -27,9 +26,9 @@ enum
 struct sip_agent_t;
 struct sip_uac_transaction_t
 {
-	struct list_head link;
-	locker_t locker;
-	int32_t ref;
+	int linked;
+	turbo_mutex_t locker;
+	sip_atomic_i32_t ref;
 
 	// valid only in [sip_uas_input, sip_uas_reply]
 	// create in sip_uas_input, destroy in sip_uas_reply

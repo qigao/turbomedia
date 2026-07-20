@@ -199,7 +199,8 @@ void mov_writer_destroy(struct mov_writer_t* writer)
 static int mov_writer_move(struct mov_t* mov, uint64_t to, uint64_t from, size_t bytes)
 {
 	uint8_t* ptr;
-	uint64_t i, j;
+	uint64_t end, i, j, next;
+	size_t remaining;
 	void* buffer[2];
 
 	assert(bytes < INT32_MAX);
@@ -212,8 +213,9 @@ static int mov_writer_move(struct mov_t* mov, uint64_t to, uint64_t from, size_t
 	mov_buffer_seek(&mov->io, from);
 	mov_buffer_read(&mov->io, buffer[0], bytes);
     mov_buffer_seek(&mov->io, to);
-    mov_buffer_read(&mov->io, buffer[1], bytes);
+	mov_buffer_read(&mov->io, buffer[1], bytes);
 
+	end = from + bytes;
 	j = 0;
 	for (i = to; i < from; i += bytes)
 	{
@@ -228,13 +230,17 @@ static int mov_writer_move(struct mov_t* mov, uint64_t to, uint64_t from, size_t
         // fsetpos, fseek, and rewind. 
         // When you switch from writing to reading, you must use an intervening 
         // call to either fflush or to a file positioning function.
-        mov_buffer_seek(&mov->io, i+bytes);
-        mov_buffer_read(&mov->io, buffer[j], bytes);
-        j ^= 1;
+		next = i + bytes;
+		remaining = (size_t)(end - next);
+		if (remaining > bytes)
+			remaining = bytes;
+        mov_buffer_seek(&mov->io, next);
+		mov_buffer_read(&mov->io, buffer[j], remaining);
+		j ^= 1;
 	}
 
     mov_buffer_seek(&mov->io, i);
-	mov_buffer_write(&mov->io, buffer[j], bytes - (size_t)(i - from));
+	mov_buffer_write(&mov->io, buffer[j], (size_t)(end - i));
 
 	free(ptr);
 	return mov_buffer_error(&mov->io);

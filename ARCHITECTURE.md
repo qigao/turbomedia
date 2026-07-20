@@ -291,27 +291,8 @@ const turbo_codec_ops_t turbo_av1_codec_ops = {
 
 ## 编译配置
 
-### CMake 选项
-
-```cmake
-# 编解码器
--DTURBO_MEDIA_ENABLE_H264=ON
--DTURBO_MEDIA_ENABLE_H265=ON
--DTURBO_MEDIA_ENABLE_OPUS=ON
--DTURBO_MEDIA_ENABLE_VPX=ON
-
-# 容器格式
--DTURBO_MEDIA_ENABLE_FLV=ON
--DTURBO_MEDIA_ENABLE_MP4=ON
--DTURBO_MEDIA_ENABLE_MKV=ON
--DTURBO_MEDIA_ENABLE_MPEG=ON
-
-# 流媒体协议
--DTURBO_MEDIA_ENABLE_HLS=ON
--DTURBO_MEDIA_ENABLE_DASH=ON
--DTURBO_MEDIA_ENABLE_RTMP=ON
--DTURBO_MEDIA_ENABLE_HTTP_FLV=ON
-```
+所有功能进入默认构建，不存在功能 CMake 选项。依赖和工具位置由本机
+`CMakeUserPresets.json` 提供；项目配置只消费标准 CMake package/target，并在缺失时失败。
 
 ### 依赖项
 
@@ -319,7 +300,7 @@ const turbo_codec_ops_t turbo_av1_codec_ops = {
 - C11 编译器
 - CMake >= 3.20
 
-**可选（根据启用的功能）**:
+**必需**:
 - libx264/OpenH264 (H.264)
 - x265 + libde265 (H.265)
 - libopus (Opus)

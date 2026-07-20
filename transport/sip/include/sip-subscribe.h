@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "sip-dialog.h"
+#include "sip-atomic.h"
 
 #define SIP_SUBSCRIPTION_STATE_ACTIVE		"active"
 #define SIP_SUBSCRIPTION_STATE_PENDING		"pending"
@@ -36,7 +37,7 @@ struct sip_subscribe_t
 	
 	// internal use only
 	char* ptr;
-	int32_t ref;
+	sip_atomic_i32_t ref;
 };
 
 struct sip_subscribe_t* sip_subscribe_create(const struct sip_event_t* event);
@@ -45,8 +46,8 @@ int sip_subscribe_addref(struct sip_subscribe_t* subscribe);
 
 struct sip_subscribe_t* sip_subscribe_internal_create(struct sip_agent_t* sip, const struct sip_message_t* msg, const struct sip_event_t* event, int uac);
 
-int sip_subscribe_id(struct cstring_t* id, const struct sip_subscribe_t* subscribe, char* ptr, int len);
-int sip_subscribe_id_with_message(struct cstring_t* id, const struct sip_message_t* msg, char* ptr, int len, int uas);
+int sip_subscribe_id(tstr_v* id, const struct sip_subscribe_t* subscribe, char* ptr, int len);
+int sip_subscribe_id_with_message(tstr_v* id, const struct sip_message_t* msg, char* ptr, int len, int uas);
 
 #if defined(__cplusplus)
 }

@@ -2,16 +2,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-char* cstring_clone(char* ptr, const char* end, struct cstring_t* clone, const char* s, size_t n)
+char* sip_string_view_clone(char* ptr, const char* end, tstr_v* clone, const char* s, size_t n)
 {
 	size_t remain;
 	remain = end - ptr;
 
-	clone->p = ptr;
-	clone->n = remain >= n ? n : remain;
+	clone->data = ptr;
+	clone->len = remain >= n ? n : remain;
 
-	memcpy(ptr, s, clone->n);
-	ptr += clone->n;
+	memcpy(ptr, s, clone->len);
+	ptr += clone->len;
 	if (ptr < end) 
 		*ptr++ = '\0';
 	return ptr;

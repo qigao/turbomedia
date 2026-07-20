@@ -1,17 +1,19 @@
 // RFC3550 A.7 Computing the RTCP Transmission Interval (p74)
 
-#define _CRT_RAND_S
+#include "platform.h"
+
+#include <stdint.h>
 #include <stdlib.h>
 
-#if defined(OS_WINDOWS)
-#include <limits.h>
-double drand48(void)
+static double rtcp_random_fraction(void)
 {
-	unsigned int v = 0;
-	rand_s(&v);
-	return (v * 1.0) / UINT_MAX;
+	uint32_t value;
+
+	if (turbo_secure_random(&value, sizeof(value)) != 0)
+		abort();
+
+	return value / 4294967296.0;
 }
-#endif
 
 double rtcp_interval(int members,
 					int senders,
@@ -94,7 +96,7 @@ double rtcp_interval(int members,
 	* other sites, we then pick our actual next report interval as a
 	* random number uniformly distributed between 0.5*t and 1.5*t.
 	*/
-	t = t * (drand48() + 0.5);
+	t = t * (rtcp_random_fraction() + 0.5);
 	t = t / COMPENSATION;
 	return t;
 }

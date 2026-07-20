@@ -1,7 +1,7 @@
 /**
  * TurboMedia RTSP control-plane support
  *
- * Optional RTSP parser/server layer. Enable with TURBO_MEDIA_ENABLE_RTSP.
+ * RTSP parser/server layer.
  */
 #ifndef TURBO_RTSP_H
 #define TURBO_RTSP_H

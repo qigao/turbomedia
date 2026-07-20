@@ -169,7 +169,13 @@ static int h264_find_nal(const uint8_t *data, size_t len, size_t pos,
 
 static void *h264_create_encoder(const void *config) {
     const turbo_video_codec_config_t *cfg = (const turbo_video_codec_config_t *)config;
-    if (!cfg) return NULL;
+    enum { H264_MAX_FRAMERATE = 240 };
+    if (!cfg || cfg->width <= 0 || cfg->width > TURBO_VIDEO_MAX_WIDTH ||
+        cfg->height <= 0 || cfg->height > TURBO_VIDEO_MAX_HEIGHT ||
+        cfg->framerate <= 0 || cfg->framerate > H264_MAX_FRAMERATE ||
+        cfg->bitrate < 0 || cfg->keyframe_interval < 0 || cfg->threads < 0) {
+        return NULL;
+    }
     
     h264_context_t *ctx = (h264_context_t *)calloc(1, sizeof(h264_context_t));
     if (!ctx) return NULL;

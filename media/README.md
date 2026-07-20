@@ -39,7 +39,7 @@ Current adaptation status:
 Build entry points:
 
 - Default desktop builds do not configure mobile targets.
-- Configure with `-DBUILD_MOBILE=ON` to include mobile CMake targets.
+- Mobile targets are part of the default build; platform-specific SDK libraries are required.
 - On non-mobile toolchains this creates `turbo_media_ios_staging` and
   `turbo_media_android_staging` source-only targets.
 - On iOS and Android toolchains the same CMake files configure native

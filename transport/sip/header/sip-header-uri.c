@@ -15,10 +15,6 @@
 #include <string.h>
 #include <assert.h>
 
-#if defined(_WIN32) || defined(_WIN64) || defined(OS_WINDOWS)
-#define strncasecmp	_strnicmp
-#endif
-
 void sip_uri_free(struct sip_uri_t* uri)
 {
 	sip_params_free(&uri->headers);
@@ -30,7 +26,7 @@ int sip_header_uri(const char* s, const char* end, struct sip_uri_t* uri)
 	int i;
 	const char* p;
 	const struct sip_param_t* param;
-	struct cstring_t parameters;
+	tstr_v parameters;
 	memset(uri, 0, sizeof(*uri));
 	sip_params_init(&uri->headers);
 	sip_params_init(&uri->parameters);
@@ -39,29 +35,29 @@ int sip_header_uri(const char* s, const char* end, struct sip_uri_t* uri)
 	if (!p || p >= end)
 		return -1;
 	
-	uri->scheme.p = s;
-	uri->scheme.n = p - s;
-	uri->host.p = p + 1;
+	uri->scheme.data = s;
+	uri->scheme.len = p - s;
+	uri->host.data = p + 1;
 
 	s = p + 1;
 	p = strpbrk(s, ";?");
 	if (!p || p >= end)
 	{
-		uri->host.n = end - s;
+		uri->host.len = end - s;
 	}
 	else
 	{
-		uri->host.n = p - s;
+		uri->host.len = p - s;
 		
 		if (p && p < end && ';' == *p)
 		{
-			parameters.p = p + 1;
+			parameters.data = p + 1;
 			p = strpbrk(p + 1, "?");
 			if(p && p < end)
-				parameters.n = p - parameters.p;
+				parameters.len = p - parameters.data;
 			else
-				parameters.n = end - parameters.p;
-			sip_header_params(';', parameters.p, parameters.p + parameters.n, &uri->parameters);
+				parameters.len = end - parameters.data;
+			sip_header_params(';', parameters.data, parameters.data + parameters.len, &uri->parameters);
 		}
 
 		if (p && p < end && '?' == *p)
@@ -73,37 +69,37 @@ int sip_header_uri(const char* s, const char* end, struct sip_uri_t* uri)
 	for(i = 0; i < sip_params_count(&uri->parameters); i++)
 	{
 		param = sip_params_get(&uri->parameters, i);
-		if (0 == cstrcasecmp(&param->name, "transport"))
+		if (0 == sip_sv_compare_cstr_ci(&param->name, "transport"))
 		{
-			uri->transport.p = param->value.p;
-			uri->transport.n = param->value.n;
+			uri->transport.data = param->value.data;
+			uri->transport.len = param->value.len;
 		}
-		else if (0 == cstrcasecmp(&param->name, "method"))
+		else if (0 == sip_sv_compare_cstr_ci(&param->name, "method"))
 		{
-			uri->method.p = param->value.p;
-			uri->method.n = param->value.n;
+			uri->method.data = param->value.data;
+			uri->method.len = param->value.len;
 		}
-		else if (0 == cstrcasecmp(&param->name, "maddr"))
+		else if (0 == sip_sv_compare_cstr_ci(&param->name, "maddr"))
 		{
-			uri->maddr.p = param->value.p;
-			uri->maddr.n = param->value.n;
+			uri->maddr.data = param->value.data;
+			uri->maddr.len = param->value.len;
 		}
-		else if (0 == cstrcasecmp(&param->name, "user"))
+		else if (0 == sip_sv_compare_cstr_ci(&param->name, "user"))
 		{
-			uri->user.p = param->value.p;
-			uri->user.n = param->value.n;
+			uri->user.data = param->value.data;
+			uri->user.len = param->value.len;
 		}
-		else if (0 == cstrcasecmp(&param->name, "ttl"))
+		else if (0 == sip_sv_compare_cstr_ci(&param->name, "ttl"))
 		{
-			uri->ttl = (int)cstrtol(&param->value, NULL, 10);
+			uri->ttl = (int)sip_sv_to_long(&param->value, NULL, 10);
 		}
-		else if (0 == cstrcasecmp(&param->name, "lr"))
+		else if (0 == sip_sv_compare_cstr_ci(&param->name, "lr"))
 		{
 			uri->lr = 1;
 		}
-		else if (0 == cstrcasecmp(&param->name, "rport"))
+		else if (0 == sip_sv_compare_cstr_ci(&param->name, "rport"))
 		{
-			uri->rport = cstrvalid(&param->value) ? (int)cstrtol(&param->value, NULL, 10) : -1;
+			uri->rport = sip_sv_valid(&param->value) ? (int)sip_sv_to_long(&param->value, NULL, 10) : -1;
 		}
 	}
 
@@ -114,12 +110,12 @@ int sip_header_uri(const char* s, const char* end, struct sip_uri_t* uri)
 int sip_uri_write(const struct sip_uri_t* uri, char* data, const char* end)
 {
 	char* p;
-	if (!cstrvalid(&uri->scheme) || !cstrvalid(&uri->host))
+	if (!sip_sv_valid(&uri->scheme) || !sip_sv_valid(&uri->host))
 		return -1; // error
 
 	p = data;
 	if(p < end)
-		p += snprintf(p, end - p, "%.*s:%.*s", (int)uri->scheme.n, uri->scheme.p, (int)uri->host.n, uri->host.p);
+		p += snprintf(p, end - p, "%.*s:%.*s", (int)uri->scheme.len, uri->scheme.data, (int)uri->host.len, uri->host.data);
 
 	if (sip_params_count(&uri->parameters) > 0)
 	{
@@ -168,7 +164,7 @@ int sip_request_uri_write(const struct sip_uri_t* uri, char* data, const char* e
 	for (i = 0; i < sip_params_count(&uri->parameters); i++)
 	{
 		param = sip_params_get(&uri->parameters, i);
-		if (0 == cstrcasecmp(&param->name, "method"))
+		if (0 == sip_sv_compare_cstr_ci(&param->name, "method"))
 			continue;
 		sip_params_push(&v.parameters, param);
 	}
@@ -189,22 +185,23 @@ int sip_uri_equal(const struct sip_uri_t* l, const struct sip_uri_t* r)
 	const struct sip_param_t* param1;
 	const struct sip_param_t* param2;
 
-	if (!cstreq(&l->scheme, &r->scheme))
+	if (!sip_sv_equal(&l->scheme, &r->scheme))
 		return 0;
 
-	p1 = cstrchr(&l->host, '@');
-	p2 = cstrchr(&r->host, '@');
-	p1 = p1 ? p1 : l->host.p;
-	p2 = p2 ? p2 : r->host.p;
+	p1 = sip_sv_find_char(&l->host, '@');
+	p2 = sip_sv_find_char(&r->host, '@');
+	p1 = p1 ? p1 : l->host.data;
+	p2 = p2 ? p2 : r->host.data;
 
 	// Comparison of the userinfo of SIP and SIPS URIs is case-sensitive
-	if (p1 - l->host.p != p2 - r->host.p || 0 != strncmp(l->host.p, r->host.p, p1 - l->host.p))
+	if (p1 - l->host.data != p2 - r->host.data || 0 != strncmp(l->host.data, r->host.data, p1 - l->host.data))
 		return 0;
 
 	// Comparison of all other components of the URI is case-insensitive
 	// A URI omitting any component with a default value will not match a 
 	// URI explicitly containing that component with its default value.
-	if (l->host.n != r->host.n || 0 != strncasecmp(p1, p2, l->host.p + l->host.n - p1))
+	if (l->host.len != r->host.len ||
+		0 != sip_mem_casecmp(p1, p2, (size_t)(l->host.data + l->host.len - p1)))
 		return 0;
 
 	// TODO:
@@ -215,10 +212,10 @@ int sip_uri_equal(const struct sip_uri_t* l, const struct sip_uri_t* r)
 	for (i = 0; i < sip_params_count(&l->parameters); i++)
 	{
 		param1 = sip_params_get(&l->parameters, i);
-		if(0 == cstrcmp(&param1->name, "maddr"))
+		if(0 == sip_sv_compare_cstr(&param1->name, "maddr"))
 			continue;
-		param2 = sip_params_find(&r->parameters, param1->name.p, (int)param1->name.n);
-		if (param2 && !cstreq(&param1->value, &param2->value))
+		param2 = sip_params_find(&r->parameters, param1->name.data, (int)param1->name.len);
+		if (param2 && !sip_sv_equal(&param1->value, &param2->value))
 			return 0;
 	}
 
@@ -236,7 +233,7 @@ int sip_uri_equal(const struct sip_uri_t* l, const struct sip_uri_t* r)
 	// that contains no maddr parameter
 	param1 = sip_params_find(&l->parameters, "maddr", 5);
 	param2 = sip_params_find(&r->parameters, "maddr", 5);
-	if ((param1 && !param2) || (!param1 && param2) || (param1 && param2 && 0==cstreq(&param1->value, &param2->value)))
+	if ((param1 && !param2) || (!param1 && param2) || (param1 && param2 && 0==sip_sv_equal(&param1->value, &param2->value)))
 		return 0;
 
 	// URI header components are never ignored.
@@ -247,25 +244,25 @@ int sip_uri_equal(const struct sip_uri_t* l, const struct sip_uri_t* r)
 	for (i = 0; i < sip_params_count(&l->headers); i++)
 	{
 		param1 = sip_params_get(&l->headers, i);
-		param2 = sip_params_find(&r->headers, param1->name.p, (int)param1->name.n);
-		if (!param2 || !cstreq(&param1->value, &param2->value))
+		param2 = sip_params_find(&r->headers, param1->name.data, (int)param1->name.len);
+		if (!param2 || !sip_sv_equal(&param1->value, &param2->value))
 			return 0;
 	}
 
 	return 1;
 }
 
-int sip_uri_username(const struct sip_uri_t* uri, struct cstring_t* user)
+int sip_uri_username(const struct sip_uri_t* uri, tstr_v* user)
 {
 	const char *p1, *p2;
-	p1 = cstrchr(&uri->host, '@');
+	p1 = sip_sv_find_char(&uri->host, '@');
 	if (!p1) return -1;
-	p2 = cstrchr(&uri->host, ':');
+	p2 = sip_sv_find_char(&uri->host, ':');
 	if (!p2 || p2 > p1)
 		p2 = p1;
 
-	user->p = uri->host.p;
-	user->n = p2 - uri->host.p;
+	user->data = uri->host.data;
+	user->len = p2 - uri->host.data;
 	return 0;
 }
 
@@ -276,63 +273,63 @@ void sip_uri_parse_test(void)
 	char p[1024];
 	const char* s;
 	struct sip_uri_t uri;
-	struct cstring_t usr;
+	tstr_v usr;
 
 	s = "sip:user:password@host:port;uri-parameters?headers";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "user:password@host:port") && 1 == sip_params_count(&uri.parameters) && 1 == sip_params_count(&uri.headers));
-	assert(0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->name, "uri-parameters") && 0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->value, ""));
-	assert(0 == cstrcmp(&sip_params_get(&uri.headers, 0)->name, "headers") && 0 == cstrcmp(&sip_params_get(&uri.headers, 0)->value, ""));
-	assert(0 == sip_uri_username(&uri, &usr) && 0 == cstrcmp(&usr, "user"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "user:password@host:port") && 1 == sip_params_count(&uri.parameters) && 1 == sip_params_count(&uri.headers));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->name, "uri-parameters") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->value, ""));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.headers, 0)->name, "headers") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.headers, 0)->value, ""));
+	assert(0 == sip_uri_username(&uri, &usr) && 0 == sip_sv_compare_cstr(&usr, "user"));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 
 	s = "sip:alice@atlanta.com";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "alice@atlanta.com") && 0 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
-	assert(0 == sip_uri_username(&uri, &usr) && 0 == cstrcmp(&usr, "alice"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "alice@atlanta.com") && 0 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
+	assert(0 == sip_uri_username(&uri, &usr) && 0 == sip_sv_compare_cstr(&usr, "alice"));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 
 	s = "sips:alice@atlanta.com?subject=project%20x&priority=urgent";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sips") && 0 == cstrcmp(&uri.host, "alice@atlanta.com") && 0 == sip_params_count(&uri.parameters) && 2 == sip_params_count(&uri.headers));
-	assert(0 == cstrcmp(&sip_params_get(&uri.headers, 0)->name, "subject") && 0 == cstrcmp(&sip_params_get(&uri.headers, 0)->value, "project%20x"));
-	assert(0 == cstrcmp(&sip_params_get(&uri.headers, 1)->name, "priority") && 0 == cstrcmp(&sip_params_get(&uri.headers, 1)->value, "urgent"));
-	assert(0 == sip_uri_username(&uri, &usr) && 0 == cstrcmp(&usr, "alice"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sips") && 0 == sip_sv_compare_cstr(&uri.host, "alice@atlanta.com") && 0 == sip_params_count(&uri.parameters) && 2 == sip_params_count(&uri.headers));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.headers, 0)->name, "subject") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.headers, 0)->value, "project%20x"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.headers, 1)->name, "priority") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.headers, 1)->value, "urgent"));
+	assert(0 == sip_uri_username(&uri, &usr) && 0 == sip_sv_compare_cstr(&usr, "alice"));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 
 	s = "sip:alice:secretword@atlanta.com;transport=tcp";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "alice:secretword@atlanta.com") && 1 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
-	assert(0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->name, "transport") && 0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->value, "tcp"));
-	assert(0 == cstrcmp(&uri.transport, "tcp"));
-	assert(0 == sip_uri_username(&uri, &usr) && 0 == cstrcmp(&usr, "alice"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "alice:secretword@atlanta.com") && 1 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->name, "transport") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->value, "tcp"));
+	assert(0 == sip_sv_compare_cstr(&uri.transport, "tcp"));
+	assert(0 == sip_uri_username(&uri, &usr) && 0 == sip_sv_compare_cstr(&usr, "alice"));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 
 	s = "sip:+1-212-555-1212:1234@gateway.com;user=phone";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "+1-212-555-1212:1234@gateway.com") && 1 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
-	assert(0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->name, "user") && 0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->value, "phone"));
-	assert(0 == cstrcmp(&uri.user, "phone"));
-	assert(0 == sip_uri_username(&uri, &usr) && 0 == cstrcmp(&usr, "+1-212-555-1212"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "+1-212-555-1212:1234@gateway.com") && 1 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->name, "user") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->value, "phone"));
+	assert(0 == sip_sv_compare_cstr(&uri.user, "phone"));
+	assert(0 == sip_uri_username(&uri, &usr) && 0 == sip_sv_compare_cstr(&usr, "+1-212-555-1212"));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 
 	s = "sip:alice;day=tuesday@atlanta.com";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "alice") && 1 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
-	assert(0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->name, "day") && 0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->value, "tuesday@atlanta.com"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "alice") && 1 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->name, "day") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->value, "tuesday@atlanta.com"));
 	assert(0 != sip_uri_username(&uri, &usr));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 
 	s = "sip:p2.domain.com;lr";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "p2.domain.com") && 1 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
-	assert(0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->name, "lr") && 0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->value, ""));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "p2.domain.com") && 1 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->name, "lr") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->value, ""));
 	assert(1 == uri.lr);
 	assert(0 != sip_uri_username(&uri, &usr));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
@@ -340,26 +337,26 @@ void sip_uri_parse_test(void)
 
 	s = "sip:alice@atlanta.com;maddr=239.255.255.1;ttl=15";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "alice@atlanta.com") && 2 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
-	assert(0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->name, "maddr") && 0 == cstrcmp(&sip_params_get(&uri.parameters, 0)->value, "239.255.255.1"));
-	assert(0 == cstrcmp(&sip_params_get(&uri.parameters, 1)->name, "ttl") && 0 == cstrcmp(&sip_params_get(&uri.parameters, 1)->value, "15"));
-	assert(0 == cstrcmp(&uri.maddr, "239.255.255.1") && 15 == uri.ttl);
-	assert(0 == sip_uri_username(&uri, &usr) && 0 == cstrcmp(&usr, "alice"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "alice@atlanta.com") && 2 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->name, "maddr") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 0)->value, "239.255.255.1"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 1)->name, "ttl") && 0 == sip_sv_compare_cstr(&sip_params_get(&uri.parameters, 1)->value, "15"));
+	assert(0 == sip_sv_compare_cstr(&uri.maddr, "239.255.255.1") && 15 == uri.ttl);
+	assert(0 == sip_uri_username(&uri, &usr) && 0 == sip_sv_compare_cstr(&usr, "alice"));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 
 	// ipv6
 	s = "sip:user@[::ffff:192.0.2.10]:19823";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "user@[::ffff:192.0.2.10]:19823") && 0 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
-	assert(0 == sip_uri_username(&uri, &usr) && 0 == cstrcmp(&usr, "user"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "user@[::ffff:192.0.2.10]:19823") && 0 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
+	assert(0 == sip_uri_username(&uri, &usr) && 0 == sip_sv_compare_cstr(&usr, "user"));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 
 	s = "sip:user@fe80::204:75ff:fe4d:19d9";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));
-	assert(0 == cstrcmp(&uri.scheme, "sip") && 0 == cstrcmp(&uri.host, "user@fe80::204:75ff:fe4d:19d9") && 0 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
-	assert(0 == sip_uri_username(&uri, &usr) && 0 == cstrcmp(&usr, "user"));
+	assert(0 == sip_sv_compare_cstr(&uri.scheme, "sip") && 0 == sip_sv_compare_cstr(&uri.host, "user@fe80::204:75ff:fe4d:19d9") && 0 == sip_params_count(&uri.parameters) && 0 == sip_params_count(&uri.headers));
+	assert(0 == sip_uri_username(&uri, &usr) && 0 == sip_sv_compare_cstr(&usr, "user"));
 	assert(sip_uri_write(&uri, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uri_free(&uri);
 }

@@ -1,8 +1,6 @@
 #include "sip-dialog.h"
 #include "sip-message.h"
 #include "sip-internal.h"
-#include "sys/atomic.h"
-#include "sys/locker.h"
 #include <stdlib.h>
 
 #define N 2048
@@ -12,7 +10,7 @@
 // field, in which case the tag is considered to have a value of null.
 // This is to maintain backwards compatibility with RFC 2543, which
 // did not mandate To tags.
-static const struct cstring_t sc_null = { "", 0 };
+static const tstr_v sc_null = { "", 0 };
 
 struct sip_dialog_t* sip_dialog_create(void)
 {
@@ -24,7 +22,7 @@ struct sip_dialog_t* sip_dialog_create(void)
         dialog->ref = 1;
         dialog->state = DIALOG_ERALY;
         dialog->ptr = (char*)(dialog + 1);
-		atomic_increment32(&s_gc.dialog);
+		sip_atomic_increment(&s_gc.dialog);
     }
     return dialog;
 }
@@ -37,10 +35,10 @@ int sip_dialog_init_uac(struct sip_dialog_t* dialog, const struct sip_message_t*
 	const struct sip_contact_t* contact;
 
     assert(SIP_MESSAGE_REPLY == msg->mode);
-	assert(cstrvalid(&msg->from.tag) && cstrvalid(&msg->to.tag));
+	assert(sip_sv_valid(&msg->from.tag) && sip_sv_valid(&msg->to.tag));
 	end = dialog->ptr + N;
 
-	dialog->ptr = cstring_clone(dialog->ptr, end, &dialog->callid, msg->callid.p, msg->callid.n);
+	dialog->ptr = sip_string_view_clone(dialog->ptr, end, &dialog->callid, msg->callid.data, msg->callid.len);
 	dialog->ptr = sip_contact_clone(dialog->ptr, end, &dialog->local.uri, &msg->from);
 	dialog->ptr = sip_contact_clone(dialog->ptr, end, &dialog->remote.uri, &msg->to);
 	dialog->local.id = msg->cseq.id;
@@ -51,7 +49,7 @@ int sip_dialog_init_uac(struct sip_dialog_t* dialog, const struct sip_message_t*
 
 	//assert(1 == sip_contacts_count(&msg->contacts));
 	contact = sip_contacts_get(&msg->contacts, 0);
-	if (contact && cstrvalid(&contact->uri.host))
+	if (contact && sip_sv_valid(&contact->uri.host))
 		dialog->ptr = sip_uri_clone(dialog->ptr, end, &dialog->remote.target, &contact->uri);
 
 	// 12.1.2 UAC Behavior (p71)
@@ -65,7 +63,7 @@ int sip_dialog_init_uac(struct sip_dialog_t* dialog, const struct sip_message_t*
 		sip_uris_push(&dialog->routers, &uri);
 	}
 
-	dialog->secure = cstrprefix(&dialog->remote.target.host, "sips");
+	dialog->secure = sip_sv_starts_with(&dialog->remote.target.host, "sips");
 	return 0;
 }
 
@@ -77,10 +75,10 @@ int sip_dialog_init_uas(struct sip_dialog_t* dialog, const struct sip_message_t*
     const struct sip_contact_t* contact;
     
     assert(SIP_MESSAGE_REQUEST == msg->mode);
-    assert(cstrvalid(&msg->from.tag));
+    assert(sip_sv_valid(&msg->from.tag));
     end = dialog->ptr + N;
 
-	dialog->ptr = cstring_clone(dialog->ptr, end, &dialog->callid, msg->callid.p, msg->callid.n);
+	dialog->ptr = sip_string_view_clone(dialog->ptr, end, &dialog->callid, msg->callid.data, msg->callid.len);
     dialog->ptr = sip_contact_clone(dialog->ptr, end, &dialog->local.uri, &msg->to);
     dialog->ptr = sip_contact_clone(dialog->ptr, end, &dialog->remote.uri, &msg->from);
     if (0 != sip_random_u31(&dialog->local.id) ||
@@ -96,7 +94,7 @@ int sip_dialog_init_uas(struct sip_dialog_t* dialog, const struct sip_message_t*
     
     //assert(1 == sip_contacts_count(&msg->contacts));
     contact = sip_contacts_get(&msg->contacts, 0);
-    if (contact && cstrvalid(&contact->uri.host))
+    if (contact && sip_sv_valid(&contact->uri.host))
         dialog->ptr = sip_uri_clone(dialog->ptr, end, &dialog->remote.target, &contact->uri);
     
 	// 12.1.1 UAS behavior (p70)
@@ -111,7 +109,7 @@ int sip_dialog_init_uas(struct sip_dialog_t* dialog, const struct sip_message_t*
         sip_uris_push(&dialog->routers, &uri);
     }
     
-    dialog->secure = cstrprefix(&dialog->remote.target.host, "sips");
+    dialog->secure = sip_sv_starts_with(&dialog->remote.target.host, "sips");
     return 0;
 }
 
@@ -121,7 +119,7 @@ int sip_dialog_release(struct sip_dialog_t* dialog)
 		return -1;
 
 	assert(dialog->ref > 0);
-	if (0 != atomic_decrement32(&dialog->ref))
+	if (0 != sip_atomic_decrement(&dialog->ref))
 		return 0;
 
 	sip_uri_free(&dialog->local.target);
@@ -130,23 +128,23 @@ int sip_dialog_release(struct sip_dialog_t* dialog)
 	sip_contact_free(&dialog->remote.uri);
 	sip_uris_free(&dialog->routers);
 	free(dialog);
-	atomic_decrement32(&s_gc.dialog);
+	sip_atomic_decrement(&s_gc.dialog);
 	return 0;
 }
 
 int sip_dialog_addref(struct sip_dialog_t* dialog)
 {
 	int r;
-	r = atomic_increment32(&dialog->ref);
+	r = sip_atomic_increment(&dialog->ref);
 	assert(r > 1);
 	return r;
 }
 
-int sip_dialog_setlocaltag(struct sip_dialog_t* dialog, const struct cstring_t* tag)
+int sip_dialog_setlocaltag(struct sip_dialog_t* dialog, const tstr_v* tag)
 {
 	const char* end;
 	end = (char*)(dialog + 1) + N;
-	dialog->ptr = cstring_clone(dialog->ptr, end, &dialog->local.uri.tag, tag->p, tag->n);
+	dialog->ptr = sip_string_view_clone(dialog->ptr, end, &dialog->local.uri.tag, tag->data, tag->len);
 	sip_params_add_or_update(&dialog->local.uri.params, "tag", 3, &dialog->local.uri.tag);
 	return dialog->ptr < end ? 0 : -1;
 }
@@ -158,7 +156,7 @@ int sip_dialog_set_local_target(struct sip_dialog_t* dialog, const struct sip_me
 	end = (char*)(dialog + 1) + N;
 
 	contact = sip_contacts_get(&msg->contacts, 0);
-	if (contact && cstrvalid(&contact->uri.host) && !sip_uri_equal(&dialog->local.target, &contact->uri))
+	if (contact && sip_sv_valid(&contact->uri.host) && !sip_uri_equal(&dialog->local.target, &contact->uri))
 	{
 		sip_uri_free(&dialog->local.target);
 		dialog->ptr = sip_uri_clone(dialog->ptr, end, &dialog->local.target, &contact->uri);
@@ -173,7 +171,7 @@ int sip_dialog_target_refresh(struct sip_dialog_t* dialog, const struct sip_mess
     end = (char*)(dialog + 1) + N;
     
     contact = sip_contacts_get(&msg->contacts, 0);
-	if (contact && cstrvalid(&contact->uri.host) && !sip_uri_equal(&dialog->remote.target, &contact->uri))
+	if (contact && sip_sv_valid(&contact->uri.host) && !sip_uri_equal(&dialog->remote.target, &contact->uri))
 	{
 		sip_uri_free(&dialog->remote.target);
 		dialog->ptr = sip_uri_clone(dialog->ptr, end, &dialog->remote.target, &contact->uri);
@@ -182,34 +180,34 @@ int sip_dialog_target_refresh(struct sip_dialog_t* dialog, const struct sip_mess
 }
 
 /// @return 1-match, 0-don't match
-static int sip_dialog_match(const struct sip_dialog_t* dialog, const struct cstring_t* callid, const struct cstring_t* local, const struct cstring_t* remote)
+static int sip_dialog_match(const struct sip_dialog_t* dialog, const tstr_v* callid, const tstr_v* local, const tstr_v* remote)
 {
 	assert(dialog && local);
 	if (!remote) remote = &sc_null;
 
-	return cstreq(callid, &dialog->callid) && cstreq(local, &dialog->local.uri.tag) && cstreq(remote, &dialog->remote.uri.tag) ? 1 : 0;
+	return sip_sv_equal(callid, &dialog->callid) && sip_sv_equal(local, &dialog->local.uri.tag) && sip_sv_equal(remote, &dialog->remote.uri.tag) ? 1 : 0;
 }
 
-int sip_dialog_id(struct cstring_t* id, const struct sip_dialog_t* dialog, char* ptr, int len)
+int sip_dialog_id(tstr_v* id, const struct sip_dialog_t* dialog, char* ptr, int len)
 {
 	int r;
-	r = dialog ? snprintf(ptr, len, "%.*s@%.*s@%.*s", (int)dialog->callid.n, dialog->callid.p, (int)dialog->local.uri.tag.n, dialog->local.uri.tag.p, (int)dialog->remote.uri.tag.n, dialog->remote.uri.tag.p) : 0;
-	id->p = ptr;
-	id->n = r > 0 && r < len ? r : 0;
+	r = dialog ? snprintf(ptr, len, "%.*s@%.*s@%.*s", (int)dialog->callid.len, dialog->callid.data, (int)dialog->local.uri.tag.len, dialog->local.uri.tag.data, (int)dialog->remote.uri.tag.len, dialog->remote.uri.tag.data) : 0;
+	id->data = ptr;
+	id->len = r > 0 && r < len ? r : 0;
 	return r;
 }
 
 // @param[in] uas 1-local is uas
-int sip_dialog_id_with_message(struct cstring_t *id, const struct sip_message_t* msg, char* ptr, int len, int uas)
+int sip_dialog_id_with_message(tstr_v *id, const struct sip_message_t* msg, char* ptr, int len, int uas)
 {
 	int r;
 	assert(msg->mode == SIP_MESSAGE_REQUEST);
 	if (uas)
-		r = snprintf(ptr, len, "%.*s@%.*s@%.*s", (int)msg->callid.n, msg->callid.p, (int)msg->to.tag.n, msg->to.tag.p, (int)msg->from.tag.n, msg->from.tag.p);
+		r = snprintf(ptr, len, "%.*s@%.*s@%.*s", (int)msg->callid.len, msg->callid.data, (int)msg->to.tag.len, msg->to.tag.data, (int)msg->from.tag.len, msg->from.tag.data);
 	else
-		r = snprintf(ptr, len, "%.*s@%.*s@%.*s", (int)msg->callid.n, msg->callid.p, (int)msg->from.tag.n, msg->from.tag.p, (int)msg->to.tag.n, msg->to.tag.p);
+		r = snprintf(ptr, len, "%.*s@%.*s@%.*s", (int)msg->callid.len, msg->callid.data, (int)msg->from.tag.len, msg->from.tag.data, (int)msg->to.tag.len, msg->to.tag.data);
 	
-	id->p = ptr;
-	id->n = r > 0 && r < len ? r : 0;
+	id->data = ptr;
+	id->len = r > 0 && r < len ? r : 0;
 	return r;
 }

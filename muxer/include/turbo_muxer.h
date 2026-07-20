@@ -51,7 +51,7 @@ typedef struct {
     int stream_id;              /* 流 ID */
     turbo_codec_class_t type;   /* 音频或视频 */
     const char *codec_name;     /* 编解码器名称 */
-    const uint8_t *extradata;   /* 额外数据 (SPS/PPS/VPS 等) */
+    const uint8_t *extradata;   /* H26x: AVC/HEVC/VVC config 或参数集 Annex-B */
     size_t extradata_size;
     
     /* 视频特定 */
@@ -71,8 +71,8 @@ typedef struct {
     int stream_id;              /* 所属流 ID */
     const uint8_t *data;
     size_t size;
-    int64_t pts;                /* 显示时间戳 (90kHz 或 codec clock) */
-    int64_t dts;                /* 解码时间戳 */
+    int64_t pts;                /* 显示时间戳（微秒）*/
+    int64_t dts;                /* 解码时间戳（微秒）*/
     int is_keyframe;            /* 是否关键帧 */
     int64_t duration;           /* 持续时长（可选）*/
 } turbo_muxer_packet_t;

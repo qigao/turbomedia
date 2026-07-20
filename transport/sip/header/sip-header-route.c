@@ -108,20 +108,20 @@ void sip_header_route_test(void)
 	s = "\"Mr.Watson\" <sip:watson@worcester.bell-telephone.com>;q=0.7; expires=3600,\"Mr.Watson\" <mailto:watson@bell-telephone.com> ;q=0.1";
 	assert(0 == sip_header_routes(s, s + strlen(s), &routes) && 2 == sip_uris_count(&routes));
 	c = sip_uris_get(&routes, 0);
-	assert(0 == cstrcmp(&c->scheme, "sip") && 0 == cstrcmp(&c->host, "watson@worcester.bell-telephone.com") && 0 == sip_params_count(&c->headers) && 0 == sip_params_count(&c->parameters));
+	assert(0 == sip_sv_compare_cstr(&c->scheme, "sip") && 0 == sip_sv_compare_cstr(&c->host, "watson@worcester.bell-telephone.com") && 0 == sip_params_count(&c->headers) && 0 == sip_params_count(&c->parameters));
 	c = sip_uris_get(&routes, 1);
-	assert(0 == cstrcmp(&c->scheme, "mailto") && 0 == cstrcmp(&c->host, "watson@bell-telephone.com") && 0 == sip_params_count(&c->headers) && 0 == sip_params_count(&c->parameters));
+	assert(0 == sip_sv_compare_cstr(&c->scheme, "mailto") && 0 == sip_sv_compare_cstr(&c->host, "watson@bell-telephone.com") && 0 == sip_params_count(&c->headers) && 0 == sip_params_count(&c->parameters));
 	sip_uris_free(&routes);
 
 	s = "<sips:bob@192.0.2.4>;expires=60";
 	assert(0 == sip_header_route(s, s + strlen(s), &route));
-	assert(0 == cstrcmp(&route.scheme, "sips") && 0 == cstrcmp(&route.host, "bob@192.0.2.4") && 0 == sip_params_count(&route.headers) && 0 == sip_params_count(&route.parameters));
+	assert(0 == sip_sv_compare_cstr(&route.scheme, "sips") && 0 == sip_sv_compare_cstr(&route.host, "bob@192.0.2.4") && 0 == sip_params_count(&route.headers) && 0 == sip_params_count(&route.parameters));
 	assert(sip_route_write(&route, p, p + sizeof(p)) < sizeof(p) && 0 == strncmp(s, p, 20));
 	sip_uri_free(&route);
 
 	s = "\"<sip:joe@big.org>\" <sip:joe@really.big.com>";
 	assert(0 == sip_header_route(s, s + strlen(s), &route));
-	assert(0 == cstrcmp(&route.scheme, "sip") && 0 == cstrcmp(&route.host, "joe@really.big.com") && 0 == sip_params_count(&route.headers) && 0 == sip_params_count(&route.parameters));
+	assert(0 == sip_sv_compare_cstr(&route.scheme, "sip") && 0 == sip_sv_compare_cstr(&route.host, "joe@really.big.com") && 0 == sip_params_count(&route.headers) && 0 == sip_params_count(&route.parameters));
 	assert(sip_route_write(&route, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s+20, p));
 	sip_uri_free(&route);
 
@@ -129,11 +129,11 @@ void sip_header_route_test(void)
 	sip_uris_init(&routes);
 	assert(0 == sip_header_routes(s, s + strlen(s), &routes) && 2 == sip_uris_count(&routes));
 	c = sip_uris_get(&routes, 0);
-	assert(0 == cstrcmp(&c->scheme, "sip") && 0 == cstrcmp(&c->host, "p1.example.com") && 0 == sip_params_count(&c->headers) && 1 == sip_params_count(&c->parameters));
-	assert(0 == cstrcmp(&sip_params_get(&c->parameters, 0)->name, "lr") && c->lr);
+	assert(0 == sip_sv_compare_cstr(&c->scheme, "sip") && 0 == sip_sv_compare_cstr(&c->host, "p1.example.com") && 0 == sip_params_count(&c->headers) && 1 == sip_params_count(&c->parameters));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->parameters, 0)->name, "lr") && c->lr);
 	c = sip_uris_get(&routes, 1);
-	assert(0 == cstrcmp(&c->scheme, "sip") && 0 == cstrcmp(&c->host, "p2.domain.com") && 0 == sip_params_count(&c->headers) && 1 == sip_params_count(&c->parameters));
-	assert(0 == cstrcmp(&sip_params_get(&c->parameters, 0)->name, "lr") && c->lr);
+	assert(0 == sip_sv_compare_cstr(&c->scheme, "sip") && 0 == sip_sv_compare_cstr(&c->host, "p2.domain.com") && 0 == sip_params_count(&c->headers) && 1 == sip_params_count(&c->parameters));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&c->parameters, 0)->name, "lr") && c->lr);
 	//assert(sip_route_write(c, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_uris_free(&routes);
 }

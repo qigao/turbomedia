@@ -4,14 +4,17 @@
  * 基于 refer/libflv 的 FLV 容器解封装器
  */
 #include "turbo_demuxer.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+#include <turbo_error.h>
+#include <turbo_vec.h>
 
 #ifdef TURBO_MEDIA_HAS_FLV
 
 #include "flv_demuxer_internal.h"
 #include "flv_reader.h"
+#include "container_io.h"
 #include "amf0.h"
 #include "../common/flv/turbo_flv_header.h"
 #include "../common/flv/turbo_flv_proto.h"
@@ -22,12 +25,7 @@
 
 typedef struct {
     flv_demuxer_t *flv;
-    FILE *fp;
-    
-    /* 内存模式 */
-    const uint8_t *data;
-    size_t data_size;
-    size_t data_pos;
+    turbo_container_io_t io;
     
     /* 流信息 */
     turbo_stream_info_t streams[2];  /* 最多 1 个视频 + 1 个音频 */
@@ -36,9 +34,9 @@ typedef struct {
     int audio_stream_index;
     
     /* 当前数据包 */
-    uint8_t *packet_buffer;
+    turbo_vec_t tag_buffer;
+    turbo_vec_t packet_buffer;
     size_t packet_size;
-    size_t packet_capacity;
     int packet_stream_index;
     int64_t packet_pts;
     int64_t packet_dts;
@@ -64,6 +62,14 @@ static const char *flv_codec_name(int codec) {
         case TURBO_FLV_AUDIO_FLAC:
         case TURBO_FLV_AUDIO_FLAC_HEAD:
             return "flac";
+        case TURBO_FLV_AUDIO_G711A:
+            return "pcma";
+        case TURBO_FLV_AUDIO_G711U:
+            return "pcmu";
+        case TURBO_FLV_AUDIO_AC3:
+            return "ac3";
+        case TURBO_FLV_AUDIO_EAC3:
+            return "eac3";
         case TURBO_FLV_VIDEO_H264:
         case TURBO_FLV_VIDEO_AVCC:
             return "h264";
@@ -163,19 +169,8 @@ static int flv_packet_handler(void *param, int codec, const void *data, size_t b
         return 0;
     }
     
-    /* 确保缓冲区足够大 */
-    if (bytes > ctx->packet_capacity) {
-        size_t new_capacity = bytes * 2;
-        uint8_t *new_buffer = (uint8_t *)realloc(ctx->packet_buffer, new_capacity);
-        if (!new_buffer) {
-            return -1;
-        }
-        ctx->packet_buffer = new_buffer;
-        ctx->packet_capacity = new_capacity;
-    }
-    
-    /* 复制数据 */
-    memcpy(ctx->packet_buffer, data, bytes);
+    if (turbo_vec_resize(&ctx->packet_buffer, bytes) != TURBO_OK) return -1;
+    memcpy(turbo_vec_data(&ctx->packet_buffer), data, bytes);
     ctx->packet_size = bytes;
     ctx->packet_stream_index = stream_index;
     ctx->packet_pts = pts;
@@ -192,48 +187,20 @@ static int flv_packet_handler(void *param, int codec, const void *data, size_t b
 
 static int flv_file_read(void *param, void *buf, int len) {
     flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)param;
-    
-    if (ctx->fp) {
-        /* 文件模式 */
-        return (int)fread(buf, 1, len, ctx->fp);
-    } else {
-        /* 内存模式 */
-        if (ctx->data_pos >= ctx->data_size) {
-            return 0;  /* EOF */
-        }
-        
-        size_t available = ctx->data_size - ctx->data_pos;
-        size_t to_read = (size_t)len < available ? (size_t)len : available;
-        
-        memcpy(buf, ctx->data + ctx->data_pos, to_read);
-        ctx->data_pos += to_read;
-        
-        return (int)to_read;
-    }
+    size_t bytes_read = 0;
+    if (!ctx || len < 0 ||
+        turbo_container_io_read_some(&ctx->io, buf, (size_t)len, &bytes_read) !=
+            TURBO_OK)
+        return -1;
+    return bytes_read > INT_MAX ? -1 : (int)bytes_read;
 }
 
 static int flv_file_seek(void *param, int64_t offset) {
     flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)param;
-    
-    if (ctx->fp) {
-        return fseek(ctx->fp, (long)offset, SEEK_SET);
-    } else {
-        if (offset < 0 || (size_t)offset > ctx->data_size) {
-            return -1;
-        }
-        ctx->data_pos = (size_t)offset;
-        return 0;
-    }
-}
-
-static int64_t flv_file_tell(void *param) {
-    flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)param;
-    
-    if (ctx->fp) {
-        return ftell(ctx->fp);
-    } else {
-        return (int64_t)ctx->data_pos;
-    }
+    return ctx && offset >= 0 &&
+                   turbo_container_io_seek(&ctx->io, offset) == TURBO_OK
+               ? 0
+               : -1;
 }
 
 /* =============================================================================
@@ -251,41 +218,28 @@ static int flv_probe_impl(const uint8_t *data, size_t size) {
     return 0;
 }
 
+static void flv_demuxer_destroy_impl(void *ctx_ptr);
+
 static void *flv_demuxer_create_impl(const turbo_demuxer_config_t *config) {
-    flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)calloc(1, sizeof(flv_demuxer_ctx_t));
+    flv_demuxer_ctx_t *ctx;
+    if (!config || (!!config->input_path == !!config->data) ||
+        (!config->input_path && config->data_size == 0))
+        return NULL;
+    ctx = (flv_demuxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    
-    /* 打开输入 */
-    if (config->input_path) {
-        ctx->fp = fopen(config->input_path, "rb");
-        if (!ctx->fp) {
-            free(ctx);
-            return NULL;
-        }
-    } else if (config->data && config->data_size > 0) {
-        ctx->data = config->data;
-        ctx->data_size = config->data_size;
-        ctx->data_pos = 0;
-    } else {
-        free(ctx);
+    ctx->io.file = TURBO_INVALID_FILE;
+    if (turbo_vec_init(&ctx->tag_buffer, sizeof(uint8_t)) != TURBO_OK ||
+        turbo_vec_init(&ctx->packet_buffer, sizeof(uint8_t)) != TURBO_OK ||
+        turbo_container_io_open_reader(&ctx->io, config->input_path, config->data,
+                                       config->data_size) != TURBO_OK) {
+        flv_demuxer_destroy_impl(ctx);
         return NULL;
     }
     
     /* 创建 FLV demuxer */
     ctx->flv = flv_demuxer_create(flv_packet_handler, ctx);
     if (!ctx->flv) {
-        if (ctx->fp) fclose(ctx->fp);
-        free(ctx);
-        return NULL;
-    }
-    
-    /* 初始化缓冲区 */
-    ctx->packet_capacity = 65536;  /* 64KB */
-    ctx->packet_buffer = (uint8_t *)malloc(ctx->packet_capacity);
-    if (!ctx->packet_buffer) {
-        flv_demuxer_destroy(ctx->flv);
-        if (ctx->fp) fclose(ctx->fp);
-        free(ctx);
+        flv_demuxer_destroy_impl(ctx);
         return NULL;
     }
     
@@ -305,16 +259,13 @@ static void flv_demuxer_destroy_impl(void *ctx_ptr) {
         flv_demuxer_destroy(ctx->flv);
     }
     
-    if (ctx->fp) {
-        fclose(ctx->fp);
-    }
-    
-    if (ctx->packet_buffer) {
-        free(ctx->packet_buffer);
-    }
-    
+    turbo_vec_destroy(&ctx->packet_buffer);
+    turbo_vec_destroy(&ctx->tag_buffer);
+    turbo_container_io_close(&ctx->io);
     free(ctx);
 }
+
+static int flv_read_next_packet(flv_demuxer_ctx_t *ctx);
 
 static int flv_demuxer_open_impl(void *ctx_ptr) {
     flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)ctx_ptr;
@@ -357,12 +308,11 @@ static int flv_demuxer_open_impl(void *ctx_ptr) {
     if (flv_file_seek(ctx, flv_header.data_offset + 4) != 0) {
         return -1;
     }
-    
-    return 0;
+
+    return flv_read_next_packet(ctx) < 0 ? -1 : 0;
 }
 
-static int flv_demuxer_read_packet_impl(void *ctx_ptr, turbo_demuxer_packet_t *packet) {
-    flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)ctx_ptr;
+static int flv_read_next_packet(flv_demuxer_ctx_t *ctx) {
     uint8_t tag_header[11];
     uint8_t prev_size[4];
     turbo_flv_tag_header_t tag;
@@ -377,16 +327,9 @@ static int flv_demuxer_read_packet_impl(void *ctx_ptr, turbo_demuxer_packet_t *p
             return -1;
         }
 
-        if (tag.size > ctx->packet_capacity) {
-            uint8_t *new_buffer = (uint8_t *)realloc(ctx->packet_buffer, tag.size);
-            if (!new_buffer) {
-                return -1;
-            }
-            ctx->packet_buffer = new_buffer;
-            ctx->packet_capacity = tag.size;
-        }
+        if (turbo_vec_resize(&ctx->tag_buffer, tag.size) != TURBO_OK) return -1;
 
-        ret = flv_file_read(ctx, ctx->packet_buffer, (int)tag.size);
+        ret = flv_file_read(ctx, turbo_vec_data(&ctx->tag_buffer), (int)tag.size);
         if (ret != (int)tag.size) {
             return ret < 0 ? ret : -1;
         }
@@ -396,12 +339,24 @@ static int flv_demuxer_read_packet_impl(void *ctx_ptr, turbo_demuxer_packet_t *p
         }
 
         ctx->current_tag_type = tag.type;
-        ret = flv_demuxer_input(ctx->flv, tag.type, ctx->packet_buffer, tag.size, tag.timestamp);
+        ret = flv_demuxer_input(ctx->flv, tag.type,
+                                turbo_vec_data_const(&ctx->tag_buffer), tag.size,
+                                tag.timestamp);
         ctx->current_tag_type = 0;
         if (ret < 0) {
             return -1;
         }
     }
+    return 1;
+}
+
+static int flv_demuxer_read_packet_impl(void *ctx_ptr, turbo_demuxer_packet_t *packet) {
+    flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)ctx_ptr;
+    int result;
+
+    if (!ctx || !packet) return TURBO_EINVAL;
+    result = flv_read_next_packet(ctx);
+    if (result <= 0) return result;
 
     if (ctx->packet_size > 0) {
         packet->data = (uint8_t *)malloc(ctx->packet_size);
@@ -409,7 +364,8 @@ static int flv_demuxer_read_packet_impl(void *ctx_ptr, turbo_demuxer_packet_t *p
             return -1;
         }
         
-        memcpy(packet->data, ctx->packet_buffer, ctx->packet_size);
+        memcpy(packet->data, turbo_vec_data_const(&ctx->packet_buffer),
+               ctx->packet_size);
         packet->size = ctx->packet_size;
         packet->stream_index = ctx->packet_stream_index;
         packet->pts = ctx->packet_pts;

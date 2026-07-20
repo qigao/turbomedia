@@ -11,9 +11,16 @@ struct sip_agent_t* sip_agent_create(struct sip_uas_handler_t* handler)
 		return NULL;
 
 	sip->ref = 1;
-	locker_create(&sip->locker);
-	LIST_INIT_HEAD(&sip->uac);
-	LIST_INIT_HEAD(&sip->uas);
+	turbo_mutex_init(&sip->locker);
+	if (turbo_vec_init(&sip->uac, sizeof(struct sip_uac_transaction_t *)) != TURBO_OK ||
+		turbo_vec_init(&sip->uas, sizeof(struct sip_uas_transaction_t *)) != TURBO_OK)
+	{
+		turbo_vec_destroy(&sip->uac);
+		turbo_vec_destroy(&sip->uas);
+		turbo_mutex_destroy(&sip->locker);
+		free(sip);
+		return NULL;
+	}
 	memcpy(&sip->handler, handler, sizeof(sip->handler));
 	return sip;
 }
@@ -23,14 +30,16 @@ int sip_agent_destroy(struct sip_agent_t* sip)
     int32_t ref;
 
 	assert(sip->ref > 0);
-    ref = atomic_decrement32(&sip->ref);
+    ref = sip_atomic_decrement(&sip->ref);
 	if (0 != ref)
 		return ref;
 
-	assert(list_empty(&sip->uac));
-	assert(list_empty(&sip->uas));
+	assert(turbo_vec_empty(&sip->uac));
+	assert(turbo_vec_empty(&sip->uas));
 	
-	locker_destroy(&sip->locker);
+	turbo_vec_destroy(&sip->uac);
+	turbo_vec_destroy(&sip->uas);
+	turbo_mutex_destroy(&sip->locker);
 	free(sip);
 	return 0;
 }
@@ -48,9 +57,9 @@ int sip_agent_set_rport(struct sip_message_t* msg, const char* peer, int port)
 struct sip_gc_t s_gc;
 void sip_gc_get(int32_t* uac, int32_t* uas, int32_t* dialog, int32_t* message, int32_t* subscribe)
 {
-	*uac = s_gc.uac;
-	*uas = s_gc.uas;
-	*dialog = s_gc.dialog;
-	*message = s_gc.message;
-	*subscribe = s_gc.subscribe;
+	*uac = sip_atomic_load(&s_gc.uac);
+	*uas = sip_atomic_load(&s_gc.uas);
+	*dialog = sip_atomic_load(&s_gc.dialog);
+	*message = sip_atomic_load(&s_gc.message);
+	*subscribe = sip_atomic_load(&s_gc.subscribe);
 }

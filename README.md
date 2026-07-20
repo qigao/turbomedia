@@ -38,19 +38,13 @@ TurboMedia 是一个高性能、模块化的多媒体处理框架，提供音视
 
 ### 安装
 
-```bash
+```powershell
 git clone https://github.com/turbomedia/turbomedia.git
 cd turbomedia
-mkdir build && cd build
 
-cmake .. \
-  -DTURBO_MEDIA_ENABLE_H264=ON \
-  -DTURBO_MEDIA_ENABLE_H265=ON \
-  -DTURBO_MEDIA_ENABLE_OPUS=ON \
-  -DTURBO_MEDIA_ENABLE_FLV=ON \
-  -DTURBO_MEDIA_ENABLE_HLS=ON
-
-cmake --build . --config Release
+# 依赖安装前缀和工具路径只在本机 CMakeUserPresets.json 中配置。
+cmake --preset win-release-user
+cmake --build --preset win-release-user
 ```
 
 ### Hello World 示例
@@ -182,38 +176,11 @@ int main() {
 输入文件 → Demuxer → Decoder → Encoder → Muxer → 输出文件
 ```
 
-## 🛠️ CMake 配置选项
+## 🛠️ CMake 配置
 
-### 编解码器
-```cmake
--DTURBO_MEDIA_ENABLE_H264=ON      # H.264 编解码
--DTURBO_MEDIA_ENABLE_H265=ON      # H.265 编解码
--DTURBO_MEDIA_ENABLE_OPUS=ON      # Opus 音频编解码
--DTURBO_MEDIA_ENABLE_VPX=ON       # VP8/VP9 编解码
-```
-
-### 容器格式
-```cmake
--DTURBO_MEDIA_ENABLE_FLV=ON       # FLV 容器
--DTURBO_MEDIA_ENABLE_MP4=ON       # MP4 容器
--DTURBO_MEDIA_ENABLE_MKV=ON       # MKV/WebM 容器
--DTURBO_MEDIA_ENABLE_MPEG=ON      # MPEG-TS/PS 容器
-```
-
-### 流媒体协议
-```cmake
--DTURBO_MEDIA_ENABLE_HLS=ON       # HLS 协议
--DTURBO_MEDIA_ENABLE_DASH=ON      # DASH 协议
--DTURBO_MEDIA_ENABLE_RTMP=ON      # RTMP 协议
--DTURBO_MEDIA_ENABLE_HTTP_FLV=ON  # HTTP-FLV 协议
-```
-
-### 其他选项
-```cmake
--DBUILD_EXAMPLES=ON               # 编译示例程序
--DBUILD_TESTS=ON                  # 编译测试
--DBUILD_MOBILE=ON                 # 移动平台支持
-```
+TurboMedia 不提供功能开关。编解码器、容器、流媒体、移动端、示例和测试目标均进入默认构建；
+缺少任一必需依赖时配置立即失败。机器相关的依赖前缀、工具路径和安装路径只能写在不提交的
+`CMakeUserPresets.json` 中，项目 CMake 文件不包含本机路径或依赖回退逻辑。
 
 ## 🔗 依赖项
 
@@ -221,7 +188,7 @@ int main() {
 - CMake >= 3.20
 - C11 编译器（GCC/Clang/MSVC）
 
-### 可选（根据启用的功能）
+### 必需库
 
 #### 编解码器
 - **H.264**: libx264 或 OpenH264
@@ -234,7 +201,22 @@ int main() {
 - **TurboHTTP**: HTTP 客户端（用于 HLS、DASH）
 
 #### 其他
-- **FFmpeg**: 可选的通用播放器支持
+- **FFmpeg**: 通用播放器支持
+
+## HLS 公网兼容性测试
+
+默认 CTest 不访问公网。需要验证 TurboMedia Player 对
+[mtoczko/hls-test-streams](https://github.com/mtoczko/hls-test-streams)
+中 discontinuity、program date time 和 fMP4 WebVTT 流的兼容性时，显式提供测试根 URL：
+
+```powershell
+$env:TURBO_MEDIA_RUN_PUBLIC_HLS_TESTS = '1'
+$env:TURBO_MEDIA_PUBLIC_HLS_ROOT = 'https://mtoczko.github.io/hls-test-streams'
+ctest --preset win-release-user -R turbo_media_test_hls_public --output-on-failure
+```
+
+启用公网测试但未提供 `TURBO_MEDIA_PUBLIC_HLS_ROOT` 时测试立即失败，不使用备用地址。
+该上游测试流仓库采用 Apache-2.0 许可证；本仓库不复制或打包其媒体文件。
 
 ## 🌍 平台支持
 
@@ -308,9 +290,8 @@ int main() {
 
 ## 🙏 致谢
 
-TurboMedia 使用或参考了以下优秀的开源项目：
+TurboMedia 使用以下开源项目：
 
-- [media-server](https://github.com/ireader/media-server) - FLV/HLS/RTMP/MPEG 实现参考
 - [x264](https://www.videolan.org/developers/x264.html) - H.264 编码器
 - [x265](https://www.videolan.org/developers/x265.html) - H.265 编码器
 - [libopus](https://opus-codec.org/) - Opus 音频编解码器

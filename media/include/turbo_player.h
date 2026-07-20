@@ -1,8 +1,7 @@
 /**
  * TurboMedia universal player
  *
- * Optional FFmpeg-backed demux/decode layer. Enable with
- * TURBO_MEDIA_ENABLE_FFMPEG.
+ * FFmpeg-backed demux/decode layer.
  */
 #ifndef TURBO_PLAYER_H
 #define TURBO_PLAYER_H
@@ -14,8 +13,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#ifdef TURBO_MEDIA_HAS_FFMPEG
 
 typedef struct turbo_player_s turbo_player_t;
 
@@ -90,8 +87,6 @@ CXX_C_API void turbo_player_resume(turbo_player_t *player);
 CXX_C_API int turbo_player_seek_ms(turbo_player_t *player, int64_t position_ms);
 
 CXX_C_API int64_t turbo_player_get_duration_ms(turbo_player_t *player);
-
-#endif /* TURBO_MEDIA_HAS_FFMPEG */
 
 #ifdef __cplusplus
 }

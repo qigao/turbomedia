@@ -145,7 +145,6 @@
 | ABI | Status | Notes |
 |-----|--------|-------|
 | arm64-v8a | ✅ | 64-bit ARM (recommended) |
-| armeabi-v7a | ✅ | 32-bit ARM |
 | x86_64 | ✅ | 64-bit Intel (emulator) |
 | x86 | ✅ | 32-bit Intel (emulator) |
 

@@ -14,6 +14,7 @@ struct flv_writer_t
 	FILE* fp;
 	flv_writer_onwrite write;
 	void* param;
+	int video;
 };
 
 static int flv_write_header(int audio, int video, struct flv_writer_t* flv)
@@ -81,6 +82,7 @@ void* flv_writer_create2(int audio, int video, flv_writer_onwrite write, void* p
 
 	flv->write = write;
 	flv->param = param;
+	flv->video = video;
 	if (0 != flv_write_header(audio, video, flv))
 	{
 		flv_writer_destroy(flv);
@@ -97,7 +99,8 @@ void flv_writer_destroy(void* p)
 
 	if (NULL != flv)
 	{
-		flv_write_eos(flv);
+		if (flv->video)
+			flv_write_eos(flv);
 		if (flv->fp)
 			fclose(flv->fp);
 		free(flv);

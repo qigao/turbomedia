@@ -105,7 +105,7 @@ NDK 优先取合并后的 `ANDROID_NDK_HOME`，否则从
 "ANDROID_PLATFORM": "android-28"
 ```
 
-当前 vcpkg 官方 `arm64-android`、`arm-android`、`x64-android` 与 `x86-android` triplet
+当前 vcpkg 官方 `arm64-android`、`x64-android` 与 `x86-android` triplet
 也使用 API 28，因此项目及静态依赖具有相同的 libc 符号边界。不要让 PowerShell runner
 根据设备版本回写 preset；设备 API 不是构建契约。runner 只读取 configure 后的
 `CMakeCache.txt` 并验证产物 ABI。若以后改变最低 API，应同时确认 vcpkg triplet 的
@@ -224,7 +224,7 @@ Android mobile 测试示例：
 
 ## WebRTC 与 TurboHTTP 链路
 
-Android presets 已启用 `TURBO_MEDIA_ENABLE_WEBRTC`，RTSP 保持关闭。ARM64 Release 使用
+Android presets 构建全部功能。ARM64 Release 使用
 已安装的 `C:/projects/cpp/external/pkgs/turbohttp-android`；其他 ABI/配置从
 `C:/projects/cpp/TurboHTTP/build/android-<abi>-<config>` 查找。对应 TurboHTTP package
 必须先构建，且 TurboHTTP、TurboNet、TurboUtils、TurboMedia 必须使用相同 ABI、构建类型、

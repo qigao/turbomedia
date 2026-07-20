@@ -17,7 +17,7 @@
 #include "mp3-header.h"
 #include "opus-head.h"
 
-#define FLV_MUXER "ireader/media-server"
+#define FLV_MUXER "TurboMedia"
 
 struct flv_muxer_t
 {

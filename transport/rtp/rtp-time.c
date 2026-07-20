@@ -1,42 +1,19 @@
-#include <stdint.h>
+#include "platform.h"
+
 #include <assert.h>
+#include <stdint.h>
 #include <time.h>
-
-#if defined(OS_WINDOWS)
-#include <Windows.h>
-#else
-#include <sys/time.h>
-
-#if defined(OS_MAC)
-#include <sys/param.h>
-#include <sys/sysctl.h>
-#include <mach/mach_time.h>
-#endif
-
-#endif
 
 /// same as system_time except ms -> us
 /// @return microseconds since the Epoch(1970-01-01 00:00:00 +0000 (UTC))
 uint64_t rtpclock()
 {
-#if defined(OS_WINDOWS)
-	uint64_t t;
-	FILETIME ft;
-	GetSystemTimeAsFileTime(&ft);
-	t = (uint64_t)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
-	return t / 10 - 11644473600000000; /* Jan 1, 1601 */
-#elif defined(OS_MAC)
-    uint64_t tick;
-    mach_timebase_info_data_t timebase;
-    tick = mach_absolute_time();
-    mach_timebase_info(&timebase);
-    return tick * timebase.numer / timebase.denom / 1000;
-#else
-    // POSIX.1-2008 marks gettimeofday() as obsolete, recommending the use of clock_gettime(2) instead.
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
-#endif
+	turbo_timeval_t tv;
+
+	if (turbo_gettimeofday(&tv, NULL) != 0)
+		abort();
+
+	return (uint64_t)tv.tv_sec * 1000000ULL + (uint32_t)tv.tv_usec;
 }
 
 /// us(microsecond) -> ntp

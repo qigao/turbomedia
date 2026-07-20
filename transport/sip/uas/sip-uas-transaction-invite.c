@@ -47,7 +47,7 @@
 */
 
 #include "sip-uas-transaction.h"
-#include "cpm/param.h"
+#include "sip-internal.h"
 
 static void sip_uas_transaction_onretransmission(void* usrptr);
 
@@ -66,7 +66,7 @@ static struct sip_dialog_t* sip_uas_create_dialog(const struct sip_message_t* re
     }
 
 	// update dialog remote tag
-	if (!cstrvalid(&dialog->local.uri.tag) && cstrvalid(&reply->to.tag))
+	if (!sip_sv_valid(&dialog->local.uri.tag) && sip_sv_valid(&reply->to.tag))
 		sip_dialog_setlocaltag(dialog, &reply->to.tag);
     
     return dialog;
@@ -90,7 +90,7 @@ static int sip_uas_transaction_inivte_change_state(struct sip_uas_transaction_t*
 int sip_uas_transaction_invite_input(struct sip_uas_transaction_t* t, const struct sip_message_t* req, void* param)
 {
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 	int r, status, oldstatus;
 
 	r = 0;
@@ -102,7 +102,7 @@ int sip_uas_transaction_invite_input(struct sip_uas_transaction_t* t, const stru
 	case SIP_UAS_TRANSACTION_INIT:
         t->dialog = sip_uas_create_dialog(req, t->reply);
         if(!t->dialog) return 0;
-		if (t->dialog->state == DIALOG_ERALY && req->to.tag.n > 0)
+		if (t->dialog->state == DIALOG_ERALY && req->to.tag.len > 0)
 			t->dialog->state = DIALOG_CONFIRMED; // re-invite
 		sip_dialog_id(&id, t->dialog, ptr, sizeof(ptr)); // always has dialog id
 
@@ -207,8 +207,8 @@ int sip_uas_transaction_invite_reply(struct sip_uas_transaction_t* t, int code, 
 		return 0; // discard
 
 	t->reply->u.s.code = code;
-	t->reply->u.s.reason.p = sip_reason_phrase(code);
-	t->reply->u.s.reason.n = strlen(t->reply->u.s.reason.p);
+	t->reply->u.s.reason.data = sip_reason_phrase(code);
+	t->reply->u.s.reason.len = strlen(t->reply->u.s.reason.data);
 	t->reply->payload = data;
 	t->reply->size = bytes;
 	t->size = sip_message_write(t->reply, t->data, sizeof(t->data));
@@ -216,9 +216,9 @@ int sip_uas_transaction_invite_reply(struct sip_uas_transaction_t* t, int code, 
 		return -1;
 
     // set early dialog local url tag/target
-    if(sip_message_isinvite(t->reply) && t->dialog && !cstrvalid(&t->dialog->local.uri.tag))
+    if(sip_message_isinvite(t->reply) && t->dialog && !sip_sv_valid(&t->dialog->local.uri.tag))
     {
-        assert(cstrvalid(&t->reply->to.tag));
+        assert(sip_sv_valid(&t->reply->to.tag));
         sip_dialog_setlocaltag(t->dialog, &t->reply->to.tag);
 		sip_dialog_set_local_target(t->dialog, t->reply);
     }
@@ -276,7 +276,7 @@ static void sip_uas_transaction_onretransmission(void* usrptr)
 	int r, timeout;
 	struct sip_uas_transaction_t* t;
 	t = (struct sip_uas_transaction_t*)usrptr;
-	locker_lock(&t->locker);
+	turbo_mutex_lock(&t->locker);
 	sip_uas_stop_timer(t->agent, t, &t->timerg); // hijack free timer only, don't release transaction
 	
 	if (t->status < SIP_UAS_TRANSACTION_CONFIRMED)
@@ -291,9 +291,9 @@ static void sip_uas_transaction_onretransmission(void* usrptr)
 
 		assert(!t->reliable);
 		timeout = T1 * (1 << t->retries++);
-		t->timerg = sip_uas_start_timer(t->agent, t, MIN(t->t2, MAX(T1, timeout)), sip_uas_transaction_onretransmission);
+		t->timerg = sip_uas_start_timer(t->agent, t, sip_int_min(t->t2, sip_int_max(T1, timeout)), sip_uas_transaction_onretransmission);
 	}
 
-	locker_unlock(&t->locker);
+	turbo_mutex_unlock(&t->locker);
 	sip_uas_transaction_release(t);
 }

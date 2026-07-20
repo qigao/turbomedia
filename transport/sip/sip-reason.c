@@ -1,59 +1,59 @@
-#include "http-reason.h"
-
 const char* sip_reason_phrase(int code)
 {
-	static const char *reason18x[] =
-	{
-		"Ringing", // 180
-		"Call Is Being Forwarded", // 181
-		"Queued", // 182
-		"Session Progress", // 183
-	};
-
-	static const char *reason48x[] =
-	{
-		// 469 Bad Info Package // rfc6086
-		"Temporarily Unavailable", // 480
-		"Call/Transaction Does Not Exist", // 481
-		"Loop Detected", // 482
-		"Too Many Hops", // 483
-		"Address Incomplete", // 484
-		"Ambiguous", // 485
-		"Busy Here", // 486
-		"Request Terminated", // 487
-		"Not Acceptable Here", // 488
-		"", // 489
-		"", // 490
-		"Request Pending", // 491
-		"", // 492
-		"Undecipherable", // 493
-	};
-
-	static const char *reason6xx[] =
-	{
-		"Busy Everywhere", // 600
-		"", // 601
-		"", // 602
-		"Decline", // 603
-		"Does Not Exist Anywhere", // 604
-		"", // 605
-		"Not Acceptable", // 606
-	};
-
-	if (180 <= code && code < 180 + sizeof(reason18x) / sizeof(reason18x[0]))
-		return reason18x[code - 180];
-	else if (480 <= code && code < 480 + sizeof(reason48x) / sizeof(reason48x[0]))
-		return reason48x[code - 480];
-	else if (600 <= code && code < 600 + sizeof(reason6xx) / sizeof(reason6xx[0]))
-		return reason6xx[code - 600];
-
 	switch (code)
 	{
-	case 100:
-		return "Trying";
-	case 380:
-		return "Alternative Service";
-	default:
-		return http_reason_phrase(code);
+	case 100: return "Trying";
+	case 180: return "Ringing";
+	case 181: return "Call Is Being Forwarded";
+	case 182: return "Queued";
+	case 183: return "Session Progress";
+	case 200: return "OK";
+	case 202: return "Accepted";
+	case 300: return "Multiple Choices";
+	case 301: return "Moved Permanently";
+	case 302: return "Moved Temporarily";
+	case 305: return "Use Proxy";
+	case 380: return "Alternative Service";
+	case 400: return "Bad Request";
+	case 401: return "Unauthorized";
+	case 402: return "Payment Required";
+	case 403: return "Forbidden";
+	case 404: return "Not Found";
+	case 405: return "Method Not Allowed";
+	case 406: return "Not Acceptable";
+	case 407: return "Proxy Authentication Required";
+	case 408: return "Request Timeout";
+	case 410: return "Gone";
+	case 413: return "Request Entity Too Large";
+	case 414: return "Request-URI Too Long";
+	case 415: return "Unsupported Media Type";
+	case 416: return "Unsupported URI Scheme";
+	case 420: return "Bad Extension";
+	case 421: return "Extension Required";
+	case 423: return "Interval Too Brief";
+	case 469: return "Bad Info Package";
+	case 480: return "Temporarily Unavailable";
+	case 481: return "Call/Transaction Does Not Exist";
+	case 482: return "Loop Detected";
+	case 483: return "Too Many Hops";
+	case 484: return "Address Incomplete";
+	case 485: return "Ambiguous";
+	case 486: return "Busy Here";
+	case 487: return "Request Terminated";
+	case 488: return "Not Acceptable Here";
+	case 491: return "Request Pending";
+	case 493: return "Undecipherable";
+	case 500: return "Server Internal Error";
+	case 501: return "Not Implemented";
+	case 502: return "Bad Gateway";
+	case 503: return "Service Unavailable";
+	case 504: return "Server Time-out";
+	case 505: return "Version Not Supported";
+	case 513: return "Message Too Large";
+	case 600: return "Busy Everywhere";
+	case 603: return "Decline";
+	case 604: return "Does Not Exist Anywhere";
+	case 606: return "Not Acceptable";
+	default: return "Unknown";
 	}
 }

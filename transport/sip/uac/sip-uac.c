@@ -11,33 +11,51 @@
 
 int sip_uac_link_transaction(struct sip_agent_t* sip, struct sip_uac_transaction_t* t)
 {
+	int result;
+
 	sip_uac_transaction_addref(t);
-	atomic_increment32(&sip->ref); // ref by transaction
+	sip_atomic_increment(&sip->ref); // ref by transaction
 	assert(sip->ref > 0);
 
-	// link to tail
-	locker_lock(&sip->locker);
-	list_insert_after(&t->link, sip->uac.prev);
-	locker_unlock(&sip->locker);
-	return 0;
+	turbo_mutex_lock(&sip->locker);
+	assert(!t->linked);
+	result = turbo_vec_push(&sip->uac, &t);
+	if (result == TURBO_OK)
+		t->linked = 1;
+	turbo_mutex_unlock(&sip->locker);
+
+	if (result != TURBO_OK)
+	{
+		sip_uac_transaction_release(t);
+		sip_agent_destroy(sip);
+	}
+	return result;
 }
 
 int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transaction_t* t)
 {
-	//struct sip_dialog_t* dialog;
-	//struct list_head *pos, *next;
+	size_t index;
+	struct sip_uac_transaction_t **candidate;
 
 	assert(sip->ref > 0);
-	locker_lock(&sip->locker);
-	if (t->link.next == NULL)
+	turbo_mutex_lock(&sip->locker);
+	if (!t->linked)
 	{
-		// fix remove twice
-		locker_unlock(&sip->locker);
+		turbo_mutex_unlock(&sip->locker);
 		return 0;
 	}
 
-	// unlink transaction
-	list_remove(&t->link);
+	for (index = 0U; index < turbo_vec_size(&sip->uac); ++index)
+	{
+		candidate = (struct sip_uac_transaction_t **)turbo_vec_at(&sip->uac, index);
+		if (candidate && *candidate == t)
+		{
+			turbo_vec_erase(&sip->uac, index, NULL);
+			t->linked = 0;
+			break;
+		}
+	}
+	assert(!t->linked);
 
 	// 12.3 Termination of a Dialog (p77)
 	// Independent of the method, if a request outside of a dialog generates
@@ -46,7 +64,7 @@ int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transacti
 	//list_for_each_safe(pos, next, &sip->dialogs)
 	//{
 	//	dialog = list_entry(pos, struct sip_dialog_t, link);
-	//	if (cstreq(&t->req->callid, &dialog->callid) && DIALOG_ERALY == dialog->state)
+	//	if (sip_sv_equal(&t->req->callid, &dialog->callid) && DIALOG_ERALY == dialog->state)
 	//	{
 	//		//assert(0 == sip_contact_compare(&t->req->from, &dialog->local.uri));
 	//		sip_dialog_remove(sip, dialog); // TODO: release in locker
@@ -54,7 +72,7 @@ int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transacti
 	//	}
 	//}
 
-	locker_unlock(&sip->locker);
+	turbo_mutex_unlock(&sip->locker);
 	sip_uac_transaction_release(t);
 	sip_agent_destroy(sip);
 	return 0;
@@ -87,37 +105,41 @@ void sip_uac_stop_timer(struct sip_agent_t* sip, struct sip_uac_transaction_t* t
 }
 
 // RFC3261 17.1.3 Matching Responses to Client Transactions (p132)
-static struct sip_uac_transaction_t* sip_uac_find_transaction(struct list_head* transactions, struct sip_message_t* reply)
+static struct sip_uac_transaction_t* sip_uac_find_transaction(turbo_vec_t* transactions, struct sip_message_t* reply)
 {
-	const struct cstring_t *p, *p2;
-	struct list_head *pos, *next;
+	const tstr_v *p, *p2;
+	size_t index;
+	struct sip_uac_transaction_t **candidate;
 	struct sip_uac_transaction_t* t;
 
 	p = sip_vias_top_branch(&reply->vias);
 	if (!p) return NULL;
-	assert(cstrprefix(p, SIP_BRANCH_PREFIX));
+	assert(sip_sv_starts_with(p, SIP_BRANCH_PREFIX));
 
-	list_for_each_safe(pos, next, transactions)
+	for (index = 0U; index < turbo_vec_size(transactions); ++index)
 	{
-		t = list_entry(pos, struct sip_uac_transaction_t, link);
+		candidate = (struct sip_uac_transaction_t **)turbo_vec_at(transactions, index);
+		if (!candidate || !*candidate)
+			continue;
+		t = *candidate;
 
 		// 1. via branch parameter
 		p2 = sip_vias_top_branch(&t->req->vias);
-		if (!p2 || 0 == cstreq(p, p2))
+		if (!p2 || 0 == sip_sv_equal(p, p2))
 			continue;
-		assert(cstrprefix(p2, SIP_BRANCH_PREFIX));
+		assert(sip_sv_starts_with(p2, SIP_BRANCH_PREFIX));
 		
 		// 2. cseq method parameter
 		// The method is needed since a CANCEL request constitutes a
 		// different transaction, but shares the same value of the branch parameter.
 		assert(reply->cseq.id == t->req->cseq.id);
-		if (!cstreq(&reply->cseq.method, &t->req->cseq.method))
+		if (!sip_sv_equal(&reply->cseq.method, &t->req->cseq.method))
 			continue;
 
 		//// 3. to tag
 		//p = sip_params_find_string(&reply->to.params, "tag");
 		//p2 = sip_params_find_string(&t->msg->to.params, "tag");
-		//if (p2 && (!p || !cstreq(p, p2)))
+		//if (p2 && (!p || !sip_sv_equal(p, p2)))
 		//	continue;
 
 		sip_uac_transaction_addref(t); // add ref
@@ -144,9 +166,9 @@ int sip_uac_input(struct sip_agent_t* sip, struct sip_message_t* reply)
 		return 0;
 
 	// 1. fetch transaction
-	locker_lock(&sip->locker);
+	turbo_mutex_lock(&sip->locker);
 	t = sip_uac_find_transaction(&sip->uac, reply);
-	locker_unlock(&sip->locker);
+	turbo_mutex_unlock(&sip->locker);
 	if (!t)
 	{
 		// timeout response, discard
@@ -175,14 +197,14 @@ int sip_uac_input(struct sip_agent_t* sip, struct sip_message_t* reply)
 	default:  break;
 	}
 
-	locker_lock(&t->locker);
+	turbo_mutex_lock(&t->locker);
 
 	if (sip_message_isinvite(reply))
 		r = sip_uac_transaction_invite_input(t, reply);
 	else
 		r = sip_uac_transaction_noninvite_input(t, reply);
 
-	locker_unlock(&t->locker);
+	turbo_mutex_unlock(&t->locker);
 	sip_uac_transaction_release(t);
 	return r;
 }
@@ -262,11 +284,11 @@ int sip_uac_transaction_via(struct sip_uac_transaction_t* t, char *via, int nvia
 	char local[128];
 	char remote[256]; // destination/router
 	char protocol[16];
-	struct cstring_t user;
+	tstr_v user;
 	const struct sip_uri_t* uri;
 
 	uri = sip_message_get_next_hop(t->req);
-	if (!uri || cstrcpy(&uri->host, remote, sizeof(remote)) >= sizeof(remote) - 1)
+	if (!uri || sip_sv_copy(&uri->host, remote, sizeof(remote)) >= sizeof(remote) - 1)
 		remote[0] = 0; // fix uri->host too long
 
 	// rfc3263 4-Client Usage (p5)
@@ -300,8 +322,8 @@ int sip_uac_transaction_via(struct sip_uac_transaction_t* t, char *via, int nvia
 	// URI, the Contact header field MUST contain a SIPS URI as well.
 	if (0 == sip_uri_username(&t->req->from.uri, &user))
 	{
-		assert(user.n > 0);
-		r = snprintf(contact, ncontact, "<%.*s:%.*s@%s>", (uri && uri->scheme.n > 0) ? (int)uri->scheme.n : 3, (uri && uri->scheme.n > 0) ? uri->scheme.p : "sip", (int)user.n, user.p, local);
+		assert(user.len > 0);
+		r = snprintf(contact, ncontact, "<%.*s:%.*s@%s>", (uri && uri->scheme.len > 0) ? (int)uri->scheme.len : 3, (uri && uri->scheme.len > 0) ? uri->scheme.data : "sip", (int)user.len, user.data, local);
 		if (r < 0 || r >= ncontact)
 			return -1; // ENOMEM
 	}

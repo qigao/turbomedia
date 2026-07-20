@@ -3,7 +3,7 @@
 int sip_uas_onbye(struct sip_uas_transaction_t* t, const struct sip_message_t* req, void* param)
 {
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 
 	sip_dialog_id_with_message(&id, req, ptr, sizeof(ptr), 1);
 

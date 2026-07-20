@@ -5,8 +5,8 @@ int sip_uas_onsubscribe(struct sip_uas_transaction_t* t, const struct sip_messag
 {
 	int r;
 	char ptr[256];
-	struct cstring_t id;
-	const struct cstring_t *h;
+	tstr_v id;
+	const tstr_v *h;
 	struct sip_subscribe_t* subscribe;
 
 	r = 0;
@@ -21,7 +21,7 @@ int sip_uas_onsubscribe(struct sip_uas_transaction_t* t, const struct sip_messag
 	}
 
 	h = sip_message_get_header_by_name(req, "Expires");
-	subscribe->expires = h ? (uint64_t)cstrtoll(h, NULL, 10) : 0;
+	subscribe->expires = h ? (uint64_t)sip_sv_to_long_long(h, NULL, 10) : 0;
 
 	// call once only
 	if ( /*added &&*/ t->handler->onsubscribe)
@@ -75,7 +75,7 @@ int sip_uas_onnotify(struct sip_uas_transaction_t* t, const struct sip_message_t
 	else
 		r = 0; // just ignore
 
-	//if (subscribe && 0 == cstrcmp(&req->substate.state, SIP_SUBSCRIPTION_STATE_TERMINATED))
+	//if (subscribe && 0 == sip_sv_compare_cstr(&req->substate.state, SIP_SUBSCRIPTION_STATE_TERMINATED))
 	//	sip_subscribe_remove(t->agent, subscribe);
 
 	return r;

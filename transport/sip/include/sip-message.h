@@ -3,7 +3,6 @@
 
 #include "sip-header.h"
 #include "sip-dialog.h"
-#include "http-parser.h"
 #include <stdint.h>
 
 #if defined(__cplusplus)
@@ -63,7 +62,7 @@ extern "C" {
 
 #define SIP_OPTION_TAG_100REL	"100rel"  // rfc3262
 
-#define SIP_HEADER_USER_AGENT "ireader/media-server"
+#define SIP_HEADER_USER_AGENT "TurboMedia"
 
 enum { SIP_MESSAGE_REQUEST = 0, SIP_MESSAGE_REPLY = 1 };
 struct sip_message_t
@@ -80,7 +79,7 @@ struct sip_message_t
 	struct sip_contact_t to;
 	struct sip_contact_t from;
 	struct sip_vias_t vias;
-	struct cstring_t callid;
+	tstr_v callid;
 	struct sip_cseq_t cseq;
 	int maxforwards;
 
@@ -91,11 +90,11 @@ struct sip_message_t
 	
 	// other headers
 	uint32_t rseq; // [1, 2**31 - 1] PRACK
-	struct cstring_t recv_info; // Info Method (invite)
-	struct cstring_t info_package; // Info Method
+	tstr_v recv_info; // Info Method (invite)
+	tstr_v info_package; // Info Method
 	struct sip_contact_t referto; // Refer Method
 	struct sip_event_t event; // Subscribe/Notify Method
-	struct cstring_t allow_events; // Subscribe/Notify Method
+	tstr_v allow_events; // Subscribe/Notify Method
 	struct sip_substate_t substate; // Subscribe/Notify Method (invite)
 	struct sip_params_t headers;
 
@@ -118,7 +117,6 @@ int sip_message_init2(struct sip_message_t* msg, const char* method, const struc
 int sip_message_init3(struct sip_message_t* reply, const struct sip_message_t* req, const struct sip_dialog_t* dialog);
 int sip_message_initack(struct sip_message_t* ack, const struct sip_message_t* origin);
 
-int sip_message_load(struct sip_message_t* msg, const struct http_parser_t* parser);
 int sip_message_write(const struct sip_message_t* msg, uint8_t* data, int bytes);
 
 /// @return 1-ack, 0-not ack
@@ -138,8 +136,8 @@ int sip_message_set_reply_default_contact(struct sip_message_t* reply);
 int sip_message_set_rport(struct sip_message_t* request, const char* addr, int port);
 
 int sip_message_get_header_count(const struct sip_message_t* msg);
-int sip_message_get_header(const struct sip_message_t* msg, int i, struct cstring_t* const name, struct cstring_t* const value);
-const struct cstring_t* sip_message_get_header_by_name(const struct sip_message_t* msg, const char* name);
+int sip_message_get_header(const struct sip_message_t* msg, int i, tstr_v* const name, tstr_v* const value);
+const tstr_v* sip_message_get_header_by_name(const struct sip_message_t* msg, const char* name);
 
 int sip_message_add_header(struct sip_message_t* msg, const char* name, const char* value);
 int sip_message_add_header_int(struct sip_message_t* msg, const char* name, int value);

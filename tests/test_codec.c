@@ -548,11 +548,8 @@ static void test_codec_bitrate_control(void) {
     }
 
     // Test bitrate setting if supported
-    const turbo_codec_ops_t *ops = turbo_codec_find_by_name("pcmu");
-    if (ops && ops->set_bitrate) {
-        ops->set_bitrate(encoder, 64000);
-        ops->set_bitrate(encoder, 128000);
-    }
+    turbo_codec_set_bitrate(encoder, 64000);
+    turbo_codec_set_bitrate(encoder, 128000);
 
     turbo_codec_destroy(encoder);
     turbo_codec_registry_shutdown();
@@ -573,11 +570,7 @@ static void test_video_keyframe_request(void) {
     }
 
     // Test keyframe request
-    const turbo_codec_ops_t *ops = turbo_codec_find_by_name("vp8");
-    if (ops && ops->request_keyframe) {
-        ops->request_keyframe(encoder);
-        // Should not crash
-    }
+    turbo_codec_request_keyframe(encoder);
 
     turbo_codec_destroy(encoder);
     turbo_codec_registry_shutdown();
@@ -598,15 +591,12 @@ static void test_packet_loss_concealment(void) {
     }
 
     // Test PLC if supported
-    const turbo_codec_ops_t *ops = turbo_codec_find_by_name("pcmu");
-    if (ops && ops->plc) {
+    {
         uint8_t plc_frame[320];
         size_t plc_len = sizeof(plc_frame);
-        int result = ops->plc(decoder, plc_frame, &plc_len);
-        
-        if (result == TURBO_CODEC_OK) {
-            CHECK_TRUE(plc_len > 0);
-        }
+        int result = turbo_codec_plc(decoder, plc_frame, &plc_len);
+
+        if (result == TURBO_CODEC_OK) CHECK_TRUE(plc_len > 0);
     }
 
     turbo_codec_destroy(decoder);

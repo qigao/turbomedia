@@ -7,34 +7,34 @@ static void sip_param_free(struct sip_param_t* param)
 	(void)param;
 }
 
-DARRAY_IMPLEMENT(sip_uri, 3);
-DARRAY_IMPLEMENT(sip_param, 5);
-DARRAY_IMPLEMENT(sip_contact, 3);
-DARRAY_IMPLEMENT(sip_via, 8);
+SIP_VEC_IMPLEMENT(sip_uri, 3);
+SIP_VEC_IMPLEMENT(sip_param, 5);
+SIP_VEC_IMPLEMENT(sip_contact, 3);
+SIP_VEC_IMPLEMENT(sip_via, 8);
 
 int sip_header_param(const char* s, const char* end, struct sip_param_t* param)
 {
 	const char* p;
-	param->name.p = s;
+	param->name.data = s;
 
 	p = (s && s < end) ? strchr(s, '=') : NULL;
 	if (p && p < end)
 	{
-		param->name.n = p - s;
-		param->value.p = p + 1;
-		param->value.n = end - param->value.p;
+		param->name.len = p - s;
+		param->value.data = p + 1;
+		param->value.len = end - param->value.data;
 
-		cstrtrim(&param->value, " \t");
+		sip_sv_trim(&param->value, " \t");
 	}
 	else
 	{
-		param->name.n = end - s;
-		param->value.p = NULL;
-		param->value.n = 0;
+		param->name.len = end - s;
+		param->value.data = NULL;
+		param->value.len = 0;
 	}
 
-	cstrtrim(&param->name, " \t");
-	return param->name.n > 0 ? 0 : -1;
+	sip_sv_trim(&param->name, " \t");
+	return param->name.len > 0 ? 0 : -1;
 }
 
 int sip_header_params(char sep, const char* s, const char* end, struct sip_params_t* params)
@@ -78,20 +78,20 @@ int sip_header_params(char sep, const char* s, const char* end, struct sip_param
 const struct sip_param_t* sip_params_find(const struct sip_params_t* params, const char* name, int bytes)
 {
 	int i;
-	struct cstring_t s;
+	tstr_v s;
 	const struct sip_param_t* p;
-	s.p = name;
-	s.n = bytes;
+	s.data = name;
+	s.len = bytes;
 	for(i = 0; i < sip_params_count(params); i++)
 	{
 		p = sip_params_get(params, i);
-		if (cstreq(&p->name, &s))
+		if (sip_sv_equal(&p->name, &s))
 			return p;
 	}
 	return NULL;
 }
 
-const struct cstring_t* sip_params_find_string(const struct sip_params_t* params, const char* name, int bytes)
+const tstr_v* sip_params_find_string(const struct sip_params_t* params, const char* name, int bytes)
 {
 	const struct sip_param_t* p;
 	p = sip_params_find(params, name, bytes);
@@ -103,7 +103,7 @@ int sip_params_find_int(const struct sip_params_t* params, const char* name, int
 	const struct sip_param_t* p;
 	p = sip_params_find(params, name, bytes);
 	if (NULL == p) return -ENOENT; // not found
-	*value = (int)cstrtol(&p->value, NULL, 10);
+	*value = (int)sip_sv_to_long(&p->value, NULL, 10);
 	return 0;
 }
 
@@ -112,7 +112,7 @@ int sip_params_find_int64(const struct sip_params_t* params, const char* name, i
 	const struct sip_param_t* p;
 	p = sip_params_find(params, name, bytes);
 	if (NULL == p) return -ENOENT; // not found
-	*value = cstrtoll(&p->value, NULL, 10);
+	*value = sip_sv_to_long_long(&p->value, NULL, 10);
 	return 0;
 }
 
@@ -121,25 +121,25 @@ int sip_params_find_double(const struct sip_params_t* params, const char* name, 
 	const struct sip_param_t* p;
 	p = sip_params_find(params, name, bytes);
 	if (NULL == p) return -ENOENT; // not found
-	*value = cstrtod(&p->value, NULL);
+	*value = sip_sv_to_double(&p->value, NULL);
 	return 0;
 }
 
-int sip_params_add_or_update(struct sip_params_t* params, const char* name, int bytes, const struct cstring_t* value)
+int sip_params_add_or_update(struct sip_params_t* params, const char* name, int bytes, const tstr_v* value)
 {
 	struct sip_param_t* param, item;
 	param = (struct sip_param_t*)sip_params_find(params, name, bytes);
 	if (param)
 	{
-		param->value.p = value->p;
-		param->value.n = value->n;
+		param->value.data = value->data;
+		param->value.len = value->len;
 		return 0;
 	}
 
-	item.name.p = name;
-	item.name.n = bytes;
-	item.value.p = value->p;
-	item.value.n = value->n;
+	item.name.data = name;
+	item.name.len = bytes;
+	item.value.data = value->data;
+	item.value.len = value->len;
 	if(name && *name && bytes > 0)
 		return sip_params_push(params, &item);
 	return -1;
@@ -147,13 +147,13 @@ int sip_params_add_or_update(struct sip_params_t* params, const char* name, int 
 
 int sip_param_write(const struct sip_param_t* param, char* data, const char* end)
 {
-	if (!cstrvalid(&param->name))
+	if (!sip_sv_valid(&param->name))
 		return -1;
 
-	if (cstrvalid(&param->value))
-		return snprintf(data, end - data, "%.*s=%.*s", (int)param->name.n, param->name.p, (int)param->value.n, param->value.p);
+	if (sip_sv_valid(&param->value))
+		return snprintf(data, end - data, "%.*s=%.*s", (int)param->name.len, param->name.data, (int)param->value.len, param->value.data);
 	else
-		return snprintf(data, end - data, "%.*s", (int)param->name.n, param->name.p);
+		return snprintf(data, end - data, "%.*s", (int)param->name.len, param->name.data);
 }
 
 int sip_params_write(const struct sip_params_t* params, char* data, const char* end, char sep)
@@ -180,48 +180,48 @@ int sip_params_write(const struct sip_params_t* params, char* data, const char* 
 void sip_header_param_test(void)
 {
 	const char* s;
-	struct cstring_t x;
+	tstr_v x;
 	struct sip_param_t param;
 	struct sip_params_t params;
 	
-	x.p = "0x12345678";
-	x.n = 8;
-	assert(0x123456 == cstrtol(&x, NULL, 16));
-	x.n = 10;
-	assert(0x12345678 == cstrtol(&x, NULL, 16));
+	x.data = "0x12345678";
+	x.len = 8;
+	assert(0x123456 == sip_sv_to_long(&x, NULL, 16));
+	x.len = 10;
+	assert(0x12345678 == sip_sv_to_long(&x, NULL, 16));
 
 	s = "name=value";
 	assert(0 == sip_header_param(s, s + strlen(s), &param));
-	assert(4 == param.name.n && 0 == cstrcmp(&param.name, "name"));
-	assert(5 == param.value.n && 0 == cstrcmp(&param.value, "value"));
+	assert(4 == param.name.len && 0 == sip_sv_compare_cstr(&param.name, "name"));
+	assert(5 == param.value.len && 0 == sip_sv_compare_cstr(&param.value, "value"));
 
 	s = "name=";
 	assert(0 == sip_header_param(s, s + strlen(s), &param));
-	assert(4 == param.name.n && 0 == cstrcmp(&param.name, "name"));
-	assert(0 == param.value.n && 0 == cstrcmp(&param.value, ""));
+	assert(4 == param.name.len && 0 == sip_sv_compare_cstr(&param.name, "name"));
+	assert(0 == param.value.len && 0 == sip_sv_compare_cstr(&param.value, ""));
 
 	s = "=value";
 	assert(-1 == sip_header_param(s, s + strlen(s), &param));
-	assert(0 == param.name.n && 0 == cstrcmp(&param.name, ""));
-	assert(5 == param.value.n && 0 == cstrcmp(&param.value, "value"));
+	assert(0 == param.name.len && 0 == sip_sv_compare_cstr(&param.name, ""));
+	assert(5 == param.value.len && 0 == sip_sv_compare_cstr(&param.value, "value"));
 
 	s = "=";
 	assert(-1 == sip_header_param(s, s + strlen(s), &param));
-	assert(0 == param.name.n && 0 == cstrcmp(&param.name, ""));
-	assert(0 == param.value.n && 0 == cstrcmp(&param.value, ""));
+	assert(0 == param.name.len && 0 == sip_sv_compare_cstr(&param.name, ""));
+	assert(0 == param.value.len && 0 == sip_sv_compare_cstr(&param.value, ""));
 
 	s = "name";
 	assert(0 == sip_header_param(s, s + strlen(s), &param));
-	assert(4 == param.name.n && 0 == cstrcmp(&param.name, "name"));
-	assert(0 == param.value.n && NULL == param.value.p);
+	assert(4 == param.name.len && 0 == sip_sv_compare_cstr(&param.name, "name"));
+	assert(0 == param.value.len && NULL == param.value.data);
 
 	s = "+sip.instance=\"<urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923>\";+org.linphone.specs=\"groupchat,lime\";pub-gruu=\"sip:alice@sip.linphone.org;gr=urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923\"";
 	sip_params_init(&params);
 	sip_header_params(';', s, s + strlen(s), &params);
 	assert(3 == sip_params_count(&params));
-	assert(0 == cstrcmp(&sip_params_get(&params, 0)->name, "+sip.instance") && 0 == cstrcmp(&sip_params_get(&params, 0)->value, "\"<urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923>\""));
-	assert(0 == cstrcmp(&sip_params_get(&params, 1)->name, "+org.linphone.specs") && 0 == cstrcmp(&sip_params_get(&params, 1)->value, "\"groupchat,lime\""));
-	assert(0 == cstrcmp(&sip_params_get(&params, 2)->name, "pub-gruu") && 0 == cstrcmp(&sip_params_get(&params, 2)->value, "\"sip:alice@sip.linphone.org;gr=urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923\""));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&params, 0)->name, "+sip.instance") && 0 == sip_sv_compare_cstr(&sip_params_get(&params, 0)->value, "\"<urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923>\""));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&params, 1)->name, "+org.linphone.specs") && 0 == sip_sv_compare_cstr(&sip_params_get(&params, 1)->value, "\"groupchat,lime\""));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&params, 2)->name, "pub-gruu") && 0 == sip_sv_compare_cstr(&sip_params_get(&params, 2)->value, "\"sip:alice@sip.linphone.org;gr=urn:uuid:4bc9608d-8364-00c4-a871-10d41d9d2923\""));
 	sip_params_free(&params);
 }
 #endif

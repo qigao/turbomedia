@@ -1,85 +1,42 @@
-# Muxer Module
-
-target_sources(turbo_media PRIVATE
-  ${CMAKE_CURRENT_LIST_DIR}/muxer_registry.c)
-
-# FLV Muxer
-if(TURBO_MEDIA_ENABLE_FLV)
-  # FLV muxer wrapper
-  target_sources(turbo_media PRIVATE 
-    ${CMAKE_CURRENT_LIST_DIR}/flv_muxer.c)
-  
-  # FLV muxer 内部实现
-  target_sources(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/flv/flv_muxer_impl.c
-    ${CMAKE_CURRENT_LIST_DIR}/flv/flv_writer.c)
-  
-  target_include_directories(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/flv)
-  
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_FLV)
-endif()
-
-# MP4 Muxer
-if(TURBO_MEDIA_ENABLE_MP4)
-  # MP4 muxer wrapper
-  target_sources(turbo_media PRIVATE ${CMAKE_CURRENT_LIST_DIR}/mp4_muxer.c)
-  
-  # MP4 muxer 内部实现
-  target_sources(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/mov/mov-writer.c
-    ${CMAKE_CURRENT_LIST_DIR}/mov/fmp4-writer.c)
-  
-  target_include_directories(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/mov)
-  
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_MP4)
-endif()
-
-# MKV Muxer
-if(TURBO_MEDIA_ENABLE_MKV)
-  # MKV muxer wrapper
-  target_sources(turbo_media PRIVATE ${CMAKE_CURRENT_LIST_DIR}/mkv_muxer.c)
-  
-  # MKV muxer 内部实现
-  target_sources(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/mkv/mkv-writer.c)
-  
-  target_include_directories(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/mkv)
-  
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_MKV)
-endif()
-
-# MPEG-TS/PS Muxer
-if(TURBO_MEDIA_ENABLE_MPEG)
-  # MPEG-TS muxer
-  target_sources(turbo_media PRIVATE 
-    ${CMAKE_CURRENT_LIST_DIR}/mpegts_muxer.c)
-  
-  # MPEG-TS muxer 内部实现
-  target_sources(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/mpeg/mpeg-ts.c
-    ${CMAKE_CURRENT_LIST_DIR}/mpeg/mpeg-ts-enc.c
-    ${CMAKE_CURRENT_LIST_DIR}/mpeg/mpeg-pes-enc.c
-    ${CMAKE_CURRENT_LIST_DIR}/mpeg/mpeg-element-descriptor.c)
-  
-  # MPEG-PS muxer
-  target_sources(turbo_media PRIVATE 
-    ${CMAKE_CURRENT_LIST_DIR}/mpegps_muxer.c)
-  
-  # MPEG-PS muxer 内部实现
-  target_sources(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/mpeg/mpeg-ps.c
-    ${CMAKE_CURRENT_LIST_DIR}/mpeg/mpeg-ps-enc.c)
-  
-  target_include_directories(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/mpeg)
-  
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_MPEG)
-endif()
-
-# Include directory
-target_include_directories(turbo_media PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
-  $<INSTALL_INTERFACE:include/turbomedia/muxer>)
+add_library(
+  turbo_media_muxer STATIC
+  muxer_registry.c
+  flv_muxer.c
+  mp4_muxer.c
+  mkv_muxer.c
+  mpeg_muxer.c
+  flv/flv_muxer_impl.c
+  flv/flv_writer.c
+  mov/mov-writer.c
+  mov/fmp4-writer.c
+  ../common/mov/mov-stsd.c
+  ../common/mov/mov-tx3g.c
+  mkv/mkv-writer.c
+)
+turbo_media_configure_component(turbo_media_muxer Muxer)
+set_target_properties(turbo_media_muxer PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_sources(turbo_media_muxer PRIVATE $<TARGET_OBJECTS:turbo_media_common_objects>)
+target_include_directories(
+  turbo_media_muxer
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE flv
+          mov
+          mkv
+          ${PROJECT_SOURCE_DIR}/common
+          ${PROJECT_SOURCE_DIR}/common/codec_helpers
+          ${PROJECT_SOURCE_DIR}/common/flv
+          ${PROJECT_SOURCE_DIR}/common/mkv
+          ${PROJECT_SOURCE_DIR}/common/mov)
+target_link_libraries(
+  turbo_media_muxer
+  PUBLIC TurboMedia::Codec
+  PRIVATE TurboUtils::Core
+          TurboMediaFFmpeg::avformat
+          TurboMediaFFmpeg::avcodec
+          TurboMediaFFmpeg::avutil)
+target_compile_definitions(
+  turbo_media_muxer
+  PUBLIC TURBO_MEDIA_HAS_FLV TURBO_MEDIA_HAS_MP4 TURBO_MEDIA_HAS_MKV
+         TURBO_MEDIA_HAS_MPEG
+  PRIVATE MOV_WRITER_ONLY)

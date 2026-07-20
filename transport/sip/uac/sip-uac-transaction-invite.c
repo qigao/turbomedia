@@ -53,10 +53,10 @@ static int sip_uac_transaction_invite_proceeding(struct sip_uac_transaction_t* t
 {
 	int r;
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 
 	// TODO: add dialog locker here
-	if (!t->dialog && cstrvalid(&reply->to.tag))
+	if (!t->dialog && sip_sv_valid(&reply->to.tag))
 	{
 		// create early dialog
 		t->dialog = sip_dialog_create();
@@ -85,7 +85,7 @@ static int sip_uac_transaction_invite_completed(struct sip_uac_transaction_t* t,
 {
 	int r;
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 	
 	r = 0;
 	assert(!t->dialog || DIALOG_ERALY == t->dialog->state);
@@ -135,11 +135,11 @@ static int sip_uac_transaction_invite_accepted(struct sip_uac_transaction_t* t, 
 {
 	int r;
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 
 	r = 0;
 	// only create new dialog on first 2xx response
-	if (!t->dialog && cstrvalid(&reply->to.tag) && !retransmissions)
+	if (!t->dialog && sip_sv_valid(&reply->to.tag) && !retransmissions)
 	{
 		t->dialog = sip_dialog_create();
 		if (!t->dialog) return -1;
@@ -165,7 +165,7 @@ static int sip_uac_transaction_invite_accepted(struct sip_uac_transaction_t* t, 
 		t->dialog->state = DIALOG_CONFIRMED;
 		
 		// completed To tag
-        assert(cstrvalid(&t->dialog->remote.uri.tag));
+        assert(sip_sv_valid(&t->dialog->remote.uri.tag));
 		sip_dialog_id(&id, t->dialog, ptr, sizeof(ptr));
         
 		// receive and pass to the TU any retransmissions of the 2xx

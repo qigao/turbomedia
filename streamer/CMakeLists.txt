@@ -1,81 +1,43 @@
-# Streamer Module
+set(TURBO_MEDIA_HLS_SOURCES hls/hls-fmp4.c hls/hls-m3u8.c)
+set(TURBO_MEDIA_DASH_SOURCES
+    dash/dash-adaptation.c
+    dash/dash-mpd.c
+    dash/dash-representation.c
+    dash/dash-segment.c
+    dash/xs-duration.c)
+file(GLOB TURBO_MEDIA_RTMP_SOURCES CONFIGURE_DEPENDS rtmp/*.c)
 
-target_sources(turbo_media PRIVATE
-  ${CMAKE_CURRENT_LIST_DIR}/streamer_registry.c)
-
-# HLS Streamer
-if(TURBO_MEDIA_ENABLE_HLS)
-  # HLS streamer wrapper
-  target_sources(turbo_media PRIVATE ${CMAKE_CURRENT_LIST_DIR}/hls_streamer.c)
-  
-  # HLS streamer 内部实现
-  file(GLOB HLS_SOURCES ${CMAKE_CURRENT_LIST_DIR}/hls/*.c)
-  target_sources(turbo_media PRIVATE ${HLS_SOURCES})
-  
-  target_include_directories(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/hls)
-  
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_HLS)
-  
-  # 链接 TurboHTTP
-  if(TARGET TurboHTTP::http_client)
-    target_link_libraries(turbo_media PRIVATE TurboHTTP::http_client)
-  endif()
-endif()
-
-# DASH Streamer
-if(TURBO_MEDIA_ENABLE_DASH)
-  # DASH streamer wrapper
-  target_sources(turbo_media PRIVATE ${CMAKE_CURRENT_LIST_DIR}/dash_streamer.c)
-  
-  # DASH streamer 内部实现
-  file(GLOB DASH_SOURCES ${CMAKE_CURRENT_LIST_DIR}/dash/*.c)
-  target_sources(turbo_media PRIVATE ${DASH_SOURCES})
-  
-  target_include_directories(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/dash)
-  
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_DASH)
-  
-  # 链接 TurboHTTP
-  if(TARGET TurboHTTP::http_client)
-    target_link_libraries(turbo_media PRIVATE TurboHTTP::http_client)
-  endif()
-endif()
-
-# RTMP Streamer
-if(TURBO_MEDIA_ENABLE_RTMP)
-  # RTMP streamer wrapper
-  target_sources(turbo_media PRIVATE ${CMAKE_CURRENT_LIST_DIR}/rtmp_streamer.c)
-  
-  # RTMP 核心实现
-  file(GLOB RTMP_SOURCES ${CMAKE_CURRENT_LIST_DIR}/rtmp/*.c)
-  target_sources(turbo_media PRIVATE ${RTMP_SOURCES})
-  
-  # RTMP AIO 层
-  file(GLOB RTMP_AIO_SOURCES ${CMAKE_CURRENT_LIST_DIR}/rtmp/aio/*.c)
-  target_sources(turbo_media PRIVATE ${RTMP_AIO_SOURCES})
-  
-  target_include_directories(turbo_media PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/rtmp
-    ${CMAKE_CURRENT_LIST_DIR}/rtmp/include
-    ${CMAKE_CURRENT_LIST_DIR}/rtmp/aio)
-  
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_RTMP)
-  
-  # 链接 CoroNet
-  if(TARGET TurboNet::CoroNet)
-    target_link_libraries(turbo_media PRIVATE TurboNet::CoroNet)
-  endif()
-endif()
-
-# HTTP-FLV Streamer
-if(TURBO_MEDIA_ENABLE_HTTP_FLV)
-  target_sources(turbo_media PRIVATE ${CMAKE_CURRENT_LIST_DIR}/http_flv_streamer.c)
-  target_compile_definitions(turbo_media PUBLIC TURBO_MEDIA_HAS_HTTP_FLV)
-endif()
-
-# Include directory
-target_include_directories(turbo_media PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>
-  $<INSTALL_INTERFACE:include/turbomedia/streamer>)
+add_library(
+  turbo_media_streamer SHARED
+  streamer_registry.c
+  hls_streamer.c
+  dash_streamer.c
+  http_flv_streamer.c
+  rtmp_streamer.c
+  ${TURBO_MEDIA_HLS_SOURCES}
+  ${TURBO_MEDIA_DASH_SOURCES}
+  ${TURBO_MEDIA_RTMP_SOURCES})
+turbo_media_configure_component(turbo_media_streamer Streamer)
+target_include_directories(
+  turbo_media_streamer
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE hls
+          dash
+          rtmp
+          rtmp/include
+          ${PROJECT_SOURCE_DIR}/common/codec_helpers
+          ${PROJECT_SOURCE_DIR}/common/mov
+          ${PROJECT_SOURCE_DIR}/muxer/flv)
+target_link_libraries(
+  turbo_media_streamer
+  PUBLIC TurboMedia::Server
+         TurboMedia::Codec
+         TurboMedia::Muxer
+         TurboMedia::Demuxer
+         TurboMedia::Transport
+  PRIVATE TurboUtils::Core TurboHttp::HttpClient TurboNet::CoroNet)
+target_compile_definitions(
+  turbo_media_streamer
+  PUBLIC TURBO_MEDIA_HAS_HLS TURBO_MEDIA_HAS_DASH TURBO_MEDIA_HAS_RTMP
+         TURBO_MEDIA_HAS_HTTP_FLV)

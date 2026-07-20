@@ -38,28 +38,28 @@ int sip_header_via(const char* s, const char* end, struct sip_via_t* via)
 	sip_params_init(&via->params);
 
 	// SIP/2.0/UDP erlang.bell-telephone.com:5060;branch=z9hG4bK87asdks7
-	if (!s || s >= end || 0 > sscanf(s, " %n%*[^/ \t]%n / %n%*[^/ \t]%n / %n%*[^/ \t]%n %n%*[^; \t\r\n]%n ", &i, (int*)&via->protocol.n, &j, (int*)&via->version.n, &k, (int*)&via->transport.n, &r, (int*)&via->host.n)
-		|| 0 == via->host.n || s + via->host.n > end)
+	if (!s || s >= end || 0 > sscanf(s, " %n%*[^/ \t]%n / %n%*[^/ \t]%n / %n%*[^/ \t]%n %n%*[^; \t\r\n]%n ", &i, (int*)&via->protocol.len, &j, (int*)&via->version.len, &k, (int*)&via->transport.len, &r, (int*)&via->host.len)
+		|| 0 == via->host.len || s + via->host.len > end)
 		return -EINVAL;
 
 	// protocol-name
-	via->protocol.p = s + i;
-	via->protocol.n -= i;
+	via->protocol.data = s + i;
+	via->protocol.len -= i;
 
 	// protocol-version
-	via->version.p = s + j;
-	via->version.n -= j;
+	via->version.data = s + j;
+	via->version.len -= j;
 	
 	// transport
-	via->transport.p = s + k;
-	via->transport.n -= k;
+	via->transport.data = s + k;
+	via->transport.len -= k;
 
 	// sent-by
-	via->host.p = s + r;
-	via->host.n -= r;
+	via->host.data = s + r;
+	via->host.len -= r;
 
 	// via-params
-	p = strchr(via->host.p + via->host.n, ';');
+	p = strchr(via->host.data + via->host.len, ';');
 	if (!p || p > end)
 		p = end;
 
@@ -72,28 +72,28 @@ int sip_header_via(const char* s, const char* end, struct sip_via_t* via)
 		{
 			param = sip_params_get(&via->params, i);
 
-			if (0 == cstrcmp(&param->name, "branch"))
+			if (0 == sip_sv_compare_cstr(&param->name, "branch"))
 			{
-				via->branch.p = param->value.p;
-				via->branch.n = param->value.n;
+				via->branch.data = param->value.data;
+				via->branch.len = param->value.len;
 			}
-			else if (0 == cstrcmp(&param->name, "maddr"))
+			else if (0 == sip_sv_compare_cstr(&param->name, "maddr"))
 			{
-				via->maddr.p = param->value.p;
-				via->maddr.n = param->value.n;
+				via->maddr.data = param->value.data;
+				via->maddr.len = param->value.len;
 			}
-			else if (0 == cstrcmp(&param->name, "received"))
+			else if (0 == sip_sv_compare_cstr(&param->name, "received"))
 			{
-				via->received.p = param->value.p;
-				via->received.n = param->value.n;
+				via->received.data = param->value.data;
+				via->received.len = param->value.len;
 			}
-			else if (0 == cstrcmp(&param->name, "ttl"))
+			else if (0 == sip_sv_compare_cstr(&param->name, "ttl"))
 			{
-				via->ttl = (int)cstrtol(&param->value, NULL, 10);
+				via->ttl = (int)sip_sv_to_long(&param->value, NULL, 10);
 			}
-			else if (0 == cstrcmp(&param->name, "rport"))
+			else if (0 == sip_sv_compare_cstr(&param->name, "rport"))
 			{
-				via->rport = cstrvalid(&param->value) ? (int)cstrtol(&param->value, NULL, 10) : -1;
+				via->rport = sip_sv_valid(&param->value) ? (int)sip_sv_to_long(&param->value, NULL, 10) : -1;
 			}
 		}
 	}
@@ -135,12 +135,12 @@ int sip_via_write(const struct sip_via_t* via, char* data, const char* end)
 {
 	int n;
 	char* p;
-	if (!cstrvalid(&via->protocol) || !cstrvalid(&via->version) || !cstrvalid(&via->transport) || !cstrvalid(&via->host))
+	if (!sip_sv_valid(&via->protocol) || !sip_sv_valid(&via->version) || !sip_sv_valid(&via->transport) || !sip_sv_valid(&via->host))
 		return -1;
 
 	p = data;
 	if (p < end)
-		p += snprintf(p, end - p, "%.*s/%.*s/%.*s %.*s", (int)via->protocol.n, via->protocol.p, (int)via->version.n, via->version.p, (int)via->transport.n, via->transport.p, (int)via->host.n, via->host.p);
+		p += snprintf(p, end - p, "%.*s/%.*s/%.*s %.*s", (int)via->protocol.len, via->protocol.data, (int)via->version.len, via->version.data, (int)via->transport.len, via->transport.data, (int)via->host.len, via->host.data);
 
 	if (sip_params_count(&via->params) > 0)
 	{
@@ -154,14 +154,14 @@ int sip_via_write(const struct sip_via_t* via, char* data, const char* end)
 	return (int)(p - data);
 }
 
-const struct cstring_t* sip_vias_top_branch(const struct sip_vias_t* vias)
+const tstr_v* sip_vias_top_branch(const struct sip_vias_t* vias)
 {
 	const struct sip_via_t *via;
 	via = sip_vias_get(vias, 0);
 	return via ? &via->branch : NULL;
 }
 
-//const struct cstring_t* sip_via_branch(const struct sip_via_t* via)
+//const tstr_v* sip_via_branch(const struct sip_via_t* via)
 //{
 //	return sip_params_find_string(&via->params, "branch");
 //}
@@ -177,9 +177,9 @@ void sip_header_via_test(void)
 
 	s = "SIP/2.0/UDP erlang.bell-telephone.com:5060;branch=z9hG4bK87asdks7";
 	assert(0 == sip_header_via(s, s + strlen(s), &via)); v = &via;
-	assert(0 == cstrcmp(&v->protocol, "SIP") && 0 == cstrcmp(&v->version, "2.0") && 0 == cstrcmp(&v->transport, "UDP") && 0 == cstrcmp(&v->host, "erlang.bell-telephone.com:5060"));
-	assert(1 == sip_params_count(&v->params) && 0 == cstrcmp(&sip_params_get(&v->params, 0)->name, "branch") && 0 == cstrcmp(&sip_params_get(&v->params, 0)->value, "z9hG4bK87asdks7"));
-	assert(0 == cstrcmp(&v->branch, "z9hG4bK87asdks7"));
+	assert(0 == sip_sv_compare_cstr(&v->protocol, "SIP") && 0 == sip_sv_compare_cstr(&v->version, "2.0") && 0 == sip_sv_compare_cstr(&v->transport, "UDP") && 0 == sip_sv_compare_cstr(&v->host, "erlang.bell-telephone.com:5060"));
+	assert(1 == sip_params_count(&v->params) && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 0)->name, "branch") && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 0)->value, "z9hG4bK87asdks7"));
+	assert(0 == sip_sv_compare_cstr(&v->branch, "z9hG4bK87asdks7"));
 	assert(sip_via_write(v, p, p + sizeof(p)) < sizeof(p) && 0 == strcmp(s, p));
 	sip_via_free(&via);
 
@@ -187,26 +187,26 @@ void sip_header_via_test(void)
 	s = "SIP/2.0/UDP first.example.com:4000;ttl=16;maddr=224.2.0.1;branch=z9hG4bKa7c6a8dlze.1,SIP/2.0/UDP erlang.bell-telephone.com:5060;branch=z9hG4bK87asdks7";
 	assert(0 == sip_header_vias(s, s + strlen(s), &vias) && 2 == sip_vias_count(&vias));
 	v = sip_vias_get(&vias, 0);
-	assert(0 == cstrcmp(&v->protocol, "SIP") && 0 == cstrcmp(&v->version, "2.0") && 0 == cstrcmp(&v->transport, "UDP") && 0 == cstrcmp(&v->host, "first.example.com:4000"));
-	assert(3 == sip_params_count(&v->params) && 0 == cstrcmp(&sip_params_get(&v->params, 2)->name, "branch") && 0 == cstrcmp(&sip_params_get(&v->params, 2)->value, "z9hG4bKa7c6a8dlze.1"));
-	assert(0 == cstrcmp(&sip_params_get(&v->params, 0)->name, "ttl") && 0 == cstrcmp(&sip_params_get(&v->params, 0)->value, "16"));
-	assert(0 == cstrcmp(&sip_params_get(&v->params, 1)->name, "maddr") && 0 == cstrcmp(&sip_params_get(&v->params, 1)->value, "224.2.0.1"));
-	assert(v->ttl == 16 && 0 == cstrcmp(&v->maddr, "224.2.0.1") && 0 == cstrcmp(&v->branch, "z9hG4bKa7c6a8dlze.1"));
+	assert(0 == sip_sv_compare_cstr(&v->protocol, "SIP") && 0 == sip_sv_compare_cstr(&v->version, "2.0") && 0 == sip_sv_compare_cstr(&v->transport, "UDP") && 0 == sip_sv_compare_cstr(&v->host, "first.example.com:4000"));
+	assert(3 == sip_params_count(&v->params) && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 2)->name, "branch") && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 2)->value, "z9hG4bKa7c6a8dlze.1"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 0)->name, "ttl") && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 0)->value, "16"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 1)->name, "maddr") && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 1)->value, "224.2.0.1"));
+	assert(v->ttl == 16 && 0 == sip_sv_compare_cstr(&v->maddr, "224.2.0.1") && 0 == sip_sv_compare_cstr(&v->branch, "z9hG4bKa7c6a8dlze.1"));
 	v = sip_vias_get(&vias, 1);
-	assert(0 == cstrcmp(&v->protocol, "SIP") && 0 == cstrcmp(&v->version, "2.0") && 0 == cstrcmp(&v->transport, "UDP") && 0 == cstrcmp(&v->host, "erlang.bell-telephone.com:5060"));
-	assert(1 == sip_params_count(&v->params) && 0 == cstrcmp(&sip_params_get(&v->params, 0)->name, "branch") && 0 == cstrcmp(&sip_params_get(&v->params, 0)->value, "z9hG4bK87asdks7"));
-	assert(0 == cstrcmp(&v->branch, "z9hG4bK87asdks7"));
+	assert(0 == sip_sv_compare_cstr(&v->protocol, "SIP") && 0 == sip_sv_compare_cstr(&v->version, "2.0") && 0 == sip_sv_compare_cstr(&v->transport, "UDP") && 0 == sip_sv_compare_cstr(&v->host, "erlang.bell-telephone.com:5060"));
+	assert(1 == sip_params_count(&v->params) && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 0)->name, "branch") && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 0)->value, "z9hG4bK87asdks7"));
+	assert(0 == sip_sv_compare_cstr(&v->branch, "z9hG4bK87asdks7"));
 	sip_vias_free(&vias);
 
 	sip_vias_init(&vias);
 	s = "SIP/2.0/UDP [2001:db8::9:1];received=[2001:db8::9:255];branch=z9hG4bKas3-111";
 	assert(0 == sip_header_vias(s, s + strlen(s), &vias) && 1 == sip_vias_count(&vias));
 	v = sip_vias_get(&vias, 0);
-	assert(0 == cstrcmp(&v->protocol, "SIP") && 0 == cstrcmp(&v->version, "2.0") && 0 == cstrcmp(&v->transport, "UDP") && 0 == cstrcmp(&v->host, "[2001:db8::9:1]"));
+	assert(0 == sip_sv_compare_cstr(&v->protocol, "SIP") && 0 == sip_sv_compare_cstr(&v->version, "2.0") && 0 == sip_sv_compare_cstr(&v->transport, "UDP") && 0 == sip_sv_compare_cstr(&v->host, "[2001:db8::9:1]"));
 	assert(2 == sip_params_count(&v->params));
-	assert(0 == cstrcmp(&sip_params_get(&v->params, 0)->name, "received") && 0 == cstrcmp(&sip_params_get(&v->params, 0)->value, "[2001:db8::9:255]"));
-	assert(0 == cstrcmp(&sip_params_get(&v->params, 1)->name, "branch") && 0 == cstrcmp(&sip_params_get(&v->params, 1)->value, "z9hG4bKas3-111"));
-	assert(0 == cstrcmp(&v->received, "[2001:db8::9:255]") && 0 == cstrcmp(&v->branch, "z9hG4bKas3-111"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 0)->name, "received") && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 0)->value, "[2001:db8::9:255]"));
+	assert(0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 1)->name, "branch") && 0 == sip_sv_compare_cstr(&sip_params_get(&v->params, 1)->value, "z9hG4bKas3-111"));
+	assert(0 == sip_sv_compare_cstr(&v->received, "[2001:db8::9:255]") && 0 == sip_sv_compare_cstr(&v->branch, "z9hG4bKas3-111"));
 	sip_vias_free(&vias);
 }
 #endif

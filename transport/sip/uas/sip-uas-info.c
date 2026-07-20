@@ -4,12 +4,12 @@ int sip_uas_oninfo(struct sip_uas_transaction_t* t, const struct sip_message_t* 
 {
 	int r;
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 
 	sip_dialog_id_with_message(&id, req, ptr, sizeof(ptr), 1);
 
     // compatible rfc 2976 as "legacy INFO Usage"
-//	if(!cstrvalid(&req->info_package))
+//	if(!sip_sv_valid(&req->info_package))
 //		r = sip_uas_reply(t, 469, NULL, 0); // 469 Bad Info Package
 
 	// TODO: check Info-Package

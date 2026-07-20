@@ -67,6 +67,10 @@ int flv_muxer_avc(flv_muxer_t* muxer, const void* data, size_t bytes, uint32_t p
 /// @param[in] data H.265 Annexb bitstream (start code + NALU)
 int flv_muxer_hevc(flv_muxer_t* muxer, const void* data, size_t bytes, uint32_t pts, uint32_t dts);
 
+/// 封装 H.266 视频帧
+/// @param[in] data H.266 Annexb bitstream (start code + NALU)
+int flv_muxer_vvc(flv_muxer_t* muxer, const void* data, size_t bytes, uint32_t pts, uint32_t dts);
+
 /// 封装 AV1 视频帧
 /// @param[in] data AV1 low overhead bitstream format
 int flv_muxer_av1(flv_muxer_t* muxer, const void* data, size_t bytes, uint32_t pts, uint32_t dts);

@@ -1,7 +1,7 @@
 #ifndef _sip_uac_h_
 #define _sip_uac_h_
 
-#include "cstring.h"
+#include "sip-string-view.h"
 #include "sip-agent.h"
 
 #if defined(__cplusplus)
@@ -14,11 +14,11 @@ struct sip_uac_transaction_t;
 /// call sip_uac_ack on 2xx only
 /// @param[out] session user-defined session-id(only code=2xx)
 /// @return 0-ok, other-error
-typedef int (*sip_uac_oninvite)(void* param, const struct sip_message_t* reply, struct sip_uac_transaction_t* t, struct sip_dialog_t* dialog, const struct cstring_t* id, int code);
+typedef int (*sip_uac_oninvite)(void* param, const struct sip_message_t* reply, struct sip_uac_transaction_t* t, struct sip_dialog_t* dialog, const tstr_v* id, int code);
 /// @param[in] subscribe MUST call sip_subscribe_remove on close
 /// @param[out] session user-defined session-id(only code=2xx)
 /// @return 0-ok, other-error
-typedef int (*sip_uac_onsubscribe)(void* param, const struct sip_message_t* reply, struct sip_uac_transaction_t* t, struct sip_subscribe_t* subscribe, const struct cstring_t* id, int code);
+typedef int (*sip_uac_onsubscribe)(void* param, const struct sip_message_t* reply, struct sip_uac_transaction_t* t, struct sip_subscribe_t* subscribe, const tstr_v* id, int code);
 /// @return 0-ok, other-error
 typedef int (*sip_uac_onreply)(void* param, const struct sip_message_t* reply, struct sip_uac_transaction_t* t, int code);
 /// @return <0-error, 0-udp, 1-tcp, other-reserved

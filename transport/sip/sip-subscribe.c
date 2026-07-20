@@ -77,8 +77,6 @@
 #include "sip-internal.h"
 #include "sip-message.h"
 #include "sip-subscribe.h"
-#include "sys/atomic.h"
-#include "sys/locker.h"
 #include <stdlib.h>
 
 #define N 512
@@ -88,7 +86,7 @@
 // field, in which case the tag is considered to have a value of null.
 // This is to maintain backwards compatibility with RFC 2543, which
 // did not mandate To tags.
-static const struct cstring_t sc_null = { "", 0 };
+static const tstr_v sc_null = { "", 0 };
 
 struct sip_subscribe_t* sip_subscribe_create(const struct sip_event_t* event)
 {
@@ -102,9 +100,9 @@ struct sip_subscribe_t* sip_subscribe_create(const struct sip_event_t* event)
 		s->ptr = (char*)(s + 1);
 
 		end = s->ptr + N;
-		s->ptr = cstring_clone(s->ptr, end, &s->event.event, event->event.p, event->event.n);
-		s->ptr = cstring_clone(s->ptr, end, &s->event.id, event->id.p, event->id.n);
-		atomic_increment32(&s_gc.subscribe);
+		s->ptr = sip_string_view_clone(s->ptr, end, &s->event.event, event->event.data, event->event.len);
+		s->ptr = sip_string_view_clone(s->ptr, end, &s->event.id, event->id.data, event->id.len);
+		sip_atomic_increment(&s_gc.subscribe);
 	}
 	return s;
 }
@@ -115,7 +113,7 @@ int sip_subscribe_release(struct sip_subscribe_t* subscribe)
 		return -1;
 
 	assert(subscribe->ref > 0);
-	if (0 != atomic_decrement32(&subscribe->ref))
+	if (0 != sip_atomic_decrement(&subscribe->ref))
 		return 0;
 
 	if (subscribe->dialog)
@@ -123,23 +121,23 @@ int sip_subscribe_release(struct sip_subscribe_t* subscribe)
 
 	//sip_event_free(&subscribe->event); // event->params don't init
 	free(subscribe);
-	atomic_decrement32(&s_gc.subscribe);
+	sip_atomic_decrement(&s_gc.subscribe);
 	return 0;
 }
 
 int sip_subscribe_addref(struct sip_subscribe_t* subscribe)
 {
 	assert(subscribe->ref > 0);
-	return atomic_increment32(&subscribe->ref);
+	return sip_atomic_increment(&subscribe->ref);
 }
 
 /// @return 1-match, 0-don't match
-static int sip_subscribe_match(const struct sip_subscribe_t* subscribe, const struct cstring_t* callid, const struct cstring_t* local, const struct cstring_t* remote, const struct sip_event_t* event)
+static int sip_subscribe_match(const struct sip_subscribe_t* subscribe, const tstr_v* callid, const tstr_v* local, const tstr_v* remote, const struct sip_event_t* event)
 {
 	assert(subscribe && local);
 	if (!remote) remote = &sc_null;
 
-	return cstreq(callid, &subscribe->dialog->callid) && cstreq(local, &subscribe->dialog->local.uri.tag) && cstreq(remote, &subscribe->dialog->remote.uri.tag) && sip_event_equal(event, &subscribe->event) ? 1 : 0;
+	return sip_sv_equal(callid, &subscribe->dialog->callid) && sip_sv_equal(local, &subscribe->dialog->local.uri.tag) && sip_sv_equal(remote, &subscribe->dialog->remote.uri.tag) && sip_event_equal(event, &subscribe->event) ? 1 : 0;
 }
 
 struct sip_subscribe_t* sip_subscribe_internal_create(struct sip_agent_t* sip, const struct sip_message_t* msg, const struct sip_event_t* event, int uac)
@@ -148,7 +146,7 @@ struct sip_subscribe_t* sip_subscribe_internal_create(struct sip_agent_t* sip, c
 	subscribe = sip_subscribe_create(event);
 	if (!subscribe)
 	{
-		locker_unlock(&sip->locker);
+		turbo_mutex_unlock(&sip->locker);
 		return NULL; // exist
 	}
 
@@ -162,26 +160,26 @@ struct sip_subscribe_t* sip_subscribe_internal_create(struct sip_agent_t* sip, c
 	return subscribe;
 }
 
-int sip_subscribe_id(struct cstring_t* id, const struct sip_subscribe_t* subscribe, char* ptr, int len)
+int sip_subscribe_id(tstr_v* id, const struct sip_subscribe_t* subscribe, char* ptr, int len)
 {
 	int r;
-	r = subscribe ? snprintf(ptr, len, "%.*s@%.*s@%.*s@%.*s@%.*s", (int)subscribe->dialog->callid.n, subscribe->dialog->callid.p, (int)subscribe->dialog->local.uri.tag.n, subscribe->dialog->local.uri.tag.p, (int)subscribe->dialog->remote.uri.tag.n, subscribe->dialog->remote.uri.tag.p, (int)subscribe->event.event.n, subscribe->event.event.p, (int)subscribe->event.id.n, subscribe->event.id.p) : 0;
-	id->p = ptr;
-	id->n = r > 0 && r < len ? r : 0;
+	r = subscribe ? snprintf(ptr, len, "%.*s@%.*s@%.*s@%.*s@%.*s", (int)subscribe->dialog->callid.len, subscribe->dialog->callid.data, (int)subscribe->dialog->local.uri.tag.len, subscribe->dialog->local.uri.tag.data, (int)subscribe->dialog->remote.uri.tag.len, subscribe->dialog->remote.uri.tag.data, (int)subscribe->event.event.len, subscribe->event.event.data, (int)subscribe->event.id.len, subscribe->event.id.data) : 0;
+	id->data = ptr;
+	id->len = r > 0 && r < len ? r : 0;
 	return r;
 }
 
 // @param[in] uas 1-local is uas
-int sip_subscribe_id_with_message(struct cstring_t* id, const struct sip_message_t* msg, char* ptr, int len, int uas)
+int sip_subscribe_id_with_message(tstr_v* id, const struct sip_message_t* msg, char* ptr, int len, int uas)
 {
 	int r;
 	assert(msg->mode == SIP_MESSAGE_REQUEST);
 	if (uas)
-		r = snprintf(ptr, len, "%.*s@%.*s@%.*s@%.*s@%.*s", (int)msg->callid.n, msg->callid.p, (int)msg->to.tag.n, msg->to.tag.p, (int)msg->from.tag.n, msg->from.tag.p, (int)msg->event.event.n, msg->event.event.p, (int)msg->event.id.n, msg->event.id.p);
+		r = snprintf(ptr, len, "%.*s@%.*s@%.*s@%.*s@%.*s", (int)msg->callid.len, msg->callid.data, (int)msg->to.tag.len, msg->to.tag.data, (int)msg->from.tag.len, msg->from.tag.data, (int)msg->event.event.len, msg->event.event.data, (int)msg->event.id.len, msg->event.id.data);
 	else
-		r = snprintf(ptr, len, "%.*s@%.*s@%.*s@%.*s@%.*s", (int)msg->callid.n, msg->callid.p, (int)msg->from.tag.n, msg->from.tag.p, (int)msg->to.tag.n, msg->to.tag.p, (int)msg->event.event.n, msg->event.event.p, (int)msg->event.id.n, msg->event.id.p);
+		r = snprintf(ptr, len, "%.*s@%.*s@%.*s@%.*s@%.*s", (int)msg->callid.len, msg->callid.data, (int)msg->from.tag.len, msg->from.tag.data, (int)msg->to.tag.len, msg->to.tag.data, (int)msg->event.event.len, msg->event.event.data, (int)msg->event.id.len, msg->event.id.data);
 
-	id->p = ptr;
-	id->n = r > 0 && r < len ? r : 0;
+	id->data = ptr;
+	id->len = r > 0 && r < len ? r : 0;
 	return r;
 }

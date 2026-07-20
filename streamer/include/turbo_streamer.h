@@ -257,7 +257,13 @@ CXX_C_API void turbo_streamer_hls_set_playlist_type(turbo_streamer_t *streamer,
  * ============================================================================= */
 
 /**
- * 设置 RTMP 元数据
+ * 设置 RTMP 元数据。
+ *
+ * 支持的 key 为 "title" 和 "author"。连接前设置的值会在 RTMP
+ * 发布完成后发送；连接后更新会立即发送新的 onMetaData。
+ *
+ * @return 0 表示值已保存（并在已连接时成功发送），-1 表示参数、
+ *         key、内存分配或发送失败。
  */
 CXX_C_API int turbo_streamer_rtmp_set_metadata(turbo_streamer_t *streamer,
                                                const char *key,

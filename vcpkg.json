@@ -5,6 +5,12 @@
     "miniaudio",
     "stb",
     "libyuv",
+    "opus",
+    "libvpx",
+    "openh264",
+    "x265",
+    "libde265",
+    "ffmpeg",
     "openssl",
     {
       "name": "libsrtp",
@@ -14,53 +20,5 @@
     },
     "roaring",
     "usrsctp"
-  ],
-  "features": {
-    "opus": {
-      "description": "Build TurboMedia Opus codec support.",
-      "dependencies": [
-        "opus"
-      ]
-    },
-    "vpx": {
-      "description": "Build TurboMedia VP8/VP9 codec support.",
-      "dependencies": [
-        "libvpx"
-      ]
-    },
-    "h264": {
-      "description": "Build TurboMedia H.264 codec support.",
-      "dependencies": [
-        "openh264"
-      ]
-    },
-    "h265": {
-      "description": "Build TurboMedia H.265 codec support.",
-      "dependencies": [
-        "x265",
-        "libde265"
-      ]
-    },
-    "ffmpeg": {
-      "description": "Install FFmpeg libraries for TurboMedia integrations.",
-      "dependencies": [
-        "ffmpeg"
-      ]
-    },
-    "all-codecs": {
-      "description": "Build all optional TurboMedia codec dependencies.",
-      "dependencies": [
-        {
-          "name": "turbomedia",
-          "default-features": false,
-          "features": [
-            "opus",
-            "vpx",
-            "h264",
-            "h265"
-          ]
-        }
-      ]
-    }
-  }
+  ]
 }

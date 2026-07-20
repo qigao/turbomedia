@@ -4,6 +4,8 @@
  * 管理所有可用的流媒体协议
  */
 #include "turbo_streamer.h"
+#include "hls_streamer_internal.h"
+#include "rtmp_streamer_internal.h"
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -272,19 +274,16 @@ void turbo_streamer_set_event_callback(turbo_streamer_t *streamer,
 int turbo_streamer_hls_get_playlist(turbo_streamer_t *streamer,
                                     char **playlist,
                                     size_t *size) {
-    if (!streamer || !playlist || !size) {
+    if (!streamer || streamer->ops->protocol != TURBO_STREAMER_HLS || !playlist || !size) {
         return -1;
     }
-
-    /* TODO: HLS 特定实现 */
-    return -1;
+    return turbo_hls_streamer_get_playlist(streamer->ctx, playlist, size);
 }
 
 void turbo_streamer_hls_set_playlist_type(turbo_streamer_t *streamer,
                                           turbo_hls_playlist_type_t type) {
-    if (!streamer) return;
-    
-    /* TODO: HLS 特定实现 */
+    if (!streamer || streamer->ops->protocol != TURBO_STREAMER_HLS) return;
+    turbo_hls_streamer_set_playlist_type(streamer->ctx, type);
 }
 
 /* =============================================================================
@@ -294,10 +293,8 @@ void turbo_streamer_hls_set_playlist_type(turbo_streamer_t *streamer,
 int turbo_streamer_rtmp_set_metadata(turbo_streamer_t *streamer,
                                      const char *key,
                                      const char *value) {
-    if (!streamer || !key || !value) {
+    if (!streamer || streamer->ops->protocol != TURBO_STREAMER_RTMP || !key || !value) {
         return -1;
     }
-
-    /* TODO: RTMP 特定实现 */
-    return -1;
+    return turbo_rtmp_streamer_set_metadata(streamer->ctx, key, value);
 }

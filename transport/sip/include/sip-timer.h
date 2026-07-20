@@ -22,9 +22,6 @@ typedef void (*sip_timer_handle)(void* usrptr);
 
 typedef void* sip_timer_t;
 
-void sip_timer_init(void);
-void sip_timer_cleanup(void);
-
 sip_timer_t sip_timer_start(int timeout, sip_timer_handle handler, void* usrptr);
 int sip_timer_stop(sip_timer_t* id);
 

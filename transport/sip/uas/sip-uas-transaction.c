@@ -22,8 +22,7 @@ struct sip_uas_transaction_t* sip_uas_transaction_create(struct sip_agent_t* sip
 	t->ref = 1; // for agent uac link, don't destory it
 	t->agent = sip;
 	t->initparam = param;
-	LIST_INIT_HEAD(&t->link);
-	locker_create(&t->locker);
+	turbo_mutex_init(&t->locker);
 	t->status = SIP_UAS_TRANSACTION_INIT;
 
 	// 17.1.1.1 Overview of INVITE Transaction (p125)
@@ -34,23 +33,27 @@ struct sip_uas_transaction_t* sip_uas_transaction_create(struct sip_agent_t* sip
 	t->t2 = sip_message_isinvite(req) ? (64 * T1) : T2;
 
 	// Life cycle: from create -> destroy
-	sip_uas_link_transaction(sip, t);
+	if (sip_uas_link_transaction(sip, t) != TURBO_OK)
+	{
+		sip_uas_transaction_release(t);
+		return NULL;
+	}
 	sip_uas_transaction_timeout(t, TIMER_H); // trying timeout
-	atomic_increment32(&s_gc.uas);
+	sip_atomic_increment(&s_gc.uas);
 	return t;
 }
 
 int sip_uas_transaction_release(struct sip_uas_transaction_t* t)
 {
 	assert(t->ref > 0);
-	if (0 != atomic_decrement32(&t->ref))
+	if (0 != sip_atomic_decrement(&t->ref))
 		return 0;
 
 	assert(0 == t->ref);
 	assert(NULL == t->timerg);
 	assert(NULL == t->timerh);
 	assert(NULL == t->timerij);
-	assert(t->link.next == t->link.prev);// unlink on termernate
+	assert(!t->linked); // unlink on terminate
 
 	// MUST: destroy t->reply after sip_uas_del_transaction
 	//sip_message_destroy((struct sip_message_t*)t->req);
@@ -76,16 +79,16 @@ int sip_uas_transaction_release(struct sip_uas_transaction_t* t)
         t->dialog = NULL;
     }
     
-	locker_destroy(&t->locker);
+	turbo_mutex_destroy(&t->locker);
 	free(t);
-	atomic_decrement32(&s_gc.uas);
+	sip_atomic_decrement(&s_gc.uas);
 	return 0;
 }
 
 int sip_uas_transaction_addref(struct sip_uas_transaction_t* t)
 {
 	int r;
-	r = atomic_increment32(&t->ref);
+	r = sip_atomic_increment(&t->ref);
 	assert(r > 1);
 	return r;
 }
@@ -101,51 +104,51 @@ int sip_uas_transaction_addref(struct sip_uas_transaction_t* t)
 int sip_uas_transaction_handler(struct sip_uas_transaction_t* t, const struct sip_message_t* req, void* param)
 {
 	//assert(t->param == t->initparam);
-	if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_CANCEL))
+	if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_CANCEL))
 	{
 		return sip_uas_oncancel(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_BYE))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_BYE))
 	{
 		return sip_uas_onbye(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_PRACK))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_PRACK))
 	{
 		return sip_uas_onprack(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_UPDATE))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_UPDATE))
 	{
 		return sip_uas_onupdate(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_INFO))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_INFO))
 	{
 		return sip_uas_oninfo(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_REGISTER))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_REGISTER))
 	{
 		return sip_uas_onregister(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_OPTIONS))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_OPTIONS))
 	{
 		return sip_uas_onoptions(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_SUBSCRIBE))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_SUBSCRIBE))
 	{
 		return sip_uas_onsubscribe(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_NOTIFY))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_NOTIFY))
 	{
 		return sip_uas_onnotify(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_PUBLISH))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_PUBLISH))
 	{
 		return sip_uas_onpublish(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_REFER))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_REFER))
 	{
 		return sip_uas_onrefer(t, req, param);
 	}
-	else if (0 == cstrcasecmp(&req->u.c.method, SIP_METHOD_MESSAGE))
+	else if (0 == sip_sv_compare_cstr_ci(&req->u.c.method, SIP_METHOD_MESSAGE))
 	{
 		return t->handler->onmessage ? t->handler->onmessage(param, req, t, req->payload, req->size) : 0;
 	}
@@ -193,10 +196,10 @@ int sip_uas_transaction_terminated(struct sip_uas_transaction_t* t)
 void sip_uas_transaction_ontimeout(void* usrptr)
 {
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 	struct sip_uas_transaction_t* t;
 	t = (struct sip_uas_transaction_t*)usrptr;
-	locker_lock(&t->locker);
+	turbo_mutex_lock(&t->locker);
 	sip_uas_stop_timer(t->agent, t, &t->timerh); // hijack free timer only, don't release transaction
 
 	if (t->status < SIP_UAS_TRANSACTION_CONFIRMED)
@@ -215,7 +218,7 @@ void sip_uas_transaction_ontimeout(void* usrptr)
 		}
 	}
 
-	locker_unlock(&t->locker);
+	turbo_mutex_unlock(&t->locker);
 	sip_uas_transaction_release(t);
 }
 
@@ -224,11 +227,11 @@ static void sip_uas_transaction_onterminated(void* usrptr)
 	struct sip_uas_transaction_t* t;
 	t = (struct sip_uas_transaction_t*)usrptr;
 
-	locker_lock(&t->locker);
+	turbo_mutex_lock(&t->locker);
 	sip_uas_stop_timer(t->agent, t, &t->timerij); // hijack free timer only, don't release transaction
 	if(SIP_UAS_TRANSACTION_TERMINATED != t->status)
 		sip_uas_transaction_terminated(t);
-	locker_unlock(&t->locker);
+	turbo_mutex_unlock(&t->locker);
 	sip_uas_transaction_release(t);
 }
 

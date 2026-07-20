@@ -603,7 +603,6 @@ $ToolchainRoot = Split-Path $ToolchainBin -Parent
 $header = (Invoke-NativeCapture $ReadElf @('-h', $Executable)).Output
 $Architecture = switch -Regex ($header) {
     'Machine:\s+AArch64' { 'arm64-v8a'; break }
-    'Machine:\s+ARM' { 'armeabi-v7a'; break }
     'Machine:\s+Advanced Micro Devices X86-64' { 'x86_64'; break }
     'Machine:\s+Intel 80386' { 'x86'; break }
     default { throw "Unsupported ELF machine in $Executable" }
@@ -611,7 +610,6 @@ $Architecture = switch -Regex ($header) {
 
 $ArchDetails = @{
     'arm64-v8a' = @{ DeviceAbi = 'arm64-v8a'; RuntimeArch = 'aarch64'; Triple = 'aarch64-linux-android' }
-    'armeabi-v7a' = @{ DeviceAbi = 'armeabi-v7a'; RuntimeArch = 'arm'; Triple = 'arm-linux-androideabi' }
     'x86_64' = @{ DeviceAbi = 'x86_64'; RuntimeArch = 'x86_64'; Triple = 'x86_64-linux-android' }
     'x86' = @{ DeviceAbi = 'x86'; RuntimeArch = 'i386'; Triple = 'i686-linux-android' }
 }[$Architecture]
@@ -727,7 +725,6 @@ function Test-MatchingElf {
     }
     $matchesArchitecture = switch ($Architecture) {
         'arm64-v8a' { $result.Output -match 'Machine:\s+AArch64' }
-        'armeabi-v7a' { $result.Output -match 'Machine:\s+ARM' }
         'x86_64' { $result.Output -match 'Machine:\s+Advanced Micro Devices X86-64' }
         'x86' { $result.Output -match 'Machine:\s+Intel 80386' }
     }

@@ -44,6 +44,7 @@ class TextSampleEntry() extends SampleEntry ('tx3g') {
 }
 */
 
+#if !defined(MOV_WRITER_ONLY)
 int mov_read_tx3g(struct mov_t* mov, const struct mov_box_t* box)
 {
 	struct mov_box_t extra;
@@ -76,7 +77,9 @@ int mov_read_tx3g(struct mov_t* mov, const struct mov_box_t* box)
 	extra.size = box->size - 30;
 	return mp4_read_extra(mov, &extra);
 }
+#endif
 
+#if !defined(MOV_READER_ONLY)
 size_t mov_write_tx3g(const struct mov_t* mov)
 {
 	//const struct mov_track_t* track = mov->track;
@@ -113,3 +116,4 @@ size_t mov_write_tx3g(const struct mov_t* mov)
 
 	return 30 + 18;
 }
+#endif

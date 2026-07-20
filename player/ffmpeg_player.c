@@ -1,7 +1,5 @@
 #include "turbo_player.h"
 
-#ifdef TURBO_MEDIA_HAS_FFMPEG
-
 #include "turbo_playback.h"
 
 #include <libavcodec/avcodec.h>
@@ -709,5 +707,3 @@ int64_t turbo_player_get_duration_ms(turbo_player_t *player) {
     }
     return av_rescale_q(player->format->duration, AV_TIME_BASE_Q, (AVRational){1, 1000});
 }
-
-#endif /* TURBO_MEDIA_HAS_FFMPEG */

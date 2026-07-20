@@ -15,7 +15,7 @@ int sip_uac_ack_3456xx(struct sip_uac_transaction_t* t, const struct sip_message
 
 	r = 0;
 	ack = sip_message_create(SIP_MESSAGE_REQUEST);
-	r = dialog && cstrvalid(&dialog->remote.target.host) ? sip_message_init2(ack, SIP_METHOD_ACK, dialog) : sip_message_initack(ack, t->req);
+	r = dialog && sip_sv_valid(&dialog->remote.target.host) ? sip_message_init2(ack, SIP_METHOD_ACK, dialog) : sip_message_initack(ack, t->req);
 	if (0 != r)
 	{
 		sip_message_destroy(ack);
@@ -25,17 +25,17 @@ int sip_uac_ack_3456xx(struct sip_uac_transaction_t* t, const struct sip_message
 #if defined(SIP_KEEP_DIALOG_REQUET_URI)
 	ack->ptr.ptr = sip_uri_clone(ack->ptr.ptr, ack->ptr.end, &ack->u.c.uri, &t->req->u.c.uri);
 #endif
-	assert(ack->u.c.uri.scheme.n == 3 && 0 == strncmp("sip", ack->u.c.uri.scheme.p, 3));
-	if (cstrcmp(&ack->u.c.method, SIP_METHOD_ACK))
+	assert(ack->u.c.uri.scheme.len == 3 && 0 == strncmp("sip", ack->u.c.uri.scheme.data, 3));
+	if (sip_sv_compare_cstr(&ack->u.c.method, SIP_METHOD_ACK))
 	{
 		// overwrite method
-		ack->u.c.method.p = SIP_METHOD_ACK;
-		ack->u.c.method.n = strlen(SIP_METHOD_ACK);
+		ack->u.c.method.data = SIP_METHOD_ACK;
+		ack->u.c.method.len = strlen(SIP_METHOD_ACK);
 		memcpy(&ack->cseq.method, &ack->u.c.method, sizeof(ack->cseq.method));
 	}
 
 	// override to tag
-	if (!cstrvalid(&ack->to.tag))
+	if (!sip_sv_valid(&ack->to.tag))
 	{
 		r = sip_contact_write(&reply->to, contact, contact + sizeof(contact));
 		if (r < 0 || r >= sizeof(contact) - 1)
@@ -104,7 +104,7 @@ int sip_uac_ack_3456xx(struct sip_uac_transaction_t* t, const struct sip_message
 	}
 
 	// message
-	assert(ack->u.c.uri.scheme.n == 3 && 0 == strncmp("sip", ack->u.c.uri.scheme.p, 3));
+	assert(ack->u.c.uri.scheme.len == 3 && 0 == strncmp("sip", ack->u.c.uri.scheme.data, 3));
 	t->size = sip_message_write(ack, t->data, sizeof(t->data));
 	// destroy sip message
 	sip_message_destroy(ack);
@@ -121,9 +121,8 @@ int sip_uac_ack(struct sip_uac_transaction_t* invite, const void* data, int byte
 	char ptr[1024];
 	char contact[1024];
 	struct sip_message_t* ack;
-	const struct cstring_t* h;
 
-	if (!invite->dialog || !cstrvalid(&invite->dialog->remote.target.host))
+	if (!invite->dialog || !sip_sv_valid(&invite->dialog->remote.target.host))
 		return -1;
 
 	r = 0;
@@ -138,7 +137,7 @@ int sip_uac_ack(struct sip_uac_transaction_t* invite, const void* data, int byte
 #if defined(SIP_KEEP_DIALOG_REQUET_URI)
 	ack->ptr.ptr = sip_uri_clone(ack->ptr.ptr, ack->ptr.end, &ack->u.c.uri, &invite->req->u.c.uri);
 #endif
-	assert(ack->u.c.uri.scheme.n >= 3 && 0 == strncmp("sip", ack->u.c.uri.scheme.p, 3));
+	assert(ack->u.c.uri.scheme.len >= 3 && 0 == strncmp("sip", ack->u.c.uri.scheme.data, 3));
 
 	sip_message_add_header(ack, "Content-Type", content_type);
 
@@ -177,10 +176,10 @@ int sip_uac_ack(struct sip_uac_transaction_t* invite, const void* data, int byte
 	if (0 == r)
 		r = sip_message_add_header(ack, "Via", ptr);
 	
-	locker_lock(&invite->locker);
+	turbo_mutex_lock(&invite->locker);
 	if (invite->status != SIP_UAC_TRANSACTION_ACCEPTED_UNACK)
 	{
-		locker_unlock(&invite->locker);
+		turbo_mutex_unlock(&invite->locker);
 		sip_message_destroy(ack);
 		assert(0);
 		return -1;
@@ -195,12 +194,12 @@ int sip_uac_ack(struct sip_uac_transaction_t* invite, const void* data, int byte
 
 	if (0 != r || invite->size <= 0 || invite->size >= sizeof(invite->data))
 	{
-		locker_unlock(&invite->locker);
+		turbo_mutex_unlock(&invite->locker);
 		return 0 == r ? -1 : r; // E2BIG
 	}
 
 	invite->status = SIP_UAC_TRANSACTION_ACCEPTED_ACKED;
-	locker_unlock(&invite->locker);
+	turbo_mutex_unlock(&invite->locker);
 
 	return invite->transport.send(invite->transportptr, invite->data, invite->size);
 }
@@ -210,13 +209,13 @@ struct sip_uac_transaction_t* sip_uac_prack(struct sip_agent_t* sip, const struc
 	char rack[64];
 	struct sip_message_t* req;
 	struct sip_uac_transaction_t* t;
-	const struct cstring_t* rseq;
+	const tstr_v* rseq;
 
 	rseq = sip_message_get_header_by_name(req100rel, SIP_HEADER_RSEQ);
 	if (!sip || !dialog || !rseq)
 		return NULL;
 
-	snprintf(rack, sizeof(rack), "%u %u %.*s", (unsigned int)req100rel->rseq, (unsigned int)req100rel->cseq.id, (int)req100rel->cseq.method.n, req100rel->cseq.method.p);
+	snprintf(rack, sizeof(rack), "%u %u %.*s", (unsigned int)req100rel->rseq, (unsigned int)req100rel->cseq.id, (int)req100rel->cseq.method.len, req100rel->cseq.method.data);
 
 	++dialog->local.id;
 	req = sip_message_create(SIP_MESSAGE_REQUEST);

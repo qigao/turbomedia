@@ -6,6 +6,7 @@
 
 // stsd: Sample Description Box
 
+#if !defined(MOV_WRITER_ONLY)
 int mp4_read_extra(struct mov_t* mov, const struct mov_box_t* box)
 {
 	int r;
@@ -371,6 +372,10 @@ int mov_read_stsd(struct mov_t* mov, const struct mov_box_t* box)
 	return mov_buffer_error(&mov->io);
 }
 
+#endif
+
+#if !defined(MOV_READER_ONLY)
+
 //static int mov_write_h264(const struct mov_t* mov)
 //{
 //	size_t size;
@@ -574,3 +579,4 @@ size_t mov_write_stsd(const struct mov_t* mov)
 	mov_write_size(mov, offset, size); /* update size */
 	return size;
 }
+#endif

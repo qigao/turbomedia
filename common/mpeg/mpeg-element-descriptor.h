@@ -4,7 +4,7 @@
 #include "turbo_mpeg_util.h"
 
 #define SERVICE_ID		0x71
-#define SERVICE_NAME	"ireader/media-server"
+#define SERVICE_NAME	"TurboMedia"
 
 int mpeg_elment_descriptor(struct mpeg_bits_t* reader);
 

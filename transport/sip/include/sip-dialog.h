@@ -2,9 +2,8 @@
 #define _sip_dialog_h_
 
 #include "sip-header.h"
-#include "sys/atomic.h"
-#include "cstring.h"
-#include "list.h"
+#include "sip-atomic.h"
+#include "sip-string-view.h"
 #include <stdint.h>
 
 #if defined(__cplusplus)
@@ -23,7 +22,7 @@ struct sip_dialog_t
 {
 	int state; // DIALOG_ERALY/DIALOG_CONFIRMED
 
-	struct cstring_t callid;
+	tstr_v callid;
 	struct 
 	{
 		uint32_t id; // local/remote sequence number
@@ -38,7 +37,7 @@ struct sip_dialog_t
 
 	// internal use only
 	char* ptr;
-	int32_t ref;
+	sip_atomic_i32_t ref;
 };
 
 struct sip_dialog_t* sip_dialog_create(void);
@@ -48,12 +47,12 @@ int sip_dialog_addref(struct sip_dialog_t* dialog);
 int sip_dialog_init_uac(struct sip_dialog_t* dialog, const struct sip_message_t* msg);
 int sip_dialog_init_uas(struct sip_dialog_t* dialog, const struct sip_message_t* msg);
 
-int sip_dialog_setlocaltag(struct sip_dialog_t* dialog, const struct cstring_t* tag);
+int sip_dialog_setlocaltag(struct sip_dialog_t* dialog, const tstr_v* tag);
 int sip_dialog_target_refresh(struct sip_dialog_t* dialog, const struct sip_message_t* msg);
 int sip_dialog_set_local_target(struct sip_dialog_t* dialog, const struct sip_message_t* msg);
 
-int sip_dialog_id(struct cstring_t* id, const struct sip_dialog_t* dialog, char* ptr, int len);
-int sip_dialog_id_with_message(struct cstring_t* id, const struct sip_message_t* msg, char* ptr, int len, int uas);
+int sip_dialog_id(tstr_v* id, const struct sip_dialog_t* dialog, char* ptr, int len);
+int sip_dialog_id_with_message(tstr_v* id, const struct sip_message_t* msg, char* ptr, int len, int uas);
 
 #if defined(__cplusplus)
 }

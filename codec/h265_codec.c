@@ -37,13 +37,6 @@ typedef struct {
     int frame_count;
     int64_t pts;
     
-    /* NAL units */
-    uint8_t *vps;
-    size_t vps_len;
-    uint8_t *sps;
-    size_t sps_len;
-    uint8_t *pps;
-    size_t pps_len;
     uint8_t *packet_bufs[TURBO_CODEC_MAX_PACKETS];
     size_t packet_caps[TURBO_CODEC_MAX_PACKETS];
     uint8_t *reassembly_buf;
@@ -117,7 +110,13 @@ static int h265_ensure_packet_buf(h265_context_t *ctx, int index, size_t needed)
 
 static void *h265_create_encoder(const void *config) {
     const turbo_video_codec_config_t *cfg = (const turbo_video_codec_config_t *)config;
-    if (!cfg) return NULL;
+    enum { H265_MAX_FRAMERATE = 240 };
+    if (!cfg || cfg->width <= 0 || cfg->width > TURBO_VIDEO_MAX_WIDTH ||
+        cfg->height <= 0 || cfg->height > TURBO_VIDEO_MAX_HEIGHT ||
+        cfg->framerate <= 0 || cfg->framerate > H265_MAX_FRAMERATE ||
+        cfg->bitrate < 0 || cfg->keyframe_interval < 0 || cfg->threads < 0) {
+        return NULL;
+    }
     
     h265_context_t *ctx = (h265_context_t *)calloc(1, sizeof(h265_context_t));
     if (!ctx) return NULL;
@@ -287,9 +286,6 @@ static void h265_destroy(void *ctx) {
         de265_free_decoder(h265->decoder);
     }
     
-    if (h265->vps) free(h265->vps);
-    if (h265->sps) free(h265->sps);
-    if (h265->pps) free(h265->pps);
     for (i = 0; i < TURBO_CODEC_MAX_PACKETS; i++) {
         free(h265->packet_bufs[i]);
     }
@@ -346,6 +342,9 @@ static int h265_encode(void *ctx,
     if (nal_count > 0) {
         for (uint32_t i = 0; i < nal_count; i++) {
             x265_nal *nal = &nals[i];
+            const uint8_t *nal_data = nal->payload;
+            size_t nal_size = nal->sizeBytes;
+            int prefix_len = 0;
             
             if (total_len + nal->sizeBytes > *output_len) {
                 return TURBO_CODEC_ERR_BUFFER;
@@ -354,34 +353,17 @@ static int h265_encode(void *ctx,
             memcpy(output + total_len, nal->payload, nal->sizeBytes);
             total_len += nal->sizeBytes;
             
-            /* Check for keyframe (IDR or I-frame) */
-            int nal_type = (nal->payload[0] >> 1) & 0x3F;
-            if (nal_type == 19 || nal_type == 20) { /* IDR_W_RADL or IDR_N_LP */
-                is_keyframe = 1;
+            if (h265_find_start_code(nal_data, nal_size, 0, &prefix_len) == 0 &&
+                prefix_len > 0) {
+                nal_data += (size_t)prefix_len;
+                nal_size -= (size_t)prefix_len;
             }
-            
-            /* Store VPS/SPS/PPS for later use */
-            if (nal_type == 32) { /* VPS */
-                if (h265->vps) free(h265->vps);
-                h265->vps = (uint8_t *)malloc(nal->sizeBytes);
-                if (h265->vps) {
-                    memcpy(h265->vps, nal->payload, nal->sizeBytes);
-                    h265->vps_len = nal->sizeBytes;
-                }
-            } else if (nal_type == 33) { /* SPS */
-                if (h265->sps) free(h265->sps);
-                h265->sps = (uint8_t *)malloc(nal->sizeBytes);
-                if (h265->sps) {
-                    memcpy(h265->sps, nal->payload, nal->sizeBytes);
-                    h265->sps_len = nal->sizeBytes;
-                }
-            } else if (nal_type == 34) { /* PPS */
-                if (h265->pps) free(h265->pps);
-                h265->pps = (uint8_t *)malloc(nal->sizeBytes);
-                if (h265->pps) {
-                    memcpy(h265->pps, nal->payload, nal->sizeBytes);
-                    h265->pps_len = nal->sizeBytes;
-                }
+            if (nal_size < 2) continue;
+
+            /* HEVC IRAP pictures (BLA/IDR/CRA) are valid random-access points. */
+            int nal_type = (nal_data[0] >> 1) & 0x3F;
+            if (nal_type >= 16 && nal_type <= 23) {
+                is_keyframe = 1;
             }
         }
     }

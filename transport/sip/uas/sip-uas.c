@@ -6,9 +6,6 @@
 #include "sip-dialog.h"
 #include "sip-message.h"
 #include "sip-transport.h"
-#include "sys/atomic.h"
-#include "sys/locker.h"
-#include "list.h"
 #include <stdio.h>
 
 sip_timer_t sip_uas_start_timer(struct sip_agent_t* sip, struct sip_uas_transaction_t* t, int timeout, sip_timer_handle handler)
@@ -39,35 +36,53 @@ void sip_uas_stop_timer(struct sip_agent_t* sip, struct sip_uas_transaction_t* t
 
 int sip_uas_link_transaction(struct sip_agent_t* sip, struct sip_uas_transaction_t* t)
 {
+	int result;
+
 	sip_uas_transaction_addref(t);
 	t->handler = &sip->handler;
 	
 	assert(sip->ref > 0);
-	atomic_increment32(&sip->ref); // ref by transaction
+	sip_atomic_increment(&sip->ref); // ref by transaction
 
-	// link to tail
-	locker_lock(&sip->locker);
-	list_insert_after(&t->link, sip->uas.prev);
-	locker_unlock(&sip->locker);
-	return 0;
+	turbo_mutex_lock(&sip->locker);
+	assert(!t->linked);
+	result = turbo_vec_push(&sip->uas, &t);
+	if (result == TURBO_OK)
+		t->linked = 1;
+	turbo_mutex_unlock(&sip->locker);
+
+	if (result != TURBO_OK)
+	{
+		sip_uas_transaction_release(t);
+		sip_agent_destroy(sip);
+	}
+	return result;
 }
 
 int sip_uas_unlink_transaction(struct sip_agent_t* sip, struct sip_uas_transaction_t* t)
 {
-	//struct sip_dialog_t* dialog;
-	//struct list_head *pos, *next;
+	size_t index;
+	struct sip_uas_transaction_t **candidate;
 
 	assert(sip->ref > 0);
-	locker_lock(&sip->locker);
-	if (t->link.next == NULL)
+	turbo_mutex_lock(&sip->locker);
+	if (!t->linked)
 	{
-		// fix remove twice
-		locker_unlock(&sip->locker);
+		turbo_mutex_unlock(&sip->locker);
 		return 0;
 	}
 
-	// unlink transaction
-	list_remove(&t->link);
+	for (index = 0U; index < turbo_vec_size(&sip->uas); ++index)
+	{
+		candidate = (struct sip_uas_transaction_t **)turbo_vec_at(&sip->uas, index);
+		if (candidate && *candidate == t)
+		{
+			turbo_vec_erase(&sip->uas, index, NULL);
+			t->linked = 0;
+			break;
+		}
+	}
+	assert(!t->linked);
 
 	// 12.3 Termination of a Dialog (p77)
 	// Independent of the method, if a request outside of a dialog generates
@@ -76,7 +91,7 @@ int sip_uas_unlink_transaction(struct sip_agent_t* sip, struct sip_uas_transacti
 	//list_for_each_safe(pos, next, &sip->dialogs)
 	//{
 	//	dialog = list_entry(pos, struct sip_dialog_t, link);
-	//	if (cstreq(&t->reply->callid, &dialog->callid) && DIALOG_ERALY == dialog->state)
+	//	if (sip_sv_equal(&t->reply->callid, &dialog->callid) && DIALOG_ERALY == dialog->state)
 	//	{
 	//		//assert(0 == sip_contact_compare(&t->req->from, &dialog->local.uri));
 	//		sip_dialog_remove(sip, dialog); // TODO: release in locker
@@ -84,7 +99,7 @@ int sip_uas_unlink_transaction(struct sip_agent_t* sip, struct sip_uas_transacti
 	//	}
 	//}
 
-	locker_unlock(&sip->locker);
+	turbo_mutex_unlock(&sip->locker);
 	sip_uas_transaction_release(t);
 	sip_agent_destroy(sip); // unref by transaction
 	return 0;
@@ -92,13 +107,17 @@ int sip_uas_unlink_transaction(struct sip_agent_t* sip, struct sip_uas_transacti
 
 static struct sip_uas_transaction_t* sip_uas_find_acktransaction(struct sip_agent_t* sip, const struct sip_message_t* req)
 {
-	struct list_head *pos, *next;
+	size_t index;
+	struct sip_uas_transaction_t **candidate;
 	struct sip_uas_transaction_t* t;
 
-	list_for_each_safe(pos, next, &sip->uas)
+	for (index = 0U; index < turbo_vec_size(&sip->uas); ++index)
 	{
-		t = list_entry(pos, struct sip_uas_transaction_t, link);
-		if (cstreq(&t->reply->callid, &req->callid) && cstreq(&t->reply->from.tag, &req->from.tag) && cstreq(&t->reply->to.tag, &req->to.tag))
+		candidate = (struct sip_uas_transaction_t **)turbo_vec_at(&sip->uas, index);
+		if (!candidate || !*candidate)
+			continue;
+		t = *candidate;
+		if (sip_sv_equal(&t->reply->callid, &req->callid) && sip_sv_equal(&t->reply->from.tag, &req->from.tag) && sip_sv_equal(&t->reply->to.tag, &req->to.tag))
 		{
 			sip_uas_transaction_addref(t);
 			return t;
@@ -111,38 +130,42 @@ static struct sip_uas_transaction_t* sip_uas_find_acktransaction(struct sip_agen
 // RFC3261 17.2.3 Matching Requests to Server Transactions (p138)
 struct sip_uas_transaction_t* sip_uas_find_transaction(struct sip_agent_t* sip, const struct sip_message_t* req, int matchmethod)
 {
-	struct list_head *pos, *next;
+	size_t index;
+	struct sip_uas_transaction_t **candidate;
 	struct sip_uas_transaction_t* t;
 	const struct sip_via_t *via, *via2;
 
 	via = sip_vias_get(&req->vias, 0);
 	if (!via) return NULL; // invalid sip message
-	//assert(cstrprefix(&via->branch, SIP_BRANCH_PREFIX));
+	//assert(sip_sv_starts_with(&via->branch, SIP_BRANCH_PREFIX));
 
-	list_for_each_safe(pos, next, &sip->uas)
+	for (index = 0U; index < turbo_vec_size(&sip->uas); ++index)
 	{
-		t = list_entry(pos, struct sip_uas_transaction_t, link);
+		candidate = (struct sip_uas_transaction_t **)turbo_vec_at(&sip->uas, index);
+		if (!candidate || !*candidate)
+			continue;
+		t = *candidate;
 		via2 = sip_vias_get(&t->reply->vias, 0);
 		assert(via2);
 
 		// 1. via branch parameter
-		if (!cstreq(&via->branch, &via2->branch))
+		if (!sip_sv_equal(&via->branch, &via2->branch))
 			continue;
-		//assert(cstrprefix(&via2->branch, SIP_BRANCH_PREFIX));
+		//assert(sip_sv_starts_with(&via2->branch, SIP_BRANCH_PREFIX));
 
 		// 2. via send-by value
 		// The sent-by value is used as part of the matching process because
 		// there could be accidental or malicious duplication of branch
 		// parameters from different clients.
-		if(!cstreq(&via->host, &via2->host) || !cstreq(&req->callid, &t->reply->callid))
+		if(!sip_sv_equal(&via->host, &via2->host) || !sip_sv_equal(&req->callid, &t->reply->callid))
 			continue;
 
 		// 3. cseq method parameter
 		// the method of the request matches the one that created the
 		// transaction, except for ACK, where the method of the request
 		// that created the transaction is INVITE
-		assert(cstreq(&req->cseq.method, &t->reply->cseq.method) || 0 == cstrcasecmp(&req->cseq.method, SIP_METHOD_CANCEL) || 0 == cstrcasecmp(&req->cseq.method, SIP_METHOD_ACK));
-		if (matchmethod && cstreq(&req->cseq.method, &t->reply->cseq.method))
+		assert(sip_sv_equal(&req->cseq.method, &t->reply->cseq.method) || 0 == sip_sv_compare_cstr_ci(&req->cseq.method, SIP_METHOD_CANCEL) || 0 == sip_sv_compare_cstr_ci(&req->cseq.method, SIP_METHOD_ACK));
+		if (matchmethod && sip_sv_equal(&req->cseq.method, &t->reply->cseq.method))
 		{
 			assert(req->cseq.id == t->reply->cseq.id);
 			sip_uas_transaction_addref(t);
@@ -150,7 +173,7 @@ struct sip_uas_transaction_t* sip_uas_find_transaction(struct sip_agent_t* sip, 
 		}
 
 		// ACK/CANCEL find origin request transaction
-		if (!matchmethod && !cstreq(&req->cseq.method, &t->reply->cseq.method) && 0 != cstrcasecmp(&t->reply->cseq.method, SIP_METHOD_CANCEL) && 0 != cstrcasecmp(&t->reply->cseq.method, SIP_METHOD_ACK))
+		if (!matchmethod && !sip_sv_equal(&req->cseq.method, &t->reply->cseq.method) && 0 != sip_sv_compare_cstr_ci(&t->reply->cseq.method, SIP_METHOD_CANCEL) && 0 != sip_sv_compare_cstr_ci(&t->reply->cseq.method, SIP_METHOD_ACK))
 		{
 			assert(req->cseq.id == t->reply->cseq.id);
 			sip_uas_transaction_addref(t);
@@ -166,20 +189,20 @@ struct sip_uas_transaction_t* sip_uas_find_transaction(struct sip_agent_t* sip, 
 //{
 //	// 8.2.2.1 To and Request-URI
 //	// if the To header field does not address a known or current user of this UAS
-//	if (0 != cstrcasecmp(&msg->to.uri.host, ""))
+//	if (0 != sip_sv_compare_cstr_ci(&msg->to.uri.host, ""))
 //		return sip_uas_reply(t, 403/*Forbidden*/, NULL, 0);
 //	// If the Request-URI uses a scheme not supported by the UAS
-//	if (0 != cstrcasecmp(&msg->u.c.uri.scheme, "sip") && 0 != cstrcasecmp(&msg->u.c.uri.scheme, "sips"))
+//	if (0 != sip_sv_compare_cstr_ci(&msg->u.c.uri.scheme, "sip") && 0 != sip_sv_compare_cstr_ci(&msg->u.c.uri.scheme, "sips"))
 //		return sip_uas_reply(t, 416/*Unsupported URI Scheme*/, NULL, 0);
 //	// If the Request-URI does not identify an address that the UAS is willing to accept requests for
-//	if (0 != cstrcasecmp(&msg->u.c.uri.host, ""))
+//	if (0 != sip_sv_compare_cstr_ci(&msg->u.c.uri.host, ""))
 //		return sip_uas_reply(t, 404/*Not Found*/, NULL, 0);
 //	return 0;
 //}
 //// 8.2.2.3 Require (p47)
 //static int sip_uas_check_require(struct sip_uas_t* uas, struct sip_uas_transaction_t* t, const struct sip_message_t* msg)
 //{
-//	const struct cstring_t* header;
+//	const tstr_v* header;
 //
 //	header = sip_message_get_header_by_name(msg, "Require");
 //	sip_uas_add_header(t, "Unsupported", );
@@ -188,9 +211,9 @@ struct sip_uas_transaction_t* sip_uas_find_transaction(struct sip_agent_t* sip, 
 //// 8.2.3 Content Processing (p47)
 //static int sip_uas_check_media_type(struct sip_uas_t* uas, struct sip_uas_transaction_t* t, const struct sip_message_t* msg)
 //{
-//	const struct cstring_t* content_type;
-//	const struct cstring_t* content_language;
-//	const struct cstring_t* content_encoding;
+//	const tstr_v* content_type;
+//	const tstr_v* content_language;
+//	const tstr_v* content_encoding;
 //
 //	content_type = sip_message_get_header_by_name(msg, "Content-Type");
 //	content_language = sip_message_get_header_by_name(msg, "Content-Language");
@@ -227,7 +250,7 @@ static int sip_uas_input_with_transaction(struct sip_agent_t* sip, const struct 
 	if (0 != r)
 		return r;
 
-	locker_lock(&t->locker);
+	turbo_mutex_lock(&t->locker);
 
 	// 4. handle
 	if (sip_message_isinvite(msg) || sip_message_isack(msg))
@@ -241,7 +264,7 @@ static int sip_uas_input_with_transaction(struct sip_agent_t* sip, const struct 
 	// 3. A stateless UAS MUST ignore ACK requests.
 	// 4. A stateless UAS MUST ignore CANCEL requests.
 
-	locker_unlock(&t->locker);
+	turbo_mutex_unlock(&t->locker);
 	return r;
 }
 
@@ -251,25 +274,25 @@ int sip_uas_input(struct sip_agent_t* sip, const struct sip_message_t* msg, void
 	struct sip_uas_transaction_t* t;
 
 	// find transaction
-	locker_lock(&sip->locker);
+	turbo_mutex_lock(&sip->locker);
 	t = sip_uas_find_transaction(sip, msg, 1);
 	if (!t)
 	{
 		if (sip_message_isack(msg))
 		{
-			locker_unlock(&sip->locker);
+			turbo_mutex_unlock(&sip->locker);
 			return 0; // invalid ack, discard, TODO: add log here
 		}
 
 		t = sip_uas_transaction_create(sip, msg, NULL, param);
 		if (!t)
 		{
-			locker_unlock(&sip->locker);
+			turbo_mutex_unlock(&sip->locker);
 			return -1;
 		}
 		assert(t->ref == 3); // +2 linker with timer H
 	}
-	locker_unlock(&sip->locker);
+	turbo_mutex_unlock(&sip->locker);
 
     r = sip_uas_input_with_transaction(sip, msg, t, param);
 	sip_uas_transaction_release(t);
@@ -279,7 +302,7 @@ int sip_uas_input(struct sip_agent_t* sip, const struct sip_message_t* msg, void
 int sip_uas_reply(struct sip_uas_transaction_t* t, int code, const void* data, int bytes, void* param)
 {
     int r;
-    locker_lock(&t->locker);
+    turbo_mutex_lock(&t->locker);
     
     // Contact: <sip:bob@192.0.2.4>
     if (200 <= code && code < 300 && 0 == sip_contacts_count(&t->reply->contacts) &&
@@ -299,8 +322,8 @@ int sip_uas_reply(struct sip_uas_transaction_t* t, int code, const void* data, i
 	// get transport reliable from via protocol
 	t->reliable = 1;
 	if (sip_vias_count(&t->reply->vias) > 0
-		&& (0 == cstrcmp(&(sip_vias_get(&t->reply->vias, 0)->transport), "UDP")
-			|| 0 == cstrcmp(&(sip_vias_get(&t->reply->vias, 0)->transport), "DTLS")))
+		&& (0 == sip_sv_compare_cstr(&(sip_vias_get(&t->reply->vias, 0)->transport), "UDP")
+			|| 0 == sip_sv_compare_cstr(&(sip_vias_get(&t->reply->vias, 0)->transport), "DTLS")))
 	{
 		t->reliable = 0;
 	}
@@ -313,17 +336,17 @@ int sip_uas_reply(struct sip_uas_transaction_t* t, int code, const void* data, i
 	{
 		r = sip_uas_transaction_noninvite_reply(t, code, data, bytes, param);
 	}
-    locker_unlock(&t->locker);
+    turbo_mutex_unlock(&t->locker);
     return r;
 }
 
 //int sip_uas_discard(struct sip_uas_transaction_t* t)
 //{
-//	locker_lock(&t->locker);
+//	turbo_mutex_lock(&t->locker);
 //	assert(t->ref > 0);
 //	if(SIP_UAS_TRANSACTION_TERMINATED != t->status)
 //		sip_uas_transaction_terminated();
-//	locker_unlock(&t->locker);
+//	turbo_mutex_unlock(&t->locker);
 //	
 //	return sip_uas_transaction_release(t);
 //}

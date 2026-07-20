@@ -1,66 +1,24 @@
 # Codec Sources
 
-`codec_registry.c` and `g711_codec.c` are built into `TurboMedia::Codec` by default.
-They provide the public `turbo_codec.h` registry and dependency-free G.711
-PCMU/PCMA codecs.
+`TurboMedia::Codec` 始终构建注册表、G.711、Opus、VP8/VP9、H.264 和 H.265 实现。
+对应的 libopus、libvpx、OpenH264、x265 与 libde265 都是配置期必需依赖；缺失时 CMake
+直接失败，不会跳过源文件或选择回退实现。
 
-The remaining sources are available behind explicit CMake options because they
-require external codec SDKs:
+FFmpeg player 同样进入默认构建，并要求 FFmpeg 的 avformat、avcodec、avutil、
+swresample 和 swscale。依赖安装前缀只通过 `CMakeUserPresets.json` 的
+`CMAKE_PREFIX_PATH`/package root 提供。
 
-- `TURBO_MEDIA_ENABLE_OPUS`: `opus_codec.c` with libopus
-- `TURBO_MEDIA_ENABLE_VPX`: `vpx_codec.c` with libvpx
-- `TURBO_MEDIA_ENABLE_H264`: `h264_codec.c` with OpenH264
-- `TURBO_MEDIA_ENABLE_H265`: `h265_codec.c` with x265 and libde265
-
-Each option is OFF by default. When an option is enabled, CMake requires the
-matching headers and libraries and exports the matching `TURBO_MEDIA_HAS_*`
-compile definition through `TurboMedia::Codec`.
-
-With vcpkg manifest mode, enable the matching manifest features as well:
-
-```sh
-cmake -S . -B build/codec-options \
-  -DVCPKG_MANIFEST_MODE=ON \
-  "-DVCPKG_MANIFEST_FEATURES=opus;vpx;h264;h265" \
-  -DTURBO_MEDIA_ENABLE_OPUS=ON \
-  -DTURBO_MEDIA_ENABLE_VPX=ON \
-  -DTURBO_MEDIA_ENABLE_H264=ON \
-  -DTURBO_MEDIA_ENABLE_H265=ON
-```
-
-`VCPKG_MANIFEST_FEATURES` installs the external dependencies. The
-`TURBO_MEDIA_ENABLE_*` options decide which codec sources are compiled into
-`TurboMedia::Codec`.
-
-## FFmpeg Player
-
-`TURBO_MEDIA_ENABLE_FFMPEG` builds the optional universal player layer in
-`turbo_player.h`. This layer uses FFmpeg for container demuxing and codec
-decode, writes decoded F32 PCM into `turbo_playback`, and exposes decoded video
-frames through a callback.
-
-Use the `ffmpeg` manifest feature to install FFmpeg:
-
-```sh
-cmake -S . -B build/ffmpeg-player \
-  -DVCPKG_MANIFEST_MODE=ON \
-  -DVCPKG_MANIFEST_FEATURES=ffmpeg \
-  -DTURBO_MEDIA_ENABLE_FFMPEG=ON
-```
-
-The `ffmpeg_probe` example decodes a media file without opening an audio device:
+`ffmpeg_probe` 可在不打开音频设备的情况下解码媒体文件：
 
 ```sh
 ffmpeg_probe sample.mp4
 ```
 
-The player supports both blocking and background-thread playback:
+Player 提供阻塞和后台线程两种播放流程：
 
-- `turbo_player_play_to_end`: blocking decode/playback.
-- `turbo_player_start` / `turbo_player_wait`: asynchronous playback.
-- `turbo_player_pause` / `turbo_player_resume`: pause and resume the decode loop
-  and audio output.
-- `turbo_player_seek_ms`: request a timestamp seek and flush decode state.
+- `turbo_player_play_to_end`：阻塞解码和播放。
+- `turbo_player_start` / `turbo_player_wait`：异步播放。
+- `turbo_player_pause` / `turbo_player_resume`：暂停或恢复解码循环和音频输出。
+- `turbo_player_seek_ms`：请求时间戳跳转并刷新解码状态。
 
-`ffmpeg_probe` also accepts `--async` and `--seek-ms N` for smoke testing these
-paths.
+`ffmpeg_probe` 也接受 `--async` 和 `--seek-ms N`，用于冒烟验证这些路径。

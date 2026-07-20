@@ -25,38 +25,26 @@ target_link_libraries(rtc_signaled_peer PRIVATE TurboMedia::DataChannel TurboMed
                                                $<$<PLATFORM_ID:Windows>:ws2_32>)
 set_target_properties(rtc_signaled_peer PROPERTIES FOLDER webrtc/examples)
 
-# ICE + DataChannel example (if ICE module is available)
-if(TARGET turbo_ice OR TARGET TurboNet::Ice)
-  set(TURBORTC_WEBRTC_ICE_TARGET TurboNet::Ice)
-  if(TARGET turbo_ice)
-    set(TURBORTC_WEBRTC_ICE_TARGET turbo_ice)
-  endif()
-  add_executable(dc_ice_example ice_datachannel.c)
-  target_link_libraries(
-    dc_ice_example PRIVATE TurboMedia::DataChannel ${TURBORTC_WEBRTC_ICE_TARGET} TurboUtils::Core)
-  target_include_directories(dc_ice_example
-                             PRIVATE ${Stb_INCLUDE_DIR})
-  set_target_properties(dc_ice_example PROPERTIES FOLDER webrtc/examples)
+add_executable(dc_ice_example ice_datachannel.c)
+target_link_libraries(
+  dc_ice_example PRIVATE TurboMedia::DataChannel TurboNet::Ice TurboUtils::Core)
+target_include_directories(dc_ice_example PRIVATE ${STB_INCLUDE_DIR})
+set_target_properties(dc_ice_example PROPERTIES FOLDER webrtc/examples)
 
-  add_executable(browser_interop browser_interop.c)
-  target_link_libraries(
-    browser_interop PRIVATE TurboMedia::WebRTC TurboUtils::Core)
-  set_target_properties(browser_interop PROPERTIES FOLDER webrtc/examples)
+add_executable(browser_interop browser_interop.c)
+target_link_libraries(browser_interop PRIVATE TurboMedia::WebRTC TurboUtils::Core)
+set_target_properties(browser_interop PROPERTIES FOLDER webrtc/examples)
 
-  add_executable(browser_media_interop browser_media_interop.c)
-  target_link_libraries(
-    browser_media_interop PRIVATE TurboMedia::RTC TurboMedia::WebRTC
-                                  TurboNet::Ice TurboUtils::Core)
-  set_target_properties(browser_media_interop PROPERTIES FOLDER webrtc/examples)
-endif()
+add_executable(browser_media_interop browser_media_interop.c)
+target_link_libraries(
+  browser_media_interop
+  PRIVATE TurboMedia::RTC TurboMedia::WebRTC TurboNet::Ice TurboUtils::Core)
+set_target_properties(browser_media_interop PROPERTIES FOLDER webrtc/examples)
 
 # =============================================================================
 # Signaling Server Example
 # =============================================================================
 
-if(TARGET TurboMedia::WebRTCSignaling)
-  add_executable(rtc_server signaling_server.c)
-  target_link_libraries(rtc_server PRIVATE TurboMedia::WebRTCSignaling
-                                           TurboMedia::SDP)
-  set_target_properties(rtc_server PROPERTIES FOLDER webrtc/examples)
-endif()
+add_executable(rtc_server signaling_server.c)
+target_link_libraries(rtc_server PRIVATE TurboMedia::WebRTCSignaling TurboMedia::SDP)
+set_target_properties(rtc_server PROPERTIES FOLDER webrtc/examples)

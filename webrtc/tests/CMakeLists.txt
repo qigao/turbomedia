@@ -1,14 +1,10 @@
 function(turbo_media_add_webrtc_test name)
-  if(ANDROID AND NOT BUILD_TESTING)
-    add_executable(${name} EXCLUDE_FROM_ALL ${ARGN})
-  else()
-    add_executable(${name} ${ARGN})
-  endif()
+  add_executable(${name} ${ARGN})
   target_include_directories(
     ${name}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
             ${CMAKE_CURRENT_SOURCE_DIR}/../src
-            ${Stb_INCLUDE_DIR})
+            ${STB_INCLUDE_DIR})
   target_link_libraries(
     ${name}
     PRIVATE TurboMedia::DataChannel
@@ -16,7 +12,7 @@ function(turbo_media_add_webrtc_test name)
             TurboUtils::TinyTest
             TurboUtils::Core
             TurboUtils::Parser)
-  if(NOT ANDROID OR BUILD_TESTING)
+  if(NOT ANDROID)
     add_test(NAME ${name} COMMAND ${name})
   endif()
   set_target_properties(
@@ -66,6 +62,5 @@ turbo_media_add_rtc_test(turbo_media_test_jitter_buffer test_jitter_buffer.c)
 turbo_media_add_rtc_test(turbo_media_test_twcc test_twcc.c)
 turbo_media_add_rtc_test(turbo_media_test_nack test_nack.c)
 turbo_media_add_rtc_test(turbo_media_test_media_engine test_media_engine.c)
-if(TURBO_MEDIA_ENABLE_VPX)
-  turbo_media_add_rtc_test(turbo_media_test_simulcast test_simulcast.c)
-endif()
+turbo_media_add_rtc_test(turbo_media_test_simulcast test_simulcast.c)
+target_link_libraries(turbo_media_test_simulcast PRIVATE TurboMedia::Codec)

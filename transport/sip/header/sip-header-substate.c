@@ -25,12 +25,12 @@ int sip_header_substate(const char* s, const char* end, struct sip_substate_t* s
 	r = i = 0;
 	if (sscanf((s && s < end) ? s : "", " %n%*[^ ;\t\r\n]%n", &i, &r) < 0 || r < i)
 		return -1;
-	substate->state.p = s + i;
-	substate->state.n = r - i;
+	substate->state.data = s + i;
+	substate->state.len = r - i;
 
 	// params
 	r = 0;
-	p = substate->state.p + substate->state.n;
+	p = substate->state.data + substate->state.len;
 	if (p && p < end && ';' == *p)
 	{
 		r = sip_header_params(';', p + 1, end, &substate->params);
@@ -39,18 +39,18 @@ int sip_header_substate(const char* s, const char* end, struct sip_substate_t* s
 		{
 			param = sip_params_get(&substate->params, i);
 
-			if (0 == cstrcmp(&param->name, "reason"))
+			if (0 == sip_sv_compare_cstr(&param->name, "reason"))
 			{
-				substate->reason.p = param->value.p;
-				substate->reason.n = param->value.n;
+				substate->reason.data = param->value.data;
+				substate->reason.len = param->value.len;
 			}
-			else if (0 == cstrcmp(&param->name, "expires"))
+			else if (0 == sip_sv_compare_cstr(&param->name, "expires"))
 			{
-				substate->expires = (uint32_t)cstrtol(&param->value, NULL, 10);
+				substate->expires = (uint32_t)sip_sv_to_long(&param->value, NULL, 10);
 			}
-			else if (0 == cstrcmp(&param->name, "retry-after"))
+			else if (0 == sip_sv_compare_cstr(&param->name, "retry-after"))
 			{
-				substate->retry = (uint32_t)cstrtol(&param->value, NULL, 10);
+				substate->retry = (uint32_t)sip_sv_to_long(&param->value, NULL, 10);
 			}
 		}
 	}
@@ -61,12 +61,12 @@ int sip_substate_write(const struct sip_substate_t* substate, char* data, const 
 {
 	int n;
 	char *p;
-	if (!cstrvalid(&substate->state))
+	if (!sip_sv_valid(&substate->state))
 		return -1;
 
 	p = data;
 	if (p < end)
-		p += snprintf(p, end - p, "%.*s", (int)substate->state.n, substate->state.p);
+		p += snprintf(p, end - p, "%.*s", (int)substate->state.len, substate->state.data);
 
 	if (sip_params_count(&substate->params) > 0)
 	{
@@ -89,7 +89,7 @@ void sip_header_substate_test(void)
 
 	s = "active;expires=600000";
 	assert(0 == sip_header_substate(s, s + strlen(s), &substate));
-	assert(0 == cstrcmp(&substate.state, "active") && substate.expires == 600000);
+	assert(0 == sip_sv_compare_cstr(&substate.state, "active") && substate.expires == 600000);
 	assert((int)strlen(s) == sip_substate_write(&substate, buf, buf + sizeof(buf)));
 	assert(0 == strcmp(s, buf));
 	sip_substate_free(&substate);

@@ -15,27 +15,38 @@
             "cacheVariables": {
                 "CMAKE_SYSTEM_NAME": "Android",
                 "ANDROID_STL": "c++_shared",
-                "ANDROID_PLATFORM": "android-28",
-                "BUILD_TESTING": false,
-                "BUILD_MOBILE": true,
-                "BUILD_EXAMPLES": false,
-                "BUILD_TESTS": true,
-                "ENABLE_TESTS": true,
-                "TURBO_MEDIA_ENABLE_WEBRTC": true,
-                "TURBO_MEDIA_ENABLE_RTSP": false
+                "ANDROID_PLATFORM": "android-28"
             }
         },
         {
             "name": "android-vcpkg-chainload",
             "hidden": true,
+            "cacheVariables": {
+                "VCPKG_MANIFEST_MODE": true
+            }
+        },
+        {
+            "name": "android-win-paths",
+            "hidden": true,
+            "inherits": "ISWindows",
             "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
             "cacheVariables": {
-                "VCPKG_MANIFEST_MODE": true,
-                "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake"
+                "CMAKE_MAKE_PROGRAM": "$env{SCOOP_SHIMS_ROOT}/ninja.exe",
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia-android",
+                "CMAKE_PREFIX_PATH": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/$env{ANDROID_BUILD_VARIANT};$env{PROJECT_ROOT}/turbonet/turbonet/build/$env{ANDROID_BUILD_VARIANT};$env{PKG_ROOT}/turbohttp-android",
+                "TURBOUTILS_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/$env{ANDROID_BUILD_VARIANT}",
+                "TURBONET_ROOT": "$env{PROJECT_ROOT}/turbonet/turbonet/build/$env{ANDROID_BUILD_VARIANT}",
+                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp-android",
+                "TurboUtils_DIR": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/$env{ANDROID_BUILD_VARIANT}",
+                "TurboNet_DIR": "$env{PROJECT_ROOT}/turbonet/turbonet/build/$env{ANDROID_BUILD_VARIANT}",
+                "TurboHttp_DIR": "$env{PKG_ROOT}/turbohttp-android/lib/cmake/TurboHttp",
+                "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
+                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
             }
         },
         {
             "name": "android-arm64-v8a-debug",
+            "hidden": true,
             "displayName": "Android arm64-v8a (Debug)",
             "description": "Developer build for Android ARM64",
             "inherits": [
@@ -45,14 +56,12 @@
             "binaryDir": "${sourceDir}/build/android-arm64-v8a-debug",
             "cacheVariables": {
                 "ANDROID_ABI": "arm64-v8a",
-                "VCPKG_TARGET_TRIPLET": "arm64-android",
-                "ENABLE_TESTS": true,
-                "BUILD_TESTS": "ON",
-                "BUILD_EXAMPLES": "OFF"
+                "VCPKG_TARGET_TRIPLET": "arm64-android"
             }
         },
         {
             "name": "android-arm64-v8a-release",
+            "hidden": true,
             "displayName": "Android arm64-v8a (Release)",
             "description": "Release build for Android ARM64",
             "inherits": [
@@ -62,48 +71,12 @@
             "binaryDir": "${sourceDir}/build/android-arm64-v8a-release",
             "cacheVariables": {
                 "ANDROID_ABI": "arm64-v8a",
-                "VCPKG_TARGET_TRIPLET": "arm64-android",
-                "ENABLE_TESTS": true,
-                "BUILD_TESTS": "ON",
-                "BUILD_EXAMPLES": "OFF"
-            }
-        },
-        {
-            "name": "android-armeabi-v7a-debug",
-            "displayName": "Android armeabi-v7a (Debug)",
-            "description": "Developer build for Android ARM32",
-            "inherits": [
-                "android-base",
-                "developer-mode"
-            ],
-            "binaryDir": "${sourceDir}/build/android-armeabi-v7a-debug",
-            "cacheVariables": {
-                "ANDROID_ABI": "armeabi-v7a",
-                "VCPKG_TARGET_TRIPLET": "arm-android",
-                "ENABLE_TESTS": true,
-                "BUILD_TESTS": "ON",
-                "BUILD_EXAMPLES": "OFF"
-            }
-        },
-        {
-            "name": "android-armeabi-v7a-release",
-            "displayName": "Android armeabi-v7a (Release)",
-            "description": "Release build for Android ARM32",
-            "inherits": [
-                "android-base",
-                "release-mode"
-            ],
-            "binaryDir": "${sourceDir}/build/android-armeabi-v7a-release",
-            "cacheVariables": {
-                "ANDROID_ABI": "armeabi-v7a",
-                "VCPKG_TARGET_TRIPLET": "arm-android",
-                "ENABLE_TESTS": true,
-                "BUILD_TESTS": "ON",
-                "BUILD_EXAMPLES": "OFF"
+                "VCPKG_TARGET_TRIPLET": "arm64-android"
             }
         },
         {
             "name": "android-x86_64-debug",
+            "hidden": true,
             "displayName": "Android x86_64 (Debug)",
             "description": "Developer build for Android x86_64 emulator",
             "inherits": [
@@ -113,14 +86,12 @@
             "binaryDir": "${sourceDir}/build/android-x86_64-debug",
             "cacheVariables": {
                 "ANDROID_ABI": "x86_64",
-                "VCPKG_TARGET_TRIPLET": "x64-android",
-                "ENABLE_TESTS": true,
-                "BUILD_TESTS": "ON",
-                "BUILD_EXAMPLES": "OFF"
+                "VCPKG_TARGET_TRIPLET": "x64-android"
             }
         },
         {
             "name": "android-x86_64-release",
+            "hidden": true,
             "displayName": "Android x86_64 (Release)",
             "description": "Release build for Android x86_64 emulator",
             "inherits": [
@@ -130,14 +101,12 @@
             "binaryDir": "${sourceDir}/build/android-x86_64-release",
             "cacheVariables": {
                 "ANDROID_ABI": "x86_64",
-                "VCPKG_TARGET_TRIPLET": "x64-android",
-                "ENABLE_TESTS": true,
-                "BUILD_TESTS": "ON",
-                "BUILD_EXAMPLES": "OFF"
+                "VCPKG_TARGET_TRIPLET": "x64-android"
             }
         },
         {
             "name": "android-x86-debug",
+            "hidden": true,
             "displayName": "Android x86 (Debug)",
             "description": "Developer build for Android x86 emulator",
             "inherits": [
@@ -147,14 +116,12 @@
             "binaryDir": "${sourceDir}/build/android-x86-debug",
             "cacheVariables": {
                 "ANDROID_ABI": "x86",
-                "VCPKG_TARGET_TRIPLET": "x86-android",
-                "ENABLE_TESTS": true,
-                "BUILD_TESTS": "ON",
-                "BUILD_EXAMPLES": "OFF"
+                "VCPKG_TARGET_TRIPLET": "x86-android"
             }
         },
         {
             "name": "android-x86-release",
+            "hidden": true,
             "displayName": "Android x86 (Release)",
             "description": "Release build for Android x86 emulator",
             "inherits": [
@@ -164,117 +131,8 @@
             "binaryDir": "${sourceDir}/build/android-x86-release",
             "cacheVariables": {
                 "ANDROID_ABI": "x86",
-                "VCPKG_TARGET_TRIPLET": "x86-android",
-                "ENABLE_TESTS": true,
-                "BUILD_TESTS": "ON",
-                "BUILD_EXAMPLES": "OFF"
+                "VCPKG_TARGET_TRIPLET": "x86-android"
             }
-        }
-    ],
-    "buildPresets": [
-        {
-            "name": "build-android-arm64-v8a-debug",
-            "displayName": "Build Android arm64-v8a (Debug)",
-            "configurePreset": "android-arm64-v8a-debug"
-        },
-        {
-            "name": "build-android-arm64-v8a-release",
-            "displayName": "Build Android arm64-v8a (Release)",
-            "configurePreset": "android-arm64-v8a-release"
-        },
-        {
-            "name": "build-android-armeabi-v7a-debug",
-            "displayName": "Build Android armeabi-v7a (Debug)",
-            "configurePreset": "android-armeabi-v7a-debug"
-        },
-        {
-            "name": "build-android-armeabi-v7a-release",
-            "displayName": "Build Android armeabi-v7a (Release)",
-            "configurePreset": "android-armeabi-v7a-release"
-        },
-        {
-            "name": "build-android-x86_64-debug",
-            "displayName": "Build Android x86_64 (Debug)",
-            "configurePreset": "android-x86_64-debug"
-        },
-        {
-            "name": "build-android-x86_64-release",
-            "displayName": "Build Android x86_64 (Release)",
-            "configurePreset": "android-x86_64-release"
-        },
-        {
-            "name": "build-android-x86-debug",
-            "displayName": "Build Android x86 (Debug)",
-            "configurePreset": "android-x86-debug"
-        },
-        {
-            "name": "build-android-x86-release",
-            "displayName": "Build Android x86 (Release)",
-            "configurePreset": "android-x86-release"
-        },
-        {
-            "name": "install-android-arm64-v8a-debug",
-            "displayName": "Install Android arm64-v8a (Debug)",
-            "configurePreset": "android-arm64-v8a-debug",
-            "targets": [
-                "install"
-            ]
-        },
-        {
-            "name": "install-android-arm64-v8a-release",
-            "displayName": "Install Android arm64-v8a (Release)",
-            "configurePreset": "android-arm64-v8a-release",
-            "targets": [
-                "install"
-            ]
-        },
-        {
-            "name": "install-android-armeabi-v7a-debug",
-            "displayName": "Install Android armeabi-v7a (Debug)",
-            "configurePreset": "android-armeabi-v7a-debug",
-            "targets": [
-                "install"
-            ]
-        },
-        {
-            "name": "install-android-armeabi-v7a-release",
-            "displayName": "Install Android armeabi-v7a (Release)",
-            "configurePreset": "android-armeabi-v7a-release",
-            "targets": [
-                "install"
-            ]
-        },
-        {
-            "name": "install-android-x86_64-debug",
-            "displayName": "Install Android x86_64 (Debug)",
-            "configurePreset": "android-x86_64-debug",
-            "targets": [
-                "install"
-            ]
-        },
-        {
-            "name": "install-android-x86_64-release",
-            "displayName": "Install Android x86_64 (Release)",
-            "configurePreset": "android-x86_64-release",
-            "targets": [
-                "install"
-            ]
-        },
-        {
-            "name": "install-android-x86-debug",
-            "displayName": "Install Android x86 (Debug)",
-            "configurePreset": "android-x86-debug",
-            "targets": [
-                "install"
-            ]
-        },
-        {
-            "name": "install-android-x86-release",
-            "displayName": "Install Android x86 (Release)",
-            "configurePreset": "android-x86-release",
-            "targets": [
-                "install"
-            ]
         }
     ]
 }

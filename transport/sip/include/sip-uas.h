@@ -1,7 +1,7 @@
 #ifndef _sip_uas_h_
 #define _sip_uas_h_
 
-#include "cstring.h"
+#include "sip-string-view.h"
 #include "sip-agent.h"
 
 #if defined(__cplusplus)

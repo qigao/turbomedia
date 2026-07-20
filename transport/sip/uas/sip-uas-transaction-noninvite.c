@@ -102,8 +102,8 @@ int sip_uas_transaction_noninvite_reply(struct sip_uas_transaction_t* t, int cod
 		return 0; // discard
 
 	t->reply->u.s.code = code;
-	t->reply->u.s.reason.p = sip_reason_phrase(code);
-	t->reply->u.s.reason.n = strlen(t->reply->u.s.reason.p);
+	t->reply->u.s.reason.data = sip_reason_phrase(code);
+	t->reply->u.s.reason.len = strlen(t->reply->u.s.reason.data);
 	t->reply->payload = data;
 	t->reply->size = bytes;
 	t->size = sip_message_write(t->reply, t->data, sizeof(t->data));

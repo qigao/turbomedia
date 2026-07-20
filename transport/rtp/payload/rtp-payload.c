@@ -2,15 +2,18 @@
 #include "rtp-profile.h"
 #include "rtp-packet.h"
 #include "rtp-payload-internal.h"
+#include "turbo_str_view.h"
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
 #define TS_PACKET_SIZE 188
 
-#if defined(OS_WINDOWS)
-#define strcasecmp _stricmp
-#endif
+static int rtp_encoding_equal(const char* left, const char* right)
+{
+	return NULL != left && NULL != right &&
+		tstr_v_ieq(tstr_v_from_cstr(left), tstr_v_from_cstr(right));
+}
 
 struct rtp_payload_delegate_t
 {
@@ -117,7 +120,7 @@ static int rtp_payload_find(int payload, const char* encoding, struct rtp_payloa
 #if defined(_DEBUG) || defined(DEBUG)
 	const struct rtp_profile_t* profile;
 	profile = rtp_profile_find(payload);
-	assert(!profile || !encoding || !*encoding || 0 == strcasecmp(profile->name, encoding));
+	assert(!profile || !encoding || !*encoding || rtp_encoding_equal(profile->name, encoding));
 #endif
 
 	switch (payload)
@@ -153,26 +156,26 @@ static int rtp_payload_find(int payload, const char* encoding, struct rtp_payloa
 	default:
 		if ( /*payload >= RTP_PAYLOAD_DYNAMIC &&*/ encoding)
 		{
-			if (0 == strcasecmp(encoding, "H264"))
+			if (rtp_encoding_equal(encoding, "H264"))
 			{
 				// H.264 video (MPEG-4 Part 10) (RFC 6184)
 				codec->encoder = rtp_h264_encode();
 				codec->decoder = rtp_h264_decode();
 			}
-			else if (0 == strcasecmp(encoding, "H265") || 0 == strcasecmp(encoding, "HEVC"))
+			else if (rtp_encoding_equal(encoding, "H265") || rtp_encoding_equal(encoding, "HEVC"))
 			{
 				// H.265 video (HEVC) (RFC 7798)
 				codec->encoder = rtp_h265_encode();
 				codec->decoder = rtp_h265_decode();
 			}
-			else if (0 == strcasecmp(encoding, "H266"))
+			else if (rtp_encoding_equal(encoding, "H266"))
 			{
 				// H.266 video (VVC)
 				// https://www.ietf.org/archive/id/draft-ietf-avtcore-rtp-vvc-18.html#name-media-type-registration
 				codec->encoder = rtp_h266_encode();
 				codec->decoder = rtp_h266_decode();
 			}
-			else if (0 == strcasecmp(encoding, "MP4V-ES") || 0 == strcasecmp(encoding, "MPEG4"))
+			else if (rtp_encoding_equal(encoding, "MP4V-ES") || rtp_encoding_equal(encoding, "MPEG4"))
 			{
 				// RFC6416 RTP Payload Format for MPEG-4 Audio/Visual Streams
 				// 5. RTP Packetization of MPEG-4 Visual Bitstreams (p8)
@@ -180,7 +183,7 @@ static int rtp_payload_find(int payload, const char* encoding, struct rtp_payloa
 				codec->encoder = rtp_mp4v_es_encode();
 				codec->decoder = rtp_mp4v_es_decode();
 			}
-			else if (0 == strcasecmp(encoding, "MP4A-LATM"))
+			else if (rtp_encoding_equal(encoding, "MP4A-LATM"))
 			{
 				// RFC6416 RTP Payload Format for MPEG-4 Audio/Visual Streams
 				// 6. RTP Packetization of MPEG-4 Audio Bitstreams (p15)
@@ -188,49 +191,49 @@ static int rtp_payload_find(int payload, const char* encoding, struct rtp_payloa
 				codec->encoder = rtp_mp4a_latm_encode();
 				codec->decoder = rtp_mp4a_latm_decode();
 			}
-			else if (0 == strcasecmp(encoding, "mpeg4-generic"))
+			else if (rtp_encoding_equal(encoding, "mpeg4-generic"))
 			{
 				/// RFC3640 RTP Payload Format for Transport of MPEG-4 Elementary Streams
 				/// 4.1. MIME Type Registration (p27)
 				codec->encoder = rtp_mpeg4_generic_encode();
 				codec->decoder = rtp_mpeg4_generic_decode();
 			}
-			else if (0 == strcasecmp(encoding, "VP8"))
+			else if (rtp_encoding_equal(encoding, "VP8"))
 			{
 				/// RFC7741 RTP Payload Format for VP8 Video
 				/// 6.1. Media Type Definition (p21)
 				codec->encoder = rtp_vp8_encode();
 				codec->decoder = rtp_vp8_decode();
 			}
-			else if (0 == strcasecmp(encoding, "VP9"))
+			else if (rtp_encoding_equal(encoding, "VP9"))
 			{
 				/// RTP Payload Format for VP9 Video draft-ietf-payload-vp9-03
 				/// 6.1. Media Type Definition (p15)
 				codec->encoder = rtp_vp9_encode();
 				codec->decoder = rtp_vp9_decode();
 			}
-			else if (0 == strcasecmp(encoding, "AV1"))
+			else if (rtp_encoding_equal(encoding, "AV1"))
 			{
 				/// https://aomediacodec.github.io/av1-rtp-spec/#7-payload-format-parameters
 				codec->encoder = rtp_av1_encode();
 				codec->decoder = rtp_av1_decode();
 			}
-			else if (0 == strcasecmp(encoding, "MP2P") || 0 == strcasecmp(encoding, "PS")) // MPEG-2 Program Streams video (RFC 2250)
+			else if (rtp_encoding_equal(encoding, "MP2P") || rtp_encoding_equal(encoding, "PS")) // MPEG-2 Program Streams video (RFC 2250)
 			{
 				codec->encoder = rtp_ts_encode();
 				codec->decoder = rtp_ps_decode();
 			}
-			else if (0 == strcasecmp(encoding, "MP1S"))  // MPEG-1 Systems Streams video (RFC 2250)
+			else if (rtp_encoding_equal(encoding, "MP1S"))  // MPEG-1 Systems Streams video (RFC 2250)
 			{
 				codec->encoder = rtp_ts_encode();
 				codec->decoder = rtp_ts_decode();
 			}
-			else if (0 == strcasecmp(encoding, "opus")	// RFC7587 RTP Payload Format for the Opus Speech and Audio Codec
-				|| 0 == strcasecmp(encoding, "G726-16") // ITU-T G.726 audio 16 kbit/s (RFC 3551)
-				|| 0 == strcasecmp(encoding, "G726-24")	// ITU-T G.726 audio 24 kbit/s (RFC 3551)
-				|| 0 == strcasecmp(encoding, "G726-32") // ITU-T G.726 audio 32 kbit/s (RFC 3551)
-				|| 0 == strcasecmp(encoding, "G726-40") // ITU-T G.726 audio 40 kbit/s (RFC 3551)
-				|| 0 == strcasecmp(encoding, "G7221"))  // RFC5577 RTP Payload Format for ITU-T Recommendation G.722.1
+			else if (rtp_encoding_equal(encoding, "opus")	// RFC7587 RTP Payload Format for the Opus Speech and Audio Codec
+				|| rtp_encoding_equal(encoding, "G726-16") // ITU-T G.726 audio 16 kbit/s (RFC 3551)
+				|| rtp_encoding_equal(encoding, "G726-24")	// ITU-T G.726 audio 24 kbit/s (RFC 3551)
+				|| rtp_encoding_equal(encoding, "G726-32") // ITU-T G.726 audio 32 kbit/s (RFC 3551)
+				|| rtp_encoding_equal(encoding, "G726-40") // ITU-T G.726 audio 40 kbit/s (RFC 3551)
+				|| rtp_encoding_equal(encoding, "G7221"))  // RFC5577 RTP Payload Format for ITU-T Recommendation G.722.1
 			{
 				codec->encoder = rtp_common_encode();
 				codec->decoder = rtp_common_decode();

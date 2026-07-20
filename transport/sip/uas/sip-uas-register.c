@@ -1,7 +1,6 @@
 #include "sip-uas-transaction.h"
-#include "http-header-expires.h"
-#include "cstringext.h"
-#include "uri-parse.h"
+#include "fmt.h"
+#include "turbo_str.h"
 
 /*
 REGISTER sip:registrar.biloxi.com SIP/2.0
@@ -26,63 +25,103 @@ Expires: 7200
 Content-Length: 0
 */
 
-static inline int sip_uas_get_expires(const char* expires)
+struct sip_register_endpoint {
+	tstr_v userinfo;
+	tstr_v host;
+	int port;
+};
+
+static int sip_register_endpoint_parse(tstr_v value, struct sip_register_endpoint *endpoint)
 {
-	struct tm tm;
-	memset(&tm, 0, sizeof(tm));
+	size_t separator;
+	tstr_v authority;
+	tstr_v port;
+	long parsed_port;
 
-	assert(expires);
-	if (0 != http_header_expires(expires, &tm))
-		return 0;
+	if (!endpoint || !value.data || value.len == 0U)
+		return TURBO_EINVAL;
 
-	return (int)(mktime(&tm) - time(NULL));
-}
+	memset(endpoint, 0, sizeof(*endpoint));
+	authority = value;
+	separator = tstr_v_rfind_char(authority, '@');
+	if (separator != TSTR_V_NPOS)
+	{
+		endpoint->userinfo = tstr_v_sub(authority, 0U, separator);
+		authority = tstr_v_sub(authority, separator + 1U, SIZE_MAX);
+	}
+	if (authority.len == 0U)
+		return TURBO_EINVAL;
 
-static inline int sip_register_check_request_uri(const struct uri_t* uri)
-{
-	// Request-URI: The "userinfo" and "@" components of the SIP URI MUST NOT be present
-	return (uri && uri->host) ? 1 : 0;
-}
+	if (authority.data[0] == '[')
+	{
+		separator = tstr_v_find_char(authority, ']');
+		if (separator == TSTR_V_NPOS || separator == 1U)
+			return TURBO_EINVAL;
+		endpoint->host = tstr_v_sub(authority, 1U, separator - 1U);
+		if (separator + 1U < authority.len)
+		{
+			if (authority.data[separator + 1U] != ':')
+				return TURBO_EINVAL;
+			port = tstr_v_sub(authority, separator + 2U, SIZE_MAX);
+		}
+		else
+			port = tstr_v_from_buf(NULL, 0U);
+	}
+	else
+	{
+		separator = tstr_v_rfind_char(authority, ':');
+		if (separator != TSTR_V_NPOS &&
+			tstr_v_find_char(authority, ':') == separator)
+		{
+			endpoint->host = tstr_v_sub(authority, 0U, separator);
+			port = tstr_v_sub(authority, separator + 1U, SIZE_MAX);
+		}
+		else
+		{
+			endpoint->host = authority;
+			port = tstr_v_from_buf(NULL, 0U);
+		}
+	}
 
-static inline int sip_register_check_to_domain(const struct sip_message_t* req)
-{
-	int r;
-	struct uri_t* to;
-	struct uri_t* uri;
-	to = uri_parse(req->to.uri.host.p, (int)req->to.uri.host.n);
-	uri = uri_parse(req->u.c.uri.host.p, (int)req->u.c.uri.host.n);
+	if (endpoint->host.len == 0U)
+		return TURBO_EINVAL;
+	if (port.len == 0U)
+	{
+		endpoint->port = SIP_PORT;
+		return TURBO_OK;
+	}
 
-	r = (!uri || !uri->host || !to || !to->host || 0 != strcasecmp(to->host, uri->host)) ? 0 : 1;
-
-	uri_free(to);
-	uri_free(uri);
-	return r;
+	parsed_port = sip_sv_to_long(&port, NULL, 10);
+	if (parsed_port < 1L || parsed_port > 65535L)
+		return TURBO_EINVAL;
+	endpoint->port = (int)parsed_port;
+	return TURBO_OK;
 }
 
 // 10.3 Processing REGISTER Requests(p63)
 int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message_t* req, void* param)
 {
 	int r, expires;
-	char location[128];
-	struct uri_t* uri;
-	struct uri_t* from;
-	const struct cstring_t* header;
+	char *from_user;
+	tstr_t location;
+	struct sip_register_endpoint uri;
+	struct sip_register_endpoint from;
+	const tstr_v* header;
 	const struct sip_contact_t* contact;
+	int have_contact;
 
 	// If contact.expire is not provided, default equal to 60
 	header = sip_message_get_header_by_name(req, "Expires");
-	expires = header ? (unsigned int)cstrtol(header, NULL, 10) : 60;
+	expires = header ? (unsigned int)sip_sv_to_long(header, NULL, 10) : 60;
 
 	// 1. Request-URI
 
 	// Request-URI: The "userinfo" and "@" components of the SIP URI MUST NOT be present
-	uri = uri_parse(req->u.c.uri.host.p, (int)req->u.c.uri.host.n);
-	if (!uri || !uri->host)
+	if (sip_register_endpoint_parse(req->u.c.uri.host, &uri) != TURBO_OK ||
+		uri.userinfo.len != 0U)
 	{
-		uri_free(uri);
 		return sip_uas_transaction_noninvite_reply(t, 400/*Invalid Request*/, NULL, 0, param);
 	}
-	assert(/*NULL == uri->userinfo &&*/ uri->host);
 
 	// TODO: check domain and proxy to another host
 	//if (0 != strcasecmp(uri->host, t->uas->domain))
@@ -100,16 +139,13 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 	// 4. authorized modify registrations(403 Forbidden)
 
 	// 5. To domain check (404 Not Found)
-	from = uri_parse(req->from.uri.host.p, (int)req->from.uri.host.n);
-	if (!from || !from->host /*|| 0 != strcasecmp(from->host, uri->host)*/)
+	if (sip_register_endpoint_parse(req->from.uri.host, &from) != TURBO_OK ||
+		from.userinfo.len == 0U)
 	{
-		uri_free(from);
-		uri_free(uri);
 		// all URI parameters MUST be removed (including the user-param), and
 		// any escaped characters MUST be converted to their unescaped form.
 		return sip_uas_transaction_noninvite_reply(t, 404/*Not Found*/, NULL, 0, param);
 	}
-	uri_free(uri);
 
 	// 6. Contact
 	//    * - multi-contacts, expires != 0 (400 Invalid Request)
@@ -117,7 +153,6 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 	//    cseq
 	if (sip_contacts_match_any(&req->contacts) && (1 != sip_contacts_count(&req->contacts) || 0 < expires) )
 	{
-		uri_free(from);
 		return sip_uas_transaction_noninvite_reply(t, 400/*Invalid Request*/, NULL, 0, param);
 	}
 
@@ -132,12 +167,15 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 
 	// A UA MUST increment the CSeq value by one for each
 	// REGISTER request with the same Call-ID.
-	assert(0 == cstrcasecmp(&req->cseq.method, "REGISTER"));
+	assert(0 == sip_sv_compare_cstr_ci(&req->cseq.method, "REGISTER"));
 	//req->cseq.id;
 
 	// zero or more values containing address bindings
 	contact = sip_contacts_get(&req->contacts, 0);
-	uri = contact ? uri_parse(contact->uri.host.p, (int)contact->uri.host.n) : NULL;
+	have_contact = contact &&
+		sip_register_endpoint_parse(contact->uri.host, &uri) == TURBO_OK;
+	if (contact && !have_contact)
+		return sip_uas_transaction_noninvite_reply(t, 400/*Invalid Request*/, NULL, 0, param);
 	if (contact && contact->expires > 0)
 	{
 		// https://datatracker.ietf.org/doc/html/rfc3261#section-10.3
@@ -157,8 +195,18 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 	// The Record-Route header field has no meaning in REGISTER 
 	// requests or responses, and MUST be ignored if present.
 
-	snprintf(location, sizeof(location), "%s:%d", uri ? uri->host : "", uri ? (uri->port ? uri->port : SIP_PORT): 0);
-	r = t->handler->onregister ? t->handler->onregister(param, req, t, from ? from->userinfo : NULL, uri ? location : NULL, expires) : 0;
+	from_user = tstr_v_to_cstr(from.userinfo);
+	if (!from_user)
+		return sip_uas_transaction_noninvite_reply(t, 500/*Server Internal Error*/, NULL, 0, param);
+	location = have_contact ? tstr_format("{}:{}", uri.host, uri.port) : NULL;
+	if (have_contact && !location)
+	{
+		free(from_user);
+		return sip_uas_transaction_noninvite_reply(t, 500/*Server Internal Error*/, NULL, 0, param);
+	}
+	r = t->handler->onregister
+		? t->handler->onregister(param, req, t, from_user, location, expires)
+		: 0;
 	
 	//if (423/*Interval Too Brief*/ == r)
 	//{
@@ -168,7 +216,7 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 	//// The Record-Route header field has no meaning in REGISTER requests or responses, 
 	//// and MUST be ignored if present.
 	//return sip_uas_transaction_noninvite_reply(t, r, NULL, 0);
-	uri_free(uri);
-	uri_free(from);
+	tstr_free(location);
+	free(from_user);
 	return r;
 }

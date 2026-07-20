@@ -4,8 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef TURBO_MEDIA_HAS_FFMPEG
-
 typedef struct {
     size_t audio_frames;
     size_t video_frames;
@@ -106,12 +104,3 @@ int main(int argc, char **argv) {
     turbo_player_close(player);
     return rc == 0 ? 0 : 1;
 }
-
-#else
-
-int main(void) {
-    printf("ffmpeg_probe requires TURBO_MEDIA_ENABLE_FFMPEG=ON\n");
-    return 0;
-}
-
-#endif

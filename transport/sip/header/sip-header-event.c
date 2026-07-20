@@ -31,12 +31,12 @@ int sip_header_event(const char* s, const char* end, struct sip_event_t* evt)
 	r = i = 0;
 	if (sscanf((s && s < end) ? s : "", " %n%*[^ ;\t\r\n]%n", &i, &r) < 0 || r < i)
 		return -1;
-	evt->event.p = s + i;
-	evt->event.n = r - i;
+	evt->event.data = s + i;
+	evt->event.len = r - i;
 
 	// params
 	r = 0;
-	p = evt->event.p + evt->event.n;
+	p = evt->event.data + evt->event.len;
 	if (p && p < end && ';' == *p)
 	{
 		r = sip_header_params(';', p + 1, end, &evt->params);
@@ -45,10 +45,10 @@ int sip_header_event(const char* s, const char* end, struct sip_event_t* evt)
 		{
 			param = sip_params_get(&evt->params, i);
 
-			if (0 == cstrcmp(&param->name, "id"))
+			if (0 == sip_sv_compare_cstr(&param->name, "id"))
 			{
-				evt->id.p = param->value.p;
-				evt->id.n = param->value.n;
+				evt->id.data = param->value.data;
+				evt->id.len = param->value.len;
 			}
 		}
 	}
@@ -59,12 +59,12 @@ int sip_event_write(const struct sip_event_t* evt, char* data, const char* end)
 {
 	int n;
 	char* p;
-	if (!cstrvalid(&evt->event))
+	if (!sip_sv_valid(&evt->event))
 		return -1;
 
 	p = data;
 	if (p < end)
-		p += snprintf(p, end - p, "%.*s", (int)evt->event.n, evt->event.p);
+		p += snprintf(p, end - p, "%.*s", (int)evt->event.len, evt->event.data);
 
 	if (sip_params_count(&evt->params) > 0)
 	{
@@ -89,10 +89,10 @@ int sip_event_equal(const struct sip_event_t* l, const struct sip_event_t* r)
 	// responses are matched per the transaction handling rules in
 	// [RFC3261].
 
-	if (!cstreq(&l->event, &r->event))
+	if (!sip_sv_equal(&l->event, &r->event))
 		return 0;
 
-	if (l->id.n != r->id.n || !cstreq(&l->id, &r->id))
+	if (l->id.len != r->id.len || !sip_sv_equal(&l->id, &r->id))
 		return 0;
 
 	return 1;
@@ -107,7 +107,7 @@ void sip_header_event_test(void)
 
 	s = "foo;id=1234";
 	assert(0 == sip_header_event(s, s + strlen(s), &evt));
-	assert(0 == cstrcmp(&evt.event, "foo") && 0 == cstrcmp(&evt.id, "1234"));
+	assert(0 == sip_sv_compare_cstr(&evt.event, "foo") && 0 == sip_sv_compare_cstr(&evt.id, "1234"));
 	assert((int)strlen(s) == sip_event_write(&evt, buf, buf + sizeof(buf)));
 	assert(0 == strcmp(s, buf));
 	

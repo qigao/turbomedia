@@ -4,7 +4,7 @@ int sip_uas_oncancel(struct sip_uas_transaction_t* t, const struct sip_message_t
 {
 	int r;
 	char ptr[256];
-	struct cstring_t id;
+	tstr_v id;
 	struct sip_uas_transaction_t* origin;
 
 	sip_dialog_id_with_message(&id, req, ptr, sizeof(ptr), 1);
@@ -32,7 +32,7 @@ int sip_uas_oncancel(struct sip_uas_transaction_t* t, const struct sip_message_t
 	{
 		// the To tag of the response to the CANCEL and the To tag
 		// in the response to the original request SHOULD be the same.
-		t->reply->ptr.ptr = cstring_clone(t->reply->ptr.ptr, t->reply->ptr.end, &t->reply->to.tag, origin->reply->to.tag.p, origin->reply->to.tag.n);
+		t->reply->ptr.ptr = sip_string_view_clone(t->reply->ptr.ptr, t->reply->ptr.end, &t->reply->to.tag, origin->reply->to.tag.data, origin->reply->to.tag.len);
 
 		r = t->handler->oncancel(param, req, t, &id);
 	}
