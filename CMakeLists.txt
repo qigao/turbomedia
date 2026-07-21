@@ -65,9 +65,23 @@ find_package(TurboUtils CONFIG REQUIRED)
 find_package(TurboNet CONFIG REQUIRED)
 find_package(TurboHttp CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+include(CheckCSourceCompiles)
+set(CMAKE_REQUIRED_LIBRARIES OpenSSL::Crypto)
+check_c_source_compiles(
+  [[
+    #include <openssl/base.h>
+    #ifndef OPENSSL_IS_BORINGSSL
+    #error BoringSSL is required
+    #endif
+    int main(void) { return 0; }
+  ]]
+  TURBO_MEDIA_HAS_BORINGSSL)
+unset(CMAKE_REQUIRED_LIBRARIES)
+if(NOT TURBO_MEDIA_HAS_BORINGSSL)
+  message(FATAL_ERROR "BoringSSL is required; OpenSSL providers are unsupported")
+endif()
 find_package(unofficial-usrsctp CONFIG REQUIRED)
 find_package(roaring CONFIG REQUIRED)
-find_package(libSRTP CONFIG REQUIRED)
 find_package(libyuv CONFIG REQUIRED)
 
 find_path(MINIAUDIO_INCLUDE_DIR NAMES miniaudio.h REQUIRED)
@@ -91,6 +105,13 @@ if(UNIX AND NOT APPLE AND NOT ANDROID)
   find_package(X11 REQUIRED COMPONENTS X11 Xext)
 endif()
 
+set(ENABLE_OPENSSL ON CACHE BOOL "Build vendored libSRTP with BoringSSL" FORCE)
+set(LIBSRTP_TEST_APPS OFF CACHE BOOL "Do not build vendored libSRTP test applications" FORCE)
+set(ENABLE_WARNINGS OFF CACHE BOOL "Do not inject vendored libSRTP warning flags" FORCE)
+add_subdirectory(vendor/libsrtp EXCLUDE_FROM_ALL)
+if(WIN32)
+  target_compile_definitions(srtp2 PRIVATE WIN32_LEAN_AND_MEAN)
+endif()
 add_subdirectory(vendor/monocypher EXCLUDE_FROM_ALL)
 add_subdirectory(common)
 add_subdirectory(core)

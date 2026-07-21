@@ -134,10 +134,9 @@ int dtls_session_init(turbo_dc_peer_t *peer) {
     /* Verify callback must return 1 to allow self-signed certs */
     SSL_set_verify(peer->dtls.ssl, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, dtls_verify_callback);
 
-    /* Enforce MTU to prevent OpenSSL from generating packets larger than our buffer */
+    /* Enforce MTU to prevent BoringSSL from exceeding the transport buffer. */
     long mtu = peer->ctx->dtls_mtu ? peer->ctx->dtls_mtu : DTLS_MTU_DEFAULT;
     SSL_set_mtu(peer->dtls.ssl, mtu);
-    DTLS_set_link_mtu(peer->dtls.ssl, mtu);
 
     /* Timer is created later for ICE mode via dtls_session_init_timer() */
     peer->dtls.retransmit_timer = NULL;

@@ -5,7 +5,13 @@
  */
 #include "turbo_srtp.h"
 #include "turbo_thread.h"
-#include <srtp2/srtp.h>
+#pragma push_macro("SRTP_MAX_KEY_LEN")
+#pragma push_macro("SRTP_MAX_TRAILER_LEN")
+#undef SRTP_MAX_KEY_LEN
+#undef SRTP_MAX_TRAILER_LEN
+#include <srtp.h>
+#pragma pop_macro("SRTP_MAX_TRAILER_LEN")
+#pragma pop_macro("SRTP_MAX_KEY_LEN")
 #include <stdlib.h>
 #include <string.h>
 

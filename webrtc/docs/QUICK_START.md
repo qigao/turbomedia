@@ -14,7 +14,7 @@ sudo apt-get install cmake ninja-build libssl-dev libuv1-dev
 brew install cmake ninja openssl libuv
 
 # Windows (vcpkg)
-vcpkg install openssl libuv usrsctp libsrtp
+vcpkg install boringssl libuv usrsctp
 ```
 
 ### Build

@@ -860,11 +860,6 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
         return NULL;
     }
 
-    /* Security level 1: 80-bit security minimum (RSA 1024, SHA1 allowed)
-     * This is the minimum acceptable for production while maintaining
-     * compatibility with older WebRTC implementations. */
-    SSL_CTX_set_security_level(ctx->ssl_ctx, 1);
-
     if (SSL_CTX_set_tlsext_use_srtp(
             ctx->ssl_ctx,
             "SRTP_AES128_CM_SHA1_80:SRTP_AES128_CM_SHA1_32:"
@@ -1290,7 +1285,7 @@ uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material) {
     if (!SSL_is_init_finished(peer->dtls.ssl)) return 0;
  
     /* Get negotiated SRTP profile */
-    SRTP_PROTECTION_PROFILE *profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
+    const SRTP_PROTECTION_PROFILE *profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
     if (!profile) return 0;
  
     /* Derive keys */

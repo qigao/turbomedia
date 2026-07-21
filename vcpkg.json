@@ -11,13 +11,7 @@
     "x265",
     "libde265",
     "ffmpeg",
-    "openssl",
-    {
-      "name": "libsrtp",
-      "features": [
-        "openssl"
-      ]
-    },
+    "boringssl",
     "roaring",
     "usrsctp"
   ]
