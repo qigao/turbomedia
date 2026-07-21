@@ -111,6 +111,45 @@ void test_srtp_dtls_server_sender_to_client_receiver(void) {
   srtp_session_destroy(sender);
 }
 
+void test_srtp_aead_aes_128_gcm_round_trip(void) {
+  srtp_keying_material_t keys;
+  srtp_session_config_t sender_cfg;
+  srtp_session_config_t receiver_cfg;
+  srtp_session_t *sender;
+  srtp_session_t *receiver;
+  uint8_t packet[RTP_MAX_PACKET + SRTP_MAX_TRAILER_LEN];
+  size_t len;
+
+  fill_keying_material(&keys);
+  keys.salt_len = 12;
+
+  sender_cfg = (srtp_session_config_t){
+      .is_sender = 1,
+      .is_dtls_client = 1,
+      .profile = SRTP_PROFILE_AEAD_AES_128_GCM,
+      .keys = &keys,
+  };
+  receiver_cfg = (srtp_session_config_t){
+      .is_sender = 0,
+      .is_dtls_client = 0,
+      .profile = SRTP_PROFILE_AEAD_AES_128_GCM,
+      .keys = &keys,
+  };
+
+  sender = srtp_session_create(&sender_cfg);
+  receiver = srtp_session_create(&receiver_cfg);
+  TEST_ASSERT_NOT_NULL(sender);
+  TEST_ASSERT_NOT_NULL(receiver);
+
+  len = build_test_rtp_packet(packet, sizeof(packet), 901, 270000, 0xABCDEF12u);
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtp_protect(sender, packet, &len, sizeof(packet)));
+  TEST_ASSERT_EQUAL_INT(0, turbo_srtp_unprotect(receiver, packet, &len));
+  TEST_ASSERT_EQUAL_size_t(RTP_HEADER_SIZE + 6, len);
+
+  srtp_session_destroy(receiver);
+  srtp_session_destroy(sender);
+}
+
 void test_srtcp_dtls_server_sender_to_client_receiver(void) {
   srtp_keying_material_t keys;
   srtp_session_config_t sender_cfg;
@@ -234,6 +273,7 @@ void test_srtp_shutdown_waits_for_active_sessions(void) {
 spec("test_srtp") {
   TT_TEST(test_srtp_dtls_client_sender_to_server_receiver);
   TT_TEST(test_srtp_dtls_server_sender_to_client_receiver);
+  TT_TEST(test_srtp_aead_aes_128_gcm_round_trip);
   TT_TEST(test_srtcp_dtls_server_sender_to_client_receiver);
   TT_TEST(test_srtcp_dtls_client_sender_to_server_receiver);
   TT_TEST(test_srtp_shutdown_waits_for_active_sessions);

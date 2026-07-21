@@ -1,0 +1,20 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4a839e2..80a0554 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -95,7 +95,7 @@ if(ENABLE_OPENSSL)
+   if(ENABLE_NSS OR ENABLE_MBEDTLS)
+     message(FATAL_ERROR "ssl conflict. can not enable openssl and mbedtls or nss simultaneously.")
+   endif()
+-  find_package(OpenSSL 1.1.0 REQUIRED)
++  find_package(OpenSSL REQUIRED)
+   set(OPENSSL ${ENABLE_OPENSSL} CACHE BOOL INTERNAL)
+   set(GCM ${ENABLE_OPENSSL} CACHE BOOL INTERNAL)
+ endif()
+@@ -297,5 +297,6 @@ elseif(ENABLE_NSS)
+ endif()
+ if(WIN32)
+   target_link_libraries(srtp2 PRIVATE ws2_32)
++  target_compile_definitions(srtp2 PRIVATE WIN32_LEAN_AND_MEAN)
+   target_compile_definitions(srtp2 PUBLIC _CRT_SECURE_NO_WARNINGS)
+ endif()

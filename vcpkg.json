@@ -12,6 +12,12 @@
     "libde265",
     "ffmpeg",
     "boringssl",
+    {
+      "name": "libsrtp",
+      "features": [
+        "openssl"
+      ]
+    },
     "roaring",
     "usrsctp"
   ]
