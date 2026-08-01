@@ -59,7 +59,7 @@ typedef struct {
  * Derive SRTP keys from DTLS session
  * Called after DTLS handshake completes
  *
- * @param ssl           OpenSSL SSL pointer
+ * @param ssl           BoringSSL SSL pointer
  * @param keys          Output keying material
  * @param profile       Negotiated SRTP profile
  * @return              0 on success, -1 on error

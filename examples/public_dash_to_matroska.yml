@@ -1,0 +1,41 @@
+# Public clear, audio-only Shaka Player DASH test asset:
+# https://github.com/shaka-project/shaka-player
+api_version: turbo.media.pipeline/v1
+id: public-dash-to-matroska
+
+limits:
+  open_timeout_ms: 15000
+  io_timeout_ms: 15000
+
+nodes:
+  - id: input
+    kind: source
+    factory: ffmpeg.input
+    config:
+      url: https://storage.googleapis.com/shaka-demo-assets/dig-the-uke-clear/dash.mpd
+
+  - id: demux
+    kind: demux
+    factory: ffmpeg.demux
+    config:
+      format: dash
+
+  - id: mux
+    kind: mux
+    factory: ffmpeg.mux
+    config:
+      format: matroska
+
+  - id: output
+    kind: sink
+    factory: ffmpeg.output
+    config:
+      url: public_dash.mkv
+
+edges:
+  - from: input.out
+    to: demux.in
+  - from: demux.audio
+    to: mux.audio
+  - from: mux.out
+    to: output.in

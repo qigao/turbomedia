@@ -276,7 +276,7 @@ int sctp_session_init(turbo_dc_peer_t *peer) {
         return -1;
     }
 
-    TLOG_INFO("%s", "SCTP socket created");
+    TLOG_INFO("SCTP socket created");
 
     usrsctp_set_non_blocking(sock, 1);
     usrsctp_register_address(peer);

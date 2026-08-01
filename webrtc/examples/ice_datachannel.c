@@ -270,7 +270,15 @@ int main(int argc, char **argv) {
   turbo_dc_peer_on_error(app.dc_peer, on_dc_error);
 
   /* Set ICE agent as transport */
-  turbo_dc_peer_set_ice_agent(app.dc_peer, app.ice_agent);
+  if (turbo_dc_peer_set_ice_agent(app.dc_peer, app.ice_agent) != 0) {
+    TLOG_ERROR("Failed to attach TurboNet ICE transport to DataChannel peer");
+    turbo_dc_peer_destroy(app.dc_peer);
+    turbo_dc_context_destroy(app.dc_ctx);
+    ice_agent_destroy(app.ice_agent);
+    coro_context_destroy(app.ice_ctx);
+    turbo_loop_destroy(app.loop);
+    return 1;
+  }
 
   /* ========== Start ICE Gathering ========== */
   TLOG_INFO("Starting ICE gathering...");

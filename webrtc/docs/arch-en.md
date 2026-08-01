@@ -32,7 +32,7 @@ TurboMedia's WebRTC DataChannel implementation provides peer-to-peer data commun
 │  - Encryption/Decryption            │
 │  - Certificate Validation           │
 │  - Handshake                        │
-│  (OpenSSL)                          │
+│  (BoringSSL)                        │
 └──────────────┬──────────────────────┘
                │
        ┌───────┴────────┬─────────┬──────────┐

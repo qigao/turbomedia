@@ -5,6 +5,8 @@
 #include <string.h>
 
 #define TURBO_MEDIA_REGISTRY_DEFAULT_MAX_SOURCES 1024
+#define TURBO_MEDIA_SUBSCRIPTION_NAMESPACE_SHIFT 32u
+#define TURBO_MEDIA_SUBSCRIPTION_LOCAL_ID_MAX UINT32_MAX
 
 typedef struct {
     turbo_media_track_info_t info;
@@ -31,6 +33,7 @@ struct turbo_media_source_s {
     int next_track_id;
     turbo_media_subscription_t *subscribers;
     size_t subscriber_count;
+    uint32_t subscription_namespace;
     uint64_t next_subscription_id;
     turbo_media_cached_frame_t *gop_frames;
     size_t gop_count;
@@ -43,6 +46,7 @@ struct turbo_media_source_s {
 struct turbo_media_registry_s {
     turbo_hash_map_t sources;
     size_t max_sources;
+    uint32_t next_subscription_namespace;
 };
 
 static size_t turbo_media_default_size(size_t value, size_t default_value) {
@@ -415,8 +419,14 @@ int turbo_media_source_subscribe(turbo_media_source_t *source,
     if (source->subscriber_count >= source->config.max_subscribers) {
         return TURBO_MEDIA_ERR_FULL;
     }
+    if (source->next_subscription_id > TURBO_MEDIA_SUBSCRIPTION_LOCAL_ID_MAX) {
+        return TURBO_MEDIA_ERR_FULL;
+    }
 
-    subscriber.id = source->next_subscription_id++;
+    subscriber.id =
+        ((uint64_t)source->subscription_namespace <<
+         TURBO_MEDIA_SUBSCRIPTION_NAMESPACE_SHIFT) |
+        source->next_subscription_id++;
     subscriber.callback = callback;
     subscriber.user_data = user_data;
     source->subscribers[source->subscriber_count++] = subscriber;
@@ -481,6 +491,7 @@ turbo_media_registry_t *turbo_media_registry_create(size_t max_sources) {
 
     registry = (turbo_media_registry_t *)calloc(1, sizeof(*registry));
     if (!registry) return NULL;
+    registry->next_subscription_namespace = 1;
 
     rc = turbo_hash_map_init(&registry->sources,
                              sizeof(turbo_media_source_key_t),
@@ -561,6 +572,12 @@ int turbo_media_registry_get_or_create(turbo_media_registry_t *registry,
 
     found = turbo_media_source_create(&normalized_key, config);
     if (!found) return TURBO_MEDIA_ERR_NOMEM;
+    if (registry->next_subscription_namespace == 0) {
+        turbo_media_source_destroy(found);
+        return TURBO_MEDIA_ERR_FULL;
+    }
+    /* A removed source must not leave a token that can match its replacement. */
+    found->subscription_namespace = registry->next_subscription_namespace++;
 
     rc = turbo_hash_map_put(&registry->sources, &normalized_key, &found);
     if (rc != TURBO_OK) {

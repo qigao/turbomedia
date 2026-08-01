@@ -10,6 +10,7 @@
  */
 
 #include <stddef.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -308,7 +309,7 @@ static int parse_origin_line(sdp_session_t *sdp, const char *line) {
     uint64_t version;
     char addr[64];
 
-    if (sscanf(line, "%63s %31s %llu IN IP%*d %63s",
+    if (sscanf(line, "%63s %31s %" SCNu64 " IN IP%*d %63s",
                username, session_id, &version, addr) == 4) {
         strncpy(sdp->username, username, sizeof(sdp->username) - 1);
         strncpy(sdp->session_id, session_id, sizeof(sdp->session_id) - 1);

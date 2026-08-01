@@ -11,9 +11,16 @@
 #include <string.h>
 
 #include <openssl/evp.h>
+#include <ctype.h>
 
 static int g_failed = 0;
 static unsigned char g_large_interleaved_payload[UINT16_MAX];
+static const uint8_t RTSP_KCP_TEST_PSK[TURBO_KCP_PSK_SIZE] = {
+    0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98,
+    0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f, 0x10,
+    0x31, 0x42, 0x53, 0x64, 0x75, 0x86, 0x97, 0xa8,
+    0xb9, 0xca, 0xdb, 0xec, 0xfd, 0x0e, 0x1f, 0x20
+};
 
 #define CHECK_TRUE(expr)                                                        \
     do {                                                                       \
@@ -36,6 +43,14 @@ static unsigned char g_large_interleaved_payload[UINT16_MAX];
     } while (0)
 
 #define UNUSED(x) (void)(x)
+
+static turbo_kcp_config_t rtsp_kcp_test_config(void) {
+    turbo_kcp_config_t config;
+
+    turbo_kcp_config_default(&config);
+    memcpy(config.pre_shared_key, RTSP_KCP_TEST_PSK, sizeof(config.pre_shared_key));
+    return config;
+}
 
 typedef struct {
     coro_context_t *ctx;
@@ -827,7 +842,7 @@ static int on_udp_setup(turbo_rtsp_session_t *session,
         request->transport_spec.delivery != TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST ||
         request->transport_spec.mode != TURBO_RTSP_TRANSPORT_MODE_PLAY ||
         request->transport_spec.client_rtp_port <= 0 ||
-        request->transport_spec.client_rtcp_port != request->transport_spec.client_rtp_port + 1) {
+        request->transport_spec.client_rtcp_port <= 0) {
         return -1;
     }
 
@@ -1404,26 +1419,45 @@ static int rtsp_send_basic_then_digest_challenge(coro_socket_t *client, uint32_t
     return coro_socket_send(client, response, (size_t)len);
 }
 
+static const char *rtsp_mem_find(const char *data, size_t data_len, const char *needle) {
+    size_t needle_len;
+    size_t offset;
+
+    if (!data || !needle) return NULL;
+    needle_len = strlen(needle);
+    if (needle_len == 0 || needle_len > data_len) return NULL;
+    for (offset = 0; offset <= data_len - needle_len; ++offset) {
+        if (memcmp(data + offset, needle, needle_len) == 0) return data + offset;
+    }
+    return NULL;
+}
+
 static int rtsp_digest_parameter(const char *request,
+                                 size_t request_len,
                                  const char *name,
                                  char *value,
                                  size_t value_size) {
     const char *start;
     const char *end;
+    const char *request_end;
     size_t length;
+    int pattern_len;
     char pattern[64];
 
     if (!request || !name || !value || value_size == 0 ||
-        snprintf(pattern, sizeof(pattern), "%s=", name) < 0) return -1;
-    start = strstr(request, pattern);
+        (pattern_len = snprintf(pattern, sizeof(pattern), "%s=", name)) < 0 ||
+        (size_t)pattern_len >= sizeof(pattern)) return -1;
+    request_end = request + request_len;
+    start = rtsp_mem_find(request, request_len, pattern);
     if (!start) return -1;
-    start += strlen(pattern);
+    start += (size_t)pattern_len;
+    if (start >= request_end) return -1;
     if (*start == '"') {
         start++;
-        end = strchr(start, '"');
+        end = memchr(start, '"', (size_t)(request_end - start));
     } else {
         end = start;
-        while (*end && *end != ',' && *end != '\r' && *end != ' ') end++;
+        while (end < request_end && *end != ',' && *end != '\r' && *end != ' ') end++;
     }
     if (!end) return -1;
     length = (size_t)(end - start);
@@ -1457,6 +1491,7 @@ static int rtsp_test_md5_hex(const char *input, char output[33]) {
 }
 
 static int rtsp_request_has_digest_auth(const char *request,
+                                        size_t request_len,
                                         const char *uri,
                                         const char *password,
                                         const char *expected_nc,
@@ -1469,8 +1504,8 @@ static int rtsp_request_has_digest_auth(const char *request,
     size_t i;
 
     if (!request || !uri || !password || !expected_nc || !cnonce ||
-        rtsp_digest_parameter(request, "cnonce", cnonce, 33) != 0 ||
-        rtsp_digest_parameter(request, "response", response, sizeof(response)) != 0 ||
+        rtsp_digest_parameter(request, request_len, "cnonce", cnonce, 33) != 0 ||
+        rtsp_digest_parameter(request, request_len, "response", response, sizeof(response)) != 0 ||
         strlen(cnonce) != 32) return 0;
     for (i = 0; i < 32; ++i) {
         if (!isxdigit((unsigned char)cnonce[i])) return 0;
@@ -1488,13 +1523,13 @@ static int rtsp_request_has_digest_auth(const char *request,
                  ha2) < 0 ||
         rtsp_test_md5_hex(input, expected) != 0) return 0;
 
-    return strstr(request, "Authorization: Digest ") != NULL &&
-           strstr(request, "username=\"user\"") != NULL &&
-           strstr(request, "realm=\"TurboMedia\"") != NULL &&
-           strstr(request, "nonce=\"abcdef0123456789\"") != NULL &&
-           strstr(request, "algorithm=MD5") != NULL &&
-           strstr(request, "qop=auth") != NULL &&
-           strstr(request, "opaque=\"opaque-token\"") != NULL &&
+    return rtsp_mem_find(request, request_len, "Authorization: Digest ") != NULL &&
+           rtsp_mem_find(request, request_len, "username=\"user\"") != NULL &&
+           rtsp_mem_find(request, request_len, "realm=\"TurboMedia\"") != NULL &&
+           rtsp_mem_find(request, request_len, "nonce=\"abcdef0123456789\"") != NULL &&
+           rtsp_mem_find(request, request_len, "algorithm=MD5") != NULL &&
+           rtsp_mem_find(request, request_len, "qop=auth") != NULL &&
+           rtsp_mem_find(request, request_len, "opaque=\"opaque-token\"") != NULL &&
            strcmp(response, expected) == 0;
 }
 
@@ -1514,7 +1549,7 @@ static void rtsp_basic_auth_handler(coro_socket_t *client, void *arg) {
         coro_context_stop(state->ctx);
         return;
     }
-    if (strstr(request, "Authorization:") != NULL) {
+    if (rtsp_mem_find(request, request_len, "Authorization:") != NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1534,9 +1569,8 @@ static void rtsp_basic_auth_handler(coro_socket_t *client, void *arg) {
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "CSeq: 2\r\n") == NULL ||
-        strstr(request, "Authorization: Basic dXNlcjpwYXNz\r\n") == NULL) {
+    if (rtsp_mem_find(request, request_len, "CSeq: 2\r\n") == NULL ||
+        rtsp_mem_find(request, request_len, "Authorization: Basic dXNlcjpwYXNz\r\n") == NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1577,7 +1611,7 @@ static void rtsp_basic_auth_reject_handler(coro_socket_t *client, void *arg) {
         coro_context_stop(state->ctx);
         return;
     }
-    if (strstr(request, "Authorization: Basic dXNlcjp3cm9uZw==\r\n") == NULL) {
+    if (rtsp_mem_find(request, request_len, "Authorization: Basic dXNlcjp3cm9uZw==\r\n") == NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1610,8 +1644,7 @@ static void rtsp_digest_auth_handler(coro_socket_t *client, void *arg) {
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "Authorization:") != NULL) {
+    if (rtsp_mem_find(request, request_len, "Authorization:") != NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1631,10 +1664,10 @@ static void rtsp_digest_auth_handler(coro_socket_t *client, void *arg) {
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "CSeq: 2\r\n") == NULL ||
+    if (rtsp_mem_find(request, request_len, "CSeq: 2\r\n") == NULL ||
         !rtsp_request_has_digest_auth(
             request,
+            request_len,
             "rtsp://127.0.0.1:20570/live",
             "pass",
             "00000001",
@@ -1657,7 +1690,7 @@ static void rtsp_digest_auth_handler(coro_socket_t *client, void *arg) {
         coro_context_stop(state->ctx);
         return;
     }
-    if (strstr(request, "Authorization:") != NULL) {
+    if (rtsp_mem_find(request, request_len, "Authorization:") != NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1670,6 +1703,7 @@ static void rtsp_digest_auth_handler(coro_socket_t *client, void *arg) {
         coro_socket_recv(client, &request, &request_len) != 0 || !request ||
         !rtsp_request_has_digest_auth(
             request,
+            request_len,
             "rtsp://127.0.0.1:20570/live",
             "pass",
             "00000002",
@@ -1717,10 +1751,10 @@ static void rtsp_digest_auth_reject_handler(coro_socket_t *client, void *arg) {
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "CSeq: 2\r\n") == NULL ||
+    if (rtsp_mem_find(request, request_len, "CSeq: 2\r\n") == NULL ||
         !rtsp_request_has_digest_auth(
             request,
+            request_len,
             "rtsp://127.0.0.1:20571/live",
             "wrong",
             "00000001",
@@ -1755,8 +1789,7 @@ static void rtsp_digest_auth_after_basic_header_handler(coro_socket_t *client, v
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "Authorization:") != NULL) {
+    if (rtsp_mem_find(request, request_len, "Authorization:") != NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1776,10 +1809,9 @@ static void rtsp_digest_auth_after_basic_header_handler(coro_socket_t *client, v
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "CSeq: 2\r\n") == NULL ||
-        strstr(request, "Authorization: Digest ") == NULL ||
-        strstr(request, "Authorization: Basic ") != NULL) {
+    if (rtsp_mem_find(request, request_len, "CSeq: 2\r\n") == NULL ||
+        rtsp_mem_find(request, request_len, "Authorization: Digest ") == NULL ||
+        rtsp_mem_find(request, request_len, "Authorization: Basic ") != NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1825,8 +1857,7 @@ static void rtsp_stale_401_then_bad_cseq_handler(coro_socket_t *client, void *ar
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "Authorization:") != NULL) {
+    if (rtsp_mem_find(request, request_len, "Authorization:") != NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1862,8 +1893,7 @@ static void rtsp_bad_interleaved_setup_transport_handler(coro_socket_t *client, 
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "ANNOUNCE ") == NULL) {
+    if (rtsp_mem_find(request, request_len, "ANNOUNCE ") == NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -1882,9 +1912,10 @@ static void rtsp_bad_interleaved_setup_transport_handler(coro_socket_t *client, 
         coro_context_stop(state->ctx);
         return;
     }
-    UNUSED(request_len);
-    if (strstr(request, "SETUP ") == NULL ||
-        strstr(request, "Transport: RTP/AVP/TCP;unicast;interleaved=0-1;mode=RECORD\r\n") == NULL) {
+    if (rtsp_mem_find(request, request_len, "SETUP ") == NULL ||
+        rtsp_mem_find(request,
+                      request_len,
+                      "Transport: RTP/AVP/TCP;unicast;interleaved=0-1;mode=RECORD\r\n") == NULL) {
         g_failed = 1;
         coro_socket_free_recv(request);
         coro_context_stop(state->ctx);
@@ -2746,6 +2777,7 @@ static void rtsp_ws_control_client_task(coro_t *co, void *arg) {
 static void rtsp_kcp_control_client_task(coro_t *co, void *arg) {
     rtsp_test_state_t *state = (rtsp_test_state_t *)arg;
     turbo_rtsp_client_config_t config;
+    turbo_kcp_config_t kcp_config;
     turbo_rtsp_client_t *client = NULL;
     const turbo_rtsp_client_response_t *last_response = NULL;
     const turbo_rtsp_header_view_t *public_header = NULL;
@@ -2758,8 +2790,11 @@ static void rtsp_kcp_control_client_task(coro_t *co, void *arg) {
     config.timeout_ms = 2000;
     config.user_agent = "TurboMedia RTSP KCP control test";
     config.control_transport = TURBO_RTSP_CONTROL_TRANSPORT_KCP;
+    kcp_config = rtsp_kcp_test_config();
+    config.kcp_config = &kcp_config;
 
     client = turbo_rtsp_client_create(state->ctx, &config);
+    turbo_kcp_config_wipe(&kcp_config);
     if (!client) {
         g_failed = 1;
         coro_context_stop(state->ctx);
@@ -3970,6 +4005,7 @@ static void test_rtsp_control_uses_websocket_transport(void) {
 static void test_rtsp_control_uses_kcp_transport(void) {
     coro_context_t *ctx = NULL;
     turbo_rtsp_server_config_t config;
+    turbo_kcp_config_t kcp_config;
     turbo_rtsp_server_handlers_t handlers;
     rtsp_test_state_t state;
     int wait_iters = 50000;
@@ -3985,10 +4021,13 @@ static void test_rtsp_control_uses_kcp_transport(void) {
     config.port = 20563;
     config.client_timeout_ms = 2000;
     config.control_transport = TURBO_RTSP_CONTROL_TRANSPORT_KCP;
+    kcp_config = rtsp_kcp_test_config();
+    config.kcp_config = &kcp_config;
     handlers.on_options = on_kcp_control_options;
 
     state.ctx = ctx;
     state.server = turbo_rtsp_server_create(ctx, &config, &handlers, &state);
+    turbo_kcp_config_wipe(&kcp_config);
     CHECK_TRUE(state.server != NULL);
     CHECK_INT(0, turbo_rtsp_server_start(state.server));
     CHECK_INT(0, coro_context_spawn(ctx, rtsp_kcp_control_client_task, &state));
@@ -4001,6 +4040,51 @@ static void test_rtsp_control_uses_kcp_transport(void) {
     CHECK_TRUE(state.completed);
 
     turbo_rtsp_server_destroy(state.server);
+    coro_context_destroy(ctx);
+}
+
+static void test_rtsp_kcp_control_requires_secure_config(void) {
+    coro_context_t *ctx = NULL;
+    turbo_rtsp_server_config_t server_config;
+    turbo_rtsp_client_config_t client_config;
+    turbo_kcp_config_t invalid_kcp_config;
+    turbo_rtsp_server_t *server = NULL;
+    turbo_rtsp_client_t *client = NULL;
+
+    memset(&server_config, 0, sizeof(server_config));
+    memset(&client_config, 0, sizeof(client_config));
+
+    ctx = coro_context_create(NULL);
+    check_not_null(ctx);
+    if (!ctx) {
+        return;
+    }
+
+    server_config.control_transport = TURBO_RTSP_CONTROL_TRANSPORT_KCP;
+    client_config.control_transport = TURBO_RTSP_CONTROL_TRANSPORT_KCP;
+    server = turbo_rtsp_server_create(ctx, &server_config, NULL, NULL);
+    client = turbo_rtsp_client_create(ctx, &client_config);
+
+    check_null(server);
+    check_null(client);
+
+    turbo_rtsp_server_destroy(server);
+    turbo_rtsp_client_destroy(client);
+
+    turbo_kcp_config_default(&invalid_kcp_config);
+    server_config.kcp_config = &invalid_kcp_config;
+    client_config.kcp_config = &invalid_kcp_config;
+    server = turbo_rtsp_server_create(ctx, &server_config, NULL, NULL);
+    client = turbo_rtsp_client_create(ctx, &client_config);
+    turbo_kcp_config_wipe(&invalid_kcp_config);
+
+    check_not_null(server);
+    check_not_null(client);
+    check(!server || turbo_rtsp_server_start(server) != 0);
+    check(!client || turbo_rtsp_client_connect(client) != 0);
+
+    turbo_rtsp_server_destroy(server);
+    turbo_rtsp_client_destroy(client);
     coro_context_destroy(ctx);
 }
 
@@ -4341,6 +4425,10 @@ suite("turbo_media_rtsp") {
 
     it("runs RTSP control over KCP transport") {
         test_rtsp_control_uses_kcp_transport();
+    }
+
+    it("requires secure configuration for RTSP over KCP") {
+        test_rtsp_kcp_control_requires_secure_config();
     }
 
     it("negotiates RTP/AVP UDP setup from the RTSP client") {

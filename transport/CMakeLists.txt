@@ -19,3 +19,9 @@ target_include_directories(
 target_compile_definitions(
   turbo_media_transport
   PUBLIC TURBO_MEDIA_HAS_RTP TURBO_MEDIA_HAS_SIP)
+# The legacy transport RTP ABI and the RTC RTP ABI intentionally use different
+# packet layouts.  Bind each shared object's internal calls locally so ELF
+# symbol preemption cannot route a packet through the other implementation.
+target_link_options(
+  turbo_media_transport
+  PRIVATE "$<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>")

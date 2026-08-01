@@ -336,6 +336,32 @@ void test_rtcp_twcc_uses_run_length_for_long_runs(void) {
   }
 }
 
+void test_rtcp_twcc_serializes_after_reference_time_wrap(void) {
+  const uint32_t wrapped_reference_time = 0x01000001u;
+  uint8_t buffer[64];
+  rtcp_compound_t compound;
+  rtcp_twcc_t input;
+
+  rtcp_compound_init(&compound, buffer, sizeof(buffer));
+  memset(&input, 0, sizeof(input));
+  input.sender_ssrc = 0x77777777u;
+  input.media_ssrc = 0x88888888u;
+  input.base_seq = 1234;
+  input.reference_time = wrapped_reference_time;
+  input.packet_count = 1;
+  input.num_packets = 1;
+  input.packets[0].seq = input.base_seq;
+  input.packets[0].received = 1;
+  input.packets[0].arrival_time_us =
+      (uint64_t)wrapped_reference_time * 64000ULL + 250ULL;
+
+  TEST_ASSERT_EQUAL_INT(0, rtcp_compound_add_twcc(&compound, &input));
+  TEST_ASSERT_EQUAL_size_t(24, rtcp_compound_finish(&compound));
+  TEST_ASSERT_EQUAL_UINT8(0, buffer[16]);
+  TEST_ASSERT_EQUAL_UINT8(0, buffer[17]);
+  TEST_ASSERT_EQUAL_UINT8(1, buffer[18]);
+}
+
 /* =============================================================================
  * Integration Tests
  * ============================================================================= */
@@ -395,6 +421,7 @@ spec("test_twcc") {
   TT_TEST(test_rtcp_twcc_roundtrip_with_deltas_and_loss);
   TT_TEST(test_rtcp_twcc_uses_one_bit_status_vector_for_small_deltas);
   TT_TEST(test_rtcp_twcc_uses_run_length_for_long_runs);
+  TT_TEST(test_rtcp_twcc_serializes_after_reference_time_wrap);
 
   /* Integration */
   TT_TEST(test_twcc_end_to_end);

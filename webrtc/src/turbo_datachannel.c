@@ -23,9 +23,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #endif
-#ifdef TURBO_DC_HAS_ICE
 #include "ice/turbo_ice.h"
-#endif
 #include "turbo_srtp_defs.h"
 
 /* TurboNet X.509 certificate generation */
@@ -232,7 +230,7 @@ void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state) {
     }
 }
 
-static void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail) {
+void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail) {
     const char *message;
     turbo_dc_state_t old_state;
 
@@ -799,6 +797,12 @@ static const dc_transport_ops_t g_external_transport_ops = {
     .destroy = external_transport_destroy
 };
 
+static void ice_agent_transport_send(void *transport,
+                                     const void *data,
+                                     size_t len) {
+    (void)ice_agent_send((turbo_ice_agent_t *)transport, data, len);
+}
+
 /* ============================================================================
  * Transport Helper
  * ============================================================================ */
@@ -1066,25 +1070,82 @@ void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_error_cb cb) {
      if (peer) peer->on_error = cb;
  }
  
+static int dc_ascii_equal_ignore_case(const char *left, const char *right) {
+    unsigned char a;
+    unsigned char b;
+
+    if (!left || !right) return 0;
+    while (*left && *right) {
+        a = (unsigned char)*left++;
+        b = (unsigned char)*right++;
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
+        if (a != b) return 0;
+    }
+    return *left == '\0' && *right == '\0';
+}
+
+static int dc_is_sha256_fingerprint(const char *fingerprint) {
+    enum {
+        SHA256_FINGERPRINT_BYTES = 32,
+        SHA256_FINGERPRINT_LENGTH = SHA256_FINGERPRINT_BYTES * 3 - 1
+    };
+    size_t i;
+
+    if (!fingerprint || strlen(fingerprint) != SHA256_FINGERPRINT_LENGTH) {
+        return 0;
+    }
+    for (i = 0; i < SHA256_FINGERPRINT_BYTES; ++i) {
+        size_t offset = i * 3;
+        unsigned char high = (unsigned char)fingerprint[offset];
+        unsigned char low = (unsigned char)fingerprint[offset + 1];
+        int high_is_hex = (high >= '0' && high <= '9') ||
+                          (high >= 'a' && high <= 'f') ||
+                          (high >= 'A' && high <= 'F');
+        int low_is_hex = (low >= '0' && low <= '9') ||
+                         (low >= 'a' && low <= 'f') ||
+                         (low >= 'A' && low <= 'F');
+
+        if (!high_is_hex || !low_is_hex ||
+            (i + 1 < SHA256_FINGERPRINT_BYTES &&
+             fingerprint[offset + 2] != ':')) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int turbo_dc_peer_set_remote_fingerprint(
     turbo_dc_peer_t *peer,
     const char *hash,
     const char *fingerprint
- ) {
-     if (!peer || !hash || !fingerprint) return -1;
- 
-     peer->remote_fingerprint_hash = tstr_dup(hash);
-     peer->remote_fingerprint = tstr_dup(fingerprint);
- 
-     /* Force case-insensitive matching by converting to uppercase */
-     char *p = peer->remote_fingerprint;
-     while (*p) {
-         if (*p >= 'a' && *p <= 'z') *p -= 32;
-         p++;
-     }
- 
-     return 0;
- }
+) {
+    tstr_t new_hash;
+    tstr_t new_fingerprint;
+    char *p;
+
+    if (!peer || !hash || !fingerprint) return -1;
+    if (!dc_ascii_equal_ignore_case(hash, "sha-256")) return -2;
+    if (!dc_is_sha256_fingerprint(fingerprint)) return -3;
+
+    new_hash = tstr_dup("sha-256");
+    new_fingerprint = tstr_dup(fingerprint);
+    if (!new_hash || !new_fingerprint) {
+        tstr_free(new_hash);
+        tstr_free(new_fingerprint);
+        return -4;
+    }
+
+    for (p = new_fingerprint; *p; ++p) {
+        if (*p >= 'a' && *p <= 'f') *p = (char)(*p - ('a' - 'A'));
+    }
+
+    tstr_free(peer->remote_fingerprint_hash);
+    tstr_free(peer->remote_fingerprint);
+    peer->remote_fingerprint_hash = new_hash;
+    peer->remote_fingerprint = new_fingerprint;
+    return 0;
+}
 
 int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
     if (!peer || !peer->dtls.ssl) return -1;
@@ -1143,9 +1204,12 @@ void turbo_dc_peer_feed_transport_data(turbo_dc_peer_t *peer,
 }
 
 int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct turbo_ice_agent_s *ice_agent) {
-    (void)peer;
-    (void)ice_agent;
-    return -1;
+    if (!peer || !ice_agent || ice_agent_get_state(ice_agent) == ICE_STATE_CLOSED) {
+        return -1;
+    }
+
+    return turbo_dc_peer_set_external_transport(
+        peer, ice_agent, ice_agent_transport_send);
 }
 
 void turbo_dc_peer_feed_ice_data(turbo_dc_peer_t *peer, const void *data, size_t len) {
@@ -1160,7 +1224,7 @@ int turbo_dc_peer_connect(turbo_dc_peer_t *peer) {
     }
 
     if (peer->external_transport) {
-        TLOG_INFO("%s", "DC peer connect via ICE");
+        TLOG_INFO("DC peer connect via ICE");
         peer->state = TURBO_DC_STATE_CONNECTING;
 
         /* Start DTLS handshake - the ICE agent should already be connected */
@@ -1241,18 +1305,11 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
         peer->sctp.socket = NULL;
     }
 
-    /* usrsctp keeps AF_CONN addresses in a global registry. Freeing the peer
-     * without deregistering leaves a stale pointer behind and can trigger a
-     * late callback/UAF during the next test cycle. Linux/ASan still has an
-     * unstable deregistration path, so keep the conservative behavior there. */
-#ifdef _WIN32
+    /* AF_CONN addresses remain process-global until explicitly deregistered. */
     if (peer->sctp_address_registered) {
         usrsctp_deregister_address(peer);
         peer->sctp_address_registered = 0;
     }
-#else
-    peer->sctp_address_registered = 0;
-#endif
 
     if (peer->transport_ops && peer->transport_ops->destroy) {
         peer->transport_ops->destroy(peer);

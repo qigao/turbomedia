@@ -320,7 +320,7 @@ VirtualDisplay, stops MediaProjection, and destroys the native ImageReader conte
 
 ## Dependencies
 
-- OpenSSL (encryption)
+- BoringSSL（由上游网络依赖提供）
 - libSRTP (SRTP)
 - miniaudio (audio fallback)
 - Android NDK APIs:

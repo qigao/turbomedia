@@ -9,6 +9,10 @@
 #include "tinytest_compat.h"
 #include <string.h>
 
+#define TEST_SHA256_FINGERPRINT \
+    "00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:" \
+    "10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F"
+
 void setUp(void) {
 }
 
@@ -124,6 +128,34 @@ void test_peer_close_null(void) {
 void test_peer_destroy_null(void) {
     /* Should not crash */
     turbo_dc_peer_destroy(NULL);
+}
+
+void test_peer_remote_fingerprint_validation(void) {
+    turbo_dc_config_t config = {
+        .is_server = 0
+    };
+    turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
+    turbo_dc_peer_t *peer;
+
+    TEST_ASSERT_NOT_NULL(ctx);
+    peer = turbo_dc_peer_create(ctx, "127.0.0.1", 5000, NULL);
+    TEST_ASSERT_NOT_NULL(peer);
+
+    TEST_ASSERT_EQUAL_INT(
+        -1, turbo_dc_peer_set_remote_fingerprint(
+                NULL, "sha-256", TEST_SHA256_FINGERPRINT));
+    TEST_ASSERT_EQUAL_INT(
+        -2, turbo_dc_peer_set_remote_fingerprint(
+                peer, "sha-1", TEST_SHA256_FINGERPRINT));
+    TEST_ASSERT_EQUAL_INT(
+        -3, turbo_dc_peer_set_remote_fingerprint(
+                peer, "sha-256", "AA:BB:CC:DD"));
+    TEST_ASSERT_EQUAL_INT(
+        0, turbo_dc_peer_set_remote_fingerprint(
+               peer, "SHA-256", TEST_SHA256_FINGERPRINT));
+
+    turbo_dc_peer_destroy(peer);
+    turbo_dc_context_destroy(ctx);
 }
 
 /* ============================================================================
@@ -339,6 +371,7 @@ spec("test_datachannel") {
   TT_TEST(test_peer_callbacks_null_peer);
   TT_TEST(test_peer_close_null);
   TT_TEST(test_peer_destroy_null);
+  TT_TEST(test_peer_remote_fingerprint_validation);
 
     /* Channel tests */
   TT_TEST(test_channel_create_null_peer);

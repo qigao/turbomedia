@@ -1,13 +1,3 @@
-cmake_minimum_required(VERSION 3.20)
-
-# Signaling Server Application
-project(
-  TurboSignalingServer
-  VERSION 1.0.0
-  LANGUAGES C
-  DESCRIPTION "Production-ready WebRTC signaling server"
-)
-
 # Source files
 set(SIGNALING_SERVER_SOURCES
   src/main.c
@@ -38,7 +28,6 @@ add_executable(signaling_server
 target_include_directories(signaling_server
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${TURBOMEDIA_ROOT}/include
 )
 
 # Link libraries
@@ -46,7 +35,9 @@ target_link_libraries(signaling_server
   PRIVATE
     ${SIGNALING_SERVER_LIBS}
     TurboMedia::WebRTCSignaling
+    turbo_media_auth
     TurboUtils::Core
+    TurboUtils::Parser
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>
 )
@@ -78,23 +69,6 @@ install(
   DESTINATION etc/turbonet
   COMPONENT SignalingServer
 )
-
-# Install systemd service file (Linux only)
-if(UNIX AND NOT APPLE)
-  install(
-    FILES systemd/signaling-server.service
-    DESTINATION lib/systemd/system
-    COMPONENT SignalingServer
-  )
-endif()
-
-# Create package
-set(CPACK_PACKAGE_NAME "TurboSignalingServer")
-set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
-set(CPACK_PACKAGE_VENDOR "TurboNet") 
-
-include(CPack)
 
 # Add to IDE folder
 set_target_properties(signaling_server

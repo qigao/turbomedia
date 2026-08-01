@@ -26,11 +26,27 @@ static void sfu_node_print_usage(const char *program_name) {
     printf("  -c, --config FILE      Configuration file path\n");
     printf("  --host HOST            Bind host (default: 0.0.0.0)\n");
     printf("  --port PORT            Bind port (default: 9190)\n");
+    printf("  --tls-cert FILE        Enable HTTPS with this certificate chain\n");
+    printf("  --tls-key FILE         Enable HTTPS with this private key\n");
     printf("  --node-id ID           Node identifier\n");
     printf("  --max-rooms N          Maximum rooms served\n");
     printf("  --room-capacity N      Default room capacity\n");
     printf("  --control-token TOKEN  Require bearer token for mutating control API commands\n");
     printf("                         Env: TURBO_SFU_NODE_CONTROL_TOKEN\n");
+    printf("  --media-token TOKEN    Bearer token for WHIP/WHEP media sessions\n");
+    printf("                         Env: TURBO_SFU_MEDIA_ACCESS_TOKEN\n");
+    printf("  --auth-key-id ID       Active signed-token key identifier\n");
+    printf("  --auth-secret SECRET   Active HS256 secret (at least 32 bytes)\n");
+    printf("                         Env: TURBO_SFU_AUTH_ACTIVE_KEY_ID / _SECRET\n");
+    printf("  --auth-previous-key-id ID\n");
+    printf("                         Previous key identifier during rotation\n");
+    printf("  --auth-previous-secret SECRET\n");
+    printf("                         Previous HS256 secret during rotation\n");
+    printf("  --stun-server URL      Override configured STUN servers with one URL\n");
+    printf("                         Env: TURBO_SFU_STUN_SERVER\n");
+    printf("  --turn-server URL      Override configured TURN servers with one URL\n");
+    printf("                         Env: TURBO_SFU_TURN_SERVER\n");
+    printf("  --allow-loopback       Allow loopback ICE candidates (test only)\n");
     printf("  --dry-run              Validate config and exit\n");
     printf("  --help                 Show this help message\n");
     printf("  --version              Show version information\n");
@@ -63,6 +79,14 @@ static int sfu_node_parse_args(int argc, char **argv, sfu_node_app_config_t *con
         } else if (strcmp(arg, "--port") == 0) {
             if (++i >= argc) return -1;
             config->bind_port = atoi(argv[i]);
+        } else if (strcmp(arg, "--tls-cert") == 0) {
+            if (++i >= argc) return -1;
+            config->use_tls = 1;
+            config->tls_cert_file = argv[i];
+        } else if (strcmp(arg, "--tls-key") == 0) {
+            if (++i >= argc) return -1;
+            config->use_tls = 1;
+            config->tls_key_file = argv[i];
         } else if (strcmp(arg, "--node-id") == 0) {
             if (++i >= argc) return -1;
             config->node_id = argv[i];
@@ -75,6 +99,39 @@ static int sfu_node_parse_args(int argc, char **argv, sfu_node_app_config_t *con
         } else if (strcmp(arg, "--control-token") == 0) {
             if (++i >= argc) return -1;
             config->control_token = argv[i];
+        } else if (strcmp(arg, "--media-token") == 0) {
+            if (++i >= argc) return -1;
+            config->media_access_token = argv[i];
+        } else if (strcmp(arg, "--auth-key-id") == 0) {
+            if (++i >= argc) return -1;
+            config->auth_active_key_id = argv[i];
+        } else if (strcmp(arg, "--auth-secret") == 0) {
+            if (++i >= argc) return -1;
+            config->auth_active_secret = argv[i];
+        } else if (strcmp(arg, "--auth-previous-key-id") == 0) {
+            if (++i >= argc) return -1;
+            config->auth_previous_key_id = argv[i];
+        } else if (strcmp(arg, "--auth-previous-secret") == 0) {
+            if (++i >= argc) return -1;
+            config->auth_previous_secret = argv[i];
+        } else if (strcmp(arg, "--stun-server") == 0) {
+            if (++i >= argc) return -1;
+            for (int index = 0;
+                 index < TURBO_SFU_NODE_MAX_STUN_SERVERS; ++index) {
+                config->stun_servers[index] = NULL;
+            }
+            config->stun_servers[0] = argv[i];
+            config->stun_server_count = 1;
+        } else if (strcmp(arg, "--turn-server") == 0) {
+            if (++i >= argc) return -1;
+            for (int index = 0;
+                 index < TURBO_SFU_NODE_MAX_TURN_SERVERS; ++index) {
+                config->turn_servers[index] = NULL;
+            }
+            config->turn_servers[0] = argv[i];
+            config->turn_server_count = 1;
+        } else if (strcmp(arg, "--allow-loopback") == 0) {
+            config->ice_allow_loopback = 1;
         } else if (strcmp(arg, "--dry-run") == 0) {
             config->dry_run = 1;
         } else {
@@ -89,29 +146,42 @@ static int sfu_node_parse_args(int argc, char **argv, sfu_node_app_config_t *con
 int main(int argc, char **argv) {
     int ret = 0;
     sfu_node_app_config_t config;
+    sfu_node_app_config_t cli_probe;
 
     sfu_node_app_config_init(&config);
+    sfu_node_app_config_init(&cli_probe);
 
-    if (sfu_node_parse_args(argc, argv, &config) != 0) {
+    /*
+     * Probe first so help and argument errors do not perform file I/O.
+     * Reapplying environment and CLI values after TOML establishes:
+     * defaults < TOML < environment < command line.
+     */
+    if (sfu_node_parse_args(argc, argv, &cli_probe) != 0) {
         return (argc > 1 &&
                 (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "--version") == 0))
                    ? 0
                    : 1;
     }
 
-    if (config.config_file && sfu_node_app_config_load(&config, config.config_file) != 0) {
-        fprintf(stderr, "Failed to load config: %s\n", config.config_file);
+    if (cli_probe.config_file &&
+        sfu_node_app_config_load(&config, cli_probe.config_file) != 0) {
+        fprintf(stderr, "Failed to load config: %s\n", cli_probe.config_file);
         ret = 1;
         goto cleanup;
     }
 
-    if (sfu_node_app_config_validate(&config) != 0) {
+    sfu_node_app_config_apply_environment(&config);
+    if (sfu_node_parse_args(argc, argv, &config) != 0 ||
+        sfu_node_app_config_validate(&config) != 0) {
         fprintf(stderr, "Invalid SFU node configuration\n");
         ret = 1;
         goto cleanup;
     }
 
     sfu_node_app_config_print(&config);
+    if (config.dry_run) {
+        goto cleanup;
+    }
     sfu_node_setup_signal_handlers();
 
     g_server = sfu_node_app_server_create(&config);

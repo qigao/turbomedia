@@ -8,14 +8,17 @@ Get started with TurboNet WebRTC in 5 minutes.
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install cmake ninja-build libssl-dev libuv1-dev
+sudo apt-get install cmake ninja-build
 
 # macOS
-brew install cmake ninja openssl libuv
+brew install cmake ninja
 
 # Windows (vcpkg)
-vcpkg install boringssl libuv usrsctp
+vcpkg install boringssl usrsctp
 ```
+
+The project requires BoringSSL on every platform. Do not install or substitute
+OpenSSL; the CMake presets resolve BoringSSL through the vcpkg manifest.
 
 ### Build
 

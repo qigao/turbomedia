@@ -4,7 +4,9 @@
 #include "turbo_sfu_node.h"
 #include "turbo_peer_connection.h"
 #include "turbo_rtp.h"
+#ifdef ENABLE_RTC_SCXML_WORKFLOW
 #include "rtc_workflow_adapter.h"
+#endif
 #include <platform.h>
 #include <turbo_thread.h>
 #include <ctype.h>
@@ -107,6 +109,8 @@ typedef struct {
     char **local_candidates;
     int local_candidate_count;
     int local_candidate_capacity;
+    uint64_t resource_version;
+    int owns_node_session;
     sfu_node_relay_track_t *relay_tracks;
     int relay_track_count;
     int relay_track_capacity;
@@ -114,6 +118,32 @@ typedef struct {
     rtc_workflow_context_t *workflow_ctx;
 #endif
 } sfu_node_webrtc_session_t;
+
+typedef enum {
+    SFU_NODE_WEBRTC_COMMAND_CREATE = 1,
+    SFU_NODE_WEBRTC_COMMAND_CREATE_OWNED,
+    SFU_NODE_WEBRTC_COMMAND_REMOVE,
+    SFU_NODE_WEBRTC_COMMAND_SET_OFFER,
+    SFU_NODE_WEBRTC_COMMAND_ADD_CANDIDATE,
+    SFU_NODE_WEBRTC_COMMAND_APPLY_SDPFRAG,
+    SFU_NODE_WEBRTC_COMMAND_CLEAR
+} sfu_node_webrtc_command_type_t;
+
+typedef struct sfu_node_webrtc_command_s {
+    sfu_node_webrtc_command_type_t type;
+    const char *room_id;
+    const char *participant_id;
+    const char *session_id;
+    const char *text;
+    size_t text_len;
+    uint64_t expected_version;
+    char *output;
+    size_t output_capacity;
+    uint64_t *version_out;
+    int result;
+    int done;
+    struct sfu_node_webrtc_command_s *next;
+} sfu_node_webrtc_command_t;
 
 struct sfu_node_app_server_s {
     sfu_node_app_config_t config;
@@ -124,6 +154,10 @@ struct sfu_node_app_server_s {
     int webrtc_running;
     int webrtc_thread_started;
     turbo_thread_t webrtc_thread;
+    turbo_mutex_t webrtc_command_mutex;
+    turbo_cond_t webrtc_command_cond;
+    sfu_node_webrtc_command_t *webrtc_command_head;
+    sfu_node_webrtc_command_t *webrtc_command_tail;
     turbo_mutex_t mutex;
     sfu_node_webrtc_session_t **webrtc_sessions;
     int webrtc_session_count;
@@ -139,6 +173,31 @@ struct sfu_node_app_server_s {
     int room_recording_count;
     int room_recording_capacity;
 };
+
+static int create_webrtc_session_impl(sfu_node_app_server_t *server,
+                                      const char *room_id,
+                                      const char *participant_id,
+                                      const char *session_id);
+static int create_owned_media_session_impl(sfu_node_app_server_t *server,
+                                           const char *room_id,
+                                           const char *participant_id,
+                                           const char *session_id);
+static int remove_webrtc_session_impl(sfu_node_app_server_t *server,
+                                      const char *room_id,
+                                      const char *session_id);
+static int set_remote_offer_impl(sfu_node_app_server_t *server,
+                                 const char *room_id,
+                                 const char *session_id,
+                                 const char *sdp);
+static int add_remote_ice_candidate_impl(sfu_node_app_server_t *server,
+                                         const char *room_id,
+                                         const char *session_id,
+                                         const char *candidate);
+static int apply_remote_ice_sdpfrag_impl(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id, uint64_t expected_version, const char *sdpfrag,
+    size_t sdpfrag_len, char *local_sdpfrag_out,
+    size_t local_sdpfrag_capacity, uint64_t *version_out);
 
 static void copy_string(char *dest, size_t dest_size, const char *src) {
     if (!dest || dest_size == 0) {
@@ -605,12 +664,12 @@ static void fill_relay_track_config(const sfu_node_published_track_t *published_
                                     turbo_media_track_config_t *config) {
     memset(config, 0, sizeof(*config));
     config->type = (published_track->kind == TURBO_ROOM_TRACK_AUDIO)
-                       ? TURBO_MEDIA_TRACK_AUDIO
-                       : TURBO_MEDIA_TRACK_VIDEO;
+                       ? TURBO_RTC_MEDIA_TRACK_AUDIO
+                       : TURBO_RTC_MEDIA_TRACK_VIDEO;
     config->direction = TURBO_MEDIA_DIRECTION_SENDONLY;
     config->codec = published_track->codec;
 
-    if (config->type == TURBO_MEDIA_TRACK_AUDIO) {
+    if (config->type == TURBO_RTC_MEDIA_TRACK_AUDIO) {
         if (published_track->codec == TURBO_CODEC_PCMU || published_track->codec == TURBO_CODEC_PCMA) {
             config->audio.sample_rate = 8000;
             config->audio.channels = 1;
@@ -857,7 +916,8 @@ static void on_sfu_keyframe_request(void *user_data, uint32_t ssrc) {
 
     for (int i = 0; i < turbo_media_get_track_count(media_ctx); ++i) {
         turbo_media_track_t *track = turbo_media_get_track(media_ctx, i);
-        if (!track || turbo_media_track_get_type(track) != TURBO_MEDIA_TRACK_VIDEO ||
+        if (!track ||
+            turbo_media_track_get_type(track) != TURBO_RTC_MEDIA_TRACK_VIDEO ||
             !(turbo_media_track_get_direction(track) & TURBO_MEDIA_DIRECTION_RECVONLY)) {
             continue;
         }
@@ -946,6 +1006,10 @@ static void destroy_webrtc_session(sfu_node_app_server_t *server,
                                                          session->participant_id, NULL, NULL);
         turbo_sfu_node_bind_session_pc(server->node, session->room_id, session->participant_id,
                                        session->session_id, NULL);
+        if (session->owns_node_session) {
+            turbo_sfu_node_remove_session(
+                server->node, session->room_id, session->session_id);
+        }
     }
 
     if (session->pc) {
@@ -1082,9 +1146,102 @@ static void sfu_node_webrtc_thread(void *arg) {
     }
 
     while (server->webrtc_running) {
+        for (;;) {
+            sfu_node_webrtc_command_t *command;
+
+            turbo_mutex_lock(&server->webrtc_command_mutex);
+            command = server->webrtc_command_head;
+            if (command) {
+                server->webrtc_command_head = command->next;
+                if (!server->webrtc_command_head) {
+                    server->webrtc_command_tail = NULL;
+                }
+            }
+            turbo_mutex_unlock(&server->webrtc_command_mutex);
+            if (!command) {
+                break;
+            }
+
+            switch (command->type) {
+                case SFU_NODE_WEBRTC_COMMAND_CREATE:
+                    command->result = create_webrtc_session_impl(
+                        server, command->room_id, command->participant_id,
+                        command->session_id);
+                    break;
+                case SFU_NODE_WEBRTC_COMMAND_CREATE_OWNED:
+                    command->result = create_owned_media_session_impl(
+                        server, command->room_id, command->participant_id,
+                        command->session_id);
+                    break;
+                case SFU_NODE_WEBRTC_COMMAND_REMOVE:
+                    command->result = remove_webrtc_session_impl(
+                        server, command->room_id, command->session_id);
+                    break;
+                case SFU_NODE_WEBRTC_COMMAND_SET_OFFER:
+                    command->result = set_remote_offer_impl(
+                        server, command->room_id, command->session_id,
+                        command->text);
+                    break;
+                case SFU_NODE_WEBRTC_COMMAND_ADD_CANDIDATE:
+                    command->result = add_remote_ice_candidate_impl(
+                        server, command->room_id, command->session_id,
+                        command->text);
+                    break;
+                case SFU_NODE_WEBRTC_COMMAND_APPLY_SDPFRAG:
+                    command->result = apply_remote_ice_sdpfrag_impl(
+                        server, command->room_id, command->participant_id,
+                        command->session_id, command->expected_version,
+                        command->text, command->text_len, command->output,
+                        command->output_capacity, command->version_out);
+                    break;
+                case SFU_NODE_WEBRTC_COMMAND_CLEAR:
+                    turbo_mutex_lock(&server->mutex);
+                    while (server->webrtc_session_count > 0) {
+                        int last = server->webrtc_session_count - 1;
+                        destroy_webrtc_session(
+                            server, server->webrtc_sessions[last]);
+                        server->webrtc_session_count--;
+                    }
+                    turbo_mutex_unlock(&server->mutex);
+                    command->result = 0;
+                    break;
+                default:
+                    command->result = -1;
+                    break;
+            }
+
+            turbo_mutex_lock(&server->webrtc_command_mutex);
+            command->done = 1;
+            turbo_cond_broadcast(&server->webrtc_command_cond);
+            turbo_mutex_unlock(&server->webrtc_command_mutex);
+        }
         sfu_node_app_server_poll_webrtc(server);
         sfu_node_sleep_ms(5);
     }
+}
+
+static int submit_webrtc_command(sfu_node_app_server_t *server,
+                                 sfu_node_webrtc_command_t *command) {
+    if (!server || !command || !server->webrtc_running ||
+        !server->webrtc_thread_started) {
+        return -1;
+    }
+    command->done = 0;
+    command->next = NULL;
+
+    turbo_mutex_lock(&server->webrtc_command_mutex);
+    if (server->webrtc_command_tail) {
+        server->webrtc_command_tail->next = command;
+    } else {
+        server->webrtc_command_head = command;
+    }
+    server->webrtc_command_tail = command;
+    while (!command->done && server->webrtc_running) {
+        turbo_cond_wait(
+            &server->webrtc_command_cond, &server->webrtc_command_mutex);
+    }
+    turbo_mutex_unlock(&server->webrtc_command_mutex);
+    return command->done ? command->result : -1;
 }
 
 void sfu_node_app_server_poll_webrtc(sfu_node_app_server_t *server) {
@@ -1123,25 +1280,34 @@ sfu_node_app_server_t *sfu_node_app_server_create(const sfu_node_app_config_t *c
         return NULL;
     }
 
-    memcpy(&server->config, config, sizeof(*config));
+    if (sfu_node_app_config_copy(&server->config, config) != 0) {
+        free(server);
+        return NULL;
+    }
     memset(&node_config, 0, sizeof(node_config));
-    node_config.node_id = config->node_id;
-    node_config.max_rooms = config->max_rooms;
-    node_config.default_room_capacity = config->default_room_capacity;
+    node_config.node_id = server->config.node_id;
+    node_config.max_rooms = server->config.max_rooms;
+    node_config.default_room_capacity = server->config.default_room_capacity;
     server->node = turbo_sfu_node_create(&node_config);
     if (!server->node) {
+        sfu_node_app_config_cleanup(&server->config);
         free(server);
         return NULL;
     }
 
     turbo_mutex_init(&server->mutex);
     turbo_mutex_init(&server->recording_mutex);
+    turbo_mutex_init(&server->webrtc_command_mutex);
+    turbo_cond_init(&server->webrtc_command_cond);
 
     server->http_api = sfu_node_http_api_create(server);
     if (!server->http_api) {
+        turbo_cond_destroy(&server->webrtc_command_cond);
+        turbo_mutex_destroy(&server->webrtc_command_mutex);
         turbo_mutex_destroy(&server->recording_mutex);
         turbo_mutex_destroy(&server->mutex);
         turbo_sfu_node_destroy(server->node);
+        sfu_node_app_config_cleanup(&server->config);
         free(server);
         return NULL;
     }
@@ -1154,20 +1320,38 @@ int sfu_node_app_server_start(sfu_node_app_server_t *server) {
         return -1;
     }
 
+    if (sfu_node_app_server_ensure_webrtc_worker(server) != 0) {
+        return -1;
+    }
     if (server->http_api &&
         sfu_node_http_api_start(server->http_api, server->config.bind_host,
                                 server->config.bind_port) != 0) {
+        server->webrtc_running = 0;
+        turbo_mutex_lock(&server->webrtc_command_mutex);
+        turbo_cond_broadcast(&server->webrtc_command_cond);
+        turbo_mutex_unlock(&server->webrtc_command_mutex);
+        turbo_thread_join(&server->webrtc_thread);
+        server->webrtc_thread_started = 0;
         return -1;
     }
 
+    server->running = 1;
+    return 0;
+}
+
+int sfu_node_app_server_ensure_webrtc_worker(sfu_node_app_server_t *server) {
+    if (!server || !server->node) {
+        return -1;
+    }
+    if (server->webrtc_thread_started) {
+        return 0;
+    }
     server->webrtc_running = 1;
     if (turbo_thread_create(&server->webrtc_thread, sfu_node_webrtc_thread, server) != 0) {
         server->webrtc_running = 0;
         return -1;
     }
     server->webrtc_thread_started = 1;
-
-    server->running = 1;
     return 0;
 }
 
@@ -1199,10 +1383,19 @@ void sfu_node_app_server_stop(sfu_node_app_server_t *server) {
     }
 
     server->running = 0;
-    server->webrtc_running = 0;
     if (server->http_api) {
         sfu_node_http_api_stop(server->http_api);
     }
+    if (server->webrtc_thread_started && server->webrtc_running) {
+        sfu_node_webrtc_command_t clear_command = {
+            .type = SFU_NODE_WEBRTC_COMMAND_CLEAR
+        };
+        submit_webrtc_command(server, &clear_command);
+    }
+    server->webrtc_running = 0;
+    turbo_mutex_lock(&server->webrtc_command_mutex);
+    turbo_cond_broadcast(&server->webrtc_command_cond);
+    turbo_mutex_unlock(&server->webrtc_command_mutex);
     if (server->webrtc_thread_started) {
         turbo_thread_join(&server->webrtc_thread);
         server->webrtc_thread_started = 0;
@@ -1239,10 +1432,13 @@ void sfu_node_app_server_destroy(sfu_node_app_server_t *server) {
     turbo_mutex_unlock(&server->recording_mutex);
     turbo_mutex_destroy(&server->recording_mutex);
     turbo_mutex_destroy(&server->mutex);
+    turbo_cond_destroy(&server->webrtc_command_cond);
+    turbo_mutex_destroy(&server->webrtc_command_mutex);
 
     if (server->node) {
         turbo_sfu_node_destroy(server->node);
     }
+    sfu_node_app_config_cleanup(&server->config);
     free(server);
 }
 
@@ -1278,10 +1474,10 @@ int sfu_node_app_server_is_draining(sfu_node_app_server_t *server) {
     return draining;
 }
 
-int sfu_node_app_server_create_webrtc_session(sfu_node_app_server_t *server,
-                                              const char *room_id,
-                                              const char *participant_id,
-                                              const char *session_id) {
+static int create_webrtc_session_impl(sfu_node_app_server_t *server,
+                                      const char *room_id,
+                                      const char *participant_id,
+                                      const char *session_id) {
     sfu_node_webrtc_session_t *session;
     turbo_peer_config_t peer_config;
     turbo_peer_callbacks_t callbacks;
@@ -1312,10 +1508,15 @@ int sfu_node_app_server_create_webrtc_session(sfu_node_app_server_t *server,
     copy_string(session->participant_id, sizeof(session->participant_id), participant_id);
     copy_string(session->session_id, sizeof(session->session_id), session_id);
     session->state = TURBO_PEER_STATE_NEW;
+    session->resource_version = 1;
     turbo_mutex_init(&session->mutex);
 
     memset(&peer_config, 0, sizeof(peer_config));
-    peer_config.allow_loopback = 1;
+    peer_config.stun_servers = (const char **)server->config.stun_servers;
+    peer_config.stun_server_count = server->config.stun_server_count;
+    peer_config.turn_servers = (const char **)server->config.turn_servers;
+    peer_config.turn_server_count = server->config.turn_server_count;
+    peer_config.allow_loopback = server->config.ice_allow_loopback;
     peer_config.disable_datachannel = 1;
     peer_config.user_data = session;
 
@@ -1389,9 +1590,75 @@ int sfu_node_app_server_create_webrtc_session(sfu_node_app_server_t *server,
     return 0;
 }
 
-int sfu_node_app_server_remove_webrtc_session(sfu_node_app_server_t *server,
+int sfu_node_app_server_create_webrtc_session(sfu_node_app_server_t *server,
                                               const char *room_id,
+                                              const char *participant_id,
                                               const char *session_id) {
+    sfu_node_webrtc_command_t command = {
+        .type = SFU_NODE_WEBRTC_COMMAND_CREATE,
+        .room_id = room_id,
+        .participant_id = participant_id,
+        .session_id = session_id
+    };
+
+    if (server && server->webrtc_thread_started) {
+        return submit_webrtc_command(server, &command);
+    }
+    return create_webrtc_session_impl(
+        server, room_id, participant_id, session_id);
+}
+
+static int create_owned_media_session_impl(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id) {
+    sfu_node_webrtc_session_t *session;
+
+    if (!server || !server->node || !room_id || !participant_id || !session_id) {
+        return -1;
+    }
+    if (turbo_sfu_node_add_session(
+            server->node, room_id, participant_id, session_id, NULL) != 0) {
+        return -1;
+    }
+    if (create_webrtc_session_impl(
+            server, room_id, participant_id, session_id) != 0) {
+        turbo_sfu_node_remove_session(server->node, room_id, session_id);
+        return -1;
+    }
+
+    turbo_mutex_lock(&server->mutex);
+    session = find_webrtc_session_locked(server, room_id, session_id);
+    if (!session) {
+        turbo_mutex_unlock(&server->mutex);
+        remove_webrtc_session_impl(server, room_id, session_id);
+        turbo_sfu_node_remove_session(server->node, room_id, session_id);
+        return -1;
+    }
+    session->owns_node_session = 1;
+    turbo_mutex_unlock(&server->mutex);
+    return 0;
+}
+
+int sfu_node_app_server_create_owned_media_session(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id) {
+    sfu_node_webrtc_command_t command = {
+        .type = SFU_NODE_WEBRTC_COMMAND_CREATE_OWNED,
+        .room_id = room_id,
+        .participant_id = participant_id,
+        .session_id = session_id
+    };
+
+    if (server && server->webrtc_thread_started) {
+        return submit_webrtc_command(server, &command);
+    }
+    return create_owned_media_session_impl(
+        server, room_id, participant_id, session_id);
+}
+
+static int remove_webrtc_session_impl(sfu_node_app_server_t *server,
+                                      const char *room_id,
+                                      const char *session_id) {
     int i;
 
     if (!server || !room_id || !session_id) {
@@ -1416,6 +1683,21 @@ int sfu_node_app_server_remove_webrtc_session(sfu_node_app_server_t *server,
     }
     turbo_mutex_unlock(&server->mutex);
     return -1;
+}
+
+int sfu_node_app_server_remove_webrtc_session(sfu_node_app_server_t *server,
+                                              const char *room_id,
+                                              const char *session_id) {
+    sfu_node_webrtc_command_t command = {
+        .type = SFU_NODE_WEBRTC_COMMAND_REMOVE,
+        .room_id = room_id,
+        .session_id = session_id
+    };
+
+    if (server && server->webrtc_thread_started) {
+        return submit_webrtc_command(server, &command);
+    }
+    return remove_webrtc_session_impl(server, room_id, session_id);
 }
 
 int sfu_node_app_server_remove_room_webrtc_sessions(sfu_node_app_server_t *server,
@@ -1446,10 +1728,10 @@ int sfu_node_app_server_remove_room_webrtc_sessions(sfu_node_app_server_t *serve
     return removed;
 }
 
-int sfu_node_app_server_set_remote_offer(sfu_node_app_server_t *server,
-                                         const char *room_id,
-                                         const char *session_id,
-                                         const char *sdp) {
+static int set_remote_offer_impl(sfu_node_app_server_t *server,
+                                 const char *room_id,
+                                 const char *session_id,
+                                 const char *sdp) {
     sfu_node_webrtc_session_t *session;
     char answer[SFU_NODE_LOCAL_SDP_CAPACITY];
     char *stored_answer;
@@ -1502,10 +1784,27 @@ int sfu_node_app_server_set_remote_offer(sfu_node_app_server_t *server,
     return 0;
 }
 
-int sfu_node_app_server_add_remote_ice_candidate(sfu_node_app_server_t *server,
-                                                 const char *room_id,
-                                                 const char *session_id,
-                                                 const char *candidate) {
+int sfu_node_app_server_set_remote_offer(sfu_node_app_server_t *server,
+                                         const char *room_id,
+                                         const char *session_id,
+                                         const char *sdp) {
+    sfu_node_webrtc_command_t command = {
+        .type = SFU_NODE_WEBRTC_COMMAND_SET_OFFER,
+        .room_id = room_id,
+        .session_id = session_id,
+        .text = sdp
+    };
+
+    if (server && server->webrtc_thread_started) {
+        return submit_webrtc_command(server, &command);
+    }
+    return set_remote_offer_impl(server, room_id, session_id, sdp);
+}
+
+static int add_remote_ice_candidate_impl(sfu_node_app_server_t *server,
+                                         const char *room_id,
+                                         const char *session_id,
+                                         const char *candidate) {
     sfu_node_webrtc_session_t *session;
     int rc;
 
@@ -1536,6 +1835,167 @@ int sfu_node_app_server_add_remote_ice_candidate(sfu_node_app_server_t *server,
     return rc;
 }
 
+int sfu_node_app_server_add_remote_ice_candidate(sfu_node_app_server_t *server,
+                                                 const char *room_id,
+                                                 const char *session_id,
+                                                 const char *candidate) {
+    sfu_node_webrtc_command_t command = {
+        .type = SFU_NODE_WEBRTC_COMMAND_ADD_CANDIDATE,
+        .room_id = room_id,
+        .session_id = session_id,
+        .text = candidate
+    };
+
+    if (server && server->webrtc_thread_started) {
+        return submit_webrtc_command(server, &command);
+    }
+    return add_remote_ice_candidate_impl(
+        server, room_id, session_id, candidate);
+}
+
+char *sfu_node_app_server_copy_local_answer(sfu_node_app_server_t *server,
+                                            const char *room_id,
+                                            const char *participant_id,
+                                            const char *session_id) {
+    sfu_node_webrtc_session_t *session;
+    char *answer = NULL;
+
+    if (!server || !room_id || !participant_id || !session_id) {
+        return NULL;
+    }
+    turbo_mutex_lock(&server->mutex);
+    session = find_webrtc_session_locked(server, room_id, session_id);
+    if (session && strcmp(session->participant_id, participant_id) == 0) {
+        turbo_mutex_lock(&session->mutex);
+        if (session->local_answer) {
+            answer = sfu_strdup(session->local_answer);
+        }
+        turbo_mutex_unlock(&session->mutex);
+    }
+    turbo_mutex_unlock(&server->mutex);
+    return answer;
+}
+
+int sfu_node_app_server_get_media_session_version(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id, uint64_t *version_out) {
+    sfu_node_webrtc_session_t *session;
+
+    if (!server || !room_id || !participant_id || !session_id || !version_out) {
+        return -1;
+    }
+    turbo_mutex_lock(&server->mutex);
+    session = find_webrtc_session_locked(server, room_id, session_id);
+    if (!session || strcmp(session->participant_id, participant_id) != 0) {
+        turbo_mutex_unlock(&server->mutex);
+        return SFU_NODE_MEDIA_SESSION_NOT_FOUND;
+    }
+    turbo_mutex_lock(&session->mutex);
+    *version_out = session->resource_version;
+    turbo_mutex_unlock(&session->mutex);
+    turbo_mutex_unlock(&server->mutex);
+    return 0;
+}
+
+static int apply_remote_ice_sdpfrag_impl(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id, uint64_t expected_version, const char *sdpfrag,
+    size_t sdpfrag_len, char *local_sdpfrag_out,
+    size_t local_sdpfrag_capacity, uint64_t *version_out) {
+    sfu_node_webrtc_session_t *session;
+    int result;
+
+    if (!server || !room_id || !participant_id || !session_id || !sdpfrag ||
+        sdpfrag_len == 0 || !version_out) {
+        return -1;
+    }
+    turbo_mutex_lock(&server->mutex);
+    session = find_webrtc_session_locked(server, room_id, session_id);
+    if (!session || !session->pc ||
+        strcmp(session->participant_id, participant_id) != 0) {
+        turbo_mutex_unlock(&server->mutex);
+        return SFU_NODE_MEDIA_SESSION_NOT_FOUND;
+    }
+    turbo_mutex_lock(&session->mutex);
+    if (session->resource_version != expected_version) {
+        turbo_mutex_unlock(&session->mutex);
+        turbo_mutex_unlock(&server->mutex);
+        return SFU_NODE_MEDIA_SESSION_PRECONDITION_FAILED;
+    }
+    turbo_mutex_unlock(&session->mutex);
+
+    result = turbo_peer_connection_apply_remote_ice_sdpfrag(
+        session->pc, sdpfrag, sdpfrag_len);
+    if (result < 0) {
+        turbo_mutex_unlock(&server->mutex);
+        return -1;
+    }
+    if (result > 0) {
+        if (!local_sdpfrag_out || local_sdpfrag_capacity == 0 ||
+            turbo_peer_connection_create_local_ice_sdpfrag(
+                session->pc, local_sdpfrag_out,
+                local_sdpfrag_capacity) < 0) {
+            turbo_mutex_unlock(&server->mutex);
+            return -1;
+        }
+        turbo_mutex_lock(&session->mutex);
+        session->resource_version++;
+        *version_out = session->resource_version;
+        turbo_mutex_unlock(&session->mutex);
+    } else {
+        turbo_mutex_lock(&session->mutex);
+        *version_out = session->resource_version;
+        turbo_mutex_unlock(&session->mutex);
+    }
+    turbo_mutex_unlock(&server->mutex);
+    return result;
+}
+
+int sfu_node_app_server_apply_remote_ice_sdpfrag(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id, uint64_t expected_version, const char *sdpfrag,
+    size_t sdpfrag_len, char *local_sdpfrag_out,
+    size_t local_sdpfrag_capacity, uint64_t *version_out) {
+    sfu_node_webrtc_command_t command = {
+        .type = SFU_NODE_WEBRTC_COMMAND_APPLY_SDPFRAG,
+        .room_id = room_id,
+        .participant_id = participant_id,
+        .session_id = session_id,
+        .text = sdpfrag,
+        .text_len = sdpfrag_len,
+        .expected_version = expected_version,
+        .output = local_sdpfrag_out,
+        .output_capacity = local_sdpfrag_capacity,
+        .version_out = version_out
+    };
+
+    if (server && server->webrtc_thread_started) {
+        return submit_webrtc_command(server, &command);
+    }
+    return apply_remote_ice_sdpfrag_impl(
+        server, room_id, participant_id, session_id, expected_version,
+        sdpfrag, sdpfrag_len, local_sdpfrag_out,
+        local_sdpfrag_capacity, version_out);
+}
+
+int sfu_node_app_server_remove_media_session(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id) {
+    sfu_node_webrtc_session_t *session;
+
+    if (!server || !room_id || !participant_id || !session_id) {
+        return -1;
+    }
+    turbo_mutex_lock(&server->mutex);
+    session = find_webrtc_session_locked(server, room_id, session_id);
+    if (!session || strcmp(session->participant_id, participant_id) != 0) {
+        turbo_mutex_unlock(&server->mutex);
+        return SFU_NODE_MEDIA_SESSION_NOT_FOUND;
+    }
+    turbo_mutex_unlock(&server->mutex);
+    return sfu_node_app_server_remove_webrtc_session(server, room_id, session_id);
+}
+
 int sfu_node_app_server_register_published_track(sfu_node_app_server_t *server,
                                                  const char *room_id,
                                                  const char *participant_id,
@@ -1548,6 +2008,9 @@ int sfu_node_app_server_register_published_track(sfu_node_app_server_t *server,
     sfu_node_published_track_t *published_track;
     turbo_codec_type_t codec = codec_from_name(codec_name);
     int i;
+#ifdef ENABLE_RTC_SCXML_WORKFLOW
+    sfu_node_webrtc_session_t *session = NULL;
+#endif
 
     if (!server || !room_id || !participant_id || !track_id || main_ssrc == 0) {
         return -1;
@@ -1577,7 +2040,6 @@ int sfu_node_app_server_register_published_track(sfu_node_app_server_t *server,
             (layer_ssrcs && layer_count > 0) ? layer_ssrcs[i] : main_ssrc;
     }
 
-    sfu_node_webrtc_session_t *session = NULL;
     if (codec != 0 && kind != 0) {
         published_track->kind = kind;
         published_track->codec = codec;
@@ -1623,8 +2085,8 @@ int sfu_node_app_server_unregister_published_track(sfu_node_app_server_t *server
             continue;
         }
 
-        sfu_node_webrtc_session_t *session = NULL;
 #ifdef ENABLE_RTC_SCXML_WORKFLOW
+        sfu_node_webrtc_session_t *session = NULL;
         session = find_webrtc_session_by_participant_locked(
             server, room_id, server->published_tracks[i].participant_id);
 #endif

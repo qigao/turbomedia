@@ -1,6 +1,7 @@
 #include "room_service/server.h"
 #include "room_service/http_api.h"
 #include "http_client.h"
+#include "turbo_media_auth.h"
 #include "turbo_parser.h"
 #include "turbo_room_service.h"
 #include "turbo_thread.h"
@@ -11,6 +12,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -67,12 +69,18 @@ typedef struct {
 #define ROOM_SERVICE_MAX_CALL_CENTER_EVENTS 512
 #define ROOM_SERVICE_SFU_CONTROL_URL_MAX 512
 #define ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX 256
+#define ROOM_SERVICE_SFU_CONTROL_AUDIENCE "turbomedia-sfu-control"
+#define ROOM_SERVICE_SFU_SCOPE_CONTROL_WRITE "sfu.control.write"
+#define ROOM_SERVICE_SFU_SCOPE_CONTROL_DANGEROUS "sfu.control.dangerous"
 
 typedef struct room_service_sfu_node_entry_s {
     char node_id[TURBO_NODE_ID_MAX];
     char control_url[ROOM_SERVICE_SFU_CONTROL_URL_MAX];
     char control_token[ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX];
 } room_service_sfu_node_entry_t;
+
+static const char *room_service_json_string_field(
+    const json_value_t *obj, const char *key);
 
 static void room_service_copy_string(char *dest, size_t dest_size, const char *src) {
     if (!dest || dest_size == 0) {
@@ -751,8 +759,10 @@ static int room_service_copy_sfu_route_for_room(room_service_app_server_t *serve
 }
 
 static http_client_t *room_service_create_sfu_client_for_route(
-    const char *control_url, const char *control_token) {
+    room_service_app_server_t *server, const char *control_url,
+    const char *control_token) {
     http_client_t *client;
+    const char *ca_file;
 
     if (!control_url || control_url[0] == '\0') {
         return NULL;
@@ -761,6 +771,19 @@ static http_client_t *room_service_create_sfu_client_for_route(
     client = http_client_create(control_url);
     if (!client) {
         return NULL;
+    }
+
+    ca_file = server ? server->config.sfu_ca_file : NULL;
+    if (ca_file) {
+        turbo_tls_client_config_t tls_config;
+
+        memset(&tls_config, 0, sizeof(tls_config));
+        tls_config.ca_file = ca_file;
+        tls_config.verify_peer = 1;
+        if (http_client_set_tls_client_config(client, &tls_config) != 0) {
+            http_client_destroy(client);
+            return NULL;
+        }
     }
 
     http_client_set_timeout(client, 3000);
@@ -772,6 +795,68 @@ static http_client_t *room_service_create_sfu_client_for_route(
     return client;
 }
 
+static int room_service_sfu_command_is_dangerous(const char *type) {
+    return type &&
+           (strcmp(type, "force_close_room") == 0 ||
+            strcmp(type, "detach_room") == 0 ||
+            strcmp(type, "set_node_drain") == 0 ||
+            strcmp(type, "start_recording") == 0 ||
+            strcmp(type, "stop_recording") == 0);
+}
+
+static int room_service_issue_sfu_command_token(
+    room_service_app_server_t *server, const char *room_id,
+    const char *command_json, char **out_token) {
+    turbo_media_auth_config_t auth = {0};
+    turbo_media_auth_claims_t claims = {0};
+    json_value_t *root = NULL;
+    const char *command_room_id;
+    const char *participant_id;
+    const char *type;
+    int64_t now;
+
+    if (!server || !room_id || !command_json || !out_token) {
+        return -1;
+    }
+    *out_token = NULL;
+    if (!server->config.sfu_auth_secret ||
+        server->config.sfu_auth_secret[0] == '\0') {
+        return 0;
+    }
+    if (turbo_parse_json((const uint8_t *)command_json, strlen(command_json),
+                         &root) != 0 ||
+        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
+        turbo_free_json(&root);
+        return -1;
+    }
+    type = room_service_json_string_field(root, "type");
+    command_room_id = room_service_json_string_field(root, "room_id");
+    participant_id = room_service_json_string_field(root, "participant_id");
+    if (!type || !command_room_id || strcmp(command_room_id, room_id) != 0) {
+        turbo_free_json(&root);
+        return -1;
+    }
+
+    auth.issuer = server->config.sfu_auth_issuer;
+    auth.active_key_id = server->config.sfu_auth_key_id;
+    auth.active_secret = server->config.sfu_auth_secret;
+    auth.clock_skew_seconds = 0;
+    auth.max_ttl_seconds = server->config.sfu_auth_ttl_seconds;
+    now = (int64_t)time(NULL);
+    claims.subject = server->config.node_id;
+    claims.audience = ROOM_SERVICE_SFU_CONTROL_AUDIENCE;
+    claims.scope = room_service_sfu_command_is_dangerous(type)
+                       ? ROOM_SERVICE_SFU_SCOPE_CONTROL_DANGEROUS
+                       : ROOM_SERVICE_SFU_SCOPE_CONTROL_WRITE;
+    claims.room_id = command_room_id;
+    claims.participant_id = participant_id;
+    claims.issued_at = now;
+    claims.expires_at = now + server->config.sfu_auth_ttl_seconds;
+    *out_token = turbo_media_auth_issue(&auth, &claims);
+    turbo_free_json(&root);
+    return *out_token ? 0 : -1;
+}
+
 static int room_service_post_sfu_command(room_service_app_server_t *server,
                                          const char *room_id,
                                          const char *command_json) {
@@ -779,6 +864,8 @@ static int room_service_post_sfu_command(room_service_app_server_t *server,
     http_response_t *response;
     char control_url[ROOM_SERVICE_SFU_CONTROL_URL_MAX];
     char control_token[ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX];
+    char *signed_token = NULL;
+    const char *request_token;
 
     if (!server || !room_id || !command_json) {
         return 0;
@@ -792,8 +879,15 @@ static int room_service_post_sfu_command(room_service_app_server_t *server,
     if (control_url[0] == '\0') {
         return 0;
     }
+    if (room_service_issue_sfu_command_token(server, room_id, command_json,
+                                             &signed_token) != 0) {
+        return -1;
+    }
+    request_token = signed_token ? signed_token : control_token;
 
-    client = room_service_create_sfu_client_for_route(control_url, control_token);
+    client = room_service_create_sfu_client_for_route(
+        server, control_url, request_token);
+    free(signed_token);
     if (!client) {
         return -1;
     }
@@ -1619,7 +1713,8 @@ int room_service_app_server_fetch_track_subscription(
         return 0;
     }
 
-    client = room_service_create_sfu_client_for_route(control_url, control_token);
+    client = room_service_create_sfu_client_for_route(
+        server, control_url, control_token);
     if (!client) {
         return -1;
     }
@@ -1747,7 +1842,8 @@ int room_service_app_server_fetch_participant_stats(
         return 0;
     }
 
-    client = room_service_create_sfu_client_for_route(control_url, control_token);
+    client = room_service_create_sfu_client_for_route(
+        server, control_url, control_token);
     if (!client) {
         return -1;
     }
@@ -1856,7 +1952,8 @@ int room_service_app_server_fetch_recording_status(
         return 0;
     }
 
-    client = room_service_create_sfu_client_for_route(control_url, control_token);
+    client = room_service_create_sfu_client_for_route(
+        server, control_url, control_token);
     if (!client) {
         return -1;
     }

@@ -1,5 +1,5 @@
-foreach(_TurboMedia_ffmpeg_component IN ITEMS avformat avcodec avutil swresample
-                                              swscale)
+foreach(_TurboMedia_ffmpeg_component IN ITEMS avformat avcodec avfilter avutil
+                                              swresample swscale)
   set(_TurboMedia_ffmpeg_variable
       "FFMPEG_lib${_TurboMedia_ffmpeg_component}_LIBRARY")
   if(NOT DEFINED ${_TurboMedia_ffmpeg_variable}
@@ -17,7 +17,13 @@ foreach(_TurboMedia_ffmpeg_component IN ITEMS avformat avcodec avutil swresample
       PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${FFMPEG_INCLUDE_DIRS}")
     target_link_libraries(
       TurboMediaFFmpeg::${_TurboMedia_ffmpeg_component}
-      INTERFACE ${${_TurboMedia_ffmpeg_variable}})
+      INTERFACE ${${_TurboMedia_ffmpeg_variable}} ${FFMPEG_LIBRARIES})
+    # FFmpeg's static x86 assembly references archive globals directly. Keep
+    # those implementation symbols local when the consumer is a shared object.
+    target_link_options(
+      TurboMediaFFmpeg::${_TurboMedia_ffmpeg_component}
+      INTERFACE
+        "$<$<PLATFORM_ID:Linux>:LINKER:--exclude-libs,ALL>")
   endif()
 endforeach()
 

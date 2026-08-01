@@ -1,2 +1,3 @@
 add_subdirectory(room_service)
 add_subdirectory(sfu_node)
+add_subdirectory(signaling_server)

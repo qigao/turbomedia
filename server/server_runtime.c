@@ -197,12 +197,21 @@ int turbo_media_server_runtime_find_source(turbo_media_server_runtime_t *runtime
 
 int turbo_media_server_runtime_remove_source(turbo_media_server_runtime_t *runtime,
                                              const turbo_media_source_key_t *key) {
+    turbo_media_source_t *source;
+    turbo_media_source_stats_t source_stats;
     int rc;
 
     if (!runtime || !key) return TURBO_MEDIA_ERR_INVALID;
 
+    rc = turbo_media_server_find_existing_source(runtime, key, &source);
+    if (rc != TURBO_MEDIA_OK) return rc;
+    rc = turbo_media_source_get_stats(source, &source_stats);
+    if (rc != TURBO_MEDIA_OK) return rc;
+
     rc = turbo_media_registry_remove(runtime->registry, key);
     if (rc == TURBO_MEDIA_OK) {
+        /* Source destruction removes every remaining subscription atomically. */
+        runtime->stats.subscriptions_removed += source_stats.subscriber_count;
         runtime->stats.sources_removed++;
         runtime->stats.source_count = turbo_media_registry_count(runtime->registry);
     }

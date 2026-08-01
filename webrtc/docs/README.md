@@ -4,11 +4,35 @@ WebRTC DataChannel implementation for peer-to-peer communication.
 
 WebRTC DataChannel 实现，用于点对点通信。
 
-## 🎉 Production Ready
+## Status
 
-**Status**: ✅ Production Ready (v1.0.0)
+**Status**: Development preview; not production-ready.
 
-The WebRTC module is now production-ready with complete ICE integration, STUN/TURN support, automatic reconnection, and full browser interoperability.
+The repository contains the in-tree PeerConnection, TurboNet::ICE, DTLS-SRTP,
+DataChannel, RTP/RTCP, SFU and room-service building blocks. Local unit and
+loopback end-to-end tests exercise those paths, but they do not establish
+production readiness.
+
+The current tree includes authenticated WHIP/WHEP resource endpoints, real ICE
+restart and consent freshness, externally configured SFU STUN/TURN servers,
+and in-process WSS/HTTPS using CoroNet and Iris. The SFU accepts short-lived
+HS256 tokens with audience, scope, room/participant binding and one-key
+rotation overlap; static bearer tokens remain an explicit migration mode.
+Room Service validates the same contract on its control/facade routes and
+mints independent, short-lived tokens for each Room-to-SFU command. The
+signaling management plane validates the same contract with route-specific
+read/write/dangerous scopes. WebSocket peer admission validates a dedicated
+join scope and exact room/peer application identity before admitting a
+connection. Signed-token trust domains also support bounded exact-token
+SHA-256 revocation lists loaded at startup. Signaling also bounds the
+first-join deadline, complete WebSocket
+message size, per-connection message rate, copied outbox memory, and
+post-upgrade connections per direct source address. There is still no public
+browser/TURN acceptance matrix, pre-handshake/trusted-proxy admission policy,
+or tenant/distributed quota and dynamic revocation enforcement.
+Weak-network, capacity, soak and multi-node failure acceptance remain. See
+[Production Readiness](./PRODUCTION_READY_SUMMARY.md) for the evidence and
+release gates.
 
 ## Documentation
 
@@ -16,7 +40,7 @@ The WebRTC module is now production-ready with complete ICE integration, STUN/TU
 |---------|------|
 | [Quick Start](./QUICK_START.md) | [快速开始](./guide-zh.md) |
 | [Production Deployment](./PRODUCTION_DEPLOYMENT.md) | [生产部署](./guide-zh.md) |
-| [Production Ready Summary](./PRODUCTION_READY_SUMMARY.md) | - |
+| [Production Readiness](./PRODUCTION_READY_SUMMARY.md) | - |
 | [API Reference](./api-en.md) | [API 参考](./api-zh.md) |
 | [Guide](./guide-en.md) | [使用指南](./guide-zh.md) |
 | [Architecture](./arch-en.md) | [架构设计](./arch-zh.md) |
@@ -31,13 +55,19 @@ The WebRTC module is now production-ready with complete ICE integration, STUN/TU
 - **SDP Parser**: High-performance re2c-based parser
 - **Signaling Server**: WebSocket-based signaling
 
-### ✅ Production Features
-- **Connection Timeout**: Configurable timeout handling
-- **Automatic Reconnection**: Exponential backoff strategy
-- **ICE Candidate Trickle**: Real-time candidate exchange
-- **Browser Interoperability**: Chrome/Firefox/Edge compatible
-- **STUN/TURN Support**: Multiple server configuration
-- **State Monitoring**: Comprehensive callbacks
+### Implemented but not production-qualified
+
+- **Connection Timeout**: Configurable initial connection timeout
+- **ICE Candidate Trickle**: Candidate callbacks and remote candidate import
+- **STUN/TURN Configuration**: Multiple server configuration
+- **State Monitoring**: Peer and transport callbacks
+- **Browser Examples**: Manual interoperability examples, not an acceptance matrix
+
+The legacy `ice_integration_reconnect()` helper remains a retry scheduler.
+Applications needing real restart should use
+`turbo_peer_connection_restart_ice()` or the conditional WHIP/WHEP trickle-ICE
+resource flow; both rotate credentials through the versioned TurboNet::ICE
+restart contract.
 
 ## Quick Start
 
@@ -85,7 +115,7 @@ DataChannel API
     ↓
 SCTP (usrsctp) - Reliable/unreliable messaging
     ↓
-DTLS (OpenSSL) - Encryption
+DTLS (BoringSSL) - Encryption
     ↓
 Transport: UDP / TCP / KCP / ICE
 ```

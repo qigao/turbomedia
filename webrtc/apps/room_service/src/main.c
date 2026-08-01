@@ -26,14 +26,23 @@ static void room_service_print_usage(const char *program_name) {
     printf("  -c, --config FILE      Configuration file path\n");
     printf("  --host HOST            Bind host (default: 0.0.0.0)\n");
     printf("  --port PORT            Bind port (default: 9090)\n");
+    printf("  --tls-cert FILE        Enable HTTPS with this certificate chain\n");
+    printf("  --tls-key FILE         Enable HTTPS with this private key\n");
     printf("  --node-id ID           Node identifier\n");
     printf("  --control-token TOKEN  Require bearer token for mutating control API commands\n");
     printf("                         Env: TURBO_ROOM_SERVICE_CONTROL_TOKEN\n");
+    printf("  --auth-key-id ID       Active key id for scoped Room control tokens\n");
+    printf("  --auth-secret SECRET   Active HS256 secret (minimum 32 bytes)\n");
+    printf("  --auth-previous-key-id ID  Previous verification key id during rotation\n");
+    printf("  --auth-previous-secret SECRET  Previous verification secret\n");
     printf("  --sfu-control-url URL  Optional SFU control API base URL\n");
     printf("  --sfu-nodes LIST       Comma-separated SFU registry: node_id=url,node2=url2\n");
     printf("                         Env: TURBO_ROOM_SERVICE_SFU_NODES\n");
     printf("  --sfu-control-token TOKEN  Bearer token for SFU control API commands\n");
     printf("                         Env: TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN\n");
+    printf("  --sfu-auth-key-id ID   Signing key id for scoped SFU command tokens\n");
+    printf("  --sfu-auth-secret SECRET  Signing secret for scoped SFU command tokens\n");
+    printf("  --sfu-ca FILE          Private CA bundle for verified HTTPS SFU calls\n");
     printf("  --max-rooms N          Maximum rooms tracked\n");
     printf("  --dry-run              Validate config and exit\n");
     printf("  --help                 Show this help message\n");
@@ -68,12 +77,32 @@ static int room_service_parse_args(int argc, char **argv,
         } else if (strcmp(arg, "--port") == 0) {
             if (++i >= argc) return -1;
             config->bind_port = atoi(argv[i]);
+        } else if (strcmp(arg, "--tls-cert") == 0) {
+            if (++i >= argc) return -1;
+            config->use_tls = 1;
+            config->tls_cert_file = argv[i];
+        } else if (strcmp(arg, "--tls-key") == 0) {
+            if (++i >= argc) return -1;
+            config->use_tls = 1;
+            config->tls_key_file = argv[i];
         } else if (strcmp(arg, "--node-id") == 0) {
             if (++i >= argc) return -1;
             config->node_id = argv[i];
         } else if (strcmp(arg, "--control-token") == 0) {
             if (++i >= argc) return -1;
             config->control_token = argv[i];
+        } else if (strcmp(arg, "--auth-key-id") == 0) {
+            if (++i >= argc) return -1;
+            config->auth_active_key_id = argv[i];
+        } else if (strcmp(arg, "--auth-secret") == 0) {
+            if (++i >= argc) return -1;
+            config->auth_active_secret = argv[i];
+        } else if (strcmp(arg, "--auth-previous-key-id") == 0) {
+            if (++i >= argc) return -1;
+            config->auth_previous_key_id = argv[i];
+        } else if (strcmp(arg, "--auth-previous-secret") == 0) {
+            if (++i >= argc) return -1;
+            config->auth_previous_secret = argv[i];
         } else if (strcmp(arg, "--sfu-control-url") == 0) {
             if (++i >= argc) return -1;
             config->sfu_control_url = argv[i];
@@ -83,6 +112,15 @@ static int room_service_parse_args(int argc, char **argv,
         } else if (strcmp(arg, "--sfu-control-token") == 0) {
             if (++i >= argc) return -1;
             config->sfu_control_token = argv[i];
+        } else if (strcmp(arg, "--sfu-auth-key-id") == 0) {
+            if (++i >= argc) return -1;
+            config->sfu_auth_key_id = argv[i];
+        } else if (strcmp(arg, "--sfu-auth-secret") == 0) {
+            if (++i >= argc) return -1;
+            config->sfu_auth_secret = argv[i];
+        } else if (strcmp(arg, "--sfu-ca") == 0) {
+            if (++i >= argc) return -1;
+            config->sfu_ca_file = argv[i];
         } else if (strcmp(arg, "--max-rooms") == 0) {
             if (++i >= argc) return -1;
             config->max_rooms = atoi(argv[i]);
@@ -100,30 +138,42 @@ static int room_service_parse_args(int argc, char **argv,
 int main(int argc, char **argv) {
     int ret = 0;
     room_service_app_config_t config;
+    room_service_app_config_t cli_probe;
 
     room_service_app_config_init(&config);
+    room_service_app_config_init(&cli_probe);
 
-    if (room_service_parse_args(argc, argv, &config) != 0) {
+    /*
+     * Probe first so help and argument errors do not perform file I/O.
+     * Reapplying environment and CLI values after TOML establishes:
+     * defaults < TOML < environment < command line.
+     */
+    if (room_service_parse_args(argc, argv, &cli_probe) != 0) {
         return (argc > 1 &&
                 (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "--version") == 0))
                    ? 0
                    : 1;
     }
 
-    if (config.config_file &&
-        room_service_app_config_load(&config, config.config_file) != 0) {
-        fprintf(stderr, "Failed to load config: %s\n", config.config_file);
+    if (cli_probe.config_file &&
+        room_service_app_config_load(&config, cli_probe.config_file) != 0) {
+        fprintf(stderr, "Failed to load config: %s\n", cli_probe.config_file);
         ret = 1;
         goto cleanup;
     }
 
-    if (room_service_app_config_validate(&config) != 0) {
+    room_service_app_config_apply_environment(&config);
+    if (room_service_parse_args(argc, argv, &config) != 0 ||
+        room_service_app_config_validate(&config) != 0) {
         fprintf(stderr, "Invalid room service configuration\n");
         ret = 1;
         goto cleanup;
     }
 
     room_service_app_config_print(&config);
+    if (config.dry_run) {
+        goto cleanup;
+    }
     room_service_setup_signal_handlers();
 
     g_server = room_service_app_server_create(&config);

@@ -22,10 +22,21 @@ typedef struct http_api_server_s http_api_server_t;
  * @brief HTTP API Configuration
  */
 typedef struct {
-    const char *host; /* NULL or "0.0.0.0"; current Iris listener binds all IPv4 interfaces */
+    const char *host; /* Required and copied local address */
     int port;
-    int auth_enabled; /* Reserved; non-zero is rejected until auth middleware is available */
-    const char *admin_token; /* If simple token auth */
+    int auth_enabled; /* Protect management routes with HTTP Bearer authentication */
+    const char *admin_token; /* Optional copied static compatibility token */
+    const char *auth_issuer;
+    const char *auth_active_key_id;
+    const char *auth_active_secret;
+    const char *auth_previous_key_id;
+    const char *auth_previous_secret;
+    const char *auth_revoked_token_sha256;
+    int auth_clock_skew_seconds;
+    int auth_max_ttl_seconds;
+    int use_tls; /* 1 for HTTPS, 0 for HTTP */
+    const char *cert_file; /* Required and copied while use_tls is non-zero */
+    const char *key_file; /* Required and copied while use_tls is non-zero */
 } http_api_config_t;
 
 /**

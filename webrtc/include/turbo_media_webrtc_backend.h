@@ -47,6 +47,10 @@ typedef struct {
     const char *const *turn_servers;
     size_t turn_server_count;
     int allow_loopback;
+    int accept_remote_tracks;
+    size_t event_queue_capacity;
+    size_t event_queue_max_bytes;
+    size_t max_rtp_packet_bytes;
     turbo_media_webrtc_backend_state_cb on_state;
     turbo_media_webrtc_backend_ice_cb on_ice_candidate;
     turbo_media_webrtc_backend_remote_track_cb on_remote_track;
@@ -75,6 +79,10 @@ typedef struct {
                     size_t packet_len);
     int (*pump)(turbo_media_webrtc_backend_peer_t *peer);
 } turbo_media_webrtc_backend_ops_t;
+
+/** Return the process-lifetime TurboMedia PeerConnection backend operations table. */
+CXX_C_API const turbo_media_webrtc_backend_ops_t *
+turbo_media_webrtc_internal_backend(void);
 
 CXX_C_API int turbo_media_webrtc_session_create_with_backend(
     const turbo_media_webrtc_session_config_t *config,

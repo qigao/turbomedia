@@ -20,14 +20,14 @@ set_target_properties(dc_benchmark PROPERTIES FOLDER webrtc/examples)
 
 add_executable(rtc_signaled_peer signaled_peer.c)
 target_link_libraries(rtc_signaled_peer PRIVATE TurboMedia::DataChannel TurboMedia::SDP
-                                               TurboUtils::Parser TurboNet::CoroNet TurboNet::Ice
+                                               TurboUtils::Parser TurboNet::CoroNet TurboNet::ICE
                                                TurboUtils::Core
                                                $<$<PLATFORM_ID:Windows>:ws2_32>)
 set_target_properties(rtc_signaled_peer PROPERTIES FOLDER webrtc/examples)
 
 add_executable(dc_ice_example ice_datachannel.c)
 target_link_libraries(
-  dc_ice_example PRIVATE TurboMedia::DataChannel TurboNet::Ice TurboUtils::Core)
+  dc_ice_example PRIVATE TurboMedia::DataChannel TurboNet::ICE TurboUtils::Core)
 target_include_directories(dc_ice_example PRIVATE ${STB_INCLUDE_DIR})
 set_target_properties(dc_ice_example PROPERTIES FOLDER webrtc/examples)
 
@@ -38,7 +38,7 @@ set_target_properties(browser_interop PROPERTIES FOLDER webrtc/examples)
 add_executable(browser_media_interop browser_media_interop.c)
 target_link_libraries(
   browser_media_interop
-  PRIVATE TurboMedia::RTC TurboMedia::WebRTC TurboNet::Ice TurboUtils::Core)
+  PRIVATE TurboMedia::RTC TurboMedia::WebRTC TurboNet::ICE TurboUtils::Core)
 set_target_properties(browser_media_interop PROPERTIES FOLDER webrtc/examples)
 
 # =============================================================================

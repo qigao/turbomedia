@@ -89,8 +89,30 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         .max_peers = server->config.max_peers,
         .max_rooms = server->config.max_rooms,
         .peer_timeout_ms = server->config.peer_timeout_ms,
+        .join_timeout_ms = server->config.join_timeout_ms,
+        .max_message_size = (size_t)server->config.max_message_size,
+        .messages_per_second = server->config.messages_per_second,
+        .message_burst = server->config.message_burst,
+        .max_outbox_messages =
+            (size_t)server->config.max_outbox_messages,
+        .max_outbox_bytes = (size_t)server->config.max_outbox_bytes,
+        .max_connections_per_source =
+            server->config.max_connections_per_source,
+        .source_admissions_per_second =
+            server->config.source_admissions_per_second,
+        .source_admission_burst = server->config.source_admission_burst,
+        .max_source_states = (size_t)server->config.max_source_states,
+        .source_state_ttl_ms = server->config.source_state_ttl_ms,
         .jwt_enabled = server->config.jwt_enabled,
+        .jwt_issuer = server->config.jwt_issuer,
+        .jwt_active_key_id = server->config.jwt_active_key_id,
         .jwt_secret = server->config.jwt_secret,
+        .jwt_previous_key_id = server->config.jwt_previous_key_id,
+        .jwt_previous_secret = server->config.jwt_previous_secret,
+        .jwt_revoked_token_sha256 =
+            server->config.jwt_revoked_token_sha256,
+        .jwt_clock_skew_seconds = server->config.jwt_clock_skew_seconds,
+        .jwt_max_ttl_seconds = server->config.jwt_ttl_seconds,
         .jwt_algo = server->config.jwt_algorithm
     };
     
@@ -141,19 +163,39 @@ int signaling_server_start(signaling_server_t *server) {
         http_api_config_t http_conf = {
             .host = server->config.http_host,
             .port = server->config.http_port,
-            .auth_enabled = 0,
-            .admin_token = NULL
+            .auth_enabled = server->config.http_auth_enabled,
+            .admin_token = server->config.http_admin_token,
+            .auth_issuer = server->config.http_auth_issuer,
+            .auth_active_key_id =
+                server->config.http_auth_active_key_id,
+            .auth_active_secret =
+                server->config.http_auth_active_secret,
+            .auth_previous_key_id =
+                server->config.http_auth_previous_key_id,
+            .auth_previous_secret =
+                server->config.http_auth_previous_secret,
+            .auth_revoked_token_sha256 =
+                server->config.http_auth_revoked_token_sha256,
+            .auth_clock_skew_seconds =
+                server->config.http_auth_clock_skew_seconds,
+            .auth_max_ttl_seconds =
+                server->config.http_auth_max_ttl_seconds,
+            .use_tls = server->config.http_use_tls,
+            .cert_file = server->config.http_cert_file,
+            .key_file = server->config.http_key_file
         };
         server->http_server = http_api_create(server->loop, &http_conf, server->ws_server);
-        if (server->http_server) {
-             if (http_api_start(server->http_server) != 0) {
-                 TLOG_ERROR("Failed to start HTTP API server");
-             } else {
-                 TLOG_INFO("HTTP API server started on port {}", server->config.http_port);
-             }
-        } else {
-             TLOG_ERROR("Failed to create HTTP API server");
+        if (!server->http_server || http_api_start(server->http_server) != 0) {
+            TLOG_ERROR("Failed to start HTTP API server");
+            http_api_destroy(server->http_server);
+            server->http_server = NULL;
+            webrtc_signaling_stop(server->ws_server);
+            server->running = 0;
+            return -1;
         }
+        TLOG_INFO("{} API server started on {}:{}",
+                  server->config.http_use_tls ? "HTTPS" : "HTTP",
+                  server->config.http_host, server->config.http_port);
     }
 
     /* TODO: Connect to Redis (Phase 4) */

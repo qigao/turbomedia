@@ -7,11 +7,7 @@ vcpkg_from_github(
         cmake-config.diff
         fix-runtime-destination.patch
         boringssl-compat.patch
-)
-
-vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
-    FEATURES
-        openssl ENABLE_OPENSSL
+        mandatory-boringssl.patch
 )
 
 vcpkg_cmake_configure(
@@ -19,7 +15,6 @@ vcpkg_cmake_configure(
     OPTIONS
         "-DCMAKE_PROJECT_INCLUDE=${CMAKE_CURRENT_LIST_DIR}/cmake-project-include.cmake"
         -DLIBSRTP_TEST_APPS=OFF
-        ${FEATURE_OPTIONS}
 )
 
 vcpkg_cmake_install()

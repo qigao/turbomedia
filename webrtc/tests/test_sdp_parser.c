@@ -96,6 +96,20 @@ void test_parse_datachannel_sdp(void) {
     TEST_ASSERT_EQUAL_INT(SDP_ROLE_ACTIVE, sdp.media[0].setup);
 }
 
+void test_parse_origin_preserves_uint64_version(void) {
+    static const char *sdp_text =
+        "v=0\r\n"
+        "o=- 123456 18446744073709551615 IN IP4 127.0.0.1\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n";
+    sdp_session_t sdp;
+
+    TEST_ASSERT_EQUAL_INT(0, sdp_parse(sdp_text, strlen(sdp_text), &sdp));
+    TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, sdp.session_version);
+    TEST_ASSERT_EQUAL_STRING("123456", sdp.session_id);
+    TEST_ASSERT_EQUAL_STRING("127.0.0.1", sdp.origin_addr);
+}
+
 /* Test: Parse ICE candidates */
 void test_parse_candidates(void) {
     sdp_session_t sdp;
@@ -219,6 +233,22 @@ void test_generate_sdp(void) {
     TEST_ASSERT_NOT_NULL(strstr(buffer, "a=extmap:1 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"));
 }
 
+void test_generate_sdp_rejects_truncated_output(void) {
+    sdp_session_t sdp;
+    char buffer[8] = "stale";
+
+    sdp_session_init(&sdp);
+    TEST_ASSERT_EQUAL_INT(-1, sdp_generate(&sdp, buffer, sizeof(buffer)));
+    TEST_ASSERT_EQUAL_STRING("", buffer);
+}
+
+void test_generate_session_id_rejects_truncation(void) {
+    char session_id[2] = "x";
+
+    sdp_generate_session_id(session_id, sizeof(session_id));
+    TEST_ASSERT_EQUAL_STRING("", session_id);
+}
+
 /* Test: Round-trip (generate -> parse) */
 void test_roundtrip(void) {
     sdp_session_t original, parsed;
@@ -294,11 +324,14 @@ spec("test_sdp_parser") {
   after_each() { tearDown(); }
   TT_TEST(test_parse_audio_sdp);
   TT_TEST(test_parse_datachannel_sdp);
+  TT_TEST(test_parse_origin_preserves_uint64_version);
   TT_TEST(test_parse_candidates);
   TT_TEST(test_parse_codecs);
   TT_TEST(test_parse_extmap);
   TT_TEST(test_parse_extmap_ignores_overflow);
   TT_TEST(test_generate_sdp);
+  TT_TEST(test_generate_sdp_rejects_truncated_output);
+  TT_TEST(test_generate_session_id_rejects_truncation);
   TT_TEST(test_roundtrip);
   TT_TEST(test_find_functions);
   TT_TEST(test_generate_ice_credentials);

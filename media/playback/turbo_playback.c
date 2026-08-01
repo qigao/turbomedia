@@ -6,6 +6,7 @@
 #include "miniaudio.h"
 
 #include "turbo_playback.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,9 +39,11 @@ typedef struct {
 } playback_queue_t;
 
 struct turbo_playback_s {
+  ma_context context;
   ma_device device;
   ma_device_config device_config;
   ma_decoder decoder; /* For file playback */
+  int has_context;
 
   playback_mode_t mode;
   turbo_playback_state_t state;
@@ -293,6 +296,56 @@ static int playback_is_valid_config(const turbo_playback_config_t *config) {
          config->buffer_size_ms > 0;
 }
 
+static int playback_parse_device_index(const char *device_id, ma_uint32 *index) {
+  char *end = NULL;
+  unsigned long value;
+
+  if (!device_id || !index || device_id[0] < '0' || device_id[0] > '9')
+    return -1;
+
+  errno = 0;
+  value = strtoul(device_id, &end, 10);
+  if (errno == ERANGE || !end || *end != '\0' || value > UINT32_MAX)
+    return -1;
+
+  *index = (ma_uint32)value;
+  return 0;
+}
+
+static int playback_init_device(turbo_playback_t *playback, const char *device_id) {
+  ma_device_info *playback_infos = NULL;
+  ma_uint32 playback_count = 0;
+  ma_uint32 device_index = 0;
+
+  if (!device_id)
+    return ma_device_init(NULL, &playback->device_config, &playback->device) == MA_SUCCESS ? 0 : -1;
+
+  if (playback_parse_device_index(device_id, &device_index) != 0)
+    return -1;
+
+  if (ma_context_init(NULL, 0, NULL, &playback->context) != MA_SUCCESS)
+    return -1;
+  playback->has_context = 1;
+
+  if (ma_context_get_devices(&playback->context, &playback_infos, &playback_count, NULL, NULL) !=
+          MA_SUCCESS ||
+      device_index >= playback_count) {
+    goto fail;
+  }
+
+  playback->device_config.playback.pDeviceID = &playback_infos[device_index].id;
+  if (ma_device_init(&playback->context, &playback->device_config, &playback->device) != MA_SUCCESS)
+    goto fail;
+
+  return 0;
+
+fail:
+  playback->device_config.playback.pDeviceID = NULL;
+  ma_context_uninit(&playback->context);
+  playback->has_context = 0;
+  return -1;
+}
+
 /* =============================================================================
  * Device Enumeration
  * ============================================================================= */
@@ -318,6 +371,7 @@ int turbo_playback_list_devices(turbo_playback_device_t *devices, int max_count)
   }
 
   int count = 0;
+  int has_default = 0;
   for (ma_uint32 i = 0; i < playback_count && count < max_count; i++) {
     devices[count].index = count;
     strncpy(devices[count].name, playback_infos[i].name, sizeof(devices[count].name) - 1);
@@ -326,8 +380,13 @@ int turbo_playback_list_devices(turbo_playback_device_t *devices, int max_count)
     /* Use index as ID for simplicity */
     snprintf(devices[count].id, sizeof(devices[count].id), "%u", (unsigned int)i);
     devices[count].is_default = playback_infos[i].isDefault ? 1 : 0;
+    has_default |= devices[count].is_default;
     count++;
   }
+
+  /* Keep enumeration consistent with get_default_device()'s first-device choice. */
+  if (count > 0 && !has_default)
+    devices[0].is_default = 1;
 
   ma_context_uninit(&context);
   return count;
@@ -408,10 +467,7 @@ turbo_playback_t *turbo_playback_create(const char *device_id,
   playback->device_config.dataCallback = playback_data_callback;
   playback->device_config.pUserData = playback;
 
-  /* TODO: Handle device_id selection */
-  (void)device_id;
-
-  if (ma_device_init(NULL, &playback->device_config, &playback->device) != MA_SUCCESS) {
+  if (playback_init_device(playback, device_id) != 0) {
     ma_mutex_uninit(&playback->ring_mutex);
     ring_buffer_free(&playback->ring);
     free(playback);
@@ -457,9 +513,7 @@ turbo_playback_t *turbo_playback_create_file(const char *device_id, const char *
   playback->device_config.dataCallback = playback_data_callback;
   playback->device_config.pUserData = playback;
 
-  (void)device_id;
-
-  if (ma_device_init(NULL, &playback->device_config, &playback->device) != MA_SUCCESS) {
+  if (playback_init_device(playback, device_id) != 0) {
     ma_decoder_uninit(&playback->decoder);
     free(playback);
     return NULL;
@@ -475,6 +529,9 @@ void turbo_playback_destroy(turbo_playback_t *playback) {
   turbo_playback_stop(playback);
 
   ma_device_uninit(&playback->device);
+  if (playback->has_context) {
+    ma_context_uninit(&playback->context);
+  }
 
   if (playback->mode == PLAYBACK_MODE_FILE) {
     ma_decoder_uninit(&playback->decoder);

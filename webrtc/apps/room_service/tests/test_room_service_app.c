@@ -5,10 +5,22 @@
 #include "sfu_node/config.h"
 #include "sfu_node/server.h"
 #include "http_client.h"
+#include "turbo_media_auth.h"
 #include "turbo_parser.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+
+#define ROOM_SERVICE_HTTP_LIFECYCLE_STRESS_ITERATIONS 32
+
+#ifndef ROOM_SERVICE_TEST_TLS_CERT_PATH
+#error "ROOM_SERVICE_TEST_TLS_CERT_PATH must identify the test certificate"
+#endif
+
+#ifndef ROOM_SERVICE_TEST_TLS_KEY_PATH
+#error "ROOM_SERVICE_TEST_TLS_KEY_PATH must identify the test private key"
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -40,6 +52,30 @@ static char *app_test_save_env(const char *name) {
 static void app_test_restore_env(const char *name, char *saved_value) {
   app_test_set_env(name, saved_value);
   free(saved_value);
+}
+
+static char *issue_room_control_token(
+    const char *key_id, const char *secret, const char *scope,
+    const char *room_id, const char *participant_id,
+    int64_t issued_at, int64_t expires_at) {
+  turbo_media_auth_config_t config = {
+      .issuer = "turbomedia",
+      .active_key_id = key_id,
+      .active_secret = secret,
+      .clock_skew_seconds = 0,
+      .max_ttl_seconds = 3600,
+  };
+  turbo_media_auth_claims_t claims = {
+      .subject = "room-control-test",
+      .audience = "turbomedia-room-control",
+      .scope = scope,
+      .room_id = room_id,
+      .participant_id = participant_id,
+      .issued_at = issued_at,
+      .expires_at = expires_at,
+  };
+
+  return turbo_media_auth_issue(&config, &claims);
 }
 
 static json_value_t *json_object_field(const json_value_t *obj, const char *key) {
@@ -299,6 +335,78 @@ static int wait_for_http_status_ok(const char *base_url, const char *path,
   return -1;
 }
 
+static int wait_for_https_status_ok(const char *base_url, const char *path,
+                                    const char *ca_file, int attempts,
+                                    unsigned int sleep_ms) {
+  int i;
+
+  if (!base_url || !path || !ca_file || attempts <= 0) {
+    return -1;
+  }
+
+  for (i = 0; i < attempts; ++i) {
+    http_client_t *client = http_client_create(base_url);
+    http_response_t *response = NULL;
+    turbo_tls_client_config_t tls_config = {
+        .ca_file = ca_file,
+        .verify_peer = 1
+    };
+    int ok = 0;
+
+    if (client &&
+        http_client_set_tls_client_config(client, &tls_config) == 0) {
+      http_client_set_timeout(client, 1000);
+      response = http_get(client, path);
+      ok = response && response->error_code == HTTP_ERROR_NONE &&
+           response->status_code >= 200 && response->status_code < 300;
+    }
+    if (response) {
+      http_response_free(response);
+    }
+    http_client_destroy(client);
+    if (ok) {
+      return 0;
+    }
+    app_test_sleep_ms(sleep_ms);
+  }
+
+  return -1;
+}
+
+static json_value_t *https_post_json_result(
+    const char *base_url, const char *path, const char *json_body,
+    const char *ca_file) {
+  http_client_t *client;
+  http_response_t *response;
+  turbo_tls_client_config_t tls_config = {
+      .ca_file = ca_file,
+      .verify_peer = 1
+  };
+  json_value_t *root = NULL;
+
+  if (!base_url || !path || !json_body || !ca_file) {
+    return NULL;
+  }
+  client = http_client_create(base_url);
+  if (!client ||
+      http_client_set_tls_client_config(client, &tls_config) != 0) {
+    http_client_destroy(client);
+    return NULL;
+  }
+  http_client_set_timeout(client, 3000);
+  response = http_post_json(client, path, json_body);
+  if (response && response->error_code == HTTP_ERROR_NONE &&
+      response->status_code >= 200 && response->status_code < 300 &&
+      http_response_is_json(response)) {
+    root = http_response_parse_json(response);
+  }
+  if (response) {
+    http_response_free(response);
+  }
+  http_client_destroy(client);
+  return root;
+}
+
 static json_value_t *http_post_json_result(const char *base_url, const char *path,
                                            const char *json_body) {
   http_client_t *client;
@@ -517,6 +625,8 @@ void test_room_service_assign_replays_existing_state_and_closed_room_diag_stays_
   sfu_server = sfu_node_app_server_create(&sfu_config);
   TEST_ASSERT_NOT_NULL(sfu_server);
   TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_start(sfu_server));
+  TEST_ASSERT_EQUAL_INT(
+      0, wait_for_http_status_ok(room_config.sfu_control_url, "/health", 30, 100));
 
   room_server = room_service_app_server_create(&room_config);
   TEST_ASSERT_NOT_NULL(room_server);
@@ -930,33 +1040,49 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
   sfu_node_app_server_destroy(sfu_server);
 }
 
-void test_room_service_forwards_sfu_control_token(void) {
+void test_room_service_issues_scoped_sfu_command_tokens(void) {
   sfu_node_app_config_t sfu_config;
   room_service_app_config_t room_config;
   sfu_node_app_server_t *sfu_server = NULL;
   room_service_app_server_t *room_server = NULL;
   json_value_t *root = NULL;
   json_value_t *stats = NULL;
-  const char *sfu_node_base_url = "http://127.0.0.1:19418";
+  const char *sfu_node_base_url = "https://localhost:19418";
   const char *room_service_base_url = "http://127.0.0.1:19419";
 
   sfu_node_app_config_init(&sfu_config);
   sfu_config.bind_host = "0.0.0.0";
   sfu_config.bind_port = 19418;
   sfu_config.node_id = "node-auth-forward";
-  sfu_config.control_token = "room-service-sfu-token";
+  sfu_config.control_token = "legacy-sfu-token";
+  sfu_config.auth_issuer = "turbomedia";
+  sfu_config.auth_active_key_id = "sfu-command-2026-07";
+  sfu_config.auth_active_secret =
+      "sfu-command-active-secret-at-least-32-bytes";
+  sfu_config.use_tls = 1;
+  sfu_config.tls_cert_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
+  sfu_config.tls_key_file = ROOM_SERVICE_TEST_TLS_KEY_PATH;
 
   room_service_app_config_init(&room_config);
   room_config.bind_host = "0.0.0.0";
   room_config.bind_port = 19419;
   room_config.node_id = "room-service-auth-forward";
-  room_config.sfu_control_url = "http://127.0.0.1:19418";
-  room_config.sfu_control_token = "room-service-sfu-token";
+  room_config.sfu_control_url = "https://localhost:19418";
+  room_config.sfu_control_token = "wrong-legacy-token";
+  room_config.sfu_ca_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
+  room_config.sfu_auth_issuer = "turbomedia";
+  room_config.sfu_auth_key_id = "sfu-command-2026-07";
+  room_config.sfu_auth_secret =
+      "sfu-command-active-secret-at-least-32-bytes";
+  room_config.sfu_auth_ttl_seconds = 30;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
   TEST_ASSERT_NOT_NULL(sfu_server);
   TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_start(sfu_server));
-  TEST_ASSERT_EQUAL_INT(0, wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100));
+  TEST_ASSERT_EQUAL_INT(
+      0, wait_for_https_status_ok(
+             sfu_node_base_url, "/health", ROOM_SERVICE_TEST_TLS_CERT_PATH,
+             30, 100));
 
   room_server = room_service_app_server_create(&room_config);
   TEST_ASSERT_NOT_NULL(room_server);
@@ -992,12 +1118,13 @@ void test_room_service_forwards_sfu_control_token(void) {
   turbo_free_json(&root);
   root = NULL;
 
-  root = http_post_json_result(
+  root = https_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
       "{"
       "\"type\":\"get_room_stats\","
       "\"room_id\":\"room-auth-forward\""
-      "}");
+      "}",
+      ROOM_SERVICE_TEST_TLS_CERT_PATH);
   TEST_ASSERT_NOT_NULL(root);
   stats = json_object_field(root, "room_stats");
   TEST_ASSERT_NOT_NULL(stats);
@@ -1015,6 +1142,13 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
   room_service_app_config_t room_config;
   room_service_app_server_t *room_server = NULL;
   json_value_t *root = NULL;
+  char *write_token = NULL;
+  char *cross_room_token = NULL;
+  char *expired_token = NULL;
+  char *previous_dangerous_token = NULL;
+  char *alice_token = NULL;
+  char *bob_token = NULL;
+  int64_t now = (int64_t)time(NULL);
   const char *room_service_base_url = "http://127.0.0.1:19420";
   const char *get_queue_depth_command =
       "{"
@@ -1027,6 +1161,28 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
       "\"room_id\":\"room-control-auth\","
       "\"room_type\":\"conference\","
       "\"created_by\":\"host-1\""
+      "}";
+  const char *create_static_room_command =
+      "{"
+      "\"type\":\"create_room\","
+      "\"room_id\":\"room-static-auth\","
+      "\"room_type\":\"conference\","
+      "\"created_by\":\"host-1\""
+      "}";
+  const char *close_room_command =
+      "{"
+      "\"type\":\"close_room\","
+      "\"room_id\":\"room-control-auth\""
+      "}";
+  const char *join_alice_request =
+      "{"
+      "\"room_id\":\"room-static-auth\","
+      "\"participant\":{"
+      "\"participant_id\":\"alice\","
+      "\"user_id\":\"u-alice\","
+      "\"display_name\":\"Alice\","
+      "\"role\":\"guest\""
+      "}"
       "}";
   const char *peek_queue_command =
       "{"
@@ -1050,6 +1206,12 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
   room_config.bind_port = 19420;
   room_config.node_id = "room-service-control-auth";
   room_config.control_token = "room-service-control-token";
+  room_config.auth_active_key_id = "room-control-2026-07";
+  room_config.auth_active_secret =
+      "room-control-active-secret-at-least-32-bytes";
+  room_config.auth_previous_key_id = "room-control-2026-06";
+  room_config.auth_previous_secret =
+      "room-control-previous-secret-at-least-32-bytes";
 
   room_server = room_service_app_server_create(&room_config);
   TEST_ASSERT_NOT_NULL(room_server);
@@ -1058,6 +1220,36 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
                         wait_for_http_status_ok(room_service_base_url, "/health", 30, 100));
   TEST_ASSERT_EQUAL_INT(0,
                         wait_for_http_status_ok(room_service_base_url, "/metrics", 30, 100));
+  write_token = issue_room_control_token(
+      "room-control-2026-07",
+      "room-control-active-secret-at-least-32-bytes",
+      "room.control.write", "room-control-auth", NULL, now, now + 60);
+  cross_room_token = issue_room_control_token(
+      "room-control-2026-07",
+      "room-control-active-secret-at-least-32-bytes",
+      "room.control.write", "another-room", NULL, now, now + 60);
+  expired_token = issue_room_control_token(
+      "room-control-2026-07",
+      "room-control-active-secret-at-least-32-bytes",
+      "room.control.write", "room-control-auth", NULL, now - 120, now - 60);
+  previous_dangerous_token = issue_room_control_token(
+      "room-control-2026-06",
+      "room-control-previous-secret-at-least-32-bytes",
+      "room.control.dangerous", "room-control-auth", NULL, now, now + 60);
+  alice_token = issue_room_control_token(
+      "room-control-2026-07",
+      "room-control-active-secret-at-least-32-bytes",
+      "room.control.write", "room-static-auth", "alice", now, now + 60);
+  bob_token = issue_room_control_token(
+      "room-control-2026-07",
+      "room-control-active-secret-at-least-32-bytes",
+      "room.control.write", "room-static-auth", "bob", now, now + 60);
+  TEST_ASSERT_NOT_NULL(write_token);
+  TEST_ASSERT_NOT_NULL(cross_room_token);
+  TEST_ASSERT_NOT_NULL(expired_token);
+  TEST_ASSERT_NOT_NULL(previous_dangerous_token);
+  TEST_ASSERT_NOT_NULL(alice_token);
+  TEST_ASSERT_NOT_NULL(bob_token);
 
   TEST_ASSERT_EQUAL_INT(200, http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/commands",
@@ -1077,13 +1269,46 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
   TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/commands",
                                  create_room_command, "wrong-token", NULL));
+  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 create_room_command, cross_room_token, NULL));
+  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 create_room_command, expired_token, NULL));
 
   TEST_ASSERT_EQUAL_INT(200, http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/commands",
-                                 create_room_command, "room-service-control-token", &root));
+                                 create_room_command, write_token, &root));
   TEST_ASSERT_NOT_NULL(root);
   TEST_ASSERT_TRUE(json_bool_value(root, "ok", 0));
   turbo_free_json(&root);
+  root = NULL;
+  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 close_room_command, write_token, NULL));
+  TEST_ASSERT_EQUAL_INT(200, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 close_room_command, previous_dangerous_token, NULL));
+  TEST_ASSERT_EQUAL_INT(200, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 create_static_room_command,
+                                 "room-service-control-token", &root));
+  TEST_ASSERT_NOT_NULL(root);
+  TEST_ASSERT_TRUE(json_bool_value(root, "ok", 0));
+  turbo_free_json(&root);
+  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/join",
+                                 join_alice_request, bob_token, NULL));
+  TEST_ASSERT_EQUAL_INT(200, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/join",
+                                 join_alice_request, alice_token, NULL));
+
+  free(bob_token);
+  free(alice_token);
+  free(previous_dangerous_token);
+  free(expired_token);
+  free(cross_room_token);
+  free(write_token);
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -1377,22 +1602,84 @@ void test_room_service_config_reads_control_tokens_from_env(void) {
   char *saved_sfu_control_token =
       app_test_save_env("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN");
   char *saved_sfu_nodes = app_test_save_env("TURBO_ROOM_SERVICE_SFU_NODES");
+  char *saved_use_tls = app_test_save_env("TURBO_ROOM_SERVICE_USE_TLS");
+  char *saved_tls_cert =
+      app_test_save_env("TURBO_ROOM_SERVICE_TLS_CERT_FILE");
+  char *saved_tls_key =
+      app_test_save_env("TURBO_ROOM_SERVICE_TLS_KEY_FILE");
+  char *saved_sfu_ca =
+      app_test_save_env("TURBO_ROOM_SERVICE_SFU_CA_FILE");
+  char *saved_auth_key_id =
+      app_test_save_env("TURBO_ROOM_SERVICE_AUTH_ACTIVE_KEY_ID");
+  char *saved_auth_secret =
+      app_test_save_env("TURBO_ROOM_SERVICE_AUTH_ACTIVE_SECRET");
+  char *saved_sfu_auth_key_id =
+      app_test_save_env("TURBO_ROOM_SERVICE_SFU_AUTH_KEY_ID");
+  char *saved_sfu_auth_secret =
+      app_test_save_env("TURBO_ROOM_SERVICE_SFU_AUTH_SECRET");
+  char *saved_sfu_auth_ttl =
+      app_test_save_env("TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS");
 
   app_test_set_env("TURBO_ROOM_SERVICE_CONTROL_TOKEN", "env-room-control-token");
   app_test_set_env("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN", "env-sfu-control-token");
   app_test_set_env("TURBO_ROOM_SERVICE_SFU_NODES",
                    "node-a=http://127.0.0.1:19423,node-b=http://127.0.0.1:19424");
+  app_test_set_env("TURBO_ROOM_SERVICE_USE_TLS", "true");
+  app_test_set_env("TURBO_ROOM_SERVICE_TLS_CERT_FILE",
+                   ROOM_SERVICE_TEST_TLS_CERT_PATH);
+  app_test_set_env("TURBO_ROOM_SERVICE_TLS_KEY_FILE",
+                   ROOM_SERVICE_TEST_TLS_KEY_PATH);
+  app_test_set_env("TURBO_ROOM_SERVICE_SFU_CA_FILE",
+                   ROOM_SERVICE_TEST_TLS_CERT_PATH);
+  app_test_set_env("TURBO_ROOM_SERVICE_AUTH_ACTIVE_KEY_ID",
+                   "env-room-key");
+  app_test_set_env("TURBO_ROOM_SERVICE_AUTH_ACTIVE_SECRET",
+                   "env-room-active-secret-at-least-32-bytes");
+  app_test_set_env("TURBO_ROOM_SERVICE_SFU_AUTH_KEY_ID",
+                   "env-sfu-key");
+  app_test_set_env("TURBO_ROOM_SERVICE_SFU_AUTH_SECRET",
+                   "env-sfu-command-secret-at-least-32-bytes");
+  app_test_set_env("TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS", "45");
 
   room_service_app_config_init(&room_config);
+  room_service_app_config_apply_environment(&room_config);
   TEST_ASSERT_EQUAL_STRING("env-room-control-token", room_config.control_token);
   TEST_ASSERT_EQUAL_STRING("env-sfu-control-token", room_config.sfu_control_token);
   TEST_ASSERT_EQUAL_STRING("node-a=http://127.0.0.1:19423,node-b=http://127.0.0.1:19424",
                            room_config.sfu_nodes);
+  TEST_ASSERT_EQUAL_INT(1, room_config.use_tls);
+  TEST_ASSERT_EQUAL_STRING(ROOM_SERVICE_TEST_TLS_CERT_PATH,
+                           room_config.tls_cert_file);
+  TEST_ASSERT_EQUAL_STRING(ROOM_SERVICE_TEST_TLS_KEY_PATH,
+                           room_config.tls_key_file);
+  TEST_ASSERT_EQUAL_STRING(ROOM_SERVICE_TEST_TLS_CERT_PATH,
+                           room_config.sfu_ca_file);
+  TEST_ASSERT_EQUAL_STRING("env-room-key", room_config.auth_active_key_id);
+  TEST_ASSERT_EQUAL_STRING("env-room-active-secret-at-least-32-bytes",
+                           room_config.auth_active_secret);
+  TEST_ASSERT_EQUAL_STRING("env-sfu-key", room_config.sfu_auth_key_id);
+  TEST_ASSERT_EQUAL_STRING("env-sfu-command-secret-at-least-32-bytes",
+                           room_config.sfu_auth_secret);
+  TEST_ASSERT_EQUAL_INT(45, room_config.sfu_auth_ttl_seconds);
   TEST_ASSERT_EQUAL_INT(0, room_service_app_config_validate(&room_config));
 
   app_test_restore_env("TURBO_ROOM_SERVICE_CONTROL_TOKEN", saved_control_token);
   app_test_restore_env("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN", saved_sfu_control_token);
   app_test_restore_env("TURBO_ROOM_SERVICE_SFU_NODES", saved_sfu_nodes);
+  app_test_restore_env("TURBO_ROOM_SERVICE_USE_TLS", saved_use_tls);
+  app_test_restore_env("TURBO_ROOM_SERVICE_TLS_CERT_FILE", saved_tls_cert);
+  app_test_restore_env("TURBO_ROOM_SERVICE_TLS_KEY_FILE", saved_tls_key);
+  app_test_restore_env("TURBO_ROOM_SERVICE_SFU_CA_FILE", saved_sfu_ca);
+  app_test_restore_env("TURBO_ROOM_SERVICE_AUTH_ACTIVE_KEY_ID",
+                       saved_auth_key_id);
+  app_test_restore_env("TURBO_ROOM_SERVICE_AUTH_ACTIVE_SECRET",
+                       saved_auth_secret);
+  app_test_restore_env("TURBO_ROOM_SERVICE_SFU_AUTH_KEY_ID",
+                       saved_sfu_auth_key_id);
+  app_test_restore_env("TURBO_ROOM_SERVICE_SFU_AUTH_SECRET",
+                       saved_sfu_auth_secret);
+  app_test_restore_env("TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS",
+                       saved_sfu_auth_ttl);
 }
 
 void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
@@ -1783,6 +2070,8 @@ void test_room_service_resync_room_repairs_sfu_drift(void) {
   sfu_server = sfu_node_app_server_create(&sfu_config);
   TEST_ASSERT_NOT_NULL(sfu_server);
   TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_start(sfu_server));
+  TEST_ASSERT_EQUAL_INT(
+      0, wait_for_http_status_ok(room_config.sfu_control_url, "/health", 30, 100));
 
   room_server = room_service_app_server_create(&room_config);
   TEST_ASSERT_NOT_NULL(room_server);
@@ -4383,12 +4672,47 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   sfu_node_app_server_destroy(sfu_server);
 }
 
+void test_room_service_http_lifecycle_repeated_start_stop(void) {
+  room_service_app_config_t config;
+  room_service_app_server_t *server = NULL;
+  room_service_http_api_t *http_api = NULL;
+  const char *base_url = "http://127.0.0.1:19434";
+  int iteration;
+
+  room_service_app_config_init(&config);
+  config.bind_host = "127.0.0.1";
+  config.bind_port = 19434;
+  config.node_id = "room-service-http-lifecycle";
+
+  server = room_service_app_server_create(&config);
+  TEST_ASSERT_NOT_NULL(server);
+  http_api = room_service_http_api_create(server);
+  TEST_ASSERT_NOT_NULL(http_api);
+
+  for (iteration = 0;
+       iteration < ROOM_SERVICE_HTTP_LIFECYCLE_STRESS_ITERATIONS;
+       ++iteration) {
+    TEST_ASSERT_EQUAL_INT(
+        0, room_service_http_api_start(http_api, config.bind_host,
+                                       config.bind_port));
+    TEST_ASSERT_EQUAL_INT(
+        0, wait_for_http_status_ok(base_url, "/health", 3, 10));
+    if (iteration + 1 < ROOM_SERVICE_HTTP_LIFECYCLE_STRESS_ITERATIONS) {
+      room_service_http_api_stop(http_api);
+    }
+  }
+
+  room_service_http_api_destroy(http_api);
+  room_service_app_server_destroy(server);
+}
+
 spec("test_room_service_app") {
+  TT_TEST(test_room_service_http_lifecycle_repeated_start_stop);
   TT_TEST(test_room_service_assign_replays_existing_state_and_closed_room_diag_stays_green);
   TT_TEST(test_room_sync_diagnostic_reports_null_when_room_has_no_sync_history);
   TT_TEST(test_room_sync_diagnostic_http_endpoints_expose_latest_sync_state);
   TT_TEST(test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic);
-  TT_TEST(test_room_service_forwards_sfu_control_token);
+  TT_TEST(test_room_service_issues_scoped_sfu_command_tokens);
   TT_TEST(test_room_service_config_reads_control_tokens_from_env);
   TT_TEST(test_room_service_http_control_token_protects_modifying_commands);
   TT_TEST(test_room_service_facade_join_publish_and_subscribe);

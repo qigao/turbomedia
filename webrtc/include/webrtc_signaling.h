@@ -17,6 +17,7 @@
 #ifndef WEBRTC_SIGNALING_H
 #define WEBRTC_SIGNALING_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <CoroNet/turbo_coro_context.h>
 #include <turbo_export.h>
@@ -44,11 +45,29 @@ typedef struct {
     int max_peers;                  /**< Max peers per room (0 = unlimited) */
     int max_rooms;                  /**< Max active rooms (0 = unlimited) */
     int peer_timeout_ms;            /**< Peer idle timeout */
+    int join_timeout_ms;            /**< Fixed deadline for the first successful join */
+    size_t max_message_size;        /**< Complete WebSocket message limit (0 = unlimited) */
+    int messages_per_second;        /**< Per-peer token refill rate (0 = disabled) */
+    int message_burst;              /**< Per-peer token bucket capacity */
+    size_t max_outbox_messages;     /**< Per-peer queued message limit (0 = unlimited) */
+    size_t max_outbox_bytes;        /**< Per-peer queued byte limit (0 = unlimited) */
+    int max_connections_per_source; /**< Concurrent upgraded connections per IP (0 = unlimited) */
+    int source_admissions_per_second; /**< Upgraded connection admission refill rate */
+    int source_admission_burst;     /**< Upgraded connection admission burst capacity */
+    size_t max_source_states;       /**< Tracked source IP limit (0 only when policy is disabled) */
+    int source_state_ttl_ms;        /**< Retain inactive source rate state for this duration */
     
     /* Authentication */
-    int jwt_enabled;                /**< Enable JWT authentication */
-    const char *jwt_secret;         /**< JWT secret key */
-    const char *jwt_algo;           /**< JWT algorithm (default: HS256) */
+    int jwt_enabled;                /**< Require a signed token in the join message */
+    const char *jwt_issuer;         /**< Exact token issuer */
+    const char *jwt_active_key_id;  /**< Active HS256 key identifier */
+    const char *jwt_secret;         /**< Active HS256 secret (at least 32 bytes) */
+    const char *jwt_previous_key_id; /**< Previous key identifier during rotation */
+    const char *jwt_previous_secret; /**< Previous secret during rotation */
+    const char *jwt_revoked_token_sha256; /**< Comma-separated revoked token digests */
+    int jwt_clock_skew_seconds;     /**< Accepted clock skew (0..300) */
+    int jwt_max_ttl_seconds;        /**< Maximum token lifetime (1..86400) */
+    const char *jwt_algo;           /**< Must be HS256 when specified */
 } webrtc_signaling_config_t;
 
 /**

@@ -76,6 +76,7 @@ struct turbo_rtsp_server_s {
     char server_name[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     char public_methods[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     turbo_rtsp_control_transport_t control_transport;
+    turbo_kcp_config_t kcp_config;
     int port;
     uint64_t client_timeout_ms;
     int started;
@@ -101,6 +102,7 @@ struct turbo_rtsp_client_s {
     uint64_t timeout_ms;
     char user_agent[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     turbo_rtsp_control_transport_t control_transport;
+    turbo_kcp_config_t kcp_config;
     char ws_path[TURBO_RTSP_MAX_URI_LEN];
     char ws_subprotocol[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     uint32_t h264_rtp_ssrc_seed;
@@ -329,9 +331,23 @@ static int turbo_rtsp_control_transport_is_tls(turbo_rtsp_control_transport_t tr
 
 static coro_socket_t *turbo_rtsp_control_socket_create(
     coro_context_t *ctx,
-    turbo_rtsp_control_transport_t transport) {
+    turbo_rtsp_control_transport_t transport,
+    const turbo_kcp_config_t *kcp_config) {
     if (transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
-        return coro_socket_create_kcp(ctx);
+        coro_socket_t *socket = NULL;
+
+        if (!kcp_config) {
+            return NULL;
+        }
+        socket = coro_socket_create_kcp(ctx);
+        if (!socket) {
+            return NULL;
+        }
+        if (coro_socket_set_kcp_config(socket, kcp_config) != 0) {
+            coro_socket_destroy(socket);
+            return NULL;
+        }
+        return socket;
     }
 
     return coro_socket_create_tcpv4(ctx);
@@ -870,6 +886,11 @@ turbo_rtsp_server_t *turbo_rtsp_server_create(
     if (!ctx) {
         return NULL;
     }
+    if (config &&
+        config->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP &&
+        !config->kcp_config) {
+        return NULL;
+    }
 
     server = (turbo_rtsp_server_t *)calloc(1, sizeof(*server));
     if (!server) {
@@ -881,6 +902,9 @@ turbo_rtsp_server_t *turbo_rtsp_server_create(
     server->port = (config && config->port > 0) ? config->port : TURBO_RTSP_DEFAULT_PORT;
     server->control_transport =
         config ? config->control_transport : TURBO_RTSP_CONTROL_TRANSPORT_TCP;
+    if (server->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
+        server->kcp_config = *config->kcp_config;
+    }
     server->client_timeout_ms =
         (config && config->client_timeout_ms > 0)
             ? config->client_timeout_ms
@@ -921,7 +945,10 @@ int turbo_rtsp_server_start(turbo_rtsp_server_t *server) {
 
     server->stopping = 0;
 
-    server->listener = turbo_rtsp_control_socket_create(server->ctx, server->control_transport);
+    server->listener = turbo_rtsp_control_socket_create(
+        server->ctx,
+        server->control_transport,
+        &server->kcp_config);
     if (!server->listener) {
         return -1;
     }
@@ -972,6 +999,7 @@ void turbo_rtsp_server_destroy(turbo_rtsp_server_t *server) {
 
     turbo_rtsp_server_stop(server);
     turbo_rtsp_server_drain_listener(server);
+    turbo_kcp_config_wipe(&server->kcp_config);
     free(server);
 }
 
@@ -1190,10 +1218,18 @@ static int turbo_rtsp_client_copy_session(
         if ((size_t)(param_end - param) > strlen("timeout=") &&
             turbo_rtsp_ascii_ieq_n(param, "timeout=", strlen("timeout="))) {
             const char *start = param + strlen("timeout=");
-            long timeout = 0;
-            char *tail = NULL;
-            timeout = strtol(start, &tail, 10);
-            if (tail == start || tail != param_end || timeout < 0 || timeout > 2147483647L) {
+            uint64_t timeout = 0;
+            const char *cursor = start;
+            while (cursor < param_end) {
+                unsigned char c = (unsigned char)*cursor;
+                if (c < '0' || c > '9' ||
+                    timeout > ((uint64_t)INT_MAX - (uint64_t)(c - '0')) / 10u) {
+                    return -1;
+                }
+                timeout = timeout * 10u + (uint64_t)(c - '0');
+                ++cursor;
+            }
+            if (cursor == start) {
                 return -1;
             }
             client->session.timeout_seconds = (int)timeout;
@@ -2655,6 +2691,11 @@ turbo_rtsp_client_t *turbo_rtsp_client_create(
     if (!ctx) {
         return NULL;
     }
+    if (config &&
+        config->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP &&
+        !config->kcp_config) {
+        return NULL;
+    }
 
     client = (turbo_rtsp_client_t *)calloc(1, sizeof(*client));
     if (!client) {
@@ -2667,6 +2708,9 @@ turbo_rtsp_client_t *turbo_rtsp_client_create(
         (config && config->timeout_ms > 0) ? config->timeout_ms : TURBO_RTSP_DEFAULT_TIMEOUT_MS;
     client->control_transport =
         config ? config->control_transport : TURBO_RTSP_CONTROL_TRANSPORT_TCP;
+    if (client->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
+        client->kcp_config = *config->kcp_config;
+    }
     client->next_cseq = 1;
     client->h264_rtp_ssrc_seed =
         (config && config->has_h264_rtp_ssrc_seed)
@@ -2698,6 +2742,7 @@ turbo_rtsp_client_t *turbo_rtsp_client_create(
         (config && config->ws_subprotocol) ? config->ws_subprotocol : "");
 
     if (turbo_rtsp_client_frame_queue_init(client) != 0) {
+        turbo_kcp_config_wipe(&client->kcp_config);
         free(client);
         return NULL;
     }
@@ -2713,7 +2758,10 @@ int turbo_rtsp_client_connect(turbo_rtsp_client_t *client) {
         return 0;
     }
 
-    client->socket = turbo_rtsp_control_socket_create(client->ctx, client->control_transport);
+    client->socket = turbo_rtsp_control_socket_create(
+        client->ctx,
+        client->control_transport,
+        &client->kcp_config);
     if (!client->socket) {
         return -1;
     }
@@ -2806,6 +2854,7 @@ void turbo_rtsp_client_destroy(turbo_rtsp_client_t *client) {
     turbo_rtsp_client_close(client);
     turbo_rtsp_client_clear_last_response(client);
     turbo_rtsp_client_frame_queue_destroy(client);
+    turbo_kcp_config_wipe(&client->kcp_config);
     free(client);
 }
 

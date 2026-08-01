@@ -57,6 +57,7 @@ typedef enum {
 typedef struct {
     int index;
     char name[256];
+    /* Pass unchanged to turbo_playback_create*(); do not persist across enumeration. */
     char id[128];
     int is_default;
 } turbo_playback_device_t;

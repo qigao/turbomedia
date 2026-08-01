@@ -14,8 +14,12 @@ extern "C" {
 
 typedef struct sfu_node_app_server_s sfu_node_app_server_t;
 
+#define SFU_NODE_MEDIA_SESSION_NOT_FOUND (-2)
+#define SFU_NODE_MEDIA_SESSION_PRECONDITION_FAILED (-3)
+
 sfu_node_app_server_t *sfu_node_app_server_create(const sfu_node_app_config_t *config);
 int sfu_node_app_server_start(sfu_node_app_server_t *server);
+int sfu_node_app_server_ensure_webrtc_worker(sfu_node_app_server_t *server);
 int sfu_node_app_server_run(sfu_node_app_server_t *server);
 void sfu_node_app_server_stop(sfu_node_app_server_t *server);
 void sfu_node_app_server_destroy(sfu_node_app_server_t *server);
@@ -28,6 +32,9 @@ int sfu_node_app_server_create_webrtc_session(sfu_node_app_server_t *server,
                                               const char *room_id,
                                               const char *participant_id,
                                               const char *session_id);
+int sfu_node_app_server_create_owned_media_session(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id);
 int sfu_node_app_server_remove_webrtc_session(sfu_node_app_server_t *server,
                                               const char *room_id,
                                               const char *session_id);
@@ -41,6 +48,21 @@ int sfu_node_app_server_add_remote_ice_candidate(sfu_node_app_server_t *server,
                                                  const char *room_id,
                                                  const char *session_id,
                                                  const char *candidate);
+char *sfu_node_app_server_copy_local_answer(sfu_node_app_server_t *server,
+                                            const char *room_id,
+                                            const char *participant_id,
+                                            const char *session_id);
+int sfu_node_app_server_get_media_session_version(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id, uint64_t *version_out);
+int sfu_node_app_server_apply_remote_ice_sdpfrag(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id, uint64_t expected_version, const char *sdpfrag,
+    size_t sdpfrag_len, char *local_sdpfrag_out,
+    size_t local_sdpfrag_capacity, uint64_t *version_out);
+int sfu_node_app_server_remove_media_session(
+    sfu_node_app_server_t *server, const char *room_id, const char *participant_id,
+    const char *session_id);
 int sfu_node_app_server_register_published_track(sfu_node_app_server_t *server,
                                                  const char *room_id,
                                                  const char *participant_id,

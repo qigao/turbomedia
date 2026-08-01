@@ -4,6 +4,15 @@ cmake_add_grammar(
   LEXER_OUTPUT turbo_sdp_parser_gen.c
   FOLDER "turbomedia/webrtc/codegen")
 
+add_library(turbo_media_auth STATIC src/auth/turbo_media_auth.c)
+target_include_directories(
+  turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
+target_link_libraries(
+  turbo_media_auth
+  PUBLIC TurboUtils::Parser
+  PRIVATE TurboNet::Crypto OpenSSL::Crypto)
+set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
+
 add_library(turbo_media_sdp STATIC)
 turbo_media_configure_component(turbo_media_sdp SDP)
 target_sources(
@@ -41,7 +50,7 @@ target_link_libraries(
   turbo_media_datachannel
   PUBLIC TurboMedia::SDP TurboUtils::Parser
   PRIVATE TurboNet::CoroNet
-          TurboNet::Ice
+          TurboNet::ICE
           TurboUtils::Core
           unofficial::usrsctp::usrsctp
           OpenSSL::SSL
@@ -54,6 +63,7 @@ turbo_media_configure_component(turbo_media_webrtc WebRTC)
 target_sources(
   turbo_media_webrtc
   PRIVATE adapter/webrtc_adapter.c
+          adapter/turbo_peer_backend.c
           adapter/webrtc_session.c
           src/ice_integration.c)
 target_include_directories(
@@ -62,7 +72,8 @@ target_include_directories(
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(
   turbo_media_webrtc
-  PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel TurboNet::Ice)
+  PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel TurboNet::ICE
+  PRIVATE TurboMedia::RTC TurboMedia::SDP TurboUtils::Core)
 target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
 
 add_library(turbo_media_webrtc_signaling SHARED)
@@ -79,7 +90,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_webrtc_signaling
   PUBLIC TurboNet::CoroNet TurboHttp::Iris TurboUtils::Parser
-  PRIVATE TurboUtils::Core)
+  PRIVATE turbo_media_auth TurboNet::Crypto TurboUtils::Core)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 
@@ -93,7 +104,8 @@ set(TURBO_MEDIA_RTC_SOURCES
     src/rtc/rtp/nack.c
     src/rtc/srtp/srtp_session.c
     src/rtc/media/jitter_buffer.c
-    src/rtc/media/turbo_media_engine.c)
+    src/rtc/media/turbo_media_engine.c
+    src/rtc/media/turbo_peer_connection.c)
 
 add_library(turbo_media_rtc SHARED)
 turbo_media_configure_component(turbo_media_rtc RTC)
@@ -105,17 +117,30 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/rtc/media)
 target_link_libraries(
   turbo_media_rtc
-  PUBLIC TurboMedia::WebRTC
-         TurboMedia::DataChannel
+  PUBLIC TurboMedia::DataChannel
          TurboMedia::SDP
          TurboMedia::Crypto
   PRIVATE TurboMedia::Codec
           TurboMedia::Device
+          TurboNet::ICE
+          TurboNet::CoroNet
           TurboUtils::Core
           OpenSSL::SSL
           OpenSSL::Crypto
           libSRTP::srtp2)
 target_compile_definitions(turbo_media_rtc PUBLIC TURBO_MEDIA_HAS_RTC)
+# See transport/CMakeLists.txt: RTC and legacy transport packets have distinct
+# layouts, so internal calls must never be preempted by the peer shared object.
+target_link_options(
+  turbo_media_rtc
+  PRIVATE "$<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>")
+
+option(TURBO_MEDIA_BUILD_RTC_APPS
+       "Build the desktop room-control and SFU server applications" ON)
+if(TURBO_MEDIA_BUILD_RTC_APPS AND NOT ANDROID)
+  find_package(TurboRTCApps REQUIRED)
+  add_subdirectory(apps)
+endif()
 
 add_subdirectory(tests)
 add_subdirectory(examples)

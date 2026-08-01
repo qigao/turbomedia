@@ -1,11 +1,11 @@
 /**
  * ice_integration.h - Complete ICE integration for WebRTC
  *
- * Production-ready features:
+ * Implemented features:
  * - ICE candidate trickle
  * - STUN/TURN server support
  * - Connection timeout handling
- * - Automatic reconnection
+ * - Retry scheduling (not a complete ICE restart)
  */
 
 #ifndef ICE_INTEGRATION_H
@@ -177,8 +177,11 @@ CXX_C_API void ice_integration_set_connection_timeout(ice_integration_ctx_t *ctx
 CXX_C_API void ice_integration_set_max_reconnect_attempts(ice_integration_ctx_t *ctx, int max_attempts);
 
 /**
- * Trigger manual reconnection
- * Useful for handling network changes
+ * Schedule another retry attempt.
+ *
+ * This function does not create a new ICE generation, rotate credentials,
+ * gather new candidates, or exchange them through signaling. It is not a
+ * complete ICE restart and must not be used as proof of connection recovery.
  *
  * @param ctx ICE integration context
  * @return 0 on success, negative on error

@@ -1,0 +1,33 @@
+api_version: turbo.media.pipeline/v1
+id: whip-to-whep-rtp-relay
+nodes:
+  - id: whip_source
+    kind: source
+    factory: media.runtime_source
+    config:
+      url: default/live/whip
+      options:
+        queue_capacity: "64"
+        max_packet_bytes: "2048"
+        max_access_unit_bytes: "2097152"
+        replay_cached: "false"
+  - id: rtp_depay
+    kind: demux
+    factory: rtp.depacketize
+  - id: rtp_pay
+    kind: mux
+    factory: rtp.packetize
+  - id: whep_sink
+    kind: sink
+    factory: media.runtime_sink
+    config:
+      url: default/live/whep
+edges:
+  - from: whip_source.out
+    to: rtp_depay.in
+  - from: rtp_depay.audio
+    to: rtp_pay.audio
+  - from: rtp_depay.video
+    to: rtp_pay.video
+  - from: rtp_pay.out
+    to: whep_sink.in

@@ -64,7 +64,18 @@ int main(int argc, char *argv[]) {
         .port = port,
         .use_tls = 0,
         .max_peers = 100,
-        .peer_timeout_ms = 60000
+        .peer_timeout_ms = 60000,
+        .join_timeout_ms = 10000,
+        .max_message_size = 65536,
+        .messages_per_second = 100,
+        .message_burst = 200,
+        .max_outbox_messages = 256,
+        .max_outbox_bytes = 1048576,
+        .max_connections_per_source = 100,
+        .source_admissions_per_second = 20,
+        .source_admission_burst = 50,
+        .max_source_states = 4096,
+        .source_state_ttl_ms = 300000
     };
 
     /* Create signaling server */

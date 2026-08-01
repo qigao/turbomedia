@@ -46,13 +46,12 @@ aligned(8) class AVCDecoderConfigurationRecord {
 */
 static int _mpeg4_avc_decoder_configuration_record_load(const uint8_t* data, size_t bytes, struct mpeg4_avc_t* avc)
 {
-    uint8_t i;
-	uint32_t j;
+	size_t i;
+	size_t j;
 	uint16_t len;
     uint8_t *p, *end;
 	
-	if (bytes < 7) return -1;
-	assert(1 == data[0]);
+	if (!data || !avc || bytes < 7 || 1 != data[0]) return -1;
 //	avc->version = data[0];
 	avc->profile = data[1];
 	avc->compatibility = data[2];
@@ -61,49 +60,49 @@ static int _mpeg4_avc_decoder_configuration_record_load(const uint8_t* data, siz
 	avc->nb_sps = data[5] & 0x1F;
 	if (avc->nb_sps > sizeof(avc->sps) / sizeof(avc->sps[0]))
 	{
-		assert(0);
 		return -1; // sps <= 32
 	}
 
 	j = 6;
     p = avc->data;
     end = avc->data + sizeof(avc->data);
-	for (i = 0; i < avc->nb_sps && j + 2 < bytes; ++i)
+	for (i = 0; i < avc->nb_sps; ++i)
 	{
+		if (bytes - j < 2) return -1;
 		len = (data[j] << 8) | data[j + 1];
-		if (j + 2 + len >= bytes || p + len > end)
+		j += 2;
+		if (len == 0 || len > bytes - j || (size_t)(end - p) < len)
 		{
-			assert(0);
 			return -1;
 		}
 
-		memcpy(p, data + j + 2, len);
+		memcpy(p, data + j, len);
         avc->sps[i].data = p;
 		avc->sps[i].bytes = len;
-		j += len + 2;
+		j += len;
         p += len;
 	}
 
 	if (j >= bytes || (unsigned int)data[j] > sizeof(avc->pps) / sizeof(avc->pps[0]))
 	{
-		assert(0);
 		return -1;
 	}
 
 	avc->nb_pps = data[j++]; 
-	for (i = 0; i < avc->nb_pps && j + 2 < bytes; i++)
+	for (i = 0; i < avc->nb_pps; ++i)
 	{
+		if (bytes - j < 2) return -1;
 		len = (data[j] << 8) | data[j + 1];
-        if (j + 2 + len > bytes || p + len > end)
+		j += 2;
+        if (len == 0 || len > bytes - j || (size_t)(end - p) < len)
         {
-            assert(0);
             return -1;
         }
 
-		memcpy(p, data + j + 2, len);
+		memcpy(p, data + j, len);
         avc->pps[i].data = p;
 		avc->pps[i].bytes = len;
-		j += len + 2;
+		j += len;
         p += len;
 	}
 
@@ -235,6 +234,9 @@ int mpeg4_avc_codecs(const struct mpeg4_avc_t* avc, char* codecs, size_t bytes)
 int mpeg4_avc_decoder_configuration_record_load(const uint8_t* data, size_t bytes, struct mpeg4_avc_t* avc)
 {
 	int r;
+	if (!data || !avc || bytes == 0) return -1;
+
+	memset(avc, 0, sizeof(*avc));
 	r = _mpeg4_avc_decoder_configuration_record_load(data, bytes, avc);
 	if (r > 0 && avc->nb_sps > 0 && avc->nb_pps > 0)
 		return r;

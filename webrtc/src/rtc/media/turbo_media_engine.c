@@ -1336,8 +1336,14 @@ static int init_decoder(turbo_media_track_t *track) {
   if (track->decoder) return 0;
 
   if (track->type == TURBO_RTC_MEDIA_TRACK_AUDIO) {
-    turbo_audio_codec_config_t cfg = {.sample_rate = track->config.audio.sample_rate,
-                                      .channels = track->config.audio.channels};
+    turbo_audio_codec_config_t cfg = {
+        .sample_rate = track->config.audio.sample_rate,
+        .channels = track->config.audio.channels,
+        .bitrate = track->config.audio.bitrate,
+        .frame_size_ms = track->config.audio.frame_size_ms,
+        .enable_fec = track->config.audio.enable_fec,
+        .enable_dtx = track->config.audio.enable_dtx,
+        .complexity = 5};
     codec_name = media_audio_codec_name(track->codec_type);
     if (!codec_name) {
       return -1;

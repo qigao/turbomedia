@@ -43,10 +43,13 @@ target_include_directories(room_service
 )
 
 set(ROOM_SERVICE_LIBS
-    TurboRTC::Conference
+    TurboRTCApps::Conference
     TurboHttp::HttpClient
     TurboHttp::Iris
-    TurboUtils::Core)
+    turbo_media_auth
+    TurboNet::Crypto
+    TurboUtils::Core
+    TurboUtils::Parser)
 
 if(ENABLE_RTC_SCXML_WORKFLOW)
   list(APPEND ROOM_SERVICE_LIBS TurboRTC::RtcSessionWorkflow)
@@ -77,6 +80,19 @@ install(
   RUNTIME DESTINATION bin
   COMPONENT RoomService
 )
+install(
+  FILES config/room_service.toml.example
+  DESTINATION etc/turbonet
+  COMPONENT RoomService
+)
+
+add_test(
+  NAME turbo_media_test_room_service_dry_run
+  COMMAND room_service --config
+          ${CMAKE_CURRENT_SOURCE_DIR}/config/room_service.toml.example --dry-run)
+set_tests_properties(
+  turbo_media_test_room_service_dry_run
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 10)
 
 message(STATUS "Room Service: ${CMAKE_CURRENT_SOURCE_DIR}")
 message(STATUS "Room Service Output: ${CMAKE_BINARY_DIR}/bin/room_service")
@@ -93,17 +109,20 @@ target_include_directories(test_room_service_app
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../sfu_node/include
-    ${CMAKE_SOURCE_DIR}/tests
+    ${CMAKE_SOURCE_DIR}/webrtc/tests
 )
 
 target_link_libraries(test_room_service_app
   PRIVATE
-    TurboRTC::Conference
+    TurboRTCApps::Conference
     TurboMedia::RTC
-    TurboRTC::Recorder
+    TurboRTCApps::Recorder
     TurboHttp::HttpClient
     TurboHttp::Iris
+    turbo_media_auth
+    TurboNet::Crypto
     TurboUtils::Core
+    TurboUtils::Parser
     TurboUtils::TinyTest
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>
@@ -121,13 +140,31 @@ target_compile_options(test_room_service_app
 target_compile_definitions(test_room_service_app
   PRIVATE
     ROOM_SERVICE_ENABLE_TEST_HOOKS=1
+    ROOM_SERVICE_TEST_TLS_CERT_PATH="${CMAKE_SOURCE_DIR}/webrtc/tests/fixtures/tls/localhost-cert.pem"
+    ROOM_SERVICE_TEST_TLS_KEY_PATH="${CMAKE_SOURCE_DIR}/webrtc/tests/fixtures/tls/localhost-key.pem"
 )
 
 
 add_test(NAME test_room_service_app COMMAND test_room_service_app)
 set_tests_properties(test_room_service_app PROPERTIES
-  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  TIMEOUT 120)
 set_target_properties(test_room_service_app PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   OUTPUT_NAME "test_room_service_app"
   FOLDER "Applications/tests")
+
+file(
+  TO_CMAKE_PATH
+  "${CMAKE_CURRENT_SOURCE_DIR}/config/room_service.toml.example"
+  ROOM_SERVICE_CONFIG_EXAMPLE_PATH)
+cmake_add_test(
+  turbo_media_test_room_service_config
+  SOURCES tests/test_room_service_config.c src/config.c
+  LIBS turbo_media_auth TurboUtils::TinyTest TurboUtils::Core TurboUtils::Parser
+  DEFS ROOM_SERVICE_CONFIG_EXAMPLE_PATH="${ROOM_SERVICE_CONFIG_EXAMPLE_PATH}"
+  INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include
+  FOLDER "Applications/tests")
+set_target_properties(
+  turbo_media_test_room_service_config
+  PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

@@ -342,8 +342,9 @@ suite("turbo_media_server_runtime") {
             check_int_eq(turbo_media_server_protocol_session_publish(player, &frame),
                          TURBO_MEDIA_ERR_STATE);
 
-            turbo_media_server_protocol_session_close(player);
+            /* Publisher-first teardown destroys the source and its subscription. */
             turbo_media_server_protocol_session_close(publisher);
+            turbo_media_server_protocol_session_close(player);
 
             REQUIRE_OK(turbo_media_server_runtime_get_stats(runtime, &stats));
             check_uint_eq(stats.source_count, 0);
@@ -351,6 +352,52 @@ suite("turbo_media_server_runtime") {
             check_uint_eq(stats.subscriptions_created, 1);
             check_uint_eq(stats.subscriptions_removed, 1);
             check_uint_eq(stats.sources_removed, 1);
+
+            turbo_media_server_runtime_destroy(runtime);
+        }
+
+        it("does not let a removed source subscription target its replacement") {
+            turbo_media_server_config_t config = server_config();
+            turbo_media_source_key_t key;
+            turbo_media_track_info_t track = h264_track();
+            turbo_media_server_stats_t stats;
+            runtime_capture_t capture;
+            uint64_t removed_subscription_id = 0;
+            uint64_t replacement_subscription_id = 0;
+            int track_id = -1;
+
+            memset(&capture, 0, sizeof(capture));
+            REQUIRE_OK(turbo_media_source_key_init(&key, "default", "live", "replacement"));
+            turbo_media_server_runtime_t *runtime = turbo_media_server_runtime_create(&config);
+            REQUIRE_NOT_NULL(runtime);
+
+            REQUIRE_OK(turbo_media_server_runtime_add_track(runtime, &key, &track, &track_id));
+            REQUIRE_OK(turbo_media_server_runtime_subscribe(runtime,
+                                                            &key,
+                                                            runtime_capture_cb,
+                                                            &capture,
+                                                            0,
+                                                            &removed_subscription_id));
+            REQUIRE_OK(turbo_media_server_runtime_remove_source(runtime, &key));
+
+            track_id = -1;
+            REQUIRE_OK(turbo_media_server_runtime_add_track(runtime, &key, &track, &track_id));
+            REQUIRE_OK(turbo_media_server_runtime_subscribe(runtime,
+                                                            &key,
+                                                            runtime_capture_cb,
+                                                            &capture,
+                                                            0,
+                                                            &replacement_subscription_id));
+            check_true(removed_subscription_id != replacement_subscription_id);
+            check_int_eq(turbo_media_server_runtime_unsubscribe(
+                             runtime, &key, removed_subscription_id),
+                         TURBO_MEDIA_ERR_NOT_FOUND);
+            REQUIRE_OK(turbo_media_server_runtime_unsubscribe(
+                runtime, &key, replacement_subscription_id));
+
+            REQUIRE_OK(turbo_media_server_runtime_get_stats(runtime, &stats));
+            check_uint_eq(stats.subscriptions_created, 2);
+            check_uint_eq(stats.subscriptions_removed, 2);
 
             turbo_media_server_runtime_destroy(runtime);
         }

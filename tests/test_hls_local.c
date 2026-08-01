@@ -6,6 +6,7 @@
 #include <turbo_player.h>
 #include <turbo_streamer.h>
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,6 +200,46 @@ cleanup:
     }
 }
 
+static void test_hls_rejects_malformed_h264_config(void) {
+    static const uint8_t malformed_avcc[] = {
+        0x01, 0x42, 0x00, 0x1e, 0xff, 0xe1, 0x00, 0x10
+    };
+    turbo_streamer_config_t streamer_config = {0};
+    turbo_stream_info_t stream_info = {0};
+    turbo_streamer_t *streamer = NULL;
+    char *output_dir = NULL;
+    int stream_id = -1;
+
+    output_dir = tt_make_temp_dir("turbomedia-hls-invalid-avc");
+    check_not_null(output_dir);
+    if (!output_dir) return;
+
+    turbo_streamer_registry_init();
+    streamer_config.protocol = TURBO_STREAMER_HLS;
+    streamer_config.segment_duration_ms = HLS_TEST_SEGMENT_DURATION_MS;
+    streamer_config.playlist_size = HLS_TEST_PLAYLIST_SIZE;
+    streamer_config.output_dir = output_dir;
+    streamer = turbo_streamer_create(&streamer_config);
+    check_not_null(streamer);
+    if (!streamer) goto cleanup;
+
+    stream_info.type = TURBO_CODEC_TYPE_VIDEO;
+    stream_info.codec_name = "h264";
+    stream_info.extradata = malformed_avcc;
+    stream_info.extradata_size = sizeof(malformed_avcc);
+    stream_info.width = HLS_TEST_WIDTH;
+    stream_info.height = HLS_TEST_HEIGHT;
+    stream_info.framerate = HLS_TEST_FPS;
+    check_int_eq(turbo_streamer_add_stream(streamer, &stream_info, &stream_id),
+                 -EINVAL);
+
+cleanup:
+    turbo_streamer_destroy(streamer);
+    turbo_streamer_registry_shutdown();
+    check_int_eq(tt_remove_tree(output_dir), 0);
+    free(output_dir);
+}
+
 suite("local HLS fMP4 pipeline") {
     it("round trips encoded H264 through generated VOD segments") {
         test_hls_fmp4_round_trip("h264");
@@ -206,5 +247,9 @@ suite("local HLS fMP4 pipeline") {
 
     it("round trips encoded H265 through generated VOD segments") {
         test_hls_fmp4_round_trip("h265");
+    }
+
+    it("rejects truncated H264 decoder configuration") {
+        test_hls_rejects_malformed_h264_config();
     }
 }

@@ -26,11 +26,215 @@ This guide covers deploying TurboNet WebRTC in production environments.
 
 - Linux/Windows/macOS
 - libuv >= 1.40
-- OpenSSL >= 1.1.1
+- BoringSSL (resolved by the project vcpkg manifest)
 - usrsctp >= 0.9.5
 - libSRTP >= 2.3 (for media)
 
 ## STUN/TURN Server Setup
+
+### SFU node configuration
+
+The SFU passes the following bounded list directly into each PeerConnection:
+
+```toml
+[ice]
+stun_servers = ["stun:stun.example.com:3478"]
+turn_servers = ["turn:username:password@turn.example.com:3478"]
+allow_loopback = false
+```
+
+Keep TURN credentials out of committed files by setting
+`TURBO_SFU_TURN_SERVER`. `TURBO_SFU_STUN_SERVER` provides the equivalent
+single-server environment override. Loopback candidates are disabled by
+default; `allow_loopback` and `--allow-loopback` are intended for local tests.
+
+The WHIP/WHEP endpoints are unavailable unless either the legacy
+`TURBO_SFU_MEDIA_ACCESS_TOKEN` or signed-token verification is configured.
+The signaling management API is disabled by default and, when enabled,
+requires scoped signed-token verification or the explicit
+`TURBO_SIGNALING_ADMIN_TOKEN` compatibility path.
+
+For multi-tenant SFU access, configure:
+
+```text
+TURBO_SFU_AUTH_ACTIVE_KEY_ID=sfu-2026-07
+TURBO_SFU_AUTH_ACTIVE_SECRET=<at-least-32-bytes-of-CSPRNG-output>
+TURBO_SFU_AUTH_MAX_TTL_SECONDS=3600
+TURBO_SFU_AUTH_CLOCK_SKEW_SECONDS=30
+```
+
+Tokens use the compact JWS form with `alg=HS256`,
+`typ=turbomedia-auth+jwt`, and the configured `kid`. Required claims are
+`iss`, `sub`, `aud`, `scope`, `iat`, and `exp`. SFU control tokens use audience
+`turbomedia-sfu-control` and scope `sfu.control.write` or
+`sfu.control.dangerous`; media tokens use audience `turbomedia-sfu-media` and
+one or more of `sfu.media.publish`, `sfu.media.subscribe`,
+`sfu.media.trickle`, and `sfu.media.delete`. `room_id` and `participant_id`
+must exactly match the routed resource; unbound tokens cannot authorize bound
+routes. The deliberately narrow profile follows the algorithm, audience,
+explicit-type and mutually exclusive validation guidance in
+[RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html).
+
+Rotate by moving the old pair to
+`TURBO_SFU_AUTH_PREVIOUS_KEY_ID`/`TURBO_SFU_AUTH_PREVIOUS_SECRET` and installing
+the new active pair atomically. Remove the previous pair after the configured
+maximum TTL plus clock skew. The `kid` is matched only against these two local
+slots; it never triggers a file, network, or database lookup. Static
+`TURBO_SFU_NODE_CONTROL_TOKEN` and `TURBO_SFU_MEDIA_ACCESS_TOKEN` values are
+accepted only when explicitly configured and should be removed after client
+migration.
+
+To revoke an individual signed token before its expiry, compute SHA-256 over
+the exact compact token bytes and configure its 64-character lowercase digest
+in the verifier's `revoked_token_sha256` list. Lists contain at most 256
+comma-separated digests, with no whitespace or wildcard entries. Use the
+matching trust-domain variable:
+
+```text
+TURBO_SFU_AUTH_REVOKED_TOKEN_SHA256=<digest>[,<digest>...]
+TURBO_SIGNALING_HTTP_AUTH_REVOKED_TOKEN_SHA256=<digest>[,<digest>...]
+TURBO_SIGNALING_AUTH_REVOKED_TOKEN_SHA256=<digest>[,<digest>...]
+TURBO_ROOM_SERVICE_AUTH_REVOKED_TOKEN_SHA256=<digest>[,<digest>...]
+```
+
+The same value is available as `revoked_token_sha256` in each corresponding
+TOML auth table. Configuration is validated at startup; malformed or oversized
+lists fail fast. The list contains no plaintext token and applies only to
+signed tokens. Revoke a static compatibility bearer by removing or rotating
+that static value instead. Revocation state is immutable and process-local:
+update every verifier instance and restart it for a change to take effect.
+Remove entries after the token expiry plus clock skew. This mechanism provides
+exact emergency revocation, not distributed or real-time revocation.
+
+For signaling management, configure:
+
+```text
+TURBO_SIGNALING_HTTP_AUTH_ISSUER=turbomedia
+TURBO_SIGNALING_HTTP_AUTH_ACTIVE_KEY_ID=signaling-management-2026-07
+TURBO_SIGNALING_HTTP_AUTH_ACTIVE_SECRET=<at-least-32-bytes-of-CSPRNG-output>
+TURBO_SIGNALING_HTTP_AUTH_PREVIOUS_KEY_ID=signaling-management-2026-06
+TURBO_SIGNALING_HTTP_AUTH_PREVIOUS_SECRET=<old-secret-during-overlap>
+TURBO_SIGNALING_HTTP_AUTH_MAX_TTL_SECONDS=3600
+TURBO_SIGNALING_HTTP_AUTH_CLOCK_SKEW_SECONDS=30
+```
+
+The management audience is `turbomedia-signaling-management`. Status and list
+routes require `signaling.management.read`; broadcast requires
+`signaling.management.write`; peer removal requires
+`signaling.management.dangerous`. Room and peer path parameters must exactly
+match the token claims. Static `TURBO_SIGNALING_ADMIN_TOKEN` remains an
+explicit migration mode.
+
+For WebSocket peer admission, configure the separate trust domain:
+
+```text
+TURBO_SIGNALING_AUTH_ISSUER=turbomedia
+TURBO_SIGNALING_AUTH_ACTIVE_KEY_ID=signaling-peer-2026-07
+TURBO_SIGNALING_AUTH_ACTIVE_SECRET=<at-least-32-bytes-of-CSPRNG-output>
+TURBO_SIGNALING_AUTH_PREVIOUS_KEY_ID=signaling-peer-2026-06
+TURBO_SIGNALING_AUTH_PREVIOUS_SECRET=<old-secret-during-overlap>
+TURBO_SIGNALING_AUTH_MAX_TTL_SECONDS=3600
+TURBO_SIGNALING_AUTH_CLOCK_SKEW_SECONDS=30
+```
+
+Set `[auth].enabled = true` in the signaling TOML. The application identity
+provider must issue a token with audience `turbomedia-signaling-peer`, scope
+`signaling.peer.join`, and exact `room_id` and `participant_id` claims. A
+browser sends it in the first application message:
+
+```javascript
+const socket = new WebSocket("wss://signal.example.com/");
+socket.addEventListener("open", () => {
+  socket.send(JSON.stringify({
+    type: "join",
+    room: "room-a",
+    peer_id: "alice",
+    token: accessToken
+  }));
+});
+```
+
+The server verifies the token before replacing its temporary connection ID.
+It rejects missing, expired, wrong-scope, cross-room, cross-peer and duplicate
+identity attempts and does not accept other signaling messages before a
+successful join. Keep the token in the message body rather than the WebSocket
+URL so reverse-proxy access logs do not capture it. Use WSS in production.
+Rotate the peer-admission pair with the same active/previous overlap rule, but
+do not reuse the management or SFU secrets.
+
+### Room Service control and SFU command identity
+
+Room Service mutating commands and the `/api/v1/join`, `/api/v1/publish`, and
+`/api/v1/subscribe` facade routes accept audience
+`turbomedia-room-control`. Use `room.control.write` for ordinary mutations and
+`room.control.dangerous` for destructive or externally consequential
+commands. A token carrying `room_id` or `participant_id` authorizes only that
+exact resource.
+
+Configure the Room verifier independently from the SFU verifier:
+
+```text
+TURBO_ROOM_SERVICE_AUTH_ISSUER=turbomedia
+TURBO_ROOM_SERVICE_AUTH_ACTIVE_KEY_ID=room-control-2026-07
+TURBO_ROOM_SERVICE_AUTH_ACTIVE_SECRET=<at-least-32-bytes-of-CSPRNG-output>
+TURBO_ROOM_SERVICE_AUTH_PREVIOUS_KEY_ID=room-control-2026-06
+TURBO_ROOM_SERVICE_AUTH_PREVIOUS_SECRET=<old-secret-during-overlap>
+TURBO_ROOM_SERVICE_AUTH_MAX_TTL_SECONDS=3600
+TURBO_ROOM_SERVICE_AUTH_CLOCK_SKEW_SECONDS=30
+```
+
+Room-to-SFU authentication uses a separate signer, so a Room API verifier key
+does not automatically grant SFU control authority:
+
+```text
+TURBO_ROOM_SERVICE_SFU_AUTH_ISSUER=turbomedia
+TURBO_ROOM_SERVICE_SFU_AUTH_KEY_ID=sfu-control-2026-07
+TURBO_ROOM_SERVICE_SFU_AUTH_SECRET=<at-least-32-bytes-of-CSPRNG-output>
+TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS=60
+```
+
+The Room signer key must match the SFU active or previous verifier slot.
+Rotate without an authorization outage by first deploying the new SFU active
+key while retaining the old key as previous, then switching every Room signer,
+then removing the SFU previous key after the maximum token TTL plus clock
+skew. Room Service signs each internal command immediately before its
+TurboHTTP `http_client` request, binding the token to the command's
+`room_id`, optional `participant_id`, and required SFU scope. When the signed
+Room-to-SFU mode is configured it takes precedence over
+`TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN`; the static value remains only as an
+explicit rollback/migration path.
+
+### SFU media resource API
+
+Provision the room through the control plane, then create a media resource:
+
+```bash
+curl -i \
+  -H "Authorization: Bearer ${SFU_MEDIA_JWT}" \
+  -H "Content-Type: application/sdp" \
+  --data-binary @offer.sdp \
+  https://media.example.com/whip/room-1/publisher-1
+```
+
+Use `/whep/room-1/viewer-1` for playback. WHIP accepts active `sendonly` or
+`sendrecv` offers; WHEP accepts active `recvonly` or `sendrecv` offers. The
+response is `201 Created` with an SDP answer, a strong `ETag`, and an opaque
+resource URL in `Location`.
+
+Trickle candidates or restart ICE at that exact resource URL:
+
+```bash
+curl -i -X PATCH \
+  -H "Authorization: Bearer ${SFU_MEDIA_JWT}" \
+  -H 'Content-Type: application/trickle-ice-sdpfrag' \
+  -H 'If-Match: "1"' \
+  --data-binary @restart.sdpfrag \
+  https://media.example.com/whip/room-1/publisher-1/sessions/RESOURCE_ID
+```
+
+Terminate the resource with authenticated `DELETE`. The WHIP contract follows
+[RFC 9725](https://www.rfc-editor.org/rfc/rfc9725.html); WHEP is pinned to
+[draft-04](https://datatracker.ietf.org/doc/html/draft-ietf-wish-whep-04).
 
 ### Option 1: Use Public STUN Servers
 
@@ -177,9 +381,15 @@ ice_integration_set_max_reconnect_attempts(ice, 2);
 
 ## Reconnection Strategy
 
-### Automatic Reconnection
+TurboNet::ICE exposes a versioned restart operation, and PeerConnection exposes
+`turbo_peer_connection_restart_ice()`. The SFU resource API carries restart
+credentials and candidates in `application/trickle-ice-sdpfrag` under a strong
+ETag. The legacy `ice_integration_reconnect()` helper below remains retry
+accounting and scheduling only.
 
-The ICE integration handles reconnection automatically:
+### Current retry scheduling
+
+The ICE integration reports failures and schedules retry attempts:
 
 ```c
 // Reconnection is triggered on:
@@ -191,13 +401,13 @@ The ICE integration handles reconnection automatically:
 void on_ice_state(ice_state_t state, void *user_data) {
     switch (state) {
         case ICE_STATE_DISCONNECTED:
-            printf("Connection lost, reconnecting...\n");
+            printf("Connection lost; application restart flow required\n");
             break;
         case ICE_STATE_FAILED:
-            printf("Connection failed, attempting reconnection...\n");
+            printf("Connection failed; retry scheduled\n");
             break;
         case ICE_STATE_CONNECTED:
-            printf("Reconnected successfully\n");
+            printf("Transport connected\n");
             break;
     }
 }
@@ -205,18 +415,14 @@ void on_ice_state(ice_state_t state, void *user_data) {
 ice_integration_on_state_change(ice, on_ice_state, NULL);
 ```
 
-### Manual Reconnection
+### Conditional WHIP/WHEP restart
 
-Trigger reconnection manually (e.g., on network change):
+Send a `PATCH` to the resource `Location` returned by `POST`, with its current
+`If-Match` ETag and an SDP fragment containing a new `ice-ufrag`/`ice-pwd`
+generation. A candidate-only fragment returns `204`; a restart returns `200`
+with the server's new fragment and ETag. A stale ETag returns `412`.
 
-```c
-// Detect network change (platform-specific)
-void on_network_change(void) {
-    ice_integration_reconnect(ice);
-}
-```
-
-### Exponential Backoff
+### Application backoff
 
 Implement custom backoff for reconnection:
 
@@ -259,14 +465,14 @@ cmake --build build --target browser_interop
 
 4. Follow the on-screen instructions to exchange SDP
 
-### Browser Compatibility
+### Browser compatibility status
 
 | Browser | Version | Status |
 |---------|---------|--------|
-| Chrome | 90+ | ✅ Tested |
-| Firefox | 88+ | ✅ Tested |
-| Safari | 14+ | ⚠️ Partial |
-| Edge | 90+ | ✅ Tested |
+| Chrome | Current supported releases | Manual example only |
+| Firefox | Current supported releases | Not acceptance-tested |
+| Safari | Current supported releases | Not acceptance-tested |
+| Edge | Current supported releases | Manual example only |
 
 ### Common Browser Issues
 
@@ -313,15 +519,19 @@ turbo_dc_context_get_local_fingerprint(ctx, fp_hash, sizeof(fp_hash),
 
 ### 1. Use TLS for Signaling
 
-```c
-webrtc_signaling_config_t config = {
-    .host = "0.0.0.0",
-    .port = 8443,
-    .use_tls = 1,
-    .cert_file = "/path/to/cert.pem",
-    .key_file = "/path/to/key.pem"
-};
-```
+The signaling server loads an explicit certificate chain and private key for
+WSS through CoroNet. Its management API, the SFU WHIP/WHEP/control listener,
+and the room-service listener use Iris HTTPS with the same explicit identity
+contract. Set `use_tls = true` and both `cert_file` and `key_file` in the
+corresponding `[server]` or `[http_api]` section. Startup fails before serving
+traffic if either identity file is missing or cannot be loaded.
+
+Room Service uses TurboHTTP `http_client` for outbound SFU control requests.
+Public certificates use the system trust store. For a private PKI, set
+`[sfu].ca_file` (or `TURBO_ROOM_SERVICE_SFU_CA_FILE`); peer and hostname
+verification remain enabled. There is no insecure skip-verification option.
+A reverse proxy remains optional for edge policy, certificate automation, and
+rate limiting, rather than being required to provide transport encryption.
 
 ### 2. Validate Remote Fingerprints
 
@@ -346,21 +556,74 @@ turbo_dc_peer_set_remote_fingerprint(peer, fp_hash, fp);
 turbo_media_setup_srtp(media_ctx);
 ```
 
-### 5. Implement Rate Limiting
+### 5. Configure Signaling Resource Bounds
 
-```c
-// Limit connection attempts per IP
-typedef struct {
-    char ip[64];
-    int attempts;
-    time_t last_attempt;
-} rate_limit_entry_t;
+The signaling application enables bounded defaults. Tune them from measured
+SDP sizes, fan-out, and expected client behavior:
 
-int check_rate_limit(const char *ip) {
-    // Allow max 10 attempts per minute
-    return attempts < 10;
-}
+```toml
+[limits]
+max_peers = 1000
+max_rooms = 100
+peer_timeout_ms = 60000
+join_timeout_ms = 10000
+max_message_size = 65536
+messages_per_second = 100
+message_burst = 200
+max_outbox_messages = 256
+max_outbox_bytes = 1048576
+max_connections_per_source = 100
+source_admissions_per_second = 20
+source_admission_burst = 50
+max_source_states = 4096
+source_state_ttl_ms = 300000
 ```
+
+`join_timeout_ms` is a fixed deadline from WebSocket admission to the first
+successful `join`; later traffic does not extend it. CoroNet rejects a complete
+text or fragmented WebSocket message above `max_message_size` before handing
+it to signaling. Each connection then has a token bucket and a bounded copied
+outbox. A rate or outbox violation closes that connection.
+
+After CoroNet completes TLS and the HTTP WebSocket upgrade, signaling groups
+connections by the socket peer's binary IPv4/IPv6 address. The ephemeral port
+is ignored and IPv4-mapped IPv6 is normalized to IPv4.
+`max_connections_per_source` bounds concurrent upgraded connections, while
+`source_admissions_per_second` and `source_admission_burst` bound upgraded
+connection admission attempts. Inactive token state is retained for
+`source_state_ttl_ms`; `max_source_states` is a hard process-local cardinality
+limit. If the state table is full, a previously unseen source is rejected.
+
+The authenticated `/api/v1/status` response reports cumulative
+`authentication`, `join_timeout`, `message_rate`, `outbox_overflow`,
+`source_address`, `source_capacity`, `source_rate`, and `source_concurrency`
+rejection counters, plus the current `source_state_count`. Alert on rejection
+rates, not only their absolute values.
+
+The source identity is the direct socket peer. TurboMedia does not trust
+`X-Forwarded-For` or similar headers. Behind a reverse proxy, configure the
+corresponding policy at that trusted proxy because signaling sees the proxy IP.
+These controls run after TLS and WebSocket upgrade and are process-local.
+Internet deployments still need pre-handshake edge limits, tenant-wide quotas,
+and distributed enforcement where multiple signaling nodes share traffic.
+
+#### Policy boundary and rollback
+
+The selected design uses the direct socket peer after upgrade because that
+identity is available from CoroNet on every supported WS/WSS backend and does
+not require trusting attacker-controlled HTTP forwarding headers. Enforcing
+only at an external proxy would leave direct deployments unbounded; trusting
+`X-Forwarded-For` inside signaling would require an explicit trusted-proxy CIDR
+contract that the current configuration does not have.
+
+The trade-off is that proxy deployments group traffic under the proxy address,
+and handshake work occurs before this policy. Deploy the same limits at the
+trusted edge using its verified client identity. Migration requires a process
+restart because the limits are startup configuration. To roll back only this
+policy while preserving all other signaling protections, set
+`max_connections_per_source`, `source_admissions_per_second`,
+`source_admission_burst`, `max_source_states`, and `source_state_ttl_ms` to
+zero and restart. The production defaults remain enabled.
 
 ## Monitoring and Debugging
 
@@ -591,9 +854,9 @@ void run_load_test(load_test_t *test) {
 ## Production Checklist
 
 - [ ] STUN/TURN servers configured
-- [ ] TLS enabled for signaling
+- [x] In-process WSS/HTTPS implemented and loopback certificate verification tested
 - [ ] Connection timeouts configured
-- [ ] Reconnection strategy implemented
+- [x] PeerConnection and WHIP/WHEP ICE restart implemented
 - [ ] Logging and monitoring enabled
 - [ ] Load testing completed
 - [ ] Browser interop tested

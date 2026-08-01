@@ -22,6 +22,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   
   # 根据测试类型确定链接库
   set(TEST_LINK_LIBS TurboUtils::TinyTest)
+  if(UNIX)
+    list(APPEND TEST_LINK_LIBS m)
+  endif()
   
   if(TEST_NAME MATCHES "rtsp")
     # RTSP 相关测试
@@ -44,7 +47,12 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   elseif(TEST_NAME STREQUAL "test_mobile_optimizer")
     list(APPEND TEST_LINK_LIBS turbo_media_android)
   elseif(TEST_NAME STREQUAL "test_webrtc")
-    list(APPEND TEST_LINK_LIBS TurboMedia::WebRTC TurboMedia::Core TurboMedia::Server)
+    list(APPEND TEST_LINK_LIBS TurboMedia::WebRTC TurboMedia::Core TurboMedia::Server
+                          TurboMedia::Pipeline TurboMedia::Transport TurboUtils::Core
+                          TurboMedia::RTC)
+  elseif(TEST_NAME STREQUAL "test_pipeline")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server TurboMedia::Transport
+                          TurboMedia::Codec TurboUtils::Core)
   else()
     # 其他测试按组件链接，避免依赖已移除的兼容聚合库。
     list(

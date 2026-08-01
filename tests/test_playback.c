@@ -195,6 +195,31 @@ suite("TurboMedia Playback Module - TDD Tests") {
             turbo_playback_destroy(playback);
         }
     }
+
+   it("create_playback_rejects_malformed_device_ids") {
+        turbo_playback_config_t config = create_valid_config();
+
+        REQUIRE_NULL(turbo_playback_create("", &config));
+        REQUIRE_NULL(turbo_playback_create("speaker", &config));
+        REQUIRE_NULL(turbo_playback_create("-1", &config));
+        REQUIRE_NULL(turbo_playback_create("0x1", &config));
+        REQUIRE_NULL(turbo_playback_create("4294967296", &config));
+    }
+
+   it("create_playback_accepts_an_enumerated_device_id") {
+        turbo_playback_config_t config = create_valid_config();
+        turbo_playback_device_t devices[TURBO_PLAYBACK_MAX_DEVICES];
+        int count = turbo_playback_list_devices(devices, TURBO_PLAYBACK_MAX_DEVICES);
+
+        REQUIRE(count >= 0);
+        if (count > 0) {
+            REQUIRE(strlen(devices[0].id) > 0);
+            turbo_playback_t *playback = turbo_playback_create(devices[0].id, &config);
+            if (playback) {
+                turbo_playback_destroy(playback);
+            }
+        }
+    }
     
    it("create_playback_rejects_invalid_sample_rates") {
         turbo_playback_config_t config = create_valid_config();

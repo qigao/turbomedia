@@ -430,8 +430,11 @@ int rtcp_compound_add_twcc(rtcp_compound_t *compound, const rtcp_twcc_t *twcc) {
   memset(chunks, 0, (size_t)status_count * sizeof(chunks[0]));
 
   size_t delta_size = 0;
+  /* Keep the full local reference-time epoch while deriving deltas. Only the
+   * wire field wraps to 24 bits; masking here breaks serialization after the
+   * monotonic clock crosses the approximately 12.4-day TWCC wrap interval. */
   uint64_t prev_recv_time_us =
-      (uint64_t)(twcc->reference_time & 0x00FFFFFF) * TWCC_REF_TIME_SCALE_US;
+      (uint64_t)twcc->reference_time * TWCC_REF_TIME_SCALE_US;
 
   for (int i = 0; i < status_count; ++i) {
     if (!twcc->packets[i].received) {

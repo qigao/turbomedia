@@ -1,0 +1,35 @@
+# Public W3C HTML video test asset:
+# https://www.w3.org/2010/05/video/mediaevents.html
+api_version: turbo.media.pipeline/v1
+id: public-https-to-mpegts
+limits:
+  open_timeout_ms: 15000
+  io_timeout_ms: 15000
+nodes:
+  - id: input
+    kind: source
+    factory: ffmpeg.input
+    config:
+      url: https://media.w3.org/2010/05/sintel/trailer.mp4
+  - id: demux
+    kind: demux
+    factory: ffmpeg.demux
+  - id: mux
+    kind: mux
+    factory: ffmpeg.mux
+    config:
+      format: mpegts
+  - id: output
+    kind: sink
+    factory: ffmpeg.output
+    config:
+      url: public_sintel.ts
+edges:
+  - from: input.out
+    to: demux.in
+  - from: demux.video
+    to: mux.video
+  - from: demux.audio
+    to: mux.audio
+  - from: mux.out
+    to: output.in

@@ -94,7 +94,9 @@ typedef struct {
   int use_tls;
 
   char peer_id[MAX_PEER_ID_LEN];
+  char requested_peer_id[MAX_PEER_ID_LEN];
   char remote_peer_id[MAX_PEER_ID_LEN];
+  const char *join_token;
 
   char cached_candidates[MAX_CACHED_CANDIDATES][512];
   int cached_candidate_count;
@@ -1214,7 +1216,16 @@ static int ensure_media_stack(app_state_t *app) {
   turbo_dc_peer_on_state(app->dc_peer, on_dc_state);
   turbo_dc_peer_on_channel(app->dc_peer, on_dc_channel);
   turbo_dc_peer_on_error(app->dc_peer, on_dc_error);
-  turbo_dc_peer_set_ice_agent(app->dc_peer, app->ice_agent);
+  if (turbo_dc_peer_set_ice_agent(app->dc_peer, app->ice_agent) != 0) {
+    TLOG_ERROR("Failed to attach TurboNet ICE transport to DataChannel peer");
+    turbo_dc_peer_destroy(app->dc_peer);
+    app->dc_peer = NULL;
+    turbo_dc_context_destroy(app->dc_ctx);
+    app->dc_ctx = NULL;
+    ice_agent_destroy(app->ice_agent);
+    app->ice_agent = NULL;
+    return -1;
+  }
   app->media_ready = 1;
   return 0;
 }
@@ -1284,7 +1295,14 @@ static void signal_task(coro_t *co, void *arg) {
   TLOG_INFO("Connected to signaling server at {}:{}{}", app->signal_host, app->signal_port,
             app->signal_path);
 
-  enqueue_signalf(app, "{\"type\":\"join\",\"room\":\"%s\"}", app->room);
+  if (app->join_token) {
+    enqueue_signalf(app,
+                    "{\"type\":\"join\",\"room\":\"%s\","
+                    "\"peer_id\":\"%s\",\"token\":\"%s\"}",
+                    app->room, app->requested_peer_id, app->join_token);
+  } else {
+    enqueue_signalf(app, "{\"type\":\"join\",\"room\":\"%s\"}", app->room);
+  }
   if (flush_signal_outbox(app) != 0) {
     TLOG_ERROR("Failed to send initial join message");
     if (app->signal_socket) {
@@ -1422,7 +1440,8 @@ static void dc_timer_task(coro_t *co, void *arg) {
 static void print_usage(const char *argv0) {
   fprintf(stderr,
           "Usage: %s (--offer|--answer) [--room name] [--server host] [--port port]\n"
-          "          [--path /ws] [--secure]\n",
+          "          [--path /ws] [--secure] [--peer-id id]\n"
+          "Set TURBO_SIGNALING_PEER_TOKEN for authenticated admission.\n",
           argv0);
 }
 
@@ -1439,6 +1458,14 @@ int main(int argc, char **argv) {
   snprintf(app.room, sizeof(app.room), "default");
   snprintf(app.signal_host, sizeof(app.signal_host), "127.0.0.1");
   snprintf(app.signal_path, sizeof(app.signal_path), "/");
+  app.join_token = getenv("TURBO_SIGNALING_PEER_TOKEN");
+  {
+    const char *peer_id = getenv("TURBO_SIGNALING_PEER_ID");
+    if (peer_id && peer_id[0] != '\0') {
+      snprintf(app.requested_peer_id, sizeof(app.requested_peer_id), "%s",
+               peer_id);
+    }
+  }
 
   for (i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--offer") == 0) {
@@ -1457,6 +1484,9 @@ int main(int argc, char **argv) {
       snprintf(app.signal_path, sizeof(app.signal_path), "%s", argv[++i]);
     } else if (strcmp(argv[i], "--secure") == 0) {
       app.use_tls = 1;
+    } else if (strcmp(argv[i], "--peer-id") == 0 && i + 1 < argc) {
+      snprintf(app.requested_peer_id, sizeof(app.requested_peer_id), "%s",
+               argv[++i]);
     } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       print_usage(argv[0]);
       return 0;
@@ -1468,6 +1498,16 @@ int main(int argc, char **argv) {
 
   if (!role_specified) {
     print_usage(argv[0]);
+    return 1;
+  }
+  if (app.join_token && app.join_token[0] == '\0') {
+    app.join_token = NULL;
+  }
+  if ((app.join_token && app.requested_peer_id[0] == '\0') ||
+      (!app.join_token && app.requested_peer_id[0] != '\0')) {
+    fprintf(stderr,
+            "Authenticated signaling requires both a peer ID and "
+            "TURBO_SIGNALING_PEER_TOKEN.\n");
     return 1;
   }
 

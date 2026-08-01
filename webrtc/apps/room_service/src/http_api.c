@@ -1,5 +1,6 @@
 #include "room_service/http_api.h"
-#include <async.h>
+#include "turbo_media_auth.h"
+#include <iris/async.h>
 #include <iris/iris_app.h>
 #include <iris/server.h>
 #include <iris/router.h>
@@ -8,21 +9,38 @@
 #include <turbo_coro_socket.h>
 #include <turbo_parser.h>
 #include <turbo_thread.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+#define ROOM_SERVICE_CONTROL_AUDIENCE "turbomedia-room-control"
+#define ROOM_SERVICE_SCOPE_CONTROL_WRITE "room.control.write"
+#define ROOM_SERVICE_SCOPE_CONTROL_DANGEROUS "room.control.dangerous"
 
 static room_service_app_server_t *g_room_service_server = NULL;
 
 struct room_service_http_api_s {
     iris_app_t *app;
+    room_service_app_server_t *server;
     turbo_thread_t thread;
     int thread_started;
+    turbo_mutex_t lifecycle_mutex;
+    turbo_cond_t lifecycle_cond;
     coro_context_t *ctx;
     coro_socket_t *listener;
-    int running;
+    int state;
+    const char *host;
     int port;
 };
+
+typedef enum room_service_http_state_e {
+    ROOM_SERVICE_HTTP_STOPPED = 0,
+    ROOM_SERVICE_HTTP_STARTING,
+    ROOM_SERVICE_HTTP_RUNNING,
+    ROOM_SERVICE_HTTP_STOPPING,
+    ROOM_SERVICE_HTTP_FAILED
+} room_service_http_state_t;
 
 typedef enum room_service_command_access_e {
     ROOM_SERVICE_COMMAND_ACCESS_READ = 0,
@@ -93,22 +111,37 @@ static const char *json_string_field(const json_value_t *obj, const char *key) {
 }
 
 static int control_auth_enabled(const room_service_app_config_t *config) {
-    return config && config->control_token && config->control_token[0] != '\0';
+    return config &&
+           ((config->control_token && config->control_token[0] != '\0') ||
+            (config->auth_active_secret &&
+             config->auth_active_secret[0] != '\0'));
 }
 
-static int bearer_token_matches(const char *authorization, const char *token) {
-    const char *prefix = "Bearer ";
-    size_t prefix_len = strlen(prefix);
+static turbo_media_auth_config_t signed_auth_config(
+    const room_service_app_config_t *config) {
+    turbo_media_auth_config_t auth = {0};
 
-    if (!authorization || !token || strncmp(authorization, prefix, prefix_len) != 0) {
-        return 0;
+    if (!config) {
+        return auth;
     }
-
-    return strcmp(authorization + prefix_len, token) == 0;
+    auth.issuer = config->auth_issuer;
+    auth.active_key_id = config->auth_active_key_id;
+    auth.active_secret = config->auth_active_secret;
+    auth.previous_key_id = config->auth_previous_key_id;
+    auth.previous_secret = config->auth_previous_secret;
+    auth.revoked_token_sha256 = config->auth_revoked_token_sha256;
+    auth.clock_skew_seconds = config->auth_clock_skew_seconds;
+    auth.max_ttl_seconds = config->auth_max_ttl_seconds;
+    return auth;
 }
 
-static int request_has_control_auth(const Req *req, const room_service_app_config_t *config) {
+static int request_has_control_auth(
+    const Req *req, const room_service_app_config_t *config,
+    const char *required_scope, const char *room_id,
+    const char *participant_id) {
     const char *authorization;
+    turbo_media_auth_config_t auth;
+    turbo_media_auth_policy_t policy;
 
     if (!control_auth_enabled(config)) {
         return 1;
@@ -118,8 +151,15 @@ static int request_has_control_auth(const Req *req, const room_service_app_confi
     if (!authorization) {
         authorization = get_headers(req, "authorization");
     }
-
-    return bearer_token_matches(authorization, config->control_token);
+    auth = signed_auth_config(config);
+    memset(&policy, 0, sizeof(policy));
+    policy.audience = ROOM_SERVICE_CONTROL_AUDIENCE;
+    policy.required_scope = required_scope;
+    policy.room_id = room_id;
+    policy.participant_id = participant_id;
+    return turbo_media_auth_authorize(
+               authorization, config->control_token, &auth, &policy) !=
+           TURBO_MEDIA_AUTH_DENIED;
 }
 
 static room_service_command_access_t command_access_for_type(const char *type) {
@@ -160,14 +200,18 @@ static int command_requires_control_auth(const char *type) {
     return command_access_for_type(type) != ROOM_SERVICE_COMMAND_ACCESS_READ;
 }
 
-static int require_control_auth(Req *req, Res *res) {
+static int require_control_auth(
+    Req *req, Res *res, const char *required_scope,
+    const char *room_id, const char *participant_id) {
     const room_service_app_config_t *config =
         room_service_app_server_get_config(g_room_service_server);
 
-    if (request_has_control_auth(req, config)) {
+    if (request_has_control_auth(req, config, required_scope, room_id,
+                                 participant_id)) {
         return 0;
     }
 
+    set_header(res, "WWW-Authenticate", "Bearer");
     send_error_json(res, 401, "UNAUTHORIZED", "control token required");
     return -1;
 }
@@ -2853,10 +2897,6 @@ static void handle_join(Req *req, Res *res) {
         send_error_json(res, 500, "SERVER_NOT_READY", "room service not initialized");
         return;
     }
-    if (require_control_auth(req, res) != 0) {
-        return;
-    }
-
     service = room_service_app_server_get_service(g_room_service_server);
     root = parse_request_object(req, res);
     if (!service || !root) {
@@ -2866,6 +2906,12 @@ static void handle_join(Req *req, Res *res) {
 
     room_id = json_string_field(root, "room_id");
     participant_obj = object_field_or_self(root, "participant");
+    participant_id = json_string_field(participant_obj, "participant_id");
+    if (require_control_auth(req, res, ROOM_SERVICE_SCOPE_CONTROL_WRITE,
+                             room_id, participant_id) != 0) {
+        turbo_free_json(&root);
+        return;
+    }
     if (!room_id ||
         ensure_room_exists(service, room_id, parse_room_type(json_string_field(root, "room_type")),
                            json_string_field(root, "created_by")) != 0 ||
@@ -2902,10 +2948,6 @@ static void handle_publish(Req *req, Res *res) {
         send_error_json(res, 500, "SERVER_NOT_READY", "room service not initialized");
         return;
     }
-    if (require_control_auth(req, res) != 0) {
-        return;
-    }
-
     service = room_service_app_server_get_service(g_room_service_server);
     root = parse_request_object(req, res);
     if (!service || !root) {
@@ -2915,6 +2957,12 @@ static void handle_publish(Req *req, Res *res) {
 
     room_id = json_string_field(root, "room_id");
     track_obj = object_field_or_self(root, "track");
+    if (require_control_auth(
+            req, res, ROOM_SERVICE_SCOPE_CONTROL_WRITE, room_id,
+            json_string_field(track_obj, "owner_participant_id")) != 0) {
+        turbo_free_json(&root);
+        return;
+    }
     if (!room_id ||
         publish_track_from_request(service, room_id, track_obj, &track_id,
                                    &warning_code, &warning_message) != 0) {
@@ -2950,10 +2998,6 @@ static void handle_subscribe(Req *req, Res *res) {
         send_error_json(res, 500, "SERVER_NOT_READY", "room service not initialized");
         return;
     }
-    if (require_control_auth(req, res) != 0) {
-        return;
-    }
-
     service = room_service_app_server_get_service(g_room_service_server);
     root = parse_request_object(req, res);
     if (!service || !root) {
@@ -2963,6 +3007,13 @@ static void handle_subscribe(Req *req, Res *res) {
 
     room_id = json_string_field(root, "room_id");
     subscription_obj = object_field_or_self(root, "subscription");
+    if (require_control_auth(
+            req, res, ROOM_SERVICE_SCOPE_CONTROL_WRITE, room_id,
+            json_string_field(subscription_obj,
+                              "subscriber_participant_id")) != 0) {
+        turbo_free_json(&root);
+        return;
+    }
     if (!room_id ||
         subscribe_track_from_request(service, room_id, subscription_obj,
                                      &subscriber_participant_id, &track_id,
@@ -3609,7 +3660,10 @@ static void handle_command(Req *req, Res *res) {
     json_value_t *root = NULL;
     const char *type;
     const char *room_id;
+    const char *auth_participant_id;
+    const char *required_scope;
     const room_service_app_config_t *app_config;
+    room_service_command_access_t access;
     int rc = -1;
     const char *warning_code = NULL;
     const char *warning_message = NULL;
@@ -3638,13 +3692,22 @@ static void handle_command(Req *req, Res *res) {
 
     type = json_string_field(root, "type");
     room_id = json_string_field(root, "room_id");
+    auth_participant_id = json_string_field(root, "participant_id");
     if (!type) {
         send_error_json(res, 400, "INVALID_REQUEST", "missing command type");
         turbo_free_json(&root);
         return;
     }
     app_config = room_service_app_server_get_config(g_room_service_server);
-    if (command_requires_control_auth(type) && !request_has_control_auth(req, app_config)) {
+    access = command_access_for_type(type);
+    required_scope =
+        access == ROOM_SERVICE_COMMAND_ACCESS_DANGEROUS
+            ? ROOM_SERVICE_SCOPE_CONTROL_DANGEROUS
+            : ROOM_SERVICE_SCOPE_CONTROL_WRITE;
+    if (command_requires_control_auth(type) &&
+        !request_has_control_auth(req, app_config, required_scope, room_id,
+                                  auth_participant_id)) {
+        set_header(res, "WWW-Authenticate", "Bearer");
         send_error_json(res, 401, "UNAUTHORIZED", "control token required");
         turbo_free_json(&root);
         return;
@@ -4929,13 +4992,32 @@ static void handle_command(Req *req, Res *res) {
     turbo_free_json(&root);
 }
 
+static void room_service_http_mark_running(void *arg1, void *arg2) {
+    room_service_http_api_t *api = (room_service_http_api_t *)arg1;
+    (void)arg2;
+
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    if (api->state == ROOM_SERVICE_HTTP_STARTING) {
+        api->state = ROOM_SERVICE_HTTP_RUNNING;
+        turbo_cond_broadcast(&api->lifecycle_cond);
+    }
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+}
+
 static void room_service_http_thread(void *arg) {
     room_service_http_api_t *api = (room_service_http_api_t *)arg;
+    const room_service_app_config_t *config =
+        room_service_app_server_get_config(api->server);
+    coro_context_t *ctx = NULL;
+    coro_socket_t *listener = NULL;
     int async_initialized = 0;
 
-    api->ctx = coro_context_create(NULL);
-    if (!api->ctx) {
-        api->running = 0;
+    ctx = coro_context_create(NULL);
+    if (!ctx) {
+        turbo_mutex_lock(&api->lifecycle_mutex);
+        api->state = ROOM_SERVICE_HTTP_FAILED;
+        turbo_cond_broadcast(&api->lifecycle_cond);
+        turbo_mutex_unlock(&api->lifecycle_mutex);
         return;
     }
 
@@ -4943,31 +5025,74 @@ static void room_service_http_thread(void *arg) {
         async_initialized = 1;
     }
 
-    api->listener = iris_server_start(api->app, api->ctx, (unsigned short)api->port);
-    if (!api->listener) {
-        coro_context_destroy(api->ctx);
+    if (config && config->use_tls) {
+        turbo_tls_server_config_t tls_config;
+
+        memset(&tls_config, 0, sizeof(tls_config));
+        tls_config.size = sizeof(tls_config);
+        tls_config.cert_file = config->tls_cert_file;
+        tls_config.key_file = config->tls_key_file;
+        tls_config.client_auth = TURBO_TLS_CLIENT_AUTH_NONE;
+        listener = iris_server_start_tls_on(
+            api->app, ctx, api->host, (unsigned short)api->port,
+            &tls_config);
+    } else {
+        listener = iris_server_start_on(
+            api->app, ctx, api->host, (unsigned short)api->port);
+    }
+    if (!listener) {
+        coro_context_destroy(ctx);
+        if (async_initialized) {
+            iris_async_shutdown();
+        }
+        turbo_mutex_lock(&api->lifecycle_mutex);
+        api->state = ROOM_SERVICE_HTTP_FAILED;
+        turbo_cond_broadcast(&api->lifecycle_cond);
+        turbo_mutex_unlock(&api->lifecycle_mutex);
+        return;
+    }
+
+    coro_context_set_persistent(ctx, 1);
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    api->ctx = ctx;
+    api->listener = listener;
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+
+    if (coro_post(ctx, room_service_http_mark_running, api, NULL) != 0) {
+        turbo_mutex_lock(&api->lifecycle_mutex);
+        api->listener = NULL;
         api->ctx = NULL;
-        api->running = 0;
+        api->state = ROOM_SERVICE_HTTP_FAILED;
+        turbo_cond_broadcast(&api->lifecycle_cond);
+        turbo_mutex_unlock(&api->lifecycle_mutex);
+        coro_context_set_persistent(ctx, 0);
+        coro_socket_destroy(listener);
+        coro_context_destroy(ctx);
         if (async_initialized) {
             iris_async_shutdown();
         }
         return;
     }
 
-    coro_context_set_persistent(api->ctx, 1);
-    coro_context_run(api->ctx, TURBO_RUN_DEFAULT);
+    coro_context_run(ctx, TURBO_RUN_DEFAULT);
 
-    if (api->listener) {
-        coro_socket_destroy(api->listener);
-        api->listener = NULL;
-    }
-    if (api->ctx) {
-        coro_context_destroy(api->ctx);
-        api->ctx = NULL;
-    }
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    api->listener = NULL;
+    api->ctx = NULL;
+    api->state = ROOM_SERVICE_HTTP_STOPPING;
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+
+    coro_context_set_persistent(ctx, 0);
+    coro_socket_destroy(listener);
+    coro_context_destroy(ctx);
     if (async_initialized) {
         iris_async_shutdown();
     }
+
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    api->state = ROOM_SERVICE_HTTP_STOPPED;
+    turbo_cond_broadcast(&api->lifecycle_cond);
+    turbo_mutex_unlock(&api->lifecycle_mutex);
 }
 
 room_service_http_api_t *room_service_http_api_create(room_service_app_server_t *server) {
@@ -4983,11 +5108,16 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
         return NULL;
     }
 
+    turbo_mutex_init(&api->lifecycle_mutex);
+    turbo_cond_init(&api->lifecycle_cond);
     api->app = iris_app_create();
     if (!api->app) {
+        turbo_cond_destroy(&api->lifecycle_cond);
+        turbo_mutex_destroy(&api->lifecycle_mutex);
         free(api);
         return NULL;
     }
+    api->server = server;
 
     g_room_service_server = server;
 
@@ -5038,41 +5168,63 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
 }
 
 int room_service_http_api_start(room_service_http_api_t *api, const char *host, int port) {
-    (void)host;
-
-    if (!api || api->running || port <= 0) {
+    if (!api || !host || host[0] == '\0' || port <= 0 || port > UINT16_MAX) {
         return -1;
     }
 
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    if (api->state != ROOM_SERVICE_HTTP_STOPPED || api->thread_started) {
+        turbo_mutex_unlock(&api->lifecycle_mutex);
+        return -1;
+    }
+    api->host = host;
     api->port = port;
+    api->state = ROOM_SERVICE_HTTP_STARTING;
     if (turbo_thread_create(&api->thread, room_service_http_thread, api) != 0) {
+        api->state = ROOM_SERVICE_HTTP_STOPPED;
+        turbo_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
 
     api->thread_started = 1;
-    api->running = 1;
-    return 0;
+    while (api->state == ROOM_SERVICE_HTTP_STARTING) {
+        turbo_cond_wait(&api->lifecycle_cond, &api->lifecycle_mutex);
+    }
+    if (api->state == ROOM_SERVICE_HTTP_RUNNING) {
+        turbo_mutex_unlock(&api->lifecycle_mutex);
+        return 0;
+    }
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+
+    turbo_thread_join(&api->thread);
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    api->thread_started = 0;
+    api->state = ROOM_SERVICE_HTTP_STOPPED;
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+    return -1;
 }
 
 void room_service_http_api_stop(room_service_http_api_t *api) {
+    int should_join;
+
     if (!api) {
         return;
     }
 
-    api->running = 0;
-    if (api->ctx) {
-        coro_context_set_persistent(api->ctx, 0);
-    }
-    if (api->listener) {
-        coro_socket_destroy(api->listener);
-        api->listener = NULL;
-    }
-    if (api->ctx) {
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    if (api->state == ROOM_SERVICE_HTTP_RUNNING && api->ctx) {
+        api->state = ROOM_SERVICE_HTTP_STOPPING;
         coro_context_stop(api->ctx);
     }
-    if (api->thread_started) {
+    should_join = api->thread_started;
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+
+    if (should_join) {
         turbo_thread_join(&api->thread);
+        turbo_mutex_lock(&api->lifecycle_mutex);
         api->thread_started = 0;
+        api->state = ROOM_SERVICE_HTTP_STOPPED;
+        turbo_mutex_unlock(&api->lifecycle_mutex);
     }
 }
 
@@ -5081,15 +5233,12 @@ void room_service_http_api_destroy(room_service_http_api_t *api) {
         return;
     }
 
-    if (api->running) {
-        room_service_http_api_stop(api);
-    } else if (api->thread_started) {
-        turbo_thread_join(&api->thread);
-        api->thread_started = 0;
-    }
+    room_service_http_api_stop(api);
     if (api->app) {
         iris_app_destroy(api->app);
     }
+    turbo_cond_destroy(&api->lifecycle_cond);
+    turbo_mutex_destroy(&api->lifecycle_mutex);
     free(api);
 }
 

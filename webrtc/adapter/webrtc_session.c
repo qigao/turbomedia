@@ -510,6 +510,11 @@ int turbo_media_webrtc_session_create_with_backend(
     backend_config.turn_servers = config->turn_servers;
     backend_config.turn_server_count = config->turn_server_count;
     backend_config.allow_loopback = config->allow_loopback;
+    backend_config.accept_remote_tracks =
+        config->role == TURBO_MEDIA_WEBRTC_ROLE_PUBLISHER;
+    backend_config.event_queue_capacity = config->event_queue_capacity;
+    backend_config.event_queue_max_bytes = config->event_queue_max_bytes;
+    backend_config.max_rtp_packet_bytes = config->max_rtp_packet_bytes;
     backend_config.on_state = rtc_backend_state;
     backend_config.on_ice_candidate = rtc_backend_ice_candidate;
     backend_config.on_remote_track = rtc_backend_remote_track;
@@ -524,8 +529,6 @@ int turbo_media_webrtc_session_create_with_backend(
 
     if (created->role == TURBO_MEDIA_WEBRTC_ROLE_PUBLISHER) {
         rc = rtc_open_publisher(created);
-    } else {
-        rc = rtc_add_player_tracks(created);
     }
     if (rc != TURBO_MEDIA_OK) goto cleanup;
 
@@ -534,6 +537,10 @@ int turbo_media_webrtc_session_create_with_backend(
                  ? created->last_error
                  : TURBO_MEDIA_ERR_INVALID;
         goto cleanup;
+    }
+    if (created->role == TURBO_MEDIA_WEBRTC_ROLE_PLAYER) {
+        rc = rtc_add_player_tracks(created);
+        if (rc != TURBO_MEDIA_OK) goto cleanup;
     }
     if (backend->create_answer(created->peer,
                                answer_sdp,
@@ -550,6 +557,21 @@ cleanup:
     created->last_error = rc;
     turbo_media_webrtc_session_destroy(created);
     return rc;
+}
+
+int turbo_media_webrtc_session_create(
+    const turbo_media_webrtc_session_config_t *config,
+    char *answer_sdp,
+    size_t answer_sdp_capacity,
+    size_t *answer_sdp_length,
+    turbo_media_webrtc_session_t **session) {
+    return turbo_media_webrtc_session_create_with_backend(
+        config,
+        turbo_media_webrtc_internal_backend(),
+        answer_sdp,
+        answer_sdp_capacity,
+        answer_sdp_length,
+        session);
 }
 
 void turbo_media_webrtc_session_destroy(turbo_media_webrtc_session_t *session) {
@@ -588,8 +610,10 @@ int turbo_media_webrtc_session_pump(turbo_media_webrtc_session_t *session) {
     }
     if (session->last_error != TURBO_MEDIA_OK) return session->last_error;
     if (session->backend->pump(session->peer) != 0) {
-        session->last_error = TURBO_MEDIA_ERR_STATE;
-        return TURBO_MEDIA_ERR_STATE;
+        if (session->last_error == TURBO_MEDIA_OK) {
+            session->last_error = TURBO_MEDIA_ERR_STATE;
+        }
+        return session->last_error;
     }
     return session->last_error;
 }

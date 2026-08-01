@@ -57,12 +57,39 @@ typedef struct turbo_media_webrtc_session_config_s {
     const char *const *turn_servers;
     size_t turn_server_count;
     int allow_loopback;
+    size_t event_queue_capacity;
+    size_t event_queue_max_bytes;
+    size_t max_rtp_packet_bytes;
     int replay_cached;
     int remove_source_on_close;
     turbo_media_webrtc_ice_candidate_cb on_ice_candidate;
     turbo_media_webrtc_state_cb on_state;
     void *user_data;
 } turbo_media_webrtc_session_config_t;
+
+/**
+ * Create a WHIP/WHEP session with the built-in TurboMedia PeerConnection backend.
+ *
+ * @param config Session identity, role, ICE servers, callbacks, and queue limits.
+ *        Queue limit fields use production defaults when zero.
+ * @param answer_sdp Receives the NUL-terminated SDP answer.
+ * @param answer_sdp_capacity Capacity of answer_sdp, including the NUL byte.
+ * @param answer_sdp_length Optional answer length excluding the NUL byte.
+ * @param session Receives the owned session on success.
+ * @return TURBO_MEDIA_OK on success; TURBO_MEDIA_ERR_INVALID for invalid SDP,
+ *         configuration, or codec negotiation; TURBO_MEDIA_ERR_NOMEM on
+ *         allocation failure; otherwise a TurboMedia state/resource error.
+ *
+ * The creating thread owns the session and must call
+ * turbo_media_webrtc_session_pump() regularly. Destroy the result with
+ * turbo_media_webrtc_session_destroy().
+ */
+CXX_C_API int turbo_media_webrtc_session_create(
+    const turbo_media_webrtc_session_config_t *config,
+    char *answer_sdp,
+    size_t answer_sdp_capacity,
+    size_t *answer_sdp_length,
+    turbo_media_webrtc_session_t **session);
 
 CXX_C_API void turbo_media_webrtc_session_destroy(
     turbo_media_webrtc_session_t *session);

@@ -1,5 +1,7 @@
 #include "sfu_node/http_api.h"
-#include <async.h>
+#include "turbo_media_auth.h"
+#include "turbo_sdp.h"
+#include <iris/async.h>
 #include <iris/iris_app.h>
 #include <iris/server.h>
 #include <iris/router.h>
@@ -7,23 +9,49 @@
 #include <turbo_coro_context.h>
 #include <turbo_coro_socket.h>
 #include <turbo_parser.h>
+#include <turbo_crypto.h>
 #include <turbo_thread.h>
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+#define SFU_NODE_MEDIA_SDP_MAX_LENGTH 65536u
+#define SFU_NODE_MEDIA_LOCATION_CAPACITY 256u
+#define SFU_NODE_MEDIA_ETAG_CAPACITY 32u
+#define SFU_NODE_CONTROL_AUDIENCE "turbomedia-sfu-control"
+#define SFU_NODE_MEDIA_AUDIENCE "turbomedia-sfu-media"
+#define SFU_NODE_SCOPE_CONTROL_WRITE "sfu.control.write"
+#define SFU_NODE_SCOPE_CONTROL_DANGEROUS "sfu.control.dangerous"
+#define SFU_NODE_SCOPE_MEDIA_PUBLISH "sfu.media.publish"
+#define SFU_NODE_SCOPE_MEDIA_SUBSCRIBE "sfu.media.subscribe"
+#define SFU_NODE_SCOPE_MEDIA_TRICKLE "sfu.media.trickle"
+#define SFU_NODE_SCOPE_MEDIA_DELETE "sfu.media.delete"
 
 struct sfu_node_http_api_s {
     iris_app_t *app;
     sfu_node_app_server_t *server;
     turbo_thread_t thread;
     int thread_started;
+    turbo_mutex_t lifecycle_mutex;
+    turbo_cond_t lifecycle_cond;
     coro_context_t *ctx;
     coro_socket_t *listener;
-    int running;
+    int state;
+    const char *host;
     int port;
     int registered;
     struct sfu_node_http_api_s *next;
 };
+
+typedef enum sfu_node_http_state_e {
+    SFU_NODE_HTTP_STOPPED = 0,
+    SFU_NODE_HTTP_STARTING,
+    SFU_NODE_HTTP_RUNNING,
+    SFU_NODE_HTTP_STOPPING,
+    SFU_NODE_HTTP_FAILED
+} sfu_node_http_state_t;
 
 static turbo_mutex_t g_sfu_node_http_registry_mutex;
 static turbo_once_t g_sfu_node_http_registry_once = TURBO_ONCE_INIT;
@@ -224,22 +252,37 @@ static int json_uint32_array_field(const json_value_t *obj, const char *key,
 }
 
 static int control_auth_enabled(const sfu_node_app_config_t *config) {
-    return config && config->control_token && config->control_token[0] != '\0';
+    return config &&
+           ((config->control_token && config->control_token[0] != '\0') ||
+            (config->auth_active_secret &&
+             config->auth_active_secret[0] != '\0'));
 }
 
-static int bearer_token_matches(const char *authorization, const char *token) {
-    const char *prefix = "Bearer ";
-    size_t prefix_len = strlen(prefix);
+static turbo_media_auth_config_t signed_auth_config(
+    const sfu_node_app_config_t *config) {
+    turbo_media_auth_config_t auth = {0};
 
-    if (!authorization || !token || strncmp(authorization, prefix, prefix_len) != 0) {
-        return 0;
+    if (!config) {
+        return auth;
     }
-
-    return strcmp(authorization + prefix_len, token) == 0;
+    auth.issuer = config->auth_issuer;
+    auth.active_key_id = config->auth_active_key_id;
+    auth.active_secret = config->auth_active_secret;
+    auth.previous_key_id = config->auth_previous_key_id;
+    auth.previous_secret = config->auth_previous_secret;
+    auth.revoked_token_sha256 = config->auth_revoked_token_sha256;
+    auth.clock_skew_seconds = config->auth_clock_skew_seconds;
+    auth.max_ttl_seconds = config->auth_max_ttl_seconds;
+    return auth;
 }
 
-static int request_has_control_auth(const Req *req, const sfu_node_app_config_t *config) {
+static int request_has_control_auth(
+    const Req *req, const sfu_node_app_config_t *config,
+    const char *required_scope, const char *room_id,
+    const char *participant_id) {
     const char *authorization;
+    turbo_media_auth_config_t auth;
+    turbo_media_auth_policy_t policy;
 
     if (!control_auth_enabled(config)) {
         return 1;
@@ -249,8 +292,229 @@ static int request_has_control_auth(const Req *req, const sfu_node_app_config_t 
     if (!authorization) {
         authorization = get_headers(req, "authorization");
     }
+    auth = signed_auth_config(config);
+    memset(&policy, 0, sizeof(policy));
+    policy.audience = SFU_NODE_CONTROL_AUDIENCE;
+    policy.required_scope = required_scope;
+    policy.room_id = room_id;
+    policy.participant_id = participant_id;
+    return turbo_media_auth_authorize(
+               authorization, config->control_token, &auth, &policy) !=
+           TURBO_MEDIA_AUTH_DENIED;
+}
 
-    return bearer_token_matches(authorization, config->control_token);
+static const char *request_header(const Req *req, const char *name,
+                                  const char *lowercase_name) {
+    const char *value;
+
+    if (!req || !name) {
+        return NULL;
+    }
+    value = get_headers(req, name);
+    if (!value && lowercase_name) {
+        value = get_headers(req, lowercase_name);
+    }
+    return value;
+}
+
+static int ascii_equal_ignore_case_n(const char *left, const char *right,
+                                     size_t length) {
+    size_t i;
+
+    if (!left || !right) {
+        return 0;
+    }
+    for (i = 0; i < length; ++i) {
+        unsigned char a = (unsigned char)left[i];
+        unsigned char b = (unsigned char)right[i];
+
+        if (a >= 'A' && a <= 'Z') {
+            a = (unsigned char)(a + ('a' - 'A'));
+        }
+        if (b >= 'A' && b <= 'Z') {
+            b = (unsigned char)(b + ('a' - 'A'));
+        }
+        if (a != b) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int request_content_type_is(const Req *req, const char *expected) {
+    const char *content_type = request_header(
+        req, "Content-Type", "content-type");
+    size_t expected_len;
+
+    if (!content_type || !expected) {
+        return 0;
+    }
+    expected_len = strlen(expected);
+    return strlen(content_type) >= expected_len &&
+           ascii_equal_ignore_case_n(content_type, expected, expected_len) &&
+           (content_type[expected_len] == '\0' ||
+            content_type[expected_len] == ';');
+}
+
+static int media_auth_enabled(const sfu_node_app_config_t *config) {
+    return config &&
+           ((config->media_access_token &&
+             config->media_access_token[0] != '\0') ||
+            (config->auth_active_secret &&
+             config->auth_active_secret[0] != '\0'));
+}
+
+static int request_has_media_auth(
+    const Req *req, const sfu_node_app_config_t *config,
+    const char *required_scope, const char *room_id,
+    const char *participant_id) {
+    const char *authorization;
+    turbo_media_auth_config_t auth;
+    turbo_media_auth_policy_t policy;
+
+    if (!media_auth_enabled(config)) {
+        return 0;
+    }
+    authorization = request_header(req, "Authorization", "authorization");
+    auth = signed_auth_config(config);
+    memset(&policy, 0, sizeof(policy));
+    policy.audience = SFU_NODE_MEDIA_AUDIENCE;
+    policy.required_scope = required_scope;
+    policy.room_id = room_id;
+    policy.participant_id = participant_id;
+    return turbo_media_auth_authorize(
+               authorization, config->media_access_token, &auth, &policy) !=
+           TURBO_MEDIA_AUTH_DENIED;
+}
+
+static int require_media_auth(Req *req, Res *res,
+                              const sfu_node_app_config_t *config,
+                              const char *required_scope,
+                              const char *room_id,
+                              const char *participant_id) {
+    if (!media_auth_enabled(config)) {
+        send_text(res, SERVICE_UNAVAILABLE,
+                  "WHIP/WHEP media access is not configured");
+        return -1;
+    }
+    if (!request_has_media_auth(req, config, required_scope, room_id,
+                                participant_id)) {
+        set_header(res, "WWW-Authenticate", "Bearer");
+        send_text(res, UNAUTHORIZED, "Bearer authentication required");
+        return -1;
+    }
+    return 0;
+}
+
+static int media_resource_id_valid(const char *value, size_t capacity) {
+    size_t length;
+
+    if (!value || capacity < 2) {
+        return 0;
+    }
+    length = strlen(value);
+    if (length == 0 || length >= capacity) {
+        return 0;
+    }
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char ch = (unsigned char)value[i];
+        if (!((ch >= 'a' && ch <= 'z') ||
+              (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9') ||
+              ch == '-' || ch == '_' || ch == '.' || ch == '~')) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int generate_media_session_id(char output[TURBO_PARTICIPANT_ID_MAX]) {
+    static const char hex[] = "0123456789abcdef";
+    uint8_t random_bytes[16];
+
+    if (!output ||
+        turbo_crypto_random(random_bytes, sizeof(random_bytes)) !=
+            TURBO_CRYPTO_OK) {
+        return -1;
+    }
+    for (size_t i = 0; i < sizeof(random_bytes); ++i) {
+        output[i * 2] = hex[random_bytes[i] >> 4];
+        output[i * 2 + 1] = hex[random_bytes[i] & 0x0f];
+    }
+    output[sizeof(random_bytes) * 2] = '\0';
+    return 0;
+}
+
+static void format_media_etag(uint64_t version,
+                              char output[SFU_NODE_MEDIA_ETAG_CAPACITY]) {
+    snprintf(output, SFU_NODE_MEDIA_ETAG_CAPACITY, "\"%" PRIu64 "\"",
+             version);
+}
+
+static int parse_media_etag(const char *value, uint64_t *version_out) {
+    uint64_t version = 0;
+    size_t length;
+
+    if (!value || !version_out) {
+        return -1;
+    }
+    length = strlen(value);
+    if (length < 3 || value[0] != '"' || value[length - 1] != '"') {
+        return -1;
+    }
+    for (size_t i = 1; i + 1 < length; ++i) {
+        unsigned int digit;
+
+        if (value[i] < '0' || value[i] > '9') {
+            return -1;
+        }
+        digit = (unsigned int)(value[i] - '0');
+        if (version > (UINT64_MAX - digit) / 10u) {
+            return -1;
+        }
+        version = version * 10u + digit;
+    }
+    if (version == 0) {
+        return -1;
+    }
+    *version_out = version;
+    return 0;
+}
+
+static int media_offer_direction_valid(const char *sdp,
+                                       const char *resource_kind) {
+    sdp_session_t parsed;
+    int active_media_count = 0;
+    int whip;
+
+    if (!sdp || !resource_kind) {
+        return 0;
+    }
+    whip = strcmp(resource_kind, "whip") == 0;
+    if (!whip && strcmp(resource_kind, "whep") != 0) {
+        return 0;
+    }
+    if (sdp_parse(sdp, strlen(sdp), &parsed) != 0) {
+        return 0;
+    }
+    for (int i = 0; i < parsed.media_count; ++i) {
+        const sdp_media_t *media = &parsed.media[i];
+
+        if (media->port == 0 || media->type == SDP_MEDIA_APPLICATION) {
+            continue;
+        }
+        active_media_count++;
+        if (whip) {
+            if (media->direction != SDP_DIRECTION_SENDONLY &&
+                media->direction != SDP_DIRECTION_SENDRECV) {
+                return 0;
+            }
+        } else if (media->direction != SDP_DIRECTION_RECVONLY &&
+                   media->direction != SDP_DIRECTION_SENDRECV) {
+            return 0;
+        }
+    }
+    return active_media_count > 0;
 }
 
 static sfu_node_command_access_t command_access_for_type(const char *type) {
@@ -730,13 +994,263 @@ static void handle_get_webrtc_session(Req *req, Res *res) {
     send_entity_ok_json(res, "webrtc_session", json);
 }
 
+static void handle_media_session_post(Req *req, Res *res,
+                                      const char *resource_kind) {
+    sfu_node_app_server_t *server = sfu_node_http_server_from_req(req);
+    const sfu_node_app_config_t *config;
+    turbo_sfu_node_t *node;
+    turbo_sfu_node_room_stats_t room_stats;
+    const char *room_id = get_params(req, "room_id");
+    const char *participant_id = get_params(req, "participant_id");
+    char session_id[TURBO_PARTICIPANT_ID_MAX];
+    char location[SFU_NODE_MEDIA_LOCATION_CAPACITY];
+    char etag[SFU_NODE_MEDIA_ETAG_CAPACITY];
+    char *offer = NULL;
+    char *answer = NULL;
+    uint64_t version = 0;
+    int created = 0;
+    int location_length;
+
+    if (!server || !resource_kind) {
+        send_text(res, INTERNAL_SERVER_ERROR, "SFU node is unavailable");
+        return;
+    }
+    config = sfu_node_app_server_get_config(server);
+    if (require_media_auth(
+            req, res, config,
+            strcmp(resource_kind, "whip") == 0
+                ? SFU_NODE_SCOPE_MEDIA_PUBLISH
+                : SFU_NODE_SCOPE_MEDIA_SUBSCRIBE,
+            room_id, participant_id) != 0) {
+        return;
+    }
+    if (sfu_node_app_server_is_draining(server)) {
+        send_text(res, SERVICE_UNAVAILABLE, "SFU node is draining");
+        return;
+    }
+    if (!media_resource_id_valid(room_id, TURBO_ROOM_ID_MAX) ||
+        !media_resource_id_valid(participant_id, TURBO_PARTICIPANT_ID_MAX)) {
+        send_text(res, BAD_REQUEST, "Invalid room or participant identifier");
+        return;
+    }
+    if (!request_content_type_is(req, "application/sdp")) {
+        send_text(res, UNSUPPORTED_MEDIA_TYPE,
+                  "Content-Type must be application/sdp");
+        return;
+    }
+    if (!req->body || req->body_len == 0 ||
+        req->body_len > SFU_NODE_MEDIA_SDP_MAX_LENGTH ||
+        memchr(req->body, '\0', req->body_len) != NULL) {
+        send_text(res, BAD_REQUEST, "Invalid SDP offer body");
+        return;
+    }
+
+    node = sfu_node_app_server_get_node(server);
+    memset(&room_stats, 0, sizeof(room_stats));
+    if (!node || turbo_sfu_node_get_room_stats(node, room_id, &room_stats) != 0) {
+        send_text(res, NOT_FOUND, "Room must be provisioned before media setup");
+        return;
+    }
+    if (generate_media_session_id(session_id) != 0) {
+        send_text(res, INTERNAL_SERVER_ERROR,
+                  "Failed to allocate media session identifier");
+        return;
+    }
+
+    offer = (char *)malloc(req->body_len + 1);
+    if (!offer) {
+        send_text(res, INTERNAL_SERVER_ERROR, "Failed to allocate SDP offer");
+        return;
+    }
+    memcpy(offer, req->body, req->body_len);
+    offer[req->body_len] = '\0';
+    if (!media_offer_direction_valid(offer, resource_kind)) {
+        send_text(res, BAD_REQUEST,
+                  "SDP media direction is incompatible with this endpoint");
+        goto cleanup;
+    }
+
+    if (sfu_node_app_server_create_owned_media_session(
+            server, room_id, participant_id, session_id) != 0) {
+        send_text(res, CONFLICT,
+                  "Participant already has an active WebRTC media session");
+        goto cleanup;
+    }
+    created = 1;
+    if (sfu_node_app_server_set_remote_offer(
+            server, room_id, session_id, offer) != 0) {
+        send_text(res, BAD_REQUEST, "Invalid or unsupported SDP offer");
+        goto cleanup;
+    }
+    answer = sfu_node_app_server_copy_local_answer(
+        server, room_id, participant_id, session_id);
+    if (!answer ||
+        sfu_node_app_server_get_media_session_version(
+            server, room_id, participant_id, session_id, &version) != 0) {
+        send_text(res, INTERNAL_SERVER_ERROR,
+                  "Failed to create the SDP answer");
+        goto cleanup;
+    }
+    location_length = snprintf(
+        location, sizeof(location), "/%s/%s/%s/sessions/%s",
+        resource_kind, room_id, participant_id, session_id);
+    if (location_length < 0 ||
+        (size_t)location_length >= sizeof(location)) {
+        send_text(res, INTERNAL_SERVER_ERROR,
+                  "Failed to create media resource location");
+        goto cleanup;
+    }
+    format_media_etag(version, etag);
+    set_header(res, "Location", location);
+    set_header(res, "ETag", etag);
+    set_header(res, "Accept-Patch", "application/trickle-ice-sdpfrag");
+    set_header(res, "Cache-Control", "no-store");
+    reply(res, CREATED, "application/sdp", answer, strlen(answer));
+    created = 0;
+
+cleanup:
+    if (created) {
+        sfu_node_app_server_remove_media_session(
+            server, room_id, participant_id, session_id);
+    }
+    free(answer);
+    free(offer);
+}
+
+static void handle_whip_post(Req *req, Res *res) {
+    handle_media_session_post(req, res, "whip");
+}
+
+static void handle_whep_post(Req *req, Res *res) {
+    handle_media_session_post(req, res, "whep");
+}
+
+static void handle_media_session_patch(Req *req, Res *res) {
+    sfu_node_app_server_t *server = sfu_node_http_server_from_req(req);
+    const sfu_node_app_config_t *config;
+    const char *room_id = get_params(req, "room_id");
+    const char *participant_id = get_params(req, "participant_id");
+    const char *session_id = get_params(req, "session_id");
+    const char *if_match;
+    char *local_fragment = NULL;
+    char etag[SFU_NODE_MEDIA_ETAG_CAPACITY];
+    uint64_t expected_version;
+    uint64_t current_version = 0;
+    int result;
+
+    if (!server) {
+        send_text(res, INTERNAL_SERVER_ERROR, "SFU node is unavailable");
+        return;
+    }
+    config = sfu_node_app_server_get_config(server);
+    if (require_media_auth(req, res, config, SFU_NODE_SCOPE_MEDIA_TRICKLE,
+                           room_id, participant_id) != 0) {
+        return;
+    }
+    if (!media_resource_id_valid(room_id, TURBO_ROOM_ID_MAX) ||
+        !media_resource_id_valid(participant_id, TURBO_PARTICIPANT_ID_MAX) ||
+        !media_resource_id_valid(session_id, TURBO_PARTICIPANT_ID_MAX)) {
+        send_text(res, BAD_REQUEST, "Invalid media resource identifier");
+        return;
+    }
+    if (!request_content_type_is(req, "application/trickle-ice-sdpfrag")) {
+        send_text(res, UNSUPPORTED_MEDIA_TYPE,
+                  "Content-Type must be application/trickle-ice-sdpfrag");
+        return;
+    }
+    if (!req->body || req->body_len == 0 ||
+        req->body_len > SFU_NODE_MEDIA_SDP_MAX_LENGTH) {
+        send_text(res, BAD_REQUEST, "Invalid ICE SDP fragment body");
+        return;
+    }
+    if_match = request_header(req, "If-Match", "if-match");
+    if (!if_match) {
+        send_text(res, PRECONDITION_REQUIRED, "If-Match is required");
+        return;
+    }
+    if (parse_media_etag(if_match, &expected_version) != 0) {
+        send_text(res, PRECONDITION_FAILED, "Invalid media resource ETag");
+        return;
+    }
+
+    local_fragment = (char *)malloc(SFU_NODE_MEDIA_SDP_MAX_LENGTH + 1);
+    if (!local_fragment) {
+        send_text(res, INTERNAL_SERVER_ERROR,
+                  "Failed to allocate ICE SDP fragment");
+        return;
+    }
+    result = sfu_node_app_server_apply_remote_ice_sdpfrag(
+        server, room_id, participant_id, session_id, expected_version,
+        req->body, req->body_len, local_fragment,
+        SFU_NODE_MEDIA_SDP_MAX_LENGTH + 1, &current_version);
+    if (result == SFU_NODE_MEDIA_SESSION_NOT_FOUND) {
+        send_text(res, NOT_FOUND, "Media session not found");
+    } else if (result == SFU_NODE_MEDIA_SESSION_PRECONDITION_FAILED) {
+        send_text(res, PRECONDITION_FAILED, "Media resource ETag is stale");
+    } else if (result < 0) {
+        send_text(res, BAD_REQUEST, "Invalid ICE SDP fragment");
+    } else {
+        format_media_etag(current_version, etag);
+        set_header(res, "ETag", etag);
+        set_header(res, "Cache-Control", "no-store");
+        if (result > 0) {
+            reply(res, OK, "application/trickle-ice-sdpfrag",
+                  local_fragment, strlen(local_fragment));
+        } else {
+            reply(res, NO_CONTENT, "application/trickle-ice-sdpfrag", "", 0);
+        }
+    }
+    free(local_fragment);
+}
+
+static void handle_media_session_delete(Req *req, Res *res) {
+    sfu_node_app_server_t *server = sfu_node_http_server_from_req(req);
+    const sfu_node_app_config_t *config;
+    const char *room_id = get_params(req, "room_id");
+    const char *participant_id = get_params(req, "participant_id");
+    const char *session_id = get_params(req, "session_id");
+    int result;
+
+    if (!server) {
+        send_text(res, INTERNAL_SERVER_ERROR, "SFU node is unavailable");
+        return;
+    }
+    config = sfu_node_app_server_get_config(server);
+    if (require_media_auth(req, res, config, SFU_NODE_SCOPE_MEDIA_DELETE,
+                           room_id, participant_id) != 0) {
+        return;
+    }
+    if (!media_resource_id_valid(room_id, TURBO_ROOM_ID_MAX) ||
+        !media_resource_id_valid(participant_id, TURBO_PARTICIPANT_ID_MAX) ||
+        !media_resource_id_valid(session_id, TURBO_PARTICIPANT_ID_MAX)) {
+        send_text(res, BAD_REQUEST, "Invalid media resource identifier");
+        return;
+    }
+    result = sfu_node_app_server_remove_media_session(
+        server, room_id, participant_id, session_id);
+    if (result == SFU_NODE_MEDIA_SESSION_NOT_FOUND) {
+        send_text(res, NOT_FOUND, "Media session not found");
+        return;
+    }
+    if (result != 0) {
+        send_text(res, INTERNAL_SERVER_ERROR,
+                  "Failed to terminate media session");
+        return;
+    }
+    set_header(res, "Cache-Control", "no-store");
+    reply(res, NO_CONTENT, "text/plain", "", 0);
+}
+
 static void handle_command(Req *req, Res *res) {
     sfu_node_app_server_t *server = sfu_node_http_server_from_req(req);
     turbo_sfu_node_t *node;
     json_value_t *root = NULL;
     const char *type;
     const char *room_id;
+    const char *auth_participant_id;
+    const char *required_scope;
     const sfu_node_app_config_t *config;
+    sfu_node_command_access_t access;
     int rc = -1;
 
     if (!server) {
@@ -763,13 +1277,21 @@ static void handle_command(Req *req, Res *res) {
 
     type = json_string_field(root, "type");
     room_id = json_string_field(root, "room_id");
+    auth_participant_id = json_string_field(root, "participant_id");
     if (!type) {
         send_error_json(res, 400, "INVALID_REQUEST", "missing command type");
         turbo_free_json(&root);
         return;
     }
     config = sfu_node_app_server_get_config(server);
-    if (command_requires_control_auth(type) && !request_has_control_auth(req, config)) {
+    access = command_access_for_type(type);
+    required_scope =
+        access == SFU_NODE_COMMAND_ACCESS_DANGEROUS
+            ? SFU_NODE_SCOPE_CONTROL_DANGEROUS
+            : SFU_NODE_SCOPE_CONTROL_WRITE;
+    if (command_requires_control_auth(type) &&
+        !request_has_control_auth(req, config, required_scope, room_id,
+                                  auth_participant_id)) {
         send_error_json(res, 401, "UNAUTHORIZED", "control token required");
         turbo_free_json(&root);
         return;
@@ -1169,13 +1691,32 @@ static void handle_command(Req *req, Res *res) {
     turbo_free_json(&root);
 }
 
+static void sfu_node_http_mark_running(void *arg1, void *arg2) {
+    sfu_node_http_api_t *api = (sfu_node_http_api_t *)arg1;
+    (void)arg2;
+
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    if (api->state == SFU_NODE_HTTP_STARTING) {
+        api->state = SFU_NODE_HTTP_RUNNING;
+        turbo_cond_broadcast(&api->lifecycle_cond);
+    }
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+}
+
 static void sfu_node_http_thread(void *arg) {
     sfu_node_http_api_t *api = (sfu_node_http_api_t *)arg;
+    const sfu_node_app_config_t *config =
+        sfu_node_app_server_get_config(api->server);
+    coro_context_t *ctx = NULL;
+    coro_socket_t *listener = NULL;
     int async_initialized = 0;
 
-    api->ctx = coro_context_create(NULL);
-    if (!api->ctx) {
-        api->running = 0;
+    ctx = coro_context_create(NULL);
+    if (!ctx) {
+        turbo_mutex_lock(&api->lifecycle_mutex);
+        api->state = SFU_NODE_HTTP_FAILED;
+        turbo_cond_broadcast(&api->lifecycle_cond);
+        turbo_mutex_unlock(&api->lifecycle_mutex);
         return;
     }
 
@@ -1183,31 +1724,74 @@ static void sfu_node_http_thread(void *arg) {
         async_initialized = 1;
     }
 
-    api->listener = iris_server_start(api->app, api->ctx, (unsigned short)api->port);
-    if (!api->listener) {
-        coro_context_destroy(api->ctx);
+    if (config && config->use_tls) {
+        turbo_tls_server_config_t tls_config;
+
+        memset(&tls_config, 0, sizeof(tls_config));
+        tls_config.size = sizeof(tls_config);
+        tls_config.cert_file = config->tls_cert_file;
+        tls_config.key_file = config->tls_key_file;
+        tls_config.client_auth = TURBO_TLS_CLIENT_AUTH_NONE;
+        listener = iris_server_start_tls_on(
+            api->app, ctx, api->host, (unsigned short)api->port,
+            &tls_config);
+    } else {
+        listener = iris_server_start_on(
+            api->app, ctx, api->host, (unsigned short)api->port);
+    }
+    if (!listener) {
+        coro_context_destroy(ctx);
+        if (async_initialized) {
+            iris_async_shutdown();
+        }
+        turbo_mutex_lock(&api->lifecycle_mutex);
+        api->state = SFU_NODE_HTTP_FAILED;
+        turbo_cond_broadcast(&api->lifecycle_cond);
+        turbo_mutex_unlock(&api->lifecycle_mutex);
+        return;
+    }
+
+    coro_context_set_persistent(ctx, 1);
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    api->ctx = ctx;
+    api->listener = listener;
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+
+    if (coro_post(ctx, sfu_node_http_mark_running, api, NULL) != 0) {
+        turbo_mutex_lock(&api->lifecycle_mutex);
+        api->listener = NULL;
         api->ctx = NULL;
-        api->running = 0;
+        api->state = SFU_NODE_HTTP_FAILED;
+        turbo_cond_broadcast(&api->lifecycle_cond);
+        turbo_mutex_unlock(&api->lifecycle_mutex);
+        coro_context_set_persistent(ctx, 0);
+        coro_socket_destroy(listener);
+        coro_context_destroy(ctx);
         if (async_initialized) {
             iris_async_shutdown();
         }
         return;
     }
 
-    coro_context_set_persistent(api->ctx, 1);
-    coro_context_run(api->ctx, TURBO_RUN_DEFAULT);
+    coro_context_run(ctx, TURBO_RUN_DEFAULT);
 
-    if (api->listener) {
-        coro_socket_destroy(api->listener);
-        api->listener = NULL;
-    }
-    if (api->ctx) {
-        coro_context_destroy(api->ctx);
-        api->ctx = NULL;
-    }
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    api->listener = NULL;
+    api->ctx = NULL;
+    api->state = SFU_NODE_HTTP_STOPPING;
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+
+    coro_context_set_persistent(ctx, 0);
+    coro_socket_destroy(listener);
+    coro_context_destroy(ctx);
     if (async_initialized) {
         iris_async_shutdown();
     }
+
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    api->state = SFU_NODE_HTTP_STOPPED;
+    turbo_cond_broadcast(&api->lifecycle_cond);
+    turbo_mutex_unlock(&api->lifecycle_mutex);
 }
 
 sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
@@ -1223,8 +1807,12 @@ sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
         return NULL;
     }
 
+    turbo_mutex_init(&api->lifecycle_mutex);
+    turbo_cond_init(&api->lifecycle_cond);
     api->app = iris_app_create();
     if (!api->app) {
+        turbo_cond_destroy(&api->lifecycle_cond);
+        turbo_mutex_destroy(&api->lifecycle_mutex);
         free(api);
         return NULL;
     }
@@ -1234,8 +1822,8 @@ sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
 
     memset(&cors_opts, 0, sizeof(cors_opts));
     cors_opts.origin = "*";
-    cors_opts.methods = "GET, POST, OPTIONS";
-    cors_opts.headers = "Content-Type, Authorization";
+    cors_opts.methods = "GET, POST, PATCH, DELETE, OPTIONS";
+    cors_opts.headers = "Content-Type, Authorization, If-Match";
     cors_opts.enabled = 1;
     iris_app_cors(api->app, &cors_opts);
 
@@ -1245,46 +1833,85 @@ sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
     iris_app_get(api->app, "/api/v1/rooms/:room_id/webrtc_sessions/:session_id",
                  handle_get_webrtc_session);
     iris_app_post(api->app, "/api/v1/commands", handle_command);
+    iris_app_post(api->app, "/whip/:room_id/:participant_id", handle_whip_post);
+    iris_app_post(api->app, "/whep/:room_id/:participant_id", handle_whep_post);
+    iris_app_patch(
+        api->app, "/whip/:room_id/:participant_id/sessions/:session_id",
+        handle_media_session_patch);
+    iris_app_patch(
+        api->app, "/whep/:room_id/:participant_id/sessions/:session_id",
+        handle_media_session_patch);
+    iris_app_delete(
+        api->app, "/whip/:room_id/:participant_id/sessions/:session_id",
+        handle_media_session_delete);
+    iris_app_delete(
+        api->app, "/whep/:room_id/:participant_id/sessions/:session_id",
+        handle_media_session_delete);
 
     return api;
 }
 
 int sfu_node_http_api_start(sfu_node_http_api_t *api, const char *host, int port) {
-    (void)host;
-
-    if (!api || api->running || port <= 0) {
+    if (!api || !host || host[0] == '\0' || port <= 0 || port > UINT16_MAX) {
+        return -1;
+    }
+    if (sfu_node_app_server_ensure_webrtc_worker(api->server) != 0) {
         return -1;
     }
 
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    if (api->state != SFU_NODE_HTTP_STOPPED || api->thread_started) {
+        turbo_mutex_unlock(&api->lifecycle_mutex);
+        return -1;
+    }
+    api->host = host;
     api->port = port;
+    api->state = SFU_NODE_HTTP_STARTING;
     if (turbo_thread_create(&api->thread, sfu_node_http_thread, api) != 0) {
+        api->state = SFU_NODE_HTTP_STOPPED;
+        turbo_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
 
     api->thread_started = 1;
-    api->running = 1;
-    return 0;
+    while (api->state == SFU_NODE_HTTP_STARTING) {
+        turbo_cond_wait(&api->lifecycle_cond, &api->lifecycle_mutex);
+    }
+    if (api->state == SFU_NODE_HTTP_RUNNING) {
+        turbo_mutex_unlock(&api->lifecycle_mutex);
+        return 0;
+    }
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+
+    turbo_thread_join(&api->thread);
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    api->thread_started = 0;
+    api->state = SFU_NODE_HTTP_STOPPED;
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+    return -1;
 }
 
 void sfu_node_http_api_stop(sfu_node_http_api_t *api) {
+    int should_join;
+
     if (!api) {
         return;
     }
 
-    api->running = 0;
-    if (api->ctx) {
-        coro_context_set_persistent(api->ctx, 0);
-    }
-    if (api->listener) {
-        coro_socket_destroy(api->listener);
-        api->listener = NULL;
-    }
-    if (api->ctx) {
+    turbo_mutex_lock(&api->lifecycle_mutex);
+    if (api->state == SFU_NODE_HTTP_RUNNING && api->ctx) {
+        api->state = SFU_NODE_HTTP_STOPPING;
         coro_context_stop(api->ctx);
     }
-    if (api->thread_started) {
+    should_join = api->thread_started;
+    turbo_mutex_unlock(&api->lifecycle_mutex);
+
+    if (should_join) {
         turbo_thread_join(&api->thread);
+        turbo_mutex_lock(&api->lifecycle_mutex);
         api->thread_started = 0;
+        api->state = SFU_NODE_HTTP_STOPPED;
+        turbo_mutex_unlock(&api->lifecycle_mutex);
     }
 }
 
@@ -1293,15 +1920,12 @@ void sfu_node_http_api_destroy(sfu_node_http_api_t *api) {
         return;
     }
 
-    if (api->running) {
-        sfu_node_http_api_stop(api);
-    } else if (api->thread_started) {
-        turbo_thread_join(&api->thread);
-        api->thread_started = 0;
-    }
+    sfu_node_http_api_stop(api);
     if (api->app) {
         sfu_node_http_registry_unregister(api);
         iris_app_destroy(api->app);
     }
+    turbo_cond_destroy(&api->lifecycle_cond);
+    turbo_mutex_destroy(&api->lifecycle_mutex);
     free(api);
 }

@@ -25,6 +25,8 @@ typedef struct {
     turbo_dc_context_t *ctx_b;
     turbo_dc_peer_t *peer_b;
     ice_integration_ctx_t *ice_b;
+    coro_context_t *direct_ice_ctx;
+    turbo_ice_agent_t *direct_ice_agent;
     
     /* State tracking */
     int peer_a_connected;
@@ -77,6 +79,15 @@ void tearDown(void) {
     if (g_test_ctx.peer_b) {
         turbo_dc_peer_destroy(g_test_ctx.peer_b);
         g_test_ctx.peer_b = NULL;
+    }
+
+    if (g_test_ctx.direct_ice_agent) {
+        ice_agent_destroy(g_test_ctx.direct_ice_agent);
+        g_test_ctx.direct_ice_agent = NULL;
+    }
+    if (g_test_ctx.direct_ice_ctx) {
+        coro_context_destroy(g_test_ctx.direct_ice_ctx);
+        g_test_ctx.direct_ice_ctx = NULL;
     }
     
     /* Cleanup contexts */
@@ -204,6 +215,34 @@ void test_ice_integration_create(void) {
         NULL, NULL, NULL, 0
     );
     TEST_ASSERT_NOT_NULL(g_test_ctx.ice_a);
+}
+
+void test_datachannel_attaches_turbonet_ice_agent(void) {
+    turbo_dc_config_t dc_config = {
+        .is_server = 0,
+        .transport = TURBO_DC_TRANSPORT_ICE
+    };
+    ice_config_t ice_config = ice_default_config();
+
+    g_test_ctx.ctx_a = turbo_dc_context_create(&dc_config);
+    TEST_ASSERT_NOT_NULL(g_test_ctx.ctx_a);
+    g_test_ctx.peer_a = turbo_dc_peer_create(g_test_ctx.ctx_a, NULL, 0, NULL);
+    TEST_ASSERT_NOT_NULL(g_test_ctx.peer_a);
+
+    g_test_ctx.direct_ice_ctx = coro_context_create(g_test_ctx.loop);
+    TEST_ASSERT_NOT_NULL(g_test_ctx.direct_ice_ctx);
+    g_test_ctx.direct_ice_agent =
+        ice_agent_create(g_test_ctx.direct_ice_ctx, &ice_config);
+    TEST_ASSERT_NOT_NULL(g_test_ctx.direct_ice_agent);
+
+    TEST_ASSERT_EQUAL_INT(
+        -1, turbo_dc_peer_set_ice_agent(NULL, g_test_ctx.direct_ice_agent));
+    TEST_ASSERT_EQUAL_INT(-1, turbo_dc_peer_set_ice_agent(g_test_ctx.peer_a, NULL));
+    TEST_ASSERT_EQUAL_INT(
+        0, turbo_dc_peer_set_ice_agent(
+               g_test_ctx.peer_a, g_test_ctx.direct_ice_agent));
+    TEST_ASSERT_EQUAL_INT(
+        0, turbo_dc_peer_set_external_transport(g_test_ctx.peer_a, NULL, NULL));
 }
 
 void test_ice_integration_credentials(void) {
@@ -350,6 +389,7 @@ spec("test_ice_integration") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
   TT_TEST(test_ice_integration_create);
+  TT_TEST(test_datachannel_attaches_turbonet_ice_agent);
   TT_TEST(test_ice_integration_credentials);
   TT_TEST(test_ice_integration_gathering);
   TT_TEST(test_ice_integration_timeout);

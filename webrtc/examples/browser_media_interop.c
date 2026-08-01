@@ -17,6 +17,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef _WIN32
+#include <strings.h>
+#define _stricmp strcasecmp
+#define _strnicmp strncasecmp
+#endif
+
 #define MAX_LOCAL_CANDIDATES 32
 #define FRAME_WIDTH 320
 #define FRAME_HEIGHT 240

@@ -1,0 +1,59 @@
+# TurboMedia SFU node configuration
+#
+# Precedence:
+#   built-in defaults < this file < environment variables < command line
+
+[server]
+host = "0.0.0.0"
+port = 9190
+# Enable application-managed HTTPS by setting use_tls=true and providing a
+# certificate chain/private key readable by the service account.
+use_tls = false
+# cert_file = "/etc/turbomedia/tls/sfu-chain.pem"
+# key_file = "/etc/turbomedia/tls/sfu-key.pem"
+node_id = "sfu-node-1"
+
+[capacity]
+max_rooms = 128
+default_room_capacity = 50
+
+[control]
+# Prefer TURBO_SFU_NODE_CONTROL_TOKEN in production.
+token = "replace-with-a-control-token"
+
+[media]
+# Independent least-privilege credential for WHIP/WHEP. If absent, media
+# session endpoints require [auth] below. Prefer TURBO_SFU_MEDIA_ACCESS_TOKEN
+# only while migrating legacy clients.
+access_token = "replace-with-a-media-access-token"
+
+[auth]
+# Optional short-lived HS256 access tokens. Secrets must contain at least
+# 32 bytes of CSPRNG output and should normally come from environment variables
+# rather than this file:
+#   TURBO_SFU_AUTH_ACTIVE_KEY_ID
+#   TURBO_SFU_AUTH_ACTIVE_SECRET
+# During rotation, set the previous pair for no longer than the maximum token
+# TTL, then remove it. Tokens use audience turbomedia-sfu-control or
+# turbomedia-sfu-media and exact room_id/participant_id bindings.
+issuer = "turbomedia"
+# active_key_id = "sfu-2026-07"
+# active_secret = "replace-with-at-least-32-random-bytes"
+# previous_key_id = "sfu-2026-06"
+# previous_secret = "replace-with-the-previous-secret"
+# revoked_token_sha256 = "one-or-more-comma-separated-lowercase-sha256-digests"
+clock_skew_seconds = 30
+max_ttl_seconds = 3600
+
+[ice]
+# Production deployments need at least one public STUN server and normally a
+# TURN server. Prefer TURBO_SFU_TURN_SERVER for credentials.
+stun_servers = ["stun:stun.example.com:3478"]
+turn_servers = ["turn:username:password@turn.example.com:3478"]
+allow_loopback = false
+
+[runtime]
+dry_run = false
+
+[logging]
+level = "info"

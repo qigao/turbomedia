@@ -12,14 +12,7 @@
     {
       "name": "vcpkg-cmake-config",
       "host": true
-    }
-  ],
-  "features": {
-    "openssl": {
-      "description": "Enable BoringSSL through its OpenSSL-compatible API",
-      "dependencies": [
-        "boringssl"
-      ]
-    }
-  }
+    },
+    "boringssl"
+  ]
 }

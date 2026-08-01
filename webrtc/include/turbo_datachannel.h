@@ -8,7 +8,7 @@
  *       ↓
  *   SCTP (usrsctp) - reliable/unreliable messaging
  *       ↓
- *   DTLS (OpenSSL) - encryption
+ *   DTLS (BoringSSL) - encryption
  *       ↓
  *   Transport: CoroNet (UDP/TCP/KCP) or ICE (NAT traversal)
  *
@@ -208,7 +208,11 @@ CXX_C_API void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_error_cb c
  * @param peer Peer handle
  * @param hash Hash name (e.g., "sha-256")
  * @param fingerprint Hex fingerprint string
- * @return 0 on success, negative on error
+ *
+ * Only SHA-256 fingerprints in colon-separated hexadecimal form are accepted.
+ *
+ * @return 0 on success, -1 for invalid arguments, -2 for an unsupported hash,
+ *         -3 for a malformed fingerprint, or -4 on allocation failure
  */
 CXX_C_API int turbo_dc_peer_set_remote_fingerprint(
     turbo_dc_peer_t *peer,
@@ -262,12 +266,16 @@ CXX_C_API void turbo_dc_peer_set_transport_data_handler(
 /**
  * Set ICE agent for this peer (ICE transport mode only)
  *
- * @param peer Peer connection
- * @param ice_agent Pre-configured ICE agent (must be in CONNECTED state)
- * @return 0 on success, negative on error
+ * The agent may be attached before candidate gathering and connectivity checks,
+ * but turbo_dc_peer_connect() must not be called until ICE reaches CONNECTED or
+ * COMPLETED. The caller retains ownership and must keep the agent alive until
+ * the peer is destroyed or its transport is detached.
  *
- * Note: The ICE agent must have already completed candidate gathering
- * and connectivity checks before calling this function.
+ * @param peer Peer connection.
+ * @param ice_agent Borrowed TurboNet ICE agent that is not closed.
+ * @return 0 on success, -1 for invalid/closed input, or -2 when a different
+ *         transport is already attached.
+ *
  */
 CXX_C_API int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct turbo_ice_agent_s *ice_agent);
 

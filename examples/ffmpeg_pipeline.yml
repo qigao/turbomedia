@@ -1,0 +1,59 @@
+api_version: turbo.media.pipeline/v1
+id: camera-to-rtmp
+limits:
+  open_timeout_ms: 10000
+  io_timeout_ms: 10000
+nodes:
+  - id: input
+    kind: source
+    factory: ffmpeg.input
+    config:
+      url: rtsp://127.0.0.1:8554/live
+      options:
+        rtsp_transport: tcp
+  - id: demux
+    kind: demux
+    factory: ffmpeg.demux
+  - id: video_decoder
+    kind: decoder
+    factory: ffmpeg.decode
+    config:
+      media: video
+  - id: video_filter
+    kind: filter
+    factory: ffmpeg.filter
+    config:
+      media: video
+      filters: scale=1280:720
+  - id: video_encoder
+    kind: encoder
+    factory: ffmpeg.encode
+    config:
+      media: video
+      codec: libx264
+      bitrate: 2500000
+      frame_rate: 25
+      gop_frames: 50
+  - id: mux
+    kind: mux
+    factory: ffmpeg.mux
+    config:
+      format: flv
+  - id: output
+    kind: sink
+    factory: ffmpeg.output
+    config:
+      url: rtmp://127.0.0.1/live/camera
+edges:
+  - from: input.out
+    to: demux.in
+  - from: demux.video
+    to: video_decoder.in
+  - from: video_decoder.out
+    to: video_filter.in
+  - from: video_filter.out
+    to: video_encoder.in
+  - from: video_encoder.out
+    to: mux.video
+  - from: mux.out
+    to: output.in

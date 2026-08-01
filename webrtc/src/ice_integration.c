@@ -5,7 +5,7 @@
  * - ICE candidate trickle
  * - STUN/TURN server support
  * - Connection timeout handling
- * - Automatic reconnection
+ * - Retry accounting and scheduling (not a complete ICE restart)
  */
 
 #include "ice_integration.h"

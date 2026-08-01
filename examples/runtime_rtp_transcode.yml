@@ -1,0 +1,87 @@
+api_version: turbo.media.pipeline/v1
+id: whip-to-whep-rtp-transcode
+nodes:
+  - id: whip_source
+    kind: source
+    factory: media.runtime_source
+    config:
+      url: default/live/whip
+      options:
+        queue_capacity: "128"
+        max_packet_bytes: "2048"
+        max_access_unit_bytes: "4194304"
+        replay_cached: "false"
+  - id: rtp_depay
+    kind: demux
+    factory: rtp.depacketize
+  - id: audio_decoder
+    kind: decoder
+    factory: ffmpeg.decode
+    config:
+      media: audio
+  - id: audio_filter
+    kind: filter
+    factory: ffmpeg.filter
+    config:
+      media: audio
+      filters: aresample=48000
+  - id: audio_encoder
+    kind: encoder
+    factory: ffmpeg.encode
+    config:
+      media: audio
+      codec: libopus
+      bitrate: 64000
+      sample_rate: 48000
+      channels: 2
+  - id: video_decoder
+    kind: decoder
+    factory: ffmpeg.decode
+    config:
+      media: video
+  - id: video_filter
+    kind: filter
+    factory: ffmpeg.filter
+    config:
+      media: video
+      filters: scale=1280:720
+  - id: video_encoder
+    kind: encoder
+    factory: ffmpeg.encode
+    config:
+      media: video
+      codec: libopenh264
+      bitrate: 2500000
+      width: 1280
+      height: 720
+      frame_rate: 30
+      gop_frames: 60
+  - id: rtp_pay
+    kind: mux
+    factory: rtp.packetize
+  - id: whep_sink
+    kind: sink
+    factory: media.runtime_sink
+    config:
+      url: default/live/whep
+edges:
+  - from: whip_source.out
+    to: rtp_depay.in
+  - from: rtp_depay.audio
+    to: audio_decoder.in
+  - from: audio_decoder.out
+    to: audio_filter.in
+  - from: audio_filter.out
+    to: audio_encoder.in
+  - from: audio_encoder.out
+    to: rtp_pay.audio
+  - from: rtp_depay.video
+    to: video_decoder.in
+  - from: video_decoder.out
+    to: video_filter.in
+  - from: video_filter.out
+    to: video_encoder.in
+  - from: video_encoder.out
+    to: rtp_pay.video
+  - from: rtp_pay.out
+    to: whep_sink.in

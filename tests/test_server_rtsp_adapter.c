@@ -597,9 +597,14 @@ suite("turbo_media_server_rtsp_adapter") {
             check_int_eq(coro_context_spawn(ctx, adapter_publisher_task, &state), 0);
             check_int_eq(coro_context_spawn(ctx, adapter_player_task, &state), 0);
 
-            while (!state.failed &&
-                   !(state.publisher_done && state.player_done) &&
-                   wait_iters-- > 0) {
+            while (!state.failed && wait_iters-- > 0) {
+                if (state.publisher_done && state.player_done) {
+                    (void)turbo_media_server_runtime_get_stats(runtime, &stats);
+                    if (stats.subscriptions_removed == 1 &&
+                        stats.sources_removed == 1) {
+                        break;
+                    }
+                }
                 coro_context_run(ctx, TURBO_RUN_ONCE);
             }
 

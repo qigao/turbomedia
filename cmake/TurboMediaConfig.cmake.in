@@ -5,10 +5,22 @@ include(CMakeFindDependencyMacro)
 find_dependency(TurboUtils CONFIG)
 find_dependency(TurboNet CONFIG)
 find_dependency(TurboHttp CONFIG)
+if(NOT TARGET TurboNet::Ice)
+  set(TurboMedia_FOUND FALSE)
+  set(TurboMedia_NOT_FOUND_MESSAGE
+      "TurboMedia requires the TurboNet Ice component")
+  return()
+endif()
+if(NOT TARGET TurboNet::ICE)
+  add_library(TurboNet::ICE INTERFACE IMPORTED)
+  set_property(TARGET TurboNet::ICE PROPERTY
+               INTERFACE_LINK_LIBRARIES TurboNet::Ice)
+endif()
+find_dependency(OpenSSL)
 
 find_path(FFMPEG_INCLUDE_DIRS NAMES libavformat/avformat.h REQUIRED)
-foreach(_TurboMedia_ffmpeg_component IN ITEMS avformat avcodec avutil swresample
-                                              swscale)
+foreach(_TurboMedia_ffmpeg_component IN ITEMS avformat avcodec avfilter avutil
+                                              swresample swscale)
   find_library(
     FFMPEG_lib${_TurboMedia_ffmpeg_component}_LIBRARY
     NAMES ${_TurboMedia_ffmpeg_component}

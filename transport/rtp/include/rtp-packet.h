@@ -2,6 +2,7 @@
 #define _rtp_packet_h_
 
 #include "rtp-header.h"
+#include <turbo_export.h>
 
 #define RTP_FIXED_HEADER 12
 
@@ -17,9 +18,9 @@ struct rtp_packet_t
 };
 
 ///@return 0-ok, other-error
-int rtp_packet_deserialize(struct rtp_packet_t *pkt, const void* data, int bytes);
+CXX_C_API int rtp_packet_deserialize(struct rtp_packet_t *pkt, const void* data, int bytes);
 
 ///@return <0-error, >0-rtp packet size, =0-impossible
-int rtp_packet_serialize(const struct rtp_packet_t *pkt, void* data, int bytes);
+CXX_C_API int rtp_packet_serialize(const struct rtp_packet_t *pkt, void* data, int bytes);
 
 #endif /* !_rtp_packet_h_ */

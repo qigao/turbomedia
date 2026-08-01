@@ -6,6 +6,7 @@
 #include "turbo_rtsp_grammar_gen.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -267,99 +268,6 @@ static int turbo_rtsp_parse_transport_profile(
     return 0;
 }
 
-static int turbo_rtsp_parse_uint16_pair_or_single(
-    const char *start,
-    const char *end,
-    int *first,
-    int *second) {
-    long a = 0;
-    long b = 0;
-    char *tail = NULL;
-
-    if (!start || start >= end || !first || !second) {
-        return -1;
-    }
-
-    a = strtol(start, &tail, 10);
-    if (tail == start || tail > end || a < 0 || a > 65535) {
-        return -1;
-    }
-    if (tail == end) {
-        a = (a / 2) * 2;
-        *first = (int)a;
-        *second = (int)a + 1;
-        return 0;
-    }
-    if (*tail != '-') {
-        return -1;
-    }
-
-    b = strtol(tail + 1, &tail, 10);
-    if (tail == start || tail != end || b < 0 || b > 65535) {
-        return -1;
-    }
-
-    *first = (int)a;
-    *second = (int)b;
-    return 0;
-}
-
-static int turbo_rtsp_parse_channel_pair_or_single(
-    const char *start,
-    const char *end,
-    int *first,
-    int *second) {
-    long a = 0;
-    long b = 0;
-    char *tail = NULL;
-
-    if (!start || start >= end || !first || !second) {
-        return -1;
-    }
-
-    a = strtol(start, &tail, 10);
-    if (tail == start || tail > end || a < 0 || a > 255) {
-        return -1;
-    }
-    if (tail == end) {
-        *first = (int)a;
-        *second = (int)a + 1;
-        return *second <= 255 ? 0 : -1;
-    }
-    if (*tail != '-') {
-        return -1;
-    }
-
-    b = strtol(tail + 1, &tail, 10);
-    if (tail == start || tail != end || b < 0 || b > 255) {
-        return -1;
-    }
-
-    *first = (int)a;
-    *second = (int)b;
-    return 0;
-}
-
-static int turbo_rtsp_parse_int_value(
-    const char *start,
-    const char *end,
-    int *value) {
-    long parsed = 0;
-    char *tail = NULL;
-
-    if (!start || start >= end || !value) {
-        return -1;
-    }
-
-    parsed = strtol(start, &tail, 10);
-    if (tail == start || tail != end || parsed < 0 || parsed > 2147483647L) {
-        return -1;
-    }
-
-    *value = (int)parsed;
-    return 0;
-}
-
 static int turbo_rtsp_parse_u32_value(
     const char *start,
     const char *end,
@@ -377,13 +285,96 @@ static int turbo_rtsp_parse_u32_value(
             return -1;
         }
         parsed = parsed * 10u + (uint64_t)(c - '0');
-        if (parsed > 0xffffffffull) {
+        if (parsed > UINT32_MAX) {
             return -1;
         }
         ++cursor;
     }
 
     *value = (uint32_t)parsed;
+    return 0;
+}
+
+static int turbo_rtsp_parse_uint16_pair_or_single(
+    const char *start,
+    const char *end,
+    int *first,
+    int *second) {
+    const char *dash = NULL;
+    uint32_t a = 0;
+    uint32_t b = 0;
+
+    if (!start || start >= end || !first || !second) {
+        return -1;
+    }
+
+    dash = memchr(start, '-', (size_t)(end - start));
+    if (turbo_rtsp_parse_u32_value(start, dash ? dash : end, &a) != 0 ||
+        a > UINT16_MAX) {
+        return -1;
+    }
+    if (!dash) {
+        a = (a / 2) * 2;
+        *first = (int)a;
+        *second = (int)a + 1;
+        return 0;
+    }
+    if (turbo_rtsp_parse_u32_value(dash + 1, end, &b) != 0 || b > UINT16_MAX) {
+        return -1;
+    }
+
+    *first = (int)a;
+    *second = (int)b;
+    return 0;
+}
+
+static int turbo_rtsp_parse_channel_pair_or_single(
+    const char *start,
+    const char *end,
+    int *first,
+    int *second) {
+    const char *dash = NULL;
+    uint32_t a = 0;
+    uint32_t b = 0;
+
+    if (!start || start >= end || !first || !second) {
+        return -1;
+    }
+
+    dash = memchr(start, '-', (size_t)(end - start));
+    if (turbo_rtsp_parse_u32_value(start, dash ? dash : end, &a) != 0 ||
+        a > UINT8_MAX) {
+        return -1;
+    }
+    if (!dash) {
+        *first = (int)a;
+        *second = (int)a + 1;
+        return *second <= UINT8_MAX ? 0 : -1;
+    }
+    if (turbo_rtsp_parse_u32_value(dash + 1, end, &b) != 0 || b > UINT8_MAX) {
+        return -1;
+    }
+
+    *first = (int)a;
+    *second = (int)b;
+    return 0;
+}
+
+static int turbo_rtsp_parse_int_value(
+    const char *start,
+    const char *end,
+    int *value) {
+    uint32_t parsed = 0;
+
+    if (!start || start >= end || !value) {
+        return -1;
+    }
+
+    if (turbo_rtsp_parse_u32_value(start, end, &parsed) != 0 || parsed > INT_MAX) {
+        return -1;
+    }
+
+    *value = (int)parsed;
     return 0;
 }
 

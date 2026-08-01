@@ -3,8 +3,7 @@
  * @brief Production WebRTC Signaling Server
  * @version 1.0.0
  * 
- * Main entry point for the production-ready WebRTC signaling server.
- * Supports JWT authentication, HTTP management API, and Redis clustering.
+ * Main entry point for the WebRTC signaling server.
  */
 
 #include "signaling_server/config.h"
@@ -71,10 +70,18 @@ static void print_usage(const char *program_name) {
     printf("TurboNet WebRTC Signaling Server v%s\n\n", SIGNALING_SERVER_VERSION);
     printf("Usage: %s [OPTIONS]\n\n", program_name);
     printf("Options:\n");
-    printf("  -c, --config FILE      Configuration file path (default: signaling.toml)\n");
+    printf("  -c, --config FILE      Configuration file path (default: none)\n");
     printf("  -h, --host HOST        WebSocket host (default: 0.0.0.0)\n");
     printf("  -p, --port PORT        WebSocket port (default: 8080)\n");
+    printf("  --tls-cert FILE        Enable WSS with this certificate chain\n");
+    printf("  --tls-key FILE         Enable WSS with this private key\n");
     printf("  --http-port PORT       HTTP API port (default: 8081)\n");
+    printf("  --http-tls-cert FILE   Enable management HTTPS with this certificate\n");
+    printf("  --http-tls-key FILE    Enable management HTTPS with this private key\n");
+    printf("  --http-auth-key-id ID  Active scoped management token key id\n");
+    printf("  --http-auth-secret SECRET  Active HS256 management token secret\n");
+    printf("  --http-auth-previous-key-id ID  Previous key id during rotation\n");
+    printf("  --http-auth-previous-secret SECRET  Previous rotation secret\n");
     printf("  --no-http              Disable HTTP management API\n");
     printf("  --node-id ID           Node identifier (default: auto-generated)\n");
     printf("  --redis-host HOST      Redis host (default: localhost)\n");
@@ -103,10 +110,7 @@ static void print_version(void) {
     printf("\n");
     printf("Features:\n");
     printf("  - WebSocket signaling (CoroNet)\n");
-    printf("  - JWT authentication (cjwt)\n");
     printf("  - HTTP management API (Iris)\n");
-    printf("  - Redis clustering (hiredis)\n");
-    printf("  - STC HashMap optimization\n");
     printf("\n");
 }
 
@@ -119,11 +123,11 @@ static int parse_args(int argc, char **argv, signaling_server_config_t *config) 
         
         if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             print_usage(argv[0]);
-            return -1;
+            return 1;
         }
         else if (strcmp(arg, "--version") == 0 || strcmp(arg, "-v") == 0) {
             print_version();
-            return -1;
+            return 1;
         }
         else if (strcmp(arg, "--config") == 0 || strcmp(arg, "-c") == 0) {
             if (++i >= argc) {
@@ -153,6 +157,68 @@ static int parse_args(int argc, char **argv, signaling_server_config_t *config) 
             }
             config->http_port = atoi(argv[i]);
             config->http_enabled = 1;
+        }
+        else if (strcmp(arg, "--tls-cert") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --tls-cert requires an argument\n");
+                return -1;
+            }
+            config->ws_use_tls = 1;
+            config->ws_cert_file = argv[i];
+        }
+        else if (strcmp(arg, "--tls-key") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --tls-key requires an argument\n");
+                return -1;
+            }
+            config->ws_use_tls = 1;
+            config->ws_key_file = argv[i];
+        }
+        else if (strcmp(arg, "--http-tls-cert") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --http-tls-cert requires an argument\n");
+                return -1;
+            }
+            config->http_enabled = 1;
+            config->http_use_tls = 1;
+            config->http_cert_file = argv[i];
+        }
+        else if (strcmp(arg, "--http-tls-key") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --http-tls-key requires an argument\n");
+                return -1;
+            }
+            config->http_enabled = 1;
+            config->http_use_tls = 1;
+            config->http_key_file = argv[i];
+        }
+        else if (strcmp(arg, "--http-auth-key-id") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --http-auth-key-id requires an argument\n");
+                return -1;
+            }
+            config->http_auth_active_key_id = argv[i];
+        }
+        else if (strcmp(arg, "--http-auth-secret") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --http-auth-secret requires an argument\n");
+                return -1;
+            }
+            config->http_auth_active_secret = argv[i];
+        }
+        else if (strcmp(arg, "--http-auth-previous-key-id") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --http-auth-previous-key-id requires an argument\n");
+                return -1;
+            }
+            config->http_auth_previous_key_id = argv[i];
+        }
+        else if (strcmp(arg, "--http-auth-previous-secret") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --http-auth-previous-secret requires an argument\n");
+                return -1;
+            }
+            config->http_auth_previous_secret = argv[i];
         }
         else if (strcmp(arg, "--no-http") == 0) {
             config->http_enabled = 0;
@@ -214,25 +280,38 @@ static int parse_args(int argc, char **argv, signaling_server_config_t *config) 
  */
 int main(int argc, char **argv) {
     int ret = 0;
+    int parse_result;
     signaling_server_config_t config;
+    signaling_server_config_t cli_probe;
     
     /* Initialize default configuration */
     signaling_server_config_init(&config);
+    signaling_server_config_init(&cli_probe);
     
-    /* Parse command line arguments */
-    if (parse_args(argc, argv, &config) != 0) {
-        return (argc > 1 && 
-                (strcmp(argv[1], "--help") == 0 || 
-                 strcmp(argv[1], "--version") == 0)) ? 0 : 1;
+    /*
+     * Probe the complete command line first so help/errors have no file I/O.
+     * Applying it again after TOML gives CLI values the documented priority.
+     */
+    parse_result = parse_args(argc, argv, &cli_probe);
+    if (parse_result != 0) {
+        return parse_result > 0 ? 0 : 1;
     }
     
     /* Load configuration file if specified */
-    if (config.config_file) {
-        TLOG_INFO("Loading configuration from: {}", config.config_file);
-        if (signaling_server_config_load(&config, config.config_file) != 0) {
-            TLOG_ERROR("Failed to load configuration file: {}", config.config_file);
-            return 1;
+    if (cli_probe.config_file) {
+        TLOG_INFO("Loading configuration from: {}", cli_probe.config_file);
+        if (signaling_server_config_load(&config, cli_probe.config_file) != 0) {
+            TLOG_ERROR("Failed to load configuration file: {}", cli_probe.config_file);
+            ret = 1;
+            goto cleanup;
         }
+    }
+
+    signaling_server_config_apply_environment(&config);
+    parse_result = parse_args(argc, argv, &config);
+    if (parse_result != 0 || signaling_server_config_validate(&config) != 0) {
+        ret = 1;
+        goto cleanup;
     }
     
     /* Initialize logging */
@@ -246,6 +325,7 @@ int main(int argc, char **argv) {
     TLOG_INFO("WebSocket: {}:{}", config.ws_host, config.ws_port);
     if (config.http_enabled) {
         TLOG_INFO("HTTP API: {}:{}", config.http_host, config.http_port);
+        TLOG_INFO("HTTP management auth: enabled");
     } else {
         TLOG_INFO("HTTP API: disabled");
     }
@@ -255,7 +335,8 @@ int main(int argc, char **argv) {
               config.redis_host, 
               config.redis_port,
               config.redis_enabled ? "enabled" : "disabled");
-    TLOG_INFO("JWT Auth: {}", config.jwt_enabled ? "enabled" : "disabled");
+    TLOG_INFO("Peer admission auth: {}",
+              config.jwt_enabled ? "enabled" : "disabled");
     TLOG_INFO("Log Level: {}", config.log_level);
     TLOG_INFO("=================================================");
     

@@ -33,15 +33,45 @@ typedef struct signaling_server_config_s {
     int http_enabled;
     const char *http_host;
     int http_port;
+    int http_use_tls;
+    const char *http_cert_file;
+    const char *http_key_file;
+    int http_auth_enabled;
+    const char *http_admin_token;
+    const char *http_auth_issuer;
+    const char *http_auth_active_key_id;
+    const char *http_auth_active_secret;
+    const char *http_auth_previous_key_id;
+    const char *http_auth_previous_secret;
+    const char *http_auth_revoked_token_sha256;
+    int http_auth_clock_skew_seconds;
+    int http_auth_max_ttl_seconds;
     
     /* Limits */
     int max_peers;
     int max_rooms;
     int peer_timeout_ms;
+    int join_timeout_ms;
+    int max_message_size;
+    int messages_per_second;
+    int message_burst;
+    int max_outbox_messages;
+    int max_outbox_bytes;
+    int max_connections_per_source;
+    int source_admissions_per_second;
+    int source_admission_burst;
+    int max_source_states;
+    int source_state_ttl_ms;
     
     /* JWT authentication */
     int jwt_enabled;
+    const char *jwt_issuer;
+    const char *jwt_active_key_id;
     const char *jwt_secret;
+    const char *jwt_previous_key_id;
+    const char *jwt_previous_secret;
+    const char *jwt_revoked_token_sha256;
+    int jwt_clock_skew_seconds;
     int jwt_ttl_seconds;
     const char *jwt_algorithm;
     
@@ -59,7 +89,12 @@ typedef struct signaling_server_config_s {
     const char *log_level;
     const char *log_format;
     const char *log_output;
-    
+
+    /*
+     * Owned TOML values. Internal to the signaling application; callers must
+     * use signaling_server_config_cleanup() instead of accessing this field.
+     */
+    void *private_data;
 } signaling_server_config_t;
 
 /**
@@ -68,9 +103,17 @@ typedef struct signaling_server_config_s {
 void signaling_server_config_init(signaling_server_config_t *config);
 
 /**
- * Load configuration from file (TOML format)
+ * Load and validate a TOML configuration file.
+ *
+ * The update is transactional: on failure, config remains unchanged.
+ *
+ * @param config Initialized configuration to update.
+ * @param filename TOML file path.
+ * @return 0 on success, -1 on read, parse, schema, allocation, or validation
+ *         failure.
  */
 int signaling_server_config_load(signaling_server_config_t *config, const char *filename);
+void signaling_server_config_apply_environment(signaling_server_config_t *config);
 
 /**
  * Cleanup configuration resources

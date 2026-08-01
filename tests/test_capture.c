@@ -445,7 +445,15 @@ suite("捕获设备错误处理") {
     it("应该支持并发创建多个捕获实例") {
         turbo_audio_capture_config_t config = valid_audio_config();
         turbo_capture_t *captures[10] = {0};
+        turbo_capture_t *probe = NULL;
         int created_count = 0;
+
+        /* A headless host may expose backend names without a usable device. */
+        probe = turbo_audio_capture_create(NULL, &config);
+        if (!probe) {
+            return;
+        }
+        turbo_capture_destroy(probe);
         
         /* 尝试创建多个实例 */
         for (int i = 0; i < 10; i++) {
@@ -478,4 +486,3 @@ suite("捕获设备错误处理") {
     }
 }
 
- 

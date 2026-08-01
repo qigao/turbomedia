@@ -183,6 +183,7 @@ struct turbo_dc_channel_s {
 
 void dc_set_peer_error(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail);
 void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state);
+void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail);
 
 /* Legacy - for context-level errors during creation (before peer exists) */
 void dc_set_context_error(turbo_dc_context_t *ctx, turbo_dc_error_code_t code, const char *detail);

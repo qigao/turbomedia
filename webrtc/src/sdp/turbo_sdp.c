@@ -8,11 +8,12 @@
 
 #include "turbo_sdp.h"
 #include "platform.h"
+#include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h> 
-#include <stb_sprintf.h>
 
 #ifdef _WIN32
   #define strcasecmp _stricmp
@@ -175,24 +176,52 @@ void sdp_media_set_fingerprint(sdp_media_t *media, const char *hash, const char 
  * SDP Generation
  * ============================================================================= */
 
+static int sdp_appendf(char *buffer, size_t size, size_t *written, const char *format, ...) {
+  va_list args;
+  int needed;
+  size_t remaining;
+
+  if (!buffer || !written || !format || *written >= size)
+    return -1;
+
+  remaining = size - *written;
+  va_start(args, format);
+  needed = vsnprintf(buffer + *written, remaining, format, args);
+  va_end(args);
+  if (needed < 0 || (size_t)needed >= remaining)
+    return -1;
+
+  *written += (size_t)needed;
+  return 0;
+}
+
 int sdp_generate(const sdp_session_t *sdp, char *buffer, size_t size) {
-  int written = 0;
+  size_t written = 0;
+
+  if (!sdp || !buffer || size == 0)
+    return -1;
+  buffer[0] = '\0';
+
+#define SDP_APPEND(...)                                                        \
+  do {                                                                         \
+    if (sdp_appendf(buffer, size, &written, __VA_ARGS__) != 0)                 \
+      goto fail;                                                               \
+  } while (0)
 
   /* Session-level fields */
-  written += stbsp_snprintf(buffer + written, size - written, "v=0\r\n");
-  written +=
-      stbsp_snprintf(buffer + written, size - written, "o=%s %s %llu IN IP4 %s\r\n", sdp->username,
-                     sdp->session_id, (unsigned long long)sdp->session_version, sdp->origin_addr);
-  written += stbsp_snprintf(buffer + written, size - written, "s=-\r\n");
-  written += stbsp_snprintf(buffer + written, size - written, "t=0 0\r\n");
+  SDP_APPEND("v=0\r\n");
+  SDP_APPEND("o=%s %s %llu IN IP4 %s\r\n", sdp->username, sdp->session_id,
+             (unsigned long long)sdp->session_version, sdp->origin_addr);
+  SDP_APPEND("s=-\r\n");
+  SDP_APPEND("t=0 0\r\n");
 
   /* BUNDLE group */
   if (sdp->bundle_count > 0) {
-    written += stbsp_snprintf(buffer + written, size - written, "a=group:BUNDLE");
+    SDP_APPEND("a=group:BUNDLE");
     for (int i = 0; i < sdp->bundle_count; i++) {
-      written += stbsp_snprintf(buffer + written, size - written, " %s", sdp->bundle_mids[i]);
+      SDP_APPEND(" %s", sdp->bundle_mids[i]);
     }
-    written += stbsp_snprintf(buffer + written, size - written, "\r\n");
+    SDP_APPEND("\r\n");
   }
 
   /* Media sections */
@@ -200,144 +229,131 @@ int sdp_generate(const sdp_session_t *sdp, char *buffer, size_t size) {
     const sdp_media_t *media = &sdp->media[m];
 
     /* m= line */
-    written += stbsp_snprintf(buffer + written, size - written, "m=%s %d %s",
-                              sdp_media_type_str(media->type), media->port, media->protocol);
+    SDP_APPEND("m=%s %d %s", sdp_media_type_str(media->type), media->port, media->protocol);
 
     if (media->type == SDP_MEDIA_APPLICATION) {
-      written += stbsp_snprintf(buffer + written, size - written, " webrtc-datachannel\r\n");
+      SDP_APPEND(" webrtc-datachannel\r\n");
     } else {
       for (int i = 0; i < media->codec_count; i++) {
-        written +=
-            stbsp_snprintf(buffer + written, size - written, " %d", media->codecs[i].payload_type);
+        SDP_APPEND(" %d", media->codecs[i].payload_type);
       }
-      written += stbsp_snprintf(buffer + written, size - written, "\r\n");
+      SDP_APPEND("\r\n");
     }
 
     /* c= line */
-    written += stbsp_snprintf(buffer + written, size - written, "c=IN IP4 0.0.0.0\r\n");
+    SDP_APPEND("c=IN IP4 0.0.0.0\r\n");
 
     /* ICE */
     if (media->ice_ufrag[0]) {
-      written +=
-          stbsp_snprintf(buffer + written, size - written, "a=ice-ufrag:%s\r\n", media->ice_ufrag);
+      SDP_APPEND("a=ice-ufrag:%s\r\n", media->ice_ufrag);
     }
     if (media->ice_pwd[0]) {
-      written +=
-          stbsp_snprintf(buffer + written, size - written, "a=ice-pwd:%s\r\n", media->ice_pwd);
+      SDP_APPEND("a=ice-pwd:%s\r\n", media->ice_pwd);
     }
 
     /* DTLS fingerprint */
     if (media->fingerprint[0]) {
-      written += stbsp_snprintf(buffer + written, size - written, "a=fingerprint:%s %s\r\n",
-                                media->fingerprint_hash, media->fingerprint);
+      SDP_APPEND("a=fingerprint:%s %s\r\n", media->fingerprint_hash, media->fingerprint);
     }
 
     /* Setup role */
     const char *setup = media->setup == SDP_ROLE_ACTIVE    ? "active"
                         : media->setup == SDP_ROLE_PASSIVE ? "passive"
                                                            : "actpass";
-    written += stbsp_snprintf(buffer + written, size - written, "a=setup:%s\r\n", setup);
+    SDP_APPEND("a=setup:%s\r\n", setup);
 
     /* Mid */
     if (media->mid[0]) {
-      written += stbsp_snprintf(buffer + written, size - written, "a=mid:%s\r\n", media->mid);
+      SDP_APPEND("a=mid:%s\r\n", media->mid);
     }
 
     /* Direction */
-    written += stbsp_snprintf(buffer + written, size - written, "a=%s\r\n",
-                              sdp_direction_str(media->direction));
+    SDP_APPEND("a=%s\r\n", sdp_direction_str(media->direction));
 
     /* RTCP-mux */
     if (media->rtcp_mux) {
-      written += stbsp_snprintf(buffer + written, size - written, "a=rtcp-mux\r\n");
+      SDP_APPEND("a=rtcp-mux\r\n");
     }
 
     /* RTP header extensions */
     for (int i = 0; i < media->extension_count; i++) {
       const sdp_extension_t *ext = &media->extensions[i];
       if (ext->id > 0 && ext->uri[0]) {
-        written += stbsp_snprintf(buffer + written, size - written, "a=extmap:%d %s\r\n",
-                                  ext->id, ext->uri);
+        SDP_APPEND("a=extmap:%d %s\r\n", ext->id, ext->uri);
       }
     }
 
     /* Codecs */
     for (int i = 0; i < media->codec_count; i++) {
       const sdp_codec_t *codec = &media->codecs[i];
-      written += stbsp_snprintf(buffer + written, size - written, "a=rtpmap:%d %s/%d",
-                                codec->payload_type, codec->name, codec->clock_rate);
+      SDP_APPEND("a=rtpmap:%d %s/%d", codec->payload_type, codec->name, codec->clock_rate);
       if (codec->channels > 1) {
-        written += stbsp_snprintf(buffer + written, size - written, "/%d", codec->channels);
+        SDP_APPEND("/%d", codec->channels);
       }
-      written += stbsp_snprintf(buffer + written, size - written, "\r\n");
+      SDP_APPEND("\r\n");
 
       if (codec->fmtp[0]) {
-        written += stbsp_snprintf(buffer + written, size - written, "a=fmtp:%d %s\r\n",
-                                  codec->payload_type, codec->fmtp);
+        SDP_APPEND("a=fmtp:%d %s\r\n", codec->payload_type, codec->fmtp);
       }
 
       if (codec->supports_nack) {
-        written += stbsp_snprintf(buffer + written, size - written, "a=rtcp-fb:%d nack\r\n",
-                                  codec->payload_type);
+        SDP_APPEND("a=rtcp-fb:%d nack\r\n", codec->payload_type);
       }
       if (codec->supports_pli) {
-        written += stbsp_snprintf(buffer + written, size - written,
-                                  "a=rtcp-fb:%d nack pli\r\n", codec->payload_type);
+        SDP_APPEND("a=rtcp-fb:%d nack pli\r\n", codec->payload_type);
       }
       if (codec->supports_fir) {
-        written += stbsp_snprintf(buffer + written, size - written, "a=rtcp-fb:%d ccm fir\r\n",
-                                  codec->payload_type);
+        SDP_APPEND("a=rtcp-fb:%d ccm fir\r\n", codec->payload_type);
       }
       if (codec->supports_remb) {
-        written += stbsp_snprintf(buffer + written, size - written, "a=rtcp-fb:%d goog-remb\r\n",
-                                  codec->payload_type);
+        SDP_APPEND("a=rtcp-fb:%d goog-remb\r\n", codec->payload_type);
       }
       if (codec->supports_transport_cc) {
-        written += stbsp_snprintf(buffer + written, size - written,
-                                  "a=rtcp-fb:%d transport-cc\r\n", codec->payload_type);
+        SDP_APPEND("a=rtcp-fb:%d transport-cc\r\n", codec->payload_type);
       }
     }
 
     /* SCTP (DataChannel) */
     if (media->type == SDP_MEDIA_APPLICATION) {
-      written +=
-          stbsp_snprintf(buffer + written, size - written, "a=sctp-port:%d\r\n", media->sctp_port);
+      SDP_APPEND("a=sctp-port:%d\r\n", media->sctp_port);
       if (media->max_message_size > 0) {
-        written += stbsp_snprintf(buffer + written, size - written, "a=max-message-size:%d\r\n",
-                                  media->max_message_size);
+        SDP_APPEND("a=max-message-size:%d\r\n", media->max_message_size);
       }
     }
 
     /* ICE candidates */
     for (int i = 0; i < media->candidate_count; i++) {
       const sdp_candidate_t *cand = &media->candidates[i];
-      written +=
-          stbsp_snprintf(buffer + written, size - written, "a=candidate:%s %d %s %u %s %hu typ %s",
-                         cand->foundation, cand->component, cand->transport, cand->priority,
-                         cand->address, cand->port, cand->type);
+      SDP_APPEND("a=candidate:%s %d %s %u %s %hu typ %s", cand->foundation,
+                 cand->component, cand->transport, cand->priority, cand->address,
+                 cand->port, cand->type);
       if (cand->rel_addr[0]) {
-        written += stbsp_snprintf(buffer + written, size - written, " raddr %s rport %hu",
-                                  cand->rel_addr, cand->rel_port);
+        SDP_APPEND(" raddr %s rport %hu", cand->rel_addr, cand->rel_port);
       }
-      written += stbsp_snprintf(buffer + written, size - written, "\r\n");
+      SDP_APPEND("\r\n");
     }
 
     for (int i = 0; i < media->ssrc_count; i++) {
       const sdp_ssrc_t *ssrc = &media->ssrcs[i];
 
       if (ssrc->cname[0]) {
-        written += stbsp_snprintf(buffer + written, size - written, "a=ssrc:%u cname:%s\r\n",
-                                  ssrc->ssrc, ssrc->cname);
+        SDP_APPEND("a=ssrc:%u cname:%s\r\n", ssrc->ssrc, ssrc->cname);
       }
       if (ssrc->msid[0]) {
         const char *track_id = ssrc->track_id[0] ? ssrc->track_id : ssrc->msid;
-        written += stbsp_snprintf(buffer + written, size - written, "a=ssrc:%u msid:%s %s\r\n",
-                                  ssrc->ssrc, ssrc->msid, track_id);
+        SDP_APPEND("a=ssrc:%u msid:%s %s\r\n", ssrc->ssrc, ssrc->msid, track_id);
       }
     }
   }
 
-  return written;
+#undef SDP_APPEND
+  if (written > INT_MAX)
+    goto fail;
+  return (int)written;
+
+fail:
+  buffer[0] = '\0';
+  return -1;
 }
 
 int sdp_generate_offer(const sdp_session_t *sdp, char *buffer, size_t size) {
@@ -440,7 +456,14 @@ const char *sdp_media_type_str(sdp_media_type_t type) {
 }
 
 void sdp_generate_session_id(char *buffer, size_t size) {
-  stbsp_snprintf(buffer, size, "%llu", (unsigned long long)time(NULL));
+  int written;
+
+  if (!buffer || size == 0)
+    return;
+
+  written = snprintf(buffer, size, "%llu", (unsigned long long)time(NULL));
+  if (written < 0 || (size_t)written >= size)
+    buffer[0] = '\0';
 }
 
 static int sdp_fill_ice_credential(char *output, size_t output_size) {

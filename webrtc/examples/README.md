@@ -113,6 +113,10 @@ Room-based WebRTC example demonstrating:
 **Notes:**
 - Requires an external signaling server that speaks this repo's JSON room protocol.
 - Works with `ws://` by default; add `--secure` for `wss://`.
+- When signaling peer admission is enabled, set
+  `TURBO_SIGNALING_PEER_TOKEN` and pass `--peer-id alice` (or set
+  `TURBO_SIGNALING_PEER_ID`). The token is sent only in the first WebSocket
+  `join` message and is never written to the example log.
 
 ---
 
@@ -290,9 +294,9 @@ turbo_dc_channel_config_t config = {
 - Verify port is not in use: `netstat -an | grep 5000`
 - Try different port number
 
-**"Failed to create SSL context":**
-- Missing OpenSSL installation
-- Check vcpkg packages: `vcpkg list | grep openssl`
+**安全上下文创建失败：**
+- 确认上游 TurboNet、TurboHTTP 与 WebRTC 依赖包来自同一安装前缀
+- BoringSSL 由上游包提供；TurboMedia 不执行额外配置或运行时校验
 
 **SCTP errors:**
 - Missing usrsctp library

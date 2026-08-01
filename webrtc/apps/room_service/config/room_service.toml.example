@@ -1,0 +1,61 @@
+# TurboMedia room service configuration
+#
+# Precedence:
+#   built-in defaults < this file < environment variables < command line
+
+[server]
+host = "0.0.0.0"
+port = 9090
+use_tls = false
+# cert_file = "/etc/turbomedia/tls/room-service-chain.pem"
+# key_file = "/etc/turbomedia/tls/room-service-key.pem"
+node_id = "room-service-1"
+
+[control]
+# Static compatibility token. Prefer scoped [auth] tokens for production.
+# Prefer TURBO_ROOM_SERVICE_CONTROL_TOKEN when this compatibility mode is used.
+token = "replace-with-a-control-token"
+
+# Scoped Room control token verifier. Uncomment both active key fields together.
+# Secrets must contain at least 32 bytes and should come from the environment:
+#   TURBO_ROOM_SERVICE_AUTH_ACTIVE_KEY_ID
+#   TURBO_ROOM_SERVICE_AUTH_ACTIVE_SECRET
+# During rotation, configure the previous key pair until all old tokens expire.
+#[auth]
+#issuer = "turbomedia"
+#active_key_id = "room-control-2026-07"
+#active_secret = "replace-with-at-least-32-random-bytes"
+#previous_key_id = "room-control-2026-06"
+#previous_secret = "replace-with-at-least-32-random-bytes"
+#revoked_token_sha256 = "one-or-more-comma-separated-lowercase-sha256-digests"
+#clock_skew_seconds = 30
+#max_ttl_seconds = 3600
+
+[sfu]
+control_url = "https://sfu-node-1.internal:9190"
+nodes = "sfu-node-1=https://sfu-node-1.internal:9190"
+# Omit ca_file for public/system-trusted certificates. For a private PKI,
+# configure its CA bundle; peer and hostname verification remain mandatory.
+# ca_file = "/etc/turbomedia/tls/internal-ca.pem"
+# Static compatibility path. A configured [sfu_auth] signer takes precedence.
+control_token = "replace-with-the-sfu-control-token"
+
+# Per-command scoped token signer used by Room -> SFU http_client calls.
+# The matching active/previous verifier key must be deployed on every SFU first.
+#[sfu_auth]
+#issuer = "turbomedia"
+#key_id = "sfu-control-2026-07"
+#secret = "replace-with-at-least-32-random-bytes"
+#ttl_seconds = 60
+
+[capacity]
+max_rooms = 1024
+
+[rooms]
+auto_create = true
+
+[runtime]
+dry_run = false
+
+[logging]
+level = "info"

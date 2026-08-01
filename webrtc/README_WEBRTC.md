@@ -107,6 +107,20 @@ v=0
 }
 ```
 
+启用 signaling `[auth]` 后，首条业务消息必须携带应用身份与访问令牌：
+
+```json
+{
+  "type": "join",
+  "room": "myroom",
+  "peer_id": "alice",
+  "token": "<turbomedia-signaling-peer access token>"
+}
+```
+
+令牌必须包含 `signaling.peer.join` scope，并与 `room`、`peer_id` 精确绑定。
+生产环境应使用 WSS；不要把令牌放入 WebSocket URL 查询参数。
+
 #### SDP Offer
 ```json
 {
@@ -275,8 +289,21 @@ webrtc_signaling_config_t config = {
     .host = "0.0.0.0",          // 绑定地址
     .port = 8080,               // 绑定端口
     .use_tls = 0,               // 0=WS, 1=WSS
+    .cert_file = NULL,           // WSS 证书链 PEM；use_tls=1 时必填
+    .key_file = NULL,            // WSS 私钥 PEM；use_tls=1 时必填
     .max_peers = 100,           // 最大 peers
-    .peer_timeout_ms = 60000    // Peer 超时 (60秒)
+    .peer_timeout_ms = 60000,   // 已加入 Peer 空闲超时
+    .join_timeout_ms = 10000,   // 首次成功 join 的固定截止时间
+    .max_message_size = 65536,  // 完整 WebSocket 消息上限
+    .messages_per_second = 100, // 单连接令牌补充速率
+    .message_burst = 200,       // 单连接突发容量
+    .max_outbox_messages = 256, // 慢消费者待发送消息上限
+    .max_outbox_bytes = 1048576,// 慢消费者待发送字节上限
+    .max_connections_per_source = 100, // 单源升级后并发连接上限
+    .source_admissions_per_second = 20,// 单源升级后准入速率
+    .source_admission_burst = 50,      // 单源准入突发容量
+    .max_source_states = 4096,         // 源地址状态表硬上限
+    .source_state_ttl_ms = 300000      // 非活动源限速状态保留时间
 };
 ```
 
@@ -332,6 +359,10 @@ OK
 
 - DTLS 1.2 加密
 - SRTP 媒体加密
+- CoroNet WSS 与 Iris HTTPS 应用内 TLS
+- Room Service 到 SFU 的 HTTPS 主机名及证书链校验
+- SFU 与 Room Service 的短期、作用域、房间/参与者绑定令牌
+- Room Service 通过 `http_client` 为每条 SFU 命令独立签发令牌
 - 自签名证书支持
 - SHA-256 指纹验证
 
@@ -349,11 +380,11 @@ OK
 - C99 标准
 - 4 空格缩进
 - 函数命名: `turbo_<module>_<action>`
-- 零运行时依赖（除 libuv/OpenSSL）
+- 网络与安全运行时由已安装的 TurboNet/WebRTC 上游依赖提供
 
 ## 🚧 下一步计划
 
-### ✅ 已完成
+### 已实现并有本地测试覆盖
 - [x] SDP Parser (re2c 高性能解析器)
 - [x] WebSocket 信令服务器 (房间管理、消息转发)
 - [x] SDP Offer/Answer 交换 (完整信令流程)
@@ -361,42 +392,44 @@ OK
 - [x] Peer 自动发现和连接
 - [x] **ICE 候选交换** - 完整的 ICE candidate trickle 实现
 - [x] **STUN/TURN 服务器集成** - NAT 穿透支持
-- [x] **连接超时处理** - 自动超时和重连机制
-- [x] **自动重连** - 网络中断后自动恢复
-- [x] **浏览器互操作性** - 与 Chrome/Firefox 完全兼容
+- [x] **初始连接超时处理** - 超时后进入显式失败/重试调度
 - [x] **端到端集成测试** - 完整的 P2P 连接测试
-- [x] **生产部署文档** - 完整的部署指南
+- [x] **部署检查文档** - 列出生产门槛与未验证范围
 
-### 🎉 生产就绪功能
+### 尚未达到生产就绪
 
 #### ICE 集成 (`ice_integration.h`)
 - ✅ ICE candidate trickle (实时候选交换)
 - ✅ STUN/TURN 服务器支持
 - ✅ 连接超时处理 (可配置)
-- ✅ 自动重连机制 (指数退避)
-- ✅ 网络变化检测
 - ✅ 连接状态监控
+- ✅ PeerConnection/WHIP 资源路径的真实 ICE restart（新凭据、重新 gather/check）
 
 #### 浏览器互操作性
-- ✅ Chrome 90+ 完全兼容
-- ✅ Firefox 88+ 完全兼容
-- ✅ Edge 90+ 完全兼容
-- ✅ Safari 14+ 部分支持
-- ✅ 完整的 SDP 交换
-- ✅ ICE candidate 交换
-- ✅ DTLS 握手验证
+- ✅ 提供手工 SDP/candidate 交换示例
+- ✅ DTLS SHA-256 指纹强制校验
+- ❌ Chrome/Firefox/Edge/Safari 公网版本矩阵尚未形成可复验报告
+- ❌ TURN-only、弱网、网络切换与长稳验收尚未完成
 
 #### 测试覆盖
 - ✅ ICE 集成单元测试
 - ✅ 端到端 P2P 连接测试
-- ✅ 浏览器互操作性测试
-- ✅ 连接超时测试
-- ✅ 重连机制测试
+- ✅ 指纹拒绝、连接超时调度和本地浏览器示例
+- ✅ WHIP 条件 PATCH 触发并完成真实 ICE restart 的本地端到端测试
+- ❌ 公网浏览器/TURN、容量、soak 与多节点故障测试
 
 ### 📋 待办
-- [ ] Media Track 支持 - 音视频轨道传输 (基础实现已完成)
-- [ ] 性能优化 - 大规模连接测试
-- [ ] 监控和指标 - Prometheus/Grafana 集成
+- [x] TurboNet::ICE 增加 consent freshness、disconnect detection 与 restart API
+- [x] WHIP/WHEP SDP fragment 交换 ICE restart 凭据与候选
+- [x] 接通带独立 bearer token 的 WHIP HTTP 与 WHEP draft-04 HTTP adapter
+- [x] 接通信令 WSS、管理 API/SFU/Room Service HTTPS 与内部 SFU CA 校验
+- [x] SFU 接通作用域、过期、房间/参与者绑定及双 key 轮换令牌
+- [x] Room Service 控制面与 Room→SFU 命令接入同一令牌契约
+- [x] 信令管理 API 接入 read/write/dangerous 及资源绑定令牌
+- [x] 信令 WebSocket peer admission 接入 room/peer 绑定应用身份
+- [ ] 接入握手前可信边缘限速、租户配额、令牌撤销与多节点分布式策略
+- [ ] 完成浏览器/TURN/弱网/容量/长稳/故障验收
+- [ ] 补齐生产监控、指标与告警
 
 ## 📚 参考文档
 

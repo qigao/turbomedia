@@ -1,7 +1,7 @@
 /**
  * dtls_session.c - DTLS session management wrapper
  *
- * Wraps OpenSSL DTLS for WebRTC DataChannel usage.
+ * Wraps BoringSSL DTLS for WebRTC DataChannel usage.
  * Handles DTLS handshake and encryption/decryption.
  */
 
@@ -180,10 +180,10 @@ void dtls_send_output(turbo_dc_peer_t *peer) {
 
     /* Read ALL available data from the BIO.
      * Note: BIO_s_mem might coalesce multiple records.
-     * OpenSSL's DTLS stack handles receiving multiple records in one packet.
+     * BoringSSL's DTLS stack handles receiving multiple records in one packet.
      */
     while ((encrypted_len = BIO_read(peer->dtls.write_bio, encrypted, sizeof(encrypted))) > 0) {
-        TLOG_INFO("DTLS outbound flight bytes={}", encrypted_len);
+        TLOG_DEBUG("DTLS outbound flight bytes={}", encrypted_len);
         dc_send_transport_data(peer, encrypted, encrypted_len);
     }
 }
@@ -251,8 +251,9 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
  
  static int verify_remote_fingerprint(turbo_dc_peer_t *peer) {
      if (!peer->remote_fingerprint || !peer->remote_fingerprint[0]) {
-         /* No fingerprint provided to verify against - optional or not yet set */
-         return 0;
+         dc_set_peer_error(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT,
+                           "remote fingerprint is required");
+         return -1;
      }
  
      X509 *cert = SSL_get_peer_certificate(peer->dtls.ssl);
@@ -300,18 +301,16 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
  
  void dtls_process_handshake(turbo_dc_peer_t *peer) {
     int ret = SSL_do_handshake(peer->dtls.ssl);
-    TLOG_INFO("DTLS handshake step ret={} state={}", ret, peer ? (int)peer->state : -1);
+    TLOG_DEBUG("DTLS handshake step ret={} state={}", ret, peer ? (int)peer->state : -1);
 
     if (ret == 1) {
-        TLOG_INFO("%s", "DTLS handshake completed");
         /* Verify fingerprint before proceeding */
         if (verify_remote_fingerprint(peer) != 0) {
-            peer->state = TURBO_DC_STATE_FAILED;
-            if (peer->on_state) {
-                peer->on_state(peer, TURBO_DC_STATE_CONNECTING, TURBO_DC_STATE_FAILED, peer->user_data);
-            }
+            turbo_dc_error_t error = turbo_dc_peer_get_error(peer);
+            dc_fail_peer(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT, error.detail);
             return;
         }
+        TLOG_INFO("DTLS handshake completed");
  
         peer->dtls.handshake_done = 1;
         dtls_stop_retransmit_timer(peer);
@@ -341,7 +340,7 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
 }
 
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len) {
-    TLOG_INFO("DTLS incoming bytes={} handshake_done={}", len, peer ? peer->dtls.handshake_done : 0);
+    TLOG_DEBUG("DTLS incoming bytes={} handshake_done={}", len, peer ? peer->dtls.handshake_done : 0);
     BIO_write(peer->dtls.read_bio, data, (int)len);
 
     if (!peer->dtls.handshake_done) {

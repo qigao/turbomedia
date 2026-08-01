@@ -161,6 +161,11 @@ typedef struct {
     const char *server_name;        /* NULL defaults to TurboMedia RTSP */
     const char *public_methods;     /* NULL uses every built-in RTSP method handler name */
     turbo_rtsp_control_transport_t control_transport; /* 0 defaults to TCP */
+    /**
+     * Required when control_transport is KCP. The configuration must contain a
+     * non-zero PSK accepted by CoroNet. turbo_rtsp_server_create() copies it.
+     */
+    const turbo_kcp_config_t *kcp_config;
 } turbo_rtsp_server_config_t;
 
 typedef struct {
@@ -264,6 +269,11 @@ typedef struct {
     int has_h264_rtp_initial_sequence;
     uint32_t h264_rtp_initial_timestamp;
     int has_h264_rtp_initial_timestamp;
+    /**
+     * Required when control_transport is KCP. The configuration must match the
+     * server configuration. turbo_rtsp_client_create() copies it.
+     */
+    const turbo_kcp_config_t *kcp_config;
 } turbo_rtsp_client_config_t;
 
 typedef struct {
@@ -360,6 +370,21 @@ CXX_C_API int turbo_rtsp_response_get_parameter(
 CXX_C_API int turbo_rtsp_response_set_parameter(
     turbo_rtsp_response_t *response);
 
+/**
+ * @brief Create an RTSP server.
+ *
+ * KCP control transport requires config->kcp_config. The configuration is
+ * copied, so the caller may wipe or release it after this function returns.
+ * Its contents are validated by CoroNet when turbo_rtsp_server_start() creates
+ * the listener; invalid values make start return -1.
+ *
+ * @param ctx Coroutine context that owns all server sockets.
+ * @param config Optional server configuration. KCP requires kcp_config.
+ * @param handlers Optional request callbacks copied by the server.
+ * @param user_data Opaque callback context retained without ownership transfer.
+ * @return A server instance, or NULL when ctx is NULL, required KCP
+ *         configuration is absent, or allocation fails.
+ */
 CXX_C_API turbo_rtsp_server_t *turbo_rtsp_server_create(
     coro_context_t *ctx,
     const turbo_rtsp_server_config_t *config,
@@ -424,6 +449,19 @@ CXX_C_API int turbo_rtsp_session_recv_rtcp_udp(
     size_t buffer_size,
     size_t *packet_len);
 
+/**
+ * @brief Create an RTSP client.
+ *
+ * KCP control transport requires config->kcp_config. The configuration is
+ * copied, so the caller may wipe or release it after this function returns.
+ * Its contents are validated by CoroNet when turbo_rtsp_client_connect()
+ * creates the socket; invalid values make connect return -1.
+ *
+ * @param ctx Coroutine context that owns the client socket.
+ * @param config Optional client configuration. KCP requires kcp_config.
+ * @return A client instance, or NULL when ctx is NULL, required KCP
+ *         configuration is absent, or allocation fails.
+ */
 CXX_C_API turbo_rtsp_client_t *turbo_rtsp_client_create(
     coro_context_t *ctx,
     const turbo_rtsp_client_config_t *config);

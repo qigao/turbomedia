@@ -862,6 +862,26 @@ suite("turbo_rtsp_lib") {
       check_int_eq(parsed.mode, TURBO_RTSP_TRANSPORT_MODE_PLAY);
     }
 
+    it("parses a bounded transport view without reading past its end") {
+      static const char transport[] =
+          "RTP/AVP/TCP;unicast;interleaved=2-3;ttl=16;layers=2";
+      const size_t transport_len = sizeof(transport) - 1;
+      turbo_rtsp_transport_spec_t parsed;
+      char *bounded = (char *)malloc(transport_len);
+
+      check_not_null(bounded);
+      memcpy(bounded, transport, transport_len);
+      memset(&parsed, 0, sizeof(parsed));
+
+      check_int_eq(turbo_rtsp_parse_transport(bounded, transport_len, &parsed), 0);
+      check_int_eq(parsed.interleaved_rtp_channel, 2);
+      check_int_eq(parsed.interleaved_rtcp_channel, 3);
+      check_int_eq(parsed.ttl, 16);
+      check_int_eq(parsed.layers, 2);
+
+      free(bounded);
+    }
+
     it("parses explicit RTP/AVP/UDP transport profiles") {
       const char *request =
           "SETUP rtsp://example.com/live/trackID=0 RTSP/1.0\r\n"
