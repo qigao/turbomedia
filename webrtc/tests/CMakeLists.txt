@@ -97,5 +97,9 @@ turbo_media_add_rtc_test(turbo_media_test_jitter_buffer test_jitter_buffer.c)
 turbo_media_add_rtc_test(turbo_media_test_twcc test_twcc.c)
 turbo_media_add_rtc_test(turbo_media_test_nack test_nack.c)
 turbo_media_add_rtc_test(turbo_media_test_media_engine test_media_engine.c)
+turbo_media_add_rtc_test(turbo_media_test_speech_integration
+                         test_speech_integration.c)
+turbo_media_add_rtc_test(turbo_media_test_recognition_integration
+                         test_recognition_integration.c)
 turbo_media_add_rtc_test(turbo_media_test_simulcast test_simulcast.c)
 target_link_libraries(turbo_media_test_simulcast PRIVATE TurboMedia::Codec)

@@ -120,6 +120,8 @@ target_link_libraries(
   PUBLIC TurboMedia::DataChannel
          TurboMedia::SDP
          TurboMedia::Crypto
+         TurboMedia::Speech
+         TurboMedia::Recognition
   PRIVATE TurboMedia::Codec
           TurboMedia::Device
           TurboNet::ICE

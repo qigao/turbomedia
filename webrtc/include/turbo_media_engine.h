@@ -10,6 +10,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <turbo_export.h>
+#include <turbo_recognition.h>
+#include <turbo_speech.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -321,6 +323,31 @@ CXX_C_API int turbo_media_track_set_capture(turbo_media_track_t *track,
                                             const turbo_capture_config_t *config);
 
 /**
+ * Attach a running ASR session to the raw microphone PCM path.
+ *
+ * The track keeps a borrowed ASR pointer and does not destroy it. The formats
+ * must match. Attach and detach are control-plane operations allowed only
+ * while the track is IDLE or STOPPED. ASR rejection never interrupts the
+ * WebRTC send path.
+ */
+CXX_C_API int turbo_media_track_attach_asr(turbo_media_track_t *track, turbo_asr_t *asr);
+CXX_C_API int turbo_media_track_detach_asr(turbo_media_track_t *track, turbo_asr_t *asr);
+
+/**
+ * Attach real-time voice activity and voiceprint analysis to microphone PCM.
+ * The track borrows both handles. Attach/detach is allowed only while the
+ * track is IDLE or STOPPED and exact PCM formats must match.
+ */
+CXX_C_API int turbo_media_track_attach_voice_detector(turbo_media_track_t *track,
+                                                      turbo_voice_detector_t *detector);
+CXX_C_API int turbo_media_track_detach_voice_detector(turbo_media_track_t *track,
+                                                      turbo_voice_detector_t *detector);
+CXX_C_API int turbo_media_track_attach_voice_fingerprint(
+    turbo_media_track_t *track, turbo_fingerprint_extractor_t *extractor);
+CXX_C_API int turbo_media_track_detach_voice_fingerprint(
+    turbo_media_track_t *track, turbo_fingerprint_extractor_t *extractor);
+
+/**
  * Set frame callback for received frames
  */
 CXX_C_API void turbo_media_track_on_frame(turbo_media_track_t *track, turbo_rtc_media_frame_cb cb);
@@ -378,6 +405,16 @@ CXX_C_API void turbo_media_track_stop(turbo_media_track_t *track);
  */
 CXX_C_API int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data,
                                            size_t len, uint64_t timestamp);
+
+/**
+ * Send a TTS/provider PCM frame through an active audio track.
+ *
+ * The frame is borrowed for this call. Its format and sample count must match
+ * the track's configured PCM input and frame_size_ms. RTP timestamp generation
+ * remains owned by the track.
+ */
+CXX_C_API int turbo_media_track_send_speech_frame(turbo_media_track_t *track,
+                                                  const turbo_speech_audio_frame_t *frame);
 
 /**
  * Relay a pre-packetized RTP packet through a local send track.

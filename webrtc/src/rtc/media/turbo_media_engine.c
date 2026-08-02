@@ -49,6 +49,9 @@ struct turbo_media_track_s {
 
   /* Capture context */
   void *capture;
+  turbo_asr_t *asr; /* Borrowed; owner detaches before destroying the ASR. */
+  turbo_voice_detector_t *voice_detector; /* Borrowed while the track is quiescent. */
+  turbo_fingerprint_extractor_t *voice_fingerprint; /* Borrowed while quiescent. */
   rtp_history_t *history;
 
   /* Configuration */
@@ -960,9 +963,35 @@ static int capture_device_id(turbo_capture_type_t type, int device_index, char *
 static void on_audio_captured(turbo_capture_t *capture, const uint8_t *samples, size_t len,
                               uint64_t timestamp, void *user_data) {
   turbo_media_track_t *track = (turbo_media_track_t *)user_data;
+  turbo_speech_audio_frame_t speech_frame;
+  turbo_recognition_audio_frame_t recognition_frame;
   if (!track || track->state != TURBO_MEDIA_STATE_ACTIVE) return;
 
-  (void)timestamp;
+  if (track->asr) {
+    speech_frame.data = samples;
+    speech_frame.len = len;
+    speech_frame.format.sample_rate = track->config.audio.sample_rate;
+    speech_frame.format.channels = track->config.audio.channels;
+    speech_frame.format.bits_per_sample = 16;
+    speech_frame.timestamp_us = timestamp;
+    (void)turbo_asr_write_frame(track->asr, &speech_frame);
+  }
+
+  if (track->voice_detector || track->voice_fingerprint) {
+    recognition_frame.data = samples;
+    recognition_frame.len = len;
+    recognition_frame.format.sample_rate = track->config.audio.sample_rate;
+    recognition_frame.format.channels = track->config.audio.channels;
+    recognition_frame.format.sample_format = TURBO_RECOGNITION_AUDIO_S16;
+    recognition_frame.timestamp_us = timestamp;
+    if (track->voice_detector) {
+      (void)turbo_voice_detector_write(track->voice_detector, &recognition_frame);
+    }
+    if (track->voice_fingerprint) {
+      (void)turbo_fingerprint_extractor_write_audio(track->voice_fingerprint,
+                                                    &recognition_frame);
+    }
+  }
 
   /* Capture clocks are microseconds; RTP pacing is owned by the track. */
   turbo_media_track_send_frame(track, samples, len, 0);
@@ -1224,6 +1253,89 @@ int turbo_media_track_set_capture(turbo_media_track_t *track,
   }
 
   return -1;
+}
+
+int turbo_media_track_attach_asr(turbo_media_track_t *track, turbo_asr_t *asr) {
+  turbo_speech_audio_format_t asr_format;
+  if (!track || !asr || track->type != TURBO_RTC_MEDIA_TRACK_AUDIO) return -1;
+  if (track->state != TURBO_MEDIA_STATE_IDLE && track->state != TURBO_MEDIA_STATE_STOPPED) {
+    return -1;
+  }
+  if (track->asr && track->asr != asr) return -1;
+  if (turbo_asr_get_state(asr) != TURBO_SPEECH_STATE_RUNNING) return -1;
+  if (turbo_asr_get_audio_format(asr, &asr_format) != TURBO_SPEECH_OK) return -1;
+  if (asr_format.sample_rate != track->config.audio.sample_rate ||
+      asr_format.channels != track->config.audio.channels || asr_format.bits_per_sample != 16) {
+    return -1;
+  }
+  track->asr = asr;
+  return 0;
+}
+
+int turbo_media_track_detach_asr(turbo_media_track_t *track, turbo_asr_t *asr) {
+  if (!track || !asr || track->asr != asr) return -1;
+  if (track->state != TURBO_MEDIA_STATE_IDLE && track->state != TURBO_MEDIA_STATE_STOPPED) {
+    return -1;
+  }
+  track->asr = NULL;
+  return 0;
+}
+
+static int track_voice_format_matches(const turbo_media_track_t *track,
+                                      const turbo_recognition_audio_format_t *format) {
+  return format->sample_rate == track->config.audio.sample_rate &&
+         format->channels == track->config.audio.channels &&
+         format->sample_format == TURBO_RECOGNITION_AUDIO_S16;
+}
+
+static int track_is_quiescent_audio(const turbo_media_track_t *track) {
+  return track && track->type == TURBO_RTC_MEDIA_TRACK_AUDIO &&
+         (track->state == TURBO_MEDIA_STATE_IDLE || track->state == TURBO_MEDIA_STATE_STOPPED);
+}
+
+int turbo_media_track_attach_voice_detector(turbo_media_track_t *track,
+                                            turbo_voice_detector_t *detector) {
+  turbo_recognition_audio_format_t format;
+  if (!track_is_quiescent_audio(track) || !detector) return -1;
+  if (track->voice_detector && track->voice_detector != detector) return -1;
+  if (turbo_voice_detector_get_state(detector) != TURBO_RECOGNITION_STATE_RUNNING ||
+      turbo_voice_detector_get_audio_format(detector, &format) != TURBO_RECOGNITION_OK ||
+      !track_voice_format_matches(track, &format)) {
+    return -1;
+  }
+  track->voice_detector = detector;
+  return 0;
+}
+
+int turbo_media_track_detach_voice_detector(turbo_media_track_t *track,
+                                            turbo_voice_detector_t *detector) {
+  if (!track_is_quiescent_audio(track) || !detector || track->voice_detector != detector) return -1;
+  track->voice_detector = NULL;
+  return 0;
+}
+
+int turbo_media_track_attach_voice_fingerprint(turbo_media_track_t *track,
+                                               turbo_fingerprint_extractor_t *extractor) {
+  turbo_recognition_audio_format_t format;
+  if (!track_is_quiescent_audio(track) || !extractor) return -1;
+  if (track->voice_fingerprint && track->voice_fingerprint != extractor) return -1;
+  if (turbo_fingerprint_extractor_get_state(extractor) != TURBO_RECOGNITION_STATE_RUNNING ||
+      turbo_fingerprint_extractor_get_domain(extractor) != TURBO_FINGERPRINT_VOICE ||
+      turbo_fingerprint_extractor_get_audio_format(extractor, &format) != TURBO_RECOGNITION_OK ||
+      !track_voice_format_matches(track, &format)) {
+    return -1;
+  }
+  track->voice_fingerprint = extractor;
+  return 0;
+}
+
+int turbo_media_track_detach_voice_fingerprint(turbo_media_track_t *track,
+                                               turbo_fingerprint_extractor_t *extractor) {
+  if (!track_is_quiescent_audio(track) || !extractor || track->voice_fingerprint != extractor) {
+    return -1;
+  }
+  track->voice_fingerprint = NULL;
+  return 0;
 }
 
 void turbo_media_track_on_frame(turbo_media_track_t *track, turbo_rtc_media_frame_cb cb) {
@@ -1503,6 +1615,28 @@ int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data
   track->stats.frames_sent++;
 
   return 0;
+}
+
+int turbo_media_track_send_speech_frame(turbo_media_track_t *track,
+                                        const turbo_speech_audio_frame_t *frame) {
+  size_t bytes_per_frame;
+  size_t expected_samples;
+  size_t expected_bytes;
+  if (!track || !frame || !frame->data || frame->len == 0 ||
+      track->type != TURBO_RTC_MEDIA_TRACK_AUDIO) {
+    return -1;
+  }
+  if (frame->format.sample_rate != track->config.audio.sample_rate ||
+      frame->format.channels != track->config.audio.channels ||
+      frame->format.bits_per_sample != 16) {
+    return -1;
+  }
+  bytes_per_frame = (size_t)frame->format.channels * sizeof(int16_t);
+  expected_samples =
+      (size_t)track->config.audio.sample_rate * (size_t)track->config.audio.frame_size_ms / 1000U;
+  expected_bytes = expected_samples * bytes_per_frame;
+  if (expected_samples == 0 || frame->len != expected_bytes) return -1;
+  return turbo_media_track_send_frame(track, frame->data, frame->len, 0);
 }
 
 int turbo_media_track_send_rtp_packet(turbo_media_track_t *track, const uint8_t *packet,

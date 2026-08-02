@@ -34,6 +34,7 @@ endif()
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Sanitizers)
 include(CmakeUtils)
+enable_testing()
 
 function(turbo_media_configure_component target_name export_name)
   cmake_config_target(
@@ -112,6 +113,7 @@ add_subdirectory(vendor/monocypher EXCLUDE_FROM_ALL)
 add_subdirectory(common)
 add_subdirectory(core)
 add_subdirectory(crypto)
+add_subdirectory(speech)
 add_subdirectory(codec)
 add_subdirectory(muxer)
 add_subdirectory(demuxer)
@@ -122,19 +124,19 @@ add_subdirectory(streamer)
 add_subdirectory(pipeline)
 add_subdirectory(media)
 add_subdirectory(player)
+add_subdirectory(recognition)
 add_subdirectory(media/rtsp)
 target_sources(turbo_media_server PRIVATE server/rtsp_server_adapter.c)
 target_link_libraries(turbo_media_server PUBLIC TurboMedia::RTSP)
 add_subdirectory(media/mobile)
 
-enable_testing()
 add_subdirectory(webrtc)
 add_subdirectory(examples)
 add_subdirectory(tests)
 
 install(
-  DIRECTORY core/include/ crypto/include/ server/include/ media/include/
-             muxer/include/ demuxer/include/ network/include/ streamer/include/
+  DIRECTORY core/include/ crypto/include/ speech/include/ recognition/include/ server/include/
+             media/include/ muxer/include/ demuxer/include/ network/include/ streamer/include/
              pipeline/include/ webrtc/include/
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
   FILES_MATCHING PATTERN "*.h")

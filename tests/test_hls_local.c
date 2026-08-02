@@ -4,6 +4,7 @@
 #include <turbo_codec.h>
 #include <turbo_fs.h>
 #include <turbo_player.h>
+#include <turbo_recognition.h>
 #include <turbo_streamer.h>
 
 #include <errno.h>
@@ -24,7 +25,64 @@ enum {
 
 typedef struct {
     size_t video_frames;
+    turbo_fingerprint_extractor_t *fingerprint;
 } hls_player_capture_t;
+
+typedef struct {
+    turbo_fingerprint_provider_callbacks_t callbacks;
+    void *callback_user_data;
+    size_t video_frames;
+    int cancel_count;
+    int destroy_count;
+} hls_fingerprint_provider_t;
+
+static int hls_fingerprint_start(
+    void *context, const turbo_fingerprint_config_t *config,
+    const turbo_fingerprint_provider_callbacks_t *callbacks,
+    void *callback_user_data) {
+    hls_fingerprint_provider_t *provider =
+        (hls_fingerprint_provider_t *)context;
+    (void)config;
+    provider->callbacks = *callbacks;
+    provider->callback_user_data = callback_user_data;
+    return TURBO_RECOGNITION_OK;
+}
+
+static int hls_fingerprint_write_video(
+    void *context, const turbo_recognition_video_frame_t *frame) {
+    hls_fingerprint_provider_t *provider =
+        (hls_fingerprint_provider_t *)context;
+    if (!frame || !frame->data || frame->len == 0) {
+        return TURBO_RECOGNITION_ERR_INVALID;
+    }
+    ++provider->video_frames;
+    return TURBO_RECOGNITION_OK;
+}
+
+static int hls_fingerprint_finish(void *context) {
+    static const uint8_t value[] = {0x48U, 0x4cU, 0x53U, 0x31U};
+    hls_fingerprint_provider_t *provider =
+        (hls_fingerprint_provider_t *)context;
+    turbo_fingerprint_t fingerprint = {
+        .domain = TURBO_FINGERPRINT_VIDEO_CONTENT,
+        .algorithm = "mock-vod-video",
+        .model_version = "v1",
+        .data = value,
+        .len = sizeof(value),
+        .duration_us = 1500000U};
+    provider->callbacks.on_result(&fingerprint, provider->callback_user_data);
+    provider->callbacks.on_complete(provider->callback_user_data);
+    return TURBO_RECOGNITION_OK;
+}
+
+static int hls_fingerprint_cancel(void *context) {
+    ++((hls_fingerprint_provider_t *)context)->cancel_count;
+    return TURBO_RECOGNITION_OK;
+}
+
+static void hls_fingerprint_destroy(void *context) {
+    ++((hls_fingerprint_provider_t *)context)->destroy_count;
+}
 
 static void hls_capture_video(turbo_player_t *player,
                               const turbo_player_video_frame_t *frame,
@@ -33,6 +91,8 @@ static void hls_capture_video(turbo_player_t *player,
     (void)player;
     if (frame && frame->data && frame->len > 0) {
         ++capture->video_frames;
+        turbo_fingerprint_player_video_callback(player, frame,
+                                                capture->fingerprint);
     }
 }
 
@@ -44,9 +104,23 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
     turbo_encoded_frame_t frame_info = {0};
     turbo_muxer_packet_t packet = {0};
     hls_player_capture_t capture = {0};
+    hls_fingerprint_provider_t fingerprint_provider_context = {0};
+    turbo_fingerprint_provider_t fingerprint_provider = {
+        .abi_version = TURBO_RECOGNITION_PROVIDER_ABI_VERSION,
+        .context = &fingerprint_provider_context,
+        .start = hls_fingerprint_start,
+        .write_video = hls_fingerprint_write_video,
+        .finish = hls_fingerprint_finish,
+        .cancel = hls_fingerprint_cancel,
+        .destroy = hls_fingerprint_destroy};
+    turbo_fingerprint_config_t fingerprint_config = {
+        .domain = TURBO_FINGERPRINT_VIDEO_CONTENT,
+        .video_format = TURBO_RECOGNITION_VIDEO_I420,
+        .max_duration_us = 5000000U};
     turbo_codec_t *encoder = NULL;
     turbo_streamer_t *streamer = NULL;
     turbo_player_t *player = NULL;
+    turbo_fingerprint_extractor_t *fingerprint = NULL;
     uint8_t *raw_frame = NULL;
     uint8_t *encoded_frame = NULL;
     char *output_dir = NULL;
@@ -178,13 +252,35 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
     player = turbo_player_open(playlist_path, &player_config);
     check_not_null(player);
     if (!player) goto cleanup;
+    fingerprint = turbo_fingerprint_extractor_create(
+        &fingerprint_provider, NULL, NULL);
+    check_not_null(fingerprint);
+    if (!fingerprint) goto cleanup;
+    result = turbo_fingerprint_extractor_start(fingerprint,
+                                               &fingerprint_config);
+    check_int_eq(result, TURBO_RECOGNITION_OK);
+    if (result != TURBO_RECOGNITION_OK) goto cleanup;
+    capture.fingerprint = fingerprint;
     turbo_player_set_video_callback(player, hls_capture_video, &capture);
     result = turbo_player_play_to_end(player);
     check_int_eq(result, TURBO_PLAYER_OK);
     check_size_eq(capture.video_frames, HLS_TEST_FRAME_COUNT);
+    check_size_eq(fingerprint_provider_context.video_frames,
+                  HLS_TEST_FRAME_COUNT);
+    result = turbo_fingerprint_extractor_finish(fingerprint);
+    check_int_eq(result, TURBO_RECOGNITION_OK);
 
 cleanup:
     if (player) turbo_player_close(player);
+    if (fingerprint &&
+        turbo_fingerprint_extractor_get_state(fingerprint) ==
+            TURBO_RECOGNITION_STATE_RUNNING) {
+        (void)turbo_fingerprint_extractor_cancel(fingerprint);
+    }
+    turbo_fingerprint_extractor_destroy(fingerprint);
+    if (fingerprint) {
+        check_int_eq(fingerprint_provider_context.destroy_count, 1);
+    }
     if (connected && streamer) turbo_streamer_disconnect(streamer);
     turbo_streamer_destroy(streamer);
     turbo_codec_destroy(encoder);
