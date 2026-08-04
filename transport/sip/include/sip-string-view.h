@@ -70,7 +70,10 @@ static inline long sip_sv_to_long(const tstr_v *value, char **endptr, int base) 
     return 0L;
   }
   copy = tstr_v_to_cstr(*value);
-  if (!copy) abort();
+  if (!copy) {
+    if (endptr) *endptr = (char *)value->data;
+    return 0L;
+  }
   result = strtol(copy, &end, base);
   if (endptr) *endptr = (char *)value->data + (end - copy);
   free(copy);
@@ -87,7 +90,10 @@ static inline long long sip_sv_to_long_long(const tstr_v *value, char **endptr, 
     return 0LL;
   }
   copy = tstr_v_to_cstr(*value);
-  if (!copy) abort();
+  if (!copy) {
+    if (endptr) *endptr = (char *)value->data;
+    return 0LL;
+  }
   result = strtoll(copy, &end, base);
   if (endptr) *endptr = (char *)value->data + (end - copy);
   free(copy);
@@ -104,7 +110,10 @@ static inline double sip_sv_to_double(const tstr_v *value, char **endptr) {
     return 0.0;
   }
   copy = tstr_v_to_cstr(*value);
-  if (!copy) abort();
+  if (!copy) {
+    if (endptr) *endptr = (char *)value->data;
+    return 0.0;
+  }
   result = strtod(copy, &end);
   if (endptr) *endptr = (char *)value->data + (end - copy);
   free(copy);

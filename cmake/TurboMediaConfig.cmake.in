@@ -11,12 +11,11 @@ if(NOT TARGET TurboNet::Ice)
       "TurboMedia requires the TurboNet Ice component")
   return()
 endif()
-if(NOT TARGET TurboNet::ICE)
-  add_library(TurboNet::ICE INTERFACE IMPORTED)
-  set_property(TARGET TurboNet::ICE PROPERTY
+if(NOT TARGET TurboNet::Ice)
+  add_library(TurboNet::Ice INTERFACE IMPORTED)
+  set_property(TARGET TurboNet::Ice PROPERTY
                INTERFACE_LINK_LIBRARIES TurboNet::Ice)
-endif()
-find_dependency(OpenSSL)
+endif() 
 
 find_path(FFMPEG_INCLUDE_DIRS NAMES libavformat/avformat.h REQUIRED)
 foreach(_TurboMedia_ffmpeg_component IN ITEMS avformat avcodec avfilter avutil

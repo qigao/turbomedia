@@ -43,7 +43,7 @@ target_include_directories(room_service
 )
 
 set(ROOM_SERVICE_LIBS
-    TurboRTCApps::Conference
+    TurboMedia::RtcApps
     TurboHttp::HttpClient
     TurboHttp::Iris
     turbo_media_auth
@@ -114,9 +114,8 @@ target_include_directories(test_room_service_app
 
 target_link_libraries(test_room_service_app
   PRIVATE
-    TurboRTCApps::Conference
+    TurboMedia::RtcApps
     TurboMedia::RTC
-    TurboRTCApps::Recorder
     TurboHttp::HttpClient
     TurboHttp::Iris
     turbo_media_auth

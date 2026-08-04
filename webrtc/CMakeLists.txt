@@ -50,7 +50,7 @@ target_link_libraries(
   turbo_media_datachannel
   PUBLIC TurboMedia::SDP TurboUtils::Parser
   PRIVATE TurboNet::CoroNet
-          TurboNet::ICE
+          TurboNet::Ice
           TurboUtils::Core
           unofficial::usrsctp::usrsctp
           OpenSSL::SSL
@@ -72,7 +72,7 @@ target_include_directories(
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(
   turbo_media_webrtc
-  PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel TurboNet::ICE
+  PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel TurboNet::Ice
   PRIVATE TurboMedia::RTC TurboMedia::SDP TurboUtils::Core)
 target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
 
@@ -124,7 +124,7 @@ target_link_libraries(
          TurboMedia::Recognition
   PRIVATE TurboMedia::Codec
           TurboMedia::Device
-          TurboNet::ICE
+          TurboNet::Ice
           TurboNet::CoroNet
           TurboUtils::Core
           OpenSSL::SSL
@@ -137,12 +137,10 @@ target_link_options(
   turbo_media_rtc
   PRIVATE "$<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>")
 
-option(TURBO_MEDIA_BUILD_RTC_APPS
-       "Build the desktop room-control and SFU server applications" ON)
-if(TURBO_MEDIA_BUILD_RTC_APPS AND NOT ANDROID)
-  find_package(TurboRTCApps REQUIRED)
+# Room-service / SFU server apps are desktop targets; keep them out of the
+# Android build (they were gated with NOT ANDROID before the RTC-apps split).
+if(NOT ANDROID)
   add_subdirectory(apps)
 endif()
-
 add_subdirectory(tests)
 add_subdirectory(examples)

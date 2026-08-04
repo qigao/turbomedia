@@ -84,10 +84,13 @@ static void* rtp_av1_pack_create(int size, uint8_t pt, uint16_t seq, uint32_t ss
 	return packer;
 }
 
+static void rtp_av1_pack_release(struct rtp_encode_av1_t *packer);
+
 static void rtp_av1_pack_destroy(void* pack)
 {
 	struct rtp_encode_av1_t *packer;
 	packer = (struct rtp_encode_av1_t *)pack;
+	rtp_av1_pack_release(packer);
 #if defined(_DEBUG) || defined(DEBUG)
 	memset(packer, 0xCC, sizeof(*packer));
 #endif
@@ -102,6 +105,16 @@ static void rtp_av1_pack_get_info(void* pack, uint16_t* seq, uint32_t* timestamp
 	*timestamp = packer->pkt.rtp.timestamp;
 }
 
+static void rtp_av1_pack_release(struct rtp_encode_av1_t *packer)
+{
+	if (packer->ptr)
+	{
+		packer->handler.free(packer->cbparam, packer->ptr);
+		packer->ptr = NULL;
+		packer->offset = 0;
+	}
+}
+
 static int rtp_av1_pack_flush(struct rtp_encode_av1_t *packer, uint8_t aggregation)
 {
 	int r, n;
@@ -113,6 +126,7 @@ static int rtp_av1_pack_flush(struct rtp_encode_av1_t *packer, uint8_t aggregati
 	n = rtp_packet_serialize_header(&packer->pkt, packer->ptr, packer->size);
 	if (n != RTP_FIXED_HEADER)
 	{
+		rtp_av1_pack_release(packer);
 		assert(0);
 		return -1;
 	}
@@ -122,9 +136,7 @@ static int rtp_av1_pack_flush(struct rtp_encode_av1_t *packer, uint8_t aggregati
 	packer->aggregation &= ~(AV1_AGGREGATION_HEADER_N | AV1_AGGREGATION_HEADER_Z);
 
 	r = packer->handler.packet(packer->cbparam, packer->ptr, n + packer->pkt.payloadlen, packer->pkt.rtp.timestamp, 0);
-	packer->handler.free(packer->cbparam, packer->ptr);
-	packer->offset = 0;
-	packer->ptr = NULL;
+	rtp_av1_pack_release(packer);
 	return r;
 }
 
@@ -192,7 +204,7 @@ static int rtp_av1_pack_input_annexb(void* pack, const void* data, int bytes, ui
 	packer = (struct rtp_encode_av1_t *)pack;
 	packer->pkt.rtp.timestamp = timestamp;
 	packer->pkt.rtp.m = 0;
-	packer->ptr = NULL; // TODO: ptr memory leak
+	rtp_av1_pack_release(packer);
 
 	temporal_id0 = spatial_id0 = 0;
 	ptr = (const uint8_t *)data;
@@ -203,6 +215,7 @@ static int rtp_av1_pack_input_annexb(void* pack, const void* data, int bytes, ui
 		frame_end = ptr + frame_size;
 		if (frame_end > end)
 		{
+			rtp_av1_pack_release(packer);
 			assert(0);
 			return -1;
 		}
@@ -213,6 +226,7 @@ static int rtp_av1_pack_input_annexb(void* pack, const void* data, int bytes, ui
 			obu_end = ptr + obu_size;
 			if (obu_end > frame_end)
 			{
+				rtp_av1_pack_release(packer);
 				assert(0);
 				return -1;
 			}
@@ -245,7 +259,10 @@ static int rtp_av1_pack_input_annexb(void* pack, const void* data, int bytes, ui
 				continue;
 
 			if (0 != rtp_av1_pack_obu(packer, ptr, obu_size))
+			{
+				rtp_av1_pack_release(packer);
 				return -ENOMEM;
+			}
 		}
 	}
 
@@ -274,7 +291,7 @@ static int rtp_av1_pack_input_obu(void* pack, const void* data, int bytes, uint3
 	packer = (struct rtp_encode_av1_t*)pack;
 	packer->pkt.rtp.timestamp = timestamp;
 	packer->pkt.rtp.m = 0;
-	packer->ptr = NULL; // TODO: ptr memory leak
+	rtp_av1_pack_release(packer);
 	packer->aggregation = 0;
 
 	raw = (const uint8_t*)data;
@@ -298,7 +315,10 @@ static int rtp_av1_pack_input_obu(void* pack, const void* data, int bytes, uint3
 		{
 			ptr = leb128(raw + i + offset, (int)(bytes - i - offset), &len);
 			if (ptr + len > raw + bytes)
+			{
+				rtp_av1_pack_release(packer);
 				return -1;
+			}
 			len += ptr - raw - i;
 		}
 		else
@@ -314,6 +334,12 @@ static int rtp_av1_pack_input_obu(void* pack, const void* data, int bytes, uint3
 
 		packer->aggregation |= OBU_SEQUENCE_HEADER == obu_type ? AV1_AGGREGATION_HEADER_N : 0;
 		r = rtp_av1_pack_obu(packer, raw + i, (size_t)len);
+	}
+
+	if (0 != r)
+	{
+		rtp_av1_pack_release(packer);
+		return r;
 	}
 
 	// The RTP header Marker bit MUST be set equal to 0 if the packet is not the last 

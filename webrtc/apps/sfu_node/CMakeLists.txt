@@ -21,9 +21,8 @@ add_executable(sfu_node ${SFU_NODE_APP_SOURCES} ${SFU_NODE_APP_HEADERS})
 target_include_directories(sfu_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 set(SFU_NODE_LIBS
-  TurboRTCApps::Conference
+  TurboMedia::RtcApps
   TurboMedia::RTC
-  TurboRTCApps::Recorder
   TurboHttp::Iris
   turbo_media_auth
   TurboNet::Crypto

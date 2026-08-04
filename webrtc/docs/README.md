@@ -8,7 +8,7 @@ WebRTC DataChannel 实现，用于点对点通信。
 
 **Status**: Development preview; not production-ready.
 
-The repository contains the in-tree PeerConnection, TurboNet::ICE, DTLS-SRTP,
+The repository contains the in-tree PeerConnection, TurboNet::Ice, DTLS-SRTP,
 DataChannel, RTP/RTCP, SFU and room-service building blocks. Local unit and
 loopback end-to-end tests exercise those paths, but they do not establish
 production readiness.
@@ -66,7 +66,7 @@ release gates.
 The legacy `ice_integration_reconnect()` helper remains a retry scheduler.
 Applications needing real restart should use
 `turbo_peer_connection_restart_ice()` or the conditional WHIP/WHEP trickle-ICE
-resource flow; both rotate credentials through the versioned TurboNet::ICE
+resource flow; both rotate credentials through the versioned TurboNet::Ice
 restart contract.
 
 ## Quick Start

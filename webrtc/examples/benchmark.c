@@ -4,7 +4,6 @@
  * Tests:
  * 1. Throughput - How many MB/s can we push through?
  * 2. Latency - Round-trip time for small messages
- * 3. Stress test - Sustained load
  *
  * Usage:
  *   Terminal 1: ./benchmark server 127.0.0.1 5000
@@ -26,8 +25,7 @@
 
 typedef enum {
     TEST_LATENCY,
-    TEST_THROUGHPUT,
-    TEST_STRESS
+    TEST_THROUGHPUT
 } test_type_t;
 
 typedef struct {
@@ -209,9 +207,6 @@ static void on_channel_message(turbo_dc_channel_t *channel, const void *data,
             break;
         case TEST_THROUGHPUT:
             handle_throughput_message(bench, data, len);
-            break;
-        case TEST_STRESS:
-            /* TODO: stress test implementation */
             break;
     }
 }

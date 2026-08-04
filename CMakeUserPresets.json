@@ -88,7 +88,7 @@
                 "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows/debug"
             },
             "environment": {
-                "PATH": "$env{PKG_ROOT}/turbo_webrtc/bin${pathListSep}$env{PKG_ROOT}/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PKG_ROOT}/turboutils/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/debug/bin${pathListSep}$penv{PATH}"
+                "PATH": "$env{PKG_ROOT}/turbohttp/bin${pathListSep}C:/projects/cpp/external/pkgs/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PKG_ROOT}/turboutils/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/debug/bin${pathListSep}C:/tools/vcpkg/installed/x64-windows/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-dev-user",
@@ -102,7 +102,7 @@
                 "TURBOUTILS_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release"
             },
             "environment": {
-                "PATH": "$env{PKG_ROOT}/turbo_webrtc/bin${pathListSep}$env{PKG_ROOT}/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}$penv{PATH}"
+                "PATH": "$env{PKG_ROOT}/turbohttp/bin${pathListSep}C:/projects/cpp/external/pkgs/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release/bin${pathListSep}$env{PKG_ROOT}/turbo_webrtc/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}C:/tools/vcpkg/installed/x64-windows/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-release-user",

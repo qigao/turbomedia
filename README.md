@@ -88,29 +88,28 @@ api_version: turbo.media.pipeline/v1
 - WebSocket 与管理 API 均可加载 PEM 证书/私钥并在进程内提供 WSS/HTTPS；
 - JWT 和 Redis 仍是保留配置，启用这些路径会明确失败。
 
-信令服务应用是 `TURBO_MEDIA_BUILD_RTC_APPS` 的根工程构建目标；配置与
-WSS/HTTPS 生命周期分别由 `turbo_media_test_signaling_config` 和
+信令服务应用是根工程 `webrtc/apps` 下的构建目标；配置与 WSS/HTTPS
+生命周期分别由 `turbo_media_test_signaling_config` 和
 `turbo_media_test_signaling_lifecycle` 验证。
 
 ## RTC 服务进程
 
-桌面构建默认启用 `TURBO_MEDIA_BUILD_RTC_APPS`，生成并安装：
+`webrtc/apps` 随 `webrtc` 子树默认构建并安装：
 
 - `sfu_node`：WebRTC 会话、媒体发布/订阅、分层转发、录制和节点 drain；
 - `room_service`：房间事实源、SFU 节点路由、状态重放和会议策略。
 
 `sfu_node` 的 PeerConnection 路径使用 TurboNet ICE agent，并由
-`TurboNet::ICE` 和 `TurboNet::CoroNet` 作为 RTC 目标的显式私有依赖提供
+`TurboNet::Ice` 和 `TurboNet::CoroNet` 作为 RTC 目标的显式私有依赖提供
 candidate gathering、connectivity checks、selected-pair I/O 与关闭排空。
 
-两个进程只依赖已安装 RTC SDK 中的 Conference 与 Recorder C ABI；根构建
-通过 `TurboRTCApps::Conference` 和 `TurboRTCApps::Recorder` 薄目标接入，
-不会加载该 SDK 的其他历史组件。若 SDK 不在默认搜索路径，应在 configure
-时提供 `TURBORTC_ROOT`：
+两个进程依赖仓库内 `TurboMedia::RtcApps` 提供的房间/SFU/录制模型层
+（`turbo_room_service`、`turbo_sfu_node`、`turbo_recorder` 与底层
+`turbo_sfu`，源码位于 `webrtc/src/{conference,sfu,recording}`），
+不再需要外部 TurboRTCApps SDK 或 `TURBORTC_ROOT`：
 
 ```powershell
-$env:TURBORTC_ROOT = 'C:\projects\cpp\external\pkgs\turbo_webrtc'
-cmake --fresh --preset win-dev-user
+cmake --preset win-dev-user
 cmake --build --preset win-dev-user --target sfu_node room_service
 ```
 

@@ -31,12 +31,12 @@ turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 turbo_media_add_webrtc_test(turbo_media_test_ice_integration
                             test_ice_integration.c)
 target_link_libraries(turbo_media_test_ice_integration
-                      PRIVATE TurboMedia::WebRTC TurboNet::ICE)
+                      PRIVATE TurboMedia::WebRTC TurboNet::Ice)
 
 turbo_media_add_webrtc_test(turbo_media_test_webrtc_e2e
                             test_e2e_connection.c)
 target_link_libraries(turbo_media_test_webrtc_e2e
-                      PRIVATE TurboMedia::WebRTC TurboNet::ICE)
+                      PRIVATE TurboMedia::WebRTC TurboNet::Ice)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_json
                             test_signaling_json.c)

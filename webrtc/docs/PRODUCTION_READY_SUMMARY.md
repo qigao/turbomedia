@@ -13,8 +13,8 @@ not prove public-network, browser, capacity, security or recovery readiness.
 - PeerConnection, SDP, RTP/RTCP, DTLS-SRTP and DataChannel are implemented in
   the TurboMedia source tree.
 - Candidate gathering, connectivity checks and selected-pair I/O use
-  `TurboNet::ICE`.
-- TurboNet::ICE performs RFC 7675 consent freshness checks, rejects responses
+  `TurboNet::Ice`.
+- TurboNet::Ice performs RFC 7675 consent freshness checks, rejects responses
   from the wrong transport tuple or transaction generation, expires consent
   after 30 seconds, and exposes a versioned ICE restart operation.
 - PeerConnection and the SFU WHIP/WHEP resource path rotate ICE credentials,

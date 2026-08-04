@@ -30,6 +30,9 @@ typedef struct {
     turbo_audio_capture_config_t config;
     turbo_capture_t *capture;
 
+    /* Monotonic sample counter for timestamp derivation, owned per device. */
+    uint64_t sample_counter;
+
     /* Device selection */
     ma_device_id *device_id;
     char device_id_str[128];
@@ -51,9 +54,8 @@ static void audio_capture_callback(ma_device *pDevice, void *pOutput,
     size_t len = frameCount * ctx->config.channels * bytes_per_sample;
 
     /* Get timestamp in microseconds */
-    static uint64_t sample_counter = 0;
-    uint64_t timestamp = (sample_counter * 1000000ULL) / ctx->config.sample_rate;
-    sample_counter += frameCount;
+    uint64_t timestamp = (ctx->sample_counter * 1000000ULL) / ctx->config.sample_rate;
+    ctx->sample_counter += frameCount;
 
     ctx->capture->audio_cb(ctx->capture, (const uint8_t *)pInput, len,
                            timestamp, ctx->capture->user_data);
@@ -214,6 +216,9 @@ void turbo_audio_capture_set_callback(turbo_capture_t *capture,
 int miniaudio_audio_start(turbo_capture_t *capture) {
     if (!capture || !capture->platform_ctx) return -1;
     miniaudio_capture_ctx_t *ctx = (miniaudio_capture_ctx_t *)capture->platform_ctx;
+
+    /* Restart resets the per-device timestamp origin. */
+    ctx->sample_counter = 0;
 
     if (ma_device_start(&ctx->device) != MA_SUCCESS) {
         return TURBO_CAPTURE_ERR_DEVICE;

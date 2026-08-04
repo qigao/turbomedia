@@ -9,21 +9,34 @@ typedef struct {
     uscxml_ccxml_t *interpreter;
 } ccxml_adapter_t;
 
+/**
+ * @internal @incomplete
+ * CCXML connection.accept is handled locally; wiring the accepted call to the
+ * SIP gateway is not implemented yet and is compiled only when
+ * ENABLE_RTC_CCXML_WORKFLOW is defined.
+ */
 static void ccxml_on_accept(void *user_data) {
     ccxml_adapter_t *adapter = (ccxml_adapter_t *)user_data;
     printf("[CCXML] Accepting connection...\n");
-    // TODO: Signal to SIP gateway
 }
 
+/**
+ * @internal @incomplete
+ * No SIP gateway side effects are defined for disconnect yet.
+ */
 static void ccxml_on_disconnect(void *user_data) {
     ccxml_adapter_t *adapter = (ccxml_adapter_t *)user_data;
     printf("[CCXML] Disconnecting...\n");
 }
 
+/**
+ * @internal @incomplete
+ * Starting a VoiceXML dialog is not implemented; remove this function once a
+ * VXML adapter exists.
+ */
 static void ccxml_on_start_dialog(void *user_data, const char *src) {
     ccxml_adapter_t *adapter = (ccxml_adapter_t *)user_data;
     printf("[CCXML] Starting VoiceXML dialog: %s\n", src);
-    // TODO: Trigger VXML adapter
 }
 
 ccxml_adapter_t *ccxml_adapter_create(signaling_server_t *server, const char *xml) {

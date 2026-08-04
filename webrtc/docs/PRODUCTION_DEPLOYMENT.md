@@ -381,7 +381,7 @@ ice_integration_set_max_reconnect_attempts(ice, 2);
 
 ## Reconnection Strategy
 
-TurboNet::ICE exposes a versioned restart operation, and PeerConnection exposes
+TurboNet::Ice exposes a versioned restart operation, and PeerConnection exposes
 `turbo_peer_connection_restart_ice()`. The SFU resource API carries restart
 credentials and candidates in `application/trickle-ice-sdpfrag` under a strong
 ETag. The legacy `ice_integration_reconnect()` helper below remains retry

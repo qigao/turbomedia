@@ -4,13 +4,36 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
+
+/* Time-seeded xorshift64 fallback so an RNG outage degrades timer jitter
+ * instead of aborting the process. RFC 3550 only needs a non-synchronized
+ * uniform draw; cryptographic strength is not required here. */
+static uint32_t rtcp_random_fallback(void)
+{
+	static uint64_t seed = 0;
+	uint64_t t;
+
+	if (0 == seed)
+	{
+		t = (uint64_t)time(NULL);
+		seed = t ^ (t << 32) ^ (uint64_t)(uintptr_t)&seed;
+		if (0 == seed)
+			seed = UINT64_C(0x9E3779B97F4A7C15);
+	}
+
+	seed ^= seed << 13;
+	seed ^= seed >> 7;
+	seed ^= seed << 17;
+	return (uint32_t)(seed >> 32);
+}
 
 static double rtcp_random_fraction(void)
 {
 	uint32_t value;
 
 	if (turbo_secure_random(&value, sizeof(value)) != 0)
-		abort();
+		value = rtcp_random_fallback();
 
 	return value / 4294967296.0;
 }

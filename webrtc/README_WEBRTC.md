@@ -419,7 +419,7 @@ OK
 - ❌ 公网浏览器/TURN、容量、soak 与多节点故障测试
 
 ### 📋 待办
-- [x] TurboNet::ICE 增加 consent freshness、disconnect detection 与 restart API
+- [x] TurboNet::Ice 增加 consent freshness、disconnect detection 与 restart API
 - [x] WHIP/WHEP SDP fragment 交换 ICE restart 凭据与候选
 - [x] 接通带独立 bearer token 的 WHIP HTTP 与 WHEP draft-04 HTTP adapter
 - [x] 接通信令 WSS、管理 API/SFU/Room Service HTTPS 与内部 SFU CA 校验

@@ -8,12 +8,15 @@
 /// @return microseconds since the Epoch(1970-01-01 00:00:00 +0000 (UTC))
 uint64_t rtpclock()
 {
+	static uint64_t last_clock = 0;
 	turbo_timeval_t tv;
 
-	if (turbo_gettimeofday(&tv, NULL) != 0)
-		abort();
+	if (turbo_gettimeofday(&tv, NULL) == 0)
+		last_clock = (uint64_t)tv.tv_sec * 1000000ULL + (uint32_t)tv.tv_usec;
 
-	return (uint64_t)tv.tv_sec * 1000000ULL + (uint32_t)tv.tv_usec;
+	/* gettimeofday failure is unexpected; reuse the last successful clock
+	 * instead of aborting the process. */
+	return last_clock;
 }
 
 /// us(microsecond) -> ntp

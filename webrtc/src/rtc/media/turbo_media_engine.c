@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 /* =============================================================================
  * Internal Structures
@@ -25,7 +26,7 @@ struct turbo_media_track_s {
   turbo_media_context_t *ctx;
   turbo_rtc_media_track_type_t type;
   turbo_media_direction_t direction;
-  turbo_media_state_t state;
+  _Atomic turbo_media_state_t state;
   turbo_codec_type_t codec_type;
   uint8_t payload_type;
 
@@ -375,7 +376,7 @@ static void send_rtcp_reports(turbo_media_context_t *ctx, uint64_t now) {
 
   for (int i = 0; i < ctx->track_count; i++) {
     turbo_media_track_t *track = ctx->tracks[i];
-    if (!track || track->state != TURBO_MEDIA_STATE_ACTIVE) continue;
+    if (!track || atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) continue;
 
     rtcp_compound_t rtcp;
     rtcp_compound_init(&rtcp, buf, sizeof(buf));
@@ -449,7 +450,7 @@ static void send_rtcp_reports(turbo_media_context_t *ctx, uint64_t now) {
 static void process_jitter_buffers(turbo_media_context_t *ctx, uint64_t now) {
   for (int i = 0; i < ctx->track_count; i++) {
     turbo_media_track_t *track = ctx->tracks[i];
-    if (!track || track->state != TURBO_MEDIA_STATE_ACTIVE) continue;
+    if (!track || atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) continue;
     if (!(track->direction & TURBO_MEDIA_DIRECTION_RECVONLY)) continue;
 
     if (track->jitter) {
@@ -965,7 +966,7 @@ static void on_audio_captured(turbo_capture_t *capture, const uint8_t *samples, 
   turbo_media_track_t *track = (turbo_media_track_t *)user_data;
   turbo_speech_audio_frame_t speech_frame;
   turbo_recognition_audio_frame_t recognition_frame;
-  if (!track || track->state != TURBO_MEDIA_STATE_ACTIVE) return;
+  if (!track || atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) return;
 
   if (track->asr) {
     speech_frame.data = samples;
@@ -1000,7 +1001,7 @@ static void on_audio_captured(turbo_capture_t *capture, const uint8_t *samples, 
 static void on_video_captured(turbo_capture_t *capture, const uint8_t *frame, size_t len, int width,
                               int height, uint64_t timestamp, void *user_data) {
   turbo_media_track_t *track = (turbo_media_track_t *)user_data;
-  if (!track || track->state != TURBO_MEDIA_STATE_ACTIVE) return;
+  if (!track || atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) return;
 
   (void)timestamp;
   (void)width;
@@ -1032,7 +1033,7 @@ turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
   track->direction = config->direction;
   track->codec_type = config->codec;
   track->payload_type = (uint8_t)config->codec;
-  track->state = TURBO_MEDIA_STATE_IDLE;
+  atomic_store(&track->state, TURBO_MEDIA_STATE_IDLE);
 
   /* Copy config */
   if (config->type == TURBO_RTC_MEDIA_TRACK_AUDIO) {
@@ -1258,7 +1259,7 @@ int turbo_media_track_set_capture(turbo_media_track_t *track,
 int turbo_media_track_attach_asr(turbo_media_track_t *track, turbo_asr_t *asr) {
   turbo_speech_audio_format_t asr_format;
   if (!track || !asr || track->type != TURBO_RTC_MEDIA_TRACK_AUDIO) return -1;
-  if (track->state != TURBO_MEDIA_STATE_IDLE && track->state != TURBO_MEDIA_STATE_STOPPED) {
+  if (atomic_load(&track->state) != TURBO_MEDIA_STATE_IDLE && atomic_load(&track->state) != TURBO_MEDIA_STATE_STOPPED) {
     return -1;
   }
   if (track->asr && track->asr != asr) return -1;
@@ -1274,7 +1275,7 @@ int turbo_media_track_attach_asr(turbo_media_track_t *track, turbo_asr_t *asr) {
 
 int turbo_media_track_detach_asr(turbo_media_track_t *track, turbo_asr_t *asr) {
   if (!track || !asr || track->asr != asr) return -1;
-  if (track->state != TURBO_MEDIA_STATE_IDLE && track->state != TURBO_MEDIA_STATE_STOPPED) {
+  if (atomic_load(&track->state) != TURBO_MEDIA_STATE_IDLE && atomic_load(&track->state) != TURBO_MEDIA_STATE_STOPPED) {
     return -1;
   }
   track->asr = NULL;
@@ -1290,7 +1291,7 @@ static int track_voice_format_matches(const turbo_media_track_t *track,
 
 static int track_is_quiescent_audio(const turbo_media_track_t *track) {
   return track && track->type == TURBO_RTC_MEDIA_TRACK_AUDIO &&
-         (track->state == TURBO_MEDIA_STATE_IDLE || track->state == TURBO_MEDIA_STATE_STOPPED);
+         (atomic_load(&track->state) == TURBO_MEDIA_STATE_IDLE || atomic_load(&track->state) == TURBO_MEDIA_STATE_STOPPED);
 }
 
 int turbo_media_track_attach_voice_detector(turbo_media_track_t *track,
@@ -1364,20 +1365,20 @@ void turbo_media_track_on_rtp_packet(turbo_media_track_t *track, turbo_media_rtp
 
 int turbo_media_track_start(turbo_media_track_t *track) {
   if (!track) return -1;
-  if (track->state == TURBO_MEDIA_STATE_ACTIVE) return 0;
+  if (atomic_load(&track->state) == TURBO_MEDIA_STATE_ACTIVE) return 0;
 
-  track->state = TURBO_MEDIA_STATE_STARTING;
+  atomic_store(&track->state, TURBO_MEDIA_STATE_STARTING);
 
   /* Initialize encoder if not already done */
   if (track->direction & TURBO_MEDIA_DIRECTION_SENDONLY) {
     if (init_encoder(track) != 0) {
-      track->state = TURBO_MEDIA_STATE_ERROR;
+      atomic_store(&track->state, TURBO_MEDIA_STATE_ERROR);
       return -1;
     }
 
     /* Start capture if present */
     if (start_capture_if_present(track) != 0) {
-      track->state = TURBO_MEDIA_STATE_ERROR;
+      atomic_store(&track->state, TURBO_MEDIA_STATE_ERROR);
       return -1;
     }
   }
@@ -1385,12 +1386,12 @@ int turbo_media_track_start(turbo_media_track_t *track) {
   /* Initialize decoder if not already done */
   if (track->direction & TURBO_MEDIA_DIRECTION_RECVONLY) {
     if (init_decoder(track) != 0) {
-      track->state = TURBO_MEDIA_STATE_ERROR;
+      atomic_store(&track->state, TURBO_MEDIA_STATE_ERROR);
       return -1;
     }
   }
 
-  track->state = TURBO_MEDIA_STATE_ACTIVE;
+  atomic_store(&track->state, TURBO_MEDIA_STATE_ACTIVE);
 
   if ((track->direction & TURBO_MEDIA_DIRECTION_SENDONLY) &&
       track->type == TURBO_RTC_MEDIA_TRACK_VIDEO && track->encoder) {
@@ -1398,7 +1399,7 @@ int turbo_media_track_start(turbo_media_track_t *track) {
   }
 
   if (track->state_cb) {
-    track->state_cb(track, track->state, track->user_data);
+    track->state_cb(track, atomic_load(&track->state), track->user_data);
   }
 
   return 0;
@@ -1483,9 +1484,9 @@ static int start_capture_if_present(turbo_media_track_t *track) {
 
 void turbo_media_track_stop(turbo_media_track_t *track) {
   if (!track) return;
-  if (track->state == TURBO_MEDIA_STATE_STOPPED) return;
+  if (atomic_load(&track->state) == TURBO_MEDIA_STATE_STOPPED) return;
 
-  track->state = TURBO_MEDIA_STATE_STOPPING;
+  atomic_store(&track->state, TURBO_MEDIA_STATE_STOPPING);
 
   /* Stop capture source */
   if (track->capture) {
@@ -1502,17 +1503,17 @@ void turbo_media_track_stop(turbo_media_track_t *track) {
     track->decoder = NULL;
   }
 
-  track->state = TURBO_MEDIA_STATE_STOPPED;
+  atomic_store(&track->state, TURBO_MEDIA_STATE_STOPPED);
 
   if (track->state_cb) {
-    track->state_cb(track, track->state, track->user_data);
+    track->state_cb(track, atomic_load(&track->state), track->user_data);
   }
 }
 
 int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data, size_t len,
                                  uint64_t timestamp) {
   if (!track || !data) return -1;
-  if (track->state != TURBO_MEDIA_STATE_ACTIVE) return -1;
+  if (atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) return -1;
   if (!(track->direction & TURBO_MEDIA_DIRECTION_SENDONLY)) return -1;
 
   if (!track->encoder || !track->rtp_session) return -1;
@@ -1647,7 +1648,7 @@ int turbo_media_track_send_rtp_packet(turbo_media_track_t *track, const uint8_t 
   int rtp_len;
 
   if (!track || !packet) return -1;
-  if (track->state != TURBO_MEDIA_STATE_ACTIVE) return -1;
+  if (atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) return -1;
   if (!(track->direction & TURBO_MEDIA_DIRECTION_SENDONLY)) return -1;
   if (!track->ctx || !track->ctx->peer || !track->rtp_session) return -1;
 
@@ -1721,7 +1722,7 @@ void turbo_media_track_get_stats(turbo_media_track_t *track, turbo_media_stats_t
 }
 
 turbo_media_state_t turbo_media_track_get_state(turbo_media_track_t *track) {
-  return track ? track->state : TURBO_MEDIA_STATE_IDLE;
+  return track ? (turbo_media_state_t)atomic_load(&track->state) : TURBO_MEDIA_STATE_IDLE;
 }
 
 turbo_rtc_media_track_type_t turbo_media_track_get_type(turbo_media_track_t *track) {
