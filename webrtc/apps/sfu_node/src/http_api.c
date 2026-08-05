@@ -428,6 +428,35 @@ static int media_resource_id_valid(const char *value, size_t capacity) {
     return 1;
 }
 
+static int command_identifier_fields_valid(json_value_t *root) {
+    const char *room_id = json_string_field(root, "room_id");
+    const char *participant_id = json_string_field(root, "participant_id");
+    const char *receiver_participant_id =
+        json_string_field(root, "receiver_participant_id");
+    const char *session_id = json_string_field(root, "session_id");
+    const char *track_id = json_string_field(root, "track_id");
+    const char *codec_name = json_string_field(root, "codec_name");
+    const char *policy_source = json_string_field(root, "policy_source");
+    const char *recording_id = json_string_field(root, "recording_id");
+    const char *mode = json_string_field(root, "mode");
+
+    return (!room_id || media_resource_id_valid(room_id, TURBO_ROOM_ID_MAX)) &&
+           (!participant_id || media_resource_id_valid(
+                                   participant_id, TURBO_PARTICIPANT_ID_MAX)) &&
+           (!receiver_participant_id ||
+            media_resource_id_valid(receiver_participant_id,
+                                    TURBO_PARTICIPANT_ID_MAX)) &&
+           (!session_id || media_resource_id_valid(
+                               session_id, TURBO_PARTICIPANT_ID_MAX)) &&
+           (!track_id || media_resource_id_valid(track_id, TURBO_TRACK_ID_MAX)) &&
+           (!codec_name || media_resource_id_valid(codec_name, TURBO_CODEC_NAME_MAX)) &&
+           (!policy_source ||
+            media_resource_id_valid(policy_source, TURBO_POLICY_SOURCE_MAX)) &&
+           (!recording_id ||
+            media_resource_id_valid(recording_id, TURBO_RECORDING_ID_MAX)) &&
+           (!mode || media_resource_id_valid(mode, TURBO_RECORDING_MODE_MAX));
+}
+
 static int generate_media_session_id(char output[TURBO_PARTICIPANT_ID_MAX]) {
     static const char hex[] = "0123456789abcdef";
     uint8_t random_bytes[16];
@@ -1280,6 +1309,12 @@ static void handle_command(Req *req, Res *res) {
     auth_participant_id = json_string_field(root, "participant_id");
     if (!type) {
         send_error_json(res, 400, "INVALID_REQUEST", "missing command type");
+        turbo_free_json(&root);
+        return;
+    }
+    if (!command_identifier_fields_valid(root)) {
+        send_error_json(res, 400, "INVALID_REQUEST",
+                        "invalid command identifier");
         turbo_free_json(&root);
         return;
     }

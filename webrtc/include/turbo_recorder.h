@@ -25,7 +25,7 @@ typedef struct rtp_recorder_ctx_t rtp_recorder_ctx_t;
 typedef enum {
     TURBO_RECORDER_FORMAT_MP4,   /* MP4 container (H.264/H.265/AAC) */
     TURBO_RECORDER_FORMAT_WEBM,  /* WebM container (VP8/VP9/Opus) */
-    TURBO_RECORDER_FORMAT_MKV    /* Matroska container (any codec) */
+    TURBO_RECORDER_FORMAT_MKV    /* Matroska container (H.26x/VPx/AAC/Opus) */
 } turbo_recorder_format_t;
 
 typedef enum {
@@ -37,13 +37,17 @@ typedef enum {
     /* Audio codecs */
     TURBO_RECORDER_CODEC_OPUS,
     TURBO_RECORDER_CODEC_AAC,
-    TURBO_RECORDER_CODEC_PCM,
+    TURBO_RECORDER_CODEC_PCM, /* Reserved; sample format is not yet specified. */
 
     /* Video codecs */
     TURBO_RECORDER_CODEC_H264,
     TURBO_RECORDER_CODEC_H265,
     TURBO_RECORDER_CODEC_VP8,
-    TURBO_RECORDER_CODEC_VP9
+    TURBO_RECORDER_CODEC_VP9,
+
+    /* G.711 variants must remain distinct when creating container streams. */
+    TURBO_RECORDER_CODEC_PCMU,
+    TURBO_RECORDER_CODEC_PCMA
 } turbo_recorder_codec_t;
 
 /* =============================================================================
@@ -72,6 +76,13 @@ typedef struct {
     /* Audio configuration */
     int sample_rate;
     int channels;
+
+    /* Encoded stream metadata. H.26x recording requires codec configuration. */
+    const uint8_t *extradata;
+    size_t extradata_size;
+
+    /* RTP payload type, or 0 to use the codec default (except PCMU, where 0 is valid). */
+    int rtp_payload_type;
 } turbo_recorder_track_config_t;
 
 /* =============================================================================
@@ -224,6 +235,9 @@ CXX_C_API void turbo_recorder_set_error_callback(turbo_recorder_t *rec,
  *
  * Helper for recording directly from RTP streams
  *
+ * The recorder and track must outlive the returned RTP context. Destroy all
+ * RTP contexts before destroying the recorder.
+ *
  * @param rec Recorder context
  * @param track_id Track ID to record to
  * @return RTP recorder context or NULL on error
@@ -251,6 +265,18 @@ CXX_C_API void turbo_recorder_destroy_rtp_context(rtp_recorder_ctx_t *ctx);
 CXX_C_API int turbo_recorder_write_rtp_frame(rtp_recorder_ctx_t *ctx,
                                    const uint8_t *data, size_t len,
                                    uint32_t rtp_timestamp, int is_keyframe);
+
+/**
+ * Write one complete RTP packet.
+ *
+ * The recorder depacketizes and reassembles access units before muxing them.
+ * The packet memory is borrowed only for the duration of this call.
+ * Returns -1 for malformed, discarded, incomplete, or corrupt packets/frames.
+ * A rejected access unit is never muxed.
+ */
+CXX_C_API int turbo_recorder_write_rtp_packet(rtp_recorder_ctx_t *ctx,
+                                              const uint8_t *packet,
+                                              size_t len);
 
 #ifdef __cplusplus
 }

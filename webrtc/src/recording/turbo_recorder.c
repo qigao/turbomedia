@@ -13,10 +13,14 @@
  */
 #include "turbo_recorder.h"
 #include "turbo_recorder_internal.h"
+#include "turbo_muxer.h"
+#include "rtp-payload.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <turbo_str.h>
+#include <turbo_vec.h>
 #include <stdio.h>
 
 #ifdef _WIN32
@@ -34,7 +38,8 @@
  * ============================================================================= */
 
 #define MAX_TRACKS 8
-#define BUFFER_SIZE (1024 * 1024)  /* 1 MB buffer per track */
+#define RECORDER_MAX_ACCESS_UNIT_BYTES (16U * 1024U * 1024U)
+#define RECORDER_ANNEX_B_START_CODE_BYTES 4U
 
 /* =============================================================================
  * Track Context
@@ -57,10 +62,11 @@ typedef struct {
     int64_t last_timestamp_us;
     int64_t frame_count;
     
-    /* Buffer */
-    uint8_t *buffer;
-    size_t buffer_size;
-    size_t buffer_used;
+    int rtp_payload_type;
+    int muxer_stream_id;
+    turbo_vec_t extradata;
+    turbo_vec_t access_unit;
+    int buffers_initialized;
     
     /* Statistics */
     int64_t bytes_written;
@@ -95,11 +101,10 @@ struct turbo_recorder_t {
     recorder_track_t tracks[MAX_TRACKS];
     int track_count;
     
-    /* File */
-    FILE *file;
+    /* Container */
+    turbo_muxer_t *muxer;
     int recording;
     int paused;
-    long mp4_mdat_offset;
     
     /* Timing */
     int64_t start_time_us;
@@ -118,6 +123,20 @@ struct turbo_recorder_t {
     /* Callbacks */
     void (*on_error)(void *user_data, const char *error);
     void *user_data;
+};
+
+struct rtp_recorder_ctx_t {
+    turbo_recorder_t *recorder;
+    int track_id;
+    uint32_t base_timestamp;
+    uint32_t clock_rate;
+    int base_timestamp_set;
+    void *decoder;
+    uint32_t access_unit_timestamp;
+    int access_unit_timestamp_set;
+    int access_unit_keyframe;
+    int access_unit_corrupt;
+    int callback_error;
 };
 
 /* =============================================================================
@@ -173,108 +192,6 @@ static int recorder_test_should_fail_io(turbo_recorder_test_io_op_t op) {
     return 0;
 }
 
-static FILE *recorder_file_open(const char *filename, const char *mode) {
-    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_OPEN)) {
-        return NULL;
-    }
-    return fopen(filename, mode);
-}
-
-static size_t write_raw(FILE *f, const void *data, size_t len) {
-    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_WRITE)) {
-        return 0;
-    }
-    return fwrite(data, 1, len, f);
-}
-
-static int recorder_file_flush(FILE *f) {
-    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_FLUSH)) {
-        return -1;
-    }
-    return fflush(f);
-}
-
-static int recorder_file_seek(FILE *f, long offset, int origin) {
-    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_SEEK)) {
-        return -1;
-    }
-    return fseek(f, offset, origin);
-}
-
-static long recorder_file_tell(FILE *f) {
-    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_TELL)) {
-        return -1;
-    }
-    return ftell(f);
-}
-
-static int recorder_file_close(FILE *f) {
-    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_CLOSE)) {
-        return EOF;
-    }
-    return fclose(f);
-}
-
-static size_t write_u8(FILE *f, uint8_t val) {
-    return write_raw(f, &val, 1);
-}
-
-static size_t write_u16_be(FILE *f, uint16_t val) {
-    uint8_t buf[2];
-    buf[0] = (val >> 8) & 0xFF;
-    buf[1] = val & 0xFF;
-    return write_raw(f, buf, sizeof(buf));
-}
-
-static size_t write_u32_be(FILE *f, uint32_t val) {
-    uint8_t buf[4];
-    buf[0] = (val >> 24) & 0xFF;
-    buf[1] = (val >> 16) & 0xFF;
-    buf[2] = (val >> 8) & 0xFF;
-    buf[3] = val & 0xFF;
-    return write_raw(f, buf, sizeof(buf));
-}
-
-static size_t write_u64_be(FILE *f, uint64_t val) {
-    uint8_t buf[8];
-    buf[0] = (val >> 56) & 0xFF;
-    buf[1] = (val >> 48) & 0xFF;
-    buf[2] = (val >> 40) & 0xFF;
-    buf[3] = (val >> 32) & 0xFF;
-    buf[4] = (val >> 24) & 0xFF;
-    buf[5] = (val >> 16) & 0xFF;
-    buf[6] = (val >> 8) & 0xFF;
-    buf[7] = val & 0xFF;
-    return write_raw(f, buf, sizeof(buf));
-}
-
-/* =============================================================================
- * MP4 Container (Simplified)
- * ============================================================================= */
-
-static size_t write_mp4_ftyp(FILE *f) {
-    size_t written = 0;
-
-    /* ftyp box */
-    written += write_u32_be(f, 20);  /* size */
-    written += write_raw(f, "ftyp", 4);
-    written += write_raw(f, "isom", 4);  /* major brand */
-    written += write_u32_be(f, 512);     /* minor version */
-    written += write_raw(f, "isom", 4);  /* compatible brand */
-
-    return written;
-}
-
-static size_t write_mp4_mdat_header(FILE *f) {
-    size_t written = 0;
-
-    /* mdat box header (size will be updated later) */
-    written += write_u32_be(f, 0);  /* size placeholder */
-    written += write_raw(f, "mdat", 4);
-
-    return written;
-}
-
 static int recorder_format_supported(turbo_recorder_format_t format) {
     switch (format) {
         case TURBO_RECORDER_FORMAT_MP4:
@@ -286,39 +203,76 @@ static int recorder_format_supported(turbo_recorder_format_t format) {
     }
 }
 
-static int finalize_mp4_mdat_size(turbo_recorder_t *rec) {
-    long file_end;
-    long mdat_size;
+static turbo_muxer_format_t recorder_muxer_format(turbo_recorder_format_t format) {
+    switch (format) {
+        case TURBO_RECORDER_FORMAT_MP4: return TURBO_MUXER_MP4;
+        case TURBO_RECORDER_FORMAT_WEBM: return TURBO_MUXER_WEBM;
+        case TURBO_RECORDER_FORMAT_MKV: return TURBO_MUXER_MKV;
+        default: return (turbo_muxer_format_t)-1;
+    }
+}
 
-    if (!rec || !rec->file || rec->mp4_mdat_offset < 0) {
-        return -1;
+static const char *recorder_codec_name(turbo_recorder_codec_t codec) {
+    switch (codec) {
+        case TURBO_RECORDER_CODEC_OPUS: return "opus";
+        case TURBO_RECORDER_CODEC_AAC: return "aac";
+        case TURBO_RECORDER_CODEC_H264: return "h264";
+        case TURBO_RECORDER_CODEC_H265: return "h265";
+        case TURBO_RECORDER_CODEC_VP8: return "vp8";
+        case TURBO_RECORDER_CODEC_VP9: return "vp9";
+        case TURBO_RECORDER_CODEC_PCMU: return "pcmu";
+        case TURBO_RECORDER_CODEC_PCMA: return "pcma";
+        default: return NULL;
     }
+}
 
-    if (recorder_file_flush(rec->file) != 0) {
-        return -1;
+static int recorder_default_payload_type(turbo_recorder_codec_t codec) {
+    switch (codec) {
+        case TURBO_RECORDER_CODEC_PCMU: return 0;
+        case TURBO_RECORDER_CODEC_PCMA: return 8;
+        case TURBO_RECORDER_CODEC_OPUS: return 111;
+        case TURBO_RECORDER_CODEC_AAC: return 97;
+        case TURBO_RECORDER_CODEC_H264: return 102;
+        case TURBO_RECORDER_CODEC_H265: return 103;
+        case TURBO_RECORDER_CODEC_VP8: return 96;
+        case TURBO_RECORDER_CODEC_VP9: return 98;
+        default: return -1;
     }
+}
 
-    file_end = recorder_file_tell(rec->file);
-    if (file_end < 0 || file_end < rec->mp4_mdat_offset) {
-        return -1;
+static int recorder_track_supported(const turbo_recorder_t *rec,
+                                    const turbo_recorder_track_config_t *config) {
+    if (!rec || !config || !recorder_codec_name(config->codec)) {
+        return 0;
     }
-
-    mdat_size = file_end - rec->mp4_mdat_offset;
-    if ((unsigned long)mdat_size > 0xFFFFFFFFUL) {
-        return -1;
+    if (config->type == TURBO_RECORDER_TRACK_VIDEO) {
+        if (config->width <= 0 || config->height <= 0 || config->framerate <= 0) {
+            return 0;
+        }
+        if ((config->codec == TURBO_RECORDER_CODEC_H264 ||
+             config->codec == TURBO_RECORDER_CODEC_H265) &&
+            (!config->extradata || config->extradata_size == 0)) {
+            return 0;
+        }
+    } else if (config->type == TURBO_RECORDER_TRACK_AUDIO) {
+        if (config->sample_rate <= 0 || config->channels <= 0) {
+            return 0;
+        }
+    } else {
+        return 0;
     }
-
-    if (recorder_file_seek(rec->file, rec->mp4_mdat_offset, SEEK_SET) != 0) {
-        return -1;
+    if (rec->format == TURBO_RECORDER_FORMAT_WEBM &&
+        config->codec != TURBO_RECORDER_CODEC_VP8 &&
+        config->codec != TURBO_RECORDER_CODEC_VP9 &&
+        config->codec != TURBO_RECORDER_CODEC_OPUS) {
+        return 0;
     }
-    if (write_u32_be(rec->file, (uint32_t)mdat_size) != 4) {
-        return -1;
+    if (rec->format == TURBO_RECORDER_FORMAT_MKV &&
+        (config->codec == TURBO_RECORDER_CODEC_PCMU ||
+         config->codec == TURBO_RECORDER_CODEC_PCMA)) {
+        return 0;
     }
-    if (recorder_file_seek(rec->file, file_end, SEEK_SET) != 0) {
-        return -1;
-    }
-
-    return recorder_file_flush(rec->file);
+    return 1;
 }
 
 static int64_t recorder_media_duration_us(const turbo_recorder_t *rec) {
@@ -367,84 +321,27 @@ static int64_t recorder_elapsed_wallclock_us(const turbo_recorder_t *rec) {
 }
 
 /* =============================================================================
- * WebM Container (Simplified)
- * ============================================================================= */
-
-static size_t write_matroska_header(FILE *f, const char *doc_type) {
-    size_t written = 0;
-    size_t doc_type_len;
-    size_t ebml_payload_size;
-
-    if (!doc_type) {
-        return 0;
-    }
-
-    doc_type_len = strlen(doc_type);
-    if (doc_type_len == 0 || doc_type_len > 0x7F) {
-        return 0;
-    }
-
-    ebml_payload_size = 16 + (size_t)(3 + doc_type_len) + 8;
-    if (ebml_payload_size > 0x7F) {
-        return 0;
-    }
-
-    /* EBML Header */
-    written += write_raw(f, "\x1A\x45\xDF\xA3", 4); /* EBML */
-    written += write_u8(f, (uint8_t)(0x80 | (uint8_t)ebml_payload_size));
-    written += write_raw(f, "\x42\x86", 2); /* EBMLVersion */
-    written += write_u8(f, 0x81);
-    written += write_u8(f, 0x01);
-    written += write_raw(f, "\x42\xF7", 2); /* EBMLReadVersion */
-    written += write_u8(f, 0x81);
-    written += write_u8(f, 0x01);
-    written += write_raw(f, "\x42\xF2", 2); /* EBMLMaxIDLength */
-    written += write_u8(f, 0x81);
-    written += write_u8(f, 0x04);
-    written += write_raw(f, "\x42\xF3", 2); /* EBMLMaxSizeLength */
-    written += write_u8(f, 0x81);
-    written += write_u8(f, 0x08);
-    written += write_raw(f, "\x42\x82", 2); /* DocType */
-    written += write_u8(f, (uint8_t)(0x80 | (uint8_t)doc_type_len));
-    written += write_raw(f, doc_type, doc_type_len);
-    written += write_raw(f, "\x42\x87", 2); /* DocTypeVersion */
-    written += write_u8(f, 0x81);
-    written += write_u8(f, 0x04);
-    written += write_raw(f, "\x42\x85", 2); /* DocTypeReadVersion */
-    written += write_u8(f, 0x81);
-    written += write_u8(f, 0x02);
-
-    /* Segment */
-    written += write_raw(f, "\x18\x53\x80\x67", 4); /* Segment */
-    written += write_u8(f, 0xFF); /* unknown size */
-
-    /* Info with TimecodeScale=1000000 (1ms) */
-    written += write_raw(f, "\x15\x49\xA9\x66", 4); /* Info */
-    written += write_u8(f, 0x87);
-    written += write_raw(f, "\x2A\xD7\xB1", 3); /* TimecodeScale */
-    written += write_u8(f, 0x83);
-    written += write_u8(f, 0x0F);
-    written += write_u8(f, 0x42);
-    written += write_u8(f, 0x40);
-
-    return written;
-}
-
-/* =============================================================================
  * Recorder Management
  * ============================================================================= */
 
 turbo_recorder_t *turbo_recorder_create(const turbo_recorder_config_t *config) {
-    if (!config || !config->filename) {
+    turbo_recorder_t *rec;
+
+    if (!config || !config->filename || !config->filename[0] ||
+        !recorder_format_supported(config->format)) {
         return NULL;
     }
-    
-    turbo_recorder_t *rec = (turbo_recorder_t *)calloc(1, sizeof(turbo_recorder_t));
+
+    rec = (turbo_recorder_t *)calloc(1, sizeof(turbo_recorder_t));
     if (!rec) return NULL;
-    
+
     rec->format = config->format;
     rec->filename = tstr_dup(config->filename);
-    
+    if (!rec->filename) {
+        free(rec);
+        return NULL;
+    }
+
     if (config->title) {
         rec->title = tstr_dup(config->title);
     }
@@ -454,13 +351,6 @@ turbo_recorder_t *turbo_recorder_create(const turbo_recorder_config_t *config) {
     if (config->comment) {
         rec->comment = tstr_dup(config->comment);
     }
-    
-    rec->track_count = 0;
-    rec->recording = 0;
-    rec->paused = 0;
-    rec->mp4_mdat_offset = -1;
-    rec->pause_start_us = 0;
-    rec->paused_total_us = 0;
     
     return rec;
 }
@@ -473,11 +363,14 @@ void turbo_recorder_destroy(turbo_recorder_t *rec) {
         turbo_recorder_stop(rec);
     }
     
-    /* Free track buffers */
     for (int i = 0; i < rec->track_count; i++) {
-        free(rec->tracks[i].buffer);
+        if (rec->tracks[i].buffers_initialized) {
+            turbo_vec_destroy(&rec->tracks[i].extradata);
+            turbo_vec_destroy(&rec->tracks[i].access_unit);
+        }
     }
-    
+
+    turbo_muxer_destroy(rec->muxer);
     tstr_free(rec->filename);
     tstr_free(rec->title);
     tstr_free(rec->author);
@@ -488,21 +381,52 @@ void turbo_recorder_destroy(turbo_recorder_t *rec) {
 
 int turbo_recorder_add_track(turbo_recorder_t *rec,
                              const turbo_recorder_track_config_t *config) {
+    recorder_track_t *track;
+    int payload_type;
+
     if (!rec || !config || rec->track_count >= MAX_TRACKS) {
         return -1;
     }
-    
-    /* Cannot add tracks while recording */
-    if (rec->recording) {
+    if (rec->recording || !recorder_track_supported(rec, config) ||
+        config->extradata_size > RECORDER_MAX_ACCESS_UNIT_BYTES ||
+        (config->extradata_size > 0 && !config->extradata)) {
         return -1;
     }
-    
-    recorder_track_t *track = &rec->tracks[rec->track_count];
-    
+
+    payload_type = config->rtp_payload_type;
+    if (config->codec != TURBO_RECORDER_CODEC_PCMU && payload_type == 0) {
+        payload_type = recorder_default_payload_type(config->codec);
+    }
+    if (payload_type < 0 || payload_type > 127) {
+        return -1;
+    }
+
+    track = &rec->tracks[rec->track_count];
+    memset(track, 0, sizeof(*track));
+    if (turbo_vec_init(&track->extradata, sizeof(uint8_t)) != 0 ||
+        turbo_vec_init(&track->access_unit, sizeof(uint8_t)) != 0) {
+        turbo_vec_destroy(&track->extradata);
+        turbo_vec_destroy(&track->access_unit);
+        return -1;
+    }
+    track->buffers_initialized = 1;
+    if (config->extradata_size > 0) {
+        if (turbo_vec_resize(&track->extradata, config->extradata_size) != 0) {
+            turbo_vec_destroy(&track->extradata);
+            turbo_vec_destroy(&track->access_unit);
+            memset(track, 0, sizeof(*track));
+            return -1;
+        }
+        memcpy(turbo_vec_data(&track->extradata), config->extradata,
+               config->extradata_size);
+    }
+
     track->active = 1;
     track->type = config->type;
     track->codec = config->codec;
-    
+    track->rtp_payload_type = payload_type;
+    track->muxer_stream_id = -1;
+
     if (config->type == TURBO_RECORDER_TRACK_VIDEO) {
         track->width = config->width;
         track->height = config->height;
@@ -511,24 +435,13 @@ int turbo_recorder_add_track(turbo_recorder_t *rec,
         track->sample_rate = config->sample_rate;
         track->channels = config->channels;
     }
-    
-    /* Allocate buffer */
-    track->buffer = (uint8_t *)malloc(BUFFER_SIZE);
-    if (!track->buffer) {
-        return -1;
-    }
-    track->buffer_size = BUFFER_SIZE;
-    track->buffer_used = 0;
-    
-    track->frame_count = 0;
-    track->bytes_written = 0;
-    track->frames_written = 0;
-    
+
     return rec->track_count++;
 }
 
 int turbo_recorder_start(turbo_recorder_t *rec) {
-    size_t header_bytes = 0;
+    turbo_muxer_config_t muxer_config;
+    int i;
 
     if (!rec || rec->recording || rec->track_count == 0) {
         return -1;
@@ -538,50 +451,69 @@ int turbo_recorder_start(turbo_recorder_t *rec) {
         recorder_emit_error(rec, "Unsupported recording format");
         return -1;
     }
-    
-    /* Open file */
-    rec->file = recorder_file_open(rec->filename, "wb");
-    if (!rec->file) {
+
+    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_OPEN) ||
+        (rec->format == TURBO_RECORDER_FORMAT_MP4 &&
+         recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_TELL))) {
         recorder_emit_error(rec, "Failed to open file");
         return -1;
     }
-    
-    rec->total_bytes_written = 0;
-    rec->mp4_mdat_offset = -1;
-    rec->paused = 0;
-    rec->pause_start_us = 0;
-    rec->paused_total_us = 0;
 
-    /* Write container header */
-    if (rec->format == TURBO_RECORDER_FORMAT_MP4) {
-        header_bytes += write_mp4_ftyp(rec->file);
-        rec->mp4_mdat_offset = recorder_file_tell(rec->file);
-        if (rec->mp4_mdat_offset < 0) {
-            recorder_file_close(rec->file);
-            rec->file = NULL;
-            recorder_emit_error(rec, "Failed to prepare MP4 container");
-            return -1;
-        }
-        header_bytes += write_mp4_mdat_header(rec->file);
-    } else if (rec->format == TURBO_RECORDER_FORMAT_WEBM) {
-        header_bytes += write_matroska_header(rec->file, "webm");
-    } else if (rec->format == TURBO_RECORDER_FORMAT_MKV) {
-        header_bytes += write_matroska_header(rec->file, "matroska");
+    turbo_muxer_registry_init();
+    memset(&muxer_config, 0, sizeof(muxer_config));
+    muxer_config.format = recorder_muxer_format(rec->format);
+    muxer_config.output_path = rec->filename;
+    muxer_config.write_duration = 1;
+    muxer_config.faststart = rec->format == TURBO_RECORDER_FORMAT_MP4;
+    rec->muxer = turbo_muxer_create(&muxer_config);
+    if (!rec->muxer) {
+        recorder_emit_error(rec, "Failed to create container muxer");
+        return -1;
     }
 
-    if (ferror(rec->file)) {
-        recorder_file_close(rec->file);
-        rec->file = NULL;
+    for (i = 0; i < rec->track_count; ++i) {
+        recorder_track_t *track = &rec->tracks[i];
+        turbo_stream_info_t stream_info;
+
+        memset(&stream_info, 0, sizeof(stream_info));
+        stream_info.type = track->type == TURBO_RECORDER_TRACK_VIDEO
+                               ? TURBO_CODEC_TYPE_VIDEO
+                               : TURBO_CODEC_TYPE_AUDIO;
+        stream_info.codec_name = recorder_codec_name(track->codec);
+        stream_info.extradata =
+            (const uint8_t *)turbo_vec_data_const(&track->extradata);
+        stream_info.extradata_size = turbo_vec_size(&track->extradata);
+        stream_info.width = track->width;
+        stream_info.height = track->height;
+        stream_info.framerate = track->framerate;
+        stream_info.sample_rate = track->sample_rate;
+        stream_info.channels = track->channels;
+        if (turbo_muxer_add_stream(rec->muxer, &stream_info,
+                                   &track->muxer_stream_id) != 0) {
+            turbo_muxer_destroy(rec->muxer);
+            rec->muxer = NULL;
+            remove(rec->filename);
+            recorder_emit_error(rec, "Failed to add recording stream");
+            return -1;
+        }
+    }
+    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_WRITE) ||
+        turbo_muxer_write_header(rec->muxer) != 0) {
+        turbo_muxer_destroy(rec->muxer);
+        rec->muxer = NULL;
+        remove(rec->filename);
         recorder_emit_error(rec, "Failed to write recording header");
         return -1;
     }
-    
+
+    rec->total_bytes_written = 0;
+    rec->paused = 0;
+    rec->pause_start_us = 0;
+    rec->paused_total_us = 0;
     rec->start_time_us = get_time_us();
     rec->recording = 1;
-    rec->total_bytes_written = (int64_t)header_bytes;
-    
-    /* Initialize track timestamps */
-    for (int i = 0; i < rec->track_count; i++) {
+
+    for (i = 0; i < rec->track_count; i++) {
         rec->tracks[i].start_time_us = rec->start_time_us;
         rec->tracks[i].last_timestamp_us = 0;
     }
@@ -592,6 +524,9 @@ int turbo_recorder_start(turbo_recorder_t *rec) {
 int turbo_recorder_write_frame(turbo_recorder_t *rec, int track_id,
                                const uint8_t *data, size_t len,
                                int64_t timestamp_us, int is_keyframe) {
+    recorder_track_t *track;
+    turbo_muxer_packet_t packet;
+
     if (!rec || !rec->recording || track_id < 0 || track_id >= rec->track_count) {
         return -1;
     }
@@ -599,37 +534,40 @@ int turbo_recorder_write_frame(turbo_recorder_t *rec, int track_id,
         return -1;
     }
     
-    if (!data || len == 0) {
+    if (!data || len == 0 || len > RECORDER_MAX_ACCESS_UNIT_BYTES ||
+        timestamp_us < 0 || recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_WRITE)) {
         return -1;
     }
-    
-    recorder_track_t *track = &rec->tracks[track_id];
-    
-    /* Write frame data directly to file (simplified) */
-    /* In production, would properly mux into container format */
-    
-    /* For now, just write raw data with simple framing */
-    /* Format: [4 bytes length][1 byte keyframe flag][data] */
-    if (write_u32_be(rec->file, (uint32_t)len) != 4 ||
-        write_u8(rec->file, is_keyframe ? 1 : 0) != 1 ||
-        write_raw(rec->file, data, len) != len) {
-        recorder_emit_error(rec, "Failed to write frame data");
+
+    track = &rec->tracks[track_id];
+    memset(&packet, 0, sizeof(packet));
+    packet.stream_id = track->muxer_stream_id;
+    packet.data = data;
+    packet.size = len;
+    packet.pts = timestamp_us;
+    packet.dts = timestamp_us;
+    packet.is_keyframe = is_keyframe ? 1 : 0;
+    if (track->type == TURBO_RECORDER_TRACK_VIDEO && track->framerate > 0) {
+        packet.duration = 1000000 / track->framerate;
+    }
+    if (!rec->muxer || turbo_muxer_write_packet(rec->muxer, &packet) != 0) {
+        recorder_emit_error(rec, "Failed to mux recording frame");
         return -1;
     }
-    
-    /* Update statistics */
+
     if (track->frames_written == 0 || timestamp_us > track->last_timestamp_us) {
         track->last_timestamp_us = timestamp_us;
     }
-    track->bytes_written += len + 5;
+    track->bytes_written += (int64_t)len;
     track->frames_written++;
-    rec->total_bytes_written += len + 5;
-    
+    rec->total_bytes_written += (int64_t)len;
+
     return 0;
 }
 
 int turbo_recorder_stop(turbo_recorder_t *rec) {
     int64_t media_duration_us;
+    int rc = 0;
 
     if (!rec || !rec->recording) {
         return -1;
@@ -638,30 +576,24 @@ int turbo_recorder_stop(turbo_recorder_t *rec) {
     media_duration_us = recorder_media_duration_us(rec);
     rec->duration_us = media_duration_us >= 0 ? media_duration_us : recorder_elapsed_wallclock_us(rec);
     
-    /* Finalize container */
-    if (rec->format == TURBO_RECORDER_FORMAT_MP4 && finalize_mp4_mdat_size(rec) != 0) {
-        recorder_emit_error(rec, "Failed to finalize MP4 mdat size");
-        return -1;
+    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_FLUSH) ||
+        (rec->format == TURBO_RECORDER_FORMAT_MP4 &&
+         recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_SEEK)) ||
+        !rec->muxer || turbo_muxer_write_trailer(rec->muxer) != 0) {
+        rc = -1;
+        recorder_emit_error(rec, "Failed to finalize recording container");
     }
-    
-    /* Close file */
-    if (rec->file) {
-        if (recorder_file_close(rec->file) != 0) {
-            rec->file = NULL;
-            rec->recording = 0;
-            rec->paused = 0;
-            rec->pause_start_us = 0;
-            recorder_emit_error(rec, "Failed to close recording file");
-            return -1;
-        }
-        rec->file = NULL;
+    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_CLOSE)) {
+        rc = -1;
+        recorder_emit_error(rec, "Failed to close recording file");
     }
-    
+    turbo_muxer_destroy(rec->muxer);
+    rec->muxer = NULL;
     rec->recording = 0;
     rec->paused = 0;
     rec->pause_start_us = 0;
-    
-    return 0;
+
+    return rc;
 }
 
 int turbo_recorder_pause(turbo_recorder_t *rec) {
@@ -669,8 +601,7 @@ int turbo_recorder_pause(turbo_recorder_t *rec) {
         return -1;
     }
     
-    /* Flush buffers */
-    if (rec->file && recorder_file_flush(rec->file) != 0) {
+    if (recorder_test_should_fail_io(TURBO_RECORDER_TEST_IO_FLUSH)) {
         recorder_emit_error(rec, "Failed to flush recording file");
         return -1;
     }
@@ -771,48 +702,195 @@ void turbo_recorder_test_fail_io_once(turbo_recorder_test_io_op_t op, int call_i
  * Utility: Recording from RTP Stream
  * ============================================================================= */
 
-struct rtp_recorder_ctx_t {
-    turbo_recorder_t *recorder;
-    int track_id;
-    uint32_t base_timestamp;
-    uint32_t clock_rate;
-    int base_timestamp_set;
-};
+static int recorder_codec_is_h26x(turbo_recorder_codec_t codec) {
+    return codec == TURBO_RECORDER_CODEC_H264 ||
+           codec == TURBO_RECORDER_CODEC_H265;
+}
+
+static int recorder_vp9_bit(const uint8_t *data, size_t len, size_t bit) {
+    if (!data || bit >= len * 8U) {
+        return -1;
+    }
+    return (data[bit / 8U] >> (bit % 8U)) & 1U;
+}
+
+static int recorder_vp9_is_keyframe(const uint8_t *data, size_t len) {
+    size_t bit = 4;
+    int profile;
+    int show_existing_frame;
+    int frame_type;
+
+    if (!data || len == 0 || (data[0] & 0x03U) != 0x02U) {
+        return 0;
+    }
+    profile = recorder_vp9_bit(data, len, 2) |
+              (recorder_vp9_bit(data, len, 3) << 1);
+    if (profile < 0) {
+        return 0;
+    }
+    if (profile == 3) {
+        bit++;
+    }
+    show_existing_frame = recorder_vp9_bit(data, len, bit++);
+    if (show_existing_frame != 0) {
+        return 0;
+    }
+    frame_type = recorder_vp9_bit(data, len, bit);
+    return frame_type == 0;
+}
+
+static int recorder_append_h26x_nal(rtp_recorder_ctx_t *ctx,
+                                    const uint8_t *data, size_t len,
+                                    uint32_t timestamp, int flags) {
+    static const uint8_t start_code[RECORDER_ANNEX_B_START_CODE_BYTES] =
+        {0x00, 0x00, 0x00, 0x01};
+    recorder_track_t *track;
+    size_t current_size;
+    size_t required;
+    int nal_type;
+
+    if (!ctx || !ctx->recorder || !data || len == 0) {
+        return -1;
+    }
+    track = &ctx->recorder->tracks[ctx->track_id];
+    if (ctx->access_unit_timestamp_set &&
+        ctx->access_unit_timestamp != timestamp) {
+        turbo_vec_clear(&track->access_unit);
+        ctx->access_unit_keyframe = 0;
+        ctx->access_unit_corrupt = 0;
+    }
+    ctx->access_unit_timestamp = timestamp;
+    ctx->access_unit_timestamp_set = 1;
+    if (flags != 0) {
+        ctx->access_unit_corrupt = 1;
+        return 0;
+    }
+
+    current_size = turbo_vec_size(&track->access_unit);
+    if (current_size > RECORDER_MAX_ACCESS_UNIT_BYTES -
+                           RECORDER_ANNEX_B_START_CODE_BYTES ||
+        len > RECORDER_MAX_ACCESS_UNIT_BYTES - current_size -
+                  RECORDER_ANNEX_B_START_CODE_BYTES) {
+        turbo_vec_clear(&track->access_unit);
+        ctx->access_unit_corrupt = 1;
+        return -1;
+    }
+    required = current_size + RECORDER_ANNEX_B_START_CODE_BYTES + len;
+    if (turbo_vec_resize(&track->access_unit, required) != 0) {
+        turbo_vec_clear(&track->access_unit);
+        ctx->access_unit_corrupt = 1;
+        return -1;
+    }
+    memcpy((uint8_t *)turbo_vec_data(&track->access_unit) + current_size,
+           start_code, sizeof(start_code));
+    memcpy((uint8_t *)turbo_vec_data(&track->access_unit) + current_size +
+               sizeof(start_code),
+           data, len);
+
+    if (track->codec == TURBO_RECORDER_CODEC_H264) {
+        nal_type = data[0] & 0x1f;
+        if (nal_type == 5) {
+            ctx->access_unit_keyframe = 1;
+        }
+    } else if (len >= 2) {
+        nal_type = (data[0] >> 1) & 0x3f;
+        if (nal_type >= 16 && nal_type <= 21) {
+            ctx->access_unit_keyframe = 1;
+        }
+    }
+    return 0;
+}
+
+static int recorder_on_depacketized_payload(void *parameter,
+                                            const void *packet, int bytes,
+                                            uint32_t timestamp, int flags) {
+    rtp_recorder_ctx_t *ctx = (rtp_recorder_ctx_t *)parameter;
+    recorder_track_t *track;
+    const uint8_t *data = (const uint8_t *)packet;
+    int keyframe = 1;
+
+    if (!ctx || !ctx->recorder || !packet || bytes <= 0) {
+        return -1;
+    }
+    track = &ctx->recorder->tracks[ctx->track_id];
+    if (recorder_codec_is_h26x(track->codec)) {
+        if (recorder_append_h26x_nal(ctx, data, (size_t)bytes, timestamp,
+                                     flags) != 0) {
+            ctx->callback_error = -1;
+        }
+        return 0;
+    }
+    if (flags != 0) {
+        ctx->callback_error = -1;
+        return 0;
+    }
+    if (track->codec == TURBO_RECORDER_CODEC_VP8) {
+        keyframe = (data[0] & 0x01U) == 0;
+    } else if (track->codec == TURBO_RECORDER_CODEC_VP9) {
+        keyframe = recorder_vp9_is_keyframe(data, (size_t)bytes);
+    }
+    if (turbo_recorder_write_rtp_frame(ctx, data, (size_t)bytes,
+                                       timestamp, keyframe) != 0) {
+        ctx->callback_error = -1;
+    }
+    return 0;
+}
 
 rtp_recorder_ctx_t *turbo_recorder_create_rtp_context(turbo_recorder_t *rec,
                                                        int track_id) {
+    struct rtp_payload_t handler;
+    recorder_track_t *track;
+    rtp_recorder_ctx_t *ctx;
+
     if (!rec || track_id < 0 || track_id >= rec->track_count) {
         return NULL;
     }
-    
-    rtp_recorder_ctx_t *ctx = (rtp_recorder_ctx_t *)calloc(1, sizeof(rtp_recorder_ctx_t));
+
+    track = &rec->tracks[track_id];
+    ctx = (rtp_recorder_ctx_t *)calloc(1, sizeof(rtp_recorder_ctx_t));
     if (!ctx) return NULL;
-    
+
     ctx->recorder = rec;
     ctx->track_id = track_id;
-    ctx->base_timestamp = 0;
-    ctx->clock_rate = recorder_track_rtp_clock_rate(&rec->tracks[track_id]);
-    ctx->base_timestamp_set = 0;
-    
+    ctx->clock_rate = recorder_track_rtp_clock_rate(track);
+    memset(&handler, 0, sizeof(handler));
+    handler.packet = recorder_on_depacketized_payload;
+    ctx->decoder = rtp_payload_decode_create(
+        track->rtp_payload_type, recorder_codec_name(track->codec),
+        &handler, ctx);
+    if (!ctx->decoder || ctx->clock_rate == 0) {
+        if (ctx->decoder) {
+            rtp_payload_decode_destroy(ctx->decoder);
+        }
+        free(ctx);
+        return NULL;
+    }
+
     return ctx;
 }
 
 void turbo_recorder_destroy_rtp_context(rtp_recorder_ctx_t *ctx) {
+    if (!ctx) {
+        return;
+    }
+    if (ctx->decoder) {
+        rtp_payload_decode_destroy(ctx->decoder);
+    }
     free(ctx);
 }
 
 int turbo_recorder_write_rtp_frame(rtp_recorder_ctx_t *ctx,
                                    const uint8_t *data, size_t len,
                                    uint32_t rtp_timestamp, int is_keyframe) {
-    if (!ctx || !data) return -1;
+    int64_t timestamp_us;
+
+    if (!ctx || !data || len == 0) return -1;
     if (!ctx->recorder || ctx->track_id < 0 || ctx->track_id >= ctx->recorder->track_count) {
         return -1;
     }
     if (ctx->clock_rate == 0) {
         return -1;
     }
-    
-    int64_t timestamp_us;
     
     if (!ctx->base_timestamp_set) {
         ctx->base_timestamp = rtp_timestamp;
@@ -822,7 +900,51 @@ int turbo_recorder_write_rtp_frame(rtp_recorder_ctx_t *ctx,
         uint32_t diff = rtp_timestamp - ctx->base_timestamp;
         timestamp_us = ((int64_t)diff * 1000000) / ctx->clock_rate;
     }
-    
     return turbo_recorder_write_frame(ctx->recorder, ctx->track_id,
                                      data, len, timestamp_us, is_keyframe);
+}
+
+int turbo_recorder_write_rtp_packet(rtp_recorder_ctx_t *ctx,
+                                    const uint8_t *packet, size_t len) {
+    recorder_track_t *track;
+    int marker;
+    int decode_rc;
+    int write_rc = 0;
+
+    if (!ctx || !ctx->recorder || !ctx->decoder || !packet || len < 12 ||
+        len > INT_MAX || ctx->track_id < 0 ||
+        ctx->track_id >= ctx->recorder->track_count) {
+        return -1;
+    }
+
+    track = &ctx->recorder->tracks[ctx->track_id];
+    marker = (packet[1] & 0x80U) != 0;
+    ctx->callback_error = 0;
+    decode_rc = rtp_payload_decode_input(ctx->decoder, packet, (int)len);
+    if (decode_rc <= 0 || ctx->callback_error != 0) {
+        write_rc = -1;
+        if (recorder_codec_is_h26x(track->codec)) {
+            turbo_vec_clear(&track->access_unit);
+            ctx->access_unit_corrupt = 1;
+        }
+    }
+
+    if (recorder_codec_is_h26x(track->codec) && marker) {
+        size_t access_unit_size = turbo_vec_size(&track->access_unit);
+        if (write_rc == 0 && !ctx->access_unit_corrupt &&
+            ctx->access_unit_timestamp_set && access_unit_size > 0) {
+            write_rc = turbo_recorder_write_rtp_frame(
+                ctx, (const uint8_t *)turbo_vec_data_const(&track->access_unit),
+                access_unit_size, ctx->access_unit_timestamp,
+                ctx->access_unit_keyframe);
+        } else {
+            write_rc = -1;
+        }
+        turbo_vec_clear(&track->access_unit);
+        ctx->access_unit_timestamp_set = 0;
+        ctx->access_unit_keyframe = 0;
+        ctx->access_unit_corrupt = 0;
+    }
+
+    return write_rc;
 }

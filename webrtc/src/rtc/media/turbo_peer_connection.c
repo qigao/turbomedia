@@ -248,41 +248,15 @@ static void pump_ice_context(turbo_peer_connection_t *pc) {
     }
 }
 
-static void drain_ice_context(turbo_peer_connection_t *pc, int wait_for_coroutines_only) {
-    int spins;
-    uint64_t deadline_ms = 0;
-
+static void drain_ice_coroutines(turbo_peer_connection_t *pc) {
     if (!pc || !pc->ice_ctx) {
         return;
     }
 
-    if (wait_for_coroutines_only) {
-        deadline_ms = turbo_monotonic_ms() + 1500;
-    }
-
-    for (spins = 0; spins < 128; ++spins) {
-        int coro_count = coro_context_coro_count(pc->ice_ctx);
-        int alive = coro_context_alive(pc->ice_ctx);
-
-        if (wait_for_coroutines_only) {
-            if (coro_count == 0) {
-                break;
-            }
-        } else if (!alive) {
-            break;
-        }
-
+    /* The ICE agent is owned by its coroutines until every task has unwound. */
+    while (coro_context_coro_count(pc->ice_ctx) > 0) {
         coro_context_run(pc->ice_ctx, TURBO_RUN_ONCE);
     }
-
-    while (wait_for_coroutines_only && turbo_monotonic_ms() < deadline_ms) {
-        int coro_count = coro_context_coro_count(pc->ice_ctx);
-        if (coro_count == 0) {
-            break;
-        }
-        coro_context_run(pc->ice_ctx, TURBO_RUN_ONCE);
-    }
-
 }
 
 static void start_gathering_task(coro_t *co, void *arg) {
@@ -1334,8 +1308,7 @@ void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
         ice_agent_close(pc->ice_agent);
         if (pc->ice_ctx) {
             coro_context_stop(pc->ice_ctx);
-            /* Let ICE coroutines observe CLOSED and unwind before sockets go away. */
-            drain_ice_context(pc, 1);
+            drain_ice_coroutines(pc);
         }
         ice_agent_destroy(pc->ice_agent);
         pc->ice_agent = NULL;
@@ -1344,7 +1317,7 @@ void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
         turbo_dc_context_destroy(pc->dc_ctx);
     }
     if (pc->ice_ctx) {
-        drain_ice_context(pc, 1);
+        drain_ice_coroutines(pc);
         coro_context_destroy(pc->ice_ctx);
         pc->ice_ctx = NULL;
     }

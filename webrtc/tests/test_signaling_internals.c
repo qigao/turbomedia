@@ -103,6 +103,37 @@ static void destroy_test_server(webrtc_signaling_server_t *server) {
   turbo_mutex_destroy(&server->mutex);
 }
 
+static void init_test_peer(webrtc_signaling_server_t *server,
+                           webrtc_peer_t *peer, const char *peer_id) {
+  memset(peer, 0, sizeof(*peer));
+  peer->server = server;
+  peer->id = tstr_dup(peer_id);
+  TEST_ASSERT_NOT_NULL(peer->id);
+  TEST_ASSERT_EQUAL_INT(
+      TURBO_OK, turbo_hash_map_put(&server->local_peers, &peer->id, &peer));
+}
+
+static void destroy_test_peer(webrtc_signaling_server_t *server,
+                              webrtc_peer_t *peer) {
+  if (peer->room_ptr) {
+    remove_peer_from_room_locked(server, peer);
+  }
+  turbo_hash_map_remove(&server->local_peers, &peer->id, NULL);
+  free_outbox_locked(peer);
+  tstr_free(peer->id);
+  memset(peer, 0, sizeof(*peer));
+}
+
+static void join_test_peer(webrtc_signaling_server_t *server,
+                           webrtc_peer_t *peer, const char *room_id) {
+  char message[256];
+  int length = snprintf(message, sizeof(message),
+                        "{\"type\":\"join\",\"room\":\"%s\"}", room_id);
+
+  TEST_ASSERT_TRUE(length > 0 && (size_t)length < sizeof(message));
+  handle_message(server, peer, message, (size_t)length);
+}
+
 void test_remove_peer_from_room_clears_room_links(void) {
   webrtc_signaling_server_t server;
   webrtc_room_t *room = NULL;
@@ -167,6 +198,124 @@ void test_json_string_maybe_escape_escapes_room_names(void) {
   TEST_ASSERT_NOT_NULL(owned);
   TEST_ASSERT_EQUAL_STRING("sales\\\"tier\\\\1\\n", json_str);
   tstr_free(owned);
+}
+
+void test_directed_signaling_rejects_cross_room_messages(void) {
+  static const char *const messages[] = {
+      "{\"type\":\"offer\",\"to\":\"bob\",\"sdp\":\"offer\"}",
+      "{\"type\":\"answer\",\"to\":\"bob\",\"sdp\":\"answer\"}",
+      "{\"type\":\"candidate\",\"to\":\"bob\",\"candidate\":\"candidate:1\"}",
+      "{\"type\":\"end-of-candidates\",\"to\":\"bob\"}"};
+  webrtc_signaling_server_t server;
+  webrtc_peer_t alice;
+  webrtc_peer_t bob;
+
+  init_test_server(&server);
+  init_test_peer(&server, &alice, "alice");
+  init_test_peer(&server, &bob, "bob");
+  join_test_peer(&server, &alice, "room-a");
+  join_test_peer(&server, &bob, "room-b");
+  free_outbox_locked(&alice);
+  free_outbox_locked(&bob);
+
+  for (size_t i = 0; i < sizeof(messages) / sizeof(messages[0]); ++i) {
+    handle_message(&server, &alice, messages[i], strlen(messages[i]));
+    TEST_ASSERT_EQUAL_size_t(0, bob.outbox_message_count);
+    TEST_ASSERT_NOT_NULL(alice.outbox_tail);
+    TEST_ASSERT_NOT_NULL(strstr(alice.outbox_tail->json,
+                                "Peer not available in room"));
+    free_outbox_locked(&alice);
+  }
+
+  destroy_test_peer(&server, &alice);
+  destroy_test_peer(&server, &bob);
+  destroy_test_server(&server);
+}
+
+void test_directed_signaling_routes_messages_within_room(void) {
+  static const char *const messages[] = {
+      "{\"type\":\"offer\",\"to\":\"bob\",\"sdp\":\"offer\"}",
+      "{\"type\":\"answer\",\"to\":\"bob\",\"sdp\":\"answer\"}",
+      "{\"type\":\"candidate\",\"to\":\"bob\",\"candidate\":\"candidate:1\"}",
+      "{\"type\":\"end-of-candidates\",\"to\":\"bob\"}"};
+  webrtc_signaling_server_t server;
+  webrtc_peer_t alice;
+  webrtc_peer_t bob;
+
+  init_test_server(&server);
+  init_test_peer(&server, &alice, "alice");
+  init_test_peer(&server, &bob, "bob");
+  join_test_peer(&server, &alice, "room-a");
+  join_test_peer(&server, &bob, "room-a");
+  free_outbox_locked(&alice);
+  free_outbox_locked(&bob);
+
+  for (size_t i = 0; i < sizeof(messages) / sizeof(messages[0]); ++i) {
+    handle_message(&server, &alice, messages[i], strlen(messages[i]));
+    TEST_ASSERT_EQUAL_size_t(1, bob.outbox_message_count);
+    free_outbox_locked(&bob);
+  }
+
+  destroy_test_peer(&server, &alice);
+  destroy_test_peer(&server, &bob);
+  destroy_test_server(&server);
+}
+
+void test_max_peers_is_enforced_per_room(void) {
+  webrtc_signaling_server_t server;
+  webrtc_peer_t alice;
+  webrtc_peer_t bob;
+  webrtc_peer_t carol;
+
+  init_test_server(&server);
+  server.config.max_peers = 1;
+  init_test_peer(&server, &alice, "alice");
+  init_test_peer(&server, &bob, "bob");
+  init_test_peer(&server, &carol, "carol");
+
+  join_test_peer(&server, &alice, "room-a");
+  TEST_ASSERT_NOT_NULL(alice.room_ptr);
+  TEST_ASSERT_EQUAL_INT(1, alice.room_ptr->peer_count);
+
+  join_test_peer(&server, &bob, "room-a");
+  TEST_ASSERT_NULL(bob.room_ptr);
+  TEST_ASSERT_NOT_NULL(bob.outbox_tail);
+  TEST_ASSERT_NOT_NULL(strstr(bob.outbox_tail->json,
+                              "Room peer limit reached"));
+
+  join_test_peer(&server, &carol, "room-b");
+  TEST_ASSERT_NOT_NULL(carol.room_ptr);
+  TEST_ASSERT_EQUAL_INT(1, carol.room_ptr->peer_count);
+
+  join_test_peer(&server, &alice, "room-a");
+  TEST_ASSERT_NOT_NULL(alice.room_ptr);
+  TEST_ASSERT_EQUAL_INT(1, alice.room_ptr->peer_count);
+  TEST_ASSERT_TRUE(alice.room_ptr->peers_head == &alice);
+  TEST_ASSERT_TRUE(alice.room_ptr->peers_tail == &alice);
+
+  destroy_test_peer(&server, &alice);
+  destroy_test_peer(&server, &bob);
+  destroy_test_peer(&server, &carol);
+  destroy_test_server(&server);
+}
+
+void test_management_posts_report_context_rejection(void) {
+  webrtc_signaling_server_t server;
+  webrtc_peer_t alice;
+
+  init_test_server(&server);
+  init_test_peer(&server, &alice, "alice");
+  join_test_peer(&server, &alice, "room-a");
+  free_outbox_locked(&alice);
+
+  TEST_ASSERT_EQUAL_INT(
+      -1, webrtc_signaling_broadcast(&server, "room-a", NULL, "message"));
+  TEST_ASSERT_EQUAL_INT(
+      -1, webrtc_signaling_kick_peer(&server, "room-a", "alice", "reason"));
+  TEST_ASSERT_EQUAL_size_t(0, alice.outbox_message_count);
+
+  destroy_test_peer(&server, &alice);
+  destroy_test_server(&server);
 }
 
 void test_peer_join_auth_binds_room_and_identity(void) {
@@ -650,6 +799,10 @@ spec("test_signaling_internals") {
   TT_TEST(test_remove_peer_from_room_clears_room_links);
   TT_TEST(test_json_string_maybe_escape_skips_plain_candidate_strings);
   TT_TEST(test_json_string_maybe_escape_escapes_room_names);
+  TT_TEST(test_directed_signaling_rejects_cross_room_messages);
+  TT_TEST(test_directed_signaling_routes_messages_within_room);
+  TT_TEST(test_max_peers_is_enforced_per_room);
+  TT_TEST(test_management_posts_report_context_rejection);
   TT_TEST(test_peer_join_auth_binds_room_and_identity);
   TT_TEST(test_peer_identity_binding_is_atomic_and_immutable);
   TT_TEST(test_authenticated_join_dispatch_admits_only_valid_first_message);

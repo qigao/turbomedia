@@ -4,6 +4,8 @@
 #include "sfu_node/server.h"
 #include "http_client.h"
 #include "turbo_media_auth.h"
+#include "turbo_recorder_internal.h"
+#include "turbo_demuxer.h"
 #include "turbo_parser.h"
 #include "turbo_peer_connection.h"
 #include <stdlib.h>
@@ -63,6 +65,45 @@ static char *app_test_save_env(const char *name) {
 static void app_test_restore_env(const char *name, char *saved_value) {
   app_test_set_env(name, saved_value);
   free(saved_value);
+}
+
+void test_sfu_node_rejects_identifiers_that_do_not_fit_storage(void) {
+  turbo_sfu_node_config_t config;
+  turbo_sfu_node_t *node = NULL;
+  char valid_room_id[TURBO_ROOM_ID_MAX];
+  char long_id[TURBO_ROOM_ID_MAX + 1];
+
+  memset(valid_room_id, 'r', sizeof(valid_room_id) - 1);
+  valid_room_id[sizeof(valid_room_id) - 1] = '\0';
+  memset(long_id, 'x', sizeof(long_id) - 1);
+  long_id[sizeof(long_id) - 1] = '\0';
+
+  memset(&config, 0, sizeof(config));
+  config.node_id = long_id;
+  TEST_ASSERT_NULL(turbo_sfu_node_create(&config));
+
+  config.node_id = "node-bounds";
+  node = turbo_sfu_node_create(&config);
+  TEST_ASSERT_NOT_NULL(node);
+  TEST_ASSERT_EQUAL_INT(-1, turbo_sfu_node_attach_room(node, long_id, 4));
+  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, valid_room_id, 4));
+  TEST_ASSERT_EQUAL_INT(-1, turbo_sfu_node_add_session(
+                                node, valid_room_id, long_id, "session-1", NULL));
+  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(
+                               node, valid_room_id, "alice", "session-alice", NULL));
+  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(
+                               node, valid_room_id, "bob", "session-bob", NULL));
+  TEST_ASSERT_EQUAL_INT(-1, turbo_sfu_node_register_published_track(
+                                node, valid_room_id, "alice", long_id,
+                                0x10203040u, NULL, 0));
+  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_register_published_track(
+                               node, valid_room_id, "alice", "track-cam",
+                               0x10203040u, NULL, 0));
+  TEST_ASSERT_EQUAL_INT(-1, turbo_sfu_node_set_track_subscription(
+                                node, valid_room_id, long_id, "track-cam", 1,
+                                TURBO_ROOM_VIDEO_LAYER_LOW));
+
+  turbo_sfu_node_destroy(node);
 }
 
 typedef struct {
@@ -2260,6 +2301,10 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
   media_peer_state_t publisher_state;
   turbo_media_context_t *publisher_media = NULL;
   turbo_media_track_config_t track_config;
+  turbo_demuxer_config_t demuxer_config;
+  turbo_demuxer_packet_t demuxed_packet;
+  turbo_stream_info_t demuxed_stream;
+  turbo_demuxer_t *demuxer = NULL;
   json_value_t *recording_status = NULL;
   char *publisher_answer = NULL;
   char *status_json = NULL;
@@ -2274,6 +2319,9 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
   int sent_frames = 0;
 
   memset(&publisher_state, 0, sizeof(publisher_state));
+  memset(&demuxer_config, 0, sizeof(demuxer_config));
+  memset(&demuxed_packet, 0, sizeof(demuxed_packet));
+  memset(&demuxed_stream, 0, sizeof(demuxed_stream));
 
   sfu_node_app_config_init(&sfu_config);
   sfu_config.bind_host = "0.0.0.0";
@@ -2386,6 +2434,23 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
   output_size = file_size_bytes(output_path_copy);
   TEST_ASSERT_GREATER_OR_EQUAL(1, (int)output_size);
 
+  turbo_demuxer_registry_init();
+  demuxer_config.input_path = output_path_copy;
+  demuxer = turbo_demuxer_create_by_name("mkv", &demuxer_config);
+  TEST_ASSERT_NOT_NULL(demuxer);
+  TEST_ASSERT_EQUAL_INT(0, turbo_demuxer_open(demuxer));
+  TEST_ASSERT_EQUAL_INT(1, turbo_demuxer_get_stream_count(demuxer));
+  TEST_ASSERT_EQUAL_INT(0, turbo_demuxer_get_stream_info(
+                               demuxer, 0, &demuxed_stream));
+  TEST_ASSERT_EQUAL_STRING("vp8", demuxed_stream.codec_name);
+  TEST_ASSERT_EQUAL_INT(1, turbo_demuxer_read_packet(demuxer,
+                                                      &demuxed_packet));
+  TEST_ASSERT_NOT_NULL(demuxed_packet.data);
+  TEST_ASSERT_GREATER_OR_EQUAL(1, (int)demuxed_packet.size);
+
+  turbo_demuxer_free_packet(&demuxed_packet);
+  turbo_demuxer_destroy(demuxer);
+  turbo_demuxer_registry_shutdown();
   turbo_free_json(&recording_status);
   free(status_json);
   free(publisher_answer);
@@ -2396,6 +2461,61 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
     remove(output_path_copy);
   }
   free(output_path_copy);
+}
+
+void test_sfu_node_recording_stop_failure_still_closes_runtime(void) {
+  sfu_node_app_config_t config;
+  sfu_node_app_server_t *server;
+  turbo_sfu_node_t *node;
+  json_value_t *status = NULL;
+  char *status_json = NULL;
+  char *output_path = NULL;
+
+  sfu_node_app_config_init(&config);
+  config.bind_host = "127.0.0.1";
+  config.bind_port = 19416;
+  config.node_id = "node-record-stop-failure";
+  config.ice_allow_loopback = 1;
+
+  server = sfu_node_app_server_create(&config);
+  TEST_ASSERT_NOT_NULL(server);
+  node = sfu_node_app_server_get_node(server);
+  TEST_ASSERT_NOT_NULL(node);
+  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-stop-failure", 2));
+  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(
+                               node, "room-stop-failure", "alice",
+                               "session-stop-failure", NULL));
+  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_register_published_track(
+                               node, "room-stop-failure", "alice", "track-cam",
+                               0x10203040U, NULL, 0));
+  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_register_published_track(
+                               server, "room-stop-failure", "alice", "track-cam",
+                               0x10203040U, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8"));
+  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_start_recording(
+                               server, "room-stop-failure", "rec-stop-failure",
+                               "archive"));
+
+  turbo_recorder_test_reset_io_failures();
+  turbo_recorder_test_fail_io_once(TURBO_RECORDER_TEST_IO_FLUSH, 1);
+  TEST_ASSERT_EQUAL_INT(-1, sfu_node_app_server_stop_recording(
+                                server, "room-stop-failure"));
+  turbo_recorder_test_reset_io_failures();
+
+  status_json = sfu_node_app_server_build_recording_status_json(
+      server, "room-stop-failure");
+  TEST_ASSERT_NOT_NULL(status_json);
+  TEST_ASSERT_EQUAL_INT(0, parse_json_text(status_json, &status));
+  TEST_ASSERT_FALSE(json_bool_value(status, "active", 1));
+  output_path = app_strdup(json_string_value(status, "output_path"));
+  TEST_ASSERT_NOT_NULL(output_path);
+  TEST_ASSERT_EQUAL_INT(-1, sfu_node_app_server_stop_recording(
+                                server, "room-stop-failure"));
+
+  turbo_free_json(&status);
+  free(status_json);
+  sfu_node_app_server_destroy(server);
+  remove(output_path);
+  free(output_path);
 }
 
 void test_sfu_node_http_lifecycle_repeated_start_stop(void) {
@@ -2433,6 +2553,7 @@ void test_sfu_node_http_lifecycle_repeated_start_stop(void) {
 }
 
 spec("test_sfu_node_app") {
+  TT_TEST(test_sfu_node_rejects_identifiers_that_do_not_fit_storage);
   TT_TEST(test_sfu_node_http_lifecycle_repeated_start_stop);
   TT_TEST(test_sfu_node_webrtc_session_accepts_offer_and_generates_answer);
   TT_TEST(test_sfu_node_webrtc_session_provisions_relay_track_before_answer);
@@ -2447,4 +2568,5 @@ spec("test_sfu_node_app") {
   TT_TEST(test_sfu_node_whip_whep_resources_auth_restart_and_delete);
   TT_TEST(test_sfu_node_media_bridge_forwards_video_to_subscriber);
   TT_TEST(test_sfu_node_recording_archives_publisher_rtp);
+  TT_TEST(test_sfu_node_recording_stop_failure_still_closes_runtime);
 }

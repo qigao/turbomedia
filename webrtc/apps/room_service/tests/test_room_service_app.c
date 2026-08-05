@@ -54,6 +54,70 @@ static void app_test_restore_env(const char *name, char *saved_value) {
   free(saved_value);
 }
 
+void test_room_service_rejects_identifiers_that_do_not_fit_storage(void) {
+  turbo_room_service_t *service = NULL;
+  turbo_room_config_t room_config;
+  turbo_room_participant_config_t participant_config;
+  turbo_room_track_config_t track_config;
+  turbo_call_center_queue_entry_config_t queue_config;
+  char valid_room_id[TURBO_ROOM_ID_MAX];
+  char long_id_a[TURBO_ROOM_ID_MAX + 1];
+  char long_id_b[TURBO_ROOM_ID_MAX + 1];
+
+  memset(valid_room_id, 'r', sizeof(valid_room_id) - 1);
+  valid_room_id[sizeof(valid_room_id) - 1] = '\0';
+  memset(long_id_a, 'x', sizeof(long_id_a) - 1);
+  long_id_a[sizeof(long_id_a) - 1] = '\0';
+  memcpy(long_id_b, long_id_a, sizeof(long_id_a));
+  long_id_b[sizeof(long_id_b) - 2] = 'y';
+
+  service = turbo_room_service_create();
+  TEST_ASSERT_NOT_NULL(service);
+
+  memset(&room_config, 0, sizeof(room_config));
+  room_config.room_type = TURBO_ROOM_TYPE_CONFERENCE;
+  room_config.room_id = long_id_a;
+  TEST_ASSERT_EQUAL_INT(-1, turbo_room_service_create_room(service, &room_config));
+  room_config.room_id = long_id_b;
+  TEST_ASSERT_EQUAL_INT(-1, turbo_room_service_create_room(service, &room_config));
+  room_config.room_id = valid_room_id;
+  TEST_ASSERT_EQUAL_INT(0, turbo_room_service_create_room(service, &room_config));
+
+  TEST_ASSERT_EQUAL_INT(-1,
+                        turbo_room_service_assign_sfu_node(service, valid_room_id,
+                                                           long_id_a));
+
+  memset(&participant_config, 0, sizeof(participant_config));
+  participant_config.participant_id = long_id_a;
+  participant_config.role = TURBO_PARTICIPANT_ROLE_HOST;
+  TEST_ASSERT_EQUAL_INT(-1, turbo_room_service_add_participant(
+                                service, valid_room_id, &participant_config));
+  participant_config.participant_id = "alice";
+  TEST_ASSERT_EQUAL_INT(0, turbo_room_service_add_participant(
+                               service, valid_room_id, &participant_config));
+
+  memset(&track_config, 0, sizeof(track_config));
+  track_config.track_id = long_id_a;
+  track_config.owner_participant_id = "alice";
+  track_config.kind = TURBO_ROOM_TRACK_VIDEO;
+  track_config.codec_name = "vp8";
+  TEST_ASSERT_EQUAL_INT(-1, turbo_room_service_publish_track(
+                                service, valid_room_id, &track_config));
+
+  TEST_ASSERT_EQUAL_INT(-1, turbo_room_service_start_recording(
+                                service, valid_room_id, long_id_a, "archive"));
+
+  memset(&queue_config, 0, sizeof(queue_config));
+  queue_config.queue_id = long_id_a;
+  queue_config.side = TURBO_CALL_CENTER_QUEUE_CALLER;
+  queue_config.entry_id = "entry-1";
+  queue_config.endpoint_id = "endpoint-1";
+  TEST_ASSERT_EQUAL_INT(-1, turbo_room_service_enqueue_call_center_queue_entry(
+                                service, &queue_config));
+
+  turbo_room_service_destroy(service);
+}
+
 static char *issue_room_control_token(
     const char *key_id, const char *secret, const char *scope,
     const char *room_id, const char *participant_id,
@@ -4707,6 +4771,7 @@ void test_room_service_http_lifecycle_repeated_start_stop(void) {
 }
 
 spec("test_room_service_app") {
+  TT_TEST(test_room_service_rejects_identifiers_that_do_not_fit_storage);
   TT_TEST(test_room_service_http_lifecycle_repeated_start_stop);
   TT_TEST(test_room_service_assign_replays_existing_state_and_closed_room_diag_stays_green);
   TT_TEST(test_room_sync_diagnostic_reports_null_when_room_has_no_sync_history);

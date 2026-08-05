@@ -616,6 +616,23 @@ static webrtc_peer_t *find_peer_by_id_locked(webrtc_signaling_server_t *server, 
   return peer ? *peer : NULL;
 }
 
+static webrtc_peer_t *find_routable_peer_locked(
+    webrtc_signaling_server_t *server, const webrtc_peer_t *from_peer,
+    const char *to_peer_id) {
+  webrtc_peer_t *to_peer = NULL;
+
+  if (!server || !from_peer || !from_peer->room_ptr || !to_peer_id) {
+    return NULL;
+  }
+
+  to_peer = find_peer_by_id_locked(server, to_peer_id);
+  if (!to_peer || !to_peer->room_ptr ||
+      to_peer->room_ptr != from_peer->room_ptr) {
+    return NULL;
+  }
+  return to_peer;
+}
+
 static webrtc_room_t *find_room_locked(webrtc_signaling_server_t *server, const char *id) {
   webrtc_room_t *const *room =
       (webrtc_room_t *const *)turbo_hash_map_get_const(&server->local_rooms, &id);
@@ -1044,6 +1061,7 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
   webrtc_room_t *room_ptr = NULL;
   int bind_result = 0;
   int created_room = 0;
+  int already_in_room = 0;
   const char *room_json = NULL;
   tstr_t escaped_room = NULL;
   tstr_t join_resp = NULL;
@@ -1069,10 +1087,6 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
     return;
   }
 
-  if (peer->room_ptr) {
-    remove_peer_from_room_locked(server, peer);
-  }
-
   room_id_str = turbo_json_string(room_value);
   if (!room_id_str) {
     err = create_error_message("Allocation failure");
@@ -1082,6 +1096,19 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
   }
   TLOG_INFO("signal: peer {} joining room {}", peer->id, room_id_str);
   room_ptr = find_room_locked(server, room_id_str);
+  already_in_room = room_ptr && peer->room_ptr == room_ptr;
+  if (room_ptr && !already_in_room && server->config.max_peers > 0 &&
+      room_ptr->peer_count >= server->config.max_peers) {
+    err = create_error_message("Room peer limit reached");
+    send_json_message_locked(peer, err);
+    tstr_free(err);
+    return;
+  }
+
+  if (peer->room_ptr && !already_in_room) {
+    remove_peer_from_room_locked(server, peer);
+  }
+
   if (!room_ptr) {
     room_ptr = create_room_locked(server, room_id_str);
     if (!room_ptr) {
@@ -1093,29 +1120,31 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
     created_room = 1;
   }
 
-  peer->room = tstr_dup(room_id_str);
-  if (!peer->room) {
-    err = create_error_message("Allocation failure");
-    send_json_message_locked(peer, err);
-    tstr_free(err);
-    if (created_room) {
-      destroy_room_locked(server, room_ptr);
+  if (!already_in_room) {
+    peer->room = tstr_dup(room_id_str);
+    if (!peer->room) {
+      err = create_error_message("Allocation failure");
+      send_json_message_locked(peer, err);
+      tstr_free(err);
+      if (created_room) {
+        destroy_room_locked(server, room_ptr);
+      }
+      return;
     }
-    return;
-  }
-  peer->room_ptr = room_ptr;
-  peer->prev_in_room = NULL;
+    peer->room_ptr = room_ptr;
+    peer->prev_in_room = NULL;
 
-  if (room_ptr->peers_tail) {
-    room_ptr->peers_tail->next_in_room = peer;
-    peer->prev_in_room = room_ptr->peers_tail;
+    if (room_ptr->peers_tail) {
+      room_ptr->peers_tail->next_in_room = peer;
+      peer->prev_in_room = room_ptr->peers_tail;
+    }
+    room_ptr->peers_tail = peer;
+    if (!room_ptr->peers_head) {
+      room_ptr->peers_head = peer;
+    }
+    room_ptr->peer_count++;
+    peer->next_in_room = NULL;
   }
-  room_ptr->peers_tail = peer;
-  if (!room_ptr->peers_head) {
-    room_ptr->peers_head = peer;
-  }
-  room_ptr->peer_count++;
-  peer->next_in_room = NULL;
 
   room_json = json_string_maybe_escape(peer->room, &escaped_room);
   if (!room_json) {
@@ -1177,9 +1206,9 @@ static void handle_offer_message(webrtc_signaling_server_t *server, webrtc_peer_
     return;
   }
 
-  to_peer = find_peer_by_id_locked(server, to_peer_id);
+  to_peer = find_routable_peer_locked(server, from_peer, to_peer_id);
   if (!to_peer) {
-    err = create_error_message("Peer not found");
+    err = create_error_message("Peer not available in room");
     send_json_message_locked(from_peer, err);
     tstr_free(err);
     return;
@@ -1228,9 +1257,9 @@ static void handle_answer_message(webrtc_signaling_server_t *server, webrtc_peer
     return;
   }
 
-  to_peer = find_peer_by_id_locked(server, to_peer_id);
+  to_peer = find_routable_peer_locked(server, from_peer, to_peer_id);
   if (!to_peer) {
-    err = create_error_message("Peer not found");
+    err = create_error_message("Peer not available in room");
     send_json_message_locked(from_peer, err);
     tstr_free(err);
     return;
@@ -1279,8 +1308,11 @@ static void handle_candidate_message(webrtc_signaling_server_t *server, webrtc_p
     return;
   }
 
-  to_peer = find_peer_by_id_locked(server, to_peer_id);
+  to_peer = find_routable_peer_locked(server, from_peer, to_peer_id);
   if (!to_peer) {
+    err = create_error_message("Peer not available in room");
+    send_json_message_locked(from_peer, err);
+    tstr_free(err);
     return;
   }
 
@@ -1322,8 +1354,11 @@ static void handle_end_of_candidates_message(webrtc_signaling_server_t *server,
     return;
   }
 
-  to_peer = find_peer_by_id_locked(server, to_peer_id);
+  to_peer = find_routable_peer_locked(server, from_peer, to_peer_id);
   if (!to_peer) {
+    err = create_error_message("Peer not available in room");
+    send_json_message_locked(from_peer, err);
+    tstr_free(err);
     return;
   }
 
@@ -1577,11 +1612,6 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   }
 
   turbo_mutex_lock(&server->mutex);
-  if (server->config.max_peers > 0 && server->peer_count >= server->config.max_peers) {
-    turbo_mutex_unlock(&server->mutex);
-    return;
-  }
-
   if (source_policy_enabled(&server->config)) {
     source_result =
         admit_source_locked(server, &source_key, turbo_monotonic_ms());
@@ -1999,7 +2029,10 @@ int webrtc_signaling_broadcast(webrtc_signaling_server_t *server, const char *ro
     free_broadcast_op(op);
     return -1;
   }
-  coro_post(server->ctx, broadcast_post_cb, op, NULL);
+  if (coro_post(server->ctx, broadcast_post_cb, op, NULL) != TURBO_OK) {
+    free_broadcast_op(op);
+    return -1;
+  }
   return sent;
 }
 
@@ -2098,7 +2131,10 @@ int webrtc_signaling_kick_peer(webrtc_signaling_server_t *server, const char *ro
     free_kick_op(op);
     return -1;
   }
-  coro_post(server->ctx, kick_post_cb, op, NULL);
+  if (coro_post(server->ctx, kick_post_cb, op, NULL) != TURBO_OK) {
+    free_kick_op(op);
+    return -1;
+  }
   return 0;
 }
 

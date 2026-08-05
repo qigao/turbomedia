@@ -185,7 +185,14 @@ static int get_participant_index(sfu_context_t *sfu, const char *participant_id)
 }
 
 int sfu_add_participant(sfu_context_t *sfu, const char *participant_id) {
-    if (!sfu || !participant_id) return -1;
+    size_t participant_id_len = 0;
+
+    if (!sfu || !participant_id || participant_id[0] == '\0') return -1;
+    while (participant_id_len < sizeof(sfu->participants[0].id) &&
+           participant_id[participant_id_len] != '\0') {
+        participant_id_len++;
+    }
+    if (participant_id_len == sizeof(sfu->participants[0].id)) return -1;
     
     /* Check if already exists */
     if (find_participant(sfu, participant_id)) {

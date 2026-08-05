@@ -67,6 +67,18 @@ static void copy_string(char *dest, size_t dest_size, const char *src) {
     dest[dest_size - 1] = '\0';
 }
 
+static int identifier_fits(const char *value, size_t capacity) {
+    size_t length = 0;
+
+    if (!value || value[0] == '\0' || capacity < 2) {
+        return 0;
+    }
+    while (length < capacity && value[length] != '\0') {
+        length++;
+    }
+    return length > 0 && length < capacity;
+}
+
 static turbo_room_video_layer_t resolve_max_layer_from_subscription(
     const turbo_sfu_node_track_subscription_t *subscription) {
     if (!subscription || !subscription->enabled || subscription->muted) {
@@ -203,6 +215,11 @@ static void remove_track_subscription_at(node_room_t *room, int index) {
 }
 
 turbo_sfu_node_t *turbo_sfu_node_create(const turbo_sfu_node_config_t *config) {
+    if (config && config->node_id &&
+        !identifier_fits(config->node_id, TURBO_NODE_ID_MAX)) {
+        return NULL;
+    }
+
     turbo_sfu_node_t *node = (turbo_sfu_node_t *)calloc(1, sizeof(turbo_sfu_node_t));
     if (!node) {
         return NULL;
@@ -241,7 +258,8 @@ void turbo_sfu_node_destroy(turbo_sfu_node_t *node) {
 int turbo_sfu_node_attach_room(turbo_sfu_node_t *node, const char *room_id, int max_participants) {
     node_room_t *room;
 
-    if (!node || !room_id || find_room(node, room_id)) {
+    if (!node || !identifier_fits(room_id, TURBO_ROOM_ID_MAX) ||
+        find_room(node, room_id)) {
         return -1;
     }
     if (node->room_count >= node->max_rooms) {
@@ -326,7 +344,8 @@ int turbo_sfu_node_add_session(turbo_sfu_node_t *node, const char *room_id,
     node_room_t *room = find_room(node, room_id);
     node_session_t *session;
 
-    if (!room || !participant_id || !session_id) {
+    if (!room || !identifier_fits(participant_id, TURBO_PARTICIPANT_ID_MAX) ||
+        !identifier_fits(session_id, TURBO_PARTICIPANT_ID_MAX)) {
         return -1;
     }
     if (find_session_by_id(room, session_id) || find_session_by_participant(room, participant_id)) {
@@ -406,17 +425,19 @@ int turbo_sfu_node_register_published_track(turbo_sfu_node_t *node, const char *
     node_room_t *room = find_room(node, room_id);
     node_track_t *track;
 
-    if (!room || !participant_id || !track_id || !find_session_by_participant(room, participant_id)) {
+    if (!room || !identifier_fits(participant_id, TURBO_PARTICIPANT_ID_MAX) ||
+        !identifier_fits(track_id, TURBO_TRACK_ID_MAX) ||
+        !find_session_by_participant(room, participant_id)) {
         return -1;
     }
     if (find_track(room, track_id)) {
         return -1;
     }
-    if (sfu_add_stream(room->sfu, participant_id, main_ssrc, layer_ssrcs, layer_count) != 0) {
-        return -1;
-    }
     if (ensure_capacity((void **)&room->tracks, &room->track_capacity, sizeof(node_track_t),
                         room->track_count + 1) != 0) {
+        return -1;
+    }
+    if (sfu_add_stream(room->sfu, participant_id, main_ssrc, layer_ssrcs, layer_count) != 0) {
         return -1;
     }
 
@@ -480,6 +501,11 @@ int turbo_sfu_node_set_track_subscription(
     const char *track_id, int enabled, turbo_room_video_layer_t max_layer) {
     turbo_sfu_node_track_subscription_t subscription;
 
+    if (!identifier_fits(receiver_participant_id, TURBO_PARTICIPANT_ID_MAX) ||
+        !identifier_fits(track_id, TURBO_TRACK_ID_MAX)) {
+        return -1;
+    }
+
     memset(&subscription, 0, sizeof(subscription));
     copy_string(subscription.receiver_participant_id,
                 sizeof(subscription.receiver_participant_id),
@@ -503,8 +529,10 @@ int turbo_sfu_node_apply_track_subscription(
     int sfu_max_layer;
 
     if (!room || !subscription_config ||
-        !subscription_config->receiver_participant_id[0] ||
-        !subscription_config->track_id[0] ||
+        !identifier_fits(subscription_config->receiver_participant_id,
+                         sizeof(subscription_config->receiver_participant_id)) ||
+        !identifier_fits(subscription_config->track_id,
+                         sizeof(subscription_config->track_id)) ||
         !find_session_by_participant(room, subscription_config->receiver_participant_id)) {
         return -1;
     }
@@ -531,6 +559,17 @@ int turbo_sfu_node_apply_track_subscription(
                             room->subscription_count + 1) != 0) {
             return -1;
         }
+    }
+
+    if (sfu_set_receiver_stream_policy(
+            room->sfu, subscription_config->receiver_participant_id,
+            track->participant_id, track->main_ssrc,
+            subscription_config->enabled && !subscription_config->muted,
+            sfu_max_layer) != 0) {
+        return -1;
+    }
+
+    if (!subscription) {
         subscription = &room->subscriptions[room->subscription_count++];
         memset(subscription, 0, sizeof(*subscription));
         copy_string(subscription->receiver_participant_id,
@@ -551,10 +590,7 @@ int turbo_sfu_node_apply_track_subscription(
                 subscription_config->policy_source);
     subscription->max_layer = max_layer;
 
-    return sfu_set_receiver_stream_policy(room->sfu, subscription->receiver_participant_id,
-                                          track->participant_id, track->main_ssrc,
-                                          subscription->enabled && !subscription->muted,
-                                          sfu_max_layer);
+    return 0;
 }
 
 int turbo_sfu_node_set_participant_packet_callback(

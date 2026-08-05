@@ -72,11 +72,13 @@ add_executable(test_sfu_node_app tests/test_sfu_node_app.c
 target_include_directories(
   test_sfu_node_app
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+          ${CMAKE_SOURCE_DIR}/webrtc/src/recording
           ${CMAKE_SOURCE_DIR}/webrtc/tests)
 
 target_link_libraries(
   test_sfu_node_app
   PRIVATE ${SFU_NODE_LIBS}
+          TurboMedia::Demuxer
           TurboHttp::HttpClient
           TurboUtils::TinyTest
           $<$<PLATFORM_ID:Linux>:m>

@@ -286,8 +286,8 @@ static turbo_recorder_codec_t recorder_codec_from_track(
 
     switch (track->codec) {
         case TURBO_CODEC_OPUS: return TURBO_RECORDER_CODEC_OPUS;
-        case TURBO_CODEC_PCMU:
-        case TURBO_CODEC_PCMA: return TURBO_RECORDER_CODEC_PCM;
+        case TURBO_CODEC_PCMU: return TURBO_RECORDER_CODEC_PCMU;
+        case TURBO_CODEC_PCMA: return TURBO_RECORDER_CODEC_PCMA;
         case TURBO_CODEC_VP8: return TURBO_RECORDER_CODEC_VP8;
         case TURBO_CODEC_VP9: return TURBO_RECORDER_CODEC_VP9;
         case TURBO_CODEC_H264: return TURBO_RECORDER_CODEC_H264;
@@ -371,6 +371,7 @@ static void fill_recorder_track_config(const sfu_node_published_track_t *publish
                        ? TURBO_RECORDER_TRACK_AUDIO
                        : TURBO_RECORDER_TRACK_VIDEO;
     config->codec = recorder_codec_from_track(published_track);
+    config->rtp_payload_type = published_track->payload_type;
 
     if (config->type == TURBO_RECORDER_TRACK_AUDIO) {
         if (published_track->codec == TURBO_CODEC_PCMU ||
@@ -974,11 +975,8 @@ static void on_session_rtp_packet(turbo_media_track_t *track, const uint8_t *pac
             recording_track = find_recording_track_by_ssrc_locked(
                 recording, session->participant_id, incoming.header.ssrc);
             if (recording_track && recording_track->rtp_ctx &&
-                turbo_recorder_write_rtp_frame(recording_track->rtp_ctx,
-                                               incoming.payload,
-                                               incoming.payload_len,
-                                               incoming.header.timestamp,
-                                               incoming.header.marker ? 1 : 0) == 0) {
+                turbo_recorder_write_rtp_packet(recording_track->rtp_ctx,
+                                                packet, len) == 0) {
                 recording_track->packet_count++;
                 recording->packet_count++;
                 refresh_room_recording_stats_locked(recording);
@@ -2359,6 +2357,7 @@ int sfu_node_app_server_start_recording(sfu_node_app_server_t *server,
 int sfu_node_app_server_stop_recording(sfu_node_app_server_t *server,
                                        const char *room_id) {
     sfu_node_room_recording_t *recording;
+    int stop_rc;
 
     if (!server || !room_id) {
         return -1;
@@ -2371,16 +2370,12 @@ int sfu_node_app_server_stop_recording(sfu_node_app_server_t *server,
         return -1;
     }
 
-    if (turbo_recorder_stop(recording->recorder) != 0) {
-        turbo_mutex_unlock(&server->recording_mutex);
-        return -1;
-    }
-
+    stop_rc = turbo_recorder_stop(recording->recorder);
     recording->active = 0;
     destroy_room_recording_rtp_contexts_locked(recording);
     refresh_room_recording_stats_locked(recording);
     turbo_mutex_unlock(&server->recording_mutex);
-    return 0;
+    return stop_rc;
 }
 
 void sfu_node_app_server_clear_room_runtime(sfu_node_app_server_t *server,

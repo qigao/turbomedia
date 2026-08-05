@@ -132,6 +132,18 @@ static void copy_string(char *dest, size_t dest_size, const char *src) {
     dest[dest_size - 1] = '\0';
 }
 
+static int string_fits(const char *value, size_t capacity, int allow_empty) {
+    size_t length = 0;
+
+    if (!value) {
+        return allow_empty;
+    }
+    while (length < capacity && value[length] != '\0') {
+        length++;
+    }
+    return length < capacity && (allow_empty || length > 0);
+}
+
 static int ensure_capacity(void **items, int *capacity, size_t item_size, int count_needed) {
     void *new_items;
     int new_capacity;
@@ -949,7 +961,9 @@ int turbo_room_service_create_room(turbo_room_service_t *service,
     room_entry_t *room;
     int rc = -1;
 
-    if (!service || !config || !config->room_id || config->room_type == 0) {
+    if (!service || !config ||
+        !string_fits(config->room_id, TURBO_ROOM_ID_MAX, 0) ||
+        config->room_type == 0) {
         return -1;
     }
     turbo_mutex_lock(&service->room_mutex);
@@ -1056,7 +1070,8 @@ int turbo_room_service_assign_sfu_node(turbo_room_service_t *service, const char
     room_entry_t *room;
     int rc = -1;
 
-    if (!service || !room_id || !node_id) {
+    if (!service || !room_id ||
+        !string_fits(node_id, TURBO_NODE_ID_MAX, 0)) {
         return -1;
     }
 
@@ -1122,7 +1137,10 @@ int turbo_room_service_add_participant(turbo_room_service_t *service, const char
     room_participant_t *participant;
     int rc = -1;
 
-    if (!service || !room_id || !config || !config->participant_id) {
+    if (!service || !room_id || !config ||
+        !string_fits(config->participant_id, TURBO_PARTICIPANT_ID_MAX, 0) ||
+        !string_fits(config->user_id, TURBO_USER_ID_MAX, 1) ||
+        !string_fits(config->display_name, TURBO_DISPLAY_NAME_MAX, 1)) {
         return -1;
     }
     turbo_mutex_lock(&service->room_mutex);
@@ -1434,8 +1452,11 @@ int turbo_room_service_publish_track(turbo_room_service_t *service, const char *
     int i;
     int rc = -1;
 
-    if (!service || !room_id || !config || !config->track_id ||
-        !config->owner_participant_id) {
+    if (!service || !room_id || !config ||
+        !string_fits(config->track_id, TURBO_TRACK_ID_MAX, 0) ||
+        !string_fits(config->owner_participant_id,
+                     TURBO_PARTICIPANT_ID_MAX, 0) ||
+        !string_fits(config->codec_name, TURBO_CODEC_NAME_MAX, 1)) {
         return -1;
     }
 
@@ -1600,8 +1621,11 @@ int turbo_room_service_set_subscription(turbo_room_service_t *service, const cha
     room_subscription_t *subscription;
     int rc = -1;
 
-    if (!service || !room_id || !config || !config->subscriber_participant_id ||
-        !config->track_id) {
+    if (!service || !room_id || !config ||
+        !string_fits(config->subscriber_participant_id,
+                     TURBO_PARTICIPANT_ID_MAX, 0) ||
+        !string_fits(config->track_id, TURBO_TRACK_ID_MAX, 0) ||
+        !string_fits(config->policy_source, TURBO_POLICY_SOURCE_MAX, 1)) {
         return -1;
     }
 
@@ -1731,7 +1755,9 @@ int turbo_room_service_start_recording(turbo_room_service_t *service, const char
     room_entry_t *room;
     int rc = -1;
 
-    if (!service || !room_id || !recording_id || !mode) {
+    if (!service || !room_id ||
+        !string_fits(recording_id, TURBO_RECORDING_ID_MAX, 0) ||
+        !string_fits(mode, TURBO_RECORDING_MODE_MAX, 0)) {
         return -1;
     }
 
@@ -1810,7 +1836,8 @@ int turbo_room_service_set_active_speaker(turbo_room_service_t *service, const c
     room_entry_t *room;
     int rc = -1;
 
-    if (!service || !room_id) {
+    if (!service || !room_id ||
+        !string_fits(participant_id, TURBO_PARTICIPANT_ID_MAX, 1)) {
         return -1;
     }
 
@@ -1839,7 +1866,8 @@ int turbo_room_service_pin_participant(turbo_room_service_t *service, const char
     room_entry_t *room;
     int rc = -1;
 
-    if (!service || !room_id) {
+    if (!service || !room_id ||
+        !string_fits(participant_id, TURBO_PARTICIPANT_ID_MAX, 1)) {
         return -1;
     }
 
@@ -2141,9 +2169,13 @@ int turbo_room_service_enqueue_call_center_queue_entry(
     int state;
     int rc = 0;
 
-    if (!service || !config || !config->queue_id || !config->queue_id[0] ||
-        !config->entry_id || !config->entry_id[0] || !config->endpoint_id ||
-        !config->endpoint_id[0] || !is_valid_call_center_queue_side(config->side)) {
+    if (!service || !config ||
+        !string_fits(config->queue_id, TURBO_CALL_CENTER_QUEUE_ID_MAX, 0) ||
+        !string_fits(config->entry_id,
+                     TURBO_CALL_CENTER_QUEUE_ENTRY_ID_MAX, 0) ||
+        !string_fits(config->endpoint_id,
+                     TURBO_CALL_CENTER_ENDPOINT_ID_MAX, 0) ||
+        !is_valid_call_center_queue_side(config->side)) {
         return -1;
     }
 
@@ -2499,7 +2531,8 @@ int turbo_room_service_set_call_center_agent_state(
     turbo_call_center_agent_state_t state) {
     int rc;
 
-    if (!service || !endpoint_id || !endpoint_id[0] ||
+    if (!service ||
+        !string_fits(endpoint_id, TURBO_CALL_CENTER_ENDPOINT_ID_MAX, 0) ||
         !is_valid_call_center_agent_state(state)) {
         return -1;
     }
@@ -2545,8 +2578,9 @@ int turbo_room_service_start_call_center_room(
     room_participant_t *agent;
     int rc = -1;
 
-    if (!service || !room_id || !customer_participant_id || !customer_participant_id[0] ||
-        !agent_participant_id || !agent_participant_id[0]) {
+    if (!service || !room_id ||
+        !string_fits(customer_participant_id, TURBO_PARTICIPANT_ID_MAX, 0) ||
+        !string_fits(agent_participant_id, TURBO_PARTICIPANT_ID_MAX, 0)) {
         return -1;
     }
 
@@ -2592,8 +2626,9 @@ int turbo_room_service_set_call_center_consult_agent(
     char previous_consult_agent_id[TURBO_PARTICIPANT_ID_MAX];
     int rc = -1;
 
-    if (!service || !room_id || !consult_agent_participant_id ||
-        !consult_agent_participant_id[0]) {
+    if (!service || !room_id ||
+        !string_fits(consult_agent_participant_id,
+                     TURBO_PARTICIPANT_ID_MAX, 0)) {
         return -1;
     }
 
@@ -2712,7 +2747,10 @@ int turbo_room_service_finalize_call_center_room(
     room_entry_t *room;
     int rc = -1;
 
-    if (!service || !room_id || !is_valid_call_center_room_state(state) ||
+    if (!service || !room_id ||
+        !string_fits(disposition_code,
+                     TURBO_CALL_CENTER_DISPOSITION_CODE_MAX, 1) ||
+        !is_valid_call_center_room_state(state) ||
         !is_valid_call_center_agent_state(agent_state)) {
         return -1;
     }
