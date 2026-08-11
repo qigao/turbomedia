@@ -3043,8 +3043,11 @@ static void handle_health(Req *req, Res *res) {
 
 static void handle_metrics(Req *req, Res *res) {
     room_service_app_stats_t stats;
+    room_service_ivr_metrics_t ivr;
     const room_service_app_config_t *config;
-    char text[768];
+    enum { ROOM_SERVICE_METRICS_CAPACITY = 4096 };
+    char text[ROOM_SERVICE_METRICS_CAPACITY];
+    int written;
 
     (void)req;
 
@@ -3058,9 +3061,14 @@ static void handle_metrics(Req *req, Res *res) {
         send_text(res, 500, "room service unavailable\n");
         return;
     }
+    if (room_service_app_server_get_ivr_metrics(g_room_service_server, &ivr) !=
+        0) {
+        send_text(res, 500, "room service IVR metrics unavailable\n");
+        return;
+    }
 
     config = room_service_app_server_get_config(g_room_service_server);
-    snprintf(text, sizeof(text),
+    written = snprintf(text, sizeof(text),
              "# TYPE turbo_room_service_up gauge\n"
              "turbo_room_service_up %d\n"
              "# TYPE turbo_room_service_control_auth_enabled gauge\n"
@@ -3074,14 +3082,76 @@ static void handle_metrics(Req *req, Res *res) {
              "# TYPE turbo_room_service_conference_policies gauge\n"
              "turbo_room_service_conference_policies %d\n"
              "# TYPE turbo_room_service_sfu_nodes gauge\n"
-             "turbo_room_service_sfu_nodes %d\n",
+             "turbo_room_service_sfu_nodes %d\n"
+             "# TYPE turbo_room_service_ivr_enabled gauge\n"
+             "turbo_room_service_ivr_enabled %d\n"
+             "# TYPE turbo_room_service_ivr_workers gauge\n"
+             "turbo_room_service_ivr_workers %u\n"
+             "# TYPE turbo_room_service_ivr_worker_capacity gauge\n"
+             "turbo_room_service_ivr_worker_capacity %u\n"
+             "# TYPE turbo_room_service_ivr_worker_high_water gauge\n"
+             "turbo_room_service_ivr_worker_high_water %u\n"
+             "# TYPE turbo_room_service_ivr_assignments gauge\n"
+             "turbo_room_service_ivr_assignments %u\n"
+             "# TYPE turbo_room_service_ivr_assignment_capacity gauge\n"
+             "turbo_room_service_ivr_assignment_capacity %u\n"
+             "# TYPE turbo_room_service_ivr_assignment_high_water gauge\n"
+             "turbo_room_service_ivr_assignment_high_water %u\n"
+             "# TYPE turbo_room_service_ivr_lease_expired_total counter\n"
+             "turbo_room_service_ivr_lease_expired_total %llu\n"
+             "# TYPE turbo_room_service_ivr_dispatch_timeout_total counter\n"
+             "turbo_room_service_ivr_dispatch_timeout_total %llu\n"
+             "# TYPE turbo_room_service_ivr_release_timeout_total counter\n"
+             "turbo_room_service_ivr_release_timeout_total %llu\n"
+             "# TYPE turbo_room_service_ivr_request_queue_items gauge\n"
+             "turbo_room_service_ivr_request_queue_items %u\n"
+             "# TYPE turbo_room_service_ivr_request_queue_capacity gauge\n"
+             "turbo_room_service_ivr_request_queue_capacity %u\n"
+             "# TYPE turbo_room_service_ivr_request_queue_high_water gauge\n"
+             "turbo_room_service_ivr_request_queue_high_water %u\n"
+             "# TYPE turbo_room_service_ivr_request_queue_drops_total counter\n"
+             "turbo_room_service_ivr_request_queue_drops_total %llu\n"
+             "# TYPE turbo_room_service_ivr_peer_event_queue_items gauge\n"
+             "turbo_room_service_ivr_peer_event_queue_items %u\n"
+             "# TYPE turbo_room_service_ivr_peer_event_queue_capacity gauge\n"
+             "turbo_room_service_ivr_peer_event_queue_capacity %u\n"
+             "# TYPE turbo_room_service_ivr_peer_event_queue_high_water gauge\n"
+             "turbo_room_service_ivr_peer_event_queue_high_water %u\n"
+             "# TYPE turbo_room_service_ivr_peer_event_queue_drops_total counter\n"
+             "turbo_room_service_ivr_peer_event_queue_drops_total %llu\n"
+             "# TYPE turbo_room_service_ivr_peer_event_queue_overflowed gauge\n"
+             "turbo_room_service_ivr_peer_event_queue_overflowed %d\n",
              stats.running ? 1 : 0,
              control_auth_enabled(config) ? 1 : 0,
              (config && config->sfu_control_token && config->sfu_control_token[0] != '\0') ? 1 : 0,
              stats.room_sync_diagnostic_count,
              stats.call_center_event_count,
              stats.conference_policy_count,
-             stats.sfu_node_count);
+             stats.sfu_node_count,
+             ivr.enabled,
+             ivr.workers,
+             ivr.worker_capacity,
+             ivr.worker_high_water,
+             ivr.assignments,
+             ivr.assignment_capacity,
+             ivr.assignment_high_water,
+             (unsigned long long)ivr.lease_expired_total,
+             (unsigned long long)ivr.dispatch_timeout_total,
+             (unsigned long long)ivr.release_timeout_total,
+             ivr.request_queue_items,
+             ivr.request_queue_capacity,
+             ivr.request_queue_high_water,
+             (unsigned long long)ivr.request_queue_drops_total,
+             ivr.peer_event_queue_items,
+             ivr.peer_event_queue_capacity,
+             ivr.peer_event_queue_high_water,
+             (unsigned long long)ivr.peer_event_queue_drops_total,
+             ivr.peer_event_queue_overflowed);
+
+    if (written < 0 || (size_t)written >= sizeof(text)) {
+        send_text(res, 500, "room service metrics overflow\n");
+        return;
+    }
 
     send_text(res, 200, text);
 }

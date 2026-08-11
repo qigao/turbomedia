@@ -1,6 +1,5 @@
 add_executable(capture_save_image capture_save_image.c)
-target_link_libraries(capture_save_image PRIVATE TurboMedia::Device yuv)
-target_include_directories(capture_save_image PRIVATE ${STB_INCLUDE_DIR})
+target_link_libraries(capture_save_image PRIVATE TurboMedia::Device)
 set_target_properties(capture_save_image PROPERTIES FOLDER "turbomedia/examples")
 
 add_executable(codec_g711_smoke codec_g711_smoke.c)

@@ -16,8 +16,16 @@
  * Global SCTP State (thread-safe)
  * ============================================================================ */
 
-static atomic_int g_sctp_initialized = 0;
 static atomic_int g_context_count = 0;
+static turbo_once_t g_sctp_once = TURBO_ONCE_INIT;
+static int g_sctp_init_result = -1;
+
+static void sctp_global_init_once(void) {
+    usrsctp_init_nothreads(0, sctp_outbound_packet_cb, NULL);
+    usrsctp_sysctl_set_sctp_ecn_enable(0);
+    usrsctp_sysctl_set_sctp_nr_outgoing_streams_default(SCTP_MAX_STREAMS);
+    g_sctp_init_result = 0;
+}
 
 static const char *sctp_assoc_state_name(uint16_t state) {
     switch (state) {
@@ -47,17 +55,10 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
     memset(&status, 0, sizeof(status));
     if (usrsctp_getsockopt(peer->sctp.socket, IPPROTO_SCTP, SCTP_STATUS,
                            &status, &status_len) != 0) {
-        TLOG_INFO("SCTP status poll failed reason='{}' errno={}", reason ? reason : "", errno);
+        TLOG_WARN("SCTP status poll failed reason='{}' errno={}",
+                  reason ? reason : "", errno);
         return;
     }
-
-    TLOG_INFO("SCTP status reason='{}' state=0x{:x} out={} in={} unack={} pend={}",
-              reason ? reason : "",
-              (unsigned int)status.sstat_state,
-              status.sstat_outstrms,
-              status.sstat_instrms,
-              status.sstat_unackdata,
-              status.sstat_penddata);
 
     /* Some usrsctp builds keep SCTP_STATUS at COOKIE_ECHOED while the stream
      * negotiation is already complete and the socket is usable for DCEP/data.
@@ -75,22 +76,11 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
 
 int sctp_global_init(void) {
     atomic_fetch_add_explicit(&g_context_count, 1, memory_order_relaxed);
-
-    if (atomic_load_explicit(&g_sctp_initialized, memory_order_acquire)) {
-        return 0;
+    turbo_once(&g_sctp_once, sctp_global_init_once);
+    if (g_sctp_init_result != 0) {
+        atomic_fetch_sub_explicit(&g_context_count, 1, memory_order_relaxed);
+        return -1;
     }
-
-    /* Try to be the one to initialize */
-    {
-        int expected = 0;
-        if (atomic_compare_exchange_strong_explicit(&g_sctp_initialized, &expected, 1,
-                                                    memory_order_acq_rel, memory_order_acquire)) {
-        usrsctp_init_nothreads(0, sctp_outbound_packet_cb, NULL);
-        usrsctp_sysctl_set_sctp_ecn_enable(0);
-        usrsctp_sysctl_set_sctp_nr_outgoing_streams_default(SCTP_MAX_STREAMS);
-        }
-    }
-
     return 0;
 }
 
@@ -118,20 +108,26 @@ int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, 
     (void)set_df;
 
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)addr;
-    if (!peer || !peer->dtls.handshake_done) {
-        TLOG_INFO("SCTP outbound dropped: peer={} handshake_done={} bytes={}",
-                  peer ? 1 : 0, peer ? peer->dtls.handshake_done : 0, length);
+    if (!peer || dc_peer_acquire(peer) != 0) {
+        return -1;
+    }
+    if (!peer->dtls.handshake_done) {
+        TLOG_WARN("SCTP outbound dropped before DTLS handshake: bytes={}",
+                  length);
+        dc_peer_release(peer);
         return -1;
     }
 
-    TLOG_INFO("SCTP outbound bytes={}", length);
     int written = SSL_write(peer->dtls.ssl, data, (int)length);
     if (written <= 0) {
-        TLOG_INFO("SCTP outbound SSL_write failed bytes={} ret={} errno={}", length, written, errno);
+        TLOG_ERROR("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
+                   length, written, errno);
+        dc_peer_release(peer);
         return -1;
     }
 
     dtls_send_output(peer);
+    dc_peer_release(peer);
     return 0;
 }
 
@@ -142,12 +138,11 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
     (void)addr;
 
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)ulp_info;
-    if (!peer || !data) {
+    if (!peer || !data || dc_peer_acquire(peer) != 0) {
         if (data) free(data);
         return 1;
     }
 
-    TLOG_INFO("SCTP inbound bytes={} flags=0x{:x}", datalen, flags);
     if (flags & MSG_NOTIFICATION) {
         union sctp_notification notif_storage;
         union sctp_notification *notif;
@@ -156,7 +151,6 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         memcpy(&notif_storage, data,
                datalen < sizeof(notif_storage) ? datalen : sizeof(notif_storage));
         notif = &notif_storage;
-        TLOG_INFO("SCTP notification type={}", notif->sn_header.sn_type);
         if (notif->sn_header.sn_type == SCTP_ASSOC_CHANGE) {
             const struct sctp_assoc_change *assoc = &notif->sn_assoc_change;
             TLOG_INFO("SCTP assoc change state={} out={} in={} error={}",
@@ -171,24 +165,21 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         }
 
         free(data);
+        dc_peer_release(peer);
         return 1;
     }
 
     uint16_t stream_id = rcv.rcv_sid;
     uint32_t ppid = ntohl(rcv.rcv_ppid);
-    TLOG_INFO("SCTP data sid={} ppid={} bytes={}", stream_id, ppid, datalen);
-
     if (ppid == SCTP_PPID_DCEP) {
-        TLOG_INFO("SCTP DCEP message sid={} bytes={}", stream_id, datalen);
         dcep_handle_message(peer, stream_id, (const uint8_t *)data, datalen);
         free(data);
+        dc_peer_release(peer);
         return 1;
     }
 
     turbo_dc_channel_t *channel = NULL;
-    if (stream_id < MAX_CHANNELS) {
-        channel = peer->channels[stream_id];
-    }
+    channel = peer_get_channel(peer, stream_id);
 
     if (channel && channel->on_message && channel->is_open) {
         int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
@@ -196,6 +187,7 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
     }
 
     free(data);
+    dc_peer_release(peer);
     return 1;
 }
 
@@ -264,6 +256,25 @@ static int configure_sctp_socket(struct socket *sock) {
     return 0;
 }
 
+int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id) {
+    uint8_t reset_buffer[sizeof(struct sctp_reset_streams) + sizeof(uint16_t)];
+    struct sctp_reset_streams *reset_request =
+        (struct sctp_reset_streams *)reset_buffer;
+
+    if (!peer || !peer->sctp.socket) {
+        return -1;
+    }
+
+    memset(reset_buffer, 0, sizeof(reset_buffer));
+    reset_request->srs_assoc_id = SCTP_ALL_ASSOC;
+    reset_request->srs_flags = SCTP_STREAM_RESET_OUTGOING;
+    reset_request->srs_number_streams = 1;
+    reset_request->srs_stream_list[0] = stream_id;
+
+    return usrsctp_setsockopt(peer->sctp.socket, IPPROTO_SCTP, SCTP_RESET_STREAMS,
+                              reset_buffer, sizeof(reset_buffer));
+}
+
 /* ============================================================================
  * SCTP Session API
  * ============================================================================ */
@@ -275,8 +286,6 @@ int sctp_session_init(turbo_dc_peer_t *peer) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SOCKET, NULL);
         return -1;
     }
-
-    TLOG_INFO("SCTP socket created");
 
     usrsctp_set_non_blocking(sock, 1);
     usrsctp_register_address(peer);
@@ -315,16 +324,15 @@ int sctp_start_association(turbo_dc_peer_t *peer) {
     remote_addr.sconn_len = sizeof(remote_addr);
 #endif
 
-    TLOG_INFO("SCTP association start port={} mtu={}", SCTP_ASSOCIATION_PORT, peer->ctx->sctp_mtu);
     if (usrsctp_bind(peer->sctp.socket, (struct sockaddr *)&local_addr, sizeof(local_addr)) != 0) {
-        TLOG_INFO("SCTP bind failed errno={}", errno);
+        TLOG_ERROR("SCTP bind failed errno={}", errno);
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_BIND, NULL);
         return -1;
     }
 
     int ret = usrsctp_connect(peer->sctp.socket, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
-    TLOG_INFO("SCTP connect ret={} errno={}", ret, errno);
     if (ret < 0 && errno != EINPROGRESS) {
+        TLOG_ERROR("SCTP connect failed ret={} errno={}", ret, errno);
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_CONNECT, NULL);
         return -1;
     }

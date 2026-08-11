@@ -1,18 +1,13 @@
 /**
  * Capture to Image Example
  * 
- * Captures a single frame from the webcam and saves it as a PNG file.
+ * Captures a native MJPEG frame from the webcam and saves it as a JPEG file.
  */
 
 #include "turbo_capture.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <libyuv/convert_argb.h>
-
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
-
 #ifdef _WIN32
 #include <windows.h>
 #define SLEEP_MS(x) Sleep(x)
@@ -34,36 +29,18 @@ static void on_video_frame(turbo_capture_t *capture,
 
     if (image_saved) return;
 
-    printf("Captured frame (I420): %dx%d, %zu bytes\n", width, height, len);
+    if (len < 2 || frame[0] != 0xFF || frame[1] != 0xD8) return;
 
-    uint8_t *rgb_frame = (uint8_t *)malloc(width * height * 3);
-    if (!rgb_frame) return;
-
-    const size_t y_size = (size_t)width * (size_t)height;
-    const size_t uv_size = y_size / 4;
-    const uint8_t *y_plane = frame;
-    const uint8_t *u_plane = frame + y_size;
-    const uint8_t *v_plane = u_plane + uv_size;
-
-    if (I420ToRAW(y_plane, width,
-                  u_plane, width / 2,
-                  v_plane, width / 2,
-                  rgb_frame, width * 3,
-                  width, height) != 0) {
-        printf("Failed to convert I420 to RGB.\n");
-        free(rgb_frame);
-        return;
-    }
-
-    const char *filename = "captured_frame.png";
-    if (stbi_write_png(filename, width, height, 3, rgb_frame, width * 3)) {
+    const char *filename = "captured_frame.jpg";
+    FILE *file = fopen(filename, "wb");
+    if (!file) return;
+    size_t written = fwrite(frame, 1, len, file);
+    int close_result = fclose(file);
+    if (written == len && close_result == 0) {
+        printf("Captured MJPEG frame: %dx%d, %zu bytes\n", width, height, len);
         printf("Success! Saved to %s\n", filename);
         image_saved = 1;
-    } else {
-        printf("Failed to save image.\n");
     }
-    
-    free(rgb_frame);
 }
 
 int main(void) {
@@ -83,19 +60,39 @@ int main(void) {
         printf("  %d: %s (ID: %s)\n", i, devices[i].name, devices[i].id);
     }
 
-    /* Request I420, the raw video format used by the WebRTC encoder path. */
-    turbo_video_capture_config_t config = {0};
-    config.width = 640;
-    config.height = 480;
-    config.framerate = 30;
-    config.format = 0; /* I420 */
-
-    char device_id[16];
-    snprintf(device_id, sizeof(device_id), "%d", devices[0].index);
+    turbo_video_device_t *device = NULL;
+    turbo_video_native_mode_t modes[256];
+    const turbo_video_native_mode_t *selected_mode = NULL;
+    size_t mode_count = 0;
     printf("Opening device: %s\n", devices[0].name);
 
-    turbo_capture_t *cap = turbo_video_capture_create(device_id, &config);
-    if (!cap) {
+    if (turbo_video_device_open(devices[0].id, &device) != TURBO_CAPTURE_OK) {
+        printf("Failed to open video device.\n");
+        return 1;
+    }
+    if (turbo_video_device_list_modes(device, modes, 256, &mode_count) !=
+        TURBO_CAPTURE_OK) {
+        printf("Failed to enumerate native video modes.\n");
+        turbo_video_device_close(device);
+        return 1;
+    }
+    for (size_t i = 0; i < mode_count; ++i) {
+        if (modes[i].format == TURBO_VIDEO_CAPTURE_FORMAT_MJPEG) {
+            selected_mode = &modes[i];
+            break;
+        }
+    }
+    if (!selected_mode) {
+        printf("No native MJPEG mode found.\n");
+        turbo_video_device_close(device);
+        return 1;
+    }
+
+    turbo_capture_t *cap = NULL;
+    int create_result = turbo_video_device_create_capture(
+        device, selected_mode, &cap);
+    turbo_video_device_close(device);
+    if (create_result != TURBO_CAPTURE_OK || !cap) {
         printf("Failed to create capture instance.\n");
         return 1;
     }

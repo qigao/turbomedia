@@ -170,10 +170,13 @@ CXX_C_API int turbo_peer_connection_create_local_ice_sdpfrag(
 );
 
 /**
- * Drive the peer connection's internal ICE coroutine context once without blocking.
+ * Drive the peer connection's ICE, DTLS, DataChannel, and media timers once
+ * without blocking.
  *
  * Call this regularly from applications that manage their own loop so queued
- * ICE gather/check tasks and socket I/O can make progress.
+ * transport work, socket I/O, RTCP, TWCC, and jitter-buffer delivery can make
+ * progress. Callers must not drive the returned internal media context's timers
+ * separately.
  */
 CXX_C_API void turbo_peer_connection_poll(turbo_peer_connection_t *pc);
 

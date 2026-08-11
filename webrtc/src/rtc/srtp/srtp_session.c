@@ -13,6 +13,7 @@
 #pragma pop_macro("SRTP_MAX_TRAILER_LEN")
 #pragma pop_macro("SRTP_MAX_KEY_LEN")
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 /* SRTP Session internal structure */
@@ -69,7 +70,8 @@ static int srtp_build_master_key(const srtp_keying_material_t *keys, int use_cli
 
   key_len = keys->key_len;
   salt_len = keys->salt_len;
-  if (key_len + salt_len > master_key_size) {
+  if (key_len > sizeof(keys->client_key) || salt_len > sizeof(keys->client_salt) ||
+      key_len > master_key_size || salt_len > master_key_size - key_len) {
     return -1;
   }
 
@@ -267,7 +269,10 @@ void srtp_session_destroy(srtp_session_t *session) {
 
 int turbo_srtp_protect(srtp_session_t *session, uint8_t *packet, size_t *len, size_t max_len) {
   if (!session || !packet || !len) return -1;
-  if (*len + SRTP_MAX_TRAILER_LEN > max_len) return -1;
+  if (*len > (size_t)INT_MAX || max_len < *len ||
+      max_len - *len < SRTP_MAX_TRAILER_LEN) {
+    return -1;
+  }
 
   int pkt_len = (int)*len;
   srtp_err_status_t status = srtp_protect(session->srtp_ctx, packet, &pkt_len);
@@ -281,6 +286,7 @@ int turbo_srtp_protect(srtp_session_t *session, uint8_t *packet, size_t *len, si
 
 int turbo_srtp_unprotect(srtp_session_t *session, uint8_t *packet, size_t *len) {
   if (!session || !packet || !len) return -1;
+  if (*len > (size_t)INT_MAX) return -1;
 
   int pkt_len = (int)*len;
   srtp_err_status_t status = srtp_unprotect(session->srtp_ctx, packet, &pkt_len);
@@ -294,7 +300,10 @@ int turbo_srtp_unprotect(srtp_session_t *session, uint8_t *packet, size_t *len) 
 
 int turbo_srtcp_protect(srtp_session_t *session, uint8_t *packet, size_t *len, size_t max_len) {
   if (!session || !packet || !len) return -1;
-  if (*len + SRTP_MAX_TRAILER_LEN + 4 > max_len) return -1; /* RTCP has extra index */
+  if (*len > (size_t)INT_MAX || max_len < *len ||
+      max_len - *len < SRTP_MAX_TRAILER_LEN + 4) {
+    return -1; /* RTCP has extra index */
+  }
 
   int pkt_len = (int)*len;
   srtp_err_status_t status = srtp_protect_rtcp(session->srtcp_send_ctx, packet, &pkt_len);
@@ -308,6 +317,7 @@ int turbo_srtcp_protect(srtp_session_t *session, uint8_t *packet, size_t *len, s
 
 int turbo_srtcp_unprotect(srtp_session_t *session, uint8_t *packet, size_t *len) {
   if (!session || !packet || !len) return -1;
+  if (*len > (size_t)INT_MAX) return -1;
 
   int pkt_len = (int)*len;
   srtp_err_status_t status = srtp_unprotect_rtcp(session->srtcp_recv_ctx, packet, &pkt_len);

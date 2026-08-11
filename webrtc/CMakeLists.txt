@@ -140,6 +140,11 @@ target_link_options(
 # Room-service / SFU server apps are desktop targets; keep them out of the
 # Android build (they were gated with NOT ANDROID before the RTC-apps split).
 if(NOT ANDROID)
+  # IVR worker (Phase 1: conference baseline) first so the RoomService app can
+  # consume TURBO_MEDIA_HAS_IVR_FMQ and link the required IVR FlowMQ bridge.
+  # Desktop-only: depends on the TurboXML runtime package which is not part of
+  # the Android toolchain.
+  add_subdirectory(ivr)
   add_subdirectory(apps)
 endif()
 add_subdirectory(tests)

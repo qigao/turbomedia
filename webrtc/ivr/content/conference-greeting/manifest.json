@@ -1,0 +1,60 @@
+{
+  "package": "conference-greeting",
+  "version": "1",
+  "max_xml_bytes": 65536,
+  "max_json_bytes": 16384,
+  "default_timeout_ms": 8000,
+  "required_capabilities": [
+    "turboxml",
+    "flowmq",
+    "tts",
+    "asr",
+    "whip",
+    "whep"
+  ],
+  "allowed_commands": [
+    "rtc.join",
+    "rtc.close",
+    "rtc.reconnect",
+    "accept",
+    "disconnect",
+    "conference.join",
+    "conference.leave",
+    "get_snapshot"
+  ],
+  "allowed_events": [
+    "room.assigned",
+    "rtc.connected",
+    "rtc.disconnected",
+    "rtc.reconnected",
+    "rtc.retry_exhausted",
+    "media.input_stalled",
+    "provider.error",
+    "rtc.failed",
+    "call.terminal",
+    "room.call.terminal",
+    "rtc.closed",
+    "connection.alerting",
+    "dtmf.final",
+    "asr.final",
+    "input.timeout",
+    "playback.finished",
+    "command.result",
+    "room.snapshot.loaded"
+  ],
+  "allowed_uris": [
+    "ivr://command/conference.join",
+    "ivr://command/conference.leave"
+  ],
+  "command_map": {
+    "1": "conference.join",
+    "2": "conference.leave"
+  },
+  "documents": {
+    "rtc_session.scxml": "rtc_session.scxml",
+    "call_control.ccxml": "call_control.ccxml"
+  },
+  "dialogs": {
+    "conference_menu.vxml": "conference_menu.vxml"
+  }
+}

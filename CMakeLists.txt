@@ -65,6 +65,24 @@ function(turbo_media_configure_component target_name export_name)
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endfunction()
 
+# External imported targets are not copied by vcpkg's applocal step. Keep
+# executable/test bundles runnable from a clean build directory on Windows.
+function(turbo_media_deploy_windows_runtime target_name)
+  if(WIN32)
+    foreach(runtime_target IN LISTS ARGN)
+      if(TARGET ${runtime_target})
+        add_custom_command(
+          TARGET ${target_name}
+          POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  $<TARGET_FILE:${runtime_target}>
+                  $<TARGET_FILE_DIR:${target_name}>
+          COMMENT "Deploying ${runtime_target} for ${target_name}")
+      endif()
+    endforeach()
+  endif()
+endfunction()
+
 add_subdirectory(tools)
 include(FindTools)
 

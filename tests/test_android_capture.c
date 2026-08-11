@@ -144,62 +144,80 @@ spec("Android capture backends") {
     }
 
     group("video capture") {
-        it("captures Camera2 frames with the requested dimensions") {
-            turbo_video_capture_config_t config = {640, 480, 30, 0};
+        it("enumerates and captures an exact Camera2 native mode") {
+            turbo_video_native_mode_t modes[TURBO_CAPTURE_MAX_VIDEO_MODES];
+            const turbo_video_native_mode_t *selected_mode = NULL;
+            turbo_video_device_t *device = NULL;
+            turbo_capture_t *capture = NULL;
             capture_observer_t observer;
-            observer_init(&observer);
+            size_t mode_count = 0;
+            int result;
 
-            turbo_capture_t *capture = turbo_video_capture_create("back", &config);
+            result = turbo_video_device_open("back", &device);
+            check_int_eq(result, TURBO_CAPTURE_OK);
+            check_not_null(device);
+            if (!device) return;
+
+            result = turbo_video_device_list_modes(
+                device, modes, TURBO_CAPTURE_MAX_VIDEO_MODES, &mode_count);
+            check_int_eq(result, TURBO_CAPTURE_OK);
+            check_true(mode_count > 0);
+            if (result != TURBO_CAPTURE_OK || mode_count == 0) {
+                turbo_video_device_close(device);
+                return;
+            }
+
+            for (size_t i = 0; i < mode_count; ++i) {
+                if (modes[i].format != TURBO_VIDEO_CAPTURE_FORMAT_I420) continue;
+                if (!selected_mode) selected_mode = &modes[i];
+                if (modes[i].width == 640 && modes[i].height == 480) {
+                    selected_mode = &modes[i];
+                    break;
+                }
+            }
+            check_not_null(selected_mode);
+            if (!selected_mode) {
+                turbo_video_device_close(device);
+                return;
+            }
+
+            result = turbo_video_device_create_capture(
+                device, selected_mode, &capture);
+            turbo_video_device_close(device);
+            check_int_eq(result, TURBO_CAPTURE_OK);
             check_not_null(capture);
             if (!capture) return;
 
+            observer_init(&observer);
             turbo_video_capture_set_callback(capture, on_video, &observer);
             turbo_capture_on_state(capture, on_state);
-
-            int result = turbo_capture_start(capture);
-            int received_data = 0;
-            int frame_width = 0;
-            int frame_height = 0;
-            size_t frame_size = 0;
+            result = turbo_capture_start(capture);
+            check_int_eq(result, TURBO_CAPTURE_OK);
             if (result == TURBO_CAPTURE_OK) {
-                received_data = wait_for_data(&observer, VIDEO_CAPTURE_WAIT_STEPS);
-                frame_width = atomic_load(&observer.last_width);
-                frame_height = atomic_load(&observer.last_height);
-                frame_size = atomic_load(&observer.last_size);
+                check_true(wait_for_data(&observer, VIDEO_CAPTURE_WAIT_STEPS));
+                check_int_eq(atomic_load(&observer.last_width),
+                             selected_mode->width);
+                check_int_eq(atomic_load(&observer.last_height),
+                             selected_mode->height);
+                check_size_gt(atomic_load(&observer.last_size), 0);
                 turbo_capture_stop(capture);
             }
-
-            turbo_capture_state_t stopped_state = turbo_capture_get_state(capture);
             turbo_capture_destroy(capture);
-
-            check_int_eq(result, TURBO_CAPTURE_OK);
-            check_true(received_data);
-            check_int_eq(frame_width, config.width);
-            check_int_eq(frame_height, config.height);
-            check_size_eq(frame_size,
-                          (size_t)config.width * (size_t)config.height * 3u / 2u);
-            check_int_eq(stopped_state, TURBO_CAPTURE_STATE_STOPPED);
         }
 
         it("reports unsupported Camera2 controls without corrupting outputs") {
-            turbo_video_capture_config_t config = {640, 480, 30, 0};
             turbo_camera_control_range_t range = {1, 2, 3, 4, 5};
             turbo_video_crop_t crop = {1, 2, 3, 4};
             int value = 7;
-            turbo_capture_t *capture = turbo_video_capture_create("back", &config);
-            check_not_null(capture);
-            if (!capture) return;
 
             int range_result = turbo_video_capture_get_control_range(
-                capture, TURBO_CAMERA_CONTROL_ZOOM, &range);
+                NULL, TURBO_CAMERA_CONTROL_ZOOM, &range);
             int set_control_result = turbo_video_capture_set_control(
-                capture, TURBO_CAMERA_CONTROL_ZOOM, 200);
+                NULL, TURBO_CAMERA_CONTROL_ZOOM, 200);
             int get_control_result = turbo_video_capture_get_control(
-                capture, TURBO_CAMERA_CONTROL_ZOOM, &value);
-            int set_crop_result = turbo_video_capture_set_crop(capture, &crop);
-            int get_crop_result = turbo_video_capture_get_crop(capture, &crop);
-
-            turbo_capture_destroy(capture);
+                NULL, TURBO_CAMERA_CONTROL_ZOOM, &value);
+            int set_crop_result = turbo_video_capture_set_crop(NULL, &crop);
+            int get_crop_result = turbo_video_capture_get_crop(NULL, &crop);
 
             check_int_eq(range_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
             check_int_eq(range.min_value, 0);

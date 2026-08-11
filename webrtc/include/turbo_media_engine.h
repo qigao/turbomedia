@@ -249,9 +249,10 @@ CXX_C_API int turbo_media_setup_srtp(turbo_media_context_t *ctx);
 CXX_C_API int turbo_media_handle_timers(turbo_media_context_t *ctx);
 
 /**
- * Feed received RTP/RTCP packet
+ * Feed received SRTP/SRTCP packet
  *
- * Called when media data is received from network
+ * Called when media data is received from network. The context must have
+ * completed turbo_media_setup_srtp(); unauthenticated packets are rejected.
  *
  * @param ctx       Media context
  * @param data      Packet data

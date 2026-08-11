@@ -535,6 +535,12 @@ static tstr_t escape_json_string(const char *str) {
       case '\t':
         s = tstr_cat(s, "\\t");
         break;
+      case '\b':
+        s = tstr_cat(s, "\\b");
+        break;
+      case '\f':
+        s = tstr_cat(s, "\\f");
+        break;
       case '"':
         s = tstr_cat(s, "\\\"");
         break;
@@ -542,7 +548,11 @@ static tstr_t escape_json_string(const char *str) {
         s = tstr_cat(s, "\\\\");
         break;
       default:
-        s = tstr_cat_len(s, src, 1);
+        if ((unsigned char)*src < 0x20u) {
+          s = tstr_cat_fmt(s, "\\u%04x", (unsigned int)(unsigned char)*src);
+        } else {
+          s = tstr_cat_len(s, src, 1);
+        }
         break;
     }
     src++;
@@ -562,10 +572,15 @@ static int json_string_needs_escape(const char *str) {
       case '\n':
       case '\r':
       case '\t':
+      case '\b':
+      case '\f':
       case '"':
       case '\\':
         return 1;
       default:
+        if ((unsigned char)*src < 0x20u) {
+          return 1;
+        }
         break;
     }
     src++;
@@ -788,12 +803,19 @@ static tstr_t create_peer_list_message_locked(webrtc_room_t *room) {
 
   msg = tstr_cat(msg, "{\"type\":\"peers\",\"peers\":[");
   for (peer = room->peers_head; peer; peer = peer->next_in_room) {
+    tstr_t escaped_id = NULL;
+    const char *id_json = json_string_maybe_escape(peer->id, &escaped_id);
+    if (!id_json) {
+      tstr_free(msg);
+      return NULL;
+    }
     if (added > 0) {
       msg = tstr_cat(msg, ",");
     }
     msg = tstr_cat(msg, "\"");
-    msg = tstr_cat(msg, peer->id);
+    msg = tstr_cat(msg, id_json);
     msg = tstr_cat(msg, "\"");
+    tstr_free(escaped_id);
     added++;
   }
   msg = tstr_cat(msg, "]}");
@@ -1063,7 +1085,9 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
   int created_room = 0;
   int already_in_room = 0;
   const char *room_json = NULL;
+  const char *peer_id_json = NULL;
   tstr_t escaped_room = NULL;
+  tstr_t escaped_peer_id = NULL;
   tstr_t join_resp = NULL;
   tstr_t peer_list = NULL;
   tstr_t notify_msg = NULL;
@@ -1154,10 +1178,19 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
     remove_peer_from_room_locked(server, peer);
     return;
   }
+  peer_id_json = json_string_maybe_escape(peer->id, &escaped_peer_id);
+  if (!peer_id_json) {
+    tstr_free(escaped_room);
+    err = create_error_message("Allocation failure");
+    send_json_message_locked(peer, err);
+    tstr_free(err);
+    remove_peer_from_room_locked(server, peer);
+    return;
+  }
 
   join_resp = tstr_new();
   join_resp = tstr_cat_fmt(join_resp, "{\"type\":\"joined\",\"peerId\":\"%s\",\"room\":\"%s\"}",
-                           peer->id, room_json);
+                           peer_id_json, room_json);
   send_json_message_locked(peer, join_resp);
   tstr_free(join_resp);
   tstr_free(escaped_room);
@@ -1167,9 +1200,11 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
   tstr_free(peer_list);
 
   notify_msg = tstr_new();
-  notify_msg = tstr_cat_fmt(notify_msg, "{\"type\":\"peer-joined\",\"peerId\":\"%s\"}", peer->id);
+  notify_msg = tstr_cat_fmt(notify_msg, "{\"type\":\"peer-joined\",\"peerId\":\"%s\"}",
+                            peer_id_json);
   broadcast_locked(server, peer->room, peer->id, notify_msg);
   tstr_free(notify_msg);
+  tstr_free(escaped_peer_id);
 }
 
 static void handle_list_peers_message(webrtc_signaling_server_t *server, webrtc_peer_t *peer) {
@@ -1186,7 +1221,9 @@ static void handle_offer_message(webrtc_signaling_server_t *server, webrtc_peer_
   const char *sdp = NULL;
   webrtc_peer_t *to_peer = NULL;
   const char *sdp_json = NULL;
+  const char *from_json = NULL;
   tstr_t escaped_sdp = NULL;
+  tstr_t escaped_from = NULL;
   tstr_t msg = NULL;
   tstr_t err = NULL;
 
@@ -1221,12 +1258,21 @@ static void handle_offer_message(webrtc_signaling_server_t *server, webrtc_peer_
     tstr_free(err);
     return;
   }
+  from_json = json_string_maybe_escape(from_peer->id, &escaped_from);
+  if (!from_json) {
+    tstr_free(escaped_sdp);
+    err = create_error_message("Allocation failure");
+    send_json_message_locked(from_peer, err);
+    tstr_free(err);
+    return;
+  }
   msg = tstr_new();
-  msg = tstr_cat_fmt(msg, "{\"type\":\"offer\",\"from\":\"%s\",\"sdp\":\"%s\"}", from_peer->id,
-                     sdp_json);
+  msg = tstr_cat_fmt(msg, "{\"type\":\"offer\",\"from\":\"%s\",\"sdp\":\"%s\"}",
+                     from_json, sdp_json);
   send_json_message_locked(to_peer, msg);
   tstr_free(msg);
   tstr_free(escaped_sdp);
+  tstr_free(escaped_from);
 }
 
 static void handle_answer_message(webrtc_signaling_server_t *server, webrtc_peer_t *from_peer,
@@ -1237,7 +1283,9 @@ static void handle_answer_message(webrtc_signaling_server_t *server, webrtc_peer
   const char *sdp = NULL;
   webrtc_peer_t *to_peer = NULL;
   const char *sdp_json = NULL;
+  const char *from_json = NULL;
   tstr_t escaped_sdp = NULL;
+  tstr_t escaped_from = NULL;
   tstr_t msg = NULL;
   tstr_t err = NULL;
 
@@ -1272,12 +1320,21 @@ static void handle_answer_message(webrtc_signaling_server_t *server, webrtc_peer
     tstr_free(err);
     return;
   }
+  from_json = json_string_maybe_escape(from_peer->id, &escaped_from);
+  if (!from_json) {
+    tstr_free(escaped_sdp);
+    err = create_error_message("Allocation failure");
+    send_json_message_locked(from_peer, err);
+    tstr_free(err);
+    return;
+  }
   msg = tstr_new();
-  msg = tstr_cat_fmt(msg, "{\"type\":\"answer\",\"from\":\"%s\",\"sdp\":\"%s\"}", from_peer->id,
+  msg = tstr_cat_fmt(msg, "{\"type\":\"answer\",\"from\":\"%s\",\"sdp\":\"%s\"}", from_json,
                      sdp_json);
   send_json_message_locked(to_peer, msg);
   tstr_free(msg);
   tstr_free(escaped_sdp);
+  tstr_free(escaped_from);
 }
 
 static void handle_candidate_message(webrtc_signaling_server_t *server, webrtc_peer_t *from_peer,
@@ -1288,7 +1345,9 @@ static void handle_candidate_message(webrtc_signaling_server_t *server, webrtc_p
   const char *candidate = NULL;
   webrtc_peer_t *to_peer = NULL;
   const char *candidate_json = NULL;
+  const char *from_json = NULL;
   tstr_t escaped_candidate = NULL;
+  tstr_t escaped_from = NULL;
   tstr_t msg = NULL;
   tstr_t err = NULL;
 
@@ -1323,12 +1382,21 @@ static void handle_candidate_message(webrtc_signaling_server_t *server, webrtc_p
     tstr_free(err);
     return;
   }
+  from_json = json_string_maybe_escape(from_peer->id, &escaped_from);
+  if (!from_json) {
+    tstr_free(escaped_candidate);
+    err = create_error_message("Allocation failure");
+    send_json_message_locked(from_peer, err);
+    tstr_free(err);
+    return;
+  }
   msg = tstr_new();
   msg = tstr_cat_fmt(msg, "{\"type\":\"candidate\",\"from\":\"%s\",\"candidate\":\"%s\"}",
-                     from_peer->id, candidate_json);
+                     from_json, candidate_json);
   send_json_message_locked(to_peer, msg);
   tstr_free(msg);
   tstr_free(escaped_candidate);
+  tstr_free(escaped_from);
 }
 
 static void handle_end_of_candidates_message(webrtc_signaling_server_t *server,
@@ -1336,6 +1404,8 @@ static void handle_end_of_candidates_message(webrtc_signaling_server_t *server,
   json_value_t *to_value = turbo_json_object_get(data, "to");
   const char *to_peer_id = NULL;
   webrtc_peer_t *to_peer = NULL;
+  const char *from_json = NULL;
+  tstr_t escaped_from = NULL;
   tstr_t msg = NULL;
   tstr_t err = NULL;
 
@@ -1362,10 +1432,19 @@ static void handle_end_of_candidates_message(webrtc_signaling_server_t *server,
     return;
   }
 
+  from_json = json_string_maybe_escape(from_peer->id, &escaped_from);
+  if (!from_json) {
+    err = create_error_message("Allocation failure");
+    send_json_message_locked(from_peer, err);
+    tstr_free(err);
+    return;
+  }
+
   msg = tstr_new();
-  msg = tstr_cat_fmt(msg, "{\"type\":\"end-of-candidates\",\"from\":\"%s\"}", from_peer->id);
+  msg = tstr_cat_fmt(msg, "{\"type\":\"end-of-candidates\",\"from\":\"%s\"}", from_json);
   send_json_message_locked(to_peer, msg);
   tstr_free(msg);
+  tstr_free(escaped_from);
 }
 
 static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *peer,
@@ -1565,6 +1644,8 @@ static void kick_post_cb(void *arg1, void *arg2) {
   signal_kick_op_t *op = (signal_kick_op_t *)arg1;
   webrtc_peer_t *peer = NULL;
   tstr_t msg = NULL;
+  tstr_t escaped_reason = NULL;
+  const char *reason_json = NULL;
   (void)arg2;
 
   if (!op) {
@@ -1574,12 +1655,16 @@ static void kick_post_cb(void *arg1, void *arg2) {
   turbo_mutex_lock(&op->server->mutex);
   peer = find_peer_by_id_locked(op->server, op->peer_id);
   if (peer && peer->room && strcmp(peer->room, op->room_id) == 0) {
+    reason_json = json_string_maybe_escape(
+        op->reason ? (const char *)op->reason : "Kicked by admin", &escaped_reason);
     msg = tstr_new();
-    msg = tstr_cat_fmt(msg, "{\"type\":\"kicked\",\"reason\":\"%s\"}",
-                       op->reason ? (const char *)op->reason : "Kicked by admin");
-    send_json_message_locked(peer, msg);
+    if (reason_json) {
+      msg = tstr_cat_fmt(msg, "{\"type\":\"kicked\",\"reason\":\"%s\"}", reason_json);
+      send_json_message_locked(peer, msg);
+    }
     close_peer_locked(peer);
     tstr_free(msg);
+    tstr_free(escaped_reason);
   }
   turbo_mutex_unlock(&op->server->mutex);
 
@@ -1709,10 +1794,16 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
 
   turbo_mutex_lock(&server->mutex);
   if (peer->room) {
+    tstr_t escaped_peer_id = NULL;
+    const char *peer_id_json = json_string_maybe_escape(peer->id, &escaped_peer_id);
     leave_msg = tstr_new();
-    leave_msg = tstr_cat_fmt(leave_msg, "{\"type\":\"peer-left\",\"peerId\":\"%s\"}", peer->id);
-    broadcast_locked(server, peer->room, peer->id, leave_msg);
+    if (peer_id_json) {
+      leave_msg = tstr_cat_fmt(leave_msg, "{\"type\":\"peer-left\",\"peerId\":\"%s\"}",
+                               peer_id_json);
+      broadcast_locked(server, peer->room, peer->id, leave_msg);
+    }
     tstr_free(leave_msg);
+    tstr_free(escaped_peer_id);
   }
   remove_peer_locked(server, peer);
   turbo_mutex_unlock(&server->mutex);
@@ -2060,10 +2151,19 @@ char *webrtc_signaling_get_rooms_json(webrtc_signaling_server_t *server) {
   turbo_mutex_lock(&server->mutex);
   json = tstr_cat(json, "{\"rooms\":[");
   for (room = server->rooms_head; room; room = room->next) {
+    tstr_t escaped_room_id = NULL;
+    const char *room_id_json = json_string_maybe_escape(room->id, &escaped_room_id);
+    if (!room_id_json) {
+      turbo_mutex_unlock(&server->mutex);
+      tstr_free(json);
+      return NULL;
+    }
     if (added > 0) {
       json = tstr_cat(json, ",");
     }
-    json = tstr_cat_fmt(json, "{\"id\":\"%s\",\"peer_count\":%d}", room->id, room->peer_count);
+    json = tstr_cat_fmt(json, "{\"id\":\"%s\",\"peer_count\":%d}",
+                        room_id_json, room->peer_count);
+    tstr_free(escaped_room_id);
     added++;
   }
   json = tstr_cat_fmt(json, "],\"total\":%d}", server->room_count);

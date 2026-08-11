@@ -18,4 +18,7 @@ target_link_libraries(
 
 add_subdirectory(room_service)
 add_subdirectory(sfu_node)
+if(TURBO_MEDIA_HAS_IVR_FMQ)
+  add_subdirectory(ivr_worker)
+endif()
 add_subdirectory(signaling_server)

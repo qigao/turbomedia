@@ -117,6 +117,28 @@ typedef struct {
     int sfu_node_count;
 } room_service_app_stats_t;
 
+typedef struct {
+    int enabled;
+    uint32_t workers;
+    uint32_t worker_capacity;
+    uint32_t worker_high_water;
+    uint32_t assignments;
+    uint32_t assignment_capacity;
+    uint32_t assignment_high_water;
+    uint64_t lease_expired_total;
+    uint64_t dispatch_timeout_total;
+    uint64_t release_timeout_total;
+    uint32_t request_queue_items;
+    uint32_t request_queue_capacity;
+    uint32_t request_queue_high_water;
+    uint64_t request_queue_drops_total;
+    uint32_t peer_event_queue_items;
+    uint32_t peer_event_queue_capacity;
+    uint32_t peer_event_queue_high_water;
+    uint64_t peer_event_queue_drops_total;
+    int peer_event_queue_overflowed;
+} room_service_ivr_metrics_t;
+
 room_service_app_server_t *room_service_app_server_create(
     const room_service_app_config_t *config);
 int room_service_app_server_start(room_service_app_server_t *server);
@@ -129,6 +151,8 @@ const room_service_app_config_t *room_service_app_server_get_config(
     room_service_app_server_t *server);
 int room_service_app_server_get_stats(room_service_app_server_t *server,
                                       room_service_app_stats_t *stats);
+int room_service_app_server_get_ivr_metrics(
+    room_service_app_server_t *server, room_service_ivr_metrics_t *metrics);
 int room_service_app_server_register_sfu_node(room_service_app_server_t *server,
                                               const char *node_id,
                                               const char *control_url,

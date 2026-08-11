@@ -1,6 +1,7 @@
 #include "room_service/config.h"
 #include "../../config_toml.h"
 #include "turbo_media_auth.h"
+#include "platform.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -29,8 +30,21 @@ typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID,
     ROOM_CONFIG_STRING_SFU_AUTH_SECRET,
     ROOM_CONFIG_STRING_LOG_LEVEL,
-    ROOM_CONFIG_STRING_COUNT
+    ROOM_CONFIG_STRING_FMQ_BIND_HOST,
+    ROOM_CONFIG_STRING_FMQ_PUB_TOPIC,
+    ROOM_CONFIG_STRING_FMQ_CA_FILE,
+    ROOM_CONFIG_STRING_FMQ_CERT_FILE,
+    ROOM_CONFIG_STRING_FMQ_KEY_FILE,
+    ROOM_CONFIG_STRING_FMQ_KEY_PASSWORD,
+    ROOM_CONFIG_STRING_FMQ_SHARED_SECRET,
+    ROOM_CONFIG_STRING_FMQ_WORKER_BASE,
+    ROOM_CONFIG_STRING_COUNT =
+        ROOM_CONFIG_STRING_FMQ_WORKER_BASE +
+        ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES * 8
 } room_service_config_string_t;
+
+#define ROOM_CONFIG_FMQ_WORKER_STRING(worker_index, field_index) \
+    (ROOM_CONFIG_STRING_FMQ_WORKER_BASE + (worker_index) * 8 + (field_index))
 
 static const char *room_service_env_value(const char *name) {
     const char *value = getenv(name);
@@ -106,6 +120,117 @@ static int room_service_sfu_nodes_syntax_valid(const char *nodes) {
     return 1;
 }
 
+static int room_service_is_loopback(const char *host) {
+    return host &&
+           (strcmp(host, "127.0.0.1") == 0 || strcmp(host, "::1") == 0 ||
+            strcmp(host, "localhost") == 0);
+}
+
+static int room_service_fingerprint_valid(const char *value) {
+    size_t i;
+    if (!value || strlen(value) != 71u || memcmp(value, "sha256:", 7u) != 0) {
+        return 0;
+    }
+    for (i = 7u; i < 71u; ++i) {
+        if (!((value[i] >= '0' && value[i] <= '9') ||
+              (value[i] >= 'a' && value[i] <= 'f'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* 1 when scope is NULL, "*", or a comma-separated list of non-empty tokens
+   with no spaces (the adapter performs the final semantic validation). */
+static int room_service_scope_valid(const char *scope) {
+    const char *p;
+    if (!scope) {
+        return 1;
+    }
+    if (scope[0] == '\0' || strcmp(scope, "*") == 0) {
+        return scope[0] != '\0' ? 1 : 0;
+    }
+    p = scope;
+    while (*p) {
+        if (*p == ',' || *p == ' ' || *p == '\t' || *p == '\r' ||
+            *p == '\n') {
+            return 0;
+        }
+        while (*p && *p != ',') {
+            ++p;
+        }
+        if (*p == ',') {
+            ++p;
+            if (*p == '\0' || *p == ',') {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int room_service_fmq_identities_valid(
+    const room_service_app_config_t *config) {
+    uint64_t now_ms = turbo_realtime_ms();
+    int i;
+    int j;
+    if (config->fmq_worker_identity_count <= 0 ||
+        config->fmq_worker_identity_count >
+            ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES) {
+        return 0;
+    }
+    for (i = 0; i < config->fmq_worker_identity_count; ++i) {
+        const room_service_fmq_worker_identity_t *entry =
+            &config->fmq_worker_identities[i];
+        if (!entry->worker_id || entry->worker_id[0] == '\0' ||
+            strlen(entry->worker_id) > 127u ||
+            !room_service_fingerprint_valid(
+                entry->active_certificate_sha256) ||
+            entry->generation == 0u) {
+            return 0;
+        }
+        if (entry->previous_certificate_sha256) {
+            if (!room_service_fingerprint_valid(
+                    entry->previous_certificate_sha256) ||
+                entry->previous_expires_at_ms <= now_ms ||
+                strcmp(entry->previous_certificate_sha256,
+                       entry->active_certificate_sha256) == 0) {
+                return 0;
+            }
+        } else if (entry->previous_expires_at_ms != 0u) {
+            return 0;
+        }
+        if ((entry->tenant_id && (entry->tenant_id[0] == '\0' ||
+                                  strlen(entry->tenant_id) > 63u)) ||
+            !room_service_scope_valid(entry->room_scope) ||
+            !room_service_scope_valid(entry->call_scope) ||
+            !room_service_scope_valid(entry->content_capabilities) ||
+            !room_service_scope_valid(entry->pub_topics)) {
+            return 0;
+        }
+        for (j = 0; j < i; ++j) {
+            const room_service_fmq_worker_identity_t *prior =
+                &config->fmq_worker_identities[j];
+            if (strcmp(prior->worker_id, entry->worker_id) == 0 ||
+                strcmp(prior->active_certificate_sha256,
+                       entry->active_certificate_sha256) == 0 ||
+                (entry->previous_certificate_sha256 &&
+                 strcmp(prior->active_certificate_sha256,
+                        entry->previous_certificate_sha256) == 0) ||
+                (prior->previous_certificate_sha256 &&
+                 strcmp(prior->previous_certificate_sha256,
+                        entry->active_certificate_sha256) == 0) ||
+                (prior->previous_certificate_sha256 &&
+                 entry->previous_certificate_sha256 &&
+                 strcmp(prior->previous_certificate_sha256,
+                        entry->previous_certificate_sha256) == 0)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 void room_service_app_config_init(room_service_app_config_t *config) {
     if (!config) {
         return;
@@ -149,6 +274,24 @@ void room_service_app_config_init(room_service_app_config_t *config) {
     config->auto_create_rooms = 1;
     config->dry_run = 0;
     config->log_level = "info";
+    config->fmq_bind_host = "127.0.0.1";
+    config->fmq_bind_port = 0;
+    config->fmq_pub_port = 0;
+    config->fmq_pub_topic = NULL;
+    config->fmq_worker_heartbeat_ms = 5000;
+    config->fmq_worker_lease_ms = 15000;
+    config->fmq_dispatch_deadline_ms = 5000;
+    config->fmq_use_tls = 0;
+    config->fmq_allow_insecure_loopback = 0;
+    config->fmq_ca_file = NULL;
+    config->fmq_cert_file = NULL;
+    config->fmq_key_file = NULL;
+    config->fmq_key_password = NULL;
+    config->fmq_shared_secret = NULL;
+    config->fmq_tls_rotation_generation = 1;
+    memset(config->fmq_worker_identities, 0,
+           sizeof(config->fmq_worker_identities));
+    config->fmq_worker_identity_count = 0;
     config->private_data = NULL;
 }
 
@@ -185,6 +328,53 @@ static int room_service_config_clone_strings(
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID, sfu_auth_key_id);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_SECRET, sfu_auth_secret);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_LOG_LEVEL, log_level);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_BIND_HOST, fmq_bind_host);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_PUB_TOPIC, fmq_pub_topic);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_CA_FILE, fmq_ca_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_CERT_FILE, fmq_cert_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_KEY_FILE, fmq_key_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_KEY_PASSWORD, fmq_key_password);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_SHARED_SECRET, fmq_shared_secret);
+
+    for (int i = 0; i < ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES; ++i) {
+        if (rtc_app_config_storage_copy(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 0),
+                source->fmq_worker_identities[i].worker_id,
+                &candidate->fmq_worker_identities[i].worker_id) != 0 ||
+            rtc_app_config_storage_copy(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 1),
+                source->fmq_worker_identities[i].active_certificate_sha256,
+                &candidate->fmq_worker_identities[i]
+                     .active_certificate_sha256) != 0 ||
+            rtc_app_config_storage_copy(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 2),
+                source->fmq_worker_identities[i].previous_certificate_sha256,
+                &candidate->fmq_worker_identities[i]
+                     .previous_certificate_sha256) != 0 ||
+            rtc_app_config_storage_copy(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 3),
+                source->fmq_worker_identities[i].tenant_id,
+                &candidate->fmq_worker_identities[i].tenant_id) != 0 ||
+            rtc_app_config_storage_copy(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 4),
+                source->fmq_worker_identities[i].room_scope,
+                &candidate->fmq_worker_identities[i].room_scope) != 0 ||
+            rtc_app_config_storage_copy(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 5),
+                source->fmq_worker_identities[i].call_scope,
+                &candidate->fmq_worker_identities[i].call_scope) != 0 ||
+            rtc_app_config_storage_copy(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 6),
+                source->fmq_worker_identities[i].content_capabilities,
+                &candidate->fmq_worker_identities[i]
+                     .content_capabilities) != 0 ||
+            rtc_app_config_storage_copy(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 7),
+                source->fmq_worker_identities[i].pub_topics,
+                &candidate->fmq_worker_identities[i].pub_topics) != 0) {
+            return -1;
+        }
+    }
 
 #undef ROOM_CONFIG_CLONE
     return 0;
@@ -415,11 +605,185 @@ static int room_service_config_apply_logging(
     return 0;
 }
 
+static int room_service_config_apply_fmq_workers(
+    const turbo_toml_t *table, room_service_app_config_t *config,
+    rtc_app_config_storage_t *storage) {
+    turbo_toml_array_t *workers;
+    int count;
+    int i;
+    if (!rtc_app_toml_table_has_key(table, "workers")) {
+        return 0;
+    }
+    workers = turbo_toml_array(table, "workers");
+    if (!workers) {
+        TLOG_ERROR("TOML key [fmq].workers must be an array of tables");
+        return -1;
+    }
+    count = turbo_toml_array_len(workers);
+    if (count < 0 || count > ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES) {
+        TLOG_ERROR("TOML key [fmq].workers exceeds the maximum of {} entries",
+                   ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES);
+        return -1;
+    }
+    for (i = 0; i < ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES; ++i) {
+        room_service_fmq_worker_identity_t *identity =
+            &config->fmq_worker_identities[i];
+        if (rtc_app_config_storage_replace(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 0), NULL,
+                &identity->worker_id) != 0 ||
+            rtc_app_config_storage_replace(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 1), NULL,
+                &identity->active_certificate_sha256) != 0 ||
+            rtc_app_config_storage_replace(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 2), NULL,
+                &identity->previous_certificate_sha256) != 0 ||
+            rtc_app_config_storage_replace(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 3), NULL,
+                &identity->tenant_id) != 0 ||
+            rtc_app_config_storage_replace(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 4), NULL,
+                &identity->room_scope) != 0 ||
+            rtc_app_config_storage_replace(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 5), NULL,
+                &identity->call_scope) != 0 ||
+            rtc_app_config_storage_replace(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 6), NULL,
+                &identity->content_capabilities) != 0 ||
+            rtc_app_config_storage_replace(
+                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 7), NULL,
+                &identity->pub_topics) != 0) {
+            return -1;
+        }
+        identity->previous_expires_at_ms = 0u;
+        identity->generation = 0u;
+    }
+    for (i = 0; i < count; ++i) {
+        static const char *const allowed[] = {
+            "worker_id", "active_certificate_sha256",
+            "previous_certificate_sha256", "previous_expires_at_ms",
+            "generation", "tenant_id", "room_scope", "call_scope",
+            "content_capabilities", "pub_topics"};
+        turbo_toml_t *worker = turbo_toml_array_table(workers, i);
+        room_service_fmq_worker_identity_t *identity =
+            &config->fmq_worker_identities[i];
+        turbo_toml_value_t value;
+        if (!worker ||
+            rtc_app_toml_table_keys_valid(
+                worker, "fmq.workers", allowed,
+                sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+            rtc_app_toml_apply_string(
+                worker, "fmq.workers", "worker_id", storage,
+                ROOM_CONFIG_FMQ_WORKER_STRING(i, 0),
+                &identity->worker_id) != 0 ||
+            rtc_app_toml_apply_string(
+                worker, "fmq.workers", "active_certificate_sha256", storage,
+                ROOM_CONFIG_FMQ_WORKER_STRING(i, 1),
+                &identity->active_certificate_sha256) != 0 ||
+            rtc_app_toml_apply_string(
+                worker, "fmq.workers", "previous_certificate_sha256", storage,
+                ROOM_CONFIG_FMQ_WORKER_STRING(i, 2),
+                &identity->previous_certificate_sha256) != 0 ||
+            rtc_app_toml_apply_string(
+                worker, "fmq.workers", "tenant_id", storage,
+                ROOM_CONFIG_FMQ_WORKER_STRING(i, 3),
+                &identity->tenant_id) != 0 ||
+            rtc_app_toml_apply_string(
+                worker, "fmq.workers", "room_scope", storage,
+                ROOM_CONFIG_FMQ_WORKER_STRING(i, 4),
+                &identity->room_scope) != 0 ||
+            rtc_app_toml_apply_string(
+                worker, "fmq.workers", "call_scope", storage,
+                ROOM_CONFIG_FMQ_WORKER_STRING(i, 5),
+                &identity->call_scope) != 0 ||
+            rtc_app_toml_apply_string(
+                worker, "fmq.workers", "content_capabilities", storage,
+                ROOM_CONFIG_FMQ_WORKER_STRING(i, 6),
+                &identity->content_capabilities) != 0 ||
+            rtc_app_toml_apply_string(
+                worker, "fmq.workers", "pub_topics", storage,
+                ROOM_CONFIG_FMQ_WORKER_STRING(i, 7),
+                &identity->pub_topics) != 0) {
+            return -1;
+        }
+        if (rtc_app_toml_table_has_key(worker, "previous_expires_at_ms")) {
+            value = turbo_toml_int(worker, "previous_expires_at_ms");
+            if (!value.ok || value.u.i <= 0) return -1;
+            identity->previous_expires_at_ms = (uint64_t)value.u.i;
+        }
+        if (!rtc_app_toml_table_has_key(worker, "generation")) return -1;
+        value = turbo_toml_int(worker, "generation");
+        if (!value.ok || value.u.i <= 0) return -1;
+        identity->generation = (uint64_t)value.u.i;
+    }
+    config->fmq_worker_identity_count = count;
+    return 0;
+}
+
+static int room_service_config_apply_fmq(
+    const turbo_toml_t *table,
+    room_service_app_config_t *config,
+    rtc_app_config_storage_t *storage) {
+    static const char *const allowed[] = {
+        "bind_host", "bind_port", "pub_port", "pub_topic",
+        "worker_heartbeat_ms", "worker_lease_ms", "dispatch_deadline_ms",
+        "use_tls", "allow_insecure_loopback", "ca_file", "cert_file",
+        "key_file", "key_password", "shared_secret", "rotation_generation",
+        "workers"
+    };
+
+    if (!table) {
+        return 0;
+    }
+    if (rtc_app_toml_table_keys_valid(
+            table, "fmq", allowed, sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        rtc_app_toml_apply_string(table, "fmq", "bind_host", storage,
+                                  ROOM_CONFIG_STRING_FMQ_BIND_HOST,
+                                  &config->fmq_bind_host) != 0 ||
+        rtc_app_toml_apply_string(table, "fmq", "pub_topic", storage,
+                                  ROOM_CONFIG_STRING_FMQ_PUB_TOPIC,
+                                  &config->fmq_pub_topic) != 0 ||
+        rtc_app_toml_apply_string(table, "fmq", "ca_file", storage,
+                                  ROOM_CONFIG_STRING_FMQ_CA_FILE,
+                                  &config->fmq_ca_file) != 0 ||
+        rtc_app_toml_apply_string(table, "fmq", "cert_file", storage,
+                                  ROOM_CONFIG_STRING_FMQ_CERT_FILE,
+                                  &config->fmq_cert_file) != 0 ||
+        rtc_app_toml_apply_string(table, "fmq", "key_file", storage,
+                                  ROOM_CONFIG_STRING_FMQ_KEY_FILE,
+                                  &config->fmq_key_file) != 0 ||
+        rtc_app_toml_apply_string(table, "fmq", "key_password", storage,
+                                  ROOM_CONFIG_STRING_FMQ_KEY_PASSWORD,
+                                  &config->fmq_key_password) != 0 ||
+        rtc_app_toml_apply_string(table, "fmq", "shared_secret", storage,
+                                  ROOM_CONFIG_STRING_FMQ_SHARED_SECRET,
+                                  &config->fmq_shared_secret) != 0 ||
+        rtc_app_toml_apply_int(table, "fmq", "bind_port",
+                               &config->fmq_bind_port) != 0 ||
+        rtc_app_toml_apply_int(table, "fmq", "pub_port",
+                               &config->fmq_pub_port) != 0 ||
+        rtc_app_toml_apply_int(table, "fmq", "worker_heartbeat_ms",
+                               &config->fmq_worker_heartbeat_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "fmq", "worker_lease_ms",
+                               &config->fmq_worker_lease_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "fmq", "dispatch_deadline_ms",
+                               &config->fmq_dispatch_deadline_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "fmq", "rotation_generation",
+                               &config->fmq_tls_rotation_generation) != 0 ||
+        rtc_app_toml_apply_bool(table, "fmq", "use_tls",
+                                &config->fmq_use_tls) != 0 ||
+        rtc_app_toml_apply_bool(table, "fmq", "allow_insecure_loopback",
+                                &config->fmq_allow_insecure_loopback) != 0 ||
+        room_service_config_apply_fmq_workers(table, config, storage) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int room_service_app_config_load(room_service_app_config_t *config,
                                  const char *filename) {
     static const char *const root_keys[] = {
         "server", "control", "auth", "sfu", "sfu_auth", "capacity",
-        "rooms", "runtime", "logging"
+        "rooms", "runtime", "logging", "fmq"
     };
     rtc_app_toml_document_t document;
     rtc_app_config_storage_t *storage = NULL;
@@ -433,6 +797,7 @@ int room_service_app_config_load(room_service_app_config_t *config,
     turbo_toml_t *rooms = NULL;
     turbo_toml_t *runtime = NULL;
     turbo_toml_t *logging = NULL;
+    turbo_toml_t *fmq = NULL;
     room_service_app_config_t candidate;
     int result = -1;
 
@@ -469,6 +834,7 @@ int room_service_app_config_load(room_service_app_config_t *config,
         rtc_app_toml_get_optional_table(document.root, "rooms", &rooms) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "runtime", &runtime) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "logging", &logging) != 0 ||
+        rtc_app_toml_get_optional_table(document.root, "fmq", &fmq) != 0 ||
         room_service_config_apply_server(server, &candidate, storage) != 0 ||
         room_service_config_apply_control(control, &candidate, storage) != 0 ||
         room_service_config_apply_auth(auth, &candidate, storage) != 0 ||
@@ -478,6 +844,7 @@ int room_service_app_config_load(room_service_app_config_t *config,
         room_service_config_apply_rooms(rooms, &candidate) != 0 ||
         room_service_config_apply_runtime(runtime, &candidate) != 0 ||
         room_service_config_apply_logging(logging, &candidate, storage) != 0 ||
+        room_service_config_apply_fmq(fmq, &candidate, storage) != 0 ||
         room_service_app_config_validate(&candidate) != 0) {
         goto cleanup_document;
     }
@@ -574,6 +941,45 @@ void room_service_app_config_apply_environment(
     config->sfu_auth_ttl_seconds = room_service_env_int(
         "TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS",
         config->sfu_auth_ttl_seconds);
+    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_BIND_HOST");
+    if (value) {
+        config->fmq_bind_host = value;
+    }
+    config->fmq_bind_port = room_service_env_int(
+        "TURBO_ROOM_SERVICE_FMQ_BIND_PORT", config->fmq_bind_port);
+    config->fmq_pub_port = room_service_env_int(
+        "TURBO_ROOM_SERVICE_FMQ_PUB_PORT", config->fmq_pub_port);
+    config->fmq_worker_heartbeat_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_FMQ_WORKER_HEARTBEAT_MS",
+        config->fmq_worker_heartbeat_ms);
+    config->fmq_worker_lease_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_FMQ_WORKER_LEASE_MS",
+        config->fmq_worker_lease_ms);
+    config->fmq_dispatch_deadline_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_FMQ_DISPATCH_DEADLINE_MS",
+        config->fmq_dispatch_deadline_ms);
+    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_PUB_TOPIC");
+    if (value) {
+        config->fmq_pub_topic = value;
+    }
+    config->fmq_use_tls = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_FMQ_USE_TLS", config->fmq_use_tls);
+    config->fmq_allow_insecure_loopback = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_FMQ_ALLOW_INSECURE_LOOPBACK",
+        config->fmq_allow_insecure_loopback);
+    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_CA_FILE");
+    if (value) config->fmq_ca_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_CERT_FILE");
+    if (value) config->fmq_cert_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_KEY_FILE");
+    if (value) config->fmq_key_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_KEY_PASSWORD");
+    if (value) config->fmq_key_password = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_SHARED_SECRET");
+    if (value) config->fmq_shared_secret = value;
+    config->fmq_tls_rotation_generation = room_service_env_int(
+        "TURBO_ROOM_SERVICE_FMQ_ROTATION_GENERATION",
+        config->fmq_tls_rotation_generation);
 }
 
 void room_service_app_config_cleanup(room_service_app_config_t *config) {
@@ -596,7 +1002,23 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
         return -1;
     }
     if (config->bind_port < 1 || config->bind_port > 65535 ||
-        config->max_rooms <= 0) {
+        config->max_rooms <= 0 ||
+        config->fmq_bind_port < 0 || config->fmq_bind_port > 65535 ||
+        config->fmq_pub_port < 0 || config->fmq_pub_port > 65535 ||
+        config->fmq_worker_heartbeat_ms <= 0 ||
+        config->fmq_worker_lease_ms < config->fmq_worker_heartbeat_ms ||
+        config->fmq_worker_heartbeat_ms > INT_MAX / 3 ||
+        config->fmq_worker_lease_ms <
+            config->fmq_worker_heartbeat_ms * 3 ||
+        config->fmq_dispatch_deadline_ms <= 0 ||
+        config->fmq_dispatch_deadline_ms >= config->fmq_worker_lease_ms ||
+        ((config->fmq_bind_port > 0) != (config->fmq_pub_port > 0)) ||
+        (config->fmq_bind_port > 0 &&
+         (!config->fmq_bind_host || config->fmq_bind_host[0] == 0)) ||
+        (config->fmq_use_tls != 0 && config->fmq_use_tls != 1) ||
+        (config->fmq_allow_insecure_loopback != 0 &&
+         config->fmq_allow_insecure_loopback != 1) ||
+        config->fmq_tls_rotation_generation <= 0) {
         return -1;
     }
     if ((config->auto_create_rooms != 0 && config->auto_create_rooms != 1) ||
@@ -677,6 +1099,22 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
     if (!room_service_sfu_nodes_syntax_valid(config->sfu_nodes)) {
         return -1;
     }
+    if (config->fmq_bind_port > 0) {
+        if (config->fmq_use_tls) {
+            if (config->fmq_allow_insecure_loopback || !config->fmq_ca_file ||
+                !config->fmq_ca_file[0] || !config->fmq_cert_file ||
+                !config->fmq_cert_file[0] || !config->fmq_key_file ||
+                !config->fmq_key_file[0] || !config->fmq_shared_secret ||
+                strlen(config->fmq_shared_secret) < 32u ||
+                strlen(config->fmq_shared_secret) > 4096u ||
+                !room_service_fmq_identities_valid(config)) {
+                return -1;
+            }
+        } else if (!config->fmq_allow_insecure_loopback ||
+                   !room_service_is_loopback(config->fmq_bind_host)) {
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -695,8 +1133,8 @@ void room_service_app_config_print(const room_service_app_config_t *config) {
                ? "enabled"
                : "disabled");
     printf("  sfu_control_url: %s\n",
-           config->sfu_control_url ? config->sfu_control_url : "(disabled)");
-    printf("  sfu_nodes: %s\n", config->sfu_nodes ? config->sfu_nodes : "(none)");
+           config->sfu_control_url ? "configured" : "disabled");
+    printf("  sfu_nodes: %s\n", config->sfu_nodes ? "configured" : "none");
     printf("  sfu_control_auth: %s\n",
            (config->sfu_auth_secret && config->sfu_auth_secret[0])
                ? "scoped signed token"
@@ -709,4 +1147,21 @@ void room_service_app_config_print(const room_service_app_config_t *config) {
     printf("  auto_create_rooms: %s\n", config->auto_create_rooms ? "true" : "false");
     printf("  dry_run: %s\n", config->dry_run ? "true" : "false");
     printf("  log_level: %s\n", config->log_level);
+    printf("  fmq_bridge: %s (router %s:%d, pub %s)\n",
+           config->fmq_bind_port > 0 ? "enabled" : "disabled",
+           config->fmq_bind_host ? config->fmq_bind_host : "127.0.0.1",
+           config->fmq_bind_port,
+           config->fmq_pub_port > 0
+               ? (config->fmq_pub_topic ? config->fmq_pub_topic
+                                        : "room.events")
+               : "off");
+    printf("  fmq_worker_timing: heartbeat=%dms lease=%dms dispatch=%dms\n",
+           config->fmq_worker_heartbeat_ms, config->fmq_worker_lease_ms,
+           config->fmq_dispatch_deadline_ms);
+    printf("  fmq_security: %s identities=%d rotation_generation=%d\n",
+           config->fmq_use_tls ? "mTLS" :
+           (config->fmq_allow_insecure_loopback ? "trusted-loopback" :
+                                                  "disabled"),
+           config->fmq_worker_identity_count,
+           config->fmq_tls_rotation_generation);
 }

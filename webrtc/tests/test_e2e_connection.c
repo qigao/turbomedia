@@ -11,6 +11,7 @@
 
 #include "tinytest_compat.h"
 #include "turbo_datachannel.h"
+#include "turbo_media_engine.h"
 #include "ice_integration.h"
 #include <turbo_coro_context.h>
 #include <string.h>
@@ -28,6 +29,7 @@ typedef struct {
     turbo_dc_peer_t *peer_a;
     ice_integration_ctx_t *ice_a;
     turbo_dc_channel_t *channel_a;
+    turbo_media_context_t *media_a;
     
     /* Peer B (answerer) */
     turbo_dc_context_t *ctx_b;
@@ -330,6 +332,11 @@ void tearDown(void) {
         g_ctx.channel_b = NULL;
     }
 
+    if (g_ctx.media_a) {
+        turbo_media_destroy(g_ctx.media_a);
+        g_ctx.media_a = NULL;
+    }
+
     /* Quiesce DTLS/SCTP before tearing down ICE underneath it. */
     if (g_ctx.peer_a) {
         turbo_dc_peer_close(g_ctx.peer_a);
@@ -504,6 +511,34 @@ void test_e2e_p2p_connection(void) {
     TEST_ASSERT_EQUAL(MESSAGE_COUNT, g_ctx.messages_sent_b);
     TEST_ASSERT_EQUAL(MESSAGE_COUNT, g_ctx.messages_received_a);
     TEST_ASSERT_EQUAL(MESSAGE_COUNT, g_ctx.messages_received_b);
+
+    {
+        turbo_media_track_config_t track_config = {
+            .type = TURBO_RTC_MEDIA_TRACK_AUDIO,
+            .direction = TURBO_MEDIA_DIRECTION_SENDONLY,
+            .codec = TURBO_CODEC_PCMU,
+            .audio = {
+                .sample_rate = 8000,
+                .channels = 1,
+                .bitrate = 64000,
+                .frame_size_ms = 20,
+            },
+        };
+        static const uint8_t rtp_packet[] = {
+            0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x12, 0x34, 0x56, 0x78, 0x7f,
+        };
+        turbo_media_track_t *track;
+
+        g_ctx.media_a = turbo_media_create(g_ctx.peer_a, NULL);
+        TEST_ASSERT_NOT_NULL(g_ctx.media_a);
+        TEST_ASSERT_EQUAL_INT(0, turbo_media_setup_srtp(g_ctx.media_a));
+        track = turbo_media_add_track(g_ctx.media_a, &track_config);
+        TEST_ASSERT_NOT_NULL(track);
+        TEST_ASSERT_EQUAL_INT(0, turbo_media_track_start(track));
+        TEST_ASSERT_EQUAL_INT(
+            0, turbo_media_track_send_rtp_packet(track, rtp_packet, sizeof(rtp_packet)));
+    }
 }
 
 /* ============================================================================

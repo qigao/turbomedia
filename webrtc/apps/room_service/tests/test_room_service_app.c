@@ -362,6 +362,37 @@ static json_value_t *http_get_json(const char *base_url, const char *path) {
   return root;
 }
 
+static char *http_get_text(const char *base_url, const char *path) {
+  http_client_t *client;
+  http_response_t *response;
+  char *body = NULL;
+
+  if (!base_url || !path) {
+    return NULL;
+  }
+  client = http_client_create(base_url);
+  if (!client) {
+    return NULL;
+  }
+  http_client_set_timeout(client, 3000);
+  http_client_set_user_agent(client, "TurboRoomServiceTest/0.1");
+  response = http_get(client, path);
+  if (response && response->error_code == HTTP_ERROR_NONE &&
+      response->status_code >= 200 && response->status_code < 300 &&
+      response->body && response->body_len < SIZE_MAX) {
+    body = (char *)malloc(response->body_len + 1u);
+    if (body) {
+      memcpy(body, response->body, response->body_len);
+      body[response->body_len] = '\0';
+    }
+  }
+  if (response) {
+    http_response_free(response);
+  }
+  http_client_destroy(client);
+  return body;
+}
+
 static int wait_for_http_status_ok(const char *base_url, const char *path,
                                    int attempts, unsigned int sleep_ms) {
   int i;
@@ -4761,6 +4792,17 @@ void test_room_service_http_lifecycle_repeated_start_stop(void) {
                                        config.bind_port));
     TEST_ASSERT_EQUAL_INT(
         0, wait_for_http_status_ok(base_url, "/health", 3, 10));
+    if (iteration == 0) {
+      char *metrics = http_get_text(base_url, "/metrics");
+      TEST_ASSERT_NOT_NULL(metrics);
+      TEST_ASSERT_NOT_NULL(
+          strstr(metrics, "turbo_room_service_ivr_enabled 0\n"));
+      TEST_ASSERT_NOT_NULL(
+          strstr(metrics, "turbo_room_service_ivr_workers 0\n"));
+      TEST_ASSERT_NOT_NULL(strstr(
+          metrics, "turbo_room_service_ivr_request_queue_high_water 0\n"));
+      free(metrics);
+    }
     if (iteration + 1 < ROOM_SERVICE_HTTP_LIFECYCLE_STRESS_ITERATIONS) {
       room_service_http_api_stop(http_api);
     }

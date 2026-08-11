@@ -49,7 +49,16 @@ set_target_properties(
              OUTPUT_NAME "sfu_node"
              FOLDER "Applications")
 
+turbo_media_deploy_windows_runtime(
+  sfu_node TurboHttp::Iris TurboNet::CoroNet RulesForge::rules_forge)
+
 install(TARGETS sfu_node RUNTIME DESTINATION bin COMPONENT SfuNode)
+if(WIN32)
+  install(
+    FILES $<TARGET_FILE:TurboHttp::Iris> $<TARGET_FILE:TurboNet::CoroNet>
+    DESTINATION bin
+    COMPONENT SfuNode)
+endif()
 install(
   FILES config/sfu_node.toml.example
   DESTINATION etc/turbonet

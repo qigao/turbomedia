@@ -18,6 +18,8 @@
 #include <string.h>
 #include <stdatomic.h>
 
+#define MEDIA_MAX_NATIVE_VIDEO_MODES 256
+
 /* =============================================================================
  * Internal Structures
  * ============================================================================= */
@@ -32,7 +34,8 @@ struct turbo_media_track_s {
 
   /* RTP/SRTP */
   rtp_session_t *rtp_session;
-  srtp_session_t *srtp_session;
+  srtp_session_t *srtp_send_session;
+  srtp_session_t *srtp_recv_session;
 
   /* TWCC (Transport-Wide Congestion Control) */
   twcc_tracker_t *twcc_tracker;   /* Sender side */
@@ -77,6 +80,8 @@ struct turbo_media_context_s {
   turbo_dc_peer_t *peer;
   void *user_data;
   srtp_session_t *rtcp_session;
+  turbo_mutex_t srtp_mutex;
+  int srtp_mutex_initialized;
 
   /* Tracks */
   turbo_media_track_t *tracks[TURBO_MEDIA_MAX_TRACKS];
@@ -231,6 +236,139 @@ static int init_encoder(turbo_media_track_t *track);
 static int init_decoder(turbo_media_track_t *track);
 static int start_capture_if_present(turbo_media_track_t *track);
 
+/* libsrtp contexts carry rollover and replay state. Keep both their state
+ * transitions and their lifetime under the media context lock. */
+static int media_track_srtp_protect(turbo_media_track_t *track, uint8_t *packet,
+                                    size_t *len, size_t max_len) {
+  turbo_media_context_t *ctx;
+  int result;
+
+  if (!track || !track->ctx || !packet || !len) return -1;
+  ctx = track->ctx;
+  turbo_mutex_lock(&ctx->srtp_mutex);
+  if (!track->srtp_send_session) {
+    turbo_mutex_unlock(&ctx->srtp_mutex);
+    return -1;
+  }
+  result = turbo_srtp_protect(track->srtp_send_session, packet, len, max_len);
+  turbo_mutex_unlock(&ctx->srtp_mutex);
+  return result;
+}
+
+static int media_track_srtp_unprotect(turbo_media_track_t *track, uint8_t *packet,
+                                      size_t *len) {
+  turbo_media_context_t *ctx;
+  int result;
+
+  if (!track || !track->ctx || !packet || !len) return -1;
+  ctx = track->ctx;
+  turbo_mutex_lock(&ctx->srtp_mutex);
+  if (!track->srtp_recv_session) {
+    turbo_mutex_unlock(&ctx->srtp_mutex);
+    return -1;
+  }
+  result = turbo_srtp_unprotect(track->srtp_recv_session, packet, len);
+  turbo_mutex_unlock(&ctx->srtp_mutex);
+  return result;
+}
+
+static int media_srtcp_protect(turbo_media_context_t *ctx, uint8_t *packet, size_t *len,
+                               size_t max_len) {
+  int result;
+
+  if (!ctx || !packet || !len) return -1;
+  turbo_mutex_lock(&ctx->srtp_mutex);
+  if (!ctx->rtcp_session) {
+    turbo_mutex_unlock(&ctx->srtp_mutex);
+    return -1;
+  }
+  result = turbo_srtcp_protect(ctx->rtcp_session, packet, len, max_len);
+  turbo_mutex_unlock(&ctx->srtp_mutex);
+  return result;
+}
+
+static int media_srtcp_unprotect(turbo_media_context_t *ctx, uint8_t *packet, size_t *len) {
+  int result;
+
+  if (!ctx || !packet || !len) return -1;
+  turbo_mutex_lock(&ctx->srtp_mutex);
+  if (!ctx->rtcp_session) {
+    turbo_mutex_unlock(&ctx->srtp_mutex);
+    return -1;
+  }
+  result = turbo_srtcp_unprotect(ctx->rtcp_session, packet, len);
+  turbo_mutex_unlock(&ctx->srtp_mutex);
+  return result;
+}
+
+static int media_create_track_srtp_sessions(
+    const turbo_media_track_t *track, uint16_t profile, int is_dtls_client,
+    const srtp_keying_material_t *material, srtp_session_t **send_session,
+    srtp_session_t **recv_session) {
+  if (!track || !material || !send_session || !recv_session) return -1;
+  *send_session = NULL;
+  *recv_session = NULL;
+
+  if (track->direction & TURBO_MEDIA_DIRECTION_SENDONLY) {
+    srtp_session_config_t send_cfg = {
+        .is_sender = 1, .is_dtls_client = is_dtls_client, .profile = profile, .keys = material};
+    *send_session = srtp_session_create(&send_cfg);
+    if (!*send_session) return -1;
+  }
+  if (track->direction & TURBO_MEDIA_DIRECTION_RECVONLY) {
+    srtp_session_config_t recv_cfg = {
+        .is_sender = 0, .is_dtls_client = is_dtls_client, .profile = profile, .keys = material};
+    *recv_session = srtp_session_create(&recv_cfg);
+    if (!*recv_session) {
+      if (*send_session) {
+        srtp_session_destroy(*send_session);
+        *send_session = NULL;
+      }
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/* A track added after DTLS connected must join the established SRTP epoch
+ * without resetting rollover/replay state on existing tracks. */
+static int media_setup_new_track_srtp_if_ready(turbo_media_track_t *track) {
+  turbo_media_context_t *ctx;
+  srtp_keying_material_t material;
+  srtp_session_t *send_session = NULL;
+  srtp_session_t *recv_session = NULL;
+  uint16_t profile;
+  int is_dtls_client;
+  int srtp_ready;
+
+  if (!track || !track->ctx) return -1;
+  ctx = track->ctx;
+  turbo_mutex_lock(&ctx->srtp_mutex);
+  srtp_ready = ctx->rtcp_session != NULL;
+  turbo_mutex_unlock(&ctx->srtp_mutex);
+  if (!srtp_ready) return 0;
+
+  profile = turbo_dc_peer_get_srtp_keys(ctx->peer, &material);
+  is_dtls_client = turbo_dc_peer_is_dtls_server(ctx->peer) ? 0 : 1;
+  if (profile == 0 ||
+      media_create_track_srtp_sessions(track, profile, is_dtls_client, &material,
+                                       &send_session, &recv_session) != 0) {
+    return -1;
+  }
+
+  turbo_mutex_lock(&ctx->srtp_mutex);
+  if (!ctx->rtcp_session) {
+    turbo_mutex_unlock(&ctx->srtp_mutex);
+    if (send_session) srtp_session_destroy(send_session);
+    if (recv_session) srtp_session_destroy(recv_session);
+    return -1;
+  }
+  track->srtp_send_session = send_session;
+  track->srtp_recv_session = recv_session;
+  turbo_mutex_unlock(&ctx->srtp_mutex);
+  return 0;
+}
+
 static void on_transport_data(void *user_data, const uint8_t *data, size_t len) {
   turbo_media_context_t *ctx = (turbo_media_context_t *)user_data;
 
@@ -256,9 +394,12 @@ turbo_media_context_t *turbo_media_create(turbo_dc_peer_t *peer, void *user_data
   ctx->peer = peer;
   ctx->user_data = user_data;
   ctx->rtcp_interval_ms = 5000; /* Default 5 second RTCP interval */
+  turbo_mutex_init(&ctx->srtp_mutex);
+  ctx->srtp_mutex_initialized = 1;
 
   /* Initialize SRTP library */
   if (srtp_lib_init() != 0) {
+    turbo_mutex_destroy(&ctx->srtp_mutex);
     free(ctx);
     return NULL;
   }
@@ -286,11 +427,16 @@ void turbo_media_destroy(turbo_media_context_t *ctx) {
     turbo_media_remove_track(track);
   }
 
+  turbo_mutex_lock(&ctx->srtp_mutex);
   if (ctx->rtcp_session) {
     srtp_session_destroy(ctx->rtcp_session);
     ctx->rtcp_session = NULL;
   }
+  turbo_mutex_unlock(&ctx->srtp_mutex);
 
+  if (ctx->srtp_mutex_initialized) {
+    turbo_mutex_destroy(&ctx->srtp_mutex);
+  }
   free(ctx);
 }
 
@@ -302,43 +448,56 @@ int turbo_media_setup_srtp(turbo_media_context_t *ctx) {
   srtp_keying_material_t material;
   uint16_t profile;
   int is_dtls_client;
+  srtp_session_t *new_rtcp = NULL;
+  srtp_session_t *new_send[TURBO_MEDIA_MAX_TRACKS] = {0};
+  srtp_session_t *new_recv[TURBO_MEDIA_MAX_TRACKS] = {0};
 
   profile = turbo_dc_peer_get_srtp_keys(ctx->peer, &material);
   is_dtls_client = turbo_dc_peer_is_dtls_server(ctx->peer) ? 0 : 1;
   if (profile == 0) return -1;
 
-  if (ctx->rtcp_session) {
-    srtp_session_destroy(ctx->rtcp_session);
-    ctx->rtcp_session = NULL;
-  }
   {
     srtp_session_config_t rtcp_cfg = {
         .is_sender = 1, .is_dtls_client = is_dtls_client, .profile = profile, .keys = &material};
-    ctx->rtcp_session = srtp_session_create(&rtcp_cfg);
-    if (!ctx->rtcp_session) {
-      return -1;
-    }
+    new_rtcp = srtp_session_create(&rtcp_cfg);
+    if (!new_rtcp) goto fail;
   }
 
-  /* Initialize SRTP session for each track */
+  /* SENDRECV needs independent SRTP rollover state in both directions. */
   for (int i = 0; i < ctx->track_count; i++) {
     turbo_media_track_t *track = ctx->tracks[i];
-    if (track->srtp_session) {
-      srtp_session_destroy(track->srtp_session);
-    }
+    if (!track) continue;
 
-    srtp_session_config_t srtp_cfg = {
-        .is_sender = (track->direction & TURBO_MEDIA_DIRECTION_SENDONLY) ? 1 : 0,
-        .is_dtls_client = is_dtls_client,
-        .profile = profile,
-        .keys = &material};
-    track->srtp_session = srtp_session_create(&srtp_cfg);
-    if (!track->srtp_session) {
-      return -1;
-    }
+    if (media_create_track_srtp_sessions(track, profile, is_dtls_client, &material,
+                                         &new_send[i], &new_recv[i]) != 0)
+      goto fail;
   }
 
+  turbo_mutex_lock(&ctx->srtp_mutex);
+  if (ctx->rtcp_session) srtp_session_destroy(ctx->rtcp_session);
+  ctx->rtcp_session = new_rtcp;
+  new_rtcp = NULL;
+  for (int i = 0; i < ctx->track_count; i++) {
+    turbo_media_track_t *track = ctx->tracks[i];
+    if (!track) continue;
+    if (track->srtp_send_session) srtp_session_destroy(track->srtp_send_session);
+    if (track->srtp_recv_session) srtp_session_destroy(track->srtp_recv_session);
+    track->srtp_send_session = new_send[i];
+    track->srtp_recv_session = new_recv[i];
+    new_send[i] = NULL;
+    new_recv[i] = NULL;
+  }
+  turbo_mutex_unlock(&ctx->srtp_mutex);
+
   return 0;
+
+fail:
+  if (new_rtcp) srtp_session_destroy(new_rtcp);
+  for (int i = 0; i < ctx->track_count; i++) {
+    if (new_send[i]) srtp_session_destroy(new_send[i]);
+    if (new_recv[i]) srtp_session_destroy(new_recv[i]);
+  }
+  return -1;
 }
 
 int turbo_media_handle_timers(turbo_media_context_t *ctx) {
@@ -437,9 +596,7 @@ static void send_rtcp_reports(turbo_media_context_t *ctx, uint64_t now) {
     size_t len = rtcp_compound_finish(&rtcp);
     if (len > 0) {
       /* Protect and send */
-      if (ctx->rtcp_session) {
-        turbo_srtcp_protect(ctx->rtcp_session, buf, &len, sizeof(buf));
-      }
+      if (media_srtcp_protect(ctx, buf, &len, sizeof(buf)) < 0) continue;
       turbo_dc_peer_send_transport_data(ctx->peer, buf, len);
     }
   }
@@ -569,9 +726,7 @@ static void send_nack_for_track(turbo_media_track_t *track, turbo_media_context_
     size_t nack_len = rtcp_compound_finish(&rtcp);
 
     if (nack_len > 0) {
-      if (ctx->rtcp_session) {
-        turbo_srtcp_protect(ctx->rtcp_session, nack_buf, &nack_len, sizeof(nack_buf));
-      }
+      if (media_srtcp_protect(ctx, nack_buf, &nack_len, sizeof(nack_buf)) < 0) return;
       turbo_dc_peer_send_transport_data(ctx->peer, nack_buf, nack_len);
     }
     track->last_nack_time = now;
@@ -585,16 +740,18 @@ int turbo_media_feed_data(turbo_media_context_t *ctx, const uint8_t *data, size_
   uint8_t packet_type;
   int looks_rtcp;
 
-  if (!ctx || !data || len < 12) return -1;
+  if (!ctx || !data || len < 4) return -1;
   if (len > sizeof(packet_buf)) return -1;
   packet_type = data[1];
   looks_rtcp = packet_type >= RTCP_SR && packet_type <= RTCP_PSFB;
 
+  if (!looks_rtcp && len < 12) return -1;
+
   if (looks_rtcp) {
-    if (ctx->rtcp_session) {
+    {
       size_t srtcp_len = len;
       memcpy(packet_buf, data, len);
-      if (turbo_srtcp_unprotect(ctx->rtcp_session, packet_buf, &srtcp_len) == 0) {
+      if (media_srtcp_unprotect(ctx, packet_buf, &srtcp_len) == 0) {
 #ifdef _WIN32
         /* Windows can raise SEH here when a bad or racing control packet
          * reaches the RTCP dispatcher. Treat it as a dropped feedback
@@ -610,21 +767,10 @@ int turbo_media_feed_data(turbo_media_context_t *ctx, const uint8_t *data, size_
           return 0;
         }
 #endif
-      } else {
         return 0;
       }
       return 0;
     }
-#ifdef _WIN32
-    __try {
-#endif
-      rtcp_compound_parse(data, len, on_rtcp_packet, ctx);
-#ifdef _WIN32
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-      return 0;
-    }
-#endif
-    return 0;
   }
 
   rtp_packet_t pkt;
@@ -668,21 +814,18 @@ int turbo_media_feed_data(turbo_media_context_t *ctx, const uint8_t *data, size_
 
   if (!track) return -1;
 
-  /* Decrypt with SRTP if session exists */
-  if (track->srtp_session) {
+  /* WebRTC media is accepted only after SRTP authentication succeeds. */
+  {
     size_t srtp_len = len;
     memcpy(packet_buf, data, len);
-    if (turbo_srtp_unprotect(track->srtp_session, packet_buf, &srtp_len) != 0) {
-      track->stats.packets_lost++;
-      return -1;
-    }
-    if (rtp_packet_parse(&pkt, packet_buf, srtp_len) != 0) {
+    if (media_track_srtp_unprotect(track, packet_buf, &srtp_len) != 0) {
       track->stats.packets_lost++;
       return -1;
     }
     packet = packet_buf;
     packet_len = srtp_len;
-  } else if (rtp_packet_parse(&pkt, packet, packet_len) != 0) {
+  }
+  if (rtp_packet_parse(&pkt, packet, packet_len) != 0) {
     track->stats.packets_lost++;
     return -1;
   }
@@ -713,6 +856,13 @@ int turbo_media_feed_data(turbo_media_context_t *ctx, const uint8_t *data, size_
 
   if (track->rtp_packet_cb) {
     track->rtp_packet_cb(track, packet, packet_len, track->user_data);
+  }
+
+  /* Auxiliary RTP payloads such as RFC 4733 telephone-event share the
+   audio SSRC but are not encoded media. Raw packet consumers receive them
+   above; only the negotiated primary codec enters jitter/decode. */
+  if (pkt.header.payload_type != track->payload_type) {
+    return 0;
   }
 
   if (!track->jitter) return -1;
@@ -957,6 +1107,35 @@ static int capture_device_id(turbo_capture_type_t type, int device_index, char *
 #endif
 }
 
+static int capture_find_native_i420_mode(
+    turbo_video_device_t *device,
+    int width,
+    int height,
+    int framerate,
+    turbo_video_native_mode_t *selected_mode) {
+  turbo_video_native_mode_t modes[MEDIA_MAX_NATIVE_VIDEO_MODES];
+  size_t mode_count = 0;
+
+  if (!device || !selected_mode || width <= 0 || height <= 0 || framerate <= 0) return -1;
+  if (turbo_video_device_list_modes(device, modes, MEDIA_MAX_NATIVE_VIDEO_MODES,
+                                    &mode_count) != TURBO_CAPTURE_OK ||
+      mode_count == 0) {
+    return -1;
+  }
+
+  for (size_t i = 0; i < mode_count; ++i) {
+    const turbo_video_native_mode_t *mode = &modes[i];
+    if (mode->format == TURBO_VIDEO_CAPTURE_FORMAT_I420 &&
+        mode->width == width && mode->height == height &&
+        (uint64_t)mode->framerate_numerator ==
+            (uint64_t)(uint32_t)framerate * mode->framerate_denominator) {
+      *selected_mode = *mode;
+      return 0;
+    }
+  }
+  return -1;
+}
+
 /* =============================================================================
  * Audio Capture Callbacks
  * ============================================================================= */
@@ -1069,7 +1248,7 @@ turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
 
   /* Create history for send tracks */
   if (config->direction & TURBO_MEDIA_DIRECTION_SENDONLY) {
-    track->history = rtp_history_create(128, RTP_MAX_PACKET);
+    track->history = rtp_history_create(128, RTP_MAX_PACKET + SRTP_MAX_TRAILER_LEN);
     if (!track->history) goto fail;
   }
 
@@ -1080,6 +1259,8 @@ turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
     track->jitter = jitter_buffer_create(rtp_cfg.clock_rate, delay, 2048);
     if (!track->jitter) goto fail;
   }
+
+  if (media_setup_new_track_srtp_if_ready(track) != 0) goto fail;
 
   /* Add to context */
   ctx->tracks[ctx->track_count++] = track;
@@ -1173,9 +1354,16 @@ void turbo_media_remove_track(turbo_media_track_t *track) {
   if (track->jitter) {
     jitter_buffer_destroy(track->jitter);
   }
-  if (track->srtp_session) {
-    srtp_session_destroy(track->srtp_session);
+  turbo_mutex_lock(&ctx->srtp_mutex);
+  if (track->srtp_send_session) {
+    srtp_session_destroy(track->srtp_send_session);
+    track->srtp_send_session = NULL;
   }
+  if (track->srtp_recv_session) {
+    srtp_session_destroy(track->srtp_recv_session);
+    track->srtp_recv_session = NULL;
+  }
+  turbo_mutex_unlock(&ctx->srtp_mutex);
   if (track->twcc_tracker) {
     twcc_tracker_destroy(track->twcc_tracker);
   }
@@ -1223,18 +1411,34 @@ int turbo_media_track_set_capture(turbo_media_track_t *track,
 
   if (config->type == TURBO_MEDIA_CAPTURE_CAMERA) {
     char device_id[128];
-    turbo_video_capture_config_t video_cfg = {.width = config->video.width,
-                                              .height = config->video.height,
-                                              .framerate = config->video.framerate,
-                                              .format = 0};
+    turbo_video_device_t *device = NULL;
+    turbo_video_native_mode_t native_mode;
+    turbo_capture_t *capture = NULL;
 
     if (capture_device_id(TURBO_CAPTURE_TYPE_VIDEO, config->device_index, device_id,
                           sizeof(device_id)) != 0) {
       return -1;
     }
 
-    track->capture = turbo_video_capture_create(device_id[0] ? device_id : NULL, &video_cfg);
-    if (!track->capture) return -1;
+    if (turbo_video_device_open(device_id[0] ? device_id : NULL,
+                                &device) != TURBO_CAPTURE_OK) {
+      return -1;
+    }
+    if (capture_find_native_i420_mode(device, config->video.width,
+                                      config->video.height,
+                                      config->video.framerate,
+                                      &native_mode) != 0) {
+      turbo_video_device_close(device);
+      return -1;
+    }
+
+    if (turbo_video_device_create_capture(device, &native_mode, &capture) !=
+        TURBO_CAPTURE_OK) {
+      turbo_video_device_close(device);
+      return -1;
+    }
+    turbo_video_device_close(device);
+    track->capture = capture;
 
     turbo_video_capture_set_callback((turbo_capture_t *)track->capture, on_video_captured, track);
     return 0;
@@ -1581,12 +1785,13 @@ int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data
       }
     }
 
-    if (track->srtp_session) {
+    {
       size_t srtp_len = (size_t)rtp_len;
-      if (turbo_srtp_protect(track->srtp_session, rtp_buf, &srtp_len, sizeof(rtp_buf)) != 0) {
-        continue;
+      int protect_result = media_track_srtp_protect(track, rtp_buf, &srtp_len, sizeof(rtp_buf));
+      if (protect_result < 0) return -1;
+      if (protect_result == 0) {
+        rtp_len = (int)srtp_len;
       }
-      rtp_len = (int)srtp_len;
     }
 
     if (track->history) {
@@ -1664,12 +1869,22 @@ int turbo_media_track_send_rtp_packet(turbo_media_track_t *track, const uint8_t 
     return -1;
   }
 
-  if (track->srtp_session) {
+  /* Raw RTP forwarding must retain the negotiated dynamic payload type.
+   rtp_session_send_with_timestamp() supplies sequence/SSRC but otherwise
+   defaults to the track's primary codec payload type. */
+  outgoing.header.payload_type = incoming.header.payload_type;
+  rtp_buf[1] = (uint8_t)((rtp_buf[1] & 0x80u) |
+                         (incoming.header.payload_type & 0x7fu));
+
+  {
     size_t srtp_len = (size_t)rtp_len;
-    if (turbo_srtp_protect(track->srtp_session, rtp_buf, &srtp_len, sizeof(rtp_buf)) != 0) {
+    int protect_result = media_track_srtp_protect(track, rtp_buf, &srtp_len, sizeof(rtp_buf));
+    if (protect_result < 0) {
       return -1;
     }
-    rtp_len = (int)srtp_len;
+    if (protect_result == 0) {
+      rtp_len = (int)srtp_len;
+    }
   }
 
   if (track->history) {
@@ -1706,9 +1921,7 @@ void turbo_media_track_request_keyframe(turbo_media_track_t *track) {
       size_t len = rtcp_compound_finish(&rtcp);
 
       /* Protect and send */
-      if (track->ctx->rtcp_session) {
-        turbo_srtcp_protect(track->ctx->rtcp_session, buf, &len, sizeof(buf));
-      }
+      if (media_srtcp_protect(track->ctx, buf, &len, sizeof(buf)) < 0) return;
       turbo_dc_peer_send_transport_data(track->ctx->peer, buf, len);
     }
   } else {
@@ -1854,7 +2067,7 @@ static void handle_rtcp_nack(turbo_media_context_t *ctx, const void *data, size_
 
   if (!track || !track->history) return;
 
-  uint8_t rtp_buf[RTP_MAX_PACKET];
+  uint8_t rtp_buf[RTP_MAX_PACKET + SRTP_MAX_TRAILER_LEN];
   size_t rtp_len;
 
   for (int i = 0; i < seq_count; i++) {
@@ -1935,10 +2148,16 @@ static void send_twcc_feedback(turbo_media_context_t *ctx, uint64_t now) {
       size_t len = rtcp_compound_finish(&rtcp);
 
       if (len > 0) {
-        /* Encrypt with SRTCP if session exists */
-        if (ctx->rtcp_session) {
+        /* WebRTC media feedback must never leave the process without SRTCP. */
+        {
           size_t srtcp_len = len;
-          if (turbo_srtcp_protect(ctx->rtcp_session, buf, &srtcp_len, sizeof(buf)) == 0) {
+          int protect_result = media_srtcp_protect(ctx, buf, &srtcp_len, sizeof(buf));
+          if (protect_result < 0) {
+            track->last_twcc_feedback_time = now;
+            free(twcc);
+            continue;
+          }
+          if (protect_result == 0) {
             len = srtcp_len;
           }
         }

@@ -5,8 +5,14 @@ add_library(
 turbo_media_configure_component(turbo_media_device Device)
 target_include_directories(
   turbo_media_device
-  PRIVATE ${MINIAUDIO_INCLUDE_DIR} ${STB_INCLUDE_DIR})
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/capture
+          ${MINIAUDIO_INCLUDE_DIR}
+          ${STB_INCLUDE_DIR})
 target_link_libraries(turbo_media_device PRIVATE yuv)
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  target_sources(turbo_media_device PRIVATE capture/capture_video.c)
+endif()
 
 if(ANDROID)
   target_sources(
@@ -28,7 +34,7 @@ if(ANDROID)
             ${TURBO_MEDIA_ANDROID_MEDIA_LIBRARY}
             ${TURBO_MEDIA_ANDROID_CAMERA_LIBRARY}
             ${CMAKE_DL_LIBS})
-else()
+elseif(NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   target_sources(turbo_media_device PRIVATE capture/capture_audio_miniaudio.c)
 endif()
 
@@ -41,7 +47,7 @@ if(WIN32)
   target_link_libraries(
     turbo_media_device
     PRIVATE mfplat mf mfuuid mfreadwrite strmiids ole32 oleaut32 d3d11 dxgi dxguid)
-elseif(APPLE)
+elseif(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
   target_sources(
     turbo_media_device
     PRIVATE capture/capture_macos.c

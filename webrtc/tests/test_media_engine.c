@@ -2,6 +2,7 @@
 #include "turbo_datachannel.h"
 #include "turbo_media_engine.h"
 #include "turbo_peer_connection.h"
+#include "turbo_rtp.h"
 #include <turbo_thread.h>
 
 enum {
@@ -78,6 +79,13 @@ static int copy_sdp_attribute(const char *sdp, const char *prefix,
   return 0;
 }
 
+static void count_transport_send(void *transport, const void *data, size_t len) {
+  int *send_count = (int *)transport;
+  (void)data;
+  (void)len;
+  (*send_count)++;
+}
+
 static void test_media_context_attach_tracks_and_detach(void) {
   turbo_dc_config_t dc_config = {
       .is_server = 0,
@@ -147,6 +155,104 @@ static void test_media_track_rejects_invalid_configuration(void) {
   track_config.direction = (turbo_media_direction_t)0;
   TEST_ASSERT_NULL(turbo_media_add_track(media, &track_config));
   TEST_ASSERT_EQUAL_INT(0, turbo_media_get_track_count(media));
+
+  turbo_media_destroy(media);
+  turbo_dc_peer_destroy(peer);
+  turbo_dc_context_destroy(dc);
+}
+
+static void test_rtcp_parser_accepts_minimum_packet(void) {
+  uint8_t receiver_report[] = {0x80, RTCP_RR, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01};
+  TEST_ASSERT_EQUAL_INT(
+      1, rtcp_compound_parse(receiver_report, sizeof(receiver_report), NULL, NULL));
+}
+
+static void test_media_rejects_unprotected_rtp_send(void) {
+  turbo_dc_config_t dc_config = {
+      .is_server = 0,
+      .transport = TURBO_DC_TRANSPORT_ICE,
+  };
+  turbo_media_track_config_t track_config = {
+      .type = TURBO_RTC_MEDIA_TRACK_AUDIO,
+      .direction = TURBO_MEDIA_DIRECTION_SENDONLY,
+      .codec = TURBO_CODEC_PCMU,
+      .audio =
+          {
+              .sample_rate = 8000,
+              .channels = 1,
+              .bitrate = 64000,
+              .frame_size_ms = 20,
+          },
+  };
+  static const uint8_t rtp_packet[] = {
+      0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x12, 0x34, 0x56, 0x78, 0x7f,
+  };
+  int send_count = 0;
+  turbo_dc_context_t *dc = turbo_dc_context_create(&dc_config);
+  turbo_dc_peer_t *peer;
+  turbo_media_context_t *media;
+  turbo_media_track_t *track;
+
+  TEST_ASSERT_NOT_NULL(dc);
+  peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
+  TEST_ASSERT_NOT_NULL(peer);
+  TEST_ASSERT_EQUAL_INT(
+      0, turbo_dc_peer_set_external_transport(peer, &send_count, count_transport_send));
+  media = turbo_media_create(peer, NULL);
+  TEST_ASSERT_NOT_NULL(media);
+  track = turbo_media_add_track(media, &track_config);
+  TEST_ASSERT_NOT_NULL(track);
+  TEST_ASSERT_EQUAL_INT(0, turbo_media_track_start(track));
+
+  TEST_ASSERT_EQUAL_INT(
+      -1, turbo_media_track_send_rtp_packet(track, rtp_packet, sizeof(rtp_packet)));
+  TEST_ASSERT_EQUAL_INT(0, send_count);
+
+  turbo_media_destroy(media);
+  TEST_ASSERT_EQUAL_INT(0, turbo_dc_peer_set_external_transport(peer, NULL, NULL));
+  turbo_dc_peer_destroy(peer);
+  turbo_dc_context_destroy(dc);
+}
+
+static void test_media_rejects_unprotected_rtp_receive(void) {
+  turbo_dc_config_t dc_config = {
+      .is_server = 0,
+      .transport = TURBO_DC_TRANSPORT_ICE,
+  };
+  turbo_media_track_config_t track_config = {
+      .type = TURBO_RTC_MEDIA_TRACK_AUDIO,
+      .direction = TURBO_MEDIA_DIRECTION_RECVONLY,
+      .codec = TURBO_CODEC_PCMU,
+      .audio =
+          {
+              .sample_rate = 8000,
+              .channels = 1,
+              .frame_size_ms = 20,
+          },
+  };
+  static const uint8_t rtp_packet[] = {
+      0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x12, 0x34, 0x56, 0x78, 0x7f,
+  };
+  turbo_media_stats_t stats = {0};
+  turbo_dc_context_t *dc = turbo_dc_context_create(&dc_config);
+  turbo_dc_peer_t *peer;
+  turbo_media_context_t *media;
+  turbo_media_track_t *track;
+
+  TEST_ASSERT_NOT_NULL(dc);
+  peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
+  TEST_ASSERT_NOT_NULL(peer);
+  media = turbo_media_create(peer, NULL);
+  TEST_ASSERT_NOT_NULL(media);
+  track = turbo_media_add_track(media, &track_config);
+  TEST_ASSERT_NOT_NULL(track);
+  TEST_ASSERT_EQUAL_INT(0, turbo_media_track_start(track));
+
+  TEST_ASSERT_EQUAL_INT(-1, turbo_media_feed_data(media, rtp_packet, sizeof(rtp_packet)));
+  turbo_media_track_get_stats(track, &stats);
+  TEST_ASSERT_EQUAL_UINT64(0, stats.packets_recv);
 
   turbo_media_destroy(media);
   turbo_dc_peer_destroy(peer);
@@ -696,6 +802,9 @@ static void test_peer_connection_applies_trickle_ice_sdpfrag_restart(void) {
 spec("test_media_engine") {
   TT_TEST(test_media_context_attach_tracks_and_detach);
   TT_TEST(test_media_track_rejects_invalid_configuration);
+  TT_TEST(test_rtcp_parser_accepts_minimum_packet);
+  TT_TEST(test_media_rejects_unprotected_rtp_send);
+  TT_TEST(test_media_rejects_unprotected_rtp_receive);
   TT_TEST(test_peer_connection_rejects_invalid_turbonet_ice_configuration);
   TT_TEST(test_peer_connection_accepts_turbonet_turn_configuration);
   TT_TEST(test_peer_connection_requires_valid_remote_fingerprint);

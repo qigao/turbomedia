@@ -1,7 +1,9 @@
 set(TURBO_MEDIA_MOBILE_ROOT ${CMAKE_CURRENT_LIST_DIR}/..)
+set(TURBO_MEDIA_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 
 add_library(
   turbo_media_ios STATIC
+  ${TURBO_MEDIA_ROOT}/capture/capture_video.c
   src/capture/capture_ios.m
   src/capture/capture_video_ios.m
   src/capture/capture_audio_ios.m
@@ -15,7 +17,7 @@ target_include_directories(
   turbo_media_ios
   PUBLIC $<BUILD_INTERFACE:${TURBO_MEDIA_MOBILE_ROOT}>
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  PRIVATE src)
+  PRIVATE src ${TURBO_MEDIA_ROOT}/capture)
 target_compile_definitions(turbo_media_ios PRIVATE TURBO_MEDIA_IOS=1)
 target_compile_options(
   turbo_media_ios

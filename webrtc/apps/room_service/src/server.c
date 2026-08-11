@@ -8,6 +8,10 @@
 #ifdef ENABLE_RTC_SCXML_WORKFLOW
 #include "room_workflow_adapter.h"
 #endif
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#include "ivr_fmq_adapter.h"
+#include "ivr_fmq_security.h"
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -44,6 +48,10 @@ struct room_service_app_server_s {
     int64_t conference_policy_sequence;
     turbo_mutex_t mutex;
     int running;
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    ivr_fmq_adapter_t *ivr_fmq; /* NULL only when the IVR feature is disabled */
+    ivr_fmq_security_owner_t *ivr_fmq_security;
+#endif
 };
 
 typedef struct {
@@ -998,6 +1006,178 @@ static int64_t room_service_json_int64_field(const json_value_t *obj, const char
     return (int64_t)turbo_json_number(value);
 }
 
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+static ivr_status_t room_service_prepare_ivr_caller_audio(
+    void *context, const char *room_id, const char *call_id, char *error,
+    size_t error_capacity) {
+    room_service_app_server_t *server =
+        (room_service_app_server_t *)context;
+    turbo_room_summary_t room;
+    turbo_room_track_summary_t selected;
+    turbo_room_participant_summary_t receiver;
+    char receiver_id[TURBO_PARTICIPANT_ID_MAX];
+    int selected_count = 0;
+    int receiver_length;
+
+    if (!server || !room_id || !call_id || !error || error_capacity == 0) {
+        return IVR_EINVAL;
+    }
+    error[0] = '\0';
+    receiver_length = snprintf(receiver_id, sizeof(receiver_id), "%s-rx",
+                               call_id);
+    if (receiver_length < 0 ||
+        (size_t)receiver_length >= sizeof(receiver_id)) {
+        snprintf(error, error_capacity, "IVR receiver participant id too long");
+        return IVR_EINVAL;
+    }
+    if (turbo_room_service_get_room_summary(server->service, room_id,
+                                            &room) != 0) {
+        snprintf(error, error_capacity, "room not found: %s", room_id);
+        return IVR_ESTATE;
+    }
+    memset(&selected, 0, sizeof(selected));
+    for (int i = 0; i < room.published_track_count; ++i) {
+        turbo_room_track_summary_t track;
+        if (turbo_room_service_get_track_summary_at(server->service, room_id,
+                                                    i, &track) != 0) {
+            snprintf(error, error_capacity,
+                     "failed to inspect caller media tracks");
+            return IVR_ESTATE;
+        }
+        if (strcmp(track.owner_participant_id, call_id) == 0 &&
+            track.kind == TURBO_ROOM_TRACK_AUDIO && !track.muted) {
+            selected = track;
+            selected_count++;
+        }
+    }
+    if (selected_count != 1) {
+        snprintf(error, error_capacity,
+                 "caller %s has %d eligible audio tracks; expected exactly one",
+                 call_id, selected_count);
+        return IVR_ESTATE;
+    }
+
+    if (turbo_room_service_get_participant_summary(
+            server->service, room_id, receiver_id, &receiver) != 0) {
+        turbo_room_participant_config_t participant;
+        memset(&participant, 0, sizeof(participant));
+        participant.participant_id = receiver_id;
+        participant.user_id = "";
+        participant.display_name = receiver_id;
+        participant.role = TURBO_PARTICIPANT_ROLE_BOT;
+        if (turbo_room_service_add_participant(server->service, room_id,
+                                               &participant) != 0) {
+            snprintf(error, error_capacity,
+                     "failed to create IVR receiver participant %s",
+                     receiver_id);
+            return IVR_ESTATE;
+        }
+    } else if (receiver.role != TURBO_PARTICIPANT_ROLE_BOT) {
+        snprintf(error, error_capacity,
+                 "IVR receiver participant %s has incompatible role",
+                 receiver_id);
+        return IVR_ESTATE;
+    }
+
+    turbo_room_subscription_config_t subscription;
+    turbo_room_subscription_summary_t committed;
+    memset(&subscription, 0, sizeof(subscription));
+    subscription.subscriber_participant_id = receiver_id;
+    subscription.track_id = selected.track_id;
+    subscription.enabled = 1;
+    subscription.muted = 0;
+    subscription.policy_source = "ivr";
+    if (turbo_room_service_set_subscription(server->service, room_id,
+                                            &subscription) != 0) {
+        snprintf(error, error_capacity,
+                 "failed to commit IVR audio subscription");
+        return IVR_ESTATE;
+    }
+    if (turbo_room_service_get_subscription_summary(
+            server->service, room_id, receiver_id, selected.track_id,
+            &committed) != 0 ||
+        room_service_app_server_sync_apply_track_subscription(
+            server, room_id, &committed) != 0) {
+        /* The authoritative desired subscription remains committed and can be
+           replayed after SFU recovery; this attempt is not dispatched. */
+        snprintf(error, error_capacity,
+                 "IVR audio subscription was committed but SFU sync failed");
+        return IVR_ESTATE;
+    }
+    return IVR_OK;
+}
+
+static ivr_status_t room_service_release_ivr_caller_audio(
+    void *context, const char *room_id, const char *call_id, char *error,
+    size_t error_capacity) {
+    room_service_app_server_t *server =
+        (room_service_app_server_t *)context;
+    turbo_room_summary_t room;
+    turbo_room_participant_summary_t receiver;
+    char receiver_id[TURBO_PARTICIPANT_ID_MAX];
+    int receiver_length;
+
+    if (!server || !room_id || !call_id || !error || error_capacity == 0) {
+        return IVR_EINVAL;
+    }
+    error[0] = '\0';
+    receiver_length = snprintf(receiver_id, sizeof(receiver_id), "%s-rx",
+                               call_id);
+    if (receiver_length < 0 ||
+        (size_t)receiver_length >= sizeof(receiver_id)) {
+        snprintf(error, error_capacity, "IVR receiver participant id too long");
+        return IVR_EINVAL;
+    }
+    if (turbo_room_service_get_participant_summary(
+            server->service, room_id, receiver_id, &receiver) != 0) {
+        return IVR_OK;
+    }
+    if (receiver.role != TURBO_PARTICIPANT_ROLE_BOT ||
+        turbo_room_service_get_room_summary(server->service, room_id,
+                                            &room) != 0) {
+        snprintf(error, error_capacity,
+                 "IVR receiver participant %s has incompatible state",
+                 receiver_id);
+        return IVR_ESTATE;
+    }
+
+    for (int i = room.subscription_count - 1; i >= 0; --i) {
+        turbo_room_subscription_summary_t subscription;
+        if (turbo_room_service_get_subscription_summary_at(
+                server->service, room_id, i, &subscription) != 0) {
+            snprintf(error, error_capacity,
+                     "failed to inspect IVR audio subscriptions");
+            return IVR_ESTATE;
+        }
+        if (strcmp(subscription.subscriber_participant_id, receiver_id) != 0) {
+            continue;
+        }
+        subscription.enabled = 0;
+        subscription.muted = 1;
+        if (room_service_app_server_sync_apply_track_subscription(
+                server, room_id, &subscription) != 0) {
+            snprintf(error, error_capacity,
+                     "failed to disable IVR audio subscription in SFU");
+            return IVR_ESTATE;
+        }
+        if (turbo_room_service_remove_subscription(
+                server->service, room_id, receiver_id,
+                subscription.track_id) != 0) {
+            snprintf(error, error_capacity,
+                     "failed to remove IVR audio subscription");
+            return IVR_ESTATE;
+        }
+    }
+    if (turbo_room_service_remove_participant(server->service, room_id,
+                                              receiver_id) != 0) {
+        snprintf(error, error_capacity,
+                 "failed to remove IVR receiver participant %s", receiver_id);
+        return IVR_ESTATE;
+    }
+    return IVR_OK;
+}
+#endif
+
 room_service_app_server_t *room_service_app_server_create(
     const room_service_app_config_t *config) {
     room_service_app_server_t *server;
@@ -1034,6 +1214,122 @@ room_service_app_server_t *room_service_app_server_create(
         free(server);
         return NULL;
     }
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    if (config->fmq_bind_port > 0) {
+        ivr_fmq_adapter_config_t fmq_config;
+        turbo_flow_fmq_tls_config_t fmq_tls =
+            TURBO_FLOW_FMQ_TLS_CONFIG_INIT;
+        ivr_certificate_identity_entry_t
+            identities[ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES];
+        ivr_fmq_worker_acl_entry_t
+            worker_acls[ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES];
+        ivr_fmq_worker_topic_acl_t
+            worker_topics[ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES];
+        int i;
+        memset(&fmq_config, 0, sizeof(fmq_config));
+        fmq_config.bind_host = config->fmq_bind_host;
+        fmq_config.bind_port = config->fmq_bind_port;
+        fmq_config.pub_port = config->fmq_pub_port;
+        fmq_config.pub_topic = config->fmq_pub_topic;
+        fmq_config.worker_lease_ms =
+            (uint64_t)config->fmq_worker_lease_ms;
+        fmq_config.dispatch_deadline_ms =
+            (uint64_t)config->fmq_dispatch_deadline_ms;
+        fmq_config.media.context = server;
+        fmq_config.media.prepare_caller_audio =
+            room_service_prepare_ivr_caller_audio;
+        fmq_config.media.release_caller_audio =
+            room_service_release_ivr_caller_audio;
+        if (config->fmq_use_tls) {
+            ivr_fmq_server_security_config_t security_config =
+                IVR_FMQ_SERVER_SECURITY_CONFIG_INIT;
+            memset(identities, 0, sizeof(identities));
+            memset(worker_acls, 0, sizeof(worker_acls));
+            memset(worker_topics, 0, sizeof(worker_topics));
+            for (i = 0; i < config->fmq_worker_identity_count; ++i) {
+                identities[i].worker_id =
+                    config->fmq_worker_identities[i].worker_id;
+                identities[i].active_certificate_sha256 =
+                    config->fmq_worker_identities[i]
+                        .active_certificate_sha256;
+                identities[i].previous_certificate_sha256 =
+                    config->fmq_worker_identities[i]
+                        .previous_certificate_sha256;
+                identities[i].previous_expires_at_ms =
+                    config->fmq_worker_identities[i].previous_expires_at_ms;
+                identities[i].generation =
+                    config->fmq_worker_identities[i].generation;
+                worker_topics[i].worker_id =
+                    config->fmq_worker_identities[i].worker_id;
+                worker_topics[i].pub_topics =
+                    config->fmq_worker_identities[i].pub_topics;
+            }
+            security_config.worker_topics = worker_topics;
+            security_config.worker_topic_count =
+                (size_t)config->fmq_worker_identity_count;
+            security_config.shared_secret = config->fmq_shared_secret;
+            security_config.pub_topic = config->fmq_pub_topic
+                                            ? config->fmq_pub_topic
+                                            : "room.events";
+            security_config.identities = identities;
+            security_config.identity_count =
+                (size_t)config->fmq_worker_identity_count;
+            security_config.policy_version =
+                (uint64_t)config->fmq_tls_rotation_generation;
+            if (ivr_fmq_server_security_create(
+                    &security_config, &server->ivr_fmq_security) != TURBO_OK) {
+                room_service_http_api_destroy(server->http_api);
+                server->http_api = NULL;
+                turbo_room_service_destroy(server->service);
+                server->service = NULL;
+                free(server->sfu_nodes);
+                turbo_mutex_destroy(&server->mutex);
+                free(server);
+                return NULL;
+            }
+            fmq_tls.ca_file = config->fmq_ca_file;
+            fmq_tls.cert_file = config->fmq_cert_file;
+            fmq_tls.key_file = config->fmq_key_file;
+            fmq_tls.key_password = config->fmq_key_password;
+            fmq_tls.verify_peer = 1;
+            fmq_tls.require_client_certificate = 1;
+            fmq_tls.rotation_generation =
+                (uint64_t)config->fmq_tls_rotation_generation;
+            fmq_config.transport = TURBO_FLOW_FMQ_TLS;
+            fmq_config.tls = &fmq_tls;
+            fmq_config.security =
+                ivr_fmq_security_binding(server->ivr_fmq_security);
+        }
+        for (i = 0; i < config->fmq_worker_identity_count; ++i) {
+            worker_acls[i].worker_id =
+                config->fmq_worker_identities[i].worker_id;
+            worker_acls[i].tenant_id =
+                config->fmq_worker_identities[i].tenant_id;
+            worker_acls[i].room_scope =
+                config->fmq_worker_identities[i].room_scope;
+            worker_acls[i].call_scope =
+                config->fmq_worker_identities[i].call_scope;
+            worker_acls[i].content_capabilities =
+                config->fmq_worker_identities[i].content_capabilities;
+        }
+        fmq_config.worker_acls = worker_acls;
+        fmq_config.worker_acl_count =
+            (size_t)config->fmq_worker_identity_count;
+        if (ivr_fmq_adapter_create(server->service, &fmq_config,
+                                   &server->ivr_fmq) != IVR_OK) {
+            ivr_fmq_security_destroy(server->ivr_fmq_security);
+            server->ivr_fmq_security = NULL;
+            room_service_http_api_destroy(server->http_api);
+            server->http_api = NULL;
+            turbo_room_service_destroy(server->service);
+            server->service = NULL;
+            free(server->sfu_nodes);
+            turbo_mutex_destroy(&server->mutex);
+            free(server);
+            return NULL;
+        }
+    }
+#endif
 
     return server;
 }
@@ -1047,6 +1343,12 @@ int room_service_app_server_start(room_service_app_server_t *server) {
                                     server->config.bind_port) != 0) {
         return -1;
     }
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    if (server->ivr_fmq &&
+        ivr_fmq_adapter_start(server->ivr_fmq) != IVR_OK) {
+        return -1;
+    }
+#endif
 
     server->running = 1;
     return 0;
@@ -1080,6 +1382,11 @@ void room_service_app_server_stop(room_service_app_server_t *server) {
     }
 
     server->running = 0;
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    if (server->ivr_fmq) {
+        ivr_fmq_adapter_stop(server->ivr_fmq);
+    }
+#endif
     if (server->http_api) {
         room_service_http_api_stop(server->http_api);
     }
@@ -1090,11 +1397,19 @@ void room_service_app_server_destroy(room_service_app_server_t *server) {
         return;
     }
 
-    if (server->service) {
-        turbo_room_service_destroy(server->service);
-    }
     if (server->http_api) {
         room_service_http_api_destroy(server->http_api);
+    }
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    if (server->ivr_fmq) {
+        ivr_fmq_adapter_destroy(server->ivr_fmq);
+        server->ivr_fmq = NULL;
+    }
+    ivr_fmq_security_destroy(server->ivr_fmq_security);
+    server->ivr_fmq_security = NULL;
+#endif
+    if (server->service) {
+        turbo_room_service_destroy(server->service);
     }
     free(server->sfu_nodes);
     free(server->call_center_events);
@@ -1139,6 +1454,47 @@ int room_service_app_server_get_stats(room_service_app_server_t *server,
     stats->conference_policy_count = server->conference_policy_count;
     stats->sfu_node_count = server->sfu_node_count;
     turbo_mutex_unlock(&server->mutex);
+    return 0;
+}
+
+int room_service_app_server_get_ivr_metrics(
+    room_service_app_server_t *server, room_service_ivr_metrics_t *metrics) {
+    if (!server || !metrics) {
+        return -1;
+    }
+
+    memset(metrics, 0, sizeof(*metrics));
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    if (server->ivr_fmq) {
+        ivr_fmq_adapter_stats_t stats;
+        ivr_fmq_adapter_get_stats(server->ivr_fmq, &stats);
+        metrics->enabled = 1;
+        metrics->workers = stats.workers;
+        metrics->worker_capacity = stats.worker_capacity;
+        metrics->worker_high_water = stats.worker_high_water;
+        metrics->assignments = stats.assignments;
+        metrics->assignment_capacity = stats.assignment_capacity;
+        metrics->assignment_high_water = stats.assignment_high_water;
+        metrics->lease_expired_total = stats.lease_expired_total;
+        metrics->dispatch_timeout_total = stats.dispatch_timeout_total;
+        metrics->release_timeout_total = stats.release_timeout_total;
+        metrics->request_queue_items = stats.bridge.request_queue_items;
+        metrics->request_queue_capacity = stats.bridge.request_queue_capacity;
+        metrics->request_queue_high_water =
+            stats.bridge.request_queue_high_water;
+        metrics->request_queue_drops_total = stats.bridge.request_queue_drops;
+        metrics->peer_event_queue_items =
+            stats.bridge.peer_event_queue_items;
+        metrics->peer_event_queue_capacity =
+            stats.bridge.peer_event_queue_capacity;
+        metrics->peer_event_queue_high_water =
+            stats.bridge.peer_event_queue_high_water;
+        metrics->peer_event_queue_drops_total =
+            stats.bridge.peer_event_queue_drops;
+        metrics->peer_event_queue_overflowed =
+            stats.bridge.peer_event_queue_overflowed;
+    }
+#endif
     return 0;
 }
 

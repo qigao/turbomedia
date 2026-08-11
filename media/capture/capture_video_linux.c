@@ -1,11 +1,10 @@
 /**
  * Linux Video Capture Implementation
  *
- * Factory-based approach:
- * - Wayland: Uses PipeWire for camera capture
- * - X11: Uses V4L2 for camera capture
+ * Exact native camera modes through V4L2.
  */
 #include "turbo_capture.h"
+#include "capture_video_backend.h"
 
 #if defined(__linux__) && !defined(__ANDROID__)
 
@@ -24,21 +23,14 @@
 #include <sys/stat.h>
 #include <linux/videodev2.h>
 
-#ifdef TURBO_HAS_PIPEWIRE
-#include <pipewire/pipewire.h>
-#include <spa/param/video/format-utils.h>
-#include <spa/debug/types.h>
-#include <stb_sprintf.h>
-#endif
-
 /* =============================================================================
  * Backend Type Enumeration
  * ============================================================================= */
 
-typedef enum {
-    VIDEO_BACKEND_V4L2,
-    VIDEO_BACKEND_PIPEWIRE
-} video_backend_type_t;
+typedef struct {
+    int fd;
+    char path[256];
+} linux_video_device_ctx_t;
 
 /* =============================================================================
  * Common Helpers
@@ -92,14 +84,89 @@ static int xioctl(int fd, unsigned long request, void *arg) {
     return r;
 }
 
-static uint32_t turbo_format_to_v4l2(int format) {
-    switch (format) {
-        case 0:  return V4L2_PIX_FMT_YUV420;   /* I420 */
-        case 1:  return V4L2_PIX_FMT_NV12;     /* NV12 */
-        case 2:  return V4L2_PIX_FMT_RGB24;    /* RGB24 */
-        case 3:  return V4L2_PIX_FMT_BGR32;    /* BGRA */
-        default: return V4L2_PIX_FMT_YUYV;     /* Default to YUYV */
+static int v4l2_pixfmt_to_turbo_format(uint32_t pixfmt) {
+    switch (pixfmt) {
+        case V4L2_PIX_FMT_YUV420:
+        case V4L2_PIX_FMT_YUYV:
+            return TURBO_VIDEO_CAPTURE_FORMAT_I420;
+        case V4L2_PIX_FMT_NV12:
+            return TURBO_VIDEO_CAPTURE_FORMAT_NV12;
+        case V4L2_PIX_FMT_RGB24:
+            return TURBO_VIDEO_CAPTURE_FORMAT_RGB24;
+        case V4L2_PIX_FMT_BGR32:
+            return TURBO_VIDEO_CAPTURE_FORMAT_BGRA;
+        case V4L2_PIX_FMT_MJPEG:
+        case V4L2_PIX_FMT_JPEG:
+            return TURBO_VIDEO_CAPTURE_FORMAT_MJPEG;
+        default:
+            return -1;
     }
+}
+
+static uint64_t v4l2_mode_id(uint32_t format_index,
+                             uint32_t size_index,
+                             uint32_t interval_index) {
+    return ((uint64_t)format_index << 32) |
+           ((uint64_t)size_index << 16) |
+           interval_index;
+}
+
+static int v4l2_read_mode(int fd,
+                          uint64_t mode_id,
+                          turbo_video_native_mode_t *mode,
+                          uint32_t *out_pixfmt) {
+    uint32_t format_index = (uint32_t)(mode_id >> 32);
+    uint32_t size_index = (uint32_t)((mode_id >> 16) & 0xffffu);
+    uint32_t interval_index = (uint32_t)(mode_id & 0xffffu);
+    struct v4l2_fmtdesc format_desc = {0};
+    struct v4l2_frmsizeenum frame_size = {0};
+    struct v4l2_frmivalenum frame_interval = {0};
+    int format;
+
+    if (!mode || format_index > 0xffffu) return TURBO_CAPTURE_ERR_FORMAT;
+
+    format_desc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    format_desc.index = format_index;
+    if (xioctl(fd, VIDIOC_ENUM_FMT, &format_desc) == -1) {
+        return TURBO_CAPTURE_ERR_DEVICE;
+    }
+    format = v4l2_pixfmt_to_turbo_format(format_desc.pixelformat);
+    if (format < 0) return TURBO_CAPTURE_ERR_UNSUPPORTED;
+
+    frame_size.index = size_index;
+    frame_size.pixel_format = format_desc.pixelformat;
+    if (xioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frame_size) == -1 ||
+        frame_size.type != V4L2_FRMSIZE_TYPE_DISCRETE) {
+        return TURBO_CAPTURE_ERR_UNSUPPORTED;
+    }
+
+    frame_interval.index = interval_index;
+    frame_interval.pixel_format = format_desc.pixelformat;
+    frame_interval.width = frame_size.discrete.width;
+    frame_interval.height = frame_size.discrete.height;
+    if (xioctl(fd, VIDIOC_ENUM_FRAMEINTERVALS, &frame_interval) == -1 ||
+        frame_interval.type != V4L2_FRMIVAL_TYPE_DISCRETE ||
+        frame_interval.discrete.numerator == 0 ||
+        frame_interval.discrete.denominator == 0) {
+        return TURBO_CAPTURE_ERR_UNSUPPORTED;
+    }
+
+    mode->width = (int)frame_size.discrete.width;
+    mode->height = (int)frame_size.discrete.height;
+    mode->framerate_numerator = frame_interval.discrete.denominator;
+    mode->framerate_denominator = frame_interval.discrete.numerator;
+    mode->format = format;
+    mode->mode_id = mode_id;
+    if (out_pixfmt) *out_pixfmt = format_desc.pixelformat;
+    return TURBO_CAPTURE_OK;
+}
+
+static int video_native_modes_equal(const turbo_video_native_mode_t *lhs,
+                                    const turbo_video_native_mode_t *rhs) {
+    return lhs->width == rhs->width && lhs->height == rhs->height &&
+           lhs->framerate_numerator == rhs->framerate_numerator &&
+           lhs->framerate_denominator == rhs->framerate_denominator &&
+           lhs->format == rhs->format && lhs->mode_id == rhs->mode_id;
 }
 
 /* Simple YUYV to I420 conversion */
@@ -207,6 +274,10 @@ static void *v4l2_capture_thread(void *arg) {
         }
 
         /* Get frame data */
+        if (buf.index >= (uint32_t)ctx->buffer_count ||
+            buf.bytesused > ctx->buffers[buf.index].length) {
+            break;
+        }
         uint8_t *frame_data = ctx->buffers[buf.index].start;
         size_t frame_len = buf.bytesused;
 
@@ -238,9 +309,12 @@ static void *v4l2_capture_thread(void *arg) {
     return NULL;
 }
 
-static int v4l2_backend_init(turbo_capture_t *capture, const char *device_id,
-                             const turbo_video_capture_config_t *config) {
-    const char *device = device_id ? device_id : "/dev/video0";
+static int v4l2_backend_init_exact(
+    turbo_capture_t *capture,
+    const char *device,
+    const turbo_video_native_mode_t *mode) {
+    turbo_video_native_mode_t actual_mode;
+    uint32_t pixfmt = 0;
 
     int fd = open(device, O_RDWR | O_NONBLOCK);
     if (fd < 0) {
@@ -254,12 +328,23 @@ static int v4l2_backend_init(turbo_capture_t *capture, const char *device_id,
         return -1;
     }
 
-    if (!(cap.device_caps & V4L2_CAP_VIDEO_CAPTURE)) {
+    uint32_t capabilities =
+        (cap.capabilities & V4L2_CAP_DEVICE_CAPS)
+            ? cap.device_caps
+            : cap.capabilities;
+    if (!(capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
         close(fd);
         return -1;
     }
 
-    if (!(cap.device_caps & V4L2_CAP_STREAMING)) {
+    if (!(capabilities & V4L2_CAP_STREAMING)) {
+        close(fd);
+        return -1;
+    }
+
+    if (v4l2_read_mode(fd, mode->mode_id, &actual_mode, &pixfmt) !=
+            TURBO_CAPTURE_OK ||
+        !video_native_modes_equal(&actual_mode, mode)) {
         close(fd);
         return -1;
     }
@@ -273,25 +358,26 @@ static int v4l2_backend_init(turbo_capture_t *capture, const char *device_id,
     capture->platform_ctx = ctx;
     ctx->capture = capture;
     ctx->fd = fd;
-    ctx->width = config ? config->width : 640;
-    ctx->height = config ? config->height : 480;
-    ctx->framerate = config ? config->framerate : 30;
-    ctx->format = config ? config->format : 0;  /* I420 */
+    ctx->width = mode->width;
+    ctx->height = mode->height;
+    ctx->framerate = (int)(((uint64_t)mode->framerate_numerator +
+                            mode->framerate_denominator / 2u) /
+                           mode->framerate_denominator);
+    ctx->format = mode->format;
 
     /* Set format */
     struct v4l2_format fmt = {0};
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     fmt.fmt.pix.width = ctx->width;
     fmt.fmt.pix.height = ctx->height;
-    fmt.fmt.pix.pixelformat = turbo_format_to_v4l2(ctx->format);
+    fmt.fmt.pix.pixelformat = pixfmt;
     fmt.fmt.pix.field = V4L2_FIELD_NONE;
 
-    if (xioctl(fd, VIDIOC_S_FMT, &fmt) == -1) {
-        /* Try YUYV as fallback (most common) */
-        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-        if (xioctl(fd, VIDIOC_S_FMT, &fmt) == -1) {
-            goto error;
-        }
+    if (xioctl(fd, VIDIOC_S_FMT, &fmt) == -1 ||
+        fmt.fmt.pix.pixelformat != pixfmt ||
+        fmt.fmt.pix.width != (uint32_t)ctx->width ||
+        fmt.fmt.pix.height != (uint32_t)ctx->height) {
+        goto error;
     }
 
     ctx->v4l2_pixfmt = fmt.fmt.pix.pixelformat;
@@ -300,7 +386,14 @@ static int v4l2_backend_init(turbo_capture_t *capture, const char *device_id,
 
     /* Allocate conversion buffer if YUYV and we want I420 */
     if (ctx->v4l2_pixfmt == V4L2_PIX_FMT_YUYV && ctx->format == 0) {
-        ctx->convert_buf_size = ctx->width * ctx->height * 3 / 2;  /* I420 size */
+        size_t pixels;
+        if ((ctx->width & 1) != 0 || (ctx->height & 1) != 0 ||
+            (size_t)ctx->width > SIZE_MAX / (size_t)ctx->height) {
+            goto error;
+        }
+        pixels = (size_t)ctx->width * (size_t)ctx->height;
+        if (pixels > SIZE_MAX - pixels / 2u) goto error;
+        ctx->convert_buf_size = pixels + pixels / 2u;
         ctx->convert_buf = malloc(ctx->convert_buf_size);
         if (!ctx->convert_buf) {
             goto error;
@@ -310,9 +403,17 @@ static int v4l2_backend_init(turbo_capture_t *capture, const char *device_id,
     /* Set framerate */
     struct v4l2_streamparm parm = {0};
     parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    parm.parm.capture.timeperframe.numerator = 1;
-    parm.parm.capture.timeperframe.denominator = ctx->framerate;
-    xioctl(fd, VIDIOC_S_PARM, &parm);  /* Ignore errors - not all drivers support */
+    parm.parm.capture.timeperframe.numerator = mode->framerate_denominator;
+    parm.parm.capture.timeperframe.denominator = mode->framerate_numerator;
+    if (xioctl(fd, VIDIOC_S_PARM, &parm) == -1 ||
+        parm.parm.capture.timeperframe.numerator == 0 ||
+        parm.parm.capture.timeperframe.denominator == 0 ||
+        (uint64_t)parm.parm.capture.timeperframe.denominator *
+                mode->framerate_denominator !=
+            (uint64_t)mode->framerate_numerator *
+                parm.parm.capture.timeperframe.numerator) {
+        goto error;
+    }
 
     /* Initialize mmap buffers */
     if (v4l2_init_mmap(ctx) != 0) {
@@ -322,6 +423,7 @@ static int v4l2_backend_init(turbo_capture_t *capture, const char *device_id,
     return 0;
 
 error:
+    v4l2_cleanup_mmap(ctx);
     if (ctx->convert_buf) free(ctx->convert_buf);
     free(ctx);
     close(fd);
@@ -390,237 +492,6 @@ static void v4l2_backend_destroy(turbo_capture_t *capture) {
 }
 
 /* =============================================================================
- * PipeWire Backend Implementation
- * ============================================================================= */
-
-#ifdef TURBO_HAS_PIPEWIRE
-
-typedef struct {
-    struct pw_main_loop *loop;
-    struct pw_stream *stream;
-    struct spa_hook stream_listener;
-
-    pthread_t capture_thread;
-    volatile int running;
-
-    int width;
-    int height;
-    int framerate;
-
-    uint8_t *frame_buffer;
-    size_t frame_buffer_size;
-
-    /* Parent capture */
-    turbo_capture_t *capture;
-} pipewire_ctx_t;
-
-static void pw_on_param_changed(void *userdata, uint32_t id,
-                                 const struct spa_pod *param) {
-    pipewire_ctx_t *ctx = (pipewire_ctx_t *)userdata;
-
-    if (param == NULL || id != SPA_PARAM_Format) return;
-
-    struct spa_video_info format;
-    if (spa_format_video_raw_parse(param, &format.info.raw) < 0) return;
-
-    ctx->width = format.info.raw.size.width;
-    ctx->height = format.info.raw.size.height;
-
-    /* Allocate frame buffer */
-    ctx->frame_buffer_size = ctx->width * ctx->height * 4;  /* BGRA */
-    ctx->frame_buffer = realloc(ctx->frame_buffer, ctx->frame_buffer_size);
-}
-
-static void pw_on_process(void *userdata) {
-    pipewire_ctx_t *ctx = (pipewire_ctx_t *)userdata;
-    turbo_capture_t *capture = ctx->capture;
-    struct pw_buffer *b;
-
-    if ((b = pw_stream_dequeue_buffer(ctx->stream)) == NULL) {
-        return;
-    }
-
-    struct spa_buffer *buf = b->buffer;
-    if (buf->datas[0].data == NULL) {
-        pw_stream_queue_buffer(ctx->stream, b);
-        return;
-    }
-
-    uint8_t *src = buf->datas[0].data;
-    size_t len = buf->datas[0].chunk->size;
-    uint64_t timestamp = get_timestamp_us();
-
-    /* Copy to frame buffer (handle stride if needed) */
-    uint32_t stride = buf->datas[0].chunk->stride;
-    uint32_t expected_stride = ctx->width * 4;
-
-    if (stride == expected_stride || stride == 0) {
-        /* Direct copy */
-        if (capture->video_cb) {
-            capture->video_cb(capture, src, len,
-                              ctx->width, ctx->height,
-                              timestamp, capture->user_data);
-        }
-    } else {
-        /* Handle stride mismatch */
-        if (ctx->frame_buffer) {
-            for (int y = 0; y < ctx->height; y++) {
-                memcpy(ctx->frame_buffer + y * expected_stride,
-                       src + y * stride,
-                       expected_stride);
-            }
-            if (capture->video_cb) {
-                capture->video_cb(capture, ctx->frame_buffer,
-                                  ctx->frame_buffer_size,
-                                  ctx->width, ctx->height,
-                                  timestamp, capture->user_data);
-            }
-        }
-    }
-
-    pw_stream_queue_buffer(ctx->stream, b);
-}
-
-static const struct pw_stream_events pw_stream_events = {
-    PW_VERSION_STREAM_EVENTS,
-    .param_changed = pw_on_param_changed,
-    .process = pw_on_process,
-};
-
-static void *pipewire_capture_thread(void *arg) {
-    pipewire_ctx_t *ctx = (pipewire_ctx_t *)arg;
-    pw_main_loop_run(ctx->loop);
-    return NULL;
-}
-
-static int pipewire_backend_init(turbo_capture_t *capture, const char *device_id,
-                                  const turbo_video_capture_config_t *config) {
-    pw_init(NULL, NULL);
-
-    pipewire_ctx_t *ctx = calloc(1, sizeof(pipewire_ctx_t));
-    if (!ctx) {
-        return -1;
-    }
-
-    capture->platform_ctx = ctx;
-    ctx->capture = capture;
-    ctx->width = config ? config->width : 640;
-    ctx->height = config ? config->height : 480;
-    ctx->framerate = config ? config->framerate : 30;
-
-    ctx->loop = pw_main_loop_new(NULL);
-    if (!ctx->loop) {
-        free(ctx);
-        capture->platform_ctx = NULL;
-        return -1;
-    }
-
-    struct pw_properties *props = pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Video",
-        PW_KEY_MEDIA_CATEGORY, "Capture",
-        PW_KEY_MEDIA_ROLE, "Camera",
-        NULL);
-
-    ctx->stream = pw_stream_new_simple(
-        pw_main_loop_get_loop(ctx->loop),
-        "turbo-video-capture",
-        props,
-        &pw_stream_events,
-        ctx);
-
-    if (!ctx->stream) {
-        pw_main_loop_destroy(ctx->loop);
-        free(ctx);
-        capture->platform_ctx = NULL;
-        return -1;
-    }
-
-    /* Request BGRA format */
-    uint8_t buffer[1024];
-    struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-
-    const struct spa_pod *params[1];
-    params[0] = spa_pod_builder_add_object(&b,
-        SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
-        SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
-        SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-        SPA_FORMAT_VIDEO_format, SPA_POD_Id(SPA_VIDEO_FORMAT_BGRx),
-        SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(
-            &SPA_RECTANGLE(ctx->width, ctx->height),
-            &SPA_RECTANGLE(1, 1),
-            &SPA_RECTANGLE(4096, 4096)),
-        SPA_FORMAT_VIDEO_framerate, SPA_POD_CHOICE_RANGE_Fraction(
-            &SPA_FRACTION(ctx->framerate, 1),
-            &SPA_FRACTION(0, 1),
-            &SPA_FRACTION(60, 1)));
-
-    int res = pw_stream_connect(ctx->stream,
-        PW_DIRECTION_INPUT,
-        PW_ID_ANY,
-        PW_STREAM_FLAG_AUTOCONNECT |
-        PW_STREAM_FLAG_MAP_BUFFERS,
-        params, 1);
-
-    if (res < 0) {
-        pw_stream_destroy(ctx->stream);
-        pw_main_loop_destroy(ctx->loop);
-        free(ctx);
-        capture->platform_ctx = NULL;
-        return -1;
-    }
-
-    return 0;
-}
-
-static int pipewire_backend_start(turbo_capture_t *capture) {
-    if (!capture || !capture->platform_ctx) return -1;
-    pipewire_ctx_t *ctx = (pipewire_ctx_t *)capture->platform_ctx;
-
-    ctx->running = 1;
-    if (pthread_create(&ctx->capture_thread, NULL,
-                       pipewire_capture_thread, ctx) != 0) {
-        ctx->running = 0;
-        return -1;
-    }
-    return 0;
-}
-
-static void pipewire_backend_stop(turbo_capture_t *capture) {
-    if (!capture || !capture->platform_ctx) return;
-    pipewire_ctx_t *ctx = (pipewire_ctx_t *)capture->platform_ctx;
-
-    if (ctx->running) {
-        ctx->running = 0;
-        if (ctx->loop) {
-            pw_main_loop_quit(ctx->loop);
-        }
-        pthread_join(ctx->capture_thread, NULL);
-    }
-}
-
-static void pipewire_backend_destroy(turbo_capture_t *capture) {
-    if (!capture || !capture->platform_ctx) return;
-
-    pipewire_backend_stop(capture);
-
-    pipewire_ctx_t *ctx = (pipewire_ctx_t *)capture->platform_ctx;
-    if (ctx->stream) {
-        pw_stream_destroy(ctx->stream);
-    }
-    if (ctx->loop) {
-        pw_main_loop_destroy(ctx->loop);
-    }
-    if (ctx->frame_buffer) {
-        free(ctx->frame_buffer);
-    }
-    pw_deinit();
-    free(ctx);
-    capture->platform_ctx = NULL;
-}
-
-#endif /* TURBO_HAS_PIPEWIRE */
-
-/* =============================================================================
  * Device Enumeration (V4L2-based for compatibility)
  * ============================================================================= */
 
@@ -660,57 +531,152 @@ int turbo_capture_list_video_devices(turbo_capture_device_t *devices, int max_co
     return count;
 }
 
-int turbo_capture_list_video_modes(const char *device_id,
-                                   turbo_video_capture_mode_t *modes,
-                                   int max_count) {
-    (void)device_id;
-    (void)modes;
-    (void)max_count;
-    return TURBO_CAPTURE_ERR_UNSUPPORTED;
+static int linux_video_device_open(const char *device_id, void **backend_ctx) {
+    const char *path = (device_id && device_id[0]) ? device_id : "/dev/video0";
+    linux_video_device_ctx_t *ctx;
+    struct v4l2_capability cap = {0};
+    int fd;
+
+    if (!backend_ctx || strlen(path) >= sizeof(ctx->path)) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+    *backend_ctx = NULL;
+
+    fd = open(path, O_RDWR | O_NONBLOCK);
+    if (fd < 0) return TURBO_CAPTURE_ERR_DEVICE;
+    if (xioctl(fd, VIDIOC_QUERYCAP, &cap) == -1) {
+        close(fd);
+        return TURBO_CAPTURE_ERR_DEVICE;
+    }
+    uint32_t capabilities =
+        (cap.capabilities & V4L2_CAP_DEVICE_CAPS)
+            ? cap.device_caps
+            : cap.capabilities;
+    if (!(capabilities & V4L2_CAP_VIDEO_CAPTURE) ||
+        !(capabilities & V4L2_CAP_STREAMING)) {
+        close(fd);
+        return TURBO_CAPTURE_ERR_DEVICE;
+    }
+
+    ctx = (linux_video_device_ctx_t *)calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        close(fd);
+        return TURBO_CAPTURE_ERR_NOMEM;
+    }
+    ctx->fd = fd;
+    memcpy(ctx->path, path, strlen(path) + 1);
+    *backend_ctx = ctx;
+    return TURBO_CAPTURE_OK;
 }
 
-/* =============================================================================
- * Factory Method - Backend Selection
- * ============================================================================= */
+static void linux_video_device_close(void *backend_ctx) {
+    linux_video_device_ctx_t *ctx = (linux_video_device_ctx_t *)backend_ctx;
+    if (!ctx) return;
+    if (ctx->fd >= 0) close(ctx->fd);
+    free(ctx);
+}
 
-turbo_capture_t *turbo_video_capture_create(const char *device_id,
-                                             const turbo_video_capture_config_t *config) {
-    turbo_capture_t *capture = calloc(1, sizeof(turbo_capture_t));
-    if (!capture) return NULL;
+static int linux_video_device_list_modes(
+    void *backend_ctx,
+    turbo_video_native_mode_t *modes,
+    size_t capacity,
+    size_t *out_count) {
+    linux_video_device_ctx_t *ctx = (linux_video_device_ctx_t *)backend_ctx;
+    size_t count = 0;
 
+    if (!ctx || !modes || capacity == 0 || !out_count) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+    memset(modes, 0, sizeof(*modes) * capacity);
+
+    for (uint32_t format_index = 0; format_index < 0x10000u; ++format_index) {
+        struct v4l2_fmtdesc format_desc = {0};
+        int format;
+
+        format_desc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        format_desc.index = format_index;
+        if (xioctl(ctx->fd, VIDIOC_ENUM_FMT, &format_desc) == -1) break;
+        format = v4l2_pixfmt_to_turbo_format(format_desc.pixelformat);
+        if (format < 0) continue;
+
+        for (uint32_t size_index = 0; size_index < 0x10000u; ++size_index) {
+            struct v4l2_frmsizeenum frame_size = {0};
+
+            frame_size.index = size_index;
+            frame_size.pixel_format = format_desc.pixelformat;
+            if (xioctl(ctx->fd, VIDIOC_ENUM_FRAMESIZES, &frame_size) == -1) break;
+            if (frame_size.type != V4L2_FRMSIZE_TYPE_DISCRETE) continue;
+
+            for (uint32_t interval_index = 0;
+                 interval_index < 0x10000u;
+                 ++interval_index) {
+                struct v4l2_frmivalenum interval = {0};
+                turbo_video_native_mode_t *mode;
+
+                interval.index = interval_index;
+                interval.pixel_format = format_desc.pixelformat;
+                interval.width = frame_size.discrete.width;
+                interval.height = frame_size.discrete.height;
+                if (xioctl(ctx->fd, VIDIOC_ENUM_FRAMEINTERVALS, &interval) == -1) {
+                    break;
+                }
+                if (interval.type != V4L2_FRMIVAL_TYPE_DISCRETE ||
+                    interval.discrete.numerator == 0 ||
+                    interval.discrete.denominator == 0) {
+                    continue;
+                }
+
+                mode = &modes[count++];
+                mode->width = (int)frame_size.discrete.width;
+                mode->height = (int)frame_size.discrete.height;
+                mode->framerate_numerator = interval.discrete.denominator;
+                mode->framerate_denominator = interval.discrete.numerator;
+                mode->format = format;
+                mode->mode_id = v4l2_mode_id(format_index, size_index,
+                                             interval_index);
+                if (count == capacity) {
+                    *out_count = count;
+                    return TURBO_CAPTURE_OK;
+                }
+            }
+        }
+    }
+
+    *out_count = count;
+    return TURBO_CAPTURE_OK;
+}
+
+static int linux_video_device_create_capture(
+    void *backend_ctx,
+    const turbo_video_native_mode_t *mode,
+    turbo_capture_t **out_capture) {
+    linux_video_device_ctx_t *device =
+        (linux_video_device_ctx_t *)backend_ctx;
+    turbo_capture_t *capture;
+
+    if (!device || !mode || !out_capture) return TURBO_CAPTURE_ERR_FORMAT;
+    *out_capture = NULL;
+    capture = (turbo_capture_t *)calloc(1, sizeof(*capture));
+    if (!capture) return TURBO_CAPTURE_ERR_NOMEM;
     capture->type = TURBO_CAPTURE_TYPE_VIDEO;
     capture->state = TURBO_CAPTURE_STATE_STOPPED;
 
-    /* Determine backend based on display server */
-    video_backend_type_t backend = VIDEO_BACKEND_V4L2;
-
-#ifdef TURBO_HAS_PIPEWIRE
-    if (getenv("WAYLAND_DISPLAY")) {
-        backend = VIDEO_BACKEND_PIPEWIRE;
-    }
-#endif
-
-    int result = -1;
-
-    /* Initialize selected backend */
-    switch (backend) {
-#ifdef TURBO_HAS_PIPEWIRE
-        case VIDEO_BACKEND_PIPEWIRE:
-            result = pipewire_backend_init(capture, device_id, config);
-            break;
-#endif
-        case VIDEO_BACKEND_V4L2:
-        default:
-            result = v4l2_backend_init(capture, device_id, config);
-            break;
-    }
-
-    if (result != 0) {
+    if (v4l2_backend_init_exact(capture, device->path, mode) != 0) {
         free(capture);
-        return NULL;
+        return TURBO_CAPTURE_ERR_DEVICE;
     }
+    *out_capture = capture;
+    return TURBO_CAPTURE_OK;
+}
 
-    return capture;
+const turbo_video_backend_ops_t *turbo_video_platform_backend(void) {
+    static const turbo_video_backend_ops_t ops = {
+        linux_video_device_open,
+        linux_video_device_close,
+        linux_video_device_list_modes,
+        linux_video_device_create_capture
+    };
+    return &ops;
 }
 
 void turbo_video_capture_set_callback(turbo_capture_t *capture,
@@ -769,36 +735,11 @@ int turbo_video_capture_get_crop(turbo_capture_t *capture,
  * ============================================================================= */
 
 int v4l2_video_start(turbo_capture_t *capture) {
-    if (!capture || !capture->platform_ctx) return -1;
-
-    /* Detect backend type by checking context structure */
-    v4l2_ctx_t *v4l2_ctx = (v4l2_ctx_t *)capture->platform_ctx;
-    
-    /* Simple heuristic: V4L2 context has an fd field */
-    if (v4l2_ctx->fd >= 0) {
-        return v4l2_backend_start(capture);
-    }
-
-#ifdef TURBO_HAS_PIPEWIRE
-    return pipewire_backend_start(capture);
-#else
-    return -1;
-#endif
+    return v4l2_backend_start(capture);
 }
 
 void v4l2_video_stop(turbo_capture_t *capture) {
-    if (!capture || !capture->platform_ctx) return;
-
-    v4l2_ctx_t *v4l2_ctx = (v4l2_ctx_t *)capture->platform_ctx;
-    
-    if (v4l2_ctx->fd >= 0) {
-        v4l2_backend_stop(capture);
-        return;
-    }
-
-#ifdef TURBO_HAS_PIPEWIRE
-    pipewire_backend_stop(capture);
-#endif
+    v4l2_backend_stop(capture);
 }
 
 void v4l2_video_destroy(turbo_capture_t *capture) {
@@ -809,17 +750,7 @@ void v4l2_video_destroy(turbo_capture_t *capture) {
         return;
     }
 
-    v4l2_ctx_t *v4l2_ctx = (v4l2_ctx_t *)capture->platform_ctx;
-    
-    if (v4l2_ctx->fd >= 0) {
-        v4l2_backend_destroy(capture);
-    }
-#ifdef TURBO_HAS_PIPEWIRE
-    else {
-        pipewire_backend_destroy(capture);
-    }
-#endif
-
+    v4l2_backend_destroy(capture);
     free(capture);
 }
 

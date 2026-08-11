@@ -44,6 +44,10 @@ release gates.
 | [API Reference](./api-en.md) | [API 参考](./api-zh.md) |
 | [Guide](./guide-en.md) | [使用指南](./guide-zh.md) |
 | [Architecture](./arch-en.md) | [架构设计](./arch-zh.md) |
+| - | [独立 IVR Worker 架构](./ivr-worker-architecture-zh.md) |
+| - | [IVR 生产化缺口解决方案](./ivr-production-readiness-design-zh.md) |
+| - | [IVR 生产化 TODO Checklist](./ivr-production-readiness-checklist-zh.md) |
+| - | [IVR 容量报告与告警 Runbook](./ivr-capacity-and-operations-zh.md) |
 
 ## Features
 

@@ -182,6 +182,60 @@
   - 性能问题（热路径瓶颈、内存泄漏）→ 先 profile 确认，再优化
   - 理论优雅问题（命名不满意、模式可以更优）→ 暂缓，除非妨碍新功能
 
+### 状态机设计与使用
+
+- 出现以下任一情况时必须评估显式状态机或转换表：
+  - 流程包含 ≥3 个稳定阶段，并由异步事件、超时、取消、重试或恢复驱动
+  - 同一输入在不同阶段具有不同合法行为
+  - 使用 ≥3 个布尔字段组合表达状态，且只有部分组合合法
+  - 需要 snapshot、恢复、审计、可视化或确定性重放
+- 不为单次、无状态、严格线性的调用链引入状态机；简单 `if` 足以表达且无非法组合时保持直接实现
+- 每个状态机必须定义并文档化：
+  - 状态机名称、职责边界、唯一 owner、owner thread/executor 和生命周期
+  - 初始状态、终止状态、允许的 state/event/guard/action/next-state 转换表
+  - 输入事件、输出命令、超时、取消、非法事件和重复/迟到事件语义
+  - 核心不变量、snapshot 字段、定义版本、恢复方式和不可恢复错误
+- 状态机只拥有自身工作流状态，不复制外部 aggregate 的权威业务事实；外部事实通过版本化事件或只读 snapshot 输入
+- 每个状态只能由一个 owner context 推进；网络、总线、媒体、插件和 timer callback 只复制/归一化事件并投递，不得直接修改状态机内部字段
+- transition/`step()` 必须有界且不阻塞：
+  - 不在 transition、guard 或 engine callback 内执行网络 I/O、不可控分配、长耗时计算或同步等待外部服务
+  - 外部副作用表达为不可变 command；命令被本地队列接受后可进入 `pending`，最终状态只由成功/失败事实事件推进
+  - timeout、cancel、shutdown 和 retry 必须建模为显式事件或 terminal latch，不以散落的特殊分支绕过状态机
+- 非法事件默认 fail fast 并返回可区分错误；协议明确允许忽略的 duplicate/stale event 必须有判定依据和计数指标，不得静默吞掉未知事件
+- 多状态机协作必须给出父子/并行职责和事件路由图；禁止两个状态机同时拥有或写入同一业务事实，禁止跨状态机直接修改内部状态
+- snapshot 必须携带状态机定义版本、当前状态、必要上下文和最后消费 sequence；恢复前验证版本和外部事实，不兼容 snapshot 必须显式拒绝或执行文档化迁移
+- 优先复用仓库已有或成熟状态机引擎；CCXML/VoiceXML/SCXML 场景优先 TurboXML，已有 RTC workflow 先评估 `TurboRTC::RtcSessionWorkflow`，不得同时启用两套会对同一 aggregate 发 mutation command 的 workflow
+- 状态机设计文档至少提供 Mermaid/UML state diagram、转换表、失败/恢复时序图；图仅辅助理解，转换表、代码和测试才是行为契约
+- 测试必须覆盖所有公开状态和转换、guard 成败、非法/重复/乱序事件、timeout/cancel、终止抢占、snapshot/restore、定义版本不匹配以及每条资源清理路径
+
+### 复杂数据流与数据总线
+
+- 引入消息总线前先判断同步直接调用是否足够；总线只用于确有异步解耦、跨进程通信、广播、削峰、独立扩缩容或故障隔离需求的路径
+- 数据流必须按语义分面，不得用一个万能 topic/queue 混合：
+  - Command bus：定向的操作意图，必须定义相关结果、幂等键、deadline 和错误语义
+  - Domain event bus：广播已经提交的事实，消费者不得用 event 反向改写同一事实源
+  - Query/snapshot：读取权威状态并用于启动、缺口恢复或审计，不隐式推进状态
+  - Stream/data plane：音视频帧、文件块、遥测批次等高吞吐数据；不与控制事件共享队列、优先级或 retained-memory budget
+- transport、broker 和 serializer 只能出现在 adapter 层；领域核心依赖 command/event/query 抽象，不依赖 FlowMQ、HTTP、MQTT 或第三方 message 类型
+- 每种 bus/message 必须定义：
+  - producer/consumer 数量与 MPSC/MPMC/broadcast 等拓扑
+  - command、result、event、snapshot 的 schema/type identity 和 schema version
+  - `message_id`、`correlation_id`、`causation_id`、aggregate/call/session ID、generation、version、sequence 的适用范围
+  - 全局或 per-key ordering、delivery guarantee、duplicate、gap、retry、expiry 和 dead-letter/terminal 语义
+  - payload 最大值、queue item/byte 上限、背压、断线、重连、drain 和 destroy 协议
+- 不得宣称 exactly-once，除非 transport、持久化提交、去重记录和故障恢复都有可复验证据；常用 mutation command 采用 at-least-once delivery + stable `message_id` 幂等执行
+- PUB/SUB 或其他非持久广播不能作为唯一事实源；状态性 event 必须携带 per-aggregate sequence，consumer 发现 gap 后停止推进并从权威 snapshot/replay 接口恢复
+- 同一状态变更涉及“事实提交 + event 发布”时，必须定义原子 outbox、同事务日志或可检测/可修复的发布缺口；不能先发布未提交事实，也不能把 publish 成功当作状态提交成功
+- 同一语义需要 JSON/XML/BIN 等多格式时，必须使用一个 canonical schema；DataBind dynamic object 作为共同运行层，typed contract 只允许 generated `.h/.c` 或 `TBE_TYPED_*` 两条路线，不得分别手写三套 struct/字段映射
+- wire frame 必须版本化并在解码前校验 magic/type/format/schema/length；解析失败、未知版本或格式不可表示时 fail fast，禁止猜测格式或自动切换 codec 作为 fallback
+- 总线 callback payload 默认 borrowed；跨 callback、线程、队列、重试或协程挂起前必须 copy、clone、retain 或 move，并写明失败时谁仍拥有 payload
+- handler 不在 broker callback 或锁内执行领域 mutation、网络 I/O 或外部 callback；先复制并投递到 aggregate/session owner context，再由 owner 校验不变量并提交
+- 所有 queue、pending request、去重缓存、snapshot、replay window 和 retained payload 都必须有 item/byte/time 上限；满时返回明确错误、阻塞、超时或协议允许的 coalesce/drop，不得无界增长或默认 `DROP_OLDEST`
+- priority queue 只在业务存在严格优先级且已定义 starvation/aging 策略时使用；状态性事件默认按 aggregate/session FIFO，disconnect/shutdown 等终止信号优先使用独立 control lane 或 terminal latch
+- 总线安全必须覆盖 transport encryption、peer identity、command authorization、topic ACL、schema/input limit、重放窗口和敏感字段脱敏；连接成功不等于有权执行 command
+- 可观测性至少包含 queue item/byte high-water、send reject、decode/schema error、duplicate、sequence gap、retry、snapshot recovery、handler latency、retained bytes 和 drain duration；日志用 ID 关联，不记录完整敏感 payload
+- 数据总线测试必须覆盖多格式 semantic round trip、BIN golden vector、短包/超限/未知版本、幂等重放、乱序/重复/gap、断线重连、队列满、慢 consumer、snapshot 恢复、shutdown drain 和所有 ownership 失败路径
+
 ### 插件系统设计规范
 
 > **详细规范参见**: `skills/plugin_system.md`
@@ -200,7 +254,7 @@
 模式选择原则：
 - 创建型（工厂、建造者、单例）：对象创建逻辑复杂、延迟初始化、配置驱动
 - 结构型（适配器、桥接、组合、装饰器）：接口转换、平台隔离、树形结构、动态组合
-- 行为型（策略、观察者、命令、访问者、模板方法）：算法可换、事件驱动、操作对象化、结构稳定操作变化
+- 行为型（策略、观察者、命令、状态、访问者、模板方法）：算法可换、事件驱动、操作对象化、显式状态转换、结构稳定操作变化
 - 禁止滥用：单例传递依赖、过度抽象工厂、上帝对象（>5 职责）
 
 ### 标准库与成熟算法优先
@@ -268,6 +322,9 @@
 - 若一个函数同时承担多种职责，应先拆职责，再改行为
 - 若新增分支主要用于绕过边界不清、状态归属不清或错误传播不清，应先修正边界而不是叠加分支
 - 复杂流程应优先拆成：输入归一化、纯判定、状态迁移、外部副作用、结果汇总
+- 复杂异步流程不得由散落的布尔字段、callback 链和重试分支隐式表达；达到“状态机设计与使用”的触发条件时必须用显式 state/event/transition 契约
+- 跨 ≥3 个模块或跨进程的数据流必须画出 producer、adapter、queue/bus、owner、side effect 和 recovery 路径，并区分 control plane、event plane 与 data plane
+- 使用数据总线不能降低端到端可理解性；若一次业务操作需要跨多个 command/event，必须用 correlation/causation ID 和 sequence 形成可追踪闭环
 - 若一个改动需要新增太多分支、例外路径或补丁逻辑，应先反查数据结构与边界定义是否错了
 - 提交复杂改动时，必须说清：核心状态是什么，谁拥有它，何时改变它，失败时如何收场
 
@@ -380,6 +437,8 @@
 - 每次改动都应给出可重复的本地验证步骤
 - 验证顺序默认遵循：先最小相关测试，再相邻回归，最后按需扩大范围
 - 优先运行最贴近改动范围的测试；能小跑，不必先全跑
+- 状态机改动必须使用 transition matrix 或等价 parameterized tests 覆盖 state/event/guard/next-state，并验证非法、重复、乱序、timeout、cancel 和 restore
+- 数据总线改动必须验证 schema/format、ordering、幂等、gap recovery、backpressure、disconnect/reconnect、drain 和跨线程 payload ownership；普通 happy-path 单测不能替代故障注入
 - 若无法运行测试，必须明言原因、影响与剩余风险
 - CI、远程流水线与人工复核皆可作为补充；不可将其视为禁物
 - 不得以“理论正确”代替实际验证
@@ -400,6 +459,8 @@
 - 仅在任务确有需要时新增文档、日志或报告文件
 - 不强制生成 `.codex/` 或其他代理私有产物
 - 文档以帮助后人维护为目的，不为流程留空壳
+- 状态机文档必须包含状态图、转换表、事件/命令契约、owner thread、snapshot/recovery 和终止语义
+- 数据总线文档必须包含组件/数据流图、至少一条端到端时序图、schema/frame、delivery/ordering、ownership、容量/背压、故障恢复、安全、迁移与回滚
 - 文档完整性要求：
   - 禁止空章节占位：无内容的 "Coming soon"、"TBD"、"TODO"
   - 示例代码必须可运行：完整导入、编译通过、输出符合预期

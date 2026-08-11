@@ -35,7 +35,8 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         uint16_t label_len = get_be16(data + DCEP_LABEL_LEN_OFFSET);
         uint16_t proto_len = get_be16(data + DCEP_PROTO_LEN_OFFSET);
 
-        if (len < (size_t)(DCEP_HEADER_LENGTH + label_len + proto_len)) {
+        if (label_len > MAX_LABEL_LEN || proto_len > MAX_PROTOCOL_LEN ||
+            len < (size_t)(DCEP_HEADER_LENGTH + label_len + proto_len)) {
             return;
         }
 
@@ -46,25 +47,42 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         channel->peer = peer;
         channel->id = stream_id;
 
-        if (label_len > 0 && label_len <= MAX_LABEL_LEN) {
+        if (label_len > 0) {
             channel->label = tstr_dup_len((const char *)data + DCEP_LABEL_OFFSET, label_len);
         }
-        if (proto_len > 0 && proto_len <= MAX_PROTOCOL_LEN) {
+        if (proto_len > 0) {
             channel->protocol = tstr_dup_len((const char *)data + DCEP_LABEL_OFFSET + label_len, proto_len);
         }
-
-        /* Parse channel type */
-        uint8_t channel_type = data[1];
-        channel->config.ordered = !(channel_type & DCEP_CHANNEL_RELIABLE_UNORDERED);
-
-        /* Validate stream_id before storing */
-        if (stream_id >= MAX_CHANNELS) {
+        if ((label_len > 0 && !channel->label) ||
+            (proto_len > 0 && !channel->protocol)) {
+            tstr_free(channel->label);
+            tstr_free(channel->protocol);
             free(channel);
             return;
         }
 
+        /* Parse channel type */
+        uint8_t channel_type = data[1];
+        uint8_t reliability = channel_type & (DCEP_CHANNEL_REXMIT | DCEP_CHANNEL_TIMED);
+        if (reliability == (DCEP_CHANNEL_REXMIT | DCEP_CHANNEL_TIMED) ||
+            (channel_type & ~(DCEP_CHANNEL_RELIABLE_UNORDERED |
+                              DCEP_CHANNEL_REXMIT | DCEP_CHANNEL_TIMED)) != 0) {
+            tstr_free(channel->label);
+            tstr_free(channel->protocol);
+            free(channel);
+            return;
+        }
+        channel->config.ordered = !(channel_type & DCEP_CHANNEL_RELIABLE_UNORDERED);
+        if (reliability == DCEP_CHANNEL_REXMIT) {
+            channel->config.max_retransmits = get_be16(data + 4);
+        } else if (reliability == DCEP_CHANNEL_TIMED) {
+            channel->config.max_lifetime_ms = get_be16(data + 4);
+        }
+
         /* Check if channel already exists (duplicate OPEN) */
-        if (peer->channels[stream_id] != NULL) {
+        if (peer_get_channel(peer, stream_id) != NULL) {
+            tstr_free(channel->label);
+            tstr_free(channel->protocol);
             free(channel);
             return;
         }
@@ -72,7 +90,13 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         /* Mark this ID as used (remote-initiated channel) */
         peer_mark_channel_id(peer, stream_id);
 
-        peer->channels[stream_id] = channel;
+        if (peer_set_channel(peer, stream_id, channel) != 0) {
+            peer_free_channel_id(peer, stream_id);
+            tstr_free(channel->label);
+            tstr_free(channel->protocol);
+            free(channel);
+            return;
+        }
         TLOG_INFO("DCEP OPEN received sid={} label='{}' proto='{}'",
                   stream_id,
                   channel->label ? channel->label : "",
@@ -95,7 +119,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         TLOG_INFO("DCEP ACK received sid={}", stream_id);
         turbo_dc_channel_t *channel = NULL;
         if (stream_id < MAX_CHANNELS) {
-            channel = peer->channels[stream_id];
+            channel = peer_get_channel(peer, stream_id);
         }
 
         if (channel && !channel->is_open) {
@@ -129,7 +153,13 @@ int dcep_send_open(turbo_dc_channel_t *channel) {
         packet[1] = DCEP_CHANNEL_RELIABLE_UNORDERED;
     }
 
-    if (channel->config.max_retransmits > 0) {
+    if (channel->config.max_retransmits < 0 || channel->config.max_lifetime_ms < 0 ||
+        (channel->config.max_retransmits > 0 && channel->config.max_lifetime_ms > 0)) {
+        return -1;
+    } else if (channel->config.max_retransmits > UINT16_MAX ||
+               channel->config.max_lifetime_ms > UINT16_MAX) {
+        return -1;
+    } else if (channel->config.max_retransmits > 0) {
         packet[1] |= DCEP_CHANNEL_REXMIT;
         put_be16(packet + 4, (uint16_t)channel->config.max_retransmits);
     } else if (channel->config.max_lifetime_ms > 0) {

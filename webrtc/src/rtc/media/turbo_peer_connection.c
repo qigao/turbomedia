@@ -2002,6 +2002,9 @@ void turbo_peer_connection_poll(turbo_peer_connection_t *pc) {
     if (pc->dc_peer) {
         turbo_dc_peer_poll(pc->dc_peer);
     }
+    if (pc->media_ctx) {
+        turbo_media_handle_timers(pc->media_ctx);
+    }
     turbo_dc_handle_timers();
     maybe_start_checks(pc);
 }

@@ -7,9 +7,13 @@
  */
 
 #include "turbo_capture.h"
+#include "capture_video_backend.h"
 
 #include <android/log.h>
+#include <camera/NdkCameraManager.h>
+#include <camera/NdkCameraMetadata.h>
 #include <jni.h>
+#include <media/NdkImage.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,13 +22,16 @@
 #define LOG_TAG "TurboMediaCapture"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define ANDROID_STREAM_CONFIGURATION_OUTPUT 0
 
 typedef struct android_camera_ctx_t android_camera_ctx_t;
 typedef struct android_audio_ctx_t android_audio_ctx_t;
 typedef struct android_screen_ctx_t android_screen_ctx_t;
 
 extern android_camera_ctx_t *android_camera_create(int width, int height,
-                                                   int framerate, int facing);
+                                                   int min_framerate,
+                                                   int max_framerate,
+                                                   const char *camera_id);
 extern void android_camera_destroy(android_camera_ctx_t *ctx);
 extern int android_camera_start(android_camera_ctx_t *ctx);
 extern int android_camera_stop(android_camera_ctx_t *ctx);
@@ -70,6 +77,12 @@ typedef struct {
 typedef struct {
     android_camera_ctx_t *native;
 } android_video_platform_t;
+
+typedef struct {
+    char camera_id[128];
+    ACameraManager *manager;
+    ACameraMetadata *metadata;
+} android_video_device_ctx_t;
 
 typedef struct {
     android_screen_ctx_t *native;
@@ -135,13 +148,205 @@ int turbo_capture_list_video_devices(turbo_capture_device_t *devices, int max_co
     return 2;
 }
 
-int turbo_capture_list_video_modes(const char *device_id,
-                                   turbo_video_capture_mode_t *modes,
-                                   int max_count) {
-    (void)device_id;
-    (void)modes;
-    (void)max_count;
-    return TURBO_CAPTURE_ERR_UNSUPPORTED;
+static int android_video_mode_from_metadata(
+    const ACameraMetadata *metadata,
+    uint64_t mode_id,
+    turbo_video_native_mode_t *mode,
+    int *out_min_framerate,
+    int *out_max_framerate) {
+    ACameraMetadata_const_entry configurations;
+    ACameraMetadata_const_entry fps_ranges;
+    ACameraMetadata_const_entry min_frame_durations;
+    uint32_t stream_index = (uint32_t)(mode_id >> 32);
+    uint32_t fps_index = (uint32_t)mode_id;
+    uint32_t configuration_offset;
+    uint32_t fps_offset;
+    int32_t min_framerate;
+    int32_t max_framerate;
+    int64_t min_frame_duration = 0;
+
+    if (!metadata || !mode ||
+        ACameraMetadata_getConstEntry(
+            metadata, ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS,
+            &configurations) != ACAMERA_OK ||
+        ACameraMetadata_getConstEntry(
+            metadata, ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES,
+            &fps_ranges) != ACAMERA_OK ||
+        ACameraMetadata_getConstEntry(
+            metadata, ACAMERA_SCALER_AVAILABLE_MIN_FRAME_DURATIONS,
+            &min_frame_durations) != ACAMERA_OK) {
+        return TURBO_CAPTURE_ERR_DEVICE;
+    }
+
+    configuration_offset = stream_index * 4u;
+    fps_offset = fps_index * 2u;
+    if (configuration_offset + 3u >= configurations.count ||
+        fps_offset + 1u >= fps_ranges.count ||
+        configurations.data.i32[configuration_offset] !=
+            AIMAGE_FORMAT_YUV_420_888 ||
+        configurations.data.i32[configuration_offset + 3u] !=
+            ANDROID_STREAM_CONFIGURATION_OUTPUT) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+
+    min_framerate = fps_ranges.data.i32[fps_offset];
+    max_framerate = fps_ranges.data.i32[fps_offset + 1u];
+    if (configurations.data.i32[configuration_offset + 1u] <= 0 ||
+        configurations.data.i32[configuration_offset + 2u] <= 0 ||
+        min_framerate <= 0 || max_framerate != min_framerate) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+
+    for (uint32_t offset = 0; offset + 3u < min_frame_durations.count;
+         offset += 4u) {
+        if (min_frame_durations.data.i64[offset] ==
+                configurations.data.i32[configuration_offset] &&
+            min_frame_durations.data.i64[offset + 1u] ==
+                configurations.data.i32[configuration_offset + 1u] &&
+            min_frame_durations.data.i64[offset + 2u] ==
+                configurations.data.i32[configuration_offset + 2u]) {
+            min_frame_duration = min_frame_durations.data.i64[offset + 3u];
+            break;
+        }
+    }
+    if (min_frame_duration <= 0 ||
+        max_framerate > INT64_C(1000000000) / min_frame_duration) {
+        return TURBO_CAPTURE_ERR_UNSUPPORTED;
+    }
+
+    mode->width = configurations.data.i32[configuration_offset + 1u];
+    mode->height = configurations.data.i32[configuration_offset + 2u];
+    mode->framerate_numerator = (uint32_t)max_framerate;
+    mode->framerate_denominator = 1;
+    mode->format = TURBO_VIDEO_CAPTURE_FORMAT_I420;
+    mode->mode_id = mode_id;
+    if (out_min_framerate) *out_min_framerate = min_framerate;
+    if (out_max_framerate) *out_max_framerate = max_framerate;
+    return TURBO_CAPTURE_OK;
+}
+
+static int android_video_device_open(const char *device_id,
+                                     void **backend_ctx) {
+    android_video_device_ctx_t *ctx;
+    ACameraManager *manager;
+    ACameraIdList *camera_ids = NULL;
+    int use_facing;
+    int requested_facing;
+
+    if (!backend_ctx) return TURBO_CAPTURE_ERR_FORMAT;
+    *backend_ctx = NULL;
+    use_facing = !device_id || !device_id[0] ||
+                 strcmp(device_id, "back") == 0 ||
+                 strcmp(device_id, "front") == 0;
+    requested_facing = device_id && strcmp(device_id, "front") == 0
+                           ? ACAMERA_LENS_FACING_FRONT
+                           : ACAMERA_LENS_FACING_BACK;
+
+    manager = ACameraManager_create();
+    if (!manager ||
+        ACameraManager_getCameraIdList(manager, &camera_ids) != ACAMERA_OK ||
+        !camera_ids) {
+        if (camera_ids) ACameraManager_deleteCameraIdList(camera_ids);
+        if (manager) ACameraManager_delete(manager);
+        return TURBO_CAPTURE_ERR_DEVICE;
+    }
+
+    ctx = (android_video_device_ctx_t *)calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        ACameraManager_deleteCameraIdList(camera_ids);
+        ACameraManager_delete(manager);
+        return TURBO_CAPTURE_ERR_NOMEM;
+    }
+    ctx->manager = manager;
+
+    for (int i = 0; i < camera_ids->numCameras; ++i) {
+        const char *camera_id = camera_ids->cameraIds[i];
+        ACameraMetadata *metadata = NULL;
+        ACameraMetadata_const_entry lens_facing = {0};
+        int matches = !use_facing && device_id &&
+                      strcmp(device_id, camera_id) == 0;
+
+        if (ACameraManager_getCameraCharacteristics(
+                manager, camera_id, &metadata) != ACAMERA_OK || !metadata) {
+            continue;
+        }
+        if (use_facing &&
+            ACameraMetadata_getConstEntry(
+                metadata, ACAMERA_LENS_FACING, &lens_facing) == ACAMERA_OK &&
+            lens_facing.count > 0 &&
+            lens_facing.data.u8[0] == requested_facing) {
+            matches = 1;
+        }
+        if (matches && strlen(camera_id) < sizeof(ctx->camera_id)) {
+            memcpy(ctx->camera_id, camera_id, strlen(camera_id) + 1);
+            ctx->metadata = metadata;
+            break;
+        }
+        ACameraMetadata_free(metadata);
+    }
+    ACameraManager_deleteCameraIdList(camera_ids);
+
+    if (!ctx->metadata) {
+        ACameraManager_delete(ctx->manager);
+        free(ctx);
+        return TURBO_CAPTURE_ERR_DEVICE;
+    }
+    *backend_ctx = ctx;
+    return TURBO_CAPTURE_OK;
+}
+
+static void android_video_device_close(void *backend_ctx) {
+    android_video_device_ctx_t *ctx =
+        (android_video_device_ctx_t *)backend_ctx;
+    if (!ctx) return;
+    if (ctx->metadata) ACameraMetadata_free(ctx->metadata);
+    if (ctx->manager) ACameraManager_delete(ctx->manager);
+    free(ctx);
+}
+
+static int android_video_device_list_modes(
+    void *backend_ctx,
+    turbo_video_native_mode_t *modes,
+    size_t capacity,
+    size_t *out_count) {
+    android_video_device_ctx_t *ctx =
+        (android_video_device_ctx_t *)backend_ctx;
+    ACameraMetadata_const_entry configurations;
+    ACameraMetadata_const_entry fps_ranges;
+    uint32_t stream_count;
+    uint32_t fps_count;
+    size_t count = 0;
+
+    if (!ctx || !modes || capacity == 0 || !out_count) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+    if (ACameraMetadata_getConstEntry(
+            ctx->metadata, ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS,
+            &configurations) != ACAMERA_OK ||
+        ACameraMetadata_getConstEntry(
+            ctx->metadata, ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES,
+            &fps_ranges) != ACAMERA_OK) {
+        return TURBO_CAPTURE_ERR_DEVICE;
+    }
+
+    memset(modes, 0, sizeof(*modes) * capacity);
+    stream_count = configurations.count / 4u;
+    fps_count = fps_ranges.count / 2u;
+    for (uint32_t stream_index = 0; stream_index < stream_count;
+         ++stream_index) {
+        for (uint32_t fps_index = 0; fps_index < fps_count; ++fps_index) {
+            uint64_t mode_id = ((uint64_t)stream_index << 32) | fps_index;
+            if (android_video_mode_from_metadata(
+                    ctx->metadata, mode_id, &modes[count], NULL, NULL) ==
+                TURBO_CAPTURE_OK) {
+                if (++count == capacity) goto done;
+            }
+        }
+    }
+
+done:
+    *out_count = count;
+    return TURBO_CAPTURE_OK;
 }
 
 int turbo_capture_list_screens(turbo_capture_device_t *devices, int max_count) {
@@ -191,34 +396,73 @@ turbo_capture_t *turbo_audio_capture_create(const char *device_id,
     return capture;
 }
 
-turbo_capture_t *turbo_video_capture_create(const char *device_id,
-                                            const turbo_video_capture_config_t *config) {
-    turbo_capture_t *capture = (turbo_capture_t *)calloc(1, sizeof(*capture));
-    android_video_platform_t *platform =
-        (android_video_platform_t *)calloc(1, sizeof(*platform));
+static int android_video_device_create_capture(
+    void *backend_ctx,
+    const turbo_video_native_mode_t *mode,
+    turbo_capture_t **out_capture) {
+    android_video_device_ctx_t *device =
+        (android_video_device_ctx_t *)backend_ctx;
+    ACameraMetadata *metadata = NULL;
+    turbo_video_native_mode_t actual_mode;
+    turbo_capture_t *capture;
+    android_video_platform_t *platform;
+    int min_framerate = 0;
+    int max_framerate = 0;
+
+    if (!device || !mode || !out_capture) return TURBO_CAPTURE_ERR_FORMAT;
+    *out_capture = NULL;
+    if (ACameraManager_getCameraCharacteristics(
+            device->manager, device->camera_id, &metadata) != ACAMERA_OK ||
+        !metadata) {
+        return TURBO_CAPTURE_ERR_DEVICE;
+    }
+    if (android_video_mode_from_metadata(
+            metadata, mode->mode_id, &actual_mode,
+            &min_framerate, &max_framerate) != TURBO_CAPTURE_OK ||
+        actual_mode.width != mode->width ||
+        actual_mode.height != mode->height ||
+        actual_mode.framerate_numerator != mode->framerate_numerator ||
+        actual_mode.framerate_denominator != mode->framerate_denominator ||
+        actual_mode.format != mode->format ||
+        actual_mode.mode_id != mode->mode_id) {
+        ACameraMetadata_free(metadata);
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+    ACameraMetadata_free(metadata);
+
+    capture = (turbo_capture_t *)calloc(1, sizeof(*capture));
+    platform = (android_video_platform_t *)calloc(1, sizeof(*platform));
     if (!capture || !platform) {
         free(capture);
         free(platform);
-        return NULL;
+        return TURBO_CAPTURE_ERR_NOMEM;
     }
-
-    int width = (config && config->width > 0) ? config->width : 640;
-    int height = (config && config->height > 0) ? config->height : 480;
-    int framerate = (config && config->framerate > 0) ? config->framerate : 30;
-    int facing = (device_id && strcmp(device_id, "front") == 0) ? 1 : 0;
-
-    platform->native = android_camera_create(width, height, framerate, facing);
+    platform->native = android_camera_create(
+        mode->width, mode->height, min_framerate, max_framerate,
+        device->camera_id);
     if (!platform->native) {
         free(platform);
         free(capture);
-        return NULL;
+        return TURBO_CAPTURE_ERR_DEVICE;
     }
 
     capture->type = TURBO_CAPTURE_TYPE_VIDEO;
     capture->state = TURBO_CAPTURE_STATE_STOPPED;
     capture->platform_ctx = platform;
-    android_camera_set_callback(platform->native, android_video_callback, capture);
-    return capture;
+    android_camera_set_callback(platform->native,
+                                android_video_callback, capture);
+    *out_capture = capture;
+    return TURBO_CAPTURE_OK;
+}
+
+const turbo_video_backend_ops_t *turbo_video_platform_backend(void) {
+    static const turbo_video_backend_ops_t ops = {
+        android_video_device_open,
+        android_video_device_close,
+        android_video_device_list_modes,
+        android_video_device_create_capture
+    };
+    return &ops;
 }
 
 turbo_capture_t *turbo_screen_capture_create(const turbo_screen_capture_config_t *config) {

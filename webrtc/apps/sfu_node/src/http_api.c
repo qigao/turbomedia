@@ -562,6 +562,7 @@ static sfu_node_command_access_t command_access_for_type(const char *type) {
 
     if (strcmp(type, "force_close_room") == 0 ||
         strcmp(type, "detach_room") == 0 ||
+        strcmp(type, "disconnect_media_participant") == 0 ||
         strcmp(type, "set_node_drain") == 0 ||
         strcmp(type, "start_recording") == 0 ||
         strcmp(type, "stop_recording") == 0) {
@@ -1396,6 +1397,17 @@ static void handle_command(Req *req, Res *res) {
         if (rc == 0 && room_id && session_id) {
             sfu_node_app_server_remove_webrtc_session(server, room_id, session_id);
         }
+    } else if (strcmp(type, "disconnect_media_participant") == 0) {
+        const char *participant_id = json_string_field(root, "participant_id");
+
+        if (!room_id || !participant_id) {
+            send_error_json(res, 400, "INVALID_REQUEST",
+                            "missing room_id or participant_id");
+            turbo_free_json(&root);
+            return;
+        }
+        rc = sfu_node_app_server_disconnect_media_participant(
+            server, room_id, participant_id);
     } else if (strcmp(type, "create_webrtc_session") == 0) {
         const char *participant_id = json_string_field(root, "participant_id");
         const char *session_id = json_string_field(root, "session_id");
@@ -1554,11 +1566,11 @@ static void handle_command(Req *req, Res *res) {
             subscription.max_layer = subscription.preferred_layer;
         }
 
-        rc = turbo_sfu_node_apply_track_subscription(node, room_id, &subscription);
-        if (rc == 0) {
-            rc = sfu_node_app_server_apply_track_subscription(
-                server, room_id, &subscription);
-        }
+        /* The app server owns desired subscription state. It accepts a
+           subscription before the WHEP receiver exists and applies it to the
+           core SFU when that receiver session is created. */
+        rc = sfu_node_app_server_apply_track_subscription(
+            server, room_id, &subscription);
     } else if (strcmp(type, "start_recording") == 0) {
         const char *recording_id = json_string_field(root, "recording_id");
         const char *mode = json_string_field(root, "mode");

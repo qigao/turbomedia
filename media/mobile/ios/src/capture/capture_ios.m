@@ -7,6 +7,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #include "turbo_capture.h"
+#include "capture_video_ios_backend.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,6 +31,70 @@ static void copy_nsstring(char *dst, size_t dst_size, NSString *value) {
         strncpy(dst, utf8, dst_size - 1);
         dst[dst_size - 1] = '\0';
     }
+}
+
+AVCaptureDevice *ios_video_find_device(const char *device_id) {
+    if (device_id && device_id[0]) {
+        NSString *unique_id = [NSString stringWithUTF8String:device_id];
+        return unique_id ? [AVCaptureDevice deviceWithUniqueID:unique_id] : nil;
+    }
+    return [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+}
+
+static uint64_t ios_video_mode_id(uint32_t format_index,
+                                  uint32_t range_index,
+                                  uint32_t endpoint) {
+    return ((uint64_t)format_index << 32) |
+           ((uint64_t)range_index << 1) |
+           endpoint;
+}
+
+int ios_video_make_mode(AVCaptureDevice *device,
+                        uint32_t format_index,
+                        uint32_t range_index,
+                        uint32_t endpoint,
+                        turbo_video_native_mode_t *mode,
+                        AVCaptureDeviceFormat **out_format,
+                        CMTime *out_duration) {
+    if (!device || !mode || endpoint > 1 ||
+        format_index >= (uint32_t)device.formats.count) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+
+    AVCaptureDeviceFormat *format = device.formats[format_index];
+    NSArray<AVFrameRateRange *> *ranges = format.videoSupportedFrameRateRanges;
+    if (range_index >= (uint32_t)ranges.count) return TURBO_CAPTURE_ERR_FORMAT;
+
+    AVFrameRateRange *range = ranges[range_index];
+    CMTime duration = endpoint == 0 ? range.minFrameDuration
+                                    : range.maxFrameDuration;
+    CMVideoDimensions dimensions =
+        CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+    if (!CMTIME_IS_NUMERIC(duration) || duration.value <= 0 ||
+        duration.timescale <= 0 ||
+        (uint64_t)duration.value > UINT32_MAX ||
+        (uint64_t)duration.timescale > UINT32_MAX ||
+        dimensions.width <= 0 || dimensions.height <= 0) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+
+    mode->width = dimensions.width;
+    mode->height = dimensions.height;
+    mode->framerate_numerator = (uint32_t)duration.timescale;
+    mode->framerate_denominator = (uint32_t)duration.value;
+    mode->format = TURBO_VIDEO_CAPTURE_FORMAT_NV12;
+    mode->mode_id = ios_video_mode_id(format_index, range_index, endpoint);
+    if (out_format) *out_format = format;
+    if (out_duration) *out_duration = duration;
+    return TURBO_CAPTURE_OK;
+}
+
+int ios_video_modes_equal(const turbo_video_native_mode_t *lhs,
+                          const turbo_video_native_mode_t *rhs) {
+    return lhs->width == rhs->width && lhs->height == rhs->height &&
+           lhs->framerate_numerator == rhs->framerate_numerator &&
+           lhs->framerate_denominator == rhs->framerate_denominator &&
+           lhs->format == rhs->format && lhs->mode_id == rhs->mode_id;
 }
 
 int turbo_capture_list_video_devices(turbo_capture_device_t *devices, int max_count) {
@@ -59,13 +124,87 @@ int turbo_capture_list_video_devices(turbo_capture_device_t *devices, int max_co
     }
 }
 
-int turbo_capture_list_video_modes(const char *device_id,
-                                   turbo_video_capture_mode_t *modes,
-                                   int max_count) {
-    (void)device_id;
-    (void)modes;
-    (void)max_count;
-    return TURBO_CAPTURE_ERR_UNSUPPORTED;
+static int ios_video_device_open(const char *device_id, void **backend_ctx) {
+    ios_video_device_ctx_t *ctx;
+
+    if (!backend_ctx) return TURBO_CAPTURE_ERR_FORMAT;
+    *backend_ctx = NULL;
+    @autoreleasepool {
+        AVCaptureDevice *device = ios_video_find_device(device_id);
+        const char *unique_id;
+        if (!device) return TURBO_CAPTURE_ERR_DEVICE;
+        unique_id = [device.uniqueID UTF8String];
+        if (!unique_id || strlen(unique_id) >= sizeof(ctx->device_id)) {
+            return TURBO_CAPTURE_ERR_FORMAT;
+        }
+
+        ctx = (ios_video_device_ctx_t *)calloc(1, sizeof(*ctx));
+        if (!ctx) return TURBO_CAPTURE_ERR_NOMEM;
+        memcpy(ctx->device_id, unique_id, strlen(unique_id) + 1);
+        *backend_ctx = ctx;
+        return TURBO_CAPTURE_OK;
+    }
+}
+
+static void ios_video_device_close(void *backend_ctx) {
+    free(backend_ctx);
+}
+
+static int ios_video_device_list_modes(
+    void *backend_ctx,
+    turbo_video_native_mode_t *modes,
+    size_t capacity,
+    size_t *out_count) {
+    ios_video_device_ctx_t *ctx = (ios_video_device_ctx_t *)backend_ctx;
+    size_t count = 0;
+
+    if (!ctx || !modes || capacity == 0 || !out_count) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+    memset(modes, 0, sizeof(*modes) * capacity);
+
+    @autoreleasepool {
+        AVCaptureDevice *device = ios_video_find_device(ctx->device_id);
+        if (!device) return TURBO_CAPTURE_ERR_DEVICE;
+
+        for (uint32_t format_index = 0;
+             format_index < (uint32_t)device.formats.count;
+             ++format_index) {
+            AVCaptureDeviceFormat *format = device.formats[format_index];
+            NSArray<AVFrameRateRange *> *ranges =
+                format.videoSupportedFrameRateRanges;
+            for (uint32_t range_index = 0;
+                 range_index < (uint32_t)ranges.count;
+                 ++range_index) {
+                AVFrameRateRange *range = ranges[range_index];
+                if (ios_video_make_mode(device, format_index, range_index, 0,
+                                        &modes[count], NULL, NULL) ==
+                    TURBO_CAPTURE_OK) {
+                    if (++count == capacity) goto done;
+                }
+                if (CMTimeCompare(range.minFrameDuration,
+                                  range.maxFrameDuration) != 0 &&
+                    ios_video_make_mode(device, format_index, range_index, 1,
+                                        &modes[count], NULL, NULL) ==
+                        TURBO_CAPTURE_OK) {
+                    if (++count == capacity) goto done;
+                }
+            }
+        }
+done:
+        *out_count = count;
+        return TURBO_CAPTURE_OK;
+    }
+}
+
+const turbo_video_backend_ops_t *turbo_video_platform_backend(void) {
+    static const turbo_video_backend_ops_t ops = {
+        ios_video_device_open,
+        ios_video_device_close,
+        ios_video_device_list_modes,
+        ios_video_device_create_capture
+    };
+    return &ops;
 }
 
 int turbo_capture_list_audio_devices(turbo_capture_device_t *devices, int max_count) {

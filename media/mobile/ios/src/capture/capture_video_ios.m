@@ -8,6 +8,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #include "turbo_capture.h"
+#include "capture_video_ios_backend.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -130,51 +131,61 @@ void ios_video_destroy(turbo_capture_t *capture) {
     }
 }
 
-turbo_capture_t *turbo_video_capture_create(const char *device_id,
-                                            const turbo_video_capture_config_t *config) {
-    @autoreleasepool {
-        ios_video_capture_t *cap = calloc(1, sizeof(ios_video_capture_t));
-        if (!cap) return NULL;
+int ios_video_device_create_capture(
+    void *backend_ctx,
+    const turbo_video_native_mode_t *mode,
+    turbo_capture_t **out_capture) {
+    ios_video_device_ctx_t *device_ctx =
+        (ios_video_device_ctx_t *)backend_ctx;
+    uint32_t format_index = (uint32_t)(mode->mode_id >> 32);
+    uint32_t range_index =
+        (uint32_t)(mode->mode_id & UINT32_MAX) >> 1;
+    uint32_t endpoint = (uint32_t)(mode->mode_id & 1u);
 
+    if (!device_ctx || !mode || !out_capture) return TURBO_CAPTURE_ERR_FORMAT;
+    *out_capture = NULL;
+
+    @autoreleasepool {
+        AVCaptureDevice *device = ios_video_find_device(device_ctx->device_id);
+        turbo_video_native_mode_t actual_mode;
+        AVCaptureDeviceFormat *selected_format = nil;
+        CMTime duration = kCMTimeInvalid;
+        NSError *error = nil;
+        ios_video_capture_t *cap;
+
+        if (!device ||
+            ios_video_make_mode(device, format_index, range_index, endpoint,
+                                &actual_mode, &selected_format, &duration) !=
+                TURBO_CAPTURE_OK ||
+            !ios_video_modes_equal(&actual_mode, mode)) {
+            return TURBO_CAPTURE_ERR_FORMAT;
+        }
+
+        cap = (ios_video_capture_t *)calloc(1, sizeof(*cap));
+        if (!cap) return TURBO_CAPTURE_ERR_NOMEM;
         cap->base.type = TURBO_CAPTURE_TYPE_VIDEO;
         cap->base.state = TURBO_CAPTURE_STATE_STOPPED;
         cap->base.platform_ctx = cap;
-        cap->width = (config && config->width > 0) ? config->width : 640;
-        cap->height = (config && config->height > 0) ? config->height : 480;
-        cap->fps = (config && config->framerate > 0) ? config->framerate : 30;
+        cap->device = device;
+        cap->width = mode->width;
+        cap->height = mode->height;
+        cap->fps = (int)(((uint64_t)mode->framerate_numerator +
+                          mode->framerate_denominator / 2u) /
+                         mode->framerate_denominator);
 
-        if (device_id && strlen(device_id) > 0) {
-            NSString *unique_id = [NSString stringWithUTF8String:device_id];
-            cap->device = [AVCaptureDevice deviceWithUniqueID:unique_id];
-        }
-
-        if (!cap->device) {
-            cap->device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-        }
-
-        if (!cap->device) {
-            NSLog(@"[VideoCapture] No camera found");
-            free(cap);
-            return NULL;
-        }
+        if (![device lockForConfiguration:&error]) goto error;
+        device.activeFormat = selected_format;
+        device.activeVideoMinFrameDuration = duration;
+        device.activeVideoMaxFrameDuration = duration;
+        [device unlockForConfiguration];
 
         cap->session = [[AVCaptureSession alloc] init];
-        if (cap->width >= 1920) {
-            cap->session.sessionPreset = AVCaptureSessionPreset1920x1080;
-        } else if (cap->width >= 1280) {
-            cap->session.sessionPreset = AVCaptureSessionPreset1280x720;
-        } else if (cap->width >= 640) {
-            cap->session.sessionPreset = AVCaptureSessionPreset640x480;
-        } else {
-            cap->session.sessionPreset = AVCaptureSessionPresetMedium;
-        }
-
-        NSError *error = nil;
-        cap->input = [AVCaptureDeviceInput deviceInputWithDevice:cap->device error:&error];
-        if (error || !cap->input || ![cap->session canAddInput:cap->input]) {
-            NSLog(@"[VideoCapture] Failed to create input: %@", error);
-            ios_video_destroy((turbo_capture_t *)cap);
-            return NULL;
+        if (!cap->session) goto error;
+        cap->input = [AVCaptureDeviceInput deviceInputWithDevice:device
+                                                           error:&error];
+        if (error || !cap->input ||
+            ![cap->session canAddInput:cap->input]) {
+            goto error;
         }
         [cap->session addInput:cap->input];
 
@@ -183,46 +194,38 @@ turbo_capture_t *turbo_video_capture_create(const char *device_id,
             (NSString *)kCVPixelBufferPixelFormatTypeKey :
                 @(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
         };
-
         cap->delegate = [[TurboVideoCaptureDelegate alloc] init];
-        cap->queue = dispatch_queue_create("com.turbomedia.video.capture", DISPATCH_QUEUE_SERIAL);
+        cap->queue = dispatch_queue_create(
+            "com.turbomedia.video.capture", DISPATCH_QUEUE_SERIAL);
         [cap->output setSampleBufferDelegate:cap->delegate queue:cap->queue];
-
-        if (![cap->session canAddOutput:cap->output]) {
-            NSLog(@"[VideoCapture] Cannot add output");
-            ios_video_destroy((turbo_capture_t *)cap);
-            return NULL;
-        }
+        if (![cap->session canAddOutput:cap->output]) goto error;
         [cap->session addOutput:cap->output];
-
-        if ([cap->device lockForConfiguration:&error]) {
-            CMTime frame_duration = CMTimeMake(1, cap->fps);
-            cap->device.activeVideoMinFrameDuration = frame_duration;
-            cap->device.activeVideoMaxFrameDuration = frame_duration;
-            [cap->device unlockForConfiguration];
-        }
 
         ios_video_capture_t *cap_ref = cap;
         cap->delegate.frameCallback = ^(CVPixelBufferRef pixel_buffer) {
             if (!cap_ref || !cap_ref->base.video_cb) return;
 
-            CVPixelBufferLockBaseAddress(pixel_buffer, kCVPixelBufferLock_ReadOnly);
-
+            CVPixelBufferLockBaseAddress(pixel_buffer,
+                                         kCVPixelBufferLock_ReadOnly);
             int width = 0;
             int height = 0;
             size_t len = 0;
-            uint8_t *frame = copy_nv12_frame(cap_ref, pixel_buffer, &width, &height, &len);
+            uint8_t *frame = copy_nv12_frame(
+                cap_ref, pixel_buffer, &width, &height, &len);
             if (frame) {
                 cap_ref->base.video_cb((turbo_capture_t *)cap_ref, frame, len,
                                        width, height, now_us(),
                                        cap_ref->base.user_data);
             }
-
-            CVPixelBufferUnlockBaseAddress(pixel_buffer, kCVPixelBufferLock_ReadOnly);
+            CVPixelBufferUnlockBaseAddress(pixel_buffer,
+                                           kCVPixelBufferLock_ReadOnly);
         };
 
-        NSLog(@"[VideoCapture] Created: %@ (%dx%d @ %d fps)",
-              cap->device.localizedName, cap->width, cap->height, cap->fps);
-        return (turbo_capture_t *)cap;
+        *out_capture = (turbo_capture_t *)cap;
+        return TURBO_CAPTURE_OK;
+
+error:
+        ios_video_destroy((turbo_capture_t *)cap);
+        return TURBO_CAPTURE_ERR_DEVICE;
     }
 }

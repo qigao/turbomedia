@@ -105,7 +105,7 @@ suite("WebRTC speech integration") {
     check_int_eq(provider_context.destroy_count, 1);
   }
 
-  it("accepts matching TTS PCM through the audio track send path") {
+  it("requires SRTP before sending matching TTS PCM") {
     enum { PCM_SAMPLES = 160 };
     int16_t pcm[PCM_SAMPLES];
     turbo_speech_audio_frame_t frame = {
@@ -132,7 +132,7 @@ suite("WebRTC speech integration") {
     track = turbo_media_add_track(media, &track_config);
     check_not_null(track);
     check_int_eq(turbo_media_track_start(track), 0);
-    check_int_eq(turbo_media_track_send_speech_frame(track, &frame), 0);
+    check_int_eq(turbo_media_track_send_speech_frame(track, &frame), -1);
 
     frame.format.sample_rate = 16000;
     check_int_eq(turbo_media_track_send_speech_frame(track, &frame), -1);

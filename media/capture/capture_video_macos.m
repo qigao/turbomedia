@@ -4,6 +4,7 @@
  * Uses AVFoundation for camera capture
  */
 #import "turbo_capture.h"
+#import "capture_video_backend.h"
 
 #if defined(__APPLE__) && defined(__MACH__)
 
@@ -117,6 +118,76 @@ typedef struct {
     int framerate;
 } avf_video_ctx_t;
 
+typedef struct {
+    char device_id[128];
+} avf_video_device_ctx_t;
+
+void avfoundation_video_destroy(turbo_capture_t *capture);
+
+static AVCaptureDevice *avf_find_video_device(const char *device_id) {
+    if (device_id && device_id[0]) {
+        NSString *uniqueID = [NSString stringWithUTF8String:device_id];
+        return uniqueID ? [AVCaptureDevice deviceWithUniqueID:uniqueID] : nil;
+    }
+    return [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+}
+
+static uint64_t avf_mode_id(uint32_t format_index,
+                            uint32_t range_index,
+                            uint32_t endpoint) {
+    return ((uint64_t)format_index << 32) |
+           ((uint64_t)range_index << 1) |
+           endpoint;
+}
+
+static int avf_make_mode(AVCaptureDevice *device,
+                         uint32_t format_index,
+                         uint32_t range_index,
+                         uint32_t endpoint,
+                         turbo_video_native_mode_t *mode,
+                         AVCaptureDeviceFormat **out_format,
+                         CMTime *out_duration) {
+    if (!device || !mode || endpoint > 1 ||
+        format_index >= (uint32_t)device.formats.count) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+
+    AVCaptureDeviceFormat *format = device.formats[format_index];
+    NSArray<AVFrameRateRange *> *ranges = format.videoSupportedFrameRateRanges;
+    if (range_index >= (uint32_t)ranges.count) return TURBO_CAPTURE_ERR_FORMAT;
+
+    AVFrameRateRange *range = ranges[range_index];
+    CMTime duration = endpoint == 0 ? range.minFrameDuration
+                                    : range.maxFrameDuration;
+    CMVideoDimensions dimensions =
+        CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+    if (!CMTIME_IS_NUMERIC(duration) || duration.value <= 0 ||
+        duration.timescale <= 0 ||
+        (uint64_t)duration.value > UINT32_MAX ||
+        (uint64_t)duration.timescale > UINT32_MAX ||
+        dimensions.width <= 0 || dimensions.height <= 0) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+
+    mode->width = dimensions.width;
+    mode->height = dimensions.height;
+    mode->framerate_numerator = (uint32_t)duration.timescale;
+    mode->framerate_denominator = (uint32_t)duration.value;
+    mode->format = TURBO_VIDEO_CAPTURE_FORMAT_BGRA;
+    mode->mode_id = avf_mode_id(format_index, range_index, endpoint);
+    if (out_format) *out_format = format;
+    if (out_duration) *out_duration = duration;
+    return TURBO_CAPTURE_OK;
+}
+
+static int avf_modes_equal(const turbo_video_native_mode_t *lhs,
+                           const turbo_video_native_mode_t *rhs) {
+    return lhs->width == rhs->width && lhs->height == rhs->height &&
+           lhs->framerate_numerator == rhs->framerate_numerator &&
+           lhs->framerate_denominator == rhs->framerate_denominator &&
+           lhs->format == rhs->format && lhs->mode_id == rhs->mode_id;
+}
+
 /* =============================================================================
  * Device Enumeration
  * ============================================================================= */
@@ -163,129 +234,178 @@ int turbo_capture_list_video_devices(turbo_capture_device_t *devices, int max_co
     }
 }
 
-int turbo_capture_list_video_modes(const char *device_id,
-                                   turbo_video_capture_mode_t *modes,
-                                   int max_count) {
-    (void)device_id;
-    (void)modes;
-    (void)max_count;
-    return TURBO_CAPTURE_ERR_UNSUPPORTED;
+static int avf_video_device_open(const char *device_id, void **backend_ctx) {
+    avf_video_device_ctx_t *ctx;
+
+    if (!backend_ctx) return TURBO_CAPTURE_ERR_FORMAT;
+    *backend_ctx = NULL;
+    @autoreleasepool {
+        AVCaptureDevice *device = avf_find_video_device(device_id);
+        const char *unique_id;
+        if (!device) return TURBO_CAPTURE_ERR_DEVICE;
+        unique_id = [device.uniqueID UTF8String];
+        if (!unique_id || strlen(unique_id) >= sizeof(ctx->device_id)) {
+            return TURBO_CAPTURE_ERR_FORMAT;
+        }
+
+        ctx = (avf_video_device_ctx_t *)calloc(1, sizeof(*ctx));
+        if (!ctx) return TURBO_CAPTURE_ERR_NOMEM;
+        memcpy(ctx->device_id, unique_id, strlen(unique_id) + 1);
+        *backend_ctx = ctx;
+        return TURBO_CAPTURE_OK;
+    }
+}
+
+static void avf_video_device_close(void *backend_ctx) {
+    free(backend_ctx);
+}
+
+static int avf_video_device_list_modes(
+    void *backend_ctx,
+    turbo_video_native_mode_t *modes,
+    size_t capacity,
+    size_t *out_count) {
+    avf_video_device_ctx_t *ctx = (avf_video_device_ctx_t *)backend_ctx;
+    size_t count = 0;
+
+    if (!ctx || !modes || capacity == 0 || !out_count) {
+        return TURBO_CAPTURE_ERR_FORMAT;
+    }
+    memset(modes, 0, sizeof(*modes) * capacity);
+
+    @autoreleasepool {
+        AVCaptureDevice *device = avf_find_video_device(ctx->device_id);
+        if (!device) return TURBO_CAPTURE_ERR_DEVICE;
+
+        for (uint32_t format_index = 0;
+             format_index < (uint32_t)device.formats.count;
+             ++format_index) {
+            AVCaptureDeviceFormat *format = device.formats[format_index];
+            NSArray<AVFrameRateRange *> *ranges =
+                format.videoSupportedFrameRateRanges;
+            for (uint32_t range_index = 0;
+                 range_index < (uint32_t)ranges.count;
+                 ++range_index) {
+                AVFrameRateRange *range = ranges[range_index];
+                if (avf_make_mode(device, format_index, range_index, 0,
+                                  &modes[count], NULL, NULL) ==
+                    TURBO_CAPTURE_OK) {
+                    if (++count == capacity) goto done;
+                }
+                if (CMTimeCompare(range.minFrameDuration,
+                                  range.maxFrameDuration) != 0 &&
+                    avf_make_mode(device, format_index, range_index, 1,
+                                  &modes[count], NULL, NULL) ==
+                        TURBO_CAPTURE_OK) {
+                    if (++count == capacity) goto done;
+                }
+            }
+        }
+done:
+        *out_count = count;
+        return TURBO_CAPTURE_OK;
+    }
 }
 
 /* =============================================================================
  * Video Capture Implementation
  * ============================================================================= */
 
-turbo_capture_t *turbo_video_capture_create(const char *device_id,
-                                             const turbo_video_capture_config_t *config) {
-    @autoreleasepool {
-        turbo_capture_t *capture = (turbo_capture_t *)calloc(1, sizeof(turbo_capture_t));
-        if (!capture) return NULL;
+static int avf_video_device_create_capture(
+    void *backend_ctx,
+    const turbo_video_native_mode_t *mode,
+    turbo_capture_t **out_capture) {
+    avf_video_device_ctx_t *device_ctx =
+        (avf_video_device_ctx_t *)backend_ctx;
+    uint32_t format_index = (uint32_t)(mode->mode_id >> 32);
+    uint32_t range_index =
+        (uint32_t)(mode->mode_id & UINT32_MAX) >> 1;
+    uint32_t endpoint = (uint32_t)(mode->mode_id & 1u);
 
-        avf_video_ctx_t *ctx = (avf_video_ctx_t *)calloc(1, sizeof(avf_video_ctx_t));
-        if (!ctx) {
-            free(capture);
-            return NULL;
+    if (!device_ctx || !mode || !out_capture) return TURBO_CAPTURE_ERR_FORMAT;
+    *out_capture = NULL;
+
+    @autoreleasepool {
+        AVCaptureDevice *device = avf_find_video_device(device_ctx->device_id);
+        turbo_video_native_mode_t actual_mode;
+        AVCaptureDeviceFormat *selected_format = nil;
+        CMTime duration = kCMTimeInvalid;
+        NSError *error = nil;
+        turbo_capture_t *capture;
+        avf_video_ctx_t *ctx;
+
+        if (!device ||
+            avf_make_mode(device, format_index, range_index, endpoint,
+                          &actual_mode, &selected_format, &duration) !=
+                TURBO_CAPTURE_OK ||
+            !avf_modes_equal(&actual_mode, mode)) {
+            return TURBO_CAPTURE_ERR_FORMAT;
         }
 
+        capture = (turbo_capture_t *)calloc(1, sizeof(*capture));
+        ctx = (avf_video_ctx_t *)calloc(1, sizeof(*ctx));
+        if (!capture || !ctx) {
+            free(capture);
+            free(ctx);
+            return TURBO_CAPTURE_ERR_NOMEM;
+        }
         capture->type = TURBO_CAPTURE_TYPE_VIDEO;
         capture->state = TURBO_CAPTURE_STATE_STOPPED;
         capture->platform_ctx = ctx;
+        ctx->width = mode->width;
+        ctx->height = mode->height;
+        ctx->framerate = (int)(((uint64_t)mode->framerate_numerator +
+                                mode->framerate_denominator / 2u) /
+                               mode->framerate_denominator);
 
-        ctx->width = config ? config->width : 640;
-        ctx->height = config ? config->height : 480;
-        ctx->framerate = config ? config->framerate : 30;
+        if (![device lockForConfiguration:&error]) goto error;
+        device.activeFormat = selected_format;
+        device.activeVideoMinFrameDuration = duration;
+        device.activeVideoMaxFrameDuration = duration;
+        [device unlockForConfiguration];
 
-        /* Find device */
-        AVCaptureDevice *device = nil;
-
-        if (device_id && strlen(device_id) > 0) {
-            NSString *uniqueID = [NSString stringWithUTF8String:device_id];
-            device = [AVCaptureDevice deviceWithUniqueID:uniqueID];
-        }
-
-        if (!device) {
-            device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-        }
-
-        if (!device) {
-            free(ctx);
-            free(capture);
-            return NULL;
-        }
-
-        /* Create session */
         ctx->session = [[AVCaptureSession alloc] init];
-        if (!ctx->session) {
-            free(ctx);
-            free(capture);
-            return NULL;
-        }
-
-        /* Configure session preset based on resolution */
-        if (ctx->width >= 1920) {
-            ctx->session.sessionPreset = AVCaptureSessionPreset1920x1080;
-        } else if (ctx->width >= 1280) {
-            ctx->session.sessionPreset = AVCaptureSessionPreset1280x720;
-        } else if (ctx->width >= 640) {
-            ctx->session.sessionPreset = AVCaptureSessionPreset640x480;
-        } else {
-            ctx->session.sessionPreset = AVCaptureSessionPreset352x288;
-        }
-
-        /* Create input */
-        NSError *error = nil;
-        ctx->input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
-        if (!ctx->input || error) {
-            ctx->session = nil;
-            free(ctx);
-            free(capture);
-            return NULL;
-        }
-
-        if (![ctx->session canAddInput:ctx->input]) {
-            ctx->session = nil;
-            free(ctx);
-            free(capture);
-            return NULL;
+        if (!ctx->session) goto error;
+        ctx->input = [AVCaptureDeviceInput deviceInputWithDevice:device
+                                                           error:&error];
+        if (!ctx->input || error ||
+            ![ctx->session canAddInput:ctx->input]) {
+            goto error;
         }
         [ctx->session addInput:ctx->input];
 
-        /* Configure framerate */
-        if ([device lockForConfiguration:&error]) {
-            CMTime frameDuration = CMTimeMake(1, ctx->framerate);
-            device.activeVideoMinFrameDuration = frameDuration;
-            device.activeVideoMaxFrameDuration = frameDuration;
-            [device unlockForConfiguration];
-        }
-
-        /* Create output */
         ctx->output = [[AVCaptureVideoDataOutput alloc] init];
         ctx->output.videoSettings = @{
-            (NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA)
+            (NSString *)kCVPixelBufferPixelFormatTypeKey :
+                @(kCVPixelFormatType_32BGRA)
         };
         ctx->output.alwaysDiscardsLateVideoFrames = YES;
-
-        /* Create delegate */
         ctx->delegate = [[TurboVideoCaptureDelegate alloc] init];
         ctx->delegate.capture = capture;
-
-        /* Create capture queue */
-        ctx->captureQueue = dispatch_queue_create("turbo.video.capture", DISPATCH_QUEUE_SERIAL);
-        [ctx->output setSampleBufferDelegate:ctx->delegate queue:ctx->captureQueue];
-
-        if (![ctx->session canAddOutput:ctx->output]) {
-            ctx->session = nil;
-            ctx->output = nil;
-            ctx->delegate = nil;
-            free(ctx);
-            free(capture);
-            return NULL;
-        }
+        ctx->captureQueue = dispatch_queue_create(
+            "turbo.video.capture", DISPATCH_QUEUE_SERIAL);
+        [ctx->output setSampleBufferDelegate:ctx->delegate
+                                       queue:ctx->captureQueue];
+        if (![ctx->session canAddOutput:ctx->output]) goto error;
         [ctx->session addOutput:ctx->output];
 
-        return capture;
+        *out_capture = capture;
+        return TURBO_CAPTURE_OK;
+
+error:
+        avfoundation_video_destroy(capture);
+        return TURBO_CAPTURE_ERR_DEVICE;
     }
+}
+
+const turbo_video_backend_ops_t *turbo_video_platform_backend(void) {
+    static const turbo_video_backend_ops_t ops = {
+        avf_video_device_open,
+        avf_video_device_close,
+        avf_video_device_list_modes,
+        avf_video_device_create_capture
+    };
+    return &ops;
 }
 
 void turbo_video_capture_set_callback(turbo_capture_t *capture,

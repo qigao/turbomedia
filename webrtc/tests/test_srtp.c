@@ -1,6 +1,7 @@
 #include "tinytest_compat.h"
 #include "turbo_rtp.h"
 #include "turbo_srtp.h"
+#include <limits.h>
 #include <string.h>
 
 static void fill_keying_material(srtp_keying_material_t *keys) {
@@ -270,6 +271,33 @@ void test_srtp_shutdown_waits_for_active_sessions(void) {
   srtp_lib_shutdown();
 }
 
+void test_srtp_rejects_oversized_and_insufficient_buffers(void) {
+  srtp_keying_material_t keys;
+  srtp_session_config_t config;
+  srtp_session_t *session;
+  uint8_t packet[64] = {0};
+  size_t len;
+
+  fill_keying_material(&keys);
+  config = (srtp_session_config_t){
+      .is_sender = 1,
+      .is_dtls_client = 1,
+      .profile = SRTP_PROFILE_AES128_CM_SHA1_80,
+      .keys = &keys,
+  };
+  session = srtp_session_create(&config);
+  TEST_ASSERT_NOT_NULL(session);
+
+  len = sizeof(packet);
+  TEST_ASSERT_EQUAL_INT(-1, turbo_srtp_protect(session, packet, &len, sizeof(packet) - 1));
+  len = (size_t)INT_MAX + 1;
+  TEST_ASSERT_EQUAL_INT(-1, turbo_srtp_protect(session, packet, &len, SIZE_MAX));
+  len = (size_t)INT_MAX + 1;
+  TEST_ASSERT_EQUAL_INT(-1, turbo_srtp_unprotect(session, packet, &len));
+
+  srtp_session_destroy(session);
+}
+
 spec("test_srtp") {
   TT_TEST(test_srtp_dtls_client_sender_to_server_receiver);
   TT_TEST(test_srtp_dtls_server_sender_to_client_receiver);
@@ -277,4 +305,5 @@ spec("test_srtp") {
   TT_TEST(test_srtcp_dtls_server_sender_to_client_receiver);
   TT_TEST(test_srtcp_dtls_client_sender_to_server_receiver);
   TT_TEST(test_srtp_shutdown_waits_for_active_sessions);
+  TT_TEST(test_srtp_rejects_oversized_and_insufficient_buffers);
 }

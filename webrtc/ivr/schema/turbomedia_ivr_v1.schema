@@ -1,0 +1,281 @@
+// TurboMedia IVR v1 canonical schema.
+//
+// This file is the single source of truth for the IVR wire contract. TEXT
+// (compact UTF-8 JSON) and BIN are representations of the same schema objects;
+// no second hand-written wire struct set exists. Message ids below are the published
+// schema_type_id values and match the versioned constant table in
+// webrtc/ivr/src/ivr_frame.c. Published ids are never reused.
+//
+// Codegen (release gate): `tbe_compiler turbomedia_ivr_v1.schema --lang c
+// --output ... --source-output ...` renders owning .h/.c bound to the same
+// schema; the runtime DataBind object API used by tests shares this schema.
+
+schema TurboMediaIvrV1 [id(21001), byte_order(little)];
+
+// ---- commands (kind=command) ----
+
+[id(1001)]
+message ConferenceJoinCommandV1 {
+  string message_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 expected_room_version;
+  string participant_role;
+}
+
+[id(1002)]
+message ConferenceLeaveCommandV1 {
+  string message_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 expected_room_version;
+}
+
+[id(1003)]
+message TransferCommandV1 {
+  string message_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 expected_room_version;
+  string queue_id;
+}
+
+[id(1004)]
+message WorkerSyncCommandV1 {
+  string message_id;
+  string worker_id;
+}
+
+[id(1005)]
+message GetSnapshotCommandV1 {
+  string message_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+}
+
+[id(1006)]
+message CallDispatchCommandV1 {
+  string message_id;
+  string worker_id;         // target worker
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 expected_room_version;
+  string content_package;   // e.g. "conference-greeting"
+}
+
+[id(1007)]
+message WorkerSyncCommandV2 {
+  string message_id;
+  string worker_id;
+  string instance_id;
+  uint64 connection_generation;
+  uint32 max_sessions;
+  uint32 active_sessions;
+  uint32 reserved_sessions;
+  uint64 lease_duration_ms;
+  bool draining;
+  string capabilities;
+  uint64 health_generation;
+  bool health_ready;
+}
+
+[id(1008)]
+message WorkerHeartbeatV1 {
+  string message_id;
+  string worker_id;
+  string instance_id;
+  uint64 connection_generation;
+  uint32 max_sessions;
+  uint32 active_sessions;
+  uint32 reserved_sessions;
+  uint64 lease_duration_ms;
+  bool draining;
+  string capabilities;
+  uint64 health_generation;
+  bool health_ready;
+}
+
+[id(1009)]
+message CallReleaseCommandV1 {
+  string message_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  string reason;
+}
+
+[id(1010)]
+message CallDispatchCommandV2 {
+  string message_id;        // stable idempotency key for this attempt
+  string assignment_id;     // stable across all attempts for one call
+  string attempt_id;        // changes only when selecting another worker
+  string worker_id;
+  string worker_instance_id;
+  uint64 worker_connection_generation;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 expected_room_version;
+  string content_package;
+  string content_version;
+  uint64 deadline_timeout_ms; // relative TTL, evaluated on worker receipt
+}
+
+// Dispatch acceptance/rejection is a separate result frame. It does not
+// change CallDispatchCommandV1, so existing workers can continue decoding the
+// command while newer workers report the post-create session outcome.
+[id(2004)]
+message CallDispatchResultV1 {
+  string message_id;        // dispatch message_id / idempotency key
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  int32 status_code;         // 0 = accepted, negative = rejected
+  string error_code;
+  string error_message;
+}
+
+[id(2005)]
+message CallReleaseResultV1 {
+  string message_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  int32 status_code;
+  string error_code;
+  string error_message;
+}
+
+[id(2006)]
+message CallDispatchResultV2 {
+  string message_id;
+  string assignment_id;
+  string attempt_id;
+  string worker_id;
+  string worker_instance_id;
+  uint64 worker_connection_generation;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  int32 status_code;
+  uint32 active_sessions;
+  uint32 max_sessions;
+  string error_code;
+  string error_message;
+}
+
+// ---- results (kind=result) ----
+
+[id(2001)]
+message IvrCommandResultV1 {
+  string message_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  int32 status_code;
+  uint64 room_version;
+  uint64 sequence;
+  string error_code;
+  string error_message;
+}
+
+[id(2002)]
+message WorkerSyncResultV1 {
+  string message_id;
+  string worker_id;
+  int32 status_code;
+  string error_code;
+  string error_message;
+}
+
+[id(2003)]
+message RoomSnapshotV1 {
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 room_version;
+  uint64 last_sequence;
+  string participant_role;
+  string call_state; // alerting | accepted | dialog_active | closed
+}
+
+// ---- domain events (kind=event) ----
+
+[id(3001)]
+message ConferenceParticipantJoinedEventV1 {
+  string event_id;
+  string causation_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 room_version;
+  uint64 sequence;
+  uint64 occurred_at_ms;
+  string participant_id;
+  string participant_role;
+}
+
+[id(3002)]
+message DtmfFinalEventV1 {
+  string event_id;
+  string call_id;
+  uint64 call_generation;
+  string input_id;
+  string input_value;
+  uint64 occurred_at_ms;
+}
+
+[id(3003)]
+message AsrFinalEventV1 {
+  string event_id;
+  string call_id;
+  uint64 call_generation;
+  string input_id;
+  string input_value;
+  uint64 occurred_at_ms;
+}
+
+[id(3004)]
+message InputTimeoutEventV1 {
+  string event_id;
+  string call_id;
+  uint64 call_generation;
+  string input_id;
+  uint64 occurred_at_ms;
+}
+
+[id(3005)]
+message PlaybackFinishedEventV1 {
+  string event_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 occurred_at_ms;
+}
+
+[id(3006)]
+message IvrWorkerLostEventV1 {
+  string event_id;
+  string causation_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 room_version;
+  uint64 sequence;
+  uint64 occurred_at_ms;
+  string reason;
+}

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<vxml xmlns="http://www.w3.org/2001/vxml" version="2.1">
+  <form id="conference_menu">
+    <field name="choice">
+      <prompt bargein="true">Press 1 to join the conference. Press 2 to leave.</prompt>
+      <grammar mode="dtmf" root="menu" version="1.0">
+        <rule id="menu" scope="public">
+          <one-of>
+            <item>1</item>
+            <item>2</item>
+          </one-of>
+        </rule>
+      </grammar>
+      <filled>
+        <if cond="choice == '1'">
+          <submit next="ivr://command/conference.join" namelist="choice"/>
+          <else/>
+          <submit next="ivr://command/conference.leave" namelist="choice"/>
+        </if>
+      </filled>
+    </field>
+  </form>
+</vxml>

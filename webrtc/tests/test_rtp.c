@@ -314,6 +314,30 @@ void test_rtp_session_stats(void) {
   rtp_session_destroy(session);
 }
 
+void test_rtp_history_rejects_invalid_capacities(void) {
+  TEST_ASSERT_NULL(rtp_history_create(0, 1));
+  TEST_ASSERT_NULL(rtp_history_create(1, 0));
+  TEST_ASSERT_NULL(rtp_history_create((size_t)-1, 2));
+}
+
+void test_rtp_history_roundtrips_full_capacity_packet(void) {
+  enum { TEST_HISTORY_PACKET_SIZE = RTP_MAX_PACKET + 14 };
+  uint8_t packet[TEST_HISTORY_PACKET_SIZE];
+  uint8_t restored[TEST_HISTORY_PACKET_SIZE];
+  size_t restored_len = sizeof(restored);
+  rtp_history_t *history = rtp_history_create(2, sizeof(packet));
+
+  TEST_ASSERT_NOT_NULL(history);
+  memset(packet, 0x5a, sizeof(packet));
+  rtp_history_put(history, 7, packet, sizeof(packet));
+  TEST_ASSERT_EQUAL_INT(
+      0, rtp_history_get(history, 7, restored, &restored_len, sizeof(restored)));
+  TEST_ASSERT_EQUAL_size_t(sizeof(packet), restored_len);
+  TEST_ASSERT_EQUAL_MEMORY(packet, restored, sizeof(packet));
+
+  rtp_history_destroy(history);
+}
+
 /* =============================================================================
  * RTCP Tests
  * ============================================================================= */
@@ -455,6 +479,8 @@ spec("test_rtp") {
   TT_TEST(test_rtp_session_send_sequence_increment);
   TT_TEST(test_rtp_session_send_with_marker);
   TT_TEST(test_rtp_session_stats);
+  TT_TEST(test_rtp_history_rejects_invalid_capacities);
+  TT_TEST(test_rtp_history_roundtrips_full_capacity_packet);
 
   /* RTCP */
   TT_TEST(test_rtcp_compound_sr);

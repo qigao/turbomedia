@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  rtc_session.scxml: declarative RTC control for the ivr-bot peer. The adapter
+  runs this document with the TurboXML SCXML engine: events are injected with
+  {"name": ...} (init first, then receive), and <send> actions are captured via
+  the execution plugin on_execution_point ("name":"send"). The explicit id on
+  each <send> (send.rtc.join / send.rtc.reconnect / send.rtc.close) is the
+  capture anchor the adapter maps to ivr.command intents.
+-->
+<scxml xmlns="http://www.w3.org/2005/07/scxml" version="1.0" initial="idle">
+  <state id="idle">
+    <transition event="room.assigned" target="joining">
+      <send id="send.rtc.join" target="ivr.command" event="rtc.join">
+        <param name="role" expr="'ivr-bot'"/>
+      </send>
+    </transition>
+  </state>
+  <state id="joining">
+    <transition event="rtc.connected" target="active"/>
+    <transition event="rtc.failed" target="closing"/>
+    <transition event="provider.error" target="closing"/>
+  </state>
+  <state id="active">
+    <transition event="rtc.disconnected" target="reconnecting"/>
+    <transition event="media.input_stalled" target="reconnecting"/>
+    <transition event="provider.error" target="closing"/>
+    <transition event="call.terminal" target="closing"/>
+  </state>
+  <state id="reconnecting">
+    <onentry>
+      <send id="send.rtc.reconnect" target="ivr.command" event="rtc.reconnect"/>
+    </onentry>
+    <transition event="rtc.reconnected" target="active"/>
+    <transition event="rtc.retry_exhausted" target="closing"/>
+    <transition event="provider.error" target="closing"/>
+  </state>
+  <state id="closing">
+    <onentry>
+      <send id="send.rtc.close" target="ivr.command" event="rtc.close"/>
+    </onentry>
+    <transition event="rtc.closed" target="final"/>
+  </state>
+  <final id="final"/>
+</scxml>

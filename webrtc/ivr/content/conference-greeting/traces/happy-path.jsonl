@@ -1,0 +1,6 @@
+{"event":"room.assigned","sequence":1}
+{"event":"rtc.connected","sequence":2}
+{"event":"connection.alerting","sequence":3}
+{"event":"dtmf.final","input":"1","window":"w1"}
+{"command":"conference.join"}
+{"event":"room.participant.joined","sequence":4}

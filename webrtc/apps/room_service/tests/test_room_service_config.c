@@ -72,7 +72,31 @@ spec("room service TOML configuration") {
             "[runtime]\n"
             "dry_run = true\n"
             "[logging]\n"
-            "level = \"warn\"\n";
+            "level = \"warn\"\n"
+            "[fmq]\n"
+            "bind_host = \"127.0.0.1\"\n"
+            "bind_port = 17713\n"
+            "pub_port = 17714\n"
+            "pub_topic = \"room.events\"\n"
+            "worker_heartbeat_ms = 4000\n"
+            "worker_lease_ms = 12000\n"
+            "dispatch_deadline_ms = 3000\n"
+            "use_tls = true\n"
+            "ca_file = \"flowmq-ca.pem\"\n"
+            "cert_file = \"flowmq-room-chain.pem\"\n"
+            "key_file = \"flowmq-room-key.pem\"\n"
+            "key_password = \"test-key-password\"\n"
+            "shared_secret = \"0123456789abcdef0123456789abcdef\"\n"
+            "rotation_generation = 7\n"
+            "[[fmq.workers]]\n"
+            "worker_id = \"ivr-worker-a\"\n"
+            "active_certificate_sha256 = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n"
+            "generation = 7\n"
+            "tenant_id = \"acme\"\n"
+            "room_scope = \"acme/room-1,acme/room-2\"\n"
+            "call_scope = \"call-1,call-2\"\n"
+            "content_capabilities = \"conference-greeting\"\n"
+            "pub_topics = \"room.events.tenant-a\"\n";
         room_service_app_config_t config;
         char *path = write_toml(toml);
 
@@ -108,6 +132,38 @@ spec("room service TOML configuration") {
             check_false(config.auto_create_rooms);
             check_true(config.dry_run);
             check_str_eq(config.log_level, "warn");
+            check_str_eq(config.fmq_bind_host, "127.0.0.1");
+            check_int_eq(config.fmq_bind_port, 17713);
+            check_int_eq(config.fmq_pub_port, 17714);
+            check_str_eq(config.fmq_pub_topic, "room.events");
+            check_int_eq(config.fmq_worker_heartbeat_ms, 4000);
+            check_int_eq(config.fmq_worker_lease_ms, 12000);
+            check_int_eq(config.fmq_dispatch_deadline_ms, 3000);
+            check_true(config.fmq_use_tls);
+            check_false(config.fmq_allow_insecure_loopback);
+            check_str_eq(config.fmq_ca_file, "flowmq-ca.pem");
+            check_str_eq(config.fmq_cert_file, "flowmq-room-chain.pem");
+            check_str_eq(config.fmq_key_file, "flowmq-room-key.pem");
+            check_str_eq(config.fmq_key_password, "test-key-password");
+            check_str_eq(config.fmq_shared_secret,
+                         "0123456789abcdef0123456789abcdef");
+            check_int_eq(config.fmq_tls_rotation_generation, 7);
+            check_int_eq(config.fmq_worker_identity_count, 1);
+            check_str_eq(config.fmq_worker_identities[0].worker_id,
+                         "ivr-worker-a");
+            check_str_eq(
+                config.fmq_worker_identities[0].active_certificate_sha256,
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000");
+            check_int_eq(config.fmq_worker_identities[0].generation, 7);
+            check_str_eq(config.fmq_worker_identities[0].tenant_id, "acme");
+            check_str_eq(config.fmq_worker_identities[0].room_scope,
+                         "acme/room-1,acme/room-2");
+            check_str_eq(config.fmq_worker_identities[0].call_scope,
+                         "call-1,call-2");
+            check_str_eq(config.fmq_worker_identities[0].content_capabilities,
+                         "conference-greeting");
+            check_str_eq(config.fmq_worker_identities[0].pub_topics,
+                         "room.events.tenant-a");
             check_not_null(config.private_data);
         }
         room_service_app_config_cleanup(&config);
@@ -122,6 +178,81 @@ spec("room service TOML configuration") {
             room_service_app_config_load(
                 &config, ROOM_SERVICE_CONFIG_EXAMPLE_PATH),
             0);
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        room_service_app_config_cleanup(&config);
+    }
+
+    it("requires FlowMQ command and event endpoints as one unit") {
+        room_service_app_config_t config;
+
+        room_service_app_config_init(&config);
+        config.fmq_allow_insecure_loopback = 1;
+        config.fmq_bind_port = 17713;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_pub_port = 17714;
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        config.fmq_bind_port = 0;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        room_service_app_config_cleanup(&config);
+    }
+
+    it("allows plaintext FlowMQ only on explicitly trusted loopback") {
+        room_service_app_config_t config;
+
+        room_service_app_config_init(&config);
+        config.fmq_bind_port = 17713;
+        config.fmq_pub_port = 17714;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_allow_insecure_loopback = 1;
+        config.fmq_bind_host = "0.0.0.0";
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_bind_host = "::1";
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        room_service_app_config_cleanup(&config);
+    }
+
+    it("requires complete mutually exclusive FlowMQ mTLS identity") {
+        static const char fingerprint[] =
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        static const char secret[] =
+            "0123456789abcdef0123456789abcdef";
+        room_service_app_config_t config;
+
+        room_service_app_config_init(&config);
+        config.fmq_bind_port = 17713;
+        config.fmq_pub_port = 17714;
+        config.fmq_use_tls = 1;
+        config.fmq_ca_file = "flowmq-ca.pem";
+        config.fmq_cert_file = "flowmq-room-chain.pem";
+        config.fmq_key_file = "flowmq-room-key.pem";
+        config.fmq_shared_secret = secret;
+        config.fmq_worker_identity_count = 1;
+        config.fmq_worker_identities[0].worker_id = "ivr-worker-a";
+        config.fmq_worker_identities[0].active_certificate_sha256 = fingerprint;
+        config.fmq_worker_identities[0].generation = 1u;
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        config.fmq_allow_insecure_loopback = 1;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_allow_insecure_loopback = 0;
+        config.fmq_shared_secret = NULL;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_shared_secret = secret;
+        config.fmq_worker_identities[0].active_certificate_sha256 = "invalid";
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        room_service_app_config_cleanup(&config);
+    }
+
+    it("validates FlowMQ heartbeat lease and dispatch timing") {
+        room_service_app_config_t config;
+
+        room_service_app_config_init(&config);
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        config.fmq_worker_lease_ms = 14999;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_worker_lease_ms = 15000;
+        config.fmq_dispatch_deadline_ms = 15000;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_dispatch_deadline_ms = 4999;
         check_int_eq(room_service_app_config_validate(&config), 0);
         room_service_app_config_cleanup(&config);
     }

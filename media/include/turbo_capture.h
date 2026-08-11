@@ -19,7 +19,11 @@ extern "C" {
  * ============================================================================= */
 
 #define TURBO_CAPTURE_MAX_DEVICES   16
-#define TURBO_CAPTURE_MAX_VIDEO_MODES 64
+/* Maximum number of native video modes a device may expose. A 4K UVC
+ * device can report several hundred combinations, so callers should not
+ * rely on this value as an upper bound; pass a larger buffer and check
+ * *out_count against capacity. */
+#define TURBO_CAPTURE_MAX_VIDEO_MODES 512
 
 /* =============================================================================
  * Types
@@ -72,12 +76,14 @@ typedef struct {
     int frame_size_ms;      /* Buffer size in ms (10, 20, etc.) */
 } turbo_audio_capture_config_t;
 
-typedef struct {
-    int width;
-    int height;
-    int framerate;
-    int format;             /* 0=I420, 1=NV12, 2=RGB24, 3=BGRA */
-} turbo_video_capture_config_t;
+typedef enum {
+    TURBO_VIDEO_CAPTURE_FORMAT_I420 = 0,
+    TURBO_VIDEO_CAPTURE_FORMAT_NV12 = 1,
+    TURBO_VIDEO_CAPTURE_FORMAT_RGB24 = 2,
+    TURBO_VIDEO_CAPTURE_FORMAT_BGRA = 3,
+    /* Native MJPEG pass-through; each callback contains one JPEG image. */
+    TURBO_VIDEO_CAPTURE_FORMAT_MJPEG = 4
+} turbo_video_capture_format_t;
 
 typedef enum {
     TURBO_CAMERA_CONTROL_ZOOM = 1,      /* Digital/hardware zoom, value is percent: 100 == 1.0x */
@@ -109,9 +115,11 @@ typedef struct {
 typedef struct {
     int width;
     int height;
-    int framerate;
-    int format;             /* 0=I420, 1=NV12, 2=RGB24, 3=BGRA, -1=unknown/native */
-} turbo_video_capture_mode_t;
+    uint32_t framerate_numerator;
+    uint32_t framerate_denominator;
+    int format;             /* Callback output: turbo_video_capture_format_t */
+    uint64_t mode_id;       /* Opaque backend-local mode identity */
+} turbo_video_native_mode_t;
 
 typedef struct {
     int monitor_index;      /* -1 for all monitors */
@@ -126,6 +134,7 @@ typedef struct {
 
 /* Forward declaration */
 typedef struct turbo_capture_s turbo_capture_t;
+typedef struct turbo_video_device_s turbo_video_device_t;
 
 /**
  * Called when audio samples are captured
@@ -144,7 +153,8 @@ typedef void (*turbo_audio_capture_cb)(turbo_capture_t *capture,
  * Called when video frame is captured
  *
  * @param capture   Capture instance
- * @param frame     Frame data (format based on config)
+ * @param frame     Borrowed frame data, valid only until the callback returns.
+ *                  MJPEG frames contain one complete JPEG image.
  * @param len       Frame length in bytes
  * @param width     Frame width
  * @param height    Frame height
@@ -200,18 +210,6 @@ CXX_C_API int turbo_capture_list_audio_devices(turbo_capture_device_t *devices, 
 CXX_C_API int turbo_capture_list_video_devices(turbo_capture_device_t *devices, int max_count);
 
 /**
- * List supported video capture modes for a camera.
- *
- * @param device_id Device index string, symbolic id, or NULL/empty for default camera.
- * @param modes Output array.
- * @param max_count Maximum modes to return.
- * @return Number of modes found, or a negative turbo_capture_result_t on error.
- */
-CXX_C_API int turbo_capture_list_video_modes(const char *device_id,
-                                             turbo_video_capture_mode_t *modes,
-                                             int max_count);
-
-/**
  * List screens/monitors
  */
 CXX_C_API int turbo_capture_list_screens(turbo_capture_device_t *devices, int max_count);
@@ -250,10 +248,65 @@ CXX_C_API void turbo_audio_capture_set_callback(turbo_capture_t *capture,
  * ============================================================================= */
 
 /**
- * Create video capture instance
+ * Nearest-integer frame rate of a native mode, in fps.
+ * Returns 0 when the frame rate cannot be represented.
  */
-CXX_C_API turbo_capture_t *turbo_video_capture_create(const char *device_id,
-                                                        const turbo_video_capture_config_t *config);
+CXX_C_API int turbo_video_mode_fps(const turbo_video_native_mode_t *mode);
+
+/**
+ * Standard broadcast/webcam frame rate check: 24/25/30/50/60/90/120 fps,
+ * matched on the rounded integer rate (29.97 -> 30, 59.94 -> 60, ...).
+ */
+CXX_C_API int turbo_video_mode_is_standard_fps(
+    const turbo_video_native_mode_t *mode);
+
+/**
+ * Open a video device adapter. The returned handle owns the platform device
+ * enumeration context and must be closed with turbo_video_device_close().
+ */
+CXX_C_API int turbo_video_device_open(
+    const char *device_id,
+    turbo_video_device_t **out_device);
+
+/** Close a video device adapter. Existing captures remain independently owned. */
+CXX_C_API void turbo_video_device_close(turbo_video_device_t *device);
+
+/**
+ * List video capture modes, defaulting to standard frame rates
+ * (24/25/30/50/60/90/120 fps, matched on the rounded integer rate).
+ * Modes are not rounded or deduplicated, and are valid only for this
+ * device handle and connection. Use turbo_video_device_list_modes_all()
+ * to receive every native mode including non-standard frame rates.
+ * The list is written up to capacity and *out_count reports the number
+ * written. If *out_count reaches capacity, the device may expose more
+ * modes; the caller should retry with a larger buffer.
+ */
+CXX_C_API int turbo_video_device_list_modes(
+    turbo_video_device_t *device,
+    turbo_video_native_mode_t *modes,
+    size_t capacity,
+    size_t *out_count);
+
+/**
+ * List every native video mode, including non-standard frame rates.
+ * Same contract as turbo_video_device_list_modes() except no frame-rate
+ * filtering is applied.
+ */
+CXX_C_API int turbo_video_device_list_modes_all(
+    turbo_video_device_t *device,
+    turbo_video_native_mode_t *modes,
+    size_t capacity,
+    size_t *out_count);
+
+/**
+ * Create a capture from an exact mode returned by
+ * turbo_video_device_list_modes(). The backend validates mode_id and every
+ * public field before creating the stream.
+ */
+CXX_C_API int turbo_video_device_create_capture(
+    turbo_video_device_t *device,
+    const turbo_video_native_mode_t *mode,
+    turbo_capture_t **out_capture);
 
 /**
  * Set video capture callback

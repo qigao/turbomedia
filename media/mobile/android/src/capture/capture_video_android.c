@@ -37,8 +37,9 @@ typedef struct android_camera_ctx_t {
     /* Configuration */
     int width;
     int height;
-    int framerate;
-    int facing;  /* 0 = back, 1 = front */
+    int min_framerate;
+    int max_framerate;
+    char camera_id[128];
     
     /* State */
     int capturing;
@@ -241,14 +242,23 @@ static void on_image_available(void *context, AImageReader *reader) {
  * Camera Management
  * ============================================================================= */
 
-android_camera_ctx_t *android_camera_create(int width, int height, int framerate, int facing) {
+android_camera_ctx_t *android_camera_create(int width,
+                                            int height,
+                                            int min_framerate,
+                                            int max_framerate,
+                                            const char *camera_id) {
+    if (!camera_id || !camera_id[0] ||
+        strlen(camera_id) >= sizeof(((android_camera_ctx_t *)0)->camera_id)) {
+        return NULL;
+    }
     android_camera_ctx_t *ctx = (android_camera_ctx_t *)calloc(1, sizeof(android_camera_ctx_t));
     if (!ctx) return NULL;
     
     ctx->width = width;
     ctx->height = height;
-    ctx->framerate = framerate;
-    ctx->facing = facing;
+    ctx->min_framerate = min_framerate;
+    ctx->max_framerate = max_framerate;
+    memcpy(ctx->camera_id, camera_id, strlen(camera_id) + 1);
     ctx->capturing = 0;
     ctx->device_callbacks.context = ctx;
     ctx->device_callbacks.onDisconnected = camera_device_on_disconnected;
@@ -302,7 +312,8 @@ android_camera_ctx_t *android_camera_create(int width, int height, int framerate
         return NULL;
     }
     
-    LOGI("Camera created: %dx%d @ %dfps", width, height, framerate);
+    LOGI("Camera created: %dx%d @ [%d,%d]fps", width, height,
+         min_framerate, max_framerate);
     
     return ctx;
 }
@@ -334,63 +345,13 @@ int android_camera_start(android_camera_ctx_t *ctx) {
     ACaptureSessionOutputContainer *output_container = NULL;
     ACaptureSessionOutput *session_output = NULL;
     
-    /* Get camera ID list */
-    ACameraIdList *camera_id_list = NULL;
-    status = ACameraManager_getCameraIdList(ctx->camera_manager, &camera_id_list);
-    
-    if (status != ACAMERA_OK || !camera_id_list || camera_id_list->numCameras == 0) {
-        LOGE("Failed to enumerate cameras: %d", status);
-        if (camera_id_list) {
-            ACameraManager_deleteCameraIdList(camera_id_list);
-        }
-        return -1;
-    }
-    
-    /* Find camera with desired facing */
-    const char *camera_id = NULL;
-    for (int i = 0; i < camera_id_list->numCameras; i++) {
-        ACameraMetadata *metadata = NULL;
-        status = ACameraManager_getCameraCharacteristics(
-            ctx->camera_manager,
-            camera_id_list->cameraIds[i],
-            &metadata
-        );
-        
-        if (status == ACAMERA_OK && metadata) {
-            ACameraMetadata_const_entry entry;
-            status = ACameraMetadata_getConstEntry(
-                metadata,
-                ACAMERA_LENS_FACING,
-                &entry
-            );
-
-            if (status == ACAMERA_OK && entry.count > 0 &&
-                ((ctx->facing == 0 && entry.data.u8[0] == ACAMERA_LENS_FACING_BACK) ||
-                 (ctx->facing == 1 && entry.data.u8[0] == ACAMERA_LENS_FACING_FRONT))) {
-                camera_id = camera_id_list->cameraIds[i];
-                ACameraMetadata_free(metadata);
-                break;
-            }
-            
-            ACameraMetadata_free(metadata);
-        }
-    }
-    
-    if (!camera_id) {
-        LOGE("Camera not found");
-        ACameraManager_deleteCameraIdList(camera_id_list);
-        return -1;
-    }
-    
     /* Open camera */
     status = ACameraManager_openCamera(
         ctx->camera_manager,
-        camera_id,
+        ctx->camera_id,
         &ctx->device_callbacks,
         &ctx->camera_device
     );
-    
-    ACameraManager_deleteCameraIdList(camera_id_list);
     
     if (status != ACAMERA_OK) {
         LOGE("Failed to open camera: %d", status);
@@ -416,7 +377,7 @@ int android_camera_start(android_camera_ctx_t *ctx) {
     }
     
     /* Set FPS range */
-    int32_t fps_range[2] = {ctx->framerate, ctx->framerate};
+    int32_t fps_range[2] = {ctx->min_framerate, ctx->max_framerate};
     status = ACaptureRequest_setEntry_i32(
         capture_request,
         ACAMERA_CONTROL_AE_TARGET_FPS_RANGE,

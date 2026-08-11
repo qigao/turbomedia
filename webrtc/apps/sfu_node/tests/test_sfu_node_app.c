@@ -1400,6 +1400,7 @@ void test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(
   turbo_media_auth_claims_t claims;
   char *room_write_token = NULL;
   char *dangerous_token = NULL;
+  char *participant_dangerous_token = NULL;
   char *expired_token = NULL;
   char *previous_token = NULL;
   int64_t now = (int64_t)time(NULL);
@@ -1412,6 +1413,9 @@ void test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(
       "\"max_participants\":4}";
   const char *force_close_room_a =
       "{\"type\":\"force_close_room\",\"room_id\":\"room-signed-a\"}";
+  const char *disconnect_participant_a =
+      "{\"type\":\"disconnect_media_participant\","
+      "\"room_id\":\"room-signed-a\",\"participant_id\":\"call-a\"}";
 
   sfu_node_app_config_init(&sfu_config);
   sfu_config.bind_host = "0.0.0.0";
@@ -1444,6 +1448,10 @@ void test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(
   claims.scope = "sfu.control.dangerous";
   dangerous_token = turbo_media_auth_issue(&current_auth, &claims);
   TEST_ASSERT_NOT_NULL(dangerous_token);
+  claims.participant_id = "call-a";
+  participant_dangerous_token = turbo_media_auth_issue(&current_auth, &claims);
+  TEST_ASSERT_NOT_NULL(participant_dangerous_token);
+  claims.participant_id = NULL;
   claims.scope = "sfu.control.write";
   claims.issued_at = now - 120;
   claims.expires_at = now - 31;
@@ -1484,6 +1492,14 @@ void test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(
                room_write_token));
   TEST_ASSERT_EQUAL_INT(
       401, http_post_json_status_with_token(
+               base_url, "/api/v1/commands", disconnect_participant_a,
+               room_write_token));
+  TEST_ASSERT_EQUAL_INT(
+      400, http_post_json_status_with_token(
+               base_url, "/api/v1/commands", disconnect_participant_a,
+               participant_dangerous_token));
+  TEST_ASSERT_EQUAL_INT(
+      401, http_post_json_status_with_token(
                base_url, "/api/v1/commands", attach_room_a,
                expired_token));
   TEST_ASSERT_EQUAL_INT(
@@ -1498,6 +1514,7 @@ void test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(
   sfu_node_http_api_stop(http_api);
   sfu_node_http_api_destroy(http_api);
   sfu_node_app_server_destroy(sfu_server);
+  free(participant_dangerous_token);
   free(previous_token);
   free(expired_token);
   free(dangerous_token);

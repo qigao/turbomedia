@@ -530,13 +530,8 @@ static int rtc_backend_send_rtp(
 }
 
 static int rtc_backend_pump(turbo_media_webrtc_backend_peer_t *peer) {
-    turbo_media_context_t *media_context;
-
     if (!peer || peer->failed) return -1;
     turbo_peer_connection_poll(peer->peer_connection);
-    media_context =
-        turbo_peer_connection_get_media_context(peer->peer_connection);
-    if (media_context) turbo_media_handle_timers(media_context);
     return peer->failed ? -1 : 0;
 }
 

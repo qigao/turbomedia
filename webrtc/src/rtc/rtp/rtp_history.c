@@ -4,6 +4,7 @@
  * Stores recently sent RTP packets for NACK retransmission
  */
 #include "turbo_rtp.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -22,6 +23,12 @@ struct rtp_history_s {
 };
 
 rtp_history_t *rtp_history_create(size_t max_packets, size_t max_packet_size) {
+  if (max_packets == 0 || max_packet_size == 0 ||
+      max_packets > SIZE_MAX / sizeof(history_slot_t) ||
+      max_packets > SIZE_MAX / max_packet_size) {
+    return NULL;
+  }
+
   /* max_packets should be a power of 2 for efficiency, but we'll use modulo for now */
   rtp_history_t *history = (rtp_history_t *)calloc(1, sizeof(rtp_history_t));
   if (!history) return NULL;

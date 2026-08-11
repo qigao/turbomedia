@@ -123,6 +123,7 @@ typedef enum {
     SFU_NODE_WEBRTC_COMMAND_CREATE = 1,
     SFU_NODE_WEBRTC_COMMAND_CREATE_OWNED,
     SFU_NODE_WEBRTC_COMMAND_REMOVE,
+    SFU_NODE_WEBRTC_COMMAND_DISCONNECT_MEDIA_PARTICIPANT,
     SFU_NODE_WEBRTC_COMMAND_SET_OFFER,
     SFU_NODE_WEBRTC_COMMAND_ADD_CANDIDATE,
     SFU_NODE_WEBRTC_COMMAND_APPLY_SDPFRAG,
@@ -185,6 +186,9 @@ static int create_owned_media_session_impl(sfu_node_app_server_t *server,
 static int remove_webrtc_session_impl(sfu_node_app_server_t *server,
                                       const char *room_id,
                                       const char *session_id);
+static int disconnect_media_participant_impl(
+    sfu_node_app_server_t *server, const char *room_id,
+    const char *participant_id);
 static int set_remote_offer_impl(sfu_node_app_server_t *server,
                                  const char *room_id,
                                  const char *session_id,
@@ -902,6 +906,74 @@ static void sync_track_to_subscribers_locked(sfu_node_app_server_t *server,
     }
 }
 
+/* Desired subscriptions may arrive before the WHEP receiver session. Apply
+   them to the core SFU only after both the receiver and published track are
+   present, then attach the corresponding relay tracks before SDP answer
+   generation. */
+static int apply_desired_subscriptions_for_participant(
+    sfu_node_app_server_t *server, const char *room_id,
+    const char *participant_id) {
+    int count;
+
+    if (!server || !room_id || !participant_id) {
+        return -1;
+    }
+    turbo_mutex_lock(&server->mutex);
+    count = server->subscription_count;
+    turbo_mutex_unlock(&server->mutex);
+    for (int i = 0; i < count; ++i) {
+        turbo_sfu_node_track_subscription_t config;
+        int ready = 0;
+
+        memset(&config, 0, sizeof(config));
+        turbo_mutex_lock(&server->mutex);
+        if (i < server->subscription_count) {
+            const sfu_node_desired_subscription_t *desired =
+                &server->subscriptions[i];
+            const sfu_node_published_track_t *track =
+                find_published_track_locked(server, room_id,
+                                            desired->track_id);
+            if (strcmp(desired->room_id, room_id) == 0 &&
+                strcmp(desired->receiver_participant_id, participant_id) == 0 &&
+                track && track->metadata_ready) {
+                copy_string(config.receiver_participant_id,
+                            sizeof(config.receiver_participant_id),
+                            desired->receiver_participant_id);
+                copy_string(config.track_id, sizeof(config.track_id),
+                            desired->track_id);
+                config.enabled = desired->enabled;
+                config.priority = desired->priority;
+                config.preferred_layer = desired->preferred_layer;
+                config.target_layer = desired->target_layer;
+                config.muted = desired->muted;
+                copy_string(config.policy_source,
+                            sizeof(config.policy_source),
+                            desired->policy_source);
+                config.max_layer = desired->max_layer;
+                ready = 1;
+            }
+        }
+        turbo_mutex_unlock(&server->mutex);
+        if (ready) {
+            /* Core participants/tracks may be provisioned after app metadata.
+               A failed apply remains pending and is retried on the next
+               participant/session or subscription update. */
+            (void)turbo_sfu_node_apply_track_subscription(
+                server->node, room_id, &config);
+        }
+    }
+
+    turbo_mutex_lock(&server->mutex);
+    sfu_node_webrtc_session_t *session =
+        find_webrtc_session_by_participant_locked(server, room_id,
+                                                  participant_id);
+    if (session) {
+        sync_session_relay_tracks_locked(server, session);
+    }
+    turbo_mutex_unlock(&server->mutex);
+    return 0;
+}
+
 static void on_sfu_keyframe_request(void *user_data, uint32_t ssrc) {
     sfu_node_webrtc_session_t *session = (sfu_node_webrtc_session_t *)user_data;
     turbo_media_context_t *media_ctx;
@@ -1175,6 +1247,10 @@ static void sfu_node_webrtc_thread(void *arg) {
                     command->result = remove_webrtc_session_impl(
                         server, command->room_id, command->session_id);
                     break;
+                case SFU_NODE_WEBRTC_COMMAND_DISCONNECT_MEDIA_PARTICIPANT:
+                    command->result = disconnect_media_participant_impl(
+                        server, command->room_id, command->participant_id);
+                    break;
                 case SFU_NODE_WEBRTC_COMMAND_SET_OFFER:
                     command->result = set_remote_offer_impl(
                         server, command->room_id, command->session_id,
@@ -1250,17 +1326,12 @@ void sfu_node_app_server_poll_webrtc(sfu_node_app_server_t *server) {
     turbo_mutex_lock(&server->mutex);
     for (int i = 0; i < server->webrtc_session_count; ++i) {
         sfu_node_webrtc_session_t *session = server->webrtc_sessions[i];
-        turbo_media_context_t *media_ctx;
 
         if (!session->pc) {
             continue;
         }
 
         turbo_peer_connection_poll(session->pc);
-        media_ctx = turbo_peer_connection_get_media_context(session->pc);
-        if (media_ctx) {
-            turbo_media_handle_timers(media_ctx);
-        }
     }
     turbo_mutex_unlock(&server->mutex);
 }
@@ -1575,6 +1646,12 @@ static int create_webrtc_session_impl(sfu_node_app_server_t *server,
     server->webrtc_sessions[server->webrtc_session_count++] = session;
     turbo_mutex_unlock(&server->mutex);
 
+    if (apply_desired_subscriptions_for_participant(
+            server, room_id, participant_id) != 0) {
+        remove_webrtc_session_impl(server, room_id, session_id);
+        return -1;
+    }
+
 #ifdef ENABLE_RTC_SCXML_WORKFLOW
     if (session->workflow_ctx) {
         turbo_rtc_workflow_param_t params[] = {
@@ -1696,6 +1773,55 @@ int sfu_node_app_server_remove_webrtc_session(sfu_node_app_server_t *server,
         return submit_webrtc_command(server, &command);
     }
     return remove_webrtc_session_impl(server, room_id, session_id);
+}
+
+static int disconnect_media_participant_impl(
+    sfu_node_app_server_t *server, const char *room_id,
+    const char *participant_id) {
+    int i;
+
+    if (!server || !room_id || !participant_id) {
+        return -1;
+    }
+
+    turbo_mutex_lock(&server->mutex);
+    for (i = 0; i < server->webrtc_session_count; ++i) {
+        sfu_node_webrtc_session_t *session = server->webrtc_sessions[i];
+        if (strcmp(session->room_id, room_id) == 0 &&
+            strcmp(session->participant_id, participant_id) == 0) {
+            if (!session->owns_node_session) {
+                turbo_mutex_unlock(&server->mutex);
+                return -1;
+            }
+            destroy_webrtc_session(server, session);
+            if (i + 1 < server->webrtc_session_count) {
+                memmove(&server->webrtc_sessions[i],
+                        &server->webrtc_sessions[i + 1],
+                        (size_t)(server->webrtc_session_count - i - 1) *
+                            sizeof(sfu_node_webrtc_session_t *));
+            }
+            server->webrtc_session_count--;
+            turbo_mutex_unlock(&server->mutex);
+            return 0;
+        }
+    }
+    turbo_mutex_unlock(&server->mutex);
+    return -1;
+}
+
+int sfu_node_app_server_disconnect_media_participant(
+    sfu_node_app_server_t *server, const char *room_id,
+    const char *participant_id) {
+    sfu_node_webrtc_command_t command = {
+        .type = SFU_NODE_WEBRTC_COMMAND_DISCONNECT_MEDIA_PARTICIPANT,
+        .room_id = room_id,
+        .participant_id = participant_id
+    };
+
+    if (server && server->webrtc_thread_started) {
+        return submit_webrtc_command(server, &command);
+    }
+    return disconnect_media_participant_impl(server, room_id, participant_id);
 }
 
 int sfu_node_app_server_remove_room_webrtc_sessions(sfu_node_app_server_t *server,
@@ -2138,7 +2264,7 @@ int sfu_node_app_server_apply_track_subscription(
     sfu_node_app_server_t *server, const char *room_id,
     const turbo_sfu_node_track_subscription_t *subscription_config) {
     sfu_node_desired_subscription_t *subscription;
-    sfu_node_webrtc_session_t *session;
+    int receiver_ready;
 
     if (!server || !room_id || !subscription_config ||
         !subscription_config->receiver_participant_id[0] ||
@@ -2176,14 +2302,19 @@ int sfu_node_app_server_apply_track_subscription(
                 subscription_config->policy_source);
     subscription->max_layer = subscription_config->max_layer;
 
-    session = find_webrtc_session_by_participant_locked(server, room_id,
-                                                        subscription->receiver_participant_id);
-    if (session && subscription->enabled && !subscription->muted) {
-        sync_session_relay_tracks_locked(server, session);
-    }
-
+    receiver_ready = find_webrtc_session_by_participant_locked(
+                         server, room_id,
+                         subscription->receiver_participant_id) != NULL;
     turbo_mutex_unlock(&server->mutex);
-    return 0;
+    /* This succeeds immediately when core sender/receiver state is ready;
+       otherwise the desired state remains pending for WHEP session creation. */
+    (void)turbo_sfu_node_apply_track_subscription(
+        server->node, room_id, subscription_config);
+    if (!receiver_ready) {
+        return 0;
+    }
+    return apply_desired_subscriptions_for_participant(
+        server, room_id, subscription_config->receiver_participant_id);
 }
 
 int sfu_node_app_server_start_recording(sfu_node_app_server_t *server,

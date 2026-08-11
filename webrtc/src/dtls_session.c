@@ -19,8 +19,14 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret);
 
 static void on_dtls_retransmit_timer(turbo_timer_t *timer) {
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)turbo_timer_get_data(timer);
-    if (!peer || peer->dtls.handshake_done) {
+    if (!peer || dc_peer_acquire(peer) != 0) {
         turbo_timer_stop(timer);
+        return;
+    }
+
+    if (peer->dtls.handshake_done) {
+        turbo_timer_stop(timer);
+        dc_peer_release(peer);
         return;
     }
 
@@ -37,6 +43,8 @@ static void on_dtls_retransmit_timer(turbo_timer_t *timer) {
             turbo_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
         }
     }
+
+    dc_peer_release(peer);
 }
 
 static void dtls_schedule_retransmit(turbo_dc_peer_t *peer) {
@@ -183,7 +191,6 @@ void dtls_send_output(turbo_dc_peer_t *peer) {
      * BoringSSL's DTLS stack handles receiving multiple records in one packet.
      */
     while ((encrypted_len = BIO_read(peer->dtls.write_bio, encrypted, sizeof(encrypted))) > 0) {
-        TLOG_DEBUG("DTLS outbound flight bytes={}", encrypted_len);
         dc_send_transport_data(peer, encrypted, encrypted_len);
     }
 }
@@ -340,7 +347,6 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
 }
 
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len) {
-    TLOG_DEBUG("DTLS incoming bytes={} handshake_done={}", len, peer ? peer->dtls.handshake_done : 0);
     BIO_write(peer->dtls.read_bio, data, (int)len);
 
     if (!peer->dtls.handshake_done) {

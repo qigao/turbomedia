@@ -36,7 +36,7 @@ target_link_libraries(turbo_media_test_ice_integration
 turbo_media_add_webrtc_test(turbo_media_test_webrtc_e2e
                             test_e2e_connection.c)
 target_link_libraries(turbo_media_test_webrtc_e2e
-                      PRIVATE TurboMedia::WebRTC TurboNet::Ice)
+                      PRIVATE TurboMedia::WebRTC TurboMedia::RTC TurboNet::Ice)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_json
                             test_signaling_json.c)

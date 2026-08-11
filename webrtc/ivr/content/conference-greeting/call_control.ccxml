@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ccxml xmlns="http://www.w3.org/2005/02/ccxml" version="1.0">
+  <eventprocessor>
+    <transition event="connection.alerting">
+      <accept/>
+      <dialogstart src="conference_menu.vxml"/>
+    </transition>
+    <transition event="room.call.terminal">
+      <disconnect/>
+    </transition>
+  </eventprocessor>
+</ccxml>

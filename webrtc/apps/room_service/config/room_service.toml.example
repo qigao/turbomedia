@@ -59,3 +59,45 @@ dry_run = false
 
 [logging]
 level = "info"
+
+# Optional IVR FlowMQ bridge (ROUTER command endpoint + PUB domain events).
+# bind_port <= 0 keeps the HTTP-only control path and disables the bridge.
+# An enabled bridge requires mTLS. Plaintext is accepted only when both the
+# bind address is loopback and allow_insecure_loopback is explicitly true.
+# Inject shared_secret with TURBO_ROOM_SERVICE_FMQ_SHARED_SECRET; do not store
+# the production secret in this file.
+#[fmq]
+#bind_host = "127.0.0.1"
+#bind_port = 17713
+# Endpoint host may carry a scheme prefix that selects the transport, e.g.
+# bind_host = "tls://127.0.0.1" or "wss://127.0.0.1" (port still in bind_port).
+# TLS/WSS require the ca_file/cert_file/key_file below.
+#pub_port = 17714
+#pub_topic = "room.events"
+#worker_heartbeat_ms = 5000
+#worker_lease_ms = 15000
+#dispatch_deadline_ms = 5000
+#use_tls = true
+#ca_file = "/etc/turbomedia/tls/flowmq-ca.pem"
+#cert_file = "/etc/turbomedia/tls/room-flowmq-chain.pem"
+#key_file = "/etc/turbomedia/tls/room-flowmq-key.pem"
+#rotation_generation = 1
+
+#[[fmq.workers]]
+#worker_id = "ivr-worker-1"
+#active_certificate_sha256 = "sha256:replace-with-64-lowercase-hex-digits"
+#generation = 1
+# During a bounded rotation window, also set previous_certificate_sha256 and
+# previous_expires_at_ms (Unix epoch milliseconds). Remove both after expiry.
+#
+# P0-04.4 authorization scope (all optional). tenant_id uses the
+# "<tenant>/" room_id prefix convention. room_scope / call_scope /
+# content_capabilities are "*" (any) or comma-separated exact ids; the
+# worker is only authorized for matching commands and only selected for
+# dispatches it may serve. pub_topics is the comma-separated PUB/SUB topic
+# allowlist (defaults to [fmq].pub_topic when absent).
+#tenant_id = "acme"
+#room_scope = "acme/room-1,acme/room-2"
+#call_scope = "*"
+#content_capabilities = "conference-greeting"
+#pub_topics = "room.events"

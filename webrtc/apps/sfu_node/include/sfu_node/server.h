@@ -38,6 +38,9 @@ int sfu_node_app_server_create_owned_media_session(
 int sfu_node_app_server_remove_webrtc_session(sfu_node_app_server_t *server,
                                               const char *room_id,
                                               const char *session_id);
+int sfu_node_app_server_disconnect_media_participant(
+    sfu_node_app_server_t *server, const char *room_id,
+    const char *participant_id);
 int sfu_node_app_server_remove_room_webrtc_sessions(sfu_node_app_server_t *server,
                                                     const char *room_id);
 int sfu_node_app_server_set_remote_offer(sfu_node_app_server_t *server,

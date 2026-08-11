@@ -16,6 +16,7 @@
 #include <turbo_kcp.h>
 #include <turbo_stream.h>
 #include <turbo_thread.h>
+#include <turbo_hash.h>
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
 #include <usrsctp.h>
@@ -33,9 +34,9 @@ extern "C" {
 #define MAX_PROTOCOL_LEN 256
 #define SCTP_MTU_DEFAULT 1188
 #define DTLS_MTU_DEFAULT 1280
-#define MAX_CHANNELS 256
+#define MAX_CHANNELS 65536u
 #define SCTP_ASSOCIATION_PORT 5000
-#define SCTP_MAX_STREAMS 300
+#define SCTP_MAX_STREAMS 65535u
 #define DCEP_MAX_PACKET_SIZE 512
 
 /* SCTP PPIDs */
@@ -75,6 +76,8 @@ typedef struct {
 } sctp_session_t;
 
 /* Data channel context - internal */
+struct turbo_dc_peer_s;
+
 struct turbo_dc_context_s {
     SSL_CTX *ssl_ctx;
     int is_server;
@@ -89,10 +92,13 @@ struct turbo_dc_context_s {
     coro_context_t *transport_ctx;    /* Private CoroNet loop context */
     turbo_thread_t transport_thread;  /* Dedicated transport loop thread */
     int transport_thread_started;
+    turbo_mutex_t peer_mutex;
+    int peer_mutex_initialized;
+    int destroying;
+    struct turbo_dc_peer_s *peers_head;
 };
 
 /* Forward declaration */
-struct turbo_dc_peer_s;
 struct turbo_ice_agent_s;
 
 /* Transport operations vtable */
@@ -105,8 +111,16 @@ typedef struct {
 /* Peer connection - internal */
 struct turbo_dc_peer_s {
     turbo_dc_context_t *ctx;
+    struct turbo_dc_peer_s *next_in_context;
     void *user_data;
     int is_dtls_server;
+
+    /* External callbacks and destruction are serialized by this protocol. */
+    turbo_mutex_t operation_mutex;
+    turbo_cond_t operation_cond;
+    int operation_sync_initialized;
+    int destroying;
+    uint32_t active_operations;
 
     /* Transport (unified via ops) */
     void *transport;
@@ -126,7 +140,8 @@ struct turbo_dc_peer_s {
     int sctp_address_registered;
 
     /* Data channels */
-    turbo_dc_channel_t *channels[MAX_CHANNELS];
+    turbo_hash_map_t channels;  /* uint16_t stream id -> turbo_dc_channel_t * */
+    int channels_initialized;
     roaring_bitmap_t *channel_ids;  /* Bitmap for ID allocation */
 
     /* Error state (per-peer to avoid race conditions) */
@@ -138,6 +153,7 @@ struct turbo_dc_peer_s {
     /* Raw RTP/RTCP transport data callback used by media engines. */
     void (*on_transport_data)(void *user_data, const uint8_t *data, size_t len);
     void *transport_data_user_data;
+    uint32_t transport_data_callbacks;
 
     /* Callbacks */
     turbo_dc_state_cb on_state;
@@ -184,6 +200,8 @@ struct turbo_dc_channel_s {
 void dc_set_peer_error(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail);
 void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state);
 void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail);
+int dc_peer_acquire(turbo_dc_peer_t *peer);
+void dc_peer_release(turbo_dc_peer_t *peer);
 
 /* Legacy - for context-level errors during creation (before peer exists) */
 void dc_set_context_error(turbo_dc_context_t *ctx, turbo_dc_error_code_t code, const char *detail);
@@ -209,6 +227,7 @@ void sctp_global_cleanup(void);
 
 int sctp_session_init(turbo_dc_peer_t *peer);
 int sctp_start_association(turbo_dc_peer_t *peer);
+int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
 void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason);
 
 /* SCTP callbacks (called by usrsctp) */
@@ -262,6 +281,28 @@ static inline int peer_alloc_channel_id(turbo_dc_peer_t *peer, uint16_t *out_id)
         }
     }
     return -1;  /* No free IDs */
+}
+
+static inline turbo_dc_channel_t *peer_get_channel(turbo_dc_peer_t *peer,
+                                                    uint16_t id) {
+    turbo_dc_channel_t **channel;
+
+    if (!peer) return NULL;
+    channel = (turbo_dc_channel_t **)turbo_hash_map_get(&peer->channels, &id);
+    return channel ? *channel : NULL;
+}
+
+static inline int peer_set_channel(turbo_dc_peer_t *peer,
+                                   uint16_t id,
+                                   turbo_dc_channel_t *channel) {
+    if (!peer || !channel) return -1;
+    return turbo_hash_map_put(&peer->channels, &id, &channel);
+}
+
+static inline void peer_remove_channel(turbo_dc_peer_t *peer, uint16_t id) {
+    if (peer) {
+        turbo_hash_map_remove(&peer->channels, &id, NULL);
+    }
 }
 
 static inline void peer_free_channel_id(turbo_dc_peer_t *peer, uint16_t id) {
