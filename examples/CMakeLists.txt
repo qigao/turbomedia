@@ -20,7 +20,7 @@ if(WIN32)
     POST_BUILD
     COMMAND
       ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:TurboUtils::Core>
-      $<TARGET_FILE:TurboUtils::DataBind> $<TARGET_FILE:TurboUtils::Parser>
+      $<TARGET_FILE:TurboParser::DataBind> $<TARGET_FILE:TurboParser::Parser>
       $<TARGET_FILE_DIR:turbo_pipeline_run>
     VERBATIM)
 endif()

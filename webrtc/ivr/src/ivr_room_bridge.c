@@ -4,6 +4,7 @@
 #include "ivr_internal.h"
 #include "turbomedia_ivr_v1.h"
 #include "turbo_flow_fmq.h"
+#include "turbo_parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -369,6 +370,12 @@ struct ivr_room_bridge_s {
     uint64_t dispatches_failed;
     uint64_t dispatch_results;
     uint64_t dispatch_result_rejects;
+    uint64_t media_results;
+    uint64_t media_result_rejects;
+    uint64_t media_events;
+    uint64_t media_event_rejects;
+    uint64_t inventory_pages;
+    uint64_t inventory_page_rejects;
     uint64_t auth_rejects; /* worker.sync identity not connected */
     uint64_t dedup_expired_rejects; /* replay outside the retention window */
 };
@@ -424,11 +431,32 @@ static int field_bool(const DataBindValue *root, const char *field) {
     return v ? data_bind_value_as_bool(v) : 0;
 }
 
+static const char *field_text(const DataBindValue *root, const char *field) {
+    const DataBindValue *value = data_bind_value_get(root, field);
+    return value ? data_bind_value_as_string(value) : NULL;
+}
+
 static void field_str(const DataBindValue *root, const char *field, char *out,
                       size_t out_size) {
     const DataBindValue *v = data_bind_value_get(root, field);
     const char *s = v ? data_bind_value_as_string(v) : "";
     snprintf(out, out_size, "%s", s ? s : "");
+}
+
+static int field_str_checked(const DataBindValue *root, const char *field,
+                             char *out, size_t out_size, int required) {
+    const DataBindValue *value = data_bind_value_get(root, field);
+    const char *text = value ? data_bind_value_as_string(value) : NULL;
+    size_t size = text ? strlen(text) : 0u;
+    if (!out || out_size == 0 || size >= out_size ||
+        (required && size == 0)) {
+        return 0;
+    }
+    if (size > 0) {
+        memcpy(out, text, size);
+    }
+    out[size] = '\0';
+    return 1;
 }
 
 ivr_status_t ivr_room_decode_frame(DataBind *codec, const uint8_t *frame,
@@ -576,6 +604,316 @@ ivr_status_t ivr_room_decode_release_result(DataBind *codec,
     return ivr_room_decode_call_result(codec, frame, len,
                                        IVR_TYPE_CALL_RELEASE_RESULT_V1,
                                        "CallReleaseResultV1", out);
+}
+
+ivr_status_t ivr_room_decode_media_result(
+    DataBind *codec, const uint8_t *frame, size_t len,
+    ivr_media_command_result_t *out) {
+    ivr_frame_info_t info;
+    DataBindError error = DATA_BIND_ERROR_INIT;
+    DataBindObject *object = NULL;
+    const DataBindValue *root;
+    const DataBindValue *status;
+
+    if (!codec || !frame || !out) {
+        return IVR_EINVAL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (ivr_frame_decode(frame, len, &info) != IVR_OK ||
+        info.format != IVR_FMT_BIN || info.kind != IVR_KIND_RESULT ||
+        info.schema_type_id != IVR_TYPE_MEDIA_COMMAND_RESULT_V1 ||
+        data_bind_object_from_bin(codec, "MediaCommandResultV1",
+                                  frame + IVR_FRAME_HEADER_SIZE,
+                                  len - IVR_FRAME_HEADER_SIZE, &object,
+                                  &error) != DATA_BIND_OK) {
+        return IVR_ESTATE;
+    }
+    root = data_bind_object_value(object);
+    status = data_bind_value_get(root, "status_code");
+    if (!field_str_checked(root, "message_id", out->message_id,
+                           sizeof(out->message_id), 1) ||
+        !field_str_checked(root, "tenant_id", out->tenant_id,
+                           sizeof(out->tenant_id), 1) ||
+        !field_str_checked(root, "provider_session_id",
+                           out->provider_session_id,
+                           sizeof(out->provider_session_id), 1) ||
+        !field_str_checked(root, "dialog_id", out->dialog_id,
+                           sizeof(out->dialog_id), 1) ||
+        !field_str_checked(root, "worker_id", out->worker_id,
+                           sizeof(out->worker_id), 1) ||
+        !field_str_checked(root, "room_id", out->room_id,
+                           sizeof(out->room_id), 1) ||
+        !field_str_checked(root, "call_id", out->call_id,
+                           sizeof(out->call_id), 1) ||
+        !field_str_checked(root, "error_code", out->error_code,
+                           sizeof(out->error_code), 0) ||
+        !field_str_checked(root, "error_message", out->error_message,
+                           sizeof(out->error_message), 0)) {
+        data_bind_object_free(object);
+        memset(out, 0, sizeof(*out));
+        return IVR_ESTATE;
+    }
+    out->call_generation = field_u64(root, "call_generation");
+    out->operation_generation = field_u64(root, "operation_generation");
+    out->status_code = status ? data_bind_value_as_int(status) : 1;
+    data_bind_object_free(object);
+    if (out->call_generation == 0 || out->operation_generation == 0 ||
+        out->status_code > 0) {
+        memset(out, 0, sizeof(*out));
+        return IVR_ESTATE;
+    }
+    return IVR_OK;
+}
+
+ivr_status_t ivr_room_decode_media_event(DataBind *codec,
+                                         const uint8_t *frame, size_t len,
+                                         ivr_media_event_t *out) {
+    ivr_frame_info_t info;
+    DataBindError error = DATA_BIND_ERROR_INIT;
+    DataBindObject *object = NULL;
+    const DataBindValue *root;
+
+    if (!codec || !frame || !out) {
+        return IVR_EINVAL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (ivr_frame_decode(frame, len, &info) != IVR_OK ||
+        info.format != IVR_FMT_BIN || info.kind != IVR_KIND_EVENT ||
+        info.schema_type_id != IVR_TYPE_MEDIA_EVENT_V1 ||
+        data_bind_object_from_bin(codec, "MediaEventV1",
+                                  frame + IVR_FRAME_HEADER_SIZE,
+                                  len - IVR_FRAME_HEADER_SIZE, &object,
+                                  &error) != DATA_BIND_OK) {
+        return IVR_ESTATE;
+    }
+    root = data_bind_object_value(object);
+    if (!field_str_checked(root, "event_id", out->event_id,
+                           sizeof(out->event_id), 1) ||
+        !field_str_checked(root, "tenant_id", out->tenant_id,
+                           sizeof(out->tenant_id), 1) ||
+        !field_str_checked(root, "provider_session_id",
+                           out->provider_session_id,
+                           sizeof(out->provider_session_id), 1) ||
+        !field_str_checked(root, "dialog_id", out->dialog_id,
+                           sizeof(out->dialog_id), 1) ||
+        !field_str_checked(root, "worker_id", out->worker_id,
+                           sizeof(out->worker_id), 1) ||
+        !field_str_checked(root, "room_id", out->room_id,
+                           sizeof(out->room_id), 1) ||
+        !field_str_checked(root, "call_id", out->call_id,
+                           sizeof(out->call_id), 1) ||
+        !field_str_checked(root, "event_type", out->event_type,
+                           sizeof(out->event_type), 1) ||
+        !field_str_checked(root, "input_id", out->input_id,
+                           sizeof(out->input_id), 0) ||
+        !field_str_checked(root, "input_value", out->input_value,
+                           sizeof(out->input_value), 0) ||
+        !field_str_checked(root, "payload_json", out->payload_json,
+                           sizeof(out->payload_json), 0)) {
+        data_bind_object_free(object);
+        memset(out, 0, sizeof(*out));
+        return IVR_ESTATE;
+    }
+    out->call_generation = field_u64(root, "call_generation");
+    out->sequence = field_u64(root, "sequence");
+    out->occurred_at_ms = field_u64(root, "occurred_at_ms");
+    data_bind_object_free(object);
+    if (out->call_generation == 0 || out->sequence == 0 ||
+        out->occurred_at_ms == 0) {
+        memset(out, 0, sizeof(*out));
+        return IVR_ESTATE;
+    }
+    return IVR_OK;
+}
+
+static ivr_worker_resource_state_t inventory_state_from_name(
+    const char *state) {
+    if (!state) return 0;
+    if (strcmp(state, "opening") == 0) return IVR_WORKER_RESOURCE_OPENING;
+    if (strcmp(state, "active") == 0) return IVR_WORKER_RESOURCE_ACTIVE;
+    if (strcmp(state, "closing") == 0) return IVR_WORKER_RESOURCE_CLOSING;
+    return 0;
+}
+
+static int inventory_record_json_shape_valid(const json_value_t *item) {
+    static const char *const keys[] = {
+        "workerId",          "workerInstanceId", "workerEpoch",
+        "tenantId",          "providerSessionId", "dialogId",
+        "roomId",
+        "callId",            "callGeneration",   "operationGeneration",
+        "inputId",           "inputGeneration",  "inputActive",
+        "state",
+        "rebindable"};
+    size_t count;
+    if (!item || turbo_json_type(item) != TURBO_JSON_OBJECT) return 0;
+    count = turbo_json_object_size(item);
+    if (count != sizeof(keys) / sizeof(keys[0])) return 0;
+    for (size_t i = 0; i < count; ++i) {
+        const char *key = turbo_json_object_key(item, i);
+        int known = 0;
+        for (size_t j = 0; j < sizeof(keys) / sizeof(keys[0]); ++j) {
+            if (key && strcmp(key, keys[j]) == 0) {
+                known = 1;
+                break;
+            }
+        }
+        if (!known) return 0;
+    }
+    return 1;
+}
+
+static int decode_inventory_record(DataBind *codec, const json_value_t *item,
+                                   const char *worker_id,
+                                   ivr_worker_inventory_record_t *out) {
+    char *json = NULL;
+    size_t json_size = 0;
+    DataBindError error = DATA_BIND_ERROR_INIT;
+    DataBindObject *object = NULL;
+    const DataBindValue *root;
+    const char *state;
+    int valid = 0;
+
+    if (!codec || !worker_id || !out ||
+        !inventory_record_json_shape_valid(item)) {
+        return 0;
+    }
+    json = turbo_json_serialize(item, &json_size);
+    if (!json ||
+        data_bind_object_from_json(codec, "WorkerMediaInventoryRecordV2",
+                                   json, json_size, &object,
+                                   &error) != DATA_BIND_OK) {
+        turbo_json_serialize_free(json);
+        return 0;
+    }
+    turbo_json_serialize_free(json);
+    memset(out, 0, sizeof(*out));
+    root = data_bind_object_value(object);
+    state = field_text(root, "state");
+    if (field_str_checked(root, "workerId", out->worker_id,
+                          sizeof(out->worker_id), 1) &&
+        field_str_checked(root, "workerInstanceId",
+                          out->worker_instance_id,
+                          sizeof(out->worker_instance_id), 1) &&
+        field_str_checked(root, "tenantId", out->tenant_id,
+                          sizeof(out->tenant_id), 1) &&
+        field_str_checked(root, "providerSessionId",
+                          out->provider_session_id,
+                          sizeof(out->provider_session_id), 1) &&
+        field_str_checked(root, "dialogId", out->dialog_id,
+                          sizeof(out->dialog_id), 1) &&
+        field_str_checked(root, "roomId", out->room_id,
+                          sizeof(out->room_id), 1) &&
+        field_str_checked(root, "callId", out->call_id,
+                          sizeof(out->call_id), 1)) {
+        out->worker_epoch = field_u64(root, "workerEpoch");
+        out->call_generation = field_u64(root, "callGeneration");
+        out->operation_generation = field_u64(root, "operationGeneration");
+        if (!field_str_checked(root, "inputId", out->input_id,
+                               sizeof(out->input_id), 0)) {
+            data_bind_object_free(object);
+            memset(out, 0, sizeof(*out));
+            return 0;
+        }
+        out->input_generation = field_u64(root, "inputGeneration");
+        out->input_active = field_bool(root, "inputActive");
+        out->state = inventory_state_from_name(state);
+        out->rebindable = field_bool(root, "rebindable");
+        valid = strcmp(out->worker_id, worker_id) == 0 &&
+                out->worker_epoch != 0 && out->call_generation != 0 &&
+                out->state != 0 &&
+                (!out->input_active ||
+                 (out->input_id[0] && out->input_generation != 0)) &&
+                (out->input_active ||
+                 (!out->input_id[0] && out->input_generation == 0)) &&
+                (out->rebindable == 0 || out->rebindable == 1) &&
+                (out->state == IVR_WORKER_RESOURCE_ACTIVE ||
+                 !out->rebindable);
+    }
+    data_bind_object_free(object);
+    if (!valid) memset(out, 0, sizeof(*out));
+    return valid;
+}
+
+ivr_status_t ivr_room_decode_inventory_page(
+    DataBind *codec, const uint8_t *frame, size_t len,
+    ivr_worker_inventory_envelope_t *out) {
+    ivr_frame_info_t info;
+    DataBindError error = DATA_BIND_ERROR_INIT;
+    DataBindObject *object = NULL;
+    const DataBindValue *root;
+    const char *records_json;
+    json_value_t *records = NULL;
+    size_t records_count;
+    const DataBindValue *status_value;
+
+    if (!codec || !frame || !out) return IVR_EINVAL;
+    memset(out, 0, sizeof(*out));
+    if (ivr_frame_decode(frame, len, &info) != IVR_OK ||
+        info.format != IVR_FMT_BIN || info.kind != IVR_KIND_RESULT ||
+        info.schema_type_id != IVR_TYPE_WORKER_MEDIA_INVENTORY_PAGE_V1 ||
+        data_bind_object_from_bin(codec, "WorkerMediaInventoryPageV1",
+                                  frame + IVR_FRAME_HEADER_SIZE,
+                                  len - IVR_FRAME_HEADER_SIZE, &object,
+                                  &error) != DATA_BIND_OK) {
+        return IVR_ESTATE;
+    }
+    root = data_bind_object_value(object);
+    status_value = data_bind_value_get(root, "status_code");
+    records_json = field_text(root, "records_json");
+    if (!field_str_checked(root, "message_id", out->message_id,
+                           sizeof(out->message_id), 1) ||
+        !field_str_checked(root, "worker_id", out->worker_id,
+                           sizeof(out->worker_id), 1) ||
+        !field_str_checked(root, "error_code", out->error_code,
+                           sizeof(out->error_code), 0) ||
+        !field_str_checked(root, "error_message", out->error_message,
+                           sizeof(out->error_message), 0) ||
+        !records_json ||
+        turbo_parse_json((const uint8_t *)records_json, strlen(records_json),
+                         &records) != 0 || !records ||
+        turbo_json_type(records) != TURBO_JSON_ARRAY) {
+        data_bind_object_free(object);
+        turbo_free_json(&records);
+        memset(out, 0, sizeof(*out));
+        return IVR_ESTATE;
+    }
+    out->page.inventory_version = field_u32(root, "inventory_version");
+    out->page.revision = field_u64(root, "revision");
+    out->page.cursor = field_u32(root, "cursor");
+    out->page.next_cursor = field_u32(root, "next_cursor");
+    out->page.total_active = field_u32(root, "total_active");
+    out->page.count = field_u32(root, "count");
+    out->page.has_more = field_bool(root, "has_more");
+    out->status_code = status_value ? data_bind_value_as_int(status_value) : 1;
+    records_count = turbo_json_array_size(records);
+    if (out->status_code > 0 ||
+        out->page.count > IVR_WORKER_INVENTORY_MAX_PAGE_SIZE ||
+        records_count != out->page.count ||
+        (out->status_code == IVR_OK &&
+         (out->page.inventory_version != IVR_WORKER_INVENTORY_VERSION ||
+          out->page.revision == 0 ||
+          out->page.total_active < out->page.count ||
+          (out->page.has_more && out->page.next_cursor == 0) ||
+          (!out->page.has_more && out->page.next_cursor != 0))) ||
+        (out->status_code != IVR_OK && out->page.count != 0)) {
+        data_bind_object_free(object);
+        turbo_free_json(&records);
+        memset(out, 0, sizeof(*out));
+        return IVR_ESTATE;
+    }
+    for (size_t i = 0; i < records_count; ++i) {
+        if (!decode_inventory_record(
+                codec, turbo_json_array_get(records, i), out->worker_id,
+                &out->page.records[i])) {
+            data_bind_object_free(object);
+            turbo_free_json(&records);
+            memset(out, 0, sizeof(*out));
+            return IVR_ESTATE;
+        }
+    }
+    data_bind_object_free(object);
+    turbo_free_json(&records);
+    return IVR_OK;
 }
 
 ivr_status_t ivr_room_bridge_encode_participant_joined(
@@ -1154,6 +1492,12 @@ void ivr_room_bridge_get_stats(const ivr_room_bridge_t *bridge,
     out->version_rejects = bridge->version_rejects;
     out->auth_rejects = bridge->auth_rejects;
     out->dispatch_result_rejects = bridge->dispatch_result_rejects;
+    out->media_results = bridge->media_results;
+    out->media_result_rejects = bridge->media_result_rejects;
+    out->media_events = bridge->media_events;
+    out->media_event_rejects = bridge->media_event_rejects;
+    out->inventory_pages = bridge->inventory_pages;
+    out->inventory_page_rejects = bridge->inventory_page_rejects;
     ivr_mutex_unlock((ivr_mutex_t *)&bridge->dedup.lock);
 }
 
@@ -1478,6 +1822,245 @@ static ivr_status_t ivr_room_bridge_send_to_worker(
     return IVR_OK;
 }
 
+ivr_status_t ivr_room_bridge_encode_media_command(
+    DataBind *codec, const ivr_media_command_t *command, uint8_t *frame,
+    size_t frame_cap, size_t *out_len) {
+    const char *type_name;
+    uint16_t type_id;
+    char json[8192];
+    char number[32];
+    ivr_json_builder_t builder;
+    DataBindError error = DATA_BIND_ERROR_INIT;
+    DataBindObject *object = NULL;
+    uint8_t *binary = NULL;
+    size_t binary_size = 0;
+    ivr_frame_info_t info;
+
+    if (!codec || !command || !frame || !out_len ||
+        frame_cap < IVR_FRAME_HEADER_SIZE ||
+        command->message_id[0] == '\0' ||
+        command->tenant_id[0] == '\0' ||
+        command->provider_session_id[0] == '\0' ||
+        command->dialog_id[0] == '\0' ||
+        command->worker_id[0] == '\0' || command->room_id[0] == '\0' ||
+        command->call_id[0] == '\0' || command->call_generation == 0 ||
+        command->operation_generation == 0 ||
+        command->deadline_timeout_ms == 0) {
+        return IVR_EINVAL;
+    }
+    *out_len = 0;
+    switch (command->kind) {
+        case IVR_MEDIA_COMMAND_SESSION_OPEN:
+            type_name = "MediaSessionOpenCommandV1";
+            type_id = IVR_TYPE_MEDIA_SESSION_OPEN_COMMAND_V1;
+            break;
+        case IVR_MEDIA_COMMAND_PLAY:
+            if (command->text[0] == '\0') return IVR_EINVAL;
+            type_name = "MediaPlayCommandV1";
+            type_id = IVR_TYPE_MEDIA_PLAY_COMMAND_V1;
+            break;
+        case IVR_MEDIA_COMMAND_INPUT_START:
+            if (command->input_id[0] == '\0' ||
+                command->input_generation == 0) return IVR_EINVAL;
+            type_name = "MediaInputStartCommandV1";
+            type_id = IVR_TYPE_MEDIA_INPUT_START_COMMAND_V1;
+            break;
+        case IVR_MEDIA_COMMAND_INPUT_STOP:
+            if (command->input_id[0] == '\0' ||
+                command->input_generation == 0) return IVR_EINVAL;
+            type_name = "MediaInputStopCommandV1";
+            type_id = IVR_TYPE_MEDIA_INPUT_STOP_COMMAND_V1;
+            break;
+        case IVR_MEDIA_COMMAND_CANCEL:
+            if (command->input_id[0] == '\0' ||
+                command->input_generation == 0) return IVR_EINVAL;
+            type_name = "MediaCancelCommandV2";
+            type_id = IVR_TYPE_MEDIA_CANCEL_COMMAND_V2;
+            break;
+        case IVR_MEDIA_COMMAND_SESSION_CLOSE:
+            type_name = "MediaSessionCloseCommandV1";
+            type_id = IVR_TYPE_MEDIA_SESSION_CLOSE_COMMAND_V1;
+            break;
+        default:
+            return IVR_EINVAL;
+    }
+
+    ivr_json_builder_init(&builder, json, sizeof(json));
+#define MEDIA_COMMAND_STRING(name, value)                                    \
+    do {                                                                      \
+        ivr_json_builder_raw(&builder, ",\"" name "\":");                 \
+        ivr_json_builder_string_cstr(&builder, (value));                      \
+    } while (0)
+    ivr_json_builder_raw(&builder, "{\"message_id\":");
+    ivr_json_builder_string_cstr(&builder, command->message_id);
+    MEDIA_COMMAND_STRING("tenant_id", command->tenant_id);
+    MEDIA_COMMAND_STRING("provider_session_id",
+                         command->provider_session_id);
+    MEDIA_COMMAND_STRING("dialog_id", command->dialog_id);
+    MEDIA_COMMAND_STRING("worker_id", command->worker_id);
+    MEDIA_COMMAND_STRING("room_id", command->room_id);
+    MEDIA_COMMAND_STRING("call_id", command->call_id);
+    ivr_json_builder_raw(&builder, ",\"call_generation\":");
+    snprintf(number, sizeof(number), "%llu",
+             (unsigned long long)command->call_generation);
+    ivr_json_builder_raw(&builder, number);
+    ivr_json_builder_raw(&builder, ",\"operation_generation\":");
+    snprintf(number, sizeof(number), "%llu",
+             (unsigned long long)command->operation_generation);
+    ivr_json_builder_raw(&builder, number);
+    ivr_json_builder_raw(&builder, ",\"deadline_timeout_ms\":");
+    snprintf(number, sizeof(number), "%llu",
+             (unsigned long long)command->deadline_timeout_ms);
+    ivr_json_builder_raw(&builder, number);
+    if (command->kind == IVR_MEDIA_COMMAND_PLAY) {
+        MEDIA_COMMAND_STRING("text", command->text);
+    } else if (command->kind == IVR_MEDIA_COMMAND_INPUT_START ||
+               command->kind == IVR_MEDIA_COMMAND_INPUT_STOP ||
+               command->kind == IVR_MEDIA_COMMAND_CANCEL) {
+        MEDIA_COMMAND_STRING("input_id", command->input_id);
+        ivr_json_builder_raw(&builder, ",\"input_generation\":");
+        snprintf(number, sizeof(number), "%llu",
+                 (unsigned long long)command->input_generation);
+        ivr_json_builder_raw(&builder, number);
+    } else if (command->kind == IVR_MEDIA_COMMAND_SESSION_CLOSE) {
+        MEDIA_COMMAND_STRING("reason", command->reason);
+    }
+    ivr_json_builder_raw(&builder, "}");
+#undef MEDIA_COMMAND_STRING
+    if (!ivr_json_builder_ok(&builder) ||
+        data_bind_object_from_json(codec, type_name, json, strlen(json),
+                                   &object, &error) != DATA_BIND_OK ||
+        data_bind_object_serialize_bin(codec, object, &binary, &binary_size,
+                                       &error) != DATA_BIND_OK) {
+        data_bind_object_free(object);
+        return IVR_ESTATE;
+    }
+    data_bind_object_free(object);
+    if (binary_size > frame_cap - IVR_FRAME_HEADER_SIZE) {
+        data_bind_binary_free(binary);
+        return IVR_ENOSPC;
+    }
+    memset(&info, 0, sizeof(info));
+    info.format = IVR_FMT_BIN;
+    info.kind = IVR_KIND_COMMAND;
+    info.schema_type_id = type_id;
+    info.schema_major = IVR_SCHEMA_MAJOR;
+    info.schema_minor = IVR_SCHEMA_MINOR;
+    if (ivr_frame_encode(frame, &info) != IVR_OK) {
+        data_bind_binary_free(binary);
+        return IVR_ESTATE;
+    }
+    memcpy(frame + IVR_FRAME_HEADER_SIZE, binary, binary_size);
+    *out_len = IVR_FRAME_HEADER_SIZE + binary_size;
+    data_bind_binary_free(binary);
+    return IVR_OK;
+}
+
+ivr_status_t ivr_room_bridge_send_media_command(
+    ivr_room_bridge_t *bridge, const ivr_media_command_t *command) {
+    uint8_t frame[IVR_FRAME_HEADER_SIZE + 8192u];
+    size_t frame_size = 0;
+    ivr_status_t status;
+    if (!bridge || !command) {
+        return IVR_EINVAL;
+    }
+    status = ivr_room_bridge_encode_media_command(
+        bridge->codec, command, frame, sizeof(frame), &frame_size);
+    if (status != IVR_OK) {
+        return status;
+    }
+    return ivr_room_bridge_send_to_worker(bridge, command->worker_id, frame,
+                                          frame_size);
+}
+
+ivr_status_t ivr_room_bridge_encode_inventory_query(
+    DataBind *codec, const ivr_worker_inventory_request_t *request,
+    uint8_t *frame, size_t frame_capacity, size_t *out_size) {
+    char json[1024];
+    char number[32];
+    ivr_json_builder_t builder;
+    DataBindError error = DATA_BIND_ERROR_INIT;
+    DataBindObject *object = NULL;
+    uint8_t *binary = NULL;
+    size_t binary_size = 0;
+    ivr_frame_info_t info;
+
+    if (!codec || !request || !frame || !out_size ||
+        frame_capacity < IVR_FRAME_HEADER_SIZE || !request->message_id[0] ||
+        !request->worker_id[0] ||
+        request->query.inventory_version != IVR_WORKER_INVENTORY_VERSION ||
+        request->query.limit == 0 ||
+        request->query.limit > IVR_WORKER_INVENTORY_MAX_PAGE_SIZE) {
+        return request && request->query.inventory_version !=
+                              IVR_WORKER_INVENTORY_VERSION
+                   ? IVR_EVERSION
+                   : IVR_EINVAL;
+    }
+    *out_size = 0;
+    ivr_json_builder_init(&builder, json, sizeof(json));
+    ivr_json_builder_raw(&builder, "{\"message_id\":");
+    ivr_json_builder_string_cstr(&builder, request->message_id);
+    ivr_json_builder_raw(&builder, ",\"worker_id\":");
+    ivr_json_builder_string_cstr(&builder, request->worker_id);
+#define INVENTORY_QUERY_NUMBER(name, value)                                  \
+    do {                                                                      \
+        ivr_json_builder_raw(&builder, ",\"" name "\":");             \
+        snprintf(number, sizeof(number), "%llu",                            \
+                 (unsigned long long)(value));                                \
+        ivr_json_builder_raw(&builder, number);                               \
+    } while (0)
+    INVENTORY_QUERY_NUMBER("inventory_version",
+                           request->query.inventory_version);
+    INVENTORY_QUERY_NUMBER("expected_revision",
+                           request->query.expected_revision);
+    INVENTORY_QUERY_NUMBER("cursor", request->query.cursor);
+    INVENTORY_QUERY_NUMBER("limit", request->query.limit);
+#undef INVENTORY_QUERY_NUMBER
+    ivr_json_builder_raw(&builder, "}");
+    if (!ivr_json_builder_ok(&builder) ||
+        data_bind_object_from_json(codec, "WorkerMediaInventoryQueryV1", json,
+                                   strlen(json), &object,
+                                   &error) != DATA_BIND_OK ||
+        data_bind_object_serialize_bin(codec, object, &binary, &binary_size,
+                                       &error) != DATA_BIND_OK) {
+        data_bind_object_free(object);
+        return IVR_ESTATE;
+    }
+    data_bind_object_free(object);
+    if (binary_size > frame_capacity - IVR_FRAME_HEADER_SIZE) {
+        data_bind_binary_free(binary);
+        return IVR_ENOSPC;
+    }
+    memset(&info, 0, sizeof(info));
+    info.format = IVR_FMT_BIN;
+    info.kind = IVR_KIND_COMMAND;
+    info.schema_type_id = IVR_TYPE_WORKER_MEDIA_INVENTORY_QUERY_V1;
+    info.schema_major = IVR_SCHEMA_MAJOR;
+    info.schema_minor = IVR_SCHEMA_MINOR;
+    if (ivr_frame_encode(frame, &info) != IVR_OK) {
+        data_bind_binary_free(binary);
+        return IVR_ESTATE;
+    }
+    memcpy(frame + IVR_FRAME_HEADER_SIZE, binary, binary_size);
+    *out_size = IVR_FRAME_HEADER_SIZE + binary_size;
+    data_bind_binary_free(binary);
+    return IVR_OK;
+}
+
+ivr_status_t ivr_room_bridge_request_inventory(
+    ivr_room_bridge_t *bridge,
+    const ivr_worker_inventory_request_t *request) {
+    uint8_t frame[IVR_FRAME_HEADER_SIZE + 1024u];
+    size_t frame_size = 0;
+    ivr_status_t status;
+    if (!bridge || !request) return IVR_EINVAL;
+    status = ivr_room_bridge_encode_inventory_query(
+        bridge->codec, request, frame, sizeof(frame), &frame_size);
+    if (status != IVR_OK) return status;
+    return ivr_room_bridge_send_to_worker(bridge, request->worker_id, frame,
+                                          frame_size);
+}
+
 ivr_status_t ivr_room_bridge_dispatch_call(
     ivr_room_bridge_t *bridge, const char *worker_id, const char *message_id,
     const char *room_id, const char *call_id, uint64_t call_generation,
@@ -1621,6 +2204,54 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
             return;
         }
         b->dispatch_results++;
+        return;
+    }
+    if (info.kind == IVR_KIND_RESULT &&
+        info.schema_type_id == IVR_TYPE_MEDIA_COMMAND_RESULT_V1) {
+        ivr_media_command_result_t media_result;
+        if (ivr_room_decode_media_result(
+                b->codec, (const uint8_t *)msg->payload.data, msg->payload.len,
+                &media_result) != IVR_OK ||
+            !route_matches_worker(b, media_result.worker_id, msg) ||
+            !b->handler.on_media_result ||
+            b->handler.on_media_result(b->handler.context, &media_result) !=
+                IVR_OK) {
+            b->media_result_rejects++;
+            return;
+        }
+        b->media_results++;
+        return;
+    }
+    if (info.kind == IVR_KIND_RESULT &&
+        info.schema_type_id == IVR_TYPE_WORKER_MEDIA_INVENTORY_PAGE_V1) {
+        ivr_worker_inventory_envelope_t inventory;
+        if (ivr_room_decode_inventory_page(
+                b->codec, (const uint8_t *)msg->payload.data,
+                msg->payload.len, &inventory) != IVR_OK ||
+            !route_matches_worker(b, inventory.worker_id, msg) ||
+            !b->handler.on_inventory_page ||
+            b->handler.on_inventory_page(b->handler.context, &inventory) !=
+                IVR_OK) {
+            b->inventory_page_rejects++;
+            return;
+        }
+        b->inventory_pages++;
+        return;
+    }
+    if (info.kind == IVR_KIND_EVENT &&
+        info.schema_type_id == IVR_TYPE_MEDIA_EVENT_V1) {
+        ivr_media_event_t media_event;
+        if (ivr_room_decode_media_event(
+                b->codec, (const uint8_t *)msg->payload.data, msg->payload.len,
+                &media_event) != IVR_OK ||
+            !route_matches_worker(b, media_event.worker_id, msg) ||
+            !b->handler.on_media_event ||
+            b->handler.on_media_event(b->handler.context, &media_event) !=
+                IVR_OK) {
+            b->media_event_rejects++;
+            return;
+        }
+        b->media_events++;
         return;
     }
     if (info.kind != IVR_KIND_COMMAND) {

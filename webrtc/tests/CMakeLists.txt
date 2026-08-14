@@ -9,7 +9,7 @@ function(turbo_media_add_webrtc_base_test name)
     ${name}
     PRIVATE TurboUtils::TinyTest
             TurboUtils::Core
-            TurboUtils::Parser)
+            TurboParser::Parser)
   if(NOT ANDROID)
     add_test(NAME ${name} COMMAND ${name})
   endif()

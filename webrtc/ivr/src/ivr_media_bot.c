@@ -28,9 +28,17 @@ struct ivr_media_bot_s {
        cancel_input while they call into the provider outside the lock.
        stop_bot waits for this to drain before cancel/destroy. */
     uint32_t session_refs;
+    ivr_str_t tenant_id;
+    ivr_str_t provider_session_id;
+    ivr_str_t dialog_id;
     ivr_str_t room_id;
     ivr_str_t call_id;
     uint64_t call_generation;
+    char input_id[IVR_MEDIA_ID_CAPACITY];
+    size_t input_id_size;
+    uint64_t input_generation;
+    int input_active;
+    int input_finishing;
     turbo_tts_t *tts;
     turbo_asr_t *asr;
     /* diagnostics */
@@ -42,6 +50,12 @@ struct ivr_media_bot_s {
 
 static void bot_call_view(ivr_media_bot_t *b, ivr_call_ref_t *out) {
     memset(out, 0, sizeof(*out));
+    out->tenant_id.data = b->tenant_id.data;
+    out->tenant_id.size = b->tenant_id.size;
+    out->provider_session_id.data = b->provider_session_id.data;
+    out->provider_session_id.size = b->provider_session_id.size;
+    out->dialog_id.data = b->dialog_id.data;
+    out->dialog_id.size = b->dialog_id.size;
     out->room_id.data = b->room_id.data;
     out->room_id.size = b->room_id.size;
     out->call_id.data = b->call_id.data;
@@ -53,6 +67,19 @@ static int bot_call_matches_locked(ivr_media_bot_t *b,
                                    const ivr_call_ref_t *call) {
     return b->active && call &&
            call->call_generation == b->call_generation &&
+           call->tenant_id.size == b->tenant_id.size &&
+           (call->tenant_id.size == 0 ||
+            memcmp(call->tenant_id.data, b->tenant_id.data,
+                   call->tenant_id.size) == 0) &&
+           call->provider_session_id.size == b->provider_session_id.size &&
+           (call->provider_session_id.size == 0 ||
+            memcmp(call->provider_session_id.data,
+                   b->provider_session_id.data,
+                   call->provider_session_id.size) == 0) &&
+           call->dialog_id.size == b->dialog_id.size &&
+           (call->dialog_id.size == 0 ||
+            memcmp(call->dialog_id.data, b->dialog_id.data,
+                   call->dialog_id.size) == 0) &&
            call->room_id.size == b->room_id.size &&
            (call->room_id.size == 0 ||
             memcmp(call->room_id.data, b->room_id.data,
@@ -89,8 +116,27 @@ static int bot_tts_audio(turbo_tts_t *tts, const turbo_speech_audio_frame_t *fra
 }
 
 static void bot_tts_complete(turbo_tts_t *tts, void *user_data) {
+    static const ivr_bytes_view_t type = {"playback.finished", 17};
+    static const ivr_bytes_view_t payload = {"{}", 2};
+    ivr_media_bot_t *b = (ivr_media_bot_t *)user_data;
+    ivr_call_ref_t call;
+    ivr_event_view_t event;
     (void)tts;
-    (void)user_data;
+    if (!b || !b->on_event) {
+        return;
+    }
+    ivr_mutex_lock(&b->lock);
+    if (!b->active) {
+        ivr_mutex_unlock(&b->lock);
+        return;
+    }
+    bot_call_view(b, &call);
+    ivr_mutex_unlock(&b->lock);
+    memset(&event, 0, sizeof(event));
+    event.event_type = type;
+    event.call = call;
+    event.payload_json = payload;
+    b->on_event(b->event_ctx, &event);
 }
 
 static void bot_emit_provider_error(ivr_media_bot_t *b, const char *provider,
@@ -142,17 +188,21 @@ static void bot_tts_error(turbo_tts_t *tts, int error_code, const char *message,
 static void bot_asr_result(turbo_asr_t *asr, const turbo_asr_result_t *result,
                            void *user_data) {
     ivr_media_bot_t *b = (ivr_media_bot_t *)user_data;
+    char input_id[IVR_MEDIA_ID_CAPACITY];
+    size_t input_id_size;
     (void)asr;
     if (!b || !result || !result->is_final) {
         return;
     }
     ivr_call_ref_t call;
     ivr_mutex_lock(&b->lock);
-    if (!b->active) {
+    if (!b->active || !b->input_active || b->input_id_size == 0) {
         ivr_mutex_unlock(&b->lock);
         return;
     }
     bot_call_view(b, &call);
+    input_id_size = b->input_id_size;
+    memcpy(input_id, b->input_id, input_id_size + 1u);
     b->asr_finals++;
     ivr_mutex_unlock(&b->lock);
     if (!b->on_event) {
@@ -177,6 +227,8 @@ static void bot_asr_result(turbo_asr_t *asr, const turbo_asr_result_t *result,
     memset(&ev, 0, sizeof(ev));
     ev.event_type = type;
     ev.call = call;
+    ev.input_id.data = input_id;
+    ev.input_id.size = input_id_size;
     ev.input_value.data = result->text;
     ev.input_value.size = result->text_len;
     ev.payload_json.data = json;
@@ -185,8 +237,18 @@ static void bot_asr_result(turbo_asr_t *asr, const turbo_asr_result_t *result,
 }
 
 static void bot_asr_complete(turbo_asr_t *asr, void *user_data) {
+    ivr_media_bot_t *b = (ivr_media_bot_t *)user_data;
     (void)asr;
-    (void)user_data;
+    if (!b) {
+        return;
+    }
+    ivr_mutex_lock(&b->lock);
+    b->input_active = 0;
+    b->input_finishing = 0;
+    b->input_id[0] = '\0';
+    b->input_id_size = 0;
+    b->input_generation = 0;
+    ivr_mutex_unlock(&b->lock);
 }
 
 static void bot_asr_error(turbo_asr_t *asr, int error_code, const char *message,
@@ -221,7 +283,8 @@ static turbo_asr_t *bot_asr_borrow(ivr_media_bot_t *b,
                                    const ivr_call_ref_t *call) {
     ivr_mutex_lock(&b->lock);
     turbo_asr_t *asr = NULL;
-    if (bot_call_matches_locked(b, call) && b->asr) {
+    if (bot_call_matches_locked(b, call) && b->asr && b->input_active &&
+        !b->input_finishing) {
         asr = b->asr;
         b->session_refs++;
     }
@@ -250,8 +313,21 @@ static ivr_status_t bot_start_bot(void *ctx, const ivr_call_ref_t *call) {
         ivr_mutex_unlock(&b->lock);
         return IVR_ESTATE; /* baseline: one active call per bot */
     }
-    if (ivr_str_assign(&b->room_id, call->room_id.data, call->room_id.size) < 0 ||
+    if (ivr_str_assign(&b->tenant_id,
+                       call->tenant_id.size ? call->tenant_id.data : "",
+                       call->tenant_id.size) < 0 ||
+        ivr_str_assign(&b->provider_session_id,
+                       call->provider_session_id.data,
+                       call->provider_session_id.size) < 0 ||
+        ivr_str_assign(&b->dialog_id, call->dialog_id.data,
+                       call->dialog_id.size) < 0 ||
+        ivr_str_assign(&b->room_id, call->room_id.data, call->room_id.size) < 0 ||
         ivr_str_assign(&b->call_id, call->call_id.data, call->call_id.size) < 0) {
+        ivr_str_free(&b->tenant_id);
+        ivr_str_free(&b->provider_session_id);
+        ivr_str_free(&b->dialog_id);
+        ivr_str_free(&b->room_id);
+        ivr_str_free(&b->call_id);
         ivr_mutex_unlock(&b->lock);
         return IVR_ENOSPC;
     }
@@ -273,16 +349,6 @@ static ivr_status_t bot_start_bot(void *ctx, const ivr_call_ref_t *call) {
             rc = -1;
         }
     }
-    if (rc == 0 && b->asr) {
-        turbo_asr_config_t cfg;
-        memset(&cfg, 0, sizeof(cfg));
-        cfg.format.sample_rate = (int)b->sample_rate;
-        cfg.format.channels = 1;
-        cfg.format.bits_per_sample = 16;
-        if (turbo_asr_start(b->asr, &cfg) != TURBO_SPEECH_OK) {
-            rc = -1;
-        }
-    }
     if (rc != 0) {
         if (b->asr) {
             turbo_asr_destroy(b->asr);
@@ -292,6 +358,9 @@ static ivr_status_t bot_start_bot(void *ctx, const ivr_call_ref_t *call) {
             turbo_tts_destroy(b->tts);
             b->tts = NULL;
         }
+        ivr_str_free(&b->tenant_id);
+        ivr_str_free(&b->provider_session_id);
+        ivr_str_free(&b->dialog_id);
         ivr_str_free(&b->room_id);
         ivr_str_free(&b->call_id);
         ivr_mutex_unlock(&b->lock);
@@ -346,7 +415,104 @@ static ivr_status_t bot_cancel_input(void *ctx, const ivr_call_ref_t *call) {
         (void)turbo_asr_cancel(asr);
         bot_session_release(b);
     }
+    ivr_mutex_lock(&b->lock);
+    b->input_active = 0;
+    b->input_finishing = 0;
+    b->input_id[0] = '\0';
+    b->input_id_size = 0;
+    b->input_generation = 0;
+    ivr_mutex_unlock(&b->lock);
     return (tts || asr) ? IVR_OK : IVR_ESTATE;
+}
+
+static ivr_status_t bot_begin_input(void *ctx, const ivr_call_ref_t *call,
+                                    const ivr_bytes_view_t *input_id,
+                                    uint64_t input_generation) {
+    ivr_media_bot_t *b = (ivr_media_bot_t *)ctx;
+    turbo_asr_t *asr;
+    turbo_asr_config_t config;
+    int result;
+
+    if (!b || !call || !input_id || !input_id->data || input_id->size == 0 ||
+        input_id->size >= sizeof(b->input_id) || input_generation == 0) {
+        return IVR_EINVAL;
+    }
+    ivr_mutex_lock(&b->lock);
+    if (!bot_call_matches_locked(b, call) || !b->asr || b->input_active ||
+        b->input_finishing) {
+        ivr_mutex_unlock(&b->lock);
+        return IVR_EBUSY;
+    }
+    memcpy(b->input_id, input_id->data, input_id->size);
+    b->input_id[input_id->size] = '\0';
+    b->input_id_size = input_id->size;
+    b->input_generation = input_generation;
+    b->input_active = 1;
+    b->session_refs++;
+    asr = b->asr;
+    ivr_mutex_unlock(&b->lock);
+
+    memset(&config, 0, sizeof(config));
+    config.format.sample_rate = (int)b->sample_rate;
+    config.format.channels = 1;
+    config.format.bits_per_sample = 16;
+    result = turbo_asr_start(asr, &config);
+
+    ivr_mutex_lock(&b->lock);
+    if (b->session_refs > 0) {
+        b->session_refs--;
+    }
+    if (result != TURBO_SPEECH_OK || !b->active || b->stopping) {
+        b->input_active = 0;
+        b->input_id[0] = '\0';
+        b->input_id_size = 0;
+        b->input_generation = 0;
+    }
+    if (b->stopping && b->session_refs == 0) {
+        ivr_cond_broadcast(&b->cond);
+    }
+    ivr_mutex_unlock(&b->lock);
+    return result == TURBO_SPEECH_OK ? IVR_OK : IVR_ESTATE;
+}
+
+static ivr_status_t bot_end_input(void *ctx, const ivr_call_ref_t *call,
+                                  const ivr_bytes_view_t *input_id,
+                                  uint64_t input_generation) {
+    ivr_media_bot_t *b = (ivr_media_bot_t *)ctx;
+    turbo_asr_t *asr;
+    int result;
+
+    if (!b || !call || !input_id || !input_id->data || input_id->size == 0 ||
+        input_generation == 0) {
+        return IVR_EINVAL;
+    }
+    ivr_mutex_lock(&b->lock);
+    if (!bot_call_matches_locked(b, call) || !b->asr || !b->input_active ||
+        b->input_finishing || b->input_generation != input_generation ||
+        b->input_id_size != input_id->size ||
+        memcmp(b->input_id, input_id->data, input_id->size) != 0) {
+        ivr_mutex_unlock(&b->lock);
+        return IVR_ESTATE;
+    }
+    b->input_finishing = 1;
+    b->session_refs++;
+    asr = b->asr;
+    ivr_mutex_unlock(&b->lock);
+
+    result = turbo_asr_finish(asr);
+
+    ivr_mutex_lock(&b->lock);
+    if (b->session_refs > 0) {
+        b->session_refs--;
+    }
+    if (result != TURBO_SPEECH_OK) {
+        b->input_finishing = 0;
+    }
+    if (b->stopping && b->session_refs == 0) {
+        ivr_cond_broadcast(&b->cond);
+    }
+    ivr_mutex_unlock(&b->lock);
+    return result == TURBO_SPEECH_OK ? IVR_OK : IVR_ESTATE;
 }
 
 static ivr_status_t bot_stop_bot(void *ctx, const ivr_call_ref_t *call) {
@@ -388,6 +554,14 @@ static ivr_status_t bot_stop_bot(void *ctx, const ivr_call_ref_t *call) {
     }
     ivr_mutex_lock(&b->lock);
     b->stopping = 0;
+    b->input_active = 0;
+    b->input_finishing = 0;
+    b->input_id[0] = '\0';
+    b->input_id_size = 0;
+    b->input_generation = 0;
+    ivr_str_free(&b->tenant_id);
+    ivr_str_free(&b->provider_session_id);
+    ivr_str_free(&b->dialog_id);
     ivr_str_free(&b->room_id);
     ivr_str_free(&b->call_id);
     b->call_generation = 0;
@@ -415,6 +589,9 @@ ivr_status_t ivr_media_bot_create(const ivr_media_bot_config_t *config,
                                          : IVR_MEDIA_BOT_DEFAULT_SAMPLE_RATE;
     b->on_event = config->on_event;
     b->event_ctx = config->event_ctx;
+    ivr_str_init(&b->tenant_id);
+    ivr_str_init(&b->provider_session_id);
+    ivr_str_init(&b->dialog_id);
     ivr_str_init(&b->room_id);
     ivr_str_init(&b->call_id);
     if (ivr_mutex_init(&b->lock) != 0) {
@@ -441,6 +618,8 @@ void ivr_media_bot_get_ops(ivr_media_bot_t *bot, ivr_media_port_ops_t *ops) {
     ops->play_pcm = bot_play_pcm;
     ops->cancel_input = bot_cancel_input;
     ops->stop_bot = bot_stop_bot;
+    ops->begin_input = bot_begin_input;
+    ops->end_input = bot_end_input;
 }
 
 ivr_status_t ivr_media_bot_feed_caller_audio(ivr_media_bot_t *bot,
@@ -478,6 +657,9 @@ void ivr_media_bot_destroy(ivr_media_bot_t *bot) {
         ivr_media_bot_get_ops(bot, &ops);
         (void)ops.stop_bot(ops.context, &call);
     }
+    ivr_str_free(&bot->tenant_id);
+    ivr_str_free(&bot->provider_session_id);
+    ivr_str_free(&bot->dialog_id);
     ivr_str_free(&bot->room_id);
     ivr_str_free(&bot->call_id);
     ivr_cond_destroy(&bot->cond);

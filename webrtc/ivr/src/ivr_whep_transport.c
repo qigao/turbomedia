@@ -27,10 +27,13 @@ struct ivr_whep_transport_s {
     int destroying;
     int active;
     int connected;
+    ivr_str_t provider_session_id;
+    ivr_str_t dialog_id;
     ivr_str_t room_id;
     ivr_str_t call_id;
     ivr_str_t participant_id;
     uint64_t call_generation;
+    uint64_t expected_room_version;
     uint64_t attempt_generation;
     ivr_media_state_fn on_state;
     void *state_context;
@@ -48,37 +51,87 @@ struct ivr_whep_transport_s {
     uint8_t telephone_event_payload_type;
 };
 
+typedef struct {
+    ivr_call_ref_t view;
+    char provider_session_id[IVR_MEDIA_ID_CAPACITY];
+    char dialog_id[IVR_MEDIA_ID_CAPACITY];
+    char room_id[IVR_MEDIA_ID_CAPACITY];
+    char call_id[IVR_MEDIA_ID_CAPACITY];
+} whep_call_copy_t;
+
+static int call_view_valid(const ivr_bytes_view_t *view) {
+    return view && view->data && view->size > 0u &&
+           view->size < IVR_MEDIA_ID_CAPACITY;
+}
+
+static int call_view_matches(const ivr_bytes_view_t *view,
+                             const ivr_str_t *owned) {
+    return view && owned && view->size == owned->size &&
+           (view->size == 0u ||
+            (view->data && owned->data &&
+             memcmp(view->data, owned->data, view->size) == 0));
+}
+
+/* Caller holds lock or has crossed the lifecycle barrier and is quiescent. */
+static void whep_clear_call(ivr_whep_transport_t *transport) {
+    ivr_str_free(&transport->provider_session_id);
+    ivr_str_free(&transport->dialog_id);
+    ivr_str_free(&transport->room_id);
+    ivr_str_free(&transport->call_id);
+    transport->call_generation = 0u;
+    transport->expected_room_version = 0u;
+}
+
+static int whep_copy_call_locked(const ivr_whep_transport_t *transport,
+                                 whep_call_copy_t *copy) {
+    if (!transport || !copy || !transport->provider_session_id.data ||
+        !transport->dialog_id.data || !transport->room_id.data ||
+        !transport->call_id.data ||
+        transport->provider_session_id.size >=
+            sizeof(copy->provider_session_id) ||
+        transport->dialog_id.size >= sizeof(copy->dialog_id) ||
+        transport->room_id.size >= sizeof(copy->room_id) ||
+        transport->call_id.size >= sizeof(copy->call_id)) {
+        return 0;
+    }
+    memset(copy, 0, sizeof(*copy));
+    memcpy(copy->provider_session_id, transport->provider_session_id.data,
+           transport->provider_session_id.size);
+    memcpy(copy->dialog_id, transport->dialog_id.data,
+           transport->dialog_id.size);
+    memcpy(copy->room_id, transport->room_id.data, transport->room_id.size);
+    memcpy(copy->call_id, transport->call_id.data, transport->call_id.size);
+    copy->view.provider_session_id.data = copy->provider_session_id;
+    copy->view.provider_session_id.size = transport->provider_session_id.size;
+    copy->view.dialog_id.data = copy->dialog_id;
+    copy->view.dialog_id.size = transport->dialog_id.size;
+    copy->view.room_id.data = copy->room_id;
+    copy->view.room_id.size = transport->room_id.size;
+    copy->view.call_id.data = copy->call_id;
+    copy->view.call_id.size = transport->call_id.size;
+    copy->view.call_generation = transport->call_generation;
+    copy->view.expected_room_version = transport->expected_room_version;
+    return 1;
+}
+
 static void whep_emit_state(ivr_whep_transport_t *transport,
                             ivr_media_link_state_t state, int error_code) {
     ivr_media_state_fn callback;
     void *context;
-    ivr_call_ref_t call;
-    char room[256];
-    char call_id[256];
+    whep_call_copy_t call;
     uint64_t generation;
+    int have_call;
     if (!transport) {
         return;
     }
-    memset(&call, 0, sizeof(call));
-    memset(room, 0, sizeof(room));
-    memset(call_id, 0, sizeof(call_id));
     ivr_mutex_lock(&transport->lock);
     callback = transport->on_state;
     context = transport->state_context;
     generation = transport->attempt_generation;
-    if (transport->room_id.data && transport->room_id.size < sizeof(room) &&
-        transport->call_id.data && transport->call_id.size < sizeof(call_id)) {
-        memcpy(room, transport->room_id.data, transport->room_id.size);
-        memcpy(call_id, transport->call_id.data, transport->call_id.size);
-        call.room_id.data = room;
-        call.room_id.size = transport->room_id.size;
-        call.call_id.data = call_id;
-        call.call_id.size = transport->call_id.size;
-        call.call_generation = transport->call_generation;
-    }
+    have_call = whep_copy_call_locked(transport, &call);
     ivr_mutex_unlock(&transport->lock);
-    if (callback) {
-        callback(context, &call, generation, state, error_code);
+    if (callback && have_call) {
+        callback(context, &call.view, generation, state, error_code);
     }
 }
 
@@ -86,24 +139,11 @@ static int whep_call_matches_locked(const ivr_whep_transport_t *transport,
                                     const ivr_call_ref_t *call) {
     return transport->active && call &&
            call->call_generation == transport->call_generation &&
-           call->room_id.size == transport->room_id.size &&
-           (call->room_id.size == 0 ||
-            memcmp(call->room_id.data, transport->room_id.data,
-                   call->room_id.size) == 0) &&
-           call->call_id.size == transport->call_id.size &&
-           (call->call_id.size == 0 ||
-            memcmp(call->call_id.data, transport->call_id.data,
-                   call->call_id.size) == 0);
-}
-
-static void whep_call_view_locked(const ivr_whep_transport_t *transport,
-                                  ivr_call_ref_t *out_call) {
-    memset(out_call, 0, sizeof(*out_call));
-    out_call->room_id.data = transport->room_id.data;
-    out_call->room_id.size = transport->room_id.size;
-    out_call->call_id.data = transport->call_id.data;
-    out_call->call_id.size = transport->call_id.size;
-    out_call->call_generation = transport->call_generation;
+           call_view_matches(&call->provider_session_id,
+                             &transport->provider_session_id) &&
+           call_view_matches(&call->dialog_id, &transport->dialog_id) &&
+           call_view_matches(&call->room_id, &transport->room_id) &&
+           call_view_matches(&call->call_id, &transport->call_id);
 }
 
 static void whep_delete_session(ivr_whep_transport_t *transport,
@@ -125,9 +165,10 @@ static void whep_on_frame(turbo_media_track_t *track, const uint8_t *data,
         (ivr_whep_transport_t *)user_data;
     ivr_whep_audio_cb callback = NULL;
     void *callback_context = NULL;
-    ivr_call_ref_t call;
+    whep_call_copy_t call;
     uint32_t sample_rate = 0;
     int accepted = 0;
+    int have_call = 0;
 
     (void)track;
     if (!transport || !data || length == 0 ||
@@ -139,15 +180,15 @@ static void whep_on_frame(turbo_media_track_t *track, const uint8_t *data,
     if (transport->active && !transport->poll_stop) {
         transport->last_frame_ms = turbo_monotonic_ms();
         transport->input_stalled = 0;
-        whep_call_view_locked(transport, &call);
+        have_call = whep_copy_call_locked(transport, &call);
         callback = transport->config.on_audio;
         callback_context = transport->config.audio_context;
         sample_rate = transport->config.sample_rate;
     }
     ivr_mutex_unlock(&transport->lock);
-    if (callback) {
-        accepted = callback(callback_context, &call, data, length, sample_rate,
-                            timestamp) == 0;
+    if (callback && have_call) {
+        accepted = callback(callback_context, &call.view, data, length,
+                            sample_rate, timestamp) == 0;
     }
     ivr_mutex_lock(&transport->lock);
     if (accepted) {
@@ -163,10 +204,11 @@ static void whep_on_rtp(turbo_media_track_t *track, const uint8_t *packet,
     ivr_whep_transport_t *transport = (ivr_whep_transport_t *)user_data;
     ivr_whep_rtp_cb callback = NULL;
     void *callback_context = NULL;
-    ivr_call_ref_t call;
+    whep_call_copy_t call;
     rtp_packet_t parsed;
     uint8_t telephone_event_pt;
     uint64_t source_generation = 0;
+    int have_call = 0;
 
     (void)track;
     if (!transport || !packet || length < 12u ||
@@ -177,14 +219,14 @@ static void whep_on_rtp(turbo_media_track_t *track, const uint8_t *packet,
     telephone_event_pt = transport->telephone_event_payload_type;
     if (transport->active && !transport->poll_stop &&
         parsed.header.payload_type == telephone_event_pt) {
-        whep_call_view_locked(transport, &call);
+        have_call = whep_copy_call_locked(transport, &call);
         callback = transport->config.on_rtp;
         callback_context = transport->config.rtp_context;
         source_generation = transport->attempt_generation;
     }
     ivr_mutex_unlock(&transport->lock);
-    if (callback) {
-        (void)callback(callback_context, &call, parsed.header.payload_type,
+    if (callback && have_call) {
+        (void)callback(callback_context, &call.view, parsed.header.payload_type,
                        parsed.header.timestamp, parsed.payload,
                        parsed.payload_len, source_generation);
     }
@@ -349,6 +391,8 @@ ivr_status_t ivr_whep_transport_create(
     transport->config.media_token = transport->media_token_owned;
     transport->on_state = config->on_state;
     transport->state_context = config->state_context;
+    ivr_str_init(&transport->provider_session_id);
+    ivr_str_init(&transport->dialog_id);
     ivr_str_init(&transport->room_id);
     ivr_str_init(&transport->call_id);
     ivr_str_init(&transport->participant_id);
@@ -395,11 +439,12 @@ static int whep_stop_impl(ivr_whep_transport_t *transport) {
     if (pc) {
         turbo_peer_connection_destroy(pc);
     }
-    ivr_str_free(&transport->room_id);
-    ivr_str_free(&transport->call_id);
+    ivr_mutex_lock(&transport->lock);
+    whep_clear_call(transport);
     ivr_str_free(&transport->participant_id);
     transport->session_location[0] = '\0';
     transport->session_etag[0] = '\0';
+    ivr_mutex_unlock(&transport->lock);
     return 0;
 }
 
@@ -437,8 +482,7 @@ static ivr_status_t whep_start_fail(ivr_whep_transport_t *transport,
     ivr_mutex_lock(&transport->lock);
     transport->active = 0;
     transport->connected = 0;
-    ivr_str_free(&transport->room_id);
-    ivr_str_free(&transport->call_id);
+    whep_clear_call(transport);
     ivr_str_free(&transport->participant_id);
     ivr_mutex_unlock(&transport->lock);
     ivr_mutex_unlock(&transport->lifecycle_lock);
@@ -462,7 +506,11 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
     char password[96];
     int path_length;
 
-    if (!transport || !call || !participant_id || participant_id[0] == '\0') {
+    if (!transport || !call || !participant_id || participant_id[0] == '\0' ||
+        !call_view_valid(&call->provider_session_id) ||
+        !call_view_valid(&call->dialog_id) ||
+        !call_view_valid(&call->room_id) ||
+        !call_view_valid(&call->call_id) || call->call_generation == 0u) {
         return IVR_EINVAL;
     }
     ivr_mutex_lock(&transport->lifecycle_lock);
@@ -472,17 +520,27 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
     }
     ivr_mutex_lock(&transport->lock);
     if (transport->active ||
+        ivr_str_assign(&transport->provider_session_id,
+                       call->provider_session_id.data,
+                       call->provider_session_id.size) < 0 ||
+        ivr_str_assign(&transport->dialog_id, call->dialog_id.data,
+                       call->dialog_id.size) < 0 ||
         ivr_str_assign(&transport->room_id, call->room_id.data,
                        call->room_id.size) < 0 ||
         ivr_str_assign(&transport->call_id, call->call_id.data,
                        call->call_id.size) < 0 ||
         ivr_str_assign(&transport->participant_id, participant_id,
                        strlen(participant_id)) < 0) {
+        if (!transport->active) {
+            whep_clear_call(transport);
+            ivr_str_free(&transport->participant_id);
+        }
         ivr_mutex_unlock(&transport->lock);
         ivr_mutex_unlock(&transport->lifecycle_lock);
         return transport->active ? IVR_ESTATE : IVR_ENOSPC;
     }
     transport->call_generation = call->call_generation;
+    transport->expected_room_version = call->expected_room_version;
     transport->attempt_generation++;
     transport->active = 1;
     transport->poll_stop = 0;
@@ -653,8 +711,7 @@ void ivr_whep_transport_destroy(ivr_whep_transport_t *transport) {
         (void)whep_stop_impl(transport);
         ivr_mutex_unlock(&transport->lifecycle_lock);
     }
-    ivr_str_free(&transport->room_id);
-    ivr_str_free(&transport->call_id);
+    whep_clear_call(transport);
     ivr_str_free(&transport->participant_id);
     if (transport->lifecycle_lock_initialized) {
         ivr_mutex_destroy(&transport->lifecycle_lock);

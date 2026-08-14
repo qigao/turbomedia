@@ -1,452 +1,515 @@
-/* test_ivr_worker.c - worker lifecycle, admission, drain (real TurboXML) */
 #include "ivr/ivr_worker.h"
-#include "ivr_session.h"
-#include "ivr_thread.h"
+#include "ivr_internal.h"
 #include "tinytest_compat.h"
-#include <stdlib.h>
+
 #include <string.h>
 
-#ifndef IVR_TEST_CONTENT_ROOT
-#define IVR_TEST_CONTENT_ROOT "content"
-#endif
-
 typedef struct {
-    ivr_mutex_t lock;
-    int stop_bot_calls;
-    int active_instances;
+    int create_calls;
+    int destroy_calls;
+    int start_calls;
+    int stop_calls;
+    int play_calls;
+    int begin_input_calls;
+    int end_input_calls;
+    int cancel_calls;
+    int event_calls;
+    uint64_t now_ms;
 } mock_media_t;
 
-static ivr_status_t mock_start_bot(void *ctx, const ivr_call_ref_t *call) {
-    (void)ctx;
-    (void)call;
-    return IVR_OK;
-}
-static ivr_status_t mock_play_pcm(void *ctx, const ivr_call_ref_t *call,
-                                  const ivr_bytes_view_t *text) {
-    (void)ctx;
-    (void)call;
-    (void)text;
-    return IVR_OK;
-}
-static ivr_status_t mock_cancel_input(void *ctx, const ivr_call_ref_t *call) {
-    (void)ctx;
-    (void)call;
-    return IVR_OK;
-}
-static ivr_status_t mock_stop_bot(void *ctx, const ivr_call_ref_t *call) {
-    mock_media_t *m = (mock_media_t *)ctx;
-    ivr_mutex_lock(&m->lock);
-    m->stop_bot_calls++;
-    ivr_mutex_unlock(&m->lock);
-    (void)call;
-    return IVR_OK;
-}
-static ivr_status_t mock_begin_input(void *ctx, const ivr_call_ref_t *call,
-                                     const ivr_bytes_view_t *input_id,
-                                     uint64_t input_generation) {
-    (void)ctx;
-    (void)call;
-    (void)input_id;
-    (void)input_generation;
-    return IVR_OK;
-}
-static ivr_status_t mock_end_input(void *ctx, const ivr_call_ref_t *call,
-                                   const ivr_bytes_view_t *input_id,
-                                   uint64_t input_generation) {
-    (void)ctx;
-    (void)call;
-    (void)input_id;
-    (void)input_generation;
-    return IVR_OK;
-}
-
-static ivr_status_t mock_gateway_submit(void *ctx, const ivr_command_view_t *cmd) {
-    (void)ctx;
-    (void)cmd;
-    return IVR_OK;
-}
-
-static ivr_worker_t *g_worker = NULL;
 static mock_media_t g_media;
-static ivr_worker_config_t g_config;
-static ivr_command_gateway_ops_t g_gateway_ops;
-static ivr_media_port_ops_t g_media_ops;
-static ivr_media_port_factory_ops_t g_media_factory;
+static ivr_worker_t *g_worker;
 static ivr_call_ref_t g_call;
 
-static ivr_status_t mock_media_create(void *ctx, const ivr_call_ref_t *call,
-                                      ivr_media_port_ops_t *out_media,
-                                      void **out_instance) {
+static ivr_status_t mock_start(void *context, const ivr_call_ref_t *call) {
+    mock_media_t *mock = (mock_media_t *)context;
     (void)call;
-    if (!ctx || !out_media || !out_instance) {
-        return IVR_EINVAL;
-    }
-    *out_media = g_media_ops;
-    *out_instance = ctx;
-    ivr_mutex_lock(&g_media.lock);
-    g_media.active_instances++;
-    ivr_mutex_unlock(&g_media.lock);
+    ++mock->start_calls;
     return IVR_OK;
 }
 
-static void mock_media_destroy(void *ctx, void *instance) {
-    mock_media_t *media = (mock_media_t *)ctx;
+static ivr_status_t mock_play(void *context, const ivr_call_ref_t *call,
+                              const ivr_bytes_view_t *text) {
+    mock_media_t *mock = (mock_media_t *)context;
+    (void)call;
+    (void)text;
+    ++mock->play_calls;
+    return IVR_OK;
+}
+
+static ivr_status_t mock_cancel(void *context, const ivr_call_ref_t *call) {
+    mock_media_t *mock = (mock_media_t *)context;
+    (void)call;
+    ++mock->cancel_calls;
+    return IVR_OK;
+}
+
+static ivr_status_t mock_stop(void *context, const ivr_call_ref_t *call) {
+    mock_media_t *mock = (mock_media_t *)context;
+    (void)call;
+    ++mock->stop_calls;
+    return IVR_OK;
+}
+
+static ivr_status_t mock_begin_input(void *context,
+                                     const ivr_call_ref_t *call,
+                                     const ivr_bytes_view_t *input_id,
+                                     uint64_t input_generation) {
+    mock_media_t *mock = (mock_media_t *)context;
+    (void)call;
+    (void)input_id;
+    (void)input_generation;
+    ++mock->begin_input_calls;
+    return IVR_OK;
+}
+
+static ivr_status_t mock_end_input(void *context,
+                                   const ivr_call_ref_t *call,
+                                   const ivr_bytes_view_t *input_id,
+                                   uint64_t input_generation) {
+    mock_media_t *mock = (mock_media_t *)context;
+    (void)call;
+    (void)input_id;
+    (void)input_generation;
+    ++mock->end_input_calls;
+    return IVR_OK;
+}
+
+static ivr_status_t mock_create(void *context, const ivr_call_ref_t *call,
+                                ivr_media_port_ops_t *out_media,
+                                void **out_instance) {
+    mock_media_t *mock = (mock_media_t *)context;
+    (void)call;
+    memset(out_media, 0, sizeof(*out_media));
+    out_media->abi_version = IVR_WORKER_ABI_VERSION;
+    out_media->context = mock;
+    out_media->start_bot = mock_start;
+    out_media->play_pcm = mock_play;
+    out_media->cancel_input = mock_cancel;
+    out_media->stop_bot = mock_stop;
+    out_media->begin_input = mock_begin_input;
+    out_media->end_input = mock_end_input;
+    *out_instance = mock;
+    ++mock->create_calls;
+    return IVR_OK;
+}
+
+static void mock_destroy(void *context, void *instance) {
+    mock_media_t *mock = (mock_media_t *)context;
     (void)instance;
-    ivr_mutex_lock(&media->lock);
-    media->active_instances--;
-    ivr_mutex_unlock(&media->lock);
+    ++mock->destroy_calls;
+}
+
+static ivr_status_t mock_publish(void *context,
+                                 const ivr_event_view_t *event) {
+    mock_media_t *mock = (mock_media_t *)context;
+    (void)event;
+    ++mock->event_calls;
+    return IVR_OK;
+}
+
+static uint64_t mock_now(void *context) {
+    return ((mock_media_t *)context)->now_ms;
+}
+
+static ivr_call_ref_t make_call(const char *call_id) {
+    ivr_call_ref_t call;
+    memset(&call, 0, sizeof(call));
+    call.provider_session_id.data = call_id;
+    call.provider_session_id.size = strlen(call_id);
+    call.dialog_id.data = call_id;
+    call.dialog_id.size = strlen(call_id);
+    call.room_id.data = "room-42";
+    call.room_id.size = strlen(call.room_id.data);
+    call.call_id.data = call_id;
+    call.call_id.size = strlen(call_id);
+    call.call_generation = 1;
+    call.expected_room_version = 9;
+    return call;
+}
+
+static ivr_status_t create_worker(uint32_t capacity) {
+    ivr_worker_config_t config;
+    ivr_media_event_sink_ops_t sink;
+    ivr_media_port_factory_ops_t factory;
+
+    memset(&config, 0, sizeof(config));
+    config.abi_version = IVR_WORKER_ABI_VERSION;
+    config.worker_id = "media-worker-test";
+    config.worker_instance_id = "media-worker-instance";
+    config.worker_epoch = 7;
+    config.max_sessions_per_worker = capacity;
+    config.now_ms = mock_now;
+    config.now_context = &g_media;
+
+    memset(&sink, 0, sizeof(sink));
+    sink.abi_version = IVR_WORKER_ABI_VERSION;
+    sink.context = &g_media;
+    sink.publish_copy = mock_publish;
+
+    memset(&factory, 0, sizeof(factory));
+    factory.abi_version = IVR_WORKER_ABI_VERSION;
+    factory.context = &g_media;
+    factory.create = mock_create;
+    factory.destroy = mock_destroy;
+    return ivr_worker_create(&config, &sink, &factory, &g_worker);
 }
 
 void setUp(void) {
     memset(&g_media, 0, sizeof(g_media));
-    ivr_mutex_init(&g_media.lock);
-    g_gateway_ops.abi_version = 1;
-    g_gateway_ops.context = NULL;
-    g_gateway_ops.submit_copy = mock_gateway_submit;
-    g_media_ops.abi_version = IVR_WORKER_ABI_VERSION;
-    g_media_ops.context = &g_media;
-    g_media_ops.start_bot = mock_start_bot;
-    g_media_ops.play_pcm = mock_play_pcm;
-    g_media_ops.cancel_input = mock_cancel_input;
-    g_media_ops.stop_bot = mock_stop_bot;
-    g_media_ops.begin_input = mock_begin_input;
-    g_media_ops.end_input = mock_end_input;
-    g_media_factory.abi_version = IVR_WORKER_ABI_VERSION;
-    g_media_factory.context = &g_media;
-    g_media_factory.create = mock_media_create;
-    g_media_factory.destroy = mock_media_destroy;
-
-    memset(&g_config, 0, sizeof(g_config));
-    g_config.abi_version = IVR_WORKER_ABI_VERSION;
-    g_config.worker_id = "ivr-worker-test";
-    g_config.max_sessions_per_worker = 2;
-    g_config.session_inbox_capacity = 8;
-    g_config.max_event_bytes = 65536;
-    g_config.max_command_bytes = 16384;
-    g_config.content_root = IVR_TEST_CONTENT_ROOT;
-    g_config.drain_deadline_ms = 5000;
-
-    g_call.room_id.data = "room-42";
-    g_call.room_id.size = 7;
-    g_call.call_id.data = "call-42";
-    g_call.call_id.size = 7;
-    g_call.call_generation = 1;
-    g_call.expected_room_version = 10;
+    g_media.now_ms = 100;
+    g_worker = NULL;
+    g_call = make_call("call-42");
 }
 
 void tearDown(void) {
     if (g_worker) {
-        ivr_worker_begin_drain(g_worker);
-        ivr_worker_destroy(g_worker);
+        (void)ivr_worker_destroy(g_worker);
         g_worker = NULL;
     }
-    ivr_mutex_destroy(&g_media.lock);
 }
 
-void test_create_start_assign_drain(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_NOT_NULL(g_worker);
+void test_open_is_bounded_and_idempotent(void) {
+    ivr_call_ref_t second = make_call("call-43");
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
     TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-
-    ivr_session_t *s1 = NULL;
     TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &s1));
-    TEST_ASSERT_NOT_NULL(s1);
-    ivr_thread_sleep_ms(50);
-    /* drain stops the session and tears down the bot */
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_drain(g_worker));
-    ivr_mutex_lock(&g_media.lock);
-    int stops = g_media.stop_bot_calls;
-    ivr_mutex_unlock(&g_media.lock);
-    TEST_ASSERT_TRUE(stops >= 1);
-}
-
-void test_old_worker_abi_rejected_with_version_error(void) {
-    g_config.abi_version = IVR_WORKER_ABI_VERSION - 1u;
-    TEST_ASSERT_EQUAL(IVR_EVERSION,
-                      ivr_worker_create(&g_config, &g_gateway_ops,
-                                        &g_media_factory, &g_worker));
-    TEST_ASSERT_NULL(g_worker);
-}
-
-static void noop_latency_observer(void *context,
-                                  ivr_session_latency_kind_t kind,
-                                  uint64_t duration_ms) {
-    (void)context;
-    (void)kind;
-    (void)duration_ms;
-}
-
-void test_old_observer_abi_rejected_with_version_error(void) {
-    g_config.observer.abi_version = IVR_SESSION_OBSERVER_ABI_VERSION + 1u;
-    g_config.observer.on_latency = noop_latency_observer;
-    TEST_ASSERT_EQUAL(IVR_EVERSION,
-                      ivr_worker_create(&g_config, &g_gateway_ops,
-                                        &g_media_factory, &g_worker));
-    TEST_ASSERT_NULL(g_worker);
-}
-
-void test_assign_before_start_rejected(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    ivr_session_t *s = NULL;
-    TEST_ASSERT_EQUAL(IVR_ECLOSED,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &s));
-}
-
-void test_admission_at_capacity(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    ivr_session_t *s1 = NULL, *s2 = NULL, *s3 = NULL;
+                      ivr_worker_open_media_call(g_worker, &g_call));
     TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &s1));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &s2));
-    /* capacity is 2; the third assignment must be explicitly rejected */
+                      ivr_worker_open_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL_INT(1, g_media.create_calls);
+    TEST_ASSERT_EQUAL_INT(1, g_media.start_calls);
+    TEST_ASSERT_EQUAL_UINT32(1, ivr_worker_active_sessions(g_worker));
     TEST_ASSERT_EQUAL(IVR_ENOSPC,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &s3));
-    TEST_ASSERT_NULL(s3);
+                      ivr_worker_open_media_call(g_worker, &second));
 }
 
-void test_120_percent_burst_rejects_only_excess_call(void) {
-    enum { C_TARGET = 4, BURST_ATTEMPTS = 5 };
-    static const char *const call_ids[BURST_ATTEMPTS] = {
-        "burst-1", "burst-2", "burst-3", "burst-4", "burst-5"};
-    ivr_call_ref_t calls[BURST_ATTEMPTS];
-    ivr_session_t *sessions[BURST_ATTEMPTS] = {0};
-    ivr_event_view_t event;
-    static const ivr_bytes_view_t event_type = {"rtc.connected", 13};
-    static const ivr_bytes_view_t payload = {"{}", 2};
-    int active_instances;
+void test_typed_open_records_generation_for_restart_inventory(void) {
+    ivr_media_operation_t operation;
+    ivr_worker_inventory_query_t query;
+    ivr_worker_inventory_page_t page;
 
-    g_config.max_sessions_per_worker = C_TARGET;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
+    memset(&operation, 0, sizeof(operation));
+    operation.call = g_call;
+    operation.operation_generation = 7u;
+    memset(&query, 0, sizeof(query));
+    query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    query.limit = 1u;
+
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
     TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-
-    for (int i = 0; i < BURST_ATTEMPTS; ++i) {
-        calls[i] = g_call;
-        calls[i].call_id.data = call_ids[i];
-        calls[i].call_id.size = strlen(call_ids[i]);
-    }
-    for (int i = 0; i < C_TARGET; ++i) {
-        TEST_ASSERT_EQUAL(
-            IVR_OK,
-            ivr_worker_assign_session(g_worker, &calls[i],
-                                      "conference-greeting", &sessions[i]));
-        TEST_ASSERT_NOT_NULL(sessions[i]);
-    }
     TEST_ASSERT_EQUAL(
-        IVR_ENOSPC,
-        ivr_worker_assign_session(g_worker, &calls[C_TARGET],
-                                  "conference-greeting", &sessions[C_TARGET]));
-    TEST_ASSERT_NULL(sessions[C_TARGET]);
-    TEST_ASSERT_EQUAL_UINT32(C_TARGET,
-                             ivr_worker_active_sessions(g_worker));
+        IVR_OK, ivr_worker_open_media_operation(g_worker, &operation));
+    TEST_ASSERT_EQUAL(
+        IVR_OK, ivr_worker_open_media_operation(g_worker, &operation));
+    TEST_ASSERT_EQUAL_INT(1, g_media.create_calls);
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    TEST_ASSERT_EQUAL_UINT32(1, page.count);
+    TEST_ASSERT_EQUAL_UINT64(7, page.records[0].operation_generation);
 
+    operation.operation_generation = 6u;
+    TEST_ASSERT_EQUAL(
+        IVR_ESTALE, ivr_worker_open_media_operation(g_worker, &operation));
+    operation.operation_generation = 8u;
+    TEST_ASSERT_EQUAL(
+        IVR_ESTATE, ivr_worker_open_media_operation(g_worker, &operation));
+}
+
+void test_operations_are_explicit_and_idempotent(void) {
+    ivr_media_operation_t operation;
+    ivr_bytes_view_t text = {"hello", 5};
+    memset(&operation, 0, sizeof(operation));
+    operation.call = g_call;
+    operation.operation_generation = 1;
+
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_open_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_play(g_worker, &operation, &text));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_play(g_worker, &operation, &text));
+    TEST_ASSERT_EQUAL_INT(1, g_media.play_calls);
+
+    operation.operation_generation = 2;
+    operation.deadline_ms = 99;
+    TEST_ASSERT_EQUAL(IVR_ESTALE,
+                      ivr_worker_play(g_worker, &operation, &text));
+    TEST_ASSERT_EQUAL_INT(1, g_media.play_calls);
+}
+
+void test_input_window_rejects_stale_completion(void) {
+    ivr_media_operation_t operation;
+    ivr_bytes_view_t input_id = {"input-1", 7};
+    ivr_bytes_view_t stale_id = {"input-old", 9};
+    memset(&operation, 0, sizeof(operation));
+    operation.call = g_call;
+    operation.operation_generation = 1;
+
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_open_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_input(
+                                  g_worker, &operation, &input_id, 7));
+    operation.operation_generation = 2;
+    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_end_input(
+                                     g_worker, &operation, &stale_id, 7));
+    TEST_ASSERT_EQUAL_INT(0, g_media.end_input_calls);
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_end_input(
+                                  g_worker, &operation, &input_id, 7));
+    TEST_ASSERT_EQUAL_INT(1, g_media.end_input_calls);
+}
+
+void test_cancel_is_fenced_to_the_exact_active_input(void) {
+    ivr_media_operation_t operation;
+    ivr_bytes_view_t input_id = {"input-1", 7};
+    ivr_bytes_view_t stale_id = {"input-old", 9};
+    ivr_worker_inventory_query_t query;
+    ivr_worker_inventory_page_t page;
+    memset(&operation, 0, sizeof(operation));
+    memset(&query, 0, sizeof(query));
+    operation.call = g_call;
+    operation.operation_generation = 1;
+    query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    query.limit = 1;
+
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_open_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_input(
+                                  g_worker, &operation, &input_id, 7));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    TEST_ASSERT_EQUAL_UINT32(1, page.count);
+    TEST_ASSERT_TRUE(page.records[0].input_active);
+    TEST_ASSERT_EQUAL_STRING("input-1", page.records[0].input_id);
+    TEST_ASSERT_EQUAL_UINT64(7, page.records[0].input_generation);
+
+    operation.operation_generation = 2;
+    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_cancel_input(
+                                     g_worker, &operation, &stale_id, 7));
+    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_cancel_input(
+                                     g_worker, &operation, &input_id, 8));
+    TEST_ASSERT_EQUAL_INT(0, g_media.cancel_calls);
+
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_cancel_input(
+                                  g_worker, &operation, &input_id, 7));
+    TEST_ASSERT_EQUAL_INT(1, g_media.cancel_calls);
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    TEST_ASSERT_FALSE(page.records[0].input_active);
+    TEST_ASSERT_EQUAL_STRING("", page.records[0].input_id);
+    TEST_ASSERT_EQUAL_UINT64(0, page.records[0].input_generation);
+
+    operation.operation_generation = 3;
+    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_cancel_input(
+                                     g_worker, &operation, &input_id, 7));
+    TEST_ASSERT_EQUAL_INT(1, g_media.cancel_calls);
+}
+
+void test_media_event_is_forwarded_without_workflow_processing(void) {
+    ivr_event_view_t event;
     memset(&event, 0, sizeof(event));
-    event.event_type = event_type;
-    event.call = calls[0];
-    event.sequence = 0;
-    event.payload_json = payload;
+    event.event_type.data = "asr.final";
+    event.event_type.size = 9;
+    event.call = g_call;
+    event.input_id.data = "input-1";
+    event.input_id.size = 7;
+    event.input_value.data = "sales";
+    event.input_value.size = 5;
+
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
     TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_submit_event_copy(g_worker, &event));
-    TEST_ASSERT_EQUAL_UINT32(C_TARGET,
-                             ivr_worker_active_sessions(g_worker));
-
-    ivr_mutex_lock(&g_media.lock);
-    active_instances = g_media.active_instances;
-    ivr_mutex_unlock(&g_media.lock);
-    TEST_ASSERT_EQUAL_INT(C_TARGET, active_instances);
-
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_drain(g_worker));
-    TEST_ASSERT_EQUAL_UINT32(0u, ivr_worker_active_sessions(g_worker));
-    ivr_mutex_lock(&g_media.lock);
-    active_instances = g_media.active_instances;
-    ivr_mutex_unlock(&g_media.lock);
-    TEST_ASSERT_EQUAL_INT(0, active_instances);
+                      ivr_worker_open_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_publish_event_copy(g_worker, &event));
+    TEST_ASSERT_EQUAL_INT(1, g_media.event_calls);
 }
 
-void test_unknown_content_rejected(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
+void test_close_and_drain_release_media_slots(void) {
+    ivr_call_ref_t second = make_call("call-43");
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(2));
     TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    ivr_session_t *s = NULL;
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_open_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_open_media_call(g_worker, &second));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_close_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_close_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL_UINT32(1, ivr_worker_active_sessions(g_worker));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_drain(g_worker));
+    TEST_ASSERT_EQUAL_UINT32(0, ivr_worker_active_sessions(g_worker));
+    TEST_ASSERT_EQUAL_INT(2, g_media.stop_calls);
+    TEST_ASSERT_EQUAL_INT(2, g_media.destroy_calls);
+    TEST_ASSERT_EQUAL(IVR_ECLOSED,
+                      ivr_worker_open_media_call(g_worker, &g_call));
+}
+
+void test_old_abi_is_rejected(void) {
+    ivr_worker_config_t config;
+    ivr_media_event_sink_ops_t sink;
+    ivr_media_port_factory_ops_t factory;
+    memset(&config, 0, sizeof(config));
+    memset(&sink, 0, sizeof(sink));
+    memset(&factory, 0, sizeof(factory));
+    config.abi_version = IVR_WORKER_ABI_VERSION - 1;
+    config.worker_id = "old-worker";
+    config.worker_instance_id = "old-worker-instance";
+    config.worker_epoch = 1;
+    config.max_sessions_per_worker = 1;
+    sink.abi_version = IVR_WORKER_ABI_VERSION;
+    sink.publish_copy = mock_publish;
+    factory.abi_version = IVR_WORKER_ABI_VERSION;
+    factory.create = mock_create;
+    factory.destroy = mock_destroy;
+    TEST_ASSERT_EQUAL(IVR_EVERSION,
+                      ivr_worker_create(&config, &sink, &factory, &g_worker));
+    TEST_ASSERT_NULL(g_worker);
+}
+
+void test_inventory_is_owned_versioned_and_bounded(void) {
+    ivr_call_ref_t second = make_call("call-43");
+    ivr_call_ref_t third = make_call("call-44");
+    ivr_worker_inventory_query_t query;
+    ivr_worker_inventory_page_t page;
+    uint64_t revision;
+    uint32_t next_cursor;
+
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(3));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_open_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_open_media_call(g_worker, &second));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_open_media_call(g_worker, &third));
+
+    memset(&query, 0, sizeof(query));
+    query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    query.limit = 2;
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    TEST_ASSERT_EQUAL_UINT32(2, page.count);
+    TEST_ASSERT_EQUAL_UINT32(3, page.total_active);
+    TEST_ASSERT_TRUE(page.has_more);
+    TEST_ASSERT_TRUE(page.next_cursor > 0);
+    TEST_ASSERT_EQUAL_STRING("media-worker-test", page.records[0].worker_id);
+    TEST_ASSERT_EQUAL_STRING("media-worker-instance",
+                             page.records[0].worker_instance_id);
+    TEST_ASSERT_EQUAL_UINT64(7, page.records[0].worker_epoch);
+    TEST_ASSERT_EQUAL_UINT64(0,
+                             page.records[0].operation_generation);
+    TEST_ASSERT_EQUAL_STRING("call-42",
+                             page.records[0].provider_session_id);
+    TEST_ASSERT_EQUAL_STRING("call-42", page.records[0].dialog_id);
+    TEST_ASSERT_EQUAL_STRING("room-42", page.records[0].room_id);
+    TEST_ASSERT_EQUAL_STRING("call-42", page.records[0].call_id);
+    TEST_ASSERT_EQUAL_UINT64(1, page.records[0].call_generation);
+    TEST_ASSERT_EQUAL_INT(IVR_WORKER_RESOURCE_ACTIVE,
+                          page.records[0].state);
+    TEST_ASSERT_TRUE(page.records[0].rebindable);
+    revision = page.revision;
+    next_cursor = page.next_cursor;
+
+    /* The page owns its strings; closing the worker slot does not mutate it. */
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_close_media_call(g_worker, &g_call));
+    TEST_ASSERT_EQUAL_STRING("call-42", page.records[0].call_id);
+
+    query.expected_revision = revision;
+    query.cursor = next_cursor;
+    TEST_ASSERT_EQUAL(IVR_ESTALE,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    TEST_ASSERT_EQUAL_UINT32(0, page.count);
+
+    query.expected_revision = 0;
+    query.cursor = 0;
+    query.limit = IVR_WORKER_INVENTORY_MAX_PAGE_SIZE;
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    TEST_ASSERT_EQUAL_UINT32(2, page.count);
+    TEST_ASSERT_EQUAL_UINT32(2, page.total_active);
+    TEST_ASSERT_FALSE(page.has_more);
+    TEST_ASSERT_EQUAL_UINT32(0, page.next_cursor);
+}
+
+void test_inventory_rejects_unknown_version_limit_and_cursor(void) {
+    ivr_worker_inventory_query_t query;
+    ivr_worker_inventory_page_t page;
+
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
+    memset(&query, 0, sizeof(query));
+    query.inventory_version = IVR_WORKER_INVENTORY_VERSION + 1u;
+    query.limit = 1;
+    TEST_ASSERT_EQUAL(IVR_EVERSION,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    query.limit = 0;
     TEST_ASSERT_EQUAL(IVR_EINVAL,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "no-such-package", &s));
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    query.limit = IVR_WORKER_INVENTORY_MAX_PAGE_SIZE + 1u;
+    TEST_ASSERT_EQUAL(IVR_EINVAL,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    query.limit = 1;
+    query.cursor = 2;
+    TEST_ASSERT_EQUAL(IVR_EINVAL,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
 }
 
-void test_drain_deadline_ok(void) {
-    g_config.drain_deadline_ms = 5000;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    ivr_session_t *s1 = NULL;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &s1));
-    /* terminal wakes the session quickly, so the deadline must not trip */
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_drain(g_worker));
-    TEST_ASSERT_EQUAL_UINT64(0u, ivr_worker_drain_timed_out(g_worker));
-}
+void test_reconnect_epoch_invalidates_inventory_and_preserves_media(void) {
+    ivr_worker_inventory_query_t query;
+    ivr_worker_inventory_page_t page;
+    uint64_t old_revision;
 
-void test_submit_event_routes_to_matching_session(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    ivr_session_t *s1 = NULL;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &s1));
-    TEST_ASSERT_NOT_NULL(s1);
-
-    /* sequence gap: a state event at sequence 2 while the session is at 0
-       must stop the call and emit get_snapshot (routed through the worker) */
-    static ivr_bytes_view_t type = {"room.participant.joined", 22};
-    static ivr_bytes_view_t payload = {"{}", 2};
-    ivr_event_view_t ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.event_type = type;
-    ev.call = g_call;
-    ev.sequence = 2;
-    ev.payload_json = payload;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_submit_event_copy(g_worker, &ev));
-    ivr_thread_sleep_ms(100);
-    TEST_ASSERT_EQUAL_INT(1, s1->awaiting_snapshot);
-    TEST_ASSERT_EQUAL_UINT64(1u, s1->snapshot_requests);
-
-    /* authoritative snapshot at sequence 2 resumes the call */
-    static ivr_bytes_view_t snap_type = {"room.snapshot.loaded", 21};
-    ev.event_type = snap_type;
-    ev.call.expected_room_version = 5;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_submit_event_copy(g_worker, &ev));
-    ivr_thread_sleep_ms(100);
-    TEST_ASSERT_EQUAL_INT(0, s1->awaiting_snapshot);
-    TEST_ASSERT_EQUAL_UINT64(2u, s1->last_sequence);
-    TEST_ASSERT_EQUAL_UINT64(5u, s1->room_version);
-}
-
-void test_submit_event_unrouted_call_dropped(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    ivr_session_t *s1 = NULL;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &s1));
-
-    static ivr_bytes_view_t type = {"rtc.connected", 12};
-    static ivr_bytes_view_t payload = {"{}", 2};
-    static ivr_bytes_view_t other_room = {"room-99", 7};
-    static ivr_bytes_view_t other_call = {"call-99", 7};
-    ivr_event_view_t ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.event_type = type;
-    ev.call.room_id = other_room;
-    ev.call.call_id = other_call;
-    ev.call.call_generation = 1;
-    ev.sequence = 1;
-    ev.payload_json = payload;
-    TEST_ASSERT_EQUAL(IVR_ESTATE,
-                      ivr_worker_submit_event_copy(g_worker, &ev));
-    /* the assigned session must not have seen the event */
-    TEST_ASSERT_EQUAL_UINT64(0u, s1->last_sequence);
-}
-
-void test_start_twice_rejected(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_ESTATE, ivr_worker_start(g_worker));
-}
-
-void test_start_while_draining_rejected(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_drain(g_worker));
-    TEST_ASSERT_EQUAL(IVR_ESTATE, ivr_worker_start(g_worker));
-}
-
-void test_destroy_without_explicit_drain(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    ivr_session_t *session = NULL;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &session));
-    TEST_ASSERT_NOT_NULL(session);
-
-    /* destroy() owns the drain transition and must not free a live session. */
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_destroy(g_worker));
-    g_worker = NULL;
-}
-
-void test_session_destroy_releases_worker_slot(void) {
-    ivr_session_t *session = NULL;
-    ivr_session_t *replacement = NULL;
-
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
+    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
     TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
     TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &session));
-    TEST_ASSERT_TRUE(ivr_worker_has_session(g_worker, &g_call));
-
-    ivr_session_destroy(session);
-    TEST_ASSERT_FALSE(ivr_worker_has_session(g_worker, &g_call));
+                      ivr_worker_open_media_call(g_worker, &g_call));
+    memset(&query, 0, sizeof(query));
+    query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    query.limit = 1;
     TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting", &replacement));
-    TEST_ASSERT_NOT_NULL(replacement);
-}
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    old_revision = page.revision;
+    TEST_ASSERT_EQUAL_UINT64(7, page.records[0].worker_epoch);
 
-void test_release_call_is_idempotent_and_releases_capacity(void) {
-    ivr_session_t *session = NULL;
+    TEST_ASSERT_EQUAL(IVR_EINVAL, ivr_worker_advance_epoch(g_worker, 0));
+    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_advance_epoch(g_worker, 7));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_advance_epoch(g_worker, 8));
+    TEST_ASSERT_EQUAL_UINT32(1, ivr_worker_active_sessions(g_worker));
 
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_create(&g_config, &g_gateway_ops,
-                                                &g_media_factory, &g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
+    query.expected_revision = old_revision;
+    TEST_ASSERT_EQUAL(IVR_ESTALE,
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    query.expected_revision = 0;
     TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_assign_session(g_worker, &g_call,
-                                                "conference-greeting",
-                                                &session));
-    TEST_ASSERT_NOT_NULL(session);
-    TEST_ASSERT_EQUAL_UINT32(1u, ivr_worker_active_sessions(g_worker));
-
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_release_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL_UINT32(0u, ivr_worker_active_sessions(g_worker));
-    TEST_ASSERT_FALSE(ivr_worker_has_session(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_release_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL_UINT32(0u, ivr_worker_active_sessions(g_worker));
+                      ivr_worker_query_inventory(g_worker, &query, &page));
+    TEST_ASSERT_EQUAL_UINT32(1, page.count);
+    TEST_ASSERT_EQUAL_UINT64(8, page.records[0].worker_epoch);
+    TEST_ASSERT_TRUE(page.revision > old_revision);
 }
 
 spec("test_ivr_worker") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_create_start_assign_drain);
-  TT_TEST(test_old_worker_abi_rejected_with_version_error);
-  TT_TEST(test_old_observer_abi_rejected_with_version_error);
-  TT_TEST(test_assign_before_start_rejected);
-  TT_TEST(test_admission_at_capacity);
-  TT_TEST(test_120_percent_burst_rejects_only_excess_call);
-  TT_TEST(test_unknown_content_rejected);
-  TT_TEST(test_start_twice_rejected);
-  TT_TEST(test_start_while_draining_rejected);
-  TT_TEST(test_destroy_without_explicit_drain);
-  TT_TEST(test_session_destroy_releases_worker_slot);
-  TT_TEST(test_release_call_is_idempotent_and_releases_capacity);
-  TT_TEST(test_drain_deadline_ok);
-  TT_TEST(test_submit_event_routes_to_matching_session);
-  TT_TEST(test_submit_event_unrouted_call_dropped);
+  TT_TEST(test_open_is_bounded_and_idempotent);
+  TT_TEST(test_typed_open_records_generation_for_restart_inventory);
+  TT_TEST(test_operations_are_explicit_and_idempotent);
+  TT_TEST(test_input_window_rejects_stale_completion);
+  TT_TEST(test_cancel_is_fenced_to_the_exact_active_input);
+  TT_TEST(test_media_event_is_forwarded_without_workflow_processing);
+  TT_TEST(test_close_and_drain_release_media_slots);
+  TT_TEST(test_old_abi_is_rejected);
+  TT_TEST(test_inventory_is_owned_versioned_and_bounded);
+  TT_TEST(test_inventory_rejects_unknown_version_limit_and_cursor);
+  TT_TEST(test_reconnect_epoch_invalidates_inventory_and_preserves_media);
 }

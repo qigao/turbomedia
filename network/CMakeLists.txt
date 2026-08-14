@@ -9,5 +9,5 @@ target_include_directories(
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(
   turbo_media_transport
-  PUBLIC TurboNet::CoroNet TurboUtils::Parser TurboHttp::HttpClient
+  PUBLIC TurboNet::CoroNet TurboParser::Parser TurboHttp::HttpClient
   PRIVATE TurboUtils::Core Threads::Threads)

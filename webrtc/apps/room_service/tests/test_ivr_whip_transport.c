@@ -245,13 +245,168 @@ typedef struct {
     unsigned failed;
     unsigned closed;
     unsigned input_stalled;
+    unsigned invalid_identity;
     uint64_t last_generation;
 } media_state_counts_t;
 static media_state_counts_t g_whip_states;
 static media_state_counts_t g_whep_states;
 
 static const ivr_call_ref_t g_call = {
-    {"room-42", 7}, {"call-42", 7}, 1, 1};
+    .provider_session_id = {"session-42", 10},
+    .dialog_id = {"dialog-42", 9},
+    .room_id = {"room-42", 7},
+    .call_id = {"call-42", 7},
+    .call_generation = 1,
+    .expected_room_version = 1};
+
+static int view_equal(const ivr_bytes_view_t *left,
+                      const ivr_bytes_view_t *right) {
+    return left && right && left->size == right->size &&
+           (left->size == 0u ||
+            (left->data && right->data &&
+             memcmp(left->data, right->data, left->size) == 0));
+}
+
+static int call_identity_matches_fixture(const ivr_call_ref_t *call) {
+    return call && call->call_generation == g_call.call_generation &&
+           call->expected_room_version == g_call.expected_room_version &&
+           view_equal(&call->provider_session_id,
+                      &g_call.provider_session_id) &&
+           view_equal(&call->dialog_id, &g_call.dialog_id) &&
+           view_equal(&call->room_id, &g_call.room_id) &&
+           view_equal(&call->call_id, &g_call.call_id);
+}
+
+static int spawn_sfu(void) {
+    char bin[1024];
+    const char *args[] = {"--config", g_cfg_path, NULL};
+
+    if (g_sfu.handle != NULL) {
+        return 0;
+    }
+    snprintf(bin, sizeof(bin), "%s/%s", TEST_BIN_DIR, SFU_NODE_BIN);
+    return spawn_with_stdout(bin, args, g_out_path, &g_sfu) == 0;
+}
+
+static int provision_room(void) {
+    char response[4096];
+
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        memset(response, 0, sizeof(response));
+        if (http_post("/api/v1/commands", TEST_CTRL_TOKEN,
+                      "{\"type\":\"attach_room\",\"room_id\":\"room-42\","
+                      "\"max_participants\":8}",
+                      response, sizeof(response)) == 0 &&
+            strstr(response, " 200 ")) {
+            return 1;
+        }
+        proc_sleep(500);
+    }
+    fprintf(stderr, "last attach_room response:\n%s\n", response);
+    return 0;
+}
+
+static int wait_whip_connected(void) {
+    for (int attempt = 0; attempt < 800; ++attempt) {
+        if (ivr_whip_transport_connected(g_transport)) {
+            return 1;
+        }
+        proc_sleep(TEST_MEDIA_STATE_POLL_MS);
+    }
+    return 0;
+}
+
+static int wait_whep_connected(void) {
+    for (int attempt = 0; attempt < 800; ++attempt) {
+        if (ivr_whep_transport_connected(g_whep_transport)) {
+            return 1;
+        }
+        proc_sleep(TEST_MEDIA_STATE_POLL_MS);
+    }
+    return 0;
+}
+
+static int configure_audio_route(uint32_t publisher_ssrc) {
+    char command[1024];
+    char response[4096];
+    int command_length = snprintf(
+        command, sizeof(command),
+        "{\"type\":\"register_published_track\","
+        "\"room_id\":\"room-42\",\"participant_id\":\"call-42\","
+        "\"track_id\":\"caller-audio-42\",\"main_ssrc\":%u,"
+        "\"layer_ssrcs\":[%u],\"kind\":\"audio\","
+        "\"codec_name\":\"opus\"}",
+        publisher_ssrc, publisher_ssrc);
+
+    if (command_length <= 0 ||
+        (size_t)command_length >= sizeof(command)) {
+        return 0;
+    }
+    memset(response, 0, sizeof(response));
+    if (http_post("/api/v1/commands", TEST_CTRL_TOKEN, command, response,
+                  sizeof(response)) != 0 ||
+        !strstr(response, " 200 ")) {
+        return 0;
+    }
+    memset(response, 0, sizeof(response));
+    return http_post(
+               "/api/v1/commands", TEST_CTRL_TOKEN,
+               "{\"type\":\"set_track_subscription\","
+               "\"room_id\":\"room-42\","
+               "\"receiver_participant_id\":\"call-42-rx\","
+               "\"track_id\":\"caller-audio-42\",\"enabled\":true,"
+               "\"muted\":false,\"policy_source\":\"ivr\"}",
+               response, sizeof(response)) == 0 &&
+           strstr(response, " 200 ") != NULL;
+}
+
+static int send_audio_frames(unsigned frame_count) {
+    ivr_media_transport_t publisher;
+    static int16_t samples[320];
+
+    ivr_whip_transport_get_transport(g_transport, &publisher);
+    for (int index = 0; index < 320; ++index) {
+        samples[index] = (int16_t)(800 + (index % 11) * 100);
+    }
+    for (unsigned frame = 0; frame < frame_count; ++frame) {
+        if (publisher.play_audio(
+                publisher.context, &g_call, (const uint8_t *)samples,
+                sizeof(samples), 16000) != 0) {
+            return 0;
+        }
+        proc_sleep(20);
+    }
+    return 1;
+}
+
+static int wait_whep_frames_greater_than(uint64_t baseline) {
+    for (int attempt = 0; attempt < 200; ++attempt) {
+        if (g_whep_audio_frames > baseline) {
+            return 1;
+        }
+        proc_sleep(TEST_MEDIA_STATE_POLL_MS);
+    }
+    return 0;
+}
+
+static int wait_sfu_room_empty(void) {
+    char response[4096];
+
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        memset(response, 0, sizeof(response));
+        if (http_post("/api/v1/commands", TEST_CTRL_TOKEN,
+                      "{\"type\":\"get_room_stats\","
+                      "\"room_id\":\"room-42\"}",
+                      response, sizeof(response)) == 0 &&
+            strstr(response, " 200 ") &&
+            strstr(response, "\"session_count\":0") &&
+            strstr(response, "\"participant_count\":0")) {
+            return 1;
+        }
+        proc_sleep(100);
+    }
+    return 0;
+}
 
 static unsigned media_terminal_count(const media_state_counts_t *counts) {
     unsigned total = 0;
@@ -296,7 +451,8 @@ static int on_whep_audio(void *context, const ivr_call_ref_t *call,
                          uint32_t sample_rate, uint64_t rtp_timestamp) {
     uint64_t *frames = (uint64_t *)context;
     (void)rtp_timestamp;
-    if (!frames || !call || !pcm || length == 0 || sample_rate == 0) {
+    if (!frames || !call_identity_matches_fixture(call) || !pcm ||
+        length == 0 || sample_rate == 0) {
         return -1;
     }
     (*frames)++;
@@ -309,7 +465,8 @@ static int on_whep_rtp(void *context, const ivr_call_ref_t *call,
                        uint64_t source_generation) {
     ivr_dtmf_input_t input;
     ivr_dtmf_ingress_t *ingress = (ivr_dtmf_ingress_t *)context;
-    if (!ingress || payload_type != 126u ||
+    if (!ingress || !call_identity_matches_fixture(call) ||
+        payload_type != 126u ||
         ivr_dtmf_ingress_submit_rtp(
             ingress, call, source_generation, rtp_timestamp, payload,
             payload_length, &input) != IVR_OK) {
@@ -332,6 +489,11 @@ static void on_media_state(void *context, const ivr_call_ref_t *call,
         return;
     }
     ivr_mutex_lock(&g_media_state_lock);
+    if (!call_identity_matches_fixture(call)) {
+        counts->invalid_identity++;
+        ivr_mutex_unlock(&g_media_state_lock);
+        return;
+    }
     counts->last_generation = attempt_generation;
     if (error_code == IVR_MEDIA_ERROR_INPUT_STALLED) {
         counts->input_stalled++;
@@ -382,33 +544,15 @@ void setUp(void) {
             TEST_SFU_PORT, TEST_CTRL_TOKEN, TEST_MEDIA_TOKEN);
     fclose(cfg);
 
-    char bin[1024];
-    snprintf(bin, sizeof(bin), "%s/%s", TEST_BIN_DIR, SFU_NODE_BIN);
-    const char *args[] = {"--config", g_cfg_path, NULL};
-    TEST_ASSERT_EQUAL_INT(0, spawn_with_stdout(bin, args, g_out_path, &g_sfu));
+    TEST_ASSERT_TRUE(spawn_sfu());
     proc_sleep(2000);
 
-    char resp[4096];
-    int ok = 0;
-    for (int i = 0; i < 10 && !ok; i++) {
-        memset(resp, 0, sizeof(resp));
-        http_post("/api/v1/commands", TEST_CTRL_TOKEN,
-                  "{\"type\":\"attach_room\",\"room_id\":\"room-42\","
-                  "\"max_participants\":8}",
-                  resp, sizeof(resp));
-        if (strstr(resp, " 200 ")) {
-            ok = 1;
-        }
-        if (!ok) {
-            proc_sleep(500);
-        }
-    }
-    if (!ok) {
-        fprintf(stderr, "last attach_room response:\n%s\n", resp);
+    int room_ready = provision_room();
+    if (!room_ready) {
         kill_child(&g_sfu);
         print_child_output(g_out_path);
     }
-    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_TRUE(room_ready);
 
     ivr_whip_transport_config_t tcfg;
     memset(&tcfg, 0, sizeof(tcfg));
@@ -477,15 +621,26 @@ void test_whip_publish_connect_and_send_audio(void) {
     media_state_counts_t whip_states = media_state_snapshot(&g_whip_states);
     TEST_ASSERT_TRUE(whip_states.connecting >= 1);
     TEST_ASSERT_TRUE(whip_states.connected >= 1);
+    TEST_ASSERT_EQUAL_UINT64(0u, whip_states.invalid_identity);
 
     /* push TTS PCM frames through the audio send track (via the bot's
        transport interface) */
     ivr_media_transport_t transport;
     ivr_whip_transport_get_transport(g_transport, &transport);
     static uint16_t samples[320];
+    ivr_call_ref_t wrong_dialog = g_call;
+    wrong_dialog.dialog_id.data = "dialog-other";
+    wrong_dialog.dialog_id.size = strlen("dialog-other");
     for (int i = 0; i < 320; i++) {
         samples[i] = (uint16_t)(1000 + (i % 7) * 100);
     }
+    TEST_ASSERT_EQUAL_INT(
+        -1, transport.play_audio(transport.context, &wrong_dialog,
+                                 (const uint8_t *)samples,
+                                 sizeof(samples), 16000));
+    TEST_ASSERT_EQUAL_INT(-1,
+                          transport.stop(transport.context, &wrong_dialog));
+    TEST_ASSERT_TRUE(ivr_whip_transport_connected(g_transport));
     for (int f = 0; f < 8; f++) {
         TEST_ASSERT_EQUAL_INT(0, transport.play_audio(
                                      transport.context, &g_call,
@@ -586,6 +741,7 @@ void test_whep_subscribe_connect_and_stop(void) {
     media_state_counts_t whep_states = media_state_snapshot(&g_whep_states);
     TEST_ASSERT_TRUE(whep_states.connecting >= 1);
     TEST_ASSERT_TRUE(whep_states.connected >= 1);
+    TEST_ASSERT_EQUAL_UINT64(0u, whep_states.invalid_identity);
 
     /* The peer stays connected while caller media is silent. The WHEP poll
        loop must report that distinct failure without waiting for shutdown. */
@@ -698,6 +854,88 @@ void test_whep_subscribe_connect_and_stop(void) {
     TEST_ASSERT_FALSE(ivr_whep_transport_connected(g_whep_transport));
 }
 
+void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
+    ivr_media_transport_t publisher;
+    media_state_counts_t whip_before;
+    media_state_counts_t whep_before;
+    media_state_counts_t whip_after;
+    media_state_counts_t whep_after;
+    unsigned whip_terminal_before;
+    unsigned whep_terminal_before;
+    uint64_t frames_before_restart;
+    uint64_t frames_after_reconnect;
+    uint32_t publisher_ssrc;
+
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_whip_transport_start(g_transport, &g_call));
+    TEST_ASSERT_TRUE(wait_whip_connected());
+    publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
+    TEST_ASSERT_TRUE(publisher_ssrc != 0u);
+    TEST_ASSERT_TRUE(configure_audio_route(publisher_ssrc));
+    TEST_ASSERT_EQUAL(
+        IVR_OK, ivr_whep_transport_start(g_whep_transport, &g_call,
+                                         "call-42-rx"));
+    TEST_ASSERT_TRUE(wait_whep_connected());
+    TEST_ASSERT_TRUE(send_audio_frames(30u));
+    TEST_ASSERT_TRUE(wait_whep_frames_greater_than(0u));
+
+    whip_before = media_state_snapshot(&g_whip_states);
+    whep_before = media_state_snapshot(&g_whep_states);
+    whip_terminal_before = media_terminal_count(&g_whip_states);
+    whep_terminal_before = media_terminal_count(&g_whep_states);
+    frames_before_restart = g_whep_audio_frames;
+
+    kill_child(&g_sfu);
+    TEST_ASSERT_TRUE(
+        wait_for_media_terminal(&g_whip_states, whip_terminal_before));
+    TEST_ASSERT_TRUE(
+        wait_for_media_terminal(&g_whep_states, whep_terminal_before));
+    TEST_ASSERT_FALSE(ivr_whip_transport_connected(g_transport));
+    TEST_ASSERT_FALSE(ivr_whep_transport_connected(g_whep_transport));
+
+    TEST_ASSERT_EQUAL_INT(
+        0, ivr_whep_transport_stop(g_whep_transport, &g_call));
+    ivr_whip_transport_get_transport(g_transport, &publisher);
+    TEST_ASSERT_NOT_NULL(publisher.stop);
+    TEST_ASSERT_EQUAL_INT(0, publisher.stop(publisher.context, &g_call));
+
+    TEST_ASSERT_TRUE(spawn_sfu());
+    TEST_ASSERT_TRUE(provision_room());
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_whip_transport_start(g_transport, &g_call));
+    TEST_ASSERT_TRUE(wait_whip_connected());
+    publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
+    TEST_ASSERT_TRUE(publisher_ssrc != 0u);
+    TEST_ASSERT_TRUE(configure_audio_route(publisher_ssrc));
+    TEST_ASSERT_EQUAL(
+        IVR_OK, ivr_whep_transport_start(g_whep_transport, &g_call,
+                                         "call-42-rx"));
+    TEST_ASSERT_TRUE(wait_whep_connected());
+
+    whip_after = media_state_snapshot(&g_whip_states);
+    whep_after = media_state_snapshot(&g_whep_states);
+    TEST_ASSERT_TRUE(whip_after.last_generation >
+                     whip_before.last_generation);
+    TEST_ASSERT_TRUE(whep_after.last_generation >
+                     whep_before.last_generation);
+    TEST_ASSERT_EQUAL_UINT64(0u, whip_after.invalid_identity);
+    TEST_ASSERT_EQUAL_UINT64(0u, whep_after.invalid_identity);
+
+    frames_after_reconnect = g_whep_audio_frames;
+    TEST_ASSERT_TRUE(frames_after_reconnect >= frames_before_restart);
+    TEST_ASSERT_TRUE(send_audio_frames(30u));
+    TEST_ASSERT_TRUE(
+        wait_whep_frames_greater_than(frames_after_reconnect));
+    TEST_ASSERT_TRUE(ivr_whip_transport_connected(g_transport));
+    TEST_ASSERT_TRUE(ivr_whep_transport_connected(g_whep_transport));
+
+    TEST_ASSERT_EQUAL_INT(
+        0, ivr_whep_transport_stop(g_whep_transport, &g_call));
+    ivr_whip_transport_get_transport(g_transport, &publisher);
+    TEST_ASSERT_EQUAL_INT(0, publisher.stop(publisher.context, &g_call));
+    TEST_ASSERT_TRUE(wait_sfu_room_empty());
+}
+
 spec("test_ivr_whip_transport") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
@@ -705,4 +943,5 @@ spec("test_ivr_whip_transport") {
   TT_TEST(test_whip_publish_connect_and_send_audio);
   TT_TEST(test_create_copies_config_and_null_token);
   TT_TEST(test_whep_subscribe_connect_and_stop);
+  TT_TEST(test_sfu_restart_reconnects_same_call_and_resumes_rtp);
 }

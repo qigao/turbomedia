@@ -1,4 +1,7 @@
 #include "room_service/http_api.h"
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#include "room_service_media.h"
+#endif
 #include "turbo_media_auth.h"
 #include <iris/async.h>
 #include <iris/iris_app.h>
@@ -19,6 +22,9 @@
 #define ROOM_SERVICE_SCOPE_CONTROL_DANGEROUS "room.control.dangerous"
 
 static room_service_app_server_t *g_room_service_server = NULL;
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+static room_service_http_api_t *g_room_service_http_api = NULL;
+#endif
 
 struct room_service_http_api_s {
     iris_app_t *app;
@@ -189,6 +195,10 @@ static room_service_command_access_t command_access_for_type(const char *type) {
         strcmp(type, "finalize_call_center_room") == 0 ||
         strcmp(type, "start_recording") == 0 ||
         strcmp(type, "stop_recording") == 0 ||
+        strcmp(type, "replay_iris_event") == 0 ||
+        strcmp(type, "replay_iris_dead_letters") == 0 ||
+        strcmp(type, "list_iris_archived_events") == 0 ||
+        strcmp(type, "run_iris_event_retention") == 0 ||
         strcmp(type, "close_room") == 0) {
         return ROOM_SERVICE_COMMAND_ACCESS_DANGEROUS;
     }
@@ -1934,6 +1944,467 @@ static void send_error_json(Res *res, int status, const char *code, const char *
     send_json(res, status, json);
 }
 
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+static int iris_media_http_status(iris_media_bridge_status_t status) {
+    switch (status) {
+        case IRIS_MEDIA_BRIDGE_ACCEPTED:
+        case IRIS_MEDIA_BRIDGE_DUPLICATE:
+            return 202;
+        case IRIS_MEDIA_BRIDGE_TERMINAL:
+        case IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY:
+            return 200;
+        case IRIS_MEDIA_BRIDGE_INVALID:
+            return 400;
+        case IRIS_MEDIA_BRIDGE_CONFLICT:
+            return 409;
+        case IRIS_MEDIA_BRIDGE_EXPIRED:
+            return 410;
+        case IRIS_MEDIA_BRIDGE_FULL:
+            return 429;
+        case IRIS_MEDIA_BRIDGE_UNAVAILABLE:
+            return 503;
+        case IRIS_MEDIA_BRIDGE_INTERNAL:
+        default:
+            return 500;
+    }
+}
+
+static void send_iris_media_result(Res *res,
+                                   const iris_media_bridge_result_t *result) {
+    json_value_t *root = turbo_json_create_object();
+    json_value_t *data = NULL;
+    char *json;
+    size_t json_size = 0u;
+
+    if (!root) {
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "provider response allocation failed");
+        return;
+    }
+#define ADD_JSON(name, value)                                                \
+    do {                                                                      \
+        json_value_t *item = (value);                                         \
+        if (!item || !turbo_json_object_add_checked(root, (name), item)) {    \
+            turbo_free_json(&item);                                           \
+            turbo_free_json(&root);                                           \
+            send_error_json(res, 500, "SERIALIZATION_FAILED",               \
+                            "provider response serialization failed");       \
+            return;                                                           \
+        }                                                                     \
+    } while (0)
+    ADD_JSON("schemaVersion", turbo_json_create_uint64(2u));
+    if (result->status == IRIS_MEDIA_BRIDGE_ACCEPTED ||
+        result->status == IRIS_MEDIA_BRIDGE_DUPLICATE) {
+        ADD_JSON("disposition", turbo_json_create_string("accepted"));
+        ADD_JSON("commandId", turbo_json_create_string(result->command_id));
+        ADD_JSON("workerId", turbo_json_create_string(result->iris_worker_id));
+        ADD_JSON("dispatchEpoch",
+                 turbo_json_create_uint64(result->dispatch_epoch));
+        ADD_JSON("duplicate", turbo_json_create_bool(
+                                  result->status == IRIS_MEDIA_BRIDGE_DUPLICATE));
+        ADD_JSON("mediaWorkerId",
+                 turbo_json_create_string(result->media_worker_id));
+    } else if (result->status == IRIS_MEDIA_BRIDGE_TERMINAL ||
+               result->status == IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY) {
+        if (result->terminal_status[0] == '\0' ||
+            result->event_type[0] == '\0' || result->data[0] == '\0' ||
+            turbo_parse_json((const uint8_t *)result->data,
+                             strlen(result->data), &data) != 0 || !data) {
+            turbo_free_json(&data);
+            turbo_free_json(&root);
+            send_error_json(res, 500, "COMMAND_LEDGER_RECORD_INVALID",
+                            "provider terminal replay is invalid");
+            return;
+        }
+        ADD_JSON("disposition", turbo_json_create_string("terminal"));
+        ADD_JSON("commandId", turbo_json_create_string(result->command_id));
+        ADD_JSON("terminalStatus",
+                 turbo_json_create_string(result->terminal_status));
+        ADD_JSON("eventType", turbo_json_create_string(result->event_type));
+        ADD_JSON("duplicate", turbo_json_create_bool(
+                                  result->status ==
+                                  IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY));
+        ADD_JSON("data", data);
+        data = NULL;
+    } else {
+        ADD_JSON("disposition", turbo_json_create_string("rejected"));
+        ADD_JSON("code", turbo_json_create_string(
+                             result->error_code ? result->error_code
+                                                : "PROVIDER_COMMAND_FAILED"));
+        ADD_JSON("message", turbo_json_create_string(
+                                result->error_message
+                                    ? result->error_message
+                                    : "provider command failed"));
+        if (result->command_id[0] != '\0') {
+            ADD_JSON("commandId",
+                     turbo_json_create_string(result->command_id));
+        }
+    }
+#undef ADD_JSON
+    json = turbo_json_serialize(root, &json_size);
+    turbo_free_json(&root);
+    if (!json) {
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "provider response serialization failed");
+        return;
+    }
+    reply(res, iris_media_http_status(result->status), "application/json",
+          json, json_size);
+    turbo_json_serialize_free(json);
+}
+
+static int iris_room_http_status(iris_room_bridge_status_t status) {
+    switch (status) {
+        case IRIS_ROOM_BRIDGE_TERMINAL:
+        case IRIS_ROOM_BRIDGE_DUPLICATE:
+            return 200;
+        case IRIS_ROOM_BRIDGE_IN_PROGRESS:
+            return 425;
+        case IRIS_ROOM_BRIDGE_INVALID:
+            return 400;
+        case IRIS_ROOM_BRIDGE_CONFLICT:
+            return 409;
+        case IRIS_ROOM_BRIDGE_EXPIRED:
+            return 410;
+        case IRIS_ROOM_BRIDGE_FULL:
+            return 429;
+        case IRIS_ROOM_BRIDGE_UNAVAILABLE:
+            return 503;
+        case IRIS_ROOM_BRIDGE_INTERNAL:
+        default:
+            return 500;
+    }
+}
+
+static void send_iris_room_result(Res *res,
+                                  const iris_room_bridge_result_t *result) {
+    json_value_t *root = turbo_json_create_object();
+    json_value_t *data = NULL;
+    char *json;
+    size_t json_size = 0u;
+    if (!root) {
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "provider response allocation failed");
+        return;
+    }
+#define ADD_ROOM_JSON(name, value)                                           \
+    do {                                                                      \
+        json_value_t *item = (value);                                         \
+        if (!item || !turbo_json_object_add_checked(root, (name), item)) {    \
+            turbo_free_json(&item);                                           \
+            turbo_free_json(&root);                                           \
+            send_error_json(res, 500, "SERIALIZATION_FAILED",               \
+                            "provider response serialization failed");       \
+            return;                                                           \
+        }                                                                     \
+    } while (0)
+    ADD_ROOM_JSON("schemaVersion", turbo_json_create_uint64(2u));
+    if (result->status == IRIS_ROOM_BRIDGE_TERMINAL ||
+        result->status == IRIS_ROOM_BRIDGE_DUPLICATE) {
+        if (turbo_parse_json((const uint8_t *)result->data,
+                             strlen(result->data), &data) != 0 || !data) {
+            turbo_free_json(&data);
+            turbo_free_json(&root);
+            send_error_json(res, 500, "SERIALIZATION_FAILED",
+                            "provider terminal data is invalid");
+            return;
+        }
+        ADD_ROOM_JSON(
+            "terminalStatus",
+            turbo_json_create_string(
+                result->terminal_status == IRIS_ROOM_TERMINAL_SUCCEEDED
+                    ? "succeeded"
+                    : "failed"));
+        ADD_ROOM_JSON("eventType",
+                      turbo_json_create_string(result->event_type));
+        ADD_ROOM_JSON("commandId",
+                      turbo_json_create_string(result->command_id));
+        ADD_ROOM_JSON("duplicate", turbo_json_create_bool(
+                                       result->status ==
+                                       IRIS_ROOM_BRIDGE_DUPLICATE));
+        if (!turbo_json_object_add_checked(root, "data", data)) {
+            turbo_free_json(&data);
+            turbo_free_json(&root);
+            send_error_json(res, 500, "SERIALIZATION_FAILED",
+                            "provider response serialization failed");
+            return;
+        }
+        data = NULL;
+    } else {
+        ADD_ROOM_JSON("disposition", turbo_json_create_string("rejected"));
+        ADD_ROOM_JSON("code", turbo_json_create_string(
+                                  result->error_code
+                                      ? result->error_code
+                                      : "PROVIDER_COMMAND_FAILED"));
+        ADD_ROOM_JSON("message", turbo_json_create_string(
+                                     result->error_message
+                                         ? result->error_message
+                                         : "provider command failed"));
+        if (result->command_id[0]) {
+            ADD_ROOM_JSON("commandId",
+                          turbo_json_create_string(result->command_id));
+        }
+    }
+#undef ADD_ROOM_JSON
+    json = turbo_json_serialize(root, &json_size);
+    turbo_free_json(&root);
+    if (!json) {
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "provider response serialization failed");
+        return;
+    }
+    reply(res, iris_room_http_status(result->status), "application/json",
+          json, json_size);
+    turbo_json_serialize_free(json);
+}
+
+static int iris_provider_capability(const char *body, size_t body_size,
+                                    char *value, size_t value_capacity) {
+    json_value_t *root = NULL;
+    json_value_t *data;
+    const char *capability;
+    size_t size;
+    if (!value || value_capacity == 0u) return 0;
+    value[0] = '\0';
+    if (!body || body_size == 0u ||
+        turbo_parse_json((const uint8_t *)body, body_size, &root) != 0 ||
+        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
+        turbo_free_json(&root);
+        return 0;
+    }
+    data = turbo_json_object_get(root, "data");
+    capability = data && turbo_json_type(data) == TURBO_JSON_OBJECT
+                     ? turbo_json_get_string(data, "capability")
+                     : NULL;
+    size = capability ? strlen(capability) : 0u;
+    if (size > 0u && size < value_capacity) {
+        memcpy(value, capability, size + 1u);
+    }
+    turbo_free_json(&root);
+    return value[0] != '\0';
+}
+
+static int add_owned_json(json_value_t *object, const char *name,
+                          json_value_t *value) {
+    if (!value || !turbo_json_object_add_checked(object, name, value)) {
+        turbo_free_json(&value);
+        return 0;
+    }
+    return 1;
+}
+
+static void send_iris_dead_letters(
+    Res *res, const iris_event_dead_letter_t *items, size_t count,
+    size_t total) {
+    json_value_t *root = turbo_json_create_object();
+    json_value_t *array = turbo_json_create_array();
+    char *json = NULL;
+    size_t json_size = 0u;
+    size_t i;
+    if (!root || !array ||
+        !add_owned_json(root, "ok", turbo_json_create_bool(1)) ||
+        !add_owned_json(root, "total", turbo_json_create_uint64(total)) ||
+        !add_owned_json(root, "truncated",
+                        turbo_json_create_bool(total > count))) {
+        turbo_free_json(&array);
+        turbo_free_json(&root);
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "dead-letter response allocation failed");
+        return;
+    }
+    for (i = 0u; i < count; ++i) {
+        json_value_t *item = turbo_json_create_object();
+        if (!item ||
+            !add_owned_json(item, "eventId",
+                            turbo_json_create_string(items[i].event_id)) ||
+            !add_owned_json(item, "sessionId", turbo_json_create_string(
+                                                    items[i].provider_session_id)) ||
+            !add_owned_json(item, "dialogId", turbo_json_create_string(
+                                                   items[i].dialog_id)) ||
+            !add_owned_json(item, "type", turbo_json_create_string(
+                                               items[i].event_type)) ||
+            !add_owned_json(item, "occurredAtUnixMs", turbo_json_create_uint64(
+                                                         items[i].occurred_at_ms)) ||
+            !add_owned_json(item, "deadAtUnixMs", turbo_json_create_uint64(
+                                                     items[i].dead_at_ms)) ||
+            !add_owned_json(item, "deliveryAttempts", turbo_json_create_uint64(
+                                                        items[i].delivery_attempts)) ||
+            !add_owned_json(item, "lastHttpStatus", turbo_json_create_int64(
+                                                       items[i].last_http_status)) ||
+            !turbo_json_array_add_checked(array, item)) {
+            turbo_free_json(&item);
+            turbo_free_json(&array);
+            turbo_free_json(&root);
+            send_error_json(res, 500, "SERIALIZATION_FAILED",
+                            "dead-letter response serialization failed");
+            return;
+        }
+    }
+    if (!add_owned_json(root, "items", array)) {
+        turbo_free_json(&root);
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "dead-letter response serialization failed");
+        return;
+    }
+    json = turbo_json_serialize(root, &json_size);
+    turbo_free_json(&root);
+    if (!json) {
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "dead-letter response serialization failed");
+        return;
+    }
+    reply(res, 200, "application/json", json, json_size);
+    turbo_json_serialize_free(json);
+}
+
+static void send_iris_archived_events(
+    Res *res, const iris_event_archive_t *items, size_t count,
+    size_t total) {
+    json_value_t *root = turbo_json_create_object();
+    json_value_t *array = turbo_json_create_array();
+    char *json = NULL;
+    size_t json_size = 0u;
+    size_t i;
+    if (!root || !array ||
+        !add_owned_json(root, "ok", turbo_json_create_bool(1)) ||
+        !add_owned_json(root, "total", turbo_json_create_uint64(total)) ||
+        !add_owned_json(root, "truncated",
+                        turbo_json_create_bool(total > count))) {
+        turbo_free_json(&array);
+        turbo_free_json(&root);
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "archive response allocation failed");
+        return;
+    }
+    for (i = 0u; i < count; ++i) {
+        json_value_t *item = turbo_json_create_object();
+        if (!item ||
+            !add_owned_json(item, "eventId",
+                            turbo_json_create_string(items[i].event_id)) ||
+            !add_owned_json(item, "sessionId", turbo_json_create_string(
+                                                    items[i].provider_session_id)) ||
+            !add_owned_json(item, "dialogId", turbo_json_create_string(
+                                                   items[i].dialog_id)) ||
+            !add_owned_json(item, "type", turbo_json_create_string(
+                                               items[i].event_type)) ||
+            !add_owned_json(item, "occurredAtUnixMs", turbo_json_create_uint64(
+                                                         items[i].occurred_at_ms)) ||
+            !add_owned_json(item, "archivedAtUnixMs", turbo_json_create_uint64(
+                                                         items[i].archived_at_ms)) ||
+            !add_owned_json(item, "deliveryAttempts", turbo_json_create_uint64(
+                                                        items[i].delivery_attempts)) ||
+            !add_owned_json(item, "lastHttpStatus", turbo_json_create_int64(
+                                                       items[i].last_http_status)) ||
+            !turbo_json_array_add_checked(array, item)) {
+            turbo_free_json(&item);
+            turbo_free_json(&array);
+            turbo_free_json(&root);
+            send_error_json(res, 500, "SERIALIZATION_FAILED",
+                            "archive response serialization failed");
+            return;
+        }
+    }
+    if (!add_owned_json(root, "items", array)) {
+        turbo_free_json(&root);
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "archive response serialization failed");
+        return;
+    }
+    json = turbo_json_serialize(root, &json_size);
+    turbo_free_json(&root);
+    if (!json) {
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "archive response serialization failed");
+        return;
+    }
+    reply(res, 200, "application/json", json, json_size);
+    turbo_json_serialize_free(json);
+}
+
+static void send_iris_retention_result(
+    Res *res, int http_status, const iris_event_retention_result_t *result,
+    const char *error_code, const char *error_message) {
+    json_value_t *root = turbo_json_create_object();
+    char *json = NULL;
+    size_t json_size = 0u;
+    if (!root ||
+        !add_owned_json(root, "ok",
+                        turbo_json_create_bool(http_status >= 200 &&
+                                               http_status < 300)) ||
+        !add_owned_json(root, "archived",
+                        turbo_json_create_uint64(result->archived)) ||
+        !add_owned_json(root, "deleted",
+                        turbo_json_create_uint64(result->deleted)) ||
+        !add_owned_json(root, "remainingDead",
+                        turbo_json_create_uint64(result->remaining_dead)) ||
+        !add_owned_json(root, "remainingArchived",
+                        turbo_json_create_uint64(
+                            result->remaining_archived)) ||
+        (error_code &&
+         !add_owned_json(root, "code",
+                         turbo_json_create_string(error_code))) ||
+        (error_message &&
+         !add_owned_json(root, "message",
+                         turbo_json_create_string(error_message)))) {
+        turbo_free_json(&root);
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "retention response serialization failed");
+        return;
+    }
+    json = turbo_json_serialize(root, &json_size);
+    turbo_free_json(&root);
+    if (!json) {
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "retention response serialization failed");
+        return;
+    }
+    reply(res, http_status, "application/json", json, json_size);
+    turbo_json_serialize_free(json);
+}
+
+static void send_iris_replay_batch(
+    Res *res, int http_status,
+    const iris_event_replay_batch_result_t *result,
+    const char *error_code, const char *error_message) {
+    json_value_t *root = turbo_json_create_object();
+    char *json = NULL;
+    size_t json_size = 0u;
+    if (!root ||
+        !add_owned_json(root, "ok",
+                        turbo_json_create_bool(http_status >= 200 &&
+                                               http_status < 300)) ||
+        !add_owned_json(root, "selected",
+                        turbo_json_create_uint64(result->selected)) ||
+        !add_owned_json(root, "replayed",
+                        turbo_json_create_uint64(result->replayed)) ||
+        !add_owned_json(root, "remainingDead",
+                        turbo_json_create_uint64(result->remaining_dead)) ||
+        !add_owned_json(root, "backpressured",
+                        turbo_json_create_bool(result->backpressured)) ||
+        (error_code &&
+         !add_owned_json(root, "code",
+                         turbo_json_create_string(error_code))) ||
+        (error_message &&
+         !add_owned_json(root, "message",
+                         turbo_json_create_string(error_message)))) {
+        turbo_free_json(&root);
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "dead-letter replay response allocation failed");
+        return;
+    }
+    json = turbo_json_serialize(root, &json_size);
+    turbo_free_json(&root);
+    if (!json) {
+        send_error_json(res, 500, "SERIALIZATION_FAILED",
+                        "dead-letter replay response serialization failed");
+        return;
+    }
+    reply(res, http_status, "application/json", json, json_size);
+    turbo_json_serialize_free(json);
+}
+
+#endif
+
 static void send_room_ok_json(Res *res, turbo_room_service_t *service, const char *room_id) {
     char *room_json = room_summary_json(service, room_id);
     char *payload;
@@ -3045,7 +3516,7 @@ static void handle_metrics(Req *req, Res *res) {
     room_service_app_stats_t stats;
     room_service_ivr_metrics_t ivr;
     const room_service_app_config_t *config;
-    enum { ROOM_SERVICE_METRICS_CAPACITY = 4096 };
+    enum { ROOM_SERVICE_METRICS_CAPACITY = 16384 };
     char text[ROOM_SERVICE_METRICS_CAPACITY];
     int written;
 
@@ -3097,6 +3568,12 @@ static void handle_metrics(Req *req, Res *res) {
              "turbo_room_service_ivr_assignment_capacity %u\n"
              "# TYPE turbo_room_service_ivr_assignment_high_water gauge\n"
              "turbo_room_service_ivr_assignment_high_water %u\n"
+             "# TYPE turbo_room_service_ivr_dialogs gauge\n"
+             "turbo_room_service_ivr_dialogs %u\n"
+             "# TYPE turbo_room_service_ivr_dialog_capacity gauge\n"
+             "turbo_room_service_ivr_dialog_capacity %u\n"
+             "# TYPE turbo_room_service_ivr_dialog_high_water gauge\n"
+             "turbo_room_service_ivr_dialog_high_water %u\n"
              "# TYPE turbo_room_service_ivr_lease_expired_total counter\n"
              "turbo_room_service_ivr_lease_expired_total %llu\n"
              "# TYPE turbo_room_service_ivr_dispatch_timeout_total counter\n"
@@ -3120,7 +3597,47 @@ static void handle_metrics(Req *req, Res *res) {
              "# TYPE turbo_room_service_ivr_peer_event_queue_drops_total counter\n"
              "turbo_room_service_ivr_peer_event_queue_drops_total %llu\n"
              "# TYPE turbo_room_service_ivr_peer_event_queue_overflowed gauge\n"
-             "turbo_room_service_ivr_peer_event_queue_overflowed %d\n",
+             "turbo_room_service_ivr_peer_event_queue_overflowed %d\n"
+             "# TYPE turbo_room_service_iris_provider_enabled gauge\n"
+             "turbo_room_service_iris_provider_enabled %d\n"
+             "# TYPE turbo_room_service_iris_queue_items gauge\n"
+             "turbo_room_service_iris_queue_items %u\n"
+             "# TYPE turbo_room_service_iris_queue_capacity gauge\n"
+             "turbo_room_service_iris_queue_capacity %u\n"
+             "# TYPE turbo_room_service_iris_queue_high_water gauge\n"
+             "turbo_room_service_iris_queue_high_water %u\n"
+             "# TYPE turbo_room_service_iris_in_flight gauge\n"
+             "turbo_room_service_iris_in_flight %u\n"
+             "# TYPE turbo_room_service_iris_enqueued_total counter\n"
+             "turbo_room_service_iris_enqueued_total %llu\n"
+             "# TYPE turbo_room_service_iris_queue_full_total counter\n"
+             "turbo_room_service_iris_queue_full_total %llu\n"
+             "# TYPE turbo_room_service_iris_closed_rejections_total counter\n"
+             "turbo_room_service_iris_closed_rejections_total %llu\n"
+             "# TYPE turbo_room_service_iris_delivery_attempts_total counter\n"
+             "turbo_room_service_iris_delivery_attempts_total %llu\n"
+             "# TYPE turbo_room_service_iris_retries_total counter\n"
+             "turbo_room_service_iris_retries_total %llu\n"
+             "# TYPE turbo_room_service_iris_fence_conflicts_total counter\n"
+             "turbo_room_service_iris_fence_conflicts_total %llu\n"
+             "# TYPE turbo_room_service_iris_fence_refresh_failures_total counter\n"
+             "turbo_room_service_iris_fence_refresh_failures_total %llu\n"
+             "# TYPE turbo_room_service_iris_completion_success_total counter\n"
+             "turbo_room_service_iris_completion_success_total %llu\n"
+             "# TYPE turbo_room_service_iris_completion_failure_total counter\n"
+             "turbo_room_service_iris_completion_failure_total %llu\n"
+             "# TYPE turbo_room_service_iris_event_success_total counter\n"
+             "turbo_room_service_iris_event_success_total %llu\n"
+             "# TYPE turbo_room_service_iris_event_failure_total counter\n"
+             "turbo_room_service_iris_event_failure_total %llu\n"
+             "# TYPE turbo_room_service_iris_shutdown_restored_completions_total counter\n"
+             "turbo_room_service_iris_shutdown_restored_completions_total %llu\n"
+             "# TYPE turbo_room_service_iris_shutdown_dropped_events_total counter\n"
+             "turbo_room_service_iris_shutdown_dropped_events_total %llu\n"
+             "# TYPE turbo_room_service_iris_last_drain_duration_ms gauge\n"
+             "turbo_room_service_iris_last_drain_duration_ms %llu\n"
+             "# TYPE turbo_room_service_iris_max_drain_duration_ms gauge\n"
+             "turbo_room_service_iris_max_drain_duration_ms %llu\n",
              stats.running ? 1 : 0,
              control_auth_enabled(config) ? 1 : 0,
              (config && config->sfu_control_token && config->sfu_control_token[0] != '\0') ? 1 : 0,
@@ -3135,6 +3652,9 @@ static void handle_metrics(Req *req, Res *res) {
              ivr.assignments,
              ivr.assignment_capacity,
              ivr.assignment_high_water,
+             ivr.dialogs,
+             ivr.dialog_capacity,
+             ivr.dialog_high_water,
              (unsigned long long)ivr.lease_expired_total,
              (unsigned long long)ivr.dispatch_timeout_total,
              (unsigned long long)ivr.release_timeout_total,
@@ -3146,7 +3666,224 @@ static void handle_metrics(Req *req, Res *res) {
              ivr.peer_event_queue_capacity,
              ivr.peer_event_queue_high_water,
              (unsigned long long)ivr.peer_event_queue_drops_total,
-             ivr.peer_event_queue_overflowed);
+             ivr.peer_event_queue_overflowed,
+             ivr.iris_provider_enabled,
+             ivr.iris_queue_items,
+             ivr.iris_queue_capacity,
+             ivr.iris_queue_high_water,
+             ivr.iris_in_flight,
+             (unsigned long long)ivr.iris_enqueued_total,
+             (unsigned long long)ivr.iris_queue_full_total,
+             (unsigned long long)ivr.iris_closed_rejections_total,
+             (unsigned long long)ivr.iris_delivery_attempts_total,
+             (unsigned long long)ivr.iris_retries_total,
+             (unsigned long long)ivr.iris_fence_conflicts_total,
+             (unsigned long long)ivr.iris_fence_refresh_failures_total,
+             (unsigned long long)ivr.iris_completion_success_total,
+             (unsigned long long)ivr.iris_completion_failure_total,
+             (unsigned long long)ivr.iris_event_success_total,
+             (unsigned long long)ivr.iris_event_failure_total,
+             (unsigned long long)
+                 ivr.iris_shutdown_restored_completions_total,
+             (unsigned long long)ivr.iris_shutdown_dropped_events_total,
+             (unsigned long long)ivr.iris_last_drain_duration_ms,
+             (unsigned long long)ivr.iris_max_drain_duration_ms);
+
+    if (written >= 0 && (size_t)written < sizeof(text)) {
+        int appended = snprintf(
+            text + written, sizeof(text) - (size_t)written,
+            "# TYPE turbo_room_service_iris_ledger_request_queue_items gauge\n"
+            "turbo_room_service_iris_ledger_request_queue_items %u\n"
+            "# TYPE turbo_room_service_iris_ledger_request_queue_capacity gauge\n"
+            "turbo_room_service_iris_ledger_request_queue_capacity %u\n"
+            "# TYPE turbo_room_service_iris_ledger_request_queue_high_water gauge\n"
+            "turbo_room_service_iris_ledger_request_queue_high_water %u\n"
+            "# TYPE turbo_room_service_iris_ledger_record_capacity gauge\n"
+            "turbo_room_service_iris_ledger_record_capacity %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_claims_total counter\n"
+            "turbo_room_service_iris_ledger_claims_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_replays_total counter\n"
+            "turbo_room_service_iris_ledger_replays_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_conflicts_total counter\n"
+            "turbo_room_service_iris_ledger_conflicts_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_unknown_total counter\n"
+            "turbo_room_service_iris_ledger_unknown_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_storage_failures_total counter\n"
+            "turbo_room_service_iris_ledger_storage_failures_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_queue_rejections_total counter\n"
+            "turbo_room_service_iris_ledger_queue_rejections_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_recovered_unknown_total counter\n"
+            "turbo_room_service_iris_ledger_recovered_unknown_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_resource_queries_total counter\n"
+            "turbo_room_service_iris_ledger_resource_queries_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_resource_seen_total counter\n"
+            "turbo_room_service_iris_ledger_resource_seen_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_retained_deleted_total counter\n"
+            "turbo_room_service_iris_ledger_retained_deleted_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_retention_sweeps_total counter\n"
+            "turbo_room_service_iris_ledger_retention_sweeps_total %llu\n"
+            "# TYPE turbo_room_service_iris_ledger_retention_failures_total counter\n"
+            "turbo_room_service_iris_ledger_retention_failures_total %llu\n",
+            ivr.iris_ledger_request_queue_items,
+            ivr.iris_ledger_request_queue_capacity,
+            ivr.iris_ledger_request_queue_high_water,
+            (unsigned long long)ivr.iris_ledger_record_capacity,
+            (unsigned long long)ivr.iris_ledger_claims_total,
+            (unsigned long long)ivr.iris_ledger_replays_total,
+            (unsigned long long)ivr.iris_ledger_conflicts_total,
+            (unsigned long long)ivr.iris_ledger_unknown_total,
+            (unsigned long long)ivr.iris_ledger_storage_failures_total,
+            (unsigned long long)ivr.iris_ledger_queue_rejections_total,
+            (unsigned long long)ivr.iris_ledger_recovered_unknown_total,
+            (unsigned long long)ivr.iris_ledger_resource_queries_total,
+            (unsigned long long)ivr.iris_ledger_resource_seen_total,
+            (unsigned long long)ivr.iris_ledger_retained_deleted_total,
+            (unsigned long long)ivr.iris_ledger_retention_sweeps_total,
+            (unsigned long long)ivr.iris_ledger_retention_failures_total);
+        if (appended < 0 ||
+            (size_t)appended >= sizeof(text) - (size_t)written) {
+            written = -1;
+        } else {
+            written += appended;
+        }
+    }
+
+    if (written >= 0 && (size_t)written < sizeof(text)) {
+        int appended = snprintf(
+            text + written, sizeof(text) - (size_t)written,
+            "# TYPE turbo_room_service_iris_outbox_request_queue_items gauge\n"
+            "turbo_room_service_iris_outbox_request_queue_items %u\n"
+            "# TYPE turbo_room_service_iris_outbox_request_queue_capacity gauge\n"
+            "turbo_room_service_iris_outbox_request_queue_capacity %u\n"
+            "# TYPE turbo_room_service_iris_outbox_request_queue_high_water gauge\n"
+            "turbo_room_service_iris_outbox_request_queue_high_water %u\n"
+            "# TYPE turbo_room_service_iris_outbox_pending_records gauge\n"
+            "turbo_room_service_iris_outbox_pending_records %u\n"
+            "# TYPE turbo_room_service_iris_outbox_in_flight_records gauge\n"
+            "turbo_room_service_iris_outbox_in_flight_records %u\n"
+            "# TYPE turbo_room_service_iris_outbox_dead_records gauge\n"
+            "turbo_room_service_iris_outbox_dead_records %u\n"
+            "# TYPE turbo_room_service_iris_outbox_archived_records gauge\n"
+            "turbo_room_service_iris_outbox_archived_records %u\n"
+            "# TYPE turbo_room_service_iris_outbox_record_capacity gauge\n"
+            "turbo_room_service_iris_outbox_record_capacity %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_retained_payload_bytes gauge\n"
+            "turbo_room_service_iris_outbox_retained_payload_bytes %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_peak_retained_payload_bytes gauge\n"
+            "turbo_room_service_iris_outbox_peak_retained_payload_bytes %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_persisted_total counter\n"
+            "turbo_room_service_iris_outbox_persisted_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_duplicate_total counter\n"
+            "turbo_room_service_iris_outbox_duplicate_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_conflict_total counter\n"
+            "turbo_room_service_iris_outbox_conflict_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_persist_failure_total counter\n"
+            "turbo_room_service_iris_outbox_persist_failure_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_capacity_rejection_total counter\n"
+            "turbo_room_service_iris_outbox_capacity_rejection_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_schedule_rejection_total counter\n"
+            "turbo_room_service_iris_outbox_schedule_rejection_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_delivered_total counter\n"
+            "turbo_room_service_iris_outbox_delivered_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_dead_lettered_total counter\n"
+            "turbo_room_service_iris_outbox_dead_lettered_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_settlement_failure_total counter\n"
+            "turbo_room_service_iris_outbox_settlement_failure_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_stale_settlement_total counter\n"
+            "turbo_room_service_iris_outbox_stale_settlement_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_decode_failure_total counter\n"
+            "turbo_room_service_iris_outbox_decode_failure_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_recovered_total counter\n"
+            "turbo_room_service_iris_outbox_recovered_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_replayed_total counter\n"
+            "turbo_room_service_iris_outbox_replayed_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_archived_total counter\n"
+            "turbo_room_service_iris_outbox_archived_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_archive_deleted_total counter\n"
+            "turbo_room_service_iris_outbox_archive_deleted_total %llu\n"
+            "# TYPE turbo_room_service_iris_outbox_retention_failure_total counter\n"
+            "turbo_room_service_iris_outbox_retention_failure_total %llu\n",
+            ivr.iris_outbox_request_queue_items,
+            ivr.iris_outbox_request_queue_capacity,
+            ivr.iris_outbox_request_queue_high_water,
+            ivr.iris_outbox_pending_records,
+            ivr.iris_outbox_in_flight_records,
+            ivr.iris_outbox_dead_records,
+            ivr.iris_outbox_archived_records,
+            (unsigned long long)ivr.iris_outbox_record_capacity,
+            (unsigned long long)ivr.iris_outbox_retained_payload_bytes,
+            (unsigned long long)ivr.iris_outbox_peak_retained_payload_bytes,
+            (unsigned long long)ivr.iris_outbox_persisted_total,
+            (unsigned long long)ivr.iris_outbox_duplicate_total,
+            (unsigned long long)ivr.iris_outbox_conflict_total,
+            (unsigned long long)ivr.iris_outbox_persist_failure_total,
+            (unsigned long long)ivr.iris_outbox_capacity_rejection_total,
+            (unsigned long long)ivr.iris_outbox_schedule_rejection_total,
+            (unsigned long long)ivr.iris_outbox_delivered_total,
+            (unsigned long long)ivr.iris_outbox_dead_lettered_total,
+            (unsigned long long)ivr.iris_outbox_settlement_failure_total,
+            (unsigned long long)ivr.iris_outbox_stale_settlement_total,
+            (unsigned long long)ivr.iris_outbox_decode_failure_total,
+            (unsigned long long)ivr.iris_outbox_recovered_total,
+            (unsigned long long)ivr.iris_outbox_replayed_total,
+            (unsigned long long)ivr.iris_outbox_archived_total,
+            (unsigned long long)ivr.iris_outbox_archive_deleted_total,
+            (unsigned long long)ivr.iris_outbox_retention_failure_total);
+        if (appended < 0 ||
+            (size_t)appended >= sizeof(text) - (size_t)written) {
+            written = -1;
+        } else {
+            written += appended;
+        }
+    }
+
+    if (written >= 0 && (size_t)written < sizeof(text)) {
+        int appended = snprintf(
+            text + written, sizeof(text) - (size_t)written,
+            "# TYPE turbo_room_service_iris_reconcile_state gauge\n"
+            "turbo_room_service_iris_reconcile_state %d\n"
+            "# TYPE turbo_room_service_iris_reconcile_accepting_commands gauge\n"
+            "turbo_room_service_iris_reconcile_accepting_commands %d\n"
+            "# TYPE turbo_room_service_iris_reconcile_inventory_queue_items gauge\n"
+            "turbo_room_service_iris_reconcile_inventory_queue_items %u\n"
+            "# TYPE turbo_room_service_iris_reconcile_inventory_queue_capacity gauge\n"
+            "turbo_room_service_iris_reconcile_inventory_queue_capacity %u\n"
+            "# TYPE turbo_room_service_iris_reconcile_cycles_total counter\n"
+            "turbo_room_service_iris_reconcile_cycles_total %llu\n"
+            "# TYPE turbo_room_service_iris_reconcile_failures_total counter\n"
+            "turbo_room_service_iris_reconcile_failures_total %llu\n"
+            "# TYPE turbo_room_service_iris_reconcile_expected_fetches_total counter\n"
+            "turbo_room_service_iris_reconcile_expected_fetches_total %llu\n"
+            "# TYPE turbo_room_service_iris_reconcile_inventory_pages_total counter\n"
+            "turbo_room_service_iris_reconcile_inventory_pages_total %llu\n"
+            "# TYPE turbo_room_service_iris_reconcile_rebound_total counter\n"
+            "turbo_room_service_iris_reconcile_rebound_total %llu\n"
+            "# TYPE turbo_room_service_iris_reconcile_orphan_close_total counter\n"
+            "turbo_room_service_iris_reconcile_orphan_close_total %llu\n"
+            "# TYPE turbo_room_service_iris_reconcile_resource_lost_total counter\n"
+            "turbo_room_service_iris_reconcile_resource_lost_total %llu\n"
+            "# TYPE turbo_room_service_iris_reconcile_inventory_queue_full_total counter\n"
+            "turbo_room_service_iris_reconcile_inventory_queue_full_total %llu\n",
+            ivr.iris_reconcile_state,
+            ivr.iris_reconcile_accepting_commands,
+            ivr.iris_reconcile_inventory_queue_items,
+            ivr.iris_reconcile_inventory_queue_capacity,
+            (unsigned long long)ivr.iris_reconcile_cycles_total,
+            (unsigned long long)ivr.iris_reconcile_failures_total,
+            (unsigned long long)ivr.iris_reconcile_expected_fetches_total,
+            (unsigned long long)ivr.iris_reconcile_inventory_pages_total,
+            (unsigned long long)ivr.iris_reconcile_rebound_total,
+            (unsigned long long)ivr.iris_reconcile_orphan_close_total,
+            (unsigned long long)ivr.iris_reconcile_resource_lost_total,
+            (unsigned long long)
+                ivr.iris_reconcile_inventory_queue_full_total);
+        if (appended < 0 ||
+            (size_t)appended >= sizeof(text) - (size_t)written) {
+            written = -1;
+        } else {
+            written += appended;
+        }
+    }
 
     if (written < 0 || (size_t)written >= sizeof(text)) {
         send_text(res, 500, "room service metrics overflow\n");
@@ -5008,6 +5745,189 @@ static void handle_command(Req *req, Res *res) {
         send_entity_ok_json(res, "conference_policy", json);
         turbo_free_json(&root);
         return;
+    } else if (strcmp(type, "list_iris_dead_letters") == 0) {
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+        int limit = turbo_json_get_int(root, "limit", 100);
+        iris_event_dead_letter_t *items;
+        size_t count = 0u;
+        size_t total = 0u;
+        ivr_status_t list_status;
+        if (limit < 1 || limit > (int)IRIS_EVENT_OUTBOX_LIST_MAX) {
+            send_error_json(res, 400, "INVALID_REQUEST",
+                            "limit must be between 1 and 256");
+            turbo_free_json(&root);
+            return;
+        }
+        items = (iris_event_dead_letter_t *)calloc((size_t)limit,
+                                                   sizeof(*items));
+        if (!items) {
+            send_error_json(res, 503, "IRIS_LIST_FAILED",
+                            "dead-letter snapshot allocation failed");
+            turbo_free_json(&root);
+            return;
+        }
+        list_status = room_service_app_server_list_iris_dead_letters(
+            g_room_service_server, items, (size_t)limit, &count, &total);
+        if (list_status == IVR_OK) {
+            send_iris_dead_letters(res, items, count, total);
+        } else if (list_status == IVR_ESTATE) {
+            send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                            "Iris event outbox is not configured");
+        } else {
+            send_error_json(res, 503, "IRIS_LIST_FAILED",
+                            "dead-letter snapshot is unavailable");
+        }
+        free(items);
+        turbo_free_json(&root);
+        return;
+#else
+        send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                        "Iris event outbox is not available in this build");
+        turbo_free_json(&root);
+        return;
+#endif
+    } else if (strcmp(type, "list_iris_archived_events") == 0) {
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+        int limit = turbo_json_get_int(root, "limit", 100);
+        iris_event_archive_t *items;
+        size_t count = 0u;
+        size_t total = 0u;
+        ivr_status_t list_status;
+        if (limit < 1 || limit > (int)IRIS_EVENT_OUTBOX_LIST_MAX) {
+            send_error_json(res, 400, "INVALID_REQUEST",
+                            "limit must be between 1 and 256");
+            turbo_free_json(&root);
+            return;
+        }
+        items = (iris_event_archive_t *)calloc((size_t)limit,
+                                               sizeof(*items));
+        if (!items) {
+            send_error_json(res, 503, "IRIS_LIST_FAILED",
+                            "archive snapshot allocation failed");
+            turbo_free_json(&root);
+            return;
+        }
+        list_status = room_service_app_server_list_iris_archived_events(
+            g_room_service_server, items, (size_t)limit, &count, &total);
+        if (list_status == IVR_OK) {
+            send_iris_archived_events(res, items, count, total);
+        } else if (list_status == IVR_ESTATE) {
+            send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                            "Iris event outbox is not configured");
+        } else {
+            send_error_json(res, 503, "IRIS_LIST_FAILED",
+                            "archive snapshot is unavailable");
+        }
+        free(items);
+        turbo_free_json(&root);
+        return;
+#else
+        send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                        "Iris event outbox is not available in this build");
+        turbo_free_json(&root);
+        return;
+#endif
+    } else if (strcmp(type, "run_iris_event_retention") == 0) {
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+        iris_event_retention_result_t retention_result;
+        ivr_status_t retention_status;
+        memset(&retention_result, 0, sizeof(retention_result));
+        retention_status = room_service_app_server_run_iris_event_retention(
+            g_room_service_server, &retention_result);
+        if (retention_status == IVR_OK) {
+            send_iris_retention_result(res, 200, &retention_result,
+                                       NULL, NULL);
+        } else if (retention_status == IVR_ECLOSED) {
+            send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                            "Iris event outbox is not configured");
+        } else {
+            send_iris_retention_result(
+                res, 503, &retention_result, "IRIS_RETENTION_FAILED",
+                "Iris event retention sweep stopped after a storage failure");
+        }
+        turbo_free_json(&root);
+        return;
+#else
+        send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                        "Iris event outbox is not available in this build");
+        turbo_free_json(&root);
+        return;
+#endif
+    } else if (strcmp(type, "replay_iris_dead_letters") == 0) {
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+        int limit = turbo_json_get_int(root, "limit", 100);
+        iris_event_replay_batch_result_t replay_result;
+        ivr_status_t replay_status;
+        memset(&replay_result, 0, sizeof(replay_result));
+        if (limit < 1 ||
+            limit > (int)IRIS_EVENT_OUTBOX_BATCH_REPLAY_MAX) {
+            send_error_json(res, 400, "INVALID_REQUEST",
+                            "limit must be between 1 and 256");
+            turbo_free_json(&root);
+            return;
+        }
+        replay_status = room_service_app_server_replay_iris_dead_letters(
+            g_room_service_server, (size_t)limit, &replay_result);
+        if (replay_status == IVR_OK) {
+            send_iris_replay_batch(res, 200, &replay_result, NULL, NULL);
+        } else if (replay_status == IVR_ECLOSED) {
+            send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                            "Iris event outbox is not configured");
+        } else if (replay_status == IVR_ESTATE) {
+            send_iris_replay_batch(
+                res, 503, &replay_result,
+                replay_result.replayed > 0u ? "IRIS_REPLAY_PARTIAL"
+                                            : "IRIS_REPLAY_FAILED",
+                replay_result.replayed > 0u
+                    ? "Iris dead-letter batch replay stopped after a storage failure"
+                    : "Iris dead-letter batch replay could not read durable state");
+        } else {
+            send_iris_replay_batch(
+                res, 503, &replay_result, "IRIS_REPLAY_FAILED",
+                "Iris dead-letter batch replay did not complete");
+        }
+        turbo_free_json(&root);
+        return;
+#else
+        send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                        "Iris event outbox is not available in this build");
+        turbo_free_json(&root);
+        return;
+#endif
+    } else if (strcmp(type, "replay_iris_event") == 0) {
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+        const char *event_id = json_string_field(root, "event_id");
+        ivr_status_t replay_status;
+        if (!event_id || !event_id[0]) {
+            send_error_json(res, 400, "INVALID_REQUEST", "missing event_id");
+            turbo_free_json(&root);
+            return;
+        }
+        replay_status = room_service_app_server_replay_iris_event(
+            g_room_service_server, event_id);
+        if (replay_status == IVR_OK) {
+            send_json(res, 200, "{\"ok\":true}");
+        } else if (replay_status == IVR_EBUSY) {
+            send_error_json(res, 409, "EVENT_NOT_DEAD_LETTER",
+                            "Iris event is not a replayable dead letter");
+        } else if (replay_status == IVR_EINVAL) {
+            send_error_json(res, 404, "IRIS_EVENT_NOT_FOUND",
+                            "Iris event dead letter was not found");
+        } else if (replay_status == IVR_ESTATE) {
+            send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                            "Iris event outbox is not configured");
+        } else {
+            send_error_json(res, 503, "IRIS_REPLAY_FAILED",
+                            "Iris event replay could not be scheduled");
+        }
+        turbo_free_json(&root);
+        return;
+#else
+        send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
+                        "Iris event outbox is not available in this build");
+        turbo_free_json(&root);
+        return;
+#endif
     } else if (strcmp(type, "start_recording") == 0) {
         turbo_room_summary_t room_summary;
         rc = turbo_room_service_start_recording(service, room_id,
@@ -5190,11 +6110,17 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
     api->server = server;
 
     g_room_service_server = server;
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    g_room_service_http_api = api;
+#endif
 
     memset(&cors_opts, 0, sizeof(cors_opts));
     cors_opts.origin = "*";
     cors_opts.methods = "GET, POST, OPTIONS";
     cors_opts.headers = "Content-Type, Authorization";
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    cors_opts.headers = "Content-Type, Authorization, Idempotency-Key";
+#endif
     cors_opts.enabled = 1;
     iris_app_cors(api->app, &cors_opts);
 
@@ -5233,7 +6159,6 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
                  "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_id/:track",
                  handle_get_subscription_diagnostic);
     iris_app_post(api->app, "/api/v1/commands", handle_command);
-
     return api;
 }
 
@@ -5304,6 +6229,12 @@ void room_service_http_api_destroy(room_service_http_api_t *api) {
     }
 
     room_service_http_api_stop(api);
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+    if (g_room_service_http_api == api) {
+        g_room_service_http_api = NULL;
+        g_room_service_server = NULL;
+    }
+#endif
     if (api->app) {
         iris_app_destroy(api->app);
     }

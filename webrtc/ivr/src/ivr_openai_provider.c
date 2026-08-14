@@ -565,10 +565,10 @@ struct ivr_openai_tts {
     uint64_t errors;
 };
 
-static void ivr_openai_tts_deliver(ivr_openai_tts_t *tts,
-                                   ivr_openai_tts_job_t *job,
-                                   const int16_t *samples, size_t sample_count,
-                                   int sample_rate, int channels, int bits) {
+static int ivr_openai_tts_deliver(ivr_openai_tts_t *tts,
+                                  ivr_openai_tts_job_t *job,
+                                  const int16_t *samples, size_t sample_count,
+                                  int sample_rate, int channels, int bits) {
     size_t frame_bytes =
         tts->config->tts_frame_bytes ? tts->config->tts_frame_bytes
                                      : IVR_OPENAI_DEFAULT_FRAME_BYTES;
@@ -583,7 +583,7 @@ static void ivr_openai_tts_deliver(ivr_openai_tts_t *tts,
         turbo_speech_audio_frame_t frame;
 
         if (atomic_load(&tts->cancel_requested)) {
-            return;
+            return TURBO_SPEECH_ERR_STATE;
         }
         if (n > frame_bytes) {
             n = frame_bytes;
@@ -597,7 +597,7 @@ static void ivr_openai_tts_deliver(ivr_openai_tts_t *tts,
         frame.timestamp_us = ts;
         if (job->callbacks.on_audio(&frame, job->callback_user_data) !=
             TURBO_SPEECH_OK) {
-            return; /* sink stopped (cancelled or error): stop delivering */
+            return TURBO_SPEECH_ERR_PROVIDER;
         }
         tts->delivered_frames++;
         tts->delivered_bytes += n;
@@ -605,6 +605,7 @@ static void ivr_openai_tts_deliver(ivr_openai_tts_t *tts,
               ((uint64_t)sample_rate * bytes_per_sample);
         offset += n;
     }
+    return TURBO_SPEECH_OK;
 }
 
 static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
@@ -709,8 +710,19 @@ static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
         http_client_destroy(client);
         return;
     }
-    ivr_openai_tts_deliver(tts, job, resampled, resampled_count, out_rate,
-                           channels, bits);
+    if (ivr_openai_tts_deliver(tts, job, resampled, resampled_count, out_rate,
+                               channels, bits) != TURBO_SPEECH_OK) {
+        free(resampled);
+        ivr_openai_response_free(response);
+        http_client_destroy(client);
+        if (!atomic_load(&tts->cancel_requested)) {
+            tts->errors++;
+            job->callbacks.on_error(TURBO_SPEECH_ERR_PROVIDER,
+                                    "TTS: audio sink rejected frame",
+                                    job->callback_user_data);
+        }
+        return;
+    }
     free(resampled);
     ivr_openai_response_free(response);
     http_client_destroy(client);

@@ -43,25 +43,38 @@ set_target_properties(ivr_worker
 turbo_media_deploy_windows_runtime(
   ivr_worker TurboHttp::Iris TurboNet::CoroNet RulesForge::rules_forge)
 
-# Dry-run smoke test: validates config and exercises worker/session/content
-# creation without touching FlowMQ.
-file(
-  TO_CMAKE_PATH
-  "${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/content"
-  IVR_WORKER_CONTENT_ROOT)
+# Dry-run smoke test: validates config and exercises media-call admission
+# without touching FlowMQ.
 add_test(
   NAME turbo_media_test_ivr_worker_dry_run
-  COMMAND ivr_worker --dry-run --content-root "${IVR_WORKER_CONTENT_ROOT}"
-          --assign room-42,call-42,conference-greeting)
+  COMMAND ivr_worker --dry-run
+          --assign session-42,dialog-42,room-42,call-42)
 set_tests_properties(
   turbo_media_test_ivr_worker_dry_run
   PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
 
 add_test(
+  NAME turbo_media_test_ivr_worker_media_input_timeout_max
+  COMMAND ${CMAKE_COMMAND} -E env
+          "IVR_MEDIA_INPUT_INACTIVITY_TIMEOUT_MS=3600000"
+          $<TARGET_FILE:ivr_worker> --dry-run)
+set_tests_properties(
+  turbo_media_test_ivr_worker_media_input_timeout_max
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
+
+add_test(
+  NAME turbo_media_test_ivr_worker_rejects_media_input_timeout_over_max
+  COMMAND ${CMAKE_COMMAND} -E env
+          "IVR_MEDIA_INPUT_INACTIVITY_TIMEOUT_MS=3600001"
+          $<TARGET_FILE:ivr_worker> --dry-run)
+set_tests_properties(
+  turbo_media_test_ivr_worker_rejects_media_input_timeout_over_max
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30 WILL_FAIL TRUE)
+
+add_test(
   NAME turbo_media_test_ivr_worker_rejects_active_plaintext
   COMMAND ${CMAKE_COMMAND}
           -DPROGRAM=$<TARGET_FILE:ivr_worker>
-          -DCONTENT_ROOT=${IVR_WORKER_CONTENT_ROOT}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/assert_active_plaintext_rejected.cmake)
 set_tests_properties(
   turbo_media_test_ivr_worker_rejects_active_plaintext
@@ -73,8 +86,7 @@ add_test(
   COMMAND ${CMAKE_COMMAND} -E env
           "IVR_OPENAI_BASE_URL=https://user:ivr-log-secret@example.invalid/v1?token=ivr-url-secret"
           "OPENAI_API_KEY=ivr-api-key-secret"
-          $<TARGET_FILE:ivr_worker> --dry-run --content-root
-          "${IVR_WORKER_CONTENT_ROOT}")
+          $<TARGET_FILE:ivr_worker> --dry-run)
 set_tests_properties(
   turbo_media_test_ivr_worker_log_redaction
   PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin

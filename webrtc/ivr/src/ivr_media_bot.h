@@ -9,10 +9,11 @@
  * sessions (turbo_speech.h): play_pcm() synthesizes the text through a
  * turbo_tts session and forwards the PCM frames to an audio transport
  * (the WebRTC/SFU send-track boundary); caller PCM fed from the transport is
- * written into a turbo_asr session whose final results become "asr.final"
- * events delivered to on_event. Provider failures become "provider.error"
- * events. The app routes both through the per-call session inbox via
- * ivr_worker_submit_event_copy.
+ * written into a turbo_asr session only while an explicit input window is
+ * active. Final results become input-correlated "asr.final" events and TTS
+ * completion becomes "playback.finished". Provider failures become
+ * "provider.error" events. The application copies these facts to its
+ * Iris-facing event path; no local XML/session workflow consumes them.
  *
  * Baseline constraint: one active call per bot (the conference baseline uses
  * one call per worker); start_bot() for a second call while one is active

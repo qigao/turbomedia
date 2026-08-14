@@ -10,14 +10,6 @@ set(SIGNALING_SERVER_HEADERS
   include/signaling_server/server.h
 )
 
-if(ENABLE_RTC_SCXML_WORKFLOW)
-  list(APPEND SIGNALING_SERVER_LIBS TurboRTC::RtcSessionWorkflow)
-endif()
-
-if(ENABLE_RTC_CCXML_WORKFLOW)
-  list(APPEND SIGNALING_SERVER_SOURCES src/ccxml_adapter.c)
-endif()
-
 # Create executable
 add_executable(signaling_server
   ${SIGNALING_SERVER_SOURCES}
@@ -37,7 +29,7 @@ target_link_libraries(signaling_server
     TurboMedia::WebRTCSignaling
     turbo_media_auth
     TurboUtils::Core
-    TurboUtils::Parser
+    TurboParser::Parser
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>
 )

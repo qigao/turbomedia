@@ -1,0 +1,28 @@
+// Provider-owned durable intent/outcome state for one Iris command.
+//
+// This record never owns Iris workflow/session state. Its key is command_id;
+// semantic_fingerprint excludes lease-only workerId/dispatchEpoch fields.
+// Resource identity is explicit so a reconciler can prove the exact fenced
+// resource incarnation before resolving an unknown/delete-like outcome.
+
+schema IrisCommandLedgerV2 [id(22003), byte_order(little)];
+
+[id(1)]
+message IrisProviderCommandRecordV2 {
+  uint32 schema_version;
+  string command_state; // intent | accepted | terminal | unknown
+  uint64 state_changed_at_ms;
+  uint64 terminal_at_ms;
+  string command_id;
+  string semantic_fingerprint;
+  string provider_session_id;
+  string command_type;
+  string resource_scope_id;
+  uint64 resource_scope_generation;
+  string resource_id;
+  uint64 resource_generation;
+  string provider_resource_id;
+  string terminal_status;
+  string event_type;
+  string result_json;
+}

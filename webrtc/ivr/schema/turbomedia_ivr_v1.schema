@@ -131,6 +131,129 @@ message CallDispatchCommandV2 {
   uint64 deadline_timeout_ms; // relative TTL, evaluated on worker receipt
 }
 
+// Iris-owned media commands. These messages contain no content package or
+// workflow state; the worker executes exactly one media operation.
+[id(1011)]
+message MediaSessionOpenCommandV1 {
+  string message_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+}
+
+[id(1012)]
+message MediaPlayCommandV1 {
+  string message_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+  string text;
+}
+
+[id(1013)]
+message MediaInputStartCommandV1 {
+  string message_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+  string input_id;
+  uint64 input_generation;
+}
+
+[id(1014)]
+message MediaInputStopCommandV1 {
+  string message_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+  string input_id;
+  uint64 input_generation;
+}
+
+[id(1015)]
+message MediaCancelCommandV1 {
+  string message_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+}
+
+[id(1016)]
+message MediaSessionCloseCommandV1 {
+  string message_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+  string reason;
+}
+
+// RoomService control-plane query for the media resources still owned by one
+// authenticated worker. expected_revision=0 begins a snapshot; subsequent
+// pages must echo the returned revision.
+[id(1017)]
+message WorkerMediaInventoryQueryV1 {
+  string message_id;
+  string worker_id;
+  uint32 inventory_version;
+  uint64 expected_revision;
+  uint32 cursor;
+  uint32 limit;
+}
+
+// Replaces MediaCancelCommandV1. V2 fences cancellation to one exact input
+// incarnation; workers intentionally do not accept V1 as a fallback.
+[id(1018)]
+message MediaCancelCommandV2 {
+  string message_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+  string input_id;
+  uint64 input_generation;
+}
+
 // Dispatch acceptance/rejection is a separate result frame. It does not
 // change CallDispatchCommandV1, so existing workers can continue decoding the
 // command while newer workers report the post-create session outcome.
@@ -174,6 +297,79 @@ message CallDispatchResultV2 {
   uint32 max_sessions;
   string error_code;
   string error_message;
+}
+
+[id(2007)]
+message MediaCommandResultV1 {
+  string message_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 operation_generation;
+  int32 status_code;
+  string error_code;
+  string error_message;
+}
+
+// `records_json` is a bounded JSON array because the current DataBind schema
+// language has no repeated message field. Its exact item schema is versioned
+// by inventory_version and validated before the page reaches RoomService.
+[id(2008)]
+message WorkerMediaInventoryPageV1 {
+  string message_id;
+  string worker_id;
+  uint32 inventory_version;
+  uint64 revision;
+  uint32 cursor;
+  uint32 next_cursor;
+  uint32 total_active;
+  uint32 count;
+  bool has_more;
+  string records_json;
+  int32 status_code;
+  string error_code;
+  string error_message;
+}
+
+// Item schema used inside WorkerMediaInventoryPageV1.records_json. It is not
+// sent as a standalone TIVR frame; the id reserves its generated binding.
+[id(4001)]
+message WorkerMediaInventoryRecordV1 {
+  string workerId;
+  string workerInstanceId;
+  uint64 workerEpoch;
+  string tenantId;
+  string providerSessionId;
+  string dialogId;
+  string roomId;
+  string callId;
+  uint64 callGeneration;
+  uint64 operationGeneration;
+  string state;
+  bool rebindable;
+}
+
+[id(4002)]
+message WorkerMediaInventoryRecordV2 {
+  string workerId;
+  string workerInstanceId;
+  uint64 workerEpoch;
+  string tenantId;
+  string providerSessionId;
+  string dialogId;
+  string roomId;
+  string callId;
+  uint64 callGeneration;
+  uint64 operationGeneration;
+  string inputId;
+  uint64 inputGeneration;
+  bool inputActive;
+  string state;
+  bool rebindable;
 }
 
 // ---- results (kind=result) ----
@@ -278,4 +474,22 @@ message IvrWorkerLostEventV1 {
   uint64 sequence;
   uint64 occurred_at_ms;
   string reason;
+}
+
+[id(3007)]
+message MediaEventV1 {
+  string event_id;
+  string tenant_id;
+  string provider_session_id;
+  string dialog_id;
+  string worker_id;
+  string room_id;
+  string call_id;
+  uint64 call_generation;
+  uint64 sequence;
+  string event_type;
+  uint64 occurred_at_ms;
+  string input_id;
+  string input_value;
+  string payload_json;
 }

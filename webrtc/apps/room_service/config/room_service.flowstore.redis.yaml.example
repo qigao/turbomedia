@@ -1,0 +1,24 @@
+version: 1
+
+# Production Redis profile. The backend currently speaks Redis TCP; terminate
+# TLS in a local authenticated proxy/service-mesh sidecar. If Redis AUTH is
+# enabled, materialize username/password into this protected file at deploy
+# time and never commit those values.
+# max_records is a hard admission bound exported as record_capacity; alert on
+# total pending + in-flight + dead records before this limit is reached.
+channels:
+  iris.media_events:
+    kind: record_store
+    config:
+      backend: redis
+      host: 127.0.0.1
+      port: 6379
+      database: 0
+      timeout_ms: 5000
+      key: turbomedia:iris:media-events:v1
+      max_key_size: 128
+      max_value_size: 16384
+      max_batch_size: 256
+      max_records: 100000
+
+adapters: {}

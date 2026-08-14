@@ -128,6 +128,23 @@ void test_type_registry(void) {
     TEST_ASSERT_EQUAL(IVR_EINVAL, ivr_frame_type_kind(9999, &kind));
     TEST_ASSERT_EQUAL(IVR_EINVAL,
                       ivr_frame_type_id_by_name("NoSuchTypeV1", &id));
+    TEST_ASSERT_EQUAL_STRING(
+        "MediaSessionOpenCommandV1",
+        ivr_frame_type_name(IVR_TYPE_MEDIA_SESSION_OPEN_COMMAND_V1));
+    TEST_ASSERT_EQUAL_STRING(
+        "MediaSessionCloseCommandV1",
+        ivr_frame_type_name(IVR_TYPE_MEDIA_SESSION_CLOSE_COMMAND_V1));
+    TEST_ASSERT_EQUAL_STRING(
+        "MediaCommandResultV1",
+        ivr_frame_type_name(IVR_TYPE_MEDIA_COMMAND_RESULT_V1));
+    TEST_ASSERT_EQUAL_STRING(
+        "WorkerMediaInventoryQueryV1",
+        ivr_frame_type_name(IVR_TYPE_WORKER_MEDIA_INVENTORY_QUERY_V1));
+    TEST_ASSERT_EQUAL_STRING(
+        "WorkerMediaInventoryPageV1",
+        ivr_frame_type_name(IVR_TYPE_WORKER_MEDIA_INVENTORY_PAGE_V1));
+    TEST_ASSERT_EQUAL_STRING("MediaEventV1",
+                             ivr_frame_type_name(IVR_TYPE_MEDIA_EVENT_V1));
 }
 
 void test_type_kind_mismatch(void) {

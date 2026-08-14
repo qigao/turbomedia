@@ -7,12 +7,21 @@
 #include "http_client.h"
 #include "turbo_media_auth.h"
 #include "turbo_parser.h"
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#include "ivr_room_bridge.h"
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #define ROOM_SERVICE_HTTP_LIFECYCLE_STRESS_ITERATIONS 32
+#define ROOM_SERVICE_PROVIDER_LIFECYCLE_HTTP_PORT 19435
+#define ROOM_SERVICE_PROVIDER_LIFECYCLE_FMQ_PORT 19436
+#define ROOM_SERVICE_PROVIDER_LIFECYCLE_PUB_PORT 19437
+#define ROOM_SERVICE_PROVIDER_LIFECYCLE_IRIS_PORT 19438
+#define ROOM_SERVICE_PROVIDER_LIFECYCLE_WAIT_ATTEMPTS 1000
+#define ROOM_SERVICE_PROVIDER_LIFECYCLE_WAIT_MS 5
 
 #ifndef ROOM_SERVICE_TEST_TLS_CERT_PATH
 #error "ROOM_SERVICE_TEST_TLS_CERT_PATH must identify the test certificate"
@@ -53,6 +62,40 @@ static void app_test_restore_env(const char *name, char *saved_value) {
   app_test_set_env(name, saved_value);
   free(saved_value);
 }
+
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+extern ivr_status_t room_service_app_server_test_submit_iris_event(
+    room_service_app_server_t *server, const ivr_media_event_t *event);
+
+static void app_test_normalize_config_path(char *path) {
+  if (!path) {
+    return;
+  }
+  for (; *path; ++path) {
+    if (*path == '\\') {
+      *path = '/';
+    }
+  }
+}
+
+static int app_test_wait_for_iris_event_in_flight(
+    room_service_app_server_t *server) {
+  room_service_ivr_metrics_t metrics;
+  int attempt;
+
+  for (attempt = 0;
+       attempt < ROOM_SERVICE_PROVIDER_LIFECYCLE_WAIT_ATTEMPTS; ++attempt) {
+    if (room_service_app_server_get_ivr_metrics(server, &metrics) == 0 &&
+        metrics.iris_outbox_persisted_total > 0u &&
+        metrics.iris_delivery_attempts_total > 0u &&
+        (metrics.iris_queue_items > 0u || metrics.iris_in_flight > 0u)) {
+      return 0;
+    }
+    app_test_sleep_ms(ROOM_SERVICE_PROVIDER_LIFECYCLE_WAIT_MS);
+  }
+  return -1;
+}
+#endif
 
 void test_room_service_rejects_identifiers_that_do_not_fit_storage(void) {
   turbo_room_service_t *service = NULL;
@@ -1295,6 +1338,25 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
       "{"
       "\"type\":\"get_mutating_like_name\""
       "}";
+  const char *replay_iris_dead_letters_command =
+      "{"
+      "\"type\":\"replay_iris_dead_letters\","
+      "\"limit\":16"
+      "}";
+  const char *replay_iris_dead_letters_invalid_limit_command =
+      "{"
+      "\"type\":\"replay_iris_dead_letters\","
+      "\"limit\":257"
+      "}";
+  const char *list_iris_archived_events_command =
+      "{"
+      "\"type\":\"list_iris_archived_events\","
+      "\"limit\":16"
+      "}";
+  const char *run_iris_event_retention_command =
+      "{"
+      "\"type\":\"run_iris_event_retention\""
+      "}";
 
   room_service_app_config_init(&room_config);
   room_config.bind_host = "0.0.0.0";
@@ -1381,6 +1443,34 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
   TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/commands",
                                  close_room_command, write_token, NULL));
+  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 replay_iris_dead_letters_command,
+                                 write_token, NULL));
+  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 list_iris_archived_events_command,
+                                 write_token, NULL));
+  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 run_iris_event_retention_command,
+                                 write_token, NULL));
+  TEST_ASSERT_EQUAL_INT(404, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 replay_iris_dead_letters_command,
+                                 "room-service-control-token", NULL));
+  TEST_ASSERT_EQUAL_INT(404, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 list_iris_archived_events_command,
+                                 "room-service-control-token", NULL));
+  TEST_ASSERT_EQUAL_INT(404, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 run_iris_event_retention_command,
+                                 "room-service-control-token", NULL));
+  TEST_ASSERT_EQUAL_INT(400, http_post_json_status_with_token(
+                                 room_service_base_url, "/api/v1/commands",
+                                 replay_iris_dead_letters_invalid_limit_command,
+                                 "room-service-control-token", NULL));
   TEST_ASSERT_EQUAL_INT(200, http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/commands",
                                  close_room_command, previous_dangerous_token, NULL));
@@ -4801,6 +4891,23 @@ void test_room_service_http_lifecycle_repeated_start_stop(void) {
           strstr(metrics, "turbo_room_service_ivr_workers 0\n"));
       TEST_ASSERT_NOT_NULL(strstr(
           metrics, "turbo_room_service_ivr_request_queue_high_water 0\n"));
+      TEST_ASSERT_NOT_NULL(strstr(
+          metrics, "turbo_room_service_iris_provider_enabled 0\n"));
+      TEST_ASSERT_NOT_NULL(strstr(
+          metrics, "turbo_room_service_iris_queue_capacity 0\n"));
+      TEST_ASSERT_NOT_NULL(strstr(
+          metrics, "turbo_room_service_iris_delivery_attempts_total 0\n"));
+      TEST_ASSERT_NOT_NULL(strstr(
+          metrics,
+          "turbo_room_service_iris_ledger_resource_queries_total 0\n"));
+      TEST_ASSERT_NOT_NULL(strstr(
+          metrics,
+          "turbo_room_service_iris_ledger_resource_seen_total 0\n"));
+      TEST_ASSERT_NOT_NULL(strstr(
+          metrics, "turbo_room_service_iris_reconcile_state 0\n"));
+      TEST_ASSERT_NOT_NULL(strstr(
+          metrics,
+          "turbo_room_service_iris_reconcile_accepting_commands 0\n"));
       free(metrics);
     }
     if (iteration + 1 < ROOM_SERVICE_HTTP_LIFECYCLE_STRESS_ITERATIONS) {
@@ -4812,9 +4919,182 @@ void test_room_service_http_lifecycle_repeated_start_stop(void) {
   room_service_app_server_destroy(server);
 }
 
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+static void test_room_service_direct_destroy_closes_flowmq_provider_dependencies(void) {
+  room_service_app_config_t config;
+  room_service_app_server_t *server = NULL;
+  room_service_ivr_metrics_t metrics;
+  char *database_path = tt_make_temp_file("room-provider-lifecycle", ".sqlite3");
+  char *ledger_database_path =
+      tt_make_temp_file("room-provider-ledger-lifecycle", ".sqlite3");
+  char *yaml_path = tt_make_temp_file("room-provider-lifecycle", ".yaml");
+  char yaml[2048];
+
+  TEST_ASSERT_NOT_NULL(database_path);
+  TEST_ASSERT_NOT_NULL(ledger_database_path);
+  TEST_ASSERT_NOT_NULL(yaml_path);
+  app_test_normalize_config_path(database_path);
+  app_test_normalize_config_path(ledger_database_path);
+  app_test_normalize_config_path(yaml_path);
+  snprintf(yaml, sizeof(yaml),
+           "version: 1\n"
+           "channels:\n"
+           "  iris.media_events:\n"
+           "    kind: record_store\n"
+           "    config:\n"
+           "      backend: sqlite\n"
+           "      database_path: '%s'\n"
+           "      namespace_name: iris.media_events\n"
+           "      busy_timeout_ms: 1000\n"
+           "      max_records: 8\n"
+           "      max_bytes: 1048576\n"
+           "      max_item_bytes: 32768\n"
+           "      max_key_size: 128\n"
+           "      max_value_size: 16384\n"
+           "      max_batch_size: 2\n"
+           "  iris.provider_commands:\n"
+           "    kind: record_store\n"
+           "    config:\n"
+           "      backend: sqlite\n"
+           "      database_path: '%s'\n"
+           "      namespace_name: iris.provider_commands\n"
+           "      busy_timeout_ms: 1000\n"
+           "      max_records: 8\n"
+           "      max_bytes: 1048576\n"
+           "      max_item_bytes: 32768\n"
+           "      max_key_size: 128\n"
+           "      max_value_size: 16384\n"
+           "      max_batch_size: 2\n"
+           "adapters: {}\n",
+           database_path, ledger_database_path);
+  TEST_ASSERT_EQUAL_INT(0, tt_write_file(yaml_path, yaml, strlen(yaml)));
+
+  room_service_app_config_init(&config);
+  config.bind_host = "127.0.0.1";
+  config.bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_HTTP_PORT;
+  config.node_id = "room-service-provider-lifecycle";
+  config.control_token = "room-provider-lifecycle-control";
+  config.iris_flowmq_host = "127.0.0.1";
+  config.iris_flowmq_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_IRIS_PORT;
+  config.iris_provider_instance_id = "room-service-provider-lifecycle";
+  config.iris_identity = "iris-router-lifecycle";
+  config.iris_flowmq_use_tls = 0;
+  config.iris_flowmq_allow_insecure_loopback = 1;
+  config.iris_event_store_config = yaml_path;
+  config.iris_event_store_channel = "iris.media_events";
+  config.iris_command_ledger_channel = "iris.provider_commands";
+  config.iris_allow_development_sqlite = 1;
+  config.iris_correlation_capacity = 8;
+  config.iris_completion_queue_capacity = 8;
+  config.iris_outbox_request_queue_capacity = 8;
+  config.iris_retry_max_attempts = 100;
+  config.iris_retry_backoff_ms = 100;
+  config.iris_ack_timeout_ms = 100;
+  config.iris_drain_timeout_ms = 300;
+  config.fmq_bind_host = "127.0.0.1";
+  config.fmq_bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_FMQ_PORT;
+  config.fmq_pub_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_PUB_PORT;
+  config.fmq_pub_topic = "room.provider.lifecycle.events";
+  config.fmq_allow_insecure_loopback = 1;
+
+  TEST_ASSERT_EQUAL_INT(0, room_service_app_config_validate(&config));
+  server = room_service_app_server_create(&config);
+  TEST_ASSERT_NOT_NULL(server);
+  TEST_ASSERT_EQUAL_INT(
+      0, room_service_app_server_get_ivr_metrics(server, &metrics));
+  TEST_ASSERT_EQUAL_INT(1, metrics.iris_provider_enabled);
+  TEST_ASSERT_EQUAL_UINT32(
+      (uint32_t)config.iris_command_ledger_queue_capacity,
+      metrics.iris_ledger_request_queue_capacity);
+  TEST_ASSERT_EQUAL_UINT64(8u, metrics.iris_ledger_record_capacity);
+  TEST_ASSERT_EQUAL_UINT64(0u, metrics.iris_ledger_resource_queries_total);
+  TEST_ASSERT_EQUAL_UINT64(0u, metrics.iris_ledger_resource_seen_total);
+
+  /* No start/stop: destroy owns every partially initialized dependency. */
+  room_service_app_server_destroy(server);
+  server = NULL;
+
+  TEST_ASSERT_EQUAL_INT(0, tt_remove_file(yaml_path));
+  TEST_ASSERT_EQUAL_INT(0, tt_remove_file(database_path));
+  TEST_ASSERT_EQUAL_INT(0, tt_remove_file(ledger_database_path));
+  free(yaml_path);
+  free(database_path);
+  free(ledger_database_path);
+}
+
+static void test_room_service_event_outbox_init_failure_destroys_ledger_once(void) {
+  room_service_app_config_t config;
+  room_service_app_server_t *server = NULL;
+  char *ledger_database_path =
+      tt_make_temp_file("room-provider-ledger-init-failure", ".sqlite3");
+  char *yaml_path =
+      tt_make_temp_file("room-provider-init-failure", ".yaml");
+  char yaml[1024];
+
+  TEST_ASSERT_NOT_NULL(ledger_database_path);
+  TEST_ASSERT_NOT_NULL(yaml_path);
+  app_test_normalize_config_path(ledger_database_path);
+  app_test_normalize_config_path(yaml_path);
+  snprintf(yaml, sizeof(yaml),
+           "version: 1\n"
+           "channels:\n"
+           "  iris.provider_commands:\n"
+           "    kind: record_store\n"
+           "    config:\n"
+           "      backend: sqlite\n"
+           "      database_path: '%s'\n"
+           "      namespace_name: iris.provider_commands\n"
+           "      busy_timeout_ms: 1000\n"
+           "      max_records: 8\n"
+           "      max_bytes: 1048576\n"
+           "      max_item_bytes: 32768\n"
+           "      max_key_size: 128\n"
+           "      max_value_size: 16384\n"
+           "      max_batch_size: 2\n"
+           "adapters: {}\n",
+           ledger_database_path);
+  TEST_ASSERT_EQUAL_INT(0, tt_write_file(yaml_path, yaml, strlen(yaml)));
+
+  room_service_app_config_init(&config);
+  config.node_id = "room-service-provider-init-failure";
+  config.control_token = "room-provider-init-failure-control";
+  config.iris_flowmq_host = "127.0.0.1";
+  config.iris_flowmq_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_IRIS_PORT;
+  config.iris_provider_instance_id = "room-service-provider-init-failure";
+  config.iris_identity = "iris-router-init-failure";
+  config.iris_flowmq_use_tls = 0;
+  config.iris_flowmq_allow_insecure_loopback = 1;
+  config.iris_event_store_config = yaml_path;
+  config.iris_event_store_channel = "iris.media_events.missing";
+  config.iris_command_ledger_channel = "iris.provider_commands";
+  config.iris_allow_development_sqlite = 1;
+  config.iris_correlation_capacity = 8;
+  config.iris_completion_queue_capacity = 8;
+  config.iris_outbox_request_queue_capacity = 8;
+  config.fmq_bind_host = "127.0.0.1";
+  config.fmq_bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_FMQ_PORT;
+  config.fmq_pub_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_PUB_PORT;
+  config.fmq_pub_topic = "room.provider.init.failure.events";
+  config.fmq_allow_insecure_loopback = 1;
+
+  TEST_ASSERT_EQUAL_INT(0, room_service_app_config_validate(&config));
+  server = room_service_app_server_create(&config);
+  TEST_ASSERT_NULL(server);
+
+  TEST_ASSERT_EQUAL_INT(0, tt_remove_file(yaml_path));
+  TEST_ASSERT_EQUAL_INT(0, tt_remove_file(ledger_database_path));
+  free(yaml_path);
+  free(ledger_database_path);
+}
+#endif
+
 spec("test_room_service_app") {
   TT_TEST(test_room_service_rejects_identifiers_that_do_not_fit_storage);
   TT_TEST(test_room_service_http_lifecycle_repeated_start_stop);
+#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+  TT_TEST(test_room_service_direct_destroy_closes_flowmq_provider_dependencies);
+  TT_TEST(test_room_service_event_outbox_init_failure_destroys_ledger_once);
+#endif
   TT_TEST(test_room_service_assign_replays_existing_state_and_closed_room_diag_stays_green);
   TT_TEST(test_room_sync_diagnostic_reports_null_when_room_has_no_sync_history);
   TT_TEST(test_room_sync_diagnostic_http_endpoints_expose_latest_sync_state);

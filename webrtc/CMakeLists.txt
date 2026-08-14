@@ -9,7 +9,7 @@ target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PUBLIC TurboUtils::Parser
+  PUBLIC TurboParser::Parser
   PRIVATE TurboNet::Crypto OpenSSL::Crypto)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
@@ -48,7 +48,7 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(
   turbo_media_datachannel
-  PUBLIC TurboMedia::SDP TurboUtils::Parser
+  PUBLIC TurboMedia::SDP TurboParser::Parser
   PRIVATE TurboNet::CoroNet
           TurboNet::Ice
           TurboUtils::Core
@@ -89,7 +89,7 @@ target_include_directories(
   PRIVATE ${STB_INCLUDE_DIR})
 target_link_libraries(
   turbo_media_webrtc_signaling
-  PUBLIC TurboNet::CoroNet TurboHttp::Iris TurboUtils::Parser
+  PUBLIC TurboNet::CoroNet TurboHttp::Iris TurboParser::Parser
   PRIVATE turbo_media_auth TurboNet::Crypto TurboUtils::Core)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
@@ -140,10 +140,8 @@ target_link_options(
 # Room-service / SFU server apps are desktop targets; keep them out of the
 # Android build (they were gated with NOT ANDROID before the RTC-apps split).
 if(NOT ANDROID)
-  # IVR worker (Phase 1: conference baseline) first so the RoomService app can
-  # consume TURBO_MEDIA_HAS_IVR_FMQ and link the required IVR FlowMQ bridge.
-  # Desktop-only: depends on the TurboXML runtime package which is not part of
-  # the Android toolchain.
+  # IVR media worker first so RoomService can consume its typed FlowMQ bridge.
+  # The server applications remain desktop-only.
   add_subdirectory(ivr)
   add_subdirectory(apps)
 endif()

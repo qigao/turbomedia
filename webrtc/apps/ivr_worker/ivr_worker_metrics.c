@@ -19,7 +19,8 @@ static const char *const kMetricNames[IVR_WORKER_METRIC_COUNT] = {
 static const char *const kGaugeNames[IVR_WORKER_GAUGE_COUNT] = {
     "reply_queue_items", "reply_queue_bytes",
     "reply_queue_items_high_water", "reply_queue_bytes_high_water",
-    "media_peers", "media_peers_high_water"};
+    "media_peers", "media_peers_high_water", "media_links_connected",
+    "media_links_connected_high_water"};
 
 static const char *const kHistogramNames[IVR_WORKER_HISTOGRAM_COUNT] = {
     "dispatch_duration_seconds",

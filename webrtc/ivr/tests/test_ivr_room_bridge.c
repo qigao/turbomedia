@@ -50,6 +50,12 @@ static ivr_status_t mock_on_command(void *ctx, const ivr_room_command_t *cmd,
 
 static atomic_int g_result_handler_entered;
 static atomic_int g_result_handler_release;
+static atomic_int g_media_result_count;
+static atomic_int g_media_event_count;
+static atomic_int g_inventory_page_count;
+static ivr_media_command_result_t g_media_result;
+static ivr_media_event_t g_media_event;
+static ivr_worker_inventory_envelope_t g_inventory_page;
 
 static ivr_status_t blocking_on_dispatch_result(
     void *ctx, const ivr_dispatch_result_t *result) {
@@ -60,6 +66,41 @@ static ivr_status_t blocking_on_dispatch_result(
         ivr_thread_sleep_ms(5);
     }
     return IVR_OK;
+}
+
+static ivr_status_t mock_on_media_result(
+    void *ctx, const ivr_media_command_result_t *result) {
+    (void)ctx;
+    g_media_result = *result;
+    atomic_fetch_add(&g_media_result_count, 1);
+    return IVR_OK;
+}
+
+static ivr_status_t mock_on_media_event(void *ctx,
+                                        const ivr_media_event_t *event) {
+    (void)ctx;
+    g_media_event = *event;
+    atomic_fetch_add(&g_media_event_count, 1);
+    return IVR_OK;
+}
+
+static ivr_status_t mock_on_inventory_page(
+    void *ctx, const ivr_worker_inventory_envelope_t *result) {
+    (void)ctx;
+    g_inventory_page = *result;
+    atomic_fetch_add(&g_inventory_page_count, 1);
+    return IVR_OK;
+}
+
+static int wait_atomic_count(atomic_int *value, int expected,
+                             int timeout_ms) {
+    for (int i = 0; i < timeout_ms / 10; i++) {
+        if (atomic_load(value) >= expected) {
+            return 1;
+        }
+        ivr_thread_sleep_ms(10);
+    }
+    return 0;
 }
 
 /* ---- reply capture on the DEALER ---- */
@@ -175,11 +216,20 @@ void setUp(void) {
     g_sequence = 90;
     g_applied = 0;
     g_last_message_id[0] = '\0';
+    atomic_store(&g_media_result_count, 0);
+    atomic_store(&g_media_event_count, 0);
+    atomic_store(&g_inventory_page_count, 0);
+    memset(&g_media_result, 0, sizeof(g_media_result));
+    memset(&g_media_event, 0, sizeof(g_media_event));
+    memset(&g_inventory_page, 0, sizeof(g_inventory_page));
 
     ivr_room_command_handler_t handler;
     memset(&handler, 0, sizeof(handler));
     handler.get_room_version = mock_get_room_version;
     handler.on_command = mock_on_command;
+    handler.on_media_result = mock_on_media_result;
+    handler.on_media_event = mock_on_media_event;
+    handler.on_inventory_page = mock_on_inventory_page;
 
     ivr_room_bridge_config_t bcfg;
     memset(&bcfg, 0, sizeof(bcfg));
@@ -339,6 +389,188 @@ void test_stale_version_rejected(void) {
     TEST_ASSERT_TRUE(wait_reply(8000));
     TEST_ASSERT_EQUAL(IVR_EVERSION, result_i32("status_code"));
     TEST_ASSERT_EQUAL_UINT64(0u, g_applied);
+}
+
+void test_media_result_and_event_are_forwarded_as_facts(void) {
+    ivr_media_command_t command;
+    ivr_event_view_t event;
+    memset(&command, 0, sizeof(command));
+    memset(&event, 0, sizeof(event));
+
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_flowmq_gateway_send_worker_sync(g_gateway,
+                                                          "media-sync"));
+    TEST_ASSERT_TRUE(wait_reply(8000));
+
+    command.kind = IVR_MEDIA_COMMAND_PLAY;
+    snprintf(command.message_id, sizeof(command.message_id), "media-op-1");
+    snprintf(command.tenant_id, sizeof(command.tenant_id), "tenant-42");
+    snprintf(command.provider_session_id,
+             sizeof(command.provider_session_id), "session-42");
+    snprintf(command.dialog_id, sizeof(command.dialog_id), "dialog-42");
+    snprintf(command.worker_id, sizeof(command.worker_id),
+             "ivr-worker-test");
+    snprintf(command.room_id, sizeof(command.room_id), "room-42");
+    snprintf(command.call_id, sizeof(command.call_id), "call-42");
+    command.call_generation = 7;
+    command.operation_generation = 9;
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_send_media_result(
+                                  g_gateway, &command, IVR_OK, "", ""));
+    TEST_ASSERT_TRUE(wait_atomic_count(&g_media_result_count, 1, 8000));
+    TEST_ASSERT_EQUAL_STRING("media-op-1", g_media_result.message_id);
+    TEST_ASSERT_EQUAL_STRING("tenant-42", g_media_result.tenant_id);
+    TEST_ASSERT_EQUAL_STRING("session-42",
+                             g_media_result.provider_session_id);
+    TEST_ASSERT_EQUAL_STRING("dialog-42", g_media_result.dialog_id);
+    TEST_ASSERT_EQUAL_UINT64(9, g_media_result.operation_generation);
+
+    event.event_id.data = "media-event-1";
+    event.event_id.size = 13;
+    event.call.tenant_id.data = "tenant-42";
+    event.call.tenant_id.size = 9;
+    event.call.provider_session_id.data = "session-42";
+    event.call.provider_session_id.size = 10;
+    event.call.dialog_id.data = "dialog-42";
+    event.call.dialog_id.size = 9;
+    event.call.room_id.data = "room-42";
+    event.call.room_id.size = 7;
+    event.call.call_id.data = "call-42";
+    event.call.call_id.size = 7;
+    event.call.call_generation = 7;
+    event.sequence = 11;
+    event.event_type.data = "asr.final";
+    event.event_type.size = 9;
+    event.input_id.data = "input-1";
+    event.input_id.size = 7;
+    event.input_value.data = "sales";
+    event.input_value.size = 5;
+    event.payload_json.data = "{}";
+    event.payload_json.size = 2;
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_send_media_event(
+                                  g_gateway, "ivr-worker-test", &event, 1234));
+    TEST_ASSERT_TRUE(wait_atomic_count(&g_media_event_count, 1, 8000));
+    TEST_ASSERT_EQUAL_STRING("media-event-1", g_media_event.event_id);
+    TEST_ASSERT_EQUAL_STRING("tenant-42", g_media_event.tenant_id);
+    TEST_ASSERT_EQUAL_UINT64(11, g_media_event.sequence);
+    TEST_ASSERT_EQUAL_STRING("dialog-42", g_media_event.dialog_id);
+    TEST_ASSERT_EQUAL_STRING("asr.final", g_media_event.event_type);
+    TEST_ASSERT_EQUAL_STRING("sales", g_media_event.input_value);
+
+    ivr_room_bridge_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+    ivr_room_bridge_get_stats(g_bridge, &stats);
+    TEST_ASSERT_EQUAL_UINT64(1, stats.media_results);
+    TEST_ASSERT_EQUAL_UINT64(1, stats.media_events);
+    TEST_ASSERT_EQUAL_UINT64(0, g_applied);
+}
+
+void test_media_result_with_spoofed_worker_is_rejected(void) {
+    ivr_media_command_t command;
+    memset(&command, 0, sizeof(command));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_flowmq_gateway_send_worker_sync(g_gateway,
+                                                          "spoof-sync"));
+    TEST_ASSERT_TRUE(wait_reply(8000));
+    snprintf(command.message_id, sizeof(command.message_id), "spoof-op-1");
+    snprintf(command.tenant_id, sizeof(command.tenant_id), "tenant-42");
+    snprintf(command.provider_session_id,
+             sizeof(command.provider_session_id), "session-42");
+    snprintf(command.dialog_id, sizeof(command.dialog_id), "dialog-42");
+    snprintf(command.worker_id, sizeof(command.worker_id), "other-worker");
+    snprintf(command.room_id, sizeof(command.room_id), "room-42");
+    snprintf(command.call_id, sizeof(command.call_id), "call-42");
+    command.call_generation = 1;
+    command.operation_generation = 1;
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_send_media_result(
+                                  g_gateway, &command, IVR_OK, "", ""));
+    ivr_thread_sleep_ms(200);
+    TEST_ASSERT_EQUAL_INT(0, atomic_load(&g_media_result_count));
+    ivr_room_bridge_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+    ivr_room_bridge_get_stats(g_bridge, &stats);
+    TEST_ASSERT_EQUAL_UINT64(1, stats.media_result_rejects);
+}
+
+void test_inventory_query_and_authenticated_page_roundtrip(void) {
+    ivr_worker_inventory_request_t request;
+    ivr_worker_inventory_request_t received;
+    ivr_worker_inventory_envelope_t result;
+    ivr_frame_info_t info;
+
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_flowmq_gateway_send_worker_sync(g_gateway,
+                                                          "inventory-sync"));
+    TEST_ASSERT_TRUE(wait_reply(8000));
+
+    memset(&request, 0, sizeof(request));
+    snprintf(request.message_id, sizeof(request.message_id),
+             "inventory-query-live");
+    snprintf(request.worker_id, sizeof(request.worker_id),
+             "ivr-worker-test");
+    request.query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    request.query.limit = 1;
+    g_reply_ready = 0;
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_room_bridge_request_inventory(g_bridge, &request));
+    TEST_ASSERT_TRUE(wait_reply(8000));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_frame_decode(g_reply, g_reply_len, &info));
+    TEST_ASSERT_EQUAL_UINT32(IVR_TYPE_WORKER_MEDIA_INVENTORY_QUERY_V1,
+                             info.schema_type_id);
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_flowmq_gateway_decode_inventory_query(
+                          g_codec, g_reply, g_reply_len, &received));
+    TEST_ASSERT_EQUAL_STRING(request.message_id, received.message_id);
+    TEST_ASSERT_EQUAL_STRING(request.worker_id, received.worker_id);
+
+    memset(&result, 0, sizeof(result));
+    snprintf(result.message_id, sizeof(result.message_id), "%s",
+             received.message_id);
+    snprintf(result.worker_id, sizeof(result.worker_id), "%s",
+             received.worker_id);
+    result.status_code = IVR_OK;
+    result.page.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    result.page.revision = 3;
+    result.page.total_active = 1;
+    result.page.count = 1;
+    snprintf(result.page.records[0].worker_id,
+             sizeof(result.page.records[0].worker_id), "ivr-worker-test");
+    snprintf(result.page.records[0].worker_instance_id,
+             sizeof(result.page.records[0].worker_instance_id),
+             "instance-live");
+    result.page.records[0].worker_epoch = 9;
+    snprintf(result.page.records[0].tenant_id,
+             sizeof(result.page.records[0].tenant_id), "tenant-live");
+    snprintf(result.page.records[0].provider_session_id,
+             sizeof(result.page.records[0].provider_session_id),
+             "session-live");
+    snprintf(result.page.records[0].dialog_id,
+             sizeof(result.page.records[0].dialog_id), "dialog-live");
+    snprintf(result.page.records[0].room_id,
+             sizeof(result.page.records[0].room_id), "room-live");
+    snprintf(result.page.records[0].call_id,
+             sizeof(result.page.records[0].call_id), "call-live");
+    result.page.records[0].call_generation = 4;
+    result.page.records[0].state = IVR_WORKER_RESOURCE_ACTIVE;
+    result.page.records[0].rebindable = 1;
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_flowmq_gateway_send_inventory_page(g_gateway,
+                                                             &result));
+    TEST_ASSERT_TRUE(wait_atomic_count(&g_inventory_page_count, 1, 8000));
+    TEST_ASSERT_EQUAL_STRING("inventory-query-live",
+                             g_inventory_page.message_id);
+    TEST_ASSERT_EQUAL_STRING("session-live",
+                             g_inventory_page.page.records[0]
+                                 .provider_session_id);
+    TEST_ASSERT_EQUAL_STRING("tenant-live",
+                             g_inventory_page.page.records[0].tenant_id);
+    TEST_ASSERT_EQUAL_UINT64(9,
+                             g_inventory_page.page.records[0].worker_epoch);
+    ivr_room_bridge_stats_t stats;
+    memset(&stats, 0, sizeof(stats));
+    ivr_room_bridge_get_stats(g_bridge, &stats);
+    TEST_ASSERT_EQUAL_UINT64(1, stats.inventory_pages);
+    TEST_ASSERT_EQUAL_UINT64(0, stats.inventory_page_rejects);
 }
 
 void test_double_start_rejected(void) {
@@ -560,6 +792,9 @@ spec("test_ivr_room_bridge") {
   TT_TEST(test_worker_sync_roundtrip);
   TT_TEST(test_worker_sync_unconnected_identity_rejected);
   TT_TEST(test_stale_version_rejected);
+  TT_TEST(test_media_result_and_event_are_forwarded_as_facts);
+  TT_TEST(test_media_result_with_spoofed_worker_is_rejected);
+  TT_TEST(test_inventory_query_and_authenticated_page_roundtrip);
   TT_TEST(test_double_start_rejected);
   TT_TEST(test_restart_after_stop);
   TT_TEST(test_destroy_without_stop);

@@ -76,6 +76,13 @@ void test_retry_exhaustion(void) {
                               IVR_MEDIA_LINK_FAILED,
                               IVR_MEDIA_ERROR_PEER_FAILED,
                               (uint64_t)(attempt * 200), &event));
+        TEST_ASSERT_EQUAL_INT(
+            attempt == 0
+                ? IVR_MEDIA_RECONNECT_EVENT_DISCONNECTED
+                : attempt == 2
+                      ? IVR_MEDIA_RECONNECT_EVENT_RETRY_EXHAUSTED
+                      : IVR_MEDIA_RECONNECT_EVENT_NONE,
+            event);
         if (attempt < 2) {
             TEST_ASSERT_EQUAL(IVR_OK,
                               ivr_media_reconnect_poll(
@@ -85,6 +92,30 @@ void test_retry_exhaustion(void) {
         }
     }
     TEST_ASSERT_EQUAL_INT(IVR_MEDIA_RECONNECT_EVENT_RETRY_EXHAUSTED, event);
+}
+
+void test_failed_retry_does_not_duplicate_disconnected_event(void) {
+    uint64_t generation;
+    ivr_media_reconnect_event_t event;
+
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_media_reconnect_start(g_reconnect, 0, &generation));
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHIP, generation,
+            IVR_MEDIA_LINK_FAILED, IVR_MEDIA_ERROR_PEER_FAILED, 10, &event));
+    TEST_ASSERT_EQUAL_INT(IVR_MEDIA_RECONNECT_EVENT_DISCONNECTED, event);
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_poll(g_reconnect, 110, &generation, &event));
+    TEST_ASSERT_EQUAL_INT(IVR_MEDIA_RECONNECT_EVENT_RETRY_DUE, event);
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHIP, generation,
+            IVR_MEDIA_LINK_FAILED, IVR_MEDIA_ERROR_PEER_FAILED, 120, &event));
+    TEST_ASSERT_EQUAL_INT(IVR_MEDIA_RECONNECT_EVENT_NONE, event);
 }
 
 void test_input_stall_is_distinct(void) {
@@ -131,12 +162,107 @@ void test_duplicate_failure_does_not_move_retry_deadline(void) {
                              duplicate.next_retry_at_ms);
 }
 
+void test_late_failure_after_stable_connection_gets_fresh_deadline(void) {
+    uint64_t generation;
+    ivr_media_reconnect_event_t event;
+    ivr_media_reconnect_snapshot_t snapshot;
+
+    TEST_ASSERT_EQUAL(
+        IVR_OK, ivr_media_reconnect_start(g_reconnect, 1000, &generation));
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHIP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 1010, &event));
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHEP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 1020, &event));
+
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHEP, generation,
+            IVR_MEDIA_LINK_FAILED, IVR_MEDIA_ERROR_PEER_FAILED, 5000,
+            &event));
+    TEST_ASSERT_EQUAL_INT(IVR_MEDIA_RECONNECT_EVENT_DISCONNECTED, event);
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_media_reconnect_snapshot(g_reconnect, &snapshot));
+    TEST_ASSERT_EQUAL_UINT64(6000u, snapshot.deadline_at_ms);
+    TEST_ASSERT_EQUAL_UINT64(5100u, snapshot.next_retry_at_ms);
+    TEST_ASSERT_EQUAL_UINT32(1u, snapshot.attempts_started);
+    TEST_ASSERT_TRUE(snapshot.retry_pending);
+
+    TEST_ASSERT_EQUAL(
+        IVR_OK, ivr_media_reconnect_poll(g_reconnect, 5100, &generation,
+                                         &event));
+    TEST_ASSERT_EQUAL_INT(IVR_MEDIA_RECONNECT_EVENT_RETRY_DUE, event);
+    TEST_ASSERT_EQUAL_UINT64(2u, generation);
+}
+
+void test_recovered_connection_starts_independent_next_recovery(void) {
+    uint64_t generation;
+    ivr_media_reconnect_event_t event;
+    ivr_media_reconnect_snapshot_t snapshot;
+
+    TEST_ASSERT_EQUAL(
+        IVR_OK, ivr_media_reconnect_start(g_reconnect, 0, &generation));
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHIP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 10, &event));
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHEP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 20, &event));
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHIP, generation,
+            IVR_MEDIA_LINK_FAILED, IVR_MEDIA_ERROR_PEER_FAILED, 2000,
+            &event));
+    TEST_ASSERT_EQUAL(
+        IVR_OK, ivr_media_reconnect_poll(g_reconnect, 2100, &generation,
+                                         &event));
+    TEST_ASSERT_EQUAL_UINT64(2u, generation);
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHIP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 2110, &event));
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHEP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 2120, &event));
+    TEST_ASSERT_EQUAL_INT(IVR_MEDIA_RECONNECT_EVENT_RECONNECTED, event);
+
+    TEST_ASSERT_EQUAL(
+        IVR_OK,
+        ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHIP, generation,
+            IVR_MEDIA_LINK_DISCONNECTED, IVR_MEDIA_ERROR_NONE, 10000,
+            &event));
+    TEST_ASSERT_EQUAL_INT(IVR_MEDIA_RECONNECT_EVENT_DISCONNECTED, event);
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      ivr_media_reconnect_snapshot(g_reconnect, &snapshot));
+    TEST_ASSERT_EQUAL_UINT64(11000u, snapshot.deadline_at_ms);
+    TEST_ASSERT_EQUAL_UINT32(1u, snapshot.attempts_started);
+    TEST_ASSERT_EQUAL_UINT64(2u, snapshot.attempt_generation);
+}
+
 spec("test_ivr_media_reconnect") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
   TT_TEST(test_both_links_reconnect);
   TT_TEST(test_retry_generation_and_stale_callback);
   TT_TEST(test_retry_exhaustion);
+  TT_TEST(test_failed_retry_does_not_duplicate_disconnected_event);
   TT_TEST(test_input_stall_is_distinct);
   TT_TEST(test_duplicate_failure_does_not_move_retry_deadline);
+  TT_TEST(test_late_failure_after_stable_connection_gets_fresh_deadline);
+  TT_TEST(test_recovered_connection_starts_independent_next_recovery);
 }

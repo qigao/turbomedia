@@ -11,9 +11,6 @@
 #include <turbo_coro_context.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef ENABLE_RTC_CCXML_WORKFLOW
-#include "ccxml_adapter.h"
-#endif
 
 /**
  * Signaling server instance
@@ -24,9 +21,6 @@ struct signaling_server_s {
     http_api_server_t *http_server;
     turbo_loop_t *loop;
     int running;
-#ifdef ENABLE_RTC_CCXML_WORKFLOW
-    ccxml_adapter_t *ccxml;
-#endif
 };
 
 /**
@@ -128,13 +122,6 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
     
     TLOG_INFO("Signaling server created successfully");
     
-#ifdef ENABLE_RTC_CCXML_WORKFLOW
-    if (server->config.ccxml_enabled) {
-        const char *ccxml_xml = "<ccxml version=\"1.0\" xmlns=\"http://www.w3.org/2005/02/ccxml\"><eventprocessor><transition event=\"connection.alerting\"><accept/></transition></eventprocessor></ccxml>";
-        server->ccxml = ccxml_adapter_create(server, ccxml_xml);
-    }
-#endif
-
     return server;
 }
 
@@ -286,11 +273,6 @@ void signaling_server_destroy(signaling_server_t *server) {
     }
     
     /* Free server */
-#ifdef ENABLE_RTC_CCXML_WORKFLOW
-    if (server->ccxml) {
-        ccxml_adapter_destroy(server->ccxml);
-    }
-#endif
     free(server);
     
     TLOG_INFO("Signaling server destroyed");

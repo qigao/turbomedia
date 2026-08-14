@@ -27,9 +27,12 @@ struct ivr_whip_transport_s {
     int destroying;
     /* active call */
     int active;
+    ivr_str_t provider_session_id;
+    ivr_str_t dialog_id;
     ivr_str_t room_id;
     ivr_str_t call_id;
     uint64_t call_generation;
+    uint64_t expected_room_version;
     uint64_t attempt_generation;
     ivr_media_state_fn on_state;
     void *state_context;
@@ -46,37 +49,98 @@ struct ivr_whip_transport_s {
     int poll_started;
 };
 
+typedef struct {
+    ivr_call_ref_t view;
+    char provider_session_id[IVR_MEDIA_ID_CAPACITY];
+    char dialog_id[IVR_MEDIA_ID_CAPACITY];
+    char room_id[IVR_MEDIA_ID_CAPACITY];
+    char call_id[IVR_MEDIA_ID_CAPACITY];
+} whip_call_copy_t;
+
+static int call_view_valid(const ivr_bytes_view_t *view) {
+    return view && view->data && view->size > 0u &&
+           view->size < IVR_MEDIA_ID_CAPACITY;
+}
+
+static int call_view_matches(const ivr_bytes_view_t *view,
+                             const ivr_str_t *owned) {
+    return view && owned && view->size == owned->size &&
+           (view->size == 0u ||
+            (view->data && owned->data &&
+             memcmp(view->data, owned->data, view->size) == 0));
+}
+
+/* Caller holds lock or has crossed the lifecycle barrier and is quiescent. */
+static void whip_clear_call(ivr_whip_transport_t *transport) {
+    ivr_str_free(&transport->provider_session_id);
+    ivr_str_free(&transport->dialog_id);
+    ivr_str_free(&transport->room_id);
+    ivr_str_free(&transport->call_id);
+    transport->call_generation = 0u;
+    transport->expected_room_version = 0u;
+}
+
+static int whip_call_matches_locked(const ivr_whip_transport_t *transport,
+                                    const ivr_call_ref_t *call) {
+    return transport->active && call &&
+           call->call_generation == transport->call_generation &&
+           call_view_matches(&call->provider_session_id,
+                             &transport->provider_session_id) &&
+           call_view_matches(&call->dialog_id, &transport->dialog_id) &&
+           call_view_matches(&call->room_id, &transport->room_id) &&
+           call_view_matches(&call->call_id, &transport->call_id);
+}
+
+static int whip_copy_call_locked(const ivr_whip_transport_t *transport,
+                                 whip_call_copy_t *copy) {
+    if (!transport || !copy || !transport->provider_session_id.data ||
+        !transport->dialog_id.data || !transport->room_id.data ||
+        !transport->call_id.data ||
+        transport->provider_session_id.size >=
+            sizeof(copy->provider_session_id) ||
+        transport->dialog_id.size >= sizeof(copy->dialog_id) ||
+        transport->room_id.size >= sizeof(copy->room_id) ||
+        transport->call_id.size >= sizeof(copy->call_id)) {
+        return 0;
+    }
+    memset(copy, 0, sizeof(*copy));
+    memcpy(copy->provider_session_id, transport->provider_session_id.data,
+           transport->provider_session_id.size);
+    memcpy(copy->dialog_id, transport->dialog_id.data,
+           transport->dialog_id.size);
+    memcpy(copy->room_id, transport->room_id.data, transport->room_id.size);
+    memcpy(copy->call_id, transport->call_id.data, transport->call_id.size);
+    copy->view.provider_session_id.data = copy->provider_session_id;
+    copy->view.provider_session_id.size = transport->provider_session_id.size;
+    copy->view.dialog_id.data = copy->dialog_id;
+    copy->view.dialog_id.size = transport->dialog_id.size;
+    copy->view.room_id.data = copy->room_id;
+    copy->view.room_id.size = transport->room_id.size;
+    copy->view.call_id.data = copy->call_id;
+    copy->view.call_id.size = transport->call_id.size;
+    copy->view.call_generation = transport->call_generation;
+    copy->view.expected_room_version = transport->expected_room_version;
+    return 1;
+}
+
 static void whip_emit_state(ivr_whip_transport_t *t,
                             ivr_media_link_state_t state, int error_code) {
     ivr_media_state_fn callback;
     void *context;
-    ivr_call_ref_t call;
-    char room[256];
-    char call_id[256];
+    whip_call_copy_t call;
     uint64_t generation;
+    int have_call;
     if (!t) {
         return;
     }
-    memset(&call, 0, sizeof(call));
-    memset(room, 0, sizeof(room));
-    memset(call_id, 0, sizeof(call_id));
     ivr_mutex_lock(&t->lock);
     callback = t->on_state;
     context = t->state_context;
     generation = t->attempt_generation;
-    if (t->room_id.data && t->room_id.size < sizeof(room) &&
-        t->call_id.data && t->call_id.size < sizeof(call_id)) {
-        memcpy(room, t->room_id.data, t->room_id.size);
-        memcpy(call_id, t->call_id.data, t->call_id.size);
-        call.room_id.data = room;
-        call.room_id.size = t->room_id.size;
-        call.call_id.data = call_id;
-        call.call_id.size = t->call_id.size;
-        call.call_generation = t->call_generation;
-    }
+    have_call = whip_copy_call_locked(t, &call);
     ivr_mutex_unlock(&t->lock);
-    if (callback) {
-        callback(context, &call, generation, state, error_code);
+    if (callback && have_call) {
+        callback(context, &call.view, generation, state, error_code);
     }
 }
 
@@ -198,6 +262,8 @@ ivr_status_t ivr_whip_transport_create(const ivr_whip_transport_config_t *config
     t->config.media_token = t->media_token_owned;
     t->on_state = config->on_state;
     t->state_context = config->state_context;
+    ivr_str_init(&t->provider_session_id);
+    ivr_str_init(&t->dialog_id);
     ivr_str_init(&t->room_id);
     ivr_str_init(&t->call_id);
     if (ivr_mutex_init(&t->lock) != 0) {
@@ -231,16 +297,7 @@ static int whip_play_audio(void *ctx, const ivr_call_ref_t *call,
         return -1;
     }
     ivr_mutex_lock(&t->lock);
-    int active = t->active &&
-                 call->call_generation == t->call_generation &&
-                 call->room_id.size == t->room_id.size &&
-                 (call->room_id.size == 0 ||
-                  memcmp(call->room_id.data, t->room_id.data,
-                         call->room_id.size) == 0) &&
-                 call->call_id.size == t->call_id.size &&
-                 (call->call_id.size == 0 ||
-                  memcmp(call->call_id.data, t->call_id.data,
-                         call->call_id.size) == 0);
+    int active = whip_call_matches_locked(t, call);
     turbo_media_track_t *track = t->audio_track;
     int connected = t->connected;
     ivr_mutex_unlock(&t->lock);
@@ -281,8 +338,7 @@ static int whip_stop_impl(ivr_whip_transport_t *t) {
     turbo_peer_connection_t *pc = t->pc;
     t->pc = NULL;
     t->audio_track = NULL;
-    ivr_str_free(&t->room_id);
-    ivr_str_free(&t->call_id);
+    whip_clear_call(t);
     ivr_mutex_unlock(&t->lock);
     if (t->poll_started) {
         ivr_thread_join(&t->poll_thread);
@@ -298,6 +354,8 @@ static int whip_stop_impl(ivr_whip_transport_t *t) {
 static int whip_stop(void *ctx, const ivr_call_ref_t *call) {
     ivr_whip_transport_t *t = (ivr_whip_transport_t *)ctx;
     int rc;
+    int active;
+    int matches;
 
     if (!t || !call) {
         return -1;
@@ -307,7 +365,11 @@ static int whip_stop(void *ctx, const ivr_call_ref_t *call) {
         ivr_mutex_unlock(&t->lifecycle_lock);
         return -1;
     }
-    rc = whip_stop_impl(t);
+    ivr_mutex_lock(&t->lock);
+    active = t->active;
+    matches = whip_call_matches_locked(t, call);
+    ivr_mutex_unlock(&t->lock);
+    rc = !active ? 0 : (matches ? whip_stop_impl(t) : -1);
     ivr_mutex_unlock(&t->lifecycle_lock);
     return rc;
 }
@@ -325,7 +387,10 @@ void ivr_whip_transport_get_transport(ivr_whip_transport_t *transport,
 
 ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
                                       const ivr_call_ref_t *call) {
-    if (!t || !call) {
+    if (!t || !call || !call_view_valid(&call->provider_session_id) ||
+        !call_view_valid(&call->dialog_id) ||
+        !call_view_valid(&call->room_id) ||
+        !call_view_valid(&call->call_id) || call->call_generation == 0u) {
         return IVR_EINVAL;
     }
     ivr_mutex_lock(&t->lifecycle_lock);
@@ -339,13 +404,20 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_ESTATE;
     }
-    if (ivr_str_assign(&t->room_id, call->room_id.data, call->room_id.size) < 0 ||
+    if (ivr_str_assign(&t->provider_session_id,
+                       call->provider_session_id.data,
+                       call->provider_session_id.size) < 0 ||
+        ivr_str_assign(&t->dialog_id, call->dialog_id.data,
+                       call->dialog_id.size) < 0 ||
+        ivr_str_assign(&t->room_id, call->room_id.data, call->room_id.size) < 0 ||
         ivr_str_assign(&t->call_id, call->call_id.data, call->call_id.size) < 0) {
+        whip_clear_call(t);
         ivr_mutex_unlock(&t->lock);
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_ENOSPC;
     }
     t->call_generation = call->call_generation;
+    t->expected_room_version = call->expected_room_version;
     t->attempt_generation++;
     t->active = 1;
     t->connected = 0;
@@ -366,8 +438,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     if (!pc) {
         ivr_mutex_lock(&t->lock);
         t->active = 0;
-        ivr_str_free(&t->room_id);
-        ivr_str_free(&t->call_id);
+        whip_clear_call(t);
         ivr_mutex_unlock(&t->lock);
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_ENOSPC;
@@ -386,8 +457,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         turbo_peer_connection_destroy(pc);
         ivr_mutex_lock(&t->lock);
         t->active = 0;
-        ivr_str_free(&t->room_id);
-        ivr_str_free(&t->call_id);
+        whip_clear_call(t);
         ivr_mutex_unlock(&t->lock);
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_ENOSPC;
@@ -398,8 +468,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         turbo_peer_connection_destroy(pc);
         ivr_mutex_lock(&t->lock);
         t->active = 0;
-        ivr_str_free(&t->room_id);
-        ivr_str_free(&t->call_id);
+        whip_clear_call(t);
         ivr_mutex_unlock(&t->lock);
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_ESTATE;
@@ -425,8 +494,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         turbo_peer_connection_destroy(pc);
         ivr_mutex_lock(&t->lock);
         t->active = 0;
-        ivr_str_free(&t->room_id);
-        ivr_str_free(&t->call_id);
+        whip_clear_call(t);
         ivr_mutex_unlock(&t->lock);
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_ESTATE;
@@ -437,8 +505,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         turbo_peer_connection_destroy(pc);
         ivr_mutex_lock(&t->lock);
         t->active = 0;
-        ivr_str_free(&t->room_id);
-        ivr_str_free(&t->call_id);
+        whip_clear_call(t);
         ivr_mutex_unlock(&t->lock);
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_ESTATE;
@@ -467,8 +534,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
             turbo_peer_connection_destroy(pc);
             ivr_mutex_lock(&t->lock);
             t->active = 0;
-            ivr_str_free(&t->room_id);
-            ivr_str_free(&t->call_id);
+            whip_clear_call(t);
             ivr_mutex_unlock(&t->lock);
             ivr_mutex_unlock(&t->lifecycle_lock);
             return IVR_ESTATE;
@@ -480,8 +546,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
             turbo_peer_connection_destroy(pc);
             ivr_mutex_lock(&t->lock);
             t->active = 0;
-            ivr_str_free(&t->room_id);
-            ivr_str_free(&t->call_id);
+            whip_clear_call(t);
             ivr_mutex_unlock(&t->lock);
             ivr_mutex_unlock(&t->lifecycle_lock);
             return IVR_ESTATE;
@@ -575,8 +640,7 @@ void ivr_whip_transport_destroy(ivr_whip_transport_t *t) {
     t->destroying = 1;
     (void)whip_stop_impl(t);
     ivr_mutex_unlock(&t->lifecycle_lock);
-    ivr_str_free(&t->room_id);
-    ivr_str_free(&t->call_id);
+    whip_clear_call(t);
     if (t->lifecycle_lock_initialized) {
         ivr_mutex_destroy(&t->lifecycle_lock);
         t->lifecycle_lock_initialized = 0;

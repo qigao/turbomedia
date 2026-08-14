@@ -73,6 +73,33 @@ spec("room service TOML configuration") {
             "dry_run = true\n"
             "[logging]\n"
             "level = \"warn\"\n"
+            "[iris_provider]\n"
+            "flowmq_host = \"127.0.0.1\"\n"
+            "flowmq_port = 17715\n"
+            "flowmq_topic = \"media-provider-v1\"\n"
+            "provider_instance_id = \"room-control-1\"\n"
+            "iris_identity = \"iris-router-1\"\n"
+            "flowmq_use_tls = false\n"
+            "flowmq_allow_insecure_loopback = true\n"
+            "event_store_config = \"room-flowstore.yaml\"\n"
+            "event_store_channel = \"iris.media_events\"\n"
+            "command_ledger_channel = \"iris.provider_commands\"\n"
+            "allow_development_sqlite = true\n"
+            "correlation_capacity = 2048\n"
+             "completion_queue_capacity = 512\n"
+             "reconcile_inventory_queue_capacity = 4\n"
+            "outbox_request_queue_capacity = 256\n"
+            "command_ledger_queue_capacity = 128\n"
+            "command_terminal_retention_seconds = 7200\n"
+            "command_retention_batch_size = 32\n"
+            "dead_retention_seconds = 3600\n"
+            "archive_retention_seconds = 604800\n"
+            "retention_sweep_interval_ms = 30000\n"
+            "retention_sweep_batch_size = 64\n"
+            "retry_max_attempts = 6\n"
+            "retry_backoff_ms = 125\n"
+            "ack_timeout_ms = 4000\n"
+            "drain_timeout_ms = 20000\n"
             "[fmq]\n"
             "bind_host = \"127.0.0.1\"\n"
             "bind_port = 17713\n"
@@ -81,6 +108,7 @@ spec("room service TOML configuration") {
             "worker_heartbeat_ms = 4000\n"
             "worker_lease_ms = 12000\n"
             "dispatch_deadline_ms = 3000\n"
+            "dialog_capacity = 768\n"
             "use_tls = true\n"
             "ca_file = \"flowmq-ca.pem\"\n"
             "cert_file = \"flowmq-room-chain.pem\"\n"
@@ -132,6 +160,37 @@ spec("room service TOML configuration") {
             check_false(config.auto_create_rooms);
             check_true(config.dry_run);
             check_str_eq(config.log_level, "warn");
+            check_str_eq(config.iris_flowmq_host, "127.0.0.1");
+            check_int_eq(config.iris_flowmq_port, 17715);
+            check_str_eq(config.iris_flowmq_topic, "media-provider-v1");
+            check_str_eq(config.iris_provider_instance_id,
+                         "room-control-1");
+            check_str_eq(config.iris_identity, "iris-router-1");
+            check_false(config.iris_flowmq_use_tls);
+            check_true(config.iris_flowmq_allow_insecure_loopback);
+            check_str_eq(config.iris_event_store_config,
+                         "room-flowstore.yaml");
+            check_str_eq(config.iris_event_store_channel,
+                         "iris.media_events");
+            check_str_eq(config.iris_command_ledger_channel,
+                         "iris.provider_commands");
+            check_true(config.iris_allow_development_sqlite);
+            check_int_eq(config.iris_correlation_capacity, 2048);
+            check_int_eq(config.iris_completion_queue_capacity, 512);
+            check_int_eq(config.iris_reconcile_inventory_queue_capacity, 4);
+            check_int_eq(config.iris_outbox_request_queue_capacity, 256);
+            check_int_eq(config.iris_command_ledger_queue_capacity, 128);
+            check_int_eq(config.iris_command_terminal_retention_seconds,
+                         7200);
+            check_int_eq(config.iris_command_retention_batch_size, 32);
+            check_int_eq(config.iris_dead_retention_seconds, 3600);
+            check_int_eq(config.iris_archive_retention_seconds, 604800);
+            check_int_eq(config.iris_retention_sweep_interval_ms, 30000);
+            check_int_eq(config.iris_retention_sweep_batch_size, 64);
+            check_int_eq(config.iris_retry_max_attempts, 6);
+            check_int_eq(config.iris_retry_backoff_ms, 125);
+            check_int_eq(config.iris_ack_timeout_ms, 4000);
+            check_int_eq(config.iris_drain_timeout_ms, 20000);
             check_str_eq(config.fmq_bind_host, "127.0.0.1");
             check_int_eq(config.fmq_bind_port, 17713);
             check_int_eq(config.fmq_pub_port, 17714);
@@ -139,6 +198,7 @@ spec("room service TOML configuration") {
             check_int_eq(config.fmq_worker_heartbeat_ms, 4000);
             check_int_eq(config.fmq_worker_lease_ms, 12000);
             check_int_eq(config.fmq_dispatch_deadline_ms, 3000);
+            check_int_eq(config.fmq_dialog_capacity, 768);
             check_true(config.fmq_use_tls);
             check_false(config.fmq_allow_insecure_loopback);
             check_str_eq(config.fmq_ca_file, "flowmq-ca.pem");
@@ -254,6 +314,71 @@ spec("room service TOML configuration") {
         check_int_eq(room_service_app_config_validate(&config), -1);
         config.fmq_dispatch_deadline_ms = 4999;
         check_int_eq(room_service_app_config_validate(&config), 0);
+        config.fmq_dialog_capacity = 0;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_dialog_capacity = 65537;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.fmq_dialog_capacity = 256;
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        room_service_app_config_cleanup(&config);
+    }
+
+    it("requires a complete bounded Iris provider configuration") {
+        room_service_app_config_t config;
+
+        room_service_app_config_init(&config);
+        config.fmq_allow_insecure_loopback = 1;
+        config.fmq_bind_port = 17713;
+        config.fmq_pub_port = 17714;
+        config.iris_flowmq_use_tls = 0;
+        config.iris_flowmq_allow_insecure_loopback = 1;
+        config.iris_flowmq_host = "127.0.0.1";
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_flowmq_port = 17715;
+        config.iris_provider_instance_id = "room-service-1";
+        config.iris_identity = "iris-router-1";
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_event_store_config = "room-flowstore.yaml";
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_event_store_channel = "iris.media_events";
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_command_ledger_channel = "iris.provider_commands";
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        config.iris_completion_queue_capacity = 0;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_completion_queue_capacity = 1024;
+        config.iris_reconcile_inventory_queue_capacity = 0;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_reconcile_inventory_queue_capacity = 8;
+        config.iris_retention_sweep_batch_size = 257;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_retention_sweep_batch_size = 128;
+        config.iris_archive_retention_seconds = 0;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_archive_retention_seconds = 2592000;
+        config.iris_retention_sweep_interval_ms = 999;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_retention_sweep_interval_ms = 60000;
+        config.iris_drain_timeout_ms = config.iris_ack_timeout_ms - 1;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_drain_timeout_ms = 30000;
+        config.iris_flowmq_host = "iris.internal";
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_flowmq_host = "127.0.0.1";
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        config.iris_flowmq_host = "iris.internal";
+        config.iris_flowmq_use_tls = 1;
+        config.iris_flowmq_allow_insecure_loopback = 0;
+        check_int_eq(room_service_app_config_validate(&config), -1);
+        config.iris_certificate_sha256 =
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        config.iris_flowmq_ca_file = "flowmq-ca.pem";
+        config.iris_flowmq_cert_file = "room-chain.pem";
+        config.iris_flowmq_key_file = "room-key.pem";
+        config.iris_flowmq_server_name = "iris.internal";
+        check_int_eq(room_service_app_config_validate(&config), 0);
+        config.iris_certificate_sha256 = "sha256:bad";
+        check_int_eq(room_service_app_config_validate(&config), -1);
         room_service_app_config_cleanup(&config);
     }
 

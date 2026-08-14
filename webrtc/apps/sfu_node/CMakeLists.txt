@@ -7,9 +7,6 @@ project(
   DESCRIPTION "TurboNet conference SFU node")
 
 set(SFU_NODE_CORE_SOURCES src/config.c src/http_api.c src/server.c)
-if(ENABLE_RTC_SCXML_WORKFLOW)
-  list(APPEND SFU_NODE_CORE_SOURCES src/rtc_workflow_adapter.c)
-endif()
 
 set(SFU_NODE_APP_SOURCES src/main.c ${SFU_NODE_CORE_SOURCES})
 
@@ -27,11 +24,7 @@ set(SFU_NODE_LIBS
   turbo_media_auth
   TurboNet::Crypto
   TurboUtils::Core
-  TurboUtils::Parser)
-
-if(ENABLE_RTC_SCXML_WORKFLOW)
-  list(APPEND SFU_NODE_LIBS TurboRTC::RtcSessionWorkflow)
-endif()
+  TurboParser::Parser)
 
 target_link_libraries(
   sfu_node
@@ -127,7 +120,7 @@ cmake_add_test(
   turbo_media_test_sfu_node_config
   SOURCES tests/test_sfu_node_config.c src/config.c
   LIBS turbo_media_auth TurboUtils::TinyTest TurboUtils::Core
-       TurboUtils::Parser
+       TurboParser::Parser
   DEFS SFU_NODE_CONFIG_EXAMPLE_PATH="${SFU_NODE_CONFIG_EXAMPLE_PATH}"
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include
   FOLDER "Applications/tests")

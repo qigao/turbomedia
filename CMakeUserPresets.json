@@ -35,10 +35,12 @@
             "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
             "cacheVariables": {
                 "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils",
+                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser",
                 "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet",
                 "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp",
                 "TURBOXML_ROOT": "$env{PKG_ROOT}/turboxml",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/turboflow",
+                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq",
+                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow",
                 "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia",
                 "CMAKE_MAKE_PROGRAM": "$env{NINJA_ROOT}/ninja.exe",
                 "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
@@ -63,10 +65,12 @@
                 "VCPKG_TARGET_TRIPLET": "x64-linux",
                 "VCPKG_MANIFEST_MODE": "ON",
                 "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils",
+                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser",
                 "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet",
                 "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp",
                 "TURBOXML_ROOT": "$env{PKG_ROOT}/turboxml",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/turboflow",
+                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq",
+                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow",
                 "CMAKE_MAKE_PROGRAM": "/usr/bin/ninja",
                 "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
             },
@@ -92,7 +96,7 @@
                 "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows/debug"
             },
             "environment": {
-                "PATH": "$env{PKG_ROOT}/turbohttp/bin${pathListSep}C:/projects/cpp/external/pkgs/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PKG_ROOT}/turboutils/bin${pathListSep}$env{PKG_ROOT}/turboflow/bin${pathListSep}$env{PKG_ROOT}/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/debug/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}C:/tools/vcpkg/installed/x64-windows/bin${pathListSep}$penv{PATH}"
+                "PATH": "$env{PKG_ROOT}/turbohttp/bin${pathListSep}C:/projects/cpp/external/pkgs/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PKG_ROOT}/turboutils/bin${pathListSep}$env{PKG_ROOT}/flowmq/bin${pathListSep}$env{PKG_ROOT}/turboflow/bin${pathListSep}$env{PKG_ROOT}/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/debug/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}C:/tools/vcpkg/installed/x64-windows/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-dev-user",
@@ -103,10 +107,11 @@
             "name": "win-release-user",
             "cacheVariables": {
                 "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows",
-                "TURBOUTILS_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release"
+                "TURBOUTILS_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release",
+                "TURBOPARSER_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-parser/build/Msvc-Release"
             },
             "environment": {
-                "PATH": "$env{PKG_ROOT}/turbohttp/bin${pathListSep}C:/projects/cpp/external/pkgs/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release/bin${pathListSep}$env{PKG_ROOT}/turbo_webrtc/bin${pathListSep}$env{PKG_ROOT}/turboflow/bin${pathListSep}$env{PKG_ROOT}/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}C:/tools/vcpkg/installed/x64-windows/bin${pathListSep}$penv{PATH}"
+                "PATH": "$env{PKG_ROOT}/turbohttp/bin${pathListSep}C:/projects/cpp/external/pkgs/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release/bin${pathListSep}$env{PKG_ROOT}/turbo_webrtc/bin${pathListSep}$env{PKG_ROOT}/flowmq/bin${pathListSep}$env{PKG_ROOT}/turboflow/bin${pathListSep}$env{PKG_ROOT}/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}C:/tools/vcpkg/installed/x64-windows/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-release-user",
@@ -291,7 +296,7 @@
             "inherits": "base-test",
             "configurePreset": "win-dev-user",
             "environment": {
-                "PATH": "${sourceDir}/../../external/pkgs/turbohttp/bin${pathListSep}${sourceDir}/../../external/pkgs/turbonet/bin${pathListSep}${sourceDir}/../../external/pkgs/turboutils/bin${pathListSep}${sourceDir}/../../external/pkgs/turboflow/bin${pathListSep}${sourceDir}/../../external/pkgs/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/debug/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}$penv{PATH}"
+                "PATH": "${sourceDir}/../../external/pkgs/turbohttp/bin${pathListSep}${sourceDir}/../../external/pkgs/turbonet/bin${pathListSep}${sourceDir}/../../external/pkgs/turboutils/bin${pathListSep}${sourceDir}/../../external/pkgs/flowmq/bin${pathListSep}${sourceDir}/../../external/pkgs/turboflow/bin${pathListSep}${sourceDir}/../../external/pkgs/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/debug/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}$penv{PATH}"
             }
         },
         {
@@ -299,7 +304,7 @@
             "inherits": "base-test",
             "configurePreset": "win-release-user",
             "environment": {
-                "PATH": "${sourceDir}/../../external/pkgs/turbohttp/bin${pathListSep}${sourceDir}/../../external/pkgs/turbonet/bin${pathListSep}${sourceDir}/../../external/pkgs/turboutils/bin${pathListSep}${sourceDir}/../../external/pkgs/turboflow/bin${pathListSep}${sourceDir}/../../external/pkgs/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}$penv{PATH}"
+                "PATH": "${sourceDir}/../../external/pkgs/turbohttp/bin${pathListSep}${sourceDir}/../../external/pkgs/turbonet/bin${pathListSep}${sourceDir}/../../external/pkgs/turboutils/bin${pathListSep}${sourceDir}/../../external/pkgs/flowmq/bin${pathListSep}${sourceDir}/../../external/pkgs/turboflow/bin${pathListSep}${sourceDir}/../../external/pkgs/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}$penv{PATH}"
             }
         },
         {

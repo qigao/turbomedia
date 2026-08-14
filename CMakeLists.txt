@@ -88,6 +88,13 @@ include(FindTools)
 
 find_package(Threads REQUIRED)
 find_package(TurboUtils CONFIG REQUIRED)
+find_package(TurboParser CONFIG REQUIRED PATHS "${TURBOPARSER_ROOT}")
+# RulesForge releases installed before its DataBind migration still export the
+# former target name in their link interface. Keep that packaging detail at the
+# build boundary; production code links TurboParser::DataBind directly.
+if(TARGET TurboParser::DataBind AND NOT TARGET TurboUtils::DataBind)
+  add_library(TurboUtils::DataBind ALIAS TurboParser::DataBind)
+endif()
 find_package(TurboNet CONFIG REQUIRED)
 find_package(TurboHttp CONFIG REQUIRED)
  

@@ -1,17 +1,21 @@
 /* test_ivr_media_bot.c - Real IVR media-port (ivr_media_bot) over turbo_speech
  * with mock TTS/ASR providers and a loopback audio transport.
  *
- * Verifies: start_bot opens the peer (TTS+ASR sessions), play_pcm synthesizes
- * text through TTS and forwards PCM frames to the transport, caller PCM fed
- * from the transport produces an "asr.final" event, cancel/stop quiesce and
- * tear down the sessions, and missing providers fail fast. */
+ * Verifies: start_bot opens the peer, play_pcm synthesizes text and emits a
+ * completion fact, explicit input windows correlate ASR finals, cancel/stop
+ * quiesce and tear down the sessions, and missing providers fail fast. */
 #include "ivr_media_bot.h"
 #include "ivr_thread.h"
 #include "tinytest_compat.h"
 #include <string.h>
 
 static const ivr_call_ref_t g_call = {
-    {"room-42", 7}, {"call-42", 7}, 1, 1};
+    .provider_session_id = {"session-42", 10},
+    .dialog_id = {"dialog-42", 9},
+    .room_id = {"room-42", 7},
+    .call_id = {"call-42", 7},
+    .call_generation = 1,
+    .expected_room_version = 1};
 
 /* ---- mock TTS provider ---- */
 typedef struct {
@@ -21,6 +25,7 @@ typedef struct {
     int cancel_count;
     int destroy_count;
     int synthesize_error;
+    int complete_on_synthesize;
 } mock_tts_t;
 
 static int mock_tts_synthesize(void *context, const turbo_tts_request_t *request,
@@ -52,6 +57,9 @@ static int mock_tts_synthesize(void *context, const turbo_tts_request_t *request
         if (callbacks->on_audio(&frame, callback_user_data) != 0) {
             break;
         }
+    }
+    if (mock->complete_on_synthesize) {
+        callbacks->on_complete(callback_user_data);
     }
     /* async-style provider: leave the session RUNNING until cancel/destroy
        so the TTS cancel path is exercisable */
@@ -89,6 +97,7 @@ typedef struct {
     int cancel_count;
     int destroy_count;
     size_t last_len;
+    int final_emitted;
 } mock_asr_t;
 
 static int mock_asr_start(void *context, const turbo_asr_config_t *config,
@@ -99,6 +108,8 @@ static int mock_asr_start(void *context, const turbo_asr_config_t *config,
     mock->callbacks = callbacks;
     mock->callback_user_data = callback_user_data;
     mock->start_count++;
+    mock->write_count = 0;
+    mock->final_emitted = 0;
     return TURBO_SPEECH_OK;
 }
 
@@ -106,7 +117,7 @@ static int mock_asr_write(void *context, const turbo_speech_audio_frame_t *frame
     mock_asr_t *mock = (mock_asr_t *)context;
     mock->write_count++;
     mock->last_len = frame->len;
-    if (mock->write_count >= 3) {
+    if (mock->write_count >= 3 && !mock->final_emitted) {
         /* emit one final transcript */
         static const char text[] = "hello";
         turbo_asr_result_t result = {.text = text,
@@ -116,6 +127,7 @@ static int mock_asr_write(void *context, const turbo_speech_audio_frame_t *frame
                                      .confidence = 0.9f,
                                      .is_final = 1};
         mock->callbacks->on_result(&result, mock->callback_user_data);
+        mock->final_emitted = 1;
     }
     return TURBO_SPEECH_OK;
 }
@@ -123,6 +135,7 @@ static int mock_asr_write(void *context, const turbo_speech_audio_frame_t *frame
 static int mock_asr_finish(void *context) {
     mock_asr_t *mock = (mock_asr_t *)context;
     mock->finish_count++;
+    mock->callbacks->on_complete(mock->callback_user_data);
     return TURBO_SPEECH_OK;
 }
 
@@ -178,7 +191,9 @@ static int loopback_stop(void *ctx, const ivr_call_ref_t *call) {
 typedef struct {
     ivr_mutex_t lock;
     int asr_final_count;
+    int playback_finished_count;
     int provider_error_count;
+    char input_id[32];
     char input_value[32];
     char provider_error_payload[128];
 } observer_t;
@@ -192,12 +207,21 @@ static void observe_event(void *ctx, const ivr_event_view_t *event) {
     if (event->event_type.size == 9 &&
         memcmp(event->event_type.data, "asr.final", 9) == 0) {
         obs->asr_final_count++;
+        int input_id_size = (int)event->input_id.size;
+        if (input_id_size > 31) {
+            input_id_size = 31;
+        }
+        memcpy(obs->input_id, event->input_id.data, (size_t)input_id_size);
+        obs->input_id[input_id_size] = '\0';
         int n = (int)event->input_value.size;
         if (n > 31) {
             n = 31;
         }
         memcpy(obs->input_value, event->input_value.data, (size_t)n);
         obs->input_value[n] = '\0';
+    } else if (event->event_type.size == 17 &&
+               memcmp(event->event_type.data, "playback.finished", 17) == 0) {
+        obs->playback_finished_count++;
     } else if (event->event_type.size == 14 &&
                memcmp(event->event_type.data, "provider.error", 14) == 0) {
         size_t n = event->payload_json.size;
@@ -259,17 +283,22 @@ static void tearDown(void) {
 
 void test_start_and_play_tts_pcm(void) {
     TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    g_tts.complete_on_synthesize = 1;
     static ivr_bytes_view_t text = {"hello there", 11};
     TEST_ASSERT_EQUAL(IVR_OK, g_ops.play_pcm(g_ops.context, &g_call, &text));
     TEST_ASSERT_EQUAL_INT(1, g_tts.synthesize_count);
     /* TTS emitted 3 frames of 32 bytes each to the transport */
     TEST_ASSERT_EQUAL_INT(3, g_loop.play_audio_count);
     TEST_ASSERT_EQUAL_size_t(96u, g_loop.play_audio_bytes);
-    TEST_ASSERT_EQUAL_INT(1, g_asr.start_count); /* ASR opened for caller audio */
+    TEST_ASSERT_EQUAL_INT(1, g_obs.playback_finished_count);
+    TEST_ASSERT_EQUAL_INT(0, g_asr.start_count);
 }
 
 void test_caller_audio_produces_asr_final(void) {
     TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    static const ivr_bytes_view_t input_id = {"input-42", 8};
+    TEST_ASSERT_EQUAL(IVR_OK, g_ops.begin_input(g_ops.context, &g_call,
+                                               &input_id, 1));
     static const uint8_t pcm[32] = {0};
     TEST_ASSERT_EQUAL(IVR_OK, ivr_media_bot_feed_caller_audio(g_bot, &g_call,
                                                               pcm, sizeof(pcm)));
@@ -283,7 +312,22 @@ void test_caller_audio_produces_asr_final(void) {
     ivr_mutex_unlock(&g_obs.lock);
     TEST_ASSERT_EQUAL_INT(1, finals);
     TEST_ASSERT_EQUAL_STRING("hello", g_obs.input_value);
+    TEST_ASSERT_EQUAL_STRING("input-42", g_obs.input_id);
     TEST_ASSERT_EQUAL_INT(3, g_asr.write_count);
+}
+
+void test_input_end_finishes_and_allows_next_window(void) {
+    static const ivr_bytes_view_t first = {"input-1", 7};
+    static const ivr_bytes_view_t second = {"input-2", 7};
+    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      g_ops.begin_input(g_ops.context, &g_call, &first, 1));
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      g_ops.end_input(g_ops.context, &g_call, &first, 1));
+    TEST_ASSERT_EQUAL_INT(1, g_asr.finish_count);
+    TEST_ASSERT_EQUAL(IVR_OK,
+                      g_ops.begin_input(g_ops.context, &g_call, &second, 2));
+    TEST_ASSERT_EQUAL_INT(2, g_asr.start_count);
 }
 
 void test_tts_failure_produces_provider_error(void) {
@@ -308,7 +352,12 @@ void test_tts_failure_produces_provider_error(void) {
 void test_audio_for_wrong_call_dropped(void) {
     TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
     static ivr_bytes_view_t text = {"hi", 2};
-    static const ivr_call_ref_t other = {{"room-99", 7}, {"call-99", 7}, 1, 0};
+    static const ivr_call_ref_t other = {
+        .provider_session_id = {"session-99", 10},
+        .dialog_id = {"dialog-99", 9},
+        .room_id = {"room-99", 7},
+        .call_id = {"call-99", 7},
+        .call_generation = 1};
     TEST_ASSERT_EQUAL(IVR_ESTATE,
                       g_ops.play_pcm(g_ops.context, &other, &text));
     static const uint8_t pcm[16] = {0};
@@ -319,6 +368,9 @@ void test_audio_for_wrong_call_dropped(void) {
 
 void test_cancel_quiesces_and_stop_tears_down(void) {
     TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    static const ivr_bytes_view_t input_id = {"input-42", 8};
+    TEST_ASSERT_EQUAL(IVR_OK, g_ops.begin_input(g_ops.context, &g_call,
+                                               &input_id, 1));
     TEST_ASSERT_EQUAL_INT(1, g_asr.start_count);
     /* a prompt must be running for TTS cancel to reach the provider */
     static ivr_bytes_view_t prompt = {"hello", 5};
@@ -341,7 +393,13 @@ void test_cancel_quiesces_and_stop_tears_down(void) {
 
 void test_second_active_call_rejected(void) {
     TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
-    static const ivr_call_ref_t other = {{"room-43", 7}, {"call-43", 7}, 1, 1};
+    static const ivr_call_ref_t other = {
+        .provider_session_id = {"session-43", 10},
+        .dialog_id = {"dialog-43", 9},
+        .room_id = {"room-43", 7},
+        .call_id = {"call-43", 7},
+        .call_generation = 1,
+        .expected_room_version = 1};
     TEST_ASSERT_EQUAL(IVR_ESTATE, g_ops.start_bot(g_ops.context, &other));
 }
 
@@ -391,8 +449,11 @@ static void *play_thread_main(void *opaque) {
 void test_concurrent_feed_and_stop(void) {
     /* feed_caller_audio is documented thread-safe: a receiver thread feeding
        PCM while stop_bot tears the ASR session down must never touch a freed
-       session (ASan build catches any UAF). */
+    session (ASan build catches any UAF). */
     TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    static const ivr_bytes_view_t input_id = {"input-stress", 12};
+    TEST_ASSERT_EQUAL(IVR_OK, g_ops.begin_input(g_ops.context, &g_call,
+                                               &input_id, 1));
     bot_stress_t s = {g_bot, g_call, 20000};
     ivr_thread_t th;
     TEST_ASSERT_EQUAL_INT(0, ivr_thread_create(&th, feed_thread_main, &s));
@@ -429,6 +490,7 @@ spec("test_ivr_media_bot") {
 
   TT_TEST(test_start_and_play_tts_pcm);
   TT_TEST(test_caller_audio_produces_asr_final);
+  TT_TEST(test_input_end_finishes_and_allows_next_window);
   TT_TEST(test_tts_failure_produces_provider_error);
   TT_TEST(test_audio_for_wrong_call_dropped);
   TT_TEST(test_cancel_quiesces_and_stop_tears_down);

@@ -232,47 +232,22 @@ int ivr_sdp_attr_value(const char *sdp, const char *attribute, char *out,
     return length > 0;
 }
 
-void ivr_sdp_build_minimal_audio_offer(const char *source, char *out,
-                                       size_t capacity, int sample_rate,
-                                       const char *direction) {
-    char ufrag[64];
-    char password[96];
-    char fingerprint[256];
-
-    if (!source || !out || capacity == 0 || !direction ||
-        !ivr_sdp_attr_value(source, "a=ice-ufrag:", ufrag, sizeof(ufrag)) ||
-        !ivr_sdp_attr_value(source, "a=ice-pwd:", password,
-                            sizeof(password)) ||
-        !ivr_sdp_attr_value(source, "a=fingerprint:sha-256 ", fingerprint,
-                            sizeof(fingerprint))) {
-        if (source && out && capacity > 0) {
-            snprintf(out, capacity, "%s", source);
-        }
-        return;
-    }
-    snprintf(out, capacity,
-             "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n"
-             "m=audio 9 UDP/TLS/RTP/SAVPF 111 126\r\nc=IN IP4 0.0.0.0\r\n"
-             "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n"
-             "a=fingerprint:sha-256 %s\r\n"
-             "a=setup:actpass\r\na=mid:0\r\na=%s\r\n"
-             "a=rtcp-mux\r\na=rtpmap:111 opus/%d/2\r\n"
-             "a=rtpmap:126 telephone-event/8000\r\n"
-             "a=fmtp:126 0-16\r\n",
-             ufrag, password, fingerprint, direction, sample_rate);
-}
-
-void ivr_sdp_append_candidates(const char *offer, char *out, size_t capacity) {
+static void ivr_sdp_append_prefixed_lines(const char *sdp,
+                                          const char *prefix, char *out,
+                                          size_t capacity) {
     size_t used = 0;
-    const char *line = offer;
+    const char *line = sdp;
+    size_t prefix_length;
 
-    if (!out || capacity == 0) {
+    if (!sdp || !prefix || !out || capacity == 0) {
         return;
     }
+    prefix_length = strlen(prefix);
     while (line && *line && used + 1 < capacity) {
         const char *end = strstr(line, "\r\n");
         size_t length = end ? (size_t)(end - line) : strlen(line);
-        if (length >= 12 && strncmp(line, "a=candidate:", 12) == 0) {
+        if (length >= prefix_length &&
+            strncmp(line, prefix, prefix_length) == 0) {
             if (used + length + 3 > capacity) {
                 break;
             }
@@ -287,4 +262,46 @@ void ivr_sdp_append_candidates(const char *offer, char *out, size_t capacity) {
         line = end + 2;
     }
     out[used] = '\0';
+}
+
+void ivr_sdp_build_minimal_audio_offer(const char *source, char *out,
+                                       size_t capacity, int sample_rate,
+                                       const char *direction) {
+    char ufrag[64];
+    char password[96];
+    char fingerprint[256];
+    char ssrc_lines[512];
+    int written;
+
+    if (!source || !out || capacity == 0 || !direction ||
+        !ivr_sdp_attr_value(source, "a=ice-ufrag:", ufrag, sizeof(ufrag)) ||
+        !ivr_sdp_attr_value(source, "a=ice-pwd:", password,
+                            sizeof(password)) ||
+        !ivr_sdp_attr_value(source, "a=fingerprint:sha-256 ", fingerprint,
+                            sizeof(fingerprint))) {
+        if (source && out && capacity > 0) {
+            snprintf(out, capacity, "%s", source);
+        }
+        return;
+    }
+    ivr_sdp_append_prefixed_lines(source, "a=ssrc:", ssrc_lines,
+                                  sizeof(ssrc_lines));
+    written = snprintf(
+        out, capacity,
+        "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n"
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111 126\r\nc=IN IP4 0.0.0.0\r\n"
+        "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n"
+        "a=fingerprint:sha-256 %s\r\n"
+        "a=setup:actpass\r\na=mid:0\r\na=%s\r\n"
+        "a=rtcp-mux\r\na=rtpmap:111 opus/%d/2\r\n"
+        "a=rtpmap:126 telephone-event/8000\r\n"
+        "a=fmtp:126 0-16\r\n%s",
+        ufrag, password, fingerprint, direction, sample_rate, ssrc_lines);
+    if (written < 0 || (size_t)written >= capacity) {
+        out[0] = '\0';
+    }
+}
+
+void ivr_sdp_append_candidates(const char *offer, char *out, size_t capacity) {
+    ivr_sdp_append_prefixed_lines(offer, "a=candidate:", out, capacity);
 }

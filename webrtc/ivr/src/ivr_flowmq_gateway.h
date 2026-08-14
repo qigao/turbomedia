@@ -5,7 +5,7 @@
  * @file ivr_flowmq_gateway.h
  * @brief FlowMQ DEALER command gateway (compiled when TURBO_MEDIA_HAS_FLOWMQ).
  *
- * Implements ivr_command_gateway_ops_t over a FlowMQ DEALER endpoint
+ * Implements an adapter-local command sender over a FlowMQ DEALER endpoint
  * (CONNECT to the RoomService ROUTER). Commands are encoded as TIVR frames
  * (12-byte header + DataBind BIN payload) using the generated
  * turbomedia_ivr_v1 schema; the payload is the per-command typed message.
@@ -25,6 +25,23 @@ extern "C" {
 #endif
 
 typedef struct ivr_flowmq_gateway_s ivr_flowmq_gateway_t;
+
+/* Adapter-only envelope for RoomService control commands. This is not an IVR
+   worker or workflow API; Iris-facing media commands use their own typed wire
+   messages. */
+typedef struct {
+    ivr_bytes_view_t message_id;
+    ivr_bytes_view_t command_type;
+    ivr_call_ref_t call;
+    ivr_bytes_view_t args_json;
+} ivr_command_view_t;
+
+typedef struct {
+    uint32_t abi_version;
+    void *context;
+    ivr_status_t (*submit_copy)(void *context,
+                                const ivr_command_view_t *command);
+} ivr_command_gateway_ops_t;
 
 typedef struct {
     const char *worker_id; /* DEALER identity; also stamped on commands */
@@ -173,6 +190,71 @@ typedef struct {
     char error_code[64];
     char error_message[128];
 } ivr_command_result_envelope_t;
+
+typedef enum {
+    IVR_MEDIA_COMMAND_SESSION_OPEN = 1,
+    IVR_MEDIA_COMMAND_PLAY,
+    IVR_MEDIA_COMMAND_INPUT_START,
+    IVR_MEDIA_COMMAND_INPUT_STOP,
+    IVR_MEDIA_COMMAND_CANCEL,
+    IVR_MEDIA_COMMAND_SESSION_CLOSE
+} ivr_media_command_kind_t;
+
+typedef struct {
+    ivr_media_command_kind_t kind;
+    char message_id[128];
+    char tenant_id[IVR_MEDIA_ID_CAPACITY];
+    char provider_session_id[IVR_MEDIA_ID_CAPACITY];
+    char dialog_id[IVR_MEDIA_ID_CAPACITY];
+    char worker_id[128];
+    char room_id[IVR_MEDIA_ID_CAPACITY];
+    char call_id[IVR_MEDIA_ID_CAPACITY];
+    uint64_t call_generation;
+    uint64_t operation_generation;
+    uint64_t deadline_timeout_ms;
+    char text[4096];
+    char input_id[IVR_MEDIA_ID_CAPACITY];
+    uint64_t input_generation;
+    char reason[128];
+} ivr_media_command_t;
+
+typedef struct {
+    char message_id[128];
+    char worker_id[128];
+    ivr_worker_inventory_query_t query;
+} ivr_worker_inventory_request_t;
+
+typedef struct {
+    char message_id[128];
+    char worker_id[128];
+    ivr_worker_inventory_page_t page;
+    int status_code;
+    char error_code[64];
+    char error_message[128];
+} ivr_worker_inventory_envelope_t;
+
+ivr_status_t ivr_flowmq_gateway_decode_media_command(
+    DataBind *codec, const uint8_t *frame, size_t len,
+    ivr_media_command_t *out);
+ivr_status_t ivr_flowmq_gateway_send_media_result(
+    ivr_flowmq_gateway_t *gateway, const ivr_media_command_t *command,
+    int status_code, const char *error_code, const char *error_message);
+ivr_status_t ivr_flowmq_gateway_send_media_event(
+    ivr_flowmq_gateway_t *gateway, const char *worker_id,
+    const ivr_event_view_t *event, uint64_t occurred_at_ms);
+
+/* Worker-side inventory control plane. Decode validates exact wire version,
+   bounded limit and target worker identity fields. The page encoder owns no
+   borrowed output: it serializes the caller-owned page before returning. */
+ivr_status_t ivr_flowmq_gateway_decode_inventory_query(
+    DataBind *codec, const uint8_t *frame, size_t len,
+    ivr_worker_inventory_request_t *out);
+ivr_status_t ivr_flowmq_gateway_encode_inventory_page(
+    DataBind *codec, const ivr_worker_inventory_envelope_t *result,
+    uint8_t *frame, size_t frame_capacity, size_t *out_size);
+ivr_status_t ivr_flowmq_gateway_send_inventory_page(
+    ivr_flowmq_gateway_t *gateway,
+    const ivr_worker_inventory_envelope_t *result);
 
 /* Pure decode of one CallDispatchCommandV1 frame (kind=command). Returns
    IVR_OK and fills *out; IVR_ESTATE for non-dispatch/malformed frames. */

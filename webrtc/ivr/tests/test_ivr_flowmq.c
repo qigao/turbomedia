@@ -653,6 +653,301 @@ void test_dispatch_deadline_ok(void) {
         NULL, 1000u, 1000u));
 }
 
+static void make_media_command(ivr_media_command_t *command,
+                               ivr_media_command_kind_t kind) {
+    memset(command, 0, sizeof(*command));
+    command->kind = kind;
+    snprintf(command->message_id, sizeof(command->message_id), "media-1");
+    snprintf(command->provider_session_id,
+             sizeof(command->provider_session_id), "session-1");
+    snprintf(command->dialog_id, sizeof(command->dialog_id), "dialog-1");
+    snprintf(command->worker_id, sizeof(command->worker_id), "worker-1");
+    snprintf(command->room_id, sizeof(command->room_id), "room-1");
+    snprintf(command->call_id, sizeof(command->call_id), "call-1");
+    command->call_generation = 2;
+    command->operation_generation = 3;
+    command->deadline_timeout_ms = 5000;
+    snprintf(command->text, sizeof(command->text), "hello");
+    snprintf(command->input_id, sizeof(command->input_id), "input-1");
+    command->input_generation = 4;
+    snprintf(command->reason, sizeof(command->reason), "completed");
+}
+
+static ivr_status_t encode_legacy_cancel_v1(uint8_t *frame,
+                                             size_t frame_capacity,
+                                             size_t *frame_size) {
+    static const char json[] =
+        "{\"message_id\":\"legacy-cancel\","
+        "\"provider_session_id\":\"session-1\","
+        "\"dialog_id\":\"dialog-1\",\"worker_id\":\"worker-1\","
+        "\"room_id\":\"room-1\",\"call_id\":\"call-1\","
+        "\"call_generation\":2,\"operation_generation\":3,"
+        "\"deadline_timeout_ms\":5000}";
+    DataBindError error = DATA_BIND_ERROR_INIT;
+    DataBindObject *object = NULL;
+    uint8_t *binary = NULL;
+    size_t binary_size = 0;
+    ivr_frame_info_t info;
+
+    if (!frame || !frame_size || frame_capacity < IVR_FRAME_HEADER_SIZE) {
+        return IVR_EINVAL;
+    }
+    *frame_size = 0;
+    if (data_bind_object_from_json(g_codec, "MediaCancelCommandV1", json,
+                                   strlen(json), &object,
+                                   &error) != DATA_BIND_OK ||
+        data_bind_object_serialize_bin(g_codec, object, &binary,
+                                       &binary_size,
+                                       &error) != DATA_BIND_OK) {
+        data_bind_object_free(object);
+        return IVR_ESTATE;
+    }
+    data_bind_object_free(object);
+    if (binary_size > frame_capacity - IVR_FRAME_HEADER_SIZE) {
+        data_bind_binary_free(binary);
+        return IVR_ENOSPC;
+    }
+    memset(&info, 0, sizeof(info));
+    info.format = IVR_FMT_BIN;
+    info.kind = IVR_KIND_COMMAND;
+    info.schema_type_id = IVR_TYPE_MEDIA_CANCEL_COMMAND_V1;
+    info.schema_major = IVR_SCHEMA_MAJOR;
+    info.schema_minor = IVR_SCHEMA_MINOR;
+    if (ivr_frame_encode(frame, &info) != IVR_OK) {
+        data_bind_binary_free(binary);
+        return IVR_ESTATE;
+    }
+    memcpy(frame + IVR_FRAME_HEADER_SIZE, binary, binary_size);
+    *frame_size = IVR_FRAME_HEADER_SIZE + binary_size;
+    data_bind_binary_free(binary);
+    return IVR_OK;
+}
+
+void test_media_commands_roundtrip(void) {
+    static const ivr_media_command_kind_t kinds[] = {
+        IVR_MEDIA_COMMAND_SESSION_OPEN, IVR_MEDIA_COMMAND_PLAY,
+        IVR_MEDIA_COMMAND_INPUT_START, IVR_MEDIA_COMMAND_INPUT_STOP,
+        IVR_MEDIA_COMMAND_CANCEL, IVR_MEDIA_COMMAND_SESSION_CLOSE};
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
+        ivr_media_command_t source;
+        ivr_media_command_t decoded;
+        uint8_t frame[8192];
+        size_t frame_size = 0;
+        make_media_command(&source, kinds[i]);
+        TEST_ASSERT_EQUAL(IVR_OK, ivr_room_bridge_encode_media_command(
+                                      g_codec, &source, frame, sizeof(frame),
+                                      &frame_size));
+        TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_decode_media_command(
+                                      g_codec, frame, frame_size, &decoded));
+        TEST_ASSERT_EQUAL_INT(source.kind, decoded.kind);
+        TEST_ASSERT_EQUAL_STRING(source.message_id, decoded.message_id);
+        TEST_ASSERT_EQUAL_STRING(source.provider_session_id,
+                                 decoded.provider_session_id);
+        TEST_ASSERT_EQUAL_STRING(source.dialog_id, decoded.dialog_id);
+        TEST_ASSERT_EQUAL_STRING(source.worker_id, decoded.worker_id);
+        TEST_ASSERT_EQUAL_UINT64(source.call_generation,
+                                 decoded.call_generation);
+        TEST_ASSERT_EQUAL_UINT64(source.operation_generation,
+                                 decoded.operation_generation);
+        TEST_ASSERT_EQUAL_UINT64(source.deadline_timeout_ms,
+                                 decoded.deadline_timeout_ms);
+        if (source.kind == IVR_MEDIA_COMMAND_INPUT_START ||
+            source.kind == IVR_MEDIA_COMMAND_INPUT_STOP ||
+            source.kind == IVR_MEDIA_COMMAND_CANCEL) {
+            TEST_ASSERT_EQUAL_STRING(source.input_id, decoded.input_id);
+            TEST_ASSERT_EQUAL_UINT64(source.input_generation,
+                                     decoded.input_generation);
+        }
+    }
+}
+
+void test_media_cancel_v1_is_rejected_without_fallback(void) {
+    ivr_media_command_t decoded;
+    uint8_t frame[8192];
+    size_t frame_size = 0;
+
+    TEST_ASSERT_EQUAL(IVR_OK, encode_legacy_cancel_v1(
+                                  frame, sizeof(frame), &frame_size));
+    TEST_ASSERT_EQUAL(IVR_ESTATE,
+                      ivr_flowmq_gateway_decode_media_command(
+                          g_codec, frame, frame_size, &decoded));
+}
+
+void test_media_command_encoder_rejects_invalid_fields(void) {
+    ivr_media_command_t command;
+    uint8_t frame[8192];
+    size_t frame_size = 99;
+    make_media_command(&command, IVR_MEDIA_COMMAND_PLAY);
+    command.text[0] = '\0';
+    TEST_ASSERT_EQUAL(IVR_EINVAL, ivr_room_bridge_encode_media_command(
+                                      g_codec, &command, frame, sizeof(frame),
+                                      &frame_size));
+    make_media_command(&command, IVR_MEDIA_COMMAND_INPUT_START);
+    command.input_generation = 0;
+    TEST_ASSERT_EQUAL(IVR_EINVAL, ivr_room_bridge_encode_media_command(
+                                      g_codec, &command, frame, sizeof(frame),
+                                      &frame_size));
+    make_media_command(&command, IVR_MEDIA_COMMAND_CANCEL);
+    command.input_id[0] = '\0';
+    TEST_ASSERT_EQUAL(IVR_EINVAL, ivr_room_bridge_encode_media_command(
+                                      g_codec, &command, frame, sizeof(frame),
+                                      &frame_size));
+    make_media_command(&command, IVR_MEDIA_COMMAND_CANCEL);
+    command.input_generation = 0;
+    TEST_ASSERT_EQUAL(IVR_EINVAL, ivr_room_bridge_encode_media_command(
+                                      g_codec, &command, frame, sizeof(frame),
+                                      &frame_size));
+    make_media_command(&command, IVR_MEDIA_COMMAND_CANCEL);
+    command.deadline_timeout_ms = 0;
+    TEST_ASSERT_EQUAL(IVR_EINVAL, ivr_room_bridge_encode_media_command(
+                                      g_codec, &command, frame, sizeof(frame),
+                                      &frame_size));
+    make_media_command(&command, IVR_MEDIA_COMMAND_CANCEL);
+    TEST_ASSERT_EQUAL(IVR_ENOSPC, ivr_room_bridge_encode_media_command(
+                                      g_codec, &command, frame,
+                                      IVR_FRAME_HEADER_SIZE, &frame_size));
+}
+
+void test_worker_inventory_query_and_page_roundtrip(void) {
+    ivr_worker_inventory_request_t request;
+    ivr_worker_inventory_request_t decoded_request;
+    ivr_worker_inventory_envelope_t result;
+    ivr_worker_inventory_envelope_t decoded_result;
+    uint8_t frame[64u * 1024u];
+    size_t frame_size = 0;
+
+    memset(&request, 0, sizeof(request));
+    snprintf(request.message_id, sizeof(request.message_id),
+             "inventory-query-1");
+    snprintf(request.worker_id, sizeof(request.worker_id), "worker-1");
+    request.query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    request.query.expected_revision = 77;
+    request.query.cursor = 4;
+    request.query.limit = 2;
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_room_bridge_encode_inventory_query(
+                                  g_codec, &request, frame, sizeof(frame),
+                                  &frame_size));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_decode_inventory_query(
+                                  g_codec, frame, frame_size,
+                                  &decoded_request));
+    TEST_ASSERT_EQUAL_STRING(request.message_id,
+                             decoded_request.message_id);
+    TEST_ASSERT_EQUAL_STRING(request.worker_id, decoded_request.worker_id);
+    TEST_ASSERT_EQUAL_UINT32(IVR_WORKER_INVENTORY_VERSION,
+                             decoded_request.query.inventory_version);
+    TEST_ASSERT_EQUAL_UINT64(77,
+                             decoded_request.query.expected_revision);
+    TEST_ASSERT_EQUAL_UINT32(4, decoded_request.query.cursor);
+    TEST_ASSERT_EQUAL_UINT32(2, decoded_request.query.limit);
+
+    memset(&result, 0, sizeof(result));
+    snprintf(result.message_id, sizeof(result.message_id), "%s",
+             request.message_id);
+    snprintf(result.worker_id, sizeof(result.worker_id), "%s",
+             request.worker_id);
+    result.status_code = IVR_OK;
+    result.page.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    result.page.revision = 77;
+    result.page.cursor = 4;
+    result.page.next_cursor = 9;
+    result.page.total_active = 3;
+    result.page.count = 2;
+    result.page.has_more = 1;
+    for (uint32_t i = 0; i < result.page.count; ++i) {
+        ivr_worker_inventory_record_t *record = &result.page.records[i];
+        snprintf(record->worker_id, sizeof(record->worker_id), "worker-1");
+        snprintf(record->worker_instance_id,
+                 sizeof(record->worker_instance_id), "instance-7");
+        record->worker_epoch = 7;
+        snprintf(record->provider_session_id,
+                 sizeof(record->provider_session_id), "session-%u", i);
+        snprintf(record->dialog_id, sizeof(record->dialog_id), "dialog-%u",
+                 i);
+        snprintf(record->room_id, sizeof(record->room_id), "room-%u", i);
+        snprintf(record->call_id, sizeof(record->call_id), "call-%u", i);
+        record->call_generation = i + 1u;
+        record->operation_generation = i + 10u;
+        if (i == 1u) {
+            snprintf(record->input_id, sizeof(record->input_id),
+                     "input-1");
+            record->input_generation = 21;
+            record->input_active = 1;
+        }
+        record->state = IVR_WORKER_RESOURCE_ACTIVE;
+        record->rebindable = 1;
+    }
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_encode_inventory_page(
+                                  g_codec, &result, frame, sizeof(frame),
+                                  &frame_size));
+    TEST_ASSERT_EQUAL(IVR_OK, ivr_room_decode_inventory_page(
+                                  g_codec, frame, frame_size,
+                                  &decoded_result));
+    TEST_ASSERT_EQUAL_STRING(result.message_id, decoded_result.message_id);
+    TEST_ASSERT_EQUAL_STRING(result.worker_id, decoded_result.worker_id);
+    TEST_ASSERT_EQUAL_UINT64(77, decoded_result.page.revision);
+    TEST_ASSERT_EQUAL_UINT32(4, decoded_result.page.cursor);
+    TEST_ASSERT_EQUAL_UINT32(9, decoded_result.page.next_cursor);
+    TEST_ASSERT_EQUAL_UINT32(3, decoded_result.page.total_active);
+    TEST_ASSERT_EQUAL_UINT32(2, decoded_result.page.count);
+    TEST_ASSERT_TRUE(decoded_result.page.has_more);
+    TEST_ASSERT_EQUAL_STRING("instance-7",
+                             decoded_result.page.records[1]
+                                 .worker_instance_id);
+    TEST_ASSERT_EQUAL_STRING("session-1",
+                             decoded_result.page.records[1]
+                                 .provider_session_id);
+    TEST_ASSERT_EQUAL_UINT64(7,
+                             decoded_result.page.records[1].worker_epoch);
+    TEST_ASSERT_EQUAL_UINT64(2,
+                             decoded_result.page.records[1].call_generation);
+    TEST_ASSERT_EQUAL_UINT64(
+        11, decoded_result.page.records[1].operation_generation);
+    TEST_ASSERT_EQUAL_INT(IVR_WORKER_RESOURCE_ACTIVE,
+                          decoded_result.page.records[1].state);
+    TEST_ASSERT_TRUE(decoded_result.page.records[1].rebindable);
+    TEST_ASSERT_TRUE(decoded_result.page.records[1].input_active);
+    TEST_ASSERT_EQUAL_STRING("input-1",
+                             decoded_result.page.records[1].input_id);
+    TEST_ASSERT_EQUAL_UINT64(
+        21, decoded_result.page.records[1].input_generation);
+}
+
+void test_worker_inventory_rejects_unknown_version_and_oversize(void) {
+    ivr_worker_inventory_request_t request;
+    ivr_worker_inventory_envelope_t result;
+    uint8_t frame[64u * 1024u];
+    size_t frame_size = 99;
+
+    memset(&request, 0, sizeof(request));
+    snprintf(request.message_id, sizeof(request.message_id), "query-invalid");
+    snprintf(request.worker_id, sizeof(request.worker_id), "worker-1");
+    request.query.inventory_version =
+        IVR_WORKER_INVENTORY_VERSION + 1u;
+    request.query.limit = 1;
+    TEST_ASSERT_EQUAL(IVR_EVERSION,
+                      ivr_room_bridge_encode_inventory_query(
+                          g_codec, &request, frame, sizeof(frame),
+                          &frame_size));
+    request.query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    request.query.limit = IVR_WORKER_INVENTORY_MAX_PAGE_SIZE + 1u;
+    TEST_ASSERT_EQUAL(IVR_EINVAL,
+                      ivr_room_bridge_encode_inventory_query(
+                          g_codec, &request, frame, sizeof(frame),
+                          &frame_size));
+
+    memset(&result, 0, sizeof(result));
+    snprintf(result.message_id, sizeof(result.message_id), "page-invalid");
+    snprintf(result.worker_id, sizeof(result.worker_id), "worker-1");
+    result.status_code = IVR_OK;
+    result.page.inventory_version = IVR_WORKER_INVENTORY_VERSION;
+    result.page.revision = 1;
+    result.page.count = IVR_WORKER_INVENTORY_MAX_PAGE_SIZE + 1u;
+    TEST_ASSERT_EQUAL(IVR_EINVAL,
+                      ivr_flowmq_gateway_encode_inventory_page(
+                          g_codec, &result, frame, sizeof(frame),
+                          &frame_size));
+}
+
 spec("test_ivr_flowmq") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
@@ -679,4 +974,9 @@ spec("test_ivr_flowmq") {
   TT_TEST(test_decode_command_result);
   TT_TEST(test_decode_result_rejects_command_frame);
   TT_TEST(test_dispatch_deadline_ok);
+  TT_TEST(test_media_commands_roundtrip);
+  TT_TEST(test_media_cancel_v1_is_rejected_without_fallback);
+  TT_TEST(test_media_command_encoder_rejects_invalid_fields);
+  TT_TEST(test_worker_inventory_query_and_page_roundtrip);
+  TT_TEST(test_worker_inventory_rejects_unknown_version_and_oversize);
 }

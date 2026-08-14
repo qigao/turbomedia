@@ -960,6 +960,57 @@ suite("TurboMedia IVR OpenAI provider") {
       check_tts_error_response(200, malformed_pcm, sizeof(malformed_pcm));
     }
 
+    it("reports an audio sink rejection instead of completing playback") {
+      mock_server_t server;
+      uint8_t pcm[MOCK_PCM_BYTES];
+      char base_url[128];
+      ivr_openai_config_t config;
+      ivr_openai_tts_t *tts_wrap = NULL;
+      turbo_tts_provider_t provider;
+      tts_observer_t observer;
+      turbo_tts_t *tts = NULL;
+      turbo_tts_request_t request;
+      turbo_tts_callbacks_t callbacks;
+
+      mock_server_init(&server);
+      mock_fill_pcm(pcm, sizeof(pcm));
+      server.tts_pcm = pcm;
+      server.tts_pcm_len = sizeof(pcm);
+      check_int_eq(mock_server_start(&server), 0);
+      mock_server_make_base_url(&server, base_url, sizeof(base_url));
+      memset(&config, 0, sizeof(config));
+      config.base_url = base_url;
+      config.sample_rate = 16000;
+      config.tts_frame_bytes = 640u;
+      config.timeout_ms = 5000;
+      memset(&observer, 0, sizeof(observer));
+      observer.sink_result = TURBO_SPEECH_ERR_PROVIDER;
+      memset(&callbacks, 0, sizeof(callbacks));
+      callbacks.on_audio = observe_tts_audio;
+      callbacks.on_complete = observe_tts_complete;
+      callbacks.on_error = observe_tts_error;
+      check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+      ivr_openai_tts_get_provider(tts_wrap, &provider);
+      tts = turbo_tts_create(&provider, &callbacks, &observer);
+      check_not_null(tts);
+      memset(&request, 0, sizeof(request));
+      request.text = "sink failure";
+      request.text_len = strlen(request.text);
+      request.rate = 1.0f;
+      request.pitch = 1.0f;
+
+      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+      check_int_eq(mock_wait_until(tts_done_cond, &observer, 5000), 0);
+      check_int_eq(observer.audio_count, 1);
+      check_int_eq(observer.error_count, 1);
+      check_int_eq(observer.complete_count, 0);
+      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
+
+      turbo_tts_destroy(tts);
+      ivr_openai_tts_free(tts_wrap);
+      mock_server_stop(&server);
+    }
+
     it("rejects input beyond the configured text cap without retention") {
       ivr_openai_config_t config;
       ivr_openai_tts_t *tts_wrap = NULL;

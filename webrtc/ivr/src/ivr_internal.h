@@ -37,19 +37,8 @@ int ivr_str_append(ivr_str_t *s, const char *data, size_t len);
 int ivr_str_set_u64(ivr_str_t *s, uint64_t value);
 
 /* ------------------------------------------------------------------ */
-/* Owned command / event                                               */
+/* Owned event                                                         */
 /* ------------------------------------------------------------------ */
-
-typedef struct {
-    ivr_str_t message_id;
-    ivr_str_t worker_id;
-    ivr_str_t room_id;
-    ivr_str_t call_id;
-    uint64_t call_generation;
-    uint64_t expected_room_version;
-    ivr_str_t command_type; /* e.g. "rtc.join", "conference.join" */
-    ivr_str_t args_json;    /* canonical JSON object or empty */
-} ivr_command_t;
 
 typedef enum {
     IVR_EVENT_KIND_STATE = 1,   /* room/rtc domain events */
@@ -87,75 +76,6 @@ int ivr_event_copy_from_view(ivr_event_t *e, const ivr_event_view_t *view);
 /* Normalize a raw event JSON (sequence/generation checks happen in session). */
 int ivr_event_classify(ivr_event_t *e);
 
-void ivr_command_init(ivr_command_t *c);
-void ivr_command_free(ivr_command_t *c);
-int ivr_command_set_from_view(ivr_command_t *c, const ivr_command_view_t *view);
-
-/* ------------------------------------------------------------------ */
-/* Engine interface (adapter boundary)                                 */
-/* ------------------------------------------------------------------ */
-
-/* Session hooks the engine uses for blocking VoiceXML input and terminal
-   checks. Implemented by the session; used by the TurboXML adapter. */
-typedef struct ivr_session_hooks {
-    void *context;
-    int (*input_wait)(void *ctx, uint64_t timeout_ms, ivr_str_t *out);
-    int (*begin_input_window)(void *ctx, const ivr_bytes_view_t *id);
-    void (*input_cancelled)(void *ctx, int succeeded);
-    void (*input_command_completed)(void *ctx, int submitted);
-    int (*is_terminal)(void *ctx);
-} ivr_session_hooks_t;
-typedef struct ivr_xml_engine ivr_xml_engine_t;
-
-/* Intents emitted by the engine; the sink forwards them to gateway/media. */
-typedef struct {
-    void *context;
-    /* Submit a command intent to the gateway. The sink copies. */
-    ivr_status_t (*command)(void *context, const ivr_command_t *command);
-    /* Play TTS text on the bot send track. The sink copies. */
-    ivr_status_t (*play_tts)(void *context, const ivr_call_ref_t *call,
-                             const ivr_bytes_view_t *text);
-    /* Cancel the current prompt/input (barge-in, noinput, terminal). */
-    ivr_status_t (*cancel_input)(void *context, const ivr_call_ref_t *call);
-    /* Tear down the bot peer (RTC closing). */
-    ivr_status_t (*stop_bot)(void *context, const ivr_call_ref_t *call);
-} ivr_engine_sink_t;
-
-typedef struct {
-    /* Create the engine for one session from a loaded content package.
-       `sink` is borrowed by the engine for its lifetime. */
-    ivr_xml_engine_t *(*create)(const void *content, const ivr_engine_sink_t *sink,
-                               const ivr_session_hooks_t *hooks,
-                               const ivr_call_ref_t *call);
-    /* Submit a normalized owned event (control thread only). */
-    ivr_status_t (*submit_event)(ivr_xml_engine_t *engine, const ivr_event_t *event);
-    /* Drive the engine; may block in VoiceXML collect_input. */
-    ivr_status_t (*step)(ivr_xml_engine_t *engine);
-    /* Terminal: cancel blocking input immediately. */
-    void (*request_terminal)(ivr_xml_engine_t *engine);
-    void (*destroy)(ivr_xml_engine_t *engine);
-} ivr_xml_engine_ops_t;
-
-/* ------------------------------------------------------------------ */
-/* Session internal interface (worker <-> session)                     */
-/* ------------------------------------------------------------------ */
-
-typedef struct ivr_session_ops {
-    void (*request_terminal)(ivr_session_t *session);
-    void (*destroy)(ivr_session_t *session);
-} ivr_session_ops_t;
-
-/* Per-session mutable state shared with the worker for drain bookkeeping. */
-typedef struct {
-    uint64_t call_generation;
-    uint64_t room_version;   /* last observed authoritative version */
-    uint64_t last_sequence;  /* last contiguous sequence delivered */
-    uint64_t dropped_stale_inputs; /* stale/late final counter */
-} ivr_session_stats_t;
-
-/* Input wait primitive used by the adapter blocking collect_input. */
-typedef struct ivr_input_waiter ivr_input_waiter_t;
-
 /* ------------------------------------------------------------------ */
 /* Bounded JSON string builder for hand-rolled encoders                */
 /* ------------------------------------------------------------------ */
@@ -184,6 +104,13 @@ void ivr_json_builder_string(ivr_json_builder_t *jb, const char *data,
 void ivr_json_builder_string_cstr(ivr_json_builder_t *jb, const char *s);
 /* 1 when no overflow occurred and the buffer holds a complete string. */
 int ivr_json_builder_ok(const ivr_json_builder_t *jb);
+
+/* Typed provider media commands include the opening operation generation.
+   Recording it at the same transition that publishes the ACTIVE slot lets a
+   restarted RoomService compare worker inventory with the next Iris command.
+   This entry point is internal so the installed embedded ABI remains stable. */
+ivr_status_t ivr_worker_open_media_operation(
+    ivr_worker_t *worker, const ivr_media_operation_t *operation);
 
 #ifdef __cplusplus
 }

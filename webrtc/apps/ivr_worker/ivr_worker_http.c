@@ -26,6 +26,8 @@ struct ivr_worker_http_s {
     iris_app_t *app;
     ivr_worker_health_t *health;
     ivr_worker_metrics_t *metrics;
+    ivr_worker_http_drain_fn drain_callback;
+    void *drain_context;
     turbo_thread_t thread;
     int thread_started;
     turbo_mutex_t lock;
@@ -91,6 +93,27 @@ static void handle_metrics(Req *request, Res *response) {
         return;
     }
     send_text(response, 200, text);
+}
+
+static void handle_drain(Req *request, Res *response) {
+    ivr_worker_http_t *server = http_from_request(request);
+    ivr_worker_http_drain_fn callback = NULL;
+    void *context = NULL;
+    if (server) {
+        turbo_mutex_lock(&server->lock);
+        callback = server->drain_callback;
+        context = server->drain_context;
+        turbo_mutex_unlock(&server->lock);
+    }
+    if (!callback) {
+        send_json(response, 503, "{\"accepted\":false}");
+        return;
+    }
+    if (callback(context) != 0) {
+        send_json(response, 503, "{\"accepted\":false}");
+        return;
+    }
+    send_json(response, 202, "{\"accepted\":true}");
 }
 
 static void mark_running(void *arg1, void *arg2) {
@@ -187,6 +210,7 @@ int ivr_worker_http_create(ivr_worker_health_t *health,
     iris_app_get(server->app, "/ready", handle_ready);
     iris_app_get(server->app, "/health", handle_health);
     iris_app_get(server->app, "/metrics", handle_metrics);
+    iris_app_post(server->app, "/drain", handle_drain);
     *out_server = server;
     return 0;
 }
@@ -202,6 +226,21 @@ int ivr_worker_http_set_metrics(ivr_worker_http_t *server,
         return -1;
     }
     server->metrics = metrics;
+    turbo_mutex_unlock(&server->lock);
+    return 0;
+}
+
+int ivr_worker_http_set_drain_handler(ivr_worker_http_t *server,
+                                      ivr_worker_http_drain_fn callback,
+                                      void *context) {
+    if (!server || !callback) return -1;
+    turbo_mutex_lock(&server->lock);
+    if (server->state != IVR_WORKER_HTTP_STOPPED) {
+        turbo_mutex_unlock(&server->lock);
+        return -1;
+    }
+    server->drain_callback = callback;
+    server->drain_context = context;
     turbo_mutex_unlock(&server->lock);
     return 0;
 }

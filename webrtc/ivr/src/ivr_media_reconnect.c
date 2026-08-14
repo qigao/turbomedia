@@ -78,6 +78,7 @@ ivr_status_t ivr_media_reconnect_start(ivr_media_reconnect_t *reconnect,
 static ivr_status_t schedule_retry(ivr_media_reconnect_t *reconnect,
                                    uint64_t now_ms,
                                    ivr_media_reconnect_event_t *out_event) {
+    int first_failure_in_episode = reconnect->state.attempts_started == 1u;
     if (reconnect->state.attempts_started >= reconnect->config.max_attempts ||
         now_ms >= reconnect->state.deadline_at_ms) {
         reconnect->state.exhausted = 1;
@@ -91,8 +92,29 @@ static ivr_status_t schedule_retry(ivr_media_reconnect_t *reconnect,
     if (reconnect->state.next_retry_at_ms > reconnect->state.deadline_at_ms) {
         reconnect->state.next_retry_at_ms = reconnect->state.deadline_at_ms;
     }
-    *out_event = IVR_MEDIA_RECONNECT_EVENT_DISCONNECTED;
+    /* A recovery episode is one business outage even when several transport
+       attempts fail. Only its first failure publishes DISCONNECTED. */
+    *out_event = first_failure_in_episode
+                     ? IVR_MEDIA_RECONNECT_EVENT_DISCONNECTED
+                     : IVR_MEDIA_RECONNECT_EVENT_NONE;
     return IVR_OK;
+}
+
+static void begin_stable_connection_recovery(
+    ivr_media_reconnect_t *reconnect, uint64_t now_ms) {
+    if (!reconnect || reconnect->state.retry_pending ||
+        !reconnect->state.whip_connected ||
+        !reconnect->state.whep_connected) {
+        return;
+    }
+
+    /* The deadline bounds one recovery episode, not the lifetime of a
+       healthy dialog. A fault after a long stable period receives the same
+       bounded retry budget as a fault immediately after setup. */
+    reconnect->state.attempts_started = 1u;
+    reconnect->state.next_retry_at_ms = 0u;
+    reconnect->state.deadline_at_ms =
+        add_saturating(now_ms, reconnect->config.total_deadline_ms);
 }
 
 ivr_status_t ivr_media_reconnect_on_state(
@@ -113,9 +135,14 @@ ivr_status_t ivr_media_reconnect_on_state(
     if (reconnect->state.exhausted) {
         return IVR_ESTATE;
     }
+    was_connected = reconnect->state.whip_connected &&
+                    reconnect->state.whep_connected;
     if (link == IVR_MEDIA_LINK_WHEP &&
         error_code == IVR_MEDIA_ERROR_INPUT_STALLED) {
         reconnect->state.input_stalls++;
+        if (was_connected) {
+            begin_stable_connection_recovery(reconnect, now_ms);
+        }
         if (!reconnect->state.retry_pending) {
             ivr_media_reconnect_event_t ignored;
             (void)schedule_retry(reconnect, now_ms, &ignored);
@@ -123,8 +150,6 @@ ivr_status_t ivr_media_reconnect_on_state(
         *out_event = IVR_MEDIA_RECONNECT_EVENT_INPUT_STALLED;
         return IVR_OK;
     }
-    was_connected = reconnect->state.whip_connected &&
-                    reconnect->state.whep_connected;
     if (state == IVR_MEDIA_LINK_CONNECTED) {
         if (link == IVR_MEDIA_LINK_WHIP) {
             reconnect->state.whip_connected = 1;
@@ -140,6 +165,9 @@ ivr_status_t ivr_media_reconnect_on_state(
     }
     if (state == IVR_MEDIA_LINK_DISCONNECTED ||
         state == IVR_MEDIA_LINK_FAILED || state == IVR_MEDIA_LINK_CLOSED) {
+        if (was_connected) {
+            begin_stable_connection_recovery(reconnect, now_ms);
+        }
         if (link == IVR_MEDIA_LINK_WHIP) {
             reconnect->state.whip_connected = 0;
         } else {

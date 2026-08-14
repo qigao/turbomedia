@@ -90,6 +90,43 @@ typedef struct {
 
 typedef ivr_dispatch_result_t ivr_release_result_t;
 
+#define IVR_MEDIA_EVENT_PAYLOAD_CAPACITY 4096u
+
+/* Owning media observations forwarded toward the Iris/provider adapter.
+   These are transport facts only; consuming them must not advance RoomService
+   business state. */
+typedef struct {
+    char message_id[128];
+    char tenant_id[IVR_MEDIA_ID_CAPACITY];
+    char provider_session_id[IVR_MEDIA_ID_CAPACITY];
+    char dialog_id[IVR_MEDIA_ID_CAPACITY];
+    char worker_id[128];
+    char room_id[IVR_MEDIA_ID_CAPACITY];
+    char call_id[IVR_MEDIA_ID_CAPACITY];
+    uint64_t call_generation;
+    uint64_t operation_generation;
+    int status_code;
+    char error_code[64];
+    char error_message[128];
+} ivr_media_command_result_t;
+
+typedef struct {
+    char event_id[128];
+    char tenant_id[IVR_MEDIA_ID_CAPACITY];
+    char provider_session_id[IVR_MEDIA_ID_CAPACITY];
+    char dialog_id[IVR_MEDIA_ID_CAPACITY];
+    char worker_id[128];
+    char room_id[IVR_MEDIA_ID_CAPACITY];
+    char call_id[IVR_MEDIA_ID_CAPACITY];
+    uint64_t call_generation;
+    uint64_t sequence;
+    char event_type[128];
+    uint64_t occurred_at_ms;
+    char input_id[IVR_MEDIA_ID_CAPACITY];
+    char input_value[IVR_MEDIA_ID_CAPACITY];
+    char payload_json[IVR_MEDIA_EVENT_PAYLOAD_CAPACITY];
+} ivr_media_event_t;
+
 typedef struct {
     void *context;
     /* Current authoritative room version; 0 skips the expected-version check. */
@@ -103,6 +140,16 @@ typedef struct {
                                        const ivr_dispatch_result_t *result);
     ivr_status_t (*on_release_result)(void *ctx,
                                       const ivr_release_result_t *result);
+    /* Authenticated media facts. The bridge invokes these on its owner thread
+       and never interprets them as workflow transitions. */
+    ivr_status_t (*on_media_result)(
+        void *ctx, const ivr_media_command_result_t *result);
+    ivr_status_t (*on_media_event)(void *ctx,
+                                   const ivr_media_event_t *event);
+    /* Authenticated worker inventory page. The page and strings are owning
+       copies valid for the callback; retain by copying if needed later. */
+    ivr_status_t (*on_inventory_page)(
+        void *ctx, const ivr_worker_inventory_envelope_t *result);
     /* Periodic owner-loop tick for bounded deadlines/lease transitions. */
     void (*on_tick)(void *ctx);
 } ivr_room_command_handler_t;
@@ -157,6 +204,12 @@ ivr_status_t ivr_room_decode_dispatch_result(DataBind *codec,
 ivr_status_t ivr_room_decode_release_result(DataBind *codec,
                                             const uint8_t *frame, size_t len,
                                             ivr_release_result_t *out);
+ivr_status_t ivr_room_decode_media_result(
+    DataBind *codec, const uint8_t *frame, size_t len,
+    ivr_media_command_result_t *out);
+ivr_status_t ivr_room_decode_media_event(DataBind *codec,
+                                         const uint8_t *frame, size_t len,
+                                         ivr_media_event_t *out);
 
 /* Pure encode of a ConferenceParticipantJoinedEventV1 domain event frame. */
 ivr_status_t ivr_room_bridge_encode_participant_joined(
@@ -225,6 +278,27 @@ ivr_status_t ivr_room_bridge_release_call(
     const char *room_id, const char *call_id, uint64_t call_generation,
     const char *reason);
 
+/* Encode/send one Iris-owned media command to the authenticated worker route.
+   No RoomService business state is read or changed by these functions. */
+ivr_status_t ivr_room_bridge_encode_media_command(
+    DataBind *codec, const ivr_media_command_t *command, uint8_t *frame,
+    size_t frame_cap, size_t *out_len);
+ivr_status_t ivr_room_bridge_send_media_command(
+    ivr_room_bridge_t *bridge, const ivr_media_command_t *command);
+
+/* RoomService-side inventory query and result codec. The worker route must be
+   registered; send performs no waiting and the result arrives through
+   on_inventory_page on the bridge owner thread. */
+ivr_status_t ivr_room_bridge_encode_inventory_query(
+    DataBind *codec, const ivr_worker_inventory_request_t *request,
+    uint8_t *frame, size_t frame_capacity, size_t *out_size);
+ivr_status_t ivr_room_bridge_request_inventory(
+    ivr_room_bridge_t *bridge,
+    const ivr_worker_inventory_request_t *request);
+ivr_status_t ivr_room_decode_inventory_page(
+    DataBind *codec, const uint8_t *frame, size_t len,
+    ivr_worker_inventory_envelope_t *out);
+
 /* True only while the registered worker still has a live FlowMQ peer and a
    reusable ROUTER route. A disconnect invalidates the captured route before
    another dispatch can select it; worker.sync after reconnect refreshes it. */
@@ -246,6 +320,12 @@ typedef struct {
     uint64_t version_rejects;
     uint64_t auth_rejects;
     uint64_t dispatch_result_rejects;
+    uint64_t media_results;
+    uint64_t media_result_rejects;
+    uint64_t media_events;
+    uint64_t media_event_rejects;
+    uint64_t inventory_pages;
+    uint64_t inventory_page_rejects;
 } ivr_room_bridge_stats_t;
 
 /* Thread-safe, read-only bounded-queue observation. */

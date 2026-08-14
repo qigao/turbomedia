@@ -4,7 +4,12 @@
 
 static ivr_dtmf_ingress_t *g_ingress;
 static const ivr_call_ref_t g_call = {
-    {"room-1", 6}, {"call-1", 6}, 7, 0};
+    .provider_session_id = {"session-1", 9},
+    .dialog_id = {"dialog-1", 8},
+    .room_id = {"room-1", 6},
+    .call_id = {"call-1", 6},
+    .call_generation = 7,
+    .expected_room_version = 0};
 
 void setUp(void) {
     ivr_dtmf_ingress_config_t config;

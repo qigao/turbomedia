@@ -6,11 +6,8 @@ project(
   VERSION 1.0.0
   LANGUAGES C)
 
-find_package(TurboXML CONFIG REQUIRED)
-
 add_library(turbo_media_ivr STATIC
   src/ivr_acl.c
-  src/ivr_content.c
   src/ivr_certificate_identity.c
   src/ivr_fmq_security.c
   src/ivr_dtmf_rtp.c
@@ -20,9 +17,7 @@ add_library(turbo_media_ivr STATIC
   src/ivr_media_reconnect.c
   src/ivr_media_supervisor.c
   src/ivr_openai_provider.c
-  src/ivr_session.c
   src/ivr_thread.c
-  src/ivr_turboxml_adapter.c
   src/ivr_util.c
   src/ivr_worker.c)
 target_include_directories(
@@ -32,7 +27,7 @@ target_include_directories(
           ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC TurboXML::turboxml TurboUtils::DataBind TurboUtils::Parser
+  PUBLIC TurboParser::DataBind TurboParser::Parser
          TurboUtils::Core TurboMedia::Speech TurboHttp::HttpClient
   PRIVATE Threads::Threads)
 set_target_properties(turbo_media_ivr PROPERTIES FOLDER "turbomedia/components")
@@ -58,10 +53,6 @@ set_target_properties(turbo_media_ivr_rtc PROPERTIES FOLDER "turbomedia/componen
 
 file(
   TO_CMAKE_PATH
-  "${CMAKE_CURRENT_SOURCE_DIR}/content"
-  IVR_TEST_CONTENT_ROOT)
-file(
-  TO_CMAKE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v1.schema"
   IVR_TEST_SCHEMA_PATH)
 
@@ -70,7 +61,8 @@ file(
 # the canonical schema. FlowMQ messages require these generated typed bindings,
 # so an IVR build fails fast when the compiler is unavailable.
 # ---------------------------------------------------------------------------
-find_program(TBE_COMPILER_EXECUTABLE NAMES tbe_compiler)
+find_program(TBE_COMPILER_EXECUTABLE NAMES tbe_compiler
+             HINTS "${TURBOPARSER_ROOT}/bin")
 if(NOT TBE_COMPILER_EXECUTABLE)
   message(FATAL_ERROR
     "IVR requires tbe_compiler for the canonical FlowMQ wire schema")
@@ -93,7 +85,7 @@ target_include_directories(
   PUBLIC ${IVR_GEN_DIR})
 target_link_libraries(
   turbo_media_ivr_schema
-  PUBLIC TurboUtils::DataBind TurboUtils::Core)
+  PUBLIC TurboParser::DataBind TurboUtils::Core)
 set_target_properties(
   turbo_media_ivr_schema
   PROPERTIES FOLDER "turbomedia/components")
@@ -104,13 +96,23 @@ message(STATUS "IVR codegen: ${TBE_COMPILER_EXECUTABLE}")
 # FlowMQ command/event adapters. FLOWMQ_ROOT is supplied by CMakeUserPresets;
 # no deprecated package-root variable or implicit environment fallback exists.
 # ---------------------------------------------------------------------------
-# Honor the user-facing FLOWMQ_ROOT cache var (CMakeUserPresets) for both
-# package names (FlowMQ and TurboFlow export their configs under
-# <prefix>/lib/cmake/<name>/).
+# FlowMQ transport and TurboFlow storage/legacy FMQ have independent package
+# roots. Do not resolve FlowMQ from the TurboFlow installation.
 if(FLOWMQ_ROOT AND NOT "${FLOWMQ_ROOT}" IN_LIST CMAKE_PREFIX_PATH)
   list(APPEND CMAKE_PREFIX_PATH "${FLOWMQ_ROOT}")
 endif()
+if(FLOWMQ_ROOT)
+  set(FlowMQ_DIR "${FLOWMQ_ROOT}/lib/cmake/FlowMQ" CACHE PATH
+      "Independent FlowMQ package directory" FORCE)
+endif()
 find_package(FlowMQ CONFIG REQUIRED)
+if(TURBOFLOW_ROOT AND NOT "${TURBOFLOW_ROOT}" IN_LIST CMAKE_PREFIX_PATH)
+  list(APPEND CMAKE_PREFIX_PATH "${TURBOFLOW_ROOT}")
+endif()
+if(TURBOFLOW_ROOT)
+  set(TurboFlow_DIR "${TURBOFLOW_ROOT}/lib/cmake/TurboFlow" CACHE PATH
+      "TurboFlow storage package directory" FORCE)
+endif()
 # The installed TurboFlow package references RulesForge::rules_forge in the
 # TurboFlow::Flow link interface but does not install its config. Provide a
 # thin empty imported target so the package can be loaded; the IVR gateway
@@ -119,9 +121,9 @@ if(NOT TARGET RulesForge::rules_forge)
   add_library(RulesForge::rules_forge INTERFACE IMPORTED)
 endif()
 find_package(TurboFlow CONFIG REQUIRED)
-if(NOT TARGET TurboFlow::FMQ OR NOT TARGET FlowMQ::Protocol)
+if(NOT TARGET TurboFlow::FMQ OR NOT TARGET FlowMQ::FlowMQ)
   message(FATAL_ERROR
-    "IVR requires TurboFlow::FMQ and FlowMQ::Protocol package targets")
+    "IVR requires legacy TurboFlow::FMQ internally and independent FlowMQ::FlowMQ transport")
 endif()
 target_sources(
   turbo_media_ivr
@@ -131,7 +133,7 @@ target_sources(
 target_compile_definitions(turbo_media_ivr PUBLIC TURBO_MEDIA_HAS_FLOWMQ)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC TurboFlow::FMQ FlowMQ::Protocol turbo_media_ivr_schema)
+  PUBLIC TurboFlow::FMQ FlowMQ::FlowMQ turbo_media_ivr_schema)
 # Visible to sibling subdirectories (RoomService app) processed after this one.
 set(TURBO_MEDIA_HAS_IVR_FMQ ON CACHE INTERNAL
     "IVR FlowMQ gateway/bridge/adapter available")
@@ -144,8 +146,7 @@ function(turbo_media_ivr_configure_test test_name test_source)
     LIBS turbo_media_ivr TurboUtils::TinyTest
     LIBS turbo_media_ivr TurboUtils::TinyTest
          $<$<PLATFORM_ID:Windows>:ws2_32>
-    DEFS IVR_TEST_CONTENT_ROOT="${IVR_TEST_CONTENT_ROOT}"
-         IVR_TEST_SCHEMA_PATH="${IVR_TEST_SCHEMA_PATH}"
+    DEFS IVR_TEST_SCHEMA_PATH="${IVR_TEST_SCHEMA_PATH}"
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src
              ${CMAKE_CURRENT_SOURCE_DIR}/include
              ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include
@@ -159,9 +160,8 @@ function(turbo_media_ivr_configure_test test_name test_source)
       TARGET ${test_name}
       POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
-              $<TARGET_FILE:TurboXML::turboxml>
-              $<TARGET_FILE:TurboUtils::DataBind>
-              $<TARGET_FILE:TurboUtils::Parser>
+              $<TARGET_FILE:TurboParser::DataBind>
+              $<TARGET_FILE:TurboParser::Parser>
               $<TARGET_FILE:TurboUtils::Core>
               $<TARGET_FILE:TurboMedia::Speech>
               $<TARGET_FILE_DIR:${test_name}>
@@ -172,19 +172,14 @@ endfunction()
 turbo_media_ivr_configure_test(test_ivr_frame tests/test_ivr_frame.c)
 turbo_media_ivr_configure_test(test_ivr_protocol tests/test_ivr_protocol.c)
 turbo_media_ivr_configure_test(test_ivr_schema tests/test_ivr_schema.c)
-turbo_media_ivr_configure_test(test_ivr_content tests/test_ivr_content.c)
 turbo_media_ivr_configure_test(test_ivr_acl tests/test_ivr_acl.c)
 turbo_media_ivr_configure_test(test_ivr_dtmf_rtp tests/test_ivr_dtmf_rtp.c)
-turbo_media_ivr_configure_test(test_ivr_session tests/test_ivr_session.c)
 turbo_media_ivr_configure_test(test_ivr_worker tests/test_ivr_worker.c)
-turbo_media_ivr_configure_test(test_ivr_turboxml tests/test_ivr_turboxml.c)
 turbo_media_ivr_configure_test(test_ivr_media_bot tests/test_ivr_media_bot.c)
 turbo_media_ivr_configure_test(test_ivr_media_reconnect
                                tests/test_ivr_media_reconnect.c)
 turbo_media_ivr_configure_test(test_ivr_media_supervisor
                                tests/test_ivr_media_supervisor.c)
-turbo_media_ivr_configure_test(test_ivr_worker_media_loop
-                               tests/test_ivr_worker_media_loop.c)
 turbo_media_ivr_configure_test(test_ivr_openai_provider
                                tests/test_ivr_openai_provider.c)
 target_sources(test_ivr_openai_provider PRIVATE

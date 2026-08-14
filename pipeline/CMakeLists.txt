@@ -10,8 +10,8 @@ target_include_directories(
 target_link_libraries(
   turbo_media_pipeline
   PUBLIC TurboUtils::Core
-  PRIVATE TurboUtils::DataBind
-          TurboUtils::Parser
+  PRIVATE TurboParser::DataBind
+          TurboParser::Parser
           TurboMedia::Server
           TurboMedia::Transport
           TurboMediaFFmpeg::avformat

@@ -1,0 +1,22 @@
+version: 1
+
+# Development-only durable Iris media-event outbox. Production deployments
+# should keep the same channel contract and select redis or postgresql.
+# max_records is a hard admission bound exported as record_capacity; alert on
+# total pending + in-flight + dead records before this limit is reached.
+channels:
+  iris.media_events:
+    kind: record_store
+    config:
+      backend: sqlite
+      database_path: room-service-iris-events.sqlite3
+      namespace_name: iris.media_events
+      busy_timeout_ms: 5000
+      max_records: 10000
+      max_bytes: 67108864
+      max_item_bytes: 16384
+      max_key_size: 128
+      max_value_size: 16384
+      max_batch_size: 256
+
+adapters: {}

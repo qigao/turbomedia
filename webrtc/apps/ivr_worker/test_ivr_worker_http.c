@@ -28,12 +28,25 @@ static int get_path(int port, const char *path,
                                   NULL, NULL, NULL, response);
 }
 
+static int post_path(int port, const char *path,
+                     ivr_http_media_response_t *response) {
+    return ivr_http_media_request("127.0.0.1", port, "POST", path, NULL,
+                                  NULL, NULL, NULL, response);
+}
+
+static int request_drain(void *context) {
+    int *calls = (int *)context;
+    ++*calls;
+    return 0;
+}
+
 void test_management_endpoints_follow_health_snapshot(void) {
     ivr_worker_health_t health;
     ivr_worker_health_snapshot_t snapshot;
     ivr_worker_metrics_t metrics;
     ivr_worker_http_t *server = NULL;
     ivr_http_media_response_t response;
+    int drain_calls = 0;
     int port;
 
     TEST_ASSERT_EQUAL_INT(0, ivr_worker_health_init(&health, 8));
@@ -41,6 +54,9 @@ void test_management_endpoints_follow_health_snapshot(void) {
     TEST_ASSERT_EQUAL_INT(0, ivr_worker_http_create(&health, &server));
     TEST_ASSERT_NOT_NULL(server);
     TEST_ASSERT_EQUAL_INT(0, ivr_worker_http_set_metrics(server, &metrics));
+    TEST_ASSERT_EQUAL_INT(
+        0, ivr_worker_http_set_drain_handler(server, request_drain,
+                                             &drain_calls));
     port = start_on_available_port(server);
     TEST_ASSERT_GREATER_THAN(0, port);
 
@@ -101,6 +117,8 @@ void test_management_endpoints_follow_health_snapshot(void) {
     ivr_worker_metrics_set_gauge_max(
         &metrics, IVR_WORKER_GAUGE_REPLY_QUEUE_ITEMS_HIGH_WATER, 2);
     ivr_worker_metrics_set_gauge(&metrics, IVR_WORKER_GAUGE_MEDIA_PEERS, 6);
+    ivr_worker_metrics_set_gauge(
+        &metrics, IVR_WORKER_GAUGE_MEDIA_LINKS_CONNECTED, 4);
     ivr_worker_metrics_observe_ms(&metrics, IVR_WORKER_HISTOGRAM_DISPATCH, 0);
     ivr_worker_metrics_observe_ms(&metrics, IVR_WORKER_HISTOGRAM_DISPATCH, 25);
     ivr_worker_metrics_observe_ms(&metrics, IVR_WORKER_HISTOGRAM_DISPATCH,
@@ -127,6 +145,8 @@ void test_management_endpoints_follow_health_snapshot(void) {
     TEST_ASSERT_NOT_NULL(strstr(
         response.body, "turbo_ivr_worker_media_peers 6\n"));
     TEST_ASSERT_NOT_NULL(strstr(
+        response.body, "turbo_ivr_worker_media_links_connected 4\n"));
+    TEST_ASSERT_NOT_NULL(strstr(
         response.body,
         "turbo_ivr_worker_dispatch_duration_seconds_bucket{le=\"0.001\"} 1\n"));
     TEST_ASSERT_NOT_NULL(strstr(
@@ -142,6 +162,14 @@ void test_management_endpoints_follow_health_snapshot(void) {
     TEST_ASSERT_NULL(strstr(response.body, "room-42"));
     TEST_ASSERT_NULL(strstr(response.body, "call-42"));
     TEST_ASSERT_NULL(strstr(response.body, "message_id"));
+
+    TEST_ASSERT_EQUAL_INT(0, post_path(port, "/drain", &response));
+    TEST_ASSERT_EQUAL_INT(202, response.status);
+    TEST_ASSERT_NOT_NULL(strstr(response.body, "\"accepted\":true"));
+    TEST_ASSERT_EQUAL_INT(1, drain_calls);
+    TEST_ASSERT_EQUAL_INT(
+        -1, ivr_worker_http_set_drain_handler(server, request_drain,
+                                              &drain_calls));
 
     TEST_ASSERT_EQUAL_INT(0, ivr_worker_health_snapshot(&health, &snapshot));
     snapshot.draining = 1;
@@ -179,6 +207,7 @@ void test_metrics_dependency_must_be_set_before_start(void) {
     ivr_worker_metrics_t metrics;
     ivr_worker_http_t *server = NULL;
     int port;
+    ivr_http_media_response_t response;
 
     TEST_ASSERT_EQUAL_INT(0, ivr_worker_health_init(&health, 1));
     ivr_worker_metrics_init(&metrics);
@@ -186,6 +215,9 @@ void test_metrics_dependency_must_be_set_before_start(void) {
     port = start_on_available_port(server);
     TEST_ASSERT_GREATER_THAN(0, port);
     TEST_ASSERT_EQUAL_INT(-1, ivr_worker_http_set_metrics(server, &metrics));
+    TEST_ASSERT_EQUAL_INT(0, post_path(port, "/drain", &response));
+    TEST_ASSERT_EQUAL_INT(503, response.status);
+    TEST_ASSERT_NOT_NULL(strstr(response.body, "\"accepted\":false"));
     ivr_worker_http_stop(server);
     ivr_worker_http_destroy(server);
     ivr_worker_health_destroy(&health);

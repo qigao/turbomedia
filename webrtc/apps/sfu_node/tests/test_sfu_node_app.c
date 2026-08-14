@@ -964,6 +964,7 @@ void test_sfu_node_webrtc_session_accepts_offer_and_generates_answer(void) {
   char *session_json = NULL;
   char offer_sdp[16384];
   const char *answer_sdp = NULL;
+  turbo_sfu_node_room_stats_t room_stats;
 
   sfu_node_app_config_init(&sfu_config);
   sfu_config.bind_host = "0.0.0.0";
@@ -1029,11 +1030,23 @@ void test_sfu_node_webrtc_session_accepts_offer_and_generates_answer(void) {
   TEST_ASSERT_NOT_NULL(strstr(answer_sdp, "a=recvonly"));
   TEST_ASSERT_EQUAL_INT(1, json_bool_value(session, "remote_description_set", 0));
   TEST_ASSERT_EQUAL_INT(1, json_int_value(session, "remote_track_count", 0));
+  memset(&room_stats, 0, sizeof(room_stats));
+  TEST_ASSERT_EQUAL_INT(
+      0, turbo_sfu_node_get_room_stats(node, "room-webrtc", &room_stats));
+  TEST_ASSERT_EQUAL_INT(1, room_stats.published_track_count);
   TEST_ASSERT_TRUE(json_int_value(session, "local_candidate_count", -1) >= 0);
   TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_set_remote_description(
                                offerer, "answer", answer_sdp));
   turbo_free_json(&root);
   root = NULL;
+
+  TEST_ASSERT_EQUAL_INT(
+      0, sfu_node_app_server_remove_webrtc_session(
+             sfu_server, "room-webrtc", "sess-alice"));
+  memset(&room_stats, 0, sizeof(room_stats));
+  TEST_ASSERT_EQUAL_INT(
+      0, turbo_sfu_node_get_room_stats(node, "room-webrtc", &room_stats));
+  TEST_ASSERT_EQUAL_INT(0, room_stats.published_track_count);
 
   free_offerer_candidates(&offerer_state);
   turbo_peer_connection_destroy(offerer);

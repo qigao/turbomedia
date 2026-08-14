@@ -231,38 +231,3 @@ int ivr_event_classify(ivr_event_t *e) {
     }
     return 0;
 }
-
-void ivr_command_init(ivr_command_t *c) {
-    memset(c, 0, sizeof(*c));
-    ivr_str_init(&c->message_id);
-    ivr_str_init(&c->worker_id);
-    ivr_str_init(&c->room_id);
-    ivr_str_init(&c->call_id);
-    ivr_str_init(&c->command_type);
-    ivr_str_init(&c->args_json);
-}
-
-void ivr_command_free(ivr_command_t *c) {
-    ivr_str_free(&c->message_id);
-    ivr_str_free(&c->worker_id);
-    ivr_str_free(&c->room_id);
-    ivr_str_free(&c->call_id);
-    ivr_str_free(&c->command_type);
-    ivr_str_free(&c->args_json);
-}
-
-int ivr_command_set_from_view(ivr_command_t *c, const ivr_command_view_t *view) {
-    if (!c || !view) {
-        return -1;
-    }
-    if (ivr_str_assign(&c->message_id, view->message_id.data, view->message_id.size) < 0 ||
-        ivr_str_assign(&c->command_type, view->command_type.data, view->command_type.size) < 0 ||
-        ivr_str_assign(&c->room_id, view->call.room_id.data, view->call.room_id.size) < 0 ||
-        ivr_str_assign(&c->call_id, view->call.call_id.data, view->call.call_id.size) < 0 ||
-        ivr_str_assign(&c->args_json, view->args_json.data, view->args_json.size) < 0) {
-        return -1;
-    }
-    c->call_generation = view->call.call_generation;
-    c->expected_room_version = view->call.expected_room_version;
-    return 0;
-}

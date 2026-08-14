@@ -9,6 +9,7 @@
 
 typedef struct {
     char participant_id[TURBO_PARTICIPANT_ID_MAX];
+    uint64_t call_generation;
     char user_id[TURBO_USER_ID_MAX];
     char display_name[TURBO_DISPLAY_NAME_MAX];
     turbo_participant_role_t role;
@@ -72,6 +73,7 @@ typedef struct {
 
 typedef struct {
     char room_id[TURBO_ROOM_ID_MAX];
+    uint64_t room_generation;
     turbo_room_type_t room_type;
     turbo_room_status_t status;
     char assigned_sfu_node[TURBO_NODE_ID_MAX];
@@ -872,6 +874,7 @@ static void fill_participant_summary(const room_participant_t *participant,
     memset(summary, 0, sizeof(*summary));
     copy_string(summary->participant_id, sizeof(summary->participant_id),
                 participant->participant_id);
+    summary->call_generation = participant->call_generation;
     copy_string(summary->user_id, sizeof(summary->user_id), participant->user_id);
     copy_string(summary->display_name, sizeof(summary->display_name),
                 participant->display_name);
@@ -978,6 +981,7 @@ int turbo_room_service_create_room(turbo_room_service_t *service,
     room = &service->rooms[service->room_count++];
     memset(room, 0, sizeof(*room));
     copy_string(room->room_id, sizeof(room->room_id), config->room_id);
+    room->room_generation = config->room_generation;
     room->room_type = config->room_type;
     room->status = TURBO_ROOM_STATUS_OPEN;
     room->recording_state = TURBO_ROOM_RECORDING_STOPPED;
@@ -1107,6 +1111,7 @@ int turbo_room_service_get_room_summary(turbo_room_service_t *service, const cha
 
     memset(summary, 0, sizeof(*summary));
     copy_string(summary->room_id, sizeof(summary->room_id), room->room_id);
+    summary->room_generation = room->room_generation;
     summary->room_type = room->room_type;
     summary->status = room->status;
     copy_string(summary->assigned_sfu_node, sizeof(summary->assigned_sfu_node),
@@ -1160,6 +1165,7 @@ int turbo_room_service_add_participant(turbo_room_service_t *service, const char
     memset(participant, 0, sizeof(*participant));
     copy_string(participant->participant_id, sizeof(participant->participant_id),
                 config->participant_id);
+    participant->call_generation = config->call_generation;
     copy_string(participant->user_id, sizeof(participant->user_id), config->user_id);
     copy_string(participant->display_name, sizeof(participant->display_name),
                 config->display_name);

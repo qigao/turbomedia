@@ -4,9 +4,6 @@
 #include "turbo_sfu_node.h"
 #include "turbo_peer_connection.h"
 #include "turbo_rtp.h"
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-#include "rtc_workflow_adapter.h"
-#endif
 #include <platform.h>
 #include <turbo_thread.h>
 #include <ctype.h>
@@ -111,12 +108,13 @@ typedef struct {
     int local_candidate_capacity;
     uint64_t resource_version;
     int owns_node_session;
+    int published_track_registration_failed;
+    char auto_published_track_ids[TURBO_MEDIA_MAX_TRACKS]
+                                 [TURBO_TRACK_ID_MAX];
+    int auto_published_track_count;
     sfu_node_relay_track_t *relay_tracks;
     int relay_track_count;
     int relay_track_capacity;
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    rtc_workflow_context_t *workflow_ctx;
-#endif
 } sfu_node_webrtc_session_t;
 
 typedef enum {
@@ -906,6 +904,77 @@ static void sync_track_to_subscribers_locked(sfu_node_app_server_t *server,
     }
 }
 
+static int register_published_track_metadata_locked(
+    sfu_node_app_server_t *server, const char *room_id,
+    const char *participant_id, const char *track_id, uint32_t main_ssrc,
+    const uint32_t *layer_ssrcs, int layer_count,
+    turbo_room_track_kind_t kind, turbo_codec_type_t codec,
+    uint8_t payload_type) {
+    sfu_node_published_track_t *published_track;
+    int i;
+
+    if (!server || !room_id || !participant_id || !track_id ||
+        main_ssrc == 0 || kind == 0 || codec == 0) {
+        return -1;
+    }
+    published_track = find_published_track_locked(server, room_id, track_id);
+    if (!published_track) {
+        if (ensure_capacity((void **)&server->published_tracks,
+                            &server->published_track_capacity,
+                            sizeof(sfu_node_published_track_t),
+                            server->published_track_count + 1) != 0) {
+            return -1;
+        }
+        published_track =
+            &server->published_tracks[server->published_track_count++];
+        memset(published_track, 0, sizeof(*published_track));
+        copy_string(published_track->room_id,
+                    sizeof(published_track->room_id), room_id);
+        copy_string(published_track->participant_id,
+                    sizeof(published_track->participant_id), participant_id);
+        copy_string(published_track->track_id,
+                    sizeof(published_track->track_id), track_id);
+    }
+    published_track->main_ssrc = main_ssrc;
+    published_track->layer_count =
+        (layer_count > 0 && layer_count <= 3) ? layer_count : 1;
+    for (i = 0; i < published_track->layer_count; ++i) {
+        published_track->layer_ssrcs[i] =
+            (layer_ssrcs && layer_count > 0) ? layer_ssrcs[i] : main_ssrc;
+    }
+    published_track->kind = kind;
+    published_track->codec = codec;
+    published_track->payload_type = payload_type;
+    published_track->metadata_ready = 1;
+    sync_track_to_subscribers_locked(server, published_track);
+    return 0;
+}
+
+static int unregister_published_track_metadata_locked(
+    sfu_node_app_server_t *server, const char *room_id,
+    const char *track_id) {
+    int i;
+
+    if (!server || !room_id || !track_id) {
+        return -1;
+    }
+    for (i = 0; i < server->published_track_count; ++i) {
+        if (strcmp(server->published_tracks[i].room_id, room_id) != 0 ||
+            strcmp(server->published_tracks[i].track_id, track_id) != 0) {
+            continue;
+        }
+        if (i + 1 < server->published_track_count) {
+            memmove(&server->published_tracks[i],
+                    &server->published_tracks[i + 1],
+                    (size_t)(server->published_track_count - i - 1) *
+                        sizeof(sfu_node_published_track_t));
+        }
+        server->published_track_count--;
+        return 0;
+    }
+    return -1;
+}
+
 /* Desired subscriptions may arrive before the WHEP receiver session. Apply
    them to the core SFU only after both the receiver and published track are
    present, then attach the corresponding relay tracks before SDP answer
@@ -1070,6 +1139,14 @@ static void destroy_webrtc_session(sfu_node_app_server_t *server,
     }
 
     if (server && server->node) {
+        for (i = 0; i < session->auto_published_track_count; ++i) {
+            const char *track_id = session->auto_published_track_ids[i];
+            (void)turbo_sfu_node_unregister_published_track(
+                server->node, session->room_id, track_id);
+            (void)unregister_published_track_metadata_locked(
+                server, session->room_id, track_id);
+        }
+        session->auto_published_track_count = 0;
         turbo_sfu_node_set_participant_packet_callback(server->node, session->room_id,
                                                        session->participant_id, NULL, NULL);
         turbo_sfu_node_set_participant_keyframe_callback(server->node, session->room_id,
@@ -1086,13 +1163,6 @@ static void destroy_webrtc_session(sfu_node_app_server_t *server,
         turbo_peer_connection_destroy(session->pc);
         session->pc = NULL;
     }
-
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    if (session->workflow_ctx) {
-        sfu_node_workflow_destroy(session->workflow_ctx);
-        session->workflow_ctx = NULL;
-    }
-#endif
 
     for (i = 0; i < session->local_candidate_count; ++i) {
         free(session->local_candidates[i]);
@@ -1143,26 +1213,18 @@ static void on_session_state_change(turbo_peer_connection_t *pc,
     session->state = state;
     turbo_mutex_unlock(&session->mutex);
 
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    if (session->workflow_ctx) {
-        const char *event_name = NULL;
-        switch (state) {
-            case TURBO_PEER_STATE_CONNECTED: event_name = "rtc.peer.connected"; break;
-            case TURBO_PEER_STATE_DISCONNECTED: event_name = "rtc.peer.disconnected"; break;
-            case TURBO_PEER_STATE_FAILED: event_name = "rtc.peer.failed"; break;
-            case TURBO_PEER_STATE_CLOSED: event_name = "rtc.session.closed"; break;
-            default: break;
-        }
-        if (event_name) {
-            sfu_node_workflow_receive(session->workflow_ctx, event_name, NULL, 0);
-        }
-    }
-#endif
 }
 
 static void on_session_track(turbo_peer_connection_t *pc, turbo_media_track_t *track,
                              void *user_data) {
     sfu_node_webrtc_session_t *session = (sfu_node_webrtc_session_t *)user_data;
+    turbo_rtc_media_track_type_t track_type;
+    turbo_room_track_kind_t kind;
+    turbo_codec_type_t codec;
+    uint32_t remote_ssrc;
+    uint8_t payload_type;
+    char *track_id;
+    int track_id_length;
     (void)pc;
 
     if (!session || !track) {
@@ -1172,6 +1234,46 @@ static void on_session_track(turbo_peer_connection_t *pc, turbo_media_track_t *t
     turbo_media_track_set_user_data(track, session);
     turbo_media_track_on_frame(track, on_session_frame);
     turbo_media_track_on_rtp_packet(track, on_session_rtp_packet);
+
+    track_type = turbo_media_track_get_type(track);
+    kind = track_type == TURBO_RTC_MEDIA_TRACK_AUDIO
+               ? TURBO_ROOM_TRACK_AUDIO
+               : (track_type == TURBO_RTC_MEDIA_TRACK_VIDEO
+                      ? TURBO_ROOM_TRACK_VIDEO
+                      : 0);
+    codec = turbo_media_track_get_codec(track);
+    remote_ssrc = turbo_media_track_get_remote_ssrc(track);
+    payload_type = turbo_media_track_get_payload_type(track);
+    if (!session->server || !session->server->node || kind == 0 ||
+        codec == 0 || remote_ssrc == 0 ||
+        session->auto_published_track_count >= TURBO_MEDIA_MAX_TRACKS) {
+        session->published_track_registration_failed = 1;
+        return;
+    }
+    track_id = session->auto_published_track_ids[
+        session->auto_published_track_count];
+    track_id_length = snprintf(
+        track_id, TURBO_TRACK_ID_MAX,
+        session->auto_published_track_count == 0 ? "%s-%s" : "%s-%s-%d",
+        session->participant_id,
+        kind == TURBO_ROOM_TRACK_AUDIO ? "audio" : "video",
+        session->auto_published_track_count);
+    if (track_id_length <= 0 || track_id_length >= TURBO_TRACK_ID_MAX ||
+        turbo_sfu_node_register_published_track(
+            session->server->node, session->room_id,
+            session->participant_id, track_id, remote_ssrc, &remote_ssrc,
+            1) != 0 ||
+        register_published_track_metadata_locked(
+            session->server, session->room_id, session->participant_id,
+            track_id, remote_ssrc, &remote_ssrc, 1, kind, codec,
+            payload_type) != 0) {
+        (void)turbo_sfu_node_unregister_published_track(
+            session->server->node, session->room_id, track_id);
+        track_id[0] = '\0';
+        session->published_track_registration_failed = 1;
+        return;
+    }
+    session->auto_published_track_count++;
 
     turbo_mutex_lock(&session->mutex);
     session->remote_track_count++;
@@ -1639,10 +1741,6 @@ static int create_webrtc_session_impl(sfu_node_app_server_t *server,
 
     sync_session_relay_tracks_locked(server, session);
 
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    sfu_node_workflow_init(server, session, &session->workflow_ctx);
-#endif
-
     server->webrtc_sessions[server->webrtc_session_count++] = session;
     turbo_mutex_unlock(&server->mutex);
 
@@ -1652,16 +1750,6 @@ static int create_webrtc_session_impl(sfu_node_app_server_t *server,
         return -1;
     }
 
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    if (session->workflow_ctx) {
-        turbo_rtc_workflow_param_t params[] = {
-            {"room_id", session->room_id},
-            {"participant_id", session->participant_id},
-            {"session_id", session->session_id}
-        };
-        sfu_node_workflow_receive(session->workflow_ctx, "rtc.session.create", params, 3);
-    }
-#endif
     return 0;
 }
 
@@ -1875,6 +1963,10 @@ static int set_remote_offer_impl(sfu_node_app_server_t *server,
         turbo_mutex_unlock(&server->mutex);
         return -1;
     }
+    if (session->published_track_registration_failed) {
+        turbo_mutex_unlock(&server->mutex);
+        return -1;
+    }
 
     sync_session_relay_tracks_locked(server, session);
     if (turbo_peer_connection_create_answer(session->pc, answer, sizeof(answer)) <= 0) {
@@ -1895,15 +1987,6 @@ static int set_remote_offer_impl(sfu_node_app_server_t *server,
     turbo_mutex_unlock(&session->mutex);
 
     turbo_mutex_unlock(&server->mutex);
-
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    if (session->workflow_ctx) {
-        turbo_rtc_workflow_param_t params[] = {
-            {"sdp", sdp}
-        };
-        sfu_node_workflow_receive(session->workflow_ctx, "rtc.offer.received", params, 1);
-    }
-#endif
 
     return 0;
 }
@@ -1946,15 +2029,6 @@ static int add_remote_ice_candidate_impl(sfu_node_app_server_t *server,
     rc = turbo_peer_connection_add_ice_candidate(session->pc, candidate);
 
     turbo_mutex_unlock(&server->mutex);
-
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    if (rc == 0 && session->workflow_ctx) {
-        turbo_rtc_workflow_param_t params[] = {
-            {"candidate", candidate}
-        };
-        sfu_node_workflow_receive(session->workflow_ctx, "rtc.ice.candidate.received", params, 1);
-    }
-#endif
 
     return rc;
 }
@@ -2129,114 +2203,33 @@ int sfu_node_app_server_register_published_track(sfu_node_app_server_t *server,
                                                  int layer_count,
                                                  turbo_room_track_kind_t kind,
                                                  const char *codec_name) {
-    sfu_node_published_track_t *published_track;
     turbo_codec_type_t codec = codec_from_name(codec_name);
-    int i;
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    sfu_node_webrtc_session_t *session = NULL;
-#endif
+    int result;
 
     if (!server || !room_id || !participant_id || !track_id || main_ssrc == 0) {
         return -1;
     }
 
     turbo_mutex_lock(&server->mutex);
-    published_track = find_published_track_locked(server, room_id, track_id);
-    if (!published_track) {
-        if (ensure_capacity((void **)&server->published_tracks, &server->published_track_capacity,
-                            sizeof(sfu_node_published_track_t),
-                            server->published_track_count + 1) != 0) {
-            turbo_mutex_unlock(&server->mutex);
-            return -1;
-        }
-        published_track = &server->published_tracks[server->published_track_count++];
-        memset(published_track, 0, sizeof(*published_track));
-        copy_string(published_track->room_id, sizeof(published_track->room_id), room_id);
-        copy_string(published_track->participant_id, sizeof(published_track->participant_id),
-                    participant_id);
-        copy_string(published_track->track_id, sizeof(published_track->track_id), track_id);
-    }
-
-    published_track->main_ssrc = main_ssrc;
-    published_track->layer_count = (layer_count > 0 && layer_count <= 3) ? layer_count : 1;
-    for (i = 0; i < published_track->layer_count; ++i) {
-        published_track->layer_ssrcs[i] =
-            (layer_ssrcs && layer_count > 0) ? layer_ssrcs[i] : main_ssrc;
-    }
-
-    if (codec != 0 && kind != 0) {
-        published_track->kind = kind;
-        published_track->codec = codec;
-        published_track->payload_type = payload_type_for_codec(codec);
-        published_track->metadata_ready = 1;
-        sync_track_to_subscribers_locked(server, published_track);
-
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-        session = find_webrtc_session_by_participant_locked(
-            server, published_track->room_id, published_track->participant_id);
-#endif
-    }
-
+    result = register_published_track_metadata_locked(
+        server, room_id, participant_id, track_id, main_ssrc, layer_ssrcs,
+        layer_count, kind, codec, payload_type_for_codec(codec));
     turbo_mutex_unlock(&server->mutex);
-
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-    if (session && session->workflow_ctx) {
-        turbo_rtc_workflow_param_t params[] = {
-            {"track_id", track_id},
-            {"kind", (kind == TURBO_ROOM_TRACK_AUDIO) ? "audio" : "video"},
-            {"codec", codec_name}
-        };
-        sfu_node_workflow_receive(session->workflow_ctx, "rtc.track.published", params, 3);
-    }
-#endif
-
-    return 0;
+    return result;
 }
 
 int sfu_node_app_server_unregister_published_track(sfu_node_app_server_t *server,
                                                    const char *room_id,
                                                    const char *track_id) {
-    int i;
-
     if (!server || !room_id || !track_id) {
         return -1;
     }
 
     turbo_mutex_lock(&server->mutex);
-    for (i = 0; i < server->published_track_count; ++i) {
-        if (strcmp(server->published_tracks[i].room_id, room_id) != 0 ||
-            strcmp(server->published_tracks[i].track_id, track_id) != 0) {
-            continue;
-        }
-
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-        sfu_node_webrtc_session_t *session = NULL;
-        session = find_webrtc_session_by_participant_locked(
-            server, room_id, server->published_tracks[i].participant_id);
-#endif
-
-        if (i + 1 < server->published_track_count) {
-            memmove(&server->published_tracks[i], &server->published_tracks[i + 1],
-                    (size_t)(server->published_track_count - i - 1) *
-                        sizeof(sfu_node_published_track_t));
-        }
-        server->published_track_count--;
-
-        turbo_mutex_unlock(&server->mutex);
-
-#ifdef ENABLE_RTC_SCXML_WORKFLOW
-        if (session && session->workflow_ctx) {
-            turbo_rtc_workflow_param_t params[] = {
-                {"track_id", track_id}
-            };
-            sfu_node_workflow_receive(session->workflow_ctx, "rtc.track.unpublished", params, 1);
-        }
-#endif
-        return 0;
-    }
-
+    int result = unregister_published_track_metadata_locked(
+        server, room_id, track_id);
     turbo_mutex_unlock(&server->mutex);
-    return -1;
+    return result;
 }
 
 int sfu_node_app_server_set_track_subscription(sfu_node_app_server_t *server,

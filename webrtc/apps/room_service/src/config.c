@@ -9,6 +9,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+enum {
+    ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS_DEFAULT = 86400,
+    ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT = 2592000,
+    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_DEFAULT = 60000,
+    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MIN = 1000,
+    ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT = 128,
+    ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX = 31536000,
+    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MAX = 3600000,
+    ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX = 256
+};
+
 typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_FILE = 0,
     ROOM_CONFIG_STRING_BIND_HOST,
@@ -30,6 +41,19 @@ typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID,
     ROOM_CONFIG_STRING_SFU_AUTH_SECRET,
     ROOM_CONFIG_STRING_LOG_LEVEL,
+    ROOM_CONFIG_STRING_IRIS_FLOWMQ_HOST,
+    ROOM_CONFIG_STRING_IRIS_FLOWMQ_TOPIC,
+    ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
+    ROOM_CONFIG_STRING_IRIS_IDENTITY,
+    ROOM_CONFIG_STRING_IRIS_CERTIFICATE_SHA256,
+    ROOM_CONFIG_STRING_IRIS_FLOWMQ_CA_FILE,
+    ROOM_CONFIG_STRING_IRIS_FLOWMQ_CERT_FILE,
+    ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_FILE,
+    ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_PASSWORD,
+    ROOM_CONFIG_STRING_IRIS_FLOWMQ_SERVER_NAME,
+    ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
+    ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
+    ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
     ROOM_CONFIG_STRING_FMQ_BIND_HOST,
     ROOM_CONFIG_STRING_FMQ_PUB_TOPIC,
     ROOM_CONFIG_STRING_FMQ_CA_FILE,
@@ -274,6 +298,48 @@ void room_service_app_config_init(room_service_app_config_t *config) {
     config->auto_create_rooms = 1;
     config->dry_run = 0;
     config->log_level = "info";
+    config->iris_flowmq_host =
+        room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_HOST");
+    config->iris_flowmq_port = 0;
+    config->iris_flowmq_topic = "media-provider-v1";
+    config->iris_provider_instance_id = NULL;
+    config->iris_identity = NULL;
+    config->iris_certificate_sha256 = NULL;
+    config->iris_flowmq_ca_file = NULL;
+    config->iris_flowmq_cert_file = NULL;
+    config->iris_flowmq_key_file = NULL;
+    config->iris_flowmq_key_password = NULL;
+    config->iris_flowmq_server_name = NULL;
+    config->iris_flowmq_use_tls = 1;
+    config->iris_flowmq_allow_insecure_loopback = 0;
+    config->iris_ack_timeout_ms = 5000;
+    config->iris_event_store_config = room_service_env_value(
+        "TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CONFIG");
+    config->iris_event_store_channel = room_service_env_value(
+        "TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CHANNEL");
+    config->iris_command_ledger_channel = room_service_env_value(
+        "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_CHANNEL");
+    config->iris_allow_development_sqlite = 0;
+    config->iris_correlation_capacity = 1024;
+    config->iris_completion_queue_capacity = 1024;
+    config->iris_reconcile_inventory_queue_capacity = 8;
+    config->iris_outbox_request_queue_capacity = 1024;
+    config->iris_command_ledger_queue_capacity = 1024;
+    config->iris_command_terminal_retention_seconds =
+        ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT;
+    config->iris_command_retention_batch_size =
+        ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT;
+    config->iris_dead_retention_seconds =
+        ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS_DEFAULT;
+    config->iris_archive_retention_seconds =
+        ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT;
+    config->iris_retention_sweep_interval_ms =
+        ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_DEFAULT;
+    config->iris_retention_sweep_batch_size =
+        ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT;
+    config->iris_retry_max_attempts = 8;
+    config->iris_retry_backoff_ms = 250;
+    config->iris_drain_timeout_ms = 30000;
     config->fmq_bind_host = "127.0.0.1";
     config->fmq_bind_port = 0;
     config->fmq_pub_port = 0;
@@ -281,6 +347,7 @@ void room_service_app_config_init(room_service_app_config_t *config) {
     config->fmq_worker_heartbeat_ms = 5000;
     config->fmq_worker_lease_ms = 15000;
     config->fmq_dispatch_deadline_ms = 5000;
+    config->fmq_dialog_capacity = 256;
     config->fmq_use_tls = 0;
     config->fmq_allow_insecure_loopback = 0;
     config->fmq_ca_file = NULL;
@@ -328,6 +395,29 @@ static int room_service_config_clone_strings(
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID, sfu_auth_key_id);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_SECRET, sfu_auth_secret);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_LOG_LEVEL, log_level);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_HOST, iris_flowmq_host);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_TOPIC, iris_flowmq_topic);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
+                      iris_provider_instance_id);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_IDENTITY, iris_identity);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CERTIFICATE_SHA256,
+                      iris_certificate_sha256);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_CA_FILE,
+                      iris_flowmq_ca_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_CERT_FILE,
+                      iris_flowmq_cert_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_FILE,
+                      iris_flowmq_key_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_PASSWORD,
+                      iris_flowmq_key_password);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_SERVER_NAME,
+                      iris_flowmq_server_name);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
+                      iris_event_store_config);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
+                      iris_event_store_channel);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
+                      iris_command_ledger_channel);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_BIND_HOST, fmq_bind_host);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_PUB_TOPIC, fmq_pub_topic);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_CA_FILE, fmq_ca_file);
@@ -726,6 +816,7 @@ static int room_service_config_apply_fmq(
     static const char *const allowed[] = {
         "bind_host", "bind_port", "pub_port", "pub_topic",
         "worker_heartbeat_ms", "worker_lease_ms", "dispatch_deadline_ms",
+        "dialog_capacity",
         "use_tls", "allow_insecure_loopback", "ca_file", "cert_file",
         "key_file", "key_password", "shared_secret", "rotation_generation",
         "workers"
@@ -767,6 +858,8 @@ static int room_service_config_apply_fmq(
                                &config->fmq_worker_lease_ms) != 0 ||
         rtc_app_toml_apply_int(table, "fmq", "dispatch_deadline_ms",
                                &config->fmq_dispatch_deadline_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "fmq", "dialog_capacity",
+                               &config->fmq_dialog_capacity) != 0 ||
         rtc_app_toml_apply_int(table, "fmq", "rotation_generation",
                                &config->fmq_tls_rotation_generation) != 0 ||
         rtc_app_toml_apply_bool(table, "fmq", "use_tls",
@@ -779,11 +872,137 @@ static int room_service_config_apply_fmq(
     return 0;
 }
 
+static int room_service_config_apply_iris_provider(
+    const turbo_toml_t *table,
+    room_service_app_config_t *config,
+    rtc_app_config_storage_t *storage) {
+    static const char *const allowed[] = {
+        "flowmq_host", "flowmq_port", "flowmq_topic",
+        "provider_instance_id", "iris_identity",
+        "iris_certificate_sha256", "flowmq_ca_file", "flowmq_cert_file",
+        "flowmq_key_file", "flowmq_key_password", "flowmq_server_name",
+        "flowmq_use_tls", "flowmq_allow_insecure_loopback",
+        "correlation_capacity",
+        "completion_queue_capacity", "reconcile_inventory_queue_capacity",
+        "retry_max_attempts", "retry_backoff_ms",
+        "ack_timeout_ms", "drain_timeout_ms", "event_store_config",
+        "event_store_channel", "outbox_request_queue_capacity",
+        "command_ledger_channel", "command_ledger_queue_capacity",
+        "command_terminal_retention_seconds", "command_retention_batch_size",
+        "allow_development_sqlite", "dead_retention_seconds",
+        "archive_retention_seconds", "retention_sweep_interval_ms",
+        "retention_sweep_batch_size"
+    };
+
+    if (!table) {
+        return 0;
+    }
+    if (rtc_app_toml_table_keys_valid(
+            table, "iris_provider", allowed,
+            sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "flowmq_host", storage,
+            ROOM_CONFIG_STRING_IRIS_FLOWMQ_HOST,
+            &config->iris_flowmq_host) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "flowmq_topic", storage,
+            ROOM_CONFIG_STRING_IRIS_FLOWMQ_TOPIC,
+            &config->iris_flowmq_topic) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "provider_instance_id", storage,
+            ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
+            &config->iris_provider_instance_id) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "iris_identity", storage,
+            ROOM_CONFIG_STRING_IRIS_IDENTITY, &config->iris_identity) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "iris_certificate_sha256", storage,
+            ROOM_CONFIG_STRING_IRIS_CERTIFICATE_SHA256,
+            &config->iris_certificate_sha256) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "flowmq_ca_file", storage,
+            ROOM_CONFIG_STRING_IRIS_FLOWMQ_CA_FILE,
+            &config->iris_flowmq_ca_file) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "flowmq_cert_file", storage,
+            ROOM_CONFIG_STRING_IRIS_FLOWMQ_CERT_FILE,
+            &config->iris_flowmq_cert_file) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "flowmq_key_file", storage,
+            ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_FILE,
+            &config->iris_flowmq_key_file) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "flowmq_key_password", storage,
+            ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_PASSWORD,
+            &config->iris_flowmq_key_password) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "flowmq_server_name", storage,
+            ROOM_CONFIG_STRING_IRIS_FLOWMQ_SERVER_NAME,
+            &config->iris_flowmq_server_name) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "flowmq_port",
+                               &config->iris_flowmq_port) != 0 ||
+        rtc_app_toml_apply_bool(table, "iris_provider", "flowmq_use_tls",
+                                &config->iris_flowmq_use_tls) != 0 ||
+        rtc_app_toml_apply_bool(
+            table, "iris_provider", "flowmq_allow_insecure_loopback",
+            &config->iris_flowmq_allow_insecure_loopback) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "event_store_config", storage,
+            ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
+            &config->iris_event_store_config) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "event_store_channel", storage,
+            ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
+            &config->iris_event_store_channel) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "iris_provider", "command_ledger_channel", storage,
+            ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
+            &config->iris_command_ledger_channel) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "correlation_capacity",
+                               &config->iris_correlation_capacity) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "completion_queue_capacity",
+                               &config->iris_completion_queue_capacity) != 0 ||
+        rtc_app_toml_apply_int(
+            table, "iris_provider", "reconcile_inventory_queue_capacity",
+            &config->iris_reconcile_inventory_queue_capacity) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "outbox_request_queue_capacity",
+                               &config->iris_outbox_request_queue_capacity) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "command_ledger_queue_capacity",
+                               &config->iris_command_ledger_queue_capacity) != 0 ||
+        rtc_app_toml_apply_int(
+            table, "iris_provider", "command_terminal_retention_seconds",
+            &config->iris_command_terminal_retention_seconds) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "command_retention_batch_size",
+                               &config->iris_command_retention_batch_size) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "dead_retention_seconds",
+                               &config->iris_dead_retention_seconds) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "archive_retention_seconds",
+                               &config->iris_archive_retention_seconds) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "retention_sweep_interval_ms",
+                               &config->iris_retention_sweep_interval_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "retention_sweep_batch_size",
+                               &config->iris_retention_sweep_batch_size) != 0 ||
+        rtc_app_toml_apply_bool(table, "iris_provider",
+                                "allow_development_sqlite",
+                                &config->iris_allow_development_sqlite) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "retry_max_attempts",
+                               &config->iris_retry_max_attempts) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "retry_backoff_ms",
+                               &config->iris_retry_backoff_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "ack_timeout_ms",
+                               &config->iris_ack_timeout_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "drain_timeout_ms",
+                               &config->iris_drain_timeout_ms) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 int room_service_app_config_load(room_service_app_config_t *config,
                                  const char *filename) {
     static const char *const root_keys[] = {
         "server", "control", "auth", "sfu", "sfu_auth", "capacity",
-        "rooms", "runtime", "logging", "fmq"
+        "rooms", "runtime", "logging", "iris_provider", "fmq"
     };
     rtc_app_toml_document_t document;
     rtc_app_config_storage_t *storage = NULL;
@@ -797,6 +1016,7 @@ int room_service_app_config_load(room_service_app_config_t *config,
     turbo_toml_t *rooms = NULL;
     turbo_toml_t *runtime = NULL;
     turbo_toml_t *logging = NULL;
+    turbo_toml_t *iris_provider = NULL;
     turbo_toml_t *fmq = NULL;
     room_service_app_config_t candidate;
     int result = -1;
@@ -834,6 +1054,7 @@ int room_service_app_config_load(room_service_app_config_t *config,
         rtc_app_toml_get_optional_table(document.root, "rooms", &rooms) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "runtime", &runtime) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "logging", &logging) != 0 ||
+        rtc_app_toml_get_optional_table(document.root, "iris_provider", &iris_provider) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "fmq", &fmq) != 0 ||
         room_service_config_apply_server(server, &candidate, storage) != 0 ||
         room_service_config_apply_control(control, &candidate, storage) != 0 ||
@@ -844,6 +1065,7 @@ int room_service_app_config_load(room_service_app_config_t *config,
         room_service_config_apply_rooms(rooms, &candidate) != 0 ||
         room_service_config_apply_runtime(runtime, &candidate) != 0 ||
         room_service_config_apply_logging(logging, &candidate, storage) != 0 ||
+        room_service_config_apply_iris_provider(iris_provider, &candidate, storage) != 0 ||
         room_service_config_apply_fmq(fmq, &candidate, storage) != 0 ||
         room_service_app_config_validate(&candidate) != 0) {
         goto cleanup_document;
@@ -941,6 +1163,72 @@ void room_service_app_config_apply_environment(
     config->sfu_auth_ttl_seconds = room_service_env_int(
         "TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS",
         config->sfu_auth_ttl_seconds);
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_HOST");
+    if (value) config->iris_flowmq_host = value;
+    config->iris_flowmq_port = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_PORT", config->iris_flowmq_port);
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_TOPIC");
+    if (value) config->iris_flowmq_topic = value;
+    value = room_service_env_value(
+        "TURBO_ROOM_SERVICE_IRIS_PROVIDER_INSTANCE_ID");
+    if (value) config->iris_provider_instance_id = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_IDENTITY");
+    if (value) config->iris_identity = value;
+    value = room_service_env_value(
+        "TURBO_ROOM_SERVICE_IRIS_CERTIFICATE_SHA256");
+    if (value) config->iris_certificate_sha256 = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_CA_FILE");
+    if (value) config->iris_flowmq_ca_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_CERT_FILE");
+    if (value) config->iris_flowmq_cert_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_KEY_FILE");
+    if (value) config->iris_flowmq_key_file = value;
+    value = room_service_env_value(
+        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_KEY_PASSWORD");
+    if (value) config->iris_flowmq_key_password = value;
+    value = room_service_env_value(
+        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_SERVER_NAME");
+    if (value) config->iris_flowmq_server_name = value;
+    config->iris_flowmq_use_tls = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_USE_TLS",
+        config->iris_flowmq_use_tls);
+    config->iris_flowmq_allow_insecure_loopback = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_ALLOW_INSECURE_LOOPBACK",
+        config->iris_flowmq_allow_insecure_loopback);
+    config->iris_ack_timeout_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_ACK_TIMEOUT_MS",
+        config->iris_ack_timeout_ms);
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CONFIG");
+    if (value) config->iris_event_store_config = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CHANNEL");
+    if (value) config->iris_event_store_channel = value;
+    value = room_service_env_value(
+        "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_CHANNEL");
+    if (value) config->iris_command_ledger_channel = value;
+    config->iris_allow_development_sqlite = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_IRIS_ALLOW_DEVELOPMENT_SQLITE",
+        config->iris_allow_development_sqlite);
+    config->iris_dead_retention_seconds = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS",
+        config->iris_dead_retention_seconds);
+    config->iris_archive_retention_seconds = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS",
+        config->iris_archive_retention_seconds);
+    config->iris_retention_sweep_interval_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS",
+        config->iris_retention_sweep_interval_ms);
+    config->iris_retention_sweep_batch_size = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE",
+        config->iris_retention_sweep_batch_size);
+    config->iris_command_ledger_queue_capacity = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_QUEUE_CAPACITY",
+        config->iris_command_ledger_queue_capacity);
+    config->iris_command_terminal_retention_seconds = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_COMMAND_TERMINAL_RETENTION_SECONDS",
+        config->iris_command_terminal_retention_seconds);
+    config->iris_command_retention_batch_size = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_COMMAND_RETENTION_BATCH_SIZE",
+        config->iris_command_retention_batch_size);
     value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_BIND_HOST");
     if (value) {
         config->fmq_bind_host = value;
@@ -958,6 +1246,9 @@ void room_service_app_config_apply_environment(
     config->fmq_dispatch_deadline_ms = room_service_env_int(
         "TURBO_ROOM_SERVICE_FMQ_DISPATCH_DEADLINE_MS",
         config->fmq_dispatch_deadline_ms);
+    config->fmq_dialog_capacity = room_service_env_int(
+        "TURBO_ROOM_SERVICE_FMQ_DIALOG_CAPACITY",
+        config->fmq_dialog_capacity);
     value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_PUB_TOPIC");
     if (value) {
         config->fmq_pub_topic = value;
@@ -1012,6 +1303,8 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
             config->fmq_worker_heartbeat_ms * 3 ||
         config->fmq_dispatch_deadline_ms <= 0 ||
         config->fmq_dispatch_deadline_ms >= config->fmq_worker_lease_ms ||
+        config->fmq_dialog_capacity < 1 ||
+        config->fmq_dialog_capacity > 65536 ||
         ((config->fmq_bind_port > 0) != (config->fmq_pub_port > 0)) ||
         (config->fmq_bind_port > 0 &&
          (!config->fmq_bind_host || config->fmq_bind_host[0] == 0)) ||
@@ -1035,6 +1328,96 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
         (config->sfu_control_token && config->sfu_control_token[0] == '\0') ||
         (config->sfu_ca_file && config->sfu_ca_file[0] == '\0')) {
         return -1;
+    }
+    {
+        int has_flowmq = config->iris_flowmq_host &&
+                         config->iris_flowmq_host[0] != '\0';
+        int has_store_config = config->iris_event_store_config &&
+                               config->iris_event_store_config[0] != '\0';
+        int has_store_channel = config->iris_event_store_channel &&
+                                config->iris_event_store_channel[0] != '\0';
+        int has_ledger_channel = config->iris_command_ledger_channel &&
+                                 config->iris_command_ledger_channel[0] != '\0';
+        if (has_flowmq != has_store_config ||
+            has_flowmq != has_store_channel ||
+            has_flowmq != has_ledger_channel ||
+            (has_flowmq && strcmp(config->iris_event_store_channel,
+                               config->iris_command_ledger_channel) == 0) ||
+            (has_flowmq &&
+             (config->iris_flowmq_port < 1 ||
+              config->iris_flowmq_port > 65535 ||
+              !config->iris_flowmq_topic ||
+              config->iris_flowmq_topic[0] == '\0' ||
+              !config->iris_provider_instance_id ||
+              config->iris_provider_instance_id[0] == '\0' ||
+              !config->iris_identity || config->iris_identity[0] == '\0')) ||
+            (config->iris_flowmq_use_tls != 0 &&
+             config->iris_flowmq_use_tls != 1) ||
+            (config->iris_flowmq_allow_insecure_loopback != 0 &&
+             config->iris_flowmq_allow_insecure_loopback != 1) ||
+            (has_flowmq && config->iris_flowmq_use_tls &&
+             (!room_service_fingerprint_valid(
+                  config->iris_certificate_sha256) ||
+              !config->iris_flowmq_ca_file ||
+              config->iris_flowmq_ca_file[0] == '\0' ||
+              !config->iris_flowmq_cert_file ||
+              config->iris_flowmq_cert_file[0] == '\0' ||
+              !config->iris_flowmq_key_file ||
+              config->iris_flowmq_key_file[0] == '\0' ||
+              !config->iris_flowmq_server_name ||
+              config->iris_flowmq_server_name[0] == '\0')) ||
+            (has_flowmq && !config->iris_flowmq_use_tls &&
+             (!config->iris_flowmq_allow_insecure_loopback ||
+              !room_service_is_loopback(config->iris_flowmq_host) ||
+              config->iris_certificate_sha256 ||
+              config->iris_flowmq_ca_file ||
+              config->iris_flowmq_cert_file ||
+              config->iris_flowmq_key_file ||
+              config->iris_flowmq_key_password ||
+              config->iris_flowmq_server_name)) ||
+            config->iris_correlation_capacity < 1 ||
+            config->iris_correlation_capacity > 65536 ||
+            config->iris_completion_queue_capacity < 1 ||
+            config->iris_completion_queue_capacity > 65536 ||
+            config->iris_reconcile_inventory_queue_capacity < 1 ||
+            config->iris_reconcile_inventory_queue_capacity > 64 ||
+            config->iris_outbox_request_queue_capacity < 1 ||
+            config->iris_outbox_request_queue_capacity > 65536 ||
+            config->iris_command_ledger_queue_capacity < 1 ||
+            config->iris_command_ledger_queue_capacity > 65536 ||
+            config->iris_command_terminal_retention_seconds < 1 ||
+            config->iris_command_terminal_retention_seconds >
+                ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX ||
+            config->iris_command_retention_batch_size < 1 ||
+            config->iris_command_retention_batch_size >
+                ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX ||
+            config->iris_dead_retention_seconds < 1 ||
+            config->iris_dead_retention_seconds >
+                ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX ||
+            config->iris_archive_retention_seconds < 1 ||
+            config->iris_archive_retention_seconds >
+                ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX ||
+            config->iris_retention_sweep_interval_ms <
+                ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MIN ||
+            config->iris_retention_sweep_interval_ms >
+                ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MAX ||
+            config->iris_retention_sweep_batch_size < 1 ||
+            config->iris_retention_sweep_batch_size >
+                ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX ||
+            (config->iris_allow_development_sqlite != 0 &&
+             config->iris_allow_development_sqlite != 1) ||
+            config->iris_retry_max_attempts < 1 ||
+            config->iris_retry_max_attempts > 100 ||
+            config->iris_retry_backoff_ms < 1 ||
+            config->iris_retry_backoff_ms > 60000 ||
+            config->iris_ack_timeout_ms < 1 ||
+            config->iris_ack_timeout_ms > 300000 ||
+            config->iris_drain_timeout_ms < 1 ||
+            config->iris_drain_timeout_ms > 600000 ||
+            config->iris_drain_timeout_ms < config->iris_ack_timeout_ms ||
+            (has_flowmq && config->fmq_bind_port == 0)) {
+            return -1;
+        }
     }
     {
         turbo_media_auth_config_t auth_config = {
@@ -1147,6 +1530,25 @@ void room_service_app_config_print(const room_service_app_config_t *config) {
     printf("  auto_create_rooms: %s\n", config->auto_create_rooms ? "true" : "false");
     printf("  dry_run: %s\n", config->dry_run ? "true" : "false");
     printf("  log_level: %s\n", config->log_level);
+    printf("  iris_provider: %s\n",
+           config->iris_flowmq_host ? "FlowMQ" : "disabled");
+    if (config->iris_flowmq_host) {
+        printf("  iris_flowmq: %s:%d topic=%s transport=%s\n",
+               config->iris_flowmq_host, config->iris_flowmq_port,
+               config->iris_flowmq_topic,
+               config->iris_flowmq_use_tls ? "mTLS" : "trusted-loopback");
+        printf("  iris_sqlite_development_opt_in: %s\n",
+               config->iris_allow_development_sqlite ? "true" : "false");
+        printf("  iris_provider_limits: correlation=%d queue=%d reconcile_queue=%d outbox_queue=%d retries=%d "
+               "ack_timeout=%dms drain_timeout=%dms\n",
+               config->iris_correlation_capacity,
+                config->iris_completion_queue_capacity,
+                config->iris_reconcile_inventory_queue_capacity,
+                config->iris_outbox_request_queue_capacity,
+               config->iris_retry_max_attempts,
+               config->iris_ack_timeout_ms,
+               config->iris_drain_timeout_ms);
+    }
     printf("  fmq_bridge: %s (router %s:%d, pub %s)\n",
            config->fmq_bind_port > 0 ? "enabled" : "disabled",
            config->fmq_bind_host ? config->fmq_bind_host : "127.0.0.1",
@@ -1155,9 +1557,9 @@ void room_service_app_config_print(const room_service_app_config_t *config) {
                ? (config->fmq_pub_topic ? config->fmq_pub_topic
                                         : "room.events")
                : "off");
-    printf("  fmq_worker_timing: heartbeat=%dms lease=%dms dispatch=%dms\n",
+    printf("  fmq_worker_timing: heartbeat=%dms lease=%dms dispatch=%dms dialogs=%d\n",
            config->fmq_worker_heartbeat_ms, config->fmq_worker_lease_ms,
-           config->fmq_dispatch_deadline_ms);
+           config->fmq_dispatch_deadline_ms, config->fmq_dialog_capacity);
     printf("  fmq_security: %s identities=%d rotation_generation=%d\n",
            config->fmq_use_tls ? "mTLS" :
            (config->fmq_allow_insecure_loopback ? "trusted-loopback" :

@@ -29,7 +29,7 @@ typedef struct {
     uint32_t max_attempts;          /* 0 = 3 */
     uint64_t initial_backoff_ms;    /* 0 = 100 */
     uint64_t max_backoff_ms;        /* 0 = 2000 */
-    uint64_t total_deadline_ms;     /* 0 = 10000 */
+    uint64_t total_deadline_ms;     /* Per recovery episode; 0 = 10000 */
 } ivr_media_reconnect_config_t;
 
 typedef struct {

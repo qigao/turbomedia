@@ -11,6 +11,8 @@
 typedef struct {
     int valid;
     int active;
+    char provider_session_id[IVR_DTMF_ID_MAX];
+    char dialog_id[IVR_DTMF_ID_MAX];
     char room_id[IVR_DTMF_ID_MAX];
     char call_id[IVR_DTMF_ID_MAX];
     char input_id[IVR_DTMF_ID_MAX];
@@ -43,6 +45,14 @@ static int call_matches(const ivr_dtmf_window_t *window,
                         const ivr_call_ref_t *call) {
     return window->valid && call &&
            window->call_generation == call->call_generation &&
+           strlen(window->provider_session_id) ==
+               call->provider_session_id.size &&
+           memcmp(window->provider_session_id,
+                  call->provider_session_id.data,
+                  call->provider_session_id.size) == 0 &&
+           strlen(window->dialog_id) == call->dialog_id.size &&
+           memcmp(window->dialog_id, call->dialog_id.data,
+                  call->dialog_id.size) == 0 &&
            strlen(window->room_id) == call->room_id.size &&
            memcmp(window->room_id, call->room_id.data, call->room_id.size) == 0 &&
            strlen(window->call_id) == call->call_id.size &&
@@ -139,7 +149,12 @@ ivr_status_t ivr_dtmf_ingress_begin_input(
         return IVR_ENOSPC;
     }
     memset(window, 0, sizeof(*window));
-    if (copy_view(window->room_id, sizeof(window->room_id), &call->room_id) != 0 ||
+    if (copy_view(window->provider_session_id,
+                  sizeof(window->provider_session_id),
+                  &call->provider_session_id) != 0 ||
+        copy_view(window->dialog_id, sizeof(window->dialog_id),
+                  &call->dialog_id) != 0 ||
+        copy_view(window->room_id, sizeof(window->room_id), &call->room_id) != 0 ||
         copy_view(window->call_id, sizeof(window->call_id), &call->call_id) != 0) {
         ivr_mutex_unlock(&ingress->lock);
         return IVR_EINVAL;
@@ -209,6 +224,10 @@ ivr_status_t ivr_dtmf_ingress_submit_rtp(
         return IVR_ESTATE;
     }
     memset(out_input, 0, sizeof(*out_input));
+    memcpy(out_input->provider_session_id, window->provider_session_id,
+           strlen(window->provider_session_id) + 1u);
+    memcpy(out_input->dialog_id, window->dialog_id,
+           strlen(window->dialog_id) + 1u);
     memcpy(out_input->room_id, window->room_id, strlen(window->room_id) + 1u);
     memcpy(out_input->call_id, window->call_id, strlen(window->call_id) + 1u);
     memcpy(out_input->input_id, window->input_id, strlen(window->input_id) + 1u);

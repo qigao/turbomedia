@@ -82,7 +82,6 @@ typedef struct {
     char pinned_participant_id[TURBO_PARTICIPANT_ID_MAX];
     turbo_call_center_supervisor_mode_t supervisor_mode;
     int64_t version;
-    void *workflow_ctx;
 } room_service_conference_policy_t;
 
 typedef struct {
@@ -125,6 +124,9 @@ typedef struct {
     uint32_t assignments;
     uint32_t assignment_capacity;
     uint32_t assignment_high_water;
+    uint32_t dialogs;
+    uint32_t dialog_capacity;
+    uint32_t dialog_high_water;
     uint64_t lease_expired_total;
     uint64_t dispatch_timeout_total;
     uint64_t release_timeout_total;
@@ -137,12 +139,88 @@ typedef struct {
     uint32_t peer_event_queue_high_water;
     uint64_t peer_event_queue_drops_total;
     int peer_event_queue_overflowed;
+    int iris_provider_enabled;
+    uint32_t iris_queue_items;
+    uint32_t iris_queue_capacity;
+    uint32_t iris_queue_high_water;
+    uint32_t iris_in_flight;
+    uint64_t iris_enqueued_total;
+    uint64_t iris_queue_full_total;
+    uint64_t iris_closed_rejections_total;
+    uint64_t iris_delivery_attempts_total;
+    uint64_t iris_retries_total;
+    uint64_t iris_fence_conflicts_total;
+    uint64_t iris_fence_refresh_failures_total;
+    uint64_t iris_completion_success_total;
+    uint64_t iris_completion_failure_total;
+    uint64_t iris_event_success_total;
+    uint64_t iris_event_failure_total;
+    uint32_t iris_ledger_request_queue_items;
+    uint32_t iris_ledger_request_queue_capacity;
+    uint32_t iris_ledger_request_queue_high_water;
+    uint64_t iris_ledger_record_capacity;
+    uint64_t iris_ledger_claims_total;
+    uint64_t iris_ledger_replays_total;
+    uint64_t iris_ledger_conflicts_total;
+    uint64_t iris_ledger_unknown_total;
+    uint64_t iris_ledger_storage_failures_total;
+    uint64_t iris_ledger_queue_rejections_total;
+    uint64_t iris_ledger_recovered_unknown_total;
+    uint64_t iris_ledger_resource_queries_total;
+    uint64_t iris_ledger_resource_seen_total;
+    uint64_t iris_ledger_retained_deleted_total;
+    uint64_t iris_ledger_retention_sweeps_total;
+    uint64_t iris_ledger_retention_failures_total;
+    uint32_t iris_outbox_request_queue_items;
+    uint32_t iris_outbox_request_queue_capacity;
+    uint32_t iris_outbox_request_queue_high_water;
+    uint32_t iris_outbox_pending_records;
+    uint32_t iris_outbox_in_flight_records;
+    uint32_t iris_outbox_dead_records;
+    uint32_t iris_outbox_archived_records;
+    uint64_t iris_outbox_record_capacity;
+    uint64_t iris_outbox_retained_payload_bytes;
+    uint64_t iris_outbox_peak_retained_payload_bytes;
+    uint64_t iris_outbox_persisted_total;
+    uint64_t iris_outbox_duplicate_total;
+    uint64_t iris_outbox_conflict_total;
+    uint64_t iris_outbox_persist_failure_total;
+    uint64_t iris_outbox_capacity_rejection_total;
+    uint64_t iris_outbox_schedule_rejection_total;
+    uint64_t iris_outbox_delivered_total;
+    uint64_t iris_outbox_dead_lettered_total;
+    uint64_t iris_outbox_settlement_failure_total;
+    uint64_t iris_outbox_stale_settlement_total;
+    uint64_t iris_outbox_decode_failure_total;
+    uint64_t iris_outbox_recovered_total;
+    uint64_t iris_outbox_replayed_total;
+    uint64_t iris_outbox_archived_total;
+    uint64_t iris_outbox_archive_deleted_total;
+    uint64_t iris_outbox_retention_failure_total;
+    uint64_t iris_shutdown_restored_completions_total;
+    uint64_t iris_shutdown_dropped_events_total;
+    uint64_t iris_last_drain_duration_ms;
+    uint64_t iris_max_drain_duration_ms;
+    int iris_reconcile_state;
+    int iris_reconcile_accepting_commands;
+    uint32_t iris_reconcile_inventory_queue_items;
+    uint32_t iris_reconcile_inventory_queue_capacity;
+    uint64_t iris_reconcile_cycles_total;
+    uint64_t iris_reconcile_failures_total;
+    uint64_t iris_reconcile_expected_fetches_total;
+    uint64_t iris_reconcile_inventory_pages_total;
+    uint64_t iris_reconcile_rebound_total;
+    uint64_t iris_reconcile_orphan_close_total;
+    uint64_t iris_reconcile_resource_lost_total;
+    uint64_t iris_reconcile_inventory_queue_full_total;
 } room_service_ivr_metrics_t;
 
 room_service_app_server_t *room_service_app_server_create(
     const room_service_app_config_t *config);
 int room_service_app_server_start(room_service_app_server_t *server);
 int room_service_app_server_run(room_service_app_server_t *server);
+/* Control-thread lifecycle: stop is idempotent and destroy stops a running
+ * server before releasing any producer/consumer dependency. */
 void room_service_app_server_stop(room_service_app_server_t *server);
 void room_service_app_server_destroy(room_service_app_server_t *server);
 turbo_room_service_t *room_service_app_server_get_service(

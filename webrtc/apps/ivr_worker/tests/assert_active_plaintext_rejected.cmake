@@ -1,10 +1,9 @@
-if(NOT DEFINED PROGRAM OR NOT DEFINED CONTENT_ROOT)
-  message(FATAL_ERROR "PROGRAM and CONTENT_ROOT are required")
+if(NOT DEFINED PROGRAM)
+  message(FATAL_ERROR "PROGRAM is required")
 endif()
 
 execute_process(
-  COMMAND "${PROGRAM}" --content-root "${CONTENT_ROOT}"
-          --router-port 17731 --pub-port 17732
+  COMMAND "${PROGRAM}" --router-port 17731
   RESULT_VARIABLE result
   OUTPUT_VARIABLE stdout
   ERROR_VARIABLE stderr)

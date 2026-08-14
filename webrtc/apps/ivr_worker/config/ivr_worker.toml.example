@@ -1,30 +1,26 @@
 # Non-secret IVR worker defaults. Precedence is CLI > environment > TOML > default.
 # Speech credentials and SFU media tokens are intentionally environment-only.
+# IVR_MEDIA_INPUT_INACTIVITY_TIMEOUT_MS is also environment-only: 0 preserves
+# the WHEP transport default (5000 ms); 1..3600000 overrides that timeout.
 
 [worker]
 worker_id = "ivr-worker-1"
-content_root = "webrtc/ivr/content"
 # Endpoint host. A scheme prefix selects the transport, e.g.
 # router_host = "tls://192.168.2.1" or "wss://192.168.2.1" (port still in
 # router_port). TLS/WSS additionally require fmq_ca_file / fmq_cert_file /
 # fmq_key_file below.
 router_host = "127.0.0.1"
 router_port = 17713
-pub_host = "127.0.0.1"
-pub_port = 17714
-pub_topic = "room.events"
 health_host = "127.0.0.1"
 health_port = 18081
 max_sessions = 4
 heartbeat_ms = 5000
 lease_ms = 15000
 
-# P0-04.4 worker-side scope (all optional). Must match the RoomService
-# [fmq.workers] entry for the same worker_id. tenant_id uses the
-# "<tenant>/" room_id prefix convention; room_scope / call_scope /
-# content_capabilities are "*" (any) or comma-separated exact ids. A dispatch
-# outside this scope is rejected before a session is created.
+# Optional media-command scope. It must match the RoomService [fmq.workers]
+# entry for this worker_id. tenant_id uses the "<tenant>/" room_id prefix;
+# room_scope and call_scope are "*" or comma-separated exact ids. Commands
+# outside this scope are rejected before media resources are changed.
 # tenant_id = "acme"
 # room_scope = "acme/room-1,acme/room-2"
 # call_scope = "*"
-# content_capabilities = "conference-greeting"

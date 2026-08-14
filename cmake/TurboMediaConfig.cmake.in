@@ -3,6 +3,7 @@
 include(CMakeFindDependencyMacro)
 
 find_dependency(TurboUtils CONFIG)
+find_dependency(TurboParser CONFIG)
 find_dependency(TurboNet CONFIG)
 find_dependency(TurboHttp CONFIG)
 if(NOT TARGET TurboNet::Ice)

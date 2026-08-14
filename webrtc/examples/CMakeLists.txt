@@ -20,7 +20,7 @@ set_target_properties(dc_benchmark PROPERTIES FOLDER webrtc/examples)
 
 add_executable(rtc_signaled_peer signaled_peer.c)
 target_link_libraries(rtc_signaled_peer PRIVATE TurboMedia::DataChannel TurboMedia::SDP
-                                               TurboUtils::Parser TurboNet::CoroNet TurboNet::Ice
+                                               TurboParser::Parser TurboNet::CoroNet TurboNet::Ice
                                                TurboUtils::Core
                                                $<$<PLATFORM_ID:Windows>:ws2_32>)
 set_target_properties(rtc_signaled_peer PROPERTIES FOLDER webrtc/examples)

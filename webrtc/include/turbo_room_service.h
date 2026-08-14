@@ -130,12 +130,14 @@ typedef enum {
 
 typedef struct {
     const char *room_id;
+    uint64_t room_generation;
     turbo_room_type_t room_type;
     const char *created_by;
 } turbo_room_config_t;
 
 typedef struct {
     const char *participant_id;
+    uint64_t call_generation;
     const char *user_id;
     const char *display_name;
     turbo_participant_role_t role;
@@ -166,6 +168,7 @@ typedef struct {
 
 typedef struct {
     char room_id[TURBO_ROOM_ID_MAX];
+    uint64_t room_generation;
     turbo_room_type_t room_type;
     turbo_room_status_t status;
     char assigned_sfu_node[TURBO_NODE_ID_MAX];
@@ -183,6 +186,7 @@ typedef struct {
 
 typedef struct {
     char participant_id[TURBO_PARTICIPANT_ID_MAX];
+    uint64_t call_generation;
     char user_id[TURBO_USER_ID_MAX];
     char display_name[TURBO_DISPLAY_NAME_MAX];
     turbo_participant_role_t role;

@@ -19,6 +19,8 @@ typedef struct {
 } ivr_dtmf_ingress_config_t;
 
 typedef struct {
+    char provider_session_id[IVR_DTMF_ID_MAX];
+    char dialog_id[IVR_DTMF_ID_MAX];
     char room_id[IVR_DTMF_ID_MAX];
     char call_id[IVR_DTMF_ID_MAX];
     char input_id[IVR_DTMF_ID_MAX];
