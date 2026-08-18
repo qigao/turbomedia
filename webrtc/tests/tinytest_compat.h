@@ -7,8 +7,8 @@
 #include <stddef.h>
 
 #define TEST_PASS() check_true(1)
-#define TEST_FAIL() __BDD_CHECK__(0, "forced failure")
-#define TEST_FAIL_MESSAGE(msg) __BDD_CHECK__(0, "%s", (msg))
+#define TEST_FAIL() TTEST_CHECK__(0, "forced failure")
+#define TEST_FAIL_MESSAGE(msg) TTEST_CHECK__(0, "%s", (msg))
 #define TEST_IGNORE() TEST_FAIL_MESSAGE("Test precondition is unavailable")
 #define TEST_IGNORE_MESSAGE(msg) TEST_FAIL_MESSAGE(msg)
 

@@ -6,29 +6,36 @@ find_dependency(TurboUtils CONFIG)
 find_dependency(TurboParser CONFIG)
 find_dependency(TurboNet CONFIG)
 find_dependency(TurboHttp CONFIG)
-if(NOT TARGET TurboNet::Ice)
-  set(TurboMedia_FOUND FALSE)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "TurboMedia requires the TurboNet Ice component")
-  return()
+
+
+# The exported target file contains all TurboMedia components, but FFmpeg is
+# only a dependency of this component closure.  Keep non-media consumers
+# (for example Core, Device, or WebRTC) usable without FFmpeg development files.
+set(_TurboMedia_ffmpeg_components Muxer Demuxer Player Pipeline Streamer RtcApps)
+set(_TurboMedia_requires_ffmpeg FALSE)
+if(NOT TurboMedia_FIND_COMPONENTS)
+  set(_TurboMedia_requires_ffmpeg TRUE)
+else()
+  foreach(_TurboMedia_requested_component IN LISTS TurboMedia_FIND_COMPONENTS)
+    if(_TurboMedia_requested_component IN_LIST _TurboMedia_ffmpeg_components)
+      set(_TurboMedia_requires_ffmpeg TRUE)
+      break()
+    endif()
+  endforeach()
 endif()
-if(NOT TARGET TurboNet::Ice)
-  add_library(TurboNet::Ice INTERFACE IMPORTED)
-  set_property(TARGET TurboNet::Ice PROPERTY
-               INTERFACE_LINK_LIBRARIES TurboNet::Ice)
-endif() 
 
-find_path(FFMPEG_INCLUDE_DIRS NAMES libavformat/avformat.h REQUIRED)
-foreach(_TurboMedia_ffmpeg_component IN ITEMS avformat avcodec avfilter avutil
-                                              swresample swscale)
-  find_library(
-    FFMPEG_lib${_TurboMedia_ffmpeg_component}_LIBRARY
-    NAMES ${_TurboMedia_ffmpeg_component}
-    REQUIRED)
-endforeach()
-unset(_TurboMedia_ffmpeg_component)
+if(_TurboMedia_requires_ffmpeg)
+  find_path(FFMPEG_INCLUDE_DIRS NAMES libavformat/avformat.h REQUIRED)
+  foreach(_TurboMedia_ffmpeg_component IN ITEMS avformat avcodec avfilter avutil
+                                                swresample swscale)
+    find_library(
+      FFMPEG_lib${_TurboMedia_ffmpeg_component}_LIBRARY
+      NAMES ${_TurboMedia_ffmpeg_component}
+      REQUIRED)
+  endforeach()
+  include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaFFmpegTargets.cmake")
+endif()
 
-include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaFFmpegTargets.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/TurboMediaTargets.cmake")
 
 foreach(_TurboMedia_component IN LISTS TurboMedia_FIND_COMPONENTS)
@@ -42,3 +49,7 @@ endforeach()
 check_required_components(TurboMedia)
 
 unset(_TurboMedia_component)
+unset(_TurboMedia_ffmpeg_component)
+unset(_TurboMedia_ffmpeg_components)
+unset(_TurboMedia_requested_component)
+unset(_TurboMedia_requires_ffmpeg)

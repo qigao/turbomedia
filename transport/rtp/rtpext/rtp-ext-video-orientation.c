@@ -32,16 +32,16 @@ F = Flip: indicates a horizontal (left-right flip) mirror operation on the video
 	0: No flip operation. If the sending MTSI client in terminal does not know if a horizontal mirror operation is necessary, then this is the default value used.
 	1: Horizontal flip operation
 R1, R0 = Rotation: indicates the rotation of the video as transmitted on the link. The receiver should rotate the video to
-	compensate that rotation. E.g. a 90бу Counter Clockwise rotation should be compensated by the receiver with a 90бу
+	compensate that rotation. E.g. a 90  Counter Clockwise rotation should be compensated by the receiver with a 90 
 	Clockwise rotation prior to displaying.
 
 Table 7.2: Rotation signalling for 2 bit granularity
 R1 R0 Rotation of the video as sent on the link		Rotation on the receiver before display
-0  0	0бу rotation									None
-0  1	90бу Counter Clockwise (CCW) rotation or		90бу CW rotation
-		270бу Clockwise (CW) rotation
-1  0	180бу CCW rotation or 180бу CW rotation		180бу CW rotation
-1  1	270бу CCW rotation or 90бу CW rotation		90бу CCW rotation
+0  0	0  rotation									None
+0  1	90  Counter Clockwise (CCW) rotation or		90  CW rotation
+		270  Clockwise (CW) rotation
+1  0	180  CCW rotation or 180  CW rotation		180  CW rotation
+1  1	270  CCW rotation or 90  CW rotation		90  CCW rotation
 
 CVO information for a higher granularity of Rotation (corresponding to urn:3GPP:video-orientation:6) is carried as a
 byte formatted as follows:
@@ -55,7 +55,7 @@ the rotation bits.
 Table 7.3: Rotation signalling for 6 bit granularity
 R1	R0	R5	R4	R3	R2	Rotation of the video as		Rotation on the receiver 
 						sent on the link				before display
-0	0	0	0	0	0	0бу rotation						None
+0	0	0	0	0	0	0  rotation						None
 0	0	0	0	0	1	(360/64)бу Counter Clockwise		(360/64)бу CW rotation
 						(CCW) rotation
 0	0	0	0	1	0	(2*360/64)бу CCW rotation		(2*360/64)бу CW rotation
