@@ -31,14 +31,14 @@ struct rtp_payload_t
 /// @param[in] handler user-defined callback functions
 /// @param[in] cbparam user-defined parameter
 /// @return NULL-error, other-ok
-CXX_C_API void* rtp_payload_encode_create(int payload, const char* name, uint16_t seq, uint32_t ssrc, struct rtp_payload_t *handler, void* cbparam);
-CXX_C_API void rtp_payload_encode_destroy(void* encoder);
+TURBO_MEDIA_API void* rtp_payload_encode_create(int payload, const char* name, uint16_t seq, uint32_t ssrc, struct rtp_payload_t *handler, void* cbparam);
+TURBO_MEDIA_API void rtp_payload_encode_destroy(void* encoder);
 
 /// Get rtp last packet sequence number and timestamp
 /// @param[in] encoder RTP packet encoder(create by rtp_payload_encode_create)
 /// @param[in] seq RTP header sequence number
 /// @param[in] timestamp RTP header timestamp
-CXX_C_API void rtp_payload_encode_getinfo(void* encoder, uint16_t* seq, uint32_t* timestamp);
+TURBO_MEDIA_API void rtp_payload_encode_getinfo(void* encoder, uint16_t* seq, uint32_t* timestamp);
 
 /// Encode RTP packet
 /// @param[in] encoder RTP packet encoder(create by rtp_payload_encode_create)
@@ -46,7 +46,7 @@ CXX_C_API void rtp_payload_encode_getinfo(void* encoder, uint16_t* seq, uint32_t
 /// @param[in] bytes stream length in bytes
 /// @param[in] timestamp RTP header timestamp
 /// @return 0-ok, ENOMEM-alloc failed, <0-failed
-CXX_C_API int rtp_payload_encode_input(void* encoder, const void* data, int bytes, uint32_t timestamp);
+TURBO_MEDIA_API int rtp_payload_encode_input(void* encoder, const void* data, int bytes, uint32_t timestamp);
 
 
 /// Create RTP packet decoder
@@ -55,19 +55,19 @@ CXX_C_API int rtp_payload_encode_input(void* encoder, const void* data, int byte
 /// @param[in] handler user-defined callback functions
 /// @param[in] cbparam user-defined parameter
 /// @return NULL-error, other-ok
-CXX_C_API void* rtp_payload_decode_create(int payload, const char* name, struct rtp_payload_t *handler, void* cbparam);
-CXX_C_API void rtp_payload_decode_destroy(void* decoder);
+TURBO_MEDIA_API void* rtp_payload_decode_create(int payload, const char* name, struct rtp_payload_t *handler, void* cbparam);
+TURBO_MEDIA_API void rtp_payload_decode_destroy(void* decoder);
 
 /// Decode RTP packet
 /// @param[in] decoder RTP packet decoder(create by rtp_payload_decode_create)
 /// @param[in] packet RTP packet, include rtp header(12 bytes)
 /// @param[in] bytes RTP packet length in bytes
 /// @return 1-packet handled, 0-packet discard, <0-failed
-CXX_C_API int rtp_payload_decode_input(void* decoder, const void* packet, int bytes);
+TURBO_MEDIA_API int rtp_payload_decode_input(void* decoder, const void* packet, int bytes);
 
 /// Set/Get rtp encode packet size(include rtp header)
-CXX_C_API void rtp_packet_setsize(int bytes);
-CXX_C_API int rtp_packet_getsize(void);
+TURBO_MEDIA_API void rtp_packet_setsize(int bytes);
+TURBO_MEDIA_API int rtp_packet_getsize(void);
 
 #ifdef __cplusplus
 }

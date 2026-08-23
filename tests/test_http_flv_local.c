@@ -3,7 +3,7 @@
 #include <CoroNet.h>
 #include <http_client.h>
 #include <turbo_streamer.h>
-#include <turbo_vec.h>
+#include <turbostl/vec.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -21,7 +21,7 @@ typedef struct {
     coro_socket_t *server;
     http_client_t *http_client;
     turbo_streamer_t *streamer;
-    turbo_vec_t received;
+    vec_t received;
     int handler_result;
     int test_result;
 } http_flv_test_state_t;
@@ -59,20 +59,20 @@ static void http_flv_upload_handler(coro_socket_t *client, void *arg) {
             state->handler_result = -1;
             break;
         }
-        old_size = turbo_vec_size(&state->received);
+        old_size = vec_size(&state->received);
         if (chunk_size > SIZE_MAX - old_size ||
-            turbo_vec_resize(&state->received, old_size + chunk_size) != TURBO_OK) {
+            vec_resize(&state->received, old_size + chunk_size) != STL_OK) {
             coro_socket_free_recv(chunk);
             state->handler_result = -1;
             break;
         }
-        memcpy((uint8_t *)turbo_vec_data(&state->received) + old_size, chunk,
+        memcpy((uint8_t *)vec_data(&state->received) + old_size, chunk,
                chunk_size);
         coro_socket_free_recv(chunk);
         chunk = NULL;
         if (http_flv_has_chunked_trailer(
-                (const uint8_t *)turbo_vec_data_const(&state->received),
-                turbo_vec_size(&state->received))) {
+                (const uint8_t *)vec_data_const(&state->received),
+                vec_size(&state->received))) {
             state->handler_result =
                 coro_socket_send(client, response, sizeof(response) - 1);
             break;
@@ -157,19 +157,19 @@ suite("local HTTP-FLV chunked push") {
         const uint8_t *flv;
         size_t received_size;
 
-        check_int_eq(turbo_vec_init(&state.received, sizeof(uint8_t)), TURBO_OK);
+        check_equal(vec_init_bytes(&state.received, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t), SIZE_MAX / sizeof(uint8_t)), STL_OK);
         state.coro_context = coro_context_create(NULL);
         check_not_null(state.coro_context);
         if (!state.coro_context) goto cleanup;
-        check_int_eq(coro_context_spawn(state.coro_context, http_flv_test_coro, &state),
+        check_equal(coro_context_spawn(state.coro_context, http_flv_test_coro, &state),
                      0);
-        check_int_eq(coro_context_run(state.coro_context, TURBO_RUN_DEFAULT), 0);
-        check_int_eq(state.test_result, 1);
-        check_int_eq(state.handler_result, 0);
-        received = (const uint8_t *)turbo_vec_data_const(&state.received);
-        received_size = turbo_vec_size(&state.received);
+        check_equal(coro_context_run(state.coro_context, TURBO_RUN_DEFAULT), 0);
+        check_equal(state.test_result, 1);
+        check_equal(state.handler_result, 0);
+        received = (const uint8_t *)vec_data_const(&state.received);
+        received_size = vec_size(&state.received);
         check_not_null(received);
-        check_size_gt(received_size, 13);
+        check_greater(received_size, 13);
         check_not_null(http_flv_find_bytes(received, received_size,
                                            (const uint8_t *)"POST /live.flv", 14));
         check_not_null(http_flv_find_bytes(
@@ -178,14 +178,14 @@ suite("local HTTP-FLV chunked push") {
                                   (const uint8_t *)"FLV", 3);
         check_not_null(flv);
         if (flv && (size_t)(flv - received) + 5 <= received_size) {
-            check_mem_eq(flv, "FLV", 3);
-            check_int_eq(flv[3], 1);
+            check_equal(flv, "FLV", 3);
+            check_equal(flv[3], 1);
             check_true((flv[4] & 0x04) != 0);
         }
 
 cleanup:
         if (state.server) coro_socket_destroy(state.server);
         if (state.coro_context) coro_context_destroy(state.coro_context);
-        turbo_vec_destroy(&state.received);
+        vec_destroy(&state.received);
     }
 }

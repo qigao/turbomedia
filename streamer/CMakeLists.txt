@@ -36,7 +36,7 @@ target_link_libraries(
          TurboMedia::Muxer
          TurboMedia::Demuxer
          TurboMedia::Transport
-  PRIVATE TurboUtils::Core TurboHttp::HttpClient TurboNet::CoroNet)
+  PRIVATE TurboUtils::Core TurboUtils::STL TurboHttp::HttpClient TurboNet::CoroNet)
 target_compile_definitions(
   turbo_media_streamer
   PUBLIC TURBO_MEDIA_HAS_HLS TURBO_MEDIA_HAS_DASH TURBO_MEDIA_HAS_RTMP

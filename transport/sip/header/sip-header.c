@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-char* sip_string_view_clone(char* ptr, const char* end, tstr_v* clone, const char* s, size_t n)
+char* sip_string_view_clone(char* ptr, const char* end, vstr* clone, const char* s, size_t n)
 {
 	size_t remain;
 	remain = end - ptr;

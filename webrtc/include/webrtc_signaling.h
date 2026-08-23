@@ -104,14 +104,14 @@ typedef struct {
  *             `turbo_loop_t *`; pass NULL to let the implementation allocate
  *             or bind lazily as supported by the active backend.
  */
-CXX_C_API webrtc_signaling_server_t *webrtc_signaling_create(
+TURBO_MEDIA_API webrtc_signaling_server_t *webrtc_signaling_create(
     void *loop,
     const webrtc_signaling_config_t *config);
 
 /**
  * @brief Start signaling server
  */
-CXX_C_API int webrtc_signaling_start(webrtc_signaling_server_t *server);
+TURBO_MEDIA_API int webrtc_signaling_start(webrtc_signaling_server_t *server);
 
 /**
  * @brief Start asynchronous signaling server shutdown
@@ -121,7 +121,7 @@ CXX_C_API int webrtc_signaling_start(webrtc_signaling_server_t *server);
  * This function is thread-safe; listener shutdown is posted to the owning
  * coroutine context.
  */
-CXX_C_API void webrtc_signaling_stop(webrtc_signaling_server_t *server);
+TURBO_MEDIA_API void webrtc_signaling_stop(webrtc_signaling_server_t *server);
 
 /**
  * @brief Drive the server's coroutine context for one iteration.
@@ -130,7 +130,7 @@ CXX_C_API void webrtc_signaling_stop(webrtc_signaling_server_t *server);
  * should use this instead of polling the raw backend loop directly. Call from
  * the coroutine context owner thread only.
  */
-CXX_C_API int webrtc_signaling_run(webrtc_signaling_server_t *server, turbo_run_mode_t mode);
+TURBO_MEDIA_API int webrtc_signaling_run(webrtc_signaling_server_t *server, turbo_run_mode_t mode);
 
 /**
  * @brief Destroy signaling server after draining all CoroNet connection tasks
@@ -138,17 +138,17 @@ CXX_C_API int webrtc_signaling_run(webrtc_signaling_server_t *server, turbo_run_
  * Call from the coroutine context owner thread after concurrent run calls have
  * returned.
  */
-CXX_C_API void webrtc_signaling_destroy(webrtc_signaling_server_t *server);
+TURBO_MEDIA_API void webrtc_signaling_destroy(webrtc_signaling_server_t *server);
 
 /**
  * @brief Get active peer count
  */
-CXX_C_API int webrtc_signaling_get_peer_count(webrtc_signaling_server_t *server);
+TURBO_MEDIA_API int webrtc_signaling_get_peer_count(webrtc_signaling_server_t *server);
 
 /**
  * @brief Broadcast message to all peers in room
  */
-CXX_C_API int webrtc_signaling_broadcast(
+TURBO_MEDIA_API int webrtc_signaling_broadcast(
     webrtc_signaling_server_t *server,
     const char *room,
     const char *from,
@@ -157,24 +157,24 @@ CXX_C_API int webrtc_signaling_broadcast(
 /**
  * @brief Get active room count
  */
-CXX_C_API int webrtc_signaling_get_room_count(webrtc_signaling_server_t *server);
+TURBO_MEDIA_API int webrtc_signaling_get_room_count(webrtc_signaling_server_t *server);
 
 /**
  * @brief Get JSON representation of all rooms
  * Caller must free the returned string
  */
-CXX_C_API char *webrtc_signaling_get_rooms_json(webrtc_signaling_server_t *server);
+TURBO_MEDIA_API char *webrtc_signaling_get_rooms_json(webrtc_signaling_server_t *server);
 
 /**
  * @brief Get JSON representation of peers in a room
  * Caller must free the returned string
  */
-CXX_C_API char *webrtc_signaling_get_room_peers_json(webrtc_signaling_server_t *server, const char *room_id);
+TURBO_MEDIA_API char *webrtc_signaling_get_room_peers_json(webrtc_signaling_server_t *server, const char *room_id);
 
 /**
  * @brief Kick a peer from a room
  */
-CXX_C_API int webrtc_signaling_kick_peer(
+TURBO_MEDIA_API int webrtc_signaling_kick_peer(
     webrtc_signaling_server_t *server, 
     const char *room_id, 
     const char *peer_id, 
@@ -184,7 +184,7 @@ CXX_C_API int webrtc_signaling_kick_peer(
  * @brief Get server status/metrics as JSON
  * Caller must free the returned string
  */
-CXX_C_API char *webrtc_signaling_get_status_json(webrtc_signaling_server_t *server);
+TURBO_MEDIA_API char *webrtc_signaling_get_status_json(webrtc_signaling_server_t *server);
 
 #ifdef __cplusplus
 }

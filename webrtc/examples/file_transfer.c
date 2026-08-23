@@ -62,7 +62,7 @@ static void send_next_chunk(app_state_t *app) {
   if (read > 0) {
     if (turbo_dc_channel_send(app->channel, buffer, read, 1) != 0) {
       turbo_dc_error_t err = turbo_dc_peer_get_error(app->peer);
-      TLOG_ERROR("Failed to send chunk: {}", turbo_dc_error_string(err.code));
+      TLOG_ERRORF("Failed to send chunk: {}", turbo_dc_error_string(err.code));
       app->transfer_active = 0;
       return;
     }
@@ -91,7 +91,7 @@ static void send_next_chunk(app_state_t *app) {
 static void start_file_transfer(app_state_t *app) {
   app->file = fopen(app->filename, "rb");
   if (!app->file) {
-    TLOG_ERROR("Failed to open file: {}", app->filename);
+    TLOG_ERRORF("Failed to open file: {}", app->filename);
     return;
   }
 
@@ -100,7 +100,7 @@ static void start_file_transfer(app_state_t *app) {
   app->file_size = ftell(app->file);
   fseek(app->file, 0, SEEK_SET);
 
-  TLOG_INFO("Transferring {} ({} bytes)", app->filename, app->file_size);
+  TLOG_INFOF("Transferring {} ({} bytes)", app->filename, app->file_size);
 
   app->bytes_transferred = 0;
   app->transfer_active = 1;
@@ -140,7 +140,7 @@ static void on_channel_message(turbo_dc_channel_t *channel, const void *data, si
 static void on_channel_open(turbo_dc_channel_t *channel, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
 
-  TLOG_INFO("Channel '{}' opened! ({})", turbo_dc_channel_get_label(channel),
+  TLOG_INFOF("Channel '{}' opened! ({})", turbo_dc_channel_get_label(channel),
             app->is_server ? "RECEIVER" : "SENDER");
 
   /* Sender starts transfer */
@@ -150,7 +150,7 @@ static void on_channel_open(turbo_dc_channel_t *channel, void *user_data) {
     /* Receiver prepares to receive */
     app->file = fopen(app->filename, "wb");
     if (!app->file) {
-      TLOG_ERROR("Failed to create output file: {}", app->filename);
+      TLOG_ERRORF("Failed to create output file: {}", app->filename);
       return;
     }
     TLOG_INFO("Ready to receive...");
@@ -161,7 +161,7 @@ static void on_channel_close(turbo_dc_channel_t *channel, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
   (void)channel;
 
-  TLOG_INFO("Channel closed ({})", app->is_server ? "RECEIVER" : "SENDER");
+  TLOG_INFOF("Channel closed ({})", app->is_server ? "RECEIVER" : "SENDER");
 
   if (app->file) {
     fclose(app->file);
@@ -174,7 +174,7 @@ static void on_peer_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, 
   app_state_t *app = (app_state_t *)user_data;
   (void)peer;
 
-  TLOG_INFO("Incoming channel: {}", turbo_dc_channel_get_label(channel));
+  TLOG_INFOF("Incoming channel: {}", turbo_dc_channel_get_label(channel));
 
   app->channel = channel;
   turbo_dc_channel_set_user_data(channel, app);
@@ -184,7 +184,7 @@ static void on_peer_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, 
   /* Channel is already open when we receive it - prepare to receive file */
   app->file = fopen(app->filename, "wb");
   if (!app->file) {
-    TLOG_ERROR("Failed to create output file: {}", app->filename);
+    TLOG_ERRORF("Failed to create output file: {}", app->filename);
     return;
   }
   TLOG_INFO("Ready to receive...");
@@ -196,7 +196,7 @@ static void on_peer_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
   (void)peer;
   (void)old_state;
 
-  TLOG_INFO("State: {} -> {} ({})", ENUM_NAME(old_state), ENUM_NAME(new_state),
+  TLOG_INFOF("State: {} -> {} ({})", ENUM_NAME(old_state), ENUM_NAME(new_state),
             app->is_server ? "RECEIVER" : "SENDER");
 
   if (new_state == TURBO_DC_STATE_CLOSED || new_state == TURBO_DC_STATE_FAILED) {
@@ -204,7 +204,7 @@ static void on_peer_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
   }
 
   if (new_state == TURBO_DC_STATE_CONNECTED) {
-    TLOG_INFO("Peer connected! ({})", app->is_server ? "RECEIVER" : "SENDER");
+    TLOG_INFOF("Peer connected! ({})", app->is_server ? "RECEIVER" : "SENDER");
 
     /* Sender creates channel */
     if (!app->is_server) {
@@ -224,7 +224,7 @@ static void on_peer_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
 
       if (turbo_dc_channel_open(app->channel) != 0) {
         turbo_dc_error_t err = turbo_dc_peer_get_error(app->peer);
-        TLOG_ERROR("Failed to open channel: {}", turbo_dc_error_string(err.code));
+        TLOG_ERRORF("Failed to open channel: {}", turbo_dc_error_string(err.code));
       }
     }
   }
@@ -235,7 +235,7 @@ static void on_peer_error(turbo_dc_peer_t *peer, int error_code, const char *err
   app_state_t *app = (app_state_t *)user_data;
   (void)peer;
   app->running = 0;
-  TLOG_ERROR("Peer error {}: {}", error_code, error_msg);
+  TLOG_ERRORF("Peer error {}: {}", error_code, error_msg);
 }
 
 /* ============================================================================
@@ -244,8 +244,8 @@ static void on_peer_error(turbo_dc_peer_t *peer, int error_code, const char *err
 
 int main(int argc, char **argv) {
   if (argc != 5) {
-    TLOG_ERROR("Usage (sender):   {} client <host> <port> <input_file>", argv[0]);
-    TLOG_ERROR("Usage (receiver): {} server <host> <port> <output_file>", argv[0]);
+    TLOG_ERRORF("Usage (sender):   {} client <host> <port> <input_file>", argv[0]);
+    TLOG_ERRORF("Usage (receiver): {} server <host> <port> <output_file>", argv[0]);
     return 1;
   }
 
@@ -257,9 +257,9 @@ int main(int argc, char **argv) {
   int is_server = (strcmp(mode, "server") == 0);
 
   TLOG_INFO("=== WebRTC DataChannel File Transfer ===");
-  TLOG_INFO("Mode: {}", is_server ? "RECEIVER" : "SENDER");
-  TLOG_INFO("Address: {}:{}", host, port);
-  TLOG_INFO("File: {}", filename);
+  TLOG_INFOF("Mode: {}", is_server ? "RECEIVER" : "SENDER");
+  TLOG_INFOF("Address: {}:{}", host, port);
+  TLOG_INFOF("File: {}", filename);
 
   /* Initialize app state */
   app_state_t app = {0};
@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
   if (!is_server) {
     FILE *f = fopen(filename, "rb");
     if (!f) {
-      TLOG_ERROR("Cannot open input file: {}", filename);
+      TLOG_ERRORF("Cannot open input file: {}", filename);
       return 1;
     }
     fseek(f, 0, SEEK_END);
@@ -295,7 +295,7 @@ int main(int argc, char **argv) {
   app.peer = turbo_dc_peer_create(app.ctx, host, (uint16_t)port, &app);
   if (!app.peer) {
     turbo_dc_error_t err = turbo_dc_context_get_error(app.ctx);
-    TLOG_ERROR("Failed to create peer: {}", turbo_dc_error_string(err.code));
+    TLOG_ERRORF("Failed to create peer: {}", turbo_dc_error_string(err.code));
     turbo_dc_context_destroy(app.ctx);
     return 1;
   }
@@ -308,7 +308,7 @@ int main(int argc, char **argv) {
   /* Connect */
   if (turbo_dc_peer_connect(app.peer) != 0) {
     turbo_dc_error_t err = turbo_dc_peer_get_error(app.peer);
-    TLOG_ERROR("Failed to connect: {}", turbo_dc_error_string(err.code));
+    TLOG_ERRORF("Failed to connect: {}", turbo_dc_error_string(err.code));
     turbo_dc_peer_destroy(app.peer);
     turbo_dc_context_destroy(app.ctx);
     return 1;

@@ -12,7 +12,7 @@
 #include "ivr_room_bridge.h"
 #include "ivr_thread.h"
 #include "turbomedia_ivr_v1.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <string.h>
 
 #define TEST_ROUTER_PORT 17713
@@ -103,27 +103,25 @@ static int wait_event(int timeout_ms) {
 void test_decode_participant_joined(void) {
     uint8_t frame[4096];
     size_t len = 0;
-    TEST_ASSERT_EQUAL(
-        IVR_OK,
-        ivr_room_bridge_encode_participant_joined(
+    check_equal(ivr_room_bridge_encode_participant_joined(
             g_codec, "ev-1", "mid-1", "ivr-worker-test", "room-42", "call-42",
-            1, 11, 91, 0, "call-42", "caller", frame, sizeof(frame), &len));
+            1, 11, 91, 0, "call-42", "caller", frame, sizeof(frame), &len), IVR_OK);
     ivr_subscriber_decoded_t *decoded = NULL;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_subscriber_decode(
-                                  g_codec, frame, len, &decoded));
-    TEST_ASSERT_NOT_NULL(decoded);
+    check_equal(ivr_flowmq_subscriber_decode(
+                                  g_codec, frame, len, &decoded), IVR_OK);
+    check_not_null(decoded);
     const ivr_event_view_t *v = ivr_subscriber_decoded_view(decoded);
-    TEST_ASSERT_NOT_NULL(v);
-    TEST_ASSERT_EQUAL_STRING("room.participant.joined", v->event_type.data);
-    TEST_ASSERT_EQUAL_STRING("ev-1", v->event_id.data);
-    TEST_ASSERT_EQUAL_STRING("room-42", v->call.room_id.data);
-    TEST_ASSERT_EQUAL_STRING("call-42", v->call.call_id.data);
-    TEST_ASSERT_EQUAL_UINT64(1u, v->call.call_generation);
+    check_not_null(v);
+    check_equal(v->event_type.data, "room.participant.joined");
+    check_equal(v->event_id.data, "ev-1");
+    check_equal(v->call.room_id.data, "room-42");
+    check_equal(v->call.call_id.data, "call-42");
+    check_equal((uint64_t)(v->call.call_generation), (uint64_t)(1u));
     /* session maps call.expected_room_version -> room_version */
-    TEST_ASSERT_EQUAL_UINT64(11u, v->call.expected_room_version);
-    TEST_ASSERT_EQUAL_UINT64(91u, v->sequence);
-    TEST_ASSERT_NOT_NULL(strstr(v->payload_json.data, "\"participant_role\":\"caller\""));
-    TEST_ASSERT_NOT_NULL(strstr(v->payload_json.data, "\"room_version\":11"));
+    check_equal((uint64_t)(v->call.expected_room_version), (uint64_t)(11u));
+    check_equal((uint64_t)(v->sequence), (uint64_t)(91u));
+    check_not_null(strstr(v->payload_json.data, "\"participant_role\":\"caller\""));
+    check_not_null(strstr(v->payload_json.data, "\"room_version\":11"));
     ivr_subscriber_decoded_free(decoded);
 }
 
@@ -135,14 +133,13 @@ void test_decode_rejects_result_frame(void) {
     result.sequence = 91;
     uint8_t frame[4096];
     size_t len = 0;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_room_encode_result(g_codec, "mid-1", "ivr-worker-test",
+    check_equal(ivr_room_encode_result(g_codec, "mid-1", "ivr-worker-test",
                                              "room-42", "call-42", 1, &result,
-                                             frame, sizeof(frame), &len));
+                                             frame, sizeof(frame), &len), IVR_OK);
     ivr_subscriber_decoded_t *decoded = (ivr_subscriber_decoded_t *)1;
-    TEST_ASSERT_EQUAL(IVR_ESTATE, ivr_flowmq_subscriber_decode(
-                                      g_codec, frame, len, &decoded));
-    TEST_ASSERT_NULL(decoded);
+    check_equal(ivr_flowmq_subscriber_decode(
+                                      g_codec, frame, len, &decoded), IVR_ESTATE);
+    check_null(decoded);
 }
 
 void test_decode_rejects_command_frame(void) {
@@ -162,45 +159,42 @@ void test_decode_rejects_command_frame(void) {
     cmd.args_json = args;
     uint8_t frame[4096];
     size_t len = 0;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_flowmq_gateway_encode_command(
+    check_equal(ivr_flowmq_gateway_encode_command(
                           g_codec, &cmd, "ivr-worker-test", frame,
-                          sizeof(frame), &len));
+                          sizeof(frame), &len), IVR_OK);
     ivr_subscriber_decoded_t *decoded = (ivr_subscriber_decoded_t *)1;
-    TEST_ASSERT_EQUAL(IVR_ESTATE, ivr_flowmq_subscriber_decode(
-                                      g_codec, frame, len, &decoded));
-    TEST_ASSERT_NULL(decoded);
+    check_equal(ivr_flowmq_subscriber_decode(
+                                      g_codec, frame, len, &decoded), IVR_ESTATE);
+    check_null(decoded);
 }
 
 void test_decode_rejects_short_frame(void) {
     const uint8_t garbage[] = {'T', 'I', 'V', 'R', 1};
     ivr_subscriber_decoded_t *decoded = (ivr_subscriber_decoded_t *)1;
-    TEST_ASSERT_EQUAL(IVR_ESTATE, ivr_flowmq_subscriber_decode(
+    check_equal(ivr_flowmq_subscriber_decode(
                                       g_codec, garbage, sizeof(garbage),
-                                      &decoded));
-    TEST_ASSERT_NULL(decoded);
+                                      &decoded), IVR_ESTATE);
+    check_null(decoded);
 }
 
 void test_decode_snapshot(void) {
     uint8_t frame[4096];
     size_t len = 0;
-    TEST_ASSERT_EQUAL(
-        IVR_OK,
-        ivr_room_bridge_encode_snapshot(g_codec, "room-42", "call-42", 1,
+    check_equal(ivr_room_bridge_encode_snapshot(g_codec, "room-42", "call-42", 1,
                                         5, 90, "caller", "active", frame,
-                                        sizeof(frame), &len));
+                                        sizeof(frame), &len), IVR_OK);
     ivr_subscriber_decoded_t *decoded = NULL;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_subscriber_decode(
-                                  g_codec, frame, len, &decoded));
-    TEST_ASSERT_NOT_NULL(decoded);
+    check_equal(ivr_flowmq_subscriber_decode(
+                                  g_codec, frame, len, &decoded), IVR_OK);
+    check_not_null(decoded);
     const ivr_event_view_t *v = ivr_subscriber_decoded_view(decoded);
-    TEST_ASSERT_NOT_NULL(v);
-    TEST_ASSERT_EQUAL_STRING("room.snapshot.loaded", v->event_type.data);
-    TEST_ASSERT_EQUAL_STRING("room-42", v->call.room_id.data);
-    TEST_ASSERT_EQUAL_STRING("call-42", v->call.call_id.data);
-    TEST_ASSERT_EQUAL_UINT64(1u, v->call.call_generation);
-    TEST_ASSERT_EQUAL_UINT64(5u, v->call.expected_room_version);
-    TEST_ASSERT_EQUAL_UINT64(90u, v->sequence);
+    check_not_null(v);
+    check_equal(v->event_type.data, "room.snapshot.loaded");
+    check_equal(v->call.room_id.data, "room-42");
+    check_equal(v->call.call_id.data, "call-42");
+    check_equal((uint64_t)(v->call.call_generation), (uint64_t)(1u));
+    check_equal((uint64_t)(v->call.expected_room_version), (uint64_t)(5u));
+    check_equal((uint64_t)(v->sequence), (uint64_t)(90u));
     ivr_subscriber_decoded_free(decoded);
 }
 
@@ -262,7 +256,7 @@ static ivr_status_t send_join(const char *message_id, uint64_t expected_version)
 
 void setUp(void) {
     DataBindError err = DATA_BIND_ERROR_INIT;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK, TurboMediaIvrV1_codec_create(&g_codec, &err));
+    check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
     ivr_mutex_init(&g_ev_lock);
     g_ev_ready = 0;
     g_ev_type[0] = '\0';
@@ -292,8 +286,8 @@ void setUp(void) {
     bcfg.pub_host = "127.0.0.1";
     bcfg.pub_port = TEST_PUB_PORT;
     bcfg.pub_topic = "room.events";
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_room_bridge_create(&bcfg, &g_bridge));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_room_bridge_start(g_bridge));
+    check_equal(ivr_room_bridge_create(&bcfg, &g_bridge), IVR_OK);
+    check_equal(ivr_room_bridge_start(g_bridge), IVR_OK);
 
     ivr_flowmq_subscriber_config_t scfg;
     memset(&scfg, 0, sizeof(scfg));
@@ -303,9 +297,8 @@ void setUp(void) {
     scfg.timeout_ms = 5000;
     scfg.on_event = on_event_cb;
     scfg.on_connection = on_subscriber_connection;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_flowmq_subscriber_create(&scfg, &g_subscriber));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_subscriber_start(g_subscriber));
+    check_equal(ivr_flowmq_subscriber_create(&scfg, &g_subscriber), IVR_OK);
+    check_equal(ivr_flowmq_subscriber_start(g_subscriber), IVR_OK);
 
     ivr_flowmq_gateway_config_t gcfg;
     memset(&gcfg, 0, sizeof(gcfg));
@@ -314,14 +307,14 @@ void setUp(void) {
     gcfg.port = TEST_ROUTER_PORT;
     gcfg.timeout_ms = 5000;
     gcfg.on_connection = on_gateway_connection;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_create(&gcfg, &g_ops,
-                                                        &g_gateway));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_start(g_gateway));
+    check_equal(ivr_flowmq_gateway_create(&gcfg, &g_ops,
+                                                        &g_gateway), IVR_OK);
+    check_equal(ivr_flowmq_gateway_start(g_gateway), IVR_OK);
     /* let the DEALER reach the ROUTER and the SUB register on the PUB */
     ivr_thread_sleep_ms(1200);
-    TEST_ASSERT_TRUE(atomic_load_explicit(&g_gateway_connected,
+    check_true(atomic_load_explicit(&g_gateway_connected,
                                          memory_order_acquire));
-    TEST_ASSERT_TRUE(atomic_load_explicit(&g_subscriber_connected,
+    check_true(atomic_load_explicit(&g_subscriber_connected,
                                          memory_order_acquire));
 }
 
@@ -347,35 +340,34 @@ void tearDown(void) {
 }
 
 void test_live_pubsub_participant_joined(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, send_join("mid-1", 10));
+    check_equal(send_join("mid-1", 10), IVR_OK);
     for (int i = 0; i < 400 && g_applied == 0; i++) {
         ivr_thread_sleep_ms(20);
     }
-    TEST_ASSERT_EQUAL_UINT64(1u, g_applied);
-    TEST_ASSERT_EQUAL(
-        IVR_OK, ivr_room_bridge_publish_participant_joined(
+    check_equal((uint64_t)(g_applied), (uint64_t)(1u));
+    check_equal(ivr_room_bridge_publish_participant_joined(
                     g_bridge, "event-mid-1", "mid-1", "ivr-worker-test",
-                    "room-42", "call-42", 1, 11, 91, "call-42", "caller"));
-    TEST_ASSERT_TRUE(wait_event(8000));
-    TEST_ASSERT_EQUAL_STRING("room.participant.joined", g_ev_type);
-    TEST_ASSERT_EQUAL_STRING("room-42", g_ev_room);
-    TEST_ASSERT_EQUAL_STRING("call-42", g_ev_call);
-    TEST_ASSERT_EQUAL_UINT64(1u, g_ev_generation);
-    TEST_ASSERT_EQUAL_UINT64(11u, g_ev_room_version);
-    TEST_ASSERT_EQUAL_UINT64(91u, g_ev_sequence);
-    TEST_ASSERT_NOT_NULL(strstr(g_ev_payload, "\"participant_role\":\"caller\""));
+                    "room-42", "call-42", 1, 11, 91, "call-42", "caller"), IVR_OK);
+    check_true(wait_event(8000));
+    check_equal(g_ev_type, "room.participant.joined");
+    check_equal(g_ev_room, "room-42");
+    check_equal(g_ev_call, "call-42");
+    check_equal((uint64_t)(g_ev_generation), (uint64_t)(1u));
+    check_equal((uint64_t)(g_ev_room_version), (uint64_t)(11u));
+    check_equal((uint64_t)(g_ev_sequence), (uint64_t)(91u));
+    check_not_null(strstr(g_ev_payload, "\"participant_role\":\"caller\""));
 }
 
 void test_live_snapshot_event(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, send_get_snapshot());
-    TEST_ASSERT_TRUE(wait_event(8000));
-    TEST_ASSERT_EQUAL_STRING("room.snapshot.loaded", g_ev_type);
-    TEST_ASSERT_EQUAL_STRING("room-42", g_ev_room);
-    TEST_ASSERT_EQUAL_STRING("call-42", g_ev_call);
-    TEST_ASSERT_EQUAL_UINT64(1u, g_ev_generation);
-    TEST_ASSERT_EQUAL_UINT64(10u, g_ev_room_version);
-    TEST_ASSERT_EQUAL_UINT64(90u, g_ev_sequence);
-    TEST_ASSERT_NOT_NULL(strstr(g_ev_payload, "\"last_sequence\":90"));
+    check_equal(send_get_snapshot(), IVR_OK);
+    check_true(wait_event(8000));
+    check_equal(g_ev_type, "room.snapshot.loaded");
+    check_equal(g_ev_room, "room-42");
+    check_equal(g_ev_call, "call-42");
+    check_equal((uint64_t)(g_ev_generation), (uint64_t)(1u));
+    check_equal((uint64_t)(g_ev_room_version), (uint64_t)(10u));
+    check_equal((uint64_t)(g_ev_sequence), (uint64_t)(90u));
+    check_not_null(strstr(g_ev_payload, "\"last_sequence\":90"));
 }
 
 void test_live_connection_callbacks_report_disconnect(void) {
@@ -391,9 +383,9 @@ void test_live_connection_callbacks_report_disconnect(void) {
         }
         ivr_thread_sleep_ms(20);
     }
-    TEST_ASSERT_FALSE(atomic_load_explicit(&g_gateway_connected,
+    check_false(atomic_load_explicit(&g_gateway_connected,
                                            memory_order_acquire));
-    TEST_ASSERT_FALSE(atomic_load_explicit(&g_subscriber_connected,
+    check_false(atomic_load_explicit(&g_subscriber_connected,
                                            memory_order_acquire));
 }
 
@@ -401,12 +393,12 @@ spec("test_ivr_flowmq_subscriber") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_decode_participant_joined);
-  TT_TEST(test_decode_rejects_result_frame);
-  TT_TEST(test_decode_rejects_command_frame);
-  TT_TEST(test_decode_rejects_short_frame);
-  TT_TEST(test_decode_snapshot);
-  TT_TEST(test_live_pubsub_participant_joined);
-  TT_TEST(test_live_snapshot_event);
-  TT_TEST(test_live_connection_callbacks_report_disconnect);
+  it("test_decode_participant_joined") { test_decode_participant_joined(); };
+  it("test_decode_rejects_result_frame") { test_decode_rejects_result_frame(); };
+  it("test_decode_rejects_command_frame") { test_decode_rejects_command_frame(); };
+  it("test_decode_rejects_short_frame") { test_decode_rejects_short_frame(); };
+  it("test_decode_snapshot") { test_decode_snapshot(); };
+  it("test_live_pubsub_participant_joined") { test_live_pubsub_participant_joined(); };
+  it("test_live_snapshot_event") { test_live_snapshot_event(); };
+  it("test_live_connection_callbacks_report_disconnect") { test_live_connection_callbacks_report_disconnect(); };
 }

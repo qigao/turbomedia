@@ -78,7 +78,7 @@ int sip_header_params(char sep, const char* s, const char* end, struct sip_param
 const struct sip_param_t* sip_params_find(const struct sip_params_t* params, const char* name, int bytes)
 {
 	int i;
-	tstr_v s;
+	vstr s;
 	const struct sip_param_t* p;
 	s.data = name;
 	s.len = bytes;
@@ -91,7 +91,7 @@ const struct sip_param_t* sip_params_find(const struct sip_params_t* params, con
 	return NULL;
 }
 
-const tstr_v* sip_params_find_string(const struct sip_params_t* params, const char* name, int bytes)
+const vstr* sip_params_find_string(const struct sip_params_t* params, const char* name, int bytes)
 {
 	const struct sip_param_t* p;
 	p = sip_params_find(params, name, bytes);
@@ -125,7 +125,7 @@ int sip_params_find_double(const struct sip_params_t* params, const char* name, 
 	return 0;
 }
 
-int sip_params_add_or_update(struct sip_params_t* params, const char* name, int bytes, const tstr_v* value)
+int sip_params_add_or_update(struct sip_params_t* params, const char* name, int bytes, const vstr* value)
 {
 	struct sip_param_t* param, item;
 	param = (struct sip_param_t*)sip_params_find(params, name, bytes);
@@ -180,7 +180,7 @@ int sip_params_write(const struct sip_params_t* params, char* data, const char* 
 void sip_header_param_test(void)
 {
 	const char* s;
-	tstr_v x;
+	vstr x;
 	struct sip_param_t param;
 	struct sip_params_t params;
 	

@@ -97,7 +97,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
             free(channel);
             return;
         }
-        TLOG_INFO("DCEP OPEN received sid={} label='{}' proto='{}'",
+        TLOG_INFOF("DCEP OPEN received sid={} label='{}' proto='{}'",
                   stream_id,
                   channel->label ? channel->label : "",
                   channel->protocol ? channel->protocol : "");
@@ -116,7 +116,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         }
     }
     else if (msg_type == DCEP_DATA_CHANNEL_ACK) {
-        TLOG_INFO("DCEP ACK received sid={}", stream_id);
+        TLOG_INFOF("DCEP ACK received sid={}", stream_id);
         turbo_dc_channel_t *channel = NULL;
         if (stream_id < MAX_CHANNELS) {
             channel = peer_get_channel(peer, stream_id);
@@ -187,7 +187,7 @@ int dcep_send_open(turbo_dc_channel_t *channel) {
                                   NULL, 0, &spa, sizeof(spa),
                                   SCTP_SENDV_SPA, 0);
 
-    TLOG_INFO("DCEP OPEN send sid={} bytes={} ret={} errno={}",
+    TLOG_INFOF("DCEP OPEN send sid={} bytes={} ret={} errno={}",
               channel->id, packet_len, (int)sent, errno);
 
     return (sent > 0) ? 0 : -1;
@@ -208,7 +208,7 @@ int dcep_send_ack(turbo_dc_peer_t *peer, uint16_t stream_id) {
                                   NULL, 0, &spa, sizeof(spa),
                                   SCTP_SENDV_SPA, 0);
 
-    TLOG_INFO("DCEP ACK send sid={} ret={} errno={}", stream_id, (int)sent, errno);
+    TLOG_INFOF("DCEP ACK send sid={} ret={} errno={}", stream_id, (int)sent, errno);
 
     return (sent > 0) ? 0 : -1;
 }

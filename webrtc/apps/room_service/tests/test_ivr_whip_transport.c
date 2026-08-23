@@ -10,7 +10,7 @@
 #include "ivr_dtmf_rtp.h"
 #include "ivr_whep_transport.h"
 #include "ivr_whip_transport.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -516,23 +516,21 @@ void setUp(void) {
     memset(&g_whep_states, 0, sizeof(g_whep_states));
     memset(&g_dtmf_input, 0, sizeof(g_dtmf_input));
     g_dtmf_finals = 0;
-    TEST_ASSERT_EQUAL_INT(0, ivr_mutex_init(&g_dtmf_lock));
-    TEST_ASSERT_EQUAL_INT(0, ivr_mutex_init(&g_media_state_lock));
+    check_equal((int)(ivr_mutex_init(&g_dtmf_lock)), (int)(0));
+    check_equal((int)(ivr_mutex_init(&g_media_state_lock)), (int)(0));
     ivr_dtmf_ingress_config_t dtmf_config;
     memset(&dtmf_config, 0, sizeof(dtmf_config));
     dtmf_config.window_capacity = 1;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_dtmf_ingress_create(&dtmf_config,
-                                              &g_dtmf_ingress));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_dtmf_ingress_begin_input(g_dtmf_ingress, &g_call,
-                                                   "w1", 1));
+    check_equal(ivr_dtmf_ingress_create(&dtmf_config,
+                                              &g_dtmf_ingress), IVR_OK);
+    check_equal(ivr_dtmf_ingress_begin_input(g_dtmf_ingress, &g_call,
+                                                   "w1", 1), IVR_OK);
     snprintf(g_cfg_path, sizeof(g_cfg_path), "%s/whip_%d.toml", TEST_BIN_DIR,
              ++g_seq);
     snprintf(g_out_path, sizeof(g_out_path), "%s/whip_%d.out", TEST_BIN_DIR,
              g_seq);
     FILE *cfg = fopen(g_cfg_path, "wb");
-    TEST_ASSERT_NOT_NULL(cfg);
+    check_not_null(cfg);
     fprintf(cfg,
             "[server]\nhost = \"127.0.0.1\"\nport = %d\nuse_tls = false\n"
             "node_id = \"sfu-whip-1\"\n"
@@ -544,7 +542,7 @@ void setUp(void) {
             TEST_SFU_PORT, TEST_CTRL_TOKEN, TEST_MEDIA_TOKEN);
     fclose(cfg);
 
-    TEST_ASSERT_TRUE(spawn_sfu());
+    check_true(spawn_sfu());
     proc_sleep(2000);
 
     int room_ready = provision_room();
@@ -552,7 +550,7 @@ void setUp(void) {
         kill_child(&g_sfu);
         print_child_output(g_out_path);
     }
-    TEST_ASSERT_TRUE(room_ready);
+    check_true(room_ready);
 
     ivr_whip_transport_config_t tcfg;
     memset(&tcfg, 0, sizeof(tcfg));
@@ -564,8 +562,8 @@ void setUp(void) {
     tcfg.connect_timeout_ms = 15000;
     tcfg.on_state = on_media_state;
     tcfg.state_context = &g_whip_states;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_whip_transport_create(&tcfg, &g_transport));
-    TEST_ASSERT_NOT_NULL(g_transport);
+    check_equal(ivr_whip_transport_create(&tcfg, &g_transport), IVR_OK);
+    check_not_null(g_transport);
 
     ivr_whep_transport_config_t wcfg;
     memset(&wcfg, 0, sizeof(wcfg));
@@ -584,9 +582,8 @@ void setUp(void) {
     wcfg.on_rtp = on_whep_rtp;
     wcfg.rtp_context = g_dtmf_ingress;
     g_whep_audio_frames = 0;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_whep_transport_create(&wcfg, &g_whep_transport));
-    TEST_ASSERT_NOT_NULL(g_whep_transport);
+    check_equal(ivr_whep_transport_create(&wcfg, &g_whep_transport), IVR_OK);
+    check_not_null(g_whep_transport);
 }
 
 void tearDown(void) {
@@ -608,7 +605,7 @@ void tearDown(void) {
 }
 
 void test_whip_publish_connect_and_send_audio(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_whip_transport_start(g_transport, &g_call));
+    check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
     /* wait for ICE/DTLS to complete against the SFU */
     int connected = 0;
     for (int i = 0; i < 800 && !connected; i++) {
@@ -617,11 +614,11 @@ void test_whip_publish_connect_and_send_audio(void) {
             proc_sleep(25);
         }
     }
-    TEST_ASSERT_TRUE(connected);
+    check_true(connected);
     media_state_counts_t whip_states = media_state_snapshot(&g_whip_states);
-    TEST_ASSERT_TRUE(whip_states.connecting >= 1);
-    TEST_ASSERT_TRUE(whip_states.connected >= 1);
-    TEST_ASSERT_EQUAL_UINT64(0u, whip_states.invalid_identity);
+    check_true(whip_states.connecting >= 1);
+    check_true(whip_states.connected >= 1);
+    check_equal((uint64_t)(whip_states.invalid_identity), (uint64_t)(0u));
 
     /* push TTS PCM frames through the audio send track (via the bot's
        transport interface) */
@@ -634,21 +631,18 @@ void test_whip_publish_connect_and_send_audio(void) {
     for (int i = 0; i < 320; i++) {
         samples[i] = (uint16_t)(1000 + (i % 7) * 100);
     }
-    TEST_ASSERT_EQUAL_INT(
-        -1, transport.play_audio(transport.context, &wrong_dialog,
+    check_equal((int)(transport.play_audio(transport.context, &wrong_dialog,
                                  (const uint8_t *)samples,
-                                 sizeof(samples), 16000));
-    TEST_ASSERT_EQUAL_INT(-1,
-                          transport.stop(transport.context, &wrong_dialog));
-    TEST_ASSERT_TRUE(ivr_whip_transport_connected(g_transport));
+                                 sizeof(samples), 16000)), (int)(-1));
+    check_equal((int)(transport.stop(transport.context, &wrong_dialog)), (int)(-1));
+    check_true(ivr_whip_transport_connected(g_transport));
     for (int f = 0; f < 8; f++) {
-        TEST_ASSERT_EQUAL_INT(0, transport.play_audio(
+        check_equal((int)(transport.play_audio(
                                      transport.context, &g_call,
                                      (const uint8_t *)samples,
-                                     sizeof(samples), 16000));
+                                     sizeof(samples), 16000)), (int)(0));
     }
-    TEST_ASSERT_GREATER_OR_EQUAL(8u,
-                                 ivr_whip_transport_frames_sent(g_transport));
+    check_greater_equal(ivr_whip_transport_frames_sent(g_transport), 8u);
 
     /* the transport owns the WHIP session; tearDown stops + DELETEs it */
 }
@@ -669,8 +663,8 @@ void test_create_copies_config_and_null_token(void) {
     tcfg.allow_loopback = 1;
     tcfg.sample_rate = 16000;
     tcfg.connect_timeout_ms = 5000;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_whip_transport_create(&tcfg, &t));
-    TEST_ASSERT_NOT_NULL(t);
+    check_equal(ivr_whip_transport_create(&tcfg, &t), IVR_OK);
+    check_not_null(t);
     /* release the caller buffers to prove the transport owns its copies */
     host[0] = '\0';
     token[0] = '\0';
@@ -685,7 +679,7 @@ void test_whep_subscribe_connect_and_stop(void) {
     char command[1024];
     uint32_t publisher_ssrc;
 
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_whip_transport_start(g_transport, &g_call));
+    check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
     int publisher_connected = 0;
     for (int i = 0; i < 800 && !publisher_connected; i++) {
         publisher_connected = ivr_whip_transport_connected(g_transport);
@@ -693,9 +687,9 @@ void test_whep_subscribe_connect_and_stop(void) {
             proc_sleep(25);
         }
     }
-    TEST_ASSERT_TRUE(publisher_connected);
+    check_true(publisher_connected);
     publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
-    TEST_ASSERT_TRUE(publisher_ssrc != 0);
+    check_true(publisher_ssrc != 0);
 
     memset(response, 0, sizeof(response));
     int command_length = snprintf(
@@ -706,30 +700,27 @@ void test_whep_subscribe_connect_and_stop(void) {
         "\"layer_ssrcs\":[%u],\"kind\":\"audio\","
         "\"codec_name\":\"opus\"}",
         publisher_ssrc, publisher_ssrc);
-    TEST_ASSERT_TRUE(command_length > 0 &&
+    check_true(command_length > 0 &&
                      (size_t)command_length < sizeof(command));
-    TEST_ASSERT_EQUAL_INT(
-        0, http_post("/api/v1/commands", TEST_CTRL_TOKEN, command, response,
-                     sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, " 200 "));
+    check_equal((int)(http_post("/api/v1/commands", TEST_CTRL_TOKEN, command, response,
+                     sizeof(response))), (int)(0));
+    check_not_null(strstr(response, " 200 "));
 
     /* Desired subscription is accepted before the WHEP participant exists;
        sfu_node applies it atomically when the receiver session is created. */
     memset(response, 0, sizeof(response));
-    TEST_ASSERT_EQUAL_INT(
-        0, http_post(
+    check_equal((int)(http_post(
                "/api/v1/commands", TEST_CTRL_TOKEN,
                "{\"type\":\"set_track_subscription\","
                "\"room_id\":\"room-42\","
                "\"receiver_participant_id\":\"call-42-rx\","
                "\"track_id\":\"caller-audio-42\",\"enabled\":true,"
                "\"muted\":false,\"policy_source\":\"ivr\"}",
-               response, sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, " 200 "));
+               response, sizeof(response))), (int)(0));
+    check_not_null(strstr(response, " 200 "));
 
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_whep_transport_start(g_whep_transport, &g_call,
-                                               "call-42-rx"));
+    check_equal(ivr_whep_transport_start(g_whep_transport, &g_call,
+                                               "call-42-rx"), IVR_OK);
     int connected = 0;
     for (int i = 0; i < 800 && !connected; i++) {
         connected = ivr_whep_transport_connected(g_whep_transport);
@@ -737,11 +728,11 @@ void test_whep_subscribe_connect_and_stop(void) {
             proc_sleep(25);
         }
     }
-    TEST_ASSERT_TRUE(connected);
+    check_true(connected);
     media_state_counts_t whep_states = media_state_snapshot(&g_whep_states);
-    TEST_ASSERT_TRUE(whep_states.connecting >= 1);
-    TEST_ASSERT_TRUE(whep_states.connected >= 1);
-    TEST_ASSERT_EQUAL_UINT64(0u, whep_states.invalid_identity);
+    check_true(whep_states.connecting >= 1);
+    check_true(whep_states.connected >= 1);
+    check_equal((uint64_t)(whep_states.invalid_identity), (uint64_t)(0u));
 
     /* The peer stays connected while caller media is silent. The WHEP poll
        loop must report that distinct failure without waiting for shutdown. */
@@ -753,8 +744,8 @@ void test_whep_subscribe_connect_and_stop(void) {
         proc_sleep(25);
     }
     whep_states = media_state_snapshot(&g_whep_states);
-    TEST_ASSERT_TRUE(whep_states.input_stalled >= 1);
-    TEST_ASSERT_TRUE(ivr_whep_transport_connected(g_whep_transport));
+    check_true(whep_states.input_stalled >= 1);
+    check_true(ivr_whep_transport_connected(g_whep_transport));
 
     ivr_media_transport_t publisher;
     ivr_whip_transport_get_transport(g_transport, &publisher);
@@ -763,22 +754,19 @@ void test_whep_subscribe_connect_and_stop(void) {
         samples[i] = (int16_t)(800 + (i % 11) * 100);
     }
     for (int i = 0; i < 30; ++i) {
-        TEST_ASSERT_EQUAL_INT(
-            0, publisher.play_audio(publisher.context, &g_call,
+        check_equal((int)(publisher.play_audio(publisher.context, &g_call,
                                     (const uint8_t *)samples,
-                                    sizeof(samples), 16000));
+                                    sizeof(samples), 16000)), (int)(0));
         proc_sleep(20);
     }
     for (int i = 0; i < 200 && g_whep_audio_frames == 0; ++i) {
         proc_sleep(25);
     }
-    TEST_ASSERT_TRUE(g_whep_audio_frames > 0);
-    TEST_ASSERT_TRUE(
-        ivr_whep_transport_frames_received(g_whep_transport) > 0);
+    check_true(g_whep_audio_frames > 0);
+    check_true(ivr_whep_transport_frames_received(g_whep_transport) > 0);
     whep_states = media_state_snapshot(&g_whep_states);
-    TEST_ASSERT_EQUAL_UINT64(1u, whep_states.input_stalled);
-    TEST_ASSERT_EQUAL_UINT64(
-        0u, ivr_whep_transport_frames_rejected(g_whep_transport));
+    check_equal((uint64_t)(whep_states.input_stalled), (uint64_t)(1u));
+    check_equal((uint64_t)(ivr_whep_transport_frames_rejected(g_whep_transport)), (uint64_t)(0u));
 
     /* RFC 4733 final packets traverse the real WHIP -> SFU -> WHEP RTP
        path. Repeated end packets are normal on the wire but produce one
@@ -787,9 +775,8 @@ void test_whep_subscribe_connect_and_stop(void) {
         0x80, 0x7e, 0x00, 0x01, 0x00, 0x01, 0x86, 0xa0,
         0x12, 0x34, 0x56, 0x78, 0x01, 0x80, 0x00, 0xa0};
     for (int i = 0; i < 3; ++i) {
-        TEST_ASSERT_EQUAL_INT(
-            0, ivr_whip_transport_send_rtp_packet(
-                   g_transport, telephone_event, sizeof(telephone_event)));
+        check_equal((int)(ivr_whip_transport_send_rtp_packet(
+                   g_transport, telephone_event, sizeof(telephone_event))), (int)(0));
         proc_sleep(20);
     }
     for (int i = 0; i < 200; ++i) {
@@ -802,28 +789,25 @@ void test_whep_subscribe_connect_and_stop(void) {
         proc_sleep(25);
     }
     ivr_mutex_lock(&g_dtmf_lock);
-    TEST_ASSERT_EQUAL_UINT64(1u, g_dtmf_finals);
-    TEST_ASSERT_EQUAL_INT('1', g_dtmf_input.digit);
-    TEST_ASSERT_EQUAL_STRING("w1", g_dtmf_input.input_id);
-    TEST_ASSERT_EQUAL_UINT64(1u, g_dtmf_input.input_generation);
+    check_equal((uint64_t)(g_dtmf_finals), (uint64_t)(1u));
+    check_equal((int)(g_dtmf_input.digit), (int)('1'));
+    check_equal(g_dtmf_input.input_id, "w1");
+    check_equal((uint64_t)(g_dtmf_input.input_generation), (uint64_t)(1u));
     ivr_mutex_unlock(&g_dtmf_lock);
 
     /* Delete only the WHEP participant's owned session. Consent freshness
        must turn the remote loss into a terminal state without dropping WHIP. */
     unsigned whep_terminal_before = media_terminal_count(&g_whep_states);
-    TEST_ASSERT_EQUAL_INT(0, disconnect_media_participant("call-42-rx"));
-    TEST_ASSERT_TRUE(
-        wait_for_media_terminal(&g_whep_states, whep_terminal_before));
-    TEST_ASSERT_FALSE(ivr_whep_transport_connected(g_whep_transport));
-    TEST_ASSERT_TRUE(ivr_whip_transport_connected(g_transport));
+    check_equal((int)(disconnect_media_participant("call-42-rx")), (int)(0));
+    check_true(wait_for_media_terminal(&g_whep_states, whep_terminal_before));
+    check_false(ivr_whep_transport_connected(g_whep_transport));
+    check_true(ivr_whip_transport_connected(g_transport));
 
-    TEST_ASSERT_EQUAL_INT(
-        0, ivr_whep_transport_stop(g_whep_transport, &g_call));
+    check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &g_call)), (int)(0));
     whep_states = media_state_snapshot(&g_whep_states);
     uint64_t whep_generation_before = whep_states.last_generation;
-    TEST_ASSERT_EQUAL(
-        IVR_OK, ivr_whep_transport_start(g_whep_transport, &g_call,
-                                         "call-42-rx"));
+    check_equal(ivr_whep_transport_start(g_whep_transport, &g_call,
+                                         "call-42-rx"), IVR_OK);
     connected = 0;
     for (int i = 0; i < 800 && !connected; ++i) {
         connected = ivr_whep_transport_connected(g_whep_transport);
@@ -831,27 +815,24 @@ void test_whep_subscribe_connect_and_stop(void) {
             proc_sleep(TEST_MEDIA_STATE_POLL_MS);
         }
     }
-    TEST_ASSERT_TRUE(connected);
+    check_true(connected);
     whep_states = media_state_snapshot(&g_whep_states);
-    TEST_ASSERT_TRUE(whep_states.last_generation > whep_generation_before);
+    check_true(whep_states.last_generation > whep_generation_before);
 
     /* Repeat in the opposite direction. The WHEP peer is independently
        owned and must remain connected when the WHIP participant is removed. */
     unsigned whip_terminal_before = media_terminal_count(&g_whip_states);
-    TEST_ASSERT_EQUAL_INT(0, disconnect_media_participant("call-42"));
-    TEST_ASSERT_TRUE(
-        wait_for_media_terminal(&g_whip_states, whip_terminal_before));
-    TEST_ASSERT_FALSE(ivr_whip_transport_connected(g_transport));
-    TEST_ASSERT_TRUE(ivr_whep_transport_connected(g_whep_transport));
+    check_equal((int)(disconnect_media_participant("call-42")), (int)(0));
+    check_true(wait_for_media_terminal(&g_whip_states, whip_terminal_before));
+    check_false(ivr_whip_transport_connected(g_transport));
+    check_true(ivr_whep_transport_connected(g_whep_transport));
 
     ivr_call_ref_t wrong_call = g_call;
     wrong_call.call_generation++;
-    TEST_ASSERT_EQUAL_INT(
-        -1, ivr_whep_transport_stop(g_whep_transport, &wrong_call));
-    TEST_ASSERT_TRUE(ivr_whep_transport_connected(g_whep_transport));
-    TEST_ASSERT_EQUAL_INT(
-        0, ivr_whep_transport_stop(g_whep_transport, &g_call));
-    TEST_ASSERT_FALSE(ivr_whep_transport_connected(g_whep_transport));
+    check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &wrong_call)), (int)(-1));
+    check_true(ivr_whep_transport_connected(g_whep_transport));
+    check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &g_call)), (int)(0));
+    check_false(ivr_whep_transport_connected(g_whep_transport));
 }
 
 void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
@@ -866,18 +847,16 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     uint64_t frames_after_reconnect;
     uint32_t publisher_ssrc;
 
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_whip_transport_start(g_transport, &g_call));
-    TEST_ASSERT_TRUE(wait_whip_connected());
+    check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
+    check_true(wait_whip_connected());
     publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
-    TEST_ASSERT_TRUE(publisher_ssrc != 0u);
-    TEST_ASSERT_TRUE(configure_audio_route(publisher_ssrc));
-    TEST_ASSERT_EQUAL(
-        IVR_OK, ivr_whep_transport_start(g_whep_transport, &g_call,
-                                         "call-42-rx"));
-    TEST_ASSERT_TRUE(wait_whep_connected());
-    TEST_ASSERT_TRUE(send_audio_frames(30u));
-    TEST_ASSERT_TRUE(wait_whep_frames_greater_than(0u));
+    check_true(publisher_ssrc != 0u);
+    check_true(configure_audio_route(publisher_ssrc));
+    check_equal(ivr_whep_transport_start(g_whep_transport, &g_call,
+                                         "call-42-rx"), IVR_OK);
+    check_true(wait_whep_connected());
+    check_true(send_audio_frames(30u));
+    check_true(wait_whep_frames_greater_than(0u));
 
     whip_before = media_state_snapshot(&g_whip_states);
     whep_before = media_state_snapshot(&g_whep_states);
@@ -886,62 +865,55 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     frames_before_restart = g_whep_audio_frames;
 
     kill_child(&g_sfu);
-    TEST_ASSERT_TRUE(
-        wait_for_media_terminal(&g_whip_states, whip_terminal_before));
-    TEST_ASSERT_TRUE(
-        wait_for_media_terminal(&g_whep_states, whep_terminal_before));
-    TEST_ASSERT_FALSE(ivr_whip_transport_connected(g_transport));
-    TEST_ASSERT_FALSE(ivr_whep_transport_connected(g_whep_transport));
+    check_true(wait_for_media_terminal(&g_whip_states, whip_terminal_before));
+    check_true(wait_for_media_terminal(&g_whep_states, whep_terminal_before));
+    check_false(ivr_whip_transport_connected(g_transport));
+    check_false(ivr_whep_transport_connected(g_whep_transport));
 
-    TEST_ASSERT_EQUAL_INT(
-        0, ivr_whep_transport_stop(g_whep_transport, &g_call));
+    check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &g_call)), (int)(0));
     ivr_whip_transport_get_transport(g_transport, &publisher);
-    TEST_ASSERT_NOT_NULL(publisher.stop);
-    TEST_ASSERT_EQUAL_INT(0, publisher.stop(publisher.context, &g_call));
+    check_not_null(publisher.stop);
+    check_equal((int)(publisher.stop(publisher.context, &g_call)), (int)(0));
 
-    TEST_ASSERT_TRUE(spawn_sfu());
-    TEST_ASSERT_TRUE(provision_room());
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_whip_transport_start(g_transport, &g_call));
-    TEST_ASSERT_TRUE(wait_whip_connected());
+    check_true(spawn_sfu());
+    check_true(provision_room());
+    check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
+    check_true(wait_whip_connected());
     publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
-    TEST_ASSERT_TRUE(publisher_ssrc != 0u);
-    TEST_ASSERT_TRUE(configure_audio_route(publisher_ssrc));
-    TEST_ASSERT_EQUAL(
-        IVR_OK, ivr_whep_transport_start(g_whep_transport, &g_call,
-                                         "call-42-rx"));
-    TEST_ASSERT_TRUE(wait_whep_connected());
+    check_true(publisher_ssrc != 0u);
+    check_true(configure_audio_route(publisher_ssrc));
+    check_equal(ivr_whep_transport_start(g_whep_transport, &g_call,
+                                         "call-42-rx"), IVR_OK);
+    check_true(wait_whep_connected());
 
     whip_after = media_state_snapshot(&g_whip_states);
     whep_after = media_state_snapshot(&g_whep_states);
-    TEST_ASSERT_TRUE(whip_after.last_generation >
+    check_true(whip_after.last_generation >
                      whip_before.last_generation);
-    TEST_ASSERT_TRUE(whep_after.last_generation >
+    check_true(whep_after.last_generation >
                      whep_before.last_generation);
-    TEST_ASSERT_EQUAL_UINT64(0u, whip_after.invalid_identity);
-    TEST_ASSERT_EQUAL_UINT64(0u, whep_after.invalid_identity);
+    check_equal((uint64_t)(whip_after.invalid_identity), (uint64_t)(0u));
+    check_equal((uint64_t)(whep_after.invalid_identity), (uint64_t)(0u));
 
     frames_after_reconnect = g_whep_audio_frames;
-    TEST_ASSERT_TRUE(frames_after_reconnect >= frames_before_restart);
-    TEST_ASSERT_TRUE(send_audio_frames(30u));
-    TEST_ASSERT_TRUE(
-        wait_whep_frames_greater_than(frames_after_reconnect));
-    TEST_ASSERT_TRUE(ivr_whip_transport_connected(g_transport));
-    TEST_ASSERT_TRUE(ivr_whep_transport_connected(g_whep_transport));
+    check_true(frames_after_reconnect >= frames_before_restart);
+    check_true(send_audio_frames(30u));
+    check_true(wait_whep_frames_greater_than(frames_after_reconnect));
+    check_true(ivr_whip_transport_connected(g_transport));
+    check_true(ivr_whep_transport_connected(g_whep_transport));
 
-    TEST_ASSERT_EQUAL_INT(
-        0, ivr_whep_transport_stop(g_whep_transport, &g_call));
+    check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &g_call)), (int)(0));
     ivr_whip_transport_get_transport(g_transport, &publisher);
-    TEST_ASSERT_EQUAL_INT(0, publisher.stop(publisher.context, &g_call));
-    TEST_ASSERT_TRUE(wait_sfu_room_empty());
+    check_equal((int)(publisher.stop(publisher.context, &g_call)), (int)(0));
+    check_true(wait_sfu_room_empty());
 }
 
 spec("test_ivr_whip_transport") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_whip_publish_connect_and_send_audio);
-  TT_TEST(test_create_copies_config_and_null_token);
-  TT_TEST(test_whep_subscribe_connect_and_stop);
-  TT_TEST(test_sfu_restart_reconnects_same_call_and_resumes_rtp);
+  it("test_whip_publish_connect_and_send_audio") { test_whip_publish_connect_and_send_audio(); };
+  it("test_create_copies_config_and_null_token") { test_create_copies_config_and_null_token(); };
+  it("test_whep_subscribe_connect_and_stop") { test_whep_subscribe_connect_and_stop(); };
+  it("test_sfu_restart_reconnects_same_call_and_resumes_rtp") { test_sfu_restart_reconnects_same_call_and_resumes_rtp(); };
 }

@@ -48,12 +48,12 @@ typedef struct {
  * @param max_participants Maximum number of participants (0 for default: 50)
  * @return SFU context or NULL on error
  */
-CXX_C_API sfu_context_t *sfu_create(int max_participants);
+TURBO_MEDIA_API sfu_context_t *sfu_create(int max_participants);
 
 /**
  * Destroy SFU context
  */
-CXX_C_API void sfu_destroy(sfu_context_t *sfu);
+TURBO_MEDIA_API void sfu_destroy(sfu_context_t *sfu);
 
 /* =============================================================================
  * Participant Management
@@ -66,7 +66,7 @@ CXX_C_API void sfu_destroy(sfu_context_t *sfu);
  * @param participant_id Unique participant identifier
  * @return 0 on success, -1 on error
  */
-CXX_C_API int sfu_add_participant(sfu_context_t *sfu, const char *participant_id);
+TURBO_MEDIA_API int sfu_add_participant(sfu_context_t *sfu, const char *participant_id);
 
 /**
  * Remove participant from conference
@@ -75,7 +75,7 @@ CXX_C_API int sfu_add_participant(sfu_context_t *sfu, const char *participant_id
  * @param participant_id Participant identifier
  * @return 0 on success, -1 on error
  */
-CXX_C_API int sfu_remove_participant(sfu_context_t *sfu, const char *participant_id);
+TURBO_MEDIA_API int sfu_remove_participant(sfu_context_t *sfu, const char *participant_id);
 
 /**
  * Set participant bandwidth
@@ -86,7 +86,7 @@ CXX_C_API int sfu_remove_participant(sfu_context_t *sfu, const char *participant
  * @param participant_id Participant identifier
  * @param bandwidth_bps Available bandwidth in bits per second
  */
-CXX_C_API void sfu_set_participant_bandwidth(sfu_context_t *sfu, const char *participant_id,
+TURBO_MEDIA_API void sfu_set_participant_bandwidth(sfu_context_t *sfu, const char *participant_id,
                                    int bandwidth_bps);
 
 /**
@@ -103,7 +103,7 @@ CXX_C_API void sfu_set_participant_bandwidth(sfu_context_t *sfu, const char *par
  * @param max_layer Maximum allowed layer: 0=low, 1=medium, 2=high
  * @return 0 on success, -1 on error
  */
-CXX_C_API int sfu_set_receiver_stream_policy(sfu_context_t *sfu, const char *receiver_id,
+TURBO_MEDIA_API int sfu_set_receiver_stream_policy(sfu_context_t *sfu, const char *receiver_id,
                                              const char *sender_id, uint32_t stream_ssrc,
                                              int enabled, int max_layer);
 
@@ -117,7 +117,7 @@ CXX_C_API int sfu_set_receiver_stream_policy(sfu_context_t *sfu, const char *rec
  * @param on_packet Callback function
  * @param user_data User data passed to callback
  */
-CXX_C_API void sfu_set_participant_callback(sfu_context_t *sfu, const char *participant_id,
+TURBO_MEDIA_API void sfu_set_participant_callback(sfu_context_t *sfu, const char *participant_id,
                                   void (*on_packet)(void *user_data,
                                                    const uint8_t *packet, size_t len),
                                   void *user_data);
@@ -133,7 +133,7 @@ CXX_C_API void sfu_set_participant_callback(sfu_context_t *sfu, const char *part
  * @param on_keyframe_request Callback function
  * @param user_data User data passed to callback
  */
-CXX_C_API void sfu_set_participant_keyframe_callback(
+TURBO_MEDIA_API void sfu_set_participant_keyframe_callback(
     sfu_context_t *sfu, const char *participant_id,
     void (*on_keyframe_request)(void *user_data, uint32_t ssrc),
     void *user_data);
@@ -152,7 +152,7 @@ CXX_C_API void sfu_set_participant_keyframe_callback(
  * @param layer_count Number of simulcast layers (0 for no simulcast)
  * @return 0 on success, -1 on error
  */
-CXX_C_API int sfu_add_stream(sfu_context_t *sfu, const char *participant_id, uint32_t ssrc,
+TURBO_MEDIA_API int sfu_add_stream(sfu_context_t *sfu, const char *participant_id, uint32_t ssrc,
                    const uint32_t *layer_ssrcs, int layer_count);
 
 /**
@@ -163,7 +163,7 @@ CXX_C_API int sfu_add_stream(sfu_context_t *sfu, const char *participant_id, uin
  * @param ssrc Main SSRC for the stream
  * @return 0 on success, -1 on error
  */
-CXX_C_API int sfu_remove_stream(sfu_context_t *sfu, const char *participant_id, uint32_t ssrc);
+TURBO_MEDIA_API int sfu_remove_stream(sfu_context_t *sfu, const char *participant_id, uint32_t ssrc);
 
 /* =============================================================================
  * Packet Forwarding
@@ -180,7 +180,7 @@ CXX_C_API int sfu_remove_stream(sfu_context_t *sfu, const char *participant_id, 
  * @param len Packet length
  * @return Number of receivers forwarded to, or -1 on error
  */
-CXX_C_API int sfu_forward_packet(sfu_context_t *sfu, const char *sender_id,
+TURBO_MEDIA_API int sfu_forward_packet(sfu_context_t *sfu, const char *sender_id,
                        const uint8_t *packet, size_t len);
 
 /**
@@ -193,7 +193,7 @@ CXX_C_API int sfu_forward_packet(sfu_context_t *sfu, const char *sender_id,
  * @param count Number of sequence numbers
  * @return 0 on success, -1 on error
  */
-CXX_C_API int sfu_forward_nack(sfu_context_t *sfu, const char *receiver_id,
+TURBO_MEDIA_API int sfu_forward_nack(sfu_context_t *sfu, const char *receiver_id,
                      const char *sender_id, const uint16_t *seq_nums, int count);
 
 /**
@@ -204,7 +204,7 @@ CXX_C_API int sfu_forward_nack(sfu_context_t *sfu, const char *receiver_id,
  * @param ssrc SSRC to request keyframe for
  * @return 0 on success, -1 on error
  */
-CXX_C_API int sfu_request_keyframe(sfu_context_t *sfu, const char *participant_id, uint32_t ssrc);
+TURBO_MEDIA_API int sfu_request_keyframe(sfu_context_t *sfu, const char *participant_id, uint32_t ssrc);
 
 /* =============================================================================
  * Statistics
@@ -216,7 +216,7 @@ CXX_C_API int sfu_request_keyframe(sfu_context_t *sfu, const char *participant_i
  * @param sfu SFU context
  * @param stats Output statistics structure
  */
-CXX_C_API void sfu_get_stats(sfu_context_t *sfu, sfu_stats_t *stats);
+TURBO_MEDIA_API void sfu_get_stats(sfu_context_t *sfu, sfu_stats_t *stats);
 
 /**
  * Get participant statistics
@@ -225,7 +225,7 @@ CXX_C_API void sfu_get_stats(sfu_context_t *sfu, sfu_stats_t *stats);
  * @param participant_id Participant identifier
  * @param stats Output statistics structure
  */
-CXX_C_API void sfu_get_participant_stats(sfu_context_t *sfu, const char *participant_id,
+TURBO_MEDIA_API void sfu_get_participant_stats(sfu_context_t *sfu, const char *participant_id,
                                sfu_participant_stats_t *stats);
 
 /**
@@ -234,7 +234,7 @@ CXX_C_API void sfu_get_participant_stats(sfu_context_t *sfu, const char *partici
  * @param sfu SFU context
  * @return Number of active participants
  */
-CXX_C_API int sfu_get_participant_count(sfu_context_t *sfu);
+TURBO_MEDIA_API int sfu_get_participant_count(sfu_context_t *sfu);
 
 /**
  * Get list of participant IDs
@@ -244,7 +244,7 @@ CXX_C_API int sfu_get_participant_count(sfu_context_t *sfu);
  * @param max_count Maximum number of IDs to return
  * @return Number of IDs returned
  */
-CXX_C_API int sfu_get_participant_list(sfu_context_t *sfu, char **participant_ids, int max_count);
+TURBO_MEDIA_API int sfu_get_participant_list(sfu_context_t *sfu, char **participant_ids, int max_count);
 
 /* =============================================================================
  * Configuration
@@ -256,7 +256,7 @@ CXX_C_API int sfu_get_participant_list(sfu_context_t *sfu, char **participant_id
  * @param sfu SFU context
  * @param enabled 1 to enable, 0 to disable
  */
-CXX_C_API void sfu_set_simulcast_enabled(sfu_context_t *sfu, int enabled);
+TURBO_MEDIA_API void sfu_set_simulcast_enabled(sfu_context_t *sfu, int enabled);
 
 /**
  * Enable or disable bandwidth adaptation
@@ -264,7 +264,7 @@ CXX_C_API void sfu_set_simulcast_enabled(sfu_context_t *sfu, int enabled);
  * @param sfu SFU context
  * @param enabled 1 to enable, 0 to disable
  */
-CXX_C_API void sfu_set_bandwidth_adaptation_enabled(sfu_context_t *sfu, int enabled);
+TURBO_MEDIA_API void sfu_set_bandwidth_adaptation_enabled(sfu_context_t *sfu, int enabled);
 
 /**
  * Set SFU callbacks
@@ -274,7 +274,7 @@ CXX_C_API void sfu_set_bandwidth_adaptation_enabled(sfu_context_t *sfu, int enab
  * @param on_participant_left Called when participant leaves
  * @param user_data User data passed to callbacks
  */
-CXX_C_API void sfu_set_callbacks(sfu_context_t *sfu,
+TURBO_MEDIA_API void sfu_set_callbacks(sfu_context_t *sfu,
                        void (*on_participant_joined)(void *user_data, const char *id),
                        void (*on_participant_left)(void *user_data, const char *id),
                        void *user_data);

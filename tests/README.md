@@ -64,19 +64,19 @@ ctest --test-dir build/release --verbose
 ### 添加新测试
 
 1. 在 `tests/` 目录创建 `test_<name>.c` 文件
-2. 包含 `helpers.h` 和相关头文件
+2. 包含 `tinytest.h`、按需包含 `helpers.h`，以及相关头文件
 3. 使用 `suite()` 和 `it()` 宏定义测试
 4. CMake 会自动发现并构建新测试
 
 ```c
 #include "helpers.h"
 #include <turbo_xxx.h>
-#include <tinytest/tinytest.h>
+#include <tinytest.h>
 
 suite("我的测试套件") {
     it("应该通过基本测试") {
         int result = my_function();
-        check_int_eq(result, 0);
+        check_equal(result, 0);
     }
 }
 
@@ -186,17 +186,14 @@ int main(int argc, char *argv[]) {
 
 ## 测试工具和辅助函数
 
-### 断言宏（helpers.h）
+### TinyTest 断言
 
 ```c
-TEST_ASSERT(condition)                    // 条件为真
-TEST_ASSERT_EQ(expected, actual)          // 整数相等
-TEST_ASSERT_NOT_NULL(ptr)                 // 指针非空
-TEST_ASSERT_NULL(ptr)                     // 指针为空
-TEST_ASSERT_STR_EQ(expected, actual)      // 字符串相等
-TEST_ASSERT_MEM_EQ(expected, actual, sz)  // 内存相等
-TEST_ASSERT_IN_RANGE(val, min, max)       // 值在范围内
-TEST_ASSERT_FLOAT_EQ(exp, act, epsilon)   // 浮点数近似相等
+check(condition)                       // 布尔条件
+check_equal(actual, expected)          // 标量或字符串相等
+check_equal(actual, expected, size)    // 内存区域相等
+check_null(ptr)                        // 指针为空
+check_not_null(ptr)                    // 指针非空
 ```
 
 ### 音频测试工具
@@ -280,12 +277,12 @@ suite("测试套件名称") {
         int result = my_function(value);
         
         // 验证
-        check_int_eq(result, 84);
+        check_equal(result, 84);
     }
     
     it("应该处理错误情况") {
         int result = my_function(-1);
-        check_int_eq(result, -1);
+        check_equal(result, -1);
     }
 }
 
@@ -297,10 +294,11 @@ int main(int argc, char *argv[]) {
 ### TinyTest 断言
 
 ```c
-check(condition)                    // 布尔条件
-check_int_eq(actual, expected)      // 整数相等
-check_str_eq(actual, expected)      // 字符串相等
-check_mem_eq(actual, expected, sz)  // 内存相等
+check(condition)                       // 布尔条件
+check_equal(actual, expected)          // 标量或字符串相等
+check_equal(actual, expected, size)    // 内存区域相等
+check_null(ptr)                        // 指针为空
+check_not_null(ptr)                    // 指针非空
 ```
 
 ### BDD 风格命名
@@ -361,11 +359,11 @@ suite("模块名称 - 功能分类") {
 it("应该管理资源") {
     // 分配资源
     void *resource = allocate_resource();
-    check(resource != NULL);
+    check_not_null(resource);
     
     // 使用资源
     int result = use_resource(resource);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     
     // 清理资源（即使断言失败也应执行）
     cleanup_resource(resource);
@@ -377,7 +375,7 @@ it("应该管理资源") {
 ```c
 it("应该处理空指针") {
     int result = my_function(NULL);
-    check_int_eq(result, -1);  // 或其他错误码
+    check_equal(result, -1);  // 或其他错误码
 }
 
 it("应该处理无效参数") {

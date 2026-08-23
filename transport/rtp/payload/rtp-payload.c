@@ -2,7 +2,7 @@
 #include "rtp-profile.h"
 #include "rtp-packet.h"
 #include "rtp-payload-internal.h"
-#include "turbo_str_view.h"
+#include "turbo_vstr.h"
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -12,7 +12,7 @@
 static int rtp_encoding_equal(const char* left, const char* right)
 {
 	return NULL != left && NULL != right &&
-		tstr_v_ieq(tstr_v_from_cstr(left), tstr_v_from_cstr(right));
+		vstr_ieq(vstr_from_cstr(left), vstr_from_cstr(right));
 }
 
 struct rtp_payload_delegate_t

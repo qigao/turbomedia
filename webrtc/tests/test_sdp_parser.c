@@ -5,7 +5,7 @@
  * Tests parsing and generation of WebRTC SDP
  */
 
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_sdp.h"
 #include "tlog.h"
 #include <string.h>
@@ -67,19 +67,19 @@ void tearDown(void) {
 
 /* Test: Parse simple audio SDP */
 void test_parse_audio_sdp(void) {
-    TLOG_INFO("Running %s", "test_parse_audio_sdp");
+    TLOG_INFOF("Running {}", "test_parse_audio_sdp");
     sdp_session_t sdp;
     int result = sdp_parse(SIMPLE_AUDIO_SDP, strlen(SIMPLE_AUDIO_SDP), &sdp);
 
-    TEST_ASSERT_EQUAL_INT(0, result);
-    TEST_ASSERT_EQUAL_INT(1, sdp.media_count);
-    TEST_ASSERT_EQUAL_INT(SDP_MEDIA_AUDIO, sdp.media[0].type);
-    TEST_ASSERT_EQUAL_STRING("0", sdp.media[0].mid);
-    TEST_ASSERT_EQUAL_STRING("abcd", sdp.media[0].ice_ufrag);
-    TEST_ASSERT_EQUAL_STRING("1234567890abcdef", sdp.media[0].ice_pwd);
-    TEST_ASSERT_EQUAL_INT(SDP_ROLE_ACTPASS, sdp.media[0].setup);
-    TEST_ASSERT_EQUAL_INT(SDP_DIRECTION_SENDRECV, sdp.media[0].direction);
-    TEST_ASSERT_EQUAL_INT(1, sdp.media[0].rtcp_mux);
+    check_equal((int)(result), (int)(0));
+    check_equal((int)(sdp.media_count), (int)(1));
+    check_equal((int)(sdp.media[0].type), (int)(SDP_MEDIA_AUDIO));
+    check_equal(sdp.media[0].mid, "0");
+    check_equal(sdp.media[0].ice_ufrag, "abcd");
+    check_equal(sdp.media[0].ice_pwd, "1234567890abcdef");
+    check_equal((int)(sdp.media[0].setup), (int)(SDP_ROLE_ACTPASS));
+    check_equal((int)(sdp.media[0].direction), (int)(SDP_DIRECTION_SENDRECV));
+    check_equal((int)(sdp.media[0].rtcp_mux), (int)(1));
 }
 
 /* Test: Parse DataChannel SDP */
@@ -87,13 +87,13 @@ void test_parse_datachannel_sdp(void) {
     sdp_session_t sdp;
     int result = sdp_parse(DATACHANNEL_SDP, strlen(DATACHANNEL_SDP), &sdp);
 
-    TEST_ASSERT_EQUAL_INT(0, result);
-    TEST_ASSERT_EQUAL_INT(1, sdp.media_count);
-    TEST_ASSERT_EQUAL_INT(SDP_MEDIA_APPLICATION, sdp.media[0].type);
-    TEST_ASSERT_EQUAL_STRING("0", sdp.media[0].mid);
-    TEST_ASSERT_EQUAL_INT(5000, sdp.media[0].sctp_port);
-    TEST_ASSERT_EQUAL_INT(262144, sdp.media[0].max_message_size);
-    TEST_ASSERT_EQUAL_INT(SDP_ROLE_ACTIVE, sdp.media[0].setup);
+    check_equal((int)(result), (int)(0));
+    check_equal((int)(sdp.media_count), (int)(1));
+    check_equal((int)(sdp.media[0].type), (int)(SDP_MEDIA_APPLICATION));
+    check_equal(sdp.media[0].mid, "0");
+    check_equal((int)(sdp.media[0].sctp_port), (int)(5000));
+    check_equal((int)(sdp.media[0].max_message_size), (int)(262144));
+    check_equal((int)(sdp.media[0].setup), (int)(SDP_ROLE_ACTIVE));
 }
 
 void test_parse_origin_preserves_uint64_version(void) {
@@ -104,10 +104,10 @@ void test_parse_origin_preserves_uint64_version(void) {
         "t=0 0\r\n";
     sdp_session_t sdp;
 
-    TEST_ASSERT_EQUAL_INT(0, sdp_parse(sdp_text, strlen(sdp_text), &sdp));
-    TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, sdp.session_version);
-    TEST_ASSERT_EQUAL_STRING("123456", sdp.session_id);
-    TEST_ASSERT_EQUAL_STRING("127.0.0.1", sdp.origin_addr);
+    check_equal((int)(sdp_parse(sdp_text, strlen(sdp_text), &sdp)), (int)(0));
+    check_equal((uint64_t)(sdp.session_version), (uint64_t)(UINT64_MAX));
+    check_equal(sdp.session_id, "123456");
+    check_equal(sdp.origin_addr, "127.0.0.1");
 }
 
 /* Test: Parse ICE candidates */
@@ -115,25 +115,25 @@ void test_parse_candidates(void) {
     sdp_session_t sdp;
     int result = sdp_parse(CANDIDATE_SDP, strlen(CANDIDATE_SDP), &sdp);
 
-    TEST_ASSERT_EQUAL_INT(0, result);
-    TEST_ASSERT_EQUAL_INT(1, sdp.media_count);
-    TEST_ASSERT_EQUAL_INT(2, sdp.media[0].candidate_count);
+    check_equal((int)(result), (int)(0));
+    check_equal((int)(sdp.media_count), (int)(1));
+    check_equal((int)(sdp.media[0].candidate_count), (int)(2));
 
     /* Check first candidate (host) */
     const sdp_candidate_t *cand1 = &sdp.media[0].candidates[0];
-    TEST_ASSERT_EQUAL_STRING("1", cand1->foundation);
-    TEST_ASSERT_EQUAL_INT(1, cand1->component);
-    TEST_ASSERT_EQUAL_STRING("udp", cand1->transport);
-    TEST_ASSERT_EQUAL_STRING("192.168.1.100", cand1->address);
-    TEST_ASSERT_EQUAL_UINT16(54321, cand1->port);
-    TEST_ASSERT_EQUAL_STRING("host", cand1->type);
+    check_equal(cand1->foundation, "1");
+    check_equal((int)(cand1->component), (int)(1));
+    check_equal(cand1->transport, "udp");
+    check_equal(cand1->address, "192.168.1.100");
+    check_equal((uint16_t)(cand1->port), (uint16_t)(54321));
+    check_equal(cand1->type, "host");
 
     /* Check second candidate (srflx) */
     const sdp_candidate_t *cand2 = &sdp.media[0].candidates[1];
-    TEST_ASSERT_EQUAL_STRING("2", cand2->foundation);
-    TEST_ASSERT_EQUAL_STRING("srflx", cand2->type);
-    TEST_ASSERT_EQUAL_STRING("192.168.1.100", cand2->rel_addr);
-    TEST_ASSERT_EQUAL_UINT16(54321, cand2->rel_port);
+    check_equal(cand2->foundation, "2");
+    check_equal(cand2->type, "srflx");
+    check_equal(cand2->rel_addr, "192.168.1.100");
+    check_equal((uint16_t)(cand2->rel_port), (uint16_t)(54321));
 }
 
 /* Test: Parse codecs */
@@ -141,16 +141,16 @@ void test_parse_codecs(void) {
     sdp_session_t sdp;
     int result = sdp_parse(SIMPLE_AUDIO_SDP, strlen(SIMPLE_AUDIO_SDP), &sdp);
 
-    TEST_ASSERT_EQUAL_INT(0, result);
-    TEST_ASSERT_GREATER_THAN(0, sdp.media[0].codec_count);
+    check_equal((int)(result), (int)(0));
+    check_greater(sdp.media[0].codec_count, 0);
 
     /* Find Opus codec */
     sdp_codec_t *opus = sdp_find_codec_by_pt(&sdp.media[0], 111);
-    TEST_ASSERT_NOT_NULL(opus);
-    TEST_ASSERT_EQUAL_STRING("opus", opus->name);
-    TEST_ASSERT_EQUAL_INT(48000, opus->clock_rate);
-    TEST_ASSERT_EQUAL_INT(2, opus->channels);
-    TEST_ASSERT_EQUAL_STRING("minptime=10;useinbandfec=1", opus->fmtp);
+    check_not_null(opus);
+    check_equal(opus->name, "opus");
+    check_equal((int)(opus->clock_rate), (int)(48000));
+    check_equal((int)(opus->channels), (int)(2));
+    check_equal(opus->fmtp, "minptime=10;useinbandfec=1");
 }
 
 void test_parse_extmap(void) {
@@ -166,10 +166,10 @@ void test_parse_extmap(void) {
         "a=rtpmap:96 VP8/90000\r\n";
     sdp_session_t sdp;
 
-    TEST_ASSERT_EQUAL_INT(0, sdp_parse(sdp_text, strlen(sdp_text), &sdp));
-    TEST_ASSERT_EQUAL_INT(1, sdp.media[0].extension_count);
-    TEST_ASSERT_EQUAL_INT(3, sdp.media[0].extensions[0].id);
-    TEST_ASSERT_EQUAL_STRING(TRANSPORT_CC_URI, sdp.media[0].extensions[0].uri);
+    check_equal((int)(sdp_parse(sdp_text, strlen(sdp_text), &sdp)), (int)(0));
+    check_equal((int)(sdp.media[0].extension_count), (int)(1));
+    check_equal((int)(sdp.media[0].extensions[0].id), (int)(3));
+    check_equal(sdp.media[0].extensions[0].uri, TRANSPORT_CC_URI);
 }
 
 void test_parse_extmap_ignores_overflow(void) {
@@ -193,8 +193,8 @@ void test_parse_extmap_ignores_overflow(void) {
         "a=rtpmap:96 VP8/90000\r\n";
     sdp_session_t sdp;
 
-    TEST_ASSERT_EQUAL_INT(0, sdp_parse(sdp_text, strlen(sdp_text), &sdp));
-    TEST_ASSERT_EQUAL_INT(SDP_MAX_EXTENSIONS, sdp.media[0].extension_count);
+    check_equal((int)(sdp_parse(sdp_text, strlen(sdp_text), &sdp)), (int)(0));
+    check_equal((int)(sdp.media[0].extension_count), (int)(SDP_MAX_EXTENSIONS));
 }
 
 /* Test: Generate SDP */
@@ -204,7 +204,7 @@ void test_generate_sdp(void) {
 
     /* Add audio media */
     sdp_media_t *media = sdp_add_audio(&sdp, "0", SDP_DIRECTION_SENDRECV);
-    TEST_ASSERT_NOT_NULL(media);
+    check_not_null(media);
 
     sdp_media_set_ice(media, "test_ufrag", "test_password");
     sdp_media_set_fingerprint(media, "sha-256", "AA:BB:CC:DD");
@@ -219,18 +219,18 @@ void test_generate_sdp(void) {
     strncpy(codec.name, "opus", sizeof(codec.name) - 1);
     strncpy(codec.fmtp, "minptime=10", sizeof(codec.fmtp) - 1);
     sdp_media_add_codec(media, &codec);
-    TEST_ASSERT_EQUAL_INT(0, sdp_media_add_extension(media, 1, TRANSPORT_CC_URI));
+    check_equal((int)(sdp_media_add_extension(media, 1, TRANSPORT_CC_URI)), (int)(0));
 
     /* Generate SDP string */
     char buffer[4096];
     int len = sdp_generate(&sdp, buffer, sizeof(buffer));
 
-    TEST_ASSERT_GREATER_THAN(0, len);
-    TEST_ASSERT_NOT_NULL(strstr(buffer, "v=0"));
-    TEST_ASSERT_NOT_NULL(strstr(buffer, "m=audio"));
-    TEST_ASSERT_NOT_NULL(strstr(buffer, "a=rtpmap:111 opus/48000/2"));
-    TEST_ASSERT_NOT_NULL(strstr(buffer, "a=ice-ufrag:test_ufrag"));
-    TEST_ASSERT_NOT_NULL(strstr(buffer, "a=extmap:1 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"));
+    check_greater(len, 0);
+    check_not_null(strstr(buffer, "v=0"));
+    check_not_null(strstr(buffer, "m=audio"));
+    check_not_null(strstr(buffer, "a=rtpmap:111 opus/48000/2"));
+    check_not_null(strstr(buffer, "a=ice-ufrag:test_ufrag"));
+    check_not_null(strstr(buffer, "a=extmap:1 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"));
 }
 
 void test_generate_sdp_rejects_truncated_output(void) {
@@ -238,15 +238,15 @@ void test_generate_sdp_rejects_truncated_output(void) {
     char buffer[8] = "stale";
 
     sdp_session_init(&sdp);
-    TEST_ASSERT_EQUAL_INT(-1, sdp_generate(&sdp, buffer, sizeof(buffer)));
-    TEST_ASSERT_EQUAL_STRING("", buffer);
+    check_equal((int)(sdp_generate(&sdp, buffer, sizeof(buffer))), (int)(-1));
+    check_equal(buffer, "");
 }
 
 void test_generate_session_id_rejects_truncation(void) {
     char session_id[2] = "x";
 
     sdp_generate_session_id(session_id, sizeof(session_id));
-    TEST_ASSERT_EQUAL_STRING("", session_id);
+    check_equal(session_id, "");
 }
 
 /* Test: Round-trip (generate -> parse) */
@@ -265,14 +265,14 @@ void test_roundtrip(void) {
     /* Generate */
     char buffer[4096];
     int len = sdp_generate(&original, buffer, sizeof(buffer));
-    TEST_ASSERT_GREATER_THAN(0, len);
+    check_greater(len, 0);
 
     /* Parse back */
     int result = sdp_parse(buffer, len, &parsed);
-    TEST_ASSERT_EQUAL_INT(0, result);
-    TEST_ASSERT_EQUAL_INT(original.media_count, parsed.media_count);
-    TEST_ASSERT_EQUAL_STRING(original.media[0].mid, parsed.media[0].mid);
-    TEST_ASSERT_EQUAL_STRING(original.media[0].ice_ufrag, parsed.media[0].ice_ufrag);
+    check_equal((int)(result), (int)(0));
+    check_equal((int)(parsed.media_count), (int)(original.media_count));
+    check_equal(parsed.media[0].mid, original.media[0].mid);
+    check_equal(parsed.media[0].ice_ufrag, original.media[0].ice_ufrag);
 }
 
 /* Test: Find functions */
@@ -285,13 +285,13 @@ void test_find_functions(void) {
 
     /* Find by mid */
     sdp_media_t *m0 = sdp_find_media_by_mid(&sdp, "0");
-    TEST_ASSERT_NOT_NULL(m0);
-    TEST_ASSERT_EQUAL_INT(SDP_MEDIA_AUDIO, m0->type);
+    check_not_null(m0);
+    check_equal((int)(m0->type), (int)(SDP_MEDIA_AUDIO));
 
     /* Find by type */
     sdp_media_t *video = sdp_find_media_by_type(&sdp, SDP_MEDIA_VIDEO);
-    TEST_ASSERT_NOT_NULL(video);
-    TEST_ASSERT_EQUAL_STRING("1", video->mid);
+    check_not_null(video);
+    check_equal(video->mid, "1");
 }
 
 void test_generate_ice_credentials(void) {
@@ -307,32 +307,32 @@ void test_generate_ice_credentials(void) {
     sdp_generate_ice_credentials(
         second_ufrag, sizeof(second_ufrag), second_pwd, sizeof(second_pwd));
 
-    TEST_ASSERT_EQUAL_size_t(sizeof(first_ufrag) - 1, strlen(first_ufrag));
-    TEST_ASSERT_EQUAL_size_t(sizeof(first_pwd) - 1, strlen(first_pwd));
-    TEST_ASSERT_EQUAL_size_t(strlen(first_ufrag), strspn(first_ufrag, alphabet));
-    TEST_ASSERT_EQUAL_size_t(strlen(first_pwd), strspn(first_pwd, alphabet));
-    TEST_ASSERT_NOT_EQUAL(0, strcmp(first_ufrag, second_ufrag));
-    TEST_ASSERT_NOT_EQUAL(0, strcmp(first_pwd, second_pwd));
+    check_equal((size_t)(strlen(first_ufrag)), (size_t)(sizeof(first_ufrag) - 1));
+    check_equal((size_t)(strlen(first_pwd)), (size_t)(sizeof(first_pwd) - 1));
+    check_equal((size_t)(strspn(first_ufrag, alphabet)), (size_t)(strlen(first_ufrag)));
+    check_equal((size_t)(strspn(first_pwd, alphabet)), (size_t)(strlen(first_pwd)));
+    check_not_equal(strcmp(first_ufrag, second_ufrag), 0);
+    check_not_equal(strcmp(first_pwd, second_pwd), 0);
 
     strcpy(first_pwd, "not-empty");
     sdp_generate_ice_credentials(NULL, 0, first_pwd, sizeof(first_pwd));
-    TEST_ASSERT_EQUAL_STRING("", first_pwd);
+    check_equal(first_pwd, "");
 }
 
 spec("test_sdp_parser") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
-  TT_TEST(test_parse_audio_sdp);
-  TT_TEST(test_parse_datachannel_sdp);
-  TT_TEST(test_parse_origin_preserves_uint64_version);
-  TT_TEST(test_parse_candidates);
-  TT_TEST(test_parse_codecs);
-  TT_TEST(test_parse_extmap);
-  TT_TEST(test_parse_extmap_ignores_overflow);
-  TT_TEST(test_generate_sdp);
-  TT_TEST(test_generate_sdp_rejects_truncated_output);
-  TT_TEST(test_generate_session_id_rejects_truncation);
-  TT_TEST(test_roundtrip);
-  TT_TEST(test_find_functions);
-  TT_TEST(test_generate_ice_credentials);
+  it("test_parse_audio_sdp") { test_parse_audio_sdp(); };
+  it("test_parse_datachannel_sdp") { test_parse_datachannel_sdp(); };
+  it("test_parse_origin_preserves_uint64_version") { test_parse_origin_preserves_uint64_version(); };
+  it("test_parse_candidates") { test_parse_candidates(); };
+  it("test_parse_codecs") { test_parse_codecs(); };
+  it("test_parse_extmap") { test_parse_extmap(); };
+  it("test_parse_extmap_ignores_overflow") { test_parse_extmap_ignores_overflow(); };
+  it("test_generate_sdp") { test_generate_sdp(); };
+  it("test_generate_sdp_rejects_truncated_output") { test_generate_sdp_rejects_truncated_output(); };
+  it("test_generate_session_id_rejects_truncation") { test_generate_session_id_rejects_truncation(); };
+  it("test_roundtrip") { test_roundtrip(); };
+  it("test_find_functions") { test_find_functions(); };
+  it("test_generate_ice_credentials") { test_generate_ice_credentials(); };
 }

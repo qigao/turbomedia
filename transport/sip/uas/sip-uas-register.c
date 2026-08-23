@@ -1,5 +1,6 @@
 #include "sip-uas-transaction.h"
 #include "fmt.h"
+#include "turbo_error.h"
 #include "turbo_str.h"
 
 /*
@@ -26,16 +27,16 @@ Content-Length: 0
 */
 
 struct sip_register_endpoint {
-	tstr_v userinfo;
-	tstr_v host;
+	vstr userinfo;
+	vstr host;
 	int port;
 };
 
-static int sip_register_endpoint_parse(tstr_v value, struct sip_register_endpoint *endpoint)
+static int sip_register_endpoint_parse(vstr value, struct sip_register_endpoint *endpoint)
 {
 	size_t separator;
-	tstr_v authority;
-	tstr_v port;
+	vstr authority;
+	vstr port;
 	long parsed_port;
 
 	if (!endpoint || !value.data || value.len == 0U)
@@ -43,43 +44,43 @@ static int sip_register_endpoint_parse(tstr_v value, struct sip_register_endpoin
 
 	memset(endpoint, 0, sizeof(*endpoint));
 	authority = value;
-	separator = tstr_v_rfind_char(authority, '@');
-	if (separator != TSTR_V_NPOS)
+	separator = vstr_rfind_char(authority, '@');
+	if (separator != VSTR_NPOS)
 	{
-		endpoint->userinfo = tstr_v_sub(authority, 0U, separator);
-		authority = tstr_v_sub(authority, separator + 1U, SIZE_MAX);
+		endpoint->userinfo = vstr_sub(authority, 0U, separator);
+		authority = vstr_sub(authority, separator + 1U, SIZE_MAX);
 	}
 	if (authority.len == 0U)
 		return TURBO_EINVAL;
 
 	if (authority.data[0] == '[')
 	{
-		separator = tstr_v_find_char(authority, ']');
-		if (separator == TSTR_V_NPOS || separator == 1U)
+		separator = vstr_find_char(authority, ']');
+		if (separator == VSTR_NPOS || separator == 1U)
 			return TURBO_EINVAL;
-		endpoint->host = tstr_v_sub(authority, 1U, separator - 1U);
+		endpoint->host = vstr_sub(authority, 1U, separator - 1U);
 		if (separator + 1U < authority.len)
 		{
 			if (authority.data[separator + 1U] != ':')
 				return TURBO_EINVAL;
-			port = tstr_v_sub(authority, separator + 2U, SIZE_MAX);
+			port = vstr_sub(authority, separator + 2U, SIZE_MAX);
 		}
 		else
-			port = tstr_v_from_buf(NULL, 0U);
+			port = vstr_from_buf(NULL, 0U);
 	}
 	else
 	{
-		separator = tstr_v_rfind_char(authority, ':');
-		if (separator != TSTR_V_NPOS &&
-			tstr_v_find_char(authority, ':') == separator)
+		separator = vstr_rfind_char(authority, ':');
+		if (separator != VSTR_NPOS &&
+			vstr_find_char(authority, ':') == separator)
 		{
-			endpoint->host = tstr_v_sub(authority, 0U, separator);
-			port = tstr_v_sub(authority, separator + 1U, SIZE_MAX);
+			endpoint->host = vstr_sub(authority, 0U, separator);
+			port = vstr_sub(authority, separator + 1U, SIZE_MAX);
 		}
 		else
 		{
 			endpoint->host = authority;
-			port = tstr_v_from_buf(NULL, 0U);
+			port = vstr_from_buf(NULL, 0U);
 		}
 	}
 
@@ -103,10 +104,10 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 {
 	int r, expires;
 	char *from_user;
-	tstr_t location;
+	tstr location;
 	struct sip_register_endpoint uri;
 	struct sip_register_endpoint from;
-	const tstr_v* header;
+	const vstr* header;
 	const struct sip_contact_t* contact;
 	int have_contact;
 
@@ -195,7 +196,7 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 	// The Record-Route header field has no meaning in REGISTER 
 	// requests or responses, and MUST be ignored if present.
 
-	from_user = tstr_v_to_cstr(from.userinfo);
+	from_user = vstr_to_cstr(from.userinfo);
 	if (!from_user)
 		return sip_uas_transaction_noninvite_reply(t, 500/*Server Internal Error*/, NULL, 0, param);
 	location = have_contact ? tstr_format("{}:{}", uri.host, uri.port) : NULL;

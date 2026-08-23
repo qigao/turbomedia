@@ -16,17 +16,17 @@ typedef struct {
     size_t body_len;
 } turbo_rtsp_response_view_t;
 
-CXX_C_API int turbo_rtsp_parse_message(
+TURBO_MEDIA_C_API int turbo_rtsp_parse_message(
     const char *buffer,
     size_t buffer_len,
     size_t *consumed,
     turbo_rtsp_message_t *message);
 
-CXX_C_API const turbo_rtsp_header_view_t *turbo_rtsp_message_find_header(
+TURBO_MEDIA_C_API const turbo_rtsp_header_view_t *turbo_rtsp_message_find_header(
     const turbo_rtsp_message_t *message,
     const char *name);
 
-CXX_C_API const turbo_rtsp_header_view_t *turbo_rtsp_response_find_header(
+TURBO_MEDIA_C_API const turbo_rtsp_header_view_t *turbo_rtsp_response_find_header(
     const turbo_rtsp_response_view_t *response,
     const char *name);
 

@@ -5,8 +5,8 @@ int sip_uas_onsubscribe(struct sip_uas_transaction_t* t, const struct sip_messag
 {
 	int r;
 	char ptr[256];
-	tstr_v id;
-	const tstr_v *h;
+	vstr id;
+	const vstr *h;
 	struct sip_subscribe_t* subscribe;
 
 	r = 0;

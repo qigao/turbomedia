@@ -711,7 +711,7 @@ static int room_service_config_apply_fmq_workers(
     }
     count = turbo_toml_array_len(workers);
     if (count < 0 || count > ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES) {
-        TLOG_ERROR("TOML key [fmq].workers exceeds the maximum of {} entries",
+        TLOG_ERRORF("TOML key [fmq].workers exceeds the maximum of {} entries",
                    ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES);
         return -1;
     }

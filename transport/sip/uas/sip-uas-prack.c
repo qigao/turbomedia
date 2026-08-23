@@ -4,7 +4,7 @@ int sip_uas_onprack(struct sip_uas_transaction_t* t, const struct sip_message_t*
 {
 	int r;
 	char ptr[256];
-	tstr_v id;
+	vstr id;
 
 	sip_dialog_id_with_message(&id, req, ptr, sizeof(ptr), 1);
 	if (t->handler->onprack)
@@ -18,7 +18,7 @@ int sip_uas_onupdate(struct sip_uas_transaction_t* t, const struct sip_message_t
 {
 	int r;
 	char ptr[256];
-	tstr_v id;
+	vstr id;
 
 	sip_dialog_id_with_message(&id, req, ptr, sizeof(ptr), 1);
 	if (t->handler->onupdate)

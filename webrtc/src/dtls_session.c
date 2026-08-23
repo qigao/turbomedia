@@ -237,10 +237,10 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
                 char err_buf[256];
                 if (err) {
                     ERR_error_string_n(err, err_buf, sizeof(err_buf));
-                    TLOG_DEBUG("DTLS handshake error: {}", err_buf);
+                    TLOG_DEBUGF("DTLS handshake error: {}", err_buf);
                 } else {
                     stbsp_snprintf(err_buf, sizeof(err_buf), "SSL error %d", ssl_error);
-                    TLOG_DEBUG("DTLS handshake error: {}", err_buf);
+                    TLOG_DEBUGF("DTLS handshake error: {}", err_buf);
                 }
 
                 if (peer->on_error) {
@@ -297,7 +297,7 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
     actual_fp[fp_pos] = '\0';
  
     if (strcmp(actual_fp, peer->remote_fingerprint) != 0) {
-        TLOG_ERROR("DTLS fingerprint mismatch: expected {}, got {}",
+        TLOG_ERRORF("DTLS fingerprint mismatch: expected {}, got {}",
                    peer->remote_fingerprint, actual_fp);
         dc_set_peer_error(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT, "fingerprint mismatch");
         return -1;
@@ -308,7 +308,7 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
  
  void dtls_process_handshake(turbo_dc_peer_t *peer) {
     int ret = SSL_do_handshake(peer->dtls.ssl);
-    TLOG_DEBUG("DTLS handshake step ret={} state={}", ret, peer ? (int)peer->state : -1);
+    TLOG_DEBUGF("DTLS handshake step ret={} state={}", ret, peer ? (int)peer->state : -1);
 
     if (ret == 1) {
         /* Verify fingerprint before proceeding */

@@ -10,15 +10,15 @@
 #include <string.h>
 #include <assert.h>
 
-static void sip_message_copy(struct sip_message_t* msg, tstr_v* str, const char* s)
+static void sip_message_copy(struct sip_message_t* msg, vstr* str, const char* s)
 {
 	msg->ptr.ptr = sip_string_view_clone(msg->ptr.ptr, msg->ptr.end, str, s ? s : "", s ? strlen(s) : 0);
 }
-static void sip_message_copy2(struct sip_message_t* msg, tstr_v* str, const tstr_v* src)
+static void sip_message_copy2(struct sip_message_t* msg, vstr* str, const vstr* src)
 {
 	msg->ptr.ptr = sip_string_view_clone(msg->ptr.ptr, msg->ptr.end, str, src->data, src->len);
 }
-static int sip_message_add_param(struct sip_params_t* params, const char* name, const tstr_v* value)
+static int sip_message_add_param(struct sip_params_t* params, const char* name, const vstr* value)
 {
 	struct sip_param_t param;
 	param.name.data = name;
@@ -152,7 +152,7 @@ int sip_message_init(struct sip_message_t* msg, const char* method, const char* 
 	char callid[TURBO_UUID_STRING_SIZE];
 	turbo_uuid_t callid_uuid;
 	uint32_t tag_value;
-	tstr_v u, f, t;
+	vstr u, f, t;
 	struct sip_contact_t contact;
 
 	if (turbo_uuid_v4_generate(&callid_uuid) != TURBO_OK ||
@@ -178,7 +178,7 @@ int sip_message_init(struct sip_message_t* msg, const char* method, const char* 
 	}
 
 	// initialize remote target
-	memmove(&msg->u.c.method, &msg->cseq.method, sizeof(tstr_v));
+	memmove(&msg->u.c.method, &msg->cseq.method, sizeof(vstr));
 	//memmove(&msg->u.c.uri, &contact.uri, sizeof(struct sip_uri_t));
 	msg->ptr.ptr = sip_uri_clone(msg->ptr.ptr, msg->ptr.end, &msg->u.c.uri, &contact.uri);
 
@@ -201,7 +201,7 @@ int sip_message_init2(struct sip_message_t* msg, const char* method, const struc
 {
 	int i;
 	struct sip_uri_t uri;
-	//tstr_v f, t;
+	//vstr f, t;
 	//struct sip_contact_t contact;
 
 	//f.data = msg->ptr.ptr;
@@ -238,7 +238,7 @@ int sip_message_init2(struct sip_message_t* msg, const char* method, const struc
 	}
 
 	// initialize remote target
-	memmove(&msg->u.c.method, &msg->cseq.method, sizeof(tstr_v));
+	memmove(&msg->u.c.method, &msg->cseq.method, sizeof(vstr));
 	//memmove(&msg->u.c.uri, &dialog->remote.target, sizeof(struct sip_uri_t));
 #if defined(SIP_KEEP_DIALOG_REQUET_URI)
 	// same as invite request uri
@@ -411,7 +411,7 @@ int sip_message_issubscribe(const struct sip_message_t* msg)
 
 int sip_message_set_uri(struct sip_message_t* msg, const char* host)
 {
-	tstr_v uri;
+	vstr uri;
 	sip_message_copy(msg, &uri, host);
 	return sip_header_uri(uri.data, uri.data + uri.len, &msg->u.c.uri);
 }
@@ -558,7 +558,7 @@ static char* sip_message_routers(const struct sip_message_t* msg, char* p, const
 	return p;
 }
 
-static inline int sip_message_skip_header(const tstr_v* name);
+static inline int sip_message_skip_header(const vstr* name);
 int sip_message_write(const struct sip_message_t* msg, uint8_t* data, int bytes)
 {
 	int i, n;
@@ -673,7 +673,7 @@ int sip_message_write(const struct sip_message_t* msg, uint8_t* data, int bytes)
 	return (int)((uint8_t*)p - data);
 }
 
-static inline int sip_message_skip_header(const tstr_v* name)
+static inline int sip_message_skip_header(const vstr* name)
 {
 	int i;
 	const char* s_headers[] = {
@@ -794,17 +794,17 @@ int sip_message_get_header_count(const struct sip_message_t* msg)
 	return sip_params_count(&msg->headers);
 }
 
-int sip_message_get_header(const struct sip_message_t* msg, int i, tstr_v* const name, tstr_v* const value)
+int sip_message_get_header(const struct sip_message_t* msg, int i, vstr* const name, vstr* const value)
 {
 	const struct sip_param_t* param;
 	param = sip_params_get(&msg->headers, i);
 	if (!param) return -1;
-	memmove(name, &param->name, sizeof(tstr_v));
-	memmove(value, &param->value, sizeof(tstr_v));
+	memmove(name, &param->name, sizeof(vstr));
+	memmove(value, &param->value, sizeof(vstr));
 	return 0;
 }
 
-const tstr_v* sip_message_get_header_by_name(const struct sip_message_t* msg, const char* name)
+const vstr* sip_message_get_header_by_name(const struct sip_message_t* msg, const char* name)
 {
 	return sip_params_find_string(&msg->headers, name, (int)strlen(name));
 }
@@ -832,7 +832,7 @@ int sip_message_set_reply_default_contact(struct sip_message_t* reply)
 int sip_message_set_rport(struct sip_message_t* request, const char* addr, int port)
 {
 	char v[32];
-	tstr_v rport;
+	vstr rport;
 	struct sip_via_t* via;
 
 	if (SIP_MESSAGE_REQUEST != request->mode)

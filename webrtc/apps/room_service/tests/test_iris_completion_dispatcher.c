@@ -555,7 +555,7 @@ static void reclaim_command(iris_media_bridge_t *bridge,
              command_id, worker, epoch);
     result = iris_media_bridge_dispatch_json(bridge, command_id, body,
                                              strlen(body));
-    check_int_eq(result.status, IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY);
+    check_equal(result.status, IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY);
 }
 
 static ivr_media_command_result_t make_result(const char *command_id) {
@@ -596,8 +596,8 @@ spec("Iris completion dispatcher") {
         dispatcher = create_flowmq_dispatcher(bridge, &delivery, 5);
         dispatch_command(bridge, "command-conflict", "41");
         check_not_null(dispatcher);
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_result(dispatcher,
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result),
                      IVR_OK);
         for (int i = 0;
@@ -605,13 +605,13 @@ spec("Iris completion dispatcher") {
             turbo_sleep_ms(1u);
         }
         iris_completion_dispatcher_stop(dispatcher);
-        check_int_eq(atomic_load(&delivery.completion_calls), 1);
+        check_equal(atomic_load(&delivery.completion_calls), 1);
         iris_completion_dispatcher_get_stats(dispatcher, &stats);
-        check_ull_eq(stats.retries_total, 0u);
-        check_ull_eq(stats.fence_conflicts_total, 1u);
-        check_ull_eq(stats.completion_failure_total, 1u);
+        check_equal(stats.retries_total, 0u);
+        check_equal(stats.fence_conflicts_total, 1u);
+        check_equal(stats.completion_failure_total, 1u);
         dispatch_command(bridge, "command-conflict", "41");
-        check_int_eq(sender.calls, 1);
+        check_equal(sender.calls, 1);
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
     }
@@ -638,20 +638,20 @@ spec("Iris completion dispatcher") {
         dispatcher = create_flowmq_dispatcher(bridge, &delivery, 2);
         dispatch_command(bridge, "command-flowmq", "41");
         check_not_null(dispatcher);
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_result(dispatcher,
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result),
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.completion_calls) < 2; ++i) {
             turbo_sleep_ms(1u);
         }
-        check_int_eq(atomic_load(&delivery.completion_calls), 2);
-        check_str_eq(delivery.completion_message_ids[0],
+        check_equal(atomic_load(&delivery.completion_calls), 2);
+        check_equal(delivery.completion_message_ids[0],
                      delivery.completion_message_ids[1]);
-        check_str_eq(delivery.completion_times[0],
+        check_equal(delivery.completion_times[0],
                      delivery.completion_times[1]);
-        check_int_eq(iris_completion_dispatcher_on_media_event(dispatcher,
+        check_equal(iris_completion_dispatcher_on_media_event(dispatcher,
                                                                &event),
                      IVR_OK);
         for (int i = 0;
@@ -659,10 +659,10 @@ spec("Iris completion dispatcher") {
             turbo_sleep_ms(1u);
         }
         iris_completion_dispatcher_stop(dispatcher);
-        check_int_eq(atomic_load(&delivery.event_calls), 1);
-        check_str_eq(delivery.event_message_id, "event-flowmq");
+        check_equal(atomic_load(&delivery.event_calls), 1);
+        check_equal(delivery.event_message_id, "event-flowmq");
         check_true(delivery.event_time[0] != '\0');
-        check_ull_eq(delivery.ack_timeout_ms, UINT64_C(250));
+        check_equal(delivery.ack_timeout_ms, UINT64_C(250));
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
     }
@@ -679,18 +679,18 @@ spec("Iris completion dispatcher") {
             create_dispatcher(bridge, &post, 1u, 1);
         dispatch_command(bridge, "command-a", "41");
         check_not_null(dispatcher);
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_result(dispatcher,
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         memset(&result, 0, sizeof(result));
         check_true(wait_calls(&post, 1));
         iris_completion_dispatcher_stop(dispatcher);
-        check_str_contains(post.urls[0], "/commands/command-a/completions");
-        check_str_contains(post.bodies[0], "\"workerId\":\"iris-worker-a\"");
-        check_str_contains(post.bodies[0], "\"expectedDispatchEpoch\":41");
-        check_str_contains(post.bodies[0], "\"mediaWorkerId\":\"media-worker-1\"");
+        check_contains(post.urls[0], "/commands/command-a/completions");
+        check_contains(post.bodies[0], "\"workerId\":\"iris-worker-a\"");
+        check_contains(post.bodies[0], "\"expectedDispatchEpoch\":41");
+        check_contains(post.bodies[0], "\"mediaWorkerId\":\"media-worker-1\"");
         dispatch_command(bridge, "command-a", "41");
-        check_int_eq(sender.calls, 1);
+        check_equal(sender.calls, 1);
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
     }
@@ -707,22 +707,22 @@ spec("Iris completion dispatcher") {
         iris_completion_dispatcher_t *dispatcher =
             create_dispatcher(bridge, &post, 1u, 2);
         dispatch_command(bridge, "command-a", "41");
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_result(dispatcher,
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 2));
         iris_completion_dispatcher_stop(dispatcher);
-        check_str_eq(post.bodies[0], post.bodies[1]);
+        check_equal(post.bodies[0], post.bodies[1]);
         {
             iris_completion_dispatcher_stats_t stats;
             iris_completion_dispatcher_get_stats(dispatcher, &stats);
-            check_size_eq(stats.queue_capacity, 1u);
-            check_size_eq(stats.queue_high_water, 1u);
-            check_ull_eq(stats.enqueued_total, 1u);
-            check_ull_eq(stats.delivery_attempts_total, 2u);
-            check_ull_eq(stats.retries_total, 1u);
-            check_ull_eq(stats.completion_success_total, 1u);
-            check_ull_eq(stats.completion_failure_total, 0u);
+            check_equal(stats.queue_capacity, 1u);
+            check_equal(stats.queue_high_water, 1u);
+            check_equal(stats.enqueued_total, 1u);
+            check_equal(stats.delivery_attempts_total, 2u);
+            check_equal(stats.retries_total, 1u);
+            check_equal(stats.completion_success_total, 1u);
+            check_equal(stats.completion_failure_total, 0u);
         }
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
@@ -741,24 +741,24 @@ spec("Iris completion dispatcher") {
         iris_completion_dispatcher_t *dispatcher =
             create_dispatcher(bridge, &post, 1u, 2);
         dispatch_command(bridge, "command-a", "41");
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_result(dispatcher,
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 1));
         reclaim_command(bridge, "command-a", "iris-worker-b", "42");
         atomic_store(&post.release, 1);
         check_true(wait_calls(&post, 2));
         iris_completion_dispatcher_stop(dispatcher);
-        check_str_contains(post.bodies[0], "\"expectedDispatchEpoch\":41");
-        check_str_contains(post.bodies[1], "\"expectedDispatchEpoch\":42");
-        check_str_contains(post.bodies[1], "\"workerId\":\"iris-worker-b\"");
+        check_contains(post.bodies[0], "\"expectedDispatchEpoch\":41");
+        check_contains(post.bodies[1], "\"expectedDispatchEpoch\":42");
+        check_contains(post.bodies[1], "\"workerId\":\"iris-worker-b\"");
         {
             iris_completion_dispatcher_stats_t stats;
             iris_completion_dispatcher_get_stats(dispatcher, &stats);
-            check_ull_eq(stats.delivery_attempts_total, 2u);
-            check_ull_eq(stats.retries_total, 1u);
-            check_ull_eq(stats.fence_conflicts_total, 1u);
-            check_ull_eq(stats.fence_refresh_failures_total, 0u);
+            check_equal(stats.delivery_attempts_total, 2u);
+            check_equal(stats.retries_total, 1u);
+            check_equal(stats.fence_conflicts_total, 1u);
+            check_equal(stats.fence_refresh_failures_total, 0u);
         }
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
@@ -776,22 +776,22 @@ spec("Iris completion dispatcher") {
         iris_completion_dispatcher_t *dispatcher =
             create_dispatcher(bridge, &post, 1u, 1);
         dispatch_command(bridge, "command-a", "41");
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_result(dispatcher,
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 1));
         turbo_sleep_ms(5u);
-        check_int_eq(iris_completion_dispatcher_on_media_result(dispatcher,
+        check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 2));
         iris_completion_dispatcher_stop(dispatcher);
         {
             iris_completion_dispatcher_stats_t stats;
             iris_completion_dispatcher_get_stats(dispatcher, &stats);
-            check_ull_eq(stats.enqueued_total, 2u);
-            check_ull_eq(stats.delivery_attempts_total, 2u);
-            check_ull_eq(stats.completion_success_total, 1u);
-            check_ull_eq(stats.completion_failure_total, 1u);
+            check_equal(stats.enqueued_total, 2u);
+            check_equal(stats.delivery_attempts_total, 2u);
+            check_equal(stats.completion_success_total, 1u);
+            check_equal(stats.completion_failure_total, 1u);
         }
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
@@ -825,30 +825,30 @@ spec("Iris completion dispatcher") {
         iris_media_bridge_t *bridge = create_bridge(&sender, 1u);
         iris_completion_dispatcher_t *dispatcher =
             create_dispatcher(bridge, &post, 1u, 1);
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_event(dispatcher, &first),
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_event(dispatcher, &first),
                      IVR_OK);
         check_true(wait_calls(&post, 1));
-        check_int_eq(iris_completion_dispatcher_on_media_event(dispatcher, &second),
+        check_equal(iris_completion_dispatcher_on_media_event(dispatcher, &second),
                      IVR_OK);
-        check_int_eq(iris_completion_dispatcher_on_media_event(dispatcher, &third),
+        check_equal(iris_completion_dispatcher_on_media_event(dispatcher, &third),
                      IVR_ENOSPC);
         memset(&second, 0, sizeof(second));
         atomic_store(&post.release, 1);
         iris_completion_dispatcher_stop(dispatcher);
-        check_int_eq(atomic_load(&post.calls), 2);
-        check_str_contains(post.bodies[1], "\"eventId\":\"event-2\"");
-        check_str_contains(post.bodies[1], "\"inputId\":\"input-a\"");
-        check_str_contains(post.bodies[1], "\"inputValue\":\"5\"");
+        check_equal(atomic_load(&post.calls), 2);
+        check_contains(post.bodies[1], "\"eventId\":\"event-2\"");
+        check_contains(post.bodies[1], "\"inputId\":\"input-a\"");
+        check_contains(post.bodies[1], "\"inputValue\":\"5\"");
         {
             iris_completion_dispatcher_stats_t stats;
             iris_completion_dispatcher_get_stats(dispatcher, &stats);
-            check_size_eq(stats.queue_items, 0u);
-            check_size_eq(stats.queue_capacity, 1u);
-            check_size_eq(stats.queue_high_water, 1u);
-            check_ull_eq(stats.enqueued_total, 2u);
-            check_ull_eq(stats.queue_full_total, 1u);
-            check_ull_eq(stats.event_success_total, 2u);
+            check_equal(stats.queue_items, 0u);
+            check_equal(stats.queue_capacity, 1u);
+            check_equal(stats.queue_high_water, 1u);
+            check_equal(stats.enqueued_total, 2u);
+            check_equal(stats.queue_full_total, 1u);
+            check_equal(stats.event_success_total, 2u);
         }
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
@@ -882,18 +882,18 @@ spec("Iris completion dispatcher") {
         dispatcher = create_dispatcher(bridge, &post, 1u, 1);
         observer.dispatcher = dispatcher;
         stop_context.dispatcher = dispatcher;
-        check_int_eq(iris_completion_dispatcher_set_event_delivery_observer(
+        check_equal(iris_completion_dispatcher_set_event_delivery_observer(
                          dispatcher, test_delivery_result, &observer),
                      0);
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_enqueue_event(
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_enqueue_event(
                          dispatcher, &first, UINT64_C(11)),
                      IVR_OK);
         check_true(wait_calls(&post, 1));
-        check_int_eq(iris_completion_dispatcher_enqueue_event(
+        check_equal(iris_completion_dispatcher_enqueue_event(
                          dispatcher, &second, UINT64_C(22)),
                      IVR_OK);
-        check_int_eq(turbo_thread_create(&stop_thread, test_stop_dispatcher,
+        check_equal(turbo_thread_create(&stop_thread, test_stop_dispatcher,
                                          &stop_context),
                      0);
         for (int i = 0; i < 2000 && !atomic_load(&observer.abandoned_seen);
@@ -906,7 +906,7 @@ spec("Iris completion dispatcher") {
         atomic_store(&post.release, 1);
         turbo_thread_join(&stop_thread);
         turbo_thread_destroy(&stop_thread);
-        check_int_eq(atomic_load(&observer.calls), 2);
+        check_equal(atomic_load(&observer.calls), 2);
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
     }
@@ -928,19 +928,19 @@ spec("Iris completion dispatcher") {
         iris_media_bridge_t *bridge = create_bridge(&sender, 1u);
         iris_completion_dispatcher_t *dispatcher =
             create_dispatcher(bridge, &post, 1u, 1);
-        check_int_eq(iris_completion_dispatcher_on_media_event(dispatcher, &event),
+        check_equal(iris_completion_dispatcher_on_media_event(dispatcher, &event),
                      IVR_ECLOSED);
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
         iris_completion_dispatcher_stop(dispatcher);
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_event(dispatcher, &event),
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_event(dispatcher, &event),
                      IVR_OK);
         check_true(wait_calls(&post, 1));
         iris_completion_dispatcher_stop(dispatcher);
         iris_completion_dispatcher_get_stats(dispatcher, &stats);
-        check_ull_eq(stats.event_success_total, 1u);
-        check_ull_eq(stats.event_failure_total, 0u);
-        check_ull_eq(stats.closed_rejections_total, 1u);
+        check_equal(stats.event_success_total, 1u);
+        check_equal(stats.event_failure_total, 0u);
+        check_equal(stats.closed_rejections_total, 1u);
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
     }
@@ -964,15 +964,15 @@ spec("Iris completion dispatcher") {
         iris_media_bridge_t *bridge = create_bridge(&sender, 1u);
         iris_completion_dispatcher_t *dispatcher =
             create_dispatcher(bridge, &post, 1u, 1);
-        check_int_eq(iris_completion_dispatcher_start(dispatcher), 0);
-        check_int_eq(iris_completion_dispatcher_on_media_event(dispatcher, &event),
+        check_equal(iris_completion_dispatcher_start(dispatcher), 0);
+        check_equal(iris_completion_dispatcher_on_media_event(dispatcher, &event),
                      IVR_OK);
         check_true(wait_calls(&post, 1));
         iris_completion_dispatcher_stop(dispatcher);
         iris_completion_dispatcher_get_stats(dispatcher, &stats);
-        check_ull_eq(stats.delivery_attempts_total, 1u);
-        check_ull_eq(stats.event_success_total, 0u);
-        check_ull_eq(stats.event_failure_total, 1u);
+        check_equal(stats.delivery_attempts_total, 1u);
+        check_equal(stats.event_success_total, 0u);
+        check_equal(stats.event_failure_total, 1u);
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
     }
@@ -994,10 +994,10 @@ spec("Iris completion dispatcher") {
         int server_started = 0;
         int dispatcher_started = 0;
 
-        check_int_eq(test_set_environment("TURBONET_TLS_CA_FILE",
+        check_equal(test_set_environment("TURBONET_TLS_CA_FILE",
                                           ROOM_SERVICE_TEST_TLS_CERT_PATH),
                      0);
-        check_int_eq(test_set_environment("TURBONET_TLS_CA_PATH", NULL), 0);
+        check_equal(test_set_environment("TURBONET_TLS_CA_PATH", NULL), 0);
         server_started = test_tls_server_start(&tls_server) == 0;
         check_true(server_started);
         if (server_started) {
@@ -1021,7 +1021,7 @@ spec("Iris completion dispatcher") {
             check_not_null(wrong_host_dispatcher);
         }
         if (wrong_host_dispatcher) {
-            check_int_eq(
+            check_equal(
                 iris_completion_dispatcher_start(wrong_host_dispatcher), 0);
             memset(&event, 0, sizeof(event));
             snprintf(event.event_id, sizeof(event.event_id),
@@ -1033,7 +1033,7 @@ spec("Iris completion dispatcher") {
                      "provider.media.input");
             snprintf(event.call_id, sizeof(event.call_id), "call-a");
             event.occurred_at_ms = UINT64_C(2000);
-            check_int_eq(iris_completion_dispatcher_on_media_event(
+            check_equal(iris_completion_dispatcher_on_media_event(
                              wrong_host_dispatcher, &event),
                          IVR_OK);
             for (int i = 0; i < 3000; ++i) {
@@ -1045,10 +1045,10 @@ spec("Iris completion dispatcher") {
             iris_completion_dispatcher_stop(wrong_host_dispatcher);
             iris_completion_dispatcher_get_stats(wrong_host_dispatcher,
                                                  &stats);
-            check_ull_eq(stats.delivery_attempts_total, 1u);
-            check_ull_eq(stats.event_success_total, 0u);
-            check_ull_eq(stats.event_failure_total, 1u);
-            check_int_eq(atomic_load(&tls_server.calls), 0);
+            check_equal(stats.delivery_attempts_total, 1u);
+            check_equal(stats.event_success_total, 0u);
+            check_equal(stats.event_failure_total, 1u);
+            check_equal(atomic_load(&tls_server.calls), 0);
             iris_completion_dispatcher_destroy(wrong_host_dispatcher);
             wrong_host_dispatcher = NULL;
 
@@ -1074,21 +1074,21 @@ spec("Iris completion dispatcher") {
             event.occurred_at_ms = UINT64_C(2000);
             snprintf(event.payload_json, sizeof(event.payload_json),
                      "{\"value\":\"tls\"}");
-            check_int_eq(
+            check_equal(
                 iris_completion_dispatcher_on_media_event(dispatcher, &event),
                 IVR_OK);
             for (int i = 0; i < 3000 && atomic_load(&tls_server.calls) < 1;
                  ++i) {
                 turbo_sleep_ms(1u);
             }
-            check_int_eq(atomic_load(&tls_server.calls), 1);
+            check_equal(atomic_load(&tls_server.calls), 1);
             iris_completion_dispatcher_stop(dispatcher);
             dispatcher_started = 0;
-            check_int_eq(atomic_load(&tls_server.request_valid), 1);
+            check_equal(atomic_load(&tls_server.request_valid), 1);
             iris_completion_dispatcher_get_stats(dispatcher, &stats);
-            check_ull_eq(stats.delivery_attempts_total, 1u);
-            check_ull_eq(stats.event_success_total, 1u);
-            check_ull_eq(stats.event_failure_total, 0u);
+            check_equal(stats.delivery_attempts_total, 1u);
+            check_equal(stats.event_success_total, 1u);
+            check_equal(stats.event_failure_total, 0u);
         }
 
         if (dispatcher_started) iris_completion_dispatcher_stop(dispatcher);

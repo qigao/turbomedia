@@ -146,7 +146,7 @@ spec("IVR FlowMQ mTLS application wiring") {
     config.host = "127.0.0.1";
     config.port = IVR_FMQ_MTLS_PUB_PORT;
     config.security = &security;
-    check_int_eq(ivr_flowmq_subscriber_create(&config, &subscriber),
+    check_equal(ivr_flowmq_subscriber_create(&config, &subscriber),
                  IVR_EINVAL);
     check_null(subscriber);
   }
@@ -177,11 +177,11 @@ spec("IVR FlowMQ mTLS application wiring") {
     server_security_config.policy_version = 2u;
     server_security_config.clock = test_clock;
     server_security_config.clock_context = &now_ms;
-    check_int_eq(ivr_fmq_server_security_create(&server_security_config,
+    check_equal(ivr_fmq_server_security_create(&server_security_config,
                                                 &server_security),
                  TURBO_OK);
     client_security_config.shared_secret = kSecret;
-    check_int_eq(ivr_fmq_client_security_create(&client_security_config,
+    check_equal(ivr_fmq_client_security_create(&client_security_config,
                                                 &client_security),
                  TURBO_OK);
 
@@ -215,8 +215,8 @@ spec("IVR FlowMQ mTLS application wiring") {
     bridge_config.dedup_capacity = 8u;
     bridge_config.handler.get_room_version = room_version;
     bridge_config.handler.on_command = apply_command;
-    check_int_eq(ivr_room_bridge_create(&bridge_config, &bridge), IVR_OK);
-    check_int_eq(ivr_room_bridge_start(bridge), IVR_OK);
+    check_equal(ivr_room_bridge_create(&bridge_config, &bridge), IVR_OK);
+    check_equal(ivr_room_bridge_start(bridge), IVR_OK);
 
     check_true(start_clients("worker-a", &client_tls,
                              ivr_fmq_security_binding(client_security),

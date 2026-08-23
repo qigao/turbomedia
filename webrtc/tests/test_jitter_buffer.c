@@ -2,7 +2,7 @@
  * Jitter Buffer Tests
  */
 #include "jitter_buffer.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_rtp.h"
 #include <stdlib.h>
 #include <string.h>
@@ -28,9 +28,9 @@ static rtp_packet_t make_packet(uint16_t seq, uint32_t ts, const uint8_t *payloa
 
 void test_jitter_buffer_create(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 50, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
-  TEST_ASSERT_EQUAL_UINT32(50, jitter_buffer_get_delay(jb));
-  TEST_ASSERT_TRUE(jitter_buffer_is_empty(jb));
+  check_not_null(jb);
+  check_equal((uint32_t)(jitter_buffer_get_delay(jb)), (uint32_t)(50));
+  check_true(jitter_buffer_is_empty(jb));
   jitter_buffer_destroy(jb);
 }
 
@@ -48,21 +48,21 @@ void test_jitter_buffer_create_null_on_zero(void) {
 
 void test_jitter_buffer_put_single(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 20, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload[] = {0x01, 0x02, 0x03, 0x04};
   rtp_packet_t pkt = make_packet(1, 960, payload, sizeof(payload));
 
   int result = jitter_buffer_put(jb, &pkt, 0);
-  TEST_ASSERT_EQUAL_INT(0, result);
-  TEST_ASSERT_EQUAL_INT(1, jitter_buffer_get_count(jb));
+  check_equal((int)(result), (int)(0));
+  check_equal((int)(jitter_buffer_get_count(jb)), (int)(1));
 
   jitter_buffer_destroy(jb);
 }
 
 void test_jitter_buffer_put_get_sequence(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 0, 1500); /* No delay */
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload1[] = {0x11, 0x22};
   uint8_t payload2[] = {0x33, 0x44};
@@ -77,7 +77,7 @@ void test_jitter_buffer_put_get_sequence(void) {
   jitter_buffer_put(jb, &pkt2, 10);
   jitter_buffer_put(jb, &pkt3, 20);
 
-  TEST_ASSERT_EQUAL_INT(3, jitter_buffer_get_count(jb));
+  check_equal((int)(jitter_buffer_get_count(jb)), (int)(3));
 
   /* Get packets */
   uint8_t out[256];
@@ -85,50 +85,50 @@ void test_jitter_buffer_put_get_sequence(void) {
   uint32_t ts;
 
   int result = jitter_buffer_get(jb, out, sizeof(out), &out_len, &ts, 100);
-  TEST_ASSERT_EQUAL_INT(1, result);
-  TEST_ASSERT_EQUAL_size_t(2, out_len);
-  TEST_ASSERT_EQUAL_MEMORY(payload1, out, out_len);
+  check_equal((int)(result), (int)(1));
+  check_equal((size_t)(out_len), (size_t)(2));
+  check_equal(out, payload1, out_len);
 
   result = jitter_buffer_get(jb, out, sizeof(out), &out_len, &ts, 110);
-  TEST_ASSERT_EQUAL_INT(1, result);
-  TEST_ASSERT_EQUAL_MEMORY(payload2, out, out_len);
+  check_equal((int)(result), (int)(1));
+  check_equal(out, payload2, out_len);
 
   result = jitter_buffer_get(jb, out, sizeof(out), &out_len, &ts, 120);
-  TEST_ASSERT_EQUAL_INT(1, result);
-  TEST_ASSERT_EQUAL_MEMORY(payload3, out, out_len);
+  check_equal((int)(result), (int)(1));
+  check_equal(out, payload3, out_len);
 
-  TEST_ASSERT_TRUE(jitter_buffer_is_empty(jb));
+  check_true(jitter_buffer_is_empty(jb));
 
   jitter_buffer_destroy(jb);
 }
 
 void test_jitter_buffer_get_ex_returns_marker(void) {
   jitter_buffer_t *jb = jitter_buffer_create(90000, 0, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload[] = {0x99, 0x88};
   rtp_packet_t pkt = make_packet(321, 90000, payload, sizeof(payload));
   pkt.header.marker = 1;
 
-  TEST_ASSERT_EQUAL_INT(0, jitter_buffer_put(jb, &pkt, 0));
+  check_equal((int)(jitter_buffer_put(jb, &pkt, 0)), (int)(0));
 
   uint8_t out[256];
   size_t out_len = 0;
   uint32_t ts = 0;
   int marker = 0;
 
-  TEST_ASSERT_EQUAL_INT(1, jitter_buffer_get_ex(jb, out, sizeof(out), &out_len, &ts, &marker, 0));
-  TEST_ASSERT_EQUAL_size_t(sizeof(payload), out_len);
-  TEST_ASSERT_EQUAL_MEMORY(payload, out, out_len);
-  TEST_ASSERT_EQUAL_UINT32(90000, ts);
-  TEST_ASSERT_EQUAL_INT(1, marker);
+  check_equal((int)(jitter_buffer_get_ex(jb, out, sizeof(out), &out_len, &ts, &marker, 0)), (int)(1));
+  check_equal((size_t)(out_len), (size_t)(sizeof(payload)));
+  check_equal(out, payload, out_len);
+  check_equal((uint32_t)(ts), (uint32_t)(90000));
+  check_equal((int)(marker), (int)(1));
 
   jitter_buffer_destroy(jb);
 }
 
 void test_jitter_buffer_reorder(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 0, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload1[] = {0xAA};
   uint8_t payload2[] = {0xBB};
@@ -149,38 +149,38 @@ void test_jitter_buffer_reorder(void) {
   uint32_t ts;
 
   jitter_buffer_get(jb, out, sizeof(out), &out_len, &ts, 100);
-  TEST_ASSERT_EQUAL_UINT8(0xAA, out[0]);
+  check_equal((uint8_t)(out[0]), (uint8_t)(0xAA));
 
   jitter_buffer_get(jb, out, sizeof(out), &out_len, &ts, 110);
-  TEST_ASSERT_EQUAL_UINT8(0xBB, out[0]);
+  check_equal((uint8_t)(out[0]), (uint8_t)(0xBB));
 
   jitter_buffer_get(jb, out, sizeof(out), &out_len, &ts, 120);
-  TEST_ASSERT_EQUAL_UINT8(0xCC, out[0]);
+  check_equal((uint8_t)(out[0]), (uint8_t)(0xCC));
 
   jitter_buffer_destroy(jb);
 }
 
 void test_jitter_buffer_duplicate(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 20, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload[] = {0x12, 0x34};
   rtp_packet_t pkt = make_packet(500, 960, payload, sizeof(payload));
 
   int result1 = jitter_buffer_put(jb, &pkt, 0);
-  TEST_ASSERT_EQUAL_INT(0, result1);
+  check_equal((int)(result1), (int)(0));
 
   int result2 = jitter_buffer_put(jb, &pkt, 5);
-  TEST_ASSERT_EQUAL_INT(1, result2); /* Duplicate returns 1 */
+  check_equal((int)(result2), (int)(1)); /* Duplicate returns 1 */
 
-  TEST_ASSERT_EQUAL_INT(1, jitter_buffer_get_count(jb));
+  check_equal((int)(jitter_buffer_get_count(jb)), (int)(1));
 
   jitter_buffer_destroy(jb);
 }
 
 void test_jitter_buffer_late_packet(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 0, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   /* Insert packets starting at seq 200 (high enough that seq 50 is >128 behind) */
   uint8_t payload[] = {0xFF};
@@ -202,7 +202,7 @@ void test_jitter_buffer_late_packet(void) {
    * So this should be rejected as "too late" */
   rtp_packet_t late_pkt = make_packet(50, 0, payload, 1);
   int result = jitter_buffer_put(jb, &late_pkt, 600);
-  TEST_ASSERT_EQUAL_INT(-1, result); /* Too late */
+  check_equal((int)(result), (int)(-1)); /* Too late */
 
   jitter_buffer_destroy(jb);
 }
@@ -213,7 +213,7 @@ void test_jitter_buffer_late_packet(void) {
 
 void test_jitter_buffer_delay_enforcement(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 50, 1500); /* 50ms delay */
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload[] = {0x01};
   rtp_packet_t pkt = make_packet(1, 960, payload, 1);
@@ -226,26 +226,26 @@ void test_jitter_buffer_delay_enforcement(void) {
 
   /* Try to get before delay has passed */
   int result = jitter_buffer_get(jb, out, sizeof(out), &out_len, &ts, 30);
-  TEST_ASSERT_EQUAL_INT(0, result); /* Not ready */
+  check_equal((int)(result), (int)(0)); /* Not ready */
 
   /* Wait for delay */
   result = jitter_buffer_get(jb, out, sizeof(out), &out_len, &ts, 60);
-  TEST_ASSERT_EQUAL_INT(1, result); /* Ready now */
+  check_equal((int)(result), (int)(1)); /* Ready now */
 
   jitter_buffer_destroy(jb);
 }
 
 void test_jitter_buffer_set_delay_bounds(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 50, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   jitter_buffer_set_delay_bounds(jb, 20, 200);
-  TEST_ASSERT_EQUAL_UINT32(50, jitter_buffer_get_delay(jb)); /* Within bounds */
+  check_equal((uint32_t)(jitter_buffer_get_delay(jb)), (uint32_t)(50)); /* Within bounds */
 
   /* Create new buffer with delay outside bounds */
   jitter_buffer_t *jb2 = jitter_buffer_create(48000, 10, 1500);
   jitter_buffer_set_delay_bounds(jb2, 20, 200);
-  TEST_ASSERT_EQUAL_UINT32(20, jitter_buffer_get_delay(jb2)); /* Clamped to min */
+  check_equal((uint32_t)(jitter_buffer_get_delay(jb2)), (uint32_t)(20)); /* Clamped to min */
 
   jitter_buffer_destroy(jb);
   jitter_buffer_destroy(jb2);
@@ -257,7 +257,7 @@ void test_jitter_buffer_set_delay_bounds(void) {
 
 void test_jitter_buffer_get_missing(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 0, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload[] = {0x01};
 
@@ -274,9 +274,9 @@ void test_jitter_buffer_get_missing(void) {
   uint16_t missing[16];
   int count = jitter_buffer_get_missing(jb, missing, 16);
 
-  TEST_ASSERT_EQUAL_INT(2, count);
-  TEST_ASSERT_EQUAL_UINT16(101, missing[0]);
-  TEST_ASSERT_EQUAL_UINT16(103, missing[1]);
+  check_equal((int)(count), (int)(2));
+  check_equal((uint16_t)(missing[0]), (uint16_t)(101));
+  check_equal((uint16_t)(missing[1]), (uint16_t)(103));
 
   jitter_buffer_destroy(jb);
 }
@@ -287,7 +287,7 @@ void test_jitter_buffer_get_missing(void) {
 
 void test_jitter_buffer_reset(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 20, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload[] = {0x01, 0x02};
   for (int i = 0; i < 5; i++) {
@@ -295,12 +295,12 @@ void test_jitter_buffer_reset(void) {
     jitter_buffer_put(jb, &pkt, i * 10);
   }
 
-  TEST_ASSERT_EQUAL_INT(5, jitter_buffer_get_count(jb));
+  check_equal((int)(jitter_buffer_get_count(jb)), (int)(5));
 
   jitter_buffer_reset(jb);
 
-  TEST_ASSERT_EQUAL_INT(0, jitter_buffer_get_count(jb));
-  TEST_ASSERT_TRUE(jitter_buffer_is_empty(jb));
+  check_equal((int)(jitter_buffer_get_count(jb)), (int)(0));
+  check_true(jitter_buffer_is_empty(jb));
 
   jitter_buffer_destroy(jb);
 }
@@ -311,7 +311,7 @@ void test_jitter_buffer_reset(void) {
 
 void test_jitter_buffer_peek(void) {
   jitter_buffer_t *jb = jitter_buffer_create(48000, 0, 1500);
-  TEST_ASSERT_NOT_NULL(jb);
+  check_not_null(jb);
 
   uint8_t payload[] = {0xAB};
   rtp_packet_t pkt = make_packet(42, 12345, payload, 1);
@@ -319,11 +319,11 @@ void test_jitter_buffer_peek(void) {
 
   uint32_t ts;
   int result = jitter_buffer_peek(jb, &ts);
-  TEST_ASSERT_EQUAL_INT(1, result);
-  TEST_ASSERT_EQUAL_UINT32(12345, ts);
+  check_equal((int)(result), (int)(1));
+  check_equal((uint32_t)(ts), (uint32_t)(12345));
 
   /* Packet should still be there */
-  TEST_ASSERT_EQUAL_INT(1, jitter_buffer_get_count(jb));
+  check_equal((int)(jitter_buffer_get_count(jb)), (int)(1));
 
   jitter_buffer_destroy(jb);
 }
@@ -337,27 +337,27 @@ spec("test_jitter_buffer") {
   after_each() { tearDown(); }
 
   /* Creation/Destruction */
-  TT_TEST(test_jitter_buffer_create);
-  TT_TEST(test_jitter_buffer_create_null_on_zero);
+  it("test_jitter_buffer_create") { test_jitter_buffer_create(); };
+  it("test_jitter_buffer_create_null_on_zero") { test_jitter_buffer_create_null_on_zero(); };
 
   /* Put/Get */
-  TT_TEST(test_jitter_buffer_put_single);
-  TT_TEST(test_jitter_buffer_put_get_sequence);
-  TT_TEST(test_jitter_buffer_get_ex_returns_marker);
-  TT_TEST(test_jitter_buffer_reorder);
-  TT_TEST(test_jitter_buffer_duplicate);
-  TT_TEST(test_jitter_buffer_late_packet);
+  it("test_jitter_buffer_put_single") { test_jitter_buffer_put_single(); };
+  it("test_jitter_buffer_put_get_sequence") { test_jitter_buffer_put_get_sequence(); };
+  it("test_jitter_buffer_get_ex_returns_marker") { test_jitter_buffer_get_ex_returns_marker(); };
+  it("test_jitter_buffer_reorder") { test_jitter_buffer_reorder(); };
+  it("test_jitter_buffer_duplicate") { test_jitter_buffer_duplicate(); };
+  it("test_jitter_buffer_late_packet") { test_jitter_buffer_late_packet(); };
 
   /* Delay */
-  TT_TEST(test_jitter_buffer_delay_enforcement);
-  TT_TEST(test_jitter_buffer_set_delay_bounds);
+  it("test_jitter_buffer_delay_enforcement") { test_jitter_buffer_delay_enforcement(); };
+  it("test_jitter_buffer_set_delay_bounds") { test_jitter_buffer_set_delay_bounds(); };
 
   /* Missing Packets */
-  TT_TEST(test_jitter_buffer_get_missing);
+  it("test_jitter_buffer_get_missing") { test_jitter_buffer_get_missing(); };
 
   /* Reset */
-  TT_TEST(test_jitter_buffer_reset);
+  it("test_jitter_buffer_reset") { test_jitter_buffer_reset(); };
 
   /* Peek */
-  TT_TEST(test_jitter_buffer_peek);
+  it("test_jitter_buffer_peek") { test_jitter_buffer_peek(); };
 }

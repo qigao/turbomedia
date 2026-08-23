@@ -28,9 +28,9 @@ spec("ivr certificate identity") {
         config.entry_count = 1u;
         config.clock = identity_test_clock;
         config.clock_context = &clock;
-        check_int_eq(ivr_certificate_identity_create(&config, &identity), 0);
+        check_equal(ivr_certificate_identity_create(&config, &identity), 0);
         check_not_null(identity);
-        check_int_eq(ivr_certificate_identity_verify(identity, ACTIVE_CERT,
+        check_equal(ivr_certificate_identity_verify(identity, ACTIVE_CERT,
                                                      "worker-a"), 0);
         check_true(ivr_certificate_identity_verify(identity, ACTIVE_CERT,
                                                    "worker-b") != 0);
@@ -48,13 +48,13 @@ spec("ivr certificate identity") {
         config.entry_count = 1u;
         config.clock = identity_test_clock;
         config.clock_context = &clock;
-        check_int_eq(ivr_certificate_identity_create(&config, &identity), 0);
-        check_int_eq(ivr_certificate_identity_verify(identity, PREVIOUS_CERT,
+        check_equal(ivr_certificate_identity_create(&config, &identity), 0);
+        check_equal(ivr_certificate_identity_verify(identity, PREVIOUS_CERT,
                                                      "worker-a"), 0);
         clock.now_ms = 200u;
         check_true(ivr_certificate_identity_verify(identity, PREVIOUS_CERT,
                                                    "worker-a") != 0);
-        check_int_eq(ivr_certificate_identity_verify(identity, ACTIVE_CERT,
+        check_equal(ivr_certificate_identity_verify(identity, ACTIVE_CERT,
                                                      "worker-a"), 0);
         ivr_certificate_identity_destroy(identity);
     }
@@ -70,7 +70,7 @@ spec("ivr certificate identity") {
         config.entry_count = 1u;
         config.clock = identity_test_clock;
         config.clock_context = &clock;
-        check_int_ne(ivr_certificate_identity_create(&config, &identity), 0);
+        check_not_equal(ivr_certificate_identity_create(&config, &identity), 0);
         check_null(identity);
 
         {
@@ -79,7 +79,7 @@ spec("ivr certificate identity") {
                 {"worker-b", ACTIVE_CERT, NULL, 0u, 1u}};
             config.entries = duplicate;
             config.entry_count = 2u;
-            check_int_ne(ivr_certificate_identity_create(&config, &identity), 0);
+            check_not_equal(ivr_certificate_identity_create(&config, &identity), 0);
             check_null(identity);
         }
     }

@@ -202,17 +202,17 @@ struct turbo_capture_s {
  * @param max_count Maximum devices to return
  * @return          Number of devices found, or negative on error
  */
-CXX_C_API int turbo_capture_list_audio_devices(turbo_capture_device_t *devices, int max_count);
+TURBO_MEDIA_API int turbo_capture_list_audio_devices(turbo_capture_device_t *devices, int max_count);
 
 /**
  * List video input devices (cameras)
  */
-CXX_C_API int turbo_capture_list_video_devices(turbo_capture_device_t *devices, int max_count);
+TURBO_MEDIA_API int turbo_capture_list_video_devices(turbo_capture_device_t *devices, int max_count);
 
 /**
  * List screens/monitors
  */
-CXX_C_API int turbo_capture_list_screens(turbo_capture_device_t *devices, int max_count);
+TURBO_MEDIA_API int turbo_capture_list_screens(turbo_capture_device_t *devices, int max_count);
 
 /**
  * List GPU adapters.
@@ -220,7 +220,7 @@ CXX_C_API int turbo_capture_list_screens(turbo_capture_device_t *devices, int ma
  * Device indexes are platform adapter indexes and are not compacted when
  * unusable software adapters are skipped.
  */
-CXX_C_API int turbo_capture_list_gpu_devices(turbo_capture_device_t *devices, int max_count);
+TURBO_MEDIA_API int turbo_capture_list_gpu_devices(turbo_capture_device_t *devices, int max_count);
 
 /* =============================================================================
  * Audio Capture
@@ -233,13 +233,13 @@ CXX_C_API int turbo_capture_list_gpu_devices(turbo_capture_device_t *devices, in
  * @param config        Capture configuration
  * @return              Capture instance, or NULL on error
  */
-CXX_C_API turbo_capture_t *turbo_audio_capture_create(const char *device_id,
+TURBO_MEDIA_API turbo_capture_t *turbo_audio_capture_create(const char *device_id,
                                                         const turbo_audio_capture_config_t *config);
 
 /**
  * Set audio capture callback
  */
-CXX_C_API void turbo_audio_capture_set_callback(turbo_capture_t *capture,
+TURBO_MEDIA_API void turbo_audio_capture_set_callback(turbo_capture_t *capture,
                                                   turbo_audio_capture_cb cb,
                                                   void *user_data);
 
@@ -251,25 +251,25 @@ CXX_C_API void turbo_audio_capture_set_callback(turbo_capture_t *capture,
  * Nearest-integer frame rate of a native mode, in fps.
  * Returns 0 when the frame rate cannot be represented.
  */
-CXX_C_API int turbo_video_mode_fps(const turbo_video_native_mode_t *mode);
+TURBO_MEDIA_API int turbo_video_mode_fps(const turbo_video_native_mode_t *mode);
 
 /**
  * Standard broadcast/webcam frame rate check: 24/25/30/50/60/90/120 fps,
  * matched on the rounded integer rate (29.97 -> 30, 59.94 -> 60, ...).
  */
-CXX_C_API int turbo_video_mode_is_standard_fps(
+TURBO_MEDIA_API int turbo_video_mode_is_standard_fps(
     const turbo_video_native_mode_t *mode);
 
 /**
  * Open a video device adapter. The returned handle owns the platform device
  * enumeration context and must be closed with turbo_video_device_close().
  */
-CXX_C_API int turbo_video_device_open(
+TURBO_MEDIA_API int turbo_video_device_open(
     const char *device_id,
     turbo_video_device_t **out_device);
 
 /** Close a video device adapter. Existing captures remain independently owned. */
-CXX_C_API void turbo_video_device_close(turbo_video_device_t *device);
+TURBO_MEDIA_API void turbo_video_device_close(turbo_video_device_t *device);
 
 /**
  * List video capture modes, defaulting to standard frame rates
@@ -281,7 +281,7 @@ CXX_C_API void turbo_video_device_close(turbo_video_device_t *device);
  * written. If *out_count reaches capacity, the device may expose more
  * modes; the caller should retry with a larger buffer.
  */
-CXX_C_API int turbo_video_device_list_modes(
+TURBO_MEDIA_API int turbo_video_device_list_modes(
     turbo_video_device_t *device,
     turbo_video_native_mode_t *modes,
     size_t capacity,
@@ -292,7 +292,7 @@ CXX_C_API int turbo_video_device_list_modes(
  * Same contract as turbo_video_device_list_modes() except no frame-rate
  * filtering is applied.
  */
-CXX_C_API int turbo_video_device_list_modes_all(
+TURBO_MEDIA_API int turbo_video_device_list_modes_all(
     turbo_video_device_t *device,
     turbo_video_native_mode_t *modes,
     size_t capacity,
@@ -303,7 +303,7 @@ CXX_C_API int turbo_video_device_list_modes_all(
  * turbo_video_device_list_modes(). The backend validates mode_id and every
  * public field before creating the stream.
  */
-CXX_C_API int turbo_video_device_create_capture(
+TURBO_MEDIA_API int turbo_video_device_create_capture(
     turbo_video_device_t *device,
     const turbo_video_native_mode_t *mode,
     turbo_capture_t **out_capture);
@@ -311,7 +311,7 @@ CXX_C_API int turbo_video_device_create_capture(
 /**
  * Set video capture callback
  */
-CXX_C_API void turbo_video_capture_set_callback(turbo_capture_t *capture,
+TURBO_MEDIA_API void turbo_video_capture_set_callback(turbo_capture_t *capture,
                                                   turbo_video_capture_cb cb,
                                                   void *user_data);
 
@@ -322,7 +322,7 @@ CXX_C_API void turbo_video_capture_set_callback(turbo_capture_t *capture,
  * TURBO_CAPTURE_ERR_UNSUPPORTED. Backends should prefer hardware controls and
  * may fall back to software controls when a hardware control is unavailable.
  */
-CXX_C_API int turbo_video_capture_get_control_range(turbo_capture_t *capture,
+TURBO_MEDIA_API int turbo_video_capture_get_control_range(turbo_capture_t *capture,
                                                      turbo_camera_control_t control,
                                                      turbo_camera_control_range_t *range);
 
@@ -332,11 +332,11 @@ CXX_C_API int turbo_video_capture_get_control_range(turbo_capture_t *capture,
  * For TURBO_CAMERA_CONTROL_ZOOM, value is percent: 100 means 1.0x. Backends
  * should apply hardware zoom first and fall back to software zoom if needed.
  */
-CXX_C_API int turbo_video_capture_set_control(turbo_capture_t *capture,
+TURBO_MEDIA_API int turbo_video_capture_set_control(turbo_capture_t *capture,
                                                turbo_camera_control_t control,
                                                int value);
 
-CXX_C_API int turbo_video_capture_get_control(turbo_capture_t *capture,
+TURBO_MEDIA_API int turbo_video_capture_get_control(turbo_capture_t *capture,
                                                turbo_camera_control_t control,
                                                int *value);
 
@@ -345,10 +345,10 @@ CXX_C_API int turbo_video_capture_get_control(turbo_capture_t *capture,
  *
  * Passing NULL or a rectangle with non-positive width/height disables crop.
  */
-CXX_C_API int turbo_video_capture_set_crop(turbo_capture_t *capture,
+TURBO_MEDIA_API int turbo_video_capture_set_crop(turbo_capture_t *capture,
                                             const turbo_video_crop_t *crop);
 
-CXX_C_API int turbo_video_capture_get_crop(turbo_capture_t *capture,
+TURBO_MEDIA_API int turbo_video_capture_get_crop(turbo_capture_t *capture,
                                             turbo_video_crop_t *crop);
 
 /* =============================================================================
@@ -358,12 +358,12 @@ CXX_C_API int turbo_video_capture_get_crop(turbo_capture_t *capture,
 /**
  * Create screen capture instance
  */
-CXX_C_API turbo_capture_t *turbo_screen_capture_create(const turbo_screen_capture_config_t *config);
+TURBO_MEDIA_API turbo_capture_t *turbo_screen_capture_create(const turbo_screen_capture_config_t *config);
 
 /**
  * Set screen capture callback (uses video callback signature)
  */
-CXX_C_API void turbo_screen_capture_set_callback(turbo_capture_t *capture,
+TURBO_MEDIA_API void turbo_screen_capture_set_callback(turbo_capture_t *capture,
                                                    turbo_video_capture_cb cb,
                                                    void *user_data);
 
@@ -376,27 +376,27 @@ CXX_C_API void turbo_screen_capture_set_callback(turbo_capture_t *capture,
  *
  * @return  0 on success
  */
-CXX_C_API int turbo_capture_start(turbo_capture_t *capture);
+TURBO_MEDIA_API int turbo_capture_start(turbo_capture_t *capture);
 
 /**
  * Stop capture
  */
-CXX_C_API void turbo_capture_stop(turbo_capture_t *capture);
+TURBO_MEDIA_API void turbo_capture_stop(turbo_capture_t *capture);
 
 /**
  * Destroy capture instance
  */
-CXX_C_API void turbo_capture_destroy(turbo_capture_t *capture);
+TURBO_MEDIA_API void turbo_capture_destroy(turbo_capture_t *capture);
 
 /**
  * Get capture state
  */
-CXX_C_API turbo_capture_state_t turbo_capture_get_state(turbo_capture_t *capture);
+TURBO_MEDIA_API turbo_capture_state_t turbo_capture_get_state(turbo_capture_t *capture);
 
 /**
  * Set state change callback
  */
-CXX_C_API void turbo_capture_on_state(turbo_capture_t *capture,
+TURBO_MEDIA_API void turbo_capture_on_state(turbo_capture_t *capture,
                                         turbo_capture_state_cb cb);
 
 #ifdef __cplusplus

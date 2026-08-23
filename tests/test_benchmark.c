@@ -165,7 +165,7 @@ suite("性能基准测试 - 音频编解码") {
         turbo_codec_registry_init();
         audio_codec_bench_ctx_t ctx;
         ctx.encoder = turbo_codec_create_encoder("pcma", &config);
-        check(ctx.encoder != NULL);
+        check_not_null(ctx.encoder);
         if (!ctx.encoder) {
             turbo_codec_registry_shutdown();
             return;
@@ -489,7 +489,7 @@ suite("性能基准测试 - 内存操作") {
         
         for (int i = 0; i < BENCHMARK_ITERATIONS; i++) {
             void *buffer = malloc(buffer_size);
-            check(buffer != NULL);
+            check_not_null(buffer);
             free(buffer);
         }
         
@@ -511,7 +511,7 @@ suite("性能基准测试 - 内存操作") {
         
         for (int i = 0; i < 100; i++) {  // 视频帧较大，减少迭代次数
             void *buffer = malloc(frame_size);
-            check(buffer != NULL);
+            check_not_null(buffer);
             free(buffer);
         }
         
@@ -614,12 +614,12 @@ suite("性能基准测试 - 端到端管道") {
         size_t encoded_size = TURBO_CODEC_MAX_FRAME_SIZE;
         int ret = turbo_codec_encode(encoder, pcm_input, pcm_size,
                                      encoded, &encoded_size, NULL);
-        check_int_eq(ret, TURBO_CODEC_OK);
+        check_equal(ret, TURBO_CODEC_OK);
         
         size_t decoded_size = pcm_size;
         ret = turbo_codec_decode(decoder, encoded, encoded_size,
                                 pcm_output, &decoded_size);
-        check_int_eq(ret, TURBO_CODEC_OK);
+        check_equal(ret, TURBO_CODEC_OK);
         
         clock_t end = clock();
         double latency_ms = ((double)(end - start) / CLOCKS_PER_SEC) * 1000.0;

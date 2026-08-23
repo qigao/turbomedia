@@ -35,13 +35,13 @@ typedef enum {
  * @param codec Video codec to use for all layers
  * @return Simulcast context or NULL on error
  */
-CXX_C_API simulcast_ctx_t *turbo_simulcast_create(int width, int height, int framerate,
+TURBO_MEDIA_API simulcast_ctx_t *turbo_simulcast_create(int width, int height, int framerate,
                                                   const turbo_codec_ops_t *codec);
 
 /**
  * Destroy simulcast context
  */
-CXX_C_API void turbo_simulcast_destroy(simulcast_ctx_t *ctx);
+TURBO_MEDIA_API void turbo_simulcast_destroy(simulcast_ctx_t *ctx);
 
 /**
  * Encode a frame for all active layers
@@ -52,7 +52,7 @@ CXX_C_API void turbo_simulcast_destroy(simulcast_ctx_t *ctx);
  * @param timestamp_us Frame timestamp in microseconds
  * @return Number of layers encoded, or -1 on error
  */
-CXX_C_API int turbo_simulcast_encode_frame(simulcast_ctx_t *ctx, const uint8_t *frame_data,
+TURBO_MEDIA_API int turbo_simulcast_encode_frame(simulcast_ctx_t *ctx, const uint8_t *frame_data,
                                            size_t frame_len, int64_t timestamp_us);
 
 /**
@@ -61,7 +61,7 @@ CXX_C_API int turbo_simulcast_encode_frame(simulcast_ctx_t *ctx, const uint8_t *
  * @param ctx Simulcast context
  * @param bandwidth_bps Available bandwidth in bits per second
  */
-CXX_C_API void turbo_simulcast_set_bandwidth(simulcast_ctx_t *ctx, int bandwidth_bps);
+TURBO_MEDIA_API void turbo_simulcast_set_bandwidth(simulcast_ctx_t *ctx, int bandwidth_bps);
 
 /**
  * Enable or disable a specific layer
@@ -70,7 +70,7 @@ CXX_C_API void turbo_simulcast_set_bandwidth(simulcast_ctx_t *ctx, int bandwidth
  * @param layer Layer to control
  * @param enable 1 to enable, 0 to disable
  */
-CXX_C_API void turbo_simulcast_enable_layer(simulcast_ctx_t *ctx, simulcast_layer_t layer,
+TURBO_MEDIA_API void turbo_simulcast_enable_layer(simulcast_ctx_t *ctx, simulcast_layer_t layer,
                                             int enable);
 
 /**
@@ -80,7 +80,7 @@ CXX_C_API void turbo_simulcast_enable_layer(simulcast_ctx_t *ctx, simulcast_laye
  * @param layer Layer to check
  * @return 1 if active, 0 if inactive
  */
-CXX_C_API int turbo_simulcast_is_layer_active(simulcast_ctx_t *ctx, simulcast_layer_t layer);
+TURBO_MEDIA_API int turbo_simulcast_is_layer_active(simulcast_ctx_t *ctx, simulcast_layer_t layer);
 
 /**
  * Request keyframe for a specific layer
@@ -88,7 +88,7 @@ CXX_C_API int turbo_simulcast_is_layer_active(simulcast_ctx_t *ctx, simulcast_la
  * @param ctx Simulcast context
  * @param layer Layer to request keyframe for
  */
-CXX_C_API void turbo_simulcast_request_keyframe(simulcast_ctx_t *ctx, simulcast_layer_t layer);
+TURBO_MEDIA_API void turbo_simulcast_request_keyframe(simulcast_ctx_t *ctx, simulcast_layer_t layer);
 
 /**
  * Set target bitrate for a specific layer
@@ -97,7 +97,7 @@ CXX_C_API void turbo_simulcast_request_keyframe(simulcast_ctx_t *ctx, simulcast_
  * @param layer Layer to configure
  * @param bitrate_bps Target bitrate in bits per second
  */
-CXX_C_API void turbo_simulcast_set_layer_bitrate(simulcast_ctx_t *ctx, simulcast_layer_t layer,
+TURBO_MEDIA_API void turbo_simulcast_set_layer_bitrate(simulcast_ctx_t *ctx, simulcast_layer_t layer,
                                                  int bitrate_bps);
 
 /**
@@ -109,7 +109,7 @@ CXX_C_API void turbo_simulcast_set_layer_bitrate(simulcast_ctx_t *ctx, simulcast
  * @param callback Callback function
  * @param user_data User data passed to callback
  */
-CXX_C_API void turbo_simulcast_set_rtp_callback(simulcast_ctx_t *ctx,
+TURBO_MEDIA_API void turbo_simulcast_set_rtp_callback(simulcast_ctx_t *ctx,
                                                 void (*callback)(void *user_data,
                                                                  simulcast_layer_t layer,
                                                                  const uint8_t *packet, size_t len),
@@ -126,7 +126,7 @@ CXX_C_API void turbo_simulcast_set_rtp_callback(simulcast_ctx_t *ctx,
  * @param frames_encoded Output: frames encoded (can be NULL)
  * @param bytes_sent Output: bytes sent (can be NULL)
  */
-CXX_C_API void turbo_simulcast_get_layer_stats(simulcast_ctx_t *ctx, simulcast_layer_t layer,
+TURBO_MEDIA_API void turbo_simulcast_get_layer_stats(simulcast_ctx_t *ctx, simulcast_layer_t layer,
                                                int *width, int *height, int *bitrate,
                                                int *frames_encoded, int64_t *bytes_sent);
 
@@ -137,7 +137,7 @@ CXX_C_API void turbo_simulcast_get_layer_stats(simulcast_ctx_t *ctx, simulcast_l
  * @param layer Layer to query
  * @return SSRC value
  */
-CXX_C_API uint32_t turbo_simulcast_get_layer_ssrc(simulcast_ctx_t *ctx, simulcast_layer_t layer);
+TURBO_MEDIA_API uint32_t turbo_simulcast_get_layer_ssrc(simulcast_ctx_t *ctx, simulcast_layer_t layer);
 
 /**
  * Set SSRC for a specific layer
@@ -146,7 +146,7 @@ CXX_C_API uint32_t turbo_simulcast_get_layer_ssrc(simulcast_ctx_t *ctx, simulcas
  * @param layer Layer to configure
  * @param ssrc SSRC value
  */
-CXX_C_API void turbo_simulcast_set_layer_ssrc(simulcast_ctx_t *ctx, simulcast_layer_t layer,
+TURBO_MEDIA_API void turbo_simulcast_set_layer_ssrc(simulcast_ctx_t *ctx, simulcast_layer_t layer,
                                               uint32_t ssrc);
 
 #ifdef __cplusplus

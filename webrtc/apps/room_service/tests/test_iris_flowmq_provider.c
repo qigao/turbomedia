@@ -58,7 +58,7 @@ typedef struct query_send_context_s {
     ivr_status_t status;
 } query_send_context_t;
 
-static int assign_string(tstr_t *target, const char *value) {
+static int assign_string(tstr *target, const char *value) {
     *target = tstr_dup(value ? value : "");
     return *target != NULL;
 }
@@ -115,7 +115,7 @@ static void router_event(void *context,
 }
 
 static int router_frame(void *context, const flowmq_router_route_t *route,
-                        tstr_v peer_identity, tstr_v peer_topic,
+                        vstr peer_identity, vstr peer_topic,
                         const flowmq_protocol_frame_t *frame) {
     provider_harness_t *harness = (provider_harness_t *)context;
     ProviderMessageKind_t kind = ProviderMessageKind_Command;
@@ -125,7 +125,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
     (void)peer_topic;
     if (!harness || !frame || frame->kind != FLOWMQ_PROTOCOL_FRAME_DATA ||
         frame->pattern != FLOWMQ_PROTOCOL_DEALER ||
-        !tstr_v_eq(peer_identity, tstr_v_from_cstr("turbomedia-a")) ||
+        !vstr_eq(peer_identity, vstr_from_cstr("turbomedia-a")) ||
         flowmq_media_provider_peek_kind(frame->payload.data,
                                         frame->payload.len, &kind) != TURBO_OK) {
         atomic_store_explicit(&harness->callback_status, status,
@@ -162,7 +162,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
         ProviderCompletionAckV1_t ack;
         uint8_t *application = NULL;
         size_t application_size = 0u;
-        tstr_t encoded = NULL;
+        tstr encoded = NULL;
         flowmq_protocol_frame_t response;
         ProviderCompletionV1_init(&completion);
         ProviderCompletionAckV1_init(&ack);
@@ -200,7 +200,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                 response.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
                 response.pattern = FLOWMQ_PROTOCOL_ROUTER;
                 response.message_id = frame->message_id;
-                response.payload = tstr_v_from_buf(
+                response.payload = vstr_from_buf(
                     (const char *)application, application_size);
                 status = flowmq_protocol_encode_frame(
                     &response, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE,
@@ -224,7 +224,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
         ProviderEventAckV1_t ack;
         uint8_t *application = NULL;
         size_t application_size = 0u;
-        tstr_t encoded = NULL;
+        tstr encoded = NULL;
         flowmq_protocol_frame_t response;
         ProviderEventV1_init(&event);
         ProviderEventAckV1_init(&ack);
@@ -256,7 +256,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                 response.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
                 response.pattern = FLOWMQ_PROTOCOL_ROUTER;
                 response.message_id = frame->message_id;
-                response.payload = tstr_v_from_buf(
+                response.payload = vstr_from_buf(
                     (const char *)application, application_size);
                 status = flowmq_protocol_encode_frame(
                     &response, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE,
@@ -280,7 +280,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
         ProviderObservationV1_t observation;
         uint8_t *application = NULL;
         size_t application_size = 0u;
-        tstr_t encoded = NULL;
+        tstr encoded = NULL;
         flowmq_protocol_frame_t response;
         ProviderQueryV1_init(&query);
         ProviderObservationV1_init(&observation);
@@ -325,7 +325,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                 response.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
                 response.pattern = FLOWMQ_PROTOCOL_ROUTER;
                 response.message_id = frame->message_id;
-                response.payload = tstr_v_from_buf(
+                response.payload = vstr_from_buf(
                     (const char *)application, application_size);
                 status = flowmq_protocol_encode_frame(
                     &response, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE,
@@ -349,7 +349,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
         ProviderSessionBoundV1_t bound;
         uint8_t *application = NULL;
         size_t application_size = 0u;
-        tstr_t encoded = NULL;
+        tstr encoded = NULL;
         flowmq_protocol_frame_t response;
         ProviderCallOfferV1_init(&offer);
         ProviderSessionBoundV1_init(&bound);
@@ -402,7 +402,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                     response.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
                     response.pattern = FLOWMQ_PROTOCOL_ROUTER;
                     response.message_id = frame->message_id;
-                    response.payload = tstr_v_from_buf(
+                    response.payload = vstr_from_buf(
                         (const char *)application, application_size);
                     status = flowmq_protocol_encode_frame(
                         &response,
@@ -517,7 +517,7 @@ static int send_command(provider_harness_t *harness, DataBind *codec) {
     flowmq_protocol_frame_t frame;
     uint8_t *application = NULL;
     size_t application_size = 0u;
-    tstr_t encoded = NULL;
+    tstr encoded = NULL;
     int status;
     application = encode_command(codec, &application_size);
     if (!application) return TURBO_EPROTO;
@@ -526,7 +526,7 @@ static int send_command(provider_harness_t *harness, DataBind *codec) {
     frame.pattern = FLOWMQ_PROTOCOL_ROUTER;
     frame.message_id = 41u;
     frame.payload =
-        tstr_v_from_buf((const char *)application, application_size);
+        vstr_from_buf((const char *)application, application_size);
     status = flowmq_protocol_encode_frame(
         &frame, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE, &encoded);
     if (status == TURBO_OK) {
@@ -548,13 +548,13 @@ spec("RoomService Iris FlowMQ provider DEALER") {
         config.iris_identity = "iris-a";
         config.dispatch = dispatch_command;
         config.allow_insecure_development_loopback = 1;
-        check_int_eq(iris_flowmq_provider_config_validate(&config), TURBO_OK);
+        check_equal(iris_flowmq_provider_config_validate(&config), TURBO_OK);
         config.allow_insecure_development_loopback = 0;
-        check_int_eq(iris_flowmq_provider_config_validate(&config),
+        check_equal(iris_flowmq_provider_config_validate(&config),
                      TURBO_EINVAL);
         config.allow_insecure_development_loopback = 1;
         config.host = "0.0.0.0";
-        check_int_eq(iris_flowmq_provider_config_validate(&config),
+        check_equal(iris_flowmq_provider_config_validate(&config),
                      TURBO_EINVAL);
     }
 
@@ -585,7 +585,7 @@ spec("RoomService Iris FlowMQ provider DEALER") {
         memset(&event, 0, sizeof(event));
         memset(&query, 0, sizeof(query));
         memset(&call_offer, 0, sizeof(call_offer));
-        check_uint_ne(port, 0u);
+        check_not_equal(port, 0u);
 
         flowmq_router_endpoint_config_init(&router_config);
         router_config.transport = FLOWMQ_TRANSPORT_TCP;
@@ -601,10 +601,10 @@ spec("RoomService Iris FlowMQ provider DEALER") {
         router_config.on_frame = router_frame;
         router_config.on_event = router_event;
         router_config.callback_ctx = &harness;
-        check_int_eq(flowmq_router_endpoint_create(&router_config,
+        check_equal(flowmq_router_endpoint_create(&router_config,
                                                    &harness.router),
                      TURBO_OK);
-        check_int_eq(flowmq_router_endpoint_start(harness.router,
+        check_equal(flowmq_router_endpoint_start(harness.router,
                                                   TEST_START_TIMEOUT_NS),
                      TURBO_OK);
 
@@ -627,24 +627,24 @@ spec("RoomService Iris FlowMQ provider DEALER") {
         provider = iris_flowmq_provider_create(&provider_config);
         check_not_null(provider);
         if (provider) {
-            check_int_eq(iris_flowmq_provider_start(provider), TURBO_OK);
-            check_int_eq(wait_atomic(&harness.connected, 1), TURBO_OK);
-            check_int_eq(FlowMqMediaProviderV1_codec_create(&codec, &error),
+            check_equal(iris_flowmq_provider_start(provider), TURBO_OK);
+            check_equal(wait_atomic(&harness.connected, 1), TURBO_OK);
+            check_equal(FlowMqMediaProviderV1_codec_create(&codec, &error),
                          DATA_BIND_OK);
-            if (codec) check_int_eq(send_command(&harness, codec), TURBO_OK);
-            check_int_eq(wait_atomic(&harness.receipts, 1), TURBO_OK);
-            check_int_eq(atomic_load_explicit(&harness.callback_status,
+            if (codec) check_equal(send_command(&harness, codec), TURBO_OK);
+            check_equal(wait_atomic(&harness.receipts, 1), TURBO_OK);
+            check_equal(atomic_load_explicit(&harness.callback_status,
                                               memory_order_acquire),
                          TURBO_OK);
-            check_int_eq(atomic_load_explicit(&harness.dispatches,
+            check_equal(atomic_load_explicit(&harness.dispatches,
                                               memory_order_acquire),
                          1);
-            check_str_eq(harness.receipt_command_id, "command-a");
-            check_str_eq(harness.receipt_worker_id, "iris-worker-a");
-            check_str_eq(harness.receipt_epoch, "17");
-            check_str_contains(harness.bridge_body,
+            check_equal(harness.receipt_command_id, "command-a");
+            check_equal(harness.receipt_worker_id, "iris-worker-a");
+            check_equal(harness.receipt_epoch, "17");
+            check_contains(harness.bridge_body,
                                "\"dialogId\":\"dialog-a\"");
-            check_str_contains(harness.bridge_body,
+            check_contains(harness.bridge_body,
                                "\"dispatchEpoch\":17");
             copy_text(completion.command_id, sizeof(completion.command_id),
                       "command-a");
@@ -668,15 +668,15 @@ spec("RoomService Iris FlowMQ provider DEALER") {
             media_result.call_generation = 7u;
             media_result.operation_generation = 9u;
             media_result.status_code = IVR_OK;
-            check_int_eq(iris_flowmq_provider_send_completion(
+            check_equal(iris_flowmq_provider_send_completion(
                              provider, &completion, &media_result,
                              "completion-a", "2026-08-14T00:00:02Z", 42u,
                              1000u, &completion_ack),
                          IVR_OK);
-            check_int_eq(completion_ack.disposition,
+            check_equal(completion_ack.disposition,
                          ProviderCompletionAckDisposition_CompletionCommitted);
-            check_uint_eq(completion_ack.committed_sequence, 29u);
-            check_int_eq(wait_atomic(&harness.completions, 1), TURBO_OK);
+            check_equal(completion_ack.committed_sequence, 29u);
+            check_equal(wait_atomic(&harness.completions, 1), TURBO_OK);
             copy_text(event.event_id, sizeof(event.event_id), "media-event-a");
             copy_text(event.tenant_id, sizeof(event.tenant_id), "tenant-a");
             copy_text(event.provider_session_id,
@@ -687,14 +687,14 @@ spec("RoomService Iris FlowMQ provider DEALER") {
                       "{\"digit\":\"5\"}");
             event.sequence = 31u;
             event.occurred_at_ms = 42u;
-            check_int_eq(iris_flowmq_provider_send_event(
+            check_equal(iris_flowmq_provider_send_event(
                              provider, &event, "event-a",
                              "2026-08-14T00:00:04Z", 1000u, &event_ack),
                          IVR_OK);
-            check_int_eq(event_ack.disposition,
+            check_equal(event_ack.disposition,
                          ProviderEventAckDisposition_Committed);
-            check_uint_eq(event_ack.committed_sequence, 37u);
-            check_int_eq(wait_atomic(&harness.events, 1), TURBO_OK);
+            check_equal(event_ack.committed_sequence, 37u);
+            check_equal(wait_atomic(&harness.events, 1), TURBO_OK);
             query.tenant_id = "tenant-a";
             query.query_id = "query-a";
             query.query_type = "expected_media_resources";
@@ -704,28 +704,28 @@ spec("RoomService Iris FlowMQ provider DEALER") {
             query.cursor = 0u;
             query.limit = 16u;
             query.payload_json = "{\"schemaVersion\":1}";
-            check_int_eq(iris_flowmq_provider_send_query(
+            check_equal(iris_flowmq_provider_send_query(
                              provider, &query, 1000u, &observation),
                          IVR_OK);
-            check_int_eq(observation.wire.status,
+            check_equal(observation.wire.status,
                          ProviderQueryStatus_QueryOk);
-            check_uint_eq(observation.revision, 47u);
-            check_uint_eq(observation.cursor, 0u);
-            check_str_contains(observation.wire.payload_json,
+            check_equal(observation.revision, 47u);
+            check_equal(observation.cursor, 0u);
+            check_contains(observation.wire.payload_json,
                                "\"resourceCount\":0");
             iris_flowmq_provider_observation_clear(&observation);
-            check_int_eq(wait_atomic(&harness.queries, 1), TURBO_OK);
+            check_equal(wait_atomic(&harness.queries, 1), TURBO_OK);
 
             memset(&concurrent_query, 0, sizeof(concurrent_query));
             harness.query_response_delay_ms = 250u;
             query.query_id = "query-concurrent";
             concurrent_query.provider = provider;
             concurrent_query.query = &query;
-            check_int_eq(turbo_thread_create(&query_thread, send_query_thread,
+            check_equal(turbo_thread_create(&query_thread, send_query_thread,
                                              &concurrent_query),
                          0);
-            check_int_eq(wait_atomic(&harness.queries_received, 2), TURBO_OK);
-            check_int_eq(iris_flowmq_provider_send_completion(
+            check_equal(wait_atomic(&harness.queries_received, 2), TURBO_OK);
+            check_equal(iris_flowmq_provider_send_completion(
                              provider, &completion, &media_result,
                              "completion-concurrent",
                              "2026-08-14T00:00:08Z", 43u, 2000u,
@@ -733,9 +733,9 @@ spec("RoomService Iris FlowMQ provider DEALER") {
                          IVR_OK);
             turbo_thread_join(&query_thread);
             turbo_thread_destroy(&query_thread);
-            check_int_eq(concurrent_query.status, IVR_OK);
-            check_uint_eq(concurrent_query.observation.revision, 47u);
-            check_int_eq(concurrent_completion_ack.disposition,
+            check_equal(concurrent_query.status, IVR_OK);
+            check_equal(concurrent_query.observation.revision, 47u);
+            check_equal(concurrent_completion_ack.disposition,
                          ProviderCompletionAckDisposition_CompletionCommitted);
             iris_flowmq_provider_observation_clear(
                 &concurrent_query.observation);
@@ -761,43 +761,43 @@ spec("RoomService Iris FlowMQ provider DEALER") {
                       sizeof(call_offer.payload_json),
                       "{\"schemaVersion\":1,\"routeKey\":\"sales-main\"}");
             call_offer.call_generation = 7u;
-            check_int_eq(iris_flowmq_provider_send_call_offer(
+            check_equal(iris_flowmq_provider_send_call_offer(
                              provider, &call_offer, 1000u, &session_bound),
                          IVR_OK);
             check_true(session_bound.accepted);
-            check_str_eq(session_bound.bound_session_id, "session-call-a");
+            check_equal(session_bound.bound_session_id, "session-call-a");
 
             copy_text(call_offer.ingress_event_id,
                       sizeof(call_offer.ingress_event_id), "ingress-call-b");
             copy_text(call_offer.call_id, sizeof(call_offer.call_id),
                       "call-b");
             harness.drop_session_bound = 1;
-            check_int_eq(iris_flowmq_provider_send_call_offer(
+            check_equal(iris_flowmq_provider_send_call_offer(
                              provider, &call_offer, 25u, &session_bound),
                          IVR_EBUSY);
             harness.drop_session_bound = 0;
-            check_int_eq(iris_flowmq_provider_send_call_offer(
+            check_equal(iris_flowmq_provider_send_call_offer(
                              provider, &call_offer, 1000u, &session_bound),
                          IVR_OK);
             check_true(session_bound.accepted);
-            check_str_eq(session_bound.bound_session_id, "session-call-a");
-            check_int_eq(wait_atomic(&harness.call_offers, 3), TURBO_OK);
+            check_equal(session_bound.bound_session_id, "session-call-a");
+            check_equal(wait_atomic(&harness.call_offers, 3), TURBO_OK);
 
             copy_text(call_offer.ingress_event_id,
                       sizeof(call_offer.ingress_event_id), "ingress-call-c");
             copy_text(call_offer.call_id, sizeof(call_offer.call_id),
                       "call-c");
             harness.reject_session_bound = 1;
-            check_int_eq(iris_flowmq_provider_send_call_offer(
+            check_equal(iris_flowmq_provider_send_call_offer(
                              provider, &call_offer, 1000u, &session_bound),
                          IVR_OK);
             check_false(session_bound.accepted);
-            check_str_eq(session_bound.bound_session_id, "");
-            check_str_eq(session_bound.error_code, "capacity_exceeded");
+            check_equal(session_bound.bound_session_id, "");
+            check_equal(session_bound.error_code, "capacity_exceeded");
             harness.reject_session_bound = 0;
 
             iris_flowmq_provider_stop(provider);
-            check_int_eq(iris_flowmq_provider_send_call_offer(
+            check_equal(iris_flowmq_provider_send_call_offer(
                              provider, &call_offer, 100u, &session_bound),
                          IVR_ECLOSED);
         }

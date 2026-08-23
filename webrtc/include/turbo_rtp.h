@@ -281,11 +281,11 @@ typedef struct {
  */
 typedef struct rtp_history_s rtp_history_t;
 
-CXX_C_API rtp_history_t *rtp_history_create(size_t max_packets, size_t max_packet_size);
-CXX_C_API void rtp_history_destroy(rtp_history_t *history);
-CXX_C_API void rtp_history_put(rtp_history_t *history, uint16_t seq, const uint8_t *packet,
+TURBO_MEDIA_API rtp_history_t *rtp_history_create(size_t max_packets, size_t max_packet_size);
+TURBO_MEDIA_API void rtp_history_destroy(rtp_history_t *history);
+TURBO_MEDIA_API void rtp_history_put(rtp_history_t *history, uint16_t seq, const uint8_t *packet,
                                size_t len);
-CXX_C_API int rtp_history_get(rtp_history_t *history, uint16_t seq, uint8_t *packet, size_t *len,
+TURBO_MEDIA_API int rtp_history_get(rtp_history_t *history, uint16_t seq, uint8_t *packet, size_t *len,
                               size_t max_len);
 
 /* =============================================================================
@@ -332,7 +332,7 @@ typedef struct {
 /**
  * Initialize an RTP packet structure
  */
-CXX_C_API void rtp_packet_init(rtp_packet_t *pkt);
+TURBO_MEDIA_API void rtp_packet_init(rtp_packet_t *pkt);
 
 /**
  * Build RTP packet from header and payload
@@ -349,7 +349,7 @@ CXX_C_API void rtp_packet_init(rtp_packet_t *pkt);
  * @param buffer_len Buffer size
  * @return          Bytes written, or -1 on error
  */
-CXX_C_API int rtp_packet_build(rtp_packet_t *pkt, uint8_t pt, uint16_t seq, uint32_t ts,
+TURBO_MEDIA_API int rtp_packet_build(rtp_packet_t *pkt, uint8_t pt, uint16_t seq, uint32_t ts,
                                uint32_t ssrc, int marker, const uint8_t *payload,
                                size_t payload_len, uint8_t *buffer, size_t buffer_len);
 
@@ -361,7 +361,7 @@ CXX_C_API int rtp_packet_build(rtp_packet_t *pkt, uint8_t pt, uint16_t seq, uint
  * @param buffer_len Buffer length
  * @return          0 on success, -1 on error
  */
-CXX_C_API int rtp_packet_parse(rtp_packet_t *pkt, const uint8_t *buffer, size_t buffer_len);
+TURBO_MEDIA_API int rtp_packet_parse(rtp_packet_t *pkt, const uint8_t *buffer, size_t buffer_len);
 
 /**
  * Serialize RTP packet to buffer
@@ -371,12 +371,12 @@ CXX_C_API int rtp_packet_parse(rtp_packet_t *pkt, const uint8_t *buffer, size_t 
  * @param buffer_len Buffer size
  * @return          Bytes written, or -1 on error
  */
-CXX_C_API int rtp_packet_serialize(const rtp_packet_t *pkt, uint8_t *buffer, size_t buffer_len);
+TURBO_MEDIA_API int rtp_packet_serialize(const rtp_packet_t *pkt, uint8_t *buffer, size_t buffer_len);
 
 /**
  * Free RTP packet resources (if owns_buffer is set)
  */
-CXX_C_API void rtp_packet_free(rtp_packet_t *pkt);
+TURBO_MEDIA_API void rtp_packet_free(rtp_packet_t *pkt);
 
 /**
  * Add extension to RTP packet
@@ -387,7 +387,7 @@ CXX_C_API void rtp_packet_free(rtp_packet_t *pkt);
  * @param len       Data length (0-16 bytes)
  * @return          0 on success, -1 on error
  */
-CXX_C_API int rtp_packet_add_extension(rtp_packet_t *pkt, uint8_t id, const uint8_t *data,
+TURBO_MEDIA_API int rtp_packet_add_extension(rtp_packet_t *pkt, uint8_t id, const uint8_t *data,
                                        uint8_t len);
 
 /**
@@ -399,7 +399,7 @@ CXX_C_API int rtp_packet_add_extension(rtp_packet_t *pkt, uint8_t id, const uint
  * @param len       Output: data length
  * @return          0 on success, -1 if not found
  */
-CXX_C_API int rtp_packet_get_extension(const rtp_packet_t *pkt, uint8_t id, uint8_t *data,
+TURBO_MEDIA_API int rtp_packet_get_extension(const rtp_packet_t *pkt, uint8_t id, uint8_t *data,
                                        uint8_t *len);
 
 /* =============================================================================
@@ -409,53 +409,53 @@ CXX_C_API int rtp_packet_get_extension(const rtp_packet_t *pkt, uint8_t id, uint
 /**
  * Initialize RTCP compound packet builder
  */
-CXX_C_API void rtcp_compound_init(rtcp_compound_t *compound, uint8_t *buffer, size_t buffer_len);
+TURBO_MEDIA_API void rtcp_compound_init(rtcp_compound_t *compound, uint8_t *buffer, size_t buffer_len);
 
 /**
  * Add Sender Report to compound packet
  */
-CXX_C_API int rtcp_compound_add_sr(rtcp_compound_t *compound, const rtcp_sr_t *sr,
+TURBO_MEDIA_API int rtcp_compound_add_sr(rtcp_compound_t *compound, const rtcp_sr_t *sr,
                                    const rtcp_rr_block_t *blocks, int block_count);
 
 /**
  * Add Receiver Report to compound packet
  */
-CXX_C_API int rtcp_compound_add_rr(rtcp_compound_t *compound, uint32_t ssrc,
+TURBO_MEDIA_API int rtcp_compound_add_rr(rtcp_compound_t *compound, uint32_t ssrc,
                                    const rtcp_rr_block_t *blocks, int block_count);
 
 /**
  * Add NACK to compound packet
  */
-CXX_C_API int rtcp_compound_add_nack(rtcp_compound_t *compound, uint32_t sender_ssrc,
+TURBO_MEDIA_API int rtcp_compound_add_nack(rtcp_compound_t *compound, uint32_t sender_ssrc,
                                      uint32_t media_ssrc, uint16_t pid, uint16_t blp);
 
 /**
  * Add PLI to compound packet
  */
-CXX_C_API int rtcp_compound_add_pli(rtcp_compound_t *compound, uint32_t sender_ssrc,
+TURBO_MEDIA_API int rtcp_compound_add_pli(rtcp_compound_t *compound, uint32_t sender_ssrc,
                                     uint32_t media_ssrc);
 
 /**
  * Add FIR to compound packet
  */
-CXX_C_API int rtcp_compound_add_fir(rtcp_compound_t *compound, uint32_t sender_ssrc,
+TURBO_MEDIA_API int rtcp_compound_add_fir(rtcp_compound_t *compound, uint32_t sender_ssrc,
                                     uint32_t media_ssrc, uint8_t seq_nr);
 
 /**
  * Add REMB to compound packet
  */
-CXX_C_API int rtcp_compound_add_remb(rtcp_compound_t *compound, uint32_t sender_ssrc,
+TURBO_MEDIA_API int rtcp_compound_add_remb(rtcp_compound_t *compound, uint32_t sender_ssrc,
                                      uint32_t media_ssrc, uint32_t bitrate);
 
 /**
  * Add TWCC feedback to compound packet
  */
-CXX_C_API int rtcp_compound_add_twcc(rtcp_compound_t *compound, const rtcp_twcc_t *twcc);
+TURBO_MEDIA_API int rtcp_compound_add_twcc(rtcp_compound_t *compound, const rtcp_twcc_t *twcc);
 
 /**
  * Finalize compound packet and get total length
  */
-CXX_C_API size_t rtcp_compound_finish(rtcp_compound_t *compound);
+TURBO_MEDIA_API size_t rtcp_compound_finish(rtcp_compound_t *compound);
 
 /**
  * Parse RTCP compound packet
@@ -467,7 +467,7 @@ CXX_C_API size_t rtcp_compound_finish(rtcp_compound_t *compound);
  * @return          Number of packets parsed, or -1 on error
  */
 typedef void (*rtcp_parse_cb)(int type, const void *data, size_t len, void *user_data);
-CXX_C_API int rtcp_compound_parse(const uint8_t *buffer, size_t buffer_len, rtcp_parse_cb callback,
+TURBO_MEDIA_API int rtcp_compound_parse(const uint8_t *buffer, size_t buffer_len, rtcp_parse_cb callback,
                                   void *user_data);
 
 /* =============================================================================
@@ -477,12 +477,12 @@ CXX_C_API int rtcp_compound_parse(const uint8_t *buffer, size_t buffer_len, rtcp
 /**
  * Create RTP session
  */
-CXX_C_API rtp_session_t *rtp_session_create(const rtp_session_config_t *config);
+TURBO_MEDIA_API rtp_session_t *rtp_session_create(const rtp_session_config_t *config);
 
 /**
  * Destroy RTP session
  */
-CXX_C_API void rtp_session_destroy(rtp_session_t *session);
+TURBO_MEDIA_API void rtp_session_destroy(rtp_session_t *session);
 
 /**
  * Generate next RTP packet for sending
@@ -496,7 +496,7 @@ CXX_C_API void rtp_session_destroy(rtp_session_t *session);
  * @param buffer_len Buffer size
  * @return          Bytes written, or -1 on error
  */
-CXX_C_API int rtp_session_send(rtp_session_t *session, const uint8_t *payload, size_t payload_len,
+TURBO_MEDIA_API int rtp_session_send(rtp_session_t *session, const uint8_t *payload, size_t payload_len,
                                int marker, rtp_packet_t *pkt, uint8_t *buffer, size_t buffer_len);
 
 /**
@@ -504,7 +504,7 @@ CXX_C_API int rtp_session_send(rtp_session_t *session, const uint8_t *payload, s
  * sequence numbers
  * and SSRC from the session.
  */
-CXX_C_API int rtp_session_send_with_timestamp(rtp_session_t *session, const uint8_t *payload,
+TURBO_MEDIA_API int rtp_session_send_with_timestamp(rtp_session_t *session, const uint8_t *payload,
                                               size_t payload_len, int marker, uint32_t timestamp,
                                               rtp_packet_t *pkt, uint8_t *buffer,
                                               size_t buffer_len);
@@ -516,7 +516,7 @@ CXX_C_API int rtp_session_send_with_timestamp(rtp_session_t *session, const uint
  * @param pkt       Received packet
  * @return          0 on success, -1 on error (e.g., duplicate, too old)
  */
-CXX_C_API int rtp_session_recv(rtp_session_t *session, const rtp_packet_t *pkt);
+TURBO_MEDIA_API int rtp_session_recv(rtp_session_t *session, const rtp_packet_t *pkt);
 
 /**
  * Advance timestamp for next packet
@@ -524,68 +524,68 @@ CXX_C_API int rtp_session_recv(rtp_session_t *session, const rtp_packet_t *pkt);
  * @param session   RTP session
  * @param samples   Number of samples (audio) or ticks (video)
  */
-CXX_C_API void rtp_session_advance_timestamp(rtp_session_t *session, uint32_t samples);
+TURBO_MEDIA_API void rtp_session_advance_timestamp(rtp_session_t *session, uint32_t samples);
 
 /**
  * Build Sender Report
  */
-CXX_C_API int rtp_session_build_sr(rtp_session_t *session, rtcp_sr_t *sr);
+TURBO_MEDIA_API int rtp_session_build_sr(rtp_session_t *session, rtcp_sr_t *sr);
 
 /**
  * Build Receiver Report block
  */
-CXX_C_API int rtp_session_build_rr_block(rtp_session_t *session, uint32_t ssrc,
+TURBO_MEDIA_API int rtp_session_build_rr_block(rtp_session_t *session, uint32_t ssrc,
                                          rtcp_rr_block_t *block);
 
 /**
  * Process received RTCP Sender Report
  */
-CXX_C_API void rtp_session_process_sr(rtp_session_t *session, const rtcp_sr_t *sr);
+TURBO_MEDIA_API void rtp_session_process_sr(rtp_session_t *session, const rtcp_sr_t *sr);
 
 /**
  * Process received RTCP Receiver Report
  */
-CXX_C_API void rtp_session_process_rr(rtp_session_t *session, const rtcp_rr_block_t *block);
+TURBO_MEDIA_API void rtp_session_process_rr(rtp_session_t *session, const rtcp_rr_block_t *block);
 
 /**
  * Get session statistics
  */
-CXX_C_API void rtp_session_get_stats(const rtp_session_t *session, rtp_session_stats_t *stats);
+TURBO_MEDIA_API void rtp_session_get_stats(const rtp_session_t *session, rtp_session_stats_t *stats);
 
 /**
  * Get remote SSRC
  */
-CXX_C_API uint32_t rtp_session_get_remote_ssrc(const rtp_session_t *session);
+TURBO_MEDIA_API uint32_t rtp_session_get_remote_ssrc(const rtp_session_t *session);
 
 /**
   * Set remote SSRC
   */
-CXX_C_API void rtp_session_set_remote_ssrc(rtp_session_t *session, uint32_t ssrc);
+TURBO_MEDIA_API void rtp_session_set_remote_ssrc(rtp_session_t *session, uint32_t ssrc);
 
 /**
   * Get RTP payload type used for outgoing packets.
   */
-CXX_C_API uint8_t rtp_session_get_payload_type(const rtp_session_t *session);
+TURBO_MEDIA_API uint8_t rtp_session_get_payload_type(const rtp_session_t *session);
 
 /**
   * Set RTP payload type for outgoing packets.
   */
-CXX_C_API void rtp_session_set_payload_type(rtp_session_t *session, uint8_t payload_type);
+TURBO_MEDIA_API void rtp_session_set_payload_type(rtp_session_t *session, uint8_t payload_type);
 
 /**
  * Get current SSRC
  */
-CXX_C_API uint32_t rtp_session_get_ssrc(const rtp_session_t *session);
+TURBO_MEDIA_API uint32_t rtp_session_get_ssrc(const rtp_session_t *session);
 
 /**
  * Check if sequence number is newer (handles wraparound)
  */
-CXX_C_API int rtp_seq_newer(uint16_t s1, uint16_t s2);
+TURBO_MEDIA_API int rtp_seq_newer(uint16_t s1, uint16_t s2);
 
 /**
  * Calculate sequence number difference (handles wraparound)
  */
-CXX_C_API int rtp_seq_diff(uint16_t s1, uint16_t s2);
+TURBO_MEDIA_API int rtp_seq_diff(uint16_t s1, uint16_t s2);
 
 /* =============================================================================
  * TWCC Functions
@@ -598,12 +598,12 @@ CXX_C_API int rtp_seq_diff(uint16_t s1, uint16_t s2);
  *
  * @return  TWCC tracker instance, or NULL on error
  */
-CXX_C_API twcc_tracker_t *twcc_tracker_create(void);
+TURBO_MEDIA_API twcc_tracker_t *twcc_tracker_create(void);
 
 /**
  * Destroy TWCC tracker
  */
-CXX_C_API void twcc_tracker_destroy(twcc_tracker_t *tracker);
+TURBO_MEDIA_API void twcc_tracker_destroy(twcc_tracker_t *tracker);
 
 /**
  * Override the sender-side TWCC bitrate baseline.
@@ -611,7 +611,7 @@ CXX_C_API void twcc_tracker_destroy(twcc_tracker_t *tracker);
  * Keeps TWCC bandwidth estimation aligned
  * with the encoder's current target.
  */
-CXX_C_API void twcc_tracker_set_bitrate(twcc_tracker_t *tracker, uint32_t bitrate_bps);
+TURBO_MEDIA_API void twcc_tracker_set_bitrate(twcc_tracker_t *tracker, uint32_t bitrate_bps);
 
 /**
  * Register outgoing packet with TWCC tracker
@@ -622,7 +622,7 @@ CXX_C_API void twcc_tracker_set_bitrate(twcc_tracker_t *tracker, uint32_t bitrat
  * @param send_time_us Send timestamp in microseconds
  * @return          Assigned transport-wide sequence number
  */
-CXX_C_API uint16_t twcc_tracker_register_packet(twcc_tracker_t *tracker, size_t size,
+TURBO_MEDIA_API uint16_t twcc_tracker_register_packet(twcc_tracker_t *tracker, size_t size,
                                                 uint64_t send_time_us);
 
 /**
@@ -633,7 +633,7 @@ CXX_C_API uint16_t twcc_tracker_register_packet(twcc_tracker_t *tracker, size_t 
  * @param result    Output: bandwidth estimation result
  * @return          0 on success, -1 on error
  */
-CXX_C_API int twcc_tracker_process_feedback(twcc_tracker_t *tracker, const rtcp_twcc_t *twcc,
+TURBO_MEDIA_API int twcc_tracker_process_feedback(twcc_tracker_t *tracker, const rtcp_twcc_t *twcc,
                                             twcc_bwe_result_t *result);
 
 /**
@@ -644,12 +644,12 @@ CXX_C_API int twcc_tracker_process_feedback(twcc_tracker_t *tracker, const rtcp_
  * @param ssrc      Local SSRC for feedback
  * @return          TWCC receiver instance, or NULL on error
  */
-CXX_C_API twcc_receiver_t *twcc_receiver_create(uint32_t ssrc);
+TURBO_MEDIA_API twcc_receiver_t *twcc_receiver_create(uint32_t ssrc);
 
 /**
  * Destroy TWCC receiver
  */
-CXX_C_API void twcc_receiver_destroy(twcc_receiver_t *receiver);
+TURBO_MEDIA_API void twcc_receiver_destroy(twcc_receiver_t *receiver);
 
 /**
  * Register received packet
@@ -659,7 +659,7 @@ CXX_C_API void twcc_receiver_destroy(twcc_receiver_t *receiver);
  * @param arrival_time_us Arrival timestamp in microseconds
  * @return              0 on success, -1 on error
  */
-CXX_C_API int twcc_receiver_register_packet(twcc_receiver_t *receiver, uint16_t twcc_seq,
+TURBO_MEDIA_API int twcc_receiver_register_packet(twcc_receiver_t *receiver, uint16_t twcc_seq,
                                             uint64_t arrival_time_us);
 
 /**
@@ -671,7 +671,7 @@ CXX_C_API int twcc_receiver_register_packet(twcc_receiver_t *receiver, uint16_t 
  * @param twcc      Output: TWCC feedback message
  * @return          1 if feedback generated, 0 if not ready, -1 on error
  */
-CXX_C_API int twcc_receiver_generate_feedback(twcc_receiver_t *receiver, rtcp_twcc_t *twcc);
+TURBO_MEDIA_API int twcc_receiver_generate_feedback(twcc_receiver_t *receiver, rtcp_twcc_t *twcc);
 
 /**
  * Parse TWCC feedback from RTCP packet
@@ -681,7 +681,7 @@ CXX_C_API int twcc_receiver_generate_feedback(twcc_receiver_t *receiver, rtcp_tw
  * @param twcc      Output: parsed TWCC feedback
  * @return          0 on success, -1 on error
  */
-CXX_C_API int rtcp_parse_twcc(const uint8_t *buffer, size_t len, rtcp_twcc_t *twcc);
+TURBO_MEDIA_API int rtcp_parse_twcc(const uint8_t *buffer, size_t len, rtcp_twcc_t *twcc);
 
 #ifdef __cplusplus
 }

@@ -35,7 +35,7 @@ static const uint8_t RTSP_KCP_TEST_PSK[TURBO_KCP_PSK_SIZE] = {
     do {                                                                       \
         int expected_value = (expected);                                        \
         int actual_value = (actual);                                            \
-        check_int_eq(actual_value, expected_value);                             \
+        check_equal(actual_value, expected_value);                             \
         if (expected_value != actual_value) {                                   \
             g_failed = 1;                                                      \
             return;                                                            \
@@ -2885,8 +2885,8 @@ static void rtsp_udp_setup_client_task(coro_t *co, void *arg) {
         g_failed = 1;
         goto done;
     }
-    check_int_eq(setup_transport.client_rtp_port, 30000);
-    check_int_eq(setup_transport.client_rtcp_port, 30001);
+    check_equal(setup_transport.client_rtp_port, 30000);
+    check_equal(setup_transport.client_rtcp_port, 30001);
     if (setup_transport.client_rtp_port != 30000 ||
         setup_transport.client_rtcp_port != 30001) {
         g_failed = 1;
@@ -2900,13 +2900,13 @@ static void rtsp_udp_setup_client_task(coro_t *co, void *arg) {
         goto done;
     }
 
-    check_int_eq(setup_transport.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
-    check_int_eq(setup_transport.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
-    check_int_eq(setup_transport.client_rtp_port, rtp_port);
-    check_int_eq(setup_transport.client_rtcp_port, rtcp_port);
+    check_equal(setup_transport.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
+    check_equal(setup_transport.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
+    check_equal(setup_transport.client_rtp_port, rtp_port);
+    check_equal(setup_transport.client_rtcp_port, rtcp_port);
     check(setup_transport.server_rtp_port > 0);
     check(setup_transport.server_rtcp_port > 0);
-    check_int_eq(setup_transport.mode, TURBO_RTSP_TRANSPORT_MODE_PLAY);
+    check_equal(setup_transport.mode, TURBO_RTSP_TRANSPORT_MODE_PLAY);
     if (setup_transport.kind != TURBO_RTSP_TRANSPORT_RTP_AVP_UDP ||
         setup_transport.delivery != TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST ||
         setup_transport.client_rtp_port != rtp_port ||
@@ -3027,12 +3027,12 @@ static void rtsp_rtp_udp_pair_task(coro_t *co, void *arg) {
         goto fail;
     }
 
-    check_int_eq((int)recv_len, rtp_len);
-    check_int_eq(turbo_rtsp_rtp_parse_header(rtp_recv, recv_len, &parsed_header, &header_len), 0);
-    check_int_eq(parsed_header.sequence_number, 7);
-    check_int_eq(parsed_header.payload_type, 96);
-    check_int_eq(parsed_header.ssrc, 0x01020304u);
-    check_int_eq((int)parsed_header.payload_len, (int)sizeof(payload));
+    check_equal((int)recv_len, rtp_len);
+    check_equal(turbo_rtsp_rtp_parse_header(rtp_recv, recv_len, &parsed_header, &header_len), 0);
+    check_equal(parsed_header.sequence_number, 7);
+    check_equal(parsed_header.payload_type, 96);
+    check_equal(parsed_header.ssrc, 0x01020304u);
+    check_equal((int)parsed_header.payload_len, (int)sizeof(payload));
     check(memcmp(parsed_header.payload, payload, sizeof(payload)) == 0);
 
     recv_len = 0;
@@ -3040,14 +3040,14 @@ static void rtsp_rtp_udp_pair_task(coro_t *co, void *arg) {
         check(0);
         goto fail;
     }
-    check_int_eq(
+    check_equal(
         turbo_rtsp_rtp_udp_pair_recv_rtp(
             receiver,
             small_rtp_recv,
             sizeof(small_rtp_recv),
             &recv_len),
         -1);
-    check_int_eq((int)recv_len, rtp_len);
+    check_equal((int)recv_len, rtp_len);
 
     rtcp_len = turbo_rtsp_rtcp_write_bye(
         rtcp_packet,
@@ -3064,24 +3064,24 @@ static void rtsp_rtp_udp_pair_task(coro_t *co, void *arg) {
         goto fail;
     }
 
-    check_int_eq((int)recv_len, rtcp_len);
-    check_int_eq(turbo_rtsp_rtcp_parse_header(rtcp_recv, recv_len, &parsed_rtcp), 0);
-    check_int_eq(parsed_rtcp.packet_type, TURBO_RTSP_RTCP_BYE);
-    check_int_eq(parsed_rtcp.count, 1);
+    check_equal((int)recv_len, rtcp_len);
+    check_equal(turbo_rtsp_rtcp_parse_header(rtcp_recv, recv_len, &parsed_rtcp), 0);
+    check_equal(parsed_rtcp.packet_type, TURBO_RTSP_RTCP_BYE);
+    check_equal(parsed_rtcp.count, 1);
 
     recv_len = 0;
     if (turbo_rtsp_rtp_udp_pair_send_rtcp(receiver, rtcp_packet, (size_t)rtcp_len) != 0) {
         check(0);
         goto fail;
     }
-    check_int_eq(
+    check_equal(
         turbo_rtsp_rtp_udp_pair_recv_rtcp(
             sender,
             small_rtcp_recv,
             sizeof(small_rtcp_recv),
             &recv_len),
         -1);
-    check_int_eq((int)recv_len, rtcp_len);
+    check_equal((int)recv_len, rtcp_len);
 
     state->completed = 1;
 

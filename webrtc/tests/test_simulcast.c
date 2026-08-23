@@ -1,7 +1,7 @@
 /**
  * Unit tests for Simulcast
  */
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_codec.h"
 #include "turbo_rtp.h"
 #include "turbo_simulcast.h"
@@ -26,7 +26,7 @@ static void on_simulcast_packet(void *user_data, simulcast_layer_t layer, const 
   capture->total_bytes += len;
   capture->last_layer = layer;
   memcpy(capture->last_packet_buf, packet, len);
-  TEST_ASSERT_EQUAL_INT(0, rtp_packet_parse(&capture->last_packet, capture->last_packet_buf, len));
+  check_equal((int)(rtp_packet_parse(&capture->last_packet, capture->last_packet_buf, len)), (int)(0));
 }
 
 void setUp(void) { turbo_codec_registry_init(); }
@@ -40,12 +40,12 @@ void tearDown(void) { turbo_codec_registry_shutdown(); }
 void test_simulcast_create(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(1280, 720, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   turbo_simulcast_destroy(ctx);
 }
@@ -53,21 +53,21 @@ void test_simulcast_create(void) {
 void test_simulcast_create_invalid_params(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   /* Invalid dimensions */
   simulcast_ctx_t *ctx1 = turbo_simulcast_create(0, 720, 30, codec);
-  TEST_ASSERT_NULL(ctx1);
+  check_null(ctx1);
 
   /* Invalid framerate */
   simulcast_ctx_t *ctx2 = turbo_simulcast_create(1280, 720, 0, codec);
-  TEST_ASSERT_NULL(ctx2);
+  check_null(ctx2);
 
   /* NULL codec */
   simulcast_ctx_t *ctx3 = turbo_simulcast_create(1280, 720, 30, NULL);
-  TEST_ASSERT_NULL(ctx3);
+  check_null(ctx3);
 }
 
 /* =============================================================================
@@ -77,12 +77,12 @@ void test_simulcast_create_invalid_params(void) {
 void test_simulcast_enable_disable_layers(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(1280, 720, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   /* Enable all layers */
   turbo_simulcast_enable_layer(ctx, SIMULCAST_LAYER_LOW, 1);
@@ -98,12 +98,12 @@ void test_simulcast_enable_disable_layers(void) {
 void test_simulcast_layer_stats(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(1280, 720, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   int width, height, bitrate, frames_encoded;
   int64_t bytes_sent;
@@ -111,14 +111,14 @@ void test_simulcast_layer_stats(void) {
   /* Get low layer stats */
   turbo_simulcast_get_layer_stats(ctx, SIMULCAST_LAYER_LOW, &width, &height, &bitrate,
                                   &frames_encoded, &bytes_sent);
-  TEST_ASSERT_GREATER_THAN(0, width);
-  TEST_ASSERT_GREATER_THAN(0, height);
+  check_greater(width, 0);
+  check_greater(height, 0);
 
   /* Get high layer stats */
   turbo_simulcast_get_layer_stats(ctx, SIMULCAST_LAYER_HIGH, &width, &height, &bitrate,
                                   &frames_encoded, &bytes_sent);
-  TEST_ASSERT_GREATER_THAN(0, width);
-  TEST_ASSERT_GREATER_THAN(0, height);
+  check_greater(width, 0);
+  check_greater(height, 0);
 
   turbo_simulcast_destroy(ctx);
 }
@@ -130,12 +130,12 @@ void test_simulcast_layer_stats(void) {
 void test_simulcast_set_bandwidth(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(1280, 720, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   /* Set different bandwidth levels */
   turbo_simulcast_set_bandwidth(ctx, 200000);  /* Low */
@@ -148,12 +148,12 @@ void test_simulcast_set_bandwidth(void) {
 void test_simulcast_bandwidth_layer_selection(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(1280, 720, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   /* Enable all layers first */
   turbo_simulcast_enable_layer(ctx, SIMULCAST_LAYER_LOW, 1);
@@ -166,7 +166,7 @@ void test_simulcast_bandwidth_layer_selection(void) {
   int high_enabled = turbo_simulcast_is_layer_active(ctx, SIMULCAST_LAYER_HIGH);
 
   /* At least one layer should be active after enabling */
-  TEST_ASSERT_TRUE(low_enabled || medium_enabled || high_enabled);
+  check_true(low_enabled || medium_enabled || high_enabled);
 
   /* Test bandwidth setting (doesn't guarantee specific layer activation) */
   turbo_simulcast_set_bandwidth(ctx, 200000);
@@ -182,12 +182,12 @@ void test_simulcast_bandwidth_layer_selection(void) {
 void test_simulcast_encode_frame(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(640, 480, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   /* Enable all layers */
   turbo_simulcast_enable_layer(ctx, SIMULCAST_LAYER_LOW, 1);
@@ -197,11 +197,11 @@ void test_simulcast_encode_frame(void) {
   /* Create dummy frame (I420 format) */
   size_t frame_size = 640 * 480 * 3 / 2;
   uint8_t *frame_data = (uint8_t *)calloc(1, frame_size);
-  TEST_ASSERT_NOT_NULL(frame_data);
+  check_not_null(frame_data);
 
   /* Encode frame */
   int result = turbo_simulcast_encode_frame(ctx, frame_data, frame_size, 0);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   free(frame_data);
   turbo_simulcast_destroy(ctx);
@@ -214,12 +214,12 @@ void test_simulcast_encode_frame(void) {
 void test_simulcast_layer_stats_after_encode(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(640, 480, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   /* Enable one layer */
   turbo_simulcast_enable_layer(ctx, SIMULCAST_LAYER_MEDIUM, 1);
@@ -227,7 +227,7 @@ void test_simulcast_layer_stats_after_encode(void) {
   /* Create and encode a dummy frame */
   size_t frame_size = 640 * 480 * 3 / 2;
   uint8_t *frame_data = (uint8_t *)calloc(1, frame_size);
-  TEST_ASSERT_NOT_NULL(frame_data);
+  check_not_null(frame_data);
 
   turbo_simulcast_encode_frame(ctx, frame_data, frame_size, 0);
 
@@ -237,8 +237,8 @@ void test_simulcast_layer_stats_after_encode(void) {
   turbo_simulcast_get_layer_stats(ctx, SIMULCAST_LAYER_MEDIUM, &width, &height, &bitrate,
                                   &frames_encoded, &bytes_sent);
 
-  TEST_ASSERT_GREATER_THAN(0, width);
-  TEST_ASSERT_GREATER_THAN(0, height);
+  check_greater(width, 0);
+  check_greater(height, 0);
 
   free(frame_data);
   turbo_simulcast_destroy(ctx);
@@ -248,12 +248,12 @@ void test_simulcast_callback_emits_rtp_packets(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   simulcast_packet_capture_t capture = {0};
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(640, 480, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   turbo_simulcast_set_rtp_callback(ctx, on_simulcast_packet, &capture);
   turbo_simulcast_enable_layer(ctx, SIMULCAST_LAYER_HIGH, 1);
@@ -261,20 +261,20 @@ void test_simulcast_callback_emits_rtp_packets(void) {
 
   size_t frame_size = 640 * 480 * 3 / 2;
   uint8_t *frame_data = (uint8_t *)calloc(1, frame_size);
-  TEST_ASSERT_NOT_NULL(frame_data);
+  check_not_null(frame_data);
 
-  TEST_ASSERT_GREATER_OR_EQUAL(1, turbo_simulcast_encode_frame(ctx, frame_data, frame_size, 33333));
-  TEST_ASSERT_GREATER_THAN(0, capture.packet_count);
-  TEST_ASSERT_EQUAL_INT(SIMULCAST_LAYER_HIGH, capture.last_layer);
-  TEST_ASSERT_EQUAL_UINT8(RTP_VERSION, capture.last_packet.header.version);
-  TEST_ASSERT_EQUAL_UINT8(codec->payload_type, capture.last_packet.header.payload_type);
-  TEST_ASSERT_EQUAL_UINT32(0x55667788, capture.last_packet.header.ssrc);
-  TEST_ASSERT_GREATER_THAN(0, capture.last_packet.payload_len);
+  check_greater_equal(turbo_simulcast_encode_frame(ctx, frame_data, frame_size, 33333), 1);
+  check_greater(capture.packet_count, 0);
+  check_equal((int)(capture.last_layer), (int)(SIMULCAST_LAYER_HIGH));
+  check_equal((uint8_t)(capture.last_packet.header.version), (uint8_t)(RTP_VERSION));
+  check_equal((uint8_t)(capture.last_packet.header.payload_type), (uint8_t)(codec->payload_type));
+  check_equal((uint32_t)(capture.last_packet.header.ssrc), (uint32_t)(0x55667788));
+  check_greater(capture.last_packet.payload_len, 0);
 
   int64_t bytes_sent = 0;
   turbo_simulcast_get_layer_stats(ctx, SIMULCAST_LAYER_HIGH, NULL, NULL, NULL, NULL, &bytes_sent);
-  TEST_ASSERT_GREATER_THAN(0, bytes_sent);
-  TEST_ASSERT_GREATER_OR_EQUAL(capture.total_bytes, (size_t)bytes_sent);
+  check_greater(bytes_sent, 0);
+  check_greater_equal((size_t)bytes_sent, capture.total_bytes);
 
   free(frame_data);
   turbo_simulcast_destroy(ctx);
@@ -283,12 +283,12 @@ void test_simulcast_callback_emits_rtp_packets(void) {
 void test_simulcast_layer_switching(void) {
   const turbo_codec_ops_t *codec = turbo_codec_find_by_name("vp8");
   if (!codec) {
-    TEST_IGNORE_MESSAGE("VP8 codec not available");
+    check(0, "%s", ("VP8 codec not available"));
     return;
   }
 
   simulcast_ctx_t *ctx = turbo_simulcast_create(1280, 720, 30, codec);
-  TEST_ASSERT_NOT_NULL(ctx);
+  check_not_null(ctx);
 
   /* Enable all layers */
   turbo_simulcast_enable_layer(ctx, SIMULCAST_LAYER_LOW, 1);
@@ -304,7 +304,7 @@ void test_simulcast_layer_switching(void) {
   int low_active = turbo_simulcast_is_layer_active(ctx, SIMULCAST_LAYER_LOW);
 
   /* At least one should be active */
-  TEST_ASSERT_TRUE(high_active || low_active);
+  check_true(high_active || low_active);
 
   turbo_simulcast_destroy(ctx);
 }
@@ -318,22 +318,22 @@ spec("test_simulcast") {
   after_each() { tearDown(); }
 
   /* Creation */
-  TT_TEST(test_simulcast_create);
-  TT_TEST(test_simulcast_create_invalid_params);
+  it("test_simulcast_create") { test_simulcast_create(); };
+  it("test_simulcast_create_invalid_params") { test_simulcast_create_invalid_params(); };
 
   /* Layer Management */
-  TT_TEST(test_simulcast_enable_disable_layers);
-  TT_TEST(test_simulcast_layer_stats);
+  it("test_simulcast_enable_disable_layers") { test_simulcast_enable_disable_layers(); };
+  it("test_simulcast_layer_stats") { test_simulcast_layer_stats(); };
 
   /* Bandwidth Adaptation */
-  TT_TEST(test_simulcast_set_bandwidth);
-  TT_TEST(test_simulcast_bandwidth_layer_selection);
+  it("test_simulcast_set_bandwidth") { test_simulcast_set_bandwidth(); };
+  it("test_simulcast_bandwidth_layer_selection") { test_simulcast_bandwidth_layer_selection(); };
 
   /* Encoding */
-  TT_TEST(test_simulcast_encode_frame);
-  TT_TEST(test_simulcast_callback_emits_rtp_packets);
+  it("test_simulcast_encode_frame") { test_simulcast_encode_frame(); };
+  it("test_simulcast_callback_emits_rtp_packets") { test_simulcast_callback_emits_rtp_packets(); };
 
   /* Statistics */
-  TT_TEST(test_simulcast_layer_stats_after_encode);
-  TT_TEST(test_simulcast_layer_switching);
+  it("test_simulcast_layer_stats_after_encode") { test_simulcast_layer_stats_after_encode(); };
+  it("test_simulcast_layer_switching") { test_simulcast_layer_switching(); };
 }

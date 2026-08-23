@@ -228,12 +228,12 @@ static void handle_broadcast(Req *req, Res *res) {
     }
     
     /* We expect body to be the message JSON */
-    tstr_t msg = tstr_dup_len(req->body, req->body_len);
+    tstr msg = tstr_dup_len(req->body, req->body_len);
     if (msg) {
         int sent = webrtc_signaling_broadcast(signaling, room_id, "admin", msg);
         tstr_free(msg);
         
-        tstr_t resp = tstr_new();
+        tstr resp = tstr_new();
         resp = tstr_cat_fmt(resp, "{\"sent\":%d}", sent);
         send_json(res, 200, resp);
         tstr_free(resp);
@@ -269,16 +269,16 @@ static void http_api_free_config_strings(http_api_config_t *config) {
     if (!config) {
         return;
     }
-    tstr_free((tstr_t)config->auth_revoked_token_sha256);
-    tstr_free((tstr_t)config->auth_previous_secret);
-    tstr_free((tstr_t)config->auth_previous_key_id);
-    tstr_free((tstr_t)config->auth_active_secret);
-    tstr_free((tstr_t)config->auth_active_key_id);
-    tstr_free((tstr_t)config->auth_issuer);
-    tstr_free((tstr_t)config->admin_token);
-    tstr_free((tstr_t)config->cert_file);
-    tstr_free((tstr_t)config->key_file);
-    tstr_free((tstr_t)config->host);
+    tstr_free((tstr)config->auth_revoked_token_sha256);
+    tstr_free((tstr)config->auth_previous_secret);
+    tstr_free((tstr)config->auth_previous_key_id);
+    tstr_free((tstr)config->auth_active_secret);
+    tstr_free((tstr)config->auth_active_key_id);
+    tstr_free((tstr)config->auth_issuer);
+    tstr_free((tstr)config->admin_token);
+    tstr_free((tstr)config->cert_file);
+    tstr_free((tstr)config->key_file);
+    tstr_free((tstr)config->host);
     memset(config, 0, sizeof(*config));
 }
 
@@ -410,7 +410,7 @@ static void http_api_thread_func(void *arg) {
     coro_context_t *ctx = NULL;
     coro_socket_t *listener = NULL;
 
-    TLOG_INFO("{} API starting on {}:{}", server->config.use_tls ? "HTTPS" : "HTTP",
+    TLOG_INFOF("{} API starting on {}:{}", server->config.use_tls ? "HTTPS" : "HTTP",
               server->config.host, server->config.port);
     ctx = coro_context_create(NULL);
     if (!ctx) {
@@ -439,7 +439,7 @@ static void http_api_thread_func(void *arg) {
             (unsigned short)server->config.port);
     }
     if (!listener) {
-        TLOG_ERROR("Failed to start HTTP API listener on port {}", server->config.port);
+        TLOG_ERRORF("Failed to start HTTP API listener on port {}", server->config.port);
         coro_context_destroy(ctx);
         turbo_mutex_lock(&server->lifecycle_mutex);
         server->state = HTTP_API_FAILED;

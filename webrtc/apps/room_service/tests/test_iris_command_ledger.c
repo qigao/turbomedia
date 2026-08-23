@@ -208,7 +208,7 @@ spec("Iris durable provider command ledger") {
         test_store_init(&store);
         store.api.capabilities = TURBO_FLOW_RECORD_STORE_ATOMIC_BATCH;
         ledger = test_create_ledger(&store);
-        check_ptr_eq(ledger, NULL);
+        check_null(ledger);
         test_store_clear(&store);
     }
 
@@ -220,20 +220,20 @@ spec("Iris durable provider command ledger") {
         iris_command_claim_result_t result;
         test_store_init(&store);
         ledger = test_create_ledger(&store);
-        check_ptr_ne(ledger, NULL);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_not_null(ledger);
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
-        check_int_eq(result.disposition, IRIS_COMMAND_CLAIM_EXECUTE);
-        check_int_eq((int)result.store_revision, 1);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(result.disposition, IRIS_COMMAND_CLAIM_EXECUTE);
+        check_equal((int)result.store_revision, 1);
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
-        check_int_eq(result.disposition, IRIS_COMMAND_CLAIM_IN_PROGRESS);
+        check_equal(result.disposition, IRIS_COMMAND_CLAIM_IN_PROGRESS);
         conflict.semantic_fingerprint[0] = 'b';
-        check_int_eq(iris_command_ledger_claim(ledger, &conflict, &result),
+        check_equal(iris_command_ledger_claim(ledger, &conflict, &result),
                      IVR_OK);
-        check_int_eq(result.disposition, IRIS_COMMAND_CLAIM_CONFLICT);
-        check_int_eq((int)test_store_count(&store), 1);
+        check_equal(result.disposition, IRIS_COMMAND_CLAIM_CONFLICT);
+        check_equal((int)test_store_count(&store), 1);
         iris_command_ledger_destroy(ledger);
         test_store_clear(&store);
     }
@@ -245,17 +245,17 @@ spec("Iris durable provider command ledger") {
         iris_command_claim_result_t result;
         test_store_init(&store);
         ledger = test_create_ledger(&store);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_commit_accepted(
+        check_equal(iris_command_ledger_commit_accepted(
                          ledger, &identity, "media-worker-a"),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
-        check_int_eq(result.disposition,
+        check_equal(result.disposition,
                      IRIS_COMMAND_CLAIM_REPLAY_ACCEPTED);
-        check_str_eq(result.provider_resource_id, "media-worker-a");
+        check_equal(result.provider_resource_id, "media-worker-a");
         iris_command_ledger_destroy(ledger);
         test_store_clear(&store);
     }
@@ -269,28 +269,28 @@ spec("Iris durable provider command ledger") {
         iris_command_retention_result_t retention;
         test_store_init(&store);
         ledger = test_create_ledger(&store);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_commit_terminal(
+        check_equal(iris_command_ledger_commit_terminal(
                          ledger, &identity, &outcome),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
-        check_int_eq(result.disposition,
+        check_equal(result.disposition,
                      IRIS_COMMAND_CLAIM_REPLAY_TERMINAL);
-        check_str_eq(result.terminal_status, "succeeded");
-        check_str_eq(result.event_type, "provider.conference.created");
-        check_str_eq(result.result_json, "{\"roomId\":\"room-a\"}");
-        check_int_eq(iris_command_ledger_run_retention(ledger, &retention),
+        check_equal(result.terminal_status, "succeeded");
+        check_equal(result.event_type, "provider.conference.created");
+        check_equal(result.result_json, "{\"roomId\":\"room-a\"}");
+        check_equal(iris_command_ledger_run_retention(ledger, &retention),
                      IVR_OK);
-        check_int_eq((int)retention.deleted, 0);
+        check_equal((int)retention.deleted, 0);
         g_now_ms += UINT64_C(1000);
-        check_int_eq(iris_command_ledger_run_retention(ledger, &retention),
+        check_equal(iris_command_ledger_run_retention(ledger, &retention),
                      IVR_OK);
-        check_int_eq((int)retention.selected, 1);
-        check_int_eq((int)retention.deleted, 1);
-        check_int_eq((int)test_store_count(&store), 0);
+        check_equal((int)retention.selected, 1);
+        check_equal((int)retention.deleted, 1);
+        check_equal((int)test_store_count(&store), 0);
         iris_command_ledger_destroy(ledger);
         test_store_clear(&store);
     }
@@ -303,18 +303,18 @@ spec("Iris durable provider command ledger") {
         iris_command_ledger_stats_t stats;
         test_store_init(&store);
         ledger = test_create_ledger(&store);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
         iris_command_ledger_destroy(ledger);
         ledger = test_create_ledger(&store);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
-        check_int_eq(result.disposition,
+        check_equal(result.disposition,
                      IRIS_COMMAND_CLAIM_OUTCOME_UNKNOWN);
         iris_command_ledger_get_stats(ledger, &stats);
-        check_int_eq((int)stats.recovered_unknown_total, 1);
+        check_equal((int)stats.recovered_unknown_total, 1);
         iris_command_ledger_destroy(ledger);
         test_store_clear(&store);
     }
@@ -331,34 +331,34 @@ spec("Iris durable provider command ledger") {
         test_store_init(&store);
         ledger = test_create_ledger(&store);
         check_not_null(ledger);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
 
-        check_int_eq(iris_command_ledger_claim(ledger, &accepted, &result),
+        check_equal(iris_command_ledger_claim(ledger, &accepted, &result),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_mark_unknown(ledger, &accepted),
+        check_equal(iris_command_ledger_mark_unknown(ledger, &accepted),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_commit_accepted(
+        check_equal(iris_command_ledger_commit_accepted(
                          ledger, &accepted, "media-worker-reconciled"),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &accepted, &result),
+        check_equal(iris_command_ledger_claim(ledger, &accepted, &result),
                      IVR_OK);
-        check_int_eq(result.disposition,
+        check_equal(result.disposition,
                      IRIS_COMMAND_CLAIM_REPLAY_ACCEPTED);
-        check_str_eq(result.provider_resource_id,
+        check_equal(result.provider_resource_id,
                      "media-worker-reconciled");
 
-        check_int_eq(iris_command_ledger_claim(ledger, &terminal, &result),
+        check_equal(iris_command_ledger_claim(ledger, &terminal, &result),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_mark_unknown(ledger, &terminal),
+        check_equal(iris_command_ledger_mark_unknown(ledger, &terminal),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_commit_terminal(
+        check_equal(iris_command_ledger_commit_terminal(
                          ledger, &terminal, &outcome),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &terminal, &result),
+        check_equal(iris_command_ledger_claim(ledger, &terminal, &result),
                      IVR_OK);
-        check_int_eq(result.disposition,
+        check_equal(result.disposition,
                      IRIS_COMMAND_CLAIM_REPLAY_TERMINAL);
-        check_str_eq(result.terminal_status, "succeeded");
+        check_equal(result.terminal_status, "succeeded");
         iris_command_ledger_destroy(ledger);
         test_store_clear(&store);
     }
@@ -377,36 +377,36 @@ spec("Iris durable provider command ledger") {
         test_store_init(&store);
         ledger = test_create_ledger(&store);
         check_not_null(ledger);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
 
-        check_int_eq(iris_command_ledger_claim(ledger, &prior, &result),
+        check_equal(iris_command_ledger_claim(ledger, &prior, &result),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_resource_seen(
+        check_equal(iris_command_ledger_resource_seen(
                          ledger, &query, &seen),
                      IVR_OK);
         check_false(seen);
-        check_int_eq(iris_command_ledger_commit_terminal(
+        check_equal(iris_command_ledger_commit_terminal(
                          ledger, &prior, &outcome),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_resource_seen(
+        check_equal(iris_command_ledger_resource_seen(
                          ledger, &query, &seen),
                      IVR_OK);
         check_true(seen);
 
         other_generation.resource_generation = 2u;
-        check_int_eq(iris_command_ledger_resource_seen(
+        check_equal(iris_command_ledger_resource_seen(
                          ledger, &other_generation, &seen),
                      IVR_OK);
         check_false(seen);
         snprintf(other_session.provider_session_id,
                  sizeof(other_session.provider_session_id), "session-b");
-        check_int_eq(iris_command_ledger_resource_seen(
+        check_equal(iris_command_ledger_resource_seen(
                          ledger, &other_session, &seen),
                      IVR_OK);
         check_false(seen);
         iris_command_ledger_get_stats(ledger, &stats);
-        check_int_eq((int)stats.resource_queries_total, 4);
-        check_int_eq((int)stats.resource_seen_total, 1);
+        check_equal((int)stats.resource_queries_total, 4);
+        check_equal((int)stats.resource_seen_total, 1);
         iris_command_ledger_destroy(ledger);
         test_store_clear(&store);
     }
@@ -420,12 +420,12 @@ spec("Iris durable provider command ledger") {
         test_store_init(&store);
         store.fail_commit_call = 1;
         ledger = test_create_ledger(&store);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_ESTATE);
-        check_int_eq((int)test_store_count(&store), 0);
+        check_equal((int)test_store_count(&store), 0);
         iris_command_ledger_get_stats(ledger, &stats);
-        check_int_eq((int)stats.storage_failures_total, 1);
+        check_equal((int)stats.storage_failures_total, 1);
         iris_command_ledger_destroy(ledger);
         test_store_clear(&store);
     }
@@ -449,10 +449,10 @@ spec("Iris durable provider command ledger") {
         config.realtime_ms = test_now_ms;
         ledger = iris_command_ledger_create(&config);
         check_not_null(ledger);
-        check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-        check_int_eq(iris_command_ledger_claim(ledger, &identity, &result),
+        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
-        check_int_eq(iris_command_ledger_commit_terminal(
+        check_equal(iris_command_ledger_commit_terminal(
                          ledger, &identity, &outcome),
                      IVR_OK);
         g_now_ms += UINT64_C(100);
@@ -465,9 +465,9 @@ spec("Iris durable provider command ledger") {
             turbo_sleep_ms(5u);
         }
         check_true(observed);
-        check_int_eq((int)test_store_count(&store), 0);
+        check_equal((int)test_store_count(&store), 0);
         check_true(stats.retention_sweeps_total >= 2u);
-        check_int_eq((int)stats.retention_failures_total, 0);
+        check_equal((int)stats.retention_failures_total, 0);
         iris_command_ledger_destroy(ledger);
         test_store_clear(&store);
     }
@@ -509,12 +509,12 @@ spec("Iris durable provider command ledger") {
                      "      max_batch_size: 2\n"
                      "adapters: {}\n",
                      database_path);
-            check_int_eq(tt_write_file(yaml_path, yaml, strlen(yaml)), 0);
+            check_equal(tt_write_file(yaml_path, yaml, strlen(yaml)), 0);
             ledger = iris_command_ledger_create_flowstore(
                 yaml_path, "iris.provider_commands", 0, 4u, 2u,
                 UINT64_C(86400000), UINT64_C(1000), error, sizeof(error));
             check_null(ledger);
-            check_str_contains(error, "development opt-in");
+            check_contains(error, "development opt-in");
             memset(error, 0, sizeof(error));
             ledger = iris_command_ledger_create_flowstore(
                 yaml_path, "iris.provider_commands", 1, 4u, 2u,
@@ -522,19 +522,19 @@ spec("Iris durable provider command ledger") {
             check_not_null(ledger);
         }
         if (ledger) {
-            check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-            check_int_eq(iris_command_ledger_claim(ledger, &intent, &result),
+            check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+            check_equal(iris_command_ledger_claim(ledger, &intent, &result),
                          IVR_OK);
-            check_int_eq(iris_command_ledger_claim(
+            check_equal(iris_command_ledger_claim(
                              ledger, &accepted, &result),
                          IVR_OK);
-            check_int_eq(iris_command_ledger_commit_accepted(
+            check_equal(iris_command_ledger_commit_accepted(
                              ledger, &accepted, "media-worker-sql"),
                          IVR_OK);
-            check_int_eq(iris_command_ledger_claim(
+            check_equal(iris_command_ledger_claim(
                              ledger, &terminal, &result),
                          IVR_OK);
-            check_int_eq(iris_command_ledger_commit_terminal(
+            check_equal(iris_command_ledger_commit_terminal(
                              ledger, &terminal, &outcome),
                          IVR_OK);
             iris_command_ledger_destroy(ledger);
@@ -544,27 +544,27 @@ spec("Iris durable provider command ledger") {
             check_not_null(ledger);
         }
         if (ledger) {
-            check_int_eq(iris_command_ledger_start(ledger), TURBO_OK);
-            check_int_eq(iris_command_ledger_claim(ledger, &intent, &result),
+            check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+            check_equal(iris_command_ledger_claim(ledger, &intent, &result),
                          IVR_OK);
-            check_int_eq(result.disposition,
+            check_equal(result.disposition,
                          IRIS_COMMAND_CLAIM_OUTCOME_UNKNOWN);
-            check_int_eq(iris_command_ledger_claim(
+            check_equal(iris_command_ledger_claim(
                              ledger, &accepted, &result),
                          IVR_OK);
-            check_int_eq(result.disposition,
+            check_equal(result.disposition,
                          IRIS_COMMAND_CLAIM_REPLAY_ACCEPTED);
-            check_str_eq(result.provider_resource_id, "media-worker-sql");
-            check_int_eq(iris_command_ledger_claim(
+            check_equal(result.provider_resource_id, "media-worker-sql");
+            check_equal(iris_command_ledger_claim(
                              ledger, &terminal, &result),
                          IVR_OK);
-            check_int_eq(result.disposition,
+            check_equal(result.disposition,
                          IRIS_COMMAND_CLAIM_REPLAY_TERMINAL);
-            check_str_eq(result.result_json, "{\"roomId\":\"room-a\"}");
+            check_equal(result.result_json, "{\"roomId\":\"room-a\"}");
             iris_command_ledger_destroy(ledger);
         }
-        if (yaml_path) check_int_eq(tt_remove_file(yaml_path), 0);
-        if (database_path) check_int_eq(tt_remove_file(database_path), 0);
+        if (yaml_path) check_equal(tt_remove_file(yaml_path), 0);
+        if (database_path) check_equal(tt_remove_file(database_path), 0);
         free(yaml_path);
         free(database_path);
     }

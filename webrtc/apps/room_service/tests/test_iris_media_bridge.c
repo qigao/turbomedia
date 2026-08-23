@@ -341,11 +341,11 @@ spec("Iris media provider bridge") {
         bridge = create_bridge(&unproven, &now_ms, 1u);
         result = iris_media_bridge_dispatch_json(
             bridge, "close-unproven", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_TERMINAL);
-        check_str_eq(result.terminal_status, "failed");
-        check_str_contains(result.data, "MEDIA_RESOURCE_NOT_FOUND");
-        check_str_contains(result.data, "\"alreadyAbsent\":false");
-        check_int_eq(unproven.commit_terminal_calls, 1);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, "failed");
+        check_contains(result.data, "MEDIA_RESOURCE_NOT_FOUND");
+        check_contains(result.data, "\"alreadyAbsent\":false");
+        check_equal(unproven.commit_terminal_calls, 1);
         iris_media_bridge_destroy(bridge);
 
         make_close_request(body, sizeof(body), "close-proven");
@@ -354,12 +354,12 @@ spec("Iris media provider bridge") {
         bridge = create_bridge(&proven, &now_ms, 1u);
         result = iris_media_bridge_dispatch_json(
             bridge, "close-proven", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_TERMINAL);
-        check_str_eq(result.terminal_status, "succeeded");
-        check_str_eq(result.event_type, "provider.dialog.terminated");
-        check_str_contains(result.data, "\"alreadyAbsent\":true");
-        check_str_contains(result.data, "\"callGeneration\":7");
-        check_int_eq(proven.commit_terminal_calls, 1);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, "succeeded");
+        check_equal(result.event_type, "provider.dialog.terminated");
+        check_contains(result.data, "\"alreadyAbsent\":true");
+        check_contains(result.data, "\"callGeneration\":7");
+        check_equal(proven.commit_terminal_calls, 1);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -376,18 +376,18 @@ spec("Iris media provider bridge") {
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
 
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
-        check_int_eq(sender.calls, 1);
-        check_str_eq(result.command_id, "command-a");
-        check_str_eq(result.iris_worker_id, "iris-worker-a");
-        check_str_eq(result.media_worker_id, "media-worker-1");
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
+        check_equal(sender.calls, 1);
+        check_equal(result.command_id, "command-a");
+        check_equal(result.iris_worker_id, "iris-worker-a");
+        check_equal(result.media_worker_id, "media-worker-1");
         check_true(result.dispatch_epoch == UINT64_MAX);
         check_true(sender.last_command.call_generation ==
                    UINT64_C(18446744073709551614));
         check_true(sender.last_command.operation_generation ==
                    UINT64_C(9007199254740993));
-        check_str_eq(sender.last_command.dialog_id, "dialog-a");
-        check_str_eq(sender.last_command.worker_id, "");
+        check_equal(sender.last_command.dialog_id, "dialog-a");
+        check_equal(sender.last_command.worker_id, "");
         iris_media_bridge_destroy(bridge);
     }
 
@@ -401,14 +401,14 @@ spec("Iris media provider bridge") {
         make_cancel_request(body, sizeof(body), "cancel-a", "input-a", "11");
         result = iris_media_bridge_dispatch_json(
             bridge, "cancel-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
-        check_int_eq(sender.calls, 1);
-        check_str_eq(sender.last_command.input_id, "input-a");
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
+        check_equal(sender.calls, 1);
+        check_equal(sender.last_command.input_id, "input-a");
         check_true(sender.last_command.input_generation == UINT64_C(11));
-        check_str_eq(sender.ledger[0].identity.resource_scope_id, "dialog-a");
+        check_equal(sender.ledger[0].identity.resource_scope_id, "dialog-a");
         check_true(sender.ledger[0].identity.resource_scope_generation ==
                    UINT64_C(7));
-        check_str_eq(sender.ledger[0].identity.resource_id, "input-a");
+        check_equal(sender.ledger[0].identity.resource_id, "input-a");
         check_true(sender.ledger[0].identity.resource_generation ==
                    UINT64_C(11));
         iris_media_bridge_destroy(bridge);
@@ -424,13 +424,13 @@ spec("Iris media provider bridge") {
         make_cancel_request(body, sizeof(body), "cancel-empty", "", "11");
         result = iris_media_bridge_dispatch_json(
             bridge, "cancel-empty", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_INVALID);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_INVALID);
         make_cancel_request(body, sizeof(body), "cancel-zero", "input-a", "0");
         result = iris_media_bridge_dispatch_json(
             bridge, "cancel-zero", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_INVALID);
-        check_int_eq(sender.calls, 0);
-        check_int_eq(sender.claim_calls, 0);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_INVALID);
+        check_equal(sender.calls, 0);
+        check_equal(sender.claim_calls, 0);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -448,15 +448,15 @@ spec("Iris media provider bridge") {
                      "iris-worker-b", "42", "Welcome");
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", first, strlen(first));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", first, strlen(first));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_DUPLICATE);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_DUPLICATE);
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", reclaimed, strlen(reclaimed));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_DUPLICATE);
-        check_int_eq(sender.calls, 1);
-        check_str_eq(result.iris_worker_id, "iris-worker-b");
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_DUPLICATE);
+        check_equal(sender.calls, 1);
+        check_equal(result.iris_worker_id, "iris-worker-b");
         check_true(result.dispatch_epoch == UINT64_C(42));
         iris_media_bridge_destroy(bridge);
     }
@@ -478,14 +478,14 @@ spec("Iris media provider bridge") {
                      "42", "Changed");
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", first, strlen(first));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", stale, strlen(stale));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_CONFLICT);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_CONFLICT);
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", changed, strlen(changed));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_CONFLICT);
-        check_int_eq(sender.calls, 1);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_CONFLICT);
+        check_equal(sender.calls, 1);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -501,12 +501,12 @@ spec("Iris media provider bridge") {
         sender.status = IVR_ESTATE;
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_UNAVAILABLE);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_UNAVAILABLE);
         sender.status = IVR_OK;
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
-        check_int_eq(sender.calls, 2);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
+        check_equal(sender.calls, 2);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -524,11 +524,11 @@ spec("Iris media provider bridge") {
                      "42", "Second");
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", first, strlen(first));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
         result = iris_media_bridge_dispatch_json(
             bridge, "command-b", second, strlen(second));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_FULL);
-        check_int_eq(sender.calls, 1);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_FULL);
+        check_equal(sender.calls, 1);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -546,22 +546,22 @@ spec("Iris media provider bridge") {
                      "41", "Welcome");
         dispatch = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(dispatch.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
-        check_int_eq(iris_media_bridge_claim_completion(
+        check_equal(dispatch.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
+        check_equal(iris_media_bridge_claim_completion(
                          bridge, &media_result, &completion),
                      IVR_OK);
-        check_str_eq(completion.command_id, "command-a");
+        check_equal(completion.command_id, "command-a");
         iris_media_bridge_release_completion(bridge, "command-a");
 
         dispatch = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(dispatch.status, IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY);
-        check_str_eq(dispatch.terminal_status, "succeeded");
-        check_str_eq(dispatch.event_type, "provider.media.completed");
-        check_str_contains(dispatch.data, "\"status\":\"completed\"");
-        check_str_contains(dispatch.data, "\"mediaWorkerId\":\"media-worker-1\"");
-        check_int_eq(sender.calls, 1);
-        check_int_eq(sender.commit_terminal_calls, 1);
+        check_equal(dispatch.status, IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY);
+        check_equal(dispatch.terminal_status, "succeeded");
+        check_equal(dispatch.event_type, "provider.media.completed");
+        check_contains(dispatch.data, "\"status\":\"completed\"");
+        check_contains(dispatch.data, "\"mediaWorkerId\":\"media-worker-1\"");
+        check_equal(sender.calls, 1);
+        check_equal(sender.commit_terminal_calls, 1);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -577,17 +577,17 @@ spec("Iris media provider bridge") {
         sender.commit_accepted_status = IVR_ESTATE;
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_UNAVAILABLE);
-        check_str_eq(result.error_code, "PROVIDER_OUTCOME_UNKNOWN");
-        check_int_eq(sender.calls, 1);
-        check_int_eq(sender.mark_unknown_calls, 1);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_UNAVAILABLE);
+        check_equal(result.error_code, "PROVIDER_OUTCOME_UNKNOWN");
+        check_equal(sender.calls, 1);
+        check_equal(sender.mark_unknown_calls, 1);
 
         sender.commit_accepted_status = IVR_OK;
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_UNAVAILABLE);
-        check_str_eq(result.error_code, "PROVIDER_OUTCOME_UNKNOWN");
-        check_int_eq(sender.calls, 1);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_UNAVAILABLE);
+        check_equal(result.error_code, "PROVIDER_OUTCOME_UNKNOWN");
+        check_equal(sender.calls, 1);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -603,8 +603,8 @@ spec("Iris media provider bridge") {
         sender.commit_accepted_status = IVR_ESTATE;
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_UNAVAILABLE);
-        check_int_eq(sender.calls, 1);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_UNAVAILABLE);
+        check_equal(sender.calls, 1);
 
         sender.commit_accepted_status = IVR_OK;
         sender.observation_state = IRIS_RESOURCE_OBSERVATION_ACTIVE;
@@ -613,11 +613,11 @@ spec("Iris media provider bridge") {
                  "media-worker-1");
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_DUPLICATE);
-        check_str_eq(result.media_worker_id, "media-worker-1");
-        check_int_eq(sender.observe_calls, 1);
-        check_int_eq(sender.calls, 1);
-        check_int_eq(sender.commit_accepted_calls, 2);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_DUPLICATE);
+        check_equal(result.media_worker_id, "media-worker-1");
+        check_equal(sender.observe_calls, 1);
+        check_equal(sender.calls, 1);
+        check_equal(sender.commit_accepted_calls, 2);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -635,11 +635,11 @@ spec("Iris media provider bridge") {
         make_close_request(body, sizeof(body), "close-unknown");
         result = iris_media_bridge_dispatch_json(
             bridge, "close-unknown", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_TERMINAL);
-        check_str_eq(result.terminal_status, "succeeded");
-        check_str_contains(result.data, "\"alreadyAbsent\":true");
-        check_int_eq(sender.observe_calls, 1);
-        check_int_eq(sender.calls, 0);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, "succeeded");
+        check_contains(result.data, "\"alreadyAbsent\":true");
+        check_equal(sender.observe_calls, 1);
+        check_equal(sender.calls, 0);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -658,17 +658,17 @@ spec("Iris media provider bridge") {
                             "11");
         result = iris_media_bridge_dispatch_json(
             bridge, "cancel-unknown", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_TERMINAL);
-        check_str_eq(result.terminal_status, "succeeded");
-        check_str_eq(result.event_type, "provider.media.cancelled");
-        check_str_contains(result.data, "\"inputId\":\"input-a\"");
-        check_str_contains(result.data, "\"inputGeneration\":11");
-        check_str_contains(result.data, "\"alreadyAbsent\":true");
-        check_str_eq(sender.ledger[0].identity.resource_id, "input-a");
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, "succeeded");
+        check_equal(result.event_type, "provider.media.cancelled");
+        check_contains(result.data, "\"inputId\":\"input-a\"");
+        check_contains(result.data, "\"inputGeneration\":11");
+        check_contains(result.data, "\"alreadyAbsent\":true");
+        check_equal(sender.ledger[0].identity.resource_id, "input-a");
         check_true(sender.ledger[0].identity.resource_generation ==
                    UINT64_C(11));
-        check_int_eq(sender.observe_calls, 1);
-        check_int_eq(sender.calls, 0);
+        check_equal(sender.observe_calls, 1);
+        check_equal(sender.calls, 0);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -686,20 +686,20 @@ spec("Iris media provider bridge") {
                      "41", "Welcome");
         dispatch = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(dispatch.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
+        check_equal(dispatch.status, IRIS_MEDIA_BRIDGE_ACCEPTED);
         sender.commit_terminal_status = IVR_ESTATE;
-        check_int_eq(iris_media_bridge_claim_completion(
+        check_equal(iris_media_bridge_claim_completion(
                          bridge, &media_result, &completion),
                      IVR_ESTATE);
-        check_str_eq(completion.command_id, "");
-        check_int_eq(sender.mark_unknown_calls, 1);
+        check_equal(completion.command_id, "");
+        check_equal(sender.mark_unknown_calls, 1);
 
         sender.commit_terminal_status = IVR_OK;
-        check_int_eq(iris_media_bridge_claim_completion(
+        check_equal(iris_media_bridge_claim_completion(
                          bridge, &media_result, &completion),
                      IVR_OK);
-        check_str_eq(completion.command_id, "command-a");
-        check_int_eq(sender.commit_terminal_calls, 2);
+        check_equal(completion.command_id, "command-a");
+        check_equal(sender.commit_terminal_calls, 2);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -715,8 +715,8 @@ spec("Iris media provider bridge") {
         sender.forced_disposition = IRIS_COMMAND_CLAIM_CONFLICT;
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_CONFLICT);
-        check_int_eq(sender.calls, 0);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_CONFLICT);
+        check_equal(sender.calls, 0);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -731,13 +731,13 @@ spec("Iris media provider bridge") {
                      "4.1", "Welcome");
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_INVALID);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_INVALID);
         make_request(body, sizeof(body), "command-a", "iris-worker-a",
                      "41", "Welcome");
         result = iris_media_bridge_dispatch_json(
             bridge, "different-command", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_INVALID);
-        check_int_eq(sender.calls, 0);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_INVALID);
+        check_equal(sender.calls, 0);
         iris_media_bridge_destroy(bridge);
     }
 
@@ -761,8 +761,8 @@ spec("Iris media provider bridge") {
         }
         result = iris_media_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_MEDIA_BRIDGE_INVALID);
-        check_int_eq(sender.calls, 0);
+        check_equal(result.status, IRIS_MEDIA_BRIDGE_INVALID);
+        check_equal(sender.calls, 0);
         iris_media_bridge_destroy(bridge);
     }
 }

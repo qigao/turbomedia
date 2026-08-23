@@ -264,147 +264,147 @@ typedef struct {
     int64_t version;
 } turbo_call_center_room_summary_t;
 
-CXX_C_API turbo_room_service_t *turbo_room_service_create(void);
-CXX_C_API void turbo_room_service_destroy(turbo_room_service_t *service);
+TURBO_MEDIA_API turbo_room_service_t *turbo_room_service_create(void);
+TURBO_MEDIA_API void turbo_room_service_destroy(turbo_room_service_t *service);
 
-CXX_C_API int turbo_room_service_create_room(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_create_room(turbo_room_service_t *service,
                                              const turbo_room_config_t *config);
-CXX_C_API int turbo_room_service_close_room(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_close_room(turbo_room_service_t *service,
                                             const char *room_id);
-CXX_C_API int turbo_room_service_discard_unassigned_room(
+TURBO_MEDIA_API int turbo_room_service_discard_unassigned_room(
     turbo_room_service_t *service, const char *room_id);
-CXX_C_API int turbo_room_service_assign_sfu_node(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_assign_sfu_node(turbo_room_service_t *service,
                                                  const char *room_id,
                                                  const char *node_id);
-CXX_C_API int turbo_room_service_get_room_summary(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_get_room_summary(turbo_room_service_t *service,
                                                   const char *room_id,
                                                   turbo_room_summary_t *summary);
 
-CXX_C_API int turbo_room_service_add_participant(
+TURBO_MEDIA_API int turbo_room_service_add_participant(
     turbo_room_service_t *service, const char *room_id,
     const turbo_room_participant_config_t *config);
-CXX_C_API int turbo_room_service_remove_participant(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_remove_participant(turbo_room_service_t *service,
                                                     const char *room_id,
                                                     const char *participant_id);
-CXX_C_API int turbo_room_service_set_participant_session_state(
+TURBO_MEDIA_API int turbo_room_service_set_participant_session_state(
     turbo_room_service_t *service, const char *room_id, const char *participant_id,
     turbo_participant_session_state_t session_state);
-CXX_C_API int turbo_room_service_set_participant_bandwidth(
+TURBO_MEDIA_API int turbo_room_service_set_participant_bandwidth(
     turbo_room_service_t *service, const char *room_id, const char *participant_id,
     int bandwidth_bps);
-CXX_C_API int turbo_room_service_get_participant_summary(
+TURBO_MEDIA_API int turbo_room_service_get_participant_summary(
     turbo_room_service_t *service, const char *room_id, const char *participant_id,
     turbo_room_participant_summary_t *summary);
-CXX_C_API int turbo_room_service_get_participant_summary_at(
+TURBO_MEDIA_API int turbo_room_service_get_participant_summary_at(
     turbo_room_service_t *service, const char *room_id, int index,
     turbo_room_participant_summary_t *summary);
-CXX_C_API int turbo_room_service_get_effective_receiver_bandwidth(
+TURBO_MEDIA_API int turbo_room_service_get_effective_receiver_bandwidth(
     turbo_room_service_t *service, const char *room_id, const char *participant_id,
     int *bandwidth_bps, int *is_explicit);
 
-CXX_C_API int turbo_room_service_publish_track(
+TURBO_MEDIA_API int turbo_room_service_publish_track(
     turbo_room_service_t *service, const char *room_id,
     const turbo_room_track_config_t *config);
-CXX_C_API int turbo_room_service_unpublish_track(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_unpublish_track(turbo_room_service_t *service,
                                                  const char *room_id,
                                                  const char *track_id);
-CXX_C_API int turbo_room_service_set_track_muted(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_set_track_muted(turbo_room_service_t *service,
                                                  const char *room_id,
                                                  const char *track_id,
                                                  int muted);
-CXX_C_API int turbo_room_service_get_track_summary(
+TURBO_MEDIA_API int turbo_room_service_get_track_summary(
     turbo_room_service_t *service, const char *room_id, const char *track_id,
     turbo_room_track_summary_t *summary);
-CXX_C_API int turbo_room_service_get_track_summary_at(
+TURBO_MEDIA_API int turbo_room_service_get_track_summary_at(
     turbo_room_service_t *service, const char *room_id, int index,
     turbo_room_track_summary_t *summary);
 
-CXX_C_API int turbo_room_service_set_subscription(
+TURBO_MEDIA_API int turbo_room_service_set_subscription(
     turbo_room_service_t *service, const char *room_id,
     const turbo_room_subscription_config_t *config);
-CXX_C_API int turbo_room_service_remove_subscription(
+TURBO_MEDIA_API int turbo_room_service_remove_subscription(
     turbo_room_service_t *service, const char *room_id,
     const char *subscriber_participant_id, const char *track_id);
-CXX_C_API int turbo_room_service_get_subscription_summary(
+TURBO_MEDIA_API int turbo_room_service_get_subscription_summary(
     turbo_room_service_t *service, const char *room_id,
     const char *subscriber_participant_id, const char *track_id,
     turbo_room_subscription_summary_t *summary);
-CXX_C_API int turbo_room_service_get_subscription_summary_at(
+TURBO_MEDIA_API int turbo_room_service_get_subscription_summary_at(
     turbo_room_service_t *service, const char *room_id, int index,
     turbo_room_subscription_summary_t *summary);
 
-CXX_C_API int turbo_room_service_start_recording(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_start_recording(turbo_room_service_t *service,
                                                  const char *room_id,
                                                  const char *recording_id,
                                                  const char *mode);
-CXX_C_API int turbo_room_service_stop_recording(turbo_room_service_t *service,
+TURBO_MEDIA_API int turbo_room_service_stop_recording(turbo_room_service_t *service,
                                                 const char *room_id);
-CXX_C_API int turbo_room_service_set_layout_mode(
+TURBO_MEDIA_API int turbo_room_service_set_layout_mode(
     turbo_room_service_t *service, const char *room_id,
     turbo_room_layout_mode_t layout_mode);
-CXX_C_API int turbo_room_service_set_active_speaker(
+TURBO_MEDIA_API int turbo_room_service_set_active_speaker(
     turbo_room_service_t *service, const char *room_id,
     const char *participant_id);
-CXX_C_API int turbo_room_service_pin_participant(
+TURBO_MEDIA_API int turbo_room_service_pin_participant(
     turbo_room_service_t *service, const char *room_id,
     const char *participant_id);
-CXX_C_API int turbo_room_service_reconcile_subscriptions(
+TURBO_MEDIA_API int turbo_room_service_reconcile_subscriptions(
     turbo_room_service_t *service, const char *room_id);
-CXX_C_API int turbo_room_service_reconcile_call_center_subscriptions(
+TURBO_MEDIA_API int turbo_room_service_reconcile_call_center_subscriptions(
     turbo_room_service_t *service, const char *room_id,
     turbo_call_center_supervisor_mode_t supervisor_mode);
-CXX_C_API int turbo_room_service_enqueue_call_center_queue_entry(
+TURBO_MEDIA_API int turbo_room_service_enqueue_call_center_queue_entry(
     turbo_room_service_t *service,
     const turbo_call_center_queue_entry_config_t *config);
-CXX_C_API int turbo_room_service_remove_call_center_queue_entry(
+TURBO_MEDIA_API int turbo_room_service_remove_call_center_queue_entry(
     turbo_room_service_t *service, const char *queue_id,
     turbo_call_center_queue_side_t side, const char *entry_id);
-CXX_C_API int turbo_room_service_get_call_center_queue_depth(
+TURBO_MEDIA_API int turbo_room_service_get_call_center_queue_depth(
     turbo_room_service_t *service, const char *queue_id,
     turbo_call_center_queue_side_t side, int *depth);
-CXX_C_API int turbo_room_service_peek_call_center_queue_entry(
+TURBO_MEDIA_API int turbo_room_service_peek_call_center_queue_entry(
     turbo_room_service_t *service, const char *queue_id,
     turbo_call_center_queue_side_t side,
     turbo_call_center_queue_entry_summary_t *summary);
-CXX_C_API int turbo_room_service_pop_call_center_queue_entry(
+TURBO_MEDIA_API int turbo_room_service_pop_call_center_queue_entry(
     turbo_room_service_t *service, const char *queue_id,
     turbo_call_center_queue_side_t side,
     turbo_call_center_queue_entry_summary_t *summary);
-CXX_C_API int turbo_room_service_match_call_center_queue(
+TURBO_MEDIA_API int turbo_room_service_match_call_center_queue(
     turbo_room_service_t *service, const char *queue_id,
     turbo_call_center_queue_match_summary_t *summary);
-CXX_C_API int turbo_room_service_claim_call_center_queue_match(
+TURBO_MEDIA_API int turbo_room_service_claim_call_center_queue_match(
     turbo_room_service_t *service, const char *queue_id,
     turbo_call_center_queue_match_summary_t *summary);
-CXX_C_API int turbo_room_service_complete_call_center_queue_match(
+TURBO_MEDIA_API int turbo_room_service_complete_call_center_queue_match(
     turbo_room_service_t *service, const char *queue_id,
     const char *caller_entry_id, const char *callee_entry_id);
-CXX_C_API int turbo_room_service_rollback_call_center_queue_match(
+TURBO_MEDIA_API int turbo_room_service_rollback_call_center_queue_match(
     turbo_room_service_t *service, const char *queue_id,
     const char *caller_entry_id, const char *callee_entry_id);
-CXX_C_API int turbo_room_service_recover_stale_call_center_queue_claims(
+TURBO_MEDIA_API int turbo_room_service_recover_stale_call_center_queue_claims(
     turbo_room_service_t *service, const char *queue_id,
     uint64_t lease_ms, int *recovered);
-CXX_C_API int turbo_room_service_set_call_center_agent_state(
+TURBO_MEDIA_API int turbo_room_service_set_call_center_agent_state(
     turbo_room_service_t *service, const char *endpoint_id,
     turbo_call_center_agent_state_t state);
-CXX_C_API int turbo_room_service_get_call_center_agent_state(
+TURBO_MEDIA_API int turbo_room_service_get_call_center_agent_state(
     turbo_room_service_t *service, const char *endpoint_id,
     turbo_call_center_agent_state_summary_t *summary);
-CXX_C_API int turbo_room_service_start_call_center_room(
+TURBO_MEDIA_API int turbo_room_service_start_call_center_room(
     turbo_room_service_t *service, const char *room_id,
     const char *customer_participant_id, const char *agent_participant_id);
-CXX_C_API int turbo_room_service_set_call_center_consult_agent(
+TURBO_MEDIA_API int turbo_room_service_set_call_center_consult_agent(
     turbo_room_service_t *service, const char *room_id,
     const char *consult_agent_participant_id);
-CXX_C_API int turbo_room_service_complete_call_center_transfer(
+TURBO_MEDIA_API int turbo_room_service_complete_call_center_transfer(
     turbo_room_service_t *service, const char *room_id,
     turbo_call_center_agent_state_t released_agent_state);
-CXX_C_API int turbo_room_service_finalize_call_center_room(
+TURBO_MEDIA_API int turbo_room_service_finalize_call_center_room(
     turbo_room_service_t *service, const char *room_id,
     turbo_call_center_room_state_t state, const char *disposition_code,
     turbo_call_center_agent_state_t agent_state);
-CXX_C_API int turbo_room_service_get_call_center_room_summary(
+TURBO_MEDIA_API int turbo_room_service_get_call_center_room_summary(
     turbo_room_service_t *service, const char *room_id,
     turbo_call_center_room_summary_t *summary);
 

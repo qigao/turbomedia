@@ -35,10 +35,10 @@ struct iris_flowmq_provider_s {
     flowmq_connect_endpoint_t *endpoint;
     turbo_threadpool_t *worker;
     DataBind *codec;
-    tstr_t provider_id;
-    tstr_t provider_instance_id;
-    tstr_t iris_identity;
-    tstr_t iris_certificate_sha256;
+    tstr provider_id;
+    tstr provider_instance_id;
+    tstr iris_identity;
+    tstr iris_certificate_sha256;
     size_t maximum_frame_bytes;
     size_t maximum_ingress_bytes;
     uint64_t start_timeout_ns;
@@ -163,14 +163,14 @@ int iris_flowmq_provider_config_validate(
     return TURBO_OK;
 }
 
-static int same_view(tstr_v view, const char *value) {
+static int same_view(vstr view, const char *value) {
     size_t length = value ? strlen(value) : 0u;
     return view.len == length &&
            (length == 0u || memcmp(view.data, value, length) == 0);
 }
 
 static int verify_iris(void *context, const char *certificate_sha256,
-                       tstr_v claimed_identity) {
+                       vstr claimed_identity) {
     iris_flowmq_provider_t *provider = (iris_flowmq_provider_t *)context;
     if (!provider || !certificate_sha256 ||
         !same_view(claimed_identity, provider->iris_identity)) {
@@ -220,14 +220,14 @@ static int send_application(iris_flowmq_provider_t *provider,
                             uint64_t message_id, const uint8_t *payload,
                             size_t payload_size) {
     flowmq_protocol_frame_t frame;
-    tstr_t encoded = NULL;
+    tstr encoded = NULL;
     uint64_t completion_id;
     int status;
     memset(&frame, 0, sizeof(frame));
     frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
     frame.pattern = FLOWMQ_PROTOCOL_DEALER;
     frame.message_id = message_id;
-    frame.payload = tstr_v_from_buf((const char *)payload, payload_size);
+    frame.payload = vstr_from_buf((const char *)payload, payload_size);
     status = flowmq_protocol_encode_frame(&frame, provider->maximum_frame_bytes,
                                           &encoded);
     if (status == TURBO_OK) {

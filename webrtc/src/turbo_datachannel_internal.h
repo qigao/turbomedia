@@ -16,7 +16,7 @@
 #include <turbo_kcp.h>
 #include <turbo_stream.h>
 #include <turbo_thread.h>
-#include <turbo_hash.h>
+#include <turbostl/hash_map.h>
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
 #include <usrsctp.h>
@@ -87,8 +87,8 @@ struct turbo_dc_context_s {
     uint16_t sctp_mtu;                /* SCTP path MTU */
     uint16_t dtls_mtu;                /* DTLS MTU */
     turbo_dc_error_t last_error;      /* Only for errors before peer exists */
-    tstr_t local_fingerprint;         /* SHA-256 hex fingerprint */
-    tstr_t local_fingerprint_hash;    /* "sha-256" */
+    tstr local_fingerprint;         /* SHA-256 hex fingerprint */
+    tstr local_fingerprint_hash;    /* "sha-256" */
     coro_context_t *transport_ctx;    /* Private CoroNet loop context */
     turbo_thread_t transport_thread;  /* Dedicated transport loop thread */
     int transport_thread_started;
@@ -140,7 +140,7 @@ struct turbo_dc_peer_s {
     int sctp_address_registered;
 
     /* Data channels */
-    turbo_hash_map_t channels;  /* uint16_t stream id -> turbo_dc_channel_t * */
+    hash_map_t channels;  /* uint16_t stream id -> turbo_dc_channel_t * */
     int channels_initialized;
     roaring_bitmap_t *channel_ids;  /* Bitmap for ID allocation */
 
@@ -161,14 +161,14 @@ struct turbo_dc_peer_s {
     turbo_dc_error_cb on_error;
 
     /* Remote endpoint */
-    tstr_t remote_host;
+    tstr remote_host;
     uint16_t remote_port;
     struct sockaddr_storage remote_addr;
     int has_remote_addr;
 
     /* Security: expected remote fingerprint from SDP */
-    tstr_t remote_fingerprint;
-    tstr_t remote_fingerprint_hash;
+    tstr remote_fingerprint;
+    tstr remote_fingerprint_hash;
 
 };
 
@@ -178,8 +178,8 @@ struct turbo_dc_channel_s {
     void *user_data;
 
     uint16_t id;
-    tstr_t label;
-    tstr_t protocol;
+    tstr label;
+    tstr protocol;
 
     turbo_dc_channel_config_t config;
 
@@ -288,7 +288,7 @@ static inline turbo_dc_channel_t *peer_get_channel(turbo_dc_peer_t *peer,
     turbo_dc_channel_t **channel;
 
     if (!peer) return NULL;
-    channel = (turbo_dc_channel_t **)turbo_hash_map_get(&peer->channels, &id);
+    channel = (turbo_dc_channel_t **)hash_map_get(&peer->channels, &id);
     return channel ? *channel : NULL;
 }
 
@@ -296,12 +296,12 @@ static inline int peer_set_channel(turbo_dc_peer_t *peer,
                                    uint16_t id,
                                    turbo_dc_channel_t *channel) {
     if (!peer || !channel) return -1;
-    return turbo_hash_map_put(&peer->channels, &id, &channel);
+    return hash_map_put(&peer->channels, &id, &channel) == STL_OK ? 0 : -1;
 }
 
 static inline void peer_remove_channel(turbo_dc_peer_t *peer, uint16_t id) {
     if (peer) {
-        turbo_hash_map_remove(&peer->channels, &id, NULL);
+        hash_map_remove(&peer->channels, &id, NULL);
     }
 }
 

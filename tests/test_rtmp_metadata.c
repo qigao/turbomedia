@@ -12,10 +12,10 @@ static void test_rtmp_metadata_configuration(void) {
 
     check_not_null(streamer);
     if (streamer) {
-        check_int_eq(turbo_streamer_rtmp_set_metadata(streamer, "title", "TurboMedia"), 0);
-        check_int_eq(turbo_streamer_rtmp_set_metadata(streamer, "author", "TurboNet"), 0);
-        check_int_eq(turbo_streamer_rtmp_set_metadata(streamer, "unsupported", "value"), -1);
-        check_int_eq(turbo_streamer_rtmp_set_metadata(streamer, NULL, "value"), -1);
+        check_equal(turbo_streamer_rtmp_set_metadata(streamer, "title", "TurboMedia"), 0);
+        check_equal(turbo_streamer_rtmp_set_metadata(streamer, "author", "TurboNet"), 0);
+        check_equal(turbo_streamer_rtmp_set_metadata(streamer, "unsupported", "value"), -1);
+        check_equal(turbo_streamer_rtmp_set_metadata(streamer, NULL, "value"), -1);
         turbo_streamer_destroy(streamer);
     }
     turbo_streamer_registry_shutdown();

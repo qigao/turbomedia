@@ -11,7 +11,7 @@ int sip_uac_subscribe_onreply(struct sip_uac_transaction_t* t, const struct sip_
 {
 	int r;
 	char ptr[256];
-	tstr_v id;
+	vstr id;
 	struct sip_subscribe_t* subscribe;
 
 	if (reply->u.s.code < 200)

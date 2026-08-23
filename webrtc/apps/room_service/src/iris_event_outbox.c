@@ -256,8 +256,8 @@ static int event_valid(const ivr_media_event_t *event) {
            fixed_text_valid(event->payload_json, sizeof(event->payload_json));
 }
 
-static int set_owned(tstr_t *field, const char *value) {
-    tstr_t next;
+static int set_owned(tstr *field, const char *value) {
+    tstr next;
     if (!field) return 0;
     next = tstr_cpy(*field, value ? value : "");
     if (!next) return 0;
@@ -679,7 +679,7 @@ static int process_settle(iris_event_outbox_t *outbox,
     }
     if (rc != TURBO_OK) {
         stats_increment(outbox, &outbox->stats.settlement_failure_total);
-        TLOG_ERROR("Iris event outbox settlement failed: event_id={}, status={}. "
+        TLOG_ERRORF("Iris event outbox settlement failed: event_id={}, status={}. "
                    "The durable record is retained for recovery.",
                    request->event.event_id, rc);
     }
@@ -986,7 +986,7 @@ static int process_retention(iris_event_outbox_t *outbox,
                 stats_increment(outbox,
                                 &outbox->stats.archive_deleted_total);
                 if (result) result->deleted++;
-                TLOG_INFO("Iris event archive deletion audit: event_id={}, "
+                TLOG_INFOF("Iris event archive deletion audit: event_id={}, "
                           "archived_at_ms={}, deleted_at_ms={}, revision={}.",
                           candidate->event.event_id,
                           candidate->archived_at_ms, scan.now_ms,
@@ -1003,7 +1003,7 @@ static int process_retention(iris_event_outbox_t *outbox,
     }
     if (rc != TURBO_OK) {
         stats_increment(outbox, &outbox->stats.retention_failure_total);
-        TLOG_ERROR("Iris event retention sweep failed: status={}. Durable "
+        TLOG_ERRORF("Iris event retention sweep failed: status={}. Durable "
                    "records are retained for the next bounded sweep.", rc);
     }
     return rc;
@@ -1053,7 +1053,7 @@ static void outbox_thread(void *context) {
     if (recovery == TURBO_OK) recovery = normalize_in_flight(outbox);
     if (recovery == TURBO_OK) recovery = schedule_pending(outbox);
     if (recovery != TURBO_OK) {
-        TLOG_ERROR("Iris event outbox recovery failed: status={}. "
+        TLOG_ERRORF("Iris event outbox recovery failed: status={}. "
                    "New media event admission is stopped.", recovery);
     }
     turbo_mutex_lock(&outbox->mutex);
@@ -1362,7 +1362,7 @@ void iris_event_outbox_on_delivery_result(
     if (!outbox || !event_valid(event) || store_revision == 0u) return;
     request = request_create(IRIS_OUTBOX_SETTLE);
     if (!request) {
-        TLOG_ERROR("Iris event outbox settlement allocation failed: "
+        TLOG_ERRORF("Iris event outbox settlement allocation failed: "
                    "event_id={}. The durable record is retained.",
                    event->event_id);
         return;
@@ -1374,7 +1374,7 @@ void iris_event_outbox_on_delivery_result(
     {
         int result = submit(outbox, request);
         if (result != TURBO_OK) {
-            TLOG_ERROR("Iris event outbox settlement submission failed: "
+            TLOG_ERRORF("Iris event outbox settlement submission failed: "
                        "event_id={}, status={}. The durable record is retained.",
                        event->event_id, result);
         }

@@ -16,8 +16,8 @@ typedef enum {
     TURBO_RECORDER_TEST_IO_CLOSE = 5,
 } turbo_recorder_test_io_op_t;
 
-CXX_C_API void turbo_recorder_test_reset_io_failures(void);
-CXX_C_API void turbo_recorder_test_fail_io_once(turbo_recorder_test_io_op_t op, int call_index);
+TURBO_MEDIA_API void turbo_recorder_test_reset_io_failures(void);
+TURBO_MEDIA_API void turbo_recorder_test_fail_io_once(turbo_recorder_test_io_op_t op, int call_index);
 
 #ifdef __cplusplus
 }

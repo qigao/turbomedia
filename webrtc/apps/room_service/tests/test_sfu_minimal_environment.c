@@ -8,7 +8,7 @@
  * plugs into (actual ICE/DTLS/SRTP media bytes require a second peer and are
  * a follow-up). */
 #include "ivr_thread.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,7 +242,7 @@ void setUp(void) {
     snprintf(g_out_path, sizeof(g_out_path), "%s/sfu_min_%d.out", TEST_BIN_DIR,
              g_seq);
     FILE *cfg = fopen(g_cfg_path, "wb");
-    TEST_ASSERT_NOT_NULL(cfg);
+    check_not_null(cfg);
     fprintf(cfg,
             "[server]\nhost = \"127.0.0.1\"\nport = %d\nuse_tls = false\n"
             "node_id = \"sfu-min-1\"\n"
@@ -256,7 +256,7 @@ void setUp(void) {
     char bin[1024];
     snprintf(bin, sizeof(bin), "%s/%s", TEST_BIN_DIR, SFU_NODE_BIN);
     const char *args[] = {"--config", g_cfg_path, NULL};
-    TEST_ASSERT_EQUAL_INT(0, spawn_with_stdout(bin, args, g_out_path, &g_sfu));
+    check_equal((int)(spawn_with_stdout(bin, args, g_out_path, &g_sfu)), (int)(0));
     proc_sleep(2000); /* let the SFU bind HTTP + start the WebRTC worker */
 
     /* provision the room through the control API (retry until up) */
@@ -275,7 +275,7 @@ void setUp(void) {
             proc_sleep(500);
         }
     }
-    TEST_ASSERT_TRUE(ok);
+    check_true(ok);
 }
 
 void tearDown(void) {
@@ -287,33 +287,33 @@ void tearDown(void) {
 void test_whip_publish_offer_answer(void) {
     char resp[8192];
     memset(resp, 0, sizeof(resp));
-    TEST_ASSERT_EQUAL_INT(0, http_post("/whip/room-42/ivr-bot",
+    check_equal((int)(http_post("/whip/room-42/ivr-bot",
                                        TEST_MEDIA_TOKEN, "application/sdp",
                                        audio_offer_sendonly(), resp,
-                                       sizeof(resp)));
-    TEST_ASSERT_NOT_NULL(strstr(resp, " 201 "));
+                                       sizeof(resp))), (int)(0));
+    check_not_null(strstr(resp, " 201 "));
     /* the answer must be a valid SDP with an audio media line and DTLS/ICE */
-    TEST_ASSERT_NOT_NULL(strstr(resp, "m=audio"));
-    TEST_ASSERT_NOT_NULL(strstr(resp, "a=setup:"));
-    TEST_ASSERT_NOT_NULL(strstr(resp, "a=ice-ufrag"));
+    check_not_null(strstr(resp, "m=audio"));
+    check_not_null(strstr(resp, "a=setup:"));
+    check_not_null(strstr(resp, "a=ice-ufrag"));
 }
 
 void test_whep_subscribe_offer_answer(void) {
     char resp[8192];
     memset(resp, 0, sizeof(resp));
-    TEST_ASSERT_EQUAL_INT(0, http_post("/whep/room-42/ivr-bot-caller-audio",
+    check_equal((int)(http_post("/whep/room-42/ivr-bot-caller-audio",
                                        TEST_MEDIA_TOKEN, "application/sdp",
                                        audio_offer_recvonly(), resp,
-                                       sizeof(resp)));
-    TEST_ASSERT_NOT_NULL(strstr(resp, " 201 "));
-    TEST_ASSERT_NOT_NULL(strstr(resp, "m=audio"));
-    TEST_ASSERT_NOT_NULL(strstr(resp, "a=setup:"));
+                                       sizeof(resp))), (int)(0));
+    check_not_null(strstr(resp, " 201 "));
+    check_not_null(strstr(resp, "m=audio"));
+    check_not_null(strstr(resp, "a=setup:"));
 }
 
 spec("test_sfu_minimal_environment") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_whip_publish_offer_answer);
-  TT_TEST(test_whep_subscribe_offer_answer);
+  it("test_whip_publish_offer_answer") { test_whip_publish_offer_answer(); };
+  it("test_whep_subscribe_offer_answer") { test_whep_subscribe_offer_answer(); };
 }

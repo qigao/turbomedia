@@ -9,7 +9,7 @@
  * 5. DataChannel messaging
  */
 
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_datachannel.h"
 #include "turbo_media_engine.h"
 #include "ice_integration.h"
@@ -418,10 +418,10 @@ void test_e2e_p2p_connection(void) {
         .transport = TURBO_DC_TRANSPORT_ICE
     };
     g_ctx.ctx_a = turbo_dc_context_create(&config_a);
-    TEST_ASSERT_NOT_NULL(g_ctx.ctx_a);
+    check_not_null(g_ctx.ctx_a);
     
     g_ctx.peer_a = turbo_dc_peer_create(g_ctx.ctx_a, NULL, 0, NULL);
-    TEST_ASSERT_NOT_NULL(g_ctx.peer_a);
+    check_not_null(g_ctx.peer_a);
     
     turbo_dc_peer_on_state(g_ctx.peer_a, on_peer_state_a);
     
@@ -431,10 +431,10 @@ void test_e2e_p2p_connection(void) {
         .transport = TURBO_DC_TRANSPORT_ICE
     };
     g_ctx.ctx_b = turbo_dc_context_create(&config_b);
-    TEST_ASSERT_NOT_NULL(g_ctx.ctx_b);
+    check_not_null(g_ctx.ctx_b);
     
     g_ctx.peer_b = turbo_dc_peer_create(g_ctx.ctx_b, NULL, 0, NULL);
-    TEST_ASSERT_NOT_NULL(g_ctx.peer_b);
+    check_not_null(g_ctx.peer_b);
     
     turbo_dc_peer_on_state(g_ctx.peer_b, on_peer_state_b);
     turbo_dc_peer_on_channel(g_ctx.peer_b, on_incoming_channel_b);
@@ -445,14 +445,14 @@ void test_e2e_p2p_connection(void) {
         NULL, 0,  /* No STUN servers */
         NULL, NULL, NULL, 0
     );
-    TEST_ASSERT_NOT_NULL(g_ctx.ice_a);
+    check_not_null(g_ctx.ice_a);
     
     g_ctx.ice_b = ice_integration_create(
         g_ctx.peer_b, g_ctx.loop,
         NULL, 0,  /* No STUN servers */
         NULL, NULL, NULL, 0
     );
-    TEST_ASSERT_NOT_NULL(g_ctx.ice_b);
+    check_not_null(g_ctx.ice_b);
     
     /* Enable loopback candidates for local testing */
     ice_integration_set_allow_loopback(g_ctx.ice_a, 1);
@@ -498,19 +498,19 @@ void test_e2e_p2p_connection(void) {
     
     /* Verify test passed */
     if (!g_ctx.test_passed) {
-        TEST_FAIL_MESSAGE(g_ctx.error_message);
+        check(0, "%s", (g_ctx.error_message));
     }
     
-    TEST_ASSERT_TRUE(g_ctx.ice_connected_a);
-    TEST_ASSERT_TRUE(g_ctx.ice_connected_b);
-    TEST_ASSERT_TRUE(g_ctx.dtls_connected_a);
-    TEST_ASSERT_TRUE(g_ctx.dtls_connected_b);
-    TEST_ASSERT_TRUE(g_ctx.channel_open_a);
-    TEST_ASSERT_TRUE(g_ctx.channel_open_b);
-    TEST_ASSERT_EQUAL(MESSAGE_COUNT, g_ctx.messages_sent_a);
-    TEST_ASSERT_EQUAL(MESSAGE_COUNT, g_ctx.messages_sent_b);
-    TEST_ASSERT_EQUAL(MESSAGE_COUNT, g_ctx.messages_received_a);
-    TEST_ASSERT_EQUAL(MESSAGE_COUNT, g_ctx.messages_received_b);
+    check_true(g_ctx.ice_connected_a);
+    check_true(g_ctx.ice_connected_b);
+    check_true(g_ctx.dtls_connected_a);
+    check_true(g_ctx.dtls_connected_b);
+    check_true(g_ctx.channel_open_a);
+    check_true(g_ctx.channel_open_b);
+    check_equal(g_ctx.messages_sent_a, MESSAGE_COUNT);
+    check_equal(g_ctx.messages_sent_b, MESSAGE_COUNT);
+    check_equal(g_ctx.messages_received_a, MESSAGE_COUNT);
+    check_equal(g_ctx.messages_received_b, MESSAGE_COUNT);
 
     {
         turbo_media_track_config_t track_config = {
@@ -531,13 +531,12 @@ void test_e2e_p2p_connection(void) {
         turbo_media_track_t *track;
 
         g_ctx.media_a = turbo_media_create(g_ctx.peer_a, NULL);
-        TEST_ASSERT_NOT_NULL(g_ctx.media_a);
-        TEST_ASSERT_EQUAL_INT(0, turbo_media_setup_srtp(g_ctx.media_a));
+        check_not_null(g_ctx.media_a);
+        check_equal((int)(turbo_media_setup_srtp(g_ctx.media_a)), (int)(0));
         track = turbo_media_add_track(g_ctx.media_a, &track_config);
-        TEST_ASSERT_NOT_NULL(track);
-        TEST_ASSERT_EQUAL_INT(0, turbo_media_track_start(track));
-        TEST_ASSERT_EQUAL_INT(
-            0, turbo_media_track_send_rtp_packet(track, rtp_packet, sizeof(rtp_packet)));
+        check_not_null(track);
+        check_equal((int)(turbo_media_track_start(track)), (int)(0));
+        check_equal((int)(turbo_media_track_send_rtp_packet(track, rtp_packet, sizeof(rtp_packet))), (int)(0));
     }
 }
 
@@ -548,5 +547,5 @@ void test_e2e_p2p_connection(void) {
 spec("test_e2e_connection") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
-  TT_TEST(test_e2e_p2p_connection);
+  it("test_e2e_p2p_connection") { test_e2e_p2p_connection(); };
 }

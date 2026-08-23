@@ -172,7 +172,7 @@ typedef struct {
 /**
  * Initialize SDP session with defaults
  */
-CXX_C_API void sdp_session_init(sdp_session_t *sdp);
+TURBO_MEDIA_API void sdp_session_init(sdp_session_t *sdp);
 
 /**
  * Add audio media section
@@ -182,51 +182,51 @@ CXX_C_API void sdp_session_init(sdp_session_t *sdp);
  * @param direction Send/recv direction
  * @return          Pointer to media section, or NULL on error
  */
-CXX_C_API sdp_media_t *sdp_add_audio(sdp_session_t *sdp, const char *mid,
+TURBO_MEDIA_API sdp_media_t *sdp_add_audio(sdp_session_t *sdp, const char *mid,
                             sdp_direction_t direction);
 
 /**
  * Add video media section
  */
-CXX_C_API sdp_media_t *sdp_add_video(sdp_session_t *sdp, const char *mid,
+TURBO_MEDIA_API sdp_media_t *sdp_add_video(sdp_session_t *sdp, const char *mid,
                             sdp_direction_t direction);
 
 /**
  * Add DataChannel (application) media section
  */
-CXX_C_API sdp_media_t *sdp_add_datachannel(sdp_session_t *sdp, const char *mid,
+TURBO_MEDIA_API sdp_media_t *sdp_add_datachannel(sdp_session_t *sdp, const char *mid,
                                   int sctp_port);
 
 /**
  * Add codec to media section
  */
-CXX_C_API int sdp_media_add_codec(sdp_media_t *media, const sdp_codec_t *codec);
+TURBO_MEDIA_API int sdp_media_add_codec(sdp_media_t *media, const sdp_codec_t *codec);
 
 /**
  * Add SSRC to media section
  */
-CXX_C_API int sdp_media_add_ssrc(sdp_media_t *media, uint32_t ssrc,
+TURBO_MEDIA_API int sdp_media_add_ssrc(sdp_media_t *media, uint32_t ssrc,
                         const char *cname, const char *msid);
 
 /**
  * Add RTP header extension mapping to media section.
  */
-CXX_C_API int sdp_media_add_extension(sdp_media_t *media, int id, const char *uri);
+TURBO_MEDIA_API int sdp_media_add_extension(sdp_media_t *media, int id, const char *uri);
 
 /**
  * Add ICE candidate to media section
  */
-CXX_C_API int sdp_media_add_candidate(sdp_media_t *media, const sdp_candidate_t *candidate);
+TURBO_MEDIA_API int sdp_media_add_candidate(sdp_media_t *media, const sdp_candidate_t *candidate);
 
 /**
  * Set ICE credentials for media section
  */
-CXX_C_API void sdp_media_set_ice(sdp_media_t *media, const char *ufrag, const char *pwd);
+TURBO_MEDIA_API void sdp_media_set_ice(sdp_media_t *media, const char *ufrag, const char *pwd);
 
 /**
  * Set DTLS fingerprint for media section
  */
-CXX_C_API void sdp_media_set_fingerprint(sdp_media_t *media, const char *hash,
+TURBO_MEDIA_API void sdp_media_set_fingerprint(sdp_media_t *media, const char *hash,
                                 const char *fingerprint);
 
 /**
@@ -237,17 +237,17 @@ CXX_C_API void sdp_media_set_fingerprint(sdp_media_t *media, const char *hash,
  * @param size      Buffer size
  * @return          Length of generated SDP, or -1 on error
  */
-CXX_C_API int sdp_generate(const sdp_session_t *sdp, char *buffer, size_t size);
+TURBO_MEDIA_API int sdp_generate(const sdp_session_t *sdp, char *buffer, size_t size);
 
 /**
  * Generate SDP offer
  */
-CXX_C_API int sdp_generate_offer(const sdp_session_t *sdp, char *buffer, size_t size);
+TURBO_MEDIA_API int sdp_generate_offer(const sdp_session_t *sdp, char *buffer, size_t size);
 
 /**
  * Generate SDP answer based on offer
  */
-CXX_C_API int sdp_generate_answer(const sdp_session_t *local, const sdp_session_t *remote,
+TURBO_MEDIA_API int sdp_generate_answer(const sdp_session_t *local, const sdp_session_t *remote,
                          char *buffer, size_t size);
 
 /* =============================================================================
@@ -262,7 +262,7 @@ CXX_C_API int sdp_generate_answer(const sdp_session_t *local, const sdp_session_
  * @param sdp       Output session structure
  * @return          0 on success, -1 on error
  */
-CXX_C_API int sdp_parse(const char *sdp_str, size_t len, sdp_session_t *sdp);
+TURBO_MEDIA_API int sdp_parse(const char *sdp_str, size_t len, sdp_session_t *sdp);
 
 /**
  * Find media section by mid

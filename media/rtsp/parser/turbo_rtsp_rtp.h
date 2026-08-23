@@ -355,75 +355,75 @@ typedef struct {
     uint64_t timeout_ms;         /* 0 leaves CoroNet default socket timeout */
 } turbo_rtsp_rtp_udp_pair_config_t;
 
-CXX_C_API int turbo_rtsp_rtp_parse_header(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_parse_header(
     const uint8_t *packet,
     size_t packet_len,
     turbo_rtsp_rtp_header_t *header,
     size_t *header_len);
 
-CXX_C_API int turbo_rtsp_rtp_write_header(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_write_header(
     uint8_t *packet,
     size_t packet_size,
     const turbo_rtsp_rtp_header_t *header);
 
-CXX_C_API int turbo_rtsp_rtp_write_packet(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_write_packet(
     uint8_t *packet,
     size_t packet_size,
     const turbo_rtsp_rtp_header_t *header,
     const uint8_t *payload,
     size_t payload_len);
 
-CXX_C_API int turbo_rtsp_mpeg4_generic_payload_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_mpeg4_generic_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
     turbo_rtsp_mpeg4_generic_payload_t *mpeg4);
 
-CXX_C_API int turbo_rtsp_mp4a_latm_payload_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_mp4a_latm_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
     turbo_rtsp_mp4a_latm_payload_t *latm);
 
-CXX_C_API int turbo_rtsp_mpeg2_ts_payload_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_mpeg2_ts_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
     turbo_rtsp_mpeg2_ts_payload_t *ts);
 
-CXX_C_API int turbo_rtsp_h264_payload_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_h264_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
     turbo_rtsp_h264_payload_t *h264);
 
-CXX_C_API int turbo_rtsp_h264_stap_a_next(
+TURBO_MEDIA_C_API int turbo_rtsp_h264_stap_a_next(
     const turbo_rtsp_h264_payload_t *h264,
     size_t *offset,
     const uint8_t **nal,
     size_t *nal_len);
 
-CXX_C_API int turbo_rtsp_h264_payload_write_nal_fragment(
+TURBO_MEDIA_C_API int turbo_rtsp_h264_payload_write_nal_fragment(
     uint8_t *buffer,
     size_t buffer_size,
     const turbo_rtsp_h264_payload_t *h264,
     size_t *written);
 
-CXX_C_API int turbo_rtsp_h264_packetizer_init(
+TURBO_MEDIA_C_API int turbo_rtsp_h264_packetizer_init(
     turbo_rtsp_h264_packetizer_t *packetizer,
     const uint8_t *nal,
     size_t nal_len,
     size_t max_payload);
 
-CXX_C_API int turbo_rtsp_h264_packetizer_next(
+TURBO_MEDIA_C_API int turbo_rtsp_h264_packetizer_next(
     turbo_rtsp_h264_packetizer_t *packetizer,
     uint8_t *payload,
     size_t payload_size,
     turbo_rtsp_h264_packetized_payload_t *out);
 
-CXX_C_API void turbo_rtsp_h264_reassembler_init(
+TURBO_MEDIA_C_API void turbo_rtsp_h264_reassembler_init(
     turbo_rtsp_h264_reassembler_t *reassembler);
 
-CXX_C_API void turbo_rtsp_h264_reassembler_reset(
+TURBO_MEDIA_C_API void turbo_rtsp_h264_reassembler_reset(
     turbo_rtsp_h264_reassembler_t *reassembler);
 
-CXX_C_API int turbo_rtsp_h264_reassembler_push(
+TURBO_MEDIA_C_API int turbo_rtsp_h264_reassembler_push(
     turbo_rtsp_h264_reassembler_t *reassembler,
     const turbo_rtsp_rtp_header_t *header,
     uint8_t *buffer,
@@ -431,42 +431,42 @@ CXX_C_API int turbo_rtsp_h264_reassembler_push(
     const uint8_t **nal,
     size_t *nal_len);
 
-CXX_C_API int turbo_rtsp_h265_payload_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_h265_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
     turbo_rtsp_h265_payload_t *h265);
 
-CXX_C_API int turbo_rtsp_h265_ap_next(
+TURBO_MEDIA_C_API int turbo_rtsp_h265_ap_next(
     const turbo_rtsp_h265_payload_t *h265,
     size_t *offset,
     const uint8_t **nal,
     size_t *nal_len);
 
-CXX_C_API int turbo_rtsp_h265_payload_write_nal_fragment(
+TURBO_MEDIA_C_API int turbo_rtsp_h265_payload_write_nal_fragment(
     uint8_t *buffer,
     size_t buffer_size,
     const turbo_rtsp_h265_payload_t *h265,
     size_t *written);
 
-CXX_C_API int turbo_rtsp_h265_packetizer_init(
+TURBO_MEDIA_C_API int turbo_rtsp_h265_packetizer_init(
     turbo_rtsp_h265_packetizer_t *packetizer,
     const uint8_t *nal,
     size_t nal_len,
     size_t max_payload);
 
-CXX_C_API int turbo_rtsp_h265_packetizer_next(
+TURBO_MEDIA_C_API int turbo_rtsp_h265_packetizer_next(
     turbo_rtsp_h265_packetizer_t *packetizer,
     uint8_t *payload,
     size_t payload_size,
     turbo_rtsp_h265_packetized_payload_t *out);
 
-CXX_C_API void turbo_rtsp_h265_reassembler_init(
+TURBO_MEDIA_C_API void turbo_rtsp_h265_reassembler_init(
     turbo_rtsp_h265_reassembler_t *reassembler);
 
-CXX_C_API void turbo_rtsp_h265_reassembler_reset(
+TURBO_MEDIA_C_API void turbo_rtsp_h265_reassembler_reset(
     turbo_rtsp_h265_reassembler_t *reassembler);
 
-CXX_C_API int turbo_rtsp_h265_reassembler_push(
+TURBO_MEDIA_C_API int turbo_rtsp_h265_reassembler_push(
     turbo_rtsp_h265_reassembler_t *reassembler,
     const turbo_rtsp_rtp_header_t *header,
     uint8_t *buffer,
@@ -474,54 +474,54 @@ CXX_C_API int turbo_rtsp_h265_reassembler_push(
     const uint8_t **nal,
     size_t *nal_len);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_header(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_header(
     const uint8_t *packet,
     size_t packet_len,
     turbo_rtsp_rtcp_header_t *header);
 
-CXX_C_API int turbo_rtsp_rtcp_write_header(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_header(
     uint8_t *packet,
     size_t packet_size,
     const turbo_rtsp_rtcp_header_t *header);
 
-CXX_C_API int turbo_rtsp_rtcp_next_packet(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_next_packet(
     const uint8_t *buffer,
     size_t buffer_len,
     turbo_rtsp_rtcp_header_t *header,
     size_t *consumed);
 
-CXX_C_API int turbo_rtsp_rtcp_validate_compound(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_validate_compound(
     const uint8_t *buffer,
     size_t buffer_len,
     size_t *packet_count);
 
-CXX_C_API uint32_t turbo_rtsp_rtcp_ntp_to_lsr(
+TURBO_MEDIA_C_API uint32_t turbo_rtsp_rtcp_ntp_to_lsr(
     uint64_t ntp_timestamp);
 
-CXX_C_API uint32_t turbo_rtsp_rtcp_delay_us_to_dlsr(
+TURBO_MEDIA_C_API uint32_t turbo_rtsp_rtcp_delay_us_to_dlsr(
     uint64_t delay_us);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_sender_info(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_sender_info(
     const uint8_t *packet,
     size_t packet_len,
     turbo_rtsp_rtcp_sender_info_t *info);
 
-CXX_C_API int turbo_rtsp_rtcp_write_sender_info(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_sender_info(
     uint8_t *packet,
     size_t packet_size,
     const turbo_rtsp_rtcp_sender_info_t *info);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_report_block(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_report_block(
     const uint8_t *packet,
     size_t packet_len,
     turbo_rtsp_rtcp_report_block_t *block);
 
-CXX_C_API int turbo_rtsp_rtcp_write_report_block(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_report_block(
     uint8_t *packet,
     size_t packet_size,
     const turbo_rtsp_rtcp_report_block_t *block);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_receiver_report(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_receiver_report(
     const uint8_t *packet,
     size_t packet_len,
     uint32_t *reporter_ssrc,
@@ -529,14 +529,14 @@ CXX_C_API int turbo_rtsp_rtcp_parse_receiver_report(
     size_t block_capacity,
     size_t *block_count);
 
-CXX_C_API int turbo_rtsp_rtcp_write_receiver_report(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_receiver_report(
     uint8_t *packet,
     size_t packet_size,
     uint32_t reporter_ssrc,
     const turbo_rtsp_rtcp_report_block_t *blocks,
     size_t block_count);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_sender_report(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_sender_report(
     const uint8_t *packet,
     size_t packet_len,
     turbo_rtsp_rtcp_sender_info_t *sender_info,
@@ -544,28 +544,28 @@ CXX_C_API int turbo_rtsp_rtcp_parse_sender_report(
     size_t block_capacity,
     size_t *block_count);
 
-CXX_C_API int turbo_rtsp_rtcp_write_sender_report(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_sender_report(
     uint8_t *packet,
     size_t packet_size,
     const turbo_rtsp_rtcp_sender_info_t *sender_info,
     const turbo_rtsp_rtcp_report_block_t *blocks,
     size_t block_count);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_sdes_cname(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_sdes_cname(
     const uint8_t *packet,
     size_t packet_len,
     uint32_t *ssrc,
     const char **cname,
     size_t *cname_len);
 
-CXX_C_API int turbo_rtsp_rtcp_write_sdes_cname(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_sdes_cname(
     uint8_t *packet,
     size_t packet_size,
     uint32_t ssrc,
     const char *cname,
     size_t cname_len);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_bye(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_bye(
     const uint8_t *packet,
     size_t packet_len,
     uint32_t *ssrcs,
@@ -574,7 +574,7 @@ CXX_C_API int turbo_rtsp_rtcp_parse_bye(
     const char **reason,
     size_t *reason_len);
 
-CXX_C_API int turbo_rtsp_rtcp_write_bye(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_bye(
     uint8_t *packet,
     size_t packet_size,
     const uint32_t *ssrcs,
@@ -582,17 +582,17 @@ CXX_C_API int turbo_rtsp_rtcp_write_bye(
     const char *reason,
     size_t reason_len);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_app(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_app(
     const uint8_t *packet,
     size_t packet_len,
     turbo_rtsp_rtcp_app_t *app);
 
-CXX_C_API int turbo_rtsp_rtcp_write_app(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_app(
     uint8_t *packet,
     size_t packet_size,
     const turbo_rtsp_rtcp_app_t *app);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_generic_nack(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_generic_nack(
     const uint8_t *packet,
     size_t packet_len,
     uint32_t *sender_ssrc,
@@ -601,7 +601,7 @@ CXX_C_API int turbo_rtsp_rtcp_parse_generic_nack(
     size_t item_capacity,
     size_t *item_count);
 
-CXX_C_API int turbo_rtsp_rtcp_write_generic_nack(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_generic_nack(
     uint8_t *packet,
     size_t packet_size,
     uint32_t sender_ssrc,
@@ -609,39 +609,39 @@ CXX_C_API int turbo_rtsp_rtcp_write_generic_nack(
     const turbo_rtsp_rtcp_nack_item_t *items,
     size_t item_count);
 
-CXX_C_API int turbo_rtsp_rtcp_parse_pli(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_parse_pli(
     const uint8_t *packet,
     size_t packet_len,
     uint32_t *sender_ssrc,
     uint32_t *media_ssrc);
 
-CXX_C_API int turbo_rtsp_rtcp_write_pli(
+TURBO_MEDIA_C_API int turbo_rtsp_rtcp_write_pli(
     uint8_t *packet,
     size_t packet_size,
     uint32_t sender_ssrc,
     uint32_t media_ssrc);
 
-CXX_C_API void turbo_rtsp_rtp_source_init(
+TURBO_MEDIA_C_API void turbo_rtsp_rtp_source_init(
     turbo_rtsp_rtp_source_t *source,
     uint32_t ssrc);
 
-CXX_C_API int turbo_rtsp_rtp_source_update(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_source_update(
     turbo_rtsp_rtp_source_t *source,
     const turbo_rtsp_rtp_header_t *header,
     uint32_t arrival_rtp_timestamp);
 
-CXX_C_API turbo_rtsp_rtp_source_update_result_t turbo_rtsp_rtp_source_update_ex(
+TURBO_MEDIA_C_API turbo_rtsp_rtp_source_update_result_t turbo_rtsp_rtp_source_update_ex(
     turbo_rtsp_rtp_source_t *source,
     const turbo_rtsp_rtp_header_t *header,
     uint32_t arrival_rtp_timestamp);
 
-CXX_C_API int turbo_rtsp_rtp_source_make_report(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_source_make_report(
     turbo_rtsp_rtp_source_t *source,
     uint32_t last_sender_report,
     uint32_t delay_since_last_sender_report,
     turbo_rtsp_rtcp_report_block_t *block);
 
-CXX_C_API int turbo_rtsp_rtp_source_write_receiver_report(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_source_write_receiver_report(
     turbo_rtsp_rtp_source_t *source,
     uint8_t *packet,
     size_t packet_size,
@@ -649,7 +649,7 @@ CXX_C_API int turbo_rtsp_rtp_source_write_receiver_report(
     uint32_t last_sender_report,
     uint32_t delay_since_last_sender_report);
 
-CXX_C_API int turbo_rtsp_rtp_source_write_rtcp_compound(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_source_write_rtcp_compound(
     turbo_rtsp_rtp_source_t *source,
     uint8_t *packet,
     size_t packet_size,
@@ -659,15 +659,15 @@ CXX_C_API int turbo_rtsp_rtp_source_write_rtcp_compound(
     const char *cname,
     size_t cname_len);
 
-CXX_C_API void turbo_rtsp_rtp_sender_init(
+TURBO_MEDIA_C_API void turbo_rtsp_rtp_sender_init(
     turbo_rtsp_rtp_sender_t *sender,
     uint32_t ssrc);
 
-CXX_C_API int turbo_rtsp_rtp_sender_update(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_sender_update(
     turbo_rtsp_rtp_sender_t *sender,
     const turbo_rtsp_rtp_header_t *header);
 
-CXX_C_API int turbo_rtsp_rtp_sender_write_sender_report(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_sender_write_sender_report(
     const turbo_rtsp_rtp_sender_t *sender,
     uint8_t *packet,
     size_t packet_size,
@@ -676,7 +676,7 @@ CXX_C_API int turbo_rtsp_rtp_sender_write_sender_report(
     const turbo_rtsp_rtcp_report_block_t *blocks,
     size_t block_count);
 
-CXX_C_API int turbo_rtsp_rtp_sender_write_rtcp_compound(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_sender_write_rtcp_compound(
     const turbo_rtsp_rtp_sender_t *sender,
     uint8_t *packet,
     size_t packet_size,
@@ -687,7 +687,7 @@ CXX_C_API int turbo_rtsp_rtp_sender_write_rtcp_compound(
     const char *cname,
     size_t cname_len);
 
-CXX_C_API void turbo_rtsp_rtp_stream_init(
+TURBO_MEDIA_C_API void turbo_rtsp_rtp_stream_init(
     turbo_rtsp_rtp_stream_t *stream,
     uint8_t payload_type,
     uint32_t ssrc,
@@ -695,7 +695,7 @@ CXX_C_API void turbo_rtsp_rtp_stream_init(
     uint32_t timestamp,
     uint32_t clock_rate);
 
-CXX_C_API int turbo_rtsp_rtp_stream_write_payload(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_stream_write_payload(
     turbo_rtsp_rtp_stream_t *stream,
     const uint8_t *payload,
     size_t payload_len,
@@ -705,7 +705,7 @@ CXX_C_API int turbo_rtsp_rtp_stream_write_payload(
     size_t packet_size,
     size_t *packet_len);
 
-CXX_C_API int turbo_rtsp_rtp_stream_write_mpeg4_generic_au(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_stream_write_mpeg4_generic_au(
     turbo_rtsp_rtp_stream_t *stream,
     const uint8_t *au,
     size_t au_len,
@@ -717,7 +717,7 @@ CXX_C_API int turbo_rtsp_rtp_stream_write_mpeg4_generic_au(
     size_t packet_count_capacity,
     size_t *packet_count);
 
-CXX_C_API int turbo_rtsp_rtp_stream_write_mp4a_latm(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_stream_write_mp4a_latm(
     turbo_rtsp_rtp_stream_t *stream,
     const uint8_t *latm,
     size_t latm_len,
@@ -729,7 +729,7 @@ CXX_C_API int turbo_rtsp_rtp_stream_write_mp4a_latm(
     size_t packet_count_capacity,
     size_t *packet_count);
 
-CXX_C_API int turbo_rtsp_rtp_stream_write_mpeg2_ts(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_stream_write_mpeg2_ts(
     turbo_rtsp_rtp_stream_t *stream,
     const uint8_t *ts,
     size_t ts_len,
@@ -741,7 +741,7 @@ CXX_C_API int turbo_rtsp_rtp_stream_write_mpeg2_ts(
     size_t packet_count_capacity,
     size_t *packet_count);
 
-CXX_C_API int turbo_rtsp_rtp_stream_write_h264_nal(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_stream_write_h264_nal(
     turbo_rtsp_rtp_stream_t *stream,
     const uint8_t *nal,
     size_t nal_len,
@@ -755,36 +755,7 @@ CXX_C_API int turbo_rtsp_rtp_stream_write_h264_nal(
     size_t packet_count_capacity,
     size_t *packet_count);
 
-CXX_C_API int turbo_rtsp_rtp_stream_write_h264_nal_ex(
-    turbo_rtsp_rtp_stream_t *stream,
-    const uint8_t *nal,
-    size_t nal_len,
-    int marker,
-    uint32_t timestamp_increment,
-    size_t max_payload,
-    uint8_t *packet,
-    size_t packet_size,
-    uint8_t *payload_scratch,
-    size_t payload_scratch_size,
-    turbo_rtsp_rtp_stream_packet_t *packets,
-    size_t packet_count_capacity,
-    size_t *packet_count);
-
-CXX_C_API int turbo_rtsp_rtp_stream_write_h265_nal(
-    turbo_rtsp_rtp_stream_t *stream,
-    const uint8_t *nal,
-    size_t nal_len,
-    uint32_t timestamp_increment,
-    size_t max_payload,
-    uint8_t *packet,
-    size_t packet_size,
-    uint8_t *payload_scratch,
-    size_t payload_scratch_size,
-    turbo_rtsp_rtp_stream_packet_t *packets,
-    size_t packet_count_capacity,
-    size_t *packet_count);
-
-CXX_C_API int turbo_rtsp_rtp_stream_write_h265_nal_ex(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_stream_write_h264_nal_ex(
     turbo_rtsp_rtp_stream_t *stream,
     const uint8_t *nal,
     size_t nal_len,
@@ -799,15 +770,44 @@ CXX_C_API int turbo_rtsp_rtp_stream_write_h265_nal_ex(
     size_t packet_count_capacity,
     size_t *packet_count);
 
-CXX_C_API void turbo_rtsp_rtp_h264_receive_stream_init(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_stream_write_h265_nal(
+    turbo_rtsp_rtp_stream_t *stream,
+    const uint8_t *nal,
+    size_t nal_len,
+    uint32_t timestamp_increment,
+    size_t max_payload,
+    uint8_t *packet,
+    size_t packet_size,
+    uint8_t *payload_scratch,
+    size_t payload_scratch_size,
+    turbo_rtsp_rtp_stream_packet_t *packets,
+    size_t packet_count_capacity,
+    size_t *packet_count);
+
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_stream_write_h265_nal_ex(
+    turbo_rtsp_rtp_stream_t *stream,
+    const uint8_t *nal,
+    size_t nal_len,
+    int marker,
+    uint32_t timestamp_increment,
+    size_t max_payload,
+    uint8_t *packet,
+    size_t packet_size,
+    uint8_t *payload_scratch,
+    size_t payload_scratch_size,
+    turbo_rtsp_rtp_stream_packet_t *packets,
+    size_t packet_count_capacity,
+    size_t *packet_count);
+
+TURBO_MEDIA_C_API void turbo_rtsp_rtp_h264_receive_stream_init(
     turbo_rtsp_rtp_h264_receive_stream_t *stream,
     uint32_t ssrc);
 
-CXX_C_API void turbo_rtsp_rtp_h264_receive_stream_reset(
+TURBO_MEDIA_C_API void turbo_rtsp_rtp_h264_receive_stream_reset(
     turbo_rtsp_rtp_h264_receive_stream_t *stream,
     uint32_t ssrc);
 
-CXX_C_API int turbo_rtsp_rtp_h264_receive_stream_push(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_h264_receive_stream_push(
     turbo_rtsp_rtp_h264_receive_stream_t *stream,
     const uint8_t *packet,
     size_t packet_len,
@@ -818,22 +818,22 @@ CXX_C_API int turbo_rtsp_rtp_h264_receive_stream_push(
     size_t *nal_len,
     turbo_rtsp_rtp_source_update_result_t *source_result);
 
-CXX_C_API int turbo_rtsp_rtp_h264_receive_stream_drain_queued(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_h264_receive_stream_drain_queued(
     turbo_rtsp_rtp_h264_receive_stream_t *stream,
     uint8_t *nal_buffer,
     size_t nal_buffer_size,
     const uint8_t **nal,
     size_t *nal_len);
 
-CXX_C_API void turbo_rtsp_rtp_h265_receive_stream_init(
+TURBO_MEDIA_C_API void turbo_rtsp_rtp_h265_receive_stream_init(
     turbo_rtsp_rtp_h265_receive_stream_t *stream,
     uint32_t ssrc);
 
-CXX_C_API void turbo_rtsp_rtp_h265_receive_stream_reset(
+TURBO_MEDIA_C_API void turbo_rtsp_rtp_h265_receive_stream_reset(
     turbo_rtsp_rtp_h265_receive_stream_t *stream,
     uint32_t ssrc);
 
-CXX_C_API int turbo_rtsp_rtp_h265_receive_stream_push(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_h265_receive_stream_push(
     turbo_rtsp_rtp_h265_receive_stream_t *stream,
     const uint8_t *packet,
     size_t packet_len,
@@ -844,69 +844,69 @@ CXX_C_API int turbo_rtsp_rtp_h265_receive_stream_push(
     size_t *nal_len,
     turbo_rtsp_rtp_source_update_result_t *source_result);
 
-CXX_C_API int turbo_rtsp_rtp_h265_receive_stream_drain_queued(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_h265_receive_stream_drain_queued(
     turbo_rtsp_rtp_h265_receive_stream_t *stream,
     uint8_t *nal_buffer,
     size_t nal_buffer_size,
     const uint8_t **nal,
     size_t *nal_len);
 
-CXX_C_API turbo_rtsp_rtp_udp_pair_t *turbo_rtsp_rtp_udp_pair_create(
+TURBO_MEDIA_C_API turbo_rtsp_rtp_udp_pair_t *turbo_rtsp_rtp_udp_pair_create(
     coro_context_t *ctx,
     const turbo_rtsp_rtp_udp_pair_config_t *config);
 
-CXX_C_API void turbo_rtsp_rtp_udp_pair_destroy(
+TURBO_MEDIA_C_API void turbo_rtsp_rtp_udp_pair_destroy(
     turbo_rtsp_rtp_udp_pair_t *pair);
 
-CXX_C_API int turbo_rtsp_rtp_udp_pair_get_local_ports(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_udp_pair_get_local_ports(
     turbo_rtsp_rtp_udp_pair_t *pair,
     int *rtp_port,
     int *rtcp_port);
 
-CXX_C_API int turbo_rtsp_rtp_udp_pair_set_peer(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_udp_pair_set_peer(
     turbo_rtsp_rtp_udp_pair_t *pair,
     const char *host,
     int rtp_port,
     int rtcp_port);
 
-CXX_C_API int turbo_rtsp_rtp_udp_pair_send_rtp(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_udp_pair_send_rtp(
     turbo_rtsp_rtp_udp_pair_t *pair,
     const uint8_t *packet,
     size_t packet_len);
 
-CXX_C_API int turbo_rtsp_rtp_udp_pair_send_rtcp(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_udp_pair_send_rtcp(
     turbo_rtsp_rtp_udp_pair_t *pair,
     const uint8_t *packet,
     size_t packet_len);
 
-CXX_C_API int turbo_rtsp_rtp_udp_pair_recv_rtp(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_udp_pair_recv_rtp(
     turbo_rtsp_rtp_udp_pair_t *pair,
     uint8_t *buffer,
     size_t buffer_size,
     size_t *packet_len);
 
-CXX_C_API int turbo_rtsp_rtp_udp_pair_recv_rtcp(
+TURBO_MEDIA_C_API int turbo_rtsp_rtp_udp_pair_recv_rtcp(
     turbo_rtsp_rtp_udp_pair_t *pair,
     uint8_t *buffer,
     size_t buffer_size,
     size_t *packet_len);
 
-CXX_C_API int turbo_rtsp_interleaved_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_interleaved_parse(
     const uint8_t *buffer,
     size_t buffer_len,
     turbo_rtsp_interleaved_frame_t *frame,
     size_t *consumed);
 
-CXX_C_API void turbo_rtsp_interleaved_parser_init(
+TURBO_MEDIA_C_API void turbo_rtsp_interleaved_parser_init(
     turbo_rtsp_interleaved_parser_t *parser);
 
-CXX_C_API void turbo_rtsp_interleaved_parser_reset(
+TURBO_MEDIA_C_API void turbo_rtsp_interleaved_parser_reset(
     turbo_rtsp_interleaved_parser_t *parser);
 
-CXX_C_API void turbo_rtsp_interleaved_parser_destroy(
+TURBO_MEDIA_C_API void turbo_rtsp_interleaved_parser_destroy(
     turbo_rtsp_interleaved_parser_t *parser);
 
-CXX_C_API int turbo_rtsp_interleaved_parser_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_interleaved_parser_parse(
     turbo_rtsp_interleaved_parser_t *parser,
     const uint8_t *buffer,
     size_t buffer_len,
@@ -916,7 +916,7 @@ CXX_C_API int turbo_rtsp_interleaved_parser_parse(
 /* Returns TURBO_RTSP_FRAME_ERROR with frame->payload_len set to the required
  * payload size when payload_capacity is too small; the frame remains pending
  * so callers can retry with a larger payload buffer. */
-CXX_C_API int turbo_rtsp_interleaved_parser_parse_copy(
+TURBO_MEDIA_C_API int turbo_rtsp_interleaved_parser_parse_copy(
     turbo_rtsp_interleaved_parser_t *parser,
     const uint8_t *buffer,
     size_t buffer_len,
@@ -925,7 +925,7 @@ CXX_C_API int turbo_rtsp_interleaved_parser_parse_copy(
     size_t payload_capacity,
     size_t *consumed);
 
-CXX_C_API int turbo_rtsp_interleaved_write_header(
+TURBO_MEDIA_C_API int turbo_rtsp_interleaved_write_header(
     uint8_t *buffer,
     size_t buffer_size,
     uint8_t channel,

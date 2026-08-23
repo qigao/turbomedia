@@ -6,7 +6,6 @@
 #ifdef TURBO_MEDIA_HAS_MPEG
 
 #include "container_io.h"
-#include "turbo_str_view.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -21,6 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <turbo_error.h>
+#include <turbo_vstr.h>
 
 enum { MPEG_AVIO_BUFFER_SIZE = 32 * 1024 };
 
@@ -73,7 +75,7 @@ static int64_t mpeg_avio_seek(void *opaque, int64_t offset, int whence) {
 
 static int mpeg_name_equals(const char *actual, const char *expected) {
     return actual && expected &&
-           tstr_v_ieq(tstr_v_from_cstr(actual), tstr_v_from_cstr(expected));
+           vstr_ieq(vstr_from_cstr(actual), vstr_from_cstr(expected));
 }
 
 static enum AVCodecID mpeg_codec_id(const turbo_stream_info_t *info) {

@@ -20,7 +20,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <turbo_str.h>
-#include <turbo_vec.h>
+#include <turbostl/vec.h>
 #include <stdio.h>
 
 #ifdef _WIN32
@@ -64,8 +64,8 @@ typedef struct {
     
     int rtp_payload_type;
     int muxer_stream_id;
-    turbo_vec_t extradata;
-    turbo_vec_t access_unit;
+    vec_t extradata;
+    vec_t access_unit;
     int buffers_initialized;
     
     /* Statistics */
@@ -95,7 +95,7 @@ static uint32_t recorder_track_rtp_clock_rate(const recorder_track_t *track) {
 struct turbo_recorder_t {
     /* Configuration */
     turbo_recorder_format_t format;
-    tstr_t filename;
+    tstr filename;
     
     /* Tracks */
     recorder_track_t tracks[MAX_TRACKS];
@@ -113,9 +113,9 @@ struct turbo_recorder_t {
     int64_t paused_total_us;
     
     /* Metadata */
-    tstr_t title;
-    tstr_t author;
-    tstr_t comment;
+    tstr title;
+    tstr author;
+    tstr comment;
     
     /* Statistics */
     int64_t total_bytes_written;
@@ -365,8 +365,8 @@ void turbo_recorder_destroy(turbo_recorder_t *rec) {
     
     for (int i = 0; i < rec->track_count; i++) {
         if (rec->tracks[i].buffers_initialized) {
-            turbo_vec_destroy(&rec->tracks[i].extradata);
-            turbo_vec_destroy(&rec->tracks[i].access_unit);
+            vec_destroy(&rec->tracks[i].extradata);
+            vec_destroy(&rec->tracks[i].access_unit);
         }
     }
 
@@ -403,21 +403,23 @@ int turbo_recorder_add_track(turbo_recorder_t *rec,
 
     track = &rec->tracks[rec->track_count];
     memset(track, 0, sizeof(*track));
-    if (turbo_vec_init(&track->extradata, sizeof(uint8_t)) != 0 ||
-        turbo_vec_init(&track->access_unit, sizeof(uint8_t)) != 0) {
-        turbo_vec_destroy(&track->extradata);
-        turbo_vec_destroy(&track->access_unit);
+    if (vec_init_bytes(&track->extradata, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t),
+                       config->extradata_size) != STL_OK ||
+        vec_init_bytes(&track->access_unit, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t),
+                       RECORDER_MAX_ACCESS_UNIT_BYTES) != STL_OK) {
+        vec_destroy(&track->extradata);
+        vec_destroy(&track->access_unit);
         return -1;
     }
     track->buffers_initialized = 1;
     if (config->extradata_size > 0) {
-        if (turbo_vec_resize(&track->extradata, config->extradata_size) != 0) {
-            turbo_vec_destroy(&track->extradata);
-            turbo_vec_destroy(&track->access_unit);
+        if (vec_resize(&track->extradata, config->extradata_size) != 0) {
+            vec_destroy(&track->extradata);
+            vec_destroy(&track->access_unit);
             memset(track, 0, sizeof(*track));
             return -1;
         }
-        memcpy(turbo_vec_data(&track->extradata), config->extradata,
+        memcpy(vec_data(&track->extradata), config->extradata,
                config->extradata_size);
     }
 
@@ -481,8 +483,8 @@ int turbo_recorder_start(turbo_recorder_t *rec) {
                                : TURBO_CODEC_TYPE_AUDIO;
         stream_info.codec_name = recorder_codec_name(track->codec);
         stream_info.extradata =
-            (const uint8_t *)turbo_vec_data_const(&track->extradata);
-        stream_info.extradata_size = turbo_vec_size(&track->extradata);
+            (const uint8_t *)vec_data_const(&track->extradata);
+        stream_info.extradata_size = vec_size(&track->extradata);
         stream_info.width = track->width;
         stream_info.height = track->height;
         stream_info.framerate = track->framerate;
@@ -755,7 +757,7 @@ static int recorder_append_h26x_nal(rtp_recorder_ctx_t *ctx,
     track = &ctx->recorder->tracks[ctx->track_id];
     if (ctx->access_unit_timestamp_set &&
         ctx->access_unit_timestamp != timestamp) {
-        turbo_vec_clear(&track->access_unit);
+        vec_clear(&track->access_unit);
         ctx->access_unit_keyframe = 0;
         ctx->access_unit_corrupt = 0;
     }
@@ -766,24 +768,24 @@ static int recorder_append_h26x_nal(rtp_recorder_ctx_t *ctx,
         return 0;
     }
 
-    current_size = turbo_vec_size(&track->access_unit);
+    current_size = vec_size(&track->access_unit);
     if (current_size > RECORDER_MAX_ACCESS_UNIT_BYTES -
                            RECORDER_ANNEX_B_START_CODE_BYTES ||
         len > RECORDER_MAX_ACCESS_UNIT_BYTES - current_size -
                   RECORDER_ANNEX_B_START_CODE_BYTES) {
-        turbo_vec_clear(&track->access_unit);
+        vec_clear(&track->access_unit);
         ctx->access_unit_corrupt = 1;
         return -1;
     }
     required = current_size + RECORDER_ANNEX_B_START_CODE_BYTES + len;
-    if (turbo_vec_resize(&track->access_unit, required) != 0) {
-        turbo_vec_clear(&track->access_unit);
+    if (vec_resize(&track->access_unit, required) != 0) {
+        vec_clear(&track->access_unit);
         ctx->access_unit_corrupt = 1;
         return -1;
     }
-    memcpy((uint8_t *)turbo_vec_data(&track->access_unit) + current_size,
+    memcpy((uint8_t *)vec_data(&track->access_unit) + current_size,
            start_code, sizeof(start_code));
-    memcpy((uint8_t *)turbo_vec_data(&track->access_unit) + current_size +
+    memcpy((uint8_t *)vec_data(&track->access_unit) + current_size +
                sizeof(start_code),
            data, len);
 
@@ -924,23 +926,23 @@ int turbo_recorder_write_rtp_packet(rtp_recorder_ctx_t *ctx,
     if (decode_rc <= 0 || ctx->callback_error != 0) {
         write_rc = -1;
         if (recorder_codec_is_h26x(track->codec)) {
-            turbo_vec_clear(&track->access_unit);
+            vec_clear(&track->access_unit);
             ctx->access_unit_corrupt = 1;
         }
     }
 
     if (recorder_codec_is_h26x(track->codec) && marker) {
-        size_t access_unit_size = turbo_vec_size(&track->access_unit);
+        size_t access_unit_size = vec_size(&track->access_unit);
         if (write_rc == 0 && !ctx->access_unit_corrupt &&
             ctx->access_unit_timestamp_set && access_unit_size > 0) {
             write_rc = turbo_recorder_write_rtp_frame(
-                ctx, (const uint8_t *)turbo_vec_data_const(&track->access_unit),
+                ctx, (const uint8_t *)vec_data_const(&track->access_unit),
                 access_unit_size, ctx->access_unit_timestamp,
                 ctx->access_unit_keyframe);
         } else {
             write_rc = -1;
         }
-        turbo_vec_clear(&track->access_unit);
+        vec_clear(&track->access_unit);
         ctx->access_unit_timestamp_set = 0;
         ctx->access_unit_keyframe = 0;
         ctx->access_unit_corrupt = 0;

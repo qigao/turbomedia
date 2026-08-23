@@ -250,16 +250,16 @@ suite("TurboMedia recognition") {
           turbo_voice_detector_create(&provider, &callbacks, &observer);
 
       check_not_null(detector);
-      check_int_eq(turbo_voice_detector_start(detector, &config), TURBO_RECOGNITION_OK);
+      check_equal(turbo_voice_detector_start(detector, &config), TURBO_RECOGNITION_OK);
       turbo_voice_detector_capture_callback(NULL, pcm, sizeof(pcm), 1000U, detector);
-      check_int_eq(mock.write_count, 1);
-      check_int_eq(observer.activity_count, 1);
-      check_int_eq(observer.last_activity.state, TURBO_VOICE_ACTIVITY_SPEECH);
-      check_long_eq((long)observer.last_activity.start_time_us, 1000L);
-      check_int_eq(turbo_voice_detector_finish(detector), TURBO_RECOGNITION_OK);
-      check_int_eq(observer.complete_count, 1);
+      check_equal(mock.write_count, 1);
+      check_equal(observer.activity_count, 1);
+      check_equal(observer.last_activity.state, TURBO_VOICE_ACTIVITY_SPEECH);
+      check_equal((long)observer.last_activity.start_time_us, 1000L);
+      check_equal(turbo_voice_detector_finish(detector), TURBO_RECOGNITION_OK);
+      check_equal(observer.complete_count, 1);
       turbo_voice_detector_destroy(detector);
-      check_int_eq(mock.destroy_count, 1);
+      check_equal(mock.destroy_count, 1);
     }
 
     it("reports capture-path backpressure without stopping the detector") {
@@ -270,12 +270,12 @@ suite("TurboMedia recognition") {
       turbo_voice_detector_t *detector = turbo_voice_detector_create(&provider, NULL, NULL);
 
       check_not_null(detector);
-      check_int_eq(turbo_voice_detector_start(detector, &config), TURBO_RECOGNITION_OK);
+      check_equal(turbo_voice_detector_start(detector, &config), TURBO_RECOGNITION_OK);
       turbo_voice_detector_capture_callback(NULL, pcm, sizeof(pcm), 0U, detector);
-      check_int_eq(turbo_voice_detector_get_last_result(detector), TURBO_RECOGNITION_ERR_BUSY);
-      check_long_eq((long)turbo_voice_detector_get_rejected_frame_count(detector), 1L);
-      check_int_eq(turbo_voice_detector_get_state(detector), TURBO_RECOGNITION_STATE_RUNNING);
-      check_int_eq(turbo_voice_detector_cancel(detector), TURBO_RECOGNITION_OK);
+      check_equal(turbo_voice_detector_get_last_result(detector), TURBO_RECOGNITION_ERR_BUSY);
+      check_equal((long)turbo_voice_detector_get_rejected_frame_count(detector), 1L);
+      check_equal(turbo_voice_detector_get_state(detector), TURBO_RECOGNITION_STATE_RUNNING);
+      check_equal(turbo_voice_detector_cancel(detector), TURBO_RECOGNITION_OK);
       turbo_voice_detector_destroy(detector);
     }
 
@@ -291,12 +291,12 @@ suite("TurboMedia recognition") {
           turbo_voice_detector_create(&provider, &callbacks, &observer);
 
       check_not_null(detector);
-      check_int_eq(turbo_voice_detector_start(detector, &config), TURBO_RECOGNITION_OK);
+      check_equal(turbo_voice_detector_start(detector, &config), TURBO_RECOGNITION_OK);
       turbo_voice_detector_capture_callback(NULL, pcm, sizeof(pcm), 0U, detector);
-      check_int_eq(observer.activity_count, 0);
-      check_int_eq(observer.error_count, 1);
-      check_int_eq(turbo_voice_detector_get_state(detector), TURBO_RECOGNITION_STATE_ERROR);
-      check_int_eq(turbo_voice_detector_get_last_result(detector), TURBO_RECOGNITION_ERR_PROVIDER);
+      check_equal(observer.activity_count, 0);
+      check_equal(observer.error_count, 1);
+      check_equal(turbo_voice_detector_get_state(detector), TURBO_RECOGNITION_STATE_ERROR);
+      check_equal(turbo_voice_detector_get_last_result(detector), TURBO_RECOGNITION_ERR_PROVIDER);
       turbo_voice_detector_destroy(detector);
     }
   }
@@ -320,14 +320,14 @@ suite("TurboMedia recognition") {
           turbo_fingerprint_extractor_create(&provider, &callbacks, &observer);
 
       check_not_null(extractor);
-      check_int_eq(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
+      check_equal(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
       turbo_fingerprint_capture_callback(NULL, pcm, sizeof(pcm), 1000U, extractor);
-      check_int_eq(mock.audio_write_count, 1);
-      check_int_eq(turbo_fingerprint_extractor_finish(extractor), TURBO_RECOGNITION_OK);
-      check_int_eq(observer.result_count, 1);
-      check_size_eq(observer.fingerprint_len, 4U);
-      check_int_eq(observer.fingerprint[0], 0x10);
-      check_int_eq(observer.complete_count, 1);
+      check_equal(mock.audio_write_count, 1);
+      check_equal(turbo_fingerprint_extractor_finish(extractor), TURBO_RECOGNITION_OK);
+      check_equal(observer.result_count, 1);
+      check_equal(observer.fingerprint_len, 4U);
+      check_equal(observer.fingerprint[0], 0x10);
+      check_equal(observer.complete_count, 1);
       turbo_fingerprint_extractor_destroy(extractor);
     }
 
@@ -348,12 +348,12 @@ suite("TurboMedia recognition") {
           turbo_fingerprint_extractor_create(&provider, &callbacks, &observer);
 
       check_not_null(extractor);
-      check_int_eq(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
-      check_int_eq(turbo_fingerprint_extractor_finish(extractor), TURBO_RECOGNITION_ERR_PROVIDER);
-      check_int_eq(observer.result_count, 0);
-      check_int_eq(observer.complete_count, 0);
-      check_int_eq(observer.error_count, 1);
-      check_int_eq(turbo_fingerprint_extractor_get_state(extractor), TURBO_RECOGNITION_STATE_ERROR);
+      check_equal(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
+      check_equal(turbo_fingerprint_extractor_finish(extractor), TURBO_RECOGNITION_ERR_PROVIDER);
+      check_equal(observer.result_count, 0);
+      check_equal(observer.complete_count, 0);
+      check_equal(observer.error_count, 1);
+      check_equal(turbo_fingerprint_extractor_get_state(extractor), TURBO_RECOGNITION_STATE_ERROR);
       turbo_fingerprint_extractor_destroy(extractor);
     }
 
@@ -372,14 +372,14 @@ suite("TurboMedia recognition") {
 
       check_not_null(extractor);
       config.max_duration_us = 0U;
-      check_int_eq(turbo_fingerprint_extractor_start(extractor, &config),
+      check_equal(turbo_fingerprint_extractor_start(extractor, &config),
                    TURBO_RECOGNITION_ERR_INVALID);
       config.max_duration_us = 1000000U;
-      check_int_eq(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
+      check_equal(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
       turbo_fingerprint_player_audio_callback(NULL, samples, 160U, 16000, 1, 25, extractor);
-      check_int_eq(mock.audio_write_count, 1);
-      check_int_eq(mock.last_audio_format, TURBO_RECOGNITION_AUDIO_F32);
-      check_int_eq(turbo_fingerprint_extractor_cancel(extractor), TURBO_RECOGNITION_OK);
+      check_equal(mock.audio_write_count, 1);
+      check_equal(mock.last_audio_format, TURBO_RECOGNITION_AUDIO_F32);
+      check_equal(turbo_fingerprint_extractor_cancel(extractor), TURBO_RECOGNITION_OK);
       turbo_fingerprint_extractor_destroy(extractor);
     }
 
@@ -399,14 +399,14 @@ suite("TurboMedia recognition") {
           turbo_fingerprint_extractor_create(&provider, NULL, NULL);
 
       check_not_null(extractor);
-      check_int_eq(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
-      check_int_eq(turbo_fingerprint_extractor_write_audio(extractor, &frame),
+      check_equal(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
+      check_equal(turbo_fingerprint_extractor_write_audio(extractor, &frame),
                    TURBO_RECOGNITION_ERR_BUSY);
       mock.audio_result = TURBO_RECOGNITION_OK;
-      check_int_eq(turbo_fingerprint_extractor_write_audio(extractor, &frame),
+      check_equal(turbo_fingerprint_extractor_write_audio(extractor, &frame),
                    TURBO_RECOGNITION_OK);
-      check_int_eq(mock.audio_write_count, 2);
-      check_int_eq(turbo_fingerprint_extractor_cancel(extractor), TURBO_RECOGNITION_OK);
+      check_equal(mock.audio_write_count, 2);
+      check_equal(turbo_fingerprint_extractor_cancel(extractor), TURBO_RECOGNITION_OK);
       turbo_fingerprint_extractor_destroy(extractor);
     }
 
@@ -428,17 +428,17 @@ suite("TurboMedia recognition") {
           turbo_fingerprint_extractor_create(&provider, NULL, NULL);
 
       check_not_null(extractor);
-      check_int_eq(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
+      check_equal(turbo_fingerprint_extractor_start(extractor, &config), TURBO_RECOGNITION_OK);
       turbo_fingerprint_player_video_callback(NULL, &frame, extractor);
-      check_int_eq(mock.video_write_count, 1);
-      check_int_eq(mock.last_video_format, TURBO_RECOGNITION_VIDEO_RGBA);
+      check_equal(mock.video_write_count, 1);
+      check_equal(mock.last_video_format, TURBO_RECOGNITION_VIDEO_RGBA);
       frame.pts_ms = 111;
       turbo_fingerprint_player_video_callback(NULL, &frame, extractor);
-      check_int_eq(mock.video_write_count, 1);
-      check_long_eq((long)turbo_fingerprint_extractor_get_rejected_frame_count(extractor), 1L);
-      check_int_eq(turbo_fingerprint_extractor_get_last_result(extractor),
+      check_equal(mock.video_write_count, 1);
+      check_equal((long)turbo_fingerprint_extractor_get_rejected_frame_count(extractor), 1L);
+      check_equal(turbo_fingerprint_extractor_get_last_result(extractor),
                    TURBO_RECOGNITION_ERR_LIMIT);
-      check_int_eq(turbo_fingerprint_extractor_cancel(extractor), TURBO_RECOGNITION_OK);
+      check_equal(turbo_fingerprint_extractor_cancel(extractor), TURBO_RECOGNITION_OK);
       turbo_fingerprint_extractor_destroy(extractor);
     }
   }
@@ -467,22 +467,22 @@ suite("TurboMedia recognition") {
       turbo_fingerprint_matcher_t *matcher = turbo_fingerprint_matcher_create(&provider);
 
       check_not_null(matcher);
-      check_int_eq(turbo_fingerprint_match(matcher, &left, &right, 0.80f, &result),
+      check_equal(turbo_fingerprint_match(matcher, &left, &right, 0.80f, &result),
                    TURBO_RECOGNITION_OK);
-      check_int_eq(result.is_match, 1);
+      check_equal(result.is_match, 1);
       check_true(result.similarity > 0.81f && result.similarity < 0.83f);
-      check_int_eq(mock.compare_count, 1);
+      check_equal(mock.compare_count, 1);
       right.model_version = "v3";
-      check_int_eq(turbo_fingerprint_match(matcher, &left, &right, 0.80f, &result),
+      check_equal(turbo_fingerprint_match(matcher, &left, &right, 0.80f, &result),
                    TURBO_RECOGNITION_ERR_INCOMPATIBLE);
-      check_int_eq(mock.compare_count, 1);
+      check_equal(mock.compare_count, 1);
       right.model_version = "v2";
       mock.similarity = 1.5f;
-      check_int_eq(turbo_fingerprint_match(matcher, &left, &right, 0.80f, &result),
+      check_equal(turbo_fingerprint_match(matcher, &left, &right, 0.80f, &result),
                    TURBO_RECOGNITION_ERR_PROVIDER);
-      check_int_eq(mock.compare_count, 2);
+      check_equal(mock.compare_count, 2);
       turbo_fingerprint_matcher_destroy(matcher);
-      check_int_eq(mock.destroy_count, 1);
+      check_equal(mock.destroy_count, 1);
     }
   }
 }

@@ -263,12 +263,12 @@ spec("iris_media_reconciler") {
         iris_media_reconciler_stats_t stats;
         reset_fixture(&fixture);
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_OK);
         check_true(iris_media_reconciler_accepting_commands(
             fixture.reconciler));
         iris_media_reconciler_get_stats(fixture.reconciler, &stats);
-        check_int_eq(stats.state, IRIS_MEDIA_RECONCILE_READY);
+        check_equal(stats.state, IRIS_MEDIA_RECONCILE_READY);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
 
@@ -280,11 +280,11 @@ spec("iris_media_reconciler") {
         fixture.expected_count = 1u;
         make_worker_inventory(&fixture, 5u);
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_OK);
-        check_int_eq(fixture.rebind_calls, 1);
-        check_int_eq(fixture.close_calls, 0);
-        check_int_eq(fixture.complete_calls, 1);
+        check_equal(fixture.rebind_calls, 1);
+        check_equal(fixture.close_calls, 0);
+        check_equal(fixture.complete_calls, 1);
         check_true(iris_media_reconciler_accepting_commands(
             fixture.reconciler));
         iris_media_reconciler_destroy(fixture.reconciler);
@@ -297,11 +297,11 @@ spec("iris_media_reconciler") {
         fixture.expected_count = 1u;
         make_worker_inventory(&fixture, 4u);
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_OK);
-        check_int_eq(fixture.rebind_calls, 1);
-        check_int_eq(fixture.complete_calls, 1);
-        check_int_eq(fixture.lost_calls, 0);
+        check_equal(fixture.rebind_calls, 1);
+        check_equal(fixture.complete_calls, 1);
+        check_equal(fixture.lost_calls, 0);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
 
@@ -310,13 +310,13 @@ spec("iris_media_reconciler") {
         reset_fixture(&fixture);
         make_worker_inventory(&fixture, 8u);
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_EBUSY);
-        check_int_eq(fixture.close_calls, 1);
-        check_int_eq(fixture.complete_calls, 0);
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(fixture.close_calls, 1);
+        check_equal(fixture.complete_calls, 0);
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_OK);
-        check_int_eq(fixture.complete_calls, 1);
+        check_equal(fixture.complete_calls, 1);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
 
@@ -326,16 +326,16 @@ spec("iris_media_reconciler") {
         make_worker_inventory(&fixture, 8u);
         fixture.preserve_inventory_on_close = 1;
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_EBUSY);
-        check_int_eq(fixture.close_calls, 1);
+        check_equal(fixture.close_calls, 1);
         iris_media_reconciler_destroy(fixture.reconciler);
 
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_EBUSY);
-        check_int_eq(fixture.close_calls, 2);
-        check_str_eq(fixture.close_message_ids[0],
+        check_equal(fixture.close_calls, 2);
+        check_equal(fixture.close_message_ids[0],
                      fixture.close_message_ids[1]);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
@@ -347,14 +347,14 @@ spec("iris_media_reconciler") {
                       IRIS_EXPECTED_COMMAND_DISPATCHED);
         fixture.expected_count = 1u;
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_EBUSY);
-        check_int_eq(fixture.lost_calls, 0);
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(fixture.lost_calls, 0);
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 1), IVR_EBUSY);
-        check_int_eq(fixture.lost_calls, 1);
-        check_str_eq(fixture.lost_reason, "inventory_missing");
-        check_str_eq(fixture.lost_resource.active_command_id, "command-a");
+        check_equal(fixture.lost_calls, 1);
+        check_equal(fixture.lost_reason, "inventory_missing");
+        check_equal(fixture.lost_resource.active_command_id, "command-a");
         iris_media_reconciler_destroy(fixture.reconciler);
     }
 
@@ -366,11 +366,11 @@ spec("iris_media_reconciler") {
         fixture.expected[0].state = IRIS_EXPECTED_MEDIA_OPENING;
         fixture.expected_count = 1u;
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_OK);
         check_true(iris_media_reconciler_accepting_commands(
             fixture.reconciler));
-        check_int_eq(fixture.lost_calls, 0);
+        check_equal(fixture.lost_calls, 0);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
 
@@ -380,9 +380,9 @@ spec("iris_media_reconciler") {
         make_expected(&fixture.expected[0], IRIS_EXPECTED_COMMAND_PENDING);
         fixture.expected_count = 1u;
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 1), IVR_OK);
-        check_int_eq(fixture.lost_calls, 0);
+        check_equal(fixture.lost_calls, 0);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
 
@@ -391,16 +391,16 @@ spec("iris_media_reconciler") {
         ivr_media_event_t first;
         ivr_media_event_t second;
         make_expected(&resource, IRIS_EXPECTED_COMMAND_DISPATCHED);
-        check_int_eq(iris_media_reconciler_build_resource_lost_event(
+        check_equal(iris_media_reconciler_build_resource_lost_event(
                          &resource, "inventory_missing", &first), IVR_OK);
-        check_int_eq(iris_media_reconciler_build_resource_lost_event(
+        check_equal(iris_media_reconciler_build_resource_lost_event(
                          &resource, "generation_or_owner_conflict", &second),
                      IVR_OK);
         check_true(memcmp(&first, &second, sizeof(first)) == 0);
-        check_str_eq(first.event_type, "provider.media.resource_lost");
+        check_equal(first.event_type, "provider.media.resource_lost");
         check_true(strstr(first.payload_json,
                           "resource_not_recoverable") != NULL);
-        check_ull_eq(first.occurred_at_ms, 12000u);
+        check_equal(first.occurred_at_ms, 12000u);
     }
 
     it("returns explicit backpressure when the inventory queue is full") {
@@ -410,9 +410,9 @@ spec("iris_media_reconciler") {
         memset(&page, 0, sizeof(page));
         snprintf(page.message_id, sizeof(page.message_id), "page-a");
         check_not_null(create_reconciler(&fixture, 1u));
-        check_int_eq(iris_media_reconciler_on_inventory_page(
+        check_equal(iris_media_reconciler_on_inventory_page(
                          fixture.reconciler, &page), IVR_OK);
-        check_int_eq(iris_media_reconciler_on_inventory_page(
+        check_equal(iris_media_reconciler_on_inventory_page(
                          fixture.reconciler, &page), IVR_ENOSPC);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
@@ -425,12 +425,12 @@ spec("iris_media_reconciler") {
         fixture.expected_count = 1u;
         make_worker_inventory(&fixture, 4u);
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 1), IVR_EBUSY);
-        check_int_eq(fixture.rebind_calls, 0);
-        check_int_eq(fixture.close_calls, 1);
-        check_int_eq(fixture.lost_calls, 1);
-        check_str_eq(fixture.lost_reason,
+        check_equal(fixture.rebind_calls, 0);
+        check_equal(fixture.close_calls, 1);
+        check_equal(fixture.lost_calls, 1);
+        check_equal(fixture.lost_reason,
                      "generation_or_owner_conflict");
         check_false(iris_media_reconciler_accepting_commands(
             fixture.reconciler));
@@ -443,12 +443,12 @@ spec("iris_media_reconciler") {
         reset_fixture(&fixture);
         fixture.fetch_failures_remaining = 2;
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_start(fixture.reconciler), 0);
+        check_equal(iris_media_reconciler_start(fixture.reconciler), 0);
         check_true(wait_until_accepting(&fixture, 500u));
         iris_media_reconciler_get_stats(fixture.reconciler, &stats);
-        check_int_ge(atomic_load(&fixture.fetch_calls), 3);
-        check_int_ge(stats.reconcile_failures_total, 2);
-        check_int_eq(stats.state, IRIS_MEDIA_RECONCILE_READY);
+        check_greater_equal(atomic_load(&fixture.fetch_calls), 3);
+        check_greater_equal(stats.reconcile_failures_total, 2);
+        check_equal(stats.state, IRIS_MEDIA_RECONCILE_READY);
         iris_media_reconciler_stop(fixture.reconciler);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
@@ -462,22 +462,22 @@ spec("iris_media_reconciler") {
         memset(&page, 0, sizeof(page));
         fixture.fetch_always_fails = 1;
         check_not_null(create_reconciler(&fixture, 2u));
-        check_int_eq(iris_media_reconciler_start(fixture.reconciler), 0);
+        check_equal(iris_media_reconciler_start(fixture.reconciler), 0);
         check_true(wait_for_fetch_calls(&fixture, 1, 500u));
         iris_media_reconciler_stop(fixture.reconciler);
         fetch_calls_after_stop = atomic_load(&fixture.fetch_calls);
         turbo_sleep_ms(5u);
-        check_int_eq(atomic_load(&fixture.fetch_calls),
+        check_equal(atomic_load(&fixture.fetch_calls),
                      fetch_calls_after_stop);
-        check_int_eq(iris_media_reconciler_on_inventory_page(
+        check_equal(iris_media_reconciler_on_inventory_page(
                          fixture.reconciler, &page), IVR_ECLOSED);
-        check_int_eq(iris_media_reconciler_reconcile_once(
+        check_equal(iris_media_reconciler_reconcile_once(
                          fixture.reconciler, 0), IVR_ECLOSED);
-        check_int_eq(iris_media_reconciler_start(fixture.reconciler), -1);
+        check_equal(iris_media_reconciler_start(fixture.reconciler), -1);
         check_false(iris_media_reconciler_accepting_commands(
             fixture.reconciler));
         iris_media_reconciler_get_stats(fixture.reconciler, &stats);
-        check_int_eq(stats.state, IRIS_MEDIA_RECONCILE_DRAINING);
+        check_equal(stats.state, IRIS_MEDIA_RECONCILE_DRAINING);
         iris_media_reconciler_destroy(fixture.reconciler);
     }
 }

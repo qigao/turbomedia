@@ -120,7 +120,7 @@ typedef void (*turbo_playback_complete_cb)(turbo_playback_t *playback,
  * @param max_count Maximum devices to return
  * @return          Number of devices found, or negative on error
  */
-CXX_C_API int turbo_playback_list_devices(turbo_playback_device_t *devices, int max_count);
+TURBO_MEDIA_API int turbo_playback_list_devices(turbo_playback_device_t *devices, int max_count);
 
 /**
  * Get default output device
@@ -128,7 +128,7 @@ CXX_C_API int turbo_playback_list_devices(turbo_playback_device_t *devices, int 
  * @param device    Output device info
  * @return          0 on success, negative on error
  */
-CXX_C_API int turbo_playback_get_default_device(turbo_playback_device_t *device);
+TURBO_MEDIA_API int turbo_playback_get_default_device(turbo_playback_device_t *device);
 
 /* =============================================================================
  * Playback Instance
@@ -143,7 +143,7 @@ CXX_C_API int turbo_playback_get_default_device(turbo_playback_device_t *device)
  * @param config        Playback configuration
  * @return              Playback instance, or NULL on error
  */
-CXX_C_API turbo_playback_t *turbo_playback_create(const char *device_id,
+TURBO_MEDIA_API turbo_playback_t *turbo_playback_create(const char *device_id,
                                                    const turbo_playback_config_t *config);
 
 /**
@@ -155,13 +155,13 @@ CXX_C_API turbo_playback_t *turbo_playback_create(const char *device_id,
  * @param filepath      Path to audio file
  * @return              Playback instance, or NULL on error
  */
-CXX_C_API turbo_playback_t *turbo_playback_create_file(const char *device_id,
+TURBO_MEDIA_API turbo_playback_t *turbo_playback_create_file(const char *device_id,
                                                         const char *filepath);
 
 /**
  * Destroy playback instance
  */
-CXX_C_API void turbo_playback_destroy(turbo_playback_t *playback);
+TURBO_MEDIA_API void turbo_playback_destroy(turbo_playback_t *playback);
 
 /* =============================================================================
  * Callbacks
@@ -173,20 +173,20 @@ CXX_C_API void turbo_playback_destroy(turbo_playback_t *playback);
  * The callback is called from the audio thread when more data is needed.
  * You must fill the output buffer with the requested number of frames.
  */
-CXX_C_API void turbo_playback_set_data_callback(turbo_playback_t *playback,
+TURBO_MEDIA_API void turbo_playback_set_data_callback(turbo_playback_t *playback,
                                                  turbo_playback_data_cb cb,
                                                  void *user_data);
 
 /**
  * Set state change callback
  */
-CXX_C_API void turbo_playback_on_state(turbo_playback_t *playback,
+TURBO_MEDIA_API void turbo_playback_on_state(turbo_playback_t *playback,
                                         turbo_playback_state_cb cb);
 
 /**
  * Set completion callback (for file playback)
  */
-CXX_C_API void turbo_playback_on_complete(turbo_playback_t *playback,
+TURBO_MEDIA_API void turbo_playback_on_complete(turbo_playback_t *playback,
                                            turbo_playback_complete_cb cb);
 
 /* =============================================================================
@@ -198,27 +198,27 @@ CXX_C_API void turbo_playback_on_complete(turbo_playback_t *playback,
  *
  * @return  0 on success
  */
-CXX_C_API int turbo_playback_start(turbo_playback_t *playback);
+TURBO_MEDIA_API int turbo_playback_start(turbo_playback_t *playback);
 
 /**
  * Stop playback
  */
-CXX_C_API void turbo_playback_stop(turbo_playback_t *playback);
+TURBO_MEDIA_API void turbo_playback_stop(turbo_playback_t *playback);
 
 /**
  * Pause playback
  */
-CXX_C_API void turbo_playback_pause(turbo_playback_t *playback);
+TURBO_MEDIA_API void turbo_playback_pause(turbo_playback_t *playback);
 
 /**
  * Resume playback
  */
-CXX_C_API void turbo_playback_resume(turbo_playback_t *playback);
+TURBO_MEDIA_API void turbo_playback_resume(turbo_playback_t *playback);
 
 /**
  * Get playback state
  */
-CXX_C_API turbo_playback_state_t turbo_playback_get_state(turbo_playback_t *playback);
+TURBO_MEDIA_API turbo_playback_state_t turbo_playback_get_state(turbo_playback_t *playback);
 
 /* =============================================================================
  * Volume and Position Control
@@ -229,12 +229,12 @@ CXX_C_API turbo_playback_state_t turbo_playback_get_state(turbo_playback_t *play
  *
  * @param volume    Volume level (0.0 = mute, 1.0 = normal, >1.0 = amplify)
  */
-CXX_C_API void turbo_playback_set_volume(turbo_playback_t *playback, float volume);
+TURBO_MEDIA_API void turbo_playback_set_volume(turbo_playback_t *playback, float volume);
 
 /**
  * Get current volume
  */
-CXX_C_API float turbo_playback_get_volume(turbo_playback_t *playback);
+TURBO_MEDIA_API float turbo_playback_get_volume(turbo_playback_t *playback);
 
 /**
  * Seek to position (file playback only)
@@ -242,26 +242,26 @@ CXX_C_API float turbo_playback_get_volume(turbo_playback_t *playback);
  * @param position_ms   Position in milliseconds
  * @return              0 on success
  */
-CXX_C_API int turbo_playback_seek(turbo_playback_t *playback, uint64_t position_ms);
+TURBO_MEDIA_API int turbo_playback_seek(turbo_playback_t *playback, uint64_t position_ms);
 
 /**
  * Get current position (file playback only)
  *
  * @return  Current position in milliseconds
  */
-CXX_C_API uint64_t turbo_playback_get_position(turbo_playback_t *playback);
+TURBO_MEDIA_API uint64_t turbo_playback_get_position(turbo_playback_t *playback);
 
 /**
  * Get total duration (file playback only)
  *
  * @return  Duration in milliseconds, or 0 if unknown
  */
-CXX_C_API uint64_t turbo_playback_get_duration(turbo_playback_t *playback);
+TURBO_MEDIA_API uint64_t turbo_playback_get_duration(turbo_playback_t *playback);
 
 /**
  * Set looping (file playback only)
  */
-CXX_C_API void turbo_playback_set_looping(turbo_playback_t *playback, int loop);
+TURBO_MEDIA_API void turbo_playback_set_looping(turbo_playback_t *playback, int loop);
 
 /* =============================================================================
  * Playlist/Queue API - Play multiple files in sequence
@@ -277,33 +277,33 @@ CXX_C_API void turbo_playback_set_looping(turbo_playback_t *playback, int loop);
  * @param filepath  Path to audio file to add
  * @return          0 on success, negative on error
  */
-CXX_C_API int turbo_playback_queue_add(turbo_playback_t *playback, const char *filepath);
+TURBO_MEDIA_API int turbo_playback_queue_add(turbo_playback_t *playback, const char *filepath);
 
 /**
  * Clear the playback queue
  *
  * Removes all queued files. Does not stop current playback.
  */
-CXX_C_API void turbo_playback_queue_clear(turbo_playback_t *playback);
+TURBO_MEDIA_API void turbo_playback_queue_clear(turbo_playback_t *playback);
 
 /**
  * Get number of files in queue (including current)
  */
-CXX_C_API int turbo_playback_queue_count(turbo_playback_t *playback);
+TURBO_MEDIA_API int turbo_playback_queue_count(turbo_playback_t *playback);
 
 /**
  * Skip to next file in queue
  *
  * @return  0 on success, -1 if queue is empty
  */
-CXX_C_API int turbo_playback_queue_next(turbo_playback_t *playback);
+TURBO_MEDIA_API int turbo_playback_queue_next(turbo_playback_t *playback);
 
 /**
  * Set queue looping
  *
  * When enabled, queue restarts from beginning after last file completes.
  */
-CXX_C_API void turbo_playback_queue_set_looping(turbo_playback_t *playback, int loop);
+TURBO_MEDIA_API void turbo_playback_queue_set_looping(turbo_playback_t *playback, int loop);
 
 /* =============================================================================
  * Streaming Buffer (Push-based API alternative)
@@ -320,7 +320,7 @@ CXX_C_API void turbo_playback_queue_set_looping(turbo_playback_t *playback, int 
  * @param len       Length in bytes
  * @return          Number of bytes written (may be less if buffer full)
  */
-CXX_C_API size_t turbo_playback_write(turbo_playback_t *playback,
+TURBO_MEDIA_API size_t turbo_playback_write(turbo_playback_t *playback,
                                        const void *samples, size_t len);
 
 /**
@@ -328,14 +328,14 @@ CXX_C_API size_t turbo_playback_write(turbo_playback_t *playback,
  *
  * @return  Available space in bytes
  */
-CXX_C_API size_t turbo_playback_get_available(turbo_playback_t *playback);
+TURBO_MEDIA_API size_t turbo_playback_get_available(turbo_playback_t *playback);
 
 /**
  * Get current buffer level (for monitoring)
  *
  * @return  Buffered data in bytes
  */
-CXX_C_API size_t turbo_playback_get_buffered(turbo_playback_t *playback);
+TURBO_MEDIA_API size_t turbo_playback_get_buffered(turbo_playback_t *playback);
 
 /**
  * Clear buffered push-based streaming data
@@ -343,7 +343,7 @@ CXX_C_API size_t turbo_playback_get_buffered(turbo_playback_t *playback);
  * Does not stop the audio device. Only affects instances created with
  * turbo_playback_create.
  */
-CXX_C_API void turbo_playback_clear(turbo_playback_t *playback);
+TURBO_MEDIA_API void turbo_playback_clear(turbo_playback_t *playback);
 
 #ifdef __cplusplus
 }

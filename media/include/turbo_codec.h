@@ -168,12 +168,12 @@ struct turbo_codec_s {
  *
  * Registers all available codecs
  */
-CXX_C_API void turbo_codec_registry_init(void);
+TURBO_MEDIA_API void turbo_codec_registry_init(void);
 
 /**
  * Shutdown codec registry
  */
-CXX_C_API void turbo_codec_registry_shutdown(void);
+TURBO_MEDIA_API void turbo_codec_registry_shutdown(void);
 
 /**
  * Find codec by payload type
@@ -181,7 +181,7 @@ CXX_C_API void turbo_codec_registry_shutdown(void);
  * @param payload_type  RTP payload type
  * @return              Codec ops, or NULL if not found
  */
-CXX_C_API const turbo_codec_ops_t *turbo_codec_find_by_pt(int payload_type);
+TURBO_MEDIA_API const turbo_codec_ops_t *turbo_codec_find_by_pt(int payload_type);
 
 /**
  * Find codec by name
@@ -189,7 +189,7 @@ CXX_C_API const turbo_codec_ops_t *turbo_codec_find_by_pt(int payload_type);
  * @param name  Codec name (e.g., "opus", "vp8")
  * @return      Codec ops, or NULL if not found
  */
-CXX_C_API const turbo_codec_ops_t *turbo_codec_find_by_name(const char *name);
+TURBO_MEDIA_API const turbo_codec_ops_t *turbo_codec_find_by_name(const char *name);
 
 /**
  * Register a codec
@@ -197,7 +197,7 @@ CXX_C_API const turbo_codec_ops_t *turbo_codec_find_by_name(const char *name);
  * @param ops   Codec operations
  * @return      0 on success
  */
-CXX_C_API int turbo_codec_register(const turbo_codec_ops_t *ops);
+TURBO_MEDIA_API int turbo_codec_register(const turbo_codec_ops_t *ops);
 
 /* =============================================================================
  * Codec Instance Functions
@@ -210,7 +210,7 @@ CXX_C_API int turbo_codec_register(const turbo_codec_ops_t *ops);
  * @param config    Codec-specific configuration
  * @return          Codec instance, or NULL on error
  */
-CXX_C_API turbo_codec_t *turbo_codec_create_encoder(const char *name, const void *config);
+TURBO_MEDIA_API turbo_codec_t *turbo_codec_create_encoder(const char *name, const void *config);
 
 /**
  * Create codec instance for decoding
@@ -219,12 +219,12 @@ CXX_C_API turbo_codec_t *turbo_codec_create_encoder(const char *name, const void
  * @param config    Codec-specific configuration
  * @return          Codec instance, or NULL on error
  */
-CXX_C_API turbo_codec_t *turbo_codec_create_decoder(const char *name, const void *config);
+TURBO_MEDIA_API turbo_codec_t *turbo_codec_create_decoder(const char *name, const void *config);
 
 /**
  * Destroy codec instance
  */
-CXX_C_API void turbo_codec_destroy(turbo_codec_t *codec);
+TURBO_MEDIA_API void turbo_codec_destroy(turbo_codec_t *codec);
 
 /**
  * Encode a frame
@@ -237,7 +237,7 @@ CXX_C_API void turbo_codec_destroy(turbo_codec_t *codec);
  * @param info          Output: frame information
  * @return              0 on success
  */
-CXX_C_API int turbo_codec_encode(turbo_codec_t *codec,
+TURBO_MEDIA_API int turbo_codec_encode(turbo_codec_t *codec,
                        const uint8_t *input, size_t input_len,
                        uint8_t *output, size_t *output_len,
                        turbo_encoded_frame_t *info);
@@ -252,24 +252,24 @@ CXX_C_API int turbo_codec_encode(turbo_codec_t *codec,
  * @param output_len    In: buffer size, Out: decoded size
  * @return              0 on success
  */
-CXX_C_API int turbo_codec_decode(turbo_codec_t *codec,
+TURBO_MEDIA_API int turbo_codec_decode(turbo_codec_t *codec,
                        const uint8_t *input, size_t input_len,
                        uint8_t *output, size_t *output_len);
 
 /**
  * Request keyframe from encoder
  */
-CXX_C_API void turbo_codec_request_keyframe(turbo_codec_t *codec);
+TURBO_MEDIA_API void turbo_codec_request_keyframe(turbo_codec_t *codec);
 
 /**
  * Get packet loss concealment frame
  */
-CXX_C_API int turbo_codec_plc(turbo_codec_t *codec, uint8_t *output, size_t *output_len);
+TURBO_MEDIA_API int turbo_codec_plc(turbo_codec_t *codec, uint8_t *output, size_t *output_len);
 
 /**
  * Set target bitrate
  */
-CXX_C_API void turbo_codec_set_bitrate(turbo_codec_t *codec, int bitrate_bps);
+TURBO_MEDIA_API void turbo_codec_set_bitrate(turbo_codec_t *codec, int bitrate_bps);
 
 /* =============================================================================
  * Built-in Codec Declarations

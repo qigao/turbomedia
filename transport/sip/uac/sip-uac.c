@@ -6,6 +6,7 @@
 #include "sip-dialog.h"
 #include "sip-message.h"
 #include "sip-transport.h"
+#include <turbo_error.h>
 #include <stdio.h>
 #include <errno.h>
 
@@ -19,17 +20,17 @@ int sip_uac_link_transaction(struct sip_agent_t* sip, struct sip_uac_transaction
 
 	turbo_mutex_lock(&sip->locker);
 	assert(!t->linked);
-	result = turbo_vec_push(&sip->uac, &t);
-	if (result == TURBO_OK)
+	result = vec_push(&sip->uac, &t);
+	if (result == STL_OK)
 		t->linked = 1;
 	turbo_mutex_unlock(&sip->locker);
 
-	if (result != TURBO_OK)
+	if (result != STL_OK)
 	{
 		sip_uac_transaction_release(t);
 		sip_agent_destroy(sip);
 	}
-	return result;
+	return result == STL_OK ? TURBO_OK : TURBO_ENOMEM;
 }
 
 int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transaction_t* t)
@@ -45,12 +46,12 @@ int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transacti
 		return 0;
 	}
 
-	for (index = 0U; index < turbo_vec_size(&sip->uac); ++index)
+	for (index = 0U; index < vec_size(&sip->uac); ++index)
 	{
-		candidate = (struct sip_uac_transaction_t **)turbo_vec_at(&sip->uac, index);
+		candidate = (struct sip_uac_transaction_t **)vec_at(&sip->uac, index);
 		if (candidate && *candidate == t)
 		{
-			turbo_vec_erase(&sip->uac, index, NULL);
+			vec_erase(&sip->uac, index, NULL);
 			t->linked = 0;
 			break;
 		}
@@ -105,9 +106,9 @@ void sip_uac_stop_timer(struct sip_agent_t* sip, struct sip_uac_transaction_t* t
 }
 
 // RFC3261 17.1.3 Matching Responses to Client Transactions (p132)
-static struct sip_uac_transaction_t* sip_uac_find_transaction(turbo_vec_t* transactions, struct sip_message_t* reply)
+static struct sip_uac_transaction_t* sip_uac_find_transaction(vec_t* transactions, struct sip_message_t* reply)
 {
-	const tstr_v *p, *p2;
+	const vstr *p, *p2;
 	size_t index;
 	struct sip_uac_transaction_t **candidate;
 	struct sip_uac_transaction_t* t;
@@ -116,9 +117,9 @@ static struct sip_uac_transaction_t* sip_uac_find_transaction(turbo_vec_t* trans
 	if (!p) return NULL;
 	assert(sip_sv_starts_with(p, SIP_BRANCH_PREFIX));
 
-	for (index = 0U; index < turbo_vec_size(transactions); ++index)
+	for (index = 0U; index < vec_size(transactions); ++index)
 	{
-		candidate = (struct sip_uac_transaction_t **)turbo_vec_at(transactions, index);
+		candidate = (struct sip_uac_transaction_t **)vec_at(transactions, index);
 		if (!candidate || !*candidate)
 			continue;
 		t = *candidate;
@@ -284,7 +285,7 @@ int sip_uac_transaction_via(struct sip_uac_transaction_t* t, char *via, int nvia
 	char local[128];
 	char remote[256]; // destination/router
 	char protocol[16];
-	tstr_v user;
+	vstr user;
 	const struct sip_uri_t* uri;
 
 	uri = sip_message_get_next_hop(t->req);

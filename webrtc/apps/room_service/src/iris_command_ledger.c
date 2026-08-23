@@ -97,8 +97,8 @@ static int copy_text(char *destination, size_t capacity, const char *source,
     return 1;
 }
 
-static int set_owned(tstr_t *field, const char *value) {
-    tstr_t next;
+static int set_owned(tstr *field, const char *value) {
+    tstr next;
     if (!field || !value) return 0;
     next = tstr_cpy(*field, value);
     if (!next) return 0;

@@ -1,4 +1,4 @@
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "sfu_node/config.h"
 #include "sfu_node/http_api.h"
 #include "sfu_node/server.h"
@@ -80,28 +80,28 @@ void test_sfu_node_rejects_identifiers_that_do_not_fit_storage(void) {
 
   memset(&config, 0, sizeof(config));
   config.node_id = long_id;
-  TEST_ASSERT_NULL(turbo_sfu_node_create(&config));
+  check_null(turbo_sfu_node_create(&config));
 
   config.node_id = "node-bounds";
   node = turbo_sfu_node_create(&config);
-  TEST_ASSERT_NOT_NULL(node);
-  TEST_ASSERT_EQUAL_INT(-1, turbo_sfu_node_attach_room(node, long_id, 4));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, valid_room_id, 4));
-  TEST_ASSERT_EQUAL_INT(-1, turbo_sfu_node_add_session(
-                                node, valid_room_id, long_id, "session-1", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(
-                               node, valid_room_id, "alice", "session-alice", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(
-                               node, valid_room_id, "bob", "session-bob", NULL));
-  TEST_ASSERT_EQUAL_INT(-1, turbo_sfu_node_register_published_track(
+  check_not_null(node);
+  check_equal((int)(turbo_sfu_node_attach_room(node, long_id, 4)), (int)(-1));
+  check_equal((int)(turbo_sfu_node_attach_room(node, valid_room_id, 4)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(
+                                node, valid_room_id, long_id, "session-1", NULL)), (int)(-1));
+  check_equal((int)(turbo_sfu_node_add_session(
+                               node, valid_room_id, "alice", "session-alice", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(
+                               node, valid_room_id, "bob", "session-bob", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_register_published_track(
                                 node, valid_room_id, "alice", long_id,
-                                0x10203040u, NULL, 0));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_register_published_track(
+                                0x10203040u, NULL, 0)), (int)(-1));
+  check_equal((int)(turbo_sfu_node_register_published_track(
                                node, valid_room_id, "alice", "track-cam",
-                               0x10203040u, NULL, 0));
-  TEST_ASSERT_EQUAL_INT(-1, turbo_sfu_node_set_track_subscription(
+                               0x10203040u, NULL, 0)), (int)(0));
+  check_equal((int)(turbo_sfu_node_set_track_subscription(
                                 node, valid_room_id, long_id, "track-cam", 1,
-                                TURBO_ROOM_VIDEO_LAYER_LOW));
+                                TURBO_ROOM_VIDEO_LAYER_LOW)), (int)(-1));
 
   turbo_sfu_node_destroy(node);
 }
@@ -913,8 +913,8 @@ static void sync_peer_candidates_to_sfu(sfu_node_app_server_t *server, const cha
   while (peer->candidates_applied_to_sfu < peer->candidate_count) {
     const char *candidate = peer->candidates[peer->candidates_applied_to_sfu];
     if (candidate) {
-      TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_add_remote_ice_candidate(
-                                   server, room_id, session_id, candidate));
+      check_equal((int)(sfu_node_app_server_add_remote_ice_candidate(
+                                   server, room_id, session_id, candidate)), (int)(0));
     }
     peer->candidates_applied_to_sfu++;
   }
@@ -942,7 +942,7 @@ static void sync_sfu_candidates_to_peer(sfu_node_app_server_t *server, const cha
         root, "local_ice_candidates",
         (size_t)peer_state->sfu_candidates_applied_to_peer);
     if (candidate && strstr(candidate, "127.0.0.1") != NULL) {
-      TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_add_ice_candidate(peer_pc, candidate));
+      check_equal((int)(turbo_peer_connection_add_ice_candidate(peer_pc, candidate)), (int)(0));
     }
     peer_state->sfu_candidates_applied_to_peer++;
   }
@@ -973,15 +973,15 @@ void test_sfu_node_webrtc_session_accepts_offer_and_generates_answer(void) {
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   node = sfu_node_app_server_get_node(sfu_server);
-  TEST_ASSERT_NOT_NULL(node);
+  check_not_null(node);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-webrtc", 4));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-webrtc", "alice",
-                                                      "sess-alice", NULL));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_create_webrtc_session(
-                               sfu_server, "room-webrtc", "alice", "sess-alice"));
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-webrtc", 4)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-webrtc", "alice",
+                                                      "sess-alice", NULL)), (int)(0));
+  check_equal((int)(sfu_node_app_server_create_webrtc_session(
+                               sfu_server, "room-webrtc", "alice", "sess-alice")), (int)(0));
 
   memset(&offerer_state, 0, sizeof(offerer_state));
   memset(&peer_config, 0, sizeof(peer_config));
@@ -993,7 +993,7 @@ void test_sfu_node_webrtc_session_accepts_offer_and_generates_answer(void) {
   peer_callbacks.on_ice_candidate = offerer_on_ice_candidate;
 
   offerer = turbo_peer_connection_create(&peer_config, &peer_callbacks);
-  TEST_ASSERT_NOT_NULL(offerer);
+  check_not_null(offerer);
 
   {
     turbo_media_track_config_t send_config;
@@ -1009,44 +1009,41 @@ void test_sfu_node_webrtc_session_accepts_offer_and_generates_answer(void) {
     send_config.video.keyframe_interval = 30;
     send_track = turbo_peer_connection_add_track_ex(offerer, &send_config);
   }
-  TEST_ASSERT_NOT_NULL(send_track);
+  check_not_null(send_track);
 
-  TEST_ASSERT_GREATER_THAN(0, turbo_peer_connection_create_offer(offerer, offer_sdp,
-                                                                 sizeof(offer_sdp)));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_remote_offer(
-                               sfu_server, "room-webrtc", "sess-alice", offer_sdp));
+  check_greater(turbo_peer_connection_create_offer(offerer, offer_sdp,
+                                                                 sizeof(offer_sdp)), 0);
+  check_equal((int)(sfu_node_app_server_set_remote_offer(
+                               sfu_server, "room-webrtc", "sess-alice", offer_sdp)), (int)(0));
   session_json = sfu_node_app_server_build_webrtc_session_json(
       sfu_server, "room-webrtc", "sess-alice");
-  TEST_ASSERT_NOT_NULL(session_json);
-  TEST_ASSERT_EQUAL_INT(0, parse_json_text(session_json, &root));
+  check_not_null(session_json);
+  check_equal((int)(parse_json_text(session_json, &root)), (int)(0));
   free(session_json);
   session_json = NULL;
 
   session = root;
-  TEST_ASSERT_EQUAL_STRING("connecting", json_string_value(session, "state"));
+  check_equal(json_string_value(session, "state"), "connecting");
   answer_sdp = json_string_value(session, "local_answer");
-  TEST_ASSERT_NOT_NULL(answer_sdp);
-  TEST_ASSERT_NOT_NULL(strstr(answer_sdp, "m=video"));
-  TEST_ASSERT_NOT_NULL(strstr(answer_sdp, "a=recvonly"));
-  TEST_ASSERT_EQUAL_INT(1, json_bool_value(session, "remote_description_set", 0));
-  TEST_ASSERT_EQUAL_INT(1, json_int_value(session, "remote_track_count", 0));
+  check_not_null(answer_sdp);
+  check_not_null(strstr(answer_sdp, "m=video"));
+  check_not_null(strstr(answer_sdp, "a=recvonly"));
+  check_equal((int)(json_bool_value(session, "remote_description_set", 0)), (int)(1));
+  check_equal((int)(json_int_value(session, "remote_track_count", 0)), (int)(1));
   memset(&room_stats, 0, sizeof(room_stats));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_sfu_node_get_room_stats(node, "room-webrtc", &room_stats));
-  TEST_ASSERT_EQUAL_INT(1, room_stats.published_track_count);
-  TEST_ASSERT_TRUE(json_int_value(session, "local_candidate_count", -1) >= 0);
-  TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_set_remote_description(
-                               offerer, "answer", answer_sdp));
+  check_equal((int)(turbo_sfu_node_get_room_stats(node, "room-webrtc", &room_stats)), (int)(0));
+  check_equal((int)(room_stats.published_track_count), (int)(1));
+  check_true(json_int_value(session, "local_candidate_count", -1) >= 0);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+                               offerer, "answer", answer_sdp)), (int)(0));
   turbo_free_json(&root);
   root = NULL;
 
-  TEST_ASSERT_EQUAL_INT(
-      0, sfu_node_app_server_remove_webrtc_session(
-             sfu_server, "room-webrtc", "sess-alice"));
+  check_equal((int)(sfu_node_app_server_remove_webrtc_session(
+             sfu_server, "room-webrtc", "sess-alice")), (int)(0));
   memset(&room_stats, 0, sizeof(room_stats));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_sfu_node_get_room_stats(node, "room-webrtc", &room_stats));
-  TEST_ASSERT_EQUAL_INT(0, room_stats.published_track_count);
+  check_equal((int)(turbo_sfu_node_get_room_stats(node, "room-webrtc", &room_stats)), (int)(0));
+  check_equal((int)(room_stats.published_track_count), (int)(0));
 
   free_offerer_candidates(&offerer_state);
   turbo_peer_connection_destroy(offerer);
@@ -1072,29 +1069,29 @@ void test_sfu_node_webrtc_session_provisions_relay_track_before_answer(void) {
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   node = sfu_node_app_server_get_node(sfu_server);
-  TEST_ASSERT_NOT_NULL(node);
+  check_not_null(node);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-relay", 4));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-relay", "alice",
-                                                      "sess-alice", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-relay", "bob",
-                                                      "sess-bob", NULL));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_register_published_track(
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-relay", 4)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-relay", "alice",
+                                                      "sess-alice", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-relay", "bob",
+                                                      "sess-bob", NULL)), (int)(0));
+  check_equal((int)(sfu_node_app_server_register_published_track(
                                sfu_server, "room-relay", "alice", "track-cam",
-                               0x11223344u, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8"));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_track_subscription(
+                               0x11223344u, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8")), (int)(0));
+  check_equal((int)(sfu_node_app_server_set_track_subscription(
                                sfu_server, "room-relay", "bob", "track-cam", 1,
-                               TURBO_ROOM_VIDEO_LAYER_LOW));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_create_webrtc_session(
-                               sfu_server, "room-relay", "bob", "sess-bob"));
+                               TURBO_ROOM_VIDEO_LAYER_LOW)), (int)(0));
+  check_equal((int)(sfu_node_app_server_create_webrtc_session(
+                               sfu_server, "room-relay", "bob", "sess-bob")), (int)(0));
 
   memset(&peer_config, 0, sizeof(peer_config));
   peer_config.allow_loopback = 1;
   peer_config.disable_datachannel = 1;
   subscriber = turbo_peer_connection_create(&peer_config, NULL);
-  TEST_ASSERT_NOT_NULL(subscriber);
+  check_not_null(subscriber);
 
   {
     turbo_media_track_config_t recv_config;
@@ -1110,25 +1107,25 @@ void test_sfu_node_webrtc_session_provisions_relay_track_before_answer(void) {
     recv_config.video.keyframe_interval = 30;
     recv_track = turbo_peer_connection_add_track_ex(subscriber, &recv_config);
   }
-  TEST_ASSERT_NOT_NULL(recv_track);
+  check_not_null(recv_track);
 
-  TEST_ASSERT_GREATER_THAN(0, turbo_peer_connection_create_offer(subscriber, offer_sdp,
-                                                                 sizeof(offer_sdp)));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_remote_offer(
-                               sfu_server, "room-relay", "sess-bob", offer_sdp));
+  check_greater(turbo_peer_connection_create_offer(subscriber, offer_sdp,
+                                                                 sizeof(offer_sdp)), 0);
+  check_equal((int)(sfu_node_app_server_set_remote_offer(
+                               sfu_server, "room-relay", "sess-bob", offer_sdp)), (int)(0));
 
   session_json = sfu_node_app_server_build_webrtc_session_json(
       sfu_server, "room-relay", "sess-bob");
-  TEST_ASSERT_NOT_NULL(session_json);
-  TEST_ASSERT_EQUAL_INT(0, parse_json_text(session_json, &root));
+  check_not_null(session_json);
+  check_equal((int)(parse_json_text(session_json, &root)), (int)(0));
   free(session_json);
   session_json = NULL;
 
-  TEST_ASSERT_EQUAL_INT(1, json_int_value(root, "relay_track_count", -1));
+  check_equal((int)(json_int_value(root, "relay_track_count", -1)), (int)(1));
   answer_sdp = json_string_value(root, "local_answer");
-  TEST_ASSERT_NOT_NULL(answer_sdp);
-  TEST_ASSERT_NOT_NULL(strstr(answer_sdp, "m=video"));
-  TEST_ASSERT_NOT_NULL(strstr(answer_sdp, "a=sendonly"));
+  check_not_null(answer_sdp);
+  check_not_null(strstr(answer_sdp, "m=video"));
+  check_not_null(strstr(answer_sdp, "a=sendonly"));
 
   turbo_free_json(&root);
   turbo_peer_connection_destroy(subscriber);
@@ -1180,47 +1177,47 @@ void test_sfu_node_webrtc_session_provisions_multiple_publishers_to_one_subscrib
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   node = sfu_node_app_server_get_node(sfu_server);
-  TEST_ASSERT_NOT_NULL(node);
+  check_not_null(node);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-relay-many", 4));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-relay-many", "alice",
-                                                      "sess-alice", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-relay-many", "carol",
-                                                      "sess-carol", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-relay-many", "bob",
-                                                      "sess-bob", NULL));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_register_published_track(
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-relay-many", 4)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-relay-many", "alice",
+                                                      "sess-alice", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-relay-many", "carol",
+                                                      "sess-carol", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-relay-many", "bob",
+                                                      "sess-bob", NULL)), (int)(0));
+  check_equal((int)(sfu_node_app_server_register_published_track(
                                sfu_server, "room-relay-many", "alice", "track-alice-cam",
-                               0x11223344u, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8"));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_register_published_track(
+                               0x11223344u, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8")), (int)(0));
+  check_equal((int)(sfu_node_app_server_register_published_track(
                                sfu_server, "room-relay-many", "carol", "track-carol-cam",
-                               0x55667788u, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8"));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_track_subscription(
+                               0x55667788u, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8")), (int)(0));
+  check_equal((int)(sfu_node_app_server_set_track_subscription(
                                sfu_server, "room-relay-many", "bob", "track-alice-cam", 1,
-                               TURBO_ROOM_VIDEO_LAYER_LOW));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_track_subscription(
+                               TURBO_ROOM_VIDEO_LAYER_LOW)), (int)(0));
+  check_equal((int)(sfu_node_app_server_set_track_subscription(
                                sfu_server, "room-relay-many", "bob", "track-carol-cam", 1,
-                               TURBO_ROOM_VIDEO_LAYER_LOW));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_create_webrtc_session(
-                               sfu_server, "room-relay-many", "bob", "sess-bob"));
+                               TURBO_ROOM_VIDEO_LAYER_LOW)), (int)(0));
+  check_equal((int)(sfu_node_app_server_create_webrtc_session(
+                               sfu_server, "room-relay-many", "bob", "sess-bob")), (int)(0));
 
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_remote_offer(
-                               sfu_server, "room-relay-many", "sess-bob", offer_sdp));
+  check_equal((int)(sfu_node_app_server_set_remote_offer(
+                               sfu_server, "room-relay-many", "sess-bob", offer_sdp)), (int)(0));
 
   session_json = sfu_node_app_server_build_webrtc_session_json(
       sfu_server, "room-relay-many", "sess-bob");
-  TEST_ASSERT_NOT_NULL(session_json);
-  TEST_ASSERT_EQUAL_INT(0, parse_json_text(session_json, &root));
+  check_not_null(session_json);
+  check_equal((int)(parse_json_text(session_json, &root)), (int)(0));
   free(session_json);
   session_json = NULL;
 
-  TEST_ASSERT_EQUAL_INT(2, json_int_value(root, "relay_track_count", -1));
+  check_equal((int)(json_int_value(root, "relay_track_count", -1)), (int)(2));
   answer_sdp = json_string_value(root, "local_answer");
-  TEST_ASSERT_NOT_NULL(answer_sdp);
-  TEST_ASSERT_EQUAL_INT(2, count_substring_occurrences(answer_sdp, "m=video"));
-  TEST_ASSERT_EQUAL_INT(2, count_substring_occurrences(answer_sdp, "a=sendonly"));
+  check_not_null(answer_sdp);
+  check_equal((int)(count_substring_occurrences(answer_sdp, "m=video")), (int)(2));
+  check_equal((int)(count_substring_occurrences(answer_sdp, "a=sendonly")), (int)(2));
 
   turbo_free_json(&root);
   sfu_node_app_server_destroy(sfu_server);
@@ -1242,27 +1239,27 @@ void test_sfu_node_http_roundtrips_track_subscription_metadata(void) {
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   node = sfu_node_app_server_get_node(sfu_server);
-  TEST_ASSERT_NOT_NULL(node);
+  check_not_null(node);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-subscription-http", 4));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-subscription-http", "alice",
-                                                      "sess-alice", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-subscription-http", "bob",
-                                                      "sess-bob", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_register_published_track(
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-subscription-http", 4)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-subscription-http", "alice",
+                                                      "sess-alice", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-subscription-http", "bob",
+                                                      "sess-bob", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_register_published_track(
                                node, "room-subscription-http", "alice", "track-cam",
-                               0x22113344u, NULL, 0));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_register_published_track(
+                               0x22113344u, NULL, 0)), (int)(0));
+  check_equal((int)(sfu_node_app_server_register_published_track(
                                sfu_server, "room-subscription-http", "alice", "track-cam",
-                               0x22113344u, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp9"));
+                               0x22113344u, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp9")), (int)(0));
 
   http_api = sfu_node_http_api_create(sfu_server);
-  TEST_ASSERT_NOT_NULL(http_api);
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_http_api_start(http_api, sfu_config.bind_host,
-                                                   sfu_config.bind_port));
-  TEST_ASSERT_EQUAL_INT(0, wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100));
+  check_not_null(http_api);
+  check_equal((int)(sfu_node_http_api_start(http_api, sfu_config.bind_host,
+                                                   sfu_config.bind_port)), (int)(0));
+  check_equal((int)(wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100)), (int)(0));
 
   root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -1279,8 +1276,8 @@ void test_sfu_node_http_roundtrips_track_subscription_metadata(void) {
       "\"policy_source\":\"conference_policy_pin\","
       "\"max_layer\":\"medium\""
       "}");
-  TEST_ASSERT_NOT_NULL(root);
-  TEST_ASSERT_TRUE(json_bool_value(root, "ok", 0));
+  check_not_null(root);
+  check_true(json_bool_value(root, "ok", 0));
   turbo_free_json(&root);
 
   root = http_post_json_result(
@@ -1291,19 +1288,18 @@ void test_sfu_node_http_roundtrips_track_subscription_metadata(void) {
       "\"receiver_participant_id\":\"bob\","
       "\"track_id\":\"track-cam\""
       "}");
-  TEST_ASSERT_NOT_NULL(root);
+  check_not_null(root);
   subscription = json_object_field(root, "track_subscription");
-  TEST_ASSERT_NOT_NULL(subscription);
-  TEST_ASSERT_EQUAL_STRING("bob", json_string_value(subscription, "receiver_participant_id"));
-  TEST_ASSERT_EQUAL_STRING("alice", json_string_value(subscription, "sender_participant_id"));
-  TEST_ASSERT_TRUE(json_bool_value(subscription, "enabled", 0));
-  TEST_ASSERT_EQUAL_INT(275, json_int_value(subscription, "priority", -1));
-  TEST_ASSERT_EQUAL_STRING("high", json_string_value(subscription, "preferred_layer"));
-  TEST_ASSERT_EQUAL_STRING("medium", json_string_value(subscription, "target_layer"));
-  TEST_ASSERT_EQUAL_INT(0, json_bool_value(subscription, "muted", 1));
-  TEST_ASSERT_EQUAL_STRING("conference_policy_pin",
-                           json_string_value(subscription, "policy_source"));
-  TEST_ASSERT_EQUAL_STRING("medium", json_string_value(subscription, "max_layer"));
+  check_not_null(subscription);
+  check_equal(json_string_value(subscription, "receiver_participant_id"), "bob");
+  check_equal(json_string_value(subscription, "sender_participant_id"), "alice");
+  check_true(json_bool_value(subscription, "enabled", 0));
+  check_equal((int)(json_int_value(subscription, "priority", -1)), (int)(275));
+  check_equal(json_string_value(subscription, "preferred_layer"), "high");
+  check_equal(json_string_value(subscription, "target_layer"), "medium");
+  check_equal((int)(json_bool_value(subscription, "muted", 1)), (int)(0));
+  check_equal(json_string_value(subscription, "policy_source"), "conference_policy_pin");
+  check_equal(json_string_value(subscription, "max_layer"), "medium");
   turbo_free_json(&root);
 
   sfu_node_http_api_stop(http_api);
@@ -1327,15 +1323,13 @@ void test_sfu_node_https_uses_explicit_identity_and_verified_client(void) {
   config.ice_allow_loopback = 1;
 
   server = sfu_node_app_server_create(&config);
-  TEST_ASSERT_NOT_NULL(server);
+  check_not_null(server);
   http_api = sfu_node_http_api_create(server);
-  TEST_ASSERT_NOT_NULL(http_api);
-  TEST_ASSERT_EQUAL_INT(
-      0, sfu_node_http_api_start(http_api, config.bind_host, config.bind_port));
-  TEST_ASSERT_EQUAL_INT(
-      0, wait_for_https_status_ok(base_url, "/health",
-                                  SFU_NODE_TEST_TLS_CERT_PATH, 30, 100));
-  TEST_ASSERT_EQUAL_INT(0, https_get_status(base_url, "/health", NULL));
+  check_not_null(http_api);
+  check_equal((int)(sfu_node_http_api_start(http_api, config.bind_host, config.bind_port)), (int)(0));
+  check_equal((int)(wait_for_https_status_ok(base_url, "/health",
+                                  SFU_NODE_TEST_TLS_CERT_PATH, 30, 100)), (int)(0));
+  check_equal((int)(https_get_status(base_url, "/health", NULL)), (int)(0));
 
   sfu_node_http_api_stop(http_api);
   sfu_node_http_api_destroy(http_api);
@@ -1372,31 +1366,31 @@ void test_sfu_node_http_control_token_protects_modifying_commands(void) {
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
 
   http_api = sfu_node_http_api_create(sfu_server);
-  TEST_ASSERT_NOT_NULL(http_api);
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_http_api_start(http_api, sfu_config.bind_host,
-                                                   sfu_config.bind_port));
-  TEST_ASSERT_EQUAL_INT(0, wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100));
+  check_not_null(http_api);
+  check_equal((int)(sfu_node_http_api_start(http_api, sfu_config.bind_host,
+                                                   sfu_config.bind_port)), (int)(0));
+  check_equal((int)(wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100)), (int)(0));
 
-  TEST_ASSERT_EQUAL_INT(200, http_post_json_status_with_token(
+  check_equal((int)(http_post_json_status_with_token(
                                  sfu_node_base_url, "/api/v1/commands",
-                                 get_node_stats_command, NULL));
-  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 get_node_stats_command, NULL)), (int)(200));
+  check_equal((int)(http_post_json_status_with_token(
                                  sfu_node_base_url, "/api/v1/commands",
-                                 attach_room_command, NULL));
-  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 attach_room_command, NULL)), (int)(401));
+  check_equal((int)(http_post_json_status_with_token(
                                  sfu_node_base_url, "/api/v1/commands",
-                                 attach_room_command, "wrong-token"));
-  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+                                 attach_room_command, "wrong-token")), (int)(401));
+  check_equal((int)(http_post_json_status_with_token(
                                  sfu_node_base_url, "/api/v1/commands",
-                                 force_close_room_command, NULL));
+                                 force_close_room_command, NULL)), (int)(401));
 
   root = http_post_json_result_with_token(sfu_node_base_url, "/api/v1/commands",
                                           attach_room_command, "test-control-token");
-  TEST_ASSERT_NOT_NULL(root);
-  TEST_ASSERT_TRUE(json_bool_value(root, "ok", 0));
+  check_not_null(root);
+  check_true(json_bool_value(root, "ok", 0));
   turbo_free_json(&root);
 
   sfu_node_http_api_stop(http_api);
@@ -1457,19 +1451,19 @@ void test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(
       .issued_at = now,
       .expires_at = now + 120};
   room_write_token = turbo_media_auth_issue(&current_auth, &claims);
-  TEST_ASSERT_NOT_NULL(room_write_token);
+  check_not_null(room_write_token);
   claims.scope = "sfu.control.dangerous";
   dangerous_token = turbo_media_auth_issue(&current_auth, &claims);
-  TEST_ASSERT_NOT_NULL(dangerous_token);
+  check_not_null(dangerous_token);
   claims.participant_id = "call-a";
   participant_dangerous_token = turbo_media_auth_issue(&current_auth, &claims);
-  TEST_ASSERT_NOT_NULL(participant_dangerous_token);
+  check_not_null(participant_dangerous_token);
   claims.participant_id = NULL;
   claims.scope = "sfu.control.write";
   claims.issued_at = now - 120;
   claims.expires_at = now - 31;
   expired_token = turbo_media_auth_issue(&current_auth, &claims);
-  TEST_ASSERT_NOT_NULL(expired_token);
+  check_not_null(expired_token);
 
   previous_issuer = current_auth;
   previous_issuer.active_key_id = current_auth.previous_key_id;
@@ -1479,50 +1473,40 @@ void test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(
   claims.issued_at = now;
   claims.expires_at = now + 120;
   previous_token = turbo_media_auth_issue(&previous_issuer, &claims);
-  TEST_ASSERT_NOT_NULL(previous_token);
+  check_not_null(previous_token);
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   http_api = sfu_node_http_api_create(sfu_server);
-  TEST_ASSERT_NOT_NULL(http_api);
-  TEST_ASSERT_EQUAL_INT(
-      0, sfu_node_http_api_start(
-             http_api, sfu_config.bind_host, sfu_config.bind_port));
-  TEST_ASSERT_EQUAL_INT(
-      0, wait_for_http_status_ok(base_url, "/health", 30, 100));
+  check_not_null(http_api);
+  check_equal((int)(sfu_node_http_api_start(
+             http_api, sfu_config.bind_host, sfu_config.bind_port)), (int)(0));
+  check_equal((int)(wait_for_http_status_ok(base_url, "/health", 30, 100)), (int)(0));
 
-  TEST_ASSERT_EQUAL_INT(
-      200, http_post_json_status_with_token(
+  check_equal((int)(http_post_json_status_with_token(
                base_url, "/api/v1/commands", attach_room_a,
-               room_write_token));
-  TEST_ASSERT_EQUAL_INT(
-      401, http_post_json_status_with_token(
+               room_write_token)), (int)(200));
+  check_equal((int)(http_post_json_status_with_token(
                base_url, "/api/v1/commands", attach_room_b,
-               room_write_token));
-  TEST_ASSERT_EQUAL_INT(
-      401, http_post_json_status_with_token(
+               room_write_token)), (int)(401));
+  check_equal((int)(http_post_json_status_with_token(
                base_url, "/api/v1/commands", force_close_room_a,
-               room_write_token));
-  TEST_ASSERT_EQUAL_INT(
-      401, http_post_json_status_with_token(
+               room_write_token)), (int)(401));
+  check_equal((int)(http_post_json_status_with_token(
                base_url, "/api/v1/commands", disconnect_participant_a,
-               room_write_token));
-  TEST_ASSERT_EQUAL_INT(
-      400, http_post_json_status_with_token(
+               room_write_token)), (int)(401));
+  check_equal((int)(http_post_json_status_with_token(
                base_url, "/api/v1/commands", disconnect_participant_a,
-               participant_dangerous_token));
-  TEST_ASSERT_EQUAL_INT(
-      401, http_post_json_status_with_token(
+               participant_dangerous_token)), (int)(400));
+  check_equal((int)(http_post_json_status_with_token(
                base_url, "/api/v1/commands", attach_room_a,
-               expired_token));
-  TEST_ASSERT_EQUAL_INT(
-      200, http_post_json_status_with_token(
+               expired_token)), (int)(401));
+  check_equal((int)(http_post_json_status_with_token(
                base_url, "/api/v1/commands", force_close_room_a,
-               dangerous_token));
-  TEST_ASSERT_EQUAL_INT(
-      200, http_post_json_status_with_token(
+               dangerous_token)), (int)(200));
+  check_equal((int)(http_post_json_status_with_token(
                base_url, "/api/v1/commands", attach_room_a,
-               previous_token));
+               previous_token)), (int)(200));
 
   sfu_node_http_api_stop(http_api);
   sfu_node_http_api_destroy(http_api);
@@ -1566,45 +1550,45 @@ void test_sfu_node_ready_metrics_and_drain_control(void) {
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
 
   http_api = sfu_node_http_api_create(sfu_server);
-  TEST_ASSERT_NOT_NULL(http_api);
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_http_api_start(http_api, sfu_config.bind_host,
-                                                   sfu_config.bind_port));
-  TEST_ASSERT_EQUAL_INT(0, wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100));
-  TEST_ASSERT_EQUAL_INT(200, http_get_status(sfu_node_base_url, "/ready"));
-  TEST_ASSERT_EQUAL_INT(200, http_get_status(sfu_node_base_url, "/metrics"));
+  check_not_null(http_api);
+  check_equal((int)(sfu_node_http_api_start(http_api, sfu_config.bind_host,
+                                                   sfu_config.bind_port)), (int)(0));
+  check_equal((int)(wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100)), (int)(0));
+  check_equal((int)(http_get_status(sfu_node_base_url, "/ready")), (int)(200));
+  check_equal((int)(http_get_status(sfu_node_base_url, "/metrics")), (int)(200));
 
-  TEST_ASSERT_EQUAL_INT(401, http_post_json_status_with_token(
+  check_equal((int)(http_post_json_status_with_token(
                                  sfu_node_base_url, "/api/v1/commands",
-                                 set_drain_command, NULL));
+                                 set_drain_command, NULL)), (int)(401));
 
   root = http_post_json_result_with_token(sfu_node_base_url, "/api/v1/commands",
                                           set_drain_command, "test-control-token");
-  TEST_ASSERT_NOT_NULL(root);
+  check_not_null(root);
   node_stats = json_object_field(root, "node_stats");
-  TEST_ASSERT_NOT_NULL(node_stats);
-  TEST_ASSERT_TRUE(json_bool_value(node_stats, "draining", 0));
+  check_not_null(node_stats);
+  check_true(json_bool_value(node_stats, "draining", 0));
   turbo_free_json(&root);
 
-  TEST_ASSERT_EQUAL_INT(503, http_get_status(sfu_node_base_url, "/ready"));
-  TEST_ASSERT_EQUAL_INT(409, http_post_json_status_with_token(
+  check_equal((int)(http_get_status(sfu_node_base_url, "/ready")), (int)(503));
+  check_equal((int)(http_post_json_status_with_token(
                                  sfu_node_base_url, "/api/v1/commands",
-                                 attach_room_command, "test-control-token"));
+                                 attach_room_command, "test-control-token")), (int)(409));
 
   root = http_post_json_result_with_token(sfu_node_base_url, "/api/v1/commands",
                                           clear_drain_command, "test-control-token");
-  TEST_ASSERT_NOT_NULL(root);
+  check_not_null(root);
   node_stats = json_object_field(root, "node_stats");
-  TEST_ASSERT_NOT_NULL(node_stats);
-  TEST_ASSERT_FALSE(json_bool_value(node_stats, "draining", 1));
+  check_not_null(node_stats);
+  check_false(json_bool_value(node_stats, "draining", 1));
   turbo_free_json(&root);
 
-  TEST_ASSERT_EQUAL_INT(200, http_get_status(sfu_node_base_url, "/ready"));
-  TEST_ASSERT_EQUAL_INT(200, http_post_json_status_with_token(
+  check_equal((int)(http_get_status(sfu_node_base_url, "/ready")), (int)(200));
+  check_equal((int)(http_post_json_status_with_token(
                                  sfu_node_base_url, "/api/v1/commands",
-                                 attach_room_command, "test-control-token"));
+                                 attach_room_command, "test-control-token")), (int)(200));
 
   sfu_node_http_api_stop(http_api);
   sfu_node_http_api_destroy(http_api);
@@ -1653,30 +1637,22 @@ void test_sfu_node_config_reads_security_and_ice_from_env(void) {
   app_test_set_env("TURBO_SFU_AUTH_MAX_TTL_SECONDS", "900");
   sfu_node_app_config_init(&sfu_config);
   sfu_node_app_config_apply_environment(&sfu_config);
-  TEST_ASSERT_EQUAL_STRING("env-sfu-control-token", sfu_config.control_token);
-  TEST_ASSERT_EQUAL_STRING("env-sfu-media-token",
-                           sfu_config.media_access_token);
-  TEST_ASSERT_EQUAL_INT(1, sfu_config.stun_server_count);
-  TEST_ASSERT_EQUAL_STRING("stun:env.example:3478",
-                           sfu_config.stun_servers[0]);
-  TEST_ASSERT_EQUAL_INT(1, sfu_config.turn_server_count);
-  TEST_ASSERT_EQUAL_STRING("turn:env-user:env-secret@env.example:3478",
-                           sfu_config.turn_servers[0]);
-  TEST_ASSERT_EQUAL_INT(1, sfu_config.use_tls);
-  TEST_ASSERT_EQUAL_STRING(SFU_NODE_TEST_TLS_CERT_PATH,
-                           sfu_config.tls_cert_file);
-  TEST_ASSERT_EQUAL_STRING(SFU_NODE_TEST_TLS_KEY_PATH,
-                           sfu_config.tls_key_file);
-  TEST_ASSERT_EQUAL_STRING("env-turbomedia", sfu_config.auth_issuer);
-  TEST_ASSERT_EQUAL_STRING("env-active", sfu_config.auth_active_key_id);
-  TEST_ASSERT_EQUAL_STRING(
-      "0123456789abcdef0123456789abcdef",
-      sfu_config.auth_active_secret);
-  TEST_ASSERT_EQUAL_STRING("env-previous",
-                           sfu_config.auth_previous_key_id);
-  TEST_ASSERT_EQUAL_INT(17, sfu_config.auth_clock_skew_seconds);
-  TEST_ASSERT_EQUAL_INT(900, sfu_config.auth_max_ttl_seconds);
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_config_validate(&sfu_config));
+  check_equal(sfu_config.control_token, "env-sfu-control-token");
+  check_equal(sfu_config.media_access_token, "env-sfu-media-token");
+  check_equal((int)(sfu_config.stun_server_count), (int)(1));
+  check_equal(sfu_config.stun_servers[0], "stun:env.example:3478");
+  check_equal((int)(sfu_config.turn_server_count), (int)(1));
+  check_equal(sfu_config.turn_servers[0], "turn:env-user:env-secret@env.example:3478");
+  check_equal((int)(sfu_config.use_tls), (int)(1));
+  check_equal(sfu_config.tls_cert_file, SFU_NODE_TEST_TLS_CERT_PATH);
+  check_equal(sfu_config.tls_key_file, SFU_NODE_TEST_TLS_KEY_PATH);
+  check_equal(sfu_config.auth_issuer, "env-turbomedia");
+  check_equal(sfu_config.auth_active_key_id, "env-active");
+  check_equal(sfu_config.auth_active_secret, "0123456789abcdef0123456789abcdef");
+  check_equal(sfu_config.auth_previous_key_id, "env-previous");
+  check_equal((int)(sfu_config.auth_clock_skew_seconds), (int)(17));
+  check_equal((int)(sfu_config.auth_max_ttl_seconds), (int)(900));
+  check_equal((int)(sfu_node_app_config_validate(&sfu_config)), (int)(0));
 
   app_test_restore_env("TURBO_SFU_NODE_CONTROL_TOKEN", saved_control);
   app_test_restore_env("TURBO_SFU_MEDIA_ACCESS_TOKEN", saved_media);
@@ -1720,19 +1696,19 @@ void test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_sessio
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   node = sfu_node_app_server_get_node(sfu_server);
-  TEST_ASSERT_NOT_NULL(node);
+  check_not_null(node);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-webrtc-http", 4));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-webrtc-http", "alice",
-                                                      "sess-alice", NULL));
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-webrtc-http", 4)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-webrtc-http", "alice",
+                                                      "sess-alice", NULL)), (int)(0));
 
   http_api = sfu_node_http_api_create(sfu_server);
-  TEST_ASSERT_NOT_NULL(http_api);
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_http_api_start(http_api, sfu_config.bind_host,
-                                                   sfu_config.bind_port));
-  TEST_ASSERT_EQUAL_INT(0, wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100));
+  check_not_null(http_api);
+  check_equal((int)(sfu_node_http_api_start(http_api, sfu_config.bind_host,
+                                                   sfu_config.bind_port)), (int)(0));
+  check_equal((int)(wait_for_http_status_ok(sfu_node_base_url, "/health", 30, 100)), (int)(0));
   fprintf(stderr, "http webrtc test: server ready\n");
 
   root = http_post_json_result(
@@ -1743,16 +1719,16 @@ void test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_sessio
       "\"participant_id\":\"alice\","
       "\"session_id\":\"sess-alice\""
       "}");
-  TEST_ASSERT_NOT_NULL(root);
-  TEST_ASSERT_TRUE(json_bool_value(root, "ok", 0));
+  check_not_null(root);
+  check_true(json_bool_value(root, "ok", 0));
   session = json_object_field(root, "webrtc_session");
-  TEST_ASSERT_NOT_NULL(session);
-  TEST_ASSERT_EQUAL_STRING("room-webrtc-http", json_string_value(session, "room_id"));
-  TEST_ASSERT_EQUAL_STRING("alice", json_string_value(session, "participant_id"));
-  TEST_ASSERT_EQUAL_STRING("sess-alice", json_string_value(session, "session_id"));
-  TEST_ASSERT_EQUAL_STRING("new", json_string_value(session, "state"));
-  TEST_ASSERT_EQUAL_INT(0, json_bool_value(session, "remote_description_set", 1));
-  TEST_ASSERT_EQUAL_INT(0, json_int_value(session, "remote_track_count", -1));
+  check_not_null(session);
+  check_equal(json_string_value(session, "room_id"), "room-webrtc-http");
+  check_equal(json_string_value(session, "participant_id"), "alice");
+  check_equal(json_string_value(session, "session_id"), "sess-alice");
+  check_equal(json_string_value(session, "state"), "new");
+  check_equal((int)(json_bool_value(session, "remote_description_set", 1)), (int)(0));
+  check_equal((int)(json_int_value(session, "remote_track_count", -1)), (int)(0));
   turbo_free_json(&root);
   root = NULL;
   fprintf(stderr, "http webrtc test: create session ok\n");
@@ -1767,7 +1743,7 @@ void test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_sessio
   peer_callbacks.on_ice_candidate = offerer_on_ice_candidate;
 
   offerer = turbo_peer_connection_create(&peer_config, &peer_callbacks);
-  TEST_ASSERT_NOT_NULL(offerer);
+  check_not_null(offerer);
 
   {
     turbo_media_track_config_t send_config;
@@ -1783,45 +1759,44 @@ void test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_sessio
     send_config.video.keyframe_interval = 30;
     send_track = turbo_peer_connection_add_track_ex(offerer, &send_config);
   }
-  TEST_ASSERT_NOT_NULL(send_track);
+  check_not_null(send_track);
 
-  TEST_ASSERT_GREATER_THAN(0, turbo_peer_connection_create_offer(offerer, offer_sdp,
-                                                                 sizeof(offer_sdp)));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_remote_offer(
-                               sfu_server, "room-webrtc-http", "sess-alice", offer_sdp));
+  check_greater(turbo_peer_connection_create_offer(offerer, offer_sdp,
+                                                                 sizeof(offer_sdp)), 0);
+  check_equal((int)(sfu_node_app_server_set_remote_offer(
+                               sfu_server, "room-webrtc-http", "sess-alice", offer_sdp)), (int)(0));
 
   root = http_get_json(sfu_node_base_url,
                        "/api/v1/rooms/room-webrtc-http/webrtc_sessions/sess-alice");
-  TEST_ASSERT_NOT_NULL(root);
-  TEST_ASSERT_TRUE(json_bool_value(root, "ok", 0));
+  check_not_null(root);
+  check_true(json_bool_value(root, "ok", 0));
   fprintf(stderr, "http webrtc test: get session ok\n");
   session = json_object_field(root, "webrtc_session");
-  TEST_ASSERT_NOT_NULL(session);
-  TEST_ASSERT_EQUAL_STRING("room-webrtc-http", json_string_value(session, "room_id"));
-  TEST_ASSERT_EQUAL_STRING("alice", json_string_value(session, "participant_id"));
-  TEST_ASSERT_EQUAL_STRING("sess-alice", json_string_value(session, "session_id"));
-  TEST_ASSERT_EQUAL_INT(1, json_bool_value(session, "remote_description_set", 0));
-  TEST_ASSERT_EQUAL_INT(1, json_int_value(session, "remote_track_count", 0));
+  check_not_null(session);
+  check_equal(json_string_value(session, "room_id"), "room-webrtc-http");
+  check_equal(json_string_value(session, "participant_id"), "alice");
+  check_equal(json_string_value(session, "session_id"), "sess-alice");
+  check_equal((int)(json_bool_value(session, "remote_description_set", 0)), (int)(1));
+  check_equal((int)(json_int_value(session, "remote_track_count", 0)), (int)(1));
   {
     json_value_t *local_ice_candidates =
         turbo_json_object_get(session, "local_ice_candidates");
-    TEST_ASSERT_NOT_NULL(local_ice_candidates);
-    TEST_ASSERT_EQUAL_INT(TURBO_JSON_ARRAY,
-                          turbo_json_type(local_ice_candidates));
+    check_not_null(local_ice_candidates);
+    check_equal((int)(turbo_json_type(local_ice_candidates)), (int)(TURBO_JSON_ARRAY));
   }
   answer_sdp = json_string_value(session, "local_answer");
-  TEST_ASSERT_NOT_NULL(answer_sdp);
-  TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_set_remote_description(
-                               offerer, "answer", answer_sdp));
+  check_not_null(answer_sdp);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+                               offerer, "answer", answer_sdp)), (int)(0));
 
   turbo_free_json(&root);
   free_offerer_candidates(&offerer_state);
   turbo_peer_connection_destroy(offerer);
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_remove_webrtc_session(
-                               sfu_server, "room-webrtc-http", "sess-alice"));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_remove_session(
-                               node, "room-webrtc-http", "sess-alice"));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_detach_room(node, "room-webrtc-http"));
+  check_equal((int)(sfu_node_app_server_remove_webrtc_session(
+                               sfu_server, "room-webrtc-http", "sess-alice")), (int)(0));
+  check_equal((int)(turbo_sfu_node_remove_session(
+                               node, "room-webrtc-http", "sess-alice")), (int)(0));
+  check_equal((int)(turbo_sfu_node_detach_room(node, "room-webrtc-http")), (int)(0));
   sfu_node_http_api_stop(http_api);
   sfu_node_http_api_destroy(http_api);
   sfu_node_app_server_destroy(sfu_server);
@@ -1881,18 +1856,17 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
       .expires_at = auth_now + 120};
   signed_publish_token =
       turbo_media_auth_issue(&signed_auth, &signed_claims);
-  TEST_ASSERT_NOT_NULL(signed_publish_token);
+  check_not_null(signed_publish_token);
   signed_claims.scope = "sfu.media.subscribe";
   signed_subscribe_token =
       turbo_media_auth_issue(&signed_auth, &signed_claims);
-  TEST_ASSERT_NOT_NULL(signed_subscribe_token);
+  check_not_null(signed_subscribe_token);
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   node = sfu_node_app_server_get_node(sfu_server);
-  TEST_ASSERT_NOT_NULL(node);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_sfu_node_attach_room(node, "room-media-http", 4));
+  check_not_null(node);
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-media-http", 4)), (int)(0));
 
   memset(&peer_config, 0, sizeof(peer_config));
   memset(&peer_callbacks, 0, sizeof(peer_callbacks));
@@ -1902,82 +1876,75 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   peer_config.user_data = &publisher_state;
   peer_callbacks.on_state_change = offerer_on_state_change;
   publisher = turbo_peer_connection_create(&peer_config, &peer_callbacks);
-  TEST_ASSERT_NOT_NULL(publisher);
-  TEST_ASSERT_NOT_NULL(turbo_peer_connection_add_track(
+  check_not_null(publisher);
+  check_not_null(turbo_peer_connection_add_track(
       publisher, TURBO_RTC_MEDIA_TRACK_VIDEO, TURBO_MEDIA_DIRECTION_SENDONLY));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_offer(publisher, offer, sizeof(offer)));
+  check_greater(turbo_peer_connection_create_offer(publisher, offer, sizeof(offer)), 0);
 
   http_api = sfu_node_http_api_create(sfu_server);
-  TEST_ASSERT_NOT_NULL(http_api);
-  TEST_ASSERT_EQUAL_INT(
-      0, sfu_node_http_api_start(
-             http_api, sfu_config.bind_host, sfu_config.bind_port));
-  TEST_ASSERT_EQUAL_INT(
-      0, wait_for_http_status_ok(base_url, "/health", 30, 100));
+  check_not_null(http_api);
+  check_equal((int)(sfu_node_http_api_start(
+             http_api, sfu_config.bind_host, sfu_config.bind_port)), (int)(0));
+  check_equal((int)(wait_for_http_status_ok(base_url, "/health", 30, 100)), (int)(0));
 
   response = http_media_request(
       base_url, HTTP_POST, "/whip/room-media-http/alice",
       "application/sdp", NULL, NULL, offer, strlen(offer));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(401, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(401));
   http_response_free(response);
   response = NULL;
 
   response = http_media_request(
       base_url, HTTP_POST, "/whip/room-media-http/bob",
       "application/sdp", signed_publish_token, NULL, offer, strlen(offer));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(401, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(401));
   http_response_free(response);
   response = NULL;
 
   response = http_media_request(
       base_url, HTTP_POST, "/whip/room-media-http/alice",
       "application/sdp", signed_subscribe_token, NULL, offer, strlen(offer));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(401, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(401));
   http_response_free(response);
   response = NULL;
 
   response = http_media_request(
       base_url, HTTP_POST, "/whip/room-media-http/alice",
       "application/sdp", "test-media-token", NULL, offer, strlen(offer));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(201, response->status_code);
-  TEST_ASSERT_GREATER_THAN(0, (int)response->body_len);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(201));
+  check_greater((int)response->body_len, 0);
   location = http_response_get_header(response, "Location");
   etag = http_response_get_header(response, "ETag");
   content_type = http_response_get_header(response, "Content-Type");
-  TEST_ASSERT_NOT_NULL(location);
-  TEST_ASSERT_NOT_NULL(etag);
-  TEST_ASSERT_NOT_NULL(content_type);
-  TEST_ASSERT_NOT_NULL(strstr(location, "/whip/room-media-http/alice/sessions/"));
-  TEST_ASSERT_NOT_NULL(strstr(content_type, "application/sdp"));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             publisher, "answer", response->body));
+  check_not_null(location);
+  check_not_null(etag);
+  check_not_null(content_type);
+  check_not_null(strstr(location, "/whip/room-media-http/alice/sessions/"));
+  check_not_null(strstr(content_type, "application/sdp"));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             publisher, "answer", response->body)), (int)(0));
   http_response_free(response);
   response = NULL;
   free(content_type);
   content_type = NULL;
 
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute_value(
-             offer, "a=ice-ufrag:", ufrag, sizeof(ufrag)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute_value(
-             offer, "a=ice-pwd:", pwd, sizeof(pwd)));
-  TEST_ASSERT_GREATER_THAN(
-      0, snprintf(fragment, sizeof(fragment),
-                  "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n", ufrag, pwd));
+  check_equal((int)(copy_sdp_attribute_value(
+             offer, "a=ice-ufrag:", ufrag, sizeof(ufrag))), (int)(0));
+  check_equal((int)(copy_sdp_attribute_value(
+             offer, "a=ice-pwd:", pwd, sizeof(pwd))), (int)(0));
+  check_greater(snprintf(fragment, sizeof(fragment),
+                  "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n", ufrag, pwd), 0);
 
   response = http_media_request(
       base_url, HTTP_PATCH, location,
       "application/trickle-ice-sdpfrag", "test-media-token", "\"999\"",
       fragment, strlen(fragment));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(412, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(412));
   http_response_free(response);
   response = NULL;
 
@@ -1985,8 +1952,8 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
       base_url, HTTP_PATCH, location,
       "application/trickle-ice-sdpfrag", "test-media-token", etag,
       fragment, strlen(fragment));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(204, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(204));
   http_response_free(response);
   response = NULL;
 
@@ -1997,39 +1964,34 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
     turbo_peer_connection_poll(publisher);
     app_test_sleep_ms(SFU_NODE_TEST_ICE_POLL_INTERVAL_MS);
   }
-  TEST_ASSERT_TRUE(publisher_state.connected);
-  TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_restart_ice(publisher));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_offer(
-             publisher, restart_offer, sizeof(restart_offer)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute_value(
-             restart_offer, "a=ice-ufrag:", ufrag, sizeof(ufrag)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute_value(
-             restart_offer, "a=ice-pwd:", pwd, sizeof(pwd)));
-  TEST_ASSERT_GREATER_THAN(
-      0, snprintf(fragment, sizeof(fragment),
+  check_true(publisher_state.connected);
+  check_equal((int)(turbo_peer_connection_restart_ice(publisher)), (int)(0));
+  check_greater(turbo_peer_connection_create_offer(
+             publisher, restart_offer, sizeof(restart_offer)), 0);
+  check_equal((int)(copy_sdp_attribute_value(
+             restart_offer, "a=ice-ufrag:", ufrag, sizeof(ufrag))), (int)(0));
+  check_equal((int)(copy_sdp_attribute_value(
+             restart_offer, "a=ice-pwd:", pwd, sizeof(pwd))), (int)(0));
+  check_greater(snprintf(fragment, sizeof(fragment),
                   "a=ice-ufrag:%s\r\n"
                   "a=ice-pwd:%s\r\n"
                   "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
                   "a=mid:0\r\n"
                   "a=end-of-candidates\r\n",
-                  ufrag, pwd));
+                  ufrag, pwd), 0);
 
   response = http_media_request(
       base_url, HTTP_PATCH, location,
       "application/trickle-ice-sdpfrag", "test-media-token", etag,
       fragment, strlen(fragment));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(200, response->status_code);
-  TEST_ASSERT_GREATER_THAN(0, (int)response->body_len);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(200));
+  check_greater((int)response->body_len, 0);
   next_etag = http_response_get_header(response, "ETag");
-  TEST_ASSERT_NOT_NULL(next_etag);
-  TEST_ASSERT_TRUE(strcmp(etag, next_etag) != 0);
-  TEST_ASSERT_EQUAL_INT(
-      1, turbo_peer_connection_apply_remote_ice_sdpfrag(
-             publisher, response->body, response->body_len));
+  check_not_null(next_etag);
+  check_true(strcmp(etag, next_etag) != 0);
+  check_equal((int)(turbo_peer_connection_apply_remote_ice_sdpfrag(
+             publisher, response->body, response->body_len)), (int)(1));
   http_response_free(response);
   response = NULL;
 
@@ -2037,46 +1999,45 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
       base_url, HTTP_PATCH, location,
       "application/trickle-ice-sdpfrag", "test-media-token", etag,
       fragment, strlen(fragment));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(412, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(412));
   http_response_free(response);
   response = NULL;
 
   response = http_media_request(
       base_url, HTTP_DELETE, location, NULL, "test-media-token", NULL, NULL, 0);
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(204, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(204));
   http_response_free(response);
   response = NULL;
   response = http_media_request(
       base_url, HTTP_DELETE, location, NULL, "test-media-token", NULL, NULL, 0);
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(404, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(404));
   http_response_free(response);
   response = NULL;
 
   peer_config.user_data = NULL;
   viewer = turbo_peer_connection_create(&peer_config, NULL);
-  TEST_ASSERT_NOT_NULL(viewer);
-  TEST_ASSERT_NOT_NULL(turbo_peer_connection_add_track(
+  check_not_null(viewer);
+  check_not_null(turbo_peer_connection_add_track(
       viewer, TURBO_RTC_MEDIA_TRACK_VIDEO, TURBO_MEDIA_DIRECTION_RECVONLY));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_offer(viewer, offer, sizeof(offer)));
+  check_greater(turbo_peer_connection_create_offer(viewer, offer, sizeof(offer)), 0);
   response = http_media_request(
       base_url, HTTP_POST, "/whep/room-media-http/bob",
       "application/sdp", "test-media-token", NULL, offer, strlen(offer));
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(201, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(201));
   free(location);
   location = http_response_get_header(response, "Location");
-  TEST_ASSERT_NOT_NULL(location);
-  TEST_ASSERT_NOT_NULL(strstr(location, "/whep/room-media-http/bob/sessions/"));
+  check_not_null(location);
+  check_not_null(strstr(location, "/whep/room-media-http/bob/sessions/"));
   http_response_free(response);
   response = NULL;
   response = http_media_request(
       base_url, HTTP_DELETE, location, NULL, "test-media-token", NULL, NULL, 0);
-  TEST_ASSERT_NOT_NULL(response);
-  TEST_ASSERT_EQUAL_INT(204, response->status_code);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(204));
   http_response_free(response);
 
   free(next_etag);
@@ -2086,8 +2047,7 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   free(signed_publish_token);
   turbo_peer_connection_destroy(viewer);
   turbo_peer_connection_destroy(publisher);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_sfu_node_detach_room(node, "room-media-http"));
+  check_equal((int)(turbo_sfu_node_detach_room(node, "room-media-http")), (int)(0));
   sfu_node_http_api_stop(http_api);
   sfu_node_http_api_destroy(http_api);
   sfu_node_app_server_destroy(sfu_server);
@@ -2131,17 +2091,17 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   node = sfu_node_app_server_get_node(sfu_server);
-  TEST_ASSERT_NOT_NULL(node);
+  check_not_null(node);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-media", 4));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-media", "alice",
-                                                      "sess-alice", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-media", "bob",
-                                                      "sess-bob", NULL));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_create_webrtc_session(
-                               sfu_server, "room-media", "alice", "sess-alice"));
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-media", 4)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-media", "alice",
+                                                      "sess-alice", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-media", "bob",
+                                                      "sess-bob", NULL)), (int)(0));
+  check_equal((int)(sfu_node_app_server_create_webrtc_session(
+                               sfu_server, "room-media", "alice", "sess-alice")), (int)(0));
 
   memset(&peer_config, 0, sizeof(peer_config));
   memset(&publisher_callbacks, 0, sizeof(publisher_callbacks));
@@ -2151,9 +2111,9 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
   publisher_callbacks.on_state_change = media_peer_on_state_change;
   publisher_callbacks.on_ice_candidate = media_peer_on_ice_candidate;
   publisher = turbo_peer_connection_create(&peer_config, &publisher_callbacks);
-  TEST_ASSERT_NOT_NULL(publisher);
+  check_not_null(publisher);
   publisher_media = turbo_peer_connection_get_media_context(publisher);
-  TEST_ASSERT_NOT_NULL(publisher_media);
+  check_not_null(publisher_media);
 
   memset(&track_config, 0, sizeof(track_config));
   track_config.type = TURBO_RTC_MEDIA_TRACK_VIDEO;
@@ -2165,25 +2125,25 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
   track_config.video.bitrate = 500000;
   track_config.video.keyframe_interval = 30;
   publisher_track = turbo_peer_connection_add_track_ex(publisher, &track_config);
-  TEST_ASSERT_NOT_NULL(publisher_track);
+  check_not_null(publisher_track);
   publisher_ssrc = turbo_media_track_get_ssrc(publisher_track);
-  TEST_ASSERT_TRUE(publisher_ssrc != 0);
+  check_true(publisher_ssrc != 0);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_register_published_track(
-                               node, "room-media", "alice", "track-cam", publisher_ssrc, NULL, 0));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_register_published_track(
+  check_equal((int)(turbo_sfu_node_register_published_track(
+                               node, "room-media", "alice", "track-cam", publisher_ssrc, NULL, 0)), (int)(0));
+  check_equal((int)(sfu_node_app_server_register_published_track(
                                sfu_server, "room-media", "alice", "track-cam", publisher_ssrc,
-                               NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8"));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_set_receiver_bandwidth(
-                               node, "room-media", "bob", 1500000u));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_set_track_subscription(
+                               NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8")), (int)(0));
+  check_equal((int)(turbo_sfu_node_set_receiver_bandwidth(
+                               node, "room-media", "bob", 1500000u)), (int)(0));
+  check_equal((int)(turbo_sfu_node_set_track_subscription(
                                node, "room-media", "bob", "track-cam", 1,
-                               TURBO_ROOM_VIDEO_LAYER_LOW));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_track_subscription(
+                               TURBO_ROOM_VIDEO_LAYER_LOW)), (int)(0));
+  check_equal((int)(sfu_node_app_server_set_track_subscription(
                                sfu_server, "room-media", "bob", "track-cam", 1,
-                               TURBO_ROOM_VIDEO_LAYER_LOW));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_create_webrtc_session(
-                               sfu_server, "room-media", "bob", "sess-bob"));
+                               TURBO_ROOM_VIDEO_LAYER_LOW)), (int)(0));
+  check_equal((int)(sfu_node_app_server_create_webrtc_session(
+                               sfu_server, "room-media", "bob", "sess-bob")), (int)(0));
 
   memset(&peer_config, 0, sizeof(peer_config));
   memset(&subscriber_callbacks, 0, sizeof(subscriber_callbacks));
@@ -2194,9 +2154,9 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
   subscriber_callbacks.on_track = media_peer_on_track;
   subscriber_callbacks.on_ice_candidate = media_peer_on_ice_candidate;
   subscriber = turbo_peer_connection_create(&peer_config, &subscriber_callbacks);
-  TEST_ASSERT_NOT_NULL(subscriber);
+  check_not_null(subscriber);
   subscriber_media = turbo_peer_connection_get_media_context(subscriber);
-  TEST_ASSERT_NOT_NULL(subscriber_media);
+  check_not_null(subscriber_media);
 
   memset(&track_config, 0, sizeof(track_config));
   track_config.type = TURBO_RTC_MEDIA_TRACK_VIDEO;
@@ -2208,30 +2168,30 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
   track_config.video.bitrate = 500000;
   track_config.video.keyframe_interval = 30;
   subscriber_recv_track = turbo_peer_connection_add_track_ex(subscriber, &track_config);
-  TEST_ASSERT_NOT_NULL(subscriber_recv_track);
+  check_not_null(subscriber_recv_track);
 
-  TEST_ASSERT_GREATER_THAN(0, turbo_peer_connection_create_offer(subscriber, subscriber_offer,
-                                                                 sizeof(subscriber_offer)));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_remote_offer(
+  check_greater(turbo_peer_connection_create_offer(subscriber, subscriber_offer,
+                                                                 sizeof(subscriber_offer)), 0);
+  check_equal((int)(sfu_node_app_server_set_remote_offer(
                                 sfu_server, "room-media", "sess-bob",
-                                subscriber_offer));
+                                subscriber_offer)), (int)(0));
   subscriber_answer = copy_session_answer(sfu_server, "room-media", "sess-bob");
-  TEST_ASSERT_NOT_NULL(subscriber_answer);
-  TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_set_remote_description(
-                                subscriber, "answer", subscriber_answer));
+  check_not_null(subscriber_answer);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+                                subscriber, "answer", subscriber_answer)), (int)(0));
   sync_peer_candidates_to_sfu(sfu_server, "room-media", "sess-bob", &subscriber_state);
   sync_sfu_candidates_to_peer(sfu_server, "room-media", "sess-bob", subscriber,
                               &subscriber_state);
 
-  TEST_ASSERT_GREATER_THAN(0, turbo_peer_connection_create_offer(publisher, publisher_offer,
-                                                                 sizeof(publisher_offer)));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_remote_offer(
+  check_greater(turbo_peer_connection_create_offer(publisher, publisher_offer,
+                                                                 sizeof(publisher_offer)), 0);
+  check_equal((int)(sfu_node_app_server_set_remote_offer(
                                 sfu_server, "room-media", "sess-alice",
-                                publisher_offer));
+                                publisher_offer)), (int)(0));
   publisher_answer = copy_session_answer(sfu_server, "room-media", "sess-alice");
-  TEST_ASSERT_NOT_NULL(publisher_answer);
-  TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_set_remote_description(
-                                publisher, "answer", publisher_answer));
+  check_not_null(publisher_answer);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+                                publisher, "answer", publisher_answer)), (int)(0));
   sync_peer_candidates_to_sfu(sfu_server, "room-media", "sess-alice", &publisher_state);
   sync_sfu_candidates_to_peer(sfu_server, "room-media", "sess-alice", publisher,
                               &publisher_state);
@@ -2255,15 +2215,15 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
     if (!sender_started && publisher_state.connected &&
         subscriber_state.connected && subscriber_state.remote_track &&
         turbo_media_track_get_state(subscriber_state.remote_track) == TURBO_MEDIA_STATE_ACTIVE) {
-      TEST_ASSERT_EQUAL_INT(0, turbo_media_track_start(publisher_track));
+      check_equal((int)(turbo_media_track_start(publisher_track)), (int)(0));
       sender_started = 1;
     }
 
     if (sender_started && sent_frames < 16) {
       fill_video_i420_frame(frame, 160, 120, sent_frames);
-      TEST_ASSERT_EQUAL_INT(0, turbo_media_track_send_frame(
+      check_equal((int)(turbo_media_track_send_frame(
                                    publisher_track, frame, sizeof(frame),
-                                   90000ULL + (uint64_t)sent_frames * 3000ULL));
+                                   90000ULL + (uint64_t)sent_frames * 3000ULL)), (int)(0));
       sent_frames++;
     }
 
@@ -2298,16 +2258,16 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
 
   publisher_session = build_session_root(sfu_server, "room-media", "sess-alice");
   subscriber_session = build_session_root(sfu_server, "room-media", "sess-bob");
-  TEST_ASSERT_NOT_NULL(publisher_session);
-  TEST_ASSERT_NOT_NULL(subscriber_session);
+  check_not_null(publisher_session);
+  check_not_null(subscriber_session);
 
-  TEST_ASSERT_TRUE(sender_started);
-  TEST_ASSERT_NOT_NULL(subscriber_state.remote_track);
-  TEST_ASSERT_GREATER_OR_EQUAL(1, sent_frames);
-  TEST_ASSERT_GREATER_OR_EQUAL(1, subscriber_state.frame_state.frame_count);
-  TEST_ASSERT_GREATER_OR_EQUAL(1, json_int_value(publisher_session, "remote_frame_count", 0));
-  TEST_ASSERT_EQUAL_INT(1, json_int_value(subscriber_session, "relay_track_count", -1));
-  TEST_ASSERT_GREATER_OR_EQUAL(90000, (int)subscriber_state.frame_state.last_timestamp);
+  check_true(sender_started);
+  check_not_null(subscriber_state.remote_track);
+  check_greater_equal(sent_frames, 1);
+  check_greater_equal(subscriber_state.frame_state.frame_count, 1);
+  check_greater_equal(json_int_value(publisher_session, "remote_frame_count", 0), 1);
+  check_equal((int)(json_int_value(subscriber_session, "relay_track_count", -1)), (int)(1));
+  check_greater_equal((int)subscriber_state.frame_state.last_timestamp, 90000);
 
   turbo_free_json(&publisher_session);
   turbo_free_json(&subscriber_session);
@@ -2360,15 +2320,15 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
   sfu_config.ice_allow_loopback = 1;
 
   sfu_server = sfu_node_app_server_create(&sfu_config);
-  TEST_ASSERT_NOT_NULL(sfu_server);
+  check_not_null(sfu_server);
   node = sfu_node_app_server_get_node(sfu_server);
-  TEST_ASSERT_NOT_NULL(node);
+  check_not_null(node);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-record", 4));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(node, "room-record", "alice",
-                                                      "sess-alice", NULL));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_create_webrtc_session(
-                               sfu_server, "room-record", "alice", "sess-alice"));
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-record", 4)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(node, "room-record", "alice",
+                                                      "sess-alice", NULL)), (int)(0));
+  check_equal((int)(sfu_node_app_server_create_webrtc_session(
+                               sfu_server, "room-record", "alice", "sess-alice")), (int)(0));
 
   memset(&peer_config, 0, sizeof(peer_config));
   memset(&publisher_callbacks, 0, sizeof(publisher_callbacks));
@@ -2378,9 +2338,9 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
   publisher_callbacks.on_state_change = media_peer_on_state_change;
   publisher_callbacks.on_ice_candidate = media_peer_on_ice_candidate;
   publisher = turbo_peer_connection_create(&peer_config, &publisher_callbacks);
-  TEST_ASSERT_NOT_NULL(publisher);
+  check_not_null(publisher);
   publisher_media = turbo_peer_connection_get_media_context(publisher);
-  TEST_ASSERT_NOT_NULL(publisher_media);
+  check_not_null(publisher_media);
 
   memset(&track_config, 0, sizeof(track_config));
   track_config.type = TURBO_RTC_MEDIA_TRACK_VIDEO;
@@ -2392,26 +2352,26 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
   track_config.video.bitrate = 500000;
   track_config.video.keyframe_interval = 30;
   publisher_track = turbo_peer_connection_add_track_ex(publisher, &track_config);
-  TEST_ASSERT_NOT_NULL(publisher_track);
+  check_not_null(publisher_track);
   publisher_ssrc = turbo_media_track_get_ssrc(publisher_track);
-  TEST_ASSERT_TRUE(publisher_ssrc != 0);
+  check_true(publisher_ssrc != 0);
 
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_register_published_track(
-                               node, "room-record", "alice", "track-cam", publisher_ssrc, NULL, 0));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_register_published_track(
+  check_equal((int)(turbo_sfu_node_register_published_track(
+                               node, "room-record", "alice", "track-cam", publisher_ssrc, NULL, 0)), (int)(0));
+  check_equal((int)(sfu_node_app_server_register_published_track(
                                sfu_server, "room-record", "alice", "track-cam", publisher_ssrc,
-                               NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8"));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_start_recording(
-                               sfu_server, "room-record", "rec-001", "archive"));
+                               NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8")), (int)(0));
+  check_equal((int)(sfu_node_app_server_start_recording(
+                               sfu_server, "room-record", "rec-001", "archive")), (int)(0));
 
-  TEST_ASSERT_GREATER_THAN(0, turbo_peer_connection_create_offer(publisher, publisher_offer,
-                                                                 sizeof(publisher_offer)));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_set_remote_offer(
-                               sfu_server, "room-record", "sess-alice", publisher_offer));
+  check_greater(turbo_peer_connection_create_offer(publisher, publisher_offer,
+                                                                 sizeof(publisher_offer)), 0);
+  check_equal((int)(sfu_node_app_server_set_remote_offer(
+                               sfu_server, "room-record", "sess-alice", publisher_offer)), (int)(0));
   publisher_answer = copy_session_answer(sfu_server, "room-record", "sess-alice");
-  TEST_ASSERT_NOT_NULL(publisher_answer);
-  TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_set_remote_description(
-                               publisher, "answer", publisher_answer));
+  check_not_null(publisher_answer);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+                               publisher, "answer", publisher_answer)), (int)(0));
 
   deadline_ms = app_test_now_ms() + 12000ULL;
   while (app_test_now_ms() < deadline_ms) {
@@ -2425,15 +2385,15 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
                                 &publisher_state);
 
     if (!sender_started && publisher_state.connected) {
-      TEST_ASSERT_EQUAL_INT(0, turbo_media_track_start(publisher_track));
+      check_equal((int)(turbo_media_track_start(publisher_track)), (int)(0));
       sender_started = 1;
     }
 
     if (sender_started && sent_frames < 16) {
       fill_video_i420_frame(frame, 160, 120, sent_frames);
-      TEST_ASSERT_EQUAL_INT(0, turbo_media_track_send_frame(
+      check_equal((int)(turbo_media_track_send_frame(
                                    publisher_track, frame, sizeof(frame),
-                                   90000ULL + (uint64_t)sent_frames * 3000ULL));
+                                   90000ULL + (uint64_t)sent_frames * 3000ULL)), (int)(0));
       sent_frames++;
     }
 
@@ -2444,39 +2404,39 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
     app_test_sleep_ms(5);
   }
 
-  TEST_ASSERT_TRUE(sender_started);
-  TEST_ASSERT_GREATER_OR_EQUAL(16, sent_frames);
+  check_true(sender_started);
+  check_greater_equal(sent_frames, 16);
   app_test_sleep_ms(100);
 
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_stop_recording(sfu_server, "room-record"));
+  check_equal((int)(sfu_node_app_server_stop_recording(sfu_server, "room-record")), (int)(0));
   status_json = sfu_node_app_server_build_recording_status_json(sfu_server, "room-record");
-  TEST_ASSERT_NOT_NULL(status_json);
-  TEST_ASSERT_EQUAL_INT(0, parse_json_text(status_json, &recording_status));
+  check_not_null(status_json);
+  check_equal((int)(parse_json_text(status_json, &recording_status)), (int)(0));
   output_path = json_string_value(recording_status, "output_path");
-  TEST_ASSERT_NOT_NULL(output_path);
+  check_not_null(output_path);
   output_path_copy = app_strdup(output_path);
-  TEST_ASSERT_NOT_NULL(output_path_copy);
-  TEST_ASSERT_FALSE(json_bool_value(recording_status, "active", 1));
-  TEST_ASSERT_GREATER_OR_EQUAL(1, json_int_value(recording_status, "track_count", 0));
-  TEST_ASSERT_GREATER_OR_EQUAL(1, json_int_value(recording_status, "packet_count", 0));
-  TEST_ASSERT_GREATER_OR_EQUAL(1, json_int_value(recording_status, "total_bytes", 0));
+  check_not_null(output_path_copy);
+  check_false(json_bool_value(recording_status, "active", 1));
+  check_greater_equal(json_int_value(recording_status, "track_count", 0), 1);
+  check_greater_equal(json_int_value(recording_status, "packet_count", 0), 1);
+  check_greater_equal(json_int_value(recording_status, "total_bytes", 0), 1);
 
   output_size = file_size_bytes(output_path_copy);
-  TEST_ASSERT_GREATER_OR_EQUAL(1, (int)output_size);
+  check_greater_equal((int)output_size, 1);
 
   turbo_demuxer_registry_init();
   demuxer_config.input_path = output_path_copy;
   demuxer = turbo_demuxer_create_by_name("mkv", &demuxer_config);
-  TEST_ASSERT_NOT_NULL(demuxer);
-  TEST_ASSERT_EQUAL_INT(0, turbo_demuxer_open(demuxer));
-  TEST_ASSERT_EQUAL_INT(1, turbo_demuxer_get_stream_count(demuxer));
-  TEST_ASSERT_EQUAL_INT(0, turbo_demuxer_get_stream_info(
-                               demuxer, 0, &demuxed_stream));
-  TEST_ASSERT_EQUAL_STRING("vp8", demuxed_stream.codec_name);
-  TEST_ASSERT_EQUAL_INT(1, turbo_demuxer_read_packet(demuxer,
-                                                      &demuxed_packet));
-  TEST_ASSERT_NOT_NULL(demuxed_packet.data);
-  TEST_ASSERT_GREATER_OR_EQUAL(1, (int)demuxed_packet.size);
+  check_not_null(demuxer);
+  check_equal((int)(turbo_demuxer_open(demuxer)), (int)(0));
+  check_equal((int)(turbo_demuxer_get_stream_count(demuxer)), (int)(1));
+  check_equal((int)(turbo_demuxer_get_stream_info(
+                               demuxer, 0, &demuxed_stream)), (int)(0));
+  check_equal(demuxed_stream.codec_name, "vp8");
+  check_equal((int)(turbo_demuxer_read_packet(demuxer,
+                                                      &demuxed_packet)), (int)(1));
+  check_not_null(demuxed_packet.data);
+  check_greater_equal((int)demuxed_packet.size, 1);
 
   turbo_demuxer_free_packet(&demuxed_packet);
   turbo_demuxer_destroy(demuxer);
@@ -2508,38 +2468,38 @@ void test_sfu_node_recording_stop_failure_still_closes_runtime(void) {
   config.ice_allow_loopback = 1;
 
   server = sfu_node_app_server_create(&config);
-  TEST_ASSERT_NOT_NULL(server);
+  check_not_null(server);
   node = sfu_node_app_server_get_node(server);
-  TEST_ASSERT_NOT_NULL(node);
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_attach_room(node, "room-stop-failure", 2));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_add_session(
+  check_not_null(node);
+  check_equal((int)(turbo_sfu_node_attach_room(node, "room-stop-failure", 2)), (int)(0));
+  check_equal((int)(turbo_sfu_node_add_session(
                                node, "room-stop-failure", "alice",
-                               "session-stop-failure", NULL));
-  TEST_ASSERT_EQUAL_INT(0, turbo_sfu_node_register_published_track(
+                               "session-stop-failure", NULL)), (int)(0));
+  check_equal((int)(turbo_sfu_node_register_published_track(
                                node, "room-stop-failure", "alice", "track-cam",
-                               0x10203040U, NULL, 0));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_register_published_track(
+                               0x10203040U, NULL, 0)), (int)(0));
+  check_equal((int)(sfu_node_app_server_register_published_track(
                                server, "room-stop-failure", "alice", "track-cam",
-                               0x10203040U, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8"));
-  TEST_ASSERT_EQUAL_INT(0, sfu_node_app_server_start_recording(
+                               0x10203040U, NULL, 0, TURBO_ROOM_TRACK_VIDEO, "vp8")), (int)(0));
+  check_equal((int)(sfu_node_app_server_start_recording(
                                server, "room-stop-failure", "rec-stop-failure",
-                               "archive"));
+                               "archive")), (int)(0));
 
   turbo_recorder_test_reset_io_failures();
   turbo_recorder_test_fail_io_once(TURBO_RECORDER_TEST_IO_FLUSH, 1);
-  TEST_ASSERT_EQUAL_INT(-1, sfu_node_app_server_stop_recording(
-                                server, "room-stop-failure"));
+  check_equal((int)(sfu_node_app_server_stop_recording(
+                                server, "room-stop-failure")), (int)(-1));
   turbo_recorder_test_reset_io_failures();
 
   status_json = sfu_node_app_server_build_recording_status_json(
       server, "room-stop-failure");
-  TEST_ASSERT_NOT_NULL(status_json);
-  TEST_ASSERT_EQUAL_INT(0, parse_json_text(status_json, &status));
-  TEST_ASSERT_FALSE(json_bool_value(status, "active", 1));
+  check_not_null(status_json);
+  check_equal((int)(parse_json_text(status_json, &status)), (int)(0));
+  check_false(json_bool_value(status, "active", 1));
   output_path = app_strdup(json_string_value(status, "output_path"));
-  TEST_ASSERT_NOT_NULL(output_path);
-  TEST_ASSERT_EQUAL_INT(-1, sfu_node_app_server_stop_recording(
-                                server, "room-stop-failure"));
+  check_not_null(output_path);
+  check_equal((int)(sfu_node_app_server_stop_recording(
+                                server, "room-stop-failure")), (int)(-1));
 
   turbo_free_json(&status);
   free(status_json);
@@ -2562,17 +2522,15 @@ void test_sfu_node_http_lifecycle_repeated_start_stop(void) {
   config.ice_allow_loopback = 1;
 
   server = sfu_node_app_server_create(&config);
-  TEST_ASSERT_NOT_NULL(server);
+  check_not_null(server);
   http_api = sfu_node_http_api_create(server);
-  TEST_ASSERT_NOT_NULL(http_api);
+  check_not_null(http_api);
 
   for (iteration = 0; iteration < SFU_NODE_HTTP_LIFECYCLE_STRESS_ITERATIONS;
        ++iteration) {
-    TEST_ASSERT_EQUAL_INT(
-        0, sfu_node_http_api_start(http_api, config.bind_host,
-                                   config.bind_port));
-    TEST_ASSERT_EQUAL_INT(
-        0, wait_for_http_status_ok(base_url, "/health", 3, 10));
+    check_equal((int)(sfu_node_http_api_start(http_api, config.bind_host,
+                                   config.bind_port)), (int)(0));
+    check_equal((int)(wait_for_http_status_ok(base_url, "/health", 3, 10)), (int)(0));
     if (iteration + 1 < SFU_NODE_HTTP_LIFECYCLE_STRESS_ITERATIONS) {
       sfu_node_http_api_stop(http_api);
     }
@@ -2583,20 +2541,20 @@ void test_sfu_node_http_lifecycle_repeated_start_stop(void) {
 }
 
 spec("test_sfu_node_app") {
-  TT_TEST(test_sfu_node_rejects_identifiers_that_do_not_fit_storage);
-  TT_TEST(test_sfu_node_http_lifecycle_repeated_start_stop);
-  TT_TEST(test_sfu_node_webrtc_session_accepts_offer_and_generates_answer);
-  TT_TEST(test_sfu_node_webrtc_session_provisions_relay_track_before_answer);
-  TT_TEST(test_sfu_node_webrtc_session_provisions_multiple_publishers_to_one_subscriber);
-  TT_TEST(test_sfu_node_http_roundtrips_track_subscription_metadata);
-  TT_TEST(test_sfu_node_https_uses_explicit_identity_and_verified_client);
-  TT_TEST(test_sfu_node_config_reads_security_and_ice_from_env);
-  TT_TEST(test_sfu_node_http_control_token_protects_modifying_commands);
-  TT_TEST(test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation);
-  TT_TEST(test_sfu_node_ready_metrics_and_drain_control);
-  TT_TEST(test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_session);
-  TT_TEST(test_sfu_node_whip_whep_resources_auth_restart_and_delete);
-  TT_TEST(test_sfu_node_media_bridge_forwards_video_to_subscriber);
-  TT_TEST(test_sfu_node_recording_archives_publisher_rtp);
-  TT_TEST(test_sfu_node_recording_stop_failure_still_closes_runtime);
+  it("test_sfu_node_rejects_identifiers_that_do_not_fit_storage") { test_sfu_node_rejects_identifiers_that_do_not_fit_storage(); };
+  it("test_sfu_node_http_lifecycle_repeated_start_stop") { test_sfu_node_http_lifecycle_repeated_start_stop(); };
+  it("test_sfu_node_webrtc_session_accepts_offer_and_generates_answer") { test_sfu_node_webrtc_session_accepts_offer_and_generates_answer(); };
+  it("test_sfu_node_webrtc_session_provisions_relay_track_before_answer") { test_sfu_node_webrtc_session_provisions_relay_track_before_answer(); };
+  it("test_sfu_node_webrtc_session_provisions_multiple_publishers_to_one_subscriber") { test_sfu_node_webrtc_session_provisions_multiple_publishers_to_one_subscriber(); };
+  it("test_sfu_node_http_roundtrips_track_subscription_metadata") { test_sfu_node_http_roundtrips_track_subscription_metadata(); };
+  it("test_sfu_node_https_uses_explicit_identity_and_verified_client") { test_sfu_node_https_uses_explicit_identity_and_verified_client(); };
+  it("test_sfu_node_config_reads_security_and_ice_from_env") { test_sfu_node_config_reads_security_and_ice_from_env(); };
+  it("test_sfu_node_http_control_token_protects_modifying_commands") { test_sfu_node_http_control_token_protects_modifying_commands(); };
+  it("test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation") { test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(); };
+  it("test_sfu_node_ready_metrics_and_drain_control") { test_sfu_node_ready_metrics_and_drain_control(); };
+  it("test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_session") { test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_session(); };
+  it("test_sfu_node_whip_whep_resources_auth_restart_and_delete") { test_sfu_node_whip_whep_resources_auth_restart_and_delete(); };
+  it("test_sfu_node_media_bridge_forwards_video_to_subscriber") { test_sfu_node_media_bridge_forwards_video_to_subscriber(); };
+  it("test_sfu_node_recording_archives_publisher_rtp") { test_sfu_node_recording_archives_publisher_rtp(); };
+  it("test_sfu_node_recording_stop_failure_still_closes_runtime") { test_sfu_node_recording_stop_failure_still_closes_runtime(); };
 }

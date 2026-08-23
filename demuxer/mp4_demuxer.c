@@ -3,6 +3,7 @@
 #ifdef TURBO_MEDIA_HAS_MP4
 
 #include "container_io.h"
+#include "stl_status.h"
 #include "mov-buffer.h"
 #include "mov-format.h"
 #include "mov-reader.h"
@@ -12,7 +13,7 @@
 #include <string.h>
 
 #include <turbo_error.h>
-#include <turbo_vec.h>
+#include <turbostl/vec.h>
 
 typedef struct {
     uint32_t track;
@@ -23,7 +24,7 @@ typedef struct {
 typedef struct {
     turbo_container_io_t io;
     mov_reader_t *reader;
-    turbo_vec_t streams;
+    vec_t streams;
     turbo_container_metadata_t metadata;
     int opened;
     int error;
@@ -99,7 +100,7 @@ static int mp4_add_stream(mp4_demuxer_ctx_t *ctx, uint32_t track,
         stream.info.extradata = stream.extra_data;
         stream.info.extradata_size = bytes;
     }
-    result = turbo_vec_push(&ctx->streams, &stream);
+    result = turbo_media_stl_status_to_error(vec_push(&ctx->streams, &stream));
     if (result != TURBO_OK) {
         free(stream.extra_data);
         ctx->error = result;
@@ -125,10 +126,10 @@ static void mp4_on_audio(void *param, uint32_t track, uint8_t object,
 }
 
 static int mp4_stream_index(const mp4_demuxer_ctx_t *ctx, uint32_t track) {
-    size_t count = turbo_vec_size(&ctx->streams);
+    size_t count = vec_size(&ctx->streams);
     for (size_t i = 0; i < count; ++i) {
         const mp4_demuxer_stream_t *stream =
-            (const mp4_demuxer_stream_t *)turbo_vec_at_const(&ctx->streams, i);
+            (const mp4_demuxer_stream_t *)vec_at_const(&ctx->streams, i);
         if (stream && stream->track == track) return (int)i;
     }
     return -1;
@@ -176,7 +177,9 @@ static void *mp4_demuxer_create_impl(const turbo_demuxer_config_t *config) {
     ctx = (mp4_demuxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
     ctx->io.file = TURBO_INVALID_FILE;
-    result = turbo_vec_init(&ctx->streams, sizeof(mp4_demuxer_stream_t));
+    result = turbo_media_stl_status_to_error(vec_init_bytes(
+        &ctx->streams, sizeof(mp4_demuxer_stream_t),
+        CMETA_ALIGNOF(mp4_demuxer_stream_t), SIZE_MAX));
     if (result != TURBO_OK) goto fail;
     result = turbo_container_io_open_reader(&ctx->io, config->input_path,
                                             config->data, config->data_size);
@@ -185,7 +188,7 @@ static void *mp4_demuxer_create_impl(const turbo_demuxer_config_t *config) {
 
 fail:
     turbo_container_io_close(&ctx->io);
-    turbo_vec_destroy(&ctx->streams);
+    vec_destroy(&ctx->streams);
     free(ctx);
     return NULL;
 }
@@ -196,13 +199,13 @@ static void mp4_demuxer_destroy_impl(void *ctx_ptr) {
 
     if (!ctx) return;
     if (ctx->reader) mov_reader_destroy(ctx->reader);
-    count = turbo_vec_size(&ctx->streams);
+    count = vec_size(&ctx->streams);
     for (size_t i = 0; i < count; ++i) {
         mp4_demuxer_stream_t *stream =
-            (mp4_demuxer_stream_t *)turbo_vec_at(&ctx->streams, i);
+            (mp4_demuxer_stream_t *)vec_at(&ctx->streams, i);
         if (stream) free(stream->extra_data);
     }
-    turbo_vec_destroy(&ctx->streams);
+    vec_destroy(&ctx->streams);
     turbo_container_io_close(&ctx->io);
     free(ctx);
 }
@@ -222,7 +225,7 @@ static int mp4_demuxer_open_impl(void *ctx_ptr) {
     result = mov_reader_getinfo(ctx->reader, &callbacks, ctx);
     if (result != TURBO_OK) return result;
     if (ctx->error != TURBO_OK) return ctx->error;
-    if (turbo_vec_empty(&ctx->streams)) return TURBO_EPROTO;
+    if (vec_empty(&ctx->streams)) return TURBO_EPROTO;
     ctx->metadata.duration_ms = (int64_t)mov_reader_getduration(ctx->reader);
     ctx->opened = 1;
     return TURBO_OK;
@@ -256,9 +259,9 @@ static int mp4_demuxer_seek_impl(void *ctx_ptr, int64_t timestamp_ms, int flags)
 
 static int mp4_demuxer_get_stream_count_impl(void *ctx_ptr) {
     mp4_demuxer_ctx_t *ctx = (mp4_demuxer_ctx_t *)ctx_ptr;
-    if (!ctx || !ctx->opened || turbo_vec_size(&ctx->streams) > INT_MAX)
+    if (!ctx || !ctx->opened || vec_size(&ctx->streams) > INT_MAX)
         return TURBO_EINVAL;
-    return (int)turbo_vec_size(&ctx->streams);
+    return (int)vec_size(&ctx->streams);
 }
 
 static int mp4_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
@@ -266,7 +269,7 @@ static int mp4_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
     mp4_demuxer_ctx_t *ctx = (mp4_demuxer_ctx_t *)ctx_ptr;
     const mp4_demuxer_stream_t *stream;
     if (!ctx || !ctx->opened || !info || stream_index < 0) return TURBO_EINVAL;
-    stream = (const mp4_demuxer_stream_t *)turbo_vec_at_const(
+    stream = (const mp4_demuxer_stream_t *)vec_at_const(
         &ctx->streams, (size_t)stream_index);
     if (!stream) return TURBO_EINVAL;
     *info = stream->info;

@@ -46,17 +46,17 @@ int sip_uas_link_transaction(struct sip_agent_t* sip, struct sip_uas_transaction
 
 	turbo_mutex_lock(&sip->locker);
 	assert(!t->linked);
-	result = turbo_vec_push(&sip->uas, &t);
-	if (result == TURBO_OK)
+	result = vec_push(&sip->uas, &t);
+	if (result == STL_OK)
 		t->linked = 1;
 	turbo_mutex_unlock(&sip->locker);
 
-	if (result != TURBO_OK)
+	if (result != STL_OK)
 	{
 		sip_uas_transaction_release(t);
 		sip_agent_destroy(sip);
 	}
-	return result;
+	return result == STL_OK ? TURBO_OK : TURBO_ENOMEM;
 }
 
 int sip_uas_unlink_transaction(struct sip_agent_t* sip, struct sip_uas_transaction_t* t)
@@ -72,12 +72,12 @@ int sip_uas_unlink_transaction(struct sip_agent_t* sip, struct sip_uas_transacti
 		return 0;
 	}
 
-	for (index = 0U; index < turbo_vec_size(&sip->uas); ++index)
+	for (index = 0U; index < vec_size(&sip->uas); ++index)
 	{
-		candidate = (struct sip_uas_transaction_t **)turbo_vec_at(&sip->uas, index);
+		candidate = (struct sip_uas_transaction_t **)vec_at(&sip->uas, index);
 		if (candidate && *candidate == t)
 		{
-			turbo_vec_erase(&sip->uas, index, NULL);
+			vec_erase(&sip->uas, index, NULL);
 			t->linked = 0;
 			break;
 		}
@@ -111,9 +111,9 @@ static struct sip_uas_transaction_t* sip_uas_find_acktransaction(struct sip_agen
 	struct sip_uas_transaction_t **candidate;
 	struct sip_uas_transaction_t* t;
 
-	for (index = 0U; index < turbo_vec_size(&sip->uas); ++index)
+	for (index = 0U; index < vec_size(&sip->uas); ++index)
 	{
-		candidate = (struct sip_uas_transaction_t **)turbo_vec_at(&sip->uas, index);
+		candidate = (struct sip_uas_transaction_t **)vec_at(&sip->uas, index);
 		if (!candidate || !*candidate)
 			continue;
 		t = *candidate;
@@ -139,9 +139,9 @@ struct sip_uas_transaction_t* sip_uas_find_transaction(struct sip_agent_t* sip, 
 	if (!via) return NULL; // invalid sip message
 	//assert(sip_sv_starts_with(&via->branch, SIP_BRANCH_PREFIX));
 
-	for (index = 0U; index < turbo_vec_size(&sip->uas); ++index)
+	for (index = 0U; index < vec_size(&sip->uas); ++index)
 	{
-		candidate = (struct sip_uas_transaction_t **)turbo_vec_at(&sip->uas, index);
+		candidate = (struct sip_uas_transaction_t **)vec_at(&sip->uas, index);
 		if (!candidate || !*candidate)
 			continue;
 		t = *candidate;
@@ -202,7 +202,7 @@ struct sip_uas_transaction_t* sip_uas_find_transaction(struct sip_agent_t* sip, 
 //// 8.2.2.3 Require (p47)
 //static int sip_uas_check_require(struct sip_uas_t* uas, struct sip_uas_transaction_t* t, const struct sip_message_t* msg)
 //{
-//	const tstr_v* header;
+//	const vstr* header;
 //
 //	header = sip_message_get_header_by_name(msg, "Require");
 //	sip_uas_add_header(t, "Unsupported", );
@@ -211,9 +211,9 @@ struct sip_uas_transaction_t* sip_uas_find_transaction(struct sip_agent_t* sip, 
 //// 8.2.3 Content Processing (p47)
 //static int sip_uas_check_media_type(struct sip_uas_t* uas, struct sip_uas_transaction_t* t, const struct sip_message_t* msg)
 //{
-//	const tstr_v* content_type;
-//	const tstr_v* content_language;
-//	const tstr_v* content_encoding;
+//	const vstr* content_type;
+//	const vstr* content_language;
+//	const vstr* content_encoding;
 //
 //	content_type = sip_message_get_header_by_name(msg, "Content-Type");
 //	content_language = sip_message_get_header_by_name(msg, "Content-Language");

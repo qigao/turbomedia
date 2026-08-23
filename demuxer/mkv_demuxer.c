@@ -3,6 +3,7 @@
 #ifdef TURBO_MEDIA_HAS_MKV
 
 #include "container_io.h"
+#include "stl_status.h"
 #include "mkv-buffer.h"
 #include "mkv-format.h"
 #include "mkv-reader.h"
@@ -12,7 +13,7 @@
 #include <string.h>
 
 #include <turbo_error.h>
-#include <turbo_vec.h>
+#include <turbostl/vec.h>
 
 enum { MKV_PROBE_HEADER_BYTES = 4096 };
 
@@ -25,7 +26,7 @@ typedef struct {
 typedef struct {
     turbo_container_io_t io;
     mkv_reader_t *reader;
-    turbo_vec_t streams;
+    vec_t streams;
     turbo_container_metadata_t metadata;
     int opened;
     int error;
@@ -95,7 +96,7 @@ static int mkv_add_stream(mkv_demuxer_ctx_t *ctx, uint32_t track,
         stream.info.extradata = stream.extra_data;
         stream.info.extradata_size = bytes;
     }
-    result = turbo_vec_push(&ctx->streams, &stream);
+    result = turbo_media_stl_status_to_error(vec_push(&ctx->streams, &stream));
     if (result != TURBO_OK) {
         free(stream.extra_data);
         ctx->error = result;
@@ -132,9 +133,9 @@ static void mkv_on_subtitle(void *param, uint32_t track, enum mkv_codec_t codec,
 }
 
 static int mkv_stream_index(const mkv_demuxer_ctx_t *ctx, uint32_t track) {
-    for (size_t i = 0; i < turbo_vec_size(&ctx->streams); ++i) {
+    for (size_t i = 0; i < vec_size(&ctx->streams); ++i) {
         const mkv_demuxer_stream_t *stream =
-            (const mkv_demuxer_stream_t *)turbo_vec_at_const(&ctx->streams, i);
+            (const mkv_demuxer_stream_t *)vec_at_const(&ctx->streams, i);
         if (stream && stream->track == track) return (int)i;
     }
     return -1;
@@ -196,7 +197,9 @@ static void *mkv_demuxer_create_impl(const turbo_demuxer_config_t *config) {
     ctx = (mkv_demuxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
     ctx->io.file = TURBO_INVALID_FILE;
-    result = turbo_vec_init(&ctx->streams, sizeof(mkv_demuxer_stream_t));
+    result = turbo_media_stl_status_to_error(vec_init_bytes(
+        &ctx->streams, sizeof(mkv_demuxer_stream_t),
+        CMETA_ALIGNOF(mkv_demuxer_stream_t), SIZE_MAX));
     if (result != TURBO_OK) goto fail;
     result = turbo_container_io_open_reader(&ctx->io, config->input_path,
                                             config->data, config->data_size);
@@ -204,7 +207,7 @@ static void *mkv_demuxer_create_impl(const turbo_demuxer_config_t *config) {
     return ctx;
 fail:
     turbo_container_io_close(&ctx->io);
-    turbo_vec_destroy(&ctx->streams);
+    vec_destroy(&ctx->streams);
     free(ctx);
     return NULL;
 }
@@ -213,12 +216,12 @@ static void mkv_demuxer_destroy_impl(void *ctx_ptr) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     if (!ctx) return;
     if (ctx->reader) mkv_reader_destroy(ctx->reader);
-    for (size_t i = 0; i < turbo_vec_size(&ctx->streams); ++i) {
+    for (size_t i = 0; i < vec_size(&ctx->streams); ++i) {
         mkv_demuxer_stream_t *stream =
-            (mkv_demuxer_stream_t *)turbo_vec_at(&ctx->streams, i);
+            (mkv_demuxer_stream_t *)vec_at(&ctx->streams, i);
         if (stream) free(stream->extra_data);
     }
-    turbo_vec_destroy(&ctx->streams);
+    vec_destroy(&ctx->streams);
     turbo_container_io_close(&ctx->io);
     free(ctx);
 }
@@ -237,7 +240,7 @@ static int mkv_demuxer_open_impl(void *ctx_ptr) {
     result = mkv_reader_getinfo(ctx->reader, &callbacks, ctx);
     if (result != TURBO_OK) return result;
     if (ctx->error != TURBO_OK) return ctx->error;
-    if (turbo_vec_empty(&ctx->streams)) return TURBO_EPROTO;
+    if (vec_empty(&ctx->streams)) return TURBO_EPROTO;
     ctx->metadata.duration_ms = (int64_t)mkv_reader_getduration(ctx->reader);
     ctx->opened = 1;
     return TURBO_OK;
@@ -270,9 +273,9 @@ static int mkv_demuxer_seek_impl(void *ctx_ptr, int64_t timestamp_ms, int flags)
 
 static int mkv_demuxer_get_stream_count_impl(void *ctx_ptr) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
-    if (!ctx || !ctx->opened || turbo_vec_size(&ctx->streams) > INT_MAX)
+    if (!ctx || !ctx->opened || vec_size(&ctx->streams) > INT_MAX)
         return TURBO_EINVAL;
-    return (int)turbo_vec_size(&ctx->streams);
+    return (int)vec_size(&ctx->streams);
 }
 
 static int mkv_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
@@ -280,7 +283,7 @@ static int mkv_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     const mkv_demuxer_stream_t *stream;
     if (!ctx || !ctx->opened || !info || stream_index < 0) return TURBO_EINVAL;
-    stream = (const mkv_demuxer_stream_t *)turbo_vec_at_const(
+    stream = (const mkv_demuxer_stream_t *)vec_at_const(
         &ctx->streams, (size_t)stream_index);
     if (!stream) return TURBO_EINVAL;
     *info = stream->info;

@@ -53,7 +53,7 @@ static void run_mpeg2_round_trip(turbo_muxer_format_t format,
     input_info.height = 288;
     input_info.framerate = 25;
     result = turbo_muxer_add_stream(muxer, &input_info, &stream_id);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
 
     input_packet.stream_id = stream_id;
@@ -65,21 +65,21 @@ static void run_mpeg2_round_trip(turbo_muxer_format_t format,
         input_packet.pts = (int64_t)i * input_packet.duration;
         input_packet.dts = input_packet.pts;
         result = turbo_muxer_write_packet(muxer, &input_packet);
-        check_int_eq(result, 0);
+        check_equal(result, 0);
         if (result != 0) goto cleanup;
     }
     result = turbo_muxer_write_trailer(muxer);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
     result = turbo_muxer_get_data(muxer, &container_data, &container_size);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     check_not_null(container_data);
-    check_size_gt(container_size, sizeof(mpeg2_sequence_and_picture));
+    check_greater(container_size, sizeof(mpeg2_sequence_and_picture));
     if (result != 0 || !container_data) goto cleanup;
 
     probed_ops = turbo_demuxer_probe(container_data, container_size);
     check_not_null(probed_ops);
-    if (probed_ops) check_str_eq(probed_ops->name, demuxer_name);
+    if (probed_ops) check_equal(probed_ops->name, demuxer_name);
 
     demux_config.data = container_data;
     demux_config.data_size = container_size;
@@ -87,19 +87,19 @@ static void run_mpeg2_round_trip(turbo_muxer_format_t format,
     check_not_null(demuxer);
     if (!demuxer) goto cleanup;
     result = turbo_demuxer_open(demuxer);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
-    check_int_eq(turbo_demuxer_get_stream_count(demuxer), 1);
+    check_equal(turbo_demuxer_get_stream_count(demuxer), 1);
     result = turbo_demuxer_get_stream_info(demuxer, 0, &output_info);
-    check_int_eq(result, 0);
-    check_str_eq(output_info.codec_name, "mpeg2video");
-    check_int_eq(output_info.width, 352);
-    check_int_eq(output_info.height, 288);
+    check_equal(result, 0);
+    check_equal(output_info.codec_name, "mpeg2video");
+    check_equal(output_info.width, 352);
+    check_equal(output_info.height, 288);
     result = turbo_demuxer_read_packet(demuxer, &output_packet);
-    check_int_eq(result, 1);
+    check_equal(result, 1);
     check_not_null(output_packet.data);
-    check_size_gt(output_packet.size, 0);
-    check_int_eq(output_packet.stream_index, 0);
+    check_greater(output_packet.size, 0);
+    check_equal(output_packet.stream_index, 0);
 
 cleanup:
     turbo_demuxer_free_packet(&output_packet);
@@ -161,25 +161,25 @@ suite("container adapters") {
             input_info.sample_rate = CONTAINER_TEST_SAMPLE_RATE;
             input_info.channels = CONTAINER_TEST_CHANNELS;
             result = turbo_muxer_add_stream(muxer, &input_info, &stream_id);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto flv_cleanup;
             input_packet.stream_id = stream_id;
             input_packet.data = input;
             input_packet.size = sizeof(input);
             input_packet.duration = 20000;
             result = turbo_muxer_write_packet(muxer, &input_packet);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto flv_cleanup;
             result = turbo_muxer_write_trailer(muxer);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto flv_cleanup;
             result = turbo_muxer_get_data(muxer, &container_data, &container_size);
-            check_int_eq(result, 0);
-            check_size_gt(container_size, sizeof(input));
+            check_equal(result, 0);
+            check_greater(container_size, sizeof(input));
             if (result != 0 || !container_data || container_size < 5)
                 goto flv_cleanup;
-            check_mem_eq(container_data, "FLV", 3);
-            check_int_eq(container_data[4], 4);
+            check_equal(container_data, "FLV", 3);
+            check_equal(container_data[4], 4);
 
             demux_config.data = container_data;
             demux_config.data_size = container_size;
@@ -187,17 +187,17 @@ suite("container adapters") {
             check_not_null(demuxer);
             if (!demuxer) goto flv_cleanup;
             result = turbo_demuxer_open(demuxer);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto flv_cleanup;
-            check_int_eq(turbo_demuxer_get_stream_count(demuxer), 1);
+            check_equal(turbo_demuxer_get_stream_count(demuxer), 1);
             result = turbo_demuxer_get_stream_info(demuxer, 0, &output_info);
-            check_int_eq(result, 0);
-            check_str_eq(output_info.codec_name, "pcma");
+            check_equal(result, 0);
+            check_equal(output_info.codec_name, "pcma");
             result = turbo_demuxer_read_packet(demuxer, &output_packet);
-            check_int_eq(result, 1);
-            check_size_eq(output_packet.size, sizeof(input));
+            check_equal(result, 1);
+            check_equal(output_packet.size, sizeof(input));
             if (result == 1 && output_packet.data)
-                check_mem_eq(output_packet.data, input, sizeof(input));
+                check_equal(output_packet.data, input, sizeof(input));
 
         flv_cleanup:
             turbo_demuxer_free_packet(&output_packet);
@@ -235,7 +235,7 @@ suite("container adapters") {
             input_info.sample_rate = CONTAINER_TEST_SAMPLE_RATE;
             input_info.channels = CONTAINER_TEST_CHANNELS;
             result = turbo_muxer_add_stream(muxer, &input_info, &stream_id);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto mp4_cleanup;
 
             input_packet.stream_id = stream_id;
@@ -244,15 +244,15 @@ suite("container adapters") {
             input_packet.duration = 20000;
             input_packet.is_keyframe = 1;
             result = turbo_muxer_write_packet(muxer, &input_packet);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto mp4_cleanup;
             result = turbo_muxer_write_trailer(muxer);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto mp4_cleanup;
             result = turbo_muxer_get_data(muxer, &container_data, &container_size);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             check_not_null(container_data);
-            check_size_gt(container_size, sizeof(input));
+            check_greater(container_size, sizeof(input));
             if (result != 0 || !container_data) goto mp4_cleanup;
 
             demux_config.data = container_data;
@@ -261,20 +261,20 @@ suite("container adapters") {
             check_not_null(demuxer);
             if (!demuxer) goto mp4_cleanup;
             result = turbo_demuxer_open(demuxer);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto mp4_cleanup;
-            check_int_eq(turbo_demuxer_get_stream_count(demuxer), 1);
+            check_equal(turbo_demuxer_get_stream_count(demuxer), 1);
             result = turbo_demuxer_get_stream_info(demuxer, 0, &output_info);
-            check_int_eq(result, 0);
-            check_str_eq(output_info.codec_name, "pcmu");
-            check_int_eq(output_info.sample_rate, CONTAINER_TEST_SAMPLE_RATE);
-            check_int_eq(output_info.channels, CONTAINER_TEST_CHANNELS);
+            check_equal(result, 0);
+            check_equal(output_info.codec_name, "pcmu");
+            check_equal(output_info.sample_rate, CONTAINER_TEST_SAMPLE_RATE);
+            check_equal(output_info.channels, CONTAINER_TEST_CHANNELS);
 
             result = turbo_demuxer_read_packet(demuxer, &output_packet);
-            check_int_eq(result, 1);
-            check_size_eq(output_packet.size, sizeof(input));
+            check_equal(result, 1);
+            check_equal(output_packet.size, sizeof(input));
             if (result == 1 && output_packet.data)
-                check_mem_eq(output_packet.data, input, sizeof(input));
+                check_equal(output_packet.data, input, sizeof(input));
 
         mp4_cleanup:
             turbo_demuxer_free_packet(&output_packet);
@@ -311,7 +311,7 @@ suite("container adapters") {
             input_info.sample_rate = 44100;
             input_info.channels = 2;
             result = turbo_muxer_add_stream(muxer, &input_info, &stream_id);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto mkv_cleanup;
             input_packet.stream_id = stream_id;
             input_packet.data = input;
@@ -319,14 +319,14 @@ suite("container adapters") {
             input_packet.duration = 26000;
             input_packet.is_keyframe = 1;
             result = turbo_muxer_write_packet(muxer, &input_packet);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto mkv_cleanup;
             result = turbo_muxer_write_trailer(muxer);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto mkv_cleanup;
             result = turbo_muxer_get_data(muxer, &container_data, &container_size);
-            check_int_eq(result, 0);
-            check_size_gt(container_size, sizeof(input));
+            check_equal(result, 0);
+            check_greater(container_size, sizeof(input));
             if (result != 0 || !container_data) goto mkv_cleanup;
 
             demux_config.data = container_data;
@@ -335,19 +335,19 @@ suite("container adapters") {
             check_not_null(demuxer);
             if (!demuxer) goto mkv_cleanup;
             result = turbo_demuxer_open(demuxer);
-            check_int_eq(result, 0);
+            check_equal(result, 0);
             if (result != 0) goto mkv_cleanup;
-            check_int_eq(turbo_demuxer_get_stream_count(demuxer), 1);
+            check_equal(turbo_demuxer_get_stream_count(demuxer), 1);
             result = turbo_demuxer_get_stream_info(demuxer, 0, &output_info);
-            check_int_eq(result, 0);
-            check_str_eq(output_info.codec_name, "mp3");
-            check_int_eq(output_info.sample_rate, 44100);
-            check_int_eq(output_info.channels, 2);
+            check_equal(result, 0);
+            check_equal(output_info.codec_name, "mp3");
+            check_equal(output_info.sample_rate, 44100);
+            check_equal(output_info.channels, 2);
             result = turbo_demuxer_read_packet(demuxer, &output_packet);
-            check_int_eq(result, 1);
-            check_size_eq(output_packet.size, sizeof(input));
+            check_equal(result, 1);
+            check_equal(output_packet.size, sizeof(input));
             if (result == 1 && output_packet.data)
-                check_mem_eq(output_packet.data, input, sizeof(input));
+                check_equal(output_packet.data, input, sizeof(input));
 
         mkv_cleanup:
             turbo_demuxer_free_packet(&output_packet);

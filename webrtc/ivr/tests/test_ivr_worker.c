@@ -1,6 +1,6 @@
 #include "ivr/ivr_worker.h"
 #include "ivr_internal.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 
 #include <string.h>
 
@@ -171,17 +171,14 @@ void tearDown(void) {
 
 void test_open_is_bounded_and_idempotent(void) {
     ivr_call_ref_t second = make_call("call-43");
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL_INT(1, g_media.create_calls);
-    TEST_ASSERT_EQUAL_INT(1, g_media.start_calls);
-    TEST_ASSERT_EQUAL_UINT32(1, ivr_worker_active_sessions(g_worker));
-    TEST_ASSERT_EQUAL(IVR_ENOSPC,
-                      ivr_worker_open_media_call(g_worker, &second));
+    check_equal(create_worker(1), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
+    check_equal((int)(g_media.create_calls), (int)(1));
+    check_equal((int)(g_media.start_calls), (int)(1));
+    check_equal((uint32_t)(ivr_worker_active_sessions(g_worker)), (uint32_t)(1));
+    check_equal(ivr_worker_open_media_call(g_worker, &second), IVR_ENOSPC);
 }
 
 void test_typed_open_records_generation_for_restart_inventory(void) {
@@ -196,24 +193,19 @@ void test_typed_open_records_generation_for_restart_inventory(void) {
     query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
     query.limit = 1u;
 
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(
-        IVR_OK, ivr_worker_open_media_operation(g_worker, &operation));
-    TEST_ASSERT_EQUAL(
-        IVR_OK, ivr_worker_open_media_operation(g_worker, &operation));
-    TEST_ASSERT_EQUAL_INT(1, g_media.create_calls);
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
-    TEST_ASSERT_EQUAL_UINT32(1, page.count);
-    TEST_ASSERT_EQUAL_UINT64(7, page.records[0].operation_generation);
+    check_equal(create_worker(1), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_operation(g_worker, &operation), IVR_OK);
+    check_equal(ivr_worker_open_media_operation(g_worker, &operation), IVR_OK);
+    check_equal((int)(g_media.create_calls), (int)(1));
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_OK);
+    check_equal((uint32_t)(page.count), (uint32_t)(1));
+    check_equal((uint64_t)(page.records[0].operation_generation), (uint64_t)(7));
 
     operation.operation_generation = 6u;
-    TEST_ASSERT_EQUAL(
-        IVR_ESTALE, ivr_worker_open_media_operation(g_worker, &operation));
+    check_equal(ivr_worker_open_media_operation(g_worker, &operation), IVR_ESTALE);
     operation.operation_generation = 8u;
-    TEST_ASSERT_EQUAL(
-        IVR_ESTATE, ivr_worker_open_media_operation(g_worker, &operation));
+    check_equal(ivr_worker_open_media_operation(g_worker, &operation), IVR_ESTATE);
 }
 
 void test_operations_are_explicit_and_idempotent(void) {
@@ -223,21 +215,17 @@ void test_operations_are_explicit_and_idempotent(void) {
     operation.call = g_call;
     operation.operation_generation = 1;
 
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_play(g_worker, &operation, &text));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_play(g_worker, &operation, &text));
-    TEST_ASSERT_EQUAL_INT(1, g_media.play_calls);
+    check_equal(create_worker(1), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(ivr_worker_play(g_worker, &operation, &text), IVR_OK);
+    check_equal(ivr_worker_play(g_worker, &operation, &text), IVR_OK);
+    check_equal((int)(g_media.play_calls), (int)(1));
 
     operation.operation_generation = 2;
     operation.deadline_ms = 99;
-    TEST_ASSERT_EQUAL(IVR_ESTALE,
-                      ivr_worker_play(g_worker, &operation, &text));
-    TEST_ASSERT_EQUAL_INT(1, g_media.play_calls);
+    check_equal(ivr_worker_play(g_worker, &operation, &text), IVR_ESTALE);
+    check_equal((int)(g_media.play_calls), (int)(1));
 }
 
 void test_input_window_rejects_stale_completion(void) {
@@ -248,19 +236,18 @@ void test_input_window_rejects_stale_completion(void) {
     operation.call = g_call;
     operation.operation_generation = 1;
 
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_input(
-                                  g_worker, &operation, &input_id, 7));
+    check_equal(create_worker(1), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(ivr_worker_begin_input(
+                                  g_worker, &operation, &input_id, 7), IVR_OK);
     operation.operation_generation = 2;
-    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_end_input(
-                                     g_worker, &operation, &stale_id, 7));
-    TEST_ASSERT_EQUAL_INT(0, g_media.end_input_calls);
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_end_input(
-                                  g_worker, &operation, &input_id, 7));
-    TEST_ASSERT_EQUAL_INT(1, g_media.end_input_calls);
+    check_equal(ivr_worker_end_input(
+                                     g_worker, &operation, &stale_id, 7), IVR_ESTALE);
+    check_equal((int)(g_media.end_input_calls), (int)(0));
+    check_equal(ivr_worker_end_input(
+                                  g_worker, &operation, &input_id, 7), IVR_OK);
+    check_equal((int)(g_media.end_input_calls), (int)(1));
 }
 
 void test_cancel_is_fenced_to_the_exact_active_input(void) {
@@ -276,39 +263,36 @@ void test_cancel_is_fenced_to_the_exact_active_input(void) {
     query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
     query.limit = 1;
 
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_input(
-                                  g_worker, &operation, &input_id, 7));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
-    TEST_ASSERT_EQUAL_UINT32(1, page.count);
-    TEST_ASSERT_TRUE(page.records[0].input_active);
-    TEST_ASSERT_EQUAL_STRING("input-1", page.records[0].input_id);
-    TEST_ASSERT_EQUAL_UINT64(7, page.records[0].input_generation);
+    check_equal(create_worker(1), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(ivr_worker_begin_input(
+                                  g_worker, &operation, &input_id, 7), IVR_OK);
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_OK);
+    check_equal((uint32_t)(page.count), (uint32_t)(1));
+    check_true(page.records[0].input_active);
+    check_equal(page.records[0].input_id, "input-1");
+    check_equal((uint64_t)(page.records[0].input_generation), (uint64_t)(7));
 
     operation.operation_generation = 2;
-    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_cancel_input(
-                                     g_worker, &operation, &stale_id, 7));
-    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_cancel_input(
-                                     g_worker, &operation, &input_id, 8));
-    TEST_ASSERT_EQUAL_INT(0, g_media.cancel_calls);
+    check_equal(ivr_worker_cancel_input(
+                                     g_worker, &operation, &stale_id, 7), IVR_ESTALE);
+    check_equal(ivr_worker_cancel_input(
+                                     g_worker, &operation, &input_id, 8), IVR_ESTALE);
+    check_equal((int)(g_media.cancel_calls), (int)(0));
 
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_cancel_input(
-                                  g_worker, &operation, &input_id, 7));
-    TEST_ASSERT_EQUAL_INT(1, g_media.cancel_calls);
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
-    TEST_ASSERT_FALSE(page.records[0].input_active);
-    TEST_ASSERT_EQUAL_STRING("", page.records[0].input_id);
-    TEST_ASSERT_EQUAL_UINT64(0, page.records[0].input_generation);
+    check_equal(ivr_worker_cancel_input(
+                                  g_worker, &operation, &input_id, 7), IVR_OK);
+    check_equal((int)(g_media.cancel_calls), (int)(1));
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_OK);
+    check_false(page.records[0].input_active);
+    check_equal(page.records[0].input_id, "");
+    check_equal((uint64_t)(page.records[0].input_generation), (uint64_t)(0));
 
     operation.operation_generation = 3;
-    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_cancel_input(
-                                     g_worker, &operation, &input_id, 7));
-    TEST_ASSERT_EQUAL_INT(1, g_media.cancel_calls);
+    check_equal(ivr_worker_cancel_input(
+                                     g_worker, &operation, &input_id, 7), IVR_ESTALE);
+    check_equal((int)(g_media.cancel_calls), (int)(1));
 }
 
 void test_media_event_is_forwarded_without_workflow_processing(void) {
@@ -322,34 +306,27 @@ void test_media_event_is_forwarded_without_workflow_processing(void) {
     event.input_value.data = "sales";
     event.input_value.size = 5;
 
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_publish_event_copy(g_worker, &event));
-    TEST_ASSERT_EQUAL_INT(1, g_media.event_calls);
+    check_equal(create_worker(1), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(ivr_worker_publish_event_copy(g_worker, &event), IVR_OK);
+    check_equal((int)(g_media.event_calls), (int)(1));
 }
 
 void test_close_and_drain_release_media_slots(void) {
     ivr_call_ref_t second = make_call("call-43");
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(2));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &second));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_close_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_close_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL_UINT32(1, ivr_worker_active_sessions(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_begin_drain(g_worker));
-    TEST_ASSERT_EQUAL_UINT32(0, ivr_worker_active_sessions(g_worker));
-    TEST_ASSERT_EQUAL_INT(2, g_media.stop_calls);
-    TEST_ASSERT_EQUAL_INT(2, g_media.destroy_calls);
-    TEST_ASSERT_EQUAL(IVR_ECLOSED,
-                      ivr_worker_open_media_call(g_worker, &g_call));
+    check_equal(create_worker(2), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &second), IVR_OK);
+    check_equal(ivr_worker_close_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(ivr_worker_close_media_call(g_worker, &g_call), IVR_OK);
+    check_equal((uint32_t)(ivr_worker_active_sessions(g_worker)), (uint32_t)(1));
+    check_equal(ivr_worker_begin_drain(g_worker), IVR_OK);
+    check_equal((uint32_t)(ivr_worker_active_sessions(g_worker)), (uint32_t)(0));
+    check_equal((int)(g_media.stop_calls), (int)(2));
+    check_equal((int)(g_media.destroy_calls), (int)(2));
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_ECLOSED);
 }
 
 void test_old_abi_is_rejected(void) {
@@ -369,9 +346,8 @@ void test_old_abi_is_rejected(void) {
     factory.abi_version = IVR_WORKER_ABI_VERSION;
     factory.create = mock_create;
     factory.destroy = mock_destroy;
-    TEST_ASSERT_EQUAL(IVR_EVERSION,
-                      ivr_worker_create(&config, &sink, &factory, &g_worker));
-    TEST_ASSERT_NULL(g_worker);
+    check_equal(ivr_worker_create(&config, &sink, &factory, &g_worker), IVR_EVERSION);
+    check_null(g_worker);
 }
 
 void test_inventory_is_owned_versioned_and_bounded(void) {
@@ -382,86 +358,71 @@ void test_inventory_is_owned_versioned_and_bounded(void) {
     uint64_t revision;
     uint32_t next_cursor;
 
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(3));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &second));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &third));
+    check_equal(create_worker(3), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &second), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &third), IVR_OK);
 
     memset(&query, 0, sizeof(query));
     query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
     query.limit = 2;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
-    TEST_ASSERT_EQUAL_UINT32(2, page.count);
-    TEST_ASSERT_EQUAL_UINT32(3, page.total_active);
-    TEST_ASSERT_TRUE(page.has_more);
-    TEST_ASSERT_TRUE(page.next_cursor > 0);
-    TEST_ASSERT_EQUAL_STRING("media-worker-test", page.records[0].worker_id);
-    TEST_ASSERT_EQUAL_STRING("media-worker-instance",
-                             page.records[0].worker_instance_id);
-    TEST_ASSERT_EQUAL_UINT64(7, page.records[0].worker_epoch);
-    TEST_ASSERT_EQUAL_UINT64(0,
-                             page.records[0].operation_generation);
-    TEST_ASSERT_EQUAL_STRING("call-42",
-                             page.records[0].provider_session_id);
-    TEST_ASSERT_EQUAL_STRING("call-42", page.records[0].dialog_id);
-    TEST_ASSERT_EQUAL_STRING("room-42", page.records[0].room_id);
-    TEST_ASSERT_EQUAL_STRING("call-42", page.records[0].call_id);
-    TEST_ASSERT_EQUAL_UINT64(1, page.records[0].call_generation);
-    TEST_ASSERT_EQUAL_INT(IVR_WORKER_RESOURCE_ACTIVE,
-                          page.records[0].state);
-    TEST_ASSERT_TRUE(page.records[0].rebindable);
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_OK);
+    check_equal((uint32_t)(page.count), (uint32_t)(2));
+    check_equal((uint32_t)(page.total_active), (uint32_t)(3));
+    check_true(page.has_more);
+    check_true(page.next_cursor > 0);
+    check_equal(page.records[0].worker_id, "media-worker-test");
+    check_equal(page.records[0].worker_instance_id, "media-worker-instance");
+    check_equal((uint64_t)(page.records[0].worker_epoch), (uint64_t)(7));
+    check_equal((uint64_t)(page.records[0].operation_generation), (uint64_t)(0));
+    check_equal(page.records[0].provider_session_id, "call-42");
+    check_equal(page.records[0].dialog_id, "call-42");
+    check_equal(page.records[0].room_id, "room-42");
+    check_equal(page.records[0].call_id, "call-42");
+    check_equal((uint64_t)(page.records[0].call_generation), (uint64_t)(1));
+    check_equal((int)(page.records[0].state), (int)(IVR_WORKER_RESOURCE_ACTIVE));
+    check_true(page.records[0].rebindable);
     revision = page.revision;
     next_cursor = page.next_cursor;
 
     /* The page owns its strings; closing the worker slot does not mutate it. */
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_close_media_call(g_worker, &g_call));
-    TEST_ASSERT_EQUAL_STRING("call-42", page.records[0].call_id);
+    check_equal(ivr_worker_close_media_call(g_worker, &g_call), IVR_OK);
+    check_equal(page.records[0].call_id, "call-42");
 
     query.expected_revision = revision;
     query.cursor = next_cursor;
-    TEST_ASSERT_EQUAL(IVR_ESTALE,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
-    TEST_ASSERT_EQUAL_UINT32(0, page.count);
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_ESTALE);
+    check_equal((uint32_t)(page.count), (uint32_t)(0));
 
     query.expected_revision = 0;
     query.cursor = 0;
     query.limit = IVR_WORKER_INVENTORY_MAX_PAGE_SIZE;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
-    TEST_ASSERT_EQUAL_UINT32(2, page.count);
-    TEST_ASSERT_EQUAL_UINT32(2, page.total_active);
-    TEST_ASSERT_FALSE(page.has_more);
-    TEST_ASSERT_EQUAL_UINT32(0, page.next_cursor);
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_OK);
+    check_equal((uint32_t)(page.count), (uint32_t)(2));
+    check_equal((uint32_t)(page.total_active), (uint32_t)(2));
+    check_false(page.has_more);
+    check_equal((uint32_t)(page.next_cursor), (uint32_t)(0));
 }
 
 void test_inventory_rejects_unknown_version_limit_and_cursor(void) {
     ivr_worker_inventory_query_t query;
     ivr_worker_inventory_page_t page;
 
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
+    check_equal(create_worker(1), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
     memset(&query, 0, sizeof(query));
     query.inventory_version = IVR_WORKER_INVENTORY_VERSION + 1u;
     query.limit = 1;
-    TEST_ASSERT_EQUAL(IVR_EVERSION,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_EVERSION);
     query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
     query.limit = 0;
-    TEST_ASSERT_EQUAL(IVR_EINVAL,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_EINVAL);
     query.limit = IVR_WORKER_INVENTORY_MAX_PAGE_SIZE + 1u;
-    TEST_ASSERT_EQUAL(IVR_EINVAL,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_EINVAL);
     query.limit = 1;
     query.cursor = 2;
-    TEST_ASSERT_EQUAL(IVR_EINVAL,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_EINVAL);
 }
 
 void test_reconnect_epoch_invalidates_inventory_and_preserves_media(void) {
@@ -469,47 +430,43 @@ void test_reconnect_epoch_invalidates_inventory_and_preserves_media(void) {
     ivr_worker_inventory_page_t page;
     uint64_t old_revision;
 
-    TEST_ASSERT_EQUAL(IVR_OK, create_worker(1));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_start(g_worker));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_open_media_call(g_worker, &g_call));
+    check_equal(create_worker(1), IVR_OK);
+    check_equal(ivr_worker_start(g_worker), IVR_OK);
+    check_equal(ivr_worker_open_media_call(g_worker, &g_call), IVR_OK);
     memset(&query, 0, sizeof(query));
     query.inventory_version = IVR_WORKER_INVENTORY_VERSION;
     query.limit = 1;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_OK);
     old_revision = page.revision;
-    TEST_ASSERT_EQUAL_UINT64(7, page.records[0].worker_epoch);
+    check_equal((uint64_t)(page.records[0].worker_epoch), (uint64_t)(7));
 
-    TEST_ASSERT_EQUAL(IVR_EINVAL, ivr_worker_advance_epoch(g_worker, 0));
-    TEST_ASSERT_EQUAL(IVR_ESTALE, ivr_worker_advance_epoch(g_worker, 7));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_worker_advance_epoch(g_worker, 8));
-    TEST_ASSERT_EQUAL_UINT32(1, ivr_worker_active_sessions(g_worker));
+    check_equal(ivr_worker_advance_epoch(g_worker, 0), IVR_EINVAL);
+    check_equal(ivr_worker_advance_epoch(g_worker, 7), IVR_ESTALE);
+    check_equal(ivr_worker_advance_epoch(g_worker, 8), IVR_OK);
+    check_equal((uint32_t)(ivr_worker_active_sessions(g_worker)), (uint32_t)(1));
 
     query.expected_revision = old_revision;
-    TEST_ASSERT_EQUAL(IVR_ESTALE,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_ESTALE);
     query.expected_revision = 0;
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_worker_query_inventory(g_worker, &query, &page));
-    TEST_ASSERT_EQUAL_UINT32(1, page.count);
-    TEST_ASSERT_EQUAL_UINT64(8, page.records[0].worker_epoch);
-    TEST_ASSERT_TRUE(page.revision > old_revision);
+    check_equal(ivr_worker_query_inventory(g_worker, &query, &page), IVR_OK);
+    check_equal((uint32_t)(page.count), (uint32_t)(1));
+    check_equal((uint64_t)(page.records[0].worker_epoch), (uint64_t)(8));
+    check_true(page.revision > old_revision);
 }
 
 spec("test_ivr_worker") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_open_is_bounded_and_idempotent);
-  TT_TEST(test_typed_open_records_generation_for_restart_inventory);
-  TT_TEST(test_operations_are_explicit_and_idempotent);
-  TT_TEST(test_input_window_rejects_stale_completion);
-  TT_TEST(test_cancel_is_fenced_to_the_exact_active_input);
-  TT_TEST(test_media_event_is_forwarded_without_workflow_processing);
-  TT_TEST(test_close_and_drain_release_media_slots);
-  TT_TEST(test_old_abi_is_rejected);
-  TT_TEST(test_inventory_is_owned_versioned_and_bounded);
-  TT_TEST(test_inventory_rejects_unknown_version_limit_and_cursor);
-  TT_TEST(test_reconnect_epoch_invalidates_inventory_and_preserves_media);
+  it("test_open_is_bounded_and_idempotent") { test_open_is_bounded_and_idempotent(); };
+  it("test_typed_open_records_generation_for_restart_inventory") { test_typed_open_records_generation_for_restart_inventory(); };
+  it("test_operations_are_explicit_and_idempotent") { test_operations_are_explicit_and_idempotent(); };
+  it("test_input_window_rejects_stale_completion") { test_input_window_rejects_stale_completion(); };
+  it("test_cancel_is_fenced_to_the_exact_active_input") { test_cancel_is_fenced_to_the_exact_active_input(); };
+  it("test_media_event_is_forwarded_without_workflow_processing") { test_media_event_is_forwarded_without_workflow_processing(); };
+  it("test_close_and_drain_release_media_slots") { test_close_and_drain_release_media_slots(); };
+  it("test_old_abi_is_rejected") { test_old_abi_is_rejected(); };
+  it("test_inventory_is_owned_versioned_and_bounded") { test_inventory_is_owned_versioned_and_bounded(); };
+  it("test_inventory_rejects_unknown_version_limit_and_cursor") { test_inventory_rejects_unknown_version_limit_and_cursor(); };
+  it("test_reconnect_epoch_invalidates_inventory_and_preserves_media") { test_reconnect_epoch_invalidates_inventory_and_preserves_media(); };
 }

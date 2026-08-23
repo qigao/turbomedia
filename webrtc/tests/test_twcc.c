@@ -1,7 +1,7 @@
 /**
  * Unit tests for TWCC (Transport-Wide Congestion Control)
  */
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_rtp.h"
 #include <string.h>
 
@@ -16,19 +16,19 @@ static uint16_t read_be16(const uint8_t *p) { return (uint16_t)(((uint16_t)p[0] 
 
 void test_twcc_tracker_create(void) {
   twcc_tracker_t *tracker = twcc_tracker_create();
-  TEST_ASSERT_NOT_NULL(tracker);
+  check_not_null(tracker);
 
   twcc_tracker_destroy(tracker);
 }
 
 void test_twcc_tracker_register_packet(void) {
   twcc_tracker_t *tracker = twcc_tracker_create();
-  TEST_ASSERT_NOT_NULL(tracker);
+  check_not_null(tracker);
 
   /* Register some packets */
   for (int i = 0; i < 10; i++) {
     uint16_t seq = twcc_tracker_register_packet(tracker, 1200, i * 1000);
-    TEST_ASSERT_EQUAL_UINT16(i, seq);
+    check_equal((uint16_t)(seq), (uint16_t)(i));
   }
 
   twcc_tracker_destroy(tracker);
@@ -36,7 +36,7 @@ void test_twcc_tracker_register_packet(void) {
 
 void test_twcc_tracker_process_feedback(void) {
   twcc_tracker_t *tracker = twcc_tracker_create();
-  TEST_ASSERT_NOT_NULL(tracker);
+  check_not_null(tracker);
 
   /* Register packets */
   for (int i = 0; i < 5; i++) {
@@ -64,8 +64,8 @@ void test_twcc_tracker_process_feedback(void) {
   /* Process feedback */
   twcc_bwe_result_t result;
   int ret = twcc_tracker_process_feedback(tracker, &twcc, &result);
-  TEST_ASSERT_EQUAL_INT(0, ret);
-  TEST_ASSERT_GREATER_THAN(0, result.estimated_bw_bps);
+  check_equal((int)(ret), (int)(0));
+  check_greater(result.estimated_bw_bps, 0);
 
   twcc_tracker_destroy(tracker);
 }
@@ -76,19 +76,19 @@ void test_twcc_tracker_process_feedback(void) {
 
 void test_twcc_receiver_create(void) {
   twcc_receiver_t *receiver = twcc_receiver_create(0x12345678);
-  TEST_ASSERT_NOT_NULL(receiver);
+  check_not_null(receiver);
 
   twcc_receiver_destroy(receiver);
 }
 
 void test_twcc_receiver_register_packet(void) {
   twcc_receiver_t *receiver = twcc_receiver_create(0xCAFEBABE);
-  TEST_ASSERT_NOT_NULL(receiver);
+  check_not_null(receiver);
 
   /* Register packets with TWCC sequence numbers */
   for (uint16_t i = 0; i < 10; i++) {
     int result = twcc_receiver_register_packet(receiver, i, i * 1000);
-    TEST_ASSERT_EQUAL_INT(0, result);
+    check_equal((int)(result), (int)(0));
   }
 
   twcc_receiver_destroy(receiver);
@@ -96,7 +96,7 @@ void test_twcc_receiver_register_packet(void) {
 
 void test_twcc_receiver_generate_feedback(void) {
   twcc_receiver_t *receiver = twcc_receiver_create(0x11111111);
-  TEST_ASSERT_NOT_NULL(receiver);
+  check_not_null(receiver);
 
   /* Register packets */
   for (uint16_t i = 0; i < 5; i++) {
@@ -108,12 +108,12 @@ void test_twcc_receiver_generate_feedback(void) {
   int result = twcc_receiver_generate_feedback(receiver, &twcc);
 
   /* Should generate feedback or indicate not ready */
-  TEST_ASSERT_GREATER_OR_EQUAL(0, result);
+  check_greater_equal(result, 0);
 
   if (result == 1) {
     /* Feedback was generated */
-    TEST_ASSERT_EQUAL_UINT32(0x11111111, twcc.sender_ssrc);
-    TEST_ASSERT_GREATER_THAN(0, twcc.num_packets);
+    check_equal((uint32_t)(twcc.sender_ssrc), (uint32_t)(0x11111111));
+    check_greater(twcc.num_packets, 0);
   }
 
   twcc_receiver_destroy(receiver);
@@ -121,7 +121,7 @@ void test_twcc_receiver_generate_feedback(void) {
 
 void test_twcc_receiver_packet_loss(void) {
   twcc_receiver_t *receiver = twcc_receiver_create(0xAAAAAAAA);
-  TEST_ASSERT_NOT_NULL(receiver);
+  check_not_null(receiver);
 
   /* Register packets with gaps (simulate loss) */
   twcc_receiver_register_packet(receiver, 0, 0);
@@ -133,7 +133,7 @@ void test_twcc_receiver_packet_loss(void) {
   /* Generate feedback should handle gaps */
   rtcp_twcc_t twcc;
   int result = twcc_receiver_generate_feedback(receiver, &twcc);
-  TEST_ASSERT_GREATER_OR_EQUAL(0, result);
+  check_greater_equal(result, 0);
 
   twcc_receiver_destroy(receiver);
 }
@@ -217,28 +217,28 @@ void test_rtcp_twcc_roundtrip_with_deltas_and_loss(void) {
   }
 
   int result = rtcp_compound_add_twcc(&compound, &input);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   size_t packet_len = rtcp_compound_finish(&compound);
-  TEST_ASSERT_GREATER_THAN(20, packet_len);
-  TEST_ASSERT_EQUAL_UINT16(0xC000, read_be16(buffer + 20) & 0xC000);
+  check_greater(packet_len, 20);
+  check_equal((uint16_t)(read_be16(buffer + 20) & 0xC000), (uint16_t)(0xC000));
 
   rtcp_twcc_t parsed;
   result = rtcp_parse_twcc(buffer, packet_len, &parsed);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
-  TEST_ASSERT_EQUAL_UINT32(input.sender_ssrc, parsed.sender_ssrc);
-  TEST_ASSERT_EQUAL_UINT32(input.media_ssrc, parsed.media_ssrc);
-  TEST_ASSERT_EQUAL_UINT16(input.base_seq, parsed.base_seq);
-  TEST_ASSERT_EQUAL_UINT16(input.packet_count, parsed.packet_count);
-  TEST_ASSERT_EQUAL_UINT32(input.reference_time, parsed.reference_time);
-  TEST_ASSERT_EQUAL_UINT8(input.fb_pkt_count, parsed.fb_pkt_count);
-  TEST_ASSERT_EQUAL_INT(input.num_packets, parsed.num_packets);
+  check_equal((uint32_t)(parsed.sender_ssrc), (uint32_t)(input.sender_ssrc));
+  check_equal((uint32_t)(parsed.media_ssrc), (uint32_t)(input.media_ssrc));
+  check_equal((uint16_t)(parsed.base_seq), (uint16_t)(input.base_seq));
+  check_equal((uint16_t)(parsed.packet_count), (uint16_t)(input.packet_count));
+  check_equal((uint32_t)(parsed.reference_time), (uint32_t)(input.reference_time));
+  check_equal((uint8_t)(parsed.fb_pkt_count), (uint8_t)(input.fb_pkt_count));
+  check_equal((int)(parsed.num_packets), (int)(input.num_packets));
 
   for (int i = 0; i < input.num_packets; ++i) {
-    TEST_ASSERT_EQUAL_UINT16(input.packets[i].seq, parsed.packets[i].seq);
-    TEST_ASSERT_EQUAL_INT(input.packets[i].received, parsed.packets[i].received);
-    TEST_ASSERT_EQUAL_UINT64(input.packets[i].arrival_time_us, parsed.packets[i].arrival_time_us);
+    check_equal((uint16_t)(parsed.packets[i].seq), (uint16_t)(input.packets[i].seq));
+    check_equal((int)(parsed.packets[i].received), (int)(input.packets[i].received));
+    check_equal((uint64_t)(parsed.packets[i].arrival_time_us), (uint64_t)(input.packets[i].arrival_time_us));
   }
 }
 
@@ -271,23 +271,23 @@ void test_rtcp_twcc_uses_one_bit_status_vector_for_small_deltas(void) {
   }
 
   int result = rtcp_compound_add_twcc(&compound, &input);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   size_t packet_len = rtcp_compound_finish(&compound);
-  TEST_ASSERT_EQUAL_size_t(32, packet_len);
+  check_equal((size_t)(packet_len), (size_t)(32));
 
   uint16_t chunk = read_be16(buffer + 20);
-  TEST_ASSERT_EQUAL_UINT16(0x8000, chunk & 0xC000);
+  check_equal((uint16_t)(chunk & 0xC000), (uint16_t)(0x8000));
 
   rtcp_twcc_t parsed;
   result = rtcp_parse_twcc(buffer, packet_len, &parsed);
-  TEST_ASSERT_EQUAL_INT(0, result);
-  TEST_ASSERT_EQUAL_INT(input.num_packets, parsed.num_packets);
+  check_equal((int)(result), (int)(0));
+  check_equal((int)(parsed.num_packets), (int)(input.num_packets));
 
   for (int i = 0; i < input.num_packets; ++i) {
-    TEST_ASSERT_EQUAL_UINT16(input.packets[i].seq, parsed.packets[i].seq);
-    TEST_ASSERT_EQUAL_INT(input.packets[i].received, parsed.packets[i].received);
-    TEST_ASSERT_EQUAL_UINT64(input.packets[i].arrival_time_us, parsed.packets[i].arrival_time_us);
+    check_equal((uint16_t)(parsed.packets[i].seq), (uint16_t)(input.packets[i].seq));
+    check_equal((int)(parsed.packets[i].received), (int)(input.packets[i].received));
+    check_equal((uint64_t)(parsed.packets[i].arrival_time_us), (uint64_t)(input.packets[i].arrival_time_us));
   }
 }
 
@@ -315,24 +315,24 @@ void test_rtcp_twcc_uses_run_length_for_long_runs(void) {
   }
 
   int result = rtcp_compound_add_twcc(&compound, &input);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   size_t packet_len = rtcp_compound_finish(&compound);
-  TEST_ASSERT_EQUAL_size_t(32, packet_len);
+  check_equal((size_t)(packet_len), (size_t)(32));
 
   uint16_t chunk = read_be16(buffer + 20);
-  TEST_ASSERT_EQUAL_UINT16(0x2000, chunk & 0xE000);
-  TEST_ASSERT_EQUAL_UINT16(10, chunk & 0x1FFF);
+  check_equal((uint16_t)(chunk & 0xE000), (uint16_t)(0x2000));
+  check_equal((uint16_t)(chunk & 0x1FFF), (uint16_t)(10));
 
   rtcp_twcc_t parsed;
   result = rtcp_parse_twcc(buffer, packet_len, &parsed);
-  TEST_ASSERT_EQUAL_INT(0, result);
-  TEST_ASSERT_EQUAL_INT(input.num_packets, parsed.num_packets);
+  check_equal((int)(result), (int)(0));
+  check_equal((int)(parsed.num_packets), (int)(input.num_packets));
 
   for (int i = 0; i < input.num_packets; ++i) {
-    TEST_ASSERT_EQUAL_UINT16(input.packets[i].seq, parsed.packets[i].seq);
-    TEST_ASSERT_EQUAL_INT(1, parsed.packets[i].received);
-    TEST_ASSERT_EQUAL_UINT64(input.packets[i].arrival_time_us, parsed.packets[i].arrival_time_us);
+    check_equal((uint16_t)(parsed.packets[i].seq), (uint16_t)(input.packets[i].seq));
+    check_equal((int)(parsed.packets[i].received), (int)(1));
+    check_equal((uint64_t)(parsed.packets[i].arrival_time_us), (uint64_t)(input.packets[i].arrival_time_us));
   }
 }
 
@@ -355,11 +355,11 @@ void test_rtcp_twcc_serializes_after_reference_time_wrap(void) {
   input.packets[0].arrival_time_us =
       (uint64_t)wrapped_reference_time * 64000ULL + 250ULL;
 
-  TEST_ASSERT_EQUAL_INT(0, rtcp_compound_add_twcc(&compound, &input));
-  TEST_ASSERT_EQUAL_size_t(24, rtcp_compound_finish(&compound));
-  TEST_ASSERT_EQUAL_UINT8(0, buffer[16]);
-  TEST_ASSERT_EQUAL_UINT8(0, buffer[17]);
-  TEST_ASSERT_EQUAL_UINT8(1, buffer[18]);
+  check_equal((int)(rtcp_compound_add_twcc(&compound, &input)), (int)(0));
+  check_equal((size_t)(rtcp_compound_finish(&compound)), (size_t)(24));
+  check_equal((uint8_t)(buffer[16]), (uint8_t)(0));
+  check_equal((uint8_t)(buffer[17]), (uint8_t)(0));
+  check_equal((uint8_t)(buffer[18]), (uint8_t)(1));
 }
 
 /* =============================================================================
@@ -371,8 +371,8 @@ void test_twcc_end_to_end(void) {
   twcc_tracker_t *tracker = twcc_tracker_create();
   twcc_receiver_t *receiver = twcc_receiver_create(0x11111111);
 
-  TEST_ASSERT_NOT_NULL(tracker);
-  TEST_ASSERT_NOT_NULL(receiver);
+  check_not_null(tracker);
+  check_not_null(receiver);
 
   /* Sender registers packets */
   for (int i = 0; i < 10; i++) {
@@ -390,7 +390,7 @@ void test_twcc_end_to_end(void) {
     /* Sender processes feedback */
     twcc_bwe_result_t bwe_result;
     result = twcc_tracker_process_feedback(tracker, &feedback, &bwe_result);
-    TEST_ASSERT_EQUAL_INT(0, result);
+    check_equal((int)(result), (int)(0));
   }
 
   twcc_tracker_destroy(tracker);
@@ -406,23 +406,23 @@ spec("test_twcc") {
   after_each() { tearDown(); }
 
   /* Tracker Tests */
-  TT_TEST(test_twcc_tracker_create);
-  TT_TEST(test_twcc_tracker_register_packet);
-  TT_TEST(test_twcc_tracker_process_feedback);
+  it("test_twcc_tracker_create") { test_twcc_tracker_create(); };
+  it("test_twcc_tracker_register_packet") { test_twcc_tracker_register_packet(); };
+  it("test_twcc_tracker_process_feedback") { test_twcc_tracker_process_feedback(); };
 
   /* Receiver Tests */
-  TT_TEST(test_twcc_receiver_create);
-  TT_TEST(test_twcc_receiver_register_packet);
-  TT_TEST(test_twcc_receiver_generate_feedback);
-  TT_TEST(test_twcc_receiver_packet_loss);
+  it("test_twcc_receiver_create") { test_twcc_receiver_create(); };
+  it("test_twcc_receiver_register_packet") { test_twcc_receiver_register_packet(); };
+  it("test_twcc_receiver_generate_feedback") { test_twcc_receiver_generate_feedback(); };
+  it("test_twcc_receiver_packet_loss") { test_twcc_receiver_packet_loss(); };
 
   /* RTCP Parsing */
-  TT_TEST(test_rtcp_parse_twcc);
-  TT_TEST(test_rtcp_twcc_roundtrip_with_deltas_and_loss);
-  TT_TEST(test_rtcp_twcc_uses_one_bit_status_vector_for_small_deltas);
-  TT_TEST(test_rtcp_twcc_uses_run_length_for_long_runs);
-  TT_TEST(test_rtcp_twcc_serializes_after_reference_time_wrap);
+  it("test_rtcp_parse_twcc") { test_rtcp_parse_twcc(); };
+  it("test_rtcp_twcc_roundtrip_with_deltas_and_loss") { test_rtcp_twcc_roundtrip_with_deltas_and_loss(); };
+  it("test_rtcp_twcc_uses_one_bit_status_vector_for_small_deltas") { test_rtcp_twcc_uses_one_bit_status_vector_for_small_deltas(); };
+  it("test_rtcp_twcc_uses_run_length_for_long_runs") { test_rtcp_twcc_uses_run_length_for_long_runs(); };
+  it("test_rtcp_twcc_serializes_after_reference_time_wrap") { test_rtcp_twcc_serializes_after_reference_time_wrap(); };
 
   /* Integration */
-  TT_TEST(test_twcc_end_to_end);
+  it("test_twcc_end_to_end") { test_twcc_end_to_end(); };
 }

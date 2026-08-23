@@ -93,7 +93,7 @@ int main(int argc, char *argv[]) {
     }
 
     TLOG_INFO("Signaling server started successfully!");
-    TLOG_INFO("WebSocket URL: ws://0.0.0.0:{}", port);
+    TLOG_INFOF("WebSocket URL: ws://0.0.0.0:{}", port);
     TLOG_INFO("Protocol: webrtc-signaling");
     TLOG_INFO("Press Ctrl+C to stop...");
 
@@ -113,7 +113,7 @@ int main(int argc, char *argv[]) {
         uint64_t now = turbo_loop_now(loop);
         if (now - last_check > 5000) {
             int peer_count = webrtc_signaling_get_peer_count(g_server);
-            TLOG_INFO("Active peers: {}", peer_count);
+            TLOG_INFOF("Active peers: {}", peer_count);
             last_check = now;
         }
     }

@@ -898,7 +898,7 @@ static void ice_agent_transport_send(void *transport,
  * Transport Helper
  * ============================================================================ */
 
-CXX_C_API void turbo_dc_peer_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len) {
+TURBO_MEDIA_C_API void turbo_dc_peer_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len) {
     if (!peer || dc_peer_acquire(peer) != 0) {
         return;
     }
@@ -913,7 +913,7 @@ void dc_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len)
     turbo_dc_peer_send_transport_data(peer, data, len);
 }
 
-CXX_C_API void turbo_dc_peer_set_transport_data_handler(
+TURBO_MEDIA_C_API void turbo_dc_peer_set_transport_data_handler(
     turbo_dc_peer_t *peer,
     turbo_dc_transport_data_cb cb,
     void *user_data) {
@@ -1083,7 +1083,7 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
                             ctx->transport_ctx,
                             NULL);
         if (stop_rc != TURBO_OK) {
-            TLOG_ERROR("Failed to post DataChannel transport stop: {}", stop_rc);
+            TLOG_ERRORF("Failed to post DataChannel transport stop: {}", stop_rc);
             coro_context_stop(ctx->transport_ctx);
         }
     }
@@ -1182,8 +1182,10 @@ turbo_dc_peer_t *turbo_dc_peer_create(
         goto peer_create_fail;
     }
 
-    if (turbo_hash_map_init(&peer->channels, sizeof(uint16_t),
-                            sizeof(turbo_dc_channel_t *), NULL, NULL, NULL) != TURBO_OK) {
+    if (hash_map_init_bytes(&peer->channels, sizeof(uint16_t), CMETA_ALIGNOF(uint16_t),
+                            sizeof(turbo_dc_channel_t *),
+                            CMETA_ALIGNOF(turbo_dc_channel_t *), UINT16_MAX,
+                            hash_bytes, hash_key_equal, NULL) != STL_OK) {
         dc_set_context_error(ctx, TURBO_DC_ERROR_ALLOC_PEER, "failed to create channel map");
         goto peer_create_fail;
     }
@@ -1222,7 +1224,7 @@ peer_create_fail:
         peer->dtls.ssl = NULL;
     }
     if (peer->channels_initialized) {
-        turbo_hash_map_destroy(&peer->channels);
+        hash_map_destroy(&peer->channels);
         peer->channels_initialized = 0;
     }
     if (peer->channel_ids) {
@@ -1300,8 +1302,8 @@ int turbo_dc_peer_set_remote_fingerprint(
     const char *hash,
     const char *fingerprint
 ) {
-    tstr_t new_hash;
-    tstr_t new_fingerprint;
+    tstr new_hash;
+    tstr new_fingerprint;
     char *p;
 
     if (!peer || !hash || !fingerprint) return -1;
@@ -1539,16 +1541,16 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
     /* Clean up channels.  The map is bounded by the uint16_t stream-id
      * space, without imposing a 512 KiB pointer array on every peer. */
     while (peer->channels_initialized &&
-           !turbo_hash_map_empty(&peer->channels)) {
+           !hash_map_empty(&peer->channels)) {
         int removed = 0;
-        for (slot = 0; slot < turbo_hash_map_capacity(&peer->channels); slot++) {
-            const uint16_t *id = (const uint16_t *)turbo_hash_map_key_at(
+        for (slot = 0; slot < hash_map_capacity(&peer->channels); slot++) {
+            const uint16_t *id = (const uint16_t *)hash_map_key_at(
                 &peer->channels, slot);
             turbo_dc_channel_t **channel = (turbo_dc_channel_t **)
-                turbo_hash_map_value_at(&peer->channels, slot);
+                hash_map_value_at(&peer->channels, slot);
             if (id && channel && *channel) {
                 turbo_dc_channel_t *owned = *channel;
-                turbo_hash_map_remove(&peer->channels, id, NULL);
+                hash_map_remove(&peer->channels, id, NULL);
                 tstr_free(owned->label);
                 tstr_free(owned->protocol);
                 free(owned);
@@ -1562,7 +1564,7 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
     }
 
     if (peer->channels_initialized) {
-        turbo_hash_map_destroy(&peer->channels);
+        hash_map_destroy(&peer->channels);
         peer->channels_initialized = 0;
     }
 
@@ -1671,7 +1673,7 @@ int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
     }
 
     if (channel->peer->state != TURBO_DC_STATE_CONNECTED) {
-        TLOG_INFO("DCEP OPEN deferred sid={} peer_state={}", channel->id, (int)channel->peer->state);
+        TLOG_INFOF("DCEP OPEN deferred sid={} peer_state={}", channel->id, (int)channel->peer->state);
         dc_set_peer_error(channel->peer, TURBO_DC_ERROR_PEER_NOT_CONNECTED, NULL);
         return -1;
     }
@@ -1686,7 +1688,7 @@ int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
     }
 
     channel->dcep_sent = 1;
-    TLOG_INFO("DCEP OPEN queued sid={} label='{}'", channel->id, channel->label ? channel->label : "");
+    TLOG_INFOF("DCEP OPEN queued sid={} label='{}'", channel->id, channel->label ? channel->label : "");
     return 0;
 }
 

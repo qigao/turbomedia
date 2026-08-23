@@ -1,6 +1,6 @@
 /* test_ivr_protocol.c - shared-schema TIVR BIN/TEXT adapter */
 #include "ivr_protocol.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,20 +18,19 @@ void setUp(void) {
     size_t read_size;
     DataBindError error = DATA_BIND_ERROR_INIT;
 
-    TEST_ASSERT_NOT_NULL(file);
-    TEST_ASSERT_EQUAL_INT(0, fseek(file, 0, SEEK_END));
+    check_not_null(file);
+    check_equal((int)(fseek(file, 0, SEEK_END)), (int)(0));
     size = ftell(file);
-    TEST_ASSERT_TRUE(size >= 0);
-    TEST_ASSERT_EQUAL_INT(0, fseek(file, 0, SEEK_SET));
+    check_true(size >= 0);
+    check_equal((int)(fseek(file, 0, SEEK_SET)), (int)(0));
     schema = (char *)malloc((size_t)size + 1);
-    TEST_ASSERT_NOT_NULL(schema);
+    check_not_null(schema);
     read_size = fread(schema, 1, (size_t)size, file);
-    TEST_ASSERT_EQUAL_UINT64((size_t)size, read_size);
-    TEST_ASSERT_EQUAL_INT(0, fclose(file));
+    check_equal((uint64_t)(read_size), (uint64_t)((size_t)size));
+    check_equal((int)(fclose(file)), (int)(0));
     schema[read_size] = '\0';
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_create_from_text(schema, read_size, &g_codec,
-                                                 &error));
+    check_equal(data_bind_create_from_text(schema, read_size, &g_codec,
+                                                 &error), DATA_BIND_OK);
     free(schema);
 }
 
@@ -47,10 +46,9 @@ static DataBindObject *make_join(void) {
         "\"expected_room_version\":42,\"participant_role\":\"ivr-bot\"}";
     DataBindError error = DATA_BIND_ERROR_INIT;
     DataBindObject *object = NULL;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(
+    check_equal(data_bind_object_from_json(
                           g_codec, "ConferenceJoinCommandV1", json,
-                          sizeof(json) - 1, &object, &error));
+                          sizeof(json) - 1, &object, &error), DATA_BIND_OK);
     return object;
 }
 
@@ -72,17 +70,14 @@ static void assert_roundtrip(uint8_t format) {
     ivr_frame_info_t info = join_info(format);
     ivr_frame_info_t decoded_info = {0};
 
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_protocol_encode(g_codec, &info, source, frame,
-                                          sizeof(frame), &frame_len));
-    TEST_ASSERT_TRUE(frame_len > IVR_FRAME_HEADER_SIZE);
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_protocol_decode(g_codec, frame, frame_len, &decoded,
-                                          &decoded_info));
-    TEST_ASSERT_EQUAL_STRING("ConferenceJoinCommandV1",
-                             data_bind_object_type_name(decoded));
-    TEST_ASSERT_EQUAL_INT(format, decoded_info.format);
-    TEST_ASSERT_EQUAL_INT(IVR_KIND_COMMAND, decoded_info.kind);
+    check_equal(ivr_protocol_encode(g_codec, &info, source, frame,
+                                          sizeof(frame), &frame_len), IVR_OK);
+    check_true(frame_len > IVR_FRAME_HEADER_SIZE);
+    check_equal(ivr_protocol_decode(g_codec, frame, frame_len, &decoded,
+                                          &decoded_info), IVR_OK);
+    check_equal(data_bind_object_type_name(decoded), "ConferenceJoinCommandV1");
+    check_equal((int)(decoded_info.format), (int)(format));
+    check_equal((int)(decoded_info.kind), (int)(IVR_KIND_COMMAND));
     data_bind_object_free(decoded);
     data_bind_object_free(source);
 }
@@ -97,11 +92,10 @@ void test_text_is_compact_json(void) {
     DataBindObject *source = make_join();
     ivr_frame_info_t info = join_info(IVR_FMT_TEXT);
 
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      ivr_protocol_encode(g_codec, &info, source, frame,
-                                          sizeof(frame), &frame_len));
-    TEST_ASSERT_EQUAL_INT('{', frame[IVR_FRAME_HEADER_SIZE]);
-    TEST_ASSERT_NULL(memchr(frame + IVR_FRAME_HEADER_SIZE, '\n',
+    check_equal(ivr_protocol_encode(g_codec, &info, source, frame,
+                                          sizeof(frame), &frame_len), IVR_OK);
+    check_equal((int)(frame[IVR_FRAME_HEADER_SIZE]), (int)('{'));
+    check_null(memchr(frame + IVR_FRAME_HEADER_SIZE, '\n',
                             frame_len - IVR_FRAME_HEADER_SIZE));
     data_bind_object_free(source);
 }
@@ -111,12 +105,11 @@ void test_malformed_text_rejected(void) {
     ivr_frame_info_t info = join_info(IVR_FMT_TEXT);
     DataBindObject *decoded = (DataBindObject *)1;
 
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_frame_encode(frame, &info));
+    check_equal(ivr_frame_encode(frame, &info), IVR_OK);
     frame[IVR_FRAME_HEADER_SIZE] = '{';
-    TEST_ASSERT_EQUAL(IVR_EINVAL,
-                      ivr_protocol_decode(g_codec, frame, sizeof(frame),
-                                          &decoded, NULL));
-    TEST_ASSERT_NULL(decoded);
+    check_equal(ivr_protocol_decode(g_codec, frame, sizeof(frame),
+                                          &decoded, NULL), IVR_EINVAL);
+    check_null(decoded);
 }
 
 void test_object_type_mismatch_rejected(void) {
@@ -128,14 +121,12 @@ void test_object_type_mismatch_rejected(void) {
     DataBindObject *object = NULL;
     ivr_frame_info_t info = join_info(IVR_FMT_BIN);
 
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(
+    check_equal(data_bind_object_from_json(
                           g_codec, "WorkerSyncCommandV1", json,
-                          sizeof(json) - 1, &object, &error));
-    TEST_ASSERT_EQUAL(IVR_EINVAL,
-                      ivr_protocol_encode(g_codec, &info, object, frame,
-                                          sizeof(frame), &frame_len));
-    TEST_ASSERT_EQUAL_UINT64(0, frame_len);
+                          sizeof(json) - 1, &object, &error), DATA_BIND_OK);
+    check_equal(ivr_protocol_encode(g_codec, &info, object, frame,
+                                          sizeof(frame), &frame_len), IVR_EINVAL);
+    check_equal((uint64_t)(frame_len), (uint64_t)(0));
     data_bind_object_free(object);
 }
 
@@ -148,11 +139,10 @@ void test_short_output_is_unchanged(void) {
 
     memset(frame, 0xa5, sizeof(frame));
     memcpy(expected, frame, sizeof(frame));
-    TEST_ASSERT_EQUAL(IVR_ENOSPC,
-                      ivr_protocol_encode(g_codec, &info, source, frame,
-                                          sizeof(frame), &frame_len));
-    TEST_ASSERT_EQUAL_UINT64(0, frame_len);
-    TEST_ASSERT_EQUAL_MEMORY(expected, frame, sizeof(frame));
+    check_equal(ivr_protocol_encode(g_codec, &info, source, frame,
+                                          sizeof(frame), &frame_len), IVR_ENOSPC);
+    check_equal((uint64_t)(frame_len), (uint64_t)(0));
+    check_equal(frame, expected, sizeof(frame));
     data_bind_object_free(source);
 }
 
@@ -160,10 +150,10 @@ spec("test_ivr_protocol") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_bin_roundtrip);
-  TT_TEST(test_text_roundtrip);
-  TT_TEST(test_text_is_compact_json);
-  TT_TEST(test_malformed_text_rejected);
-  TT_TEST(test_object_type_mismatch_rejected);
-  TT_TEST(test_short_output_is_unchanged);
+  it("test_bin_roundtrip") { test_bin_roundtrip(); };
+  it("test_text_roundtrip") { test_text_roundtrip(); };
+  it("test_text_is_compact_json") { test_text_is_compact_json(); };
+  it("test_malformed_text_rejected") { test_malformed_text_rejected(); };
+  it("test_object_type_mismatch_rejected") { test_object_type_mismatch_rejected(); };
+  it("test_short_output_is_unchanged") { test_short_output_is_unchanged(); };
 }

@@ -6,7 +6,7 @@
 
 #include "turbo_datachannel.h"
 #include "turbo_datachannel_errors.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <turbo_thread.h>
 #include <string.h>
 
@@ -26,7 +26,7 @@ void tearDown(void) {
 
 void test_context_create_null_config(void) {
     turbo_dc_context_t *ctx = turbo_dc_context_create(NULL);
-    TEST_ASSERT_NULL(ctx);
+    check_null(ctx);
 }
 
 void test_context_create_default(void) {
@@ -34,7 +34,7 @@ void test_context_create_default(void) {
     turbo_dc_config_t config = {0};
 
     turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
-    TEST_ASSERT_NOT_NULL(ctx);
+    check_not_null(ctx);
 
     turbo_dc_context_destroy(ctx);
 }
@@ -47,7 +47,7 @@ void test_context_create_client_mode(void) {
     };
 
     turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
-    TEST_ASSERT_NOT_NULL(ctx);
+    check_not_null(ctx);
 
     turbo_dc_context_destroy(ctx);
 }
@@ -60,7 +60,7 @@ void test_context_create_server_mode(void) {
     };
 
     turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
-    TEST_ASSERT_NOT_NULL(ctx);
+    check_not_null(ctx);
 
     turbo_dc_context_destroy(ctx);
 }
@@ -76,7 +76,7 @@ void test_context_destroy_null(void) {
 
 void test_peer_create_null_context(void) {
     turbo_dc_peer_t *peer = turbo_dc_peer_create(NULL, "127.0.0.1", 5000, NULL);
-    TEST_ASSERT_NULL(peer);
+    check_null(peer);
 }
 
 void test_peer_create_client(void) {
@@ -85,12 +85,12 @@ void test_peer_create_client(void) {
     };
 
     turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
-    TEST_ASSERT_NOT_NULL(ctx);
+    check_not_null(ctx);
 
     turbo_dc_peer_t *peer = turbo_dc_peer_create(ctx, "127.0.0.1", 5000, NULL);
-    TEST_ASSERT_NOT_NULL(peer);
+    check_not_null(peer);
 
-    TEST_ASSERT_EQUAL(TURBO_DC_STATE_NEW, turbo_dc_peer_get_state(peer));
+    check_equal(turbo_dc_peer_get_state(peer), TURBO_DC_STATE_NEW);
 
     turbo_dc_peer_destroy(peer);
     turbo_dc_context_destroy(ctx);
@@ -104,14 +104,14 @@ void test_peer_state_initial(void) {
     turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
     turbo_dc_peer_t *peer = turbo_dc_peer_create(ctx, "127.0.0.1", 5000, NULL);
 
-    TEST_ASSERT_EQUAL(TURBO_DC_STATE_NEW, turbo_dc_peer_get_state(peer));
+    check_equal(turbo_dc_peer_get_state(peer), TURBO_DC_STATE_NEW);
 
     turbo_dc_peer_destroy(peer);
     turbo_dc_context_destroy(ctx);
 }
 
 void test_peer_get_state_null(void) {
-    TEST_ASSERT_EQUAL(TURBO_DC_STATE_CLOSED, turbo_dc_peer_get_state(NULL));
+    check_equal(turbo_dc_peer_get_state(NULL), TURBO_DC_STATE_CLOSED);
 }
 
 void test_peer_callbacks_null_peer(void) {
@@ -138,22 +138,18 @@ void test_peer_remote_fingerprint_validation(void) {
     turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
     turbo_dc_peer_t *peer;
 
-    TEST_ASSERT_NOT_NULL(ctx);
+    check_not_null(ctx);
     peer = turbo_dc_peer_create(ctx, "127.0.0.1", 5000, NULL);
-    TEST_ASSERT_NOT_NULL(peer);
+    check_not_null(peer);
 
-    TEST_ASSERT_EQUAL_INT(
-        -1, turbo_dc_peer_set_remote_fingerprint(
-                NULL, "sha-256", TEST_SHA256_FINGERPRINT));
-    TEST_ASSERT_EQUAL_INT(
-        -2, turbo_dc_peer_set_remote_fingerprint(
-                peer, "sha-1", TEST_SHA256_FINGERPRINT));
-    TEST_ASSERT_EQUAL_INT(
-        -3, turbo_dc_peer_set_remote_fingerprint(
-                peer, "sha-256", "AA:BB:CC:DD"));
-    TEST_ASSERT_EQUAL_INT(
-        0, turbo_dc_peer_set_remote_fingerprint(
-               peer, "SHA-256", TEST_SHA256_FINGERPRINT));
+    check_equal((int)(turbo_dc_peer_set_remote_fingerprint(
+                NULL, "sha-256", TEST_SHA256_FINGERPRINT)), (int)(-1));
+    check_equal((int)(turbo_dc_peer_set_remote_fingerprint(
+                peer, "sha-1", TEST_SHA256_FINGERPRINT)), (int)(-2));
+    check_equal((int)(turbo_dc_peer_set_remote_fingerprint(
+                peer, "sha-256", "AA:BB:CC:DD")), (int)(-3));
+    check_equal((int)(turbo_dc_peer_set_remote_fingerprint(
+               peer, "SHA-256", TEST_SHA256_FINGERPRINT)), (int)(0));
 
     turbo_dc_peer_destroy(peer);
     turbo_dc_context_destroy(ctx);
@@ -166,9 +162,9 @@ void test_context_destroy_reclaims_live_peer(void) {
     turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
     turbo_dc_peer_t *peer;
 
-    TEST_ASSERT_NOT_NULL(ctx);
+    check_not_null(ctx);
     peer = turbo_dc_peer_create(ctx, "127.0.0.1", 5000, NULL);
-    TEST_ASSERT_NOT_NULL(peer);
+    check_not_null(peer);
 
     /* The context is the owner: destroying it must close and free peers that
        were not explicitly destroyed by the caller. */
@@ -236,16 +232,16 @@ void test_transport_data_handler_detach_waits_for_callback(void) {
     turbo_thread_t feed_thread;
     turbo_thread_t detach_thread;
 
-    TEST_ASSERT_NOT_NULL(dc);
+    check_not_null(dc);
     test_context.peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
-    TEST_ASSERT_NOT_NULL(test_context.peer);
+    check_not_null(test_context.peer);
     turbo_mutex_init(&test_context.mutex);
     turbo_cond_init(&test_context.cond);
     turbo_dc_peer_set_transport_data_handler(
         test_context.peer, blocking_transport_data_callback, &test_context);
 
-    TEST_ASSERT_EQUAL_INT(0, turbo_thread_create(
-        &feed_thread, feed_transport_data_thread, &test_context));
+    check_equal((int)(turbo_thread_create(
+        &feed_thread, feed_transport_data_thread, &test_context)), (int)(0));
 
     turbo_mutex_lock(&test_context.mutex);
     while (!test_context.callback_entered) {
@@ -253,20 +249,20 @@ void test_transport_data_handler_detach_waits_for_callback(void) {
     }
     turbo_mutex_unlock(&test_context.mutex);
 
-    TEST_ASSERT_EQUAL_INT(0, turbo_thread_create(
-        &detach_thread, detach_transport_data_thread, &test_context));
+    check_equal((int)(turbo_thread_create(
+        &detach_thread, detach_transport_data_thread, &test_context)), (int)(0));
     turbo_mutex_lock(&test_context.mutex);
     while (!test_context.detach_entered) {
         turbo_cond_wait(&test_context.cond, &test_context.mutex);
     }
-    TEST_ASSERT_EQUAL_INT(0, test_context.detach_completed);
+    check_equal((int)(test_context.detach_completed), (int)(0));
     test_context.release_callback = 1;
     turbo_cond_broadcast(&test_context.cond);
     turbo_mutex_unlock(&test_context.mutex);
 
-    TEST_ASSERT_EQUAL_INT(0, turbo_thread_join(&feed_thread));
-    TEST_ASSERT_EQUAL_INT(0, turbo_thread_join(&detach_thread));
-    TEST_ASSERT_EQUAL_INT(1, test_context.detach_completed);
+    check_equal((int)(turbo_thread_join(&feed_thread)), (int)(0));
+    check_equal((int)(turbo_thread_join(&detach_thread)), (int)(0));
+    check_equal((int)(test_context.detach_completed), (int)(1));
 
     turbo_cond_destroy(&test_context.cond);
     turbo_mutex_destroy(&test_context.mutex);
@@ -280,7 +276,7 @@ void test_transport_data_handler_detach_waits_for_callback(void) {
 
 void test_channel_create_null_peer(void) {
     turbo_dc_channel_t *channel = turbo_dc_channel_create(NULL, "test", NULL);
-    TEST_ASSERT_NULL(channel);
+    check_null(channel);
 }
 
 void test_channel_create_null_label(void) {
@@ -292,7 +288,7 @@ void test_channel_create_null_label(void) {
     turbo_dc_peer_t *peer = turbo_dc_peer_create(ctx, "127.0.0.1", 5000, NULL);
 
     turbo_dc_channel_t *channel = turbo_dc_channel_create(peer, NULL, NULL);
-    TEST_ASSERT_NULL(channel);
+    check_null(channel);
 
     turbo_dc_peer_destroy(peer);
     turbo_dc_context_destroy(ctx);
@@ -307,12 +303,12 @@ void test_channel_create_with_label(void) {
     turbo_dc_peer_t *peer = turbo_dc_peer_create(ctx, "127.0.0.1", 5000, NULL);
 
     turbo_dc_channel_t *channel = turbo_dc_channel_create(peer, "my-channel", NULL);
-    TEST_ASSERT_NOT_NULL(channel);
+    check_not_null(channel);
 
-    TEST_ASSERT_EQUAL_STRING("my-channel", turbo_dc_channel_get_label(channel));
-    TEST_ASSERT_EQUAL(0, turbo_dc_channel_get_id(channel));
-    TEST_ASSERT_FALSE(turbo_dc_channel_is_open(channel));
-    TEST_ASSERT_EQUAL(0, turbo_dc_channel_buffered_amount(channel));
+    check_equal(turbo_dc_channel_get_label(channel), "my-channel");
+    check_equal(turbo_dc_channel_get_id(channel), 0);
+    check_false(turbo_dc_channel_is_open(channel));
+    check_equal(turbo_dc_channel_buffered_amount(channel), 0);
 
     turbo_dc_channel_close(channel);
     turbo_dc_peer_destroy(peer);
@@ -331,17 +327,17 @@ void test_channel_create_multiple(void) {
     turbo_dc_channel_t *ch2 = turbo_dc_channel_create(peer, "channel-2", NULL);
     turbo_dc_channel_t *ch3 = turbo_dc_channel_create(peer, "channel-3", NULL);
 
-    TEST_ASSERT_NOT_NULL(ch1);
-    TEST_ASSERT_NOT_NULL(ch2);
-    TEST_ASSERT_NOT_NULL(ch3);
+    check_not_null(ch1);
+    check_not_null(ch2);
+    check_not_null(ch3);
 
     {
         int ch1_id = (int)turbo_dc_channel_get_id(ch1);
         int ch2_id = (int)turbo_dc_channel_get_id(ch2);
         int ch3_id = (int)turbo_dc_channel_get_id(ch3);
-        check_int_eq(ch1_id, 0);
-        check_int_eq(ch2_id, 2);
-        check_int_eq(ch3_id, 4);
+        check_equal(ch1_id, 0);
+        check_equal(ch2_id, 2);
+        check_equal(ch3_id, 4);
     }
 
     turbo_dc_channel_close(ch1);
@@ -367,7 +363,7 @@ void test_channel_with_config(void) {
     };
 
     turbo_dc_channel_t *channel = turbo_dc_channel_create(peer, "config-test", &ch_config);
-    TEST_ASSERT_NOT_NULL(channel);
+    check_not_null(channel);
 
     turbo_dc_channel_close(channel);
     turbo_dc_peer_destroy(peer);
@@ -375,19 +371,19 @@ void test_channel_with_config(void) {
 }
 
 void test_channel_get_label_null(void) {
-    TEST_ASSERT_NULL(turbo_dc_channel_get_label(NULL));
+    check_null(turbo_dc_channel_get_label(NULL));
 }
 
 void test_channel_get_id_null(void) {
-    TEST_ASSERT_EQUAL(0, turbo_dc_channel_get_id(NULL));
+    check_equal(turbo_dc_channel_get_id(NULL), 0);
 }
 
 void test_channel_is_open_null(void) {
-    TEST_ASSERT_FALSE(turbo_dc_channel_is_open(NULL));
+    check_false(turbo_dc_channel_is_open(NULL));
 }
 
 void test_channel_buffered_amount_null(void) {
-    TEST_ASSERT_EQUAL(0, turbo_dc_channel_buffered_amount(NULL));
+    check_equal(turbo_dc_channel_buffered_amount(NULL), 0);
 }
 
 void test_channel_close_null(void) {
@@ -409,10 +405,10 @@ void test_channel_callbacks_null(void) {
 void test_default_channel_config(void) {
     turbo_dc_channel_config_t config = turbo_dc_default_channel_config();
 
-    TEST_ASSERT_TRUE(config.ordered);
-    TEST_ASSERT_EQUAL(0, config.max_retransmits);
-    TEST_ASSERT_EQUAL(0, config.max_lifetime_ms);
-    TEST_ASSERT_NULL(config.protocol);
+    check_true(config.ordered);
+    check_equal(config.max_retransmits, 0);
+    check_equal(config.max_lifetime_ms, 0);
+    check_null(config.protocol);
 }
 
 /* ============================================================================
@@ -420,13 +416,13 @@ void test_default_channel_config(void) {
  * ============================================================================ */
 
 void test_error_string(void) {
-    TEST_ASSERT_NOT_NULL(turbo_dc_error_string(TURBO_DC_ERROR_NONE));
-    TEST_ASSERT_NOT_NULL(turbo_dc_error_string(TURBO_DC_ERROR_NULL_LOOP));
+    check_not_null(turbo_dc_error_string(TURBO_DC_ERROR_NONE));
+    check_not_null(turbo_dc_error_string(TURBO_DC_ERROR_NULL_LOOP));
 }
 
 void test_channel_send_null_channel(void) {
     int result = turbo_dc_channel_send(NULL, "test", 4, 0);
-    TEST_ASSERT_EQUAL(-1, result);
+    check_equal(result, -1);
 }
 
 void test_channel_send_null_data(void) {
@@ -439,7 +435,7 @@ void test_channel_send_null_data(void) {
     turbo_dc_channel_t *channel = turbo_dc_channel_create(peer, "test", NULL);
 
     int result = turbo_dc_channel_send(channel, NULL, 0, 0);
-    TEST_ASSERT_EQUAL(-1, result);
+    check_equal(result, -1);
 
     turbo_dc_channel_close(channel);
     turbo_dc_peer_destroy(peer);
@@ -457,7 +453,7 @@ void test_channel_send_not_open(void) {
 
     /* Channel not open yet */
     int result = turbo_dc_channel_send(channel, "test", 4, 0);
-    TEST_ASSERT_EQUAL(-1, result);
+    check_equal(result, -1);
 
     turbo_dc_channel_close(channel);
     turbo_dc_peer_destroy(peer);
@@ -473,43 +469,43 @@ spec("test_datachannel") {
   after_each() { tearDown(); }
 
     /* Context tests */
-  TT_TEST(test_context_create_null_config);
-  TT_TEST(test_context_create_default);
-  TT_TEST(test_context_create_client_mode);
-  TT_TEST(test_context_create_server_mode);
-  TT_TEST(test_context_destroy_null);
+  it("test_context_create_null_config") { test_context_create_null_config(); };
+  it("test_context_create_default") { test_context_create_default(); };
+  it("test_context_create_client_mode") { test_context_create_client_mode(); };
+  it("test_context_create_server_mode") { test_context_create_server_mode(); };
+  it("test_context_destroy_null") { test_context_destroy_null(); };
 
     /* Peer tests */
-  TT_TEST(test_peer_create_null_context);
-  TT_TEST(test_peer_create_client);
-  TT_TEST(test_context_destroy_reclaims_live_peer);
-  TT_TEST(test_peer_state_initial);
-  TT_TEST(test_peer_get_state_null);
-  TT_TEST(test_peer_callbacks_null_peer);
-  TT_TEST(test_peer_close_null);
-  TT_TEST(test_peer_destroy_null);
-  TT_TEST(test_peer_remote_fingerprint_validation);
-  TT_TEST(test_transport_data_handler_detach_waits_for_callback);
+  it("test_peer_create_null_context") { test_peer_create_null_context(); };
+  it("test_peer_create_client") { test_peer_create_client(); };
+  it("test_context_destroy_reclaims_live_peer") { test_context_destroy_reclaims_live_peer(); };
+  it("test_peer_state_initial") { test_peer_state_initial(); };
+  it("test_peer_get_state_null") { test_peer_get_state_null(); };
+  it("test_peer_callbacks_null_peer") { test_peer_callbacks_null_peer(); };
+  it("test_peer_close_null") { test_peer_close_null(); };
+  it("test_peer_destroy_null") { test_peer_destroy_null(); };
+  it("test_peer_remote_fingerprint_validation") { test_peer_remote_fingerprint_validation(); };
+  it("test_transport_data_handler_detach_waits_for_callback") { test_transport_data_handler_detach_waits_for_callback(); };
 
     /* Channel tests */
-  TT_TEST(test_channel_create_null_peer);
-  TT_TEST(test_channel_create_null_label);
-  TT_TEST(test_channel_create_with_label);
-  TT_TEST(test_channel_create_multiple);
-  TT_TEST(test_channel_with_config);
-  TT_TEST(test_channel_get_label_null);
-  TT_TEST(test_channel_get_id_null);
-  TT_TEST(test_channel_is_open_null);
-  TT_TEST(test_channel_buffered_amount_null);
-  TT_TEST(test_channel_close_null);
-  TT_TEST(test_channel_callbacks_null);
+  it("test_channel_create_null_peer") { test_channel_create_null_peer(); };
+  it("test_channel_create_null_label") { test_channel_create_null_label(); };
+  it("test_channel_create_with_label") { test_channel_create_with_label(); };
+  it("test_channel_create_multiple") { test_channel_create_multiple(); };
+  it("test_channel_with_config") { test_channel_with_config(); };
+  it("test_channel_get_label_null") { test_channel_get_label_null(); };
+  it("test_channel_get_id_null") { test_channel_get_id_null(); };
+  it("test_channel_is_open_null") { test_channel_is_open_null(); };
+  it("test_channel_buffered_amount_null") { test_channel_buffered_amount_null(); };
+  it("test_channel_close_null") { test_channel_close_null(); };
+  it("test_channel_callbacks_null") { test_channel_callbacks_null(); };
 
     /* Default config tests */
-  TT_TEST(test_default_channel_config);
+  it("test_default_channel_config") { test_default_channel_config(); };
 
     /* Error handling tests */
-  TT_TEST(test_error_string);
-  TT_TEST(test_channel_send_null_channel);
-  TT_TEST(test_channel_send_null_data);
-  TT_TEST(test_channel_send_not_open);
+  it("test_error_string") { test_error_string(); };
+  it("test_channel_send_null_channel") { test_channel_send_null_channel(); };
+  it("test_channel_send_null_data") { test_channel_send_null_data(); };
+  it("test_channel_send_not_open") { test_channel_send_not_open(); };
 }

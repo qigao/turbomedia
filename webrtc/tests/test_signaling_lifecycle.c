@@ -1,7 +1,7 @@
 #include "http_api.h"
 #include "http_client.h"
 #include "turbo_media_auth.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "webrtc_signaling.h"
 #include <stdlib.h>
 #include <time.h>
@@ -107,8 +107,8 @@ void test_signaling_and_http_api_instances_have_independent_lifecycles(void) {
   signaling_config.host = "127.0.0.1";
   signaling_a = webrtc_signaling_create(NULL, &signaling_config);
   signaling_b = webrtc_signaling_create(NULL, &signaling_config);
-  TEST_ASSERT_NOT_NULL(signaling_a);
-  TEST_ASSERT_NOT_NULL(signaling_b);
+  check_not_null(signaling_a);
+  check_not_null(signaling_b);
 
   http_config_a.host = "0.0.0.0";
   http_config_a.port = 18081;
@@ -116,14 +116,14 @@ void test_signaling_and_http_api_instances_have_independent_lifecycles(void) {
   http_config_b.port = 18082;
   http_a = http_api_create(NULL, &http_config_a, signaling_a);
   http_b = http_api_create(NULL, &http_config_b, signaling_b);
-  TEST_ASSERT_NOT_NULL(http_a);
-  TEST_ASSERT_NOT_NULL(http_b);
+  check_not_null(http_a);
+  check_not_null(http_b);
 
   for (iteration = 0;
        iteration < SIGNALING_HTTP_LIFECYCLE_STRESS_ITERATIONS;
        ++iteration) {
-    TEST_ASSERT_EQUAL_INT(0, http_api_start(http_a));
-    TEST_ASSERT_EQUAL_INT(0, http_api_start(http_b));
+    check_equal((int)(http_api_start(http_a)), (int)(0));
+    check_equal((int)(http_api_start(http_b)), (int)(0));
     http_api_stop(http_b);
     http_api_stop(http_a);
   }
@@ -140,32 +140,32 @@ void test_http_api_rejects_invalid_configuration(void) {
   webrtc_signaling_server_t *signaling = NULL;
 
   signaling = webrtc_signaling_create(NULL, &signaling_config);
-  TEST_ASSERT_NOT_NULL(signaling);
+  check_not_null(signaling);
 
-  TEST_ASSERT_NULL(http_api_create(NULL, NULL, signaling));
-  TEST_ASSERT_NULL(http_api_create(NULL, &http_config, signaling));
+  check_null(http_api_create(NULL, NULL, signaling));
+  check_null(http_api_create(NULL, &http_config, signaling));
   http_config.port = 8080;
-  TEST_ASSERT_NULL(http_api_create(NULL, &http_config, NULL));
+  check_null(http_api_create(NULL, &http_config, NULL));
   http_config.host = "";
-  TEST_ASSERT_NULL(http_api_create(NULL, &http_config, signaling));
+  check_null(http_api_create(NULL, &http_config, signaling));
   http_config.host = "127.0.0.1";
   http_config.auth_enabled = 1;
-  TEST_ASSERT_NULL(http_api_create(NULL, &http_config, signaling));
+  check_null(http_api_create(NULL, &http_config, signaling));
   http_config.auth_active_key_id = "weak-key";
   http_config.auth_active_secret = "too-short";
   http_config.auth_issuer = "turbomedia";
   http_config.auth_max_ttl_seconds = 3600;
-  TEST_ASSERT_NULL(http_api_create(NULL, &http_config, signaling));
+  check_null(http_api_create(NULL, &http_config, signaling));
   http_config.auth_active_secret =
       "management-active-secret-at-least-32-bytes";
   http_config.auth_revoked_token_sha256 = "invalid";
-  TEST_ASSERT_NULL(http_api_create(NULL, &http_config, signaling));
+  check_null(http_api_create(NULL, &http_config, signaling));
   http_config.auth_revoked_token_sha256 =
       "0000000000000000000000000000000000000000000000000000000000000000";
   {
     http_api_server_t *authenticated =
         http_api_create(NULL, &http_config, signaling);
-    TEST_ASSERT_NOT_NULL(authenticated);
+    check_not_null(authenticated);
     http_api_destroy(authenticated);
   }
   http_config.auth_active_key_id = NULL;
@@ -175,7 +175,7 @@ void test_http_api_rejects_invalid_configuration(void) {
   {
     http_api_server_t *authenticated =
         http_api_create(NULL, &http_config, signaling);
-    TEST_ASSERT_NOT_NULL(authenticated);
+    check_not_null(authenticated);
     http_api_destroy(authenticated);
   }
 
@@ -191,10 +191,10 @@ void test_signaling_native_websocket_listener_stops_and_restarts(void) {
   config.peer_timeout_ms = 1000;
 
   server = webrtc_signaling_create(NULL, &config);
-  TEST_ASSERT_NOT_NULL(server);
-  TEST_ASSERT_EQUAL_INT(0, webrtc_signaling_start(server));
+  check_not_null(server);
+  check_equal((int)(webrtc_signaling_start(server)), (int)(0));
   webrtc_signaling_stop(server);
-  TEST_ASSERT_EQUAL_INT(0, webrtc_signaling_start(server));
+  check_equal((int)(webrtc_signaling_start(server)), (int)(0));
   webrtc_signaling_stop(server);
   webrtc_signaling_destroy(server);
 }
@@ -210,23 +210,23 @@ void test_signaling_peer_auth_configuration_fails_fast(void) {
   config.jwt_active_key_id = "signaling-peer-2026-07";
   config.jwt_secret = "too-short";
   config.jwt_algo = "HS256";
-  TEST_ASSERT_NULL(webrtc_signaling_create(NULL, &config));
+  check_null(webrtc_signaling_create(NULL, &config));
 
   config.jwt_secret =
       "signaling-peer-active-secret-at-least-32-bytes";
   config.jwt_previous_key_id = "signaling-peer-2026-06";
-  TEST_ASSERT_NULL(webrtc_signaling_create(NULL, &config));
+  check_null(webrtc_signaling_create(NULL, &config));
 
   config.jwt_previous_secret =
       "signaling-peer-previous-secret-at-least-32-bytes";
   config.jwt_revoked_token_sha256 = "invalid";
-  TEST_ASSERT_NULL(webrtc_signaling_create(NULL, &config));
+  check_null(webrtc_signaling_create(NULL, &config));
 
   config.jwt_revoked_token_sha256 =
       "0000000000000000000000000000000000000000000000000000000000000000";
   server = webrtc_signaling_create(NULL, &config);
-  TEST_ASSERT_NOT_NULL(server);
-  TEST_ASSERT_EQUAL_INT(0, webrtc_signaling_start(server));
+  check_not_null(server);
+  check_equal((int)(webrtc_signaling_start(server)), (int)(0));
   webrtc_signaling_stop(server);
   webrtc_signaling_destroy(server);
 }
@@ -236,24 +236,24 @@ void test_signaling_resource_policy_configuration_fails_fast(void) {
   webrtc_signaling_server_t *server = NULL;
 
   config.messages_per_second = 100;
-  TEST_ASSERT_NULL(webrtc_signaling_create(NULL, &config));
+  check_null(webrtc_signaling_create(NULL, &config));
 
   config.message_burst = 200;
   config.join_timeout_ms = -1;
-  TEST_ASSERT_NULL(webrtc_signaling_create(NULL, &config));
+  check_null(webrtc_signaling_create(NULL, &config));
 
   config.join_timeout_ms = 10000;
   config.max_connections_per_source = 1;
-  TEST_ASSERT_NULL(webrtc_signaling_create(NULL, &config));
+  check_null(webrtc_signaling_create(NULL, &config));
 
   config.max_source_states = 16;
   config.source_state_ttl_ms = 1000;
   config.source_admissions_per_second = 10;
-  TEST_ASSERT_NULL(webrtc_signaling_create(NULL, &config));
+  check_null(webrtc_signaling_create(NULL, &config));
 
   config.source_admission_burst = 20;
   server = webrtc_signaling_create(NULL, &config);
-  TEST_ASSERT_NOT_NULL(server);
+  check_not_null(server);
   webrtc_signaling_destroy(server);
 }
 
@@ -269,10 +269,10 @@ void test_signaling_wss_listener_loads_explicit_identity(void) {
   config.peer_timeout_ms = 1000;
 
   server = webrtc_signaling_create(NULL, &config);
-  TEST_ASSERT_NOT_NULL(server);
-  TEST_ASSERT_EQUAL_INT(0, webrtc_signaling_start(server));
+  check_not_null(server);
+  check_equal((int)(webrtc_signaling_start(server)), (int)(0));
   webrtc_signaling_stop(server);
-  TEST_ASSERT_EQUAL_INT(0, webrtc_signaling_start(server));
+  check_equal((int)(webrtc_signaling_start(server)), (int)(0));
   webrtc_signaling_stop(server);
   webrtc_signaling_destroy(server);
 }
@@ -324,48 +324,40 @@ void test_http_api_bearer_auth_protects_management_routes(void) {
       "signaling.management.dangerous", "room-a", "peer-a",
       now, now + 60);
 
-  TEST_ASSERT_NOT_NULL(signaling);
-  TEST_ASSERT_NOT_NULL(read_token);
-  TEST_ASSERT_NOT_NULL(previous_read_token);
-  TEST_ASSERT_NOT_NULL(expired_token);
-  TEST_ASSERT_NOT_NULL(room_read_token);
-  TEST_ASSERT_NOT_NULL(write_token);
-  TEST_ASSERT_NOT_NULL(dangerous_token);
+  check_not_null(signaling);
+  check_not_null(read_token);
+  check_not_null(previous_read_token);
+  check_not_null(expired_token);
+  check_not_null(room_read_token);
+  check_not_null(write_token);
+  check_not_null(dangerous_token);
   http = http_api_create(NULL, &http_config, signaling);
-  TEST_ASSERT_NOT_NULL(http);
-  TEST_ASSERT_EQUAL_INT(0, http_api_start(http));
+  check_not_null(http);
+  check_equal((int)(http_api_start(http)), (int)(0));
 
-  TEST_ASSERT_EQUAL_INT(200, get_status("http://127.0.0.1:18083",
-                                        "/health", NULL, NULL));
-  TEST_ASSERT_EQUAL_INT(401, get_status("http://127.0.0.1:18083",
-                                        "/api/v1/status", NULL, NULL));
-  TEST_ASSERT_EQUAL_INT(401, get_status("http://127.0.0.1:18083",
-                                        "/api/v1/status", "wrong-token", NULL));
-  TEST_ASSERT_EQUAL_INT(
-      200, get_status("http://127.0.0.1:18083", "/api/v1/status",
-                      "test-admin-token", NULL));
-  TEST_ASSERT_EQUAL_INT(
-      200, get_status("http://127.0.0.1:18083", "/api/v1/status",
-                      read_token, NULL));
-  TEST_ASSERT_EQUAL_INT(
-      200, get_status("http://127.0.0.1:18083", "/api/v1/status",
-                      previous_read_token, NULL));
-  TEST_ASSERT_EQUAL_INT(
-      401, get_status("http://127.0.0.1:18083", "/api/v1/status",
-                      expired_token, NULL));
-  TEST_ASSERT_EQUAL_INT(
-      404, get_status("http://127.0.0.1:18083",
-                      "/api/v1/rooms/room-a/peers", room_read_token, NULL));
-  TEST_ASSERT_EQUAL_INT(
-      401, get_status("http://127.0.0.1:18083",
-                      "/api/v1/rooms/room-b/peers", room_read_token, NULL));
-  TEST_ASSERT_EQUAL_INT(
-      401, delete_status("http://127.0.0.1:18083",
-                         "/api/v1/rooms/room-a/peers/peer-a", write_token));
-  TEST_ASSERT_EQUAL_INT(
-      404, delete_status("http://127.0.0.1:18083",
+  check_equal((int)(get_status("http://127.0.0.1:18083",
+                                        "/health", NULL, NULL)), (int)(200));
+  check_equal((int)(get_status("http://127.0.0.1:18083",
+                                        "/api/v1/status", NULL, NULL)), (int)(401));
+  check_equal((int)(get_status("http://127.0.0.1:18083",
+                                        "/api/v1/status", "wrong-token", NULL)), (int)(401));
+  check_equal((int)(get_status("http://127.0.0.1:18083", "/api/v1/status",
+                      "test-admin-token", NULL)), (int)(200));
+  check_equal((int)(get_status("http://127.0.0.1:18083", "/api/v1/status",
+                      read_token, NULL)), (int)(200));
+  check_equal((int)(get_status("http://127.0.0.1:18083", "/api/v1/status",
+                      previous_read_token, NULL)), (int)(200));
+  check_equal((int)(get_status("http://127.0.0.1:18083", "/api/v1/status",
+                      expired_token, NULL)), (int)(401));
+  check_equal((int)(get_status("http://127.0.0.1:18083",
+                      "/api/v1/rooms/room-a/peers", room_read_token, NULL)), (int)(404));
+  check_equal((int)(get_status("http://127.0.0.1:18083",
+                      "/api/v1/rooms/room-b/peers", room_read_token, NULL)), (int)(401));
+  check_equal((int)(delete_status("http://127.0.0.1:18083",
+                         "/api/v1/rooms/room-a/peers/peer-a", write_token)), (int)(401));
+  check_equal((int)(delete_status("http://127.0.0.1:18083",
                          "/api/v1/rooms/room-a/peers/peer-a",
-                         dangerous_token));
+                         dangerous_token)), (int)(404));
 
   http_api_destroy(http);
   webrtc_signaling_destroy(signaling);
@@ -390,28 +382,26 @@ void test_https_management_api_requires_trusted_identity(void) {
       webrtc_signaling_create(NULL, &signaling_config);
   http_api_server_t *http;
 
-  TEST_ASSERT_NOT_NULL(signaling);
+  check_not_null(signaling);
   http = http_api_create(NULL, &http_config, signaling);
-  TEST_ASSERT_NOT_NULL(http);
-  TEST_ASSERT_EQUAL_INT(0, http_api_start(http));
+  check_not_null(http);
+  check_equal((int)(http_api_start(http)), (int)(0));
 
-  TEST_ASSERT_EQUAL_INT(
-      0, get_status("https://localhost:18084", "/health", NULL, NULL));
-  TEST_ASSERT_EQUAL_INT(
-      200, get_status("https://localhost:18084", "/health", NULL,
-                      TURBO_MEDIA_TEST_TLS_CERT_PATH));
+  check_equal((int)(get_status("https://localhost:18084", "/health", NULL, NULL)), (int)(0));
+  check_equal((int)(get_status("https://localhost:18084", "/health", NULL,
+                      TURBO_MEDIA_TEST_TLS_CERT_PATH)), (int)(200));
 
   http_api_destroy(http);
   webrtc_signaling_destroy(signaling);
 }
 
 spec("test_signaling_lifecycle") {
-  TT_TEST(test_signaling_and_http_api_instances_have_independent_lifecycles);
-  TT_TEST(test_http_api_rejects_invalid_configuration);
-  TT_TEST(test_signaling_native_websocket_listener_stops_and_restarts);
-  TT_TEST(test_signaling_peer_auth_configuration_fails_fast);
-  TT_TEST(test_signaling_resource_policy_configuration_fails_fast);
-  TT_TEST(test_signaling_wss_listener_loads_explicit_identity);
-  TT_TEST(test_http_api_bearer_auth_protects_management_routes);
-  TT_TEST(test_https_management_api_requires_trusted_identity);
+  it("test_signaling_and_http_api_instances_have_independent_lifecycles") { test_signaling_and_http_api_instances_have_independent_lifecycles(); };
+  it("test_http_api_rejects_invalid_configuration") { test_http_api_rejects_invalid_configuration(); };
+  it("test_signaling_native_websocket_listener_stops_and_restarts") { test_signaling_native_websocket_listener_stops_and_restarts(); };
+  it("test_signaling_peer_auth_configuration_fails_fast") { test_signaling_peer_auth_configuration_fails_fast(); };
+  it("test_signaling_resource_policy_configuration_fails_fast") { test_signaling_resource_policy_configuration_fails_fast(); };
+  it("test_signaling_wss_listener_loads_explicit_identity") { test_signaling_wss_listener_loads_explicit_identity(); };
+  it("test_http_api_bearer_auth_protects_management_routes") { test_http_api_bearer_auth_protects_management_routes(); };
+  it("test_https_management_api_requires_trusted_identity") { test_https_management_api_requires_trusted_identity(); };
 }

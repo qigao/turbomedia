@@ -86,7 +86,7 @@
 // field, in which case the tag is considered to have a value of null.
 // This is to maintain backwards compatibility with RFC 2543, which
 // did not mandate To tags.
-static const tstr_v sc_null = { "", 0 };
+static const vstr sc_null = { "", 0 };
 
 struct sip_subscribe_t* sip_subscribe_create(const struct sip_event_t* event)
 {
@@ -132,7 +132,7 @@ int sip_subscribe_addref(struct sip_subscribe_t* subscribe)
 }
 
 /// @return 1-match, 0-don't match
-static int sip_subscribe_match(const struct sip_subscribe_t* subscribe, const tstr_v* callid, const tstr_v* local, const tstr_v* remote, const struct sip_event_t* event)
+static int sip_subscribe_match(const struct sip_subscribe_t* subscribe, const vstr* callid, const vstr* local, const vstr* remote, const struct sip_event_t* event)
 {
 	assert(subscribe && local);
 	if (!remote) remote = &sc_null;
@@ -160,7 +160,7 @@ struct sip_subscribe_t* sip_subscribe_internal_create(struct sip_agent_t* sip, c
 	return subscribe;
 }
 
-int sip_subscribe_id(tstr_v* id, const struct sip_subscribe_t* subscribe, char* ptr, int len)
+int sip_subscribe_id(vstr* id, const struct sip_subscribe_t* subscribe, char* ptr, int len)
 {
 	int r;
 	r = subscribe ? snprintf(ptr, len, "%.*s@%.*s@%.*s@%.*s@%.*s", (int)subscribe->dialog->callid.len, subscribe->dialog->callid.data, (int)subscribe->dialog->local.uri.tag.len, subscribe->dialog->local.uri.tag.data, (int)subscribe->dialog->remote.uri.tag.len, subscribe->dialog->remote.uri.tag.data, (int)subscribe->event.event.len, subscribe->event.event.data, (int)subscribe->event.id.len, subscribe->event.id.data) : 0;
@@ -170,7 +170,7 @@ int sip_subscribe_id(tstr_v* id, const struct sip_subscribe_t* subscribe, char* 
 }
 
 // @param[in] uas 1-local is uas
-int sip_subscribe_id_with_message(tstr_v* id, const struct sip_message_t* msg, char* ptr, int len, int uas)
+int sip_subscribe_id_with_message(vstr* id, const struct sip_message_t* msg, char* ptr, int len, int uas)
 {
 	int r;
 	assert(msg->mode == SIP_MESSAGE_REQUEST);

@@ -92,73 +92,73 @@ typedef int (*turbo_media_frame_cb)(turbo_media_source_t *source,
                                     const turbo_media_frame_t *frame,
                                     void *user_data);
 
-CXX_C_API int turbo_media_source_key_init(turbo_media_source_key_t *key,
+TURBO_MEDIA_API int turbo_media_source_key_init(turbo_media_source_key_t *key,
                                           const char *vhost,
                                           const char *app,
                                           const char *stream);
 
-CXX_C_API int turbo_media_source_key_equal(const turbo_media_source_key_t *lhs,
+TURBO_MEDIA_API int turbo_media_source_key_equal(const turbo_media_source_key_t *lhs,
                                            const turbo_media_source_key_t *rhs);
 
-CXX_C_API turbo_media_source_t *turbo_media_source_create(
+TURBO_MEDIA_API turbo_media_source_t *turbo_media_source_create(
     const turbo_media_source_key_t *key,
     const turbo_media_source_config_t *config);
 
-CXX_C_API void turbo_media_source_destroy(turbo_media_source_t *source);
+TURBO_MEDIA_API void turbo_media_source_destroy(turbo_media_source_t *source);
 
-CXX_C_API const turbo_media_source_key_t *turbo_media_source_key(
+TURBO_MEDIA_API const turbo_media_source_key_t *turbo_media_source_key(
     const turbo_media_source_t *source);
 
-CXX_C_API turbo_media_source_state_t turbo_media_source_state(
+TURBO_MEDIA_API turbo_media_source_state_t turbo_media_source_state(
     const turbo_media_source_t *source);
 
-CXX_C_API int turbo_media_source_add_track(turbo_media_source_t *source,
+TURBO_MEDIA_API int turbo_media_source_add_track(turbo_media_source_t *source,
                                            const turbo_media_track_info_t *track,
                                            int *track_id);
 
-CXX_C_API int turbo_media_source_get_track(const turbo_media_source_t *source,
+TURBO_MEDIA_API int turbo_media_source_get_track(const turbo_media_source_t *source,
                                            int track_id,
                                            turbo_media_track_info_t *track);
 
-CXX_C_API int turbo_media_source_get_track_at(const turbo_media_source_t *source,
+TURBO_MEDIA_API int turbo_media_source_get_track_at(const turbo_media_source_t *source,
                                               size_t index,
                                               turbo_media_track_info_t *track);
 
-CXX_C_API size_t turbo_media_source_track_count(const turbo_media_source_t *source);
+TURBO_MEDIA_API size_t turbo_media_source_track_count(const turbo_media_source_t *source);
 
-CXX_C_API int turbo_media_source_publish(turbo_media_source_t *source,
+TURBO_MEDIA_API int turbo_media_source_publish(turbo_media_source_t *source,
                                          const turbo_media_frame_t *frame);
 
-CXX_C_API int turbo_media_source_subscribe(turbo_media_source_t *source,
+TURBO_MEDIA_API int turbo_media_source_subscribe(turbo_media_source_t *source,
                                            turbo_media_frame_cb callback,
                                            void *user_data,
                                            int replay_cached,
                                            uint64_t *subscription_id);
 
-CXX_C_API int turbo_media_source_unsubscribe(turbo_media_source_t *source,
+TURBO_MEDIA_API int turbo_media_source_unsubscribe(turbo_media_source_t *source,
                                              uint64_t subscription_id);
 
-CXX_C_API int turbo_media_source_get_stats(const turbo_media_source_t *source,
+TURBO_MEDIA_API int turbo_media_source_get_stats(const turbo_media_source_t *source,
                                            turbo_media_source_stats_t *stats);
 
-CXX_C_API turbo_media_registry_t *turbo_media_registry_create(size_t max_sources);
+TURBO_MEDIA_API turbo_media_registry_t *turbo_media_registry_create(size_t max_sources);
 
-CXX_C_API void turbo_media_registry_destroy(turbo_media_registry_t *registry);
+TURBO_MEDIA_API void turbo_media_registry_destroy(turbo_media_registry_t *registry);
 
-CXX_C_API turbo_media_source_t *turbo_media_registry_find(
+TURBO_MEDIA_API turbo_media_source_t *turbo_media_registry_find(
     const turbo_media_registry_t *registry,
     const turbo_media_source_key_t *key);
 
-CXX_C_API int turbo_media_registry_get_or_create(
+TURBO_MEDIA_API int turbo_media_registry_get_or_create(
     turbo_media_registry_t *registry,
     const turbo_media_source_key_t *key,
     const turbo_media_source_config_t *config,
     turbo_media_source_t **source);
 
-CXX_C_API int turbo_media_registry_remove(turbo_media_registry_t *registry,
+TURBO_MEDIA_API int turbo_media_registry_remove(turbo_media_registry_t *registry,
                                           const turbo_media_source_key_t *key);
 
-CXX_C_API size_t turbo_media_registry_count(const turbo_media_registry_t *registry);
+TURBO_MEDIA_API size_t turbo_media_registry_count(const turbo_media_registry_t *registry);
 
 #ifdef __cplusplus
 }

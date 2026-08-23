@@ -4,7 +4,7 @@
  * Tests complete P2P connection flow with ICE
  */
 
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_datachannel.h"
 #include "ice_integration.h"
 #include "ice/turbo_ice.h"
@@ -201,10 +201,10 @@ void test_ice_integration_create(void) {
         .transport = TURBO_DC_TRANSPORT_ICE
     };
     g_test_ctx.ctx_a = turbo_dc_context_create(&config_a);
-    TEST_ASSERT_NOT_NULL(g_test_ctx.ctx_a);
+    check_not_null(g_test_ctx.ctx_a);
     
     g_test_ctx.peer_a = turbo_dc_peer_create(g_test_ctx.ctx_a, NULL, 0, NULL);
-    TEST_ASSERT_NOT_NULL(g_test_ctx.peer_a);
+    check_not_null(g_test_ctx.peer_a);
     
     /* Create ICE integration without STUN servers (host candidates only) */
     /* This avoids DNS resolution issues during test cleanup */
@@ -214,7 +214,7 @@ void test_ice_integration_create(void) {
         NULL, 0,  /* No STUN servers */
         NULL, NULL, NULL, 0
     );
-    TEST_ASSERT_NOT_NULL(g_test_ctx.ice_a);
+    check_not_null(g_test_ctx.ice_a);
 }
 
 void test_datachannel_attaches_turbonet_ice_agent(void) {
@@ -225,24 +225,21 @@ void test_datachannel_attaches_turbonet_ice_agent(void) {
     ice_config_t ice_config = ice_default_config();
 
     g_test_ctx.ctx_a = turbo_dc_context_create(&dc_config);
-    TEST_ASSERT_NOT_NULL(g_test_ctx.ctx_a);
+    check_not_null(g_test_ctx.ctx_a);
     g_test_ctx.peer_a = turbo_dc_peer_create(g_test_ctx.ctx_a, NULL, 0, NULL);
-    TEST_ASSERT_NOT_NULL(g_test_ctx.peer_a);
+    check_not_null(g_test_ctx.peer_a);
 
     g_test_ctx.direct_ice_ctx = coro_context_create(g_test_ctx.loop);
-    TEST_ASSERT_NOT_NULL(g_test_ctx.direct_ice_ctx);
+    check_not_null(g_test_ctx.direct_ice_ctx);
     g_test_ctx.direct_ice_agent =
         ice_agent_create(g_test_ctx.direct_ice_ctx, &ice_config);
-    TEST_ASSERT_NOT_NULL(g_test_ctx.direct_ice_agent);
+    check_not_null(g_test_ctx.direct_ice_agent);
 
-    TEST_ASSERT_EQUAL_INT(
-        -1, turbo_dc_peer_set_ice_agent(NULL, g_test_ctx.direct_ice_agent));
-    TEST_ASSERT_EQUAL_INT(-1, turbo_dc_peer_set_ice_agent(g_test_ctx.peer_a, NULL));
-    TEST_ASSERT_EQUAL_INT(
-        0, turbo_dc_peer_set_ice_agent(
-               g_test_ctx.peer_a, g_test_ctx.direct_ice_agent));
-    TEST_ASSERT_EQUAL_INT(
-        0, turbo_dc_peer_set_external_transport(g_test_ctx.peer_a, NULL, NULL));
+    check_equal((int)(turbo_dc_peer_set_ice_agent(NULL, g_test_ctx.direct_ice_agent)), (int)(-1));
+    check_equal((int)(turbo_dc_peer_set_ice_agent(g_test_ctx.peer_a, NULL)), (int)(-1));
+    check_equal((int)(turbo_dc_peer_set_ice_agent(
+               g_test_ctx.peer_a, g_test_ctx.direct_ice_agent)), (int)(0));
+    check_equal((int)(turbo_dc_peer_set_external_transport(g_test_ctx.peer_a, NULL, NULL)), (int)(0));
 }
 
 void test_ice_integration_credentials(void) {
@@ -255,13 +252,13 @@ void test_ice_integration_credentials(void) {
         g_test_ctx.ice_a, ufrag, sizeof(ufrag), pwd, sizeof(pwd)
     );
     
-    TEST_ASSERT_EQUAL(0, result);
-    TEST_ASSERT_GREATER_THAN(0, strlen(ufrag));
-    TEST_ASSERT_GREATER_THAN(0, strlen(pwd));
+    check_equal(result, 0);
+    check_greater(strlen(ufrag), 0);
+    check_greater(strlen(pwd), 0);
     
     /* Set remote credentials */
     result = ice_integration_set_remote_credentials(g_test_ctx.ice_a, "test_ufrag", "test_password");
-    TEST_ASSERT_EQUAL(0, result);
+    check_equal(result, 0);
 }
 
 void test_ice_integration_gathering(void) {
@@ -273,7 +270,7 @@ void test_ice_integration_gathering(void) {
     
     /* Start gathering */
     int result = ice_integration_start_gathering(g_test_ctx.ice_a);
-    TEST_ASSERT_EQUAL(0, result);
+    check_equal(result, 0);
     
     /* Run event loop briefly to allow gathering to start */
     for (int i = 0; i < 10; i++) {
@@ -314,13 +311,13 @@ void test_ice_integration_reconnect(void) {
     
     /* Trigger reconnect */
     int result = ice_integration_reconnect(g_test_ctx.ice_a);
-    TEST_ASSERT_EQUAL(0, result);
+    check_equal(result, 0);
     
     /* Multiple reconnects should eventually fail */
     for (int i = 0; i < 5; i++) {
         result = ice_integration_reconnect(g_test_ctx.ice_a);
     }
-    TEST_ASSERT_EQUAL(-1, result);  /* Should fail after max attempts */
+    check_equal(result, -1);  /* Should fail after max attempts */
 }
 
 void test_ice_integration_add_remote_candidate(void) {
@@ -332,7 +329,7 @@ void test_ice_integration_add_remote_candidate(void) {
     int result = ice_integration_add_remote_candidate(g_test_ctx.ice_a, candidate);
     
     /* Should succeed (even if not connected yet) */
-    TEST_ASSERT_EQUAL(0, result);
+    check_equal(result, 0);
 }
 
 void test_ice_integration_end_of_candidates(void) {
@@ -350,10 +347,10 @@ void test_ice_integration_with_stun(void) {
         .transport = TURBO_DC_TRANSPORT_ICE
     };
     g_test_ctx.ctx_a = turbo_dc_context_create(&config_a);
-    TEST_ASSERT_NOT_NULL(g_test_ctx.ctx_a);
+    check_not_null(g_test_ctx.ctx_a);
     
     g_test_ctx.peer_a = turbo_dc_peer_create(g_test_ctx.ctx_a, NULL, 0, NULL);
-    TEST_ASSERT_NOT_NULL(g_test_ctx.peer_a);
+    check_not_null(g_test_ctx.peer_a);
     
     /* Create ICE integration with STUN server */
     const char *stun_servers[] = {"stun:stun.l.google.com:19302"};
@@ -363,14 +360,14 @@ void test_ice_integration_with_stun(void) {
         stun_servers, 1,
         NULL, NULL, NULL, 0
     );
-    TEST_ASSERT_NOT_NULL(g_test_ctx.ice_a);
+    check_not_null(g_test_ctx.ice_a);
     
     /* Set candidate callback */
     ice_integration_on_candidate(g_test_ctx.ice_a, on_candidate_a, NULL);
     
     /* Start gathering */
     int result = ice_integration_start_gathering(g_test_ctx.ice_a);
-    TEST_ASSERT_EQUAL(0, result);
+    check_equal(result, 0);
     
     /* Run event loop long enough for DNS to complete and cleanup to work */
     /* This gives time for async operations to finish before tearDown */
@@ -388,14 +385,14 @@ void test_ice_integration_with_stun(void) {
 spec("test_ice_integration") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
-  TT_TEST(test_ice_integration_create);
-  TT_TEST(test_datachannel_attaches_turbonet_ice_agent);
-  TT_TEST(test_ice_integration_credentials);
-  TT_TEST(test_ice_integration_gathering);
-  TT_TEST(test_ice_integration_timeout);
-  TT_TEST(test_ice_integration_reconnect);
-  TT_TEST(test_ice_integration_add_remote_candidate);
-  TT_TEST(test_ice_integration_end_of_candidates);
+  it("test_ice_integration_create") { test_ice_integration_create(); };
+  it("test_datachannel_attaches_turbonet_ice_agent") { test_datachannel_attaches_turbonet_ice_agent(); };
+  it("test_ice_integration_credentials") { test_ice_integration_credentials(); };
+  it("test_ice_integration_gathering") { test_ice_integration_gathering(); };
+  it("test_ice_integration_timeout") { test_ice_integration_timeout(); };
+  it("test_ice_integration_reconnect") { test_ice_integration_reconnect(); };
+  it("test_ice_integration_add_remote_candidate") { test_ice_integration_add_remote_candidate(); };
+  it("test_ice_integration_end_of_candidates") { test_ice_integration_end_of_candidates(); };
     /* Skip STUN test by default - it requires network and proper async cleanup */
     /* STUN-backed integration test remains disabled in this suite. */
 }

@@ -218,20 +218,20 @@ suite("TurboMedia speech") {
       turbo_asr_t *asr = turbo_asr_create(&provider, &callbacks, &observer);
 
       check_not_null(asr);
-      check_int_eq(turbo_asr_start(asr, &config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_start(asr, &config), TURBO_SPEECH_OK);
       turbo_asr_capture_callback(NULL, pcm, sizeof(pcm), 1234U, asr);
-      check_int_eq(mock.write_count, 1);
-      check_size_eq(mock.last_len, sizeof(pcm));
-      check_long_eq((long)mock.last_timestamp_us, 1234L);
-      check_int_eq(mock.first_byte, pcm[0]);
-      check_int_eq(turbo_asr_finish(asr), TURBO_SPEECH_OK);
-      check_int_eq(observer.result_count, 1);
-      check_str_eq(observer.text, "hello");
-      check_int_eq(observer.complete_count, 1);
-      check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_STOPPED);
+      check_equal(mock.write_count, 1);
+      check_equal(mock.last_len, sizeof(pcm));
+      check_equal((long)mock.last_timestamp_us, 1234L);
+      check_equal(mock.first_byte, pcm[0]);
+      check_equal(turbo_asr_finish(asr), TURBO_SPEECH_OK);
+      check_equal(observer.result_count, 1);
+      check_equal(observer.text, "hello");
+      check_equal(observer.complete_count, 1);
+      check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_STOPPED);
 
       turbo_asr_destroy(asr);
-      check_int_eq(mock.destroy_count, 1);
+      check_equal(mock.destroy_count, 1);
     }
 
     it("rejects format mismatches without changing the running session") {
@@ -246,11 +246,11 @@ suite("TurboMedia speech") {
       turbo_asr_t *asr = turbo_asr_create(&provider, NULL, NULL);
 
       check_not_null(asr);
-      check_int_eq(turbo_asr_start(asr, &config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_frame(asr, &frame), TURBO_SPEECH_ERR_FORMAT);
-      check_int_eq(mock.write_count, 0);
-      check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_RUNNING);
-      check_int_eq(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_start(asr, &config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_write_frame(asr, &frame), TURBO_SPEECH_ERR_FORMAT);
+      check_equal(mock.write_count, 0);
+      check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_RUNNING);
+      check_equal(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
       turbo_asr_destroy(asr);
     }
 
@@ -262,12 +262,12 @@ suite("TurboMedia speech") {
       turbo_asr_t *asr = turbo_asr_create(&provider, NULL, NULL);
 
       check_not_null(asr);
-      check_int_eq(turbo_asr_start(asr, &config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0U), TURBO_SPEECH_ERR_BUSY);
-      check_int_eq(turbo_asr_get_last_result(asr), TURBO_SPEECH_ERR_BUSY);
-      check_long_eq((long)turbo_asr_get_rejected_frame_count(asr), 1L);
-      check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_RUNNING);
-      check_int_eq(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_start(asr, &config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0U), TURBO_SPEECH_ERR_BUSY);
+      check_equal(turbo_asr_get_last_result(asr), TURBO_SPEECH_ERR_BUSY);
+      check_equal((long)turbo_asr_get_rejected_frame_count(asr), 1L);
+      check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_RUNNING);
+      check_equal(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
       turbo_asr_destroy(asr);
     }
 
@@ -280,13 +280,13 @@ suite("TurboMedia speech") {
       turbo_asr_t *asr = turbo_asr_create(&provider, &callbacks, &observer);
 
       check_not_null(asr);
-      check_int_eq(turbo_asr_start(asr, &config), TURBO_SPEECH_ERR_PROVIDER);
-      check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_ERROR);
-      check_int_eq(turbo_asr_get_last_result(asr), TURBO_SPEECH_ERR_PROVIDER);
-      check_int_eq(observer.error_count, 1);
+      check_equal(turbo_asr_start(asr, &config), TURBO_SPEECH_ERR_PROVIDER);
+      check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_ERROR);
+      check_equal(turbo_asr_get_last_result(asr), TURBO_SPEECH_ERR_PROVIDER);
+      check_equal(observer.error_count, 1);
       turbo_asr_destroy(asr);
-      check_int_eq(mock.cancel_count, 1);
-      check_int_eq(mock.destroy_count, 1);
+      check_equal(mock.cancel_count, 1);
+      check_equal(mock.destroy_count, 1);
     }
   }
 
@@ -301,14 +301,14 @@ suite("TurboMedia speech") {
       turbo_tts_t *tts = turbo_tts_create(&provider, &callbacks, &observer);
 
       check_not_null(tts);
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
-      check_int_eq(observer.audio_count, 1);
-      check_size_eq(observer.last_len, 4U);
-      check_int_eq(observer.first_byte, 1);
-      check_int_eq(observer.complete_count, 1);
-      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_STOPPED);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+      check_equal(observer.audio_count, 1);
+      check_equal(observer.last_len, 4U);
+      check_equal(observer.first_byte, 1);
+      check_equal(observer.complete_count, 1);
+      check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_STOPPED);
       turbo_tts_destroy(tts);
-      check_int_eq(mock.destroy_count, 1);
+      check_equal(mock.destroy_count, 1);
     }
 
     it("propagates sink backpressure to the provider") {
@@ -320,10 +320,10 @@ suite("TurboMedia speech") {
       turbo_tts_t *tts = turbo_tts_create(&provider, &callbacks, &observer);
 
       check_not_null(tts);
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_ERR_BUSY);
-      check_int_eq(mock.audio_result, TURBO_SPEECH_ERR_BUSY);
-      check_int_eq(turbo_tts_get_last_result(tts), TURBO_SPEECH_ERR_BUSY);
-      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_IDLE);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_ERR_BUSY);
+      check_equal(mock.audio_result, TURBO_SPEECH_ERR_BUSY);
+      check_equal(turbo_tts_get_last_result(tts), TURBO_SPEECH_ERR_BUSY);
+      check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_IDLE);
       turbo_tts_destroy(tts);
     }
 
@@ -337,13 +337,13 @@ suite("TurboMedia speech") {
       turbo_tts_t *tts = turbo_tts_create(&provider, &callbacks, &observer);
 
       check_not_null(tts);
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_ERR_PROVIDER);
-      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
-      check_int_eq(turbo_tts_get_last_result(tts), TURBO_SPEECH_ERR_PROVIDER);
-      check_int_eq(observer.error_count, 1);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_ERR_PROVIDER);
+      check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
+      check_equal(turbo_tts_get_last_result(tts), TURBO_SPEECH_ERR_PROVIDER);
+      check_equal(observer.error_count, 1);
       turbo_tts_destroy(tts);
-      check_int_eq(mock.cancel_count, 1);
-      check_int_eq(mock.destroy_count, 1);
+      check_equal(mock.cancel_count, 1);
+      check_equal(mock.destroy_count, 1);
     }
   }
 }

@@ -7,7 +7,7 @@
 #include "ivr_frame.h"
 #include "ivr_thread.h"
 #include "turbomedia_ivr_v1.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <string.h>
 
 #define TEST_PORT 17813
@@ -106,13 +106,13 @@ static void send_join(const char *message_id, uint64_t expected_version) {
     ivr_mutex_lock(&g_reply_lock);
     g_reply_ready = 0;
     ivr_mutex_unlock(&g_reply_lock);
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.submit_copy(g_ops.context, &cmd));
+    check_equal(g_ops.submit_copy(g_ops.context, &cmd), IVR_OK);
 }
 
 
 void test_replay_within_window_is_idempotent(void) {
     DataBindError err = DATA_BIND_ERROR_INIT;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK, TurboMediaIvrV1_codec_create(&g_codec, &err));
+    check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
     ivr_mutex_init(&g_reply_lock);
     g_reply_ready = 0;
     g_reply_len = 0;
@@ -136,8 +136,8 @@ void test_replay_within_window_is_idempotent(void) {
     bcfg.now_ms = fake_now;
     bcfg.handler = handler;
     ivr_room_bridge_t *bridge = NULL;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_room_bridge_create(&bcfg, &bridge));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_room_bridge_start(bridge));
+    check_equal(ivr_room_bridge_create(&bcfg, &bridge), IVR_OK);
+    check_equal(ivr_room_bridge_start(bridge), IVR_OK);
 
     ivr_flowmq_gateway_config_t gcfg;
     memset(&gcfg, 0, sizeof(gcfg));
@@ -147,36 +147,36 @@ void test_replay_within_window_is_idempotent(void) {
     gcfg.timeout_ms = 5000;
     gcfg.on_reply = on_reply_cb;
     ivr_flowmq_gateway_t *gateway = NULL;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_create(&gcfg, &g_ops,
-                                                        &gateway));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_flowmq_gateway_start(gateway));
+    check_equal(ivr_flowmq_gateway_create(&gcfg, &g_ops,
+                                                        &gateway), IVR_OK);
+    check_equal(ivr_flowmq_gateway_start(gateway), IVR_OK);
     ivr_thread_sleep_ms(800); /* let the DEALER connect to the ROUTER */
 
     /* first send applies the mutation */
     send_join("mid-ret-1", 0);
-    TEST_ASSERT_TRUE(wait_reply(8000));
-    TEST_ASSERT_EQUAL_UINT64(1u, g_applied);
-    TEST_ASSERT_EQUAL_INT(0, reply_i32("status_code"));
+    check_true(wait_reply(8000));
+    check_equal((uint64_t)(g_applied), (uint64_t)(1u));
+    check_equal((int)(reply_i32("status_code")), (int)(0));
 
     /* replay inside the retention window returns the cached result */
     g_fake_now_ms += 100u;
     send_join("mid-ret-1", 0);
-    TEST_ASSERT_TRUE(wait_reply(8000));
-    TEST_ASSERT_EQUAL_UINT64(1u, g_applied);
-    TEST_ASSERT_EQUAL_INT(0, reply_i32("status_code"));
+    check_true(wait_reply(8000));
+    check_equal((uint64_t)(g_applied), (uint64_t)(1u));
+    check_equal((int)(reply_i32("status_code")), (int)(0));
 
     /* replay after the retention window is explicitly rejected */
     g_fake_now_ms += 1000u;
     send_join("mid-ret-1", 0);
-    TEST_ASSERT_TRUE(wait_reply(8000));
-    TEST_ASSERT_EQUAL_UINT64(1u, g_applied);
-    TEST_ASSERT_EQUAL_INT(IVR_ESTALE, reply_i32("status_code"));
+    check_true(wait_reply(8000));
+    check_equal((uint64_t)(g_applied), (uint64_t)(1u));
+    check_equal((int)(reply_i32("status_code")), (int)(IVR_ESTALE));
 
     /* a fresh message_id after the window is applied normally */
     send_join("mid-ret-2", 0);
-    TEST_ASSERT_TRUE(wait_reply(8000));
-    TEST_ASSERT_EQUAL_UINT64(2u, g_applied);
-    TEST_ASSERT_EQUAL_INT(0, reply_i32("status_code"));
+    check_true(wait_reply(8000));
+    check_equal((uint64_t)(g_applied), (uint64_t)(2u));
+    check_equal((int)(reply_i32("status_code")), (int)(0));
 
     ivr_flowmq_gateway_destroy(gateway);
     ivr_room_bridge_stop(bridge);
@@ -187,5 +187,5 @@ void test_replay_within_window_is_idempotent(void) {
 }
 
 spec("test_ivr_room_bridge_dedup") {
-  TT_TEST(test_replay_within_window_is_idempotent);
+  it("test_replay_within_window_is_idempotent") { test_replay_within_window_is_idempotent(); };
 }

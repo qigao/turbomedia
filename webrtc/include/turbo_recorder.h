@@ -95,14 +95,14 @@ typedef struct {
  * @param config Recorder configuration
  * @return Recorder context or NULL on error
  */
-CXX_C_API turbo_recorder_t *turbo_recorder_create(const turbo_recorder_config_t *config);
+TURBO_MEDIA_API turbo_recorder_t *turbo_recorder_create(const turbo_recorder_config_t *config);
 
 /**
  * Destroy recorder
  *
  * Stops recording if active and frees resources
  */
-CXX_C_API void turbo_recorder_destroy(turbo_recorder_t *rec);
+TURBO_MEDIA_API void turbo_recorder_destroy(turbo_recorder_t *rec);
 
 /**
  * Add track to recording
@@ -113,7 +113,7 @@ CXX_C_API void turbo_recorder_destroy(turbo_recorder_t *rec);
  * @param config Track configuration
  * @return Track ID (>= 0) on success, -1 on error
  */
-CXX_C_API int turbo_recorder_add_track(turbo_recorder_t *rec,
+TURBO_MEDIA_API int turbo_recorder_add_track(turbo_recorder_t *rec,
                              const turbo_recorder_track_config_t *config);
 
 /**
@@ -124,7 +124,7 @@ CXX_C_API int turbo_recorder_add_track(turbo_recorder_t *rec,
  * @param rec Recorder context
  * @return 0 on success, -1 on error
  */
-CXX_C_API int turbo_recorder_start(turbo_recorder_t *rec);
+TURBO_MEDIA_API int turbo_recorder_start(turbo_recorder_t *rec);
 
 /**
  * Write frame to track
@@ -137,7 +137,7 @@ CXX_C_API int turbo_recorder_start(turbo_recorder_t *rec);
  * @param is_keyframe 1 if keyframe, 0 otherwise
  * @return 0 on success, -1 on error
  */
-CXX_C_API int turbo_recorder_write_frame(turbo_recorder_t *rec, int track_id,
+TURBO_MEDIA_API int turbo_recorder_write_frame(turbo_recorder_t *rec, int track_id,
                                const uint8_t *data, size_t len,
                                int64_t timestamp_us, int is_keyframe);
 
@@ -149,7 +149,7 @@ CXX_C_API int turbo_recorder_write_frame(turbo_recorder_t *rec, int track_id,
  * @param rec Recorder context
  * @return 0 on success, -1 on error
  */
-CXX_C_API int turbo_recorder_stop(turbo_recorder_t *rec);
+TURBO_MEDIA_API int turbo_recorder_stop(turbo_recorder_t *rec);
 
 /**
  * Pause recording
@@ -159,7 +159,7 @@ CXX_C_API int turbo_recorder_stop(turbo_recorder_t *rec);
  * @param rec Recorder context
  * @return 0 on success, -1 on error
  */
-CXX_C_API int turbo_recorder_pause(turbo_recorder_t *rec);
+TURBO_MEDIA_API int turbo_recorder_pause(turbo_recorder_t *rec);
 
 /**
  * Resume recording
@@ -169,7 +169,7 @@ CXX_C_API int turbo_recorder_pause(turbo_recorder_t *rec);
  * @param rec Recorder context
  * @return 0 on success, -1 on error
  */
-CXX_C_API int turbo_recorder_resume(turbo_recorder_t *rec);
+TURBO_MEDIA_API int turbo_recorder_resume(turbo_recorder_t *rec);
 
 /* =============================================================================
  * Statistics
@@ -183,7 +183,7 @@ CXX_C_API int turbo_recorder_resume(turbo_recorder_t *rec);
  * @param bytes_written Output: total bytes written (can be NULL)
  * @param track_count Output: number of tracks (can be NULL)
  */
-CXX_C_API void turbo_recorder_get_stats(turbo_recorder_t *rec,
+TURBO_MEDIA_API void turbo_recorder_get_stats(turbo_recorder_t *rec,
                               int64_t *duration_us,
                               int64_t *bytes_written,
                               int *track_count);
@@ -196,7 +196,7 @@ CXX_C_API void turbo_recorder_get_stats(turbo_recorder_t *rec,
  * @param bytes_written Output: bytes written for this track (can be NULL)
  * @param frames_written Output: frames written for this track (can be NULL)
  */
-CXX_C_API void turbo_recorder_get_track_stats(turbo_recorder_t *rec, int track_id,
+TURBO_MEDIA_API void turbo_recorder_get_track_stats(turbo_recorder_t *rec, int track_id,
                                    int64_t *bytes_written,
                                    int64_t *frames_written);
 
@@ -206,7 +206,7 @@ CXX_C_API void turbo_recorder_get_track_stats(turbo_recorder_t *rec, int track_i
  * @param rec Recorder context
  * @return 1 if recording, 0 otherwise
  */
-CXX_C_API int turbo_recorder_is_recording(turbo_recorder_t *rec);
+TURBO_MEDIA_API int turbo_recorder_is_recording(turbo_recorder_t *rec);
 
 /* =============================================================================
  * Callbacks
@@ -221,7 +221,7 @@ CXX_C_API int turbo_recorder_is_recording(turbo_recorder_t *rec);
  * @param callback Callback function
  * @param user_data User data passed to callback
  */
-CXX_C_API void turbo_recorder_set_error_callback(turbo_recorder_t *rec,
+TURBO_MEDIA_API void turbo_recorder_set_error_callback(turbo_recorder_t *rec,
                                        void (*callback)(void *user_data,
                                                        const char *error),
                                        void *user_data);
@@ -242,13 +242,13 @@ CXX_C_API void turbo_recorder_set_error_callback(turbo_recorder_t *rec,
  * @param track_id Track ID to record to
  * @return RTP recorder context or NULL on error
  */
-CXX_C_API rtp_recorder_ctx_t *turbo_recorder_create_rtp_context(turbo_recorder_t *rec,
+TURBO_MEDIA_API rtp_recorder_ctx_t *turbo_recorder_create_rtp_context(turbo_recorder_t *rec,
                                                        int track_id);
 
 /**
  * Destroy RTP recording context
  */
-CXX_C_API void turbo_recorder_destroy_rtp_context(rtp_recorder_ctx_t *ctx);
+TURBO_MEDIA_API void turbo_recorder_destroy_rtp_context(rtp_recorder_ctx_t *ctx);
 
 /**
  * Write RTP frame
@@ -262,7 +262,7 @@ CXX_C_API void turbo_recorder_destroy_rtp_context(rtp_recorder_ctx_t *ctx);
  * @param is_keyframe 1 if keyframe, 0 otherwise
  * @return 0 on success, -1 on error
  */
-CXX_C_API int turbo_recorder_write_rtp_frame(rtp_recorder_ctx_t *ctx,
+TURBO_MEDIA_API int turbo_recorder_write_rtp_frame(rtp_recorder_ctx_t *ctx,
                                    const uint8_t *data, size_t len,
                                    uint32_t rtp_timestamp, int is_keyframe);
 
@@ -274,7 +274,7 @@ CXX_C_API int turbo_recorder_write_rtp_frame(rtp_recorder_ctx_t *ctx,
  * Returns -1 for malformed, discarded, incomplete, or corrupt packets/frames.
  * A rejected access unit is never muxed.
  */
-CXX_C_API int turbo_recorder_write_rtp_packet(rtp_recorder_ctx_t *ctx,
+TURBO_MEDIA_API int turbo_recorder_write_rtp_packet(rtp_recorder_ctx_t *ctx,
                                               const uint8_t *packet,
                                               size_t len);
 

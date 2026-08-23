@@ -425,13 +425,13 @@ static void process_item(iris_completion_dispatcher_t *dispatcher,
         } else {
             iris_media_bridge_restore_completion(dispatcher->bridge,
                                                   item->completion.command_id);
-            TLOG_ERROR("Iris command completion failed: command_id={}, session_id={}. "
+            TLOG_ERRORF("Iris command completion failed: command_id={}, session_id={}. "
                        "The correlation remains available for a repeated media result.",
                        item->completion.command_id,
                        item->completion.provider_session_id);
         }
     } else if (!succeeded) {
-        TLOG_ERROR("Iris media event delivery failed: event_id={}, session_id={}. "
+        TLOG_ERRORF("Iris media event delivery failed: event_id={}, session_id={}. "
                    "Check Iris availability and provider credentials.",
                    item->event.event_id, item->event.provider_session_id);
     }

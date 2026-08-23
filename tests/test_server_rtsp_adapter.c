@@ -13,19 +13,6 @@
 #define RTSP_ADAPTER_E2E_URI "rtsp://127.0.0.1:20611/live/cam"
 #define RTSP_ADAPTER_INTERLEAVED_HEADER_SIZE 4u
 
-#define REQUIRE_OK(expr)                    \
-    do {                                    \
-        int rc__ = (expr);                  \
-        check_int_eq(rc__, TURBO_MEDIA_OK); \
-        if (rc__ != TURBO_MEDIA_OK) return; \
-    } while (0)
-
-#define REQUIRE_NOT_NULL(expr) \
-    do {                       \
-        check_not_null(expr);  \
-        if (!(expr)) return;   \
-    } while (0)
-
 typedef struct {
     coro_context_t *ctx;
     turbo_media_server_runtime_t *runtime;
@@ -508,7 +495,7 @@ static void adapter_player_task(coro_t *co, void *arg) {
 }
 
 suite("turbo_media_server_rtsp_adapter") {
-    section("lifecycle") {
+    group("lifecycle") {
         it("creates and starts an RTSP adapter on top of ServerRuntime") {
             coro_context_t *ctx = coro_context_create(NULL);
             turbo_media_server_config_t server_config = adapter_server_config();
@@ -517,10 +504,10 @@ suite("turbo_media_server_rtsp_adapter") {
             turbo_media_rtsp_server_adapter_config_t adapter_config;
             turbo_media_rtsp_server_adapter_t *adapter;
 
-            REQUIRE_NOT_NULL(ctx);
+            check_not_null(ctx);
             server_config.coro_context = (struct coro_context_s *)ctx;
             runtime = turbo_media_server_runtime_create(&server_config);
-            REQUIRE_NOT_NULL(runtime);
+            check_not_null(runtime);
 
             memset(&rtsp_config, 0, sizeof(rtsp_config));
             rtsp_config.bind_host = "127.0.0.1";
@@ -539,12 +526,12 @@ suite("turbo_media_server_rtsp_adapter") {
                 (struct coro_context_s *)ctx,
                 &rtsp_config,
                 &adapter_config);
-            REQUIRE_NOT_NULL(adapter);
+            check_not_null(adapter);
             check_not_null(turbo_media_server_rtsp_adapter_rtsp_server(adapter));
 
-            REQUIRE_OK(turbo_media_server_rtsp_adapter_start(adapter));
-            REQUIRE_OK(turbo_media_server_rtsp_adapter_stop(adapter));
-            REQUIRE_OK(turbo_media_server_rtsp_adapter_stop(adapter));
+            check_equal(turbo_media_server_rtsp_adapter_start(adapter), TURBO_MEDIA_OK);
+            check_equal(turbo_media_server_rtsp_adapter_stop(adapter), TURBO_MEDIA_OK);
+            check_equal(turbo_media_server_rtsp_adapter_stop(adapter), TURBO_MEDIA_OK);
 
             turbo_media_server_rtsp_adapter_destroy(adapter);
             turbo_media_server_runtime_destroy(runtime);
@@ -552,7 +539,7 @@ suite("turbo_media_server_rtsp_adapter") {
         }
     }
 
-    section("end-to-end") {
+    group("end-to-end") {
         it("publishes and plays one RTP frame through MediaRegistry") {
             static const uint8_t expected_payload[] = {0x80, 0x61, 0x00, 0x01, 0xaa, 0xbb, 0xcc, 0xdd};
             coro_context_t *ctx = coro_context_create(NULL);
@@ -567,10 +554,10 @@ suite("turbo_media_server_rtsp_adapter") {
 
             memset(&state, 0, sizeof(state));
             memset(&stats, 0, sizeof(stats));
-            REQUIRE_NOT_NULL(ctx);
+            check_not_null(ctx);
             server_config.coro_context = (struct coro_context_s *)ctx;
             runtime = turbo_media_server_runtime_create(&server_config);
-            REQUIRE_NOT_NULL(runtime);
+            check_not_null(runtime);
 
             memset(&rtsp_config, 0, sizeof(rtsp_config));
             rtsp_config.bind_host = "127.0.0.1";
@@ -589,13 +576,13 @@ suite("turbo_media_server_rtsp_adapter") {
                 (struct coro_context_s *)ctx,
                 &rtsp_config,
                 &adapter_config);
-            REQUIRE_NOT_NULL(adapter);
-            REQUIRE_OK(turbo_media_server_rtsp_adapter_start(adapter));
+            check_not_null(adapter);
+            check_equal(turbo_media_server_rtsp_adapter_start(adapter), TURBO_MEDIA_OK);
 
             state.ctx = ctx;
             state.runtime = runtime;
-            check_int_eq(coro_context_spawn(ctx, adapter_publisher_task, &state), 0);
-            check_int_eq(coro_context_spawn(ctx, adapter_player_task, &state), 0);
+            check_equal(coro_context_spawn(ctx, adapter_publisher_task, &state), 0);
+            check_equal(coro_context_spawn(ctx, adapter_player_task, &state), 0);
 
             while (!state.failed && wait_iters-- > 0) {
                 if (state.publisher_done && state.player_done) {
@@ -611,13 +598,13 @@ suite("turbo_media_server_rtsp_adapter") {
             (void)turbo_media_server_runtime_get_stats(runtime, &stats);
             state.source_count_after_close = stats.source_count;
 
-            check_int_eq(state.failed_line, 0);
+            check_equal(state.failed_line, 0);
             check_false(state.failed);
             check_true(state.publisher_done);
             check_true(state.player_done);
-            check_size_eq(state.received_payload_len, sizeof(expected_payload));
-            check_mem_eq(state.received_payload, expected_payload, sizeof(expected_payload));
-            check_int_eq(state.received_channel, 6);
+            check_equal(state.received_payload_len, sizeof(expected_payload));
+            check_equal(state.received_payload, expected_payload, sizeof(expected_payload));
+            check_equal(state.received_channel, 6);
             check_true(state.publisher_session[0] != '\0');
             check_true(state.player_session[0] != '\0');
             check_true(adapter_session_has_uuid_suffix(
@@ -627,13 +614,13 @@ suite("turbo_media_server_rtsp_adapter") {
                 state.player_session,
                 "adapter-e2e"));
             check_true(strcmp(state.publisher_session, state.player_session) != 0);
-            check_int_eq((int)state.source_count_during_stream, 1);
-            check_int_eq((int)state.source_count_after_close, 0);
-            check_int_eq((int)stats.frames_published, 1);
-            check_int_eq((int)stats.tracks_registered, 2);
-            check_int_eq((int)stats.subscriptions_created, 1);
-            check_int_eq((int)stats.subscriptions_removed, 1);
-            check_int_eq((int)stats.sources_removed, 1);
+            check_equal((int)state.source_count_during_stream, 1);
+            check_equal((int)state.source_count_after_close, 0);
+            check_equal((int)stats.frames_published, 1);
+            check_equal((int)stats.tracks_registered, 2);
+            check_equal((int)stats.subscriptions_created, 1);
+            check_equal((int)stats.subscriptions_removed, 1);
+            check_equal((int)stats.sources_removed, 1);
 
             turbo_media_server_rtsp_adapter_destroy(adapter);
             turbo_media_server_runtime_destroy(runtime);
@@ -645,7 +632,7 @@ suite("turbo_media_server_rtsp_adapter") {
 #else
 
 suite("turbo_media_server_rtsp_adapter") {
-    section("disabled") {
+    group("disabled") {
         it("is not built when RTSP is disabled") {
             check_true(1);
         }

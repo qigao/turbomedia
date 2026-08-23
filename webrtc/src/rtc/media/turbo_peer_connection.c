@@ -36,13 +36,13 @@ struct turbo_peer_connection_s {
     turbo_peer_state_t state;
     
     /* Local credentials */
-    tstr_t local_ufrag;
-    tstr_t local_pwd;
+    tstr local_ufrag;
+    tstr local_pwd;
     
     /* Remote info */
-    tstr_t remote_fingerprint;
-    tstr_t remote_ufrag;
-    tstr_t remote_pwd;
+    tstr remote_fingerprint;
+    tstr remote_ufrag;
+    tstr remote_pwd;
     sdp_session_t remote_sdp;
     int have_remote_sdp;
     
@@ -160,8 +160,8 @@ static int configure_ice_servers(const turbo_peer_config_t *source,
 static int refresh_local_ice_credentials(turbo_peer_connection_t *pc) {
     char ufrag[32];
     char pwd[64];
-    tstr_t next_ufrag;
-    tstr_t next_pwd;
+    tstr next_ufrag;
+    tstr next_pwd;
 
     if (!pc || !pc->ice_agent) {
         return -1;
@@ -511,7 +511,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
                  if (turbo_media_track_get_direction(track) & TURBO_MEDIA_DIRECTION_RECVONLY) {
                      if (turbo_media_track_get_state(track) != TURBO_MEDIA_STATE_ACTIVE &&
                          turbo_media_track_start(track) != 0) {
-                         TLOG_ERROR("PeerConnection failed to start recv track[{}]", i);
+                         TLOG_ERRORF("PeerConnection failed to start recv track[{}]", i);
                          notify_state_change(pc, TURBO_PEER_STATE_FAILED);
                          return;
                      }
@@ -1512,9 +1512,9 @@ int turbo_peer_connection_set_remote_description(
     const char *sdp_str
 ) {
     const sdp_media_t *transport_media = NULL;
-    tstr_t new_ufrag = NULL;
-    tstr_t new_pwd = NULL;
-    tstr_t new_fingerprint = NULL;
+    tstr new_ufrag = NULL;
+    tstr new_pwd = NULL;
+    tstr new_fingerprint = NULL;
     int ice_controlling;
     int dtls_server = 0;
     int remote_credentials_changed = 0;
@@ -1834,8 +1834,8 @@ int turbo_peer_connection_apply_remote_ice_sdpfrag(
     size_t sdpfrag_len
 ) {
     turbo_ice_sdpfrag_t parsed;
-    tstr_t next_ufrag = NULL;
-    tstr_t next_pwd = NULL;
+    tstr next_ufrag = NULL;
+    tstr next_pwd = NULL;
     int completing_local_restart;
     int restarted = 0;
 

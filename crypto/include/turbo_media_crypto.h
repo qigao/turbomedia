@@ -42,7 +42,7 @@ extern "C" {
  * @param public_key Destination for the 32-byte public key
  * @return TURBO_OK, TURBO_EINVAL, or an entropy acquisition error
  */
-CXX_C_API int turbo_media_x25519_keypair_generate(
+TURBO_MEDIA_API int turbo_media_x25519_keypair_generate(
     uint8_t private_key[TURBO_MEDIA_X25519_KEY_SIZE],
     uint8_t public_key[TURBO_MEDIA_X25519_KEY_SIZE]);
 
@@ -53,7 +53,7 @@ CXX_C_API int turbo_media_x25519_keypair_generate(
  * @param public_key Destination public key; exact input/output aliasing is supported
  * @return TURBO_OK or TURBO_EINVAL
  */
-CXX_C_API int turbo_media_x25519_public_key(
+TURBO_MEDIA_API int turbo_media_x25519_public_key(
     const uint8_t private_key[TURBO_MEDIA_X25519_KEY_SIZE],
     uint8_t public_key[TURBO_MEDIA_X25519_KEY_SIZE]);
 
@@ -69,7 +69,7 @@ CXX_C_API int turbo_media_x25519_public_key(
  * @param shared_secret Destination raw shared secret
  * @return TURBO_OK, TURBO_EINVAL, or TURBO_EPROTO for a low-order peer key
  */
-CXX_C_API int turbo_media_x25519_shared_secret(
+TURBO_MEDIA_API int turbo_media_x25519_shared_secret(
     const uint8_t private_key[TURBO_MEDIA_X25519_KEY_SIZE],
     const uint8_t peer_public_key[TURBO_MEDIA_X25519_KEY_SIZE],
     uint8_t shared_secret[TURBO_MEDIA_X25519_KEY_SIZE]);
@@ -80,7 +80,7 @@ CXX_C_API int turbo_media_x25519_shared_secret(
  * @param key Destination key
  * @return TURBO_OK, TURBO_EINVAL, or an entropy acquisition error
  */
-CXX_C_API int turbo_media_xchacha20_key_generate(
+TURBO_MEDIA_API int turbo_media_xchacha20_key_generate(
     uint8_t key[TURBO_MEDIA_XCHACHA20_KEY_SIZE]);
 
 /**
@@ -90,7 +90,7 @@ CXX_C_API int turbo_media_xchacha20_key_generate(
  * @param nonce Destination nonce
  * @return TURBO_OK, TURBO_EINVAL, or an entropy acquisition error
  */
-CXX_C_API int turbo_media_xchacha20_nonce_generate(
+TURBO_MEDIA_API int turbo_media_xchacha20_nonce_generate(
     uint8_t nonce[TURBO_MEDIA_XCHACHA20_NONCE_SIZE]);
 
 /**
@@ -110,7 +110,7 @@ CXX_C_API int turbo_media_xchacha20_nonce_generate(
  * @param tag Destination authentication tag
  * @return TURBO_OK or TURBO_EINVAL
  */
-CXX_C_API int turbo_media_xchacha20poly1305_encrypt(
+TURBO_MEDIA_API int turbo_media_xchacha20poly1305_encrypt(
     const uint8_t key[TURBO_MEDIA_XCHACHA20_KEY_SIZE],
     const uint8_t nonce[TURBO_MEDIA_XCHACHA20_NONCE_SIZE],
     const uint8_t *associated_data,
@@ -136,7 +136,7 @@ CXX_C_API int turbo_media_xchacha20poly1305_encrypt(
  * @param plain_text Destination plaintext
  * @return TURBO_OK, TURBO_EINVAL, or TURBO_EPROTO on authentication failure
  */
-CXX_C_API int turbo_media_xchacha20poly1305_decrypt(
+TURBO_MEDIA_API int turbo_media_xchacha20poly1305_decrypt(
     const uint8_t key[TURBO_MEDIA_XCHACHA20_KEY_SIZE],
     const uint8_t nonce[TURBO_MEDIA_XCHACHA20_NONCE_SIZE],
     const uint8_t *associated_data,
@@ -152,7 +152,7 @@ CXX_C_API int turbo_media_xchacha20poly1305_decrypt(
  * @param secret Mutable secret buffer; NULL is accepted as a no-op
  * @param size Number of bytes to erase
  */
-CXX_C_API void turbo_media_crypto_wipe(void *secret, size_t size);
+TURBO_MEDIA_API void turbo_media_crypto_wipe(void *secret, size_t size);
 
 #ifdef __cplusplus
 }

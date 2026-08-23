@@ -141,19 +141,19 @@ typedef void (*turbo_dc_error_cb)(
  * Create a data channel context
  * Must be called before creating any peers
  */
-CXX_C_API turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config);
+TURBO_MEDIA_API turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config);
 
 /**
  * Destroy context and all associated peers
  */
-CXX_C_API void turbo_dc_context_destroy(turbo_dc_context_t *ctx);
+TURBO_MEDIA_API void turbo_dc_context_destroy(turbo_dc_context_t *ctx);
 
 /**
  * Force global cleanup (optional)
  * Normally cleanup happens automatically when the last context is destroyed.
  * Call this only if you need to forcefully cleanup SCTP resources.
  */
-CXX_C_API void turbo_dc_global_cleanup(void);
+TURBO_MEDIA_API void turbo_dc_global_cleanup(void);
  
 /**
  * Get the local DTLS certificate fingerprint
@@ -166,7 +166,7 @@ CXX_C_API void turbo_dc_global_cleanup(void);
  * @param fp_len Size of fingerprint buffer
  * @return 0 on success, negative on error
  */
-CXX_C_API int turbo_dc_context_get_local_fingerprint(
+TURBO_MEDIA_API int turbo_dc_context_get_local_fingerprint(
     turbo_dc_context_t *ctx,
     char *hash,
     size_t hash_len,
@@ -187,7 +187,7 @@ CXX_C_API int turbo_dc_context_get_local_fingerprint(
  * @param user_data User data passed to callbacks
  * @return Peer handle or NULL on error
  */
-CXX_C_API turbo_dc_peer_t *turbo_dc_peer_create(
+TURBO_MEDIA_API turbo_dc_peer_t *turbo_dc_peer_create(
     turbo_dc_context_t *ctx,
     const char *remote_host,
     uint16_t remote_port,
@@ -197,9 +197,9 @@ CXX_C_API turbo_dc_peer_t *turbo_dc_peer_create(
 /**
  * Set callbacks
  */
-CXX_C_API void turbo_dc_peer_on_state(turbo_dc_peer_t *peer, turbo_dc_state_cb cb);
-CXX_C_API void turbo_dc_peer_on_channel(turbo_dc_peer_t *peer, turbo_dc_channel_cb cb);
-CXX_C_API void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_error_cb cb);
+TURBO_MEDIA_API void turbo_dc_peer_on_state(turbo_dc_peer_t *peer, turbo_dc_state_cb cb);
+TURBO_MEDIA_API void turbo_dc_peer_on_channel(turbo_dc_peer_t *peer, turbo_dc_channel_cb cb);
+TURBO_MEDIA_API void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_error_cb cb);
  
 /**
  * Set the expected remote certificate fingerprint
@@ -214,7 +214,7 @@ CXX_C_API void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_error_cb c
  * @return 0 on success, -1 for invalid arguments, -2 for an unsupported hash,
  *         -3 for a malformed fingerprint, or -4 on allocation failure
  */
-CXX_C_API int turbo_dc_peer_set_remote_fingerprint(
+TURBO_MEDIA_API int turbo_dc_peer_set_remote_fingerprint(
     turbo_dc_peer_t *peer,
     const char *hash,
     const char *fingerprint
@@ -227,13 +227,13 @@ CXX_C_API int turbo_dc_peer_set_remote_fingerprint(
  * @param is_server 1 for DTLS server/passive, 0 for DTLS client/active
  * @return 0 on success, negative on error
  */
-CXX_C_API int turbo_dc_peer_set_dtls_role(
+TURBO_MEDIA_API int turbo_dc_peer_set_dtls_role(
     turbo_dc_peer_t *peer,
     int is_server
 );
 
 /** Return 1 when the peer uses the DTLS server role, otherwise 0. */
-CXX_C_API int turbo_dc_peer_is_dtls_server(const turbo_dc_peer_t *peer);
+TURBO_MEDIA_API int turbo_dc_peer_is_dtls_server(const turbo_dc_peer_t *peer);
 
 /**
  * Attach an externally owned datagram transport to the peer.
@@ -248,17 +248,17 @@ CXX_C_API int turbo_dc_peer_is_dtls_server(const turbo_dc_peer_t *peer);
  * @return 0 on success, -1 for invalid arguments, or -2 when another transport
  *         is already attached.
  */
-CXX_C_API int turbo_dc_peer_set_external_transport(
+TURBO_MEDIA_API int turbo_dc_peer_set_external_transport(
     turbo_dc_peer_t *peer,
     void *transport,
     turbo_dc_transport_send_cb send_cb);
 
-CXX_C_API void turbo_dc_peer_feed_transport_data(
+TURBO_MEDIA_API void turbo_dc_peer_feed_transport_data(
     turbo_dc_peer_t *peer,
     const void *data,
     size_t len);
 
-CXX_C_API void turbo_dc_peer_set_transport_data_handler(
+TURBO_MEDIA_API void turbo_dc_peer_set_transport_data_handler(
     turbo_dc_peer_t *peer,
     turbo_dc_transport_data_cb callback,
     void *user_data);
@@ -277,7 +277,7 @@ CXX_C_API void turbo_dc_peer_set_transport_data_handler(
  *         transport is already attached.
  *
  */
-CXX_C_API int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct turbo_ice_agent_s *ice_agent);
+TURBO_MEDIA_API int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct turbo_ice_agent_s *ice_agent);
 
 /**
  * Feed data from ICE agent to DataChannel
@@ -289,32 +289,32 @@ CXX_C_API int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct turbo_ic
  * @param data Data received from ICE agent
  * @param len Data length
  */
-CXX_C_API void turbo_dc_peer_feed_ice_data(turbo_dc_peer_t *peer, const void *data, size_t len);
+TURBO_MEDIA_API void turbo_dc_peer_feed_ice_data(turbo_dc_peer_t *peer, const void *data, size_t len);
 
 /**
  * Start connection (client) or listening (server)
  */
-CXX_C_API int turbo_dc_peer_connect(turbo_dc_peer_t *peer);
+TURBO_MEDIA_API int turbo_dc_peer_connect(turbo_dc_peer_t *peer);
 
 /**
  * Poll peer-internal state after transport/timer progress.
  */
-CXX_C_API void turbo_dc_peer_poll(turbo_dc_peer_t *peer);
+TURBO_MEDIA_API void turbo_dc_peer_poll(turbo_dc_peer_t *peer);
 
 /**
  * Get current state
  */
-CXX_C_API turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer);
+TURBO_MEDIA_API turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer);
 
 /**
  * Close peer connection
  */
-CXX_C_API void turbo_dc_peer_close(turbo_dc_peer_t *peer);
+TURBO_MEDIA_API void turbo_dc_peer_close(turbo_dc_peer_t *peer);
 
 /**
  * Destroy peer (must be closed first or will force close)
  */
-CXX_C_API void turbo_dc_peer_destroy(turbo_dc_peer_t *peer);
+TURBO_MEDIA_API void turbo_dc_peer_destroy(turbo_dc_peer_t *peer);
 
 /**
  * Get negotiated SRTP keys from DTLS session
@@ -323,7 +323,7 @@ CXX_C_API void turbo_dc_peer_destroy(turbo_dc_peer_t *peer);
  * @param material  Output buffer for keys
  * @return          Negotated SRTP profile ID, or 0 if not ready/error
  */
-CXX_C_API uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material);
+TURBO_MEDIA_API uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material);
 
 /**
  * Send raw transport data (for RTP/RTCP media packets)
@@ -335,7 +335,7 @@ CXX_C_API uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *mate
  * @param data Data to send
  * @param len  Data length
  */
-CXX_C_API void turbo_dc_peer_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len);
+TURBO_MEDIA_API void turbo_dc_peer_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len);
 
 /* ============================================================================
  * Data Channel API
@@ -349,7 +349,7 @@ CXX_C_API void turbo_dc_peer_send_transport_data(turbo_dc_peer_t *peer, const vo
  * @param config Channel configuration (NULL for defaults)
  * @return Channel handle or NULL on error
  */
-CXX_C_API turbo_dc_channel_t *turbo_dc_channel_create(
+TURBO_MEDIA_API turbo_dc_channel_t *turbo_dc_channel_create(
     turbo_dc_peer_t *peer,
     const char *label,
     const turbo_dc_channel_config_t *config
@@ -362,20 +362,20 @@ CXX_C_API turbo_dc_channel_t *turbo_dc_channel_create(
  * @param channel Channel handle
  * @return 0 on success, negative on error
  */
-CXX_C_API int turbo_dc_channel_open(turbo_dc_channel_t *channel);
+TURBO_MEDIA_API int turbo_dc_channel_open(turbo_dc_channel_t *channel);
 
 /**
  * Set channel callbacks
  */
-CXX_C_API void turbo_dc_channel_on_open(turbo_dc_channel_t *channel, turbo_dc_open_cb cb);
-CXX_C_API void turbo_dc_channel_on_message(turbo_dc_channel_t *channel, turbo_dc_message_cb cb);
-CXX_C_API void turbo_dc_channel_on_close(turbo_dc_channel_t *channel, turbo_dc_close_cb cb);
+TURBO_MEDIA_API void turbo_dc_channel_on_open(turbo_dc_channel_t *channel, turbo_dc_open_cb cb);
+TURBO_MEDIA_API void turbo_dc_channel_on_message(turbo_dc_channel_t *channel, turbo_dc_message_cb cb);
+TURBO_MEDIA_API void turbo_dc_channel_on_close(turbo_dc_channel_t *channel, turbo_dc_close_cb cb);
 
 /**
  * Set/get user data for channel callbacks
  */
-CXX_C_API void turbo_dc_channel_set_user_data(turbo_dc_channel_t *channel, void *user_data);
-CXX_C_API void *turbo_dc_channel_get_user_data(turbo_dc_channel_t *channel);
+TURBO_MEDIA_API void turbo_dc_channel_set_user_data(turbo_dc_channel_t *channel, void *user_data);
+TURBO_MEDIA_API void *turbo_dc_channel_get_user_data(turbo_dc_channel_t *channel);
 
 /**
  * Send data on channel
@@ -386,7 +386,7 @@ CXX_C_API void *turbo_dc_channel_get_user_data(turbo_dc_channel_t *channel);
  * @param is_binary TRUE for binary, FALSE for text
  * @return 0 on success, negative on error
  */
-CXX_C_API int turbo_dc_channel_send(
+TURBO_MEDIA_API int turbo_dc_channel_send(
     turbo_dc_channel_t *channel,
     const void *data,
     size_t len,
@@ -396,27 +396,27 @@ CXX_C_API int turbo_dc_channel_send(
 /**
  * Get channel label
  */
-CXX_C_API const char *turbo_dc_channel_get_label(turbo_dc_channel_t *channel);
+TURBO_MEDIA_API const char *turbo_dc_channel_get_label(turbo_dc_channel_t *channel);
 
 /**
  * Get channel ID
  */
-CXX_C_API uint16_t turbo_dc_channel_get_id(turbo_dc_channel_t *channel);
+TURBO_MEDIA_API uint16_t turbo_dc_channel_get_id(turbo_dc_channel_t *channel);
 
 /**
  * Check if channel is open
  */
-CXX_C_API int turbo_dc_channel_is_open(turbo_dc_channel_t *channel);
+TURBO_MEDIA_API int turbo_dc_channel_is_open(turbo_dc_channel_t *channel);
 
 /**
  * Get buffered amount (bytes waiting to send)
  */
-CXX_C_API size_t turbo_dc_channel_buffered_amount(turbo_dc_channel_t *channel);
+TURBO_MEDIA_API size_t turbo_dc_channel_buffered_amount(turbo_dc_channel_t *channel);
 
 /**
  * Close data channel
  */
-CXX_C_API void turbo_dc_channel_close(turbo_dc_channel_t *channel);
+TURBO_MEDIA_API void turbo_dc_channel_close(turbo_dc_channel_t *channel);
 
 /* ============================================================================
  * Utility Functions
@@ -425,7 +425,7 @@ CXX_C_API void turbo_dc_channel_close(turbo_dc_channel_t *channel);
 /**
  * Get default channel config
  */
-CXX_C_API turbo_dc_channel_config_t turbo_dc_default_channel_config(void);
+TURBO_MEDIA_API turbo_dc_channel_config_t turbo_dc_default_channel_config(void);
 
 /**
  * Handle SCTP timers
@@ -436,7 +436,7 @@ CXX_C_API turbo_dc_channel_config_t turbo_dc_default_channel_config(void);
  *
  * This is required for proper message delivery and retransmissions.
  */
-CXX_C_API void turbo_dc_handle_timers(void);
+TURBO_MEDIA_API void turbo_dc_handle_timers(void);
 
 #ifdef __cplusplus
 }

@@ -48,7 +48,7 @@ typedef struct {
  *                  returned HTTP API server.
  * @return Handle or NULL on failure
  */
-CXX_C_API http_api_server_t *http_api_create(
+TURBO_MEDIA_API http_api_server_t *http_api_create(
     void *loop,
     const http_api_config_t *config,
     webrtc_signaling_server_t *signaling);
@@ -56,17 +56,17 @@ CXX_C_API http_api_server_t *http_api_create(
 /**
  * @brief Start HTTP API server
  */
-CXX_C_API int http_api_start(http_api_server_t *server);
+TURBO_MEDIA_API int http_api_start(http_api_server_t *server);
 
 /**
  * @brief Stop HTTP API server
  */
-CXX_C_API void http_api_stop(http_api_server_t *server);
+TURBO_MEDIA_API void http_api_stop(http_api_server_t *server);
 
 /**
  * @brief Destroy HTTP API server
  */
-CXX_C_API void http_api_destroy(http_api_server_t *server);
+TURBO_MEDIA_API void http_api_destroy(http_api_server_t *server);
 
 #ifdef __cplusplus
 }

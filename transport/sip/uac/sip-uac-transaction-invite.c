@@ -53,7 +53,7 @@ static int sip_uac_transaction_invite_proceeding(struct sip_uac_transaction_t* t
 {
 	int r;
 	char ptr[256];
-	tstr_v id;
+	vstr id;
 
 	// TODO: add dialog locker here
 	if (!t->dialog && sip_sv_valid(&reply->to.tag))
@@ -85,7 +85,7 @@ static int sip_uac_transaction_invite_completed(struct sip_uac_transaction_t* t,
 {
 	int r;
 	char ptr[256];
-	tstr_v id;
+	vstr id;
 	
 	r = 0;
 	assert(!t->dialog || DIALOG_ERALY == t->dialog->state);
@@ -135,7 +135,7 @@ static int sip_uac_transaction_invite_accepted(struct sip_uac_transaction_t* t, 
 {
 	int r;
 	char ptr[256];
-	tstr_v id;
+	vstr id;
 
 	r = 0;
 	// only create new dialog on first 2xx response

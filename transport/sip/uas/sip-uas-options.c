@@ -34,7 +34,7 @@ int sip_uas_onoptions(struct sip_uas_transaction_t* t, const struct sip_message_
 
 	int i;
 	struct sip_param_t param;
-	const tstr_v* header;
+	const vstr* header;
 	
 	for (i = 0; i < sizeof(headers) / sizeof(headers[0]); i++)
 	{

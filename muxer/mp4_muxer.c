@@ -3,6 +3,7 @@
 #ifdef TURBO_MEDIA_HAS_MP4
 
 #include "container_io.h"
+#include "stl_status.h"
 #include "mov-buffer.h"
 #include "mov-format.h"
 #include "mov-writer.h"
@@ -14,8 +15,8 @@
 #include <string.h>
 
 #include <turbo_error.h>
-#include <turbo_str_view.h>
-#include <turbo_vec.h>
+#include <turbo_vstr.h>
+#include <turbostl/vec.h>
 
 typedef union {
     struct mpeg4_avc_t avc;
@@ -27,13 +28,13 @@ typedef struct {
     int track;
     uint8_t object;
     mp4_video_config_t config;
-    turbo_vec_t sample;
+    vec_t sample;
 } mp4_muxer_stream_t;
 
 typedef struct {
     turbo_container_io_t io;
     mov_writer_t *writer;
-    turbo_vec_t streams;
+    vec_t streams;
     int finalized;
 } mp4_muxer_ctx_t;
 
@@ -45,7 +46,7 @@ static const struct mov_buffer_t s_mp4_io = {
 };
 
 static int mp4_name_is(const char *name, const char *expected) {
-    return tstr_v_ieq(tstr_v_from_cstr(name), tstr_v_from_cstr(expected));
+    return vstr_ieq(vstr_from_cstr(name), vstr_from_cstr(expected));
 }
 
 static int mp4_codec_object(const turbo_stream_info_t *info, uint8_t *object) {
@@ -89,18 +90,18 @@ static int mp4_codec_object(const turbo_stream_info_t *info, uint8_t *object) {
     return TURBO_OK;
 }
 
-static int mp4_resize_bytes(turbo_vec_t *buffer, size_t input_size) {
+static int mp4_resize_bytes(vec_t *buffer, size_t input_size) {
     size_t capacity;
 
     if (input_size > (SIZE_MAX - 64U) / 2U) return TURBO_EFBIG;
     capacity = input_size * 2U + 64U;
-    return turbo_vec_resize(buffer, capacity);
+    return turbo_media_stl_status_to_error(vec_resize(buffer, capacity));
 }
 
 static int mp4_normalize_video_config(mp4_muxer_stream_t *stream,
                                       const uint8_t *extra_data,
                                       size_t extra_data_size,
-                                      turbo_vec_t *normalized) {
+                                      vec_t *normalized) {
     int bytes;
     int result;
 
@@ -116,8 +117,8 @@ static int mp4_normalize_video_config(mp4_muxer_stream_t *stream,
                     extra_data, extra_data_size, &stream->config.avc) <= 0)
                 return TURBO_EINVAL;
             bytes = mpeg4_avc_decoder_configuration_record_save(
-                &stream->config.avc, turbo_vec_data(normalized),
-                turbo_vec_size(normalized));
+                &stream->config.avc, vec_data(normalized),
+                vec_size(normalized));
             break;
         case MOV_OBJECT_H265:
             memset(&stream->config.hevc, 0, sizeof(stream->config.hevc));
@@ -125,8 +126,8 @@ static int mp4_normalize_video_config(mp4_muxer_stream_t *stream,
                     extra_data, extra_data_size, &stream->config.hevc) <= 0)
                 return TURBO_EINVAL;
             bytes = mpeg4_hevc_decoder_configuration_record_save(
-                &stream->config.hevc, turbo_vec_data(normalized),
-                turbo_vec_size(normalized));
+                &stream->config.hevc, vec_data(normalized),
+                vec_size(normalized));
             break;
         case MOV_OBJECT_H266: {
             int update = 0;
@@ -135,20 +136,21 @@ static int mp4_normalize_video_config(mp4_muxer_stream_t *stream,
                     extra_data, extra_data_size, &stream->config.vvc) <= 0) {
                 (void)h266_annexbtomp4(
                     &stream->config.vvc, extra_data, extra_data_size,
-                    turbo_vec_data(normalized), turbo_vec_size(normalized), NULL,
+                    vec_data(normalized), vec_size(normalized), NULL,
                     &update);
                 if (!update) return TURBO_EINVAL;
             }
             bytes = mpeg4_vvc_decoder_configuration_record_save(
-                &stream->config.vvc, turbo_vec_data(normalized),
-                turbo_vec_size(normalized));
+                &stream->config.vvc, vec_data(normalized),
+                vec_size(normalized));
             break;
         }
         default:
             return TURBO_ENOTSUP;
     }
     if (bytes <= 0) return TURBO_EINVAL;
-    return turbo_vec_resize(normalized, (size_t)bytes);
+    return turbo_media_stl_status_to_error(
+        vec_resize(normalized, (size_t)bytes));
 }
 
 static int mp4_convert_video_sample(mp4_muxer_stream_t *stream,
@@ -171,26 +173,26 @@ static int mp4_convert_video_sample(mp4_muxer_stream_t *stream,
     if (result != TURBO_OK) return result;
     if (stream->object == MOV_OBJECT_H264)
         bytes = h264_annexbtomp4(&stream->config.avc, input, input_size,
-                                 turbo_vec_data(&stream->sample),
-                                 turbo_vec_size(&stream->sample), NULL, &update);
+                                 vec_data(&stream->sample),
+                                 vec_size(&stream->sample), NULL, &update);
     else if (stream->object == MOV_OBJECT_H265)
         bytes = h265_annexbtomp4(&stream->config.hevc, input, input_size,
-                                 turbo_vec_data(&stream->sample),
-                                 turbo_vec_size(&stream->sample), NULL, &update);
+                                 vec_data(&stream->sample),
+                                 vec_size(&stream->sample), NULL, &update);
     else
         bytes = h266_annexbtomp4(&stream->config.vvc, input, input_size,
-                                 turbo_vec_data(&stream->sample),
-                                 turbo_vec_size(&stream->sample), NULL, &update);
+                                 vec_data(&stream->sample),
+                                 vec_size(&stream->sample), NULL, &update);
 
     if (bytes <= 0 || update) return TURBO_EPROTO;
-    *output = (const uint8_t *)turbo_vec_data_const(&stream->sample);
+    *output = (const uint8_t *)vec_data_const(&stream->sample);
     *output_size = (size_t)bytes;
     return TURBO_OK;
 }
 
 static void mp4_stream_destroy(mp4_muxer_stream_t *stream) {
     if (!stream) return;
-    turbo_vec_destroy(&stream->sample);
+    vec_destroy(&stream->sample);
     free(stream);
 }
 
@@ -204,7 +206,9 @@ static void *mp4_muxer_create_impl(const turbo_muxer_config_t *config) {
     if (!ctx) return NULL;
     ctx->io.file = TURBO_INVALID_FILE;
 
-    result = turbo_vec_init(&ctx->streams, sizeof(mp4_muxer_stream_t *));
+    result = turbo_media_stl_status_to_error(vec_init_bytes(
+        &ctx->streams, sizeof(mp4_muxer_stream_t *),
+        CMETA_ALIGNOF(mp4_muxer_stream_t *), SIZE_MAX));
     if (result != TURBO_OK) goto fail;
     result = turbo_container_io_open_writer(&ctx->io, config->output_path);
     if (result != TURBO_OK) goto fail;
@@ -217,7 +221,7 @@ static void *mp4_muxer_create_impl(const turbo_muxer_config_t *config) {
 fail:
     if (ctx->writer) mov_writer_destroy(ctx->writer);
     turbo_container_io_close(&ctx->io);
-    turbo_vec_destroy(&ctx->streams);
+    vec_destroy(&ctx->streams);
     free(ctx);
     return NULL;
 }
@@ -239,13 +243,13 @@ static void mp4_muxer_destroy_impl(void *ctx_ptr) {
 
     if (!ctx) return;
     if (!ctx->finalized && ctx->writer) (void)mp4_muxer_finalize(ctx);
-    count = turbo_vec_size(&ctx->streams);
+    count = vec_size(&ctx->streams);
     for (size_t i = 0; i < count; ++i) {
         mp4_muxer_stream_t **entry =
-            (mp4_muxer_stream_t **)turbo_vec_at(&ctx->streams, i);
+            (mp4_muxer_stream_t **)vec_at(&ctx->streams, i);
         if (entry) mp4_stream_destroy(*entry);
     }
-    turbo_vec_destroy(&ctx->streams);
+    vec_destroy(&ctx->streams);
     turbo_container_io_close(&ctx->io);
     free(ctx);
 }
@@ -255,7 +259,7 @@ static int mp4_muxer_add_stream_impl(void *ctx_ptr,
                                      int *stream_id) {
     mp4_muxer_ctx_t *ctx = (mp4_muxer_ctx_t *)ctx_ptr;
     mp4_muxer_stream_t *stream = NULL;
-    turbo_vec_t normalized = {0};
+    vec_t normalized = {0};
     const void *extra_data;
     size_t extra_data_size;
     size_t next_id;
@@ -269,12 +273,14 @@ static int mp4_muxer_add_stream_impl(void *ctx_ptr,
          (info->sample_rate <= 0 || info->channels <= 0)))
         return TURBO_EINVAL;
 
-    next_id = turbo_vec_size(&ctx->streams);
-    result = turbo_vec_reserve(&ctx->streams, next_id + 1);
+    next_id = vec_size(&ctx->streams);
+    result = turbo_media_stl_status_to_error(
+        vec_reserve(&ctx->streams, next_id + 1));
     if (result != TURBO_OK) return result;
     stream = (mp4_muxer_stream_t *)calloc(1, sizeof(*stream));
     if (!stream) return TURBO_ENOMEM;
-    result = turbo_vec_init(&stream->sample, sizeof(uint8_t));
+    result = turbo_media_stl_status_to_error(vec_init_bytes(
+        &stream->sample, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t), SIZE_MAX));
     if (result != TURBO_OK) goto fail;
     result = mp4_codec_object(info, &stream->object);
     if (result != TURBO_OK) goto fail;
@@ -284,13 +290,14 @@ static int mp4_muxer_add_stream_impl(void *ctx_ptr,
     if (info->type == TURBO_CODEC_TYPE_VIDEO &&
         (stream->object == MOV_OBJECT_H264 || stream->object == MOV_OBJECT_H265 ||
          stream->object == MOV_OBJECT_H266)) {
-        result = turbo_vec_init(&normalized, sizeof(uint8_t));
+        result = turbo_media_stl_status_to_error(vec_init_bytes(
+            &normalized, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t), SIZE_MAX));
         if (result != TURBO_OK) goto fail;
         result = mp4_normalize_video_config(stream, info->extradata,
                                             info->extradata_size, &normalized);
         if (result != TURBO_OK) goto fail;
-        extra_data = turbo_vec_data_const(&normalized);
-        extra_data_size = turbo_vec_size(&normalized);
+        extra_data = vec_data_const(&normalized);
+        extra_data_size = vec_size(&normalized);
     }
 
     if (info->type == TURBO_CODEC_TYPE_VIDEO)
@@ -306,14 +313,14 @@ static int mp4_muxer_add_stream_impl(void *ctx_ptr,
         goto fail;
     }
 
-    result = turbo_vec_push(&ctx->streams, &stream);
+    result = turbo_media_stl_status_to_error(vec_push(&ctx->streams, &stream));
     if (result != TURBO_OK) goto fail;
     *stream_id = (int)next_id;
-    turbo_vec_destroy(&normalized);
+    vec_destroy(&normalized);
     return TURBO_OK;
 
 fail:
-    turbo_vec_destroy(&normalized);
+    vec_destroy(&normalized);
     mp4_stream_destroy(stream);
     return result;
 }
@@ -321,7 +328,7 @@ fail:
 static int mp4_muxer_write_header_impl(void *ctx_ptr) {
     mp4_muxer_ctx_t *ctx = (mp4_muxer_ctx_t *)ctx_ptr;
     if (!ctx || !ctx->writer || ctx->finalized) return TURBO_EINVAL;
-    return turbo_vec_empty(&ctx->streams) ? TURBO_EINVAL : ctx->io.error;
+    return vec_empty(&ctx->streams) ? TURBO_EINVAL : ctx->io.error;
 }
 
 static int mp4_muxer_write_packet_impl(void *ctx_ptr,
@@ -337,7 +344,7 @@ static int mp4_muxer_write_packet_impl(void *ctx_ptr,
     if (!ctx || !ctx->writer || !packet || !packet->data || packet->size == 0 ||
         packet->stream_id < 0 || ctx->finalized)
         return TURBO_EINVAL;
-    entry = (mp4_muxer_stream_t **)turbo_vec_at(
+    entry = (mp4_muxer_stream_t **)vec_at(
         &ctx->streams, (size_t)packet->stream_id);
     if (!entry || !*entry) return TURBO_EINVAL;
     stream = *entry;

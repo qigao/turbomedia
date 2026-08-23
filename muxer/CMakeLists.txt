@@ -32,6 +32,7 @@ target_link_libraries(
   turbo_media_muxer
   PUBLIC TurboMedia::Codec
   PRIVATE TurboUtils::Core
+          TurboUtils::STL
           TurboMediaFFmpeg::avformat
           TurboMediaFFmpeg::avcodec
           TurboMediaFFmpeg::avutil)

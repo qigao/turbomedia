@@ -10,9 +10,9 @@
 #include "flv_writer.h"
 #include "http_client.h"
 #include "turbo_coro.h"
-#include "turbo_deque.h"
+#include <turbostl/deque.h>
 #include "turbo_str.h"
-#include "turbo_str_view.h"
+#include "turbo_vstr.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -38,13 +38,13 @@ typedef struct {
 } http_flv_chunk_t;
 
 typedef struct {
-    tstr_t url;
+    tstr url;
     http_client_t *http_client;
     coro_context_t *coro_context;
     coro_task_t *upload_task;
     flv_muxer_t *muxer;
     void *writer;
-    turbo_deque_t queue;
+    deque_t queue;
     size_t queue_bytes;
     size_t queue_capacity;
     http_flv_codec_t video_codec;
@@ -62,7 +62,7 @@ typedef struct {
 
 static void http_flv_clear_queue(http_flv_streamer_ctx_t *ctx) {
     http_flv_chunk_t chunk;
-    while (turbo_deque_pop_front(&ctx->queue, &chunk) == TURBO_OK) free(chunk.data);
+    while (deque_pop_front(&ctx->queue, &chunk) == STL_OK) free(chunk.data);
     ctx->queue_bytes = 0;
 }
 
@@ -95,7 +95,7 @@ static int http_flv_enqueue_vectors(void *param, const struct flv_vec_t *vectors
         memcpy(chunk.data + offset, vectors[index].ptr, (size_t)vectors[index].len);
         offset += (size_t)vectors[index].len;
     }
-    if (turbo_deque_push_back(&ctx->queue, &chunk) != TURBO_OK) {
+    if (deque_push_back(&ctx->queue, &chunk) != STL_OK) {
         free(chunk.data);
         return -ENOMEM;
     }
@@ -117,12 +117,12 @@ static size_t http_flv_read_body(char *buffer, size_t size, void *user_data) {
     size_t copied;
 
     if (!ctx || !buffer || size == 0) return (size_t)-1;
-    while (turbo_deque_empty(&ctx->queue)) {
+    while (deque_empty(&ctx->queue)) {
         if (ctx->upload_closed) return 0;
         if (coro_yield() != 0) return (size_t)-1;
     }
 
-    front = (http_flv_chunk_t *)turbo_deque_front(&ctx->queue);
+    front = (http_flv_chunk_t *)deque_front(&ctx->queue);
     if (!front || front->offset > front->size) return (size_t)-1;
     available = front->size - front->offset;
     copied = available < size ? available : size;
@@ -131,7 +131,7 @@ static size_t http_flv_read_body(char *buffer, size_t size, void *user_data) {
     ctx->queue_bytes -= copied;
     if (front->offset == front->size) {
         http_flv_chunk_t completed;
-        if (turbo_deque_pop_front(&ctx->queue, &completed) != TURBO_OK)
+        if (deque_pop_front(&ctx->queue, &completed) != STL_OK)
             return (size_t)-1;
         free(completed.data);
     }
@@ -158,31 +158,31 @@ static void http_flv_upload_task(coro_t *co, void *arg) {
 }
 
 static int http_flv_codec(const char *name, int video, http_flv_codec_t *codec) {
-    tstr_v value;
+    vstr value;
 
     if (!name || !codec) return -EINVAL;
-    value = tstr_v_from_cstr(name);
+    value = vstr_from_cstr(name);
     if (video) {
-        if (tstr_v_ieq(value, tstr_v_from_cstr("h264")) ||
-            tstr_v_ieq(value, tstr_v_from_cstr("avc")))
+        if (vstr_ieq(value, vstr_from_cstr("h264")) ||
+            vstr_ieq(value, vstr_from_cstr("avc")))
             *codec = HTTP_FLV_CODEC_H264;
-        else if (tstr_v_ieq(value, tstr_v_from_cstr("h265")) ||
-                 tstr_v_ieq(value, tstr_v_from_cstr("hevc")))
+        else if (vstr_ieq(value, vstr_from_cstr("h265")) ||
+                 vstr_ieq(value, vstr_from_cstr("hevc")))
             *codec = HTTP_FLV_CODEC_H265;
-        else if (tstr_v_ieq(value, tstr_v_from_cstr("h266")) ||
-                 tstr_v_ieq(value, tstr_v_from_cstr("vvc")))
+        else if (vstr_ieq(value, vstr_from_cstr("h266")) ||
+                 vstr_ieq(value, vstr_from_cstr("vvc")))
             *codec = HTTP_FLV_CODEC_H266;
         else
             return -ENOTSUP;
-    } else if (tstr_v_ieq(value, tstr_v_from_cstr("aac")))
+    } else if (vstr_ieq(value, vstr_from_cstr("aac")))
         *codec = HTTP_FLV_CODEC_AAC;
-    else if (tstr_v_ieq(value, tstr_v_from_cstr("mp3")))
+    else if (vstr_ieq(value, vstr_from_cstr("mp3")))
         *codec = HTTP_FLV_CODEC_MP3;
-    else if (tstr_v_ieq(value, tstr_v_from_cstr("pcma")) ||
-             tstr_v_ieq(value, tstr_v_from_cstr("g711a")))
+    else if (vstr_ieq(value, vstr_from_cstr("pcma")) ||
+             vstr_ieq(value, vstr_from_cstr("g711a")))
         *codec = HTTP_FLV_CODEC_G711A;
-    else if (tstr_v_ieq(value, tstr_v_from_cstr("pcmu")) ||
-             tstr_v_ieq(value, tstr_v_from_cstr("g711u")))
+    else if (vstr_ieq(value, vstr_from_cstr("pcmu")) ||
+             vstr_ieq(value, vstr_from_cstr("g711u")))
         *codec = HTTP_FLV_CODEC_G711U;
     else
         return -ENOTSUP;
@@ -196,7 +196,7 @@ static void http_flv_streamer_destroy_impl(void *ctx_ptr) {
     if (ctx->muxer) flv_muxer_destroy(ctx->muxer);
     if (ctx->upload_task) coro_task_destroy(ctx->upload_task);
     http_flv_clear_queue(ctx);
-    turbo_deque_destroy(&ctx->queue);
+    deque_destroy(&ctx->queue);
     tstr_free(ctx->url);
     free(ctx);
 }
@@ -216,7 +216,9 @@ static void *http_flv_streamer_create(const turbo_streamer_config_t *config) {
     ctx->video_stream_id = -1;
     ctx->audio_stream_id = -1;
     ctx->stats.uptime_ms = (int64_t)time(NULL) * 1000;
-    if (!ctx->url || turbo_deque_init(&ctx->queue, sizeof(http_flv_chunk_t)) != TURBO_OK) {
+    if (!ctx->url || deque_init_bytes(
+                         &ctx->queue, sizeof(http_flv_chunk_t),
+                         CMETA_ALIGNOF(http_flv_chunk_t), ctx->queue_capacity) != STL_OK) {
         http_flv_streamer_destroy_impl(ctx);
         return NULL;
     }

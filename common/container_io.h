@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include <turbo_fs.h>
-#include <turbo_vec.h>
+#include <turbostl/vec.h>
 
 typedef enum {
     TURBO_CONTAINER_IO_NONE = 0,
@@ -19,7 +19,7 @@ typedef struct {
     turbo_file_t file;
     const uint8_t *input;
     size_t input_size;
-    turbo_vec_t output;
+    vec_t output;
     size_t position;
     int error;
 } turbo_container_io_t;

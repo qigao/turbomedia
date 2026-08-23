@@ -81,10 +81,10 @@ typedef struct {
 } turbo_media_webrtc_backend_ops_t;
 
 /** Return the process-lifetime TurboMedia PeerConnection backend operations table. */
-CXX_C_API const turbo_media_webrtc_backend_ops_t *
+TURBO_MEDIA_C_API const turbo_media_webrtc_backend_ops_t *
 turbo_media_webrtc_internal_backend(void);
 
-CXX_C_API int turbo_media_webrtc_session_create_with_backend(
+TURBO_MEDIA_C_API int turbo_media_webrtc_session_create_with_backend(
     const turbo_media_webrtc_session_config_t *config,
     const turbo_media_webrtc_backend_ops_t *backend,
     char *answer_sdp,

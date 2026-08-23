@@ -14,7 +14,7 @@
 #include "mov-format.h"
 #include "turbo_fs.h"
 #include "turbo_str.h"
-#include "turbo_str_view.h"
+#include "turbo_vstr.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -37,8 +37,8 @@ static const char DASH_VIDEO_PREFIX[] = "video";
 static const char DASH_AUDIO_PREFIX[] = "audio";
 
 typedef struct {
-    tstr_t output_dir;
-    tstr_t base_url;
+    tstr output_dir;
+    tstr base_url;
     dash_mpd_t *mpd;
     int playlist_size;
     int video_track;
@@ -71,8 +71,8 @@ static int dash_make_path(const dash_streamer_ctx_t *ctx, const char *name,
     return turbo_fs_path_join(path, TURBO_FS_MAX_PATH, ctx->output_dir, name);
 }
 
-static tstr_t dash_make_url(const dash_streamer_ctx_t *ctx, const char *name) {
-    tstr_t url;
+static tstr dash_make_url(const dash_streamer_ctx_t *ctx, const char *name) {
+    tstr url;
 
     if (!ctx->base_url) return tstr_dup(name);
     url = tstr_clone(ctx->base_url);
@@ -93,7 +93,7 @@ static int dash_write_file(const dash_streamer_ctx_t *ctx, const char *name,
 static int dash_upload_file(const dash_streamer_ctx_t *ctx, const char *name,
                             const char *path) {
     http_response_t *response;
-    tstr_t url;
+    tstr url;
     int result;
 
     if (!ctx->http_client) return 0;
@@ -196,23 +196,23 @@ static int dash_on_segment(void *param, int adaptation, const void *data, size_t
 }
 
 static int dash_codec_object(const char *codec_name, int video, uint8_t *object) {
-    tstr_v name;
+    vstr name;
 
     if (!codec_name || !object) return -EINVAL;
-    name = tstr_v_from_cstr(codec_name);
+    name = vstr_from_cstr(codec_name);
     if (video) {
-        if (tstr_v_ieq(name, tstr_v_from_cstr("h264")) ||
-            tstr_v_ieq(name, tstr_v_from_cstr("avc")))
+        if (vstr_ieq(name, vstr_from_cstr("h264")) ||
+            vstr_ieq(name, vstr_from_cstr("avc")))
             *object = MOV_OBJECT_H264;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("h265")) ||
-                 tstr_v_ieq(name, tstr_v_from_cstr("hevc")))
+        else if (vstr_ieq(name, vstr_from_cstr("h265")) ||
+                 vstr_ieq(name, vstr_from_cstr("hevc")))
             *object = MOV_OBJECT_H265;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("h266")) ||
-                 tstr_v_ieq(name, tstr_v_from_cstr("vvc")))
+        else if (vstr_ieq(name, vstr_from_cstr("h266")) ||
+                 vstr_ieq(name, vstr_from_cstr("vvc")))
             *object = MOV_OBJECT_H266;
         else
             return -ENOTSUP;
-    } else if (tstr_v_ieq(name, tstr_v_from_cstr("aac"))) {
+    } else if (vstr_ieq(name, vstr_from_cstr("aac"))) {
         *object = MOV_OBJECT_AAC;
     } else {
         return -ENOTSUP;

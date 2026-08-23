@@ -144,7 +144,7 @@ static inline int rtc_app_toml_table_keys_valid(
             }
         }
         if (!found) {
-            TLOG_ERROR("Unknown TOML key in [{}]", section);
+            TLOG_ERRORF("Unknown TOML key in [{}]", section);
             return -1;
         }
     }
@@ -161,7 +161,7 @@ static inline int rtc_app_toml_get_optional_table(
     }
     *table = turbo_toml_table(root, name);
     if (!*table) {
-        TLOG_ERROR("TOML root key '{}' must be a table", name);
+        TLOG_ERRORF("TOML root key '{}' must be a table", name);
         return -1;
     }
     return 0;
@@ -183,7 +183,7 @@ static inline int rtc_app_toml_apply_string(
     if (!value.ok || !value.u.s || value.u.sl < 0 ||
         strlen(value.u.s) != (size_t)value.u.sl) {
         free(value.ok ? value.u.s : NULL);
-        TLOG_ERROR("TOML key [{}].{} must be a string without embedded NUL",
+        TLOG_ERRORF("TOML key [{}].{} must be a string without embedded NUL",
                    section, key);
         return -1;
     }
@@ -212,13 +212,13 @@ static inline int rtc_app_toml_apply_string_array(
     }
     array = turbo_toml_array(table, key);
     if (!array) {
-        TLOG_ERROR("TOML key [{}].{} must be an array of strings",
+        TLOG_ERRORF("TOML key [{}].{} must be an array of strings",
                    section, key);
         return -1;
     }
     count = turbo_toml_array_len(array);
     if (count < 0 || count > target_capacity) {
-        TLOG_ERROR("TOML key [{}].{} exceeds the maximum of {} entries",
+        TLOG_ERRORF("TOML key [{}].{} exceeds the maximum of {} entries",
                    section, key, target_capacity);
         return -1;
     }
@@ -235,7 +235,7 @@ static inline int rtc_app_toml_apply_string_array(
         if (!value.ok || !value.u.s || value.u.sl <= 0 ||
             strlen(value.u.s) != (size_t)value.u.sl) {
             free(value.ok ? value.u.s : NULL);
-            TLOG_ERROR(
+            TLOG_ERRORF(
                 "TOML key [{}].{}[{}] must be a non-empty string without embedded NUL",
                 section, key, index);
             return -1;
@@ -262,7 +262,7 @@ static inline int rtc_app_toml_apply_bool(
     }
     value = turbo_toml_bool(table, key);
     if (!value.ok) {
-        TLOG_ERROR("TOML key [{}].{} must be a boolean", section, key);
+        TLOG_ERRORF("TOML key [{}].{} must be a boolean", section, key);
         return -1;
     }
     *target = value.u.b ? 1 : 0;
@@ -281,7 +281,7 @@ static inline int rtc_app_toml_apply_int(
     }
     value = turbo_toml_int(table, key);
     if (!value.ok || value.u.i < INT_MIN || value.u.i > INT_MAX) {
-        TLOG_ERROR("TOML key [{}].{} must be a 32-bit integer", section, key);
+        TLOG_ERRORF("TOML key [{}].{} must be a 32-bit integer", section, key);
         return -1;
     }
     *target = (int)value.u.i;
@@ -293,12 +293,12 @@ static inline int rtc_app_toml_document_open(
     const char *filename) {
     memset(document, 0, sizeof(*document));
     if (turbo_fs_read_file(filename, &document->file) != 0) {
-        TLOG_ERROR("Failed to open configuration file: {}", filename);
+        TLOG_ERRORF("Failed to open configuration file: {}", filename);
         return -1;
     }
     if (turbo_parse_toml((const uint8_t *)document->file.base,
                          document->file.len, &document->root) != 0) {
-        TLOG_ERROR("Failed to parse TOML configuration file: {}", filename);
+        TLOG_ERRORF("Failed to parse TOML configuration file: {}", filename);
         turbo_fs_buf_free(&document->file);
         return -1;
     }

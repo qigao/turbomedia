@@ -72,7 +72,7 @@ static void test_dash_h264_pipeline(void) {
     encoded_size = TURBO_CODEC_MAX_FRAME_SIZE;
     result = turbo_codec_encode(encoder, raw_frame, raw_frame_size, encoded_frame,
                                 &encoded_size, &frame_info);
-    check_int_eq(result, TURBO_CODEC_OK);
+    check_equal(result, TURBO_CODEC_OK);
     check_true(frame_info.is_keyframe);
     if (result != TURBO_CODEC_OK || !frame_info.is_keyframe) goto cleanup;
 
@@ -93,11 +93,11 @@ static void test_dash_h264_pipeline(void) {
     stream_info.height = DASH_TEST_HEIGHT;
     stream_info.framerate = DASH_TEST_FPS;
     result = turbo_streamer_add_stream(streamer, &stream_info, &stream_id);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
 
     result = turbo_streamer_connect(streamer);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
     connected = 1;
 
@@ -111,7 +111,7 @@ static void test_dash_h264_pipeline(void) {
             memset(&frame_info, 0, sizeof(frame_info));
             result = turbo_codec_encode(encoder, raw_frame, raw_frame_size,
                                         encoded_frame, &encoded_size, &frame_info);
-            check_int_eq(result, TURBO_CODEC_OK);
+            check_equal(result, TURBO_CODEC_OK);
             if (result != TURBO_CODEC_OK) goto cleanup;
         }
 
@@ -123,43 +123,43 @@ static void test_dash_h264_pipeline(void) {
         packet.duration = 1000000 / DASH_TEST_FPS;
         packet.is_keyframe = frame_info.is_keyframe;
         result = turbo_streamer_write_packet(streamer, &packet);
-        check_int_eq(result, 0);
+        check_equal(result, 0);
         if (result != 0) goto cleanup;
     }
 
     result = turbo_streamer_disconnect(streamer);
     connected = 0;
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
 
     result = turbo_fs_path_join(manifest_path, sizeof(manifest_path), output_dir,
                                 "manifest.mpd");
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
     manifest = tt_read_file(manifest_path, &manifest_size);
     check_not_null(manifest);
-    check_size_gt(manifest_size, 0);
+    check_greater(manifest_size, 0);
     if (!manifest) goto cleanup;
-    check_str_contains(manifest, "type=\"dynamic\"");
-    check_str_contains(manifest,
+    check_contains(manifest, "type=\"dynamic\"");
+    check_contains(manifest,
                        "<BaseURL>https://media.example/live/</BaseURL>");
-    check_str_contains(manifest, "initialization=\"video-init.m4v\"");
-    check_str_contains(manifest, "frameRate=\"30\"");
+    check_contains(manifest, "initialization=\"video-init.m4v\"");
+    check_contains(manifest, "frameRate=\"30\"");
     check_true(strstr(manifest, "<S t=\"0\"") == NULL);
-    check_str_contains(manifest, "<S t=\"500\"");
-    check_str_contains(manifest, "<S t=\"1000\"");
-    check_str_contains(manifest, "d=\"500\"");
+    check_contains(manifest, "<S t=\"500\"");
+    check_contains(manifest, "<S t=\"1000\"");
+    check_contains(manifest, "d=\"500\"");
 
     result = turbo_fs_path_join(init_path, sizeof(init_path), output_dir,
                                 "video-init.m4v");
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result == 0)
-        check_int_eq(turbo_fs_access(init_path, TURBO_FS_ACCESS_EXISTS), 0);
+        check_equal(turbo_fs_access(init_path, TURBO_FS_ACCESS_EXISTS), 0);
     result = turbo_fs_path_join(segment_path, sizeof(segment_path), output_dir,
                                 "video-1000.m4v");
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result == 0)
-        check_int_eq(turbo_fs_access(segment_path, TURBO_FS_ACCESS_EXISTS), 0);
+        check_equal(turbo_fs_access(segment_path, TURBO_FS_ACCESS_EXISTS), 0);
 
 cleanup:
     if (connected && streamer) turbo_streamer_disconnect(streamer);
@@ -171,7 +171,7 @@ cleanup:
     free(encoded_frame);
     free(raw_frame);
     if (output_dir) {
-        check_int_eq(tt_remove_tree(output_dir), 0);
+        check_equal(tt_remove_tree(output_dir), 0);
         free(output_dir);
     }
 }

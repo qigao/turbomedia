@@ -193,19 +193,19 @@ spec("Iris room provider bridge") {
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", first, strlen(first));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
-        check_int_eq(result.terminal_status, IRIS_ROOM_TERMINAL_SUCCEEDED);
-        check_str_eq(result.event_type, "provider.conference.created");
-        check_str_contains(result.data, "\"call\":1");
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, IRIS_ROOM_TERMINAL_SUCCEEDED);
+        check_equal(result.event_type, "provider.conference.created");
+        check_contains(result.data, "\"call\":1");
 
         make_create_request(retry, sizeof(retry), "command-a", "worker-b",
                             "42", "room-a", TEST_CAUSATION_ID,
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", retry, strlen(retry));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_DUPLICATE);
-        check_str_contains(result.data, "\"call\":1");
-        check_int_eq(executor.calls, 1);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_DUPLICATE);
+        check_contains(result.data, "\"call\":1");
+        check_equal(executor.calls, 1);
         iris_room_bridge_destroy(bridge);
     }
 
@@ -221,12 +221,12 @@ spec("Iris room provider bridge") {
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
-        check_int_eq(result.terminal_status, IRIS_ROOM_TERMINAL_FAILED);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, IRIS_ROOM_TERMINAL_FAILED);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_DUPLICATE);
-        check_int_eq(executor.calls, 1);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_DUPLICATE);
+        check_equal(executor.calls, 1);
         iris_room_bridge_destroy(bridge);
     }
 
@@ -242,15 +242,15 @@ spec("Iris room provider bridge") {
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
-        check_int_eq(result.terminal_status, IRIS_ROOM_TERMINAL_FAILED);
-        check_str_eq(result.event_type, "provider.command.failed");
-        check_str_contains(result.data, "ROOM_EXECUTION_FAILED");
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, IRIS_ROOM_TERMINAL_FAILED);
+        check_equal(result.event_type, "provider.command.failed");
+        check_contains(result.data, "ROOM_EXECUTION_FAILED");
 
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_DUPLICATE);
-        check_int_eq(executor.calls, 1);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_DUPLICATE);
+        check_equal(executor.calls, 1);
         iris_room_bridge_destroy(bridge);
     }
 
@@ -266,15 +266,15 @@ spec("Iris room provider bridge") {
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
         make_create_request(body, sizeof(body), "command-a", "worker-b",
                             "42", "room-b", TEST_CAUSATION_ID,
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_INVALID);
-        check_str_eq(result.error_code, "IDEMPOTENCY_CONFLICT");
-        check_int_eq(executor.calls, 1);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_INVALID);
+        check_equal(result.error_code, "IDEMPOTENCY_CONFLICT");
+        check_equal(executor.calls, 1);
         iris_room_bridge_destroy(bridge);
     }
 
@@ -290,29 +290,29 @@ spec("Iris room provider bridge") {
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
         make_create_request(body, sizeof(body), "command-a", "worker-b",
                             "42", "room-a", "changed-causation",
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_INVALID);
-        check_str_eq(result.error_code, "IDEMPOTENCY_CONFLICT");
+        check_equal(result.status, IRIS_ROOM_BRIDGE_INVALID);
+        check_equal(result.error_code, "IDEMPOTENCY_CONFLICT");
 
         make_create_request(body, sizeof(body), "command-b", "worker-a",
                             "43", "room-b", TEST_CAUSATION_ID,
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-b", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
         make_create_request(body, sizeof(body), "command-b", "worker-b",
                             "44", "room-b", TEST_CAUSATION_ID,
                             "2099-01-02T00:00:00Z");
         result = iris_room_bridge_dispatch_json(
             bridge, "command-b", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_INVALID);
-        check_str_eq(result.error_code, "IDEMPOTENCY_CONFLICT");
-        check_int_eq(executor.calls, 2);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_INVALID);
+        check_equal(result.error_code, "IDEMPOTENCY_CONFLICT");
+        check_equal(executor.calls, 2);
         iris_room_bridge_destroy(bridge);
     }
 
@@ -328,14 +328,14 @@ spec("Iris room provider bridge") {
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
         make_create_request(body, sizeof(body), "command-b", "worker-a",
                             "42", "room-b", TEST_CAUSATION_ID,
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "command-b", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
-        check_int_eq(executor.calls, 2);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(executor.calls, 2);
         iris_room_bridge_destroy(bridge);
     }
 
@@ -352,7 +352,7 @@ spec("Iris room provider bridge") {
                             TEST_DEADLINE);
         result = iris_room_bridge_dispatch_json(
             bridge, "other-command", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_INVALID);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_INVALID);
         end = strstr(body, "}}");
         check_not_null(end);
         if (end) {
@@ -363,8 +363,8 @@ spec("Iris room provider bridge") {
         }
         result = iris_room_bridge_dispatch_json(
             bridge, "command-a", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_INVALID);
-        check_int_eq(executor.calls, 0);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_INVALID);
+        check_equal(executor.calls, 0);
         iris_room_bridge_destroy(bridge);
     }
 
@@ -382,9 +382,9 @@ spec("Iris room provider bridge") {
             "\"id1\":\"call-a\",\"id2\":\"room-a\"");
         result = iris_room_bridge_dispatch_json(
             bridge, "command-join", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_INVALID);
-        check_str_eq(result.error_code, "INVALID_COMMAND_ENVELOPE");
-        check_int_eq(executor.calls, 0);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_INVALID);
+        check_equal(result.error_code, "INVALID_COMMAND_ENVELOPE");
+        check_equal(executor.calls, 0);
         iris_room_bridge_destroy(bridge);
     }
 
@@ -401,8 +401,8 @@ spec("Iris room provider bridge") {
         make_destroy_request(body, sizeof(body), "destroy-unproven");
         result = iris_room_bridge_dispatch_json(
             bridge, "destroy-unproven", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
-        check_int_eq(result.terminal_status, IRIS_ROOM_TERMINAL_FAILED);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, IRIS_ROOM_TERMINAL_FAILED);
         check_false(strstr(result.data, "alreadyAbsent") != NULL);
         iris_room_bridge_destroy(bridge);
 
@@ -411,11 +411,11 @@ spec("Iris room provider bridge") {
         make_destroy_request(body, sizeof(body), "destroy-proven");
         result = iris_room_bridge_dispatch_json(
             bridge, "destroy-proven", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
-        check_int_eq(result.terminal_status, IRIS_ROOM_TERMINAL_SUCCEEDED);
-        check_str_eq(result.event_type, "provider.conference.destroyed");
-        check_str_contains(result.data, "\"alreadyAbsent\":true");
-        check_str_contains(result.data, "\"roomGeneration\":1");
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, IRIS_ROOM_TERMINAL_SUCCEEDED);
+        check_equal(result.event_type, "provider.conference.destroyed");
+        check_contains(result.data, "\"alreadyAbsent\":true");
+        check_contains(result.data, "\"roomGeneration\":1");
         iris_room_bridge_destroy(bridge);
         g_resource_seen = 0;
     }
@@ -436,20 +436,20 @@ spec("Iris room provider bridge") {
         make_destroy_request(body, sizeof(body), "destroy-unknown");
         result = iris_room_bridge_dispatch_json(
             bridge, "destroy-unknown", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
-        check_int_eq(result.terminal_status, IRIS_ROOM_TERMINAL_SUCCEEDED);
-        check_str_contains(result.data, "\"alreadyAbsent\":true");
-        check_int_eq(g_observe_calls, 1);
-        check_int_eq(executor.calls, 0);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_TERMINAL);
+        check_equal(result.terminal_status, IRIS_ROOM_TERMINAL_SUCCEEDED);
+        check_contains(result.data, "\"alreadyAbsent\":true");
+        check_equal(g_observe_calls, 1);
+        check_equal(executor.calls, 0);
         iris_room_bridge_destroy(bridge);
 
         g_observation_state = IRIS_RESOURCE_OBSERVATION_ACTIVE;
         bridge = create_bridge(&executor, &now_ms, 1u);
         result = iris_room_bridge_dispatch_json(
             bridge, "destroy-unknown", body, strlen(body));
-        check_int_eq(result.status, IRIS_ROOM_BRIDGE_UNAVAILABLE);
-        check_str_eq(result.error_code, "PROVIDER_OUTCOME_UNKNOWN");
-        check_int_eq(executor.calls, 0);
+        check_equal(result.status, IRIS_ROOM_BRIDGE_UNAVAILABLE);
+        check_equal(result.error_code, "PROVIDER_OUTCOME_UNKNOWN");
+        check_equal(executor.calls, 0);
         iris_room_bridge_destroy(bridge);
 
         g_claim_disposition = 0;

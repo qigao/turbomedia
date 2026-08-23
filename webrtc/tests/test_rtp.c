@@ -1,7 +1,7 @@
 /**
  * RTP/RTCP Packet Tests
  */
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_rtp.h"
 #include <stdlib.h>
 #include <string.h>
@@ -33,13 +33,13 @@ void test_rtp_packet_build_basic(void) {
                                 1,          /* marker */
                                 payload, sizeof(payload), buffer, sizeof(buffer));
 
-  TEST_ASSERT_GREATER_THAN(0, result);
-  TEST_ASSERT_EQUAL_size_t(12 + sizeof(payload), (size_t)result);
+  check_greater(result, 0);
+  check_equal((size_t)((size_t)result), (size_t)(12 + sizeof(payload)));
 
   /* Check header fields */
-  TEST_ASSERT_EQUAL_UINT8(0x80, buffer[0] & 0xC0);              /* Version 2 */
-  TEST_ASSERT_EQUAL_UINT8(0x80 | 96, buffer[1]);                /* Marker + PT */
-  TEST_ASSERT_EQUAL_UINT16(1234, (buffer[2] << 8) | buffer[3]); /* Sequence */
+  check_equal((uint8_t)(buffer[0] & 0xC0), (uint8_t)(0x80));              /* Version 2 */
+  check_equal((uint8_t)(buffer[1]), (uint8_t)(0x80 | 96));                /* Marker + PT */
+  check_equal((uint16_t)((buffer[2] << 8) | buffer[3]), (uint16_t)(1234)); /* Sequence */
 }
 
 void test_rtp_packet_build_no_marker(void) {
@@ -54,8 +54,8 @@ void test_rtp_packet_build_no_marker(void) {
                                 0,          /* no marker */
                                 payload, sizeof(payload), buffer, sizeof(buffer));
 
-  TEST_ASSERT_GREATER_THAN(0, result);
-  TEST_ASSERT_EQUAL_UINT8(111, buffer[1]); /* No marker bit, PT=111 */
+  check_greater(result, 0);
+  check_equal((uint8_t)(buffer[1]), (uint8_t)(111)); /* No marker bit, PT=111 */
 }
 
 /* =============================================================================
@@ -76,14 +76,14 @@ void test_rtp_packet_parse_basic(void) {
   rtp_packet_t pkt;
   int result = rtp_packet_parse(&pkt, buffer, sizeof(buffer));
 
-  TEST_ASSERT_EQUAL_INT(0, result);
-  TEST_ASSERT_EQUAL_UINT8(2, pkt.header.version);
-  TEST_ASSERT_EQUAL_UINT8(1, pkt.header.marker);
-  TEST_ASSERT_EQUAL_UINT8(96, pkt.header.payload_type);
-  TEST_ASSERT_EQUAL_UINT16(1, pkt.header.sequence);
-  TEST_ASSERT_EQUAL_UINT32(100, pkt.header.timestamp);
-  TEST_ASSERT_EQUAL_UINT32(0x12345678, pkt.header.ssrc);
-  TEST_ASSERT_EQUAL_size_t(4, pkt.payload_len);
+  check_equal((int)(result), (int)(0));
+  check_equal((uint8_t)(pkt.header.version), (uint8_t)(2));
+  check_equal((uint8_t)(pkt.header.marker), (uint8_t)(1));
+  check_equal((uint8_t)(pkt.header.payload_type), (uint8_t)(96));
+  check_equal((uint16_t)(pkt.header.sequence), (uint16_t)(1));
+  check_equal((uint32_t)(pkt.header.timestamp), (uint32_t)(100));
+  check_equal((uint32_t)(pkt.header.ssrc), (uint32_t)(0x12345678));
+  check_equal((size_t)(pkt.payload_len), (size_t)(4));
 }
 
 void test_rtp_packet_parse_too_short(void) {
@@ -92,7 +92,7 @@ void test_rtp_packet_parse_too_short(void) {
   rtp_packet_t pkt;
   int result = rtp_packet_parse(&pkt, buffer, sizeof(buffer));
 
-  TEST_ASSERT_EQUAL_INT(-1, result);
+  check_equal((int)(result), (int)(-1));
 }
 
 void test_rtp_packet_parse_invalid_version(void) {
@@ -102,7 +102,7 @@ void test_rtp_packet_parse_invalid_version(void) {
   rtp_packet_t pkt;
   int result = rtp_packet_parse(&pkt, buffer, sizeof(buffer));
 
-  TEST_ASSERT_EQUAL_INT(-1, result);
+  check_equal((int)(result), (int)(-1));
 }
 
 void test_rtp_packet_roundtrip(void) {
@@ -117,21 +117,21 @@ void test_rtp_packet_roundtrip(void) {
                              0xDEADBEEF,    /* SSRC */
                              0,             /* marker */
                              original_payload, sizeof(original_payload), buffer, sizeof(buffer));
-  TEST_ASSERT_GREATER_THAN(0, len);
+  check_greater(len, 0);
 
   /* Parse */
   rtp_packet_t pkt_in;
   int result = rtp_packet_parse(&pkt_in, buffer, len);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   /* Verify */
-  TEST_ASSERT_EQUAL_UINT8(pkt_out.header.marker, pkt_in.header.marker);
-  TEST_ASSERT_EQUAL_UINT8(pkt_out.header.payload_type, pkt_in.header.payload_type);
-  TEST_ASSERT_EQUAL_UINT16(pkt_out.header.sequence, pkt_in.header.sequence);
-  TEST_ASSERT_EQUAL_UINT32(pkt_out.header.timestamp, pkt_in.header.timestamp);
-  TEST_ASSERT_EQUAL_UINT32(pkt_out.header.ssrc, pkt_in.header.ssrc);
-  TEST_ASSERT_EQUAL_size_t(pkt_out.payload_len, pkt_in.payload_len);
-  TEST_ASSERT_EQUAL_MEMORY(original_payload, pkt_in.payload, pkt_in.payload_len);
+  check_equal((uint8_t)(pkt_in.header.marker), (uint8_t)(pkt_out.header.marker));
+  check_equal((uint8_t)(pkt_in.header.payload_type), (uint8_t)(pkt_out.header.payload_type));
+  check_equal((uint16_t)(pkt_in.header.sequence), (uint16_t)(pkt_out.header.sequence));
+  check_equal((uint32_t)(pkt_in.header.timestamp), (uint32_t)(pkt_out.header.timestamp));
+  check_equal((uint32_t)(pkt_in.header.ssrc), (uint32_t)(pkt_out.header.ssrc));
+  check_equal((size_t)(pkt_in.payload_len), (size_t)(pkt_out.payload_len));
+  check_equal(pkt_in.payload, original_payload, pkt_in.payload_len);
 }
 
 void test_rtp_packet_extension_wire_roundtrip(void) {
@@ -145,24 +145,22 @@ void test_rtp_packet_extension_wire_roundtrip(void) {
 
   int len = rtp_packet_build(&pkt_out, 96, 77, 123456, 0x01020304, 1, payload, sizeof(payload),
                              buffer, sizeof(buffer));
-  TEST_ASSERT_GREATER_THAN(0, len);
-  TEST_ASSERT_EQUAL_INT(
-      0, rtp_packet_add_extension(&pkt_out, RTP_EXT_TRANSPORT_CC, twcc, sizeof(twcc)));
+  check_greater(len, 0);
+  check_equal((int)(rtp_packet_add_extension(&pkt_out, RTP_EXT_TRANSPORT_CC, twcc, sizeof(twcc))), (int)(0));
 
   len = rtp_packet_serialize(&pkt_out, buffer, sizeof(buffer));
-  TEST_ASSERT_EQUAL_size_t(12 + 4 + 4 + sizeof(payload), (size_t)len);
-  TEST_ASSERT_TRUE((buffer[0] & 0x10) != 0);
+  check_equal((size_t)((size_t)len), (size_t)(12 + 4 + 4 + sizeof(payload)));
+  check_true((buffer[0] & 0x10) != 0);
 
-  TEST_ASSERT_EQUAL_INT(0, rtp_packet_parse(&pkt_in, buffer, (size_t)len));
-  TEST_ASSERT_EQUAL_INT(1, pkt_in.header.extension);
-  TEST_ASSERT_EQUAL_INT(1, pkt_in.extension_count);
-  TEST_ASSERT_EQUAL_size_t(sizeof(payload), pkt_in.payload_len);
-  TEST_ASSERT_EQUAL_MEMORY(payload, pkt_in.payload, pkt_in.payload_len);
+  check_equal((int)(rtp_packet_parse(&pkt_in, buffer, (size_t)len)), (int)(0));
+  check_equal((int)(pkt_in.header.extension), (int)(1));
+  check_equal((int)(pkt_in.extension_count), (int)(1));
+  check_equal((size_t)(pkt_in.payload_len), (size_t)(sizeof(payload)));
+  check_equal(pkt_in.payload, payload, pkt_in.payload_len);
 
-  TEST_ASSERT_EQUAL_INT(
-      0, rtp_packet_get_extension(&pkt_in, RTP_EXT_TRANSPORT_CC, parsed_twcc, &parsed_len));
-  TEST_ASSERT_EQUAL_UINT8(sizeof(twcc), parsed_len);
-  TEST_ASSERT_EQUAL_MEMORY(twcc, parsed_twcc, sizeof(twcc));
+  check_equal((int)(rtp_packet_get_extension(&pkt_in, RTP_EXT_TRANSPORT_CC, parsed_twcc, &parsed_len)), (int)(0));
+  check_equal((uint8_t)(parsed_len), (uint8_t)(sizeof(twcc)));
+  check_equal(parsed_twcc, twcc, sizeof(twcc));
 }
 
 void test_rtp_packet_serialize_clears_empty_extension_bit(void) {
@@ -172,14 +170,14 @@ void test_rtp_packet_serialize_clears_empty_extension_bit(void) {
 
   int len = rtp_packet_build(&pkt, 96, 10, 20, 0x11223344, 0, payload, sizeof(payload), buffer,
                              sizeof(buffer));
-  TEST_ASSERT_GREATER_THAN(0, len);
+  check_greater(len, 0);
 
   pkt.header.extension = 1;
   pkt.extension_count = 0;
 
   len = rtp_packet_serialize(&pkt, buffer, sizeof(buffer));
-  TEST_ASSERT_EQUAL_size_t(12 + sizeof(payload), (size_t)len);
-  TEST_ASSERT_TRUE((buffer[0] & 0x10) == 0);
+  check_equal((size_t)((size_t)len), (size_t)(12 + sizeof(payload)));
+  check_true((buffer[0] & 0x10) == 0);
 }
 
 void test_rtp_packet_parse_stops_at_reserved_extension_id(void) {
@@ -187,11 +185,11 @@ void test_rtp_packet_parse_stops_at_reserved_extension_id(void) {
                       0x78, 0xBE, 0xDE, 0x00, 0x01, 0xF0, 0x00, 0x00, 0x00, 0xAA, 0xBB};
   rtp_packet_t pkt;
 
-  TEST_ASSERT_EQUAL_INT(0, rtp_packet_parse(&pkt, buffer, sizeof(buffer)));
-  TEST_ASSERT_EQUAL_INT(1, pkt.header.extension);
-  TEST_ASSERT_EQUAL_INT(0, pkt.extension_count);
-  TEST_ASSERT_EQUAL_size_t(2, pkt.payload_len);
-  TEST_ASSERT_EQUAL_UINT8(0xAA, pkt.payload[0]);
+  check_equal((int)(rtp_packet_parse(&pkt, buffer, sizeof(buffer))), (int)(0));
+  check_equal((int)(pkt.header.extension), (int)(1));
+  check_equal((int)(pkt.extension_count), (int)(0));
+  check_equal((size_t)(pkt.payload_len), (size_t)(2));
+  check_equal((uint8_t)(pkt.payload[0]), (uint8_t)(0xAA));
 }
 
 /* =============================================================================
@@ -206,10 +204,10 @@ void test_rtp_session_create_destroy(void) {
                                  .is_audio = 0};
 
   rtp_session_t *session = rtp_session_create(&config);
-  TEST_ASSERT_NOT_NULL(session);
+  check_not_null(session);
 
   uint32_t ssrc = rtp_session_get_ssrc(session);
-  TEST_ASSERT_NOT_EQUAL(0, ssrc);
+  check_not_equal(ssrc, 0);
 
   rtp_session_destroy(session);
 }
@@ -223,20 +221,20 @@ void test_rtp_session_auto_generated_ssrcs_are_unique(void) {
   uint32_t ssrc_b;
   uint32_t ssrc_c;
 
-  TEST_ASSERT_NOT_NULL(session_a);
-  TEST_ASSERT_NOT_NULL(session_b);
-  TEST_ASSERT_NOT_NULL(session_c);
+  check_not_null(session_a);
+  check_not_null(session_b);
+  check_not_null(session_c);
 
   ssrc_a = rtp_session_get_ssrc(session_a);
   ssrc_b = rtp_session_get_ssrc(session_b);
   ssrc_c = rtp_session_get_ssrc(session_c);
 
-  TEST_ASSERT_NOT_EQUAL(0, ssrc_a);
-  TEST_ASSERT_NOT_EQUAL(0, ssrc_b);
-  TEST_ASSERT_NOT_EQUAL(0, ssrc_c);
-  TEST_ASSERT_TRUE(ssrc_a != ssrc_b);
-  TEST_ASSERT_TRUE(ssrc_a != ssrc_c);
-  TEST_ASSERT_TRUE(ssrc_b != ssrc_c);
+  check_not_equal(ssrc_a, 0);
+  check_not_equal(ssrc_b, 0);
+  check_not_equal(ssrc_c, 0);
+  check_true(ssrc_a != ssrc_b);
+  check_true(ssrc_a != ssrc_c);
+  check_true(ssrc_b != ssrc_c);
 
   rtp_session_destroy(session_c);
   rtp_session_destroy(session_b);
@@ -248,7 +246,7 @@ void test_rtp_session_send_sequence_increment(void) {
       .ssrc = 0x12345678, .payload_type = 111, .clock_rate = 48000, .is_audio = 1};
 
   rtp_session_t *session = rtp_session_create(&config);
-  TEST_ASSERT_NOT_NULL(session);
+  check_not_null(session);
 
   uint8_t payload[] = {0x01, 0x02, 0x03};
   uint8_t buffer1[256], buffer2[256];
@@ -257,15 +255,15 @@ void test_rtp_session_send_sequence_increment(void) {
   /* Send first packet */
   int len1 =
       rtp_session_send(session, payload, sizeof(payload), 0, &pkt1, buffer1, sizeof(buffer1));
-  TEST_ASSERT_GREATER_THAN(0, len1);
+  check_greater(len1, 0);
 
   /* Send second packet */
   int len2 =
       rtp_session_send(session, payload, sizeof(payload), 0, &pkt2, buffer2, sizeof(buffer2));
-  TEST_ASSERT_GREATER_THAN(0, len2);
+  check_greater(len2, 0);
 
   /* Verify sequence increment */
-  TEST_ASSERT_EQUAL_UINT16(pkt1.header.sequence + 1, pkt2.header.sequence);
+  check_equal((uint16_t)(pkt2.header.sequence), (uint16_t)(pkt1.header.sequence + 1));
 
   rtp_session_destroy(session);
 }
@@ -275,15 +273,15 @@ void test_rtp_session_send_with_marker(void) {
       .ssrc = 0xCAFEBABE, .payload_type = 96, .clock_rate = 90000, .is_audio = 0};
 
   rtp_session_t *session = rtp_session_create(&config);
-  TEST_ASSERT_NOT_NULL(session);
+  check_not_null(session);
 
   uint8_t payload[] = {0xFF};
   uint8_t buffer[256];
   rtp_packet_t pkt;
 
   int len = rtp_session_send(session, payload, sizeof(payload), 1, &pkt, buffer, sizeof(buffer));
-  TEST_ASSERT_GREATER_THAN(0, len);
-  TEST_ASSERT_EQUAL_UINT8(1, pkt.header.marker);
+  check_greater(len, 0);
+  check_equal((uint8_t)(pkt.header.marker), (uint8_t)(1));
 
   rtp_session_destroy(session);
 }
@@ -293,7 +291,7 @@ void test_rtp_session_stats(void) {
       .ssrc = 0x11223344, .payload_type = 111, .clock_rate = 48000, .is_audio = 1};
 
   rtp_session_t *session = rtp_session_create(&config);
-  TEST_ASSERT_NOT_NULL(session);
+  check_not_null(session);
 
   /* Send a few packets */
   uint8_t payload[] = {0x01, 0x02, 0x03, 0x04};
@@ -308,16 +306,16 @@ void test_rtp_session_stats(void) {
   rtp_session_stats_t stats;
   rtp_session_get_stats(session, &stats);
 
-  TEST_ASSERT_EQUAL_UINT64(5, stats.packets_sent);
-  TEST_ASSERT_EQUAL_UINT64(20, stats.octets_sent); /* 5 * 4 bytes */
+  check_equal((uint64_t)(stats.packets_sent), (uint64_t)(5));
+  check_equal((uint64_t)(stats.octets_sent), (uint64_t)(20)); /* 5 * 4 bytes */
 
   rtp_session_destroy(session);
 }
 
 void test_rtp_history_rejects_invalid_capacities(void) {
-  TEST_ASSERT_NULL(rtp_history_create(0, 1));
-  TEST_ASSERT_NULL(rtp_history_create(1, 0));
-  TEST_ASSERT_NULL(rtp_history_create((size_t)-1, 2));
+  check_null(rtp_history_create(0, 1));
+  check_null(rtp_history_create(1, 0));
+  check_null(rtp_history_create((size_t)-1, 2));
 }
 
 void test_rtp_history_roundtrips_full_capacity_packet(void) {
@@ -327,13 +325,12 @@ void test_rtp_history_roundtrips_full_capacity_packet(void) {
   size_t restored_len = sizeof(restored);
   rtp_history_t *history = rtp_history_create(2, sizeof(packet));
 
-  TEST_ASSERT_NOT_NULL(history);
+  check_not_null(history);
   memset(packet, 0x5a, sizeof(packet));
   rtp_history_put(history, 7, packet, sizeof(packet));
-  TEST_ASSERT_EQUAL_INT(
-      0, rtp_history_get(history, 7, restored, &restored_len, sizeof(restored)));
-  TEST_ASSERT_EQUAL_size_t(sizeof(packet), restored_len);
-  TEST_ASSERT_EQUAL_MEMORY(packet, restored, sizeof(packet));
+  check_equal((int)(rtp_history_get(history, 7, restored, &restored_len, sizeof(restored))), (int)(0));
+  check_equal((size_t)(restored_len), (size_t)(sizeof(packet)));
+  check_equal(restored, packet, sizeof(packet));
 
   rtp_history_destroy(history);
 }
@@ -356,14 +353,14 @@ void test_rtcp_compound_sr(void) {
                   .octet_count = 50000};
 
   int result = rtcp_compound_add_sr(&compound, &sr, NULL, 0);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   size_t total_len = rtcp_compound_finish(&compound);
-  TEST_ASSERT_GREATER_THAN(0, total_len);
+  check_greater(total_len, 0);
 
   /* Verify RTCP header */
-  TEST_ASSERT_EQUAL_UINT8(0x80, buffer[0] & 0xC0); /* Version 2 */
-  TEST_ASSERT_EQUAL_UINT8(200, buffer[1]);         /* PT = SR */
+  check_equal((uint8_t)(buffer[0] & 0xC0), (uint8_t)(0x80)); /* Version 2 */
+  check_equal((uint8_t)(buffer[1]), (uint8_t)(200));         /* PT = SR */
 }
 
 void test_rtcp_compound_nack(void) {
@@ -374,10 +371,10 @@ void test_rtcp_compound_nack(void) {
 
   /* NACK for sequence 100 with bitmap 0x0005 (also missing 101, 103) */
   int result = rtcp_compound_add_nack(&compound, 0xAABBCCDD, 0x11223344, 100, 0x0005);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   size_t total_len = rtcp_compound_finish(&compound);
-  TEST_ASSERT_GREATER_THAN(0, total_len);
+  check_greater(total_len, 0);
 }
 
 void test_rtcp_compound_pli(void) {
@@ -387,10 +384,10 @@ void test_rtcp_compound_pli(void) {
   rtcp_compound_init(&compound, buffer, sizeof(buffer));
 
   int result = rtcp_compound_add_pli(&compound, 0xDEADBEEF, 0xCAFEBABE);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   size_t total_len = rtcp_compound_finish(&compound);
-  TEST_ASSERT_EQUAL_size_t(12, total_len); /* Fixed size for PLI */
+  check_equal((size_t)(total_len), (size_t)(12)); /* Fixed size for PLI */
 }
 
 void test_rtcp_compound_fir(void) {
@@ -400,10 +397,10 @@ void test_rtcp_compound_fir(void) {
   rtcp_compound_init(&compound, buffer, sizeof(buffer));
 
   int result = rtcp_compound_add_fir(&compound, 0x11111111, 0x22222222, 5);
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   size_t total_len = rtcp_compound_finish(&compound);
-  TEST_ASSERT_GREATER_THAN(0, total_len);
+  check_greater(total_len, 0);
 }
 
 void test_rtcp_compound_remb(void) {
@@ -413,16 +410,16 @@ void test_rtcp_compound_remb(void) {
   rtcp_compound_init(&compound, buffer, sizeof(buffer));
 
   int result = rtcp_compound_add_remb(&compound, 0xAAAAAAAA, 0xBBBBBBBB, 2000000); /* 2 Mbps */
-  TEST_ASSERT_EQUAL_INT(0, result);
+  check_equal((int)(result), (int)(0));
 
   size_t total_len = rtcp_compound_finish(&compound);
-  TEST_ASSERT_EQUAL_size_t(24, total_len);
-  TEST_ASSERT_EQUAL_UINT8((uint8_t)((2u << 6) | RTCP_REMB), buffer[0]);
-  TEST_ASSERT_EQUAL_UINT8(RTCP_PSFB, buffer[1]);
-  TEST_ASSERT_EQUAL_UINT16(5u, test_read_be16(buffer + 2));
-  TEST_ASSERT_EQUAL_UINT32(0x52454d42u, test_read_be32(buffer + 12));
-  TEST_ASSERT_EQUAL_UINT8(1u, buffer[16]);
-  TEST_ASSERT_EQUAL_UINT32(0xBBBBBBBBu, test_read_be32(buffer + 20));
+  check_equal((size_t)(total_len), (size_t)(24));
+  check_equal((uint8_t)(buffer[0]), (uint8_t)((uint8_t)((2u << 6) | RTCP_REMB)));
+  check_equal((uint8_t)(buffer[1]), (uint8_t)(RTCP_PSFB));
+  check_equal((uint16_t)(test_read_be16(buffer + 2)), (uint16_t)(5u));
+  check_equal((uint32_t)(test_read_be32(buffer + 12)), (uint32_t)(0x52454d42u));
+  check_equal((uint8_t)(buffer[16]), (uint8_t)(1u));
+  check_equal((uint32_t)(test_read_be32(buffer + 20)), (uint32_t)(0xBBBBBBBBu));
 }
 
 /* =============================================================================
@@ -431,25 +428,25 @@ void test_rtcp_compound_remb(void) {
 
 void test_rtp_seq_newer(void) {
   /* Normal case */
-  TEST_ASSERT_TRUE(rtp_seq_newer(100, 99));
-  TEST_ASSERT_FALSE(rtp_seq_newer(99, 100));
+  check_true(rtp_seq_newer(100, 99));
+  check_false(rtp_seq_newer(99, 100));
 
   /* Wraparound case */
-  TEST_ASSERT_TRUE(rtp_seq_newer(1, 65535));
-  TEST_ASSERT_FALSE(rtp_seq_newer(65535, 1));
+  check_true(rtp_seq_newer(1, 65535));
+  check_false(rtp_seq_newer(65535, 1));
 
   /* Equal */
-  TEST_ASSERT_FALSE(rtp_seq_newer(50, 50));
+  check_false(rtp_seq_newer(50, 50));
 }
 
 void test_rtp_seq_diff(void) {
   /* Normal case */
-  TEST_ASSERT_EQUAL_INT(1, rtp_seq_diff(100, 99));
-  TEST_ASSERT_EQUAL_INT(-1, rtp_seq_diff(99, 100));
+  check_equal((int)(rtp_seq_diff(100, 99)), (int)(1));
+  check_equal((int)(rtp_seq_diff(99, 100)), (int)(-1));
 
   /* Wraparound case */
-  TEST_ASSERT_EQUAL_INT(2, rtp_seq_diff(1, 65535));
-  TEST_ASSERT_EQUAL_INT(-2, rtp_seq_diff(65535, 1));
+  check_equal((int)(rtp_seq_diff(1, 65535)), (int)(2));
+  check_equal((int)(rtp_seq_diff(65535, 1)), (int)(-2));
 }
 
 /* =============================================================================
@@ -461,35 +458,35 @@ spec("test_rtp") {
   after_each() { tearDown(); }
 
   /* RTP Build */
-  TT_TEST(test_rtp_packet_build_basic);
-  TT_TEST(test_rtp_packet_build_no_marker);
+  it("test_rtp_packet_build_basic") { test_rtp_packet_build_basic(); };
+  it("test_rtp_packet_build_no_marker") { test_rtp_packet_build_no_marker(); };
 
   /* RTP Parse */
-  TT_TEST(test_rtp_packet_parse_basic);
-  TT_TEST(test_rtp_packet_parse_too_short);
-  TT_TEST(test_rtp_packet_parse_invalid_version);
-  TT_TEST(test_rtp_packet_roundtrip);
-  TT_TEST(test_rtp_packet_extension_wire_roundtrip);
-  TT_TEST(test_rtp_packet_serialize_clears_empty_extension_bit);
-  TT_TEST(test_rtp_packet_parse_stops_at_reserved_extension_id);
+  it("test_rtp_packet_parse_basic") { test_rtp_packet_parse_basic(); };
+  it("test_rtp_packet_parse_too_short") { test_rtp_packet_parse_too_short(); };
+  it("test_rtp_packet_parse_invalid_version") { test_rtp_packet_parse_invalid_version(); };
+  it("test_rtp_packet_roundtrip") { test_rtp_packet_roundtrip(); };
+  it("test_rtp_packet_extension_wire_roundtrip") { test_rtp_packet_extension_wire_roundtrip(); };
+  it("test_rtp_packet_serialize_clears_empty_extension_bit") { test_rtp_packet_serialize_clears_empty_extension_bit(); };
+  it("test_rtp_packet_parse_stops_at_reserved_extension_id") { test_rtp_packet_parse_stops_at_reserved_extension_id(); };
 
   /* RTP Session */
-  TT_TEST(test_rtp_session_create_destroy);
-  TT_TEST(test_rtp_session_auto_generated_ssrcs_are_unique);
-  TT_TEST(test_rtp_session_send_sequence_increment);
-  TT_TEST(test_rtp_session_send_with_marker);
-  TT_TEST(test_rtp_session_stats);
-  TT_TEST(test_rtp_history_rejects_invalid_capacities);
-  TT_TEST(test_rtp_history_roundtrips_full_capacity_packet);
+  it("test_rtp_session_create_destroy") { test_rtp_session_create_destroy(); };
+  it("test_rtp_session_auto_generated_ssrcs_are_unique") { test_rtp_session_auto_generated_ssrcs_are_unique(); };
+  it("test_rtp_session_send_sequence_increment") { test_rtp_session_send_sequence_increment(); };
+  it("test_rtp_session_send_with_marker") { test_rtp_session_send_with_marker(); };
+  it("test_rtp_session_stats") { test_rtp_session_stats(); };
+  it("test_rtp_history_rejects_invalid_capacities") { test_rtp_history_rejects_invalid_capacities(); };
+  it("test_rtp_history_roundtrips_full_capacity_packet") { test_rtp_history_roundtrips_full_capacity_packet(); };
 
   /* RTCP */
-  TT_TEST(test_rtcp_compound_sr);
-  TT_TEST(test_rtcp_compound_nack);
-  TT_TEST(test_rtcp_compound_pli);
-  TT_TEST(test_rtcp_compound_fir);
-  TT_TEST(test_rtcp_compound_remb);
+  it("test_rtcp_compound_sr") { test_rtcp_compound_sr(); };
+  it("test_rtcp_compound_nack") { test_rtcp_compound_nack(); };
+  it("test_rtcp_compound_pli") { test_rtcp_compound_pli(); };
+  it("test_rtcp_compound_fir") { test_rtcp_compound_fir(); };
+  it("test_rtcp_compound_remb") { test_rtcp_compound_remb(); };
 
   /* Sequence utilities */
-  TT_TEST(test_rtp_seq_newer);
-  TT_TEST(test_rtp_seq_diff);
+  it("test_rtp_seq_newer") { test_rtp_seq_newer(); };
+  it("test_rtp_seq_diff") { test_rtp_seq_diff(); };
 }

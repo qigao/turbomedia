@@ -41,15 +41,15 @@ spec("IVR FlowMQ security owner") {
     config.identity_count = 1u;
     config.clock = test_clock;
     config.clock_context = &now_ms;
-    check_int_eq(ivr_fmq_server_security_create(&config, &owner), TURBO_OK);
+    check_equal(ivr_fmq_server_security_create(&config, &owner), TURBO_OK);
     binding = ivr_fmq_security_binding(owner);
     check_not_null(binding);
     check_not_null(binding->realm);
-    check_int_eq(binding->verify_peer_certificate_identity(
+    check_equal(binding->verify_peer_certificate_identity(
                      binding->peer_certificate_identity_ctx, kFingerprint,
                      "worker-a"),
                  TURBO_OK);
-    check_int_eq(binding->verify_peer_certificate_identity(
+    check_equal(binding->verify_peer_certificate_identity(
                      binding->peer_certificate_identity_ctx, kFingerprint,
                      "worker-b"),
                  TURBO_EPERM);
@@ -58,7 +58,7 @@ spec("IVR FlowMQ security owner") {
     auth.method = "token";
     auth.secret = (const uint8_t *)kSecret;
     auth.secret_size = sizeof(kSecret) - 1u;
-    check_int_eq(turbo_flow_security_authenticate(binding->auth_provider,
+    check_equal(turbo_flow_security_authenticate(binding->auth_provider,
                                                   &auth, &principal),
                  TURBO_OK);
     request.principal = &principal;
@@ -66,13 +66,13 @@ spec("IVR FlowMQ security owner") {
     request.action = TURBO_FLOW_SECURITY_ACTION_WRITE;
     request.resource_type = TURBO_FLOW_SECURITY_RESOURCE_GENERIC;
     request.resource = "fmq:fmq.app.endpoint:connection";
-    check_int_eq(turbo_flow_security_realm_authorize(
+    check_equal(turbo_flow_security_realm_authorize(
                      binding->realm, &request, 1u, &decision),
                  TURBO_OK);
     request.resource = "other.topic";
     decision = (turbo_flow_security_decision_t)
         TURBO_FLOW_SECURITY_DECISION_INIT;
-    check_int_eq(turbo_flow_security_realm_authorize(
+    check_equal(turbo_flow_security_realm_authorize(
                      binding->realm, &request, 1u, &decision),
                  TURBO_EPERM);
     ivr_fmq_security_destroy(owner);
@@ -96,17 +96,17 @@ spec("IVR FlowMQ security owner") {
     server.pub_topic = "room.events";
     server.identities = &identity;
     server.identity_count = 1u;
-    check_int_eq(ivr_fmq_server_security_create(&server, &owner),
+    check_equal(ivr_fmq_server_security_create(&server, &owner),
                  TURBO_EINVAL);
     check_null(owner);
     server.shared_secret = kSecret;
-    check_int_eq(ivr_fmq_server_security_create(&server, &owner), TURBO_OK);
+    check_equal(ivr_fmq_server_security_create(&server, &owner), TURBO_OK);
     binding = ivr_fmq_security_binding(owner);
     auth.identity = "worker-a";
     auth.method = "token";
     auth.secret = (const uint8_t *)wrong;
     auth.secret_size = sizeof(wrong) - 1u;
-    check_int_eq(turbo_flow_security_authenticate(binding->auth_provider,
+    check_equal(turbo_flow_security_authenticate(binding->auth_provider,
                                                   &auth, &principal),
                  TURBO_EPERM);
     ivr_fmq_security_destroy(owner);
@@ -121,15 +121,15 @@ spec("IVR FlowMQ security owner") {
         TURBO_FLOW_SECURITY_SECRET_LEASE_INIT;
 
     config.shared_secret = kSecret;
-    check_int_eq(ivr_fmq_client_security_create(&config, &owner), TURBO_OK);
+    check_equal(ivr_fmq_client_security_create(&config, &owner), TURBO_OK);
     binding = ivr_fmq_security_binding(owner);
     check_not_null(binding);
     check_null(binding->realm);
-    check_int_eq(turbo_flow_security_secret_acquire(
+    check_equal(turbo_flow_security_secret_acquire(
                      binding->key_provider, binding->secret_reference, &lease),
                  TURBO_OK);
-    check_size_eq(lease.byte_count, sizeof(kSecret) - 1u);
-    check_mem_eq(lease.bytes, kSecret, sizeof(kSecret) - 1u);
+    check_equal(lease.byte_count, sizeof(kSecret) - 1u);
+    check_equal(lease.bytes, kSecret, sizeof(kSecret) - 1u);
     turbo_flow_security_secret_release(binding->key_provider, &lease);
     check_null(lease.bytes);
     ivr_fmq_security_destroy(owner);
@@ -164,7 +164,7 @@ spec("IVR FlowMQ security owner") {
     config.worker_topic_count = 2u;
     config.clock = test_clock;
     config.clock_context = &now_ms;
-    check_int_eq(ivr_fmq_server_security_create(&config, &owner), TURBO_OK);
+    check_equal(ivr_fmq_server_security_create(&config, &owner), TURBO_OK);
     binding = ivr_fmq_security_binding(owner);
     check_not_null(binding);
 
@@ -172,7 +172,7 @@ spec("IVR FlowMQ security owner") {
     auth.method = "token";
     auth.secret = (const uint8_t *)kSecret;
     auth.secret_size = sizeof(kSecret) - 1u;
-    check_int_eq(turbo_flow_security_authenticate(binding->auth_provider,
+    check_equal(turbo_flow_security_authenticate(binding->auth_provider,
                                                   &auth, &principal),
                  TURBO_OK);
     request.principal = &principal;
@@ -180,44 +180,44 @@ spec("IVR FlowMQ security owner") {
     request.action = TURBO_FLOW_SECURITY_ACTION_SUBSCRIBE;
     request.resource_type = TURBO_FLOW_SECURITY_RESOURCE_GENERIC;
     request.resource = "room.events.tenant-a";
-    check_int_eq(turbo_flow_security_realm_authorize(
+    check_equal(turbo_flow_security_realm_authorize(
                      binding->realm, &request, 1u, &decision),
                  TURBO_OK);
     /* worker-a is not granted the shared topic or tenant-b topic */
     request.resource = "room.events";
     decision = (turbo_flow_security_decision_t)
         TURBO_FLOW_SECURITY_DECISION_INIT;
-    check_int_eq(turbo_flow_security_realm_authorize(
+    check_equal(turbo_flow_security_realm_authorize(
                      binding->realm, &request, 1u, &decision),
                  TURBO_EPERM);
     request.resource = "room.events.tenant-b";
     decision = (turbo_flow_security_decision_t)
         TURBO_FLOW_SECURITY_DECISION_INIT;
-    check_int_eq(turbo_flow_security_realm_authorize(
+    check_equal(turbo_flow_security_realm_authorize(
                      binding->realm, &request, 1u, &decision),
                  TURBO_EPERM);
 
     /* worker-b is granted both of its configured topics */
     auth.identity = "worker-b";
-    check_int_eq(turbo_flow_security_authenticate(binding->auth_provider,
+    check_equal(turbo_flow_security_authenticate(binding->auth_provider,
                                                   &auth, &principal),
                  TURBO_OK);
     request.principal = &principal;
     request.domain_id = principal.domain_id;
     request.resource = "room.events.tenant-b";
-    check_int_eq(turbo_flow_security_realm_authorize(
+    check_equal(turbo_flow_security_realm_authorize(
                      binding->realm, &request, 1u, &decision),
                  TURBO_OK);
     request.resource = "room.events.shared";
     decision = (turbo_flow_security_decision_t)
         TURBO_FLOW_SECURITY_DECISION_INIT;
-    check_int_eq(turbo_flow_security_realm_authorize(
+    check_equal(turbo_flow_security_realm_authorize(
                      binding->realm, &request, 1u, &decision),
                  TURBO_OK);
     request.resource = "room.events.tenant-a";
     decision = (turbo_flow_security_decision_t)
         TURBO_FLOW_SECURITY_DECISION_INIT;
-    check_int_eq(turbo_flow_security_realm_authorize(
+    check_equal(turbo_flow_security_realm_authorize(
                      binding->realm, &request, 1u, &decision),
                  TURBO_EPERM);
     ivr_fmq_security_destroy(owner);
@@ -241,7 +241,7 @@ spec("IVR FlowMQ security owner") {
     config.worker_topic_count = 1u;
     config.clock = test_clock;
     config.clock_context = &now_ms;
-    check_int_eq(ivr_fmq_server_security_create(&config, &owner),
+    check_equal(ivr_fmq_server_security_create(&config, &owner),
                  TURBO_EINVAL);
     check_null(owner);
   }

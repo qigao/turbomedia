@@ -10,7 +10,7 @@
 // field, in which case the tag is considered to have a value of null.
 // This is to maintain backwards compatibility with RFC 2543, which
 // did not mandate To tags.
-static const tstr_v sc_null = { "", 0 };
+static const vstr sc_null = { "", 0 };
 
 struct sip_dialog_t* sip_dialog_create(void)
 {
@@ -140,7 +140,7 @@ int sip_dialog_addref(struct sip_dialog_t* dialog)
 	return r;
 }
 
-int sip_dialog_setlocaltag(struct sip_dialog_t* dialog, const tstr_v* tag)
+int sip_dialog_setlocaltag(struct sip_dialog_t* dialog, const vstr* tag)
 {
 	const char* end;
 	end = (char*)(dialog + 1) + N;
@@ -180,7 +180,7 @@ int sip_dialog_target_refresh(struct sip_dialog_t* dialog, const struct sip_mess
 }
 
 /// @return 1-match, 0-don't match
-static int sip_dialog_match(const struct sip_dialog_t* dialog, const tstr_v* callid, const tstr_v* local, const tstr_v* remote)
+static int sip_dialog_match(const struct sip_dialog_t* dialog, const vstr* callid, const vstr* local, const vstr* remote)
 {
 	assert(dialog && local);
 	if (!remote) remote = &sc_null;
@@ -188,7 +188,7 @@ static int sip_dialog_match(const struct sip_dialog_t* dialog, const tstr_v* cal
 	return sip_sv_equal(callid, &dialog->callid) && sip_sv_equal(local, &dialog->local.uri.tag) && sip_sv_equal(remote, &dialog->remote.uri.tag) ? 1 : 0;
 }
 
-int sip_dialog_id(tstr_v* id, const struct sip_dialog_t* dialog, char* ptr, int len)
+int sip_dialog_id(vstr* id, const struct sip_dialog_t* dialog, char* ptr, int len)
 {
 	int r;
 	r = dialog ? snprintf(ptr, len, "%.*s@%.*s@%.*s", (int)dialog->callid.len, dialog->callid.data, (int)dialog->local.uri.tag.len, dialog->local.uri.tag.data, (int)dialog->remote.uri.tag.len, dialog->remote.uri.tag.data) : 0;
@@ -198,7 +198,7 @@ int sip_dialog_id(tstr_v* id, const struct sip_dialog_t* dialog, char* ptr, int 
 }
 
 // @param[in] uas 1-local is uas
-int sip_dialog_id_with_message(tstr_v *id, const struct sip_message_t* msg, char* ptr, int len, int uas)
+int sip_dialog_id_with_message(vstr *id, const struct sip_message_t* msg, char* ptr, int len, int uas)
 {
 	int r;
 	assert(msg->mode == SIP_MESSAGE_REQUEST);

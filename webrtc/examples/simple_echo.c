@@ -49,7 +49,7 @@ static void on_channel_message(turbo_dc_channel_t *channel, const void *data, si
     char msg_buf[512];
     int pr_len = (int)len > 511 ? 511 : (int)len;
     snprintf(msg_buf, sizeof(msg_buf), "%.*s", pr_len, (const char *)data);
-    TLOG_INFO("Received: {}", msg_buf);
+    TLOG_INFOF("Received: {}", msg_buf);
 
   app->messages_received++;
 
@@ -63,12 +63,12 @@ static void on_channel_message(turbo_dc_channel_t *channel, const void *data, si
 static void on_channel_open(turbo_dc_channel_t *channel, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
 
-  TLOG_INFO("Channel '{}' opened!", turbo_dc_channel_get_label(channel));
+  TLOG_INFOF("Channel '{}' opened!", turbo_dc_channel_get_label(channel));
 
   /* Client sends first message */
   if (!app->is_server) {
     const char *msg = "Hello from client!";
-    TLOG_INFO("Sending: {}", msg);
+    TLOG_INFOF("Sending: {}", msg);
     turbo_dc_channel_send(channel, msg, strlen(msg), 0);
   }
 }
@@ -83,7 +83,7 @@ static void on_peer_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, 
   app_state_t *app = (app_state_t *)user_data;
   (void)peer;
 
-  TLOG_INFO("Incoming channel: {}", turbo_dc_channel_get_label(channel));
+  TLOG_INFOF("Incoming channel: {}", turbo_dc_channel_get_label(channel));
 
   app->channel = channel;
   turbo_dc_channel_set_user_data(channel, app);
@@ -97,7 +97,7 @@ static void on_peer_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
   (void)peer;
   (void)old_state;
 
-  TLOG_INFO("State: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
+  TLOG_INFOF("State: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
 
   if (new_state == TURBO_DC_STATE_CLOSED || new_state == TURBO_DC_STATE_FAILED) {
     app->running = 0;
@@ -121,7 +121,7 @@ static void on_peer_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
 
       if (turbo_dc_channel_open(app->channel) != 0) {
         turbo_dc_error_t err = turbo_dc_peer_get_error(app->peer);
-        TLOG_ERROR("Failed to open channel: {}", turbo_dc_error_string(err.code));
+        TLOG_ERRORF("Failed to open channel: {}", turbo_dc_error_string(err.code));
       }
     }
   }
@@ -131,7 +131,7 @@ static void on_peer_error(turbo_dc_peer_t *peer, int error_code, const char *err
                           void *user_data) {
   (void)peer;
   (void)user_data;
-  TLOG_ERROR("Peer error {}: {}", error_code, error_msg);
+  TLOG_ERRORF("Peer error {}: {}", error_code, error_msg);
 }
 
 /* ============================================================================
@@ -140,7 +140,7 @@ static void on_peer_error(turbo_dc_peer_t *peer, int error_code, const char *err
 
 int main(int argc, char **argv) {
   if (argc != 4) {
-    TLOG_ERROR("Usage: {} <server|client> <host> <port>", argv[0]);
+    TLOG_ERRORF("Usage: {} <server|client> <host> <port>", argv[0]);
     return 1;
   }
 
@@ -151,8 +151,8 @@ int main(int argc, char **argv) {
   int is_server = (strcmp(mode, "server") == 0);
 
   TLOG_INFO("=== WebRTC DataChannel Simple Echo Example ===");
-  TLOG_INFO("Mode: {}", is_server ? "SERVER" : "CLIENT");
-  TLOG_INFO("Address: {}:{}", host, port);
+  TLOG_INFOF("Mode: {}", is_server ? "SERVER" : "CLIENT");
+  TLOG_INFOF("Address: {}:{}", host, port);
 
   /* Initialize app state */
   app_state_t app = {0};
@@ -172,7 +172,7 @@ int main(int argc, char **argv) {
   app.peer = turbo_dc_peer_create(app.ctx, host, (uint16_t)port, &app);
   if (!app.peer) {
     turbo_dc_error_t err = turbo_dc_context_get_error(app.ctx);
-    TLOG_ERROR("Failed to create peer: {}", turbo_dc_error_string(err.code));
+    TLOG_ERRORF("Failed to create peer: {}", turbo_dc_error_string(err.code));
     turbo_dc_context_destroy(app.ctx);
     return 1;
   }
@@ -185,7 +185,7 @@ int main(int argc, char **argv) {
   /* Connect */
   if (turbo_dc_peer_connect(app.peer) != 0) {
     turbo_dc_error_t err = turbo_dc_peer_get_error(app.peer);
-    TLOG_ERROR("Failed to connect: {}", turbo_dc_error_string(err.code));
+    TLOG_ERRORF("Failed to connect: {}", turbo_dc_error_string(err.code));
     turbo_dc_peer_destroy(app.peer);
     turbo_dc_context_destroy(app.ctx);
     return 1;
@@ -202,7 +202,7 @@ int main(int argc, char **argv) {
   turbo_dc_peer_destroy(app.peer);
   turbo_dc_context_destroy(app.ctx);
 
-  TLOG_INFO("Received {} messages", app.messages_received);
+  TLOG_INFOF("Received {} messages", app.messages_received);
   TLOG_INFO("Done!");
 
   return 0;
