@@ -13,7 +13,7 @@ extern "C" {
  * Normalize RTC/WHIP/WHEP resource identity into the shared TurboMedia source
  * key. Query parameters app= and stream= take precedence over path segments.
  */
-CXX_C_API int turbo_media_webrtc_source_key(
+TURBO_MEDIA_API int turbo_media_webrtc_source_key(
     const char *default_vhost,
     const char *resource_path,
     const char *query,
@@ -84,30 +84,30 @@ typedef struct turbo_media_webrtc_session_config_s {
  * turbo_media_webrtc_session_pump() regularly. Destroy the result with
  * turbo_media_webrtc_session_destroy().
  */
-CXX_C_API int turbo_media_webrtc_session_create(
+TURBO_MEDIA_API int turbo_media_webrtc_session_create(
     const turbo_media_webrtc_session_config_t *config,
     char *answer_sdp,
     size_t answer_sdp_capacity,
     size_t *answer_sdp_length,
     turbo_media_webrtc_session_t **session);
 
-CXX_C_API void turbo_media_webrtc_session_destroy(
+TURBO_MEDIA_API void turbo_media_webrtc_session_destroy(
     turbo_media_webrtc_session_t *session);
 
-CXX_C_API int turbo_media_webrtc_session_add_ice_candidate(
+TURBO_MEDIA_API int turbo_media_webrtc_session_add_ice_candidate(
     turbo_media_webrtc_session_t *session,
     const char *candidate);
 
-CXX_C_API int turbo_media_webrtc_session_pump(
+TURBO_MEDIA_API int turbo_media_webrtc_session_pump(
     turbo_media_webrtc_session_t *session);
 
-CXX_C_API turbo_media_webrtc_peer_state_t turbo_media_webrtc_session_state(
+TURBO_MEDIA_API turbo_media_webrtc_peer_state_t turbo_media_webrtc_session_state(
     const turbo_media_webrtc_session_t *session);
 
-CXX_C_API int turbo_media_webrtc_session_last_error(
+TURBO_MEDIA_API int turbo_media_webrtc_session_last_error(
     const turbo_media_webrtc_session_t *session);
 
-CXX_C_API const turbo_media_source_key_t *turbo_media_webrtc_session_key(
+TURBO_MEDIA_API const turbo_media_source_key_t *turbo_media_webrtc_session_key(
     const turbo_media_webrtc_session_t *session);
 
 #ifdef __cplusplus

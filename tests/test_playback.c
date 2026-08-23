@@ -7,48 +7,6 @@
 #include <stdlib.h>
 #include <math.h>
 
-/* TDD-style test macros compatible with the local TinyTest header. */
-#define REQUIRE(condition) \
-    do { \
-        check(condition); \
-        if (!(condition)) { \
-            return; \
-        } \
-    } while (0)
-
-#define REQUIRE_EQ(expected, actual) \
-    do { \
-        check((actual) == (expected)); \
-        if ((actual) != (expected)) { \
-            return; \
-        } \
-    } while (0)
-
-#define REQUIRE_NOT_NULL(ptr) \
-    do { \
-        check((ptr) != NULL); \
-        if ((ptr) == NULL) { \
-            return; \
-        } \
-    } while (0)
-
-#define REQUIRE_NULL(ptr) \
-    do { \
-        check((ptr) == NULL); \
-        if ((ptr) != NULL) { \
-            return; \
-        } \
-    } while (0)
-
-#define REQUIRE_OK(result) \
-    do { \
-        int res = (result); \
-        check(res == TURBO_PLAYBACK_OK); \
-        if (res != TURBO_PLAYBACK_OK) { \
-            return; \
-        } \
-    } while (0)
-
 /* Test fixture for tracking callback invocations */
 typedef struct {
     int data_callback_count;
@@ -145,19 +103,19 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         // Test basic enumeration
         int count = turbo_playback_list_devices(devices, TURBO_PLAYBACK_MAX_DEVICES);
-        REQUIRE(count >= 0); // Should not fail, may return 0 if no devices
-        REQUIRE(count <= TURBO_PLAYBACK_MAX_DEVICES);
+        check(count >= 0); // Should not fail, may return 0 if no devices
+        check(count <= TURBO_PLAYBACK_MAX_DEVICES);
     }
     
    it("device_enumeration_handles_null_parameters") {
         int count = turbo_playback_list_devices(NULL, 10);
-        REQUIRE(count < 0); // Should fail with null devices array
+        check(count < 0); // Should fail with null devices array
     }
     
    it("device_enumeration_handles_zero_max_count") {
         turbo_playback_device_t devices[1];
         int count = turbo_playback_list_devices(devices, 0);
-        REQUIRE(count < 0);
+        check(count < 0);
     }
     
    it("get_default_device_returns_valid_info") {
@@ -166,16 +124,16 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         if (result == 0) {
             // If successful, device should have valid properties
-            REQUIRE(device.index >= 0);
-            REQUIRE(strlen(device.name) > 0);
-            REQUIRE(device.is_default == 1);
+            check(device.index >= 0);
+            check(strlen(device.name) > 0);
+            check(device.is_default == 1);
         }
         // Note: May fail if no audio devices available
     }
     
    it("get_default_device_rejects_null_parameter") {
         int result = turbo_playback_get_default_device(NULL);
-        REQUIRE(result < 0);
+        check(result < 0);
     }
     
     /* Test 2: Configuration validation must prevent invalid setups */
@@ -199,11 +157,11 @@ suite("TurboMedia Playback Module - TDD Tests") {
    it("create_playback_rejects_malformed_device_ids") {
         turbo_playback_config_t config = create_valid_config();
 
-        REQUIRE_NULL(turbo_playback_create("", &config));
-        REQUIRE_NULL(turbo_playback_create("speaker", &config));
-        REQUIRE_NULL(turbo_playback_create("-1", &config));
-        REQUIRE_NULL(turbo_playback_create("0x1", &config));
-        REQUIRE_NULL(turbo_playback_create("4294967296", &config));
+        check_null(turbo_playback_create("", &config));
+        check_null(turbo_playback_create("speaker", &config));
+        check_null(turbo_playback_create("-1", &config));
+        check_null(turbo_playback_create("0x1", &config));
+        check_null(turbo_playback_create("4294967296", &config));
     }
 
    it("create_playback_accepts_an_enumerated_device_id") {
@@ -211,9 +169,9 @@ suite("TurboMedia Playback Module - TDD Tests") {
         turbo_playback_device_t devices[TURBO_PLAYBACK_MAX_DEVICES];
         int count = turbo_playback_list_devices(devices, TURBO_PLAYBACK_MAX_DEVICES);
 
-        REQUIRE(count >= 0);
+        check(count >= 0);
         if (count > 0) {
-            REQUIRE(strlen(devices[0].id) > 0);
+            check(strlen(devices[0].id) > 0);
             turbo_playback_t *playback = turbo_playback_create(devices[0].id, &config);
             if (playback) {
                 turbo_playback_destroy(playback);
@@ -228,15 +186,15 @@ suite("TurboMedia Playback Module - TDD Tests") {
         // Test invalid sample rates
         config.sample_rate = 0;
         playback = turbo_playback_create(NULL, &config);
-        REQUIRE_NULL(playback);
+        check_null(playback);
         
         config.sample_rate = -1;
         playback = turbo_playback_create(NULL, &config);
-        REQUIRE_NULL(playback);
+        check_null(playback);
         
         config.sample_rate = 999999; // Unrealistic rate
         playback = turbo_playback_create(NULL, &config);
-        REQUIRE_NULL(playback);
+        check_null(playback);
     }
    it("create_playback_rejects_invalid_channel_counts") {
         turbo_playback_config_t config = create_valid_config();
@@ -244,15 +202,15 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         config.channels = 0;
         playback = turbo_playback_create(NULL, &config);
-        REQUIRE_NULL(playback);
+        check_null(playback);
         
         config.channels = -1;
         playback = turbo_playback_create(NULL, &config);
-        REQUIRE_NULL(playback);
+        check_null(playback);
         
         config.channels = 100; // Too many channels
         playback = turbo_playback_create(NULL, &config);
-        REQUIRE_NULL(playback);
+        check_null(playback);
     }
     
    it("create_playback_supports_standard_formats") {
@@ -276,12 +234,12 @@ suite("TurboMedia Playback Module - TDD Tests") {
     /* Test 3: File playback must validate file paths */
    it("create_file_playback_rejects_null_filepath") {
         turbo_playback_t *playback = turbo_playback_create_file(NULL, NULL);
-        REQUIRE_NULL(playback);
+        check_null(playback);
     }
     
    it("create_file_playback_rejects_nonexistent_file") {
         turbo_playback_t *playback = turbo_playback_create_file(NULL, "nonexistent_file.wav");
-        REQUIRE_NULL(playback);
+        check_null(playback);
     }
     
    it("create_file_playback_rejects_invalid_file_format") {
@@ -293,7 +251,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
             fclose(f);
             
             turbo_playback_t *playback = turbo_playback_create_file(NULL, dummy_file);
-            REQUIRE_NULL(playback);
+            check_null(playback);
             
             remove(dummy_file);
         }
@@ -305,7 +263,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         if (playback) {
             turbo_playback_state_t state = turbo_playback_get_state(playback);
-            REQUIRE_EQ(TURBO_PLAYBACK_STATE_STOPPED, state);
+            check_equal(state, TURBO_PLAYBACK_STATE_STOPPED);
             turbo_playback_destroy(playback);
         }
     }
@@ -321,7 +279,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
             int result = turbo_playback_start(playback);
             if (result == TURBO_PLAYBACK_OK) {
                 turbo_playback_state_t state = turbo_playback_get_state(playback);
-                REQUIRE(state == TURBO_PLAYBACK_STATE_STARTING || 
+                check(state == TURBO_PLAYBACK_STATE_STARTING ||
                        state == TURBO_PLAYBACK_STATE_PLAYING);
             }
             
@@ -337,7 +295,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
         if (playback) {
             turbo_playback_stop(playback);
             turbo_playback_state_t state = turbo_playback_get_state(playback);
-            REQUIRE(state == TURBO_PLAYBACK_STATE_STOPPED || 
+            check(state == TURBO_PLAYBACK_STATE_STOPPED ||
                    state == TURBO_PLAYBACK_STATE_STOPPING);
             
             turbo_playback_destroy(playback);
@@ -353,11 +311,11 @@ suite("TurboMedia Playback Module - TDD Tests") {
             if (result == TURBO_PLAYBACK_OK) {
                 turbo_playback_pause(playback);
                 turbo_playback_state_t state = turbo_playback_get_state(playback);
-                REQUIRE(state == TURBO_PLAYBACK_STATE_PAUSED);
+                check(state == TURBO_PLAYBACK_STATE_PAUSED);
                 
                 turbo_playback_resume(playback);
                 state = turbo_playback_get_state(playback);
-                REQUIRE(state == TURBO_PLAYBACK_STATE_PLAYING || 
+                check(state == TURBO_PLAYBACK_STATE_PLAYING ||
                        state == TURBO_PLAYBACK_STATE_STARTING);
             }
             
@@ -436,7 +394,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
             float volume = turbo_playback_get_volume(playback);
             
             // Allow small floating point differences
-            REQUIRE(fabsf(volume - 0.75f) < 0.01f);
+            check(fabsf(volume - 0.75f) < 0.01f);
             
             turbo_playback_destroy(playback);
         }
@@ -451,7 +409,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
             generate_sine_wave(samples, 1024, 48000, 440.0f);
             
             size_t written = turbo_playback_write(playback, samples, sizeof(samples));
-            REQUIRE(written <= sizeof(samples));
+            check(written <= sizeof(samples));
             
             turbo_playback_destroy(playback);
         }
@@ -464,7 +422,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
         if (playback) {
             // Should handle null data gracefully
             size_t written = turbo_playback_write(playback, NULL, 1024);
-            REQUIRE_EQ(0, written);
+            check_equal(written, 0);
             
             turbo_playback_destroy(playback);
         }
@@ -472,7 +430,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
         // Should handle null playback gracefully
         float samples[16];
         size_t written = turbo_playback_write(NULL, samples, sizeof(samples));
-        REQUIRE_EQ(0, written);
+        check_equal(written, 0);
     }
     
    it("get_available_buffer_space_returns_valid_size") {
@@ -481,7 +439,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         if (playback) {
             size_t available = turbo_playback_get_available(playback);
-            REQUIRE(available >= 0); // Should be non-negative
+            check(available >= 0); // Should be non-negative
             
             turbo_playback_destroy(playback);
         }
@@ -493,7 +451,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         if (playback) {
             size_t buffered = turbo_playback_get_buffered(playback);
-            REQUIRE(buffered >= 0);
+            check(buffered >= 0);
             
             turbo_playback_destroy(playback);
         }
@@ -529,7 +487,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
         if (streaming_playback) {
             // Adding to queue on streaming playback should fail
             int result = turbo_playback_queue_add(streaming_playback, "test.wav");
-            REQUIRE(result != TURBO_PLAYBACK_OK);
+            check(result != TURBO_PLAYBACK_OK);
             
             turbo_playback_destroy(streaming_playback);
         }
@@ -542,13 +500,13 @@ suite("TurboMedia Playback Module - TDD Tests") {
         // Should handle null filepath
         if (playback) {
             int result = turbo_playback_queue_add(playback, NULL);
-            REQUIRE(result != TURBO_PLAYBACK_OK);
+            check(result != TURBO_PLAYBACK_OK);
             turbo_playback_destroy(playback);
         }
         
         // Should handle null playback
         int result = turbo_playback_queue_add(NULL, "test.wav");
-        REQUIRE(result != TURBO_PLAYBACK_OK);
+        check(result != TURBO_PLAYBACK_OK);
     }
     
    it("queue_count_returns_valid_count") {
@@ -556,13 +514,13 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         if (playback) {
             int count = turbo_playback_queue_count(playback);
-            REQUIRE(count >= 0);
+            check(count >= 0);
             turbo_playback_destroy(playback);
         }
         
         // Should handle null playback
         int count = turbo_playback_queue_count(NULL);
-        REQUIRE_EQ(0, count);
+        check_equal(count, 0);
     }
     
    it("queue_clear_removes_all_files") {
@@ -583,13 +541,13 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         if (playback) {
             int result = turbo_playback_queue_next(playback);
-            REQUIRE(result != TURBO_PLAYBACK_OK); // Should fail on empty queue
+            check(result != TURBO_PLAYBACK_OK); // Should fail on empty queue
             turbo_playback_destroy(playback);
         }
         
         // Should handle null playback
         int result = turbo_playback_queue_next(NULL);
-        REQUIRE(result != TURBO_PLAYBACK_OK);
+        check(result != TURBO_PLAYBACK_OK);
     }
     /* Test 9: Seek operations must validate parameters */
    it("seek_validates_parameters") {
@@ -606,7 +564,7 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         // Should handle null playback
         int result = turbo_playback_seek(NULL, 1000);
-        REQUIRE(result != TURBO_PLAYBACK_OK);
+        check(result != TURBO_PLAYBACK_OK);
     }
     
    it("get_position_returns_valid_value") {
@@ -615,13 +573,13 @@ suite("TurboMedia Playback Module - TDD Tests") {
         if (playback) {
             uint64_t position = turbo_playback_get_position(playback);
             // Should return valid position (may be 0 for non-existent file)
-            REQUIRE(position >= 0);
+            check(position >= 0);
             turbo_playback_destroy(playback);
         }
         
         // Should handle null playback
         uint64_t position = turbo_playback_get_position(NULL);
-        REQUIRE_EQ(0, position);
+        check_equal(position, 0);
     }
     
    it("get_duration_returns_valid_value") {
@@ -629,13 +587,13 @@ suite("TurboMedia Playback Module - TDD Tests") {
         
         if (playback) {
             uint64_t duration = turbo_playback_get_duration(playback);
-            REQUIRE(duration >= 0);
+            check(duration >= 0);
             turbo_playback_destroy(playback);
         }
         
         // Should handle null playback
         uint64_t duration = turbo_playback_get_duration(NULL);
-        REQUIRE_EQ(0, duration);
+        check_equal(duration, 0);
     }
     
     /* Test 10: Looping operations must be consistent */
@@ -673,17 +631,17 @@ suite("TurboMedia Playback Module - TDD Tests") {
    it("all_operations_handle_null_playback_safely") {
         // All API functions should handle null playback without crashing
         
-        REQUIRE(turbo_playback_start(NULL) != TURBO_PLAYBACK_OK);
+        check(turbo_playback_start(NULL) != TURBO_PLAYBACK_OK);
         turbo_playback_stop(NULL);
         turbo_playback_pause(NULL);
         turbo_playback_resume(NULL);
         
         turbo_playback_state_t state = turbo_playback_get_state(NULL);
-        REQUIRE_EQ(TURBO_PLAYBACK_STATE_STOPPED, state);
+        check_equal(state, TURBO_PLAYBACK_STATE_STOPPED);
         
         turbo_playback_set_volume(NULL, 1.0f);
         float volume = turbo_playback_get_volume(NULL);
-        REQUIRE_EQ(0.0f, volume);
+        check_equal(volume, 0.0f);
         
         turbo_playback_set_data_callback(NULL, NULL, NULL);
         turbo_playback_on_state(NULL, NULL);

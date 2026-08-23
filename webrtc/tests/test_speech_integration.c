@@ -1,4 +1,4 @@
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_datachannel.h"
 #include "turbo_media_engine.h"
 
@@ -88,21 +88,21 @@ suite("WebRTC speech integration") {
     asr = create_integration_asr(&provider_context, 8000);
     check_not_null(asr);
 
-    check_int_eq(turbo_media_track_attach_asr(track, asr), 0);
-    check_int_eq(turbo_media_track_start(track), 0);
-    check_int_eq(turbo_media_track_detach_asr(track, asr), -1);
+    check_equal(turbo_media_track_attach_asr(track, asr), 0);
+    check_equal(turbo_media_track_start(track), 0);
+    check_equal(turbo_media_track_detach_asr(track, asr), -1);
     turbo_media_track_stop(track);
-    check_int_eq(turbo_media_track_detach_asr(track, asr), 0);
+    check_equal(turbo_media_track_detach_asr(track, asr), 0);
 
-    check_int_eq(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
-    check_int_eq(turbo_media_track_attach_asr(track, asr), -1);
+    check_equal(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
+    check_equal(turbo_media_track_attach_asr(track, asr), -1);
     turbo_asr_destroy(asr);
     turbo_media_destroy(media);
     turbo_dc_peer_destroy(peer);
     turbo_dc_context_destroy(dc);
-    check_int_eq(provider_context.start_count, 1);
-    check_int_eq(provider_context.cancel_count, 1);
-    check_int_eq(provider_context.destroy_count, 1);
+    check_equal(provider_context.start_count, 1);
+    check_equal(provider_context.cancel_count, 1);
+    check_equal(provider_context.destroy_count, 1);
   }
 
   it("requires SRTP before sending matching TTS PCM") {
@@ -131,14 +131,14 @@ suite("WebRTC speech integration") {
     check_not_null(media);
     track = turbo_media_add_track(media, &track_config);
     check_not_null(track);
-    check_int_eq(turbo_media_track_start(track), 0);
-    check_int_eq(turbo_media_track_send_speech_frame(track, &frame), -1);
+    check_equal(turbo_media_track_start(track), 0);
+    check_equal(turbo_media_track_send_speech_frame(track, &frame), -1);
 
     frame.format.sample_rate = 16000;
-    check_int_eq(turbo_media_track_send_speech_frame(track, &frame), -1);
+    check_equal(turbo_media_track_send_speech_frame(track, &frame), -1);
     frame.format.sample_rate = 8000;
     frame.len -= sizeof(int16_t);
-    check_int_eq(turbo_media_track_send_speech_frame(track, &frame), -1);
+    check_equal(turbo_media_track_send_speech_frame(track, &frame), -1);
     turbo_media_destroy(media);
     turbo_dc_peer_destroy(peer);
     turbo_dc_context_destroy(dc);

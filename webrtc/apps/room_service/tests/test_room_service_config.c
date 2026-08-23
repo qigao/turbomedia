@@ -17,7 +17,7 @@ static char *write_toml(const char *content) {
         return NULL;
     }
     result = tt_write_file(path, content, strlen(content));
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) {
         tt_remove_file(path);
         free(path);
@@ -30,7 +30,7 @@ static void remove_toml(char *path) {
     if (!path) {
         return;
     }
-    check_int_eq(tt_remove_file(path), 0);
+    check_equal(tt_remove_file(path), 0);
     free(path);
 }
 
@@ -130,99 +130,99 @@ spec("room service TOML configuration") {
 
         room_service_app_config_init(&config);
         if (path) {
-            check_int_eq(room_service_app_config_load(&config, path), 0);
-            check_str_eq(config.config_file, path);
-            check_str_eq(config.bind_host, "127.0.0.1");
-            check_int_eq(config.bind_port, 19090);
+            check_equal(room_service_app_config_load(&config, path), 0);
+            check_equal(config.config_file, path);
+            check_equal(config.bind_host, "127.0.0.1");
+            check_equal(config.bind_port, 19090);
             check_true(config.use_tls);
-            check_str_eq(config.tls_cert_file, "room-chain.pem");
-            check_str_eq(config.tls_key_file, "room-key.pem");
-            check_str_eq(config.node_id, "room-control-1");
-            check_str_eq(config.control_token, "room-token");
-            check_str_eq(config.auth_issuer, "room-issuer");
-            check_str_eq(config.auth_active_key_id, "room-key-2026-07");
-            check_str_eq(config.auth_previous_key_id, "room-key-2026-06");
-            check_str_eq(
+            check_equal(config.tls_cert_file, "room-chain.pem");
+            check_equal(config.tls_key_file, "room-key.pem");
+            check_equal(config.node_id, "room-control-1");
+            check_equal(config.control_token, "room-token");
+            check_equal(config.auth_issuer, "room-issuer");
+            check_equal(config.auth_active_key_id, "room-key-2026-07");
+            check_equal(config.auth_previous_key_id, "room-key-2026-06");
+            check_equal(
                 config.auth_revoked_token_sha256,
                 "0000000000000000000000000000000000000000000000000000000000000000");
-            check_int_eq(config.auth_clock_skew_seconds, 15);
-            check_int_eq(config.auth_max_ttl_seconds, 900);
-            check_str_eq(config.sfu_control_url, "https://sfu-a.internal:19190");
-            check_str_eq(
+            check_equal(config.auth_clock_skew_seconds, 15);
+            check_equal(config.auth_max_ttl_seconds, 900);
+            check_equal(config.sfu_control_url, "https://sfu-a.internal:19190");
+            check_equal(
                 config.sfu_nodes,
                 "sfu-a=https://sfu-a.internal:19190,sfu-b=https://sfu-b.internal:19191");
-            check_str_eq(config.sfu_control_token, "sfu-token");
-            check_str_eq(config.sfu_ca_file, "internal-ca.pem");
-            check_str_eq(config.sfu_auth_issuer, "sfu-command-issuer");
-            check_str_eq(config.sfu_auth_key_id, "sfu-key-2026-07");
-            check_int_eq(config.sfu_auth_ttl_seconds, 45);
-            check_int_eq(config.max_rooms, 512);
+            check_equal(config.sfu_control_token, "sfu-token");
+            check_equal(config.sfu_ca_file, "internal-ca.pem");
+            check_equal(config.sfu_auth_issuer, "sfu-command-issuer");
+            check_equal(config.sfu_auth_key_id, "sfu-key-2026-07");
+            check_equal(config.sfu_auth_ttl_seconds, 45);
+            check_equal(config.max_rooms, 512);
             check_false(config.auto_create_rooms);
             check_true(config.dry_run);
-            check_str_eq(config.log_level, "warn");
-            check_str_eq(config.iris_flowmq_host, "127.0.0.1");
-            check_int_eq(config.iris_flowmq_port, 17715);
-            check_str_eq(config.iris_flowmq_topic, "media-provider-v1");
-            check_str_eq(config.iris_provider_instance_id,
+            check_equal(config.log_level, "warn");
+            check_equal(config.iris_flowmq_host, "127.0.0.1");
+            check_equal(config.iris_flowmq_port, 17715);
+            check_equal(config.iris_flowmq_topic, "media-provider-v1");
+            check_equal(config.iris_provider_instance_id,
                          "room-control-1");
-            check_str_eq(config.iris_identity, "iris-router-1");
+            check_equal(config.iris_identity, "iris-router-1");
             check_false(config.iris_flowmq_use_tls);
             check_true(config.iris_flowmq_allow_insecure_loopback);
-            check_str_eq(config.iris_event_store_config,
+            check_equal(config.iris_event_store_config,
                          "room-flowstore.yaml");
-            check_str_eq(config.iris_event_store_channel,
+            check_equal(config.iris_event_store_channel,
                          "iris.media_events");
-            check_str_eq(config.iris_command_ledger_channel,
+            check_equal(config.iris_command_ledger_channel,
                          "iris.provider_commands");
             check_true(config.iris_allow_development_sqlite);
-            check_int_eq(config.iris_correlation_capacity, 2048);
-            check_int_eq(config.iris_completion_queue_capacity, 512);
-            check_int_eq(config.iris_reconcile_inventory_queue_capacity, 4);
-            check_int_eq(config.iris_outbox_request_queue_capacity, 256);
-            check_int_eq(config.iris_command_ledger_queue_capacity, 128);
-            check_int_eq(config.iris_command_terminal_retention_seconds,
+            check_equal(config.iris_correlation_capacity, 2048);
+            check_equal(config.iris_completion_queue_capacity, 512);
+            check_equal(config.iris_reconcile_inventory_queue_capacity, 4);
+            check_equal(config.iris_outbox_request_queue_capacity, 256);
+            check_equal(config.iris_command_ledger_queue_capacity, 128);
+            check_equal(config.iris_command_terminal_retention_seconds,
                          7200);
-            check_int_eq(config.iris_command_retention_batch_size, 32);
-            check_int_eq(config.iris_dead_retention_seconds, 3600);
-            check_int_eq(config.iris_archive_retention_seconds, 604800);
-            check_int_eq(config.iris_retention_sweep_interval_ms, 30000);
-            check_int_eq(config.iris_retention_sweep_batch_size, 64);
-            check_int_eq(config.iris_retry_max_attempts, 6);
-            check_int_eq(config.iris_retry_backoff_ms, 125);
-            check_int_eq(config.iris_ack_timeout_ms, 4000);
-            check_int_eq(config.iris_drain_timeout_ms, 20000);
-            check_str_eq(config.fmq_bind_host, "127.0.0.1");
-            check_int_eq(config.fmq_bind_port, 17713);
-            check_int_eq(config.fmq_pub_port, 17714);
-            check_str_eq(config.fmq_pub_topic, "room.events");
-            check_int_eq(config.fmq_worker_heartbeat_ms, 4000);
-            check_int_eq(config.fmq_worker_lease_ms, 12000);
-            check_int_eq(config.fmq_dispatch_deadline_ms, 3000);
-            check_int_eq(config.fmq_dialog_capacity, 768);
+            check_equal(config.iris_command_retention_batch_size, 32);
+            check_equal(config.iris_dead_retention_seconds, 3600);
+            check_equal(config.iris_archive_retention_seconds, 604800);
+            check_equal(config.iris_retention_sweep_interval_ms, 30000);
+            check_equal(config.iris_retention_sweep_batch_size, 64);
+            check_equal(config.iris_retry_max_attempts, 6);
+            check_equal(config.iris_retry_backoff_ms, 125);
+            check_equal(config.iris_ack_timeout_ms, 4000);
+            check_equal(config.iris_drain_timeout_ms, 20000);
+            check_equal(config.fmq_bind_host, "127.0.0.1");
+            check_equal(config.fmq_bind_port, 17713);
+            check_equal(config.fmq_pub_port, 17714);
+            check_equal(config.fmq_pub_topic, "room.events");
+            check_equal(config.fmq_worker_heartbeat_ms, 4000);
+            check_equal(config.fmq_worker_lease_ms, 12000);
+            check_equal(config.fmq_dispatch_deadline_ms, 3000);
+            check_equal(config.fmq_dialog_capacity, 768);
             check_true(config.fmq_use_tls);
             check_false(config.fmq_allow_insecure_loopback);
-            check_str_eq(config.fmq_ca_file, "flowmq-ca.pem");
-            check_str_eq(config.fmq_cert_file, "flowmq-room-chain.pem");
-            check_str_eq(config.fmq_key_file, "flowmq-room-key.pem");
-            check_str_eq(config.fmq_key_password, "test-key-password");
-            check_str_eq(config.fmq_shared_secret,
+            check_equal(config.fmq_ca_file, "flowmq-ca.pem");
+            check_equal(config.fmq_cert_file, "flowmq-room-chain.pem");
+            check_equal(config.fmq_key_file, "flowmq-room-key.pem");
+            check_equal(config.fmq_key_password, "test-key-password");
+            check_equal(config.fmq_shared_secret,
                          "0123456789abcdef0123456789abcdef");
-            check_int_eq(config.fmq_tls_rotation_generation, 7);
-            check_int_eq(config.fmq_worker_identity_count, 1);
-            check_str_eq(config.fmq_worker_identities[0].worker_id,
+            check_equal(config.fmq_tls_rotation_generation, 7);
+            check_equal(config.fmq_worker_identity_count, 1);
+            check_equal(config.fmq_worker_identities[0].worker_id,
                          "ivr-worker-a");
-            check_str_eq(
+            check_equal(
                 config.fmq_worker_identities[0].active_certificate_sha256,
                 "sha256:0000000000000000000000000000000000000000000000000000000000000000");
-            check_int_eq(config.fmq_worker_identities[0].generation, 7);
-            check_str_eq(config.fmq_worker_identities[0].tenant_id, "acme");
-            check_str_eq(config.fmq_worker_identities[0].room_scope,
+            check_equal(config.fmq_worker_identities[0].generation, 7);
+            check_equal(config.fmq_worker_identities[0].tenant_id, "acme");
+            check_equal(config.fmq_worker_identities[0].room_scope,
                          "acme/room-1,acme/room-2");
-            check_str_eq(config.fmq_worker_identities[0].call_scope,
+            check_equal(config.fmq_worker_identities[0].call_scope,
                          "call-1,call-2");
-            check_str_eq(config.fmq_worker_identities[0].content_capabilities,
+            check_equal(config.fmq_worker_identities[0].content_capabilities,
                          "conference-greeting");
-            check_str_eq(config.fmq_worker_identities[0].pub_topics,
+            check_equal(config.fmq_worker_identities[0].pub_topics,
                          "room.events.tenant-a");
             check_not_null(config.private_data);
         }
@@ -234,11 +234,11 @@ spec("room service TOML configuration") {
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
-        check_int_eq(
+        check_equal(
             room_service_app_config_load(
                 &config, ROOM_SERVICE_CONFIG_EXAMPLE_PATH),
             0);
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         room_service_app_config_cleanup(&config);
     }
 
@@ -248,11 +248,11 @@ spec("room service TOML configuration") {
         room_service_app_config_init(&config);
         config.fmq_allow_insecure_loopback = 1;
         config.fmq_bind_port = 17713;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_pub_port = 17714;
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         config.fmq_bind_port = 0;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         room_service_app_config_cleanup(&config);
     }
 
@@ -262,12 +262,12 @@ spec("room service TOML configuration") {
         room_service_app_config_init(&config);
         config.fmq_bind_port = 17713;
         config.fmq_pub_port = 17714;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_allow_insecure_loopback = 1;
         config.fmq_bind_host = "0.0.0.0";
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_bind_host = "::1";
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         room_service_app_config_cleanup(&config);
     }
 
@@ -290,15 +290,15 @@ spec("room service TOML configuration") {
         config.fmq_worker_identities[0].worker_id = "ivr-worker-a";
         config.fmq_worker_identities[0].active_certificate_sha256 = fingerprint;
         config.fmq_worker_identities[0].generation = 1u;
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         config.fmq_allow_insecure_loopback = 1;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_allow_insecure_loopback = 0;
         config.fmq_shared_secret = NULL;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_shared_secret = secret;
         config.fmq_worker_identities[0].active_certificate_sha256 = "invalid";
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         room_service_app_config_cleanup(&config);
     }
 
@@ -306,20 +306,20 @@ spec("room service TOML configuration") {
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         config.fmq_worker_lease_ms = 14999;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_worker_lease_ms = 15000;
         config.fmq_dispatch_deadline_ms = 15000;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_dispatch_deadline_ms = 4999;
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         config.fmq_dialog_capacity = 0;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_dialog_capacity = 65537;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_dialog_capacity = 256;
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         room_service_app_config_cleanup(&config);
     }
 
@@ -333,52 +333,52 @@ spec("room service TOML configuration") {
         config.iris_flowmq_use_tls = 0;
         config.iris_flowmq_allow_insecure_loopback = 1;
         config.iris_flowmq_host = "127.0.0.1";
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_flowmq_port = 17715;
         config.iris_provider_instance_id = "room-service-1";
         config.iris_identity = "iris-router-1";
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_event_store_config = "room-flowstore.yaml";
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_event_store_channel = "iris.media_events";
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_command_ledger_channel = "iris.provider_commands";
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         config.iris_completion_queue_capacity = 0;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_completion_queue_capacity = 1024;
         config.iris_reconcile_inventory_queue_capacity = 0;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_reconcile_inventory_queue_capacity = 8;
         config.iris_retention_sweep_batch_size = 257;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_retention_sweep_batch_size = 128;
         config.iris_archive_retention_seconds = 0;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_archive_retention_seconds = 2592000;
         config.iris_retention_sweep_interval_ms = 999;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_retention_sweep_interval_ms = 60000;
         config.iris_drain_timeout_ms = config.iris_ack_timeout_ms - 1;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_drain_timeout_ms = 30000;
         config.iris_flowmq_host = "iris.internal";
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_flowmq_host = "127.0.0.1";
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         config.iris_flowmq_host = "iris.internal";
         config.iris_flowmq_use_tls = 1;
         config.iris_flowmq_allow_insecure_loopback = 0;
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         config.iris_certificate_sha256 =
             "sha256:0000000000000000000000000000000000000000000000000000000000000000";
         config.iris_flowmq_ca_file = "flowmq-ca.pem";
         config.iris_flowmq_cert_file = "room-chain.pem";
         config.iris_flowmq_key_file = "room-key.pem";
         config.iris_flowmq_server_name = "iris.internal";
-        check_int_eq(room_service_app_config_validate(&config), 0);
+        check_equal(room_service_app_config_validate(&config), 0);
         config.iris_certificate_sha256 = "sha256:bad";
-        check_int_eq(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), -1);
         room_service_app_config_cleanup(&config);
     }
 
@@ -390,8 +390,8 @@ spec("room service TOML configuration") {
         room_service_app_config_init(&config);
         config.bind_port = 17777;
         if (path) {
-            check_int_eq(room_service_app_config_load(&config, path), -1);
-            check_int_eq(config.bind_port, 17777);
+            check_equal(room_service_app_config_load(&config, path), -1);
+            check_equal(config.bind_port, 17777);
             check_null(config.config_file);
             check_null(config.private_data);
         }
@@ -410,10 +410,10 @@ spec("room service TOML configuration") {
 
         room_service_app_config_init(&config);
         if (malformed_path && mistyped_path && invalid_path) {
-            check_int_eq(room_service_app_config_load(&config, malformed_path), -1);
-            check_int_eq(room_service_app_config_load(&config, mistyped_path), -1);
-            check_int_eq(room_service_app_config_load(&config, invalid_path), -1);
-            check_int_eq(config.bind_port, 9090);
+            check_equal(room_service_app_config_load(&config, malformed_path), -1);
+            check_equal(room_service_app_config_load(&config, mistyped_path), -1);
+            check_equal(room_service_app_config_load(&config, invalid_path), -1);
+            check_equal(config.bind_port, 9090);
             check_true(config.auto_create_rooms);
             check_null(config.private_data);
         }
@@ -433,7 +433,7 @@ spec("room service TOML configuration") {
 
         room_service_app_config_init(&config);
         if (path) {
-            check_int_eq(room_service_app_config_load(&config, path), -1);
+            check_equal(room_service_app_config_load(&config, path), -1);
             check_false(config.use_tls);
             check_null(config.private_data);
         }
@@ -455,9 +455,9 @@ spec("room service TOML configuration") {
 
         room_service_app_config_init(&config);
         if (inbound_path && outbound_path) {
-            check_int_eq(
+            check_equal(
                 room_service_app_config_load(&config, inbound_path), -1);
-            check_int_eq(
+            check_equal(
                 room_service_app_config_load(&config, outbound_path), -1);
             check_null(config.private_data);
         }
@@ -476,11 +476,11 @@ spec("room service TOML configuration") {
 
         room_service_app_config_init(&config);
         if (first_path && second_path) {
-            check_int_eq(room_service_app_config_load(&config, first_path), 0);
-            check_int_eq(room_service_app_config_load(&config, second_path), 0);
-            check_str_eq(config.node_id, "persistent-room-service");
-            check_int_eq(config.max_rooms, 2048);
-            check_str_eq(config.config_file, second_path);
+            check_equal(room_service_app_config_load(&config, first_path), 0);
+            check_equal(room_service_app_config_load(&config, second_path), 0);
+            check_equal(config.node_id, "persistent-room-service");
+            check_equal(config.max_rooms, 2048);
+            check_equal(config.config_file, second_path);
         }
         room_service_app_config_cleanup(&config);
         remove_toml(first_path);

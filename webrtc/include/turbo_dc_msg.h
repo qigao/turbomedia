@@ -43,7 +43,7 @@ typedef struct ltv_message_s ltv_message_t;
  *
  * Encodes message as LTV and sends as binary.
  */
-CXX_C_API int turbo_dc_send_ltv(turbo_dc_channel_t *channel, uint8_t type,
+TURBO_MEDIA_API int turbo_dc_send_ltv(turbo_dc_channel_t *channel, uint8_t type,
                                  const void *data, size_t len);
 
 /**
@@ -83,7 +83,7 @@ static inline int turbo_dc_send_raw(turbo_dc_channel_t *channel,
  *       }
  *   }
  */
-CXX_C_API int turbo_dc_parse_ltv(const void *data, size_t len, ltv_message_t **out);
+TURBO_MEDIA_API int turbo_dc_parse_ltv(const void *data, size_t len, ltv_message_t **out);
 
 /**
  * @brief Check if data looks like LTV message
@@ -91,7 +91,7 @@ CXX_C_API int turbo_dc_parse_ltv(const void *data, size_t len, ltv_message_t **o
  * @param len      Data length
  * @return 1 if valid LTV, 0 otherwise
  */
-CXX_C_API int turbo_dc_is_ltv(const void *data, size_t len);
+TURBO_MEDIA_API int turbo_dc_is_ltv(const void *data, size_t len);
 
 /* ============================================================================
  * Stream Parser (for fragmented messages)
@@ -104,7 +104,7 @@ typedef struct turbo_dc_msg_stream_s turbo_dc_msg_stream_t;
  * @param buffer_size  Internal buffer size (0 = default 64KB)
  * @return Stream parser or NULL on error
  */
-CXX_C_API turbo_dc_msg_stream_t *turbo_dc_msg_stream_create(size_t buffer_size);
+TURBO_MEDIA_API turbo_dc_msg_stream_t *turbo_dc_msg_stream_create(size_t buffer_size);
 
 /**
  * @brief Feed data to stream parser
@@ -114,19 +114,19 @@ CXX_C_API turbo_dc_msg_stream_t *turbo_dc_msg_stream_create(size_t buffer_size);
  * @param out     Output: pointer to LTV message handle on completion
  * @return 1 if message complete, 0 if need more data, -1 on error
  */
-CXX_C_API int turbo_dc_msg_stream_feed(turbo_dc_msg_stream_t *stream,
+TURBO_MEDIA_API int turbo_dc_msg_stream_feed(turbo_dc_msg_stream_t *stream,
                                         const void *data, size_t len,
                                         ltv_message_t **out);
 
 /**
  * @brief Reset stream parser state
  */
-CXX_C_API void turbo_dc_msg_stream_reset(turbo_dc_msg_stream_t *stream);
+TURBO_MEDIA_API void turbo_dc_msg_stream_reset(turbo_dc_msg_stream_t *stream);
 
 /**
  * @brief Destroy stream parser
  */
-CXX_C_API void turbo_dc_msg_stream_destroy(turbo_dc_msg_stream_t *stream);
+TURBO_MEDIA_API void turbo_dc_msg_stream_destroy(turbo_dc_msg_stream_t *stream);
 
 #ifdef __cplusplus
 }

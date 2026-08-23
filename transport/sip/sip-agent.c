@@ -12,11 +12,11 @@ struct sip_agent_t* sip_agent_create(struct sip_uas_handler_t* handler)
 
 	sip->ref = 1;
 	turbo_mutex_init(&sip->locker);
-	if (turbo_vec_init(&sip->uac, sizeof(struct sip_uac_transaction_t *)) != TURBO_OK ||
-		turbo_vec_init(&sip->uas, sizeof(struct sip_uas_transaction_t *)) != TURBO_OK)
+	if (vec_init_bytes(&sip->uac, sizeof(struct sip_uac_transaction_t *), CMETA_ALIGNOF(struct sip_uac_transaction_t *), SIZE_MAX / sizeof(struct sip_uac_transaction_t *)) != STL_OK ||
+		vec_init_bytes(&sip->uas, sizeof(struct sip_uas_transaction_t *), CMETA_ALIGNOF(struct sip_uas_transaction_t *), SIZE_MAX / sizeof(struct sip_uas_transaction_t *)) != STL_OK)
 	{
-		turbo_vec_destroy(&sip->uac);
-		turbo_vec_destroy(&sip->uas);
+		vec_destroy(&sip->uac);
+		vec_destroy(&sip->uas);
 		turbo_mutex_destroy(&sip->locker);
 		free(sip);
 		return NULL;
@@ -34,11 +34,11 @@ int sip_agent_destroy(struct sip_agent_t* sip)
 	if (0 != ref)
 		return ref;
 
-	assert(turbo_vec_empty(&sip->uac));
-	assert(turbo_vec_empty(&sip->uas));
+	assert(vec_empty(&sip->uac));
+	assert(vec_empty(&sip->uas));
 	
-	turbo_vec_destroy(&sip->uac);
-	turbo_vec_destroy(&sip->uas);
+	vec_destroy(&sip->uac);
+	vec_destroy(&sip->uas);
 	turbo_mutex_destroy(&sip->locker);
 	free(sip);
 	return 0;

@@ -142,33 +142,33 @@ struct turbo_streamer_s {
 /**
  * 初始化 Streamer 注册表
  */
-CXX_C_API void turbo_streamer_registry_init(void);
+TURBO_MEDIA_API void turbo_streamer_registry_init(void);
 
 /**
  * 关闭 Streamer 注册表
  */
-CXX_C_API void turbo_streamer_registry_shutdown(void);
+TURBO_MEDIA_API void turbo_streamer_registry_shutdown(void);
 
 /**
  * 注册 Streamer
  */
-CXX_C_API int turbo_streamer_register(const turbo_streamer_ops_t *ops);
+TURBO_MEDIA_API int turbo_streamer_register(const turbo_streamer_ops_t *ops);
 
 /**
  * 根据协议查找 Streamer
  */
-CXX_C_API const turbo_streamer_ops_t *turbo_streamer_find_by_protocol(
+TURBO_MEDIA_API const turbo_streamer_ops_t *turbo_streamer_find_by_protocol(
     turbo_streamer_protocol_t protocol);
 
 /**
  * 根据名称查找 Streamer
  */
-CXX_C_API const turbo_streamer_ops_t *turbo_streamer_find_by_name(const char *name);
+TURBO_MEDIA_API const turbo_streamer_ops_t *turbo_streamer_find_by_name(const char *name);
 
 /**
  * 根据 URL 自动检测协议
  */
-CXX_C_API turbo_streamer_protocol_t turbo_streamer_detect_protocol(const char *url);
+TURBO_MEDIA_API turbo_streamer_protocol_t turbo_streamer_detect_protocol(const char *url);
 
 /* =============================================================================
  * Streamer 实例操作
@@ -177,52 +177,52 @@ CXX_C_API turbo_streamer_protocol_t turbo_streamer_detect_protocol(const char *u
 /**
  * 创建 Streamer 实例
  */
-CXX_C_API turbo_streamer_t *turbo_streamer_create(const turbo_streamer_config_t *config);
+TURBO_MEDIA_API turbo_streamer_t *turbo_streamer_create(const turbo_streamer_config_t *config);
 
 /**
  * 销毁 Streamer 实例
  */
-CXX_C_API void turbo_streamer_destroy(turbo_streamer_t *streamer);
+TURBO_MEDIA_API void turbo_streamer_destroy(turbo_streamer_t *streamer);
 
 /**
  * 连接到流媒体服务器
  */
-CXX_C_API int turbo_streamer_connect(turbo_streamer_t *streamer);
+TURBO_MEDIA_API int turbo_streamer_connect(turbo_streamer_t *streamer);
 
 /**
  * 断开连接
  */
-CXX_C_API int turbo_streamer_disconnect(turbo_streamer_t *streamer);
+TURBO_MEDIA_API int turbo_streamer_disconnect(turbo_streamer_t *streamer);
 
 /**
  * 添加流轨道
  */
-CXX_C_API int turbo_streamer_add_stream(turbo_streamer_t *streamer,
+TURBO_MEDIA_API int turbo_streamer_add_stream(turbo_streamer_t *streamer,
                                         const turbo_stream_info_t *stream_info,
                                         int *stream_id);
 
 /**
  * 写入数据包（推流）
  */
-CXX_C_API int turbo_streamer_write_packet(turbo_streamer_t *streamer,
+TURBO_MEDIA_API int turbo_streamer_write_packet(turbo_streamer_t *streamer,
                                           const turbo_muxer_packet_t *packet);
 
 /**
  * 读取数据包（拉流）
  */
-CXX_C_API int turbo_streamer_read_packet(turbo_streamer_t *streamer,
+TURBO_MEDIA_API int turbo_streamer_read_packet(turbo_streamer_t *streamer,
                                          turbo_demuxer_packet_t *packet);
 
 /**
  * 获取统计信息
  */
-CXX_C_API int turbo_streamer_get_stats(turbo_streamer_t *streamer,
+TURBO_MEDIA_API int turbo_streamer_get_stats(turbo_streamer_t *streamer,
                                        turbo_streamer_stats_t *stats);
 
 /**
  * 设置事件回调
  */
-CXX_C_API void turbo_streamer_set_event_callback(turbo_streamer_t *streamer,
+TURBO_MEDIA_API void turbo_streamer_set_event_callback(turbo_streamer_t *streamer,
                                                  turbo_streamer_event_cb callback,
                                                  void *user_data);
 
@@ -242,14 +242,14 @@ typedef enum {
 /**
  * 获取 M3U8 播放列表内容
  */
-CXX_C_API int turbo_streamer_hls_get_playlist(turbo_streamer_t *streamer,
+TURBO_MEDIA_API int turbo_streamer_hls_get_playlist(turbo_streamer_t *streamer,
                                               char **playlist,
                                               size_t *size);
 
 /**
  * 设置 HLS 播放列表类型
  */
-CXX_C_API void turbo_streamer_hls_set_playlist_type(turbo_streamer_t *streamer,
+TURBO_MEDIA_API void turbo_streamer_hls_set_playlist_type(turbo_streamer_t *streamer,
                                                     turbo_hls_playlist_type_t type);
 
 /* =============================================================================
@@ -265,7 +265,7 @@ CXX_C_API void turbo_streamer_hls_set_playlist_type(turbo_streamer_t *streamer,
  * @return 0 表示值已保存（并在已连接时成功发送），-1 表示参数、
  *         key、内存分配或发送失败。
  */
-CXX_C_API int turbo_streamer_rtmp_set_metadata(turbo_streamer_t *streamer,
+TURBO_MEDIA_API int turbo_streamer_rtmp_set_metadata(turbo_streamer_t *streamer,
                                                const char *key,
                                                const char *value);
 

@@ -196,7 +196,7 @@ int sip_uas_transaction_terminated(struct sip_uas_transaction_t* t)
 void sip_uas_transaction_ontimeout(void* usrptr)
 {
 	char ptr[256];
-	tstr_v id;
+	vstr id;
 	struct sip_uas_transaction_t* t;
 	t = (struct sip_uas_transaction_t*)usrptr;
 	turbo_mutex_lock(&t->locker);

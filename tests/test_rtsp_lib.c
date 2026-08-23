@@ -67,7 +67,7 @@ static void turbo_rtsp_test_fill_mpeg2_ts(uint8_t *ts, size_t ts_len) {
 }
 
 suite("turbo_rtsp_lib") {
-  section("RFC 2326 RTSP messages") {
+  group("RFC 2326 RTSP messages") {
     it("parses a request line, CSeq, Session and stops at the first complete message") {
       const char *request =
           "DESCRIBE rtsp://example.com/media.mp4 RTSP/1.0\r\n"
@@ -86,12 +86,12 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.method, TURBO_RTSP_METHOD_DESCRIBE);
-      check_int_eq((int)parsed.cseq, 312);
-      check_str_eq(parsed.uri, "rtsp://example.com/media.mp4");
-      check_str_eq(parsed.session_id, "12345678");
-      check_size_eq(consumed, expected_consumed);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.method, TURBO_RTSP_METHOD_DESCRIBE);
+      check_equal((int)parsed.cseq, 312);
+      check_equal(parsed.uri, "rtsp://example.com/media.mp4");
+      check_equal(parsed.session_id, "12345678");
+      check_equal(consumed, expected_consumed);
     }
 
     it("reports partial input until the RTSP header terminator arrives") {
@@ -102,8 +102,8 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(partial, strlen(partial), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_PARTIAL);
-      check_size_eq(consumed, 0);
+      check_equal(rc, TURBO_RTSP_PARSE_PARTIAL);
+      check_equal(consumed, 0);
     }
 
     it("consumes request bodies according to Content-Length before the next message") {
@@ -126,10 +126,10 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.method, TURBO_RTSP_METHOD_SET_PARAMETER);
-      check_int_eq((int)parsed.cseq, 4);
-      check_size_eq(consumed, expected_consumed);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.method, TURBO_RTSP_METHOD_SET_PARAMETER);
+      check_equal((int)parsed.cseq, 4);
+      check_equal(consumed, expected_consumed);
     }
 
     it("preserves headers and body as a zero-copy message view") {
@@ -146,19 +146,19 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_message(request, strlen(request), &consumed, &message);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(message.request.method, TURBO_RTSP_METHOD_SET_PARAMETER);
-      check_int_eq((int)message.request.cseq, 6);
-      check_size_eq(message.header_count, 3);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(message.request.method, TURBO_RTSP_METHOD_SET_PARAMETER);
+      check_equal((int)message.request.cseq, 6);
+      check_equal(message.header_count, 3);
       content_type = turbo_rtsp_message_find_header(&message, "content-type");
       content_length = turbo_rtsp_message_find_header(&message, "Content-Length");
-      check(content_type != NULL);
-      check(content_length != NULL);
-      check_mem_eq(content_type->value, "text/parameters", strlen("text/parameters"));
-      check_mem_eq(content_length->value, "14", 2);
-      check_size_eq(message.body_len, 14);
-      check_mem_eq(message.body, "volume: 0.75\r\n", 14);
-      check_size_eq(consumed, strlen(request));
+      check_not_null(content_type);
+      check_not_null(content_length);
+      check_equal(content_type->value, "text/parameters", strlen("text/parameters"));
+      check_equal(content_length->value, "14", 2);
+      check_equal(message.body_len, 14);
+      check_equal(message.body, "volume: 0.75\r\n", 14);
+      check_equal(consumed, strlen(request));
     }
 
     it("reports partial input when Content-Length body is incomplete") {
@@ -172,8 +172,8 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_PARTIAL);
-      check_size_eq(consumed, 0);
+      check_equal(rc, TURBO_RTSP_PARSE_PARTIAL);
+      check_equal(consumed, 0);
     }
 
     it("rejects non-RTSP request versions") {
@@ -189,7 +189,7 @@ suite("turbo_rtsp_lib") {
           &consumed,
           &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_ERROR);
+      check_equal(rc, TURBO_RTSP_PARSE_ERROR);
     }
 
     it("parses an OK response status line and headers") {
@@ -211,16 +211,16 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_response(response, strlen(response), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.status_code, 200);
-      check_mem_eq(parsed.reason, "OK", 2);
-      check_size_eq(parsed.reason_len, 2);
-      check_size_eq(parsed.header_count, 3);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.status_code, 200);
+      check_equal(parsed.reason, "OK", 2);
+      check_equal(parsed.reason_len, 2);
+      check_equal(parsed.header_count, 3);
       cseq = turbo_rtsp_response_find_header(&parsed, "cseq");
-      check(cseq != NULL);
-      check_mem_eq(cseq->value, "7", 1);
-      check_size_eq(parsed.body_len, 0);
-      check_size_eq(consumed, expected_consumed);
+      check_not_null(cseq);
+      check_equal(cseq->value, "7", 1);
+      check_equal(parsed.body_len, 0);
+      check_equal(consumed, expected_consumed);
     }
 
     it("preserves response bodies as a zero-copy view") {
@@ -236,11 +236,11 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_response(response, strlen(response), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.status_code, 200);
-      check_size_eq(parsed.body_len, 10);
-      check_mem_eq(parsed.body, "v=0\r\ns=x\r\n", 10);
-      check_size_eq(consumed, strlen(response) - strlen("RTSP/1.0 200 OK\r\n"));
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.status_code, 200);
+      check_equal(parsed.body_len, 10);
+      check_equal(parsed.body, "v=0\r\ns=x\r\n", 10);
+      check_equal(consumed, strlen(response) - strlen("RTSP/1.0 200 OK\r\n"));
     }
 
     it("reports partial response input when Content-Length body is incomplete") {
@@ -254,8 +254,8 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_response(response, strlen(response), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_PARTIAL);
-      check_size_eq(consumed, 0);
+      check_equal(rc, TURBO_RTSP_PARSE_PARTIAL);
+      check_equal(consumed, 0);
     }
 
     it("rejects response status lines with non-RTSP versions") {
@@ -268,7 +268,7 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_response(response, strlen(response), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_ERROR);
+      check_equal(rc, TURBO_RTSP_PARSE_ERROR);
     }
 
     it("rejects duplicate conflicting response Content-Length headers") {
@@ -283,7 +283,7 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_response(response, strlen(response), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_ERROR);
+      check_equal(rc, TURBO_RTSP_PARSE_ERROR);
     }
 
     it("formats an OPTIONS response with status line, CSeq, Server and Public") {
@@ -304,11 +304,11 @@ suite("turbo_rtsp_lib") {
 
       check(len > 0);
       check(strstr(buffer, "RTSP/1.0 200 OK\r\n") == buffer);
-      check(strstr(buffer, "CSeq: 7\r\n") != NULL);
-      check(strstr(buffer, "Server: TurboMedia RTSP\r\n") != NULL);
-      check(strstr(buffer, "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n") != NULL);
-      check(strstr(buffer, "Content-Length: 0\r\n") != NULL);
-      check(strstr(buffer, "\r\n\r\n") != NULL);
+      check_not_null(strstr(buffer, "CSeq: 7\r\n"));
+      check_not_null(strstr(buffer, "Server: TurboMedia RTSP\r\n"));
+      check_not_null(strstr(buffer, "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n"));
+      check_not_null(strstr(buffer, "Content-Length: 0\r\n"));
+      check_not_null(strstr(buffer, "\r\n\r\n"));
     }
 
     it("rejects duplicate conflicting Content-Length headers") {
@@ -323,7 +323,7 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_ERROR);
+      check_equal(rc, TURBO_RTSP_PARSE_ERROR);
     }
 
     it("rejects overflowing request CSeq and Content-Length values") {
@@ -339,14 +339,14 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_request_t parsed;
       size_t consumed = 0;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_request(
               overflow_cseq,
               strlen(overflow_cseq),
               &consumed,
               &parsed),
           TURBO_RTSP_PARSE_ERROR);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_request(
               overflow_content_length,
               strlen(overflow_content_length),
@@ -367,7 +367,7 @@ suite("turbo_rtsp_lib") {
       response.headers = headers;
       response.header_count = sizeof(headers) / sizeof(headers[0]);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_format_response(buffer, sizeof(buffer), 1, "TurboMedia RTSP", &response),
           -1);
     }
@@ -383,17 +383,17 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_str_eq(parsed.session_id, "12345678");
-      check_str_eq(parsed.session.id, "12345678");
-      check_int_eq(parsed.session.has_timeout, 1);
-      check_int_eq(parsed.session.timeout_seconds, 45);
-      check_str_eq(parsed.range, "npt=10.500-20.250");
-      check_int_eq(parsed.range_spec.type, TURBO_RTSP_RANGE_NPT);
-      check_int_eq(parsed.range_spec.has_start, 1);
-      check_int_eq((int)parsed.range_spec.start_ms, 10500);
-      check_int_eq(parsed.range_spec.has_end, 1);
-      check_int_eq((int)parsed.range_spec.end_ms, 20250);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.session_id, "12345678");
+      check_equal(parsed.session.id, "12345678");
+      check_equal(parsed.session.has_timeout, 1);
+      check_equal(parsed.session.timeout_seconds, 45);
+      check_equal(parsed.range, "npt=10.500-20.250");
+      check_equal(parsed.range_spec.type, TURBO_RTSP_RANGE_NPT);
+      check_equal(parsed.range_spec.has_start, 1);
+      check_equal((int)parsed.range_spec.start_ms, 10500);
+      check_equal(parsed.range_spec.has_end, 1);
+      check_equal((int)parsed.range_spec.end_ms, 20250);
     }
 
     it("parses open-ended NPT now ranges") {
@@ -406,11 +406,11 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.range_spec.type, TURBO_RTSP_RANGE_NPT);
-      check_int_eq(parsed.range_spec.has_start, 1);
-      check_int_eq(parsed.range_spec.start_is_now, 1);
-      check_int_eq(parsed.range_spec.has_end, 0);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.range_spec.type, TURBO_RTSP_RANGE_NPT);
+      check_equal(parsed.range_spec.has_start, 1);
+      check_equal(parsed.range_spec.start_is_now, 1);
+      check_equal(parsed.range_spec.has_end, 0);
     }
 
     it("parses NPT hh:mm:ss request ranges") {
@@ -426,12 +426,12 @@ suite("turbo_rtsp_lib") {
       memset(&parsed, 0, sizeof(parsed));
       rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.range_spec.type, TURBO_RTSP_RANGE_NPT);
-      check_int_eq(parsed.range_spec.has_start, 1);
-      check_int_eq((int)parsed.range_spec.start_ms, 3723400);
-      check_int_eq(parsed.range_spec.has_end, 1);
-      check_int_eq((int)parsed.range_spec.end_ms, 3724005);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.range_spec.type, TURBO_RTSP_RANGE_NPT);
+      check_equal(parsed.range_spec.has_start, 1);
+      check_equal((int)parsed.range_spec.start_ms, 3723400);
+      check_equal(parsed.range_spec.has_end, 1);
+      check_equal((int)parsed.range_spec.end_ms, 3724005);
     }
 
     it("parses SMPTE request ranges and absolute time parameters") {
@@ -447,14 +447,14 @@ suite("turbo_rtsp_lib") {
       memset(&parsed, 0, sizeof(parsed));
       rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_str_eq(parsed.range, "smpte-25=10:07:00-10:07:33:05.01;time=19970123T153600Z");
-      check_int_eq(parsed.range_spec.type, TURBO_RTSP_RANGE_SMPTE_25);
-      check_int_eq(parsed.range_spec.has_start, 1);
-      check_int_eq((int)parsed.range_spec.start_ms, 36420000);
-      check_int_eq(parsed.range_spec.has_end, 1);
-      check_int_eq((int)parsed.range_spec.end_ms, 36453200);
-      check_int_eq(parsed.range_spec.has_time, 1);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.range, "smpte-25=10:07:00-10:07:33:05.01;time=19970123T153600Z");
+      check_equal(parsed.range_spec.type, TURBO_RTSP_RANGE_SMPTE_25);
+      check_equal(parsed.range_spec.has_start, 1);
+      check_equal((int)parsed.range_spec.start_ms, 36420000);
+      check_equal(parsed.range_spec.has_end, 1);
+      check_equal((int)parsed.range_spec.end_ms, 36453200);
+      check_equal(parsed.range_spec.has_time, 1);
       check(parsed.range_spec.time_ms == 854033760000LL);
     }
 
@@ -475,11 +475,11 @@ suite("turbo_rtsp_lib") {
 
       memset(&parsed, 0, sizeof(parsed));
       rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.range_spec.type, TURBO_RTSP_RANGE_CLOCK);
-      check_int_eq(parsed.range_spec.has_start, 1);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.range_spec.type, TURBO_RTSP_RANGE_CLOCK);
+      check_equal(parsed.range_spec.has_start, 1);
       check(parsed.range_spec.start_ms == 847463840250LL);
-      check_int_eq(parsed.range_spec.has_end, 0);
+      check_equal(parsed.range_spec.has_end, 0);
 
       memset(&parsed, 0, sizeof(parsed));
       consumed = 0;
@@ -488,8 +488,8 @@ suite("turbo_rtsp_lib") {
           strlen(request_without_seconds),
           &consumed,
           &parsed);
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.range_spec.type, TURBO_RTSP_RANGE_CLOCK);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.range_spec.type, TURBO_RTSP_RANGE_CLOCK);
       check(parsed.range_spec.start_ms == 847653900000LL);
       check(parsed.range_spec.end_ms == 847656900000LL);
     }
@@ -514,19 +514,19 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
 
       memset(&parsed, 0, sizeof(parsed));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_request(bad_clock, strlen(bad_clock), &consumed, &parsed),
           TURBO_RTSP_PARSE_ERROR);
 
       memset(&parsed, 0, sizeof(parsed));
       consumed = 0;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_request(bad_smpte, strlen(bad_smpte), &consumed, &parsed),
           TURBO_RTSP_PARSE_ERROR);
 
       memset(&parsed, 0, sizeof(parsed));
       consumed = 0;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_request(bad_npt, strlen(bad_npt), &consumed, &parsed),
           TURBO_RTSP_PARSE_ERROR);
     }
@@ -543,12 +543,12 @@ suite("turbo_rtsp_lib") {
       response.rtp_info = "url=rtsp://example.com/live/trackID=0;seq=45102;rtptime=12345678";
 
       check(turbo_rtsp_format_response(buffer, sizeof(buffer), 15, "TurboMedia RTSP", &response) > 0);
-      check(strstr(buffer, "RTP-Info: url=rtsp://example.com/live/trackID=0;seq=45102;rtptime=12345678\r\n") != NULL);
+      check_not_null(strstr(buffer, "RTP-Info: url=rtsp://example.com/live/trackID=0;seq=45102;rtptime=12345678\r\n"));
 
       response.rtp_info = NULL;
       response.headers = headers;
       response.header_count = sizeof(headers) / sizeof(headers[0]);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_format_response(buffer, sizeof(buffer), 15, "TurboMedia RTSP", &response),
           -1);
     }
@@ -559,7 +559,7 @@ suite("turbo_rtsp_lib") {
 
       memset(infos, 0, sizeof(infos));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_rtp_info(
               "url=rtsp://example.com/live/trackID=0;seq=45102;rtptime=12345678,"
               "url=rtsp://example.com/live/trackID=1;rtptime=42",
@@ -568,16 +568,16 @@ suite("turbo_rtsp_lib") {
               sizeof(infos) / sizeof(infos[0]),
               &info_count),
           0);
-      check_size_eq(info_count, 2);
-      check_str_eq(infos[0].url, "rtsp://example.com/live/trackID=0");
-      check_int_eq(infos[0].has_seq, 1);
-      check_int_eq((int)infos[0].seq, 45102);
-      check_int_eq(infos[0].has_rtptime, 1);
-      check_int_eq((int)infos[0].rtptime, 12345678);
-      check_str_eq(infos[1].url, "rtsp://example.com/live/trackID=1");
-      check_int_eq(infos[1].has_seq, 0);
-      check_int_eq(infos[1].has_rtptime, 1);
-      check_int_eq((int)infos[1].rtptime, 42);
+      check_equal(info_count, 2);
+      check_equal(infos[0].url, "rtsp://example.com/live/trackID=0");
+      check_equal(infos[0].has_seq, 1);
+      check_equal((int)infos[0].seq, 45102);
+      check_equal(infos[0].has_rtptime, 1);
+      check_equal((int)infos[0].rtptime, 12345678);
+      check_equal(infos[1].url, "rtsp://example.com/live/trackID=1");
+      check_equal(infos[1].has_seq, 0);
+      check_equal(infos[1].has_rtptime, 1);
+      check_equal((int)infos[1].rtptime, 42);
     }
 
     it("rejects malformed RTP-Info entries") {
@@ -586,7 +586,7 @@ suite("turbo_rtsp_lib") {
 
       memset(&info, 0, sizeof(info));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_rtp_info(
               "seq=1;rtptime=2",
               0,
@@ -594,7 +594,7 @@ suite("turbo_rtsp_lib") {
               1,
               &info_count),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_rtp_info(
               "url=rtsp://example.com/live/trackID=0;seq=4294967296",
               0,
@@ -605,7 +605,7 @@ suite("turbo_rtsp_lib") {
     }
   }
 
-  section("RFC 2326 RTSP client request formatting") {
+  group("RFC 2326 RTSP client request formatting") {
     it("formats ANNOUNCE with SDP body length and client headers") {
       static const char sdp_body[] =
           "v=0\r\n"
@@ -640,20 +640,20 @@ suite("turbo_rtsp_lib") {
 
       check(len > 0);
       check(strstr(buffer, "ANNOUNCE rtsp://example.com/live RTSP/1.0\r\n") == buffer);
-      check(strstr(buffer, "CSeq: 31\r\n") != NULL);
-      check(strstr(buffer, "User-Agent: TurboMedia RTSP Client/1.0\r\n") != NULL);
-      check(strstr(buffer, "Content-Type: application/sdp\r\n") != NULL);
-      check(strstr(buffer, content_length) != NULL);
+      check_not_null(strstr(buffer, "CSeq: 31\r\n"));
+      check_not_null(strstr(buffer, "User-Agent: TurboMedia RTSP Client/1.0\r\n"));
+      check_not_null(strstr(buffer, "Content-Type: application/sdp\r\n"));
+      check_not_null(strstr(buffer, content_length));
       body = strstr(buffer, "\r\n\r\n");
-      check(body != NULL);
+      check_not_null(body);
       body += 4;
-      check_str_eq(body, sdp_body);
+      check_equal(body, sdp_body);
 
-      check_int_eq(turbo_rtsp_parse_message(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.request.method, TURBO_RTSP_METHOD_ANNOUNCE);
-      check_int_eq((int)parsed.request.cseq, 31);
-      check_size_eq(parsed.body_len, sizeof(sdp_body) - 1);
-      check_size_eq(consumed, (size_t)len);
+      check_equal(turbo_rtsp_parse_message(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.request.method, TURBO_RTSP_METHOD_ANNOUNCE);
+      check_equal((int)parsed.request.cseq, 31);
+      check_equal(parsed.body_len, sizeof(sdp_body) - 1);
+      check_equal(consumed, (size_t)len);
     }
 
     it("formats SETUP for RTP interleaved push transport") {
@@ -674,19 +674,19 @@ suite("turbo_rtsp_lib") {
 
       check(len > 0);
       check(strstr(buffer, "SETUP rtsp://example.com/live/trackID=0 RTSP/1.0\r\n") == buffer);
-      check(strstr(buffer, "CSeq: 32\r\n") != NULL);
-      check(strstr(buffer, "User-Agent: TurboMedia RTSP Client/1.0\r\n") != NULL);
-      check(strstr(buffer, "Transport: RTP/AVP/TCP;unicast;interleaved=0-1;mode=RECORD\r\n") != NULL);
-      check(strstr(buffer, "Content-Length: 0\r\n") != NULL);
-      check(strstr(buffer, "\r\n\r\n") != NULL);
+      check_not_null(strstr(buffer, "CSeq: 32\r\n"));
+      check_not_null(strstr(buffer, "User-Agent: TurboMedia RTSP Client/1.0\r\n"));
+      check_not_null(strstr(buffer, "Transport: RTP/AVP/TCP;unicast;interleaved=0-1;mode=RECORD\r\n"));
+      check_not_null(strstr(buffer, "Content-Length: 0\r\n"));
+      check_not_null(strstr(buffer, "\r\n\r\n"));
 
-      check_int_eq(turbo_rtsp_parse_request(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.method, TURBO_RTSP_METHOD_SETUP);
-      check_int_eq((int)parsed.cseq, 32);
-      check_int_eq(parsed.transport_kind, TURBO_RTSP_TRANSPORT_RTP_AVP_TCP);
-      check_int_eq(parsed.interleaved_rtp_channel, 0);
-      check_int_eq(parsed.interleaved_rtcp_channel, 1);
-      check_size_eq(consumed, (size_t)len);
+      check_equal(turbo_rtsp_parse_request(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.method, TURBO_RTSP_METHOD_SETUP);
+      check_equal((int)parsed.cseq, 32);
+      check_equal(parsed.transport_kind, TURBO_RTSP_TRANSPORT_RTP_AVP_TCP);
+      check_equal(parsed.interleaved_rtp_channel, 0);
+      check_equal(parsed.interleaved_rtcp_channel, 1);
+      check_equal(consumed, (size_t)len);
     }
 
     it("formats RECORD with Session, Range and no request body") {
@@ -708,18 +708,18 @@ suite("turbo_rtsp_lib") {
 
       check(len > 0);
       check(strstr(buffer, "RECORD rtsp://example.com/live RTSP/1.0\r\n") == buffer);
-      check(strstr(buffer, "CSeq: 33\r\n") != NULL);
-      check(strstr(buffer, "User-Agent: TurboMedia RTSP Client/1.0\r\n") != NULL);
-      check(strstr(buffer, "Session: 12345678\r\n") != NULL);
-      check(strstr(buffer, "Range: npt=0.000-\r\n") != NULL);
-      check(strstr(buffer, "Content-Length: 0\r\n") != NULL);
+      check_not_null(strstr(buffer, "CSeq: 33\r\n"));
+      check_not_null(strstr(buffer, "User-Agent: TurboMedia RTSP Client/1.0\r\n"));
+      check_not_null(strstr(buffer, "Session: 12345678\r\n"));
+      check_not_null(strstr(buffer, "Range: npt=0.000-\r\n"));
+      check_not_null(strstr(buffer, "Content-Length: 0\r\n"));
 
-      check_int_eq(turbo_rtsp_parse_request(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.method, TURBO_RTSP_METHOD_RECORD);
-      check_int_eq((int)parsed.cseq, 33);
-      check_str_eq(parsed.session_id, "12345678");
-      check_str_eq(parsed.range, "npt=0.000-");
-      check_size_eq(consumed, (size_t)len);
+      check_equal(turbo_rtsp_parse_request(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.method, TURBO_RTSP_METHOD_RECORD);
+      check_equal((int)parsed.cseq, 33);
+      check_equal(parsed.session_id, "12345678");
+      check_equal(parsed.range, "npt=0.000-");
+      check_equal(consumed, (size_t)len);
     }
 
     it("formats TEARDOWN with Session and exact zero Content-Length") {
@@ -740,16 +740,16 @@ suite("turbo_rtsp_lib") {
 
       check(len > 0);
       check(strstr(buffer, "TEARDOWN rtsp://example.com/live RTSP/1.0\r\n") == buffer);
-      check(strstr(buffer, "CSeq: 34\r\n") != NULL);
-      check(strstr(buffer, "User-Agent: TurboMedia RTSP Client/1.0\r\n") != NULL);
-      check(strstr(buffer, "Session: 12345678\r\n") != NULL);
-      check(strstr(buffer, "Content-Length: 0\r\n") != NULL);
+      check_not_null(strstr(buffer, "CSeq: 34\r\n"));
+      check_not_null(strstr(buffer, "User-Agent: TurboMedia RTSP Client/1.0\r\n"));
+      check_not_null(strstr(buffer, "Session: 12345678\r\n"));
+      check_not_null(strstr(buffer, "Content-Length: 0\r\n"));
 
-      check_int_eq(turbo_rtsp_parse_request(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.method, TURBO_RTSP_METHOD_TEARDOWN);
-      check_int_eq((int)parsed.cseq, 34);
-      check_str_eq(parsed.session_id, "12345678");
-      check_size_eq(consumed, (size_t)len);
+      check_equal(turbo_rtsp_parse_request(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.method, TURBO_RTSP_METHOD_TEARDOWN);
+      check_equal((int)parsed.cseq, 34);
+      check_equal(parsed.session_id, "12345678");
+      check_equal(consumed, (size_t)len);
     }
 
     it("formats GET_PARAMETER keepalive with Session and no request body") {
@@ -770,14 +770,14 @@ suite("turbo_rtsp_lib") {
 
       check(len > 0);
       check(strstr(buffer, "GET_PARAMETER rtsp://example.com/live RTSP/1.0\r\n") == buffer);
-      check(strstr(buffer, "Session: 12345678\r\n") != NULL);
-      check(strstr(buffer, "Content-Length: 0\r\n") != NULL);
+      check_not_null(strstr(buffer, "Session: 12345678\r\n"));
+      check_not_null(strstr(buffer, "Content-Length: 0\r\n"));
 
-      check_int_eq(turbo_rtsp_parse_request(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.method, TURBO_RTSP_METHOD_GET_PARAMETER);
-      check_int_eq((int)parsed.cseq, 35);
-      check_str_eq(parsed.session_id, "12345678");
-      check_size_eq(consumed, (size_t)len);
+      check_equal(turbo_rtsp_parse_request(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.method, TURBO_RTSP_METHOD_GET_PARAMETER);
+      check_equal((int)parsed.cseq, 35);
+      check_equal(parsed.session_id, "12345678");
+      check_equal(consumed, (size_t)len);
     }
 
     it("formats SET_PARAMETER with text parameters body") {
@@ -802,21 +802,21 @@ suite("turbo_rtsp_lib") {
 
       check(len > 0);
       check(strstr(buffer, "SET_PARAMETER rtsp://example.com/live RTSP/1.0\r\n") == buffer);
-      check(strstr(buffer, "Session: 12345678\r\n") != NULL);
-      check(strstr(buffer, "Content-Type: text/parameters\r\n") != NULL);
-      check(strstr(buffer, "Content-Length: 14\r\n") != NULL);
+      check_not_null(strstr(buffer, "Session: 12345678\r\n"));
+      check_not_null(strstr(buffer, "Content-Type: text/parameters\r\n"));
+      check_not_null(strstr(buffer, "Content-Length: 14\r\n"));
 
-      check_int_eq(turbo_rtsp_parse_message(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.request.method, TURBO_RTSP_METHOD_SET_PARAMETER);
-      check_int_eq((int)parsed.request.cseq, 36);
-      check_str_eq(parsed.request.session_id, "12345678");
-      check_size_eq(parsed.body_len, sizeof(body) - 1);
-      check_mem_eq(parsed.body, body, sizeof(body) - 1);
-      check_size_eq(consumed, (size_t)len);
+      check_equal(turbo_rtsp_parse_message(buffer, (size_t)len, &consumed, &parsed), TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.request.method, TURBO_RTSP_METHOD_SET_PARAMETER);
+      check_equal((int)parsed.request.cseq, 36);
+      check_equal(parsed.request.session_id, "12345678");
+      check_equal(parsed.body_len, sizeof(body) - 1);
+      check_equal(parsed.body, body, sizeof(body) - 1);
+      check_equal(consumed, (size_t)len);
     }
   }
 
-  section("RFC 3550 RTP/AVP transport parameters") {
+  group("RFC 3550 RTP/AVP transport parameters") {
     it("parses RTP/AVP over UDP client RTP and RTCP ports") {
       const char *request =
           "SETUP rtsp://example.com/live/trackID=0 RTSP/1.0\r\n"
@@ -827,19 +827,19 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.method, TURBO_RTSP_METHOD_SETUP);
-      check_int_eq((int)parsed.cseq, 8);
-      check_int_eq(parsed.transport_kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
-      check_int_eq(parsed.transport_spec.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
-      check_int_eq(parsed.transport_spec.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
-      check_int_eq(parsed.client_rtp_port, 8000);
-      check_int_eq(parsed.client_rtcp_port, 8001);
-      check_int_eq(parsed.transport_spec.client_rtp_port, 8000);
-      check_int_eq(parsed.transport_spec.client_rtcp_port, 8001);
-      check_int_eq(parsed.interleaved_rtp_channel, -1);
-      check_int_eq(parsed.interleaved_rtcp_channel, -1);
-      check_str_eq(parsed.transport, "RTP/AVP;unicast;client_port=8000-8001");
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.method, TURBO_RTSP_METHOD_SETUP);
+      check_equal((int)parsed.cseq, 8);
+      check_equal(parsed.transport_kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
+      check_equal(parsed.transport_spec.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
+      check_equal(parsed.transport_spec.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
+      check_equal(parsed.client_rtp_port, 8000);
+      check_equal(parsed.client_rtcp_port, 8001);
+      check_equal(parsed.transport_spec.client_rtp_port, 8000);
+      check_equal(parsed.transport_spec.client_rtcp_port, 8001);
+      check_equal(parsed.interleaved_rtp_channel, -1);
+      check_equal(parsed.interleaved_rtcp_channel, -1);
+      check_equal(parsed.transport, "RTP/AVP;unicast;client_port=8000-8001");
     }
 
     it("parses a standalone RTP/AVP transport header value") {
@@ -847,19 +847,19 @@ suite("turbo_rtsp_lib") {
 
       memset(&parsed, 0, sizeof(parsed));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_transport(
               "RTP/AVP;unicast;client_port=4588-4589;server_port=6256-6257;mode=PLAY",
               0,
               &parsed),
           0);
-      check_int_eq(parsed.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
-      check_int_eq(parsed.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
-      check_int_eq(parsed.client_rtp_port, 4588);
-      check_int_eq(parsed.client_rtcp_port, 4589);
-      check_int_eq(parsed.server_rtp_port, 6256);
-      check_int_eq(parsed.server_rtcp_port, 6257);
-      check_int_eq(parsed.mode, TURBO_RTSP_TRANSPORT_MODE_PLAY);
+      check_equal(parsed.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
+      check_equal(parsed.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
+      check_equal(parsed.client_rtp_port, 4588);
+      check_equal(parsed.client_rtcp_port, 4589);
+      check_equal(parsed.server_rtp_port, 6256);
+      check_equal(parsed.server_rtcp_port, 6257);
+      check_equal(parsed.mode, TURBO_RTSP_TRANSPORT_MODE_PLAY);
     }
 
     it("parses a bounded transport view without reading past its end") {
@@ -873,11 +873,11 @@ suite("turbo_rtsp_lib") {
       memcpy(bounded, transport, transport_len);
       memset(&parsed, 0, sizeof(parsed));
 
-      check_int_eq(turbo_rtsp_parse_transport(bounded, transport_len, &parsed), 0);
-      check_int_eq(parsed.interleaved_rtp_channel, 2);
-      check_int_eq(parsed.interleaved_rtcp_channel, 3);
-      check_int_eq(parsed.ttl, 16);
-      check_int_eq(parsed.layers, 2);
+      check_equal(turbo_rtsp_parse_transport(bounded, transport_len, &parsed), 0);
+      check_equal(parsed.interleaved_rtp_channel, 2);
+      check_equal(parsed.interleaved_rtcp_channel, 3);
+      check_equal(parsed.ttl, 16);
+      check_equal(parsed.layers, 2);
 
       free(bounded);
     }
@@ -894,23 +894,23 @@ suite("turbo_rtsp_lib") {
 
       memset(&parsed, 0, sizeof(parsed));
 
-      check_int_eq(turbo_rtsp_parse_request(request, strlen(request), &consumed, &request_parsed), 0);
-      check_int_eq(request_parsed.transport_kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
-      check_int_eq(request_parsed.transport_spec.client_rtp_port, 5000);
-      check_int_eq(request_parsed.transport_spec.server_rtp_port, 6000);
+      check_equal(turbo_rtsp_parse_request(request, strlen(request), &consumed, &request_parsed), 0);
+      check_equal(request_parsed.transport_kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
+      check_equal(request_parsed.transport_spec.client_rtp_port, 5000);
+      check_equal(request_parsed.transport_spec.server_rtp_port, 6000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_transport(
               "RTP/AVP/UDP;unicast;client_port=5000-5001;server_port=6000-6001",
               0,
               &parsed),
           0);
-      check_int_eq(parsed.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
-      check_int_eq(parsed.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
-      check_int_eq(parsed.client_rtp_port, 5000);
-      check_int_eq(parsed.client_rtcp_port, 5001);
-      check_int_eq(parsed.server_rtp_port, 6000);
-      check_int_eq(parsed.server_rtcp_port, 6001);
+      check_equal(parsed.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
+      check_equal(parsed.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
+      check_equal(parsed.client_rtp_port, 5000);
+      check_equal(parsed.client_rtcp_port, 5001);
+      check_equal(parsed.server_rtp_port, 6000);
+      check_equal(parsed.server_rtcp_port, 6001);
     }
 
     it("rejects invalid RTP transport profiles instead of prefix-matching them") {
@@ -918,7 +918,7 @@ suite("turbo_rtsp_lib") {
 
       memset(&parsed, 0, sizeof(parsed));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_parse_transport(
               "RTP/AVPX;unicast;client_port=4588-4589",
               0,
@@ -936,15 +936,15 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.transport_kind, TURBO_RTSP_TRANSPORT_RTP_AVP_TCP);
-      check_int_eq(parsed.transport_spec.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_TCP);
-      check_int_eq(parsed.client_rtp_port, -1);
-      check_int_eq(parsed.client_rtcp_port, -1);
-      check_int_eq(parsed.interleaved_rtp_channel, 2);
-      check_int_eq(parsed.interleaved_rtcp_channel, 3);
-      check_int_eq(parsed.transport_spec.interleaved_rtp_channel, 2);
-      check_int_eq(parsed.transport_spec.interleaved_rtcp_channel, 3);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.transport_kind, TURBO_RTSP_TRANSPORT_RTP_AVP_TCP);
+      check_equal(parsed.transport_spec.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_TCP);
+      check_equal(parsed.client_rtp_port, -1);
+      check_equal(parsed.client_rtcp_port, -1);
+      check_equal(parsed.interleaved_rtp_channel, 2);
+      check_equal(parsed.interleaved_rtcp_channel, 3);
+      check_equal(parsed.transport_spec.interleaved_rtp_channel, 2);
+      check_equal(parsed.transport_spec.interleaved_rtcp_channel, 3);
     }
 
     it("parses unicast server ports, source and SSRC transport parameters") {
@@ -957,15 +957,15 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.transport_spec.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
-      check_int_eq(parsed.transport_spec.client_rtp_port, 4588);
-      check_int_eq(parsed.transport_spec.client_rtcp_port, 4589);
-      check_int_eq(parsed.transport_spec.server_rtp_port, 6256);
-      check_int_eq(parsed.transport_spec.server_rtcp_port, 6257);
-      check_str_eq(parsed.transport_spec.source, "192.0.2.10");
-      check_int_eq(parsed.transport_spec.has_ssrc, 1);
-      check_int_eq((int)parsed.transport_spec.ssrc, 0x08abe80f);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.transport_spec.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_UNICAST);
+      check_equal(parsed.transport_spec.client_rtp_port, 4588);
+      check_equal(parsed.transport_spec.client_rtcp_port, 4589);
+      check_equal(parsed.transport_spec.server_rtp_port, 6256);
+      check_equal(parsed.transport_spec.server_rtcp_port, 6257);
+      check_equal(parsed.transport_spec.source, "192.0.2.10");
+      check_equal(parsed.transport_spec.has_ssrc, 1);
+      check_equal((int)parsed.transport_spec.ssrc, 0x08abe80f);
     }
 
     it("parses multicast destination, ports, ttl, layers and mode") {
@@ -978,15 +978,15 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.transport_spec.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
-      check_int_eq(parsed.transport_spec.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_MULTICAST);
-      check_str_eq(parsed.transport_spec.destination, "239.255.0.1");
-      check_int_eq(parsed.transport_spec.multicast_rtp_port, 3456);
-      check_int_eq(parsed.transport_spec.multicast_rtcp_port, 3457);
-      check_int_eq(parsed.transport_spec.ttl, 16);
-      check_int_eq(parsed.transport_spec.layers, 2);
-      check_int_eq(parsed.transport_spec.mode, TURBO_RTSP_TRANSPORT_MODE_PLAY);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.transport_spec.kind, TURBO_RTSP_TRANSPORT_RTP_AVP_UDP);
+      check_equal(parsed.transport_spec.delivery, TURBO_RTSP_TRANSPORT_DELIVERY_MULTICAST);
+      check_equal(parsed.transport_spec.destination, "239.255.0.1");
+      check_equal(parsed.transport_spec.multicast_rtp_port, 3456);
+      check_equal(parsed.transport_spec.multicast_rtcp_port, 3457);
+      check_equal(parsed.transport_spec.ttl, 16);
+      check_equal(parsed.transport_spec.layers, 2);
+      check_equal(parsed.transport_spec.mode, TURBO_RTSP_TRANSPORT_MODE_PLAY);
     }
 
     it("parses single interleaved channel as an RTP and RTCP pair") {
@@ -999,11 +999,11 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
       int rc = turbo_rtsp_parse_request(request, strlen(request), &consumed, &parsed);
 
-      check_int_eq(rc, TURBO_RTSP_PARSE_OK);
-      check_int_eq(parsed.transport_spec.interleaved_rtp_channel, 4);
-      check_int_eq(parsed.transport_spec.interleaved_rtcp_channel, 5);
-      check_int_eq(parsed.transport_spec.mode, TURBO_RTSP_TRANSPORT_MODE_RECORD);
-      check_int_eq(parsed.transport_spec.append, 1);
+      check_equal(rc, TURBO_RTSP_PARSE_OK);
+      check_equal(parsed.transport_spec.interleaved_rtp_channel, 4);
+      check_equal(parsed.transport_spec.interleaved_rtcp_channel, 5);
+      check_equal(parsed.transport_spec.mode, TURBO_RTSP_TRANSPORT_MODE_RECORD);
+      check_equal(parsed.transport_spec.append, 1);
     }
 
     it("encodes and decodes the fixed RTP header fields") {
@@ -1022,20 +1022,20 @@ suite("turbo_rtsp_lib") {
       header.ssrc = 0xaabbccdd;
 
       written = turbo_rtsp_rtp_write_header(packet, sizeof(packet), &header);
-      check_int_eq(written, TURBO_RTSP_RTP_HEADER_SIZE);
-      check_int_eq(packet[0], 0x80);
-      check_int_eq(packet[1], 0xe0);
-      check_int_eq(packet[2], 0x12);
-      check_int_eq(packet[3], 0x34);
+      check_equal(written, TURBO_RTSP_RTP_HEADER_SIZE);
+      check_equal(packet[0], 0x80);
+      check_equal(packet[1], 0xe0);
+      check_equal(packet[2], 0x12);
+      check_equal(packet[3], 0x34);
 
-      check_int_eq(turbo_rtsp_rtp_parse_header(packet, sizeof(packet), &parsed, &header_len), 0);
-      check_size_eq(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
-      check_int_eq(parsed.version, 2);
-      check_int_eq(parsed.marker, 1);
-      check_int_eq(parsed.payload_type, 96);
-      check_int_eq(parsed.sequence_number, 0x1234);
-      check_int_eq((int)parsed.timestamp, 0x01020304);
-      check_int_eq((int)parsed.ssrc, (int)0xaabbccdd);
+      check_equal(turbo_rtsp_rtp_parse_header(packet, sizeof(packet), &parsed, &header_len), 0);
+      check_equal(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
+      check_equal(parsed.version, 2);
+      check_equal(parsed.marker, 1);
+      check_equal(parsed.payload_type, 96);
+      check_equal(parsed.sequence_number, 0x1234);
+      check_equal((int)parsed.timestamp, 0x01020304);
+      check_equal((int)parsed.ssrc, (int)0xaabbccdd);
     }
 
     it("rejects RTP packets with unsupported version") {
@@ -1045,7 +1045,7 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_rtp_header_t parsed;
       size_t header_len = 0;
 
-      check_int_eq(turbo_rtsp_rtp_parse_header(packet, sizeof(packet), &parsed, &header_len), -1);
+      check_equal(turbo_rtsp_rtp_parse_header(packet, sizeof(packet), &parsed, &header_len), -1);
     }
 
     it("parses CSRC, header extension, payload and padding") {
@@ -1058,19 +1058,19 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_rtp_header_t parsed;
       size_t header_len = 0;
 
-      check_int_eq(turbo_rtsp_rtp_parse_header(packet, sizeof(packet), &parsed, &header_len), 0);
-      check_size_eq(header_len, 24);
-      check_int_eq(parsed.version, 2);
-      check_int_eq(parsed.padding, 1);
-      check_int_eq(parsed.extension, 1);
-      check_int_eq(parsed.padding_len, 4);
-      check_int_eq(parsed.csrc_count, 1);
-      check_int_eq((int)parsed.csrc[0], 0x11223344);
-      check_int_eq(parsed.extension_profile, 0xbede);
-      check_size_eq(parsed.extension_len, 4);
-      check_mem_eq(parsed.extension_data, packet + 20, 4);
-      check_size_eq(parsed.payload_len, 2);
-      check_mem_eq(parsed.payload, packet + 24, 2);
+      check_equal(turbo_rtsp_rtp_parse_header(packet, sizeof(packet), &parsed, &header_len), 0);
+      check_equal(header_len, 24);
+      check_equal(parsed.version, 2);
+      check_equal(parsed.padding, 1);
+      check_equal(parsed.extension, 1);
+      check_equal(parsed.padding_len, 4);
+      check_equal(parsed.csrc_count, 1);
+      check_equal((int)parsed.csrc[0], 0x11223344);
+      check_equal(parsed.extension_profile, 0xbede);
+      check_equal(parsed.extension_len, 4);
+      check_equal(parsed.extension_data, packet + 20, 4);
+      check_equal(parsed.payload_len, 2);
+      check_equal(parsed.payload, packet + 24, 2);
     }
 
     it("writes RTP headers with CSRC and header extension") {
@@ -1098,8 +1098,8 @@ suite("turbo_rtsp_lib") {
       header.extension_len = sizeof(extension);
 
       written = turbo_rtsp_rtp_write_header(packet, sizeof(packet), &header);
-      check_int_eq(written, (int)sizeof(expected));
-      check_mem_eq(packet, expected, sizeof(expected));
+      check_equal(written, (int)sizeof(expected));
+      check_equal(packet, expected, sizeof(expected));
     }
 
     it("writes complete RTP packets with payload") {
@@ -1124,14 +1124,14 @@ suite("turbo_rtsp_lib") {
           &header,
           payload,
           sizeof(payload));
-      check_int_eq(written, (int)sizeof(packet));
-      check_int_eq(turbo_rtsp_rtp_parse_header(packet, (size_t)written, &parsed, &header_len), 0);
-      check_size_eq(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
-      check_int_eq(parsed.marker, 1);
-      check_int_eq(parsed.payload_type, 96);
-      check_int_eq(parsed.sequence_number, 0x1234);
-      check_size_eq(parsed.payload_len, sizeof(payload));
-      check_mem_eq(parsed.payload, payload, sizeof(payload));
+      check_equal(written, (int)sizeof(packet));
+      check_equal(turbo_rtsp_rtp_parse_header(packet, (size_t)written, &parsed, &header_len), 0);
+      check_equal(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
+      check_equal(parsed.marker, 1);
+      check_equal(parsed.payload_type, 96);
+      check_equal(parsed.sequence_number, 0x1234);
+      check_equal(parsed.payload_len, sizeof(payload));
+      check_equal(parsed.payload, payload, sizeof(payload));
     }
 
     it("writes RTP packets with CSRC, extension and payload") {
@@ -1162,16 +1162,16 @@ suite("turbo_rtsp_lib") {
           &header,
           payload,
           sizeof(payload));
-      check_int_eq(written, (int)sizeof(packet));
-      check_int_eq(turbo_rtsp_rtp_parse_header(packet, (size_t)written, &parsed, &header_len), 0);
-      check_size_eq(header_len, 24);
-      check_int_eq(parsed.csrc_count, 1);
-      check_int_eq((int)parsed.csrc[0], 0x11223344);
-      check_int_eq(parsed.extension_profile, 0xabcd);
-      check_size_eq(parsed.extension_len, sizeof(extension));
-      check_mem_eq(parsed.extension_data, extension, sizeof(extension));
-      check_size_eq(parsed.payload_len, sizeof(payload));
-      check_mem_eq(parsed.payload, payload, sizeof(payload));
+      check_equal(written, (int)sizeof(packet));
+      check_equal(turbo_rtsp_rtp_parse_header(packet, (size_t)written, &parsed, &header_len), 0);
+      check_equal(header_len, 24);
+      check_equal(parsed.csrc_count, 1);
+      check_equal((int)parsed.csrc[0], 0x11223344);
+      check_equal(parsed.extension_profile, 0xabcd);
+      check_equal(parsed.extension_len, sizeof(extension));
+      check_equal(parsed.extension_data, extension, sizeof(extension));
+      check_equal(parsed.payload_len, sizeof(payload));
+      check_equal(parsed.payload, payload, sizeof(payload));
     }
 
     it("rejects invalid RTP packet writes") {
@@ -1183,7 +1183,7 @@ suite("turbo_rtsp_lib") {
       header.version = 2;
       header.payload_type = 96;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_write_packet(
               packet,
               sizeof(packet),
@@ -1192,7 +1192,7 @@ suite("turbo_rtsp_lib") {
               sizeof(payload)),
           -1);
       header.padding = 1;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_write_packet(
               packet,
               sizeof(packet),
@@ -1211,23 +1211,23 @@ suite("turbo_rtsp_lib") {
       memset(&h264, 0, sizeof(h264));
       memset(nal, 0, sizeof(nal));
 
-      check_int_eq(turbo_rtsp_h264_payload_parse(payload, sizeof(payload), &h264), 0);
-      check_int_eq(h264.kind, TURBO_RTSP_H264_PAYLOAD_SINGLE_NAL);
-      check_int_eq(h264.forbidden_zero_bit, 0);
-      check_int_eq(h264.nal_ref_idc, 3);
-      check_int_eq(h264.nal_unit_type, 5);
-      check_size_eq(h264.nal_len, sizeof(payload));
-      check_mem_eq(h264.nal, payload, sizeof(payload));
+      check_equal(turbo_rtsp_h264_payload_parse(payload, sizeof(payload), &h264), 0);
+      check_equal(h264.kind, TURBO_RTSP_H264_PAYLOAD_SINGLE_NAL);
+      check_equal(h264.forbidden_zero_bit, 0);
+      check_equal(h264.nal_ref_idc, 3);
+      check_equal(h264.nal_unit_type, 5);
+      check_equal(h264.nal_len, sizeof(payload));
+      check_equal(h264.nal, payload, sizeof(payload));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_payload_write_nal_fragment(
               nal,
               sizeof(nal),
               &h264,
               &written),
           0);
-      check_size_eq(written, sizeof(payload));
-      check_mem_eq(nal, payload, sizeof(payload));
+      check_equal(written, sizeof(payload));
+      check_equal(nal, payload, sizeof(payload));
     }
 
     it("iterates H264 STAP-A aggregated NAL units") {
@@ -1243,22 +1243,22 @@ suite("turbo_rtsp_lib") {
 
       memset(&h264, 0, sizeof(h264));
 
-      check_int_eq(turbo_rtsp_h264_payload_parse(payload, sizeof(payload), &h264), 0);
-      check_int_eq(h264.kind, TURBO_RTSP_H264_PAYLOAD_STAP_A);
-      check_int_eq(h264.nal_ref_idc, 3);
-      check_int_eq(h264.nal_unit_type, TURBO_RTSP_H264_NAL_TYPE_STAP_A);
+      check_equal(turbo_rtsp_h264_payload_parse(payload, sizeof(payload), &h264), 0);
+      check_equal(h264.kind, TURBO_RTSP_H264_PAYLOAD_STAP_A);
+      check_equal(h264.nal_ref_idc, 3);
+      check_equal(h264.nal_unit_type, TURBO_RTSP_H264_NAL_TYPE_STAP_A);
 
-      check_int_eq(turbo_rtsp_h264_stap_a_next(&h264, &offset, &nal, &nal_len), 0);
-      check_size_eq(nal_len, 3);
-      check_mem_eq(nal, payload + 3, 3);
+      check_equal(turbo_rtsp_h264_stap_a_next(&h264, &offset, &nal, &nal_len), 0);
+      check_equal(nal_len, 3);
+      check_equal(nal, payload + 3, 3);
 
-      check_int_eq(turbo_rtsp_h264_stap_a_next(&h264, &offset, &nal, &nal_len), 0);
-      check_size_eq(nal_len, 2);
-      check_mem_eq(nal, payload + 8, 2);
+      check_equal(turbo_rtsp_h264_stap_a_next(&h264, &offset, &nal, &nal_len), 0);
+      check_equal(nal_len, 2);
+      check_equal(nal, payload + 8, 2);
 
-      check_int_eq(turbo_rtsp_h264_stap_a_next(&h264, &offset, &nal, &nal_len), 1);
-      check_size_eq(nal_len, 0);
-      check(nal == NULL);
+      check_equal(turbo_rtsp_h264_stap_a_next(&h264, &offset, &nal, &nal_len), 1);
+      check_equal(nal_len, 0);
+      check_null(nal);
     }
 
     it("reassembles H264 FU-A fragments into NAL bytes") {
@@ -1274,13 +1274,13 @@ suite("turbo_rtsp_lib") {
       memset(&h264, 0, sizeof(h264));
       memset(nal, 0, sizeof(nal));
 
-      check_int_eq(turbo_rtsp_h264_payload_parse(start_payload, sizeof(start_payload), &h264), 0);
-      check_int_eq(h264.kind, TURBO_RTSP_H264_PAYLOAD_FU_A);
-      check_int_eq(h264.fu_start, 1);
-      check_int_eq(h264.fu_end, 0);
-      check_int_eq(h264.fu_nal_unit_type, 5);
-      check_int_eq(h264.reconstructed_nal_header, 0x65);
-      check_int_eq(
+      check_equal(turbo_rtsp_h264_payload_parse(start_payload, sizeof(start_payload), &h264), 0);
+      check_equal(h264.kind, TURBO_RTSP_H264_PAYLOAD_FU_A);
+      check_equal(h264.fu_start, 1);
+      check_equal(h264.fu_end, 0);
+      check_equal(h264.fu_nal_unit_type, 5);
+      check_equal(h264.reconstructed_nal_header, 0x65);
+      check_equal(
           turbo_rtsp_h264_payload_write_nal_fragment(
               nal + total,
               sizeof(nal) - total,
@@ -1289,10 +1289,10 @@ suite("turbo_rtsp_lib") {
           0);
       total += written;
 
-      check_int_eq(turbo_rtsp_h264_payload_parse(middle_payload, sizeof(middle_payload), &h264), 0);
-      check_int_eq(h264.fu_start, 0);
-      check_int_eq(h264.fu_end, 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_h264_payload_parse(middle_payload, sizeof(middle_payload), &h264), 0);
+      check_equal(h264.fu_start, 0);
+      check_equal(h264.fu_end, 0);
+      check_equal(
           turbo_rtsp_h264_payload_write_nal_fragment(
               nal + total,
               sizeof(nal) - total,
@@ -1301,10 +1301,10 @@ suite("turbo_rtsp_lib") {
           0);
       total += written;
 
-      check_int_eq(turbo_rtsp_h264_payload_parse(end_payload, sizeof(end_payload), &h264), 0);
-      check_int_eq(h264.fu_start, 0);
-      check_int_eq(h264.fu_end, 1);
-      check_int_eq(
+      check_equal(turbo_rtsp_h264_payload_parse(end_payload, sizeof(end_payload), &h264), 0);
+      check_equal(h264.fu_start, 0);
+      check_equal(h264.fu_end, 1);
+      check_equal(
           turbo_rtsp_h264_payload_write_nal_fragment(
               nal + total,
               sizeof(nal) - total,
@@ -1313,8 +1313,8 @@ suite("turbo_rtsp_lib") {
           0);
       total += written;
 
-      check_size_eq(total, sizeof(expected_nal));
-      check_mem_eq(nal, expected_nal, sizeof(expected_nal));
+      check_equal(total, sizeof(expected_nal));
+      check_equal(nal, expected_nal, sizeof(expected_nal));
     }
 
     it("packetizes H264 NALs as single NAL payloads when they fit") {
@@ -1325,25 +1325,25 @@ suite("turbo_rtsp_lib") {
       memset(&packetizer, 0, sizeof(packetizer));
       memset(&out, 0, sizeof(out));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
               sizeof(nal),
               sizeof(nal)),
           0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               NULL,
               0,
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(nal));
-      check_mem_eq(out.payload, nal, sizeof(nal));
-      check_int_eq(out.marker, 1);
-      check_int_eq(out.end, 1);
-      check_int_eq(
+      check_equal(out.payload_len, sizeof(nal));
+      check_equal(out.payload, nal, sizeof(nal));
+      check_equal(out.marker, 1);
+      check_equal(out.end, 1);
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               NULL,
@@ -1365,7 +1365,7 @@ suite("turbo_rtsp_lib") {
       memset(&out, 0, sizeof(out));
       memset(payload, 0, sizeof(payload));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
@@ -1373,43 +1373,43 @@ suite("turbo_rtsp_lib") {
               sizeof(payload)),
           0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected_start));
-      check_mem_eq(out.payload, expected_start, sizeof(expected_start));
-      check_int_eq(out.marker, 0);
-      check_int_eq(out.end, 0);
+      check_equal(out.payload_len, sizeof(expected_start));
+      check_equal(out.payload, expected_start, sizeof(expected_start));
+      check_equal(out.marker, 0);
+      check_equal(out.end, 0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected_middle));
-      check_mem_eq(out.payload, expected_middle, sizeof(expected_middle));
-      check_int_eq(out.marker, 0);
-      check_int_eq(out.end, 0);
+      check_equal(out.payload_len, sizeof(expected_middle));
+      check_equal(out.payload, expected_middle, sizeof(expected_middle));
+      check_equal(out.marker, 0);
+      check_equal(out.end, 0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected_end));
-      check_mem_eq(out.payload, expected_end, sizeof(expected_end));
-      check_int_eq(out.marker, 1);
-      check_int_eq(out.end, 1);
+      check_equal(out.payload_len, sizeof(expected_end));
+      check_equal(out.payload, expected_end, sizeof(expected_end));
+      check_equal(out.marker, 1);
+      check_equal(out.end, 1);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
@@ -1424,7 +1424,7 @@ suite("turbo_rtsp_lib") {
 
       memset(&packetizer, 0, sizeof(packetizer));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
@@ -1439,7 +1439,7 @@ suite("turbo_rtsp_lib") {
 
       memset(&packetizer, 0, sizeof(packetizer));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
@@ -1469,7 +1469,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           start_payload,
           sizeof(start_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1478,9 +1478,9 @@ suite("turbo_rtsp_lib") {
               &nal,
               &nal_len),
           TURBO_RTSP_FRAME_PARTIAL);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(reassembler.started, 1);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(reassembler.started, 1);
 
       turbo_rtsp_test_rtp_payload_header(
           &header,
@@ -1489,7 +1489,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           middle_payload,
           sizeof(middle_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1498,8 +1498,8 @@ suite("turbo_rtsp_lib") {
               &nal,
               &nal_len),
           TURBO_RTSP_FRAME_PARTIAL);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
+      check_null(nal);
+      check_equal(nal_len, 0);
 
       turbo_rtsp_test_rtp_payload_header(
           &header,
@@ -1508,7 +1508,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           end_payload,
           sizeof(end_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1518,9 +1518,9 @@ suite("turbo_rtsp_lib") {
               &nal_len),
           TURBO_RTSP_FRAME_OK);
       check(nal == nal_buffer);
-      check_size_eq(nal_len, sizeof(expected_nal));
-      check_mem_eq(nal, expected_nal, sizeof(expected_nal));
-      check_int_eq(reassembler.started, 0);
+      check_equal(nal_len, sizeof(expected_nal));
+      check_equal(nal, expected_nal, sizeof(expected_nal));
+      check_equal(reassembler.started, 0);
     }
 
     it("rejects H264 FU-A end packets without a started reassembly") {
@@ -1540,7 +1540,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1549,9 +1549,9 @@ suite("turbo_rtsp_lib") {
               &nal,
               &nal_len),
           TURBO_RTSP_FRAME_ERROR);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(reassembler.started, 0);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(reassembler.started, 0);
     }
 
     it("rejects H264 FU-A RTP sequence gaps") {
@@ -1571,7 +1571,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           start_payload,
           sizeof(start_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1588,7 +1588,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           end_payload,
           sizeof(end_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1597,9 +1597,9 @@ suite("turbo_rtsp_lib") {
               &nal,
               &nal_len),
           TURBO_RTSP_FRAME_ERROR);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(reassembler.started, 0);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(reassembler.started, 0);
     }
 
     it("rejects H264 FU-A nal type changes during reassembly") {
@@ -1619,7 +1619,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           start_payload,
           sizeof(start_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1636,7 +1636,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           changed_type_payload,
           sizeof(changed_type_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1645,9 +1645,9 @@ suite("turbo_rtsp_lib") {
               &nal,
               &nal_len),
           TURBO_RTSP_FRAME_ERROR);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(reassembler.started, 0);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(reassembler.started, 0);
     }
 
     it("statefully outputs H264 single NAL RTP payloads directly") {
@@ -1666,7 +1666,7 @@ suite("turbo_rtsp_lib") {
           payload,
           sizeof(payload));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_reassembler_push(
               &reassembler,
               &header,
@@ -1676,9 +1676,9 @@ suite("turbo_rtsp_lib") {
               &nal_len),
           TURBO_RTSP_FRAME_OK);
       check(nal == payload);
-      check_size_eq(nal_len, sizeof(payload));
-      check_mem_eq(nal, payload, sizeof(payload));
-      check_int_eq(reassembler.started, 0);
+      check_equal(nal_len, sizeof(payload));
+      check_equal(nal, payload, sizeof(payload));
+      check_equal(reassembler.started, 0);
     }
 
     it("packetizes H264 single NAL payloads without copying") {
@@ -1689,22 +1689,22 @@ suite("turbo_rtsp_lib") {
       memset(&packetizer, 0, sizeof(packetizer));
       memset(&out, 0, sizeof(out));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
               sizeof(nal),
               sizeof(nal)),
           0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(&packetizer, NULL, 0, &out),
           0);
       check(out.payload == nal);
-      check_size_eq(out.payload_len, sizeof(nal));
-      check_int_eq(out.marker, 1);
-      check_int_eq(out.end, 1);
-      check_mem_eq(out.payload, nal, sizeof(nal));
-      check_int_eq(
+      check_equal(out.payload_len, sizeof(nal));
+      check_equal(out.marker, 1);
+      check_equal(out.end, 1);
+      check_equal(out.payload, nal, sizeof(nal));
+      check_equal(
           turbo_rtsp_h264_packetizer_next(&packetizer, NULL, 0, &out),
           1);
     }
@@ -1722,7 +1722,7 @@ suite("turbo_rtsp_lib") {
       memset(&out, 0, sizeof(out));
       memset(payload, 0, sizeof(payload));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
@@ -1730,7 +1730,7 @@ suite("turbo_rtsp_lib") {
               4),
           0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
@@ -1738,36 +1738,36 @@ suite("turbo_rtsp_lib") {
               &out),
           0);
       check(out.payload == payload);
-      check_size_eq(out.payload_len, sizeof(expected_start));
-      check_int_eq(out.marker, 0);
-      check_int_eq(out.end, 0);
-      check_mem_eq(out.payload, expected_start, sizeof(expected_start));
+      check_equal(out.payload_len, sizeof(expected_start));
+      check_equal(out.marker, 0);
+      check_equal(out.end, 0);
+      check_equal(out.payload, expected_start, sizeof(expected_start));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected_middle));
-      check_int_eq(out.marker, 0);
-      check_int_eq(out.end, 0);
-      check_mem_eq(out.payload, expected_middle, sizeof(expected_middle));
+      check_equal(out.payload_len, sizeof(expected_middle));
+      check_equal(out.marker, 0);
+      check_equal(out.end, 0);
+      check_equal(out.payload, expected_middle, sizeof(expected_middle));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected_end));
-      check_int_eq(out.marker, 1);
-      check_int_eq(out.end, 1);
-      check_mem_eq(out.payload, expected_end, sizeof(expected_end));
+      check_equal(out.payload_len, sizeof(expected_end));
+      check_equal(out.marker, 1);
+      check_equal(out.end, 1);
+      check_equal(out.payload, expected_end, sizeof(expected_end));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
@@ -1789,31 +1789,31 @@ suite("turbo_rtsp_lib") {
       memset(small_payload, 0, sizeof(small_payload));
       memset(payload, 0, sizeof(payload));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
               sizeof(nal),
               4),
           0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               small_payload,
               sizeof(small_payload),
               &out),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected));
-      check_int_eq(out.marker, 0);
-      check_int_eq(out.end, 0);
-      check_mem_eq(out.payload, expected, sizeof(expected));
+      check_equal(out.payload_len, sizeof(expected));
+      check_equal(out.marker, 0);
+      check_equal(out.end, 0);
+      check_equal(out.payload, expected, sizeof(expected));
     }
 
     it("rejects H264 packetizer inputs that cannot form valid RTP payloads") {
@@ -1825,34 +1825,34 @@ suite("turbo_rtsp_lib") {
 
       memset(&packetizer, 0, sizeof(packetizer));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(&packetizer, NULL, 1, 4),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(&packetizer, empty_nal, 0, 4),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
               sizeof(nal),
               0),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               nal,
               sizeof(nal),
               2),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               forbidden_nal,
               sizeof(forbidden_nal),
               4),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h264_packetizer_init(
               &packetizer,
               aggregate_nal,
@@ -1878,17 +1878,17 @@ suite("turbo_rtsp_lib") {
 
       memset(&h264, 0, sizeof(h264));
 
-      check_int_eq(turbo_rtsp_h264_payload_parse(NULL, 0, &h264), -1);
-      check_int_eq(turbo_rtsp_h264_payload_parse(forbidden_bit_payload, sizeof(forbidden_bit_payload), &h264), -1);
-      check_int_eq(turbo_rtsp_h264_payload_parse(unsupported_payload, sizeof(unsupported_payload), &h264), -1);
-      check_int_eq(turbo_rtsp_h264_payload_parse(short_fu_a, sizeof(short_fu_a), &h264), -1);
-      check_int_eq(turbo_rtsp_h264_payload_parse(invalid_fu_a_flags, sizeof(invalid_fu_a_flags), &h264), -1);
-      check_int_eq(turbo_rtsp_h264_payload_parse(invalid_fu_a_reserved, sizeof(invalid_fu_a_reserved), &h264), -1);
-      check_int_eq(turbo_rtsp_h264_payload_parse(invalid_fu_a_type, sizeof(invalid_fu_a_type), &h264), -1);
+      check_equal(turbo_rtsp_h264_payload_parse(NULL, 0, &h264), -1);
+      check_equal(turbo_rtsp_h264_payload_parse(forbidden_bit_payload, sizeof(forbidden_bit_payload), &h264), -1);
+      check_equal(turbo_rtsp_h264_payload_parse(unsupported_payload, sizeof(unsupported_payload), &h264), -1);
+      check_equal(turbo_rtsp_h264_payload_parse(short_fu_a, sizeof(short_fu_a), &h264), -1);
+      check_equal(turbo_rtsp_h264_payload_parse(invalid_fu_a_flags, sizeof(invalid_fu_a_flags), &h264), -1);
+      check_equal(turbo_rtsp_h264_payload_parse(invalid_fu_a_reserved, sizeof(invalid_fu_a_reserved), &h264), -1);
+      check_equal(turbo_rtsp_h264_payload_parse(invalid_fu_a_type, sizeof(invalid_fu_a_type), &h264), -1);
 
-      check_int_eq(turbo_rtsp_h264_payload_parse(malformed_stap_a, sizeof(malformed_stap_a), &h264), 0);
-      check_int_eq(turbo_rtsp_h264_stap_a_next(&h264, &offset, &nal, &nal_len), -1);
-      check_int_eq(
+      check_equal(turbo_rtsp_h264_payload_parse(malformed_stap_a, sizeof(malformed_stap_a), &h264), 0);
+      check_equal(turbo_rtsp_h264_stap_a_next(&h264, &offset, &nal, &nal_len), -1);
+      check_equal(
           turbo_rtsp_h264_payload_write_nal_fragment(
               buffer,
               sizeof(buffer),
@@ -1906,24 +1906,24 @@ suite("turbo_rtsp_lib") {
       memset(&h265, 0, sizeof(h265));
       memset(nal, 0, sizeof(nal));
 
-      check_int_eq(turbo_rtsp_h265_payload_parse(payload, sizeof(payload), &h265), 0);
-      check_int_eq(h265.kind, TURBO_RTSP_H265_PAYLOAD_SINGLE_NAL);
-      check_int_eq(h265.forbidden_zero_bit, 0);
-      check_int_eq(h265.nal_unit_type, 19);
-      check_int_eq(h265.nuh_layer_id, 0);
-      check_int_eq(h265.nuh_temporal_id_plus1, 1);
-      check_size_eq(h265.nal_len, sizeof(payload));
-      check_mem_eq(h265.nal, payload, sizeof(payload));
+      check_equal(turbo_rtsp_h265_payload_parse(payload, sizeof(payload), &h265), 0);
+      check_equal(h265.kind, TURBO_RTSP_H265_PAYLOAD_SINGLE_NAL);
+      check_equal(h265.forbidden_zero_bit, 0);
+      check_equal(h265.nal_unit_type, 19);
+      check_equal(h265.nuh_layer_id, 0);
+      check_equal(h265.nuh_temporal_id_plus1, 1);
+      check_equal(h265.nal_len, sizeof(payload));
+      check_equal(h265.nal, payload, sizeof(payload));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_payload_write_nal_fragment(
               nal,
               sizeof(nal),
               &h265,
               &written),
           0);
-      check_size_eq(written, sizeof(payload));
-      check_mem_eq(nal, payload, sizeof(payload));
+      check_equal(written, sizeof(payload));
+      check_equal(nal, payload, sizeof(payload));
     }
 
     it("iterates H265 AP aggregated NAL units") {
@@ -1939,21 +1939,21 @@ suite("turbo_rtsp_lib") {
 
       memset(&h265, 0, sizeof(h265));
 
-      check_int_eq(turbo_rtsp_h265_payload_parse(payload, sizeof(payload), &h265), 0);
-      check_int_eq(h265.kind, TURBO_RTSP_H265_PAYLOAD_AP);
-      check_int_eq(h265.nal_unit_type, TURBO_RTSP_H265_NAL_TYPE_AP);
+      check_equal(turbo_rtsp_h265_payload_parse(payload, sizeof(payload), &h265), 0);
+      check_equal(h265.kind, TURBO_RTSP_H265_PAYLOAD_AP);
+      check_equal(h265.nal_unit_type, TURBO_RTSP_H265_NAL_TYPE_AP);
 
-      check_int_eq(turbo_rtsp_h265_ap_next(&h265, &offset, &nal, &nal_len), 0);
-      check_size_eq(nal_len, 3);
-      check_mem_eq(nal, payload + 4, 3);
+      check_equal(turbo_rtsp_h265_ap_next(&h265, &offset, &nal, &nal_len), 0);
+      check_equal(nal_len, 3);
+      check_equal(nal, payload + 4, 3);
 
-      check_int_eq(turbo_rtsp_h265_ap_next(&h265, &offset, &nal, &nal_len), 0);
-      check_size_eq(nal_len, 3);
-      check_mem_eq(nal, payload + 9, 3);
+      check_equal(turbo_rtsp_h265_ap_next(&h265, &offset, &nal, &nal_len), 0);
+      check_equal(nal_len, 3);
+      check_equal(nal, payload + 9, 3);
 
-      check_int_eq(turbo_rtsp_h265_ap_next(&h265, &offset, &nal, &nal_len), 1);
-      check_size_eq(nal_len, 0);
-      check(nal == NULL);
+      check_equal(turbo_rtsp_h265_ap_next(&h265, &offset, &nal, &nal_len), 1);
+      check_equal(nal_len, 0);
+      check_null(nal);
     }
 
     it("reassembles H265 FU fragments into NAL bytes") {
@@ -1969,13 +1969,13 @@ suite("turbo_rtsp_lib") {
       memset(&h265, 0, sizeof(h265));
       memset(nal, 0, sizeof(nal));
 
-      check_int_eq(turbo_rtsp_h265_payload_parse(start_payload, sizeof(start_payload), &h265), 0);
-      check_int_eq(h265.kind, TURBO_RTSP_H265_PAYLOAD_FU);
-      check_int_eq(h265.fu_start, 1);
-      check_int_eq(h265.fu_end, 0);
-      check_int_eq(h265.fu_nal_unit_type, 19);
-      check_mem_eq(h265.reconstructed_nal_header, expected_nal, 2);
-      check_int_eq(
+      check_equal(turbo_rtsp_h265_payload_parse(start_payload, sizeof(start_payload), &h265), 0);
+      check_equal(h265.kind, TURBO_RTSP_H265_PAYLOAD_FU);
+      check_equal(h265.fu_start, 1);
+      check_equal(h265.fu_end, 0);
+      check_equal(h265.fu_nal_unit_type, 19);
+      check_equal(h265.reconstructed_nal_header, expected_nal, 2);
+      check_equal(
           turbo_rtsp_h265_payload_write_nal_fragment(
               nal + total,
               sizeof(nal) - total,
@@ -1984,10 +1984,10 @@ suite("turbo_rtsp_lib") {
           0);
       total += written;
 
-      check_int_eq(turbo_rtsp_h265_payload_parse(middle_payload, sizeof(middle_payload), &h265), 0);
-      check_int_eq(h265.fu_start, 0);
-      check_int_eq(h265.fu_end, 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_h265_payload_parse(middle_payload, sizeof(middle_payload), &h265), 0);
+      check_equal(h265.fu_start, 0);
+      check_equal(h265.fu_end, 0);
+      check_equal(
           turbo_rtsp_h265_payload_write_nal_fragment(
               nal + total,
               sizeof(nal) - total,
@@ -1996,10 +1996,10 @@ suite("turbo_rtsp_lib") {
           0);
       total += written;
 
-      check_int_eq(turbo_rtsp_h265_payload_parse(end_payload, sizeof(end_payload), &h265), 0);
-      check_int_eq(h265.fu_start, 0);
-      check_int_eq(h265.fu_end, 1);
-      check_int_eq(
+      check_equal(turbo_rtsp_h265_payload_parse(end_payload, sizeof(end_payload), &h265), 0);
+      check_equal(h265.fu_start, 0);
+      check_equal(h265.fu_end, 1);
+      check_equal(
           turbo_rtsp_h265_payload_write_nal_fragment(
               nal + total,
               sizeof(nal) - total,
@@ -2008,8 +2008,8 @@ suite("turbo_rtsp_lib") {
           0);
       total += written;
 
-      check_size_eq(total, sizeof(expected_nal));
-      check_mem_eq(nal, expected_nal, sizeof(expected_nal));
+      check_equal(total, sizeof(expected_nal));
+      check_equal(nal, expected_nal, sizeof(expected_nal));
     }
 
     it("packetizes H265 NAL units as FU start middle and end payloads") {
@@ -2025,7 +2025,7 @@ suite("turbo_rtsp_lib") {
       memset(&out, 0, sizeof(out));
       memset(payload, 0, sizeof(payload));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_packetizer_init(
               &packetizer,
               nal,
@@ -2033,43 +2033,43 @@ suite("turbo_rtsp_lib") {
               sizeof(payload)),
           0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected_start));
-      check_int_eq(out.marker, 0);
-      check_int_eq(out.end, 0);
-      check_mem_eq(out.payload, expected_start, sizeof(expected_start));
+      check_equal(out.payload_len, sizeof(expected_start));
+      check_equal(out.marker, 0);
+      check_equal(out.end, 0);
+      check_equal(out.payload, expected_start, sizeof(expected_start));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected_middle));
-      check_int_eq(out.marker, 0);
-      check_int_eq(out.end, 0);
-      check_mem_eq(out.payload, expected_middle, sizeof(expected_middle));
+      check_equal(out.payload_len, sizeof(expected_middle));
+      check_equal(out.marker, 0);
+      check_equal(out.end, 0);
+      check_equal(out.payload, expected_middle, sizeof(expected_middle));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_packetizer_next(
               &packetizer,
               payload,
               sizeof(payload),
               &out),
           0);
-      check_size_eq(out.payload_len, sizeof(expected_end));
-      check_int_eq(out.marker, 1);
-      check_int_eq(out.end, 1);
-      check_mem_eq(out.payload, expected_end, sizeof(expected_end));
+      check_equal(out.payload_len, sizeof(expected_end));
+      check_equal(out.marker, 1);
+      check_equal(out.end, 1);
+      check_equal(out.payload, expected_end, sizeof(expected_end));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_packetizer_next(
               &packetizer,
               payload,
@@ -2099,7 +2099,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           start_payload,
           sizeof(start_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_reassembler_push(
               &reassembler,
               &header,
@@ -2116,7 +2116,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           middle_payload,
           sizeof(middle_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_reassembler_push(
               &reassembler,
               &header,
@@ -2133,7 +2133,7 @@ suite("turbo_rtsp_lib") {
           0x01020304,
           end_payload,
           sizeof(end_payload));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_h265_reassembler_push(
               &reassembler,
               &header,
@@ -2143,9 +2143,9 @@ suite("turbo_rtsp_lib") {
               &nal_len),
           TURBO_RTSP_FRAME_OK);
       check(nal == nal_buffer);
-      check_size_eq(nal_len, sizeof(expected_nal));
-      check_mem_eq(nal, expected_nal, sizeof(expected_nal));
-      check_int_eq(reassembler.started, 0);
+      check_equal(nal_len, sizeof(expected_nal));
+      check_equal(nal, expected_nal, sizeof(expected_nal));
+      check_equal(reassembler.started, 0);
     }
 
     it("rejects malformed or unsupported H265 RTP payloads") {
@@ -2165,17 +2165,17 @@ suite("turbo_rtsp_lib") {
 
       memset(&h265, 0, sizeof(h265));
 
-      check_int_eq(turbo_rtsp_h265_payload_parse(NULL, 0, &h265), -1);
-      check_int_eq(turbo_rtsp_h265_payload_parse(short_payload, sizeof(short_payload), &h265), -1);
-      check_int_eq(turbo_rtsp_h265_payload_parse(forbidden_payload, sizeof(forbidden_payload), &h265), -1);
-      check_int_eq(turbo_rtsp_h265_payload_parse(zero_tid_payload, sizeof(zero_tid_payload), &h265), -1);
-      check_int_eq(turbo_rtsp_h265_payload_parse(short_fu, sizeof(short_fu), &h265), -1);
-      check_int_eq(turbo_rtsp_h265_payload_parse(invalid_fu_flags, sizeof(invalid_fu_flags), &h265), -1);
-      check_int_eq(turbo_rtsp_h265_payload_parse(invalid_fu_type, sizeof(invalid_fu_type), &h265), -1);
+      check_equal(turbo_rtsp_h265_payload_parse(NULL, 0, &h265), -1);
+      check_equal(turbo_rtsp_h265_payload_parse(short_payload, sizeof(short_payload), &h265), -1);
+      check_equal(turbo_rtsp_h265_payload_parse(forbidden_payload, sizeof(forbidden_payload), &h265), -1);
+      check_equal(turbo_rtsp_h265_payload_parse(zero_tid_payload, sizeof(zero_tid_payload), &h265), -1);
+      check_equal(turbo_rtsp_h265_payload_parse(short_fu, sizeof(short_fu), &h265), -1);
+      check_equal(turbo_rtsp_h265_payload_parse(invalid_fu_flags, sizeof(invalid_fu_flags), &h265), -1);
+      check_equal(turbo_rtsp_h265_payload_parse(invalid_fu_type, sizeof(invalid_fu_type), &h265), -1);
 
-      check_int_eq(turbo_rtsp_h265_payload_parse(malformed_ap, sizeof(malformed_ap), &h265), 0);
-      check_int_eq(turbo_rtsp_h265_ap_next(&h265, &offset, &nal, &nal_len), -1);
-      check_int_eq(
+      check_equal(turbo_rtsp_h265_payload_parse(malformed_ap, sizeof(malformed_ap), &h265), 0);
+      check_equal(turbo_rtsp_h265_ap_next(&h265, &offset, &nal, &nal_len), -1);
+      check_equal(
           turbo_rtsp_h265_payload_write_nal_fragment(
               buffer,
               sizeof(buffer),
@@ -2190,31 +2190,31 @@ suite("turbo_rtsp_lib") {
       static turbo_rtsp_mpeg4_generic_payload_t mpeg4;
 
       memset(&mpeg4, 0, sizeof(mpeg4));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mpeg4_generic_payload_parse(
               complete_payload,
               sizeof(complete_payload),
               &mpeg4),
           0);
-      check_int_eq(mpeg4.au_header_bits, 16);
-      check_size_eq(mpeg4.au_size, 3);
-      check_int_eq(mpeg4.au_index, 0);
-      check_size_eq(mpeg4.au_fragment_len, 3);
-      check_mem_eq(mpeg4.au_fragment, complete_payload + 4, 3);
-      check_int_eq(mpeg4.complete, 1);
+      check_equal(mpeg4.au_header_bits, 16);
+      check_equal(mpeg4.au_size, 3);
+      check_equal(mpeg4.au_index, 0);
+      check_equal(mpeg4.au_fragment_len, 3);
+      check_equal(mpeg4.au_fragment, complete_payload + 4, 3);
+      check_equal(mpeg4.complete, 1);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mpeg4_generic_payload_parse(
               fragment_payload,
               sizeof(fragment_payload),
               &mpeg4),
           0);
-      check_int_eq(mpeg4.au_header_bits, 16);
-      check_size_eq(mpeg4.au_size, 9);
-      check_int_eq(mpeg4.au_index, 0);
-      check_size_eq(mpeg4.au_fragment_len, 2);
-      check_mem_eq(mpeg4.au_fragment, fragment_payload + 4, 2);
-      check_int_eq(mpeg4.complete, 0);
+      check_equal(mpeg4.au_header_bits, 16);
+      check_equal(mpeg4.au_size, 9);
+      check_equal(mpeg4.au_index, 0);
+      check_equal(mpeg4.au_fragment_len, 2);
+      check_equal(mpeg4.au_fragment, fragment_payload + 4, 2);
+      check_equal(mpeg4.complete, 0);
     }
 
     it("rejects malformed MPEG4-GENERIC AAC-hbr RTP payloads") {
@@ -2226,32 +2226,32 @@ suite("turbo_rtsp_lib") {
       static turbo_rtsp_mpeg4_generic_payload_t mpeg4;
 
       memset(&mpeg4, 0, sizeof(mpeg4));
-      check_int_eq(turbo_rtsp_mpeg4_generic_payload_parse(NULL, 0, &mpeg4), -1);
-      check_int_eq(
+      check_equal(turbo_rtsp_mpeg4_generic_payload_parse(NULL, 0, &mpeg4), -1);
+      check_equal(
           turbo_rtsp_mpeg4_generic_payload_parse(
               short_payload,
               sizeof(short_payload),
               &mpeg4),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mpeg4_generic_payload_parse(
               unsupported_header_len,
               sizeof(unsupported_header_len),
               &mpeg4),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mpeg4_generic_payload_parse(
               zero_au_size,
               sizeof(zero_au_size),
               &mpeg4),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mpeg4_generic_payload_parse(
               empty_fragment,
               sizeof(empty_fragment),
               &mpeg4),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mpeg4_generic_payload_parse(
               fragment_too_large,
               sizeof(fragment_too_large),
@@ -2265,29 +2265,29 @@ suite("turbo_rtsp_lib") {
       static turbo_rtsp_mp4a_latm_payload_t latm;
 
       memset(&latm, 0, sizeof(latm));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mp4a_latm_payload_parse(
               complete_payload,
               sizeof(complete_payload),
               &latm),
           0);
-      check_size_eq(latm.payload_length, 4);
-      check_size_eq(latm.length_info_len, 1);
-      check_mem_eq(latm.fragment, complete_payload + 1, 4);
-      check_size_eq(latm.fragment_len, 4);
-      check_int_eq(latm.complete, 1);
+      check_equal(latm.payload_length, 4);
+      check_equal(latm.length_info_len, 1);
+      check_equal(latm.fragment, complete_payload + 1, 4);
+      check_equal(latm.fragment_len, 4);
+      check_equal(latm.complete, 1);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mp4a_latm_payload_parse(
               fragment_payload,
               sizeof(fragment_payload),
               &latm),
           0);
-      check_size_eq(latm.payload_length, 300);
-      check_size_eq(latm.length_info_len, 2);
-      check_mem_eq(latm.fragment, fragment_payload + 2, 3);
-      check_size_eq(latm.fragment_len, 3);
-      check_int_eq(latm.complete, 0);
+      check_equal(latm.payload_length, 300);
+      check_equal(latm.length_info_len, 2);
+      check_equal(latm.fragment, fragment_payload + 2, 3);
+      check_equal(latm.fragment_len, 3);
+      check_equal(latm.complete, 0);
     }
 
     it("rejects malformed MP4A-LATM RTP payload length info") {
@@ -2300,26 +2300,26 @@ suite("turbo_rtsp_lib") {
       memset(&latm, 0, sizeof(latm));
       memset(unterminated, 0xff, sizeof(unterminated));
 
-      check_int_eq(turbo_rtsp_mp4a_latm_payload_parse(NULL, 0, &latm), -1);
-      check_int_eq(
+      check_equal(turbo_rtsp_mp4a_latm_payload_parse(NULL, 0, &latm), -1);
+      check_equal(
           turbo_rtsp_mp4a_latm_payload_parse(
               unterminated,
               sizeof(unterminated),
               &latm),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mp4a_latm_payload_parse(
               zero_length,
               sizeof(zero_length),
               &latm),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mp4a_latm_payload_parse(
               too_short_fragment,
               sizeof(too_short_fragment),
               &latm),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mp4a_latm_payload_parse(
               fragment_too_large,
               sizeof(fragment_too_large),
@@ -2334,12 +2334,12 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_test_fill_mpeg2_ts(ts_data, sizeof(ts_data));
       memset(&ts, 0, sizeof(ts));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mpeg2_ts_payload_parse(ts_data, sizeof(ts_data), &ts),
           0);
       check(ts.packets == ts_data);
-      check_size_eq(ts.packets_len, sizeof(ts_data));
-      check_size_eq(ts.packet_count, 2);
+      check_equal(ts.packets_len, sizeof(ts_data));
+      check_equal(ts.packet_count, 2);
     }
 
     it("rejects malformed MPEG2 TS RTP payloads") {
@@ -2349,15 +2349,15 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_test_fill_mpeg2_ts(ts_data, sizeof(ts_data));
       memset(&ts, 0, sizeof(ts));
 
-      check_int_eq(turbo_rtsp_mpeg2_ts_payload_parse(NULL, 0, &ts), -1);
-      check_int_eq(
+      check_equal(turbo_rtsp_mpeg2_ts_payload_parse(NULL, 0, &ts), -1);
+      check_equal(
           turbo_rtsp_mpeg2_ts_payload_parse(
               ts_data,
               sizeof(ts_data) - 1,
               &ts),
           -1);
       ts_data[TURBO_RTSP_MPEG2_TS_PACKET_SIZE] = 0x00;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_mpeg2_ts_payload_parse(ts_data, sizeof(ts_data), &ts),
           -1);
     }
@@ -2376,26 +2376,26 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_rtcp_header_t header;
       turbo_rtsp_rtcp_report_block_t block;
 
-      check_int_eq(turbo_rtsp_rtcp_parse_header(packet, sizeof(packet), &header), 0);
-      check_int_eq(header.version, 2);
-      check_int_eq(header.count, 1);
-      check_int_eq(header.packet_type, TURBO_RTSP_RTCP_RR);
-      check_int_eq(header.length, 7);
-      check_size_eq(header.packet_len, sizeof(packet));
+      check_equal(turbo_rtsp_rtcp_parse_header(packet, sizeof(packet), &header), 0);
+      check_equal(header.version, 2);
+      check_equal(header.count, 1);
+      check_equal(header.packet_type, TURBO_RTSP_RTCP_RR);
+      check_equal(header.length, 7);
+      check_equal(header.packet_len, sizeof(packet));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_report_block(
               packet + TURBO_RTSP_RTCP_HEADER_SIZE + 4,
               sizeof(packet) - TURBO_RTSP_RTCP_HEADER_SIZE - 4,
               &block),
           0);
-      check_int_eq((int)block.ssrc, 0x01020304);
-      check_int_eq(block.fraction_lost, 5);
-      check_int_eq(block.cumulative_lost, -2);
-      check_int_eq((int)block.extended_highest_sequence_number, 0x00001234);
-      check_int_eq((int)block.jitter, 0x01020304);
-      check_int_eq((int)block.last_sender_report, 0x11121314);
-      check_int_eq((int)block.delay_since_last_sender_report, 0x21222324);
+      check_equal((int)block.ssrc, 0x01020304);
+      check_equal(block.fraction_lost, 5);
+      check_equal(block.cumulative_lost, -2);
+      check_equal((int)block.extended_highest_sequence_number, 0x00001234);
+      check_equal((int)block.jitter, 0x01020304);
+      check_equal((int)block.last_sender_report, 0x11121314);
+      check_equal((int)block.delay_since_last_sender_report, 0x21222324);
     }
 
     it("writes RTCP sender report fields") {
@@ -2424,26 +2424,26 @@ suite("turbo_rtsp_lib") {
       info.packet_count = 5;
       info.octet_count = 4096;
 
-      check_int_eq(turbo_rtsp_rtcp_write_header(packet, sizeof(packet), &header), 4);
-      check_int_eq(
+      check_equal(turbo_rtsp_rtcp_write_header(packet, sizeof(packet), &header), 4);
+      check_equal(
           turbo_rtsp_rtcp_write_sender_info(
               packet + TURBO_RTSP_RTCP_HEADER_SIZE,
               sizeof(packet) - TURBO_RTSP_RTCP_HEADER_SIZE,
               &info),
           TURBO_RTSP_RTCP_SENDER_INFO_SIZE);
-      check_mem_eq(packet, expected, sizeof(expected));
+      check_equal(packet, expected, sizeof(expected));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_sender_info(
               packet + TURBO_RTSP_RTCP_HEADER_SIZE,
               sizeof(packet) - TURBO_RTSP_RTCP_HEADER_SIZE,
               &parsed),
           0);
-      check_int_eq((int)parsed.ssrc, 0x01020304);
+      check_equal((int)parsed.ssrc, 0x01020304);
       check(parsed.ntp_timestamp == 0x1112131421222324ull);
-      check_int_eq((int)parsed.rtp_timestamp, 0x31323334);
-      check_int_eq((int)parsed.packet_count, 5);
-      check_int_eq((int)parsed.octet_count, 4096);
+      check_equal((int)parsed.rtp_timestamp, 0x31323334);
+      check_equal((int)parsed.packet_count, 5);
+      check_equal((int)parsed.octet_count, 4096);
     }
 
     it("formats and parses complete RTCP receiver reports") {
@@ -2473,7 +2473,7 @@ suite("turbo_rtsp_lib") {
       block.last_sender_report = 0x11121314;
       block.delay_since_last_sender_report = 0x21222324;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_receiver_report(
               packet,
               sizeof(packet),
@@ -2481,9 +2481,9 @@ suite("turbo_rtsp_lib") {
               &block,
               1),
           (int)sizeof(expected));
-      check_mem_eq(packet, expected, sizeof(expected));
+      check_equal(packet, expected, sizeof(expected));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_receiver_report(
               packet,
               sizeof(packet),
@@ -2492,15 +2492,15 @@ suite("turbo_rtsp_lib") {
               1,
               &block_count),
           0);
-      check_int_eq((int)reporter_ssrc, 0x0a0b0c0d);
-      check_size_eq(block_count, 1);
-      check_int_eq((int)parsed_block.ssrc, 0x01020304);
-      check_int_eq(parsed_block.fraction_lost, 5);
-      check_int_eq(parsed_block.cumulative_lost, -2);
-      check_int_eq((int)parsed_block.extended_highest_sequence_number, 0x00001234);
+      check_equal((int)reporter_ssrc, 0x0a0b0c0d);
+      check_equal(block_count, 1);
+      check_equal((int)parsed_block.ssrc, 0x01020304);
+      check_equal(parsed_block.fraction_lost, 5);
+      check_equal(parsed_block.cumulative_lost, -2);
+      check_equal((int)parsed_block.extended_highest_sequence_number, 0x00001234);
 
       block_count = 0;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_receiver_report(
               packet,
               sizeof(packet),
@@ -2509,7 +2509,7 @@ suite("turbo_rtsp_lib") {
               0,
               &block_count),
           -1);
-      check_size_eq(block_count, 1);
+      check_equal(block_count, 1);
     }
 
     it("formats and parses complete RTCP sender reports with report blocks") {
@@ -2547,13 +2547,13 @@ suite("turbo_rtsp_lib") {
           &sender,
           &block,
           1);
-      check_int_eq(written, (int)sizeof(packet));
-      check_int_eq(packet[0], 0x81);
-      check_int_eq(packet[1], TURBO_RTSP_RTCP_SR);
-      check_int_eq(packet[2], 0x00);
-      check_int_eq(packet[3], 0x0c);
+      check_equal(written, (int)sizeof(packet));
+      check_equal(packet[0], 0x81);
+      check_equal(packet[1], TURBO_RTSP_RTCP_SR);
+      check_equal(packet[2], 0x00);
+      check_equal(packet[3], 0x0c);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_sender_report(
               packet,
               sizeof(packet),
@@ -2562,13 +2562,13 @@ suite("turbo_rtsp_lib") {
               1,
               &block_count),
           0);
-      check_size_eq(block_count, 1);
-      check_int_eq((int)parsed_sender.ssrc, 0x01020304);
+      check_equal(block_count, 1);
+      check_equal((int)parsed_sender.ssrc, 0x01020304);
       check(parsed_sender.ntp_timestamp == 0x1112131421222324ull);
-      check_int_eq((int)parsed_sender.rtp_timestamp, 0x31323334);
-      check_int_eq((int)parsed_block.ssrc, 0x55667788);
-      check_int_eq(parsed_block.fraction_lost, 8);
-      check_int_eq(parsed_block.cumulative_lost, 3);
+      check_equal((int)parsed_sender.rtp_timestamp, 0x31323334);
+      check_equal((int)parsed_block.ssrc, 0x55667788);
+      check_equal(parsed_block.fraction_lost, 8);
+      check_equal(parsed_block.cumulative_lost, 3);
     }
 
     it("formats and parses RTCP SDES CNAME chunks") {
@@ -2584,7 +2584,7 @@ suite("turbo_rtsp_lib") {
       const char *cname = NULL;
       size_t cname_len = 0;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_sdes_cname(
               packet,
               sizeof(packet),
@@ -2592,9 +2592,9 @@ suite("turbo_rtsp_lib") {
               "camera-1",
               strlen("camera-1")),
           (int)sizeof(expected));
-      check_mem_eq(packet, expected, sizeof(expected));
+      check_equal(packet, expected, sizeof(expected));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_sdes_cname(
               packet,
               sizeof(packet),
@@ -2602,9 +2602,9 @@ suite("turbo_rtsp_lib") {
               &cname,
               &cname_len),
           0);
-      check_int_eq((int)ssrc, 0x01020304);
-      check_size_eq(cname_len, strlen("camera-1"));
-      check_mem_eq(cname, "camera-1", strlen("camera-1"));
+      check_equal((int)ssrc, 0x01020304);
+      check_equal(cname_len, strlen("camera-1"));
+      check_equal(cname, "camera-1", strlen("camera-1"));
     }
 
     it("formats and parses RTCP BYE packets") {
@@ -2622,7 +2622,7 @@ suite("turbo_rtsp_lib") {
       size_t reason_len = 0;
       size_t ssrc_count = 0;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_bye(
               packet,
               sizeof(packet),
@@ -2631,9 +2631,9 @@ suite("turbo_rtsp_lib") {
               "done",
               strlen("done")),
           (int)sizeof(expected));
-      check_mem_eq(packet, expected, sizeof(expected));
+      check_equal(packet, expected, sizeof(expected));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_bye(
               packet,
               sizeof(packet),
@@ -2643,14 +2643,14 @@ suite("turbo_rtsp_lib") {
               &reason,
               &reason_len),
           0);
-      check_size_eq(ssrc_count, 2);
-      check_int_eq((int)parsed_ssrcs[0], 0x01020304);
-      check_int_eq((int)parsed_ssrcs[1], 0x11121314);
-      check_size_eq(reason_len, strlen("done"));
-      check_mem_eq(reason, "done", strlen("done"));
+      check_equal(ssrc_count, 2);
+      check_equal((int)parsed_ssrcs[0], 0x01020304);
+      check_equal((int)parsed_ssrcs[1], 0x11121314);
+      check_equal(reason_len, strlen("done"));
+      check_equal(reason, "done", strlen("done"));
 
       ssrc_count = 0;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_bye(
               packet,
               sizeof(packet),
@@ -2660,7 +2660,7 @@ suite("turbo_rtsp_lib") {
               NULL,
               NULL),
           -1);
-      check_size_eq(ssrc_count, 2);
+      check_equal(ssrc_count, 2);
     }
 
     it("formats and parses RTCP APP packets") {
@@ -2683,17 +2683,17 @@ suite("turbo_rtsp_lib") {
       app.data = data;
       app.data_len = sizeof(data);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_app(packet, sizeof(packet), &app),
           (int)sizeof(expected));
-      check_mem_eq(packet, expected, sizeof(expected));
+      check_equal(packet, expected, sizeof(expected));
 
-      check_int_eq(turbo_rtsp_rtcp_parse_app(packet, sizeof(packet), &parsed), 0);
-      check_int_eq(parsed.subtype, 5);
-      check_int_eq((int)parsed.ssrc, 0x01020304);
-      check_mem_eq(parsed.name, "TMED", 4);
-      check_size_eq(parsed.data_len, sizeof(data));
-      check_mem_eq(parsed.data, data, sizeof(data));
+      check_equal(turbo_rtsp_rtcp_parse_app(packet, sizeof(packet), &parsed), 0);
+      check_equal(parsed.subtype, 5);
+      check_equal((int)parsed.ssrc, 0x01020304);
+      check_equal(parsed.name, "TMED", 4);
+      check_equal(parsed.data_len, sizeof(data));
+      check_equal(parsed.data, data, sizeof(data));
     }
 
     it("formats and parses RTCP RTPFB Generic NACK packets") {
@@ -2715,7 +2715,7 @@ suite("turbo_rtsp_lib") {
       size_t item_count = 0;
 
       memset(parsed_items, 0, sizeof(parsed_items));
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_generic_nack(
               packet,
               sizeof(packet),
@@ -2724,9 +2724,9 @@ suite("turbo_rtsp_lib") {
               items,
               sizeof(items) / sizeof(items[0])),
           (int)sizeof(expected));
-      check_mem_eq(packet, expected, sizeof(expected));
+      check_equal(packet, expected, sizeof(expected));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_generic_nack(
               packet,
               sizeof(packet),
@@ -2736,13 +2736,13 @@ suite("turbo_rtsp_lib") {
               sizeof(parsed_items) / sizeof(parsed_items[0]),
               &item_count),
           0);
-      check_int_eq((int)sender_ssrc, 0x01020304);
-      check_int_eq((int)media_ssrc, 0x11121314);
-      check_size_eq(item_count, 2);
-      check_int_eq(parsed_items[0].packet_id, 631);
-      check_int_eq(parsed_items[0].lost_packet_bitmask, 0x8028);
-      check_int_eq(parsed_items[1].packet_id, 648);
-      check_int_eq(parsed_items[1].lost_packet_bitmask, 0x0021);
+      check_equal((int)sender_ssrc, 0x01020304);
+      check_equal((int)media_ssrc, 0x11121314);
+      check_equal(item_count, 2);
+      check_equal(parsed_items[0].packet_id, 631);
+      check_equal(parsed_items[0].lost_packet_bitmask, 0x8028);
+      check_equal(parsed_items[1].packet_id, 648);
+      check_equal(parsed_items[1].lost_packet_bitmask, 0x0021);
     }
 
     it("formats and parses RTCP PSFB PLI packets") {
@@ -2755,24 +2755,24 @@ suite("turbo_rtsp_lib") {
       uint32_t sender_ssrc = 0;
       uint32_t media_ssrc = 0;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_pli(
               packet,
               sizeof(packet),
               0x01020304,
               0x11121314),
           (int)sizeof(expected));
-      check_mem_eq(packet, expected, sizeof(expected));
+      check_equal(packet, expected, sizeof(expected));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_pli(
               packet,
               sizeof(packet),
               &sender_ssrc,
               &media_ssrc),
           0);
-      check_int_eq((int)sender_ssrc, 0x01020304);
-      check_int_eq((int)media_ssrc, 0x11121314);
+      check_equal((int)sender_ssrc, 0x01020304);
+      check_equal((int)media_ssrc, 0x11121314);
     }
 
     it("rejects invalid RTCP packet headers and report block counters") {
@@ -2807,24 +2807,24 @@ suite("turbo_rtsp_lib") {
       app.ssrc = 0x01020304;
       memcpy(app.name, "BAD!", 4);
 
-      check_int_eq(turbo_rtsp_rtcp_parse_header(bad_version, sizeof(bad_version), &header), -1);
-      check_int_eq(turbo_rtsp_rtcp_parse_header(truncated, sizeof(truncated), &header), -1);
-      check_int_eq(turbo_rtsp_rtcp_parse_header(valid_padding, sizeof(valid_padding), &header), 0);
-      check_int_eq(header.padding, 1);
-      check_int_eq(header.padding_len, 4);
-      check_size_eq(header.payload_len, 4);
-      check_int_eq(turbo_rtsp_rtcp_parse_header(zero_padding, sizeof(zero_padding), &header), -1);
-      check_int_eq(
+      check_equal(turbo_rtsp_rtcp_parse_header(bad_version, sizeof(bad_version), &header), -1);
+      check_equal(turbo_rtsp_rtcp_parse_header(truncated, sizeof(truncated), &header), -1);
+      check_equal(turbo_rtsp_rtcp_parse_header(valid_padding, sizeof(valid_padding), &header), 0);
+      check_equal(header.padding, 1);
+      check_equal(header.padding_len, 4);
+      check_equal(header.payload_len, 4);
+      check_equal(turbo_rtsp_rtcp_parse_header(zero_padding, sizeof(zero_padding), &header), -1);
+      check_equal(
           turbo_rtsp_rtcp_parse_header(oversized_padding, sizeof(oversized_padding), &header),
           -1);
-      check_int_eq(turbo_rtsp_rtcp_write_report_block(report, sizeof(report), &block), -1);
-      check_int_eq(turbo_rtsp_rtcp_write_app(app_packet, sizeof(app_packet), &app), -1);
+      check_equal(turbo_rtsp_rtcp_write_report_block(report, sizeof(report), &block), -1);
+      check_equal(turbo_rtsp_rtcp_write_app(app_packet, sizeof(app_packet), &app), -1);
 
       app.subtype = 1;
       app.data = unaligned_app_data;
       app.data_len = sizeof(unaligned_app_data);
-      check_int_eq(turbo_rtsp_rtcp_write_app(app_packet, sizeof(app_packet), &app), -1);
-      check_int_eq(turbo_rtsp_rtcp_parse_app(truncated, sizeof(truncated), &app), -1);
+      check_equal(turbo_rtsp_rtcp_write_app(app_packet, sizeof(app_packet), &app), -1);
+      check_equal(turbo_rtsp_rtcp_parse_app(truncated, sizeof(truncated), &app), -1);
     }
 
     it("rejects malformed RTCP feedback packets") {
@@ -2857,7 +2857,7 @@ suite("turbo_rtsp_lib") {
       uint32_t media_ssrc = 0;
       size_t item_count = 0;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_generic_nack(
               nack_without_fci,
               sizeof(nack_without_fci),
@@ -2867,8 +2867,8 @@ suite("turbo_rtsp_lib") {
               1,
               &item_count),
           -1);
-      check_size_eq(item_count, 0);
-      check_int_eq(
+      check_equal(item_count, 0);
+      check_equal(
           turbo_rtsp_rtcp_parse_generic_nack(
               nack_short_fci,
               sizeof(nack_short_fci),
@@ -2878,22 +2878,22 @@ suite("turbo_rtsp_lib") {
               0,
               &item_count),
           -1);
-      check_size_eq(item_count, 1);
-      check_int_eq(
+      check_equal(item_count, 1);
+      check_equal(
           turbo_rtsp_rtcp_parse_pli(
               pli_with_fci,
               sizeof(pli_with_fci),
               &sender_ssrc,
               &media_ssrc),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_pli(
               wrong_feedback_type,
               sizeof(wrong_feedback_type),
               &sender_ssrc,
               &media_ssrc),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_generic_nack(
               packet,
               sizeof(packet),
@@ -2902,7 +2902,7 @@ suite("turbo_rtsp_lib") {
               NULL,
               1),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_generic_nack(
               packet,
               sizeof(packet),
@@ -2911,7 +2911,7 @@ suite("turbo_rtsp_lib") {
               &item,
               0),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_generic_nack(
               packet,
               sizeof(packet) - 1,
@@ -2920,7 +2920,7 @@ suite("turbo_rtsp_lib") {
               &item,
               2),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_write_pli(packet, sizeof(packet) - 9, 0x01020304, 0x11121314),
           -1);
     }
@@ -2978,55 +2978,55 @@ suite("turbo_rtsp_lib") {
       check(written > 0);
       total_len += (size_t)written;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_next_packet(compound, total_len, &header, &consumed),
           0);
-      check_int_eq(header.packet_type, TURBO_RTSP_RTCP_SR);
-      check_size_eq(consumed, TURBO_RTSP_RTCP_HEADER_SIZE + TURBO_RTSP_RTCP_SENDER_INFO_SIZE);
+      check_equal(header.packet_type, TURBO_RTSP_RTCP_SR);
+      check_equal(consumed, TURBO_RTSP_RTCP_HEADER_SIZE + TURBO_RTSP_RTCP_SENDER_INFO_SIZE);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_next_packet(
               compound + consumed,
               total_len - consumed,
               &header,
               &consumed),
           0);
-      check_int_eq(header.packet_type, TURBO_RTSP_RTCP_SDES);
-      check_size_eq(consumed, 20);
+      check_equal(header.packet_type, TURBO_RTSP_RTCP_SDES);
+      check_equal(consumed, 20);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_next_packet(
               compound + TURBO_RTSP_RTCP_HEADER_SIZE + TURBO_RTSP_RTCP_SENDER_INFO_SIZE + 20,
               total_len - TURBO_RTSP_RTCP_HEADER_SIZE - TURBO_RTSP_RTCP_SENDER_INFO_SIZE - 20,
               &header,
               &consumed),
           0);
-      check_int_eq(header.packet_type, TURBO_RTSP_RTCP_APP);
-      check_size_eq(consumed, 16);
+      check_equal(header.packet_type, TURBO_RTSP_RTCP_APP);
+      check_equal(consumed, 16);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_next_packet(
               compound + TURBO_RTSP_RTCP_HEADER_SIZE + TURBO_RTSP_RTCP_SENDER_INFO_SIZE + 20 + 16,
               total_len - TURBO_RTSP_RTCP_HEADER_SIZE - TURBO_RTSP_RTCP_SENDER_INFO_SIZE - 20 - 16,
               &header,
               &consumed),
           0);
-      check_int_eq(header.packet_type, TURBO_RTSP_RTCP_BYE);
-      check_size_eq(consumed, 8);
+      check_equal(header.packet_type, TURBO_RTSP_RTCP_BYE);
+      check_equal(consumed, 8);
 
-      check_int_eq(turbo_rtsp_rtcp_next_packet(compound, 2, &header, &consumed), 1);
-      check_size_eq(consumed, 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_rtcp_next_packet(compound, 2, &header, &consumed), 1);
+      check_equal(consumed, 0);
+      check_equal(
           turbo_rtsp_rtcp_next_packet(
               compound,
               TURBO_RTSP_RTCP_HEADER_SIZE + TURBO_RTSP_RTCP_SENDER_INFO_SIZE - 1,
               &header,
               &consumed),
           1);
-      check_size_eq(consumed, 0);
+      check_equal(consumed, 0);
 
       compound[0] = 0x40;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_next_packet(compound, TURBO_RTSP_RTCP_HEADER_SIZE, &header, &consumed),
           -1);
     }
@@ -3076,15 +3076,15 @@ suite("turbo_rtsp_lib") {
       check(written > 0);
       total_len += (size_t)written;
 
-      check_int_eq(turbo_rtsp_rtcp_validate_compound(compound, total_len, &packet_count), 0);
-      check_size_eq(packet_count, 3);
+      check_equal(turbo_rtsp_rtcp_validate_compound(compound, total_len, &packet_count), 0);
+      check_equal(packet_count, 3);
 
       memcpy(mismatched_cname, compound, total_len);
       mismatched_cname[sr_len + TURBO_RTSP_RTCP_HEADER_SIZE + 0] = 0x90;
       mismatched_cname[sr_len + TURBO_RTSP_RTCP_HEADER_SIZE + 1] = 0x90;
       mismatched_cname[sr_len + TURBO_RTSP_RTCP_HEADER_SIZE + 2] = 0x90;
       mismatched_cname[sr_len + TURBO_RTSP_RTCP_HEADER_SIZE + 3] = 0x90;
-      check_int_eq(turbo_rtsp_rtcp_validate_compound(mismatched_cname, total_len, NULL), -1);
+      check_equal(turbo_rtsp_rtcp_validate_compound(mismatched_cname, total_len, NULL), -1);
 
       memcpy(padded_compound, compound, sr_len + sdes_len);
       padded_compound[sr_len + sdes_len + 0] = 0xa1;
@@ -3100,15 +3100,15 @@ suite("turbo_rtsp_lib") {
       padded_compound[sr_len + sdes_len + 10] = 0x00;
       padded_compound[sr_len + sdes_len + 11] = 0x04;
       packet_count = 0;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_validate_compound(
               padded_compound,
               sr_len + sdes_len + 12u,
               &packet_count),
           0);
-      check_size_eq(packet_count, 3);
+      check_equal(packet_count, 3);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_validate_compound(compound + sr_len, total_len - sr_len, NULL),
           -1);
 
@@ -3121,7 +3121,7 @@ suite("turbo_rtsp_lib") {
           NULL,
           0);
       check(written > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_validate_compound(
               missing_cname,
               sr_len + (size_t)written,
@@ -3129,22 +3129,22 @@ suite("turbo_rtsp_lib") {
           -1);
 
       compound[0] |= 0x20;
-      check_int_eq(turbo_rtsp_rtcp_validate_compound(compound, total_len, NULL), -1);
+      check_equal(turbo_rtsp_rtcp_validate_compound(compound, total_len, NULL), -1);
       compound[0] = (uint8_t)(compound[0] & 0xdfu);
 
       UNUSED(sdes_len);
     }
 
     it("converts RTCP NTP timestamps and delays into LSR and DLSR fields") {
-      check_int_eq(
+      check_equal(
           (int)turbo_rtsp_rtcp_ntp_to_lsr(0x83aa7e8000000000ull),
           0x7e800000);
-      check_int_eq(
+      check_equal(
           (int)turbo_rtsp_rtcp_ntp_to_lsr(0x1112131421222324ull),
           0x13142122);
-      check_int_eq((int)turbo_rtsp_rtcp_delay_us_to_dlsr(1000000), 65536);
-      check_int_eq((int)turbo_rtsp_rtcp_delay_us_to_dlsr(250000), 16384);
-      check_int_eq((int)turbo_rtsp_rtcp_delay_us_to_dlsr(UINT64_MAX), -1);
+      check_equal((int)turbo_rtsp_rtcp_delay_us_to_dlsr(1000000), 65536);
+      check_equal((int)turbo_rtsp_rtcp_delay_us_to_dlsr(250000), 16384);
+      check_equal((int)turbo_rtsp_rtcp_delay_us_to_dlsr(UINT64_MAX), -1);
     }
 
     it("tracks RTP sequence loss, wrap and jitter for RTCP reports") {
@@ -3160,43 +3160,43 @@ suite("turbo_rtsp_lib") {
 
       header.sequence_number = 65534;
       header.timestamp = 1000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
 
       header.sequence_number = 65535;
       header.timestamp = 2000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 2020), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 2020), 0);
 
       header.sequence_number = 1;
       header.timestamp = 4000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 4050), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 4050), 0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_make_report(
               &source,
               0x11121314,
               0x00010000,
               &report),
           0);
-      check_int_eq((int)report.ssrc, 0x01020304);
-      check_int_eq(report.fraction_lost, 64);
-      check_int_eq(report.cumulative_lost, 1);
-      check_int_eq((int)report.extended_highest_sequence_number, 65537);
-      check_int_eq((int)report.jitter, 3);
-      check_int_eq((int)report.last_sender_report, 0x11121314);
-      check_int_eq((int)report.delay_since_last_sender_report, 0x00010000);
+      check_equal((int)report.ssrc, 0x01020304);
+      check_equal(report.fraction_lost, 64);
+      check_equal(report.cumulative_lost, 1);
+      check_equal((int)report.extended_highest_sequence_number, 65537);
+      check_equal((int)report.jitter, 3);
+      check_equal((int)report.last_sender_report, 0x11121314);
+      check_equal((int)report.delay_since_last_sender_report, 0x00010000);
 
       header.sequence_number = 2;
       header.timestamp = 5000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 5060), 0);
-      check_int_eq(turbo_rtsp_rtp_source_make_report(&source, 0, 0, &report), 0);
-      check_int_eq(report.fraction_lost, 0);
-      check_int_eq(report.cumulative_lost, 1);
-      check_int_eq((int)report.extended_highest_sequence_number, 65538);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 5060), 0);
+      check_equal(turbo_rtsp_rtp_source_make_report(&source, 0, 0, &report), 0);
+      check_equal(report.fraction_lost, 0);
+      check_equal(report.cumulative_lost, 1);
+      check_equal((int)report.extended_highest_sequence_number, 65538);
 
       header.ssrc = 0x10203040;
       header.sequence_number = 3;
       header.timestamp = 6000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 6060), -1);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 6060), -1);
     }
 
     it("classifies duplicate RTP source updates without counting them twice") {
@@ -3211,19 +3211,19 @@ suite("turbo_rtsp_lib") {
 
       header.sequence_number = 10;
       header.timestamp = 1000;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 1000),
           TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check_int_eq((int)source.received, 1);
+      check_equal((int)source.received, 1);
 
       header.timestamp = 2000;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 2000),
           TURBO_RTSP_RTP_SOURCE_UPDATE_DUPLICATE);
-      check_int_eq((int)source.received, 1);
+      check_equal((int)source.received, 1);
 
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 2000), 0);
-      check_int_eq((int)source.received, 1);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 2000), 0);
+      check_equal((int)source.received, 1);
     }
 
     it("classifies slight RTP source reordering as late or out of order") {
@@ -3238,28 +3238,28 @@ suite("turbo_rtsp_lib") {
 
       header.sequence_number = 10;
       header.timestamp = 1000;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 1000),
           TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
 
       header.sequence_number = 12;
       header.timestamp = 3000;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 3020),
           TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
 
       header.sequence_number = 11;
       header.timestamp = 2000;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 2030),
           TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
-      check_int_eq((int)source.received, 3);
-      check_int_eq(source.max_sequence_number, 12);
+      check_equal((int)source.received, 3);
+      check_equal(source.max_sequence_number, 12);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 2030),
           TURBO_RTSP_RTP_SOURCE_UPDATE_DUPLICATE);
-      check_int_eq((int)source.received, 3);
+      check_equal((int)source.received, 3);
     }
 
     it("classifies large RTP source sequence jumps as dropout") {
@@ -3274,17 +3274,17 @@ suite("turbo_rtsp_lib") {
 
       header.sequence_number = 10;
       header.timestamp = 1000;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 1000),
           TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
 
       header.sequence_number = 4011;
       header.timestamp = 2000;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 2020),
           TURBO_RTSP_RTP_SOURCE_UPDATE_DROPOUT);
-      check_int_eq((int)source.received, 2);
-      check_int_eq(source.max_sequence_number, 4011);
+      check_equal((int)source.received, 2);
+      check_equal(source.max_sequence_number, 4011);
     }
 
     it("classifies RTP source SSRC mismatches") {
@@ -3298,21 +3298,21 @@ suite("turbo_rtsp_lib") {
       header.ssrc = 0x01020304;
 
       turbo_rtsp_rtp_source_init(&source, 0x10203040);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 1000),
           TURBO_RTSP_RTP_SOURCE_UPDATE_SSRC_MISMATCH);
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 1000), -1);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 1000), -1);
 
       turbo_rtsp_rtp_source_init(&source, 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 1000),
           TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
       header.ssrc = 0x10203040;
       header.sequence_number = 2;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_update_ex(&source, &header, 2000),
           TURBO_RTSP_RTP_SOURCE_UPDATE_SSRC_MISMATCH);
-      check_int_eq((int)source.received, 1);
+      check_equal((int)source.received, 1);
     }
 
     it("writes receiver reports directly from RTP source state") {
@@ -3333,11 +3333,11 @@ suite("turbo_rtsp_lib") {
 
       header.sequence_number = 10;
       header.timestamp = 1000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
 
       header.sequence_number = 12;
       header.timestamp = 3000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 3030), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 3030), 0);
 
       written = turbo_rtsp_rtp_source_write_receiver_report(
           &source,
@@ -3346,8 +3346,8 @@ suite("turbo_rtsp_lib") {
           0x0a0b0c0d,
           turbo_rtsp_rtcp_ntp_to_lsr(0x1112131421222324ull),
           turbo_rtsp_rtcp_delay_us_to_dlsr(1000000));
-      check_int_eq(written, (int)sizeof(packet));
-      check_int_eq(
+      check_equal(written, (int)sizeof(packet));
+      check_equal(
           turbo_rtsp_rtcp_parse_receiver_report(
               packet,
               (size_t)written,
@@ -3356,18 +3356,18 @@ suite("turbo_rtsp_lib") {
               1,
               &block_count),
           0);
-      check_int_eq((int)reporter_ssrc, 0x0a0b0c0d);
-      check_size_eq(block_count, 1);
-      check_int_eq((int)block.ssrc, 0x01020304);
-      check_int_eq(block.fraction_lost, 85);
-      check_int_eq(block.cumulative_lost, 1);
-      check_int_eq((int)block.extended_highest_sequence_number, 12);
-      check_int_eq((int)block.last_sender_report, 0x13142122);
-      check_int_eq((int)block.delay_since_last_sender_report, 0x00010000);
+      check_equal((int)reporter_ssrc, 0x0a0b0c0d);
+      check_equal(block_count, 1);
+      check_equal((int)block.ssrc, 0x01020304);
+      check_equal(block.fraction_lost, 85);
+      check_equal(block.cumulative_lost, 1);
+      check_equal((int)block.extended_highest_sequence_number, 12);
+      check_equal((int)block.last_sender_report, 0x13142122);
+      check_equal((int)block.delay_since_last_sender_report, 0x00010000);
 
       header.sequence_number = 13;
       header.timestamp = 4000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 4040), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 4040), 0);
       written = turbo_rtsp_rtp_source_write_receiver_report(
           &source,
           packet,
@@ -3375,8 +3375,8 @@ suite("turbo_rtsp_lib") {
           0x0a0b0c0d,
           0,
           0);
-      check_int_eq(written, (int)sizeof(packet));
-      check_int_eq(
+      check_equal(written, (int)sizeof(packet));
+      check_equal(
           turbo_rtsp_rtcp_parse_receiver_report(
               packet,
               (size_t)written,
@@ -3385,9 +3385,9 @@ suite("turbo_rtsp_lib") {
               1,
               &block_count),
           0);
-      check_int_eq(block.fraction_lost, 0);
-      check_int_eq(block.cumulative_lost, 1);
-      check_int_eq((int)block.extended_highest_sequence_number, 13);
+      check_equal(block.fraction_lost, 0);
+      check_equal(block.cumulative_lost, 1);
+      check_equal((int)block.extended_highest_sequence_number, 13);
     }
 
     it("writes RTCP RR and SDES CNAME compound packets from RTP source state") {
@@ -3413,10 +3413,10 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_rtp_source_init(&source, 0);
       header.sequence_number = 10;
       header.timestamp = 1000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
       header.sequence_number = 12;
       header.timestamp = 3000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 3030), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 3030), 0);
 
       written = turbo_rtsp_rtp_source_write_rtcp_compound(
           &source,
@@ -3427,16 +3427,16 @@ suite("turbo_rtsp_lib") {
           0x00010000,
           "receiver",
           strlen("receiver"));
-      check_int_eq(written, 52);
-      check_int_eq(turbo_rtsp_rtcp_validate_compound(packet, (size_t)written, &packet_count), 0);
-      check_size_eq(packet_count, 2);
+      check_equal(written, 52);
+      check_equal(turbo_rtsp_rtcp_validate_compound(packet, (size_t)written, &packet_count), 0);
+      check_equal(packet_count, 2);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_next_packet(packet, (size_t)written, &rtcp_header, &consumed),
           0);
-      check_int_eq(rtcp_header.packet_type, TURBO_RTSP_RTCP_RR);
-      check_size_eq(consumed, TURBO_RTSP_RTCP_HEADER_SIZE + 4 + TURBO_RTSP_RTCP_REPORT_BLOCK_SIZE);
-      check_int_eq(
+      check_equal(rtcp_header.packet_type, TURBO_RTSP_RTCP_RR);
+      check_equal(consumed, TURBO_RTSP_RTCP_HEADER_SIZE + 4 + TURBO_RTSP_RTCP_REPORT_BLOCK_SIZE);
+      check_equal(
           turbo_rtsp_rtcp_parse_receiver_report(
               packet,
               consumed,
@@ -3445,13 +3445,13 @@ suite("turbo_rtsp_lib") {
               1,
               &block_count),
           0);
-      check_int_eq((int)reporter_ssrc, 0x0a0b0c0d);
-      check_size_eq(block_count, 1);
-      check_int_eq((int)block.ssrc, 0x01020304);
-      check_int_eq(block.fraction_lost, 85);
-      check_int_eq(block.cumulative_lost, 1);
+      check_equal((int)reporter_ssrc, 0x0a0b0c0d);
+      check_equal(block_count, 1);
+      check_equal((int)block.ssrc, 0x01020304);
+      check_equal(block.fraction_lost, 85);
+      check_equal(block.cumulative_lost, 1);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_sdes_cname(
               packet + consumed,
               (size_t)written - consumed,
@@ -3459,9 +3459,9 @@ suite("turbo_rtsp_lib") {
               &cname,
               &cname_len),
           0);
-      check_int_eq((int)sdes_ssrc, 0x0a0b0c0d);
-      check_size_eq(cname_len, strlen("receiver"));
-      check_mem_eq(cname, "receiver", strlen("receiver"));
+      check_equal((int)sdes_ssrc, 0x0a0b0c0d);
+      check_equal(cname_len, strlen("receiver"));
+      check_equal(cname, "receiver", strlen("receiver"));
     }
 
     it("writes sender reports directly from RTP sender state") {
@@ -3479,9 +3479,9 @@ suite("turbo_rtsp_lib") {
 
       turbo_rtsp_rtp_sender_init(&sender, 0);
       header.payload_len = 160;
-      check_int_eq(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
+      check_equal(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
       header.payload_len = 1200;
-      check_int_eq(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
+      check_equal(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
 
       written = turbo_rtsp_rtp_sender_write_sender_report(
           &sender,
@@ -3491,8 +3491,8 @@ suite("turbo_rtsp_lib") {
           0x31323334,
           NULL,
           0);
-      check_int_eq(written, (int)sizeof(packet));
-      check_int_eq(
+      check_equal(written, (int)sizeof(packet));
+      check_equal(
           turbo_rtsp_rtcp_parse_sender_report(
               packet,
               (size_t)written,
@@ -3501,20 +3501,20 @@ suite("turbo_rtsp_lib") {
               0,
               &block_count),
           0);
-      check_size_eq(block_count, 0);
-      check_int_eq((int)parsed.ssrc, 0x01020304);
+      check_equal(block_count, 0);
+      check_equal((int)parsed.ssrc, 0x01020304);
       check(parsed.ntp_timestamp == 0x1112131421222324ull);
-      check_int_eq((int)parsed.rtp_timestamp, 0x31323334);
-      check_int_eq((int)parsed.packet_count, 2);
-      check_int_eq((int)parsed.octet_count, 1360);
+      check_equal((int)parsed.rtp_timestamp, 0x31323334);
+      check_equal((int)parsed.packet_count, 2);
+      check_equal((int)parsed.octet_count, 1360);
 
       header.ssrc = 0x10203040;
       header.payload_len = 1;
-      check_int_eq(turbo_rtsp_rtp_sender_update(&sender, &header), -1);
+      check_equal(turbo_rtsp_rtp_sender_update(&sender, &header), -1);
 
       turbo_rtsp_rtp_sender_init(&sender, 0x10203040);
       header.ssrc = 0x01020304;
-      check_int_eq(turbo_rtsp_rtp_sender_update(&sender, &header), -1);
+      check_equal(turbo_rtsp_rtp_sender_update(&sender, &header), -1);
     }
 
     it("writes RTCP SR and SDES CNAME compound packets from RTP sender state") {
@@ -3538,9 +3538,9 @@ suite("turbo_rtsp_lib") {
 
       turbo_rtsp_rtp_sender_init(&sender, 0);
       header.payload_len = 160;
-      check_int_eq(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
+      check_equal(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
       header.payload_len = 1200;
-      check_int_eq(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
+      check_equal(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
 
       written = turbo_rtsp_rtp_sender_write_rtcp_compound(
           &sender,
@@ -3552,16 +3552,16 @@ suite("turbo_rtsp_lib") {
           0,
           "sender-1",
           strlen("sender-1"));
-      check_int_eq(written, 48);
-      check_int_eq(turbo_rtsp_rtcp_validate_compound(packet, (size_t)written, &packet_count), 0);
-      check_size_eq(packet_count, 2);
+      check_equal(written, 48);
+      check_equal(turbo_rtsp_rtcp_validate_compound(packet, (size_t)written, &packet_count), 0);
+      check_equal(packet_count, 2);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_next_packet(packet, (size_t)written, &rtcp_header, &consumed),
           0);
-      check_int_eq(rtcp_header.packet_type, TURBO_RTSP_RTCP_SR);
-      check_size_eq(consumed, TURBO_RTSP_RTCP_HEADER_SIZE + TURBO_RTSP_RTCP_SENDER_INFO_SIZE);
-      check_int_eq(
+      check_equal(rtcp_header.packet_type, TURBO_RTSP_RTCP_SR);
+      check_equal(consumed, TURBO_RTSP_RTCP_HEADER_SIZE + TURBO_RTSP_RTCP_SENDER_INFO_SIZE);
+      check_equal(
           turbo_rtsp_rtcp_parse_sender_report(
               packet,
               consumed,
@@ -3570,14 +3570,14 @@ suite("turbo_rtsp_lib") {
               0,
               &block_count),
           0);
-      check_size_eq(block_count, 0);
-      check_int_eq((int)parsed.ssrc, 0x01020304);
+      check_equal(block_count, 0);
+      check_equal((int)parsed.ssrc, 0x01020304);
       check(parsed.ntp_timestamp == 0x1112131421222324ull);
-      check_int_eq((int)parsed.rtp_timestamp, 0x31323334);
-      check_int_eq((int)parsed.packet_count, 2);
-      check_int_eq((int)parsed.octet_count, 1360);
+      check_equal((int)parsed.rtp_timestamp, 0x31323334);
+      check_equal((int)parsed.packet_count, 2);
+      check_equal((int)parsed.octet_count, 1360);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtcp_parse_sdes_cname(
               packet + consumed,
               (size_t)written - consumed,
@@ -3585,9 +3585,9 @@ suite("turbo_rtsp_lib") {
               &cname,
               &cname_len),
           0);
-      check_int_eq((int)sdes_ssrc, 0x01020304);
-      check_size_eq(cname_len, strlen("sender-1"));
-      check_mem_eq(cname, "sender-1", strlen("sender-1"));
+      check_equal((int)sdes_ssrc, 0x01020304);
+      check_equal(cname_len, strlen("sender-1"));
+      check_equal(cname, "sender-1", strlen("sender-1"));
     }
 
     it("rejects invalid RTCP compound CNAME and buffer inputs") {
@@ -3605,38 +3605,38 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_rtp_source_init(&source, 0);
       header.sequence_number = 10;
       header.timestamp = 1000;
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_write_rtcp_compound(
               &source, packet, sizeof(packet), 0x0a0b0c0d, 0, 0, NULL, 8),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_write_rtcp_compound(
               &source, packet, sizeof(packet), 0x0a0b0c0d, 0, 0, "", 0),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_write_rtcp_compound(
               &source, packet, sizeof(packet), 0x0a0b0c0d, 0, 0, long_cname, sizeof(long_cname)),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_source_write_rtcp_compound(
               &source, packet, sizeof(packet) - 1, 0x0a0b0c0d, 0, 0, "receiver", strlen("receiver")),
           -1);
-      check_int_eq((int)source.expected_prior, 0);
+      check_equal((int)source.expected_prior, 0);
 
       turbo_rtsp_rtp_sender_init(&sender, 0);
       header.payload_len = 160;
-      check_int_eq(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_rtp_sender_update(&sender, &header), 0);
+      check_equal(
           turbo_rtsp_rtp_sender_write_rtcp_compound(
               &sender, packet, sizeof(packet), 0, 0, NULL, 0, NULL, 8),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_sender_write_rtcp_compound(
               &sender, packet, sizeof(packet), 0, 0, NULL, 0, long_cname, sizeof(long_cname)),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_sender_write_rtcp_compound(
               &sender, packet, 47, 0, 0, NULL, 0, "sender-1", strlen("sender-1")),
           -1);
@@ -3655,7 +3655,7 @@ suite("turbo_rtsp_lib") {
       memset(&parsed, 0, sizeof(parsed));
       turbo_rtsp_rtp_stream_init(&stream, 0, 0x01020304, 77, 8000, 8000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_payload(
               &stream,
               audio,
@@ -3667,26 +3667,26 @@ suite("turbo_rtsp_lib") {
               &packet_len),
           0);
 
-      check_size_eq(packet_len, TURBO_RTSP_RTP_HEADER_SIZE + sizeof(audio));
-      check_int_eq(
+      check_equal(packet_len, TURBO_RTSP_RTP_HEADER_SIZE + sizeof(audio));
+      check_equal(
           turbo_rtsp_rtp_parse_header(
               packet,
               packet_len,
               &parsed,
               &header_len),
           0);
-      check_size_eq(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
-      check_int_eq(parsed.marker, 1);
-      check_int_eq(parsed.payload_type, 0);
-      check_int_eq(parsed.sequence_number, 77);
-      check_int_eq((int)parsed.timestamp, 8000);
-      check_int_eq((int)parsed.ssrc, 0x01020304);
-      check_size_eq(parsed.payload_len, sizeof(audio));
-      check_mem_eq(parsed.payload, audio, sizeof(audio));
-      check_int_eq(stream.sequence_number, 78);
-      check_int_eq((int)stream.timestamp, 8004);
-      check_int_eq((int)stream.sender.packet_count, 1);
-      check_int_eq((int)stream.sender.octet_count, 4);
+      check_equal(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
+      check_equal(parsed.marker, 1);
+      check_equal(parsed.payload_type, 0);
+      check_equal(parsed.sequence_number, 77);
+      check_equal((int)parsed.timestamp, 8000);
+      check_equal((int)parsed.ssrc, 0x01020304);
+      check_equal(parsed.payload_len, sizeof(audio));
+      check_equal(parsed.payload, audio, sizeof(audio));
+      check_equal(stream.sequence_number, 78);
+      check_equal((int)stream.timestamp, 8004);
+      check_equal((int)stream.sender.packet_count, 1);
+      check_equal((int)stream.sender.octet_count, 4);
     }
 
     it("does not advance RTP stream state when raw payload output buffer is too small") {
@@ -3699,7 +3699,7 @@ suite("turbo_rtsp_lib") {
       memset(packet, 0, sizeof(packet));
       turbo_rtsp_rtp_stream_init(&stream, 8, 0x01020304, 10, 1000, 8000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_payload(
               &stream,
               audio,
@@ -3710,11 +3710,11 @@ suite("turbo_rtsp_lib") {
               sizeof(packet),
               &packet_len),
           -1);
-      check_size_eq(packet_len, 0);
-      check_int_eq(stream.sequence_number, 10);
-      check_int_eq((int)stream.timestamp, 1000);
-      check_int_eq((int)stream.sender.packet_count, 0);
-      check_int_eq((int)stream.sender.octet_count, 0);
+      check_equal(packet_len, 0);
+      check_equal(stream.sequence_number, 10);
+      check_equal((int)stream.timestamp, 1000);
+      check_equal((int)stream.sender.packet_count, 0);
+      check_equal((int)stream.sender.octet_count, 0);
     }
 
     it("rejects invalid raw RTP stream inputs without advancing state") {
@@ -3727,7 +3727,7 @@ suite("turbo_rtsp_lib") {
       memset(packet, 0, sizeof(packet));
       turbo_rtsp_rtp_stream_init(&stream, 96, 0x01020304, 20, 2000, 8000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_payload(
               &stream,
               audio,
@@ -3738,11 +3738,11 @@ suite("turbo_rtsp_lib") {
               sizeof(packet),
               &packet_len),
           -1);
-      check_size_eq(packet_len, 0);
+      check_equal(packet_len, 0);
 
       stream.payload_type = 128;
       packet_len = 99;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_payload(
               &stream,
               audio,
@@ -3753,11 +3753,11 @@ suite("turbo_rtsp_lib") {
               sizeof(packet),
               &packet_len),
           -1);
-      check_size_eq(packet_len, 0);
-      check_int_eq(stream.sequence_number, 20);
-      check_int_eq((int)stream.timestamp, 2000);
-      check_int_eq((int)stream.sender.packet_count, 0);
-      check_int_eq((int)stream.sender.octet_count, 0);
+      check_equal(packet_len, 0);
+      check_equal(stream.sequence_number, 20);
+      check_equal((int)stream.timestamp, 2000);
+      check_equal((int)stream.sender.packet_count, 0);
+      check_equal((int)stream.sender.octet_count, 0);
     }
 
     it("writes MPEG4-GENERIC AAC-hbr AU RTP stream packets") {
@@ -3776,7 +3776,7 @@ suite("turbo_rtsp_lib") {
       memset(packets, 0, sizeof(packets));
       turbo_rtsp_rtp_stream_init(&stream, 97, 0x01020304, 500, 48000, 48000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_mpeg4_generic_au(
               &stream,
               au,
@@ -3789,7 +3789,7 @@ suite("turbo_rtsp_lib") {
               3,
               &packet_count),
           0);
-      check_size_eq(packet_count, 3);
+      check_equal(packet_count, 3);
 
       for (i = 0; i < packet_count; ++i) {
         turbo_rtsp_rtp_header_t parsed;
@@ -3798,41 +3798,41 @@ suite("turbo_rtsp_lib") {
 
         memset(&parsed, 0, sizeof(parsed));
         check(packets[i].packet == packet + (i * 20));
-        check_size_eq(
+        check_equal(
             packets[i].packet_len,
             TURBO_RTSP_RTP_HEADER_SIZE +
                 TURBO_RTSP_MPEG4_GENERIC_AU_HEADER_SIZE + fragment_len);
-        check_int_eq(
+        check_equal(
             turbo_rtsp_rtp_parse_header(
                 packets[i].packet,
                 packets[i].packet_len,
                 &parsed,
                 &header_len),
             0);
-        check_size_eq(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
-        check_int_eq(parsed.marker, i == 2 ? 1 : 0);
-        check_int_eq(parsed.payload_type, 97);
-        check_int_eq(parsed.sequence_number, (uint16_t)(500 + i));
-        check_int_eq((int)parsed.timestamp, 48000);
-        check_int_eq((int)parsed.ssrc, 0x01020304);
-        check_size_eq(
+        check_equal(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
+        check_equal(parsed.marker, i == 2 ? 1 : 0);
+        check_equal(parsed.payload_type, 97);
+        check_equal(parsed.sequence_number, (uint16_t)(500 + i));
+        check_equal((int)parsed.timestamp, 48000);
+        check_equal((int)parsed.ssrc, 0x01020304);
+        check_equal(
             parsed.payload_len,
             TURBO_RTSP_MPEG4_GENERIC_AU_HEADER_SIZE + fragment_len);
-        check_mem_eq(
+        check_equal(
             parsed.payload,
             expected_au_header,
             TURBO_RTSP_MPEG4_GENERIC_AU_HEADER_SIZE);
-        check_mem_eq(
+        check_equal(
             parsed.payload + TURBO_RTSP_MPEG4_GENERIC_AU_HEADER_SIZE,
             au + offset,
             fragment_len);
         offset += fragment_len;
       }
 
-      check_int_eq(stream.sequence_number, 503);
-      check_int_eq((int)stream.timestamp, 49024);
-      check_int_eq((int)stream.sender.packet_count, 3);
-      check_int_eq((int)stream.sender.octet_count, 21);
+      check_equal(stream.sequence_number, 503);
+      check_equal((int)stream.timestamp, 49024);
+      check_equal((int)stream.sender.packet_count, 3);
+      check_equal((int)stream.sender.octet_count, 21);
     }
 
     it("does not advance MPEG4-GENERIC RTP stream state on invalid output") {
@@ -3847,7 +3847,7 @@ suite("turbo_rtsp_lib") {
       memset(packets, 0, sizeof(packets));
       turbo_rtsp_rtp_stream_init(&stream, 97, 0x01020304, 20, 2000, 48000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_mpeg4_generic_au(
               &stream,
               au,
@@ -3860,9 +3860,9 @@ suite("turbo_rtsp_lib") {
               1,
               &packet_count),
           -1);
-      check_size_eq(packet_count, 0);
+      check_equal(packet_count, 0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_mpeg4_generic_au(
               &stream,
               au,
@@ -3875,10 +3875,10 @@ suite("turbo_rtsp_lib") {
               1,
               &packet_count),
           -1);
-      check_int_eq(stream.sequence_number, 20);
-      check_int_eq((int)stream.timestamp, 2000);
-      check_int_eq((int)stream.sender.packet_count, 0);
-      check_int_eq((int)stream.sender.octet_count, 0);
+      check_equal(stream.sequence_number, 20);
+      check_equal((int)stream.timestamp, 2000);
+      check_equal((int)stream.sender.packet_count, 0);
+      check_equal((int)stream.sender.octet_count, 0);
     }
 
     it("writes MP4A-LATM RTP stream packets") {
@@ -3896,7 +3896,7 @@ suite("turbo_rtsp_lib") {
       memset(packets, 0, sizeof(packets));
       turbo_rtsp_rtp_stream_init(&stream, 96, 0x01020304, 600, 48000, 48000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_mp4a_latm(
               &stream,
               latm,
@@ -3909,44 +3909,44 @@ suite("turbo_rtsp_lib") {
               3,
               &packet_count),
           0);
-      check_size_eq(packet_count, 3);
+      check_equal(packet_count, 3);
 
       for (i = 0; i < packet_count; ++i) {
         turbo_rtsp_rtp_header_t parsed;
         size_t header_len = 0;
 
         memset(&parsed, 0, sizeof(parsed));
-        check_size_eq(
+        check_equal(
             packets[i].packet_len,
             TURBO_RTSP_RTP_HEADER_SIZE + expected_payload_lens[i]);
-        check_int_eq(
+        check_equal(
             turbo_rtsp_rtp_parse_header(
                 packets[i].packet,
                 packets[i].packet_len,
                 &parsed,
                 &header_len),
             0);
-        check_size_eq(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
-        check_int_eq(parsed.marker, i == 2 ? 1 : 0);
-        check_int_eq(parsed.payload_type, 96);
-        check_int_eq(parsed.sequence_number, (uint16_t)(600 + i));
-        check_int_eq((int)parsed.timestamp, 48000);
-        check_int_eq((int)parsed.ssrc, 0x01020304);
-        check_size_eq(parsed.payload_len, expected_payload_lens[i]);
+        check_equal(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
+        check_equal(parsed.marker, i == 2 ? 1 : 0);
+        check_equal(parsed.payload_type, 96);
+        check_equal(parsed.sequence_number, (uint16_t)(600 + i));
+        check_equal((int)parsed.timestamp, 48000);
+        check_equal((int)parsed.ssrc, 0x01020304);
+        check_equal(parsed.payload_len, expected_payload_lens[i]);
         if (i == 0) {
-          check_int_eq(parsed.payload[0], (int)sizeof(latm));
-          check_mem_eq(parsed.payload + 1, latm, 4);
+          check_equal(parsed.payload[0], (int)sizeof(latm));
+          check_equal(parsed.payload + 1, latm, 4);
           offset = 4;
         } else {
-          check_mem_eq(parsed.payload, latm + offset, expected_payload_lens[i]);
+          check_equal(parsed.payload, latm + offset, expected_payload_lens[i]);
           offset += expected_payload_lens[i];
         }
       }
 
-      check_int_eq(stream.sequence_number, 603);
-      check_int_eq((int)stream.timestamp, 49024);
-      check_int_eq((int)stream.sender.packet_count, 3);
-      check_int_eq((int)stream.sender.octet_count, 11);
+      check_equal(stream.sequence_number, 603);
+      check_equal((int)stream.timestamp, 49024);
+      check_equal((int)stream.sender.packet_count, 3);
+      check_equal((int)stream.sender.octet_count, 11);
     }
 
     it("does not advance MP4A-LATM RTP stream state on invalid output") {
@@ -3961,7 +3961,7 @@ suite("turbo_rtsp_lib") {
       memset(packets, 0, sizeof(packets));
       turbo_rtsp_rtp_stream_init(&stream, 96, 0x01020304, 20, 2000, 48000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_mp4a_latm(
               &stream,
               latm,
@@ -3974,11 +3974,11 @@ suite("turbo_rtsp_lib") {
               1,
               &packet_count),
           -1);
-      check_size_eq(packet_count, 0);
-      check_int_eq(stream.sequence_number, 20);
-      check_int_eq((int)stream.timestamp, 2000);
-      check_int_eq((int)stream.sender.packet_count, 0);
-      check_int_eq((int)stream.sender.octet_count, 0);
+      check_equal(packet_count, 0);
+      check_equal(stream.sequence_number, 20);
+      check_equal((int)stream.timestamp, 2000);
+      check_equal((int)stream.sender.packet_count, 0);
+      check_equal((int)stream.sender.octet_count, 0);
     }
 
     it("writes MPEG2 TS RTP stream packets on TS packet boundaries") {
@@ -4001,7 +4001,7 @@ suite("turbo_rtsp_lib") {
       memset(&stream, 0, sizeof(stream));
       turbo_rtsp_rtp_stream_init(&stream, 33, 0x01020304, 900, 90000, 90000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_mpeg2_ts(
               &stream,
               ts_data,
@@ -4014,7 +4014,7 @@ suite("turbo_rtsp_lib") {
               3,
               &packet_count),
           0);
-      check_size_eq(packet_count, 3);
+      check_equal(packet_count, 3);
 
       for (i = 0; i < packet_count; ++i) {
         turbo_rtsp_rtp_header_t parsed;
@@ -4023,34 +4023,34 @@ suite("turbo_rtsp_lib") {
 
         memset(&parsed, 0, sizeof(parsed));
         memset(&ts, 0, sizeof(ts));
-        check_size_eq(
+        check_equal(
             packets[i].packet_len,
             TURBO_RTSP_RTP_HEADER_SIZE + expected_payload_lens[i]);
-        check_int_eq(
+        check_equal(
             turbo_rtsp_rtp_parse_header(
                 packets[i].packet,
                 packets[i].packet_len,
                 &parsed,
                 &header_len),
             0);
-        check_size_eq(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
-        check_int_eq(parsed.marker, 0);
-        check_int_eq(parsed.payload_type, 33);
-        check_int_eq(parsed.sequence_number, (uint16_t)(900 + i));
-        check_int_eq((int)parsed.timestamp, 90000);
-        check_int_eq((int)parsed.ssrc, 0x01020304);
-        check_size_eq(parsed.payload_len, expected_payload_lens[i]);
-        check_mem_eq(parsed.payload, ts_data + offset, expected_payload_lens[i]);
-        check_int_eq(
+        check_equal(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
+        check_equal(parsed.marker, 0);
+        check_equal(parsed.payload_type, 33);
+        check_equal(parsed.sequence_number, (uint16_t)(900 + i));
+        check_equal((int)parsed.timestamp, 90000);
+        check_equal((int)parsed.ssrc, 0x01020304);
+        check_equal(parsed.payload_len, expected_payload_lens[i]);
+        check_equal(parsed.payload, ts_data + offset, expected_payload_lens[i]);
+        check_equal(
             turbo_rtsp_mpeg2_ts_payload_parse(parsed.payload, parsed.payload_len, &ts),
             0);
         offset += expected_payload_lens[i];
       }
 
-      check_int_eq(stream.sequence_number, 903);
-      check_int_eq((int)stream.timestamp, 93600);
-      check_int_eq((int)stream.sender.packet_count, 3);
-      check_int_eq((int)stream.sender.octet_count, (int)sizeof(ts_data));
+      check_equal(stream.sequence_number, 903);
+      check_equal((int)stream.timestamp, 93600);
+      check_equal((int)stream.sender.packet_count, 3);
+      check_equal((int)stream.sender.octet_count, (int)sizeof(ts_data));
     }
 
     it("does not advance MPEG2 TS RTP stream state on invalid output") {
@@ -4066,7 +4066,7 @@ suite("turbo_rtsp_lib") {
       memset(&stream, 0, sizeof(stream));
       turbo_rtsp_rtp_stream_init(&stream, 33, 0x01020304, 40, 4000, 90000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_mpeg2_ts(
               &stream,
               ts_data,
@@ -4079,10 +4079,10 @@ suite("turbo_rtsp_lib") {
               1,
               &packet_count),
           -1);
-      check_size_eq(packet_count, 0);
+      check_equal(packet_count, 0);
 
       packet_count = 99;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_mpeg2_ts(
               &stream,
               ts_data,
@@ -4095,10 +4095,10 @@ suite("turbo_rtsp_lib") {
               1,
               &packet_count),
           -1);
-      check_int_eq(stream.sequence_number, 40);
-      check_int_eq((int)stream.timestamp, 4000);
-      check_int_eq((int)stream.sender.packet_count, 0);
-      check_int_eq((int)stream.sender.octet_count, 0);
+      check_equal(stream.sequence_number, 40);
+      check_equal((int)stream.timestamp, 4000);
+      check_equal((int)stream.sender.packet_count, 0);
+      check_equal((int)stream.sender.octet_count, 0);
     }
 
     it("writes H264 single NAL RTP stream packets and advances sender state") {
@@ -4114,7 +4114,7 @@ suite("turbo_rtsp_lib") {
       memset(&parsed, 0, sizeof(parsed));
       turbo_rtsp_rtp_stream_init(&stream, 96, 0x01020304, 100, 90000, 90000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal(
               &stream,
               nal,
@@ -4130,28 +4130,28 @@ suite("turbo_rtsp_lib") {
               &packet_count),
           0);
 
-      check_size_eq(packet_count, 1);
+      check_equal(packet_count, 1);
       check(packets[0].packet == packet);
-      check_size_eq(packets[0].packet_len, TURBO_RTSP_RTP_HEADER_SIZE + sizeof(nal));
-      check_int_eq(
+      check_equal(packets[0].packet_len, TURBO_RTSP_RTP_HEADER_SIZE + sizeof(nal));
+      check_equal(
           turbo_rtsp_rtp_parse_header(
               packets[0].packet,
               packets[0].packet_len,
               &parsed,
               &header_len),
           0);
-      check_size_eq(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
-      check_int_eq(parsed.marker, 1);
-      check_int_eq(parsed.payload_type, 96);
-      check_int_eq(parsed.sequence_number, 100);
-      check_int_eq((int)parsed.timestamp, 90000);
-      check_int_eq((int)parsed.ssrc, 0x01020304);
-      check_mem_eq(parsed.payload, nal, sizeof(nal));
+      check_equal(header_len, TURBO_RTSP_RTP_HEADER_SIZE);
+      check_equal(parsed.marker, 1);
+      check_equal(parsed.payload_type, 96);
+      check_equal(parsed.sequence_number, 100);
+      check_equal((int)parsed.timestamp, 90000);
+      check_equal((int)parsed.ssrc, 0x01020304);
+      check_equal(parsed.payload, nal, sizeof(nal));
 
-      check_int_eq(stream.sequence_number, 101);
-      check_int_eq((int)stream.timestamp, 93000);
-      check_int_eq((int)stream.sender.packet_count, 1);
-      check_int_eq((int)stream.sender.octet_count, (int)sizeof(nal));
+      check_equal(stream.sequence_number, 101);
+      check_equal((int)stream.timestamp, 93000);
+      check_equal((int)stream.sender.packet_count, 1);
+      check_equal((int)stream.sender.octet_count, (int)sizeof(nal));
     }
 
     it("writes multiple H264 NALs in one access unit with one RTP timestamp") {
@@ -4169,7 +4169,7 @@ suite("turbo_rtsp_lib") {
 
       turbo_rtsp_rtp_stream_init(&stream, 96, 0x01020304, 1000, 270000, 90000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal_ex(
               &stream,
               sps,
@@ -4185,10 +4185,10 @@ suite("turbo_rtsp_lib") {
               1,
               &packet_count),
           0);
-      check_size_eq(packet_count, 1);
-      check_int_eq((int)stream.timestamp, 270000);
+      check_equal(packet_count, 1);
+      check_equal((int)stream.timestamp, 270000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal_ex(
               &stream,
               pps,
@@ -4204,10 +4204,10 @@ suite("turbo_rtsp_lib") {
               1,
               &packet_count),
           0);
-      check_size_eq(packet_count, 1);
-      check_int_eq((int)stream.timestamp, 270000);
+      check_equal(packet_count, 1);
+      check_equal((int)stream.timestamp, 270000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal_ex(
               &stream,
               slice,
@@ -4223,30 +4223,30 @@ suite("turbo_rtsp_lib") {
               1,
               &packet_count),
           0);
-      check_size_eq(packet_count, 1);
+      check_equal(packet_count, 1);
 
       for (i = 0; i < 3; ++i) {
         turbo_rtsp_rtp_header_t parsed;
         size_t header_len = 0;
 
         memset(&parsed, 0, sizeof(parsed));
-        check_int_eq(
+        check_equal(
             turbo_rtsp_rtp_parse_header(
                 packets_storage[i],
                 TURBO_RTSP_RTP_HEADER_SIZE + expected_lens[i],
                 &parsed,
                 &header_len),
             0);
-        check_int_eq(parsed.marker, expected_markers[i]);
-        check_int_eq(parsed.sequence_number, (uint16_t)(1000 + i));
-        check_int_eq((int)parsed.timestamp, 270000);
-        check_mem_eq(parsed.payload, expected_payloads[i], expected_lens[i]);
+        check_equal(parsed.marker, expected_markers[i]);
+        check_equal(parsed.sequence_number, (uint16_t)(1000 + i));
+        check_equal((int)parsed.timestamp, 270000);
+        check_equal(parsed.payload, expected_payloads[i], expected_lens[i]);
       }
 
-      check_int_eq(stream.sequence_number, 1003);
-      check_int_eq((int)stream.timestamp, 273000);
-      check_int_eq((int)stream.sender.packet_count, 3);
-      check_int_eq(
+      check_equal(stream.sequence_number, 1003);
+      check_equal((int)stream.timestamp, 273000);
+      check_equal((int)stream.sender.packet_count, 3);
+      check_equal(
           (int)stream.sender.octet_count,
           (int)(sizeof(sps) + sizeof(pps) + sizeof(slice)));
     }
@@ -4278,7 +4278,7 @@ suite("turbo_rtsp_lib") {
       memset(payload_scratch, 0, sizeof(payload_scratch));
       turbo_rtsp_rtp_stream_init(&stream, 97, 0x10203040, 65000, 123456, 90000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal(
               &stream,
               nal,
@@ -4293,7 +4293,7 @@ suite("turbo_rtsp_lib") {
               3,
               &packet_count),
           0);
-      check_size_eq(packet_count, 3);
+      check_equal(packet_count, 3);
 
       for (i = 0; i < packet_count; ++i) {
         turbo_rtsp_rtp_header_t parsed;
@@ -4301,27 +4301,27 @@ suite("turbo_rtsp_lib") {
 
         memset(&parsed, 0, sizeof(parsed));
         check(packets[i].packet == packet + (i * 16));
-        check_size_eq(packets[i].packet_len, TURBO_RTSP_RTP_HEADER_SIZE + expected_lens[i]);
-        check_int_eq(
+        check_equal(packets[i].packet_len, TURBO_RTSP_RTP_HEADER_SIZE + expected_lens[i]);
+        check_equal(
             turbo_rtsp_rtp_parse_header(
                 packets[i].packet,
                 packets[i].packet_len,
                 &parsed,
                 &header_len),
             0);
-        check_int_eq(parsed.marker, i == 2 ? 1 : 0);
-        check_int_eq(parsed.payload_type, 97);
-        check_int_eq(parsed.sequence_number, (uint16_t)(65000 + i));
-        check_int_eq((int)parsed.timestamp, 123456);
-        check_int_eq((int)parsed.ssrc, 0x10203040);
-        check_size_eq(parsed.payload_len, expected_lens[i]);
-        check_mem_eq(parsed.payload, expected_payloads[i], expected_lens[i]);
+        check_equal(parsed.marker, i == 2 ? 1 : 0);
+        check_equal(parsed.payload_type, 97);
+        check_equal(parsed.sequence_number, (uint16_t)(65000 + i));
+        check_equal((int)parsed.timestamp, 123456);
+        check_equal((int)parsed.ssrc, 0x10203040);
+        check_equal(parsed.payload_len, expected_lens[i]);
+        check_equal(parsed.payload, expected_payloads[i], expected_lens[i]);
       }
 
-      check_int_eq(stream.sequence_number, 65003);
-      check_int_eq((int)stream.timestamp, 127056);
-      check_int_eq((int)stream.sender.packet_count, 3);
-      check_int_eq((int)stream.sender.octet_count, 11);
+      check_equal(stream.sequence_number, 65003);
+      check_equal((int)stream.timestamp, 127056);
+      check_equal((int)stream.sender.packet_count, 3);
+      check_equal((int)stream.sender.octet_count, 11);
     }
 
     it("writes oversized H265 NALs as FU RTP stream packets") {
@@ -4351,7 +4351,7 @@ suite("turbo_rtsp_lib") {
       memset(payload_scratch, 0, sizeof(payload_scratch));
       turbo_rtsp_rtp_stream_init(&stream, 98, 0x10203040, 65000, 123456, 90000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h265_nal(
               &stream,
               nal,
@@ -4366,7 +4366,7 @@ suite("turbo_rtsp_lib") {
               3,
               &packet_count),
           0);
-      check_size_eq(packet_count, 3);
+      check_equal(packet_count, 3);
 
       for (i = 0; i < packet_count; ++i) {
         turbo_rtsp_rtp_header_t parsed;
@@ -4374,27 +4374,27 @@ suite("turbo_rtsp_lib") {
 
         memset(&parsed, 0, sizeof(parsed));
         check(packets[i].packet == packet + (i * 20));
-        check_size_eq(packets[i].packet_len, TURBO_RTSP_RTP_HEADER_SIZE + expected_lens[i]);
-        check_int_eq(
+        check_equal(packets[i].packet_len, TURBO_RTSP_RTP_HEADER_SIZE + expected_lens[i]);
+        check_equal(
             turbo_rtsp_rtp_parse_header(
                 packets[i].packet,
                 packets[i].packet_len,
                 &parsed,
                 &header_len),
             0);
-        check_int_eq(parsed.marker, i == 2 ? 1 : 0);
-        check_int_eq(parsed.payload_type, 98);
-        check_int_eq(parsed.sequence_number, (uint16_t)(65000 + i));
-        check_int_eq((int)parsed.timestamp, 123456);
-        check_int_eq((int)parsed.ssrc, 0x10203040);
-        check_size_eq(parsed.payload_len, expected_lens[i]);
-        check_mem_eq(parsed.payload, expected_payloads[i], expected_lens[i]);
+        check_equal(parsed.marker, i == 2 ? 1 : 0);
+        check_equal(parsed.payload_type, 98);
+        check_equal(parsed.sequence_number, (uint16_t)(65000 + i));
+        check_equal((int)parsed.timestamp, 123456);
+        check_equal((int)parsed.ssrc, 0x10203040);
+        check_equal(parsed.payload_len, expected_lens[i]);
+        check_equal(parsed.payload, expected_payloads[i], expected_lens[i]);
       }
 
-      check_int_eq(stream.sequence_number, 65003);
-      check_int_eq((int)stream.timestamp, 127056);
-      check_int_eq((int)stream.sender.packet_count, 3);
-      check_int_eq((int)stream.sender.octet_count, 14);
+      check_equal(stream.sequence_number, 65003);
+      check_equal((int)stream.timestamp, 127056);
+      check_equal((int)stream.sender.packet_count, 3);
+      check_equal((int)stream.sender.octet_count, 14);
     }
 
     it("does not advance RTP stream state when packet array capacity is too small") {
@@ -4408,7 +4408,7 @@ suite("turbo_rtsp_lib") {
       memset(packets, 0, sizeof(packets));
       turbo_rtsp_rtp_stream_init(&stream, 96, 0x01020304, 10, 1000, 90000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal(
               &stream,
               nal,
@@ -4423,11 +4423,11 @@ suite("turbo_rtsp_lib") {
               2,
               &packet_count),
           -1);
-      check_size_eq(packet_count, 0);
-      check_int_eq(stream.sequence_number, 10);
-      check_int_eq((int)stream.timestamp, 1000);
-      check_int_eq((int)stream.sender.packet_count, 0);
-      check_int_eq((int)stream.sender.octet_count, 0);
+      check_equal(packet_count, 0);
+      check_equal(stream.sequence_number, 10);
+      check_equal((int)stream.timestamp, 1000);
+      check_equal((int)stream.sender.packet_count, 0);
+      check_equal((int)stream.sender.octet_count, 0);
     }
 
     it("rejects invalid H264 RTP stream inputs without advancing state") {
@@ -4442,7 +4442,7 @@ suite("turbo_rtsp_lib") {
       memset(packets, 0, sizeof(packets));
       turbo_rtsp_rtp_stream_init(&stream, 96, 0x01020304, 20, 2000, 90000);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal(
               &stream,
               forbidden_nal,
@@ -4457,8 +4457,8 @@ suite("turbo_rtsp_lib") {
               2,
               &packet_count),
           -1);
-      check_size_eq(packet_count, 0);
-      check_int_eq(
+      check_equal(packet_count, 0);
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal(
               &stream,
               oversized_nal,
@@ -4473,7 +4473,7 @@ suite("turbo_rtsp_lib") {
               2,
               &packet_count),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_stream_write_h264_nal(
               &stream,
               oversized_nal,
@@ -4488,10 +4488,10 @@ suite("turbo_rtsp_lib") {
               2,
               &packet_count),
           -1);
-      check_int_eq(stream.sequence_number, 20);
-      check_int_eq((int)stream.timestamp, 2000);
-      check_int_eq((int)stream.sender.packet_count, 0);
-      check_int_eq((int)stream.sender.octet_count, 0);
+      check_equal(stream.sequence_number, 20);
+      check_equal((int)stream.timestamp, 2000);
+      check_equal((int)stream.sender.packet_count, 0);
+      check_equal((int)stream.sender.octet_count, 0);
     }
 
     it("receives H264 single NAL RTP packets directly from packet payload") {
@@ -4514,7 +4514,7 @@ suite("turbo_rtsp_lib") {
           sizeof(payload));
       check(packet_len > 0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4526,10 +4526,10 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
       check(nal == packet + TURBO_RTSP_RTP_HEADER_SIZE);
-      check_size_eq(nal_len, sizeof(payload));
-      check_mem_eq(nal, payload, sizeof(payload));
+      check_equal(nal_len, sizeof(payload));
+      check_equal(nal, payload, sizeof(payload));
     }
 
     it("receives H264 FU-A RTP packets as partial then complete NAL") {
@@ -4554,7 +4554,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4566,10 +4566,10 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(stream.reassembler.started, 1);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(stream.reassembler.started, 1);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -4580,7 +4580,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4592,11 +4592,11 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
       check(nal == nal_buffer);
-      check_size_eq(nal_len, sizeof(expected_nal));
-      check_mem_eq(nal, expected_nal, sizeof(expected_nal));
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(nal_len, sizeof(expected_nal));
+      check_equal(nal, expected_nal, sizeof(expected_nal));
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("recovers short out-of-order H264 FU-A RTP packets") {
@@ -4622,7 +4622,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4634,7 +4634,7 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -4645,7 +4645,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4657,8 +4657,8 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check_size_eq(stream.reorder_count, 1);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(stream.reorder_count, 1);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -4669,7 +4669,7 @@ suite("turbo_rtsp_lib") {
           middle_payload,
           sizeof(middle_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4681,12 +4681,12 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
       check(nal == nal_buffer);
-      check_size_eq(nal_len, sizeof(expected_nal));
-      check_mem_eq(nal, expected_nal, sizeof(expected_nal));
-      check_size_eq(stream.reorder_count, 0);
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(nal_len, sizeof(expected_nal));
+      check_equal(nal, expected_nal, sizeof(expected_nal));
+      check_equal(stream.reorder_count, 0);
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("drains queued out-of-order H264 single NAL RTP packets") {
@@ -4711,7 +4711,7 @@ suite("turbo_rtsp_lib") {
           payload_10,
           sizeof(payload_10));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4723,7 +4723,7 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_mem_eq(nal, payload_10, sizeof(payload_10));
+      check_equal(nal, payload_10, sizeof(payload_10));
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -4734,7 +4734,7 @@ suite("turbo_rtsp_lib") {
           payload_12,
           sizeof(payload_12));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4746,8 +4746,8 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check_size_eq(stream.reorder_count, 1);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(stream.reorder_count, 1);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -4758,7 +4758,7 @@ suite("turbo_rtsp_lib") {
           payload_11,
           sizeof(payload_11));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4770,11 +4770,11 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
-      check_mem_eq(nal, payload_11, sizeof(payload_11));
-      check_size_eq(stream.reorder_count, 1);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
+      check_equal(nal, payload_11, sizeof(payload_11));
+      check_equal(stream.reorder_count, 1);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_drain_queued(
               &stream,
               NULL,
@@ -4782,10 +4782,10 @@ suite("turbo_rtsp_lib") {
               &nal,
               &nal_len),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(nal_len, sizeof(payload_12));
-      check_mem_eq(nal, payload_12, sizeof(payload_12));
-      check_size_eq(stream.reorder_count, 0);
-      check_int_eq(
+      check_equal(nal_len, sizeof(payload_12));
+      check_equal(nal, payload_12, sizeof(payload_12));
+      check_equal(stream.reorder_count, 0);
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_drain_queued(
               &stream,
               NULL,
@@ -4794,7 +4794,7 @@ suite("turbo_rtsp_lib") {
               &nal_len),
           TURBO_RTSP_FRAME_PARTIAL);
       check_null(nal);
-      check_size_eq(nal_len, 0);
+      check_equal(nal_len, 0);
     }
 
     it("does not re-output duplicate H264 RTP packets") {
@@ -4816,7 +4816,7 @@ suite("turbo_rtsp_lib") {
           payload,
           sizeof(payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4828,11 +4828,11 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check(nal != NULL);
+      check_not_null(nal);
 
       nal = (const uint8_t *)0x1;
       nal_len = 99;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4844,9 +4844,9 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_DUPLICATE);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_DUPLICATE);
+      check_null(nal);
+      check_equal(nal_len, 0);
     }
 
     it("resets H264 receive reassembly on RTP dropout") {
@@ -4870,7 +4870,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4882,7 +4882,7 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(stream.reassembler.started, 1);
+      check_equal(stream.reassembler.started, 1);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -4893,7 +4893,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4905,10 +4905,10 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_ERROR);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_DROPOUT);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_DROPOUT);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("resets H264 receive reassembly on RTP sequence gaps beyond the reorder window") {
@@ -4932,7 +4932,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4954,7 +4954,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -4966,11 +4966,11 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_ERROR);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(stream.reassembler.started, 0);
-      check_size_eq(stream.reorder_count, 0);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(stream.reassembler.started, 0);
+      check_equal(stream.reorder_count, 0);
     }
 
     it("resets H264 receive reassembly when the reorder queue is full") {
@@ -4995,7 +4995,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -5018,7 +5018,7 @@ suite("turbo_rtsp_lib") {
             middle_payload,
             sizeof(middle_payload));
         check(packet_len > 0);
-        check_int_eq(
+        check_equal(
             turbo_rtsp_rtp_h264_receive_stream_push(
                 &stream,
                 packet,
@@ -5031,7 +5031,7 @@ suite("turbo_rtsp_lib") {
                 &update_result),
             TURBO_RTSP_FRAME_PARTIAL);
       }
-      check_size_eq(stream.reorder_count, TURBO_RTSP_RTP_H264_RECEIVE_REORDER_CAPACITY);
+      check_equal(stream.reorder_count, TURBO_RTSP_RTP_H264_RECEIVE_REORDER_CAPACITY);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -5042,7 +5042,7 @@ suite("turbo_rtsp_lib") {
           middle_payload,
           sizeof(middle_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -5054,9 +5054,9 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_ERROR);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check_size_eq(stream.reorder_count, 0);
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(stream.reorder_count, 0);
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("clears queued H264 RTP packets when receive stream state resets") {
@@ -5080,7 +5080,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -5102,7 +5102,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -5114,12 +5114,12 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_size_eq(stream.reorder_count, 1);
+      check_equal(stream.reorder_count, 1);
 
       turbo_rtsp_rtp_h264_receive_stream_reset(&stream, 0x10203040);
-      check_size_eq(stream.reorder_count, 0);
-      check_int_eq(stream.has_next_sequence_number, 0);
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(stream.reorder_count, 0);
+      check_equal(stream.has_next_sequence_number, 0);
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("resets H264 receive reassembly on SSRC mismatch") {
@@ -5143,7 +5143,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -5155,7 +5155,7 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(stream.reassembler.started, 1);
+      check_equal(stream.reassembler.started, 1);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -5166,7 +5166,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -5178,10 +5178,10 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_ERROR);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_SSRC_MISMATCH);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_SSRC_MISMATCH);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("returns error and clears H264 receive reassembly when NAL buffer is too small") {
@@ -5204,7 +5204,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h264_receive_stream_push(
               &stream,
               packet,
@@ -5216,10 +5216,10 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_ERROR);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("receives H265 single NAL RTP packets directly from packet payload") {
@@ -5242,7 +5242,7 @@ suite("turbo_rtsp_lib") {
           sizeof(payload));
       check(packet_len > 0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5254,10 +5254,10 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
       check(nal == packet + TURBO_RTSP_RTP_HEADER_SIZE);
-      check_size_eq(nal_len, sizeof(payload));
-      check_mem_eq(nal, payload, sizeof(payload));
+      check_equal(nal_len, sizeof(payload));
+      check_equal(nal, payload, sizeof(payload));
     }
 
     it("receives H265 FU RTP packets as partial then complete NAL") {
@@ -5282,7 +5282,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5294,10 +5294,10 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
-      check_int_eq(stream.reassembler.started, 1);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_null(nal);
+      check_equal(nal_len, 0);
+      check_equal(stream.reassembler.started, 1);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -5308,7 +5308,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5320,11 +5320,11 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
       check(nal == nal_buffer);
-      check_size_eq(nal_len, sizeof(expected_nal));
-      check_mem_eq(nal, expected_nal, sizeof(expected_nal));
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(nal_len, sizeof(expected_nal));
+      check_equal(nal, expected_nal, sizeof(expected_nal));
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("recovers short out-of-order H265 FU RTP packets") {
@@ -5350,7 +5350,7 @@ suite("turbo_rtsp_lib") {
           start_payload,
           sizeof(start_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5362,7 +5362,7 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -5373,7 +5373,7 @@ suite("turbo_rtsp_lib") {
           end_payload,
           sizeof(end_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5385,8 +5385,8 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check_size_eq(stream.reorder_count, 1);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(stream.reorder_count, 1);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -5397,7 +5397,7 @@ suite("turbo_rtsp_lib") {
           middle_payload,
           sizeof(middle_payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5409,12 +5409,12 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
       check(nal == nal_buffer);
-      check_size_eq(nal_len, sizeof(expected_nal));
-      check_mem_eq(nal, expected_nal, sizeof(expected_nal));
-      check_size_eq(stream.reorder_count, 0);
-      check_int_eq(stream.reassembler.started, 0);
+      check_equal(nal_len, sizeof(expected_nal));
+      check_equal(nal, expected_nal, sizeof(expected_nal));
+      check_equal(stream.reorder_count, 0);
+      check_equal(stream.reassembler.started, 0);
     }
 
     it("drains queued out-of-order H265 single NAL RTP packets") {
@@ -5439,7 +5439,7 @@ suite("turbo_rtsp_lib") {
           payload_10,
           sizeof(payload_10));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5451,7 +5451,7 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_mem_eq(nal, payload_10, sizeof(payload_10));
+      check_equal(nal, payload_10, sizeof(payload_10));
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -5462,7 +5462,7 @@ suite("turbo_rtsp_lib") {
           payload_12,
           sizeof(payload_12));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5474,8 +5474,8 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
-      check_size_eq(stream.reorder_count, 1);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_OK);
+      check_equal(stream.reorder_count, 1);
 
       packet_len = turbo_rtsp_test_write_rtp_packet(
           packet,
@@ -5486,7 +5486,7 @@ suite("turbo_rtsp_lib") {
           payload_11,
           sizeof(payload_11));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5498,11 +5498,11 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
-      check_mem_eq(nal, payload_11, sizeof(payload_11));
-      check_size_eq(stream.reorder_count, 1);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_LATE_OR_OUT_OF_ORDER);
+      check_equal(nal, payload_11, sizeof(payload_11));
+      check_equal(stream.reorder_count, 1);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_drain_queued(
               &stream,
               NULL,
@@ -5510,9 +5510,9 @@ suite("turbo_rtsp_lib") {
               &nal,
               &nal_len),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(nal_len, sizeof(payload_12));
-      check_mem_eq(nal, payload_12, sizeof(payload_12));
-      check_size_eq(stream.reorder_count, 0);
+      check_equal(nal_len, sizeof(payload_12));
+      check_equal(nal, payload_12, sizeof(payload_12));
+      check_equal(stream.reorder_count, 0);
     }
 
     it("does not re-output duplicate H265 RTP packets") {
@@ -5534,7 +5534,7 @@ suite("turbo_rtsp_lib") {
           payload,
           sizeof(payload));
       check(packet_len > 0);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5546,11 +5546,11 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_OK);
-      check(nal != NULL);
+      check_not_null(nal);
 
       nal = (const uint8_t *)0x1;
       nal_len = 99;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_rtp_h265_receive_stream_push(
               &stream,
               packet,
@@ -5562,9 +5562,9 @@ suite("turbo_rtsp_lib") {
               &nal_len,
               &update_result),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_int_eq(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_DUPLICATE);
-      check(nal == NULL);
-      check_size_eq(nal_len, 0);
+      check_equal(update_result, TURBO_RTSP_RTP_SOURCE_UPDATE_DUPLICATE);
+      check_null(nal);
+      check_equal(nal_len, 0);
     }
 
     it("binds RTP sources to an expected SSRC when configured") {
@@ -5578,17 +5578,17 @@ suite("turbo_rtsp_lib") {
       header.ssrc = 0x01020304;
 
       turbo_rtsp_rtp_source_init(&source, 0x10203040);
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 1000), -1);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 1000), -1);
 
       turbo_rtsp_rtp_source_init(&source, 0x01020304);
-      check_int_eq(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
-      check_int_eq((int)source.ssrc, 0x01020304);
-      check_int_eq(source.has_ssrc, 1);
-      check_int_eq(source.initialized, 1);
+      check_equal(turbo_rtsp_rtp_source_update(&source, &header, 1000), 0);
+      check_equal((int)source.ssrc, 0x01020304);
+      check_equal(source.has_ssrc, 1);
+      check_equal(source.initialized, 1);
     }
   }
 
-  section("RFC 2326 RTP over RTSP interleaving") {
+  group("RFC 2326 RTP over RTSP interleaving") {
     it("parses a complete interleaved binary frame") {
       const uint8_t frame_bytes[] = {'$', 2, 0, 4, 0xde, 0xad, 0xbe, 0xef, 'R', 'T'};
       turbo_rtsp_interleaved_frame_t frame;
@@ -5599,11 +5599,11 @@ suite("turbo_rtsp_lib") {
           &frame,
           &consumed);
 
-      check_int_eq(rc, TURBO_RTSP_FRAME_OK);
-      check_int_eq(frame.channel, 2);
-      check_int_eq(frame.payload_len, 4);
-      check_mem_eq(frame.payload, frame_bytes + TURBO_RTSP_INTERLEAVED_HEADER_SIZE, 4);
-      check_size_eq(consumed, TURBO_RTSP_INTERLEAVED_HEADER_SIZE + 4);
+      check_equal(rc, TURBO_RTSP_FRAME_OK);
+      check_equal(frame.channel, 2);
+      check_equal(frame.payload_len, 4);
+      check_equal(frame.payload, frame_bytes + TURBO_RTSP_INTERLEAVED_HEADER_SIZE, 4);
+      check_equal(consumed, TURBO_RTSP_INTERLEAVED_HEADER_SIZE + 4);
     }
 
     it("reports partial interleaved frames until the declared payload arrives") {
@@ -5611,10 +5611,10 @@ suite("turbo_rtsp_lib") {
       turbo_rtsp_interleaved_frame_t frame;
       size_t consumed = 0;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parse(frame_bytes, sizeof(frame_bytes), &frame, &consumed),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_size_eq(consumed, 0);
+      check_equal(consumed, 0);
     }
 
     it("skips noise before parsing the next interleaved frame") {
@@ -5624,7 +5624,7 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
 
       turbo_rtsp_interleaved_parser_init(&parser);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               frame_bytes,
@@ -5632,10 +5632,10 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(consumed, sizeof(frame_bytes));
-      check_int_eq(frame.channel, 3);
-      check_int_eq(frame.payload_len, 2);
-      check_mem_eq(frame.payload, frame_bytes + 6, 2);
+      check_equal(consumed, sizeof(frame_bytes));
+      check_equal(frame.channel, 3);
+      check_equal(frame.payload_len, 2);
+      check_equal(frame.payload, frame_bytes + 6, 2);
     }
 
     it("keeps interleaved header state across input buffers") {
@@ -5646,7 +5646,7 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
 
       turbo_rtsp_interleaved_parser_init(&parser);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               header_part,
@@ -5654,10 +5654,10 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_size_eq(consumed, sizeof(header_part));
-      check_size_eq(parser.needed, 2);
+      check_equal(consumed, sizeof(header_part));
+      check_equal(parser.needed, 2);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               payload_part,
@@ -5665,10 +5665,10 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(consumed, sizeof(payload_part));
-      check_int_eq(frame.channel, 4);
-      check_int_eq(frame.payload_len, 3);
-      check_mem_eq(frame.payload, payload_part + 2, 3);
+      check_equal(consumed, sizeof(payload_part));
+      check_equal(frame.channel, 4);
+      check_equal(frame.payload_len, 3);
+      check_equal(frame.payload, payload_part + 2, 3);
     }
 
     it("records missing payload bytes when zero-copy output would cross buffers") {
@@ -5680,7 +5680,7 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
 
       turbo_rtsp_interleaved_parser_init(&parser);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               first_part,
@@ -5688,11 +5688,11 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_size_eq(consumed, sizeof(first_part));
-      check_size_eq(parser.needed, 2);
-      check_int_eq(parser.discarding_payload, 1);
+      check_equal(consumed, sizeof(first_part));
+      check_equal(parser.needed, 2);
+      check_equal(parser.discarding_payload, 1);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               second_part,
@@ -5700,10 +5700,10 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_size_eq(consumed, sizeof(second_part));
-      check_size_eq(parser.needed, 1);
+      check_equal(consumed, sizeof(second_part));
+      check_equal(parser.needed, 1);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               third_part,
@@ -5711,10 +5711,10 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_size_eq(consumed, 1);
-      check_size_eq(parser.needed, 0);
+      check_equal(consumed, 1);
+      check_equal(parser.needed, 0);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               third_part + consumed,
@@ -5722,10 +5722,10 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(consumed, sizeof(third_part) - 1);
-      check_int_eq(frame.channel, 1);
-      check_int_eq(frame.payload_len, 1);
-      check_mem_eq(frame.payload, third_part + 5, 1);
+      check_equal(consumed, sizeof(third_part) - 1);
+      check_equal(frame.channel, 1);
+      check_equal(frame.payload_len, 1);
+      check_equal(frame.payload, third_part + 5, 1);
     }
 
     it("copies an interleaved frame split across three input buffers") {
@@ -5739,7 +5739,7 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
 
       turbo_rtsp_interleaved_parser_init(&parser);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse_copy(
               &parser,
               first_part,
@@ -5749,9 +5749,9 @@ suite("turbo_rtsp_lib") {
               sizeof(payload),
               &consumed),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_size_eq(consumed, sizeof(first_part));
+      check_equal(consumed, sizeof(first_part));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse_copy(
               &parser,
               second_part,
@@ -5761,9 +5761,9 @@ suite("turbo_rtsp_lib") {
               sizeof(payload),
               &consumed),
           TURBO_RTSP_FRAME_PARTIAL);
-      check_size_eq(consumed, sizeof(second_part));
+      check_equal(consumed, sizeof(second_part));
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse_copy(
               &parser,
               third_part,
@@ -5773,11 +5773,11 @@ suite("turbo_rtsp_lib") {
               sizeof(payload),
               &consumed),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(consumed, 3);
-      check_int_eq(frame.channel, 8);
-      check_int_eq(frame.payload_len, 4);
+      check_equal(consumed, 3);
+      check_equal(frame.channel, 8);
+      check_equal(frame.payload_len, 4);
       check(frame.payload == payload);
-      check_mem_eq(frame.payload, expected_payload, sizeof(expected_payload));
+      check_equal(frame.payload, expected_payload, sizeof(expected_payload));
 
       turbo_rtsp_interleaved_parser_destroy(&parser);
     }
@@ -5792,7 +5792,7 @@ suite("turbo_rtsp_lib") {
       size_t consumed = 0;
 
       turbo_rtsp_interleaved_parser_init(&parser);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse_copy(
               &parser,
               frame_bytes,
@@ -5802,13 +5802,13 @@ suite("turbo_rtsp_lib") {
               sizeof(short_payload),
               &consumed),
           TURBO_RTSP_FRAME_ERROR);
-      check_size_eq(consumed, sizeof(frame_bytes));
-      check_int_eq(frame.channel, 9);
-      check_int_eq(frame.payload_len, 4);
-      check_size_eq(parser.needed, sizeof(expected_payload));
-      check(frame.payload == NULL);
+      check_equal(consumed, sizeof(frame_bytes));
+      check_equal(frame.channel, 9);
+      check_equal(frame.payload_len, 4);
+      check_equal(parser.needed, sizeof(expected_payload));
+      check_null(frame.payload);
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse_copy(
               &parser,
               NULL,
@@ -5818,11 +5818,11 @@ suite("turbo_rtsp_lib") {
               sizeof(payload),
               &consumed),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(consumed, 0);
-      check_int_eq(frame.channel, 9);
-      check_int_eq(frame.payload_len, 4);
+      check_equal(consumed, 0);
+      check_equal(frame.channel, 9);
+      check_equal(frame.payload_len, 4);
       check(frame.payload == payload);
-      check_mem_eq(frame.payload, expected_payload, sizeof(expected_payload));
+      check_equal(frame.payload, expected_payload, sizeof(expected_payload));
 
       turbo_rtsp_interleaved_parser_destroy(&parser);
     }
@@ -5838,7 +5838,7 @@ suite("turbo_rtsp_lib") {
       size_t total_consumed = 0;
 
       turbo_rtsp_interleaved_parser_init(&parser);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               frame_bytes,
@@ -5846,12 +5846,12 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(consumed, 5);
-      check_int_eq(frame.channel, 1);
-      check_mem_eq(frame.payload, frame_bytes + 4, 1);
+      check_equal(consumed, 5);
+      check_equal(frame.channel, 1);
+      check_equal(frame.payload, frame_bytes + 4, 1);
       total_consumed += consumed;
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_interleaved_parser_parse(
               &parser,
               frame_bytes + total_consumed,
@@ -5859,49 +5859,49 @@ suite("turbo_rtsp_lib") {
               &frame,
               &consumed),
           TURBO_RTSP_FRAME_OK);
-      check_size_eq(consumed, 6);
-      check_int_eq(frame.channel, 2);
-      check_mem_eq(frame.payload, frame_bytes + 9, 2);
+      check_equal(consumed, 6);
+      check_equal(frame.channel, 2);
+      check_equal(frame.payload, frame_bytes + 9, 2);
     }
 
     it("formats an interleaved frame header") {
       uint8_t header[TURBO_RTSP_INTERLEAVED_HEADER_SIZE];
 
-      check_int_eq(turbo_rtsp_interleaved_write_header(header, sizeof(header), 1, 1500), 4);
-      check_int_eq(header[0], '$');
-      check_int_eq(header[1], 1);
-      check_int_eq(header[2], 0x05);
-      check_int_eq(header[3], 0xdc);
+      check_equal(turbo_rtsp_interleaved_write_header(header, sizeof(header), 1, 1500), 4);
+      check_equal(header[0], '$');
+      check_equal(header[1], 1);
+      check_equal(header[2], 0x05);
+      check_equal(header[3], 0xdc);
     }
 
     it("rejects invalid interleaved frame header output buffers") {
       uint8_t short_header[TURBO_RTSP_INTERLEAVED_HEADER_SIZE - 1] = {0xaa, 0xbb, 0xcc};
 
-      check_int_eq(turbo_rtsp_interleaved_write_header(NULL, 0, 1, 1), -1);
-      check_int_eq(
+      check_equal(turbo_rtsp_interleaved_write_header(NULL, 0, 1, 1), -1);
+      check_equal(
           turbo_rtsp_interleaved_write_header(
               short_header,
               sizeof(short_header),
               1,
               1),
           -1);
-      check_int_eq(short_header[0], 0xaa);
-      check_int_eq(short_header[1], 0xbb);
-      check_int_eq(short_header[2], 0xcc);
+      check_equal(short_header[0], 0xaa);
+      check_equal(short_header[1], 0xbb);
+      check_equal(short_header[2], 0xcc);
     }
 
     it("formats the largest interleaved frame header values") {
       uint8_t header[TURBO_RTSP_INTERLEAVED_HEADER_SIZE];
 
-      check_int_eq(turbo_rtsp_interleaved_write_header(header, sizeof(header), 255, 65535), 4);
-      check_int_eq(header[0], '$');
-      check_int_eq(header[1], 255);
-      check_int_eq(header[2], 0xff);
-      check_int_eq(header[3], 0xff);
+      check_equal(turbo_rtsp_interleaved_write_header(header, sizeof(header), 255, 65535), 4);
+      check_equal(header[0], '$');
+      check_equal(header[1], 255);
+      check_equal(header[2], 0xff);
+      check_equal(header[3], 0xff);
     }
   }
 
-  section("RFC 4566 SDP responses") {
+  group("RFC 4566 SDP responses") {
     it("builds a single-media SDP description") {
       const turbo_rtsp_sdp_session_t session = {
           "-",
@@ -5944,8 +5944,8 @@ suite("turbo_rtsp_lib") {
       char buffer[512];
       int len = turbo_rtsp_sdp_build(buffer, sizeof(buffer), &session, &media, 1);
 
-      check_int_eq(len, (int)strlen(expected));
-      check_str_eq(buffer, expected);
+      check_equal(len, (int)strlen(expected));
+      check_equal(buffer, expected);
     }
 
     it("parses media rtpmap and control attributes") {
@@ -5985,73 +5985,73 @@ suite("turbo_rtsp_lib") {
       memset(h264_annexb, 0, sizeof(h264_annexb));
       memset(config, 0, sizeof(config));
 
-      check_int_eq(turbo_rtsp_sdp_parse(sdp_body, sizeof(sdp_body) - 1, &parsed), 0);
-      check_str_eq(parsed.session_name, "RTSP Session");
-      check_str_eq(parsed.connection_address, "192.0.2.1");
-      check_str_eq(parsed.control, "*");
-      check_str_eq(parsed.range, "npt=0-60.000");
-      check_str_eq(parsed.direction, "recvonly");
-      check_size_eq(parsed.media_count, 2);
-      check_str_eq(parsed.media[0].media, "video");
-      check_str_eq(parsed.media[0].connection_address, "198.51.100.10");
-      check_str_eq(parsed.media[0].proto, "RTP/AVP");
-      check_int_eq(parsed.media[0].payload_type, 96);
-      check_str_eq(parsed.media[0].encoding_name, "H264");
-      check_int_eq(parsed.media[0].clock_rate, 90000);
-      check_int_eq(parsed.media[0].encoding_parameters, 0);
-      check_int_eq((int)parsed.media[0].mpeg4_fmtp.flags, 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_parse(sdp_body, sizeof(sdp_body) - 1, &parsed), 0);
+      check_equal(parsed.session_name, "RTSP Session");
+      check_equal(parsed.connection_address, "192.0.2.1");
+      check_equal(parsed.control, "*");
+      check_equal(parsed.range, "npt=0-60.000");
+      check_equal(parsed.direction, "recvonly");
+      check_equal(parsed.media_count, 2);
+      check_equal(parsed.media[0].media, "video");
+      check_equal(parsed.media[0].connection_address, "198.51.100.10");
+      check_equal(parsed.media[0].proto, "RTP/AVP");
+      check_equal(parsed.media[0].payload_type, 96);
+      check_equal(parsed.media[0].encoding_name, "H264");
+      check_equal(parsed.media[0].clock_rate, 90000);
+      check_equal(parsed.media[0].encoding_parameters, 0);
+      check_equal((int)parsed.media[0].mpeg4_fmtp.flags, 0);
+      check_equal(
           (int)parsed.media[0].h264_fmtp.flags,
           (int)(TURBO_RTSP_SDP_H264_FMTP_PACKETIZATION_MODE |
                 TURBO_RTSP_SDP_H264_FMTP_PROFILE_LEVEL_ID |
                 TURBO_RTSP_SDP_H264_FMTP_SPROP_PARAMETER_SETS));
-      check_int_eq(parsed.media[0].h264_fmtp.packetization_mode, 1);
-      check_str_eq(parsed.media[0].h264_fmtp.profile_level_id, "42e01f");
-      check_str_eq(
+      check_equal(parsed.media[0].h264_fmtp.packetization_mode, 1);
+      check_equal(parsed.media[0].h264_fmtp.profile_level_id, "42e01f");
+      check_equal(
           parsed.media[0].h264_fmtp.sprop_parameter_sets,
           "Z0IAH5WoFAFuQA==,aM48gA==");
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_h264_fmtp_write_annexb(
               h264_annexb,
               sizeof(h264_annexb),
               &parsed.media[0].h264_fmtp,
               &h264_written),
           0);
-      check_size_eq(h264_written, sizeof(expected_h264_annexb));
-      check_mem_eq(h264_annexb, expected_h264_annexb, sizeof(expected_h264_annexb));
-      check_str_eq(
+      check_equal(h264_written, sizeof(expected_h264_annexb));
+      check_equal(h264_annexb, expected_h264_annexb, sizeof(expected_h264_annexb));
+      check_equal(
           parsed.media[0].fmtp,
           "packetization-mode=1;profile-level-id=42e01f;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM48gA==");
-      check_str_eq(parsed.media[0].control, "trackID=0");
-      check_str_eq(parsed.media[0].range, "npt=10-20");
-      check_str_eq(parsed.media[0].direction, "sendonly");
-      check_str_eq(parsed.media[1].media, "audio");
-      check_str_eq(parsed.media[1].connection_address, "");
-      check_int_eq(parsed.media[1].payload_type, 97);
-      check_str_eq(parsed.media[1].encoding_name, "MPEG4-GENERIC");
-      check_int_eq(parsed.media[1].clock_rate, 48000);
-      check_int_eq(parsed.media[1].encoding_parameters, 2);
-      check_str_eq(parsed.media[1].fmtp, "streamtype=5;mode=AAC-hbr;config=1190");
-      check_int_eq(
+      check_equal(parsed.media[0].control, "trackID=0");
+      check_equal(parsed.media[0].range, "npt=10-20");
+      check_equal(parsed.media[0].direction, "sendonly");
+      check_equal(parsed.media[1].media, "audio");
+      check_equal(parsed.media[1].connection_address, "");
+      check_equal(parsed.media[1].payload_type, 97);
+      check_equal(parsed.media[1].encoding_name, "MPEG4-GENERIC");
+      check_equal(parsed.media[1].clock_rate, 48000);
+      check_equal(parsed.media[1].encoding_parameters, 2);
+      check_equal(parsed.media[1].fmtp, "streamtype=5;mode=AAC-hbr;config=1190");
+      check_equal(
           (int)parsed.media[1].mpeg4_fmtp.flags,
           (int)(TURBO_RTSP_SDP_MPEG4_FMTP_STREAM_TYPE |
                 TURBO_RTSP_SDP_MPEG4_FMTP_MODE |
                 TURBO_RTSP_SDP_MPEG4_FMTP_CONFIG));
-      check_int_eq(parsed.media[1].mpeg4_fmtp.stream_type, 5);
-      check_str_eq(parsed.media[1].mpeg4_fmtp.mode, "AAC-hbr");
-      check_str_eq(parsed.media[1].mpeg4_fmtp.config, "1190");
-      check_int_eq(
+      check_equal(parsed.media[1].mpeg4_fmtp.stream_type, 5);
+      check_equal(parsed.media[1].mpeg4_fmtp.mode, "AAC-hbr");
+      check_equal(parsed.media[1].mpeg4_fmtp.config, "1190");
+      check_equal(
           turbo_rtsp_sdp_mpeg4_fmtp_write_config(
               config,
               sizeof(config),
               &parsed.media[1].mpeg4_fmtp,
               &written),
           0);
-      check_size_eq(written, sizeof(expected_config));
-      check_mem_eq(config, expected_config, sizeof(expected_config));
-      check_str_eq(parsed.media[1].control, "trackID=1");
-      check_str_eq(parsed.media[1].range, "");
-      check_str_eq(parsed.media[1].direction, "");
+      check_equal(written, sizeof(expected_config));
+      check_equal(config, expected_config, sizeof(expected_config));
+      check_equal(parsed.media[1].control, "trackID=1");
+      check_equal(parsed.media[1].range, "");
+      check_equal(parsed.media[1].direction, "");
     }
 
     it("parses MP4A-LATM fmtp fields and writes AAC config") {
@@ -6069,30 +6069,30 @@ suite("turbo_rtsp_lib") {
       memset(&parsed, 0, sizeof(parsed));
       memset(config, 0, sizeof(config));
 
-      check_int_eq(turbo_rtsp_sdp_parse(sdp_body, sizeof(sdp_body) - 1, &parsed), 0);
-      check_size_eq(parsed.media_count, 1);
-      check_str_eq(parsed.media[0].encoding_name, "MP4A-LATM");
-      check_int_eq(parsed.media[0].clock_rate, 48000);
-      check_int_eq(parsed.media[0].encoding_parameters, 2);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_parse(sdp_body, sizeof(sdp_body) - 1, &parsed), 0);
+      check_equal(parsed.media_count, 1);
+      check_equal(parsed.media[0].encoding_name, "MP4A-LATM");
+      check_equal(parsed.media[0].clock_rate, 48000);
+      check_equal(parsed.media[0].encoding_parameters, 2);
+      check_equal(
           (int)parsed.media[0].mpeg4_fmtp.flags,
           (int)(TURBO_RTSP_SDP_MPEG4_FMTP_PROFILE_LEVEL_ID |
                 TURBO_RTSP_SDP_MPEG4_FMTP_OBJECT |
                 TURBO_RTSP_SDP_MPEG4_FMTP_CPRESENT |
                 TURBO_RTSP_SDP_MPEG4_FMTP_CONFIG));
-      check_str_eq(parsed.media[0].mpeg4_fmtp.profile_level_id, "9");
-      check_int_eq(parsed.media[0].mpeg4_fmtp.object, 8);
-      check_int_eq(parsed.media[0].mpeg4_fmtp.cpresent, 0);
-      check_str_eq(parsed.media[0].mpeg4_fmtp.config, "9128B1071070");
-      check_int_eq(
+      check_equal(parsed.media[0].mpeg4_fmtp.profile_level_id, "9");
+      check_equal(parsed.media[0].mpeg4_fmtp.object, 8);
+      check_equal(parsed.media[0].mpeg4_fmtp.cpresent, 0);
+      check_equal(parsed.media[0].mpeg4_fmtp.config, "9128B1071070");
+      check_equal(
           turbo_rtsp_sdp_mpeg4_fmtp_write_config(
               config,
               sizeof(config),
               &parsed.media[0].mpeg4_fmtp,
               &written),
           0);
-      check_size_eq(written, sizeof(expected_config));
-      check_mem_eq(config, expected_config, sizeof(expected_config));
+      check_equal(written, sizeof(expected_config));
+      check_equal(config, expected_config, sizeof(expected_config));
     }
 
     it("applies RTP/AVP static payload profiles when rtpmap is omitted") {
@@ -6108,23 +6108,23 @@ suite("turbo_rtsp_lib") {
       static turbo_rtsp_sdp_description_t parsed;
 
       memset(&parsed, 0, sizeof(parsed));
-      check_int_eq(turbo_rtsp_sdp_parse(sdp_body, sizeof(sdp_body) - 1, &parsed), 0);
-      check_size_eq(parsed.media_count, 3);
-      check_int_eq(parsed.media[0].payload_type, 0);
-      check_str_eq(parsed.media[0].encoding_name, "PCMU");
-      check_int_eq(parsed.media[0].clock_rate, 8000);
-      check_int_eq(parsed.media[0].encoding_parameters, 1);
-      check_str_eq(parsed.media[0].control, "trackID=0");
-      check_int_eq(parsed.media[1].payload_type, 8);
-      check_str_eq(parsed.media[1].encoding_name, "PCMA");
-      check_int_eq(parsed.media[1].clock_rate, 8000);
-      check_int_eq(parsed.media[1].encoding_parameters, 1);
-      check_str_eq(parsed.media[1].control, "trackID=1");
-      check_int_eq(parsed.media[2].payload_type, 33);
-      check_str_eq(parsed.media[2].encoding_name, "MP2T");
-      check_int_eq(parsed.media[2].clock_rate, 90000);
-      check_int_eq(parsed.media[2].encoding_parameters, 0);
-      check_str_eq(parsed.media[2].control, "trackID=2");
+      check_equal(turbo_rtsp_sdp_parse(sdp_body, sizeof(sdp_body) - 1, &parsed), 0);
+      check_equal(parsed.media_count, 3);
+      check_equal(parsed.media[0].payload_type, 0);
+      check_equal(parsed.media[0].encoding_name, "PCMU");
+      check_equal(parsed.media[0].clock_rate, 8000);
+      check_equal(parsed.media[0].encoding_parameters, 1);
+      check_equal(parsed.media[0].control, "trackID=0");
+      check_equal(parsed.media[1].payload_type, 8);
+      check_equal(parsed.media[1].encoding_name, "PCMA");
+      check_equal(parsed.media[1].clock_rate, 8000);
+      check_equal(parsed.media[1].encoding_parameters, 1);
+      check_equal(parsed.media[1].control, "trackID=1");
+      check_equal(parsed.media[2].payload_type, 33);
+      check_equal(parsed.media[2].encoding_name, "MP2T");
+      check_equal(parsed.media[2].clock_rate, 90000);
+      check_equal(parsed.media[2].encoding_parameters, 0);
+      check_equal(parsed.media[2].control, "trackID=2");
     }
 
     it("builds MPEG4 AAC fmtp strings") {
@@ -6147,10 +6147,10 @@ suite("turbo_rtsp_lib") {
       mpeg4.index_delta_length = 3;
       snprintf(mpeg4.config, sizeof(mpeg4.config), "1190");
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_mpeg4_fmtp_build(fmtp, sizeof(fmtp), &mpeg4),
           (int)strlen("streamtype=5;profile-level-id=41;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=1190"));
-      check_str_eq(
+      check_equal(
           fmtp,
           "streamtype=5;profile-level-id=41;mode=AAC-hbr;sizelength=13;indexlength=3;indexdeltalength=3;config=1190");
     }
@@ -6169,10 +6169,10 @@ suite("turbo_rtsp_lib") {
       mpeg4.cpresent = 0;
       snprintf(mpeg4.config, sizeof(mpeg4.config), "9128B1071070");
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_mpeg4_fmtp_build(fmtp, sizeof(fmtp), &mpeg4),
           (int)strlen("profile-level-id=9;object=8;cpresent=0;config=9128B1071070"));
-      check_str_eq(fmtp, "profile-level-id=9;object=8;cpresent=0;config=9128B1071070");
+      check_equal(fmtp, "profile-level-id=9;object=8;cpresent=0;config=9128B1071070");
     }
 
     it("builds H264 fmtp parameter set strings") {
@@ -6190,10 +6190,10 @@ suite("turbo_rtsp_lib") {
           sizeof(h264.sprop_parameter_sets),
           "Z0IAH5WoFAFuQA==,aM48gA==");
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_h264_fmtp_build(fmtp, sizeof(fmtp), &h264),
           (int)strlen("packetization-mode=1;profile-level-id=42e01f;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM48gA=="));
-      check_str_eq(
+      check_equal(
           fmtp,
           "packetization-mode=1;profile-level-id=42e01f;sprop-parameter-sets=Z0IAH5WoFAFuQA==,aM48gA==");
     }
@@ -6220,32 +6220,32 @@ suite("turbo_rtsp_lib") {
       memset(&parsed, 0, sizeof(parsed));
       memset(annexb, 0, sizeof(annexb));
 
-      check_int_eq(turbo_rtsp_sdp_parse(sdp_body, sizeof(sdp_body) - 1, &parsed), 0);
-      check_size_eq(parsed.media_count, 1);
-      check_str_eq(parsed.media[0].encoding_name, "H265");
-      check_str_eq(
+      check_equal(turbo_rtsp_sdp_parse(sdp_body, sizeof(sdp_body) - 1, &parsed), 0);
+      check_equal(parsed.media_count, 1);
+      check_equal(parsed.media[0].encoding_name, "H265");
+      check_equal(
           parsed.media[0].fmtp,
           "profile-id=1; sprop-vps=QAE=; sprop-sps=QgE=,QgEC; sprop-pps=RAE=; sprop-sei=TgE=");
-      check_int_eq(
+      check_equal(
           (int)parsed.media[0].h265_fmtp.flags,
           (int)(TURBO_RTSP_SDP_H265_FMTP_SPROP_VPS |
                 TURBO_RTSP_SDP_H265_FMTP_SPROP_SPS |
                 TURBO_RTSP_SDP_H265_FMTP_SPROP_PPS |
                 TURBO_RTSP_SDP_H265_FMTP_SPROP_SEI));
-      check_str_eq(parsed.media[0].h265_fmtp.sprop_vps, "QAE=");
-      check_str_eq(parsed.media[0].h265_fmtp.sprop_sps, "QgE=,QgEC");
-      check_str_eq(parsed.media[0].h265_fmtp.sprop_pps, "RAE=");
-      check_str_eq(parsed.media[0].h265_fmtp.sprop_sei, "TgE=");
+      check_equal(parsed.media[0].h265_fmtp.sprop_vps, "QAE=");
+      check_equal(parsed.media[0].h265_fmtp.sprop_sps, "QgE=,QgEC");
+      check_equal(parsed.media[0].h265_fmtp.sprop_pps, "RAE=");
+      check_equal(parsed.media[0].h265_fmtp.sprop_sei, "TgE=");
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_h265_fmtp_write_annexb(
               annexb,
               sizeof(annexb),
               &parsed.media[0].h265_fmtp,
               &written),
           0);
-      check_size_eq(written, sizeof(expected_annexb));
-      check_mem_eq(annexb, expected_annexb, sizeof(expected_annexb));
+      check_equal(written, sizeof(expected_annexb));
+      check_equal(annexb, expected_annexb, sizeof(expected_annexb));
     }
 
     it("builds H265 fmtp parameter set strings") {
@@ -6260,10 +6260,10 @@ suite("turbo_rtsp_lib") {
       snprintf(h265.sprop_sps, sizeof(h265.sprop_sps), "QgE=");
       snprintf(h265.sprop_pps, sizeof(h265.sprop_pps), "RAE=");
 
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_h265_fmtp_build(fmtp, sizeof(fmtp), &h265),
           (int)strlen("sprop-vps=QAE=; sprop-sps=QgE=; sprop-pps=RAE="));
-      check_str_eq(fmtp, "sprop-vps=QAE=; sprop-sps=QgE=; sprop-pps=RAE=");
+      check_equal(fmtp, "sprop-vps=QAE=; sprop-sps=QgE=; sprop-pps=RAE=");
     }
 
     it("rejects malformed H265 fmtp parameter sets") {
@@ -6272,28 +6272,28 @@ suite("turbo_rtsp_lib") {
       size_t written = 99;
 
       memset(&h265, 0, sizeof(h265));
-      check_int_eq(turbo_rtsp_sdp_h265_fmtp_parse("sprop-vps=", 0, &h265), -1);
-      check_int_eq(turbo_rtsp_sdp_h265_fmtp_parse("sprop-vps", 0, &h265), -1);
+      check_equal(turbo_rtsp_sdp_h265_fmtp_parse("sprop-vps=", 0, &h265), -1);
+      check_equal(turbo_rtsp_sdp_h265_fmtp_parse("sprop-vps", 0, &h265), -1);
 
-      check_int_eq(turbo_rtsp_sdp_h265_fmtp_parse("sprop-vps=not-base64", 0, &h265), 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_h265_fmtp_parse("sprop-vps=not-base64", 0, &h265), 0);
+      check_equal(
           turbo_rtsp_sdp_h265_fmtp_write_annexb(
               annexb,
               sizeof(annexb),
               &h265,
               &written),
           -1);
-      check_size_eq(written, 0);
+      check_equal(written, 0);
 
-      check_int_eq(turbo_rtsp_sdp_h265_fmtp_parse("sprop-vps=QAE=;sprop-sps=QgE=", 0, &h265), 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_h265_fmtp_parse("sprop-vps=QAE=;sprop-sps=QgE=", 0, &h265), 0);
+      check_equal(
           turbo_rtsp_sdp_h265_fmtp_write_annexb(
               annexb,
               5,
               &h265,
               &written),
           -1);
-      check_size_eq(written, 0);
+      check_equal(written, 0);
     }
 
     it("rejects malformed H264 fmtp parameter sets") {
@@ -6302,31 +6302,31 @@ suite("turbo_rtsp_lib") {
       size_t written = 99;
 
       memset(&h264, 0, sizeof(h264));
-      check_int_eq(turbo_rtsp_sdp_h264_fmtp_parse("packetization-mode=3", 0, &h264), -1);
-      check_int_eq(turbo_rtsp_sdp_h264_fmtp_parse("sprop-parameter-sets=", 0, &h264), -1);
-      check_int_eq(turbo_rtsp_sdp_h264_fmtp_parse("sprop-parameter-sets", 0, &h264), -1);
+      check_equal(turbo_rtsp_sdp_h264_fmtp_parse("packetization-mode=3", 0, &h264), -1);
+      check_equal(turbo_rtsp_sdp_h264_fmtp_parse("sprop-parameter-sets=", 0, &h264), -1);
+      check_equal(turbo_rtsp_sdp_h264_fmtp_parse("sprop-parameter-sets", 0, &h264), -1);
 
-      check_int_eq(turbo_rtsp_sdp_h264_fmtp_parse("sprop-parameter-sets=not-base64", 0, &h264), 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_h264_fmtp_parse("sprop-parameter-sets=not-base64", 0, &h264), 0);
+      check_equal(
           turbo_rtsp_sdp_h264_fmtp_write_annexb(
               annexb,
               sizeof(annexb),
               &h264,
               &written),
           -1);
-      check_size_eq(written, 0);
-      check_int_eq(annexb[0], 0xaa);
-      check_int_eq(annexb[1], 0xbb);
+      check_equal(written, 0);
+      check_equal(annexb[0], 0xaa);
+      check_equal(annexb[1], 0xbb);
 
-      check_int_eq(turbo_rtsp_sdp_h264_fmtp_parse("sprop-parameter-sets=Z0IAH5WoFAFuQA==", 0, &h264), 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_h264_fmtp_parse("sprop-parameter-sets=Z0IAH5WoFAFuQA==", 0, &h264), 0);
+      check_equal(
           turbo_rtsp_sdp_h264_fmtp_write_annexb(
               annexb,
               5,
               &h264,
               &written),
           -1);
-      check_size_eq(written, 0);
+      check_equal(written, 0);
     }
 
     it("rejects malformed MPEG4 AAC fmtp config") {
@@ -6335,44 +6335,44 @@ suite("turbo_rtsp_lib") {
       size_t written = 99;
 
       memset(&mpeg4, 0, sizeof(mpeg4));
-      check_int_eq(turbo_rtsp_sdp_mpeg4_fmtp_parse("config=119", 0, &mpeg4), 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_mpeg4_fmtp_parse("config=119", 0, &mpeg4), 0);
+      check_equal(
           turbo_rtsp_sdp_mpeg4_fmtp_write_config(
               config,
               sizeof(config),
               &mpeg4,
               &written),
           -1);
-      check_size_eq(written, 0);
-      check_int_eq(config[0], 0xaa);
-      check_int_eq(config[1], 0xbb);
+      check_equal(written, 0);
+      check_equal(config[0], 0xaa);
+      check_equal(config[1], 0xbb);
 
-      check_int_eq(turbo_rtsp_sdp_mpeg4_fmtp_parse("config=11xz", 0, &mpeg4), 0);
+      check_equal(turbo_rtsp_sdp_mpeg4_fmtp_parse("config=11xz", 0, &mpeg4), 0);
       config[0] = 0xaa;
       config[1] = 0xbb;
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_mpeg4_fmtp_write_config(
               config,
               sizeof(config),
               &mpeg4,
               &written),
           -1);
-      check_size_eq(written, 0);
-      check_int_eq(config[0], 0xaa);
-      check_int_eq(config[1], 0xbb);
+      check_equal(written, 0);
+      check_equal(config[0], 0xaa);
+      check_equal(config[1], 0xbb);
 
-      check_int_eq(turbo_rtsp_sdp_mpeg4_fmtp_parse("config=1190", 0, &mpeg4), 0);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_mpeg4_fmtp_parse("config=1190", 0, &mpeg4), 0);
+      check_equal(
           turbo_rtsp_sdp_mpeg4_fmtp_write_config(
               config,
               1,
               &mpeg4,
               &written),
           -1);
-      check_size_eq(written, 0);
+      check_equal(written, 0);
 
-      check_int_eq(turbo_rtsp_sdp_mpeg4_fmtp_parse("streamtype=x;config=1190", 0, &mpeg4), -1);
-      check_int_eq(turbo_rtsp_sdp_mpeg4_fmtp_parse("config", 0, &mpeg4), -1);
+      check_equal(turbo_rtsp_sdp_mpeg4_fmtp_parse("streamtype=x;config=1190", 0, &mpeg4), -1);
+      check_equal(turbo_rtsp_sdp_mpeg4_fmtp_parse("config", 0, &mpeg4), -1);
     }
 
     it("rejects malformed SDP numeric fields") {
@@ -6396,20 +6396,20 @@ suite("turbo_rtsp_lib") {
           "a=rtpmap:96 H264/2147483648\r\n";
       static turbo_rtsp_sdp_description_t parsed;
 
-      check_int_eq(turbo_rtsp_sdp_parse(invalid_port, sizeof(invalid_port) - 1, &parsed), -1);
-      check_int_eq(
+      check_equal(turbo_rtsp_sdp_parse(invalid_port, sizeof(invalid_port) - 1, &parsed), -1);
+      check_equal(
           turbo_rtsp_sdp_parse(
               invalid_payload_type,
               sizeof(invalid_payload_type) - 1,
               &parsed),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_parse(
               invalid_rtpmap_payload_type,
               sizeof(invalid_rtpmap_payload_type) - 1,
               &parsed),
           -1);
-      check_int_eq(
+      check_equal(
           turbo_rtsp_sdp_parse(
               invalid_clock_rate,
               sizeof(invalid_clock_rate) - 1,
@@ -6461,17 +6461,17 @@ suite("turbo_rtsp_lib") {
 
       check(len > 0);
       check(strstr(buffer, "RTSP/1.0 200 OK\r\n") == buffer);
-      check(strstr(buffer, "Content-Type: application/sdp\r\n") != NULL);
-      check(strstr(buffer, "Content-Base: rtsp://example.com/live/\r\n") != NULL);
-      check(strstr(buffer, "Cache-Control: no-cache\r\n") != NULL);
-      check(strstr(buffer, content_length) != NULL);
-      check(strstr(buffer, "m=video 0 RTP/AVP 96\r\n") != NULL);
-      check(strstr(buffer, "a=rtpmap:96 H264/90000\r\n") != NULL);
+      check_not_null(strstr(buffer, "Content-Type: application/sdp\r\n"));
+      check_not_null(strstr(buffer, "Content-Base: rtsp://example.com/live/\r\n"));
+      check_not_null(strstr(buffer, "Cache-Control: no-cache\r\n"));
+      check_not_null(strstr(buffer, content_length));
+      check_not_null(strstr(buffer, "m=video 0 RTP/AVP 96\r\n"));
+      check_not_null(strstr(buffer, "a=rtpmap:96 H264/90000\r\n"));
 
       body = strstr(buffer, "\r\n\r\n");
-      check(body != NULL);
+      check_not_null(body);
       body += 4;
-      check_str_eq(body, sdp_body);
+      check_equal(body, sdp_body);
     }
   }
 }

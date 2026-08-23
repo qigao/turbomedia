@@ -1,4 +1,4 @@
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_datachannel.h"
 #include "turbo_media_engine.h"
 #include "turbo_peer_connection.h"
@@ -108,20 +108,20 @@ static void test_media_context_attach_tracks_and_detach(void) {
   turbo_media_context_t *media;
   turbo_media_track_t *track;
 
-  TEST_ASSERT_NOT_NULL(dc);
+  check_not_null(dc);
   peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
-  TEST_ASSERT_NOT_NULL(peer);
+  check_not_null(peer);
   media = turbo_media_create(peer, &user_value);
-  TEST_ASSERT_NOT_NULL(media);
-  TEST_ASSERT_TRUE(turbo_media_get_user_data(media) == &user_value);
-  TEST_ASSERT_EQUAL_INT(0, turbo_media_get_track_count(media));
+  check_not_null(media);
+  check_true(turbo_media_get_user_data(media) == &user_value);
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(0));
 
   track = turbo_media_add_track(media, &track_config);
-  TEST_ASSERT_NOT_NULL(track);
-  TEST_ASSERT_EQUAL_INT(1, turbo_media_get_track_count(media));
-  TEST_ASSERT_TRUE(turbo_media_get_track(media, 0) == track);
-  TEST_ASSERT_EQUAL_INT(TURBO_RTC_MEDIA_TRACK_AUDIO, turbo_media_track_get_type(track));
-  TEST_ASSERT_EQUAL_INT(-1, turbo_media_setup_srtp(media));
+  check_not_null(track);
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(1));
+  check_true(turbo_media_get_track(media, 0) == track);
+  check_equal((int)(turbo_media_track_get_type(track)), (int)(TURBO_RTC_MEDIA_TRACK_AUDIO));
+  check_equal((int)(turbo_media_setup_srtp(media)), (int)(-1));
 
   turbo_media_destroy(media);
   turbo_dc_peer_destroy(peer);
@@ -142,19 +142,19 @@ static void test_media_track_rejects_invalid_configuration(void) {
   turbo_dc_peer_t *peer;
   turbo_media_context_t *media;
 
-  TEST_ASSERT_NOT_NULL(dc);
+  check_not_null(dc);
   peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
-  TEST_ASSERT_NOT_NULL(peer);
+  check_not_null(peer);
   media = turbo_media_create(peer, NULL);
-  TEST_ASSERT_NOT_NULL(media);
+  check_not_null(media);
 
-  TEST_ASSERT_NULL(turbo_media_add_track(media, &track_config));
-  TEST_ASSERT_EQUAL_INT(0, turbo_media_get_track_count(media));
+  check_null(turbo_media_add_track(media, &track_config));
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(0));
 
   track_config.type = TURBO_RTC_MEDIA_TRACK_AUDIO;
   track_config.direction = (turbo_media_direction_t)0;
-  TEST_ASSERT_NULL(turbo_media_add_track(media, &track_config));
-  TEST_ASSERT_EQUAL_INT(0, turbo_media_get_track_count(media));
+  check_null(turbo_media_add_track(media, &track_config));
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(0));
 
   turbo_media_destroy(media);
   turbo_dc_peer_destroy(peer);
@@ -163,8 +163,7 @@ static void test_media_track_rejects_invalid_configuration(void) {
 
 static void test_rtcp_parser_accepts_minimum_packet(void) {
   uint8_t receiver_report[] = {0x80, RTCP_RR, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01};
-  TEST_ASSERT_EQUAL_INT(
-      1, rtcp_compound_parse(receiver_report, sizeof(receiver_report), NULL, NULL));
+  check_equal((int)(rtcp_compound_parse(receiver_report, sizeof(receiver_report), NULL, NULL)), (int)(1));
 }
 
 static void test_media_rejects_unprotected_rtp_send(void) {
@@ -194,23 +193,21 @@ static void test_media_rejects_unprotected_rtp_send(void) {
   turbo_media_context_t *media;
   turbo_media_track_t *track;
 
-  TEST_ASSERT_NOT_NULL(dc);
+  check_not_null(dc);
   peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_dc_peer_set_external_transport(peer, &send_count, count_transport_send));
+  check_not_null(peer);
+  check_equal((int)(turbo_dc_peer_set_external_transport(peer, &send_count, count_transport_send)), (int)(0));
   media = turbo_media_create(peer, NULL);
-  TEST_ASSERT_NOT_NULL(media);
+  check_not_null(media);
   track = turbo_media_add_track(media, &track_config);
-  TEST_ASSERT_NOT_NULL(track);
-  TEST_ASSERT_EQUAL_INT(0, turbo_media_track_start(track));
+  check_not_null(track);
+  check_equal((int)(turbo_media_track_start(track)), (int)(0));
 
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_media_track_send_rtp_packet(track, rtp_packet, sizeof(rtp_packet)));
-  TEST_ASSERT_EQUAL_INT(0, send_count);
+  check_equal((int)(turbo_media_track_send_rtp_packet(track, rtp_packet, sizeof(rtp_packet))), (int)(-1));
+  check_equal((int)(send_count), (int)(0));
 
   turbo_media_destroy(media);
-  TEST_ASSERT_EQUAL_INT(0, turbo_dc_peer_set_external_transport(peer, NULL, NULL));
+  check_equal((int)(turbo_dc_peer_set_external_transport(peer, NULL, NULL)), (int)(0));
   turbo_dc_peer_destroy(peer);
   turbo_dc_context_destroy(dc);
 }
@@ -241,18 +238,18 @@ static void test_media_rejects_unprotected_rtp_receive(void) {
   turbo_media_context_t *media;
   turbo_media_track_t *track;
 
-  TEST_ASSERT_NOT_NULL(dc);
+  check_not_null(dc);
   peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
-  TEST_ASSERT_NOT_NULL(peer);
+  check_not_null(peer);
   media = turbo_media_create(peer, NULL);
-  TEST_ASSERT_NOT_NULL(media);
+  check_not_null(media);
   track = turbo_media_add_track(media, &track_config);
-  TEST_ASSERT_NOT_NULL(track);
-  TEST_ASSERT_EQUAL_INT(0, turbo_media_track_start(track));
+  check_not_null(track);
+  check_equal((int)(turbo_media_track_start(track)), (int)(0));
 
-  TEST_ASSERT_EQUAL_INT(-1, turbo_media_feed_data(media, rtp_packet, sizeof(rtp_packet)));
+  check_equal((int)(turbo_media_feed_data(media, rtp_packet, sizeof(rtp_packet))), (int)(-1));
   turbo_media_track_get_stats(track, &stats);
-  TEST_ASSERT_EQUAL_UINT64(0, stats.packets_recv);
+  check_equal((uint64_t)(stats.packets_recv), (uint64_t)(0));
 
   turbo_media_destroy(media);
   turbo_dc_peer_destroy(peer);
@@ -266,20 +263,20 @@ static void test_peer_connection_rejects_invalid_turbonet_ice_configuration(void
 
   config.stun_server_count = TEST_TOO_MANY_ICE_SERVERS;
   config.stun_servers = stun_servers;
-  TEST_ASSERT_NULL(turbo_peer_connection_create(&config, NULL));
+  check_null(turbo_peer_connection_create(&config, NULL));
 
   config.stun_server_count = 1;
   config.stun_servers = NULL;
-  TEST_ASSERT_NULL(turbo_peer_connection_create(&config, NULL));
+  check_null(turbo_peer_connection_create(&config, NULL));
 
   config.stun_server_count = 0;
   config.turn_server_count = 1;
   config.turn_servers = NULL;
-  TEST_ASSERT_NULL(turbo_peer_connection_create(&config, NULL));
+  check_null(turbo_peer_connection_create(&config, NULL));
 
   config.turn_servers = turn_servers;
   config.turn_servers[0] = "turn:missing-credentials@127.0.0.1:9";
-  TEST_ASSERT_NULL(turbo_peer_connection_create(&config, NULL));
+  check_null(turbo_peer_connection_create(&config, NULL));
 }
 
 static void test_peer_connection_accepts_turbonet_turn_configuration(void) {
@@ -293,7 +290,7 @@ static void test_peer_connection_accepts_turbonet_turn_configuration(void) {
   config.turn_server_count = 1;
 
   peer = turbo_peer_connection_create(&config, NULL);
-  TEST_ASSERT_NOT_NULL(peer);
+  check_not_null(peer);
   turbo_peer_connection_destroy(peer);
 }
 
@@ -366,29 +363,22 @@ static void test_peer_connection_requires_valid_remote_fingerprint(void) {
   config.allow_loopback = 1;
   config.disable_datachannel = 1;
   peer = turbo_peer_connection_create(&config, NULL);
-  TEST_ASSERT_NOT_NULL(peer);
+  check_not_null(peer);
 
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_set_remote_description(
-              peer, "offer", missing_fingerprint_sdp));
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_set_remote_description(
-              peer, "offer", malformed_fingerprint_sdp));
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_set_remote_description(
-              peer, "offer", unsupported_hash_sdp));
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_set_remote_description(
-              peer, "offer", unsupported_multi_transport_sdp));
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_set_remote_description(
-              peer, "pranswer", valid_sdp));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "offer", bundled_distinct_transport_sdp));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "offer", valid_sdp));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+              peer, "offer", missing_fingerprint_sdp)), (int)(-1));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+              peer, "offer", malformed_fingerprint_sdp)), (int)(-1));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+              peer, "offer", unsupported_hash_sdp)), (int)(-1));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+              peer, "offer", unsupported_multi_transport_sdp)), (int)(-1));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+              peer, "pranswer", valid_sdp)), (int)(-1));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "offer", bundled_distinct_transport_sdp)), (int)(0));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "offer", valid_sdp)), (int)(0));
 
   turbo_peer_connection_destroy(peer);
 }
@@ -406,17 +396,16 @@ static void test_peer_connection_propagates_datachannel_close(void) {
       turbo_peer_connection_create(&config, &callbacks);
   turbo_dc_peer_t *dc_peer;
 
-  TEST_ASSERT_NOT_NULL(peer);
+  check_not_null(peer);
   dc_peer = turbo_peer_connection_get_dc_peer(peer);
-  TEST_ASSERT_NOT_NULL(dc_peer);
+  check_not_null(dc_peer);
 
   turbo_dc_peer_close(dc_peer);
-  TEST_ASSERT_EQUAL_INT(1, state_context.call_count);
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_PEER_STATE_DISCONNECTED, state_context.last_state);
+  check_equal((int)(state_context.call_count), (int)(1));
+  check_equal((int)(state_context.last_state), (int)(TURBO_PEER_STATE_DISCONNECTED));
 
   turbo_dc_peer_close(dc_peer);
-  TEST_ASSERT_EQUAL_INT(1, state_context.call_count);
+  check_equal((int)(state_context.call_count), (int)(1));
 
   turbo_peer_connection_destroy(peer);
 }
@@ -457,36 +446,31 @@ static void test_peer_connection_negotiates_dtls_setup_role(void) {
       "a=rtpmap:96 VP8/90000\r\n";
   turbo_peer_connection_t *peer = create_test_peer();
 
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "offer", offer_actpass));
-  TEST_ASSERT_TRUE(turbo_dc_peer_is_dtls_server(
+  check_not_null(peer);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "offer", offer_actpass)), (int)(0));
+  check_true(turbo_dc_peer_is_dtls_server(
       turbo_peer_connection_get_dc_peer(peer)));
   turbo_peer_connection_destroy(peer);
 
   peer = create_test_peer();
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "answer", answer_active));
-  TEST_ASSERT_TRUE(turbo_dc_peer_is_dtls_server(
+  check_not_null(peer);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "answer", answer_active)), (int)(0));
+  check_true(turbo_dc_peer_is_dtls_server(
       turbo_peer_connection_get_dc_peer(peer)));
   turbo_peer_connection_destroy(peer);
 
   peer = create_test_peer();
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "answer", answer_passive));
-  TEST_ASSERT_FALSE(turbo_dc_peer_is_dtls_server(
+  check_not_null(peer);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "answer", answer_passive)), (int)(0));
+  check_false(turbo_dc_peer_is_dtls_server(
       turbo_peer_connection_get_dc_peer(peer)));
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_set_remote_description(
-              peer, "answer", offer_actpass));
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_set_remote_description(
-              peer, "offer", answer_active));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+              peer, "answer", offer_actpass)), (int)(-1));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+              peer, "offer", answer_active)), (int)(-1));
   turbo_peer_connection_destroy(peer);
 }
 
@@ -520,28 +504,25 @@ static void test_peer_connection_answer_uses_offered_payload_type(void) {
   turbo_media_track_t *receive_track;
   char answer[8192];
 
-  TEST_ASSERT_NOT_NULL(peer);
+  check_not_null(peer);
   receive_track = turbo_peer_connection_add_track(
       peer, TURBO_RTC_MEDIA_TRACK_VIDEO, TURBO_MEDIA_DIRECTION_RECVONLY);
-  TEST_ASSERT_NOT_NULL(receive_track);
+  check_not_null(receive_track);
   media = turbo_peer_connection_get_media_context(peer);
-  TEST_ASSERT_NOT_NULL(media);
-  TEST_ASSERT_EQUAL_INT(1, turbo_media_get_track_count(media));
+  check_not_null(media);
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(1));
 
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(peer, "offer", offer));
-  TEST_ASSERT_EQUAL_INT(1, turbo_media_get_track_count(media));
-  TEST_ASSERT_EQUAL_INT(1, track_context.call_count);
-  TEST_ASSERT_TRUE(track_context.last_track == receive_track);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(peer, "offer", offer));
-  TEST_ASSERT_EQUAL_INT(1, track_context.call_count);
-  TEST_ASSERT_EQUAL_INT(1, turbo_media_get_track_count(media));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_answer(peer, answer, sizeof(answer)));
-  TEST_ASSERT_NOT_NULL(strstr(
+  check_equal((int)(turbo_peer_connection_set_remote_description(peer, "offer", offer)), (int)(0));
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(1));
+  check_equal((int)(track_context.call_count), (int)(1));
+  check_true(track_context.last_track == receive_track);
+  check_equal((int)(turbo_peer_connection_set_remote_description(peer, "offer", offer)), (int)(0));
+  check_equal((int)(track_context.call_count), (int)(1));
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(1));
+  check_greater(turbo_peer_connection_create_answer(peer, answer, sizeof(answer)), 0);
+  check_not_null(strstr(
       answer, "m=video 9 UDP/TLS/RTP/SAVPF 120\r\n"));
-  TEST_ASSERT_NOT_NULL(strstr(answer, "a=rtpmap:120 VP8/90000\r\n"));
+  check_not_null(strstr(answer, "a=rtpmap:120 VP8/90000\r\n"));
 
   turbo_peer_connection_destroy(peer);
 }
@@ -577,28 +558,24 @@ static void test_peer_connection_answer_preserves_rejected_media_sections(void) 
   turbo_peer_connection_t *peer = create_test_peer();
   char answer[8192];
 
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "offer", unsupported_video_offer));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_answer(peer, answer, sizeof(answer)));
-  TEST_ASSERT_NOT_NULL(strstr(
+  check_not_null(peer);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "offer", unsupported_video_offer)), (int)(0));
+  check_greater(turbo_peer_connection_create_answer(peer, answer, sizeof(answer)), 0);
+  check_not_null(strstr(
       answer, "m=video 0 UDP/TLS/RTP/SAVPF 120\r\n"));
-  TEST_ASSERT_NOT_NULL(strstr(answer, "a=mid:video-x\r\n"));
+  check_not_null(strstr(answer, "a=mid:video-x\r\n"));
   turbo_peer_connection_destroy(peer);
 
   peer = create_test_peer();
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "offer", datachannel_offer));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_answer(peer, answer, sizeof(answer)));
-  TEST_ASSERT_NOT_NULL(strstr(
+  check_not_null(peer);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "offer", datachannel_offer)), (int)(0));
+  check_greater(turbo_peer_connection_create_answer(peer, answer, sizeof(answer)), 0);
+  check_not_null(strstr(
       answer,
       "m=application 0 UDP/DTLS/SCTP webrtc-datachannel\r\n"));
-  TEST_ASSERT_NOT_NULL(strstr(answer, "a=mid:data\r\n"));
+  check_not_null(strstr(answer, "a=mid:data\r\n"));
   turbo_peer_connection_destroy(peer);
 }
 
@@ -610,27 +587,23 @@ static void test_peer_connection_local_ice_restart_changes_credentials(void) {
   char first_ufrag[TEST_ICE_CREDENTIAL_SIZE];
   char restart_ufrag[TEST_ICE_CREDENTIAL_SIZE];
 
-  TEST_ASSERT_NOT_NULL(peer);
+  check_not_null(peer);
   track = turbo_peer_connection_add_track(
       peer, TURBO_RTC_MEDIA_TRACK_VIDEO, TURBO_MEDIA_DIRECTION_SENDONLY);
-  TEST_ASSERT_NOT_NULL(track);
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_offer(
-             peer, first_offer, sizeof(first_offer)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute(
-             first_offer, "a=ice-ufrag:", first_ufrag, sizeof(first_ufrag)));
+  check_not_null(track);
+  check_greater(turbo_peer_connection_create_offer(
+             peer, first_offer, sizeof(first_offer)), 0);
+  check_equal((int)(copy_sdp_attribute(
+             first_offer, "a=ice-ufrag:", first_ufrag, sizeof(first_ufrag))), (int)(0));
 
   pump_test_peer(peer);
-  TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_restart_ice(peer));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_offer(
-             peer, restart_offer, sizeof(restart_offer)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute(
+  check_equal((int)(turbo_peer_connection_restart_ice(peer)), (int)(0));
+  check_greater(turbo_peer_connection_create_offer(
+             peer, restart_offer, sizeof(restart_offer)), 0);
+  check_equal((int)(copy_sdp_attribute(
              restart_offer, "a=ice-ufrag:", restart_ufrag,
-             sizeof(restart_ufrag)));
-  TEST_ASSERT_TRUE(strcmp(first_ufrag, restart_ufrag) != 0);
+             sizeof(restart_ufrag))), (int)(0));
+  check_true(strcmp(first_ufrag, restart_ufrag) != 0);
 
   turbo_peer_connection_destroy(peer);
 }
@@ -659,25 +632,20 @@ static void test_peer_connection_completes_local_ice_restart_with_new_answer(voi
   turbo_peer_connection_t *peer = create_test_peer();
   char offer[TEST_SDP_BUFFER_SIZE];
 
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_NOT_NULL(turbo_peer_connection_add_track(
+  check_not_null(peer);
+  check_not_null(turbo_peer_connection_add_track(
       peer, TURBO_RTC_MEDIA_TRACK_VIDEO, TURBO_MEDIA_DIRECTION_SENDONLY));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_offer(peer, offer, sizeof(offer)));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "answer", first_answer));
+  check_greater(turbo_peer_connection_create_offer(peer, offer, sizeof(offer)), 0);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "answer", first_answer)), (int)(0));
 
   pump_test_peer(peer);
-  TEST_ASSERT_EQUAL_INT(0, turbo_peer_connection_restart_ice(peer));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_offer(peer, offer, sizeof(offer)));
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_set_remote_description(
-              peer, "answer", first_answer));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "answer", restart_answer));
+  check_equal((int)(turbo_peer_connection_restart_ice(peer)), (int)(0));
+  check_greater(turbo_peer_connection_create_offer(peer, offer, sizeof(offer)), 0);
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+              peer, "answer", first_answer)), (int)(-1));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "answer", restart_answer)), (int)(0));
 
   turbo_peer_connection_destroy(peer);
 }
@@ -709,31 +677,25 @@ static void test_peer_connection_answers_remote_ice_restart(void) {
   char first_ufrag[TEST_ICE_CREDENTIAL_SIZE];
   char restart_ufrag[TEST_ICE_CREDENTIAL_SIZE];
 
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_NOT_NULL(turbo_peer_connection_add_track(
+  check_not_null(peer);
+  check_not_null(turbo_peer_connection_add_track(
       peer, TURBO_RTC_MEDIA_TRACK_VIDEO, TURBO_MEDIA_DIRECTION_RECVONLY));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "offer", first_offer));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_answer(
-             peer, first_answer, sizeof(first_answer)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute(
-             first_answer, "a=ice-ufrag:", first_ufrag, sizeof(first_ufrag)));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "offer", first_offer)), (int)(0));
+  check_greater(turbo_peer_connection_create_answer(
+             peer, first_answer, sizeof(first_answer)), 0);
+  check_equal((int)(copy_sdp_attribute(
+             first_answer, "a=ice-ufrag:", first_ufrag, sizeof(first_ufrag))), (int)(0));
 
   pump_test_peer(peer);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(
-             peer, "offer", restart_offer));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_answer(
-             peer, restart_answer, sizeof(restart_answer)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute(
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             peer, "offer", restart_offer)), (int)(0));
+  check_greater(turbo_peer_connection_create_answer(
+             peer, restart_answer, sizeof(restart_answer)), 0);
+  check_equal((int)(copy_sdp_attribute(
              restart_answer, "a=ice-ufrag:", restart_ufrag,
-             sizeof(restart_ufrag)));
-  TEST_ASSERT_TRUE(strcmp(first_ufrag, restart_ufrag) != 0);
+             sizeof(restart_ufrag))), (int)(0));
+  check_true(strcmp(first_ufrag, restart_ufrag) != 0);
 
   turbo_peer_connection_destroy(peer);
 }
@@ -762,58 +724,50 @@ static void test_peer_connection_applies_trickle_ice_sdpfrag_restart(void) {
   char first_ufrag[TEST_ICE_CREDENTIAL_SIZE];
   char restart_ufrag[TEST_ICE_CREDENTIAL_SIZE];
 
-  TEST_ASSERT_NOT_NULL(peer);
-  TEST_ASSERT_NOT_NULL(turbo_peer_connection_add_track(
+  check_not_null(peer);
+  check_not_null(turbo_peer_connection_add_track(
       peer, TURBO_RTC_MEDIA_TRACK_VIDEO, TURBO_MEDIA_DIRECTION_RECVONLY));
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_set_remote_description(peer, "offer", offer));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_answer(
-             peer, first_answer, sizeof(first_answer)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute(
-             first_answer, "a=ice-ufrag:", first_ufrag, sizeof(first_ufrag)));
+  check_equal((int)(turbo_peer_connection_set_remote_description(peer, "offer", offer)), (int)(0));
+  check_greater(turbo_peer_connection_create_answer(
+             peer, first_answer, sizeof(first_answer)), 0);
+  check_equal((int)(copy_sdp_attribute(
+             first_answer, "a=ice-ufrag:", first_ufrag, sizeof(first_ufrag))), (int)(0));
 
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_peer_connection_apply_remote_ice_sdpfrag(
+  check_equal((int)(turbo_peer_connection_apply_remote_ice_sdpfrag(
              peer, same_generation_fragment,
-             strlen(same_generation_fragment)));
-  TEST_ASSERT_EQUAL_INT(
-      -1, turbo_peer_connection_apply_remote_ice_sdpfrag(
+             strlen(same_generation_fragment))), (int)(0));
+  check_equal((int)(turbo_peer_connection_apply_remote_ice_sdpfrag(
               peer, incomplete_restart_fragment,
-              strlen(incomplete_restart_fragment)));
-  TEST_ASSERT_EQUAL_INT(
-      1, turbo_peer_connection_apply_remote_ice_sdpfrag(
-             peer, restart_fragment, strlen(restart_fragment)));
-  TEST_ASSERT_GREATER_THAN(
-      0, turbo_peer_connection_create_local_ice_sdpfrag(
-             peer, local_fragment, sizeof(local_fragment)));
-  TEST_ASSERT_EQUAL_INT(
-      0, copy_sdp_attribute(
+              strlen(incomplete_restart_fragment))), (int)(-1));
+  check_equal((int)(turbo_peer_connection_apply_remote_ice_sdpfrag(
+             peer, restart_fragment, strlen(restart_fragment))), (int)(1));
+  check_greater(turbo_peer_connection_create_local_ice_sdpfrag(
+             peer, local_fragment, sizeof(local_fragment)), 0);
+  check_equal((int)(copy_sdp_attribute(
              local_fragment, "a=ice-ufrag:", restart_ufrag,
-             sizeof(restart_ufrag)));
-  TEST_ASSERT_TRUE(strcmp(first_ufrag, restart_ufrag) != 0);
-  TEST_ASSERT_NOT_NULL(strstr(local_fragment, "m=video 9 UDP/TLS/RTP/SAVPF 96"));
-  TEST_ASSERT_NOT_NULL(strstr(local_fragment, "a=mid:0\r\n"));
+             sizeof(restart_ufrag))), (int)(0));
+  check_true(strcmp(first_ufrag, restart_ufrag) != 0);
+  check_not_null(strstr(local_fragment, "m=video 9 UDP/TLS/RTP/SAVPF 96"));
+  check_not_null(strstr(local_fragment, "a=mid:0\r\n"));
 
   turbo_peer_connection_destroy(peer);
 }
 
 spec("test_media_engine") {
-  TT_TEST(test_media_context_attach_tracks_and_detach);
-  TT_TEST(test_media_track_rejects_invalid_configuration);
-  TT_TEST(test_rtcp_parser_accepts_minimum_packet);
-  TT_TEST(test_media_rejects_unprotected_rtp_send);
-  TT_TEST(test_media_rejects_unprotected_rtp_receive);
-  TT_TEST(test_peer_connection_rejects_invalid_turbonet_ice_configuration);
-  TT_TEST(test_peer_connection_accepts_turbonet_turn_configuration);
-  TT_TEST(test_peer_connection_requires_valid_remote_fingerprint);
-  TT_TEST(test_peer_connection_propagates_datachannel_close);
-  TT_TEST(test_peer_connection_negotiates_dtls_setup_role);
-  TT_TEST(test_peer_connection_answer_uses_offered_payload_type);
-  TT_TEST(test_peer_connection_answer_preserves_rejected_media_sections);
-  TT_TEST(test_peer_connection_local_ice_restart_changes_credentials);
-  TT_TEST(test_peer_connection_completes_local_ice_restart_with_new_answer);
-  TT_TEST(test_peer_connection_answers_remote_ice_restart);
-  TT_TEST(test_peer_connection_applies_trickle_ice_sdpfrag_restart);
+  it("test_media_context_attach_tracks_and_detach") { test_media_context_attach_tracks_and_detach(); };
+  it("test_media_track_rejects_invalid_configuration") { test_media_track_rejects_invalid_configuration(); };
+  it("test_rtcp_parser_accepts_minimum_packet") { test_rtcp_parser_accepts_minimum_packet(); };
+  it("test_media_rejects_unprotected_rtp_send") { test_media_rejects_unprotected_rtp_send(); };
+  it("test_media_rejects_unprotected_rtp_receive") { test_media_rejects_unprotected_rtp_receive(); };
+  it("test_peer_connection_rejects_invalid_turbonet_ice_configuration") { test_peer_connection_rejects_invalid_turbonet_ice_configuration(); };
+  it("test_peer_connection_accepts_turbonet_turn_configuration") { test_peer_connection_accepts_turbonet_turn_configuration(); };
+  it("test_peer_connection_requires_valid_remote_fingerprint") { test_peer_connection_requires_valid_remote_fingerprint(); };
+  it("test_peer_connection_propagates_datachannel_close") { test_peer_connection_propagates_datachannel_close(); };
+  it("test_peer_connection_negotiates_dtls_setup_role") { test_peer_connection_negotiates_dtls_setup_role(); };
+  it("test_peer_connection_answer_uses_offered_payload_type") { test_peer_connection_answer_uses_offered_payload_type(); };
+  it("test_peer_connection_answer_preserves_rejected_media_sections") { test_peer_connection_answer_preserves_rejected_media_sections(); };
+  it("test_peer_connection_local_ice_restart_changes_credentials") { test_peer_connection_local_ice_restart_changes_credentials(); };
+  it("test_peer_connection_completes_local_ice_restart_with_new_answer") { test_peer_connection_completes_local_ice_restart_with_new_answer(); };
+  it("test_peer_connection_answers_remote_ice_restart") { test_peer_connection_answers_remote_ice_restart(); };
+  it("test_peer_connection_applies_trickle_ice_sdpfrag_restart") { test_peer_connection_applies_trickle_ice_sdpfrag_restart(); };
 }

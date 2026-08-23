@@ -98,63 +98,63 @@ typedef void (*turbo_transport_event_cb)(turbo_transport_t *transport,
 /**
  * 创建传输实例
  */
-CXX_C_API turbo_transport_t *turbo_transport_create(const turbo_transport_config_t *config);
+TURBO_MEDIA_API turbo_transport_t *turbo_transport_create(const turbo_transport_config_t *config);
 
 /**
  * 销毁传输实例
  */
-CXX_C_API void turbo_transport_destroy(turbo_transport_t *transport);
+TURBO_MEDIA_API void turbo_transport_destroy(turbo_transport_t *transport);
 
 /**
  * 连接到服务器（协程内调用）
  */
-CXX_C_API int turbo_transport_connect(turbo_transport_t *transport);
+TURBO_MEDIA_API int turbo_transport_connect(turbo_transport_t *transport);
 
 /**
  * 断开连接
  */
-CXX_C_API int turbo_transport_disconnect(turbo_transport_t *transport);
+TURBO_MEDIA_API int turbo_transport_disconnect(turbo_transport_t *transport);
 
 /**
  * 发送数据（协程内调用）
  */
-CXX_C_API int turbo_transport_send(turbo_transport_t *transport,
+TURBO_MEDIA_API int turbo_transport_send(turbo_transport_t *transport,
                                    const uint8_t *data,
                                    size_t size);
 
 /**
  * 接收数据（协程内调用，会挂起等待）
  */
-CXX_C_API int turbo_transport_recv(turbo_transport_t *transport,
+TURBO_MEDIA_API int turbo_transport_recv(turbo_transport_t *transport,
                                    uint8_t **data,
                                    size_t *size);
 
 /**
  * 释放接收到的数据
  */
-CXX_C_API void turbo_transport_free_recv(turbo_transport_t *transport, uint8_t *data);
+TURBO_MEDIA_API void turbo_transport_free_recv(turbo_transport_t *transport, uint8_t *data);
 
 /**
  * 检查连接状态
  */
-CXX_C_API int turbo_transport_is_connected(turbo_transport_t *transport);
+TURBO_MEDIA_API int turbo_transport_is_connected(turbo_transport_t *transport);
 
 /**
  * 设置事件回调
  */
-CXX_C_API void turbo_transport_set_event_callback(turbo_transport_t *transport,
+TURBO_MEDIA_API void turbo_transport_set_event_callback(turbo_transport_t *transport,
                                                   turbo_transport_event_cb callback,
                                                   void *user_data);
 
 /**
  * 获取底层 CoroNet socket（如果有）
  */
-CXX_C_API struct coro_socket_s *turbo_transport_get_socket(turbo_transport_t *transport);
+TURBO_MEDIA_API struct coro_socket_s *turbo_transport_get_socket(turbo_transport_t *transport);
 
 /**
  * 获取底层 HttpClient（如果有）
  */
-CXX_C_API struct http_client_s *turbo_transport_get_http_client(turbo_transport_t *transport);
+TURBO_MEDIA_API struct http_client_s *turbo_transport_get_http_client(turbo_transport_t *transport);
 
 /* =============================================================================
  * HTTP 特定 API
@@ -174,7 +174,7 @@ typedef enum {
 /**
  * 发送 HTTP 请求
  */
-CXX_C_API struct http_response_s *turbo_transport_http_request(
+TURBO_MEDIA_API struct http_response_s *turbo_transport_http_request(
     turbo_transport_t *transport,
     turbo_http_method_t method,
     const char *path,
@@ -188,7 +188,7 @@ CXX_C_API struct http_response_s *turbo_transport_http_request(
  */
 typedef size_t (*turbo_transport_read_cb)(uint8_t *buffer, size_t size, void *user_data);
 
-CXX_C_API struct http_response_s *turbo_transport_http_upload_stream(
+TURBO_MEDIA_API struct http_response_s *turbo_transport_http_upload_stream(
     turbo_transport_t *transport,
     const char *path,
     turbo_transport_read_cb read_cb,
@@ -200,7 +200,7 @@ CXX_C_API struct http_response_s *turbo_transport_http_upload_stream(
  */
 typedef void (*turbo_transport_data_cb)(const uint8_t *data, size_t size, void *user_data);
 
-CXX_C_API int turbo_transport_http_download_stream(
+TURBO_MEDIA_API int turbo_transport_http_download_stream(
     turbo_transport_t *transport,
     const char *path,
     turbo_transport_data_cb data_cb,
@@ -213,20 +213,20 @@ CXX_C_API int turbo_transport_http_download_stream(
 /**
  * 发送 WebSocket 文本消息
  */
-CXX_C_API int turbo_transport_ws_send_text(turbo_transport_t *transport,
+TURBO_MEDIA_API int turbo_transport_ws_send_text(turbo_transport_t *transport,
                                            const char *text);
 
 /**
  * 发送 WebSocket 二进制消息
  */
-CXX_C_API int turbo_transport_ws_send_binary(turbo_transport_t *transport,
+TURBO_MEDIA_API int turbo_transport_ws_send_binary(turbo_transport_t *transport,
                                              const uint8_t *data,
                                              size_t size);
 
 /**
  * 接收 WebSocket 消息
  */
-CXX_C_API int turbo_transport_ws_recv(turbo_transport_t *transport,
+TURBO_MEDIA_API int turbo_transport_ws_recv(turbo_transport_t *transport,
                                       uint8_t **data,
                                       size_t *size,
                                       int *is_text);
@@ -247,13 +247,13 @@ CXX_C_API int turbo_transport_ws_recv(turbo_transport_t *transport,
  * - https://host:port/path
  * - rtmp://host:port/app/stream
  */
-CXX_C_API int turbo_transport_parse_url(const char *url,
+TURBO_MEDIA_API int turbo_transport_parse_url(const char *url,
                                         turbo_transport_config_t *config);
 
 /**
  * 获取错误描述
  */
-CXX_C_API const char *turbo_transport_get_error(turbo_transport_t *transport);
+TURBO_MEDIA_API const char *turbo_transport_get_error(turbo_transport_t *transport);
 
 #ifdef __cplusplus
 }

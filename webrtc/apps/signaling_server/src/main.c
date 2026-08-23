@@ -42,7 +42,7 @@ static void signal_handler(int signum) {
         default: break;
     }
     
-    TLOG_INFO("Received signal {} ({}), initiating graceful shutdown...", 
+    TLOG_INFOF("Received signal {} ({}), initiating graceful shutdown...",
               signame, signum);
     
     if (g_server) {
@@ -299,9 +299,9 @@ int main(int argc, char **argv) {
     
     /* Load configuration file if specified */
     if (cli_probe.config_file) {
-        TLOG_INFO("Loading configuration from: {}", cli_probe.config_file);
+        TLOG_INFOF("Loading configuration from: {}", cli_probe.config_file);
         if (signaling_server_config_load(&config, cli_probe.config_file) != 0) {
-            TLOG_ERROR("Failed to load configuration file: {}", cli_probe.config_file);
+            TLOG_ERRORF("Failed to load configuration file: {}", cli_probe.config_file);
             ret = 1;
             goto cleanup;
         }
@@ -319,25 +319,25 @@ int main(int argc, char **argv) {
     
     /* Print startup banner */
     TLOG_INFO("=================================================");
-    TLOG_INFO("TurboNet WebRTC Signaling Server v{}", SIGNALING_SERVER_VERSION);
+    TLOG_INFOF("TurboNet WebRTC Signaling Server v{}", SIGNALING_SERVER_VERSION);
     TLOG_INFO("=================================================");
-    TLOG_INFO("Node ID: {}", config.node_id ? config.node_id : "auto");
-    TLOG_INFO("WebSocket: {}:{}", config.ws_host, config.ws_port);
+    TLOG_INFOF("Node ID: {}", config.node_id ? config.node_id : "auto");
+    TLOG_INFOF("WebSocket: {}:{}", config.ws_host, config.ws_port);
     if (config.http_enabled) {
-        TLOG_INFO("HTTP API: {}:{}", config.http_host, config.http_port);
+        TLOG_INFOF("HTTP API: {}:{}", config.http_host, config.http_port);
         TLOG_INFO("HTTP management auth: enabled");
     } else {
         TLOG_INFO("HTTP API: disabled");
     }
-    TLOG_INFO("Max Peers: {}", config.max_peers);
-    TLOG_INFO("Max Rooms: {}", config.max_rooms);
-    TLOG_INFO("Redis: {}:{} ({})", 
+    TLOG_INFOF("Max Peers: {}", config.max_peers);
+    TLOG_INFOF("Max Rooms: {}", config.max_rooms);
+    TLOG_INFOF("Redis: {}:{} ({})",
               config.redis_host, 
               config.redis_port,
               config.redis_enabled ? "enabled" : "disabled");
-    TLOG_INFO("Peer admission auth: {}",
+    TLOG_INFOF("Peer admission auth: {}",
               config.jwt_enabled ? "enabled" : "disabled");
-    TLOG_INFO("Log Level: {}", config.log_level);
+    TLOG_INFOF("Log Level: {}", config.log_level);
     TLOG_INFO("=================================================");
     
     /* Setup signal handlers */

@@ -319,55 +319,55 @@ typedef struct {
     char connection_address[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
 } turbo_rtsp_client_media_track_t;
 
-CXX_C_API int turbo_rtsp_response_options(
+TURBO_MEDIA_API int turbo_rtsp_response_options(
     turbo_rtsp_response_t *response,
     const char *public_methods);
 
-CXX_C_API int turbo_rtsp_response_status(
+TURBO_MEDIA_API int turbo_rtsp_response_status(
     turbo_rtsp_response_t *response,
     int status_code,
     const char *reason);
 
-CXX_C_API int turbo_rtsp_response_redirect(
+TURBO_MEDIA_API int turbo_rtsp_response_redirect(
     turbo_rtsp_response_t *response,
     int status_code,
     const char *location);
 
-CXX_C_API int turbo_rtsp_response_describe(
+TURBO_MEDIA_API int turbo_rtsp_response_describe(
     turbo_rtsp_response_t *response,
     const char *sdp,
     size_t sdp_len);
 
-CXX_C_API int turbo_rtsp_response_setup(
+TURBO_MEDIA_API int turbo_rtsp_response_setup(
     turbo_rtsp_response_t *response,
     const char *session_id,
     const char *transport);
 
-CXX_C_API int turbo_rtsp_response_play(
+TURBO_MEDIA_API int turbo_rtsp_response_play(
     turbo_rtsp_response_t *response,
     const char *range,
     const char *rtp_info);
 
-CXX_C_API int turbo_rtsp_response_pause(
+TURBO_MEDIA_API int turbo_rtsp_response_pause(
     turbo_rtsp_response_t *response);
 
-CXX_C_API int turbo_rtsp_response_teardown(
+TURBO_MEDIA_API int turbo_rtsp_response_teardown(
     turbo_rtsp_response_t *response);
 
-CXX_C_API int turbo_rtsp_response_announce(
+TURBO_MEDIA_API int turbo_rtsp_response_announce(
     turbo_rtsp_response_t *response);
 
-CXX_C_API int turbo_rtsp_response_record(
+TURBO_MEDIA_API int turbo_rtsp_response_record(
     turbo_rtsp_response_t *response,
     const char *range);
 
-CXX_C_API int turbo_rtsp_response_get_parameter(
+TURBO_MEDIA_API int turbo_rtsp_response_get_parameter(
     turbo_rtsp_response_t *response,
     const char *content_type,
     const char *body,
     size_t body_len);
 
-CXX_C_API int turbo_rtsp_response_set_parameter(
+TURBO_MEDIA_API int turbo_rtsp_response_set_parameter(
     turbo_rtsp_response_t *response);
 
 /**
@@ -385,65 +385,65 @@ CXX_C_API int turbo_rtsp_response_set_parameter(
  * @return A server instance, or NULL when ctx is NULL, required KCP
  *         configuration is absent, or allocation fails.
  */
-CXX_C_API turbo_rtsp_server_t *turbo_rtsp_server_create(
+TURBO_MEDIA_API turbo_rtsp_server_t *turbo_rtsp_server_create(
     coro_context_t *ctx,
     const turbo_rtsp_server_config_t *config,
     const turbo_rtsp_server_handlers_t *handlers,
     void *user_data);
 
-CXX_C_API int turbo_rtsp_server_start(turbo_rtsp_server_t *server);
+TURBO_MEDIA_API int turbo_rtsp_server_start(turbo_rtsp_server_t *server);
 /**
  * @brief Begin asynchronous server shutdown.
  *
  * Active connections and pending TCP/TLS/WebSocket admission tasks are
  * cancelled. turbo_rtsp_server_destroy() waits for their completion.
  */
-CXX_C_API void turbo_rtsp_server_stop(turbo_rtsp_server_t *server);
-CXX_C_API void turbo_rtsp_server_destroy(turbo_rtsp_server_t *server);
+TURBO_MEDIA_API void turbo_rtsp_server_stop(turbo_rtsp_server_t *server);
+TURBO_MEDIA_API void turbo_rtsp_server_destroy(turbo_rtsp_server_t *server);
 
-CXX_C_API int turbo_rtsp_url_parse(
+TURBO_MEDIA_API int turbo_rtsp_url_parse(
     const char *url,
     turbo_rtsp_url_t *parsed);
 
-CXX_C_API coro_socket_t *turbo_rtsp_session_get_control_socket(
+TURBO_MEDIA_API coro_socket_t *turbo_rtsp_session_get_control_socket(
     turbo_rtsp_session_t *session);
 
-CXX_C_API const turbo_rtsp_request_t *turbo_rtsp_session_get_last_request(
+TURBO_MEDIA_API const turbo_rtsp_request_t *turbo_rtsp_session_get_last_request(
     const turbo_rtsp_session_t *session);
 
-CXX_C_API const turbo_rtsp_message_t *turbo_rtsp_session_get_last_message(
+TURBO_MEDIA_API const turbo_rtsp_message_t *turbo_rtsp_session_get_last_message(
     const turbo_rtsp_session_t *session);
 
-CXX_C_API int turbo_rtsp_session_send_interleaved_frame(
+TURBO_MEDIA_API int turbo_rtsp_session_send_interleaved_frame(
     turbo_rtsp_session_t *session,
     uint8_t channel,
     const uint8_t *payload,
     size_t payload_len);
 
-CXX_C_API int turbo_rtsp_session_setup_udp_transport(
+TURBO_MEDIA_API int turbo_rtsp_session_setup_udp_transport(
     turbo_rtsp_session_t *session,
     turbo_rtsp_response_t *response,
     const char *session_id,
     const char *local_host,
     const char *peer_host);
 
-CXX_C_API int turbo_rtsp_session_send_rtp_udp(
+TURBO_MEDIA_API int turbo_rtsp_session_send_rtp_udp(
     turbo_rtsp_session_t *session,
     const uint8_t *packet,
     size_t packet_len);
 
-CXX_C_API int turbo_rtsp_session_send_rtcp_udp(
+TURBO_MEDIA_API int turbo_rtsp_session_send_rtcp_udp(
     turbo_rtsp_session_t *session,
     const uint8_t *packet,
     size_t packet_len);
 
-CXX_C_API int turbo_rtsp_session_recv_rtp_udp(
+TURBO_MEDIA_API int turbo_rtsp_session_recv_rtp_udp(
     turbo_rtsp_session_t *session,
     uint8_t *buffer,
     size_t buffer_size,
     size_t *packet_len);
 
-CXX_C_API int turbo_rtsp_session_recv_rtcp_udp(
+TURBO_MEDIA_API int turbo_rtsp_session_recv_rtcp_udp(
     turbo_rtsp_session_t *session,
     uint8_t *buffer,
     size_t buffer_size,
@@ -462,157 +462,157 @@ CXX_C_API int turbo_rtsp_session_recv_rtcp_udp(
  * @return A client instance, or NULL when ctx is NULL, required KCP
  *         configuration is absent, or allocation fails.
  */
-CXX_C_API turbo_rtsp_client_t *turbo_rtsp_client_create(
+TURBO_MEDIA_API turbo_rtsp_client_t *turbo_rtsp_client_create(
     coro_context_t *ctx,
     const turbo_rtsp_client_config_t *config);
 
-CXX_C_API int turbo_rtsp_client_connect(
+TURBO_MEDIA_API int turbo_rtsp_client_connect(
     turbo_rtsp_client_t *client);
 
-CXX_C_API turbo_rtsp_client_t *turbo_rtsp_client_open_url(
+TURBO_MEDIA_API turbo_rtsp_client_t *turbo_rtsp_client_open_url(
     coro_context_t *ctx,
     const char *url,
     const turbo_rtsp_client_config_t *config);
 
-CXX_C_API void turbo_rtsp_client_close(
+TURBO_MEDIA_API void turbo_rtsp_client_close(
     turbo_rtsp_client_t *client);
 
-CXX_C_API void turbo_rtsp_client_destroy(
+TURBO_MEDIA_API void turbo_rtsp_client_destroy(
     turbo_rtsp_client_t *client);
 
-CXX_C_API const turbo_rtsp_client_response_t *turbo_rtsp_client_get_last_response(
+TURBO_MEDIA_API const turbo_rtsp_client_response_t *turbo_rtsp_client_get_last_response(
     const turbo_rtsp_client_t *client);
 
-CXX_C_API int turbo_rtsp_client_set_auth(
+TURBO_MEDIA_API int turbo_rtsp_client_set_auth(
     turbo_rtsp_client_t *client,
     const char *username,
     const char *password,
     turbo_rtsp_auth_scheme_t preferred);
 
-CXX_C_API int turbo_rtsp_client_get_last_setup_transport(
+TURBO_MEDIA_API int turbo_rtsp_client_get_last_setup_transport(
     const turbo_rtsp_client_t *client,
     turbo_rtsp_transport_spec_t *transport);
 
-CXX_C_API int turbo_rtsp_client_get_session(
+TURBO_MEDIA_API int turbo_rtsp_client_get_session(
     const turbo_rtsp_client_t *client,
     turbo_rtsp_session_header_t *session);
 
-CXX_C_API size_t turbo_rtsp_client_get_media_track_count(
+TURBO_MEDIA_API size_t turbo_rtsp_client_get_media_track_count(
     const turbo_rtsp_client_t *client);
 
-CXX_C_API const turbo_rtsp_client_media_track_t *turbo_rtsp_client_get_media_track(
+TURBO_MEDIA_API const turbo_rtsp_client_media_track_t *turbo_rtsp_client_get_media_track(
     const turbo_rtsp_client_t *client,
     size_t index);
 
-CXX_C_API const turbo_rtsp_header_view_t *turbo_rtsp_client_response_find_header(
+TURBO_MEDIA_API const turbo_rtsp_header_view_t *turbo_rtsp_client_response_find_header(
     const turbo_rtsp_client_response_t *response,
     const char *name);
 
-CXX_C_API int turbo_rtsp_client_options(
+TURBO_MEDIA_API int turbo_rtsp_client_options(
     turbo_rtsp_client_t *client,
     const char *uri);
 
-CXX_C_API int turbo_rtsp_client_options_ex(
+TURBO_MEDIA_API int turbo_rtsp_client_options_ex(
     turbo_rtsp_client_t *client,
     const char *uri,
     const turbo_rtsp_header_t *headers,
     size_t header_count);
 
-CXX_C_API int turbo_rtsp_client_redirect(
+TURBO_MEDIA_API int turbo_rtsp_client_redirect(
     turbo_rtsp_client_t *client,
     const char *uri);
 
-CXX_C_API int turbo_rtsp_client_describe(
+TURBO_MEDIA_API int turbo_rtsp_client_describe(
     turbo_rtsp_client_t *client,
     const char *uri);
 
-CXX_C_API int turbo_rtsp_client_describe_ex(
+TURBO_MEDIA_API int turbo_rtsp_client_describe_ex(
     turbo_rtsp_client_t *client,
     const char *uri,
     const turbo_rtsp_header_t *headers,
     size_t header_count);
 
-CXX_C_API int turbo_rtsp_client_announce(
+TURBO_MEDIA_API int turbo_rtsp_client_announce(
     turbo_rtsp_client_t *client,
     const turbo_rtsp_push_announce_t *announce);
 
-CXX_C_API int turbo_rtsp_client_setup_interleaved(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_interleaved(
     turbo_rtsp_client_t *client,
     const turbo_rtsp_push_track_t *track);
 
-CXX_C_API int turbo_rtsp_client_setup_interleaved_track(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_interleaved_track(
     turbo_rtsp_client_t *client,
     const turbo_rtsp_interleaved_track_t *track);
 
-CXX_C_API int turbo_rtsp_client_setup_play_interleaved(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_play_interleaved(
     turbo_rtsp_client_t *client,
     const turbo_rtsp_interleaved_track_t *track);
 
-CXX_C_API int turbo_rtsp_client_setup_record_interleaved_track_index(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_record_interleaved_track_index(
     turbo_rtsp_client_t *client,
     size_t index,
     uint8_t rtp_channel,
     uint8_t rtcp_channel);
 
-CXX_C_API int turbo_rtsp_client_setup_play_interleaved_track_index(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_play_interleaved_track_index(
     turbo_rtsp_client_t *client,
     size_t index,
     uint8_t rtp_channel,
     uint8_t rtcp_channel);
 
-CXX_C_API int turbo_rtsp_client_setup_record_udp(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_record_udp(
     turbo_rtsp_client_t *client,
     const turbo_rtsp_udp_track_t *track);
 
-CXX_C_API int turbo_rtsp_client_setup_play_udp(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_play_udp(
     turbo_rtsp_client_t *client,
     const turbo_rtsp_udp_track_t *track);
 
-CXX_C_API int turbo_rtsp_client_setup_record_udp_track_index(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_record_udp_track_index(
     turbo_rtsp_client_t *client,
     size_t index,
     turbo_rtsp_rtp_udp_pair_t *udp_pair);
 
-CXX_C_API int turbo_rtsp_client_setup_play_udp_track_index(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_play_udp_track_index(
     turbo_rtsp_client_t *client,
     size_t index,
     turbo_rtsp_rtp_udp_pair_t *udp_pair);
 
-CXX_C_API int turbo_rtsp_client_setup_record_udp_ports_track_index(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_record_udp_ports_track_index(
     turbo_rtsp_client_t *client,
     size_t index,
     int client_rtp_port,
     int client_rtcp_port);
 
-CXX_C_API int turbo_rtsp_client_setup_play_udp_ports_track_index(
+TURBO_MEDIA_API int turbo_rtsp_client_setup_play_udp_ports_track_index(
     turbo_rtsp_client_t *client,
     size_t index,
     int client_rtp_port,
     int client_rtcp_port);
 
-CXX_C_API int turbo_rtsp_client_play(
+TURBO_MEDIA_API int turbo_rtsp_client_play(
     turbo_rtsp_client_t *client,
     const char *range);
 
-CXX_C_API int turbo_rtsp_client_play_ex(
+TURBO_MEDIA_API int turbo_rtsp_client_play_ex(
     turbo_rtsp_client_t *client,
     const char *range,
     const turbo_rtsp_header_t *headers,
     size_t header_count);
 
-CXX_C_API int turbo_rtsp_client_pause(
+TURBO_MEDIA_API int turbo_rtsp_client_pause(
     turbo_rtsp_client_t *client);
 
-CXX_C_API int turbo_rtsp_client_record(
+TURBO_MEDIA_API int turbo_rtsp_client_record(
     turbo_rtsp_client_t *client);
 
-CXX_C_API int turbo_rtsp_client_get_parameter(
+TURBO_MEDIA_API int turbo_rtsp_client_get_parameter(
     turbo_rtsp_client_t *client,
     const char *content_type,
     const char *body,
     size_t body_len);
 
-CXX_C_API int turbo_rtsp_client_get_parameter_ex(
+TURBO_MEDIA_API int turbo_rtsp_client_get_parameter_ex(
     turbo_rtsp_client_t *client,
     const char *content_type,
     const turbo_rtsp_header_t *headers,
@@ -620,13 +620,13 @@ CXX_C_API int turbo_rtsp_client_get_parameter_ex(
     const char *body,
     size_t body_len);
 
-CXX_C_API int turbo_rtsp_client_set_parameter(
+TURBO_MEDIA_API int turbo_rtsp_client_set_parameter(
     turbo_rtsp_client_t *client,
     const char *content_type,
     const char *body,
     size_t body_len);
 
-CXX_C_API int turbo_rtsp_client_set_parameter_ex(
+TURBO_MEDIA_API int turbo_rtsp_client_set_parameter_ex(
     turbo_rtsp_client_t *client,
     const char *content_type,
     const turbo_rtsp_header_t *headers,
@@ -634,16 +634,16 @@ CXX_C_API int turbo_rtsp_client_set_parameter_ex(
     const char *body,
     size_t body_len);
 
-CXX_C_API int turbo_rtsp_client_teardown(
+TURBO_MEDIA_API int turbo_rtsp_client_teardown(
     turbo_rtsp_client_t *client);
 
-CXX_C_API int turbo_rtsp_client_send_interleaved_frame(
+TURBO_MEDIA_API int turbo_rtsp_client_send_interleaved_frame(
     turbo_rtsp_client_t *client,
     uint8_t channel,
     const uint8_t *payload,
     size_t payload_len);
 
-CXX_C_API int turbo_rtsp_client_send_h264_nal_interleaved_track_index(
+TURBO_MEDIA_API int turbo_rtsp_client_send_h264_nal_interleaved_track_index(
     turbo_rtsp_client_t *client,
     size_t index,
     const uint8_t *nal,
@@ -651,7 +651,7 @@ CXX_C_API int turbo_rtsp_client_send_h264_nal_interleaved_track_index(
     uint32_t timestamp_increment,
     uint32_t *rtp_timestamp_or_null);
 
-CXX_C_API int turbo_rtsp_client_send_h264_nal_interleaved_track_index_ex(
+TURBO_MEDIA_API int turbo_rtsp_client_send_h264_nal_interleaved_track_index_ex(
     turbo_rtsp_client_t *client,
     size_t index,
     const uint8_t *nal,
@@ -660,7 +660,7 @@ CXX_C_API int turbo_rtsp_client_send_h264_nal_interleaved_track_index_ex(
     uint32_t timestamp_increment,
     uint32_t *rtp_timestamp_or_null);
 
-CXX_C_API int turbo_rtsp_client_send_sender_rtcp_compound_interleaved_track_index(
+TURBO_MEDIA_API int turbo_rtsp_client_send_sender_rtcp_compound_interleaved_track_index(
     turbo_rtsp_client_t *client,
     size_t index,
     uint64_t ntp_timestamp,
@@ -671,14 +671,14 @@ CXX_C_API int turbo_rtsp_client_send_sender_rtcp_compound_interleaved_track_inde
 /* Returns -1 with *payload_len set to the required size when payload_capacity
  * is too small. The frame remains pending so callers can retry with a larger
  * buffer. */
-CXX_C_API int turbo_rtsp_client_recv_interleaved_frame(
+TURBO_MEDIA_API int turbo_rtsp_client_recv_interleaved_frame(
     turbo_rtsp_client_t *client,
     uint8_t *channel,
     uint8_t *payload,
     size_t payload_capacity,
     size_t *payload_len);
 
-CXX_C_API const turbo_rtsp_header_view_t *turbo_rtsp_message_find_header(
+TURBO_MEDIA_API const turbo_rtsp_header_view_t *turbo_rtsp_message_find_header(
     const turbo_rtsp_message_t *message,
     const char *name);
 

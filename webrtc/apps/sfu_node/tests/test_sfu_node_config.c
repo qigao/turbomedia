@@ -17,7 +17,7 @@ static char *write_toml(const char *content) {
         return NULL;
     }
     result = tt_write_file(path, content, strlen(content));
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) {
         tt_remove_file(path);
         free(path);
@@ -30,7 +30,7 @@ static void remove_toml(char *path) {
     if (!path) {
         return;
     }
-    check_int_eq(tt_remove_file(path), 0);
+    check_equal(tt_remove_file(path), 0);
     free(path);
 }
 
@@ -70,32 +70,32 @@ spec("SFU node TOML configuration") {
 
         sfu_node_app_config_init(&config);
         if (path) {
-            check_int_eq(sfu_node_app_config_load(&config, path), 0);
-            check_str_eq(config.config_file, path);
-            check_str_eq(config.bind_host, "127.0.0.1");
-            check_int_eq(config.bind_port, 19190);
+            check_equal(sfu_node_app_config_load(&config, path), 0);
+            check_equal(config.config_file, path);
+            check_equal(config.bind_host, "127.0.0.1");
+            check_equal(config.bind_port, 19190);
             check_true(config.use_tls);
-            check_str_eq(config.tls_cert_file, "sfu-chain.pem");
-            check_str_eq(config.tls_key_file, "sfu-key.pem");
-            check_str_eq(config.node_id, "sfu-edge-1");
-            check_int_eq(config.max_rooms, 64);
-            check_int_eq(config.default_room_capacity, 24);
-            check_str_eq(config.control_token, "sfu-token");
-            check_str_eq(config.media_access_token, "media-token");
-            check_str_eq(
+            check_equal(config.tls_cert_file, "sfu-chain.pem");
+            check_equal(config.tls_key_file, "sfu-key.pem");
+            check_equal(config.node_id, "sfu-edge-1");
+            check_equal(config.max_rooms, 64);
+            check_equal(config.default_room_capacity, 24);
+            check_equal(config.control_token, "sfu-token");
+            check_equal(config.media_access_token, "media-token");
+            check_equal(
                 config.auth_revoked_token_sha256,
                 "0000000000000000000000000000000000000000000000000000000000000000");
-            check_int_eq(config.stun_server_count, 2);
-            check_str_eq(config.stun_servers[0],
+            check_equal(config.stun_server_count, 2);
+            check_equal(config.stun_servers[0],
                          "stun:stun-1.example.com:3478");
-            check_str_eq(config.stun_servers[1],
+            check_equal(config.stun_servers[1],
                          "stun:stun-2.example.com:3478");
-            check_int_eq(config.turn_server_count, 1);
-            check_str_eq(config.turn_servers[0],
+            check_equal(config.turn_server_count, 1);
+            check_equal(config.turn_servers[0],
                          "turn:user:secret@turn.example.com:3478");
             check_true(config.ice_allow_loopback);
             check_true(config.dry_run);
-            check_str_eq(config.log_level, "debug");
+            check_equal(config.log_level, "debug");
             check_not_null(config.private_data);
         }
         sfu_node_app_config_cleanup(&config);
@@ -106,9 +106,9 @@ spec("SFU node TOML configuration") {
         sfu_node_app_config_t config;
 
         sfu_node_app_config_init(&config);
-        check_int_eq(
+        check_equal(
             sfu_node_app_config_load(&config, SFU_NODE_CONFIG_EXAMPLE_PATH), 0);
-        check_int_eq(sfu_node_app_config_validate(&config), 0);
+        check_equal(sfu_node_app_config_validate(&config), 0);
         sfu_node_app_config_cleanup(&config);
     }
 
@@ -123,8 +123,8 @@ spec("SFU node TOML configuration") {
         sfu_node_app_config_init(&config);
         config.bind_port = 17777;
         if (path) {
-            check_int_eq(sfu_node_app_config_load(&config, path), -1);
-            check_int_eq(config.bind_port, 17777);
+            check_equal(sfu_node_app_config_load(&config, path), -1);
+            check_equal(config.bind_port, 17777);
             check_null(config.config_file);
             check_null(config.private_data);
         }
@@ -143,11 +143,11 @@ spec("SFU node TOML configuration") {
 
         sfu_node_app_config_init(&config);
         if (malformed_path && mistyped_path && invalid_path) {
-            check_int_eq(sfu_node_app_config_load(&config, malformed_path), -1);
-            check_int_eq(sfu_node_app_config_load(&config, mistyped_path), -1);
-            check_int_eq(sfu_node_app_config_load(&config, invalid_path), -1);
-            check_int_eq(config.bind_port, 9190);
-            check_int_eq(config.max_rooms, 128);
+            check_equal(sfu_node_app_config_load(&config, malformed_path), -1);
+            check_equal(sfu_node_app_config_load(&config, mistyped_path), -1);
+            check_equal(sfu_node_app_config_load(&config, invalid_path), -1);
+            check_equal(config.bind_port, 9190);
+            check_equal(config.max_rooms, 128);
             check_null(config.private_data);
         }
         sfu_node_app_config_cleanup(&config);
@@ -171,9 +171,9 @@ spec("SFU node TOML configuration") {
 
         sfu_node_app_config_init(&config);
         if (missing_key_path && missing_cert_path) {
-            check_int_eq(
+            check_equal(
                 sfu_node_app_config_load(&config, missing_key_path), -1);
-            check_int_eq(
+            check_equal(
                 sfu_node_app_config_load(&config, missing_cert_path), -1);
             check_false(config.use_tls);
             check_null(config.private_data);
@@ -199,11 +199,11 @@ spec("SFU node TOML configuration") {
 
         sfu_node_app_config_init(&config);
         if (too_many_path && wrong_type_path && invalid_url_path) {
-            check_int_eq(sfu_node_app_config_load(&config, too_many_path), -1);
-            check_int_eq(sfu_node_app_config_load(&config, wrong_type_path), -1);
-            check_int_eq(sfu_node_app_config_load(&config, invalid_url_path), -1);
-            check_int_eq(config.stun_server_count, 0);
-            check_int_eq(config.turn_server_count, 0);
+            check_equal(sfu_node_app_config_load(&config, too_many_path), -1);
+            check_equal(sfu_node_app_config_load(&config, wrong_type_path), -1);
+            check_equal(sfu_node_app_config_load(&config, invalid_url_path), -1);
+            check_equal(config.stun_server_count, 0);
+            check_equal(config.turn_server_count, 0);
             check_null(config.private_data);
         }
         sfu_node_app_config_cleanup(&config);
@@ -221,11 +221,11 @@ spec("SFU node TOML configuration") {
 
         sfu_node_app_config_init(&config);
         if (first_path && second_path) {
-            check_int_eq(sfu_node_app_config_load(&config, first_path), 0);
-            check_int_eq(sfu_node_app_config_load(&config, second_path), 0);
-            check_str_eq(config.node_id, "persistent-sfu");
-            check_int_eq(config.max_rooms, 321);
-            check_str_eq(config.config_file, second_path);
+            check_equal(sfu_node_app_config_load(&config, first_path), 0);
+            check_equal(sfu_node_app_config_load(&config, second_path), 0);
+            check_equal(config.node_id, "persistent-sfu");
+            check_equal(config.max_rooms, 321);
+            check_equal(config.config_file, second_path);
         }
         sfu_node_app_config_cleanup(&config);
         remove_toml(first_path);
@@ -245,14 +245,14 @@ spec("SFU node TOML configuration") {
         sfu_node_app_config_init(&source);
         sfu_node_app_config_init(&copy);
         if (path) {
-            check_int_eq(sfu_node_app_config_load(&source, path), 0);
-            check_int_eq(sfu_node_app_config_copy(&copy, &source), 0);
+            check_equal(sfu_node_app_config_load(&source, path), 0);
+            check_equal(sfu_node_app_config_copy(&copy, &source), 0);
             sfu_node_app_config_cleanup(&source);
-            check_str_eq(copy.node_id, "owned-node");
-            check_int_eq(copy.stun_server_count, 1);
-            check_str_eq(copy.stun_servers[0], "stun:owned.example:3478");
-            check_int_eq(copy.turn_server_count, 1);
-            check_str_eq(copy.turn_servers[0],
+            check_equal(copy.node_id, "owned-node");
+            check_equal(copy.stun_server_count, 1);
+            check_equal(copy.stun_servers[0], "stun:owned.example:3478");
+            check_equal(copy.turn_server_count, 1);
+            check_equal(copy.turn_servers[0],
                          "turn:user:secret@owned.example:3478");
         }
         sfu_node_app_config_cleanup(&source);

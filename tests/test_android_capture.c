@@ -83,23 +83,23 @@ spec("Android capture backends") {
             turbo_capture_device_t devices[TURBO_CAPTURE_MAX_DEVICES];
 
             int audio_count = turbo_capture_list_audio_devices(devices, TURBO_CAPTURE_MAX_DEVICES);
-            check_int_eq(audio_count, 1);
-            check_int_eq(devices[0].type, TURBO_CAPTURE_TYPE_AUDIO);
+            check_equal(audio_count, 1);
+            check_equal(devices[0].type, TURBO_CAPTURE_TYPE_AUDIO);
             check_true(devices[0].is_default);
-            check_str_eq(devices[0].id, "default");
+            check_equal(devices[0].id, "default");
 
             int video_count = turbo_capture_list_video_devices(devices, TURBO_CAPTURE_MAX_DEVICES);
-            check_int_eq(video_count, 2);
-            check_int_eq(devices[0].type, TURBO_CAPTURE_TYPE_VIDEO);
-            check_str_eq(devices[0].id, "back");
-            check_str_eq(devices[1].id, "front");
+            check_equal(video_count, 2);
+            check_equal(devices[0].type, TURBO_CAPTURE_TYPE_VIDEO);
+            check_equal(devices[0].id, "back");
+            check_equal(devices[1].id, "front");
 
             int screen_count = turbo_capture_list_screens(devices, TURBO_CAPTURE_MAX_DEVICES);
-            check_int_eq(screen_count, 1);
-            check_int_eq(devices[0].type, TURBO_CAPTURE_TYPE_SCREEN);
-            check_str_eq(devices[0].id, "screen:0");
+            check_equal(screen_count, 1);
+            check_equal(devices[0].type, TURBO_CAPTURE_TYPE_SCREEN);
+            check_equal(devices[0].id, "screen:0");
 
-            check_int_eq(turbo_capture_list_gpu_devices(devices, TURBO_CAPTURE_MAX_DEVICES), 0);
+            check_equal(turbo_capture_list_gpu_devices(devices, TURBO_CAPTURE_MAX_DEVICES), 0);
         }
     }
 
@@ -132,14 +132,14 @@ spec("Android capture backends") {
             int state_callbacks = atomic_load(&observer.state_callbacks);
             turbo_capture_destroy(capture);
 
-            check_int_eq(initial_state, TURBO_CAPTURE_STATE_STOPPED);
-            check_int_eq(result, TURBO_CAPTURE_OK);
-            check_int_eq(running_state, TURBO_CAPTURE_STATE_RUNNING);
+            check_equal(initial_state, TURBO_CAPTURE_STATE_STOPPED);
+            check_equal(result, TURBO_CAPTURE_OK);
+            check_equal(running_state, TURBO_CAPTURE_STATE_RUNNING);
             check_true(received_data);
-            check_size_gt(sample_size, 0);
-            check_int_eq(stopped_state, TURBO_CAPTURE_STATE_STOPPED);
-            check_int_eq(last_state, TURBO_CAPTURE_STATE_STOPPED);
-            check_int_ge(state_callbacks, 2);
+            check_greater(sample_size, 0);
+            check_equal(stopped_state, TURBO_CAPTURE_STATE_STOPPED);
+            check_equal(last_state, TURBO_CAPTURE_STATE_STOPPED);
+            check_greater_equal(state_callbacks, 2);
         }
     }
 
@@ -154,13 +154,13 @@ spec("Android capture backends") {
             int result;
 
             result = turbo_video_device_open("back", &device);
-            check_int_eq(result, TURBO_CAPTURE_OK);
+            check_equal(result, TURBO_CAPTURE_OK);
             check_not_null(device);
             if (!device) return;
 
             result = turbo_video_device_list_modes(
                 device, modes, TURBO_CAPTURE_MAX_VIDEO_MODES, &mode_count);
-            check_int_eq(result, TURBO_CAPTURE_OK);
+            check_equal(result, TURBO_CAPTURE_OK);
             check_true(mode_count > 0);
             if (result != TURBO_CAPTURE_OK || mode_count == 0) {
                 turbo_video_device_close(device);
@@ -184,7 +184,7 @@ spec("Android capture backends") {
             result = turbo_video_device_create_capture(
                 device, selected_mode, &capture);
             turbo_video_device_close(device);
-            check_int_eq(result, TURBO_CAPTURE_OK);
+            check_equal(result, TURBO_CAPTURE_OK);
             check_not_null(capture);
             if (!capture) return;
 
@@ -192,14 +192,14 @@ spec("Android capture backends") {
             turbo_video_capture_set_callback(capture, on_video, &observer);
             turbo_capture_on_state(capture, on_state);
             result = turbo_capture_start(capture);
-            check_int_eq(result, TURBO_CAPTURE_OK);
+            check_equal(result, TURBO_CAPTURE_OK);
             if (result == TURBO_CAPTURE_OK) {
                 check_true(wait_for_data(&observer, VIDEO_CAPTURE_WAIT_STEPS));
-                check_int_eq(atomic_load(&observer.last_width),
+                check_equal(atomic_load(&observer.last_width),
                              selected_mode->width);
-                check_int_eq(atomic_load(&observer.last_height),
+                check_equal(atomic_load(&observer.last_height),
                              selected_mode->height);
-                check_size_gt(atomic_load(&observer.last_size), 0);
+                check_greater(atomic_load(&observer.last_size), 0);
                 turbo_capture_stop(capture);
             }
             turbo_capture_destroy(capture);
@@ -219,14 +219,14 @@ spec("Android capture backends") {
             int set_crop_result = turbo_video_capture_set_crop(NULL, &crop);
             int get_crop_result = turbo_video_capture_get_crop(NULL, &crop);
 
-            check_int_eq(range_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
-            check_int_eq(range.min_value, 0);
-            check_int_eq(set_control_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
-            check_int_eq(get_control_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
-            check_int_eq(value, 0);
-            check_int_eq(set_crop_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
-            check_int_eq(get_crop_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
-            check_int_eq(crop.width, 0);
+            check_equal(range_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
+            check_equal(range.min_value, 0);
+            check_equal(set_control_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
+            check_equal(get_control_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
+            check_equal(value, 0);
+            check_equal(set_crop_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
+            check_equal(get_crop_result, TURBO_CAPTURE_ERR_UNSUPPORTED);
+            check_equal(crop.width, 0);
         }
     }
 
@@ -256,13 +256,13 @@ spec("Android capture backends") {
             int state_callbacks = atomic_load(&observer.state_callbacks);
             turbo_capture_destroy(capture);
 
-            check_int_eq(type, TURBO_CAPTURE_TYPE_SCREEN);
-            check_int_eq(initial_state, TURBO_CAPTURE_STATE_STOPPED);
-            check_int_eq(result, TURBO_CAPTURE_OK);
-            check_int_eq(running_state, TURBO_CAPTURE_STATE_RUNNING);
-            check_int_eq(stopped_state, TURBO_CAPTURE_STATE_STOPPED);
-            check_int_eq(last_state, TURBO_CAPTURE_STATE_STOPPED);
-            check_int_ge(state_callbacks, 2);
+            check_equal(type, TURBO_CAPTURE_TYPE_SCREEN);
+            check_equal(initial_state, TURBO_CAPTURE_STATE_STOPPED);
+            check_equal(result, TURBO_CAPTURE_OK);
+            check_equal(running_state, TURBO_CAPTURE_STATE_RUNNING);
+            check_equal(stopped_state, TURBO_CAPTURE_STATE_STOPPED);
+            check_equal(last_state, TURBO_CAPTURE_STATE_STOPPED);
+            check_greater_equal(state_callbacks, 2);
         }
     }
 }

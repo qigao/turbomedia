@@ -6,6 +6,7 @@
 #ifdef TURBO_MEDIA_HAS_MPEG
 
 #include "container_io.h"
+#include "stl_status.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -21,7 +22,7 @@
 #include <string.h>
 
 #include <turbo_error.h>
-#include <turbo_vec.h>
+#include <turbostl/vec.h>
 
 enum {
     MPEG_AVIO_BUFFER_SIZE = 32 * 1024,
@@ -40,7 +41,7 @@ typedef struct {
     turbo_container_io_t io;
     AVFormatContext *format;
     AVIOContext *avio;
-    turbo_vec_t streams;
+    vec_t streams;
     const char *format_name;
     int probe_size;
     int opened;
@@ -105,11 +106,11 @@ static const char *mpeg_codec_name(enum AVCodecID codec_id) {
 
 static int mpeg_public_stream_index(const mpeg_demuxer_ctx_t *ctx,
                                     int av_stream_index) {
-    size_t count = turbo_vec_size(&ctx->streams);
+    size_t count = vec_size(&ctx->streams);
     size_t i;
     for (i = 0; i < count; ++i) {
         const mpeg_demuxer_stream_t *stream =
-            (const mpeg_demuxer_stream_t *)turbo_vec_at_const(&ctx->streams, i);
+            (const mpeg_demuxer_stream_t *)vec_at_const(&ctx->streams, i);
         if (stream && stream->av_stream_index == av_stream_index) return (int)i;
     }
     return -1;
@@ -147,7 +148,7 @@ static int mpeg_add_stream(mpeg_demuxer_ctx_t *ctx, AVStream *av_stream) {
         stream.info.extradata = stream.extra_data;
         stream.info.extradata_size = bytes;
     }
-    result = turbo_vec_push(&ctx->streams, &stream);
+    result = turbo_media_stl_status_to_error(vec_push(&ctx->streams, &stream));
     if (result != TURBO_OK) free(stream.extra_data);
     return result;
 }
@@ -166,13 +167,13 @@ static void mpeg_demuxer_destroy_impl(void *ctx_ptr) {
         av_freep(&ctx->avio->buffer);
         avio_context_free(&ctx->avio);
     }
-    count = turbo_vec_size(&ctx->streams);
+    count = vec_size(&ctx->streams);
     for (i = 0; i < count; ++i) {
         mpeg_demuxer_stream_t *stream =
-            (mpeg_demuxer_stream_t *)turbo_vec_at(&ctx->streams, i);
+            (mpeg_demuxer_stream_t *)vec_at(&ctx->streams, i);
         if (stream) free(stream->extra_data);
     }
-    turbo_vec_destroy(&ctx->streams);
+    vec_destroy(&ctx->streams);
     turbo_container_io_close(&ctx->io);
     free(ctx);
 }
@@ -190,7 +191,8 @@ static void *mpeg_demuxer_create(const turbo_demuxer_config_t *config,
     ctx->io.file = TURBO_INVALID_FILE;
     ctx->format_name = format_name;
     ctx->probe_size = config->probe_size;
-    if (turbo_vec_init(&ctx->streams, sizeof(mpeg_demuxer_stream_t)) != TURBO_OK ||
+    if (vec_init_bytes(&ctx->streams, sizeof(mpeg_demuxer_stream_t),
+                       CMETA_ALIGNOF(mpeg_demuxer_stream_t), SIZE_MAX) != STL_OK ||
         turbo_container_io_open_reader(&ctx->io, config->input_path, config->data,
                                        config->data_size) != TURBO_OK) {
         mpeg_demuxer_destroy_impl(ctx);
@@ -239,7 +241,7 @@ static int mpeg_demuxer_open_impl(void *ctx_ptr) {
         int result = mpeg_add_stream(ctx, ctx->format->streams[i]);
         if (result != TURBO_OK) return result;
     }
-    if (turbo_vec_empty(&ctx->streams)) return TURBO_EPROTO;
+    if (vec_empty(&ctx->streams)) return TURBO_EPROTO;
     ctx->opened = 1;
     return TURBO_OK;
 }
@@ -323,7 +325,7 @@ static int mpeg_demuxer_get_stream_count_impl(void *ctx_ptr) {
     mpeg_demuxer_ctx_t *ctx = (mpeg_demuxer_ctx_t *)ctx_ptr;
     size_t count;
     if (!ctx || !ctx->opened) return TURBO_EINVAL;
-    count = turbo_vec_size(&ctx->streams);
+    count = vec_size(&ctx->streams);
     return count > INT_MAX ? TURBO_EFBIG : (int)count;
 }
 
@@ -332,7 +334,7 @@ static int mpeg_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
     mpeg_demuxer_ctx_t *ctx = (mpeg_demuxer_ctx_t *)ctx_ptr;
     const mpeg_demuxer_stream_t *stream;
     if (!ctx || !ctx->opened || !info || stream_index < 0) return TURBO_EINVAL;
-    stream = (const mpeg_demuxer_stream_t *)turbo_vec_at_const(
+    stream = (const mpeg_demuxer_stream_t *)vec_at_const(
         &ctx->streams, (size_t)stream_index);
     if (!stream) return TURBO_EINVAL;
     *info = stream->info;

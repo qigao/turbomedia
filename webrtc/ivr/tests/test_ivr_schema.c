@@ -1,6 +1,6 @@
 /* test_ivr_schema.c - DataBind JSON/XML/BIN semantic round trip + golden vector */
 #include "data_bind.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,20 +13,20 @@ static DataBind *g_codec = NULL;
 
 void setUp(void) {
     FILE *f = fopen(IVR_TEST_SCHEMA_PATH, "rb");
-    TEST_ASSERT_NOT_NULL(f);
+    check_not_null(f);
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     char *text = (char *)malloc((size_t)sz + 1);
-    TEST_ASSERT_NOT_NULL(text);
+    check_not_null(text);
     size_t got = fread(text, 1, (size_t)sz, f);
     fclose(f);
     text[got] = '\0';
     DataBindError err = DATA_BIND_ERROR_INIT;
     DataBindStatus rc = data_bind_create_from_text(text, got, &g_codec, &err);
     free(text);
-    TEST_ASSERT_EQUAL(DATA_BIND_OK, rc);
-    TEST_ASSERT_NOT_NULL(g_codec);
+    check_equal(rc, DATA_BIND_OK);
+    check_not_null(g_codec);
 }
 
 void tearDown(void) {
@@ -42,9 +42,9 @@ static const char *field_string(DataBindObject *obj, const char *field,
                                 char *out, size_t out_size) {
     const DataBindValue *root = data_bind_object_value(obj);
     const DataBindValue *v = data_bind_value_get(root, field);
-    TEST_ASSERT_NOT_NULL(v);
+    check_not_null(v);
     const char *s = data_bind_value_as_string(v);
-    TEST_ASSERT_NOT_NULL(s);
+    check_not_null(s);
     snprintf(out, out_size, "%s", s);
     return out;
 }
@@ -52,14 +52,14 @@ static const char *field_string(DataBindObject *obj, const char *field,
 static uint64_t field_u64(DataBindObject *obj, const char *field) {
     const DataBindValue *root = data_bind_object_value(obj);
     const DataBindValue *v = data_bind_value_get(root, field);
-    TEST_ASSERT_NOT_NULL(v);
+    check_not_null(v);
     return data_bind_value_as_uint64(v);
 }
 
 static int32_t field_i32(DataBindObject *obj, const char *field) {
     const DataBindValue *root = data_bind_object_value(obj);
     const DataBindValue *v = data_bind_value_get(root, field);
-    TEST_ASSERT_NOT_NULL(v);
+    check_not_null(v);
     return data_bind_value_as_int(v);
 }
 
@@ -73,42 +73,37 @@ static void roundtrip_type(const char *type, const char *json, int with_xml) {
     DataBindError err = DATA_BIND_ERROR_INIT;
 
     DataBindObject *obj = NULL;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(g_codec, type, json,
-                                                 strlen(json), &obj, &err));
-    TEST_ASSERT_NOT_NULL(obj);
+    check_equal(data_bind_object_from_json(g_codec, type, json,
+                                                 strlen(json), &obj, &err), DATA_BIND_OK);
+    check_not_null(obj);
 
     uint8_t *bin = NULL;
     size_t bin_len = 0;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_serialize_bin(g_codec, obj, &bin,
-                                                     &bin_len, &err));
-    TEST_ASSERT_NOT_NULL(bin);
-    TEST_ASSERT_TRUE(bin_len > 0);
+    check_equal(data_bind_object_serialize_bin(g_codec, obj, &bin,
+                                                     &bin_len, &err), DATA_BIND_OK);
+    check_not_null(bin);
+    check_true(bin_len > 0);
     DataBindObject *obj2 = NULL;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_bin(g_codec, type, bin, bin_len,
-                                                &obj2, &err));
+    check_equal(data_bind_object_from_bin(g_codec, type, bin, bin_len,
+                                                &obj2, &err), DATA_BIND_OK);
     data_bind_binary_free(bin);
-    TEST_ASSERT_NOT_NULL(obj2);
-    TEST_ASSERT_EQUAL_STRING(type, data_bind_object_type_name(obj2));
+    check_not_null(obj2);
+    check_equal(data_bind_object_type_name(obj2), type);
     data_bind_object_free(obj2);
 
     if (with_xml) {
         char *xml = NULL;
         size_t xml_len = 0;
-        TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                          data_bind_object_serialize_xml(g_codec, obj, &xml,
-                                                         &xml_len, &err));
-        TEST_ASSERT_NOT_NULL(xml);
-        TEST_ASSERT_TRUE(xml_len > 0);
+        check_equal(data_bind_object_serialize_xml(g_codec, obj, &xml,
+                                                         &xml_len, &err), DATA_BIND_OK);
+        check_not_null(xml);
+        check_true(xml_len > 0);
         DataBindObject *obj3 = NULL;
-        TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                          data_bind_object_from_xml(g_codec, type, xml,
-                                                    xml_len, &obj3, &err));
+        check_equal(data_bind_object_from_xml(g_codec, type, xml,
+                                                    xml_len, &obj3, &err), DATA_BIND_OK);
         data_bind_serialized_free(xml);
-        TEST_ASSERT_NOT_NULL(obj3);
-        TEST_ASSERT_EQUAL_STRING(type, data_bind_object_type_name(obj3));
+        check_not_null(obj3);
+        check_equal(data_bind_object_type_name(obj3), type);
         data_bind_object_free(obj3);
     }
     data_bind_object_free(obj);
@@ -124,14 +119,13 @@ void test_conference_join_roundtrip(void) {
     roundtrip_type("ConferenceJoinCommandV1", json, 1);
     DataBindError err = DATA_BIND_ERROR_INIT;
     DataBindObject *obj = NULL;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(g_codec, "ConferenceJoinCommandV1",
-                                                 json, strlen(json), &obj, &err));
+    check_equal(data_bind_object_from_json(g_codec, "ConferenceJoinCommandV1",
+                                                 json, strlen(json), &obj, &err), DATA_BIND_OK);
     char buf[64];
-    TEST_ASSERT_EQUAL_STRING("m-1", field_string(obj, "message_id", buf, sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("ivr-bot", field_string(obj, "participant_role", buf, sizeof(buf)));
-    TEST_ASSERT_EQUAL_UINT64(7u, field_u64(obj, "call_generation"));
-    TEST_ASSERT_EQUAL_UINT64(42u, field_u64(obj, "expected_room_version"));
+    check_equal(field_string(obj, "message_id", buf, sizeof(buf)), "m-1");
+    check_equal(field_string(obj, "participant_role", buf, sizeof(buf)), "ivr-bot");
+    check_equal((uint64_t)(field_u64(obj, "call_generation")), (uint64_t)(7u));
+    check_equal((uint64_t)(field_u64(obj, "expected_room_version")), (uint64_t)(42u));
     data_bind_object_free(obj);
 }
 
@@ -174,11 +168,10 @@ void test_command_result_roundtrip(void) {
     roundtrip_type("IvrCommandResultV1", json, 1);
     DataBindError err = DATA_BIND_ERROR_INIT;
     DataBindObject *obj = NULL;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(g_codec, "IvrCommandResultV1",
-                                                 json, strlen(json), &obj, &err));
-    TEST_ASSERT_EQUAL(-3, field_i32(obj, "status_code"));
-    TEST_ASSERT_EQUAL_UINT64(91u, field_u64(obj, "sequence"));
+    check_equal(data_bind_object_from_json(g_codec, "IvrCommandResultV1",
+                                                 json, strlen(json), &obj, &err), DATA_BIND_OK);
+    check_equal(field_i32(obj, "status_code"), -3);
+    check_equal((uint64_t)(field_u64(obj, "sequence")), (uint64_t)(91u));
     data_bind_object_free(obj);
 }
 
@@ -190,12 +183,11 @@ void test_room_snapshot_roundtrip(void) {
     roundtrip_type("RoomSnapshotV1", json, 1);
     DataBindError err = DATA_BIND_ERROR_INIT;
     DataBindObject *obj = NULL;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(g_codec, "RoomSnapshotV1",
-                                                 json, strlen(json), &obj, &err));
+    check_equal(data_bind_object_from_json(g_codec, "RoomSnapshotV1",
+                                                 json, strlen(json), &obj, &err), DATA_BIND_OK);
     char buf[64];
-    TEST_ASSERT_EQUAL_UINT64(90u, field_u64(obj, "last_sequence"));
-    TEST_ASSERT_EQUAL_STRING("dialog_active", field_string(obj, "call_state", buf, sizeof(buf)));
+    check_equal((uint64_t)(field_u64(obj, "last_sequence")), (uint64_t)(90u));
+    check_equal(field_string(obj, "call_state", buf, sizeof(buf)), "dialog_active");
     data_bind_object_free(obj);
 }
 
@@ -208,12 +200,11 @@ void test_participant_joined_event_roundtrip(void) {
     roundtrip_type("ConferenceParticipantJoinedEventV1", json, 1);
     DataBindError err = DATA_BIND_ERROR_INIT;
     DataBindObject *obj = NULL;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(
+    check_equal(data_bind_object_from_json(
                           g_codec, "ConferenceParticipantJoinedEventV1",
-                          json, strlen(json), &obj, &err));
-    TEST_ASSERT_EQUAL_UINT64(91u, field_u64(obj, "sequence"));
-    TEST_ASSERT_EQUAL_UINT64(1786030000000ull, field_u64(obj, "occurred_at_ms"));
+                          json, strlen(json), &obj, &err), DATA_BIND_OK);
+    check_equal((uint64_t)(field_u64(obj, "sequence")), (uint64_t)(91u));
+    check_equal((uint64_t)(field_u64(obj, "occurred_at_ms")), (uint64_t)(1786030000000ull));
     data_bind_object_free(obj);
 }
 
@@ -224,12 +215,11 @@ void test_dtmf_final_roundtrip(void) {
     roundtrip_type("DtmfFinalEventV1", json, 1);
     DataBindError err = DATA_BIND_ERROR_INIT;
     DataBindObject *obj = NULL;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(g_codec, "DtmfFinalEventV1",
-                                                 json, strlen(json), &obj, &err));
+    check_equal(data_bind_object_from_json(g_codec, "DtmfFinalEventV1",
+                                                 json, strlen(json), &obj, &err), DATA_BIND_OK);
     char buf[64];
-    TEST_ASSERT_EQUAL_STRING("w1", field_string(obj, "input_id", buf, sizeof(buf)));
-    TEST_ASSERT_EQUAL_STRING("1", field_string(obj, "input_value", buf, sizeof(buf)));
+    check_equal(field_string(obj, "input_id", buf, sizeof(buf)), "w1");
+    check_equal(field_string(obj, "input_value", buf, sizeof(buf)), "1");
     data_bind_object_free(obj);
 }
 
@@ -262,14 +252,12 @@ static void assert_bin_golden(const char *type, const char *json,
     DataBindObject *obj = NULL;
     uint8_t *bin = NULL;
     size_t bin_len = 0;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(g_codec, type, json,
-                                                 strlen(json), &obj, &err));
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_serialize_bin(g_codec, obj, &bin,
-                                                     &bin_len, &err));
-    TEST_ASSERT_EQUAL_UINT64(golden_len, bin_len);
-    TEST_ASSERT_EQUAL_MEMORY(golden, bin, golden_len);
+    check_equal(data_bind_object_from_json(g_codec, type, json,
+                                                 strlen(json), &obj, &err), DATA_BIND_OK);
+    check_equal(data_bind_object_serialize_bin(g_codec, obj, &bin,
+                                                     &bin_len, &err), DATA_BIND_OK);
+    check_equal((uint64_t)(bin_len), (uint64_t)(golden_len));
+    check_equal(bin, golden, golden_len);
     data_bind_binary_free(bin);
     data_bind_object_free(obj);
 }
@@ -379,7 +367,7 @@ void test_malformed_json_rejected(void) {
     DataBindObject *obj = (DataBindObject *)0x1;
     DataBindStatus rc = data_bind_object_from_json(
         g_codec, "ConferenceJoinCommandV1", "{not-json", 9, &obj, &err);
-    TEST_ASSERT_NOT_EQUAL(DATA_BIND_OK, rc);
+    check_not_equal(rc, DATA_BIND_OK);
 }
 
 void test_unknown_type_rejected(void) {
@@ -387,7 +375,7 @@ void test_unknown_type_rejected(void) {
     DataBindObject *obj = NULL;
     DataBindStatus rc = data_bind_object_from_json(
         g_codec, "NoSuchTypeV1", "{}", 2, &obj, &err);
-    TEST_ASSERT_NOT_EQUAL(DATA_BIND_OK, rc);
+    check_not_equal(rc, DATA_BIND_OK);
 }
 
 /* Golden vector: BIN bytes for a fixed ConferenceJoinCommandV1. Regenerated
@@ -400,15 +388,13 @@ void test_bin_golden_vector(void) {
         "{\"message_id\":\"m-1\",\"worker_id\":\"w1\",\"room_id\":\"r1\","
         "\"call_id\":\"c1\",\"call_generation\":7,\"expected_room_version\":42,"
         "\"participant_role\":\"ivr-bot\"}";
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_from_json(g_codec, "ConferenceJoinCommandV1",
-                                                 json, strlen(json), &obj, &err));
+    check_equal(data_bind_object_from_json(g_codec, "ConferenceJoinCommandV1",
+                                                 json, strlen(json), &obj, &err), DATA_BIND_OK);
     uint8_t *bin = NULL;
     size_t bin_len = 0;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK,
-                      data_bind_object_serialize_bin(g_codec, obj, &bin,
-                                                     &bin_len, &err));
-    TEST_ASSERT_NOT_NULL(bin);
+    check_equal(data_bind_object_serialize_bin(g_codec, obj, &bin,
+                                                     &bin_len, &err), DATA_BIND_OK);
+    check_not_null(bin);
     /* recorded from the same schema/build on 2026-08-06 */
     static const uint8_t golden[] = {
         0x03, 0x00, 0x00, 0x00, 0x6D, 0x2D, 0x31, 0x02, 0x00, 0x00, 0x00, 0x77,
@@ -416,8 +402,8 @@ void test_bin_golden_vector(void) {
         0x31, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x69, 0x76, 0x72,
         0x2D, 0x62, 0x6F, 0x74};
-    TEST_ASSERT_EQUAL_UINT64(sizeof(golden), bin_len);
-    TEST_ASSERT_EQUAL_MEMORY(golden, bin, sizeof(golden));
+    check_equal((uint64_t)(bin_len), (uint64_t)(sizeof(golden)));
+    check_equal(bin, golden, sizeof(golden));
     data_bind_binary_free(bin);
     data_bind_object_free(obj);
 }
@@ -426,20 +412,20 @@ spec("test_ivr_schema") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_conference_join_roundtrip);
-  TT_TEST(test_conference_leave_roundtrip);
-  TT_TEST(test_transfer_roundtrip);
-  TT_TEST(test_worker_sync_roundtrip);
-  TT_TEST(test_get_snapshot_roundtrip);
-  TT_TEST(test_command_result_roundtrip);
-  TT_TEST(test_room_snapshot_roundtrip);
-  TT_TEST(test_participant_joined_event_roundtrip);
-  TT_TEST(test_dtmf_final_roundtrip);
-  TT_TEST(test_asr_final_roundtrip);
-  TT_TEST(test_input_timeout_roundtrip);
-  TT_TEST(test_playback_finished_roundtrip);
-  TT_TEST(test_p0_protocol_roundtrip_and_golden_vectors);
-  TT_TEST(test_malformed_json_rejected);
-  TT_TEST(test_unknown_type_rejected);
-  TT_TEST(test_bin_golden_vector);
+  it("test_conference_join_roundtrip") { test_conference_join_roundtrip(); };
+  it("test_conference_leave_roundtrip") { test_conference_leave_roundtrip(); };
+  it("test_transfer_roundtrip") { test_transfer_roundtrip(); };
+  it("test_worker_sync_roundtrip") { test_worker_sync_roundtrip(); };
+  it("test_get_snapshot_roundtrip") { test_get_snapshot_roundtrip(); };
+  it("test_command_result_roundtrip") { test_command_result_roundtrip(); };
+  it("test_room_snapshot_roundtrip") { test_room_snapshot_roundtrip(); };
+  it("test_participant_joined_event_roundtrip") { test_participant_joined_event_roundtrip(); };
+  it("test_dtmf_final_roundtrip") { test_dtmf_final_roundtrip(); };
+  it("test_asr_final_roundtrip") { test_asr_final_roundtrip(); };
+  it("test_input_timeout_roundtrip") { test_input_timeout_roundtrip(); };
+  it("test_playback_finished_roundtrip") { test_playback_finished_roundtrip(); };
+  it("test_p0_protocol_roundtrip_and_golden_vectors") { test_p0_protocol_roundtrip_and_golden_vectors(); };
+  it("test_malformed_json_rejected") { test_malformed_json_rejected(); };
+  it("test_unknown_type_rejected") { test_unknown_type_rejected(); };
+  it("test_bin_golden_vector") { test_bin_golden_vector(); };
 }

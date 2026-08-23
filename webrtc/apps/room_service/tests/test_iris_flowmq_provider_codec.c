@@ -12,7 +12,7 @@
 #define TEST_SEMANTIC_FINGERPRINT                                           \
     "sha256:710227af291421e97abf6de1cc8af21e2a50d653bb2855ecab4f549425fdeb4a"
 
-static int assign_string(tstr_t *target, const char *value) {
+static int assign_string(tstr *target, const char *value) {
     *target = tstr_dup(value);
     return *target != NULL;
 }
@@ -71,7 +71,7 @@ spec("RoomService Iris FlowMQ provider codec") {
 
     before_all() {
         DataBindError error = DATA_BIND_ERROR_INIT;
-        check_int_eq(FlowMqMediaProviderV1_codec_create(&codec, &error),
+        check_equal(FlowMqMediaProviderV1_codec_create(&codec, &error),
                      DATA_BIND_OK);
         check_not_null(codec);
     }
@@ -95,23 +95,23 @@ spec("RoomService Iris FlowMQ provider codec") {
             payload, "session-a", "17", TEST_SEMANTIC_FINGERPRINT,
             &encoded_size);
         check_not_null(encoded);
-        check_int_eq(iris_flowmq_provider_decode_command(
+        check_equal(iris_flowmq_provider_decode_command(
                          codec, encoded, encoded_size, &decoded),
                      IVR_OK);
-        check_uint_eq(decoded.dispatch_epoch, 17u);
-        check_str_eq(decoded.wire.semantic_fingerprint,
+        check_equal(decoded.dispatch_epoch, 17u);
+        check_equal(decoded.wire.semantic_fingerprint,
                      TEST_SEMANTIC_FINGERPRINT);
-        check_int_eq(turbo_parse_json((const uint8_t *)decoded.bridge_json,
+        check_equal(turbo_parse_json((const uint8_t *)decoded.bridge_json,
                                       decoded.bridge_json_size, &root),
                      0);
         check_not_null(root);
-        check_str_eq(json_string_field(root, "commandId"), "command-a");
-        check_str_eq(json_string_field(root, "tenantId"), "tenant-a");
-        check_str_eq(json_string_field(root, "workerId"), "iris-worker-a");
+        check_equal(json_string_field(root, "commandId"), "command-a");
+        check_equal(json_string_field(root, "tenantId"), "tenant-a");
+        check_equal(json_string_field(root, "workerId"), "iris-worker-a");
         data = turbo_json_object_get(root, "data");
         check_not_null(data);
-        check_str_eq(json_string_field(data, "dialogId"), "dialog-a");
-        check_str_eq(json_string_field(data, "text"), "Welcome");
+        check_equal(json_string_field(data, "dialogId"), "dialog-a");
+        check_equal(json_string_field(data, "text"), "Welcome");
         turbo_free_json(&root);
         iris_flowmq_provider_command_clear(&decoded);
         tbe_typed_serialized_free(encoded);
@@ -133,28 +133,28 @@ spec("RoomService Iris FlowMQ provider codec") {
             payload, "session-a", "17", TEST_SEMANTIC_FINGERPRINT,
             &command_size);
         uint8_t *encoded_receipt = NULL;
-        check_int_eq(iris_flowmq_provider_decode_command(
+        check_equal(iris_flowmq_provider_decode_command(
                          codec, command, command_size, &decoded),
                      IVR_OK);
         result.status = IRIS_MEDIA_BRIDGE_ACCEPTED;
         result.error_code = "";
         result.error_message = "";
-        check_int_eq(iris_flowmq_provider_encode_receipt(
+        check_equal(iris_flowmq_provider_encode_receipt(
                          &decoded, &result, "turbomedia-a",
                          "2026-08-14T00:00:01Z", &encoded_receipt,
                          &receipt_size),
                      IVR_OK);
         ProviderReceiptV1_init(&receipt);
-        check_int_eq(ProviderReceiptV1_from_bin(codec, &receipt,
+        check_equal(ProviderReceiptV1_from_bin(codec, &receipt,
                                                 encoded_receipt, receipt_size,
                                                 &error),
                      DATA_BIND_OK);
-        check_int_eq(receipt.disposition,
+        check_equal(receipt.disposition,
                      ProviderReceiptDisposition_DurableAccepted);
-        check_str_eq(receipt.command_id, "command-a");
-        check_str_eq(receipt.worker_id, "iris-worker-a");
-        check_str_eq(receipt.dispatch_epoch, "17");
-        check_str_eq(receipt.producer_id, "turbomedia-a");
+        check_equal(receipt.command_id, "command-a");
+        check_equal(receipt.worker_id, "iris-worker-a");
+        check_equal(receipt.dispatch_epoch, "17");
+        check_equal(receipt.producer_id, "turbomedia-a");
         ProviderReceiptV1_clear(&receipt);
         tbe_typed_serialized_free(encoded_receipt);
         iris_flowmq_provider_command_clear(&decoded);
@@ -193,19 +193,19 @@ spec("RoomService Iris FlowMQ provider codec") {
         result.call_generation = 7u;
         result.operation_generation = 9u;
         result.status_code = IVR_OK;
-        check_int_eq(iris_flowmq_provider_encode_completion(
+        check_equal(iris_flowmq_provider_encode_completion(
                          &completion, &result, "turbomedia", "turbomedia-a",
                          "completion-a", "2026-08-14T00:00:02Z", 42u,
                          &encoded, &encoded_size),
                      IVR_OK);
         ProviderCompletionV1_init(&wire);
-        check_int_eq(ProviderCompletionV1_from_bin(
+        check_equal(ProviderCompletionV1_from_bin(
                          codec, &wire, encoded, encoded_size, &error),
                      DATA_BIND_OK);
-        check_str_eq(wire.tenant_id, "tenant-a");
-        check_str_eq(wire.command_id, "command-a");
-        check_str_eq(wire.dispatch_epoch, "17");
-        check_str_eq(wire.result_json,
+        check_equal(wire.tenant_id, "tenant-a");
+        check_equal(wire.command_id, "command-a");
+        check_equal(wire.dispatch_epoch, "17");
+        check_equal(wire.result_json,
                      "{\"status\":\"completed\",\"mediaWorkerId\":"
                      "\"media-worker-a\",\"dialogId\":\"dialog-a\"," 
                      "\"roomId\":\"room-a\",\"callId\":\"call-a\"," 
@@ -231,18 +231,18 @@ spec("RoomService Iris FlowMQ provider codec") {
         check_true(assign_string(&ack.committed_sequence, "23"));
         check_true(assign_string(&ack.error_code, ""));
         check_true(assign_string(&ack.error_message, ""));
-        check_int_eq(ProviderCompletionAckV1_to_bin(
+        check_equal(ProviderCompletionAckV1_to_bin(
                          &ack, &encoded_ack, &encoded_ack_size, &error),
                      DATA_BIND_OK);
-        check_int_eq(iris_flowmq_provider_decode_completion_ack(
+        check_equal(iris_flowmq_provider_decode_completion_ack(
                          codec, encoded_ack, encoded_ack_size, &completion,
                          "turbomedia", "iris-a", "completion-a", &decoded_ack),
                      IVR_OK);
-        check_int_eq(decoded_ack.disposition,
+        check_equal(decoded_ack.disposition,
                      ProviderCompletionAckDisposition_CompletionCommitted);
-        check_uint_eq(decoded_ack.committed_sequence, 23u);
+        check_equal(decoded_ack.committed_sequence, 23u);
         completion.dispatch_epoch = 18u;
-        check_int_eq(iris_flowmq_provider_decode_completion_ack(
+        check_equal(iris_flowmq_provider_decode_completion_ack(
                          codec, encoded_ack, encoded_ack_size, &completion,
                          "turbomedia", "iris-a", "completion-a", &decoded_ack),
                      IVR_ESTATE);
@@ -272,20 +272,20 @@ spec("RoomService Iris FlowMQ provider codec") {
                  "{\"digit\":\"5\"}");
         event.sequence = 31u;
         event.occurred_at_ms = 42u;
-        check_int_eq(iris_flowmq_provider_encode_event(
+        check_equal(iris_flowmq_provider_encode_event(
                          &event, "turbomedia", "turbomedia-a", "event-msg-a",
                          "2026-08-14T00:00:04Z", "2026-08-14T00:00:03Z",
                          &encoded, &encoded_size),
                      IVR_OK);
         ProviderEventV1_init(&wire);
-        check_int_eq(ProviderEventV1_from_bin(codec, &wire, encoded,
+        check_equal(ProviderEventV1_from_bin(codec, &wire, encoded,
                                               encoded_size, &error),
                      DATA_BIND_OK);
-        check_str_eq(wire.tenant_id, "tenant-a");
-        check_str_eq(wire.session_id, "session-a");
-        check_str_eq(wire.aggregate_id, "dialog-a");
-        check_str_eq(wire.sequence, "31");
-        check_str_eq(wire.payload_json, "{\"digit\":\"5\"}");
+        check_equal(wire.tenant_id, "tenant-a");
+        check_equal(wire.session_id, "session-a");
+        check_equal(wire.aggregate_id, "dialog-a");
+        check_equal(wire.sequence, "31");
+        check_equal(wire.payload_json, "{\"digit\":\"5\"}");
         ProviderEventV1_clear(&wire);
 
         ProviderEventAckV1_init(&ack);
@@ -306,18 +306,18 @@ spec("RoomService Iris FlowMQ provider codec") {
         check_true(assign_string(&ack.committed_sequence, "37"));
         check_true(assign_string(&ack.error_code, ""));
         check_true(assign_string(&ack.error_message, ""));
-        check_int_eq(ProviderEventAckV1_to_bin(
+        check_equal(ProviderEventAckV1_to_bin(
                          &ack, &encoded_ack, &encoded_ack_size, &error),
                      DATA_BIND_OK);
-        check_int_eq(iris_flowmq_provider_decode_event_ack(
+        check_equal(iris_flowmq_provider_decode_event_ack(
                          codec, encoded_ack, encoded_ack_size, &event,
                          "turbomedia", "iris-a", "event-msg-a", &decoded_ack),
                      IVR_OK);
-        check_int_eq(decoded_ack.disposition,
+        check_equal(decoded_ack.disposition,
                      ProviderEventAckDisposition_Committed);
-        check_uint_eq(decoded_ack.committed_sequence, 37u);
+        check_equal(decoded_ack.committed_sequence, 37u);
         snprintf(event.tenant_id, sizeof(event.tenant_id), "tenant-b");
-        check_int_eq(iris_flowmq_provider_decode_event_ack(
+        check_equal(iris_flowmq_provider_decode_event_ack(
                          codec, encoded_ack, encoded_ack_size, &event,
                          "turbomedia", "iris-a", "event-msg-a", &decoded_ack),
                      IVR_ESTATE);
@@ -335,20 +335,20 @@ spec("RoomService Iris FlowMQ provider codec") {
         uint8_t *encoded_response = NULL;
         size_t encoded_size = 0u;
         size_t encoded_response_size = 0u;
-        check_int_eq(iris_flowmq_provider_encode_query(
+        check_equal(iris_flowmq_provider_encode_query(
                          "tenant-a", "turbomedia", "turbomedia-a", "query-a",
                          "expected_media_resources", "2026-08-14T00:00:06Z",
                          "2026-08-14T00:00:10Z", 19u, 32u, 16u,
                          "{\"schemaVersion\":1}", &encoded, &encoded_size),
                      IVR_OK);
         ProviderQueryV1_init(&query);
-        check_int_eq(ProviderQueryV1_from_bin(codec, &query, encoded,
+        check_equal(ProviderQueryV1_from_bin(codec, &query, encoded,
                                               encoded_size, &error),
                      DATA_BIND_OK);
-        check_str_eq(query.message_id, "query-a");
-        check_str_eq(query.partition_key, "tenant-a");
-        check_str_eq(query.expected_revision, "19");
-        check_str_eq(query.cursor, "32");
+        check_equal(query.message_id, "query-a");
+        check_equal(query.partition_key, "tenant-a");
+        check_equal(query.expected_revision, "19");
+        check_equal(query.cursor, "32");
         ProviderQueryV1_clear(&query);
 
         ProviderObservationV1_init(&response);
@@ -376,21 +376,21 @@ spec("RoomService Iris FlowMQ provider codec") {
                                  "{\"schemaVersion\":1,\"resources\":[]}"));
         check_true(assign_string(&response.error_code, ""));
         check_true(assign_string(&response.error_message, ""));
-        check_int_eq(ProviderObservationV1_to_bin(
+        check_equal(ProviderObservationV1_to_bin(
                          &response, &encoded_response, &encoded_response_size,
                          &error),
                      DATA_BIND_OK);
-        check_int_eq(iris_flowmq_provider_decode_observation(
+        check_equal(iris_flowmq_provider_decode_observation(
                          codec, encoded_response, encoded_response_size,
                          "tenant-a", "turbomedia", "iris-a", "query-a",
                          "expected_media_resources", 32u, &decoded),
                      IVR_OK);
-        check_int_eq(decoded.wire.status, ProviderQueryStatus_QueryOk);
-        check_uint_eq(decoded.revision, 19u);
-        check_uint_eq(decoded.next_cursor, 48u);
-        check_str_contains(decoded.wire.payload_json, "\"resources\":[]");
+        check_equal(decoded.wire.status, ProviderQueryStatus_QueryOk);
+        check_equal(decoded.revision, 19u);
+        check_equal(decoded.next_cursor, 48u);
+        check_contains(decoded.wire.payload_json, "\"resources\":[]");
         iris_flowmq_provider_observation_clear(&decoded);
-        check_int_eq(iris_flowmq_provider_decode_observation(
+        check_equal(iris_flowmq_provider_decode_observation(
                          codec, encoded_response, encoded_response_size,
                          "tenant-b", "turbomedia", "iris-a", "query-a",
                          "expected_media_resources", 32u, &decoded),
@@ -430,24 +430,24 @@ spec("RoomService Iris FlowMQ provider codec") {
                  "{\"schemaVersion\":1,\"routeKey\":\"sales-main\"}");
         offer.call_generation = 7u;
 
-        check_int_eq(iris_flowmq_provider_encode_call_offer(
+        check_equal(iris_flowmq_provider_encode_call_offer(
                          &offer, "turbomedia", "turbomedia-a", &encoded,
                          &encoded_size),
                      IVR_OK);
-        check_int_eq(iris_flowmq_provider_encode_call_offer(
+        check_equal(iris_flowmq_provider_encode_call_offer(
                          &offer, "turbomedia", "turbomedia-a", &retry,
                          &retry_size),
                      IVR_OK);
-        check_uint_eq(encoded_size, retry_size);
-        check_int_eq(memcmp(encoded, retry, encoded_size), 0);
+        check_equal(encoded_size, retry_size);
+        check_equal(memcmp(encoded, retry, encoded_size), 0);
         ProviderCallOfferV1_init(&wire);
-        check_int_eq(ProviderCallOfferV1_from_bin(
+        check_equal(ProviderCallOfferV1_from_bin(
                          codec, &wire, encoded, encoded_size, &error),
                      DATA_BIND_OK);
-        check_str_eq(wire.message_id, "ingress-call-a");
-        check_str_eq(wire.correlation_id, "call-a");
-        check_str_eq(wire.partition_key, "call-a");
-        check_str_eq(wire.call_generation, "7");
+        check_equal(wire.message_id, "ingress-call-a");
+        check_equal(wire.correlation_id, "call-a");
+        check_equal(wire.partition_key, "call-a");
+        check_equal(wire.call_generation, "7");
         ProviderCallOfferV1_clear(&wire);
 
         ProviderSessionBoundV1_init(&response);
@@ -473,18 +473,18 @@ spec("RoomService Iris FlowMQ provider codec") {
         check_true(assign_string(&response.bound_session_id, "session-a"));
         check_true(assign_string(&response.error_code, ""));
         check_true(assign_string(&response.error_message, ""));
-        check_int_eq(ProviderSessionBoundV1_to_bin(
+        check_equal(ProviderSessionBoundV1_to_bin(
                          &response, &encoded_response, &encoded_response_size,
                          &error),
                      DATA_BIND_OK);
-        check_int_eq(iris_flowmq_provider_decode_session_bound(
+        check_equal(iris_flowmq_provider_decode_session_bound(
                          codec, encoded_response, encoded_response_size,
                          &offer, "turbomedia", "iris-a", &decoded),
                      IVR_OK);
         check_true(decoded.accepted);
-        check_str_eq(decoded.bound_session_id, "session-a");
+        check_equal(decoded.bound_session_id, "session-a");
         offer.call_generation = 8u;
-        check_int_eq(iris_flowmq_provider_decode_session_bound(
+        check_equal(iris_flowmq_provider_decode_session_bound(
                          codec, encoded_response, encoded_response_size,
                          &offer, "turbomedia", "iris-a", &decoded),
                      IVR_ESTATE);
@@ -505,19 +505,19 @@ spec("RoomService Iris FlowMQ provider codec") {
         uint8_t *encoded = encode_command(
             payload, "session-a", "17", TEST_SEMANTIC_FINGERPRINT,
             &encoded_size);
-        check_int_eq(iris_flowmq_provider_decode_command(
+        check_equal(iris_flowmq_provider_decode_command(
                          codec, encoded, encoded_size, &decoded),
                      IVR_ESTATE);
         tbe_typed_serialized_free(encoded);
         encoded = encode_command(payload, "another-session", "17",
                                  TEST_SEMANTIC_FINGERPRINT, &encoded_size);
-        check_int_eq(iris_flowmq_provider_decode_command(
+        check_equal(iris_flowmq_provider_decode_command(
                          codec, encoded, encoded_size, &decoded),
                      IVR_ESTATE);
         tbe_typed_serialized_free(encoded);
         encoded = encode_command(payload, "session-a", "0",
                                  TEST_SEMANTIC_FINGERPRINT, &encoded_size);
-        check_int_eq(iris_flowmq_provider_decode_command(
+        check_equal(iris_flowmq_provider_decode_command(
                          codec, encoded, encoded_size, &decoded),
                      IVR_ESTATE);
         tbe_typed_serialized_free(encoded);

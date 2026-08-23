@@ -115,24 +115,24 @@ typedef struct {
  * Creates an ASR session and assumes ownership of provider.context on success.
  * On validation or allocation failure, ownership remains with the caller.
  */
-CXX_C_API turbo_asr_t *turbo_asr_create(const turbo_asr_provider_t *provider,
+TURBO_MEDIA_API turbo_asr_t *turbo_asr_create(const turbo_asr_provider_t *provider,
                                         const turbo_asr_callbacks_t *callbacks, void *user_data);
-CXX_C_API void turbo_asr_destroy(turbo_asr_t *asr);
-CXX_C_API int turbo_asr_start(turbo_asr_t *asr, const turbo_asr_config_t *config);
+TURBO_MEDIA_API void turbo_asr_destroy(turbo_asr_t *asr);
+TURBO_MEDIA_API int turbo_asr_start(turbo_asr_t *asr, const turbo_asr_config_t *config);
 
 /**
  * Submits a borrowed PCM frame. write() must not block the capture thread;
  * asynchronous providers copy the frame or return TURBO_SPEECH_ERR_BUSY.
  */
-CXX_C_API int turbo_asr_write_frame(turbo_asr_t *asr, const turbo_speech_audio_frame_t *frame);
-CXX_C_API int turbo_asr_write_pcm(turbo_asr_t *asr, const uint8_t *samples, size_t len,
+TURBO_MEDIA_API int turbo_asr_write_frame(turbo_asr_t *asr, const turbo_speech_audio_frame_t *frame);
+TURBO_MEDIA_API int turbo_asr_write_pcm(turbo_asr_t *asr, const uint8_t *samples, size_t len,
                                   uint64_t timestamp_us);
-CXX_C_API int turbo_asr_finish(turbo_asr_t *asr);
-CXX_C_API int turbo_asr_cancel(turbo_asr_t *asr);
-CXX_C_API turbo_speech_state_t turbo_asr_get_state(const turbo_asr_t *asr);
-CXX_C_API int turbo_asr_get_last_result(const turbo_asr_t *asr);
-CXX_C_API uint64_t turbo_asr_get_rejected_frame_count(const turbo_asr_t *asr);
-CXX_C_API int turbo_asr_get_audio_format(const turbo_asr_t *asr,
+TURBO_MEDIA_API int turbo_asr_finish(turbo_asr_t *asr);
+TURBO_MEDIA_API int turbo_asr_cancel(turbo_asr_t *asr);
+TURBO_MEDIA_API turbo_speech_state_t turbo_asr_get_state(const turbo_asr_t *asr);
+TURBO_MEDIA_API int turbo_asr_get_last_result(const turbo_asr_t *asr);
+TURBO_MEDIA_API uint64_t turbo_asr_get_rejected_frame_count(const turbo_asr_t *asr);
+TURBO_MEDIA_API int turbo_asr_get_audio_format(const turbo_asr_t *asr,
                                          turbo_speech_audio_format_t *format);
 
 /**
@@ -140,7 +140,7 @@ CXX_C_API int turbo_asr_get_audio_format(const turbo_asr_t *asr,
  * WebRTC microphone track use turbo_media_track_attach_asr(), which preserves
  * the track's primary capture callback.
  */
-CXX_C_API void turbo_asr_capture_callback(struct turbo_capture_s *capture, const uint8_t *samples,
+TURBO_MEDIA_API void turbo_asr_capture_callback(struct turbo_capture_s *capture, const uint8_t *samples,
                                           size_t len, uint64_t timestamp_us, void *user_data);
 
 typedef struct {
@@ -185,13 +185,13 @@ typedef struct {
 /* TTS providers follow the same callback serialization/quiescence contract. */
 
 /** Same provider ownership rule as turbo_asr_create(). */
-CXX_C_API turbo_tts_t *turbo_tts_create(const turbo_tts_provider_t *provider,
+TURBO_MEDIA_API turbo_tts_t *turbo_tts_create(const turbo_tts_provider_t *provider,
                                         const turbo_tts_callbacks_t *callbacks, void *user_data);
-CXX_C_API void turbo_tts_destroy(turbo_tts_t *tts);
-CXX_C_API int turbo_tts_synthesize(turbo_tts_t *tts, const turbo_tts_request_t *request);
-CXX_C_API int turbo_tts_cancel(turbo_tts_t *tts);
-CXX_C_API turbo_speech_state_t turbo_tts_get_state(const turbo_tts_t *tts);
-CXX_C_API int turbo_tts_get_last_result(const turbo_tts_t *tts);
+TURBO_MEDIA_API void turbo_tts_destroy(turbo_tts_t *tts);
+TURBO_MEDIA_API int turbo_tts_synthesize(turbo_tts_t *tts, const turbo_tts_request_t *request);
+TURBO_MEDIA_API int turbo_tts_cancel(turbo_tts_t *tts);
+TURBO_MEDIA_API turbo_speech_state_t turbo_tts_get_state(const turbo_tts_t *tts);
+TURBO_MEDIA_API int turbo_tts_get_last_result(const turbo_tts_t *tts);
 
 #ifdef __cplusplus
 }

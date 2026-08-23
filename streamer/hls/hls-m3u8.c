@@ -1,6 +1,6 @@
 #include "hls-m3u8.h"
 #include "hls-param.h"
-#include "turbo_vec.h"
+#include <turbostl/vec.h>
 #include <inttypes.h>
 #include <errno.h>
 #include <stdio.h>
@@ -17,7 +17,7 @@ struct hls_m3u8_t
 	int64_t seq; // m3u8 sequence number (base 0)
 	int64_t duration;// target duration
 
-	turbo_vec_t segments;
+	vec_t segments;
 
 	char* ext_x_map;
 	char* playlist_type;
@@ -47,14 +47,14 @@ struct hls_m3u8_t* hls_m3u8_create(int live, int version)
 	m3u8->live = live;
 	m3u8->seq = 0;
 	m3u8->duration = 0;
-	if (TURBO_OK != turbo_vec_init(&m3u8->segments, sizeof(struct hls_segment_t*)))
+	if (STL_OK != vec_init_bytes(&m3u8->segments, sizeof(struct hls_segment_t*), CMETA_ALIGNOF(struct hls_segment_t*), SIZE_MAX / sizeof(struct hls_segment_t*)))
 	{
 		free(m3u8);
 		return NULL;
 	}
-	if (live > 0 && TURBO_OK != turbo_vec_reserve(&m3u8->segments, (size_t)live))
+	if (live > 0 && STL_OK != vec_reserve(&m3u8->segments, (size_t)live))
 	{
-		turbo_vec_destroy(&m3u8->segments);
+		vec_destroy(&m3u8->segments);
 		free(m3u8);
 		return NULL;
 	}
@@ -65,12 +65,12 @@ void hls_m3u8_destroy(struct hls_m3u8_t* m3u8)
 {
 	size_t index;
 	struct hls_segment_t* seg;
-	for (index = 0; index < turbo_vec_size(&m3u8->segments); ++index)
+	for (index = 0; index < vec_size(&m3u8->segments); ++index)
 	{
-		seg = *(struct hls_segment_t**)turbo_vec_at(&m3u8->segments, index);
+		seg = *(struct hls_segment_t**)vec_at(&m3u8->segments, index);
 		free(seg);
 	}
-	turbo_vec_destroy(&m3u8->segments);
+	vec_destroy(&m3u8->segments);
 
 	if (m3u8->ext_x_map)
 		free(m3u8->ext_x_map);
@@ -107,7 +107,7 @@ int hls_m3u8_add_with_offset(hls_m3u8_t* m3u8, const char* name, int64_t pts, in
 	struct hls_segment_t* seg;
 	seg = NULL;
 	r = strlen(name);
-	count = turbo_vec_size(&m3u8->segments);
+	count = vec_size(&m3u8->segments);
 
 	if (0 != m3u8->live && count >= (size_t)m3u8->live)
 	{
@@ -116,7 +116,7 @@ int hls_m3u8_add_with_offset(hls_m3u8_t* m3u8, const char* name, int64_t pts, in
 		++m3u8->seq; // update EXT-X-MEDIA-SEQUENCE
 
 		// reuse the first segment
-		if (TURBO_OK != turbo_vec_erase(&m3u8->segments, 0U, &seg))
+		if (STL_OK != vec_erase(&m3u8->segments, 0U, &seg))
 			return -EINVAL;
 
 		// check name length
@@ -147,7 +147,7 @@ int hls_m3u8_add_with_offset(hls_m3u8_t* m3u8, const char* name, int64_t pts, in
 	seg->discontinuity = discontinuity; // EXT-X-DISCONTINUITY
 	memcpy(seg->name, name, r + 1); // copy last '\0'
 
-	if (TURBO_OK != turbo_vec_push(&m3u8->segments, &seg))
+	if (STL_OK != vec_push(&m3u8->segments, &seg))
 	{
 		free(seg);
 		return -ENOMEM;
@@ -178,7 +178,7 @@ int hls_m3u8_set_playlist_type(hls_m3u8_t* m3u8, const char* type)
 
 size_t hls_m3u8_count(struct hls_m3u8_t* m3u8)
 {
-	return turbo_vec_size(&m3u8->segments);
+	return vec_size(&m3u8->segments);
 }
 
 int hls_m3u8_playlist(struct hls_m3u8_t* m3u8, int eof, char* playlist, size_t bytes)
@@ -209,12 +209,12 @@ int hls_m3u8_playlist(struct hls_m3u8_t* m3u8, int eof, char* playlist, size_t b
 		r += snprintf(playlist + r, r < bytes ? bytes - r : 0, "#EXT-X-MAP:URI=\"%s\",\n", m3u8->ext_x_map);
 
 	n = r;
-	for (index = 0; index < turbo_vec_size(&m3u8->segments); ++index)
+	for (index = 0; index < vec_size(&m3u8->segments); ++index)
 	{
 		if (bytes <= n)
 			break;
 
-		seg = *(struct hls_segment_t**)turbo_vec_at(&m3u8->segments, index);
+		seg = *(struct hls_segment_t**)vec_at(&m3u8->segments, index);
 
 		if (seg->discontinuity)
 			n += snprintf(playlist + n, n < bytes ? bytes - n : 0, "#EXT-X-DISCONTINUITY\n");

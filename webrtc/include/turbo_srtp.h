@@ -39,12 +39,12 @@ typedef struct {
  *
  * @return  0 on success, -1 on error
  */
-CXX_C_API int srtp_lib_init(void);
+TURBO_MEDIA_API int srtp_lib_init(void);
 
 /**
  * Shutdown SRTP library (call once at cleanup)
  */
-CXX_C_API void srtp_lib_shutdown(void);
+TURBO_MEDIA_API void srtp_lib_shutdown(void);
 
 /* =============================================================================
  * SRTP Session Functions
@@ -56,12 +56,12 @@ CXX_C_API void srtp_lib_shutdown(void);
  * @param config    Session configuration with keying material
  * @return          Session handle, or NULL on error
  */
-CXX_C_API srtp_session_t *srtp_session_create(const srtp_session_config_t *config);
+TURBO_MEDIA_API srtp_session_t *srtp_session_create(const srtp_session_config_t *config);
 
 /**
  * Destroy SRTP session
  */
-CXX_C_API void srtp_session_destroy(srtp_session_t *session);
+TURBO_MEDIA_API void srtp_session_destroy(srtp_session_t *session);
 
 /**
  * Protect (encrypt) RTP packet
@@ -72,7 +72,7 @@ CXX_C_API void srtp_session_destroy(srtp_session_t *session);
  * @param max_len   Maximum buffer size (must allow for auth tag)
  * @return          0 on success, -1 on error
  */
-CXX_C_API int turbo_srtp_protect(srtp_session_t *session, uint8_t *packet, size_t *len,
+TURBO_MEDIA_API int turbo_srtp_protect(srtp_session_t *session, uint8_t *packet, size_t *len,
                                  size_t max_len);
 
 /**
@@ -83,7 +83,7 @@ CXX_C_API int turbo_srtp_protect(srtp_session_t *session, uint8_t *packet, size_
  * @param len       Input: packet length, Output: unprotected packet length
  * @return          0 on success, -1 on error (auth fail, replay, etc.)
  */
-CXX_C_API int turbo_srtp_unprotect(srtp_session_t *session, uint8_t *packet, size_t *len);
+TURBO_MEDIA_API int turbo_srtp_unprotect(srtp_session_t *session, uint8_t *packet, size_t *len);
 
 /**
  * Protect RTCP packet
@@ -94,7 +94,7 @@ CXX_C_API int turbo_srtp_unprotect(srtp_session_t *session, uint8_t *packet, siz
  * @param max_len   Maximum buffer size
  * @return          0 on success, -1 on error
  */
-CXX_C_API int turbo_srtcp_protect(srtp_session_t *session, uint8_t *packet, size_t *len,
+TURBO_MEDIA_API int turbo_srtcp_protect(srtp_session_t *session, uint8_t *packet, size_t *len,
                                   size_t max_len);
 
 /**
@@ -105,7 +105,7 @@ CXX_C_API int turbo_srtcp_protect(srtp_session_t *session, uint8_t *packet, size
  * @param len       Input: packet length, Output: unprotected packet length
  * @return          0 on success, -1 on error
  */
-CXX_C_API int turbo_srtcp_unprotect(srtp_session_t *session, uint8_t *packet, size_t *len);
+TURBO_MEDIA_API int turbo_srtcp_unprotect(srtp_session_t *session, uint8_t *packet, size_t *len);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,4 @@
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_media_auth.h"
 #include <turbo_crypto.h>
 
@@ -21,7 +21,7 @@ static const turbo_media_auth_config_t active_config = {
 static char *authorization_for(const char *token) {
     size_t length = strlen(token) + strlen("Bearer ") + 1U;
     char *authorization = (char *)malloc(length);
-    TEST_ASSERT_NOT_NULL(authorization);
+    check_not_null(authorization);
     snprintf(authorization, length, "Bearer %s", token);
     return authorization;
 }
@@ -60,9 +60,7 @@ static void token_sha256_hex(const char *token, char output[65]) {
     static const char hex[] = "0123456789abcdef";
     uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
 
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_CRYPTO_OK,
-        turbo_crypto_sha256(token, strlen(token), digest));
+    check_equal((int)(turbo_crypto_sha256(token, strlen(token), digest)), (int)(TURBO_CRYPTO_OK));
     for (size_t index = 0; index < sizeof(digest); ++index) {
         output[index * 2U] = hex[digest[index] >> 4U];
         output[index * 2U + 1U] = hex[digest[index] & 0x0fU];
@@ -71,18 +69,16 @@ static void token_sha256_hex(const char *token, char output[65]) {
 }
 
 void test_auth_token_accepts_exact_scope_and_resource(void) {
-    TEST_ASSERT_EQUAL_INT(0, turbo_media_auth_config_validate(&active_config));
+    check_equal((int)(turbo_media_auth_config_validate(&active_config)), (int)(0));
     char *token = issue_token(
         &active_config, "sfu.media.publish sfu.media.trickle", "room-a",
         "alice", TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
     char *authorization;
 
-    TEST_ASSERT_NOT_NULL(token);
+    check_not_null(token);
     authorization = authorization_for(token);
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_SIGNED_TOKEN,
-        authorize(authorization, &active_config, "sfu.media.publish",
-                  "room-a", "alice", TEST_NOW_SECONDS + 1));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.publish",
+                  "room-a", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_SIGNED_TOKEN));
 
     free(authorization);
     free(token);
@@ -94,20 +90,14 @@ void test_auth_token_rejects_cross_room_and_participant_use(void) {
         TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
     char *authorization;
 
-    TEST_ASSERT_NOT_NULL(token);
+    check_not_null(token);
     authorization = authorization_for(token);
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_DENIED,
-        authorize(authorization, &active_config, "sfu.media.publish",
-                  "room-b", "alice", TEST_NOW_SECONDS + 1));
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_DENIED,
-        authorize(authorization, &active_config, "sfu.media.publish",
-                  "room-a", "bob", TEST_NOW_SECONDS + 1));
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_DENIED,
-        authorize(authorization, &active_config, "sfu.media.subscribe",
-                  "room-a", "alice", TEST_NOW_SECONDS + 1));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.publish",
+                  "room-b", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_DENIED));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.publish",
+                  "room-a", "bob", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_DENIED));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.subscribe",
+                  "room-a", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_DENIED));
 
     free(authorization);
     free(token);
@@ -122,13 +112,11 @@ void test_auth_token_rejects_expired_and_overlong_tokens(void) {
         TEST_NOW_SECONDS, TEST_NOW_SECONDS + 301);
     char *authorization;
 
-    TEST_ASSERT_NOT_NULL(expired);
-    TEST_ASSERT_NULL(overlong);
+    check_not_null(expired);
+    check_null(overlong);
     authorization = authorization_for(expired);
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_DENIED,
-        authorize(authorization, &active_config, "sfu.media.publish",
-                  "room-a", "alice", TEST_NOW_SECONDS));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.publish",
+                  "room-a", "alice", TEST_NOW_SECONDS)), (int)(TURBO_MEDIA_AUTH_DENIED));
 
     free(authorization);
     free(expired);
@@ -146,12 +134,10 @@ void test_auth_token_supports_one_previous_rotation_key(void) {
     token = issue_token(
         &old_issuer, "sfu.media.publish", "room-a", "alice",
         TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
-    TEST_ASSERT_NOT_NULL(token);
+    check_not_null(token);
     authorization = authorization_for(token);
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_SIGNED_TOKEN,
-        authorize(authorization, &active_config, "sfu.media.publish",
-                  "room-a", "alice", TEST_NOW_SECONDS + 1));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.publish",
+                  "room-a", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_SIGNED_TOKEN));
 
     free(authorization);
     free(token);
@@ -164,14 +150,12 @@ void test_auth_token_rejects_tampering_and_unknown_key(void) {
         TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
     char *authorization;
 
-    TEST_ASSERT_NOT_NULL(token);
+    check_not_null(token);
     token[strlen(token) - 1U] =
         token[strlen(token) - 1U] == 'A' ? 'B' : 'A';
     authorization = authorization_for(token);
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_DENIED,
-        authorize(authorization, &active_config, "sfu.media.publish",
-                  "room-a", "alice", TEST_NOW_SECONDS + 1));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.publish",
+                  "room-a", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_DENIED));
     free(authorization);
     free(token);
 
@@ -181,12 +165,10 @@ void test_auth_token_rejects_tampering_and_unknown_key(void) {
     token = issue_token(
         &unrelated, "sfu.media.publish", "room-a", "alice",
         TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
-    TEST_ASSERT_NOT_NULL(token);
+    check_not_null(token);
     authorization = authorization_for(token);
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_DENIED,
-        authorize(authorization, &active_config, "sfu.media.publish",
-                  "room-a", "alice", TEST_NOW_SECONDS + 1));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.publish",
+                  "room-a", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_DENIED));
 
     free(authorization);
     free(token);
@@ -201,14 +183,10 @@ void test_auth_token_keeps_static_bearer_compatibility_explicit(void) {
         .now = TEST_NOW_SECONDS
     };
 
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_STATIC_TOKEN,
-        turbo_media_auth_authorize(
-            "Bearer legacy-token", "legacy-token", &active_config, &policy));
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_DENIED,
-        turbo_media_auth_authorize(
-            "Bearer wrong-token", "legacy-token", &active_config, &policy));
+    check_equal((int)(turbo_media_auth_authorize(
+            "Bearer legacy-token", "legacy-token", &active_config, &policy)), (int)(TURBO_MEDIA_AUTH_STATIC_TOKEN));
+    check_equal((int)(turbo_media_auth_authorize(
+            "Bearer wrong-token", "legacy-token", &active_config, &policy)), (int)(TURBO_MEDIA_AUTH_DENIED));
 }
 
 void test_auth_token_rejects_weak_or_incomplete_key_configuration(void) {
@@ -217,9 +195,8 @@ void test_auth_token_rejects_weak_or_incomplete_key_configuration(void) {
 
     weak.active_secret = "human-password";
     incomplete_rotation.previous_secret = NULL;
-    TEST_ASSERT_EQUAL_INT(-1, turbo_media_auth_config_validate(&weak));
-    TEST_ASSERT_EQUAL_INT(
-        -1, turbo_media_auth_config_validate(&incomplete_rotation));
+    check_equal((int)(turbo_media_auth_config_validate(&weak)), (int)(-1));
+    check_equal((int)(turbo_media_auth_config_validate(&incomplete_rotation)), (int)(-1));
 }
 
 void test_auth_token_rejects_exact_revoked_fingerprint(void) {
@@ -231,23 +208,19 @@ void test_auth_token_rejects_exact_revoked_fingerprint(void) {
     char digest[65];
     char revocation_list[130];
 
-    TEST_ASSERT_NOT_NULL(token);
+    check_not_null(token);
     token_sha256_hex(token, digest);
     snprintf(
         revocation_list, sizeof(revocation_list),
         "0000000000000000000000000000000000000000000000000000000000000000,%s",
         digest);
     revoked.revoked_token_sha256 = revocation_list;
-    TEST_ASSERT_EQUAL_INT(0, turbo_media_auth_config_validate(&revoked));
+    check_equal((int)(turbo_media_auth_config_validate(&revoked)), (int)(0));
     authorization = authorization_for(token);
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_DENIED,
-        authorize(authorization, &revoked, "sfu.media.publish",
-                  "room-a", "alice", TEST_NOW_SECONDS + 1));
-    TEST_ASSERT_EQUAL_INT(
-        TURBO_MEDIA_AUTH_SIGNED_TOKEN,
-        authorize(authorization, &active_config, "sfu.media.publish",
-                  "room-a", "alice", TEST_NOW_SECONDS + 1));
+    check_equal((int)(authorize(authorization, &revoked, "sfu.media.publish",
+                  "room-a", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_DENIED));
+    check_equal((int)(authorize(authorization, &active_config, "sfu.media.publish",
+                  "room-a", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_SIGNED_TOKEN));
 
     free(authorization);
     free(token);
@@ -257,13 +230,13 @@ void test_auth_token_rejects_malformed_revocation_lists(void) {
     turbo_media_auth_config_t malformed = active_config;
 
     malformed.revoked_token_sha256 = "abc";
-    TEST_ASSERT_EQUAL_INT(-1, turbo_media_auth_config_validate(&malformed));
+    check_equal((int)(turbo_media_auth_config_validate(&malformed)), (int)(-1));
     malformed.revoked_token_sha256 =
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    TEST_ASSERT_EQUAL_INT(-1, turbo_media_auth_config_validate(&malformed));
+    check_equal((int)(turbo_media_auth_config_validate(&malformed)), (int)(-1));
     malformed.revoked_token_sha256 =
         "0000000000000000000000000000000000000000000000000000000000000000,";
-    TEST_ASSERT_EQUAL_INT(-1, turbo_media_auth_config_validate(&malformed));
+    check_equal((int)(turbo_media_auth_config_validate(&malformed)), (int)(-1));
 }
 
 void test_auth_token_bounds_revocation_list_cardinality(void) {
@@ -273,7 +246,7 @@ void test_auth_token_bounds_revocation_list_cardinality(void) {
     char *list = (char *)malloc(valid_length + 66U);
     size_t offset = 0U;
 
-    TEST_ASSERT_NOT_NULL(list);
+    check_not_null(list);
     for (size_t entry = 0; entry < maximum; ++entry) {
         memset(list + offset, '0', 64U);
         offset += 64U;
@@ -283,25 +256,25 @@ void test_auth_token_bounds_revocation_list_cardinality(void) {
     }
     list[offset] = '\0';
     bounded.revoked_token_sha256 = list;
-    TEST_ASSERT_EQUAL_INT(0, turbo_media_auth_config_validate(&bounded));
+    check_equal((int)(turbo_media_auth_config_validate(&bounded)), (int)(0));
 
     list[offset++] = ',';
     memset(list + offset, '1', 64U);
     offset += 64U;
     list[offset] = '\0';
-    TEST_ASSERT_EQUAL_INT(-1, turbo_media_auth_config_validate(&bounded));
+    check_equal((int)(turbo_media_auth_config_validate(&bounded)), (int)(-1));
     free(list);
 }
 
 spec("test_auth_token") {
-    TT_TEST(test_auth_token_accepts_exact_scope_and_resource);
-    TT_TEST(test_auth_token_rejects_cross_room_and_participant_use);
-    TT_TEST(test_auth_token_rejects_expired_and_overlong_tokens);
-    TT_TEST(test_auth_token_supports_one_previous_rotation_key);
-    TT_TEST(test_auth_token_rejects_tampering_and_unknown_key);
-    TT_TEST(test_auth_token_keeps_static_bearer_compatibility_explicit);
-    TT_TEST(test_auth_token_rejects_weak_or_incomplete_key_configuration);
-    TT_TEST(test_auth_token_rejects_exact_revoked_fingerprint);
-    TT_TEST(test_auth_token_rejects_malformed_revocation_lists);
-    TT_TEST(test_auth_token_bounds_revocation_list_cardinality);
+    it("test_auth_token_accepts_exact_scope_and_resource") { test_auth_token_accepts_exact_scope_and_resource(); };
+    it("test_auth_token_rejects_cross_room_and_participant_use") { test_auth_token_rejects_cross_room_and_participant_use(); };
+    it("test_auth_token_rejects_expired_and_overlong_tokens") { test_auth_token_rejects_expired_and_overlong_tokens(); };
+    it("test_auth_token_supports_one_previous_rotation_key") { test_auth_token_supports_one_previous_rotation_key(); };
+    it("test_auth_token_rejects_tampering_and_unknown_key") { test_auth_token_rejects_tampering_and_unknown_key(); };
+    it("test_auth_token_keeps_static_bearer_compatibility_explicit") { test_auth_token_keeps_static_bearer_compatibility_explicit(); };
+    it("test_auth_token_rejects_weak_or_incomplete_key_configuration") { test_auth_token_rejects_weak_or_incomplete_key_configuration(); };
+    it("test_auth_token_rejects_exact_revoked_fingerprint") { test_auth_token_rejects_exact_revoked_fingerprint(); };
+    it("test_auth_token_rejects_malformed_revocation_lists") { test_auth_token_rejects_malformed_revocation_lists(); };
+    it("test_auth_token_bounds_revocation_list_cardinality") { test_auth_token_bounds_revocation_list_cardinality(); };
 }

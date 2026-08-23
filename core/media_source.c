@@ -1,5 +1,5 @@
 #include "turbo_media_source.h"
-#include "turbo_hash.h"
+#include <turbostl/hash_map.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +44,7 @@ struct turbo_media_source_s {
 };
 
 struct turbo_media_registry_s {
-    turbo_hash_map_t sources;
+    hash_map_t sources;
     size_t max_sources;
     uint32_t next_subscription_namespace;
 };
@@ -493,20 +493,20 @@ turbo_media_registry_t *turbo_media_registry_create(size_t max_sources) {
     if (!registry) return NULL;
     registry->next_subscription_namespace = 1;
 
-    rc = turbo_hash_map_init(&registry->sources,
+    rc = hash_map_init_bytes(&registry->sources,
                              sizeof(turbo_media_source_key_t),
+                             CMETA_ALIGNOF(turbo_media_source_key_t),
                              sizeof(turbo_media_source_t *),
-                             NULL,
-                             NULL,
-                             NULL);
-    if (rc != TURBO_OK) {
+                             CMETA_ALIGNOF(turbo_media_source_t *), max_sources,
+                             hash_bytes, hash_key_equal, NULL);
+    if (rc != STL_OK) {
         free(registry);
         return NULL;
     }
 
-    rc = turbo_hash_map_reserve(&registry->sources, max_sources);
-    if (rc != TURBO_OK) {
-        turbo_hash_map_destroy(&registry->sources);
+    rc = hash_map_reserve(&registry->sources, max_sources);
+    if (rc != STL_OK) {
+        hash_map_destroy(&registry->sources);
         free(registry);
         return NULL;
     }
@@ -520,14 +520,14 @@ void turbo_media_registry_destroy(turbo_media_registry_t *registry) {
 
     if (!registry) return;
 
-    for (i = 0; i < turbo_hash_map_capacity(&registry->sources); ++i) {
+    for (i = 0; i < hash_map_capacity(&registry->sources); ++i) {
         turbo_media_source_t *const *source =
-            (turbo_media_source_t *const *)turbo_hash_map_value_at_const(
+            (turbo_media_source_t *const *)hash_map_value_at_const(
                 &registry->sources, i);
         if (source) turbo_media_source_destroy(*source);
     }
 
-    turbo_hash_map_destroy(&registry->sources);
+    hash_map_destroy(&registry->sources);
     free(registry);
 }
 
@@ -540,7 +540,7 @@ turbo_media_source_t *turbo_media_registry_find(const turbo_media_registry_t *re
         return NULL;
     }
 
-    source = (turbo_media_source_t *const *)turbo_hash_map_get_const(&registry->sources,
+    source = (turbo_media_source_t *const *)hash_map_get_const(&registry->sources,
                                                                      &normalized_key);
     return source ? *source : NULL;
 }
@@ -559,14 +559,14 @@ int turbo_media_registry_get_or_create(turbo_media_registry_t *registry,
         return TURBO_MEDIA_ERR_INVALID;
     }
 
-    existing = (turbo_media_source_t *const *)turbo_hash_map_get_const(&registry->sources,
+    existing = (turbo_media_source_t *const *)hash_map_get_const(&registry->sources,
                                                                        &normalized_key);
     if (existing) {
         *source = *existing;
         return TURBO_MEDIA_OK;
     }
 
-    if (turbo_hash_map_size(&registry->sources) >= registry->max_sources) {
+    if (hash_map_size(&registry->sources) >= registry->max_sources) {
         return TURBO_MEDIA_ERR_FULL;
     }
 
@@ -579,10 +579,10 @@ int turbo_media_registry_get_or_create(turbo_media_registry_t *registry,
     /* A removed source must not leave a token that can match its replacement. */
     found->subscription_namespace = registry->next_subscription_namespace++;
 
-    rc = turbo_hash_map_put(&registry->sources, &normalized_key, &found);
-    if (rc != TURBO_OK) {
+    rc = hash_map_put(&registry->sources, &normalized_key, &found);
+    if (rc != STL_OK) {
         turbo_media_source_destroy(found);
-        return rc == TURBO_ENOMEM ? TURBO_MEDIA_ERR_NOMEM : TURBO_MEDIA_ERR_INVALID;
+        return rc == STL_OUT_OF_MEMORY ? TURBO_MEDIA_ERR_NOMEM : TURBO_MEDIA_ERR_INVALID;
     }
 
     *source = found;
@@ -599,14 +599,14 @@ int turbo_media_registry_remove(turbo_media_registry_t *registry,
         return TURBO_MEDIA_ERR_INVALID;
     }
 
-    rc = turbo_hash_map_remove(&registry->sources, &normalized_key, &source);
-    if (rc == TURBO_ENOENT) return TURBO_MEDIA_ERR_NOT_FOUND;
-    if (rc != TURBO_OK) return TURBO_MEDIA_ERR_INVALID;
+    rc = hash_map_remove(&registry->sources, &normalized_key, &source);
+    if (rc == STL_NOT_FOUND) return TURBO_MEDIA_ERR_NOT_FOUND;
+    if (rc != STL_OK) return TURBO_MEDIA_ERR_INVALID;
 
     turbo_media_source_destroy(source);
     return TURBO_MEDIA_OK;
 }
 
 size_t turbo_media_registry_count(const turbo_media_registry_t *registry) {
-    return registry ? turbo_hash_map_size(&registry->sources) : 0;
+    return registry ? hash_map_size(&registry->sources) : 0;
 }

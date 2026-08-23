@@ -28,12 +28,12 @@ typedef struct nack_sender_t nack_sender_t;
  * @param ssrc SSRC of the stream
  * @return NACK receiver context or NULL on error
  */
-CXX_C_API nack_receiver_t *nack_receiver_create(uint32_t ssrc);
+TURBO_MEDIA_API nack_receiver_t *nack_receiver_create(uint32_t ssrc);
 
 /**
  * Destroy NACK receiver
  */
-CXX_C_API void nack_receiver_destroy(nack_receiver_t *nack);
+TURBO_MEDIA_API void nack_receiver_destroy(nack_receiver_t *nack);
 
 /**
  * Process received packet
@@ -44,7 +44,7 @@ CXX_C_API void nack_receiver_destroy(nack_receiver_t *nack);
  * @param seq_num RTP sequence number
  * @param now Current timestamp in microseconds
  */
-CXX_C_API void nack_receiver_process_packet(nack_receiver_t *nack, uint16_t seq_num, int64_t now);
+TURBO_MEDIA_API void nack_receiver_process_packet(nack_receiver_t *nack, uint16_t seq_num, int64_t now);
 
 /**
  * Get list of packets to NACK
@@ -57,7 +57,7 @@ CXX_C_API void nack_receiver_process_packet(nack_receiver_t *nack, uint16_t seq_
  * @param now Current timestamp in microseconds
  * @return Number of sequence numbers returned
  */
-CXX_C_API int nack_receiver_get_nacks(nack_receiver_t *nack, uint16_t *seq_nums, int max_count,
+TURBO_MEDIA_API int nack_receiver_get_nacks(nack_receiver_t *nack, uint16_t *seq_nums, int max_count,
                                       int64_t now);
 
 /**
@@ -68,7 +68,7 @@ CXX_C_API int nack_receiver_get_nacks(nack_receiver_t *nack, uint16_t *seq_nums,
  * @param nack NACK receiver context
  * @param now Current timestamp in microseconds
  */
-CXX_C_API void nack_receiver_cleanup_old(nack_receiver_t *nack, int64_t now);
+TURBO_MEDIA_API void nack_receiver_cleanup_old(nack_receiver_t *nack, int64_t now);
 
 /**
  * Set NACK callback
@@ -79,7 +79,7 @@ CXX_C_API void nack_receiver_cleanup_old(nack_receiver_t *nack, int64_t now);
  * @param callback Callback function
  * @param user_data User data passed to callback
  */
-CXX_C_API void nack_receiver_set_callback(nack_receiver_t *nack,
+TURBO_MEDIA_API void nack_receiver_set_callback(nack_receiver_t *nack,
                                           void (*callback)(void *user_data, uint32_t ssrc,
                                                            const uint16_t *seq_nums, int count),
                                           void *user_data);
@@ -94,7 +94,7 @@ CXX_C_API void nack_receiver_set_callback(nack_receiver_t *nack,
  * @param retransmissions_received Output: retransmissions received (can be NULL)
  * @param missing_count Output: currently missing packets (can be NULL)
  */
-CXX_C_API void nack_receiver_get_stats(nack_receiver_t *nack, int64_t *packets_received,
+TURBO_MEDIA_API void nack_receiver_get_stats(nack_receiver_t *nack, int64_t *packets_received,
                                        int64_t *packets_lost, int64_t *nacks_sent,
                                        int64_t *retransmissions_received, int *missing_count);
 
@@ -109,12 +109,12 @@ CXX_C_API void nack_receiver_get_stats(nack_receiver_t *nack, int64_t *packets_r
  * @param history_size Number of packets to keep in history
  * @return NACK sender context or NULL on error
  */
-CXX_C_API nack_sender_t *nack_sender_create(uint32_t ssrc, size_t history_size);
+TURBO_MEDIA_API nack_sender_t *nack_sender_create(uint32_t ssrc, size_t history_size);
 
 /**
  * Destroy NACK sender
  */
-CXX_C_API void nack_sender_destroy(nack_sender_t *nack);
+TURBO_MEDIA_API void nack_sender_destroy(nack_sender_t *nack);
 
 /**
  * Add packet to history
@@ -126,7 +126,7 @@ CXX_C_API void nack_sender_destroy(nack_sender_t *nack);
  * @param packet Packet data
  * @param len Packet length
  */
-CXX_C_API void nack_sender_add_packet(nack_sender_t *nack, uint16_t seq_num, const uint8_t *packet,
+TURBO_MEDIA_API void nack_sender_add_packet(nack_sender_t *nack, uint16_t seq_num, const uint8_t *packet,
                                       size_t len);
 
 /**
@@ -139,7 +139,7 @@ CXX_C_API void nack_sender_add_packet(nack_sender_t *nack, uint16_t seq_num, con
  * @param count Number of sequence numbers
  * @return Number of packets retransmitted
  */
-CXX_C_API int nack_sender_process_nack(nack_sender_t *nack, const uint16_t *seq_nums, int count);
+TURBO_MEDIA_API int nack_sender_process_nack(nack_sender_t *nack, const uint16_t *seq_nums, int count);
 
 /**
  * Set retransmission callback
@@ -150,7 +150,7 @@ CXX_C_API int nack_sender_process_nack(nack_sender_t *nack, const uint16_t *seq_
  * @param callback Callback function
  * @param user_data User data passed to callback
  */
-CXX_C_API void nack_sender_set_callback(nack_sender_t *nack,
+TURBO_MEDIA_API void nack_sender_set_callback(nack_sender_t *nack,
                                         void (*callback)(void *user_data, const uint8_t *packet,
                                                          size_t len),
                                         void *user_data);
@@ -163,7 +163,7 @@ CXX_C_API void nack_sender_set_callback(nack_sender_t *nack,
  * @param packets_retransmitted Output: packets retransmitted (can be NULL)
  * @param retransmit_failures Output: retransmit failures (can be NULL)
  */
-CXX_C_API void nack_sender_get_stats(nack_sender_t *nack, int64_t *nacks_received,
+TURBO_MEDIA_API void nack_sender_get_stats(nack_sender_t *nack, int64_t *nacks_received,
                                      int64_t *packets_retransmitted, int64_t *retransmit_failures);
 
 /* =============================================================================
@@ -181,7 +181,7 @@ CXX_C_API void nack_sender_get_stats(nack_sender_t *nack, int64_t *nacks_receive
  * @param len Input: buffer size, Output: packet size
  * @return 0 on success, -1 on error
  */
-CXX_C_API int nack_build_rtcp(uint32_t sender_ssrc, uint32_t media_ssrc, const uint16_t *seq_nums,
+TURBO_MEDIA_API int nack_build_rtcp(uint32_t sender_ssrc, uint32_t media_ssrc, const uint16_t *seq_nums,
                               int count, uint8_t *buffer, size_t *len);
 
 /**
@@ -196,7 +196,7 @@ CXX_C_API int nack_build_rtcp(uint32_t sender_ssrc, uint32_t media_ssrc, const u
  * @param max_count Maximum sequence numbers to parse
  * @return 0 on success, -1 on error
  */
-CXX_C_API int nack_parse_rtcp(const uint8_t *buffer, size_t len, uint32_t *sender_ssrc,
+TURBO_MEDIA_API int nack_parse_rtcp(const uint8_t *buffer, size_t len, uint32_t *sender_ssrc,
                               uint32_t *media_ssrc, uint16_t *seq_nums, int *count, int max_count);
 
 #ifdef __cplusplus

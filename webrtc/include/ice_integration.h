@@ -35,7 +35,7 @@ typedef struct ice_integration_ctx_s ice_integration_ctx_t;
  * @param turn_count Number of TURN servers
  * @return ICE integration context or NULL on error
  */
-CXX_C_API ice_integration_ctx_t *ice_integration_create(
+TURBO_MEDIA_API ice_integration_ctx_t *ice_integration_create(
     turbo_dc_peer_t *peer,
     void *loop,
     const char **stun_servers,
@@ -49,7 +49,7 @@ CXX_C_API ice_integration_ctx_t *ice_integration_create(
 /**
  * Destroy ICE integration context
  */
-CXX_C_API void ice_integration_destroy(ice_integration_ctx_t *ctx);
+TURBO_MEDIA_API void ice_integration_destroy(ice_integration_ctx_t *ctx);
 
 /**
  * Set callback for ICE candidate trickle
@@ -59,7 +59,7 @@ CXX_C_API void ice_integration_destroy(ice_integration_ctx_t *ctx);
  * @param callback Callback function receiving SDP-format candidate string
  * @param user_data User data passed to callback
  */
-CXX_C_API void ice_integration_on_candidate(
+TURBO_MEDIA_API void ice_integration_on_candidate(
     ice_integration_ctx_t *ctx,
     void (*callback)(const char *candidate_sdp, void *user_data),
     void *user_data
@@ -72,7 +72,7 @@ CXX_C_API void ice_integration_on_candidate(
  * @param callback Callback function receiving ICE state
  * @param user_data User data passed to callback
  */
-CXX_C_API void ice_integration_on_state_change(
+TURBO_MEDIA_API void ice_integration_on_state_change(
     ice_integration_ctx_t *ctx,
     void (*callback)(ice_state_t state, void *user_data),
     void *user_data
@@ -88,7 +88,7 @@ CXX_C_API void ice_integration_on_state_change(
  * @param pwd_len Size of pwd buffer
  * @return 0 on success, negative on error
  */
-CXX_C_API int ice_integration_get_local_credentials(
+TURBO_MEDIA_API int ice_integration_get_local_credentials(
     ice_integration_ctx_t *ctx,
     char *ufrag,
     size_t ufrag_len,
@@ -104,7 +104,7 @@ CXX_C_API int ice_integration_get_local_credentials(
  * @param pwd Remote password
  * @return 0 on success, negative on error
  */
-CXX_C_API int ice_integration_set_remote_credentials(
+TURBO_MEDIA_API int ice_integration_set_remote_credentials(
     ice_integration_ctx_t *ctx,
     const char *ufrag,
     const char *pwd
@@ -117,7 +117,7 @@ CXX_C_API int ice_integration_set_remote_credentials(
  * @param ctx ICE integration context
  * @return 0 on success, negative on error
  */
-CXX_C_API int ice_integration_start_gathering(ice_integration_ctx_t *ctx);
+TURBO_MEDIA_API int ice_integration_start_gathering(ice_integration_ctx_t *ctx);
 
 /**
  * Add remote ICE candidate (trickle ICE)
@@ -127,7 +127,7 @@ CXX_C_API int ice_integration_start_gathering(ice_integration_ctx_t *ctx);
  * @param candidate_sdp SDP-format candidate string
  * @return 0 on success, negative on error
  */
-CXX_C_API int ice_integration_add_remote_candidate(
+TURBO_MEDIA_API int ice_integration_add_remote_candidate(
     ice_integration_ctx_t *ctx,
     const char *candidate_sdp
 );
@@ -138,7 +138,7 @@ CXX_C_API int ice_integration_add_remote_candidate(
  *
  * @param ctx ICE integration context
  */
-CXX_C_API void ice_integration_end_of_candidates(ice_integration_ctx_t *ctx);
+TURBO_MEDIA_API void ice_integration_end_of_candidates(ice_integration_ctx_t *ctx);
 
 /**
  * Drive the internal ICE coroutine context once without blocking.
@@ -148,7 +148,7 @@ CXX_C_API void ice_integration_end_of_candidates(ice_integration_ctx_t *ctx);
  *
  * @param ctx ICE integration context
  */
-CXX_C_API void ice_integration_poll(ice_integration_ctx_t *ctx);
+TURBO_MEDIA_API void ice_integration_poll(ice_integration_ctx_t *ctx);
 
 /**
  * Query whether local ICE gathering has completed.
@@ -156,7 +156,7 @@ CXX_C_API void ice_integration_poll(ice_integration_ctx_t *ctx);
  * @param ctx ICE integration context
  * @return 1 if gathering is complete, 0 otherwise
  */
-CXX_C_API int ice_integration_is_gathering_complete(ice_integration_ctx_t *ctx);
+TURBO_MEDIA_API int ice_integration_is_gathering_complete(ice_integration_ctx_t *ctx);
 
 /**
  * Set connection timeout (milliseconds)
@@ -165,7 +165,7 @@ CXX_C_API int ice_integration_is_gathering_complete(ice_integration_ctx_t *ctx);
  * @param ctx ICE integration context
  * @param timeout_ms Timeout in milliseconds
  */
-CXX_C_API void ice_integration_set_connection_timeout(ice_integration_ctx_t *ctx, int timeout_ms);
+TURBO_MEDIA_API void ice_integration_set_connection_timeout(ice_integration_ctx_t *ctx, int timeout_ms);
 
 /**
  * Set max reconnection attempts
@@ -174,7 +174,7 @@ CXX_C_API void ice_integration_set_connection_timeout(ice_integration_ctx_t *ctx
  * @param ctx ICE integration context
  * @param max_attempts Maximum number of reconnection attempts
  */
-CXX_C_API void ice_integration_set_max_reconnect_attempts(ice_integration_ctx_t *ctx, int max_attempts);
+TURBO_MEDIA_API void ice_integration_set_max_reconnect_attempts(ice_integration_ctx_t *ctx, int max_attempts);
 
 /**
  * Schedule another retry attempt.
@@ -186,7 +186,7 @@ CXX_C_API void ice_integration_set_max_reconnect_attempts(ice_integration_ctx_t 
  * @param ctx ICE integration context
  * @return 0 on success, negative on error
  */
-CXX_C_API int ice_integration_reconnect(ice_integration_ctx_t *ctx);
+TURBO_MEDIA_API int ice_integration_reconnect(ice_integration_ctx_t *ctx);
 
 /**
  * Enable/disable loopback candidate gathering
@@ -194,7 +194,7 @@ CXX_C_API int ice_integration_reconnect(ice_integration_ctx_t *ctx);
  * @param ctx ICE integration context
  * @param allow 1 to allow, 0 to disable
  */
-CXX_C_API void ice_integration_set_allow_loopback(ice_integration_ctx_t *ctx, int allow);
+TURBO_MEDIA_API void ice_integration_set_allow_loopback(ice_integration_ctx_t *ctx, int allow);
 
 #ifdef __cplusplus
 }

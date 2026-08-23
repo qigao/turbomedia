@@ -5,8 +5,9 @@
 #include "sip-atomic.h"
 #include "sip-message.h"
 #include "platform.h"
+#include "turbo_error.h"
 #include "turbo_thread.h"
-#include "turbo_vec.h"
+#include <turbostl/vec.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,21 +33,21 @@ struct sip_agent_t
 	//struct sip_timer_t timer;
 	//void* timerptr;
 
-	turbo_vec_t uac; // sip_uac_transaction_t pointers
-	turbo_vec_t uas; // sip_uas_transaction_t pointers
+	vec_t uac; // sip_uac_transaction_t pointers
+	vec_t uas; // sip_uas_transaction_t pointers
 	struct sip_uas_handler_t handler;
 };
 
 int sip_uac_input(struct sip_agent_t* sip, struct sip_message_t* reply);
 int sip_uas_input(struct sip_agent_t* sip, const struct sip_message_t* request, void* param);
 
-static inline int sip_transport_isreliable(const tstr_v* c)
+static inline int sip_transport_isreliable(const vstr* c)
 {
 	return (0 == sip_sv_compare_cstr_ci(c, "TCP") || 0 == sip_sv_compare_cstr_ci(c, "TLS") || 0 == sip_sv_compare_cstr_ci(c, "SCTP")) ? 1 : 0;
 }
 static inline int sip_transport_isreliable2(const char* protocol)
 {
-	tstr_v c;
+	vstr c;
 	c.data = protocol;
 	c.len = strlen(protocol);
 	return sip_transport_isreliable(&c);

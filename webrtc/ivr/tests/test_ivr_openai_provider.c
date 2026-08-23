@@ -1,4 +1,4 @@
-﻿/* test_ivr_openai_provider.c - Remote TTS/ASR providers (OpenAI-compatible
+/* test_ivr_openai_provider.c - Remote TTS/ASR providers (OpenAI-compatible
  * protocol) against an in-process mock HTTP server.
  *
  * The mock server speaks the real wire protocol (JSON POST for TTS, raw PCM
@@ -9,7 +9,7 @@
 #include "ivr_openai_provider.h"
 #include "ivr_speech_session_factory.h"
 #include "ivr_thread.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -677,7 +677,7 @@ static void check_tts_error_response(int status, const uint8_t *payload,
     server->tts_status = status;
     server->tts_pcm = payload;
     server->tts_pcm_len = payload_len;
-    check_int_eq(mock_server_start(server), 0);
+    check_equal(mock_server_start(server), 0);
     mock_server_make_base_url(server, base_url, sizeof(base_url));
     memset(&config, 0, sizeof(config));
     config.base_url = base_url;
@@ -687,7 +687,7 @@ static void check_tts_error_response(int status, const uint8_t *payload,
     callbacks.on_audio = observe_tts_audio;
     callbacks.on_complete = observe_tts_complete;
     callbacks.on_error = observe_tts_error;
-    check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+    check_equal(ivr_openai_tts_create(&config, &tts_wrap), 0);
     ivr_openai_tts_get_provider(tts_wrap, &provider);
     tts = turbo_tts_create(&provider, &callbacks, &observer);
     check_not_null(tts);
@@ -696,12 +696,12 @@ static void check_tts_error_response(int status, const uint8_t *payload,
     request.text_len = strlen(request.text);
     request.rate = 1.0f;
     request.pitch = 1.0f;
-    check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
-    check_int_eq(mock_wait_until(tts_done_cond, &observer, 5000), 0);
-    check_int_eq(observer.error_count, 1);
-    check_int_eq(observer.complete_count, 0);
-    check_int_eq(observer.audio_count, 0);
-    check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
+    check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+    check_equal(mock_wait_until(tts_done_cond, &observer, 5000), 0);
+    check_equal(observer.error_count, 1);
+    check_equal(observer.complete_count, 0);
+    check_equal(observer.audio_count, 0);
+    check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
     turbo_tts_destroy(tts);
     ivr_openai_tts_free(tts_wrap);
     mock_server_stop(server);
@@ -727,7 +727,7 @@ static void check_asr_error_response(int status, const char *json,
     server->asr_status = status;
     server->asr_json = json;
     server->asr_delay_ms = response_delay_ms;
-    check_int_eq(mock_server_start(server), 0);
+    check_equal(mock_server_start(server), 0);
     mock_server_make_base_url(server, base_url, sizeof(base_url));
     memset(&config, 0, sizeof(config));
     config.base_url = base_url;
@@ -738,7 +738,7 @@ static void check_asr_error_response(int status, const char *json,
     callbacks.on_result = observe_asr_result;
     callbacks.on_complete = observe_asr_complete;
     callbacks.on_error = observe_asr_error;
-    check_int_eq(ivr_openai_asr_create(&config, &asr_wrap), 0);
+    check_equal(ivr_openai_asr_create(&config, &asr_wrap), 0);
     ivr_openai_asr_get_provider(asr_wrap, &provider);
     asr = turbo_asr_create(&provider, &callbacks, &observer);
     check_not_null(asr);
@@ -746,15 +746,15 @@ static void check_asr_error_response(int status, const char *json,
     asr_config.format.sample_rate = 16000;
     asr_config.format.channels = 1;
     asr_config.format.bits_per_sample = 16;
-    check_int_eq(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
-    check_int_eq(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
+    check_equal(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
+    check_equal(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
                  TURBO_SPEECH_OK);
-    check_int_eq(turbo_asr_finish(asr), TURBO_SPEECH_OK);
-    check_int_eq(mock_wait_until(asr_done_cond, &observer, 5000), 0);
-    check_int_eq(observer.error_count, 1);
-    check_int_eq(observer.result_count, 0);
-    check_int_eq(observer.complete_count, 0);
-    check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_ERROR);
+    check_equal(turbo_asr_finish(asr), TURBO_SPEECH_OK);
+    check_equal(mock_wait_until(asr_done_cond, &observer, 5000), 0);
+    check_equal(observer.error_count, 1);
+    check_equal(observer.result_count, 0);
+    check_equal(observer.complete_count, 0);
+    check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_ERROR);
     turbo_asr_destroy(asr);
     ivr_openai_asr_free(asr_wrap);
     mock_server_stop(server);
@@ -779,7 +779,7 @@ suite("TurboMedia IVR OpenAI provider") {
       mock_fill_pcm(pcm, sizeof(pcm));
       server.tts_pcm = pcm;
       server.tts_pcm_len = sizeof(pcm);
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -800,7 +800,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_tts_complete;
       callbacks.on_error = observe_tts_error;
 
-      check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+      check_equal(ivr_openai_tts_create(&config, &tts_wrap), 0);
       check_not_null(tts_wrap);
       ivr_openai_tts_get_provider(tts_wrap, &provider);
       tts = turbo_tts_create(&provider, &callbacks, &observer);
@@ -811,30 +811,30 @@ suite("TurboMedia IVR OpenAI provider") {
       request.text_len = 9;
       request.rate = 1.0f;
       request.pitch = 1.0f;
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(tts_done_cond, &observer, 5000), 0);
-      check_int_eq(mock_wait_until(request_observed_cond, &request_observer,
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(tts_done_cond, &observer, 5000), 0);
+      check_equal(mock_wait_until(request_observed_cond, &request_observer,
                                    5000), 0);
 
-      check_int_eq(observer.error_count, 0);
-      check_int_eq(observer.complete_count, 1);
-      check_int_eq(observer.audio_count, 20); /* 32000 / 1600 */
-      check_long_eq((long)observer.total_bytes, 32000L);
-      check_int_eq(observer.last_sample_rate, 16000);
-      check_int_eq((int)observer.first_sample, -500);
-      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_STOPPED);
-      check_uint_eq((unsigned)atomic_load(&request_observer.tts_count), 1u);
-      check_uint_eq((unsigned)atomic_load(&request_observer.asr_count), 0u);
+      check_equal(observer.error_count, 0);
+      check_equal(observer.complete_count, 1);
+      check_equal(observer.audio_count, 20); /* 32000 / 1600 */
+      check_equal((long)observer.total_bytes, 32000L);
+      check_equal(observer.last_sample_rate, 16000);
+      check_equal((int)observer.first_sample, -500);
+      check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_STOPPED);
+      check_equal((unsigned)atomic_load(&request_observer.tts_count), 1u);
+      check_equal((unsigned)atomic_load(&request_observer.asr_count), 0u);
 
-      check_int_eq(server.tts_requests, 1);
-      check_int_eq(server.asr_requests, 0);
-      check_str_eq(server.last_path, MOCK_TTS_PATH);
-      check_str_eq(server.last_method, "POST");
-      check_str_contains(server.last_auth, "Bearer test-openai-key");
-      check_str_contains((const char *)server.last_body, "\"model\":\"tts-1\"");
-      check_str_contains((const char *)server.last_body, "\"voice\":\"alloy\"");
-      check_str_contains((const char *)server.last_body, "\"response_format\":\"pcm\"");
-      check_str_contains((const char *)server.last_body, "hello ivr");
+      check_equal(server.tts_requests, 1);
+      check_equal(server.asr_requests, 0);
+      check_equal(server.last_path, MOCK_TTS_PATH);
+      check_equal(server.last_method, "POST");
+      check_contains(server.last_auth, "Bearer test-openai-key");
+      check_contains((const char *)server.last_body, "\"model\":\"tts-1\"");
+      check_contains((const char *)server.last_body, "\"voice\":\"alloy\"");
+      check_contains((const char *)server.last_body, "\"response_format\":\"pcm\"");
+      check_contains((const char *)server.last_body, "hello ivr");
 
       turbo_tts_destroy(tts);
       ivr_openai_tts_free(tts_wrap);
@@ -858,7 +858,7 @@ suite("TurboMedia IVR OpenAI provider") {
       server.tts_pcm = pcm;
       server.tts_pcm_len = sizeof(pcm);
       server.tts_status = 500;
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -872,7 +872,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_tts_complete;
       callbacks.on_error = observe_tts_error;
 
-      check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+      check_equal(ivr_openai_tts_create(&config, &tts_wrap), 0);
       ivr_openai_tts_get_provider(tts_wrap, &provider);
       tts = turbo_tts_create(&provider, &callbacks, &observer);
       check_not_null(tts);
@@ -882,13 +882,13 @@ suite("TurboMedia IVR OpenAI provider") {
       request.text_len = 4;
       request.rate = 1.0f;
       request.pitch = 1.0f;
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(tts_done_cond, &observer, 5000), 0);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(tts_done_cond, &observer, 5000), 0);
 
-      check_int_eq(observer.error_count, 1);
-      check_int_eq(observer.complete_count, 0);
-      check_int_eq(observer.audio_count, 0);
-      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
+      check_equal(observer.error_count, 1);
+      check_equal(observer.complete_count, 0);
+      check_equal(observer.audio_count, 0);
+      check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
 
       turbo_tts_destroy(tts);
       ivr_openai_tts_free(tts_wrap);
@@ -912,7 +912,7 @@ suite("TurboMedia IVR OpenAI provider") {
       server.tts_pcm = pcm;
       server.tts_pcm_len = sizeof(pcm);
       server.tts_frame_delay_ms = 5u;
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -929,7 +929,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_tts_complete;
       callbacks.on_error = observe_tts_error;
 
-      check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+      check_equal(ivr_openai_tts_create(&config, &tts_wrap), 0);
       ivr_openai_tts_get_provider(tts_wrap, &provider);
       tts = turbo_tts_create(&provider, &callbacks, &observer);
       check_not_null(tts);
@@ -939,16 +939,16 @@ suite("TurboMedia IVR OpenAI provider") {
       request.text_len = 32;
       request.rate = 1.0f;
       request.pitch = 1.0f;
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
       /* give the worker a chance to start delivering frames */
       mock_sleep_ms(60);
       frames_before_cancel = observer.audio_count;
-      check_int_eq(turbo_tts_cancel(tts), TURBO_SPEECH_OK);
+      check_equal(turbo_tts_cancel(tts), TURBO_SPEECH_OK);
       (void)frames_before_cancel;
       mock_sleep_ms(100); /* no callback may arrive after cancel() returns */
-      check_int_eq(observer.complete_count, 0);
-      check_int_eq(observer.error_count, 0);
-      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_STOPPED);
+      check_equal(observer.complete_count, 0);
+      check_equal(observer.error_count, 0);
+      check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_STOPPED);
 
       turbo_tts_destroy(tts);
       ivr_openai_tts_free(tts_wrap);
@@ -976,7 +976,7 @@ suite("TurboMedia IVR OpenAI provider") {
       mock_fill_pcm(pcm, sizeof(pcm));
       server.tts_pcm = pcm;
       server.tts_pcm_len = sizeof(pcm);
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
       memset(&config, 0, sizeof(config));
       config.base_url = base_url;
@@ -989,7 +989,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_audio = observe_tts_audio;
       callbacks.on_complete = observe_tts_complete;
       callbacks.on_error = observe_tts_error;
-      check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+      check_equal(ivr_openai_tts_create(&config, &tts_wrap), 0);
       ivr_openai_tts_get_provider(tts_wrap, &provider);
       tts = turbo_tts_create(&provider, &callbacks, &observer);
       check_not_null(tts);
@@ -999,12 +999,12 @@ suite("TurboMedia IVR OpenAI provider") {
       request.rate = 1.0f;
       request.pitch = 1.0f;
 
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(tts_done_cond, &observer, 5000), 0);
-      check_int_eq(observer.audio_count, 1);
-      check_int_eq(observer.error_count, 1);
-      check_int_eq(observer.complete_count, 0);
-      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(tts_done_cond, &observer, 5000), 0);
+      check_equal(observer.audio_count, 1);
+      check_equal(observer.error_count, 1);
+      check_equal(observer.complete_count, 0);
+      check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_ERROR);
 
       turbo_tts_destroy(tts);
       ivr_openai_tts_free(tts_wrap);
@@ -1029,7 +1029,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_audio = observe_tts_audio;
       callbacks.on_complete = observe_tts_complete;
       callbacks.on_error = observe_tts_error;
-      check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+      check_equal(ivr_openai_tts_create(&config, &tts_wrap), 0);
       ivr_openai_tts_get_provider(tts_wrap, &provider);
       tts = turbo_tts_create(&provider, &callbacks, &observer);
       check_not_null(tts);
@@ -1039,7 +1039,7 @@ suite("TurboMedia IVR OpenAI provider") {
       request.rate = 1.0f;
       request.pitch = 1.0f;
 
-      check_int_eq(turbo_tts_synthesize(tts, &request),
+      check_equal(turbo_tts_synthesize(tts, &request),
                    TURBO_SPEECH_ERR_BUSY);
       turbo_tts_destroy(tts);
       ivr_openai_tts_free(tts_wrap);
@@ -1068,7 +1068,7 @@ suite("TurboMedia IVR OpenAI provider") {
       mock_fill_pcm(pcm, MOCK_PCM_BYTES);
       server->tts_pcm = pcm;
       server->tts_pcm_len = MOCK_PCM_BYTES;
-      check_int_eq(mock_server_start(server), 0);
+      check_equal(mock_server_start(server), 0);
       mock_server_make_base_url(server, base_url, sizeof(base_url));
       memset(&config, 0, sizeof(config));
       config.base_url = base_url;
@@ -1078,7 +1078,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_audio = observe_tts_audio;
       callbacks.on_complete = observe_tts_complete;
       callbacks.on_error = observe_tts_error;
-      check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+      check_equal(ivr_openai_tts_create(&config, &tts_wrap), 0);
       ivr_openai_tts_get_provider(tts_wrap, &provider);
       tts = turbo_tts_create(&provider, &callbacks, &observer);
       check_not_null(tts);
@@ -1088,10 +1088,10 @@ suite("TurboMedia IVR OpenAI provider") {
       request.rate = 1.0f;
       request.pitch = 1.0f;
 
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(tts_done_cond, &observer, 5000), 0);
-      check_int_eq(observer.error_count, 1);
-      check_int_eq(observer.complete_count, 0);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(tts_done_cond, &observer, 5000), 0);
+      check_equal(observer.error_count, 1);
+      check_equal(observer.complete_count, 0);
       turbo_tts_destroy(tts);
       ivr_openai_tts_free(tts_wrap);
       mock_server_stop(server);
@@ -1118,7 +1118,7 @@ suite("TurboMedia IVR OpenAI provider") {
       server.tts_pcm = pcm;
       server.tts_pcm_len = sizeof(pcm);
       server.tts_frame_delay_ms = 20u; /* keep the first request in flight */
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -1133,7 +1133,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_tts_complete;
       callbacks.on_error = observe_tts_error;
 
-      check_int_eq(ivr_openai_tts_create(&config, &tts_wrap), 0);
+      check_equal(ivr_openai_tts_create(&config, &tts_wrap), 0);
       ivr_openai_tts_get_provider(tts_wrap, &provider);
       tts = turbo_tts_create(&provider, &callbacks, &observer);
       check_not_null(tts);
@@ -1143,7 +1143,7 @@ suite("TurboMedia IVR OpenAI provider") {
       request.text_len = 5;
       request.rate = 1.0f;
       request.pitch = 1.0f;
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_OK);
       mock_sleep_ms(50);
       memset(&request, 0, sizeof(request));
       request.text = "second";
@@ -1152,9 +1152,9 @@ suite("TurboMedia IVR OpenAI provider") {
       request.pitch = 1.0f;
       /* the session layer rejects a second synthesize while the first is
          RUNNING (before the provider is consulted) */
-      check_int_eq(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_ERR_STATE);
-      check_int_eq(turbo_tts_cancel(tts), TURBO_SPEECH_OK);
-      check_int_eq(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_STOPPED);
+      check_equal(turbo_tts_synthesize(tts, &request), TURBO_SPEECH_ERR_STATE);
+      check_equal(turbo_tts_cancel(tts), TURBO_SPEECH_OK);
+      check_equal(turbo_tts_get_state(tts), TURBO_SPEECH_STATE_STOPPED);
 
       turbo_tts_destroy(tts);
       ivr_openai_tts_free(tts_wrap);
@@ -1176,7 +1176,7 @@ suite("TurboMedia IVR OpenAI provider") {
       request_observer_t request_observer;
 
       mock_server_init(&server);
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -1197,7 +1197,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_asr_complete;
       callbacks.on_error = observe_asr_error;
 
-      check_int_eq(ivr_openai_asr_create(&config, &asr_wrap), 0);
+      check_equal(ivr_openai_asr_create(&config, &asr_wrap), 0);
       check_not_null(asr_wrap);
       ivr_openai_asr_get_provider(asr_wrap, &provider);
       asr = turbo_asr_create(&provider, &callbacks, &observer);
@@ -1208,29 +1208,29 @@ suite("TurboMedia IVR OpenAI provider") {
       asr_config.format.channels = 1;
       asr_config.format.bits_per_sample = 16;
       asr_config.language = "en-US";
-      check_int_eq(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
+      check_equal(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_finish(asr), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(asr_done_cond, &observer, 5000), 0);
-      check_int_eq(mock_wait_until(request_observed_cond, &request_observer,
+      check_equal(turbo_asr_finish(asr), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(asr_done_cond, &observer, 5000), 0);
+      check_equal(mock_wait_until(request_observed_cond, &request_observer,
                                    5000), 0);
 
-      check_int_eq(observer.error_count, 0);
-      check_int_eq(observer.result_count, 1);
-      check_str_eq(observer.text, "hello remote world");
-      check_int_eq(observer.is_final, 1);
-      check_int_eq(observer.complete_count, 1);
-      check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_STOPPED);
-      check_uint_eq((unsigned)atomic_load(&request_observer.tts_count), 0u);
-      check_uint_eq((unsigned)atomic_load(&request_observer.asr_count), 1u);
+      check_equal(observer.error_count, 0);
+      check_equal(observer.result_count, 1);
+      check_equal(observer.text, "hello remote world");
+      check_equal(observer.is_final, 1);
+      check_equal(observer.complete_count, 1);
+      check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_STOPPED);
+      check_equal((unsigned)atomic_load(&request_observer.tts_count), 0u);
+      check_equal((unsigned)atomic_load(&request_observer.asr_count), 1u);
 
-      check_int_eq(server.asr_requests, 1);
-      check_int_eq(server.tts_requests, 0);
-      check_str_eq(server.last_path, MOCK_ASR_PATH);
-      check_str_eq(server.last_method, "POST");
-      check_str_contains(server.last_auth, "Bearer test-openai-key");
-      check_str_contains(server.last_content_type, "multipart/form-data");
+      check_equal(server.asr_requests, 1);
+      check_equal(server.tts_requests, 0);
+      check_equal(server.last_path, MOCK_ASR_PATH);
+      check_equal(server.last_method, "POST");
+      check_contains(server.last_auth, "Bearer test-openai-key");
+      check_contains(server.last_content_type, "multipart/form-data");
       /* multipart parts: file + model + language */
       check(mock_body_contains(&server, "name=\"file\""), "multipart file field");
       check(mock_body_contains(&server, "audio.wav"), "multipart wav filename");
@@ -1259,7 +1259,7 @@ suite("TurboMedia IVR OpenAI provider") {
       turbo_asr_callbacks_t callbacks;
 
       mock_server_init(&server);
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -1272,7 +1272,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_asr_complete;
       callbacks.on_error = observe_asr_error;
 
-      check_int_eq(ivr_openai_asr_create(&config, &asr_wrap), 0);
+      check_equal(ivr_openai_asr_create(&config, &asr_wrap), 0);
       ivr_openai_asr_get_provider(asr_wrap, &provider);
       asr = turbo_asr_create(&provider, &callbacks, &observer);
       check_not_null(asr);
@@ -1281,15 +1281,15 @@ suite("TurboMedia IVR OpenAI provider") {
       asr_config.format.sample_rate = 16000;
       asr_config.format.channels = 1;
       asr_config.format.bits_per_sample = 16;
-      check_int_eq(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_finish(asr), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(asr_done_cond, &observer, 2000), 0);
+      check_equal(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_finish(asr), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(asr_done_cond, &observer, 2000), 0);
 
-      check_int_eq(observer.complete_count, 1);
-      check_int_eq(observer.result_count, 0);
-      check_int_eq(observer.error_count, 0);
-      check_int_eq(server.request_count, 0); /* no network round trip */
-      check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_STOPPED);
+      check_equal(observer.complete_count, 1);
+      check_equal(observer.result_count, 0);
+      check_equal(observer.error_count, 0);
+      check_equal(server.request_count, 0); /* no network round trip */
+      check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_STOPPED);
 
       turbo_asr_destroy(asr);
       ivr_openai_asr_free(asr_wrap);
@@ -1311,7 +1311,7 @@ suite("TurboMedia IVR OpenAI provider") {
       mock_server_init(&server);
       server.asr_status = 401;
       server.asr_json = "{\"error\":{\"message\":\"invalid api key\"}}";
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -1324,7 +1324,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_asr_complete;
       callbacks.on_error = observe_asr_error;
 
-      check_int_eq(ivr_openai_asr_create(&config, &asr_wrap), 0);
+      check_equal(ivr_openai_asr_create(&config, &asr_wrap), 0);
       ivr_openai_asr_get_provider(asr_wrap, &provider);
       asr = turbo_asr_create(&provider, &callbacks, &observer);
       check_not_null(asr);
@@ -1333,16 +1333,16 @@ suite("TurboMedia IVR OpenAI provider") {
       asr_config.format.sample_rate = 16000;
       asr_config.format.channels = 1;
       asr_config.format.bits_per_sample = 16;
-      check_int_eq(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
+      check_equal(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_finish(asr), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(asr_done_cond, &observer, 5000), 0);
+      check_equal(turbo_asr_finish(asr), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(asr_done_cond, &observer, 5000), 0);
 
-      check_int_eq(observer.error_count, 1);
-      check_int_eq(observer.result_count, 0);
-      check_int_eq(observer.complete_count, 0);
-      check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_ERROR);
+      check_equal(observer.error_count, 1);
+      check_equal(observer.result_count, 0);
+      check_equal(observer.complete_count, 0);
+      check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_ERROR);
 
       turbo_asr_destroy(asr);
       ivr_openai_asr_free(asr_wrap);
@@ -1373,7 +1373,7 @@ suite("TurboMedia IVR OpenAI provider") {
       server.asr_delay_ms = 60000u; /* the server never answers in time: the
                                        client request timeout is what bounds
                                        the in-flight wait */
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -1388,7 +1388,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_asr_complete;
       callbacks.on_error = observe_asr_error;
 
-      check_int_eq(ivr_openai_asr_create(&config, &asr_wrap), 0);
+      check_equal(ivr_openai_asr_create(&config, &asr_wrap), 0);
       ivr_openai_asr_get_provider(asr_wrap, &provider);
       asr = turbo_asr_create(&provider, &callbacks, &observer);
       check_not_null(asr);
@@ -1397,16 +1397,16 @@ suite("TurboMedia IVR OpenAI provider") {
       asr_config.format.sample_rate = 16000;
       asr_config.format.channels = 1;
       asr_config.format.bits_per_sample = 16;
-      check_int_eq(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
+      check_equal(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_finish(asr), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_finish(asr), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
       mock_sleep_ms(100);
-      check_int_eq(observer.result_count, 0);
-      check_int_eq(observer.complete_count, 0);
-      check_int_eq(observer.error_count, 0);
-      check_int_eq(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_STOPPED);
+      check_equal(observer.result_count, 0);
+      check_equal(observer.complete_count, 0);
+      check_equal(observer.error_count, 0);
+      check_equal(turbo_asr_get_state(asr), TURBO_SPEECH_STATE_STOPPED);
 
       turbo_asr_destroy(asr);
       ivr_openai_asr_free(asr_wrap);
@@ -1426,7 +1426,7 @@ suite("TurboMedia IVR OpenAI provider") {
       turbo_asr_callbacks_t callbacks;
 
       mock_server_init(&server);
-      check_int_eq(mock_server_start(&server), 0);
+      check_equal(mock_server_start(&server), 0);
       mock_server_make_base_url(&server, base_url, sizeof(base_url));
 
       memset(&config, 0, sizeof(config));
@@ -1439,7 +1439,7 @@ suite("TurboMedia IVR OpenAI provider") {
       callbacks.on_complete = observe_asr_complete;
       callbacks.on_error = observe_asr_error;
 
-      check_int_eq(ivr_openai_asr_create(&config, &asr_wrap), 0);
+      check_equal(ivr_openai_asr_create(&config, &asr_wrap), 0);
       ivr_openai_asr_get_provider(asr_wrap, &provider);
       asr = turbo_asr_create(&provider, &callbacks, &observer);
       check_not_null(asr);
@@ -1448,15 +1448,15 @@ suite("TurboMedia IVR OpenAI provider") {
       asr_config.format.sample_rate = 16000;
       asr_config.format.channels = 1;
       asr_config.format.bits_per_sample = 16;
-      check_int_eq(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
+      check_equal(turbo_asr_start(asr, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
+      check_equal(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
+      check_equal(turbo_asr_write_pcm(asr, pcm, sizeof(pcm), 0),
                    TURBO_SPEECH_ERR_BUSY);
-      check_int_eq(turbo_asr_get_rejected_frame_count(asr), 1u);
-      check_int_eq(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_get_rejected_frame_count(asr), 1u);
+      check_equal(turbo_asr_cancel(asr), TURBO_SPEECH_OK);
 
       turbo_asr_destroy(asr);
       ivr_openai_asr_free(asr_wrap);
@@ -1474,7 +1474,7 @@ suite("TurboMedia IVR OpenAI provider") {
       config.base_url = "http://127.0.0.1:1";
       config.max_asr_buffer_bytes = 4096;
       config.max_response_bytes = 4096;
-      check_int_eq(ivr_openai_speech_factory_init(&factory, &config, NULL, &ops),
+      check_equal(ivr_openai_speech_factory_init(&factory, &config, NULL, &ops),
                    IVR_OK);
       memset(&call, 0, sizeof(call));
       call.room_id.data = "room";
@@ -1485,8 +1485,8 @@ suite("TurboMedia IVR OpenAI provider") {
       for (int i = 0; i < 100; i++) {
         ivr_speech_session_t *session_a = NULL;
         ivr_speech_session_t *session_b = NULL;
-        check_int_eq(ops.create(ops.context, &call, &session_a), IVR_OK);
-        check_int_eq(ops.create(ops.context, &call, &session_b), IVR_OK);
+        check_equal(ops.create(ops.context, &call, &session_a), IVR_OK);
+        check_equal(ops.create(ops.context, &call, &session_b), IVR_OK);
         ops.destroy(ops.context, session_a);
         ops.destroy(ops.context, session_b);
       }
@@ -1500,7 +1500,7 @@ suite("TurboMedia IVR OpenAI provider") {
         check(snapshot.provider.retained_input_bytes == 0);
         check(snapshot.provider.retained_response_bytes == 0);
       }
-      check_int_eq(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
+      check_equal(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
     }
 
     it("rolls back TTS when ASR provider creation fails") {
@@ -1518,7 +1518,7 @@ suite("TurboMedia IVR OpenAI provider") {
       memset(&create_ops, 0, sizeof(create_ops));
       create_ops.context = &asr_create_calls;
       create_ops.create_asr = fail_asr_create;
-      check_int_eq(ivr_openai_speech_factory_init(
+      check_equal(ivr_openai_speech_factory_init(
                        &factory, &config, &create_ops, &ops),
                    IVR_OK);
       memset(&call, 0, sizeof(call));
@@ -1528,9 +1528,9 @@ suite("TurboMedia IVR OpenAI provider") {
       call.call_id.size = 14;
       call.call_generation = 1;
 
-      check_int_eq(ops.create(ops.context, &call, &session), IVR_ESTATE);
+      check_equal(ops.create(ops.context, &call, &session), IVR_ESTATE);
       check_null(session);
-      check_int_eq(asr_create_calls, 1);
+      check_equal(asr_create_calls, 1);
       ivr_openai_speech_factory_get_resource_snapshot(&factory, &snapshot);
       check(snapshot.active_sessions == 0);
       check(snapshot.provider.active_tts_instances == 0);
@@ -1538,7 +1538,7 @@ suite("TurboMedia IVR OpenAI provider") {
       check(snapshot.provider.live_provider_threads == 0);
       check(snapshot.provider.retained_input_bytes == 0);
       check(snapshot.provider.retained_response_bytes == 0);
-      check_int_eq(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
+      check_equal(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
     }
 
     it("runs two TTS calls concurrently without provider busy leakage") {
@@ -1565,13 +1565,13 @@ suite("TurboMedia IVR OpenAI provider") {
       server->tts_pcm = pcm;
       server->tts_pcm_len = sizeof(pcm);
       server->tts_frame_delay_ms = 2;
-      check_int_eq(mock_server_start(server), 0);
+      check_equal(mock_server_start(server), 0);
       mock_server_make_base_url(server, base_url, sizeof(base_url));
       memset(&config, 0, sizeof(config));
       config.base_url = base_url;
       config.sample_rate = 16000;
       config.timeout_ms = 5000;
-      check_int_eq(ivr_openai_speech_factory_init(&factory, &config, NULL, &ops),
+      check_equal(ivr_openai_speech_factory_init(&factory, &config, NULL, &ops),
                    IVR_OK);
 
       memset(&call_a, 0, sizeof(call_a));
@@ -1582,8 +1582,8 @@ suite("TurboMedia IVR OpenAI provider") {
       call_a.call_generation = 1;
       call_b = call_a;
       call_b.call_id.data = "call-b";
-      check_int_eq(ops.create(ops.context, &call_a, &session_a), IVR_OK);
-      check_int_eq(ops.create(ops.context, &call_b, &session_b), IVR_OK);
+      check_equal(ops.create(ops.context, &call_a, &session_a), IVR_OK);
+      check_equal(ops.create(ops.context, &call_b, &session_b), IVR_OK);
       check_true(ivr_speech_session_tts(session_a)->context !=
                  ivr_speech_session_tts(session_b)->context);
 
@@ -1604,20 +1604,20 @@ suite("TurboMedia IVR OpenAI provider") {
       request.text_len = 5;
       request.rate = 1.0f;
       request.pitch = 1.0f;
-      check_int_eq(turbo_tts_synthesize(tts_a, &request), TURBO_SPEECH_OK);
-      check_int_eq(turbo_tts_synthesize(tts_b, &request), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(tts_done_cond, &observer_a, 5000), 0);
-      check_int_eq(mock_wait_until(tts_done_cond, &observer_b, 5000), 0);
-      check_int_eq(observer_a.complete_count, 1);
-      check_int_eq(observer_b.complete_count, 1);
-      check_int_eq(observer_a.error_count, 0);
-      check_int_eq(observer_b.error_count, 0);
+      check_equal(turbo_tts_synthesize(tts_a, &request), TURBO_SPEECH_OK);
+      check_equal(turbo_tts_synthesize(tts_b, &request), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(tts_done_cond, &observer_a, 5000), 0);
+      check_equal(mock_wait_until(tts_done_cond, &observer_b, 5000), 0);
+      check_equal(observer_a.complete_count, 1);
+      check_equal(observer_b.complete_count, 1);
+      check_equal(observer_a.error_count, 0);
+      check_equal(observer_b.error_count, 0);
 
       turbo_tts_destroy(tts_a);
       turbo_tts_destroy(tts_b);
       ops.destroy(ops.context, session_a);
       ops.destroy(ops.context, session_b);
-      check_int_eq(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
+      check_equal(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
       mock_server_stop(server);
       free(server);
     }
@@ -1652,12 +1652,12 @@ suite("TurboMedia IVR OpenAI provider") {
       server->asr_match_len = sizeof(call_b_marker);
       server->asr_match_json = "{\"text\":\"call-b-transcript\"}";
       memset(pcm_b, 0xa5, sizeof(pcm_b));
-      check_int_eq(mock_server_start(server), 0);
+      check_equal(mock_server_start(server), 0);
       mock_server_make_base_url(server, base_url, sizeof(base_url));
       memset(&config, 0, sizeof(config));
       config.base_url = base_url;
       config.timeout_ms = 5000;
-      check_int_eq(ivr_openai_speech_factory_init(&factory, &config, NULL, &ops),
+      check_equal(ivr_openai_speech_factory_init(&factory, &config, NULL, &ops),
                    IVR_OK);
       memset(&call, 0, sizeof(call));
       call.room_id.data = "room";
@@ -1665,8 +1665,8 @@ suite("TurboMedia IVR OpenAI provider") {
       call.call_id.data = "call";
       call.call_id.size = 4;
       call.call_generation = 1;
-      check_int_eq(ops.create(ops.context, &call, &session_a), IVR_OK);
-      check_int_eq(ops.create(ops.context, &call, &session_b), IVR_OK);
+      check_equal(ops.create(ops.context, &call, &session_a), IVR_OK);
+      check_equal(ops.create(ops.context, &call, &session_b), IVR_OK);
       memset(&observer_a, 0, sizeof(observer_a));
       memset(&observer_b, 0, sizeof(observer_b));
       memset(&callbacks, 0, sizeof(callbacks));
@@ -1683,28 +1683,28 @@ suite("TurboMedia IVR OpenAI provider") {
       asr_config.format.sample_rate = 16000;
       asr_config.format.channels = 1;
       asr_config.format.bits_per_sample = 16;
-      check_int_eq(turbo_asr_start(asr_a, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_start(asr_b, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr_a, pcm_a, sizeof(pcm_a), 0),
+      check_equal(turbo_asr_start(asr_a, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_start(asr_b, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_write_pcm(asr_a, pcm_a, sizeof(pcm_a), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr_b, pcm_b, sizeof(pcm_b), 0),
+      check_equal(turbo_asr_write_pcm(asr_b, pcm_b, sizeof(pcm_b), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_finish(asr_a), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_finish(asr_b), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(asr_done_cond, &observer_a, 5000), 0);
-      check_int_eq(mock_wait_until(asr_done_cond, &observer_b, 5000), 0);
-      check_str_eq(observer_a.text, "call-a-transcript");
-      check_str_eq(observer_b.text, "call-b-transcript");
-      check_int_eq(observer_a.complete_count, 1);
-      check_int_eq(observer_b.complete_count, 1);
-      check_int_eq(observer_a.error_count, 0);
-      check_int_eq(observer_b.error_count, 0);
+      check_equal(turbo_asr_finish(asr_a), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_finish(asr_b), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(asr_done_cond, &observer_a, 5000), 0);
+      check_equal(mock_wait_until(asr_done_cond, &observer_b, 5000), 0);
+      check_equal(observer_a.text, "call-a-transcript");
+      check_equal(observer_b.text, "call-b-transcript");
+      check_equal(observer_a.complete_count, 1);
+      check_equal(observer_b.complete_count, 1);
+      check_equal(observer_a.error_count, 0);
+      check_equal(observer_b.error_count, 0);
 
       turbo_asr_destroy(asr_a);
       turbo_asr_destroy(asr_b);
       ops.destroy(ops.context, session_a);
       ops.destroy(ops.context, session_b);
-      check_int_eq(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
+      check_equal(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
       mock_server_stop(server);
       free(server);
     }
@@ -1728,12 +1728,12 @@ suite("TurboMedia IVR OpenAI provider") {
 
       check_not_null(server);
       mock_server_init(server);
-      check_int_eq(mock_server_start(server), 0);
+      check_equal(mock_server_start(server), 0);
       mock_server_make_base_url(server, base_url, sizeof(base_url));
       memset(&config, 0, sizeof(config));
       config.base_url = base_url;
       config.timeout_ms = 5000;
-      check_int_eq(ivr_openai_speech_factory_init(&factory, &config, NULL, &ops),
+      check_equal(ivr_openai_speech_factory_init(&factory, &config, NULL, &ops),
                    IVR_OK);
       memset(&call, 0, sizeof(call));
       call.room_id.data = "room";
@@ -1741,8 +1741,8 @@ suite("TurboMedia IVR OpenAI provider") {
       call.call_id.data = "call";
       call.call_id.size = 4;
       call.call_generation = 1;
-      check_int_eq(ops.create(ops.context, &call, &session_a), IVR_OK);
-      check_int_eq(ops.create(ops.context, &call, &session_b), IVR_OK);
+      check_equal(ops.create(ops.context, &call, &session_a), IVR_OK);
+      check_equal(ops.create(ops.context, &call, &session_b), IVR_OK);
 
       memset(&observer_a, 0, sizeof(observer_a));
       memset(&observer_b, 0, sizeof(observer_b));
@@ -1760,24 +1760,24 @@ suite("TurboMedia IVR OpenAI provider") {
       asr_config.format.sample_rate = 16000;
       asr_config.format.channels = 1;
       asr_config.format.bits_per_sample = 16;
-      check_int_eq(turbo_asr_start(asr_a, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_start(asr_b, &asr_config), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr_a, pcm, sizeof(pcm), 0),
+      check_equal(turbo_asr_start(asr_a, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_start(asr_b, &asr_config), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_write_pcm(asr_a, pcm, sizeof(pcm), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_write_pcm(asr_b, pcm, sizeof(pcm), 0),
+      check_equal(turbo_asr_write_pcm(asr_b, pcm, sizeof(pcm), 0),
                    TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_cancel(asr_a), TURBO_SPEECH_OK);
-      check_int_eq(turbo_asr_finish(asr_b), TURBO_SPEECH_OK);
-      check_int_eq(mock_wait_until(asr_done_cond, &observer_b, 5000), 0);
-      check_int_eq(observer_a.result_count, 0);
-      check_int_eq(observer_b.result_count, 1);
-      check_str_eq(observer_b.text, "hello remote world");
+      check_equal(turbo_asr_cancel(asr_a), TURBO_SPEECH_OK);
+      check_equal(turbo_asr_finish(asr_b), TURBO_SPEECH_OK);
+      check_equal(mock_wait_until(asr_done_cond, &observer_b, 5000), 0);
+      check_equal(observer_a.result_count, 0);
+      check_equal(observer_b.result_count, 1);
+      check_equal(observer_b.text, "hello remote world");
 
       turbo_asr_destroy(asr_a);
       turbo_asr_destroy(asr_b);
       ops.destroy(ops.context, session_a);
       ops.destroy(ops.context, session_b);
-      check_int_eq(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
+      check_equal(ivr_openai_speech_factory_deinit(&factory), IVR_OK);
       mock_server_stop(server);
       free(server);
     }

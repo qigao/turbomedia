@@ -1,4 +1,5 @@
 #include "container_io.h"
+#include "stl_status.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -78,7 +79,8 @@ int turbo_container_io_open_writer(turbo_container_io_t *io, const char *path) {
         return TURBO_OK;
     }
 
-    result = turbo_vec_init(&io->output, sizeof(uint8_t));
+    result = turbo_media_stl_status_to_error(vec_init_bytes(
+        &io->output, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t), SIZE_MAX));
     if (result != TURBO_OK) return result;
     io->mode = TURBO_CONTAINER_IO_MEMORY_WRITE;
     return TURBO_OK;
@@ -90,7 +92,7 @@ void turbo_container_io_close(turbo_container_io_t *io) {
         (void)turbo_fs_close(io->file);
     }
     if (io->mode == TURBO_CONTAINER_IO_MEMORY_WRITE) {
-        turbo_vec_destroy(&io->output);
+        vec_destroy(&io->output);
     }
     memset(io, 0, sizeof(*io));
     io->file = TURBO_INVALID_FILE;
@@ -127,10 +129,10 @@ int turbo_container_io_read(void *param, void *data, uint64_t bytes) {
     }
 
     if (io->mode == TURBO_CONTAINER_IO_MEMORY_WRITE) {
-        size_t size = turbo_vec_size(&io->output);
+        size_t size = vec_size(&io->output);
         if (io->position > size || count > size - io->position)
             return container_io_fail(io, TURBO_EOF);
-        memcpy(data, (const uint8_t *)turbo_vec_data_const(&io->output) + io->position,
+        memcpy(data, (const uint8_t *)vec_data_const(&io->output) + io->position,
                count);
         io->position += count;
         return TURBO_OK;
@@ -163,13 +165,13 @@ int turbo_container_io_read_some(turbo_container_io_t *io, void *data,
         count = capacity < available ? capacity : available;
         if (count > 0) memcpy(data, io->input + io->position, count);
     } else if (io->mode == TURBO_CONTAINER_IO_MEMORY_WRITE) {
-        size_t size = turbo_vec_size(&io->output);
+        size_t size = vec_size(&io->output);
         if (io->position > size) return container_io_fail(io, TURBO_ERANGE);
         available = size - io->position;
         count = capacity < available ? capacity : available;
         if (count > 0) {
             memcpy(data,
-                   (const uint8_t *)turbo_vec_data_const(&io->output) + io->position,
+                   (const uint8_t *)vec_data_const(&io->output) + io->position,
                    count);
         }
     } else {
@@ -198,11 +200,11 @@ int turbo_container_io_write(void *param, const void *data, uint64_t bytes) {
         return container_io_fail(io, TURBO_EFBIG);
 
     required = io->position + count;
-    if (required > turbo_vec_size(&io->output)) {
-        result = turbo_vec_resize(&io->output, required);
+    if (required > vec_size(&io->output)) {
+        result = turbo_media_stl_status_to_error(vec_resize(&io->output, required));
         if (result != TURBO_OK) return container_io_fail(io, result);
     }
-    memcpy((uint8_t *)turbo_vec_data(&io->output) + io->position, data, count);
+    memcpy((uint8_t *)vec_data(&io->output) + io->position, data, count);
     io->position = required;
     return TURBO_OK;
 }
@@ -223,7 +225,7 @@ int turbo_container_io_seek(void *param, int64_t offset) {
 
     size = io->mode == TURBO_CONTAINER_IO_MEMORY_READ
                ? io->input_size
-               : turbo_vec_size(&io->output);
+               : vec_size(&io->output);
     if (offset >= 0) {
         if ((uint64_t)offset > SIZE_MAX)
             return container_io_fail(io, TURBO_EFBIG);
@@ -237,7 +239,8 @@ int turbo_container_io_seek(void *param, int64_t offset) {
     if (io->mode == TURBO_CONTAINER_IO_MEMORY_READ && target > size)
         return container_io_fail(io, TURBO_ERANGE);
     if (io->mode == TURBO_CONTAINER_IO_MEMORY_WRITE && target > size) {
-        int resize_result = turbo_vec_resize(&io->output, target);
+        int resize_result = turbo_media_stl_status_to_error(
+            vec_resize(&io->output, target));
         if (resize_result != TURBO_OK)
             return container_io_fail(io, resize_result);
     }
@@ -269,7 +272,7 @@ int64_t turbo_container_io_size(turbo_container_io_t *io) {
         return (int64_t)io->input_size;
     }
     if (io->mode == TURBO_CONTAINER_IO_MEMORY_WRITE) {
-        size_t output_size = turbo_vec_size(&io->output);
+        size_t output_size = vec_size(&io->output);
         if (output_size > INT64_MAX) return container_io_fail(io, TURBO_EFBIG);
         return (int64_t)output_size;
     }
@@ -289,7 +292,7 @@ int turbo_container_io_get_memory(turbo_container_io_t *io, uint8_t **data,
     if (!io || !data || !size || io->mode != TURBO_CONTAINER_IO_MEMORY_WRITE)
         return TURBO_EINVAL;
     if (io->error != TURBO_OK) return io->error;
-    *data = (uint8_t *)turbo_vec_data(&io->output);
-    *size = turbo_vec_size(&io->output);
+    *data = (uint8_t *)vec_data(&io->output);
+    *size = vec_size(&io->output);
     return TURBO_OK;
 }

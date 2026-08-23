@@ -127,32 +127,32 @@ struct turbo_muxer_s {
 /**
  * 初始化 Muxer 注册表
  */
-CXX_C_API void turbo_muxer_registry_init(void);
+TURBO_MEDIA_API void turbo_muxer_registry_init(void);
 
 /**
  * 关闭 Muxer 注册表
  */
-CXX_C_API void turbo_muxer_registry_shutdown(void);
+TURBO_MEDIA_API void turbo_muxer_registry_shutdown(void);
 
 /**
  * 注册 Muxer
  */
-CXX_C_API int turbo_muxer_register(const turbo_muxer_ops_t *ops);
+TURBO_MEDIA_API int turbo_muxer_register(const turbo_muxer_ops_t *ops);
 
 /**
  * 根据格式查找 Muxer
  */
-CXX_C_API const turbo_muxer_ops_t *turbo_muxer_find_by_format(turbo_muxer_format_t format);
+TURBO_MEDIA_API const turbo_muxer_ops_t *turbo_muxer_find_by_format(turbo_muxer_format_t format);
 
 /**
  * 根据名称查找 Muxer
  */
-CXX_C_API const turbo_muxer_ops_t *turbo_muxer_find_by_name(const char *name);
+TURBO_MEDIA_API const turbo_muxer_ops_t *turbo_muxer_find_by_name(const char *name);
 
 /**
  * 根据文件扩展名查找 Muxer
  */
-CXX_C_API const turbo_muxer_ops_t *turbo_muxer_find_by_extension(const char *ext);
+TURBO_MEDIA_API const turbo_muxer_ops_t *turbo_muxer_find_by_extension(const char *ext);
 
 /* =============================================================================
  * Muxer 实例操作
@@ -161,40 +161,40 @@ CXX_C_API const turbo_muxer_ops_t *turbo_muxer_find_by_extension(const char *ext
 /**
  * 创建 Muxer 实例
  */
-CXX_C_API turbo_muxer_t *turbo_muxer_create(const turbo_muxer_config_t *config);
+TURBO_MEDIA_API turbo_muxer_t *turbo_muxer_create(const turbo_muxer_config_t *config);
 
 /**
  * 销毁 Muxer 实例
  */
-CXX_C_API void turbo_muxer_destroy(turbo_muxer_t *muxer);
+TURBO_MEDIA_API void turbo_muxer_destroy(turbo_muxer_t *muxer);
 
 /**
  * 添加流轨道
  */
-CXX_C_API int turbo_muxer_add_stream(turbo_muxer_t *muxer, 
+TURBO_MEDIA_API int turbo_muxer_add_stream(turbo_muxer_t *muxer,
                                      const turbo_stream_info_t *stream_info,
                                      int *stream_id);
 
 /**
  * 写入头部
  */
-CXX_C_API int turbo_muxer_write_header(turbo_muxer_t *muxer);
+TURBO_MEDIA_API int turbo_muxer_write_header(turbo_muxer_t *muxer);
 
 /**
  * 写入数据包
  */
-CXX_C_API int turbo_muxer_write_packet(turbo_muxer_t *muxer, 
+TURBO_MEDIA_API int turbo_muxer_write_packet(turbo_muxer_t *muxer,
                                        const turbo_muxer_packet_t *packet);
 
 /**
  * 写入尾部
  */
-CXX_C_API int turbo_muxer_write_trailer(turbo_muxer_t *muxer);
+TURBO_MEDIA_API int turbo_muxer_write_trailer(turbo_muxer_t *muxer);
 
 /**
  * 获取输出数据（内存模式）
  */
-CXX_C_API int turbo_muxer_get_data(turbo_muxer_t *muxer, uint8_t **data, size_t *size);
+TURBO_MEDIA_API int turbo_muxer_get_data(turbo_muxer_t *muxer, uint8_t **data, size_t *size);
 
 /* =============================================================================
  * 内置 Muxer 声明

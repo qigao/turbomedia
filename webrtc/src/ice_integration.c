@@ -314,7 +314,7 @@ int ice_integration_add_remote_candidate(ice_integration_ctx_t *ctx,
                                           const char *candidate_sdp) {
     if (!ctx || !ctx->ice_agent || !candidate_sdp) return -1;
     
-    TLOG_DEBUG("Adding remote candidate: {}", candidate_sdp);
+    TLOG_DEBUGF("Adding remote candidate: {}", candidate_sdp);
     
     int result = ice_agent_add_remote_candidate(ctx->ice_agent, candidate_sdp);
     
@@ -385,14 +385,14 @@ int ice_integration_reconnect(ice_integration_ctx_t *ctx) {
     if (ctx->reconnect_attempts <= 5) {
         /* Phase 1: Aggressive (Fast) */
         delay_ms = 2000;
-        TLOG_DEBUG("ICE Reconnect [Aggressive]: attempt {}/{}", 
+        TLOG_DEBUGF("ICE Reconnect [Aggressive]: attempt {}/{}",
                    ctx->reconnect_attempts + 1, ctx->max_reconnect_attempts);
     } else if (ctx->reconnect_attempts <= 15) {
         /* Phase 2: Backoff (Jittered) */
         unsigned int seed = (unsigned int)turbo_hrtime();
         delay_ms = 10000 + (int)(seed % 20000); /* 10-30s */
         if (ctx->reconnect_attempts % 5 == 0) {
-            TLOG_DEBUG("ICE Reconnect [Backoff]: attempt {}/{}", 
+            TLOG_DEBUGF("ICE Reconnect [Backoff]: attempt {}/{}",
                        ctx->reconnect_attempts + 1, ctx->max_reconnect_attempts);
         }
     } else {
@@ -400,7 +400,7 @@ int ice_integration_reconnect(ice_integration_ctx_t *ctx) {
         unsigned int seed = (unsigned int)turbo_hrtime();
         delay_ms = 60000 + (int)(seed % 60000); /* 1-2m */
         if (ctx->reconnect_attempts % 10 == 0) {
-            TLOG_DEBUG("ICE Reconnect [Standby]: attempt {}/{}", 
+            TLOG_DEBUGF("ICE Reconnect [Standby]: attempt {}/{}",
                        ctx->reconnect_attempts + 1, ctx->max_reconnect_attempts);
         }
     }
@@ -443,7 +443,7 @@ static void on_ice_state_changed(turbo_ice_agent_t *agent, ice_state_t old_state
         "COMPLETED", "FAILED", "DISCONNECTED", "CLOSED"
     };
     
-    TLOG_INFO("ICE state changed: {} -> {}",
+    TLOG_INFOF("ICE state changed: {} -> {}",
               state_names[old_state], state_names[new_state]);
     
     switch (new_state) {
@@ -515,7 +515,7 @@ static void on_ice_gathering_changed(turbo_ice_agent_t *agent,
     ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)user_data;
     
     const char *state_names[] = {"NEW", "GATHERING", "COMPLETE"};
-    TLOG_INFO("ICE gathering state: {}", state_names[state]);
+    TLOG_INFOF("ICE gathering state: {}", state_names[state]);
     
     if (state == ICE_GATHERING_COMPLETE) {
         ctx->gathering_complete = 1;
@@ -534,7 +534,7 @@ static void on_ice_candidate_discovered(turbo_ice_agent_t *agent,
     /* Convert to SDP format */
     char candidate_sdp[512];
     if (ice_candidate_to_sdp(candidate, candidate_sdp, sizeof(candidate_sdp)) > 0) {
-        TLOG_DEBUG("Local candidate: {}", candidate_sdp);
+        TLOG_DEBUGF("Local candidate: {}", candidate_sdp);
         
         /* Trickle to application for signaling */
         if (ctx->on_ice_candidate) {
@@ -569,7 +569,7 @@ static void on_connection_timeout(turbo_timer_t *timer) {
     ice_state_t state = ice_agent_get_state(ctx->ice_agent);
     
     if (state != ICE_STATE_CONNECTED && state != ICE_STATE_COMPLETED) {
-        TLOG_DEBUG("Connection timeout after {} ms", ctx->connection_timeout_ms);
+        TLOG_DEBUGF("Connection timeout after {} ms", ctx->connection_timeout_ms);
         
         /* Attempt reconnection */
         ice_integration_reconnect(ctx);
@@ -602,7 +602,7 @@ static void start_gathering_task(coro_t *co, void *arg) {
     rc = ice_agent_gather_candidates(ctx->ice_agent);
     if (rc != 0) {
         ctx->gathering_start_pending = 0;
-        TLOG_WARN("Failed to start ICE candidate gathering: {}", rc);
+        TLOG_WARNF("Failed to start ICE candidate gathering: {}", rc);
     }
 }
 
@@ -619,7 +619,7 @@ static void start_connectivity_checks_task(coro_t *co, void *arg) {
     ctx->checks_start_pending = 0;
     if (rc != 0) {
         ctx->checks_started = 0;
-        TLOG_WARN("Failed to start ICE connectivity checks: {}", rc);
+        TLOG_WARNF("Failed to start ICE connectivity checks: {}", rc);
     }
 }
 

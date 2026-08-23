@@ -469,7 +469,7 @@ static int rtc_backend_set_remote_offer(
     if (turbo_peer_connection_set_remote_description(
             peer->peer_connection, "offer", offer_sdp) != 0 ||
         peer->failed) {
-        TLOG_ERROR("WebRTC internal backend rejected remote offer failed={}",
+        TLOG_ERRORF("WebRTC internal backend rejected remote offer failed={}",
                    peer->failed);
         return -1;
     }

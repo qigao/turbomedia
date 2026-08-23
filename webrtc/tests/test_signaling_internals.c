@@ -3,7 +3,7 @@
  * @brief Regression checks for signaling room-link internals
  */
 
-#include "tinytest_compat.h"
+#include "tinytest.h"
 
 #include "../src/signaling/webrtc_signaling.c"
 
@@ -17,20 +17,26 @@ static const char *const TEST_PREVIOUS_SECRET =
 static void init_test_server(webrtc_signaling_server_t *server) {
   memset(server, 0, sizeof(*server));
   turbo_mutex_init(&server->mutex);
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK,
-      turbo_hash_map_init(&server->local_peers, sizeof(tstr_t), sizeof(webrtc_peer_t *),
-                          webrtc_str_hash, webrtc_str_equal, NULL));
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK,
-      turbo_hash_map_init(&server->local_rooms, sizeof(tstr_t), sizeof(webrtc_room_t *),
-                          webrtc_str_hash, webrtc_str_equal, NULL));
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK,
-      turbo_hash_map_init(&server->source_states,
-                          sizeof(signaling_source_key_t),
-                          sizeof(signaling_source_state_t *), turbo_hash_bytes,
-                          turbo_hash_key_equal, NULL));
+  check_equal(
+      hash_map_init_bytes(
+          &server->local_peers, sizeof(tstr), CMETA_ALIGNOF(tstr),
+          sizeof(webrtc_peer_t *), CMETA_ALIGNOF(webrtc_peer_t *), SIZE_MAX,
+          webrtc_str_hash, webrtc_str_equal, NULL),
+      STL_OK);
+  check_equal(
+      hash_map_init_bytes(
+          &server->local_rooms, sizeof(tstr), CMETA_ALIGNOF(tstr),
+          sizeof(webrtc_room_t *), CMETA_ALIGNOF(webrtc_room_t *), SIZE_MAX,
+          webrtc_str_hash, webrtc_str_equal, NULL),
+      STL_OK);
+  check_equal(
+      hash_map_init_bytes(
+          &server->source_states, sizeof(signaling_source_key_t),
+          CMETA_ALIGNOF(signaling_source_key_t),
+          sizeof(signaling_source_state_t *),
+          CMETA_ALIGNOF(signaling_source_state_t *), SIZE_MAX,
+          hash_bytes, hash_key_equal, NULL),
+      STL_OK);
 }
 
 static void configure_peer_auth(webrtc_signaling_server_t *server) {
@@ -77,12 +83,12 @@ static json_value_t *parse_join_message(const char *room_id,
                         "\"peer_id\":\"%s\",\"token\":\"%s\"}",
                         room_id, peer_id, token);
 
-  TEST_ASSERT_TRUE(length > 0);
+  check_true(length > 0);
   if (length <= 0) {
     return NULL;
   }
   json = (char *)malloc((size_t)length + 1U);
-  TEST_ASSERT_NOT_NULL(json);
+  check_not_null(json);
   if (!json) {
     return NULL;
   }
@@ -90,15 +96,14 @@ static json_value_t *parse_join_message(const char *room_id,
            "{\"type\":\"join\",\"room\":\"%s\","
            "\"peer_id\":\"%s\",\"token\":\"%s\"}",
            room_id, peer_id, token);
-  TEST_ASSERT_EQUAL_INT(
-      0, turbo_parse_json((const uint8_t *)json, (size_t)length, &root));
+  check_equal((int)(turbo_parse_json((const uint8_t *)json, (size_t)length, &root)), (int)(0));
   free(json);
   return root;
 }
 
 static void destroy_test_server(webrtc_signaling_server_t *server) {
-  turbo_hash_map_destroy(&server->local_peers);
-  turbo_hash_map_destroy(&server->local_rooms);
+  hash_map_destroy(&server->local_peers);
+  hash_map_destroy(&server->local_rooms);
   destroy_source_states(server);
   turbo_mutex_destroy(&server->mutex);
 }
@@ -108,9 +113,8 @@ static void init_test_peer(webrtc_signaling_server_t *server,
   memset(peer, 0, sizeof(*peer));
   peer->server = server;
   peer->id = tstr_dup(peer_id);
-  TEST_ASSERT_NOT_NULL(peer->id);
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK, turbo_hash_map_put(&server->local_peers, &peer->id, &peer));
+  check_not_null(peer->id);
+  check_equal((int)(hash_map_put(&server->local_peers, &peer->id, &peer)), (int)(STL_OK));
 }
 
 static void destroy_test_peer(webrtc_signaling_server_t *server,
@@ -118,7 +122,7 @@ static void destroy_test_peer(webrtc_signaling_server_t *server,
   if (peer->room_ptr) {
     remove_peer_from_room_locked(server, peer);
   }
-  turbo_hash_map_remove(&server->local_peers, &peer->id, NULL);
+  hash_map_remove(&server->local_peers, &peer->id, NULL);
   free_outbox_locked(peer);
   tstr_free(peer->id);
   memset(peer, 0, sizeof(*peer));
@@ -130,7 +134,7 @@ static void join_test_peer(webrtc_signaling_server_t *server,
   int length = snprintf(message, sizeof(message),
                         "{\"type\":\"join\",\"room\":\"%s\"}", room_id);
 
-  TEST_ASSERT_TRUE(length > 0 && (size_t)length < sizeof(message));
+  check_true(length > 0 && (size_t)length < sizeof(message));
   handle_message(server, peer, message, (size_t)length);
 }
 
@@ -145,7 +149,7 @@ void test_remove_peer_from_room_clears_room_links(void) {
   init_test_server(&server);
 
   room = create_room_locked(&server, "room-a");
-  TEST_ASSERT_NOT_NULL(room);
+  check_not_null(room);
 
   peer_b.room = tstr_dup("room-a");
   peer_b.room_ptr = room;
@@ -162,16 +166,16 @@ void test_remove_peer_from_room_clears_room_links(void) {
 
   remove_peer_from_room_locked(&server, &peer_a);
 
-  TEST_ASSERT_NULL(peer_a.room_ptr);
-  TEST_ASSERT_NULL(peer_a.room);
-  TEST_ASSERT_NULL(peer_a.prev_in_room);
-  TEST_ASSERT_NULL(peer_a.next_in_room);
-  TEST_ASSERT_TRUE(room->peers_head == &peer_b);
-  TEST_ASSERT_TRUE(room->peers_tail == &peer_b);
-  TEST_ASSERT_EQUAL_INT(1, room->peer_count);
+  check_null(peer_a.room_ptr);
+  check_null(peer_a.room);
+  check_null(peer_a.prev_in_room);
+  check_null(peer_a.next_in_room);
+  check_true(room->peers_head == &peer_b);
+  check_true(room->peers_tail == &peer_b);
+  check_equal((int)(room->peer_count), (int)(1));
 
   remove_peer_from_room_locked(&server, &peer_b);
-  TEST_ASSERT_EQUAL_INT(0, server.room_count);
+  check_equal((int)(server.room_count), (int)(0));
 
   destroy_test_server(&server);
 }
@@ -179,24 +183,24 @@ void test_remove_peer_from_room_clears_room_links(void) {
 void test_json_string_maybe_escape_skips_plain_candidate_strings(void) {
   const char *candidate = "candidate:1 1 UDP 2130706431 127.0.0.1 5000 typ host";
   const char *json_str = NULL;
-  tstr_t owned = NULL;
+  tstr owned = NULL;
 
   json_str = json_string_maybe_escape(candidate, &owned);
 
-  TEST_ASSERT_TRUE(json_str == candidate);
-  TEST_ASSERT_NULL(owned);
+  check_true(json_str == candidate);
+  check_null(owned);
 }
 
 void test_json_string_maybe_escape_escapes_room_names(void) {
   const char *room = "sales\"tier\\1\n";
   const char *json_str = NULL;
-  tstr_t owned = NULL;
+  tstr owned = NULL;
 
   json_str = json_string_maybe_escape(room, &owned);
 
-  TEST_ASSERT_NOT_NULL(json_str);
-  TEST_ASSERT_NOT_NULL(owned);
-  TEST_ASSERT_EQUAL_STRING("sales\\\"tier\\\\1\\n", json_str);
+  check_not_null(json_str);
+  check_not_null(owned);
+  check_equal(json_str, "sales\\\"tier\\\\1\\n");
   tstr_free(owned);
 }
 
@@ -220,9 +224,9 @@ void test_directed_signaling_rejects_cross_room_messages(void) {
 
   for (size_t i = 0; i < sizeof(messages) / sizeof(messages[0]); ++i) {
     handle_message(&server, &alice, messages[i], strlen(messages[i]));
-    TEST_ASSERT_EQUAL_size_t(0, bob.outbox_message_count);
-    TEST_ASSERT_NOT_NULL(alice.outbox_tail);
-    TEST_ASSERT_NOT_NULL(strstr(alice.outbox_tail->json,
+    check_equal((size_t)(bob.outbox_message_count), (size_t)(0));
+    check_not_null(alice.outbox_tail);
+    check_not_null(strstr(alice.outbox_tail->json,
                                 "Peer not available in room"));
     free_outbox_locked(&alice);
   }
@@ -252,7 +256,7 @@ void test_directed_signaling_routes_messages_within_room(void) {
 
   for (size_t i = 0; i < sizeof(messages) / sizeof(messages[0]); ++i) {
     handle_message(&server, &alice, messages[i], strlen(messages[i]));
-    TEST_ASSERT_EQUAL_size_t(1, bob.outbox_message_count);
+    check_equal((size_t)(bob.outbox_message_count), (size_t)(1));
     free_outbox_locked(&bob);
   }
 
@@ -274,24 +278,24 @@ void test_max_peers_is_enforced_per_room(void) {
   init_test_peer(&server, &carol, "carol");
 
   join_test_peer(&server, &alice, "room-a");
-  TEST_ASSERT_NOT_NULL(alice.room_ptr);
-  TEST_ASSERT_EQUAL_INT(1, alice.room_ptr->peer_count);
+  check_not_null(alice.room_ptr);
+  check_equal((int)(alice.room_ptr->peer_count), (int)(1));
 
   join_test_peer(&server, &bob, "room-a");
-  TEST_ASSERT_NULL(bob.room_ptr);
-  TEST_ASSERT_NOT_NULL(bob.outbox_tail);
-  TEST_ASSERT_NOT_NULL(strstr(bob.outbox_tail->json,
+  check_null(bob.room_ptr);
+  check_not_null(bob.outbox_tail);
+  check_not_null(strstr(bob.outbox_tail->json,
                               "Room peer limit reached"));
 
   join_test_peer(&server, &carol, "room-b");
-  TEST_ASSERT_NOT_NULL(carol.room_ptr);
-  TEST_ASSERT_EQUAL_INT(1, carol.room_ptr->peer_count);
+  check_not_null(carol.room_ptr);
+  check_equal((int)(carol.room_ptr->peer_count), (int)(1));
 
   join_test_peer(&server, &alice, "room-a");
-  TEST_ASSERT_NOT_NULL(alice.room_ptr);
-  TEST_ASSERT_EQUAL_INT(1, alice.room_ptr->peer_count);
-  TEST_ASSERT_TRUE(alice.room_ptr->peers_head == &alice);
-  TEST_ASSERT_TRUE(alice.room_ptr->peers_tail == &alice);
+  check_not_null(alice.room_ptr);
+  check_equal((int)(alice.room_ptr->peer_count), (int)(1));
+  check_true(alice.room_ptr->peers_head == &alice);
+  check_true(alice.room_ptr->peers_tail == &alice);
 
   destroy_test_peer(&server, &alice);
   destroy_test_peer(&server, &bob);
@@ -308,11 +312,9 @@ void test_management_posts_report_context_rejection(void) {
   join_test_peer(&server, &alice, "room-a");
   free_outbox_locked(&alice);
 
-  TEST_ASSERT_EQUAL_INT(
-      -1, webrtc_signaling_broadcast(&server, "room-a", NULL, "message"));
-  TEST_ASSERT_EQUAL_INT(
-      -1, webrtc_signaling_kick_peer(&server, "room-a", "alice", "reason"));
-  TEST_ASSERT_EQUAL_size_t(0, alice.outbox_message_count);
+  check_equal((int)(webrtc_signaling_broadcast(&server, "room-a", NULL, "message")), (int)(-1));
+  check_equal((int)(webrtc_signaling_kick_peer(&server, "room-a", "alice", "reason")), (int)(-1));
+  check_equal((size_t)(alice.outbox_message_count), (size_t)(0));
 
   destroy_test_peer(&server, &alice);
   destroy_test_server(&server);
@@ -327,7 +329,7 @@ void test_peer_join_auth_binds_room_and_identity(void) {
   char *wrong_scope_token = NULL;
   char *expired_token = NULL;
   json_value_t *root = NULL;
-  tstr_t authorized_peer_id = NULL;
+  tstr authorized_peer_id = NULL;
 
   init_test_server(&server);
   configure_peer_auth(&server);
@@ -346,39 +348,34 @@ void test_peer_join_auth_binds_room_and_identity(void) {
   expired_token = issue_peer_join_token(
       TEST_ACTIVE_KEY_ID, TEST_ACTIVE_SECRET, SIGNALING_PEER_JOIN_SCOPE,
       "room-a", "alice", now - 120, now - 60);
-  TEST_ASSERT_NOT_NULL(active_token);
-  TEST_ASSERT_NOT_NULL(previous_token);
-  TEST_ASSERT_NOT_NULL(wrong_room_token);
-  TEST_ASSERT_NOT_NULL(wrong_scope_token);
-  TEST_ASSERT_NOT_NULL(expired_token);
+  check_not_null(active_token);
+  check_not_null(previous_token);
+  check_not_null(wrong_room_token);
+  check_not_null(wrong_scope_token);
+  check_not_null(expired_token);
 
   root = parse_join_message("room-a", "alice", active_token);
-  TEST_ASSERT_NOT_NULL(root);
-  TEST_ASSERT_EQUAL_INT(
-      0, authorize_join_message(&server, root, &authorized_peer_id));
-  TEST_ASSERT_EQUAL_STRING("alice", authorized_peer_id);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(0));
+  check_equal(authorized_peer_id, "alice");
   tstr_free(authorized_peer_id);
   authorized_peer_id = NULL;
   turbo_free_json(&root);
 
   root = parse_join_message("room-a", "alice", previous_token);
-  TEST_ASSERT_EQUAL_INT(
-      0, authorize_join_message(&server, root, &authorized_peer_id));
+  check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(0));
   tstr_free(authorized_peer_id);
   authorized_peer_id = NULL;
   turbo_free_json(&root);
 
   root = parse_join_message("room-a", "alice", wrong_room_token);
-  TEST_ASSERT_EQUAL_INT(
-      -1, authorize_join_message(&server, root, &authorized_peer_id));
+  check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(-1));
   turbo_free_json(&root);
   root = parse_join_message("room-a", "alice", wrong_scope_token);
-  TEST_ASSERT_EQUAL_INT(
-      -1, authorize_join_message(&server, root, &authorized_peer_id));
+  check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(-1));
   turbo_free_json(&root);
   root = parse_join_message("room-a", "alice", expired_token);
-  TEST_ASSERT_EQUAL_INT(
-      -1, authorize_join_message(&server, root, &authorized_peer_id));
+  check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(-1));
   turbo_free_json(&root);
 
   free(expired_token);
@@ -393,7 +390,7 @@ void test_peer_identity_binding_is_atomic_and_immutable(void) {
   webrtc_signaling_server_t server;
   webrtc_peer_t peer_a;
   webrtc_peer_t peer_b;
-  tstr_t requested_id = NULL;
+  tstr requested_id = NULL;
 
   memset(&peer_a, 0, sizeof(peer_a));
   memset(&peer_b, 0, sizeof(peer_b));
@@ -401,33 +398,28 @@ void test_peer_identity_binding_is_atomic_and_immutable(void) {
   configure_peer_auth(&server);
   peer_a.id = tstr_dup("temporary-a");
   peer_b.id = tstr_dup("temporary-b");
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK, turbo_hash_map_put(&server.local_peers, &peer_a.id, &peer_a));
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK, turbo_hash_map_put(&server.local_peers, &peer_b.id, &peer_b));
+  check_equal((int)(hash_map_put(&server.local_peers, &peer_a.id, &peer_a)), (int)(STL_OK));
+  check_equal((int)(hash_map_put(&server.local_peers, &peer_b.id, &peer_b)), (int)(STL_OK));
 
   requested_id = tstr_dup("alice");
-  TEST_ASSERT_EQUAL_INT(
-      0, bind_peer_identity_locked(&server, &peer_a, &requested_id));
-  TEST_ASSERT_NULL(requested_id);
-  TEST_ASSERT_TRUE(peer_a.identity_bound);
-  TEST_ASSERT_EQUAL_STRING("alice", peer_a.id);
-  TEST_ASSERT_NULL(find_peer_by_id_locked(&server, "temporary-a"));
-  TEST_ASSERT_TRUE(find_peer_by_id_locked(&server, "alice") == &peer_a);
+  check_equal((int)(bind_peer_identity_locked(&server, &peer_a, &requested_id)), (int)(0));
+  check_null(requested_id);
+  check_true(peer_a.identity_bound);
+  check_equal(peer_a.id, "alice");
+  check_null(find_peer_by_id_locked(&server, "temporary-a"));
+  check_true(find_peer_by_id_locked(&server, "alice") == &peer_a);
 
   requested_id = tstr_dup("mallory");
-  TEST_ASSERT_EQUAL_INT(
-      -1, bind_peer_identity_locked(&server, &peer_a, &requested_id));
-  TEST_ASSERT_EQUAL_STRING("alice", peer_a.id);
+  check_equal((int)(bind_peer_identity_locked(&server, &peer_a, &requested_id)), (int)(-1));
+  check_equal(peer_a.id, "alice");
   tstr_free(requested_id);
   requested_id = tstr_dup("alice");
-  TEST_ASSERT_EQUAL_INT(
-      -2, bind_peer_identity_locked(&server, &peer_b, &requested_id));
-  TEST_ASSERT_EQUAL_STRING("temporary-b", peer_b.id);
+  check_equal((int)(bind_peer_identity_locked(&server, &peer_b, &requested_id)), (int)(-2));
+  check_equal(peer_b.id, "temporary-b");
   tstr_free(requested_id);
 
-  turbo_hash_map_remove(&server.local_peers, &peer_a.id, NULL);
-  turbo_hash_map_remove(&server.local_peers, &peer_b.id, NULL);
+  hash_map_remove(&server.local_peers, &peer_a.id, NULL);
+  hash_map_remove(&server.local_peers, &peer_b.id, NULL);
   tstr_free(peer_a.id);
   tstr_free(peer_b.id);
   destroy_test_server(&server);
@@ -450,44 +442,41 @@ void test_authenticated_join_dispatch_admits_only_valid_first_message(void) {
   unauthenticated_peer.server = &server;
   peer.id = tstr_dup("temporary-a");
   unauthenticated_peer.id = tstr_dup("temporary-b");
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK, turbo_hash_map_put(&server.local_peers, &peer.id, &peer));
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK,
-      turbo_hash_map_put(&server.local_peers, &unauthenticated_peer.id,
-                         &unauthenticated_peer));
+  check_equal((int)(hash_map_put(&server.local_peers, &peer.id, &peer)), (int)(STL_OK));
+  check_equal((int)(hash_map_put(&server.local_peers, &unauthenticated_peer.id,
+                         &unauthenticated_peer)), (int)(STL_OK));
 
   token = issue_peer_join_token(
       TEST_ACTIVE_KEY_ID, TEST_ACTIVE_SECRET, SIGNALING_PEER_JOIN_SCOPE,
       "room-a", "alice", now, now + 60);
-  TEST_ASSERT_NOT_NULL(token);
+  check_not_null(token);
   message_length = snprintf(
       NULL, 0,
       "{\"type\":\"join\",\"room\":\"room-a\","
       "\"peer_id\":\"alice\",\"token\":\"%s\"}",
       token);
   message = (char *)malloc((size_t)message_length + 1U);
-  TEST_ASSERT_NOT_NULL(message);
+  check_not_null(message);
   snprintf(message, (size_t)message_length + 1U,
            "{\"type\":\"join\",\"room\":\"room-a\","
            "\"peer_id\":\"alice\",\"token\":\"%s\"}",
            token);
 
   handle_message(&server, &peer, message, (size_t)message_length);
-  TEST_ASSERT_FALSE(peer.closing);
-  TEST_ASSERT_TRUE(peer.identity_bound);
-  TEST_ASSERT_EQUAL_STRING("alice", peer.id);
-  TEST_ASSERT_EQUAL_STRING("room-a", peer.room);
-  TEST_ASSERT_NOT_NULL(peer.outbox_head);
-  TEST_ASSERT_TRUE(strstr(peer.outbox_head->json, "\"type\":\"joined\"") !=
+  check_false(peer.closing);
+  check_true(peer.identity_bound);
+  check_equal(peer.id, "alice");
+  check_equal(peer.room, "room-a");
+  check_not_null(peer.outbox_head);
+  check_true(strstr(peer.outbox_head->json, "\"type\":\"joined\"") !=
                    NULL);
 
   handle_message(&server, &unauthenticated_peer,
                  "{\"type\":\"list-peers\"}",
                  strlen("{\"type\":\"list-peers\"}"));
-  TEST_ASSERT_TRUE(unauthenticated_peer.closing);
-  TEST_ASSERT_NOT_NULL(unauthenticated_peer.outbox_head);
-  TEST_ASSERT_TRUE(strstr(unauthenticated_peer.outbox_head->json,
+  check_true(unauthenticated_peer.closing);
+  check_not_null(unauthenticated_peer.outbox_head);
+  check_true(strstr(unauthenticated_peer.outbox_head->json,
                           "Authenticated join required") != NULL);
 
   free(message);
@@ -495,8 +484,8 @@ void test_authenticated_join_dispatch_admits_only_valid_first_message(void) {
   free_outbox_locked(&peer);
   free_outbox_locked(&unauthenticated_peer);
   remove_peer_from_room_locked(&server, &peer);
-  turbo_hash_map_remove(&server.local_peers, &peer.id, NULL);
-  turbo_hash_map_remove(&server.local_peers, &unauthenticated_peer.id, NULL);
+  hash_map_remove(&server.local_peers, &peer.id, NULL);
+  hash_map_remove(&server.local_peers, &unauthenticated_peer.id, NULL);
   tstr_free(peer.id);
   tstr_free(unauthenticated_peer.id);
   destroy_test_server(&server);
@@ -511,19 +500,18 @@ void test_legacy_join_remains_available_when_auth_is_disabled(void) {
   init_test_server(&server);
   peer.server = &server;
   peer.id = tstr_dup("generated-peer");
-  TEST_ASSERT_EQUAL_INT(
-      TURBO_OK, turbo_hash_map_put(&server.local_peers, &peer.id, &peer));
+  check_equal((int)(hash_map_put(&server.local_peers, &peer.id, &peer)), (int)(STL_OK));
 
   handle_message(&server, &peer, message, strlen(message));
-  TEST_ASSERT_FALSE(peer.closing);
-  TEST_ASSERT_FALSE(peer.identity_bound);
-  TEST_ASSERT_EQUAL_STRING("generated-peer", peer.id);
-  TEST_ASSERT_EQUAL_STRING("development", peer.room);
-  TEST_ASSERT_NOT_NULL(peer.outbox_head);
+  check_false(peer.closing);
+  check_false(peer.identity_bound);
+  check_equal(peer.id, "generated-peer");
+  check_equal(peer.room, "development");
+  check_not_null(peer.outbox_head);
 
   free_outbox_locked(&peer);
   remove_peer_from_room_locked(&server, &peer);
-  turbo_hash_map_remove(&server.local_peers, &peer.id, NULL);
+  hash_map_remove(&server.local_peers, &peer.id, NULL);
   tstr_free(peer.id);
   destroy_test_server(&server);
 }
@@ -539,12 +527,12 @@ void test_message_rate_bucket_is_bounded_and_refills_with_time(void) {
   peer.rate_last_refill_ms = 1000;
   peer.rate_tokens = 2U * SIGNALING_RATE_TOKEN_UNITS;
 
-  TEST_ASSERT_TRUE(consume_peer_message_budget_locked(&server, &peer, 1000));
-  TEST_ASSERT_TRUE(consume_peer_message_budget_locked(&server, &peer, 1000));
-  TEST_ASSERT_FALSE(consume_peer_message_budget_locked(&server, &peer, 1000));
-  TEST_ASSERT_TRUE(consume_peer_message_budget_locked(&server, &peer, 1500));
-  TEST_ASSERT_FALSE(consume_peer_message_budget_locked(&server, &peer, 1500));
-  TEST_ASSERT_TRUE(consume_peer_message_budget_locked(&server, &peer, 2000));
+  check_true(consume_peer_message_budget_locked(&server, &peer, 1000));
+  check_true(consume_peer_message_budget_locked(&server, &peer, 1000));
+  check_false(consume_peer_message_budget_locked(&server, &peer, 1000));
+  check_true(consume_peer_message_budget_locked(&server, &peer, 1500));
+  check_false(consume_peer_message_budget_locked(&server, &peer, 1500));
+  check_true(consume_peer_message_budget_locked(&server, &peer, 2000));
 
   destroy_test_server(&server);
 }
@@ -563,13 +551,12 @@ void test_message_rate_violation_closes_peer_and_reports_rejection(void) {
   peer.rate_tokens = SIGNALING_RATE_TOKEN_UNITS;
 
   handle_message(&server, &peer, message, strlen(message));
-  TEST_ASSERT_FALSE(peer.closing);
+  check_false(peer.closing);
   handle_message(&server, &peer, message, strlen(message));
-  TEST_ASSERT_TRUE(peer.closing);
-  TEST_ASSERT_EQUAL_UINT64(1, server.message_rate_rejections);
-  TEST_ASSERT_NOT_NULL(peer.outbox_tail);
-  TEST_ASSERT_NOT_NULL(
-      strstr(peer.outbox_tail->json, "Message rate limit exceeded"));
+  check_true(peer.closing);
+  check_equal((uint64_t)(server.message_rate_rejections), (uint64_t)(1));
+  check_not_null(peer.outbox_tail);
+  check_not_null(strstr(peer.outbox_tail->json, "Message rate limit exceeded"));
 
   free_outbox_locked(&peer);
   destroy_test_server(&server);
@@ -587,25 +574,24 @@ void test_outbox_limits_close_slow_consumers(void) {
   server.config.max_outbox_bytes = 1024;
   count_limited.server = &server;
 
-  TEST_ASSERT_EQUAL_INT(0, enqueue_message_locked(&count_limited, "one"));
-  TEST_ASSERT_EQUAL_INT(0, enqueue_message_locked(&count_limited, "two"));
-  TEST_ASSERT_EQUAL_INT(
-      -1, enqueue_message_locked(&count_limited, "overflow"));
-  TEST_ASSERT_TRUE(count_limited.closing);
-  TEST_ASSERT_EQUAL_UINT64(1, server.outbox_overflow_rejections);
-  TEST_ASSERT_EQUAL_size_t(2, count_limited.outbox_message_count);
-  TEST_ASSERT_EQUAL_size_t(6, count_limited.outbox_bytes);
+  check_equal((int)(enqueue_message_locked(&count_limited, "one")), (int)(0));
+  check_equal((int)(enqueue_message_locked(&count_limited, "two")), (int)(0));
+  check_equal((int)(enqueue_message_locked(&count_limited, "overflow")), (int)(-1));
+  check_true(count_limited.closing);
+  check_equal((uint64_t)(server.outbox_overflow_rejections), (uint64_t)(1));
+  check_equal((size_t)(count_limited.outbox_message_count), (size_t)(2));
+  check_equal((size_t)(count_limited.outbox_bytes), (size_t)(6));
   free_outbox_locked(&count_limited);
 
   server.config.max_outbox_messages = 10;
   server.config.max_outbox_bytes = 5;
   byte_limited.server = &server;
-  TEST_ASSERT_EQUAL_INT(0, enqueue_message_locked(&byte_limited, "1234"));
-  TEST_ASSERT_EQUAL_INT(-1, enqueue_message_locked(&byte_limited, "56"));
-  TEST_ASSERT_TRUE(byte_limited.closing);
-  TEST_ASSERT_EQUAL_UINT64(2, server.outbox_overflow_rejections);
-  TEST_ASSERT_EQUAL_size_t(1, byte_limited.outbox_message_count);
-  TEST_ASSERT_EQUAL_size_t(4, byte_limited.outbox_bytes);
+  check_equal((int)(enqueue_message_locked(&byte_limited, "1234")), (int)(0));
+  check_equal((int)(enqueue_message_locked(&byte_limited, "56")), (int)(-1));
+  check_true(byte_limited.closing);
+  check_equal((uint64_t)(server.outbox_overflow_rejections), (uint64_t)(2));
+  check_equal((size_t)(byte_limited.outbox_message_count), (size_t)(1));
+  check_equal((size_t)(byte_limited.outbox_bytes), (size_t)(4));
   free_outbox_locked(&byte_limited);
 
   destroy_test_server(&server);
@@ -636,13 +622,13 @@ void test_join_deadline_is_fixed_and_idle_timeout_remains_separate(void) {
   server.peers_tail = &joined;
 
   expire_peers_locked(&server, 2000);
-  TEST_ASSERT_TRUE(unjoined.closing);
-  TEST_ASSERT_FALSE(joined.closing);
-  TEST_ASSERT_EQUAL_UINT64(1, server.join_timeout_rejections);
+  check_true(unjoined.closing);
+  check_false(joined.closing);
+  check_equal((uint64_t)(server.join_timeout_rejections), (uint64_t)(1));
 
   expire_peers_locked(&server, 7000);
-  TEST_ASSERT_TRUE(joined.closing);
-  TEST_ASSERT_EQUAL_UINT64(1, server.join_timeout_rejections);
+  check_true(joined.closing);
+  check_equal((uint64_t)(server.join_timeout_rejections), (uint64_t)(1));
 
   destroy_test_server(&server);
 }
@@ -672,18 +658,15 @@ void test_source_key_ignores_port_and_normalizes_mapped_ipv4(void) {
   mapped_bytes[11] = 0xffU;
   memcpy(mapped_bytes + 12U, &ipv4_a.sin_addr, 4U);
 
-  TEST_ASSERT_EQUAL_INT(
-      0, source_key_from_sockaddr(
-             (const struct sockaddr_storage *)&ipv4_a, &key_a));
-  TEST_ASSERT_EQUAL_INT(
-      0, source_key_from_sockaddr(
-             (const struct sockaddr_storage *)&ipv4_b, &key_b));
-  TEST_ASSERT_EQUAL_INT(
-      0, source_key_from_sockaddr(
-             (const struct sockaddr_storage *)&mapped_ipv4, &mapped_key));
-  TEST_ASSERT_EQUAL_INT(0, memcmp(&key_a, &key_b, sizeof(key_a)));
-  TEST_ASSERT_EQUAL_INT(0, memcmp(&key_a, &mapped_key, sizeof(key_a)));
-  TEST_ASSERT_EQUAL_INT(SIGNALING_SOURCE_FAMILY_IPV4, key_a.family);
+  check_equal((int)(source_key_from_sockaddr(
+             (const struct sockaddr_storage *)&ipv4_a, &key_a)), (int)(0));
+  check_equal((int)(source_key_from_sockaddr(
+             (const struct sockaddr_storage *)&ipv4_b, &key_b)), (int)(0));
+  check_equal((int)(source_key_from_sockaddr(
+             (const struct sockaddr_storage *)&mapped_ipv4, &mapped_key)), (int)(0));
+  check_equal((int)(memcmp(&key_a, &key_b, sizeof(key_a))), (int)(0));
+  check_equal((int)(memcmp(&key_a, &mapped_key, sizeof(key_a))), (int)(0));
+  check_equal((int)(key_a.family), (int)(SIGNALING_SOURCE_FAMILY_IPV4));
 }
 
 void test_source_concurrency_releases_and_expires_state(void) {
@@ -701,23 +684,19 @@ void test_source_concurrency_releases_and_expires_state(void) {
   server.config.max_source_states = 2U;
   server.config.source_state_ttl_ms = 1000;
 
-  TEST_ASSERT_EQUAL_INT(
-      SIGNALING_SOURCE_ADMITTED, admit_source_locked(&server, &key, 1000));
-  TEST_ASSERT_EQUAL_INT(
-      SIGNALING_SOURCE_ADMITTED, admit_source_locked(&server, &key, 1000));
-  TEST_ASSERT_EQUAL_INT(SIGNALING_SOURCE_REJECT_CONCURRENCY,
-                        admit_source_locked(&server, &key, 1000));
+  check_equal((int)(admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_REJECT_CONCURRENCY));
   release_source_key_locked(&server, &key, 1000);
-  TEST_ASSERT_EQUAL_INT(
-      SIGNALING_SOURCE_ADMITTED, admit_source_locked(&server, &key, 1000));
+  check_equal((int)(admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
   release_source_key_locked(&server, &key, 1000);
   release_source_key_locked(&server, &key, 1000);
-  TEST_ASSERT_EQUAL_size_t(1, turbo_hash_map_size(&server.source_states));
+  check_equal((size_t)(hash_map_size(&server.source_states)), (size_t)(1));
 
   expire_source_states_locked(&server, 1999);
-  TEST_ASSERT_EQUAL_size_t(1, turbo_hash_map_size(&server.source_states));
+  check_equal((size_t)(hash_map_size(&server.source_states)), (size_t)(1));
   expire_source_states_locked(&server, 2000);
-  TEST_ASSERT_EQUAL_size_t(0, turbo_hash_map_size(&server.source_states));
+  check_equal((size_t)(hash_map_size(&server.source_states)), (size_t)(0));
 
   destroy_test_server(&server);
 }
@@ -739,22 +718,16 @@ void test_source_admission_rate_and_state_capacity_are_bounded(void) {
   server.config.max_source_states = 1U;
   server.config.source_state_ttl_ms = 1000;
 
-  TEST_ASSERT_EQUAL_INT(
-      SIGNALING_SOURCE_ADMITTED, admit_source_locked(&server, &key_a, 1000));
-  TEST_ASSERT_EQUAL_INT(
-      SIGNALING_SOURCE_ADMITTED, admit_source_locked(&server, &key_a, 1000));
-  TEST_ASSERT_EQUAL_INT(SIGNALING_SOURCE_REJECT_RATE,
-                        admit_source_locked(&server, &key_a, 1000));
+  check_equal((int)(admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_REJECT_RATE));
   release_source_key_locked(&server, &key_a, 1000);
   release_source_key_locked(&server, &key_a, 1000);
-  TEST_ASSERT_EQUAL_INT(SIGNALING_SOURCE_REJECT_CAPACITY,
-                        admit_source_locked(&server, &key_b, 1000));
-  TEST_ASSERT_EQUAL_INT(
-      SIGNALING_SOURCE_ADMITTED, admit_source_locked(&server, &key_a, 1500));
+  check_equal((int)(admit_source_locked(&server, &key_b, 1000)), (int)(SIGNALING_SOURCE_REJECT_CAPACITY));
+  check_equal((int)(admit_source_locked(&server, &key_a, 1500)), (int)(SIGNALING_SOURCE_ADMITTED));
   release_source_key_locked(&server, &key_a, 1500);
   expire_source_states_locked(&server, 2500);
-  TEST_ASSERT_EQUAL_INT(
-      SIGNALING_SOURCE_ADMITTED, admit_source_locked(&server, &key_b, 2500));
+  check_equal((int)(admit_source_locked(&server, &key_b, 2500)), (int)(SIGNALING_SOURCE_ADMITTED));
   release_source_key_locked(&server, &key_b, 2500);
 
   destroy_test_server(&server);
@@ -780,39 +753,39 @@ void test_status_reports_resource_rejection_counters(void) {
                                  SIGNALING_SOURCE_REJECT_CONCURRENCY);
 
   json = webrtc_signaling_get_status_json(&server);
-  TEST_ASSERT_NOT_NULL(json);
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"source_state_count\":0"));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"authentication\":1"));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"join_timeout\":2"));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"message_rate\":3"));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"outbox_overflow\":4"));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"source_address\":5"));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"source_capacity\":6"));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"source_rate\":7"));
-  TEST_ASSERT_NOT_NULL(strstr(json, "\"source_concurrency\":8"));
+  check_not_null(json);
+  check_not_null(strstr(json, "\"source_state_count\":0"));
+  check_not_null(strstr(json, "\"authentication\":1"));
+  check_not_null(strstr(json, "\"join_timeout\":2"));
+  check_not_null(strstr(json, "\"message_rate\":3"));
+  check_not_null(strstr(json, "\"outbox_overflow\":4"));
+  check_not_null(strstr(json, "\"source_address\":5"));
+  check_not_null(strstr(json, "\"source_capacity\":6"));
+  check_not_null(strstr(json, "\"source_rate\":7"));
+  check_not_null(strstr(json, "\"source_concurrency\":8"));
   free(json);
 
   destroy_test_server(&server);
 }
 
 spec("test_signaling_internals") {
-  TT_TEST(test_remove_peer_from_room_clears_room_links);
-  TT_TEST(test_json_string_maybe_escape_skips_plain_candidate_strings);
-  TT_TEST(test_json_string_maybe_escape_escapes_room_names);
-  TT_TEST(test_directed_signaling_rejects_cross_room_messages);
-  TT_TEST(test_directed_signaling_routes_messages_within_room);
-  TT_TEST(test_max_peers_is_enforced_per_room);
-  TT_TEST(test_management_posts_report_context_rejection);
-  TT_TEST(test_peer_join_auth_binds_room_and_identity);
-  TT_TEST(test_peer_identity_binding_is_atomic_and_immutable);
-  TT_TEST(test_authenticated_join_dispatch_admits_only_valid_first_message);
-  TT_TEST(test_legacy_join_remains_available_when_auth_is_disabled);
-  TT_TEST(test_message_rate_bucket_is_bounded_and_refills_with_time);
-  TT_TEST(test_message_rate_violation_closes_peer_and_reports_rejection);
-  TT_TEST(test_outbox_limits_close_slow_consumers);
-  TT_TEST(test_join_deadline_is_fixed_and_idle_timeout_remains_separate);
-  TT_TEST(test_source_key_ignores_port_and_normalizes_mapped_ipv4);
-  TT_TEST(test_source_concurrency_releases_and_expires_state);
-  TT_TEST(test_source_admission_rate_and_state_capacity_are_bounded);
-  TT_TEST(test_status_reports_resource_rejection_counters);
+  it("test_remove_peer_from_room_clears_room_links") { test_remove_peer_from_room_clears_room_links(); };
+  it("test_json_string_maybe_escape_skips_plain_candidate_strings") { test_json_string_maybe_escape_skips_plain_candidate_strings(); };
+  it("test_json_string_maybe_escape_escapes_room_names") { test_json_string_maybe_escape_escapes_room_names(); };
+  it("test_directed_signaling_rejects_cross_room_messages") { test_directed_signaling_rejects_cross_room_messages(); };
+  it("test_directed_signaling_routes_messages_within_room") { test_directed_signaling_routes_messages_within_room(); };
+  it("test_max_peers_is_enforced_per_room") { test_max_peers_is_enforced_per_room(); };
+  it("test_management_posts_report_context_rejection") { test_management_posts_report_context_rejection(); };
+  it("test_peer_join_auth_binds_room_and_identity") { test_peer_join_auth_binds_room_and_identity(); };
+  it("test_peer_identity_binding_is_atomic_and_immutable") { test_peer_identity_binding_is_atomic_and_immutable(); };
+  it("test_authenticated_join_dispatch_admits_only_valid_first_message") { test_authenticated_join_dispatch_admits_only_valid_first_message(); };
+  it("test_legacy_join_remains_available_when_auth_is_disabled") { test_legacy_join_remains_available_when_auth_is_disabled(); };
+  it("test_message_rate_bucket_is_bounded_and_refills_with_time") { test_message_rate_bucket_is_bounded_and_refills_with_time(); };
+  it("test_message_rate_violation_closes_peer_and_reports_rejection") { test_message_rate_violation_closes_peer_and_reports_rejection(); };
+  it("test_outbox_limits_close_slow_consumers") { test_outbox_limits_close_slow_consumers(); };
+  it("test_join_deadline_is_fixed_and_idle_timeout_remains_separate") { test_join_deadline_is_fixed_and_idle_timeout_remains_separate(); };
+  it("test_source_key_ignores_port_and_normalizes_mapped_ipv4") { test_source_key_ignores_port_and_normalizes_mapped_ipv4(); };
+  it("test_source_concurrency_releases_and_expires_state") { test_source_concurrency_releases_and_expires_state(); };
+  it("test_source_admission_rate_and_state_capacity_are_bounded") { test_source_admission_rate_and_state_capacity_are_bounded(); };
+  it("test_status_reports_resource_rejection_counters") { test_status_reports_resource_rejection_counters(); };
 }

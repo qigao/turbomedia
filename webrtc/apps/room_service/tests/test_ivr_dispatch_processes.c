@@ -9,7 +9,7 @@
 #include "ivr_thread.h"
 #include "ivr_whip_transport.h"
 #include "turbomedia_ivr_v1.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <iris/iris_app.h>
 #include <iris/server.h>
 #include <platform.h>
@@ -1705,24 +1705,20 @@ void setUp(void) {
     g_http_client = NULL;
     g_saved_ca_file = copy_environment("TURBONET_TLS_CA_FILE");
     g_saved_ca_path = copy_environment("TURBONET_TLS_CA_PATH");
-    TEST_ASSERT_EQUAL_INT(
-        0, set_environment("TURBONET_TLS_CA_FILE",
-                           ROOM_SERVICE_TEST_TLS_CERT_PATH));
-    TEST_ASSERT_EQUAL_INT(0, set_environment("TURBONET_TLS_CA_PATH", NULL));
-    TEST_ASSERT_EQUAL_INT(0, test_iris_server_start(&g_iris));
-    TEST_ASSERT_EQUAL_INT(
-        0, test_iris_proxy_start(&g_iris_proxy, TEST_IRIS_TLS_PORT,
-                                 TEST_IRIS_BACKEND_TLS_PORT));
-    TEST_ASSERT_EQUAL_INT(TURBO_OK,
-                          turbo_http_options_init(&http_options,
-                                                  sizeof(http_options)));
+    check_equal((int)(set_environment("TURBONET_TLS_CA_FILE",
+                           ROOM_SERVICE_TEST_TLS_CERT_PATH)), (int)(0));
+    check_equal((int)(set_environment("TURBONET_TLS_CA_PATH", NULL)), (int)(0));
+    check_equal((int)(test_iris_server_start(&g_iris)), (int)(0));
+    check_equal((int)(test_iris_proxy_start(&g_iris_proxy, TEST_IRIS_TLS_PORT,
+                                 TEST_IRIS_BACKEND_TLS_PORT)), (int)(0));
+    check_equal((int)(turbo_http_options_init(&http_options,
+                                                  sizeof(http_options))), (int)(TURBO_OK));
     http_options.timeout_ms = TEST_HTTP_IO_TIMEOUT_MS;
     http_options.follow_redirects = 0;
-    TEST_ASSERT_EQUAL_INT(TURBO_OK,
-                          turbo_http_create_sync(&http_options,
-                                                 &g_http_client));
+    check_equal((int)(turbo_http_create_sync(&http_options,
+                                                 &g_http_client)), (int)(TURBO_OK));
     DataBindError err = DATA_BIND_ERROR_INIT;
-    TEST_ASSERT_EQUAL(DATA_BIND_OK, TurboMediaIvrV1_codec_create(&g_codec, &err));
+    check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
 
     /* temp config for room_service with FMQ and durable Iris outbox enabled */
     snprintf(g_cfg_path, sizeof(g_cfg_path), "%s/rs_dispatch_%d.toml",
@@ -1738,9 +1734,8 @@ void setUp(void) {
     normalize_config_path(g_database_path);
     normalize_config_path(g_ledger_database_path);
     FILE *store = fopen(g_store_path, "wb");
-    TEST_ASSERT_NOT_NULL(store);
-    TEST_ASSERT_TRUE(
-        fprintf(store,
+    check_not_null(store);
+    check_true(fprintf(store,
                 "version: 1\n"
                 "channels:\n"
                 "  iris.media_events:\n"
@@ -1772,7 +1767,7 @@ void setUp(void) {
                 "adapters: {}\n",
                 g_database_path, g_ledger_database_path) > 0);
     fclose(store);
-    TEST_ASSERT_TRUE(write_room_service_config(0));
+    check_true(write_room_service_config(0));
 
     snprintf(g_rs_out, sizeof(g_rs_out), "%s/rs_dispatch_%d.out", TEST_BIN_DIR,
              g_seq);
@@ -1788,7 +1783,7 @@ void setUp(void) {
     normalize_config_path(g_orphan_resume_path);
     remove(g_orphan_resume_path);
 
-    TEST_ASSERT_TRUE(spawn_room_service());
+    check_true(spawn_room_service());
     proc_sleep(2000); /* let room_service bind HTTP + FMQ */
 
     {
@@ -1799,14 +1794,12 @@ void setUp(void) {
             HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
             "reconcile-readiness-probe", readiness_probe, response,
             sizeof(response));
-        TEST_ASSERT_EQUAL_INT(503, status);
-        TEST_ASSERT_NOT_NULL(strstr(response, "MEDIA_PROVIDER_RECONCILING"));
-        TEST_ASSERT_TRUE(
-            atomic_load_explicit(&g_iris.expected_lease_calls,
+        check_equal((int)(status), (int)(503));
+        check_not_null(strstr(response, "MEDIA_PROVIDER_RECONCILING"));
+        check_true(atomic_load_explicit(&g_iris.expected_lease_calls,
                                  memory_order_acquire) > 0);
-        TEST_ASSERT_EQUAL_INT(
-            1, atomic_load_explicit(&g_iris.expected_lease_valid,
-                                    memory_order_acquire));
+        check_equal((int)(atomic_load_explicit(&g_iris.expected_lease_valid,
+                                    memory_order_acquire)), (int)(1));
 
         atomic_store_explicit(&g_iris.expected_resources_enabled, 1,
                               memory_order_release);
@@ -1818,19 +1811,16 @@ void setUp(void) {
             if (status == 400) break;
             proc_sleep(TEST_IRIS_DELIVERY_POLL_MS);
         }
-        TEST_ASSERT_EQUAL_INT(400, status);
-        TEST_ASSERT_TRUE(
-            atomic_load_explicit(&g_iris.expected_page_calls,
+        check_equal((int)(status), (int)(400));
+        check_true(atomic_load_explicit(&g_iris.expected_page_calls,
                                  memory_order_acquire) > 0);
-        TEST_ASSERT_EQUAL_INT(
-            1, atomic_load_explicit(&g_iris.expected_page_valid,
-                                    memory_order_acquire));
+        check_equal((int)(atomic_load_explicit(&g_iris.expected_page_valid,
+                                    memory_order_acquire)), (int)(1));
     }
 
-    TEST_ASSERT_TRUE(provision_room_service_room());
+    check_true(provision_room_service_room());
 
-    TEST_ASSERT_TRUE(
-        spawn_probe_worker("ivr-worker-dispatch", "media-runtime"));
+    check_true(spawn_probe_worker("ivr-worker-dispatch", "media-runtime"));
     {
         static const char readiness_probe[] =
             "{\"data\":{\"capability\":\"ivr\"}}";
@@ -1844,7 +1834,7 @@ void setUp(void) {
             if (status == 400) break;
             proc_sleep(TEST_IRIS_DELIVERY_POLL_MS);
         }
-        TEST_ASSERT_EQUAL_INT(400, status);
+        check_equal((int)(status), (int)(400));
     }
 }
 
@@ -2140,7 +2130,7 @@ static int submit_fault_dialog_start(const char *command_id,
 void test_worker_exit_before_dispatch_rejects_without_reservation(void) {
     char response[TEST_HTTP_RESPONSE_CAPACITY];
     int status = 0;
-    TEST_ASSERT_TRUE(file_contains(g_wk_out, "probe sync acknowledged"));
+    check_true(file_contains(g_wk_out, "probe sync acknowledged"));
     kill_child(&g_worker);
     for (int attempt = 0; attempt < TEST_IRIS_DELIVERY_ATTEMPTS; ++attempt) {
         status = submit_fault_dialog_start(
@@ -2149,8 +2139,8 @@ void test_worker_exit_before_dispatch_rejects_without_reservation(void) {
         if (status == 503) break;
         proc_sleep(TEST_IRIS_DELIVERY_POLL_MS);
     }
-    TEST_ASSERT_EQUAL_INT(503, status);
-    TEST_ASSERT_TRUE(strstr(response, "MEDIA_ROUTE_UNAVAILABLE") != NULL ||
+    check_equal((int)(status), (int)(503));
+    check_true(strstr(response, "MEDIA_ROUTE_UNAVAILABLE") != NULL ||
                      strstr(response, "MEDIA_PROVIDER_RECONCILING") != NULL);
 }
 
@@ -2158,57 +2148,51 @@ void test_worker_exit_during_dialog_open_emits_loss_and_replacement_recovers(
     void) {
     char response[TEST_HTTP_RESPONSE_CAPACITY];
     kill_child(&g_worker);
-    TEST_ASSERT_TRUE(
-        spawn_probe_worker("ivr-worker-creating", "drop-before-ack"));
-    TEST_ASSERT_TRUE(wait_provider_ready());
-    TEST_ASSERT_EQUAL_INT(
-        202, submit_fault_dialog_start(
+    check_true(spawn_probe_worker("ivr-worker-creating", "drop-before-ack"));
+    check_true(wait_provider_ready());
+    check_equal((int)(submit_fault_dialog_start(
                  "command-fault-creating", "dialog-fault-creating", response,
-                 sizeof(response)));
+                 sizeof(response))), (int)(202));
     if (!wait_file_contains(g_wk_out,
                             "probe media received command-fault-creating",
                             100, 50)) {
         print_file_on_failure("room_service", g_rs_out);
         print_file_on_failure("creating_worker", g_wk_out);
-        TEST_FAIL_MESSAGE("creating worker did not receive dialog.open");
+        check(0, "%s", ("creating worker did not receive dialog.open"));
     }
-    TEST_ASSERT_TRUE(wait_iris_deliveries(0, 1));
+    check_true(wait_iris_deliveries(0, 1));
 
-    TEST_ASSERT_TRUE(
-        spawn_probe_worker("ivr-worker-replacement", "media-runtime"));
-    TEST_ASSERT_TRUE(wait_provider_ready());
-    TEST_ASSERT_EQUAL_INT(
-        202, submit_fault_dialog_start(
+    check_true(spawn_probe_worker("ivr-worker-replacement", "media-runtime"));
+    check_true(wait_provider_ready());
+    check_equal((int)(submit_fault_dialog_start(
                  "command-fault-replacement", "dialog-fault-replacement",
-                 response, sizeof(response)));
-    TEST_ASSERT_TRUE(wait_iris_deliveries(1, 1));
+                 response, sizeof(response))), (int)(202));
+    check_true(wait_iris_deliveries(1, 1));
 }
 
 void test_worker_exit_after_result_preserves_room_membership(void) {
     char response[8192];
 
     kill_child(&g_worker);
-    TEST_ASSERT_TRUE(spawn_probe_worker("ivr-worker-acked", "ack-exit"));
-    TEST_ASSERT_TRUE(wait_provider_ready());
-    TEST_ASSERT_EQUAL_INT(
-        202, submit_fault_dialog_start(
+    check_true(spawn_probe_worker("ivr-worker-acked", "ack-exit"));
+    check_true(wait_provider_ready());
+    check_equal((int)(submit_fault_dialog_start(
                  "command-fault-acked", "dialog-fault-acked", response,
-                 sizeof(response)));
+                 sizeof(response))), (int)(202));
     if (!wait_file_contains(g_wk_out,
                             "probe media completed command-fault-acked", 100,
                             50)) {
         print_file_on_failure("room_service", g_rs_out);
         print_file_on_failure("acked_worker", g_wk_out);
-        TEST_FAIL_MESSAGE("worker did not return dialog.open result");
+        check(0, "%s", ("worker did not return dialog.open result"));
     }
-    TEST_ASSERT_TRUE(wait_iris_deliveries(1, 1));
+    check_true(wait_iris_deliveries(1, 1));
     memset(response, 0, sizeof(response));
-    TEST_ASSERT_EQUAL_INT(
-        0, http_post_command(
+    check_equal((int)(http_post_command(
                "127.0.0.1", TEST_HTTP_PORT, TEST_CTRL_TOKEN,
                "{\"type\":\"get_room_state\",\"room_id\":\"room-42\"}",
-               response, sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "call-42"));
+               response, sizeof(response))), (int)(0));
+    check_not_null(strstr(response, "call-42"));
 }
 
 void test_room_service_restart_rebinds_active_worker_dialog(void) {
@@ -2219,13 +2203,12 @@ void test_room_service_restart_rebinds_active_worker_dialog(void) {
     int expected_page_calls_before_restart;
     int status = 0;
 
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-start",
                             TEST_PROCESS_START_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_TRUE(wait_iris_deliveries(1, 0));
-    TEST_ASSERT_TRUE(wait_file_contains(
+                            sizeof(response))), (int)(202));
+    check_true(wait_iris_deliveries(1, 0));
+    check_true(wait_file_contains(
         g_wk_out, "media runtime completed command-process-start",
         TEST_PROBE_LOG_ATTEMPTS, TEST_PROBE_LOG_POLL_MS));
 
@@ -2236,7 +2219,7 @@ void test_room_service_restart_rebinds_active_worker_dialog(void) {
     atomic_store_explicit(&g_iris.expected_resources_enabled, 0,
                           memory_order_release);
     kill_child(&g_room_service);
-    TEST_ASSERT_TRUE(spawn_room_service());
+    check_true(spawn_room_service());
 
     for (int attempt = 0; attempt < TEST_IRIS_DELIVERY_ATTEMPTS; ++attempt) {
         status = facade_request(
@@ -2252,9 +2235,9 @@ void test_room_service_restart_rebinds_active_worker_dialog(void) {
     if (status != 503) {
         print_file_on_failure("restarted_room_service", g_rs_out);
     }
-    TEST_ASSERT_EQUAL_INT(503, status);
-    TEST_ASSERT_NOT_NULL(strstr(response, "MEDIA_PROVIDER_RECONCILING"));
-    TEST_ASSERT_TRUE(wait_atomic_int_greater_than(
+    check_equal((int)(status), (int)(503));
+    check_not_null(strstr(response, "MEDIA_PROVIDER_RECONCILING"));
+    check_true(wait_atomic_int_greater_than(
         &g_iris.expected_lease_calls, expected_lease_calls_before_restart));
 
     atomic_store_explicit(&g_iris.expected_resources_enabled, 1,
@@ -2262,28 +2245,25 @@ void test_room_service_restart_rebinds_active_worker_dialog(void) {
     if (!wait_rebound_ready(response, sizeof(response))) {
         print_file_on_failure("restarted_room_service", g_rs_out);
         print_file_on_failure("active_worker", g_wk_out);
-        TEST_FAIL_MESSAGE("active dialog did not reach rebound READY state");
+        check(0, "%s", ("active dialog did not reach rebound READY state"));
     }
-    TEST_ASSERT_TRUE(wait_atomic_int_greater_than(
+    check_true(wait_atomic_int_greater_than(
         &g_iris.expected_page_calls, expected_page_calls_before_restart));
-    TEST_ASSERT_NOT_NULL(strstr(
+    check_not_null(strstr(
         response, "turbo_room_service_iris_reconcile_inventory_pages_total "));
 
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_TRUE(wait_iris_deliveries(2, 1));
-    TEST_ASSERT_TRUE(wait_file_contains(
+                            sizeof(response))), (int)(202));
+    check_true(wait_iris_deliveries(2, 1));
+    check_true(wait_file_contains(
         g_wk_out, "media runtime completed command-process-play",
         TEST_PROBE_LOG_ATTEMPTS, TEST_PROBE_LOG_POLL_MS));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.completion_valid,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.playback_event_valid,
-                                memory_order_acquire));
+    check_equal((int)(atomic_load_explicit(&g_iris.completion_valid,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.playback_event_valid,
+                                memory_order_acquire)), (int)(1));
 }
 
 static void run_orphan_close_crash_window(const char *mode,
@@ -2295,11 +2275,10 @@ static void run_orphan_close_crash_window(const char *mode,
 
     kill_child(&g_worker);
     remove(g_orphan_resume_path);
-    TEST_ASSERT_EQUAL_INT(
-        0, set_environment("PROBE_ORPHAN_RESUME_PATH",
-                           g_orphan_resume_path));
-    TEST_ASSERT_TRUE(spawn_probe_worker("ivr-worker-dispatch", mode));
-    TEST_ASSERT_TRUE(wait_provider_ready());
+    check_equal((int)(set_environment("PROBE_ORPHAN_RESUME_PATH",
+                           g_orphan_resume_path)), (int)(0));
+    check_true(spawn_probe_worker("ivr-worker-dispatch", mode));
+    check_true(wait_provider_ready());
 
     completion_target =
         atomic_load_explicit(&g_iris.completion_calls,
@@ -2310,54 +2289,54 @@ static void run_orphan_close_crash_window(const char *mode,
             "command-process-start", TEST_PROCESS_START_COMMAND, response,
             sizeof(response));
         if (start_status == 202) break;
-        TEST_ASSERT_TRUE(start_status == 503 || start_status == 425);
+        check_true(start_status == 503 || start_status == 425);
         proc_sleep(TEST_IRIS_DELIVERY_POLL_MS);
     }
     if (start_status != 202) {
         print_file_on_failure("orphan_start_room_service", g_rs_out);
         print_file_on_failure("orphan_start_worker", g_wk_out);
     }
-    TEST_ASSERT_EQUAL_INT(202, start_status);
-    TEST_ASSERT_TRUE(wait_atomic_int_at_least(
+    check_equal((int)(start_status), (int)(202));
+    check_true(wait_atomic_int_at_least(
         &g_iris.completion_calls, completion_target,
         TEST_IRIS_DELIVERY_ATTEMPTS, TEST_IRIS_DELIVERY_POLL_MS));
-    TEST_ASSERT_TRUE(wait_file_contains(
+    check_true(wait_file_contains(
         g_wk_out, "media runtime completed command-process-start",
         TEST_PROBE_LOG_ATTEMPTS, TEST_PROBE_LOG_POLL_MS));
 
     atomic_store_explicit(&g_iris.expected_resources_empty, 1,
                           memory_order_release);
     kill_child(&g_room_service);
-    TEST_ASSERT_TRUE(spawn_room_service());
+    check_true(spawn_room_service());
     if (!wait_file_contains(g_wk_out, phase_needle,
                             TEST_IRIS_DELIVERY_ATTEMPTS,
                             TEST_IRIS_DELIVERY_POLL_MS)) {
         print_file_on_failure("orphan_window_room_service", g_rs_out);
         print_file_on_failure("orphan_window_worker", g_wk_out);
-        TEST_FAIL_MESSAGE("orphan close did not enter crash window");
+        check(0, "%s", ("orphan close did not enter crash window"));
     }
 
     /* The action is deliberately paused before its side effect, or after the
        side effect but before its result. Kill only RoomService; the worker and
        its media observation remain the restart facts. */
     kill_child(&g_room_service);
-    TEST_ASSERT_TRUE(create_resume_marker());
-    TEST_ASSERT_TRUE(spawn_room_service());
+    check_true(create_resume_marker());
+    check_true(spawn_room_service());
     if (!wait_reconcile_ready(response, sizeof(response))) {
         print_file_on_failure("restarted_orphan_room_service", g_rs_out);
         print_file_on_failure("orphan_worker", g_wk_out);
-        TEST_FAIL_MESSAGE("orphan crash window did not converge to READY");
+        check(0, "%s", ("orphan crash window did not converge to READY"));
     }
     if (expect_fenced_retry) {
-        TEST_ASSERT_TRUE(wait_file_contains(
+        check_true(wait_file_contains(
             g_wk_out, "probe orphan close retry stable=0",
             TEST_IRIS_DELIVERY_ATTEMPTS, TEST_IRIS_DELIVERY_POLL_MS));
     }
-    TEST_ASSERT_TRUE(wait_file_contains(
+    check_true(wait_file_contains(
         g_wk_out, "probe media destroy count=1",
         TEST_IRIS_DELIVERY_ATTEMPTS, TEST_IRIS_DELIVERY_POLL_MS));
     proc_sleep(500);
-    TEST_ASSERT_FALSE(file_contains(g_wk_out,
+    check_false(file_contains(g_wk_out,
                                     "probe media destroy count=2"));
 }
 
@@ -2382,24 +2361,21 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
     kill_child(&g_worker);
     kill_child(&g_room_service);
     g_router_bind_port = TEST_ROUTER_BACKEND_PORT;
-    TEST_ASSERT_TRUE(write_room_service_config(0));
-    TEST_ASSERT_EQUAL_INT(
-        0, test_iris_proxy_start(&g_fmq_proxy, TEST_ROUTER_PORT,
-                                 TEST_ROUTER_BACKEND_PORT));
-    TEST_ASSERT_TRUE(spawn_room_service());
-    TEST_ASSERT_TRUE(
-        spawn_probe_worker("ivr-worker-dispatch", "media-runtime"));
-    TEST_ASSERT_TRUE(wait_provider_ready());
+    check_true(write_room_service_config(0));
+    check_equal((int)(test_iris_proxy_start(&g_fmq_proxy, TEST_ROUTER_PORT,
+                                 TEST_ROUTER_BACKEND_PORT)), (int)(0));
+    check_true(spawn_room_service());
+    check_true(spawn_probe_worker("ivr-worker-dispatch", "media-runtime"));
+    check_true(wait_provider_ready());
 
     completion_target =
         atomic_load_explicit(&g_iris.completion_calls,
                              memory_order_acquire) + 1;
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-start",
                             TEST_PROCESS_START_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_TRUE(wait_atomic_int_at_least(
+                            sizeof(response))), (int)(202));
+    check_true(wait_atomic_int_at_least(
         &g_iris.completion_calls, completion_target,
         TEST_IRIS_DELIVERY_ATTEMPTS, TEST_IRIS_DELIVERY_POLL_MS));
 
@@ -2412,8 +2388,8 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
             sizeof(response));
         if (partition_status != 0) break;
     }
-    TEST_ASSERT_EQUAL_INT(503, partition_status);
-    TEST_ASSERT_FALSE(file_contains(g_wk_out, "probe media play count=1"));
+    check_equal((int)(partition_status), (int)(503));
+    check_false(file_contains(g_wk_out, "probe media play count=1"));
 
     test_iris_proxy_set_available(&g_fmq_proxy, 1);
     /* FlowMQ may already be in the 8-16 second jittered reconnect step after
@@ -2423,7 +2399,7 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
             TEST_FMQ_PARTITION_RECOVERY_ATTEMPTS)) {
         print_file_on_failure("flowmq_partition_room_service", g_rs_out);
         print_file_on_failure("flowmq_partition_worker", g_wk_out);
-        TEST_FAIL_MESSAGE("FlowMQ worker partition did not rebind dialog");
+        check(0, "%s", ("FlowMQ worker partition did not rebind dialog"));
     }
 
     completion_target =
@@ -2431,38 +2407,33 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
                              memory_order_acquire) + 1;
     event_target = atomic_load_explicit(&g_iris.event_calls,
                                         memory_order_acquire) + 1;
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_TRUE(wait_atomic_int_at_least(
+                            sizeof(response))), (int)(202));
+    check_true(wait_atomic_int_at_least(
         &g_iris.completion_calls, completion_target,
         TEST_IRIS_DELIVERY_ATTEMPTS, TEST_IRIS_DELIVERY_POLL_MS));
-    TEST_ASSERT_TRUE(wait_atomic_int_at_least(
+    check_true(wait_atomic_int_at_least(
         &g_iris.event_calls, event_target, TEST_IRIS_DELIVERY_ATTEMPTS,
         TEST_IRIS_DELIVERY_POLL_MS));
-    TEST_ASSERT_TRUE(wait_file_contains(
+    check_true(wait_file_contains(
         g_wk_out, "probe media play count=1", TEST_PROBE_LOG_ATTEMPTS,
         TEST_PROBE_LOG_POLL_MS));
 
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"disposition\":\"terminal\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"terminalStatus\":\"succeeded\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"duplicate\":true"));
+                            sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"disposition\":\"terminal\""));
+    check_not_null(strstr(response, "\"terminalStatus\":\"succeeded\""));
+    check_not_null(strstr(response, "\"duplicate\":true"));
     proc_sleep(500u);
-    TEST_ASSERT_FALSE(file_contains(g_wk_out, "probe media play count=2"));
-    TEST_ASSERT_EQUAL_INT(
-        completion_target,
-        atomic_load_explicit(&g_iris.completion_calls,
-                             memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(event_target,
-                          atomic_load_explicit(&g_iris.event_calls,
-                                               memory_order_acquire));
+    check_false(file_contains(g_wk_out, "probe media play count=2"));
+    check_equal((int)(atomic_load_explicit(&g_iris.completion_calls,
+                             memory_order_acquire)), (int)(completion_target));
+    check_equal((int)(atomic_load_explicit(&g_iris.event_calls,
+                                               memory_order_acquire)), (int)(event_target));
 }
 
 void test_real_worker_recovers_live_transport_and_releases_media_resources(void) {
@@ -2479,34 +2450,33 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
     kill_child(&g_worker);
     kill_child(&g_room_service);
     g_router_bind_port = TEST_ROUTER_BACKEND_PORT;
-    TEST_ASSERT_TRUE(write_room_service_config(1));
-    TEST_ASSERT_EQUAL_INT(
-        0, test_iris_proxy_start(&g_fmq_proxy, TEST_ROUTER_PORT,
-                                 TEST_ROUTER_BACKEND_PORT));
-    TEST_ASSERT_TRUE(spawn_room_service());
+    check_true(write_room_service_config(1));
+    check_equal((int)(test_iris_proxy_start(&g_fmq_proxy, TEST_ROUTER_PORT,
+                                 TEST_ROUTER_BACKEND_PORT)), (int)(0));
+    check_true(spawn_room_service());
     if (!provision_room_service_room()) {
         print_file_on_failure("secure_room_service", g_rs_out);
-        TEST_FAIL_MESSAGE("secure RoomService did not accept control commands");
+        check(0, "%s", ("secure RoomService did not accept control commands"));
     }
-    TEST_ASSERT_TRUE(wait_provider_ready());
+    check_true(wait_provider_ready());
 
-    TEST_ASSERT_TRUE(write_sfu_config());
-    TEST_ASSERT_TRUE(spawn_sfu());
-    TEST_ASSERT_TRUE(provision_sfu_room());
-    TEST_ASSERT_TRUE(start_sfu_caller_transport());
-    TEST_ASSERT_TRUE(provision_sfu_caller_subscription());
-    TEST_ASSERT_TRUE(spawn_real_worker());
+    check_true(write_sfu_config());
+    check_true(spawn_sfu());
+    check_true(provision_sfu_room());
+    check_true(start_sfu_caller_transport());
+    check_true(provision_sfu_caller_subscription());
+    check_true(spawn_real_worker());
     if (!wait_file_contains(g_wk_out, "worker.sync acknowledged", 200, 50)) {
         print_file_on_failure("secure_room_service", g_rs_out);
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("live_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("real ivr_worker did not become ready over mTLS");
+        check(0, "%s", ("real ivr_worker did not become ready over mTLS"));
     }
-    TEST_ASSERT_TRUE(wait_real_worker_ready());
+    check_true(wait_real_worker_ready());
     /* A successful sync makes the worker locally ready; the next bounded
        heartbeat publishes that state to the RoomService scheduler. */
     proc_sleep(TEST_REAL_WORKER_READY_PROPAGATION_MS);
-    TEST_ASSERT_TRUE(wait_provider_ready());
+    check_true(wait_provider_ready());
 
     {
         int status = facade_request(
@@ -2520,48 +2490,44 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
             print_file_on_failure("real_ivr_worker", g_wk_out);
             print_file_on_failure("live_sfu", g_sfu_out);
         }
-        TEST_ASSERT_EQUAL_INT(202, status);
+        check_equal((int)(status), (int)(202));
     }
-    TEST_ASSERT_TRUE(wait_iris_deliveries(1, 0));
+    check_true(wait_iris_deliveries(1, 0));
     if (!wait_sfu_room_counts(3u, 3u)) {
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("live_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("initial WHIP/WHEP sessions did not reach SFU");
+        check(0, "%s", ("initial WHIP/WHEP sessions did not reach SFU"));
     }
-    TEST_ASSERT_TRUE(sfu_media_participant_exists("call-42"));
-    TEST_ASSERT_TRUE(sfu_media_participant_exists("call-42-rx"));
-    TEST_ASSERT_TRUE(send_sfu_caller_audio());
+    check_true(sfu_media_participant_exists("call-42"));
+    check_true(sfu_media_participant_exists("call-42-rx"));
+    check_true(send_sfu_caller_audio());
     if (!wait_real_worker_media_links(2u)) {
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("live_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("worker WHIP/WHEP links did not both connect");
+        check(0, "%s", ("worker WHIP/WHEP links did not both connect"));
     }
 
-    TEST_ASSERT_TRUE(read_sfu_room_packet_count(&packets_before_playback));
+    check_true(read_sfu_room_packet_count(&packets_before_playback));
     completion_target =
         atomic_load_explicit(&g_iris.completion_calls, memory_order_acquire) + 1;
     event_target =
         atomic_load_explicit(&g_iris.event_calls, memory_order_acquire) + 1;
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_TRUE(wait_atomic_int_at_least(
+                            sizeof(response))), (int)(202));
+    check_true(wait_atomic_int_at_least(
         &g_iris.completion_calls, completion_target,
         TEST_IRIS_DELIVERY_ATTEMPTS, TEST_IRIS_DELIVERY_POLL_MS));
-    TEST_ASSERT_TRUE(wait_atomic_int_at_least(
+    check_true(wait_atomic_int_at_least(
         &g_iris.event_calls, event_target, TEST_IRIS_DELIVERY_ATTEMPTS,
         TEST_IRIS_DELIVERY_POLL_MS));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.playback_event_valid,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.speech_tts_calls,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.speech_tts_valid,
-                                memory_order_acquire));
+    check_equal((int)(atomic_load_explicit(&g_iris.playback_event_valid,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.speech_tts_calls,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.speech_tts_valid,
+                                memory_order_acquire)), (int)(1));
     if (!wait_sfu_room_packet_count_greater_than(packets_before_playback)) {
         char worker_metrics[16384] = {0};
         char room_stats[4096] = {0};
@@ -2587,36 +2553,30 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
                 participant_stats);
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("live_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("remote TTS PCM did not reach the live SFU");
+        check(0, "%s", ("remote TTS PCM did not reach the live SFU"));
     }
-    TEST_ASSERT_TRUE(read_real_worker_metric(
+    check_true(read_real_worker_metric(
         "turbo_ivr_worker_tts_provider_duration_seconds_count",
         &tts_observations));
-    TEST_ASSERT_EQUAL_UINT64(1u, tts_observations);
+    check_equal((uint64_t)(tts_observations), (uint64_t)(1u));
 
     /* The durable ledger must replay the terminal outcome without repeating
        the remote speech side effect or emitting another terminal fact. */
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"disposition\":\"terminal\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"terminalStatus\":\"succeeded\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"duplicate\":true"));
+                            sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"disposition\":\"terminal\""));
+    check_not_null(strstr(response, "\"terminalStatus\":\"succeeded\""));
+    check_not_null(strstr(response, "\"duplicate\":true"));
     proc_sleep(500u);
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.speech_tts_calls,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        completion_target,
-        atomic_load_explicit(&g_iris.completion_calls,
-                             memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        event_target,
-        atomic_load_explicit(&g_iris.event_calls, memory_order_acquire));
+    check_equal((int)(atomic_load_explicit(&g_iris.speech_tts_calls,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.completion_calls,
+                             memory_order_acquire)), (int)(completion_target));
+    check_equal((int)(atomic_load_explicit(&g_iris.event_calls, memory_order_acquire)), (int)(event_target));
 
-    TEST_ASSERT_TRUE(disconnect_sfu_media_participant("call-42-rx"));
+    check_true(disconnect_sfu_media_participant("call-42-rx"));
     if (!wait_atomic_int_at_least(
             &g_iris.rtc_disconnected_calls, 1,
             TEST_RTC_TRANSITION_ATTEMPTS, TEST_RTC_TRANSITION_POLL_MS)) {
@@ -2632,7 +2592,7 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
         print_file_on_failure("secure_room_service", g_rs_out);
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("live_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("live media fault did not reach Iris as rtc.disconnected");
+        check(0, "%s", ("live media fault did not reach Iris as rtc.disconnected"));
     }
     if (!wait_atomic_int_at_least(
             &g_iris.rtc_reconnected_calls, 1,
@@ -2640,24 +2600,19 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
         print_file_on_failure("secure_room_service", g_rs_out);
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("live_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("live media retry did not reach Iris as rtc.reconnected");
+        check(0, "%s", ("live media retry did not reach Iris as rtc.reconnected"));
     }
-    TEST_ASSERT_TRUE(wait_sfu_room_counts(3u, 3u));
+    check_true(wait_sfu_room_counts(3u, 3u));
     proc_sleep(500);
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.rtc_event_valid,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.rtc_disconnected_calls,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.rtc_reconnected_calls,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        0, atomic_load_explicit(&g_iris.rtc_retry_exhausted_calls,
-                                memory_order_acquire));
-    TEST_ASSERT_TRUE(
-        atomic_load_explicit(&g_iris.rtc_reconnected_generation,
+    check_equal((int)(atomic_load_explicit(&g_iris.rtc_event_valid,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.rtc_disconnected_calls,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.rtc_reconnected_calls,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.rtc_retry_exhausted_calls,
+                                memory_order_acquire)), (int)(0));
+    check_true(atomic_load_explicit(&g_iris.rtc_reconnected_generation,
                              memory_order_acquire) >
         atomic_load_explicit(&g_iris.rtc_disconnected_generation,
                              memory_order_acquire));
@@ -2668,9 +2623,9 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
        resources remain active. The worker supervisor owns recovery of its
        WHIP/WHEP links; the caller fixture is explicitly recreated with the
        same stable call identity after the new SFU is ready. */
-    TEST_ASSERT_TRUE(stop_sfu_caller_transport());
-    TEST_ASSERT_TRUE(wait_sfu_room_counts(2u, 2u));
-    TEST_ASSERT_TRUE(read_room_service_metric(
+    check_true(stop_sfu_caller_transport());
+    check_true(wait_sfu_room_counts(2u, 2u));
+    check_true(read_room_service_metric(
         "turbo_room_service_iris_outbox_persisted_total",
         &outbox_persisted_before_partition));
     disconnected_before_partition = atomic_load_explicit(
@@ -2685,11 +2640,10 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
             TEST_SFU_PROCESS_LOSS_ATTEMPTS)) {
         print_file_on_failure("secure_room_service", g_rs_out);
         print_file_on_failure("real_ivr_worker", g_wk_out);
-        TEST_FAIL_MESSAGE(
-            "whole-SFU loss did not persist while Iris was unavailable");
+        check(0, "%s", ("whole-SFU loss did not persist while Iris was unavailable"));
     }
     test_iris_proxy_set_available(&g_iris_proxy, 1);
-    TEST_ASSERT_EQUAL_INT(404, probe_restarted_iris());
+    check_equal((int)(probe_restarted_iris()), (int)(404));
     atomic_store_explicit(&g_iris.expected_resources_enabled, 1,
                           memory_order_release);
     if (!wait_atomic_int_at_least(
@@ -2715,15 +2669,14 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
         print_room_service_iris_outbox_metrics();
         print_file_on_failure("secure_room_service", g_rs_out);
         print_file_on_failure("real_ivr_worker", g_wk_out);
-        TEST_FAIL_MESSAGE(
-            "durable whole-SFU disconnect was not delivered after Iris restart");
+        check(0, "%s", ("durable whole-SFU disconnect was not delivered after Iris restart"));
     }
 
-    TEST_ASSERT_TRUE(spawn_sfu());
-    TEST_ASSERT_TRUE(provision_sfu_room());
-    TEST_ASSERT_TRUE(start_sfu_caller_transport());
-    TEST_ASSERT_TRUE(provision_sfu_caller_subscription());
-    TEST_ASSERT_TRUE(send_sfu_caller_audio());
+    check_true(spawn_sfu());
+    check_true(provision_sfu_room());
+    check_true(start_sfu_caller_transport());
+    check_true(provision_sfu_caller_subscription());
+    check_true(send_sfu_caller_audio());
     if (!wait_atomic_int_at_least(
             &g_iris.rtc_reconnected_calls, reconnected_before_partition + 1,
             TEST_RTC_TRANSITION_ATTEMPTS, TEST_RTC_TRANSITION_POLL_MS)) {
@@ -2754,30 +2707,22 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
         print_file_on_failure("secure_room_service", g_rs_out);
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("restarted_live_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("whole SFU restart did not reach Iris as rtc.reconnected");
+        check(0, "%s", ("whole SFU restart did not reach Iris as rtc.reconnected"));
     }
-    TEST_ASSERT_TRUE(wait_real_worker_media_links(2u));
-    TEST_ASSERT_TRUE(wait_sfu_room_counts(3u, 3u));
-    TEST_ASSERT_TRUE(sfu_media_participant_exists("call-42"));
-    TEST_ASSERT_TRUE(sfu_media_participant_exists("call-42-rx"));
+    check_true(wait_real_worker_media_links(2u));
+    check_true(wait_sfu_room_counts(3u, 3u));
+    check_true(sfu_media_participant_exists("call-42"));
+    check_true(sfu_media_participant_exists("call-42-rx"));
     proc_sleep(500);
-    TEST_ASSERT_EQUAL_INT(
-        disconnected_before_partition + 1,
-        atomic_load_explicit(&g_iris.rtc_disconnected_calls,
-                             memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        reconnected_before_partition + 1,
-        atomic_load_explicit(&g_iris.rtc_reconnected_calls,
-                             memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        0, atomic_load_explicit(&g_iris.rtc_retry_exhausted_calls,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_UINT64(
-        participant_recovery_generation,
-        atomic_load_explicit(&g_iris.rtc_disconnected_generation,
-                             memory_order_acquire));
-    TEST_ASSERT_TRUE(
-        atomic_load_explicit(&g_iris.rtc_reconnected_generation,
+    check_equal((int)(atomic_load_explicit(&g_iris.rtc_disconnected_calls,
+                             memory_order_acquire)), (int)(disconnected_before_partition + 1));
+    check_equal((int)(atomic_load_explicit(&g_iris.rtc_reconnected_calls,
+                             memory_order_acquire)), (int)(reconnected_before_partition + 1));
+    check_equal((int)(atomic_load_explicit(&g_iris.rtc_retry_exhausted_calls,
+                                memory_order_acquire)), (int)(0));
+    check_equal((uint64_t)(atomic_load_explicit(&g_iris.rtc_disconnected_generation,
+                             memory_order_acquire)), (uint64_t)(participant_recovery_generation));
+    check_true(atomic_load_explicit(&g_iris.rtc_reconnected_generation,
                              memory_order_acquire) >
         atomic_load_explicit(&g_iris.rtc_disconnected_generation,
                              memory_order_acquire));
@@ -2786,7 +2731,7 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
        active slot remains worker-owned; FlowMQ reconnect advances its epoch,
        and exact expected/inventory rebind must finish before READY. */
     kill_child(&g_room_service);
-    TEST_ASSERT_TRUE(spawn_room_service());
+    check_true(spawn_room_service());
     if (!wait_rebound_ready_with_attempts(
             response, sizeof(response),
             TEST_FMQ_PARTITION_RECOVERY_ATTEMPTS)) {
@@ -2794,8 +2739,7 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
                 response);
         print_file_on_failure("whole_sfu_restarted_room_service", g_rs_out);
         print_file_on_failure("whole_sfu_active_worker", g_wk_out);
-        TEST_FAIL_MESSAGE(
-            "recovered whole-SFU dialog did not reconcile after RoomService restart");
+        check(0, "%s", ("recovered whole-SFU dialog did not reconcile after RoomService restart"));
     }
 
     event_target =
@@ -2803,33 +2747,31 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
     (void)http_request_raw("127.0.0.1", TEST_REAL_WORKER_HEALTH_PORT,
                            "POST", "/drain", NULL, NULL, response,
                            sizeof(response));
-    TEST_ASSERT_NOT_NULL(strstr(response, " 202 "));
-    TEST_ASSERT_TRUE(wait_child_exit(&g_worker, 30000u));
+    check_not_null(strstr(response, " 202 "));
+    check_true(wait_child_exit(&g_worker, 30000u));
     if (!wait_file_contains(g_wk_out, "ivr_worker: draining",
                             TEST_IRIS_DELIVERY_ATTEMPTS,
                             TEST_IRIS_DELIVERY_POLL_MS)) {
         print_file_on_failure("worker_drain", g_wk_out);
         print_file_on_failure("worker_drain_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("worker exited without the graceful drain marker");
+        check(0, "%s", ("worker exited without the graceful drain marker"));
     }
-    TEST_ASSERT_TRUE(wait_atomic_int_at_least(
+    check_true(wait_atomic_int_at_least(
         &g_iris.event_calls, event_target, TEST_IRIS_DELIVERY_ATTEMPTS,
         TEST_IRIS_DELIVERY_POLL_MS));
-    TEST_ASSERT_NOT_NULL(strstr(g_iris.event_body,
+    check_not_null(strstr(g_iris.event_body,
                                 "provider.media.worker_lost"));
     if (!wait_sfu_room_counts(1u, 1u)) {
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("live_sfu", g_sfu_out);
-        TEST_FAIL_MESSAGE("worker drain did not release live SFU resources");
+        check(0, "%s", ("worker drain did not release live SFU resources"));
     }
     /* Worker drain may already remove the last subscription and the source
        track. The transport destroy below is idempotent; 0/0 is the fact. */
     (void)stop_sfu_caller_transport();
-    TEST_ASSERT_TRUE(wait_sfu_room_counts(0u, 0u));
+    check_true(wait_sfu_room_counts(0u, 0u));
     proc_sleep(TEST_REAL_WORKER_READY_PROPAGATION_MS);
-    TEST_ASSERT_EQUAL_INT(
-        event_target,
-        atomic_load_explicit(&g_iris.event_calls, memory_order_acquire));
+    check_equal((int)(atomic_load_explicit(&g_iris.event_calls, memory_order_acquire)), (int)(event_target));
 }
 
 void test_iris_http_flowmq_tls_completion_and_event(void) {
@@ -3015,96 +2957,80 @@ void test_iris_http_flowmq_tls_completion_and_event(void) {
     char response[TEST_HTTP_RESPONSE_CAPACITY];
     int completed = 0;
 
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-create",
-                            create_room_command, response, sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"terminalStatus\":\"succeeded\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"eventType\":\"provider.conference.created\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"duplicate\":false"));
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+                            create_room_command, response, sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"terminalStatus\":\"succeeded\""));
+    check_not_null(strstr(response, "\"eventType\":\"provider.conference.created\""));
+    check_not_null(strstr(response, "\"duplicate\":false"));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-create",
                             retry_create_room_command, response,
-                            sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"duplicate\":true"));
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+                            sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"duplicate\":true"));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-join",
-                            join_room_command, response, sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"eventType\":\"provider.connection.joined\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"callId\":\"call-process\""));
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+                            join_room_command, response, sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"eventType\":\"provider.connection.joined\""));
+    check_not_null(strstr(response, "\"callId\":\"call-process\""));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN,
                             "command-room-destroy-nonempty",
                             destroy_nonempty_room_command, response,
-                            sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"terminalStatus\":\"failed\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"code\":\"ROOM_NOT_EMPTY\""));
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+                            sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"terminalStatus\":\"failed\""));
+    check_not_null(strstr(response, "\"code\":\"ROOM_NOT_EMPTY\""));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-unjoin",
-                            unjoin_room_command, response, sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"eventType\":\"provider.connection.unjoined\""));
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+                            unjoin_room_command, response, sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"eventType\":\"provider.connection.unjoined\""));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-unjoin-again",
                             unjoin_room_again_command, response,
-                            sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"terminalStatus\":\"succeeded\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"alreadyAbsent\":true"));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"callGeneration\":1"));
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+                            sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"terminalStatus\":\"succeeded\""));
+    check_not_null(strstr(response, "\"alreadyAbsent\":true"));
+    check_not_null(strstr(response, "\"callGeneration\":1"));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-destroy",
-                            destroy_room_command, response, sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"eventType\":\"provider.conference.destroyed\""));
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+                            destroy_room_command, response, sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"eventType\":\"provider.conference.destroyed\""));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-destroy-again",
                             destroy_room_again_command, response,
-                            sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"terminalStatus\":\"succeeded\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"alreadyAbsent\":true"));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"roomGeneration\":1"));
+                            sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"terminalStatus\":\"succeeded\""));
+    check_not_null(strstr(response, "\"alreadyAbsent\":true"));
+    check_not_null(strstr(response, "\"roomGeneration\":1"));
 
-    TEST_ASSERT_EQUAL_INT(
-        401, facade_request(HTTP_POST, "/provider/v1/commands", NULL,
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands", NULL,
                             "command-process-start", TEST_PROCESS_START_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_EQUAL_INT(
-        401, facade_request(HTTP_POST, "/provider/v1/commands", "wrong-token",
+                            sizeof(response))), (int)(401));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands", "wrong-token",
                             "command-process-start", TEST_PROCESS_START_COMMAND, response,
-                            sizeof(response)));
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+                            sizeof(response))), (int)(401));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-start",
-                            TEST_PROCESS_START_COMMAND, response, sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"disposition\":\"accepted\""));
-    TEST_ASSERT_NOT_NULL(
-        strstr(response, "\"mediaWorkerId\":\"ivr-worker-dispatch\""));
+                            TEST_PROCESS_START_COMMAND, response, sizeof(response))), (int)(202));
+    check_not_null(strstr(response, "\"disposition\":\"accepted\""));
+    check_not_null(strstr(response, "\"mediaWorkerId\":\"ivr-worker-dispatch\""));
 
-    TEST_ASSERT_TRUE(wait_iris_deliveries(1, 0));
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_true(wait_iris_deliveries(1, 0));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
-                            TEST_PROCESS_PLAY_COMMAND, response, sizeof(response)));
-    TEST_ASSERT_TRUE(wait_iris_deliveries(2, 1));
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+                            TEST_PROCESS_PLAY_COMMAND, response, sizeof(response))), (int)(202));
+    check_true(wait_iris_deliveries(2, 1));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-collect",
-                            collect_command, response, sizeof(response)));
-    TEST_ASSERT_TRUE(wait_iris_deliveries(3, 3));
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+                            collect_command, response, sizeof(response))), (int)(202));
+    check_true(wait_iris_deliveries(3, 3));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-cancel",
-                            cancel_command, response, sizeof(response)));
-    TEST_ASSERT_TRUE(wait_iris_deliveries(4, 3));
-    TEST_ASSERT_EQUAL_INT(
-        202, facade_request(HTTP_POST, "/provider/v1/commands",
+                            cancel_command, response, sizeof(response))), (int)(202));
+    check_true(wait_iris_deliveries(4, 3));
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-close",
-                            close_command, response, sizeof(response)));
+                            close_command, response, sizeof(response))), (int)(202));
     completed = wait_iris_deliveries(5, 3);
     if (!completed) {
         char metrics[TEST_HTTP_RESPONSE_CAPACITY];
@@ -3128,55 +3054,47 @@ void test_iris_http_flowmq_tls_completion_and_event(void) {
         print_file_on_failure("room_service", g_rs_out);
         print_file_on_failure("dispatch_worker_probe", g_wk_out);
     }
-    TEST_ASSERT_TRUE(completed);
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.completion_valid,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.event_valid, memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.playback_event_valid,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.asr_event_valid,
-                                memory_order_acquire));
-    TEST_ASSERT_EQUAL_INT(
-        1, atomic_load_explicit(&g_iris.dtmf_event_valid,
-                                memory_order_acquire));
-    TEST_ASSERT_TRUE(
-        wait_file_contains(g_wk_out,
+    check_true(completed);
+    check_equal((int)(atomic_load_explicit(&g_iris.completion_valid,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.event_valid, memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.playback_event_valid,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.asr_event_valid,
+                                memory_order_acquire)), (int)(1));
+    check_equal((int)(atomic_load_explicit(&g_iris.dtmf_event_valid,
+                                memory_order_acquire)), (int)(1));
+    check_true(wait_file_contains(g_wk_out,
                            "media runtime completed command-process-close",
                            TEST_PROBE_LOG_ATTEMPTS,
                            TEST_PROBE_LOG_POLL_MS));
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN,
                             "command-process-close-again",
                             close_again_command, response,
-                            sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"terminalStatus\":\"succeeded\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"eventType\":\"provider.dialog.terminated\""));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"alreadyAbsent\":true"));
-    TEST_ASSERT_NOT_NULL(strstr(response, "\"duplicate\":false"));
+                            sizeof(response))), (int)(200));
+    check_not_null(strstr(response, "\"terminalStatus\":\"succeeded\""));
+    check_not_null(strstr(response, "\"eventType\":\"provider.dialog.terminated\""));
+    check_not_null(strstr(response, "\"alreadyAbsent\":true"));
+    check_not_null(strstr(response, "\"duplicate\":false"));
 
-    TEST_ASSERT_EQUAL_INT(
-        200, facade_request(HTTP_GET, "/metrics", NULL, NULL, NULL, response,
-                            sizeof(response)));
-    TEST_ASSERT_NOT_NULL(strstr(
+    check_equal((int)(facade_request(HTTP_GET, "/metrics", NULL, NULL, NULL, response,
+                            sizeof(response))), (int)(200));
+    check_not_null(strstr(
         response, "turbo_room_service_iris_completion_success_total 5\n"));
-    TEST_ASSERT_NOT_NULL(strstr(
+    check_not_null(strstr(
         response, "turbo_room_service_iris_event_success_total 3\n"));
-    TEST_ASSERT_NOT_NULL(strstr(
+    check_not_null(strstr(
         response, "turbo_room_service_iris_outbox_dead_records 0\n"));
-    TEST_ASSERT_NOT_NULL(strstr(
+    check_not_null(strstr(
         response, "turbo_room_service_iris_reconcile_state 5\n"));
-    TEST_ASSERT_NOT_NULL(strstr(
+    check_not_null(strstr(
         response,
         "turbo_room_service_iris_reconcile_accepting_commands 1\n"));
-    TEST_ASSERT_NOT_NULL(strstr(
+    check_not_null(strstr(
         response,
         "turbo_room_service_iris_reconcile_expected_fetches_total "));
-    TEST_ASSERT_NOT_NULL(strstr(
+    check_not_null(strstr(
         response,
         "turbo_room_service_iris_reconcile_inventory_pages_total "));
 }
@@ -3185,16 +3103,13 @@ spec("test_ivr_dispatch_processes") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_worker_exit_before_dispatch_rejects_without_reservation);
-  TT_TEST(
-      test_worker_exit_during_dialog_open_emits_loss_and_replacement_recovers);
-  TT_TEST(test_worker_exit_after_result_preserves_room_membership);
-  TT_TEST(test_room_service_restart_rebinds_active_worker_dialog);
-  TT_TEST(
-      test_reconcile_orphan_close_recovers_when_room_service_dies_before_action);
-  TT_TEST(
-      test_reconcile_orphan_close_recovers_when_room_service_dies_after_action);
-  TT_TEST(test_flowmq_worker_partition_rebinds_and_deduplicates_media_command);
-  TT_TEST(test_real_worker_recovers_live_transport_and_releases_media_resources);
-  TT_TEST(test_iris_http_flowmq_tls_completion_and_event);
+  it("test_worker_exit_before_dispatch_rejects_without_reservation") { test_worker_exit_before_dispatch_rejects_without_reservation(); };
+  it("test_worker_exit_during_dialog_open_emits_loss_and_replacement_recovers") { test_worker_exit_during_dialog_open_emits_loss_and_replacement_recovers(); };
+  it("test_worker_exit_after_result_preserves_room_membership") { test_worker_exit_after_result_preserves_room_membership(); };
+  it("test_room_service_restart_rebinds_active_worker_dialog") { test_room_service_restart_rebinds_active_worker_dialog(); };
+  it("test_reconcile_orphan_close_recovers_when_room_service_dies_before_action") { test_reconcile_orphan_close_recovers_when_room_service_dies_before_action(); };
+  it("test_reconcile_orphan_close_recovers_when_room_service_dies_after_action") { test_reconcile_orphan_close_recovers_when_room_service_dies_after_action(); };
+  it("test_flowmq_worker_partition_rebinds_and_deduplicates_media_command") { test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(); };
+  it("test_real_worker_recovers_live_transport_and_releases_media_resources") { test_real_worker_recovers_live_transport_and_releases_media_resources(); };
+  it("test_iris_http_flowmq_tls_completion_and_event") { test_iris_http_flowmq_tls_completion_and_event(); };
 }

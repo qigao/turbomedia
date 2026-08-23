@@ -10,4 +10,4 @@ target_include_directories(
 target_link_libraries(
   turbo_media_transport
   PUBLIC TurboNet::CoroNet TurboParser::Parser TurboHttp::HttpClient
-  PRIVATE TurboUtils::Core Threads::Threads)
+  PRIVATE TurboUtils::Core TurboUtils::STL Threads::Threads)

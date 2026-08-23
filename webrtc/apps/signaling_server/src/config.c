@@ -231,7 +231,7 @@ static int config_table_keys_valid(
             }
         }
         if (!found) {
-            TLOG_ERROR("Unknown TOML key in [{}]: {}", section, key ? key : "(null)");
+            TLOG_ERRORF("Unknown TOML key in [{}]: {}", section, key ? key : "(null)");
             return -1;
         }
     }
@@ -254,7 +254,7 @@ static int config_apply_string(
     if (!value.ok || !value.u.s || value.u.sl < 0 ||
         strlen(value.u.s) != (size_t)value.u.sl) {
         free(value.ok ? value.u.s : NULL);
-        TLOG_ERROR("TOML key [{}].{} must be a string without embedded NUL", section, key);
+        TLOG_ERRORF("TOML key [{}].{} must be a string without embedded NUL", section, key);
         return -1;
     }
     return config_storage_replace(storage, index, value.u.s, target);
@@ -272,7 +272,7 @@ static int config_apply_bool(
     }
     value = turbo_toml_bool(table, key);
     if (!value.ok) {
-        TLOG_ERROR("TOML key [{}].{} must be a boolean", section, key);
+        TLOG_ERRORF("TOML key [{}].{} must be a boolean", section, key);
         return -1;
     }
     *target = value.u.b ? 1 : 0;
@@ -291,7 +291,7 @@ static int config_apply_int(
     }
     value = turbo_toml_int(table, key);
     if (!value.ok || value.u.i < INT_MIN || value.u.i > INT_MAX) {
-        TLOG_ERROR("TOML key [{}].{} must be a 32-bit integer", section, key);
+        TLOG_ERRORF("TOML key [{}].{} must be a 32-bit integer", section, key);
         return -1;
     }
     *target = (int)value.u.i;
@@ -308,7 +308,7 @@ static int config_get_optional_table(
     }
     *table = turbo_toml_table(root, name);
     if (!*table) {
-        TLOG_ERROR("TOML root key '{}' must be a table", name);
+        TLOG_ERRORF("TOML root key '{}' must be a table", name);
         return -1;
     }
     return 0;
@@ -714,11 +714,11 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
     }
 
     if (turbo_fs_read_file(filename, &file) != 0) {
-        TLOG_ERROR("Failed to open configuration file: {}", filename);
+        TLOG_ERRORF("Failed to open configuration file: {}", filename);
         goto cleanup;
     }
     if (turbo_parse_toml((const uint8_t *)file.base, file.len, &root) != 0) {
-        TLOG_ERROR("Failed to parse TOML configuration file: {}", filename);
+        TLOG_ERRORF("Failed to parse TOML configuration file: {}", filename);
         goto cleanup;
     }
     if (config_table_keys_valid(root, "root", root_keys,
@@ -903,7 +903,7 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
 
     /* Validate ports */
     if (config->ws_port < 1 || config->ws_port > 65535) {
-        TLOG_ERROR("Invalid WebSocket port: {}", config->ws_port);
+        TLOG_ERRORF("Invalid WebSocket port: {}", config->ws_port);
         return -1;
     }
     if ((config->ws_use_tls != 0 && config->ws_use_tls != 1) ||
@@ -916,7 +916,7 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
     }
     
     if (config->http_enabled && (config->http_port < 1 || config->http_port > 65535)) {
-        TLOG_ERROR("Invalid HTTP port: {}", config->http_port);
+        TLOG_ERRORF("Invalid HTTP port: {}", config->http_port);
         return -1;
     }
     if (config->http_enabled &&
@@ -975,61 +975,61 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
     
     /* Validate limits */
     if (config->max_peers < 1) {
-        TLOG_ERROR("Invalid max_peers: {}", config->max_peers);
+        TLOG_ERRORF("Invalid max_peers: {}", config->max_peers);
         return -1;
     }
     
     if (config->max_rooms < 1) {
-        TLOG_ERROR("Invalid max_rooms: {}", config->max_rooms);
+        TLOG_ERRORF("Invalid max_rooms: {}", config->max_rooms);
         return -1;
     }
     if (config->peer_timeout_ms < 1) {
-        TLOG_ERROR("Invalid peer_timeout_ms: {}", config->peer_timeout_ms);
+        TLOG_ERRORF("Invalid peer_timeout_ms: {}", config->peer_timeout_ms);
         return -1;
     }
     if (config->join_timeout_ms < SIGNALING_MIN_JOIN_TIMEOUT_MS ||
         config->join_timeout_ms > SIGNALING_MAX_JOIN_TIMEOUT_MS) {
-        TLOG_ERROR("Invalid join_timeout_ms: {}", config->join_timeout_ms);
+        TLOG_ERRORF("Invalid join_timeout_ms: {}", config->join_timeout_ms);
         return -1;
     }
     if (config->max_message_size < SIGNALING_MIN_MESSAGE_SIZE ||
         config->max_message_size > SIGNALING_MAX_MESSAGE_SIZE) {
-        TLOG_ERROR("Invalid max_message_size: {}", config->max_message_size);
+        TLOG_ERRORF("Invalid max_message_size: {}", config->max_message_size);
         return -1;
     }
     if (config->messages_per_second < 1 ||
         config->messages_per_second > SIGNALING_MAX_MESSAGES_PER_SECOND) {
-        TLOG_ERROR("Invalid messages_per_second: {}",
+        TLOG_ERRORF("Invalid messages_per_second: {}",
                    config->messages_per_second);
         return -1;
     }
     if (config->message_burst < 1 ||
         config->message_burst > SIGNALING_MAX_MESSAGE_BURST) {
-        TLOG_ERROR("Invalid message_burst: {}", config->message_burst);
+        TLOG_ERRORF("Invalid message_burst: {}", config->message_burst);
         return -1;
     }
     if (config->max_outbox_messages < 1 ||
         config->max_outbox_messages > SIGNALING_MAX_OUTBOX_MESSAGES) {
-        TLOG_ERROR("Invalid max_outbox_messages: {}",
+        TLOG_ERRORF("Invalid max_outbox_messages: {}",
                    config->max_outbox_messages);
         return -1;
     }
     if (config->max_outbox_bytes < config->max_message_size ||
         config->max_outbox_bytes > SIGNALING_MAX_OUTBOX_BYTES) {
-        TLOG_ERROR("Invalid max_outbox_bytes: {}", config->max_outbox_bytes);
+        TLOG_ERRORF("Invalid max_outbox_bytes: {}", config->max_outbox_bytes);
         return -1;
     }
     if (config->max_connections_per_source < 0 ||
         config->max_connections_per_source >
             SIGNALING_MAX_CONNECTIONS_PER_SOURCE) {
-        TLOG_ERROR("Invalid max_connections_per_source: {}",
+        TLOG_ERRORF("Invalid max_connections_per_source: {}",
                    config->max_connections_per_source);
         return -1;
     }
     if (config->source_admissions_per_second < 0 ||
         config->source_admissions_per_second >
             SIGNALING_MAX_SOURCE_ADMISSIONS_PER_SECOND) {
-        TLOG_ERROR("Invalid source_admissions_per_second: {}",
+        TLOG_ERRORF("Invalid source_admissions_per_second: {}",
                    config->source_admissions_per_second);
         return -1;
     }
@@ -1038,13 +1038,13 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
             SIGNALING_MAX_SOURCE_ADMISSION_BURST ||
         ((config->source_admissions_per_second == 0) !=
          (config->source_admission_burst == 0))) {
-        TLOG_ERROR("Invalid source_admission_burst: {}",
+        TLOG_ERRORF("Invalid source_admission_burst: {}",
                    config->source_admission_burst);
         return -1;
     }
     if (config->max_source_states < 0 ||
         config->max_source_states > SIGNALING_MAX_SOURCE_STATES) {
-        TLOG_ERROR("Invalid max_source_states: {}", config->max_source_states);
+        TLOG_ERRORF("Invalid max_source_states: {}", config->max_source_states);
         return -1;
     }
     if (config->source_state_ttl_ms < 0 ||
@@ -1056,7 +1056,7 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
                     SIGNALING_MIN_SOURCE_STATE_TTL_MS)
              : (config->max_source_states != 0 ||
                 config->source_state_ttl_ms != 0))) {
-        TLOG_ERROR("Invalid source_state_ttl_ms: {}",
+        TLOG_ERRORF("Invalid source_state_ttl_ms: {}",
                    config->source_state_ttl_ms);
         return -1;
     }
@@ -1132,41 +1132,41 @@ void signaling_server_config_print(const signaling_server_config_t *config) {
         return;
     }
     TLOG_DEBUG("Configuration:");
-    TLOG_DEBUG("  Node ID: {}", config->node_id ? config->node_id : "auto");
-    TLOG_DEBUG("  WebSocket: {}:{}", config->ws_host, config->ws_port);
-    TLOG_DEBUG("  WebSocket TLS: {}", config->ws_use_tls ? "enabled" : "disabled");
-    TLOG_DEBUG("  HTTP API: {}:{}", config->http_host, config->http_port);
-    TLOG_DEBUG("  HTTP API: {}", config->http_enabled ? "enabled" : "disabled");
-    TLOG_DEBUG("  HTTP API TLS: {}", config->http_use_tls ? "enabled" : "disabled");
-    TLOG_DEBUG("  HTTP management auth: {}",
+    TLOG_DEBUGF("  Node ID: {}", config->node_id ? config->node_id : "auto");
+    TLOG_DEBUGF("  WebSocket: {}:{}", config->ws_host, config->ws_port);
+    TLOG_DEBUGF("  WebSocket TLS: {}", config->ws_use_tls ? "enabled" : "disabled");
+    TLOG_DEBUGF("  HTTP API: {}:{}", config->http_host, config->http_port);
+    TLOG_DEBUGF("  HTTP API: {}", config->http_enabled ? "enabled" : "disabled");
+    TLOG_DEBUGF("  HTTP API TLS: {}", config->http_use_tls ? "enabled" : "disabled");
+    TLOG_DEBUGF("  HTTP management auth: {}",
                config->http_auth_enabled ? "enabled" : "disabled");
-    TLOG_DEBUG("  HTTP management scoped auth: {}",
+    TLOG_DEBUGF("  HTTP management scoped auth: {}",
                (config->http_auth_active_secret &&
                 config->http_auth_active_secret[0])
                    ? "enabled"
                    : "disabled");
-    TLOG_DEBUG("  Max Peers: {}", config->max_peers);
-    TLOG_DEBUG("  Max Rooms: {}", config->max_rooms);
-    TLOG_DEBUG("  Peer Timeout: {}ms", config->peer_timeout_ms);
-    TLOG_DEBUG("  Join Timeout: {}ms", config->join_timeout_ms);
-    TLOG_DEBUG("  WebSocket Message Limit: {} bytes",
+    TLOG_DEBUGF("  Max Peers: {}", config->max_peers);
+    TLOG_DEBUGF("  Max Rooms: {}", config->max_rooms);
+    TLOG_DEBUGF("  Peer Timeout: {}ms", config->peer_timeout_ms);
+    TLOG_DEBUGF("  Join Timeout: {}ms", config->join_timeout_ms);
+    TLOG_DEBUGF("  WebSocket Message Limit: {} bytes",
                config->max_message_size);
-    TLOG_DEBUG("  Message Rate: {}/s, burst {}",
+    TLOG_DEBUGF("  Message Rate: {}/s, burst {}",
                config->messages_per_second, config->message_burst);
-    TLOG_DEBUG("  Outbox Limit: {} messages / {} bytes",
+    TLOG_DEBUGF("  Outbox Limit: {} messages / {} bytes",
                config->max_outbox_messages, config->max_outbox_bytes);
-    TLOG_DEBUG("  Source Limit: {} active, {}/s burst {}",
+    TLOG_DEBUGF("  Source Limit: {} active, {}/s burst {}",
                config->max_connections_per_source,
                config->source_admissions_per_second,
                config->source_admission_burst);
-    TLOG_DEBUG("  Source State: {} entries / {}ms TTL",
+    TLOG_DEBUGF("  Source State: {} entries / {}ms TTL",
                config->max_source_states, config->source_state_ttl_ms);
-    TLOG_DEBUG("  Peer admission auth: {}",
+    TLOG_DEBUGF("  Peer admission auth: {}",
                config->jwt_enabled ? "enabled" : "disabled");
-    TLOG_DEBUG("  Redis: {}", config->redis_enabled ? "enabled" : "disabled");
+    TLOG_DEBUGF("  Redis: {}", config->redis_enabled ? "enabled" : "disabled");
     if (config->redis_enabled) {
-        TLOG_DEBUG("  Redis Host: {}:{}", config->redis_host, config->redis_port);
-        TLOG_DEBUG("  Redis Streams: {}", config->redis_use_streams ? "enabled" : "disabled");
+        TLOG_DEBUGF("  Redis Host: {}:{}", config->redis_host, config->redis_port);
+        TLOG_DEBUGF("  Redis Streams: {}", config->redis_use_streams ? "enabled" : "disabled");
     }
-    TLOG_DEBUG("  Log Level: {}", config->log_level);
+    TLOG_DEBUGF("  Log Level: {}", config->log_level);
 }

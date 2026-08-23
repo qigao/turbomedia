@@ -26,7 +26,7 @@ int sip_header_uri(const char* s, const char* end, struct sip_uri_t* uri)
 	int i;
 	const char* p;
 	const struct sip_param_t* param;
-	tstr_v parameters;
+	vstr parameters;
 	memset(uri, 0, sizeof(*uri));
 	sip_params_init(&uri->headers);
 	sip_params_init(&uri->parameters);
@@ -252,7 +252,7 @@ int sip_uri_equal(const struct sip_uri_t* l, const struct sip_uri_t* r)
 	return 1;
 }
 
-int sip_uri_username(const struct sip_uri_t* uri, tstr_v* user)
+int sip_uri_username(const struct sip_uri_t* uri, vstr* user)
 {
 	const char *p1, *p2;
 	p1 = sip_sv_find_char(&uri->host, '@');
@@ -273,7 +273,7 @@ void sip_uri_parse_test(void)
 	char p[1024];
 	const char* s;
 	struct sip_uri_t uri;
-	tstr_v usr;
+	vstr usr;
 
 	s = "sip:user:password@host:port;uri-parameters?headers";
 	assert(0 == sip_header_uri(s, s + strlen(s), &uri));

@@ -154,14 +154,14 @@ int sip_via_write(const struct sip_via_t* via, char* data, const char* end)
 	return (int)(p - data);
 }
 
-const tstr_v* sip_vias_top_branch(const struct sip_vias_t* vias)
+const vstr* sip_vias_top_branch(const struct sip_vias_t* vias)
 {
 	const struct sip_via_t *via;
 	via = sip_vias_get(vias, 0);
 	return via ? &via->branch : NULL;
 }
 
-//const tstr_v* sip_via_branch(const struct sip_via_t* via)
+//const vstr* sip_via_branch(const struct sip_via_t* via)
 //{
 //	return sip_params_find_string(&via->params, "branch");
 //}

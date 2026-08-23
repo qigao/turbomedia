@@ -79,7 +79,7 @@ struct sip_message_t
 	struct sip_contact_t to;
 	struct sip_contact_t from;
 	struct sip_vias_t vias;
-	tstr_v callid;
+	vstr callid;
 	struct sip_cseq_t cseq;
 	int maxforwards;
 
@@ -90,11 +90,11 @@ struct sip_message_t
 	
 	// other headers
 	uint32_t rseq; // [1, 2**31 - 1] PRACK
-	tstr_v recv_info; // Info Method (invite)
-	tstr_v info_package; // Info Method
+	vstr recv_info; // Info Method (invite)
+	vstr info_package; // Info Method
 	struct sip_contact_t referto; // Refer Method
 	struct sip_event_t event; // Subscribe/Notify Method
-	tstr_v allow_events; // Subscribe/Notify Method
+	vstr allow_events; // Subscribe/Notify Method
 	struct sip_substate_t substate; // Subscribe/Notify Method (invite)
 	struct sip_params_t headers;
 
@@ -136,8 +136,8 @@ int sip_message_set_reply_default_contact(struct sip_message_t* reply);
 int sip_message_set_rport(struct sip_message_t* request, const char* addr, int port);
 
 int sip_message_get_header_count(const struct sip_message_t* msg);
-int sip_message_get_header(const struct sip_message_t* msg, int i, tstr_v* const name, tstr_v* const value);
-const tstr_v* sip_message_get_header_by_name(const struct sip_message_t* msg, const char* name);
+int sip_message_get_header(const struct sip_message_t* msg, int i, vstr* const name, vstr* const value);
+const vstr* sip_message_get_header_by_name(const struct sip_message_t* msg, const char* name);
 
 int sip_message_add_header(struct sip_message_t* msg, const char* name, const char* value);
 int sip_message_add_header_int(struct sip_message_t* msg, const char* name, int value);

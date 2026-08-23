@@ -52,6 +52,7 @@ target_link_libraries(
   PRIVATE TurboNet::CoroNet
           TurboNet::Ice
           TurboUtils::Core
+          TurboUtils::STL
           unofficial::usrsctp::usrsctp
           OpenSSL::SSL
           OpenSSL::Crypto
@@ -90,7 +91,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_webrtc_signaling
   PUBLIC TurboNet::CoroNet TurboHttp::Iris TurboParser::Parser
-  PRIVATE turbo_media_auth TurboNet::Crypto TurboUtils::Core)
+  PRIVATE turbo_media_auth TurboNet::Crypto TurboUtils::Core TurboUtils::STL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 
@@ -127,6 +128,7 @@ target_link_libraries(
           TurboNet::Ice
           TurboNet::CoroNet
           TurboUtils::Core
+          TurboUtils::STL
           OpenSSL::SSL
           OpenSSL::Crypto
           libSRTP::srtp2)

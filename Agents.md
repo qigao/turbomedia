@@ -280,10 +280,10 @@
 
 #### 避免重复造轮子（强制规则）
 
-- ❌ **禁止手写**：动态数组 → 用 `turbo_vec_t` / `TURBO_VEC_DEFINE`，临时数组可用 `mem_pool_t`
-- ❌ **禁止手写**：字符串拼接 → 用 `tstr_t`（TurboNet）或 `sds`（vendor）
-- ❌ **禁止手写**：哈希表/集合 → 用 `turbo_hash_map_t` / `TURBO_HASH_MAP_DEFINE` 或 `turbo_set_t` / `TURBO_SET_DEFINE`
-- ❌ **禁止手写**：双端队列 → 用 `turbo_deque_t` / `TURBO_DEQUE_DEFINE`
+- ❌ **禁止手写**：动态数组 → 包含 `<turbostl/typed.h>` 并用 `typed(Vec, Name, Type)`，临时数组可用 `mem_pool_t`
+- ❌ **禁止手写**：字符串拼接 → 用 `tstr`（TurboUtils）或 `sds`（vendor）
+- ❌ **禁止手写**：哈希表/集合 → 包含 `<turbostl/typed.h>` 并用 `typed(HashMap, Name, Key, Value)` 或 `typed(Set, Name, Type)`
+- ❌ **禁止手写**：双端队列 → 包含 `<turbostl/typed.h>` 并用 `typed(Deque, Name, Type)`
 - ❌ **禁止手写**：文件读写 → 用 `turbo_fs`（TurboNet）
 - ❌ **禁止手写**：日志系统 → 用 `tlog`（TurboNet）
 - ❌ **禁止手写**：线程池 → 用 `turbo_threadpool`（TurboNet）

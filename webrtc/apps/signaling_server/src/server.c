@@ -62,7 +62,7 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
     /* Generate node ID if not provided */
     if (!server->config.node_id) {
         server->config.node_id = generate_node_id();
-        TLOG_INFO("Generated node ID: {}", server->config.node_id);
+        TLOG_INFOF("Generated node ID: {}", server->config.node_id);
     }
     
     /* Create event loop */
@@ -141,7 +141,7 @@ int signaling_server_start(signaling_server_t *server) {
     
     server->running = 1;
     
-    TLOG_INFO("WebSocket server listening on {}:{}", 
+    TLOG_INFOF("WebSocket server listening on {}:{}",
               server->config.ws_host, 
               server->config.ws_port);
     
@@ -180,7 +180,7 @@ int signaling_server_start(signaling_server_t *server) {
             server->running = 0;
             return -1;
         }
-        TLOG_INFO("{} API server started on {}:{}",
+        TLOG_INFOF("{} API server started on {}:{}",
                   server->config.http_use_tls ? "HTTPS" : "HTTP",
                   server->config.http_host, server->config.http_port);
     }

@@ -19,7 +19,7 @@
     do { \
         int exp = (expected); \
         int act = (actual); \
-        check_int_eq(act, exp); \
+        check_equal(act, exp); \
         if (exp != act) { \
             return; \
         } \
@@ -101,7 +101,7 @@ static size_t integration_playback_data_cb(turbo_playback_t *playback,
 
 suite("TurboMedia Integration Tests") {
     
-    section("Capture to Encode Pipeline") {
+    group("Capture to Encode Pipeline") {
         
         it("should capture audio and encode with G.711") {
             integration_test_context_t ctx = {0};
@@ -165,7 +165,7 @@ suite("TurboMedia Integration Tests") {
         }
     }
     
-    section("Encode to Decode Pipeline") {
+    group("Encode to Decode Pipeline") {
         
         it("should encode and decode audio with matching quality") {
             integration_test_context_t ctx = {0};
@@ -272,7 +272,7 @@ suite("TurboMedia Integration Tests") {
         }
     }
     
-    section("Decode to Playback Pipeline") {
+    group("Decode to Playback Pipeline") {
         
         it("should decode audio and play through playback system") {
             integration_test_context_t ctx = {0};
@@ -329,7 +329,7 @@ suite("TurboMedia Integration Tests") {
         }
     }
     
-    section("End-to-End Audio Pipeline") {
+    group("End-to-End Audio Pipeline") {
         
         it("should complete full capture-encode-decode-playback flow") {
             integration_test_context_t ctx = {0};
@@ -454,7 +454,7 @@ suite("TurboMedia Integration Tests") {
         }
     }
     
-    section("Multi-Component Error Handling") {
+    group("Multi-Component Error Handling") {
         
         it("should handle codec registry errors gracefully in pipeline") {
             integration_test_context_t ctx = {0};
@@ -538,7 +538,7 @@ suite("TurboMedia Integration Tests") {
         }
     }
     
-    section("Resource Management Across Components") {
+    group("Resource Management Across Components") {
         
         it("should properly clean up resources in correct order") {
             integration_test_context_t ctx = {0};
@@ -603,7 +603,7 @@ suite("TurboMedia Integration Tests") {
         }
     }
     
-    section("Performance and Throughput") {
+    group("Performance and Throughput") {
         
         it("should process multiple frames efficiently") {
             integration_test_context_t ctx = {0};
@@ -664,7 +664,7 @@ suite("TurboMedia Integration Tests") {
         }
     }
     
-    section("State Consistency Across Components") {
+    group("State Consistency Across Components") {
         
         it("should maintain consistent state during start-stop cycles") {
             integration_test_context_t ctx = {0};

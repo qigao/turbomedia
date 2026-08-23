@@ -17,52 +17,6 @@
 #endif
 
 /* ============================================================================
- * 测试辅助宏 (BDD 风格断言)
- * ============================================================================ */
-
-#define EXPECT_TRUE(expr)       \
-    do {                        \
-        check(expr);           \
-        if (!(expr)) {         \
-            return;            \
-        }                      \
-    } while (0)
-
-#define EXPECT_FALSE(expr)      \
-    do {                        \
-        check(!(expr));        \
-        if (expr) {            \
-            return;            \
-        }                      \
-    } while (0)
-
-#define EXPECT_INT_EQ(expected, actual)            \
-    do {                                          \
-        int expected_value = (expected);          \
-        int actual_value = (actual);              \
-        check_int_eq(actual_value, expected_value); \
-        if (actual_value != expected_value) {     \
-            return;                               \
-        }                                         \
-    } while (0)
-
-#define EXPECT_NOT_NULL(ptr)    \
-    do {                        \
-        check((ptr) != NULL);   \
-        if ((ptr) == NULL) {    \
-            return;             \
-        }                       \
-    } while (0)
-
-#define EXPECT_NULL(ptr)        \
-    do {                        \
-        check((ptr) == NULL);   \
-        if ((ptr) != NULL) {    \
-            return;             \
-        }                       \
-    } while (0)
-
-/* ============================================================================
  * 配置辅助函数
  * ============================================================================ */
 
@@ -116,32 +70,32 @@ static void observe_mjpeg_frame(turbo_capture_t *capture,
 suite("捕获设备枚举") {
     it("应该安全处理空指针和无效参数") {
         /* 空指针应该返回错误 */
-        EXPECT_INT_EQ(-1, turbo_capture_list_audio_devices(NULL, 10));
-        EXPECT_INT_EQ(-1, turbo_capture_list_video_devices(NULL, 10));
-        EXPECT_INT_EQ(-1, turbo_capture_list_screens(NULL, 10));
-        EXPECT_INT_EQ(-1, turbo_capture_list_gpu_devices(NULL, 0));
+        check_equal(turbo_capture_list_audio_devices(NULL, 10), -1);
+        check_equal(turbo_capture_list_video_devices(NULL, 10), -1);
+        check_equal(turbo_capture_list_screens(NULL, 10), -1);
+        check_equal(turbo_capture_list_gpu_devices(NULL, 0), -1);
         
         /* max_count <= 0 应该返回错误 */
         turbo_capture_device_t devices[1];
-        EXPECT_INT_EQ(-1, turbo_capture_list_audio_devices(devices, 0));
-        EXPECT_INT_EQ(-1, turbo_capture_list_video_devices(devices, 0));
-        EXPECT_INT_EQ(-1, turbo_capture_list_screens(devices, 0));
-        EXPECT_INT_EQ(-1, turbo_capture_list_gpu_devices(devices, -1));
+        check_equal(turbo_capture_list_audio_devices(devices, 0), -1);
+        check_equal(turbo_capture_list_video_devices(devices, 0), -1);
+        check_equal(turbo_capture_list_screens(devices, 0), -1);
+        check_equal(turbo_capture_list_gpu_devices(devices, -1), -1);
     }
     
     it("应该枚举可用的音频输入设备") {
         turbo_capture_device_t devices[TURBO_CAPTURE_MAX_DEVICES];
         int count = turbo_capture_list_audio_devices(devices, TURBO_CAPTURE_MAX_DEVICES);
         
-        EXPECT_TRUE(count >= 0);
-        EXPECT_TRUE(count <= TURBO_CAPTURE_MAX_DEVICES);
+        check_true(count >= 0);
+        check_true(count <= TURBO_CAPTURE_MAX_DEVICES);
         
         /* 验证设备信息 */
         for (int i = 0; i < count; i++) {
-            EXPECT_TRUE(devices[i].type == TURBO_CAPTURE_TYPE_AUDIO);
-            EXPECT_TRUE(devices[i].name[0] != '\0');
-            EXPECT_TRUE(devices[i].id[0] != '\0');
-            EXPECT_TRUE(devices[i].index >= 0);
+            check_true(devices[i].type == TURBO_CAPTURE_TYPE_AUDIO);
+            check_true(devices[i].name[0] != '\0');
+            check_true(devices[i].id[0] != '\0');
+            check_true(devices[i].index >= 0);
         }
         
         /* 应该至少有一个默认设备（如果有设备） */
@@ -153,7 +107,7 @@ suite("捕获设备枚举") {
                     break;
                 }
             }
-            EXPECT_TRUE(has_default || count == 0);
+            check_true(has_default || count == 0);
         }
     }
     
@@ -161,10 +115,10 @@ suite("捕获设备枚举") {
         turbo_capture_device_t devices[TURBO_CAPTURE_MAX_DEVICES];
         int count = turbo_capture_list_video_devices(devices, TURBO_CAPTURE_MAX_DEVICES);
         
-        EXPECT_TRUE(count >= 0);
+        check_true(count >= 0);
         
         for (int i = 0; i < count; i++) {
-            EXPECT_TRUE(devices[i].type == TURBO_CAPTURE_TYPE_VIDEO);
+            check_true(devices[i].type == TURBO_CAPTURE_TYPE_VIDEO);
         }
     }
     
@@ -172,10 +126,10 @@ suite("捕获设备枚举") {
         turbo_capture_device_t devices[TURBO_CAPTURE_MAX_DEVICES];
         int count = turbo_capture_list_screens(devices, TURBO_CAPTURE_MAX_DEVICES);
         
-        EXPECT_TRUE(count >= 0);
+        check_true(count >= 0);
         
         for (int i = 0; i < count; i++) {
-            EXPECT_TRUE(devices[i].type == TURBO_CAPTURE_TYPE_SCREEN);
+            check_true(devices[i].type == TURBO_CAPTURE_TYPE_SCREEN);
         }
     }
     
@@ -183,8 +137,8 @@ suite("捕获设备枚举") {
         turbo_capture_device_t devices[2];
         int count = turbo_capture_list_audio_devices(devices, 2);
         
-        EXPECT_TRUE(count >= 0);
-        EXPECT_TRUE(count <= 2);
+        check_true(count >= 0);
+        check_true(count <= 2);
     }
 }
 
@@ -267,11 +221,11 @@ suite("音频捕获设备生命周期") {
 
 suite("视频捕获设备生命周期") {
     it("应该公开稳定的 MJPEG 捕获格式") {
-        check_int_eq(TURBO_VIDEO_CAPTURE_FORMAT_I420, 0);
-        check_int_eq(TURBO_VIDEO_CAPTURE_FORMAT_NV12, 1);
-        check_int_eq(TURBO_VIDEO_CAPTURE_FORMAT_RGB24, 2);
-        check_int_eq(TURBO_VIDEO_CAPTURE_FORMAT_BGRA, 3);
-        check_int_eq(TURBO_VIDEO_CAPTURE_FORMAT_MJPEG, 4);
+        check_equal(TURBO_VIDEO_CAPTURE_FORMAT_I420, 0);
+        check_equal(TURBO_VIDEO_CAPTURE_FORMAT_NV12, 1);
+        check_equal(TURBO_VIDEO_CAPTURE_FORMAT_RGB24, 2);
+        check_equal(TURBO_VIDEO_CAPTURE_FORMAT_BGRA, 3);
+        check_equal(TURBO_VIDEO_CAPTURE_FORMAT_MJPEG, 4);
     }
 
 #ifdef _WIN32
@@ -378,7 +332,7 @@ suite("视频捕获设备生命周期") {
 
     it("应该拒绝空的原生视频模式") {
         turbo_capture_t *capture = NULL;
-        check_int_eq(turbo_video_device_create_capture(NULL, NULL, &capture),
+        check_equal(turbo_video_device_create_capture(NULL, NULL, &capture),
                      TURBO_CAPTURE_ERR_FORMAT);
         check_null(capture);
     }
@@ -408,7 +362,7 @@ suite("捕获启动和停止控制") {
     it("应该拒绝对空指针的操作") {
         /* turbo_capture_start(NULL) 应该返回错误 */
         int result = turbo_capture_start(NULL);
-        EXPECT_TRUE(result < 0);  /* 返回任何负数错误码都可接受 */
+        check_true(result < 0);  /* 返回任何负数错误码都可接受 */
         
         turbo_capture_stop(NULL); /* 不应崩溃 */
         turbo_capture_destroy(NULL); /* 不应崩溃 */
@@ -546,7 +500,7 @@ suite("捕获设备错误处理") {
         }
         
         /* 应该至少能创建一个实例 */
-        EXPECT_TRUE(created_count > 0);
+        check_true(created_count > 0);
     }
     
     it("应该安全销毁已销毁的实例") {
@@ -572,29 +526,29 @@ suite("视频模式帧率工具") {
         memset(&mode, 0, sizeof(mode));
         mode.framerate_numerator = 30000;
         mode.framerate_denominator = 1001;
-        EXPECT_INT_EQ(30, turbo_video_mode_fps(&mode));      /* 29.97 -> 30 */
+        check_equal(turbo_video_mode_fps(&mode), 30);      /* 29.97 -> 30 */
 
         mode.framerate_numerator = 60000;
         mode.framerate_denominator = 1001;
-        EXPECT_INT_EQ(60, turbo_video_mode_fps(&mode));      /* 59.94 -> 60 */
+        check_equal(turbo_video_mode_fps(&mode), 60);      /* 59.94 -> 60 */
 
         mode.framerate_numerator = 24000;
         mode.framerate_denominator = 1001;
-        EXPECT_INT_EQ(24, turbo_video_mode_fps(&mode));      /* 23.976 -> 24 */
+        check_equal(turbo_video_mode_fps(&mode), 24);      /* 23.976 -> 24 */
 
         mode.framerate_numerator = 10000000;
         mode.framerate_denominator = 111111;
-        EXPECT_INT_EQ(90, turbo_video_mode_fps(&mode));      /* 90.00009 */
+        check_equal(turbo_video_mode_fps(&mode), 90);      /* 90.00009 */
 
         mode.framerate_numerator = 10000000;
         mode.framerate_denominator = 83333;
-        EXPECT_INT_EQ(120, turbo_video_mode_fps(&mode));     /* 120.00048 */
+        check_equal(turbo_video_mode_fps(&mode), 120);     /* 120.00048 */
 
         mode.framerate_numerator = 10000000;
         mode.framerate_denominator = 1333333;
-        EXPECT_INT_EQ(8, turbo_video_mode_fps(&mode));       /* 7.5 -> 8 */
+        check_equal(turbo_video_mode_fps(&mode), 8);       /* 7.5 -> 8 */
 
-        EXPECT_INT_EQ(0, turbo_video_mode_fps(NULL));
+        check_equal(turbo_video_mode_fps(NULL), 0);
     }
 
     it("应该识别标准帧率集合 24/25/30/50/60/90/120") {
@@ -607,13 +561,13 @@ suite("视频模式帧率工具") {
 
         for (size_t i = 0; i < sizeof(standard) / sizeof(standard[0]); ++i) {
             mode.framerate_numerator = standard[i];
-            EXPECT_TRUE(turbo_video_mode_is_standard_fps(&mode));
+            check_true(turbo_video_mode_is_standard_fps(&mode));
         }
         for (size_t i = 0; i < sizeof(non_standard) / sizeof(non_standard[0]); ++i) {
             mode.framerate_numerator = non_standard[i];
-            EXPECT_FALSE(turbo_video_mode_is_standard_fps(&mode));
+            check_false(turbo_video_mode_is_standard_fps(&mode));
         }
-        EXPECT_FALSE(turbo_video_mode_is_standard_fps(NULL));
+        check_false(turbo_video_mode_is_standard_fps(NULL));
     }
 
 #ifdef _WIN32

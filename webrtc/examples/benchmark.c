@@ -91,9 +91,9 @@ static void send_ping(benchmark_state_t *bench) {
         double avg_latency_ms = (bench->latency_sum_us / (double)bench->pongs_received) / 1000.0;
 
         TLOG_INFO("=== Latency Test Results ===");
-        TLOG_INFO("Pings sent: {}", bench->ping_count);
-        TLOG_INFO("Pongs received: {}", bench->pongs_received);
-        TLOG_INFO("Average RTT: {} ms", avg_latency_ms);
+        TLOG_INFOF("Pings sent: {}", bench->ping_count);
+        TLOG_INFOF("Pongs received: {}", bench->pongs_received);
+        TLOG_INFOF("Average RTT: {} ms", avg_latency_ms);
 
         return;
     }
@@ -162,12 +162,12 @@ static void update_throughput_test(benchmark_state_t *bench, uint64_t now_us) {
     TLOG_INFO("=== Throughput Test Results ===");
     if (bench->is_server) {
         double mbps = (bench->bytes_received * 8.0) / (TEST_DURATION_SEC * 1000000.0);
-        TLOG_INFO("Total received: {} MB", bench->bytes_received / (1024.0 * 1024.0));
-        TLOG_INFO("Throughput: {} Mbps", mbps);
+        TLOG_INFOF("Total received: {} MB", bench->bytes_received / (1024.0 * 1024.0));
+        TLOG_INFOF("Throughput: {} Mbps", mbps);
     } else {
         double mbps = (bench->bytes_sent * 8.0) / (TEST_DURATION_SEC * 1000000.0);
-        TLOG_INFO("Total sent: {} MB", bench->bytes_sent / (1024.0 * 1024.0));
-        TLOG_INFO("Throughput: {} Mbps", mbps);
+        TLOG_INFOF("Total sent: {} MB", bench->bytes_sent / (1024.0 * 1024.0));
+        TLOG_INFOF("Throughput: {} Mbps", mbps);
     }
 
     turbo_dc_peer_close(bench->peer);
@@ -181,7 +181,7 @@ static void start_throughput_test(benchmark_state_t *bench) {
     bench->test_running = 1;
     bench->throughput_started = 1;
 
-    TLOG_INFO("=== Starting Throughput Test ({} seconds) ===", TEST_DURATION_SEC);
+    TLOG_INFOF("=== Starting Throughput Test ({} seconds) ===", TEST_DURATION_SEC);
 }
 
 static void handle_throughput_message(benchmark_state_t *bench, const void *data, size_t len) {
@@ -214,7 +214,7 @@ static void on_channel_message(turbo_dc_channel_t *channel, const void *data,
 static void on_channel_open(turbo_dc_channel_t *channel, void *user_data) {
     benchmark_state_t *bench = (benchmark_state_t *)user_data;
 
-    TLOG_INFO("Channel '{}' opened! ({})", 
+    TLOG_INFOF("Channel '{}' opened! ({})",
            turbo_dc_channel_get_label(channel),
            bench->is_server ? "SERVER" : "CLIENT");
 
@@ -228,7 +228,7 @@ static void on_channel_open(turbo_dc_channel_t *channel, void *user_data) {
         bench->pongs_received = 0;
         bench->latency_sum_us = 0;
 
-        TLOG_INFO("=== Starting Latency Test ({} pings) ===", PING_COUNT);
+        TLOG_INFOF("=== Starting Latency Test ({} pings) ===", PING_COUNT);
         send_ping(bench);
 
     } else {
@@ -241,7 +241,7 @@ static void on_peer_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel,
     benchmark_state_t *bench = (benchmark_state_t *)user_data;
     (void)peer;
 
-    TLOG_INFO("Incoming channel: {}", turbo_dc_channel_get_label(channel));
+    TLOG_INFOF("Incoming channel: {}", turbo_dc_channel_get_label(channel));
 
     bench->channel = channel;
     turbo_dc_channel_on_message(channel, on_channel_message);
@@ -254,7 +254,7 @@ static void on_peer_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
     (void)old_state;
 
     if (new_state == TURBO_DC_STATE_CONNECTED) {
-        TLOG_INFO("Peer connected! ({})", bench->is_server ? "SERVER" : "CLIENT");
+        TLOG_INFOF("Peer connected! ({})", bench->is_server ? "SERVER" : "CLIENT");
 
         if (!bench->is_server) {
             turbo_dc_channel_config_t config = turbo_dc_default_channel_config();
@@ -271,7 +271,7 @@ static void on_peer_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
 
             if (turbo_dc_channel_open(bench->channel) != 0) {
                 turbo_dc_error_t err = turbo_dc_peer_get_error(bench->peer);
-                TLOG_ERROR("Failed to open channel: {}", turbo_dc_error_string(err.code));
+                TLOG_ERRORF("Failed to open channel: {}", turbo_dc_error_string(err.code));
             }
         }
     }
@@ -281,7 +281,7 @@ static void on_peer_error(turbo_dc_peer_t *peer, int error_code,
                           const char *error_msg, void *user_data) {
     (void)peer;
     (void)user_data;
-    TLOG_ERROR("Error {}: {}", error_code, error_msg);
+    TLOG_ERRORF("Error {}: {}", error_code, error_msg);
 }
 
 /* ============================================================================
@@ -290,7 +290,7 @@ static void on_peer_error(turbo_dc_peer_t *peer, int error_code,
 
 int main(int argc, char **argv) {
     if (argc != 4) {
-        TLOG_ERROR("Usage: {} <server|client> <host> <port>", argv[0]);
+        TLOG_ERRORF("Usage: {} <server|client> <host> <port>", argv[0]);
         return 1;
     }
 
@@ -301,8 +301,8 @@ int main(int argc, char **argv) {
     int is_server = (strcmp(mode, "server") == 0);
 
     TLOG_INFO("=== WebRTC DataChannel Benchmark ===");
-    TLOG_INFO("Mode: {}", is_server ? "SERVER" : "CLIENT");
-    TLOG_INFO("Address: {}:{}", host, port);
+    TLOG_INFOF("Mode: {}", is_server ? "SERVER" : "CLIENT");
+    TLOG_INFOF("Address: {}:{}", host, port);
 
     benchmark_state_t bench = {0};
     bench.is_server = is_server;
@@ -321,7 +321,7 @@ int main(int argc, char **argv) {
     bench.peer = turbo_dc_peer_create(bench.ctx, host, (uint16_t)port, &bench);
     if (!bench.peer) {
         turbo_dc_error_t err = turbo_dc_context_get_error(bench.ctx);
-        TLOG_ERROR("Failed to create peer: {}", turbo_dc_error_string(err.code));
+        TLOG_ERRORF("Failed to create peer: {}", turbo_dc_error_string(err.code));
         turbo_dc_context_destroy(bench.ctx);
         return 1;
     }
@@ -332,7 +332,7 @@ int main(int argc, char **argv) {
 
     if (turbo_dc_peer_connect(bench.peer) != 0) {
         turbo_dc_error_t err = turbo_dc_peer_get_error(bench.peer);
-        TLOG_ERROR("Failed to connect: {}", turbo_dc_error_string(err.code));
+        TLOG_ERRORF("Failed to connect: {}", turbo_dc_error_string(err.code));
         turbo_dc_peer_destroy(bench.peer);
         turbo_dc_context_destroy(bench.ctx);
         return 1;

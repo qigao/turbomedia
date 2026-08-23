@@ -13,7 +13,7 @@
 #include <string.h>
 
 #include <turbo_error.h>
-#include <turbo_str_view.h>
+#include <turbo_vstr.h>
 
 typedef enum {
     FLV_CODEC_NONE = 0,
@@ -48,7 +48,7 @@ typedef struct {
 
 static int flv_name_equals(const char *actual, const char *expected) {
     return actual && expected &&
-           tstr_v_ieq(tstr_v_from_cstr(actual), tstr_v_from_cstr(expected));
+           vstr_ieq(vstr_from_cstr(actual), vstr_from_cstr(expected));
 }
 
 static flv_codec_t flv_video_codec(const char *name) {

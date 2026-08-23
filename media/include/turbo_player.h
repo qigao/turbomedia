@@ -63,30 +63,30 @@ typedef void (*turbo_player_audio_cb)(turbo_player_t *player,
 
 typedef void (*turbo_player_complete_cb)(turbo_player_t *player, void *user_data);
 
-CXX_C_API turbo_player_t *turbo_player_open(const char *url,
+TURBO_MEDIA_API turbo_player_t *turbo_player_open(const char *url,
                                             const turbo_player_config_t *config);
-CXX_C_API void turbo_player_close(turbo_player_t *player);
+TURBO_MEDIA_API void turbo_player_close(turbo_player_t *player);
 
-CXX_C_API void turbo_player_set_video_callback(turbo_player_t *player,
+TURBO_MEDIA_API void turbo_player_set_video_callback(turbo_player_t *player,
                                                turbo_player_video_cb cb,
                                                void *user_data);
-CXX_C_API void turbo_player_set_audio_callback(turbo_player_t *player,
+TURBO_MEDIA_API void turbo_player_set_audio_callback(turbo_player_t *player,
                                                turbo_player_audio_cb cb,
                                                void *user_data);
-CXX_C_API void turbo_player_on_complete(turbo_player_t *player,
+TURBO_MEDIA_API void turbo_player_on_complete(turbo_player_t *player,
                                         turbo_player_complete_cb cb,
                                         void *user_data);
 
-CXX_C_API int turbo_player_play_to_end(turbo_player_t *player);
-CXX_C_API int turbo_player_start(turbo_player_t *player);
-CXX_C_API int turbo_player_wait(turbo_player_t *player);
-CXX_C_API int turbo_player_is_running(turbo_player_t *player);
-CXX_C_API void turbo_player_stop(turbo_player_t *player);
-CXX_C_API void turbo_player_pause(turbo_player_t *player);
-CXX_C_API void turbo_player_resume(turbo_player_t *player);
-CXX_C_API int turbo_player_seek_ms(turbo_player_t *player, int64_t position_ms);
+TURBO_MEDIA_API int turbo_player_play_to_end(turbo_player_t *player);
+TURBO_MEDIA_API int turbo_player_start(turbo_player_t *player);
+TURBO_MEDIA_API int turbo_player_wait(turbo_player_t *player);
+TURBO_MEDIA_API int turbo_player_is_running(turbo_player_t *player);
+TURBO_MEDIA_API void turbo_player_stop(turbo_player_t *player);
+TURBO_MEDIA_API void turbo_player_pause(turbo_player_t *player);
+TURBO_MEDIA_API void turbo_player_resume(turbo_player_t *player);
+TURBO_MEDIA_API int turbo_player_seek_ms(turbo_player_t *player, int64_t position_ms);
 
-CXX_C_API int64_t turbo_player_get_duration_ms(turbo_player_t *player);
+TURBO_MEDIA_API int64_t turbo_player_get_duration_ms(turbo_player_t *player);
 
 #ifdef __cplusplus
 }

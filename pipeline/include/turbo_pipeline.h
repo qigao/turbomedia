@@ -62,7 +62,7 @@ typedef struct turbo_pipeline_stats {
  * @return A pipeline in CREATED state, or NULL for invalid input, schema,
  *         graph, limit or allocation errors.
  */
-CXX_C_API turbo_pipeline_t *turbo_pipeline_create_from_yaml(
+TURBO_MEDIA_API turbo_pipeline_t *turbo_pipeline_create_from_yaml(
     const char *yaml, size_t yaml_size, turbo_pipeline_error_t *error);
 
 /**
@@ -74,7 +74,7 @@ CXX_C_API turbo_pipeline_t *turbo_pipeline_create_from_yaml(
  * source subscription mutation is event-loop owned, quiesce the input
  * publisher before requesting stop and destroying a Runtime/RTP pipeline.
  */
-CXX_C_API turbo_pipeline_status_t turbo_pipeline_bind_server_runtime(
+TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_bind_server_runtime(
     turbo_pipeline_t *pipeline,
     turbo_media_server_runtime_t *runtime,
     turbo_pipeline_error_t *error);
@@ -87,7 +87,7 @@ CXX_C_API turbo_pipeline_status_t turbo_pipeline_bind_server_runtime(
  *
  * @return TURBO_PIPELINE_OK, or a configuration, I/O, FFmpeg or state error.
  */
-CXX_C_API turbo_pipeline_status_t turbo_pipeline_prepare(
+TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_prepare(
     turbo_pipeline_t *pipeline, turbo_pipeline_error_t *error);
 
 /**
@@ -101,20 +101,20 @@ CXX_C_API turbo_pipeline_status_t turbo_pipeline_prepare(
  * @return TURBO_PIPELINE_OK at EOF, TURBO_PIPELINE_ESTOPPED after cooperative
  *         cancellation, or a fatal processing error.
  */
-CXX_C_API turbo_pipeline_status_t turbo_pipeline_run(
+TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_run(
     turbo_pipeline_t *pipeline, turbo_pipeline_error_t *error);
 
 /**
  * Request cooperative cancellation of blocking FFmpeg I/O and processing.
  * @return TURBO_PIPELINE_OK, TURBO_PIPELINE_EINVAL or TURBO_PIPELINE_ESTATE.
  */
-CXX_C_API turbo_pipeline_status_t turbo_pipeline_request_stop(turbo_pipeline_t *pipeline);
+TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_request_stop(turbo_pipeline_t *pipeline);
 
 /** Return the current lifecycle state. */
-CXX_C_API turbo_pipeline_state_t turbo_pipeline_state(const turbo_pipeline_t *pipeline);
+TURBO_MEDIA_API turbo_pipeline_state_t turbo_pipeline_state(const turbo_pipeline_t *pipeline);
 
 /** Copy a point-in-time statistics snapshot. */
-CXX_C_API turbo_pipeline_status_t turbo_pipeline_stats(
+TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_stats(
     const turbo_pipeline_t *pipeline, turbo_pipeline_stats_t *stats);
 
 /**
@@ -124,7 +124,7 @@ CXX_C_API turbo_pipeline_status_t turbo_pipeline_stats(
  * allowed to return. Calling destroy while it is running requests stop but
  * deliberately does not free memory still owned by the running thread.
  */
-CXX_C_API void turbo_pipeline_destroy(turbo_pipeline_t *pipeline);
+TURBO_MEDIA_API void turbo_pipeline_destroy(turbo_pipeline_t *pipeline);
 
 #ifdef __cplusplus
 }

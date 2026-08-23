@@ -84,20 +84,20 @@ typedef struct {
 /**
  * Get human-readable string for error code
  */
-CXX_C_API const char *turbo_dc_error_string(turbo_dc_error_code_t code);
+TURBO_MEDIA_API const char *turbo_dc_error_string(turbo_dc_error_code_t code);
 
 /**
  * Get last error info from peer
  * This is the preferred API for errors during peer/channel operations.
  */
-CXX_C_API turbo_dc_error_t turbo_dc_peer_get_error(turbo_dc_peer_t *peer);
+TURBO_MEDIA_API turbo_dc_error_t turbo_dc_peer_get_error(turbo_dc_peer_t *peer);
 
 /**
  * Get last error info from context
  * Use this only for errors during turbo_dc_peer_create() when peer is NULL.
  * For all other errors, use turbo_dc_peer_get_error().
  */
-CXX_C_API turbo_dc_error_t turbo_dc_context_get_error(turbo_dc_context_t *ctx);
+TURBO_MEDIA_API turbo_dc_error_t turbo_dc_context_get_error(turbo_dc_context_t *ctx);
 
 #ifdef __cplusplus
 }

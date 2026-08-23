@@ -6,7 +6,7 @@
  * quiesce and tear down the sessions, and missing providers fail fast. */
 #include "ivr_media_bot.h"
 #include "ivr_thread.h"
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include <string.h>
 
 static const ivr_call_ref_t g_call = {
@@ -268,8 +268,8 @@ static void setUp(void) {
     cfg.sample_rate = 16000;
     cfg.on_event = observe_event;
     cfg.event_ctx = &g_obs;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_media_bot_create(&cfg, &g_bot));
-    TEST_ASSERT_NOT_NULL(g_bot);
+    check_equal(ivr_media_bot_create(&cfg, &g_bot), IVR_OK);
+    check_not_null(g_bot);
     ivr_media_bot_get_ops(g_bot, &g_ops);
 }
 
@@ -282,52 +282,49 @@ static void tearDown(void) {
 }
 
 void test_start_and_play_tts_pcm(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
     g_tts.complete_on_synthesize = 1;
     static ivr_bytes_view_t text = {"hello there", 11};
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.play_pcm(g_ops.context, &g_call, &text));
-    TEST_ASSERT_EQUAL_INT(1, g_tts.synthesize_count);
+    check_equal(g_ops.play_pcm(g_ops.context, &g_call, &text), IVR_OK);
+    check_equal((int)(g_tts.synthesize_count), (int)(1));
     /* TTS emitted 3 frames of 32 bytes each to the transport */
-    TEST_ASSERT_EQUAL_INT(3, g_loop.play_audio_count);
-    TEST_ASSERT_EQUAL_size_t(96u, g_loop.play_audio_bytes);
-    TEST_ASSERT_EQUAL_INT(1, g_obs.playback_finished_count);
-    TEST_ASSERT_EQUAL_INT(0, g_asr.start_count);
+    check_equal((int)(g_loop.play_audio_count), (int)(3));
+    check_equal((size_t)(g_loop.play_audio_bytes), (size_t)(96u));
+    check_equal((int)(g_obs.playback_finished_count), (int)(1));
+    check_equal((int)(g_asr.start_count), (int)(0));
 }
 
 void test_caller_audio_produces_asr_final(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
     static const ivr_bytes_view_t input_id = {"input-42", 8};
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.begin_input(g_ops.context, &g_call,
-                                               &input_id, 1));
+    check_equal(g_ops.begin_input(g_ops.context, &g_call,
+                                               &input_id, 1), IVR_OK);
     static const uint8_t pcm[32] = {0};
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_media_bot_feed_caller_audio(g_bot, &g_call,
-                                                              pcm, sizeof(pcm)));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_media_bot_feed_caller_audio(g_bot, &g_call,
-                                                              pcm, sizeof(pcm)));
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_media_bot_feed_caller_audio(g_bot, &g_call,
-                                                              pcm, sizeof(pcm)));
+    check_equal(ivr_media_bot_feed_caller_audio(g_bot, &g_call,
+                                                              pcm, sizeof(pcm)), IVR_OK);
+    check_equal(ivr_media_bot_feed_caller_audio(g_bot, &g_call,
+                                                              pcm, sizeof(pcm)), IVR_OK);
+    check_equal(ivr_media_bot_feed_caller_audio(g_bot, &g_call,
+                                                              pcm, sizeof(pcm)), IVR_OK);
     /* ASR emits its final on the 3rd write -> asr.final event */
     ivr_mutex_lock(&g_obs.lock);
     int finals = g_obs.asr_final_count;
     ivr_mutex_unlock(&g_obs.lock);
-    TEST_ASSERT_EQUAL_INT(1, finals);
-    TEST_ASSERT_EQUAL_STRING("hello", g_obs.input_value);
-    TEST_ASSERT_EQUAL_STRING("input-42", g_obs.input_id);
-    TEST_ASSERT_EQUAL_INT(3, g_asr.write_count);
+    check_equal((int)(finals), (int)(1));
+    check_equal(g_obs.input_value, "hello");
+    check_equal(g_obs.input_id, "input-42");
+    check_equal((int)(g_asr.write_count), (int)(3));
 }
 
 void test_input_end_finishes_and_allows_next_window(void) {
     static const ivr_bytes_view_t first = {"input-1", 7};
     static const ivr_bytes_view_t second = {"input-2", 7};
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      g_ops.begin_input(g_ops.context, &g_call, &first, 1));
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      g_ops.end_input(g_ops.context, &g_call, &first, 1));
-    TEST_ASSERT_EQUAL_INT(1, g_asr.finish_count);
-    TEST_ASSERT_EQUAL(IVR_OK,
-                      g_ops.begin_input(g_ops.context, &g_call, &second, 2));
-    TEST_ASSERT_EQUAL_INT(2, g_asr.start_count);
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
+    check_equal(g_ops.begin_input(g_ops.context, &g_call, &first, 1), IVR_OK);
+    check_equal(g_ops.end_input(g_ops.context, &g_call, &first, 1), IVR_OK);
+    check_equal((int)(g_asr.finish_count), (int)(1));
+    check_equal(g_ops.begin_input(g_ops.context, &g_call, &second, 2), IVR_OK);
+    check_equal((int)(g_asr.start_count), (int)(2));
 }
 
 void test_tts_failure_produces_provider_error(void) {
@@ -335,22 +332,21 @@ void test_tts_failure_produces_provider_error(void) {
     int errors;
     char payload[sizeof(g_obs.provider_error_payload)];
 
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
     g_tts.synthesize_error = TURBO_SPEECH_ERR_PROVIDER;
-    TEST_ASSERT_EQUAL(IVR_ESTATE,
-                      g_ops.play_pcm(g_ops.context, &g_call, &text));
+    check_equal(g_ops.play_pcm(g_ops.context, &g_call, &text), IVR_ESTATE);
 
     ivr_mutex_lock(&g_obs.lock);
     errors = g_obs.provider_error_count;
     memcpy(payload, g_obs.provider_error_payload, sizeof(payload));
     ivr_mutex_unlock(&g_obs.lock);
-    TEST_ASSERT_EQUAL_INT(1, errors);
-    TEST_ASSERT_NOT_NULL(strstr(payload, "\"provider\":\"tts\""));
-    TEST_ASSERT_NOT_NULL(strstr(payload, "\"error_code\":"));
+    check_equal((int)(errors), (int)(1));
+    check_not_null(strstr(payload, "\"provider\":\"tts\""));
+    check_not_null(strstr(payload, "\"error_code\":"));
 }
 
 void test_audio_for_wrong_call_dropped(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
     static ivr_bytes_view_t text = {"hi", 2};
     static const ivr_call_ref_t other = {
         .provider_session_id = {"session-99", 10},
@@ -358,41 +354,39 @@ void test_audio_for_wrong_call_dropped(void) {
         .room_id = {"room-99", 7},
         .call_id = {"call-99", 7},
         .call_generation = 1};
-    TEST_ASSERT_EQUAL(IVR_ESTATE,
-                      g_ops.play_pcm(g_ops.context, &other, &text));
+    check_equal(g_ops.play_pcm(g_ops.context, &other, &text), IVR_ESTATE);
     static const uint8_t pcm[16] = {0};
-    TEST_ASSERT_EQUAL(IVR_ESTATE,
-                      ivr_media_bot_feed_caller_audio(g_bot, &other, pcm,
-                                                      sizeof(pcm)));
+    check_equal(ivr_media_bot_feed_caller_audio(g_bot, &other, pcm,
+                                                      sizeof(pcm)), IVR_ESTATE);
 }
 
 void test_cancel_quiesces_and_stop_tears_down(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
     static const ivr_bytes_view_t input_id = {"input-42", 8};
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.begin_input(g_ops.context, &g_call,
-                                               &input_id, 1));
-    TEST_ASSERT_EQUAL_INT(1, g_asr.start_count);
+    check_equal(g_ops.begin_input(g_ops.context, &g_call,
+                                               &input_id, 1), IVR_OK);
+    check_equal((int)(g_asr.start_count), (int)(1));
     /* a prompt must be running for TTS cancel to reach the provider */
     static ivr_bytes_view_t prompt = {"hello", 5};
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.play_pcm(g_ops.context, &g_call, &prompt));
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.cancel_input(g_ops.context, &g_call));
-    TEST_ASSERT_EQUAL_INT(1, g_tts.cancel_count);
-    TEST_ASSERT_EQUAL_INT(1, g_asr.cancel_count);
+    check_equal(g_ops.play_pcm(g_ops.context, &g_call, &prompt), IVR_OK);
+    check_equal(g_ops.cancel_input(g_ops.context, &g_call), IVR_OK);
+    check_equal((int)(g_tts.cancel_count), (int)(1));
+    check_equal((int)(g_asr.cancel_count), (int)(1));
 
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.stop_bot(g_ops.context, &g_call));
-    TEST_ASSERT_EQUAL_INT(1, g_tts.destroy_count);
-    TEST_ASSERT_EQUAL_INT(1, g_asr.destroy_count);
-    TEST_ASSERT_EQUAL_INT(1, g_loop.stop_count);
+    check_equal(g_ops.stop_bot(g_ops.context, &g_call), IVR_OK);
+    check_equal((int)(g_tts.destroy_count), (int)(1));
+    check_equal((int)(g_asr.destroy_count), (int)(1));
+    check_equal((int)(g_loop.stop_count), (int)(1));
 
     /* after stop the peer is gone: play fails fast */
     static ivr_bytes_view_t text = {"hi", 2};
-    TEST_ASSERT_EQUAL(IVR_ESTATE, g_ops.play_pcm(g_ops.context, &g_call, &text));
+    check_equal(g_ops.play_pcm(g_ops.context, &g_call, &text), IVR_ESTATE);
     /* and the call can be re-started */
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
 }
 
 void test_second_active_call_rejected(void) {
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
     static const ivr_call_ref_t other = {
         .provider_session_id = {"session-43", 10},
         .dialog_id = {"dialog-43", 9},
@@ -400,7 +394,7 @@ void test_second_active_call_rejected(void) {
         .call_id = {"call-43", 7},
         .call_generation = 1,
         .expected_room_version = 1};
-    TEST_ASSERT_EQUAL(IVR_ESTATE, g_ops.start_bot(g_ops.context, &other));
+    check_equal(g_ops.start_bot(g_ops.context, &other), IVR_ESTATE);
 }
 
 void test_missing_tts_fails_fast(void) {
@@ -409,13 +403,13 @@ void test_missing_tts_fails_fast(void) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.asr_provider = &g_asr_provider;
     cfg.transport = g_transport;
-    TEST_ASSERT_EQUAL(IVR_OK, ivr_media_bot_create(&cfg, &bot));
+    check_equal(ivr_media_bot_create(&cfg, &bot), IVR_OK);
     ivr_media_port_ops_t ops;
     ivr_media_bot_get_ops(bot, &ops);
-    TEST_ASSERT_EQUAL(IVR_OK, ops.start_bot(ops.context, &g_call));
+    check_equal(ops.start_bot(ops.context, &g_call), IVR_OK);
     static ivr_bytes_view_t text = {"hi", 2};
-    TEST_ASSERT_EQUAL(IVR_ESTATE, ops.play_pcm(ops.context, &g_call, &text));
-    TEST_ASSERT_EQUAL_INT(0, g_tts.synthesize_count);
+    check_equal(ops.play_pcm(ops.context, &g_call, &text), IVR_ESTATE);
+    check_equal((int)(g_tts.synthesize_count), (int)(0));
     ivr_media_bot_destroy(bot);
 }
 
@@ -450,52 +444,50 @@ void test_concurrent_feed_and_stop(void) {
     /* feed_caller_audio is documented thread-safe: a receiver thread feeding
        PCM while stop_bot tears the ASR session down must never touch a freed
     session (ASan build catches any UAF). */
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
     static const ivr_bytes_view_t input_id = {"input-stress", 12};
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.begin_input(g_ops.context, &g_call,
-                                               &input_id, 1));
+    check_equal(g_ops.begin_input(g_ops.context, &g_call,
+                                               &input_id, 1), IVR_OK);
     bot_stress_t s = {g_bot, g_call, 20000};
     ivr_thread_t th;
-    TEST_ASSERT_EQUAL_INT(0, ivr_thread_create(&th, feed_thread_main, &s));
+    check_equal((int)(ivr_thread_create(&th, feed_thread_main, &s)), (int)(0));
     ivr_thread_sleep_ms(5);
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.stop_bot(g_ops.context, &g_call));
+    check_equal(g_ops.stop_bot(g_ops.context, &g_call), IVR_OK);
     ivr_thread_join(&th);
-    TEST_ASSERT_EQUAL_INT(1, g_asr.destroy_count);
+    check_equal((int)(g_asr.destroy_count), (int)(1));
     /* after stop the peer is gone: feeding fails fast */
     static const uint8_t pcm[16] = {0};
-    TEST_ASSERT_EQUAL(IVR_ESTATE,
-                      ivr_media_bot_feed_caller_audio(g_bot, &g_call, pcm,
-                                                      sizeof(pcm)));
+    check_equal(ivr_media_bot_feed_caller_audio(g_bot, &g_call, pcm,
+                                                      sizeof(pcm)), IVR_ESTATE);
 }
 
 void test_concurrent_play_and_stop(void) {
     /* play_pcm holds a session borrow across synthesize; a concurrent
        stop_bot must wait for it before destroying the TTS session. */
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.start_bot(g_ops.context, &g_call));
+    check_equal(g_ops.start_bot(g_ops.context, &g_call), IVR_OK);
     bot_stress_t s = {g_bot, g_call, 20000};
     ivr_thread_t th;
-    TEST_ASSERT_EQUAL_INT(0, ivr_thread_create(&th, play_thread_main, &s));
+    check_equal((int)(ivr_thread_create(&th, play_thread_main, &s)), (int)(0));
     ivr_thread_sleep_ms(5);
-    TEST_ASSERT_EQUAL(IVR_OK, g_ops.stop_bot(g_ops.context, &g_call));
+    check_equal(g_ops.stop_bot(g_ops.context, &g_call), IVR_OK);
     ivr_thread_join(&th);
-    TEST_ASSERT_EQUAL_INT(1, g_tts.destroy_count);
+    check_equal((int)(g_tts.destroy_count), (int)(1));
     static ivr_bytes_view_t text = {"hi", 2};
-    TEST_ASSERT_EQUAL(IVR_ESTATE,
-                      g_ops.play_pcm(g_ops.context, &g_call, &text));
+    check_equal(g_ops.play_pcm(g_ops.context, &g_call, &text), IVR_ESTATE);
 }
 
 spec("test_ivr_media_bot") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 
-  TT_TEST(test_start_and_play_tts_pcm);
-  TT_TEST(test_caller_audio_produces_asr_final);
-  TT_TEST(test_input_end_finishes_and_allows_next_window);
-  TT_TEST(test_tts_failure_produces_provider_error);
-  TT_TEST(test_audio_for_wrong_call_dropped);
-  TT_TEST(test_cancel_quiesces_and_stop_tears_down);
-  TT_TEST(test_second_active_call_rejected);
-  TT_TEST(test_missing_tts_fails_fast);
-  TT_TEST(test_concurrent_feed_and_stop);
-  TT_TEST(test_concurrent_play_and_stop);
+  it("test_start_and_play_tts_pcm") { test_start_and_play_tts_pcm(); };
+  it("test_caller_audio_produces_asr_final") { test_caller_audio_produces_asr_final(); };
+  it("test_input_end_finishes_and_allows_next_window") { test_input_end_finishes_and_allows_next_window(); };
+  it("test_tts_failure_produces_provider_error") { test_tts_failure_produces_provider_error(); };
+  it("test_audio_for_wrong_call_dropped") { test_audio_for_wrong_call_dropped(); };
+  it("test_cancel_quiesces_and_stop_tears_down") { test_cancel_quiesces_and_stop_tears_down(); };
+  it("test_second_active_call_rejected") { test_second_active_call_rejected(); };
+  it("test_missing_tts_fails_fast") { test_missing_tts_fails_fast(); };
+  it("test_concurrent_feed_and_stop") { test_concurrent_feed_and_stop(); };
+  it("test_concurrent_play_and_stop") { test_concurrent_play_and_stop(); };
 }

@@ -161,7 +161,7 @@ suite("turbo_media_pipeline") {
             if (!pipeline) fprintf(stderr, "pipeline config error: %s\n", error.message);
             check_not_null(pipeline);
             if (pipeline) {
-                check_int_eq(turbo_pipeline_state(pipeline),
+                check_equal(turbo_pipeline_state(pipeline),
                              TURBO_PIPELINE_STATE_CREATED);
                 turbo_pipeline_destroy(pipeline);
             }
@@ -179,7 +179,7 @@ suite("turbo_media_pipeline") {
                 yaml, sizeof(yaml) - 1u, &error);
 
             check_null(pipeline);
-            check_int_eq(error.code, TURBO_PIPELINE_ECONFIG);
+            check_equal(error.code, TURBO_PIPELINE_ECONFIG);
         }
 
         it("rejects duplicate node identifiers") {
@@ -200,7 +200,7 @@ suite("turbo_media_pipeline") {
                 turbo_pipeline_create_from_yaml(yaml, sizeof(yaml) - 1u, &error);
 
             check_null(pipeline);
-            check_int_eq(error.code, TURBO_PIPELINE_EGRAPH);
+            check_equal(error.code, TURBO_PIPELINE_EGRAPH);
         }
 
         it("rejects unknown YAML fields before graph compilation") {
@@ -213,8 +213,8 @@ suite("turbo_media_pipeline") {
             pipeline = turbo_pipeline_create_from_yaml(yaml, (size_t)length, &error);
 
             check_null(pipeline);
-            check_int_eq(error.code, TURBO_PIPELINE_ECONFIG);
-            check_str_contains(error.message, "unknown field");
+            check_equal(error.code, TURBO_PIPELINE_ECONFIG);
+            check_contains(error.message, "unknown field");
         }
 
         it("rejects graph cycles") {
@@ -229,8 +229,8 @@ suite("turbo_media_pipeline") {
             pipeline = turbo_pipeline_create_from_yaml(yaml, (size_t)length, &error);
 
             check_null(pipeline);
-            check_int_eq(error.code, TURBO_PIPELINE_EGRAPH);
-            check_str_contains(error.message, "cycle");
+            check_equal(error.code, TURBO_PIPELINE_EGRAPH);
+            check_contains(error.message, "cycle");
         }
 
         it("rejects labeled multi-endpoint filter syntax") {
@@ -257,7 +257,7 @@ suite("turbo_media_pipeline") {
                 turbo_pipeline_create_from_yaml(yaml, sizeof(yaml) - 1u, &error);
 
             check_null(pipeline);
-            check_int_eq(error.code, TURBO_PIPELINE_ECONFIG);
+            check_equal(error.code, TURBO_PIPELINE_ECONFIG);
         }
     }
 
@@ -275,8 +275,8 @@ suite("turbo_media_pipeline") {
             check_not_null(missing_path);
             check_not_null(output_path);
             if (!missing_path || !output_path) goto cleanup_failed_prepare;
-            check_int_eq(tt_remove_file(missing_path), 0);
-            check_int_eq(tt_remove_file(output_path), 0);
+            check_equal(tt_remove_file(missing_path), 0);
+            check_equal(tt_remove_file(output_path), 0);
             normalize_path(missing_path);
             normalize_path(output_path);
             yaml_size = snprintf(
@@ -301,13 +301,13 @@ suite("turbo_media_pipeline") {
             check_not_null(pipeline);
             if (!pipeline) goto cleanup_failed_prepare;
 
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error),
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
                          TURBO_PIPELINE_EFFMPEG);
-            check_int_eq(turbo_pipeline_state(pipeline),
+            check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_FAILED);
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error),
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
                          TURBO_PIPELINE_ESTATE);
-            check_int_eq(turbo_pipeline_request_stop(pipeline),
+            check_equal(turbo_pipeline_request_stop(pipeline),
                          TURBO_PIPELINE_ESTATE);
 
         cleanup_failed_prepare:
@@ -334,7 +334,7 @@ suite("turbo_media_pipeline") {
             if (!input_path || !output_path) goto cleanup_stop;
             normalize_path(input_path);
             normalize_path(output_path);
-            check_int_eq(write_test_wav(input_path), 0);
+            check_equal(write_test_wav(input_path), 0);
             yaml_size = snprintf(
                 yaml, sizeof(yaml),
                 "api_version: turbo.media.pipeline/v1\n"
@@ -356,18 +356,18 @@ suite("turbo_media_pipeline") {
                 turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
             check_not_null(pipeline);
             if (!pipeline) goto cleanup_stop;
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error),
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
                          TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_request_stop(pipeline),
+            check_equal(turbo_pipeline_request_stop(pipeline),
                          TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_run(pipeline, &error),
+            check_equal(turbo_pipeline_run(pipeline, &error),
                          TURBO_PIPELINE_ESTOPPED);
-            check_int_eq(turbo_pipeline_state(pipeline),
+            check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_STOPPED);
-            check_int_eq(turbo_pipeline_stats(pipeline, &stats),
+            check_equal(turbo_pipeline_stats(pipeline, &stats),
                          TURBO_PIPELINE_OK);
-            check_int_eq((int)stats.packets_read, 0);
-            check_int_eq((int)stats.packets_written, 0);
+            check_equal((int)stats.packets_read, 0);
+            check_equal((int)stats.packets_written, 0);
 
         cleanup_stop:
             turbo_pipeline_destroy(pipeline);
@@ -393,7 +393,7 @@ suite("turbo_media_pipeline") {
             if (!input_path || !output_path) goto cleanup_copy;
             normalize_path(input_path);
             normalize_path(output_path);
-            check_int_eq(write_test_wav(input_path), 0);
+            check_equal(write_test_wav(input_path), 0);
             yaml_size = snprintf(
                 yaml, sizeof(yaml),
                 "api_version: turbo.media.pipeline/v1\n"
@@ -413,22 +413,22 @@ suite("turbo_media_pipeline") {
             pipeline = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
             check_not_null(pipeline);
             if (!pipeline) goto cleanup_copy;
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
             if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED)
                 goto cleanup_copy;
-            check_int_eq(turbo_pipeline_run(pipeline, &error), TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_stats(pipeline, &stats), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_run(pipeline, &error), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_stats(pipeline, &stats), TURBO_PIPELINE_OK);
             check_true(stats.packets_read > 0);
             check_true(stats.packets_written > 0);
-            check_int_eq((int)stats.frames_decoded, 0);
+            check_equal((int)stats.frames_decoded, 0);
             output_data = tt_read_file(output_path, &output_size);
             check_not_null(output_data);
             check_true(output_size > 4u);
             if (output_data && output_size >= 4u) {
-                check_int_eq((unsigned char)output_data[0], 0x1a);
-                check_int_eq((unsigned char)output_data[1], 0x45);
-                check_int_eq((unsigned char)output_data[2], 0xdf);
-                check_int_eq((unsigned char)output_data[3], 0xa3);
+                check_equal((unsigned char)output_data[0], 0x1a);
+                check_equal((unsigned char)output_data[1], 0x45);
+                check_equal((unsigned char)output_data[2], 0xdf);
+                check_equal((unsigned char)output_data[3], 0xa3);
             }
 
         cleanup_copy:
@@ -456,7 +456,7 @@ suite("turbo_media_pipeline") {
             if (!input_path || !output_path) goto cleanup;
             normalize_path(input_path);
             normalize_path(output_path);
-            check_int_eq(write_test_wav(input_path), 0);
+            check_equal(write_test_wav(input_path), 0);
 
             yaml_size = snprintf(
                 yaml, sizeof(yaml),
@@ -491,12 +491,12 @@ suite("turbo_media_pipeline") {
             if (!pipeline) fprintf(stderr, "pipeline runtime config error: %s\n", error.message);
             check_not_null(pipeline);
             if (!pipeline) goto cleanup;
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
             if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED)
                 goto cleanup;
-            check_int_eq(turbo_pipeline_run(pipeline, &error), TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_state(pipeline), TURBO_PIPELINE_STATE_STOPPED);
-            check_int_eq(turbo_pipeline_stats(pipeline, &stats), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_run(pipeline, &error), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_state(pipeline), TURBO_PIPELINE_STATE_STOPPED);
+            check_equal(turbo_pipeline_stats(pipeline, &stats), TURBO_PIPELINE_OK);
             check_true(stats.packets_read > 0);
             check_true(stats.frames_decoded > 0);
             check_true(stats.frames_encoded > 0);
@@ -535,7 +535,7 @@ suite("turbo_media_pipeline") {
             if (!input_path || !output_path) goto cleanup_video;
             normalize_path(input_path);
             normalize_path(output_path);
-            check_int_eq(write_test_yuv420p(input_path), 0);
+            check_equal(write_test_yuv420p(input_path), 0);
             yaml_size = snprintf(
                 yaml, sizeof(yaml),
                 "api_version: turbo.media.pipeline/v1\n"
@@ -569,11 +569,11 @@ suite("turbo_media_pipeline") {
             pipeline = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
             check_not_null(pipeline);
             if (!pipeline) goto cleanup_video;
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
             if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED)
                 goto cleanup_video;
-            check_int_eq(turbo_pipeline_run(pipeline, &error), TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_stats(pipeline, &stats), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_run(pipeline, &error), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_stats(pipeline, &stats), TURBO_PIPELINE_OK);
             check_true(stats.frames_decoded >= 2u);
             check_true(stats.frames_encoded >= 2u);
             check_true(stats.packets_written > 0);
@@ -647,13 +647,13 @@ suite("turbo_media_pipeline") {
             runtime = turbo_media_server_runtime_create(NULL);
             check_not_null(runtime);
             if (!runtime) goto runtime_cleanup;
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &input_key, "default", "live", "whip"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &output_key, "default", "live", "whep"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_server_runtime_get_or_create_source(
+            check_equal(turbo_media_server_runtime_get_or_create_source(
                              runtime, &input_key, &input_source),
                          TURBO_MEDIA_OK);
             video.track_id = 10;
@@ -668,9 +668,9 @@ suite("turbo_media_pipeline") {
             audio.clock_rate = 48000;
             audio.sample_rate = 48000;
             audio.channels = 2;
-            check_int_eq(turbo_media_source_add_track(input_source, &video, NULL),
+            check_equal(turbo_media_source_add_track(input_source, &video, NULL),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_source_add_track(input_source, &audio, NULL),
+            check_equal(turbo_media_source_add_track(input_source, &audio, NULL),
                          TURBO_MEDIA_OK);
 
             pipeline = turbo_pipeline_create_from_yaml(
@@ -679,25 +679,25 @@ suite("turbo_media_pipeline") {
                 fprintf(stderr, "Runtime/RTP config error: %s\n", error.message);
             check_not_null(pipeline);
             if (!pipeline) goto runtime_cleanup;
-            check_int_eq(turbo_pipeline_bind_server_runtime(
+            check_equal(turbo_pipeline_bind_server_runtime(
                              pipeline, runtime, &error),
                          TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error),
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
                          TURBO_PIPELINE_OK);
             if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED)
                 goto runtime_cleanup;
-            check_int_eq(turbo_media_server_runtime_find_source(
+            check_equal(turbo_media_server_runtime_find_source(
                              runtime, &output_key, &output_source),
                          TURBO_MEDIA_OK);
             check_not_null(output_source);
             if (!output_source) goto runtime_cleanup;
-            check_int_eq(turbo_media_source_subscribe(
+            check_equal(turbo_media_source_subscribe(
                              output_source, capture_runtime_rtp, &capture, 0,
                              &output_subscription),
                          TURBO_MEDIA_OK);
 
             run_result.pipeline = pipeline;
-            check_int_eq(turbo_thread_create(
+            check_equal(turbo_thread_create(
                              &thread, run_pipeline_thread, &run_result),
                          0);
             for (wait_count = 0; wait_count < 100 &&
@@ -705,7 +705,7 @@ suite("turbo_media_pipeline") {
                                      TURBO_PIPELINE_STATE_RUNNING;
                  ++wait_count)
                 turbo_sleep_ms(1);
-            check_int_eq(turbo_pipeline_state(pipeline),
+            check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_RUNNING);
 
             h264_size = make_rtp_packet(
@@ -720,52 +720,52 @@ suite("turbo_media_pipeline") {
             frame.track_id = 10;
             frame.data = h264_rtp;
             frame.size = (size_t)h264_size;
-            check_int_eq(turbo_media_source_publish(input_source, &frame),
+            check_equal(turbo_media_source_publish(input_source, &frame),
                          TURBO_MEDIA_OK);
             frame.track_id = 20;
             frame.data = opus_rtp;
             frame.size = (size_t)opus_size;
-            check_int_eq(turbo_media_source_publish(input_source, &frame),
+            check_equal(turbo_media_source_publish(input_source, &frame),
                          TURBO_MEDIA_OK);
             for (wait_count = 0;
                  wait_count < 1000 &&
                  atomic_load_explicit(&capture.count, memory_order_acquire) < 2;
                  ++wait_count)
                 turbo_sleep_ms(1);
-            check_int_eq(
+            check_equal(
                 atomic_load_explicit(&capture.count, memory_order_acquire), 2);
 
-            check_int_eq(turbo_pipeline_request_stop(pipeline),
+            check_equal(turbo_pipeline_request_stop(pipeline),
                          TURBO_PIPELINE_OK);
-            check_int_eq(turbo_thread_join(&thread), 0);
+            check_equal(turbo_thread_join(&thread), 0);
             turbo_thread_destroy(&thread);
             thread = NULL;
-            check_int_eq(run_result.status, TURBO_PIPELINE_ESTOPPED);
-            check_int_eq(turbo_pipeline_stats(pipeline, &stats),
+            check_equal(run_result.status, TURBO_PIPELINE_ESTOPPED);
+            check_equal(turbo_pipeline_stats(pipeline, &stats),
                          TURBO_PIPELINE_OK);
-            check_int_eq((int)stats.packets_read, 2);
-            check_int_eq((int)stats.packets_written, 2);
-            check_int_eq((int)stats.frames_decoded, 2);
-            check_int_eq((int)stats.frames_encoded, 2);
+            check_equal((int)stats.packets_read, 2);
+            check_equal((int)stats.packets_written, 2);
+            check_equal((int)stats.frames_decoded, 2);
+            check_equal((int)stats.frames_encoded, 2);
 
-            check_int_eq(rtp_packet_deserialize(
+            check_equal(rtp_packet_deserialize(
                              &parsed, capture.packets[0],
                              (int)capture.sizes[0]),
                          0);
-            check_int_eq((int)parsed.rtp.pt, 96);
-            check_int_eq((int)parsed.rtp.timestamp, 90000);
-            check_int_eq((int)parsed.rtp.ssrc, (int)0x10203040u);
-            check_int_eq(parsed.payloadlen, (int)sizeof(h264_payload));
+            check_equal((int)parsed.rtp.pt, 96);
+            check_equal((int)parsed.rtp.timestamp, 90000);
+            check_equal((int)parsed.rtp.ssrc, (int)0x10203040u);
+            check_equal(parsed.payloadlen, (int)sizeof(h264_payload));
             check_true(memcmp(parsed.payload, h264_payload,
                               sizeof(h264_payload)) == 0);
-            check_int_eq(rtp_packet_deserialize(
+            check_equal(rtp_packet_deserialize(
                              &parsed, capture.packets[1],
                              (int)capture.sizes[1]),
                          0);
-            check_int_eq((int)parsed.rtp.pt, 111);
-            check_int_eq((int)parsed.rtp.timestamp, 48000);
-            check_int_eq((int)parsed.rtp.ssrc, (int)0x50607080u);
-            check_int_eq(parsed.payloadlen, (int)sizeof(opus_payload));
+            check_equal((int)parsed.rtp.pt, 111);
+            check_equal((int)parsed.rtp.timestamp, 48000);
+            check_equal((int)parsed.rtp.ssrc, (int)0x50607080u);
+            check_equal(parsed.payloadlen, (int)sizeof(opus_payload));
             check_true(memcmp(parsed.payload, opus_payload,
                               sizeof(opus_payload)) == 0);
 
@@ -848,13 +848,13 @@ suite("turbo_media_pipeline") {
             runtime = turbo_media_server_runtime_create(NULL);
             check_not_null(runtime);
             if (!runtime) goto transcode_cleanup;
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &input_key, "default", "live", "opus-in"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &output_key, "default", "live", "opus-out"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_server_runtime_get_or_create_source(
+            check_equal(turbo_media_server_runtime_get_or_create_source(
                              runtime, &input_key, &input_source),
                          TURBO_MEDIA_OK);
             audio.track_id = 20;
@@ -864,7 +864,7 @@ suite("turbo_media_pipeline") {
             audio.clock_rate = SAMPLE_RATE;
             audio.sample_rate = SAMPLE_RATE;
             audio.channels = CHANNELS;
-            check_int_eq(turbo_media_source_add_track(input_source, &audio, NULL),
+            check_equal(turbo_media_source_add_track(input_source, &audio, NULL),
                          TURBO_MEDIA_OK);
             pipeline = turbo_pipeline_create_from_yaml(
                 yaml, sizeof(yaml) - 1u, &error);
@@ -873,10 +873,10 @@ suite("turbo_media_pipeline") {
                         error.message);
             check_not_null(pipeline);
             if (!pipeline) goto transcode_cleanup;
-            check_int_eq(turbo_pipeline_bind_server_runtime(
+            check_equal(turbo_pipeline_bind_server_runtime(
                              pipeline, runtime, &error),
                          TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error),
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
                          TURBO_PIPELINE_OK);
             if (turbo_pipeline_state(pipeline) !=
                 TURBO_PIPELINE_STATE_PREPARED) {
@@ -884,24 +884,24 @@ suite("turbo_media_pipeline") {
                         error.message);
                 goto transcode_cleanup;
             }
-            check_int_eq(turbo_media_server_runtime_find_source(
+            check_equal(turbo_media_server_runtime_find_source(
                              runtime, &output_key, &output_source),
                          TURBO_MEDIA_OK);
             check_not_null(output_source);
             if (!output_source) goto transcode_cleanup;
-            check_int_eq(turbo_media_source_get_track_at(
+            check_equal(turbo_media_source_get_track_at(
                              output_source, 0, &output_track),
                          TURBO_MEDIA_OK);
             check_true(strcmp(output_track.codec_name, "opus") == 0);
-            check_int_eq(output_track.clock_rate, SAMPLE_RATE);
-            check_int_eq(output_track.sample_rate, SAMPLE_RATE);
-            check_int_eq(output_track.channels, CHANNELS);
-            check_int_eq(turbo_media_source_subscribe(
+            check_equal(output_track.clock_rate, SAMPLE_RATE);
+            check_equal(output_track.sample_rate, SAMPLE_RATE);
+            check_equal(output_track.channels, CHANNELS);
+            check_equal(turbo_media_source_subscribe(
                              output_source, capture_runtime_rtp, &capture, 0,
                              &output_subscription),
                          TURBO_MEDIA_OK);
             run_result.pipeline = pipeline;
-            check_int_eq(turbo_thread_create(
+            check_equal(turbo_thread_create(
                              &thread, run_pipeline_thread, &run_result),
                          0);
             for (wait_count = 0;
@@ -910,7 +910,7 @@ suite("turbo_media_pipeline") {
                      TURBO_PIPELINE_STATE_RUNNING;
                  ++wait_count)
                 turbo_sleep_ms(1);
-            check_int_eq(turbo_pipeline_state(pipeline),
+            check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_RUNNING);
 
             for (frame_index = 0; frame_index < FRAME_COUNT; ++frame_index) {
@@ -924,7 +924,7 @@ suite("turbo_media_pipeline") {
                         (int16_t)(((sample_index + (size_t)frame_index * 97u) %
                                   2000u) -
                                  1000);
-                check_int_eq(turbo_codec_encode(
+                check_equal(turbo_codec_encode(
                                  input_encoder, (const uint8_t *)pcm,
                                  sizeof(pcm), opus_payload, &opus_size, NULL),
                              TURBO_CODEC_OK);
@@ -938,7 +938,7 @@ suite("turbo_media_pipeline") {
                 frame.track_id = 20;
                 frame.data = rtp;
                 frame.size = (size_t)rtp_size;
-                check_int_eq(turbo_media_source_publish(input_source, &frame),
+                check_equal(turbo_media_source_publish(input_source, &frame),
                              TURBO_MEDIA_OK);
             }
             for (wait_count = 0;
@@ -951,9 +951,9 @@ suite("turbo_media_pipeline") {
                 turbo_sleep_ms(1);
             if (turbo_pipeline_state(pipeline) ==
                 TURBO_PIPELINE_STATE_RUNNING)
-                check_int_eq(turbo_pipeline_request_stop(pipeline),
+                check_equal(turbo_pipeline_request_stop(pipeline),
                              TURBO_PIPELINE_OK);
-            check_int_eq(turbo_thread_join(&thread), 0);
+            check_equal(turbo_thread_join(&thread), 0);
             turbo_thread_destroy(&thread);
             thread = NULL;
             if (run_result.status != TURBO_PIPELINE_ESTOPPED)
@@ -961,18 +961,18 @@ suite("turbo_media_pipeline") {
                         run_result.error.message);
             check_true(atomic_load_explicit(&capture.count,
                                             memory_order_acquire) >= 1);
-            check_int_eq(run_result.status, TURBO_PIPELINE_ESTOPPED);
-            check_int_eq(turbo_pipeline_stats(pipeline, &stats),
+            check_equal(run_result.status, TURBO_PIPELINE_ESTOPPED);
+            check_equal(turbo_pipeline_stats(pipeline, &stats),
                          TURBO_PIPELINE_OK);
             check_true(stats.frames_decoded >= 1u);
             check_true(stats.frames_encoded >= 1u);
             check_true(stats.packets_written >= 1u);
-            check_int_eq(rtp_packet_deserialize(
+            check_equal(rtp_packet_deserialize(
                              &parsed, capture.packets[1],
                              (int)capture.sizes[1]),
                          0);
-            check_int_eq((int)parsed.rtp.pt, 111);
-            check_int_eq((int)parsed.rtp.ssrc, (int)0x55667788u);
+            check_equal((int)parsed.rtp.pt, 111);
+            check_equal((int)parsed.rtp.ssrc, (int)0x55667788u);
             check_true(parsed.payloadlen > 0);
 
         transcode_cleanup:
@@ -1023,13 +1023,13 @@ suite("turbo_media_pipeline") {
             runtime = turbo_media_server_runtime_create(NULL);
             check_not_null(runtime);
             if (!runtime) goto metadata_cleanup;
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &input_key, "default", "live", "video-in"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &output_key, "default", "live", "video-out"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_server_runtime_get_or_create_source(
+            check_equal(turbo_media_server_runtime_get_or_create_source(
                              runtime, &input_key, &input_source),
                          TURBO_MEDIA_OK);
             memset(&input_track, 0, sizeof(input_track));
@@ -1043,35 +1043,35 @@ suite("turbo_media_pipeline") {
             input_track.framerate = 60;
             input_track.extradata = input_extradata;
             input_track.extradata_size = sizeof(input_extradata);
-            check_int_eq(turbo_media_source_add_track(
+            check_equal(turbo_media_source_add_track(
                              input_source, &input_track, NULL),
                          TURBO_MEDIA_OK);
             pipeline = turbo_pipeline_create_from_yaml(
                 yaml, sizeof(yaml) - 1u, &error);
             check_not_null(pipeline);
             if (!pipeline) goto metadata_cleanup;
-            check_int_eq(turbo_pipeline_bind_server_runtime(
+            check_equal(turbo_pipeline_bind_server_runtime(
                              pipeline, runtime, &error),
                          TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error),
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
                          TURBO_PIPELINE_OK);
             if (turbo_pipeline_state(pipeline) !=
                 TURBO_PIPELINE_STATE_PREPARED)
                 goto metadata_cleanup;
-            check_int_eq(turbo_media_server_runtime_find_source(
+            check_equal(turbo_media_server_runtime_find_source(
                              runtime, &output_key, &output_source),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_source_get_track_at(
+            check_equal(turbo_media_source_get_track_at(
                              output_source, 0, &output_track),
                          TURBO_MEDIA_OK);
             check_true(strcmp(output_track.codec_name, "H264") == 0);
-            check_int_eq(output_track.payload_type, 96);
-            check_int_eq(output_track.clock_rate, 90000);
-            check_int_eq(output_track.width, 1280);
-            check_int_eq(output_track.height, 720);
-            check_int_eq(output_track.framerate, 30);
+            check_equal(output_track.payload_type, 96);
+            check_equal(output_track.clock_rate, 90000);
+            check_equal(output_track.width, 1280);
+            check_equal(output_track.height, 720);
+            check_equal(output_track.framerate, 30);
             check_null(output_track.extradata);
-            check_size_eq(output_track.extradata_size, 0);
+            check_equal(output_track.extradata_size, 0);
 
         metadata_cleanup:
             turbo_pipeline_destroy(pipeline);
@@ -1105,10 +1105,10 @@ suite("turbo_media_pipeline") {
             runtime = turbo_media_server_runtime_create(NULL);
             check_not_null(runtime);
             if (!runtime) goto backpressure_cleanup;
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &input_key, "default", "live", "input"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_server_runtime_get_or_create_source(
+            check_equal(turbo_media_server_runtime_get_or_create_source(
                              runtime, &input_key, &input_source),
                          TURBO_MEDIA_OK);
             memset(&audio, 0, sizeof(audio));
@@ -1119,16 +1119,16 @@ suite("turbo_media_pipeline") {
             audio.clock_rate = 48000;
             audio.sample_rate = 48000;
             audio.channels = 2;
-            check_int_eq(turbo_media_source_add_track(input_source, &audio, NULL),
+            check_equal(turbo_media_source_add_track(input_source, &audio, NULL),
                          TURBO_MEDIA_OK);
             pipeline = turbo_pipeline_create_from_yaml(
                 yaml, sizeof(yaml) - 1u, &error);
             check_not_null(pipeline);
             if (!pipeline) goto backpressure_cleanup;
-            check_int_eq(turbo_pipeline_bind_server_runtime(
+            check_equal(turbo_pipeline_bind_server_runtime(
                              pipeline, runtime, &error),
                          TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error),
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
                          TURBO_PIPELINE_OK);
             if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED)
                 goto backpressure_cleanup;
@@ -1140,14 +1140,14 @@ suite("turbo_media_pipeline") {
             frame.track_id = 0;
             frame.data = packet;
             frame.size = (size_t)packet_size;
-            check_int_eq(turbo_media_source_publish(input_source, &frame),
+            check_equal(turbo_media_source_publish(input_source, &frame),
                          TURBO_MEDIA_OK);
             packet[3]++;
-            check_int_eq(turbo_media_source_publish(input_source, &frame),
+            check_equal(turbo_media_source_publish(input_source, &frame),
                          TURBO_MEDIA_ERR_FULL);
-            check_int_eq(turbo_pipeline_run(pipeline, &error),
+            check_equal(turbo_pipeline_run(pipeline, &error),
                          TURBO_PIPELINE_EBACKPRESSURE);
-            check_int_eq(turbo_pipeline_state(pipeline),
+            check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_FAILED);
 
         backpressure_cleanup:
@@ -1180,13 +1180,13 @@ suite("turbo_media_pipeline") {
             runtime = turbo_media_server_runtime_create(NULL);
             check_not_null(runtime);
             if (!runtime) goto rollback_cleanup;
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &input_key, "default", "live", "input"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_source_key_init(
+            check_equal(turbo_media_source_key_init(
                              &output_key, "default", "live", "output"),
                          TURBO_MEDIA_OK);
-            check_int_eq(turbo_media_server_runtime_get_or_create_source(
+            check_equal(turbo_media_server_runtime_get_or_create_source(
                              runtime, &input_key, &input_source),
                          TURBO_MEDIA_OK);
             memset(&video, 0, sizeof(video));
@@ -1195,18 +1195,18 @@ suite("turbo_media_pipeline") {
             memcpy(video.codec_name, "VP8", sizeof("VP8"));
             video.payload_type = 96;
             video.clock_rate = 90000;
-            check_int_eq(turbo_media_source_add_track(input_source, &video, NULL),
+            check_equal(turbo_media_source_add_track(input_source, &video, NULL),
                          TURBO_MEDIA_OK);
             pipeline = turbo_pipeline_create_from_yaml(
                 yaml, sizeof(yaml) - 1u, &error);
             check_not_null(pipeline);
             if (!pipeline) goto rollback_cleanup;
-            check_int_eq(turbo_pipeline_bind_server_runtime(
+            check_equal(turbo_pipeline_bind_server_runtime(
                              pipeline, runtime, &error),
                          TURBO_PIPELINE_OK);
-            check_int_eq(turbo_pipeline_prepare(pipeline, &error),
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
                          TURBO_PIPELINE_ECONFIG);
-            check_int_eq(turbo_media_server_runtime_find_source(
+            check_equal(turbo_media_server_runtime_find_source(
                              runtime, &output_key, &output_source),
                          TURBO_MEDIA_ERR_NOT_FOUND);
 

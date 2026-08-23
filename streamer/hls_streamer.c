@@ -15,7 +15,7 @@
 #include "http_client.h"
 #include "turbo_fs.h"
 #include "turbo_str.h"
-#include "turbo_str_view.h"
+#include "turbo_vstr.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -40,8 +40,8 @@ static const char HLS_INIT_SEGMENT_NAME[] = "init.mp4";
 static const char HLS_PLAYLIST_NAME[] = "playlist.m3u8";
 
 typedef struct {
-    tstr_t output_dir;
-    tstr_t base_url;
+    tstr output_dir;
+    tstr base_url;
     int segment_duration_ms;
     int playlist_size;
     turbo_hls_playlist_type_t playlist_type;
@@ -78,8 +78,8 @@ static int hls_make_path(const hls_streamer_ctx_t *ctx, const char *name,
     return turbo_fs_path_join(path, TURBO_FS_MAX_PATH, ctx->output_dir, name);
 }
 
-static tstr_t hls_make_url(const hls_streamer_ctx_t *ctx, const char *name) {
-    tstr_t url;
+static tstr hls_make_url(const hls_streamer_ctx_t *ctx, const char *name) {
+    tstr url;
     size_t length;
 
     if (!ctx->base_url) return tstr_dup(name);
@@ -108,7 +108,7 @@ static int hls_write_file(const hls_streamer_ctx_t *ctx, const char *name,
 static int hls_upload_file(const hls_streamer_ctx_t *ctx, const char *name,
                            const char *path) {
     http_response_t *response;
-    tstr_t url;
+    tstr url;
     int result;
 
     if (!ctx->http_client) return 0;
@@ -175,7 +175,7 @@ static int hls_on_segment(void *param, const void *data, size_t bytes, int64_t p
     hls_streamer_ctx_t *ctx = (hls_streamer_ctx_t *)param;
     char name[64];
     char path[TURBO_FS_MAX_PATH];
-    tstr_t uri;
+    tstr uri;
     int written;
     int result;
 
@@ -206,42 +206,42 @@ static int hls_on_segment(void *param, const void *data, size_t bytes, int64_t p
 }
 
 static int hls_codec_object(const char *codec_name, int video, uint8_t *object) {
-    tstr_v name;
+    vstr name;
 
     if (!codec_name || !object) return -EINVAL;
-    name = tstr_v_from_cstr(codec_name);
+    name = vstr_from_cstr(codec_name);
 
     if (video) {
-        if (tstr_v_ieq(name, tstr_v_from_cstr("h264")) || tstr_v_ieq(name, tstr_v_from_cstr("avc")))
+        if (vstr_ieq(name, vstr_from_cstr("h264")) || vstr_ieq(name, vstr_from_cstr("avc")))
             *object = MOV_OBJECT_H264;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("h265")) ||
-                 tstr_v_ieq(name, tstr_v_from_cstr("hevc")))
+        else if (vstr_ieq(name, vstr_from_cstr("h265")) ||
+                 vstr_ieq(name, vstr_from_cstr("hevc")))
             *object = MOV_OBJECT_H265;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("h266")) ||
-                 tstr_v_ieq(name, tstr_v_from_cstr("vvc")))
+        else if (vstr_ieq(name, vstr_from_cstr("h266")) ||
+                 vstr_ieq(name, vstr_from_cstr("vvc")))
             *object = MOV_OBJECT_H266;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("vp8")))
+        else if (vstr_ieq(name, vstr_from_cstr("vp8")))
             *object = MOV_OBJECT_VP8;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("vp9")))
+        else if (vstr_ieq(name, vstr_from_cstr("vp9")))
             *object = MOV_OBJECT_VP9;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("av1")))
+        else if (vstr_ieq(name, vstr_from_cstr("av1")))
             *object = MOV_OBJECT_AV1;
         else
             return -ENOTSUP;
     } else {
-        if (tstr_v_ieq(name, tstr_v_from_cstr("aac")))
+        if (vstr_ieq(name, vstr_from_cstr("aac")))
             *object = MOV_OBJECT_AAC;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("opus")))
+        else if (vstr_ieq(name, vstr_from_cstr("opus")))
             *object = MOV_OBJECT_OPUS;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("mp3")))
+        else if (vstr_ieq(name, vstr_from_cstr("mp3")))
             *object = MOV_OBJECT_MP3;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("pcma")) ||
-                 tstr_v_ieq(name, tstr_v_from_cstr("g711a")))
+        else if (vstr_ieq(name, vstr_from_cstr("pcma")) ||
+                 vstr_ieq(name, vstr_from_cstr("g711a")))
             *object = MOV_OBJECT_G711a;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("pcmu")) ||
-                 tstr_v_ieq(name, tstr_v_from_cstr("g711u")))
+        else if (vstr_ieq(name, vstr_from_cstr("pcmu")) ||
+                 vstr_ieq(name, vstr_from_cstr("g711u")))
             *object = MOV_OBJECT_G711u;
-        else if (tstr_v_ieq(name, tstr_v_from_cstr("flac")))
+        else if (vstr_ieq(name, vstr_from_cstr("flac")))
             *object = MOV_OBJECT_FLAC;
         else
             return -ENOTSUP;
@@ -410,7 +410,7 @@ static void *hls_streamer_create(const turbo_streamer_config_t *config) {
 static int hls_write_init_segment(hls_streamer_ctx_t *ctx) {
     uint8_t *data;
     char path[TURBO_FS_MAX_PATH];
-    tstr_t uri;
+    tstr uri;
     int bytes;
     int result;
 

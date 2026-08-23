@@ -1,7 +1,7 @@
 /**
  * Unit tests for NACK (Negative Acknowledgment)
  */
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_nack.h"
 #include <string.h>
 
@@ -11,21 +11,21 @@ void tearDown(void) {}
 /* Test NACK sender creation */
 void test_nack_sender_create(void) {
   nack_sender_t *sender = nack_sender_create(0x12345678, 100);
-  TEST_ASSERT_NOT_NULL(sender);
+  check_not_null(sender);
   nack_sender_destroy(sender);
 }
 
 /* Test NACK receiver creation */
 void test_nack_receiver_create(void) {
   nack_receiver_t *receiver = nack_receiver_create(0xAABBCCDD);
-  TEST_ASSERT_NOT_NULL(receiver);
+  check_not_null(receiver);
   nack_receiver_destroy(receiver);
 }
 
 /* Test adding packets to sender history */
 void test_nack_sender_add_packet(void) {
   nack_sender_t *sender = nack_sender_create(0x11111111, 50);
-  TEST_ASSERT_NOT_NULL(sender);
+  check_not_null(sender);
 
   uint8_t packet[100];
   memset(packet, 0xAA, sizeof(packet));
@@ -40,7 +40,7 @@ void test_nack_sender_add_packet(void) {
 /* Test NACK receiver detecting loss */
 void test_nack_receiver_detect_loss(void) {
   nack_receiver_t *receiver = nack_receiver_create(0x22222222);
-  TEST_ASSERT_NOT_NULL(receiver);
+  check_not_null(receiver);
 
   /* Receive packets with gap */
   nack_receiver_process_packet(receiver, 100, 0);
@@ -52,8 +52,8 @@ void test_nack_receiver_detect_loss(void) {
   uint16_t missing[16];
   int count = nack_receiver_get_nacks(receiver, missing, 16, 40000);
 
-  TEST_ASSERT_GREATER_THAN(0, count);
-  TEST_ASSERT_EQUAL_UINT16(102, missing[0]);
+  check_greater(count, 0);
+  check_equal((uint16_t)(missing[0]), (uint16_t)(102));
 
   nack_receiver_destroy(receiver);
 }
@@ -61,7 +61,7 @@ void test_nack_receiver_detect_loss(void) {
 /* Test NACK sender statistics */
 void test_nack_sender_stats(void) {
   nack_sender_t *sender = nack_sender_create(0x33333333, 100);
-  TEST_ASSERT_NOT_NULL(sender);
+  check_not_null(sender);
 
   int64_t nacks_received = -1;
   int64_t packets_retransmitted = -1;
@@ -69,9 +69,9 @@ void test_nack_sender_stats(void) {
 
   nack_sender_get_stats(sender, &nacks_received, &packets_retransmitted, &retransmit_failures);
 
-  TEST_ASSERT_EQUAL_INT64(0, nacks_received);
-  TEST_ASSERT_EQUAL_INT64(0, packets_retransmitted);
-  TEST_ASSERT_EQUAL_INT64(0, retransmit_failures);
+  check_equal((long long)(nacks_received), (long long)(0));
+  check_equal((long long)(packets_retransmitted), (long long)(0));
+  check_equal((long long)(retransmit_failures), (long long)(0));
 
   nack_sender_destroy(sender);
 }
@@ -79,7 +79,7 @@ void test_nack_sender_stats(void) {
 /* Test NACK receiver statistics */
 void test_nack_receiver_stats(void) {
   nack_receiver_t *receiver = nack_receiver_create(0x44444444);
-  TEST_ASSERT_NOT_NULL(receiver);
+  check_not_null(receiver);
 
   int64_t packets_received = -1;
   int64_t packets_lost = -1;
@@ -90,11 +90,11 @@ void test_nack_receiver_stats(void) {
   nack_receiver_get_stats(receiver, &packets_received, &packets_lost, &nacks_sent,
                           &retransmissions_received, &missing_count);
 
-  TEST_ASSERT_EQUAL_INT64(0, packets_received);
-  TEST_ASSERT_EQUAL_INT64(0, packets_lost);
-  TEST_ASSERT_EQUAL_INT64(0, nacks_sent);
-  TEST_ASSERT_EQUAL_INT64(0, retransmissions_received);
-  TEST_ASSERT_EQUAL_INT(0, missing_count);
+  check_equal((long long)(packets_received), (long long)(0));
+  check_equal((long long)(packets_lost), (long long)(0));
+  check_equal((long long)(nacks_sent), (long long)(0));
+  check_equal((long long)(retransmissions_received), (long long)(0));
+  check_equal((int)(missing_count), (int)(0));
 
   nack_receiver_destroy(receiver);
 }
@@ -107,12 +107,12 @@ void test_nack_build_rtcp(void) {
 
   int result = nack_build_rtcp(0x11111111, 0x22222222, seq_nums, 3, buffer, &len);
 
-  TEST_ASSERT_EQUAL_INT(0, result);
-  TEST_ASSERT_GREATER_THAN(0, len);
+  check_equal((int)(result), (int)(0));
+  check_greater(len, 0);
 
   /* Verify RTCP header */
-  TEST_ASSERT_EQUAL_UINT8(0x81, buffer[0]); /* V=2, P=0, FMT=1 */
-  TEST_ASSERT_EQUAL_UINT8(205, buffer[1]);  /* PT=205 (RTPFB) */
+  check_equal((uint8_t)(buffer[0]), (uint8_t)(0x81)); /* V=2, P=0, FMT=1 */
+  check_equal((uint8_t)(buffer[1]), (uint8_t)(205));  /* PT=205 (RTPFB) */
 }
 
 /* Test NACK RTCP packet parsing */
@@ -131,21 +131,21 @@ void test_nack_parse_rtcp(void) {
 
   int result = nack_parse_rtcp(buffer, len, &sender_ssrc, &media_ssrc, seq_nums_in, &count, 16);
 
-  TEST_ASSERT_EQUAL_INT(0, result);
-  TEST_ASSERT_EQUAL_UINT32(0xAAAAAAAA, sender_ssrc);
-  TEST_ASSERT_EQUAL_UINT32(0xBBBBBBBB, media_ssrc);
-  TEST_ASSERT_GREATER_THAN(0, count);
+  check_equal((int)(result), (int)(0));
+  check_equal((uint32_t)(sender_ssrc), (uint32_t)(0xAAAAAAAA));
+  check_equal((uint32_t)(media_ssrc), (uint32_t)(0xBBBBBBBB));
+  check_greater(count, 0);
 }
 
 spec("test_nack") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
-  TT_TEST(test_nack_sender_create);
-  TT_TEST(test_nack_receiver_create);
-  TT_TEST(test_nack_sender_add_packet);
-  TT_TEST(test_nack_receiver_detect_loss);
-  TT_TEST(test_nack_sender_stats);
-  TT_TEST(test_nack_receiver_stats);
-  TT_TEST(test_nack_build_rtcp);
-  TT_TEST(test_nack_parse_rtcp);
+  it("test_nack_sender_create") { test_nack_sender_create(); };
+  it("test_nack_receiver_create") { test_nack_receiver_create(); };
+  it("test_nack_sender_add_packet") { test_nack_sender_add_packet(); };
+  it("test_nack_receiver_detect_loss") { test_nack_receiver_detect_loss(); };
+  it("test_nack_sender_stats") { test_nack_sender_stats(); };
+  it("test_nack_receiver_stats") { test_nack_receiver_stats(); };
+  it("test_nack_build_rtcp") { test_nack_build_rtcp(); };
+  it("test_nack_parse_rtcp") { test_nack_parse_rtcp(); };
 }

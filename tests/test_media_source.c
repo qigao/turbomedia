@@ -7,19 +7,6 @@
 
 #define REGISTRY_STRESS_SOURCE_COUNT 128
 
-#define REQUIRE_OK(expr)                    \
-    do {                                    \
-        int rc__ = (expr);                  \
-        check_int_eq(rc__, TURBO_MEDIA_OK); \
-        if (rc__ != TURBO_MEDIA_OK) return; \
-    } while (0)
-
-#define REQUIRE_NOT_NULL(expr) \
-    do {                       \
-        check_not_null(expr);  \
-        if (!(expr)) return;   \
-    } while (0)
-
 typedef struct {
     int count;
     uint8_t first_byte[8];
@@ -105,18 +92,18 @@ static int failing_frame_cb(turbo_media_source_t *source,
 }
 
 suite("turbo_media_source") {
-    section("source identity and tracks") {
+    group("source identity and tracks") {
         it("creates a typed stream key and rejects invalid identity") {
             turbo_media_source_key_t key;
             char too_long[TURBO_MEDIA_MAX_STREAM_LEN + 1];
             memset(too_long, 'x', sizeof(too_long));
             too_long[sizeof(too_long) - 1] = '\0';
 
-            REQUIRE_OK(turbo_media_source_key_init(&key, "default", "live", "camera"));
-            check_str_eq(key.vhost, "default");
-            check_str_eq(key.app, "live");
-            check_str_eq(key.stream, "camera");
-            check_int_eq(turbo_media_source_key_init(&key, "default", "live", too_long),
+            check_equal(turbo_media_source_key_init(&key, "default", "live", "camera"), TURBO_MEDIA_OK);
+            check_equal(key.vhost, "default");
+            check_equal(key.app, "live");
+            check_equal(key.stream, "camera");
+            check_equal(turbo_media_source_key_init(&key, "default", "live", too_long),
                          TURBO_MEDIA_ERR_INVALID);
         }
 
@@ -128,30 +115,30 @@ suite("turbo_media_source") {
             uint8_t extradata[] = {0x01, 0x64, 0x00, 0x1f};
             int track_id = -1;
 
-            REQUIRE_OK(turbo_media_source_key_init(&key, "default", "live", "camera"));
+            check_equal(turbo_media_source_key_init(&key, "default", "live", "camera"), TURBO_MEDIA_OK);
             turbo_media_source_t *source = turbo_media_source_create(&key, &config);
-            REQUIRE_NOT_NULL(source);
+            check_not_null(source);
 
             track.extradata = extradata;
             track.extradata_size = sizeof(extradata);
-            REQUIRE_OK(turbo_media_source_add_track(source, &track, &track_id));
-            check_int_eq(track_id, 0);
-            check_size_eq(turbo_media_source_track_count(source), 1);
+            check_equal(turbo_media_source_add_track(source, &track, &track_id), TURBO_MEDIA_OK);
+            check_equal(track_id, 0);
+            check_equal(turbo_media_source_track_count(source), 1);
 
             extradata[1] = 0xff;
             memset(&copied, 0, sizeof(copied));
-            REQUIRE_OK(turbo_media_source_get_track(source, track_id, &copied));
-            check_str_eq(copied.codec_name, "h264");
-            check_int_eq(copied.type, TURBO_MEDIA_TRACK_VIDEO);
-            check_size_eq(copied.extradata_size, 4);
+            check_equal(turbo_media_source_get_track(source, track_id, &copied), TURBO_MEDIA_OK);
+            check_equal(copied.codec_name, "h264");
+            check_equal(copied.type, TURBO_MEDIA_TRACK_VIDEO);
+            check_equal(copied.extradata_size, 4);
             check(copied.extradata != extradata);
-            check_int_eq(copied.extradata[1], 0x64);
+            check_equal(copied.extradata[1], 0x64);
 
             turbo_media_source_destroy(source);
         }
     }
 
-    section("publish and subscribe") {
+    group("publish and subscribe") {
         it("fanouts published frames through the source") {
             turbo_media_source_key_t key;
             turbo_media_source_config_t config = small_source_config();
@@ -164,32 +151,32 @@ suite("turbo_media_source") {
             turbo_media_frame_t frame;
 
             memset(&capture, 0, sizeof(capture));
-            REQUIRE_OK(turbo_media_source_key_init(&key, "default", "live", "audio"));
+            check_equal(turbo_media_source_key_init(&key, "default", "live", "audio"), TURBO_MEDIA_OK);
             turbo_media_source_t *source = turbo_media_source_create(&key, &config);
-            REQUIRE_NOT_NULL(source);
+            check_not_null(source);
 
-            REQUIRE_OK(turbo_media_source_add_track(source, &track, &track_id));
-            REQUIRE_OK(turbo_media_source_subscribe(source,
+            check_equal(turbo_media_source_add_track(source, &track, &track_id), TURBO_MEDIA_OK);
+            check_equal(turbo_media_source_subscribe(source,
                                                     capture_frame_cb,
                                                     &capture,
                                                     0,
-                                                    &subscription_id));
+                                                    &subscription_id), TURBO_MEDIA_OK);
             frame = media_frame(track_id, data, sizeof(data), 10, 0);
-            REQUIRE_OK(turbo_media_source_publish(source, &frame));
+            check_equal(turbo_media_source_publish(source, &frame), TURBO_MEDIA_OK);
 
-            check_int_eq(capture.count, 1);
-            check_int_eq(capture.first_byte[0], 0xaa);
-            check_int_eq(turbo_media_source_state(source), TURBO_MEDIA_SOURCE_PUBLISHING);
+            check_equal(capture.count, 1);
+            check_equal(capture.first_byte[0], 0xaa);
+            check_equal(turbo_media_source_state(source), TURBO_MEDIA_SOURCE_PUBLISHING);
 
-            REQUIRE_OK(turbo_media_source_get_stats(source, &stats));
-            check_uint_eq(stats.frames_published, 1);
-            check_uint_eq(stats.bytes_published, sizeof(data));
-            check_uint_eq(stats.frames_delivered, 1);
-            check_uint_eq(stats.subscriber_count, 1);
+            check_equal(turbo_media_source_get_stats(source, &stats), TURBO_MEDIA_OK);
+            check_equal(stats.frames_published, 1);
+            check_equal(stats.bytes_published, sizeof(data));
+            check_equal(stats.frames_delivered, 1);
+            check_equal(stats.subscriber_count, 1);
 
-            REQUIRE_OK(turbo_media_source_unsubscribe(source, subscription_id));
-            REQUIRE_OK(turbo_media_source_get_stats(source, &stats));
-            check_uint_eq(stats.subscriber_count, 0);
+            check_equal(turbo_media_source_unsubscribe(source, subscription_id), TURBO_MEDIA_OK);
+            check_equal(turbo_media_source_get_stats(source, &stats), TURBO_MEDIA_OK);
+            check_equal(stats.subscriber_count, 0);
 
             turbo_media_source_destroy(source);
         }
@@ -206,24 +193,24 @@ suite("turbo_media_source") {
             turbo_media_frame_t frame;
 
             memset(&replay, 0, sizeof(replay));
-            REQUIRE_OK(turbo_media_source_key_init(&key, "default", "live", "video"));
+            check_equal(turbo_media_source_key_init(&key, "default", "live", "video"), TURBO_MEDIA_OK);
             turbo_media_source_t *source = turbo_media_source_create(&key, &config);
-            REQUIRE_NOT_NULL(source);
+            check_not_null(source);
 
-            REQUIRE_OK(turbo_media_source_add_track(source, &track, &track_id));
+            check_equal(turbo_media_source_add_track(source, &track, &track_id), TURBO_MEDIA_OK);
             frame = media_frame(track_id, prekey, sizeof(prekey), 10, 0);
-            REQUIRE_OK(turbo_media_source_publish(source, &frame));
+            check_equal(turbo_media_source_publish(source, &frame), TURBO_MEDIA_OK);
             frame = media_frame(track_id, keyframe, sizeof(keyframe), 20, 1);
-            REQUIRE_OK(turbo_media_source_publish(source, &frame));
+            check_equal(turbo_media_source_publish(source, &frame), TURBO_MEDIA_OK);
             frame = media_frame(track_id, delta, sizeof(delta), 30, 0);
-            REQUIRE_OK(turbo_media_source_publish(source, &frame));
+            check_equal(turbo_media_source_publish(source, &frame), TURBO_MEDIA_OK);
 
-            REQUIRE_OK(turbo_media_source_subscribe(source, capture_frame_cb, &replay, 1, NULL));
-            check_int_eq(replay.count, 2);
-            check_int_eq(replay.first_byte[0], 0x20);
-            check_int_eq(replay.keyframe[0], 1);
-            check_int_eq(replay.first_byte[1], 0x30);
-            check_int_eq(replay.pts[1], 30);
+            check_equal(turbo_media_source_subscribe(source, capture_frame_cb, &replay, 1, NULL), TURBO_MEDIA_OK);
+            check_equal(replay.count, 2);
+            check_equal(replay.first_byte[0], 0x20);
+            check_equal(replay.keyframe[0], 1);
+            check_equal(replay.first_byte[1], 0x30);
+            check_equal(replay.pts[1], 30);
 
             turbo_media_source_destroy(source);
         }
@@ -237,41 +224,42 @@ suite("turbo_media_source") {
             uint8_t data[] = {0x44};
             turbo_media_frame_t frame;
 
-            REQUIRE_OK(turbo_media_source_key_init(&key, "default", "live", "fail"));
+            check_equal(turbo_media_source_key_init(&key, "default", "live", "fail"), TURBO_MEDIA_OK);
             turbo_media_source_t *source = turbo_media_source_create(&key, &config);
-            REQUIRE_NOT_NULL(source);
+            check_not_null(source);
 
-            REQUIRE_OK(turbo_media_source_add_track(source, &track, &track_id));
+            check_equal(turbo_media_source_add_track(source, &track, &track_id), TURBO_MEDIA_OK);
             frame = media_frame(track_id, data, sizeof(data), 1, 0);
-            REQUIRE_OK(turbo_media_source_publish(source, &frame));
-            check_int_eq(turbo_media_source_subscribe(source, failing_frame_cb, NULL, 1, NULL), -77);
+            check_equal(turbo_media_source_publish(source, &frame), TURBO_MEDIA_OK);
+            check_equal(turbo_media_source_subscribe(source, failing_frame_cb, NULL, 1, NULL), -77);
 
-            REQUIRE_OK(turbo_media_source_get_stats(source, &stats));
-            check_uint_eq(stats.subscriber_count, 0);
+            check_equal(turbo_media_source_get_stats(source, &stats), TURBO_MEDIA_OK);
+            check_equal(stats.subscriber_count, 0);
 
             turbo_media_source_destroy(source);
         }
     }
 
-    section("registry") {
+    group("registry") {
         it("keeps one source per stream key") {
             turbo_media_source_key_t key;
             turbo_media_source_config_t config = small_source_config();
             turbo_media_source_t *first = NULL;
             turbo_media_source_t *second = NULL;
 
-            REQUIRE_OK(turbo_media_source_key_init(&key, "default", "live", "camera"));
+            check_equal(turbo_media_source_key_init(&key, "default", "live", "camera"), TURBO_MEDIA_OK);
             turbo_media_registry_t *registry = turbo_media_registry_create(2);
-            REQUIRE_NOT_NULL(registry);
+            check_not_null(registry);
 
-            REQUIRE_OK(turbo_media_registry_get_or_create(registry, &key, &config, &first));
-            REQUIRE_OK(turbo_media_registry_get_or_create(registry, &key, &config, &second));
-            check_ptr_eq(first, second);
-            check_size_eq(turbo_media_registry_count(registry), 1);
-            check_ptr_eq(turbo_media_registry_find(registry, &key), first);
+            check_equal(turbo_media_registry_get_or_create(registry, &key, &config, &first), TURBO_MEDIA_OK);
+            check_equal(turbo_media_registry_get_or_create(registry, &key, &config, &second), TURBO_MEDIA_OK);
+            check_equal((const void *)first, (const void *)second);
+            check_equal(turbo_media_registry_count(registry), 1);
+            check_equal((const void *)turbo_media_registry_find(registry, &key),
+                        (const void *)first);
 
-            REQUIRE_OK(turbo_media_registry_remove(registry, &key));
-            check_size_eq(turbo_media_registry_count(registry), 0);
+            check_equal(turbo_media_registry_remove(registry, &key), TURBO_MEDIA_OK);
+            check_equal(turbo_media_registry_count(registry), 0);
             check_null(turbo_media_registry_find(registry, &key));
 
             turbo_media_registry_destroy(registry);
@@ -285,32 +273,34 @@ suite("turbo_media_source") {
                 turbo_media_registry_create(REGISTRY_STRESS_SOURCE_COUNT);
             size_t i;
 
-            REQUIRE_NOT_NULL(registry);
+            check_not_null(registry);
             memset(sources, 0, sizeof(sources));
 
             for (i = 0; i < REGISTRY_STRESS_SOURCE_COUNT; ++i) {
                 char stream[TURBO_MEDIA_MAX_STREAM_LEN];
                 snprintf(stream, sizeof(stream), "camera-%zu", i);
-                REQUIRE_OK(turbo_media_source_key_init(&keys[i], "default", "live", stream));
-                REQUIRE_OK(turbo_media_registry_get_or_create(
-                    registry, &keys[i], &config, &sources[i]));
+                check_equal(turbo_media_source_key_init(&keys[i], "default", "live", stream), TURBO_MEDIA_OK);
+                check_equal(turbo_media_registry_get_or_create(
+                    registry, &keys[i], &config, &sources[i]), TURBO_MEDIA_OK);
             }
 
-            check_size_eq(turbo_media_registry_count(registry),
+            check_equal(turbo_media_registry_count(registry),
                           REGISTRY_STRESS_SOURCE_COUNT);
             for (i = 0; i < REGISTRY_STRESS_SOURCE_COUNT; ++i) {
-                check_ptr_eq(turbo_media_registry_find(registry, &keys[i]), sources[i]);
+                check_equal((const void *)turbo_media_registry_find(registry, &keys[i]),
+                            (const void *)sources[i]);
             }
 
             for (i = 0; i < REGISTRY_STRESS_SOURCE_COUNT; i += 2) {
-                REQUIRE_OK(turbo_media_registry_remove(registry, &keys[i]));
+                check_equal(turbo_media_registry_remove(registry, &keys[i]), TURBO_MEDIA_OK);
                 check_null(turbo_media_registry_find(registry, &keys[i]));
             }
 
-            check_size_eq(turbo_media_registry_count(registry),
+            check_equal(turbo_media_registry_count(registry),
                           REGISTRY_STRESS_SOURCE_COUNT / 2);
             for (i = 1; i < REGISTRY_STRESS_SOURCE_COUNT; i += 2) {
-                check_ptr_eq(turbo_media_registry_find(registry, &keys[i]), sources[i]);
+                check_equal((const void *)turbo_media_registry_find(registry, &keys[i]),
+                            (const void *)sources[i]);
             }
 
             turbo_media_registry_destroy(registry);

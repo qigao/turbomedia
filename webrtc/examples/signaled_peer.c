@@ -375,7 +375,7 @@ static int flush_signal_outbox(app_state_t *app) {
       app->outbox_tail = NULL;
     }
 
-    TLOG_INFO("Sending signaling message: {}", msg->json);
+    TLOG_INFOF("Sending signaling message: {}", msg->json);
     if (app->signal_socket &&
         coro_socket_send_ws_text(app->signal_socket, msg->json, strlen(msg->json)) != 0) {
       free(msg->json);
@@ -521,7 +521,7 @@ static void repair_local_candidate_ports(app_state_t *app) {
         local_addr.ss_family == AF_INET) {
       struct sockaddr_in *addr4 = (struct sockaddr_in *)&local_addr;
       candidate->port = ntohs(addr4->sin_port);
-      TLOG_INFO("Repaired local candidate {}:{} type={}", candidate->ip, candidate->port,
+      TLOG_INFOF("Repaired local candidate {}:{} type={}", candidate->ip, candidate->port,
                 ice_candidate_type_name(candidate->type));
     }
   }
@@ -703,7 +703,7 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
     }
   }
 
-  TLOG_INFO("Applied remote %s SDP", type);
+  TLOG_INFOF("Applied remote {} SDP", type);
   return 0;
 }
 
@@ -732,7 +732,7 @@ static void send_offer(app_state_t *app) {
 
   if (enqueue_signalf(app, "{\"type\":\"offer\",\"to\":\"%s\",\"sdp\":\"%s\"}",
                       app->remote_peer_id, escaped) == 0) {
-    TLOG_INFO("Sent offer to {}", app->remote_peer_id);
+    TLOG_INFOF("Sent offer to {}", app->remote_peer_id);
     if (flush_signal_outbox(app) != 0) {
       TLOG_ERROR("Failed to flush SDP offer");
     }
@@ -765,7 +765,7 @@ static void send_answer(app_state_t *app) {
 
   if (enqueue_signalf(app, "{\"type\":\"answer\",\"to\":\"%s\",\"sdp\":\"%s\"}",
                       app->remote_peer_id, escaped) == 0) {
-    TLOG_INFO("Sent answer to {}", app->remote_peer_id);
+    TLOG_INFOF("Sent answer to {}", app->remote_peer_id);
     if (flush_signal_outbox(app) != 0) {
       TLOG_ERROR("Failed to flush SDP answer");
     }
@@ -785,7 +785,7 @@ static void handle_joined(app_state_t *app, json_value_t *root) {
     return;
   }
   copy_json_string(peer_id, app->peer_id, sizeof(app->peer_id));
-  TLOG_INFO("Joined room '{}' as {}", app->room, app->peer_id);
+  TLOG_INFOF("Joined room '{}' as {}", app->room, app->peer_id);
   if (app->is_offerer && app->remote_peer_id[0] == '\0') {
     request_peer_list(app);
   }
@@ -808,7 +808,7 @@ static void handle_peers(app_state_t *app, json_value_t *root) {
     }
     copy_json_string(value, app->remote_peer_id, sizeof(app->remote_peer_id));
     if (strcmp(app->remote_peer_id, app->peer_id) != 0) {
-      TLOG_INFO("Selected remote peer {}", app->remote_peer_id);
+      TLOG_INFOF("Selected remote peer {}", app->remote_peer_id);
       send_offer(app);
       return;
     }
@@ -831,7 +831,7 @@ static void handle_peer_joined(app_state_t *app, json_value_t *root) {
     return;
   }
 
-  TLOG_INFO("Peer joined: {}", app->remote_peer_id);
+  TLOG_INFOF("Peer joined: {}", app->remote_peer_id);
   send_offer(app);
 }
 
@@ -966,7 +966,7 @@ static void process_signaling_message(app_state_t *app, const char *message, siz
     TLOG_INFO("Remote peer left room");
     app->remote_peer_id[0] = '\0';
   } else if (strcmp(type_name, "error") == 0) {
-    TLOG_ERROR("Signaling server returned an error: {}", json_text);
+    TLOG_ERRORF("Signaling server returned an error: {}", json_text);
   }
 
   turbo_free_json(&root);
@@ -977,7 +977,7 @@ static void on_ice_state_change(turbo_ice_agent_t *agent, ice_state_t old_state,
                                 ice_state_t new_state, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
   (void)agent;
-  TLOG_INFO("ICE state: {} -> {}", ice_state_name(old_state), ice_state_name(new_state));
+  TLOG_INFOF("ICE state: {} -> {}", ice_state_name(old_state), ice_state_name(new_state));
 
   if ((new_state == ICE_STATE_CONNECTED || new_state == ICE_STATE_COMPLETED) &&
       !app->dc_connect_started) {
@@ -1061,7 +1061,7 @@ static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t 
 
   memcpy(message, data, copy_len);
   message[copy_len] = '\0';
-  TLOG_INFO("Received: {}", message);
+  TLOG_INFOF("Received: {}", message);
 
   if (!app->is_offerer && strncmp(message, "ECHO:", 5) != 0) {
     char echo[512];
@@ -1079,7 +1079,7 @@ static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t 
 static void on_dc_open(turbo_dc_channel_t *channel, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
   const char *hello = "hello over signaled ICE";
-  TLOG_INFO("Channel '{}' opened", turbo_dc_channel_get_label(channel));
+  TLOG_INFOF("Channel '{}' opened", turbo_dc_channel_get_label(channel));
 
   if (app->is_offerer && !app->message_sent) {
     turbo_dc_channel_send(channel, hello, strlen(hello), 0);
@@ -1100,7 +1100,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
                         turbo_dc_state_t new_state, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
   (void)peer;
-  TLOG_INFO("DC state: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
+  TLOG_INFOF("DC state: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
 
   if (new_state == TURBO_DC_STATE_CONNECTED && app->is_offerer && !app->channel) {
     app->channel = turbo_dc_channel_create(app->dc_peer, "chat", NULL);
@@ -1130,7 +1130,7 @@ static void on_dc_error(turbo_dc_peer_t *peer, int error_code, const char *error
                         void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
   (void)peer;
-  TLOG_ERROR("DataChannel error {}: {}", error_code, error_msg);
+  TLOG_ERRORF("DataChannel error {}: {}", error_code, error_msg);
   app_request_stop(app);
 }
 
@@ -1241,7 +1241,7 @@ static int ensure_media_runtime(app_state_t *app) {
     TLOG_INFO("ensure_media_runtime: gather candidates inline");
     rc = ice_agent_gather_candidates(app->ice_agent);
     if (rc != 0) {
-      TLOG_ERROR("Failed to gather ICE candidates: {}", rc);
+      TLOG_ERRORF("Failed to gather ICE candidates: {}", rc);
       app_request_stop(app);
       return -1;
     }
@@ -1282,7 +1282,7 @@ static void signal_task(coro_t *co, void *arg) {
   rc = coro_socket_connect_ws_ex(app->signal_socket, app->signal_host, app->signal_port,
                                  app->signal_path, app->use_tls, "webrtc-signaling");
   if (rc != 0) {
-    TLOG_ERROR("Failed to connect to signaling WebSocket: {} ({})", rc,
+    TLOG_ERRORF("Failed to connect to signaling WebSocket: {} ({})", rc,
                turbo_strerror(rc));
     coro_socket_destroy(app->signal_socket);
     app->signal_socket = NULL;
@@ -1292,7 +1292,7 @@ static void signal_task(coro_t *co, void *arg) {
 
   app->ws_connected = 1;
   coro_socket_set_timeout(app->signal_socket, 500);
-  TLOG_INFO("Connected to signaling server at {}:{}{}", app->signal_host, app->signal_port,
+  TLOG_INFOF("Connected to signaling server at {}:{}{}", app->signal_host, app->signal_port,
             app->signal_path);
 
   if (app->join_token) {
@@ -1344,7 +1344,7 @@ static void signal_task(coro_t *co, void *arg) {
       continue;
     }
     if (rc != 0) {
-      TLOG_ERROR("Signaling socket receive failed: {} ({})", rc, turbo_strerror(rc));
+      TLOG_ERRORF("Signaling socket receive failed: {} ({})", rc, turbo_strerror(rc));
       if (data) {
         coro_socket_free_recv(data);
       }
@@ -1388,7 +1388,7 @@ static void ice_gather_task(coro_t *co, void *arg) {
 
   rc = ice_agent_gather_candidates(app->ice_agent);
   if (rc != 0) {
-    TLOG_ERROR("Failed to gather ICE candidates: {}", rc);
+    TLOG_ERRORF("Failed to gather ICE candidates: {}", rc);
     app_request_stop(app);
   }
   app->gather_task_done = 1;
@@ -1415,7 +1415,7 @@ static void ice_checks_task(coro_t *co, void *arg) {
       continue;
     }
     if (rc != 0 && app->running) {
-      TLOG_ERROR("Failed to start ICE checks: {}", rc);
+      TLOG_ERRORF("Failed to start ICE checks: {}", rc);
       app_request_stop(app);
     }
     break;
@@ -1512,8 +1512,8 @@ int main(int argc, char **argv) {
   }
 
   TLOG_INFO("=== WebRTC Signaled Peer Example ===");
-  TLOG_INFO("Mode: {}", app.is_offerer ? "offerer" : "answerer");
-  TLOG_INFO("Room: {}", app.room);
+  TLOG_INFOF("Mode: {}", app.is_offerer ? "offerer" : "answerer");
+  TLOG_INFOF("Room: {}", app.room);
 
   app.ctx = coro_context_create(NULL);
   if (!app.ctx) {

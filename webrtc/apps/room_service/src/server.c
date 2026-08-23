@@ -1623,7 +1623,7 @@ room_service_app_server_t *room_service_app_server_create(
             ledger_error, sizeof(ledger_error));
         if (!server->iris_command_ledger) {
             if (ledger_error[0]) {
-                TLOG_ERROR("Iris command ledger initialization failed: {}",
+                TLOG_ERRORF("Iris command ledger initialization failed: {}",
                            ledger_error);
             }
             turbo_room_service_destroy(server->service);
@@ -1767,7 +1767,7 @@ room_service_app_server_t *room_service_app_server_create(
                     room_service_settle_iris_event,
                     server->iris_event_outbox) != 0) {
                 if (outbox_error[0]) {
-                    TLOG_ERROR("Iris event outbox initialization failed: {}",
+                    TLOG_ERRORF("Iris event outbox initialization failed: {}",
                                outbox_error);
                 }
                 iris_event_outbox_destroy(server->iris_event_outbox);

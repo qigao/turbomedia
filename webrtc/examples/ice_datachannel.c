@@ -62,7 +62,7 @@ static void on_ice_state(turbo_ice_agent_t *agent, ice_state_t old_state, ice_st
   (void)old_state;
   app_state_t *app = (app_state_t *)user_data;
 
-  TLOG_INFO("ICE State: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
+  TLOG_INFOF("ICE State: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
 
   if (new_state == ICE_STATE_CONNECTED) {
     TLOG_INFO("ICE connected! Starting DTLS...");
@@ -93,7 +93,7 @@ static void on_ice_candidate(turbo_ice_agent_t *agent, const ice_candidate_t *ca
 
   char sdp[256];
   ice_candidate_to_sdp(candidate, sdp, sizeof(sdp));
-  TLOG_INFO("Local candidate: {}", sdp);
+  TLOG_INFOF("Local candidate: {}", sdp);
 }
 
 static void on_ice_data(turbo_ice_agent_t *agent, const void *data, size_t len, void *user_data) {
@@ -116,7 +116,7 @@ static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t 
   char msg_buf[512];
   int pr_len = (int)len > 511 ? 511 : (int)len;
   stbsp_snprintf(msg_buf, sizeof(msg_buf), "%.*s", pr_len, (const char *)data);
-  TLOG_INFO("Received: {}", msg_buf);
+  TLOG_INFOF("Received: {}", msg_buf);
 
   /* Don't echo messages that are already echoes (prevent infinite loop) */
   if (len >= 5 && strncmp((const char *)data, "ECHO:", 5) == 0) {
@@ -128,13 +128,13 @@ static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t 
   int echo_len = stbsp_snprintf(echo, sizeof(echo), "ECHO: %.*s", (int)len, (const char *)data);
   if (echo_len > 0 && echo_len < (int)sizeof(echo)) {
     turbo_dc_channel_send(channel, echo, (size_t)echo_len, 0);
-    TLOG_INFO("Sent echo: {}", echo);
+    TLOG_INFOF("Sent echo: {}", echo);
   }
 }
 
 static void on_dc_open(turbo_dc_channel_t *channel, void *user_data) {
   (void)user_data;
-  TLOG_INFO("Channel '{}' opened!", turbo_dc_channel_get_label(channel));
+  TLOG_INFOF("Channel '{}' opened!", turbo_dc_channel_get_label(channel));
 }
 
 static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
@@ -143,7 +143,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
   (void)old_state;
   app_state_t *app = (app_state_t *)user_data;
 
-  TLOG_INFO("DC state: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
+  TLOG_INFOF("DC state: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
 
   if (new_state == TURBO_DC_STATE_CONNECTED) {
     TLOG_INFO("DataChannel connected!");
@@ -166,7 +166,7 @@ static void on_dc_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, vo
   (void)peer;
   app_state_t *app = (app_state_t *)user_data;
 
-  TLOG_INFO("Incoming channel: {}", turbo_dc_channel_get_label(channel));
+  TLOG_INFOF("Incoming channel: {}", turbo_dc_channel_get_label(channel));
   app->channel = channel;
 
   /* Set callbacks for incoming channel */
@@ -177,7 +177,7 @@ static void on_dc_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, vo
 static void on_dc_error(turbo_dc_peer_t *peer, int code, const char *msg, void *user_data) {
   (void)peer;
   (void)user_data;
-  TLOG_ERROR("DC error {}: {}", code, msg);
+  TLOG_ERRORF("DC error {}: {}", code, msg);
 }
 
 /* ============================================================================
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
   int is_offerer = (strcmp(argv[1], "offer") == 0);
 
   TLOG_INFO("=== WebRTC DataChannel + ICE Example ===");
-  TLOG_INFO("Mode: {}", is_offerer ? "OFFERER" : "ANSWERER");
+  TLOG_INFOF("Mode: {}", is_offerer ? "OFFERER" : "ANSWERER");
 
   app_state_t app = {0};
   app.is_offerer = is_offerer;
@@ -289,8 +289,8 @@ int main(int argc, char **argv) {
   ice_agent_get_local_credentials(app.ice_agent, local_ufrag, sizeof(local_ufrag), local_pwd,
                                   sizeof(local_pwd));
   TLOG_INFO("=== Local ICE Credentials ===");
-  TLOG_INFO("ufrag: {}", local_ufrag);
-  TLOG_INFO("pwd: {}", local_pwd);
+  TLOG_INFOF("ufrag: {}", local_ufrag);
+  TLOG_INFOF("pwd: {}", local_pwd);
 
   /* Wait for gathering */
   TLOG_INFO("Waiting for candidate gathering...");
@@ -351,7 +351,7 @@ int main(int argc, char **argv) {
       static int sent = 0;
       if (!sent) {
         const char *msg = "Hello via ICE!";
-        TLOG_INFO("Sending: {}", msg);
+        TLOG_INFOF("Sending: {}", msg);
         turbo_dc_channel_send(app.channel, msg, strlen(msg), 0);
         sent = 1;
       }

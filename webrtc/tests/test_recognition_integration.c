@@ -1,4 +1,4 @@
-#include "tinytest_compat.h"
+#include "tinytest.h"
 #include "turbo_datachannel.h"
 #include "turbo_media_engine.h"
 
@@ -129,24 +129,24 @@ suite("WebRTC recognition integration") {
     check_not_null(detector);
     check_not_null(fingerprint);
 
-    check_int_eq(turbo_media_track_attach_voice_detector(track, detector), 0);
-    check_int_eq(turbo_media_track_attach_voice_fingerprint(track, fingerprint), 0);
-    check_int_eq(turbo_media_track_start(track), 0);
-    check_int_eq(turbo_media_track_detach_voice_detector(track, detector), -1);
-    check_int_eq(turbo_media_track_detach_voice_fingerprint(track, fingerprint), -1);
+    check_equal(turbo_media_track_attach_voice_detector(track, detector), 0);
+    check_equal(turbo_media_track_attach_voice_fingerprint(track, fingerprint), 0);
+    check_equal(turbo_media_track_start(track), 0);
+    check_equal(turbo_media_track_detach_voice_detector(track, detector), -1);
+    check_equal(turbo_media_track_detach_voice_fingerprint(track, fingerprint), -1);
     turbo_media_track_stop(track);
-    check_int_eq(turbo_media_track_detach_voice_detector(track, detector), 0);
-    check_int_eq(turbo_media_track_detach_voice_fingerprint(track, fingerprint), 0);
+    check_equal(turbo_media_track_detach_voice_detector(track, detector), 0);
+    check_equal(turbo_media_track_detach_voice_fingerprint(track, fingerprint), 0);
 
-    check_int_eq(turbo_voice_detector_cancel(detector), TURBO_RECOGNITION_OK);
-    check_int_eq(turbo_fingerprint_extractor_cancel(fingerprint), TURBO_RECOGNITION_OK);
+    check_equal(turbo_voice_detector_cancel(detector), TURBO_RECOGNITION_OK);
+    check_equal(turbo_fingerprint_extractor_cancel(fingerprint), TURBO_RECOGNITION_OK);
     turbo_voice_detector_destroy(detector);
     turbo_fingerprint_extractor_destroy(fingerprint);
     turbo_media_destroy(media);
     turbo_dc_peer_destroy(peer);
     turbo_dc_context_destroy(dc);
-    check_int_eq(detector_context.destroy_count, 1);
-    check_int_eq(fingerprint_context.destroy_count, 1);
+    check_equal(detector_context.destroy_count, 1);
+    check_equal(fingerprint_context.destroy_count, 1);
   }
 
   it("rejects mismatched formats and non-voice fingerprint domains") {
@@ -166,10 +166,10 @@ suite("WebRTC recognition integration") {
     turbo_fingerprint_extractor_t *fingerprint =
         create_voice_fingerprint(&fingerprint_context, TURBO_FINGERPRINT_AUDIO_CONTENT, 8000);
 
-    check_int_eq(turbo_media_track_attach_voice_detector(track, detector), -1);
-    check_int_eq(turbo_media_track_attach_voice_fingerprint(track, fingerprint), -1);
-    check_int_eq(turbo_voice_detector_cancel(detector), TURBO_RECOGNITION_OK);
-    check_int_eq(turbo_fingerprint_extractor_cancel(fingerprint), TURBO_RECOGNITION_OK);
+    check_equal(turbo_media_track_attach_voice_detector(track, detector), -1);
+    check_equal(turbo_media_track_attach_voice_fingerprint(track, fingerprint), -1);
+    check_equal(turbo_voice_detector_cancel(detector), TURBO_RECOGNITION_OK);
+    check_equal(turbo_fingerprint_extractor_cancel(fingerprint), TURBO_RECOGNITION_OK);
     turbo_voice_detector_destroy(detector);
     turbo_fingerprint_extractor_destroy(fingerprint);
     turbo_media_destroy(media);

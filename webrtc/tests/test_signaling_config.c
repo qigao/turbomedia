@@ -58,7 +58,7 @@ static void remove_toml(char *path) {
     if (!path) {
         return;
     }
-    check_int_eq(tt_remove_file(path), 0);
+    check_equal(tt_remove_file(path), 0);
     free(path);
 }
 
@@ -137,57 +137,57 @@ spec("signaling TOML configuration") {
 
         signaling_server_config_init(&config);
         if (path) {
-            check_int_eq(signaling_server_config_load(&config, path), 0);
-            check_str_eq(config.config_file, path);
-            check_str_eq(config.node_id, "edge-1");
-            check_str_eq(config.ws_host, "::");
-            check_int_eq(config.ws_port, 9443);
+            check_equal(signaling_server_config_load(&config, path), 0);
+            check_equal(config.config_file, path);
+            check_equal(config.node_id, "edge-1");
+            check_equal(config.ws_host, "::");
+            check_equal(config.ws_port, 9443);
             check_true(config.ws_use_tls);
-            check_str_eq(config.ws_cert_file, "signaling-chain.pem");
-            check_str_eq(config.ws_key_file, "signaling-key.pem");
+            check_equal(config.ws_cert_file, "signaling-chain.pem");
+            check_equal(config.ws_key_file, "signaling-key.pem");
             check_false(config.http_enabled);
-            check_str_eq(config.http_host, "127.0.0.1");
-            check_int_eq(config.http_port, 9001);
+            check_equal(config.http_host, "127.0.0.1");
+            check_equal(config.http_port, 9001);
             check_true(config.http_auth_enabled);
-            check_str_eq(config.http_auth_issuer, "management-issuer");
-            check_str_eq(config.http_auth_active_key_id,
+            check_equal(config.http_auth_issuer, "management-issuer");
+            check_equal(config.http_auth_active_key_id,
                          "management-key-2026-07");
-            check_str_eq(config.http_auth_previous_key_id,
+            check_equal(config.http_auth_previous_key_id,
                          "management-key-2026-06");
-            check_str_eq(
+            check_equal(
                 config.http_auth_revoked_token_sha256,
                 "0000000000000000000000000000000000000000000000000000000000000000");
-            check_int_eq(config.http_auth_clock_skew_seconds, 15);
-            check_int_eq(config.http_auth_max_ttl_seconds, 900);
-            check_int_eq(config.max_peers, 2048);
-            check_int_eq(config.max_rooms, 256);
-            check_int_eq(config.peer_timeout_ms, 45000);
-            check_int_eq(config.join_timeout_ms, 12000);
-            check_int_eq(config.max_message_size, 131072);
-            check_int_eq(config.messages_per_second, 250);
-            check_int_eq(config.message_burst, 500);
-            check_int_eq(config.max_outbox_messages, 512);
-            check_int_eq(config.max_outbox_bytes, 2097152);
-            check_int_eq(config.max_connections_per_source, 150);
-            check_int_eq(config.source_admissions_per_second, 30);
-            check_int_eq(config.source_admission_burst, 75);
-            check_int_eq(config.max_source_states, 8192);
-            check_int_eq(config.source_state_ttl_ms, 240000);
-            check_str_eq(
+            check_equal(config.http_auth_clock_skew_seconds, 15);
+            check_equal(config.http_auth_max_ttl_seconds, 900);
+            check_equal(config.max_peers, 2048);
+            check_equal(config.max_rooms, 256);
+            check_equal(config.peer_timeout_ms, 45000);
+            check_equal(config.join_timeout_ms, 12000);
+            check_equal(config.max_message_size, 131072);
+            check_equal(config.messages_per_second, 250);
+            check_equal(config.message_burst, 500);
+            check_equal(config.max_outbox_messages, 512);
+            check_equal(config.max_outbox_bytes, 2097152);
+            check_equal(config.max_connections_per_source, 150);
+            check_equal(config.source_admissions_per_second, 30);
+            check_equal(config.source_admission_burst, 75);
+            check_equal(config.max_source_states, 8192);
+            check_equal(config.source_state_ttl_ms, 240000);
+            check_equal(
                 config.jwt_revoked_token_sha256,
                 "1111111111111111111111111111111111111111111111111111111111111111");
-            check_int_eq(config.jwt_ttl_seconds, 7200);
-            check_str_eq(config.jwt_issuer, "peer-issuer");
-            check_str_eq(config.jwt_active_key_id, "peer-key-2026-07");
-            check_str_eq(config.jwt_secret,
+            check_equal(config.jwt_ttl_seconds, 7200);
+            check_equal(config.jwt_issuer, "peer-issuer");
+            check_equal(config.jwt_active_key_id, "peer-key-2026-07");
+            check_equal(config.jwt_secret,
                          "peer-active-secret-at-least-32-bytes");
-            check_str_eq(config.jwt_previous_key_id, "peer-key-2026-06");
-            check_int_eq(config.jwt_clock_skew_seconds, 20);
-            check_str_eq(config.redis_host, "redis.internal");
-            check_int_eq(config.redis_port, 6380);
-            check_int_eq(config.redis_db, 2);
+            check_equal(config.jwt_previous_key_id, "peer-key-2026-06");
+            check_equal(config.jwt_clock_skew_seconds, 20);
+            check_equal(config.redis_host, "redis.internal");
+            check_equal(config.redis_port, 6380);
+            check_equal(config.redis_db, 2);
             check_false(config.redis_use_streams);
-            check_str_eq(config.log_level, "debug");
+            check_equal(config.log_level, "debug");
             check_not_null(config.private_data);
         }
         signaling_server_config_cleanup(&config);
@@ -198,9 +198,9 @@ spec("signaling TOML configuration") {
         signaling_server_config_t config;
 
         signaling_server_config_init(&config);
-        check_int_eq(
+        check_equal(
             signaling_server_config_load(&config, SIGNALING_CONFIG_EXAMPLE_PATH), 0);
-        check_int_eq(signaling_server_config_validate(&config), 0);
+        check_equal(signaling_server_config_validate(&config), 0);
         signaling_server_config_cleanup(&config);
     }
 
@@ -219,9 +219,9 @@ spec("signaling TOML configuration") {
         signaling_server_config_init(&config);
         config.ws_port = 7777;
         if (field_path && section_path) {
-            check_int_eq(signaling_server_config_load(&config, field_path), -1);
-            check_int_eq(signaling_server_config_load(&config, section_path), -1);
-            check_int_eq(config.ws_port, 7777);
+            check_equal(signaling_server_config_load(&config, field_path), -1);
+            check_equal(signaling_server_config_load(&config, section_path), -1);
+            check_equal(config.ws_port, 7777);
             check_null(config.config_file);
             check_null(config.private_data);
         }
@@ -239,8 +239,8 @@ spec("signaling TOML configuration") {
 
         signaling_server_config_init(&config);
         if (path) {
-            check_int_eq(signaling_server_config_load(&config, path), -1);
-            check_int_eq(config.max_peers, 1000);
+            check_equal(signaling_server_config_load(&config, path), -1);
+            check_equal(config.max_peers, 1000);
         }
         signaling_server_config_cleanup(&config);
         remove_toml(path);
@@ -256,8 +256,8 @@ spec("signaling TOML configuration") {
         signaling_server_config_init(&config);
         config.ws_port = 7777;
         if (path) {
-            check_int_eq(signaling_server_config_load(&config, path), -1);
-            check_int_eq(config.ws_port, 7777);
+            check_equal(signaling_server_config_load(&config, path), -1);
+            check_equal(config.ws_port, 7777);
             check_null(config.private_data);
         }
         signaling_server_config_cleanup(&config);
@@ -271,8 +271,8 @@ spec("signaling TOML configuration") {
         signaling_server_config_init(&config);
         check_not_null(path);
         if (path) {
-            check_int_eq(tt_remove_file(path), 0);
-            check_int_eq(signaling_server_config_load(&config, path), -1);
+            check_equal(tt_remove_file(path), 0);
+            check_equal(signaling_server_config_load(&config, path), -1);
             check_null(config.config_file);
             check_null(config.private_data);
             free(path);
@@ -289,8 +289,8 @@ spec("signaling TOML configuration") {
 
         signaling_server_config_init(&config);
         if (path) {
-            check_int_eq(signaling_server_config_load(&config, path), -1);
-            check_int_eq(config.peer_timeout_ms, 60000);
+            check_equal(signaling_server_config_load(&config, path), -1);
+            check_equal(config.peer_timeout_ms, 60000);
         }
         signaling_server_config_cleanup(&config);
         remove_toml(path);
@@ -306,9 +306,9 @@ spec("signaling TOML configuration") {
 
         signaling_server_config_init(&config);
         if (path) {
-            check_int_eq(signaling_server_config_load(&config, path), -1);
-            check_int_eq(config.max_message_size, 65536);
-            check_int_eq(config.max_outbox_bytes, 1048576);
+            check_equal(signaling_server_config_load(&config, path), -1);
+            check_equal(config.max_message_size, 65536);
+            check_equal(config.max_outbox_bytes, 1048576);
         }
         signaling_server_config_cleanup(&config);
         remove_toml(path);
@@ -323,9 +323,9 @@ spec("signaling TOML configuration") {
 
         signaling_server_config_init(&config);
         if (path) {
-            check_int_eq(signaling_server_config_load(&config, path), -1);
-            check_int_eq(config.source_state_ttl_ms, 300000);
-            check_int_eq(config.max_source_states, 4096);
+            check_equal(signaling_server_config_load(&config, path), -1);
+            check_equal(config.source_state_ttl_ms, 300000);
+            check_equal(config.max_source_states, 4096);
         }
         signaling_server_config_cleanup(&config);
         remove_toml(path);
@@ -340,7 +340,7 @@ spec("signaling TOML configuration") {
         config.source_admission_burst = 0;
         config.max_source_states = 0;
         config.source_state_ttl_ms = 0;
-        check_int_eq(signaling_server_config_validate(&config), 0);
+        check_equal(signaling_server_config_validate(&config), 0);
         signaling_server_config_cleanup(&config);
     }
 
@@ -357,11 +357,11 @@ spec("signaling TOML configuration") {
 
         signaling_server_config_init(&config);
         if (first_path && second_path) {
-            check_int_eq(signaling_server_config_load(&config, first_path), 0);
-            check_int_eq(signaling_server_config_load(&config, second_path), 0);
-            check_str_eq(config.node_id, "persistent-node");
-            check_int_eq(config.max_rooms, 321);
-            check_str_eq(config.config_file, second_path);
+            check_equal(signaling_server_config_load(&config, first_path), 0);
+            check_equal(signaling_server_config_load(&config, second_path), 0);
+            check_equal(config.node_id, "persistent-node");
+            check_equal(config.max_rooms, 321);
+            check_equal(config.config_file, second_path);
         }
         signaling_server_config_cleanup(&config);
         remove_toml(first_path);
@@ -389,10 +389,10 @@ spec("signaling TOML configuration") {
 
         signaling_server_config_init(&config);
         if (valid_path && invalid_path) {
-            check_int_eq(signaling_server_config_load(&config, valid_path), 0);
+            check_equal(signaling_server_config_load(&config, valid_path), 0);
             signaling_server_config_cleanup(&config);
             signaling_server_config_init(&config);
-            check_int_eq(signaling_server_config_load(&config, invalid_path), -1);
+            check_equal(signaling_server_config_load(&config, invalid_path), -1);
         }
         signaling_server_config_cleanup(&config);
         remove_toml(valid_path);
@@ -408,7 +408,7 @@ spec("signaling TOML configuration") {
 
         signaling_server_config_init(&config);
         if (redis_path) {
-            check_int_eq(signaling_server_config_load(&config, redis_path), -1);
+            check_equal(signaling_server_config_load(&config, redis_path), -1);
         }
         signaling_server_config_cleanup(&config);
         remove_toml(redis_path);
@@ -446,14 +446,14 @@ spec("signaling TOML configuration") {
         signaling_server_config_init(&config);
         config.http_admin_token = "test-admin-token";
         if (valid_path && invalid_ws_path && invalid_http_path) {
-            check_int_eq(
+            check_equal(
                 signaling_server_config_load(&config, valid_path), 0);
             signaling_server_config_cleanup(&config);
             signaling_server_config_init(&config);
             config.http_admin_token = "test-admin-token";
-            check_int_eq(
+            check_equal(
                 signaling_server_config_load(&config, invalid_ws_path), -1);
-            check_int_eq(
+            check_equal(
                 signaling_server_config_load(&config, invalid_http_path), -1);
         }
         signaling_server_config_cleanup(&config);
@@ -470,21 +470,21 @@ spec("signaling TOML configuration") {
         config.http_host = "0.0.0.0";
         config.http_auth_enabled = 1;
         config.http_admin_token = "test-admin-token";
-        check_int_eq(signaling_server_config_validate(&config), 0);
+        check_equal(signaling_server_config_validate(&config), 0);
 
         config.http_admin_token = NULL;
-        check_int_eq(signaling_server_config_validate(&config), -1);
+        check_equal(signaling_server_config_validate(&config), -1);
         config.http_auth_active_key_id = "management-key";
         config.http_auth_active_secret =
             "management-active-secret-at-least-32-bytes";
-        check_int_eq(signaling_server_config_validate(&config), 0);
+        check_equal(signaling_server_config_validate(&config), 0);
         config.http_auth_active_secret = "too-short";
-        check_int_eq(signaling_server_config_validate(&config), -1);
+        check_equal(signaling_server_config_validate(&config), -1);
         config.http_auth_active_key_id = NULL;
         config.http_auth_active_secret = NULL;
         config.http_admin_token = "test-admin-token";
         config.http_auth_enabled = 0;
-        check_int_eq(signaling_server_config_validate(&config), -1);
+        check_equal(signaling_server_config_validate(&config), -1);
         signaling_server_config_cleanup(&config);
     }
 
@@ -524,21 +524,21 @@ spec("signaling TOML configuration") {
         config.http_enabled = 1;
         signaling_server_config_apply_environment(&config);
         check_true(config.ws_use_tls);
-        check_str_eq(config.ws_cert_file, "signaling-chain.pem");
-        check_str_eq(config.ws_key_file, "signaling-key.pem");
+        check_equal(config.ws_cert_file, "signaling-chain.pem");
+        check_equal(config.ws_key_file, "signaling-key.pem");
         check_true(config.http_use_tls);
-        check_str_eq(config.http_cert_file, "management-chain.pem");
-        check_str_eq(config.http_key_file, "management-key.pem");
-        check_str_eq(config.http_admin_token, "env-admin-token");
-        check_str_eq(config.http_auth_active_key_id, "env-management-key");
-        check_str_eq(config.http_auth_active_secret,
+        check_equal(config.http_cert_file, "management-chain.pem");
+        check_equal(config.http_key_file, "management-key.pem");
+        check_equal(config.http_admin_token, "env-admin-token");
+        check_equal(config.http_auth_active_key_id, "env-management-key");
+        check_equal(config.http_auth_active_secret,
                      "env-management-secret-at-least-32-bytes");
-        check_int_eq(config.http_auth_max_ttl_seconds, 900);
-        check_int_eq(signaling_server_config_validate(&config), 0);
+        check_equal(config.http_auth_max_ttl_seconds, 900);
+        check_equal(signaling_server_config_validate(&config), 0);
 
         signaling_config_test_set_env(names[1], "not-a-boolean");
         signaling_server_config_apply_environment(&config);
-        check_int_eq(signaling_server_config_validate(&config), -1);
+        check_equal(signaling_server_config_validate(&config), -1);
         signaling_server_config_cleanup(&config);
 
         for (size_t index = 0; index < sizeof(names) / sizeof(names[0]);

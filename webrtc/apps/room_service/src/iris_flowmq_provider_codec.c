@@ -21,12 +21,12 @@ static int add_member(json_value_t *object, const char *name,
     return 1;
 }
 
-static json_value_t *wire_string(tstr_t value) {
+static json_value_t *wire_string(tstr value) {
     return turbo_json_create_string_n(value ? value : "",
                                       value ? tstr_len(value) : 0u);
 }
 
-static int hash_field(turbo_crypto_sha256_ctx_t *context, tstr_t value) {
+static int hash_field(turbo_crypto_sha256_ctx_t *context, tstr value) {
     uint64_t length = value ? (uint64_t)tstr_len(value) : 0u;
     uint8_t encoded_length[sizeof(length)];
     size_t index;
@@ -181,7 +181,7 @@ static ProviderReceiptDisposition_t receipt_disposition(
     }
 }
 
-static int assign(tstr_t *target, const char *value) {
+static int assign(tstr *target, const char *value) {
     *target = tstr_dup(value ? value : "");
     return *target != NULL;
 }

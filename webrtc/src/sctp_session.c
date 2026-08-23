@@ -55,7 +55,7 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
     memset(&status, 0, sizeof(status));
     if (usrsctp_getsockopt(peer->sctp.socket, IPPROTO_SCTP, SCTP_STATUS,
                            &status, &status_len) != 0) {
-        TLOG_WARN("SCTP status poll failed reason='{}' errno={}",
+        TLOG_WARNF("SCTP status poll failed reason='{}' errno={}",
                   reason ? reason : "", errno);
         return;
     }
@@ -112,7 +112,7 @@ int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, 
         return -1;
     }
     if (!peer->dtls.handshake_done) {
-        TLOG_WARN("SCTP outbound dropped before DTLS handshake: bytes={}",
+        TLOG_WARNF("SCTP outbound dropped before DTLS handshake: bytes={}",
                   length);
         dc_peer_release(peer);
         return -1;
@@ -120,7 +120,7 @@ int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, 
 
     int written = SSL_write(peer->dtls.ssl, data, (int)length);
     if (written <= 0) {
-        TLOG_ERROR("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
+        TLOG_ERRORF("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
                    length, written, errno);
         dc_peer_release(peer);
         return -1;
@@ -153,7 +153,7 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         notif = &notif_storage;
         if (notif->sn_header.sn_type == SCTP_ASSOC_CHANGE) {
             const struct sctp_assoc_change *assoc = &notif->sn_assoc_change;
-            TLOG_INFO("SCTP assoc change state={} out={} in={} error={}",
+            TLOG_INFOF("SCTP assoc change state={} out={} in={} error={}",
                       sctp_assoc_state_name(assoc->sac_state),
                       assoc->sac_outbound_streams,
                       assoc->sac_inbound_streams,
@@ -325,14 +325,14 @@ int sctp_start_association(turbo_dc_peer_t *peer) {
 #endif
 
     if (usrsctp_bind(peer->sctp.socket, (struct sockaddr *)&local_addr, sizeof(local_addr)) != 0) {
-        TLOG_ERROR("SCTP bind failed errno={}", errno);
+        TLOG_ERRORF("SCTP bind failed errno={}", errno);
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_BIND, NULL);
         return -1;
     }
 
     int ret = usrsctp_connect(peer->sctp.socket, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
     if (ret < 0 && errno != EINPROGRESS) {
-        TLOG_ERROR("SCTP connect failed ret={} errno={}", ret, errno);
+        TLOG_ERRORF("SCTP connect failed ret={} errno={}", ret, errno);
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_CONNECT, NULL);
         return -1;
     }

@@ -124,61 +124,61 @@ typedef struct {
     size_t media_count;
 } turbo_rtsp_sdp_description_t;
 
-CXX_C_API int turbo_rtsp_sdp_build(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_build(
     char *buffer,
     size_t buffer_size,
     const turbo_rtsp_sdp_session_t *session,
     const turbo_rtsp_sdp_media_t *media,
     size_t media_count);
 
-CXX_C_API int turbo_rtsp_sdp_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_parse(
     const char *sdp,
     size_t sdp_len,
     turbo_rtsp_sdp_description_t *description);
 
-CXX_C_API int turbo_rtsp_sdp_h264_fmtp_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_h264_fmtp_parse(
     const char *fmtp,
     size_t fmtp_len,
     turbo_rtsp_sdp_h264_fmtp_t *h264);
 
-CXX_C_API int turbo_rtsp_sdp_h264_fmtp_build(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_h264_fmtp_build(
     char *buffer,
     size_t buffer_size,
     const turbo_rtsp_sdp_h264_fmtp_t *h264);
 
-CXX_C_API int turbo_rtsp_sdp_h264_fmtp_write_annexb(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_h264_fmtp_write_annexb(
     uint8_t *buffer,
     size_t buffer_size,
     const turbo_rtsp_sdp_h264_fmtp_t *h264,
     size_t *written);
 
-CXX_C_API int turbo_rtsp_sdp_h265_fmtp_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_h265_fmtp_parse(
     const char *fmtp,
     size_t fmtp_len,
     turbo_rtsp_sdp_h265_fmtp_t *h265);
 
-CXX_C_API int turbo_rtsp_sdp_h265_fmtp_build(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_h265_fmtp_build(
     char *buffer,
     size_t buffer_size,
     const turbo_rtsp_sdp_h265_fmtp_t *h265);
 
-CXX_C_API int turbo_rtsp_sdp_h265_fmtp_write_annexb(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_h265_fmtp_write_annexb(
     uint8_t *buffer,
     size_t buffer_size,
     const turbo_rtsp_sdp_h265_fmtp_t *h265,
     size_t *written);
 
-CXX_C_API int turbo_rtsp_sdp_mpeg4_fmtp_parse(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_mpeg4_fmtp_parse(
     const char *fmtp,
     size_t fmtp_len,
     turbo_rtsp_sdp_mpeg4_fmtp_t *mpeg4);
 
-CXX_C_API int turbo_rtsp_sdp_mpeg4_fmtp_build(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_mpeg4_fmtp_build(
     char *buffer,
     size_t buffer_size,
     const turbo_rtsp_sdp_mpeg4_fmtp_t *mpeg4);
 
-CXX_C_API int turbo_rtsp_sdp_mpeg4_fmtp_write_config(
+TURBO_MEDIA_C_API int turbo_rtsp_sdp_mpeg4_fmtp_write_config(
     uint8_t *buffer,
     size_t buffer_size,
     const turbo_rtsp_sdp_mpeg4_fmtp_t *mpeg4,

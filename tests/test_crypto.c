@@ -42,13 +42,13 @@ spec("TurboMedia crypto") {
       uint8_t alice_public[32];
       uint8_t shared[32];
 
-      check_int_eq(turbo_media_x25519_public_key(alice_private, alice_public), TURBO_OK);
-      check_mem_eq(alice_public, alice_public_expected, sizeof(alice_public));
-      check_int_eq(turbo_media_x25519_shared_secret(alice_private, bob_public, shared), TURBO_OK);
-      check_mem_eq(shared, shared_expected, sizeof(shared));
+      check_equal(turbo_media_x25519_public_key(alice_private, alice_public), TURBO_OK);
+      check_equal(alice_public, alice_public_expected, sizeof(alice_public));
+      check_equal(turbo_media_x25519_shared_secret(alice_private, bob_public, shared), TURBO_OK);
+      check_equal(shared, shared_expected, sizeof(shared));
 
-      check_int_eq(turbo_media_x25519_shared_secret(bob_private, alice_public, shared), TURBO_OK);
-      check_mem_eq(shared, shared_expected, sizeof(shared));
+      check_equal(turbo_media_x25519_shared_secret(bob_private, alice_public, shared), TURBO_OK);
+      check_equal(shared, shared_expected, sizeof(shared));
     }
 
     it("generates distinct key pairs and rejects an all-zero peer key") {
@@ -60,19 +60,19 @@ spec("TurboMedia crypto") {
       uint8_t unchanged[32];
 
       memset(unchanged, 0xa5, sizeof(unchanged));
-      check_int_eq(turbo_media_x25519_keypair_generate(private_a, private_a), TURBO_EINVAL);
-      check_int_eq(turbo_media_x25519_keypair_generate(private_a, public_a), TURBO_OK);
-      check_int_eq(turbo_media_x25519_keypair_generate(private_b, public_b), TURBO_OK);
+      check_equal(turbo_media_x25519_keypair_generate(private_a, private_a), TURBO_EINVAL);
+      check_equal(turbo_media_x25519_keypair_generate(private_a, public_a), TURBO_OK);
+      check_equal(turbo_media_x25519_keypair_generate(private_b, public_b), TURBO_OK);
       check_false(bytes_are_zero(private_a, sizeof(private_a)));
       check_false(bytes_are_zero(public_a, sizeof(public_a)));
-      check_mem_ne(private_a, private_b, sizeof(private_a));
-      check_mem_ne(public_a, public_b, sizeof(public_a));
-      check_int_eq(turbo_media_x25519_shared_secret(private_a, zero_public, unchanged),
+      check_not_equal(private_a, private_b, sizeof(private_a));
+      check_not_equal(public_a, public_b, sizeof(public_a));
+      check_equal(turbo_media_x25519_shared_secret(private_a, zero_public, unchanged),
                    TURBO_EPROTO);
       {
         uint8_t expected[32];
         memset(expected, 0xa5, sizeof(expected));
-        check_mem_eq(unchanged, expected, sizeof(unchanged));
+        check_equal(unchanged, expected, sizeof(unchanged));
       }
     }
   }
@@ -93,10 +93,10 @@ spec("TurboMedia crypto") {
           0x05, 0xdb, 0xe2, 0xb0, 0x39, 0xc7, 0xe8, 0x05};
       uint8_t tag[16];
 
-      check_int_eq(turbo_media_xchacha20poly1305_encrypt(
+      check_equal(turbo_media_xchacha20poly1305_encrypt(
                        key, nonce, NULL, 0U, NULL, 0U, NULL, tag),
                    TURBO_OK);
-      check_mem_eq(tag, expected_tag, sizeof(tag));
+      check_equal(tag, expected_tag, sizeof(tag));
     }
 
     it("round trips associated data and rejects a modified tag") {
@@ -108,42 +108,42 @@ spec("TurboMedia crypto") {
       uint8_t plain[sizeof(message)];
       uint8_t tag[16];
 
-      check_int_eq(turbo_media_xchacha20_key_generate(key), TURBO_OK);
-      check_int_eq(turbo_media_xchacha20_nonce_generate(nonce), TURBO_OK);
-      check_int_eq(turbo_media_xchacha20poly1305_encrypt(
+      check_equal(turbo_media_xchacha20_key_generate(key), TURBO_OK);
+      check_equal(turbo_media_xchacha20_nonce_generate(nonce), TURBO_OK);
+      check_equal(turbo_media_xchacha20poly1305_encrypt(
                        key, nonce, associated_data, sizeof(associated_data) - 1U,
                        message, sizeof(message), cipher, tag),
                    TURBO_OK);
-      check_mem_ne(cipher, message, sizeof(message));
-      check_int_eq(turbo_media_xchacha20poly1305_decrypt(
+      check_not_equal(cipher, message, sizeof(message));
+      check_equal(turbo_media_xchacha20poly1305_decrypt(
                        key, nonce, associated_data, sizeof(associated_data) - 1U,
                        cipher, sizeof(cipher), tag, plain),
                    TURBO_OK);
-      check_mem_eq(plain, message, sizeof(message));
+      check_equal(plain, message, sizeof(message));
 
       tag[0] ^= 0x01U;
       memset(plain, 0xa5, sizeof(plain));
-      check_int_eq(turbo_media_xchacha20poly1305_decrypt(
+      check_equal(turbo_media_xchacha20poly1305_decrypt(
                        key, nonce, associated_data, sizeof(associated_data) - 1U,
                        cipher, sizeof(cipher), tag, plain),
                    TURBO_EPROTO);
       {
         uint8_t expected[sizeof(plain)];
         memset(expected, 0xa5, sizeof(expected));
-        check_mem_eq(plain, expected, sizeof(plain));
+        check_equal(plain, expected, sizeof(plain));
       }
 
       memcpy(plain, message, sizeof(message));
-      check_int_eq(turbo_media_xchacha20_nonce_generate(nonce), TURBO_OK);
-      check_int_eq(turbo_media_xchacha20poly1305_encrypt(
+      check_equal(turbo_media_xchacha20_nonce_generate(nonce), TURBO_OK);
+      check_equal(turbo_media_xchacha20poly1305_encrypt(
                        key, nonce, associated_data, sizeof(associated_data) - 1U,
                        plain, sizeof(plain), plain, tag),
                    TURBO_OK);
-      check_int_eq(turbo_media_xchacha20poly1305_decrypt(
+      check_equal(turbo_media_xchacha20poly1305_decrypt(
                        key, nonce, associated_data, sizeof(associated_data) - 1U,
                        plain, sizeof(plain), tag, plain),
                    TURBO_OK);
-      check_mem_eq(plain, message, sizeof(message));
+      check_equal(plain, message, sizeof(message));
 
       turbo_media_crypto_wipe(key, sizeof(key));
       check_true(bytes_are_zero(key, sizeof(key)));
@@ -154,12 +154,12 @@ spec("TurboMedia crypto") {
       uint8_t nonce[24] = {0};
       uint8_t tag[16] = {0};
 
-      check_int_eq(turbo_media_xchacha20_key_generate(NULL), TURBO_EINVAL);
-      check_int_eq(turbo_media_xchacha20_nonce_generate(NULL), TURBO_EINVAL);
-      check_int_eq(turbo_media_xchacha20poly1305_encrypt(
+      check_equal(turbo_media_xchacha20_key_generate(NULL), TURBO_EINVAL);
+      check_equal(turbo_media_xchacha20_nonce_generate(NULL), TURBO_EINVAL);
+      check_equal(turbo_media_xchacha20poly1305_encrypt(
                        key, nonce, NULL, 1U, NULL, 0U, NULL, tag),
                    TURBO_EINVAL);
-      check_int_eq(turbo_media_xchacha20poly1305_encrypt(
+      check_equal(turbo_media_xchacha20poly1305_encrypt(
                        key, nonce, NULL, 0U, NULL, 0U, NULL, tag),
                    TURBO_OK);
     }

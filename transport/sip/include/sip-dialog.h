@@ -22,7 +22,7 @@ struct sip_dialog_t
 {
 	int state; // DIALOG_ERALY/DIALOG_CONFIRMED
 
-	tstr_v callid;
+	vstr callid;
 	struct 
 	{
 		uint32_t id; // local/remote sequence number
@@ -47,12 +47,12 @@ int sip_dialog_addref(struct sip_dialog_t* dialog);
 int sip_dialog_init_uac(struct sip_dialog_t* dialog, const struct sip_message_t* msg);
 int sip_dialog_init_uas(struct sip_dialog_t* dialog, const struct sip_message_t* msg);
 
-int sip_dialog_setlocaltag(struct sip_dialog_t* dialog, const tstr_v* tag);
+int sip_dialog_setlocaltag(struct sip_dialog_t* dialog, const vstr* tag);
 int sip_dialog_target_refresh(struct sip_dialog_t* dialog, const struct sip_message_t* msg);
 int sip_dialog_set_local_target(struct sip_dialog_t* dialog, const struct sip_message_t* msg);
 
-int sip_dialog_id(tstr_v* id, const struct sip_dialog_t* dialog, char* ptr, int len);
-int sip_dialog_id_with_message(tstr_v* id, const struct sip_message_t* msg, char* ptr, int len, int uas);
+int sip_dialog_id(vstr* id, const struct sip_dialog_t* dialog, char* ptr, int len);
+int sip_dialog_id_with_message(vstr* id, const struct sip_message_t* msg, char* ptr, int len, int uas);
 
 #if defined(__cplusplus)
 }

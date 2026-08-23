@@ -90,7 +90,7 @@ static int sip_uas_transaction_inivte_change_state(struct sip_uas_transaction_t*
 int sip_uas_transaction_invite_input(struct sip_uas_transaction_t* t, const struct sip_message_t* req, void* param)
 {
 	char ptr[256];
-	tstr_v id;
+	vstr id;
 	int r, status, oldstatus;
 
 	r = 0;

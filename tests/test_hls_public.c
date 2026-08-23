@@ -35,14 +35,14 @@ static void check_public_hls_stream(const char *relative_path) {
     if (!root) {
         return;
     }
-    check_size_gt(strlen(root), 0);
+    check_greater(strlen(root), 0);
     if (root[0] == '\0') {
         return;
     }
 
     length = snprintf(url, sizeof(url), "%s/%s", root, relative_path);
-    check_int_gt(length, 0);
-    check_size_lt((size_t)length, sizeof(url));
+    check_greater(length, 0);
+    check_less((size_t)length, sizeof(url));
     if (length <= 0 || (size_t)length >= sizeof(url)) {
         return;
     }

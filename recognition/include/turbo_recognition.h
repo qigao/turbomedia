@@ -151,31 +151,31 @@ typedef struct {
   void (*destroy)(void *context);
 } turbo_voice_detector_provider_t;
 
-CXX_C_API turbo_voice_detector_t *
+TURBO_MEDIA_API turbo_voice_detector_t *
 turbo_voice_detector_create(const turbo_voice_detector_provider_t *provider,
                             const turbo_voice_detector_callbacks_t *callbacks, void *user_data);
-CXX_C_API void turbo_voice_detector_destroy(turbo_voice_detector_t *detector);
-CXX_C_API int turbo_voice_detector_start(turbo_voice_detector_t *detector,
+TURBO_MEDIA_API void turbo_voice_detector_destroy(turbo_voice_detector_t *detector);
+TURBO_MEDIA_API int turbo_voice_detector_start(turbo_voice_detector_t *detector,
                                          const turbo_voice_detector_config_t *config);
-CXX_C_API int turbo_voice_detector_write(turbo_voice_detector_t *detector,
+TURBO_MEDIA_API int turbo_voice_detector_write(turbo_voice_detector_t *detector,
                                          const turbo_recognition_audio_frame_t *frame);
-CXX_C_API int turbo_voice_detector_finish(turbo_voice_detector_t *detector);
-CXX_C_API int turbo_voice_detector_cancel(turbo_voice_detector_t *detector);
-CXX_C_API turbo_recognition_state_t
+TURBO_MEDIA_API int turbo_voice_detector_finish(turbo_voice_detector_t *detector);
+TURBO_MEDIA_API int turbo_voice_detector_cancel(turbo_voice_detector_t *detector);
+TURBO_MEDIA_API turbo_recognition_state_t
 turbo_voice_detector_get_state(const turbo_voice_detector_t *detector);
-CXX_C_API int turbo_voice_detector_get_last_result(const turbo_voice_detector_t *detector);
-CXX_C_API uint64_t
+TURBO_MEDIA_API int turbo_voice_detector_get_last_result(const turbo_voice_detector_t *detector);
+TURBO_MEDIA_API uint64_t
 turbo_voice_detector_get_rejected_frame_count(const turbo_voice_detector_t *detector);
-CXX_C_API int turbo_voice_detector_get_audio_format(const turbo_voice_detector_t *detector,
+TURBO_MEDIA_API int turbo_voice_detector_get_audio_format(const turbo_voice_detector_t *detector,
                                                     turbo_recognition_audio_format_t *format);
 
 /** turbo_audio_capture_cb-compatible adapter for detector-only capture. */
-CXX_C_API void turbo_voice_detector_capture_callback(struct turbo_capture_s *capture,
+TURBO_MEDIA_API void turbo_voice_detector_capture_callback(struct turbo_capture_s *capture,
                                                      const uint8_t *samples, size_t len,
                                                      uint64_t timestamp_us, void *user_data);
 
 /** turbo_player_audio_cb-compatible adapter for offline/VOD analysis. */
-CXX_C_API void turbo_voice_detector_player_audio_callback(turbo_player_t *player,
+TURBO_MEDIA_API void turbo_voice_detector_player_audio_callback(turbo_player_t *player,
                                                           const float *samples, size_t frame_count,
                                                           int sample_rate, int channels,
                                                           int64_t pts_ms, void *user_data);
@@ -238,41 +238,41 @@ typedef struct {
   void (*destroy)(void *context);
 } turbo_fingerprint_provider_t;
 
-CXX_C_API turbo_fingerprint_extractor_t *
+TURBO_MEDIA_API turbo_fingerprint_extractor_t *
 turbo_fingerprint_extractor_create(const turbo_fingerprint_provider_t *provider,
                                    const turbo_fingerprint_callbacks_t *callbacks, void *user_data);
-CXX_C_API void turbo_fingerprint_extractor_destroy(turbo_fingerprint_extractor_t *extractor);
-CXX_C_API int turbo_fingerprint_extractor_start(turbo_fingerprint_extractor_t *extractor,
+TURBO_MEDIA_API void turbo_fingerprint_extractor_destroy(turbo_fingerprint_extractor_t *extractor);
+TURBO_MEDIA_API int turbo_fingerprint_extractor_start(turbo_fingerprint_extractor_t *extractor,
                                                 const turbo_fingerprint_config_t *config);
-CXX_C_API int turbo_fingerprint_extractor_write_audio(turbo_fingerprint_extractor_t *extractor,
+TURBO_MEDIA_API int turbo_fingerprint_extractor_write_audio(turbo_fingerprint_extractor_t *extractor,
                                                       const turbo_recognition_audio_frame_t *frame);
-CXX_C_API int turbo_fingerprint_extractor_write_video(turbo_fingerprint_extractor_t *extractor,
+TURBO_MEDIA_API int turbo_fingerprint_extractor_write_video(turbo_fingerprint_extractor_t *extractor,
                                                       const turbo_recognition_video_frame_t *frame);
-CXX_C_API int turbo_fingerprint_extractor_finish(turbo_fingerprint_extractor_t *extractor);
-CXX_C_API int turbo_fingerprint_extractor_cancel(turbo_fingerprint_extractor_t *extractor);
-CXX_C_API turbo_recognition_state_t
+TURBO_MEDIA_API int turbo_fingerprint_extractor_finish(turbo_fingerprint_extractor_t *extractor);
+TURBO_MEDIA_API int turbo_fingerprint_extractor_cancel(turbo_fingerprint_extractor_t *extractor);
+TURBO_MEDIA_API turbo_recognition_state_t
 turbo_fingerprint_extractor_get_state(const turbo_fingerprint_extractor_t *extractor);
-CXX_C_API int
+TURBO_MEDIA_API int
 turbo_fingerprint_extractor_get_last_result(const turbo_fingerprint_extractor_t *extractor);
-CXX_C_API uint64_t turbo_fingerprint_extractor_get_rejected_frame_count(
+TURBO_MEDIA_API uint64_t turbo_fingerprint_extractor_get_rejected_frame_count(
     const turbo_fingerprint_extractor_t *extractor);
-CXX_C_API turbo_fingerprint_domain_t
+TURBO_MEDIA_API turbo_fingerprint_domain_t
 turbo_fingerprint_extractor_get_domain(const turbo_fingerprint_extractor_t *extractor);
-CXX_C_API int
+TURBO_MEDIA_API int
 turbo_fingerprint_extractor_get_audio_format(const turbo_fingerprint_extractor_t *extractor,
                                              turbo_recognition_audio_format_t *format);
 
 /** turbo_audio_capture_cb-compatible adapter for voice/audio fingerprints. */
-CXX_C_API void turbo_fingerprint_capture_callback(struct turbo_capture_s *capture,
+TURBO_MEDIA_API void turbo_fingerprint_capture_callback(struct turbo_capture_s *capture,
                                                   const uint8_t *samples, size_t len,
                                                   uint64_t timestamp_us, void *user_data);
 
 /** turbo_player callbacks for offline/VOD audio or video fingerprinting. */
-CXX_C_API void turbo_fingerprint_player_audio_callback(turbo_player_t *player, const float *samples,
+TURBO_MEDIA_API void turbo_fingerprint_player_audio_callback(turbo_player_t *player, const float *samples,
                                                        size_t frame_count, int sample_rate,
                                                        int channels, int64_t pts_ms,
                                                        void *user_data);
-CXX_C_API void turbo_fingerprint_player_video_callback(turbo_player_t *player,
+TURBO_MEDIA_API void turbo_fingerprint_player_video_callback(turbo_player_t *player,
                                                        const turbo_player_video_frame_t *frame,
                                                        void *user_data);
 
@@ -290,10 +290,10 @@ typedef struct {
   int is_match;
 } turbo_fingerprint_match_result_t;
 
-CXX_C_API turbo_fingerprint_matcher_t *
+TURBO_MEDIA_API turbo_fingerprint_matcher_t *
 turbo_fingerprint_matcher_create(const turbo_fingerprint_matcher_provider_t *provider);
-CXX_C_API void turbo_fingerprint_matcher_destroy(turbo_fingerprint_matcher_t *matcher);
-CXX_C_API int turbo_fingerprint_match(turbo_fingerprint_matcher_t *matcher,
+TURBO_MEDIA_API void turbo_fingerprint_matcher_destroy(turbo_fingerprint_matcher_t *matcher);
+TURBO_MEDIA_API int turbo_fingerprint_match(turbo_fingerprint_matcher_t *matcher,
                                       const turbo_fingerprint_t *left,
                                       const turbo_fingerprint_t *right, float threshold,
                                       turbo_fingerprint_match_result_t *result);

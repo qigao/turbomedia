@@ -209,7 +209,7 @@ struct sip_uac_transaction_t* sip_uac_prack(struct sip_agent_t* sip, const struc
 	char rack[64];
 	struct sip_message_t* req;
 	struct sip_uac_transaction_t* t;
-	const tstr_v* rseq;
+	const vstr* rseq;
 
 	rseq = sip_message_get_header_by_name(req100rel, SIP_HEADER_RSEQ);
 	if (!sip || !dialog || !rseq)

@@ -249,26 +249,26 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
-        check_int_eq(delivery.calls, 1);
-        check_size_eq(test_store_count(&store), 1u);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(delivery.calls, 1);
+        check_equal(test_store_count(&store), 1u);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.pending_records, 0u);
-        check_size_eq(stats.in_flight_records, 1u);
-        check_size_eq(stats.dead_records, 0u);
-        check_size_eq(stats.retained_payload_bytes,
+        check_equal(stats.pending_records, 0u);
+        check_equal(stats.in_flight_records, 1u);
+        check_equal(stats.dead_records, 0u);
+        check_equal(stats.retained_payload_bytes,
                       strlen(event.payload_json));
-        check_size_eq(stats.peak_retained_payload_bytes,
+        check_equal(stats.peak_retained_payload_bytes,
                       strlen(event.payload_json));
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 1, 202);
-        check_size_eq(test_store_count(&store), 0u);
+        check_equal(test_store_count(&store), 0u);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_ull_eq(stats.persisted_total, 1u);
-        check_ull_eq(stats.delivered_total, 1u);
-        check_size_eq(stats.retained_payload_bytes, 0u);
-        check_size_eq(stats.peak_retained_payload_bytes,
+        check_equal(stats.persisted_total, 1u);
+        check_equal(stats.delivered_total, 1u);
+        check_equal(stats.retained_payload_bytes, 0u);
+        check_equal(stats.peak_retained_payload_bytes,
                       strlen(event.payload_json));
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
@@ -283,14 +283,14 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         snprintf(conflict.payload_json, sizeof(conflict.payload_json),
                  "{\"value\":\"2\"}");
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &conflict),
+        check_equal(iris_event_outbox_on_media_event(outbox, &conflict),
                      IVR_EBUSY);
-        check_int_eq(delivery.calls, 1);
+        check_equal(delivery.calls, 1);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -316,22 +316,22 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         revision = delivery.last_revision;
         iris_event_outbox_on_delivery_result(
             outbox, &event, revision + 1u, 1, 202);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(test_store_count(&store), 1u);
-        check_ull_eq(stats.stale_settlement_total, 1u);
-        check_ull_eq(stats.settlement_failure_total, 1u);
-        check_size_eq(stats.retained_payload_bytes,
+        check_equal(test_store_count(&store), 1u);
+        check_equal(stats.stale_settlement_total, 1u);
+        check_equal(stats.settlement_failure_total, 1u);
+        check_equal(stats.retained_payload_bytes,
                       strlen(event.payload_json));
         iris_event_outbox_on_delivery_result(
             outbox, &event, revision, 1, 202);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(test_store_count(&store), 0u);
-        check_size_eq(stats.retained_payload_bytes, 0u);
+        check_equal(test_store_count(&store), 0u);
+        check_equal(stats.retained_payload_bytes, 0u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -350,17 +350,17 @@ spec("Iris durable media event outbox") {
         delivery.status = IVR_ENOSPC;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         index = test_find_record(&store, (const uint8_t *)event.event_id,
                                  strlen(event.event_id));
         check_true(index >= 0);
         if (index >= 0) store.records[index].value[0] = '!';
-        check_int_eq(iris_event_outbox_list_dead_letters(
+        check_equal(iris_event_outbox_list_dead_letters(
                          outbox, dead, 1u, &count, &total),
                      IVR_ESTATE);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_ull_eq(stats.decode_failure_total, 1u);
+        check_equal(stats.decode_failure_total, 1u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -373,39 +373,39 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 0, 503);
-        check_size_eq(test_store_count(&store), 1u);
+        check_equal(test_store_count(&store), 1u);
         {
             iris_event_outbox_stats_t stats;
             iris_event_dead_letter_t dead[1];
             size_t dead_count = 0u;
             size_t dead_total = 0u;
             iris_event_outbox_get_stats(outbox, &stats);
-            check_size_eq(stats.dead_records, 1u);
-            check_size_eq(stats.in_flight_records, 0u);
-            check_int_eq(iris_event_outbox_list_dead_letters(
+            check_equal(stats.dead_records, 1u);
+            check_equal(stats.in_flight_records, 0u);
+            check_equal(iris_event_outbox_list_dead_letters(
                              outbox, dead, 1u, &dead_count, &dead_total),
                          IVR_OK);
-            check_size_eq(dead_count, 1u);
-            check_size_eq(dead_total, 1u);
-            check_str_eq(dead[0].event_id, "event-c");
-            check_uint_eq(dead[0].delivery_attempts, 1u);
-            check_int_eq(dead[0].last_http_status, 503);
+            check_equal(dead_count, 1u);
+            check_equal(dead_total, 1u);
+            check_equal(dead[0].event_id, "event-c");
+            check_equal(dead[0].delivery_attempts, 1u);
+            check_equal(dead[0].last_http_status, 503);
         }
-        check_int_eq(iris_event_outbox_replay(outbox, event.event_id), IVR_OK);
-        check_int_eq(delivery.calls, 2);
+        check_equal(iris_event_outbox_replay(outbox, event.event_id), IVR_OK);
+        check_equal(delivery.calls, 2);
         {
             iris_event_outbox_stats_t stats;
             iris_event_outbox_get_stats(outbox, &stats);
-            check_size_eq(stats.dead_records, 0u);
-            check_size_eq(stats.in_flight_records, 1u);
+            check_equal(stats.dead_records, 0u);
+            check_equal(stats.in_flight_records, 1u);
         }
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 1, 202);
-        check_size_eq(test_store_count(&store), 0u);
+        check_equal(test_store_count(&store), 0u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -420,30 +420,30 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
         for (i = 0u; i < 3u; ++i) {
             char event_id[32];
             ivr_media_event_t event;
             snprintf(event_id, sizeof(event_id), "event-batch-%u",
                      (unsigned)i);
             event = test_event(event_id, "{}");
-            check_int_eq(iris_event_outbox_on_media_event(outbox, &event),
+            check_equal(iris_event_outbox_on_media_event(outbox, &event),
                          IVR_OK);
             iris_event_outbox_on_delivery_result(
                 outbox, &event, delivery.last_revision, 0, 503);
         }
         memset(&result, 0, sizeof(result));
-        check_int_eq(iris_event_outbox_replay_dead_letters(
+        check_equal(iris_event_outbox_replay_dead_letters(
                          outbox, 2u, &result),
                      IVR_OK);
-        check_size_eq(result.selected, 2u);
-        check_size_eq(result.replayed, 2u);
-        check_size_eq(result.remaining_dead, 1u);
+        check_equal(result.selected, 2u);
+        check_equal(result.replayed, 2u);
+        check_equal(result.remaining_dead, 1u);
         check_false(result.backpressured);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.dead_records, 1u);
-        check_size_eq(stats.in_flight_records, 2u);
-        check_ull_eq(stats.replayed_total, 2u);
+        check_equal(stats.dead_records, 1u);
+        check_equal(stats.in_flight_records, 2u);
+        check_equal(stats.replayed_total, 2u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -456,11 +456,11 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_replay_dead_letters(
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_replay_dead_letters(
                          outbox, 0u, &result),
                      IVR_EINVAL);
-        check_int_eq(iris_event_outbox_replay_dead_letters(
+        check_equal(iris_event_outbox_replay_dead_letters(
                          outbox, IRIS_EVENT_OUTBOX_BATCH_REPLAY_MAX + 1u,
                          &result),
                      IVR_EINVAL);
@@ -478,31 +478,31 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
         for (i = 0u; i < 2u; ++i) {
             char event_id[32];
             ivr_media_event_t event;
             snprintf(event_id, sizeof(event_id), "event-pressure-%u",
                      (unsigned)i);
             event = test_event(event_id, "{}");
-            check_int_eq(iris_event_outbox_on_media_event(outbox, &event),
+            check_equal(iris_event_outbox_on_media_event(outbox, &event),
                          IVR_OK);
             iris_event_outbox_on_delivery_result(
                 outbox, &event, delivery.last_revision, 0, 503);
         }
         delivery.status = IVR_ENOSPC;
         memset(&result, 0, sizeof(result));
-        check_int_eq(iris_event_outbox_replay_dead_letters(
+        check_equal(iris_event_outbox_replay_dead_letters(
                          outbox, 2u, &result),
                      IVR_OK);
-        check_size_eq(result.selected, 2u);
-        check_size_eq(result.replayed, 1u);
-        check_size_eq(result.remaining_dead, 1u);
+        check_equal(result.selected, 2u);
+        check_equal(result.replayed, 1u);
+        check_equal(result.remaining_dead, 1u);
         check_true(result.backpressured);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.dead_records, 1u);
-        check_size_eq(stats.pending_records, 1u);
-        check_size_eq(stats.in_flight_records, 0u);
+        check_equal(stats.dead_records, 1u);
+        check_equal(stats.pending_records, 1u);
+        check_equal(stats.in_flight_records, 0u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -517,22 +517,22 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(
             outbox, &event, delivery.last_revision, 0, 503);
         store.fail_commit_call = store.commit_calls + 2;
         memset(&result, 0, sizeof(result));
-        check_int_eq(iris_event_outbox_replay_dead_letters(
+        check_equal(iris_event_outbox_replay_dead_letters(
                          outbox, 1u, &result),
                      IVR_ESTATE);
-        check_size_eq(result.selected, 1u);
-        check_size_eq(result.replayed, 1u);
-        check_size_eq(result.remaining_dead, 0u);
+        check_equal(result.selected, 1u);
+        check_equal(result.replayed, 1u);
+        check_equal(result.remaining_dead, 0u);
         check_false(result.backpressured);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.dead_records, 0u);
-        check_size_eq(stats.pending_records, 1u);
+        check_equal(stats.dead_records, 0u);
+        check_equal(stats.pending_records, 1u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -547,26 +547,26 @@ spec("Iris durable media event outbox") {
         delivery.status = IVR_ENOSPC;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
         for (i = 0u; i < TEST_STORE_CAPACITY; ++i) {
             char event_id[32];
             ivr_media_event_t event;
             snprintf(event_id, sizeof(event_id), "event-capacity-%u",
                      (unsigned)i);
             event = test_event(event_id, "{}");
-            check_int_eq(iris_event_outbox_on_media_event(outbox, &event),
+            check_equal(iris_event_outbox_on_media_event(outbox, &event),
                          IVR_OK);
         }
         {
             ivr_media_event_t rejected =
                 test_event("event-capacity-rejected", "{}");
-            check_int_eq(iris_event_outbox_on_media_event(outbox, &rejected),
+            check_equal(iris_event_outbox_on_media_event(outbox, &rejected),
                          IVR_ENOSPC);
         }
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.record_capacity, TEST_STORE_CAPACITY);
-        check_size_eq(stats.pending_records, TEST_STORE_CAPACITY);
-        check_ull_eq(stats.capacity_rejection_total, 1u);
+        check_equal(stats.record_capacity, TEST_STORE_CAPACITY);
+        check_equal(stats.pending_records, TEST_STORE_CAPACITY);
+        check_equal(stats.capacity_rejection_total, 1u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -581,27 +581,27 @@ spec("Iris durable media event outbox") {
         delivery.status = IVR_ENOSPC;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
-        check_size_eq(test_store_count(&store), 1u);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(test_store_count(&store), 1u);
         iris_event_outbox_destroy(outbox);
 
         delivery.status = IVR_OK;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(delivery.calls, 2);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(delivery.calls, 2);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.retained_payload_bytes,
+        check_equal(stats.retained_payload_bytes,
                       strlen(event.payload_json));
-        check_size_eq(stats.peak_retained_payload_bytes,
+        check_equal(stats.peak_retained_payload_bytes,
                       strlen(event.payload_json));
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 1, 202);
-        check_size_eq(test_store_count(&store), 0u);
+        check_equal(test_store_count(&store), 0u);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.retained_payload_bytes, 0u);
-        check_size_eq(stats.peak_retained_payload_bytes,
+        check_equal(stats.retained_payload_bytes, 0u);
+        check_equal(stats.peak_retained_payload_bytes,
                       strlen(event.payload_json));
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
@@ -615,14 +615,14 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_destroy(outbox);
 
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(delivery.calls, 2);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(delivery.calls, 2);
         check_true(delivery.last_revision > 2u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
@@ -636,7 +636,7 @@ spec("Iris durable media event outbox") {
         store.scan_status = TURBO_EIO;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_EIO);
+        check_equal(iris_event_outbox_start(outbox), TURBO_EIO);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -649,12 +649,12 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
         memset(event.event_type, 'x', sizeof(event.event_type));
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event),
+        check_equal(iris_event_outbox_on_media_event(outbox, &event),
                      IVR_EINVAL);
-        check_int_eq(delivery.calls, 0);
-        check_size_eq(test_store_count(&store), 0u);
+        check_equal(delivery.calls, 0);
+        check_equal(test_store_count(&store), 0u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -672,47 +672,47 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 0, 503);
 
         g_test_now_ms = UINT64_C(10999);
-        check_int_eq(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
-        check_size_eq(result.archived, 0u);
-        check_size_eq(result.deleted, 0u);
-        check_size_eq(result.remaining_dead, 1u);
+        check_equal(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
+        check_equal(result.archived, 0u);
+        check_equal(result.deleted, 0u);
+        check_equal(result.remaining_dead, 1u);
 
         g_test_now_ms = UINT64_C(11000);
-        check_int_eq(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
-        check_size_eq(result.archived, 1u);
-        check_size_eq(result.deleted, 0u);
-        check_size_eq(result.remaining_dead, 0u);
-        check_size_eq(result.remaining_archived, 1u);
-        check_int_eq(iris_event_outbox_list_archived(
+        check_equal(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
+        check_equal(result.archived, 1u);
+        check_equal(result.deleted, 0u);
+        check_equal(result.remaining_dead, 0u);
+        check_equal(result.remaining_archived, 1u);
+        check_equal(iris_event_outbox_list_archived(
                          outbox, archived, 1u, &count, &total),
                      IVR_OK);
-        check_size_eq(count, 1u);
-        check_size_eq(total, 1u);
-        check_str_eq(archived[0].event_id, event.event_id);
-        check_ull_eq(archived[0].archived_at_ms, UINT64_C(11000));
-        check_int_eq(iris_event_outbox_replay(outbox, event.event_id),
+        check_equal(count, 1u);
+        check_equal(total, 1u);
+        check_equal(archived[0].event_id, event.event_id);
+        check_equal(archived[0].archived_at_ms, UINT64_C(11000));
+        check_equal(iris_event_outbox_replay(outbox, event.event_id),
                      IVR_EBUSY);
 
         g_test_now_ms = UINT64_C(11999);
-        check_int_eq(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
-        check_size_eq(result.deleted, 0u);
-        check_size_eq(test_store_count(&store), 1u);
+        check_equal(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
+        check_equal(result.deleted, 0u);
+        check_equal(test_store_count(&store), 1u);
         g_test_now_ms = UINT64_C(12000);
-        check_int_eq(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
-        check_size_eq(result.deleted, 1u);
-        check_size_eq(result.remaining_archived, 0u);
-        check_size_eq(test_store_count(&store), 0u);
+        check_equal(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
+        check_equal(result.deleted, 1u);
+        check_equal(result.remaining_archived, 0u);
+        check_equal(test_store_count(&store), 0u);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_ull_eq(stats.archived_total, 1u);
-        check_ull_eq(stats.archive_deleted_total, 1u);
-        check_ull_eq(stats.retention_failure_total, 0u);
-        check_size_eq(stats.retained_payload_bytes, 0u);
+        check_equal(stats.archived_total, 1u);
+        check_equal(stats.archive_deleted_total, 1u);
+        check_equal(stats.retention_failure_total, 0u);
+        check_equal(stats.retained_payload_bytes, 0u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -727,21 +727,21 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 0, 503);
         g_test_now_ms = UINT64_C(11000);
         store.fail_commit_call = store.commit_calls + 1;
-        check_int_eq(iris_event_outbox_run_retention(outbox, &result),
+        check_equal(iris_event_outbox_run_retention(outbox, &result),
                      IVR_ESTATE);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.dead_records, 1u);
-        check_size_eq(stats.archived_records, 0u);
-        check_ull_eq(stats.retention_failure_total, 1u);
+        check_equal(stats.dead_records, 1u);
+        check_equal(stats.archived_records, 0u);
+        check_equal(stats.retention_failure_total, 1u);
         store.fail_commit_call = 0;
-        check_int_eq(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
-        check_size_eq(result.archived, 1u);
+        check_equal(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
+        check_equal(result.archived, 1u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -755,8 +755,8 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-        check_int_eq(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 0, 503);
         iris_event_outbox_destroy(outbox);
@@ -764,19 +764,19 @@ spec("Iris durable media event outbox") {
         g_test_now_ms = UINT64_C(11000);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.dead_records, 0u);
-        check_size_eq(stats.archived_records, 1u);
+        check_equal(stats.dead_records, 0u);
+        check_equal(stats.archived_records, 1u);
         iris_event_outbox_destroy(outbox);
 
         g_test_now_ms = UINT64_C(12000);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
         iris_event_outbox_get_stats(outbox, &stats);
-        check_size_eq(stats.archived_records, 0u);
-        check_size_eq(test_store_count(&store), 0u);
+        check_equal(stats.archived_records, 0u);
+        check_equal(test_store_count(&store), 0u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -790,27 +790,27 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
         for (i = 0u; i < 3u; ++i) {
             char event_id[32];
             ivr_media_event_t event;
             snprintf(event_id, sizeof(event_id), "event-retention-%u",
                      (unsigned)i);
             event = test_event(event_id, "{}");
-            check_int_eq(iris_event_outbox_on_media_event(outbox, &event),
+            check_equal(iris_event_outbox_on_media_event(outbox, &event),
                          IVR_OK);
             iris_event_outbox_on_delivery_result(
                 outbox, &event, delivery.last_revision, 0, 503);
         }
         g_test_now_ms = UINT64_C(11000);
-        check_int_eq(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
-        check_size_eq(result.archived, 2u);
-        check_size_eq(result.remaining_dead, 1u);
-        check_size_eq(result.remaining_archived, 2u);
-        check_int_eq(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
-        check_size_eq(result.archived, 1u);
-        check_size_eq(result.remaining_dead, 0u);
-        check_size_eq(result.remaining_archived, 3u);
+        check_equal(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
+        check_equal(result.archived, 2u);
+        check_equal(result.remaining_dead, 1u);
+        check_equal(result.remaining_archived, 2u);
+        check_equal(iris_event_outbox_run_retention(outbox, &result), IVR_OK);
+        check_equal(result.archived, 1u);
+        check_equal(result.remaining_dead, 0u);
+        check_equal(result.remaining_archived, 3u);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -849,13 +849,13 @@ spec("Iris durable media event outbox") {
                      "      max_batch_size: 2\n"
                      "adapters: {}\n",
                      database_path);
-            check_int_eq(tt_write_file(yaml_path, yaml, strlen(yaml)), 0);
+            check_equal(tt_write_file(yaml_path, yaml, strlen(yaml)), 0);
             outbox = iris_event_outbox_create_flowstore(
                 yaml_path, "iris.media_events", 0, 4u, &retention,
                 test_deliver, &delivery,
                 error, sizeof(error));
             check_null(outbox);
-            check_str_contains(error, "development opt-in");
+            check_contains(error, "development opt-in");
             outbox = iris_event_outbox_create_flowstore(
                 yaml_path, "iris.media_events", 1, 4u, &retention,
                 test_deliver, &delivery,
@@ -863,10 +863,10 @@ spec("Iris durable media event outbox") {
             check_not_null(outbox);
         }
         if (outbox) {
-            check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-            check_int_eq(iris_event_outbox_on_media_event(outbox, &event),
+            check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+            check_equal(iris_event_outbox_on_media_event(outbox, &event),
                          IVR_OK);
-            check_int_eq(delivery.calls, 1);
+            check_equal(delivery.calls, 1);
             iris_event_outbox_destroy(outbox);
             outbox = iris_event_outbox_create_flowstore(
                 yaml_path, "iris.media_events", 1, 4u, &retention,
@@ -875,14 +875,14 @@ spec("Iris durable media event outbox") {
             check_not_null(outbox);
         }
         if (outbox) {
-            check_int_eq(iris_event_outbox_start(outbox), TURBO_OK);
-            check_int_eq(delivery.calls, 2);
+            check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+            check_equal(delivery.calls, 2);
             iris_event_outbox_on_delivery_result(
                 outbox, &event, delivery.last_revision, 1, 202);
             iris_event_outbox_destroy(outbox);
         }
-        if (yaml_path) check_int_eq(tt_remove_file(yaml_path), 0);
-        if (database_path) check_int_eq(tt_remove_file(database_path), 0);
+        if (yaml_path) check_equal(tt_remove_file(yaml_path), 0);
+        if (database_path) check_equal(tt_remove_file(database_path), 0);
         free(yaml_path);
         free(database_path);
     }

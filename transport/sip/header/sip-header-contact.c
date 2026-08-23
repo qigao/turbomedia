@@ -195,7 +195,7 @@ int sip_contacts_match_any(const struct sip_contacts_t* contacts)
 	return 0;
 }
 
-static int sip_nickname_check(const tstr_v* s)
+static int sip_nickname_check(const vstr* s)
 {
 	size_t i;
 	for (i = 0; i < s->len; i++)
@@ -245,7 +245,7 @@ int sip_contact_write(const struct sip_contact_t* c, char* data, const char* end
 	return (int)(p - data);
 }
 
-//const tstr_v* sip_contact_tag(const struct sip_contact_t* contact)
+//const vstr* sip_contact_tag(const struct sip_contact_t* contact)
 //{
 //	return sip_params_find_string(&contact->params, "tag");
 //}

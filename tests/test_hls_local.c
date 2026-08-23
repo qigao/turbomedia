@@ -164,8 +164,8 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
     encoded_size = TURBO_CODEC_MAX_FRAME_SIZE;
     result = turbo_codec_encode(encoder, raw_frame, raw_frame_size, encoded_frame,
                                 &encoded_size, &frame_info);
-    check_int_eq(result, TURBO_CODEC_OK);
-    check_size_gt(encoded_size, 0);
+    check_equal(result, TURBO_CODEC_OK);
+    check_greater(encoded_size, 0);
     check_true(frame_info.is_keyframe);
     if (result != TURBO_CODEC_OK || encoded_size == 0 || !frame_info.is_keyframe)
         goto cleanup;
@@ -187,11 +187,11 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
     stream_info.height = HLS_TEST_HEIGHT;
     stream_info.framerate = HLS_TEST_FPS;
     result = turbo_streamer_add_stream(streamer, &stream_info, &stream_id);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
 
     result = turbo_streamer_connect(streamer);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
     connected = 1;
 
@@ -205,8 +205,8 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
             memset(&frame_info, 0, sizeof(frame_info));
             result = turbo_codec_encode(encoder, raw_frame, raw_frame_size,
                                         encoded_frame, &encoded_size, &frame_info);
-            check_int_eq(result, TURBO_CODEC_OK);
-            check_size_gt(encoded_size, 0);
+            check_equal(result, TURBO_CODEC_OK);
+            check_greater(encoded_size, 0);
             if (result != TURBO_CODEC_OK || encoded_size == 0) goto cleanup;
         }
 
@@ -218,34 +218,34 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
         packet.duration = 1000000 / HLS_TEST_FPS;
         packet.is_keyframe = frame_info.is_keyframe;
         result = turbo_streamer_write_packet(streamer, &packet);
-        check_int_eq(result, 0);
+        check_equal(result, 0);
         if (result != 0) goto cleanup;
     }
 
     result = turbo_streamer_disconnect(streamer);
     connected = 0;
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
 
     result = turbo_streamer_hls_get_playlist(streamer, &playlist, &playlist_size);
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     check_not_null(playlist);
-    check_size_gt(playlist_size, 0);
+    check_greater(playlist_size, 0);
     if (result != 0 || !playlist) goto cleanup;
-    check_str_contains(playlist, "#EXT-X-MAP:URI=\"init.mp4\"");
-    check_str_contains(playlist, "segment_0.m4s");
-    check_str_contains(playlist, "segment_1.m4s");
-    check_str_contains(playlist, "#EXT-X-ENDLIST");
+    check_contains(playlist, "#EXT-X-MAP:URI=\"init.mp4\"");
+    check_contains(playlist, "segment_0.m4s");
+    check_contains(playlist, "segment_1.m4s");
+    check_contains(playlist, "#EXT-X-ENDLIST");
 
     result = turbo_fs_path_join(playlist_path, sizeof(playlist_path), output_dir,
                                 "playlist.m3u8");
-    check_int_eq(result, 0);
+    check_equal(result, 0);
     if (result != 0) goto cleanup;
     playlist_file = tt_read_file(playlist_path, &playlist_file_size);
     check_not_null(playlist_file);
-    check_size_eq(playlist_file_size, playlist_size);
+    check_equal(playlist_file_size, playlist_size);
     if (!playlist_file) goto cleanup;
-    check_mem_eq(playlist_file, playlist, playlist_size);
+    check_equal(playlist_file, playlist, playlist_size);
 
     player_config.play_audio = 0;
     player_config.video_format = TURBO_PLAYER_VIDEO_I420;
@@ -258,17 +258,17 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
     if (!fingerprint) goto cleanup;
     result = turbo_fingerprint_extractor_start(fingerprint,
                                                &fingerprint_config);
-    check_int_eq(result, TURBO_RECOGNITION_OK);
+    check_equal(result, TURBO_RECOGNITION_OK);
     if (result != TURBO_RECOGNITION_OK) goto cleanup;
     capture.fingerprint = fingerprint;
     turbo_player_set_video_callback(player, hls_capture_video, &capture);
     result = turbo_player_play_to_end(player);
-    check_int_eq(result, TURBO_PLAYER_OK);
-    check_size_eq(capture.video_frames, HLS_TEST_FRAME_COUNT);
-    check_size_eq(fingerprint_provider_context.video_frames,
+    check_equal(result, TURBO_PLAYER_OK);
+    check_equal(capture.video_frames, HLS_TEST_FRAME_COUNT);
+    check_equal(fingerprint_provider_context.video_frames,
                   HLS_TEST_FRAME_COUNT);
     result = turbo_fingerprint_extractor_finish(fingerprint);
-    check_int_eq(result, TURBO_RECOGNITION_OK);
+    check_equal(result, TURBO_RECOGNITION_OK);
 
 cleanup:
     if (player) turbo_player_close(player);
@@ -279,7 +279,7 @@ cleanup:
     }
     turbo_fingerprint_extractor_destroy(fingerprint);
     if (fingerprint) {
-        check_int_eq(fingerprint_provider_context.destroy_count, 1);
+        check_equal(fingerprint_provider_context.destroy_count, 1);
     }
     if (connected && streamer) turbo_streamer_disconnect(streamer);
     turbo_streamer_destroy(streamer);
@@ -291,7 +291,7 @@ cleanup:
     free(encoded_frame);
     free(raw_frame);
     if (output_dir) {
-        check_int_eq(tt_remove_tree(output_dir), 0);
+        check_equal(tt_remove_tree(output_dir), 0);
         free(output_dir);
     }
 }
@@ -326,13 +326,13 @@ static void test_hls_rejects_malformed_h264_config(void) {
     stream_info.width = HLS_TEST_WIDTH;
     stream_info.height = HLS_TEST_HEIGHT;
     stream_info.framerate = HLS_TEST_FPS;
-    check_int_eq(turbo_streamer_add_stream(streamer, &stream_info, &stream_id),
+    check_equal(turbo_streamer_add_stream(streamer, &stream_info, &stream_id),
                  -EINVAL);
 
 cleanup:
     turbo_streamer_destroy(streamer);
     turbo_streamer_registry_shutdown();
-    check_int_eq(tt_remove_tree(output_dir), 0);
+    check_equal(tt_remove_tree(output_dir), 0);
     free(output_dir);
 }
 

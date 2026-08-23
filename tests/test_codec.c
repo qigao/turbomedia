@@ -17,7 +17,7 @@
     do {                                      \
         int expected_value = (expected);      \
         int actual_value = (actual);          \
-        check_int_eq(actual_value, expected_value); \
+        check_equal(actual_value, expected_value); \
         if (actual_value != expected_value) { \
             return;                           \
         }                                     \
@@ -333,7 +333,7 @@ static void test_video_codec_config_validation(void) {
 }
 
 suite("turbo_media_codec") {
-    section("Codec Registry Management") {
+    group("Codec Registry Management") {
         it("registers and unregisters built-in G.711 codecs") {
             test_registry_lifecycle_registers_g711();
         }
@@ -351,7 +351,7 @@ suite("turbo_media_codec") {
         }
     }
 
-    section("Codec Configuration Validation") {
+    group("Codec Configuration Validation") {
         it("validates audio codec configuration parameters") {
             test_audio_codec_config_validation();
         }
@@ -365,7 +365,7 @@ suite("turbo_media_codec") {
         }
     }
 
-    section("Codec Operations") {
+    group("Codec Operations") {
         it("requires codec direction to match encode and decode calls") {
             test_encode_decode_require_matching_codec_direction();
         }
@@ -383,7 +383,7 @@ suite("turbo_media_codec") {
         }
     }
 
-    section("Codec Lifecycle") {
+    group("Codec Lifecycle") {
         it("manages codec instance lifecycle properly") {
             test_codec_lifecycle_management();
         }
@@ -393,13 +393,13 @@ suite("turbo_media_codec") {
         }
     }
 
-    section("Error Handling") {
+    group("Error Handling") {
         it("handles error conditions gracefully") {
             test_codec_error_conditions();
         }
     }
 
-    section("Advanced Features") {
+    group("Advanced Features") {
         it("supports bitrate control") {
             test_codec_bitrate_control();
         }
@@ -413,7 +413,7 @@ suite("turbo_media_codec") {
         }
     }
 
-    section("Device Integration") {
+    group("Device Integration") {
         it("rejects empty GPU device output") {
             test_gpu_device_list_rejects_empty_output();
         }

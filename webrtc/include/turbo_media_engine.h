@@ -216,17 +216,17 @@ typedef void (*turbo_media_rtp_packet_cb)(turbo_media_track_t *track, const uint
  * User-provided context
  * @return          Media context, or NULL on error
  */
-CXX_C_API turbo_media_context_t *turbo_media_create(turbo_dc_peer_t *peer, void *user_data);
+TURBO_MEDIA_API turbo_media_context_t *turbo_media_create(turbo_dc_peer_t *peer, void *user_data);
 
 /**
  * Destroy media context and all tracks, and detach it from the DataChannel peer.
  */
-CXX_C_API void turbo_media_destroy(turbo_media_context_t *ctx);
+TURBO_MEDIA_API void turbo_media_destroy(turbo_media_context_t *ctx);
 
 /**
  * Get user data from context
  */
-CXX_C_API void *turbo_media_get_user_data(turbo_media_context_t *ctx);
+TURBO_MEDIA_API void *turbo_media_get_user_data(turbo_media_context_t *ctx);
 
 /**
  * Initialize SRTP sessions for all tracks using negotiated keys
@@ -236,7 +236,7 @@ CXX_C_API void *turbo_media_get_user_data(turbo_media_context_t *ctx);
  * @param ctx   Media context
  * @return      0 on success, -1 if keys not ready
  */
-CXX_C_API int turbo_media_setup_srtp(turbo_media_context_t *ctx);
+TURBO_MEDIA_API int turbo_media_setup_srtp(turbo_media_context_t *ctx);
 
 /**
  * Process media timers (call periodically from event loop)
@@ -246,7 +246,7 @@ CXX_C_API int turbo_media_setup_srtp(turbo_media_context_t *ctx);
  * @param ctx       Media context
  * @return          Time until next timer in ms, or 0 if none
  */
-CXX_C_API int turbo_media_handle_timers(turbo_media_context_t *ctx);
+TURBO_MEDIA_API int turbo_media_handle_timers(turbo_media_context_t *ctx);
 
 /**
  * Feed received SRTP/SRTCP packet
@@ -259,17 +259,17 @@ CXX_C_API int turbo_media_handle_timers(turbo_media_context_t *ctx);
  * @param len       Packet length
  * @return          0 on success, -1 on error
  */
-CXX_C_API int turbo_media_feed_data(turbo_media_context_t *ctx, const uint8_t *data, size_t len);
+TURBO_MEDIA_API int turbo_media_feed_data(turbo_media_context_t *ctx, const uint8_t *data, size_t len);
 
 /**
  * Get the number of tracks currently attached to a media context.
  */
-CXX_C_API int turbo_media_get_track_count(turbo_media_context_t *ctx);
+TURBO_MEDIA_API int turbo_media_get_track_count(turbo_media_context_t *ctx);
 
 /**
  * Get a track by index from a media context.
  */
-CXX_C_API turbo_media_track_t *turbo_media_get_track(turbo_media_context_t *ctx, int index);
+TURBO_MEDIA_API turbo_media_track_t *turbo_media_get_track(turbo_media_context_t *ctx, int index);
 
 /* =============================================================================
  * Track Functions
@@ -282,7 +282,7 @@ CXX_C_API turbo_media_track_t *turbo_media_get_track(turbo_media_context_t *ctx,
  * @param config    Track configuration
  * @return          Track handle, or NULL on error
  */
-CXX_C_API turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
+TURBO_MEDIA_API turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
                                                      const turbo_media_track_config_t *config);
 
 /**
@@ -293,25 +293,25 @@ CXX_C_API turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
  * @param fps           Target framerate
  * @return              Track handle, or NULL on error
  */
-CXX_C_API turbo_media_track_t *turbo_media_add_screen_track(turbo_media_context_t *ctx,
+TURBO_MEDIA_API turbo_media_track_t *turbo_media_add_screen_track(turbo_media_context_t *ctx,
                                                             int screen_index, int fps);
 
 /**
  * Add audio track (convenience)
  */
-CXX_C_API turbo_media_track_t *turbo_media_add_audio_track(turbo_media_context_t *ctx,
+TURBO_MEDIA_API turbo_media_track_t *turbo_media_add_audio_track(turbo_media_context_t *ctx,
                                                            int device_index);
 
 /**
  * Add video track (convenience)
  */
-CXX_C_API turbo_media_track_t *turbo_media_add_video_track(turbo_media_context_t *ctx,
+TURBO_MEDIA_API turbo_media_track_t *turbo_media_add_video_track(turbo_media_context_t *ctx,
                                                            int device_index);
 
 /**
  * Remove media track
  */
-CXX_C_API void turbo_media_remove_track(turbo_media_track_t *track);
+TURBO_MEDIA_API void turbo_media_remove_track(turbo_media_track_t *track);
 
 /**
  * Set capture source for track
@@ -320,7 +320,7 @@ CXX_C_API void turbo_media_remove_track(turbo_media_track_t *track);
  * @param config    Capture configuration
  * @return          0 on success, -1 on error
  */
-CXX_C_API int turbo_media_track_set_capture(turbo_media_track_t *track,
+TURBO_MEDIA_API int turbo_media_track_set_capture(turbo_media_track_t *track,
                                             const turbo_capture_config_t *config);
 
 /**
@@ -331,53 +331,53 @@ CXX_C_API int turbo_media_track_set_capture(turbo_media_track_t *track,
  * while the track is IDLE or STOPPED. ASR rejection never interrupts the
  * WebRTC send path.
  */
-CXX_C_API int turbo_media_track_attach_asr(turbo_media_track_t *track, turbo_asr_t *asr);
-CXX_C_API int turbo_media_track_detach_asr(turbo_media_track_t *track, turbo_asr_t *asr);
+TURBO_MEDIA_API int turbo_media_track_attach_asr(turbo_media_track_t *track, turbo_asr_t *asr);
+TURBO_MEDIA_API int turbo_media_track_detach_asr(turbo_media_track_t *track, turbo_asr_t *asr);
 
 /**
  * Attach real-time voice activity and voiceprint analysis to microphone PCM.
  * The track borrows both handles. Attach/detach is allowed only while the
  * track is IDLE or STOPPED and exact PCM formats must match.
  */
-CXX_C_API int turbo_media_track_attach_voice_detector(turbo_media_track_t *track,
+TURBO_MEDIA_API int turbo_media_track_attach_voice_detector(turbo_media_track_t *track,
                                                       turbo_voice_detector_t *detector);
-CXX_C_API int turbo_media_track_detach_voice_detector(turbo_media_track_t *track,
+TURBO_MEDIA_API int turbo_media_track_detach_voice_detector(turbo_media_track_t *track,
                                                       turbo_voice_detector_t *detector);
-CXX_C_API int turbo_media_track_attach_voice_fingerprint(
+TURBO_MEDIA_API int turbo_media_track_attach_voice_fingerprint(
     turbo_media_track_t *track, turbo_fingerprint_extractor_t *extractor);
-CXX_C_API int turbo_media_track_detach_voice_fingerprint(
+TURBO_MEDIA_API int turbo_media_track_detach_voice_fingerprint(
     turbo_media_track_t *track, turbo_fingerprint_extractor_t *extractor);
 
 /**
  * Set frame callback for received frames
  */
-CXX_C_API void turbo_media_track_on_frame(turbo_media_track_t *track, turbo_rtc_media_frame_cb cb);
+TURBO_MEDIA_API void turbo_media_track_on_frame(turbo_media_track_t *track, turbo_rtc_media_frame_cb cb);
 
 /**
  * Set user data passed to track callbacks.
  */
-CXX_C_API void turbo_media_track_set_user_data(turbo_media_track_t *track, void *user_data);
+TURBO_MEDIA_API void turbo_media_track_set_user_data(turbo_media_track_t *track, void *user_data);
 
 /**
  * Get user data associated with a track.
  */
-CXX_C_API void *turbo_media_track_get_user_data(turbo_media_track_t *track);
+TURBO_MEDIA_API void *turbo_media_track_get_user_data(turbo_media_track_t *track);
 
 /**
  * Set state change callback
  */
-CXX_C_API void turbo_media_track_on_state(turbo_media_track_t *track, turbo_media_state_cb cb);
+TURBO_MEDIA_API void turbo_media_track_on_state(turbo_media_track_t *track, turbo_media_state_cb cb);
 
 /**
  * Set keyframe request callback
  */
-CXX_C_API void turbo_media_track_on_keyframe_request(turbo_media_track_t *track,
+TURBO_MEDIA_API void turbo_media_track_on_keyframe_request(turbo_media_track_t *track,
                                                      turbo_media_keyframe_cb cb);
 
 /**
  * Set raw RTP packet callback for receive tracks.
  */
-CXX_C_API void turbo_media_track_on_rtp_packet(turbo_media_track_t *track,
+TURBO_MEDIA_API void turbo_media_track_on_rtp_packet(turbo_media_track_t *track,
                                                turbo_media_rtp_packet_cb cb);
 
 /**
@@ -385,12 +385,12 @@ CXX_C_API void turbo_media_track_on_rtp_packet(turbo_media_track_t *track,
  *
  * @return  0 on success, -1 on error
  */
-CXX_C_API int turbo_media_track_start(turbo_media_track_t *track);
+TURBO_MEDIA_API int turbo_media_track_start(turbo_media_track_t *track);
 
 /**
  * Stop media track
  */
-CXX_C_API void turbo_media_track_stop(turbo_media_track_t *track);
+TURBO_MEDIA_API void turbo_media_track_stop(turbo_media_track_t *track);
 
 /**
  * Send raw frame (alternative to capture)
@@ -404,7 +404,7 @@ CXX_C_API void turbo_media_track_stop(turbo_media_track_t *track);
  * @param timestamp Frame timestamp (0 = auto)
  * @return          0 on success, -1 on error
  */
-CXX_C_API int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data,
+TURBO_MEDIA_API int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data,
                                            size_t len, uint64_t timestamp);
 
 /**
@@ -414,7 +414,7 @@ CXX_C_API int turbo_media_track_send_frame(turbo_media_track_t *track, const uin
  * the track's configured PCM input and frame_size_ms. RTP timestamp generation
  * remains owned by the track.
  */
-CXX_C_API int turbo_media_track_send_speech_frame(turbo_media_track_t *track,
+TURBO_MEDIA_API int turbo_media_track_send_speech_frame(turbo_media_track_t *track,
                                                   const turbo_speech_audio_frame_t *frame);
 
 /**
@@ -433,7 +433,7 @@ CXX_C_API int turbo_media_track_send_speech_frame(turbo_media_track_t *track,
  * Packet length
  * @return          0 on success, -1 on error
  */
-CXX_C_API int turbo_media_track_send_rtp_packet(turbo_media_track_t *track, const uint8_t *packet,
+TURBO_MEDIA_API int turbo_media_track_send_rtp_packet(turbo_media_track_t *track, const uint8_t *packet,
                                                 size_t len);
 
 /**
@@ -441,57 +441,57 @@ CXX_C_API int turbo_media_track_send_rtp_packet(turbo_media_track_t *track, cons
  *
  * Sends RTCP PLI to remote
  */
-CXX_C_API void turbo_media_track_request_keyframe(turbo_media_track_t *track);
+TURBO_MEDIA_API void turbo_media_track_request_keyframe(turbo_media_track_t *track);
 
 /**
  * Get track statistics
  */
-CXX_C_API void turbo_media_track_get_stats(turbo_media_track_t *track, turbo_media_stats_t *stats);
+TURBO_MEDIA_API void turbo_media_track_get_stats(turbo_media_track_t *track, turbo_media_stats_t *stats);
 
 /**
  * Get track state
  */
-CXX_C_API turbo_media_state_t turbo_media_track_get_state(turbo_media_track_t *track);
+TURBO_MEDIA_API turbo_media_state_t turbo_media_track_get_state(turbo_media_track_t *track);
 
 /**
  * Get track type
  */
-CXX_C_API turbo_rtc_media_track_type_t turbo_media_track_get_type(turbo_media_track_t *track);
+TURBO_MEDIA_API turbo_rtc_media_track_type_t turbo_media_track_get_type(turbo_media_track_t *track);
 
 /**
  * Get track direction.
  */
-CXX_C_API turbo_media_direction_t turbo_media_track_get_direction(turbo_media_track_t *track);
+TURBO_MEDIA_API turbo_media_direction_t turbo_media_track_get_direction(turbo_media_track_t *track);
 
 /**
  * Get configured codec for track.
  */
-CXX_C_API turbo_codec_type_t turbo_media_track_get_codec(turbo_media_track_t *track);
+TURBO_MEDIA_API turbo_codec_type_t turbo_media_track_get_codec(turbo_media_track_t *track);
 
 /**
  * Get negotiated RTP payload type for this track.
  */
-CXX_C_API uint8_t turbo_media_track_get_payload_type(turbo_media_track_t *track);
+TURBO_MEDIA_API uint8_t turbo_media_track_get_payload_type(turbo_media_track_t *track);
 
 /**
  * Override RTP payload type for this track.
  */
-CXX_C_API void turbo_media_track_set_payload_type(turbo_media_track_t *track, uint8_t payload_type);
+TURBO_MEDIA_API void turbo_media_track_set_payload_type(turbo_media_track_t *track, uint8_t payload_type);
 
 /**
  * Get SSRC for track
  */
-CXX_C_API uint32_t turbo_media_track_get_ssrc(turbo_media_track_t *track);
+TURBO_MEDIA_API uint32_t turbo_media_track_get_ssrc(turbo_media_track_t *track);
 
 /**
  * Get remote SSRC for track
  */
-CXX_C_API uint32_t turbo_media_track_get_remote_ssrc(turbo_media_track_t *track);
+TURBO_MEDIA_API uint32_t turbo_media_track_get_remote_ssrc(turbo_media_track_t *track);
 
 /**
  * Set remote SSRC for track
  */
-CXX_C_API void turbo_media_track_set_remote_ssrc(turbo_media_track_t *track, uint32_t ssrc);
+TURBO_MEDIA_API void turbo_media_track_set_remote_ssrc(turbo_media_track_t *track, uint32_t ssrc);
 
 /**
  * Set RTP header extension ID used for transport-wide congestion control.
@@ -499,12 +499,12 @@ CXX_C_API void turbo_media_track_set_remote_ssrc(turbo_media_track_t *track, uin
  * Pass 0 to
  * disable TWCC RTP header extensions for this track.
  */
-CXX_C_API void turbo_media_track_set_transport_cc_ext_id(turbo_media_track_t *track, int ext_id);
+TURBO_MEDIA_API void turbo_media_track_set_transport_cc_ext_id(turbo_media_track_t *track, int ext_id);
 
 /**
  * Get RTP header extension ID used for transport-wide congestion control.
  */
-CXX_C_API int turbo_media_track_get_transport_cc_ext_id(turbo_media_track_t *track);
+TURBO_MEDIA_API int turbo_media_track_get_transport_cc_ext_id(turbo_media_track_t *track);
 
 /* =============================================================================
  * Device
@@ -525,17 +525,17 @@ typedef struct {
  * @param max_count Maximum devices to return
  * @return          Number of devices found
  */
-CXX_C_API int turbo_media_list_audio_inputs(turbo_media_device_t *devices, int max_count);
+TURBO_MEDIA_API int turbo_media_list_audio_inputs(turbo_media_device_t *devices, int max_count);
 
 /**
  * List video input devices (cameras)
  */
-CXX_C_API int turbo_media_list_video_inputs(turbo_media_device_t *devices, int max_count);
+TURBO_MEDIA_API int turbo_media_list_video_inputs(turbo_media_device_t *devices, int max_count);
 
 /**
  * List screens/monitors
  */
-CXX_C_API int turbo_media_list_screens(turbo_media_device_t *devices, int max_count);
+TURBO_MEDIA_API int turbo_media_list_screens(turbo_media_device_t *devices, int max_count);
 
 #ifdef __cplusplus
 }
