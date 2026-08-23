@@ -9,6 +9,15 @@ project(
   VERSION 1.0.0
   LANGUAGES C CXX)
 
+# Package roots are defined once by the configure preset environment. Import
+# only the roots consumed explicitly by subdirectories; normal package lookup
+# uses CMAKE_PREFIX_PATH derived from the same environment values.
+foreach(package_root IN ITEMS TURBOPARSER_ROOT FLOWMQ_ROOT TURBOFLOW_ROOT)
+  if(DEFINED ENV{${package_root}})
+    set(${package_root} "$ENV{${package_root}}")
+  endif()
+endforeach()
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
