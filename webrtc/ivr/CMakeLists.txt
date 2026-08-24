@@ -61,12 +61,7 @@ file(
 # the canonical schema. FlowMQ messages require these generated typed bindings,
 # so an IVR build fails fast when the compiler is unavailable.
 # ---------------------------------------------------------------------------
-find_program(TBE_COMPILER_EXECUTABLE NAMES tbe_compiler
-             HINTS "${TURBOPARSER_ROOT}/bin")
-if(NOT TBE_COMPILER_EXECUTABLE)
-  message(FATAL_ERROR
-    "IVR requires tbe_compiler for the canonical FlowMQ wire schema")
-endif()
+turbo_media_find_tbe_compiler(TBE_COMPILER_EXECUTABLE)
 set(IVR_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${IVR_GEN_DIR}")
 set(IVR_GEN_HEADER "${IVR_GEN_DIR}/turbomedia_ivr_v1.h")
@@ -96,23 +91,6 @@ message(STATUS "IVR codegen: ${TBE_COMPILER_EXECUTABLE}")
 # FlowMQ command/event adapters. FLOWMQ_ROOT is supplied by CMakeUserPresets;
 # no deprecated package-root variable or implicit environment fallback exists.
 # ---------------------------------------------------------------------------
-# FlowMQ transport and TurboFlow storage/legacy FMQ have independent package
-# roots. Do not resolve FlowMQ from the TurboFlow installation.
-if(FLOWMQ_ROOT AND NOT "${FLOWMQ_ROOT}" IN_LIST CMAKE_PREFIX_PATH)
-  list(APPEND CMAKE_PREFIX_PATH "${FLOWMQ_ROOT}")
-endif()
-if(FLOWMQ_ROOT)
-  set(FlowMQ_DIR "${FLOWMQ_ROOT}/lib/cmake/FlowMQ" CACHE PATH
-      "Independent FlowMQ package directory" FORCE)
-endif()
-find_package(FlowMQ CONFIG REQUIRED)
-if(TURBOFLOW_ROOT AND NOT "${TURBOFLOW_ROOT}" IN_LIST CMAKE_PREFIX_PATH)
-  list(APPEND CMAKE_PREFIX_PATH "${TURBOFLOW_ROOT}")
-endif()
-if(TURBOFLOW_ROOT)
-  set(TurboFlow_DIR "${TURBOFLOW_ROOT}/lib/cmake/TurboFlow" CACHE PATH
-      "TurboFlow storage package directory" FORCE)
-endif()
 # The installed TurboFlow package references RulesForge::rules_forge in the
 # TurboFlow::Flow link interface but does not install its config. Provide a
 # thin empty imported target so the package can be loaded; the IVR gateway
@@ -120,7 +98,6 @@ endif()
 if(NOT TARGET RulesForge::rules_forge)
   add_library(RulesForge::rules_forge INTERFACE IMPORTED)
 endif()
-find_package(TurboFlow CONFIG REQUIRED)
 if(NOT TARGET TurboFlow::FMQ OR NOT TARGET FlowMQ::FlowMQ)
   message(FATAL_ERROR
     "IVR requires legacy TurboFlow::FMQ internally and independent FlowMQ::FlowMQ transport")

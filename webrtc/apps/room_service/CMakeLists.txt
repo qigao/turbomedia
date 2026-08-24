@@ -7,30 +7,8 @@ project(
   DESCRIPTION "TurboNet conference room service"
 )
 
-# Imported targets are directory-scoped. The IVR sibling resolves TurboFlow for
-# FlowMQ, while RoomService directly owns the FlowStore outbox backends.
-if(FLOWMQ_ROOT AND NOT "${FLOWMQ_ROOT}" IN_LIST CMAKE_PREFIX_PATH)
-  list(APPEND CMAKE_PREFIX_PATH "${FLOWMQ_ROOT}")
-endif()
-if(FLOWMQ_ROOT)
-  set(FlowMQ_DIR "${FLOWMQ_ROOT}/lib/cmake/FlowMQ" CACHE PATH
-      "Independent FlowMQ package directory" FORCE)
-endif()
-find_package(FlowMQ CONFIG REQUIRED)
-if(TURBOFLOW_ROOT AND NOT "${TURBOFLOW_ROOT}" IN_LIST CMAKE_PREFIX_PATH)
-  list(APPEND CMAKE_PREFIX_PATH "${TURBOFLOW_ROOT}")
-endif()
-if(TURBOFLOW_ROOT)
-  set(TurboFlow_DIR "${TURBOFLOW_ROOT}/lib/cmake/TurboFlow" CACHE PATH
-      "TurboFlow storage package directory" FORCE)
-endif()
-if(NOT TARGET RulesForge::rules_forge)
-  get_filename_component(ROOM_SERVICE_PACKAGE_ROOT "${FLOWMQ_ROOT}" DIRECTORY)
-  find_package(RulesForge CONFIG REQUIRED
-    PATHS "${ROOM_SERVICE_PACKAGE_ROOT}/rules_forge"
-    NO_DEFAULT_PATH)
-endif()
-find_package(TurboFlow CONFIG REQUIRED)
+# First-party packages are resolved once at the repository root from their
+# explicit environment roots, so every WebRTC subdirectory sees the same targets.
 if(NOT TARGET TurboFlow::FlowStore OR
    NOT TARGET TurboFlow::StorageBackend OR
    NOT TARGET TurboFlow::SQLiteStorage OR
@@ -40,17 +18,7 @@ if(NOT TARGET TurboFlow::FlowStore OR
     "RoomService Iris outbox requires FlowStore and SQLite/Redis/PostgreSQL backends")
 endif()
 
-if(TBE_COMPILER_EXECUTABLE)
-  set(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE
-    "${TBE_COMPILER_EXECUTABLE}")
-else()
-  find_program(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE NAMES tbe_compiler
-               HINTS "${TURBOPARSER_ROOT}/bin")
-endif()
-if(NOT ROOM_SERVICE_TBE_COMPILER_EXECUTABLE)
-  message(FATAL_ERROR
-    "RoomService Iris event outbox requires tbe_compiler")
-endif()
+turbo_media_find_tbe_compiler(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE)
 set(ROOM_SERVICE_OUTBOX_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ROOM_SERVICE_OUTBOX_GEN_DIR}")
 set(ROOM_SERVICE_OUTBOX_GEN_HEADER

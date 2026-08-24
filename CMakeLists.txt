@@ -36,6 +36,40 @@ include(Sanitizers)
 include(CmakeUtils)
 enable_testing()
 
+function(turbo_media_find_tbe_compiler output_variable)
+  if(CMAKE_CROSSCOMPILING)
+    set(_turbomedia_tbe_root_name TURBOPARSER_HOST_ROOT)
+  else()
+    set(_turbomedia_tbe_root_name TURBOPARSER_ROOT)
+  endif()
+  if(NOT DEFINED ENV{${_turbomedia_tbe_root_name}} OR
+     "$ENV{${_turbomedia_tbe_root_name}}" STREQUAL "" OR
+     NOT IS_DIRECTORY "$ENV{${_turbomedia_tbe_root_name}}")
+    message(FATAL_ERROR
+            "${_turbomedia_tbe_root_name} must name the TurboParser host install prefix")
+  endif()
+
+  file(REAL_PATH "$ENV{${_turbomedia_tbe_root_name}}"
+       _turbomedia_tbe_root_real)
+  unset(${output_variable} CACHE)
+  unset(${output_variable})
+  find_program(${output_variable} NAMES tbe_compiler tbe_compiler.exe
+               PATHS "${_turbomedia_tbe_root_real}/bin" NO_DEFAULT_PATH)
+  if(NOT ${output_variable})
+    message(FATAL_ERROR
+            "tbe_compiler was not found under ${_turbomedia_tbe_root_real}/bin")
+  endif()
+  file(REAL_PATH "${${output_variable}}" _turbomedia_tbe_compiler_real)
+  cmake_path(IS_PREFIX _turbomedia_tbe_root_real
+             "${_turbomedia_tbe_compiler_real}" NORMALIZE
+             _turbomedia_tbe_compiler_in_root)
+  if(NOT _turbomedia_tbe_compiler_in_root)
+    message(FATAL_ERROR
+            "tbe_compiler resolved outside ${_turbomedia_tbe_root_name}: ${_turbomedia_tbe_compiler_real}")
+  endif()
+  set(${output_variable} "${_turbomedia_tbe_compiler_real}" PARENT_SCOPE)
+endfunction()
+
 function(turbo_media_configure_component target_name export_name)
   cmake_config_target(
     ${target_name}
@@ -86,17 +120,41 @@ endfunction()
 add_subdirectory(tools)
 include(FindTools)
 
+foreach(_turbomedia_dependency_root IN ITEMS
+        TURBOUTILS_ROOT TURBOPARSER_ROOT TURBONET_ROOT TURBOHTTP_ROOT
+        FLOWMQ_ROOT TURBOFLOW_ROOT RULES_FORGE_ROOT)
+  if(NOT DEFINED ENV{${_turbomedia_dependency_root}} OR
+     "$ENV{${_turbomedia_dependency_root}}" STREQUAL "")
+    message(FATAL_ERROR
+            "Required dependency root is not defined: ${_turbomedia_dependency_root}")
+  endif()
+  if(NOT IS_DIRECTORY "$ENV{${_turbomedia_dependency_root}}")
+    message(FATAL_ERROR
+            "${_turbomedia_dependency_root} is not a directory: $ENV{${_turbomedia_dependency_root}}")
+  endif()
+endforeach()
+
 find_package(Threads REQUIRED)
-find_package(TurboUtils CONFIG REQUIRED)
-find_package(TurboParser CONFIG REQUIRED PATHS "${TURBOPARSER_ROOT}")
+find_package(TurboUtils CONFIG REQUIRED
+             PATHS "$ENV{TURBOUTILS_ROOT}" NO_DEFAULT_PATH)
+find_package(TurboParser CONFIG REQUIRED
+             PATHS "$ENV{TURBOPARSER_ROOT}" NO_DEFAULT_PATH)
 # RulesForge releases installed before its DataBind migration still export the
 # former target name in their link interface. Keep that packaging detail at the
 # build boundary; production code links TurboParser::DataBind directly.
 if(TARGET TurboParser::DataBind AND NOT TARGET TurboUtils::DataBind)
   add_library(TurboUtils::DataBind ALIAS TurboParser::DataBind)
 endif()
-find_package(TurboNet CONFIG REQUIRED)
-find_package(TurboHttp CONFIG REQUIRED)
+find_package(TurboNet CONFIG REQUIRED
+             PATHS "$ENV{TURBONET_ROOT}" NO_DEFAULT_PATH)
+find_package(TurboHttp CONFIG REQUIRED
+             PATHS "$ENV{TURBOHTTP_ROOT}" NO_DEFAULT_PATH)
+find_package(RulesForge CONFIG REQUIRED
+             PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH)
+find_package(FlowMQ CONFIG REQUIRED
+             PATHS "$ENV{FLOWMQ_ROOT}" NO_DEFAULT_PATH)
+find_package(TurboFlow CONFIG REQUIRED
+             PATHS "$ENV{TURBOFLOW_ROOT}" NO_DEFAULT_PATH)
  
 find_package(OpenSSL REQUIRED)
 find_package(libSRTP CONFIG REQUIRED)

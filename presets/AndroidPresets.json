@@ -26,23 +26,6 @@
             }
         },
         {
-            "name": "android-win-paths",
-            "hidden": true,
-            "inherits": "ISWindows",
-            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-            "cacheVariables": {
-                "CMAKE_MAKE_PROGRAM": "$env{NINJA_ROOT}/ninja.exe",
-                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia-android",
-                "CMAKE_PREFIX_PATH": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/$env{ANDROID_BUILD_VARIANT};$env{PROJECT_ROOT}/turbonet/turbonet/build/$env{ANDROID_BUILD_VARIANT};$env{PKG_ROOT}/turbohttp-android",
-                "TURBOUTILS_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/$env{ANDROID_BUILD_VARIANT}",
-                "TURBOPARSER_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-parser/build/$env{ANDROID_BUILD_VARIANT}",
-                "TURBONET_ROOT": "$env{PROJECT_ROOT}/turbonet/turbonet/build/$env{ANDROID_BUILD_VARIANT}",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp-android",
-                "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
-                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
-            }
-        },
-        {
             "name": "android-arm64-v8a-debug",
             "hidden": true,
             "displayName": "Android arm64-v8a (Debug)",

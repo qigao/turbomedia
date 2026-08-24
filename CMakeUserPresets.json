@@ -12,21 +12,8 @@
                 "PKG_ROOT": "$env{PROJECT_ROOT}/external/pkgs",
                 "VCPKG_ROOT": "C:/tools/vcpkg",
                 "USER_ROOT": "C:/Users/lockg",
-                "PROGRAM_FILES_X86_ROOT": "C:/Program Files (x86)",
-                "WINDOWS_ROOT": "C:/Windows",
-                "NINJA_ROOT": "$env{USER_ROOT}/scoop/shims",
-                "VS_ROOT": "$env{PROGRAM_FILES_X86_ROOT}/Microsoft Visual Studio/2022/BuildTools",
-                "MSVC_VERSION": "14.44.35207",
-                "MSVC_ROOT": "$env{VS_ROOT}/VC/Tools/MSVC/$env{MSVC_VERSION}",
-                "MSVC_AUXILIARY_ROOT": "$env{VS_ROOT}/VC/Auxiliary/VS",
-                "WINDOWS_SDK_ROOT": "$env{PROGRAM_FILES_X86_ROOT}/Windows Kits/10",
-                "WINDOWS_SDK_VERSION": "10.0.26100.0",
-                "WINDOWS_SDK_INCLUDE_DIRS": "$env{WINDOWS_SDK_ROOT}/Include/$env{WINDOWS_SDK_VERSION}",
-                "WINDOWS_SDK_INCLUDE": "$env{WINDOWS_SDK_INCLUDE_DIRS}/ucrt;$env{WINDOWS_SDK_INCLUDE_DIRS}/um;$env{WINDOWS_SDK_INCLUDE_DIRS}/shared;$env{WINDOWS_SDK_INCLUDE_DIRS}/winrt;$env{WINDOWS_SDK_INCLUDE_DIRS}/cppwinrt",
-                "INCLUDE": "$env{MSVC_ROOT}/include;$env{MSVC_AUXILIARY_ROOT}/include;$env{WINDOWS_SDK_INCLUDE}",
-                "LIB": "$env{MSVC_ROOT}/lib/x64;$env{WINDOWS_SDK_ROOT}/Lib/$env{WINDOWS_SDK_VERSION}/ucrt/x64;$env{WINDOWS_SDK_ROOT}/Lib/$env{WINDOWS_SDK_VERSION}/um/x64",
-                "LIBPATH": "$env{MSVC_ROOT}/lib/x64;$env{MSVC_ROOT}/lib/x86/store/references;$env{WINDOWS_SDK_ROOT}/UnionMetadata/$env{WINDOWS_SDK_VERSION};$env{WINDOWS_SDK_ROOT}/References/$env{WINDOWS_SDK_VERSION};$env{WINDOWS_ROOT}/Microsoft.NET/Framework64/v4.0.30319"
-            }
+                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
+             }
         },
         {
             "name": "win-paths",
@@ -34,17 +21,8 @@
             "inherits": "win-toolchain",
             "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
             "cacheVariables": {
-                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils",
-                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser",
-                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp",
-                "TURBOXML_ROOT": "$env{PKG_ROOT}/turboxml",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq",
-                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow",
-                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia",
-                "CMAKE_MAKE_PROGRAM": "$env{NINJA_ROOT}/ninja.exe",
-                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
-                "PKG_CONFIG_EXECUTABLE": "${sourceDir}/vcpkg_installed/x64-windows/tools/pkgconf/pkgconf.exe",
+                "VCPKG_INSTALLED_DIR": "$env{VCPKG_INSTALLED_DIR}",
+                "PKG_CONFIG_EXECUTABLE": "$env{VCPKG_INSTALLED_DIR}/x64-windows/tools/pkgconf/pkgconf.exe",
                 "VCPKG_TARGET_TRIPLET": "x64-windows",
                 "VCPKG_MANIFEST_MODE": "ON"
             },
@@ -64,19 +42,12 @@
             "cacheVariables": {
                 "VCPKG_TARGET_TRIPLET": "x64-linux",
                 "VCPKG_MANIFEST_MODE": "ON",
-                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils",
-                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser",
-                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp",
-                "TURBOXML_ROOT": "$env{PKG_ROOT}/turboxml",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq",
-                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow",
-                "CMAKE_MAKE_PROGRAM": "/usr/bin/ninja",
-                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
+                "VCPKG_INSTALLED_DIR": "$env{VCPKG_INSTALLED_DIR}"
             },
             "environment": {
                 "PKG_ROOT": "/opt",
-                "VCPKG_ROOT": "/opt/vcpkg"
+                "VCPKG_ROOT": "/opt/vcpkg",
+                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
             }
         },
         {
@@ -90,13 +61,31 @@
             }
         },
         {
+            "name": "android-win-paths",
+            "hidden": true,
+            "inherits": "ISWindows",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "cacheVariables": {
+                "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
+                "VCPKG_INSTALLED_DIR": "$env{VCPKG_INSTALLED_DIR}"
+            }
+        },
+        {
             "name": "win-dev-user",
             "cacheVariables": {
                 "ENABLE_SANITIZER_ADDRESS": "ON",
-                "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows/debug"
+                "CMAKE_PREFIX_PATH": "$env{VCPKG_INSTALLED_DIR}/x64-windows/debug",
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/debug"
             },
             "environment": {
-                "PATH": "$env{PKG_ROOT}/turbohttp/bin${pathListSep}C:/projects/cpp/external/pkgs/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PKG_ROOT}/turboutils/bin${pathListSep}$env{PKG_ROOT}/flowmq/bin${pathListSep}$env{PKG_ROOT}/turboflow/bin${pathListSep}$env{PKG_ROOT}/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/debug/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}C:/tools/vcpkg/installed/x64-windows/bin${pathListSep}$penv{PATH}"
+                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils/debug",
+                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser/debug",
+                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet/debug",
+                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp/debug",
+                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq/debug",
+                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow/debug",
+                "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/debug",
+                "PATH": "${sourceDir}/build/Msvc/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{TURBOUTILS_ROOT}/bin${pathListSep}$env{TURBOPARSER_ROOT}/bin${pathListSep}$env{TURBONET_ROOT}/bin${pathListSep}$env{TURBOHTTP_ROOT}/bin${pathListSep}$env{FLOWMQ_ROOT}/bin${pathListSep}$env{TURBOFLOW_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-dev-user",
@@ -106,12 +95,18 @@
         {
             "name": "win-release-user",
             "cacheVariables": {
-                "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-windows",
-                "TURBOUTILS_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release",
-                "TURBOPARSER_ROOT": "$env{PROJECT_ROOT}/turbonet/turbo-parser/build/Msvc-Release"
+                "CMAKE_PREFIX_PATH": "$env{VCPKG_INSTALLED_DIR}/x64-windows",
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/release"
             },
             "environment": {
-                "PATH": "$env{PKG_ROOT}/turbohttp/bin${pathListSep}C:/projects/cpp/external/pkgs/turbohttp/bin${pathListSep}$env{PKG_ROOT}/turbonet/bin${pathListSep}$env{PROJECT_ROOT}/turbonet/turbo-utils/build/Msvc-Release/bin${pathListSep}$env{PKG_ROOT}/turbo_webrtc/bin${pathListSep}$env{PKG_ROOT}/flowmq/bin${pathListSep}$env{PKG_ROOT}/turboflow/bin${pathListSep}$env{PKG_ROOT}/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}C:/tools/vcpkg/installed/x64-windows/bin${pathListSep}$penv{PATH}"
+                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils/release",
+                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser/release",
+                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet/release",
+                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp/release",
+                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq/release",
+                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow/release",
+                "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/release",
+                "PATH": "${sourceDir}/build/Msvc-Release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{TURBOUTILS_ROOT}/bin${pathListSep}$env{TURBOPARSER_ROOT}/bin${pathListSep}$env{TURBONET_ROOT}/bin${pathListSep}$env{TURBOHTTP_ROOT}/bin${pathListSep}$env{FLOWMQ_ROOT}/bin${pathListSep}$env{TURBOFLOW_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-release-user",
@@ -122,7 +117,18 @@
             "name": "linux-dev-user",
             "cacheVariables": {
                 "ENABLE_SANITIZER_ADDRESS": "ON",
-                "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-linux/"
+                "CMAKE_PREFIX_PATH": "$env{VCPKG_INSTALLED_DIR}/x64-linux/debug",
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/debug"
+            },
+            "environment": {
+                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils/debug",
+                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser/debug",
+                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet/debug",
+                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp/debug",
+                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq/debug",
+                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow/debug",
+                "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/debug",
+                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/debug/lib${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{TURBOUTILS_ROOT}/lib${pathListSep}$env{TURBOPARSER_ROOT}/lib${pathListSep}$env{TURBONET_ROOT}/lib${pathListSep}$env{TURBOHTTP_ROOT}/lib${pathListSep}$env{FLOWMQ_ROOT}/lib${pathListSep}$env{TURBOFLOW_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
             },
             "inherits": [
                 "base-linux-dev-user",
@@ -132,7 +138,18 @@
         {
             "name": "linux-release-user",
             "cacheVariables": {
-                "CMAKE_PREFIX_PATH": "${sourceDir}/vcpkg_installed/x64-linux"
+                "CMAKE_PREFIX_PATH": "$env{VCPKG_INSTALLED_DIR}/x64-linux",
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/release"
+            },
+            "environment": {
+                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils/release",
+                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser/release",
+                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet/release",
+                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp/release",
+                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq/release",
+                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow/release",
+                "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/release",
+                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{TURBOUTILS_ROOT}/lib${pathListSep}$env{TURBOPARSER_ROOT}/lib${pathListSep}$env{TURBONET_ROOT}/lib${pathListSep}$env{TURBOHTTP_ROOT}/lib${pathListSep}$env{FLOWMQ_ROOT}/lib${pathListSep}$env{TURBOFLOW_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
             },
             "inherits": [
                 "release-linux-ninja",
@@ -140,67 +157,85 @@
             ]
         },
         {
-            "name": "android-arm64-v8a-debug-win",
+            "name": "android-dependencies-debug",
+            "hidden": true,
             "environment": {
-                "ANDROID_BUILD_VARIANT": "android-arm64-v8a-debug"
+                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils-android/debug",
+                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser-android/debug",
+                "TURBOPARSER_HOST_ROOT": "$env{PKG_ROOT}/turboparser/release",
+                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet-android/debug",
+                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp-android/debug",
+                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq-android/debug",
+                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow-android/debug",
+                "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge-android/debug"
             },
+            "cacheVariables": {"CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia-android/debug"}
+        },
+        {
+            "name": "android-dependencies-release",
+            "hidden": true,
+            "environment": {
+                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils-android/release",
+                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser-android/release",
+                "TURBOPARSER_HOST_ROOT": "$env{PKG_ROOT}/turboparser/release",
+                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet-android/release",
+                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp-android/release",
+                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq-android/release",
+                "TURBOFLOW_ROOT": "$env{PKG_ROOT}/turboflow-android/release",
+                "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge-android/release"
+            },
+            "cacheVariables": {"CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia-android/release"}
+        },
+        {
+            "name": "android-arm64-v8a-debug-win",
             "inherits": [
                 "android-arm64-v8a-debug",
+                "android-dependencies-debug",
                 "android-win-paths",
                 "android-win-environment"
             ]
         },
         {
             "name": "android-arm64-v8a-release-win",
-            "environment": {
-                "ANDROID_BUILD_VARIANT": "android-arm64-v8a-release"
-            },
             "inherits": [
                 "android-arm64-v8a-release",
+                "android-dependencies-release",
                 "android-win-paths",
                 "android-win-environment"
             ]
         },
         {
             "name": "android-x86_64-debug-win",
-            "environment": {
-                "ANDROID_BUILD_VARIANT": "android-x86_64-debug"
-            },
             "inherits": [
                 "android-x86_64-debug",
+                "android-dependencies-debug",
                 "android-win-paths",
                 "android-win-environment"
             ]
         },
         {
             "name": "android-x86_64-release-win",
-            "environment": {
-                "ANDROID_BUILD_VARIANT": "android-x86_64-release"
-            },
             "inherits": [
                 "android-x86_64-release",
+                "android-dependencies-release",
                 "android-win-paths",
                 "android-win-environment"
             ]
         },
         {
             "name": "android-x86-debug-win",
-            "environment": {
-                "ANDROID_BUILD_VARIANT": "android-x86-debug"
-            },
             "inherits": [
                 "android-x86-debug",
+                "android-dependencies-debug",
                 "android-win-paths",
                 "android-win-environment"
             ]
         },
         {
             "name": "android-x86-release-win",
-            "environment": {
-                "ANDROID_BUILD_VARIANT": "android-x86-release"
-            },
             "inherits": [
                 "android-x86-release",
+                "android-dependencies-release",
                 "android-win-paths",
                 "android-win-environment"
             ]
@@ -223,6 +258,10 @@
             "name": "linux-release-user",
             "configurePreset": "linux-release-user"
         },
+        {"name": "install-win-dev-user", "configurePreset": "win-dev-user", "targets": ["install"]},
+        {"name": "install-win-release-user", "configurePreset": "win-release-user", "targets": ["install"]},
+        {"name": "install-linux-dev-user", "configurePreset": "linux-dev-user", "targets": ["install"]},
+        {"name": "install-linux-release-user", "configurePreset": "linux-release-user", "targets": ["install"]},
         {
             "name": "android-arm64-v8a-debug-win",
             "configurePreset": "android-arm64-v8a-debug-win"
@@ -294,18 +333,12 @@
         {
             "name": "win-dev-user",
             "inherits": "base-test",
-            "configurePreset": "win-dev-user",
-            "environment": {
-                "PATH": "${sourceDir}/../../external/pkgs/turbohttp/bin${pathListSep}${sourceDir}/../../external/pkgs/turbonet/bin${pathListSep}${sourceDir}/../../external/pkgs/turboutils/bin${pathListSep}${sourceDir}/../../external/pkgs/flowmq/bin${pathListSep}${sourceDir}/../../external/pkgs/turboflow/bin${pathListSep}${sourceDir}/../../external/pkgs/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/debug/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}$penv{PATH}"
-            }
+            "configurePreset": "win-dev-user"
         },
         {
             "name": "win-release-user",
             "inherits": "base-test",
-            "configurePreset": "win-release-user",
-            "environment": {
-                "PATH": "${sourceDir}/../../external/pkgs/turbohttp/bin${pathListSep}${sourceDir}/../../external/pkgs/turbonet/bin${pathListSep}${sourceDir}/../../external/pkgs/turboutils/bin${pathListSep}${sourceDir}/../../external/pkgs/flowmq/bin${pathListSep}${sourceDir}/../../external/pkgs/turboflow/bin${pathListSep}${sourceDir}/../../external/pkgs/rules_forge/bin${pathListSep}${sourceDir}/vcpkg_installed/x64-windows/bin${pathListSep}$penv{PATH}"
-            }
+            "configurePreset": "win-release-user"
         },
         {
             "name": "linux-dev-user",
