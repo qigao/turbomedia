@@ -54,6 +54,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server
                           TurboMedia::RTSP TurboMedia::Transport TurboMedia::Codec
                           TurboUtils::Core)
+    if(WIN32)
+      list(APPEND TEST_LINK_LIBS ws2_32)
+    endif()
   else()
     # 其他测试按组件链接，避免依赖已移除的兼容聚合库。
     list(

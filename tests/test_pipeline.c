@@ -1,6 +1,7 @@
 #include "turbo_pipeline.h"
 
 #include "CoroNet/turbo_coro_context.h"
+#include "CoroNet/turbo_coro_socket.h"
 #include <rtp-packet.h>
 #include <tinytest.h>
 #include <turbo_codec.h>
@@ -12,6 +13,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #define PIPELINE_RTSP_E2E_PORT 20612
 #define PIPELINE_RTSP_E2E_URI "rtsp://127.0.0.1:20612/live/cam"
@@ -20,6 +24,20 @@
 #define PIPELINE_RTSP_TIMESTAMP_STEP 3000
 #define PIPELINE_RTSP_SSRC UINT32_C(0x10203040)
 #define PIPELINE_RTSP_CLIENT_TIMEOUT_MS 10000
+
+enum {
+    PIPELINE_HLS_FIXTURE_FRAME_COUNT = 90,
+    PIPELINE_HLS_PATH_CAPACITY = 1024,
+    PIPELINE_HLS_YAML_CAPACITY = 8192,
+    PIPELINE_HLS_URI_CAPACITY = 256,
+    PIPELINE_HLS_PLAYLIST_CAPACITY = 2048,
+    PIPELINE_HLS_WAIT_LIMIT = 10000,
+    PIPELINE_HLS_STABLE_POLL_COUNT = 50,
+    PIPELINE_HLS_SEGMENT_COUNT = 3,
+    PIPELINE_HLS_PLAYLIST_REVISION_COUNT = 2,
+    PIPELINE_HLS_HTTP_REQUEST_CAPACITY = 2048,
+    PIPELINE_HLS_HTTP_HEADER_CAPACITY = 512
+};
 
 static const char VALID_COPY_YAML[] =
     "api_version: turbo.media.pipeline/v1\n"
@@ -121,6 +139,16 @@ static void normalize_path(char *path) {
         if (*cursor == '\\') *cursor = '/';
 }
 
+static int make_test_path(char *path, size_t capacity, const char *root,
+                          const char *name) {
+    int path_size;
+    if (!path || capacity == 0 || !root || !name) return -1;
+    path_size = snprintf(path, capacity, "%s/%s", root, name);
+    if (path_size <= 0 || (size_t)path_size >= capacity) return -1;
+    normalize_path(path);
+    return 0;
+}
+
 typedef struct pipeline_run_result {
     turbo_pipeline_t *pipeline;
     turbo_pipeline_status_t status;
@@ -133,6 +161,53 @@ typedef struct pipeline_execute_result {
     turbo_pipeline_status_t status;
     turbo_pipeline_error_t error;
 } pipeline_execute_result_t;
+
+typedef struct pipeline_hls_http_server {
+    atomic_int playlist_revision;
+    atomic_int playlist_requests;
+    atomic_int segment_requests[PIPELINE_HLS_SEGMENT_COUNT];
+    atomic_int failed;
+    char playlists[PIPELINE_HLS_PLAYLIST_REVISION_COUNT]
+                  [PIPELINE_HLS_PLAYLIST_CAPACITY];
+    size_t playlist_sizes[PIPELINE_HLS_PLAYLIST_REVISION_COUNT];
+    char segment_uris[PIPELINE_HLS_SEGMENT_COUNT][PIPELINE_HLS_URI_CAPACITY];
+    char *segment_data[PIPELINE_HLS_SEGMENT_COUNT];
+    size_t segment_sizes[PIPELINE_HLS_SEGMENT_COUNT];
+} pipeline_hls_http_server_t;
+
+static unsigned short pipeline_pick_loopback_port(void) {
+    unsigned short port = 0;
+    struct sockaddr_in address;
+#ifdef _WIN32
+    int address_size = (int)sizeof(address);
+    SOCKET socket_handle = INVALID_SOCKET;
+#else
+    socklen_t address_size = (socklen_t)sizeof(address);
+    int socket_handle = -1;
+#endif
+
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(0);
+    socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#ifdef _WIN32
+    if (socket_handle == INVALID_SOCKET) return 0;
+#else
+    if (socket_handle < 0) return 0;
+#endif
+    if (bind(socket_handle, (const struct sockaddr *)&address,
+             sizeof(address)) == 0 &&
+        getsockname(socket_handle, (struct sockaddr *)&address,
+                    &address_size) == 0)
+        port = ntohs(address.sin_port);
+#ifdef _WIN32
+    closesocket(socket_handle);
+#else
+    close(socket_handle);
+#endif
+    return port;
+}
 
 typedef struct pipeline_rtsp_publisher {
     coro_context_t *context;
@@ -164,6 +239,215 @@ static void execute_pipeline_thread(void *parameter) {
     if (result->status == TURBO_PIPELINE_OK)
         result->status = turbo_pipeline_run(result->pipeline, &result->error);
     atomic_store_explicit(&result->done, 1, memory_order_release);
+}
+
+static int generate_local_hls_fixture(
+    const char *root, char *playlist_path, size_t playlist_path_capacity,
+    turbo_pipeline_error_t *error) {
+    char raw_path[PIPELINE_HLS_PATH_CAPACITY] = {0};
+    char yaml[PIPELINE_HLS_YAML_CAPACITY];
+    turbo_pipeline_t *writer = NULL;
+    turbo_pipeline_status_t status;
+    int yaml_size;
+    int result = -1;
+
+    if (!root || !playlist_path || !error ||
+        make_test_path(raw_path, sizeof(raw_path), root, "input.yuv") != 0 ||
+        make_test_path(playlist_path, playlist_path_capacity, root,
+                       "fixture.m3u8") != 0 ||
+        write_test_yuv420p_frames(raw_path,
+                                  PIPELINE_HLS_FIXTURE_FRAME_COUNT) != 0)
+        goto cleanup;
+
+    yaml_size = snprintf(
+        yaml, sizeof(yaml),
+        "api_version: turbo.media.pipeline/v1\n"
+        "id: local-hls-fixture-writer\n"
+        "nodes:\n"
+        "  - id: source\n"
+        "    kind: source\n"
+        "    factory: ffmpeg.input\n"
+        "    config:\n"
+        "      url: '%s'\n"
+        "      options: { video_size: 16x16, pixel_format: yuv420p, framerate: '10' }\n"
+        "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: rawvideo } }\n"
+        "  - { id: decoder, kind: decoder, factory: ffmpeg.decode, config: { media: video } }\n"
+        "  - { id: encoder, kind: encoder, factory: ffmpeg.encode, config: { media: video, codec: libopenh264, width: 16, height: 16, frame_rate: 10, bitrate: 100000, gop_frames: 30 } }\n"
+        "  - id: mux\n"
+        "    kind: mux\n"
+        "    factory: ffmpeg.mux\n"
+        "    config:\n"
+        "      format: hls\n"
+        "      options: { hls_time: '3', hls_list_size: '0', hls_playlist_type: vod }\n"
+        "  - { id: sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+        "edges:\n"
+        "  - { from: source.out, to: demux.in }\n"
+        "  - { from: demux.video, to: decoder.in }\n"
+        "  - { from: decoder.out, to: encoder.in }\n"
+        "  - { from: encoder.out, to: mux.video }\n"
+        "  - { from: mux.out, to: sink.in }\n",
+        raw_path, playlist_path);
+    if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml)) goto cleanup;
+
+    writer = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, error);
+    if (!writer) goto cleanup;
+    status = turbo_pipeline_prepare(writer, error);
+    if (status != TURBO_PIPELINE_OK) goto cleanup;
+    status = turbo_pipeline_run(writer, error);
+    if (status != TURBO_PIPELINE_OK) goto cleanup;
+    result = 0;
+
+cleanup:
+    turbo_pipeline_destroy(writer);
+    return result;
+}
+
+static int collect_hls_segment_uris(
+    const char *playlist_data, size_t playlist_size,
+    char segment_uris[][PIPELINE_HLS_URI_CAPACITY], size_t required_count) {
+    size_t offset = 0;
+    size_t found = 0;
+    if (!playlist_data || !segment_uris || required_count == 0) return -1;
+
+    while (offset < playlist_size && found < required_count) {
+        size_t line_start = offset;
+        size_t line_size;
+        while (offset < playlist_size && playlist_data[offset] != '\n') ++offset;
+        line_size = offset - line_start;
+        if (line_size > 0 && playlist_data[line_start + line_size - 1] == '\r')
+            --line_size;
+        if (line_size > 0 && playlist_data[line_start] != '#') {
+            if (line_size >= PIPELINE_HLS_URI_CAPACITY) return -1;
+            memcpy(segment_uris[found], playlist_data + line_start, line_size);
+            segment_uris[found][line_size] = '\0';
+            ++found;
+        }
+        if (offset < playlist_size) ++offset;
+    }
+    return found == required_count ? 0 : -1;
+}
+
+static int format_live_hls_playlist(
+    char *playlist, size_t playlist_capacity,
+    char segment_uris[][PIPELINE_HLS_URI_CAPACITY], size_t segment_count,
+    size_t *playlist_size) {
+    size_t offset = 0;
+    size_t segment_index;
+    int written;
+    static const char header[] =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:3\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXT-X-PLAYLIST-TYPE:EVENT\n";
+
+    if (!playlist || playlist_capacity < sizeof(header) || !segment_uris ||
+        segment_count == 0 || !playlist_size)
+        return -1;
+    memcpy(playlist, header, sizeof(header) - 1u);
+    offset = sizeof(header) - 1u;
+    for (segment_index = 0; segment_index < segment_count; ++segment_index) {
+        written = snprintf(playlist + offset, playlist_capacity - offset,
+                           "#EXTINF:3.000000,\n%s\n",
+                           segment_uris[segment_index]);
+        if (written <= 0 || (size_t)written >= playlist_capacity - offset)
+            return -1;
+        offset += (size_t)written;
+    }
+    *playlist_size = offset;
+    return 0;
+}
+
+static void serve_pipeline_hls_http(coro_socket_t *client, void *user_data) {
+    pipeline_hls_http_server_t *server =
+        (pipeline_hls_http_server_t *)user_data;
+    char request[PIPELINE_HLS_HTTP_REQUEST_CAPACITY] = {0};
+    char resource[PIPELINE_HLS_URI_CAPACITY] = {0};
+    char response_header[PIPELINE_HLS_HTTP_HEADER_CAPACITY];
+    const char *body = NULL;
+    const char *content_type = NULL;
+    size_t request_size = 0;
+    size_t body_size = 0;
+    int status_code = 200;
+    int segment_index;
+    int result;
+
+    if (!client || !server) return;
+    for (;;) {
+        char *chunk = NULL;
+        size_t chunk_size = 0;
+        result = coro_socket_recv(client, &chunk, &chunk_size);
+        if (result != 0 || !chunk || chunk_size == 0 ||
+            chunk_size > sizeof(request) - 1u - request_size) {
+            if (chunk) coro_socket_free_recv(chunk);
+            atomic_store_explicit(&server->failed, 1, memory_order_release);
+            return;
+        }
+        memcpy(request + request_size, chunk, chunk_size);
+        request_size += chunk_size;
+        request[request_size] = '\0';
+        coro_socket_free_recv(chunk);
+        if (strstr(request, "\r\n\r\n")) break;
+    }
+
+    if (sscanf(request, "GET /%255s HTTP/1.1", resource) != 1) {
+        atomic_store_explicit(&server->failed, 1, memory_order_release);
+        return;
+    }
+    if (strcmp(resource, "live.m3u8") == 0) {
+        int revision = atomic_load_explicit(&server->playlist_revision,
+                                            memory_order_acquire);
+        if (revision < 0 ||
+            revision >= PIPELINE_HLS_PLAYLIST_REVISION_COUNT) {
+            atomic_store_explicit(&server->failed, 1, memory_order_release);
+            return;
+        }
+        body = server->playlists[revision];
+        body_size = server->playlist_sizes[revision];
+        content_type = "application/vnd.apple.mpegurl";
+        atomic_fetch_add_explicit(&server->playlist_requests, 1,
+                                  memory_order_release);
+    } else {
+        for (segment_index = 0;
+             segment_index < PIPELINE_HLS_SEGMENT_COUNT; ++segment_index) {
+            if (strcmp(resource, server->segment_uris[segment_index]) == 0) {
+                body = server->segment_data[segment_index];
+                body_size = server->segment_sizes[segment_index];
+                content_type = "video/mp2t";
+                atomic_fetch_add_explicit(
+                    &server->segment_requests[segment_index], 1,
+                    memory_order_release);
+                break;
+            }
+        }
+        if (!body) {
+            status_code = 404;
+            body = "";
+            body_size = 0;
+            content_type = "text/plain";
+            atomic_store_explicit(&server->failed, 1, memory_order_release);
+        }
+    }
+
+    result = snprintf(
+        response_header, sizeof(response_header),
+        "HTTP/1.1 %d %s\r\n"
+        "Connection: close\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %zu\r\n\r\n",
+        status_code, status_code == 200 ? "OK" : "Not Found", content_type,
+        body_size);
+    if (result <= 0 || (size_t)result >= sizeof(response_header)) {
+        atomic_store_explicit(&server->failed, 1, memory_order_release);
+        return;
+    }
+    {
+        turbo_iovec_t response[] = {{response_header, (size_t)result},
+                                    {body, body_size}};
+        if (coro_socket_sendv(client, response, 2) != 0)
+            atomic_store_explicit(&server->failed, 1, memory_order_release);
+    }
 }
 
 static int capture_runtime_rtp(turbo_media_source_t *source,
@@ -1163,86 +1447,29 @@ suite("turbo_media_pipeline") {
         }
 
         it("reads a local HLS playlist and remuxes its video stream") {
-            enum {
-                HLS_TEST_FRAME_COUNT = 30,
-                HLS_TEST_PATH_CAPACITY = 1024,
-                HLS_TEST_YAML_CAPACITY = 8192
-            };
             char *root = tt_make_temp_dir("turbomedia-pipeline-hls");
-            char raw_path[HLS_TEST_PATH_CAPACITY] = {0};
-            char playlist_path[HLS_TEST_PATH_CAPACITY] = {0};
-            char output_path[HLS_TEST_PATH_CAPACITY] = {0};
-            char yaml[HLS_TEST_YAML_CAPACITY];
+            char playlist_path[PIPELINE_HLS_PATH_CAPACITY] = {0};
+            char output_path[PIPELINE_HLS_PATH_CAPACITY] = {0};
+            char yaml[PIPELINE_HLS_YAML_CAPACITY];
             turbo_pipeline_error_t error;
-            turbo_pipeline_t *writer = NULL;
             turbo_pipeline_t *reader = NULL;
             char *playlist_data = NULL;
             char *output_data = NULL;
             size_t playlist_size = 0;
             size_t output_size = 0;
-            int path_size;
+            int fixture_status;
             int yaml_size;
 
             check_not_null(root);
             if (!root) goto cleanup_hls_input;
-            path_size = snprintf(raw_path, sizeof(raw_path), "%s/input.yuv", root);
-            check_true(path_size > 0 && (size_t)path_size < sizeof(raw_path));
-            if (path_size <= 0 || (size_t)path_size >= sizeof(raw_path))
-                goto cleanup_hls_input;
-            path_size = snprintf(playlist_path, sizeof(playlist_path),
-                                 "%s/playlist.m3u8", root);
-            check_true(path_size > 0 && (size_t)path_size < sizeof(playlist_path));
-            if (path_size <= 0 || (size_t)path_size >= sizeof(playlist_path))
-                goto cleanup_hls_input;
-            path_size = snprintf(output_path, sizeof(output_path), "%s/output.mkv", root);
-            check_true(path_size > 0 && (size_t)path_size < sizeof(output_path));
-            if (path_size <= 0 || (size_t)path_size >= sizeof(output_path))
-                goto cleanup_hls_input;
-            normalize_path(raw_path);
-            normalize_path(playlist_path);
-            normalize_path(output_path);
-            check_equal(write_test_yuv420p_frames(raw_path, HLS_TEST_FRAME_COUNT), 0);
-
-            yaml_size = snprintf(
-                yaml, sizeof(yaml),
-                "api_version: turbo.media.pipeline/v1\n"
-                "id: local-hls-writer\n"
-                "nodes:\n"
-                "  - id: source\n"
-                "    kind: source\n"
-                "    factory: ffmpeg.input\n"
-                "    config:\n"
-                "      url: '%s'\n"
-                "      options: { video_size: 16x16, pixel_format: yuv420p, framerate: '10' }\n"
-                "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: rawvideo } }\n"
-                "  - { id: decoder, kind: decoder, factory: ffmpeg.decode, config: { media: video } }\n"
-                "  - { id: encoder, kind: encoder, factory: ffmpeg.encode, config: { media: video, codec: libopenh264, width: 16, height: 16, frame_rate: 10, bitrate: 100000, gop_frames: 1 } }\n"
-                "  - id: mux\n"
-                "    kind: mux\n"
-                "    factory: ffmpeg.mux\n"
-                "    config:\n"
-                "      format: hls\n"
-                "      options: { hls_time: '0.1', hls_list_size: '0', hls_playlist_type: vod }\n"
-                "  - { id: sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
-                "edges:\n"
-                "  - { from: source.out, to: demux.in }\n"
-                "  - { from: demux.video, to: decoder.in }\n"
-                "  - { from: decoder.out, to: encoder.in }\n"
-                "  - { from: encoder.out, to: mux.video }\n"
-                "  - { from: mux.out, to: sink.in }\n",
-                raw_path, playlist_path);
-            check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
-            if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
-                goto cleanup_hls_input;
-            writer = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
-            check_not_null(writer);
-            if (!writer) goto cleanup_hls_input;
-            check_equal(turbo_pipeline_prepare(writer, &error), TURBO_PIPELINE_OK);
-            if (turbo_pipeline_state(writer) != TURBO_PIPELINE_STATE_PREPARED)
-                goto cleanup_hls_input;
-            check_equal(turbo_pipeline_run(writer, &error), TURBO_PIPELINE_OK);
-            turbo_pipeline_destroy(writer);
-            writer = NULL;
+            check_equal(make_test_path(output_path, sizeof(output_path), root,
+                                       "output.mkv"),
+                        0);
+            if (output_path[0] == '\0') goto cleanup_hls_input;
+            fixture_status = generate_local_hls_fixture(
+                root, playlist_path, sizeof(playlist_path), &error);
+            check_equal(fixture_status, 0);
+            if (fixture_status != 0) goto cleanup_hls_input;
 
             playlist_data = tt_read_file(playlist_path, &playlist_size);
             check_not_null(playlist_data);
@@ -1287,7 +1514,295 @@ suite("turbo_media_pipeline") {
             free(output_data);
             free(playlist_data);
             turbo_pipeline_destroy(reader);
-            turbo_pipeline_destroy(writer);
+            if (root) check_equal(tt_remove_tree(root), 0);
+            free(root);
+        }
+
+        it("waits for a local live HLS playlist revision") {
+            char *root = tt_make_temp_dir("turbomedia-pipeline-live-hls");
+            char fixture_playlist_path[PIPELINE_HLS_PATH_CAPACITY] = {0};
+            char output_path[PIPELINE_HLS_PATH_CAPACITY] = {0};
+            char segment_path[PIPELINE_HLS_PATH_CAPACITY] = {0};
+            char yaml[PIPELINE_HLS_YAML_CAPACITY];
+            turbo_pipeline_error_t error;
+            turbo_pipeline_t *reader = NULL;
+            pipeline_execute_result_t execution;
+            pipeline_hls_http_server_t hls_server;
+            turbo_pipeline_stats_t stats;
+            turbo_thread_t reader_thread = NULL;
+            coro_context_t *server_context = NULL;
+            coro_socket_t *server_socket = NULL;
+            char *fixture_playlist_data = NULL;
+            char *output_data = NULL;
+            size_t fixture_playlist_size = 0;
+            size_t output_size = 0;
+            uint64_t last_packets = 0;
+            uint64_t initial_packets = 0;
+            int fixture_status;
+            int segment_index;
+            int server_port = 0;
+            int yaml_size;
+            int wait_count;
+            int stable_poll_count = 0;
+            int thread_started = 0;
+            int stop_requested = 0;
+
+            memset(&execution, 0, sizeof(execution));
+            memset(&hls_server, 0, sizeof(hls_server));
+            memset(&stats, 0, sizeof(stats));
+            atomic_init(&execution.done, 0);
+            atomic_init(&hls_server.playlist_revision, 0);
+            atomic_init(&hls_server.playlist_requests, 0);
+            atomic_init(&hls_server.failed, 0);
+            for (segment_index = 0;
+                 segment_index < PIPELINE_HLS_SEGMENT_COUNT; ++segment_index)
+                atomic_init(&hls_server.segment_requests[segment_index], 0);
+            check_not_null(root);
+            if (!root) goto cleanup_live_hls_input;
+            check_equal(make_test_path(output_path, sizeof(output_path), root,
+                                       "live-output.mkv"),
+                        0);
+            if (output_path[0] == '\0')
+                goto cleanup_live_hls_input;
+
+            fixture_status = generate_local_hls_fixture(
+                root, fixture_playlist_path, sizeof(fixture_playlist_path),
+                &error);
+            check_equal(fixture_status, 0);
+            if (fixture_status != 0) goto cleanup_live_hls_input;
+            fixture_playlist_data =
+                tt_read_file(fixture_playlist_path, &fixture_playlist_size);
+            check_not_null(fixture_playlist_data);
+            if (!fixture_playlist_data) goto cleanup_live_hls_input;
+            check_equal(collect_hls_segment_uris(
+                            fixture_playlist_data, fixture_playlist_size,
+                            hls_server.segment_uris,
+                            PIPELINE_HLS_SEGMENT_COUNT),
+                        0);
+            for (segment_index = 0;
+                 segment_index < PIPELINE_HLS_SEGMENT_COUNT; ++segment_index) {
+                if (hls_server.segment_uris[segment_index][0] == '\0')
+                    goto cleanup_live_hls_input;
+                check_equal(make_test_path(
+                                segment_path, sizeof(segment_path), root,
+                                hls_server.segment_uris[segment_index]),
+                            0);
+                hls_server.segment_data[segment_index] = tt_read_file(
+                    segment_path, &hls_server.segment_sizes[segment_index]);
+                check_not_null(hls_server.segment_data[segment_index]);
+                if (!hls_server.segment_data[segment_index])
+                    goto cleanup_live_hls_input;
+            }
+            check_equal(format_live_hls_playlist(
+                            hls_server.playlists[0],
+                            sizeof(hls_server.playlists[0]),
+                            hls_server.segment_uris, 2,
+                            &hls_server.playlist_sizes[0]),
+                        0);
+            check_equal(format_live_hls_playlist(
+                            hls_server.playlists[1],
+                            sizeof(hls_server.playlists[1]),
+                            hls_server.segment_uris, 3,
+                            &hls_server.playlist_sizes[1]),
+                        0);
+
+            server_context = coro_context_create(NULL);
+            check_not_null(server_context);
+            if (!server_context) goto cleanup_live_hls_input;
+            server_socket =
+                coro_socket_create(server_context, CORO_SOCKET_TCP_V4);
+            check_not_null(server_socket);
+            if (!server_socket) goto cleanup_live_hls_input;
+            server_port = (int)pipeline_pick_loopback_port();
+            check_true(server_port > 0);
+            if (server_port <= 0) goto cleanup_live_hls_input;
+            check_equal(coro_socket_listen_on(
+                            server_socket, "127.0.0.1", server_port,
+                            serve_pipeline_hls_http, &hls_server),
+                        0);
+
+            yaml_size = snprintf(
+                yaml, sizeof(yaml),
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: local-live-hls-reader\n"
+                "limits: { open_timeout_ms: 10000, io_timeout_ms: 10000 }\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: 'http://127.0.0.1:%d/live.m3u8' } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: hls } }\n"
+                "  - { id: mux, kind: mux, factory: ffmpeg.mux, config: { format: matroska } }\n"
+                "  - { id: sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.video, to: mux.video }\n"
+                "  - { from: mux.out, to: sink.in }\n",
+                server_port, output_path);
+            check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
+            if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
+                goto cleanup_live_hls_input;
+            reader =
+                turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
+            check_not_null(reader);
+            if (!reader) goto cleanup_live_hls_input;
+
+            execution.pipeline = reader;
+            check_equal(turbo_thread_create(&reader_thread,
+                                            execute_pipeline_thread, &execution),
+                        0);
+            if (!reader_thread) goto cleanup_live_hls_input;
+            thread_started = 1;
+
+            for (wait_count = 0; wait_count < PIPELINE_HLS_WAIT_LIMIT;
+                 ++wait_count) {
+                (void)coro_context_run(server_context, TURBO_RUN_NOWAIT);
+                check_equal(turbo_pipeline_stats(reader, &stats),
+                            TURBO_PIPELINE_OK);
+                if (atomic_load_explicit(&execution.done,
+                                         memory_order_acquire))
+                    break;
+                if (turbo_pipeline_state(reader) ==
+                        TURBO_PIPELINE_STATE_RUNNING &&
+                    stats.packets_read > 0) {
+                    if (stats.packets_read == last_packets)
+                        ++stable_poll_count;
+                    else
+                        stable_poll_count = 0;
+                    last_packets = stats.packets_read;
+                    if (stable_poll_count >= PIPELINE_HLS_STABLE_POLL_COUNT)
+                        break;
+                }
+                turbo_sleep_ms(1);
+            }
+            if (atomic_load_explicit(&execution.done, memory_order_acquire))
+                fprintf(stderr, "local live HLS reader exited early: %s\n",
+                        execution.error.message);
+            check_false(
+                atomic_load_explicit(&execution.done, memory_order_acquire));
+            check_equal(turbo_pipeline_state(reader),
+                        TURBO_PIPELINE_STATE_RUNNING);
+            check_true(stats.packets_read > 0);
+            check_true(stable_poll_count >= PIPELINE_HLS_STABLE_POLL_COUNT);
+            if (atomic_load_explicit(&execution.done, memory_order_acquire) ||
+                stats.packets_read == 0 ||
+                stable_poll_count < PIPELINE_HLS_STABLE_POLL_COUNT)
+                goto cleanup_live_hls_input;
+            initial_packets = stats.packets_read;
+            check_true(atomic_load_explicit(&hls_server.playlist_requests,
+                                            memory_order_acquire) > 0);
+            check_true(atomic_load_explicit(&hls_server.segment_requests[0],
+                                            memory_order_acquire) > 0);
+            check_true(atomic_load_explicit(&hls_server.segment_requests[1],
+                                            memory_order_acquire) > 0);
+
+            atomic_store_explicit(&hls_server.playlist_revision, 1,
+                                  memory_order_release);
+            for (wait_count = 0; wait_count < PIPELINE_HLS_WAIT_LIMIT;
+                 ++wait_count) {
+                (void)coro_context_run(server_context, TURBO_RUN_NOWAIT);
+                check_equal(turbo_pipeline_stats(reader, &stats),
+                            TURBO_PIPELINE_OK);
+                if (stats.packets_read > initial_packets ||
+                    atomic_load_explicit(&execution.done,
+                                         memory_order_acquire))
+                    break;
+                turbo_sleep_ms(1);
+            }
+            if (atomic_load_explicit(&execution.done, memory_order_acquire))
+                fprintf(
+                    stderr,
+                    "local live HLS revision failed: status=%d error=%s "
+                    "playlist_requests=%d segment_requests=%d/%d/%d "
+                    "packets=%llu initial=%llu\n",
+                    (int)execution.status, execution.error.message,
+                    atomic_load_explicit(&hls_server.playlist_requests,
+                                         memory_order_acquire),
+                    atomic_load_explicit(&hls_server.segment_requests[0],
+                                         memory_order_acquire),
+                    atomic_load_explicit(&hls_server.segment_requests[1],
+                                         memory_order_acquire),
+                    atomic_load_explicit(&hls_server.segment_requests[2],
+                                         memory_order_acquire),
+                    (unsigned long long)stats.packets_read,
+                    (unsigned long long)initial_packets);
+            check_false(
+                atomic_load_explicit(&execution.done, memory_order_acquire));
+            check_true(stats.packets_read > initial_packets);
+            check_true(atomic_load_explicit(&hls_server.playlist_requests,
+                                            memory_order_acquire) > 1);
+            check_true(atomic_load_explicit(&hls_server.segment_requests[2],
+                                            memory_order_acquire) > 0);
+            check_false(atomic_load_explicit(&hls_server.failed,
+                                             memory_order_acquire));
+            if (atomic_load_explicit(&execution.done, memory_order_acquire) ||
+                stats.packets_read <= initial_packets)
+                goto cleanup_live_hls_input;
+
+            check_equal(turbo_pipeline_request_stop(reader),
+                        TURBO_PIPELINE_OK);
+            stop_requested = 1;
+            for (wait_count = 0;
+                 wait_count < PIPELINE_HLS_WAIT_LIMIT &&
+                 !atomic_load_explicit(&execution.done, memory_order_acquire);
+                 ++wait_count) {
+                (void)coro_context_run(server_context, TURBO_RUN_NOWAIT);
+                turbo_sleep_ms(1);
+            }
+            check_true(
+                atomic_load_explicit(&execution.done, memory_order_acquire));
+            if (!atomic_load_explicit(&execution.done, memory_order_acquire))
+                goto cleanup_live_hls_input;
+            check_equal(turbo_thread_join(&reader_thread), 0);
+            turbo_thread_destroy(&reader_thread);
+            thread_started = 0;
+            check_equal(execution.status, TURBO_PIPELINE_ESTOPPED);
+            check_equal(turbo_pipeline_state(reader),
+                        TURBO_PIPELINE_STATE_STOPPED);
+
+            output_data = tt_read_file(output_path, &output_size);
+            check_not_null(output_data);
+            check_true(output_size > 4u);
+            if (output_data && output_size >= 4u) {
+                static const unsigned char ebml_header[] = {0x1a, 0x45, 0xdf,
+                                                            0xa3};
+                check_equal(output_data, ebml_header, sizeof(ebml_header));
+            }
+
+        cleanup_live_hls_input:
+            if (reader && thread_started &&
+                !atomic_load_explicit(&execution.done, memory_order_acquire)) {
+                for (wait_count = 0;
+                     wait_count < PIPELINE_HLS_WAIT_LIMIT &&
+                     !atomic_load_explicit(&execution.done,
+                                           memory_order_acquire);
+                     ++wait_count) {
+                    turbo_pipeline_state_t state =
+                        turbo_pipeline_state(reader);
+                    if (!stop_requested &&
+                        (state == TURBO_PIPELINE_STATE_PREPARED ||
+                         state == TURBO_PIPELINE_STATE_RUNNING ||
+                         state == TURBO_PIPELINE_STATE_STOPPING) &&
+                        turbo_pipeline_request_stop(reader) ==
+                            TURBO_PIPELINE_OK)
+                        stop_requested = 1;
+                    if (server_context)
+                        (void)coro_context_run(server_context,
+                                               TURBO_RUN_NOWAIT);
+                    turbo_sleep_ms(1);
+                }
+            }
+            if (thread_started) {
+                check_equal(turbo_thread_join(&reader_thread), 0);
+                turbo_thread_destroy(&reader_thread);
+                if (stop_requested)
+                    check_equal(execution.status, TURBO_PIPELINE_ESTOPPED);
+            }
+            free(output_data);
+            free(fixture_playlist_data);
+            turbo_pipeline_destroy(reader);
+            if (server_socket) coro_socket_destroy(server_socket);
+            if (server_context) coro_context_destroy(server_context);
+            for (segment_index = 0;
+                 segment_index < PIPELINE_HLS_SEGMENT_COUNT; ++segment_index)
+                free(hls_server.segment_data[segment_index]);
             if (root) check_equal(tt_remove_tree(root), 0);
             free(root);
         }

@@ -192,7 +192,11 @@ BoringSSL 检查保证，SRTP 使用 libSRTP。
 Runtime/RTP 单输出约束、打开失败清理和 prepare 后取消。集成测试覆盖单/双输出
 WAV 转封装、单/双输出音频重采样/转码，以及 raw YUV
 缩放/视频转码；本地 HLS VOD 测试覆盖 playlist/segment 输入、正常 EOF/drain 与
-Matroska 转封装。安装 smoke consumer 验证 `find_package`、公开头文件、链接和动态
+Matroska 转封装。本地 Live HLS 测试通过动态端口 loopback HTTP 提供无
+`#EXT-X-ENDLIST` 的两版 EVENT playlist，验证初始窗口进入 RUNNING、增量 segment
+读取、packet stats 推进、协作停止与输出回收；该测试是确定性功能验收，不替代公网
+CDN、鉴权、断线重连和不同 HLS 变体的兼容性验证。安装 smoke consumer 验证
+`find_package`、公开头文件、链接和动态
 加载。RTC 集成测试覆盖 H.264/Opus depay/pay、Opus decode/filter/libopus
 实时再编码，以及 fake WHIP publisher → Pipeline → fake WHEP player。内置 PeerConnection
 集成测试覆盖 H.264 WHIP/WHEP offer/answer、remote track owner-thread 注册与 send
