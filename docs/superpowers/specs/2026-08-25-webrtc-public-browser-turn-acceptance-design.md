@@ -28,6 +28,7 @@ TurboMedia 将在 `webrtc/acceptance/` 新增独立的、测试专用的公网�
 - coturn 支持 WebRTC long-term credentials 和基于共享 secret 的短期凭据，凭据过期时间编码在 username 中：<https://github.com/coturn/coturn/wiki/turnserver>。
 - Selenium Grid 支持跨主机、跨平台和不同浏览器版本的 Remote WebDriver；官方列出 Chrome、Edge、Firefox 和 Safari：<https://www.selenium.dev/documentation/grid/>、<https://www.selenium.dev/documentation/webdriver/browsers/>。
 - 设计时 `selenium-webdriver` 当前版本为 `4.47.0`，Apache-2.0，要求 Node.js `>=22.0.0`；npm unpacked size 约 18.5 MB，依赖 `ws`、`tmp`、`jszip` 和 `@bazel/runfiles`。依赖只存在于测试子系统，不进入 TurboMedia 二进制或安装包。
+- JSON Schema draft 2020-12 验证使用 `ajv@8.20.0`，MIT，npm unpacked size 约 1.03 MB。它只存在于测试子系统，避免仓库自行实现不完整的 schema validator。
 
 ## 3. 目标与非目标
 
@@ -143,7 +144,7 @@ controller 不解析私有浏览器日志格式，不执行 shell 字符串，�
 
 ### 6.3 Selenium Adapter
 
-- 只依赖 `selenium-webdriver@4.47.0` 和 lockfile 固定的传递依赖。
+- browser adapter 直接依赖 `selenium-webdriver@4.47.0`，schema adapter 直接依赖 `ajv@8.20.0`；所有传递依赖由 lockfile 固定。
 - 连接 manifest 指定的受保护 Remote WebDriver endpoint。
 - 从实际 session capabilities 读取 browser name/version/platform，精确匹配 manifest。
 - publisher/viewer session 必须独立；默认串行 case，Safari 节点不假定可并行。
@@ -509,7 +510,7 @@ release manifest 至少覆盖真实 Chrome、Edge、Firefox、Safari，以及 IP
 ## 15. 构建、依赖与兼容性
 
 - 新增 `webrtc/acceptance/package.json`、lockfile 和 `engines.node >=22.0.0`。
-- Selenium 是 test-only Apache-2.0 依赖；不链接 C/C++ target，不进入安装导出和发布 binary。
+- Selenium 是 test-only Apache-2.0 依赖，Ajv 是 test-only MIT 依赖；二者都不链接 C/C++ target，不进入安装导出和发布 binary。
 - 默认 configure/build/CTest 不执行 npm install，也不要求 Grid、coturn 或浏览器。
 - 新增显式 acceptance target/preset 或文档化 npm 命令，只有实验室主动启用。
 - 现有 C API、ABI、配置文件、WHIP/WHEP route、默认安全策略和本地 browser smoke 行为保持不变。
