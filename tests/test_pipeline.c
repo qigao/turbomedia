@@ -167,6 +167,166 @@ suite("turbo_media_pipeline") {
             }
         }
 
+        it("accepts one FFmpeg media branch fanned out to two outputs") {
+            static const char yaml[] =
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: copy-fanout\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: input.wav } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux }\n"
+                "  - { id: live_mux, kind: mux, factory: ffmpeg.mux, config: { format: matroska } }\n"
+                "  - { id: live_sink, kind: sink, factory: ffmpeg.output, config: { url: live.mka } }\n"
+                "  - { id: archive_mux, kind: mux, factory: ffmpeg.mux, config: { format: matroska } }\n"
+                "  - { id: archive_sink, kind: sink, factory: ffmpeg.output, config: { url: archive.mka } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.audio, to: live_mux.audio }\n"
+                "  - { from: demux.audio, to: archive_mux.audio }\n"
+                "  - { from: live_mux.out, to: live_sink.in }\n"
+                "  - { from: archive_mux.out, to: archive_sink.in }\n";
+            turbo_pipeline_error_t error;
+            turbo_pipeline_t *pipeline =
+                turbo_pipeline_create_from_yaml(yaml, sizeof(yaml) - 1u, &error);
+
+            if (!pipeline) fprintf(stderr, "multi-output config error: %s\n", error.message);
+            check_not_null(pipeline);
+            turbo_pipeline_destroy(pipeline);
+        }
+
+        it("rejects mismatched FFmpeg mux and sink counts") {
+            static const char yaml[] =
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: mismatched-outputs\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: input.wav } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux }\n"
+                "  - { id: mux_a, kind: mux, factory: ffmpeg.mux }\n"
+                "  - { id: mux_b, kind: mux, factory: ffmpeg.mux }\n"
+                "  - { id: sink, kind: sink, factory: ffmpeg.output, config: { url: output.mka } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.audio, to: mux_a.audio }\n"
+                "  - { from: demux.audio, to: mux_b.audio }\n"
+                "  - { from: mux_a.out, to: sink.in }\n";
+            turbo_pipeline_error_t error;
+            turbo_pipeline_t *pipeline =
+                turbo_pipeline_create_from_yaml(yaml, sizeof(yaml) - 1u, &error);
+
+            check_null(pipeline);
+            check_equal(error.code, TURBO_PIPELINE_EGRAPH);
+        }
+
+        it("rejects more than eight FFmpeg outputs") {
+            enum { OUTPUT_COUNT_OVER_LIMIT = 9 };
+            char yaml[8192];
+            size_t offset = 0;
+            turbo_pipeline_error_t error;
+            turbo_pipeline_t *pipeline = NULL;
+            int written;
+            int output_index;
+
+            written = snprintf(
+                yaml, sizeof(yaml),
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: too-many-outputs\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: input.wav } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux }\n");
+            check_true(written > 0 && (size_t)written < sizeof(yaml));
+            if (written <= 0 || (size_t)written >= sizeof(yaml))
+                goto cleanup_output_limit;
+            offset = (size_t)written;
+            for (output_index = 0; output_index < OUTPUT_COUNT_OVER_LIMIT;
+                 ++output_index) {
+                written = snprintf(
+                    yaml + offset, sizeof(yaml) - offset,
+                    "  - { id: mux_%d, kind: mux, factory: ffmpeg.mux }\n"
+                    "  - { id: sink_%d, kind: sink, factory: ffmpeg.output, config: { url: output_%d.mka } }\n",
+                    output_index, output_index, output_index);
+                check_true(written > 0 && (size_t)written < sizeof(yaml) - offset);
+                if (written <= 0 || (size_t)written >= sizeof(yaml) - offset)
+                    goto cleanup_output_limit;
+                offset += (size_t)written;
+            }
+            written = snprintf(yaml + offset, sizeof(yaml) - offset,
+                               "edges:\n"
+                               "  - { from: source.out, to: demux.in }\n");
+            check_true(written > 0 && (size_t)written < sizeof(yaml) - offset);
+            if (written <= 0 || (size_t)written >= sizeof(yaml) - offset)
+                goto cleanup_output_limit;
+            offset += (size_t)written;
+            for (output_index = 0; output_index < OUTPUT_COUNT_OVER_LIMIT;
+                 ++output_index) {
+                written = snprintf(
+                    yaml + offset, sizeof(yaml) - offset,
+                    "  - { from: demux.audio, to: mux_%d.audio }\n"
+                    "  - { from: mux_%d.out, to: sink_%d.in }\n",
+                    output_index, output_index, output_index);
+                check_true(written > 0 && (size_t)written < sizeof(yaml) - offset);
+                if (written <= 0 || (size_t)written >= sizeof(yaml) - offset)
+                    goto cleanup_output_limit;
+                offset += (size_t)written;
+            }
+
+            pipeline = turbo_pipeline_create_from_yaml(yaml, offset, &error);
+
+            check_null(pipeline);
+            check_equal(error.code, TURBO_PIPELINE_EGRAPH);
+            check_contains(error.message, "limit of 8");
+
+        cleanup_output_limit:
+            turbo_pipeline_destroy(pipeline);
+        }
+
+        it("rejects a media branch that omits one FFmpeg output") {
+            static const char yaml[] =
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: partial-fanout\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: input.wav } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux }\n"
+                "  - { id: mux_a, kind: mux, factory: ffmpeg.mux }\n"
+                "  - { id: sink_a, kind: sink, factory: ffmpeg.output, config: { url: a.mka } }\n"
+                "  - { id: mux_b, kind: mux, factory: ffmpeg.mux }\n"
+                "  - { id: sink_b, kind: sink, factory: ffmpeg.output, config: { url: b.mka } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.audio, to: mux_a.audio }\n"
+                "  - { from: mux_a.out, to: sink_a.in }\n"
+                "  - { from: mux_b.out, to: sink_b.in }\n";
+            turbo_pipeline_error_t error;
+            turbo_pipeline_t *pipeline =
+                turbo_pipeline_create_from_yaml(yaml, sizeof(yaml) - 1u, &error);
+
+            check_null(pipeline);
+            check_equal(error.code, TURBO_PIPELINE_EGRAPH);
+        }
+
+        it("keeps Runtime RTP restricted to one output") {
+            static const char yaml[] =
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: runtime-multi-output\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: media.runtime_source, config: { url: default/live/whip } }\n"
+                "  - { id: depay, kind: demux, factory: rtp.depacketize }\n"
+                "  - { id: pay_a, kind: mux, factory: rtp.packetize }\n"
+                "  - { id: sink_a, kind: sink, factory: media.runtime_sink, config: { url: default/live/a } }\n"
+                "  - { id: pay_b, kind: mux, factory: rtp.packetize }\n"
+                "  - { id: sink_b, kind: sink, factory: media.runtime_sink, config: { url: default/live/b } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: depay.in }\n"
+                "  - { from: depay.audio, to: pay_a.audio }\n"
+                "  - { from: depay.audio, to: pay_b.audio }\n"
+                "  - { from: pay_a.out, to: sink_a.in }\n"
+                "  - { from: pay_b.out, to: sink_b.in }\n";
+            turbo_pipeline_error_t error;
+            turbo_pipeline_t *pipeline =
+                turbo_pipeline_create_from_yaml(yaml, sizeof(yaml) - 1u, &error);
+
+            check_null(pipeline);
+            check_equal(error.code, TURBO_PIPELINE_EGRAPH);
+        }
+
         it("rejects an unsupported API version") {
             char yaml[sizeof(VALID_COPY_YAML)];
             turbo_pipeline_error_t error;
@@ -440,6 +600,149 @@ suite("turbo_media_pipeline") {
             free(output_path);
         }
 
+        it("stream-copies one audio branch to two FFmpeg outputs") {
+            char *input_path = tt_make_temp_file("turbo_pipeline_fanout_in_", ".wav");
+            char *live_path = tt_make_temp_file("turbo_pipeline_fanout_live_", ".mka");
+            char *archive_path =
+                tt_make_temp_file("turbo_pipeline_fanout_archive_", ".mka");
+            char yaml[4096];
+            turbo_pipeline_error_t error;
+            turbo_pipeline_stats_t stats;
+            turbo_pipeline_t *pipeline = NULL;
+            char *live_data = NULL;
+            char *archive_data = NULL;
+            size_t live_size = 0;
+            size_t archive_size = 0;
+            int yaml_size;
+
+            check_not_null(input_path);
+            check_not_null(live_path);
+            check_not_null(archive_path);
+            if (!input_path || !live_path || !archive_path) goto cleanup_fanout_copy;
+            normalize_path(input_path);
+            normalize_path(live_path);
+            normalize_path(archive_path);
+            check_equal(write_test_wav(input_path), 0);
+            yaml_size = snprintf(
+                yaml, sizeof(yaml),
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: wav-fanout\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: '%s' } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: wav } }\n"
+                "  - { id: live_mux, kind: mux, factory: ffmpeg.mux, config: { format: matroska } }\n"
+                "  - { id: live_sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "  - { id: archive_mux, kind: mux, factory: ffmpeg.mux, config: { format: matroska } }\n"
+                "  - { id: archive_sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.audio, to: live_mux.audio }\n"
+                "  - { from: demux.audio, to: archive_mux.audio }\n"
+                "  - { from: live_mux.out, to: live_sink.in }\n"
+                "  - { from: archive_mux.out, to: archive_sink.in }\n",
+                input_path, live_path, archive_path);
+            check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
+            if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
+                goto cleanup_fanout_copy;
+            pipeline = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
+            if (!pipeline) fprintf(stderr, "fanout config error: %s\n", error.message);
+            check_not_null(pipeline);
+            if (!pipeline) goto cleanup_fanout_copy;
+            check_equal(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
+            if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED) {
+                fprintf(stderr, "fanout prepare error: %s\n", error.message);
+                goto cleanup_fanout_copy;
+            }
+            check_equal(turbo_pipeline_run(pipeline, &error), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_stats(pipeline, &stats), TURBO_PIPELINE_OK);
+            check_true(stats.packets_read > 0);
+            check_equal(stats.packets_written, stats.packets_read * 2u);
+            live_data = tt_read_file(live_path, &live_size);
+            archive_data = tt_read_file(archive_path, &archive_size);
+            check_not_null(live_data);
+            check_not_null(archive_data);
+            check_true(live_size > 4u);
+            check_true(archive_size > 4u);
+
+        cleanup_fanout_copy:
+            free(live_data);
+            free(archive_data);
+            turbo_pipeline_destroy(pipeline);
+            if (input_path) tt_remove_file(input_path);
+            if (live_path) tt_remove_file(live_path);
+            if (archive_path) tt_remove_file(archive_path);
+            free(input_path);
+            free(live_path);
+            free(archive_path);
+        }
+
+        it("reports the exact sink when opening a later output fails") {
+            char *input_path = tt_make_temp_file("turbo_pipeline_sink_fail_in_", ".wav");
+            char *good_path = tt_make_temp_file("turbo_pipeline_sink_good_", ".mka");
+            char *blocking_path =
+                tt_make_temp_file("turbo_pipeline_sink_block_", ".tmp");
+            char bad_path[2048];
+            char yaml[4096];
+            turbo_pipeline_error_t error;
+            turbo_pipeline_t *pipeline = NULL;
+            int bad_path_size;
+            int yaml_size;
+
+            check_not_null(input_path);
+            check_not_null(good_path);
+            check_not_null(blocking_path);
+            if (!input_path || !good_path || !blocking_path)
+                goto cleanup_sink_failure;
+            normalize_path(input_path);
+            normalize_path(good_path);
+            normalize_path(blocking_path);
+            check_equal(write_test_wav(input_path), 0);
+            bad_path_size = snprintf(bad_path, sizeof(bad_path), "%s/missing.mka",
+                                     blocking_path);
+            check_true(bad_path_size > 0 &&
+                       (size_t)bad_path_size < sizeof(bad_path));
+            if (bad_path_size <= 0 || (size_t)bad_path_size >= sizeof(bad_path))
+                goto cleanup_sink_failure;
+            yaml_size = snprintf(
+                yaml, sizeof(yaml),
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: later-sink-failure\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: '%s' } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: wav } }\n"
+                "  - { id: good_mux, kind: mux, factory: ffmpeg.mux, config: { format: matroska } }\n"
+                "  - { id: good_sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "  - { id: bad_mux, kind: mux, factory: ffmpeg.mux, config: { format: matroska } }\n"
+                "  - { id: bad_sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.audio, to: good_mux.audio }\n"
+                "  - { from: demux.audio, to: bad_mux.audio }\n"
+                "  - { from: good_mux.out, to: good_sink.in }\n"
+                "  - { from: bad_mux.out, to: bad_sink.in }\n",
+                input_path, good_path, bad_path);
+            check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
+            if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
+                goto cleanup_sink_failure;
+            pipeline = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
+            check_not_null(pipeline);
+            if (!pipeline) goto cleanup_sink_failure;
+            check_equal(turbo_pipeline_prepare(pipeline, &error),
+                        TURBO_PIPELINE_EFFMPEG);
+            check_equal(turbo_pipeline_state(pipeline),
+                        TURBO_PIPELINE_STATE_FAILED);
+            check_equal(error.node_id, "bad_sink");
+
+        cleanup_sink_failure:
+            turbo_pipeline_destroy(pipeline);
+            if (input_path) tt_remove_file(input_path);
+            if (good_path) tt_remove_file(good_path);
+            if (blocking_path) tt_remove_file(blocking_path);
+            free(input_path);
+            free(good_path);
+            free(blocking_path);
+        }
+
         it("resamples and transcodes a local WAV through the graph") {
             char *input_path = tt_make_temp_file("turbo_pipeline_input_", ".wav");
             char *output_path = tt_make_temp_file("turbo_pipeline_output_", ".wav");
@@ -517,6 +820,94 @@ suite("turbo_media_pipeline") {
             if (output_path) tt_remove_file(output_path);
             free(input_path);
             free(output_path);
+        }
+
+        it("transcodes one audio branch to two FFmpeg outputs") {
+            char *input_path = tt_make_temp_file("turbo_pipeline_transcode_in_", ".wav");
+            char *first_path = tt_make_temp_file("turbo_pipeline_transcode_a_", ".wav");
+            char *second_path = tt_make_temp_file("turbo_pipeline_transcode_b_", ".wav");
+            char yaml[4096];
+            turbo_pipeline_error_t error;
+            turbo_pipeline_stats_t stats;
+            turbo_pipeline_t *pipeline = NULL;
+            char *first_data = NULL;
+            char *second_data = NULL;
+            size_t first_size = 0;
+            size_t second_size = 0;
+            int yaml_size;
+
+            check_not_null(input_path);
+            check_not_null(first_path);
+            check_not_null(second_path);
+            if (!input_path || !first_path || !second_path)
+                goto cleanup_fanout_transcode;
+            normalize_path(input_path);
+            normalize_path(first_path);
+            normalize_path(second_path);
+            check_equal(write_test_wav(input_path), 0);
+            yaml_size = snprintf(
+                yaml, sizeof(yaml),
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: wav-transcode-fanout\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: '%s' } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: wav } }\n"
+                "  - { id: decoder, kind: decoder, factory: ffmpeg.decode, config: { media: audio } }\n"
+                "  - { id: filter, kind: filter, factory: ffmpeg.filter, config: { media: audio, filters: volume=0.5 } }\n"
+                "  - { id: encoder, kind: encoder, factory: ffmpeg.encode, config: { media: audio, codec: pcm_s16le, sample_rate: 16000, channels: 1 } }\n"
+                "  - { id: mux_a, kind: mux, factory: ffmpeg.mux, config: { format: wav } }\n"
+                "  - { id: sink_a, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "  - { id: mux_b, kind: mux, factory: ffmpeg.mux, config: { format: wav } }\n"
+                "  - { id: sink_b, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.audio, to: decoder.in }\n"
+                "  - { from: decoder.out, to: filter.in }\n"
+                "  - { from: filter.out, to: encoder.in }\n"
+                "  - { from: encoder.out, to: mux_a.audio }\n"
+                "  - { from: encoder.out, to: mux_b.audio }\n"
+                "  - { from: mux_a.out, to: sink_a.in }\n"
+                "  - { from: mux_b.out, to: sink_b.in }\n",
+                input_path, first_path, second_path);
+            check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
+            if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
+                goto cleanup_fanout_transcode;
+            pipeline = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
+            check_not_null(pipeline);
+            if (!pipeline) goto cleanup_fanout_transcode;
+            check_equal(turbo_pipeline_prepare(pipeline, &error), TURBO_PIPELINE_OK);
+            if (turbo_pipeline_state(pipeline) != TURBO_PIPELINE_STATE_PREPARED)
+                goto cleanup_fanout_transcode;
+            check_equal(turbo_pipeline_run(pipeline, &error), TURBO_PIPELINE_OK);
+            check_equal(turbo_pipeline_stats(pipeline, &stats), TURBO_PIPELINE_OK);
+            check_true(stats.frames_decoded > 0);
+            check_true(stats.frames_encoded > 0);
+            check_true(stats.packets_written > 0);
+            check_equal(stats.packets_written % 2u, 0);
+            first_data = tt_read_file(first_path, &first_size);
+            second_data = tt_read_file(second_path, &second_size);
+            check_not_null(first_data);
+            check_not_null(second_data);
+            check_true(first_size > 44u);
+            check_true(second_size > 44u);
+            if (first_data && second_data && first_size >= 12u &&
+                second_size >= 12u) {
+                check_true(memcmp(first_data, "RIFF", 4) == 0);
+                check_true(memcmp(first_data + 8, "WAVE", 4) == 0);
+                check_true(memcmp(second_data, "RIFF", 4) == 0);
+                check_true(memcmp(second_data + 8, "WAVE", 4) == 0);
+            }
+
+        cleanup_fanout_transcode:
+            free(first_data);
+            free(second_data);
+            turbo_pipeline_destroy(pipeline);
+            if (input_path) tt_remove_file(input_path);
+            if (first_path) tt_remove_file(first_path);
+            if (second_path) tt_remove_file(second_path);
+            free(input_path);
+            free(first_path);
+            free(second_path);
         }
 
         it("scales and transcodes raw video through the graph") {

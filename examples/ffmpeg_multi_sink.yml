@@ -1,0 +1,49 @@
+# Replace the loopback RTSP URL with the meeting/live source used by deployment.
+# The shared encoded video branch is synchronously delivered to both outputs.
+api_version: turbo.media.pipeline/v1
+id: live-and-archive
+limits:
+  open_timeout_ms: 10000
+  io_timeout_ms: 10000
+nodes:
+  - id: source
+    kind: source
+    factory: ffmpeg.input
+    config:
+      url: rtsp://127.0.0.1:8554/meeting
+      options:
+        rtsp_transport: tcp
+  - id: demux
+    kind: demux
+    factory: ffmpeg.demux
+  - id: live_mux
+    kind: mux
+    factory: ffmpeg.mux
+    config:
+      format: mpegts
+  - id: live_sink
+    kind: sink
+    factory: ffmpeg.output
+    config:
+      url: udp://127.0.0.1:1234?pkt_size=1316
+  - id: archive_mux
+    kind: mux
+    factory: ffmpeg.mux
+    config:
+      format: mpegts
+  - id: archive_sink
+    kind: sink
+    factory: ffmpeg.output
+    config:
+      url: meeting_archive.ts
+edges:
+  - from: source.out
+    to: demux.in
+  - from: demux.video
+    to: live_mux.video
+  - from: demux.video
+    to: archive_mux.video
+  - from: live_mux.out
+    to: live_sink.in
+  - from: archive_mux.out
+    to: archive_sink.in

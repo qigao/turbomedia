@@ -31,6 +31,7 @@
 #define PIPELINE_MAX_NODES 32u
 #define PIPELINE_MAX_EDGES 64u
 #define PIPELINE_MAX_OPTIONS 16u
+#define PIPELINE_MAX_OUTPUTS 8u
 #define PIPELINE_ID_SIZE 64u
 #define PIPELINE_FACTORY_SIZE 64u
 #define PIPELINE_URL_SIZE 1024u
@@ -131,6 +132,16 @@ typedef struct pipeline_edge {
     char to_pad[16];
 } pipeline_edge_t;
 
+typedef struct pipeline_output {
+    int mux_node;
+    int sink_node;
+    AVFormatContext *format;
+    AVDictionary *options;
+    AVStream *audio_stream;
+    AVStream *video_stream;
+    int header_written;
+} pipeline_output_t;
+
 typedef struct pipeline_runtime_track pipeline_runtime_track_t;
 
 typedef struct pipeline_branch {
@@ -143,7 +154,6 @@ typedef struct pipeline_branch {
     int input_stream_index;
     AVRational input_time_base;
     AVStream *input_stream;
-    AVStream *output_stream;
     AVCodecContext *decoder;
     AVCodecContext *encoder;
     AVFilterGraph *filter_graph;
@@ -217,17 +227,17 @@ struct turbo_pipeline {
     int demux_node;
     int mux_node;
     int sink_node;
+    pipeline_output_t outputs[PIPELINE_MAX_OUTPUTS];
+    size_t output_count;
     int open_timeout_ms;
     int io_timeout_ms;
     pipeline_execution_mode_t execution_mode;
     pipeline_branch_t audio;
     pipeline_branch_t video;
     AVFormatContext *input;
-    AVFormatContext *output;
-    AVDictionary *output_options;
     AVPacket *input_packet;
+    AVPacket *output_packet;
     pipeline_runtime_rtp_t runtime_rtp;
-    int header_written;
     atomic_int state;
     atomic_int stop_requested;
     atomic_llong io_deadline_us;
@@ -585,15 +595,132 @@ static int pipeline_media_matches(const pipeline_node_t *node, const char *media
     return strcmp(node->config.media, media) == 0;
 }
 
+static int pipeline_collect_outputs(turbo_pipeline_t *pipeline,
+                                    turbo_pipeline_error_t *error) {
+    unsigned char claimed_sinks[PIPELINE_MAX_NODES] = {0};
+    size_t i;
+    pipeline->output_count = 0;
+    for (i = 0; i < pipeline->node_count; ++i) {
+        pipeline_output_t *output;
+        int edge_index;
+        int sink_node;
+        if (pipeline->nodes[i].kind != PIPELINE_NODE_MUX) continue;
+        if (pipeline->output_count == PIPELINE_MAX_OUTPUTS) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH,
+                               pipeline->nodes[i].id,
+                               "FFmpeg output count exceeds the limit of %u",
+                               PIPELINE_MAX_OUTPUTS);
+            return 0;
+        }
+        output = &pipeline->outputs[pipeline->output_count];
+        output->mux_node = (int)i;
+        output->sink_node = -1;
+        if (pipeline_find_unique_edge(pipeline, pipeline->nodes[i].id, "out",
+                                      &edge_index, error) != 0 ||
+            edge_index < 0) {
+            if (!error || error->code == TURBO_PIPELINE_OK)
+                pipeline_error_set(error, TURBO_PIPELINE_EGRAPH,
+                                   pipeline->nodes[i].id,
+                                   "mux.out must have exactly one edge");
+            return 0;
+        }
+        sink_node = pipeline_find_node(pipeline, pipeline->edges[edge_index].to_id);
+        if (sink_node < 0 ||
+            pipeline->nodes[sink_node].kind != PIPELINE_NODE_SINK ||
+            strcmp(pipeline->edges[edge_index].to_pad, "in") != 0) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH,
+                               pipeline->nodes[i].id,
+                               "mux.out must connect to one sink.in");
+            return 0;
+        }
+        if (claimed_sinks[sink_node]) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH,
+                               pipeline->nodes[sink_node].id,
+                               "sink.in cannot be shared by multiple mux nodes");
+            return 0;
+        }
+        claimed_sinks[sink_node] = 1;
+        output->sink_node = sink_node;
+        ++pipeline->output_count;
+    }
+    if (pipeline->output_count == 0) {
+        pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, NULL,
+                           "graph requires at least one mux and sink output");
+        return 0;
+    }
+    for (i = 0; i < pipeline->node_count; ++i) {
+        if (pipeline->nodes[i].kind == PIPELINE_NODE_SINK && !claimed_sinks[i]) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH,
+                               pipeline->nodes[i].id,
+                               "sink.in must be driven by exactly one mux.out");
+            return 0;
+        }
+    }
+    pipeline->mux_node = pipeline->outputs[0].mux_node;
+    pipeline->sink_node = pipeline->outputs[0].sink_node;
+    return 1;
+}
+
+static int pipeline_trace_output_fanout(turbo_pipeline_t *pipeline,
+                                        const char *from_id,
+                                        const char *from_pad,
+                                        const char *media,
+                                        unsigned char *used_edges,
+                                        turbo_pipeline_error_t *error) {
+    unsigned char reached_outputs[PIPELINE_MAX_OUTPUTS] = {0};
+    size_t i;
+    for (i = 0; i < pipeline->edge_count; ++i) {
+        const pipeline_edge_t *edge = &pipeline->edges[i];
+        size_t output_index;
+        int target_node;
+        if (strcmp(edge->from_id, from_id) != 0 ||
+            strcmp(edge->from_pad, from_pad) != 0)
+            continue;
+        target_node = pipeline_find_node(pipeline, edge->to_id);
+        for (output_index = 0; output_index < pipeline->output_count;
+             ++output_index) {
+            if (pipeline->outputs[output_index].mux_node == target_node) break;
+        }
+        if (output_index == pipeline->output_count ||
+            strcmp(edge->to_pad, media) != 0) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, from_id,
+                               "%s.%s must fan out only to mux.%s pads",
+                               from_id, from_pad, media);
+            return 0;
+        }
+        if (reached_outputs[output_index]) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, from_id,
+                               "%s.%s has duplicate edges to mux '%s'",
+                               from_id, from_pad,
+                               pipeline->nodes[target_node].id);
+            return 0;
+        }
+        reached_outputs[output_index] = 1;
+        used_edges[i] = 1;
+    }
+    for (i = 0; i < pipeline->output_count; ++i) {
+        if (!reached_outputs[i]) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, from_id,
+                               "%s.%s must connect to every mux.%s pad; missing '%s'",
+                               from_id, from_pad, media,
+                               pipeline->nodes[pipeline->outputs[i].mux_node].id);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int pipeline_trace_branch(turbo_pipeline_t *pipeline, const char *media,
                                  enum AVMediaType media_type, unsigned char *used_nodes,
                                  unsigned char *used_edges, pipeline_branch_t *branch,
                                  turbo_pipeline_error_t *error) {
     const pipeline_node_t *demux = &pipeline->nodes[pipeline->demux_node];
-    int edge_index;
+    int edge_index = -1;
     int node_index;
     const pipeline_edge_t *edge;
     const pipeline_node_t *node;
+    size_t i;
+    size_t start_edge_count = 0;
 
     branch->media_type = media_type;
     branch->decoder_node = -1;
@@ -601,33 +728,35 @@ static int pipeline_trace_branch(turbo_pipeline_t *pipeline, const char *media,
     branch->encoder_node = -1;
     branch->input_stream_index = -1;
 
-    if (pipeline_find_unique_edge(pipeline, demux->id, media, &edge_index, error) != 0)
-        return 0;
-    if (edge_index < 0) return 1;
+    for (i = 0; i < pipeline->edge_count; ++i) {
+        if (strcmp(pipeline->edges[i].from_id, demux->id) == 0 &&
+            strcmp(pipeline->edges[i].from_pad, media) == 0) {
+            if (edge_index < 0) edge_index = (int)i;
+            ++start_edge_count;
+        }
+    }
+    if (start_edge_count == 0) return 1;
 
     branch->configured = 1;
-    used_edges[edge_index] = 1;
     edge = &pipeline->edges[edge_index];
     node_index = pipeline_find_node(pipeline, edge->to_id);
     node = &pipeline->nodes[node_index];
 
     if (node->kind == PIPELINE_NODE_MUX) {
-        if (node_index != pipeline->mux_node || strcmp(edge->to_pad, media) != 0) {
-            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, node->id,
-                               "stream-copy branch must end at mux.%s", media);
-            return 0;
-        }
         branch->copy = 1;
-        return 1;
+        return pipeline_trace_output_fanout(pipeline, demux->id, media, media,
+                                            used_edges, error);
     }
 
-    if (node->kind != PIPELINE_NODE_DECODER || strcmp(edge->to_pad, "in") != 0 ||
+    if (start_edge_count != 1 || node->kind != PIPELINE_NODE_DECODER ||
+        strcmp(edge->to_pad, "in") != 0 ||
         !pipeline_media_matches(node, media)) {
         pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, node->id,
-                           "%s branch must connect to a matching decoder.in or mux.%s",
+                           "%s branch must use one matching decoder.in or fan out to every mux.%s",
                            media, media);
         return 0;
     }
+    used_edges[edge_index] = 1;
     branch->decoder_node = node_index;
     used_nodes[node_index] = 1;
 
@@ -680,22 +809,8 @@ static int pipeline_trace_branch(turbo_pipeline_t *pipeline, const char *media,
     branch->encoder_node = node_index;
     used_nodes[node_index] = 1;
 
-    if (pipeline_find_unique_edge(pipeline, node->id, "out", &edge_index, error) != 0 ||
-        edge_index < 0) {
-        if (!error || error->code == TURBO_PIPELINE_OK)
-            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, node->id,
-                               "encoder.out must have exactly one edge");
-        return 0;
-    }
-    used_edges[edge_index] = 1;
-    edge = &pipeline->edges[edge_index];
-    if (pipeline_find_node(pipeline, edge->to_id) != pipeline->mux_node ||
-        strcmp(edge->to_pad, media) != 0) {
-        pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, node->id,
-                           "encoder.out must connect to mux.%s", media);
-        return 0;
-    }
-    return 1;
+    return pipeline_trace_output_fanout(pipeline, node->id, "out", media,
+                                        used_edges, error);
 }
 
 static int pipeline_validate_dag(const turbo_pipeline_t *pipeline,
@@ -753,9 +868,8 @@ static int pipeline_validate_backbone(turbo_pipeline_t *pipeline, unsigned char 
                                       unsigned char *used_edges,
                                       turbo_pipeline_error_t *error) {
     int source_edge;
-    int mux_edge;
+    size_t i;
     const pipeline_node_t *source = &pipeline->nodes[pipeline->source_node];
-    const pipeline_node_t *mux = &pipeline->nodes[pipeline->mux_node];
     if (pipeline_find_unique_edge(pipeline, source->id, "out", &source_edge, error) != 0 ||
         source_edge < 0) {
         if (!error || error->code == TURBO_PIPELINE_OK)
@@ -770,26 +884,32 @@ static int pipeline_validate_backbone(turbo_pipeline_t *pipeline, unsigned char 
                            "source.out must connect to demux.in");
         return 0;
     }
-    if (pipeline_find_unique_edge(pipeline, mux->id, "out", &mux_edge, error) != 0 ||
-        mux_edge < 0) {
-        if (!error || error->code == TURBO_PIPELINE_OK)
-            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, mux->id,
-                               "mux.out must have exactly one edge");
-        return 0;
-    }
-    if (pipeline_find_node(pipeline, pipeline->edges[mux_edge].to_id) !=
-            pipeline->sink_node ||
-        strcmp(pipeline->edges[mux_edge].to_pad, "in") != 0) {
-        pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, mux->id,
-                           "mux.out must connect to sink.in");
-        return 0;
-    }
     used_nodes[pipeline->source_node] = 1;
     used_nodes[pipeline->demux_node] = 1;
-    used_nodes[pipeline->mux_node] = 1;
-    used_nodes[pipeline->sink_node] = 1;
     used_edges[source_edge] = 1;
-    used_edges[mux_edge] = 1;
+    for (i = 0; i < pipeline->output_count; ++i) {
+        const pipeline_output_t *output = &pipeline->outputs[i];
+        const pipeline_node_t *mux = &pipeline->nodes[output->mux_node];
+        int mux_edge;
+        if (pipeline_find_unique_edge(pipeline, mux->id, "out", &mux_edge,
+                                      error) != 0 ||
+            mux_edge < 0) {
+            if (!error || error->code == TURBO_PIPELINE_OK)
+                pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, mux->id,
+                                   "mux.out must have exactly one edge");
+            return 0;
+        }
+        if (pipeline_find_node(pipeline, pipeline->edges[mux_edge].to_id) !=
+                output->sink_node ||
+            strcmp(pipeline->edges[mux_edge].to_pad, "in") != 0) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, mux->id,
+                               "mux.out must connect to its sink.in");
+            return 0;
+        }
+        used_nodes[output->mux_node] = 1;
+        used_nodes[output->sink_node] = 1;
+        used_edges[mux_edge] = 1;
+    }
     return 1;
 }
 
@@ -919,37 +1039,54 @@ static int pipeline_validate_graph(turbo_pipeline_t *pipeline,
     }
     if (kind_counts[PIPELINE_NODE_SOURCE] != 1 ||
         kind_counts[PIPELINE_NODE_DEMUX] != 1 ||
-        kind_counts[PIPELINE_NODE_MUX] != 1 ||
-        kind_counts[PIPELINE_NODE_SINK] != 1) {
+        kind_counts[PIPELINE_NODE_MUX] < 1 ||
+        kind_counts[PIPELINE_NODE_MUX] != kind_counts[PIPELINE_NODE_SINK]) {
         pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, NULL,
-                           "v1 requires exactly one source, demux, mux and sink node");
+                           "v1 requires exactly one source and demux plus matching mux/sink counts");
         return 0;
     }
     for (i = 0; i < pipeline->node_count; ++i) {
         switch (pipeline->nodes[i].kind) {
             case PIPELINE_NODE_SOURCE: pipeline->source_node = (int)i; break;
             case PIPELINE_NODE_DEMUX: pipeline->demux_node = (int)i; break;
-            case PIPELINE_NODE_MUX: pipeline->mux_node = (int)i; break;
-            case PIPELINE_NODE_SINK: pipeline->sink_node = (int)i; break;
             default: break;
         }
     }
-    if (pipeline->nodes[pipeline->source_node].config.url[0] == '\0' ||
-        pipeline->nodes[pipeline->sink_node].config.url[0] == '\0') {
+    if (!pipeline_collect_outputs(pipeline, error)) return 0;
+    if (pipeline->nodes[pipeline->source_node].config.url[0] == '\0') {
         pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, NULL,
-                           "source and sink nodes require non-empty URLs");
+                           "source node requires a non-empty URL");
         return 0;
     }
+    for (i = 0; i < pipeline->output_count; ++i) {
+        if (pipeline->nodes[pipeline->outputs[i].sink_node].config.url[0] == '\0') {
+            pipeline_error_set(error, TURBO_PIPELINE_ECONFIG,
+                               pipeline->nodes[pipeline->outputs[i].sink_node].id,
+                               "sink node requires a non-empty URL");
+            return 0;
+        }
+    }
     if (strcmp(pipeline->nodes[pipeline->source_node].factory, "ffmpeg.input") == 0 &&
-        strcmp(pipeline->nodes[pipeline->demux_node].factory, "ffmpeg.demux") == 0 &&
-        strcmp(pipeline->nodes[pipeline->mux_node].factory, "ffmpeg.mux") == 0 &&
-        strcmp(pipeline->nodes[pipeline->sink_node].factory, "ffmpeg.output") == 0) {
+        strcmp(pipeline->nodes[pipeline->demux_node].factory, "ffmpeg.demux") == 0) {
+        for (i = 0; i < pipeline->output_count; ++i) {
+            if (strcmp(pipeline->nodes[pipeline->outputs[i].mux_node].factory,
+                       "ffmpeg.mux") != 0 ||
+                strcmp(pipeline->nodes[pipeline->outputs[i].sink_node].factory,
+                       "ffmpeg.output") != 0)
+                break;
+        }
+        if (i != pipeline->output_count) {
+            pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, NULL,
+                               "all FFmpeg outputs must use ffmpeg.mux and ffmpeg.output");
+            return 0;
+        }
         pipeline->execution_mode = PIPELINE_EXECUTION_FFMPEG;
     } else if (
         strcmp(pipeline->nodes[pipeline->source_node].factory,
                "media.runtime_source") == 0 &&
         strcmp(pipeline->nodes[pipeline->demux_node].factory,
                "rtp.depacketize") == 0 &&
+        pipeline->output_count == 1 &&
         strcmp(pipeline->nodes[pipeline->mux_node].factory,
                "rtp.packetize") == 0 &&
         strcmp(pipeline->nodes[pipeline->sink_node].factory,
@@ -957,8 +1094,7 @@ static int pipeline_validate_graph(turbo_pipeline_t *pipeline,
         pipeline->execution_mode = PIPELINE_EXECUTION_RUNTIME_RTP;
     } else {
         pipeline_error_set(error, TURBO_PIPELINE_EGRAPH, NULL,
-                           "source, demux, mux and sink factories must form one "
-                           "FFmpeg or Runtime/RTP execution path");
+                           "factories must form an FFmpeg output set or one Runtime/RTP path");
         return 0;
     }
     if (!pipeline_validate_dag(pipeline, error) ||
@@ -1800,7 +1936,6 @@ static void pipeline_branch_release(pipeline_branch_t *branch) {
     avcodec_free_context(&branch->encoder);
     avcodec_free_context(&branch->decoder);
     branch->input_stream = NULL;
-    branch->output_stream = NULL;
     branch->input_stream_index = -1;
 }
 
@@ -1813,19 +1948,29 @@ static void pipeline_release_runtime(turbo_pipeline_t *pipeline) {
         return;
     }
     pipeline_clear_deadline(pipeline);
-    av_dict_free(&pipeline->output_options);
+    {
+        size_t output_index;
+        for (output_index = 0; output_index < pipeline->output_count;
+             ++output_index) {
+            pipeline_output_t *output = &pipeline->outputs[output_index];
+            av_dict_free(&output->options);
+            if (output->format) {
+                if (output->format->pb &&
+                    !(output->format->oformat->flags & AVFMT_NOFILE))
+                    avio_closep(&output->format->pb);
+                avformat_free_context(output->format);
+                output->format = NULL;
+            }
+            output->audio_stream = NULL;
+            output->video_stream = NULL;
+            output->header_written = 0;
+        }
+    }
     av_packet_free(&pipeline->input_packet);
+    av_packet_free(&pipeline->output_packet);
     pipeline_branch_release(&pipeline->audio);
     pipeline_branch_release(&pipeline->video);
-    if (pipeline->output) {
-        if (pipeline->output->pb &&
-            !(pipeline->output->oformat->flags & AVFMT_NOFILE))
-            avio_closep(&pipeline->output->pb);
-        avformat_free_context(pipeline->output);
-        pipeline->output = NULL;
-    }
     if (pipeline->input) avformat_close_input(&pipeline->input);
-    pipeline->header_written = 0;
 }
 
 static int pipeline_dictionary_add(AVDictionary **dictionary, const pipeline_node_t *node,
@@ -2112,6 +2257,7 @@ static int pipeline_open_encoder(turbo_pipeline_t *pipeline, pipeline_branch_t *
     const pipeline_node_t *node = &pipeline->nodes[branch->encoder_node];
     const AVCodec *encoder = avcodec_find_encoder_by_name(node->config.codec);
     AVDictionary *options = NULL;
+    size_t output_index;
     int result;
     if (!encoder || encoder->type != branch->media_type) {
         pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, node->id,
@@ -2133,9 +2279,14 @@ static int pipeline_open_encoder(turbo_pipeline_t *pipeline, pipeline_branch_t *
                                                  first_frame, error)) {
         return 0;
     }
-    if (pipeline->output &&
-        (pipeline->output->oformat->flags & AVFMT_GLOBALHEADER))
-        branch->encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    for (output_index = 0; output_index < pipeline->output_count;
+         ++output_index) {
+        AVFormatContext *format = pipeline->outputs[output_index].format;
+        if (format && (format->oformat->flags & AVFMT_GLOBALHEADER)) {
+            branch->encoder->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            break;
+        }
+    }
     if (!pipeline_dictionary_add(&options, node, error)) {
         av_dict_free(&options);
         return 0;
@@ -2227,7 +2378,6 @@ static int pipeline_prepare_branch(turbo_pipeline_t *pipeline, pipeline_branch_t
                                    turbo_pipeline_error_t *error) {
     const char *media = av_get_media_type_string(branch->media_type);
     int stream_index;
-    int result;
     if (!branch->configured) return 1;
     stream_index = av_find_best_stream(pipeline->input, branch->media_type, -1, -1, NULL, 0);
     if (stream_index < 0) {
@@ -2238,36 +2388,10 @@ static int pipeline_prepare_branch(turbo_pipeline_t *pipeline, pipeline_branch_t
     branch->input_stream_index = stream_index;
     branch->input_stream = pipeline->input->streams[stream_index];
     branch->input_time_base = branch->input_stream->time_base;
-    branch->output_stream = avformat_new_stream(pipeline->output, NULL);
-    if (!branch->output_stream) {
-        pipeline_error_set(error, TURBO_PIPELINE_ENOMEM,
-                           pipeline->nodes[pipeline->mux_node].id,
-                           "cannot allocate %s output stream", media);
-        return 0;
-    }
-    if (branch->copy) {
-        result = avcodec_parameters_copy(branch->output_stream->codecpar,
-                                         branch->input_stream->codecpar);
-        if (result < 0) {
-            pipeline_ffmpeg_error(error, pipeline->nodes[pipeline->mux_node].id,
-                                  "copy stream parameters", result);
-            return 0;
-        }
-        branch->output_stream->codecpar->codec_tag = 0;
-        branch->output_stream->time_base = branch->input_stream->time_base;
-        return 1;
-    }
+    if (branch->copy) return 1;
     if (!pipeline_open_decoder(pipeline, branch, error) ||
         !pipeline_open_encoder(pipeline, branch, NULL, error))
         return 0;
-    result = avcodec_parameters_from_context(branch->output_stream->codecpar,
-                                             branch->encoder);
-    if (result < 0) {
-        pipeline_ffmpeg_error(error, pipeline->nodes[branch->encoder_node].id,
-                              "export encoder parameters", result);
-        return 0;
-    }
-    branch->output_stream->time_base = branch->encoder->time_base;
     branch->decoded_frame = av_frame_alloc();
     branch->filtered_frame = av_frame_alloc();
     branch->encoded_packet = av_packet_alloc();
@@ -2277,6 +2401,51 @@ static int pipeline_prepare_branch(turbo_pipeline_t *pipeline, pipeline_branch_t
                            "cannot allocate transcode frames or packet");
         return 0;
     }
+    return 1;
+}
+
+static int pipeline_prepare_output_stream(turbo_pipeline_t *pipeline,
+                                          pipeline_output_t *output,
+                                          pipeline_branch_t *branch,
+                                          turbo_pipeline_error_t *error) {
+    AVStream **stream_slot;
+    AVStream *stream;
+    const char *media;
+    int result;
+    if (!branch->configured) return 1;
+    media = av_get_media_type_string(branch->media_type);
+    stream_slot = branch->media_type == AVMEDIA_TYPE_AUDIO
+                      ? &output->audio_stream
+                      : &output->video_stream;
+    stream = avformat_new_stream(output->format, NULL);
+    if (!stream) {
+        pipeline_error_set(error, TURBO_PIPELINE_ENOMEM,
+                           pipeline->nodes[output->mux_node].id,
+                           "cannot allocate %s output stream", media);
+        return 0;
+    }
+    *stream_slot = stream;
+    if (branch->copy) {
+        result = avcodec_parameters_copy(stream->codecpar,
+                                         branch->input_stream->codecpar);
+        if (result < 0) {
+            pipeline_ffmpeg_error(error,
+                                  pipeline->nodes[output->mux_node].id,
+                                  "copy stream parameters", result);
+            return 0;
+        }
+        stream->codecpar->codec_tag = 0;
+        stream->time_base = branch->input_stream->time_base;
+        return 1;
+    }
+    result = avcodec_parameters_from_context(stream->codecpar, branch->encoder);
+    if (result < 0) {
+        pipeline_ffmpeg_error(error,
+                              pipeline->nodes[output->mux_node].id,
+                              "export encoder parameters", result);
+        return 0;
+    }
+    stream->time_base = branch->encoder->time_base;
     return 1;
 }
 
@@ -2335,35 +2504,53 @@ static int pipeline_open_input(turbo_pipeline_t *pipeline,
 
 static int pipeline_prepare_output(turbo_pipeline_t *pipeline,
                                    turbo_pipeline_error_t *error) {
-    const pipeline_node_t *mux = &pipeline->nodes[pipeline->mux_node];
-    const pipeline_node_t *sink = &pipeline->nodes[pipeline->sink_node];
-    int result = avformat_alloc_output_context2(
-        &pipeline->output, NULL, mux->config.format[0] ? mux->config.format : NULL,
-        sink->config.url);
-    if (result < 0 || !pipeline->output) {
-        pipeline_ffmpeg_error(error, mux->id, "allocate output context",
-                              result < 0 ? result : AVERROR(EINVAL));
-        return 0;
+    size_t output_index;
+    int result;
+    for (output_index = 0; output_index < pipeline->output_count;
+         ++output_index) {
+        pipeline_output_t *output = &pipeline->outputs[output_index];
+        const pipeline_node_t *mux = &pipeline->nodes[output->mux_node];
+        const pipeline_node_t *sink = &pipeline->nodes[output->sink_node];
+        result = avformat_alloc_output_context2(
+            &output->format, NULL,
+            mux->config.format[0] ? mux->config.format : NULL,
+            sink->config.url);
+        if (result < 0 || !output->format) {
+            pipeline_ffmpeg_error(error, mux->id, "allocate output context",
+                                  result < 0 ? result : AVERROR(EINVAL));
+            return 0;
+        }
+        /* Cross-container stream copy still needs codec framing adaptation. */
+        output->format->flags |= AVFMT_FLAG_AUTO_BSF;
+        output->format->interrupt_callback.callback = pipeline_interrupt;
+        output->format->interrupt_callback.opaque = pipeline;
+        if (!pipeline_dictionary_add(&output->options, sink, error) ||
+            !pipeline_dictionary_add(&output->options, mux, error))
+            return 0;
     }
-    /* Cross-container stream copy still needs codec framing adaptation. */
-    pipeline->output->flags |= AVFMT_FLAG_AUTO_BSF;
-    pipeline->output->interrupt_callback.callback = pipeline_interrupt;
-    pipeline->output->interrupt_callback.opaque = pipeline;
-    if (!pipeline_dictionary_add(&pipeline->output_options, sink, error) ||
-        !pipeline_dictionary_add(&pipeline->output_options, mux, error))
-        return 0;
     if (!pipeline_prepare_branch(pipeline, &pipeline->audio, error) ||
         !pipeline_prepare_branch(pipeline, &pipeline->video, error))
         return 0;
-    if (!(pipeline->output->oformat->flags & AVFMT_NOFILE)) {
-        pipeline_set_deadline(pipeline, pipeline->open_timeout_ms);
-        result = avio_open2(&pipeline->output->pb, sink->config.url, AVIO_FLAG_WRITE,
-                            &pipeline->output->interrupt_callback,
-                            &pipeline->output_options);
-        pipeline_clear_deadline(pipeline);
-        if (result < 0) {
-            pipeline_ffmpeg_error(error, sink->id, "open output", result);
+    for (output_index = 0; output_index < pipeline->output_count;
+         ++output_index) {
+        pipeline_output_t *output = &pipeline->outputs[output_index];
+        const pipeline_node_t *sink = &pipeline->nodes[output->sink_node];
+        if (!pipeline_prepare_output_stream(pipeline, output, &pipeline->audio,
+                                            error) ||
+            !pipeline_prepare_output_stream(pipeline, output, &pipeline->video,
+                                            error))
             return 0;
+        if (!(output->format->oformat->flags & AVFMT_NOFILE)) {
+            pipeline_set_deadline(pipeline, pipeline->open_timeout_ms);
+            result = avio_open2(&output->format->pb, sink->config.url,
+                                AVIO_FLAG_WRITE,
+                                &output->format->interrupt_callback,
+                                &output->options);
+            pipeline_clear_deadline(pipeline);
+            if (result < 0) {
+                pipeline_ffmpeg_error(error, sink->id, "open output", result);
+                return 0;
+            }
         }
     }
     return 1;
@@ -2464,12 +2651,13 @@ turbo_pipeline_status_t turbo_pipeline_prepare(turbo_pipeline_t *pipeline,
         return error ? error->code : TURBO_PIPELINE_EFFMPEG;
     }
     pipeline->input_packet = av_packet_alloc();
-    if (!pipeline->input_packet) {
+    pipeline->output_packet = av_packet_alloc();
+    if (!pipeline->input_packet || !pipeline->output_packet) {
         pipeline_release_runtime(pipeline);
         atomic_store_explicit(&pipeline->state, TURBO_PIPELINE_STATE_FAILED,
                               memory_order_release);
         return pipeline_error_set(error, TURBO_PIPELINE_ENOMEM, NULL,
-                                  "cannot allocate input packet");
+                                  "cannot allocate pipeline packets");
     }
     atomic_store_explicit(&pipeline->state, TURBO_PIPELINE_STATE_PREPARED,
                           memory_order_release);
@@ -2639,6 +2827,64 @@ fail:
     return 0;
 }
 
+static AVStream *pipeline_output_stream(const pipeline_output_t *output,
+                                        enum AVMediaType media_type) {
+    return media_type == AVMEDIA_TYPE_AUDIO ? output->audio_stream
+                                            : output->video_stream;
+}
+
+static int pipeline_write_packet_to_outputs(turbo_pipeline_t *pipeline,
+                                            pipeline_branch_t *branch,
+                                            const AVPacket *packet,
+                                            AVRational source_time_base,
+                                            const char *operation,
+                                            turbo_pipeline_error_t *error) {
+    size_t output_index;
+    int packet_size = packet->size;
+    for (output_index = 0; output_index < pipeline->output_count;
+         ++output_index) {
+        pipeline_output_t *output = &pipeline->outputs[output_index];
+        AVStream *stream = pipeline_output_stream(output, branch->media_type);
+        int result;
+        if (!stream) {
+            pipeline_error_set(error, TURBO_PIPELINE_ESTATE,
+                               pipeline->nodes[output->mux_node].id,
+                               "prepared output has no %s stream",
+                               av_get_media_type_string(branch->media_type));
+            return 0;
+        }
+        av_packet_unref(pipeline->output_packet);
+        result = av_packet_ref(pipeline->output_packet, packet);
+        if (result < 0) {
+            pipeline_ffmpeg_error(error,
+                                  pipeline->nodes[output->sink_node].id,
+                                  "reference output packet", result);
+            return 0;
+        }
+        av_packet_rescale_ts(pipeline->output_packet, source_time_base,
+                             stream->time_base);
+        pipeline->output_packet->stream_index = stream->index;
+        pipeline->output_packet->pos = -1;
+        pipeline_set_deadline(pipeline, pipeline->io_timeout_ms);
+        result = av_interleaved_write_frame(output->format,
+                                            pipeline->output_packet);
+        pipeline_clear_deadline(pipeline);
+        av_packet_unref(pipeline->output_packet);
+        if (result < 0) {
+            pipeline_ffmpeg_error(error,
+                                  pipeline->nodes[output->sink_node].id,
+                                  operation, result);
+            return 0;
+        }
+        atomic_fetch_add_explicit(&pipeline->packets_written, 1,
+                                  memory_order_relaxed);
+        atomic_fetch_add_explicit(&pipeline->bytes_written,
+                                  (unsigned long long)packet_size,
+                                  memory_order_relaxed);
+    }
+    return 1;
+}
+
 static int pipeline_receive_encoded(turbo_pipeline_t *pipeline,
                                     pipeline_branch_t *branch,
                                     turbo_pipeline_error_t *error) {
@@ -2681,23 +2927,11 @@ static int pipeline_receive_encoded(turbo_pipeline_t *pipeline,
             }
             continue;
         }
-        av_packet_rescale_ts(branch->encoded_packet, branch->encoder->time_base,
-                             branch->output_stream->time_base);
-        branch->encoded_packet->stream_index = branch->output_stream->index;
-        branch->encoded_packet->pos = -1;
-        packet_size = branch->encoded_packet->size;
-        pipeline_set_deadline(pipeline, pipeline->io_timeout_ms);
-        result = av_interleaved_write_frame(pipeline->output, branch->encoded_packet);
-        pipeline_clear_deadline(pipeline);
+        result = pipeline_write_packet_to_outputs(
+            pipeline, branch, branch->encoded_packet, branch->encoder->time_base,
+            "write encoded packet", error);
         av_packet_unref(branch->encoded_packet);
-        if (result < 0) {
-            pipeline_ffmpeg_error(error, pipeline->nodes[pipeline->sink_node].id,
-                                  "write encoded packet", result);
-            return 0;
-        }
-        atomic_fetch_add_explicit(&pipeline->packets_written, 1, memory_order_relaxed);
-        atomic_fetch_add_explicit(&pipeline->bytes_written, (unsigned long long)packet_size,
-                                  memory_order_relaxed);
+        if (!result) return 0;
     }
 }
 
@@ -2804,25 +3038,11 @@ static int pipeline_transcode_packet(turbo_pipeline_t *pipeline,
 }
 
 static int pipeline_copy_packet(turbo_pipeline_t *pipeline, pipeline_branch_t *branch,
-                                AVPacket *packet, turbo_pipeline_error_t *error) {
-    int result;
-    int packet_size = packet->size;
-    av_packet_rescale_ts(packet, branch->input_stream->time_base,
-                         branch->output_stream->time_base);
-    packet->stream_index = branch->output_stream->index;
-    packet->pos = -1;
-    pipeline_set_deadline(pipeline, pipeline->io_timeout_ms);
-    result = av_interleaved_write_frame(pipeline->output, packet);
-    pipeline_clear_deadline(pipeline);
-    if (result < 0) {
-        pipeline_ffmpeg_error(error, pipeline->nodes[pipeline->sink_node].id,
-                              "write copied packet", result);
-        return 0;
-    }
-    atomic_fetch_add_explicit(&pipeline->packets_written, 1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&pipeline->bytes_written, (unsigned long long)packet_size,
-                              memory_order_relaxed);
-    return 1;
+                                const AVPacket *packet,
+                                turbo_pipeline_error_t *error) {
+    return pipeline_write_packet_to_outputs(
+        pipeline, branch, packet, branch->input_stream->time_base,
+        "write copied packet", error);
 }
 
 static int pipeline_drain_branch(turbo_pipeline_t *pipeline, pipeline_branch_t *branch,
@@ -2853,31 +3073,47 @@ static int pipeline_drain_branch(turbo_pipeline_t *pipeline, pipeline_branch_t *
 
 static turbo_pipeline_status_t pipeline_write_header(turbo_pipeline_t *pipeline,
                                                      turbo_pipeline_error_t *error) {
-    int result;
-    pipeline_set_deadline(pipeline, pipeline->open_timeout_ms);
-    result = avformat_write_header(pipeline->output, &pipeline->output_options);
-    pipeline_clear_deadline(pipeline);
-    if (result < 0)
-        return pipeline_ffmpeg_error(error, pipeline->nodes[pipeline->mux_node].id,
-                                     "write output header", result);
-    pipeline->header_written = 1;
-    return pipeline_reject_unused_option(
-        pipeline->output_options, pipeline->nodes[pipeline->mux_node].id,
-        "output header", error);
+    size_t output_index;
+    for (output_index = 0; output_index < pipeline->output_count;
+         ++output_index) {
+        pipeline_output_t *output = &pipeline->outputs[output_index];
+        turbo_pipeline_status_t status;
+        int result;
+        pipeline_set_deadline(pipeline, pipeline->open_timeout_ms);
+        result = avformat_write_header(output->format, &output->options);
+        pipeline_clear_deadline(pipeline);
+        if (result < 0)
+            return pipeline_ffmpeg_error(
+                error, pipeline->nodes[output->mux_node].id,
+                "write output header", result);
+        output->header_written = 1;
+        status = pipeline_reject_unused_option(
+            output->options, pipeline->nodes[output->mux_node].id,
+            "output header", error);
+        if (status != TURBO_PIPELINE_OK) return status;
+    }
+    return TURBO_PIPELINE_OK;
 }
 
 static turbo_pipeline_status_t pipeline_write_trailer(turbo_pipeline_t *pipeline,
                                                       turbo_pipeline_error_t *error) {
-    int result;
-    if (!pipeline->header_written) return TURBO_PIPELINE_OK;
-    pipeline_set_deadline(pipeline, pipeline->io_timeout_ms);
-    result = av_write_trailer(pipeline->output);
-    pipeline_clear_deadline(pipeline);
-    pipeline->header_written = 0;
-    if (result < 0)
-        return pipeline_ffmpeg_error(error, pipeline->nodes[pipeline->mux_node].id,
-                                     "write output trailer", result);
-    return TURBO_PIPELINE_OK;
+    turbo_pipeline_status_t status = TURBO_PIPELINE_OK;
+    size_t output_index;
+    for (output_index = 0; output_index < pipeline->output_count;
+         ++output_index) {
+        pipeline_output_t *output = &pipeline->outputs[output_index];
+        int result;
+        if (!output->header_written) continue;
+        pipeline_set_deadline(pipeline, pipeline->io_timeout_ms);
+        result = av_write_trailer(output->format);
+        pipeline_clear_deadline(pipeline);
+        output->header_written = 0;
+        if (result < 0 && status == TURBO_PIPELINE_OK)
+            status = pipeline_ffmpeg_error(
+                error, pipeline->nodes[output->mux_node].id,
+                "write output trailer", result);
+    }
+    return status;
 }
 
 static turbo_pipeline_status_t pipeline_run_runtime_rtp(

@@ -44,14 +44,25 @@ track。每条分支既可直接 `depacketize -> packetize`，也可显式插入
 `prepare` 阶段 fail fast，不会静默退化成原包转发。输出保留输入 payload type
 与 SSRC，H.264/Opus 时钟分别规范化为 90000/48000。
 
-端点写成 `node_id.pad`。固定骨架为 `source.out -> demux.in` 和 `mux.out -> sink.in`。每个媒体分支只能是以下两种之一：
+端点写成 `node_id.pad`。固定输入骨架为 `source.out -> demux.in`。FFmpeg
+执行路径允许 1 到 8 组独立的 `mux.out -> sink.in`，Runtime/RTP 执行路径仍只
+允许一组。每个媒体分支只能是以下两种之一：
 
 ```text
-demux.audio/video -> mux.audio/video
-demux.audio/video -> decoder -> [filter] -> encoder -> mux.audio/video
+demux.audio/video -> 每个 mux.audio/video
+demux.audio/video -> decoder -> [filter] -> encoder -> 每个 mux.audio/video
 ```
 
-v1 最多处理一个最佳音频流和一个最佳视频流；不支持多输出、运行期改图或复杂 filter graph 标签。filter 字符串拒绝 `;`、`[`、`]`，从而限制为单输入单输出链。
+v1 最多处理一个最佳音频流和一个最佳视频流。已配置分支必须连接所有 mux，
+不支持按输出选择不同轨道、编码参数、运行期改图或复杂 filter graph 标签。
+filter 字符串拒绝 `;`、`[`、`]`，从而限制为单输入单输出链。
+
+多输出是同步且有界的共同失败域：runner 按配置顺序把同一复制/编码 packet 写入
+每个 sink，慢 sink 在 `io_timeout_ms` 内对整条流水线施加背压；任一输出失败会
+使 pipeline 失败，不会跳过该输出、静默丢包或自动退化。外部输出无法事务回滚，
+所以失败时各输出可能只拥有同一媒体流的不同长度前缀。`packets_written` 和
+`bytes_written` 按成功的 sink delivery 累加；相同内容完整写入两个输出时，其值
+通常是单输出的两倍。
 
 完整配置见 [`examples/ffmpeg_pipeline.yml`](../examples/ffmpeg_pipeline.yml)。最小调用顺序为：
 
@@ -68,6 +79,10 @@ if (status == TURBO_PIPELINE_OK)
 turbo_pipeline_destroy(pipeline);
 return status;
 ```
+
+直播推送与本地录制同时输出的受限 fan-out 示例见
+[`examples/ffmpeg_multi_sink.yml`](../examples/ffmpeg_multi_sink.yml)。示例只共享已编码
+视频分支；如需 HLS 或文件输入，可替换 source URL，图的 mux/sink 扇出契约不变。
 
 Runtime/RTP 图在 `prepare` 前还必须绑定借用的 ServerRuntime：
 
@@ -129,7 +144,7 @@ demuxer、实时 `libopus` 和 `libopenh264` 编码器可用。公开 DASH 转�
   唯一 depay、FFmpeg 与 pay 消费者。`AVPacket`/`AVFrame` 只归该消费者线程
   所有；输出 packet 在同步 publish 返回前有效，不跨回调借用。
 - `create` 只解析和验证，不产生外部副作用。
-- `prepare` 按 input → decoder/encoder/filter → output 顺序建立资源；任何失败都逆序释放并进入 `FAILED`。
+- `prepare` 按 input → output contexts → shared decoder/encoder/filter → output streams/IO 顺序建立资源；任何失败都释放已建立资源并进入 `FAILED`。
 - FFmpeg `run` 是单线程 pull；Runtime/RTP `run` 是单消费者 pull。两条路径都
   不存在无界队列或跨线程裸指针。
 - `request_stop` 是并发安全的原子请求；FFmpeg interrupt callback 同时检查停止标志和 I/O deadline。
@@ -173,8 +188,9 @@ BoringSSL 检查保证，SRTP 使用 libSRTP。
 
 ## 验证范围
 
-单元测试覆盖严格 YAML、重复节点、环、非法端点、受限 filter、打开失败清理和
-prepare 后取消。集成测试覆盖 WAV 转封装、音频重采样/转码，以及 raw YUV
+单元测试覆盖严格 YAML、重复节点、环、非法端点、受限 filter、完整 fan-out、
+Runtime/RTP 单输出约束、打开失败清理和 prepare 后取消。集成测试覆盖单/双输出
+WAV 转封装、单/双输出音频重采样/转码，以及 raw YUV
 缩放/视频转码；安装 smoke consumer 验证 `find_package`、公开头文件、链接和动态
 加载。RTC 集成测试覆盖 H.264/Opus depay/pay、Opus decode/filter/libopus
 实时再编码，以及 fake WHIP publisher → Pipeline → fake WHEP player。内置 PeerConnection

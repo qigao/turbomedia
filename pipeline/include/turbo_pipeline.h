@@ -113,7 +113,12 @@ TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_request_stop(turbo_pipeli
 /** Return the current lifecycle state. */
 TURBO_MEDIA_API turbo_pipeline_state_t turbo_pipeline_state(const turbo_pipeline_t *pipeline);
 
-/** Copy a point-in-time statistics snapshot. */
+/**
+ * Copy a point-in-time statistics snapshot.
+ *
+ * packets_written and bytes_written count successful sink deliveries. A media
+ * packet delivered to two FFmpeg outputs contributes two writes.
+ */
 TURBO_MEDIA_API turbo_pipeline_status_t turbo_pipeline_stats(
     const turbo_pipeline_t *pipeline, turbo_pipeline_stats_t *stats);
 
