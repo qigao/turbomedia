@@ -3,6 +3,7 @@
 #ifdef TURBO_MEDIA_HAS_RTSP
 
 #include "turbo_rtsp_sdp.h"
+#include "turbo_str.h"
 #include "turbo_uuid.h"
 
 #include <stdio.h>
@@ -383,7 +384,11 @@ static int turbo_media_rtsp_adapter_write_sdp(
         if (track.clock_rate > 0) clock_rate = track.clock_rate;
 
         APPEND_SDP("m=%s 0 RTP/AVP %d\r\n", media, payload_type);
-        APPEND_SDP("a=rtpmap:%d %s/%d\r\n", payload_type, codec, clock_rate);
+        if (tstr_casecmp(codec, "opus") == 0) {
+            APPEND_SDP("a=rtpmap:%d %s/%d/2\r\n", payload_type, codec, clock_rate);
+        } else {
+            APPEND_SDP("a=rtpmap:%d %s/%d\r\n", payload_type, codec, clock_rate);
+        }
         APPEND_SDP("a=control:trackID=%d\r\n", track.track_id);
 
         memset(mapped, 0, sizeof(*mapped));

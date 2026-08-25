@@ -398,8 +398,9 @@ static void adapter_player_task(coro_t *co, void *arg) {
         adapter_recv_response(client, response, sizeof(response), 200) != 0 ||
         strstr(response, "m=video 0 RTP/AVP 96") == NULL ||
         strstr(response, "a=rtpmap:96 H264/90000") == NULL ||
+        strstr(response, "a=rtpmap:96 H264/90000/2") != NULL ||
         strstr(response, "m=audio 0 RTP/AVP 97") == NULL ||
-        strstr(response, "a=rtpmap:97 OPUS/48000") == NULL ||
+        strstr(response, "a=rtpmap:97 OPUS/48000/2") == NULL ||
         adapter_send_checked(
             client,
             "SETUP " RTSP_ADAPTER_E2E_URI "/trackID=0 RTSP/1.0\r\n"
