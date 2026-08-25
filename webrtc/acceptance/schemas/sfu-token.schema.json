@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://turbonet.example/schemas/webrtc-acceptance/sfu-token-v1.json",
+  "title": "TurboMedia short-lived SFU token v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "provider_id", "token_id", "audience", "scope", "subject", "binding", "issued_at", "expires_at", "token"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "provider_id": { "type": "string", "minLength": 1 },
+    "token_id": { "type": "string", "minLength": 1 },
+    "audience": { "type": "string", "minLength": 1 },
+    "scope": { "type": "array", "minItems": 1, "maxItems": 256, "items": { "type": "string", "minLength": 1 } },
+    "subject": { "type": "string", "minLength": 1 },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["room_id", "participant_id"],
+      "properties": {
+        "room_id": { "type": "string", "minLength": 1 },
+        "participant_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "issued_at": { "type": "string", "minLength": 1 },
+    "expires_at": { "type": "string", "minLength": 1 },
+    "token": { "type": "string", "minLength": 1 }
+  }
+}

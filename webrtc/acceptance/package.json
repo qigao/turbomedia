@@ -1,0 +1,16 @@
+{
+  "name": "@turbonet/webrtc-acceptance",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Public-browser TURN acceptance contracts for TurboMedia",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "selenium-webdriver": "4.47.0"
+  }
+}

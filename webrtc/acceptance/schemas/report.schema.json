@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://turbonet.example/schemas/webrtc-acceptance/report-v1.json",
+  "title": "TurboMedia WebRTC acceptance report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "outcome", "started_at", "finished_at", "cases"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "outcome": { "enum": ["PASS", "FAIL", "INCOMPLETE", "ERROR"] },
+    "started_at": { "type": "string", "minLength": 1 },
+    "finished_at": { "type": "string", "minLength": 1 },
+    "cases": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "outcome"],
+        "properties": {
+          "case_id": { "type": "string", "minLength": 1 },
+          "outcome": { "enum": ["PASS", "FAIL", "INCOMPLETE", "ERROR"] },
+          "started_at": { "type": "string", "minLength": 1 },
+          "finished_at": { "type": "string", "minLength": 1 },
+          "evidence_id": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
