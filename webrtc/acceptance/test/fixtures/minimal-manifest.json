@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "profile": "diagnostic",
+  "source": {
+    "commit": "0123456789012345678901234567890123456789",
+    "require_clean_tree": true,
+    "test_page_url": "https://acceptance.example.test/client.html",
+    "test_page_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "grid": {
+    "endpoint_env": "TURBO_MEDIA_ACCEPTANCE_GRID_URL",
+    "browsers": [
+      { "name": "chrome", "version": "127.0.0", "platform": "Windows 11" },
+      { "name": "firefox", "version": "128.0.0", "platform": "Linux" }
+    ]
+  },
+  "sfu": {
+    "base_url": "https://sfu.example.test",
+    "whip_endpoint": "/whip",
+    "whep_endpoint": "/whep",
+    "token_provider": { "command": ["sfu-token-provider", "--json"] }
+  },
+  "turn": {
+    "credential_provider": { "command": ["turn-credential-provider", "--json"] }
+  },
+  "topologies": [
+    {
+      "topology_id": "restricted-nat-ipv4",
+      "hooks": {
+        "setup": { "command": ["topology-hook", "setup"] },
+        "transition": { "command": ["topology-hook", "transition"] },
+        "teardown": { "command": ["topology-hook", "teardown"] }
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "scenario_id": "relay-baseline",
+      "topology_id": "restricted-nat-ipv4",
+      "sample_interval_ms": 250,
+      "duration_ms": 1000
+    },
+    {
+      "scenario_id": "network-migration",
+      "topology_id": "restricted-nat-ipv4",
+      "sample_interval_ms": 250,
+      "duration_ms": 1000
+    }
+  ],
+  "phase_deadlines": {
+    "preflight_ms": 1000,
+    "connect_ms": 1000,
+    "stable_ms": 1000,
+    "transition_ms": 1000,
+    "recovery_ms": 1000,
+    "drain_ms": 1000
+  },
+  "threshold_profile": {
+    "profile_id": "diagnostic-default",
+    "stable": { "minimum_samples": 1 },
+    "recovery": { "minimum_samples": 1 },
+    "drain": { "maximum_duration_ms": 1000 }
+  },
+  "artifact_directory": "artifacts/webrtc-acceptance"
+}
