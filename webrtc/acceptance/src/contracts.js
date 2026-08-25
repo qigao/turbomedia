@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const Ajv2020 = require('ajv/dist/2020');
+const { LIMITS } = require('./constants');
 
 const SCHEMA_FILES = Object.freeze({
   manifest: 'manifest.schema.json',
@@ -14,7 +15,35 @@ const SCHEMA_FILES = Object.freeze({
 
 function loadSchema(schemaDirectory, fileName) {
   const schemaPath = path.resolve(schemaDirectory, fileName);
-  return JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+  return injectLimitValues(JSON.parse(fs.readFileSync(schemaPath, 'utf8')));
+}
+
+function injectLimitValues(schema) {
+  if (Array.isArray(schema)) {
+    schema.forEach(injectLimitValues);
+    return schema;
+  }
+  if (!schema || typeof schema !== 'object') {
+    return schema;
+  }
+
+  if (typeof schema.$comment === 'string' && schema.$comment.startsWith('limits:')) {
+    const assignments = schema.$comment.slice('limits:'.length).split(';');
+    for (const assignment of assignments) {
+      const [keyword, limitName] = assignment.split('=');
+      if (!['maxItems', 'maximum', 'minimum'].includes(keyword) ||
+          !Object.hasOwn(LIMITS, limitName)) {
+        throw new Error(`invalid schema limit annotation: ${schema.$comment}`);
+      }
+      schema[keyword] = LIMITS[limitName];
+    }
+    delete schema.$comment;
+  }
+
+  for (const value of Object.values(schema)) {
+    injectLimitValues(value);
+  }
+  return schema;
 }
 
 function createContractValidator(schemaDirectory) {
@@ -63,4 +92,4 @@ function validateContract(validator, schemaName, value) {
   };
 }
 
-module.exports = { createContractValidator, validateContract };
+module.exports = { LIMITS, createContractValidator, validateContract };

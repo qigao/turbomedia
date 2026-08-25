@@ -28,7 +28,7 @@
         "browsers": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 256,
+          "$comment": "limits:maxItems=MAX_CASES",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -64,7 +64,7 @@
     "topologies": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 256,
+      "$comment": "limits:maxItems=MAX_CASES",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -88,7 +88,7 @@
     "scenarios": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 256,
+      "$comment": "limits:maxItems=MAX_CASES",
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -96,8 +96,8 @@
         "properties": {
           "scenario_id": { "type": "string", "minLength": 1 },
           "topology_id": { "type": "string", "minLength": 1 },
-          "sample_interval_ms": { "type": "integer", "minimum": 250, "maximum": 3600000 },
-          "duration_ms": { "type": "integer", "minimum": 1, "maximum": 3600000 }
+          "sample_interval_ms": { "type": "integer", "$comment": "limits:minimum=MIN_SAMPLE_INTERVAL_MS;maximum=MAX_CASE_DURATION_MS" },
+          "duration_ms": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_CASE_DURATION_MS" }
         }
       }
     },
@@ -130,12 +130,12 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "max_cases": { "type": "integer", "minimum": 1, "maximum": 256 },
-        "max_provider_output_bytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
-        "max_hook_output_bytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
-        "max_case_log_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
-        "max_samples_per_case": { "type": "integer", "minimum": 1, "maximum": 36000 },
-        "max_artifact_bytes_per_case": { "type": "integer", "minimum": 1, "maximum": 16777216 }
+        "max_cases": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_CASES" },
+        "max_provider_output_bytes": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_PROVIDER_OUTPUT_BYTES" },
+        "max_hook_output_bytes": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_HOOK_OUTPUT_BYTES" },
+        "max_case_log_bytes": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_CASE_LOG_BYTES" },
+        "max_samples_per_case": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_SAMPLES_PER_CASE" },
+        "max_artifact_bytes_per_case": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_ARTIFACT_BYTES_PER_CASE" }
       }
     }
   },
@@ -148,17 +148,17 @@
         "command": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 256,
+          "$comment": "limits:maxItems=MAX_CASES",
           "items": { "type": "string", "minLength": 1 }
         }
       }
     },
-    "duration": { "type": "integer", "minimum": 1, "maximum": 3600000 },
+    "duration": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_CASE_DURATION_MS" },
     "thresholds": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "minimum_samples": { "type": "integer", "minimum": 1, "maximum": 36000 },
+        "minimum_samples": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_SAMPLES_PER_CASE" },
         "maximum_duration_ms": { "$ref": "#/$defs/duration" },
         "max_rtt_ms": { "type": "number", "minimum": 0 },
         "max_jitter_ms": { "type": "number", "minimum": 0 },

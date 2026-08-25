@@ -1,13 +1,13 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const {
-  createContractValidator,
-  validateContract,
-} = require('../src/contracts');
+const contracts = require('../src/contracts');
+const { LIMITS: CONSTANT_LIMITS } = require('../src/constants');
+const { createContractValidator, validateContract } = contracts;
 
 const validator = createContractValidator(path.join(__dirname, '..', 'schemas'));
 
@@ -114,6 +114,83 @@ function validReport() {
 
 function assertRejected(schemaName, value) {
   const result = validateContract(validator, schemaName, value);
+  assert.equal(result.valid, false, `${schemaName} should be rejected`);
+  assert.ok(result.errors.length > 0, `${schemaName} should expose schema errors`);
+}
+
+function loadContractsWithLimits(t, limits) {
+  const isolatedDirectory = fs.mkdtempSync(path.join(__dirname, '.contracts-limits-'));
+  const contractsPath = path.join(isolatedDirectory, 'contracts.js');
+  const constantsPath = path.join(isolatedDirectory, 'constants.js');
+
+  fs.copyFileSync(path.join(__dirname, '..', 'src', 'contracts.js'), contractsPath);
+  fs.writeFileSync(
+    constantsPath,
+    `'use strict';\nconst LIMITS = Object.freeze(${JSON.stringify(limits)});\nmodule.exports = { LIMITS };\n`,
+    'utf8'
+  );
+  t.after(() => {
+    delete require.cache[require.resolve(contractsPath)];
+    fs.rmSync(isolatedDirectory, { recursive: true, force: true });
+  });
+  return require(contractsPath);
+}
+
+test('contracts expose the shared LIMITS object and compile resource caps from it', (t) => {
+  assert.strictEqual(contracts.LIMITS, CONSTANT_LIMITS);
+
+  const limits = {
+    MAX_CASES: 1,
+    MAX_PROVIDER_OUTPUT_BYTES: 7,
+    MAX_HOOK_OUTPUT_BYTES: 8,
+    MAX_CASE_LOG_BYTES: 9,
+    MAX_SAMPLES_PER_CASE: 10,
+    MAX_ARTIFACT_BYTES_PER_CASE: 11,
+    MIN_SAMPLE_INTERVAL_MS: 500,
+    MAX_CASE_DURATION_MS: 2_000,
+  };
+  const isolatedContracts = loadContractsWithLimits(t, limits);
+  const isolatedValidator = isolatedContracts.createContractValidator(path.join(__dirname, '..', 'schemas'));
+  const manifest = validManifest();
+  manifest.sfu.token_provider.command = ['sfu-token-provider'];
+  manifest.turn.credential_provider.command = ['turn-credential-provider'];
+  manifest.topologies[0].hooks.setup.command = ['topology-hook'];
+  manifest.topologies[0].hooks.transition.command = ['topology-hook'];
+  manifest.topologies[0].hooks.teardown.command = ['topology-hook'];
+  manifest.scenarios[0].sample_interval_ms = limits.MIN_SAMPLE_INTERVAL_MS;
+  manifest.scenarios[0].duration_ms = limits.MAX_CASE_DURATION_MS;
+  manifest.limits = {
+    max_cases: limits.MAX_CASES,
+    max_provider_output_bytes: limits.MAX_PROVIDER_OUTPUT_BYTES,
+    max_hook_output_bytes: limits.MAX_HOOK_OUTPUT_BYTES,
+    max_case_log_bytes: limits.MAX_CASE_LOG_BYTES,
+    max_samples_per_case: limits.MAX_SAMPLES_PER_CASE,
+    max_artifact_bytes_per_case: limits.MAX_ARTIFACT_BYTES_PER_CASE,
+  };
+  assert.deepEqual(isolatedContracts.validateContract(isolatedValidator, 'manifest', manifest), {
+    valid: true,
+    errors: [],
+  });
+
+  const tooManyCases = clone(manifest);
+  tooManyCases.scenarios.push(clone(tooManyCases.scenarios[0]));
+  assertRejectedWith(isolatedContracts, isolatedValidator, 'manifest', tooManyCases);
+
+  const tooFastSampling = clone(manifest);
+  tooFastSampling.scenarios[0].sample_interval_ms = limits.MIN_SAMPLE_INTERVAL_MS - 1;
+  assertRejectedWith(isolatedContracts, isolatedValidator, 'manifest', tooFastSampling);
+
+  const tooLongCase = clone(manifest);
+  tooLongCase.scenarios[0].duration_ms = limits.MAX_CASE_DURATION_MS + 1;
+  assertRejectedWith(isolatedContracts, isolatedValidator, 'manifest', tooLongCase);
+
+  const tooMuchProviderOutput = clone(manifest);
+  tooMuchProviderOutput.limits.max_provider_output_bytes = limits.MAX_PROVIDER_OUTPUT_BYTES + 1;
+  assertRejectedWith(isolatedContracts, isolatedValidator, 'manifest', tooMuchProviderOutput);
+});
+
+function assertRejectedWith(contractApi, contractValidator, schemaName, value) {
+  const result = contractApi.validateContract(contractValidator, schemaName, value);
   assert.equal(result.valid, false, `${schemaName} should be rejected`);
   assert.ok(result.errors.length > 0, `${schemaName} should expose schema errors`);
 }

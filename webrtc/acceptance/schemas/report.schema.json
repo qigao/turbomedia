@@ -13,7 +13,7 @@
     "finished_at": { "type": "string", "minLength": 1 },
     "cases": {
       "type": "array",
-      "maxItems": 256,
+      "$comment": "limits:maxItems=MAX_CASES",
       "items": {
         "type": "object",
         "additionalProperties": false,
