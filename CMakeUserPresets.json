@@ -349,6 +349,50 @@
             "name": "linux-release-user",
             "inherits": "base-test",
             "configurePreset": "linux-release-user"
+        },
+        {
+            "name": "test-dev-windows",
+            "displayName": "Developer Windows Tests",
+            "inherits": "base-test",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            },
+            "configurePreset": "win-dev-user"
+        },
+        {
+            "name": "test-release-windows",
+            "displayName": "Release Windows Tests",
+            "inherits": "base-test",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            },
+            "configurePreset": "win-release-user"
+        },
+        {
+            "name": "test-dev-linux",
+            "displayName": "Developer Linux Tests",
+            "inherits": "base-test",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            },
+            "configurePreset": "linux-dev-user"
+        },
+        {
+            "name": "test-release-linux",
+            "displayName": "Release Linux Tests",
+            "inherits": "base-test",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            },
+            "configurePreset": "linux-release-user"
         }
     ]
 }
