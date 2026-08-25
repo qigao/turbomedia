@@ -1,9 +1,8 @@
 version: 1
 
-# Development-only durable Iris media-event outbox. Production deployments
-# should keep the same channel contract and select redis or postgresql.
-# max_records is a hard admission bound exported as record_capacity; alert on
-# total pending + in-flight + dead records before this limit is reached.
+# TurboMedia exports only the SQLite TurboDB ORM backend. PostgreSQL support,
+# when required by a deployment, must be supplied from TurboDB build output;
+# TurboMedia does not link or deploy libpq.
 channels:
   iris.media_events:
     kind: record_store

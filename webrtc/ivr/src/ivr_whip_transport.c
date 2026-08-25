@@ -15,18 +15,14 @@
 
 struct ivr_whip_transport_s {
     ivr_whip_transport_config_t config;
-    /* Owned copies of the config strings (sfu_host / media_token). The
-       transport keeps them for its whole lifetime so callers may release
-       their config after create(); config.sfu_host / config.media_token point
-       at these buffers. */
-    char *sfu_host_owned;
-    char *media_token_owned;
+    ivr_http_media_client_t *http_client;
     ivr_mutex_t lock;
     ivr_mutex_t lifecycle_lock;
     int lifecycle_lock_initialized;
     int destroying;
     /* active call */
     int active;
+    ivr_str_t tenant_id;
     ivr_str_t provider_session_id;
     ivr_str_t dialog_id;
     ivr_str_t room_id;
@@ -51,6 +47,7 @@ struct ivr_whip_transport_s {
 
 typedef struct {
     ivr_call_ref_t view;
+    char tenant_id[IVR_MEDIA_ID_CAPACITY];
     char provider_session_id[IVR_MEDIA_ID_CAPACITY];
     char dialog_id[IVR_MEDIA_ID_CAPACITY];
     char room_id[IVR_MEDIA_ID_CAPACITY];
@@ -72,6 +69,7 @@ static int call_view_matches(const ivr_bytes_view_t *view,
 
 /* Caller holds lock or has crossed the lifecycle barrier and is quiescent. */
 static void whip_clear_call(ivr_whip_transport_t *transport) {
+    ivr_str_free(&transport->tenant_id);
     ivr_str_free(&transport->provider_session_id);
     ivr_str_free(&transport->dialog_id);
     ivr_str_free(&transport->room_id);
@@ -84,6 +82,7 @@ static int whip_call_matches_locked(const ivr_whip_transport_t *transport,
                                     const ivr_call_ref_t *call) {
     return transport->active && call &&
            call->call_generation == transport->call_generation &&
+           call_view_matches(&call->tenant_id, &transport->tenant_id) &&
            call_view_matches(&call->provider_session_id,
                              &transport->provider_session_id) &&
            call_view_matches(&call->dialog_id, &transport->dialog_id) &&
@@ -93,9 +92,11 @@ static int whip_call_matches_locked(const ivr_whip_transport_t *transport,
 
 static int whip_copy_call_locked(const ivr_whip_transport_t *transport,
                                  whip_call_copy_t *copy) {
-    if (!transport || !copy || !transport->provider_session_id.data ||
+    if (!transport || !copy || !transport->tenant_id.data ||
+        !transport->provider_session_id.data ||
         !transport->dialog_id.data || !transport->room_id.data ||
         !transport->call_id.data ||
+        transport->tenant_id.size >= sizeof(copy->tenant_id) ||
         transport->provider_session_id.size >=
             sizeof(copy->provider_session_id) ||
         transport->dialog_id.size >= sizeof(copy->dialog_id) ||
@@ -104,12 +105,16 @@ static int whip_copy_call_locked(const ivr_whip_transport_t *transport,
         return 0;
     }
     memset(copy, 0, sizeof(*copy));
+    memcpy(copy->tenant_id, transport->tenant_id.data,
+           transport->tenant_id.size);
     memcpy(copy->provider_session_id, transport->provider_session_id.data,
            transport->provider_session_id.size);
     memcpy(copy->dialog_id, transport->dialog_id.data,
            transport->dialog_id.size);
     memcpy(copy->room_id, transport->room_id.data, transport->room_id.size);
     memcpy(copy->call_id, transport->call_id.data, transport->call_id.size);
+    copy->view.tenant_id.data = copy->tenant_id;
+    copy->view.tenant_id.size = transport->tenant_id.size;
     copy->view.provider_session_id.data = copy->provider_session_id;
     copy->view.provider_session_id.size = transport->provider_session_id.size;
     copy->view.dialog_id.data = copy->dialog_id;
@@ -152,9 +157,8 @@ static void whip_delete_session(ivr_whip_transport_t *t,
         return;
     }
     memset(&resp, 0, sizeof(resp));
-    (void)ivr_http_media_request(t->config.sfu_host, t->config.sfu_port,
-                                 "DELETE", location, t->config.media_token,
-                                 NULL, NULL, NULL, &resp);
+    (void)ivr_http_media_request(t->http_client, "DELETE", location, NULL,
+                                 NULL, NULL, &resp);
 }
 
 static void whip_state_change(turbo_peer_connection_t *pc,
@@ -235,8 +239,9 @@ static void *whip_poll_thread_main(void *opaque) {
 
 ivr_status_t ivr_whip_transport_create(const ivr_whip_transport_config_t *config,
                                        ivr_whip_transport_t **out_transport) {
-    if (!config || !config->sfu_host || config->sfu_port <= 0 ||
-        !out_transport) {
+    ivr_http_media_client_config_t http_config =
+        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    if (!config || !config->sfu_base_url || !out_transport) {
         return IVR_EINVAL;
     }
     ivr_whip_transport_t *t =
@@ -248,34 +253,39 @@ ivr_status_t ivr_whip_transport_create(const ivr_whip_transport_config_t *config
     t->config.sample_rate = config->sample_rate
                                 ? config->sample_rate
                                 : IVR_WHIP_DEFAULT_SAMPLE_RATE;
-    /* Deep-copy the config strings so later start/stop do not dereference
-       caller-owned memory that may already have been freed. */
-    t->sfu_host_owned = ivr_http_media_strdup(config->sfu_host);
-    t->media_token_owned = ivr_http_media_strdup(config->media_token);
-    if (!t->sfu_host_owned || (config->media_token && !t->media_token_owned)) {
-        free(t->sfu_host_owned);
-        free(t->media_token_owned);
+    t->config.sfu_base_url = NULL;
+    t->config.media_token = NULL;
+    t->config.ca_file = NULL;
+    t->config.cert_file = NULL;
+    t->config.key_file = NULL;
+    t->config.key_password = NULL;
+    http_config.base_url = config->sfu_base_url;
+    http_config.media_token = config->media_token;
+    http_config.ca_file = config->ca_file;
+    http_config.cert_file = config->cert_file;
+    http_config.key_file = config->key_file;
+    http_config.key_password = config->key_password;
+    http_config.timeout_ms = config->http_timeout_ms;
+    http_config.allow_plaintext_loopback = config->allow_plaintext_loopback;
+    if (ivr_http_media_client_create(&http_config, &t->http_client) != 0) {
         free(t);
-        return IVR_ENOSPC;
+        return IVR_EINVAL;
     }
-    t->config.sfu_host = t->sfu_host_owned;
-    t->config.media_token = t->media_token_owned;
     t->on_state = config->on_state;
     t->state_context = config->state_context;
+    ivr_str_init(&t->tenant_id);
     ivr_str_init(&t->provider_session_id);
     ivr_str_init(&t->dialog_id);
     ivr_str_init(&t->room_id);
     ivr_str_init(&t->call_id);
     if (ivr_mutex_init(&t->lock) != 0) {
-        free(t->sfu_host_owned);
-        free(t->media_token_owned);
+        ivr_http_media_client_destroy(t->http_client);
         free(t);
         return IVR_ENOSPC;
     }
     if (ivr_mutex_init(&t->lifecycle_lock) != 0) {
         ivr_mutex_destroy(&t->lock);
-        free(t->sfu_host_owned);
-        free(t->media_token_owned);
+        ivr_http_media_client_destroy(t->http_client);
         free(t);
         return IVR_ENOSPC;
     }
@@ -387,7 +397,8 @@ void ivr_whip_transport_get_transport(ivr_whip_transport_t *transport,
 
 ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
                                       const ivr_call_ref_t *call) {
-    if (!t || !call || !call_view_valid(&call->provider_session_id) ||
+    if (!t || !call || !call_view_valid(&call->tenant_id) ||
+        !call_view_valid(&call->provider_session_id) ||
         !call_view_valid(&call->dialog_id) ||
         !call_view_valid(&call->room_id) ||
         !call_view_valid(&call->call_id) || call->call_generation == 0u) {
@@ -404,7 +415,9 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_ESTATE;
     }
-    if (ivr_str_assign(&t->provider_session_id,
+    if (ivr_str_assign(&t->tenant_id, call->tenant_id.data,
+                       call->tenant_id.size) < 0 ||
+        ivr_str_assign(&t->provider_session_id,
                        call->provider_session_id.data,
                        call->provider_session_id.size) < 0 ||
         ivr_str_assign(&t->dialog_id, call->dialog_id.data,
@@ -474,10 +487,34 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         return IVR_ESTATE;
     }
 
-    char path[512];
-    snprintf(path, sizeof(path), "/whip/%.*s/%.*s",
-             (int)t->room_id.size, t->room_id.data, (int)t->call_id.size,
-             t->call_id.data);
+    char path[IVR_MEDIA_ID_CAPACITY * 6u + 16u];
+    char *room_segment = ivr_http_media_encode_path_segment(t->room_id.data);
+    char *call_segment = ivr_http_media_encode_path_segment(t->call_id.data);
+    int path_length;
+    if (!room_segment || !call_segment) {
+        free(room_segment);
+        free(call_segment);
+        turbo_peer_connection_destroy(pc);
+        ivr_mutex_lock(&t->lock);
+        t->active = 0;
+        whip_clear_call(t);
+        ivr_mutex_unlock(&t->lock);
+        ivr_mutex_unlock(&t->lifecycle_lock);
+        return IVR_EINVAL;
+    }
+    path_length = snprintf(path, sizeof(path), "/whip/%s/%s", room_segment,
+                           call_segment);
+    free(room_segment);
+    free(call_segment);
+    if (path_length < 0 || (size_t)path_length >= sizeof(path)) {
+        turbo_peer_connection_destroy(pc);
+        ivr_mutex_lock(&t->lock);
+        t->active = 0;
+        whip_clear_call(t);
+        ivr_mutex_unlock(&t->lock);
+        ivr_mutex_unlock(&t->lifecycle_lock);
+        return IVR_EINVAL;
+    }
     ivr_http_media_response_t resp;
     memset(&resp, 0, sizeof(resp));
     /* Build a minimal WHIP offer from the peer connection ICE credentials and
@@ -485,9 +522,9 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     char offer_min[IVR_HTTP_MEDIA_MAX_SDP];
     ivr_sdp_build_minimal_audio_offer(offer, offer_min, sizeof(offer_min),
                                       (int)t->config.sample_rate, "sendonly");
-    int whip_rc = ivr_http_media_request(
-        t->config.sfu_host, t->config.sfu_port, "POST", path,
-        t->config.media_token, "application/sdp", NULL, offer_min, &resp);
+    int whip_rc = ivr_http_media_request(t->http_client, "POST", path,
+                                         "application/sdp", NULL, offer_min,
+                                         &resp);
     if (whip_rc != 0 ||
         resp.status != 201 || resp.location[0] == '\0' ||
         resp.etag[0] == '\0' || resp.body[0] == '\0') {
@@ -525,8 +562,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         ivr_http_media_response_t trickle;
         memset(&trickle, 0, sizeof(trickle));
         if (ivr_http_media_request(
-                t->config.sfu_host, t->config.sfu_port, "PATCH",
-                resp.location, t->config.media_token,
+                t->http_client, "PATCH", resp.location,
                 "application/trickle-ice-sdpfrag", resp.etag, fragment,
                 &trickle) != 0 ||
             (trickle.status != 200 && trickle.status != 204)) {
@@ -646,7 +682,6 @@ void ivr_whip_transport_destroy(ivr_whip_transport_t *t) {
         t->lifecycle_lock_initialized = 0;
     }
     ivr_mutex_destroy(&t->lock);
-    free(t->sfu_host_owned);
-    free(t->media_token_owned);
+    ivr_http_media_client_destroy(t->http_client);
     free(t);
 }

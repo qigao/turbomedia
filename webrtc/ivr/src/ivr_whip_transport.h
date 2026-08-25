@@ -25,11 +25,16 @@ extern "C" {
 typedef struct ivr_whip_transport_s ivr_whip_transport_t;
 
 typedef struct {
-    const char *sfu_host;   /* 127.0.0.1 */
-    int sfu_port;           /* SFU HTTP port (WHIP endpoint) */
+    const char *sfu_base_url; /* HTTPS origin, e.g. https://sfu.example */
     const char *media_token; /* WHIP/WHEP bearer token */
+    const char *ca_file;
+    const char *cert_file;
+    const char *key_file;
+    const char *key_password;
+    int allow_plaintext_loopback; /* tests/local development only */
     int allow_loopback;     /* allow host ICE candidates on loopback */
     uint32_t sample_rate;   /* 0 = 16000 */
+    uint64_t http_timeout_ms; /* 0 = 5000 */
     uint64_t connect_timeout_ms; /* 0 = 10000 */
     ivr_media_state_fn on_state;
     void *state_context;

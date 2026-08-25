@@ -122,7 +122,7 @@ include(FindTools)
 
 foreach(_turbomedia_dependency_root IN ITEMS
         TURBOUTILS_ROOT TURBOPARSER_ROOT TURBONET_ROOT TURBOHTTP_ROOT
-        FLOWMQ_ROOT TURBOFLOW_ROOT RULES_FORGE_ROOT)
+        FLOWMQ_ROOT TURBODB_ROOT RULES_FORGE_ROOT)
   if(NOT DEFINED ENV{${_turbomedia_dependency_root}} OR
      "$ENV{${_turbomedia_dependency_root}}" STREQUAL "")
     message(FATAL_ERROR
@@ -153,8 +153,8 @@ find_package(RulesForge CONFIG REQUIRED
              PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH)
 find_package(FlowMQ CONFIG REQUIRED
              PATHS "$ENV{FLOWMQ_ROOT}" NO_DEFAULT_PATH)
-find_package(TurboFlow CONFIG REQUIRED
-             PATHS "$ENV{TURBOFLOW_ROOT}" NO_DEFAULT_PATH)
+find_package(TurboDB CONFIG REQUIRED
+             PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH)
  
 find_package(OpenSSL REQUIRED)
 find_package(libSRTP CONFIG REQUIRED)

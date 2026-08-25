@@ -224,7 +224,8 @@ static const char *kAudioOfferBase =
 static char g_offer_buf[1024];
 
 static const char *audio_offer_sendonly(void) {
-    snprintf(g_offer_buf, sizeof(g_offer_buf), "%sa=sendonly\r\n",
+    snprintf(g_offer_buf, sizeof(g_offer_buf),
+             "%sa=sendonly\r\na=ssrc:424242 cname:minimal-whip\r\n",
              kAudioOfferBase);
     return g_offer_buf;
 }
@@ -291,6 +292,9 @@ void test_whip_publish_offer_answer(void) {
                                        TEST_MEDIA_TOKEN, "application/sdp",
                                        audio_offer_sendonly(), resp,
                                        sizeof(resp))), (int)(0));
+    if (!strstr(resp, " 201 ")) {
+        fprintf(stderr, "WHIP response: %s\n", resp);
+    }
     check_not_null(strstr(resp, " 201 "));
     /* the answer must be a valid SDP with an audio media line and DTLS/ICE */
     check_not_null(strstr(resp, "m=audio"));

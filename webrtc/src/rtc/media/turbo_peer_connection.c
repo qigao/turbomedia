@@ -518,7 +518,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
                  }
              }
          }
-        
+
         notify_state_change(pc, TURBO_PEER_STATE_CONNECTED);
     } else if (new_state == TURBO_DC_STATE_FAILED) {
         pc->dtls_connected = 0;

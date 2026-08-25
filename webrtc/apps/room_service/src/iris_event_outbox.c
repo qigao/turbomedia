@@ -1,7 +1,7 @@
 #include "iris_event_outbox.h"
 
 #include "iris_event_outbox_v1.h"
-#include "iris_flowstore.h"
+#include "iris_orm_store.h"
 #include "platform.h"
 #include "turbo_error.h"
 #include "turbo_thread.h"
@@ -81,8 +81,8 @@ typedef struct iris_outbox_scan_s {
 } iris_outbox_scan_t;
 
 struct iris_event_outbox_s {
-    turbo_flow_record_store_t *store;
-    iris_flowstore_owner_t *flowstore_owner;
+    iris_record_store_t *store;
+    iris_orm_store_owner_t *orm_store_owner;
     DataBind *codec;
     iris_event_outbox_deliver_fn deliver;
     void *deliver_context;
@@ -156,7 +156,7 @@ typedef struct iris_outbox_count_s {
 } iris_outbox_count_t;
 
 static int count_visit(void *context,
-                       const turbo_flow_record_view_t *view) {
+                       const iris_record_view_t *view) {
     iris_outbox_count_t *count = (iris_outbox_count_t *)context;
     IrisMediaEventOutboxRecordV1_t record;
     int rc = decode_record(count->codec, view->value, view->value_size,
@@ -410,7 +410,7 @@ static int commit_record(iris_event_outbox_t *outbox,
                          uint64_t expected_revision,
                          uint64_t next_revision) {
     IrisMediaEventOutboxRecordV1_t record;
-    turbo_flow_record_mutation_t mutation = TURBO_FLOW_RECORD_MUTATION_INIT;
+    iris_record_mutation_t mutation = IRIS_RECORD_MUTATION_INIT;
     uint8_t *value = NULL;
     size_t value_size = 0u;
     uint64_t changed_at_ms = outbox_realtime_ms(outbox);
@@ -438,8 +438,8 @@ static int commit_record(iris_event_outbox_t *outbox,
 
 static int delete_record(iris_event_outbox_t *outbox, const char *event_id,
                          uint64_t revision) {
-    turbo_flow_record_mutation_t mutation = TURBO_FLOW_RECORD_MUTATION_INIT;
-    mutation.kind = TURBO_FLOW_RECORD_DELETE;
+    iris_record_mutation_t mutation = IRIS_RECORD_MUTATION_INIT;
+    mutation.kind = IRIS_RECORD_DELETE;
     mutation.key = (const uint8_t *)event_id;
     mutation.key_size = strlen(event_id);
     mutation.expected_revision = revision;
@@ -447,7 +447,7 @@ static int delete_record(iris_event_outbox_t *outbox, const char *event_id,
 }
 
 static int scan_visit(void *context,
-                      const turbo_flow_record_view_t *view) {
+                      const iris_record_view_t *view) {
     iris_outbox_scan_t *scan = (iris_outbox_scan_t *)context;
     IrisMediaEventOutboxRecordV1_t record;
     iris_outbox_candidate_t *candidate;
@@ -512,7 +512,7 @@ static int schedule_one(iris_event_outbox_t *outbox,
                         iris_outbox_candidate_t *candidate) {
     uint64_t in_flight_revision;
     int rc;
-    if (candidate->revision >= TURBO_FLOW_RECORD_REVISION_MAX - 1u ||
+    if (candidate->revision >= IRIS_RECORD_REVISION_MAX - 1u ||
         candidate->attempts == UINT32_MAX) {
         return TURBO_ENOSPC;
     }
@@ -572,7 +572,7 @@ static int normalize_in_flight(iris_event_outbox_t *outbox) {
         rc = scan_records(outbox, items, capacity, NULL, 1, 0, 0, &count);
         if (rc != TURBO_OK || count == 0u) break;
         for (size_t i = 0u; i < count; ++i) {
-            if (items[i].revision >= TURBO_FLOW_RECORD_REVISION_MAX) {
+            if (items[i].revision >= IRIS_RECORD_REVISION_MAX) {
                 rc = TURBO_ENOSPC;
                 break;
             }
@@ -597,7 +597,7 @@ static int process_persist(iris_event_outbox_t *outbox,
     size_t count = 0u;
     int rc = commit_record(outbox, &request->event,
                            IRIS_OUTBOX_STATE_PENDING, 0u, 0,
-                           TURBO_FLOW_RECORD_REVISION_ABSENT, 1u);
+                           IRIS_RECORD_REVISION_ABSENT, 1u);
     if (rc == TURBO_OK) {
         memset(&existing, 0, sizeof(existing));
         existing.event = request->event;
@@ -655,7 +655,7 @@ static int process_settle(iris_event_outbox_t *outbox,
                           0, 0, 0, &count);
         if (rc == TURBO_OK && count == 1u &&
             current.revision == request->revision &&
-            request->revision < TURBO_FLOW_RECORD_REVISION_MAX) {
+            request->revision < IRIS_RECORD_REVISION_MAX) {
             rc = commit_record(
                 outbox, &request->event,
                 request->succeeded < 0 ? IRIS_OUTBOX_STATE_PENDING
@@ -696,7 +696,7 @@ static int replay_candidate(iris_event_outbox_t *outbox,
     if (strcmp(candidate->state, IRIS_OUTBOX_STATE_DEAD) != 0) {
         return TURBO_EBUSY;
     }
-    if (candidate->revision >= TURBO_FLOW_RECORD_REVISION_MAX - 2u ||
+    if (candidate->revision >= IRIS_RECORD_REVISION_MAX - 2u ||
         candidate->attempts == UINT32_MAX) {
         return TURBO_ENOSPC;
     }
@@ -770,7 +770,7 @@ typedef struct iris_outbox_dead_list_s {
 } iris_outbox_dead_list_t;
 
 static int dead_list_visit(void *context,
-                           const turbo_flow_record_view_t *view) {
+                           const iris_record_view_t *view) {
     iris_outbox_dead_list_t *list = (iris_outbox_dead_list_t *)context;
     IrisMediaEventOutboxRecordV1_t record;
     iris_event_dead_letter_t *item;
@@ -815,7 +815,7 @@ typedef struct iris_outbox_archive_list_s {
 } iris_outbox_archive_list_t;
 
 static int archive_list_visit(void *context,
-                              const turbo_flow_record_view_t *view) {
+                              const iris_record_view_t *view) {
     iris_outbox_archive_list_t *list =
         (iris_outbox_archive_list_t *)context;
     IrisMediaEventOutboxRecordV1_t record;
@@ -883,7 +883,7 @@ typedef struct iris_outbox_retention_scan_s {
 } iris_outbox_retention_scan_t;
 
 static int retention_visit(void *context,
-                           const turbo_flow_record_view_t *view) {
+                           const iris_record_view_t *view) {
     iris_outbox_retention_scan_t *scan =
         (iris_outbox_retention_scan_t *)context;
     IrisMediaEventOutboxRecordV1_t record;
@@ -961,7 +961,7 @@ static int process_retention(iris_event_outbox_t *outbox,
     for (i = 0u; rc == TURBO_OK && i < scan.count; ++i) {
         iris_outbox_candidate_t *candidate = &items[i];
         if (strcmp(candidate->state, IRIS_OUTBOX_STATE_DEAD) == 0) {
-            if (candidate->revision >= TURBO_FLOW_RECORD_REVISION_MAX) {
+            if (candidate->revision >= IRIS_RECORD_REVISION_MAX) {
                 rc = TURBO_ENOSPC;
                 break;
             }
@@ -1179,8 +1179,8 @@ static iris_event_outbox_t *create_common(
         config->retention.sweep_batch_size == 0u ||
         config->retention.sweep_batch_size > IRIS_EVENT_OUTBOX_LIST_MAX ||
         config->request_queue_capacity > SIZE_MAX / sizeof(void *) ||
-        (config->store->capabilities & TURBO_FLOW_RECORD_STORE_DURABLE) == 0u ||
-        (config->store->capabilities & TURBO_FLOW_RECORD_STORE_ATOMIC_BATCH) == 0u ||
+        (config->store->capabilities & IRIS_RECORD_STORE_DURABLE) == 0u ||
+        (config->store->capabilities & IRIS_RECORD_STORE_ATOMIC_BATCH) == 0u ||
         !config->store->scan || !config->store->commit ||
         config->store->max_key_size < IRIS_OUTBOX_EVENT_ID_CAPACITY - 1u ||
         config->store->max_value_size < IRIS_OUTBOX_MIN_VALUE_SIZE ||
@@ -1220,14 +1220,14 @@ iris_event_outbox_t *iris_event_outbox_create(
     return create_common(config);
 }
 
-iris_event_outbox_t *iris_event_outbox_create_flowstore(
+iris_event_outbox_t *iris_event_outbox_create_record_store(
     const char *yaml_path, const char *channel_name,
     int allow_development_sqlite, size_t request_queue_capacity,
     const iris_event_outbox_retention_config_t *retention,
     iris_event_outbox_deliver_fn deliver,
     void *deliver_context, char *error_text, size_t error_capacity) {
-    iris_flowstore_owner_t *owner;
-    turbo_flow_record_store_t *store;
+    iris_orm_store_owner_t *owner;
+    iris_record_store_t *store;
     iris_event_outbox_config_t config;
     iris_event_outbox_t *outbox = NULL;
     if (!yaml_path || !yaml_path[0] || !channel_name || !channel_name[0] ||
@@ -1238,11 +1238,11 @@ iris_event_outbox_t *iris_event_outbox_create_flowstore(
         }
         return NULL;
     }
-    owner = iris_flowstore_owner_create(
+    owner = iris_orm_store_owner_create(
         yaml_path, channel_name, allow_development_sqlite, error_text,
         error_capacity);
     if (!owner) return NULL;
-    store = iris_flowstore_owner_store(owner);
+    store = iris_orm_store_owner_store(owner);
     memset(&config, 0, sizeof(config));
     config.request_queue_capacity = request_queue_capacity;
     config.store = store;
@@ -1256,10 +1256,10 @@ iris_event_outbox_t *iris_event_outbox_create_flowstore(
                 error_text, error_capacity,
                 "FlowStore channel is not durable, atomic, or sufficiently bounded");
         }
-        iris_flowstore_owner_destroy(owner);
+        iris_orm_store_owner_destroy(owner);
         return NULL;
     }
-    outbox->flowstore_owner = owner;
+    outbox->orm_store_owner = owner;
     return outbox;
 }
 
@@ -1325,7 +1325,7 @@ void iris_event_outbox_destroy(iris_event_outbox_t *outbox) {
     turbo_cond_destroy(&outbox->not_empty);
     turbo_mutex_destroy(&outbox->mutex);
     free(outbox->requests);
-    iris_flowstore_owner_destroy(outbox->flowstore_owner);
+    iris_orm_store_owner_destroy(outbox->orm_store_owner);
     free(outbox);
 }
 

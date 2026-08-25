@@ -2,7 +2,7 @@
 #define TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_H
 
 #include "iris_command_ledger_port.h"
-#include "turbo_flow_record_store.h"
+#include "iris_record_store.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -20,7 +20,7 @@ typedef struct iris_command_ledger_config_s {
     size_t retention_batch_size;
     uint64_t terminal_retention_ms;
     uint64_t retention_sweep_interval_ms;
-    turbo_flow_record_store_t *store;
+    iris_record_store_t *store;
     iris_command_ledger_realtime_ms_fn realtime_ms;
     void *realtime_context;
 } iris_command_ledger_config_t;
@@ -59,8 +59,8 @@ typedef struct iris_command_retention_result_s {
 iris_command_ledger_t *iris_command_ledger_create(
     const iris_command_ledger_config_t *config);
 
-/** Resolve a dedicated FlowStore channel and own its backend lifecycle. */
-iris_command_ledger_t *iris_command_ledger_create_flowstore(
+/** Resolve a dedicated SQLite TurboDB ORM channel and own its lifecycle. */
+iris_command_ledger_t *iris_command_ledger_create_record_store(
     const char *yaml_path, const char *channel_name,
     int allow_development_sqlite, size_t request_queue_capacity,
     size_t retention_batch_size, uint64_t terminal_retention_ms,

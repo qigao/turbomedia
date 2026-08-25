@@ -2,7 +2,7 @@
 #define TURBO_ROOM_SERVICE_IRIS_EVENT_OUTBOX_H
 
 #include "ivr_room_bridge.h"
-#include "turbo_flow_record_store.h"
+#include "iris_record_store.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -28,7 +28,7 @@ typedef struct iris_event_outbox_retention_config_s {
 
 typedef struct iris_event_outbox_config_s {
     size_t request_queue_capacity;
-    turbo_flow_record_store_t *store;
+    iris_record_store_t *store;
     iris_event_outbox_deliver_fn deliver;
     void *deliver_context;
     iris_event_outbox_retention_config_t retention;
@@ -113,11 +113,13 @@ iris_event_outbox_t *iris_event_outbox_create(
     const iris_event_outbox_config_t *config);
 
 /**
- * Resolve a FlowStore YAML record_store channel and own its backend lifecycle.
- * Supported builtins are sqlite, redis, and postgresql. SQLite is rejected
- * unless allow_development_sqlite is explicitly nonzero.
+ * Resolve a TurboDB ORM YAML record_store channel and own its lifecycle.
+ * TurboMedia deploys the SQLite-only ORM runtime by default; a PostgreSQL
+ * channel requires replacing it with TurboDB's PG-enabled build output. Redis
+ * remains unsupported. SQLite is rejected unless allow_development_sqlite is
+ * explicitly nonzero.
  */
-iris_event_outbox_t *iris_event_outbox_create_flowstore(
+iris_event_outbox_t *iris_event_outbox_create_record_store(
     const char *yaml_path, const char *channel_name,
     int allow_development_sqlite, size_t request_queue_capacity,
     const iris_event_outbox_retention_config_t *retention,

@@ -103,8 +103,6 @@ spec("room service TOML configuration") {
             "[fmq]\n"
             "bind_host = \"127.0.0.1\"\n"
             "bind_port = 17713\n"
-            "pub_port = 17714\n"
-            "pub_topic = \"room.events\"\n"
             "worker_heartbeat_ms = 4000\n"
             "worker_lease_ms = 12000\n"
             "dispatch_deadline_ms = 3000\n"
@@ -114,8 +112,6 @@ spec("room service TOML configuration") {
             "cert_file = \"flowmq-room-chain.pem\"\n"
             "key_file = \"flowmq-room-key.pem\"\n"
             "key_password = \"test-key-password\"\n"
-            "shared_secret = \"0123456789abcdef0123456789abcdef\"\n"
-            "rotation_generation = 7\n"
             "[[fmq.workers]]\n"
             "worker_id = \"ivr-worker-a\"\n"
             "active_certificate_sha256 = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n"
@@ -123,8 +119,7 @@ spec("room service TOML configuration") {
             "tenant_id = \"acme\"\n"
             "room_scope = \"acme/room-1,acme/room-2\"\n"
             "call_scope = \"call-1,call-2\"\n"
-            "content_capabilities = \"conference-greeting\"\n"
-            "pub_topics = \"room.events.tenant-a\"\n";
+            "content_capabilities = \"conference-greeting\"\n";
         room_service_app_config_t config;
         char *path = write_toml(toml);
 
@@ -193,8 +188,6 @@ spec("room service TOML configuration") {
             check_equal(config.iris_drain_timeout_ms, 20000);
             check_equal(config.fmq_bind_host, "127.0.0.1");
             check_equal(config.fmq_bind_port, 17713);
-            check_equal(config.fmq_pub_port, 17714);
-            check_equal(config.fmq_pub_topic, "room.events");
             check_equal(config.fmq_worker_heartbeat_ms, 4000);
             check_equal(config.fmq_worker_lease_ms, 12000);
             check_equal(config.fmq_dispatch_deadline_ms, 3000);
@@ -205,9 +198,6 @@ spec("room service TOML configuration") {
             check_equal(config.fmq_cert_file, "flowmq-room-chain.pem");
             check_equal(config.fmq_key_file, "flowmq-room-key.pem");
             check_equal(config.fmq_key_password, "test-key-password");
-            check_equal(config.fmq_shared_secret,
-                         "0123456789abcdef0123456789abcdef");
-            check_equal(config.fmq_tls_rotation_generation, 7);
             check_equal(config.fmq_worker_identity_count, 1);
             check_equal(config.fmq_worker_identities[0].worker_id,
                          "ivr-worker-a");
@@ -222,8 +212,6 @@ spec("room service TOML configuration") {
                          "call-1,call-2");
             check_equal(config.fmq_worker_identities[0].content_capabilities,
                          "conference-greeting");
-            check_equal(config.fmq_worker_identities[0].pub_topics,
-                         "room.events.tenant-a");
             check_not_null(config.private_data);
         }
         room_service_app_config_cleanup(&config);
@@ -242,17 +230,15 @@ spec("room service TOML configuration") {
         room_service_app_config_cleanup(&config);
     }
 
-    it("requires FlowMQ command and event endpoints as one unit") {
+    it("uses one typed FlowMQ endpoint") {
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
         config.fmq_allow_insecure_loopback = 1;
         config.fmq_bind_port = 17713;
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_pub_port = 17714;
         check_equal(room_service_app_config_validate(&config), 0);
         config.fmq_bind_port = 0;
-        check_equal(room_service_app_config_validate(&config), -1);
+        check_equal(room_service_app_config_validate(&config), 0);
         room_service_app_config_cleanup(&config);
     }
 
@@ -261,7 +247,6 @@ spec("room service TOML configuration") {
 
         room_service_app_config_init(&config);
         config.fmq_bind_port = 17713;
-        config.fmq_pub_port = 17714;
         check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_allow_insecure_loopback = 1;
         config.fmq_bind_host = "0.0.0.0";
@@ -274,18 +259,14 @@ spec("room service TOML configuration") {
     it("requires complete mutually exclusive FlowMQ mTLS identity") {
         static const char fingerprint[] =
             "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-        static const char secret[] =
-            "0123456789abcdef0123456789abcdef";
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
         config.fmq_bind_port = 17713;
-        config.fmq_pub_port = 17714;
         config.fmq_use_tls = 1;
         config.fmq_ca_file = "flowmq-ca.pem";
         config.fmq_cert_file = "flowmq-room-chain.pem";
         config.fmq_key_file = "flowmq-room-key.pem";
-        config.fmq_shared_secret = secret;
         config.fmq_worker_identity_count = 1;
         config.fmq_worker_identities[0].worker_id = "ivr-worker-a";
         config.fmq_worker_identities[0].active_certificate_sha256 = fingerprint;
@@ -294,9 +275,9 @@ spec("room service TOML configuration") {
         config.fmq_allow_insecure_loopback = 1;
         check_equal(room_service_app_config_validate(&config), -1);
         config.fmq_allow_insecure_loopback = 0;
-        config.fmq_shared_secret = NULL;
+        config.fmq_key_file = NULL;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_shared_secret = secret;
+        config.fmq_key_file = "flowmq-room-key.pem";
         config.fmq_worker_identities[0].active_certificate_sha256 = "invalid";
         check_equal(room_service_app_config_validate(&config), -1);
         room_service_app_config_cleanup(&config);
@@ -329,7 +310,6 @@ spec("room service TOML configuration") {
         room_service_app_config_init(&config);
         config.fmq_allow_insecure_loopback = 1;
         config.fmq_bind_port = 17713;
-        config.fmq_pub_port = 17714;
         config.iris_flowmq_use_tls = 0;
         config.iris_flowmq_allow_insecure_loopback = 1;
         config.iris_flowmq_host = "127.0.0.1";

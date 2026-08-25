@@ -691,7 +691,6 @@ void setUp(void) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.bind_host = "127.0.0.1";
     cfg.bind_port = TEST_FMQ_PORT;
-    cfg.pub_port = 0;
     cfg.timeout_ms = 5000;
     cfg.queue_capacity = 8;
     cfg.dedup_capacity = 8;
@@ -1362,9 +1361,18 @@ void test_worker_sync_unconnected_identity_rejected(void) {
                                                         "ghost-worker"));
 
     /* the real worker (connected as its claimed id) registers fine */
-    g_reply_ready = 0;
-    check_equal(ivr_flowmq_gateway_send_worker_sync(g_gateway, "ws-ok"), IVR_OK);
-    check_true(wait_reply(8000));
+    {
+        int replied = 0;
+        for (int attempt = 0; attempt < 20 && !replied; ++attempt) {
+            char message_id[32];
+            snprintf(message_id, sizeof(message_id), "ws-ok-%d", attempt);
+            g_reply_ready = 0;
+            check_equal(ivr_flowmq_gateway_send_worker_sync(
+                            g_gateway, message_id), IVR_OK);
+            replied = wait_reply(250);
+        }
+        check_true(replied);
+    }
     check_true(ivr_fmq_adapter_worker_registered(g_adapter,
                                                        "ivr-worker-test"));
 
@@ -1488,7 +1496,6 @@ void test_live_acl_blocks_out_of_scope_join(void) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.bind_host = "127.0.0.1";
     cfg.bind_port = TEST_FMQ_PORT + 1;
-    cfg.pub_port = 0;
     cfg.timeout_ms = 5000;
     cfg.queue_capacity = 8;
     cfg.dedup_capacity = 8;

@@ -9,7 +9,6 @@ project(
 add_library(turbo_media_ivr STATIC
   src/ivr_acl.c
   src/ivr_certificate_identity.c
-  src/ivr_fmq_security.c
   src/ivr_dtmf_rtp.c
   src/ivr_frame.c
   src/ivr_protocol.c
@@ -45,10 +44,8 @@ target_include_directories(
           ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include)
 target_link_libraries(
   turbo_media_ivr_rtc
-  PUBLIC turbo_media_ivr TurboMedia::RTC)
-if(WIN32)
-  target_link_libraries(turbo_media_ivr_rtc PRIVATE ws2_32)
-endif()
+  PUBLIC turbo_media_ivr TurboMedia::RTC
+  PRIVATE TurboHttp::TurboHttp)
 set_target_properties(turbo_media_ivr_rtc PROPERTIES FOLDER "turbomedia/components")
 
 file(
@@ -91,26 +88,18 @@ message(STATUS "IVR codegen: ${TBE_COMPILER_EXECUTABLE}")
 # FlowMQ command/event adapters. FLOWMQ_ROOT is supplied by CMakeUserPresets;
 # no deprecated package-root variable or implicit environment fallback exists.
 # ---------------------------------------------------------------------------
-# The installed TurboFlow package references RulesForge::rules_forge in the
-# TurboFlow::Flow link interface but does not install its config. Provide a
-# thin empty imported target so the package can be loaded; the IVR gateway
-# never calls RulesForge.
-if(NOT TARGET RulesForge::rules_forge)
-  add_library(RulesForge::rules_forge INTERFACE IMPORTED)
-endif()
-if(NOT TARGET TurboFlow::FMQ OR NOT TARGET FlowMQ::FlowMQ)
+if(NOT TARGET FlowMQ::FlowMQ)
   message(FATAL_ERROR
-    "IVR requires legacy TurboFlow::FMQ internally and independent FlowMQ::FlowMQ transport")
+    "IVR requires independent FlowMQ::FlowMQ transport")
 endif()
 target_sources(
   turbo_media_ivr
   PRIVATE src/ivr_flowmq_gateway.c
-          src/ivr_room_bridge.c
-          src/ivr_flowmq_subscriber.c)
+          src/ivr_room_bridge.c)
 target_compile_definitions(turbo_media_ivr PUBLIC TURBO_MEDIA_HAS_FLOWMQ)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC TurboFlow::FMQ FlowMQ::FlowMQ turbo_media_ivr_schema)
+  PUBLIC FlowMQ::FlowMQ turbo_media_ivr_schema)
 # Visible to sibling subdirectories (RoomService app) processed after this one.
 set(TURBO_MEDIA_HAS_IVR_FMQ ON CACHE INTERNAL
     "IVR FlowMQ gateway/bridge/adapter available")
@@ -120,7 +109,6 @@ function(turbo_media_ivr_configure_test test_name test_source)
   cmake_add_test(
     ${test_name}
     SOURCES ${test_source}
-    LIBS turbo_media_ivr TurboUtils::TinyTest
     LIBS turbo_media_ivr TurboUtils::TinyTest
          $<$<PLATFORM_ID:Windows>:ws2_32>
     DEFS IVR_TEST_SCHEMA_PATH="${IVR_TEST_SCHEMA_PATH}"
@@ -132,18 +120,14 @@ function(turbo_media_ivr_configure_test test_name test_source)
   set_target_properties(
     ${test_name}
     PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  if(WIN32)
-    add_custom_command(
-      TARGET ${test_name}
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different
-              $<TARGET_FILE:TurboParser::DataBind>
-              $<TARGET_FILE:TurboParser::Parser>
-              $<TARGET_FILE:TurboUtils::Core>
-              $<TARGET_FILE:TurboMedia::Speech>
-              $<TARGET_FILE_DIR:${test_name}>
-      VERBATIM)
-  endif()
+  turbo_media_deploy_windows_runtime(
+    ${test_name}
+    FlowMQ::FlowMQ
+    TurboNet::CoroNet
+    TurboParser::DataBind
+    TurboParser::Parser
+    TurboUtils::Core
+    TurboMedia::Speech)
 endfunction()
 
 turbo_media_ivr_configure_test(test_ivr_frame tests/test_ivr_frame.c)
@@ -169,24 +153,8 @@ turbo_media_ivr_configure_test(
 turbo_media_ivr_configure_test(
   test_ivr_certificate_identity tests/test_ivr_certificate_identity.c)
 turbo_media_ivr_configure_test(
-  test_ivr_fmq_security tests/test_ivr_fmq_security.c)
-turbo_media_ivr_configure_test(
-  test_ivr_fmq_mtls tests/test_ivr_fmq_mtls.c)
-file(TO_CMAKE_PATH
-     "${CMAKE_SOURCE_DIR}/webrtc/tests/fixtures/tls/localhost-cert.pem"
-     IVR_FMQ_TEST_TLS_CERT_PATH)
-file(TO_CMAKE_PATH
-     "${CMAKE_SOURCE_DIR}/webrtc/tests/fixtures/tls/localhost-key.pem"
-     IVR_FMQ_TEST_TLS_KEY_PATH)
-target_compile_definitions(
-  test_ivr_fmq_mtls
-  PRIVATE IVR_FMQ_TEST_TLS_CERT_PATH="${IVR_FMQ_TEST_TLS_CERT_PATH}"
-          IVR_FMQ_TEST_TLS_KEY_PATH="${IVR_FMQ_TEST_TLS_KEY_PATH}")
-turbo_media_ivr_configure_test(
   test_ivr_flowmq tests/test_ivr_flowmq.c)
 turbo_media_ivr_configure_test(
   test_ivr_room_bridge tests/test_ivr_room_bridge.c)
 turbo_media_ivr_configure_test(
   test_ivr_room_bridge_dedup tests/test_ivr_room_bridge_dedup.c)
-turbo_media_ivr_configure_test(
-  test_ivr_flowmq_subscriber tests/test_ivr_flowmq_subscriber.c)

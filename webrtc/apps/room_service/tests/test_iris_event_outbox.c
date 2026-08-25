@@ -26,7 +26,7 @@ typedef struct test_record_s {
 } test_record_t;
 
 typedef struct test_store_s {
-    turbo_flow_record_store_t api;
+    iris_record_store_t api;
     test_record_t records[TEST_STORE_CAPACITY];
     int scan_status;
     int commit_calls;
@@ -52,14 +52,14 @@ static int test_find_record(test_store_t *store, const uint8_t *key,
     return -1;
 }
 
-static int test_scan(void *context, turbo_flow_record_visit_fn visit,
+static int test_scan(void *context, iris_record_visit_fn visit,
                      void *visit_context) {
     test_store_t *store = (test_store_t *)context;
     size_t i;
     if (!store || !visit) return TURBO_EINVAL;
     if (store->scan_status != TURBO_OK) return store->scan_status;
     for (i = 0u; i < TEST_STORE_CAPACITY; ++i) {
-        turbo_flow_record_view_t view = TURBO_FLOW_RECORD_VIEW_INIT;
+        iris_record_view_t view = IRIS_RECORD_VIEW_INIT;
         int rc;
         if (!store->records[i].used) continue;
         view.key = store->records[i].key;
@@ -74,10 +74,10 @@ static int test_scan(void *context, turbo_flow_record_visit_fn visit,
 }
 
 static int test_commit(void *context,
-                       const turbo_flow_record_mutation_t *mutations,
+                       const iris_record_mutation_t *mutations,
                        size_t mutation_count) {
     test_store_t *store = (test_store_t *)context;
-    const turbo_flow_record_mutation_t *mutation;
+    const iris_record_mutation_t *mutation;
     int index;
     size_t i;
     uint8_t *value = NULL;
@@ -94,18 +94,18 @@ static int test_commit(void *context,
     }
     index = test_find_record(store, mutation->key, mutation->key_size);
     if ((index < 0 && mutation->expected_revision !=
-                        TURBO_FLOW_RECORD_REVISION_ABSENT) ||
+                        IRIS_RECORD_REVISION_ABSENT) ||
         (index >= 0 && store->records[index].revision !=
                            mutation->expected_revision)) {
         return TURBO_EBUSY;
     }
-    if (mutation->kind == TURBO_FLOW_RECORD_DELETE) {
+    if (mutation->kind == IRIS_RECORD_DELETE) {
         if (index < 0) return TURBO_EBUSY;
         free(store->records[index].value);
         memset(&store->records[index], 0, sizeof(store->records[index]));
         return TURBO_OK;
     }
-    if (mutation->kind != TURBO_FLOW_RECORD_PUT || !mutation->value ||
+    if (mutation->kind != IRIS_RECORD_PUT || !mutation->value ||
         mutation->value_size == 0u ||
         mutation->value_size > store->api.max_value_size ||
         mutation->next_revision <= mutation->expected_revision) {
@@ -136,9 +136,9 @@ static int test_commit(void *context,
 
 static void test_store_init(test_store_t *store) {
     memset(store, 0, sizeof(*store));
-    store->api = (turbo_flow_record_store_t)TURBO_FLOW_RECORD_STORE_INIT;
-    store->api.capabilities = TURBO_FLOW_RECORD_STORE_DURABLE |
-                              TURBO_FLOW_RECORD_STORE_ATOMIC_BATCH;
+    store->api = (iris_record_store_t)IRIS_RECORD_STORE_INIT;
+    store->api.capabilities = IRIS_RECORD_STORE_DURABLE |
+                              IRIS_RECORD_STORE_ATOMIC_BATCH;
     store->api.max_key_size = 128u;
     store->api.max_value_size = 16384u;
     store->api.max_batch_size = 2u;
@@ -234,7 +234,7 @@ spec("Iris durable media event outbox") {
         test_delivery_t delivery = {0};
         iris_event_outbox_t *outbox;
         test_store_init(&store);
-        store.api.capabilities = TURBO_FLOW_RECORD_STORE_ATOMIC_BATCH;
+        store.api.capabilities = IRIS_RECORD_STORE_ATOMIC_BATCH;
         outbox = test_create_outbox(&store, &delivery);
         check_null(outbox);
         test_store_cleanup(&store);
@@ -850,13 +850,13 @@ spec("Iris durable media event outbox") {
                      "adapters: {}\n",
                      database_path);
             check_equal(tt_write_file(yaml_path, yaml, strlen(yaml)), 0);
-            outbox = iris_event_outbox_create_flowstore(
+            outbox = iris_event_outbox_create_record_store(
                 yaml_path, "iris.media_events", 0, 4u, &retention,
                 test_deliver, &delivery,
                 error, sizeof(error));
             check_null(outbox);
             check_contains(error, "development opt-in");
-            outbox = iris_event_outbox_create_flowstore(
+            outbox = iris_event_outbox_create_record_store(
                 yaml_path, "iris.media_events", 1, 4u, &retention,
                 test_deliver, &delivery,
                 error, sizeof(error));
@@ -868,7 +868,7 @@ spec("Iris durable media event outbox") {
                          IVR_OK);
             check_equal(delivery.calls, 1);
             iris_event_outbox_destroy(outbox);
-            outbox = iris_event_outbox_create_flowstore(
+            outbox = iris_event_outbox_create_record_store(
                 yaml_path, "iris.media_events", 1, 4u, &retention,
                 test_deliver, &delivery,
                 error, sizeof(error));

@@ -22,7 +22,7 @@
 #endif
 
 enum {
-    TEST_TLS_LOOPBACK_PORT = 19998,
+    TEST_TLS_LOOPBACK_PORT = 19995,
     TEST_TLS_BODY_CAPACITY = 8192,
     TEST_EVENT_ID_CAPACITY =
         sizeof(((ivr_media_event_t *)0)->event_id)

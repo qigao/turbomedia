@@ -93,6 +93,13 @@ int iris_completion_dispatcher_set_event_delivery_observer(
 
 ivr_status_t iris_completion_dispatcher_on_media_result(
     void *context, const ivr_media_command_result_t *result);
+
+/** Enqueue a terminal fact already committed by a non-media bridge. The
+    completion must carry terminal_status, event_type and result_json. */
+ivr_status_t iris_completion_dispatcher_enqueue_terminal(
+    iris_completion_dispatcher_t *dispatcher,
+    const iris_media_completion_t *completion,
+    const ivr_media_command_result_t *result, const char *stable_event_id);
 ivr_status_t iris_completion_dispatcher_on_media_event(
     void *context, const ivr_media_event_t *event);
 

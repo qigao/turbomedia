@@ -32,8 +32,8 @@
   command/result/event 不因同机或同进程部署而旁路；broker callback 后复制到 owner queue；
   Room aggregate 内部 timer/control 不绕 broker，RTP/PCM 不进入 FlowMQ。
   证据：生产化设计 2.2、2.3 节；`ivr_flowmq_gateway.c`、
-  `ivr_flowmq_subscriber.c`、`ivr_fmq_adapter.c`；`test_ivr_flowmq`、
-  `test_ivr_room_bridge`、`test_ivr_flowmq_subscriber`、`test_ivr_dispatch_processes`。
+  `ivr_room_bridge.c`、`ivr_fmq_adapter.c`；`test_ivr_flowmq`、
+  `test_ivr_room_bridge`、`test_ivr_room_bridge_dedup`、`test_ivr_dispatch_processes`。
 - [x] `ARCH-03` TIVR wire 收敛为 BIN/TEXT；TEXT 是 compact UTF-8 JSON，两者共享
   canonical DataBind schema，不提供格式猜测或 fallback。
   证据：`ivr_protocol.c`、`test_ivr_protocol`、生产化设计 2.4 节。
@@ -189,7 +189,7 @@ snapshot 的 mid-dialog 自动恢复仍不提供，必须通过显式 terminal/f
 
 ```text
 cmake --build --preset win-release-user --target room_service ivr_worker \
-  test_ivr_protocol test_ivr_schema test_ivr_flowmq test_ivr_flowmq_subscriber \
+  test_ivr_protocol test_ivr_schema test_ivr_flowmq test_ivr_room_bridge \
   test_ivr_fmq_adapter test_ivr_worker_e2e test_ivr_dispatch_processes
 ctest --preset win-release-user -R '^test_ivr_fmq_adapter$' --output-on-failure
 ctest --preset win-release-user -R '^test_ivr_dispatch_processes$' --output-on-failure
@@ -247,8 +247,8 @@ TLS transport 的认证身份由 P0-04 提供；P0-03 只消费 FlowMQ 已验证
 已验证：`test_ivr_worker_health` 覆盖 dependency negative matrix、容量、generation
 翻转和 stale update；`test_ivr_worker_http` 使用真实 listener 覆盖 `/live` 200、
 `/ready` 200/503、draining、只读 JSON、loopback 拒绝和 stop/join；
-`test_ivr_flowmq_subscriber` 使用真实 FlowMQ ROUTER/PUB/DEALER/SUB 覆盖两条 channel 的
-connect/disconnect callback；
+`test_ivr_room_bridge` 使用真实 FlowMQ ROUTER/DEALER 覆盖单一 typed channel 的
+connect/disconnect、双向 route 和身份冒用拒绝；
 `test_ivr_content`、`test_ivr_fmq_adapter` 的 `health.shadow`/无 `health.ready`
 worker negative case、`turbo_media_test_ivr_worker_dry_run`（Release）。
 `ivr_worker` 的 `--config`、`IVR_*` 环境变量、CLI 解析顺序实现为
@@ -257,22 +257,22 @@ worker negative case、`turbo_media_test_ivr_worker_dry_run`（Release）。
 非敏感 TOML 示例位于 `webrtc/apps/ivr_worker/config/ivr_worker.toml.example`；
 speech/SFU secret 仍只从环境变量读取。
 
-2026-08-10 Release 验证：`test_ivr_flowmq`、`test_ivr_flowmq_subscriber`、
+2026-08-24 Release 验证：`test_ivr_flowmq`、`test_ivr_room_bridge`、
 `test_ivr_worker_e2e`、`turbo_media_test_ivr_worker_dry_run`、
 `test_ivr_worker_health`、`test_ivr_worker_http` 共 6/6 通过。
 
 ### IVR-P0-04：mTLS/WSS identity 与授权
 
-Owner：FlowMQ gateway/subscriber/bridge、RoomService security adapter
+Owner：FlowMQ gateway/bridge、RoomService certificate identity adapter
 
-- [x] `P0-04.1` gateway、subscriber 和 bridge config 增加 CA bundle、cert、key、server name、
-  peer verification 和 rotation generation；TLS/WSS secure facade 缺少对象配置时 fail closed。
+- [x] `P0-04.1` gateway 和 bridge config 使用独立 FlowMQ 的 client/server TLS object，
+  增加 CA bundle、cert、key、server name 与 peer verification；缺少对象配置时 fail closed。
 - [x] `P0-04.2` active mode 仅允许 TLS/WSS；TCP/WS 只允许显式 test/loopback/trusted
   boundary 配置，禁止自动 fallback。
 - [x] `P0-04.3` RoomService 从验证后的 canonical certificate fingerprint 映射 worker ID；payload
   worker ID 必须精确匹配。
-- [x] `P0-04.4` 为 worker 配置 tenant/room/call scope、content capability 和 PUB/SUB topic
-  ACL；连接成功不绕过 command authorization。
+- [x] `P0-04.4` 为 worker 配置 tenant/room/call scope 与 content capability ACL；
+  连接成功不绕过 command authorization。
 - [x] `P0-04.5` command/result/status 校验 deadline、instance ID、connection generation 和
   stable message ID。
 - [x] `P0-04.6` replay/dedup cache 设置 item/time 上限，过 retention window 的 mutation
@@ -286,12 +286,12 @@ Owner：FlowMQ gateway/subscriber/bridge、RoomService security adapter
 - [x] 跨 tenant/room/call、错误 topic、错误 content capability 的命令不改变 Room version。
 - [x] replay、旧 generation 和轮换窗口前后测试通过。
 
-P0-04.1 完成证据（事实，2026-08-10）：TurboFlow `flowmq` 增加
-`turbo_flow_fmq_tls_config_t`，facade 在 create 时复制证书/密钥字符串，并在 TLS/WSS
-CONNECT/BIND 前配置 CoroNet；`test_fmq` 的对象级 TLS、hostname mismatch、mTLS negative
-tests 及完整 FlowMQ CTest 16/16 通过。IVR gateway/subscriber/bridge 已透传借用的 TLS
-配置指针，`test_ivr_flowmq_subscriber`、`test_ivr_room_bridge`、`test_ivr_fmq_adapter`
-均通过。P0-04.4 至 P0-04.6 于 2026-08-11 补齐（证据见下方 P0-04.4/04.5/04.6 段落）；
+P0-04.1 完成证据（事实，2026-08-24）：TurboMedia 直接链接独立
+`FlowMQ::FlowMQ`，gateway 使用 typed DEALER endpoint，Room bridge 使用 typed ROUTER
+endpoint；两者在 create 时复制证书/密钥配置，并在 TLS/WSS CONNECT/BIND 前配置 CoroNet。
+内部 command/result/event/query 共用一个身份约束的 ROUTER/DEALER channel，不再创建
+独立 PUB/SUB endpoint。`test_ivr_flowmq`、`test_ivr_room_bridge`、
+`test_ivr_room_bridge_dedup` 与 `test_ivr_fmq_adapter` 覆盖 codec、route、身份绑定与去重；
 不得使用进程级 `TURBONET_TLS_*` 环境变量冒充多 endpoint 配置，也不得在 TLS 失败时
 自动回退 TCP/WS。
 
@@ -301,12 +301,11 @@ worker ID、正 generation；同一 worker/fingerprint 的重复映射 fail fast
 只比较已由 CoroNet 验证的 fingerprint 与 claimed identity，不执行网络或 Room mutation。
 每项可配置 active 与 previous fingerprint，previous 在注入时钟达到 expiry 时立即失效；
 `test_ivr_certificate_identity` 覆盖 active、previous expiry、错误 identity、格式错误和
-重复映射。RoomService 配置解析并验证 TLS material、shared secret 和 bounded worker identity
-数组，server owner 将 default-deny realm、认证 provider 与 certificate verifier 注入 ROUTER/PUB；
-worker DEALER/SUB 使用同一显式 CONNECT identity 和 client security owner。`test_ivr_fmq_mtls`
-使用真实 TLS fixture 同时覆盖两条通道：previous fingerprint 在窗口内连接成功、同一证书
-冒用不同 worker ID 失败、窗口到期后旧 fingerprint 失败。`test_ivr_fmq_security` 覆盖 secret、
-认证和精确 topic ACL；`turbo_media_test_ivr_worker_rejects_active_plaintext` 验证 active worker
+重复映射。RoomService 配置解析并验证 TLS material 和 bounded worker identity 数组，
+server owner 将 certificate verifier 注入 ROUTER；worker DEALER 使用显式 CONNECT identity。
+每条 ROUTER 消息携带 peer identity，bridge 要求其与 claimed worker ID 完全相同。
+`test_ivr_certificate_identity` 覆盖轮换窗口，Room bridge/adapter loopback 测试覆盖冒用拒绝；
+`turbo_media_test_ivr_worker_rejects_active_plaintext` 验证 active worker
 不会回退 plaintext；`turbo_media_test_room_service_config` 验证 plaintext 仅限显式 loopback。
 
 P0-04.8 完成证据（事实，2026-08-10）：IVR/RoomService 日志审查未发现 token、key、证书
@@ -317,21 +316,21 @@ release reason，RoomService config summary 不再输出完整 SFU control URL/r
 `turbo_media_test_ivr_worker_log_redaction` 和
 `turbo_media_test_room_service_log_redaction` 分别向 URL、API key、node registry 与 auth
 secret 注入唯一标记，并通过 `FAIL_REGULAR_EXPRESSION` 验证 stdout/stderr 不含标记；Release
-2/2 通过。同期 `test_ivr*` 26/26、IVR/RoomService 进程级测试 6/6 与 TurboFlow FlowMQ
-16/16 回归通过。
+2/2 通过。独立 FlowMQ 迁移后的 focused codec、ROUTER/DEALER、dedup、adapter 与
+SQLite ORM 测试另见 2026-08-24 验证记录。
 
 P0-04.4/04.5/04.6 完成证据（事实，2026-08-11）：
 
 - `P0-04.4`：新增 `webrtc/ivr/include/ivr/ivr_acl.h`（`ivr_acl_scope_allows` /
   `ivr_acl_tenant_allows`，tenant 采用 `<tenant>/` room_id 前缀约定）。RoomService
   `[fmq.workers]` 每项可配置 `tenant_id` / `room_scope` / `call_scope` /
-  `content_capabilities` / `pub_topics`（`config.c`、`room_service.toml.example`），
+  `content_capabilities`（`config.c`、`room_service.toml.example`），
   server 注入 adapter 的 worker ACL；adapter 在 `ivr_fmq_adapter_apply` 与
   `ivr_fmq_adapter_on_command` 入口做 command authorization（未配置 ACL 时保持
   legacy allow-all，配置后未列名 worker fail closed），dispatch selection 与 retry
   只在 ACL 覆盖 room/call 与 content package 的 worker 间进行，且命令被拒绝不改变
-  Room version（新增 `acl_rejects` 计数）。`ivr_fmq_security` 增加 per-worker
-  PUB/SUB topic allowlist（默认 `pub_topic`），realm 只对列出的 topic 授予 SUB/READ。
+  Room version（新增 `acl_rejects` 计数）。FlowMQ transport identity 只负责连接身份，
+  tenant/room/call/content authorization 仍由 adapter 的 worker ACL 负责。
   worker 侧 `ivr_worker.toml.example` 与 `main.c` 增加同名字段，dispatch 收包时校验
   scope（`worker_dispatch_in_scope`）并拒绝 `IVR_EAUTH`。
 - `P0-04.5`：worker 在 dispatch 收包时按 `deadline_timeout_ms` 相对 TTL 求值
@@ -344,8 +343,7 @@ P0-04.4/04.5/04.6 完成证据（事实，2026-08-11）：
   结果、窗口外以 `IVR_ESTALE` 显式拒绝（新增 `dedup_expired_rejects` 计数），容量仍受
   `dedup_capacity` 环缓冲约束。
 
-验收证据：`test_ivr_acl`（scope/tenant 规则）、`test_ivr_fmq_security`
-（per-worker topic ACL 与未知 worker 拒绝）、`test_ivr_fmq_adapter`
+验收证据：`test_ivr_acl`（scope/tenant 规则）、`test_ivr_fmq_adapter`
 （`test_apply_acl_scope_denies_cross_tenant_room_call` 跨 tenant/room/call 命令不改
 Room version、`test_live_acl_blocks_out_of_scope_join` 连接成功不绕过授权）、
 `test_ivr_room_bridge_dedup`（窗口内幂等、窗口外 `IVR_ESTALE`）、`test_ivr_flowmq`
@@ -503,7 +501,7 @@ Owner：CI、deployment、IVR integration tests
 2026-08-10 ASan 验证：`win-dev-user` 明确输出 `AddressSanitizer: ON`；
 `test_ivr_dtmf_rtp`、`test_ivr_session`、`test_ivr_worker`、
 `test_ivr_media_reconnect`、`test_ivr_media_supervisor`、
-`test_ivr_worker_media_loop`、`test_ivr_flowmq_subscriber`、
+`test_ivr_worker_media_loop`、`test_ivr_room_bridge`、
 `test_ivr_worker_e2e`、`turbo_media_test_ivr_worker_dry_run`、
 `test_ivr_worker_health`、`test_ivr_worker_http` 共 11/11 通过；随后
 `test_ivr_openai_provider`（并发 speech/cancel/resource cleanup）与

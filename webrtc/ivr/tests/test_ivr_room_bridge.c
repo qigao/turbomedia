@@ -206,6 +206,31 @@ static ivr_status_t send_join(const char *message_id, uint64_t expected_version)
     return g_ops.submit_copy(g_ops.context, &cmd);
 }
 
+static ivr_status_t send_join_with_ops(const ivr_command_gateway_ops_t *ops,
+                                       const char *message_id,
+                                       uint64_t expected_version) {
+    static ivr_bytes_view_t type = {"conference.join", 15};
+    static ivr_bytes_view_t room = {"room-42", 7};
+    static ivr_bytes_view_t call = {"call-42", 7};
+    static ivr_bytes_view_t args = {"{}", 2};
+    ivr_command_view_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.message_id.data = message_id;
+    cmd.message_id.size = strlen(message_id);
+    cmd.command_type = type;
+    cmd.call.room_id = room;
+    cmd.call.call_id = call;
+    cmd.call.call_generation = 1;
+    cmd.call.expected_room_version = expected_version;
+    cmd.args_json = args;
+    return ops->submit_copy(ops->context, &cmd);
+}
+
+static void *stop_bridge_thread(void *opaque) {
+    ivr_room_bridge_stop((ivr_room_bridge_t *)opaque);
+    return NULL;
+}
+
 void setUp(void) {
     DataBindError err = DATA_BIND_ERROR_INIT;
     check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
@@ -368,9 +393,18 @@ void test_worker_sync_unconnected_identity_rejected(void) {
     check_equal(worker_sync_status(), IVR_EAUTH);
 
     /* the legitimate worker (connected as its claimed id) still registers */
-    g_reply_ready = 0;
-    check_equal(ivr_flowmq_gateway_send_worker_sync(g_gateway, "ws-2"), IVR_OK);
-    check_true(wait_reply(8000));
+    {
+        int replied = 0;
+        for (int attempt = 0; attempt < 20 && !replied; ++attempt) {
+            char message_id[32];
+            snprintf(message_id, sizeof(message_id), "ws-2-%d", attempt);
+            g_reply_ready = 0;
+            check_equal(ivr_flowmq_gateway_send_worker_sync(
+                            g_gateway, message_id), IVR_OK);
+            replied = wait_reply(250);
+        }
+        check_true(replied);
+    }
     check_equal(worker_sync_status(), 0);
 
     ivr_flowmq_gateway_destroy(attacker);
@@ -595,6 +629,156 @@ void test_destroy_without_stop(void) {
     ivr_room_bridge_destroy(b2);
 }
 
+void test_stop_discards_command_queued_behind_inflight_handler(void) {
+    ivr_room_bridge_t *bridge = NULL;
+    ivr_flowmq_gateway_t *gateway = NULL;
+    ivr_command_gateway_ops_t ops;
+    ivr_room_command_handler_t handler;
+    ivr_room_bridge_config_t bridge_config;
+    ivr_flowmq_gateway_config_t gateway_config;
+    ivr_call_dispatch_t dispatch;
+    ivr_thread_t stop_thread;
+    memset(&ops, 0, sizeof(ops));
+    memset(&handler, 0, sizeof(handler));
+    memset(&bridge_config, 0, sizeof(bridge_config));
+    memset(&gateway_config, 0, sizeof(gateway_config));
+    memset(&dispatch, 0, sizeof(dispatch));
+    memset(&stop_thread, 0, sizeof(stop_thread));
+    atomic_store(&g_result_handler_entered, 0);
+    atomic_store(&g_result_handler_release, 0);
+    g_applied = 0;
+
+    handler.get_room_version = mock_get_room_version;
+    handler.on_command = mock_on_command;
+    handler.on_dispatch_result = blocking_on_dispatch_result;
+    bridge_config.host = "127.0.0.1";
+    bridge_config.port = TEST_PORT + 3;
+    bridge_config.timeout_ms = 5000;
+    bridge_config.queue_capacity = 4;
+    bridge_config.dedup_capacity = 4;
+    bridge_config.handler = handler;
+    check_equal(ivr_room_bridge_create(&bridge_config, &bridge), IVR_OK);
+    check_equal(ivr_room_bridge_start(bridge), IVR_OK);
+
+    gateway_config.worker_id = "ivr-worker-test";
+    gateway_config.host = "127.0.0.1";
+    gateway_config.port = TEST_PORT + 3;
+    gateway_config.timeout_ms = 5000;
+    gateway_config.on_reply = on_reply_cb;
+    check_equal(ivr_flowmq_gateway_create(&gateway_config, &ops, &gateway),
+                IVR_OK);
+    check_equal(ivr_flowmq_gateway_start(gateway), IVR_OK);
+    ivr_thread_sleep_ms(800);
+    g_reply_ready = 0;
+    check_equal(ivr_flowmq_gateway_send_worker_sync(gateway, "stop-sync"),
+                IVR_OK);
+    check_true(wait_reply(8000));
+
+    dispatch.wire_version = 1;
+    snprintf(dispatch.worker_id, sizeof(dispatch.worker_id), "ivr-worker-test");
+    snprintf(dispatch.room_id, sizeof(dispatch.room_id), "room-42");
+    snprintf(dispatch.call_id, sizeof(dispatch.call_id), "call-stop");
+    dispatch.call_generation = 1;
+    snprintf(dispatch.message_id, sizeof(dispatch.message_id), "stop-block");
+    check_equal(ivr_flowmq_gateway_send_dispatch_result(
+                    gateway, &dispatch, IVR_OK, "", ""), IVR_OK);
+    check_true(wait_atomic_count(&g_result_handler_entered, 1, 4000));
+    check_equal(send_join_with_ops(&ops, "mid-1", g_room_version), IVR_OK);
+    ivr_thread_sleep_ms(100);
+
+    check_equal(ivr_thread_create(&stop_thread, stop_bridge_thread, bridge), 0);
+    ivr_thread_sleep_ms(100);
+    atomic_store(&g_result_handler_release, 1);
+    check_equal(ivr_thread_join(&stop_thread), 0);
+    check_equal((uint64_t)g_applied, (uint64_t)0u);
+    check_equal(ivr_room_bridge_start(bridge), IVR_OK);
+    ivr_thread_sleep_ms(100);
+    check_equal((uint64_t)g_applied, (uint64_t)0u);
+
+    ivr_flowmq_gateway_destroy(gateway);
+    ivr_room_bridge_destroy(bridge);
+}
+
+void test_old_sync_route_is_rejected_after_same_identity_reconnect(void) {
+    ivr_room_bridge_t *bridge = NULL;
+    ivr_flowmq_gateway_t *old_gateway = NULL;
+    ivr_flowmq_gateway_t *new_gateway = NULL;
+    ivr_command_gateway_ops_t old_ops;
+    ivr_command_gateway_ops_t new_ops;
+    ivr_room_command_handler_t handler;
+    ivr_room_bridge_config_t bridge_config;
+    ivr_flowmq_gateway_config_t gateway_config;
+    ivr_call_dispatch_t dispatch;
+    ivr_room_bridge_stats_t stats;
+    memset(&old_ops, 0, sizeof(old_ops));
+    memset(&new_ops, 0, sizeof(new_ops));
+    memset(&handler, 0, sizeof(handler));
+    memset(&bridge_config, 0, sizeof(bridge_config));
+    memset(&gateway_config, 0, sizeof(gateway_config));
+    memset(&dispatch, 0, sizeof(dispatch));
+    memset(&stats, 0, sizeof(stats));
+    atomic_store(&g_result_handler_entered, 0);
+    atomic_store(&g_result_handler_release, 0);
+
+    handler.get_room_version = mock_get_room_version;
+    handler.on_command = mock_on_command;
+    handler.on_dispatch_result = blocking_on_dispatch_result;
+    bridge_config.host = "127.0.0.1";
+    bridge_config.port = TEST_PORT + 4;
+    bridge_config.timeout_ms = 5000;
+    bridge_config.queue_capacity = 8;
+    bridge_config.dedup_capacity = 8;
+    bridge_config.handler = handler;
+    check_equal(ivr_room_bridge_create(&bridge_config, &bridge), IVR_OK);
+    check_equal(ivr_room_bridge_start(bridge), IVR_OK);
+
+    gateway_config.worker_id = "ivr-worker-test";
+    gateway_config.host = "127.0.0.1";
+    gateway_config.port = TEST_PORT + 4;
+    gateway_config.timeout_ms = 5000;
+    gateway_config.on_reply = on_reply_cb;
+    check_equal(ivr_flowmq_gateway_create(&gateway_config, &old_ops,
+                                          &old_gateway), IVR_OK);
+    check_equal(ivr_flowmq_gateway_start(old_gateway), IVR_OK);
+    ivr_thread_sleep_ms(800);
+    g_reply_ready = 0;
+    check_equal(ivr_flowmq_gateway_send_worker_sync(old_gateway, "route-a"),
+                IVR_OK);
+    check_true(wait_reply(8000));
+
+    dispatch.wire_version = 1;
+    snprintf(dispatch.worker_id, sizeof(dispatch.worker_id), "ivr-worker-test");
+    snprintf(dispatch.room_id, sizeof(dispatch.room_id), "room-42");
+    snprintf(dispatch.call_id, sizeof(dispatch.call_id), "call-route");
+    dispatch.call_generation = 1;
+    snprintf(dispatch.message_id, sizeof(dispatch.message_id), "route-block");
+    check_equal(ivr_flowmq_gateway_send_dispatch_result(
+                    old_gateway, &dispatch, IVR_OK, "", ""), IVR_OK);
+    check_true(wait_atomic_count(&g_result_handler_entered, 1, 4000));
+    check_equal(ivr_flowmq_gateway_send_worker_sync(old_gateway,
+                                                    "route-a-delayed"),
+                IVR_OK);
+    ivr_thread_sleep_ms(100);
+    ivr_flowmq_gateway_destroy(old_gateway);
+    old_gateway = NULL;
+
+    g_reply_ready = 0;
+    check_equal(ivr_flowmq_gateway_create(&gateway_config, &new_ops,
+                                          &new_gateway), IVR_OK);
+    check_equal(ivr_flowmq_gateway_start(new_gateway), IVR_OK);
+    ivr_thread_sleep_ms(800);
+    check_equal(ivr_flowmq_gateway_send_worker_sync(new_gateway, "route-b"),
+                IVR_OK);
+    atomic_store(&g_result_handler_release, 1);
+    check_true(wait_reply(8000));
+    check_equal(worker_sync_status(), IVR_OK);
+    ivr_room_bridge_get_stats(bridge, &stats);
+    check_true(stats.auth_rejects >= 1u);
+
+    ivr_flowmq_gateway_destroy(new_gateway);
+    ivr_room_bridge_destroy(bridge);
+}
+
 void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
     ivr_room_bridge_t *bridge = NULL;
     ivr_flowmq_gateway_t *gateway = NULL;
@@ -773,6 +957,8 @@ spec("test_ivr_room_bridge") {
   it("test_double_start_rejected") { test_double_start_rejected(); };
   it("test_restart_after_stop") { test_restart_after_stop(); };
   it("test_destroy_without_stop") { test_destroy_without_stop(); };
+  it("test_stop_discards_command_queued_behind_inflight_handler") { test_stop_discards_command_queued_behind_inflight_handler(); };
+  it("test_old_sync_route_is_rejected_after_same_identity_reconnect") { test_old_sync_route_is_rejected_after_same_identity_reconnect(); };
   it("test_dispatch_result_queue_overflow_is_counted_and_fail_closed") { test_dispatch_result_queue_overflow_is_counted_and_fail_closed(); };
   it("test_encode_dispatch_escapes_special_chars") { test_encode_dispatch_escapes_special_chars(); };
   it("test_encode_result_escapes_special_chars") { test_encode_result_escapes_special_chars(); };

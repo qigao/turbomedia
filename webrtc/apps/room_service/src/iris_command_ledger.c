@@ -1,7 +1,7 @@
 #include "iris_command_ledger.h"
 
 #include "iris_command_ledger_v2.h"
-#include "iris_flowstore.h"
+#include "iris_orm_store.h"
 
 #include <data_bind.h>
 #include <platform.h>
@@ -50,8 +50,8 @@ typedef struct ledger_candidate_s {
 } ledger_candidate_t;
 
 struct iris_command_ledger_s {
-    turbo_flow_record_store_t *store;
-    iris_flowstore_owner_t *flowstore_owner;
+    iris_record_store_t *store;
+    iris_orm_store_owner_t *orm_store_owner;
     DataBind *codec;
     ledger_request_t **requests;
     size_t capacity;
@@ -269,7 +269,7 @@ static int commit_record(iris_command_ledger_t *ledger,
                          const IrisProviderCommandRecordV2_t *record,
                          uint64_t expected_revision,
                          uint64_t next_revision) {
-    turbo_flow_record_mutation_t mutation = TURBO_FLOW_RECORD_MUTATION_INIT;
+    iris_record_mutation_t mutation = IRIS_RECORD_MUTATION_INIT;
     uint8_t *value = NULL;
     size_t value_size = 0u;
     int rc;
@@ -278,7 +278,7 @@ static int commit_record(iris_command_ledger_t *ledger,
     }
     rc = encode_record(ledger->codec, record, &value, &value_size);
     if (rc == TURBO_OK) {
-        mutation.kind = TURBO_FLOW_RECORD_PUT;
+        mutation.kind = IRIS_RECORD_PUT;
         mutation.key = (const uint8_t *)record->command_id;
         mutation.key_size = strlen(record->command_id);
         mutation.expected_revision = expected_revision;
@@ -298,7 +298,7 @@ typedef struct find_context_s {
     int found;
 } find_context_t;
 
-static int find_visit(void *context, const turbo_flow_record_view_t *view) {
+static int find_visit(void *context, const iris_record_view_t *view) {
     find_context_t *find = (find_context_t *)context;
     IrisProviderCommandRecordV2_t record;
     size_t command_id_size = strlen(find->command_id);
@@ -357,7 +357,7 @@ static int same_resource_incarnation(
 }
 
 static int resource_history_visit(
-    void *context, const turbo_flow_record_view_t *view) {
+    void *context, const iris_record_view_t *view) {
     resource_history_context_t *history =
         (resource_history_context_t *)context;
     IrisProviderCommandRecordV2_t record;
@@ -424,7 +424,7 @@ static ivr_status_t process_claim(iris_command_ledger_t *ledger,
                                   IRIS_COMMAND_STATE_INTENT, now_ms);
         if (rc == TURBO_OK) {
             rc = commit_record(ledger, &record,
-                               TURBO_FLOW_RECORD_REVISION_ABSENT, 1u);
+                               IRIS_RECORD_REVISION_ABSENT, 1u);
             IrisProviderCommandRecordV2_clear(&record);
         }
         if (rc != TURBO_OK) return storage_failure(ledger);
@@ -573,7 +573,7 @@ typedef struct collect_context_s {
 } collect_context_t;
 
 static int collect_visit(void *context,
-                         const turbo_flow_record_view_t *view) {
+                         const iris_record_view_t *view) {
     collect_context_t *collect = (collect_context_t *)context;
     IrisProviderCommandRecordV2_t record;
     int selected = 0;
@@ -665,9 +665,9 @@ static ivr_status_t process_retention(iris_command_ledger_t *ledger,
     request->retention_result.selected = collect.count;
     request->retention_result.remaining_terminal = collect.terminal_total;
     for (i = 0u; rc == TURBO_OK && i < collect.count; ++i) {
-        turbo_flow_record_mutation_t mutation =
-            TURBO_FLOW_RECORD_MUTATION_INIT;
-        mutation.kind = TURBO_FLOW_RECORD_DELETE;
+        iris_record_mutation_t mutation =
+            IRIS_RECORD_MUTATION_INIT;
+        mutation.kind = IRIS_RECORD_DELETE;
         mutation.key = (const uint8_t *)items[i].record.command_id;
         mutation.key_size = strlen(items[i].record.command_id);
         mutation.expected_revision = items[i].revision;
@@ -694,7 +694,7 @@ static ivr_status_t process_retention(iris_command_ledger_t *ledger,
 static ivr_status_t process_abort(iris_command_ledger_t *ledger,
                                   ledger_request_t *request) {
     ledger_candidate_t candidate;
-    turbo_flow_record_mutation_t mutation = TURBO_FLOW_RECORD_MUTATION_INIT;
+    iris_record_mutation_t mutation = IRIS_RECORD_MUTATION_INIT;
     int found = 0;
     int rc = find_record(ledger, request->identity.command_id, &candidate,
                          &found);
@@ -706,7 +706,7 @@ static ivr_status_t process_abort(iris_command_ledger_t *ledger,
         if (found) IrisProviderCommandRecordV2_clear(&candidate.record);
         return IVR_ESTATE;
     }
-    mutation.kind = TURBO_FLOW_RECORD_DELETE;
+    mutation.kind = IRIS_RECORD_DELETE;
     mutation.key = (const uint8_t *)candidate.record.command_id;
     mutation.key_size = strlen(candidate.record.command_id);
     mutation.expected_revision = candidate.revision;
@@ -870,9 +870,9 @@ iris_command_ledger_t *iris_command_ledger_create(
         config->retention_sweep_interval_ms >
             UINT64_MAX / UINT64_C(1000000) ||
         config->request_queue_capacity > SIZE_MAX / sizeof(void *) ||
-        (config->store->capabilities & TURBO_FLOW_RECORD_STORE_DURABLE) == 0u ||
+        (config->store->capabilities & IRIS_RECORD_STORE_DURABLE) == 0u ||
         (config->store->capabilities &
-         TURBO_FLOW_RECORD_STORE_ATOMIC_BATCH) == 0u ||
+         IRIS_RECORD_STORE_ATOMIC_BATCH) == 0u ||
         !config->store->scan || !config->store->commit ||
         config->store->max_key_size < IRIS_COMMAND_ID_CAPACITY - 1u ||
         config->store->max_value_size < IRIS_COMMAND_LEDGER_MIN_VALUE_SIZE ||
@@ -910,16 +910,16 @@ iris_command_ledger_t *iris_command_ledger_create(
     return ledger;
 }
 
-iris_command_ledger_t *iris_command_ledger_create_flowstore(
+iris_command_ledger_t *iris_command_ledger_create_record_store(
     const char *yaml_path, const char *channel_name,
     int allow_development_sqlite, size_t request_queue_capacity,
     size_t retention_batch_size, uint64_t terminal_retention_ms,
     uint64_t retention_sweep_interval_ms,
     char *error, size_t error_capacity) {
-    iris_flowstore_owner_t *owner;
+    iris_orm_store_owner_t *owner;
     iris_command_ledger_config_t config;
     iris_command_ledger_t *ledger;
-    owner = iris_flowstore_owner_create(
+    owner = iris_orm_store_owner_create(
         yaml_path, channel_name, allow_development_sqlite, error,
         error_capacity);
     if (!owner) return NULL;
@@ -928,13 +928,13 @@ iris_command_ledger_t *iris_command_ledger_create_flowstore(
     config.retention_batch_size = retention_batch_size;
     config.terminal_retention_ms = terminal_retention_ms;
     config.retention_sweep_interval_ms = retention_sweep_interval_ms;
-    config.store = iris_flowstore_owner_store(owner);
+    config.store = iris_orm_store_owner_store(owner);
     ledger = iris_command_ledger_create(&config);
     if (!ledger) {
-        iris_flowstore_owner_destroy(owner);
+        iris_orm_store_owner_destroy(owner);
         return NULL;
     }
-    ledger->flowstore_owner = owner;
+    ledger->orm_store_owner = owner;
     return ledger;
 }
 
@@ -990,7 +990,7 @@ void iris_command_ledger_destroy(iris_command_ledger_t *ledger) {
     turbo_mutex_destroy(&ledger->mutex);
     data_bind_free(ledger->codec);
     free(ledger->requests);
-    iris_flowstore_owner_destroy(ledger->flowstore_owner);
+    iris_orm_store_owner_destroy(ledger->orm_store_owner);
     free(ledger);
 }
 

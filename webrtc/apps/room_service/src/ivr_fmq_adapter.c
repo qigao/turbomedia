@@ -17,7 +17,6 @@
 #define IVR_FMQ_ADAPTER_DEFAULT_DISPATCH_MAX_ATTEMPTS 3u
 #define IVR_FMQ_ADAPTER_DEFAULT_DEDUP_RETENTION_MS 60000u
 #define IVR_FMQ_ADAPTER_MAX_DISPATCH_ATTEMPTS 8u
-#define IVR_FMQ_ADAPTER_DEFAULT_PUB_TOPIC "room.events"
 #define IVR_FMQ_ADAPTER_DEFAULT_CONTENT_PACKAGE "conference-greeting"
 
 /* One bounded per-call domain sequence slot. The aggregate has no per-call
@@ -2978,7 +2977,7 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
     }
     a->service = service;
     a->media = config->media;
-    a->events_enabled = config->pub_port > 0;
+    a->events_enabled = config->bind_port > 0;
     a->media_observer = config->media_observer;
     a->inventory_observer = config->inventory_observer;
     snprintf(a->content_package, sizeof(a->content_package), "%s",
@@ -3118,7 +3117,9 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
         bridge_config.transport = config->transport;
         bridge_config.path = config->path;
         bridge_config.tls = config->tls;
-        bridge_config.security = config->security;
+        bridge_config.verify_peer_identity = config->verify_peer_identity;
+        bridge_config.verify_peer_identity_context =
+            config->verify_peer_identity_context;
         /* The worker heartbeat is the liveness signal. When callers leave
            transport timeout unset, keep the bridge alive for at least one
            full lease so the default heartbeat cannot race an idle timeout. */
@@ -3129,15 +3130,6 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
         bridge_config.dedup_retention_ms = a->dedup_retention_ms;
         bridge_config.now_ms = a->clock.now_ms;
         bridge_config.now_ctx = a->clock.context;
-        bridge_config.pub_host = "127.0.0.1";
-        bridge_config.pub_port = config->pub_port;
-        bridge_config.pub_transport = config->transport;
-        bridge_config.pub_path = config->path;
-        bridge_config.pub_tls = config->tls;
-        bridge_config.pub_security = config->security;
-        bridge_config.pub_topic =
-            config->pub_topic ? config->pub_topic
-                              : IVR_FMQ_ADAPTER_DEFAULT_PUB_TOPIC;
         bridge_config.handler.context = a;
         bridge_config.handler.get_room_version = ivr_fmq_adapter_get_room_version;
         bridge_config.handler.on_command = ivr_fmq_adapter_on_command;

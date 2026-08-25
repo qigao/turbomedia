@@ -6,8 +6,9 @@ project(
   LANGUAGES C)
 
 # Standalone IVR worker executable. The parent IVR module requires the FlowMQ
-# gateway/subscriber before this directory is added.
+# typed DEALER gateway before this directory is added.
 add_executable(ivr_worker
+  ivr_worker_control.c
   ivr_worker_health.c
   ivr_worker_metrics.c
   ivr_worker_http.c
@@ -41,7 +42,9 @@ set_target_properties(ivr_worker
     FOLDER "Applications")
 
 turbo_media_deploy_windows_runtime(
-  ivr_worker TurboHttp::Iris TurboNet::CoroNet RulesForge::rules_forge)
+  ivr_worker FlowMQ::FlowMQ TurboHttp::Iris TurboHttp::TurboHttp
+  TurboNet::CoroNet
+  RulesForge::rules_forge)
 
 # Dry-run smoke test: validates config and exercises media-call admission
 # without touching FlowMQ.
@@ -107,14 +110,24 @@ set_target_properties(test_ivr_worker_health
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 cmake_add_test(
+  test_ivr_worker_control
+  SOURCES test_ivr_worker_control.c ivr_worker_control.c
+  LIBS TurboUtils::TinyTest TurboUtils::Core
+  INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
+           ${CMAKE_CURRENT_SOURCE_DIR}/../../tests
+  FOLDER "turbomedia/tests/ivr")
+set_target_properties(test_ivr_worker_control
+  PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+cmake_add_test(
   test_ivr_worker_http
   SOURCES test_ivr_worker_http.c
           ivr_worker_health.c
           ivr_worker_metrics.c
           ivr_worker_http.c
           ../../ivr/src/ivr_http_media_client.c
-  LIBS TurboUtils::TinyTest TurboUtils::Core TurboHttp::Iris TurboNet::CoroNet
-       $<$<PLATFORM_ID:Windows>:ws2_32>
+  LIBS TurboUtils::TinyTest TurboUtils::Core TurboHttp::Iris
+       TurboHttp::TurboHttp TurboNet::CoroNet
        $<$<PLATFORM_ID:Linux>:pthread>
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
            ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
@@ -123,13 +136,14 @@ cmake_add_test(
 set_target_properties(test_ivr_worker_http
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 turbo_media_deploy_windows_runtime(
-  test_ivr_worker_http TurboHttp::Iris TurboNet::CoroNet)
+  test_ivr_worker_http TurboHttp::Iris TurboHttp::TurboHttp TurboNet::CoroNet)
 
 install(FILES config/ivr_worker.toml.example
   DESTINATION etc/turbonet COMPONENT IvrWorker)
 if(WIN32)
   install(
     FILES $<TARGET_FILE:TurboHttp::Iris>
+          $<TARGET_FILE:TurboHttp::TurboHttp>
           $<TARGET_FILE:TurboNet::CoroNet>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>
     DESTINATION bin

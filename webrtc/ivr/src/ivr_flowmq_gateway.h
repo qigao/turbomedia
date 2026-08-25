@@ -15,10 +15,7 @@
 
 #include "ivr/ivr_worker.h"
 #include "data_bind.h"
-
-typedef struct turbo_flow_fmq_security_binding_s
-    turbo_flow_fmq_security_binding_t;
-typedef struct turbo_flow_fmq_tls_config_s turbo_flow_fmq_tls_config_t;
+#include "flowmq_coronet.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,16 +44,13 @@ typedef struct {
     const char *worker_id; /* DEALER identity; also stamped on commands */
     const char *host;      /* ROUTER host */
     int port;
-    int transport;         /* turbo_flow_fmq_transport_t; 0 = TCP */
+    int transport;         /* flowmq_coronet_transport_t; 0 = TCP */
     const char *path;      /* WS/WSS path; NULL = "/" */
     uint64_t timeout_ms;   /* 0 = 5000 */
     uint64_t reconnect_initial_ms; /* 0 = 1000 */
     uint64_t reconnect_max_ms;     /* 0 = 30000 */
     /* Borrowed object-level TLS/WSS material; FlowMQ copies it during create. */
-    const turbo_flow_fmq_tls_config_t *tls;
-    /* Borrowed secure binding; when non-NULL create uses the mandatory-secure
-       FlowMQ facade and fails closed on authentication/ACL errors. */
-    const turbo_flow_fmq_security_binding_t *security;
+    const flowmq_coronet_tls_client_config_t *tls;
     /* Optional DEALER reply ingress (command results from the ROUTER).
        The frame bytes are borrowed for the call only; copy to retain. */
     void (*on_reply)(void *ctx, const uint8_t *frame, size_t len);

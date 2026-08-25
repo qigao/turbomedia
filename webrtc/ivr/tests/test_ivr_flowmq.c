@@ -1,7 +1,7 @@
 /* test_ivr_flowmq.c - FlowMQ DEALER gateway encoding + lifecycle.
  * The pure frame encoder is verified against the generated schema (decode the
  * BIN payload back and compare typed fields); no live ROUTER peer is needed.
- * Requires TURBO_MEDIA_HAS_FLOWMQ (FlowMQ/TurboFlow + tbe_compiler present). */
+ * Requires TURBO_MEDIA_HAS_FLOWMQ (FlowMQ + tbe_compiler present). */
 #include "ivr_flowmq_gateway.h"
 #include "ivr_frame.h"
 #include "ivr_room_bridge.h"
@@ -618,6 +618,7 @@ static void make_media_command(ivr_media_command_t *command,
     memset(command, 0, sizeof(*command));
     command->kind = kind;
     snprintf(command->message_id, sizeof(command->message_id), "media-1");
+    snprintf(command->tenant_id, sizeof(command->tenant_id), "tenant-1");
     snprintf(command->provider_session_id,
              sizeof(command->provider_session_id), "session-1");
     snprintf(command->dialog_id, sizeof(command->dialog_id), "dialog-1");
@@ -638,6 +639,7 @@ static ivr_status_t encode_legacy_cancel_v1(uint8_t *frame,
                                              size_t *frame_size) {
     static const char json[] =
         "{\"message_id\":\"legacy-cancel\","
+        "\"tenant_id\":\"tenant-1\","
         "\"provider_session_id\":\"session-1\","
         "\"dialog_id\":\"dialog-1\",\"worker_id\":\"worker-1\","
         "\"room_id\":\"room-1\",\"call_id\":\"call-1\","
@@ -810,6 +812,7 @@ void test_worker_inventory_query_and_page_roundtrip(void) {
         snprintf(record->worker_instance_id,
                  sizeof(record->worker_instance_id), "instance-7");
         record->worker_epoch = 7;
+        snprintf(record->tenant_id, sizeof(record->tenant_id), "tenant-1");
         snprintf(record->provider_session_id,
                  sizeof(record->provider_session_id), "session-%u", i);
         snprintf(record->dialog_id, sizeof(record->dialog_id), "dialog-%u",

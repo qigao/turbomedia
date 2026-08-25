@@ -22,14 +22,11 @@ typedef struct room_service_fmq_worker_identity_s {
     uint64_t generation;
     /* P0-04.4 authorization scope. NULL = not restricted for that dimension.
        tenant_id uses the "<tenant>/" room_id prefix convention; room_scope,
-       call_scope and content_capabilities are "*" or comma-separated ids.
-       pub_topics is the comma-separated PUB/SUB topic allowlist (defaults to
-       [fmq].pub_topic when absent). */
+       call_scope and content_capabilities are "*" or comma-separated ids. */
     const char *tenant_id;
     const char *room_scope;
     const char *call_scope;
     const char *content_capabilities;
-    const char *pub_topics;
 } room_service_fmq_worker_identity_t;
 
 typedef struct room_service_app_config_s {
@@ -97,13 +94,9 @@ typedef struct room_service_app_config_s {
     int iris_retry_backoff_ms;
     int iris_drain_timeout_ms;
 
-    /* IVR FlowMQ bridge (ROUTER command endpoint + PUB domain events).
-       Both ports are required when IVR is enabled; zero means that the IVR
-       feature, not an individual participant transport, is disabled. */
+    /* IVR FlowMQ typed ROUTER endpoint. Zero disables IVR transport. */
     const char *fmq_bind_host;
     int fmq_bind_port;
-    int fmq_pub_port;
-    const char *fmq_pub_topic;
     int fmq_worker_heartbeat_ms;
     int fmq_worker_lease_ms;
     int fmq_dispatch_deadline_ms;
@@ -114,8 +107,6 @@ typedef struct room_service_app_config_s {
     const char *fmq_cert_file;
     const char *fmq_key_file;
     const char *fmq_key_password;
-    const char *fmq_shared_secret;
-    int fmq_tls_rotation_generation;
     room_service_fmq_worker_identity_t
         fmq_worker_identities[ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES];
     int fmq_worker_identity_count;

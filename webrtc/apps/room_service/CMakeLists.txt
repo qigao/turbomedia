@@ -9,13 +9,9 @@ project(
 
 # First-party packages are resolved once at the repository root from their
 # explicit environment roots, so every WebRTC subdirectory sees the same targets.
-if(NOT TARGET TurboFlow::FlowStore OR
-   NOT TARGET TurboFlow::StorageBackend OR
-   NOT TARGET TurboFlow::SQLiteStorage OR
-   NOT TARGET TurboFlow::Redis OR
-   NOT TARGET TurboFlow::PostgreSQL)
+if(NOT TARGET TurboDB::ORM)
   message(FATAL_ERROR
-    "RoomService Iris outbox requires FlowStore and SQLite/Redis/PostgreSQL backends")
+    "RoomService Iris outbox requires TurboDB::ORM")
 endif()
 
 turbo_media_find_tbe_compiler(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE)
@@ -66,7 +62,7 @@ set(ROOM_SERVICE_APP_SOURCES
 if(TURBO_MEDIA_HAS_IVR_FMQ)
   list(APPEND ROOM_SERVICE_APP_SOURCES
     src/iris_event_outbox.c
-    src/iris_flowstore.c
+    src/iris_orm_store.c
     src/iris_command_ledger.c
     src/iris_command_fingerprint.c
     src/iris_flowmq_provider_codec.c
@@ -92,7 +88,7 @@ set(ROOM_SERVICE_CORE_SOURCES
 if(TURBO_MEDIA_HAS_IVR_FMQ)
   list(APPEND ROOM_SERVICE_CORE_SOURCES
     src/iris_event_outbox.c
-    src/iris_flowstore.c
+    src/iris_orm_store.c
     src/iris_command_ledger.c
     src/iris_command_fingerprint.c
     src/iris_flowmq_provider_codec.c
@@ -136,11 +132,7 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   list(APPEND ROOM_SERVICE_LIBS
     turbo_media_ivr
     room_service_iris_outbox_schema
-    TurboFlow::FlowStore
-    TurboFlow::StorageBackend
-    TurboFlow::SQLiteStorage
-    TurboFlow::Redis
-    TurboFlow::PostgreSQL)
+    TurboDB::ORM)
   list(APPEND ROOM_SERVICE_LIBS FlowMQ::FlowMQ)
 endif()
 
@@ -166,9 +158,7 @@ set_target_properties(room_service
 
 turbo_media_deploy_windows_runtime(
   room_service TurboHttp::Iris TurboNet::CoroNet RulesForge::rules_forge
-  FlowMQ::FlowMQ
-  TurboFlow::Flow TurboFlow::FlowStore TurboFlow::SQLiteStorage
-  TurboFlow::Redis TurboFlow::PostgreSQL)
+  FlowMQ::FlowMQ TurboParser::Mustache TurboParser::Parser TurboUtils::Core)
 
 install(
   TARGETS room_service
@@ -176,24 +166,31 @@ install(
   COMPONENT RoomService
 )
 if(WIN32)
+  get_filename_component(ROOM_SERVICE_SQLITE_LIBRARY_DIR
+                         "${SQLite3_LIBRARY}" DIRECTORY)
+  get_filename_component(ROOM_SERVICE_SQLITE_RUNTIME_ROOT
+                         "${ROOM_SERVICE_SQLITE_LIBRARY_DIR}" DIRECTORY)
+  set(ROOM_SERVICE_SQLITE_RUNTIME
+      "${ROOM_SERVICE_SQLITE_RUNTIME_ROOT}/bin/sqlite3.dll")
+  if(NOT EXISTS "${ROOM_SERVICE_SQLITE_RUNTIME}")
+    message(FATAL_ERROR
+      "SQLite ORM runtime is missing: ${ROOM_SERVICE_SQLITE_RUNTIME}")
+  endif()
   install(
     FILES $<TARGET_FILE:TurboHttp::Iris>
           $<TARGET_FILE:TurboNet::CoroNet>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>
           $<TARGET_FILE:FlowMQ::FlowMQ>
-          $<TARGET_FILE:TurboFlow::Flow>
-          $<TARGET_FILE:TurboFlow::FlowStore>
-          $<TARGET_FILE:TurboFlow::SQLiteStorage>
-          $<TARGET_FILE:TurboFlow::Redis>
-          $<TARGET_FILE:TurboFlow::PostgreSQL>
+          $<TARGET_FILE:TurboParser::Mustache>
+          $<TARGET_FILE:TurboParser::Parser>
+          $<TARGET_FILE:TurboUtils::Core>
+          ${ROOM_SERVICE_SQLITE_RUNTIME}
     DESTINATION bin
     COMPONENT RoomService)
 endif()
 install(
   FILES config/room_service.toml.example
-        config/room_service.flowstore.dev.yaml.example
-        config/room_service.flowstore.redis.yaml.example
-        config/room_service.flowstore.postgresql.yaml.example
+        config/room_service.orm.sqlite.yaml.example
   DESTINATION etc/turbonet
   COMPONENT RoomService
 )
@@ -265,8 +262,7 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   target_link_libraries(test_room_service_app PRIVATE turbo_media_ivr)
   target_link_libraries(test_room_service_app PRIVATE
     room_service_iris_outbox_schema
-    TurboFlow::FlowStore TurboFlow::StorageBackend
-    TurboFlow::SQLiteStorage TurboFlow::Redis TurboFlow::PostgreSQL)
+    TurboDB::ORM)
 endif()
 
 target_compile_options(test_room_service_app
@@ -291,6 +287,9 @@ set_target_properties(test_room_service_app PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   OUTPUT_NAME "test_room_service_app"
   FOLDER "Applications/tests")
+turbo_media_deploy_windows_runtime(
+  test_room_service_app FlowMQ::FlowMQ TurboNet::CoroNet
+  TurboParser::Mustache TurboParser::Parser TurboUtils::Core)
 
 if(TURBO_MEDIA_HAS_IVR_FMQ)
   add_executable(test_iris_media_bridge
@@ -427,7 +426,7 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     src/iris_flowmq_provider.c
     src/iris_flowmq_provider_codec.c
     src/iris_event_outbox.c
-    src/iris_flowstore.c
+    src/iris_orm_store.c
     src/ivr_fmq_adapter.c)
   target_include_directories(test_iris_media_reconciler PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -441,11 +440,7 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     TurboHttp::TurboHttp
     TurboNet::Crypto
     OpenSSL::Crypto
-    TurboFlow::FlowStore
-    TurboFlow::StorageBackend
-    TurboFlow::SQLiteStorage
-    TurboFlow::Redis
-    TurboFlow::PostgreSQL
+    TurboDB::ORM
     TurboUtils::Core
     TurboParser::Parser
     TurboUtils::TinyTest)
@@ -458,19 +453,21 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   set_target_properties(test_iris_media_reconciler PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
+  turbo_media_deploy_windows_runtime(
+    test_iris_media_reconciler FlowMQ::FlowMQ TurboNet::CoroNet
+    TurboParser::Mustache TurboParser::Parser TurboUtils::Core)
 
   add_executable(test_iris_event_outbox
     tests/test_iris_event_outbox.c
     src/iris_event_outbox.c
-    src/iris_flowstore.c)
+    src/iris_orm_store.c)
   target_include_directories(test_iris_event_outbox PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_event_outbox PRIVATE
-    turbo_media_ivr room_service_iris_outbox_schema
-    TurboFlow::FlowStore TurboFlow::StorageBackend
-    TurboFlow::SQLiteStorage TurboFlow::Redis TurboFlow::PostgreSQL
+    room_service_iris_outbox_schema FlowMQ::FlowMQ
+    TurboDB::ORM
     TurboUtils::Core TurboParser::DataBind TurboUtils::TinyTest)
   target_compile_definitions(test_iris_event_outbox PRIVATE
     TURBO_MEDIA_HAS_IVR_FMQ)
@@ -480,19 +477,21 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   set_target_properties(test_iris_event_outbox PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
+  turbo_media_deploy_windows_runtime(
+    test_iris_event_outbox FlowMQ::FlowMQ TurboNet::CoroNet
+    TurboParser::Mustache TurboParser::Parser TurboUtils::Core)
 
   add_executable(test_iris_command_ledger
     tests/test_iris_command_ledger.c
     src/iris_command_ledger.c
-    src/iris_flowstore.c)
+    src/iris_orm_store.c)
   target_include_directories(test_iris_command_ledger PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_command_ledger PRIVATE
-    turbo_media_ivr room_service_iris_outbox_schema
-    TurboFlow::FlowStore TurboFlow::StorageBackend
-    TurboFlow::SQLiteStorage TurboFlow::Redis TurboFlow::PostgreSQL
+    room_service_iris_outbox_schema
+    TurboDB::ORM
     TurboUtils::Core TurboParser::DataBind
     TurboUtils::TinyTest)
   target_compile_definitions(test_iris_command_ledger PRIVATE
@@ -503,6 +502,26 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   set_target_properties(test_iris_command_ledger PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
+  turbo_media_deploy_windows_runtime(
+    test_iris_command_ledger TurboParser::Mustache TurboParser::Parser
+    TurboUtils::Core)
+
+  add_executable(test_iris_orm_store
+    tests/test_iris_orm_store.c
+    src/iris_orm_store.c)
+  target_include_directories(test_iris_orm_store PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_iris_orm_store PRIVATE
+    TurboDB::ORM TurboUtils::Core TurboParser::Parser TurboUtils::TinyTest)
+  add_test(NAME test_iris_orm_store COMMAND test_iris_orm_store)
+  set_tests_properties(test_iris_orm_store PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
+  set_target_properties(test_iris_orm_store PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    FOLDER "Applications/tests")
+  turbo_media_deploy_windows_runtime(
+    test_iris_orm_store TurboParser::Mustache TurboParser::Parser
+    TurboUtils::Core)
 
   add_executable(test_ivr_fmq_adapter
     tests/test_ivr_fmq_adapter.c
@@ -535,6 +554,9 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     OUTPUT_NAME "test_ivr_fmq_adapter"
     FOLDER "Applications/tests")
+  turbo_media_deploy_windows_runtime(
+    test_ivr_fmq_adapter FlowMQ::FlowMQ TurboNet::CoroNet
+    TurboParser::Parser TurboUtils::Core)
 endif()
 
 if(TURBO_MEDIA_HAS_IVR_FMQ)
@@ -550,6 +572,7 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
 
   add_executable(test_ivr_dispatch_processes
     tests/test_ivr_dispatch_processes.c
+    tests/iris_flowmq_process_peer.c
   )
   target_include_directories(test_ivr_dispatch_processes
     PRIVATE
@@ -563,6 +586,9 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
       turbo_media_ivr_rtc
       TurboHttp::TurboHttp
       TurboHttp::Iris
+      FlowMQ::FlowMQ
+      TurboParser::Parser
+      TurboParser::DataBind
       TurboNet::CoroNet
       TurboNet::Crypto
       TurboUtils::Core

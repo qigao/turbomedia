@@ -4922,8 +4922,6 @@ static void test_room_service_direct_destroy_closes_flowmq_provider_dependencies
   config.iris_drain_timeout_ms = 300;
   config.fmq_bind_host = "127.0.0.1";
   config.fmq_bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_FMQ_PORT;
-  config.fmq_pub_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_PUB_PORT;
-  config.fmq_pub_topic = "room.provider.lifecycle.events";
   config.fmq_allow_insecure_loopback = 1;
 
   check_equal((int)(room_service_app_config_validate(&config)), (int)(0));
@@ -4999,8 +4997,6 @@ static void test_room_service_event_outbox_init_failure_destroys_ledger_once(voi
   config.iris_outbox_request_queue_capacity = 8;
   config.fmq_bind_host = "127.0.0.1";
   config.fmq_bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_FMQ_PORT;
-  config.fmq_pub_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_PUB_PORT;
-  config.fmq_pub_topic = "room.provider.init.failure.events";
   config.fmq_allow_insecure_loopback = 1;
 
   check_equal((int)(room_service_app_config_validate(&config)), (int)(0));

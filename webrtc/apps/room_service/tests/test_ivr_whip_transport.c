@@ -252,6 +252,7 @@ static media_state_counts_t g_whip_states;
 static media_state_counts_t g_whep_states;
 
 static const ivr_call_ref_t g_call = {
+    .tenant_id = {"tenant-42", 9},
     .provider_session_id = {"session-42", 10},
     .dialog_id = {"dialog-42", 9},
     .room_id = {"room-42", 7},
@@ -270,6 +271,7 @@ static int view_equal(const ivr_bytes_view_t *left,
 static int call_identity_matches_fixture(const ivr_call_ref_t *call) {
     return call && call->call_generation == g_call.call_generation &&
            call->expected_room_version == g_call.expected_room_version &&
+           view_equal(&call->tenant_id, &g_call.tenant_id) &&
            view_equal(&call->provider_session_id,
                       &g_call.provider_session_id) &&
            view_equal(&call->dialog_id, &g_call.dialog_id) &&
@@ -552,11 +554,14 @@ void setUp(void) {
     }
     check_true(room_ready);
 
+    char sfu_base_url[64];
+    snprintf(sfu_base_url, sizeof(sfu_base_url), "http://127.0.0.1:%d",
+             TEST_SFU_PORT);
     ivr_whip_transport_config_t tcfg;
     memset(&tcfg, 0, sizeof(tcfg));
-    tcfg.sfu_host = "127.0.0.1";
-    tcfg.sfu_port = TEST_SFU_PORT;
+    tcfg.sfu_base_url = sfu_base_url;
     tcfg.media_token = TEST_MEDIA_TOKEN;
+    tcfg.allow_plaintext_loopback = 1;
     tcfg.allow_loopback = 1;
     tcfg.sample_rate = 16000;
     tcfg.connect_timeout_ms = 15000;
@@ -567,9 +572,9 @@ void setUp(void) {
 
     ivr_whep_transport_config_t wcfg;
     memset(&wcfg, 0, sizeof(wcfg));
-    wcfg.sfu_host = "127.0.0.1";
-    wcfg.sfu_port = TEST_SFU_PORT;
+    wcfg.sfu_base_url = sfu_base_url;
     wcfg.media_token = TEST_MEDIA_TOKEN;
+    wcfg.allow_plaintext_loopback = 1;
     wcfg.allow_loopback = 1;
     wcfg.sample_rate = 16000;
     wcfg.connect_timeout_ms = 15000;
@@ -653,20 +658,20 @@ void test_create_copies_config_and_null_token(void) {
        create/start/destroy (the HTTP builder treats a NULL token as an empty
        bearer value instead of hitting %s(NULL) undefined behavior). */
     ivr_whip_transport_t *t = NULL;
-    char host[] = "127.0.0.1";
+    char base_url[] = "http://127.0.0.1:17932";
     char token[] = "ignored";
     ivr_whip_transport_config_t tcfg;
     memset(&tcfg, 0, sizeof(tcfg));
-    tcfg.sfu_host = host;
-    tcfg.sfu_port = TEST_SFU_PORT;
+    tcfg.sfu_base_url = base_url;
     tcfg.media_token = NULL; /* allowed: no media token configured */
+    tcfg.allow_plaintext_loopback = 1;
     tcfg.allow_loopback = 1;
     tcfg.sample_rate = 16000;
     tcfg.connect_timeout_ms = 5000;
     check_equal(ivr_whip_transport_create(&tcfg, &t), IVR_OK);
     check_not_null(t);
     /* release the caller buffers to prove the transport owns its copies */
-    host[0] = '\0';
+    base_url[0] = '\0';
     token[0] = '\0';
     /* start reaches the HTTP layer with a NULL media_token: it must not crash
        (the SFU rejects the empty bearer, so start fails without connecting) */

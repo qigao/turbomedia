@@ -31,6 +31,7 @@ typedef struct iris_dispatch_item_s {
     char completion_occurred_at[40];
     uint64_t completed_at_ms;
     uint64_t delivery_token;
+    int settle_media_bridge;
 } iris_dispatch_item_t;
 
 struct iris_completion_dispatcher_s {
@@ -418,7 +419,8 @@ static void process_item(iris_completion_dispatcher_t *dispatcher,
         }
     }
     record_delivery_result(dispatcher, item->kind, succeeded);
-    if (item->kind == IRIS_DISPATCH_COMPLETION) {
+    if (item->kind == IRIS_DISPATCH_COMPLETION &&
+        item->settle_media_bridge) {
         if (succeeded || terminal_delivery_failure) {
             iris_media_bridge_release_completion(dispatcher->bridge,
                                                   item->completion.command_id);
@@ -719,6 +721,7 @@ ivr_status_t iris_completion_dispatcher_on_media_result(
     if (!dispatcher || !result) return IVR_EINVAL;
     memset(&item, 0, sizeof(item));
     item.kind = IRIS_DISPATCH_COMPLETION;
+    item.settle_media_bridge = 1;
     item.result = *result;
     item.completed_at_ms = turbo_realtime_ms();
     {
@@ -742,6 +745,36 @@ ivr_status_t iris_completion_dispatcher_on_media_result(
                                               item.completion.command_id);
     }
     return status;
+}
+
+ivr_status_t iris_completion_dispatcher_enqueue_terminal(
+    iris_completion_dispatcher_t *dispatcher,
+    const iris_media_completion_t *completion,
+    const ivr_media_command_result_t *result, const char *stable_event_id) {
+    iris_dispatch_item_t item;
+    if (!dispatcher || !completion || !result || !stable_event_id ||
+        !stable_event_id[0] ||
+        strlen(stable_event_id) >= sizeof(item.completion_event_id) ||
+        !completion->command_id[0] || !completion->tenant_id[0] ||
+        !completion->provider_session_id[0] ||
+        !completion->iris_worker_id[0] || completion->dispatch_epoch == 0u ||
+        !completion->terminal_status[0] || !completion->event_type[0] ||
+        !completion->result_json[0]) {
+        return IVR_EINVAL;
+    }
+    memset(&item, 0, sizeof(item));
+    item.kind = IRIS_DISPATCH_COMPLETION;
+    item.completion = *completion;
+    item.result = *result;
+    item.completed_at_ms = turbo_realtime_ms();
+    if (item.completed_at_ms == 0u ||
+        snprintf(item.completion_event_id,
+                 sizeof(item.completion_event_id), "%s", stable_event_id) <= 0 ||
+        format_rfc3339(item.completed_at_ms, item.completion_occurred_at,
+                       sizeof(item.completion_occurred_at)) != 0) {
+        return IVR_ESTATE;
+    }
+    return enqueue(dispatcher, &item);
 }
 
 ivr_status_t iris_completion_dispatcher_on_media_event(

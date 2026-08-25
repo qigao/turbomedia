@@ -4,6 +4,8 @@
 #include "ivr_worker_metrics.h"
 #include "tinytest.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum {
@@ -24,20 +26,97 @@ static int start_on_available_port(ivr_worker_http_t *server) {
 
 static int get_path(int port, const char *path,
                     ivr_http_media_response_t *response) {
-    return ivr_http_media_request("127.0.0.1", port, "GET", path, NULL,
-                                  NULL, NULL, NULL, response);
+    char base_url[64];
+    ivr_http_media_client_config_t config =
+        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    ivr_http_media_client_t *client = NULL;
+    int result;
+
+    snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", port);
+    config.base_url = base_url;
+    config.allow_plaintext_loopback = 1;
+    if (ivr_http_media_client_create(&config, &client) != 0) {
+        return -1;
+    }
+    result = ivr_http_media_request(client, "GET", path, NULL, NULL, NULL,
+                                    response);
+    ivr_http_media_client_destroy(client);
+    return result;
 }
 
 static int post_path(int port, const char *path,
                      ivr_http_media_response_t *response) {
-    return ivr_http_media_request("127.0.0.1", port, "POST", path, NULL,
-                                  NULL, NULL, NULL, response);
+    char base_url[64];
+    ivr_http_media_client_config_t config =
+        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    ivr_http_media_client_t *client = NULL;
+    int result;
+
+    snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", port);
+    config.base_url = base_url;
+    config.allow_plaintext_loopback = 1;
+    if (ivr_http_media_client_create(&config, &client) != 0) {
+        return -1;
+    }
+    result = ivr_http_media_request(client, "POST", path, NULL, NULL, NULL,
+                                    response);
+    ivr_http_media_client_destroy(client);
+    return result;
 }
 
 static int request_drain(void *context) {
     int *calls = (int *)context;
     ++*calls;
     return 0;
+}
+
+void test_opus_offer_uses_rfc7587_rtp_clock(void) {
+    static const char source[] =
+        "v=0\r\n"
+        "a=ice-ufrag:test-ufrag\r\n"
+        "a=ice-pwd:test-password\r\n"
+        "a=fingerprint:sha-256 00:11:22:33\r\n";
+    char offer[IVR_HTTP_MEDIA_MAX_SDP];
+
+    memset(offer, 0, sizeof(offer));
+    ivr_sdp_build_minimal_audio_offer(source, offer, sizeof(offer), 16000,
+                                      "sendonly");
+
+    check_not_null(strstr(offer,
+                          "a=rtpmap:111 opus/48000/2\r\n"));
+    check_null(strstr(offer, "opus/16000/2"));
+}
+
+void test_media_path_segment_is_encoded_and_rejects_controls(void) {
+    char *encoded = ivr_http_media_encode_path_segment("room/a?b c");
+
+    check_not_null(encoded);
+    if (encoded) {
+        check_equal(encoded, "room%2Fa%3Fb%20c");
+    }
+    free(encoded);
+    check_null(ivr_http_media_encode_path_segment("bad\r\nid"));
+    check_null(ivr_http_media_encode_path_segment("bad\x1f" "id"));
+}
+
+void test_media_client_plaintext_requires_explicit_loopback(void) {
+    ivr_http_media_client_config_t config =
+        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    ivr_http_media_client_t *client = NULL;
+
+    config.base_url = "http://127.0.0.1:8080";
+    check_equal((int)ivr_http_media_client_create(&config, &client), (int)-1);
+    check_null(client);
+
+    config.allow_plaintext_loopback = 1;
+    check_equal((int)ivr_http_media_client_create(&config, &client), (int)0);
+    check_not_null(client);
+    ivr_http_media_client_destroy(client);
+    client = NULL;
+
+    config.base_url = "http://example.invalid:8080";
+    check_equal((int)ivr_http_media_client_create(&config, &client), (int)-1);
+    check_null(client);
 }
 
 void test_management_endpoints_follow_health_snapshot(void) {
@@ -217,6 +296,9 @@ void test_metrics_dependency_must_be_set_before_start(void) {
 }
 
 spec("test_ivr_worker_http") {
+  it("test_opus_offer_uses_rfc7587_rtp_clock") { test_opus_offer_uses_rfc7587_rtp_clock(); };
+  it("test_media_path_segment_is_encoded_and_rejects_controls") { test_media_path_segment_is_encoded_and_rejects_controls(); };
+  it("test_media_client_plaintext_requires_explicit_loopback") { test_media_client_plaintext_requires_explicit_loopback(); };
   it("test_management_endpoints_follow_health_snapshot") { test_management_endpoints_follow_health_snapshot(); };
   it("test_management_listener_rejects_non_loopback_bind") { test_management_listener_rejects_non_loopback_bind(); };
   it("test_metrics_dependency_must_be_set_before_start") { test_metrics_dependency_must_be_set_before_start(); };

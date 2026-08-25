@@ -18,8 +18,7 @@
 
 struct ivr_whep_transport_s {
     ivr_whep_transport_config_t config;
-    char *sfu_host_owned;
-    char *media_token_owned;
+    ivr_http_media_client_t *http_client;
     ivr_mutex_t lock;
     ivr_mutex_t lifecycle_lock;
     int lock_initialized;
@@ -27,6 +26,7 @@ struct ivr_whep_transport_s {
     int destroying;
     int active;
     int connected;
+    ivr_str_t tenant_id;
     ivr_str_t provider_session_id;
     ivr_str_t dialog_id;
     ivr_str_t room_id;
@@ -53,6 +53,7 @@ struct ivr_whep_transport_s {
 
 typedef struct {
     ivr_call_ref_t view;
+    char tenant_id[IVR_MEDIA_ID_CAPACITY];
     char provider_session_id[IVR_MEDIA_ID_CAPACITY];
     char dialog_id[IVR_MEDIA_ID_CAPACITY];
     char room_id[IVR_MEDIA_ID_CAPACITY];
@@ -74,6 +75,7 @@ static int call_view_matches(const ivr_bytes_view_t *view,
 
 /* Caller holds lock or has crossed the lifecycle barrier and is quiescent. */
 static void whep_clear_call(ivr_whep_transport_t *transport) {
+    ivr_str_free(&transport->tenant_id);
     ivr_str_free(&transport->provider_session_id);
     ivr_str_free(&transport->dialog_id);
     ivr_str_free(&transport->room_id);
@@ -84,9 +86,11 @@ static void whep_clear_call(ivr_whep_transport_t *transport) {
 
 static int whep_copy_call_locked(const ivr_whep_transport_t *transport,
                                  whep_call_copy_t *copy) {
-    if (!transport || !copy || !transport->provider_session_id.data ||
+    if (!transport || !copy || !transport->tenant_id.data ||
+        !transport->provider_session_id.data ||
         !transport->dialog_id.data || !transport->room_id.data ||
         !transport->call_id.data ||
+        transport->tenant_id.size >= sizeof(copy->tenant_id) ||
         transport->provider_session_id.size >=
             sizeof(copy->provider_session_id) ||
         transport->dialog_id.size >= sizeof(copy->dialog_id) ||
@@ -95,12 +99,16 @@ static int whep_copy_call_locked(const ivr_whep_transport_t *transport,
         return 0;
     }
     memset(copy, 0, sizeof(*copy));
+    memcpy(copy->tenant_id, transport->tenant_id.data,
+           transport->tenant_id.size);
     memcpy(copy->provider_session_id, transport->provider_session_id.data,
            transport->provider_session_id.size);
     memcpy(copy->dialog_id, transport->dialog_id.data,
            transport->dialog_id.size);
     memcpy(copy->room_id, transport->room_id.data, transport->room_id.size);
     memcpy(copy->call_id, transport->call_id.data, transport->call_id.size);
+    copy->view.tenant_id.data = copy->tenant_id;
+    copy->view.tenant_id.size = transport->tenant_id.size;
     copy->view.provider_session_id.data = copy->provider_session_id;
     copy->view.provider_session_id.size = transport->provider_session_id.size;
     copy->view.dialog_id.data = copy->dialog_id;
@@ -139,6 +147,7 @@ static int whep_call_matches_locked(const ivr_whep_transport_t *transport,
                                     const ivr_call_ref_t *call) {
     return transport->active && call &&
            call->call_generation == transport->call_generation &&
+           call_view_matches(&call->tenant_id, &transport->tenant_id) &&
            call_view_matches(&call->provider_session_id,
                              &transport->provider_session_id) &&
            call_view_matches(&call->dialog_id, &transport->dialog_id) &&
@@ -153,9 +162,8 @@ static void whep_delete_session(ivr_whep_transport_t *transport,
     if (!transport || !location || location[0] == '\0') {
         return;
     }
-    (void)ivr_http_media_request(
-        transport->config.sfu_host, transport->config.sfu_port, "DELETE",
-        location, transport->config.media_token, NULL, NULL, NULL, &response);
+    (void)ivr_http_media_request(transport->http_client, "DELETE", location,
+                                 NULL, NULL, NULL, &response);
 }
 
 static void whep_on_frame(turbo_media_track_t *track, const uint8_t *data,
@@ -359,9 +367,11 @@ static void *whep_poll_thread_main(void *opaque) {
 ivr_status_t ivr_whep_transport_create(
     const ivr_whep_transport_config_t *config,
     ivr_whep_transport_t **out_transport) {
+    ivr_http_media_client_config_t http_config =
+        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
     ivr_whep_transport_t *transport;
 
-    if (!config || !config->sfu_host || config->sfu_port <= 0 ||
+    if (!config || !config->sfu_base_url ||
         !config->on_audio || !out_transport) {
         return IVR_EINVAL;
     }
@@ -377,20 +387,28 @@ ivr_status_t ivr_whep_transport_create(
         config->telephone_event_payload_type
             ? config->telephone_event_payload_type
             : IVR_WHEP_DEFAULT_TELEPHONE_EVENT_PT;
-    transport->sfu_host_owned = ivr_http_media_strdup(config->sfu_host);
-    transport->media_token_owned =
-        ivr_http_media_strdup(config->media_token);
-    if (!transport->sfu_host_owned ||
-        (config->media_token && !transport->media_token_owned)) {
-        free(transport->sfu_host_owned);
-        free(transport->media_token_owned);
+    transport->config.sfu_base_url = NULL;
+    transport->config.media_token = NULL;
+    transport->config.ca_file = NULL;
+    transport->config.cert_file = NULL;
+    transport->config.key_file = NULL;
+    transport->config.key_password = NULL;
+    http_config.base_url = config->sfu_base_url;
+    http_config.media_token = config->media_token;
+    http_config.ca_file = config->ca_file;
+    http_config.cert_file = config->cert_file;
+    http_config.key_file = config->key_file;
+    http_config.key_password = config->key_password;
+    http_config.timeout_ms = config->http_timeout_ms;
+    http_config.allow_plaintext_loopback = config->allow_plaintext_loopback;
+    if (ivr_http_media_client_create(&http_config,
+                                     &transport->http_client) != 0) {
         free(transport);
-        return IVR_ENOSPC;
+        return IVR_EINVAL;
     }
-    transport->config.sfu_host = transport->sfu_host_owned;
-    transport->config.media_token = transport->media_token_owned;
     transport->on_state = config->on_state;
     transport->state_context = config->state_context;
+    ivr_str_init(&transport->tenant_id);
     ivr_str_init(&transport->provider_session_id);
     ivr_str_init(&transport->dialog_id);
     ivr_str_init(&transport->room_id);
@@ -500,13 +518,15 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
     ivr_http_media_response_t response;
     char offer[IVR_HTTP_MEDIA_MAX_SDP];
     char minimal_offer[IVR_HTTP_MEDIA_MAX_SDP];
-    char path[512];
+    char path[IVR_MEDIA_ID_CAPACITY * 6u + 16u];
     char fragment[2048];
     char ufrag[64];
     char password[96];
     int path_length;
 
     if (!transport || !call || !participant_id || participant_id[0] == '\0' ||
+        strlen(participant_id) >= IVR_MEDIA_ID_CAPACITY ||
+        !call_view_valid(&call->tenant_id) ||
         !call_view_valid(&call->provider_session_id) ||
         !call_view_valid(&call->dialog_id) ||
         !call_view_valid(&call->room_id) ||
@@ -520,6 +540,8 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
     }
     ivr_mutex_lock(&transport->lock);
     if (transport->active ||
+        ivr_str_assign(&transport->tenant_id, call->tenant_id.data,
+                       call->tenant_id.size) < 0 ||
         ivr_str_assign(&transport->provider_session_id,
                        call->provider_session_id.data,
                        call->provider_session_id.size) < 0 ||
@@ -585,17 +607,26 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
     ivr_sdp_build_minimal_audio_offer(
         offer, minimal_offer, sizeof(minimal_offer),
         (int)transport->config.sample_rate, "recvonly");
-    path_length = snprintf(path, sizeof(path), "/whep/%.*s/%s",
-                           (int)call->room_id.size, call->room_id.data,
-                           participant_id);
+    char *room_segment =
+        ivr_http_media_encode_path_segment(transport->room_id.data);
+    char *participant_segment =
+        ivr_http_media_encode_path_segment(transport->participant_id.data);
+    if (!room_segment || !participant_segment) {
+        free(room_segment);
+        free(participant_segment);
+        return whep_start_fail(transport, pc, NULL, IVR_EINVAL);
+    }
+    path_length = snprintf(path, sizeof(path), "/whep/%s/%s", room_segment,
+                           participant_segment);
+    free(room_segment);
+    free(participant_segment);
     if (path_length < 0 || (size_t)path_length >= sizeof(path)) {
         fprintf(stderr, "[ivr_whep] start failed: session path too long\n");
         return whep_start_fail(transport, pc, NULL, IVR_EINVAL);
     }
-    if (ivr_http_media_request(
-            transport->config.sfu_host, transport->config.sfu_port, "POST",
-            path, transport->config.media_token, "application/sdp", NULL,
-            minimal_offer, &response) != 0) {
+    if (ivr_http_media_request(transport->http_client, "POST", path,
+                               "application/sdp", NULL, minimal_offer,
+                               &response) != 0) {
         fprintf(stderr, "[ivr_whep] start failed: POST request failed\n");
         return whep_start_fail(transport, pc, NULL, IVR_ESTATE);
     }
@@ -630,8 +661,7 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
         ivr_sdp_append_candidates(offer, fragment + prefix_length,
                                   sizeof(fragment) - (size_t)prefix_length);
         if (ivr_http_media_request(
-                transport->config.sfu_host, transport->config.sfu_port,
-                "PATCH", response.location, transport->config.media_token,
+                transport->http_client, "PATCH", response.location,
                 "application/trickle-ice-sdpfrag", response.etag, fragment,
                 &trickle) != 0 ||
             (trickle.status != 200 && trickle.status != 204) ||
@@ -719,7 +749,6 @@ void ivr_whep_transport_destroy(ivr_whep_transport_t *transport) {
     if (transport->lock_initialized) {
         ivr_mutex_destroy(&transport->lock);
     }
-    free(transport->sfu_host_owned);
-    free(transport->media_token_owned);
+    ivr_http_media_client_destroy(transport->http_client);
     free(transport);
 }

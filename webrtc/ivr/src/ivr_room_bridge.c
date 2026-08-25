@@ -3,7 +3,10 @@
 #include "ivr_thread.h"
 #include "ivr_internal.h"
 #include "turbomedia_ivr_v1.h"
-#include "turbo_flow_fmq.h"
+#include "flowmq_protocol.h"
+#include "flowmq_router_endpoint.h"
+#include "turbo_error.h"
+#include "turbo_str.h"
 #include "turbo_parser.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,8 +140,25 @@ static void ivr_dedup_store(ivr_dedup_t *d, const char *message_id,
 /* bounded cloned-request queue                                        */
 /* ------------------------------------------------------------------ */
 
+typedef struct ivr_route_message_s {
+    uint8_t *payload;
+    size_t payload_size;
+    flowmq_router_route_t route;
+    char peer_identity[128];
+} ivr_route_message_t;
+
+static void ivr_route_message_init(ivr_route_message_t *message) {
+    if (message) memset(message, 0, sizeof(*message));
+}
+
+static void ivr_route_message_cleanup(ivr_route_message_t *message) {
+    if (!message) return;
+    free(message->payload);
+    memset(message, 0, sizeof(*message));
+}
+
 typedef struct {
-    turbo_flow_msg_t *items;
+    ivr_route_message_t *items;
     uint32_t capacity;
     uint32_t head;
     uint32_t count;
@@ -152,7 +172,7 @@ typedef struct {
 static int ivr_req_queue_init(ivr_req_queue_t *q, uint32_t capacity) {
     memset(q, 0, sizeof(*q));
     q->capacity = capacity ? capacity : 64;
-    q->items = (turbo_flow_msg_t *)calloc(q->capacity, sizeof(*q->items));
+    q->items = (ivr_route_message_t *)calloc(q->capacity, sizeof(*q->items));
     if (!q->items) {
         /* keep the struct destroy-safe (capacity 0 + NULL items) so the
            create() failure path can run ivr_req_queue_destroy() */
@@ -160,7 +180,7 @@ static int ivr_req_queue_init(ivr_req_queue_t *q, uint32_t capacity) {
         return -1;
     }
     for (uint32_t i = 0; i < q->capacity; i++) {
-        turbo_flow_msg_init(&q->items[i]);
+        ivr_route_message_init(&q->items[i]);
     }
     if (ivr_mutex_init(&q->lock) != 0) {
         free(q->items);
@@ -180,7 +200,7 @@ static int ivr_req_queue_init(ivr_req_queue_t *q, uint32_t capacity) {
 
 static void ivr_req_queue_destroy(ivr_req_queue_t *q) {
     for (uint32_t i = 0; i < q->capacity; i++) {
-        turbo_flow_msg_cleanup(&q->items[i]);
+        ivr_route_message_cleanup(&q->items[i]);
     }
     free(q->items);
     q->items = NULL;
@@ -189,16 +209,16 @@ static void ivr_req_queue_destroy(ivr_req_queue_t *q) {
 }
 
 /* Moves ownership of `msg` into the queue; returns 0 on success, -1 on full. */
-static int ivr_req_queue_push(ivr_req_queue_t *q, turbo_flow_msg_t *msg) {
+static int ivr_req_queue_push(ivr_req_queue_t *q, ivr_route_message_t *msg) {
     ivr_mutex_lock(&q->lock);
-    if (q->count >= q->capacity) {
+    if (q->stop || q->count >= q->capacity) {
         q->dropped++;
         ivr_mutex_unlock(&q->lock);
         return -1;
     }
     uint32_t tail = (q->head + q->count) % q->capacity;
     q->items[tail] = *msg;
-    turbo_flow_msg_init(msg);
+    ivr_route_message_init(msg);
     q->count++;
     if (q->count > q->high_water) {
         q->high_water = q->count;
@@ -208,9 +228,22 @@ static int ivr_req_queue_push(ivr_req_queue_t *q, turbo_flow_msg_t *msg) {
     return 0;
 }
 
+static void ivr_req_queue_close_and_discard(ivr_req_queue_t *q) {
+    ivr_mutex_lock(&q->lock);
+    q->stop = 1;
+    while (q->count > 0u) {
+        ivr_route_message_cleanup(&q->items[q->head]);
+        q->head = (q->head + 1u) % q->capacity;
+        q->count--;
+    }
+    q->head = 0u;
+    ivr_cond_broadcast(&q->cond);
+    ivr_mutex_unlock(&q->lock);
+}
+
 /* Pops one message; caller owns it. Returns 0, or -1 when stopped. */
 /* Returns 0 with a message, 1 on the owner tick, or -1 when stopped. */
-static int ivr_req_queue_pop(ivr_req_queue_t *q, turbo_flow_msg_t *out) {
+static int ivr_req_queue_pop(ivr_req_queue_t *q, ivr_route_message_t *out) {
     ivr_mutex_lock(&q->lock);
     while (q->count == 0 && !q->stop) {
         if (!ivr_cond_timedwait(&q->cond, &q->lock, 100u)) {
@@ -223,7 +256,7 @@ static int ivr_req_queue_pop(ivr_req_queue_t *q, turbo_flow_msg_t *out) {
         return -1;
     }
     *out = q->items[q->head];
-    turbo_flow_msg_init(&q->items[q->head]);
+    ivr_route_message_init(&q->items[q->head]);
     q->head = (q->head + 1) % q->capacity;
     q->count--;
     ivr_mutex_unlock(&q->lock);
@@ -231,7 +264,8 @@ static int ivr_req_queue_pop(ivr_req_queue_t *q, turbo_flow_msg_t *out) {
 }
 
 typedef struct {
-    turbo_flow_fmq_event_kind_t kind;
+    flowmq_router_endpoint_event_kind_t kind;
+    flowmq_router_route_t route;
     char peer_identity[128];
 } ivr_peer_event_t;
 
@@ -272,7 +306,7 @@ static void ivr_peer_event_queue_destroy(ivr_peer_event_queue_t *q) {
 }
 
 static int ivr_peer_event_queue_push(ivr_peer_event_queue_t *q,
-                                     const turbo_flow_fmq_event_t *event) {
+                                     const flowmq_router_endpoint_event_t *event) {
     size_t length = event->peer_identity.len;
     ivr_mutex_lock(&q->lock);
     if (!event->peer_identity.data || length == 0 || length >= 128 ||
@@ -284,6 +318,7 @@ static int ivr_peer_event_queue_push(ivr_peer_event_queue_t *q,
     }
     uint32_t tail = (q->head + q->count) % q->capacity;
     q->items[tail].kind = event->kind;
+    q->items[tail].route = event->route;
     memcpy(q->items[tail].peer_identity, event->peer_identity.data, length);
     q->items[tail].peer_identity[length] = '\0';
     q->count++;
@@ -292,6 +327,14 @@ static int ivr_peer_event_queue_push(ivr_peer_event_queue_t *q,
     }
     ivr_mutex_unlock(&q->lock);
     return 0;
+}
+
+static void ivr_peer_event_queue_clear(ivr_peer_event_queue_t *q) {
+    ivr_mutex_lock(&q->lock);
+    q->head = 0u;
+    q->count = 0u;
+    q->overflowed = 0;
+    ivr_mutex_unlock(&q->lock);
 }
 
 /* Returns 1 with one event, 0 when empty, or -1 when overflow invalidated
@@ -326,7 +369,12 @@ static int ivr_peer_event_queue_pop(ivr_peer_event_queue_t *q,
    bind worker.sync registration to a real connected DEALER so a worker cannot
    register under an identity it is not connected as. */
 typedef struct {
-    char (*ids)[128];
+    char identity[128];
+    flowmq_router_route_t route;
+} ivr_peer_entry_t;
+
+typedef struct {
+    ivr_peer_entry_t *entries;
     uint32_t capacity;
     uint32_t count;
     ivr_mutex_t lock;
@@ -336,14 +384,12 @@ typedef struct {
    to push CallDispatchCommandV1 to the worker's DEALER later. */
 typedef struct {
     char worker_id[128];
-    turbo_flow_msg_t msg; /* owns the detached route + last payload */
+    flowmq_router_route_t route;
     int valid;
 } ivr_route_entry_t;
 
 struct ivr_room_bridge_s {
-    turbo_flow_fmq_app_t *app;
-    turbo_flow_fmq_app_t *pub_app;
-    char pub_topic[128];
+    flowmq_router_endpoint_t *endpoint;
     DataBind *codec;
     ivr_room_command_handler_t handler;
     ivr_dedup_t dedup;
@@ -357,28 +403,92 @@ struct ivr_room_bridge_s {
        use it so repeated start() or destroy-without-stop cannot leak the
        thread or free objects the thread still references. */
     atomic_int started;
+    atomic_int accepting;
+    atomic_uint_fast64_t next_completion_id;
+    uint64_t start_timeout_ns;
+    int (*verify_peer_identity)(void *context,
+                                const char *certificate_sha256,
+                                const char *claimed_identity);
+    void *verify_peer_identity_context;
     ivr_peer_set_t peers;
     ivr_route_entry_t *routes;
     uint32_t route_capacity;
     uint32_t route_count;
-    uint64_t applied;
-    uint64_t dedup_hits;
-    uint64_t version_rejects;
-    uint64_t drops;
-    uint64_t events_published;
-    uint64_t dispatches_sent;
-    uint64_t dispatches_failed;
-    uint64_t dispatch_results;
-    uint64_t dispatch_result_rejects;
-    uint64_t media_results;
-    uint64_t media_result_rejects;
-    uint64_t media_events;
-    uint64_t media_event_rejects;
-    uint64_t inventory_pages;
-    uint64_t inventory_page_rejects;
-    uint64_t auth_rejects; /* worker.sync identity not connected */
-    uint64_t dedup_expired_rejects; /* replay outside the retention window */
+    atomic_uint_fast64_t applied;
+    atomic_uint_fast64_t dedup_hits;
+    atomic_uint_fast64_t version_rejects;
+    atomic_uint_fast64_t drops;
+    atomic_uint_fast64_t events_published;
+    atomic_uint_fast64_t dispatches_sent;
+    atomic_uint_fast64_t dispatches_failed;
+    atomic_uint_fast64_t dispatch_results;
+    atomic_uint_fast64_t dispatch_result_rejects;
+    atomic_uint_fast64_t media_results;
+    atomic_uint_fast64_t media_result_rejects;
+    atomic_uint_fast64_t media_events;
+    atomic_uint_fast64_t media_event_rejects;
+    atomic_uint_fast64_t inventory_pages;
+    atomic_uint_fast64_t inventory_page_rejects;
+    atomic_uint_fast64_t auth_rejects; /* worker.sync identity not connected */
+    atomic_uint_fast64_t dedup_expired_rejects;
 };
+
+#define IVR_BRIDGE_COUNTER_INC(bridge, field)                              \
+    ((void)atomic_fetch_add_explicit(&(bridge)->field, 1u,                 \
+                                     memory_order_relaxed))
+
+static int ivr_room_router_send_payload(ivr_room_bridge_t *bridge,
+                                        flowmq_router_route_t route,
+                                        const uint8_t *payload,
+                                        size_t payload_size) {
+    flowmq_protocol_frame_t frame;
+    uint64_t completion_id;
+    tstr encoded = NULL;
+    int rc;
+    if (!bridge || !bridge->endpoint || (!payload && payload_size > 0u)) {
+        return TURBO_EINVAL;
+    }
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
+    frame.pattern = FLOWMQ_PROTOCOL_ROUTER;
+    completion_id = atomic_fetch_add_explicit(
+        &bridge->next_completion_id, 1u, memory_order_relaxed);
+    if (completion_id == 0u) {
+        completion_id = atomic_fetch_add_explicit(
+            &bridge->next_completion_id, 1u, memory_order_relaxed);
+    }
+    frame.message_id = completion_id;
+    frame.payload = vstr_from_buf((const char *)payload, payload_size);
+    rc = flowmq_protocol_encode_frame(
+        &frame, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE, &encoded);
+    if (rc == TURBO_OK) {
+        rc = flowmq_router_endpoint_send_copy(
+            bridge->endpoint, route, completion_id, encoded,
+            tstr_len(encoded));
+    }
+    tstr_free(encoded);
+    return rc;
+}
+
+static int ivr_room_verify_peer_identity(void *context,
+                                         const char *certificate_sha256,
+                                         vstr claimed_identity) {
+    ivr_room_bridge_t *bridge = (ivr_room_bridge_t *)context;
+    char identity[128];
+    if (!bridge || !bridge->verify_peer_identity ||
+        !claimed_identity.data || claimed_identity.len == 0u ||
+        claimed_identity.len >= sizeof(identity)) {
+        return TURBO_EINVAL;
+    }
+    memcpy(identity, claimed_identity.data, claimed_identity.len);
+    identity[claimed_identity.len] = '\0';
+    return bridge->verify_peer_identity(bridge->verify_peer_identity_context,
+                                        certificate_sha256, identity);
+}
+
+static ivr_status_t ivr_room_bridge_send_to_worker(
+    ivr_room_bridge_t *bridge, const char *worker_id, const uint8_t *frame,
+    size_t len);
 
 /* ------------------------------------------------------------------ */
 /* type id -> command name (reverse of the gateway map)                */
@@ -1005,8 +1115,8 @@ ivr_status_t ivr_room_bridge_publish_participant_joined(
     const char *participant_role) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 64u * 1024u];
     size_t len = 0;
-    if (!bridge || !bridge->pub_app) {
-        return IVR_ESTATE;
+    if (!bridge || !worker_id) {
+        return IVR_EINVAL;
     }
     if (ivr_room_bridge_encode_participant_joined(
             bridge->codec, event_id, causation_id, worker_id, room_id, call_id,
@@ -1014,10 +1124,11 @@ ivr_status_t ivr_room_bridge_publish_participant_joined(
             participant_role, frame, sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    if (turbo_flow_fmq_app_send(bridge->pub_app, frame, len) != TURBO_OK) {
+    if (ivr_room_bridge_send_to_worker(bridge, worker_id, frame, len) !=
+        IVR_OK) {
         return IVR_ESTATE;
     }
-    bridge->events_published++;
+    IVR_BRIDGE_COUNTER_INC(bridge, events_published);
     return IVR_OK;
 }
 
@@ -1035,7 +1146,7 @@ ivr_status_t ivr_room_bridge_publish_worker_lost(
     DataBindObject *obj = NULL;
     uint8_t *bin = NULL;
     size_t bin_len = 0;
-    if (!bridge || !bridge->pub_app || !event_id || !causation_id ||
+    if (!bridge || !event_id || !causation_id ||
         !worker_id || !room_id || !call_id || !reason) {
         return IVR_EINVAL;
     }
@@ -1092,10 +1203,11 @@ ivr_status_t ivr_room_bridge_publish_worker_lost(
     memcpy(frame + IVR_FRAME_HEADER_SIZE, bin, bin_len);
     frame_len = IVR_FRAME_HEADER_SIZE + bin_len;
     data_bind_binary_free(bin);
-    if (turbo_flow_fmq_app_send(bridge->pub_app, frame, frame_len) != TURBO_OK) {
+    if (ivr_room_bridge_send_to_worker(bridge, worker_id, frame, frame_len) !=
+        IVR_OK) {
         return IVR_ESTATE;
     }
-    bridge->events_published++;
+    IVR_BRIDGE_COUNTER_INC(bridge, events_published);
     return IVR_OK;
 }
 
@@ -1306,8 +1418,16 @@ ivr_status_t ivr_room_encode_result(
 /* connected peer identity set (from FMQ connection events)              */
 /* ------------------------------------------------------------------ */
 
-static void peer_add(ivr_peer_set_t *p, const char *data, size_t len) {
-    if (!data || len == 0) {
+static int route_equal(flowmq_router_route_t left,
+                       flowmq_router_route_t right) {
+    return left.endpoint_id == right.endpoint_id &&
+           left.generation == right.generation &&
+           left.session_id == right.session_id;
+}
+
+static void peer_add(ivr_peer_set_t *p, const char *data, size_t len,
+                     flowmq_router_route_t route) {
+    if (!p || !data || len == 0) {
         return;
     }
     if (len > 127) {
@@ -1315,21 +1435,25 @@ static void peer_add(ivr_peer_set_t *p, const char *data, size_t len) {
     }
     ivr_mutex_lock(&p->lock);
     for (uint32_t i = 0; i < p->count; i++) {
-        if (strncmp(p->ids[i], data, len) == 0 && p->ids[i][len] == '\0') {
+        if (strncmp(p->entries[i].identity, data, len) == 0 &&
+            p->entries[i].identity[len] == '\0') {
+            p->entries[i].route = route;
             ivr_mutex_unlock(&p->lock);
             return;
         }
     }
     if (p->count < p->capacity) {
-        memcpy(p->ids[p->count], data, len);
-        p->ids[p->count][len] = '\0';
+        memcpy(p->entries[p->count].identity, data, len);
+        p->entries[p->count].identity[len] = '\0';
+        p->entries[p->count].route = route;
         p->count++;
     }
     ivr_mutex_unlock(&p->lock);
 }
 
-static void peer_remove(ivr_peer_set_t *p, const char *data, size_t len) {
-    if (!data || len == 0) {
+static void peer_remove(ivr_peer_set_t *p, const char *data, size_t len,
+                        flowmq_router_route_t route) {
+    if (!p || !data || len == 0) {
         return;
     }
     if (len > 127) {
@@ -1337,11 +1461,14 @@ static void peer_remove(ivr_peer_set_t *p, const char *data, size_t len) {
     }
     ivr_mutex_lock(&p->lock);
     for (uint32_t i = 0; i < p->count; i++) {
-        if (strncmp(p->ids[i], data, len) == 0 && p->ids[i][len] == '\0') {
+        if (strncmp(p->entries[i].identity, data, len) == 0 &&
+            p->entries[i].identity[len] == '\0' &&
+            route_equal(p->entries[i].route, route)) {
             for (uint32_t j = i + 1; j < p->count; j++) {
-                memcpy(p->ids[j - 1], p->ids[j], 128);
+                p->entries[j - 1] = p->entries[j];
             }
             p->count--;
+            memset(&p->entries[p->count], 0, sizeof(p->entries[p->count]));
             break;
         }
     }
@@ -1355,7 +1482,23 @@ static int peer_connected(const ivr_peer_set_t *p, const char *id) {
     int found = 0;
     ivr_mutex_lock((ivr_mutex_t *)&p->lock);
     for (uint32_t i = 0; i < p->count; i++) {
-        if (strcmp(p->ids[i], id) == 0) {
+        if (strcmp(p->entries[i].identity, id) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    ivr_mutex_unlock((ivr_mutex_t *)&p->lock);
+    return found;
+}
+
+static int peer_route_matches(const ivr_peer_set_t *p, const char *id,
+                              flowmq_router_route_t route) {
+    int found = 0;
+    if (!p || !id) return 0;
+    ivr_mutex_lock((ivr_mutex_t *)&p->lock);
+    for (uint32_t i = 0; i < p->count; ++i) {
+        if (strcmp(p->entries[i].identity, id) == 0 &&
+            route_equal(p->entries[i].route, route)) {
             found = 1;
             break;
         }
@@ -1365,15 +1508,18 @@ static int peer_connected(const ivr_peer_set_t *p, const char *id) {
 }
 
 static void route_invalidate_peer(ivr_room_bridge_t *bridge,
-                                  const char *peer_identity, size_t length);
+                                  const char *peer_identity, size_t length,
+                                  flowmq_router_route_t route);
 
-static void bridge_on_fmq_event(void *ctx, const turbo_flow_fmq_event_t *event) {
+static void bridge_on_fmq_event(
+    void *ctx, const flowmq_router_endpoint_event_t *event) {
     ivr_room_bridge_t *b = (ivr_room_bridge_t *)ctx;
-    if (!b || !event) {
+    if (!b || !event ||
+        !atomic_load_explicit(&b->accepting, memory_order_acquire)) {
         return;
     }
-    if (event->kind == TURBO_FLOW_FMQ_EVENT_PEER_CONNECTED ||
-        event->kind == TURBO_FLOW_FMQ_EVENT_PEER_DISCONNECTED) {
+    if (event->kind == FLOWMQ_ROUTER_EVENT_PEER_CONNECTED ||
+        event->kind == FLOWMQ_ROUTER_EVENT_PEER_DISCONNECTED) {
         (void)ivr_peer_event_queue_push(&b->peer_events, event);
     }
 }
@@ -1396,18 +1542,20 @@ static ivr_route_entry_t *route_find_locked(ivr_room_bridge_t *b,
 }
 
 static void route_invalidate_peer(ivr_room_bridge_t *bridge,
-                                  const char *peer_identity, size_t length) {
+                                  const char *peer_identity, size_t length,
+                                  flowmq_router_route_t route) {
     if (!bridge || !peer_identity || length == 0 || length >= 128) {
         return;
     }
     ivr_mutex_lock(&bridge->routes_lock);
     for (uint32_t i = 0; i < bridge->route_count; i++) {
         ivr_route_entry_t *entry = &bridge->routes[i];
-        if (entry->valid && strncmp(entry->worker_id, peer_identity, length) == 0 &&
-            entry->worker_id[length] == '\0') {
+        if (entry->valid &&
+            strncmp(entry->worker_id, peer_identity, length) == 0 &&
+            entry->worker_id[length] == '\0' &&
+            route_equal(entry->route, route)) {
             entry->valid = 0;
-            turbo_flow_msg_cleanup(&entry->msg);
-            turbo_flow_msg_init(&entry->msg);
+            memset(&entry->route, 0, sizeof(entry->route));
         }
     }
     ivr_mutex_unlock(&bridge->routes_lock);
@@ -1422,8 +1570,7 @@ static void peer_and_routes_clear(ivr_room_bridge_t *bridge) {
         ivr_route_entry_t *entry = &bridge->routes[i];
         if (entry->valid) {
             entry->valid = 0;
-            turbo_flow_msg_cleanup(&entry->msg);
-            turbo_flow_msg_init(&entry->msg);
+            memset(&entry->route, 0, sizeof(entry->route));
         }
     }
     ivr_mutex_unlock(&bridge->routes_lock);
@@ -1441,11 +1588,14 @@ static void ivr_bridge_process_peer_events(ivr_room_bridge_t *bridge) {
             return;
         }
         size_t identity_len = strlen(event.peer_identity);
-        if (event.kind == TURBO_FLOW_FMQ_EVENT_PEER_CONNECTED) {
-            peer_add(&bridge->peers, event.peer_identity, identity_len);
-        } else if (event.kind == TURBO_FLOW_FMQ_EVENT_PEER_DISCONNECTED) {
-            peer_remove(&bridge->peers, event.peer_identity, identity_len);
-            route_invalidate_peer(bridge, event.peer_identity, identity_len);
+        if (event.kind == FLOWMQ_ROUTER_EVENT_PEER_CONNECTED) {
+            peer_add(&bridge->peers, event.peer_identity, identity_len,
+                     event.route);
+        } else if (event.kind == FLOWMQ_ROUTER_EVENT_PEER_DISCONNECTED) {
+            peer_remove(&bridge->peers, event.peer_identity, identity_len,
+                        event.route);
+            route_invalidate_peer(bridge, event.peer_identity, identity_len,
+                                  event.route);
         }
     }
 }
@@ -1486,25 +1636,34 @@ void ivr_room_bridge_get_stats(const ivr_room_bridge_t *bridge,
     out->peer_event_queue_drops = bridge->peer_events.dropped;
     out->peer_event_queue_overflowed = bridge->peer_events.overflowed;
     ivr_mutex_unlock((ivr_mutex_t *)&bridge->peer_events.lock);
-    ivr_mutex_lock((ivr_mutex_t *)&bridge->dedup.lock);
-    out->dedup_hits = bridge->dedup_hits;
-    out->dedup_expired_rejects = bridge->dedup_expired_rejects;
-    out->version_rejects = bridge->version_rejects;
-    out->auth_rejects = bridge->auth_rejects;
-    out->dispatch_result_rejects = bridge->dispatch_result_rejects;
-    out->media_results = bridge->media_results;
-    out->media_result_rejects = bridge->media_result_rejects;
-    out->media_events = bridge->media_events;
-    out->media_event_rejects = bridge->media_event_rejects;
-    out->inventory_pages = bridge->inventory_pages;
-    out->inventory_page_rejects = bridge->inventory_page_rejects;
-    ivr_mutex_unlock((ivr_mutex_t *)&bridge->dedup.lock);
+    out->dedup_hits = atomic_load_explicit(&bridge->dedup_hits,
+                                           memory_order_relaxed);
+    out->dedup_expired_rejects = atomic_load_explicit(
+        &bridge->dedup_expired_rejects, memory_order_relaxed);
+    out->version_rejects = atomic_load_explicit(&bridge->version_rejects,
+                                                memory_order_relaxed);
+    out->auth_rejects = atomic_load_explicit(&bridge->auth_rejects,
+                                             memory_order_relaxed);
+    out->dispatch_result_rejects = atomic_load_explicit(
+        &bridge->dispatch_result_rejects, memory_order_relaxed);
+    out->media_results = atomic_load_explicit(&bridge->media_results,
+                                              memory_order_relaxed);
+    out->media_result_rejects = atomic_load_explicit(
+        &bridge->media_result_rejects, memory_order_relaxed);
+    out->media_events = atomic_load_explicit(&bridge->media_events,
+                                             memory_order_relaxed);
+    out->media_event_rejects = atomic_load_explicit(
+        &bridge->media_event_rejects, memory_order_relaxed);
+    out->inventory_pages = atomic_load_explicit(&bridge->inventory_pages,
+                                                memory_order_relaxed);
+    out->inventory_page_rejects = atomic_load_explicit(
+        &bridge->inventory_page_rejects, memory_order_relaxed);
 }
 
 /* Capture/refresh the ROUTER route of a registered worker (called on a
    successful worker.sync so the route is generation-fenced and current). */
 static void route_store(ivr_room_bridge_t *b, const char *worker_id,
-                        turbo_flow_msg_t *msg) {
+                        ivr_route_message_t *msg) {
     ivr_mutex_lock(&b->routes_lock);
     ivr_route_entry_t *entry = route_find_locked(b, worker_id);
     if (!entry && b->route_count < b->route_capacity) {
@@ -1526,14 +1685,8 @@ static void route_store(ivr_room_bridge_t *b, const char *worker_id,
         ivr_mutex_unlock(&b->routes_lock);
         return; /* route table full: dispatch to this worker stays unavailable */
     }
-    if (entry->valid) {
-        turbo_flow_msg_cleanup(&entry->msg);
-        turbo_flow_msg_init(&entry->msg);
-    }
-    entry->valid = 0;
-    if (turbo_flow_msg_clone(&entry->msg, msg) == TURBO_OK) {
-        entry->valid = 1;
-    }
+    entry->route = msg->route;
+    entry->valid = 1;
     ivr_mutex_unlock(&b->routes_lock);
 }
 
@@ -1541,26 +1694,19 @@ static void route_store(ivr_room_bridge_t *b, const char *worker_id,
    worker's latest successful worker.sync. A connected peer name alone is not
    sufficient because another connected DEALER could spoof worker_id. */
 static int route_matches_worker(ivr_room_bridge_t *b, const char *worker_id,
-                                const turbo_flow_msg_t *msg) {
-    const turbo_flow_protocol_route_t *incoming;
+                                const ivr_route_message_t *msg) {
     int matches = 0;
 
-    if (!b || !worker_id || !msg || !peer_connected(&b->peers, worker_id)) {
-        return 0;
-    }
-    incoming = turbo_flow_msg_protocol_route(msg);
-    if (!incoming) {
+    if (!b || !worker_id || !msg ||
+        !peer_route_matches(&b->peers, worker_id, msg->route)) {
         return 0;
     }
     ivr_mutex_lock(&b->routes_lock);
     ivr_route_entry_t *entry = route_find_locked(b, worker_id);
-    const turbo_flow_protocol_route_t *registered =
-        entry && entry->valid ? turbo_flow_msg_protocol_route(&entry->msg)
-                              : NULL;
-    if (registered && registered->protocol == incoming->protocol &&
-        registered->owner_instance_id == incoming->owner_instance_id &&
-        registered->session_id == incoming->session_id &&
-        registered->session_generation == incoming->session_generation) {
+    if (entry && entry->valid &&
+        entry->route.endpoint_id == msg->route.endpoint_id &&
+        entry->route.generation == msg->route.generation &&
+        entry->route.session_id == msg->route.session_id) {
         matches = 1;
     }
     ivr_mutex_unlock(&b->routes_lock);
@@ -1793,32 +1939,28 @@ ivr_status_t ivr_room_bridge_encode_dispatch_v2(
 static ivr_status_t ivr_room_bridge_send_to_worker(
     ivr_room_bridge_t *bridge, const char *worker_id, const uint8_t *frame,
     size_t len) {
-    turbo_flow_msg_t push;
-    turbo_flow_msg_init(&push);
+    flowmq_router_route_t route;
     ivr_mutex_lock(&bridge->routes_lock);
     ivr_route_entry_t *entry = route_find_locked(bridge, worker_id);
     if (!entry || !entry->valid) {
         ivr_mutex_unlock(&bridge->routes_lock);
         return IVR_ESTATE;
     }
-    int clone_rc = turbo_flow_msg_clone(&push, &entry->msg);
+    route = entry->route;
     ivr_mutex_unlock(&bridge->routes_lock);
-    if (clone_rc != TURBO_OK ||
-        turbo_flow_fmq_app_message_set_payload_copy(&push, frame, len) !=
-            TURBO_OK ||
-        turbo_flow_fmq_app_send_message(bridge->app, &push) != TURBO_OK) {
-        turbo_flow_msg_cleanup(&push);
+    if (ivr_room_router_send_payload(bridge, route, frame, len) != TURBO_OK) {
         ivr_mutex_lock(&bridge->routes_lock);
         entry = route_find_locked(bridge, worker_id);
-        if (entry) {
+        if (entry && entry->valid &&
+            entry->route.endpoint_id == route.endpoint_id &&
+            entry->route.generation == route.generation &&
+            entry->route.session_id == route.session_id) {
             entry->valid = 0;
-            turbo_flow_msg_cleanup(&entry->msg);
-            turbo_flow_msg_init(&entry->msg);
+            memset(&entry->route, 0, sizeof(entry->route));
         }
         ivr_mutex_unlock(&bridge->routes_lock);
         return IVR_ESTATE;
     }
-    turbo_flow_msg_cleanup(&push);
     return IVR_OK;
 }
 
@@ -1836,8 +1978,14 @@ ivr_status_t ivr_room_bridge_encode_media_command(
     size_t binary_size = 0;
     ivr_frame_info_t info;
 
-    if (!codec || !command || !frame || !out_len ||
-        frame_cap < IVR_FRAME_HEADER_SIZE ||
+    if (!codec || !command || !frame || !out_len) {
+        return IVR_EINVAL;
+    }
+    if (frame_cap < IVR_FRAME_HEADER_SIZE) {
+        *out_len = 0;
+        return IVR_ENOSPC;
+    }
+    if (
         command->message_id[0] == '\0' ||
         command->tenant_id[0] == '\0' ||
         command->provider_session_id[0] == '\0' ||
@@ -2074,15 +2222,15 @@ ivr_status_t ivr_room_bridge_dispatch_call(
             bridge->codec, message_id, worker_id, room_id, call_id,
             call_generation, expected_room_version, content_package, frame,
             sizeof(frame), &len) != IVR_OK) {
-        bridge->dispatches_failed++;
+        IVR_BRIDGE_COUNTER_INC(bridge, dispatches_failed);
         return IVR_ESTATE;
     }
     if (ivr_room_bridge_send_to_worker(bridge, worker_id, frame, len) !=
         IVR_OK) {
-        bridge->dispatches_failed++;
+        IVR_BRIDGE_COUNTER_INC(bridge, dispatches_failed);
         return IVR_ESTATE;
     }
-    bridge->dispatches_sent++;
+    IVR_BRIDGE_COUNTER_INC(bridge, dispatches_sent);
     return IVR_OK;
 }
 
@@ -2097,10 +2245,10 @@ ivr_status_t ivr_room_bridge_dispatch_call_v2(
                                            sizeof(frame), &len) != IVR_OK ||
         ivr_room_bridge_send_to_worker(bridge, dispatch->worker_id, frame,
                                        len) != IVR_OK) {
-        bridge->dispatches_failed++;
+        IVR_BRIDGE_COUNTER_INC(bridge, dispatches_failed);
         return IVR_ESTATE;
     }
-    bridge->dispatches_sent++;
+    IVR_BRIDGE_COUNTER_INC(bridge, dispatches_sent);
     return IVR_OK;
 }
 
@@ -2116,15 +2264,15 @@ ivr_status_t ivr_room_bridge_release_call(
     if (ivr_room_bridge_encode_release(
             bridge->codec, message_id, worker_id, room_id, call_id,
             call_generation, reason, frame, sizeof(frame), &len) != IVR_OK) {
-        bridge->dispatches_failed++;
+        IVR_BRIDGE_COUNTER_INC(bridge, dispatches_failed);
         return IVR_ESTATE;
     }
     if (ivr_room_bridge_send_to_worker(bridge, worker_id, frame, len) !=
         IVR_OK) {
-        bridge->dispatches_failed++;
+        IVR_BRIDGE_COUNTER_INC(bridge, dispatches_failed);
         return IVR_ESTATE;
     }
-    bridge->dispatches_sent++;
+    IVR_BRIDGE_COUNTER_INC(bridge, dispatches_sent);
     return IVR_OK;
 }
 
@@ -2132,7 +2280,7 @@ ivr_status_t ivr_room_bridge_release_call(
 /* command handling (bridge worker thread)                             */
 /* ------------------------------------------------------------------ */
 
-static void ivr_bridge_reply(ivr_room_bridge_t *b, turbo_flow_msg_t *msg,
+static void ivr_bridge_reply(ivr_room_bridge_t *b, ivr_route_message_t *msg,
                              const ivr_room_command_t *cmd,
                              const ivr_room_command_result_t *result) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 64u * 1024u];
@@ -2153,17 +2301,13 @@ static void ivr_bridge_reply(ivr_room_bridge_t *b, turbo_flow_msg_t *msg,
     if (rc != IVR_OK) {
         return;
     }
-    if (turbo_flow_fmq_app_message_set_payload_copy(msg, frame, len) !=
-        TURBO_OK) {
-        return;
-    }
-    (void)turbo_flow_fmq_app_send_message(b->app, msg);
+    (void)ivr_room_router_send_payload(b, msg->route, frame, len);
 }
 
 static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
-                                      turbo_flow_msg_t *msg) {
+                                      ivr_route_message_t *msg) {
     ivr_frame_info_t info;
-    if (ivr_frame_decode((const uint8_t *)msg->payload.data, msg->payload.len,
+    if (ivr_frame_decode((const uint8_t *)msg->payload, msg->payload_size,
                          &info) != IVR_OK) {
         return;
     }
@@ -2172,94 +2316,94 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
          info.schema_type_id == IVR_TYPE_CALL_DISPATCH_RESULT_V2)) {
         ivr_dispatch_result_t dispatch_result;
         if (ivr_room_decode_dispatch_result(
-                b->codec, (const uint8_t *)msg->payload.data, msg->payload.len,
+                b->codec, (const uint8_t *)msg->payload, msg->payload_size,
                 &dispatch_result) != IVR_OK ||
             !route_matches_worker(b, dispatch_result.worker_id, msg)) {
-            b->dispatch_result_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, dispatch_result_rejects);
             return;
         }
         if (!b->handler.on_dispatch_result ||
             b->handler.on_dispatch_result(b->handler.context,
                                           &dispatch_result) != IVR_OK) {
-            b->dispatch_result_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, dispatch_result_rejects);
             return;
         }
-        b->dispatch_results++;
+        IVR_BRIDGE_COUNTER_INC(b, dispatch_results);
         return;
     }
     if (info.kind == IVR_KIND_RESULT &&
         info.schema_type_id == IVR_TYPE_CALL_RELEASE_RESULT_V1) {
         ivr_release_result_t release_result;
         if (ivr_room_decode_release_result(
-                b->codec, (const uint8_t *)msg->payload.data, msg->payload.len,
+                b->codec, (const uint8_t *)msg->payload, msg->payload_size,
                 &release_result) != IVR_OK ||
             !route_matches_worker(b, release_result.worker_id, msg)) {
-            b->dispatch_result_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, dispatch_result_rejects);
             return;
         }
         if (!b->handler.on_release_result ||
             b->handler.on_release_result(b->handler.context,
                                          &release_result) != IVR_OK) {
-            b->dispatch_result_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, dispatch_result_rejects);
             return;
         }
-        b->dispatch_results++;
+        IVR_BRIDGE_COUNTER_INC(b, dispatch_results);
         return;
     }
     if (info.kind == IVR_KIND_RESULT &&
         info.schema_type_id == IVR_TYPE_MEDIA_COMMAND_RESULT_V1) {
         ivr_media_command_result_t media_result;
         if (ivr_room_decode_media_result(
-                b->codec, (const uint8_t *)msg->payload.data, msg->payload.len,
+                b->codec, (const uint8_t *)msg->payload, msg->payload_size,
                 &media_result) != IVR_OK ||
             !route_matches_worker(b, media_result.worker_id, msg) ||
             !b->handler.on_media_result ||
             b->handler.on_media_result(b->handler.context, &media_result) !=
                 IVR_OK) {
-            b->media_result_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, media_result_rejects);
             return;
         }
-        b->media_results++;
+        IVR_BRIDGE_COUNTER_INC(b, media_results);
         return;
     }
     if (info.kind == IVR_KIND_RESULT &&
         info.schema_type_id == IVR_TYPE_WORKER_MEDIA_INVENTORY_PAGE_V1) {
         ivr_worker_inventory_envelope_t inventory;
         if (ivr_room_decode_inventory_page(
-                b->codec, (const uint8_t *)msg->payload.data,
-                msg->payload.len, &inventory) != IVR_OK ||
+                b->codec, (const uint8_t *)msg->payload,
+                msg->payload_size, &inventory) != IVR_OK ||
             !route_matches_worker(b, inventory.worker_id, msg) ||
             !b->handler.on_inventory_page ||
             b->handler.on_inventory_page(b->handler.context, &inventory) !=
                 IVR_OK) {
-            b->inventory_page_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, inventory_page_rejects);
             return;
         }
-        b->inventory_pages++;
+        IVR_BRIDGE_COUNTER_INC(b, inventory_pages);
         return;
     }
     if (info.kind == IVR_KIND_EVENT &&
         info.schema_type_id == IVR_TYPE_MEDIA_EVENT_V1) {
         ivr_media_event_t media_event;
         if (ivr_room_decode_media_event(
-                b->codec, (const uint8_t *)msg->payload.data, msg->payload.len,
+                b->codec, (const uint8_t *)msg->payload, msg->payload_size,
                 &media_event) != IVR_OK ||
             !route_matches_worker(b, media_event.worker_id, msg) ||
             !b->handler.on_media_event ||
             b->handler.on_media_event(b->handler.context, &media_event) !=
                 IVR_OK) {
-            b->media_event_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, media_event_rejects);
             return;
         }
-        b->media_events++;
+        IVR_BRIDGE_COUNTER_INC(b, media_events);
         return;
     }
     if (info.kind != IVR_KIND_COMMAND) {
         return;
     }
     ivr_room_command_t cmd;
-    if (ivr_room_decode_frame(b->codec, (const uint8_t *)msg->payload.data,
-                              msg->payload.len, &cmd) != IVR_OK) {
+    if (ivr_room_decode_frame(b->codec, (const uint8_t *)msg->payload,
+                              msg->payload_size, &cmd) != IVR_OK) {
         return; /* malformed frame: no reply (fail fast, drop + count below) */
     }
     ivr_room_command_result_t result;
@@ -2267,7 +2411,7 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
     int dedup_rc = ivr_dedup_lookup(&b->dedup, cmd.message_id,
                                     cmd.call_generation, &result);
     if (dedup_rc > 0) {
-        b->dedup_hits++;
+        IVR_BRIDGE_COUNTER_INC(b, dedup_hits);
         ivr_bridge_reply(b, msg, &cmd, &result);
         return;
     }
@@ -2278,21 +2422,24 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
         result.status_code = IVR_ESTALE;
         snprintf(result.error_message, sizeof(result.error_message),
                  "replay outside dedup retention window");
-        b->dedup_expired_rejects++;
+        IVR_BRIDGE_COUNTER_INC(b, dedup_expired_rejects);
         ivr_bridge_reply(b, msg, &cmd, &result);
         return;
     }
     if (strcmp(cmd.command, "worker.sync") == 0 ||
         strcmp(cmd.command, "worker.sync.v2") == 0 ||
         strcmp(cmd.command, "worker.heartbeat") == 0) {
-        /* Registration binds the claimed worker_id to a real connected DEALER
-           identity (tracked from FMQ connection events): a worker must not
-           register under an identity it is not connected as. */
-        if (!peer_connected(&b->peers, cmd.worker_id)) {
+        /* Independent FlowMQ supplies the authenticated identity for this
+           exact ROUTER message. Bind registration to that peer instead of
+           accepting a claim merely because some peer with the same ID is
+           connected. */
+        if (msg->peer_identity[0] == '\0' ||
+            strcmp(msg->peer_identity, cmd.worker_id) != 0 ||
+            !peer_route_matches(&b->peers, cmd.worker_id, msg->route)) {
             result.status_code = IVR_EAUTH;
             snprintf(result.error_message, sizeof(result.error_message),
                      "worker identity not connected");
-            b->auth_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, auth_rejects);
             ivr_dedup_store(&b->dedup, cmd.message_id, cmd.call_generation,
                             &result);
             ivr_bridge_reply(b, msg, &cmd, &result);
@@ -2308,7 +2455,7 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
             result.status_code = IVR_EVERSION;
             snprintf(result.error_message, sizeof(result.error_message),
                      "stale expected_room_version");
-            b->version_rejects++;
+            IVR_BRIDGE_COUNTER_INC(b, version_rejects);
             ivr_dedup_store(&b->dedup, cmd.message_id, cmd.call_generation,
                             &result);
             ivr_bridge_reply(b, msg, &cmd, &result);
@@ -2327,7 +2474,7 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
                  "no command handler");
     }
     if (result.status_code == 0) {
-        b->applied++;
+        IVR_BRIDGE_COUNTER_INC(b, applied);
         if (strcmp(cmd.command, "worker.sync") == 0 ||
             strcmp(cmd.command, "worker.sync.v2") == 0 ||
             strcmp(cmd.command, "worker.heartbeat") == 0) {
@@ -2337,7 +2484,7 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
         }
         /* A join event is gated by CallDispatchResultV1 accepted so the
            worker session exists before its first sequenced event arrives. */
-        if (b->pub_app && strcmp(cmd.command, "get_snapshot") == 0) {
+        if (strcmp(cmd.command, "get_snapshot") == 0) {
             /* authoritative snapshot domain event: confirms continuity for the
                worker after a sequence gap (worker.sync/get_snapshot) */
             uint8_t ev[IVR_FRAME_HEADER_SIZE + 64u * 1024u];
@@ -2346,8 +2493,9 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
                     b->codec, cmd.room_id, cmd.call_id, cmd.call_generation,
                     result.room_version, result.sequence, "", "", ev,
                     sizeof(ev), &ev_len) == IVR_OK) {
-                if (turbo_flow_fmq_app_send(b->pub_app, ev, ev_len) == TURBO_OK) {
-                    b->events_published++;
+                if (ivr_room_router_send_payload(b, msg->route, ev, ev_len) ==
+                    TURBO_OK) {
+                    IVR_BRIDGE_COUNTER_INC(b, events_published);
                 }
             }
         }
@@ -2361,8 +2509,8 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
 
 static void *ivr_bridge_thread_main(void *opaque) {
     ivr_room_bridge_t *b = (ivr_room_bridge_t *)opaque;
-    turbo_flow_msg_t msg;
-    turbo_flow_msg_init(&msg);
+    ivr_route_message_t msg;
+    ivr_route_message_init(&msg);
     for (;;) {
         int pop_rc = ivr_req_queue_pop(&b->queue, &msg);
         if (pop_rc < 0) {
@@ -2377,10 +2525,10 @@ static void *ivr_bridge_thread_main(void *opaque) {
         }
         ivr_bridge_process_peer_events(b);
         ivr_bridge_handle_request(b, &msg);
-        turbo_flow_msg_cleanup(&msg);
-        turbo_flow_msg_init(&msg);
+        ivr_route_message_cleanup(&msg);
+        ivr_route_message_init(&msg);
     }
-    turbo_flow_msg_cleanup(&msg);
+    ivr_route_message_cleanup(&msg);
     return NULL;
 }
 
@@ -2388,23 +2536,41 @@ static void *ivr_bridge_thread_main(void *opaque) {
 /* FlowMQ ROUTER ingress callback                                      */
 /* ------------------------------------------------------------------ */
 
-static int bridge_on_router_request(turbo_flow_fmq_app_t *app,
-                                    turbo_flow_msg_t *message, void *ctx) {
+static int bridge_on_router_request(
+    void *ctx, const flowmq_router_route_t *route, vstr peer_identity,
+    vstr peer_topic, const flowmq_protocol_frame_t *message) {
     ivr_room_bridge_t *b = (ivr_room_bridge_t *)ctx;
-    (void)app;
-    if (!b || !message) {
+    ivr_route_message_t clone;
+    (void)peer_topic;
+    if (!b || !route || !message ||
+        !atomic_load_explicit(&b->accepting, memory_order_acquire) ||
+        message->kind != FLOWMQ_PROTOCOL_FRAME_DATA) {
         return TURBO_EINVAL;
     }
-    turbo_flow_msg_t clone;
-    turbo_flow_msg_init(&clone);
-    if (turbo_flow_fmq_message_detach_router_route(message) != TURBO_OK ||
-        turbo_flow_msg_clone(&clone, message) != TURBO_OK) {
-        turbo_flow_msg_cleanup(&clone);
-        return TURBO_OK;
+    ivr_route_message_init(&clone);
+    if ((!message->payload.data && message->payload.len > 0u) ||
+        !peer_identity.data || peer_identity.len == 0u ||
+        peer_identity.len >= sizeof(clone.peer_identity)) {
+        return TURBO_EINVAL;
     }
-    if (ivr_req_queue_push(&b->queue, &clone) != 0) {
-        turbo_flow_msg_cleanup(&clone);
-        b->drops++;
+    if (message->payload.len > 0u) {
+        clone.payload = (uint8_t *)malloc(message->payload.len);
+    }
+    if (message->payload.len > 0u && !clone.payload) {
+        ivr_route_message_cleanup(&clone);
+        return TURBO_ENOMEM;
+    }
+    if (message->payload.len > 0u) {
+        memcpy(clone.payload, message->payload.data, message->payload.len);
+    }
+    clone.payload_size = message->payload.len;
+    clone.route = *route;
+    memcpy(clone.peer_identity, peer_identity.data, peer_identity.len);
+    clone.peer_identity[peer_identity.len] = '\0';
+    if (!atomic_load_explicit(&b->accepting, memory_order_acquire) ||
+        ivr_req_queue_push(&b->queue, &clone) != 0) {
+        ivr_route_message_cleanup(&clone);
+        IVR_BRIDGE_COUNTER_INC(b, drops);
     }
     return TURBO_OK;
 }
@@ -2443,59 +2609,66 @@ ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
         goto fail_resources;
     }
     atomic_init(&b->started, 0);
+    atomic_init(&b->accepting, 0);
+    atomic_init(&b->next_completion_id, 1u);
+    atomic_init(&b->applied, 0u);
+    atomic_init(&b->dedup_hits, 0u);
+    atomic_init(&b->version_rejects, 0u);
+    atomic_init(&b->drops, 0u);
+    atomic_init(&b->events_published, 0u);
+    atomic_init(&b->dispatches_sent, 0u);
+    atomic_init(&b->dispatches_failed, 0u);
+    atomic_init(&b->dispatch_results, 0u);
+    atomic_init(&b->dispatch_result_rejects, 0u);
+    atomic_init(&b->media_results, 0u);
+    atomic_init(&b->media_result_rejects, 0u);
+    atomic_init(&b->media_events, 0u);
+    atomic_init(&b->media_event_rejects, 0u);
+    atomic_init(&b->inventory_pages, 0u);
+    atomic_init(&b->inventory_page_rejects, 0u);
+    atomic_init(&b->auth_rejects, 0u);
+    atomic_init(&b->dedup_expired_rejects, 0u);
 
     b->peers.capacity = 64;
-    b->peers.ids = (char(*)[128])calloc(b->peers.capacity, 128);
-    if (!b->peers.ids) {
+    b->peers.entries = (ivr_peer_entry_t *)calloc(
+        b->peers.capacity, sizeof(*b->peers.entries));
+    if (!b->peers.entries) {
         goto fail_resources;
     }
-    turbo_flow_fmq_config_t ep = TURBO_FLOW_FMQ_CONFIG_INIT;
-    ep.pattern = TURBO_FLOW_FMQ_ROUTER;
-    ep.mode = TURBO_FLOW_FMQ_BIND;
-    ep.transport = config->transport ? config->transport : TURBO_FLOW_FMQ_TCP;
+    flowmq_router_endpoint_config_t ep;
+    uint64_t timeout_ms = config->timeout_ms ? config->timeout_ms : 5000u;
+    if (timeout_ms > UINT64_MAX / UINT64_C(1000000)) {
+        goto fail_resources;
+    }
+    b->start_timeout_ns = timeout_ms * UINT64_C(1000000);
+    b->verify_peer_identity = config->verify_peer_identity;
+    b->verify_peer_identity_context = config->verify_peer_identity_context;
+    flowmq_router_endpoint_config_init(&ep);
+    ep.transport = config->transport
+                       ? (flowmq_coronet_transport_t)config->transport
+                       : FLOWMQ_TRANSPORT_TCP;
     ep.host = config->host;
     ep.port = config->port;
-    ep.max_frame_size = TURBO_FLOW_FMQ_DEFAULT_MAX_FRAME_SIZE;
-    ep.timeout_ms = config->timeout_ms ? config->timeout_ms : 5000;
+    ep.identity = "room-service";
+    ep.topic = "ivr.internal";
+    ep.max_frame_size = FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE;
+    ep.timeouts.timeout_ms = timeout_ms;
+    ep.timeouts.set_flags = FLOWMQ_TIMEOUT_SET_DEFAULT;
     ep.tls = config->tls;
-    ep.path = config->path ? config->path : "/";
-    ep.event_callback = bridge_on_fmq_event;
-    ep.event_ctx = b;
-
-    turbo_flow_fmq_app_options_t opt = TURBO_FLOW_FMQ_APP_OPTIONS_INIT;
-    opt.on_message = bridge_on_router_request;
-    opt.message_ctx = b;
-    int app_rc = config->security
-                     ? turbo_flow_fmq_app_create_secure(&ep, &opt,
-                                                        config->security,
-                                                        &b->app)
-                     : turbo_flow_fmq_app_create(&ep, &opt, &b->app);
+    ep.path = config->path ? config->path : "";
+    ep.context = NULL;
+    ep.drive_context = 1;
+    ep.own_context = 1;
+    ep.on_frame = bridge_on_router_request;
+    ep.on_event = bridge_on_fmq_event;
+    ep.callback_ctx = b;
+    if (config->verify_peer_identity) {
+        ep.verify_peer_identity = ivr_room_verify_peer_identity;
+        ep.verify_peer_identity_ctx = b;
+    }
+    int app_rc = flowmq_router_endpoint_create(&ep, &b->endpoint);
     if (app_rc != TURBO_OK) {
         goto fail_resources;
-    }
-    if (config->pub_port > 0) {
-        snprintf(b->pub_topic, sizeof(b->pub_topic), "%s",
-                 config->pub_topic ? config->pub_topic : "room.events");
-        turbo_flow_fmq_config_t pub = TURBO_FLOW_FMQ_CONFIG_INIT;
-        pub.pattern = TURBO_FLOW_FMQ_PUB;
-        pub.mode = TURBO_FLOW_FMQ_BIND;
-        pub.transport = config->pub_transport ? config->pub_transport
-                                              : TURBO_FLOW_FMQ_TCP;
-        pub.host = config->pub_host ? config->pub_host : "127.0.0.1";
-        pub.port = config->pub_port;
-        pub.topic = b->pub_topic;
-        pub.max_frame_size = TURBO_FLOW_FMQ_DEFAULT_MAX_FRAME_SIZE;
-        pub.timeout_ms = config->timeout_ms ? config->timeout_ms : 5000;
-        pub.tls = config->pub_tls;
-        pub.path = config->pub_path ? config->pub_path : "/";
-        turbo_flow_fmq_app_options_t pub_opt = TURBO_FLOW_FMQ_APP_OPTIONS_INIT;
-        int pub_rc = config->pub_security
-                         ? turbo_flow_fmq_app_create_secure(
-                               &pub, &pub_opt, config->pub_security, &b->pub_app)
-                         : turbo_flow_fmq_app_create(&pub, &pub_opt, &b->pub_app);
-        if (pub_rc != TURBO_OK) {
-            goto fail_resources;
-        }
     }
     *out_bridge = b;
     return IVR_OK;
@@ -2503,16 +2676,12 @@ ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
 fail_resources:
     /* ivr_req_queue_destroy/ivr_dedup_destroy/ivr_mutex_destroy are safe on
        zero-initialized or partially initialized members (NULL handles). */
-    if (b->app) {
-        turbo_flow_fmq_app_destroy(b->app);
-        b->app = NULL;
+    if (b->endpoint) {
+        flowmq_router_endpoint_destroy(b->endpoint);
+        b->endpoint = NULL;
     }
-    if (b->pub_app) {
-        turbo_flow_fmq_app_destroy(b->pub_app);
-        b->pub_app = NULL;
-    }
-    free(b->peers.ids);
-    b->peers.ids = NULL;
+    free(b->peers.entries);
+    b->peers.entries = NULL;
     ivr_mutex_destroy(&b->peers.lock);
     ivr_mutex_destroy(&b->routes_lock);
     ivr_peer_event_queue_destroy(&b->peer_events);
@@ -2530,11 +2699,12 @@ fail_resources:
 static void ivr_bridge_abort_start(ivr_room_bridge_t *bridge) {
     /* The worker thread is already running: stop it before failing so a
        caller that only destroys on start failure cannot leak the thread. */
-    ivr_mutex_lock(&bridge->queue.lock);
-    bridge->queue.stop = 1;
-    ivr_cond_broadcast(&bridge->queue.cond);
-    ivr_mutex_unlock(&bridge->queue.lock);
+    atomic_store_explicit(&bridge->accepting, 0, memory_order_release);
+    ivr_req_queue_close_and_discard(&bridge->queue);
+    flowmq_router_endpoint_stop(bridge->endpoint);
     ivr_thread_join(&bridge->thread);
+    ivr_peer_event_queue_clear(&bridge->peer_events);
+    peer_and_routes_clear(bridge);
 }
 
 ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge) {
@@ -2544,21 +2714,22 @@ ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge) {
     if (atomic_exchange(&bridge->started, 1) != 0) {
         return IVR_ESTATE; /* already started: fail fast, never spawn twice */
     }
-    /* a previous stop() left the queue latched; allow a clean restart */
+    /* A new lifecycle generation starts with no requests, peer events or
+       routes retained from the previous endpoint generation. */
+    ivr_peer_event_queue_clear(&bridge->peer_events);
+    peer_and_routes_clear(bridge);
     ivr_mutex_lock(&bridge->queue.lock);
+    bridge->queue.head = 0u;
+    bridge->queue.count = 0u;
     bridge->queue.stop = 0;
     ivr_mutex_unlock(&bridge->queue.lock);
     if (ivr_thread_create(&bridge->thread, ivr_bridge_thread_main, bridge) < 0) {
         atomic_store(&bridge->started, 0);
         return IVR_ENOSPC;
     }
-    if (bridge->pub_app &&
-        turbo_flow_fmq_app_start(bridge->pub_app) != TURBO_OK) {
-        ivr_bridge_abort_start(bridge);
-        atomic_store(&bridge->started, 0);
-        return IVR_ESTATE;
-    }
-    if (turbo_flow_fmq_app_start(bridge->app) != TURBO_OK) {
+    atomic_store_explicit(&bridge->accepting, 1, memory_order_release);
+    if (flowmq_router_endpoint_start(bridge->endpoint,
+                                     bridge->start_timeout_ns) != TURBO_OK) {
         ivr_bridge_abort_start(bridge);
         atomic_store(&bridge->started, 0);
         return IVR_ESTATE;
@@ -2573,17 +2744,14 @@ void ivr_room_bridge_stop(ivr_room_bridge_t *bridge) {
     if (atomic_exchange(&bridge->started, 0) == 0) {
         return; /* not started: idempotent */
     }
-    ivr_mutex_lock(&bridge->queue.lock);
-    bridge->queue.stop = 1;
-    ivr_cond_broadcast(&bridge->queue.cond);
-    ivr_mutex_unlock(&bridge->queue.lock);
+    /* Close ingress first. Queue close rejects any callback already in flight;
+       endpoint stop then establishes callback quiescence before owner join. */
+    atomic_store_explicit(&bridge->accepting, 0, memory_order_release);
+    ivr_req_queue_close_and_discard(&bridge->queue);
+    flowmq_router_endpoint_stop(bridge->endpoint);
     ivr_thread_join(&bridge->thread);
-    if (bridge->app) {
-        (void)turbo_flow_fmq_app_stop(bridge->app);
-    }
-    if (bridge->pub_app) {
-        (void)turbo_flow_fmq_app_stop(bridge->pub_app);
-    }
+    ivr_peer_event_queue_clear(&bridge->peer_events);
+    peer_and_routes_clear(bridge);
 }
 
 void ivr_room_bridge_destroy(ivr_room_bridge_t *bridge) {
@@ -2593,26 +2761,21 @@ void ivr_room_bridge_destroy(ivr_room_bridge_t *bridge) {
     /* Stop and join the worker thread (and stop the FMQ apps) before freeing
        resources the worker thread and the FlowMQ callbacks still reference. */
     ivr_room_bridge_stop(bridge);
-    if (bridge->app) {
-        turbo_flow_fmq_app_destroy(bridge->app);
-        bridge->app = NULL;
-    }
-    if (bridge->pub_app) {
-        turbo_flow_fmq_app_destroy(bridge->pub_app);
-        bridge->pub_app = NULL;
+    if (bridge->endpoint) {
+        flowmq_router_endpoint_destroy(bridge->endpoint);
+        bridge->endpoint = NULL;
     }
     ivr_req_queue_destroy(&bridge->queue);
     ivr_peer_event_queue_destroy(&bridge->peer_events);
     ivr_dedup_destroy(&bridge->dedup);
     ivr_mutex_destroy(&bridge->routes_lock);
     ivr_mutex_destroy(&bridge->peers.lock);
-    free(bridge->peers.ids);
-    bridge->peers.ids = NULL;
+    free(bridge->peers.entries);
+    bridge->peers.entries = NULL;
     if (bridge->routes) {
         for (uint32_t i = 0; i < bridge->route_count; i++) {
-            if (bridge->routes[i].valid) {
-                turbo_flow_msg_cleanup(&bridge->routes[i].msg);
-            }
+            memset(&bridge->routes[i].route, 0,
+                   sizeof(bridge->routes[i].route));
         }
         free(bridge->routes);
         bridge->routes = NULL;

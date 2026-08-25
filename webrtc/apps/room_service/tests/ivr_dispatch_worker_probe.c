@@ -90,6 +90,7 @@ static ivr_status_t probe_publish_event(void *context,
     outbound = *event;
     outbound.event_id.data = event_id;
     outbound.event_id.size = (size_t)written;
+    outbound.sequence = g_event_sequence;
     return ivr_flowmq_gateway_send_media_event(
         g_gateway, g_worker_id, &outbound,
         TEST_MEDIA_EVENT_TIMESTAMP_MS);
@@ -406,6 +407,8 @@ static ivr_status_t probe_execute_media(const ivr_media_command_t *command) {
     ivr_media_operation_t operation;
     ivr_bytes_view_t input;
     memset(&call, 0, sizeof(call));
+    call.tenant_id.data = command->tenant_id;
+    call.tenant_id.size = strlen(command->tenant_id);
     call.provider_session_id.data = command->provider_session_id;
     call.provider_session_id.size = strlen(command->provider_session_id);
     call.dialog_id.data = command->dialog_id;
@@ -560,6 +563,8 @@ static void handle_media_command(const uint8_t *frame, size_t length) {
     memset(&event, 0, sizeof(event));
     event.event_id.data = event_id;
     event.event_id.size = (size_t)event_id_length;
+    event.call.tenant_id.data = command.tenant_id;
+    event.call.tenant_id.size = strlen(command.tenant_id);
     event.call.provider_session_id.data = command.provider_session_id;
     event.call.provider_session_id.size = strlen(command.provider_session_id);
     event.call.dialog_id.data = command.dialog_id;
@@ -620,8 +625,35 @@ static void handle_inventory_query(const uint8_t *frame, size_t length) {
         snprintf(result.error_message, sizeof(result.error_message),
                  "inventory query rejected");
     }
-    if (ivr_flowmq_gateway_send_inventory_page(g_gateway, &result) != IVR_OK) {
-        fprintf(stderr, "probe inventory page send failed\n");
+    status = ivr_flowmq_gateway_send_inventory_page(g_gateway, &result);
+    if (status != IVR_OK) {
+        fprintf(stderr,
+                "probe inventory page send failed status=%d envelope=%s/%s "
+                "page=%u/%llu/%u/%u more=%d next=%u\n",
+                status, result.message_id, result.worker_id,
+                result.page.inventory_version,
+                (unsigned long long)result.page.revision,
+                result.page.count, result.page.total_active,
+                result.page.has_more, result.page.next_cursor);
+        for (uint32_t index = 0u; index < result.page.count; ++index) {
+            const ivr_worker_inventory_record_t *record =
+                &result.page.records[index];
+            fprintf(stderr,
+                    "probe inventory record[%u]=worker:%s instance:%s "
+                    "epoch:%llu tenant:%s session:%s dialog:%s room:%s "
+                    "call:%s/%llu operation:%llu input:%s/%llu/%d "
+                    "state:%d rebindable:%d\n",
+                    index, record->worker_id, record->worker_instance_id,
+                    (unsigned long long)record->worker_epoch,
+                    record->tenant_id, record->provider_session_id,
+                    record->dialog_id, record->room_id, record->call_id,
+                    (unsigned long long)record->call_generation,
+                    (unsigned long long)record->operation_generation,
+                    record->input_id,
+                    (unsigned long long)record->input_generation,
+                    record->input_active, (int)record->state,
+                    record->rebindable);
+        }
         probe_exit();
     }
 }

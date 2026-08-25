@@ -24,11 +24,16 @@ typedef int (*ivr_whep_rtp_cb)(void *context, const ivr_call_ref_t *call,
                                uint64_t source_generation);
 
 typedef struct {
-    const char *sfu_host;
-    int sfu_port;
+    const char *sfu_base_url;
     const char *media_token;
+    const char *ca_file;
+    const char *cert_file;
+    const char *key_file;
+    const char *key_password;
+    int allow_plaintext_loopback;
     uint32_t sample_rate;
     int allow_loopback;
+    uint64_t http_timeout_ms;
     uint64_t connect_timeout_ms;
     uint64_t input_inactivity_timeout_ms; /* 0 = 5000 */
     ivr_media_state_fn on_state;

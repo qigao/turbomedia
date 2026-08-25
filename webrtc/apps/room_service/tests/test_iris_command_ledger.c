@@ -20,7 +20,7 @@ typedef struct test_record_s {
 } test_record_t;
 
 typedef struct test_store_s {
-    turbo_flow_record_store_t api;
+    iris_record_store_t api;
     test_record_t records[TEST_STORE_CAPACITY];
     int commit_calls;
     int fail_commit_call;
@@ -46,13 +46,13 @@ static int find_record(test_store_t *store, const uint8_t *key,
     return -1;
 }
 
-static int test_scan(void *context, turbo_flow_record_visit_fn visit,
+static int test_scan(void *context, iris_record_visit_fn visit,
                      void *visit_context) {
     test_store_t *store = (test_store_t *)context;
     size_t i;
     if (!store || !visit) return TURBO_EINVAL;
     for (i = 0u; i < TEST_STORE_CAPACITY; ++i) {
-        turbo_flow_record_view_t view = TURBO_FLOW_RECORD_VIEW_INIT;
+        iris_record_view_t view = IRIS_RECORD_VIEW_INIT;
         int rc;
         if (!store->records[i].used) continue;
         view.key = store->records[i].key;
@@ -67,10 +67,10 @@ static int test_scan(void *context, turbo_flow_record_visit_fn visit,
 }
 
 static int test_commit(void *context,
-                       const turbo_flow_record_mutation_t *mutations,
+                       const iris_record_mutation_t *mutations,
                        size_t mutation_count) {
     test_store_t *store = (test_store_t *)context;
-    const turbo_flow_record_mutation_t *mutation;
+    const iris_record_mutation_t *mutation;
     int index;
     size_t i;
     uint8_t *copy;
@@ -83,18 +83,18 @@ static int test_commit(void *context,
     mutation = &mutations[0];
     index = find_record(store, mutation->key, mutation->key_size);
     if ((index < 0 && mutation->expected_revision !=
-                        TURBO_FLOW_RECORD_REVISION_ABSENT) ||
+                        IRIS_RECORD_REVISION_ABSENT) ||
         (index >= 0 && store->records[index].revision !=
                            mutation->expected_revision)) {
         return TURBO_EBUSY;
     }
-    if (mutation->kind == TURBO_FLOW_RECORD_DELETE) {
+    if (mutation->kind == IRIS_RECORD_DELETE) {
         if (index < 0) return TURBO_EBUSY;
         free(store->records[index].value);
         memset(&store->records[index], 0, sizeof(store->records[index]));
         return TURBO_OK;
     }
-    if (mutation->kind != TURBO_FLOW_RECORD_PUT || !mutation->value ||
+    if (mutation->kind != IRIS_RECORD_PUT || !mutation->value ||
         mutation->value_size == 0u ||
         mutation->value_size > store->api.max_value_size ||
         mutation->next_revision <= mutation->expected_revision) {
@@ -125,9 +125,9 @@ static int test_commit(void *context,
 
 static void test_store_init(test_store_t *store) {
     memset(store, 0, sizeof(*store));
-    store->api = (turbo_flow_record_store_t)TURBO_FLOW_RECORD_STORE_INIT;
-    store->api.capabilities = TURBO_FLOW_RECORD_STORE_DURABLE |
-                              TURBO_FLOW_RECORD_STORE_ATOMIC_BATCH;
+    store->api = (iris_record_store_t)IRIS_RECORD_STORE_INIT;
+    store->api.capabilities = IRIS_RECORD_STORE_DURABLE |
+                              IRIS_RECORD_STORE_ATOMIC_BATCH;
     store->api.max_key_size = IRIS_COMMAND_ID_CAPACITY;
     store->api.max_value_size = 16384u;
     store->api.max_batch_size = 1u;
@@ -206,7 +206,7 @@ spec("Iris durable provider command ledger") {
         test_store_t store;
         iris_command_ledger_t *ledger;
         test_store_init(&store);
-        store.api.capabilities = TURBO_FLOW_RECORD_STORE_ATOMIC_BATCH;
+        store.api.capabilities = IRIS_RECORD_STORE_ATOMIC_BATCH;
         ledger = test_create_ledger(&store);
         check_null(ledger);
         test_store_clear(&store);
@@ -510,13 +510,13 @@ spec("Iris durable provider command ledger") {
                      "adapters: {}\n",
                      database_path);
             check_equal(tt_write_file(yaml_path, yaml, strlen(yaml)), 0);
-            ledger = iris_command_ledger_create_flowstore(
+            ledger = iris_command_ledger_create_record_store(
                 yaml_path, "iris.provider_commands", 0, 4u, 2u,
                 UINT64_C(86400000), UINT64_C(1000), error, sizeof(error));
             check_null(ledger);
             check_contains(error, "development opt-in");
             memset(error, 0, sizeof(error));
-            ledger = iris_command_ledger_create_flowstore(
+            ledger = iris_command_ledger_create_record_store(
                 yaml_path, "iris.provider_commands", 1, 4u, 2u,
                 UINT64_C(86400000), UINT64_C(1000), error, sizeof(error));
             check_not_null(ledger);
@@ -538,7 +538,7 @@ spec("Iris durable provider command ledger") {
                              ledger, &terminal, &outcome),
                          IVR_OK);
             iris_command_ledger_destroy(ledger);
-            ledger = iris_command_ledger_create_flowstore(
+            ledger = iris_command_ledger_create_record_store(
                 yaml_path, "iris.provider_commands", 1, 4u, 2u,
                 UINT64_C(86400000), UINT64_C(1000), error, sizeof(error));
             check_not_null(ledger);

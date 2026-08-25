@@ -119,8 +119,6 @@ typedef struct {
 typedef struct {
     const char *bind_host; /* ROUTER bind address; NULL = "127.0.0.1" */
     int bind_port;         /* ROUTER port; <= 0 disables the FMQ endpoint */
-    int pub_port;          /* PUB port; <= 0 disables domain event publishing */
-    const char *pub_topic; /* PUB topic; NULL = "room.events" */
     uint64_t timeout_ms;   /* 0 = worker lease duration */
     uint32_t queue_capacity; /* bridge cloned-request queue; 0 = 64 */
     uint32_t dedup_capacity; /* bridge message_id cache; 0 = 64 */
@@ -140,10 +138,13 @@ typedef struct {
     ivr_fmq_media_observer_ops_t media_observer;
     ivr_fmq_inventory_observer_ops_t inventory_observer;
     ivr_fmq_clock_ops_t clock;
-    int transport; /* turbo_flow_fmq_transport_t; 0 = TCP */
+    int transport; /* flowmq_coronet_transport_t; 0 = TCP */
     const char *path;
-    const turbo_flow_fmq_tls_config_t *tls;
-    const turbo_flow_fmq_security_binding_t *security;
+    const flowmq_coronet_tls_server_config_t *tls;
+    int (*verify_peer_identity)(void *context,
+                                const char *certificate_sha256,
+                                const char *claimed_identity);
+    void *verify_peer_identity_context;
 } ivr_fmq_adapter_config_t;
 
 typedef enum {

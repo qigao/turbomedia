@@ -17,6 +17,7 @@
 
 #include "ivr/ivr_worker.h"
 #include "ivr_flowmq_gateway.h"
+#include "flowmq_router_endpoint.h"
 
 #include "data_bind.h"
 #include <stdint.h>
@@ -26,7 +27,6 @@ extern "C" {
 #endif
 
 typedef struct ivr_room_bridge_s ivr_room_bridge_t;
-typedef struct turbo_flow_fmq_tls_config_s turbo_flow_fmq_tls_config_t;
 
 /* One decoded IVR command handed to the host handler. */
 typedef struct {
@@ -157,11 +157,11 @@ typedef struct {
 typedef struct {
     const char *host; /* bind address */
     int port;
-    int transport;    /* turbo_flow_fmq_transport_t; 0 = TCP */
+    int transport;    /* flowmq_coronet_transport_t; 0 = TCP */
     const char *path; /* WS/WSS path; NULL = "/" */
     uint64_t timeout_ms;
     /* Borrowed object-level TLS/WSS material; FlowMQ copies it during create. */
-    const turbo_flow_fmq_tls_config_t *tls;
+    const flowmq_coronet_tls_server_config_t *tls;
     uint32_t queue_capacity;  /* bounded cloned-request queue; 0 = 64 */
     uint32_t dedup_capacity;  /* bounded message_id result cache; 0 = 64 */
     /* Replay/dedup retention window in milliseconds. A mutation replayed after
@@ -173,18 +173,11 @@ typedef struct {
     uint64_t (*now_ms)(void *ctx);
     void *now_ctx;
     ivr_room_command_handler_t handler;
-    /* optional PUB endpoint for domain events; pub_port <= 0 disables it */
-    const char *pub_host;
-    int pub_port;
-    int pub_transport;   /* turbo_flow_fmq_transport_t; 0 = TCP */
-    const char *pub_path;
-    const char *pub_topic; /* NULL = "room.events" */
-    /* Borrowed object-level TLS/WSS material for the PUB endpoint. */
-    const turbo_flow_fmq_tls_config_t *pub_tls;
-    /* Borrowed server bindings. Secure bindings are passed to the FlowMQ
-       facade and must outlive the bridge. */
-    const turbo_flow_fmq_security_binding_t *security;
-    const turbo_flow_fmq_security_binding_t *pub_security;
+    /* Optional mTLS identity verifier. Inputs are callback-borrowed. */
+    int (*verify_peer_identity)(void *context,
+                                const char *certificate_sha256,
+                                const char *claimed_identity);
+    void *verify_peer_identity_context;
 } ivr_room_bridge_config_t;
 
 ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
@@ -220,9 +213,8 @@ ivr_status_t ivr_room_bridge_encode_participant_joined(
     const char *participant_role, uint8_t *frame, size_t frame_cap,
     size_t *out_len);
 
-/* Publish one committed participant-joined fact after the target worker has
-   accepted its dispatch. Returns IVR_ESTATE when PUB is disabled or send
-   fails; callers retain their pending publication marker for retry. */
+/* Send one committed participant-joined fact to the target worker route after
+   it accepted its dispatch. */
 ivr_status_t ivr_room_bridge_publish_participant_joined(
     ivr_room_bridge_t *bridge, const char *event_id,
     const char *causation_id, const char *worker_id, const char *room_id,

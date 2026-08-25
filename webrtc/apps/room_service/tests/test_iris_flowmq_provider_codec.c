@@ -11,6 +11,8 @@
 
 #define TEST_SEMANTIC_FINGERPRINT                                           \
     "sha256:710227af291421e97abf6de1cc8af21e2a50d653bb2855ecab4f549425fdeb4a"
+#define TEST_ROOM_SEMANTIC_FINGERPRINT                                      \
+    "sha256:77266bd0dee0f61e6bb3ce63fcaeaba7114c9b940838c4b495bc3d9424d0664a"
 
 static int assign_string(tstr *target, const char *value) {
     *target = tstr_dup(value);
@@ -108,10 +110,39 @@ spec("RoomService Iris FlowMQ provider codec") {
         check_equal(json_string_field(root, "commandId"), "command-a");
         check_equal(json_string_field(root, "tenantId"), "tenant-a");
         check_equal(json_string_field(root, "workerId"), "iris-worker-a");
+        check_equal((uint64_t)turbo_json_number(
+                        turbo_json_object_get(root, "schemaVersion")),
+                    UINT64_C(2));
         data = turbo_json_object_get(root, "data");
         check_not_null(data);
         check_equal(json_string_field(data, "dialogId"), "dialog-a");
         check_equal(json_string_field(data, "text"), "Welcome");
+        turbo_free_json(&root);
+        iris_flowmq_provider_command_clear(&decoded);
+        tbe_typed_serialized_free(encoded);
+    }
+
+    it("maps canonical room commands to the room bridge schema") {
+        static const char payload[] =
+            "{\"capability\":\"room\",\"roomId\":\"room-a\","
+            "\"roomGeneration\":1}";
+        iris_flowmq_provider_command_t decoded;
+        json_value_t *root = NULL;
+        size_t encoded_size = 0u;
+        uint8_t *encoded = encode_command(
+            payload, "session-a", "17", TEST_ROOM_SEMANTIC_FINGERPRINT,
+            &encoded_size);
+        check_not_null(encoded);
+        check_equal(iris_flowmq_provider_decode_command(
+                         codec, encoded, encoded_size, &decoded),
+                    IVR_OK);
+        check_equal(turbo_parse_json((const uint8_t *)decoded.bridge_json,
+                                     decoded.bridge_json_size, &root),
+                    0);
+        check_not_null(root);
+        check_equal((uint64_t)turbo_json_number(
+                        turbo_json_object_get(root, "schemaVersion")),
+                    UINT64_C(3));
         turbo_free_json(&root);
         iris_flowmq_provider_command_clear(&decoded);
         tbe_typed_serialized_free(encoded);
@@ -251,6 +282,52 @@ spec("RoomService Iris FlowMQ provider codec") {
         tbe_typed_serialized_free(encoded);
     }
 
+    it("preserves a committed room terminal in the canonical completion") {
+        iris_media_completion_t completion;
+        ivr_media_command_result_t result;
+        ProviderCompletionV1_t wire;
+        DataBindError error = DATA_BIND_ERROR_INIT;
+        uint8_t *encoded = NULL;
+        size_t encoded_size = 0u;
+        memset(&completion, 0, sizeof(completion));
+        memset(&result, 0, sizeof(result));
+        snprintf(completion.command_id, sizeof(completion.command_id),
+                 "command-room-a");
+        snprintf(completion.tenant_id, sizeof(completion.tenant_id),
+                 "tenant-a");
+        snprintf(completion.provider_session_id,
+                 sizeof(completion.provider_session_id), "session-a");
+        snprintf(completion.iris_worker_id,
+                 sizeof(completion.iris_worker_id), "iris-worker-a");
+        snprintf(completion.correlation_id,
+                 sizeof(completion.correlation_id), "room-a");
+        completion.dispatch_epoch = 19u;
+        snprintf(completion.terminal_status,
+                 sizeof(completion.terminal_status), "succeeded");
+        snprintf(completion.event_type, sizeof(completion.event_type),
+                 "provider.conference.created");
+        snprintf(completion.result_json, sizeof(completion.result_json),
+                 "{\"roomId\":\"room-a\",\"roomGeneration\":1}");
+        result.status_code = IVR_OK;
+
+        check_equal(iris_flowmq_provider_encode_completion(
+                         &completion, &result, "turbomedia", "turbomedia-a",
+                         "room-completion-a", "2026-08-14T00:00:02Z", 42u,
+                         &encoded, &encoded_size),
+                     IVR_OK);
+        ProviderCompletionV1_init(&wire);
+        check_equal(ProviderCompletionV1_from_bin(
+                         codec, &wire, encoded, encoded_size, &error),
+                     DATA_BIND_OK);
+        check_equal(wire.terminal_status,
+                    ProviderTerminalStatus_Succeeded);
+        check_equal(wire.event_type, "provider.conference.created");
+        check_equal(wire.result_json,
+                    "{\"roomId\":\"room-a\",\"roomGeneration\":1}");
+        ProviderCompletionV1_clear(&wire);
+        tbe_typed_serialized_free(encoded);
+    }
+
     it("encodes a sequenced media event and fences its durable Iris ack") {
         ivr_media_event_t event;
         ProviderEventV1_t wire;
@@ -267,6 +344,11 @@ spec("RoomService Iris FlowMQ provider codec") {
         snprintf(event.provider_session_id,
                  sizeof(event.provider_session_id), "session-a");
         snprintf(event.dialog_id, sizeof(event.dialog_id), "dialog-a");
+        snprintf(event.room_id, sizeof(event.room_id), "room-a");
+        snprintf(event.call_id, sizeof(event.call_id), "call-a");
+        event.call_generation = 7u;
+        snprintf(event.input_id, sizeof(event.input_id), "input-a");
+        snprintf(event.input_value, sizeof(event.input_value), "5");
         snprintf(event.event_type, sizeof(event.event_type), "dtmf.final");
         snprintf(event.payload_json, sizeof(event.payload_json),
                  "{\"digit\":\"5\"}");
@@ -285,7 +367,11 @@ spec("RoomService Iris FlowMQ provider codec") {
         check_equal(wire.session_id, "session-a");
         check_equal(wire.aggregate_id, "dialog-a");
         check_equal(wire.sequence, "31");
-        check_equal(wire.payload_json, "{\"digit\":\"5\"}");
+        check_equal(wire.payload_json,
+                    "{\"dialogId\":\"dialog-a\",\"roomId\":\"room-a\","
+                    "\"callId\":\"call-a\",\"callGeneration\":7,"
+                    "\"inputId\":\"input-a\",\"inputValue\":\"5\","
+                    "\"payload\":{\"digit\":\"5\"}}");
         ProviderEventV1_clear(&wire);
 
         ProviderEventAckV1_init(&ack);

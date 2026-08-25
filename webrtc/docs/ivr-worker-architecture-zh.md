@@ -12,7 +12,7 @@ flowchart LR
   JS[Capability-checked JavaScript]
   Iris[Iris session runtime]
   Outbox[Transactional provider outbox]
-  HTTP[TurboHTTP provider]
+  IrisMQ[Iris FlowMQ adapter]
   Room[RoomService media adapter]
   MQ[FlowMQ control plane]
   Worker[IVR media executor]
@@ -20,8 +20,8 @@ flowchart LR
 
   XML --> Iris
   JS --> Iris
-  Iris --> Outbox --> HTTP --> Room --> MQ --> Worker --> Plane
-  Plane --> Worker --> MQ --> Room --> HTTP --> Iris
+  Iris --> Outbox --> IrisMQ --> MQ --> Room --> MQ --> Worker --> Plane
+  Plane --> Worker --> MQ --> Room --> MQ --> IrisMQ --> Iris
 ```
 
 ## 状态归属
@@ -42,14 +42,14 @@ Iris；只有 Iris 可以根据 XML/JS 决定下一条 media command。
 ```mermaid
 sequenceDiagram
   participant I as Iris XML/JS session
-  participant H as HTTP provider
   participant R as RoomService adapter
   participant F as FlowMQ
   participant W as IVR media worker
   participant M as Media engines
 
-  I->>H: typed media command + provider_session_id
-  H->>R: HTTP command + idempotency key
+  I->>F: typed command + stable message_id
+  F->>R: owning decoded command
+  R-->>F: durable receipt
   R->>F: Media*CommandV1
   F->>W: owning decoded command
   W->>M: open/play/input/cancel/close
@@ -57,8 +57,8 @@ sequenceDiagram
   M-->>W: DTMF/ASR/playback/media fact
   W-->>F: MediaEventV1
   F-->>R: authenticated owning envelope
-  R-->>H: bounded async HTTP delivery
-  H-->>I: commit result event and wake session
+  R-->>F: completion/event + stable message_id
+  F-->>I: commit fact, application ACK, wake session
 ```
 
 FlowMQ 是 control plane：传输 command/result/event 和 worker health/lease，不传 RTP、PCM、
@@ -67,12 +67,15 @@ archive 或脚本。wire frame 在解码前校验 kind、format、schema type/ve
 ## 并发与关闭协议
 
 - worker media callback 是多 producer；只复制到容量 64 的 owning event queue。
+- FlowMQ connection/management callback 只发布到容量 32 的 control queue；仅 worker owner
+  推进 connection generation、health 与 drain。
 - application owner loop 是唯一 FlowMQ event sender。
-- Room bridge broker callback 只 clone/enqueue；bridge owner thread 解码、route fence、回调。
-- upstream HTTP observer 必须拥有独立有界队列和线程，不能阻塞 bridge owner。
+- Room bridge broker callback 只 clone/enqueue；bridge owner thread 解码并按完整 route token
+  （peer identity + route generation）做 fence 后回调。
+- Iris provider completion/event 走独立有界队列并等待 application ACK，不能阻塞 bridge owner。
 - queue 满、未知 schema、错误 route、stale generation、deadline 到期均 fail fast。
-- 关闭顺序：停止接收 command/event，drain media call，释放 queue entry，销毁媒体 transport，
-  再销毁 FlowMQ/HTTP owner。
+- 关闭顺序：停止 provider command ingress，再停止 reconciler 和 worker FlowMQ adapter，随后
+  停止 completion dispatcher、durable outbox 与 command ledger，最后销毁资源。
 
 ## Mock 与验证边界
 

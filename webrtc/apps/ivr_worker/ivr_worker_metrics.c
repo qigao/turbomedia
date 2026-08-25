@@ -8,6 +8,7 @@ static const char *const kMetricNames[IVR_WORKER_METRIC_COUNT] = {
     "assign_accepted_total",       "assign_rejected_total",
     "release_accepted_total",      "release_rejected_total",
     "reply_invalid_total",         "reply_queue_full_total",
+    "control_queue_full_total",
     "command_connected_total",    "command_disconnected_total",
     "event_connected_total",       "event_disconnected_total",
     "sync_retry_total",            "heartbeat_failure_total",

@@ -67,6 +67,11 @@ typedef struct iris_media_completion_s {
     char iris_worker_id[128];
     char correlation_id[128];
     uint64_t dispatch_epoch;
+    /* Optional canonical terminal fields for non-media commands sharing the
+       provider completion lane. Empty fields retain the media defaults. */
+    char terminal_status[16];
+    char event_type[96];
+    char result_json[2048];
 } iris_media_completion_t;
 
 iris_media_bridge_t *iris_media_bridge_create(

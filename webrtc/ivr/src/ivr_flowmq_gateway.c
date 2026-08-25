@@ -2,8 +2,12 @@
 #include "ivr_internal.h"
 #include "ivr_frame.h"
 #include "turbomedia_ivr_v1.h"
-#include "turbo_flow_fmq.h"
+#include "flowmq_connect_endpoint.h"
+#include "flowmq_protocol.h"
+#include "turbo_error.h"
+#include "turbo_str.h"
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,7 +16,7 @@
     (IVR_FRAME_HEADER_SIZE + IVR_INVENTORY_WIRE_JSON_CAPACITY)
 
 struct ivr_flowmq_gateway_s {
-    turbo_flow_fmq_app_t *app;
+    flowmq_connect_endpoint_t *endpoint;
     DataBind *codec;
     char worker_id[128];
     ivr_command_gateway_ops_t ops;
@@ -22,7 +26,40 @@ struct ivr_flowmq_gateway_s {
     void *connection_ctx;
     uint64_t sent_count;
     uint64_t rejected_count;
+    uint64_t start_timeout_ns;
+    atomic_uint_fast64_t next_completion_id;
 };
+
+static int flowmq_gateway_send_payload(ivr_flowmq_gateway_t *gateway,
+                                       const uint8_t *payload,
+                                       size_t payload_size) {
+    flowmq_protocol_frame_t frame;
+    uint64_t completion_id;
+    tstr encoded = NULL;
+    int rc;
+    if (!gateway || !gateway->endpoint || (!payload && payload_size > 0u)) {
+        return TURBO_EINVAL;
+    }
+    memset(&frame, 0, sizeof(frame));
+    frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
+    frame.pattern = FLOWMQ_PROTOCOL_DEALER;
+    completion_id = atomic_fetch_add_explicit(
+        &gateway->next_completion_id, 1u, memory_order_relaxed);
+    if (completion_id == 0u) {
+        completion_id = atomic_fetch_add_explicit(
+            &gateway->next_completion_id, 1u, memory_order_relaxed);
+    }
+    frame.message_id = completion_id;
+    frame.payload = vstr_from_buf((const char *)payload, payload_size);
+    rc = flowmq_protocol_encode_frame(
+        &frame, FLOWMQ_CONNECT_ENDPOINT_DEFAULT_MAX_FRAME_SIZE, &encoded);
+    if (rc == TURBO_OK) {
+        rc = flowmq_connect_endpoint_send_copy(
+            gateway->endpoint, completion_id, encoded, tstr_len(encoded));
+    }
+    tstr_free(encoded);
+    return rc;
+}
 
 /* ------------------------------------------------------------------ */
 /* command -> RoomService schema message mapping                       */
@@ -825,7 +862,7 @@ ivr_status_t ivr_flowmq_gateway_send_dispatch_result(
     int status_code, const char *error_code, const char *error_message) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4096u];
     size_t len = 0;
-    if (!gateway || !gateway->app || !dispatch) {
+    if (!gateway || !gateway->endpoint || !dispatch) {
         return IVR_EINVAL;
     }
     if (ivr_flowmq_gateway_encode_dispatch_result(
@@ -833,7 +870,7 @@ ivr_status_t ivr_flowmq_gateway_send_dispatch_result(
             frame, sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return turbo_flow_fmq_app_send(gateway->app, frame, len) == TURBO_OK
+    return flowmq_gateway_send_payload(gateway, frame, len) == TURBO_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
@@ -844,7 +881,7 @@ ivr_status_t ivr_flowmq_gateway_send_dispatch_result_v2(
     const char *error_code, const char *error_message) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4096u];
     size_t len = 0;
-    if (!gateway || !gateway->app || !dispatch) {
+    if (!gateway || !gateway->endpoint || !dispatch) {
         return IVR_EINVAL;
     }
     if (ivr_flowmq_gateway_encode_dispatch_result_v2(
@@ -853,7 +890,7 @@ ivr_status_t ivr_flowmq_gateway_send_dispatch_result_v2(
             &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return turbo_flow_fmq_app_send(gateway->app, frame, len) == TURBO_OK
+    return flowmq_gateway_send_payload(gateway, frame, len) == TURBO_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
@@ -863,7 +900,7 @@ ivr_status_t ivr_flowmq_gateway_send_release_result(
     int status_code, const char *error_code, const char *error_message) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4096u];
     size_t len = 0;
-    if (!gateway || !gateway->app || !release) {
+    if (!gateway || !gateway->endpoint || !release) {
         return IVR_EINVAL;
     }
     if (ivr_flowmq_gateway_encode_release_result(
@@ -871,7 +908,7 @@ ivr_status_t ivr_flowmq_gateway_send_release_result(
             frame, sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return turbo_flow_fmq_app_send(gateway->app, frame, len) == TURBO_OK
+    return flowmq_gateway_send_payload(gateway, frame, len) == TURBO_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
@@ -924,11 +961,14 @@ ivr_status_t ivr_flowmq_gateway_decode_result(
 /* DEALER reply ingress                                                 */
 /* ------------------------------------------------------------------ */
 
-static int flowmq_on_message(turbo_flow_fmq_app_t *app,
-                             turbo_flow_msg_t *message, void *ctx) {
+static int flowmq_on_message(void *ctx,
+                             const flowmq_protocol_frame_t *message,
+                             uint64_t generation) {
     ivr_flowmq_gateway_t *g = (ivr_flowmq_gateway_t *)ctx;
-    (void)app;
-    if (!g || !g->on_reply || !message || message->payload.len == 0) {
+    (void)generation;
+    if (!g || !g->on_reply || !message ||
+        message->kind != FLOWMQ_PROTOCOL_FRAME_DATA ||
+        message->payload.len == 0u) {
         return TURBO_OK;
     }
     g->on_reply(g->reply_ctx, (const uint8_t *)message->payload.data,
@@ -936,29 +976,15 @@ static int flowmq_on_message(turbo_flow_fmq_app_t *app,
     return TURBO_OK;
 }
 
-static void flowmq_on_connection_event(
-    void *ctx, const turbo_flow_fmq_event_t *event) {
+static void flowmq_on_connection_state(
+    void *ctx, flowmq_connect_endpoint_connection_state_t state,
+    int status, size_t connections_current) {
     ivr_flowmq_gateway_t *gateway = (ivr_flowmq_gateway_t *)ctx;
-    int connected;
-    if (!gateway || !gateway->on_connection || !event) {
-        return;
-    }
-    switch (event->kind) {
-    case TURBO_FLOW_FMQ_EVENT_PEER_CONNECTED:
-    case TURBO_FLOW_FMQ_EVENT_RECONNECT_SUCCEEDED:
-        connected = 1;
-        break;
-    case TURBO_FLOW_FMQ_EVENT_PEER_DISCONNECTED:
-    case TURBO_FLOW_FMQ_EVENT_RECONNECT_SCHEDULED:
-    case TURBO_FLOW_FMQ_EVENT_RECONNECT_FAILED:
-    case TURBO_FLOW_FMQ_EVENT_HEARTBEAT_TIMEOUT:
-    case TURBO_FLOW_FMQ_EVENT_AUTHENTICATION_FAILED:
-        connected = 0;
-        break;
-    default:
-        return;
-    }
-    gateway->on_connection(gateway->connection_ctx, connected);
+    (void)status;
+    if (!gateway || !gateway->on_connection) return;
+    gateway->on_connection(
+        gateway->connection_ctx,
+        state == FLOWMQ_ENDPOINT_CONNECTION_READY && connections_current > 0u);
 }
 
 /* ------------------------------------------------------------------ */
@@ -968,7 +994,7 @@ static void flowmq_on_connection_event(
 static ivr_status_t flowmq_submit_copy(void *context,
                                        const ivr_command_view_t *command) {
     ivr_flowmq_gateway_t *g = (ivr_flowmq_gateway_t *)context;
-    if (!g || !g->app || !command) {
+    if (!g || !g->endpoint || !command) {
         return IVR_EINVAL;
     }
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 64u * 1024u];
@@ -979,7 +1005,7 @@ static ivr_status_t flowmq_submit_copy(void *context,
         g->rejected_count++;
         return rc;
     }
-    int send_rc = turbo_flow_fmq_app_send(g->app, frame, len);
+    int send_rc = flowmq_gateway_send_payload(g, frame, len);
     if (send_rc != TURBO_OK) {
         g->rejected_count++;
         return IVR_ENOSPC;
@@ -990,7 +1016,7 @@ static ivr_status_t flowmq_submit_copy(void *context,
 
 ivr_status_t ivr_flowmq_gateway_send_worker_sync(
     ivr_flowmq_gateway_t *gateway, const char *message_id) {
-    if (!gateway || !gateway->app || !message_id) {
+    if (!gateway || !gateway->endpoint || !message_id) {
         return IVR_EINVAL;
     }
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4u * 1024u];
@@ -1000,7 +1026,7 @@ ivr_status_t ivr_flowmq_gateway_send_worker_sync(
                                               sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    if (turbo_flow_fmq_app_send(gateway->app, frame, len) != TURBO_OK) {
+    if (flowmq_gateway_send_payload(gateway, frame, len) != TURBO_OK) {
         return IVR_ENOSPC;
     }
     return IVR_OK;
@@ -1012,7 +1038,7 @@ static ivr_status_t ivr_flowmq_gateway_send_worker_status(
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4u * 1024u];
     size_t len = 0;
     ivr_status_t rc;
-    if (!gateway || !gateway->app || !message_id || !status) {
+    if (!gateway || !gateway->endpoint || !message_id || !status) {
         return IVR_EINVAL;
     }
     rc = heartbeat ? ivr_flowmq_gateway_encode_worker_heartbeat(
@@ -1024,7 +1050,7 @@ static ivr_status_t ivr_flowmq_gateway_send_worker_status(
     if (rc != IVR_OK) {
         return rc;
     }
-    return turbo_flow_fmq_app_send(gateway->app, frame, len) == TURBO_OK
+    return flowmq_gateway_send_payload(gateway, frame, len) == TURBO_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
@@ -1045,10 +1071,10 @@ ivr_status_t ivr_flowmq_gateway_send_worker_heartbeat(
 
 ivr_status_t ivr_flowmq_gateway_send_frame(ivr_flowmq_gateway_t *gateway,
                                             const uint8_t *frame, size_t len) {
-    if (!gateway || !gateway->app || (!frame && len > 0)) {
+    if (!gateway || !gateway->endpoint || (!frame && len > 0)) {
         return IVR_EINVAL;
     }
-    if (turbo_flow_fmq_app_send(gateway->app, frame, len) != TURBO_OK) {
+    if (flowmq_gateway_send_payload(gateway, frame, len) != TURBO_OK) {
         return IVR_ENOSPC;
     }
     return IVR_OK;
@@ -1064,7 +1090,7 @@ ivr_status_t ivr_flowmq_gateway_send_media_result(
     ivr_json_builder_t builder;
     ivr_status_t status;
 
-    if (!gateway || !gateway->app || !command || !error_code ||
+    if (!gateway || !gateway->endpoint || !command || !error_code ||
         !error_message) {
         return IVR_EINVAL;
     }
@@ -1120,7 +1146,7 @@ ivr_status_t ivr_flowmq_gateway_send_media_event(
     ivr_json_builder_t builder;
     ivr_status_t status;
 
-    if (!gateway || !gateway->app || !worker_id || !worker_id[0] || !event ||
+    if (!gateway || !gateway->endpoint || !worker_id || !worker_id[0] || !event ||
         !event->call.tenant_id.data || event->call.tenant_id.size == 0 ||
         !event->call.provider_session_id.data ||
         event->call.provider_session_id.size == 0 ||
@@ -1410,7 +1436,7 @@ ivr_status_t ivr_flowmq_gateway_send_inventory_page(
     uint8_t *frame;
     size_t frame_size = 0;
     ivr_status_t status;
-    if (!gateway || !gateway->app || !result) {
+    if (!gateway || !gateway->endpoint || !result) {
         return IVR_EINVAL;
     }
     frame = (uint8_t *)malloc(IVR_INVENTORY_WIRE_FRAME_CAPACITY);
@@ -1454,37 +1480,46 @@ ivr_status_t ivr_flowmq_gateway_create(const ivr_flowmq_gateway_config_t *config
         return IVR_ENOSPC;
     }
 
-    turbo_flow_fmq_config_t ep = TURBO_FLOW_FMQ_CONFIG_INIT;
-    ep.pattern = TURBO_FLOW_FMQ_DEALER;
-    ep.mode = TURBO_FLOW_FMQ_CONNECT;
-    ep.transport = config->transport ? config->transport : TURBO_FLOW_FMQ_TCP;
+    flowmq_connect_endpoint_config_t ep;
+    uint64_t timeout_ms = config->timeout_ms ? config->timeout_ms : 5000u;
+    int rc;
+    if (timeout_ms > UINT64_MAX / UINT64_C(1000000)) {
+        data_bind_free(g->codec);
+        free(g);
+        return IVR_EINVAL;
+    }
+    flowmq_connect_endpoint_config_init(&ep);
+    ep.pattern = FLOWMQ_PROTOCOL_DEALER;
+    ep.transport = config->transport
+                       ? (flowmq_coronet_transport_t)config->transport
+                       : FLOWMQ_TRANSPORT_TCP;
     ep.host = config->host;
     ep.port = config->port;
-    ep.identity = g->worker_id; /* required, unique DEALER identity */
-    ep.max_frame_size = TURBO_FLOW_FMQ_DEFAULT_MAX_FRAME_SIZE;
-    ep.timeout_ms = config->timeout_ms ? config->timeout_ms : 5000;
+    ep.identity = g->worker_id;
+    ep.topic = "ivr.internal";
+    ep.max_frame_size = FLOWMQ_CONNECT_ENDPOINT_DEFAULT_MAX_FRAME_SIZE;
+    ep.timeouts.timeout_ms = timeout_ms;
+    ep.timeouts.set_flags = FLOWMQ_TIMEOUT_SET_DEFAULT;
     ep.reconnect_initial_ms =
         config->reconnect_initial_ms ? config->reconnect_initial_ms : 1000;
     ep.reconnect_max_ms =
         config->reconnect_max_ms ? config->reconnect_max_ms : 30000;
     ep.tls = config->tls;
-    ep.path = config->path ? config->path : "/";
-    ep.event_callback = flowmq_on_connection_event;
-    ep.event_ctx = g;
+    ep.path = config->path ? config->path : "";
+    ep.context = NULL;
+    ep.drive_context = 1;
+    ep.own_context = 1;
+    ep.on_frame = flowmq_on_message;
+    ep.on_state = flowmq_on_connection_state;
+    ep.callback_ctx = g;
 
     g->on_reply = config->on_reply;
     g->reply_ctx = config->reply_ctx;
     g->on_connection = config->on_connection;
     g->connection_ctx = config->connection_ctx;
-    turbo_flow_fmq_app_options_t opt = TURBO_FLOW_FMQ_APP_OPTIONS_INIT;
-    /* bidirectional facade: ingress (DEALER replies) is forwarded to the
-       optional on_reply callback when provided */
-    opt.on_message = flowmq_on_message;
-    opt.message_ctx = g;
-    int rc = config->security
-                 ? turbo_flow_fmq_app_create_secure(&ep, &opt, config->security,
-                                                    &g->app)
-                 : turbo_flow_fmq_app_create(&ep, &opt, &g->app);
+    g->start_timeout_ns = timeout_ms * UINT64_C(1000000);
+    atomic_init(&g->next_completion_id, 1u);
+    rc = flowmq_connect_endpoint_create(&ep, &g->endpoint);
     if (rc != TURBO_OK) {
         data_bind_free(g->codec);
         free(g);
@@ -1500,20 +1535,22 @@ ivr_status_t ivr_flowmq_gateway_create(const ivr_flowmq_gateway_config_t *config
 }
 
 ivr_status_t ivr_flowmq_gateway_start(ivr_flowmq_gateway_t *gateway) {
-    if (!gateway || !gateway->app) {
+    if (!gateway || !gateway->endpoint) {
         return IVR_EINVAL;
     }
-    return turbo_flow_fmq_app_start(gateway->app) == TURBO_OK ? IVR_OK
-                                                               : IVR_ESTATE;
+    return flowmq_connect_endpoint_start(
+               gateway->endpoint, gateway->start_timeout_ns) == TURBO_OK
+               ? IVR_OK
+               : IVR_ESTATE;
 }
 
 void ivr_flowmq_gateway_destroy(ivr_flowmq_gateway_t *gateway) {
     if (!gateway) {
         return;
     }
-    if (gateway->app) {
-        turbo_flow_fmq_app_destroy(gateway->app);
-        gateway->app = NULL;
+    if (gateway->endpoint) {
+        flowmq_connect_endpoint_destroy(gateway->endpoint);
+        gateway->endpoint = NULL;
     }
     if (gateway->codec) {
         data_bind_free(gateway->codec);

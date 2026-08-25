@@ -14,14 +14,14 @@
 ```mermaid
 flowchart LR
   Iris[Iris: XML + JS + session owner]
-  HTTP[HTTP provider]
+  IrisMQ[Iris FlowMQ adapter + durable outbox]
   Room[RoomService: media adapter]
   MQ[FlowMQ typed command/result/event]
   Worker[IVR media worker]
   Media[WebRTC/RTP/ASR/TTS/DTMF]
 
-  Iris --> HTTP --> Room --> MQ --> Worker --> Media
-  Media --> Worker --> MQ --> Room --> HTTP --> Iris
+  Iris --> IrisMQ --> MQ --> Room --> MQ --> Worker --> Media
+  Media --> Worker --> MQ --> Room --> MQ --> IrisMQ --> Iris
 ```
 
 ## Wire contract
@@ -46,6 +46,11 @@ open, play, begin/end/cancel input and close. The worker owns no business state.
 Media callbacks copy events into a bounded MPSC-to-single-consumer queue. The application
 owner loop serializes those events to FlowMQ. Queue full returns `IVR_ENOSPC`; shutdown
 stops producers, drains owned entries, closes all media calls, then destroys transports.
+
+FlowMQ connection and management callbacks also only publish immutable events into a
+bounded control queue. Only the worker owner loop changes connection generation, health
+or drain state. Room bridge callbacks are fenced by the full route token; stop closes
+acceptance and discards queued commands before joining the owner so restart begins empty.
 
 Room bridge callbacks receive owning `ivr_media_command_result_t` and
 `ivr_media_event_t` values on the bridge owner thread after the authenticated route is
@@ -73,9 +78,17 @@ cmake --build --preset win-dev-user --target ivr_worker room_service
 ctest --preset win-dev-user -R "test_ivr_worker|test_ivr_room_bridge|test_ivr_flowmq" --output-on-failure
 ```
 
-## Remaining integration gate
+## Production provider boundary
 
-RoomService exposes an explicit media observer dependency. The production observer must
-use an independent bounded queue/owner thread to POST facts to Iris; network I/O must not
-run in the FlowMQ bridge callback. Until configured, media facts are rejected and counted,
-not silently acknowledged.
+Iris 与 RoomService 之间只使用 typed FlowMQ provider lane：command 必须收到 durable
+receipt，completion/event 必须收到 application ACK；transport send 成功不等于 Iris 已提交。
+断线期间 event 先进入 TurboDB ORM durable outbox，发现 sequence gap 时通过 query/observation
+恢复。不存在 HTTP provider fallback，也不得从 broker callback 直接推进 workflow。
+
+WHIP/WHEP 是独立 media-edge 协议：信令经 `TurboHttp::TurboHttp`，生产仅允许验证过的 HTTPS
+（可选 mTLS），明文只允许显式 loopback 测试。动态 room/call/participant ID 必须按单个 URL
+segment 编码；Opus SDP 的 RTP clock 固定为 48000 Hz，与 PCM 处理采样率解耦。
+
+完整状态归属、关闭顺序、容量与恢复契约见
+[`../docs/ivr-production-readiness-design-zh.md`](../docs/ivr-production-readiness-design-zh.md)，
+部署容量见 [`../docs/ivr-capacity-and-operations-zh.md`](../docs/ivr-capacity-and-operations-zh.md)。
