@@ -51,8 +51,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
                           TurboMedia::Pipeline TurboMedia::Transport TurboUtils::Core
                           TurboMedia::RTC)
   elseif(TEST_NAME STREQUAL "test_pipeline")
-    list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server TurboMedia::Transport
-                          TurboMedia::Codec TurboUtils::Core)
+    list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server
+                          TurboMedia::RTSP TurboMedia::Transport TurboMedia::Codec
+                          TurboUtils::Core)
   else()
     # 其他测试按组件链接，避免依赖已移除的兼容聚合库。
     list(

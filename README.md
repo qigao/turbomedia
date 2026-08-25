@@ -11,7 +11,7 @@ FFmpeg 图式流水线以及 WebRTC/RTC 媒体处理。项目默认 fail fast：
 | Codec | H.264、H.265、VP8、VP9、Opus、G.711 μ-law/A-law | `TurboMedia::Codec` |
 | Muxer/Demuxer | FLV、MP4/fMP4、MKV/WebM、MPEG-TS/PS | `TurboMedia::Muxer`、`TurboMedia::Demuxer` |
 | Streamer | HLS、DASH、RTMP、HTTP-FLV | `TurboMedia::Streamer` |
-| Pipeline | YAML 图校验、FFmpeg 转封装/转码/filter、Runtime/RTP relay 与转码 | `TurboMedia::Pipeline` |
+| Pipeline | YAML 图校验、FFmpeg File/HLS/RTSP 输入、转封装/转码/filter、Runtime/RTP relay 与转码 | `TurboMedia::Pipeline` |
 | Playback/Capture | FFmpeg 播放、桌面与移动端设备适配 | `TurboMedia::Player`、`TurboMedia::Device` |
 | WebRTC/RTC | SDP、DataChannel、ICE、信令、RTP/RTCP、SRTP、jitter、NACK、TWCC、simulcast | `TurboMedia::WebRTC`、`TurboMedia::RTC` |
 

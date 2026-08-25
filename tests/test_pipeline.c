@@ -1,5 +1,6 @@
 #include "turbo_pipeline.h"
 
+#include "CoroNet/turbo_coro_context.h"
 #include <rtp-packet.h>
 #include <tinytest.h>
 #include <turbo_codec.h>
@@ -11,6 +12,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define PIPELINE_RTSP_E2E_PORT 20612
+#define PIPELINE_RTSP_E2E_URI "rtsp://127.0.0.1:20612/live/cam"
+#define PIPELINE_RTSP_PAYLOAD_TYPE 96
+#define PIPELINE_RTSP_CLOCK_RATE 90000
+#define PIPELINE_RTSP_TIMESTAMP_STEP 3000
+#define PIPELINE_RTSP_SSRC UINT32_C(0x10203040)
+#define PIPELINE_RTSP_CLIENT_TIMEOUT_MS 10000
 
 static const char VALID_COPY_YAML[] =
     "api_version: turbo.media.pipeline/v1\n"
@@ -118,6 +127,24 @@ typedef struct pipeline_run_result {
     turbo_pipeline_error_t error;
 } pipeline_run_result_t;
 
+typedef struct pipeline_execute_result {
+    turbo_pipeline_t *pipeline;
+    atomic_int done;
+    turbo_pipeline_status_t status;
+    turbo_pipeline_error_t error;
+} pipeline_execute_result_t;
+
+typedef struct pipeline_rtsp_publisher {
+    coro_context_t *context;
+    turbo_media_source_t *source;
+    const uint8_t *access_unit;
+    size_t access_unit_size;
+    int track_id;
+    int done;
+    int failed;
+    int packets_published;
+} pipeline_rtsp_publisher_t;
+
 typedef struct runtime_rtp_capture {
     atomic_int count;
     uint8_t packets[2][2048];
@@ -128,6 +155,15 @@ typedef struct runtime_rtp_capture {
 static void run_pipeline_thread(void *parameter) {
     pipeline_run_result_t *result = (pipeline_run_result_t *)parameter;
     result->status = turbo_pipeline_run(result->pipeline, &result->error);
+}
+
+static void execute_pipeline_thread(void *parameter) {
+    pipeline_execute_result_t *result =
+        (pipeline_execute_result_t *)parameter;
+    result->status = turbo_pipeline_prepare(result->pipeline, &result->error);
+    if (result->status == TURBO_PIPELINE_OK)
+        result->status = turbo_pipeline_run(result->pipeline, &result->error);
+    atomic_store_explicit(&result->done, 1, memory_order_release);
 }
 
 static int capture_runtime_rtp(turbo_media_source_t *source,
@@ -165,6 +201,131 @@ static int make_rtp_packet(uint8_t *buffer,
     packet.payload = payload;
     packet.payloadlen = (int)payload_size;
     return rtp_packet_serialize(&packet, buffer, (int)capacity);
+}
+
+static int encode_test_h264_access_unit(uint8_t *output,
+                                        size_t *output_size) {
+    enum { WIDTH = 16, HEIGHT = 16, YUV_SIZE = WIDTH * HEIGHT * 3 / 2 };
+    turbo_video_codec_config_t config;
+    turbo_codec_t *encoder;
+    turbo_encoded_frame_t frame_info;
+    uint8_t yuv[YUV_SIZE];
+    int result;
+
+    if (!output || !output_size) return TURBO_CODEC_ERR_INVALID;
+    memset(&config, 0, sizeof(config));
+    memset(&frame_info, 0, sizeof(frame_info));
+    memset(yuv, 128, sizeof(yuv));
+    config.width = WIDTH;
+    config.height = HEIGHT;
+    config.framerate = 30;
+    config.bitrate = 100000;
+    config.keyframe_interval = 1;
+    config.threads = 1;
+
+    turbo_codec_registry_init();
+    encoder = turbo_codec_create_encoder("h264", &config);
+    if (!encoder) {
+        *output_size = 0;
+        turbo_codec_registry_shutdown();
+        return TURBO_CODEC_ERR_CODEC;
+    }
+    result = turbo_codec_encode(encoder, yuv, sizeof(yuv), output,
+                                output_size, &frame_info);
+    if (result != TURBO_CODEC_OK) *output_size = 0;
+    turbo_codec_destroy(encoder);
+    turbo_codec_registry_shutdown();
+    return result;
+}
+
+static size_t annexb_start_code_size(const uint8_t *data,
+                                     size_t size,
+                                     size_t offset) {
+    if (!data || offset >= size || size - offset < 3u) return 0;
+    if (data[offset] != 0 || data[offset + 1u] != 0) return 0;
+    if (data[offset + 2u] == 1u) return 3u;
+    if (size - offset >= 4u && data[offset + 2u] == 0u &&
+        data[offset + 3u] == 1u)
+        return 4u;
+    return 0;
+}
+
+static void publish_pipeline_rtsp_video(coro_t *coroutine, void *parameter) {
+    enum {
+        MAX_ACCESS_UNITS = 16,
+        RTP_PACKET_CAPACITY = 2048,
+        PUBLISH_INTERVAL_MS = 5
+    };
+    pipeline_rtsp_publisher_t *publisher =
+        (pipeline_rtsp_publisher_t *)parameter;
+    uint8_t packet[RTP_PACKET_CAPACITY];
+    uint16_t sequence = 1;
+    int access_unit;
+    (void)coroutine;
+
+    for (access_unit = 0; access_unit < MAX_ACCESS_UNITS; ++access_unit) {
+        uint32_t timestamp = PIPELINE_RTSP_CLOCK_RATE +
+                             (uint32_t)access_unit *
+                                 PIPELINE_RTSP_TIMESTAMP_STEP;
+        size_t position = 0;
+        while (position < publisher->access_unit_size) {
+            turbo_media_frame_t frame;
+            size_t start_code_size = annexb_start_code_size(
+                publisher->access_unit, publisher->access_unit_size, position);
+            size_t nal_start;
+            size_t nal_end;
+            size_t scan;
+            int marker;
+            int keyframe;
+            if (start_code_size == 0) {
+                position++;
+                continue;
+            }
+            nal_start = position + start_code_size;
+            nal_end = publisher->access_unit_size;
+            for (scan = nal_start; scan < publisher->access_unit_size; ++scan) {
+                if (annexb_start_code_size(publisher->access_unit,
+                                           publisher->access_unit_size,
+                                           scan) != 0) {
+                    nal_end = scan;
+                    break;
+                }
+            }
+            if (nal_start >= nal_end) {
+                position = nal_end;
+                continue;
+            }
+            marker = nal_end == publisher->access_unit_size;
+            keyframe = (publisher->access_unit[nal_start] & 0x1fu) == 5u;
+            int packet_size = make_rtp_packet(
+                packet, sizeof(packet), PIPELINE_RTSP_PAYLOAD_TYPE, sequence++,
+                timestamp, PIPELINE_RTSP_SSRC, marker,
+                publisher->access_unit + nal_start, nal_end - nal_start);
+            if (packet_size <= 0) {
+                publisher->failed = 1;
+                publisher->done = 1;
+                return;
+            }
+            memset(&frame, 0, sizeof(frame));
+            frame.track_id = publisher->track_id;
+            frame.data = packet;
+            frame.size = (size_t)packet_size;
+            frame.pts = timestamp;
+            frame.dts = timestamp;
+            frame.duration = PIPELINE_RTSP_TIMESTAMP_STEP;
+            frame.is_keyframe = keyframe;
+            if (turbo_media_source_publish(publisher->source, &frame) !=
+                TURBO_MEDIA_OK) {
+                publisher->failed = 1;
+                publisher->done = 1;
+                return;
+            }
+            publisher->packets_published++;
+            position = nal_end;
+        }
+        coro_sleep(publisher->context, PUBLISH_INTERVAL_MS);
+    }
+    publisher->done = 1;
 }
 
 suite("turbo_media_pipeline") {
@@ -1130,6 +1291,215 @@ suite("turbo_media_pipeline") {
             if (root) check_equal(tt_remove_tree(root), 0);
             free(root);
         }
+
+#ifdef TURBO_MEDIA_HAS_RTSP
+        it("pulls local RTSP TCP video through FFmpeg mux and sink") {
+            enum {
+                WAIT_LIMIT = 8000,
+                YAML_CAPACITY = 2048,
+                H264_ACCESS_UNIT_CAPACITY = 4096,
+                SOURCE_CAPACITY = 2,
+                GOP_CAPACITY = 4,
+                RTP_CHANNEL_COUNT = 2
+            };
+            char yaml[YAML_CAPACITY];
+            uint8_t h264_access_unit[H264_ACCESS_UNIT_CAPACITY];
+            size_t h264_access_unit_size = sizeof(h264_access_unit);
+            coro_context_t *context = NULL;
+            turbo_media_server_config_t server_config;
+            turbo_media_server_runtime_t *runtime = NULL;
+            turbo_media_source_key_t source_key;
+            turbo_media_source_t *source = NULL;
+            turbo_media_track_info_t track;
+            turbo_media_source_stats_t source_stats;
+            turbo_rtsp_server_config_t rtsp_config;
+            turbo_media_rtsp_server_adapter_config_t adapter_config;
+            turbo_media_rtsp_server_adapter_t *adapter = NULL;
+            turbo_pipeline_t *pipeline = NULL;
+            pipeline_execute_result_t execution;
+            pipeline_rtsp_publisher_t publisher;
+            turbo_thread_t pipeline_thread = NULL;
+            turbo_pipeline_error_t create_error;
+            turbo_pipeline_stats_t stats;
+            int track_id = -1;
+            int yaml_size;
+            int wait_count;
+            int thread_started = 0;
+
+            memset(&server_config, 0, sizeof(server_config));
+            memset(&source_key, 0, sizeof(source_key));
+            memset(&track, 0, sizeof(track));
+            memset(&source_stats, 0, sizeof(source_stats));
+            memset(&rtsp_config, 0, sizeof(rtsp_config));
+            memset(&adapter_config, 0, sizeof(adapter_config));
+            memset(&execution, 0, sizeof(execution));
+            memset(&publisher, 0, sizeof(publisher));
+            memset(&stats, 0, sizeof(stats));
+            atomic_init(&execution.done, 0);
+
+            check_equal(encode_test_h264_access_unit(
+                            h264_access_unit, &h264_access_unit_size),
+                        TURBO_CODEC_OK);
+            check_true(h264_access_unit_size > 0);
+            if (h264_access_unit_size == 0) goto cleanup_local_rtsp;
+
+            context = coro_context_create(NULL);
+            check_not_null(context);
+            if (!context) goto cleanup_local_rtsp;
+            server_config.max_sources = SOURCE_CAPACITY;
+            server_config.source_config.max_tracks = SOURCE_CAPACITY;
+            server_config.source_config.max_subscribers = SOURCE_CAPACITY;
+            server_config.source_config.gop_capacity = GOP_CAPACITY;
+            server_config.coro_context = (struct coro_context_s *)context;
+            runtime = turbo_media_server_runtime_create(&server_config);
+            check_not_null(runtime);
+            if (!runtime) goto cleanup_local_rtsp;
+
+            check_equal(turbo_media_source_key_init(
+                            &source_key, "default", "live", "cam"),
+                        TURBO_MEDIA_OK);
+            check_equal(turbo_media_server_runtime_get_or_create_source(
+                            runtime, &source_key, &source),
+                        TURBO_MEDIA_OK);
+            check_not_null(source);
+            if (!source) goto cleanup_local_rtsp;
+            track.track_id = -1;
+            track.type = TURBO_MEDIA_TRACK_VIDEO;
+            memcpy(track.codec_name, "H264", sizeof("H264"));
+            track.payload_type = PIPELINE_RTSP_PAYLOAD_TYPE;
+            track.clock_rate = PIPELINE_RTSP_CLOCK_RATE;
+            track.width = 16;
+            track.height = 16;
+            track.framerate = 30;
+            check_equal(turbo_media_source_add_track(source, &track, &track_id),
+                        TURBO_MEDIA_OK);
+            check_equal(track_id, 0);
+
+            rtsp_config.bind_host = "127.0.0.1";
+            rtsp_config.port = PIPELINE_RTSP_E2E_PORT;
+            rtsp_config.client_timeout_ms = PIPELINE_RTSP_CLIENT_TIMEOUT_MS;
+            adapter_config.vhost = "default";
+            adapter_config.session_id = "pipeline-rtsp-e2e";
+            adapter_config.default_rtp_channel_count = RTP_CHANNEL_COUNT;
+            adapter_config.replay_cached = 0;
+            adapter = turbo_media_server_rtsp_adapter_create(
+                runtime, (struct coro_context_s *)context, &rtsp_config,
+                &adapter_config);
+            check_not_null(adapter);
+            if (!adapter) goto cleanup_local_rtsp;
+            check_equal(turbo_media_server_rtsp_adapter_start(adapter),
+                        TURBO_MEDIA_OK);
+
+            yaml_size = snprintf(
+                yaml, sizeof(yaml),
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: local-rtsp-input\n"
+                "limits: { open_timeout_ms: 3000, io_timeout_ms: 3000 }\n"
+                "nodes:\n"
+                "  - id: source\n"
+                "    kind: source\n"
+                "    factory: ffmpeg.input\n"
+                "    config:\n"
+                "      url: '%s'\n"
+                "      options: { rtsp_transport: tcp }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: rtsp } }\n"
+                "  - { id: mux, kind: mux, factory: ffmpeg.mux, config: { format: 'null' } }\n"
+                "  - { id: sink, kind: sink, factory: ffmpeg.output, config: { url: '-' } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.video, to: mux.video }\n"
+                "  - { from: mux.out, to: sink.in }\n",
+                PIPELINE_RTSP_E2E_URI);
+            check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
+            if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
+                goto cleanup_local_rtsp;
+            pipeline = turbo_pipeline_create_from_yaml(
+                yaml, (size_t)yaml_size, &create_error);
+            if (!pipeline)
+                fprintf(stderr, "local RTSP config error: %s\n",
+                        create_error.message);
+            check_not_null(pipeline);
+            if (!pipeline) goto cleanup_local_rtsp;
+
+            execution.pipeline = pipeline;
+            check_equal(turbo_thread_create(
+                            &pipeline_thread, execute_pipeline_thread, &execution),
+                        0);
+            if (!pipeline_thread) goto cleanup_local_rtsp;
+            thread_started = 1;
+
+            for (wait_count = 0; wait_count < WAIT_LIMIT; ++wait_count) {
+                (void)coro_context_run(context, TURBO_RUN_NOWAIT);
+                check_equal(turbo_media_source_get_stats(source, &source_stats),
+                            TURBO_MEDIA_OK);
+                if (source_stats.subscriber_count > 0 ||
+                    atomic_load_explicit(&execution.done, memory_order_acquire))
+                    break;
+                turbo_sleep_ms(1);
+            }
+            if (atomic_load_explicit(&execution.done, memory_order_acquire) &&
+                source_stats.subscriber_count == 0)
+                fprintf(stderr, "local RTSP prepare failed: %s\n",
+                        execution.error.message);
+            check_equal((int)source_stats.subscriber_count, 1);
+            if (source_stats.subscriber_count == 0) goto cleanup_local_rtsp;
+
+            publisher.context = context;
+            publisher.source = source;
+            publisher.access_unit = h264_access_unit;
+            publisher.access_unit_size = h264_access_unit_size;
+            publisher.track_id = track_id;
+            check_equal(coro_context_spawn(
+                            context, publish_pipeline_rtsp_video, &publisher),
+                        0);
+            for (wait_count = 0; wait_count < WAIT_LIMIT; ++wait_count) {
+                (void)coro_context_run(context, TURBO_RUN_NOWAIT);
+                check_equal(turbo_pipeline_stats(pipeline, &stats),
+                            TURBO_PIPELINE_OK);
+                if (stats.packets_written > 0 ||
+                    atomic_load_explicit(&execution.done, memory_order_acquire))
+                    break;
+                turbo_sleep_ms(1);
+            }
+            check_false(publisher.failed);
+            check_true(publisher.done);
+            check_true(publisher.packets_published > 0);
+            check_true(stats.packets_read > 0);
+            check_true(stats.packets_written > 0);
+
+        cleanup_local_rtsp:
+            if (pipeline && thread_started &&
+                !atomic_load_explicit(&execution.done, memory_order_acquire)) {
+                turbo_pipeline_state_t state = turbo_pipeline_state(pipeline);
+                if (state == TURBO_PIPELINE_STATE_PREPARED ||
+                    state == TURBO_PIPELINE_STATE_RUNNING ||
+                    state == TURBO_PIPELINE_STATE_STOPPING)
+                    check_equal(turbo_pipeline_request_stop(pipeline),
+                                TURBO_PIPELINE_OK);
+                for (wait_count = 0; wait_count < WAIT_LIMIT &&
+                                     !atomic_load_explicit(
+                                         &execution.done, memory_order_acquire);
+                     ++wait_count) {
+                    if (context)
+                        (void)coro_context_run(context, TURBO_RUN_NOWAIT);
+                    turbo_sleep_ms(1);
+                }
+            }
+            if (thread_started) {
+                check_equal(turbo_thread_join(&pipeline_thread), 0);
+                turbo_thread_destroy(&pipeline_thread);
+                check_equal(execution.status, TURBO_PIPELINE_ESTOPPED);
+            }
+            if (adapter) {
+                check_equal(turbo_media_server_rtsp_adapter_stop(adapter),
+                            TURBO_MEDIA_OK);
+                turbo_media_server_rtsp_adapter_destroy(adapter);
+            }
+            turbo_pipeline_destroy(pipeline);
+            turbo_media_server_runtime_destroy(runtime);
+            if (context) coro_context_destroy(context);
+        }
+#endif
     }
 
     group("Runtime RTP") {
