@@ -351,6 +351,21 @@ test('malformed event reasons become ERROR drain without throwing', () => {
   }
 });
 
+test('failure rejects empty evidence as ERROR drain without throwing', () => {
+  for (const reason of ['', '   ', {}, []]) {
+    let result;
+    assert.doesNotThrow(() => {
+      result = stepCase(createCaseMachine(IDENTITY), event('failure', 1, 0, {
+        outcome: Outcome.FAIL,
+        reason,
+      }));
+    });
+    assert.equal(result.phase, CaseState.DRAINING);
+    assert.equal(result.primary.outcome, Outcome.ERROR);
+    assert.match(result.primary.reason.message, /failure requires a non-empty reason/i);
+  }
+});
+
 test('prototype event names are rejected rather than treated as transitions', () => {
   for (const type of ['toString', '__proto__']) {
     const result = stepCase(createCaseMachine(IDENTITY), event(type, 1, 0));

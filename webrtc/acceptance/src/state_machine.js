@@ -238,7 +238,7 @@ function normalizeFailure(event, envelope) {
     if (!outcome.present || !Object.hasOwn(FAILURE_OUTCOMES, outcome.value)) {
       return invalidEnvelope('INVALID_FAILURE', 'failure requires FAIL, INCOMPLETE, or ERROR outcome');
     }
-    if (!reason.present) {
+    if (!reason.present || !isReason(reason.value)) {
       return invalidEnvelope('INVALID_FAILURE', 'failure requires a non-empty reason');
     }
     return Object.freeze({ valid: true, value: freezeFailure(outcome.value, reason.value) });
