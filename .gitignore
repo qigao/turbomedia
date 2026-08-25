@@ -74,6 +74,7 @@ Thumbs.db
 .codex-*
 .claude
 .agent
+.worktrees/
 
 # Security - Entire projects directory (contains generated keys, licenses, and project-specific configs)
 # NEVER commit this directory - it contains:
