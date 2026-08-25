@@ -12,7 +12,12 @@ const {
   finishDrain,
 } = require('../src/state_machine');
 
-const IDENTITY = Object.freeze({ run_id: 'run-acceptance', case_id: 'case-relay' });
+const IDENTITY = Object.freeze({
+  run_id: 'run-acceptance',
+  case_id: 'case-relay',
+  case_key: 'chrome/relay-baseline',
+  ordinal: 0,
+});
 
 function event(type, sequence, generation, extra = {}) {
   return {
@@ -183,13 +188,18 @@ test('first primary outcome wins and cleanup evidence never overwrites it', () =
 });
 
 test('cleanup-only evidence resolves to ERROR and all machine data is recursively immutable', () => {
-  const identity = { run_id: 'run-immutable', case_id: 'case-immutable', nested: { source: 'caller' } };
+  const identity = {
+    run_id: 'run-immutable',
+    case_id: 'case-immutable',
+    case_key: 'chrome/immutable',
+    ordinal: 2,
+  };
   const machine = createCaseMachine(identity);
   const draining = beginDrain(machine, Outcome.PASS, { ignored: true });
   const cleanupFailures = [{ step: 'close', details: { resource: 'viewer' } }];
   const terminal = finishDrain(draining, cleanupFailures);
 
-  identity.nested.source = 'changed';
+  identity.case_key = 'changed';
   cleanupFailures[0].details.resource = 'changed';
   assert.equal(terminal.phase, CaseState.ERROR);
   assert.equal(terminal.outcome, Outcome.ERROR);
@@ -212,4 +222,154 @@ test('invalid envelopes and invalid failure evidence fail fast into ERROR drain'
     assert.equal(result.phase, CaseState.DRAINING);
     assert.equal(result.primary.outcome, Outcome.ERROR);
   }
+});
+
+test('machine copies the complete Task 2 case identity without aliasing caller data', () => {
+  const identity = {
+    run_id: 'run-copy',
+    case_id: 'case-copy',
+    case_key: 'firefox/network-migration',
+    ordinal: 4,
+  };
+  const machine = createCaseMachine(identity);
+
+  assert.deepEqual(machine.identity, identity);
+  assert.notStrictEqual(machine.identity, identity);
+  assert.throws(() => { machine.identity.ordinal = 9; }, TypeError);
+  assert.throws(
+    () => createCaseMachine({ run_id: 'run', case_id: 'case', case_key: 'key' }),
+    /ordinal/i
+  );
+
+  let identityGetterReads = 0;
+  const hostileIdentity = { case_id: 'case', case_key: 'key', ordinal: 0 };
+  Object.defineProperty(hostileIdentity, 'run_id', {
+    enumerable: true,
+    get() {
+      identityGetterReads += 1;
+      return 'run';
+    },
+  });
+  assert.throws(() => createCaseMachine(hostileIdentity), /identity/i);
+  assert.equal(identityGetterReads, 0);
+});
+
+test('generation ordering precedes sequence and stale old generation never reads receipt payload', () => {
+  const stable = reachStable();
+  const transitioning = stepCase(stable, event('transition_due', 4, 0));
+  let receiptGetterReads = 0;
+  const stale = stepCase(transitioning, event('hook_effective', 99, 0, {
+    evidence: {
+      evidence_id: 'stale-receipt',
+      get content_hash() {
+        receiptGetterReads += 1;
+        return 'b'.repeat(64);
+      },
+    },
+  }));
+  const future = stepCase(stable, event('complete', 0, 1));
+
+  assert.equal(receiptGetterReads, 0);
+  assert.equal(stale.phase, CaseState.TRANSITIONING);
+  assert.equal(stale.stale_event_count, 1);
+  assert.equal(future.phase, CaseState.DRAINING);
+  assert.match(future.primary.reason.message, /future generation/i);
+});
+
+test('event, receipt, reason, and cleanup accessors are never executed', () => {
+  let envelopeGetterReads = 0;
+  const hostileEnvelope = event('start', 1, 0);
+  Object.defineProperty(hostileEnvelope, 'type', {
+    enumerable: true,
+    get() {
+      envelopeGetterReads += 1;
+      return 'start';
+    },
+  });
+  const envelopeResult = stepCase(createCaseMachine(IDENTITY), hostileEnvelope);
+
+  const transitioning = stepCase(reachStable(), event('transition_due', 4, 0));
+  let receiptGetterReads = 0;
+  const receiptResult = stepCase(transitioning, event('hook_effective', 5, 1, {
+    evidence: {
+      evidence_id: 'receipt',
+      get content_hash() {
+        receiptGetterReads += 1;
+        return 'a'.repeat(64);
+      },
+    },
+  }));
+
+  let reasonGetterReads = 0;
+  const hostileReason = event('failure', 1, 0, { outcome: Outcome.FAIL });
+  Object.defineProperty(hostileReason, 'reason', {
+    enumerable: true,
+    get() {
+      reasonGetterReads += 1;
+      return 'threshold';
+    },
+  });
+  const reasonResult = stepCase(createCaseMachine(IDENTITY), hostileReason);
+
+  const draining = stepCase(reachStable(), event('complete', 4, 0));
+  let cleanupGetterReads = 0;
+  const hostileCleanup = event('cleanup_complete', 5, 0);
+  Object.defineProperty(hostileCleanup, 'cleanup_failures', {
+    enumerable: true,
+    get() {
+      cleanupGetterReads += 1;
+      return [];
+    },
+  });
+  const cleanupResult = stepCase(draining, hostileCleanup);
+
+  assert.equal(envelopeGetterReads, 0);
+  assert.equal(receiptGetterReads, 0);
+  assert.equal(reasonGetterReads, 0);
+  assert.equal(cleanupGetterReads, 0);
+  for (const result of [envelopeResult, receiptResult, reasonResult, cleanupResult]) {
+    assert.equal(result.phase, CaseState.DRAINING);
+    assert.equal(result.primary.outcome, Outcome.ERROR);
+  }
+});
+
+test('malformed event reasons become ERROR drain without throwing', () => {
+  const cyclic = {};
+  cyclic.self = cyclic;
+  const reasons = [undefined, { value: Infinity }, cyclic];
+
+  for (const reason of reasons) {
+    let result;
+    assert.doesNotThrow(() => {
+      result = stepCase(createCaseMachine(IDENTITY), event('failure', 1, 0, {
+        outcome: Outcome.FAIL,
+        reason,
+      }));
+    });
+    assert.equal(result.phase, CaseState.DRAINING);
+    assert.equal(result.primary.outcome, Outcome.ERROR);
+  }
+});
+
+test('prototype event names are rejected rather than treated as transitions', () => {
+  for (const type of ['toString', '__proto__']) {
+    const result = stepCase(createCaseMachine(IDENTITY), event(type, 1, 0));
+    assert.equal(result.phase, CaseState.DRAINING, type);
+    assert.equal(result.primary.outcome, Outcome.ERROR, type);
+  }
+});
+
+test('DRAINING accepts cleanup_complete with an empty default or copied failures', () => {
+  const draining = stepCase(reachStable(), event('complete', 4, 0));
+  const passed = stepCase(draining, event('cleanup_complete', 5, 0));
+  const cleanupOnly = stepCase(
+    stepCase(reachStable(), event('complete', 4, 0)),
+    event('cleanup_complete', 5, 0, { cleanup_failures: [{ step: 'delete', message: 'residue' }] })
+  );
+
+  assert.equal(passed.phase, CaseState.PASSED);
+  assert.equal(passed.outcome, Outcome.PASS);
+  assert.equal(cleanupOnly.phase, CaseState.ERROR);
+  assert.equal(cleanupOnly.outcome, Outcome.ERROR);
+  assert.deepEqual(cleanupOnly.cleanup_failures, [{ step: 'delete', message: 'residue' }]);
 });

@@ -45,6 +45,7 @@ const EVENT_TYPES = Object.freeze({
   timeout: true,
   cancel: true,
   failure: true,
+  cleanup_complete: true,
 });
 
 const TRANSITIONS = deepFreeze({
@@ -57,7 +58,7 @@ const TRANSITIONS = deepFreeze({
   },
   [CaseState.TRANSITIONING]: { hook_effective: CaseState.RECOVERING },
   [CaseState.RECOVERING]: { recovery_verified: CaseState.STABLE },
-  [CaseState.DRAINING]: {},
+  [CaseState.DRAINING]: { cleanup_complete: 'FINISH_DRAIN' },
 });
 
 function createCaseMachine(identity) {
@@ -81,55 +82,70 @@ function stepCase(machine, event) {
     throw new Error('INVALID_TRANSITION: terminal case machine cannot accept events');
   }
 
-  const envelope = inspectEnvelope(machine, event);
+  const envelope = safelyNormalize(() => inspectEnvelope(machine, event));
   if (!envelope.valid) {
     return enterErrorDrain(machine, envelope.code, envelope.message);
   }
 
-  if (event.type === 'hook_effective') {
-    const receipt = normalizeReceipt(event);
+  if (envelope.value.generation < machine.generation) {
+    return nextState(machine, { stale_event_count: machine.stale_event_count + 1 });
+  }
+  if (envelope.value.generation > machine.generation) {
+    return enterErrorDrain(machine, 'FUTURE_GENERATION', 'future generation event received');
+  }
+
+  let receipt = null;
+  if (envelope.value.type === 'hook_effective') {
+    receipt = safelyNormalize(() => normalizeReceipt(event, envelope.value));
     if (!receipt.valid) {
       return enterErrorDrain(machine, receipt.code, receipt.message);
     }
-    if (isConflictingReceipt(machine, event.generation, receipt.value)) {
+    if (isConflictingReceipt(machine, envelope.value.generation, receipt.value)) {
       return enterErrorDrain(machine, 'CONFLICTING_RECEIPT', 'conflicting receipt evidence for the same generation');
     }
-    if (isMatchingReceipt(machine, event.generation, receipt.value)) {
+    if (isMatchingReceipt(machine, envelope.value.generation, receipt.value)) {
       return nextState(machine, { stale_event_count: machine.stale_event_count + 1 });
     }
   }
 
-  if (event.generation < machine.generation || event.sequence <= machine.last_sequence) {
+  if (envelope.value.sequence <= machine.last_sequence) {
     return nextState(machine, { stale_event_count: machine.stale_event_count + 1 });
   }
-  if (event.generation > machine.generation) {
-    return enterErrorDrain(machine, 'FUTURE_GENERATION', 'future generation event received');
-  }
 
-  if (event.type === 'failure' || event.type === 'timeout' || event.type === 'cancel') {
-    const failure = normalizeFailure(event);
+  if (envelope.value.type === 'failure' || envelope.value.type === 'timeout' || envelope.value.type === 'cancel') {
+    const failure = safelyNormalize(() => normalizeFailure(event, envelope.value));
     if (!failure.valid) {
       return enterErrorDrain(machine, failure.code, failure.message);
     }
-    return enterDrain(machine, failure.value.outcome, failure.value.reason, event.sequence);
+    return enterDrain(machine, failure.value.outcome, failure.value.reason, envelope.value.sequence);
   }
 
-  const nextPhase = TRANSITIONS[machine.phase][event.type];
+  const transitions = Object.hasOwn(TRANSITIONS, machine.phase) ? TRANSITIONS[machine.phase] : null;
+  const nextPhase = transitions && Object.hasOwn(transitions, envelope.value.type)
+    ? transitions[envelope.value.type]
+    : null;
   if (!nextPhase) {
-    return enterErrorDrain(machine, 'INVALID_TRANSITION', `event ${event.type} is invalid in ${machine.phase}`);
+    return enterErrorDrain(machine, 'INVALID_TRANSITION', `event ${envelope.value.type} is invalid in ${machine.phase}`);
+  }
+  if (envelope.value.type === 'cleanup_complete') {
+    const cleanupFailures = safelyNormalize(() => normalizeEventCleanupFailures(event));
+    if (!cleanupFailures.valid) {
+      return enterErrorDrain(machine, cleanupFailures.code, cleanupFailures.message);
+    }
+    return nextState(finishDrain(machine, cleanupFailures.value), { last_sequence: envelope.value.sequence });
   }
 
   const updates = {
     phase: nextPhase,
-    last_sequence: event.sequence,
+    last_sequence: envelope.value.sequence,
   };
-  if (event.type === 'transition_due') {
+  if (envelope.value.type === 'transition_due') {
     updates.generation = machine.generation + 1;
   }
-  if (event.type === 'hook_effective') {
-    updates.last_receipt = normalizeReceipt(event).value;
+  if (envelope.value.type === 'hook_effective') {
+    updates.last_receipt = receipt.value;
   }
-  if (event.type === 'complete') {
+  if (envelope.value.type === 'complete') {
     updates.primary = null;
   }
   return nextState(machine, updates);
@@ -146,7 +162,7 @@ function beginDrain(machine, primaryOutcome, reason) {
   if (primaryOutcome === undefined || primaryOutcome === null || primaryOutcome === Outcome.PASS) {
     return nextState(machine, { phase: CaseState.DRAINING, primary: null });
   }
-  if (!FAILURE_OUTCOMES[primaryOutcome]) {
+  if (!Object.hasOwn(FAILURE_OUTCOMES, primaryOutcome)) {
     throw new TypeError('primaryOutcome must be FAIL, INCOMPLETE, ERROR, or PASS');
   }
   return nextState(machine, {
@@ -177,62 +193,108 @@ function inspectEnvelope(machine, event) {
   if (!event || typeof event !== 'object' || Array.isArray(event)) {
     return invalidEnvelope('INVALID_EVENT', 'event must be an object');
   }
-  if (typeof event.run_id !== 'string' || event.run_id.length === 0 ||
-      typeof event.case_id !== 'string' || event.case_id.length === 0) {
+  const runId = ownData(event, 'run_id');
+  const caseId = ownData(event, 'case_id');
+  const type = ownData(event, 'type');
+  const generation = ownData(event, 'generation');
+  const sequence = ownData(event, 'sequence');
+  if (!runId.valid || !caseId.valid || !type.valid || !generation.valid || !sequence.valid) {
+    return invalidEnvelope('INVALID_EVENT', 'event fields must be own data properties');
+  }
+  if (typeof runId.value !== 'string' || runId.value.length === 0 ||
+      typeof caseId.value !== 'string' || caseId.value.length === 0) {
     return invalidEnvelope('INVALID_EVENT', 'event must contain non-empty run_id and case_id');
   }
-  if (event.run_id !== machine.identity.run_id || event.case_id !== machine.identity.case_id) {
+  if (runId.value !== machine.identity.run_id || caseId.value !== machine.identity.case_id) {
     return invalidEnvelope('IDENTITY_MISMATCH', 'event identity mismatch');
   }
-  if (typeof event.type !== 'string' || event.type.length === 0) {
+  if (typeof type.value !== 'string' || type.value.length === 0) {
     return invalidEnvelope('INVALID_EVENT', 'event type must be non-empty');
   }
-  if (!EVENT_TYPES[event.type]) {
-    return invalidEnvelope('UNKNOWN_EVENT', `unknown event type: ${event.type}`);
+  if (!Object.hasOwn(EVENT_TYPES, type.value)) {
+    return invalidEnvelope('UNKNOWN_EVENT', `unknown event type: ${type.value}`);
   }
-  if (!Number.isInteger(event.generation) || event.generation < 0 ||
-      !Number.isInteger(event.sequence) || event.sequence < 0) {
+  if (!Number.isInteger(generation.value) || generation.value < 0 ||
+      !Number.isInteger(sequence.value) || sequence.value < 0) {
     return invalidEnvelope('INVALID_EVENT', 'event generation and sequence must be non-negative integers');
   }
-  return Object.freeze({ valid: true });
+  return Object.freeze({
+    valid: true,
+    value: Object.freeze({
+      type: type.value,
+      generation: generation.value,
+      sequence: sequence.value,
+    }),
+  });
 }
 
-function normalizeFailure(event) {
-  if (event.type === 'failure') {
-    if (!FAILURE_OUTCOMES[event.outcome]) {
+function normalizeFailure(event, envelope) {
+  const outcome = ownData(event, 'outcome');
+  const reason = ownData(event, 'reason');
+  if (!outcome.valid || !reason.valid) {
+    return invalidEnvelope('INVALID_FAILURE', 'failure fields must be own data properties');
+  }
+  if (envelope.type === 'failure') {
+    if (!outcome.present || !Object.hasOwn(FAILURE_OUTCOMES, outcome.value)) {
       return invalidEnvelope('INVALID_FAILURE', 'failure requires FAIL, INCOMPLETE, or ERROR outcome');
     }
-    if (!isReason(event.reason)) {
+    if (!reason.present) {
       return invalidEnvelope('INVALID_FAILURE', 'failure requires a non-empty reason');
     }
-    return Object.freeze({ valid: true, value: freezeFailure(event.outcome, event.reason) });
+    return Object.freeze({ valid: true, value: freezeFailure(outcome.value, reason.value) });
   }
 
-  const outcome = event.outcome === undefined ? Outcome.ERROR : event.outcome;
-  if (!FAILURE_OUTCOMES[outcome]) {
-    return invalidEnvelope('INVALID_FAILURE', `${event.type} outcome must be FAIL, INCOMPLETE, or ERROR`);
+  const effectiveOutcome = outcome.present ? outcome.value : Outcome.ERROR;
+  if (!Object.hasOwn(FAILURE_OUTCOMES, effectiveOutcome)) {
+    return invalidEnvelope('INVALID_FAILURE', `${envelope.type} outcome must be FAIL, INCOMPLETE, or ERROR`);
   }
-  const reason = event.reason === undefined ? `${event.type} received` : event.reason;
-  if (!isReason(reason)) {
-    return invalidEnvelope('INVALID_FAILURE', `${event.type} reason must be non-empty when supplied`);
+  const effectiveReason = reason.present ? reason.value : `${envelope.type} received`;
+  if (!isReason(effectiveReason)) {
+    return invalidEnvelope('INVALID_FAILURE', `${envelope.type} reason must be non-empty when supplied`);
   }
-  return Object.freeze({ valid: true, value: freezeFailure(outcome, reason) });
+  return Object.freeze({ valid: true, value: freezeFailure(effectiveOutcome, effectiveReason) });
 }
 
-function normalizeReceipt(event) {
-  const evidence = event.evidence === undefined ? event : event.evidence;
+function normalizeReceipt(event, envelope) {
+  const evidenceField = ownData(event, 'evidence');
+  if (!evidenceField.valid) {
+    return invalidEnvelope('INVALID_RECEIPT', 'receipt evidence must be an own data property');
+  }
+  const evidence = evidenceField.present ? evidenceField.value : event;
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) {
     return invalidEnvelope('INVALID_RECEIPT', 'hook_effective requires receipt evidence');
   }
-  const evidenceId = evidence.evidence_id === undefined ? evidence.receipt_id : evidence.evidence_id;
-  const contentHash = evidence.content_hash === undefined ? evidence.evidence_hash : evidence.content_hash;
-  if (typeof evidenceId !== 'string' || evidenceId.length === 0 ||
-      typeof contentHash !== 'string' || !/^[0-9a-f]{64}$/.test(contentHash)) {
+  const evidenceId = ownData(evidence, 'evidence_id');
+  const receiptId = ownData(evidence, 'receipt_id');
+  const contentHash = ownData(evidence, 'content_hash');
+  const evidenceHash = ownData(evidence, 'evidence_hash');
+  if (!evidenceId.valid || !receiptId.valid || !contentHash.valid || !evidenceHash.valid) {
+    return invalidEnvelope('INVALID_RECEIPT', 'receipt fields must be own data properties');
+  }
+  const effectiveEvidenceId = evidenceId.present ? evidenceId.value : receiptId.value;
+  const effectiveContentHash = contentHash.present ? contentHash.value : evidenceHash.value;
+  if (typeof effectiveEvidenceId !== 'string' || effectiveEvidenceId.length === 0 ||
+      typeof effectiveContentHash !== 'string' || !/^[0-9a-f]{64}$/.test(effectiveContentHash)) {
     return invalidEnvelope('INVALID_RECEIPT', 'hook_effective receipt requires evidence_id and lowercase SHA-256 content_hash');
   }
   return Object.freeze({
     valid: true,
-    value: freezeState({ generation: event.generation, evidence_id: evidenceId, content_hash: contentHash }),
+    value: freezeState({
+      generation: envelope.generation,
+      evidence_id: effectiveEvidenceId,
+      content_hash: effectiveContentHash,
+    }),
+  });
+}
+
+function normalizeEventCleanupFailures(event) {
+  const cleanupFailures = ownData(event, 'cleanup_failures');
+  if (!cleanupFailures.valid) {
+    return invalidEnvelope('INVALID_CLEANUP', 'cleanup_failures must be an own data property');
+  }
+  return Object.freeze({
+    valid: true,
+    value: normalizeCleanupFailures(cleanupFailures.present ? cleanupFailures.value : []),
   });
 }
 
@@ -284,7 +346,15 @@ function normalizeCleanupFailures(cleanupFailures) {
   if (!Array.isArray(cleanupFailures)) {
     throw new TypeError('cleanupFailures must be an array');
   }
-  return freezeState(cleanupFailures.map((failure) => copyValue(failure)));
+  const copied = [];
+  for (let index = 0; index < cleanupFailures.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(cleanupFailures, index);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+      throw new TypeError('cleanupFailures cannot contain sparse arrays or accessors');
+    }
+    copied.push(copyValue(descriptor.value));
+  }
+  return freezeState(copied);
 }
 
 function terminalStateFor(outcome) {
@@ -313,12 +383,26 @@ function nextState(machine, updates) {
 }
 
 function normalizeIdentity(identity) {
-  if (!identity || typeof identity !== 'object' || Array.isArray(identity) ||
-      typeof identity.run_id !== 'string' || identity.run_id.length === 0 ||
-      typeof identity.case_id !== 'string' || identity.case_id.length === 0) {
-    throw new TypeError('identity must contain non-empty run_id and case_id');
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
+    throw new TypeError('identity must be an object');
   }
-  return freezeState({ run_id: identity.run_id, case_id: identity.case_id });
+  const runId = ownData(identity, 'run_id');
+  const caseId = ownData(identity, 'case_id');
+  const caseKey = ownData(identity, 'case_key');
+  const ordinal = ownData(identity, 'ordinal');
+  if (!runId.valid || !caseId.valid || !caseKey.valid || !ordinal.valid ||
+      typeof runId.value !== 'string' || runId.value.length === 0 ||
+      typeof caseId.value !== 'string' || caseId.value.length === 0 ||
+      typeof caseKey.value !== 'string' || caseKey.value.length === 0 ||
+      !Number.isInteger(ordinal.value) || ordinal.value < 0) {
+    throw new TypeError('identity must contain non-empty run_id, case_id, case_key, and non-negative ordinal');
+  }
+  return freezeState({
+    run_id: runId.value,
+    case_id: caseId.value,
+    case_key: caseKey.value,
+    ordinal: ordinal.value,
+  });
 }
 
 function assertMachine(machine) {
@@ -331,7 +415,7 @@ function assertMachine(machine) {
 }
 
 function isTerminal(machine) {
-  return Boolean(TERMINAL_STATES[machine.phase]);
+  return Object.hasOwn(TERMINAL_STATES, machine.phase);
 }
 
 function invalidEnvelope(code, message) {
@@ -346,6 +430,28 @@ function isReason(value) {
     return false;
   }
   return Array.isArray(value) ? value.length > 0 : Object.keys(value).length > 0;
+}
+
+function ownData(object, key) {
+  if (!object || typeof object !== 'object') {
+    return Object.freeze({ valid: false, present: false, value: undefined });
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  if (!descriptor) {
+    return Object.freeze({ valid: true, present: false, value: undefined });
+  }
+  if (!Object.hasOwn(descriptor, 'value')) {
+    return Object.freeze({ valid: false, present: false, value: undefined });
+  }
+  return Object.freeze({ valid: true, present: true, value: descriptor.value });
+}
+
+function safelyNormalize(normalize) {
+  try {
+    return normalize();
+  } catch {
+    return invalidEnvelope('INVALID_EVENT_PAYLOAD', 'event payload must contain finite, acyclic own data values');
+  }
 }
 
 function copyValue(value, ancestors = new Set()) {
@@ -387,7 +493,12 @@ function copyValue(value, ancestors = new Set()) {
       if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
         throw new TypeError('state evidence cannot contain accessors');
       }
-      copied[key] = copyValue(descriptor.value, ancestors);
+      Object.defineProperty(copied, key, {
+        value: copyValue(descriptor.value, ancestors),
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      });
     }
     return freezeState(copied);
   } finally {
