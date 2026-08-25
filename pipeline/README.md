@@ -191,7 +191,8 @@ BoringSSL 检查保证，SRTP 使用 libSRTP。
 单元测试覆盖严格 YAML、重复节点、环、非法端点、受限 filter、完整 fan-out、
 Runtime/RTP 单输出约束、打开失败清理和 prepare 后取消。集成测试覆盖单/双输出
 WAV 转封装、单/双输出音频重采样/转码，以及 raw YUV
-缩放/视频转码；安装 smoke consumer 验证 `find_package`、公开头文件、链接和动态
+缩放/视频转码；本地 HLS VOD 测试覆盖 playlist/segment 输入、正常 EOF/drain 与
+Matroska 转封装。安装 smoke consumer 验证 `find_package`、公开头文件、链接和动态
 加载。RTC 集成测试覆盖 H.264/Opus depay/pay、Opus decode/filter/libopus
 实时再编码，以及 fake WHIP publisher → Pipeline → fake WHEP player。内置 PeerConnection
 集成测试覆盖 H.264 WHIP/WHEP offer/answer、remote track owner-thread 注册与 send

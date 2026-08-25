@@ -78,16 +78,32 @@ static int write_test_wav(const char *path) {
     return result;
 }
 
+static int write_test_yuv420p_frames(const char *path, size_t frame_count) {
+    enum { WIDTH = 16, HEIGHT = 16 };
+    const size_t frame_size = WIDTH * HEIGHT * 3u / 2u;
+    uint8_t *frames;
+    size_t frame_index;
+    size_t pixel_index;
+    int result;
+    if (!path || frame_count == 0 || frame_count > SIZE_MAX / frame_size) return -1;
+    frames = (uint8_t *)malloc(frame_size * frame_count);
+    if (!frames) return -1;
+    memset(frames, 128, frame_size * frame_count);
+    for (frame_index = 0; frame_index < frame_count; ++frame_index) {
+        uint8_t *luma = frames + frame_index * frame_size;
+        for (pixel_index = 0; pixel_index < WIDTH * HEIGHT; ++pixel_index)
+            luma[pixel_index] = frame_index % 2u == 0
+                                    ? (uint8_t)pixel_index
+                                    : (uint8_t)(255u - pixel_index);
+    }
+    result = tt_write_file(path, frames, frame_size * frame_count);
+    free(frames);
+    return result;
+}
+
 static int write_test_yuv420p(const char *path) {
-    enum { WIDTH = 16, HEIGHT = 16, FRAME_COUNT = 2 };
-    uint8_t frames[WIDTH * HEIGHT * 3 / 2 * FRAME_COUNT];
-    size_t frame_size = WIDTH * HEIGHT * 3u / 2u;
-    size_t i;
-    memset(frames, 128, sizeof(frames));
-    for (i = 0; i < WIDTH * HEIGHT; ++i) frames[i] = (uint8_t)i;
-    for (i = 0; i < WIDTH * HEIGHT; ++i)
-        frames[frame_size + i] = (uint8_t)(255u - i);
-    return tt_write_file(path, frames, sizeof(frames));
+    enum { FRAME_COUNT = 2 };
+    return write_test_yuv420p_frames(path, FRAME_COUNT);
 }
 
 static void normalize_path(char *path) {
@@ -983,6 +999,136 @@ suite("turbo_media_pipeline") {
             if (output_path) tt_remove_file(output_path);
             free(input_path);
             free(output_path);
+        }
+
+        it("reads a local HLS playlist and remuxes its video stream") {
+            enum {
+                HLS_TEST_FRAME_COUNT = 30,
+                HLS_TEST_PATH_CAPACITY = 1024,
+                HLS_TEST_YAML_CAPACITY = 8192
+            };
+            char *root = tt_make_temp_dir("turbomedia-pipeline-hls");
+            char raw_path[HLS_TEST_PATH_CAPACITY] = {0};
+            char playlist_path[HLS_TEST_PATH_CAPACITY] = {0};
+            char output_path[HLS_TEST_PATH_CAPACITY] = {0};
+            char yaml[HLS_TEST_YAML_CAPACITY];
+            turbo_pipeline_error_t error;
+            turbo_pipeline_t *writer = NULL;
+            turbo_pipeline_t *reader = NULL;
+            char *playlist_data = NULL;
+            char *output_data = NULL;
+            size_t playlist_size = 0;
+            size_t output_size = 0;
+            int path_size;
+            int yaml_size;
+
+            check_not_null(root);
+            if (!root) goto cleanup_hls_input;
+            path_size = snprintf(raw_path, sizeof(raw_path), "%s/input.yuv", root);
+            check_true(path_size > 0 && (size_t)path_size < sizeof(raw_path));
+            if (path_size <= 0 || (size_t)path_size >= sizeof(raw_path))
+                goto cleanup_hls_input;
+            path_size = snprintf(playlist_path, sizeof(playlist_path),
+                                 "%s/playlist.m3u8", root);
+            check_true(path_size > 0 && (size_t)path_size < sizeof(playlist_path));
+            if (path_size <= 0 || (size_t)path_size >= sizeof(playlist_path))
+                goto cleanup_hls_input;
+            path_size = snprintf(output_path, sizeof(output_path), "%s/output.mkv", root);
+            check_true(path_size > 0 && (size_t)path_size < sizeof(output_path));
+            if (path_size <= 0 || (size_t)path_size >= sizeof(output_path))
+                goto cleanup_hls_input;
+            normalize_path(raw_path);
+            normalize_path(playlist_path);
+            normalize_path(output_path);
+            check_equal(write_test_yuv420p_frames(raw_path, HLS_TEST_FRAME_COUNT), 0);
+
+            yaml_size = snprintf(
+                yaml, sizeof(yaml),
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: local-hls-writer\n"
+                "nodes:\n"
+                "  - id: source\n"
+                "    kind: source\n"
+                "    factory: ffmpeg.input\n"
+                "    config:\n"
+                "      url: '%s'\n"
+                "      options: { video_size: 16x16, pixel_format: yuv420p, framerate: '10' }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: rawvideo } }\n"
+                "  - { id: decoder, kind: decoder, factory: ffmpeg.decode, config: { media: video } }\n"
+                "  - { id: encoder, kind: encoder, factory: ffmpeg.encode, config: { media: video, codec: libopenh264, width: 16, height: 16, frame_rate: 10, bitrate: 100000, gop_frames: 1 } }\n"
+                "  - id: mux\n"
+                "    kind: mux\n"
+                "    factory: ffmpeg.mux\n"
+                "    config:\n"
+                "      format: hls\n"
+                "      options: { hls_time: '0.1', hls_list_size: '0', hls_playlist_type: vod }\n"
+                "  - { id: sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.video, to: decoder.in }\n"
+                "  - { from: decoder.out, to: encoder.in }\n"
+                "  - { from: encoder.out, to: mux.video }\n"
+                "  - { from: mux.out, to: sink.in }\n",
+                raw_path, playlist_path);
+            check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
+            if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
+                goto cleanup_hls_input;
+            writer = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
+            check_not_null(writer);
+            if (!writer) goto cleanup_hls_input;
+            check_equal(turbo_pipeline_prepare(writer, &error), TURBO_PIPELINE_OK);
+            if (turbo_pipeline_state(writer) != TURBO_PIPELINE_STATE_PREPARED)
+                goto cleanup_hls_input;
+            check_equal(turbo_pipeline_run(writer, &error), TURBO_PIPELINE_OK);
+            turbo_pipeline_destroy(writer);
+            writer = NULL;
+
+            playlist_data = tt_read_file(playlist_path, &playlist_size);
+            check_not_null(playlist_data);
+            check_true(playlist_size > sizeof("#EXTM3U") - 1u);
+            if (!playlist_data) goto cleanup_hls_input;
+            check_true(memcmp(playlist_data, "#EXTM3U", sizeof("#EXTM3U") - 1u) == 0);
+
+            yaml_size = snprintf(
+                yaml, sizeof(yaml),
+                "api_version: turbo.media.pipeline/v1\n"
+                "id: local-hls-reader\n"
+                "nodes:\n"
+                "  - { id: source, kind: source, factory: ffmpeg.input, config: { url: '%s' } }\n"
+                "  - { id: demux, kind: demux, factory: ffmpeg.demux, config: { format: hls } }\n"
+                "  - { id: mux, kind: mux, factory: ffmpeg.mux, config: { format: matroska } }\n"
+                "  - { id: sink, kind: sink, factory: ffmpeg.output, config: { url: '%s' } }\n"
+                "edges:\n"
+                "  - { from: source.out, to: demux.in }\n"
+                "  - { from: demux.video, to: mux.video }\n"
+                "  - { from: mux.out, to: sink.in }\n",
+                playlist_path, output_path);
+            check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
+            if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
+                goto cleanup_hls_input;
+            reader = turbo_pipeline_create_from_yaml(yaml, (size_t)yaml_size, &error);
+            check_not_null(reader);
+            if (!reader) goto cleanup_hls_input;
+            check_equal(turbo_pipeline_prepare(reader, &error), TURBO_PIPELINE_OK);
+            if (turbo_pipeline_state(reader) != TURBO_PIPELINE_STATE_PREPARED)
+                goto cleanup_hls_input;
+            check_equal(turbo_pipeline_run(reader, &error), TURBO_PIPELINE_OK);
+
+            output_data = tt_read_file(output_path, &output_size);
+            check_not_null(output_data);
+            check_true(output_size > 4u);
+            if (output_data && output_size >= 4u) {
+                static const unsigned char ebml_header[] = {0x1a, 0x45, 0xdf, 0xa3};
+                check_equal(output_data, ebml_header, sizeof(ebml_header));
+            }
+
+        cleanup_hls_input:
+            free(output_data);
+            free(playlist_data);
+            turbo_pipeline_destroy(reader);
+            turbo_pipeline_destroy(writer);
+            if (root) check_equal(tt_remove_tree(root), 0);
+            free(root);
         }
     }
 
