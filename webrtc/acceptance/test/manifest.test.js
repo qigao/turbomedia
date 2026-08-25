@@ -39,6 +39,51 @@ test('canonical JSON hashes equivalent object key orders identically', () => {
   );
 });
 
+test('canonical JSON rejects an array accessor without executing its getter', () => {
+  let getterReads = 0;
+  const value = [];
+  Object.defineProperty(value, 0, {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 'must-not-be-read';
+    },
+  });
+  value.length = 1;
+
+  assert.throws(() => canonicalStringify(value), /accessor properties/i);
+  assert.equal(getterReads, 0);
+});
+
+test('canonical JSON rejects an object accessor without executing its getter', () => {
+  let getterReads = 0;
+  const value = {};
+  Object.defineProperty(value, 'secret', {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 'must-not-be-read';
+    },
+  });
+
+  assert.throws(() => canonicalStringify(value), /accessor properties/i);
+  assert.equal(getterReads, 0);
+});
+
+test('canonical JSON rejects cyclic values', () => {
+  const value = {};
+  value.self = value;
+
+  assert.throws(() => canonicalStringify(value), /cyclic values/i);
+});
+
+test('canonical JSON rejects sparse arrays', () => {
+  const value = [];
+  value.length = 1;
+
+  assert.throws(() => canonicalStringify(value), /sparse arrays/i);
+});
+
 test('manifest expansion retains declared browser then scenario order', () => {
   const manifest = loadManifest(fixturePath);
   const cases = expandCases(manifest);
@@ -70,6 +115,32 @@ test('manifest expansion rejects duplicate case keys', (t) => {
   assert.throws(
     () => expandCases(loadManifest(writeManifest(t, manifest))),
     /duplicate case key/i
+  );
+});
+
+test('manifest expansion accepts a scenario that references a declared topology', () => {
+  const manifest = loadManifest(fixturePath);
+
+  assert.equal(expandCases(manifest).length, 4);
+});
+
+test('manifest expansion rejects a scenario with an undeclared topology', (t) => {
+  const manifest = loadFixture();
+  manifest.scenarios[0].topology_id = 'missing-topology';
+
+  assert.throws(
+    () => expandCases(loadManifest(writeManifest(t, manifest))),
+    /undeclared topology_id.*missing-topology/i
+  );
+});
+
+test('manifest expansion rejects duplicate topology identifiers', (t) => {
+  const manifest = loadFixture();
+  manifest.topologies.push(clone(manifest.topologies[0]));
+
+  assert.throws(
+    () => expandCases(loadManifest(writeManifest(t, manifest))),
+    /duplicate topology_id.*restricted-nat-ipv4/i
   );
 });
 

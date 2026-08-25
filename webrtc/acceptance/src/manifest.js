@@ -65,6 +65,7 @@ function expandCases(manifest) {
   if (!Array.isArray(browsers) || browsers.length === 0 || !Array.isArray(scenarios) || scenarios.length === 0) {
     throw new RangeError('manifest matrix must contain at least one browser and scenario');
   }
+  const topologiesById = createTopologyIndex(manifest.topologies);
 
   const maxCases = manifest.limits && manifest.limits.max_cases !== undefined
     ? manifest.limits.max_cases
@@ -78,6 +79,9 @@ function expandCases(manifest) {
   const cases = [];
   for (const browser of browsers) {
     for (const scenario of scenarios) {
+      if (!topologiesById.has(scenario.topology_id)) {
+        throw new RangeError(`scenario references undeclared topology_id: ${scenario.topology_id}`);
+      }
       if (cases.length >= maxCases) {
         throw new RangeError(`expanded case count exceeds ${maxCases}`);
       }
@@ -110,6 +114,20 @@ function expandCases(manifest) {
     }
   }
   return Object.freeze(cases);
+}
+
+function createTopologyIndex(topologies) {
+  if (!Array.isArray(topologies) || topologies.length === 0) {
+    throw new RangeError('manifest must declare at least one topology');
+  }
+  const topologiesById = new Map();
+  for (const topology of topologies) {
+    if (topologiesById.has(topology.topology_id)) {
+      throw new Error(`duplicate topology_id: ${topology.topology_id}`);
+    }
+    topologiesById.set(topology.topology_id, topology);
+  }
+  return topologiesById;
 }
 
 function requireNonEmptyString(value, name) {

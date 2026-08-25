@@ -33,10 +33,14 @@ function serialize(value, ancestors) {
     if (Array.isArray(value)) {
       const entries = [];
       for (let index = 0; index < value.length; index += 1) {
-        if (!Object.hasOwn(value, index)) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, index);
+        if (!descriptor) {
           throw new TypeError('canonical JSON does not support sparse arrays');
         }
-        entries.push(serialize(value[index], ancestors));
+        if (!Object.hasOwn(descriptor, 'value')) {
+          throw new TypeError('canonical JSON does not support accessor properties');
+        }
+        entries.push(serialize(descriptor.value, ancestors));
       }
       return `[${entries.join(',')}]`;
     }
