@@ -1,5 +1,6 @@
 #include <rtp-packet.h>
 #include <rtp-payload.h>
+#include <turbo_capture.h>
 #include <turbo_pipeline.h>
 #include <turbo_media_webrtc_backend.h>
 #include <turbo_rtsp.h>
@@ -24,6 +25,10 @@ int main(void) {
     turbo_kcp_config_t kcp_config;
     turbo_rtsp_client_config_t rtsp_config;
     struct rtp_packet_t packet;
+    turbo_video_native_mode_t capture_mode = {
+        .framerate_numerator = 30000,
+        .framerate_denominator = 1001,
+    };
     turbo_pipeline_t *pipeline =
         turbo_pipeline_create_from_yaml(yaml, strlen(yaml), &error);
 
@@ -31,6 +36,10 @@ int main(void) {
         fprintf(stderr, "pipeline create failed: code=%d node=%s message=%s\n",
                 error.code, error.node_id, error.message);
         return 1;
+    }
+    if (turbo_video_mode_fps(&capture_mode) != 30) {
+        turbo_pipeline_destroy(pipeline);
+        return 6;
     }
     memset(&rtsp_config, 0, sizeof(rtsp_config));
     turbo_kcp_config_default(&kcp_config);

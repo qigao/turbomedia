@@ -3,7 +3,14 @@
 include(CMakeFindDependencyMacro)
 
 find_dependency(TurboUtils CONFIG)
+if(NOT TARGET TurboUtils::Capture)
+  set(TurboMedia_NOT_FOUND_MESSAGE
+      "TurboMedia requires a TurboUtils package built with TURBO_ENABLE_CAPTURE=ON")
+  set(TurboMedia_FOUND FALSE)
+  return()
+endif()
 find_dependency(TurboParser CONFIG)
+find_dependency(OpenSSL)
 find_dependency(TurboNet CONFIG)
 find_dependency(TurboHttp CONFIG)
 

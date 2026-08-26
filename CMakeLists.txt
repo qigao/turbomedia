@@ -137,6 +137,12 @@ endforeach()
 find_package(Threads REQUIRED)
 find_package(TurboUtils CONFIG REQUIRED
              PATHS "$ENV{TURBOUTILS_ROOT}" NO_DEFAULT_PATH)
+if(NOT TARGET TurboUtils::Capture)
+  message(
+    FATAL_ERROR
+      "TurboUtils::Capture is required. Reinstall TurboUtils with TURBO_ENABLE_CAPTURE=ON and point TURBOUTILS_ROOT at that package."
+  )
+endif()
 find_package(TurboParser CONFIG REQUIRED
              PATHS "$ENV{TURBOPARSER_ROOT}" NO_DEFAULT_PATH)
 # RulesForge releases installed before its DataBind migration still export the
@@ -160,7 +166,9 @@ find_package(OpenSSL REQUIRED)
 find_package(libSRTP CONFIG REQUIRED)
 find_package(unofficial-usrsctp CONFIG REQUIRED)
 find_package(roaring CONFIG REQUIRED)
-find_package(libyuv CONFIG REQUIRED)
+if(ANDROID)
+  find_package(libyuv CONFIG REQUIRED)
+endif()
 
 find_path(MINIAUDIO_INCLUDE_DIR NAMES miniaudio.h REQUIRED)
 find_path(STB_INCLUDE_DIR NAMES stb_sprintf.h stb_image_write.h REQUIRED)
@@ -176,14 +184,6 @@ find_path(LIBDE265_INCLUDE_DIR NAMES libde265/de265.h REQUIRED)
 find_library(LIBDE265_LIBRARY NAMES de265 libde265 REQUIRED)
 find_package(FFMPEG REQUIRED)
 include(TurboMediaFFmpegTargets)
-
-if(UNIX AND NOT APPLE AND NOT ANDROID)
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
-  # The base X11 library is implicit in FindX11. Treating it as a component
-  # breaks configuration with CMake 3.25 even when libX11 is installed.
-  find_package(X11 REQUIRED COMPONENTS Xext)
-endif()
 
 add_subdirectory(vendor/monocypher EXCLUDE_FROM_ALL)
 add_subdirectory(common)
