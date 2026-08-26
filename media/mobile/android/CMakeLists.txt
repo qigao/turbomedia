@@ -3,14 +3,12 @@ set(TURBO_MEDIA_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 
 find_library(TURBO_MEDIA_ANDROID_LOG_LIBRARY log REQUIRED)
 find_library(TURBO_MEDIA_ANDROID_LIBRARY android REQUIRED)
-find_library(TURBO_MEDIA_ANDROID_OPENSL_LIBRARY OpenSLES REQUIRED)
 find_library(TURBO_MEDIA_ANDROID_MEDIA_LIBRARY mediandk REQUIRED)
-find_library(TURBO_MEDIA_ANDROID_CAMERA_LIBRARY camera2ndk REQUIRED)
-find_library(TURBO_MEDIA_ANDROID_JNIGRAPHICS_LIBRARY jnigraphics REQUIRED)
 
 add_library(
   turbo_media_android SHARED
   src/jni/turbo_media_jni.c
+  src/capture/capture_screen_android.c
   src/codec/hardware_codec_android.c
   src/mobile/mobile_optimizations.c
   src/mobile/battery_monitor.c
@@ -28,9 +26,8 @@ target_compile_options(
 target_link_libraries(
   turbo_media_android
   PUBLIC TurboMedia::Device
-  PRIVATE ${TURBO_MEDIA_ANDROID_LOG_LIBRARY}
+  PRIVATE TurboUtils::Core
+          yuv
+          ${TURBO_MEDIA_ANDROID_LOG_LIBRARY}
           ${TURBO_MEDIA_ANDROID_LIBRARY}
-          ${TURBO_MEDIA_ANDROID_OPENSL_LIBRARY}
-          ${TURBO_MEDIA_ANDROID_MEDIA_LIBRARY}
-          ${TURBO_MEDIA_ANDROID_CAMERA_LIBRARY}
-          ${TURBO_MEDIA_ANDROID_JNIGRAPHICS_LIBRARY})
+          ${TURBO_MEDIA_ANDROID_MEDIA_LIBRARY})
