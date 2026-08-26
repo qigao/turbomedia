@@ -42,8 +42,9 @@ Surface 适配符号，不定义任何 `turbo_capture_*` 公共入口；它由
 
 ## 接口、状态与所有权
 
-- 公开 C Capture ABI 不变；提供者从 `turbo_media_device` 变为
-  `TurboUtils::Capture`。
+- Capture 的 C 声明、数据布局和调用语义保持不变，但符号提供库从
+  `turbo_media_device` 变为 `TurboUtils::Capture`。因此源码消费者重新链接后兼容；
+  已编译消费者不能只替换旧 DLL/so，必须重新链接并成套部署两个匹配版本的库。
 - `TurboMedia::Device` 目标名和播放 API 不变，只新增公开目标依赖。
 - Capture 对象、平台句柄和控制面状态由 TurboUtils 独占。调用方保持串行
   `create -> start -> stop -> destroy`；启动失败继续显式向上传播。
@@ -61,15 +62,24 @@ TurboMedia 配置要求其 `TURBOUTILS_ROOT` 指向启用了
 包消费测试请求 `Device` 组件、链接 `TurboMedia::Device`、包含
 `<turbo_capture.h>` 并引用一个无硬件依赖的 FPS 辅助函数。测试同时断言
 `find_package(TurboMedia)` 后存在 `TurboUtils::Capture`，覆盖依赖发现、头文件传播和
-链接闭包。
+链接闭包。CTest 还覆盖缺失 Capture 目标，以及旧 TurboMedia 安装前缀残留
+`include/turbo_capture.h` 的失败路径。后者通过头文件中的
+`turbo_capture_export.h` 引用识别，不会误拒绝 TurboUtils 与 TurboMedia 共用安装前缀
+时的规范头文件。
 
 ## 风险、兼容性与验证
 
 - **HIGH — 重复符号（事实）**：若任一 TurboMedia 公共 Capture 实现残留，进程可
   同时加载两个同名 ABI 提供者。通过源码检索、链接映射和包消费测试验证只剩
   TurboUtils 提供者。
+- **HIGH — 已编译消费者 ABI（事实）**：旧二进制的导入表仍指向
+  `turbo_media_device`，而新库不再导出 Capture 符号。迁移必须重新链接应用并同时部署
+  `TurboUtils::Capture`；本改动不提供 export forwarder，也不宣称 DLL 原位替换兼容。
 - **MED — SDK 前置条件（事实）**：旧 TurboUtils 安装树没有 Capture 目标，新版
   TurboMedia 将在配置时明确失败。验证错误消息和 Capture-enabled SDK 的成功路径。
+- **MED — 原位安装残留头（事实）**：CMake install 不删除旧文件。包配置会拒绝
+  不含 `turbo_capture_export.h` 引用的旧 `include/turbo_capture.h`，要求精确删除该文件
+  或使用干净前缀；不会由安装脚本静默删除用户前缀内容。
 - **MED — 平台验证范围（事实）**：Windows 可在当前主机执行；Android 可交叉编译，
   Linux/macOS/iOS 仍需原生 runner 验证链接和设备生命周期，不从源码检查推断成功。
 - **LOW — 导出宏变化（事实）**：头文件导出宏从 `TURBO_MEDIA_API` 变为
@@ -84,4 +94,5 @@ TurboMedia 配置要求其 `TURBOUTILS_ROOT` 指向启用了
 ## 回滚
 
 单次提交回滚可恢复 TurboMedia 的本地 Capture 文件和原目标源列表。由于迁移不改变
-调用方 API 或状态数据，不需要数据迁移；回滚后应同时恢复旧 TurboUtils SDK 前置条件。
+调用方 API 或状态数据，不需要数据迁移；已经针对新 provider 重新链接的应用在回滚
+后也应重新链接，且应同时恢复旧 TurboUtils SDK 前置条件。

@@ -8,6 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef TURBO_CAPTURE_API
+#error "TurboMedia package consumer resolved a stale pre-TurboUtils capture header"
+#endif
+
 int main(void) {
     static const char yaml[] =
         "api_version: turbo.media.pipeline/v1\n"

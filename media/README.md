@@ -2,15 +2,23 @@
 
 `TurboMedia::Device` owns audio playback and publicly links
 `TurboUtils::Capture`. Applications may keep including `<turbo_capture.h>` and
-linking `TurboMedia::Device`; the header, Capture ABI, native state, and backend
-implementation are supplied only by the TurboUtils package.
+linking `TurboMedia::Device`; the header, C declarations, native state, and
+backend implementation are supplied only by the TurboUtils package.
+
+This provider move is source-compatible after relinking, but it is not a
+drop-in binary ABI update. Previously built applications import Capture symbols
+from the old `turbo_media_device` library. Rebuild/relink those applications and
+deploy `turbo_media_device` together with the matching TurboUtils Capture shared
+library (`turbo_capture.dll` on Windows).
 
 Configure TurboUtils with `TURBO_ENABLE_CAPTURE=ON` and install that build before
 configuring TurboMedia. TurboMedia fails at configure time when the installed
 package does not export `TurboUtils::Capture`; there is no local fallback.
 When upgrading an existing TurboMedia install prefix in place, remove the old
 `include/turbo_capture.h` once or install into a clean prefix; CMake install does
-not prune files owned by an older version.
+not prune files owned by an older version. `find_package(TurboMedia)` rejects a
+legacy header without `turbo_capture_export.h` rather than compiling against a
+stale declaration set.
 
 Capture callbacks borrow their frame bytes synchronously. A consumer that keeps
 data after the callback returns, or sends it to another thread/queue/coroutine,

@@ -2,6 +2,23 @@
 
 include(CMakeFindDependencyMacro)
 
+set(_TurboMedia_legacy_capture_header
+    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@/turbo_capture.h")
+if(EXISTS "${_TurboMedia_legacy_capture_header}")
+  file(STRINGS "${_TurboMedia_legacy_capture_header}"
+       _TurboMedia_capture_export_include
+       REGEX "turbo_capture_export\\.h"
+       LIMIT_COUNT 1)
+  if(NOT _TurboMedia_capture_export_include)
+    set(TurboMedia_NOT_FOUND_MESSAGE
+        "TurboMedia found an obsolete include/turbo_capture.h from an older in-place install; remove that file or install into a clean prefix so TurboUtils::Capture remains the only header provider")
+    set(TurboMedia_FOUND FALSE)
+    return()
+  endif()
+endif()
+unset(_TurboMedia_capture_export_include)
+unset(_TurboMedia_legacy_capture_header)
+
 find_dependency(TurboUtils CONFIG)
 if(NOT TARGET TurboUtils::Capture)
   set(TurboMedia_NOT_FOUND_MESSAGE
