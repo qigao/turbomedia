@@ -17,7 +17,7 @@
 #include <turbo_coro_context.h>
 #include <turbo_coro_socket.h>
 #include <turbo_http.h>
-#include <turbo_thread.h>
+#include <salts_thread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -123,9 +123,9 @@ typedef struct {
     iris_app_t *app;
     coro_context_t *context;
     coro_socket_t *listener;
-    turbo_thread_t thread;
-    turbo_mutex_t mutex;
-    turbo_cond_t lifecycle;
+    salts_thread_t thread;
+    salts_mutex_t mutex;
+    salts_cond_t lifecycle;
     test_iris_state_t state;
     int thread_started;
     atomic_int completion_calls;
@@ -165,7 +165,7 @@ typedef struct {
     SOCKET clients[TEST_IRIS_PROXY_CONNECTION_CAPACITY];
     SOCKET backends[TEST_IRIS_PROXY_CONNECTION_CAPACITY];
 #endif
-    turbo_thread_t thread;
+    salts_thread_t thread;
     atomic_int stopping;
     atomic_int available;
     int listen_port;
@@ -492,12 +492,12 @@ static void test_iris_server_thread(void *context) {
             server->app, coro_context, "127.0.0.1",
             TEST_IRIS_BACKEND_TLS_PORT, &tls);
     }
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     server->context = coro_context;
     server->listener = listener;
     server->state = listener ? TEST_IRIS_RUNNING : TEST_IRIS_FAILED;
-    turbo_cond_broadcast(&server->lifecycle);
-    turbo_mutex_unlock(&server->mutex);
+    salts_cond_broadcast(&server->lifecycle);
+    salts_mutex_unlock(&server->mutex);
 
     if (listener) {
         coro_context_set_persistent(coro_context, 1);
@@ -506,12 +506,12 @@ static void test_iris_server_thread(void *context) {
         coro_socket_destroy(listener);
     }
     if (coro_context) coro_context_destroy(coro_context);
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     server->context = NULL;
     server->listener = NULL;
     server->state = TEST_IRIS_STOPPED;
-    turbo_cond_broadcast(&server->lifecycle);
-    turbo_mutex_unlock(&server->mutex);
+    salts_cond_broadcast(&server->lifecycle);
+    salts_mutex_unlock(&server->mutex);
 }
 
 static int test_iris_server_start(test_iris_server_t *server) {
@@ -524,8 +524,8 @@ static int test_iris_server_start(test_iris_server_t *server) {
     }
     server->app = iris_app_create();
     if (!server->app) return -1;
-    turbo_mutex_init(&server->mutex);
-    turbo_cond_init(&server->lifecycle);
+    salts_mutex_init(&server->mutex);
+    salts_cond_init(&server->lifecycle);
     server->state = TEST_IRIS_STARTING;
     g_iris_server = server;
     iris_app_post(server->app,
@@ -542,27 +542,27 @@ static int test_iris_server_start(test_iris_server_t *server) {
         server->app,
         "/v1/providers/:providerId/expected-resources/leases/:leaseId/pages/:cursor",
         test_iris_expected_page_handler);
-    if (turbo_thread_create(&server->thread, test_iris_server_thread, server) !=
+    if (salts_thread_create(&server->thread, test_iris_server_thread, server) !=
         0) {
         g_iris_server = NULL;
-        turbo_cond_destroy(&server->lifecycle);
-        turbo_mutex_destroy(&server->mutex);
+        salts_cond_destroy(&server->lifecycle);
+        salts_mutex_destroy(&server->mutex);
         iris_app_destroy(server->app);
         server->app = NULL;
         return -1;
     }
     server->thread_started = 1;
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     while (server->state == TEST_IRIS_STARTING) {
-        turbo_cond_wait(&server->lifecycle, &server->mutex);
+        salts_cond_wait(&server->lifecycle, &server->mutex);
     }
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     if (server->state == TEST_IRIS_RUNNING) return 0;
-    turbo_thread_join(&server->thread);
+    salts_thread_join(&server->thread);
     server->thread_started = 0;
     g_iris_server = NULL;
-    turbo_cond_destroy(&server->lifecycle);
-    turbo_mutex_destroy(&server->mutex);
+    salts_cond_destroy(&server->lifecycle);
+    salts_mutex_destroy(&server->mutex);
     iris_app_destroy(server->app);
     server->app = NULL;
     return -1;
@@ -571,17 +571,17 @@ static int test_iris_server_start(test_iris_server_t *server) {
 static void test_iris_server_stop(test_iris_server_t *server) {
     coro_context_t *context;
     if (!server || !server->app) return;
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     context = server->context;
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     if (context) coro_context_stop(context);
     if (server->thread_started) {
-        turbo_thread_join(&server->thread);
+        salts_thread_join(&server->thread);
         server->thread_started = 0;
     }
     g_iris_server = NULL;
-    turbo_cond_destroy(&server->lifecycle);
-    turbo_mutex_destroy(&server->mutex);
+    salts_cond_destroy(&server->lifecycle);
+    salts_mutex_destroy(&server->mutex);
     iris_app_destroy(server->app);
     server->app = NULL;
 }
@@ -736,7 +736,7 @@ static int test_iris_proxy_start(test_iris_proxy_t *proxy, int listen_port,
         listen(proxy->listener, SOMAXCONN) != 0) {
         goto fail;
     }
-    if (turbo_thread_create(&proxy->thread, test_iris_proxy_thread, proxy) !=
+    if (salts_thread_create(&proxy->thread, test_iris_proxy_thread, proxy) !=
         0) {
         goto fail;
     }
@@ -755,7 +755,7 @@ static void test_iris_proxy_stop(test_iris_proxy_t *proxy) {
     shutdown(proxy->listener, SD_BOTH);
     closesocket(proxy->listener);
     proxy->listener = INVALID_SOCKET;
-    turbo_thread_join(&proxy->thread);
+    salts_thread_join(&proxy->thread);
     proxy->thread_started = 0;
     WSACleanup();
 }
@@ -1159,16 +1159,16 @@ static int probe_restarted_iris(void) {
     http_response_t *response = NULL;
     char url[256];
     int status = 0;
-    if (turbo_http_options_init(&options, sizeof(options)) != TURBO_OK) {
+    if (turbo_http_options_init(&options, sizeof(options)) != SALTS_OK) {
         return 0;
     }
     options.transport = TURBO_HTTP_TRANSPORT_AUTO;
     options.timeout_ms = 1000;
-    if (turbo_http_create_sync(&options, &client) != TURBO_OK) return 0;
+    if (turbo_http_create_sync(&options, &client) != SALTS_OK) return 0;
     memset(&tls, 0, sizeof(tls));
     tls.verify_peer = 1;
     tls.ca_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
-    if (turbo_http_set_tls_config(client, &tls) != TURBO_OK) goto cleanup;
+    if (turbo_http_set_tls_config(client, &tls) != SALTS_OK) goto cleanup;
     if (snprintf(url, sizeof(url), "https://localhost:%d/probe",
                  TEST_IRIS_TLS_PORT) <= 0) {
         goto cleanup;
@@ -1893,7 +1893,7 @@ static int facade_request(http_method_t method, const char *path,
             int flowmq_status = test_iris_flowmq_peer_send_command(
                 g_iris_flowmq_peer, idempotency_key, body,
                 TEST_HTTP_IO_TIMEOUT_MS, &receipt);
-            if (flowmq_status != TURBO_OK) {
+            if (flowmq_status != SALTS_OK) {
                 fprintf(stderr,
                         "process Iris FlowMQ command failed status=%d id=%s\n",
                         flowmq_status, idempotency_key);
@@ -2038,11 +2038,11 @@ void setUp(void) {
     check_equal((int)(test_iris_proxy_start(&g_iris_proxy, TEST_IRIS_TLS_PORT,
                                  TEST_IRIS_BACKEND_TLS_PORT)), (int)(0));
     check_equal((int)(turbo_http_options_init(&http_options,
-                                                  sizeof(http_options))), (int)(TURBO_OK));
+                                                  sizeof(http_options))), (int)(SALTS_OK));
     http_options.timeout_ms = TEST_HTTP_IO_TIMEOUT_MS;
     http_options.follow_redirects = 0;
     check_equal((int)(turbo_http_create_sync(&http_options,
-                                                 &g_http_client)), (int)(TURBO_OK));
+                                                 &g_http_client)), (int)(SALTS_OK));
     DataBindError err = DATA_BIND_ERROR_INIT;
     check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
     memset(&iris_flowmq_config, 0, sizeof(iris_flowmq_config));
@@ -2053,7 +2053,7 @@ void setUp(void) {
     iris_flowmq_config.context = &g_iris;
     check_equal(test_iris_flowmq_peer_start(&iris_flowmq_config,
                                             &g_iris_flowmq_peer),
-                TURBO_OK);
+                SALTS_OK);
 
     /* temp config for room_service with FMQ and durable Iris outbox enabled */
     snprintf(g_cfg_path, sizeof(g_cfg_path), "%s/rs_dispatch_%d.toml",

@@ -7,7 +7,7 @@
 #include "turbo_datachannel.h"
 #include "turbo_datachannel_errors.h"
 #include "tinytest.h"
-#include <turbo_thread.h>
+#include <salts_thread.h>
 #include <string.h>
 
 #define TEST_SHA256_FINGERPRINT \
@@ -172,8 +172,8 @@ void test_context_destroy_reclaims_live_peer(void) {
 }
 
 typedef struct {
-    turbo_mutex_t mutex;
-    turbo_cond_t cond;
+    salts_mutex_t mutex;
+    salts_cond_t cond;
     int callback_entered;
     int release_callback;
     int detach_entered;
@@ -187,13 +187,13 @@ static void blocking_transport_data_callback(void *user_data, const uint8_t *dat
     (void)data;
     (void)len;
 
-    turbo_mutex_lock(&context->mutex);
+    salts_mutex_lock(&context->mutex);
     context->callback_entered = 1;
-    turbo_cond_broadcast(&context->cond);
+    salts_cond_broadcast(&context->cond);
     while (!context->release_callback) {
-        turbo_cond_wait(&context->cond, &context->mutex);
+        salts_cond_wait(&context->cond, &context->mutex);
     }
-    turbo_mutex_unlock(&context->mutex);
+    salts_mutex_unlock(&context->mutex);
 }
 
 static void feed_transport_data_thread(void *arg) {
@@ -209,17 +209,17 @@ static void detach_transport_data_thread(void *arg) {
     transport_detach_test_context_t *context =
         (transport_detach_test_context_t *)arg;
 
-    turbo_mutex_lock(&context->mutex);
+    salts_mutex_lock(&context->mutex);
     context->detach_entered = 1;
-    turbo_cond_broadcast(&context->cond);
-    turbo_mutex_unlock(&context->mutex);
+    salts_cond_broadcast(&context->cond);
+    salts_mutex_unlock(&context->mutex);
 
     turbo_dc_peer_set_transport_data_handler(context->peer, NULL, NULL);
 
-    turbo_mutex_lock(&context->mutex);
+    salts_mutex_lock(&context->mutex);
     context->detach_completed = 1;
-    turbo_cond_broadcast(&context->cond);
-    turbo_mutex_unlock(&context->mutex);
+    salts_cond_broadcast(&context->cond);
+    salts_mutex_unlock(&context->mutex);
 }
 
 void test_transport_data_handler_detach_waits_for_callback(void) {
@@ -229,43 +229,43 @@ void test_transport_data_handler_detach_waits_for_callback(void) {
     };
     transport_detach_test_context_t test_context = {0};
     turbo_dc_context_t *dc = turbo_dc_context_create(&config);
-    turbo_thread_t feed_thread;
-    turbo_thread_t detach_thread;
+    salts_thread_t feed_thread;
+    salts_thread_t detach_thread;
 
     check_not_null(dc);
     test_context.peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
     check_not_null(test_context.peer);
-    turbo_mutex_init(&test_context.mutex);
-    turbo_cond_init(&test_context.cond);
+    salts_mutex_init(&test_context.mutex);
+    salts_cond_init(&test_context.cond);
     turbo_dc_peer_set_transport_data_handler(
         test_context.peer, blocking_transport_data_callback, &test_context);
 
-    check_equal((int)(turbo_thread_create(
+    check_equal((int)(salts_thread_create(
         &feed_thread, feed_transport_data_thread, &test_context)), (int)(0));
 
-    turbo_mutex_lock(&test_context.mutex);
+    salts_mutex_lock(&test_context.mutex);
     while (!test_context.callback_entered) {
-        turbo_cond_wait(&test_context.cond, &test_context.mutex);
+        salts_cond_wait(&test_context.cond, &test_context.mutex);
     }
-    turbo_mutex_unlock(&test_context.mutex);
+    salts_mutex_unlock(&test_context.mutex);
 
-    check_equal((int)(turbo_thread_create(
+    check_equal((int)(salts_thread_create(
         &detach_thread, detach_transport_data_thread, &test_context)), (int)(0));
-    turbo_mutex_lock(&test_context.mutex);
+    salts_mutex_lock(&test_context.mutex);
     while (!test_context.detach_entered) {
-        turbo_cond_wait(&test_context.cond, &test_context.mutex);
+        salts_cond_wait(&test_context.cond, &test_context.mutex);
     }
     check_equal((int)(test_context.detach_completed), (int)(0));
     test_context.release_callback = 1;
-    turbo_cond_broadcast(&test_context.cond);
-    turbo_mutex_unlock(&test_context.mutex);
+    salts_cond_broadcast(&test_context.cond);
+    salts_mutex_unlock(&test_context.mutex);
 
-    check_equal((int)(turbo_thread_join(&feed_thread)), (int)(0));
-    check_equal((int)(turbo_thread_join(&detach_thread)), (int)(0));
+    check_equal((int)(salts_thread_join(&feed_thread)), (int)(0));
+    check_equal((int)(salts_thread_join(&detach_thread)), (int)(0));
     check_equal((int)(test_context.detach_completed), (int)(1));
 
-    turbo_cond_destroy(&test_context.cond);
-    turbo_mutex_destroy(&test_context.mutex);
+    salts_cond_destroy(&test_context.cond);
+    salts_mutex_destroy(&test_context.mutex);
     turbo_dc_peer_destroy(test_context.peer);
     turbo_dc_context_destroy(dc);
 }

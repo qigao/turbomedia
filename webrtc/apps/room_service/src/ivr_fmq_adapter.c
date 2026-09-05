@@ -2,7 +2,7 @@
 #include "ivr/ivr_acl.h"
 #include "ivr_thread.h"
 #include "platform.h"
-#include "turbo_uuid.h"
+#include "salts_uuid.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -744,7 +744,7 @@ static void ivr_fmq_seq_rollback(ivr_fmq_adapter_t *a,
 
 static uint64_t ivr_fmq_now_ms(const ivr_fmq_adapter_t *a) {
     return a->clock.now_ms ? a->clock.now_ms(a->clock.context)
-                           : turbo_monotonic_ms();
+                           : salts_monotonic_ms();
 }
 
 static ivr_fmq_worker_entry_t *ivr_fmq_worker_find_locked(
@@ -2613,7 +2613,7 @@ static void ivr_fmq_dialog_recover_worker_loss(
     ivr_fmq_adapter_t *adapter, uint32_t index, uint64_t now_ms) {
     ivr_fmq_dialog_route_t snapshot;
     ivr_fmq_worker_entry_t *worker;
-    turbo_uuid_t event_uuid;
+    salts_uuid_t event_uuid;
     char new_event_id[128];
     uint64_t occurred_at_ms = 0;
     int worker_available;
@@ -2652,9 +2652,9 @@ static void ivr_fmq_dialog_recover_worker_loss(
     if (snapshot.state != IVR_FMQ_DIALOG_WORKER_LOST) {
         occurred_at_ms = turbo_realtime_ms();
         if (occurred_at_ms == 0 ||
-            turbo_uuid_v4_generate(&event_uuid) != TURBO_OK ||
-            turbo_uuid_format(&event_uuid, new_event_id,
-                              sizeof(new_event_id)) != TURBO_OK) {
+            salts_uuid_v4_generate(&event_uuid) != SALTS_OK ||
+            salts_uuid_format(&event_uuid, new_event_id,
+                              sizeof(new_event_id)) != SALTS_OK) {
             return;
         }
 

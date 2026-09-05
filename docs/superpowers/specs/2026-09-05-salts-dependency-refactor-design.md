@@ -150,7 +150,7 @@ flowchart LR
 - `salts_capture_t` 是 capture handle 的唯一状态 owner。
 - frame callback payload 默认 borrowed，只在 callback 期间有效；跨线程、队列或协程挂起前由消费者显式 copy/retain。
 - start/stop/destroy 的成功、失败和重复调用语义以 Salts Capture 契约为准，TurboMedia 不另建镜像状态。
-- Windows、Linux、macOS、Android 和 iOS provider 均由 SaltsUtils 提供；TurboMedia 删除对应本地实现，只保留非 Capture 的 playback、codec、JNI 和 mobile utilities。
+- Windows、Linux、macOS、Android 和 iOS 的公开 Capture provider 均由 SaltsUtils 提供；TurboMedia 删除对应本地 provider。Android Java `MediaProjection` 所需的私有 surface bridge 因 SaltsUtils 暂无公开交接接口而临时保留，并由 #25 跟踪；该 bridge 不拥有 `salts_capture_t` 状态，也不导出 `turbo_capture_*`/`salts_capture_*` provider API。
 - 删除顺序为：消费者先迁移并通过测试 → CMake 切换 provider → 删除本地 header/source → 安装树和源码树执行旧 header 负向扫描。
 
 ## 8. 错误、兼容性与回滚
@@ -182,7 +182,7 @@ flowchart LR
 
 1. **Foundation**：迁移 Core/CSTL/TinyTest、基础 include/symbol、`SALTS_ROOT` 和 package export。该 PR 可暂时保留 parser/capture 旧依赖，但同一最终 target 不得链接两套 Core runtime；若旧 TurboParser 安装包仍传递 TurboUtils，则此 PR 与 Parser PR 组成不可拆分的 stacked PR，在 Parser PR 合并前不得进入 master。
 2. **Parser/SaltsUtils**：引入 `SALTS_UTILS_ROOT`/`SALTS_UTILS_HOST_ROOT`，迁移 DataBind/Mustache，按 capability 删除 `TurboParser::Parser`，移除 TurboParser package/root/alias。
-3. **Capture**：迁移公开类型与消费者，切换 `Salts::Capture`，删除桌面/移动本地 provider 和 `turbo_capture.h`。
+3. **Capture**：迁移公开类型与消费者，切换 `Salts::Capture`，删除桌面/移动本地 provider 和 `turbo_capture.h`；Android 私有 `MediaProjection` surface bridge 的最终移除由 #25 阻塞跟踪。
 4. **Umbrella gate**：执行全量 Windows/Linux、Android configure/build、install-consumer、旧标识负向扫描和文档更新。
 
 任一中间 PR 若不能形成单一依赖事实源，就必须作为 stacked PR 保持未合并，不能用 compatibility alias 暂时掩盖。

@@ -10,6 +10,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <salts_capture.h>
 #include <turbo_export.h>
 
 #ifdef __cplusplus
@@ -20,7 +21,6 @@ extern "C" {
 
 typedef struct turbo_asr_s turbo_asr_t;
 typedef struct turbo_tts_s turbo_tts_t;
-struct turbo_capture_s;
 
 typedef enum {
   TURBO_SPEECH_OK = 0,
@@ -136,11 +136,11 @@ TURBO_MEDIA_API int turbo_asr_get_audio_format(const turbo_asr_t *asr,
                                          turbo_speech_audio_format_t *format);
 
 /**
- * turbo_audio_capture_cb-compatible adapter for an ASR-only capture. For a
+ * salts_audio_capture_cb-compatible adapter for an ASR-only capture. For a
  * WebRTC microphone track use turbo_media_track_attach_asr(), which preserves
  * the track's primary capture callback.
  */
-TURBO_MEDIA_API void turbo_asr_capture_callback(struct turbo_capture_s *capture, const uint8_t *samples,
+TURBO_MEDIA_API void turbo_asr_capture_callback(salts_capture_t *capture, const uint8_t *samples,
                                           size_t len, uint64_t timestamp_us, void *user_data);
 
 typedef struct {

@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - This plan starts after the Parser/SaltsUtils plan, so exact `SALTS_ROOT` and `SALTS_UTILS_ROOT` package discovery already works.
-- `Salts::Capture` and `salts_capture_t` are the single provider and state owner; do not retain a Turbo compatibility provider or alias.
+- `Salts::Capture` and `salts_capture_t` are the single public provider and state owner; do not retain a Turbo compatibility provider or alias.
+- The existing Android Java `MediaProjection` API still needs a native surface handoff that `<salts_capture.h>` does not expose. Keep only that private JNI bridge under issue #25 until SaltsUtils publishes a supported adapter; it must not define any `turbo_capture_*` or `salts_capture_*` provider symbol.
 - Preserve callback borrowed-lifetime rules, start/stop/destroy ordering, error visibility, device bounds, and TurboMedia media-track behavior.
 - The change from `struct turbo_capture_s *` to `salts_capture_t *` in installed headers is an explicit source-compatibility break requiring consumer recompilation.
 - Delete local capture files only after all consumers compile and behavior tests pass against Salts Capture.
@@ -36,7 +37,7 @@
 - [ ] **Step 1: Record the legacy Capture inventory**
 
 ```powershell
-rg.exe -n "turbo_capture\.h|turbo_(audio|video|screen|capture)_[a-z0-9_]+|TURBO_CAPTURE_[A-Z0-9_]+|struct turbo_capture_s" `
+rg.exe -n "turbo_capture\.h|\bturbo_(audio_capture|video_capture|screen_capture|video_device|video_mode|capture_(list|start|stop|destroy|get_state|on_state))[a-z0-9_]*\b|\bTURBO_(CAPTURE|VIDEO_CAPTURE|CAMERA_CONTROL)_[A-Z0-9_]+\b|struct turbo_capture_s" `
   CMakeLists.txt CMakeUserPresets.json cmake presets common core crypto demuxer examples media muxer network pipeline recognition server speech streamer tests webrtc
 ```
 
@@ -117,7 +118,7 @@ Remove `media/capture/*.c` and `*.m` plus `media/mobile/android/src/capture/*` f
 
 - [ ] **Step 4: Strengthen installed consumer coverage**
 
-In `tests/package_consumer/main.c`, include `<salts_capture.h>` through the installed dependency and type-check a `salts_capture_t *` used with a TurboMedia public callback. The consumer still links only a TurboMedia target; do not add direct `Salts::Capture` linkage.
+Add isolated Device, Speech, and Recognition consumers under `tests/package_consumer/`. Each executable links exactly one matching `TurboMedia::*` target, includes `<salts_capture.h>` through the installed dependency, and type-checks the public callback boundary where applicable. Do not add direct `Salts::Capture` linkage; otherwise a broken exported edge would be masked.
 
 - [ ] **Step 5: Configure and build before source renames**
 
@@ -214,7 +215,7 @@ git commit -m "refactor: expose Salts Capture in speech adapters"
 - [ ] **Step 1: Capture the exact consumer inventory**
 
 ```powershell
-rg.exe -n "turbo_capture\.h|\bturbo_(audio|video|screen|capture)_[a-z0-9_]+\b|\bTURBO_CAPTURE_[A-Z0-9_]+\b|struct turbo_capture_s" `
+rg.exe -n "turbo_capture\.h|\bturbo_(audio_capture|video_capture|screen_capture|video_device|video_mode|capture_(list|start|stop|destroy|get_state|on_state))[a-z0-9_]*\b|\bTURBO_(CAPTURE|VIDEO_CAPTURE|CAMERA_CONTROL)_[A-Z0-9_]+\b|struct turbo_capture_s" `
   examples media recognition speech tests webrtc
 ```
 
@@ -264,7 +265,7 @@ git commit -m "refactor: migrate capture consumers to Salts API"
 - Delete: `media/mobile/android/src/capture/capture_android.c`
 - Delete: `media/mobile/android/src/capture/capture_audio_android.c`
 - Delete: `media/mobile/android/src/capture/capture_video_android.c`
-- Delete: `media/mobile/android/src/capture/capture_screen_android.c`
+- Retain temporarily: `media/mobile/android/src/capture/capture_screen_android.c` (private Java `MediaProjection` surface bridge; issue #25)
 - Delete: `media/mobile/ios/src/capture/capture_ios.m`
 - Delete: `media/mobile/ios/src/capture/capture_audio_ios.m`
 - Delete: `media/mobile/ios/src/capture/capture_video_ios.m`
@@ -283,7 +284,7 @@ Use `rg.exe` in the exact SaltsUtils revision being consumed and record that `ca
 
 - [ ] **Step 2: Remove TurboMedia's duplicate platform sources**
 
-Delete the Android/iOS files listed above. Remove their source-list entries and Capture-only platform libraries/definitions from `media/CMakeLists.txt` and `media/mobile/ios/CMakeLists.txt`. Keep non-Capture mobile codec, JNI, battery, network-monitor, and optimizer sources unchanged.
+Delete the Android/iOS provider files listed above except `capture_screen_android.c`. Retain that file only as the private Java `MediaProjection` surface bridge tracked by #25; it must not export either the old Turbo Capture API or the Salts Capture API. Remove the deleted sources and Capture-only platform libraries/definitions from `media/CMakeLists.txt` and `media/mobile/ios/CMakeLists.txt`. Keep non-Capture mobile codec, JNI, battery, network-monitor, and optimizer sources unchanged.
 
 - [ ] **Step 3: Configure/build Android**
 
@@ -293,7 +294,7 @@ cmake --build --preset android-arm64-v8a-debug-win
 cmake --build --preset install-android-arm64-v8a-debug-win
 ```
 
-Expected: exactly one definition of each Salts capture symbol and no `turbo_capture_*` symbol.
+Expected: exactly one definition of each Salts capture symbol and no `turbo_capture_*` symbol. The remaining `android_screen_*` bridge is separately tracked by #25.
 
 - [ ] **Step 4: Verify Apple source paths**
 
@@ -333,7 +334,7 @@ git commit -m "refactor: unify platform capture ownership"
 - [ ] **Step 1: Prove no compiled consumer needs the local files**
 
 ```powershell
-rg.exe -n "turbo_capture\.h|\bturbo_(audio|video|screen|capture)_[a-z0-9_]+\b|\bTURBO_CAPTURE_[A-Z0-9_]+\b|struct turbo_capture_s" `
+rg.exe -n "turbo_capture\.h|\bturbo_(audio_capture|video_capture|screen_capture|video_device|video_mode|capture_(list|start|stop|destroy|get_state|on_state))[a-z0-9_]*\b|\bTURBO_(CAPTURE|VIDEO_CAPTURE|CAMERA_CONTROL)_[A-Z0-9_]+\b|struct turbo_capture_s" `
   CMakeLists.txt cmake presets common core crypto demuxer examples media muxer network pipeline recognition server speech streamer tests webrtc
 ```
 
@@ -346,7 +347,7 @@ Remove the files listed above with `apply_patch` or an equivalent reviewed patch
 - [ ] **Step 3: Make the legacy static gate pass**
 
 ```powershell
-rg.exe -n "turbo_capture\.h|turbo_(audio|video|screen|capture)_[a-z0-9_]+|TURBO_CAPTURE_[A-Z0-9_]+|struct turbo_capture_s" `
+rg.exe -n "turbo_capture\.h|\bturbo_(audio_capture|video_capture|screen_capture|video_device|video_mode|capture_(list|start|stop|destroy|get_state|on_state))[a-z0-9_]*\b|\bTURBO_(CAPTURE|VIDEO_CAPTURE|CAMERA_CONTROL)_[A-Z0-9_]+\b|struct turbo_capture_s" `
   CMakeLists.txt CMakeUserPresets.json cmake presets common core crypto demuxer examples media muxer network pipeline recognition server speech streamer tests webrtc
 ```
 
@@ -369,11 +370,11 @@ Expected: all commands exit 0 and installed public headers resolve `<salts_captu
 - [ ] **Step 5: Inspect binaries and source for duplicate providers**
 
 ```powershell
-rg.exe -n "turbo_capture\.h|\bturbo_(audio|video|screen|capture)_[a-z0-9_]+\b|\bTURBO_CAPTURE_[A-Z0-9_]+\b|struct turbo_capture_s" `
+rg.exe -n "turbo_capture\.h|\bturbo_(audio_capture|video_capture|screen_capture|video_device|video_mode|capture_(list|start|stop|destroy|get_state|on_state))[a-z0-9_]*\b|\bTURBO_(CAPTURE|VIDEO_CAPTURE|CAMERA_CONTROL)_[A-Z0-9_]+\b|struct turbo_capture_s" `
   CMakeLists.txt CMakeUserPresets.json cmake presets common core crypto demuxer examples media muxer network pipeline recognition server speech streamer tests webrtc
 ```
 
-Expected: no output. Inspect the platform library with the toolchain symbol dumper and confirm only `salts_capture_*` is provided by SaltsUtils, not by TurboMedia.
+Expected: no output. Inspect the platform library with the toolchain symbol dumper and confirm only `salts_capture_*` is provided by SaltsUtils, not by TurboMedia. Track removal of the separately named `android_screen_*` bridge in #25.
 
 - [ ] **Step 6: Commit deletion and documentation**
 

@@ -1,6 +1,6 @@
 #include "turbo_media_server.h"
 #include "CoroNet/turbo_coro_context.h"
-#include "turbo_uuid.h"
+#include "salts_uuid.h"
 #include <tinytest.h>
 
 #ifdef TURBO_MEDIA_HAS_RTSP
@@ -113,7 +113,7 @@ static int adapter_extract_session(const char *response,
 
 static int adapter_session_has_uuid_suffix(const char *session_id,
                                            const char *prefix) {
-    turbo_uuid_t uuid;
+    salts_uuid_t uuid;
     size_t prefix_len;
 
     if (!session_id || !prefix) return 0;
@@ -122,7 +122,7 @@ static int adapter_session_has_uuid_suffix(const char *session_id,
         session_id[prefix_len] != '-') {
         return 0;
     }
-    return turbo_uuid_parse(session_id + prefix_len + 1, &uuid) == TURBO_OK;
+    return salts_uuid_parse(session_id + prefix_len + 1, &uuid) == SALTS_OK;
 }
 
 static int adapter_recv_interleaved(coro_socket_t *client,

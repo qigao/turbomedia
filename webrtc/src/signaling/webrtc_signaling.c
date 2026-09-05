@@ -8,9 +8,9 @@
 #include "platform.h"
 #include "tlog.h"
 #include "turbo_media_auth.h"
-#include <turbostl/hash_map.h>
-#include "turbo_parser.h"
-#include "turbo_str.h"
+#include <cstl/hash_map.h>
+#include <json_parser.h>
+#include "salts_str.h"
 
 #include <CoroNet/turbo_coro_context.h>
 #include <CoroNet/turbo_coro_socket.h>
@@ -231,8 +231,8 @@ struct webrtc_signaling_server_s {
 
   int running;
   int stop_posted;
-  turbo_timer_t *cleanup_timer;
-  turbo_mutex_t mutex;
+  salts_timer_t *cleanup_timer;
+  salts_mutex_t mutex;
 };
 
 static int source_policy_enabled(const webrtc_signaling_config_t *config) {
@@ -478,9 +478,9 @@ static void signaling_stop_listener_post_cb(void *arg1, void *arg2) {
     (void)coro_socket_server_stop(listener);
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   server->stop_posted = 0;
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 }
 
 static void signaling_drain_listener(webrtc_signaling_server_t *server) {
@@ -492,18 +492,18 @@ static void signaling_drain_listener(webrtc_signaling_server_t *server) {
   }
 
   listener = server->listener;
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   stop_posted = server->stop_posted;
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 
   if (!stop_posted) {
     (void)coro_socket_server_stop(listener);
   }
 
   for (;;) {
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     stop_posted = server->stop_posted;
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     if (!stop_posted && coro_socket_server_is_stopped(listener)) {
       break;
     }
@@ -516,7 +516,7 @@ static void signaling_drain_listener(webrtc_signaling_server_t *server) {
 
 static int signaling_send_text(coro_socket_t *socket, const char *json) {
   if (!socket || !json || json[0] == '\0') {
-    return TURBO_EINVAL;
+    return SALTS_EINVAL;
   }
   return coro_socket_send_ws_text(socket, json, strlen(json));
 }
@@ -611,7 +611,7 @@ static const char *json_string_maybe_escape(const char *str, tstr *owned) {
 }
 
 static tstr generate_peer_id_locked(webrtc_signaling_server_t *server) {
-  uint64_t timestamp = turbo_monotonic_ms();
+  uint64_t timestamp = salts_monotonic_ms();
   tstr id = tstr_new();
   uint64_t sequence = 0;
 
@@ -913,7 +913,7 @@ static void remove_peer_locked(webrtc_signaling_server_t *server, webrtc_peer_t 
     server->peers_tail = peer->prev;
   }
   server->peer_count--;
-  release_source_locked(server, peer, turbo_monotonic_ms());
+  release_source_locked(server, peer, salts_monotonic_ms());
 
   free_outbox_locked(peer);
   if (peer->id) {
@@ -926,7 +926,7 @@ static int flush_peer_outbox(webrtc_peer_t *peer) {
   peer_message_t *msg = NULL;
 
   for (;;) {
-    turbo_mutex_lock(&peer->server->mutex);
+    salts_mutex_lock(&peer->server->mutex);
     msg = peer->outbox_head;
     if (msg) {
       peer->outbox_head = msg->next;
@@ -936,7 +936,7 @@ static int flush_peer_outbox(webrtc_peer_t *peer) {
       peer->outbox_message_count--;
       peer->outbox_bytes -= msg->bytes;
     }
-    turbo_mutex_unlock(&peer->server->mutex);
+    salts_mutex_unlock(&peer->server->mutex);
 
     if (!msg) {
       return 0;
@@ -1007,17 +1007,17 @@ static int authorize_join_message(const webrtc_signaling_server_t *server,
     return 0;
   }
 
-  room_value = turbo_json_object_get(data, "room");
-  peer_value = turbo_json_object_get(data, "peer_id");
-  token_value = turbo_json_object_get(data, "token");
-  if (!room_value || turbo_json_type(room_value) != TURBO_JSON_STRING ||
-      !peer_value || turbo_json_type(peer_value) != TURBO_JSON_STRING ||
-      !token_value || turbo_json_type(token_value) != TURBO_JSON_STRING) {
+  room_value = json_object_get(data, "room");
+  peer_value = json_object_get(data, "peer_id");
+  token_value = json_object_get(data, "token");
+  if (!room_value || json_type(room_value) != JSON_STRING ||
+      !peer_value || json_type(peer_value) != JSON_STRING ||
+      !token_value || json_type(token_value) != JSON_STRING) {
     return -1;
   }
-  room_id = turbo_json_string(room_value);
-  peer_id = turbo_json_string(peer_value);
-  token = turbo_json_string(token_value);
+  room_id = json_string(room_value);
+  peer_id = json_string(peer_value);
+  token = json_string(token_value);
   if (!room_id || !peer_id || !token) {
     return -1;
   }
@@ -1078,7 +1078,7 @@ static int bind_peer_identity_locked(webrtc_signaling_server_t *server,
 static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t *peer,
                                 json_value_t *data,
                                 tstr *authorized_peer_id) {
-  json_value_t *room_value = turbo_json_object_get(data, "room");
+  json_value_t *room_value = json_object_get(data, "room");
   const char *room_id_str = NULL;
   webrtc_room_t *room_ptr = NULL;
   int bind_result = 0;
@@ -1093,7 +1093,7 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
   tstr notify_msg = NULL;
   tstr err = NULL;
 
-  if (!room_value || turbo_json_type(room_value) != TURBO_JSON_STRING) {
+  if (!room_value || json_type(room_value) != JSON_STRING) {
     err = create_error_message("Missing room");
     send_json_message_locked(peer, err);
     tstr_free(err);
@@ -1111,7 +1111,7 @@ static void handle_join_message(webrtc_signaling_server_t *server, webrtc_peer_t
     return;
   }
 
-  room_id_str = turbo_json_string(room_value);
+  room_id_str = json_string(room_value);
   if (!room_id_str) {
     err = create_error_message("Allocation failure");
     send_json_message_locked(peer, err);
@@ -1215,8 +1215,8 @@ static void handle_list_peers_message(webrtc_signaling_server_t *server, webrtc_
 
 static void handle_offer_message(webrtc_signaling_server_t *server, webrtc_peer_t *from_peer,
                                  json_value_t *data) {
-  json_value_t *to_value = turbo_json_object_get(data, "to");
-  json_value_t *sdp_value = turbo_json_object_get(data, "sdp");
+  json_value_t *to_value = json_object_get(data, "to");
+  json_value_t *sdp_value = json_object_get(data, "sdp");
   const char *to_peer_id = NULL;
   const char *sdp = NULL;
   webrtc_peer_t *to_peer = NULL;
@@ -1234,8 +1234,8 @@ static void handle_offer_message(webrtc_signaling_server_t *server, webrtc_peer_
     return;
   }
 
-  to_peer_id = turbo_json_string(to_value);
-  sdp = turbo_json_string(sdp_value);
+  to_peer_id = json_string(to_value);
+  sdp = json_string(sdp_value);
   if (!to_peer_id || !sdp) {
     err = create_error_message("Allocation failure");
     send_json_message_locked(from_peer, err);
@@ -1277,8 +1277,8 @@ static void handle_offer_message(webrtc_signaling_server_t *server, webrtc_peer_
 
 static void handle_answer_message(webrtc_signaling_server_t *server, webrtc_peer_t *from_peer,
                                   json_value_t *data) {
-  json_value_t *to_value = turbo_json_object_get(data, "to");
-  json_value_t *sdp_value = turbo_json_object_get(data, "sdp");
+  json_value_t *to_value = json_object_get(data, "to");
+  json_value_t *sdp_value = json_object_get(data, "sdp");
   const char *to_peer_id = NULL;
   const char *sdp = NULL;
   webrtc_peer_t *to_peer = NULL;
@@ -1296,8 +1296,8 @@ static void handle_answer_message(webrtc_signaling_server_t *server, webrtc_peer
     return;
   }
 
-  to_peer_id = turbo_json_string(to_value);
-  sdp = turbo_json_string(sdp_value);
+  to_peer_id = json_string(to_value);
+  sdp = json_string(sdp_value);
   if (!to_peer_id || !sdp) {
     err = create_error_message("Allocation failure");
     send_json_message_locked(from_peer, err);
@@ -1339,8 +1339,8 @@ static void handle_answer_message(webrtc_signaling_server_t *server, webrtc_peer
 
 static void handle_candidate_message(webrtc_signaling_server_t *server, webrtc_peer_t *from_peer,
                                      json_value_t *data) {
-  json_value_t *to_value = turbo_json_object_get(data, "to");
-  json_value_t *cand_value = turbo_json_object_get(data, "candidate");
+  json_value_t *to_value = json_object_get(data, "to");
+  json_value_t *cand_value = json_object_get(data, "candidate");
   const char *to_peer_id = NULL;
   const char *candidate = NULL;
   webrtc_peer_t *to_peer = NULL;
@@ -1358,8 +1358,8 @@ static void handle_candidate_message(webrtc_signaling_server_t *server, webrtc_p
     return;
   }
 
-  to_peer_id = turbo_json_string(to_value);
-  candidate = turbo_json_string(cand_value);
+  to_peer_id = json_string(to_value);
+  candidate = json_string(cand_value);
   if (!to_peer_id || !candidate) {
     err = create_error_message("Allocation failure");
     send_json_message_locked(from_peer, err);
@@ -1401,7 +1401,7 @@ static void handle_candidate_message(webrtc_signaling_server_t *server, webrtc_p
 
 static void handle_end_of_candidates_message(webrtc_signaling_server_t *server,
                                              webrtc_peer_t *from_peer, json_value_t *data) {
-  json_value_t *to_value = turbo_json_object_get(data, "to");
+  json_value_t *to_value = json_object_get(data, "to");
   const char *to_peer_id = NULL;
   webrtc_peer_t *to_peer = NULL;
   const char *from_json = NULL;
@@ -1416,7 +1416,7 @@ static void handle_end_of_candidates_message(webrtc_signaling_server_t *server,
     return;
   }
 
-  to_peer_id = turbo_json_string(to_value);
+  to_peer_id = json_string(to_value);
   if (!to_peer_id) {
     err = create_error_message("Allocation failure");
     send_json_message_locked(from_peer, err);
@@ -1457,9 +1457,9 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
   tstr err = NULL;
   tstr authorized_peer_id = NULL;
   int is_join = 0;
-  uint64_t now_ms = turbo_monotonic_ms();
+  uint64_t now_ms = salts_monotonic_ms();
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   if (!peer->closing &&
       !consume_peer_message_budget_locked(server, peer, now_ms)) {
     err = create_error_message("Message rate limit exceeded");
@@ -1468,11 +1468,11 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
     close_peer_locked(peer);
   }
   if (peer->closing) {
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     tstr_free(err);
     return;
   }
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 
   null_terminated = (char *)malloc(len + 1);
   if (!null_terminated) {
@@ -1481,40 +1481,42 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
   memcpy(null_terminated, message, len);
   null_terminated[len] = '\0';
 
-  if (turbo_parse_json((const uint8_t *)null_terminated, len, &root) != 0 || !root ||
-      turbo_json_type(root) != TURBO_JSON_OBJECT) {
+  if (((root = json_parse((const char *)((const uint8_t *)null_terminated), len)) ? 0 : -1) != 0 || !root ||
+      json_type(root) != JSON_OBJECT) {
     err = create_error_message("Invalid JSON");
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     if (!peer->closing) {
       peer->last_activity = now_ms;
       send_json_message_locked(peer, err);
     }
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     tstr_free(err);
     free(null_terminated);
     if (root) {
-      turbo_free_json(&root);
+      json_free(root);
+      root = NULL;
     }
     return;
   }
 
-  type_value = turbo_json_object_get(root, "type");
-  if (!type_value || turbo_json_type(type_value) != TURBO_JSON_STRING) {
+  type_value = json_object_get(root, "type");
+  if (!type_value || json_type(type_value) != JSON_STRING) {
     err = create_error_message("Missing type");
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     if (!peer->closing) {
       peer->last_activity = now_ms;
       send_json_message_locked(peer, err);
     }
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     tstr_free(err);
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
     free(null_terminated);
     return;
   }
 
-  type = turbo_json_string(type_value);
-  type_len = turbo_json_string_len(type_value);
+  type = json_string(type_value);
+  type_len = json_string_len(type_value);
   is_join = type_len == 4 && strncmp(type, "join", 4) == 0;
   if ((type_len == 9 && strncmp(type, "candidate", 9) == 0) ||
       (type_len == 17 && strncmp(type, "end-of-candidates", 17) == 0)) {
@@ -1528,25 +1530,27 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
   if (is_join &&
       authorize_join_message(server, root, &authorized_peer_id) != 0) {
     err = create_error_message("Unauthorized join");
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     if (!peer->closing) {
       peer->last_activity = now_ms;
       server->authentication_rejections++;
       send_json_message_locked(peer, err);
       close_peer_locked(peer);
     }
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     tstr_free(err);
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
     free(null_terminated);
     return;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   if (peer->closing) {
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     tstr_free(authorized_peer_id);
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
     free(null_terminated);
     return;
   }
@@ -1573,10 +1577,11 @@ static void handle_message(webrtc_signaling_server_t *server, webrtc_peer_t *pee
     send_json_message_locked(peer, err);
     tstr_free(err);
   }
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 
   tstr_free(authorized_peer_id);
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   free(null_terminated);
 }
 
@@ -1605,9 +1610,9 @@ static void expire_peers_locked(webrtc_signaling_server_t *server,
   }
 }
 
-static void on_cleanup_timer(turbo_timer_t *handle) {
+static void on_cleanup_timer(salts_timer_t *handle) {
   webrtc_signaling_server_t *server =
-      (webrtc_signaling_server_t *)turbo_timer_get_data(handle);
+      (webrtc_signaling_server_t *)salts_timer_get_data(handle);
 
   if (!server ||
       (server->config.join_timeout_ms <= 0 &&
@@ -1616,13 +1621,13 @@ static void on_cleanup_timer(turbo_timer_t *handle) {
     return;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   {
-    uint64_t now_ms = turbo_monotonic_ms();
+    uint64_t now_ms = salts_monotonic_ms();
     expire_peers_locked(server, now_ms);
     expire_source_states_locked(server, now_ms);
   }
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 }
 
 static void broadcast_post_cb(void *arg1, void *arg2) {
@@ -1633,9 +1638,9 @@ static void broadcast_post_cb(void *arg1, void *arg2) {
     return;
   }
 
-  turbo_mutex_lock(&op->server->mutex);
+  salts_mutex_lock(&op->server->mutex);
   broadcast_locked(op->server, op->room, op->from, op->message);
-  turbo_mutex_unlock(&op->server->mutex);
+  salts_mutex_unlock(&op->server->mutex);
 
   free_broadcast_op(op);
 }
@@ -1652,7 +1657,7 @@ static void kick_post_cb(void *arg1, void *arg2) {
     return;
   }
 
-  turbo_mutex_lock(&op->server->mutex);
+  salts_mutex_lock(&op->server->mutex);
   peer = find_peer_by_id_locked(op->server, op->peer_id);
   if (peer && peer->room && strcmp(peer->room, op->room_id) == 0) {
     reason_json = json_string_maybe_escape(
@@ -1666,7 +1671,7 @@ static void kick_post_cb(void *arg1, void *arg2) {
     tstr_free(msg);
     tstr_free(escaped_reason);
   }
-  turbo_mutex_unlock(&op->server->mutex);
+  salts_mutex_unlock(&op->server->mutex);
 
   free_kick_op(op);
 }
@@ -1690,19 +1695,19 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   memset(&source_key, 0, sizeof(source_key));
   if (source_policy_enabled(&server->config) &&
       source_key_from_socket(client, &source_key) != 0) {
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     record_source_rejection_locked(server, SIGNALING_SOURCE_REJECT_ADDRESS);
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     return;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   if (source_policy_enabled(&server->config)) {
     source_result =
-        admit_source_locked(server, &source_key, turbo_monotonic_ms());
+        admit_source_locked(server, &source_key, salts_monotonic_ms());
     if (source_result != SIGNALING_SOURCE_ADMITTED) {
       record_source_rejection_locked(server, source_result);
-      turbo_mutex_unlock(&server->mutex);
+      salts_mutex_unlock(&server->mutex);
       return;
     }
   }
@@ -1710,9 +1715,9 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   peer = (webrtc_peer_t *)calloc(1, sizeof(*peer));
   if (!peer) {
     if (source_policy_enabled(&server->config)) {
-      release_source_key_locked(server, &source_key, turbo_monotonic_ms());
+      release_source_key_locked(server, &source_key, salts_monotonic_ms());
     }
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     return;
   }
 
@@ -1721,20 +1726,20 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   peer->source_admitted = source_policy_enabled(&server->config);
   peer->id = generate_peer_id_locked(server);
   if (!peer->id) {
-    release_source_locked(server, peer, turbo_monotonic_ms());
-    turbo_mutex_unlock(&server->mutex);
+    release_source_locked(server, peer, salts_monotonic_ms());
+    salts_mutex_unlock(&server->mutex);
     free(peer);
     return;
   }
   peer->socket = client;
-  peer->connected_at = turbo_monotonic_ms();
+  peer->connected_at = salts_monotonic_ms();
   peer->last_activity = peer->connected_at;
   peer->rate_last_refill_ms = peer->connected_at;
   peer->rate_tokens =
       (uint64_t)server->config.message_burst * SIGNALING_RATE_TOKEN_UNITS;
   if (hash_map_put(&server->local_peers, &peer->id, &peer) != STL_OK) {
-    release_source_locked(server, peer, turbo_monotonic_ms());
-    turbo_mutex_unlock(&server->mutex);
+    release_source_locked(server, peer, salts_monotonic_ms());
+    salts_mutex_unlock(&server->mutex);
     tstr_free(peer->id);
     free(peer);
     return;
@@ -1750,24 +1755,24 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
   server->peer_count++;
   coro_socket_set_user_data(client, server);
   coro_socket_set_timeout(client, SIGNALING_PEER_IO_TIMEOUT_MS);
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
   for (;;) {
     if (flush_peer_outbox(peer) != 0) {
       break;
     }
 
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     if (!server->running || peer->closing) {
-      turbo_mutex_unlock(&server->mutex);
+      salts_mutex_unlock(&server->mutex);
       break;
     }
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
 
     data = NULL;
     len = 0;
     is_text = 0;
     recv_status = coro_socket_recv_ws(client, &data, &len, &is_text);
-    if (recv_status == TURBO_ETIMEDOUT) {
+    if (recv_status == SALTS_ETIMEDOUT) {
       continue;
     }
     if (recv_status < 0) {
@@ -1792,7 +1797,7 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
     coro_socket_free_recv(data);
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   if (peer->room) {
     tstr escaped_peer_id = NULL;
     const char *peer_id_json = json_string_maybe_escape(peer->id, &escaped_peer_id);
@@ -1806,7 +1811,7 @@ static void signaling_client_handler(coro_socket_t *client, void *arg) {
     tstr_free(escaped_peer_id);
   }
   remove_peer_locked(server, peer);
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 }
 
 webrtc_signaling_server_t *webrtc_signaling_create(void *loop,
@@ -1880,12 +1885,12 @@ webrtc_signaling_server_t *webrtc_signaling_create(void *loop,
     return NULL;
   }
 
-  server->cleanup_timer = turbo_timer_create(server->loop);
+  server->cleanup_timer = salts_timer_create(server->loop);
   if (server->cleanup_timer) {
-    turbo_timer_set_data(server->cleanup_timer, server);
+    salts_timer_set_data(server->cleanup_timer, server);
   }
 
-  turbo_mutex_init(&server->mutex);
+  salts_mutex_init(&server->mutex);
   if (hash_map_init_bytes(
           &server->local_peers, sizeof(tstr), CMETA_ALIGNOF(tstr),
           sizeof(webrtc_peer_t *), CMETA_ALIGNOF(webrtc_peer_t *),
@@ -1912,9 +1917,9 @@ webrtc_signaling_server_t *webrtc_signaling_create(void *loop,
     hash_map_destroy(&server->local_peers);
     hash_map_destroy(&server->local_rooms);
     destroy_source_states(server);
-    turbo_mutex_destroy(&server->mutex);
+    salts_mutex_destroy(&server->mutex);
     if (server->cleanup_timer) {
-      turbo_timer_destroy(server->cleanup_timer);
+      salts_timer_destroy(server->cleanup_timer);
     }
     coro_context_destroy(server->ctx);
     if (server->owns_loop) {
@@ -1989,7 +1994,7 @@ int webrtc_signaling_start(webrtc_signaling_server_t *server) {
        server->config.peer_timeout_ms > 0 ||
        source_policy_enabled(&server->config)) &&
       server->cleanup_timer) {
-    turbo_timer_start(server->cleanup_timer, on_cleanup_timer,
+    salts_timer_start(server->cleanup_timer, on_cleanup_timer,
                       SIGNALING_CLEANUP_INTERVAL_MS,
                       SIGNALING_CLEANUP_INTERVAL_MS);
   }
@@ -2010,12 +2015,12 @@ void webrtc_signaling_stop(webrtc_signaling_server_t *server) {
   }
 
   if (server->cleanup_timer) {
-    turbo_timer_stop(server->cleanup_timer);
+    salts_timer_stop(server->cleanup_timer);
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   if (!server->running) {
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     return;
   }
   server->running = 0;
@@ -2027,14 +2032,14 @@ void webrtc_signaling_stop(webrtc_signaling_server_t *server) {
     server->stop_posted = 1;
     post_stop = 1;
   }
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 
   if (post_stop) {
     rc = coro_post(server->ctx, signaling_stop_listener_post_cb, server, listener);
-    if (rc != TURBO_OK) {
-      turbo_mutex_lock(&server->mutex);
+    if (rc != SALTS_OK) {
+      salts_mutex_lock(&server->mutex);
       server->stop_posted = 0;
-      turbo_mutex_unlock(&server->mutex);
+      salts_mutex_unlock(&server->mutex);
       TLOG_ERRORF("Failed to post signaling listener stop: {}", rc);
     }
   }
@@ -2048,10 +2053,10 @@ int webrtc_signaling_run(webrtc_signaling_server_t *server, turbo_run_mode_t mod
     return 0;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   running = server->running;
   stop_posted = server->stop_posted;
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
   if (!running && !stop_posted && server->listener &&
       !coro_socket_server_is_stopped(server->listener)) {
     (void)coro_socket_server_stop(server->listener);
@@ -2072,7 +2077,7 @@ void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
   }
 
   if (server->cleanup_timer) {
-    turbo_timer_destroy(server->cleanup_timer);
+    salts_timer_destroy(server->cleanup_timer);
   }
   if (server->ctx) {
     coro_context_destroy(server->ctx);
@@ -2080,7 +2085,7 @@ void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
   hash_map_destroy(&server->local_peers);
   hash_map_destroy(&server->local_rooms);
   destroy_source_states(server);
-  turbo_mutex_destroy(&server->mutex);
+  salts_mutex_destroy(&server->mutex);
   if (server->owns_loop && server->loop) {
     turbo_loop_destroy(server->loop);
   }
@@ -2092,9 +2097,9 @@ int webrtc_signaling_get_peer_count(webrtc_signaling_server_t *server) {
   if (!server) {
     return 0;
   }
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   count = server->peer_count;
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
   return count;
 }
 
@@ -2109,7 +2114,7 @@ int webrtc_signaling_broadcast(webrtc_signaling_server_t *server, const char *ro
     return -1;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   room_ptr = find_room_locked(server, room);
   if (room_ptr) {
     for (peer = room_ptr->peers_head; peer; peer = peer->next_in_room) {
@@ -2118,7 +2123,7 @@ int webrtc_signaling_broadcast(webrtc_signaling_server_t *server, const char *ro
       }
     }
   }
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 
   op = (signal_broadcast_op_t *)calloc(1, sizeof(*op));
   if (!op) {
@@ -2132,7 +2137,7 @@ int webrtc_signaling_broadcast(webrtc_signaling_server_t *server, const char *ro
     free_broadcast_op(op);
     return -1;
   }
-  if (coro_post(server->ctx, broadcast_post_cb, op, NULL) != TURBO_OK) {
+  if (coro_post(server->ctx, broadcast_post_cb, op, NULL) != SALTS_OK) {
     free_broadcast_op(op);
     return -1;
   }
@@ -2144,9 +2149,9 @@ int webrtc_signaling_get_room_count(webrtc_signaling_server_t *server) {
   if (!server) {
     return 0;
   }
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   count = server->room_count;
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
   return count;
 }
 
@@ -2160,13 +2165,13 @@ char *webrtc_signaling_get_rooms_json(webrtc_signaling_server_t *server) {
     return NULL;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   json = tstr_cat(json, "{\"rooms\":[");
   for (room = server->rooms_head; room; room = room->next) {
     tstr escaped_room_id = NULL;
     const char *room_id_json = json_string_maybe_escape(room->id, &escaped_room_id);
     if (!room_id_json) {
-      turbo_mutex_unlock(&server->mutex);
+      salts_mutex_unlock(&server->mutex);
       tstr_free(json);
       return NULL;
     }
@@ -2179,7 +2184,7 @@ char *webrtc_signaling_get_rooms_json(webrtc_signaling_server_t *server) {
     added++;
   }
   json = tstr_cat_fmt(json, "],\"total\":%d}", server->room_count);
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 
   result = tstr_to_cstr(json);
   tstr_free(json);
@@ -2195,12 +2200,12 @@ char *webrtc_signaling_get_room_peers_json(webrtc_signaling_server_t *server, co
     return NULL;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   room = find_room_locked(server, room_id);
   if (room) {
     list = create_peer_list_message_locked(room);
   }
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 
   if (!list) {
     return NULL;
@@ -2221,12 +2226,12 @@ int webrtc_signaling_kick_peer(webrtc_signaling_server_t *server, const char *ro
     return -1;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   peer = find_peer_by_id_locked(server, peer_id);
   if (peer && peer->room && strcmp(peer->room, room_id) == 0) {
     ret = 0;
   }
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
   if (ret != 0) {
     return -1;
   }
@@ -2243,7 +2248,7 @@ int webrtc_signaling_kick_peer(webrtc_signaling_server_t *server, const char *ro
     free_kick_op(op);
     return -1;
   }
-  if (coro_post(server->ctx, kick_post_cb, op, NULL) != TURBO_OK) {
+  if (coro_post(server->ctx, kick_post_cb, op, NULL) != SALTS_OK) {
     free_kick_op(op);
     return -1;
   }
@@ -2258,7 +2263,7 @@ char *webrtc_signaling_get_status_json(webrtc_signaling_server_t *server) {
     return NULL;
   }
 
-  turbo_mutex_lock(&server->mutex);
+  salts_mutex_lock(&server->mutex);
   json = tstr_cat_fmt(json,
                       "{\"peer_count\":%d,\"room_count\":%d,"
                       "\"source_state_count\":%zu,\"timestamp\":%llu,"
@@ -2270,7 +2275,7 @@ char *webrtc_signaling_get_status_json(webrtc_signaling_server_t *server) {
                       "\"source_concurrency\":%llu}}",
                       server->peer_count, server->room_count,
                       hash_map_size(&server->source_states),
-                      (unsigned long long)turbo_monotonic_ms(), server->running,
+                      (unsigned long long)salts_monotonic_ms(), server->running,
                       (unsigned long long)server->authentication_rejections,
                       (unsigned long long)server->join_timeout_rejections,
                       (unsigned long long)server->message_rate_rejections,
@@ -2279,7 +2284,7 @@ char *webrtc_signaling_get_status_json(webrtc_signaling_server_t *server) {
                       (unsigned long long)server->source_capacity_rejections,
                       (unsigned long long)server->source_rate_rejections,
                       (unsigned long long)server->source_concurrency_rejections);
-  turbo_mutex_unlock(&server->mutex);
+  salts_mutex_unlock(&server->mutex);
 
   result = tstr_to_cstr(json);
   tstr_free(json);

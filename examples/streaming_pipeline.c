@@ -8,7 +8,7 @@
 #include <stdlib.h>
 
 /* TurboMedia 模块 */
-#include <turbo_capture.h>
+#include <salts_capture.h>
 #include <turbo_codec.h>
 #include <turbo_muxer.h>
 #include <turbo_streamer.h>

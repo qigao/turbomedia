@@ -1,7 +1,7 @@
 #include "iris_completion_dispatcher.h"
 
 #include <tinytest.h>
-#include <turbo_thread.h>
+#include <salts_thread.h>
 #include <iris/iris_app.h>
 #include <iris/server.h>
 #include <platform.h>
@@ -39,9 +39,9 @@ typedef struct test_tls_server_s {
     iris_app_t *app;
     coro_context_t *context;
     coro_socket_t *listener;
-    turbo_thread_t thread;
-    turbo_mutex_t mutex;
-    turbo_cond_t lifecycle;
+    salts_thread_t thread;
+    salts_mutex_t mutex;
+    salts_cond_t lifecycle;
     test_tls_server_state_t state;
     int thread_started;
     atomic_int calls;
@@ -103,12 +103,12 @@ static void test_tls_server_thread(void *context) {
             &tls);
     }
 
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     server->context = coro_context;
     server->listener = listener;
     server->state = listener ? TEST_TLS_SERVER_RUNNING : TEST_TLS_SERVER_FAILED;
-    turbo_cond_broadcast(&server->lifecycle);
-    turbo_mutex_unlock(&server->mutex);
+    salts_cond_broadcast(&server->lifecycle);
+    salts_mutex_unlock(&server->mutex);
 
     if (listener) {
         coro_context_set_persistent(coro_context, 1);
@@ -118,45 +118,45 @@ static void test_tls_server_thread(void *context) {
     }
     if (coro_context) coro_context_destroy(coro_context);
 
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     server->context = NULL;
     server->listener = NULL;
     server->state = TEST_TLS_SERVER_STOPPED;
-    turbo_cond_broadcast(&server->lifecycle);
-    turbo_mutex_unlock(&server->mutex);
+    salts_cond_broadcast(&server->lifecycle);
+    salts_mutex_unlock(&server->mutex);
 }
 
 static int test_tls_server_start(test_tls_server_t *server) {
     memset(server, 0, sizeof(*server));
     server->app = iris_app_create();
     if (!server->app) return -1;
-    turbo_mutex_init(&server->mutex);
-    turbo_cond_init(&server->lifecycle);
+    salts_mutex_init(&server->mutex);
+    salts_cond_init(&server->lifecycle);
     server->state = TEST_TLS_SERVER_STARTING;
     g_test_tls_server = server;
     iris_app_post(server->app, "/v1/sessions/:sessionId/events",
                   test_tls_event_handler);
-    if (turbo_thread_create(&server->thread, test_tls_server_thread, server) !=
+    if (salts_thread_create(&server->thread, test_tls_server_thread, server) !=
         0) {
         g_test_tls_server = NULL;
-        turbo_cond_destroy(&server->lifecycle);
-        turbo_mutex_destroy(&server->mutex);
+        salts_cond_destroy(&server->lifecycle);
+        salts_mutex_destroy(&server->mutex);
         iris_app_destroy(server->app);
         server->app = NULL;
         return -1;
     }
     server->thread_started = 1;
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     while (server->state == TEST_TLS_SERVER_STARTING) {
-        turbo_cond_wait(&server->lifecycle, &server->mutex);
+        salts_cond_wait(&server->lifecycle, &server->mutex);
     }
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     if (server->state == TEST_TLS_SERVER_RUNNING) return 0;
-    turbo_thread_join(&server->thread);
+    salts_thread_join(&server->thread);
     server->thread_started = 0;
     g_test_tls_server = NULL;
-    turbo_cond_destroy(&server->lifecycle);
-    turbo_mutex_destroy(&server->mutex);
+    salts_cond_destroy(&server->lifecycle);
+    salts_mutex_destroy(&server->mutex);
     iris_app_destroy(server->app);
     server->app = NULL;
     return -1;
@@ -165,17 +165,17 @@ static int test_tls_server_start(test_tls_server_t *server) {
 static void test_tls_server_stop(test_tls_server_t *server) {
     coro_context_t *context;
     if (!server || !server->app) return;
-    turbo_mutex_lock(&server->mutex);
+    salts_mutex_lock(&server->mutex);
     context = server->context;
-    turbo_mutex_unlock(&server->mutex);
+    salts_mutex_unlock(&server->mutex);
     if (context) coro_context_stop(context);
     if (server->thread_started) {
-        turbo_thread_join(&server->thread);
+        salts_thread_join(&server->thread);
         server->thread_started = 0;
     }
     g_test_tls_server = NULL;
-    turbo_cond_destroy(&server->lifecycle);
-    turbo_mutex_destroy(&server->mutex);
+    salts_cond_destroy(&server->lifecycle);
+    salts_mutex_destroy(&server->mutex);
     iris_app_destroy(server->app);
     server->app = NULL;
 }
@@ -402,7 +402,7 @@ static int test_post(void *context, const char *url,
                  (int)body_size, body);
     }
     if (atomic_load(&post->blocked)) {
-        while (!atomic_load(&post->release)) turbo_sleep_ms(1u);
+        while (!atomic_load(&post->release)) salts_sleep_ms(1u);
     }
     return index < post->status_count ? post->statuses[index] : 200;
 }
@@ -578,7 +578,7 @@ static ivr_media_command_result_t make_result(const char *command_id) {
 static int wait_calls(test_post_t *post, int expected) {
     for (int i = 0; i < 1000; ++i) {
         if (atomic_load(&post->calls) >= expected) return 1;
-        turbo_sleep_ms(1u);
+        salts_sleep_ms(1u);
     }
     return 0;
 }
@@ -602,7 +602,7 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.completion_calls) < 1; ++i) {
-            turbo_sleep_ms(1u);
+            salts_sleep_ms(1u);
         }
         iris_completion_dispatcher_stop(dispatcher);
         check_equal(atomic_load(&delivery.completion_calls), 1);
@@ -644,7 +644,7 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.completion_calls) < 2; ++i) {
-            turbo_sleep_ms(1u);
+            salts_sleep_ms(1u);
         }
         check_equal(atomic_load(&delivery.completion_calls), 2);
         check_equal(delivery.completion_message_ids[0],
@@ -656,7 +656,7 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.event_calls) < 1; ++i) {
-            turbo_sleep_ms(1u);
+            salts_sleep_ms(1u);
         }
         iris_completion_dispatcher_stop(dispatcher);
         check_equal(atomic_load(&delivery.event_calls), 1);
@@ -780,7 +780,7 @@ spec("Iris completion dispatcher") {
         check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 1));
-        turbo_sleep_ms(5u);
+        salts_sleep_ms(5u);
         check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 2));
@@ -859,7 +859,7 @@ spec("Iris completion dispatcher") {
         test_post_t post;
         test_delivery_observer_t observer;
         test_stop_context_t stop_context;
-        turbo_thread_t stop_thread;
+        salts_thread_t stop_thread;
         ivr_media_event_t first;
         ivr_media_event_t second;
         iris_media_bridge_t *bridge;
@@ -893,19 +893,19 @@ spec("Iris completion dispatcher") {
         check_equal(iris_completion_dispatcher_enqueue_event(
                          dispatcher, &second, UINT64_C(22)),
                      IVR_OK);
-        check_equal(turbo_thread_create(&stop_thread, test_stop_dispatcher,
+        check_equal(salts_thread_create(&stop_thread, test_stop_dispatcher,
                                          &stop_context),
                      0);
         for (int i = 0; i < 2000 && !atomic_load(&observer.abandoned_seen);
              ++i) {
-            turbo_sleep_ms(1u);
+            salts_sleep_ms(1u);
         }
         check_true(atomic_load(&observer.abandoned_seen));
         check_true(atomic_load(&observer.stats_read));
         check_true(atomic_load(&observer.abandoned_token) == UINT64_C(22));
         atomic_store(&post.release, 1);
-        turbo_thread_join(&stop_thread);
-        turbo_thread_destroy(&stop_thread);
+        salts_thread_join(&stop_thread);
+        salts_thread_destroy(&stop_thread);
         check_equal(atomic_load(&observer.calls), 2);
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
@@ -1040,7 +1040,7 @@ spec("Iris completion dispatcher") {
                 iris_completion_dispatcher_get_stats(wrong_host_dispatcher,
                                                      &stats);
                 if (stats.event_failure_total == 1u) break;
-                turbo_sleep_ms(1u);
+                salts_sleep_ms(1u);
             }
             iris_completion_dispatcher_stop(wrong_host_dispatcher);
             iris_completion_dispatcher_get_stats(wrong_host_dispatcher,
@@ -1079,7 +1079,7 @@ spec("Iris completion dispatcher") {
                 IVR_OK);
             for (int i = 0; i < 3000 && atomic_load(&tls_server.calls) < 1;
                  ++i) {
-                turbo_sleep_ms(1u);
+                salts_sleep_ms(1u);
             }
             check_equal(atomic_load(&tls_server.calls), 1);
             iris_completion_dispatcher_stop(dispatcher);

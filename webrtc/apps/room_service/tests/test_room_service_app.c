@@ -6,7 +6,7 @@
 #include "sfu_node/server.h"
 #include "http_client.h"
 #include "turbo_media_auth.h"
-#include "turbo_parser.h"
+#include <json_parser.h>
 #ifdef TURBO_MEDIA_HAS_IVR_FMQ
 #include "ivr_room_bridge.h"
 #endif
@@ -191,8 +191,8 @@ static json_value_t *json_object_field(const json_value_t *obj, const char *key)
     return NULL;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_OBJECT) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_OBJECT) {
     return NULL;
   }
 
@@ -206,12 +206,12 @@ static int json_bool_value(const json_value_t *obj, const char *key, int def) {
     return def;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_BOOL) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_BOOL) {
     return def;
   }
 
-  return turbo_json_bool(value) ? 1 : 0;
+  return json_bool(value) ? 1 : 0;
 }
 
 static int json_int_value(const json_value_t *obj, const char *key, int def) {
@@ -221,12 +221,12 @@ static int json_int_value(const json_value_t *obj, const char *key, int def) {
     return def;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_NUMBER) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_NUMBER) {
     return def;
   }
 
-  return (int)turbo_json_number(value);
+  return (int)json_number(value);
 }
 
 static size_t json_array_count(const json_value_t *obj, const char *key) {
@@ -236,12 +236,12 @@ static size_t json_array_count(const json_value_t *obj, const char *key) {
     return 0;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_ARRAY) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_ARRAY) {
     return 0;
   }
 
-  return turbo_json_array_size(value);
+  return json_array_size(value);
 }
 
 static json_value_t *json_array_field(const json_value_t *obj, const char *key) {
@@ -251,8 +251,8 @@ static json_value_t *json_array_field(const json_value_t *obj, const char *key) 
     return NULL;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_ARRAY) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_ARRAY) {
     return NULL;
   }
 
@@ -262,13 +262,13 @@ static json_value_t *json_array_field(const json_value_t *obj, const char *key) 
 static json_value_t *json_array_object_at(const json_value_t *array, size_t index) {
   json_value_t *value;
 
-  if (!array || turbo_json_type(array) != TURBO_JSON_ARRAY ||
-      index >= turbo_json_array_size(array)) {
+  if (!array || json_type(array) != JSON_ARRAY ||
+      index >= json_array_size(array)) {
     return NULL;
   }
 
-  value = turbo_json_array_get(array, index);
-  if (!value || turbo_json_type(value) != TURBO_JSON_OBJECT) {
+  value = json_array_get(array, index);
+  if (!value || json_type(value) != JSON_OBJECT) {
     return NULL;
   }
 
@@ -282,12 +282,12 @@ static const char *json_string_value(const json_value_t *obj, const char *key) {
     return NULL;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_STRING) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_STRING) {
     return NULL;
   }
 
-  return turbo_json_string(value);
+  return json_string(value);
 }
 
 static int json_is_null_field(const json_value_t *obj, const char *key) {
@@ -297,8 +297,8 @@ static int json_is_null_field(const json_value_t *obj, const char *key) {
     return 0;
   }
 
-  value = turbo_json_object_get(obj, key);
-  return value && turbo_json_type(value) == TURBO_JSON_NULL;
+  value = json_object_get(obj, key);
+  return value && json_type(value) == JSON_NULL;
 }
 
 static json_value_t *find_call_center_event(const json_value_t *events_view,
@@ -313,7 +313,7 @@ static json_value_t *find_call_center_event(const json_value_t *events_view,
     return NULL;
   }
 
-  for (i = 0; i < turbo_json_array_size(events); ++i) {
+  for (i = 0; i < json_array_size(events); ++i) {
     json_value_t *event = json_array_object_at(events, i);
     const char *current_type;
 
@@ -356,9 +356,10 @@ static int parse_json_text(const char *json_text, json_value_t **out_root) {
     return -1;
   }
 
-  if (turbo_parse_json((const uint8_t *)json_text, strlen(json_text), &root) != 0 ||
-      !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-    turbo_free_json(&root);
+  if (((root = json_parse((const char *)((const uint8_t *)json_text), strlen(json_text))) ? 0 : -1) != 0 ||
+      !root || json_type(root) != JSON_OBJECT) {
+    json_free(root);
+    root = NULL;
     return -1;
   }
 
@@ -396,8 +397,9 @@ static json_value_t *http_get_json(const char *base_url, const char *path) {
   root = http_response_parse_json(response);
   http_response_free(response);
   http_client_destroy(client);
-  if (!root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-    turbo_free_json(&root);
+  if (!root || json_type(root) != JSON_OBJECT) {
+    json_free(root);
+    root = NULL;
     return NULL;
   }
 
@@ -575,8 +577,9 @@ static json_value_t *http_post_json_result(const char *base_url, const char *pat
   root = http_response_parse_json(response);
   http_response_free(response);
   http_client_destroy(client);
-  if (!root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-    turbo_free_json(&root);
+  if (!root || json_type(root) != JSON_OBJECT) {
+    json_free(root);
+    root = NULL;
     return NULL;
   }
 
@@ -616,10 +619,11 @@ static int http_post_json_status(const char *base_url, const char *path,
   }
   http_client_destroy(client);
 
-  if (root && turbo_json_type(root) == TURBO_JSON_OBJECT && out_root) {
+  if (root && json_type(root) == JSON_OBJECT && out_root) {
     *out_root = root;
   } else {
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
   }
 
   return status;
@@ -663,10 +667,11 @@ static int http_post_json_status_with_token(const char *base_url, const char *pa
   }
   http_client_destroy(client);
 
-  if (root && turbo_json_type(root) == TURBO_JSON_OBJECT && out_root) {
+  if (root && json_type(root) == JSON_OBJECT && out_root) {
     *out_root = root;
   } else {
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
   }
 
   return status;
@@ -796,7 +801,8 @@ void test_room_service_assign_replays_existing_state_and_closed_room_diag_stays_
   check_equal((int)(json_int_value(last_sync_stats, "tracks_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(last_sync_stats, "subscriptions_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(last_sync_stats, "skipped_items", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   check_equal((int)(turbo_room_service_close_room(service, "room-replay")), (int)(0));
   check_equal((int)(room_service_app_server_sync_force_close_room(room_server,
@@ -819,7 +825,8 @@ void test_room_service_assign_replays_existing_state_and_closed_room_diag_stays_
   last_sync = json_object_field(diag, "last_sfu_sync");
   check_not_null(last_sync);
   check_equal(json_string_value(last_sync, "operation"), "replay");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -861,7 +868,8 @@ void test_room_sync_diagnostic_reports_null_when_room_has_no_sync_history(void) 
   check_not_null(diag);
   check_false(json_bool_value(diag, "has_last_sfu_sync", 1));
   check_true(json_is_null_field(diag, "last_sfu_sync"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_service_app_server_destroy(room_server);
 }
@@ -935,8 +943,11 @@ void test_room_sync_diagnostic_http_endpoints_expose_latest_sync_state(void) {
   check_equal((int)(json_int_value(stats, "receiver_bandwidths_replayed", -1)), (int)(2));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(1));
 
-  turbo_free_json(&post_root);
-  turbo_free_json(&get_root);
+  json_free(post_root);
+
+  post_root = NULL;
+  json_free(get_root);
+  get_root = NULL;
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
   sfu_node_app_server_stop(sfu_server);
@@ -987,7 +998,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1004,7 +1016,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1021,7 +1034,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1042,7 +1056,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1061,7 +1076,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1080,7 +1096,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   sync_diag_root = http_post_json_result(
@@ -1102,7 +1119,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
   check_equal((int)(json_int_value(stats, "receiver_bandwidths_replayed", -1)), (int)(2));
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(1));
-  turbo_free_json(&sync_diag_root);
+  json_free(sync_diag_root);
+  sync_diag_root = NULL;
   sync_diag_root = NULL;
 
   root = http_post_json_result(
@@ -1115,7 +1133,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1130,7 +1149,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1148,7 +1168,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   sync_diag_root = http_get_json(room_service_base_url,
@@ -1164,7 +1185,8 @@ void test_room_sync_http_assign_and_resync_results_match_room_sync_diagnostic(vo
   check_equal((int)(json_int_value(stats, "receiver_bandwidths_replayed", -1)), (int)(2));
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(1));
-  turbo_free_json(&sync_diag_root);
+  json_free(sync_diag_root);
+  sync_diag_root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -1230,7 +1252,8 @@ void test_room_service_issues_scoped_sfu_command_tokens(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1245,7 +1268,8 @@ void test_room_service_issues_scoped_sfu_command_tokens(void) {
   stats = json_object_field(root, "sfu_replay_stats");
   check_not_null(stats);
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = https_post_json_result(
@@ -1260,7 +1284,8 @@ void test_room_service_issues_scoped_sfu_command_tokens(void) {
   check_not_null(stats);
   check_equal(json_string_value(stats, "room_id"), "room-auth-forward");
   check_equal((int)(json_int_value(stats, "participant_count", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -1428,7 +1453,8 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
                                  create_room_command, write_token, &root)), (int)(200));
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
   check_equal((int)(http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/commands",
@@ -1470,7 +1496,8 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
                                  "room-service-control-token", &root)), (int)(200));
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   check_equal((int)(http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/join",
                                  join_alice_request, bob_token, NULL)), (int)(401));
@@ -1570,7 +1597,8 @@ void test_room_service_facade_join_publish_and_subscribe(void) {
   check_equal(json_string_value(room, "room_id"), "room-facade");
   check_equal(json_string_value(participant, "participant_id"), "alice");
   check_equal((int)(json_int_value(room, "participant_count", 0)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   check_equal((int)(http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/join",
@@ -1582,7 +1610,8 @@ void test_room_service_facade_join_publish_and_subscribe(void) {
   check_not_null(participant);
   check_equal(json_string_value(participant, "participant_id"), "bob");
   check_equal((int)(json_int_value(room, "participant_count", 0)), (int)(2));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   check_equal((int)(http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/publish",
@@ -1594,7 +1623,8 @@ void test_room_service_facade_join_publish_and_subscribe(void) {
   check_not_null(track);
   check_equal(json_string_value(track, "track_id"), "track-cam");
   check_equal((int)(json_int_value(room, "published_track_count", 0)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   check_equal((int)(http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/subscribe",
@@ -1608,7 +1638,8 @@ void test_room_service_facade_join_publish_and_subscribe(void) {
   check_equal(json_string_value(subscription, "track_id"), "track-cam");
   check_true(json_bool_value(subscription, "enabled", 0));
   check_equal((int)(json_int_value(room, "subscription_count", 0)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -1660,14 +1691,16 @@ void test_room_service_routes_rooms_to_registered_sfu_nodes(void) {
   node_stats = json_object_field(root, "node_stats");
   check_not_null(node_stats);
   check_equal(json_string_value(node_stats, "node_id"), "sfu-a");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_get_json(sfu_b_base_url, "/health");
   check_not_null(root);
   node_stats = json_object_field(root, "node_stats");
   check_not_null(node_stats);
   check_equal(json_string_value(node_stats, "node_id"), "sfu-b");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_server = room_service_app_server_create(&room_config);
   check_not_null(room_server);
@@ -1685,7 +1718,8 @@ void test_room_service_routes_rooms_to_registered_sfu_nodes(void) {
       "\"created_by\":\"host-a\""
       "}");
   check_not_null(root);
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -1696,7 +1730,8 @@ void test_room_service_routes_rooms_to_registered_sfu_nodes(void) {
       "\"created_by\":\"host-b\""
       "}");
   check_not_null(root);
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -1708,7 +1743,8 @@ void test_room_service_routes_rooms_to_registered_sfu_nodes(void) {
   room = json_object_field(root, "room");
   check_not_null(room);
   check_equal(json_string_value(room, "assigned_sfu_node"), "sfu-a");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -1720,7 +1756,8 @@ void test_room_service_routes_rooms_to_registered_sfu_nodes(void) {
   room = json_object_field(root, "room");
   check_not_null(room);
   check_equal(json_string_value(room, "assigned_sfu_node"), "sfu-b");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   check_equal((int)(http_post_json_status(
                                  sfu_a_base_url, "/api/v1/commands",
@@ -1892,7 +1929,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1909,7 +1947,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1926,7 +1965,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1946,7 +1986,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_null(json_string_value(root, "warning_code"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1966,7 +2007,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_null(json_string_value(root, "warning_code"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -1986,7 +2028,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(2));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   sync_diag_root = http_get_json(room_service_base_url,
@@ -2003,7 +2046,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(2));
-  turbo_free_json(&sync_diag_root);
+  json_free(sync_diag_root);
+  sync_diag_root = NULL;
   sync_diag_root = NULL;
 
   root = http_post_json_result(
@@ -2022,7 +2066,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(2));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   sync_diag_root = http_post_json_result(
@@ -2045,7 +2090,8 @@ void test_room_sync_http_warning_paths_surface_skipped_replay_state(void) {
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(2));
-  turbo_free_json(&sync_diag_root);
+  json_free(sync_diag_root);
+  sync_diag_root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -2084,7 +2130,8 @@ void test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic(
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -2101,7 +2148,8 @@ void test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic(
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -2118,7 +2166,8 @@ void test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic(
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -2139,7 +2188,8 @@ void test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic(
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -2158,7 +2208,8 @@ void test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic(
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   root = http_post_json_result(
@@ -2178,7 +2229,8 @@ void test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic(
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   sync_diag_root = http_get_json(room_service_base_url,
@@ -2197,7 +2249,8 @@ void test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic(
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "subscriptions_replayed", -1)), (int)(0));
   check_equal((int)(json_int_value(stats, "skipped_items", -1)), (int)(0));
-  turbo_free_json(&sync_diag_root);
+  json_free(sync_diag_root);
+  sync_diag_root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -2258,7 +2311,8 @@ void test_room_service_resync_room_repairs_sfu_drift(void) {
   check_false(json_bool_value(diag, "in_sync", 1));
   check_equal((int)(json_int_value(diag, "participant_mismatch_count", -1)), (int)(1));
   check_equal((int)(json_int_value(diag, "subscription_mismatch_count", -1)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   memset(&replay_stats, 0, sizeof(replay_stats));
   check_equal((int)(room_service_app_server_sync_resync_room(
@@ -2293,7 +2347,8 @@ void test_room_service_resync_room_repairs_sfu_drift(void) {
   check_equal((int)(json_int_value(last_sync_stats, "tracks_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(last_sync_stats, "subscriptions_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(last_sync_stats, "skipped_items", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_service_app_server_destroy(room_server);
   sfu_node_app_server_stop(sfu_server);
@@ -2351,7 +2406,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2367,7 +2423,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2383,7 +2440,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2399,7 +2457,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2415,7 +2474,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2434,7 +2494,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2454,7 +2515,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2474,7 +2536,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2494,7 +2557,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2508,7 +2572,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   room = json_object_field(root, "room");
   check_not_null(room);
   check_equal(json_string_value(room, "assigned_sfu_node"), "node-eu-1");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2522,7 +2587,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   policy = json_object_field(root, "conference_policy");
   check_not_null(policy);
   check_equal(json_string_value(policy, "layout_mode"), "speaker");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2536,7 +2602,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   policy = json_object_field(root, "conference_policy");
   check_not_null(policy);
   check_equal(json_string_value(policy, "active_speaker_participant_id"), "alice");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2550,7 +2617,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   policy = json_object_field(root, "conference_policy");
   check_not_null(policy);
   check_equal(json_string_value(policy, "pinned_participant_id"), "charlie");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2561,7 +2629,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_null(json_string_value(root, "warning_code"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2578,7 +2647,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal((int)(json_int_value(subscription, "priority", -1)), (int)(400));
   check_equal(json_string_value(subscription, "target_layer"), "low");
   check_equal(json_string_value(subscription, "policy_source"), "conference_policy_audio");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2595,7 +2665,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal((int)(json_int_value(subscription, "priority", -1)), (int)(250));
   check_equal(json_string_value(subscription, "target_layer"), "high");
   check_equal(json_string_value(subscription, "policy_source"), "conference_policy_pin");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2612,7 +2683,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal((int)(json_int_value(subscription, "priority", -1)), (int)(100));
   check_equal(json_string_value(subscription, "target_layer"), "low");
   check_equal(json_string_value(subscription, "policy_source"), "conference_policy_camera");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2629,7 +2701,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal((int)(json_int_value(subscription, "priority", -1)), (int)(300));
   check_equal(json_string_value(subscription, "target_layer"), "high");
   check_equal(json_string_value(subscription, "policy_source"), "conference_policy_screen");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2651,7 +2724,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal(json_string_value(sfu_track_subscription, "target_layer"), "high");
   check_equal((int)(json_bool_value(sfu_track_subscription, "muted", 1)), (int)(0));
   check_equal(json_string_value(sfu_track_subscription, "policy_source"), "conference_policy_screen");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_get_json(room_service_base_url, "/api/v1/rooms/room-policy/state");
   check_not_null(root);
@@ -2669,7 +2743,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal((int)((int)json_array_count(room_state, "participants")), (int)(4));
   check_equal((int)((int)json_array_count(room_state, "published_tracks")), (int)(4));
   check_equal((int)((int)json_array_count(room_state, "subscriptions")), (int)(12));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   room_state = NULL;
 
   root = http_post_json_result(
@@ -2690,7 +2765,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal((int)((int)json_array_count(room_state, "participants")), (int)(4));
   check_equal((int)((int)json_array_count(room_state, "published_tracks")), (int)(4));
   check_equal((int)((int)json_array_count(room_state, "subscriptions")), (int)(12));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2710,7 +2786,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
                                              "pinned_participant_id"), "charlie");
   check_true(json_bool_value(diag, "in_sync", 0));
   check_equal((int)(json_int_value(diag, "subscription_mismatch_count", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2724,7 +2801,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   policy = json_object_field(root, "conference_policy");
   check_not_null(policy);
   check_equal(json_string_value(policy, "pinned_participant_id"), "");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2735,7 +2813,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_null(json_string_value(root, "warning_code"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2751,7 +2830,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal((int)(json_int_value(subscription, "priority", -1)), (int)(200));
   check_equal(json_string_value(subscription, "target_layer"), "high");
   check_equal(json_string_value(subscription, "policy_source"), "conference_policy_active");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2767,7 +2847,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal((int)(json_int_value(subscription, "priority", -1)), (int)(100));
   check_equal(json_string_value(subscription, "target_layer"), "low");
   check_equal(json_string_value(subscription, "policy_source"), "conference_policy_camera");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -2785,7 +2866,8 @@ void test_room_service_conference_policy_materializes_and_syncs_screen_pin_and_a
   check_equal(json_string_value(conference_policy,
                                                   "pinned_participant_id"), "");
   check_true(json_bool_value(diag, "in_sync", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -3017,7 +3099,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3033,7 +3116,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3049,7 +3133,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3065,7 +3150,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3084,7 +3170,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3103,7 +3190,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3122,7 +3210,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3133,7 +3222,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3146,7 +3236,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
   participant = json_object_field(root, "participant");
   check_not_null(participant);
   check_equal(json_string_value(participant, "role"), "customer");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3164,7 +3255,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
   apply_result = json_object_field(root, "policy_apply_result");
   check_not_null(apply_result);
   check_equal((int)(json_int_value(apply_result, "subscriptions_applied", -1)), (int)(6));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3179,7 +3271,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
   check_not_null(subscription);
   check_true(json_bool_value(subscription, "enabled", 0));
   check_equal(json_string_value(subscription, "policy_source"), "call_center_barge");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3196,7 +3289,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
   sfu_track_subscription = json_object_field(subscription_diag, "sfu_track_subscription");
   check_not_null(sfu_track_subscription);
   check_equal(json_string_value(sfu_track_subscription, "policy_source"), "call_center_barge");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3214,7 +3308,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
   apply_result = json_object_field(root, "policy_apply_result");
   check_not_null(apply_result);
   check_equal((int)(json_int_value(apply_result, "subscriptions_removed", -1)), (int)(4));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -3229,7 +3324,8 @@ void test_room_service_http_call_center_policy_command_syncs_to_sfu_node(void) {
   check_not_null(sfu_track_subscription);
   check_false(json_bool_value(sfu_track_subscription, "enabled", 1));
   check_true(json_bool_value(sfu_track_subscription, "muted", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -3280,7 +3376,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "queue_depth", -1)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3295,7 +3392,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "queue_depth", -1)), (int)(2));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3310,7 +3408,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "queue_depth", -1)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3325,7 +3424,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_equal(json_string_value(queue_entry, "entry_id"), "caller-vip");
   check_equal(json_string_value(queue_entry, "endpoint_id"), "customer-vip");
   check_equal((int)(json_int_value(queue_entry, "priority", -1)), (int)(80));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3343,7 +3443,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(callee);
   check_equal(json_string_value(caller, "entry_id"), "caller-vip");
   check_equal(json_string_value(callee, "entry_id"), "agent-primary");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3355,7 +3456,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "caller_depth", -1)), (int)(1));
   check_equal((int)(json_int_value(root, "callee_depth", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3369,7 +3471,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3394,7 +3497,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(callee);
   check_equal(json_string_value(caller, "entry_id"), "caller-regular");
   check_equal(json_string_value(callee, "entry_id"), "agent-secondary");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3407,7 +3511,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   participant = json_object_field(root, "participant");
   check_not_null(participant);
   check_equal(json_string_value(participant, "role"), "customer");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3420,7 +3525,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   participant = json_object_field(root, "participant");
   check_not_null(participant);
   check_equal(json_string_value(participant, "role"), "agent");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_get_json(room_service_base_url, "/api/v1/rooms/room-routed-call");
   check_not_null(root);
@@ -3428,7 +3534,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_equal(json_string_value(room, "recording_state"), "active");
   check_equal(json_string_value(room, "recording_id"), "rec-routed-call");
   check_equal(json_string_value(room, "recording_mode"), "compliance");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3446,7 +3553,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
                                              "agent_participant_id"), "agent-b");
   check_equal(json_string_value(call_center_room,
                                              "consult_agent_participant_id"), "");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3462,7 +3570,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3481,7 +3590,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3500,7 +3610,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3511,7 +3622,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3527,7 +3639,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3543,7 +3656,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3559,7 +3673,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3574,7 +3689,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(subscription);
   check_true(json_bool_value(subscription, "enabled", 0));
   check_equal(json_string_value(subscription, "policy_source"), "call_center_monitor");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3589,7 +3705,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(subscription);
   check_true(json_bool_value(subscription, "enabled", 0));
   check_equal(json_string_value(subscription, "policy_source"), "call_center_monitor");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3604,7 +3721,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(subscription);
   check_true(json_bool_value(subscription, "enabled", 0));
   check_equal(json_string_value(subscription, "policy_source"), "call_center_observe");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3619,7 +3737,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(subscription);
   check_true(json_bool_value(subscription, "enabled", 0));
   check_equal(json_string_value(subscription, "policy_source"), "call_center_observe");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3633,7 +3752,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(call_center_room);
   check_equal(json_string_value(call_center_room,
                                              "consult_agent_participant_id"), "agent-c");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3645,7 +3765,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   agent_state = json_object_field(root, "call_center_agent_state");
   check_not_null(agent_state);
   check_equal(json_string_value(agent_state, "state"), "busy");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3664,7 +3785,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3678,7 +3800,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   subscription = json_object_field(root, "subscription");
   check_not_null(subscription);
   check_equal(json_string_value(subscription, "policy_source"), "call_center_consult");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3692,7 +3815,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   subscription = json_object_field(root, "subscription");
   check_not_null(subscription);
   check_equal(json_string_value(subscription, "policy_source"), "call_center_consult");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3706,7 +3830,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   subscription = json_object_field(root, "subscription");
   check_not_null(subscription);
   check_equal(json_string_value(subscription, "policy_source"), "call_center_observe");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3720,7 +3845,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   subscription = json_object_field(root, "subscription");
   check_not_null(subscription);
   check_equal(json_string_value(subscription, "policy_source"), "call_center_observe");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3731,7 +3857,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3744,7 +3871,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(call_center_room);
   check_equal(json_string_value(call_center_room,
                                              "consult_agent_participant_id"), "");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3756,7 +3884,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   agent_state = json_object_field(root, "call_center_agent_state");
   check_not_null(agent_state);
   check_equal(json_string_value(agent_state, "state"), "available");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3772,7 +3901,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3786,7 +3916,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(call_center_room);
   check_equal(json_string_value(call_center_room,
                                              "consult_agent_participant_id"), "agent-c");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3805,7 +3936,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3819,7 +3951,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   subscription = json_object_field(root, "subscription");
   check_not_null(subscription);
   check_equal(json_string_value(subscription, "policy_source"), "call_center_consult");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = NULL;
   check_equal((int)(http_post_json_status(
@@ -3833,7 +3966,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
                &root)), (int)(404));
   check_not_null(root);
   check_equal(json_string_value(root, "code"), "SUBSCRIPTION_NOT_FOUND");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3849,7 +3983,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
                                              "agent_participant_id"), "agent-c");
   check_equal(json_string_value(call_center_room,
                                              "consult_agent_participant_id"), "");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3861,7 +3996,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   agent_state = json_object_field(root, "call_center_agent_state");
   check_not_null(agent_state);
   check_equal(json_string_value(agent_state, "state"), "wrap_up");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3875,7 +4011,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   subscription = json_object_field(root, "subscription");
   check_not_null(subscription);
   check_equal(json_string_value(subscription, "policy_source"), "call_center_call");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = NULL;
   check_equal((int)(http_post_json_status(
@@ -3889,7 +4026,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
                &root)), (int)(404));
   check_not_null(root);
   check_equal(json_string_value(root, "code"), "SUBSCRIPTION_NOT_FOUND");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3905,7 +4043,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(call_center_room);
   check_equal(json_string_value(call_center_room, "state"), "wrap_up");
   check_equal(json_string_value(call_center_room, "disposition_code"), "resolved");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3917,7 +4056,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   agent_state = json_object_field(root, "call_center_agent_state");
   check_not_null(agent_state);
   check_equal(json_string_value(agent_state, "state"), "wrap_up");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3932,7 +4072,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   call_center_room = json_object_field(root, "call_center_room");
   check_not_null(call_center_room);
   check_equal(json_string_value(call_center_room, "state"), "completed");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3944,7 +4085,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   agent_state = json_object_field(root, "call_center_agent_state");
   check_not_null(agent_state);
   check_equal(json_string_value(agent_state, "state"), "available");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -3994,7 +4136,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
                                  "completed");
   check_not_null(event);
   check_equal(json_string_value(event, "detail"), "resolved");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   snprintf(event_path, sizeof(event_path),
            "/api/v1/rooms/room-routed-call/call_center_events?after_sequence=%d&limit=4",
@@ -4007,7 +4150,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(event);
   check_equal(json_string_value(event, "event_type"), "room_finalized");
   check_equal(json_string_value(event, "state"), "completed");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4019,7 +4163,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "caller_depth", -1)), (int)(0));
   check_equal((int)(json_int_value(root, "callee_depth", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4033,7 +4178,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4047,7 +4193,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4072,7 +4219,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "caller_depth", -1)), (int)(1));
   check_equal((int)(json_int_value(root, "callee_depth", -1)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4094,7 +4242,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(callee);
   check_equal(json_string_value(caller, "entry_id"), "caller-retry");
   check_equal(json_string_value(callee, "entry_id"), "agent-retry");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4107,7 +4256,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   agent_state = json_object_field(root, "call_center_agent_state");
   check_not_null(agent_state);
   check_equal(json_string_value(agent_state, "state"), "offline");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4121,7 +4271,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4135,7 +4286,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4149,7 +4301,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4166,7 +4319,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   callee = json_object_field(match, "callee");
   check_not_null(callee);
   check_equal(json_string_value(callee, "entry_id"), "agent-ready");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4178,7 +4332,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   agent_state = json_object_field(root, "call_center_agent_state");
   check_not_null(agent_state);
   check_equal(json_string_value(agent_state, "state"), "offline");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4190,7 +4345,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   agent_state = json_object_field(root, "call_center_agent_state");
   check_not_null(agent_state);
   check_equal(json_string_value(agent_state, "state"), "busy");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4204,7 +4360,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4218,7 +4375,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4239,7 +4397,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "caller_depth", -1)), (int)(1));
   check_equal((int)(json_int_value(root, "callee_depth", -1)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4257,7 +4416,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(callee);
   check_equal(json_string_value(caller, "entry_id"), "caller-loop");
   check_equal(json_string_value(callee, "entry_id"), "agent-loop");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4269,7 +4429,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "caller_depth", -1)), (int)(0));
   check_equal((int)(json_int_value(root, "callee_depth", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4281,7 +4442,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "recovered", -1)), (int)(2));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4293,7 +4455,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   match = json_object_field(root, "call_center_match");
   check_not_null(match);
   check_true(json_bool_value(match, "matched", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4305,7 +4468,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4317,7 +4481,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   match = json_object_field(root, "call_center_match");
   check_not_null(match);
   check_true(json_bool_value(match, "matched", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4329,7 +4494,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4341,7 +4507,8 @@ void test_room_service_http_call_center_priority_queue_commands(void) {
   check_true(json_bool_value(root, "ok", 0));
   check_equal((int)(json_int_value(root, "caller_depth", -1)), (int)(0));
   check_equal((int)(json_int_value(root, "callee_depth", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);
@@ -4391,7 +4558,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4407,7 +4575,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4427,7 +4596,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4438,7 +4608,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4451,7 +4622,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_null(json_string_value(root, "warning_code"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   recording_root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -4465,7 +4637,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_true(json_bool_value(recording_status, "active", 0));
   check_equal(json_string_value(recording_status, "recording_id"), "rec-001");
   check_equal((int)(json_int_value(recording_status, "track_count", -1)), (int)(1));
-  turbo_free_json(&recording_root);
+  json_free(recording_root);
+  recording_root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4476,7 +4649,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_null(json_string_value(root, "warning_code"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   recording_root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -4491,7 +4665,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   output_path = json_string_value(recording_status, "output_path");
   check_not_null(output_path);
   remove(output_path);
-  turbo_free_json(&recording_root);
+  json_free(recording_root);
+  recording_root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4503,7 +4678,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4519,7 +4695,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4539,7 +4716,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4551,7 +4729,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4566,7 +4745,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_not_null(stats);
   check_equal((int)(json_int_value(stats, "tracks_replayed", -1)), (int)(1));
   check_equal((int)(json_int_value(stats, "recordings_replayed", -1)), (int)(1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   recording_root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -4580,7 +4760,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_true(json_bool_value(recording_status, "active", 0));
   check_equal(json_string_value(recording_status, "recording_id"), "rec-replay");
   check_equal((int)(json_int_value(recording_status, "track_count", -1)), (int)(1));
-  turbo_free_json(&recording_root);
+  json_free(recording_root);
+  recording_root = NULL;
 
   root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -4594,7 +4775,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   output_path = json_string_value(recording_status, "output_path");
   check_not_null(output_path);
   remove(output_path);
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -4610,7 +4792,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_true(json_bool_value(recording_status, "active", 0));
   check_equal(json_string_value(recording_status, "recording_id"), "rec-stale");
   check_equal(json_string_value(recording_status, "mode"), "webm");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4631,7 +4814,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_null(json_string_value(root, "warning_code"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   remove("recording_room-recording-replay_rec-stale.webm");
 
   recording_root = http_post_json_result(
@@ -4647,7 +4831,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_equal(json_string_value(recording_status, "recording_id"), "rec-replay");
   check_equal(json_string_value(recording_status, "mode"), "archive");
   check_equal((int)(json_int_value(recording_status, "track_count", -1)), (int)(2));
-  turbo_free_json(&recording_root);
+  json_free(recording_root);
+  recording_root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4657,7 +4842,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   recording_root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -4671,7 +4857,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   output_path = json_string_value(recording_status, "output_path");
   check_not_null(output_path);
   remove(output_path);
-  turbo_free_json(&recording_root);
+  json_free(recording_root);
+  recording_root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4683,7 +4870,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4699,7 +4887,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4710,7 +4899,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4723,7 +4913,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_equal(json_string_value(root, "warning_code"), "SFU_SYNC_FAILED");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4744,7 +4935,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
   check_null(json_string_value(root, "warning_code"));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   recording_root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -4758,7 +4950,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   check_true(json_bool_value(recording_status, "active", 0));
   check_equal(json_string_value(recording_status, "recording_id"), "rec-late-track");
   check_equal((int)(json_int_value(recording_status, "track_count", -1)), (int)(1));
-  turbo_free_json(&recording_root);
+  json_free(recording_root);
+  recording_root = NULL;
 
   root = http_post_json_result(
       room_service_base_url, "/api/v1/commands",
@@ -4768,7 +4961,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   recording_root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -4782,7 +4976,8 @@ void test_room_service_recording_commands_sync_to_sfu_node(void) {
   output_path = json_string_value(recording_status, "output_path");
   check_not_null(output_path);
   remove(output_path);
-  turbo_free_json(&recording_root);
+  json_free(recording_root);
+  recording_root = NULL;
 
   room_service_app_server_stop(room_server);
   room_service_app_server_destroy(room_server);

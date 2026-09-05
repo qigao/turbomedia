@@ -27,6 +27,7 @@ target_link_libraries(ivr_worker
     turbo_media_ivr_rtc
     TurboMedia::RTC
     TurboHttp::Iris
+    Salts::TomlParser
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>)
 
@@ -43,7 +44,7 @@ set_target_properties(ivr_worker
 
 turbo_media_deploy_windows_runtime(
   ivr_worker FlowMQ::FlowMQ TurboHttp::Iris TurboHttp::TurboHttp
-  TurboNet::CoroNet
+  TurboNet::CoroNet Salts::DataBind Salts::Capture
   RulesForge::rules_forge)
 
 # Dry-run smoke test: validates config and exercises media-call admission
@@ -102,7 +103,7 @@ message(STATUS "IVR Worker App: ${CMAKE_CURRENT_SOURCE_DIR}")
 cmake_add_test(
   test_ivr_worker_health
   SOURCES test_ivr_worker_health.c ivr_worker_health.c
-  LIBS TurboUtils::TinyTest TurboUtils::Core
+  LIBS Salts::TinyTest Salts::Core
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
            ${CMAKE_CURRENT_SOURCE_DIR}/../../tests
   FOLDER "turbomedia/tests/ivr")
@@ -112,7 +113,7 @@ set_target_properties(test_ivr_worker_health
 cmake_add_test(
   test_ivr_worker_control
   SOURCES test_ivr_worker_control.c ivr_worker_control.c
-  LIBS TurboUtils::TinyTest TurboUtils::Core
+  LIBS Salts::TinyTest Salts::Core
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
            ${CMAKE_CURRENT_SOURCE_DIR}/../../tests
   FOLDER "turbomedia/tests/ivr")
@@ -126,7 +127,7 @@ cmake_add_test(
           ivr_worker_metrics.c
           ivr_worker_http.c
           ../../ivr/src/ivr_http_media_client.c
-  LIBS TurboUtils::TinyTest TurboUtils::Core TurboHttp::Iris
+  LIBS Salts::TinyTest Salts::Core TurboHttp::Iris
        TurboHttp::TurboHttp TurboNet::CoroNet
        $<$<PLATFORM_ID:Linux>:pthread>
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
@@ -145,6 +146,8 @@ if(WIN32)
     FILES $<TARGET_FILE:TurboHttp::Iris>
           $<TARGET_FILE:TurboHttp::TurboHttp>
           $<TARGET_FILE:TurboNet::CoroNet>
+          $<TARGET_FILE:Salts::DataBind>
+          $<TARGET_FILE:Salts::Capture>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>
     DESTINATION bin
     COMPONENT IvrWorker)

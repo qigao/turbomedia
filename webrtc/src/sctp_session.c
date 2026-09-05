@@ -17,7 +17,7 @@
  * ============================================================================ */
 
 static atomic_int g_context_count = 0;
-static turbo_once_t g_sctp_once = TURBO_ONCE_INIT;
+static salts_once_t g_sctp_once = SALTS_ONCE_INIT;
 static int g_sctp_init_result = -1;
 
 static void sctp_global_init_once(void) {
@@ -76,7 +76,7 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
 
 int sctp_global_init(void) {
     atomic_fetch_add_explicit(&g_context_count, 1, memory_order_relaxed);
-    turbo_once(&g_sctp_once, sctp_global_init_once);
+    salts_once(&g_sctp_once, sctp_global_init_once);
     if (g_sctp_init_result != 0) {
         atomic_fetch_sub_explicit(&g_context_count, 1, memory_order_relaxed);
         return -1;

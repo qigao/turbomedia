@@ -26,9 +26,8 @@ target_include_directories(
           ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC TurboParser::DataBind TurboParser::Parser
-         TurboUtils::Core TurboMedia::Speech TurboHttp::HttpClient
-  PRIVATE Threads::Threads)
+  PUBLIC Salts::DataBind Salts::Core TurboMedia::Speech TurboHttp::HttpClient
+  PRIVATE Salts::JsonParser Threads::Threads)
 set_target_properties(turbo_media_ivr PROPERTIES FOLDER "turbomedia/components")
 
 # Real WebRTC media adapters are kept separate from the provider-neutral IVR
@@ -77,7 +76,7 @@ target_include_directories(
   PUBLIC ${IVR_GEN_DIR})
 target_link_libraries(
   turbo_media_ivr_schema
-  PUBLIC TurboParser::DataBind TurboUtils::Core)
+  PUBLIC Salts::DataBind Salts::Core)
 set_target_properties(
   turbo_media_ivr_schema
   PROPERTIES FOLDER "turbomedia/components")
@@ -109,7 +108,7 @@ function(turbo_media_ivr_configure_test test_name test_source)
   cmake_add_test(
     ${test_name}
     SOURCES ${test_source}
-    LIBS turbo_media_ivr TurboUtils::TinyTest
+    LIBS turbo_media_ivr Salts::TinyTest
          $<$<PLATFORM_ID:Windows>:ws2_32>
     DEFS IVR_TEST_SCHEMA_PATH="${IVR_TEST_SCHEMA_PATH}"
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -124,9 +123,9 @@ function(turbo_media_ivr_configure_test test_name test_source)
     ${test_name}
     FlowMQ::FlowMQ
     TurboNet::CoroNet
-    TurboParser::DataBind
-    TurboParser::Parser
-    TurboUtils::Core
+    Salts::DataBind
+    Salts::Core
+    Salts::Capture
     TurboMedia::Speech)
 endfunction()
 

@@ -237,7 +237,7 @@ int ivr_http_media_client_create(
     memcpy(client->base_url, config->base_url, base_url_length);
     client->base_url[base_url_length] = '\0';
 
-    if (turbo_http_options_init(&options, sizeof(options)) != TURBO_OK) {
+    if (turbo_http_options_init(&options, sizeof(options)) != SALTS_OK) {
         ivr_http_media_client_destroy(client);
         return -1;
     }
@@ -247,7 +247,7 @@ int ivr_http_media_client_create(
     options.timeout_ms = config->timeout_ms
                              ? (int64_t)config->timeout_ms
                              : (int64_t)IVR_HTTP_MEDIA_DEFAULT_TIMEOUT_MS;
-    if (turbo_http_create_sync(&options, &client->http) != TURBO_OK) {
+    if (turbo_http_create_sync(&options, &client->http) != SALTS_OK) {
         ivr_http_media_client_destroy(client);
         return -1;
     }
@@ -256,7 +256,7 @@ int ivr_http_media_client_create(
         client->http, IVR_HTTP_MEDIA_MAX_RESPONSE_HEADERS);
     if (config->media_token && config->media_token[0] != '\0' &&
         turbo_http_set_bearer_token(client->http, config->media_token) !=
-            TURBO_OK) {
+            SALTS_OK) {
         ivr_http_media_client_destroy(client);
         return -1;
     }
@@ -267,7 +267,7 @@ int ivr_http_media_client_create(
         tls.key_file = config->key_file;
         tls.key_password = config->key_password;
         tls.verify_peer = 1;
-        if (turbo_http_set_tls_config(client->http, &tls) != TURBO_OK) {
+        if (turbo_http_set_tls_config(client->http, &tls) != SALTS_OK) {
             ivr_http_media_client_destroy(client);
             return -1;
         }

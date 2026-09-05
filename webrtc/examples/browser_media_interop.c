@@ -926,7 +926,7 @@ int main(int argc, char **argv) {
     printf("[Status] Waiting for browser connection...\n");
 
     while (g_running) {
-        uint64_t now_ms = turbo_monotonic_ms();
+        uint64_t now_ms = salts_monotonic_ms();
 
         turbo_loop_poll(g_loop, 10, 1);
         ice_integration_poll(g_ice);

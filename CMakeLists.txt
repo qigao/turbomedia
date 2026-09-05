@@ -38,15 +38,15 @@ enable_testing()
 
 function(turbo_media_find_tbe_compiler output_variable)
   if(CMAKE_CROSSCOMPILING)
-    set(_turbomedia_tbe_root_name TURBOPARSER_HOST_ROOT)
+    set(_turbomedia_tbe_root_name SALTS_UTILS_HOST_ROOT)
   else()
-    set(_turbomedia_tbe_root_name TURBOPARSER_ROOT)
+    set(_turbomedia_tbe_root_name SALTS_UTILS_ROOT)
   endif()
   if(NOT DEFINED ENV{${_turbomedia_tbe_root_name}} OR
      "$ENV{${_turbomedia_tbe_root_name}}" STREQUAL "" OR
      NOT IS_DIRECTORY "$ENV{${_turbomedia_tbe_root_name}}")
     message(FATAL_ERROR
-            "${_turbomedia_tbe_root_name} must name the TurboParser host install prefix")
+            "${_turbomedia_tbe_root_name} must name the SaltsUtils host install prefix")
   endif()
 
   file(REAL_PATH "$ENV{${_turbomedia_tbe_root_name}}"
@@ -121,7 +121,7 @@ add_subdirectory(tools)
 include(FindTools)
 
 foreach(_turbomedia_dependency_root IN ITEMS
-        TURBOUTILS_ROOT TURBOPARSER_ROOT TURBONET_ROOT TURBOHTTP_ROOT
+        SALTS_ROOT SALTS_UTILS_ROOT TURBONET_ROOT TURBOHTTP_ROOT
         FLOWMQ_ROOT TURBODB_ROOT RULES_FORGE_ROOT)
   if(NOT DEFINED ENV{${_turbomedia_dependency_root}} OR
      "$ENV{${_turbomedia_dependency_root}}" STREQUAL "")
@@ -135,15 +135,13 @@ foreach(_turbomedia_dependency_root IN ITEMS
 endforeach()
 
 find_package(Threads REQUIRED)
-find_package(TurboUtils CONFIG REQUIRED
-             PATHS "$ENV{TURBOUTILS_ROOT}" NO_DEFAULT_PATH)
-find_package(TurboParser CONFIG REQUIRED
-             PATHS "$ENV{TURBOPARSER_ROOT}" NO_DEFAULT_PATH)
-# RulesForge releases installed before its DataBind migration still export the
-# former target name in their link interface. Keep that packaging detail at the
-# build boundary; production code links TurboParser::DataBind directly.
-if(TARGET TurboParser::DataBind AND NOT TARGET TurboUtils::DataBind)
-  add_library(TurboUtils::DataBind ALIAS TurboParser::DataBind)
+find_package(Salts CONFIG REQUIRED
+             PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH)
+find_package(SaltsUtils CONFIG REQUIRED
+             PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH)
+if(NOT TARGET Salts::Capture)
+  message(FATAL_ERROR
+          "SaltsUtils profile does not export Salts::Capture; enable SALTS_UTILS_ENABLE_CAPTURE")
 endif()
 find_package(TurboNet CONFIG REQUIRED
              PATHS "$ENV{TURBONET_ROOT}" NO_DEFAULT_PATH)
@@ -160,7 +158,6 @@ find_package(OpenSSL REQUIRED)
 find_package(libSRTP CONFIG REQUIRED)
 find_package(unofficial-usrsctp CONFIG REQUIRED)
 find_package(roaring CONFIG REQUIRED)
-find_package(libyuv CONFIG REQUIRED)
 
 find_path(MINIAUDIO_INCLUDE_DIR NAMES miniaudio.h REQUIRED)
 find_path(STB_INCLUDE_DIR NAMES stb_sprintf.h stb_image_write.h REQUIRED)
@@ -176,14 +173,6 @@ find_path(LIBDE265_INCLUDE_DIR NAMES libde265/de265.h REQUIRED)
 find_library(LIBDE265_LIBRARY NAMES de265 libde265 REQUIRED)
 find_package(FFMPEG REQUIRED)
 include(TurboMediaFFmpegTargets)
-
-if(UNIX AND NOT APPLE AND NOT ANDROID)
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
-  # The base X11 library is implicit in FindX11. Treating it as a component
-  # breaks configuration with CMake 3.25 even when libX11 is installed.
-  find_package(X11 REQUIRED COMPONENTS Xext)
-endif()
 
 add_subdirectory(vendor/monocypher EXCLUDE_FROM_ALL)
 add_subdirectory(common)

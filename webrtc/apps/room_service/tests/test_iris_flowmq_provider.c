@@ -2,10 +2,10 @@
 
 #include <flowmq.h>
 #include <tinytest.h>
-#include <turbo_error.h>
-#include <turbo_parser.h>
-#include <turbo_str.h>
-#include <turbo_thread.h>
+#include <salts_error.h>
+
+#include <salts_str.h>
+#include <salts_thread.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -121,13 +121,13 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
     ProviderMessageKind_t kind = ProviderMessageKind_Command;
     DataBind *codec = NULL;
     DataBindError error = DATA_BIND_ERROR_INIT;
-    int status = TURBO_EPROTO;
+    int status = SALTS_EPROTO;
     (void)peer_topic;
     if (!harness || !frame || frame->kind != FLOWMQ_PROTOCOL_FRAME_DATA ||
         frame->pattern != FLOWMQ_PROTOCOL_DEALER ||
         !vstr_eq(peer_identity, vstr_from_cstr("turbomedia-a")) ||
         flowmq_media_provider_peek_kind(frame->payload.data,
-                                        frame->payload.len, &kind) != TURBO_OK) {
+                                        frame->payload.len, &kind) != SALTS_OK) {
         atomic_store_explicit(&harness->callback_status, status,
                               memory_order_release);
         return status;
@@ -152,7 +152,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                       receipt.dispatch_epoch) &&
             receipt.disposition ==
                 ProviderReceiptDisposition_DurableAccepted) {
-            status = TURBO_OK;
+            status = SALTS_OK;
             atomic_fetch_add_explicit(&harness->receipts, 1,
                                       memory_order_acq_rel);
         }
@@ -205,11 +205,11 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                 status = flowmq_protocol_encode_frame(
                     &response, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE,
                     &encoded);
-                if (status == TURBO_OK) {
+                if (status == SALTS_OK) {
                     status = flowmq_router_endpoint_send(
                         harness->router, *route, encoded, tstr_len(encoded));
                 }
-                if (status == TURBO_OK) {
+                if (status == SALTS_OK) {
                     atomic_fetch_add_explicit(&harness->completions, 1,
                                               memory_order_acq_rel);
                 }
@@ -261,11 +261,11 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                 status = flowmq_protocol_encode_frame(
                     &response, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE,
                     &encoded);
-                if (status == TURBO_OK) {
+                if (status == SALTS_OK) {
                     status = flowmq_router_endpoint_send(
                         harness->router, *route, encoded, tstr_len(encoded));
                 }
-                if (status == TURBO_OK) {
+                if (status == SALTS_OK) {
                     atomic_fetch_add_explicit(&harness->events, 1,
                                               memory_order_acq_rel);
                 }
@@ -290,7 +290,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
             atomic_fetch_add_explicit(&harness->queries_received, 1,
                                       memory_order_acq_rel);
             if (harness->query_response_delay_ms > 0u) {
-                turbo_sleep_ms(harness->query_response_delay_ms);
+                salts_sleep_ms(harness->query_response_delay_ms);
             }
             observation.schema_version = 1u;
             observation.message_kind = ProviderMessageKind_Observation;
@@ -330,11 +330,11 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                 status = flowmq_protocol_encode_frame(
                     &response, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE,
                     &encoded);
-                if (status == TURBO_OK) {
+                if (status == SALTS_OK) {
                     status = flowmq_router_endpoint_send(
                         harness->router, *route, encoded, tstr_len(encoded));
                 }
-                if (status == TURBO_OK) {
+                if (status == SALTS_OK) {
                     atomic_fetch_add_explicit(&harness->queries, 1,
                                               memory_order_acq_rel);
                 }
@@ -359,7 +359,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
             atomic_fetch_add_explicit(&harness->call_offers, 1,
                                       memory_order_acq_rel);
             if (harness->drop_session_bound) {
-                status = TURBO_OK;
+                status = SALTS_OK;
             } else {
                 bound.schema_version = 1u;
                 bound.message_kind = ProviderMessageKind_SessionBound;
@@ -408,7 +408,7 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                         &response,
                         FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE,
                         &encoded);
-                    if (status == TURBO_OK) {
+                    if (status == SALTS_OK) {
                         status = flowmq_router_endpoint_send(
                             harness->router, *route, encoded,
                             tstr_len(encoded));
@@ -451,19 +451,19 @@ static iris_media_bridge_result_t dispatch_command(
 
 static int fixed_now(void *context, char *out, size_t capacity) {
     (void)context;
-    return copy_text(out, capacity, "2026-08-14T00:00:01Z") ? TURBO_OK
-                                                              : TURBO_ENOSPC;
+    return copy_text(out, capacity, "2026-08-14T00:00:01Z") ? SALTS_OK
+                                                              : SALTS_ENOSPC;
 }
 
 static int wait_atomic(const atomic_int *value, int expected) {
     int attempt;
     for (attempt = 0; attempt < TEST_WAIT_ATTEMPTS; ++attempt) {
         if (atomic_load_explicit(value, memory_order_acquire) == expected) {
-            return TURBO_OK;
+            return SALTS_OK;
         }
-        turbo_sleep_ms(TEST_WAIT_STEP_MS);
+        salts_sleep_ms(TEST_WAIT_STEP_MS);
     }
-    return TURBO_ETIMEDOUT;
+    return SALTS_ETIMEDOUT;
 }
 
 static void send_query_thread(void *context) {
@@ -520,7 +520,7 @@ static int send_command(provider_harness_t *harness, DataBind *codec) {
     tstr encoded = NULL;
     int status;
     application = encode_command(codec, &application_size);
-    if (!application) return TURBO_EPROTO;
+    if (!application) return SALTS_EPROTO;
     memset(&frame, 0, sizeof(frame));
     frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
     frame.pattern = FLOWMQ_PROTOCOL_ROUTER;
@@ -529,7 +529,7 @@ static int send_command(provider_harness_t *harness, DataBind *codec) {
         vstr_from_buf((const char *)application, application_size);
     status = flowmq_protocol_encode_frame(
         &frame, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE, &encoded);
-    if (status == TURBO_OK) {
+    if (status == SALTS_OK) {
         status = flowmq_router_endpoint_send_copy(
             harness->router, harness->route, 1u, encoded, tstr_len(encoded));
     }
@@ -548,14 +548,14 @@ spec("RoomService Iris FlowMQ provider DEALER") {
         config.iris_identity = "iris-a";
         config.dispatch = dispatch_command;
         config.allow_insecure_development_loopback = 1;
-        check_equal(iris_flowmq_provider_config_validate(&config), TURBO_OK);
+        check_equal(iris_flowmq_provider_config_validate(&config), SALTS_OK);
         config.allow_insecure_development_loopback = 0;
         check_equal(iris_flowmq_provider_config_validate(&config),
-                     TURBO_EINVAL);
+                     SALTS_EINVAL);
         config.allow_insecure_development_loopback = 1;
         config.host = "0.0.0.0";
         check_equal(iris_flowmq_provider_config_validate(&config),
-                     TURBO_EINVAL);
+                     SALTS_EINVAL);
     }
 
     it("dispatches one canonical command and returns its exact durable receipt") {
@@ -574,12 +574,12 @@ spec("RoomService Iris FlowMQ provider DEALER") {
         iris_flowmq_session_bound_t session_bound;
         query_send_context_t concurrent_query;
         iris_flowmq_completion_ack_t concurrent_completion_ack;
-        turbo_thread_t query_thread;
+        salts_thread_t query_thread;
         DataBind *codec = NULL;
         DataBindError error = DATA_BIND_ERROR_INIT;
         unsigned short port = available_port();
         memset(&harness, 0, sizeof(harness));
-        atomic_init(&harness.callback_status, TURBO_EALREADY);
+        atomic_init(&harness.callback_status, SALTS_EALREADY);
         memset(&completion, 0, sizeof(completion));
         memset(&media_result, 0, sizeof(media_result));
         memset(&event, 0, sizeof(event));
@@ -603,10 +603,10 @@ spec("RoomService Iris FlowMQ provider DEALER") {
         router_config.callback_ctx = &harness;
         check_equal(flowmq_router_endpoint_create(&router_config,
                                                    &harness.router),
-                     TURBO_OK);
+                     SALTS_OK);
         check_equal(flowmq_router_endpoint_start(harness.router,
                                                   TEST_START_TIMEOUT_NS),
-                     TURBO_OK);
+                     SALTS_OK);
 
         iris_flowmq_provider_config_init(&provider_config);
         provider_config.transport = FLOWMQ_TRANSPORT_TCP;
@@ -627,15 +627,15 @@ spec("RoomService Iris FlowMQ provider DEALER") {
         provider = iris_flowmq_provider_create(&provider_config);
         check_not_null(provider);
         if (provider) {
-            check_equal(iris_flowmq_provider_start(provider), TURBO_OK);
-            check_equal(wait_atomic(&harness.connected, 1), TURBO_OK);
+            check_equal(iris_flowmq_provider_start(provider), SALTS_OK);
+            check_equal(wait_atomic(&harness.connected, 1), SALTS_OK);
             check_equal(FlowMqMediaProviderV1_codec_create(&codec, &error),
                          DATA_BIND_OK);
-            if (codec) check_equal(send_command(&harness, codec), TURBO_OK);
-            check_equal(wait_atomic(&harness.receipts, 1), TURBO_OK);
+            if (codec) check_equal(send_command(&harness, codec), SALTS_OK);
+            check_equal(wait_atomic(&harness.receipts, 1), SALTS_OK);
             check_equal(atomic_load_explicit(&harness.callback_status,
                                               memory_order_acquire),
-                         TURBO_OK);
+                         SALTS_OK);
             check_equal(atomic_load_explicit(&harness.dispatches,
                                               memory_order_acquire),
                          1);
@@ -676,7 +676,7 @@ spec("RoomService Iris FlowMQ provider DEALER") {
             check_equal(completion_ack.disposition,
                          ProviderCompletionAckDisposition_CompletionCommitted);
             check_equal(completion_ack.committed_sequence, 29u);
-            check_equal(wait_atomic(&harness.completions, 1), TURBO_OK);
+            check_equal(wait_atomic(&harness.completions, 1), SALTS_OK);
             copy_text(event.event_id, sizeof(event.event_id), "media-event-a");
             copy_text(event.tenant_id, sizeof(event.tenant_id), "tenant-a");
             copy_text(event.provider_session_id,
@@ -694,7 +694,7 @@ spec("RoomService Iris FlowMQ provider DEALER") {
             check_equal(event_ack.disposition,
                          ProviderEventAckDisposition_Committed);
             check_equal(event_ack.committed_sequence, 37u);
-            check_equal(wait_atomic(&harness.events, 1), TURBO_OK);
+            check_equal(wait_atomic(&harness.events, 1), SALTS_OK);
             query.tenant_id = "tenant-a";
             query.query_id = "query-a";
             query.query_type = "expected_media_resources";
@@ -714,25 +714,25 @@ spec("RoomService Iris FlowMQ provider DEALER") {
             check_contains(observation.wire.payload_json,
                                "\"resourceCount\":0");
             iris_flowmq_provider_observation_clear(&observation);
-            check_equal(wait_atomic(&harness.queries, 1), TURBO_OK);
+            check_equal(wait_atomic(&harness.queries, 1), SALTS_OK);
 
             memset(&concurrent_query, 0, sizeof(concurrent_query));
             harness.query_response_delay_ms = 250u;
             query.query_id = "query-concurrent";
             concurrent_query.provider = provider;
             concurrent_query.query = &query;
-            check_equal(turbo_thread_create(&query_thread, send_query_thread,
+            check_equal(salts_thread_create(&query_thread, send_query_thread,
                                              &concurrent_query),
                          0);
-            check_equal(wait_atomic(&harness.queries_received, 2), TURBO_OK);
+            check_equal(wait_atomic(&harness.queries_received, 2), SALTS_OK);
             check_equal(iris_flowmq_provider_send_completion(
                              provider, &completion, &media_result,
                              "completion-concurrent",
                              "2026-08-14T00:00:08Z", 43u, 2000u,
                              &concurrent_completion_ack),
                          IVR_OK);
-            turbo_thread_join(&query_thread);
-            turbo_thread_destroy(&query_thread);
+            salts_thread_join(&query_thread);
+            salts_thread_destroy(&query_thread);
             check_equal(concurrent_query.status, IVR_OK);
             check_equal(concurrent_query.observation.revision, 47u);
             check_equal(concurrent_completion_ack.disposition,
@@ -781,7 +781,7 @@ spec("RoomService Iris FlowMQ provider DEALER") {
                          IVR_OK);
             check_true(session_bound.accepted);
             check_equal(session_bound.bound_session_id, "session-call-a");
-            check_equal(wait_atomic(&harness.call_offers, 3), TURBO_OK);
+            check_equal(wait_atomic(&harness.call_offers, 3), SALTS_OK);
 
             copy_text(call_offer.ingress_event_id,
                       sizeof(call_offer.ingress_event_id), "ingress-call-c");

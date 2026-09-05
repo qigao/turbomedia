@@ -1,9 +1,9 @@
 #include "iris_completion_dispatcher.h"
 
 #include <turbo_http.h>
-#include <turbo_parser.h>
-#include <turbo_thread.h>
-#include <turbo_uuid.h>
+#include <json_parser.h>
+#include <salts_thread.h>
+#include <salts_uuid.h>
 #include <turbo_crypto.h>
 #include <tlog.h>
 
@@ -27,7 +27,7 @@ typedef struct iris_dispatch_item_s {
     iris_media_completion_t completion;
     ivr_media_command_result_t result;
     ivr_media_event_t event;
-    char completion_event_id[TURBO_UUID_STRING_SIZE];
+    char completion_event_id[SALTS_UUID_STRING_SIZE];
     char completion_occurred_at[40];
     uint64_t completed_at_ms;
     uint64_t delivery_token;
@@ -49,10 +49,10 @@ struct iris_completion_dispatcher_s {
     int retry_backoff_ms;
     int request_timeout_ms;
     int drain_timeout_ms;
-    turbo_mutex_t mutex;
-    turbo_cond_t not_empty;
-    turbo_cond_t drained;
-    turbo_thread_t thread;
+    salts_mutex_t mutex;
+    salts_cond_t not_empty;
+    salts_cond_t drained;
+    salts_thread_t thread;
     turbo_http_t *client;
     iris_media_bridge_t *bridge;
     iris_completion_post_fn post;
@@ -69,20 +69,20 @@ struct iris_completion_dispatcher_s {
 static void record_delivery_attempt(iris_completion_dispatcher_t *dispatcher,
                                     int retry, int fence_conflict,
                                     int fence_refresh_failed) {
-    turbo_mutex_lock(&dispatcher->mutex);
+    salts_mutex_lock(&dispatcher->mutex);
     dispatcher->stats.delivery_attempts_total++;
     if (retry) dispatcher->stats.retries_total++;
     if (fence_conflict) dispatcher->stats.fence_conflicts_total++;
     if (fence_refresh_failed) {
         dispatcher->stats.fence_refresh_failures_total++;
     }
-    turbo_mutex_unlock(&dispatcher->mutex);
+    salts_mutex_unlock(&dispatcher->mutex);
 }
 
 static void record_delivery_result(iris_completion_dispatcher_t *dispatcher,
                                    iris_dispatch_item_kind_t kind,
                                    int succeeded) {
-    turbo_mutex_lock(&dispatcher->mutex);
+    salts_mutex_lock(&dispatcher->mutex);
     if (kind == IRIS_DISPATCH_COMPLETION) {
         if (succeeded) {
             dispatcher->stats.completion_success_total++;
@@ -94,21 +94,21 @@ static void record_delivery_result(iris_completion_dispatcher_t *dispatcher,
     } else {
         dispatcher->stats.event_failure_total++;
     }
-    turbo_mutex_unlock(&dispatcher->mutex);
+    salts_mutex_unlock(&dispatcher->mutex);
 }
 
 static void retry_wait(iris_completion_dispatcher_t *dispatcher,
                        uint64_t delay_ms) {
     while (delay_ms > 0u) {
         uint64_t deadline = atomic_load(&dispatcher->stop_deadline_ms);
-        uint64_t now = turbo_monotonic_ms();
+        uint64_t now = salts_monotonic_ms();
         uint64_t slice = delay_ms > 10u ? 10u : delay_ms;
         if (deadline) {
             if (now >= deadline) return;
             if (slice > deadline - now) slice = deadline - now;
         }
         if (slice == 0u) return;
-        turbo_sleep_ms((uint32_t)slice);
+        salts_sleep_ms((uint32_t)slice);
         delay_ms -= slice;
     }
 }
@@ -145,8 +145,9 @@ static int format_rfc3339(uint64_t unix_ms, char *out, size_t capacity) {
 
 static int add_json(json_value_t *object, const char *name,
                     json_value_t *value) {
-    if (!value || !turbo_json_object_add_checked(object, name, value)) {
-        turbo_free_json(&value);
+    if (!value || !json_object_add_checked(object, name, value)) {
+        json_free(value);
+        value = NULL;
         return 0;
     }
     return 1;
@@ -170,54 +171,57 @@ static char *serialize_completion(const iris_dispatch_item_t *item,
     }
     memcpy(occurred_at, item->completion_occurred_at,
            sizeof(occurred_at));
-    root = turbo_json_create_object();
-    event = turbo_json_create_object();
-    data = turbo_json_create_object();
+    root = json_create_object();
+    event = json_create_object();
+    data = json_create_object();
     if (!root || !event || !data ||
-        !add_json(root, "workerId", turbo_json_create_string(
+        !add_json(root, "workerId", json_create_string(
                                         item->completion.iris_worker_id)) ||
-        !add_json(root, "expectedDispatchEpoch", turbo_json_create_uint64(
+        !add_json(root, "expectedDispatchEpoch", json_create_uint64(
                                                    item->completion.dispatch_epoch)) ||
-        !add_json(root, "terminalStatus", turbo_json_create_string(terminal)) ||
+        !add_json(root, "terminalStatus", json_create_string(terminal)) ||
         !add_json(root, "completedAtUnixMs",
-                  turbo_json_create_uint64(item->completed_at_ms)) ||
-        !add_json(event, "eventId", turbo_json_create_string(
+                  json_create_uint64(item->completed_at_ms)) ||
+        !add_json(event, "eventId", json_create_string(
                                       item->completion_event_id)) ||
-        !add_json(event, "type", turbo_json_create_string(
+        !add_json(event, "type", json_create_string(
                                    item->result.status_code == IVR_OK
                                        ? "provider.media.completed"
                                        : "provider.media.failed")) ||
-        !add_json(event, "correlationId", turbo_json_create_string(
+        !add_json(event, "correlationId", json_create_string(
                                             item->completion.correlation_id)) ||
-        !add_json(event, "occurredAt", turbo_json_create_string(occurred_at)) ||
-        !add_json(data, "status", turbo_json_create_string(status)) ||
-        !add_json(data, "mediaWorkerId", turbo_json_create_string(
+        !add_json(event, "occurredAt", json_create_string(occurred_at)) ||
+        !add_json(data, "status", json_create_string(status)) ||
+        !add_json(data, "mediaWorkerId", json_create_string(
                                            item->result.worker_id)) ||
-        !add_json(data, "dialogId", turbo_json_create_string(
+        !add_json(data, "dialogId", json_create_string(
                                       item->result.dialog_id)) ||
-        !add_json(data, "roomId", turbo_json_create_string(item->result.room_id)) ||
-        !add_json(data, "callId", turbo_json_create_string(item->result.call_id)) ||
-        !add_json(data, "callGeneration", turbo_json_create_uint64(
+        !add_json(data, "roomId", json_create_string(item->result.room_id)) ||
+        !add_json(data, "callId", json_create_string(item->result.call_id)) ||
+        !add_json(data, "callGeneration", json_create_uint64(
                                              item->result.call_generation)) ||
-        !add_json(data, "operationGeneration", turbo_json_create_uint64(
+        !add_json(data, "operationGeneration", json_create_uint64(
                                                   item->result.operation_generation))) {
         goto cleanup;
     }
     if (item->result.error_code[0] &&
         !add_json(data, "errorCode",
-                  turbo_json_create_string(item->result.error_code))) goto cleanup;
+                  json_create_string(item->result.error_code))) goto cleanup;
     if (item->result.error_message[0] &&
         !add_json(data, "errorMessage",
-                  turbo_json_create_string(item->result.error_message))) goto cleanup;
+                  json_create_string(item->result.error_message))) goto cleanup;
     if (!add_json(event, "data", data)) goto cleanup;
     data = NULL;
     if (!add_json(root, "event", event)) goto cleanup;
     event = NULL;
-    json = turbo_json_serialize(root, out_size);
+    json = json_serialize(root, out_size);
 cleanup:
-    turbo_free_json(&data);
-    turbo_free_json(&event);
-    turbo_free_json(&root);
+    json_free(data);
+    data = NULL;
+    json_free(event);
+    event = NULL;
+    json_free(root);
+    root = NULL;
     return json;
 }
 
@@ -230,53 +234,56 @@ static char *serialize_event(const ivr_media_event_t *source, size_t *out_size) 
     if (format_rfc3339(source->occurred_at_ms, occurred_at,
                        sizeof(occurred_at)) != 0) return NULL;
     if (source->payload_json[0]) {
-        if (turbo_parse_json((const uint8_t *)source->payload_json,
-                             strlen(source->payload_json), &payload) != 0 ||
+        if (((payload = json_parse((const char *)((const uint8_t *)source->payload_json), strlen(source->payload_json))) ? 0 : -1) != 0 ||
             !payload) {
-            turbo_free_json(&payload);
+            json_free(payload);
+            payload = NULL;
             return NULL;
         }
     } else {
-        payload = turbo_json_create_object();
+        payload = json_create_object();
     }
-    root = turbo_json_create_object();
-    data = turbo_json_create_object();
+    root = json_create_object();
+    data = json_create_object();
     if (!root || !data || !payload ||
-        !add_json(data, "dialogId", turbo_json_create_string(source->dialog_id)) ||
-        !add_json(data, "roomId", turbo_json_create_string(source->room_id)) ||
-        !add_json(data, "callId", turbo_json_create_string(source->call_id)) ||
+        !add_json(data, "dialogId", json_create_string(source->dialog_id)) ||
+        !add_json(data, "roomId", json_create_string(source->room_id)) ||
+        !add_json(data, "callId", json_create_string(source->call_id)) ||
         !add_json(data, "callGeneration",
-                  turbo_json_create_uint64(source->call_generation)) ||
+                  json_create_uint64(source->call_generation)) ||
         !add_json(data, "payload", payload)) {
         goto cleanup;
     }
     payload = NULL;
     if (source->input_id[0] &&
         !add_json(data, "inputId",
-                  turbo_json_create_string(source->input_id))) {
+                  json_create_string(source->input_id))) {
         goto cleanup;
     }
     if (source->input_value[0] &&
         !add_json(data, "inputValue",
-                  turbo_json_create_string(source->input_value))) {
+                  json_create_string(source->input_value))) {
         goto cleanup;
     }
     if (
-        !add_json(root, "eventId", turbo_json_create_string(source->event_id)) ||
-        !add_json(root, "type", turbo_json_create_string(source->event_type)) ||
-        !add_json(root, "source", turbo_json_create_string(IRIS_PROVIDER_ID)) ||
+        !add_json(root, "eventId", json_create_string(source->event_id)) ||
+        !add_json(root, "type", json_create_string(source->event_type)) ||
+        !add_json(root, "source", json_create_string(IRIS_PROVIDER_ID)) ||
         !add_json(root, "correlationId",
-                  turbo_json_create_string(source->dialog_id)) ||
-        !add_json(root, "occurredAt", turbo_json_create_string(occurred_at)) ||
+                  json_create_string(source->dialog_id)) ||
+        !add_json(root, "occurredAt", json_create_string(occurred_at)) ||
         !add_json(root, "data", data)) {
         goto cleanup;
     }
     data = NULL;
-    json = turbo_json_serialize(root, out_size);
+    json = json_serialize(root, out_size);
 cleanup:
-    turbo_free_json(&payload);
-    turbo_free_json(&data);
-    turbo_free_json(&root);
+    json_free(payload);
+    payload = NULL;
+    json_free(data);
+    data = NULL;
+    json_free(root);
+    root = NULL;
     return json;
 }
 
@@ -341,7 +348,7 @@ static void process_item(iris_completion_dispatcher_t *dispatcher,
         size_t body_size = 0u;
         int status;
         uint64_t stop_deadline = atomic_load(&dispatcher->stop_deadline_ms);
-        if (stop_deadline && turbo_monotonic_ms() >= stop_deadline) break;
+        if (stop_deadline && salts_monotonic_ms() >= stop_deadline) break;
         if (dispatcher->deliver_completion) {
             if (item->kind == IRIS_DISPATCH_COMPLETION) {
                 status = dispatcher->deliver_completion(
@@ -379,13 +386,13 @@ static void process_item(iris_completion_dispatcher_t *dispatcher,
                 (size_t)auth_size >= sizeof(authorization) ||
                 build_request(dispatcher, item, url, sizeof(url), &body,
                               &body_size) != 0) {
-                turbo_json_serialize_free(body);
+                json_serialize_free(body);
                 break;
             }
             status = dispatcher->post(dispatcher->post_context, url,
                                       authorization, body, body_size);
             terminal_status = status;
-            turbo_json_serialize_free(body);
+            json_serialize_free(body);
             body = NULL;
             if (status >= 200 && status < 300) {
                 record_delivery_attempt(dispatcher, 0, 0, 0);
@@ -453,12 +460,12 @@ static void dispatcher_thread(void *context) {
         (iris_completion_dispatcher_t *)context;
     for (;;) {
         iris_dispatch_item_t item;
-        turbo_mutex_lock(&dispatcher->mutex);
+        salts_mutex_lock(&dispatcher->mutex);
         while (dispatcher->count == 0u && dispatcher->running) {
-            turbo_cond_wait(&dispatcher->not_empty, &dispatcher->mutex);
+            salts_cond_wait(&dispatcher->not_empty, &dispatcher->mutex);
         }
         if (dispatcher->count == 0u && !dispatcher->running) {
-            turbo_mutex_unlock(&dispatcher->mutex);
+            salts_mutex_unlock(&dispatcher->mutex);
             break;
         }
         item = dispatcher->items[dispatcher->head];
@@ -467,14 +474,14 @@ static void dispatcher_thread(void *context) {
         dispatcher->head = (dispatcher->head + 1u) % dispatcher->capacity;
         dispatcher->count--;
         dispatcher->in_flight++;
-        turbo_mutex_unlock(&dispatcher->mutex);
+        salts_mutex_unlock(&dispatcher->mutex);
         process_item(dispatcher, &item);
-        turbo_mutex_lock(&dispatcher->mutex);
+        salts_mutex_lock(&dispatcher->mutex);
         dispatcher->in_flight--;
         if (dispatcher->count == 0u && dispatcher->in_flight == 0u) {
-            turbo_cond_broadcast(&dispatcher->drained);
+            salts_cond_broadcast(&dispatcher->drained);
         }
-        turbo_mutex_unlock(&dispatcher->mutex);
+        salts_mutex_unlock(&dispatcher->mutex);
     }
 }
 
@@ -521,23 +528,23 @@ iris_completion_dispatcher_t *iris_completion_dispatcher_create(
     dispatcher->event_delivery_result = config->event_delivery_result;
     dispatcher->event_delivery_context = config->event_delivery_context;
     atomic_init(&dispatcher->stop_deadline_ms, 0u);
-    turbo_mutex_init(&dispatcher->mutex);
-    turbo_cond_init(&dispatcher->not_empty);
-    turbo_cond_init(&dispatcher->drained);
-    if (turbo_http_options_init(&options, sizeof(options)) != TURBO_OK) {
-        turbo_cond_destroy(&dispatcher->drained);
-        turbo_cond_destroy(&dispatcher->not_empty);
-        turbo_mutex_destroy(&dispatcher->mutex);
+    salts_mutex_init(&dispatcher->mutex);
+    salts_cond_init(&dispatcher->not_empty);
+    salts_cond_init(&dispatcher->drained);
+    if (turbo_http_options_init(&options, sizeof(options)) != SALTS_OK) {
+        salts_cond_destroy(&dispatcher->drained);
+        salts_cond_destroy(&dispatcher->not_empty);
+        salts_mutex_destroy(&dispatcher->mutex);
         goto fail;
     }
     options.transport = TURBO_HTTP_TRANSPORT_AUTO;
     options.follow_redirects = 0;
     options.timeout_ms = config->request_timeout_ms;
     if (!config->post && !config->deliver_completion) {
-        if (turbo_http_create_sync(&options, &dispatcher->client) != TURBO_OK) {
-            turbo_cond_destroy(&dispatcher->drained);
-            turbo_cond_destroy(&dispatcher->not_empty);
-            turbo_mutex_destroy(&dispatcher->mutex);
+        if (turbo_http_create_sync(&options, &dispatcher->client) != SALTS_OK) {
+            salts_cond_destroy(&dispatcher->drained);
+            salts_cond_destroy(&dispatcher->not_empty);
+            salts_mutex_destroy(&dispatcher->mutex);
             goto fail;
         }
         /* Snapshot the provider trust anchor into the facade.  Relying on a
@@ -552,12 +559,12 @@ iris_completion_dispatcher_t *iris_completion_dispatcher_create(
             tls_config.verify_peer = 1;
             tls_config.ca_file = tls_ca_file;
             if (turbo_http_set_tls_config(dispatcher->client, &tls_config) !=
-                TURBO_OK) {
+                SALTS_OK) {
                 turbo_http_destroy(dispatcher->client);
                 dispatcher->client = NULL;
-                turbo_cond_destroy(&dispatcher->drained);
-                turbo_cond_destroy(&dispatcher->not_empty);
-                turbo_mutex_destroy(&dispatcher->mutex);
+                salts_cond_destroy(&dispatcher->drained);
+                salts_cond_destroy(&dispatcher->not_empty);
+                salts_mutex_destroy(&dispatcher->mutex);
                 goto fail;
             }
         }
@@ -574,16 +581,16 @@ fail:
 int iris_completion_dispatcher_start(iris_completion_dispatcher_t *dispatcher) {
     if (!dispatcher || dispatcher->thread_started) return -1;
     atomic_store(&dispatcher->stop_deadline_ms, 0u);
-    turbo_mutex_lock(&dispatcher->mutex);
+    salts_mutex_lock(&dispatcher->mutex);
     dispatcher->accepting = 1;
     dispatcher->running = 1;
-    turbo_mutex_unlock(&dispatcher->mutex);
-    if (turbo_thread_create(&dispatcher->thread, dispatcher_thread,
+    salts_mutex_unlock(&dispatcher->mutex);
+    if (salts_thread_create(&dispatcher->thread, dispatcher_thread,
                             dispatcher) != 0) {
-        turbo_mutex_lock(&dispatcher->mutex);
+        salts_mutex_lock(&dispatcher->mutex);
         dispatcher->accepting = 0;
         dispatcher->running = 0;
-        turbo_mutex_unlock(&dispatcher->mutex);
+        salts_mutex_unlock(&dispatcher->mutex);
         return -1;
     }
     dispatcher->thread_started = 1;
@@ -595,15 +602,15 @@ void iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
     uint64_t drain_started;
     uint64_t drain_duration;
     if (!dispatcher || !dispatcher->thread_started) return;
-    drain_started = turbo_monotonic_ms();
-    turbo_mutex_lock(&dispatcher->mutex);
+    drain_started = salts_monotonic_ms();
+    salts_mutex_lock(&dispatcher->mutex);
     dispatcher->accepting = 0;
-    deadline = turbo_monotonic_ms() + (uint64_t)dispatcher->drain_timeout_ms;
+    deadline = salts_monotonic_ms() + (uint64_t)dispatcher->drain_timeout_ms;
     atomic_store(&dispatcher->stop_deadline_ms, deadline);
     while ((dispatcher->count > 0u || dispatcher->in_flight > 0u) &&
-           turbo_monotonic_ms() < deadline) {
-        uint64_t remaining = deadline - turbo_monotonic_ms();
-        (void)turbo_cond_timedwait(&dispatcher->drained, &dispatcher->mutex,
+           salts_monotonic_ms() < deadline) {
+        uint64_t remaining = deadline - salts_monotonic_ms();
+        (void)salts_cond_timedwait(&dispatcher->drained, &dispatcher->mutex,
                                   remaining * UINT64_C(1000000));
     }
     while (dispatcher->count > 0u) {
@@ -617,7 +624,7 @@ void iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
         } else if (item.kind == IRIS_DISPATCH_EVENT) {
             dispatcher->stats.shutdown_dropped_events_total++;
         }
-        turbo_mutex_unlock(&dispatcher->mutex);
+        salts_mutex_unlock(&dispatcher->mutex);
         if (item.kind == IRIS_DISPATCH_COMPLETION) {
             iris_media_bridge_restore_completion(
                 dispatcher->bridge, item.completion.command_id);
@@ -628,21 +635,21 @@ void iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
                     item.delivery_token, IRIS_EVENT_DELIVERY_ABANDONED, 0);
             }
         }
-        turbo_mutex_lock(&dispatcher->mutex);
+        salts_mutex_lock(&dispatcher->mutex);
     }
     dispatcher->running = 0;
-    turbo_cond_broadcast(&dispatcher->not_empty);
-    turbo_mutex_unlock(&dispatcher->mutex);
-    turbo_thread_join(&dispatcher->thread);
-    turbo_thread_destroy(&dispatcher->thread);
+    salts_cond_broadcast(&dispatcher->not_empty);
+    salts_mutex_unlock(&dispatcher->mutex);
+    salts_thread_join(&dispatcher->thread);
+    salts_thread_destroy(&dispatcher->thread);
     dispatcher->thread_started = 0;
-    drain_duration = turbo_monotonic_ms() - drain_started;
-    turbo_mutex_lock(&dispatcher->mutex);
+    drain_duration = salts_monotonic_ms() - drain_started;
+    salts_mutex_lock(&dispatcher->mutex);
     dispatcher->stats.last_drain_duration_ms = drain_duration;
     if (drain_duration > dispatcher->stats.max_drain_duration_ms) {
         dispatcher->stats.max_drain_duration_ms = drain_duration;
     }
-    turbo_mutex_unlock(&dispatcher->mutex);
+    salts_mutex_unlock(&dispatcher->mutex);
 }
 
 void iris_completion_dispatcher_get_stats(
@@ -651,12 +658,12 @@ void iris_completion_dispatcher_get_stats(
     if (!stats) return;
     memset(stats, 0, sizeof(*stats));
     if (!dispatcher) return;
-    turbo_mutex_lock(&dispatcher->mutex);
+    salts_mutex_lock(&dispatcher->mutex);
     *stats = dispatcher->stats;
     stats->queue_items = dispatcher->count;
     stats->queue_capacity = dispatcher->capacity;
     stats->in_flight = dispatcher->in_flight;
-    turbo_mutex_unlock(&dispatcher->mutex);
+    salts_mutex_unlock(&dispatcher->mutex);
 }
 
 int iris_completion_dispatcher_set_event_delivery_observer(
@@ -672,9 +679,9 @@ void iris_completion_dispatcher_destroy(iris_completion_dispatcher_t *dispatcher
     if (!dispatcher) return;
     iris_completion_dispatcher_stop(dispatcher);
     turbo_http_destroy(dispatcher->client);
-    turbo_cond_destroy(&dispatcher->drained);
-    turbo_cond_destroy(&dispatcher->not_empty);
-    turbo_mutex_destroy(&dispatcher->mutex);
+    salts_cond_destroy(&dispatcher->drained);
+    salts_cond_destroy(&dispatcher->not_empty);
+    salts_mutex_destroy(&dispatcher->mutex);
     free(dispatcher->items);
     if (dispatcher->provider_token) {
         turbo_crypto_wipe(dispatcher->provider_token,
@@ -689,15 +696,15 @@ static ivr_status_t enqueue(iris_completion_dispatcher_t *dispatcher,
                             const iris_dispatch_item_t *item) {
     size_t tail;
     if (!dispatcher || !item) return IVR_EINVAL;
-    turbo_mutex_lock(&dispatcher->mutex);
+    salts_mutex_lock(&dispatcher->mutex);
     if (!dispatcher->accepting) {
         dispatcher->stats.closed_rejections_total++;
-        turbo_mutex_unlock(&dispatcher->mutex);
+        salts_mutex_unlock(&dispatcher->mutex);
         return IVR_ECLOSED;
     }
     if (dispatcher->count == dispatcher->capacity) {
         dispatcher->stats.queue_full_total++;
-        turbo_mutex_unlock(&dispatcher->mutex);
+        salts_mutex_unlock(&dispatcher->mutex);
         return IVR_ENOSPC;
     }
     tail = (dispatcher->head + dispatcher->count) % dispatcher->capacity;
@@ -707,8 +714,8 @@ static ivr_status_t enqueue(iris_completion_dispatcher_t *dispatcher,
     if (dispatcher->count > dispatcher->stats.queue_high_water) {
         dispatcher->stats.queue_high_water = dispatcher->count;
     }
-    turbo_cond_signal(&dispatcher->not_empty);
-    turbo_mutex_unlock(&dispatcher->mutex);
+    salts_cond_signal(&dispatcher->not_empty);
+    salts_mutex_unlock(&dispatcher->mutex);
     return IVR_OK;
 }
 
@@ -725,11 +732,11 @@ ivr_status_t iris_completion_dispatcher_on_media_result(
     item.result = *result;
     item.completed_at_ms = turbo_realtime_ms();
     {
-        turbo_uuid_t uuid;
+        salts_uuid_t uuid;
         if (item.completed_at_ms == 0u ||
-            turbo_uuid_v4_generate(&uuid) != TURBO_OK ||
-            turbo_uuid_format(&uuid, item.completion_event_id,
-                              sizeof(item.completion_event_id)) != TURBO_OK ||
+            salts_uuid_v4_generate(&uuid) != SALTS_OK ||
+            salts_uuid_format(&uuid, item.completion_event_id,
+                              sizeof(item.completion_event_id)) != SALTS_OK ||
             format_rfc3339(item.completed_at_ms,
                            item.completion_occurred_at,
                            sizeof(item.completion_occurred_at)) != 0) {

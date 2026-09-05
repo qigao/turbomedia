@@ -2,9 +2,9 @@
 
 #include <flowmq_media_provider.h>
 #include <turbo_crypto.h>
-#include <turbo_error.h>
-#include <turbo_parser.h>
-#include <turbo_str.h>
+#include <salts_error.h>
+#include <json_parser.h>
+#include <salts_str.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,15 +15,16 @@
 
 static int add_member(json_value_t *object, const char *name,
                       json_value_t *value) {
-    if (!value || !turbo_json_object_add_checked(object, name, value)) {
-        turbo_free_json(&value);
+    if (!value || !json_object_add_checked(object, name, value)) {
+        json_free(value);
+        value = NULL;
         return 0;
     }
     return 1;
 }
 
 static json_value_t *wire_string(tstr value) {
-    return turbo_json_create_string_n(value ? value : "",
+    return json_create_string_n(value ? value : "",
                                       value ? tstr_len(value) : 0u);
 }
 
@@ -80,25 +81,25 @@ static char *build_bridge_json(const ProviderCommandV1_t *command,
     const char *capability;
     uint64_t bridge_schema_version;
     char *json = NULL;
-    if (turbo_parse_json((const uint8_t *)command->payload_json,
-                         tstr_len(command->payload_json), &payload) != 0 ||
-        !payload || turbo_json_type(payload) != TURBO_JSON_OBJECT) {
-        turbo_free_json(&payload);
+    if (((payload = json_parse((const char *)((const uint8_t *)command->payload_json), tstr_len(command->payload_json))) ? 0 : -1) != 0 ||
+        !payload || json_type(payload) != JSON_OBJECT) {
+        json_free(payload);
+        payload = NULL;
         return NULL;
     }
-    capability_value = turbo_json_object_get(payload, "capability");
+    capability_value = json_object_get(payload, "capability");
     capability = capability_value &&
-                         turbo_json_type(capability_value) == TURBO_JSON_STRING
-                     ? turbo_json_string(capability_value)
+                         json_type(capability_value) == JSON_STRING
+                     ? json_string(capability_value)
                      : NULL;
     bridge_schema_version =
         capability && strcmp(capability, "room") == 0
             ? IRIS_FLOWMQ_ROOM_BRIDGE_SCHEMA_VERSION
             : IRIS_FLOWMQ_MEDIA_BRIDGE_SCHEMA_VERSION;
-    root = turbo_json_create_object();
+    root = json_create_object();
     if (!root ||
         !add_member(root, "schemaVersion",
-                    turbo_json_create_uint64(bridge_schema_version)) ||
+                    json_create_uint64(bridge_schema_version)) ||
         !add_member(root, "commandId", wire_string(command->command_id)) ||
         !add_member(root, "tenantId", wire_string(command->tenant_id)) ||
         !add_member(root, "sessionId", wire_string(command->session_id)) ||
@@ -109,15 +110,18 @@ static char *build_bridge_json(const ProviderCommandV1_t *command,
         !add_member(root, "deadline", wire_string(command->deadline_at)) ||
         !add_member(root, "workerId", wire_string(command->worker_id)) ||
         !add_member(root, "dispatchEpoch",
-                    turbo_json_create_uint64(dispatch_epoch)) ||
+                    json_create_uint64(dispatch_epoch)) ||
         !add_member(root, "data", payload)) {
-        turbo_free_json(&payload);
-        turbo_free_json(&root);
+        json_free(payload);
+        payload = NULL;
+        json_free(root);
+        root = NULL;
         return NULL;
     }
     payload = NULL;
-    json = turbo_json_serialize(root, out_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, out_size);
+    json_free(root);
+    root = NULL;
     return json;
 }
 
@@ -131,7 +135,7 @@ void iris_flowmq_provider_command_init(
 void iris_flowmq_provider_command_clear(
     iris_flowmq_provider_command_t *command) {
     if (!command) return;
-    turbo_json_serialize_free(command->bridge_json);
+    json_serialize_free(command->bridge_json);
     command->bridge_json = NULL;
     command->bridge_json_size = 0u;
     command->dispatch_epoch = 0u;
@@ -148,15 +152,15 @@ ivr_status_t iris_flowmq_provider_decode_command(
     if (!codec || !encoded || encoded_size == 0u || !out) return IVR_EINVAL;
     iris_flowmq_provider_command_init(out);
     if (flowmq_media_provider_peek_kind(encoded, encoded_size, &kind) !=
-            TURBO_OK ||
+            SALTS_OK ||
         kind != ProviderMessageKind_Command ||
         ProviderCommandV1_from_bin(codec, &out->wire, encoded, encoded_size,
                                    &error) != DATA_BIND_OK ||
-        flowmq_media_provider_validate_command(&out->wire, &limits) != TURBO_OK ||
+        flowmq_media_provider_validate_command(&out->wire, &limits) != SALTS_OK ||
         strcmp(out->wire.message_id, out->wire.command_id) != 0 ||
         strcmp(out->wire.partition_key, out->wire.session_id) != 0 ||
         flowmq_media_provider_parse_u64(out->wire.dispatch_epoch,
-                                        &dispatch_epoch) != TURBO_OK ||
+                                        &dispatch_epoch) != SALTS_OK ||
         dispatch_epoch == 0u || !command_fingerprint_valid(&out->wire)) {
         iris_flowmq_provider_command_clear(out);
         return IVR_ESTATE;
@@ -207,34 +211,36 @@ static int format_u64(uint64_t value, char *out, size_t capacity) {
 
 static char *completion_result_json(const ivr_media_command_result_t *result,
                                     size_t *out_size) {
-    json_value_t *root = turbo_json_create_object();
+    json_value_t *root = json_create_object();
     char *json = NULL;
     if (!root ||
         !add_member(root, "status",
-                    turbo_json_create_string(result->status_code == IVR_OK
+                    json_create_string(result->status_code == IVR_OK
                                                  ? "completed"
                                                  : "failed")) ||
         !add_member(root, "mediaWorkerId",
-                    turbo_json_create_string(result->worker_id)) ||
+                    json_create_string(result->worker_id)) ||
         !add_member(root, "dialogId",
-                    turbo_json_create_string(result->dialog_id)) ||
-        !add_member(root, "roomId", turbo_json_create_string(result->room_id)) ||
-        !add_member(root, "callId", turbo_json_create_string(result->call_id)) ||
+                    json_create_string(result->dialog_id)) ||
+        !add_member(root, "roomId", json_create_string(result->room_id)) ||
+        !add_member(root, "callId", json_create_string(result->call_id)) ||
         !add_member(root, "callGeneration",
-                    turbo_json_create_uint64(result->call_generation)) ||
+                    json_create_uint64(result->call_generation)) ||
         !add_member(root, "operationGeneration",
-                    turbo_json_create_uint64(result->operation_generation)) ||
+                    json_create_uint64(result->operation_generation)) ||
         (result->error_code[0] &&
          !add_member(root, "errorCode",
-                     turbo_json_create_string(result->error_code))) ||
+                     json_create_string(result->error_code))) ||
         (result->error_message[0] &&
          !add_member(root, "errorMessage",
-                     turbo_json_create_string(result->error_message)))) {
-        turbo_free_json(&root);
+                     json_create_string(result->error_message)))) {
+        json_free(root);
+        root = NULL;
         return NULL;
     }
-    json = turbo_json_serialize(root, out_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, out_size);
+    json_free(root);
+    root = NULL;
     return json;
 }
 
@@ -277,7 +283,7 @@ ivr_status_t iris_flowmq_provider_encode_receipt(
         !assign(&receipt.dispatch_epoch, command->wire.dispatch_epoch) ||
         !assign(&receipt.error_code, result->error_code) ||
         !assign(&receipt.error_message, result->error_message) ||
-        flowmq_media_provider_validate_receipt(&receipt, &limits) != TURBO_OK ||
+        flowmq_media_provider_validate_receipt(&receipt, &limits) != SALTS_OK ||
         ProviderReceiptV1_to_bin(&receipt, out, out_size, &error) != DATA_BIND_OK) {
         ProviderReceiptV1_clear(&receipt);
         tbe_typed_serialized_free(*out);
@@ -365,18 +371,18 @@ ivr_status_t iris_flowmq_provider_encode_completion(
         !assign(&wire.result_json, result_json) ||
         !assign(&wire.error_code, result->error_code) ||
         !assign(&wire.error_message, result->error_message) ||
-        flowmq_media_provider_validate_completion(&wire, &limits) != TURBO_OK ||
+        flowmq_media_provider_validate_completion(&wire, &limits) != SALTS_OK ||
         ProviderCompletionV1_to_bin(&wire, out, out_size, &error) !=
             DATA_BIND_OK) {
         ProviderCompletionV1_clear(&wire);
-        turbo_json_serialize_free(generated_result_json);
+        json_serialize_free(generated_result_json);
         tbe_typed_serialized_free(*out);
         *out = NULL;
         *out_size = 0u;
         return IVR_ENOSPC;
     }
     ProviderCompletionV1_clear(&wire);
-    turbo_json_serialize_free(generated_result_json);
+    json_serialize_free(generated_result_json);
     return IVR_OK;
 }
 
@@ -398,16 +404,16 @@ ivr_status_t iris_flowmq_provider_decode_completion_ack(
     memset(out, 0, sizeof(*out));
     ProviderCompletionAckV1_init(&ack);
     if (flowmq_media_provider_peek_kind(encoded, encoded_size, &kind) !=
-            TURBO_OK ||
+            SALTS_OK ||
         kind != ProviderMessageKind_CompletionAck ||
         ProviderCompletionAckV1_from_bin(codec, &ack, encoded, encoded_size,
                                          &error) != DATA_BIND_OK ||
         flowmq_media_provider_validate_completion_ack(&ack, &limits) !=
-            TURBO_OK ||
+            SALTS_OK ||
         flowmq_media_provider_parse_u64(ack.dispatch_epoch, &epoch) !=
-            TURBO_OK ||
+            SALTS_OK ||
         flowmq_media_provider_parse_u64(ack.committed_sequence, &sequence) !=
-            TURBO_OK ||
+            SALTS_OK ||
         strcmp(ack.causation_id, completion_message_id) != 0 ||
         strcmp(ack.correlation_id, completion->correlation_id) != 0 ||
         strcmp(ack.tenant_id, completion->tenant_id) != 0 ||
@@ -432,39 +438,42 @@ static char *canonical_event_payload(const ivr_media_event_t *event,
     json_value_t *payload = NULL;
     char *json = NULL;
     if (event->payload_json[0]) {
-        if (turbo_parse_json((const uint8_t *)event->payload_json,
-                             strlen(event->payload_json), &payload) != 0 ||
+        if (((payload = json_parse((const char *)((const uint8_t *)event->payload_json), strlen(event->payload_json))) ? 0 : -1) != 0 ||
             !payload) {
-            turbo_free_json(&payload);
+            json_free(payload);
+            payload = NULL;
             return NULL;
         }
     } else {
-        payload = turbo_json_create_object();
+        payload = json_create_object();
     }
-    root = turbo_json_create_object();
+    root = json_create_object();
     if (!root || !payload ||
         !add_member(root, "dialogId",
-                    turbo_json_create_string(event->dialog_id)) ||
+                    json_create_string(event->dialog_id)) ||
         !add_member(root, "roomId",
-                    turbo_json_create_string(event->room_id)) ||
+                    json_create_string(event->room_id)) ||
         !add_member(root, "callId",
-                    turbo_json_create_string(event->call_id)) ||
+                    json_create_string(event->call_id)) ||
         !add_member(root, "callGeneration",
-                    turbo_json_create_uint64(event->call_generation)) ||
+                    json_create_uint64(event->call_generation)) ||
         (event->input_id[0] &&
          !add_member(root, "inputId",
-                     turbo_json_create_string(event->input_id))) ||
+                     json_create_string(event->input_id))) ||
         (event->input_value[0] &&
          !add_member(root, "inputValue",
-                     turbo_json_create_string(event->input_value))) ||
+                     json_create_string(event->input_value))) ||
         !add_member(root, "payload", payload)) {
-        turbo_free_json(&payload);
-        turbo_free_json(&root);
+        json_free(payload);
+        payload = NULL;
+        json_free(root);
+        root = NULL;
         return NULL;
     }
     payload = NULL;
-    json = turbo_json_serialize(root, out_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, out_size);
+    json_free(root);
+    root = NULL;
     return json;
 }
 
@@ -491,7 +500,7 @@ ivr_status_t iris_flowmq_provider_encode_event(
     *out_size = 0u;
     payload_json = canonical_event_payload(event, &payload_json_size);
     if (!payload_json || payload_json_size == 0u) {
-        turbo_json_serialize_free(payload_json);
+        json_serialize_free(payload_json);
         return IVR_ENOSPC;
     }
     ProviderEventV1_init(&wire);
@@ -513,17 +522,17 @@ ivr_status_t iris_flowmq_provider_encode_event(
         !assign(&wire.sequence, sequence) ||
         !assign(&wire.occurred_at, occurred_at) ||
         !assign(&wire.payload_json, payload_json) ||
-        flowmq_media_provider_validate_event(&wire, &limits) != TURBO_OK ||
+        flowmq_media_provider_validate_event(&wire, &limits) != SALTS_OK ||
         ProviderEventV1_to_bin(&wire, out, out_size, &error) != DATA_BIND_OK) {
         ProviderEventV1_clear(&wire);
         tbe_typed_serialized_free(*out);
         *out = NULL;
         *out_size = 0u;
-        turbo_json_serialize_free(payload_json);
+        json_serialize_free(payload_json);
         return IVR_ENOSPC;
     }
     ProviderEventV1_clear(&wire);
-    turbo_json_serialize_free(payload_json);
+    json_serialize_free(payload_json);
     return IVR_OK;
 }
 
@@ -544,13 +553,13 @@ ivr_status_t iris_flowmq_provider_decode_event_ack(
     memset(out, 0, sizeof(*out));
     ProviderEventAckV1_init(&ack);
     if (flowmq_media_provider_peek_kind(encoded, encoded_size, &kind) !=
-            TURBO_OK ||
+            SALTS_OK ||
         kind != ProviderMessageKind_EventAck ||
         ProviderEventAckV1_from_bin(codec, &ack, encoded, encoded_size,
                                     &error) != DATA_BIND_OK ||
-        flowmq_media_provider_validate_event_ack(&ack, &limits) != TURBO_OK ||
+        flowmq_media_provider_validate_event_ack(&ack, &limits) != SALTS_OK ||
         flowmq_media_provider_parse_u64(ack.committed_sequence, &sequence) !=
-            TURBO_OK ||
+            SALTS_OK ||
         strcmp(ack.causation_id, event_message_id) != 0 ||
         strcmp(ack.correlation_id, event->dialog_id) != 0 ||
         strcmp(ack.tenant_id, event->tenant_id) != 0 ||
@@ -629,7 +638,7 @@ ivr_status_t iris_flowmq_provider_encode_query(
         !assign(&query.expected_revision, revision) ||
         !assign(&query.cursor, cursor_text) ||
         !assign(&query.payload_json, payload_json) ||
-        flowmq_media_provider_validate_query(&query, &limits) != TURBO_OK ||
+        flowmq_media_provider_validate_query(&query, &limits) != SALTS_OK ||
         ProviderQueryV1_to_bin(&query, out, out_size, &error) != DATA_BIND_OK) {
         ProviderQueryV1_clear(&query);
         tbe_typed_serialized_free(*out);
@@ -658,17 +667,17 @@ ivr_status_t iris_flowmq_provider_decode_observation(
     }
     iris_flowmq_provider_observation_init(out);
     if (flowmq_media_provider_peek_kind(encoded, encoded_size, &kind) !=
-            TURBO_OK ||
+            SALTS_OK ||
         kind != ProviderMessageKind_Observation ||
         ProviderObservationV1_from_bin(codec, &out->wire, encoded,
                                        encoded_size, &error) != DATA_BIND_OK ||
         flowmq_media_provider_validate_observation(&out->wire, &limits) !=
-            TURBO_OK ||
+            SALTS_OK ||
         flowmq_media_provider_parse_u64(out->wire.revision, &revision) !=
-            TURBO_OK ||
-        flowmq_media_provider_parse_u64(out->wire.cursor, &cursor) != TURBO_OK ||
+            SALTS_OK ||
+        flowmq_media_provider_parse_u64(out->wire.cursor, &cursor) != SALTS_OK ||
         flowmq_media_provider_parse_u64(out->wire.next_cursor, &next_cursor) !=
-            TURBO_OK ||
+            SALTS_OK ||
         strcmp(out->wire.correlation_id, query_id) != 0 ||
         strcmp(out->wire.causation_id, query_id) != 0 ||
         strcmp(out->wire.tenant_id, tenant_id) != 0 ||
@@ -753,7 +762,7 @@ ivr_status_t iris_flowmq_provider_encode_call_offer(
         !assign(&wire.source, offer->source) ||
         !assign(&wire.destination, offer->destination) ||
         !assign(&wire.payload_json, offer->payload_json) ||
-        flowmq_media_provider_validate_call_offer(&wire, &limits) != TURBO_OK ||
+        flowmq_media_provider_validate_call_offer(&wire, &limits) != SALTS_OK ||
         ProviderCallOfferV1_to_bin(&wire, out, out_size, &error) !=
             DATA_BIND_OK) {
         ProviderCallOfferV1_clear(&wire);
@@ -783,14 +792,14 @@ ivr_status_t iris_flowmq_provider_decode_session_bound(
     memset(out, 0, sizeof(*out));
     ProviderSessionBoundV1_init(&wire);
     if (flowmq_media_provider_peek_kind(encoded, encoded_size, &kind) !=
-            TURBO_OK ||
+            SALTS_OK ||
         kind != ProviderMessageKind_SessionBound ||
         ProviderSessionBoundV1_from_bin(codec, &wire, encoded, encoded_size,
                                         &error) != DATA_BIND_OK ||
         flowmq_media_provider_validate_session_bound(&wire, &limits) !=
-            TURBO_OK ||
+            SALTS_OK ||
         flowmq_media_provider_parse_u64(wire.call_generation, &generation) !=
-            TURBO_OK ||
+            SALTS_OK ||
         strcmp(wire.correlation_id, offer->call_id) != 0 ||
         strcmp(wire.causation_id, offer->ingress_event_id) != 0 ||
         strcmp(wire.tenant_id, offer->tenant_id) != 0 ||

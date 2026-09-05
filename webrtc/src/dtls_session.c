@@ -17,15 +17,15 @@
 
 static void dtls_handle_error(turbo_dc_peer_t *peer, int ret);
 
-static void on_dtls_retransmit_timer(turbo_timer_t *timer) {
-    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)turbo_timer_get_data(timer);
+static void on_dtls_retransmit_timer(salts_timer_t *timer) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)salts_timer_get_data(timer);
     if (!peer || dc_peer_acquire(peer) != 0) {
-        turbo_timer_stop(timer);
+        salts_timer_stop(timer);
         return;
     }
 
     if (peer->dtls.handshake_done) {
-        turbo_timer_stop(timer);
+        salts_timer_stop(timer);
         dc_peer_release(peer);
         return;
     }
@@ -40,7 +40,7 @@ static void on_dtls_retransmit_timer(turbo_timer_t *timer) {
         if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
             uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
             if (timeout_ms == 0) timeout_ms = 1;  /* Minimum 1ms */
-            turbo_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
+            salts_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
         }
     }
 
@@ -56,13 +56,13 @@ static void dtls_schedule_retransmit(turbo_dc_peer_t *peer) {
     if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
         uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
         if (timeout_ms == 0) timeout_ms = 1;
-        turbo_timer_start(peer->dtls.retransmit_timer, on_dtls_retransmit_timer, timeout_ms, 0);
+        salts_timer_start(peer->dtls.retransmit_timer, on_dtls_retransmit_timer, timeout_ms, 0);
     }
 }
 
 static void dtls_stop_retransmit_timer(turbo_dc_peer_t *peer) {
     if (peer->dtls.retransmit_timer) {
-        turbo_timer_stop(peer->dtls.retransmit_timer);
+        salts_timer_stop(peer->dtls.retransmit_timer);
     }
 }
 
@@ -158,10 +158,10 @@ int dtls_session_init_timer(turbo_dc_peer_t *peer) {
     if (peer->dtls.retransmit_timer) return 0;  /* Already initialized */
 
     /* Use the backend-native timer abstraction instead of reaching for libuv. */
-    peer->dtls.retransmit_timer = turbo_timer_create(NULL);
+    peer->dtls.retransmit_timer = salts_timer_create(NULL);
 
     if (peer->dtls.retransmit_timer) {
-        turbo_timer_set_data(peer->dtls.retransmit_timer, peer);
+        salts_timer_set_data(peer->dtls.retransmit_timer, peer);
         return 0;
     }
     return -1;
@@ -170,7 +170,7 @@ int dtls_session_init_timer(turbo_dc_peer_t *peer) {
 void dtls_session_cleanup(turbo_dc_peer_t *peer) {
     /* Stop and close retransmit timer */
     if (peer->dtls.retransmit_timer) {
-        turbo_timer_destroy(peer->dtls.retransmit_timer);
+        salts_timer_destroy(peer->dtls.retransmit_timer);
         peer->dtls.retransmit_timer = NULL;
     }
 }

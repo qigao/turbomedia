@@ -12,9 +12,9 @@
 #include "mpeg4-hevc.h"
 #include "mpeg4-vvc.h"
 #include "mov-format.h"
-#include "turbo_fs.h"
-#include "turbo_str.h"
-#include "turbo_vstr.h"
+#include "salts_fs.h"
+#include "salts_str.h"
+#include "salts_vstr.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -49,7 +49,7 @@ typedef struct {
     int64_t last_pts_ms;
     int64_t last_dts_ms;
     int64_t last_duration_ms;
-    char init_names[DASH_MAX_ADAPTATION_SETS][TURBO_FS_MAX_PATH];
+    char init_names[DASH_MAX_ADAPTATION_SETS][SALTS_FS_MAX_PATH];
     int init_count;
 
     union {
@@ -67,8 +67,8 @@ typedef struct {
 } dash_streamer_ctx_t;
 
 static int dash_make_path(const dash_streamer_ctx_t *ctx, const char *name,
-                          char path[TURBO_FS_MAX_PATH]) {
-    return turbo_fs_path_join(path, TURBO_FS_MAX_PATH, ctx->output_dir, name);
+                          char path[SALTS_FS_MAX_PATH]) {
+    return salts_fs_path_join(path, SALTS_FS_MAX_PATH, ctx->output_dir, name);
 }
 
 static tstr dash_make_url(const dash_streamer_ctx_t *ctx, const char *name) {
@@ -82,12 +82,12 @@ static tstr dash_make_url(const dash_streamer_ctx_t *ctx, const char *name) {
 
 static int dash_write_file(const dash_streamer_ctx_t *ctx, const char *name,
                            const void *data, size_t bytes,
-                           char path[TURBO_FS_MAX_PATH]) {
-    turbo_fs_buf_t buffer;
+                           char path[SALTS_FS_MAX_PATH]) {
+    salts_fs_buf_t buffer;
 
     if (dash_make_path(ctx, name, path) != 0) return -ENAMETOOLONG;
-    buffer = turbo_fs_buf_init((char *)data, bytes);
-    return turbo_fs_write_file(path, &buffer);
+    buffer = salts_fs_buf_init((char *)data, bytes);
+    return salts_fs_write_file(path, &buffer);
 }
 
 static int dash_upload_file(const dash_streamer_ctx_t *ctx, const char *name,
@@ -144,7 +144,7 @@ static int dash_render_manifest(dash_streamer_ctx_t *ctx, char **manifest,
 }
 
 static int dash_publish_manifest(dash_streamer_ctx_t *ctx) {
-    char path[TURBO_FS_MAX_PATH];
+    char path[SALTS_FS_MAX_PATH];
     char *manifest;
     size_t size;
     int result;
@@ -163,8 +163,8 @@ static int dash_remember_init(dash_streamer_ctx_t *ctx, const char *name) {
     int written;
 
     if (ctx->init_count >= DASH_MAX_ADAPTATION_SETS) return -EOVERFLOW;
-    written = snprintf(ctx->init_names[ctx->init_count], TURBO_FS_MAX_PATH, "%s", name);
-    if (written <= 0 || written >= TURBO_FS_MAX_PATH) return -ENAMETOOLONG;
+    written = snprintf(ctx->init_names[ctx->init_count], SALTS_FS_MAX_PATH, "%s", name);
+    if (written <= 0 || written >= SALTS_FS_MAX_PATH) return -ENAMETOOLONG;
     ++ctx->init_count;
     return 0;
 }
@@ -173,7 +173,7 @@ static int dash_on_segment(void *param, int adaptation, const void *data, size_t
                            int64_t pts, int64_t dts, int64_t duration,
                            const char *name) {
     dash_streamer_ctx_t *ctx = (dash_streamer_ctx_t *)param;
-    char path[TURBO_FS_MAX_PATH];
+    char path[SALTS_FS_MAX_PATH];
     int result;
 
     (void)adaptation;
@@ -332,10 +332,10 @@ static void *dash_streamer_create(const turbo_streamer_config_t *config) {
         (config->base_url && strpbrk(config->base_url, "&<>\"'")))
         return NULL;
 
-    if (turbo_fs_access(config->output_dir, TURBO_FS_ACCESS_EXISTS) != 0 &&
-        turbo_fs_mkdir(config->output_dir, 0755) != 0)
+    if (salts_fs_access(config->output_dir, SALTS_FS_ACCESS_EXISTS) != 0 &&
+        salts_fs_mkdir(config->output_dir, 0755) != 0)
         return NULL;
-    if (turbo_fs_access(config->output_dir, TURBO_FS_ACCESS_WRITE) != 0) return NULL;
+    if (salts_fs_access(config->output_dir, SALTS_FS_ACCESS_WRITE) != 0) return NULL;
 
     ctx = (dash_streamer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
@@ -376,7 +376,7 @@ static void *dash_streamer_create(const turbo_streamer_config_t *config) {
 
 static int dash_streamer_connect_impl(void *ctx_ptr) {
     dash_streamer_ctx_t *ctx = (dash_streamer_ctx_t *)ctx_ptr;
-    char path[TURBO_FS_MAX_PATH];
+    char path[SALTS_FS_MAX_PATH];
     int index;
     int result;
 

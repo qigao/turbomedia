@@ -14,8 +14,9 @@
 #include "ice/turbo_ice.h"
 #include "tlog.h"
 #include "turbo_datachannel.h"
-#include "turbo_parser.h"
+#include <json_parser.h>
 #include "turbo_sdp.h"
+#include <salts_error.h>
 #include <CoroNet/turbo_coro_context.h>
 #include <CoroNet/turbo_coro_socket.h>
 #include <stdint.h>
@@ -151,7 +152,7 @@ static void request_peer_list(app_state_t *app) {
     return;
   }
   if (enqueue_signalf(app, "{\"type\":\"list-peers\"}") == 0) {
-    app->last_peer_query_ms = turbo_monotonic_ms();
+    app->last_peer_query_ms = salts_monotonic_ms();
   }
 }
 
@@ -186,8 +187,8 @@ static void maybe_stop_context(app_state_t *app) {
 }
 
 static void copy_json_string(json_value_t *value, char *buffer, size_t buffer_size) {
-  const char *str = turbo_json_string(value);
-  size_t len = turbo_json_string_len(value);
+  const char *str = json_string(value);
+  size_t len = json_string_len(value);
   if (buffer_size == 0) {
     return;
   }
@@ -780,8 +781,8 @@ static void send_answer(app_state_t *app) {
 }
 
 static void handle_joined(app_state_t *app, json_value_t *root) {
-  json_value_t *peer_id = turbo_json_object_get(root, "peerId");
-  if (!peer_id || turbo_json_type(peer_id) != TURBO_JSON_STRING) {
+  json_value_t *peer_id = json_object_get(root, "peerId");
+  if (!peer_id || json_type(peer_id) != JSON_STRING) {
     return;
   }
   copy_json_string(peer_id, app->peer_id, sizeof(app->peer_id));
@@ -793,17 +794,17 @@ static void handle_joined(app_state_t *app, json_value_t *root) {
 
 static void handle_peers(app_state_t *app, json_value_t *root) {
   size_t i;
-  json_value_t *peers = turbo_json_object_get(root, "peers");
+  json_value_t *peers = json_object_get(root, "peers");
   if (!app->is_offerer || app->remote_peer_id[0] != '\0') {
     return;
   }
-  if (!peers || turbo_json_type(peers) != TURBO_JSON_ARRAY) {
+  if (!peers || json_type(peers) != JSON_ARRAY) {
     return;
   }
 
-  for (i = 0; i < turbo_json_array_size(peers); ++i) {
-    json_value_t *value = turbo_json_array_get(peers, i);
-    if (!value || turbo_json_type(value) != TURBO_JSON_STRING) {
+  for (i = 0; i < json_array_size(peers); ++i) {
+    json_value_t *value = json_array_get(peers, i);
+    if (!value || json_type(value) != JSON_STRING) {
       continue;
     }
     copy_json_string(value, app->remote_peer_id, sizeof(app->remote_peer_id));
@@ -817,11 +818,11 @@ static void handle_peers(app_state_t *app, json_value_t *root) {
 }
 
 static void handle_peer_joined(app_state_t *app, json_value_t *root) {
-  json_value_t *peer_id = turbo_json_object_get(root, "peerId");
+  json_value_t *peer_id = json_object_get(root, "peerId");
   if (!app->is_offerer || app->remote_peer_id[0] != '\0') {
     return;
   }
-  if (!peer_id || turbo_json_type(peer_id) != TURBO_JSON_STRING) {
+  if (!peer_id || json_type(peer_id) != JSON_STRING) {
     return;
   }
 
@@ -838,13 +839,13 @@ static void handle_peer_joined(app_state_t *app, json_value_t *root) {
 static void handle_offer(app_state_t *app, json_value_t *root) {
   char from[MAX_PEER_ID_LEN];
   char sdp[4096];
-  json_value_t *from_value = turbo_json_object_get(root, "from");
-  json_value_t *sdp_value = turbo_json_object_get(root, "sdp");
+  json_value_t *from_value = json_object_get(root, "from");
+  json_value_t *sdp_value = json_object_get(root, "sdp");
 
   if (!from_value || !sdp_value) {
     return;
   }
-  if (turbo_json_type(from_value) != TURBO_JSON_STRING || turbo_json_type(sdp_value) != TURBO_JSON_STRING) {
+  if (json_type(from_value) != JSON_STRING || json_type(sdp_value) != JSON_STRING) {
     return;
   }
 
@@ -868,9 +869,9 @@ static void handle_offer(app_state_t *app, json_value_t *root) {
 
 static void handle_answer(app_state_t *app, json_value_t *root) {
   char sdp[4096];
-  json_value_t *sdp_value = turbo_json_object_get(root, "sdp");
+  json_value_t *sdp_value = json_object_get(root, "sdp");
 
-  if (!sdp_value || turbo_json_type(sdp_value) != TURBO_JSON_STRING) {
+  if (!sdp_value || json_type(sdp_value) != JSON_STRING) {
     return;
   }
 
@@ -883,9 +884,9 @@ static void handle_answer(app_state_t *app, json_value_t *root) {
 
 static void handle_candidate(app_state_t *app, json_value_t *root) {
   char candidate[512];
-  json_value_t *candidate_value = turbo_json_object_get(root, "candidate");
+  json_value_t *candidate_value = json_object_get(root, "candidate");
 
-  if (!candidate_value || turbo_json_type(candidate_value) != TURBO_JSON_STRING) {
+  if (!candidate_value || json_type(candidate_value) != JSON_STRING) {
     return;
   }
   if (ensure_media_runtime(app) != 0) {
@@ -929,19 +930,21 @@ static void process_signaling_message(app_state_t *app, const char *message, siz
   memcpy(json_text, message, len);
   json_text[len] = '\0';
 
-  if (turbo_parse_json((const uint8_t *)json_text, len, &root) != 0 || !root ||
-      turbo_json_type(root) != TURBO_JSON_OBJECT) {
+  if (((root = json_parse((const char *)((const uint8_t *)json_text), len)) ? 0 : -1) != 0 || !root ||
+      json_type(root) != JSON_OBJECT) {
     TLOG_WARN("Ignoring invalid signaling message");
     if (root) {
-      turbo_free_json(&root);
+      json_free(root);
+      root = NULL;
     }
     free(json_text);
     return;
   }
 
-  type = turbo_json_object_get(root, "type");
-  if (!type || turbo_json_type(type) != TURBO_JSON_STRING) {
-    turbo_free_json(&root);
+  type = json_object_get(root, "type");
+  if (!type || json_type(type) != JSON_STRING) {
+    json_free(root);
+    root = NULL;
     free(json_text);
     return;
   }
@@ -969,7 +972,9 @@ static void process_signaling_message(app_state_t *app, const char *message, siz
     TLOG_ERRORF("Signaling server returned an error: {}", json_text);
   }
 
-  turbo_free_json(&root);
+  json_free(root);
+
+  root = NULL;
   free(json_text);
 }
 
@@ -1283,7 +1288,7 @@ static void signal_task(coro_t *co, void *arg) {
                                  app->signal_path, app->use_tls, "webrtc-signaling");
   if (rc != 0) {
     TLOG_ERRORF("Failed to connect to signaling WebSocket: {} ({})", rc,
-               turbo_strerror(rc));
+               salts_strerror(rc));
     coro_socket_destroy(app->signal_socket);
     app->signal_socket = NULL;
     app_request_stop(app);
@@ -1315,7 +1320,7 @@ static void signal_task(coro_t *co, void *arg) {
 
   while (app->running) {
     if (app->is_offerer && app->remote_peer_id[0] == '\0' && app->ws_connected) {
-      uint64_t now_ms = turbo_monotonic_ms();
+      uint64_t now_ms = salts_monotonic_ms();
       if (app->last_peer_query_ms == 0 || now_ms - app->last_peer_query_ms >= 1000) {
         request_peer_list(app);
       }
@@ -1337,14 +1342,14 @@ static void signal_task(coro_t *co, void *arg) {
       break;
     }
 
-    if (rc == TURBO_ETIMEDOUT) {
+    if (rc == SALTS_ETIMEDOUT) {
       if (data) {
         coro_socket_free_recv(data);
       }
       continue;
     }
     if (rc != 0) {
-      TLOG_ERRORF("Signaling socket receive failed: {} ({})", rc, turbo_strerror(rc));
+      TLOG_ERRORF("Signaling socket receive failed: {} ({})", rc, salts_strerror(rc));
       if (data) {
         coro_socket_free_recv(data);
       }

@@ -33,8 +33,8 @@ struct ice_integration_ctx_s {
     void *state_user_data;
 
     /* Connection management */
-    turbo_timer_t *connection_timer;
-    turbo_timer_t *reconnect_timer;
+    salts_timer_t *connection_timer;
+    salts_timer_t *reconnect_timer;
 
     int connection_timeout_ms;
     int reconnect_attempts;
@@ -61,15 +61,15 @@ static void on_ice_candidate_discovered(turbo_ice_agent_t *agent,
                                          const ice_candidate_t *candidate, void *user_data);
 static void on_ice_data_received(turbo_ice_agent_t *agent, const void *data,
                                   size_t len, void *user_data);
-static void on_connection_timeout(turbo_timer_t *timer);
-static void on_reconnect_timer(turbo_timer_t *timer);
+static void on_connection_timeout(salts_timer_t *timer);
+static void on_reconnect_timer(salts_timer_t *timer);
 static void on_ice_connected_post(void *arg1, void *arg2);
 static void start_gathering_task(coro_t *co, void *arg);
 static void start_connectivity_checks_task(coro_t *co, void *arg);
 static void send_ice_datagram(void *transport, const void *data, size_t len);
 
 static int start_connectivity_checks_if_ready(ice_integration_ctx_t *ctx);
-static void stop_and_destroy_timer(turbo_timer_t **timer_ptr);
+static void stop_and_destroy_timer(salts_timer_t **timer_ptr);
 static void drain_ice_context(ice_integration_ctx_t *ctx, int wait_for_coroutines_only);
 
 /* ============================================================================
@@ -170,16 +170,16 @@ ice_integration_ctx_t *ice_integration_create(
     ice_agent_set_callbacks(ctx->ice_agent, &callbacks);
     
     /* Create connection timeout timer */
-    ctx->connection_timer = turbo_timer_create(ctx->loop);
+    ctx->connection_timer = salts_timer_create(ctx->loop);
     if (ctx->connection_timer) {
-        turbo_timer_set_data(ctx->connection_timer, ctx);
+        salts_timer_set_data(ctx->connection_timer, ctx);
     }
 
     
     /* Create reconnect timer */
-    ctx->reconnect_timer = turbo_timer_create(ctx->loop);
+    ctx->reconnect_timer = salts_timer_create(ctx->loop);
     if (ctx->reconnect_timer) {
-        turbo_timer_set_data(ctx->reconnect_timer, ctx);
+        salts_timer_set_data(ctx->reconnect_timer, ctx);
     }
 
     
@@ -294,7 +294,7 @@ int ice_integration_start_gathering(ice_integration_ctx_t *ctx) {
     
     /* Start connection timeout */
     if (ctx->connection_timer) {
-        turbo_timer_start(ctx->connection_timer, on_connection_timeout,
+        salts_timer_start(ctx->connection_timer, on_connection_timeout,
                         ctx->connection_timeout_ms, 0);
     }
 
@@ -414,7 +414,7 @@ int ice_integration_reconnect(ice_integration_ctx_t *ctx) {
     
     /* Scheduling reconnection */
     if (ctx->reconnect_timer) {
-        turbo_timer_start(ctx->reconnect_timer, on_reconnect_timer, delay_ms, 0);
+        salts_timer_start(ctx->reconnect_timer, on_reconnect_timer, delay_ms, 0);
     }
 
     return 0;
@@ -451,7 +451,7 @@ static void on_ice_state_changed(turbo_ice_agent_t *agent, ice_state_t old_state
         case ICE_STATE_COMPLETED:
             /* Stop connection timeout */
             if (ctx->connection_timer) {
-                turbo_timer_stop(ctx->connection_timer);
+                salts_timer_stop(ctx->connection_timer);
             }
 
             
@@ -555,10 +555,10 @@ static void send_ice_datagram(void *transport, const void *data, size_t len) {
     (void)ice_agent_send((turbo_ice_agent_t *)transport, data, len);
 }
 
-static void on_connection_timeout(turbo_timer_t *timer) {
+static void on_connection_timeout(salts_timer_t *timer) {
     if (!timer) return;
     
-    ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)turbo_timer_get_data(timer);
+    ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)salts_timer_get_data(timer);
 
     
     /* Check if context was destroyed (data set to NULL during cleanup) */
@@ -576,10 +576,10 @@ static void on_connection_timeout(turbo_timer_t *timer) {
     }
 }
 
-static void on_reconnect_timer(turbo_timer_t *timer) {
+static void on_reconnect_timer(salts_timer_t *timer) {
     if (!timer) return;
     
-    ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)turbo_timer_get_data(timer);
+    ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)salts_timer_get_data(timer);
 
     
     /* Check if context was destroyed (data set to NULL during cleanup) */
@@ -649,14 +649,14 @@ static int start_connectivity_checks_if_ready(ice_integration_ctx_t *ctx) {
     return 0;
 }
 
-static void stop_and_destroy_timer(turbo_timer_t **timer_ptr) {
+static void stop_and_destroy_timer(salts_timer_t **timer_ptr) {
     if (!timer_ptr || !*timer_ptr) {
         return;
     }
 
-    turbo_timer_stop(*timer_ptr);
-    turbo_timer_set_data(*timer_ptr, NULL);
-    turbo_timer_destroy(*timer_ptr);
+    salts_timer_stop(*timer_ptr);
+    salts_timer_set_data(*timer_ptr, NULL);
+    salts_timer_destroy(*timer_ptr);
     *timer_ptr = NULL;
 }
 

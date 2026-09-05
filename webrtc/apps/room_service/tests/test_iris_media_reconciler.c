@@ -2,7 +2,7 @@
 
 #include <tinytest.h>
 #include <platform.h>
-#include <turbo_uuid.h>
+#include <salts_uuid.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -18,7 +18,7 @@ typedef struct reconcile_fixture_s {
     int rebind_calls;
     int close_calls;
     int preserve_inventory_on_close;
-    char close_message_ids[2][TURBO_UUID_STRING_SIZE];
+    char close_message_ids[2][SALTS_UUID_STRING_SIZE];
     int complete_calls;
     int lost_calls;
     iris_expected_media_resource_t lost_resource;
@@ -173,7 +173,7 @@ static int wait_until_accepting(reconcile_fixture_t *fixture,
         if (iris_media_reconciler_accepting_commands(fixture->reconciler)) {
             return 1;
         }
-        turbo_sleep_ms(1u);
+        salts_sleep_ms(1u);
         ++elapsed_ms;
     }
     return iris_media_reconciler_accepting_commands(fixture->reconciler);
@@ -184,7 +184,7 @@ static int wait_for_fetch_calls(reconcile_fixture_t *fixture, int expected,
     uint32_t elapsed_ms = 0u;
     while (elapsed_ms < timeout_ms) {
         if (atomic_load(&fixture->fetch_calls) >= expected) return 1;
-        turbo_sleep_ms(1u);
+        salts_sleep_ms(1u);
         ++elapsed_ms;
     }
     return atomic_load(&fixture->fetch_calls) >= expected;
@@ -466,7 +466,7 @@ spec("iris_media_reconciler") {
         check_true(wait_for_fetch_calls(&fixture, 1, 500u));
         iris_media_reconciler_stop(fixture.reconciler);
         fetch_calls_after_stop = atomic_load(&fixture.fetch_calls);
-        turbo_sleep_ms(5u);
+        salts_sleep_ms(5u);
         check_equal(atomic_load(&fixture.fetch_calls),
                      fetch_calls_after_stop);
         check_equal(iris_media_reconciler_on_inventory_page(

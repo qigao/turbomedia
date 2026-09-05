@@ -7,10 +7,9 @@ function(turbo_media_add_webrtc_base_test name)
             ${STB_INCLUDE_DIR})
   target_link_libraries(
     ${name}
-    PRIVATE TurboUtils::TinyTest
-            TurboUtils::Core
-            TurboUtils::STL
-            TurboParser::Parser)
+    PRIVATE Salts::TinyTest
+            Salts::Core
+            Salts::CSTL)
   if(NOT ANDROID)
     add_test(NAME ${name} COMMAND ${name})
   endif()
@@ -28,6 +27,7 @@ endfunction()
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
+target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
 
 turbo_media_add_webrtc_test(turbo_media_test_ice_integration
                             test_ice_integration.c)
@@ -41,6 +41,7 @@ target_link_libraries(turbo_media_test_webrtc_e2e
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_json
                             test_signaling_json.c)
+target_link_libraries(turbo_media_test_signaling_json PRIVATE Salts::JsonParser)
 
 turbo_media_add_webrtc_base_test(turbo_media_test_auth_token test_auth_token.c)
 target_link_libraries(turbo_media_test_auth_token
@@ -49,7 +50,8 @@ target_link_libraries(turbo_media_test_auth_token
 turbo_media_add_webrtc_test(turbo_media_test_signaling_internals
                             test_signaling_internals.c)
 target_link_libraries(turbo_media_test_signaling_internals
-                      PRIVATE TurboNet::CoroNet turbo_media_auth)
+                      PRIVATE TurboNet::CoroNet turbo_media_auth
+                              Salts::JsonParser)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
@@ -75,7 +77,7 @@ target_include_directories(
   turbo_media_test_signaling_config
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include)
 target_link_libraries(turbo_media_test_signaling_config
-                      PRIVATE turbo_media_auth)
+                      PRIVATE turbo_media_auth Salts::TomlParser)
 file(
   TO_CMAKE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/config/signaling.toml.example"

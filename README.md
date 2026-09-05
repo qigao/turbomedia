@@ -35,12 +35,13 @@ ctest --preset win-dev-user --output-on-failure
 
 根工程默认构建不会用可选开关裁剪上述多媒体模块，并会检查所有必需依赖。主要依赖包括 FFmpeg
 （含 `openh264`、`opus`、`xml2` feature）、OpenH264、x265、libde265、
-libvpx、Opus、TurboUtils、TurboNet、TurboHTTP、libSRTP 和 usrsctp。WebRTC
+libvpx、Opus、Salts、SaltsUtils、TurboNet、TurboHTTP、libSRTP 和 usrsctp。WebRTC
 PeerConnection、ICE、DTLS-SRTP 与 DataChannel 由仓库内 TurboMedia/TurboNet
 模块实现；安全传输强制使用 BoringSSL。
 
-Linux 桌面构建还需要系统开发包 `pkg-config`、`libpipewire-0.3-dev`、
-`libx11-dev` 和 `libxext-dev`，用于 PipeWire 与 X11 采集后端。
+Linux 桌面 Capture 由 `Salts::Capture` 提供；所选 SaltsUtils 安装 profile
+必须已启用 Capture。从源码构建该 profile 时需要 `pkg-config`、
+`libpipewire-0.3-dev`、`libx11-dev` 和 `libxext-dev`。
 
 ## FFmpeg 图式流水线
 

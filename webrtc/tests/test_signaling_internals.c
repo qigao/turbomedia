@@ -16,7 +16,7 @@ static const char *const TEST_PREVIOUS_SECRET =
 
 static void init_test_server(webrtc_signaling_server_t *server) {
   memset(server, 0, sizeof(*server));
-  turbo_mutex_init(&server->mutex);
+  salts_mutex_init(&server->mutex);
   check_equal(
       hash_map_init_bytes(
           &server->local_peers, sizeof(tstr), CMETA_ALIGNOF(tstr),
@@ -96,7 +96,7 @@ static json_value_t *parse_join_message(const char *room_id,
            "{\"type\":\"join\",\"room\":\"%s\","
            "\"peer_id\":\"%s\",\"token\":\"%s\"}",
            room_id, peer_id, token);
-  check_equal((int)(turbo_parse_json((const uint8_t *)json, (size_t)length, &root)), (int)(0));
+  check_equal((int)(((root = json_parse((const char *)((const uint8_t *)json), (size_t)length)) ? 0 : -1)), (int)(0));
   free(json);
   return root;
 }
@@ -105,7 +105,7 @@ static void destroy_test_server(webrtc_signaling_server_t *server) {
   hash_map_destroy(&server->local_peers);
   hash_map_destroy(&server->local_rooms);
   destroy_source_states(server);
-  turbo_mutex_destroy(&server->mutex);
+  salts_mutex_destroy(&server->mutex);
 }
 
 static void init_test_peer(webrtc_signaling_server_t *server,
@@ -360,23 +360,28 @@ void test_peer_join_auth_binds_room_and_identity(void) {
   check_equal(authorized_peer_id, "alice");
   tstr_free(authorized_peer_id);
   authorized_peer_id = NULL;
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = parse_join_message("room-a", "alice", previous_token);
   check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(0));
   tstr_free(authorized_peer_id);
   authorized_peer_id = NULL;
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = parse_join_message("room-a", "alice", wrong_room_token);
   check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(-1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = parse_join_message("room-a", "alice", wrong_scope_token);
   check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(-1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = parse_join_message("room-a", "alice", expired_token);
   check_equal((int)(authorize_join_message(&server, root, &authorized_peer_id)), (int)(-1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   free(expired_token);
   free(wrong_scope_token);
@@ -547,7 +552,7 @@ void test_message_rate_violation_closes_peer_and_reports_rejection(void) {
   server.config.messages_per_second = 1;
   server.config.message_burst = 1;
   peer.server = &server;
-  peer.rate_last_refill_ms = turbo_monotonic_ms();
+  peer.rate_last_refill_ms = salts_monotonic_ms();
   peer.rate_tokens = SIGNALING_RATE_TOKEN_UNITS;
 
   handle_message(&server, &peer, message, strlen(message));

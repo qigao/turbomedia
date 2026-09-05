@@ -1,7 +1,7 @@
 #include "sip-uas-transaction.h"
 #include "fmt.h"
-#include "turbo_error.h"
-#include "turbo_str.h"
+#include "salts_error.h"
+#include "salts_str.h"
 
 /*
 REGISTER sip:registrar.biloxi.com SIP/2.0
@@ -40,7 +40,7 @@ static int sip_register_endpoint_parse(vstr value, struct sip_register_endpoint 
 	long parsed_port;
 
 	if (!endpoint || !value.data || value.len == 0U)
-		return TURBO_EINVAL;
+		return SALTS_EINVAL;
 
 	memset(endpoint, 0, sizeof(*endpoint));
 	authority = value;
@@ -51,18 +51,18 @@ static int sip_register_endpoint_parse(vstr value, struct sip_register_endpoint 
 		authority = vstr_sub(authority, separator + 1U, SIZE_MAX);
 	}
 	if (authority.len == 0U)
-		return TURBO_EINVAL;
+		return SALTS_EINVAL;
 
 	if (authority.data[0] == '[')
 	{
 		separator = vstr_find_char(authority, ']');
 		if (separator == VSTR_NPOS || separator == 1U)
-			return TURBO_EINVAL;
+			return SALTS_EINVAL;
 		endpoint->host = vstr_sub(authority, 1U, separator - 1U);
 		if (separator + 1U < authority.len)
 		{
 			if (authority.data[separator + 1U] != ':')
-				return TURBO_EINVAL;
+				return SALTS_EINVAL;
 			port = vstr_sub(authority, separator + 2U, SIZE_MAX);
 		}
 		else
@@ -85,18 +85,18 @@ static int sip_register_endpoint_parse(vstr value, struct sip_register_endpoint 
 	}
 
 	if (endpoint->host.len == 0U)
-		return TURBO_EINVAL;
+		return SALTS_EINVAL;
 	if (port.len == 0U)
 	{
 		endpoint->port = SIP_PORT;
-		return TURBO_OK;
+		return SALTS_OK;
 	}
 
 	parsed_port = sip_sv_to_long(&port, NULL, 10);
 	if (parsed_port < 1L || parsed_port > 65535L)
-		return TURBO_EINVAL;
+		return SALTS_EINVAL;
 	endpoint->port = (int)parsed_port;
-	return TURBO_OK;
+	return SALTS_OK;
 }
 
 // 10.3 Processing REGISTER Requests(p63)
@@ -118,7 +118,7 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 	// 1. Request-URI
 
 	// Request-URI: The "userinfo" and "@" components of the SIP URI MUST NOT be present
-	if (sip_register_endpoint_parse(req->u.c.uri.host, &uri) != TURBO_OK ||
+	if (sip_register_endpoint_parse(req->u.c.uri.host, &uri) != SALTS_OK ||
 		uri.userinfo.len != 0U)
 	{
 		return sip_uas_transaction_noninvite_reply(t, 400/*Invalid Request*/, NULL, 0, param);
@@ -140,7 +140,7 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 	// 4. authorized modify registrations(403 Forbidden)
 
 	// 5. To domain check (404 Not Found)
-	if (sip_register_endpoint_parse(req->from.uri.host, &from) != TURBO_OK ||
+	if (sip_register_endpoint_parse(req->from.uri.host, &from) != SALTS_OK ||
 		from.userinfo.len == 0U)
 	{
 		// all URI parameters MUST be removed (including the user-param), and
@@ -174,7 +174,7 @@ int sip_uas_onregister(struct sip_uas_transaction_t* t, const struct sip_message
 	// zero or more values containing address bindings
 	contact = sip_contacts_get(&req->contacts, 0);
 	have_contact = contact &&
-		sip_register_endpoint_parse(contact->uri.host, &uri) == TURBO_OK;
+		sip_register_endpoint_parse(contact->uri.host, &uri) == SALTS_OK;
 	if (contact && !have_contact)
 		return sip_uas_transaction_noninvite_reply(t, 400/*Invalid Request*/, NULL, 0, param);
 	if (contact && contact->expires > 0)

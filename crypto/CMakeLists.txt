@@ -7,5 +7,5 @@ target_include_directories(
   PRIVATE ${PROJECT_SOURCE_DIR}/vendor/monocypher)
 target_link_libraries(
   turbo_media_crypto
-  PUBLIC TurboUtils::Core
+  PUBLIC Salts::Core
   PRIVATE TurboMediaVendor::Monocypher)

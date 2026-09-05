@@ -19,15 +19,12 @@
  */
 
 #include "turbo_datachannel.h"
-#include <turbo_parser.h>
+#include <ltv_parser.h>
 #include <turbo_export.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* Typedef for compatibility */
-typedef struct ltv_message_s ltv_message_t;
 
 /* ============================================================================
  * Send API
@@ -73,17 +70,25 @@ static inline int turbo_dc_send_raw(turbo_dc_channel_t *channel,
  * @param out      Output: pointer to LTV message handle (caller must free)
  * @return 0 on success, -1 if not valid LTV
  *
+ * The parsed value borrows @p data. The caller must keep the input buffer
+ * alive and unchanged until it releases the message handle.
+ *
  * Usage in on_message callback:
  *   void on_message(channel, data, len, is_binary, user_data) {
  *       ltv_message_t *msg = NULL;
  *       if (turbo_dc_parse_ltv(data, len, &msg) == 0) {
- *           uint8_t type = turbo_ltv_type(msg);
+ *           uint8_t type = msg->type;
  *           // handle type...
- *           turbo_free_ltv(&msg);
+ *           turbo_dc_ltv_free(&msg);
  *       }
  *   }
  */
 TURBO_MEDIA_API int turbo_dc_parse_ltv(const void *data, size_t len, ltv_message_t **out);
+
+/**
+ * @brief Release an LTV message allocated by TurboMedia and clear the handle.
+ */
+TURBO_MEDIA_API void turbo_dc_ltv_free(ltv_message_t **message);
 
 /**
  * @brief Check if data looks like LTV message
@@ -113,6 +118,10 @@ TURBO_MEDIA_API turbo_dc_msg_stream_t *turbo_dc_msg_stream_create(size_t buffer_
  * @param len     Data length
  * @param out     Output: pointer to LTV message handle on completion
  * @return 1 if message complete, 0 if need more data, -1 on error
+ *
+ * Release the returned handle with turbo_dc_ltv_free(). Its value borrows the
+ * stream reassembly buffer and is valid only until the next feed, reset, or
+ * destroy call on @p stream.
  */
 TURBO_MEDIA_API int turbo_dc_msg_stream_feed(turbo_dc_msg_stream_t *stream,
                                         const void *data, size_t len,

@@ -4,9 +4,9 @@
 
 #include <flowmq.h>
 #include <turbo_crypto.h>
-#include <turbo_error.h>
-#include <turbo_str.h>
-#include <turbo_thread.h>
+#include <salts_error.h>
+#include <salts_str.h>
+#include <salts_thread.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -33,7 +33,7 @@ typedef struct iris_flowmq_work_item_s {
 
 struct iris_flowmq_provider_s {
     flowmq_connect_endpoint_t *endpoint;
-    turbo_threadpool_t *worker;
+    salts_threadpool_t *worker;
     DataBind *codec;
     tstr provider_id;
     tstr provider_instance_id;
@@ -46,11 +46,11 @@ struct iris_flowmq_provider_s {
     void *dispatch_context;
     iris_flowmq_provider_now_fn now;
     void *now_context;
-    turbo_mutex_t delivery_mutex;
-    turbo_mutex_t query_mutex;
-    turbo_mutex_t offer_mutex;
-    turbo_mutex_t ack_mutex;
-    turbo_cond_t ack_changed;
+    salts_mutex_t delivery_mutex;
+    salts_mutex_t query_mutex;
+    salts_mutex_t offer_mutex;
+    salts_mutex_t ack_mutex;
+    salts_cond_t ack_changed;
     iris_media_completion_t pending_completion;
     iris_flowmq_completion_ack_t pending_completion_ack;
     char pending_completion_message_id[256];
@@ -140,7 +140,7 @@ int iris_flowmq_provider_config_validate(
         config->send_queue_bytes > IRIS_FLOWMQ_MAX_BUFFER_BYTES ||
         config->start_timeout_ns == 0u ||
         config->reconnect_initial_ms > config->reconnect_max_ms) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     secure = secure_transport(config->transport);
     if (secure) {
@@ -148,7 +148,7 @@ int iris_flowmq_provider_config_validate(
             !nonempty(config->ca_file) || !nonempty(config->certificate_file) ||
             !nonempty(config->private_key_file) ||
             !nonempty(config->server_name)) {
-            return TURBO_EINVAL;
+            return SALTS_EINVAL;
         }
     } else if (!development_transport(config->transport) ||
                !config->allow_insecure_development_loopback ||
@@ -158,9 +158,9 @@ int iris_flowmq_provider_config_validate(
                nonempty(config->private_key_file) ||
                nonempty(config->private_key_password) ||
                nonempty(config->server_name)) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int same_view(vstr view, const char *value) {
@@ -174,12 +174,12 @@ static int verify_iris(void *context, const char *certificate_sha256,
     iris_flowmq_provider_t *provider = (iris_flowmq_provider_t *)context;
     if (!provider || !certificate_sha256 ||
         !same_view(claimed_identity, provider->iris_identity)) {
-        return TURBO_EPERM;
+        return SALTS_EPERM;
     }
     return strcmp(certificate_sha256,
                   provider->iris_certificate_sha256) == 0
-               ? TURBO_OK
-               : TURBO_EPERM;
+               ? SALTS_OK
+               : SALTS_EPERM;
 }
 
 static int reserve_bytes(iris_flowmq_provider_t *provider, size_t size) {
@@ -203,17 +203,17 @@ static int utc_now(void *context, char *out, size_t capacity) {
     struct tm value;
     int written;
     (void)context;
-    if (!out || capacity < 21u) return TURBO_EINVAL;
+    if (!out || capacity < 21u) return SALTS_EINVAL;
     current = time(NULL);
 #ifdef _WIN32
-    if (gmtime_s(&value, &current) != 0) return TURBO_EIO;
+    if (gmtime_s(&value, &current) != 0) return SALTS_EIO;
 #else
-    if (!gmtime_r(&current, &value)) return TURBO_EIO;
+    if (!gmtime_r(&current, &value)) return SALTS_EIO;
 #endif
     written = snprintf(out, capacity, "%04d-%02d-%02dT%02d:%02d:%02dZ",
                        value.tm_year + 1900, value.tm_mon + 1, value.tm_mday,
                        value.tm_hour, value.tm_min, value.tm_sec);
-    return written > 0 && (size_t)written < capacity ? TURBO_OK : TURBO_ENOSPC;
+    return written > 0 && (size_t)written < capacity ? SALTS_OK : SALTS_ENOSPC;
 }
 
 static int send_application(iris_flowmq_provider_t *provider,
@@ -230,7 +230,7 @@ static int send_application(iris_flowmq_provider_t *provider,
     frame.payload = vstr_from_buf((const char *)payload, payload_size);
     status = flowmq_protocol_encode_frame(&frame, provider->maximum_frame_bytes,
                                           &encoded);
-    if (status == TURBO_OK) {
+    if (status == SALTS_OK) {
         completion_id = atomic_fetch_add_explicit(
             &provider->next_send_completion_id, 1u, memory_order_relaxed);
         status = flowmq_connect_endpoint_send_copy(
@@ -248,13 +248,13 @@ static void process_completion_ack(iris_flowmq_provider_t *provider,
     char message_id[256];
     uint64_t generation;
     int active;
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     active = provider->pending_completion_active;
     completion = provider->pending_completion;
     memcpy(message_id, provider->pending_completion_message_id,
            sizeof(message_id));
     generation = provider->pending_delivery_generation;
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
     if (!active ||
         iris_flowmq_provider_decode_completion_ack(
             provider->codec, payload, payload_size, &completion,
@@ -262,15 +262,15 @@ static void process_completion_ack(iris_flowmq_provider_t *provider,
             &ack) != IVR_OK) {
         return;
     }
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     if (provider->pending_completion_active &&
         provider->pending_delivery_generation == generation &&
         strcmp(provider->pending_completion_message_id, message_id) == 0) {
         provider->pending_completion_ack = ack;
         provider->pending_completion_done = 1;
-        turbo_cond_broadcast(&provider->ack_changed);
+        salts_cond_broadcast(&provider->ack_changed);
     }
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
 }
 
 static void process_event_ack(iris_flowmq_provider_t *provider,
@@ -281,13 +281,13 @@ static void process_event_ack(iris_flowmq_provider_t *provider,
     char message_id[256];
     uint64_t generation;
     int active;
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     active = provider->pending_event_active;
     event = provider->pending_event;
     memcpy(message_id, provider->pending_event_message_id,
            sizeof(message_id));
     generation = provider->pending_delivery_generation;
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
     if (!active ||
         iris_flowmq_provider_decode_event_ack(
             provider->codec, payload, payload_size, &event,
@@ -295,15 +295,15 @@ static void process_event_ack(iris_flowmq_provider_t *provider,
             &ack) != IVR_OK) {
         return;
     }
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     if (provider->pending_event_active &&
         provider->pending_delivery_generation == generation &&
         strcmp(provider->pending_event_message_id, message_id) == 0) {
         provider->pending_event_ack = ack;
         provider->pending_event_done = 1;
-        turbo_cond_broadcast(&provider->ack_changed);
+        salts_cond_broadcast(&provider->ack_changed);
     }
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
 }
 
 static void process_observation(iris_flowmq_provider_t *provider,
@@ -316,14 +316,14 @@ static void process_observation(iris_flowmq_provider_t *provider,
     uint64_t cursor;
     uint64_t generation;
     int active;
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     active = provider->pending_query_active;
     memcpy(tenant_id, provider->pending_query_tenant_id, sizeof(tenant_id));
     memcpy(query_id, provider->pending_query_id, sizeof(query_id));
     memcpy(query_type, provider->pending_query_type, sizeof(query_type));
     cursor = provider->pending_query_cursor;
     generation = provider->pending_query_generation;
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
     if (!active ||
         iris_flowmq_provider_decode_observation(
             provider->codec, payload, payload_size, tenant_id,
@@ -331,7 +331,7 @@ static void process_observation(iris_flowmq_provider_t *provider,
             query_type, cursor, &observation) != IVR_OK) {
         return;
     }
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     if (provider->pending_query_active &&
         provider->pending_query_generation == generation &&
         strcmp(provider->pending_query_id, query_id) == 0) {
@@ -340,9 +340,9 @@ static void process_observation(iris_flowmq_provider_t *provider,
         provider->pending_observation = observation;
         iris_flowmq_provider_observation_init(&observation);
         provider->pending_query_done = 1;
-        turbo_cond_broadcast(&provider->ack_changed);
+        salts_cond_broadcast(&provider->ack_changed);
     }
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
     iris_flowmq_provider_observation_clear(&observation);
 }
 
@@ -353,27 +353,27 @@ static void process_session_bound(iris_flowmq_provider_t *provider,
     iris_flowmq_session_bound_t bound;
     uint64_t generation;
     int active;
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     active = provider->pending_offer_active;
     offer = provider->pending_offer;
     generation = provider->pending_offer_generation;
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
     if (!active ||
         iris_flowmq_provider_decode_session_bound(
             provider->codec, payload, payload_size, &offer,
             provider->provider_id, provider->iris_identity, &bound) != IVR_OK) {
         return;
     }
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     if (provider->pending_offer_active &&
         provider->pending_offer_generation == generation &&
         strcmp(provider->pending_offer.ingress_event_id,
                offer.ingress_event_id) == 0) {
         provider->pending_session_bound = bound;
         provider->pending_offer_done = 1;
-        turbo_cond_broadcast(&provider->ack_changed);
+        salts_cond_broadcast(&provider->ack_changed);
     }
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
 }
 
 static iris_media_bridge_result_t rejected_result(const char *code,
@@ -402,7 +402,7 @@ static void process_command(void *context) {
     }
     provider = item->owner;
     if (flowmq_media_provider_peek_kind(item->payload, item->payload_size,
-                                        &kind) == TURBO_OK &&
+                                        &kind) == SALTS_OK &&
         kind == ProviderMessageKind_CompletionAck) {
         process_completion_ack(provider, item->payload, item->payload_size);
     } else if (kind == ProviderMessageKind_EventAck) {
@@ -428,7 +428,7 @@ static void process_command(void *context) {
         }
         if ((provider->now ? provider->now : utc_now)(
                 provider->now_context, created_at, sizeof(created_at)) ==
-                TURBO_OK &&
+                SALTS_OK &&
             iris_flowmq_provider_encode_receipt(
                 &command, &result, provider->provider_instance_id, created_at,
                 &receipt, &receipt_size) == IVR_OK) {
@@ -448,24 +448,24 @@ static int on_frame(void *context, const flowmq_protocol_frame_t *frame,
     iris_flowmq_provider_t *provider = (iris_flowmq_provider_t *)context;
     iris_flowmq_work_item_t *item = NULL;
     size_t allocation_size;
-    int status = TURBO_OK;
+    int status = SALTS_OK;
     (void)generation;
-    if (!provider) return TURBO_EINVAL;
+    if (!provider) return SALTS_EINVAL;
     atomic_fetch_add_explicit(&provider->callback_count, 1u,
                               memory_order_acq_rel);
     if (!atomic_load_explicit(&provider->accepting, memory_order_acquire)) {
-        status = TURBO_ESHUTDOWN;
+        status = SALTS_ESHUTDOWN;
     } else if (!frame || frame->kind != FLOWMQ_PROTOCOL_FRAME_DATA ||
                frame->pattern != FLOWMQ_PROTOCOL_ROUTER ||
                !frame->payload.data || frame->payload.len == 0u ||
                frame->payload.len > provider->maximum_frame_bytes) {
-        status = TURBO_EPROTO;
+        status = SALTS_EPROTO;
     } else if (!reserve_bytes(provider, frame->payload.len)) {
-        status = TURBO_ENOSPC;
+        status = SALTS_ENOSPC;
     } else if (frame->payload.len > SIZE_MAX - sizeof(*item)) {
         atomic_fetch_sub_explicit(&provider->pending_ingress_bytes,
                                   frame->payload.len, memory_order_acq_rel);
-        status = TURBO_ENOSPC;
+        status = SALTS_ENOSPC;
     } else {
         allocation_size = sizeof(*item) + frame->payload.len;
         item = (iris_flowmq_work_item_t *)malloc(allocation_size);
@@ -473,19 +473,19 @@ static int on_frame(void *context, const flowmq_protocol_frame_t *frame,
             atomic_fetch_sub_explicit(&provider->pending_ingress_bytes,
                                       frame->payload.len,
                                       memory_order_acq_rel);
-            status = TURBO_ENOMEM;
+            status = SALTS_ENOMEM;
         } else {
             item->owner = provider;
             item->frame_message_id = frame->message_id;
             item->payload_size = frame->payload.len;
             memcpy(item->payload, frame->payload.data, frame->payload.len);
-            if (turbo_threadpool_try_submit(provider->worker, process_command,
+            if (salts_threadpool_try_submit(provider->worker, process_command,
                                             item) != 0) {
                 atomic_fetch_sub_explicit(&provider->pending_ingress_bytes,
                                           frame->payload.len,
                                           memory_order_acq_rel);
                 free(item);
-                status = TURBO_ENOSPC;
+                status = SALTS_ENOSPC;
             }
         }
     }
@@ -504,9 +504,9 @@ static void on_state(void *context,
     atomic_store_explicit(&provider->running,
                           state == FLOWMQ_ENDPOINT_CONNECTION_READY,
                           memory_order_release);
-    turbo_mutex_lock(&provider->ack_mutex);
-    turbo_cond_broadcast(&provider->ack_changed);
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
+    salts_cond_broadcast(&provider->ack_changed);
+    salts_mutex_unlock(&provider->ack_mutex);
 }
 
 iris_flowmq_provider_t *iris_flowmq_provider_create(
@@ -514,17 +514,17 @@ iris_flowmq_provider_t *iris_flowmq_provider_create(
     iris_flowmq_provider_t *provider = NULL;
     flowmq_connect_endpoint_config_t endpoint_config;
     flowmq_coronet_tls_client_config_t tls;
-    turbo_threadpool_config_t worker_config;
+    salts_threadpool_config_t worker_config;
     DataBindError error = DATA_BIND_ERROR_INIT;
     int status;
-    if (iris_flowmq_provider_config_validate(config) != TURBO_OK) return NULL;
+    if (iris_flowmq_provider_config_validate(config) != SALTS_OK) return NULL;
     provider = (iris_flowmq_provider_t *)calloc(1u, sizeof(*provider));
     if (!provider) return NULL;
-    turbo_mutex_init(&provider->delivery_mutex);
-    turbo_mutex_init(&provider->query_mutex);
-    turbo_mutex_init(&provider->offer_mutex);
-    turbo_mutex_init(&provider->ack_mutex);
-    turbo_cond_init(&provider->ack_changed);
+    salts_mutex_init(&provider->delivery_mutex);
+    salts_mutex_init(&provider->query_mutex);
+    salts_mutex_init(&provider->offer_mutex);
+    salts_mutex_init(&provider->ack_mutex);
+    salts_cond_init(&provider->ack_changed);
     atomic_init(&provider->pending_ingress_bytes, 0u);
     atomic_init(&provider->callback_count, 0u);
     atomic_init(&provider->running, 0);
@@ -556,7 +556,7 @@ iris_flowmq_provider_t *iris_flowmq_provider_create(
     memset(&worker_config, 0, sizeof(worker_config));
     worker_config.num_threads = 1;
     worker_config.queue_capacity = config->maximum_ingress_messages;
-    provider->worker = turbo_threadpool_create_with_config(&worker_config);
+    provider->worker = salts_threadpool_create_with_config(&worker_config);
     if (!provider->worker) {
         iris_flowmq_provider_destroy(provider);
         return NULL;
@@ -597,7 +597,7 @@ iris_flowmq_provider_t *iris_flowmq_provider_create(
     }
     status = flowmq_connect_endpoint_create(&endpoint_config,
                                              &provider->endpoint);
-    if (status != TURBO_OK || !provider->endpoint) {
+    if (status != SALTS_OK || !provider->endpoint) {
         iris_flowmq_provider_destroy(provider);
         return NULL;
     }
@@ -608,11 +608,11 @@ int iris_flowmq_provider_start(iris_flowmq_provider_t *provider) {
     int status;
     if (!provider || !provider->endpoint ||
         atomic_load_explicit(&provider->stopped, memory_order_acquire)) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     status = flowmq_connect_endpoint_start(provider->endpoint,
                                             provider->start_timeout_ns);
-    if (status == TURBO_OK) {
+    if (status == SALTS_OK) {
         atomic_store_explicit(&provider->running, 1, memory_order_release);
     }
     return status;
@@ -626,22 +626,22 @@ void iris_flowmq_provider_stop(iris_flowmq_provider_t *provider) {
         return;
     }
     atomic_store_explicit(&provider->accepting, 0, memory_order_release);
-    turbo_mutex_lock(&provider->ack_mutex);
-    turbo_cond_broadcast(&provider->ack_changed);
-    turbo_mutex_unlock(&provider->ack_mutex);
-    turbo_mutex_lock(&provider->delivery_mutex);
-    turbo_mutex_unlock(&provider->delivery_mutex);
-    turbo_mutex_lock(&provider->query_mutex);
-    turbo_mutex_unlock(&provider->query_mutex);
-    turbo_mutex_lock(&provider->offer_mutex);
-    turbo_mutex_unlock(&provider->offer_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
+    salts_cond_broadcast(&provider->ack_changed);
+    salts_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->delivery_mutex);
+    salts_mutex_unlock(&provider->delivery_mutex);
+    salts_mutex_lock(&provider->query_mutex);
+    salts_mutex_unlock(&provider->query_mutex);
+    salts_mutex_lock(&provider->offer_mutex);
+    salts_mutex_unlock(&provider->offer_mutex);
     for (attempt = 0u; attempt < IRIS_FLOWMQ_CALLBACK_QUIESCE_ATTEMPTS;
          ++attempt) {
         if (atomic_load_explicit(&provider->callback_count,
                                  memory_order_acquire) == 0u) {
             break;
         }
-        turbo_sleep_ms(IRIS_FLOWMQ_CALLBACK_QUIESCE_STEP_MS);
+        salts_sleep_ms(IRIS_FLOWMQ_CALLBACK_QUIESCE_STEP_MS);
     }
     if (atomic_load_explicit(&provider->callback_count,
                              memory_order_acquire) != 0u) {
@@ -649,9 +649,9 @@ void iris_flowmq_provider_stop(iris_flowmq_provider_t *provider) {
         endpoint_stopped = 1;
     }
     if (provider->worker) {
-        turbo_threadpool_shutdown(provider->worker);
-        turbo_threadpool_wait(provider->worker);
-        turbo_threadpool_destroy(provider->worker);
+        salts_threadpool_shutdown(provider->worker);
+        salts_threadpool_wait(provider->worker);
+        salts_threadpool_destroy(provider->worker);
         provider->worker = NULL;
     }
     if (!endpoint_stopped) flowmq_connect_endpoint_stop(provider->endpoint);
@@ -674,11 +674,11 @@ void iris_flowmq_provider_destroy(iris_flowmq_provider_t *provider) {
     tstr_freep(&provider->provider_instance_id);
     tstr_freep(&provider->iris_identity);
     tstr_freep(&provider->iris_certificate_sha256);
-    turbo_cond_destroy(&provider->ack_changed);
-    turbo_mutex_destroy(&provider->ack_mutex);
-    turbo_mutex_destroy(&provider->delivery_mutex);
-    turbo_mutex_destroy(&provider->query_mutex);
-    turbo_mutex_destroy(&provider->offer_mutex);
+    salts_cond_destroy(&provider->ack_changed);
+    salts_mutex_destroy(&provider->ack_mutex);
+    salts_mutex_destroy(&provider->delivery_mutex);
+    salts_mutex_destroy(&provider->query_mutex);
+    salts_mutex_destroy(&provider->offer_mutex);
     free(provider);
 }
 
@@ -714,11 +714,11 @@ ivr_status_t iris_flowmq_provider_send_completion(
             completed_at_unix_ms, &application, &application_size) != IVR_OK) {
         return IVR_EINVAL;
     }
-    turbo_mutex_lock(&provider->delivery_mutex);
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->delivery_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     if (provider->pending_completion_active) {
-        turbo_mutex_unlock(&provider->ack_mutex);
-        turbo_mutex_unlock(&provider->delivery_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->delivery_mutex);
         tbe_typed_serialized_free(application);
         return IVR_EBUSY;
     }
@@ -728,8 +728,8 @@ ivr_status_t iris_flowmq_provider_send_completion(
                  message_id) <= 0 ||
         strlen(message_id) >=
             sizeof(provider->pending_completion_message_id)) {
-        turbo_mutex_unlock(&provider->ack_mutex);
-        turbo_mutex_unlock(&provider->delivery_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->delivery_mutex);
         tbe_typed_serialized_free(application);
         return IVR_ENOSPC;
     }
@@ -742,26 +742,26 @@ ivr_status_t iris_flowmq_provider_send_completion(
     provider->pending_completion_done = 0;
     memset(&provider->pending_completion_ack, 0,
            sizeof(provider->pending_completion_ack));
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
 
     if (send_application(provider, provider->pending_delivery_generation,
                          application,
-                         application_size) != TURBO_OK) {
+                         application_size) != SALTS_OK) {
         status = IVR_EBUSY;
     } else {
-        deadline = turbo_monotonic_ms();
+        deadline = salts_monotonic_ms();
         deadline = UINT64_MAX - deadline < ack_timeout_ms
                        ? UINT64_MAX
                        : deadline + ack_timeout_ms;
-        turbo_mutex_lock(&provider->ack_mutex);
+        salts_mutex_lock(&provider->ack_mutex);
         while (!provider->pending_completion_done &&
                !atomic_load_explicit(&provider->stopped,
                                      memory_order_acquire)) {
-            uint64_t now = turbo_monotonic_ms();
+            uint64_t now = salts_monotonic_ms();
             uint64_t remaining;
             if (now >= deadline) break;
             remaining = deadline - now;
-            (void)turbo_cond_timedwait(&provider->ack_changed,
+            (void)salts_cond_timedwait(&provider->ack_changed,
                                        &provider->ack_mutex,
                                        remaining * UINT64_C(1000000));
         }
@@ -776,15 +776,15 @@ ivr_status_t iris_flowmq_provider_send_completion(
         }
         provider->pending_completion_active = 0;
         provider->pending_completion_done = 0;
-        turbo_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
     }
     if (status != IVR_OK) {
-        turbo_mutex_lock(&provider->ack_mutex);
+        salts_mutex_lock(&provider->ack_mutex);
         provider->pending_completion_active = 0;
         provider->pending_completion_done = 0;
-        turbo_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
     }
-    turbo_mutex_unlock(&provider->delivery_mutex);
+    salts_mutex_unlock(&provider->delivery_mutex);
     tbe_typed_serialized_free(application);
     return status;
 }
@@ -813,11 +813,11 @@ ivr_status_t iris_flowmq_provider_send_event(
             &application_size) != IVR_OK) {
         return IVR_EINVAL;
     }
-    turbo_mutex_lock(&provider->delivery_mutex);
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->delivery_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     if (provider->pending_event_active || provider->pending_completion_active) {
-        turbo_mutex_unlock(&provider->ack_mutex);
-        turbo_mutex_unlock(&provider->delivery_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->delivery_mutex);
         tbe_typed_serialized_free(application);
         return IVR_EBUSY;
     }
@@ -826,8 +826,8 @@ ivr_status_t iris_flowmq_provider_send_event(
                  sizeof(provider->pending_event_message_id), "%s",
                  message_id) <= 0 ||
         strlen(message_id) >= sizeof(provider->pending_event_message_id)) {
-        turbo_mutex_unlock(&provider->ack_mutex);
-        turbo_mutex_unlock(&provider->delivery_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->delivery_mutex);
         tbe_typed_serialized_free(application);
         return IVR_ENOSPC;
     }
@@ -840,26 +840,26 @@ ivr_status_t iris_flowmq_provider_send_event(
     provider->pending_event_done = 0;
     memset(&provider->pending_event_ack, 0,
            sizeof(provider->pending_event_ack));
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
 
     if (send_application(provider, provider->pending_delivery_generation,
                          application,
-                         application_size) != TURBO_OK) {
+                         application_size) != SALTS_OK) {
         status = IVR_EBUSY;
     } else {
-        deadline = turbo_monotonic_ms();
+        deadline = salts_monotonic_ms();
         deadline = UINT64_MAX - deadline < ack_timeout_ms
                        ? UINT64_MAX
                        : deadline + ack_timeout_ms;
-        turbo_mutex_lock(&provider->ack_mutex);
+        salts_mutex_lock(&provider->ack_mutex);
         while (!provider->pending_event_done &&
                !atomic_load_explicit(&provider->stopped,
                                      memory_order_acquire)) {
-            uint64_t now = turbo_monotonic_ms();
+            uint64_t now = salts_monotonic_ms();
             uint64_t remaining;
             if (now >= deadline) break;
             remaining = deadline - now;
-            (void)turbo_cond_timedwait(&provider->ack_changed,
+            (void)salts_cond_timedwait(&provider->ack_changed,
                                        &provider->ack_mutex,
                                        remaining * UINT64_C(1000000));
         }
@@ -874,15 +874,15 @@ ivr_status_t iris_flowmq_provider_send_event(
         }
         provider->pending_event_active = 0;
         provider->pending_event_done = 0;
-        turbo_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
     }
     if (status != IVR_OK) {
-        turbo_mutex_lock(&provider->ack_mutex);
+        salts_mutex_lock(&provider->ack_mutex);
         provider->pending_event_active = 0;
         provider->pending_event_done = 0;
-        turbo_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
     }
-    turbo_mutex_unlock(&provider->delivery_mutex);
+    salts_mutex_unlock(&provider->delivery_mutex);
     tbe_typed_serialized_free(application);
     return status;
 }
@@ -921,8 +921,8 @@ ivr_status_t iris_flowmq_provider_send_query(
             query->payload_json, &application, &application_size) != IVR_OK) {
         return IVR_EINVAL;
     }
-    turbo_mutex_lock(&provider->query_mutex);
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->query_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     if (provider->pending_query_active ||
         !copy_pending_text(provider->pending_query_tenant_id,
                            sizeof(provider->pending_query_tenant_id),
@@ -932,8 +932,8 @@ ivr_status_t iris_flowmq_provider_send_query(
         !copy_pending_text(provider->pending_query_type,
                            sizeof(provider->pending_query_type),
                            query->query_type)) {
-        turbo_mutex_unlock(&provider->ack_mutex);
-        turbo_mutex_unlock(&provider->query_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->query_mutex);
         tbe_typed_serialized_free(application);
         return IVR_EBUSY;
     }
@@ -947,26 +947,26 @@ ivr_status_t iris_flowmq_provider_send_query(
     provider->pending_query_done = 0;
     iris_flowmq_provider_observation_clear(&provider->pending_observation);
     iris_flowmq_provider_observation_init(&provider->pending_observation);
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
 
     if (send_application(provider, provider->pending_query_generation,
                          application,
-                         application_size) != TURBO_OK) {
+                         application_size) != SALTS_OK) {
         status = IVR_EBUSY;
     } else {
-        deadline = turbo_monotonic_ms();
+        deadline = salts_monotonic_ms();
         deadline = UINT64_MAX - deadline < timeout_ms
                        ? UINT64_MAX
                        : deadline + timeout_ms;
-        turbo_mutex_lock(&provider->ack_mutex);
+        salts_mutex_lock(&provider->ack_mutex);
         while (!provider->pending_query_done &&
                !atomic_load_explicit(&provider->stopped,
                                      memory_order_acquire)) {
-            uint64_t now = turbo_monotonic_ms();
+            uint64_t now = salts_monotonic_ms();
             uint64_t remaining;
             if (now >= deadline) break;
             remaining = deadline - now;
-            (void)turbo_cond_timedwait(&provider->ack_changed,
+            (void)salts_cond_timedwait(&provider->ack_changed,
                                        &provider->ack_mutex,
                                        remaining * UINT64_C(1000000));
         }
@@ -983,18 +983,18 @@ ivr_status_t iris_flowmq_provider_send_query(
         }
         provider->pending_query_active = 0;
         provider->pending_query_done = 0;
-        turbo_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
     }
     if (status != IVR_OK) {
-        turbo_mutex_lock(&provider->ack_mutex);
+        salts_mutex_lock(&provider->ack_mutex);
         provider->pending_query_active = 0;
         provider->pending_query_done = 0;
         iris_flowmq_provider_observation_clear(
             &provider->pending_observation);
         iris_flowmq_provider_observation_init(&provider->pending_observation);
-        turbo_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
     }
-    turbo_mutex_unlock(&provider->query_mutex);
+    salts_mutex_unlock(&provider->query_mutex);
     tbe_typed_serialized_free(application);
     return status;
 }
@@ -1023,11 +1023,11 @@ ivr_status_t iris_flowmq_provider_send_call_offer(
         return IVR_EINVAL;
     }
 
-    turbo_mutex_lock(&provider->offer_mutex);
-    turbo_mutex_lock(&provider->ack_mutex);
+    salts_mutex_lock(&provider->offer_mutex);
+    salts_mutex_lock(&provider->ack_mutex);
     if (provider->pending_offer_active) {
-        turbo_mutex_unlock(&provider->ack_mutex);
-        turbo_mutex_unlock(&provider->offer_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->offer_mutex);
         tbe_typed_serialized_free(application);
         return IVR_EBUSY;
     }
@@ -1041,28 +1041,28 @@ ivr_status_t iris_flowmq_provider_send_call_offer(
            sizeof(provider->pending_session_bound));
     provider->pending_offer_active = 1;
     provider->pending_offer_done = 0;
-    turbo_mutex_unlock(&provider->ack_mutex);
+    salts_mutex_unlock(&provider->ack_mutex);
 
     send_status = send_application(provider, provider->pending_offer_generation,
                                    application, application_size);
-    if (send_status != TURBO_OK) {
-        status = send_status == TURBO_ENOSPC ? IVR_ENOSPC : IVR_EBUSY;
+    if (send_status != SALTS_OK) {
+        status = send_status == SALTS_ENOSPC ? IVR_ENOSPC : IVR_EBUSY;
     } else {
-        deadline = turbo_monotonic_ms();
+        deadline = salts_monotonic_ms();
         deadline = UINT64_MAX - deadline < timeout_ms
                        ? UINT64_MAX
                        : deadline + timeout_ms;
-        turbo_mutex_lock(&provider->ack_mutex);
+        salts_mutex_lock(&provider->ack_mutex);
         while (!provider->pending_offer_done &&
                !atomic_load_explicit(&provider->stopped,
                                      memory_order_acquire) &&
                atomic_load_explicit(&provider->running,
                                     memory_order_acquire)) {
-            uint64_t now = turbo_monotonic_ms();
+            uint64_t now = salts_monotonic_ms();
             uint64_t remaining;
             if (now >= deadline) break;
             remaining = deadline - now;
-            (void)turbo_cond_timedwait(&provider->ack_changed,
+            (void)salts_cond_timedwait(&provider->ack_changed,
                                        &provider->ack_mutex,
                                        remaining * UINT64_C(1000000));
         }
@@ -1077,15 +1077,15 @@ ivr_status_t iris_flowmq_provider_send_call_offer(
         }
         provider->pending_offer_active = 0;
         provider->pending_offer_done = 0;
-        turbo_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
     }
     if (status != IVR_OK) {
-        turbo_mutex_lock(&provider->ack_mutex);
+        salts_mutex_lock(&provider->ack_mutex);
         provider->pending_offer_active = 0;
         provider->pending_offer_done = 0;
-        turbo_mutex_unlock(&provider->ack_mutex);
+        salts_mutex_unlock(&provider->ack_mutex);
     }
-    turbo_mutex_unlock(&provider->offer_mutex);
+    salts_mutex_unlock(&provider->offer_mutex);
     tbe_typed_serialized_free(application);
     return status;
 }

@@ -19,8 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <turbo_str.h>
-#include <turbostl/vec.h>
+#include <salts_str.h>
+#include <cstl/vec.h>
 #include <stdio.h>
 
 #ifdef _WIN32

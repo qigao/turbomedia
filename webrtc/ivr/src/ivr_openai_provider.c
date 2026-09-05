@@ -1,4 +1,4 @@
-﻿/*
+/*
  * ivr_openai_provider.c - Remote TTS/ASR providers over an OpenAI-compatible
  * audio API. See ivr_openai_provider.h for the protocol and threading model.
  */
@@ -6,7 +6,7 @@
 #include "ivr_thread.h"
 #include "http_client.h"
 #include "platform.h"
-#include "turbo_parser.h"
+#include <json_parser.h>
 
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -46,7 +46,7 @@ static void ivr_openai_observe_request(
     if (!config || !config->observer.on_request_complete) {
         return;
     }
-    finished_at_ms = turbo_monotonic_ms();
+    finished_at_ms = salts_monotonic_ms();
     config->observer.on_request_complete(
         config->observer.context, kind,
         finished_at_ms >= started_at_ms ? finished_at_ms - started_at_ms : 0);
@@ -383,15 +383,16 @@ static char *ivr_openai_parse_transcript(const char *json, size_t json_len) {
     char *out = NULL;
 
     if (!json || json_len == 0 ||
-        turbo_parse_json((const uint8_t *)json, json_len, &root) != 0 || !root ||
-        turbo_json_type(root) != TURBO_JSON_OBJECT) {
-        turbo_free_json(&root);
+        ((root = json_parse((const char *)((const uint8_t *)json), json_len)) ? 0 : -1) != 0 || !root ||
+        json_type(root) != JSON_OBJECT) {
+        json_free(root);
+        root = NULL;
         return NULL;
     }
-    text_value = turbo_json_object_get(root, "text");
-    if (text_value && turbo_json_type(text_value) == TURBO_JSON_STRING) {
-        const char *s = turbo_json_string(text_value);
-        size_t len = turbo_json_string_len(text_value);
+    text_value = json_object_get(root, "text");
+    if (text_value && json_type(text_value) == JSON_STRING) {
+        const char *s = json_string(text_value);
+        size_t len = json_string_len(text_value);
         out = (char *)malloc(len + 1);
         if (out) {
             if (len > 0) {
@@ -400,7 +401,8 @@ static char *ivr_openai_parse_transcript(const char *json, size_t json_len) {
             out[len] = '\0';
         }
     }
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
     return out;
 }
 /* ------------------------------------------------------------------ */
@@ -757,7 +759,7 @@ static void *ivr_openai_tts_thread(void *opaque) {
         ivr_mutex_unlock(&tts->lock);
 
         if (job) {
-            uint64_t started_at_ms = turbo_monotonic_ms();
+            uint64_t started_at_ms = salts_monotonic_ms();
             ivr_openai_tts_run_job(tts, job);
             ivr_openai_observe_request(tts->config, IVR_OPENAI_REQUEST_TTS,
                                        started_at_ms);
@@ -1045,7 +1047,7 @@ static void *ivr_openai_asr_thread(void *opaque) {
         ivr_mutex_unlock(&asr->lock);
 
         if (job) {
-            uint64_t started_at_ms = turbo_monotonic_ms();
+            uint64_t started_at_ms = salts_monotonic_ms();
             ivr_openai_asr_run_job(asr, job);
             ivr_openai_observe_request(asr->config, IVR_OPENAI_REQUEST_ASR,
                                        started_at_ms);

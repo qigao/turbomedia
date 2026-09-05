@@ -62,7 +62,7 @@ at test_capture.c:103
 
 ### 根本原因
 
-测试期望 `turbo_capture_list_*_devices(devices, 0)` 返回 0，但实际实现中：
+测试期望 `salts_capture_list_*_devices(devices, 0)` 返回 0，但实际实现中：
 - `max_count <= 0` 被视为无效参数
 - 返回 -1 错误码
 
@@ -74,23 +74,23 @@ at test_capture.c:103
 
 **修改前**：
 ```c
-turbo_capture_device_t devices[1];
-EXPECT_INT_EQ(0, turbo_capture_list_audio_devices(devices, 0));
+salts_capture_device_t devices[1];
+EXPECT_INT_EQ(0, salts_capture_list_audio_devices(devices, 0));
 ```
 
 **修改后**：
 ```c
 /* max_count <= 0 应该返回错误 */
-turbo_capture_device_t devices[1];
-EXPECT_INT_EQ(-1, turbo_capture_list_audio_devices(devices, 0));
+salts_capture_device_t devices[1];
+EXPECT_INT_EQ(-1, salts_capture_list_audio_devices(devices, 0));
 ```
 
 ### API 行为规范
 
-函数 `turbo_capture_list_*_devices(devices, max_count)` 返回值约定：
+函数 `salts_capture_list_*_devices(devices, max_count)` 返回值约定：
 - 返回 `>= 0`：成功，返回值为设备数量
 - 返回 `-1`：参数错误（`devices == NULL` 或 `max_count <= 0`）
-- 返回 `< -1`：其他错误（如 `TURBO_CAPTURE_ERR_DEVICE`）
+- 返回 `< -1`：其他错误（如 `SALTS_CAPTURE_ERR_DEVICE`）
 
 ---
 
@@ -100,15 +100,15 @@ EXPECT_INT_EQ(-1, turbo_capture_list_audio_devices(devices, 0));
 
 链接错误：
 ```
-error LNK2019: unresolved external symbol turbo_capture_set_state_callback
+error LNK2019: unresolved external symbol for the legacy Capture state callback setter
 ```
 
 ### 根本原因
 
 测试代码调用了尚未实现的回调 API：
-- `turbo_capture_set_state_callback` - 不存在（应为 `turbo_capture_on_state`）
-- `turbo_audio_capture_set_callback` - 声明但未实现
-- `turbo_video_capture_set_callback` - 声明但未实现
+- 旧 Capture 状态回调 setter 不存在（应使用 `salts_capture_on_state`）
+- `salts_audio_capture_set_callback` - 声明但未实现
+- `salts_video_capture_set_callback` - 声明但未实现
 - 回调 API 缺少 `user_data` 参数传递机制
 
 ### 解决方案
@@ -144,9 +144,9 @@ error LNK2019: unresolved external symbol turbo_capture_set_state_callback
 
 ```c
 // TODO: 需要实现的 API
-- turbo_audio_capture_set_callback() - 设置音频数据回调
-- turbo_video_capture_set_callback() - 设置视频帧回调
-- turbo_capture_on_state() + user_data 支持 - 状态变化回调
+- salts_audio_capture_set_callback() - 设置音频数据回调
+- salts_video_capture_set_callback() - 设置视频帧回调
+- salts_capture_on_state() + user_data 支持 - 状态变化回调
 ```
 
 ---

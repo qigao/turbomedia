@@ -10,8 +10,8 @@
 #include <platform.h>
 #include <turbo_coro_context.h>
 #include <turbo_coro_socket.h>
-#include <turbo_parser.h>
-#include <turbo_thread.h>
+#include <json_parser.h>
+#include <salts_thread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,10 +29,10 @@ static room_service_http_api_t *g_room_service_http_api = NULL;
 struct room_service_http_api_s {
     iris_app_t *app;
     room_service_app_server_t *server;
-    turbo_thread_t thread;
+    salts_thread_t thread;
     int thread_started;
-    turbo_mutex_t lifecycle_mutex;
-    turbo_cond_t lifecycle_cond;
+    salts_mutex_t lifecycle_mutex;
+    salts_cond_t lifecycle_cond;
     coro_context_t *ctx;
     coro_socket_t *listener;
     int state;
@@ -108,12 +108,12 @@ static const char *json_string_field(const json_value_t *obj, const char *key) {
         return NULL;
     }
 
-    value = turbo_json_object_get(obj, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_STRING) {
+    value = json_object_get(obj, key);
+    if (!value || json_type(value) != JSON_STRING) {
         return NULL;
     }
 
-    return turbo_json_string(value);
+    return json_string(value);
 }
 
 static int control_auth_enabled(const room_service_app_config_t *config) {
@@ -312,12 +312,12 @@ static int json_bool_field(const json_value_t *obj, const char *key, int def) {
         return def;
     }
 
-    value = turbo_json_object_get(obj, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_BOOL) {
+    value = json_object_get(obj, key);
+    if (!value || json_type(value) != JSON_BOOL) {
         return def;
     }
 
-    return turbo_json_bool(value) ? 1 : 0;
+    return json_bool(value) ? 1 : 0;
 }
 
 static int json_uint32_field(const json_value_t *obj, const char *key,
@@ -329,12 +329,12 @@ static int json_uint32_field(const json_value_t *obj, const char *key,
         return -1;
     }
 
-    value = turbo_json_object_get(obj, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_NUMBER) {
+    value = json_object_get(obj, key);
+    if (!value || json_type(value) != JSON_NUMBER) {
         return -1;
     }
 
-    number = turbo_json_number(value);
+    number = json_number(value);
     if (number < 0 || number > 4294967295.0) {
         return -1;
     }
@@ -356,28 +356,28 @@ static int json_uint32_array_field(const json_value_t *obj, const char *key,
     *out_count = 0;
     memset(values, 0, sizeof(uint32_t) * (size_t)max_values);
 
-    array = turbo_json_object_get(obj, key);
+    array = json_object_get(obj, key);
     if (!array) {
         return 0;
     }
-    if (turbo_json_type(array) != TURBO_JSON_ARRAY) {
+    if (json_type(array) != JSON_ARRAY) {
         return -1;
     }
 
-    count = turbo_json_array_size(array);
+    count = json_array_size(array);
     if ((int)count > max_values) {
         count = (size_t)max_values;
     }
 
     for (i = 0; i < count; ++i) {
-        json_value_t *item = turbo_json_array_get(array, i);
+        json_value_t *item = json_array_get(array, i);
         double number;
 
-        if (!item || turbo_json_type(item) != TURBO_JSON_NUMBER) {
+        if (!item || json_type(item) != JSON_NUMBER) {
             return -1;
         }
 
-        number = turbo_json_number(item);
+        number = json_number(item);
         if (number < 0 || number > 4294967295.0) {
             return -1;
         }
@@ -1971,7 +1971,7 @@ static int iris_media_http_status(iris_media_bridge_status_t status) {
 
 static void send_iris_media_result(Res *res,
                                    const iris_media_bridge_result_t *result) {
-    json_value_t *root = turbo_json_create_object();
+    json_value_t *root = json_create_object();
     json_value_t *data = NULL;
     char *json;
     size_t json_size = 0u;
@@ -1984,65 +1984,69 @@ static void send_iris_media_result(Res *res,
 #define ADD_JSON(name, value)                                                \
     do {                                                                      \
         json_value_t *item = (value);                                         \
-        if (!item || !turbo_json_object_add_checked(root, (name), item)) {    \
-            turbo_free_json(&item);                                           \
-            turbo_free_json(&root);                                           \
+        if (!item || !json_object_add_checked(root, (name), item)) {    \
+            json_free(item);                                                \
+            item = NULL;                                           \
+            json_free(root);                                                \
+            root = NULL;                                           \
             send_error_json(res, 500, "SERIALIZATION_FAILED",               \
                             "provider response serialization failed");       \
             return;                                                           \
         }                                                                     \
     } while (0)
-    ADD_JSON("schemaVersion", turbo_json_create_uint64(2u));
+    ADD_JSON("schemaVersion", json_create_uint64(2u));
     if (result->status == IRIS_MEDIA_BRIDGE_ACCEPTED ||
         result->status == IRIS_MEDIA_BRIDGE_DUPLICATE) {
-        ADD_JSON("disposition", turbo_json_create_string("accepted"));
-        ADD_JSON("commandId", turbo_json_create_string(result->command_id));
-        ADD_JSON("workerId", turbo_json_create_string(result->iris_worker_id));
+        ADD_JSON("disposition", json_create_string("accepted"));
+        ADD_JSON("commandId", json_create_string(result->command_id));
+        ADD_JSON("workerId", json_create_string(result->iris_worker_id));
         ADD_JSON("dispatchEpoch",
-                 turbo_json_create_uint64(result->dispatch_epoch));
-        ADD_JSON("duplicate", turbo_json_create_bool(
+                 json_create_uint64(result->dispatch_epoch));
+        ADD_JSON("duplicate", json_create_bool(
                                   result->status == IRIS_MEDIA_BRIDGE_DUPLICATE));
         ADD_JSON("mediaWorkerId",
-                 turbo_json_create_string(result->media_worker_id));
+                 json_create_string(result->media_worker_id));
     } else if (result->status == IRIS_MEDIA_BRIDGE_TERMINAL ||
                result->status == IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY) {
         if (result->terminal_status[0] == '\0' ||
             result->event_type[0] == '\0' || result->data[0] == '\0' ||
-            turbo_parse_json((const uint8_t *)result->data,
-                             strlen(result->data), &data) != 0 || !data) {
-            turbo_free_json(&data);
-            turbo_free_json(&root);
+            ((data = json_parse((const char *)((const uint8_t *)result->data), strlen(result->data))) ? 0 : -1) != 0 || !data) {
+            json_free(data);
+            data = NULL;
+            json_free(root);
+            root = NULL;
             send_error_json(res, 500, "COMMAND_LEDGER_RECORD_INVALID",
                             "provider terminal replay is invalid");
             return;
         }
-        ADD_JSON("disposition", turbo_json_create_string("terminal"));
-        ADD_JSON("commandId", turbo_json_create_string(result->command_id));
+        ADD_JSON("disposition", json_create_string("terminal"));
+        ADD_JSON("commandId", json_create_string(result->command_id));
         ADD_JSON("terminalStatus",
-                 turbo_json_create_string(result->terminal_status));
-        ADD_JSON("eventType", turbo_json_create_string(result->event_type));
-        ADD_JSON("duplicate", turbo_json_create_bool(
+                 json_create_string(result->terminal_status));
+        ADD_JSON("eventType", json_create_string(result->event_type));
+        ADD_JSON("duplicate", json_create_bool(
                                   result->status ==
                                   IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY));
         ADD_JSON("data", data);
         data = NULL;
     } else {
-        ADD_JSON("disposition", turbo_json_create_string("rejected"));
-        ADD_JSON("code", turbo_json_create_string(
+        ADD_JSON("disposition", json_create_string("rejected"));
+        ADD_JSON("code", json_create_string(
                              result->error_code ? result->error_code
                                                 : "PROVIDER_COMMAND_FAILED"));
-        ADD_JSON("message", turbo_json_create_string(
+        ADD_JSON("message", json_create_string(
                                 result->error_message
                                     ? result->error_message
                                     : "provider command failed"));
         if (result->command_id[0] != '\0') {
             ADD_JSON("commandId",
-                     turbo_json_create_string(result->command_id));
+                     json_create_string(result->command_id));
         }
     }
 #undef ADD_JSON
-    json = turbo_json_serialize(root, &json_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, &json_size);
+    json_free(root);
+    root = NULL;
     if (!json) {
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "provider response serialization failed");
@@ -2050,7 +2054,7 @@ static void send_iris_media_result(Res *res,
     }
     reply(res, iris_media_http_status(result->status), "application/json",
           json, json_size);
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
 }
 
 static int iris_room_http_status(iris_room_bridge_status_t status) {
@@ -2078,7 +2082,7 @@ static int iris_room_http_status(iris_room_bridge_status_t status) {
 
 static void send_iris_room_result(Res *res,
                                   const iris_room_bridge_result_t *result) {
-    json_value_t *root = turbo_json_create_object();
+    json_value_t *root = json_create_object();
     json_value_t *data = NULL;
     char *json;
     size_t json_size = 0u;
@@ -2090,64 +2094,70 @@ static void send_iris_room_result(Res *res,
 #define ADD_ROOM_JSON(name, value)                                           \
     do {                                                                      \
         json_value_t *item = (value);                                         \
-        if (!item || !turbo_json_object_add_checked(root, (name), item)) {    \
-            turbo_free_json(&item);                                           \
-            turbo_free_json(&root);                                           \
+        if (!item || !json_object_add_checked(root, (name), item)) {    \
+            json_free(item);                                                \
+            item = NULL;                                           \
+            json_free(root);                                                \
+            root = NULL;                                           \
             send_error_json(res, 500, "SERIALIZATION_FAILED",               \
                             "provider response serialization failed");       \
             return;                                                           \
         }                                                                     \
     } while (0)
-    ADD_ROOM_JSON("schemaVersion", turbo_json_create_uint64(2u));
+    ADD_ROOM_JSON("schemaVersion", json_create_uint64(2u));
     if (result->status == IRIS_ROOM_BRIDGE_TERMINAL ||
         result->status == IRIS_ROOM_BRIDGE_DUPLICATE) {
-        if (turbo_parse_json((const uint8_t *)result->data,
-                             strlen(result->data), &data) != 0 || !data) {
-            turbo_free_json(&data);
-            turbo_free_json(&root);
+        if (((data = json_parse((const char *)((const uint8_t *)result->data), strlen(result->data))) ? 0 : -1) != 0 || !data) {
+            json_free(data);
+            data = NULL;
+            json_free(root);
+            root = NULL;
             send_error_json(res, 500, "SERIALIZATION_FAILED",
                             "provider terminal data is invalid");
             return;
         }
         ADD_ROOM_JSON(
             "terminalStatus",
-            turbo_json_create_string(
+            json_create_string(
                 result->terminal_status == IRIS_ROOM_TERMINAL_SUCCEEDED
                     ? "succeeded"
                     : "failed"));
         ADD_ROOM_JSON("eventType",
-                      turbo_json_create_string(result->event_type));
+                      json_create_string(result->event_type));
         ADD_ROOM_JSON("commandId",
-                      turbo_json_create_string(result->command_id));
-        ADD_ROOM_JSON("duplicate", turbo_json_create_bool(
+                      json_create_string(result->command_id));
+        ADD_ROOM_JSON("duplicate", json_create_bool(
                                        result->status ==
                                        IRIS_ROOM_BRIDGE_DUPLICATE));
-        if (!turbo_json_object_add_checked(root, "data", data)) {
-            turbo_free_json(&data);
-            turbo_free_json(&root);
+        if (!json_object_add_checked(root, "data", data)) {
+            json_free(data);
+            data = NULL;
+            json_free(root);
+            root = NULL;
             send_error_json(res, 500, "SERIALIZATION_FAILED",
                             "provider response serialization failed");
             return;
         }
         data = NULL;
     } else {
-        ADD_ROOM_JSON("disposition", turbo_json_create_string("rejected"));
-        ADD_ROOM_JSON("code", turbo_json_create_string(
+        ADD_ROOM_JSON("disposition", json_create_string("rejected"));
+        ADD_ROOM_JSON("code", json_create_string(
                                   result->error_code
                                       ? result->error_code
                                       : "PROVIDER_COMMAND_FAILED"));
-        ADD_ROOM_JSON("message", turbo_json_create_string(
+        ADD_ROOM_JSON("message", json_create_string(
                                      result->error_message
                                          ? result->error_message
                                          : "provider command failed"));
         if (result->command_id[0]) {
             ADD_ROOM_JSON("commandId",
-                          turbo_json_create_string(result->command_id));
+                          json_create_string(result->command_id));
         }
     }
 #undef ADD_ROOM_JSON
-    json = turbo_json_serialize(root, &json_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, &json_size);
+    json_free(root);
+    root = NULL;
     if (!json) {
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "provider response serialization failed");
@@ -2155,7 +2165,7 @@ static void send_iris_room_result(Res *res,
     }
     reply(res, iris_room_http_status(result->status), "application/json",
           json, json_size);
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
 }
 
 static int iris_provider_capability(const char *body, size_t body_size,
@@ -2167,27 +2177,30 @@ static int iris_provider_capability(const char *body, size_t body_size,
     if (!value || value_capacity == 0u) return 0;
     value[0] = '\0';
     if (!body || body_size == 0u ||
-        turbo_parse_json((const uint8_t *)body, body_size, &root) != 0 ||
-        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-        turbo_free_json(&root);
+        ((root = json_parse((const char *)((const uint8_t *)body), body_size)) ? 0 : -1) != 0 ||
+        !root || json_type(root) != JSON_OBJECT) {
+        json_free(root);
+        root = NULL;
         return 0;
     }
-    data = turbo_json_object_get(root, "data");
-    capability = data && turbo_json_type(data) == TURBO_JSON_OBJECT
-                     ? turbo_json_get_string(data, "capability")
+    data = json_object_get(root, "data");
+    capability = data && json_type(data) == JSON_OBJECT
+                     ? json_get_string(data, "capability")
                      : NULL;
     size = capability ? strlen(capability) : 0u;
     if (size > 0u && size < value_capacity) {
         memcpy(value, capability, size + 1u);
     }
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
     return value[0] != '\0';
 }
 
 static int add_owned_json(json_value_t *object, const char *name,
                           json_value_t *value) {
-    if (!value || !turbo_json_object_add_checked(object, name, value)) {
-        turbo_free_json(&value);
+    if (!value || !json_object_add_checked(object, name, value)) {
+        json_free(value);
+        value = NULL;
         return 0;
     }
     return 1;
@@ -2196,211 +2209,229 @@ static int add_owned_json(json_value_t *object, const char *name,
 static void send_iris_dead_letters(
     Res *res, const iris_event_dead_letter_t *items, size_t count,
     size_t total) {
-    json_value_t *root = turbo_json_create_object();
-    json_value_t *array = turbo_json_create_array();
+    json_value_t *root = json_create_object();
+    json_value_t *array = json_create_array();
     char *json = NULL;
     size_t json_size = 0u;
     size_t i;
     if (!root || !array ||
-        !add_owned_json(root, "ok", turbo_json_create_bool(1)) ||
-        !add_owned_json(root, "total", turbo_json_create_uint64(total)) ||
+        !add_owned_json(root, "ok", json_create_bool(1)) ||
+        !add_owned_json(root, "total", json_create_uint64(total)) ||
         !add_owned_json(root, "truncated",
-                        turbo_json_create_bool(total > count))) {
-        turbo_free_json(&array);
-        turbo_free_json(&root);
+                        json_create_bool(total > count))) {
+        json_free(array);
+        array = NULL;
+        json_free(root);
+        root = NULL;
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "dead-letter response allocation failed");
         return;
     }
     for (i = 0u; i < count; ++i) {
-        json_value_t *item = turbo_json_create_object();
+        json_value_t *item = json_create_object();
         if (!item ||
             !add_owned_json(item, "eventId",
-                            turbo_json_create_string(items[i].event_id)) ||
-            !add_owned_json(item, "sessionId", turbo_json_create_string(
+                            json_create_string(items[i].event_id)) ||
+            !add_owned_json(item, "sessionId", json_create_string(
                                                     items[i].provider_session_id)) ||
-            !add_owned_json(item, "dialogId", turbo_json_create_string(
+            !add_owned_json(item, "dialogId", json_create_string(
                                                    items[i].dialog_id)) ||
-            !add_owned_json(item, "type", turbo_json_create_string(
+            !add_owned_json(item, "type", json_create_string(
                                                items[i].event_type)) ||
-            !add_owned_json(item, "occurredAtUnixMs", turbo_json_create_uint64(
+            !add_owned_json(item, "occurredAtUnixMs", json_create_uint64(
                                                          items[i].occurred_at_ms)) ||
-            !add_owned_json(item, "deadAtUnixMs", turbo_json_create_uint64(
+            !add_owned_json(item, "deadAtUnixMs", json_create_uint64(
                                                      items[i].dead_at_ms)) ||
-            !add_owned_json(item, "deliveryAttempts", turbo_json_create_uint64(
+            !add_owned_json(item, "deliveryAttempts", json_create_uint64(
                                                         items[i].delivery_attempts)) ||
-            !add_owned_json(item, "lastHttpStatus", turbo_json_create_int64(
+            !add_owned_json(item, "lastHttpStatus", json_create_int64(
                                                        items[i].last_http_status)) ||
-            !turbo_json_array_add_checked(array, item)) {
-            turbo_free_json(&item);
-            turbo_free_json(&array);
-            turbo_free_json(&root);
+            !json_array_add_checked(array, item)) {
+            json_free(item);
+            item = NULL;
+            json_free(array);
+            array = NULL;
+            json_free(root);
+            root = NULL;
             send_error_json(res, 500, "SERIALIZATION_FAILED",
                             "dead-letter response serialization failed");
             return;
         }
     }
     if (!add_owned_json(root, "items", array)) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "dead-letter response serialization failed");
         return;
     }
-    json = turbo_json_serialize(root, &json_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, &json_size);
+    json_free(root);
+    root = NULL;
     if (!json) {
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "dead-letter response serialization failed");
         return;
     }
     reply(res, 200, "application/json", json, json_size);
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
 }
 
 static void send_iris_archived_events(
     Res *res, const iris_event_archive_t *items, size_t count,
     size_t total) {
-    json_value_t *root = turbo_json_create_object();
-    json_value_t *array = turbo_json_create_array();
+    json_value_t *root = json_create_object();
+    json_value_t *array = json_create_array();
     char *json = NULL;
     size_t json_size = 0u;
     size_t i;
     if (!root || !array ||
-        !add_owned_json(root, "ok", turbo_json_create_bool(1)) ||
-        !add_owned_json(root, "total", turbo_json_create_uint64(total)) ||
+        !add_owned_json(root, "ok", json_create_bool(1)) ||
+        !add_owned_json(root, "total", json_create_uint64(total)) ||
         !add_owned_json(root, "truncated",
-                        turbo_json_create_bool(total > count))) {
-        turbo_free_json(&array);
-        turbo_free_json(&root);
+                        json_create_bool(total > count))) {
+        json_free(array);
+        array = NULL;
+        json_free(root);
+        root = NULL;
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "archive response allocation failed");
         return;
     }
     for (i = 0u; i < count; ++i) {
-        json_value_t *item = turbo_json_create_object();
+        json_value_t *item = json_create_object();
         if (!item ||
             !add_owned_json(item, "eventId",
-                            turbo_json_create_string(items[i].event_id)) ||
-            !add_owned_json(item, "sessionId", turbo_json_create_string(
+                            json_create_string(items[i].event_id)) ||
+            !add_owned_json(item, "sessionId", json_create_string(
                                                     items[i].provider_session_id)) ||
-            !add_owned_json(item, "dialogId", turbo_json_create_string(
+            !add_owned_json(item, "dialogId", json_create_string(
                                                    items[i].dialog_id)) ||
-            !add_owned_json(item, "type", turbo_json_create_string(
+            !add_owned_json(item, "type", json_create_string(
                                                items[i].event_type)) ||
-            !add_owned_json(item, "occurredAtUnixMs", turbo_json_create_uint64(
+            !add_owned_json(item, "occurredAtUnixMs", json_create_uint64(
                                                          items[i].occurred_at_ms)) ||
-            !add_owned_json(item, "archivedAtUnixMs", turbo_json_create_uint64(
+            !add_owned_json(item, "archivedAtUnixMs", json_create_uint64(
                                                          items[i].archived_at_ms)) ||
-            !add_owned_json(item, "deliveryAttempts", turbo_json_create_uint64(
+            !add_owned_json(item, "deliveryAttempts", json_create_uint64(
                                                         items[i].delivery_attempts)) ||
-            !add_owned_json(item, "lastHttpStatus", turbo_json_create_int64(
+            !add_owned_json(item, "lastHttpStatus", json_create_int64(
                                                        items[i].last_http_status)) ||
-            !turbo_json_array_add_checked(array, item)) {
-            turbo_free_json(&item);
-            turbo_free_json(&array);
-            turbo_free_json(&root);
+            !json_array_add_checked(array, item)) {
+            json_free(item);
+            item = NULL;
+            json_free(array);
+            array = NULL;
+            json_free(root);
+            root = NULL;
             send_error_json(res, 500, "SERIALIZATION_FAILED",
                             "archive response serialization failed");
             return;
         }
     }
     if (!add_owned_json(root, "items", array)) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "archive response serialization failed");
         return;
     }
-    json = turbo_json_serialize(root, &json_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, &json_size);
+    json_free(root);
+    root = NULL;
     if (!json) {
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "archive response serialization failed");
         return;
     }
     reply(res, 200, "application/json", json, json_size);
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
 }
 
 static void send_iris_retention_result(
     Res *res, int http_status, const iris_event_retention_result_t *result,
     const char *error_code, const char *error_message) {
-    json_value_t *root = turbo_json_create_object();
+    json_value_t *root = json_create_object();
     char *json = NULL;
     size_t json_size = 0u;
     if (!root ||
         !add_owned_json(root, "ok",
-                        turbo_json_create_bool(http_status >= 200 &&
+                        json_create_bool(http_status >= 200 &&
                                                http_status < 300)) ||
         !add_owned_json(root, "archived",
-                        turbo_json_create_uint64(result->archived)) ||
+                        json_create_uint64(result->archived)) ||
         !add_owned_json(root, "deleted",
-                        turbo_json_create_uint64(result->deleted)) ||
+                        json_create_uint64(result->deleted)) ||
         !add_owned_json(root, "remainingDead",
-                        turbo_json_create_uint64(result->remaining_dead)) ||
+                        json_create_uint64(result->remaining_dead)) ||
         !add_owned_json(root, "remainingArchived",
-                        turbo_json_create_uint64(
+                        json_create_uint64(
                             result->remaining_archived)) ||
         (error_code &&
          !add_owned_json(root, "code",
-                         turbo_json_create_string(error_code))) ||
+                         json_create_string(error_code))) ||
         (error_message &&
          !add_owned_json(root, "message",
-                         turbo_json_create_string(error_message)))) {
-        turbo_free_json(&root);
+                         json_create_string(error_message)))) {
+        json_free(root);
+        root = NULL;
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "retention response serialization failed");
         return;
     }
-    json = turbo_json_serialize(root, &json_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, &json_size);
+    json_free(root);
+    root = NULL;
     if (!json) {
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "retention response serialization failed");
         return;
     }
     reply(res, http_status, "application/json", json, json_size);
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
 }
 
 static void send_iris_replay_batch(
     Res *res, int http_status,
     const iris_event_replay_batch_result_t *result,
     const char *error_code, const char *error_message) {
-    json_value_t *root = turbo_json_create_object();
+    json_value_t *root = json_create_object();
     char *json = NULL;
     size_t json_size = 0u;
     if (!root ||
         !add_owned_json(root, "ok",
-                        turbo_json_create_bool(http_status >= 200 &&
+                        json_create_bool(http_status >= 200 &&
                                                http_status < 300)) ||
         !add_owned_json(root, "selected",
-                        turbo_json_create_uint64(result->selected)) ||
+                        json_create_uint64(result->selected)) ||
         !add_owned_json(root, "replayed",
-                        turbo_json_create_uint64(result->replayed)) ||
+                        json_create_uint64(result->replayed)) ||
         !add_owned_json(root, "remainingDead",
-                        turbo_json_create_uint64(result->remaining_dead)) ||
+                        json_create_uint64(result->remaining_dead)) ||
         !add_owned_json(root, "backpressured",
-                        turbo_json_create_bool(result->backpressured)) ||
+                        json_create_bool(result->backpressured)) ||
         (error_code &&
          !add_owned_json(root, "code",
-                         turbo_json_create_string(error_code))) ||
+                         json_create_string(error_code))) ||
         (error_message &&
          !add_owned_json(root, "message",
-                         turbo_json_create_string(error_message)))) {
-        turbo_free_json(&root);
+                         json_create_string(error_message)))) {
+        json_free(root);
+        root = NULL;
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "dead-letter replay response allocation failed");
         return;
     }
-    json = turbo_json_serialize(root, &json_size);
-    turbo_free_json(&root);
+    json = json_serialize(root, &json_size);
+    json_free(root);
+    root = NULL;
     if (!json) {
         send_error_json(res, 500, "SERIALIZATION_FAILED",
                         "dead-letter replay response serialization failed");
         return;
     }
     reply(res, http_status, "application/json", json, json_size);
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
 }
 
 #endif
@@ -3018,10 +3049,11 @@ static json_value_t *parse_request_object(Req *req, Res *res) {
         return NULL;
     }
 
-    if (turbo_parse_json((const uint8_t *)req->body, req->body_len, &root) != 0 ||
-        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
+    if (((root = json_parse((const char *)((const uint8_t *)req->body), req->body_len)) ? 0 : -1) != 0 ||
+        !root || json_type(root) != JSON_OBJECT) {
         send_error_json(res, 400, "INVALID_JSON", "request body must be a JSON object");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return NULL;
     }
 
@@ -3036,8 +3068,8 @@ static const json_value_t *object_field_or_self(const json_value_t *root,
         return root;
     }
 
-    field = turbo_json_object_get(root, field_name);
-    if (field && turbo_json_type(field) == TURBO_JSON_OBJECT) {
+    field = json_object_get(root, field_name);
+    if (field && json_type(field) == JSON_OBJECT) {
         return field;
     }
 
@@ -3265,7 +3297,7 @@ static int subscribe_track_from_request(turbo_room_service_t *service, const cha
     }
     config.track_id = json_string_field(subscription_obj, "track_id");
     config.enabled = json_bool_field(subscription_obj, "enabled", 1);
-    config.priority = turbo_json_get_int(subscription_obj, "priority", 0);
+    config.priority = json_get_int(subscription_obj, "priority", 0);
     config.preferred_layer =
         parse_video_layer(json_string_field(subscription_obj, "preferred_layer"));
     config.target_layer =
@@ -3371,7 +3403,8 @@ static void handle_join(Req *req, Res *res) {
     service = room_service_app_server_get_service(g_room_service_server);
     root = parse_request_object(req, res);
     if (!service || !root) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -3380,7 +3413,8 @@ static void handle_join(Req *req, Res *res) {
     participant_id = json_string_field(participant_obj, "participant_id");
     if (require_control_auth(req, res, ROOM_SERVICE_SCOPE_CONTROL_WRITE,
                              room_id, participant_id) != 0) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
     if (!room_id ||
@@ -3389,20 +3423,23 @@ static void handle_join(Req *req, Res *res) {
         ensure_participant_joined(service, room_id, participant_obj, &participant_id,
                                   &warning_code, &warning_message) != 0) {
         send_error_json(res, 400, "INVALID_REQUEST", "invalid join payload");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
     participant_json = participant_summary_json(service, room_id, participant_id);
     if (!participant_json) {
         send_error_json(res, 500, "INTERNAL_ERROR", "participant summary unavailable");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
     send_facade_entity_json(res, "participant", participant_json, service, room_id,
                             warning_code, warning_message);
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
 }
 
 static void handle_publish(Req *req, Res *res) {
@@ -3422,7 +3459,8 @@ static void handle_publish(Req *req, Res *res) {
     service = room_service_app_server_get_service(g_room_service_server);
     root = parse_request_object(req, res);
     if (!service || !root) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -3431,27 +3469,31 @@ static void handle_publish(Req *req, Res *res) {
     if (require_control_auth(
             req, res, ROOM_SERVICE_SCOPE_CONTROL_WRITE, room_id,
             json_string_field(track_obj, "owner_participant_id")) != 0) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
     if (!room_id ||
         publish_track_from_request(service, room_id, track_obj, &track_id,
                                    &warning_code, &warning_message) != 0) {
         send_error_json(res, 400, "INVALID_REQUEST", "invalid publish payload");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
     track_json = track_summary_json(service, room_id, track_id);
     if (!track_json) {
         send_error_json(res, 500, "INTERNAL_ERROR", "track summary unavailable");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
     send_facade_entity_json(res, "track", track_json, service, room_id,
                             warning_code, warning_message);
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
 }
 
 static void handle_subscribe(Req *req, Res *res) {
@@ -3472,7 +3514,8 @@ static void handle_subscribe(Req *req, Res *res) {
     service = room_service_app_server_get_service(g_room_service_server);
     root = parse_request_object(req, res);
     if (!service || !root) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -3482,7 +3525,8 @@ static void handle_subscribe(Req *req, Res *res) {
             req, res, ROOM_SERVICE_SCOPE_CONTROL_WRITE, room_id,
             json_string_field(subscription_obj,
                               "subscriber_participant_id")) != 0) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
     if (!room_id ||
@@ -3490,7 +3534,8 @@ static void handle_subscribe(Req *req, Res *res) {
                                      &subscriber_participant_id, &track_id,
                                      &warning_code, &warning_message) != 0) {
         send_error_json(res, 400, "INVALID_REQUEST", "invalid subscribe payload");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -3498,13 +3543,15 @@ static void handle_subscribe(Req *req, Res *res) {
                                                   subscriber_participant_id, track_id);
     if (!subscription_json) {
         send_error_json(res, 500, "INTERNAL_ERROR", "subscription summary unavailable");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
     send_facade_entity_json(res, "subscription", subscription_json, service, room_id,
                             warning_code, warning_message);
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
 }
 
 static void handle_health(Req *req, Res *res) {
@@ -4490,10 +4537,11 @@ static void handle_command(Req *req, Res *res) {
         return;
     }
 
-    if (turbo_parse_json((const uint8_t *)req->body, req->body_len, &root) != 0 ||
-        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
+    if (((root = json_parse((const char *)((const uint8_t *)req->body), req->body_len)) ? 0 : -1) != 0 ||
+        !root || json_type(root) != JSON_OBJECT) {
         send_error_json(res, 400, "INVALID_JSON", "request body must be a JSON object");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -4502,7 +4550,8 @@ static void handle_command(Req *req, Res *res) {
     auth_participant_id = json_string_field(root, "participant_id");
     if (!type) {
         send_error_json(res, 400, "INVALID_REQUEST", "missing command type");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
     app_config = room_service_app_server_get_config(g_room_service_server);
@@ -4516,7 +4565,8 @@ static void handle_command(Req *req, Res *res) {
                                   auth_participant_id)) {
         set_header(res, "WWW-Authenticate", "Bearer");
         send_error_json(res, 401, "UNAUTHORIZED", "control token required");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -4530,13 +4580,14 @@ static void handle_command(Req *req, Res *res) {
         config.side = parse_call_center_queue_side(json_string_field(root, "side"));
         config.entry_id = json_string_field(root, "entry_id");
         config.endpoint_id = json_string_field(root, "endpoint_id");
-        config.priority = turbo_json_get_int(root, "priority", 0);
+        config.priority = json_get_int(root, "priority", 0);
 
         if (!config.queue_id || config.side == 0 || !config.entry_id ||
             !config.endpoint_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center queue entry payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4547,7 +4598,8 @@ static void handle_command(Req *req, Res *res) {
             snprintf(payload, sizeof(payload), "{\"ok\":true,\"queue_depth\":%d}",
                      depth);
             send_json(res, 200, payload);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "remove_call_center_queue_entry") == 0) {
@@ -4559,7 +4611,8 @@ static void handle_command(Req *req, Res *res) {
         if (!queue_id || side == 0 || !entry_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center queue remove payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4567,7 +4620,8 @@ static void handle_command(Req *req, Res *res) {
                                                                entry_id);
         if (rc == 0) {
             send_json(res, 200, "{\"ok\":true}");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "peek_call_center_queue") == 0 ||
@@ -4581,7 +4635,8 @@ static void handle_command(Req *req, Res *res) {
         if (!queue_id || side == 0) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center queue lookup payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4596,7 +4651,8 @@ static void handle_command(Req *req, Res *res) {
         if (rc != 0) {
             send_error_json(res, 404, "QUEUE_ENTRY_NOT_FOUND",
                             "call-center queue entry not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4604,11 +4660,13 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center queue entry unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "queue_entry", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "match_call_center_queue") == 0) {
         const char *queue_id = json_string_field(root, "queue_id");
@@ -4618,7 +4676,8 @@ static void handle_command(Req *req, Res *res) {
         if (!queue_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center queue match payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4629,11 +4688,13 @@ static void handle_command(Req *req, Res *res) {
             if (!json) {
                 send_error_json(res, 500, "INTERNAL_ERROR",
                                 "call-center queue match unavailable");
-                turbo_free_json(&root);
+                json_free(root);
+                root = NULL;
                 return;
             }
             send_entity_ok_json(res, "call_center_match", json);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "claim_call_center_queue") == 0) {
@@ -4644,7 +4705,8 @@ static void handle_command(Req *req, Res *res) {
         if (!queue_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center queue claim payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4656,11 +4718,13 @@ static void handle_command(Req *req, Res *res) {
             if (!json) {
                 send_error_json(res, 500, "INTERNAL_ERROR",
                                 "call-center queue claim unavailable");
-                turbo_free_json(&root);
+                json_free(root);
+                root = NULL;
                 return;
             }
             send_entity_ok_json(res, "call_center_match", json);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "complete_call_center_queue_match") == 0 ||
@@ -4672,7 +4736,8 @@ static void handle_command(Req *req, Res *res) {
         if (!queue_id || !caller_entry_id || !callee_entry_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center queue claim state payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4685,19 +4750,21 @@ static void handle_command(Req *req, Res *res) {
         }
         if (rc == 0) {
             send_json(res, 200, "{\"ok\":true}");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "recover_call_center_queue_claims") == 0) {
         const char *queue_id = json_string_field(root, "queue_id");
-        int lease_ms = turbo_json_get_int(root, "lease_ms", 30000);
+        int lease_ms = json_get_int(root, "lease_ms", 30000);
         int recovered = 0;
         char payload[128];
 
         if (!queue_id || lease_ms < 0) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center queue recovery payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4707,7 +4774,8 @@ static void handle_command(Req *req, Res *res) {
             snprintf(payload, sizeof(payload), "{\"ok\":true,\"recovered\":%d}",
                      recovered);
             send_json(res, 200, payload);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "set_call_center_agent_state") == 0) {
@@ -4720,7 +4788,8 @@ static void handle_command(Req *req, Res *res) {
         if (!endpoint_id || !state) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center agent state payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4730,7 +4799,8 @@ static void handle_command(Req *req, Res *res) {
                                                            &summary) != 0) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center agent state unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4738,11 +4808,13 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center agent state unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "call_center_agent_state", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_call_center_agent_state") == 0) {
         const char *endpoint_id = json_string_field(root, "endpoint_id");
@@ -4752,7 +4824,8 @@ static void handle_command(Req *req, Res *res) {
         if (!endpoint_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center agent state lookup payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4760,7 +4833,8 @@ static void handle_command(Req *req, Res *res) {
                                                            &summary) != 0) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center agent state unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4768,11 +4842,13 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center agent state unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "call_center_agent_state", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_call_center_room") == 0) {
         turbo_call_center_room_summary_t summary;
@@ -4781,7 +4857,8 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center room lookup payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4789,7 +4866,8 @@ static void handle_command(Req *req, Res *res) {
                                                             &summary) != 0) {
             send_error_json(res, 404, "CALL_CENTER_ROOM_NOT_FOUND",
                             "call-center room state not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4797,21 +4875,24 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center room state unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "call_center_room", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_call_center_events") == 0) {
-        int64_t after_sequence = (int64_t)turbo_json_get_int(root, "after_sequence", 0);
-        int limit = turbo_json_get_int(root, "limit", 32);
+        int64_t after_sequence = (int64_t)json_get_int(root, "after_sequence", 0);
+        int limit = json_get_int(root, "limit", 32);
         char *json;
 
         if (!room_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center event lookup payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         if (limit <= 0) {
@@ -4826,11 +4907,13 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center events unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "call_center_events", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "set_call_center_consult_agent") == 0) {
         const char *consult_agent_participant_id =
@@ -4844,7 +4927,8 @@ static void handle_command(Req *req, Res *res) {
             !consult_agent_participant_id[0]) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center consult payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4858,7 +4942,8 @@ static void handle_command(Req *req, Res *res) {
                                                             &summary) != 0) {
             send_error_json(res, 400, "COMMAND_FAILED",
                             "call-center consult failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4866,7 +4951,8 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center room state unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         record_call_center_event_if_room(g_room_service_server, service, room_id,
@@ -4878,7 +4964,8 @@ static void handle_command(Req *req, Res *res) {
                                              : call_center_room_state_name(summary.state),
                                          "consult");
         send_entity_ok_json(res, "call_center_room", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "complete_call_center_transfer") == 0) {
         turbo_call_center_agent_state_t released_agent_state =
@@ -4891,7 +4978,8 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id || !released_agent_state) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center transfer payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4905,7 +4993,8 @@ static void handle_command(Req *req, Res *res) {
                                                             &summary) != 0) {
             send_error_json(res, 400, "COMMAND_FAILED",
                             "call-center transfer failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4913,7 +5002,8 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center room state unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         record_call_center_event_if_room(g_room_service_server, service, room_id,
@@ -4923,7 +5013,8 @@ static void handle_command(Req *req, Res *res) {
                                          call_center_room_state_name(summary.state),
                                          call_center_agent_state_name(released_agent_state));
         send_entity_ok_json(res, "call_center_room", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "finalize_call_center_room") == 0) {
         turbo_call_center_room_state_t state =
@@ -4937,7 +5028,8 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id || !state || !agent_state) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center room finalize payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4947,7 +5039,8 @@ static void handle_command(Req *req, Res *res) {
                                                             &summary) != 0) {
             send_error_json(res, 400, "COMMAND_FAILED",
                             "call-center room finalize failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -4955,7 +5048,8 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center room state unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         record_call_center_event_if_room(g_room_service_server, service, room_id,
@@ -4965,7 +5059,8 @@ static void handle_command(Req *req, Res *res) {
                                          call_center_room_state_name(state),
                                          disposition_code ? disposition_code : "");
         send_entity_ok_json(res, "call_center_room", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_call_center_queue_depth") == 0) {
         const char *queue_id = json_string_field(root, "queue_id");
@@ -4978,7 +5073,8 @@ static void handle_command(Req *req, Res *res) {
         if (!queue_id || (side_text && side == 0)) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center queue depth payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -5002,7 +5098,8 @@ static void handle_command(Req *req, Res *res) {
                      "{\"ok\":true,\"caller_depth\":%d,\"callee_depth\":%d}",
                      caller_depth, callee_depth);
             send_json(res, 200, payload);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "route_call_center_queue") == 0) {
@@ -5028,7 +5125,8 @@ static void handle_command(Req *req, Res *res) {
         if (!queue_id || !route_room_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center route payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 #ifdef ROOM_SERVICE_ENABLE_TEST_HOOKS
@@ -5036,7 +5134,8 @@ static void handle_command(Req *req, Res *res) {
                                            &test_failure_stage) != 0) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid call-center route test failure stage");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 #endif
@@ -5046,7 +5145,8 @@ static void handle_command(Req *req, Res *res) {
                                                 &existing_room) == 0) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "call-center route room already exists");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -5056,7 +5156,8 @@ static void handle_command(Req *req, Res *res) {
         if (rc != 0) {
             send_error_json(res, 500, "INTERNAL_ERROR",
                             "call-center route unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         if (!match.matched) {
@@ -5066,11 +5167,13 @@ static void handle_command(Req *req, Res *res) {
             if (!match_json) {
                 send_error_json(res, 500, "INTERNAL_ERROR",
                                 "call-center route unavailable");
-                turbo_free_json(&root);
+                json_free(root);
+                root = NULL;
                 return;
             }
             send_entity_ok_json(res, "call_center_route", match_json);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         if (strcmp(match.caller.endpoint_id, match.callee.endpoint_id) == 0) {
@@ -5078,7 +5181,8 @@ static void handle_command(Req *req, Res *res) {
                 service, queue_id, match.caller.entry_id, match.callee.entry_id);
             send_error_json(res, 400, "INVALID_REQUEST",
                             "call-center route endpoints must be distinct");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -5160,7 +5264,8 @@ static void handle_command(Req *req, Res *res) {
                 }
                 send_error_json(res, 500, "INTERNAL_ERROR",
                                 "call-center route unavailable");
-                turbo_free_json(&root);
+                json_free(root);
+                root = NULL;
                 return;
             }
             rc = turbo_room_service_complete_call_center_queue_match(
@@ -5180,7 +5285,8 @@ static void handle_command(Req *req, Res *res) {
                                                  match.callee.endpoint_id, "active",
                                                  queue_id);
                 send_entity_ok_json(res, "call_center_route", json);
-                turbo_free_json(&root);
+                json_free(root);
+                root = NULL;
                 return;
             }
         }
@@ -5192,7 +5298,8 @@ static void handle_command(Req *req, Res *res) {
         config.created_by = json_string_field(root, "created_by");
         if (!config.room_id || config.room_type == 0) {
             send_error_json(res, 400, "INVALID_REQUEST", "invalid create_room payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         rc = turbo_room_service_create_room(service, &config);
@@ -5204,7 +5311,8 @@ static void handle_command(Req *req, Res *res) {
         memset(&replay_stats, 0, sizeof(replay_stats));
         if (!room_id) {
             send_error_json(res, 400, "INVALID_REQUEST", "missing room_id");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         if (!node_id) {
@@ -5213,7 +5321,8 @@ static void handle_command(Req *req, Res *res) {
                     sizeof(selected_node_id)) != 0) {
                 send_error_json(res, 409, "NO_SFU_NODE_AVAILABLE",
                                 "no sfu node is registered or configured");
-                turbo_free_json(&root);
+                json_free(root);
+                root = NULL;
                 return;
             }
             node_id = selected_node_id;
@@ -5228,7 +5337,8 @@ static void handle_command(Req *req, Res *res) {
                 !config || !config->sfu_control_url || config->sfu_control_url[0] == '\0') {
                 send_error_json(res, 404, "SFU_NODE_NOT_FOUND",
                                 "sfu node is not registered");
-                turbo_free_json(&root);
+                json_free(root);
+                root = NULL;
                 return;
             }
         }
@@ -5252,7 +5362,8 @@ static void handle_command(Req *req, Res *res) {
         if (rc == 0) {
             send_room_sync_result_json(res, service, room_id, "sfu_replay_stats",
                                        &replay_stats, warning_code, warning_message);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "resync_room") == 0) {
@@ -5263,13 +5374,15 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id ||
             turbo_room_service_get_room_summary(service, room_id, &room_summary) != 0) {
             send_error_json(res, 404, "ROOM_NOT_FOUND", "room not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         if (room_summary.assigned_sfu_node[0] == '\0') {
             send_error_json(res, 400, "ROOM_UNASSIGNED",
                             "room has no assigned sfu node");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -5288,16 +5401,18 @@ static void handle_command(Req *req, Res *res) {
         if (rc == 0) {
             send_room_sync_result_json(res, service, room_id, "sfu_replay_stats",
                                        &replay_stats, warning_code, warning_message);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "add_participant") == 0) {
-        json_value_t *participant = turbo_json_object_get(root, "participant");
+        json_value_t *participant = json_object_get(root, "participant");
         turbo_room_participant_config_t config;
         memset(&config, 0, sizeof(config));
-        if (!participant || turbo_json_type(participant) != TURBO_JSON_OBJECT) {
+        if (!participant || json_type(participant) != JSON_OBJECT) {
             send_error_json(res, 400, "INVALID_REQUEST", "missing participant object");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         config.participant_id = json_string_field(participant, "participant_id");
@@ -5306,7 +5421,8 @@ static void handle_command(Req *req, Res *res) {
         config.role = parse_role(json_string_field(participant, "role"));
         if (!room_id || !config.participant_id || config.role == 0) {
             send_error_json(res, 400, "INVALID_REQUEST", "invalid participant payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         rc = turbo_room_service_add_participant(service, room_id, &config);
@@ -5377,7 +5493,7 @@ static void handle_command(Req *req, Res *res) {
             parse_session_state(json_string_field(root, "session_state")));
     } else if (strcmp(type, "set_participant_bandwidth") == 0) {
         const char *participant_id = json_string_field(root, "participant_id");
-        int bandwidth_bps = turbo_json_get_int(root, "bandwidth_bps", -1);
+        int bandwidth_bps = json_get_int(root, "bandwidth_bps", -1);
         turbo_room_summary_t room_summary;
 
         rc = turbo_room_service_set_participant_bandwidth(service, room_id, participant_id,
@@ -5392,16 +5508,17 @@ static void handle_command(Req *req, Res *res) {
                 "participant bandwidth committed locally; set_receiver_bandwidth was not forwarded to sfu node";
         }
     } else if (strcmp(type, "publish_track") == 0) {
-        json_value_t *track = turbo_json_object_get(root, "track");
+        json_value_t *track = json_object_get(root, "track");
         turbo_room_track_config_t config;
         room_service_conference_policy_apply_result_t call_center_apply_result = {0};
         turbo_room_summary_t room_summary;
         turbo_room_track_summary_t track_summary;
         uint32_t layer_ssrcs[3] = {0};
         memset(&config, 0, sizeof(config));
-        if (!track || turbo_json_type(track) != TURBO_JSON_OBJECT) {
+        if (!track || json_type(track) != JSON_OBJECT) {
             send_error_json(res, 400, "INVALID_REQUEST", "missing track object");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         config.track_id = json_string_field(track, "track_id");
@@ -5414,14 +5531,16 @@ static void handle_command(Req *req, Res *res) {
         if (json_uint32_array_field(track, "layer_ssrcs", layer_ssrcs, 3,
                                     &config.layer_count) != 0) {
             send_error_json(res, 400, "INVALID_REQUEST", "invalid layer_ssrcs payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         config.layer_ssrcs = layer_ssrcs;
         if (!room_id || !config.track_id || !config.owner_participant_id ||
             config.kind == 0 || config.source == 0 || !config.codec_name) {
             send_error_json(res, 400, "INVALID_REQUEST", "invalid track payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         rc = turbo_room_service_publish_track(service, room_id, &config);
@@ -5496,19 +5615,20 @@ static void handle_command(Req *req, Res *res) {
                                                 json_string_field(root, "track_id"),
                                                 json_bool_field(root, "muted", 0));
     } else if (strcmp(type, "set_subscription") == 0) {
-        json_value_t *subscription = turbo_json_object_get(root, "subscription");
+        json_value_t *subscription = json_object_get(root, "subscription");
         turbo_room_subscription_config_t config;
         memset(&config, 0, sizeof(config));
-        if (!subscription || turbo_json_type(subscription) != TURBO_JSON_OBJECT) {
+        if (!subscription || json_type(subscription) != JSON_OBJECT) {
             send_error_json(res, 400, "INVALID_REQUEST", "missing subscription object");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         config.subscriber_participant_id =
             json_string_field(subscription, "subscriber_participant_id");
         config.track_id = json_string_field(subscription, "track_id");
         config.enabled = json_bool_field(subscription, "enabled", 1);
-        config.priority = turbo_json_get_int(subscription, "priority", 0);
+        config.priority = json_get_int(subscription, "priority", 0);
         config.preferred_layer =
             parse_video_layer(json_string_field(subscription, "preferred_layer"));
         config.target_layer =
@@ -5517,7 +5637,8 @@ static void handle_command(Req *req, Res *res) {
         config.policy_source = json_string_field(subscription, "policy_source");
         if (!room_id || !config.subscriber_participant_id || !config.track_id) {
             send_error_json(res, 400, "INVALID_REQUEST", "invalid subscription payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         rc = turbo_room_service_set_subscription(service, room_id, &config);
@@ -5549,7 +5670,8 @@ static void handle_command(Req *req, Res *res) {
 
         if (!room_id || !layout_mode) {
             send_error_json(res, 400, "INVALID_REQUEST", "invalid conference policy payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -5562,7 +5684,8 @@ static void handle_command(Req *req, Res *res) {
         if (rc == 0) {
             send_conference_policy_result_json(res, g_room_service_server, service, room_id,
                                                &apply_result);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "set_active_speaker") == 0) {
@@ -5578,7 +5701,8 @@ static void handle_command(Req *req, Res *res) {
         if (rc == 0) {
             send_conference_policy_result_json(res, g_room_service_server, service, room_id,
                                                &apply_result);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "set_pin") == 0 ||
@@ -5600,7 +5724,8 @@ static void handle_command(Req *req, Res *res) {
         if (rc == 0) {
             send_conference_policy_result_json(res, g_room_service_server, service, room_id,
                                                &apply_result);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "apply_conference_policy") == 0) {
@@ -5612,7 +5737,8 @@ static void handle_command(Req *req, Res *res) {
         if (rc == 0) {
             send_conference_policy_result_json(res, g_room_service_server, service, room_id,
                                                &apply_result);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "apply_call_center_policy") == 0) {
@@ -5624,7 +5750,8 @@ static void handle_command(Req *req, Res *res) {
 
         if (!room_id || supervisor_mode < TURBO_CALL_CENTER_SUPERVISOR_NONE) {
             send_error_json(res, 400, "INVALID_REQUEST", "invalid call-center policy payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -5640,7 +5767,8 @@ static void handle_command(Req *req, Res *res) {
                 res, service, room_id,
                 supervisor_mode_text ? supervisor_mode_text : "none",
                 &apply_result);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     } else if (strcmp(type, "get_participant") == 0) {
@@ -5648,11 +5776,13 @@ static void handle_command(Req *req, Res *res) {
                                               json_string_field(root, "participant_id"));
         if (!json) {
             send_error_json(res, 404, "PARTICIPANT_NOT_FOUND", "participant not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "participant", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_participant_bandwidth_diagnostic") == 0) {
         char *json = participant_bandwidth_diagnostic_json(
@@ -5661,52 +5791,62 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 404, "PARTICIPANT_NOT_FOUND",
                             "participant bandwidth diagnostic not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "participant_bandwidth_diagnostic", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_room_diagnostic") == 0) {
         char *json = room_diagnostic_json(g_room_service_server, service, room_id);
         if (!json) {
             send_error_json(res, 404, "ROOM_NOT_FOUND", "room diagnostic not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "room_diagnostic", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_room_state") == 0) {
         char *json = room_state_json(g_room_service_server, service, room_id);
         if (!json) {
             send_error_json(res, 404, "ROOM_NOT_FOUND", "room state not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "room_state", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_room_sync_diagnostic") == 0) {
         char *json = room_sync_view_json(g_room_service_server, service, room_id);
         if (!json) {
             send_error_json(res, 404, "ROOM_NOT_FOUND", "room sync diagnostic not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "room_sync_diagnostic", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_track") == 0) {
         char *json = track_summary_json(service, room_id,
                                         json_string_field(root, "track_id"));
         if (!json) {
             send_error_json(res, 404, "TRACK_NOT_FOUND", "track not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "track", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_subscription") == 0) {
         char *json = subscription_summary_json(
@@ -5715,11 +5855,13 @@ static void handle_command(Req *req, Res *res) {
             json_string_field(root, "track_id"));
         if (!json) {
             send_error_json(res, 404, "SUBSCRIPTION_NOT_FOUND", "subscription not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "subscription", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_subscription_diagnostic") == 0) {
         char *json = subscription_diagnostic_json(
@@ -5729,25 +5871,29 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 404, "SUBSCRIPTION_NOT_FOUND",
                             "subscription diagnostic not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "subscription_diagnostic", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_conference_policy") == 0) {
         char *json = conference_policy_json(g_room_service_server, room_id);
         if (!json) {
             send_error_json(res, 404, "ROOM_NOT_FOUND", "conference policy not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "conference_policy", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "list_iris_dead_letters") == 0) {
 #ifdef TURBO_MEDIA_HAS_IVR_FMQ
-        int limit = turbo_json_get_int(root, "limit", 100);
+        int limit = json_get_int(root, "limit", 100);
         iris_event_dead_letter_t *items;
         size_t count = 0u;
         size_t total = 0u;
@@ -5755,7 +5901,8 @@ static void handle_command(Req *req, Res *res) {
         if (limit < 1 || limit > (int)IRIS_EVENT_OUTBOX_LIST_MAX) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "limit must be between 1 and 256");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         items = (iris_event_dead_letter_t *)calloc((size_t)limit,
@@ -5763,7 +5910,8 @@ static void handle_command(Req *req, Res *res) {
         if (!items) {
             send_error_json(res, 503, "IRIS_LIST_FAILED",
                             "dead-letter snapshot allocation failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         list_status = room_service_app_server_list_iris_dead_letters(
@@ -5778,17 +5926,19 @@ static void handle_command(Req *req, Res *res) {
                             "dead-letter snapshot is unavailable");
         }
         free(items);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #else
         send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
                         "Iris event outbox is not available in this build");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #endif
     } else if (strcmp(type, "list_iris_archived_events") == 0) {
 #ifdef TURBO_MEDIA_HAS_IVR_FMQ
-        int limit = turbo_json_get_int(root, "limit", 100);
+        int limit = json_get_int(root, "limit", 100);
         iris_event_archive_t *items;
         size_t count = 0u;
         size_t total = 0u;
@@ -5796,7 +5946,8 @@ static void handle_command(Req *req, Res *res) {
         if (limit < 1 || limit > (int)IRIS_EVENT_OUTBOX_LIST_MAX) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "limit must be between 1 and 256");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         items = (iris_event_archive_t *)calloc((size_t)limit,
@@ -5804,7 +5955,8 @@ static void handle_command(Req *req, Res *res) {
         if (!items) {
             send_error_json(res, 503, "IRIS_LIST_FAILED",
                             "archive snapshot allocation failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         list_status = room_service_app_server_list_iris_archived_events(
@@ -5819,12 +5971,14 @@ static void handle_command(Req *req, Res *res) {
                             "archive snapshot is unavailable");
         }
         free(items);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #else
         send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
                         "Iris event outbox is not available in this build");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #endif
     } else if (strcmp(type, "run_iris_event_retention") == 0) {
@@ -5845,17 +5999,19 @@ static void handle_command(Req *req, Res *res) {
                 res, 503, &retention_result, "IRIS_RETENTION_FAILED",
                 "Iris event retention sweep stopped after a storage failure");
         }
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #else
         send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
                         "Iris event outbox is not available in this build");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #endif
     } else if (strcmp(type, "replay_iris_dead_letters") == 0) {
 #ifdef TURBO_MEDIA_HAS_IVR_FMQ
-        int limit = turbo_json_get_int(root, "limit", 100);
+        int limit = json_get_int(root, "limit", 100);
         iris_event_replay_batch_result_t replay_result;
         ivr_status_t replay_status;
         memset(&replay_result, 0, sizeof(replay_result));
@@ -5863,7 +6019,8 @@ static void handle_command(Req *req, Res *res) {
             limit > (int)IRIS_EVENT_OUTBOX_BATCH_REPLAY_MAX) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "limit must be between 1 and 256");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         replay_status = room_service_app_server_replay_iris_dead_letters(
@@ -5886,12 +6043,14 @@ static void handle_command(Req *req, Res *res) {
                 res, 503, &replay_result, "IRIS_REPLAY_FAILED",
                 "Iris dead-letter batch replay did not complete");
         }
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #else
         send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
                         "Iris event outbox is not available in this build");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #endif
     } else if (strcmp(type, "replay_iris_event") == 0) {
@@ -5900,7 +6059,8 @@ static void handle_command(Req *req, Res *res) {
         ivr_status_t replay_status;
         if (!event_id || !event_id[0]) {
             send_error_json(res, 400, "INVALID_REQUEST", "missing event_id");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         replay_status = room_service_app_server_replay_iris_event(
@@ -5920,12 +6080,14 @@ static void handle_command(Req *req, Res *res) {
             send_error_json(res, 503, "IRIS_REPLAY_FAILED",
                             "Iris event replay could not be scheduled");
         }
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #else
         send_error_json(res, 404, "IRIS_OUTBOX_UNAVAILABLE",
                         "Iris event outbox is not available in this build");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
 #endif
     } else if (strcmp(type, "start_recording") == 0) {
@@ -5964,13 +6126,15 @@ static void handle_command(Req *req, Res *res) {
         }
     } else {
         send_error_json(res, 400, "UNKNOWN_COMMAND", "unsupported command type");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
     if (rc != 0) {
         send_error_json(res, 400, "COMMAND_FAILED", "command execution failed");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -5979,19 +6143,20 @@ static void handle_command(Req *req, Res *res) {
     } else {
         send_room_ok_json(res, service, room_id);
     }
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
 }
 
 static void room_service_http_mark_running(void *arg1, void *arg2) {
     room_service_http_api_t *api = (room_service_http_api_t *)arg1;
     (void)arg2;
 
-    turbo_mutex_lock(&api->lifecycle_mutex);
+    salts_mutex_lock(&api->lifecycle_mutex);
     if (api->state == ROOM_SERVICE_HTTP_STARTING) {
         api->state = ROOM_SERVICE_HTTP_RUNNING;
-        turbo_cond_broadcast(&api->lifecycle_cond);
+        salts_cond_broadcast(&api->lifecycle_cond);
     }
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    salts_mutex_unlock(&api->lifecycle_mutex);
 }
 
 static void room_service_http_thread(void *arg) {
@@ -6004,10 +6169,10 @@ static void room_service_http_thread(void *arg) {
 
     ctx = coro_context_create(NULL);
     if (!ctx) {
-        turbo_mutex_lock(&api->lifecycle_mutex);
+        salts_mutex_lock(&api->lifecycle_mutex);
         api->state = ROOM_SERVICE_HTTP_FAILED;
-        turbo_cond_broadcast(&api->lifecycle_cond);
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+        salts_cond_broadcast(&api->lifecycle_cond);
+        salts_mutex_unlock(&api->lifecycle_mutex);
         return;
     }
 
@@ -6035,26 +6200,26 @@ static void room_service_http_thread(void *arg) {
         if (async_initialized) {
             iris_async_shutdown();
         }
-        turbo_mutex_lock(&api->lifecycle_mutex);
+        salts_mutex_lock(&api->lifecycle_mutex);
         api->state = ROOM_SERVICE_HTTP_FAILED;
-        turbo_cond_broadcast(&api->lifecycle_cond);
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+        salts_cond_broadcast(&api->lifecycle_cond);
+        salts_mutex_unlock(&api->lifecycle_mutex);
         return;
     }
 
     coro_context_set_persistent(ctx, 1);
-    turbo_mutex_lock(&api->lifecycle_mutex);
+    salts_mutex_lock(&api->lifecycle_mutex);
     api->ctx = ctx;
     api->listener = listener;
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    salts_mutex_unlock(&api->lifecycle_mutex);
 
     if (coro_post(ctx, room_service_http_mark_running, api, NULL) != 0) {
-        turbo_mutex_lock(&api->lifecycle_mutex);
+        salts_mutex_lock(&api->lifecycle_mutex);
         api->listener = NULL;
         api->ctx = NULL;
         api->state = ROOM_SERVICE_HTTP_FAILED;
-        turbo_cond_broadcast(&api->lifecycle_cond);
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+        salts_cond_broadcast(&api->lifecycle_cond);
+        salts_mutex_unlock(&api->lifecycle_mutex);
         coro_context_set_persistent(ctx, 0);
         coro_socket_destroy(listener);
         coro_context_destroy(ctx);
@@ -6066,11 +6231,11 @@ static void room_service_http_thread(void *arg) {
 
     coro_context_run(ctx, TURBO_RUN_DEFAULT);
 
-    turbo_mutex_lock(&api->lifecycle_mutex);
+    salts_mutex_lock(&api->lifecycle_mutex);
     api->listener = NULL;
     api->ctx = NULL;
     api->state = ROOM_SERVICE_HTTP_STOPPING;
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    salts_mutex_unlock(&api->lifecycle_mutex);
 
     coro_context_set_persistent(ctx, 0);
     coro_socket_destroy(listener);
@@ -6079,10 +6244,10 @@ static void room_service_http_thread(void *arg) {
         iris_async_shutdown();
     }
 
-    turbo_mutex_lock(&api->lifecycle_mutex);
+    salts_mutex_lock(&api->lifecycle_mutex);
     api->state = ROOM_SERVICE_HTTP_STOPPED;
-    turbo_cond_broadcast(&api->lifecycle_cond);
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    salts_cond_broadcast(&api->lifecycle_cond);
+    salts_mutex_unlock(&api->lifecycle_mutex);
 }
 
 room_service_http_api_t *room_service_http_api_create(room_service_app_server_t *server) {
@@ -6098,12 +6263,12 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
         return NULL;
     }
 
-    turbo_mutex_init(&api->lifecycle_mutex);
-    turbo_cond_init(&api->lifecycle_cond);
+    salts_mutex_init(&api->lifecycle_mutex);
+    salts_cond_init(&api->lifecycle_cond);
     api->app = iris_app_create();
     if (!api->app) {
-        turbo_cond_destroy(&api->lifecycle_cond);
-        turbo_mutex_destroy(&api->lifecycle_mutex);
+        salts_cond_destroy(&api->lifecycle_cond);
+        salts_mutex_destroy(&api->lifecycle_mutex);
         free(api);
         return NULL;
     }
@@ -6167,35 +6332,35 @@ int room_service_http_api_start(room_service_http_api_t *api, const char *host, 
         return -1;
     }
 
-    turbo_mutex_lock(&api->lifecycle_mutex);
+    salts_mutex_lock(&api->lifecycle_mutex);
     if (api->state != ROOM_SERVICE_HTTP_STOPPED || api->thread_started) {
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+        salts_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
     api->host = host;
     api->port = port;
     api->state = ROOM_SERVICE_HTTP_STARTING;
-    if (turbo_thread_create(&api->thread, room_service_http_thread, api) != 0) {
+    if (salts_thread_create(&api->thread, room_service_http_thread, api) != 0) {
         api->state = ROOM_SERVICE_HTTP_STOPPED;
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+        salts_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
 
     api->thread_started = 1;
     while (api->state == ROOM_SERVICE_HTTP_STARTING) {
-        turbo_cond_wait(&api->lifecycle_cond, &api->lifecycle_mutex);
+        salts_cond_wait(&api->lifecycle_cond, &api->lifecycle_mutex);
     }
     if (api->state == ROOM_SERVICE_HTTP_RUNNING) {
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+        salts_mutex_unlock(&api->lifecycle_mutex);
         return 0;
     }
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    salts_mutex_unlock(&api->lifecycle_mutex);
 
-    turbo_thread_join(&api->thread);
-    turbo_mutex_lock(&api->lifecycle_mutex);
+    salts_thread_join(&api->thread);
+    salts_mutex_lock(&api->lifecycle_mutex);
     api->thread_started = 0;
     api->state = ROOM_SERVICE_HTTP_STOPPED;
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    salts_mutex_unlock(&api->lifecycle_mutex);
     return -1;
 }
 
@@ -6206,20 +6371,20 @@ void room_service_http_api_stop(room_service_http_api_t *api) {
         return;
     }
 
-    turbo_mutex_lock(&api->lifecycle_mutex);
+    salts_mutex_lock(&api->lifecycle_mutex);
     if (api->state == ROOM_SERVICE_HTTP_RUNNING && api->ctx) {
         api->state = ROOM_SERVICE_HTTP_STOPPING;
         coro_context_stop(api->ctx);
     }
     should_join = api->thread_started;
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    salts_mutex_unlock(&api->lifecycle_mutex);
 
     if (should_join) {
-        turbo_thread_join(&api->thread);
-        turbo_mutex_lock(&api->lifecycle_mutex);
+        salts_thread_join(&api->thread);
+        salts_mutex_lock(&api->lifecycle_mutex);
         api->thread_started = 0;
         api->state = ROOM_SERVICE_HTTP_STOPPED;
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+        salts_mutex_unlock(&api->lifecycle_mutex);
     }
 }
 
@@ -6238,8 +6403,8 @@ void room_service_http_api_destroy(room_service_http_api_t *api) {
     if (api->app) {
         iris_app_destroy(api->app);
     }
-    turbo_cond_destroy(&api->lifecycle_cond);
-    turbo_mutex_destroy(&api->lifecycle_mutex);
+    salts_cond_destroy(&api->lifecycle_cond);
+    salts_mutex_destroy(&api->lifecycle_mutex);
     free(api);
 }
 

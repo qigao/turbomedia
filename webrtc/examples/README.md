@@ -214,7 +214,7 @@ turbo_dc_peer_connect(peer);
 
 /* 5. Keep the process alive while the internal CoroNet runtime drives I/O */
 while (running) {
-    turbo_sleep_ms(100);
+    salts_sleep_ms(100);
 }
 ```
 

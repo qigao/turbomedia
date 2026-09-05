@@ -38,7 +38,7 @@
   canonical DataBind schema，不提供格式猜测或 fallback。
   证据：`ivr_protocol.c`、`test_ivr_protocol`、生产化设计 2.4 节。
 - [ ] `ARCH-04` `RtcSessionWorkflow` 删除 `.hpp/.cpp`，纯 C 实现使用 TurboXML C API 和
-  TurboUtils Parser，并通过全部 C API 状态/command/非法输入/cleanup 测试。
+  Salts Parser，并通过全部 C API 状态/command/非法输入/cleanup 测试。
   当前证据（2026-08-10）：外部 `turbo-webrtc` 已完成 `win-release-user`、BoringSSL
   probe、`turbo_rtc_session_workflow` 和 `test_rtc_session_workflow` 编译；workflow
   target 已补 `SHARED_CXX` 导出，C wrapper 已有界驱动 TurboXML 初始化和事件宏步。

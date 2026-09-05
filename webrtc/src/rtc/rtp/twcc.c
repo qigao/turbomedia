@@ -73,7 +73,7 @@ struct twcc_receiver_s {
  * Helper Functions
  * ============================================================================= */
 
-static uint64_t get_time_us(void) { return turbo_monotonic_ms() * 1000ULL; }
+static uint64_t get_time_us(void) { return salts_monotonic_ms() * 1000ULL; }
 
 static int seq_newer(uint16_t s1, uint16_t s2) { return ((int16_t)(s1 - s2)) > 0; }
 

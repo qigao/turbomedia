@@ -262,9 +262,11 @@ git commit -m "refactor: migrate config parsers to concrete Salts targets"
 ### Task 5: Migrate URI parsing without weakening validation
 
 **Files:**
+- Add: `network/transport_url.c`
+- Add: `tests/test_transport_url.c`
 - Modify: `network/transport_coronet.c`
 - Modify: `network/CMakeLists.txt`
-- Modify: the existing transport tests selected by `rg.exe -l "transport_coronet|TurboMedia::Transport" tests network`
+- Modify: `tests/package_consumer/transport_consumer.c`
 
 **Interfaces:**
 - Consumes: `<uri_parser.h>`, `int uri_parse(const char *, uri_t *)`, `Salts::UriParser`
@@ -323,7 +325,7 @@ git commit -m "refactor: migrate transport URI parsing to Salts"
 - Modify: `webrtc/src/turbo_dc_msg.c`
 - Modify: `webrtc/tests/test_dc_msg.c`
 - Modify: `webrtc/CMakeLists.txt`
-- Modify: `tests/package_consumer/main.c`
+- Add: `tests/package_consumer/datachannel_consumer.c`
 
 **Interfaces:**
 - Consumes: `<ltv_parser.h>`, `ltv_message_t`, `ltv_build`, `ltv_parse`, `Salts::LtvParser`

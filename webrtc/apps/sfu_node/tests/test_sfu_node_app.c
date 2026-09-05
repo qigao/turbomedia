@@ -6,7 +6,7 @@
 #include "turbo_media_auth.h"
 #include "turbo_recorder_internal.h"
 #include "turbo_demuxer.h"
-#include "turbo_parser.h"
+#include <json_parser.h>
 #include "turbo_peer_connection.h"
 #include <stdlib.h>
 #include <stdint.h>
@@ -135,8 +135,8 @@ static json_value_t *json_object_field(const json_value_t *obj, const char *key)
     return NULL;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_OBJECT) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_OBJECT) {
     return NULL;
   }
 
@@ -150,12 +150,12 @@ static const char *json_string_value(const json_value_t *obj, const char *key) {
     return NULL;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_STRING) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_STRING) {
     return NULL;
   }
 
-  return turbo_json_string(value);
+  return json_string(value);
 }
 
 static int json_bool_value(const json_value_t *obj, const char *key, int def) {
@@ -165,12 +165,12 @@ static int json_bool_value(const json_value_t *obj, const char *key, int def) {
     return def;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_BOOL) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_BOOL) {
     return def;
   }
 
-  return turbo_json_bool(value) ? 1 : 0;
+  return json_bool(value) ? 1 : 0;
 }
 
 static int json_int_value(const json_value_t *obj, const char *key, int def) {
@@ -180,12 +180,12 @@ static int json_int_value(const json_value_t *obj, const char *key, int def) {
     return def;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_NUMBER) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_NUMBER) {
     return def;
   }
 
-  return (int)turbo_json_number(value);
+  return (int)json_number(value);
 }
 
 static size_t json_array_count(const json_value_t *obj, const char *key) {
@@ -195,12 +195,12 @@ static size_t json_array_count(const json_value_t *obj, const char *key) {
     return 0;
   }
 
-  value = turbo_json_object_get(obj, key);
-  if (!value || turbo_json_type(value) != TURBO_JSON_ARRAY) {
+  value = json_object_get(obj, key);
+  if (!value || json_type(value) != JSON_ARRAY) {
     return 0;
   }
 
-  return turbo_json_array_size(value);
+  return json_array_size(value);
 }
 
 static const char *json_array_string_at(const json_value_t *obj, const char *key,
@@ -212,18 +212,18 @@ static const char *json_array_string_at(const json_value_t *obj, const char *key
     return NULL;
   }
 
-  array = turbo_json_object_get(obj, key);
-  if (!array || turbo_json_type(array) != TURBO_JSON_ARRAY ||
-      index >= turbo_json_array_size(array)) {
+  array = json_object_get(obj, key);
+  if (!array || json_type(array) != JSON_ARRAY ||
+      index >= json_array_size(array)) {
     return NULL;
   }
 
-  item = turbo_json_array_get(array, index);
-  if (!item || turbo_json_type(item) != TURBO_JSON_STRING) {
+  item = json_array_get(array, index);
+  if (!item || json_type(item) != JSON_STRING) {
     return NULL;
   }
 
-  return turbo_json_string(item);
+  return json_string(item);
 }
 
 static int parse_json_text(const char *json_text, json_value_t **out_root) {
@@ -236,9 +236,10 @@ static int parse_json_text(const char *json_text, json_value_t **out_root) {
     return -1;
   }
 
-  if (turbo_parse_json((const uint8_t *)json_text, strlen(json_text), &root) != 0 ||
-      !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-    turbo_free_json(&root);
+  if (((root = json_parse((const char *)((const uint8_t *)json_text), strlen(json_text))) ? 0 : -1) != 0 ||
+      !root || json_type(root) != JSON_OBJECT) {
+    json_free(root);
+    root = NULL;
     return -1;
   }
 
@@ -275,8 +276,9 @@ static json_value_t *http_get_json(const char *base_url, const char *path) {
   root = http_response_parse_json(response);
   http_response_free(response);
   http_client_destroy(client);
-  if (!root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-    turbo_free_json(&root);
+  if (!root || json_type(root) != JSON_OBJECT) {
+    json_free(root);
+    root = NULL;
     return NULL;
   }
 
@@ -338,8 +340,9 @@ static json_value_t *http_post_json_result(const char *base_url, const char *pat
   root = http_response_parse_json(response);
   http_response_free(response);
   http_client_destroy(client);
-  if (!root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-    turbo_free_json(&root);
+  if (!root || json_type(root) != JSON_OBJECT) {
+    json_free(root);
+    root = NULL;
     return NULL;
   }
 
@@ -410,8 +413,9 @@ static json_value_t *http_post_json_result_with_token(const char *base_url,
   root = http_response_parse_json(response);
   http_response_free(response);
   http_client_destroy(client);
-  if (!root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-    turbo_free_json(&root);
+  if (!root || json_type(root) != JSON_OBJECT) {
+    json_free(root);
+    root = NULL;
     return NULL;
   }
 
@@ -497,7 +501,8 @@ static int wait_for_http_status_ok(const char *base_url, const char *path, int r
   for (int i = 0; i < retries; ++i) {
     json_value_t *root = http_get_json(base_url, path);
     if (root) {
-      turbo_free_json(&root);
+      json_free(root);
+      root = NULL;
       return 0;
     }
     app_test_sleep_ms((unsigned int)delay_ms);
@@ -795,7 +800,8 @@ static char *copy_session_answer(sfu_node_app_server_t *server, const char *room
   if (answer_sdp) {
     answer_copy = app_strdup(answer_sdp);
   }
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   return answer_copy;
 }
 
@@ -947,7 +953,9 @@ static void sync_sfu_candidates_to_peer(sfu_node_app_server_t *server, const cha
     peer_state->sfu_candidates_applied_to_peer++;
   }
 
-  turbo_free_json(&root);
+  json_free(root);
+
+  root = NULL;
 }
 
 void test_sfu_node_webrtc_session_accepts_offer_and_generates_answer(void) {
@@ -1036,7 +1044,8 @@ void test_sfu_node_webrtc_session_accepts_offer_and_generates_answer(void) {
   check_true(json_int_value(session, "local_candidate_count", -1) >= 0);
   check_equal((int)(turbo_peer_connection_set_remote_description(
                                offerer, "answer", answer_sdp)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
 
   check_equal((int)(sfu_node_app_server_remove_webrtc_session(
@@ -1127,7 +1136,9 @@ void test_sfu_node_webrtc_session_provisions_relay_track_before_answer(void) {
   check_not_null(strstr(answer_sdp, "m=video"));
   check_not_null(strstr(answer_sdp, "a=sendonly"));
 
-  turbo_free_json(&root);
+  json_free(root);
+
+  root = NULL;
   turbo_peer_connection_destroy(subscriber);
   sfu_node_app_server_destroy(sfu_server);
 }
@@ -1219,7 +1230,9 @@ void test_sfu_node_webrtc_session_provisions_multiple_publishers_to_one_subscrib
   check_equal((int)(count_substring_occurrences(answer_sdp, "m=video")), (int)(2));
   check_equal((int)(count_substring_occurrences(answer_sdp, "a=sendonly")), (int)(2));
 
-  turbo_free_json(&root);
+  json_free(root);
+
+  root = NULL;
   sfu_node_app_server_destroy(sfu_server);
 }
 
@@ -1278,7 +1291,8 @@ void test_sfu_node_http_roundtrips_track_subscription_metadata(void) {
       "}");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   root = http_post_json_result(
       sfu_node_base_url, "/api/v1/commands",
@@ -1300,7 +1314,8 @@ void test_sfu_node_http_roundtrips_track_subscription_metadata(void) {
   check_equal((int)(json_bool_value(subscription, "muted", 1)), (int)(0));
   check_equal(json_string_value(subscription, "policy_source"), "conference_policy_pin");
   check_equal(json_string_value(subscription, "max_layer"), "medium");
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   sfu_node_http_api_stop(http_api);
   sfu_node_http_api_destroy(http_api);
@@ -1391,7 +1406,8 @@ void test_sfu_node_http_control_token_protects_modifying_commands(void) {
                                           attach_room_command, "test-control-token");
   check_not_null(root);
   check_true(json_bool_value(root, "ok", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   sfu_node_http_api_stop(http_api);
   sfu_node_http_api_destroy(http_api);
@@ -1570,7 +1586,8 @@ void test_sfu_node_ready_metrics_and_drain_control(void) {
   node_stats = json_object_field(root, "node_stats");
   check_not_null(node_stats);
   check_true(json_bool_value(node_stats, "draining", 0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   check_equal((int)(http_get_status(sfu_node_base_url, "/ready")), (int)(503));
   check_equal((int)(http_post_json_status_with_token(
@@ -1583,7 +1600,8 @@ void test_sfu_node_ready_metrics_and_drain_control(void) {
   node_stats = json_object_field(root, "node_stats");
   check_not_null(node_stats);
   check_false(json_bool_value(node_stats, "draining", 1));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
 
   check_equal((int)(http_get_status(sfu_node_base_url, "/ready")), (int)(200));
   check_equal((int)(http_post_json_status_with_token(
@@ -1729,7 +1747,8 @@ void test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_sessio
   check_equal(json_string_value(session, "state"), "new");
   check_equal((int)(json_bool_value(session, "remote_description_set", 1)), (int)(0));
   check_equal((int)(json_int_value(session, "remote_track_count", -1)), (int)(0));
-  turbo_free_json(&root);
+  json_free(root);
+  root = NULL;
   root = NULL;
   fprintf(stderr, "http webrtc test: create session ok\n");
 
@@ -1780,16 +1799,18 @@ void test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_sessio
   check_equal((int)(json_int_value(session, "remote_track_count", 0)), (int)(1));
   {
     json_value_t *local_ice_candidates =
-        turbo_json_object_get(session, "local_ice_candidates");
+        json_object_get(session, "local_ice_candidates");
     check_not_null(local_ice_candidates);
-    check_equal((int)(turbo_json_type(local_ice_candidates)), (int)(TURBO_JSON_ARRAY));
+    check_equal((int)(json_type(local_ice_candidates)), (int)(JSON_ARRAY));
   }
   answer_sdp = json_string_value(session, "local_answer");
   check_not_null(answer_sdp);
   check_equal((int)(turbo_peer_connection_set_remote_description(
                                offerer, "answer", answer_sdp)), (int)(0));
 
-  turbo_free_json(&root);
+  json_free(root);
+
+  root = NULL;
   free_offerer_candidates(&offerer_state);
   turbo_peer_connection_destroy(offerer);
   check_equal((int)(sfu_node_app_server_remove_webrtc_session(
@@ -2241,7 +2262,8 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
         json_int_value(publisher_session, "remote_frame_count", 0) > 0) {
       break;
     }
-    turbo_free_json(&publisher_session);
+    json_free(publisher_session);
+    publisher_session = NULL;
     publisher_session = NULL;
     sfu_node_app_server_poll_webrtc(sfu_server);
     turbo_peer_connection_poll(publisher);
@@ -2252,7 +2274,8 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
   }
 
   if (publisher_session) {
-    turbo_free_json(&publisher_session);
+    json_free(publisher_session);
+    publisher_session = NULL;
     publisher_session = NULL;
   }
 
@@ -2269,8 +2292,11 @@ void test_sfu_node_media_bridge_forwards_video_to_subscriber(void) {
   check_equal((int)(json_int_value(subscriber_session, "relay_track_count", -1)), (int)(1));
   check_greater_equal((int)subscriber_state.frame_state.last_timestamp, 90000);
 
-  turbo_free_json(&publisher_session);
-  turbo_free_json(&subscriber_session);
+  json_free(publisher_session);
+
+  publisher_session = NULL;
+  json_free(subscriber_session);
+  subscriber_session = NULL;
   free(subscriber_answer);
   free(publisher_answer);
   free_media_peer_candidates(&subscriber_state);
@@ -2441,7 +2467,8 @@ void test_sfu_node_recording_archives_publisher_rtp(void) {
   turbo_demuxer_free_packet(&demuxed_packet);
   turbo_demuxer_destroy(demuxer);
   turbo_demuxer_registry_shutdown();
-  turbo_free_json(&recording_status);
+  json_free(recording_status);
+  recording_status = NULL;
   free(status_json);
   free(publisher_answer);
   free_media_peer_candidates(&publisher_state);
@@ -2501,7 +2528,9 @@ void test_sfu_node_recording_stop_failure_still_closes_runtime(void) {
   check_equal((int)(sfu_node_app_server_stop_recording(
                                 server, "room-stop-failure")), (int)(-1));
 
-  turbo_free_json(&status);
+  json_free(status);
+
+  status = NULL;
   free(status_json);
   sfu_node_app_server_destroy(server);
   remove(output_path);

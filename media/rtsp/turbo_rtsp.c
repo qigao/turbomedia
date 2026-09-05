@@ -1993,7 +1993,7 @@ static int turbo_rtsp_client_build_digest_auth(
         return -1;
     }
 
-    if (turbo_secure_random(cnonce_bytes, sizeof(cnonce_bytes)) != 0) {
+    if (salts_secure_random(cnonce_bytes, sizeof(cnonce_bytes)) != 0) {
         return -1;
     }
     for (i = 0; i < sizeof(cnonce_bytes); ++i) {

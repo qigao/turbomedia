@@ -1,9 +1,9 @@
 #include "iris_media_reconciler.h"
 
 #include <turbo_crypto.h>
-#include <turbo_parser.h>
-#include <turbo_thread.h>
-#include <turbo_uuid.h>
+#include <json_parser.h>
+#include <salts_thread.h>
+#include <salts_uuid.h>
 
 #include <openssl/digest.h>
 
@@ -41,9 +41,9 @@ struct iris_media_reconciler_s {
     ivr_fmq_adapter_t *adapter;
     iris_media_reconciler_ops_t ops;
     int injected_ops;
-    turbo_mutex_t mutex;
-    turbo_cond_t wake;
-    turbo_thread_t thread;
+    salts_mutex_t mutex;
+    salts_cond_t wake;
+    salts_thread_t thread;
     atomic_int running;
     int thread_started;
     int intake_closed;
@@ -52,17 +52,17 @@ struct iris_media_reconciler_s {
 
 static void set_state(iris_media_reconciler_t *reconciler,
                       iris_media_reconcile_state_t state) {
-    turbo_mutex_lock(&reconciler->mutex);
+    salts_mutex_lock(&reconciler->mutex);
     if (state == IRIS_MEDIA_RECONCILE_DRAINING ||
         reconciler->stats.state != IRIS_MEDIA_RECONCILE_DRAINING) {
         reconciler->stats.state = state;
     }
-    turbo_mutex_unlock(&reconciler->mutex);
+    salts_mutex_unlock(&reconciler->mutex);
 }
 
 static int copy_json_string(const json_value_t *object, const char *key,
                             char *out, size_t capacity, int required) {
-    const char *value = turbo_json_get_string(object, key);
+    const char *value = json_get_string(object, key);
     size_t size = value ? strlen(value) : 0u;
     if (!out || capacity == 0u || size >= capacity ||
         (required && size == 0u)) {
@@ -82,9 +82,9 @@ static int json_u64(const json_value_t *object, const char *key,
     char *end = NULL;
     unsigned long long parsed;
     if (!object || !key || !out) return 0;
-    value = turbo_json_object_get(object, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_NUMBER) return 0;
-    text = turbo_json_number_text(value, &size);
+    value = json_object_get(object, key);
+    if (!value || json_type(value) != JSON_NUMBER) return 0;
+    text = json_number_text(value, &size);
     if (!text || size == 0u || size >= sizeof(buffer)) return 0;
     memcpy(buffer, text, size);
     buffer[size] = '\0';
@@ -121,10 +121,10 @@ static int parse_expected_resource(
     const json_value_t *item, iris_expected_media_resource_t *out) {
     const char *state;
     const char *command_state;
-    if (!item || !out || turbo_json_type(item) != TURBO_JSON_OBJECT) return 0;
+    if (!item || !out || json_type(item) != JSON_OBJECT) return 0;
     memset(out, 0, sizeof(*out));
-    state = turbo_json_get_string(item, "state");
-    command_state = turbo_json_get_string(item, "activeCommandStatus");
+    state = json_get_string(item, "state");
+    command_state = json_get_string(item, "activeCommandStatus");
     out->state = expected_state(state);
     out->active_command_state = expected_command_state(command_state);
     if (!copy_json_string(item, "tenantId", out->tenant_id,
@@ -175,7 +175,7 @@ static ivr_status_t default_fetch_expected(
         (iris_media_reconciler_t *)context;
     iris_flowmq_provider_query_t query;
     iris_flowmq_provider_observation_t observation;
-    char query_id[TURBO_UUID_STRING_SIZE];
+    char query_id[SALTS_UUID_STRING_SIZE];
     char created_at[32];
     uint64_t resource_count = 0;
     uint64_t revision = 0;
@@ -224,31 +224,33 @@ static ivr_status_t default_fetch_expected(
         if (observation.wire.status != ProviderQueryStatus_QueryOk ||
             (revision != 0u && observation.revision != revision) ||
             observation.cursor != cursor ||
-            turbo_parse_json((const uint8_t *)observation.wire.payload_json,
-                             strlen(observation.wire.payload_json), &root) != 0 ||
-            !root || turbo_json_type(root) != TURBO_JSON_OBJECT ||
+            ((root = json_parse((const char *)((const uint8_t *)observation.wire.payload_json), strlen(observation.wire.payload_json))) ? 0 : -1) != 0 ||
+            !root || json_type(root) != JSON_OBJECT ||
             !json_u64(root, "resourceCount", &resource_count)) {
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             iris_flowmq_provider_observation_clear(&observation);
             return IVR_ESTATE;
         }
         if (revision == 0u) revision = observation.revision;
-        items = turbo_json_object_get(root, "resources");
-        page_count = items && turbo_json_type(items) == TURBO_JSON_ARRAY
-                         ? (uint64_t)turbo_json_array_size(items)
+        items = json_object_get(root, "resources");
+        page_count = items && json_type(items) == JSON_ARRAY
+                         ? (uint64_t)json_array_size(items)
                          : UINT64_MAX;
         if (resource_count > capacity || page_count == UINT64_MAX ||
             page_count > capacity - count ||
             (observation.wire.has_more && page_count == 0u) ||
             count + page_count > resource_count) {
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             iris_flowmq_provider_observation_clear(&observation);
             return resource_count > capacity ? IVR_ENOSPC : IVR_ESTATE;
         }
         for (size_t i = 0; i < (size_t)page_count; ++i) {
-            if (!parse_expected_resource(turbo_json_array_get(items, i),
+            if (!parse_expected_resource(json_array_get(items, i),
                                          &resources[count + i])) {
-                turbo_free_json(&root);
+                json_free(root);
+                root = NULL;
                 iris_flowmq_provider_observation_clear(&observation);
                 return IVR_ESTATE;
             }
@@ -258,7 +260,8 @@ static ivr_status_t default_fetch_expected(
         {
             int has_more = observation.wire.has_more ? 1 : 0;
             iris_flowmq_provider_observation_clear(&observation);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             root = NULL;
             if (!has_more) break;
         }
@@ -449,10 +452,10 @@ static int expected_rebind_matches(
 }
 
 static int make_uuid(char *out, size_t capacity) {
-    turbo_uuid_t uuid;
-    return out && capacity >= TURBO_UUID_STRING_SIZE &&
-           turbo_uuid_v7_generate(&uuid) == TURBO_OK &&
-           turbo_uuid_format(&uuid, out, capacity) == TURBO_OK;
+    salts_uuid_t uuid;
+    return out && capacity >= SALTS_UUID_STRING_SIZE &&
+           salts_uuid_v7_generate(&uuid) == SALTS_OK &&
+           salts_uuid_format(&uuid, out, capacity) == SALTS_OK;
 }
 
 static int stable_orphan_close_id(
@@ -461,9 +464,9 @@ static int stable_orphan_close_id(
     char input[1024];
     uint8_t digest[EVP_MAX_MD_SIZE];
     unsigned digest_size = 0u;
-    turbo_uuid_t uuid;
+    salts_uuid_t uuid;
     int written;
-    if (!record || !out || capacity < TURBO_UUID_STRING_SIZE) return 0;
+    if (!record || !out || capacity < SALTS_UUID_STRING_SIZE) return 0;
     written = snprintf(
         input, sizeof(input),
         "reconcile.orphan.close|%s|%s|%s|%s|%llu|%llu|%s|%s|%llu",
@@ -481,14 +484,14 @@ static int stable_orphan_close_id(
        retaining the canonical 36-byte message-id representation. */
     uuid.bytes[6] = (uint8_t)((uuid.bytes[6] & 0x0fu) | 0x80u);
     uuid.bytes[8] = (uint8_t)((uuid.bytes[8] & 0x3fu) | 0x80u);
-    return turbo_uuid_format(&uuid, out, capacity) == TURBO_OK;
+    return salts_uuid_format(&uuid, out, capacity) == SALTS_OK;
 }
 
 static ivr_status_t wait_inventory_page(
     iris_media_reconciler_t *reconciler, const char *message_id,
     ivr_worker_inventory_envelope_t *out) {
-    uint64_t deadline = turbo_monotonic_ms() + reconciler->request_timeout_ms;
-    turbo_mutex_lock(&reconciler->mutex);
+    uint64_t deadline = salts_monotonic_ms() + reconciler->request_timeout_ms;
+    salts_mutex_lock(&reconciler->mutex);
     while (atomic_load(&reconciler->running) || !reconciler->thread_started) {
         while (reconciler->inventory_count > 0u) {
             ivr_worker_inventory_envelope_t page =
@@ -501,16 +504,16 @@ static ivr_status_t wait_inventory_page(
             --reconciler->inventory_count;
             if (strcmp(page.message_id, message_id) == 0) {
                 *out = page;
-                turbo_mutex_unlock(&reconciler->mutex);
+                salts_mutex_unlock(&reconciler->mutex);
                 return IVR_OK;
             }
         }
-        if (turbo_monotonic_ms() >= deadline) break;
-        (void)turbo_cond_timedwait(
+        if (salts_monotonic_ms() >= deadline) break;
+        (void)salts_cond_timedwait(
             &reconciler->wake, &reconciler->mutex,
-            (deadline - turbo_monotonic_ms()) * UINT64_C(1000000));
+            (deadline - salts_monotonic_ms()) * UINT64_C(1000000));
     }
-    turbo_mutex_unlock(&reconciler->mutex);
+    salts_mutex_unlock(&reconciler->mutex);
     return IVR_EBUSY;
 }
 
@@ -531,13 +534,13 @@ static ivr_status_t process_inventory_record(
             reconciler->ops.context, record);
         if (status != IVR_OK) return status;
         reconciler->matched[found] = 1u;
-        turbo_mutex_lock(&reconciler->mutex);
+        salts_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.rebound_total;
-        turbo_mutex_unlock(&reconciler->mutex);
+        salts_mutex_unlock(&reconciler->mutex);
         return IVR_OK;
     }
     {
-        char message_id[TURBO_UUID_STRING_SIZE];
+        char message_id[SALTS_UUID_STRING_SIZE];
         ivr_status_t status;
         if (!stable_orphan_close_id(record, message_id,
                                     sizeof(message_id))) {
@@ -548,9 +551,9 @@ static ivr_status_t process_inventory_record(
             reconciler->close_deadline_ms);
         if (status != IVR_OK) return status;
         *out_cleanup_pending = 1;
-        turbo_mutex_lock(&reconciler->mutex);
+        salts_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.orphan_close_total;
-        turbo_mutex_unlock(&reconciler->mutex);
+        salts_mutex_unlock(&reconciler->mutex);
     }
     return IVR_OK;
 }
@@ -591,9 +594,9 @@ static ivr_status_t reconcile_worker(
         }
         if (revision == 0u) revision = page.page.revision;
         observed += page.page.count;
-        turbo_mutex_lock(&reconciler->mutex);
+        salts_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.inventory_pages_total;
-        turbo_mutex_unlock(&reconciler->mutex);
+        salts_mutex_unlock(&reconciler->mutex);
         for (uint32_t i = 0; i < page.page.count; ++i) {
             status = process_inventory_record(
                 reconciler, &page.page.records[i], expected_count,
@@ -624,12 +627,12 @@ ivr_status_t iris_media_reconciler_reconcile_once(
     if (!reconciler || (allow_missing_loss != 0 && allow_missing_loss != 1)) {
         return IVR_EINVAL;
     }
-    turbo_mutex_lock(&reconciler->mutex);
+    salts_mutex_lock(&reconciler->mutex);
     if (reconciler->intake_closed) {
-        turbo_mutex_unlock(&reconciler->mutex);
+        salts_mutex_unlock(&reconciler->mutex);
         return IVR_ECLOSED;
     }
-    turbo_mutex_unlock(&reconciler->mutex);
+    salts_mutex_unlock(&reconciler->mutex);
     if (reconciler->thread_started && !atomic_load(&reconciler->running)) {
         return IVR_ECLOSED;
     }
@@ -640,9 +643,9 @@ ivr_status_t iris_media_reconciler_reconcile_once(
     status = reconciler->ops.fetch_expected(
         reconciler->ops.context, reconciler->expected,
         reconciler->resource_capacity, &expected_count);
-    turbo_mutex_lock(&reconciler->mutex);
+    salts_mutex_lock(&reconciler->mutex);
     ++reconciler->stats.expected_fetches_total;
-    turbo_mutex_unlock(&reconciler->mutex);
+    salts_mutex_unlock(&reconciler->mutex);
     if (status != IVR_OK || expected_count > reconciler->resource_capacity) {
         return status == IVR_OK ? IVR_EVERSION : status;
     }
@@ -674,9 +677,9 @@ ivr_status_t iris_media_reconciler_reconcile_once(
             has_reconciling_worker ? "generation_or_owner_conflict"
                                    : "inventory_missing");
         if (status != IVR_OK) return status;
-        turbo_mutex_lock(&reconciler->mutex);
+        salts_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.resource_lost_total;
-        turbo_mutex_unlock(&reconciler->mutex);
+        salts_mutex_unlock(&reconciler->mutex);
         cleanup_pending = 1;
     }
     if (cleanup_pending) return IVR_EBUSY;
@@ -692,7 +695,7 @@ ivr_status_t iris_media_reconciler_on_inventory_page(
     int queue_full;
     int intake_closed;
     if (!reconciler || !page) return IVR_EINVAL;
-    turbo_mutex_lock(&reconciler->mutex);
+    salts_mutex_lock(&reconciler->mutex);
     intake_closed = reconciler->intake_closed;
     queue_full = reconciler->inventory_count ==
                  reconciler->inventory_queue_capacity;
@@ -702,7 +705,7 @@ ivr_status_t iris_media_reconciler_on_inventory_page(
         if (queue_full) {
             ++reconciler->stats.inventory_queue_full_total;
         }
-        turbo_mutex_unlock(&reconciler->mutex);
+        salts_mutex_unlock(&reconciler->mutex);
         if (intake_closed) return IVR_ECLOSED;
         return queue_full ? IVR_ENOSPC : IVR_ECLOSED;
     }
@@ -710,19 +713,19 @@ ivr_status_t iris_media_reconciler_on_inventory_page(
            reconciler->inventory_queue_capacity;
     reconciler->inventory_queue[tail] = *page;
     ++reconciler->inventory_count;
-    turbo_cond_broadcast(&reconciler->wake);
-    turbo_mutex_unlock(&reconciler->mutex);
+    salts_cond_broadcast(&reconciler->wake);
+    salts_mutex_unlock(&reconciler->mutex);
     return IVR_OK;
 }
 
 static void interruptible_wait(iris_media_reconciler_t *reconciler,
                                uint32_t milliseconds) {
-    turbo_mutex_lock(&reconciler->mutex);
+    salts_mutex_lock(&reconciler->mutex);
     if (atomic_load(&reconciler->running)) {
-        (void)turbo_cond_timedwait(&reconciler->wake, &reconciler->mutex,
+        (void)salts_cond_timedwait(&reconciler->wake, &reconciler->mutex,
                                    (uint64_t)milliseconds * UINT64_C(1000000));
     }
-    turbo_mutex_unlock(&reconciler->mutex);
+    salts_mutex_unlock(&reconciler->mutex);
 }
 
 static void reconcile_thread(void *context) {
@@ -731,9 +734,9 @@ static void reconcile_thread(void *context) {
     uint32_t attempts = 0;
     while (atomic_load(&reconciler->running)) {
         ivr_status_t status;
-        turbo_mutex_lock(&reconciler->mutex);
+        salts_mutex_lock(&reconciler->mutex);
         iris_media_reconcile_state_t state = reconciler->stats.state;
-        turbo_mutex_unlock(&reconciler->mutex);
+        salts_mutex_unlock(&reconciler->mutex);
         if (state == IRIS_MEDIA_RECONCILE_READY &&
             !reconciler->ops.reconcile_required(reconciler->ops.context)) {
             interruptible_wait(reconciler, IRIS_RECONCILE_IDLE_POLL_MS);
@@ -742,7 +745,7 @@ static void reconcile_thread(void *context) {
         set_state(reconciler, IRIS_MEDIA_RECONCILE_NOT_READY);
         status = iris_media_reconciler_reconcile_once(
             reconciler, attempts + 1u >= reconciler->retry_max_attempts);
-        turbo_mutex_lock(&reconciler->mutex);
+        salts_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.reconcile_cycles_total;
         if (status != IVR_OK && status != IVR_EBUSY) {
             ++reconciler->stats.reconcile_failures_total;
@@ -754,7 +757,7 @@ static void reconcile_thread(void *context) {
                 reconciler->stats.state = IRIS_MEDIA_RECONCILE_FAILED;
             }
         }
-        turbo_mutex_unlock(&reconciler->mutex);
+        salts_mutex_unlock(&reconciler->mutex);
         if (status == IVR_OK) {
             attempts = 0;
         } else if (attempts < reconciler->retry_max_attempts) {
@@ -826,8 +829,8 @@ iris_media_reconciler_t *iris_media_reconciler_create(
         !reconciler->workers || !reconciler->inventory_queue) {
         goto fail;
     }
-    turbo_mutex_init(&reconciler->mutex);
-    turbo_cond_init(&reconciler->wake);
+    salts_mutex_init(&reconciler->mutex);
+    salts_cond_init(&reconciler->wake);
     atomic_init(&reconciler->running, 0);
     reconciler->stats.state = IRIS_MEDIA_RECONCILE_NOT_READY;
     reconciler->stats.inventory_queue_capacity =
@@ -874,7 +877,7 @@ int iris_media_reconciler_start(iris_media_reconciler_t *reconciler) {
     }
     atomic_store(&reconciler->running, 1);
     set_state(reconciler, IRIS_MEDIA_RECONCILE_NOT_READY);
-    if (turbo_thread_create(&reconciler->thread, reconcile_thread,
+    if (salts_thread_create(&reconciler->thread, reconcile_thread,
                             reconciler) != 0) {
         atomic_store(&reconciler->running, 0);
         return -1;
@@ -887,12 +890,12 @@ void iris_media_reconciler_stop(iris_media_reconciler_t *reconciler) {
     if (!reconciler || !reconciler->thread_started) return;
     set_state(reconciler, IRIS_MEDIA_RECONCILE_DRAINING);
     atomic_store(&reconciler->running, 0);
-    turbo_mutex_lock(&reconciler->mutex);
+    salts_mutex_lock(&reconciler->mutex);
     reconciler->intake_closed = 1;
-    turbo_cond_broadcast(&reconciler->wake);
-    turbo_mutex_unlock(&reconciler->mutex);
-    turbo_thread_join(&reconciler->thread);
-    turbo_thread_destroy(&reconciler->thread);
+    salts_cond_broadcast(&reconciler->wake);
+    salts_mutex_unlock(&reconciler->mutex);
+    salts_thread_join(&reconciler->thread);
+    salts_thread_destroy(&reconciler->thread);
     reconciler->thread_started = 0;
 }
 
@@ -900,9 +903,9 @@ int iris_media_reconciler_accepting_commands(
     iris_media_reconciler_t *reconciler) {
     iris_media_reconcile_state_t state;
     if (!reconciler) return 0;
-    turbo_mutex_lock(&reconciler->mutex);
+    salts_mutex_lock(&reconciler->mutex);
     state = reconciler->stats.state;
-    turbo_mutex_unlock(&reconciler->mutex);
+    salts_mutex_unlock(&reconciler->mutex);
     return state == IRIS_MEDIA_RECONCILE_READY &&
            !reconciler->ops.reconcile_required(reconciler->ops.context);
 }
@@ -913,17 +916,17 @@ void iris_media_reconciler_get_stats(
     if (!stats) return;
     memset(stats, 0, sizeof(*stats));
     if (!reconciler) return;
-    turbo_mutex_lock(&reconciler->mutex);
+    salts_mutex_lock(&reconciler->mutex);
     *stats = reconciler->stats;
     stats->inventory_queue_items = reconciler->inventory_count;
-    turbo_mutex_unlock(&reconciler->mutex);
+    salts_mutex_unlock(&reconciler->mutex);
 }
 
 void iris_media_reconciler_destroy(iris_media_reconciler_t *reconciler) {
     if (!reconciler) return;
     iris_media_reconciler_stop(reconciler);
-    turbo_cond_destroy(&reconciler->wake);
-    turbo_mutex_destroy(&reconciler->mutex);
+    salts_cond_destroy(&reconciler->wake);
+    salts_mutex_destroy(&reconciler->mutex);
     free(reconciler->inventory_queue);
     free(reconciler->workers);
     free(reconciler->matched);

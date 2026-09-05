@@ -554,7 +554,7 @@ static ivr_worker_inventory_envelope_t g_last_inventory_page;
 
 static uint64_t live_now_ms(void *context) {
     (void)context;
-    return turbo_monotonic_ms() +
+    return salts_monotonic_ms() +
            atomic_load(&g_live_clock_offset_ms);
 }
 

@@ -1,7 +1,7 @@
 #include "ivr_certificate_identity.h"
 
 #include "platform.h"
-#include "turbo_error.h"
+#include "salts_error.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -73,15 +73,15 @@ int ivr_certificate_identity_create(
     if (!config || config->size < sizeof(*config) || !out_identity ||
         !config->entries || config->entry_count == 0u ||
         config->entry_count > IVR_CERTIFICATE_IDENTITY_MAX_ENTRIES) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     identity = (ivr_certificate_identity_t *)calloc(1u, sizeof(*identity));
-    if (!identity) return TURBO_ENOMEM;
+    if (!identity) return SALTS_ENOMEM;
     identity->entries = (ivr_certificate_identity_entry_owned_t *)calloc(
         config->entry_count, sizeof(*identity->entries));
     if (!identity->entries) {
         free(identity);
-        return TURBO_ENOMEM;
+        return SALTS_ENOMEM;
     }
     identity->entry_count = config->entry_count;
     identity->clock = config->clock;
@@ -124,11 +124,11 @@ int ivr_certificate_identity_create(
         identity->entries[i].generation = entry->generation;
     }
     *out_identity = identity;
-    return TURBO_OK;
+    return SALTS_OK;
 
 invalid:
     ivr_certificate_identity_destroy(identity);
-    return TURBO_EINVAL;
+    return SALTS_EINVAL;
 }
 
 void ivr_certificate_identity_destroy(ivr_certificate_identity_t *identity) {
@@ -149,7 +149,7 @@ int ivr_certificate_identity_verify(void *context,
     size_t i;
     if (!identity || !fingerprint_valid(certificate_sha256) || !claimed_identity ||
         claimed_identity[0] == '\0') {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     now_ms = identity_now_ms(identity);
     for (i = 0u; i < identity->entry_count; ++i) {
@@ -159,9 +159,9 @@ int ivr_certificate_identity_verify(void *context,
             (entry->previous_certificate_sha256[0] != '\0' &&
              now_ms < entry->previous_expires_at_ms &&
              strcmp(entry->previous_certificate_sha256, certificate_sha256) == 0)) {
-            return TURBO_OK;
+            return SALTS_OK;
         }
-        return TURBO_EPERM;
+        return SALTS_EPERM;
     }
-    return TURBO_EPERM;
+    return SALTS_EPERM;
 }

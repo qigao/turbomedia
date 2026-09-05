@@ -11,7 +11,6 @@
 /* CoroNet 头文件 */
 #include "CoroNet/turbo_coro_context.h"
 #include "CoroNet/turbo_coro_socket.h"
-#include "turbo_parser.h"
 
 /* =============================================================================
  * 传输上下文
@@ -54,45 +53,6 @@ static void transport_fire_event(turbo_transport_impl_t *transport,
         transport->event_callback((turbo_transport_t *)transport, 
                                 event, event_data, transport->event_user_data);
     }
-}
-
-static int transport_default_port(turbo_transport_type_t type, int use_tls) {
-    switch (type) {
-        case TURBO_TRANSPORT_HTTP:
-            return use_tls ? 443 : 80;
-        case TURBO_TRANSPORT_WEBSOCKET:
-            return use_tls ? 443 : 80;
-        case TURBO_TRANSPORT_TLS:
-            return 443;
-        case TURBO_TRANSPORT_RTMP:
-            return 1935;
-        default:
-            return 0;
-    }
-}
-
-static char *transport_build_uri_path(const uri_t *uri) {
-    const char *path = turbo_uri_path(uri);
-    const char *query = turbo_uri_query(uri);
-    size_t path_len = path && path[0] ? strlen(path) : 1;
-    size_t query_len = query && query[0] ? strlen(query) : 0;
-    char *out = (char *)malloc(path_len + (query_len ? query_len + 1 : 0) + 1);
-
-    if (!out) return NULL;
-    if (path && path[0]) {
-        memcpy(out, path, path_len);
-    } else {
-        out[0] = '/';
-    }
-    if (query_len) {
-        out[path_len] = '?';
-        memcpy(out + path_len + 1, query, query_len);
-        out[path_len + query_len + 1] = '\0';
-    } else {
-        out[path_len] = '\0';
-    }
-
-    return out;
 }
 
 /* =============================================================================
@@ -396,84 +356,4 @@ int turbo_transport_ws_recv(turbo_transport_t *transport_ptr,
     transport_fire_event(transport, TURBO_TRANSPORT_EVENT_DATA_RECEIVED, recv_data);
     
     return (int)recv_size;
-}
-
-/* =============================================================================
- * URL 解析工具
- * ============================================================================= */
-
-int turbo_transport_parse_url(const char *url, turbo_transport_config_t *config) {
-    uri_t *uri = NULL;
-    const char *scheme;
-    const char *host;
-    int port;
-
-    if (!url || !config) return -1;
-
-    memset(config, 0, sizeof(turbo_transport_config_t));
-
-    if (turbo_parse_uri((const uint8_t *)url, strlen(url), &uri) != 0 || !uri ||
-        !turbo_uri_is_valid(uri)) {
-        turbo_free_uri(&uri);
-        return -1;
-    }
-
-    scheme = turbo_uri_scheme(uri);
-    host = turbo_uri_host(uri);
-    if (!scheme || !host || !host[0]) {
-        turbo_free_uri(&uri);
-        return -1;
-    }
-
-    if (strcmp(scheme, "tcp") == 0) {
-        config->type = TURBO_TRANSPORT_TCP;
-    } else if (strcmp(scheme, "tls") == 0) {
-        config->type = TURBO_TRANSPORT_TLS;
-        config->use_tls = 1;
-    } else if (strcmp(scheme, "ws") == 0) {
-        config->type = TURBO_TRANSPORT_WEBSOCKET;
-        config->use_tls = 0;
-    } else if (strcmp(scheme, "wss") == 0) {
-        config->type = TURBO_TRANSPORT_WEBSOCKET;
-        config->use_tls = 1;
-    } else if (strcmp(scheme, "http") == 0) {
-        config->type = TURBO_TRANSPORT_HTTP;
-        config->use_tls = 0;
-    } else if (strcmp(scheme, "https") == 0) {
-        config->type = TURBO_TRANSPORT_HTTP;
-        config->use_tls = 1;
-    } else if (strcmp(scheme, "rtmp") == 0) {
-        config->type = TURBO_TRANSPORT_RTMP;
-    } else {
-        turbo_free_uri(&uri);
-        return -1;
-    }
-
-    port = turbo_uri_port(uri);
-    config->port = port > 0 ? port : transport_default_port(config->type, config->use_tls);
-    if (config->port <= 0) {
-        turbo_free_uri(&uri);
-        return -1;
-    }
-
-    config->host = strdup(host);
-    if (!config->host) {
-        turbo_free_uri(&uri);
-        return -1;
-    }
-
-    if (config->type == TURBO_TRANSPORT_HTTP ||
-        config->type == TURBO_TRANSPORT_WEBSOCKET ||
-        config->type == TURBO_TRANSPORT_RTMP) {
-        config->path = transport_build_uri_path(uri);
-        if (!config->path) {
-            free((void *)config->host);
-            memset(config, 0, sizeof(turbo_transport_config_t));
-            turbo_free_uri(&uri);
-            return -1;
-        }
-    }
-
-    turbo_free_uri(&uri);
-    return 0;
 }

@@ -4,7 +4,7 @@
 #include "iris/iris_app.h"
 #include "iris/router.h"
 #include "iris/server.h"
-#include "turbo_thread.h"
+#include "salts_thread.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -28,10 +28,10 @@ struct ivr_worker_http_s {
     ivr_worker_metrics_t *metrics;
     ivr_worker_http_drain_fn drain_callback;
     void *drain_context;
-    turbo_thread_t thread;
+    salts_thread_t thread;
     int thread_started;
-    turbo_mutex_t lock;
-    turbo_cond_t cond;
+    salts_mutex_t lock;
+    salts_cond_t cond;
     coro_context_t *context;
     coro_socket_t *listener;
     int state;
@@ -100,10 +100,10 @@ static void handle_drain(Req *request, Res *response) {
     ivr_worker_http_drain_fn callback = NULL;
     void *context = NULL;
     if (server) {
-        turbo_mutex_lock(&server->lock);
+        salts_mutex_lock(&server->lock);
         callback = server->drain_callback;
         context = server->drain_context;
-        turbo_mutex_unlock(&server->lock);
+        salts_mutex_unlock(&server->lock);
     }
     if (!callback) {
         send_json(response, 503, "{\"accepted\":false}");
@@ -119,12 +119,12 @@ static void handle_drain(Req *request, Res *response) {
 static void mark_running(void *arg1, void *arg2) {
     ivr_worker_http_t *server = (ivr_worker_http_t *)arg1;
     (void)arg2;
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_lock(&server->lock);
     if (server->state == IVR_WORKER_HTTP_STARTING) {
         server->state = IVR_WORKER_HTTP_RUNNING;
-        turbo_cond_broadcast(&server->cond);
+        salts_cond_broadcast(&server->cond);
     }
-    turbo_mutex_unlock(&server->lock);
+    salts_mutex_unlock(&server->lock);
 }
 
 static void http_thread(void *opaque) {
@@ -139,42 +139,42 @@ static void http_thread(void *opaque) {
         if (context) {
             coro_context_destroy(context);
         }
-        turbo_mutex_lock(&server->lock);
+        salts_mutex_lock(&server->lock);
         server->state = IVR_WORKER_HTTP_FAILED;
-        turbo_cond_broadcast(&server->cond);
-        turbo_mutex_unlock(&server->lock);
+        salts_cond_broadcast(&server->cond);
+        salts_mutex_unlock(&server->lock);
         return;
     }
     coro_context_set_persistent(context, 1);
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_lock(&server->lock);
     server->context = context;
     server->listener = listener;
-    turbo_mutex_unlock(&server->lock);
+    salts_mutex_unlock(&server->lock);
     if (coro_post(context, mark_running, server, NULL) != 0) {
-        turbo_mutex_lock(&server->lock);
+        salts_mutex_lock(&server->lock);
         server->context = NULL;
         server->listener = NULL;
         server->state = IVR_WORKER_HTTP_FAILED;
-        turbo_cond_broadcast(&server->cond);
-        turbo_mutex_unlock(&server->lock);
+        salts_cond_broadcast(&server->cond);
+        salts_mutex_unlock(&server->lock);
         coro_context_set_persistent(context, 0);
         coro_socket_destroy(listener);
         coro_context_destroy(context);
         return;
     }
     (void)coro_context_run(context, TURBO_RUN_DEFAULT);
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_lock(&server->lock);
     server->context = NULL;
     server->listener = NULL;
     server->state = IVR_WORKER_HTTP_STOPPING;
-    turbo_mutex_unlock(&server->lock);
+    salts_mutex_unlock(&server->lock);
     coro_context_set_persistent(context, 0);
     coro_socket_destroy(listener);
     coro_context_destroy(context);
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_lock(&server->lock);
     server->state = IVR_WORKER_HTTP_STOPPED;
-    turbo_cond_broadcast(&server->cond);
-    turbo_mutex_unlock(&server->lock);
+    salts_cond_broadcast(&server->cond);
+    salts_mutex_unlock(&server->lock);
 }
 
 int ivr_worker_http_create(ivr_worker_health_t *health,
@@ -187,12 +187,12 @@ int ivr_worker_http_create(ivr_worker_health_t *health,
     if (!server) {
         return -1;
     }
-    turbo_mutex_init(&server->lock);
-    turbo_cond_init(&server->cond);
+    salts_mutex_init(&server->lock);
+    salts_cond_init(&server->cond);
     server->app = iris_app_create();
     if (!server->app) {
-        turbo_cond_destroy(&server->cond);
-        turbo_mutex_destroy(&server->lock);
+        salts_cond_destroy(&server->cond);
+        salts_mutex_destroy(&server->lock);
         free(server);
         return -1;
     }
@@ -201,8 +201,8 @@ int ivr_worker_http_create(ivr_worker_health_t *health,
     if (iris_app_bind_rpc_context(server->app, IVR_WORKER_HTTP_CONTEXT_PATH,
                                   server) != 0) {
         iris_app_destroy(server->app);
-        turbo_cond_destroy(&server->cond);
-        turbo_mutex_destroy(&server->lock);
+        salts_cond_destroy(&server->cond);
+        salts_mutex_destroy(&server->lock);
         free(server);
         return -1;
     }
@@ -220,13 +220,13 @@ int ivr_worker_http_set_metrics(ivr_worker_http_t *server,
     if (!server || !metrics) {
         return -1;
     }
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_lock(&server->lock);
     if (server->state != IVR_WORKER_HTTP_STOPPED) {
-        turbo_mutex_unlock(&server->lock);
+        salts_mutex_unlock(&server->lock);
         return -1;
     }
     server->metrics = metrics;
-    turbo_mutex_unlock(&server->lock);
+    salts_mutex_unlock(&server->lock);
     return 0;
 }
 
@@ -234,14 +234,14 @@ int ivr_worker_http_set_drain_handler(ivr_worker_http_t *server,
                                       ivr_worker_http_drain_fn callback,
                                       void *context) {
     if (!server || !callback) return -1;
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_lock(&server->lock);
     if (server->state != IVR_WORKER_HTTP_STOPPED) {
-        turbo_mutex_unlock(&server->lock);
+        salts_mutex_unlock(&server->lock);
         return -1;
     }
     server->drain_callback = callback;
     server->drain_context = context;
-    turbo_mutex_unlock(&server->lock);
+    salts_mutex_unlock(&server->lock);
     return 0;
 }
 
@@ -252,37 +252,37 @@ int ivr_worker_http_start(ivr_worker_http_t *server, const char *host,
         port <= 0 || port > UINT16_MAX) {
         return -1;
     }
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_lock(&server->lock);
     if (server->state != IVR_WORKER_HTTP_STOPPED || server->thread_started) {
-        turbo_mutex_unlock(&server->lock);
+        salts_mutex_unlock(&server->lock);
         return -1;
     }
     if (snprintf(server->host, sizeof(server->host), "%s", host) < 0 ||
         strlen(server->host) != strlen(host)) {
-        turbo_mutex_unlock(&server->lock);
+        salts_mutex_unlock(&server->lock);
         return -1;
     }
     server->port = port;
     server->state = IVR_WORKER_HTTP_STARTING;
-    if (turbo_thread_create(&server->thread, http_thread, server) != 0) {
+    if (salts_thread_create(&server->thread, http_thread, server) != 0) {
         server->state = IVR_WORKER_HTTP_STOPPED;
-        turbo_mutex_unlock(&server->lock);
+        salts_mutex_unlock(&server->lock);
         return -1;
     }
     server->thread_started = 1;
     while (server->state == IVR_WORKER_HTTP_STARTING) {
-        turbo_cond_wait(&server->cond, &server->lock);
+        salts_cond_wait(&server->cond, &server->lock);
     }
     if (server->state == IVR_WORKER_HTTP_RUNNING) {
-        turbo_mutex_unlock(&server->lock);
+        salts_mutex_unlock(&server->lock);
         return 0;
     }
-    turbo_mutex_unlock(&server->lock);
-    turbo_thread_join(&server->thread);
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_unlock(&server->lock);
+    salts_thread_join(&server->thread);
+    salts_mutex_lock(&server->lock);
     server->thread_started = 0;
     server->state = IVR_WORKER_HTTP_STOPPED;
-    turbo_mutex_unlock(&server->lock);
+    salts_mutex_unlock(&server->lock);
     return -1;
 }
 
@@ -291,19 +291,19 @@ void ivr_worker_http_stop(ivr_worker_http_t *server) {
     if (!server) {
         return;
     }
-    turbo_mutex_lock(&server->lock);
+    salts_mutex_lock(&server->lock);
     if (server->state == IVR_WORKER_HTTP_RUNNING && server->context) {
         server->state = IVR_WORKER_HTTP_STOPPING;
         coro_context_stop(server->context);
     }
     should_join = server->thread_started;
-    turbo_mutex_unlock(&server->lock);
+    salts_mutex_unlock(&server->lock);
     if (should_join) {
-        turbo_thread_join(&server->thread);
-        turbo_mutex_lock(&server->lock);
+        salts_thread_join(&server->thread);
+        salts_mutex_lock(&server->lock);
         server->thread_started = 0;
         server->state = IVR_WORKER_HTTP_STOPPED;
-        turbo_mutex_unlock(&server->lock);
+        salts_mutex_unlock(&server->lock);
     }
 }
 
@@ -315,7 +315,7 @@ void ivr_worker_http_destroy(ivr_worker_http_t *server) {
     (void)iris_app_unbind_rpc_context(server->app,
                                       IVR_WORKER_HTTP_CONTEXT_PATH, server);
     iris_app_destroy(server->app);
-    turbo_cond_destroy(&server->cond);
-    turbo_mutex_destroy(&server->lock);
+    salts_cond_destroy(&server->cond);
+    salts_mutex_destroy(&server->lock);
     free(server);
 }

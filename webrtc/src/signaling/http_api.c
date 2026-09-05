@@ -15,7 +15,7 @@
 #include <stb_sprintf.h>
 #include <stdlib.h>
 #include <string.h>
-#include "turbo_str.h"
+#include "salts_str.h"
 
 static const char *HTTP_API_SIGNALING_CONTEXT_PATH = "/_turbomedia/webrtc-signaling";
 static const char *HTTP_API_SERVER_CONTEXT_PATH = "/_turbomedia/http-api";
@@ -28,10 +28,10 @@ struct http_api_server_s {
     iris_app_t *app;
     http_api_config_t config;
     webrtc_signaling_server_t *signaling;
-    turbo_thread_t thread;
+    salts_thread_t thread;
     int thread_started;
-    turbo_mutex_t lifecycle_mutex;
-    turbo_cond_t lifecycle_cond;
+    salts_mutex_t lifecycle_mutex;
+    salts_cond_t lifecycle_cond;
     coro_context_t *ctx;
     coro_socket_t *listener;
     int state;
@@ -346,14 +346,14 @@ http_api_server_t *http_api_create(void *loop, const http_api_config_t *config, 
         }
     }
     server->signaling = signaling;
-    turbo_mutex_init(&server->lifecycle_mutex);
-    turbo_cond_init(&server->lifecycle_cond);
+    salts_mutex_init(&server->lifecycle_mutex);
+    salts_cond_init(&server->lifecycle_cond);
     server->app = iris_app_create();
     
     if (!server->app) {
         http_api_free_config_strings(&server->config);
-        turbo_cond_destroy(&server->lifecycle_cond);
-        turbo_mutex_destroy(&server->lifecycle_mutex);
+        salts_cond_destroy(&server->lifecycle_cond);
+        salts_mutex_destroy(&server->lifecycle_mutex);
         free(server);
         return NULL;
     }
@@ -366,8 +366,8 @@ http_api_server_t *http_api_create(void *loop, const http_api_config_t *config, 
                                     signaling);
         iris_app_destroy(server->app);
         http_api_free_config_strings(&server->config);
-        turbo_cond_destroy(&server->lifecycle_cond);
-        turbo_mutex_destroy(&server->lifecycle_mutex);
+        salts_cond_destroy(&server->lifecycle_cond);
+        salts_mutex_destroy(&server->lifecycle_mutex);
         free(server);
         return NULL;
     }
@@ -396,12 +396,12 @@ static void http_api_mark_running(void *arg1, void *arg2) {
     http_api_server_t *server = (http_api_server_t *)arg1;
     (void)arg2;
 
-    turbo_mutex_lock(&server->lifecycle_mutex);
+    salts_mutex_lock(&server->lifecycle_mutex);
     if (server->state == HTTP_API_STARTING) {
         server->state = HTTP_API_RUNNING;
-        turbo_cond_broadcast(&server->lifecycle_cond);
+        salts_cond_broadcast(&server->lifecycle_cond);
     }
-    turbo_mutex_unlock(&server->lifecycle_mutex);
+    salts_mutex_unlock(&server->lifecycle_mutex);
 }
 
 static void http_api_thread_func(void *arg) {
@@ -415,10 +415,10 @@ static void http_api_thread_func(void *arg) {
     ctx = coro_context_create(NULL);
     if (!ctx) {
         TLOG_ERROR("Failed to create HTTP API coroutine context");
-        turbo_mutex_lock(&server->lifecycle_mutex);
+        salts_mutex_lock(&server->lifecycle_mutex);
         server->state = HTTP_API_FAILED;
-        turbo_cond_broadcast(&server->lifecycle_cond);
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_cond_broadcast(&server->lifecycle_cond);
+        salts_mutex_unlock(&server->lifecycle_mutex);
         return;
     }
 
@@ -441,26 +441,26 @@ static void http_api_thread_func(void *arg) {
     if (!listener) {
         TLOG_ERRORF("Failed to start HTTP API listener on port {}", server->config.port);
         coro_context_destroy(ctx);
-        turbo_mutex_lock(&server->lifecycle_mutex);
+        salts_mutex_lock(&server->lifecycle_mutex);
         server->state = HTTP_API_FAILED;
-        turbo_cond_broadcast(&server->lifecycle_cond);
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_cond_broadcast(&server->lifecycle_cond);
+        salts_mutex_unlock(&server->lifecycle_mutex);
         return;
     }
 
     coro_context_set_persistent(ctx, 1);
-    turbo_mutex_lock(&server->lifecycle_mutex);
+    salts_mutex_lock(&server->lifecycle_mutex);
     server->ctx = ctx;
     server->listener = listener;
-    turbo_mutex_unlock(&server->lifecycle_mutex);
+    salts_mutex_unlock(&server->lifecycle_mutex);
 
     if (coro_post(ctx, http_api_mark_running, server, NULL) != 0) {
-        turbo_mutex_lock(&server->lifecycle_mutex);
+        salts_mutex_lock(&server->lifecycle_mutex);
         server->listener = NULL;
         server->ctx = NULL;
         server->state = HTTP_API_FAILED;
-        turbo_cond_broadcast(&server->lifecycle_cond);
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_cond_broadcast(&server->lifecycle_cond);
+        salts_mutex_unlock(&server->lifecycle_mutex);
         coro_context_set_persistent(ctx, 0);
         coro_socket_destroy(listener);
         coro_context_destroy(ctx);
@@ -470,76 +470,76 @@ static void http_api_thread_func(void *arg) {
     run_result = coro_context_run(ctx, TURBO_RUN_DEFAULT);
     (void)run_result;
 
-    turbo_mutex_lock(&server->lifecycle_mutex);
+    salts_mutex_lock(&server->lifecycle_mutex);
     server->listener = NULL;
     server->ctx = NULL;
     server->state = HTTP_API_STOPPING;
-    turbo_mutex_unlock(&server->lifecycle_mutex);
+    salts_mutex_unlock(&server->lifecycle_mutex);
 
     coro_context_set_persistent(ctx, 0);
     coro_socket_destroy(listener);
     coro_context_destroy(ctx);
 
-    turbo_mutex_lock(&server->lifecycle_mutex);
+    salts_mutex_lock(&server->lifecycle_mutex);
     server->state = HTTP_API_STOPPED;
-    turbo_cond_broadcast(&server->lifecycle_cond);
-    turbo_mutex_unlock(&server->lifecycle_mutex);
+    salts_cond_broadcast(&server->lifecycle_cond);
+    salts_mutex_unlock(&server->lifecycle_mutex);
 
     TLOG_INFO("HTTP API thread exiting");
 }
 
 int http_api_start(http_api_server_t *server) {
     if (!server) return -1;
-    turbo_mutex_lock(&server->lifecycle_mutex);
+    salts_mutex_lock(&server->lifecycle_mutex);
     if (server->state == HTTP_API_RUNNING) {
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_mutex_unlock(&server->lifecycle_mutex);
         return 0;
     }
     if (server->state != HTTP_API_STOPPED || server->thread_started) {
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_mutex_unlock(&server->lifecycle_mutex);
         return -1;
     }
     server->state = HTTP_API_STARTING;
-    if (turbo_thread_create(&server->thread, http_api_thread_func, server) != 0) {
+    if (salts_thread_create(&server->thread, http_api_thread_func, server) != 0) {
         server->state = HTTP_API_STOPPED;
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_mutex_unlock(&server->lifecycle_mutex);
         TLOG_ERROR("Failed to create HTTP API thread");
         return -1;
     }
     server->thread_started = 1;
     while (server->state == HTTP_API_STARTING) {
-        turbo_cond_wait(&server->lifecycle_cond, &server->lifecycle_mutex);
+        salts_cond_wait(&server->lifecycle_cond, &server->lifecycle_mutex);
     }
     if (server->state == HTTP_API_RUNNING) {
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_mutex_unlock(&server->lifecycle_mutex);
         return 0;
     }
-    turbo_mutex_unlock(&server->lifecycle_mutex);
-    turbo_thread_join(&server->thread);
-    turbo_mutex_lock(&server->lifecycle_mutex);
+    salts_mutex_unlock(&server->lifecycle_mutex);
+    salts_thread_join(&server->thread);
+    salts_mutex_lock(&server->lifecycle_mutex);
     server->thread_started = 0;
     server->state = HTTP_API_STOPPED;
-    turbo_mutex_unlock(&server->lifecycle_mutex);
+    salts_mutex_unlock(&server->lifecycle_mutex);
     return -1;
 }
 
 void http_api_stop(http_api_server_t *server) {
     int should_join = 0;
     if (!server) return;
-    turbo_mutex_lock(&server->lifecycle_mutex);
+    salts_mutex_lock(&server->lifecycle_mutex);
     if (server->state == HTTP_API_RUNNING && server->ctx) {
         server->state = HTTP_API_STOPPING;
         coro_context_stop(server->ctx);
     }
     should_join = server->thread_started;
-    turbo_mutex_unlock(&server->lifecycle_mutex);
+    salts_mutex_unlock(&server->lifecycle_mutex);
 
     if (should_join) {
-        turbo_thread_join(&server->thread);
-        turbo_mutex_lock(&server->lifecycle_mutex);
+        salts_thread_join(&server->thread);
+        salts_mutex_lock(&server->lifecycle_mutex);
         server->thread_started = 0;
         server->state = HTTP_API_STOPPED;
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_mutex_unlock(&server->lifecycle_mutex);
     }
 }
 
@@ -552,8 +552,8 @@ void http_api_destroy(http_api_server_t *server) {
                                     server);
         iris_app_destroy(server->app);
         http_api_free_config_strings(&server->config);
-        turbo_cond_destroy(&server->lifecycle_cond);
-        turbo_mutex_destroy(&server->lifecycle_mutex);
+        salts_cond_destroy(&server->lifecycle_cond);
+        salts_mutex_destroy(&server->lifecycle_mutex);
         free(server);
     }
 }

@@ -9,7 +9,7 @@
 #include "ice_integration.h"
 #include "ice/turbo_ice.h"
 #include <turbo_coro_context.h>
-#include <turbo_thread.h>
+#include <salts_thread.h>
 #include <string.h>
 
 /* Test context */
@@ -109,7 +109,7 @@ void tearDown(void) {
         if (!turbo_loop_alive(g_test_ctx.loop)) {
             break;
         }
-        turbo_sleep_ms(1);
+        salts_sleep_ms(1);
     }
 
     if (g_test_ctx.loop) {
@@ -374,7 +374,7 @@ void test_ice_integration_with_stun(void) {
     for (int i = 0; i < 100; i++) {
         turbo_loop_poll(g_test_ctx.loop, 0, 0);
         ice_integration_poll(g_test_ctx.ice_a);
-        turbo_sleep_ms(10);
+        salts_sleep_ms(10);
     }
 }
 

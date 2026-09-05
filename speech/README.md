@@ -28,7 +28,7 @@ that integration and supplies the operation table declared in
 When ASR is the only microphone consumer, create and start ASR with the same
 sample rate, channel count, and sample width as the capture, then pass
 `turbo_asr_capture_callback` and the ASR session to
-`turbo_audio_capture_set_callback()` before starting capture. The complete,
+`salts_audio_capture_set_callback()` before starting capture. The complete,
 executable mock-provider flow is covered by
 `speech/tests/test_speech.c`.
 

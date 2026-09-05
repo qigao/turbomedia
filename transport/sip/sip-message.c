@@ -3,7 +3,7 @@
 #include "sip-header.h"
 #include "sip-dialog.h"
 #include "sip-internal.h"
-#include "turbo_uuid.h"
+#include "salts_uuid.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -149,14 +149,14 @@ int sip_message_clone(struct sip_message_t* msg, const struct sip_message_t* clo
 int sip_message_init(struct sip_message_t* msg, const char* method, const char* uri, const char* from, const char* to)
 {
 	char tag[16];
-	char callid[TURBO_UUID_STRING_SIZE];
-	turbo_uuid_t callid_uuid;
+	char callid[SALTS_UUID_STRING_SIZE];
+	salts_uuid_t callid_uuid;
 	uint32_t tag_value;
 	vstr u, f, t;
 	struct sip_contact_t contact;
 
-	if (turbo_uuid_v4_generate(&callid_uuid) != TURBO_OK ||
-		turbo_uuid_format(&callid_uuid, callid, sizeof(callid)) != TURBO_OK)
+	if (salts_uuid_v4_generate(&callid_uuid) != SALTS_OK ||
+		salts_uuid_format(&callid_uuid, callid, sizeof(callid)) != SALTS_OK)
 		return -1;
 	sip_message_copy(msg, &u, uri);
 	sip_message_copy(msg, &t, to);

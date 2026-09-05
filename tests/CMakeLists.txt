@@ -21,7 +21,7 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   endif()
   
   # 根据测试类型确定链接库
-  set(TEST_LINK_LIBS TurboUtils::TinyTest)
+  set(TEST_LINK_LIBS Salts::TinyTest)
   if(UNIX)
     list(APPEND TEST_LINK_LIBS m)
   endif()
@@ -48,12 +48,12 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     list(APPEND TEST_LINK_LIBS turbo_media_android)
   elseif(TEST_NAME STREQUAL "test_webrtc")
     list(APPEND TEST_LINK_LIBS TurboMedia::WebRTC TurboMedia::Core TurboMedia::Server
-                          TurboMedia::Pipeline TurboMedia::Transport TurboUtils::Core
+                          TurboMedia::Pipeline TurboMedia::Transport Salts::Core
                           TurboMedia::RTC)
   elseif(TEST_NAME STREQUAL "test_pipeline")
     list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server
                           TurboMedia::RTSP TurboMedia::Transport TurboMedia::Codec
-                          TurboUtils::Core)
+                          Salts::Core)
     if(WIN32)
       list(APPEND TEST_LINK_LIBS ws2_32)
     endif()

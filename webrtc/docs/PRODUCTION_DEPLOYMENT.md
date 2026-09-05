@@ -440,7 +440,7 @@ void schedule_reconnect(reconnect_state_t *state) {
     }
     
     // Schedule reconnection after delay
-    turbo_timer_start(timer, on_reconnect, delay, 0);
+    salts_timer_start(timer, on_reconnect, delay, 0);
     state->attempt++;
 }
 ```

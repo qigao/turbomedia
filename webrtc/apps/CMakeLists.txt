@@ -13,7 +13,7 @@ target_include_directories(
   turbo_media_rtc_apps PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/recording)
 target_link_libraries(
   turbo_media_rtc_apps
-  PUBLIC TurboMedia::RTC TurboUtils::Core
+  PUBLIC TurboMedia::RTC Salts::Core
   PRIVATE TurboMedia::Muxer TurboMedia::Transport TurboNet::Crypto)
 
 add_subdirectory(room_service)

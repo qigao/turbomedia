@@ -9,8 +9,7 @@ target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PUBLIC TurboParser::Parser
-  PRIVATE TurboNet::Crypto OpenSSL::Crypto)
+  PRIVATE Salts::JsonParser TurboNet::Crypto OpenSSL::Crypto)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
 add_library(turbo_media_sdp STATIC)
@@ -27,7 +26,7 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sdp
           ${CMAKE_CURRENT_BINARY_DIR}
           ${STB_INCLUDE_DIR})
-target_link_libraries(turbo_media_sdp PRIVATE TurboUtils::Core)
+target_link_libraries(turbo_media_sdp PRIVATE Salts::Core)
 
 set(TURBO_MEDIA_DATACHANNEL_SOURCES
     src/turbo_datachannel.c
@@ -48,11 +47,11 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(
   turbo_media_datachannel
-  PUBLIC TurboMedia::SDP TurboParser::Parser
+  PUBLIC TurboMedia::SDP Salts::LtvParser
   PRIVATE TurboNet::CoroNet
           TurboNet::Ice
-          TurboUtils::Core
-          TurboUtils::STL
+          Salts::Core
+          Salts::CSTL
           unofficial::usrsctp::usrsctp
           OpenSSL::SSL
           OpenSSL::Crypto
@@ -74,7 +73,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_webrtc
   PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel TurboNet::Ice
-  PRIVATE TurboMedia::RTC TurboMedia::SDP TurboUtils::Core)
+  PRIVATE TurboMedia::RTC TurboMedia::SDP Salts::Core)
 target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
 
 add_library(turbo_media_webrtc_signaling SHARED)
@@ -90,8 +89,8 @@ target_include_directories(
   PRIVATE ${STB_INCLUDE_DIR})
 target_link_libraries(
   turbo_media_webrtc_signaling
-  PUBLIC TurboNet::CoroNet TurboHttp::Iris TurboParser::Parser
-  PRIVATE turbo_media_auth TurboNet::Crypto TurboUtils::Core TurboUtils::STL)
+  PUBLIC TurboNet::CoroNet TurboHttp::Iris
+  PRIVATE turbo_media_auth Salts::JsonParser TurboNet::Crypto Salts::Core Salts::CSTL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 
@@ -127,8 +126,8 @@ target_link_libraries(
           TurboMedia::Device
           TurboNet::Ice
           TurboNet::CoroNet
-          TurboUtils::Core
-          TurboUtils::STL
+          Salts::Core
+          Salts::CSTL
           OpenSSL::SSL
           OpenSSL::Crypto
           libSRTP::srtp2)

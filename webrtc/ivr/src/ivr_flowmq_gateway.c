@@ -4,8 +4,8 @@
 #include "turbomedia_ivr_v1.h"
 #include "flowmq_connect_endpoint.h"
 #include "flowmq_protocol.h"
-#include "turbo_error.h"
-#include "turbo_str.h"
+#include "salts_error.h"
+#include "salts_str.h"
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -38,7 +38,7 @@ static int flowmq_gateway_send_payload(ivr_flowmq_gateway_t *gateway,
     tstr encoded = NULL;
     int rc;
     if (!gateway || !gateway->endpoint || (!payload && payload_size > 0u)) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     memset(&frame, 0, sizeof(frame));
     frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
@@ -53,7 +53,7 @@ static int flowmq_gateway_send_payload(ivr_flowmq_gateway_t *gateway,
     frame.payload = vstr_from_buf((const char *)payload, payload_size);
     rc = flowmq_protocol_encode_frame(
         &frame, FLOWMQ_CONNECT_ENDPOINT_DEFAULT_MAX_FRAME_SIZE, &encoded);
-    if (rc == TURBO_OK) {
+    if (rc == SALTS_OK) {
         rc = flowmq_connect_endpoint_send_copy(
             gateway->endpoint, completion_id, encoded, tstr_len(encoded));
     }
@@ -870,7 +870,7 @@ ivr_status_t ivr_flowmq_gateway_send_dispatch_result(
             frame, sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return flowmq_gateway_send_payload(gateway, frame, len) == TURBO_OK
+    return flowmq_gateway_send_payload(gateway, frame, len) == SALTS_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
@@ -890,7 +890,7 @@ ivr_status_t ivr_flowmq_gateway_send_dispatch_result_v2(
             &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return flowmq_gateway_send_payload(gateway, frame, len) == TURBO_OK
+    return flowmq_gateway_send_payload(gateway, frame, len) == SALTS_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
@@ -908,7 +908,7 @@ ivr_status_t ivr_flowmq_gateway_send_release_result(
             frame, sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return flowmq_gateway_send_payload(gateway, frame, len) == TURBO_OK
+    return flowmq_gateway_send_payload(gateway, frame, len) == SALTS_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
@@ -969,11 +969,11 @@ static int flowmq_on_message(void *ctx,
     if (!g || !g->on_reply || !message ||
         message->kind != FLOWMQ_PROTOCOL_FRAME_DATA ||
         message->payload.len == 0u) {
-        return TURBO_OK;
+        return SALTS_OK;
     }
     g->on_reply(g->reply_ctx, (const uint8_t *)message->payload.data,
                 message->payload.len);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static void flowmq_on_connection_state(
@@ -1006,7 +1006,7 @@ static ivr_status_t flowmq_submit_copy(void *context,
         return rc;
     }
     int send_rc = flowmq_gateway_send_payload(g, frame, len);
-    if (send_rc != TURBO_OK) {
+    if (send_rc != SALTS_OK) {
         g->rejected_count++;
         return IVR_ENOSPC;
     }
@@ -1026,7 +1026,7 @@ ivr_status_t ivr_flowmq_gateway_send_worker_sync(
                                               sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    if (flowmq_gateway_send_payload(gateway, frame, len) != TURBO_OK) {
+    if (flowmq_gateway_send_payload(gateway, frame, len) != SALTS_OK) {
         return IVR_ENOSPC;
     }
     return IVR_OK;
@@ -1050,7 +1050,7 @@ static ivr_status_t ivr_flowmq_gateway_send_worker_status(
     if (rc != IVR_OK) {
         return rc;
     }
-    return flowmq_gateway_send_payload(gateway, frame, len) == TURBO_OK
+    return flowmq_gateway_send_payload(gateway, frame, len) == SALTS_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
@@ -1074,7 +1074,7 @@ ivr_status_t ivr_flowmq_gateway_send_frame(ivr_flowmq_gateway_t *gateway,
     if (!gateway || !gateway->endpoint || (!frame && len > 0)) {
         return IVR_EINVAL;
     }
-    if (flowmq_gateway_send_payload(gateway, frame, len) != TURBO_OK) {
+    if (flowmq_gateway_send_payload(gateway, frame, len) != SALTS_OK) {
         return IVR_ENOSPC;
     }
     return IVR_OK;
@@ -1520,7 +1520,7 @@ ivr_status_t ivr_flowmq_gateway_create(const ivr_flowmq_gateway_config_t *config
     g->start_timeout_ns = timeout_ms * UINT64_C(1000000);
     atomic_init(&g->next_completion_id, 1u);
     rc = flowmq_connect_endpoint_create(&ep, &g->endpoint);
-    if (rc != TURBO_OK) {
+    if (rc != SALTS_OK) {
         data_bind_free(g->codec);
         free(g);
         return IVR_ENOSPC;
@@ -1539,7 +1539,7 @@ ivr_status_t ivr_flowmq_gateway_start(ivr_flowmq_gateway_t *gateway) {
         return IVR_EINVAL;
     }
     return flowmq_connect_endpoint_start(
-               gateway->endpoint, gateway->start_timeout_ns) == TURBO_OK
+               gateway->endpoint, gateway->start_timeout_ns) == SALTS_OK
                ? IVR_OK
                : IVR_ESTATE;
 }

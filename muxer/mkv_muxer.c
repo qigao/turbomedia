@@ -14,9 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <turbo_error.h>
-#include <turbo_vstr.h>
-#include <turbostl/vec.h>
+#include <salts_error.h>
+#include <salts_vstr.h>
+#include <cstl/vec.h>
 
 typedef union {
     struct mpeg4_avc_t avc;
@@ -52,7 +52,7 @@ static int mkv_name_is(const char *name, const char *expected) {
 
 static int mkv_codec(const turbo_stream_info_t *info, enum mkv_codec_t *codec) {
     const char *name;
-    if (!info || !codec || !info->codec_name) return TURBO_EINVAL;
+    if (!info || !codec || !info->codec_name) return SALTS_EINVAL;
     name = info->codec_name;
     if (info->type == TURBO_CODEC_TYPE_VIDEO) {
         if (mkv_name_is(name, "h264") || mkv_name_is(name, "avc"))
@@ -68,10 +68,10 @@ static int mkv_codec(const turbo_stream_info_t *info, enum mkv_codec_t *codec) {
         else if (mkv_name_is(name, "av1"))
             *codec = MKV_CODEC_VIDEO_AV1;
         else
-            return TURBO_ENOTSUP;
-        return TURBO_OK;
+            return SALTS_ENOTSUP;
+        return SALTS_OK;
     }
-    if (info->type != TURBO_CODEC_TYPE_AUDIO) return TURBO_ENOTSUP;
+    if (info->type != TURBO_CODEC_TYPE_AUDIO) return SALTS_ENOTSUP;
     if (mkv_name_is(name, "aac"))
         *codec = MKV_CODEC_AUDIO_AAC;
     else if (mkv_name_is(name, "opus"))
@@ -85,8 +85,8 @@ static int mkv_codec(const turbo_stream_info_t *info, enum mkv_codec_t *codec) {
     else if (mkv_name_is(name, "eac3"))
         *codec = MKV_CODEC_AUDIO_EAC3;
     else
-        return TURBO_ENOTSUP;
-    return TURBO_OK;
+        return SALTS_ENOTSUP;
+    return SALTS_OK;
 }
 
 static int mkv_codec_is_h26x(enum mkv_codec_t codec) {
@@ -95,7 +95,7 @@ static int mkv_codec_is_h26x(enum mkv_codec_t codec) {
 }
 
 static int mkv_resize_bytes(vec_t *buffer, size_t input_size) {
-    if (input_size > (SIZE_MAX - 64U) / 2U) return TURBO_EFBIG;
+    if (input_size > (SIZE_MAX - 64U) / 2U) return SALTS_EFBIG;
     return turbo_media_stl_status_to_error(
         vec_resize(buffer, input_size * 2U + 64U));
 }
@@ -105,22 +105,22 @@ static int mkv_normalize_config(mkv_muxer_stream_t *stream,
                                 vec_t *output) {
     int bytes;
     int result;
-    if (!stream || !input || input_size == 0 || !output) return TURBO_EINVAL;
+    if (!stream || !input || input_size == 0 || !output) return SALTS_EINVAL;
     result = mkv_resize_bytes(output, input_size);
-    if (result != TURBO_OK) return result;
+    if (result != SALTS_OK) return result;
 
     if (stream->codec == MKV_CODEC_VIDEO_H264) {
         memset(&stream->config.avc, 0, sizeof(stream->config.avc));
         if (mpeg4_avc_decoder_configuration_record_load(
                 input, input_size, &stream->config.avc) <= 0)
-            return TURBO_EINVAL;
+            return SALTS_EINVAL;
         bytes = mpeg4_avc_decoder_configuration_record_save(
             &stream->config.avc, vec_data(output), vec_size(output));
     } else if (stream->codec == MKV_CODEC_VIDEO_H265) {
         memset(&stream->config.hevc, 0, sizeof(stream->config.hevc));
         if (mpeg4_hevc_decoder_configuration_record_load(
                 input, input_size, &stream->config.hevc) <= 0)
-            return TURBO_EINVAL;
+            return SALTS_EINVAL;
         bytes = mpeg4_hevc_decoder_configuration_record_save(
             &stream->config.hevc, vec_data(output), vec_size(output));
     } else {
@@ -131,12 +131,12 @@ static int mkv_normalize_config(mkv_muxer_stream_t *stream,
             (void)h266_annexbtomp4(&stream->config.vvc, input, input_size,
                                    vec_data(output), vec_size(output),
                                    NULL, &update);
-            if (!update) return TURBO_EINVAL;
+            if (!update) return SALTS_EINVAL;
         }
         bytes = mpeg4_vvc_decoder_configuration_record_save(
             &stream->config.vvc, vec_data(output), vec_size(output));
     }
-    if (bytes <= 0) return TURBO_EINVAL;
+    if (bytes <= 0) return SALTS_EINVAL;
     return turbo_media_stl_status_to_error(vec_resize(output, (size_t)bytes));
 }
 
@@ -147,14 +147,14 @@ static int mkv_convert_sample(mkv_muxer_stream_t *stream, const uint8_t *input,
     int update = 0;
     int result;
     if (!stream || !input || input_size == 0 || !output || !output_size)
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     if (!mkv_codec_is_h26x(stream->codec)) {
         *output = input;
         *output_size = input_size;
-        return TURBO_OK;
+        return SALTS_OK;
     }
     result = mkv_resize_bytes(&stream->sample, input_size);
-    if (result != TURBO_OK) return result;
+    if (result != SALTS_OK) return result;
     if (stream->codec == MKV_CODEC_VIDEO_H264)
         bytes = h264_annexbtomp4(&stream->config.avc, input, input_size,
                                  vec_data(&stream->sample),
@@ -167,10 +167,10 @@ static int mkv_convert_sample(mkv_muxer_stream_t *stream, const uint8_t *input,
         bytes = h266_annexbtomp4(&stream->config.vvc, input, input_size,
                                  vec_data(&stream->sample),
                                  vec_size(&stream->sample), NULL, &update);
-    if (bytes <= 0 || update) return TURBO_EPROTO;
+    if (bytes <= 0 || update) return SALTS_EPROTO;
     *output = (const uint8_t *)vec_data_const(&stream->sample);
     *output_size = (size_t)bytes;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static void mkv_stream_destroy(mkv_muxer_stream_t *stream) {
@@ -188,17 +188,17 @@ static void *mkv_muxer_create_impl(const turbo_muxer_config_t *config) {
         return NULL;
     ctx = (mkv_muxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    ctx->io.file = TURBO_INVALID_FILE;
+    ctx->io.file = SALTS_INVALID_FILE;
     ctx->format = config->format;
     result = turbo_media_stl_status_to_error(vec_init_bytes(
         &ctx->streams, sizeof(mkv_muxer_stream_t *),
         CMETA_ALIGNOF(mkv_muxer_stream_t *), SIZE_MAX));
-    if (result != TURBO_OK) goto fail;
+    if (result != SALTS_OK) goto fail;
     result = turbo_container_io_open_writer(&ctx->io, config->output_path);
-    if (result != TURBO_OK) goto fail;
+    if (result != SALTS_OK) goto fail;
     options = config->format == TURBO_MUXER_WEBM ? MKV_OPTION_WEBM : 0;
     ctx->writer = mkv_writer_create(&s_mkv_io, &ctx->io, options);
-    if (!ctx->writer || ctx->io.error != TURBO_OK) goto fail;
+    if (!ctx->writer || ctx->io.error != SALTS_OK) goto fail;
     return ctx;
 fail:
     if (ctx->writer) mkv_writer_destroy(ctx->writer);
@@ -209,13 +209,13 @@ fail:
 }
 
 static int mkv_muxer_finalize(mkv_muxer_ctx_t *ctx) {
-    if (!ctx) return TURBO_EINVAL;
+    if (!ctx) return SALTS_EINVAL;
     if (ctx->finalized) return ctx->io.error;
-    if (!ctx->writer) return TURBO_EINVAL;
+    if (!ctx->writer) return SALTS_EINVAL;
     mkv_writer_destroy(ctx->writer);
     ctx->writer = NULL;
     ctx->finalized = 1;
-    if (ctx->io.error != TURBO_OK) return ctx->io.error;
+    if (ctx->io.error != SALTS_OK) return ctx->io.error;
     return turbo_container_io_flush(&ctx->io);
 }
 
@@ -244,29 +244,29 @@ static int mkv_muxer_add_stream_impl(void *ctx_ptr,
     size_t next_id;
     int result;
     if (!ctx || !ctx->writer || !info || !stream_id || ctx->finalized)
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     if ((info->type == TURBO_CODEC_TYPE_VIDEO &&
          (info->width <= 0 || info->height <= 0)) ||
         (info->type == TURBO_CODEC_TYPE_AUDIO &&
          (info->sample_rate <= 0 || info->channels <= 0)))
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     next_id = vec_size(&ctx->streams);
     result = turbo_media_stl_status_to_error(
         vec_reserve(&ctx->streams, next_id + 1));
-    if (result != TURBO_OK) return result;
+    if (result != SALTS_OK) return result;
     stream = (mkv_muxer_stream_t *)calloc(1, sizeof(*stream));
-    if (!stream) return TURBO_ENOMEM;
+    if (!stream) return SALTS_ENOMEM;
     result = turbo_media_stl_status_to_error(vec_init_bytes(
         &stream->sample, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t), SIZE_MAX));
-    if (result != TURBO_OK) goto fail;
+    if (result != SALTS_OK) goto fail;
     result = mkv_codec(info, &stream->codec);
-    if (result != TURBO_OK) goto fail;
+    if (result != SALTS_OK) goto fail;
     if (ctx->format == TURBO_MUXER_WEBM &&
         stream->codec != MKV_CODEC_VIDEO_VP8 &&
         stream->codec != MKV_CODEC_VIDEO_VP9 &&
         stream->codec != MKV_CODEC_VIDEO_AV1 &&
         stream->codec != MKV_CODEC_AUDIO_OPUS) {
-        result = TURBO_ENOTSUP;
+        result = SALTS_ENOTSUP;
         goto fail;
     }
 
@@ -275,10 +275,10 @@ static int mkv_muxer_add_stream_impl(void *ctx_ptr,
     if (mkv_codec_is_h26x(stream->codec)) {
         result = turbo_media_stl_status_to_error(vec_init_bytes(
             &normalized, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t), SIZE_MAX));
-        if (result != TURBO_OK) goto fail;
+        if (result != SALTS_OK) goto fail;
         result = mkv_normalize_config(stream, info->extradata,
                                       info->extradata_size, &normalized);
-        if (result != TURBO_OK) goto fail;
+        if (result != SALTS_OK) goto fail;
         extra = vec_data_const(&normalized);
         extra_size = vec_size(&normalized);
     }
@@ -296,10 +296,10 @@ static int mkv_muxer_add_stream_impl(void *ctx_ptr,
         goto fail;
     }
     result = turbo_media_stl_status_to_error(vec_push(&ctx->streams, &stream));
-    if (result != TURBO_OK) goto fail;
+    if (result != SALTS_OK) goto fail;
     *stream_id = (int)next_id;
     vec_destroy(&normalized);
-    return TURBO_OK;
+    return SALTS_OK;
 fail:
     vec_destroy(&normalized);
     mkv_stream_destroy(stream);
@@ -308,8 +308,8 @@ fail:
 
 static int mkv_muxer_write_header_impl(void *ctx_ptr) {
     mkv_muxer_ctx_t *ctx = (mkv_muxer_ctx_t *)ctx_ptr;
-    if (!ctx || !ctx->writer || ctx->finalized) return TURBO_EINVAL;
-    return vec_empty(&ctx->streams) ? TURBO_EINVAL : ctx->io.error;
+    if (!ctx || !ctx->writer || ctx->finalized) return SALTS_EINVAL;
+    return vec_empty(&ctx->streams) ? SALTS_EINVAL : ctx->io.error;
 }
 
 static int mkv_muxer_write_packet_impl(void *ctx_ptr,
@@ -322,16 +322,16 @@ static int mkv_muxer_write_packet_impl(void *ctx_ptr,
     int result;
     if (!ctx || !ctx->writer || !packet || !packet->data || packet->size == 0 ||
         packet->stream_id < 0 || ctx->finalized)
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     entry = (mkv_muxer_stream_t **)vec_at(
         &ctx->streams, (size_t)packet->stream_id);
-    if (!entry || !*entry) return TURBO_EINVAL;
+    if (!entry || !*entry) return SALTS_EINVAL;
     result = mkv_convert_sample(*entry, packet->data, packet->size, &data, &size);
-    if (result != TURBO_OK) return result;
+    if (result != SALTS_OK) return result;
     flags = packet->is_keyframe ? MKV_FLAGS_KEYFRAME : 0;
     result = mkv_writer_write(ctx->writer, (*entry)->track, data, size,
                               packet->pts / 1000, packet->dts / 1000, flags);
-    return result == TURBO_OK ? ctx->io.error : result;
+    return result == SALTS_OK ? ctx->io.error : result;
 }
 
 static int mkv_muxer_write_trailer_impl(void *ctx_ptr) {
@@ -341,7 +341,7 @@ static int mkv_muxer_write_trailer_impl(void *ctx_ptr) {
 static int mkv_muxer_get_data_impl(void *ctx_ptr, uint8_t **data, size_t *size) {
     mkv_muxer_ctx_t *ctx = (mkv_muxer_ctx_t *)ctx_ptr;
     return ctx ? turbo_container_io_get_memory(&ctx->io, data, size)
-               : TURBO_EINVAL;
+               : SALTS_EINVAL;
 }
 
 static const char *s_mkv_extensions[] = {".mkv", ".mka", NULL};

@@ -186,7 +186,7 @@ static void whep_on_frame(turbo_media_track_t *track, const uint8_t *data,
     }
     ivr_mutex_lock(&transport->lock);
     if (transport->active && !transport->poll_stop) {
-        transport->last_frame_ms = turbo_monotonic_ms();
+        transport->last_frame_ms = salts_monotonic_ms();
         transport->input_stalled = 0;
         have_call = whep_copy_call_locked(transport, &call);
         callback = transport->config.on_audio;
@@ -276,7 +276,7 @@ static void whep_on_state_change(turbo_peer_connection_t *pc,
     ivr_mutex_lock(&transport->lock);
     if (state == TURBO_PEER_STATE_CONNECTED) {
         transport->connected = 1;
-        transport->last_frame_ms = turbo_monotonic_ms();
+        transport->last_frame_ms = salts_monotonic_ms();
         transport->input_stalled = 0;
     } else if (state == TURBO_PEER_STATE_DISCONNECTED ||
                state == TURBO_PEER_STATE_FAILED ||
@@ -325,7 +325,7 @@ static void *whep_poll_thread_main(void *opaque) {
         stop = transport->poll_stop;
         connected = transport->connected;
         pc = transport->pc;
-        now = turbo_monotonic_ms();
+        now = salts_monotonic_ms();
         if (!stop && transport->active && connected &&
             !transport->input_stalled && transport->last_frame_ms != 0 &&
             now >= transport->last_frame_ms &&

@@ -30,7 +30,7 @@
 #include "turbomedia_ivr_v1.h"
 #include "disruptor.h"
 #include "platform.h"
-#include "turbo_uuid.h"
+#include "salts_uuid.h"
 #include "../config_toml.h"
 #include <signal.h>
 #include <errno.h>
@@ -306,14 +306,14 @@ static void toml_config_shutdown(void) {
     toml_strings_cleanup();
 }
 
-static int toml_copy_string(const turbo_toml_t *table, const char *key,
+static int toml_copy_string(const toml_table_t *table, const char *key,
                             const char **target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
     char *copy;
     if (!table || !key || !target || !rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_string(table, key);
+    value = toml_table_string(table, key);
     if (!value.ok || !value.u.s || value.u.sl < 0 ||
         strlen(value.u.s) != (size_t)value.u.sl ||
         g_toml_string_count >= sizeof(g_toml_strings) / sizeof(g_toml_strings[0])) {
@@ -330,12 +330,12 @@ static int toml_copy_string(const turbo_toml_t *table, const char *key,
     return 0;
 }
 
-static int toml_copy_int(const turbo_toml_t *table, const char *key, int *target) {
-    turbo_toml_value_t value;
+static int toml_copy_int(const toml_table_t *table, const char *key, int *target) {
+    toml_value_t value;
     if (!table || !key || !target || !rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_int(table, key);
+    value = toml_table_int(table, key);
     if (!value.ok || value.u.i < INT_MIN || value.u.i > INT_MAX) {
         return -1;
     }
@@ -343,20 +343,20 @@ static int toml_copy_int(const turbo_toml_t *table, const char *key, int *target
     return 0;
 }
 
-static int toml_copy_bool(const turbo_toml_t *table, const char *key,
+static int toml_copy_bool(const toml_table_t *table, const char *key,
                           int *target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
     if (!table || !key || !target || !rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_bool(table, key);
+    value = toml_table_bool(table, key);
     if (!value.ok) return -1;
     *target = value.u.b ? 1 : 0;
     return 0;
 }
 
 static int load_toml_config(const char *filename) {
-    turbo_toml_t *worker = NULL;
+    toml_table_t *worker = NULL;
     const char *const allowed[] = {
         "worker_id",   "router_host",  "router_port",  "health_host",
         "health_port", "max_sessions", "heartbeat_ms", "lease_ms",
@@ -511,7 +511,7 @@ static ivr_worker_control_state_t g_control_state;
 static ivr_atomic_int_t g_accept_replies;
 static ivr_atomic_int_t g_accept_media_events;
 static atomic_ullong g_media_event_sequence;
-static char g_instance_id[TURBO_UUID_STRING_SIZE];
+static char g_instance_id[SALTS_UUID_STRING_SIZE];
 static const char *g_sfu_base_url = NULL;
 static const char *g_sfu_media_token = NULL;
 static const char *g_sfu_ca_file = NULL;
@@ -532,7 +532,7 @@ static ivr_status_t enqueue_media_event_copy(
 
 static void metrics_observe_elapsed(ivr_worker_histogram_kind_t kind,
                                     uint64_t started_at_ms) {
-    uint64_t finished_at_ms = turbo_monotonic_ms();
+    uint64_t finished_at_ms = salts_monotonic_ms();
     ivr_worker_metrics_observe_ms(
         &g_metrics, kind,
         finished_at_ms >= started_at_ms ? finished_at_ms - started_at_ms : 0);
@@ -540,7 +540,7 @@ static void metrics_observe_elapsed(ivr_worker_histogram_kind_t kind,
 
 static uint64_t worker_now_ms(void *context) {
     (void)context;
-    return turbo_monotonic_ms();
+    return salts_monotonic_ms();
 }
 
 static void management_http_stop(void) {
@@ -1654,7 +1654,7 @@ static void handle_reply(const uint8_t *frame, size_t len) {
             return;
         }
         {
-            uint64_t received_at_ms = turbo_monotonic_ms();
+            uint64_t received_at_ms = salts_monotonic_ms();
             ivr_status_t rc = execute_media_command(&command, received_at_ms);
             const char *error_code = rc == IVR_OK ? "" : media_error_code(rc);
             const char *error_message =
@@ -2007,7 +2007,7 @@ static void process_media_events(void) {
         if (g_gateway &&
             ivr_flowmq_gateway_send_media_event(
                 g_gateway, g_config.worker_id, &event,
-                turbo_monotonic_ms()) != IVR_OK) {
+                salts_monotonic_ms()) != IVR_OK) {
             fprintf(stderr,
                     "ivr_worker: media event send failed session=%s type=%s\n",
                     entry->provider_session_id, entry->event_type);
@@ -2378,10 +2378,10 @@ int main(int argc, char **argv) {
     }
     print_config();
 
-    turbo_uuid_t instance_uuid;
-    if (turbo_uuid_v4_generate(&instance_uuid) != TURBO_OK ||
-        turbo_uuid_format(&instance_uuid, g_instance_id,
-                          sizeof(g_instance_id)) != TURBO_OK) {
+    salts_uuid_t instance_uuid;
+    if (salts_uuid_v4_generate(&instance_uuid) != SALTS_OK ||
+        salts_uuid_format(&instance_uuid, g_instance_id,
+                          sizeof(g_instance_id)) != SALTS_OK) {
         fprintf(stderr, "ivr_worker: instance UUID generation failed\n");
         return 1;
     }
@@ -2597,7 +2597,7 @@ int main(int argc, char **argv) {
     uint64_t heartbeat_sequence = 0;
     uint64_t health_revocation_sequence = 0;
     uint64_t next_heartbeat_ms =
-        turbo_monotonic_ms() + g_config.heartbeat_ms;
+        salts_monotonic_ms() + g_config.heartbeat_ms;
     int ticks = 0;
     while (atomic_load_explicit(&g_running, memory_order_acquire) &&
            !g_signal_stop) {
@@ -2645,7 +2645,7 @@ int main(int argc, char **argv) {
             }
         }
         if (g_synced && command_connected &&
-            turbo_monotonic_ms() >= next_heartbeat_ms) {
+            salts_monotonic_ms() >= next_heartbeat_ms) {
             char mid[64];
             snprintf(mid, sizeof(mid), "heartbeat-%llu",
                      (unsigned long long)++heartbeat_sequence);
@@ -2662,7 +2662,7 @@ int main(int argc, char **argv) {
                        (unsigned long long)g_config.timeout_ms);
             }
             next_heartbeat_ms =
-                turbo_monotonic_ms() + g_config.heartbeat_ms;
+                salts_monotonic_ms() + g_config.heartbeat_ms;
         }
     }
 

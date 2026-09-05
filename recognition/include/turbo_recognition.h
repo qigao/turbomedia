@@ -18,6 +18,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <salts_capture.h>
 #include <turbo_export.h>
 #include <turbo_player.h>
 
@@ -38,7 +39,6 @@ extern "C" {
 typedef struct turbo_voice_detector_s turbo_voice_detector_t;
 typedef struct turbo_fingerprint_extractor_s turbo_fingerprint_extractor_t;
 typedef struct turbo_fingerprint_matcher_s turbo_fingerprint_matcher_t;
-struct turbo_capture_s;
 
 typedef enum {
   TURBO_RECOGNITION_OK = 0,
@@ -169,8 +169,8 @@ turbo_voice_detector_get_rejected_frame_count(const turbo_voice_detector_t *dete
 TURBO_MEDIA_API int turbo_voice_detector_get_audio_format(const turbo_voice_detector_t *detector,
                                                     turbo_recognition_audio_format_t *format);
 
-/** turbo_audio_capture_cb-compatible adapter for detector-only capture. */
-TURBO_MEDIA_API void turbo_voice_detector_capture_callback(struct turbo_capture_s *capture,
+/** salts_audio_capture_cb-compatible adapter for detector-only capture. */
+TURBO_MEDIA_API void turbo_voice_detector_capture_callback(salts_capture_t *capture,
                                                      const uint8_t *samples, size_t len,
                                                      uint64_t timestamp_us, void *user_data);
 
@@ -262,8 +262,8 @@ TURBO_MEDIA_API int
 turbo_fingerprint_extractor_get_audio_format(const turbo_fingerprint_extractor_t *extractor,
                                              turbo_recognition_audio_format_t *format);
 
-/** turbo_audio_capture_cb-compatible adapter for voice/audio fingerprints. */
-TURBO_MEDIA_API void turbo_fingerprint_capture_callback(struct turbo_capture_s *capture,
+/** salts_audio_capture_cb-compatible adapter for voice/audio fingerprints. */
+TURBO_MEDIA_API void turbo_fingerprint_capture_callback(salts_capture_t *capture,
                                                   const uint8_t *samples, size_t len,
                                                   uint64_t timestamp_us, void *user_data);
 

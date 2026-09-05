@@ -5,7 +5,7 @@ streamer/hls、streamer/dash 与 streamer/rtmp 目录的代码移植自
 
 本地修改：
 
-- HLS/DASH 分片写入与 m3u8/mpd 生成保留上游实现，接入 TurboUtils 容器与 IO 接口；
+- HLS/DASH 分片写入与 m3u8/mpd 生成保留上游实现，接入 Salts 容器与 IO 接口；
 - RTMP 传输层基于 CoroNet（TCP/TLS）重写，不再依赖上游自带的 socket 封装；
 - 移除了本仓库不使用的历史 RTSP 相关代码。
 

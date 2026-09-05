@@ -5,7 +5,7 @@
 
 本地修改：
 
-- RTP/SIP 内部缓冲区与时间接口已适配 TurboUtils/TurboNet（如 	urbo_gettimeofday、
+- RTP/SIP 内部缓冲区与时间接口已适配 Salts/TurboNet（如 	urbo_gettimeofday、
   	urbo_secure_random）；
 - 修复了 RTP 库内失败即 bort() 的行为（tcp-interval.c、tp-time.c、
   sip-string-view.h），改为可恢复的错误处理；

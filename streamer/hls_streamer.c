@@ -1,5 +1,5 @@
 /**
- * HLS fMP4 streamer backed by TurboUtils filesystem APIs and TurboHTTP uploads.
+ * HLS fMP4 streamer backed by Salts filesystem APIs and TurboHTTP uploads.
  */
 #include "turbo_streamer.h"
 
@@ -13,9 +13,9 @@
 #include "mpeg4-vvc.h"
 #include "mov-format.h"
 #include "http_client.h"
-#include "turbo_fs.h"
-#include "turbo_str.h"
-#include "turbo_vstr.h"
+#include "salts_fs.h"
+#include "salts_str.h"
+#include "salts_vstr.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -74,8 +74,8 @@ typedef struct {
 } hls_streamer_ctx_t;
 
 static int hls_make_path(const hls_streamer_ctx_t *ctx, const char *name,
-                         char path[TURBO_FS_MAX_PATH]) {
-    return turbo_fs_path_join(path, TURBO_FS_MAX_PATH, ctx->output_dir, name);
+                         char path[SALTS_FS_MAX_PATH]) {
+    return salts_fs_path_join(path, SALTS_FS_MAX_PATH, ctx->output_dir, name);
 }
 
 static tstr hls_make_url(const hls_streamer_ctx_t *ctx, const char *name) {
@@ -97,12 +97,12 @@ static tstr hls_make_url(const hls_streamer_ctx_t *ctx, const char *name) {
 }
 
 static int hls_write_file(const hls_streamer_ctx_t *ctx, const char *name,
-                          const void *data, size_t bytes, char path[TURBO_FS_MAX_PATH]) {
-    turbo_fs_buf_t buffer;
+                          const void *data, size_t bytes, char path[SALTS_FS_MAX_PATH]) {
+    salts_fs_buf_t buffer;
 
     if (hls_make_path(ctx, name, path) != 0) return -ENAMETOOLONG;
-    buffer = turbo_fs_buf_init((char *)data, bytes);
-    return turbo_fs_write_file(path, &buffer);
+    buffer = salts_fs_buf_init((char *)data, bytes);
+    return salts_fs_write_file(path, &buffer);
 }
 
 static int hls_upload_file(const hls_streamer_ctx_t *ctx, const char *name,
@@ -156,7 +156,7 @@ static int hls_render_playlist(hls_streamer_ctx_t *ctx, int eof, char **playlist
 }
 
 static int hls_publish_playlist(hls_streamer_ctx_t *ctx, int eof) {
-    char path[TURBO_FS_MAX_PATH];
+    char path[SALTS_FS_MAX_PATH];
     char *playlist;
     size_t size;
     int result;
@@ -174,7 +174,7 @@ static int hls_on_segment(void *param, const void *data, size_t bytes, int64_t p
                           int64_t dts, int64_t duration) {
     hls_streamer_ctx_t *ctx = (hls_streamer_ctx_t *)param;
     char name[64];
-    char path[TURBO_FS_MAX_PATH];
+    char path[SALTS_FS_MAX_PATH];
     tstr uri;
     int written;
     int result;
@@ -371,11 +371,11 @@ static void *hls_streamer_create(const turbo_streamer_config_t *config) {
         return NULL;
     }
 
-    if (turbo_fs_access(config->output_dir, TURBO_FS_ACCESS_EXISTS) != 0 &&
-        turbo_fs_mkdir(config->output_dir, 0755) != 0) {
+    if (salts_fs_access(config->output_dir, SALTS_FS_ACCESS_EXISTS) != 0 &&
+        salts_fs_mkdir(config->output_dir, 0755) != 0) {
         return NULL;
     }
-    if (turbo_fs_access(config->output_dir, TURBO_FS_ACCESS_WRITE) != 0) return NULL;
+    if (salts_fs_access(config->output_dir, SALTS_FS_ACCESS_WRITE) != 0) return NULL;
 
     ctx = (hls_streamer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
@@ -409,7 +409,7 @@ static void *hls_streamer_create(const turbo_streamer_config_t *config) {
 
 static int hls_write_init_segment(hls_streamer_ctx_t *ctx) {
     uint8_t *data;
-    char path[TURBO_FS_MAX_PATH];
+    char path[SALTS_FS_MAX_PATH];
     tstr uri;
     int bytes;
     int result;

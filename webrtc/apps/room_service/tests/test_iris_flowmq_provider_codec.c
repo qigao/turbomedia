@@ -2,9 +2,9 @@
 
 #include <flowmq_media_provider.h>
 #include <tinytest.h>
-#include <turbo_error.h>
-#include <turbo_parser.h>
-#include <turbo_str.h>
+#include <salts_error.h>
+#include <json_parser.h>
+#include <salts_str.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -62,9 +62,9 @@ static uint8_t *encode_command(const char *payload, const char *partition_key,
 
 static const char *json_string_field(const json_value_t *object,
                                      const char *name) {
-    json_value_t *value = turbo_json_object_get(object, name);
-    return value && turbo_json_type(value) == TURBO_JSON_STRING
-               ? turbo_json_string(value)
+    json_value_t *value = json_object_get(object, name);
+    return value && json_type(value) == JSON_STRING
+               ? json_string(value)
                : NULL;
 }
 
@@ -103,21 +103,21 @@ spec("RoomService Iris FlowMQ provider codec") {
         check_equal(decoded.dispatch_epoch, 17u);
         check_equal(decoded.wire.semantic_fingerprint,
                      TEST_SEMANTIC_FINGERPRINT);
-        check_equal(turbo_parse_json((const uint8_t *)decoded.bridge_json,
-                                      decoded.bridge_json_size, &root),
+        check_equal(((root = json_parse((const char *)((const uint8_t *)decoded.bridge_json), decoded.bridge_json_size)) ? 0 : -1),
                      0);
         check_not_null(root);
         check_equal(json_string_field(root, "commandId"), "command-a");
         check_equal(json_string_field(root, "tenantId"), "tenant-a");
         check_equal(json_string_field(root, "workerId"), "iris-worker-a");
-        check_equal((uint64_t)turbo_json_number(
-                        turbo_json_object_get(root, "schemaVersion")),
+        check_equal((uint64_t)json_number(
+                        json_object_get(root, "schemaVersion")),
                     UINT64_C(2));
-        data = turbo_json_object_get(root, "data");
+        data = json_object_get(root, "data");
         check_not_null(data);
         check_equal(json_string_field(data, "dialogId"), "dialog-a");
         check_equal(json_string_field(data, "text"), "Welcome");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         iris_flowmq_provider_command_clear(&decoded);
         tbe_typed_serialized_free(encoded);
     }
@@ -136,14 +136,14 @@ spec("RoomService Iris FlowMQ provider codec") {
         check_equal(iris_flowmq_provider_decode_command(
                          codec, encoded, encoded_size, &decoded),
                     IVR_OK);
-        check_equal(turbo_parse_json((const uint8_t *)decoded.bridge_json,
-                                     decoded.bridge_json_size, &root),
+        check_equal(((root = json_parse((const char *)((const uint8_t *)decoded.bridge_json), decoded.bridge_json_size)) ? 0 : -1),
                     0);
         check_not_null(root);
-        check_equal((uint64_t)turbo_json_number(
-                        turbo_json_object_get(root, "schemaVersion")),
+        check_equal((uint64_t)json_number(
+                        json_object_get(root, "schemaVersion")),
                     UINT64_C(3));
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         iris_flowmq_provider_command_clear(&decoded);
         tbe_typed_serialized_free(encoded);
     }

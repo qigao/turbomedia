@@ -12,14 +12,14 @@
  * @code
  * uint8_t private_key[TURBO_MEDIA_X25519_KEY_SIZE];
  * uint8_t public_key[TURBO_MEDIA_X25519_KEY_SIZE];
- * if (turbo_media_x25519_keypair_generate(private_key, public_key) == TURBO_OK) {
+ * if (turbo_media_x25519_keypair_generate(private_key, public_key) == SALTS_OK) {
  *   publish_authenticated_public_key(public_key);
  * }
  * turbo_media_crypto_wipe(private_key, sizeof(private_key));
  * @endcode
  */
 
-#include "turbo_error.h"
+#include "salts_error.h"
 #include "turbo_export.h"
 
 #include <stddef.h>
@@ -40,7 +40,7 @@ extern "C" {
  *
  * @param private_key Destination for the 32-byte private key
  * @param public_key Destination for the 32-byte public key
- * @return TURBO_OK, TURBO_EINVAL, or an entropy acquisition error
+ * @return SALTS_OK, SALTS_EINVAL, or an entropy acquisition error
  */
 TURBO_MEDIA_API int turbo_media_x25519_keypair_generate(
     uint8_t private_key[TURBO_MEDIA_X25519_KEY_SIZE],
@@ -51,7 +51,7 @@ TURBO_MEDIA_API int turbo_media_x25519_keypair_generate(
  *
  * @param private_key Source private key
  * @param public_key Destination public key; exact input/output aliasing is supported
- * @return TURBO_OK or TURBO_EINVAL
+ * @return SALTS_OK or SALTS_EINVAL
  */
 TURBO_MEDIA_API int turbo_media_x25519_public_key(
     const uint8_t private_key[TURBO_MEDIA_X25519_KEY_SIZE],
@@ -60,14 +60,14 @@ TURBO_MEDIA_API int turbo_media_x25519_public_key(
 /**
  * Compute an X25519 raw shared secret.
  *
- * The function returns TURBO_EPROTO and leaves shared_secret unchanged when
+ * The function returns SALTS_EPROTO and leaves shared_secret unchanged when
  * the peer key produces the all-zero result. A protocol-specific KDF must be
  * applied before using the result as an encryption key.
  *
  * @param private_key Local private key
  * @param peer_public_key Authenticated peer public key
  * @param shared_secret Destination raw shared secret
- * @return TURBO_OK, TURBO_EINVAL, or TURBO_EPROTO for a low-order peer key
+ * @return SALTS_OK, SALTS_EINVAL, or SALTS_EPROTO for a low-order peer key
  */
 TURBO_MEDIA_API int turbo_media_x25519_shared_secret(
     const uint8_t private_key[TURBO_MEDIA_X25519_KEY_SIZE],
@@ -78,7 +78,7 @@ TURBO_MEDIA_API int turbo_media_x25519_shared_secret(
  * Generate a random 32-byte XChaCha20 key using the system CSPRNG.
  *
  * @param key Destination key
- * @return TURBO_OK, TURBO_EINVAL, or an entropy acquisition error
+ * @return SALTS_OK, SALTS_EINVAL, or an entropy acquisition error
  */
 TURBO_MEDIA_API int turbo_media_xchacha20_key_generate(
     uint8_t key[TURBO_MEDIA_XCHACHA20_KEY_SIZE]);
@@ -88,7 +88,7 @@ TURBO_MEDIA_API int turbo_media_xchacha20_key_generate(
  * The caller remains responsible for guaranteeing uniqueness per key.
  *
  * @param nonce Destination nonce
- * @return TURBO_OK, TURBO_EINVAL, or an entropy acquisition error
+ * @return SALTS_OK, SALTS_EINVAL, or an entropy acquisition error
  */
 TURBO_MEDIA_API int turbo_media_xchacha20_nonce_generate(
     uint8_t nonce[TURBO_MEDIA_XCHACHA20_NONCE_SIZE]);
@@ -108,7 +108,7 @@ TURBO_MEDIA_API int turbo_media_xchacha20_nonce_generate(
  * @param text_size Message length and cipher_text capacity
  * @param cipher_text Destination ciphertext
  * @param tag Destination authentication tag
- * @return TURBO_OK or TURBO_EINVAL
+ * @return SALTS_OK or SALTS_EINVAL
  */
 TURBO_MEDIA_API int turbo_media_xchacha20poly1305_encrypt(
     const uint8_t key[TURBO_MEDIA_XCHACHA20_KEY_SIZE],
@@ -123,7 +123,7 @@ TURBO_MEDIA_API int turbo_media_xchacha20poly1305_encrypt(
 /**
  * Authenticate and decrypt a message with XChaCha20-Poly1305.
  *
- * Returns TURBO_EPROTO on authentication failure. plain_text remains unchanged
+ * Returns SALTS_EPROTO on authentication failure. plain_text remains unchanged
  * on authentication failure. Exact in-place operation is supported.
  *
  * @param key Secret decryption key
@@ -134,7 +134,7 @@ TURBO_MEDIA_API int turbo_media_xchacha20poly1305_encrypt(
  * @param text_size Ciphertext length and plain_text capacity
  * @param tag Authentication tag supplied with the ciphertext
  * @param plain_text Destination plaintext
- * @return TURBO_OK, TURBO_EINVAL, or TURBO_EPROTO on authentication failure
+ * @return SALTS_OK, SALTS_EINVAL, or SALTS_EPROTO on authentication failure
  */
 TURBO_MEDIA_API int turbo_media_xchacha20poly1305_decrypt(
     const uint8_t key[TURBO_MEDIA_XCHACHA20_KEY_SIZE],

@@ -5,9 +5,9 @@
 #include "turbomedia_ivr_v1.h"
 #include "flowmq_protocol.h"
 #include "flowmq_router_endpoint.h"
-#include "turbo_error.h"
-#include "turbo_str.h"
-#include "turbo_parser.h"
+#include "salts_error.h"
+#include "salts_str.h"
+#include <json_parser.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +37,7 @@ typedef struct {
 
 static uint64_t ivr_dedup_default_now(void *ctx) {
     (void)ctx;
-    return turbo_monotonic_ms();
+    return salts_monotonic_ms();
 }
 
 static uint64_t ivr_dedup_now(const ivr_dedup_t *d) {
@@ -446,7 +446,7 @@ static int ivr_room_router_send_payload(ivr_room_bridge_t *bridge,
     tstr encoded = NULL;
     int rc;
     if (!bridge || !bridge->endpoint || (!payload && payload_size > 0u)) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     memset(&frame, 0, sizeof(frame));
     frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
@@ -461,7 +461,7 @@ static int ivr_room_router_send_payload(ivr_room_bridge_t *bridge,
     frame.payload = vstr_from_buf((const char *)payload, payload_size);
     rc = flowmq_protocol_encode_frame(
         &frame, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE, &encoded);
-    if (rc == TURBO_OK) {
+    if (rc == SALTS_OK) {
         rc = flowmq_router_endpoint_send_copy(
             bridge->endpoint, route, completion_id, encoded,
             tstr_len(encoded));
@@ -478,7 +478,7 @@ static int ivr_room_verify_peer_identity(void *context,
     if (!bridge || !bridge->verify_peer_identity ||
         !claimed_identity.data || claimed_identity.len == 0u ||
         claimed_identity.len >= sizeof(identity)) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     memcpy(identity, claimed_identity.data, claimed_identity.len);
     identity[claimed_identity.len] = '\0';
@@ -855,11 +855,11 @@ static int inventory_record_json_shape_valid(const json_value_t *item) {
         "state",
         "rebindable"};
     size_t count;
-    if (!item || turbo_json_type(item) != TURBO_JSON_OBJECT) return 0;
-    count = turbo_json_object_size(item);
+    if (!item || json_type(item) != JSON_OBJECT) return 0;
+    count = json_object_size(item);
     if (count != sizeof(keys) / sizeof(keys[0])) return 0;
     for (size_t i = 0; i < count; ++i) {
-        const char *key = turbo_json_object_key(item, i);
+        const char *key = json_object_key(item, i);
         int known = 0;
         for (size_t j = 0; j < sizeof(keys) / sizeof(keys[0]); ++j) {
             if (key && strcmp(key, keys[j]) == 0) {
@@ -887,15 +887,15 @@ static int decode_inventory_record(DataBind *codec, const json_value_t *item,
         !inventory_record_json_shape_valid(item)) {
         return 0;
     }
-    json = turbo_json_serialize(item, &json_size);
+    json = json_serialize(item, &json_size);
     if (!json ||
         data_bind_object_from_json(codec, "WorkerMediaInventoryRecordV2",
                                    json, json_size, &object,
                                    &error) != DATA_BIND_OK) {
-        turbo_json_serialize_free(json);
+        json_serialize_free(json);
         return 0;
     }
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
     memset(out, 0, sizeof(*out));
     root = data_bind_object_value(object);
     state = field_text(root, "state");
@@ -979,11 +979,11 @@ ivr_status_t ivr_room_decode_inventory_page(
         !field_str_checked(root, "error_message", out->error_message,
                            sizeof(out->error_message), 0) ||
         !records_json ||
-        turbo_parse_json((const uint8_t *)records_json, strlen(records_json),
-                         &records) != 0 || !records ||
-        turbo_json_type(records) != TURBO_JSON_ARRAY) {
+        ((records = json_parse((const char *)((const uint8_t *)records_json), strlen(records_json))) ? 0 : -1) != 0 || !records ||
+        json_type(records) != JSON_ARRAY) {
         data_bind_object_free(object);
-        turbo_free_json(&records);
+        json_free(records);
+        records = NULL;
         memset(out, 0, sizeof(*out));
         return IVR_ESTATE;
     }
@@ -995,7 +995,7 @@ ivr_status_t ivr_room_decode_inventory_page(
     out->page.count = field_u32(root, "count");
     out->page.has_more = field_bool(root, "has_more");
     out->status_code = status_value ? data_bind_value_as_int(status_value) : 1;
-    records_count = turbo_json_array_size(records);
+    records_count = json_array_size(records);
     if (out->status_code > 0 ||
         out->page.count > IVR_WORKER_INVENTORY_MAX_PAGE_SIZE ||
         records_count != out->page.count ||
@@ -1007,22 +1007,25 @@ ivr_status_t ivr_room_decode_inventory_page(
           (!out->page.has_more && out->page.next_cursor != 0))) ||
         (out->status_code != IVR_OK && out->page.count != 0)) {
         data_bind_object_free(object);
-        turbo_free_json(&records);
+        json_free(records);
+        records = NULL;
         memset(out, 0, sizeof(*out));
         return IVR_ESTATE;
     }
     for (size_t i = 0; i < records_count; ++i) {
         if (!decode_inventory_record(
-                codec, turbo_json_array_get(records, i), out->worker_id,
+                codec, json_array_get(records, i), out->worker_id,
                 &out->page.records[i])) {
             data_bind_object_free(object);
-            turbo_free_json(&records);
+            json_free(records);
+            records = NULL;
             memset(out, 0, sizeof(*out));
             return IVR_ESTATE;
         }
     }
     data_bind_object_free(object);
-    turbo_free_json(&records);
+    json_free(records);
+    records = NULL;
     return IVR_OK;
 }
 
@@ -1948,7 +1951,7 @@ static ivr_status_t ivr_room_bridge_send_to_worker(
     }
     route = entry->route;
     ivr_mutex_unlock(&bridge->routes_lock);
-    if (ivr_room_router_send_payload(bridge, route, frame, len) != TURBO_OK) {
+    if (ivr_room_router_send_payload(bridge, route, frame, len) != SALTS_OK) {
         ivr_mutex_lock(&bridge->routes_lock);
         entry = route_find_locked(bridge, worker_id);
         if (entry && entry->valid &&
@@ -2494,7 +2497,7 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
                     result.room_version, result.sequence, "", "", ev,
                     sizeof(ev), &ev_len) == IVR_OK) {
                 if (ivr_room_router_send_payload(b, msg->route, ev, ev_len) ==
-                    TURBO_OK) {
+                    SALTS_OK) {
                     IVR_BRIDGE_COUNTER_INC(b, events_published);
                 }
             }
@@ -2545,20 +2548,20 @@ static int bridge_on_router_request(
     if (!b || !route || !message ||
         !atomic_load_explicit(&b->accepting, memory_order_acquire) ||
         message->kind != FLOWMQ_PROTOCOL_FRAME_DATA) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     ivr_route_message_init(&clone);
     if ((!message->payload.data && message->payload.len > 0u) ||
         !peer_identity.data || peer_identity.len == 0u ||
         peer_identity.len >= sizeof(clone.peer_identity)) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     if (message->payload.len > 0u) {
         clone.payload = (uint8_t *)malloc(message->payload.len);
     }
     if (message->payload.len > 0u && !clone.payload) {
         ivr_route_message_cleanup(&clone);
-        return TURBO_ENOMEM;
+        return SALTS_ENOMEM;
     }
     if (message->payload.len > 0u) {
         memcpy(clone.payload, message->payload.data, message->payload.len);
@@ -2572,7 +2575,7 @@ static int bridge_on_router_request(
         ivr_route_message_cleanup(&clone);
         IVR_BRIDGE_COUNTER_INC(b, drops);
     }
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2667,7 +2670,7 @@ ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
         ep.verify_peer_identity_ctx = b;
     }
     int app_rc = flowmq_router_endpoint_create(&ep, &b->endpoint);
-    if (app_rc != TURBO_OK) {
+    if (app_rc != SALTS_OK) {
         goto fail_resources;
     }
     *out_bridge = b;
@@ -2729,7 +2732,7 @@ ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge) {
     }
     atomic_store_explicit(&bridge->accepting, 1, memory_order_release);
     if (flowmq_router_endpoint_start(bridge->endpoint,
-                                     bridge->start_timeout_ns) != TURBO_OK) {
+                                     bridge->start_timeout_ns) != SALTS_OK) {
         ivr_bridge_abort_start(bridge);
         atomic_store(&bridge->started, 0);
         return IVR_ESTATE;

@@ -10,13 +10,13 @@
 #include "turbo_datachannel.h"
 #include "turbo_datachannel_errors.h"
 #include <platform.h>
-#include <turbo_str.h>
+#include <salts_str.h>
 #include <turbo_coro_context.h>
 #include <turbo_datagram.h>
 #include <turbo_kcp.h>
 #include <turbo_stream.h>
-#include <turbo_thread.h>
-#include <turbostl/hash_map.h>
+#include <salts_thread.h>
+#include <cstl/hash_map.h>
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
 #include <usrsctp.h>
@@ -66,7 +66,7 @@ typedef struct {
     BIO *read_bio;
     BIO *write_bio;
     int handshake_done;
-    turbo_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
+    salts_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
 } dtls_session_t;
 
 /* SCTP session state */
@@ -90,9 +90,9 @@ struct turbo_dc_context_s {
     tstr local_fingerprint;         /* SHA-256 hex fingerprint */
     tstr local_fingerprint_hash;    /* "sha-256" */
     coro_context_t *transport_ctx;    /* Private CoroNet loop context */
-    turbo_thread_t transport_thread;  /* Dedicated transport loop thread */
+    salts_thread_t transport_thread;  /* Dedicated transport loop thread */
     int transport_thread_started;
-    turbo_mutex_t peer_mutex;
+    salts_mutex_t peer_mutex;
     int peer_mutex_initialized;
     int destroying;
     struct turbo_dc_peer_s *peers_head;
@@ -116,8 +116,8 @@ struct turbo_dc_peer_s {
     int is_dtls_server;
 
     /* External callbacks and destruction are serialized by this protocol. */
-    turbo_mutex_t operation_mutex;
-    turbo_cond_t operation_cond;
+    salts_mutex_t operation_mutex;
+    salts_cond_t operation_cond;
     int operation_sync_initialized;
     int destroying;
     uint32_t active_operations;

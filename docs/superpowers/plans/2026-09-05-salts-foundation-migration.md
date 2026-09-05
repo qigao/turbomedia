@@ -33,7 +33,7 @@
 - [ ] **Step 1: Record the static baseline**
 
 ```powershell
-rg.exe -n "TurboUtils::|TURBOUTILS_ROOT|<turbostl/|<turbo_(error|fs|uuid|str)\.h>|TURBO_E[A-Z0-9_]+|turbo_(fs|uuid)_[a-z0-9_]+" `
+rg.exe -n "TurboUtils::|TURBOUTILS_ROOT|<turbostl/|<turbo_(error|fs|uuid|str|thread|vstr)\.h>|\bTURBO_OK\b|\bTURBO_E(ALREADY|BUSY|FBIG|INVAL|IO|NOENT|NOMEM|NOSPC|NOTCONN|NOTSUP|OF|PERM|PROTO|RANGE|SHUTDOWN|TIMEDOUT)\b|TURBO_INVALID_FILE|turbo_(fs|uuid|mutex|cond|threadpool|thread|once|timer)_[a-z0-9_]+|\bturbo_(strerror|sleep_ms|getpid|gettimeofday|monotonic_ms|secure_random|timer_t|timeval_t)\b|\bTURBO_ONCE_INIT\b" `
   CMakeLists.txt CMakeUserPresets.json cmake presets common core crypto demuxer examples media muxer network pipeline recognition server speech streamer tests webrtc
 ```
 
@@ -187,8 +187,8 @@ git commit -m "build: link TurboMedia foundation to Salts"
 - Modify: `crypto/include/turbo_media_crypto.h`
 
 **Interfaces:**
-- Consumes: Salts error/fs/uuid/string headers and CSTL headers
-- Produces: existing TurboMedia APIs implemented with `SALTS_E*`, `salts_fs_*`, `salts_uuid_*`, `tstr_*`, and CSTL container APIs
+- Consumes: Salts error/fs/uuid/string/thread/vstr headers and CSTL headers
+- Produces: existing TurboMedia APIs implemented with `SALTS_E*`, `salts_fs_*`, `salts_uuid_*`, `salts_*` synchronization/thread-pool APIs, `tstr_*`, `vstr_*`, and CSTL container APIs
 
 - [ ] **Step 1: Run focused behavior tests before source edits**
 
@@ -208,10 +208,12 @@ Apply these exact transformations, reviewing each call for ownership and return-
 #include <turbo_fs.h>     /* becomes */ #include <salts_fs.h>
 #include <turbo_uuid.h>   /* becomes */ #include <salts_uuid.h>
 #include <turbo_str.h>    /* becomes */ #include <salts_str.h>
+#include <turbo_thread.h> /* becomes */ #include <salts_thread.h>
+#include <turbo_vstr.h>   /* becomes */ #include <salts_vstr.h>
 #include <turbostl/x.h>   /* becomes */ #include <cstl/x.h>
 ```
 
-Replace `TURBO_E*` with the same-suffix `SALTS_E*`, `turbo_fs_*`/`TURBO_FS_*` with `salts_fs_*`/`SALTS_FS_*`, and `turbo_uuid_*`/`TURBO_UUID_*` with `salts_uuid_*`/`SALTS_UUID_*`. Keep `tstr_*`, `stl_status`, `vec_*`, and other unchanged CSTL API names.
+Replace `TURBO_E*` with the same-suffix `SALTS_E*`, `turbo_fs_*`/`TURBO_FS_*` with `salts_fs_*`/`SALTS_FS_*`, `turbo_uuid_*`/`TURBO_UUID_*` with `salts_uuid_*`/`SALTS_UUID_*`, and the one-to-one synchronization, thread-pool, timer, clock, and secure-random APIs with their `salts_*` equivalents. Keep `tstr_*`, `vstr_*`, `stl_status`, `vec_*`, and other unchanged CSTL API names.
 
 - [ ] **Step 3: Update the shared STL-status mapping**
 
@@ -229,7 +231,7 @@ Expected: build succeeds and all selected tests pass with no ignored return-code
 - [ ] **Step 5: Make the legacy static gate pass**
 
 ```powershell
-rg.exe -n "TurboUtils::|TURBOUTILS_ROOT|<turbostl/|<turbo_(error|fs|uuid|str)\.h>|TURBO_E[A-Z0-9_]+|turbo_(fs|uuid)_[a-z0-9_]+" `
+rg.exe -n "TurboUtils::|TURBOUTILS_ROOT|<turbostl/|<turbo_(error|fs|uuid|str|thread|vstr)\.h>|\bTURBO_OK\b|\bTURBO_E(ALREADY|BUSY|FBIG|INVAL|IO|NOENT|NOMEM|NOSPC|NOTCONN|NOTSUP|OF|PERM|PROTO|RANGE|SHUTDOWN|TIMEDOUT)\b|TURBO_INVALID_FILE|turbo_(fs|uuid|mutex|cond|threadpool|thread|once|timer)_[a-z0-9_]+|\bturbo_(strerror|sleep_ms|getpid|gettimeofday|monotonic_ms|secure_random|timer_t|timeval_t)\b|\bTURBO_ONCE_INIT\b" `
   CMakeLists.txt CMakeUserPresets.json cmake presets common core crypto demuxer examples media muxer network pipeline recognition server speech streamer tests webrtc
 ```
 
@@ -330,7 +332,7 @@ Expected: all commands exit 0.
 - [ ] **Step 3: Run final negative scans**
 
 ```powershell
-rg.exe -n "TurboUtils::|TURBOUTILS_ROOT|<turbostl/|<turbo_(error|fs|uuid|str)\.h>|\bTURBO_E[A-Z0-9_]+\b|\bturbo_(fs|uuid)_[a-z0-9_]+\b" `
+rg.exe -n "TurboUtils::|TURBOUTILS_ROOT|<turbostl/|<turbo_(error|fs|uuid|str|thread|vstr)\.h>|\bTURBO_OK\b|\bTURBO_E(ALREADY|BUSY|FBIG|INVAL|IO|NOENT|NOMEM|NOSPC|NOTCONN|NOTSUP|OF|PERM|PROTO|RANGE|SHUTDOWN|TIMEDOUT)\b|\bTURBO_INVALID_FILE\b|\bturbo_(fs|uuid|mutex|cond|threadpool|thread|once|timer)_[a-z0-9_]+\b|\bturbo_(strerror|sleep_ms|getpid|gettimeofday|monotonic_ms|secure_random|timer_t|timeval_t)\b|\bTURBO_ONCE_INIT\b" `
   CMakeLists.txt CMakeUserPresets.json cmake presets common core crypto demuxer examples media muxer network pipeline recognition server speech streamer tests webrtc
 ```
 

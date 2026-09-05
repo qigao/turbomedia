@@ -22,7 +22,7 @@
 
 typedef struct {
     turbo_loop_t *loop;
-    turbo_timer_t *timeout_timer;
+    salts_timer_t *timeout_timer;
     
     /* Peer A (offerer) */
     turbo_dc_context_t *ctx_a;
@@ -84,7 +84,7 @@ static void check_test_completion(void) {
     }
 }
 
-static void on_timeout(turbo_timer_t *timer) {
+static void on_timeout(salts_timer_t *timer) {
     (void)timer;
     fail_test("Test timeout");
 }
@@ -305,17 +305,17 @@ void setUp(void) {
     g_ctx.loop = turbo_loop_create();
     
     /* Create timeout timer */
-    g_ctx.timeout_timer = turbo_timer_create(NULL);
+    g_ctx.timeout_timer = salts_timer_create(NULL);
     if (g_ctx.timeout_timer) {
-        turbo_timer_start(g_ctx.timeout_timer, on_timeout, TEST_TIMEOUT_MS, 0);
+        salts_timer_start(g_ctx.timeout_timer, on_timeout, TEST_TIMEOUT_MS, 0);
     }
 }
 
 void tearDown(void) {
     /* Stop timeout */
     if (g_ctx.timeout_timer) {
-        turbo_timer_stop(g_ctx.timeout_timer);
-        turbo_timer_destroy(g_ctx.timeout_timer);
+        salts_timer_stop(g_ctx.timeout_timer);
+        salts_timer_destroy(g_ctx.timeout_timer);
         g_ctx.timeout_timer = NULL;
     }
     

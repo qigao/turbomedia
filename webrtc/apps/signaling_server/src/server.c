@@ -28,8 +28,8 @@ struct signaling_server_s {
  */
 static char *generate_node_id(void) {
     static char node_id[64];
-    uint64_t timestamp = turbo_monotonic_ms();
-    int pid = turbo_getpid();
+    uint64_t timestamp = salts_monotonic_ms();
+    int pid = salts_getpid();
     
     snprintf(node_id, sizeof(node_id), "node-%d-%llu", pid, 
              (unsigned long long)timestamp);

@@ -458,7 +458,7 @@ static int room_service_config_clone_strings(
 }
 
 static int room_service_config_apply_server(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -491,7 +491,7 @@ static int room_service_config_apply_server(
 }
 
 static int room_service_config_apply_control(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {"token"};
@@ -510,7 +510,7 @@ static int room_service_config_apply_control(
 }
 
 static int room_service_config_apply_auth(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -553,7 +553,7 @@ static int room_service_config_apply_auth(
 }
 
 static int room_service_config_apply_sfu(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -583,7 +583,7 @@ static int room_service_config_apply_sfu(
 }
 
 static int room_service_config_apply_sfu_auth(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -613,7 +613,7 @@ static int room_service_config_apply_sfu_auth(
 }
 
 static int room_service_config_apply_capacity(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config) {
     static const char *const allowed[] = {"max_rooms"};
 
@@ -630,7 +630,7 @@ static int room_service_config_apply_capacity(
 }
 
 static int room_service_config_apply_rooms(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config) {
     static const char *const allowed[] = {"auto_create"};
 
@@ -647,7 +647,7 @@ static int room_service_config_apply_rooms(
 }
 
 static int room_service_config_apply_runtime(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config) {
     static const char *const allowed[] = {"dry_run"};
 
@@ -664,7 +664,7 @@ static int room_service_config_apply_runtime(
 }
 
 static int room_service_config_apply_logging(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {"level"};
@@ -683,20 +683,20 @@ static int room_service_config_apply_logging(
 }
 
 static int room_service_config_apply_fmq_workers(
-    const turbo_toml_t *table, room_service_app_config_t *config,
+    const toml_table_t *table, room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
-    turbo_toml_array_t *workers;
+    toml_array_t *workers;
     int count;
     int i;
     if (!rtc_app_toml_table_has_key(table, "workers")) {
         return 0;
     }
-    workers = turbo_toml_array(table, "workers");
+    workers = toml_table_array(table, "workers");
     if (!workers) {
         TLOG_ERROR("TOML key [fmq].workers must be an array of tables");
         return -1;
     }
-    count = turbo_toml_array_len(workers);
+    count = toml_array_len(workers);
     if (count < 0 || count > ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES) {
         TLOG_ERRORF("TOML key [fmq].workers exceeds the maximum of {} entries",
                    ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES);
@@ -737,10 +737,10 @@ static int room_service_config_apply_fmq_workers(
             "previous_certificate_sha256", "previous_expires_at_ms",
             "generation", "tenant_id", "room_scope", "call_scope",
             "content_capabilities"};
-        turbo_toml_t *worker = turbo_toml_array_table(workers, i);
+        toml_table_t *worker = toml_array_table(workers, i);
         room_service_fmq_worker_identity_t *identity =
             &config->fmq_worker_identities[i];
-        turbo_toml_value_t value;
+        toml_value_t value;
         if (!worker ||
             rtc_app_toml_table_keys_valid(
                 worker, "fmq.workers", allowed,
@@ -776,12 +776,12 @@ static int room_service_config_apply_fmq_workers(
             return -1;
         }
         if (rtc_app_toml_table_has_key(worker, "previous_expires_at_ms")) {
-            value = turbo_toml_int(worker, "previous_expires_at_ms");
+            value = toml_table_int(worker, "previous_expires_at_ms");
             if (!value.ok || value.u.i <= 0) return -1;
             identity->previous_expires_at_ms = (uint64_t)value.u.i;
         }
         if (!rtc_app_toml_table_has_key(worker, "generation")) return -1;
-        value = turbo_toml_int(worker, "generation");
+        value = toml_table_int(worker, "generation");
         if (!value.ok || value.u.i <= 0) return -1;
         identity->generation = (uint64_t)value.u.i;
     }
@@ -790,7 +790,7 @@ static int room_service_config_apply_fmq_workers(
 }
 
 static int room_service_config_apply_fmq(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -843,7 +843,7 @@ static int room_service_config_apply_fmq(
 }
 
 static int room_service_config_apply_iris_provider(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -977,17 +977,17 @@ int room_service_app_config_load(room_service_app_config_t *config,
     rtc_app_toml_document_t document;
     rtc_app_config_storage_t *storage = NULL;
     rtc_app_config_storage_t *old_storage;
-    turbo_toml_t *server = NULL;
-    turbo_toml_t *control = NULL;
-    turbo_toml_t *auth = NULL;
-    turbo_toml_t *sfu = NULL;
-    turbo_toml_t *sfu_auth = NULL;
-    turbo_toml_t *capacity = NULL;
-    turbo_toml_t *rooms = NULL;
-    turbo_toml_t *runtime = NULL;
-    turbo_toml_t *logging = NULL;
-    turbo_toml_t *iris_provider = NULL;
-    turbo_toml_t *fmq = NULL;
+    toml_table_t *server = NULL;
+    toml_table_t *control = NULL;
+    toml_table_t *auth = NULL;
+    toml_table_t *sfu = NULL;
+    toml_table_t *sfu_auth = NULL;
+    toml_table_t *capacity = NULL;
+    toml_table_t *rooms = NULL;
+    toml_table_t *runtime = NULL;
+    toml_table_t *logging = NULL;
+    toml_table_t *iris_provider = NULL;
+    toml_table_t *fmq = NULL;
     room_service_app_config_t candidate;
     int result = -1;
 

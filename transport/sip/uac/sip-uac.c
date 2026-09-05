@@ -6,7 +6,7 @@
 #include "sip-dialog.h"
 #include "sip-message.h"
 #include "sip-transport.h"
-#include <turbo_error.h>
+#include <salts_error.h>
 #include <stdio.h>
 #include <errno.h>
 
@@ -18,19 +18,19 @@ int sip_uac_link_transaction(struct sip_agent_t* sip, struct sip_uac_transaction
 	sip_atomic_increment(&sip->ref); // ref by transaction
 	assert(sip->ref > 0);
 
-	turbo_mutex_lock(&sip->locker);
+	salts_mutex_lock(&sip->locker);
 	assert(!t->linked);
 	result = vec_push(&sip->uac, &t);
 	if (result == STL_OK)
 		t->linked = 1;
-	turbo_mutex_unlock(&sip->locker);
+	salts_mutex_unlock(&sip->locker);
 
 	if (result != STL_OK)
 	{
 		sip_uac_transaction_release(t);
 		sip_agent_destroy(sip);
 	}
-	return result == STL_OK ? TURBO_OK : TURBO_ENOMEM;
+	return result == STL_OK ? SALTS_OK : SALTS_ENOMEM;
 }
 
 int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transaction_t* t)
@@ -39,10 +39,10 @@ int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transacti
 	struct sip_uac_transaction_t **candidate;
 
 	assert(sip->ref > 0);
-	turbo_mutex_lock(&sip->locker);
+	salts_mutex_lock(&sip->locker);
 	if (!t->linked)
 	{
-		turbo_mutex_unlock(&sip->locker);
+		salts_mutex_unlock(&sip->locker);
 		return 0;
 	}
 
@@ -73,7 +73,7 @@ int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transacti
 	//	}
 	//}
 
-	turbo_mutex_unlock(&sip->locker);
+	salts_mutex_unlock(&sip->locker);
 	sip_uac_transaction_release(t);
 	sip_agent_destroy(sip);
 	return 0;
@@ -167,9 +167,9 @@ int sip_uac_input(struct sip_agent_t* sip, struct sip_message_t* reply)
 		return 0;
 
 	// 1. fetch transaction
-	turbo_mutex_lock(&sip->locker);
+	salts_mutex_lock(&sip->locker);
 	t = sip_uac_find_transaction(&sip->uac, reply);
-	turbo_mutex_unlock(&sip->locker);
+	salts_mutex_unlock(&sip->locker);
 	if (!t)
 	{
 		// timeout response, discard
@@ -198,14 +198,14 @@ int sip_uac_input(struct sip_agent_t* sip, struct sip_message_t* reply)
 	default:  break;
 	}
 
-	turbo_mutex_lock(&t->locker);
+	salts_mutex_lock(&t->locker);
 
 	if (sip_message_isinvite(reply))
 		r = sip_uac_transaction_invite_input(t, reply);
 	else
 		r = sip_uac_transaction_noninvite_input(t, reply);
 
-	turbo_mutex_unlock(&t->locker);
+	salts_mutex_unlock(&t->locker);
 	sip_uac_transaction_release(t);
 	return r;
 }

@@ -9,9 +9,10 @@
  */
 
 #include "turbo_datachannel_internal.h"
+#include <salts_error.h>
 #include <stdlib.h>
 #include <string.h>
-#include <turbo_str.h>
+#include <salts_str.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
@@ -191,8 +192,8 @@ int srtp_derive_keys_from_dtls(void *ssl_ptr,
  * ============================================================================ */
 
 typedef struct {
-    turbo_mutex_t mutex;
-    turbo_cond_t cond;
+    salts_mutex_t mutex;
+    salts_cond_t cond;
     int done;
     coro_post_fn fn;
     void *arg1;
@@ -222,13 +223,13 @@ int dc_peer_acquire(turbo_dc_peer_t *peer) {
         return -1;
     }
 
-    turbo_mutex_lock(&peer->operation_mutex);
+    salts_mutex_lock(&peer->operation_mutex);
     if (peer->destroying) {
-        turbo_mutex_unlock(&peer->operation_mutex);
+        salts_mutex_unlock(&peer->operation_mutex);
         return -1;
     }
     peer->active_operations++;
-    turbo_mutex_unlock(&peer->operation_mutex);
+    salts_mutex_unlock(&peer->operation_mutex);
     return 0;
 }
 
@@ -237,15 +238,15 @@ void dc_peer_release(turbo_dc_peer_t *peer) {
         return;
     }
 
-    turbo_mutex_lock(&peer->operation_mutex);
+    salts_mutex_lock(&peer->operation_mutex);
     if (peer->active_operations > 0) {
         peer->active_operations--;
     }
     if (peer->destroying && peer->active_operations == 0 &&
         peer->transport_data_callbacks == 0) {
-        turbo_cond_broadcast(&peer->operation_cond);
+        salts_cond_broadcast(&peer->operation_cond);
     }
-    turbo_mutex_unlock(&peer->operation_mutex);
+    salts_mutex_unlock(&peer->operation_mutex);
 }
 
 static int dc_peer_begin_destroy(turbo_dc_peer_t *peer) {
@@ -253,17 +254,17 @@ static int dc_peer_begin_destroy(turbo_dc_peer_t *peer) {
         return -1;
     }
 
-    turbo_mutex_lock(&peer->operation_mutex);
+    salts_mutex_lock(&peer->operation_mutex);
     if (peer->destroying) {
-        turbo_mutex_unlock(&peer->operation_mutex);
+        salts_mutex_unlock(&peer->operation_mutex);
         return -1;
     }
     peer->destroying = 1;
     while (peer->active_operations != 0 ||
            peer->transport_data_callbacks != 0) {
-        turbo_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+        salts_cond_wait(&peer->operation_cond, &peer->operation_mutex);
     }
-    turbo_mutex_unlock(&peer->operation_mutex);
+    salts_mutex_unlock(&peer->operation_mutex);
     return 0;
 }
 
@@ -276,7 +277,7 @@ static void dc_peer_unlink_from_context(turbo_dc_peer_t *peer) {
     }
 
     ctx = peer->ctx;
-    turbo_mutex_lock(&ctx->peer_mutex);
+    salts_mutex_lock(&ctx->peer_mutex);
     cursor = &ctx->peers_head;
     while (*cursor) {
         if (*cursor == peer) {
@@ -286,7 +287,7 @@ static void dc_peer_unlink_from_context(turbo_dc_peer_t *peer) {
         }
         cursor = &(*cursor)->next_in_context;
     }
-    turbo_mutex_unlock(&ctx->peer_mutex);
+    salts_mutex_unlock(&ctx->peer_mutex);
 }
 
 void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state) {
@@ -348,10 +349,10 @@ static void dc_sync_post_runner(void *arg1, void *arg2) {
 
     sync->fn(sync->arg1, sync->arg2);
 
-    turbo_mutex_lock(&sync->mutex);
+    salts_mutex_lock(&sync->mutex);
     sync->done = 1;
-    turbo_cond_signal(&sync->cond);
-    turbo_mutex_unlock(&sync->mutex);
+    salts_cond_signal(&sync->cond);
+    salts_mutex_unlock(&sync->mutex);
 }
 
 static int dc_post_sync(turbo_dc_context_t *ctx, coro_post_fn fn, void *arg1, void *arg2) {
@@ -364,23 +365,23 @@ static int dc_post_sync(turbo_dc_context_t *ctx, coro_post_fn fn, void *arg1, vo
     }
 
     memset(&sync, 0, sizeof(sync));
-    turbo_mutex_init(&sync.mutex);
-    turbo_cond_init(&sync.cond);
+    salts_mutex_init(&sync.mutex);
+    salts_cond_init(&sync.cond);
     sync.fn = fn;
     sync.arg1 = arg1;
     sync.arg2 = arg2;
 
-    turbo_mutex_lock(&sync.mutex);
+    salts_mutex_lock(&sync.mutex);
     post_rc = coro_post(ctx->transport_ctx, dc_sync_post_runner, &sync, NULL);
     if (post_rc == 0) {
         while (!sync.done) {
-            turbo_cond_wait(&sync.cond, &sync.mutex);
+            salts_cond_wait(&sync.cond, &sync.mutex);
         }
     }
-    turbo_mutex_unlock(&sync.mutex);
+    salts_mutex_unlock(&sync.mutex);
 
-    turbo_cond_destroy(&sync.cond);
-    turbo_mutex_destroy(&sync.mutex);
+    salts_cond_destroy(&sync.cond);
+    salts_mutex_destroy(&sync.mutex);
     return post_rc;
 }
 
@@ -490,24 +491,24 @@ static void dc_handle_incoming_packet(turbo_dc_peer_t *peer, const void *data, s
         turbo_dc_transport_data_cb callback = NULL;
         void *user_data = NULL;
 
-        turbo_mutex_lock(&peer->operation_mutex);
+        salts_mutex_lock(&peer->operation_mutex);
         if (!peer->destroying && peer->on_transport_data) {
             callback = peer->on_transport_data;
             user_data = peer->transport_data_user_data;
             peer->transport_data_callbacks++;
         }
-        turbo_mutex_unlock(&peer->operation_mutex);
+        salts_mutex_unlock(&peer->operation_mutex);
 
         if (callback) {
             callback(user_data, bytes, len);
-            turbo_mutex_lock(&peer->operation_mutex);
+            salts_mutex_lock(&peer->operation_mutex);
             if (peer->transport_data_callbacks > 0) {
                 peer->transport_data_callbacks--;
             }
             if (peer->transport_data_callbacks == 0) {
-                turbo_cond_broadcast(&peer->operation_cond);
+                salts_cond_broadcast(&peer->operation_cond);
             }
-            turbo_mutex_unlock(&peer->operation_mutex);
+            salts_mutex_unlock(&peer->operation_mutex);
         }
     }
 }
@@ -536,7 +537,7 @@ static void dc_stream_connect_cb(void *handle, int status, void *peer_ctx) {
 
     if (!peer) return;
     if (status != 0) {
-        dc_fail_peer(peer, TURBO_DC_ERROR_CONNECT_FAILED, turbo_strerror(status));
+        dc_fail_peer(peer, TURBO_DC_ERROR_CONNECT_FAILED, salts_strerror(status));
         return;
     }
 
@@ -764,7 +765,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                                                      (const struct sockaddr *)&bind_addr, 128,
                                                      dc_stream_accept_cb);
                 if (!peer->listener) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, turbo_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
                     return;
                 }
 
@@ -777,14 +778,14 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
 
                 stream = turbo_stream_create(peer->ctx->transport_ctx, dc_stream_kind_for_host(peer->remote_host));
                 if (!stream) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, turbo_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
                     return;
                 }
 
                 turbo_stream_set_user_data(stream, peer);
                 if (turbo_stream_connect(stream, peer->remote_host, peer->remote_port,
                                          dc_stream_connect_cb, dc_stream_close_cb) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, turbo_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
                     turbo_stream_destroy(stream);
                     return;
                 }
@@ -805,7 +806,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
             turbo_datagram_t *dg = turbo_datagram_create(peer->ctx->transport_ctx,
                                                          dc_datagram_kind_for_host(peer->remote_host));
             if (!dg) {
-                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, turbo_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
+                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
                 return;
             }
 
@@ -814,7 +815,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                 if (turbo_datagram_bind(dg,
                                         (peer->remote_host && peer->remote_host[0]) ? peer->remote_host : "0.0.0.0",
                                         peer->remote_port) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, turbo_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
                     turbo_datagram_destroy(dg);
                     return;
                 }
@@ -835,7 +836,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                 if (status) *status = 0;
             } else {
                 if (turbo_datagram_connect(dg, peer->remote_host, peer->remote_port) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, turbo_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
                     turbo_datagram_destroy(dg);
                     return;
                 }
@@ -921,15 +922,15 @@ TURBO_MEDIA_C_API void turbo_dc_peer_set_transport_data_handler(
         return;
     }
 
-    turbo_mutex_lock(&peer->operation_mutex);
+    salts_mutex_lock(&peer->operation_mutex);
     peer->on_transport_data = cb;
     peer->transport_data_user_data = user_data;
     if (!cb) {
         while (peer->transport_data_callbacks != 0) {
-            turbo_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+            salts_cond_wait(&peer->operation_cond, &peer->operation_mutex);
         }
     }
-    turbo_mutex_unlock(&peer->operation_mutex);
+    salts_mutex_unlock(&peer->operation_mutex);
     dc_peer_release(peer);
 }
 
@@ -1033,7 +1034,7 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
         }
 
         coro_context_set_persistent(ctx->transport_ctx, 1);
-        if (turbo_thread_create(&ctx->transport_thread, dc_transport_thread_main, ctx) != 0) {
+        if (salts_thread_create(&ctx->transport_thread, dc_transport_thread_main, ctx) != 0) {
             dc_set_context_error(ctx, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to start CoroNet transport thread");
             coro_context_set_persistent(ctx->transport_ctx, 0);
             coro_context_destroy(ctx->transport_ctx);
@@ -1046,7 +1047,7 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
         ctx->transport_thread_started = 1;
     }
 
-    turbo_mutex_init(&ctx->peer_mutex);
+    salts_mutex_init(&ctx->peer_mutex);
     ctx->peer_mutex_initialized = 1;
     ctx->initialized = 1;
     return ctx;
@@ -1062,14 +1063,14 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
      * gone before the CoroNet loop, SCTP resources, or context storage is
      * released. */
     if (ctx->peer_mutex_initialized) {
-        turbo_mutex_lock(&ctx->peer_mutex);
+        salts_mutex_lock(&ctx->peer_mutex);
         ctx->destroying = 1;
-        turbo_mutex_unlock(&ctx->peer_mutex);
+        salts_mutex_unlock(&ctx->peer_mutex);
 
         for (;;) {
-            turbo_mutex_lock(&ctx->peer_mutex);
+            salts_mutex_lock(&ctx->peer_mutex);
             peer = ctx->peers_head;
-            turbo_mutex_unlock(&ctx->peer_mutex);
+            salts_mutex_unlock(&ctx->peer_mutex);
             if (!peer) {
                 break;
             }
@@ -1082,14 +1083,14 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
                             dc_transport_stop_post,
                             ctx->transport_ctx,
                             NULL);
-        if (stop_rc != TURBO_OK) {
+        if (stop_rc != SALTS_OK) {
             TLOG_ERRORF("Failed to post DataChannel transport stop: {}", stop_rc);
             coro_context_stop(ctx->transport_ctx);
         }
     }
     if (ctx->transport_thread_started) {
-        turbo_thread_join(&ctx->transport_thread);
-        turbo_thread_destroy(&ctx->transport_thread);
+        salts_thread_join(&ctx->transport_thread);
+        salts_thread_destroy(&ctx->transport_thread);
         ctx->transport_thread_started = 0;
     }
     if (ctx->transport_ctx) {
@@ -1107,7 +1108,7 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
     tstr_free(ctx->local_fingerprint);
     tstr_free(ctx->local_fingerprint_hash);
     if (ctx->peer_mutex_initialized) {
-        turbo_mutex_destroy(&ctx->peer_mutex);
+        salts_mutex_destroy(&ctx->peer_mutex);
         ctx->peer_mutex_initialized = 0;
     }
     free(ctx);
@@ -1152,16 +1153,16 @@ turbo_dc_peer_t *turbo_dc_peer_create(
         return NULL;
     }
 
-    turbo_mutex_lock(&ctx->peer_mutex);
+    salts_mutex_lock(&ctx->peer_mutex);
     if (ctx->destroying) {
-        turbo_mutex_unlock(&ctx->peer_mutex);
+        salts_mutex_unlock(&ctx->peer_mutex);
         return NULL;
     }
 
     turbo_dc_peer_t *peer = calloc(1, sizeof(*peer));
     if (!peer) {
         dc_set_context_error(ctx, TURBO_DC_ERROR_ALLOC_PEER, NULL);
-        turbo_mutex_unlock(&ctx->peer_mutex);
+        salts_mutex_unlock(&ctx->peer_mutex);
         return NULL;
     }
 
@@ -1170,8 +1171,8 @@ turbo_dc_peer_t *turbo_dc_peer_create(
     peer->state = TURBO_DC_STATE_NEW;
     peer->is_dtls_server = ctx->is_server;
 
-    turbo_mutex_init(&peer->operation_mutex);
-    turbo_cond_init(&peer->operation_cond);
+    salts_mutex_init(&peer->operation_mutex);
+    salts_cond_init(&peer->operation_cond);
     peer->operation_sync_initialized = 1;
     operation_sync_initialized = 1;
 
@@ -1206,7 +1207,7 @@ turbo_dc_peer_t *turbo_dc_peer_create(
 
     peer->next_in_context = ctx->peers_head;
     ctx->peers_head = peer;
-    turbo_mutex_unlock(&ctx->peer_mutex);
+    salts_mutex_unlock(&ctx->peer_mutex);
     return peer;
 
 peer_create_fail:
@@ -1232,11 +1233,11 @@ peer_create_fail:
     }
     tstr_free(peer->remote_host);
     if (operation_sync_initialized) {
-        turbo_cond_destroy(&peer->operation_cond);
-        turbo_mutex_destroy(&peer->operation_mutex);
+        salts_cond_destroy(&peer->operation_cond);
+        salts_mutex_destroy(&peer->operation_mutex);
     }
     free(peer);
-    turbo_mutex_unlock(&ctx->peer_mutex);
+    salts_mutex_unlock(&ctx->peer_mutex);
     return NULL;
 }
 
@@ -1582,8 +1583,8 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
      * in-flight peer destruction for an empty peer list. */
     dc_peer_unlink_from_context(peer);
 
-    turbo_cond_destroy(&peer->operation_cond);
-    turbo_mutex_destroy(&peer->operation_mutex);
+    salts_cond_destroy(&peer->operation_cond);
+    salts_mutex_destroy(&peer->operation_mutex);
 
     free(peer);
 }

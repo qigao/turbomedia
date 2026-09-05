@@ -1,5 +1,5 @@
 #include "turbo_codec.h"
-#include "turbo_capture.h"
+#include "salts_capture.h"
 #include <tinytest.h>
 
 #include <stdint.h>
@@ -172,7 +172,7 @@ static void test_g711_round_trip_sets_frame_info(void) {
 }
 
 static void test_gpu_device_list_rejects_empty_output(void) {
-    CHECK_INT(-1, turbo_capture_list_gpu_devices(NULL, 0));
+    CHECK_INT(-1, salts_capture_list_gpu_devices(NULL, 0));
 }
 
 /* Extended test helper functions */
