@@ -87,11 +87,17 @@ if (-not $NoBuild) {
 $screenCaptureJava = Join-Path $repoRoot 'media/mobile/android/java/com/turbonet/media/ScreenCapture.java'
 $activityJava = Join-Path $repoRoot 'tests/android/screen_capture/ScreenCaptureTestActivity.java'
 $manifest = Join-Path $repoRoot 'tests/android/screen_capture/AndroidManifest.xml'
-$androidLibrary = Join-Path $repoRoot 'media/mobile/android/libs/arm64-v8a/libturbo_media_android.so'
-$deviceLibrary = Join-Path $buildRoot 'bin/libturbo_media_device.so'
-foreach ($inputPath in @($screenCaptureJava, $activityJava, $manifest, $androidLibrary, $deviceLibrary)) {
+$runtimeManifest = Join-Path $buildRoot 'android-screen-runtime-libraries.txt'
+foreach ($inputPath in @($screenCaptureJava, $activityJava, $manifest, $runtimeManifest)) {
     if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) {
         throw "Screen test input not found: $inputPath"
+    }
+}
+$runtimeLibraries = @(Get-Content -LiteralPath $runtimeManifest |
+    Where-Object { -not [String]::IsNullOrWhiteSpace($_) })
+foreach ($runtimeLibrary in $runtimeLibraries) {
+    if (-not (Test-Path -LiteralPath $runtimeLibrary -PathType Leaf)) {
+        throw "Android runtime library not found: $runtimeLibrary"
     }
 }
 
@@ -126,7 +132,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Copy-Item -LiteralPath (Join-Path $dexDirectory 'classes.dex') -Destination $stageDirectory
-Copy-Item -LiteralPath $androidLibrary, $deviceLibrary -Destination $nativeDirectory
+Copy-Item -LiteralPath $runtimeLibraries -Destination $nativeDirectory
 & $jar --update --file $unsignedApk -C $stageDirectory classes.dex -C $stageDirectory lib
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to add DEX/native libraries to APK"

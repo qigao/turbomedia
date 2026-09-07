@@ -283,11 +283,12 @@ MediaProjection 必须由 Activity 发起系统授权，命令行 ELF 无法独�
   -Serial "adb-38101FDJG00AVU-Rx6MV9._adb-tls-connect._tcp"
 ```
 
-脚本按以下顺序 fail fast：构建 `turbo_media_android`、用已安装的 Android SDK/JDK 生成并签名
-测试 APK、安装和启动 Activity、等待用户在系统对话框中允许录屏，再等待 native ImageReader
-取得 RGBA 帧并通过 libyuv 转换成 I420。只有 APK 内部的 native 帧计数大于零才输出 PASS；默认
-超时 90 秒，并在结束后卸载测试 APK。此 APK 的 `minSdkVersion` 和 `targetSdkVersion` 都是 28，
-与当前 Android preset 的 API 基线一致。
+脚本按以下顺序 fail fast：构建 `turbo_media_android`、读取 CMake 生成的 runtime manifest 并
+打包 TurboMedia/Salts Capture/Salts Core 依赖闭包、用已安装的 Android SDK/JDK 生成并签名
+测试 APK、安装和启动 Activity、等待用户在系统对话框中允许录屏。Activity 先验证
+VirtualDisplay 已连接但 native capture 尚未 start 时没有帧，再等待至少一帧 I420，最后验证
+stop 后 frame count 不再增长。默认超时 90 秒，并在结束后卸载测试 APK。此 APK 的
+`minSdkVersion` 和 `targetSdkVersion` 都是 28，与当前 Android preset 的 API 基线一致。
 
 可用参数：
 

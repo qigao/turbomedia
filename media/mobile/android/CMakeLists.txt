@@ -26,3 +26,9 @@ target_link_libraries(
   PUBLIC TurboMedia::Device
   PRIVATE ${TURBO_MEDIA_ANDROID_LOG_LIBRARY}
           ${TURBO_MEDIA_ANDROID_MEDIA_LIBRARY})
+
+file(
+  GENERATE
+  OUTPUT "${CMAKE_BINARY_DIR}/android-screen-runtime-libraries.txt"
+  CONTENT
+    "$<TARGET_FILE:turbo_media_android>\n$<TARGET_FILE:TurboMedia::Device>\n$<TARGET_FILE:Salts::Capture>\n$<TARGET_FILE:Salts::Core>\n")

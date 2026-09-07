@@ -58,9 +58,15 @@ dependencies {
 ### Method 2: Copy Native Libraries
 
 ```bash
-# Copy .so files to your project
+# Copy TurboMedia plus the Salts capture/core runtime dependency closure.
 cp -r install/*/lib/* app/src/main/jniLibs/
+cp "$SALTS_UTILS_ROOT/lib/libsalts_capture.so" app/src/main/jniLibs/<abi>/
+cp "$SALTS_ROOT/lib/libsalts.so" app/src/main/jniLibs/<abi>/
 ```
+
+`SALTS_UTILS_ROOT` and `SALTS_ROOT` must name Android installs for the same ABI
+and build profile as TurboMedia. The loader requires all three libraries;
+desktop or mixed-ABI installs are rejected rather than used as fallbacks.
 
 **app/build.gradle**:
 ```groovy

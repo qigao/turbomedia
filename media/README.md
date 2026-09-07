@@ -45,7 +45,4 @@ Build entry points:
 
 Known remaining work:
 
-- Android screen capture still needs a public Salts MediaProjection/surface
-  handoff before TurboMedia's legacy `ScreenCapture.java` JNI bridge can be
-  removed without losing that Java-facing behavior.
 - Validate the platform targets with real iOS and Android toolchains.
