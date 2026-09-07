@@ -22,7 +22,6 @@
     "boringssl",
     "libsrtp",
     "roaring",
-    "sqlite3",
     "usrsctp"
   ],
   "builtin-baseline": "a51bb4d1434e6d0927ff79db8033bed8522b85df",
