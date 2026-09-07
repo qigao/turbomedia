@@ -42,11 +42,6 @@ set_target_properties(ivr_worker
     OUTPUT_NAME "ivr_worker"
     FOLDER "Applications")
 
-turbo_media_deploy_windows_runtime(
-  ivr_worker Salts::CHTTP
-  Salts::CNet Salts::DataBind
-  RulesForge::rules_forge)
-
 # Dry-run smoke test: validates config and exercises media-call admission
 # without touching CHTTP H1 WebSocket.
 add_test(
@@ -135,8 +130,6 @@ cmake_add_test(
   FOLDER "turbomedia/tests/ivr")
 set_target_properties(test_ivr_worker_http
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-turbo_media_deploy_windows_runtime(
-  test_ivr_worker_http Salts::CHTTP Salts::CNet)
 
 install(FILES config/ivr_worker.toml.example
   DESTINATION etc/turbomedia COMPONENT IvrWorker)

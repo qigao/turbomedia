@@ -114,12 +114,6 @@ function(turbo_media_ivr_configure_test test_name test_source)
   set_target_properties(
     ${test_name}
     PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  turbo_media_deploy_windows_runtime(
-    ${test_name}
-    Salts::CNet
-    Salts::DataBind
-    Salts::Core
-    TurboMedia::Speech)
 endfunction()
 
 turbo_media_ivr_configure_test(test_ivr_frame tests/test_ivr_frame.c)
@@ -135,8 +129,6 @@ cmake_add_test(
 set_target_properties(
   test_ivr_control_ws
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-turbo_media_deploy_windows_runtime(
-  test_ivr_control_ws Salts::CHTTP Salts::CNet Salts::Core)
 turbo_media_ivr_configure_test(test_ivr_schema tests/test_ivr_schema.c)
 turbo_media_ivr_configure_test(test_ivr_acl tests/test_ivr_acl.c)
 turbo_media_ivr_configure_test(test_ivr_dtmf_rtp tests/test_ivr_dtmf_rtp.c)

@@ -33,8 +33,6 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(
   turbo_media_test_salts_ice_owner PRIVATE SaltsNet::ICE)
-turbo_media_deploy_windows_runtime(
-  turbo_media_test_salts_ice_owner SaltsNet::ICE Salts::CNet Salts::Core)
 
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
@@ -46,17 +44,11 @@ if(TURBO_MEDIA_IS_SERVER)
                               test_ice_integration.c)
   target_link_libraries(turbo_media_test_ice_integration
                         PRIVATE TurboMedia::WebRTC SaltsNet::ICE)
-  turbo_media_deploy_windows_runtime(
-    turbo_media_test_ice_integration SaltsNet::ICE SaltsNet::Asn1Parser
-    Salts::CNet Salts::Core yuv)
 
   turbo_media_add_webrtc_test(turbo_media_test_webrtc_e2e
                               test_e2e_connection.c)
   target_link_libraries(turbo_media_test_webrtc_e2e
                         PRIVATE TurboMedia::WebRTC TurboMedia::RTC SaltsNet::ICE)
-  turbo_media_deploy_windows_runtime(
-    turbo_media_test_webrtc_e2e SaltsNet::ICE SaltsNet::Asn1Parser
-    Salts::CNet Salts::Core yuv)
 endif()
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_json
