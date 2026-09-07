@@ -33,7 +33,7 @@ cd media/android
 cmake -B build -S . \
   -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-24
+  -DANDROID_PLATFORM=android-26
 
 cmake --build build -j8
 ```
@@ -330,7 +330,7 @@ set ANDROID_NDK=C:\path\to\ndk
 
 ## Requirements
 
-- Android 7.0+ (API 24+)
+- Android 8.0+ (API 26+)
 - Android NDK r25+
 - Gradle 7.0+
 - CMake 3.18.1+
