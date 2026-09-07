@@ -18,7 +18,7 @@ target_compile_options(
   PRIVATE -Wall -Wextra -Wno-unused-parameter -fvisibility=hidden -fobjc-arc)
 target_link_libraries(
   turbo_media_ios
-  PUBLIC TurboMedia::Device
+  PUBLIC Salts::Capture
   PRIVATE "-framework Foundation"
           "-framework CoreMedia"
           "-framework CoreVideo"

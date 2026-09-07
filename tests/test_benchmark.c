@@ -15,7 +15,7 @@
 #include "helpers.h"
 #include <turbo_codec.h>
 #include <salts_capture.h>
-#include <turbo_playback.h>
+#include <salts_playback.h>
 #include <tinytest.h>
 #include <stdio.h>
 #include <time.h>
@@ -429,27 +429,30 @@ suite("性能基准测试 - 播放设备") {
     it("播放设备枚举性能") {
         clock_t start = clock();
         
-        turbo_playback_device_t devices[TURBO_PLAYBACK_MAX_DEVICES];
-        int count = turbo_playback_list_devices(devices, TURBO_PLAYBACK_MAX_DEVICES);
+        salts_playback_device_t devices[SALTS_PLAYBACK_MAX_DEVICES];
+        size_t count = 0;
+        int list_result = salts_playback_list_devices(
+            devices, SALTS_PLAYBACK_MAX_DEVICES, &count);
         
         clock_t end = clock();
         double elapsed_ms = ((double)(end - start) / CLOCKS_PER_SEC) * 1000.0;
         
-        printf("\n枚举 %d 个播放设备耗时: %.2f ms\n", count, elapsed_ms);
+        printf("\n枚举 %zu 个播放设备耗时: %.2f ms\n", count, elapsed_ms);
+        check(list_result == SALTS_PLAYBACK_OK);
         check(elapsed_ms < 100.0);
         
     }
     
     it("播放队列操作性能") {
-        turbo_playback_config_t config = {
+        salts_playback_config_t config = {
             .sample_rate = 48000,
             .channels = 2,
-            .format = TURBO_PLAYBACK_FORMAT_S16,
-            .buffer_size_ms = 100
+            .format = SALTS_PLAYBACK_FORMAT_S16,
+            .buffer_duration_ms = 100
         };
         
-        turbo_playback_t *playback = turbo_playback_create(NULL, &config);
-        if (!playback) {
+        salts_playback_t *playback = NULL;
+        if (salts_playback_create(NULL, &config, &playback) != SALTS_PLAYBACK_OK) {
             printf("无法创建播放设备，跳过测试\n");
             return;
         }
@@ -461,7 +464,11 @@ suite("性能基准测试 - 播放设备") {
         clock_t start = clock();
         
         for (int i = 0; i < BENCHMARK_ITERATIONS; i++) {
-            turbo_playback_write(playback, buffer, buffer_size);
+            size_t written = 0;
+            if (salts_playback_write(playback, buffer, buffer_size, &written) !=
+                SALTS_PLAYBACK_OK) {
+                break;
+            }
         }
         
         clock_t end = clock();
@@ -473,7 +480,7 @@ suite("性能基准测试 - 播放设备") {
         check(avg_us < 50.0);  // 单次队列操作应在 50µs 内
         
         free(buffer);
-        turbo_playback_destroy(playback);
+        salts_playback_destroy(playback);
     }
 }
 
@@ -578,11 +585,11 @@ suite("性能基准测试 - 端到端管道") {
         turbo_audio_codec_config_t dec_config = enc_config;
         
         // 配置播放
-        turbo_playback_config_t playback_config = {
+        salts_playback_config_t playback_config = {
             .sample_rate = 48000,
             .channels = 2,
-            .format = TURBO_PLAYBACK_FORMAT_S16,
-            .buffer_size_ms = 100
+            .format = SALTS_PLAYBACK_FORMAT_S16,
+            .buffer_duration_ms = 100
         };
         (void)playback_config;
         

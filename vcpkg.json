@@ -1,8 +1,7 @@
 {
   "name": "turbomedia",
-  "version-semver": "1.0.0",
+  "version-semver": "2.0.0",
   "dependencies": [
-    "miniaudio",
     "stb",
     "libyuv",
     "opus",

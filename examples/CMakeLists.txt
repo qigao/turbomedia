@@ -1,5 +1,5 @@
 add_executable(capture_save_image capture_save_image.c)
-target_link_libraries(capture_save_image PRIVATE TurboMedia::Device)
+target_link_libraries(capture_save_image PRIVATE Salts::Capture)
 set_target_properties(capture_save_image PROPERTIES FOLDER "turbomedia/examples")
 turbo_media_deploy_windows_runtime(capture_save_image Salts::Capture Salts::Core)
 
@@ -10,7 +10,7 @@ set_target_properties(codec_g711_smoke PROPERTIES FOLDER "turbomedia/examples")
 add_executable(ffmpeg_probe ffmpeg_probe.c)
 target_link_libraries(ffmpeg_probe PRIVATE TurboMedia::Player)
 set_target_properties(ffmpeg_probe PROPERTIES FOLDER "turbomedia/examples")
-turbo_media_deploy_windows_runtime(ffmpeg_probe Salts::Capture Salts::Core)
+turbo_media_deploy_windows_runtime(ffmpeg_probe Salts::Playback Salts::Core)
 
 add_executable(turbo_pipeline_run pipeline_run.c)
 target_link_libraries(

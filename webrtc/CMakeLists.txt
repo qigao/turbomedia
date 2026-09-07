@@ -126,7 +126,7 @@ target_link_libraries(
          TurboMedia::Speech
          TurboMedia::Recognition
   PRIVATE TurboMedia::Codec
-          TurboMedia::Device
+          Salts::Capture
           SaltsNet::ICE
           Salts::CNet
           Salts::Core

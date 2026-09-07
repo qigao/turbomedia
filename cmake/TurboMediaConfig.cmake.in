@@ -12,13 +12,19 @@ if(NOT TARGET Salts::Capture)
       "SaltsUtils profile does not export Salts::Capture")
   return()
 endif()
+if(NOT TARGET Salts::Playback)
+  set(TurboMedia_FOUND FALSE)
+  set(TurboMedia_NOT_FOUND_MESSAGE
+      "SaltsUtils profile does not export Salts::Playback")
+  return()
+endif()
 find_dependency(SaltsNet CONFIG REQUIRED
                 PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 
 
 # The exported target file contains all TurboMedia components, but FFmpeg is
 # only a dependency of this component closure.  Keep non-media consumers
-# (for example Core, Device, or WebRTC) usable without FFmpeg development files.
+# (for example Core or WebRTC) usable without FFmpeg development files.
 set(_TurboMedia_ffmpeg_components Muxer Demuxer Player Pipeline Streamer RtcApps)
 set(_TurboMedia_requires_ffmpeg FALSE)
 if(NOT TurboMedia_FIND_COMPONENTS)
