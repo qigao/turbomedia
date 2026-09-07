@@ -357,6 +357,7 @@ suite("TurboMedia recognition") {
       turbo_fingerprint_extractor_destroy(extractor);
     }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
     it("adapts decoded VOD float audio without copying") {
       float samples[160] = {0};
       mock_fingerprint_provider_t mock = {0};
@@ -382,6 +383,7 @@ suite("TurboMedia recognition") {
       check_equal(turbo_fingerprint_extractor_cancel(extractor), TURBO_RECOGNITION_OK);
       turbo_fingerprint_extractor_destroy(extractor);
     }
+#endif
 
     it("does not consume the duration budget when a provider is busy") {
       uint8_t pcm[320] = {0};
@@ -410,6 +412,7 @@ suite("TurboMedia recognition") {
       turbo_fingerprint_extractor_destroy(extractor);
     }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
     it("adapts decoded VOD video and enforces the configured duration limit") {
       uint8_t pixels[16] = {0};
       mock_fingerprint_provider_t mock = {0};
@@ -441,6 +444,7 @@ suite("TurboMedia recognition") {
       check_equal(turbo_fingerprint_extractor_cancel(extractor), TURBO_RECOGNITION_OK);
       turbo_fingerprint_extractor_destroy(extractor);
     }
+#endif
   }
 
   group("fingerprint matching") {

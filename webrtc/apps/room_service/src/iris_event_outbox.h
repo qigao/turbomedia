@@ -1,8 +1,8 @@
 #ifndef TURBO_ROOM_SERVICE_IRIS_EVENT_OUTBOX_H
 #define TURBO_ROOM_SERVICE_IRIS_EVENT_OUTBOX_H
 
-#include "ivr_room_bridge.h"
 #include "iris_record_store.h"
+#include "ivr_room_bridge.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -109,34 +109,31 @@ typedef struct iris_event_replay_batch_result_s {
  * delivery context must outlive the outbox. Durable and atomic-batch
  * capabilities are mandatory; no volatile fallback is accepted.
  */
-iris_event_outbox_t *iris_event_outbox_create(
-    const iris_event_outbox_config_t *config);
+iris_event_outbox_t *
+iris_event_outbox_create(const iris_event_outbox_config_t *config);
 
 /**
- * Resolve a TurboDB ORM YAML record_store channel and own its lifecycle.
- * TurboMedia deploys the SQLite-only ORM runtime by default; a PostgreSQL
- * channel requires replacing it with TurboDB's PG-enabled build output. Redis
- * remains unsupported. SQLite is rejected unless allow_development_sqlite is
- * explicitly nonzero.
+ * Resolve a PostgreSQL TurboDB ORM record_store channel and own its lifecycle.
  */
 iris_event_outbox_t *iris_event_outbox_create_record_store(
     const char *yaml_path, const char *channel_name,
-    int allow_development_sqlite, size_t request_queue_capacity,
+    size_t request_queue_capacity,
     const iris_event_outbox_retention_config_t *retention,
-    iris_event_outbox_deliver_fn deliver,
-    void *deliver_context, char *error, size_t error_capacity);
+    iris_event_outbox_deliver_fn deliver, void *deliver_context, char *error,
+    size_t error_capacity);
 
 int iris_event_outbox_start(iris_event_outbox_t *outbox);
 void iris_event_outbox_stop(iris_event_outbox_t *outbox);
 void iris_event_outbox_destroy(iris_event_outbox_t *outbox);
 
-ivr_status_t iris_event_outbox_on_media_event(
-    void *context, const ivr_media_event_t *event);
+ivr_status_t iris_event_outbox_on_media_event(void *context,
+                                              const ivr_media_event_t *event);
 
 /** Called by the HTTP dispatcher after its terminal retry decision. */
-void iris_event_outbox_on_delivery_result(
-    void *context, const ivr_media_event_t *event, uint64_t store_revision,
-    int succeeded, int http_status);
+void iris_event_outbox_on_delivery_result(void *context,
+                                          const ivr_media_event_t *event,
+                                          uint64_t store_revision,
+                                          int succeeded, int http_status);
 
 /** Move one dead letter back to pending and schedule it. */
 ivr_status_t iris_event_outbox_replay(iris_event_outbox_t *outbox,
@@ -150,11 +147,12 @@ ivr_status_t iris_event_outbox_replay(iris_event_outbox_t *outbox,
  * records remain replayed even if a later storage operation fails; callers may
  * safely repeat the command because non-dead records are not selected.
  */
-ivr_status_t iris_event_outbox_replay_dead_letters(
-    iris_event_outbox_t *outbox, size_t limit,
-    iris_event_replay_batch_result_t *result);
+ivr_status_t
+iris_event_outbox_replay_dead_letters(iris_event_outbox_t *outbox, size_t limit,
+                                      iris_event_replay_batch_result_t *result);
 
-/** Return a bounded provider-ordered dead-letter snapshot and the full total. */
+/** Return a bounded provider-ordered dead-letter snapshot and the full total.
+ */
 ivr_status_t iris_event_outbox_list_dead_letters(
     iris_event_outbox_t *outbox, iris_event_dead_letter_t *items,
     size_t capacity, size_t *count, size_t *total);
@@ -166,9 +164,10 @@ ivr_status_t iris_event_outbox_list_dead_letters(
  * copied; total is the full bounded-store total. Returns IVR_OK, IVR_EINVAL,
  * IVR_ENOSPC, IVR_ECLOSED, or IVR_ESTATE without mutating records.
  */
-ivr_status_t iris_event_outbox_list_archived(
-    iris_event_outbox_t *outbox, iris_event_archive_t *items,
-    size_t capacity, size_t *count, size_t *total);
+ivr_status_t iris_event_outbox_list_archived(iris_event_outbox_t *outbox,
+                                             iris_event_archive_t *items,
+                                             size_t capacity, size_t *count,
+                                             size_t *total);
 
 /**
  * Run one bounded archive/delete retention batch on the owner thread.
@@ -178,8 +177,9 @@ ivr_status_t iris_event_outbox_list_archived(
  * processed; storage/CAS failure returns IVR_ESTATE and retains its source
  * record for a later sweep.
  */
-ivr_status_t iris_event_outbox_run_retention(
-    iris_event_outbox_t *outbox, iris_event_retention_result_t *result);
+ivr_status_t
+iris_event_outbox_run_retention(iris_event_outbox_t *outbox,
+                                iris_event_retention_result_t *result);
 
 void iris_event_outbox_get_stats(iris_event_outbox_t *outbox,
                                  iris_event_outbox_stats_t *stats);

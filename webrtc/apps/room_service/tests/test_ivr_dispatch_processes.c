@@ -1336,8 +1336,6 @@ static chttp_client g_http_client;
 static int g_http_client_initialized;
 static char g_cfg_path[1024];
 static char g_store_path[1024];
-static char g_database_path[1024];
-static char g_ledger_database_path[1024];
 static char g_rs_out[1024];
 static char g_wk_out[1024];
 static char g_sfu_cfg_path[1024];
@@ -1438,7 +1436,6 @@ static int write_room_service_config(int secure_control_ws) {
              "event_store_config = \"%s\"\n"
              "event_store_channel = \"iris.media_events\"\n"
              "command_ledger_channel = \"iris.provider_commands\"\n"
-             "allow_development_sqlite = true\n"
              "correlation_capacity = 16\n"
              "completion_queue_capacity = 16\n"
              "outbox_request_queue_capacity = 16\n"
@@ -2147,6 +2144,8 @@ static int facade_request(chttp_method method, const char *path,
 void setUp(void) {
     chttp_client_config http_config;
     int http_status;
+    const char *postgres_service =
+        getenv("TURBO_MEDIA_TEST_POSTGRES_SERVICE");
     test_iris_control_peer_config_t iris_control_config;
     memset(&g_room_service, 0, sizeof(g_room_service));
     memset(&g_worker, 0, sizeof(g_worker));
@@ -2159,6 +2158,7 @@ void setUp(void) {
     memset(&g_http_client, 0, sizeof(g_http_client));
     g_http_client_initialized = 0;
     g_iris_control_peer = NULL;
+    check_not_null(postgres_service);
     check_equal((int)(test_iris_server_start(&g_iris)), (int)(0));
     check_equal((int)(test_iris_proxy_start(&g_iris_proxy, TEST_IRIS_TLS_PORT,
                                  TEST_IRIS_BACKEND_TLS_PORT)), (int)(0));
@@ -2183,14 +2183,8 @@ void setUp(void) {
              TEST_BIN_DIR, ++g_seq);
     snprintf(g_store_path, sizeof(g_store_path), "%s/rs_dispatch_%d.yaml",
              TEST_BIN_DIR, g_seq);
-    snprintf(g_database_path, sizeof(g_database_path),
-             "%s/rs_dispatch_%d.sqlite3", TEST_BIN_DIR, g_seq);
-    snprintf(g_ledger_database_path, sizeof(g_ledger_database_path),
-             "%s/rs_dispatch_ledger_%d.sqlite3", TEST_BIN_DIR, g_seq);
     normalize_config_path(g_cfg_path);
     normalize_config_path(g_store_path);
-    normalize_config_path(g_database_path);
-    normalize_config_path(g_ledger_database_path);
     FILE *store = fopen(g_store_path, "wb");
     check_not_null(store);
     check_true(fprintf(store,
@@ -2199,10 +2193,9 @@ void setUp(void) {
                 "  iris.media_events:\n"
                 "    kind: record_store\n"
                 "    config:\n"
-                "      backend: sqlite\n"
-                "      database_path: '%s'\n"
-                "      namespace_name: iris.media_events\n"
-                "      busy_timeout_ms: 1000\n"
+                "      backend: postgresql\n"
+                "      service: '%s'\n"
+                "      namespace_name: iris.media_events.%d\n"
                 "      max_records: 32\n"
                 "      max_bytes: 1048576\n"
                 "      max_item_bytes: 32768\n"
@@ -2212,10 +2205,9 @@ void setUp(void) {
                 "  iris.provider_commands:\n"
                 "    kind: record_store\n"
                 "    config:\n"
-                "      backend: sqlite\n"
-                "      database_path: '%s'\n"
-                "      namespace_name: iris.provider_commands\n"
-                "      busy_timeout_ms: 1000\n"
+                "      backend: postgresql\n"
+                "      service: '%s'\n"
+                "      namespace_name: iris.provider_commands.%d\n"
                 "      max_records: 32\n"
                 "      max_bytes: 1048576\n"
                 "      max_item_bytes: 32768\n"
@@ -2223,7 +2215,7 @@ void setUp(void) {
                 "      max_value_size: 16384\n"
                 "      max_batch_size: 8\n"
                 "adapters: {}\n",
-                g_database_path, g_ledger_database_path) > 0);
+                postgres_service, g_seq, postgres_service, g_seq) > 0);
     fclose(store);
     check_true(write_room_service_config(0));
 
@@ -2311,7 +2303,6 @@ void setUp(void) {
 }
 
 void tearDown(void) {
-    char sqlite_aux_path[sizeof(g_database_path) + sizeof("-wal")];
     if (g_codec) {
         data_bind_free(g_codec);
         g_codec = NULL;
@@ -2335,20 +2326,6 @@ void tearDown(void) {
     test_iris_server_stop(&g_iris);
     remove(g_cfg_path);
     remove(g_store_path);
-    snprintf(sqlite_aux_path, sizeof(sqlite_aux_path), "%s-wal",
-             g_database_path);
-    remove(sqlite_aux_path);
-    snprintf(sqlite_aux_path, sizeof(sqlite_aux_path), "%s-shm",
-             g_database_path);
-    remove(sqlite_aux_path);
-    remove(g_database_path);
-    snprintf(sqlite_aux_path, sizeof(sqlite_aux_path), "%s-wal",
-             g_ledger_database_path);
-    remove(sqlite_aux_path);
-    snprintf(sqlite_aux_path, sizeof(sqlite_aux_path), "%s-shm",
-             g_ledger_database_path);
-    remove(sqlite_aux_path);
-    remove(g_ledger_database_path);
     remove(g_rs_out);
     remove(g_wk_out);
     remove(g_sfu_cfg_path);

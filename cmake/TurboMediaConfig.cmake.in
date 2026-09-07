@@ -2,20 +2,17 @@
 
 include(CMakeFindDependencyMacro)
 
+set(TurboMedia_PRODUCT "@TURBO_MEDIA_PRODUCT@")
+
 find_dependency(Salts CONFIG REQUIRED
                 PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_dependency(SaltsUtils CONFIG REQUIRED
                 PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT TARGET Salts::Capture)
+if(TurboMedia_PRODUCT STREQUAL "CLIENT" AND
+   (NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback))
   set(TurboMedia_FOUND FALSE)
   set(TurboMedia_NOT_FOUND_MESSAGE
-      "SaltsUtils profile does not export Salts::Capture")
-  return()
-endif()
-if(NOT TARGET Salts::Playback)
-  set(TurboMedia_FOUND FALSE)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "SaltsUtils profile does not export Salts::Playback")
+      "TurboMedia CLIENT requires Salts::Capture and Salts::Playback")
   return()
 endif()
 find_dependency(SaltsNet CONFIG REQUIRED

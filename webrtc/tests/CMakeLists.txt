@@ -41,21 +41,23 @@ turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
 
-turbo_media_add_webrtc_test(turbo_media_test_ice_integration
-                            test_ice_integration.c)
-target_link_libraries(turbo_media_test_ice_integration
-                      PRIVATE TurboMedia::WebRTC SaltsNet::ICE)
-turbo_media_deploy_windows_runtime(
-  turbo_media_test_ice_integration SaltsNet::ICE SaltsNet::Asn1Parser
-  Salts::CNet Salts::Core Salts::Capture yuv)
+if(TURBO_MEDIA_IS_SERVER)
+  turbo_media_add_webrtc_test(turbo_media_test_ice_integration
+                              test_ice_integration.c)
+  target_link_libraries(turbo_media_test_ice_integration
+                        PRIVATE TurboMedia::WebRTC SaltsNet::ICE)
+  turbo_media_deploy_windows_runtime(
+    turbo_media_test_ice_integration SaltsNet::ICE SaltsNet::Asn1Parser
+    Salts::CNet Salts::Core yuv)
 
-turbo_media_add_webrtc_test(turbo_media_test_webrtc_e2e
-                            test_e2e_connection.c)
-target_link_libraries(turbo_media_test_webrtc_e2e
-                      PRIVATE TurboMedia::WebRTC TurboMedia::RTC SaltsNet::ICE)
-turbo_media_deploy_windows_runtime(
-  turbo_media_test_webrtc_e2e SaltsNet::ICE SaltsNet::Asn1Parser
-  Salts::CNet Salts::Core Salts::Capture yuv)
+  turbo_media_add_webrtc_test(turbo_media_test_webrtc_e2e
+                              test_e2e_connection.c)
+  target_link_libraries(turbo_media_test_webrtc_e2e
+                        PRIVATE TurboMedia::WebRTC TurboMedia::RTC SaltsNet::ICE)
+  turbo_media_deploy_windows_runtime(
+    turbo_media_test_webrtc_e2e SaltsNet::ICE SaltsNet::Asn1Parser
+    Salts::CNet Salts::Core yuv)
+endif()
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_json
                             test_signaling_json.c)
@@ -88,22 +90,24 @@ target_compile_definitions(
   PRIVATE TURBO_MEDIA_TEST_TLS_CERT_PATH="${TURBO_MEDIA_TEST_TLS_CERT_PATH}"
           TURBO_MEDIA_TEST_TLS_KEY_PATH="${TURBO_MEDIA_TEST_TLS_KEY_PATH}")
 
-turbo_media_add_webrtc_test(
-  turbo_media_test_signaling_config
-  test_signaling_config.c
-  ../apps/signaling_server/src/config.c)
-target_include_directories(
-  turbo_media_test_signaling_config
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include)
-target_link_libraries(turbo_media_test_signaling_config
-                      PRIVATE turbo_media_auth Salts::TomlParser)
-file(
-  TO_CMAKE_PATH
-  "${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/config/signaling.toml.example"
-  SIGNALING_CONFIG_EXAMPLE_PATH)
-target_compile_definitions(
-  turbo_media_test_signaling_config
-  PRIVATE SIGNALING_CONFIG_EXAMPLE_PATH="${SIGNALING_CONFIG_EXAMPLE_PATH}")
+if(TURBO_MEDIA_IS_SERVER)
+  turbo_media_add_webrtc_test(
+    turbo_media_test_signaling_config
+    test_signaling_config.c
+    ../apps/signaling_server/src/config.c)
+  target_include_directories(
+    turbo_media_test_signaling_config
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include)
+  target_link_libraries(turbo_media_test_signaling_config
+                        PRIVATE turbo_media_auth Salts::TomlParser)
+  file(
+    TO_CMAKE_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/config/signaling.toml.example"
+    SIGNALING_CONFIG_EXAMPLE_PATH)
+  target_compile_definitions(
+    turbo_media_test_signaling_config
+    PRIVATE SIGNALING_CONFIG_EXAMPLE_PATH="${SIGNALING_CONFIG_EXAMPLE_PATH}")
+endif()
 
 function(turbo_media_add_rtc_test name source)
   turbo_media_add_webrtc_test(${name} ${source})

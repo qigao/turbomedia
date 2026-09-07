@@ -44,20 +44,18 @@ set_target_properties(
              FOLDER "Applications")
 
 turbo_media_deploy_windows_runtime(
-  sfu_node Salts::CHTTP Salts::CNet RulesForge::rules_forge
-  Salts::Capture)
+  sfu_node Salts::CHTTP Salts::CNet RulesForge::rules_forge)
 
 install(TARGETS sfu_node RUNTIME DESTINATION bin COMPONENT SfuNode)
 if(WIN32)
   install(
     FILES $<TARGET_FILE:Salts::CHTTP> $<TARGET_FILE:Salts::CNet>
-          $<TARGET_FILE:Salts::Capture>
     DESTINATION bin
     COMPONENT SfuNode)
 endif()
 install(
   FILES config/sfu_node.toml.example
-  DESTINATION etc/turbonet
+  DESTINATION etc/turbomedia
   COMPONENT SfuNode)
 
 add_test(
@@ -110,7 +108,8 @@ target_compile_options(
 add_test(NAME test_sfu_node_app COMMAND test_sfu_node_app)
 set_tests_properties(test_sfu_node_app PROPERTIES WORKING_DIRECTORY
                                                   ${CMAKE_BINARY_DIR}/bin
-                                                  TIMEOUT 120)
+                                                  TIMEOUT 120
+                                                  RESOURCE_LOCK http_port_19434)
 set_target_properties(
   test_sfu_node_app
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

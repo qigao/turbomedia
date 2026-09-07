@@ -36,7 +36,7 @@ provider contract，不能承载 Iris 或 RoomService command。旧 H2 文档已
 - `ProviderQueryV1/ProviderObservationV1` 已实现单飞 request/response、身份/cursor/revision fence 和
   有界 payload；RoomService 启动时查询 Iris 受配置 tenant scope 限制的 provider-wide expected view，
   再与 worker inventory 收敛，READY 前拒绝 CHTTP H1 WebSocket command。
-- 确定性生产媒体核心进程 E2E 已串联真实 Iris process、RoomService process、独立 IVR worker、SQLite
+- 确定性生产媒体核心进程 E2E 已串联真实 Iris process、RoomService process、独立 IVR worker、PostgreSQL
   TurboDB ORM RecordStore 与双向 CHTTP H1 WebSocket，验证 VoiceXML `dialog.start`、`dialog.terminate`、completion ACK 与 session 完成；
   真实 SIP/WebRTC/SFU/RTP 和远端 speech 仍属于独立 live-media gate。
 
@@ -91,7 +91,7 @@ flowchart LR
   Worker[IVR worker]
   Media[SFU / RTP / ASR / TTS / DTMF]
   EventOutbox[RoomService durable event outbox]
-  ORM[(TurboDB ORM<br/>SQLite RecordStore)]
+  ORM[(TurboDB ORM<br/>PostgreSQL RecordStore)]
 
   XML --> Iris --> Outbox --> IrisControl --> CHTTP H1 WebSocket --> MediaControl
   MediaControl -->|claim before side effect| CommandLedger
@@ -115,10 +115,10 @@ flowchart LR
 | HIGH | Unified external Room provider | 同一 provider ingress 已支持 `conference.create/destroy` 和 `connection.join/unjoin`；Room 同步终态与 IVR 异步 fence 明确分流；durable ledger 保证响应丢失/进程重启后的幂等重放；真实多进程 HTTP 测试覆盖 create/duplicate/join/unjoin/destroy 后继续 IVR CHTTP H1 WebSocket 链路 |
 | HIGH | Typed dialog worker-loss closure | RoomService 先把稳定 `provider.media.worker_lost` 写入 durable event outbox；Iris 仅允许 provider 身份提交该保留事件，并在接纳事件的同一存储事务中把相同 provider/dialog correlation 下所有非终态命令置为 failed；重复事件与容量失败均有原子语义 |
 | MED | Component recovery | stable command/event ID；durable accepted/terminal replay；bounded correlation/tombstone；route/generation fence；retry exhaustion 后恢复 command correlation |
-| HIGH | Media event retry exhaustion | TurboDB ORM durable fact source；CAS 状态迁移；启动恢复；terminal dead letter；dangerous-scope 单条/有界批量重放；容量与拒绝指标；重复/冲突/背压/重启及真实 SQLite backend 测试 |
+| HIGH | Media event retry exhaustion | TurboDB ORM durable fact source；CAS 状态迁移；启动恢复；terminal dead letter；dangerous-scope 单条/有界批量重放；容量与拒绝指标；重复/冲突/背压/重启及真实 PostgreSQL backend 测试 |
 | HIGH | Dead-letter archive/retention | 同一 durable RecordStore 上的 `dead -> archived -> delete` revision-CAS；双 TTL；自动与手动有界 sweep；归档只读列表；删除审计日志/指标；CAS 失败保留；重启恢复测试 |
 | MED | Observability | dispatcher/outbox queue 与 drain、HTTP retry/fence、backlog/capacity、retained payload 当前值/峰值、persist/conflict/recovery/replay、durable decode failure、stale settlement，以及 provider auth missing/invalid 分类均已导出 |
-| MED | Deterministic media-core process E2E | 真实 RoomService 进程与独立 worker 进程串联生产 `ivr_worker_t`、media bot、RFC 4733 parser 和 typed CHTTP H1 WebSocket；仅 TTS/ASR provider 与 audio transport 为确定性 fixture；SQLite outbox、provider auth、CHTTP TLS listener、start/play/input/cancel/close、completion 与 playback/ASR/DTMF event 均已验证 |
+| MED | Deterministic media-core process E2E | 真实 RoomService 进程与独立 worker 进程串联生产 `ivr_worker_t`、media bot、RFC 4733 parser 和 typed CHTTP H1 WebSocket；仅 TTS/ASR provider 与 audio transport 为确定性 fixture；PostgreSQL outbox、provider auth、CHTTP TLS listener、start/play/input/cancel/close、completion 与 playback/ASR/DTMF event 均由显式 live-test gate 验证 |
 | MED | Live worker transport recovery slice | 真实 caller WHIP 与 worker WHIP/WHEP 通过 `sfu_node` 建立 ICE/DTLS/SRTP，按 caller 实际 SSRC 注册/订阅并发送 RTP；删除活动 WHEP participant 后，supervisor 各产生一次 `rtc.disconnected`/`rtc.reconnected`，generation 递增，Iris 只接收一次对应事件；Iris↔RoomService 连接级分区期间 event 先 durable 落盘、恢复后重投，dialog/caller 关闭后 SFU 资源归零 |
 
 ## 尚未完成的生产 gate
@@ -420,7 +420,7 @@ event ID/type/timestamp/payload。
 退回 `pending`。若 2xx 后删除失败，记录会再次投递，但 Iris 的相同 `eventId`/相同内容幂等契约
 使该 at-least-once 恢复安全。
 
-dead-letter retention 使用 SQLite TurboDB ORM RecordStore 作为唯一事实源，三个终态动作均由 outbox owner
+dead-letter retention 使用 PostgreSQL TurboDB ORM RecordStore 作为唯一事实源，三个终态动作均由 outbox owner
 线程串行执行：
 
 ```mermaid
@@ -432,7 +432,7 @@ stateDiagram-v2
 ```
 
 `archived` 保留完整 owning event、失败状态、`state_changed_at_ms` 和 `archived_at_ms`，但不再允许
-重放。归档与删除使用同一个 SQLite ORM 事务契约；不做跨 backend 双写，
+重放。归档与删除使用同一个 PostgreSQL ORM 事务契约；不做跨 backend 双写，
 因此 crash 只能留下原 `dead` 或已提交的 `archived`，不会出现“先删后归档”的窗口。每个 sweep
 最多处理 `retention_sweep_batch_size` 条；CAS/存储失败不改变原记录，计入 failure counter 后由下一
 周期重试。sweep 在 archive 与 delete 阶段间轮换；当前阶段没有到期记录时把批次让给另一阶段，
@@ -497,15 +497,12 @@ application ACK deadline 作为完整单元启用；因此 dangerous-scope 重�
 60 秒和 128 条；sweep 周期最小为 1 秒，所有值均在启动时校验硬上限。对应环境变量使用
 `TURBO_ROOM_SERVICE_IRIS_*` 同名大写形式。
 
-TurboMedia 只安装 `room_service.orm.sqlite.yaml.example`，并只消费 SQLite-only
-`TurboDB::ORM`。TurboMedia 不链接或部署 libpq；标准 TurboDB manifest 也不安装 libpq。
-配置 `backend: postgresql` 时 adapter 会把 driver、libpq 键值选项和 PostgreSQL SQL 方言交给
-TurboDB ORM；SQLite-only runtime 返回明确 unsupported 错误且不 fallback。部署确需 PostgreSQL 时，
-必须用 TurboDB `postgresql` manifest feature + `ORM_WITH_PGSQL=ON` 生成运行产物，再整体替换
-TurboDB ORM package/runtime。
+TurboMedia Server 只安装 `room_service.orm.postgresql.yaml.example`，并要求 TurboDB Orm package
+显式导出 `Orm_WITH_SQLITE=OFF`、`Orm_WITH_POSTGRESQL=ON` 及 `Orm::PostgreSQL` target。
+adapter 通过 PostgreSQL 专用连接入口消费 libpq 键值选项和 SQL 方言；Windows 安装包随
+`Orm::PostgreSQL` 部署 libpq 运行时。缺少 capability marker、启用 SQLite、禁用 PostgreSQL 或
+配置非 PostgreSQL backend 时均在配置/启动边界明确失败，不提供 fallback。
 后端无法连接、不是 durable + atomic、容量不足或启动 scan/recovery 失败时，RoomService 启动失败，不做 memory fallback。
-SQLite 还要求显式 `allow_development_sqlite=true`（或对应环境变量）；默认关闭，因此生产配置
-不会因误填 SQLite YAML 而启动。
 `max_item_bytes` 限制单条 key+value，`max_bytes` 限制同 namespace 的总 retained bytes；两者在
 同一 serializable mutation transaction 内按旧值/新值差额计算，溢出或超限返回容量错误并回滚整批。
 

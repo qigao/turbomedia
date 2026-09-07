@@ -44,7 +44,7 @@ set_target_properties(ivr_worker
 
 turbo_media_deploy_windows_runtime(
   ivr_worker Salts::CHTTP
-  Salts::CNet Salts::DataBind Salts::Capture
+  Salts::CNet Salts::DataBind
   RulesForge::rules_forge)
 
 # Dry-run smoke test: validates config and exercises media-call admission
@@ -139,13 +139,12 @@ turbo_media_deploy_windows_runtime(
   test_ivr_worker_http Salts::CHTTP Salts::CNet)
 
 install(FILES config/ivr_worker.toml.example
-  DESTINATION etc/turbonet COMPONENT IvrWorker)
+  DESTINATION etc/turbomedia COMPONENT IvrWorker)
 if(WIN32)
   install(
     FILES $<TARGET_FILE:Salts::CHTTP>
           $<TARGET_FILE:Salts::CNet>
           $<TARGET_FILE:Salts::DataBind>
-          $<TARGET_FILE:Salts::Capture>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>
     DESTINATION bin
     COMPONENT IvrWorker)

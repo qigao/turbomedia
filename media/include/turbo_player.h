@@ -40,7 +40,7 @@ typedef struct {
     turbo_player_video_format_t video_format;
 } turbo_player_config_t;
 
-typedef struct {
+typedef struct turbo_player_video_frame_s {
     const uint8_t *data;
     size_t len;
     int width;

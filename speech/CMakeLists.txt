@@ -4,7 +4,7 @@ target_include_directories(
   turbo_media_speech
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(turbo_media_speech PUBLIC Salts::Capture)
+target_link_libraries(turbo_media_speech PRIVATE Salts::Core)
 
 cmake_add_test(
   turbo_media_test_speech

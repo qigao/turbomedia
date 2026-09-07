@@ -1992,7 +1992,6 @@ room_service_app_server_t *room_service_app_server_create(
         server->iris_command_ledger = iris_command_ledger_create_record_store(
             config->iris_event_store_config,
             config->iris_command_ledger_channel,
-            config->iris_allow_development_sqlite,
             (size_t)config->iris_command_ledger_queue_capacity,
             (size_t)config->iris_command_retention_batch_size,
             (uint64_t)config->iris_command_terminal_retention_seconds *
@@ -2129,7 +2128,6 @@ room_service_app_server_t *room_service_app_server_create(
             server->iris_event_outbox = iris_event_outbox_create_record_store(
                 config->iris_event_store_config,
                 config->iris_event_store_channel,
-                config->iris_allow_development_sqlite,
                 (size_t)config->iris_outbox_request_queue_capacity,
                 &retention,
                 room_service_deliver_iris_event,

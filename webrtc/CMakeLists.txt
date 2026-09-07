@@ -58,24 +58,26 @@ target_link_libraries(
           SaltsNet::Asn1Parser
           roaring::roaring)
 
-add_library(turbo_media_webrtc SHARED)
-turbo_media_configure_component(turbo_media_webrtc WebRTC)
-target_sources(
-  turbo_media_webrtc
-  PRIVATE adapter/webrtc_adapter.c
-          adapter/turbo_peer_backend.c
-          adapter/webrtc_session.c
-          src/salts_ice_owner.c
-          src/ice_integration.c)
-target_include_directories(
-  turbo_media_webrtc
-  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(
-  turbo_media_webrtc
-  PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel SaltsNet::ICE
-  PRIVATE TurboMedia::RTC TurboMedia::SDP Salts::Core)
-target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
+if(TURBO_MEDIA_IS_SERVER)
+  add_library(turbo_media_webrtc SHARED)
+  turbo_media_configure_component(turbo_media_webrtc WebRTC)
+  target_sources(
+    turbo_media_webrtc
+    PRIVATE adapter/webrtc_adapter.c
+            adapter/turbo_peer_backend.c
+            adapter/webrtc_session.c
+            src/salts_ice_owner.c
+            src/ice_integration.c)
+  target_include_directories(
+    turbo_media_webrtc
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+  target_link_libraries(
+    turbo_media_webrtc
+    PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel SaltsNet::ICE
+    PRIVATE TurboMedia::RTC TurboMedia::SDP Salts::Core)
+  target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
+endif()
 
 add_library(turbo_media_webrtc_signaling SHARED)
 turbo_media_configure_component(turbo_media_webrtc_signaling WebRTCSignaling)
@@ -126,7 +128,6 @@ target_link_libraries(
          TurboMedia::Speech
          TurboMedia::Recognition
   PRIVATE TurboMedia::Codec
-          Salts::Capture
           SaltsNet::ICE
           Salts::CNet
           Salts::Core
@@ -135,6 +136,9 @@ target_link_libraries(
           OpenSSL::Crypto
           libSRTP::srtp2)
 target_compile_definitions(turbo_media_rtc PUBLIC TURBO_MEDIA_HAS_RTC)
+if(TURBO_MEDIA_IS_CLIENT)
+  target_link_libraries(turbo_media_rtc PRIVATE Salts::Capture)
+endif()
 # See transport/CMakeLists.txt: RTC and legacy transport packets have distinct
 # layouts, so internal calls must never be preempted by the peer shared object.
 target_link_options(
@@ -143,7 +147,7 @@ target_link_options(
 
 # Room-service / SFU server apps are desktop targets; keep them out of the
 # Android build (they were gated with NOT ANDROID before the RTC-apps split).
-if(NOT ANDROID)
+if(TURBO_MEDIA_IS_SERVER)
   # IVR media worker first so RoomService can consume its typed H1 WebSocket bridge.
   # The server applications remain desktop-only.
   add_subdirectory(ivr)

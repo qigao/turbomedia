@@ -77,7 +77,6 @@ typedef struct room_service_app_config_s {
     const char *iris_event_store_config;
     const char *iris_event_store_channel;
     const char *iris_command_ledger_channel;
-    int iris_allow_development_sqlite;
     int iris_correlation_capacity;
     int iris_completion_queue_capacity;
     int iris_reconcile_inventory_queue_capacity;

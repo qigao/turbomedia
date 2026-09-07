@@ -1223,7 +1223,7 @@ iris_event_outbox_t *iris_event_outbox_create(
 
 iris_event_outbox_t *iris_event_outbox_create_record_store(
     const char *yaml_path, const char *channel_name,
-    int allow_development_sqlite, size_t request_queue_capacity,
+    size_t request_queue_capacity,
     const iris_event_outbox_retention_config_t *retention,
     iris_event_outbox_deliver_fn deliver,
     void *deliver_context, char *error_text, size_t error_capacity) {
@@ -1239,9 +1239,8 @@ iris_event_outbox_t *iris_event_outbox_create_record_store(
         }
         return NULL;
     }
-    owner = iris_orm_store_owner_create(
-        yaml_path, channel_name, allow_development_sqlite, error_text,
-        error_capacity);
+    owner = iris_orm_store_owner_create(yaml_path, channel_name, error_text,
+                                        error_capacity);
     if (!owner) return NULL;
     store = iris_orm_store_owner_store(owner);
     memset(&config, 0, sizeof(config));
