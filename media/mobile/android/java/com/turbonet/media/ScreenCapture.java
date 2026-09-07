@@ -117,6 +117,9 @@ public class ScreenCapture {
      * Must be called after permission is granted
      */
     public boolean start() {
+        if (virtualDisplay != null) {
+            return true;
+        }
         try {
             return attachVirtualDisplayForTest() && startNativeForTest();
         } catch (Exception e) {
