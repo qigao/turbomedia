@@ -173,20 +173,6 @@ set_target_properties(room_service
     FOLDER "Applications"
 )
 
-turbo_media_deploy_windows_runtime(
-  room_service Salts::CHTTP Salts::CNet RulesForge::rules_forge
-   Orm::PostgreSQL Orm::C Salts::Mustache Salts::DataBind Salts::Core)
-if(WIN32)
-  add_custom_command(
-    TARGET room_service POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${TURBO_MEDIA_ORM_PREFIX}/bin/LIBPQ.dll"
-            "${TURBO_MEDIA_ORM_PREFIX}/bin/ssl.dll"
-            "${TURBO_MEDIA_ORM_PREFIX}/bin/crypto.dll"
-            $<TARGET_FILE_DIR:room_service>
-    COMMENT "Deploying PostgreSQL runtime for room_service")
-endif()
-
 install(
   TARGETS room_service
   RUNTIME DESTINATION bin
@@ -310,9 +296,6 @@ set_target_properties(test_room_service_app PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   OUTPUT_NAME "test_room_service_app"
   FOLDER "Applications/tests")
-turbo_media_deploy_windows_runtime(
-  test_room_service_app  Salts::CNet
-  Salts::Mustache Salts::DataBind Salts::Core)
 
 if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_executable(test_iris_media_bridge
@@ -487,9 +470,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   set_target_properties(test_iris_media_reconciler PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
-  turbo_media_deploy_windows_runtime(
-    test_iris_media_reconciler  Salts::CNet
-    Salts::Mustache Salts::Core)
 
   add_executable(test_iris_event_outbox
     tests/test_iris_event_outbox.c
@@ -511,9 +491,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   set_target_properties(test_iris_event_outbox PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
-  turbo_media_deploy_windows_runtime(
-    test_iris_event_outbox  Salts::CNet
-    Salts::Mustache Salts::Core)
 
   add_executable(test_iris_command_ledger
     tests/test_iris_command_ledger.c
@@ -536,8 +513,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   set_target_properties(test_iris_command_ledger PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
-  turbo_media_deploy_windows_runtime(
-    test_iris_command_ledger Salts::Mustache Salts::Core)
 
   add_executable(test_iris_orm_store
     tests/test_iris_orm_store.c
@@ -552,8 +527,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   set_target_properties(test_iris_orm_store PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
-  turbo_media_deploy_windows_runtime(
-    test_iris_orm_store Salts::Mustache Salts::Core)
 
   add_executable(test_ivr_control_adapter
     tests/test_ivr_control_adapter.c
@@ -587,9 +560,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     OUTPUT_NAME "test_ivr_control_adapter"
     FOLDER "Applications/tests")
-  turbo_media_deploy_windows_runtime(
-    test_ivr_control_adapter  Salts::CNet
-    Salts::Core)
 endif()
 
 if(TURBO_MEDIA_HAS_IVR_CONTROL)

@@ -43,9 +43,6 @@ set_target_properties(
              OUTPUT_NAME "sfu_node"
              FOLDER "Applications")
 
-turbo_media_deploy_windows_runtime(
-  sfu_node Salts::CHTTP Salts::CNet RulesForge::rules_forge)
-
 install(TARGETS sfu_node RUNTIME DESTINATION bin COMPONENT SfuNode)
 if(WIN32)
   install(
