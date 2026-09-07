@@ -6,6 +6,46 @@ const { createContractValidator, validateContract } = require('./contracts');
 const validator = createContractValidator(path.join(__dirname, '..', 'schemas'));
 const SAFE_LABEL = /^[A-Za-z0-9_.:-]+$/;
 const ISO_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/;
+const SAFE_PROCESS_ERROR = Symbol.for('turbonet.webrtcAcceptance.safeError');
+const PROCESS_ERROR_CODES = new Set([
+  'INVALID_PROCESS_OPTIONS',
+  'PROCESS_ABORTED',
+  'PROCESS_EXIT_ERROR',
+  'PROCESS_SPAWN_ERROR',
+  'PROCESS_STDIN_ERROR',
+  'PROCESS_STREAM_ERROR',
+  'PROCESS_TIMEOUT',
+  'STDERR_LIMIT_EXCEEDED',
+  'STDOUT_LIMIT_EXCEEDED',
+  'INVALID_PROCESS_OUTPUT',
+]);
+const PROCESS_ERROR_STAGES = new Set([
+  'abort',
+  'exit',
+  'json',
+  'output_stream',
+  'spawn',
+  'stderr_limit',
+  'stdin',
+  'stdout_limit',
+  'timeout',
+  'utf8',
+  'validate_options',
+]);
+const PROCESS_SIGNALS = new Set([
+  'SIGABRT',
+  'SIGALRM',
+  'SIGBREAK',
+  'SIGHUP',
+  'SIGINT',
+  'SIGKILL',
+  'SIGPIPE',
+  'SIGQUIT',
+  'SIGSEGV',
+  'SIGTERM',
+  'SIGUSR1',
+  'SIGUSR2',
+]);
 
 async function issueTurnCredential(adapter, request) {
   return issueCredential('turn-credential', 'issue_turn_credential', adapter, request);
@@ -48,7 +88,7 @@ async function invokeTopologyHook(adapter, request) {
   try {
     rawOutput = await adapter(copiedRequest);
   } catch (error) {
-    throw sanitizeAdapterError(error, operation, caseId);
+    throw sanitizeAdapterError(error, operation, caseId, 'HOOK_ADAPTER_FAILED');
   }
   let output;
   try {
@@ -97,7 +137,7 @@ async function invokeProvider(schemaName, operation, adapter, request) {
   try {
     rawOutput = await adapter(copiedRequest);
   } catch (error) {
-    throw sanitizeAdapterError(error, operation, caseId);
+    throw sanitizeAdapterError(error, operation, caseId, 'PROVIDER_ADAPTER_FAILED');
   }
   let output;
   try {
@@ -249,18 +289,33 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function sanitizeAdapterError(error, operation, caseId) {
+function sanitizeAdapterError(error, operation, caseId, fallbackCode) {
+  if (!isTrustedProcessError(error)) {
+    return safeError(fallbackCode, operation, caseId, 'adapter');
+  }
   const code = safeOwnString(error, 'code');
   const stage = safeOwnString(error, 'stage');
   const exitCode = safeOwnInteger(error, 'exit_code');
   const signal = safeOwnString(error, 'signal');
+  if (!PROCESS_ERROR_CODES.has(code) || !PROCESS_ERROR_STAGES.has(stage)) {
+    return safeError(fallbackCode, operation, caseId, 'adapter');
+  }
   return safeError(
-    code && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : 'PROVIDER_ADAPTER_FAILED',
+    code,
     operation,
     caseId,
-    stage && isSafeLabel(stage) ? stage : 'adapter',
-    { exit_code: exitCode, signal: signal && isSafeLabel(signal) ? signal : undefined }
+    stage,
+    {
+      exit_code: Number.isSafeInteger(exitCode) ? exitCode : undefined,
+      signal: PROCESS_SIGNALS.has(signal) ? signal : undefined,
+    }
   );
+}
+
+function isTrustedProcessError(error) {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return false;
+  const descriptor = Object.getOwnPropertyDescriptor(error, SAFE_PROCESS_ERROR);
+  return Boolean(descriptor && Object.hasOwn(descriptor, 'value') && descriptor.value === true);
 }
 
 function safeOwnString(value, key) {

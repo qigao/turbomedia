@@ -17,6 +17,7 @@ function createRedactor(secretValues) {
     const secret = descriptor.value;
     addLiteralPattern(patterns, secret);
     addLiteralPattern(patterns, JSON.stringify(secret).slice(1, -1));
+    addJsonUnicodePattern(patterns, secret);
     addEncodedPattern(patterns, encodeURIComponent(secret.toWellFormed()));
     addEncodedPattern(patterns, formEncode(secret));
   }
@@ -32,6 +33,18 @@ function createRedactor(secretValues) {
     }
     return matcher ? text.replace(matcher, REDACTED) : text;
   };
+}
+
+function addJsonUnicodePattern(patterns, value) {
+  const fragments = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const literal = escapeRegularExpression(JSON.stringify(value[index]).slice(1, -1));
+    const hex = value.charCodeAt(index).toString(16).padStart(4, '0').toUpperCase();
+    const unicodeEscape = `\\\\u${[...hex].map(hexPattern).join('')}`;
+    fragments.push(`(?:${literal}|${unicodeEscape})`);
+  }
+  const source = fragments.join('');
+  patterns.set(source, { source, literalLength: value.length });
 }
 
 function formEncode(value) {

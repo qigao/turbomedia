@@ -43,6 +43,20 @@ test('redactor removes application/x-www-form-urlencoded punctuation encoding', 
   assert.equal(redactor(formEncoded), '[REDACTED]');
 });
 
+test('redactor removes equivalent literal JSON Unicode escape forms', () => {
+  const cjkEscaped = String.raw`\u79d8\u5bc6`;
+  const cjkMixed = String.raw`秘\u5BC6`;
+  const emojiEscaped = String.raw`\ud83d\udd11`;
+  const redactor = createRedactor(['秘密', '🔑']);
+
+  assert.notEqual(cjkEscaped, '秘密');
+  assert.ok(cjkEscaped.includes(String.raw`\u79d8`));
+  assert.equal(
+    redactor([cjkEscaped, cjkMixed, emojiEscaped].join('|')),
+    '[REDACTED]|[REDACTED]|[REDACTED]'
+  );
+});
+
 test('redactor rejects empty non-string or non-array secret registries', () => {
   assert.throws(() => createRedactor(['']), /non-empty strings/i);
   assert.throws(() => createRedactor([42]), /non-empty strings/i);

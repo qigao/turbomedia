@@ -36,7 +36,8 @@ async function runBoundedCommand(options) {
     }
 
     const stdoutChunks = [];
-    const stderrChunks = [];
+    const stdoutDecoder = new TextDecoder('utf-8', { fatal: true });
+    const stderrDecoder = new TextDecoder('utf-8', { fatal: true });
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let acceptingOutput = true;
@@ -61,18 +62,25 @@ async function runBoundedCommand(options) {
         requestTermination(safeError('STDOUT_LIMIT_EXCEEDED', normalized, 'stdout_limit'));
         return;
       }
-      stdoutChunks.push(Buffer.from(chunk));
+      try {
+        stdoutChunks.push(stdoutDecoder.decode(chunk, { stream: true }));
+      } catch {
+        requestTermination(safeError('INVALID_PROCESS_OUTPUT', normalized, 'utf8'));
+      }
     };
     const onStderrData = (chunk) => {
       if (!acceptingOutput) return;
       const bytes = Buffer.byteLength(chunk);
       stderrBytes += bytes;
       if (stderrBytes > normalized.maxStderrBytes) {
-        stderrChunks.length = 0;
         requestTermination(safeError('STDERR_LIMIT_EXCEEDED', normalized, 'stderr_limit'));
         return;
       }
-      stderrChunks.push(Buffer.from(chunk));
+      try {
+        stderrDecoder.decode(chunk, { stream: true });
+      } catch {
+        requestTermination(safeError('INVALID_PROCESS_OUTPUT', normalized, 'utf8'));
+      }
     };
     const onStreamError = () => {
       requestTermination(safeError('PROCESS_STREAM_ERROR', normalized, 'output_stream'));
@@ -98,10 +106,9 @@ async function runBoundedCommand(options) {
 
       let stdoutText;
       try {
-        const decoder = new TextDecoder('utf-8', { fatal: true });
-        stdoutText = decoder.decode(Buffer.concat(stdoutChunks));
-        const stderrDecoder = new TextDecoder('utf-8', { fatal: true });
-        stderrDecoder.decode(Buffer.concat(stderrChunks));
+        stdoutChunks.push(stdoutDecoder.decode());
+        stderrDecoder.decode();
+        stdoutText = stdoutChunks.join('');
       } catch {
         finish(safeError('INVALID_PROCESS_OUTPUT', normalized, 'utf8'));
         return;

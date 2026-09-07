@@ -242,6 +242,15 @@ test('bounded command rejects fatal UTF-8 and byte-counted stdout or stderr over
   );
 });
 
+test('bounded command rejects invalid stdout or stderr UTF-8 before a later timeout', async () => {
+  for (const mode of ['invalid_utf8_then_timeout', 'invalid_stderr_utf8_then_timeout']) {
+    await assertSafeRejection(
+      runBoundedCommand(commandOptions({ mode }, { timeoutMs: 300 })),
+      'INVALID_PROCESS_OUTPUT'
+    );
+  }
+});
+
 test('TURN provider validates through the real process boundary and returns a frozen copy', async () => {
   const request = turnRequest();
   const result = await issueTurnCredential(processAdapter(providerFixture, 'issue_turn_credential'), request);
@@ -327,6 +336,66 @@ test('providers reject output accessors without executing them', async () => {
     ['accessor-output-secret']
   );
   assert.equal(getterReads, 0);
+});
+
+test('credential providers replace arbitrary adapter error metadata with fixed safe fields', async () => {
+  const maliciousCode = `SECRET_${'TOKEN'.repeat(64)}`;
+  const maliciousStage = 'secret-token-stage';
+  const maliciousSignal = 'secret-token-signal';
+  const adapterError = {
+    code: maliciousCode,
+    stage: maliciousStage,
+    signal: maliciousSignal,
+    exit_code: 77,
+  };
+
+  await assert.rejects(issueTurnCredential(async () => { throw adapterError; }, turnRequest()), (error) => {
+    assert.equal(error.code, 'PROVIDER_ADAPTER_FAILED');
+    assert.equal(error.stage, 'adapter');
+    assert.equal(error.exit_code, undefined);
+    assert.equal(error.signal, undefined);
+    const exposed = JSON.stringify({ message: error.message, ...error });
+    for (const secret of [maliciousCode, maliciousStage, maliciousSignal]) {
+      assert.ok(!exposed.includes(secret), `error leaked ${secret}`);
+    }
+    return true;
+  });
+});
+
+test('topology hooks replace arbitrary adapter error metadata with fixed safe fields', async () => {
+  const maliciousCode = 'SECRET_TOKEN_ABC';
+  const maliciousStage = 'secret-token-abc';
+  const maliciousSignal = 'secret-token-abc';
+
+  await assert.rejects(invokeTopologyHook(async () => {
+    throw { code: maliciousCode, stage: maliciousStage, signal: maliciousSignal, exit_code: 91 };
+  }, hookRequest()), (error) => {
+    assert.equal(error.code, 'HOOK_ADAPTER_FAILED');
+    assert.equal(error.stage, 'adapter');
+    assert.equal(error.exit_code, undefined);
+    assert.equal(error.signal, undefined);
+    const exposed = JSON.stringify({ message: error.message, ...error });
+    for (const secret of [maliciousCode, maliciousStage, maliciousSignal]) {
+      assert.ok(!exposed.includes(secret), `error leaked ${secret}`);
+    }
+    return true;
+  });
+});
+
+test('providers preserve allowlisted metadata from trusted bounded process errors', async () => {
+  await assert.rejects(
+    issueTurnCredential(
+      processAdapter(providerFixture, 'issue_turn_credential'),
+      turnRequest({ mode: 'nonzero' })
+    ),
+    (error) => {
+      assert.equal(error.code, 'PROCESS_EXIT_ERROR');
+      assert.equal(error.stage, 'exit');
+      assert.equal(error.exit_code, 7);
+      assert.equal(error.signal, undefined);
+      return true;
+    }
+  );
 });
 
 test('TURN provider rejects expired invalid-order and required-deadline credentials', async () => {

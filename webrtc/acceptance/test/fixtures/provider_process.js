@@ -71,9 +71,17 @@ process.stdin.on('end', () => {
     case 'invalid_utf8':
       process.stdout.write(Buffer.from([0xc3, 0x28]));
       break;
+    case 'invalid_utf8_then_timeout':
+      process.stdout.write(Buffer.from([0xc3, 0x28]));
+      setTimeout(() => process.stdout.write('{}'), 10_000);
+      break;
     case 'invalid_stderr_utf8':
       process.stderr.write(Buffer.from([0xc3, 0x28]));
       process.stdout.write('{}');
+      break;
+    case 'invalid_stderr_utf8_then_timeout':
+      process.stderr.write(Buffer.from([0xc3, 0x28]));
+      setTimeout(() => process.stdout.write('{}'), 10_000);
       break;
     case 'stdout_unicode_overflow':
       process.stdout.write('🔑'.repeat(request.character_count));
