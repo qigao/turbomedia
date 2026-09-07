@@ -12,7 +12,7 @@ typedef struct reconcile_fixture_s {
     iris_media_reconciler_t *reconciler;
     iris_expected_media_resource_t expected[4];
     size_t expected_count;
-    ivr_fmq_worker_snapshot_t worker;
+    ivr_control_worker_snapshot_t worker;
     int has_worker;
     ivr_worker_inventory_envelope_t inventory;
     int rebind_calls;
@@ -51,7 +51,7 @@ static ivr_status_t mock_fetch_expected(
 }
 
 static ivr_status_t mock_list_workers(
-    void *context, ivr_fmq_worker_snapshot_t *workers, uint32_t capacity,
+    void *context, ivr_control_worker_snapshot_t *workers, uint32_t capacity,
     uint32_t *out_count, uint32_t *out_total) {
     reconcile_fixture_t *fixture = (reconcile_fixture_t *)context;
     *out_count = 0;
@@ -120,7 +120,7 @@ static ivr_status_t mock_complete(
     }
     ++fixture->complete_calls;
     fixture->worker.requires_reconcile = 0;
-    fixture->worker.state = IVR_FMQ_WORKER_READY;
+    fixture->worker.state = IVR_CONTROL_WORKER_READY;
     return IVR_OK;
 }
 
@@ -229,7 +229,7 @@ static void make_worker_inventory(reconcile_fixture_t *fixture,
     snprintf(fixture->worker.instance_id, sizeof(fixture->worker.instance_id),
              "instance-a");
     fixture->worker.connection_generation = 9u;
-    fixture->worker.state = IVR_FMQ_WORKER_RECONCILING;
+    fixture->worker.state = IVR_CONTROL_WORKER_RECONCILING;
     fixture->worker.max_sessions = 4u;
     fixture->worker.active_sessions = 1u;
     fixture->worker.requires_reconcile = 1;

@@ -67,7 +67,7 @@ static void setup_signal_handlers(void) {
  * Print usage information
  */
 static void print_usage(const char *program_name) {
-    printf("TurboNet WebRTC Signaling Server v%s\n\n", SIGNALING_SERVER_VERSION);
+    printf("TurboMedia WebRTC Signaling Server v%s\n\n", SIGNALING_SERVER_VERSION);
     printf("Usage: %s [OPTIONS]\n\n", program_name);
     printf("Options:\n");
     printf("  -c, --config FILE      Configuration file path (default: none)\n");
@@ -86,6 +86,7 @@ static void print_usage(const char *program_name) {
     printf("  --node-id ID           Node identifier (default: auto-generated)\n");
     printf("  --redis-host HOST      Redis host (default: localhost)\n");
     printf("  --redis-port PORT      Redis port (default: 6379)\n");
+    printf("  --connection-capacity N  WebSocket connection capacity (default: 4096)\n");
     printf("  --max-peers N          Maximum peers (default: 1000)\n");
     printf("  --max-rooms N          Maximum rooms (default: 100)\n");
     printf("  --log-level LEVEL      Log level: trace|debug|info|warn|error (default: info)\n");
@@ -93,7 +94,7 @@ static void print_usage(const char *program_name) {
     printf("  --version              Show version information\n");
     printf("\n");
     printf("Examples:\n");
-    printf("  %s --config /etc/turbonet/signaling.toml\n", program_name);
+    printf("  %s --config /etc/turbomedia/signaling.toml\n", program_name);
     printf("  %s --port 8080 --http-port 8081 --max-peers 5000\n", program_name);
     printf("  %s --redis-host redis.example.com --node-id node-1\n", program_name);
     printf("\n");
@@ -103,13 +104,13 @@ static void print_usage(const char *program_name) {
  * Print version information
  */
 static void print_version(void) {
-    printf("TurboNet WebRTC Signaling Server\n");
+    printf("TurboMedia WebRTC Signaling Server\n");
     printf("Version: %s\n", SIGNALING_SERVER_VERSION);
     printf("Build Date: %s %s\n", __DATE__, __TIME__);
     printf("Platform: %s\n", PLATFORM_NAME);
     printf("\n");
     printf("Features:\n");
-    printf("  - WebSocket signaling (CoroNet)\n");
+    printf("  - WebSocket signaling (Salts CHTTP/CNet)\n");
     printf("  - HTTP management API (Iris)\n");
     printf("\n");
 }
@@ -244,6 +245,13 @@ static int parse_args(int argc, char **argv, signaling_server_config_t *config) 
             }
             config->redis_port = atoi(argv[i]);
         }
+        else if (strcmp(arg, "--connection-capacity") == 0) {
+            if (++i >= argc) {
+                fprintf(stderr, "Error: --connection-capacity requires an argument\n");
+                return -1;
+            }
+            config->connection_capacity = atoi(argv[i]);
+        }
         else if (strcmp(arg, "--max-peers") == 0) {
             if (++i >= argc) {
                 fprintf(stderr, "Error: --max-peers requires an argument\n");
@@ -315,14 +323,15 @@ int main(int argc, char **argv) {
     }
     
     /* Initialize logging */
-    tlog_set_level(tlog_get_default(), turbo_log_level_from_name(config.log_level));
+    tlog_set_level(tlog_get_default(), salts_log_level_from_name(config.log_level));
     
     /* Print startup banner */
     TLOG_INFO("=================================================");
-    TLOG_INFOF("TurboNet WebRTC Signaling Server v{}", SIGNALING_SERVER_VERSION);
+    TLOG_INFOF("TurboMedia WebRTC Signaling Server v{}", SIGNALING_SERVER_VERSION);
     TLOG_INFO("=================================================");
     TLOG_INFOF("Node ID: {}", config.node_id ? config.node_id : "auto");
     TLOG_INFOF("WebSocket: {}:{}", config.ws_host, config.ws_port);
+    TLOG_INFOF("Connection Capacity: {}", config.connection_capacity);
     if (config.http_enabled) {
         TLOG_INFOF("HTTP API: {}:{}", config.http_host, config.http_port);
         TLOG_INFO("HTTP management auth: enabled");

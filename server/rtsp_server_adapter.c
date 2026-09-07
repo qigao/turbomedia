@@ -50,7 +50,6 @@ typedef struct {
 
 struct turbo_media_rtsp_server_adapter_s {
     turbo_media_server_runtime_t *runtime;
-    struct coro_context_s *coro_context;
     turbo_rtsp_server_t *rtsp_server;
     turbo_rtsp_server_handlers_t handlers;
     turbo_media_rtsp_server_adapter_config_t config;
@@ -695,18 +694,16 @@ static void turbo_media_rtsp_adapter_on_session_close(
 
 turbo_media_rtsp_server_adapter_t *turbo_media_server_rtsp_adapter_create(
     turbo_media_server_runtime_t *runtime,
-    struct coro_context_s *coro_context,
     const turbo_rtsp_server_config_t *rtsp_config,
     const turbo_media_rtsp_server_adapter_config_t *adapter_config) {
     turbo_media_rtsp_server_adapter_t *adapter;
 
-    if (!runtime || !coro_context) return NULL;
+    if (!runtime) return NULL;
 
     adapter = (turbo_media_rtsp_server_adapter_t *)calloc(1, sizeof(*adapter));
     if (!adapter) return NULL;
 
     adapter->runtime = runtime;
-    adapter->coro_context = coro_context;
     if (adapter_config) adapter->config = *adapter_config;
     if (adapter->config.vhost) {
         snprintf(adapter->vhost, sizeof(adapter->vhost), "%s", adapter->config.vhost);
@@ -726,7 +723,6 @@ turbo_media_rtsp_server_adapter_t *turbo_media_server_rtsp_adapter_create(
     adapter->handlers.on_session_close = turbo_media_rtsp_adapter_on_session_close;
 
     adapter->rtsp_server = turbo_rtsp_server_create(
-        (coro_context_t *)coro_context,
         rtsp_config,
         &adapter->handlers,
         adapter);

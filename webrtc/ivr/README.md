@@ -8,15 +8,15 @@
   业务状态和下一步动作选择。
 - RoomService 只负责媒体资源寻址、worker route/lease 和 typed command 转发。
 - IVR worker 只负责 WebRTC/RTP/PCM、TTS/ASR、DTMF、播放和 input window。
-- FlowMQ 只传有界的 typed command/result/event；RTP、PCM 和脚本不经过 FlowMQ。
+- CHTTP H1 WebSocket 只传有界的 typed command/result/event；RTP、PCM 和脚本不经过 CHTTP H1 WebSocket。
 - 本模块不加载 XML/JS/content archive，不创建 TurboXML interpreter，也不消费业务事件。
 
 ```mermaid
 flowchart LR
   Iris[Iris: XML + JS + session owner]
-  IrisMQ[Iris FlowMQ adapter + durable outbox]
+  IrisMQ[Iris CHTTP H1 WebSocket adapter + durable outbox]
   Room[RoomService: media adapter]
-  MQ[FlowMQ typed command/result/event]
+  MQ[CHTTP H1 WebSocket typed command/result/event]
   Worker[IVR media worker]
   Media[WebRTC/RTP/ASR/TTS/DTMF]
 
@@ -44,10 +44,10 @@ rejects them and requires the typed media protocol.
 open, play, begin/end/cancel input and close. The worker owns no business state.
 
 Media callbacks copy events into a bounded MPSC-to-single-consumer queue. The application
-owner loop serializes those events to FlowMQ. Queue full returns `IVR_ENOSPC`; shutdown
+owner loop serializes those events to CHTTP H1 WebSocket. Queue full returns `IVR_ENOSPC`; shutdown
 stops producers, drains owned entries, closes all media calls, then destroys transports.
 
-FlowMQ connection and management callbacks also only publish immutable events into a
+CHTTP H1 WebSocket connection and management callbacks also only publish immutable events into a
 bounded control queue. Only the worker owner loop changes connection generation, health
 or drain state. Room bridge callbacks are fenced by the full route token; stop closes
 acceptance and discards queued commands before joining the owner so restart begins empty.
@@ -60,7 +60,7 @@ matched. These callbacks may forward facts upstream, but must not decide a workf
 
 - `tests/test_ivr_worker.c` uses a mock media factory/port/event sink to test lifecycle,
   idempotency, deadlines, input windows, capacity and drain.
-- `tests/test_ivr_room_bridge.c` uses real loopback FlowMQ and DataBind wire frames, while
+- `tests/test_ivr_room_bridge.c` uses real loopback CHTTP H1 WebSocket and DataBind wire frames, while
   mocking only the upstream observer. It verifies route fencing and that media facts do not
   call the Room business handler.
 - `ivr_worker --dry-run` uses a logging media transport for application smoke tests.
@@ -75,17 +75,17 @@ cmake --preset win-dev-user
 cmake --build --preset win-dev-user --target test_ivr_worker
 cmake --build --preset win-dev-user --target test_ivr_room_bridge
 cmake --build --preset win-dev-user --target ivr_worker room_service
-ctest --preset win-dev-user -R "test_ivr_worker|test_ivr_room_bridge|test_ivr_flowmq" --output-on-failure
+ctest --preset win-dev-user -R "test_ivr_worker|test_ivr_room_bridge|test_ivr_control" --output-on-failure
 ```
 
 ## Production provider boundary
 
-Iris 与 RoomService 之间只使用 typed FlowMQ provider lane：command 必须收到 durable
+Iris 与 RoomService 之间只使用 typed CHTTP H1 WebSocket provider lane：command 必须收到 durable
 receipt，completion/event 必须收到 application ACK；transport send 成功不等于 Iris 已提交。
 断线期间 event 先进入 TurboDB ORM durable outbox，发现 sequence gap 时通过 query/observation
 恢复。不存在 HTTP provider fallback，也不得从 broker callback 直接推进 workflow。
 
-WHIP/WHEP 是独立 media-edge 协议：信令经 `TurboHttp::TurboHttp`，生产仅允许验证过的 HTTPS
+WHIP/WHEP 是独立 media-edge 协议：信令经 `Salts::CHTTP`，生产仅允许验证过的 HTTPS
 （可选 mTLS），明文只允许显式 loopback 测试。动态 room/call/participant ID 必须按单个 URL
 segment 编码；Opus SDP 的 RTP clock 固定为 48000 Hz，与 PCM 处理采样率解耦。
 

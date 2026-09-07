@@ -35,9 +35,9 @@ ctest --preset win-dev-user --output-on-failure
 
 根工程默认构建不会用可选开关裁剪上述多媒体模块，并会检查所有必需依赖。主要依赖包括 FFmpeg
 （含 `openh264`、`opus`、`xml2` feature）、OpenH264、x265、libde265、
-libvpx、Opus、Salts、SaltsUtils、TurboNet、TurboHTTP、libSRTP 和 usrsctp。WebRTC
-PeerConnection、ICE、DTLS-SRTP 与 DataChannel 由仓库内 TurboMedia/TurboNet
-模块实现；安全传输强制使用 BoringSSL。
+libvpx、Opus、Salts、SaltsUtils、SaltsNet、CHTTP、CNet、libSRTP 和 usrsctp。
+WebRTC PeerConnection、ICE、DTLS-SRTP 与 DataChannel 由仓库内 TurboMedia 与
+SaltsNet 模块实现；安全传输强制使用 BoringSSL。
 
 Linux 桌面 Capture 由 `Salts::Capture` 提供；所选 SaltsUtils 安装 profile
 必须已启用 Capture。从源码构建该 profile 时需要 `pkg-config`、
@@ -100,8 +100,8 @@ api_version: turbo.media.pipeline/v1
 - `sfu_node`：WebRTC 会话、媒体发布/订阅、分层转发、录制和节点 drain；
 - `room_service`：房间事实源、SFU 节点路由、状态重放和会议策略。
 
-`sfu_node` 的 PeerConnection 路径使用 TurboNet ICE agent，并由
-`TurboNet::Ice` 和 `TurboNet::CoroNet` 作为 RTC 目标的显式私有依赖提供
+`sfu_node` 的 PeerConnection 路径使用 SaltsNet ICE agent，并由
+`SaltsNet::ICE` 和 `Salts::CNet` 作为 RTC 目标的显式私有依赖提供
 candidate gathering、connectivity checks、selected-pair I/O 与关闭排空。
 
 两个进程依赖仓库内 `TurboMedia::RtcApps` 提供的房间/SFU/录制模型层

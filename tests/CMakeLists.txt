@@ -28,7 +28,8 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   
   if(TEST_NAME MATCHES "rtsp")
     # RTSP 相关测试
-    list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core TurboMedia::Server)
+    list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core
+                               TurboMedia::ServerRTSP)
     if(TEST_NAME STREQUAL "test_rtsp")
       list(APPEND TEST_LINK_LIBS OpenSSL::Crypto)
     endif()
@@ -52,8 +53,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
                           TurboMedia::RTC)
   elseif(TEST_NAME STREQUAL "test_pipeline")
     list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server
-                          TurboMedia::RTSP TurboMedia::Transport TurboMedia::Codec
-                          Salts::Core)
+                          TurboMedia::RTSP TurboMedia::ServerRTSP
+                          TurboMedia::Transport TurboMedia::Codec
+                          Salts::CHTTP Salts::Core)
     if(WIN32)
       list(APPEND TEST_LINK_LIBS ws2_32)
     endif()

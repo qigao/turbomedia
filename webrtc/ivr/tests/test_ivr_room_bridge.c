@@ -1,8 +1,8 @@
-﻿/* test_ivr_room_bridge.c - FlowMQ DEALER->ROUTER end-to-end.
- * Spins the ivr_room_bridge (ROUTER BIND) + the flowmq DEALER gateway and
+/* test_ivr_room_bridge.c - CHTTP H1 WebSocket client/server end-to-end.
+ * Spins the ivr_room_bridge server + the control WebSocket client gateway and
  * verifies: command frame round-trip, IvrCommandResultV1 reply, message_id
  * idempotency, and stale expected_room_version rejection. */
-#include "ivr_flowmq_gateway.h"
+#include "ivr_control_gateway.h"
 #include "ivr_room_bridge.h"
 #include "ivr_frame.h"
 #include "ivr_thread.h"
@@ -103,7 +103,7 @@ static int wait_atomic_count(atomic_int *value, int expected,
     return 0;
 }
 
-/* ---- reply capture on the DEALER ---- */
+/* ---- reply capture on the WebSocket client ---- */
 static ivr_mutex_t g_reply_lock;
 static uint8_t g_reply[8192];
 static size_t g_reply_len = 0;
@@ -185,7 +185,7 @@ static void result_string(const char *field, char *out, size_t out_size) {
 
 /* ---- scaffolding ---- */
 static ivr_room_bridge_t *g_bridge = NULL;
-static ivr_flowmq_gateway_t *g_gateway = NULL;
+static ivr_control_gateway_t *g_gateway = NULL;
 static ivr_command_gateway_ops_t g_ops;
 
 static ivr_status_t send_join(const char *message_id, uint64_t expected_version) {
@@ -267,22 +267,22 @@ void setUp(void) {
     check_equal(ivr_room_bridge_create(&bcfg, &g_bridge), IVR_OK);
     check_equal(ivr_room_bridge_start(g_bridge), IVR_OK);
 
-    ivr_flowmq_gateway_config_t gcfg;
+    ivr_control_gateway_config_t gcfg;
     memset(&gcfg, 0, sizeof(gcfg));
     gcfg.worker_id = "ivr-worker-test";
     gcfg.host = "127.0.0.1";
     gcfg.port = TEST_PORT;
     gcfg.timeout_ms = 5000;
     gcfg.on_reply = on_reply_cb;
-    check_equal(ivr_flowmq_gateway_create(&gcfg, &g_ops,
+    check_equal(ivr_control_gateway_create(&gcfg, &g_ops,
                                                         &g_gateway), IVR_OK);
-    check_equal(ivr_flowmq_gateway_start(g_gateway), IVR_OK);
-    ivr_thread_sleep_ms(800); /* let the DEALER connect to the ROUTER */
+    check_equal(ivr_control_gateway_start(g_gateway), IVR_OK);
+    ivr_thread_sleep_ms(800); /* let the client connect to the server */
 }
 
 void tearDown(void) {
     if (g_gateway) {
-        ivr_flowmq_gateway_destroy(g_gateway);
+        ivr_control_gateway_destroy(g_gateway);
         g_gateway = NULL;
     }
     if (g_bridge) {
@@ -321,7 +321,7 @@ void test_idempotent_retry(void) {
 }
 
 void test_worker_sync_roundtrip(void) {
-    check_equal(ivr_flowmq_gateway_send_worker_sync(g_gateway, "ws-1"), IVR_OK);
+    check_equal(ivr_control_gateway_send_worker_sync(g_gateway, "ws-1"), IVR_OK);
     check_true(wait_reply(8000));
     ivr_frame_info_t info;
     memset(&info, 0, sizeof(info));
@@ -364,12 +364,12 @@ static int worker_sync_status(void) {
 }
 
 void test_worker_sync_unconnected_identity_rejected(void) {
-    /* registration is bound to a live connection: a DEALER claiming an
+    /* registration is bound to a live connection: a client claiming an
        identity that has no connected peer is rejected (IVR_EAUTH) before the
        command handler runs. (Full anti-spoofing needs transport-level mTLS
-       identity: the facade exposes no per-message peer identity on ROUTER
+       identity: the facade exposes no per-message peer identity on the server
        ingress, so a claim that matches ANY live connection is accepted.) */
-    ivr_flowmq_gateway_config_t acfg;
+    ivr_control_gateway_config_t acfg;
     memset(&acfg, 0, sizeof(acfg));
     acfg.worker_id = "attacker-1";
     acfg.host = "127.0.0.1";
@@ -377,18 +377,18 @@ void test_worker_sync_unconnected_identity_rejected(void) {
     acfg.timeout_ms = 5000;
     acfg.on_reply = on_reply_cb;
     ivr_command_gateway_ops_t aops;
-    ivr_flowmq_gateway_t *attacker = NULL;
-    check_equal(ivr_flowmq_gateway_create(&acfg, &aops, &attacker), IVR_OK);
-    check_equal(ivr_flowmq_gateway_start(attacker), IVR_OK);
-    ivr_thread_sleep_ms(800); /* let the DEALER connect + PEER_CONNECTED fire */
+    ivr_control_gateway_t *attacker = NULL;
+    check_equal(ivr_control_gateway_create(&acfg, &aops, &attacker), IVR_OK);
+    check_equal(ivr_control_gateway_start(attacker), IVR_OK);
+    ivr_thread_sleep_ms(800); /* let the client connect + PEER_CONNECTED fire */
 
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_worker_sync(
+    check_equal(ivr_control_gateway_encode_worker_sync(
                           g_codec, "ws-spoof", "ghost-worker", frame,
                           sizeof(frame), &len), IVR_OK);
     g_reply_ready = 0;
-    check_equal(ivr_flowmq_gateway_send_frame(attacker, frame, len), IVR_OK);
+    check_equal(ivr_control_gateway_send_frame(attacker, frame, len), IVR_OK);
     check_true(wait_reply(8000));
     check_equal(worker_sync_status(), IVR_EAUTH);
 
@@ -399,7 +399,7 @@ void test_worker_sync_unconnected_identity_rejected(void) {
             char message_id[32];
             snprintf(message_id, sizeof(message_id), "ws-2-%d", attempt);
             g_reply_ready = 0;
-            check_equal(ivr_flowmq_gateway_send_worker_sync(
+            check_equal(ivr_control_gateway_send_worker_sync(
                             g_gateway, message_id), IVR_OK);
             replied = wait_reply(250);
         }
@@ -407,7 +407,7 @@ void test_worker_sync_unconnected_identity_rejected(void) {
     }
     check_equal(worker_sync_status(), 0);
 
-    ivr_flowmq_gateway_destroy(attacker);
+    ivr_control_gateway_destroy(attacker);
 }
 
 void test_stale_version_rejected(void) {
@@ -424,7 +424,7 @@ void test_media_result_and_event_are_forwarded_as_facts(void) {
     memset(&command, 0, sizeof(command));
     memset(&event, 0, sizeof(event));
 
-    check_equal(ivr_flowmq_gateway_send_worker_sync(g_gateway,
+    check_equal(ivr_control_gateway_send_worker_sync(g_gateway,
                                                           "media-sync"), IVR_OK);
     check_true(wait_reply(8000));
 
@@ -440,7 +440,7 @@ void test_media_result_and_event_are_forwarded_as_facts(void) {
     snprintf(command.call_id, sizeof(command.call_id), "call-42");
     command.call_generation = 7;
     command.operation_generation = 9;
-    check_equal(ivr_flowmq_gateway_send_media_result(
+    check_equal(ivr_control_gateway_send_media_result(
                                   g_gateway, &command, IVR_OK, "", ""), IVR_OK);
     check_true(wait_atomic_count(&g_media_result_count, 1, 8000));
     check_equal(g_media_result.message_id, "media-op-1");
@@ -471,7 +471,7 @@ void test_media_result_and_event_are_forwarded_as_facts(void) {
     event.input_value.size = 5;
     event.payload_json.data = "{}";
     event.payload_json.size = 2;
-    check_equal(ivr_flowmq_gateway_send_media_event(
+    check_equal(ivr_control_gateway_send_media_event(
                                   g_gateway, "ivr-worker-test", &event, 1234), IVR_OK);
     check_true(wait_atomic_count(&g_media_event_count, 1, 8000));
     check_equal(g_media_event.event_id, "media-event-1");
@@ -492,7 +492,7 @@ void test_media_result_and_event_are_forwarded_as_facts(void) {
 void test_media_result_with_spoofed_worker_is_rejected(void) {
     ivr_media_command_t command;
     memset(&command, 0, sizeof(command));
-    check_equal(ivr_flowmq_gateway_send_worker_sync(g_gateway,
+    check_equal(ivr_control_gateway_send_worker_sync(g_gateway,
                                                           "spoof-sync"), IVR_OK);
     check_true(wait_reply(8000));
     snprintf(command.message_id, sizeof(command.message_id), "spoof-op-1");
@@ -505,7 +505,7 @@ void test_media_result_with_spoofed_worker_is_rejected(void) {
     snprintf(command.call_id, sizeof(command.call_id), "call-42");
     command.call_generation = 1;
     command.operation_generation = 1;
-    check_equal(ivr_flowmq_gateway_send_media_result(
+    check_equal(ivr_control_gateway_send_media_result(
                                   g_gateway, &command, IVR_OK, "", ""), IVR_OK);
     ivr_thread_sleep_ms(200);
     check_equal((int)(atomic_load(&g_media_result_count)), (int)(0));
@@ -521,7 +521,7 @@ void test_inventory_query_and_authenticated_page_roundtrip(void) {
     ivr_worker_inventory_envelope_t result;
     ivr_frame_info_t info;
 
-    check_equal(ivr_flowmq_gateway_send_worker_sync(g_gateway,
+    check_equal(ivr_control_gateway_send_worker_sync(g_gateway,
                                                           "inventory-sync"), IVR_OK);
     check_true(wait_reply(8000));
 
@@ -537,7 +537,7 @@ void test_inventory_query_and_authenticated_page_roundtrip(void) {
     check_true(wait_reply(8000));
     check_equal(ivr_frame_decode(g_reply, g_reply_len, &info), IVR_OK);
     check_equal((uint32_t)(info.schema_type_id), (uint32_t)(IVR_TYPE_WORKER_MEDIA_INVENTORY_QUERY_V1));
-    check_equal(ivr_flowmq_gateway_decode_inventory_query(
+    check_equal(ivr_control_gateway_decode_inventory_query(
                           g_codec, g_reply, g_reply_len, &received), IVR_OK);
     check_equal(received.message_id, request.message_id);
     check_equal(received.worker_id, request.worker_id);
@@ -572,7 +572,7 @@ void test_inventory_query_and_authenticated_page_roundtrip(void) {
     result.page.records[0].call_generation = 4;
     result.page.records[0].state = IVR_WORKER_RESOURCE_ACTIVE;
     result.page.records[0].rebindable = 1;
-    check_equal(ivr_flowmq_gateway_send_inventory_page(g_gateway,
+    check_equal(ivr_control_gateway_send_inventory_page(g_gateway,
                                                              &result), IVR_OK);
     check_true(wait_atomic_count(&g_inventory_page_count, 1, 8000));
     check_equal(g_inventory_page.message_id, "inventory-query-live");
@@ -601,7 +601,7 @@ void test_double_start_rejected(void) {
 void test_restart_after_stop(void) {
     /* stop() must be reversible: a stopped bridge can start again and the
        queue latch from the previous stop must not kill the new thread. (The
-       DEALER gateway reconnect after a ROUTER restart is the gateway's own
+       client gateway reconnect after a server restart is the gateway's own
        concern, so no round-trip is asserted here.) */
     ivr_room_bridge_stop(g_bridge);
     check_equal(ivr_room_bridge_start(g_bridge), IVR_OK);
@@ -614,8 +614,8 @@ void test_restart_after_stop(void) {
 
 void test_destroy_without_stop(void) {
     /* destroying a started bridge must stop/join the worker thread and the
-       FMQ apps before freeing queue/lock/codec/bridge (ASan catches any UAF
-       from the still-running worker thread or FlowMQ callbacks) */
+       control WebSocket apps before freeing queue/lock/codec/bridge (ASan catches any UAF
+       from the still-running worker thread or CHTTP H1 WebSocket callbacks) */
     ivr_room_bridge_config_t bcfg;
     memset(&bcfg, 0, sizeof(bcfg));
     bcfg.host = "127.0.0.1";
@@ -631,11 +631,11 @@ void test_destroy_without_stop(void) {
 
 void test_stop_discards_command_queued_behind_inflight_handler(void) {
     ivr_room_bridge_t *bridge = NULL;
-    ivr_flowmq_gateway_t *gateway = NULL;
+    ivr_control_gateway_t *gateway = NULL;
     ivr_command_gateway_ops_t ops;
     ivr_room_command_handler_t handler;
     ivr_room_bridge_config_t bridge_config;
-    ivr_flowmq_gateway_config_t gateway_config;
+    ivr_control_gateway_config_t gateway_config;
     ivr_call_dispatch_t dispatch;
     ivr_thread_t stop_thread;
     memset(&ops, 0, sizeof(ops));
@@ -665,12 +665,12 @@ void test_stop_discards_command_queued_behind_inflight_handler(void) {
     gateway_config.port = TEST_PORT + 3;
     gateway_config.timeout_ms = 5000;
     gateway_config.on_reply = on_reply_cb;
-    check_equal(ivr_flowmq_gateway_create(&gateway_config, &ops, &gateway),
+    check_equal(ivr_control_gateway_create(&gateway_config, &ops, &gateway),
                 IVR_OK);
-    check_equal(ivr_flowmq_gateway_start(gateway), IVR_OK);
+    check_equal(ivr_control_gateway_start(gateway), IVR_OK);
     ivr_thread_sleep_ms(800);
     g_reply_ready = 0;
-    check_equal(ivr_flowmq_gateway_send_worker_sync(gateway, "stop-sync"),
+    check_equal(ivr_control_gateway_send_worker_sync(gateway, "stop-sync"),
                 IVR_OK);
     check_true(wait_reply(8000));
 
@@ -680,7 +680,7 @@ void test_stop_discards_command_queued_behind_inflight_handler(void) {
     snprintf(dispatch.call_id, sizeof(dispatch.call_id), "call-stop");
     dispatch.call_generation = 1;
     snprintf(dispatch.message_id, sizeof(dispatch.message_id), "stop-block");
-    check_equal(ivr_flowmq_gateway_send_dispatch_result(
+    check_equal(ivr_control_gateway_send_dispatch_result(
                     gateway, &dispatch, IVR_OK, "", ""), IVR_OK);
     check_true(wait_atomic_count(&g_result_handler_entered, 1, 4000));
     check_equal(send_join_with_ops(&ops, "mid-1", g_room_version), IVR_OK);
@@ -695,19 +695,19 @@ void test_stop_discards_command_queued_behind_inflight_handler(void) {
     ivr_thread_sleep_ms(100);
     check_equal((uint64_t)g_applied, (uint64_t)0u);
 
-    ivr_flowmq_gateway_destroy(gateway);
+    ivr_control_gateway_destroy(gateway);
     ivr_room_bridge_destroy(bridge);
 }
 
 void test_old_sync_route_is_rejected_after_same_identity_reconnect(void) {
     ivr_room_bridge_t *bridge = NULL;
-    ivr_flowmq_gateway_t *old_gateway = NULL;
-    ivr_flowmq_gateway_t *new_gateway = NULL;
+    ivr_control_gateway_t *old_gateway = NULL;
+    ivr_control_gateway_t *new_gateway = NULL;
     ivr_command_gateway_ops_t old_ops;
     ivr_command_gateway_ops_t new_ops;
     ivr_room_command_handler_t handler;
     ivr_room_bridge_config_t bridge_config;
-    ivr_flowmq_gateway_config_t gateway_config;
+    ivr_control_gateway_config_t gateway_config;
     ivr_call_dispatch_t dispatch;
     ivr_room_bridge_stats_t stats;
     memset(&old_ops, 0, sizeof(old_ops));
@@ -737,12 +737,12 @@ void test_old_sync_route_is_rejected_after_same_identity_reconnect(void) {
     gateway_config.port = TEST_PORT + 4;
     gateway_config.timeout_ms = 5000;
     gateway_config.on_reply = on_reply_cb;
-    check_equal(ivr_flowmq_gateway_create(&gateway_config, &old_ops,
+    check_equal(ivr_control_gateway_create(&gateway_config, &old_ops,
                                           &old_gateway), IVR_OK);
-    check_equal(ivr_flowmq_gateway_start(old_gateway), IVR_OK);
+    check_equal(ivr_control_gateway_start(old_gateway), IVR_OK);
     ivr_thread_sleep_ms(800);
     g_reply_ready = 0;
-    check_equal(ivr_flowmq_gateway_send_worker_sync(old_gateway, "route-a"),
+    check_equal(ivr_control_gateway_send_worker_sync(old_gateway, "route-a"),
                 IVR_OK);
     check_true(wait_reply(8000));
 
@@ -752,22 +752,22 @@ void test_old_sync_route_is_rejected_after_same_identity_reconnect(void) {
     snprintf(dispatch.call_id, sizeof(dispatch.call_id), "call-route");
     dispatch.call_generation = 1;
     snprintf(dispatch.message_id, sizeof(dispatch.message_id), "route-block");
-    check_equal(ivr_flowmq_gateway_send_dispatch_result(
+    check_equal(ivr_control_gateway_send_dispatch_result(
                     old_gateway, &dispatch, IVR_OK, "", ""), IVR_OK);
     check_true(wait_atomic_count(&g_result_handler_entered, 1, 4000));
-    check_equal(ivr_flowmq_gateway_send_worker_sync(old_gateway,
+    check_equal(ivr_control_gateway_send_worker_sync(old_gateway,
                                                     "route-a-delayed"),
                 IVR_OK);
     ivr_thread_sleep_ms(100);
-    ivr_flowmq_gateway_destroy(old_gateway);
+    ivr_control_gateway_destroy(old_gateway);
     old_gateway = NULL;
 
     g_reply_ready = 0;
-    check_equal(ivr_flowmq_gateway_create(&gateway_config, &new_ops,
+    check_equal(ivr_control_gateway_create(&gateway_config, &new_ops,
                                           &new_gateway), IVR_OK);
-    check_equal(ivr_flowmq_gateway_start(new_gateway), IVR_OK);
+    check_equal(ivr_control_gateway_start(new_gateway), IVR_OK);
     ivr_thread_sleep_ms(800);
-    check_equal(ivr_flowmq_gateway_send_worker_sync(new_gateway, "route-b"),
+    check_equal(ivr_control_gateway_send_worker_sync(new_gateway, "route-b"),
                 IVR_OK);
     atomic_store(&g_result_handler_release, 1);
     check_true(wait_reply(8000));
@@ -775,17 +775,17 @@ void test_old_sync_route_is_rejected_after_same_identity_reconnect(void) {
     ivr_room_bridge_get_stats(bridge, &stats);
     check_true(stats.auth_rejects >= 1u);
 
-    ivr_flowmq_gateway_destroy(new_gateway);
+    ivr_control_gateway_destroy(new_gateway);
     ivr_room_bridge_destroy(bridge);
 }
 
 void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
     ivr_room_bridge_t *bridge = NULL;
-    ivr_flowmq_gateway_t *gateway = NULL;
+    ivr_control_gateway_t *gateway = NULL;
     ivr_command_gateway_ops_t unused_ops;
     ivr_room_command_handler_t handler;
     ivr_room_bridge_config_t bridge_config;
-    ivr_flowmq_gateway_config_t gateway_config;
+    ivr_control_gateway_config_t gateway_config;
     memset(&unused_ops, 0, sizeof(unused_ops));
     memset(&handler, 0, sizeof(handler));
     memset(&bridge_config, 0, sizeof(bridge_config));
@@ -810,12 +810,12 @@ void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
     gateway_config.port = TEST_PORT + 2;
     gateway_config.timeout_ms = 5000;
     gateway_config.on_reply = on_reply_cb;
-    check_equal(ivr_flowmq_gateway_create(
+    check_equal(ivr_control_gateway_create(
                                   &gateway_config, &unused_ops, &gateway), IVR_OK);
-    check_equal(ivr_flowmq_gateway_start(gateway), IVR_OK);
+    check_equal(ivr_control_gateway_start(gateway), IVR_OK);
     ivr_thread_sleep_ms(800);
     g_reply_ready = 0;
-    check_equal(ivr_flowmq_gateway_send_worker_sync(gateway, "overflow-sync"), IVR_OK);
+    check_equal(ivr_control_gateway_send_worker_sync(gateway, "overflow-sync"), IVR_OK);
     check_true(wait_reply(8000));
 
     ivr_call_dispatch_t dispatch;
@@ -827,7 +827,7 @@ void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
     snprintf(dispatch.call_id, sizeof(dispatch.call_id), "call-overflow");
     dispatch.call_generation = 1;
     snprintf(dispatch.message_id, sizeof(dispatch.message_id), "result-0");
-    check_equal(ivr_flowmq_gateway_send_dispatch_result(
+    check_equal(ivr_control_gateway_send_dispatch_result(
                                   gateway, &dispatch, IVR_OK, "", ""), IVR_OK);
     for (int i = 0; i < 400 && !atomic_load(&g_result_handler_entered); i++) {
         ivr_thread_sleep_ms(5);
@@ -837,7 +837,7 @@ void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
     for (int i = 1; i <= 32; i++) {
         snprintf(dispatch.message_id, sizeof(dispatch.message_id),
                  "result-%d", i);
-        if (ivr_flowmq_gateway_send_dispatch_result(
+        if (ivr_control_gateway_send_dispatch_result(
                 gateway, &dispatch, IVR_OK, "", "") != IVR_OK) {
             send_failures++;
         }
@@ -853,7 +853,7 @@ void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
     }
     atomic_store(&g_result_handler_release, 1);
     ivr_thread_sleep_ms(100);
-    ivr_flowmq_gateway_destroy(gateway);
+    ivr_control_gateway_destroy(gateway);
     ivr_room_bridge_destroy(bridge);
 
     check_true(atomic_load(&g_result_handler_entered));

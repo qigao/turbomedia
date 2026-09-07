@@ -7,7 +7,7 @@
 
 #include "dash-mpd.h"
 #include "dash-proto.h"
-#include "http_client.h"
+#include "chttp_upload.h"
 #include "mpeg4-avc.h"
 #include "mpeg4-hevc.h"
 #include "mpeg4-vvc.h"
@@ -60,7 +60,9 @@ typedef struct {
     uint8_t *video_sample;
     size_t video_sample_capacity;
 
-    http_client_t *http_client;
+    chttp_client *http_client;
+    const chttp_tls_profile *http_tls_profile;
+    uint32_t http_timeout_ms;
     turbo_streamer_event_cb event_callback;
     void *event_user_data;
     turbo_streamer_stats_t stats;
@@ -92,7 +94,6 @@ static int dash_write_file(const dash_streamer_ctx_t *ctx, const char *name,
 
 static int dash_upload_file(const dash_streamer_ctx_t *ctx, const char *name,
                             const char *path) {
-    http_response_t *response;
     tstr url;
     int result;
 
@@ -101,16 +102,11 @@ static int dash_upload_file(const dash_streamer_ctx_t *ctx, const char *name,
 
     url = dash_make_url(ctx, name);
     if (!url) return -ENOMEM;
-    response = http_upload_file_stream(ctx->http_client, url, path, NULL, NULL);
+    result = turbo_streamer_chttp_post_file(
+        ctx->http_client, ctx->http_tls_profile, url, path,
+        ctx->http_timeout_ms);
     tstr_free(url);
-    if (!response) return -EIO;
-
-    result = response->error_code == HTTP_ERROR_NONE && response->status_code >= 200 &&
-                     response->status_code < 300
-                 ? 0
-                 : -EIO;
-    http_response_free(response);
-    return result;
+    return result == 0 ? 0 : -EIO;
 }
 
 static int dash_render_manifest(dash_streamer_ctx_t *ctx, char **manifest,
@@ -346,7 +342,11 @@ static void *dash_streamer_create(const turbo_streamer_config_t *config) {
     ctx->audio_track = -1;
     ctx->last_pts_ms = -1;
     ctx->last_dts_ms = -1;
-    ctx->http_client = (http_client_t *)config->http_client;
+    ctx->http_client = config->http_client;
+    ctx->http_tls_profile = config->http_tls_profile;
+    ctx->http_timeout_ms = config->timeout_ms > 0
+                               ? (uint32_t)config->timeout_ms
+                               : 0u;
     ctx->stats.uptime_ms = (int64_t)time(NULL) * 1000;
     if (!ctx->output_dir || (config->base_url && !ctx->base_url)) {
         dash_streamer_destroy_impl(ctx);

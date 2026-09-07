@@ -11,7 +11,7 @@
 #include "ice_integration.h"
 #include "turbo_sdp.h"
 #include "turbo_media_engine.h"
-#include <CoroNet/turbo_coro_context.h>
+#include <salts_thread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +46,6 @@ static int g_receive_mode = 0;
 
 static turbo_dc_context_t *g_dc_ctx = NULL;
 static turbo_dc_peer_t *g_peer = NULL;
-static turbo_loop_t *g_loop = NULL;
 static ice_integration_ctx_t *g_ice = NULL;
 static turbo_media_context_t *g_media = NULL;
 static turbo_media_track_t *g_audio_track = NULL;
@@ -728,14 +727,8 @@ int main(int argc, char **argv) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    printf("=== TurboNet Browser Media Interop (Native A/V %s) ===\n\n",
+    printf("=== Salts Browser Media Interop (Native A/V %s) ===\n\n",
            g_receive_mode ? "Receiver" : "Sender");
-
-    g_loop = turbo_loop_create();
-    if (!g_loop) {
-        fprintf(stderr, "Failed to create event loop\n");
-        return 1;
-    }
 
     {
         turbo_dc_config_t dc_config = {
@@ -747,7 +740,6 @@ int main(int argc, char **argv) {
     }
     if (!g_dc_ctx) {
         fprintf(stderr, "Failed to create DataChannel context\n");
-        turbo_loop_destroy(g_loop);
         return 1;
     }
 
@@ -755,7 +747,6 @@ int main(int argc, char **argv) {
     if (!g_peer) {
         fprintf(stderr, "Failed to create peer\n");
         turbo_dc_context_destroy(g_dc_ctx);
-        turbo_loop_destroy(g_loop);
         return 1;
     }
 
@@ -763,14 +754,13 @@ int main(int argc, char **argv) {
     turbo_dc_peer_set_dtls_role(g_peer, 0);
 
     g_ice = ice_integration_create(
-        g_peer, g_loop,
+        g_peer, NULL,
         use_stun ? stun_servers : NULL, use_stun ? 2 : 0,
         NULL, NULL, NULL, 0);
     if (!g_ice) {
         fprintf(stderr, "Failed to create ICE integration\n");
         turbo_dc_peer_destroy(g_peer);
         turbo_dc_context_destroy(g_dc_ctx);
-        turbo_loop_destroy(g_loop);
         return 1;
     }
 
@@ -783,7 +773,6 @@ int main(int argc, char **argv) {
         ice_integration_destroy(g_ice);
         turbo_dc_peer_destroy(g_peer);
         turbo_dc_context_destroy(g_dc_ctx);
-        turbo_loop_destroy(g_loop);
         return 1;
     }
 
@@ -798,8 +787,7 @@ int main(int argc, char **argv) {
             ice_integration_destroy(g_ice);
             turbo_dc_peer_destroy(g_peer);
             turbo_dc_context_destroy(g_dc_ctx);
-            turbo_loop_destroy(g_loop);
-            return 1;
+                return 1;
         }
     }
 
@@ -811,13 +799,12 @@ int main(int argc, char **argv) {
         ice_integration_destroy(g_ice);
         turbo_dc_peer_destroy(g_peer);
         turbo_dc_context_destroy(g_dc_ctx);
-        turbo_loop_destroy(g_loop);
         return 1;
     }
 
     printf("[ICE] Waiting for candidate gathering to complete...\n");
     while (g_running && !ice_integration_is_gathering_complete(g_ice)) {
-        turbo_loop_poll(g_loop, 50, 1);
+        salts_sleep_ms(50u);
         ice_integration_poll(g_ice);
     }
 
@@ -840,7 +827,6 @@ int main(int argc, char **argv) {
         ice_integration_destroy(g_ice);
         turbo_dc_peer_destroy(g_peer);
         turbo_dc_context_destroy(g_dc_ctx);
-        turbo_loop_destroy(g_loop);
         return 1;
     }
 
@@ -865,8 +851,7 @@ int main(int argc, char **argv) {
             ice_integration_destroy(g_ice);
             turbo_dc_peer_destroy(g_peer);
             turbo_dc_context_destroy(g_dc_ctx);
-            turbo_loop_destroy(g_loop);
-            return 1;
+                return 1;
         }
         turbo_media_track_set_payload_type(g_audio_track, (uint8_t)remote_offer.audio_codec->payload_type);
         if (g_receive_mode) {
@@ -899,8 +884,7 @@ int main(int argc, char **argv) {
             ice_integration_destroy(g_ice);
             turbo_dc_peer_destroy(g_peer);
             turbo_dc_context_destroy(g_dc_ctx);
-            turbo_loop_destroy(g_loop);
-            return 1;
+                return 1;
         }
         turbo_media_track_set_payload_type(g_video_track, (uint8_t)remote_offer.video_codec->payload_type);
         if (g_receive_mode) {
@@ -918,7 +902,6 @@ int main(int argc, char **argv) {
         ice_integration_destroy(g_ice);
         turbo_dc_peer_destroy(g_peer);
         turbo_dc_context_destroy(g_dc_ctx);
-        turbo_loop_destroy(g_loop);
         return 1;
     }
 
@@ -928,7 +911,7 @@ int main(int argc, char **argv) {
     while (g_running) {
         uint64_t now_ms = salts_monotonic_ms();
 
-        turbo_loop_poll(g_loop, 10, 1);
+        salts_sleep_ms(10u);
         ice_integration_poll(g_ice);
         try_start_media();
         if (g_media) {
@@ -1005,6 +988,5 @@ int main(int argc, char **argv) {
     ice_integration_destroy(g_ice);
     turbo_dc_peer_destroy(g_peer);
     turbo_dc_context_destroy(g_dc_ctx);
-    turbo_loop_destroy(g_loop);
     return 0;
 }

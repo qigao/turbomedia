@@ -303,7 +303,7 @@ void test_max_peers_is_enforced_per_room(void) {
   destroy_test_server(&server);
 }
 
-void test_management_posts_report_context_rejection(void) {
+void test_management_operations_enqueue_without_external_event_loop(void) {
   webrtc_signaling_server_t server;
   webrtc_peer_t alice;
 
@@ -312,9 +312,10 @@ void test_management_posts_report_context_rejection(void) {
   join_test_peer(&server, &alice, "room-a");
   free_outbox_locked(&alice);
 
-  check_equal((int)(webrtc_signaling_broadcast(&server, "room-a", NULL, "message")), (int)(-1));
-  check_equal((int)(webrtc_signaling_kick_peer(&server, "room-a", "alice", "reason")), (int)(-1));
-  check_equal((size_t)(alice.outbox_message_count), (size_t)(0));
+  check_equal((int)(webrtc_signaling_broadcast(&server, "room-a", NULL, "message")), (int)(1));
+  check_equal((int)(webrtc_signaling_kick_peer(&server, "room-a", "alice", "reason")), (int)(0));
+  check_equal((size_t)(alice.outbox_message_count), (size_t)(2));
+  check_true(alice.closing);
 
   destroy_test_peer(&server, &alice);
   destroy_test_server(&server);
@@ -579,9 +580,9 @@ void test_outbox_limits_close_slow_consumers(void) {
   server.config.max_outbox_bytes = 1024;
   count_limited.server = &server;
 
-  check_equal((int)(enqueue_message_locked(&count_limited, "one")), (int)(0));
-  check_equal((int)(enqueue_message_locked(&count_limited, "two")), (int)(0));
-  check_equal((int)(enqueue_message_locked(&count_limited, "overflow")), (int)(-1));
+  check_equal((int)(send_json_message_locked(&count_limited, "one")), (int)(0));
+  check_equal((int)(send_json_message_locked(&count_limited, "two")), (int)(0));
+  check_equal((int)(send_json_message_locked(&count_limited, "overflow")), (int)(-1));
   check_true(count_limited.closing);
   check_equal((uint64_t)(server.outbox_overflow_rejections), (uint64_t)(1));
   check_equal((size_t)(count_limited.outbox_message_count), (size_t)(2));
@@ -591,8 +592,8 @@ void test_outbox_limits_close_slow_consumers(void) {
   server.config.max_outbox_messages = 10;
   server.config.max_outbox_bytes = 5;
   byte_limited.server = &server;
-  check_equal((int)(enqueue_message_locked(&byte_limited, "1234")), (int)(0));
-  check_equal((int)(enqueue_message_locked(&byte_limited, "56")), (int)(-1));
+  check_equal((int)(send_json_message_locked(&byte_limited, "1234")), (int)(0));
+  check_equal((int)(send_json_message_locked(&byte_limited, "56")), (int)(-1));
   check_true(byte_limited.closing);
   check_equal((uint64_t)(server.outbox_overflow_rejections), (uint64_t)(2));
   check_equal((size_t)(byte_limited.outbox_message_count), (size_t)(1));
@@ -639,36 +640,31 @@ void test_join_deadline_is_fixed_and_idle_timeout_remains_separate(void) {
 }
 
 void test_source_key_ignores_port_and_normalizes_mapped_ipv4(void) {
-  struct sockaddr_in ipv4_a;
-  struct sockaddr_in ipv4_b;
-  struct sockaddr_in6 mapped_ipv4;
+  cnet_stream_peer ipv4_a;
+  cnet_stream_peer ipv4_b;
+  cnet_stream_peer mapped_ipv4;
   signaling_source_key_t key_a;
   signaling_source_key_t key_b;
   signaling_source_key_t mapped_key;
-  uint8_t *mapped_bytes;
   const uint8_t address_bytes[4] = {192U, 0U, 2U, 1U};
 
   memset(&ipv4_a, 0, sizeof(ipv4_a));
   memset(&ipv4_b, 0, sizeof(ipv4_b));
   memset(&mapped_ipv4, 0, sizeof(mapped_ipv4));
-  ipv4_a.sin_family = AF_INET;
-  ipv4_a.sin_port = 10000;
-  memcpy(&ipv4_a.sin_addr, address_bytes, sizeof(address_bytes));
+  ipv4_a.family = CNET_DATAGRAM_ADDRESS_IPV4;
+  ipv4_a.port = 10000;
+  memcpy(ipv4_a.address, address_bytes, sizeof(address_bytes));
   ipv4_b = ipv4_a;
-  ipv4_b.sin_port = 20000;
-  mapped_ipv4.sin6_family = AF_INET6;
-  mapped_ipv4.sin6_port = 30000;
-  mapped_bytes = (uint8_t *)&mapped_ipv4.sin6_addr;
-  mapped_bytes[10] = 0xffU;
-  mapped_bytes[11] = 0xffU;
-  memcpy(mapped_bytes + 12U, &ipv4_a.sin_addr, 4U);
+  ipv4_b.port = 20000;
+  mapped_ipv4.family = CNET_DATAGRAM_ADDRESS_IPV6;
+  mapped_ipv4.port = 30000;
+  mapped_ipv4.address[10] = 0xffU;
+  mapped_ipv4.address[11] = 0xffU;
+  memcpy(mapped_ipv4.address + 12U, ipv4_a.address, 4U);
 
-  check_equal((int)(source_key_from_sockaddr(
-             (const struct sockaddr_storage *)&ipv4_a, &key_a)), (int)(0));
-  check_equal((int)(source_key_from_sockaddr(
-             (const struct sockaddr_storage *)&ipv4_b, &key_b)), (int)(0));
-  check_equal((int)(source_key_from_sockaddr(
-             (const struct sockaddr_storage *)&mapped_ipv4, &mapped_key)), (int)(0));
+  check_equal((int)(source_key_from_peer(&ipv4_a, &key_a)), (int)(0));
+  check_equal((int)(source_key_from_peer(&ipv4_b, &key_b)), (int)(0));
+  check_equal((int)(source_key_from_peer(&mapped_ipv4, &mapped_key)), (int)(0));
   check_equal((int)(memcmp(&key_a, &key_b, sizeof(key_a))), (int)(0));
   check_equal((int)(memcmp(&key_a, &mapped_key, sizeof(key_a))), (int)(0));
   check_equal((int)(key_a.family), (int)(SIGNALING_SOURCE_FAMILY_IPV4));
@@ -780,7 +776,7 @@ spec("test_signaling_internals") {
   it("test_directed_signaling_rejects_cross_room_messages") { test_directed_signaling_rejects_cross_room_messages(); };
   it("test_directed_signaling_routes_messages_within_room") { test_directed_signaling_routes_messages_within_room(); };
   it("test_max_peers_is_enforced_per_room") { test_max_peers_is_enforced_per_room(); };
-  it("test_management_posts_report_context_rejection") { test_management_posts_report_context_rejection(); };
+  it("test_management_operations_enqueue_without_external_event_loop") { test_management_operations_enqueue_without_external_event_loop(); };
   it("test_peer_join_auth_binds_room_and_identity") { test_peer_join_auth_binds_room_and_identity(); };
   it("test_peer_identity_binding_is_atomic_and_immutable") { test_peer_identity_binding_is_atomic_and_immutable(); };
   it("test_authenticated_join_dispatch_admits_only_valid_first_message") { test_authenticated_join_dispatch_admits_only_valid_first_message(); };

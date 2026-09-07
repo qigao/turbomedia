@@ -1,16 +1,12 @@
 #include "room_service/http_api.h"
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 #include "room_service_media.h"
 #endif
 #include "turbo_media_auth.h"
-#include <iris/async.h>
-#include <iris/iris_app.h>
-#include <iris/server.h>
-#include <iris/router.h>
+#include <chttp/chttp.h>
 #include <platform.h>
-#include <turbo_coro_context.h>
-#include <turbo_coro_socket.h>
 #include <json_parser.h>
+#include <salts/error_codes.h>
 #include <salts_thread.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -22,31 +18,254 @@
 #define ROOM_SERVICE_SCOPE_CONTROL_DANGEROUS "room.control.dangerous"
 
 static room_service_app_server_t *g_room_service_server = NULL;
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 static room_service_http_api_t *g_room_service_http_api = NULL;
 #endif
 
+enum {
+    ROOM_SERVICE_HTTP_CONNECTION_CAPACITY = 64,
+    ROOM_SERVICE_HTTP_COMMAND_CAPACITY = 128,
+    ROOM_SERVICE_HTTP_REQUEST_CAPACITY = 128,
+    ROOM_SERVICE_HTTP_COMPLETION_CAPACITY = 32,
+    ROOM_SERVICE_HTTP_EVENT_CAPACITY = 128,
+    ROOM_SERVICE_HTTP_ROUTE_CAPACITY = 64,
+    ROOM_SERVICE_HTTP_MAX_ROUTE_PARAM_COUNT = 3,
+    ROOM_SERVICE_HTTP_MAX_ROUTE_PARAM_BYTES = 4096,
+    ROOM_SERVICE_HTTP_MAX_QUERY_PARAM_COUNT = 32,
+    ROOM_SERVICE_HTTP_MAX_QUERY_BYTES = 16 * 1024,
+    ROOM_SERVICE_HTTP_MAX_TARGET_BYTES = 16 * 1024,
+    ROOM_SERVICE_HTTP_MAX_HEADER_COUNT = 64,
+    ROOM_SERVICE_HTTP_MAX_HEADER_BYTES = 32 * 1024,
+    ROOM_SERVICE_HTTP_MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024,
+    ROOM_SERVICE_HTTP_MAX_RESPONSE_BODY_BYTES = 4 * 1024 * 1024,
+    ROOM_SERVICE_HTTP_MAX_SEND_BYTES =
+        ROOM_SERVICE_HTTP_MAX_RESPONSE_BODY_BYTES + 64 * 1024,
+    ROOM_SERVICE_HTTP_RECEIVE_BUFFER_BYTES = 32 * 1024,
+    ROOM_SERVICE_HTTP_TLS_IO_BUFFER_BYTES = 256 * 1024,
+    ROOM_SERVICE_HTTP_BUFFER_CAPACITY_BYTES = 32 * 1024 * 1024,
+    ROOM_SERVICE_HTTP_TIMEOUT_MS = 5000,
+    ROOM_SERVICE_HTTP_POLL_SLICE_MS = 10
+};
+
 struct room_service_http_api_s {
-    iris_app_t *app;
     room_service_app_server_t *server;
-    salts_thread_t thread;
-    int thread_started;
     salts_mutex_t lifecycle_mutex;
-    salts_cond_t lifecycle_cond;
-    coro_context_t *ctx;
-    coro_socket_t *listener;
+    chttp_server http;
+    int http_initialized;
     int state;
-    const char *host;
-    int port;
 };
 
 typedef enum room_service_http_state_e {
     ROOM_SERVICE_HTTP_STOPPED = 0,
     ROOM_SERVICE_HTTP_STARTING,
     ROOM_SERVICE_HTTP_RUNNING,
-    ROOM_SERVICE_HTTP_STOPPING,
-    ROOM_SERVICE_HTTP_FAILED
+    ROOM_SERVICE_HTTP_STOPPING
 } room_service_http_state_t;
+
+typedef struct room_service_http_query_param_s {
+    const char *name;
+    const char *value;
+} room_service_http_query_param_t;
+
+typedef struct Req {
+    const chttp_server_request_view *request;
+    const char *path;
+    const void *body;
+    size_t body_len;
+    room_service_http_query_param_t
+        query_params[ROOM_SERVICE_HTTP_MAX_QUERY_PARAM_COUNT];
+    size_t query_param_count;
+    char query_storage[ROOM_SERVICE_HTTP_MAX_QUERY_BYTES];
+} Req;
+
+typedef struct Res {
+    room_service_http_api_t *api;
+    chttp_server_response *response;
+    int status;
+} Res;
+
+static const char *get_headers(const Req *req, const char *name) {
+    return req && req->request
+               ? chttp_server_request_header(req->request, name)
+               : NULL;
+}
+
+static const char *get_params(const Req *req, const char *name) {
+    return req && req->request
+               ? chttp_server_request_param(req->request, name)
+               : NULL;
+}
+
+static int room_service_http_hex_digit(char value) {
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'a' && value <= 'f') {
+        return value - 'a' + 10;
+    }
+    if (value >= 'A' && value <= 'F') {
+        return value - 'A' + 10;
+    }
+    return -1;
+}
+
+static int room_service_http_decode_query_component(char *value) {
+    char *read_cursor = value;
+    char *write_cursor = value;
+
+    if (!value) {
+        return -1;
+    }
+    while (*read_cursor) {
+        if (*read_cursor == '%') {
+            int high;
+            int low;
+            if (!read_cursor[1] || !read_cursor[2]) {
+                return -1;
+            }
+            high = room_service_http_hex_digit(read_cursor[1]);
+            low = room_service_http_hex_digit(read_cursor[2]);
+            if (high < 0 || low < 0 || (high == 0 && low == 0)) {
+                return -1;
+            }
+            *write_cursor++ = (char)((high << 4) | low);
+            read_cursor += 3;
+        } else {
+            *write_cursor++ = *read_cursor == '+' ? ' ' : *read_cursor;
+            ++read_cursor;
+        }
+    }
+    *write_cursor = '\0';
+    return 0;
+}
+
+static int room_service_http_parse_query(Req *req) {
+    const char *query;
+    const char *fragment;
+    size_t query_size;
+    char *cursor;
+
+    if (!req || !req->request || !req->request->target) {
+        return -1;
+    }
+    query = strchr(req->request->target, '?');
+    if (!query) {
+        return 0;
+    }
+    ++query;
+    fragment = strchr(query, '#');
+    query_size = fragment ? (size_t)(fragment - query) : strlen(query);
+    if (query_size >= sizeof(req->query_storage)) {
+        return -1;
+    }
+    memcpy(req->query_storage, query, query_size);
+    req->query_storage[query_size] = '\0';
+    cursor = req->query_storage;
+    while (*cursor) {
+        char *segment = cursor;
+        char *separator = strchr(segment, '&');
+        char *equals;
+        room_service_http_query_param_t *param;
+
+        if (req->query_param_count >=
+            ROOM_SERVICE_HTTP_MAX_QUERY_PARAM_COUNT) {
+            return -1;
+        }
+        if (separator) {
+            *separator = '\0';
+            cursor = separator + 1;
+        } else {
+            cursor += strlen(cursor);
+        }
+        equals = strchr(segment, '=');
+        if (equals) {
+            *equals = '\0';
+        }
+        if (!segment[0]) {
+            return -1;
+        }
+        param = &req->query_params[req->query_param_count];
+        param->name = segment;
+        param->value = equals ? equals + 1 : "";
+        if (room_service_http_decode_query_component((char *)param->name) != 0 ||
+            (equals && room_service_http_decode_query_component(
+                           (char *)param->value) != 0)) {
+            return -1;
+        }
+        ++req->query_param_count;
+    }
+    return 0;
+}
+
+static const char *get_query(const Req *req, const char *name) {
+    size_t index;
+
+    if (!req || !name) {
+        return NULL;
+    }
+    for (index = 0u; index < req->query_param_count; ++index) {
+        if (strcmp(req->query_params[index].name, name) == 0) {
+            return req->query_params[index].value;
+        }
+    }
+    return NULL;
+}
+
+static int room_service_http_add_cors_headers(Res *res) {
+    int status;
+
+    if (!res || !res->response) {
+        return SALTS_EINVAL;
+    }
+    status = chttp_server_response_set_header(
+        res->response, "Access-Control-Allow-Origin", "*");
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            res->response, "Access-Control-Allow-Methods",
+            "GET, POST, OPTIONS");
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            res->response, "Access-Control-Allow-Headers",
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
+            "Content-Type, Authorization, Idempotency-Key");
+#else
+            "Content-Type, Authorization");
+#endif
+    }
+    return status;
+}
+
+static void set_header(Res *res, const char *name, const char *value) {
+    if (!res || res->status != SALTS_OK) {
+        return;
+    }
+    res->status = chttp_server_response_set_header(res->response, name,
+                                                    value);
+}
+
+static void room_service_http_reply(Res *res, unsigned int status,
+                                    const char *content_type,
+                                    const void *body, size_t body_size) {
+    if (!res || res->status != SALTS_OK) {
+        return;
+    }
+    res->status = room_service_http_add_cors_headers(res);
+    if (res->status == SALTS_OK) {
+        res->status = chttp_server_reply(res->response, status,
+                                         content_type, body, body_size);
+    }
+}
+
+static void send_json(Res *res, unsigned int status, const char *body) {
+    room_service_http_reply(res, status, "application/json", body,
+                            body ? strlen(body) : 0u);
+}
+
+static void send_text(Res *res, unsigned int status, const char *body) {
+    room_service_http_reply(res, status, "text/plain", body,
+                            body ? strlen(body) : 0u);
+}
 
 typedef enum room_service_command_access_e {
     ROOM_SERVICE_COMMAND_ACCESS_READ = 0,
@@ -1944,7 +2163,7 @@ static void send_error_json(Res *res, int status, const char *code, const char *
     send_json(res, status, json);
 }
 
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 static int iris_media_http_status(iris_media_bridge_status_t status) {
     switch (status) {
         case IRIS_MEDIA_BRIDGE_ACCEPTED:
@@ -2052,8 +2271,8 @@ static void send_iris_media_result(Res *res,
                         "provider response serialization failed");
         return;
     }
-    reply(res, iris_media_http_status(result->status), "application/json",
-          json, json_size);
+    room_service_http_reply(res, iris_media_http_status(result->status),
+                            "application/json", json, json_size);
     json_serialize_free(json);
 }
 
@@ -2163,8 +2382,8 @@ static void send_iris_room_result(Res *res,
                         "provider response serialization failed");
         return;
     }
-    reply(res, iris_room_http_status(result->status), "application/json",
-          json, json_size);
+    room_service_http_reply(res, iris_room_http_status(result->status),
+                            "application/json", json, json_size);
     json_serialize_free(json);
 }
 
@@ -2273,7 +2492,7 @@ static void send_iris_dead_letters(
                         "dead-letter response serialization failed");
         return;
     }
-    reply(res, 200, "application/json", json, json_size);
+    room_service_http_reply(res, 200, "application/json", json, json_size);
     json_serialize_free(json);
 }
 
@@ -2344,7 +2563,7 @@ static void send_iris_archived_events(
                         "archive response serialization failed");
         return;
     }
-    reply(res, 200, "application/json", json, json_size);
+    room_service_http_reply(res, 200, "application/json", json, json_size);
     json_serialize_free(json);
 }
 
@@ -2387,7 +2606,8 @@ static void send_iris_retention_result(
                         "retention response serialization failed");
         return;
     }
-    reply(res, http_status, "application/json", json, json_size);
+    room_service_http_reply(res, http_status, "application/json", json,
+                            json_size);
     json_serialize_free(json);
 }
 
@@ -2430,7 +2650,8 @@ static void send_iris_replay_batch(
                         "dead-letter replay response serialization failed");
         return;
     }
-    reply(res, http_status, "application/json", json, json_size);
+    room_service_http_reply(res, http_status, "application/json", json,
+                            json_size);
     json_serialize_free(json);
 }
 
@@ -5892,7 +6113,7 @@ static void handle_command(Req *req, Res *res) {
         root = NULL;
         return;
     } else if (strcmp(type, "list_iris_dead_letters") == 0) {
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
         int limit = json_get_int(root, "limit", 100);
         iris_event_dead_letter_t *items;
         size_t count = 0u;
@@ -5937,7 +6158,7 @@ static void handle_command(Req *req, Res *res) {
         return;
 #endif
     } else if (strcmp(type, "list_iris_archived_events") == 0) {
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
         int limit = json_get_int(root, "limit", 100);
         iris_event_archive_t *items;
         size_t count = 0u;
@@ -5982,7 +6203,7 @@ static void handle_command(Req *req, Res *res) {
         return;
 #endif
     } else if (strcmp(type, "run_iris_event_retention") == 0) {
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
         iris_event_retention_result_t retention_result;
         ivr_status_t retention_status;
         memset(&retention_result, 0, sizeof(retention_result));
@@ -6010,7 +6231,7 @@ static void handle_command(Req *req, Res *res) {
         return;
 #endif
     } else if (strcmp(type, "replay_iris_dead_letters") == 0) {
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
         int limit = json_get_int(root, "limit", 100);
         iris_event_replay_batch_result_t replay_result;
         ivr_status_t replay_status;
@@ -6054,7 +6275,7 @@ static void handle_command(Req *req, Res *res) {
         return;
 #endif
     } else if (strcmp(type, "replay_iris_event") == 0) {
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
         const char *event_id = json_string_field(root, "event_id");
         ivr_status_t replay_status;
         if (!event_id || !event_id[0]) {
@@ -6147,112 +6368,173 @@ static void handle_command(Req *req, Res *res) {
     root = NULL;
 }
 
-static void room_service_http_mark_running(void *arg1, void *arg2) {
-    room_service_http_api_t *api = (room_service_http_api_t *)arg1;
-    (void)arg2;
+typedef void (*room_service_http_handler_fn)(Req *req, Res *res);
 
-    salts_mutex_lock(&api->lifecycle_mutex);
-    if (api->state == ROOM_SERVICE_HTTP_STARTING) {
-        api->state = ROOM_SERVICE_HTTP_RUNNING;
-        salts_cond_broadcast(&api->lifecycle_cond);
+static int room_service_http_dispatch(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *response, room_service_http_handler_fn handler) {
+    room_service_http_api_t *api = (room_service_http_api_t *)user;
+    Req req = {.request = request,
+               .path = request ? request->path : NULL,
+               .body = request ? request->body : NULL,
+               .body_len = request ? request->body_size : 0u};
+    Res res = {.api = api, .response = response, .status = SALTS_OK};
+
+    if (!api || !request || !response || !handler) {
+        return SALTS_EINVAL;
     }
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    if (room_service_http_parse_query(&req) != 0) {
+        send_error_json(&res, 400, "INVALID_QUERY",
+                        "query parameters exceed limits or are malformed");
+        return res.status;
+    }
+    handler(&req, &res);
+    return res.status;
 }
 
-static void room_service_http_thread(void *arg) {
-    room_service_http_api_t *api = (room_service_http_api_t *)arg;
-    const room_service_app_config_t *config =
-        room_service_app_server_get_config(api->server);
-    coro_context_t *ctx = NULL;
-    coro_socket_t *listener = NULL;
-    int async_initialized = 0;
-
-    ctx = coro_context_create(NULL);
-    if (!ctx) {
-        salts_mutex_lock(&api->lifecycle_mutex);
-        api->state = ROOM_SERVICE_HTTP_FAILED;
-        salts_cond_broadcast(&api->lifecycle_cond);
-        salts_mutex_unlock(&api->lifecycle_mutex);
-        return;
+#define ROOM_SERVICE_HTTP_ROUTE_ADAPTER(name)                               \
+    static int name##_route(void *user,                                     \
+                            const chttp_server_request_view *request,        \
+                            chttp_server_response *response) {               \
+        return room_service_http_dispatch(user, request, response, name);   \
     }
 
-    if (iris_async_init(1) == 0) {
-        async_initialized = 1;
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_health)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_metrics)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_join)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_publish)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_subscribe)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_room)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_room_state)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_call_center_events)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_participant)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_room_diagnostic)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_room_sync_diagnostic)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_participant_bandwidth_diagnostic)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_track)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_subscription)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_get_subscription_diagnostic)
+ROOM_SERVICE_HTTP_ROUTE_ADAPTER(handle_command)
+
+static int handle_options_route(void *user,
+                                const chttp_server_request_view *request,
+                                chttp_server_response *response) {
+    Res res = {.api = (room_service_http_api_t *)user,
+               .response = response,
+               .status = SALTS_OK};
+    (void)request;
+    room_service_http_reply(&res, 204, NULL, NULL, 0u);
+    return res.status;
+}
+
+static native_io_backend_kind room_service_http_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static cnet_client_config room_service_http_network_config(int use_tls) {
+    const cnet_client_config config = {
+        .backend = room_service_http_backend(),
+        .connection_capacity = ROOM_SERVICE_HTTP_CONNECTION_CAPACITY,
+        .command_capacity = ROOM_SERVICE_HTTP_COMMAND_CAPACITY,
+        .request_capacity = ROOM_SERVICE_HTTP_REQUEST_CAPACITY,
+        .completion_batch_capacity = ROOM_SERVICE_HTTP_COMPLETION_CAPACITY,
+        .event_capacity = ROOM_SERVICE_HTTP_EVENT_CAPACITY,
+        .max_send_bytes = ROOM_SERVICE_HTTP_MAX_SEND_BYTES,
+        .receive_buffer_bytes = ROOM_SERVICE_HTTP_RECEIVE_BUFFER_BYTES,
+        .connect_timeout_ms = ROOM_SERVICE_HTTP_TIMEOUT_MS,
+        .read_timeout_ms = ROOM_SERVICE_HTTP_TIMEOUT_MS,
+        .write_timeout_ms = ROOM_SERVICE_HTTP_TIMEOUT_MS,
+        .tls_io_buffer_bytes = use_tls
+                                   ? ROOM_SERVICE_HTTP_TLS_IO_BUFFER_BYTES
+                                   : 0u,
+        .tls_handshake_timeout_ms =
+            use_tls ? ROOM_SERVICE_HTTP_TIMEOUT_MS : 0u};
+    return config;
+}
+
+static chttp_server_config room_service_http_config(
+    const char *host, uint16_t port, const cnet_tls_server_config *tls) {
+    const chttp_server_config config = {
+        .host = host,
+        .port = port,
+        .backlog = ROOM_SERVICE_HTTP_CONNECTION_CAPACITY,
+        .network = room_service_http_network_config(tls != NULL),
+        .route_capacity = ROOM_SERVICE_HTTP_ROUTE_CAPACITY,
+        .max_route_param_count = ROOM_SERVICE_HTTP_MAX_ROUTE_PARAM_COUNT,
+        .max_route_param_bytes = ROOM_SERVICE_HTTP_MAX_ROUTE_PARAM_BYTES,
+        .max_target_bytes = ROOM_SERVICE_HTTP_MAX_TARGET_BYTES,
+        .max_header_count = ROOM_SERVICE_HTTP_MAX_HEADER_COUNT,
+        .max_header_bytes = ROOM_SERVICE_HTTP_MAX_HEADER_BYTES,
+        .max_request_body_bytes = ROOM_SERVICE_HTTP_MAX_REQUEST_BODY_BYTES,
+        .max_response_header_count = ROOM_SERVICE_HTTP_MAX_HEADER_COUNT,
+        .max_response_header_bytes = ROOM_SERVICE_HTTP_MAX_HEADER_BYTES,
+        .max_response_body_bytes = ROOM_SERVICE_HTTP_MAX_RESPONSE_BODY_BYTES,
+        .poll_slice_ms = ROOM_SERVICE_HTTP_POLL_SLICE_MS,
+        .tls = tls,
+        .max_buffered_response_body_bytes =
+            ROOM_SERVICE_HTTP_MAX_RESPONSE_BODY_BYTES,
+        .buffer_capacity_bytes = ROOM_SERVICE_HTTP_BUFFER_CAPACITY_BYTES};
+    return config;
+}
+
+typedef struct room_service_http_route_s {
+    chttp_method method;
+    const char *path;
+    chttp_server_handler_fn handler;
+} room_service_http_route_t;
+
+static int room_service_http_register_routes(room_service_http_api_t *api) {
+    static const room_service_http_route_t routes[] = {
+        {CHTTP_METHOD_GET, "/health", handle_health_route},
+        {CHTTP_METHOD_GET, "/metrics", handle_metrics_route},
+        {CHTTP_METHOD_POST, "/api/v1/join", handle_join_route},
+        {CHTTP_METHOD_POST, "/api/v1/publish", handle_publish_route},
+        {CHTTP_METHOD_POST, "/api/v1/subscribe", handle_subscribe_route},
+        {CHTTP_METHOD_GET, "/api/v1/rooms/:id", handle_get_room_route},
+        {CHTTP_METHOD_GET, "/api/v1/room_state", handle_get_room_state_route},
+        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/state", handle_get_room_state_route},
+        {CHTTP_METHOD_GET, "/api/v1/call_center_events", handle_get_call_center_events_route},
+        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/call_center_events", handle_get_call_center_events_route},
+        {CHTTP_METHOD_GET, "/api/v1/participant", handle_get_participant_route},
+        {CHTTP_METHOD_GET, "/api/v1/room_diagnostic", handle_get_room_diagnostic_route},
+        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/room_diagnostic", handle_get_room_diagnostic_route},
+        {CHTTP_METHOD_GET, "/api/v1/room_sync_diagnostic", handle_get_room_sync_diagnostic_route},
+        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/room_sync_diagnostic", handle_get_room_sync_diagnostic_route},
+        {CHTTP_METHOD_GET, "/api/v1/participant_bandwidth_diagnostic", handle_get_participant_bandwidth_diagnostic_route},
+        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/participant_bandwidth_diagnostic/:participant_id", handle_get_participant_bandwidth_diagnostic_route},
+        {CHTTP_METHOD_GET, "/api/v1/track", handle_get_track_route},
+        {CHTTP_METHOD_GET, "/api/v1/subscription", handle_get_subscription_route},
+        {CHTTP_METHOD_GET, "/api/v1/subscription_diagnostic", handle_get_subscription_diagnostic_route},
+        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_participant_id/:track_id", handle_get_subscription_diagnostic_route},
+        {CHTTP_METHOD_GET, "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_id/:track", handle_get_subscription_diagnostic_route},
+        {CHTTP_METHOD_POST, "/api/v1/commands", handle_command_route}};
+    int status = SALTS_OK;
+    size_t index;
+
+    for (index = 0u;
+         status == SALTS_OK && index < sizeof(routes) / sizeof(routes[0]);
+         ++index) {
+        status = chttp_server_route(&api->http, routes[index].method,
+                                    routes[index].path,
+                                    routes[index].handler, api);
     }
-
-    if (config && config->use_tls) {
-        turbo_tls_server_config_t tls_config;
-
-        memset(&tls_config, 0, sizeof(tls_config));
-        tls_config.size = sizeof(tls_config);
-        tls_config.cert_file = config->tls_cert_file;
-        tls_config.key_file = config->tls_key_file;
-        tls_config.client_auth = TURBO_TLS_CLIENT_AUTH_NONE;
-        listener = iris_server_start_tls_on(
-            api->app, ctx, api->host, (unsigned short)api->port,
-            &tls_config);
-    } else {
-        listener = iris_server_start_on(
-            api->app, ctx, api->host, (unsigned short)api->port);
+    for (index = 0u;
+         status == SALTS_OK && index < sizeof(routes) / sizeof(routes[0]);
+         ++index) {
+        status = chttp_server_options(&api->http, routes[index].path,
+                                      handle_options_route, api);
     }
-    if (!listener) {
-        coro_context_destroy(ctx);
-        if (async_initialized) {
-            iris_async_shutdown();
-        }
-        salts_mutex_lock(&api->lifecycle_mutex);
-        api->state = ROOM_SERVICE_HTTP_FAILED;
-        salts_cond_broadcast(&api->lifecycle_cond);
-        salts_mutex_unlock(&api->lifecycle_mutex);
-        return;
-    }
-
-    coro_context_set_persistent(ctx, 1);
-    salts_mutex_lock(&api->lifecycle_mutex);
-    api->ctx = ctx;
-    api->listener = listener;
-    salts_mutex_unlock(&api->lifecycle_mutex);
-
-    if (coro_post(ctx, room_service_http_mark_running, api, NULL) != 0) {
-        salts_mutex_lock(&api->lifecycle_mutex);
-        api->listener = NULL;
-        api->ctx = NULL;
-        api->state = ROOM_SERVICE_HTTP_FAILED;
-        salts_cond_broadcast(&api->lifecycle_cond);
-        salts_mutex_unlock(&api->lifecycle_mutex);
-        coro_context_set_persistent(ctx, 0);
-        coro_socket_destroy(listener);
-        coro_context_destroy(ctx);
-        if (async_initialized) {
-            iris_async_shutdown();
-        }
-        return;
-    }
-
-    coro_context_run(ctx, TURBO_RUN_DEFAULT);
-
-    salts_mutex_lock(&api->lifecycle_mutex);
-    api->listener = NULL;
-    api->ctx = NULL;
-    api->state = ROOM_SERVICE_HTTP_STOPPING;
-    salts_mutex_unlock(&api->lifecycle_mutex);
-
-    coro_context_set_persistent(ctx, 0);
-    coro_socket_destroy(listener);
-    coro_context_destroy(ctx);
-    if (async_initialized) {
-        iris_async_shutdown();
-    }
-
-    salts_mutex_lock(&api->lifecycle_mutex);
-    api->state = ROOM_SERVICE_HTTP_STOPPED;
-    salts_cond_broadcast(&api->lifecycle_cond);
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    return status;
 }
 
 room_service_http_api_t *room_service_http_api_create(room_service_app_server_t *server) {
     room_service_http_api_t *api;
-    cors_t cors_opts;
 
     if (!server) {
         return NULL;
@@ -6264,128 +6546,90 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
     }
 
     salts_mutex_init(&api->lifecycle_mutex);
-    salts_cond_init(&api->lifecycle_cond);
-    api->app = iris_app_create();
-    if (!api->app) {
-        salts_cond_destroy(&api->lifecycle_cond);
-        salts_mutex_destroy(&api->lifecycle_mutex);
-        free(api);
-        return NULL;
-    }
     api->server = server;
+    api->state = ROOM_SERVICE_HTTP_STOPPED;
 
     g_room_service_server = server;
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     g_room_service_http_api = api;
 #endif
 
-    memset(&cors_opts, 0, sizeof(cors_opts));
-    cors_opts.origin = "*";
-    cors_opts.methods = "GET, POST, OPTIONS";
-    cors_opts.headers = "Content-Type, Authorization";
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
-    cors_opts.headers = "Content-Type, Authorization, Idempotency-Key";
-#endif
-    cors_opts.enabled = 1;
-    iris_app_cors(api->app, &cors_opts);
-
-    iris_app_get(api->app, "/health", handle_health);
-    iris_app_get(api->app, "/metrics", handle_metrics);
-    iris_app_post(api->app, "/api/v1/join", handle_join);
-    iris_app_post(api->app, "/api/v1/publish", handle_publish);
-    iris_app_post(api->app, "/api/v1/subscribe", handle_subscribe);
-    iris_app_get(api->app, "/api/v1/rooms/:id", handle_get_room);
-    iris_app_get(api->app, "/api/v1/room_state", handle_get_room_state);
-    iris_app_get(api->app, "/api/v1/rooms/:id/state", handle_get_room_state);
-    iris_app_get(api->app, "/api/v1/call_center_events", handle_get_call_center_events);
-    iris_app_get(api->app, "/api/v1/rooms/:id/call_center_events",
-                 handle_get_call_center_events);
-    iris_app_get(api->app, "/api/v1/participant", handle_get_participant);
-    iris_app_get(api->app, "/api/v1/room_diagnostic", handle_get_room_diagnostic);
-    iris_app_get(api->app, "/api/v1/rooms/:id/room_diagnostic",
-                 handle_get_room_diagnostic);
-    iris_app_get(api->app, "/api/v1/room_sync_diagnostic",
-                 handle_get_room_sync_diagnostic);
-    iris_app_get(api->app, "/api/v1/rooms/:id/room_sync_diagnostic",
-                 handle_get_room_sync_diagnostic);
-    iris_app_get(api->app, "/api/v1/participant_bandwidth_diagnostic",
-                 handle_get_participant_bandwidth_diagnostic);
-    iris_app_get(api->app,
-                 "/api/v1/rooms/:id/participant_bandwidth_diagnostic/:participant_id",
-                 handle_get_participant_bandwidth_diagnostic);
-    iris_app_get(api->app, "/api/v1/track", handle_get_track);
-    iris_app_get(api->app, "/api/v1/subscription", handle_get_subscription);
-    iris_app_get(api->app, "/api/v1/subscription_diagnostic",
-                 handle_get_subscription_diagnostic);
-    iris_app_get(api->app,
-                 "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_participant_id/:track_id",
-                 handle_get_subscription_diagnostic);
-    iris_app_get(api->app,
-                 "/api/v1/rooms/:id/subscription_diagnostic/:subscriber_id/:track",
-                 handle_get_subscription_diagnostic);
-    iris_app_post(api->app, "/api/v1/commands", handle_command);
     return api;
 }
 
 int room_service_http_api_start(room_service_http_api_t *api, const char *host, int port) {
+    const room_service_app_config_t *app_config;
+    cnet_tls_server_config tls;
+    chttp_server_config config;
+    const char *stage = "initialize";
+    int status;
+
     if (!api || !host || host[0] == '\0' || port <= 0 || port > UINT16_MAX) {
         return -1;
     }
 
     salts_mutex_lock(&api->lifecycle_mutex);
-    if (api->state != ROOM_SERVICE_HTTP_STOPPED || api->thread_started) {
+    if (api->state != ROOM_SERVICE_HTTP_STOPPED || api->http_initialized) {
         salts_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
-    api->host = host;
-    api->port = port;
     api->state = ROOM_SERVICE_HTTP_STARTING;
-    if (salts_thread_create(&api->thread, room_service_http_thread, api) != 0) {
+    app_config = room_service_app_server_get_config(api->server);
+    memset(&tls, 0, sizeof(tls));
+    if (app_config && app_config->use_tls) {
+        tls.size = sizeof(tls);
+        tls.cert_file = app_config->tls_cert_file;
+        tls.key_file = app_config->tls_key_file;
+        tls.client_auth = CNET_TLS_CLIENT_AUTH_NONE;
+    }
+    config = room_service_http_config(
+        host, (uint16_t)port,
+        app_config && app_config->use_tls ? &tls : NULL);
+    status = chttp_server_init(&api->http, &config);
+    if (status == SALTS_OK) {
+        api->http_initialized = 1;
+        stage = "register routes";
+        status = room_service_http_register_routes(api);
+    }
+    if (status == SALTS_OK) {
+        stage = "start listener";
+        status = chttp_server_start(&api->http);
+    }
+    if (status != SALTS_OK) {
+        fprintf(stderr,
+                "RoomService HTTP failed to %s on %s:%d (status=%d)\n",
+                stage, host, port, status);
+        if (api->http_initialized) {
+            (void)chttp_server_destroy(&api->http);
+        }
+        api->http_initialized = 0;
         api->state = ROOM_SERVICE_HTTP_STOPPED;
         salts_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
-
-    api->thread_started = 1;
-    while (api->state == ROOM_SERVICE_HTTP_STARTING) {
-        salts_cond_wait(&api->lifecycle_cond, &api->lifecycle_mutex);
-    }
-    if (api->state == ROOM_SERVICE_HTTP_RUNNING) {
-        salts_mutex_unlock(&api->lifecycle_mutex);
-        return 0;
-    }
+    api->state = ROOM_SERVICE_HTTP_RUNNING;
     salts_mutex_unlock(&api->lifecycle_mutex);
-
-    salts_thread_join(&api->thread);
-    salts_mutex_lock(&api->lifecycle_mutex);
-    api->thread_started = 0;
-    api->state = ROOM_SERVICE_HTTP_STOPPED;
-    salts_mutex_unlock(&api->lifecycle_mutex);
-    return -1;
+    return 0;
 }
 
 void room_service_http_api_stop(room_service_http_api_t *api) {
-    int should_join;
-
     if (!api) {
         return;
     }
 
     salts_mutex_lock(&api->lifecycle_mutex);
-    if (api->state == ROOM_SERVICE_HTTP_RUNNING && api->ctx) {
-        api->state = ROOM_SERVICE_HTTP_STOPPING;
-        coro_context_stop(api->ctx);
-    }
-    should_join = api->thread_started;
-    salts_mutex_unlock(&api->lifecycle_mutex);
-
-    if (should_join) {
-        salts_thread_join(&api->thread);
-        salts_mutex_lock(&api->lifecycle_mutex);
-        api->thread_started = 0;
-        api->state = ROOM_SERVICE_HTTP_STOPPED;
+    if (api->state == ROOM_SERVICE_HTTP_STOPPED) {
         salts_mutex_unlock(&api->lifecycle_mutex);
+        return;
     }
+    api->state = ROOM_SERVICE_HTTP_STOPPING;
+    if (api->http_initialized) {
+        (void)chttp_server_stop(&api->http, 0u);
+        (void)chttp_server_destroy(&api->http);
+    }
+    api->http_initialized = 0;
+    api->state = ROOM_SERVICE_HTTP_STOPPED;
+    salts_mutex_unlock(&api->lifecycle_mutex);
 }
 
 void room_service_http_api_destroy(room_service_http_api_t *api) {
@@ -6394,16 +6638,14 @@ void room_service_http_api_destroy(room_service_http_api_t *api) {
     }
 
     room_service_http_api_stop(api);
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     if (g_room_service_http_api == api) {
         g_room_service_http_api = NULL;
-        g_room_service_server = NULL;
     }
 #endif
-    if (api->app) {
-        iris_app_destroy(api->app);
+    if (g_room_service_server == api->server) {
+        g_room_service_server = NULL;
     }
-    salts_cond_destroy(&api->lifecycle_cond);
     salts_mutex_destroy(&api->lifecycle_mutex);
     free(api);
 }

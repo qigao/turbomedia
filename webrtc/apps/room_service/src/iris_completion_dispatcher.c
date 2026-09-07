@@ -1,8 +1,9 @@
 #include "iris_completion_dispatcher.h"
 
-#include <turbo_http.h>
+#include <turbo_transport.h>
 #include <json_parser.h>
 #include <salts_thread.h>
+#include <salts/clock.h>
 #include <salts_uuid.h>
 #include <turbo_crypto.h>
 #include <tlog.h>
@@ -53,7 +54,7 @@ struct iris_completion_dispatcher_s {
     salts_cond_t not_empty;
     salts_cond_t drained;
     salts_thread_t thread;
-    turbo_http_t *client;
+    turbo_transport_t *client;
     iris_media_bridge_t *bridge;
     iris_completion_post_fn post;
     void *post_context;
@@ -121,6 +122,39 @@ static char *copy_string(const char *value) {
     copy = (char *)malloc(size + 1u);
     if (copy) memcpy(copy, value, size + 1u);
     return copy;
+}
+
+static char *encode_path_segment(const char *value) {
+    static const char hex[] = "0123456789ABCDEF";
+    const unsigned char *input = (const unsigned char *)value;
+    size_t input_size;
+    size_t output_size = 0u;
+    char *encoded;
+    if (!value) return NULL;
+    input_size = strlen(value);
+    if (input_size > (SIZE_MAX - 1u) / 3u) return NULL;
+    encoded = (char *)malloc(input_size * 3u + 1u);
+    if (!encoded) return NULL;
+    for (size_t index = 0u; index < input_size; ++index) {
+        unsigned char byte = input[index];
+        int unreserved = (byte >= 'A' && byte <= 'Z') ||
+                         (byte >= 'a' && byte <= 'z') ||
+                         (byte >= '0' && byte <= '9') || byte == '-' ||
+                         byte == '.' || byte == '_' || byte == '~';
+        if (byte < 0x20u || byte == 0x7fu) {
+            free(encoded);
+            return NULL;
+        }
+        if (unreserved) {
+            encoded[output_size++] = (char)byte;
+        } else {
+            encoded[output_size++] = '%';
+            encoded[output_size++] = hex[byte >> 4u];
+            encoded[output_size++] = hex[byte & 0x0fu];
+        }
+    }
+    encoded[output_size] = '\0';
+    return encoded;
 }
 
 static int format_rfc3339(uint64_t unix_ms, char *out, size_t capacity) {
@@ -292,12 +326,24 @@ static int default_post(void *context, const char *url,
                         size_t body_size) {
     iris_completion_dispatcher_t *dispatcher =
         (iris_completion_dispatcher_t *)context;
-    const char *headers[] = {"Content-Type: application/json", authorization};
-    http_response_t *response = turbo_http_request_sync(
-        dispatcher->client, HTTP_POST, url, headers, 2, body, body_size);
-    int status = response && response->error_code == HTTP_ERROR_NONE
-                     ? response->status_code : 0;
-    if (response) http_response_free(response);
+    const char *headers[] = {"Content-Type", "application/json"};
+    size_t base_url_size = strlen(dispatcher->base_url);
+    const char *path;
+    chttp_response *response;
+    int status;
+    (void)authorization;
+    if (!url || strncmp(url, dispatcher->base_url, base_url_size) != 0 ||
+        url[base_url_size] != '/')
+        return 0;
+    path = url + base_url_size;
+    response = turbo_transport_http_request(
+        dispatcher->client, TURBO_HTTP_POST, path,
+        (const uint8_t *)body, body_size, headers, 2);
+    status = response ? (int)response->status_code : 0;
+    if (response) {
+        chttp_response_destroy(response);
+        free(response);
+    }
     return status;
 }
 
@@ -311,10 +357,10 @@ static int build_request(const iris_completion_dispatcher_t *dispatcher,
     const char *session_id = item->kind == IRIS_DISPATCH_COMPLETION
                                  ? item->completion.provider_session_id
                                  : item->event.provider_session_id;
-    session = turbo_url_encode(session_id);
+    session = encode_path_segment(session_id);
     if (!session) return -1;
     if (item->kind == IRIS_DISPATCH_COMPLETION) {
-        command = turbo_url_encode(item->completion.command_id);
+        command = encode_path_segment(item->completion.command_id);
         if (!command) {
             free(session);
             return -1;
@@ -488,8 +534,10 @@ static void dispatcher_thread(void *context) {
 iris_completion_dispatcher_t *iris_completion_dispatcher_create(
     const iris_completion_dispatcher_config_t *config) {
     iris_completion_dispatcher_t *dispatcher;
-    turbo_http_options_t options;
+    turbo_transport_config_t http_config = {0};
+    cnet_tls_client_config tls_config = {0};
     const char *tls_ca_file;
+    const char *tls_ca_path;
     if (!config ||
         ((!config->deliver_completion || !config->deliver_event) &&
          (!config->base_url || !config->provider_token)) ||
@@ -531,42 +579,37 @@ iris_completion_dispatcher_t *iris_completion_dispatcher_create(
     salts_mutex_init(&dispatcher->mutex);
     salts_cond_init(&dispatcher->not_empty);
     salts_cond_init(&dispatcher->drained);
-    if (turbo_http_options_init(&options, sizeof(options)) != SALTS_OK) {
-        salts_cond_destroy(&dispatcher->drained);
-        salts_cond_destroy(&dispatcher->not_empty);
-        salts_mutex_destroy(&dispatcher->mutex);
-        goto fail;
-    }
-    options.transport = TURBO_HTTP_TRANSPORT_AUTO;
-    options.follow_redirects = 0;
-    options.timeout_ms = config->request_timeout_ms;
     if (!config->post && !config->deliver_completion) {
-        if (turbo_http_create_sync(&options, &dispatcher->client) != SALTS_OK) {
+        if (turbo_transport_parse_url(dispatcher->base_url, &http_config) != 0 ||
+            http_config.type != TURBO_TRANSPORT_HTTP) {
+            free((void *)http_config.host);
+            free((void *)http_config.path);
             salts_cond_destroy(&dispatcher->drained);
             salts_cond_destroy(&dispatcher->not_empty);
             salts_mutex_destroy(&dispatcher->mutex);
             goto fail;
         }
-        /* Snapshot the provider trust anchor into the facade.  Relying on a
-         * process-global TLS context makes reconnect behavior depend on which
-         * subsystem initialized TLS first.  Explicit facade configuration is
-         * deep-copied and inherited by every fresh H1/H2 connection. */
-        tls_ca_file = getenv("TURBONET_TLS_CA_FILE");
-        if (strncmp(dispatcher->base_url, "https://", 8u) == 0 &&
-            tls_ca_file && tls_ca_file[0] != '\0') {
-            turbo_tls_client_config_t tls_config;
-            memset(&tls_config, 0, sizeof(tls_config));
-            tls_config.verify_peer = 1;
+        http_config.connect_timeout_ms = config->request_timeout_ms;
+        http_config.read_timeout_ms = config->request_timeout_ms;
+        http_config.write_timeout_ms = config->request_timeout_ms;
+        http_config.user_agent = "TurboMediaIrisDispatcher/1";
+        http_config.auth_token = dispatcher->provider_token;
+        if (http_config.use_tls) {
+            tls_ca_file = getenv("SALTS_TLS_CA_FILE");
+            tls_ca_path = getenv("SALTS_TLS_CA_PATH");
+            tls_config.size = sizeof(tls_config);
             tls_config.ca_file = tls_ca_file;
-            if (turbo_http_set_tls_config(dispatcher->client, &tls_config) !=
-                SALTS_OK) {
-                turbo_http_destroy(dispatcher->client);
-                dispatcher->client = NULL;
-                salts_cond_destroy(&dispatcher->drained);
-                salts_cond_destroy(&dispatcher->not_empty);
-                salts_mutex_destroy(&dispatcher->mutex);
-                goto fail;
-            }
+            tls_config.ca_path = tls_ca_path;
+            http_config.tls = &tls_config;
+        }
+        dispatcher->client = turbo_transport_create(&http_config);
+        free((void *)http_config.host);
+        free((void *)http_config.path);
+        if (!dispatcher->client) {
+            salts_cond_destroy(&dispatcher->drained);
+            salts_cond_destroy(&dispatcher->not_empty);
+            salts_mutex_destroy(&dispatcher->mutex);
+            goto fail;
         }
     }
     return dispatcher;
@@ -678,7 +721,7 @@ int iris_completion_dispatcher_set_event_delivery_observer(
 void iris_completion_dispatcher_destroy(iris_completion_dispatcher_t *dispatcher) {
     if (!dispatcher) return;
     iris_completion_dispatcher_stop(dispatcher);
-    turbo_http_destroy(dispatcher->client);
+    turbo_transport_destroy(dispatcher->client);
     salts_cond_destroy(&dispatcher->drained);
     salts_cond_destroy(&dispatcher->not_empty);
     salts_mutex_destroy(&dispatcher->mutex);
@@ -730,7 +773,7 @@ ivr_status_t iris_completion_dispatcher_on_media_result(
     item.kind = IRIS_DISPATCH_COMPLETION;
     item.settle_media_bridge = 1;
     item.result = *result;
-    item.completed_at_ms = turbo_realtime_ms();
+    item.completed_at_ms = salts_realtime_ms();
     {
         salts_uuid_t uuid;
         if (item.completed_at_ms == 0u ||
@@ -773,7 +816,7 @@ ivr_status_t iris_completion_dispatcher_enqueue_terminal(
     item.kind = IRIS_DISPATCH_COMPLETION;
     item.completion = *completion;
     item.result = *result;
-    item.completed_at_ms = turbo_realtime_ms();
+    item.completed_at_ms = salts_realtime_ms();
     if (item.completed_at_ms == 0u ||
         snprintf(item.completion_event_id,
                  sizeof(item.completion_event_id), "%s", stable_event_id) <= 0 ||

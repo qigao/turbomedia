@@ -1,18 +1,13 @@
 #include "ivr_worker_http.h"
 
-#include "CoroNet.h"
-#include "iris/iris_app.h"
-#include "iris/router.h"
-#include "iris/server.h"
 #include "salts_thread.h"
 
+#include <chttp/chttp.h>
+#include <salts/error_codes.h>
+
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define IVR_WORKER_HTTP_CONTEXT_PATH "/internal/ivr-worker-http"
-#define IVR_WORKER_HTTP_HOST_CAPACITY 46u
 
 enum {
     IVR_WORKER_HTTP_STOPPED = 0,
@@ -22,159 +17,196 @@ enum {
     IVR_WORKER_HTTP_FAILED
 };
 
+enum {
+    IVR_WORKER_HTTP_CONNECTION_CAPACITY = 16,
+    IVR_WORKER_HTTP_COMMAND_CAPACITY = 32,
+    IVR_WORKER_HTTP_REQUEST_CAPACITY = 32,
+    IVR_WORKER_HTTP_COMPLETION_CAPACITY = 16,
+    IVR_WORKER_HTTP_EVENT_CAPACITY = 32,
+    IVR_WORKER_HTTP_BACKLOG = 16,
+    IVR_WORKER_HTTP_ROUTE_CAPACITY = 8,
+    IVR_WORKER_HTTP_MAX_TARGET_BYTES = 4096,
+    IVR_WORKER_HTTP_MAX_HEADER_COUNT = 32,
+    IVR_WORKER_HTTP_MAX_HEADER_BYTES = 16 * 1024,
+    IVR_WORKER_HTTP_MAX_REQUEST_BODY_BYTES = 4096,
+    IVR_WORKER_HTTP_MAX_RESPONSE_BODY_BYTES = 32 * 1024,
+    IVR_WORKER_HTTP_MAX_SEND_BYTES = 48 * 1024,
+    IVR_WORKER_HTTP_RECEIVE_BUFFER_BYTES = 8192,
+    IVR_WORKER_HTTP_BUFFER_CAPACITY_BYTES = 1024 * 1024,
+    IVR_WORKER_HTTP_TIMEOUT_MS = 5000,
+    IVR_WORKER_HTTP_POLL_SLICE_MS = 10
+};
+
 struct ivr_worker_http_s {
-    iris_app_t *app;
     ivr_worker_health_t *health;
     ivr_worker_metrics_t *metrics;
     ivr_worker_http_drain_fn drain_callback;
     void *drain_context;
-    salts_thread_t thread;
-    int thread_started;
     salts_mutex_t lock;
-    salts_cond_t cond;
-    coro_context_t *context;
-    coro_socket_t *listener;
+    chttp_server http;
+    int http_initialized;
     int state;
-    char host[IVR_WORKER_HTTP_HOST_CAPACITY];
-    int port;
 };
 
-static ivr_worker_http_t *http_from_request(Req *request) {
-    return request && request->app
-               ? (ivr_worker_http_t *)iris_app_lookup_rpc_context(
-                     request->app, IVR_WORKER_HTTP_CONTEXT_PATH)
-               : NULL;
+static native_io_backend_kind ivr_worker_http_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
 }
 
-static void handle_live(Req *request, Res *response) {
+static cnet_client_config ivr_worker_http_network_config(void) {
+    const cnet_client_config config = {
+        .backend = ivr_worker_http_backend(),
+        .connection_capacity = IVR_WORKER_HTTP_CONNECTION_CAPACITY,
+        .command_capacity = IVR_WORKER_HTTP_COMMAND_CAPACITY,
+        .request_capacity = IVR_WORKER_HTTP_REQUEST_CAPACITY,
+        .completion_batch_capacity = IVR_WORKER_HTTP_COMPLETION_CAPACITY,
+        .event_capacity = IVR_WORKER_HTTP_EVENT_CAPACITY,
+        .max_send_bytes = IVR_WORKER_HTTP_MAX_SEND_BYTES,
+        .receive_buffer_bytes = IVR_WORKER_HTTP_RECEIVE_BUFFER_BYTES,
+        .connect_timeout_ms = IVR_WORKER_HTTP_TIMEOUT_MS,
+        .read_timeout_ms = IVR_WORKER_HTTP_TIMEOUT_MS,
+        .write_timeout_ms = IVR_WORKER_HTTP_TIMEOUT_MS};
+    return config;
+}
+
+static chttp_server_config ivr_worker_http_config(const char *host,
+                                                   uint16_t port) {
+    const chttp_server_config config = {
+        .host = host,
+        .port = port,
+        .backlog = IVR_WORKER_HTTP_BACKLOG,
+        .network = ivr_worker_http_network_config(),
+        .route_capacity = IVR_WORKER_HTTP_ROUTE_CAPACITY,
+        .max_target_bytes = IVR_WORKER_HTTP_MAX_TARGET_BYTES,
+        .max_header_count = IVR_WORKER_HTTP_MAX_HEADER_COUNT,
+        .max_header_bytes = IVR_WORKER_HTTP_MAX_HEADER_BYTES,
+        .max_request_body_bytes = IVR_WORKER_HTTP_MAX_REQUEST_BODY_BYTES,
+        .max_response_header_count = IVR_WORKER_HTTP_MAX_HEADER_COUNT,
+        .max_response_header_bytes = IVR_WORKER_HTTP_MAX_HEADER_BYTES,
+        .max_response_body_bytes = IVR_WORKER_HTTP_MAX_RESPONSE_BODY_BYTES,
+        .poll_slice_ms = IVR_WORKER_HTTP_POLL_SLICE_MS,
+        .buffer_capacity_bytes = IVR_WORKER_HTTP_BUFFER_CAPACITY_BYTES};
+    return config;
+}
+
+static int ivr_worker_http_reply(chttp_server_response *response,
+                                 unsigned int status,
+                                 const char *content_type,
+                                 const char *body) {
+    return chttp_server_reply(response, status, content_type, body,
+                              body ? strlen(body) : 0u);
+}
+
+static int handle_live(void *user,
+                       const chttp_server_request_view *request,
+                       chttp_server_response *response) {
+    (void)user;
     (void)request;
-    send_json(response, 200, "{\"live\":true}");
+    return ivr_worker_http_reply(response, 200u, "application/json",
+                                 "{\"live\":true}");
 }
 
-static void handle_ready(Req *request, Res *response) {
-    ivr_worker_http_t *server = http_from_request(request);
+static int handle_ready(void *user,
+                        const chttp_server_request_view *request,
+                        chttp_server_response *response) {
+    ivr_worker_http_t *server = (ivr_worker_http_t *)user;
     ivr_worker_health_snapshot_t snapshot;
     char json[1024];
+    (void)request;
     if (!server ||
         ivr_worker_health_snapshot(server->health, &snapshot) != 0 ||
         ivr_worker_health_json(server->health, json, sizeof(json)) < 0) {
-        send_json(response, 500, "{\"ready\":false}");
-        return;
+        return ivr_worker_http_reply(response, 500u, "application/json",
+                                     "{\"ready\":false}");
     }
-    send_json(response, snapshot.ready && !snapshot.draining ? 200 : 503,
-              json);
+    return ivr_worker_http_reply(
+        response, snapshot.ready && !snapshot.draining ? 200u : 503u,
+        "application/json", json);
 }
 
-static void handle_health(Req *request, Res *response) {
-    ivr_worker_http_t *server = http_from_request(request);
+static int handle_health(void *user,
+                         const chttp_server_request_view *request,
+                         chttp_server_response *response) {
+    ivr_worker_http_t *server = (ivr_worker_http_t *)user;
     char json[1024];
+    (void)request;
     if (!server ||
         ivr_worker_health_json(server->health, json, sizeof(json)) < 0) {
-        send_json(response, 500, "{\"ready\":false}");
-        return;
+        return ivr_worker_http_reply(response, 500u, "application/json",
+                                     "{\"ready\":false}");
     }
-    send_json(response, 200, json);
+    return ivr_worker_http_reply(response, 200u, "application/json", json);
 }
 
-static void handle_metrics(Req *request, Res *response) {
-    ivr_worker_http_t *server = http_from_request(request);
+static int handle_metrics(void *user,
+                          const chttp_server_request_view *request,
+                          chttp_server_response *response) {
+    ivr_worker_http_t *server = (ivr_worker_http_t *)user;
     ivr_worker_health_snapshot_t health;
     char text[16384];
     int length;
+    (void)request;
     if (!server || !server->metrics ||
         ivr_worker_health_snapshot(server->health, &health) != 0) {
-        send_text(response, 500, "ivr worker metrics unavailable\n");
-        return;
+        return ivr_worker_http_reply(response, 500u, "text/plain",
+                                     "ivr worker metrics unavailable\n");
     }
     length = ivr_worker_metrics_render(server->metrics, &health, text,
                                        sizeof(text));
     if (length < 0) {
-        send_text(response, 500, "ivr worker metrics too large\n");
-        return;
+        return ivr_worker_http_reply(response, 500u, "text/plain",
+                                     "ivr worker metrics too large\n");
     }
-    send_text(response, 200, text);
+    return chttp_server_reply(response, 200u, "text/plain", text,
+                              (size_t)length);
 }
 
-static void handle_drain(Req *request, Res *response) {
-    ivr_worker_http_t *server = http_from_request(request);
+static int handle_drain(void *user,
+                        const chttp_server_request_view *request,
+                        chttp_server_response *response) {
+    ivr_worker_http_t *server = (ivr_worker_http_t *)user;
     ivr_worker_http_drain_fn callback = NULL;
     void *context = NULL;
+    (void)request;
     if (server) {
         salts_mutex_lock(&server->lock);
         callback = server->drain_callback;
         context = server->drain_context;
         salts_mutex_unlock(&server->lock);
     }
-    if (!callback) {
-        send_json(response, 503, "{\"accepted\":false}");
-        return;
+    if (!callback || callback(context) != 0) {
+        return ivr_worker_http_reply(response, 503u, "application/json",
+                                     "{\"accepted\":false}");
     }
-    if (callback(context) != 0) {
-        send_json(response, 503, "{\"accepted\":false}");
-        return;
-    }
-    send_json(response, 202, "{\"accepted\":true}");
+    return ivr_worker_http_reply(response, 202u, "application/json",
+                                 "{\"accepted\":true}");
 }
 
-static void mark_running(void *arg1, void *arg2) {
-    ivr_worker_http_t *server = (ivr_worker_http_t *)arg1;
-    (void)arg2;
-    salts_mutex_lock(&server->lock);
-    if (server->state == IVR_WORKER_HTTP_STARTING) {
-        server->state = IVR_WORKER_HTTP_RUNNING;
-        salts_cond_broadcast(&server->cond);
+static int ivr_worker_http_register_routes(ivr_worker_http_t *server) {
+    int status = chttp_server_get(&server->http, "/live", handle_live,
+                                  server);
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&server->http, "/ready", handle_ready,
+                                  server);
     }
-    salts_mutex_unlock(&server->lock);
-}
-
-static void http_thread(void *opaque) {
-    ivr_worker_http_t *server = (ivr_worker_http_t *)opaque;
-    coro_context_t *context = coro_context_create(NULL);
-    coro_socket_t *listener = NULL;
-    if (context) {
-        listener = iris_server_start_on(server->app, context, server->host,
-                                        (unsigned short)server->port);
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&server->http, "/health", handle_health,
+                                  server);
     }
-    if (!context || !listener) {
-        if (context) {
-            coro_context_destroy(context);
-        }
-        salts_mutex_lock(&server->lock);
-        server->state = IVR_WORKER_HTTP_FAILED;
-        salts_cond_broadcast(&server->cond);
-        salts_mutex_unlock(&server->lock);
-        return;
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&server->http, "/metrics", handle_metrics,
+                                  server);
     }
-    coro_context_set_persistent(context, 1);
-    salts_mutex_lock(&server->lock);
-    server->context = context;
-    server->listener = listener;
-    salts_mutex_unlock(&server->lock);
-    if (coro_post(context, mark_running, server, NULL) != 0) {
-        salts_mutex_lock(&server->lock);
-        server->context = NULL;
-        server->listener = NULL;
-        server->state = IVR_WORKER_HTTP_FAILED;
-        salts_cond_broadcast(&server->cond);
-        salts_mutex_unlock(&server->lock);
-        coro_context_set_persistent(context, 0);
-        coro_socket_destroy(listener);
-        coro_context_destroy(context);
-        return;
+    if (status == SALTS_OK) {
+        status = chttp_server_post(&server->http, "/drain", handle_drain,
+                                   server);
     }
-    (void)coro_context_run(context, TURBO_RUN_DEFAULT);
-    salts_mutex_lock(&server->lock);
-    server->context = NULL;
-    server->listener = NULL;
-    server->state = IVR_WORKER_HTTP_STOPPING;
-    salts_mutex_unlock(&server->lock);
-    coro_context_set_persistent(context, 0);
-    coro_socket_destroy(listener);
-    coro_context_destroy(context);
-    salts_mutex_lock(&server->lock);
-    server->state = IVR_WORKER_HTTP_STOPPED;
-    salts_cond_broadcast(&server->cond);
-    salts_mutex_unlock(&server->lock);
+    return status;
 }
 
 int ivr_worker_http_create(ivr_worker_health_t *health,
@@ -183,34 +215,14 @@ int ivr_worker_http_create(ivr_worker_health_t *health,
     if (!health || !out_server) {
         return -1;
     }
+    *out_server = NULL;
     server = (ivr_worker_http_t *)calloc(1, sizeof(*server));
     if (!server) {
         return -1;
     }
     salts_mutex_init(&server->lock);
-    salts_cond_init(&server->cond);
-    server->app = iris_app_create();
-    if (!server->app) {
-        salts_cond_destroy(&server->cond);
-        salts_mutex_destroy(&server->lock);
-        free(server);
-        return -1;
-    }
     server->health = health;
     server->state = IVR_WORKER_HTTP_STOPPED;
-    if (iris_app_bind_rpc_context(server->app, IVR_WORKER_HTTP_CONTEXT_PATH,
-                                  server) != 0) {
-        iris_app_destroy(server->app);
-        salts_cond_destroy(&server->cond);
-        salts_mutex_destroy(&server->lock);
-        free(server);
-        return -1;
-    }
-    iris_app_get(server->app, "/live", handle_live);
-    iris_app_get(server->app, "/ready", handle_ready);
-    iris_app_get(server->app, "/health", handle_health);
-    iris_app_get(server->app, "/metrics", handle_metrics);
-    iris_app_post(server->app, "/drain", handle_drain);
     *out_server = server;
     return 0;
 }
@@ -233,7 +245,9 @@ int ivr_worker_http_set_metrics(ivr_worker_http_t *server,
 int ivr_worker_http_set_drain_handler(ivr_worker_http_t *server,
                                       ivr_worker_http_drain_fn callback,
                                       void *context) {
-    if (!server || !callback) return -1;
+    if (!server || !callback) {
+        return -1;
+    }
     salts_mutex_lock(&server->lock);
     if (server->state != IVR_WORKER_HTTP_STOPPED) {
         salts_mutex_unlock(&server->lock);
@@ -247,64 +261,71 @@ int ivr_worker_http_set_drain_handler(ivr_worker_http_t *server,
 
 int ivr_worker_http_start(ivr_worker_http_t *server, const char *host,
                           int port) {
+    chttp_server_config config;
+    int status;
     if (!server || !host ||
         (strcmp(host, "127.0.0.1") != 0 && strcmp(host, "::1") != 0) ||
         port <= 0 || port > UINT16_MAX) {
         return -1;
     }
     salts_mutex_lock(&server->lock);
-    if (server->state != IVR_WORKER_HTTP_STOPPED || server->thread_started) {
+    if (server->state != IVR_WORKER_HTTP_STOPPED ||
+        server->http_initialized) {
         salts_mutex_unlock(&server->lock);
         return -1;
     }
-    if (snprintf(server->host, sizeof(server->host), "%s", host) < 0 ||
-        strlen(server->host) != strlen(host)) {
-        salts_mutex_unlock(&server->lock);
-        return -1;
-    }
-    server->port = port;
     server->state = IVR_WORKER_HTTP_STARTING;
-    if (salts_thread_create(&server->thread, http_thread, server) != 0) {
+    salts_mutex_unlock(&server->lock);
+
+    config = ivr_worker_http_config(host, (uint16_t)port);
+    status = chttp_server_init(&server->http, &config);
+    if (status == SALTS_OK) {
+        salts_mutex_lock(&server->lock);
+        server->http_initialized = 1;
+        salts_mutex_unlock(&server->lock);
+        status = ivr_worker_http_register_routes(server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_start(&server->http);
+    }
+    if (status != SALTS_OK) {
+        (void)chttp_server_destroy(&server->http);
+        salts_mutex_lock(&server->lock);
+        server->http_initialized = 0;
         server->state = IVR_WORKER_HTTP_STOPPED;
         salts_mutex_unlock(&server->lock);
         return -1;
     }
-    server->thread_started = 1;
-    while (server->state == IVR_WORKER_HTTP_STARTING) {
-        salts_cond_wait(&server->cond, &server->lock);
-    }
-    if (server->state == IVR_WORKER_HTTP_RUNNING) {
-        salts_mutex_unlock(&server->lock);
-        return 0;
-    }
-    salts_mutex_unlock(&server->lock);
-    salts_thread_join(&server->thread);
+
     salts_mutex_lock(&server->lock);
-    server->thread_started = 0;
-    server->state = IVR_WORKER_HTTP_STOPPED;
+    server->state = IVR_WORKER_HTTP_RUNNING;
     salts_mutex_unlock(&server->lock);
-    return -1;
+    return 0;
 }
 
 void ivr_worker_http_stop(ivr_worker_http_t *server) {
-    int should_join;
+    int initialized;
     if (!server) {
         return;
     }
     salts_mutex_lock(&server->lock);
-    if (server->state == IVR_WORKER_HTTP_RUNNING && server->context) {
-        server->state = IVR_WORKER_HTTP_STOPPING;
-        coro_context_stop(server->context);
-    }
-    should_join = server->thread_started;
-    salts_mutex_unlock(&server->lock);
-    if (should_join) {
-        salts_thread_join(&server->thread);
-        salts_mutex_lock(&server->lock);
-        server->thread_started = 0;
-        server->state = IVR_WORKER_HTTP_STOPPED;
+    if (server->state == IVR_WORKER_HTTP_STOPPED) {
         salts_mutex_unlock(&server->lock);
+        return;
     }
+    server->state = IVR_WORKER_HTTP_STOPPING;
+    initialized = server->http_initialized;
+    salts_mutex_unlock(&server->lock);
+
+    if (initialized) {
+        (void)chttp_server_stop(&server->http, 0u);
+        (void)chttp_server_destroy(&server->http);
+    }
+
+    salts_mutex_lock(&server->lock);
+    server->http_initialized = 0;
+    server->state = IVR_WORKER_HTTP_STOPPED;
+    salts_mutex_unlock(&server->lock);
 }
 
 void ivr_worker_http_destroy(ivr_worker_http_t *server) {
@@ -312,10 +333,6 @@ void ivr_worker_http_destroy(ivr_worker_http_t *server) {
         return;
     }
     ivr_worker_http_stop(server);
-    (void)iris_app_unbind_rpc_context(server->app,
-                                      IVR_WORKER_HTTP_CONTEXT_PATH, server);
-    iris_app_destroy(server->app);
-    salts_cond_destroy(&server->cond);
     salts_mutex_destroy(&server->lock);
     free(server);
 }

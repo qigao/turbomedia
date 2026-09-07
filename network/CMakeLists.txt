@@ -1,6 +1,6 @@
 add_library(
   turbo_media_transport SHARED
-  transport_coronet.c
+  transport_cnet.c
   transport_http.c
   transport_url.c)
 turbo_media_configure_component(turbo_media_transport Transport)
@@ -10,5 +10,5 @@ target_include_directories(
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(
   turbo_media_transport
-  PUBLIC TurboNet::CoroNet TurboHttp::HttpClient
+  PUBLIC Salts::CNet Salts::CHTTP
   PRIVATE Salts::UriParser Salts::Core Salts::CSTL Threads::Threads)

@@ -5,6 +5,7 @@
 #include <json_parser.h>
 #include <datetime_parser.h>
 #include <salts_thread.h>
+#include <salts/clock.h>
 
 #include <limits.h>
 #include <stdlib.h>
@@ -729,7 +730,7 @@ static int refresh_terminal_replay_fence(
 
 static uint64_t default_realtime_ms(void *context) {
     (void)context;
-    return turbo_realtime_ms();
+    return salts_realtime_ms();
 }
 
 iris_media_bridge_t *iris_media_bridge_create(

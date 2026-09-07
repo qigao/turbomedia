@@ -6,7 +6,6 @@
 #ifndef WEBRTC_HTTP_API_H
 #define WEBRTC_HTTP_API_H
 
-#include "webrtc_signaling.h"
 #include <turbo_export.h>
 
 #ifdef __cplusplus
@@ -17,6 +16,7 @@ extern "C" {
  * @brief HTTP API Server Handle
  */
 typedef struct http_api_server_s http_api_server_t;
+typedef struct webrtc_signaling_server_s webrtc_signaling_server_t;
 
 /**
  * @brief HTTP API Configuration

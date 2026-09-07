@@ -4,9 +4,10 @@
  */
 #include "ivr_openai_provider.h"
 #include "ivr_thread.h"
-#include "http_client.h"
 #include "platform.h"
+#include <chttp/chttp.h>
 #include <json_parser.h>
+#include <salts/error_codes.h>
 
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -32,6 +33,29 @@
 #define IVR_OPENAI_DEFAULT_USER_AGENT "TurboMediaIVR/1.0"
 #define IVR_OPENAI_WAV_HEADER_SIZE 44u
 #define IVR_OPENAI_ERROR_MESSAGE_MAX 256
+
+enum {
+    IVR_OPENAI_HTTP_QUEUE_CAPACITY = 8,
+    IVR_OPENAI_HTTP_MAX_HEADER_COUNT = 16,
+    IVR_OPENAI_HTTP_MAX_HEADER_BYTES = 32 * 1024,
+    IVR_OPENAI_HTTP_MAX_START_LINE_BYTES = 8 * 1024,
+    IVR_OPENAI_HTTP_STOP_TIMEOUT_MS = 5000
+};
+
+typedef chttp_response ivr_openai_http_response_t;
+
+typedef struct ivr_openai_http_client_s {
+    chttp_client client;
+    chttp_tls_profile tls;
+    int client_initialized;
+    int tls_initialized;
+    uint32_t timeout_ms;
+    char *connection_uri;
+    char *authority;
+    char *base_path;
+    char *authorization;
+    const char *user_agent;
+} ivr_openai_http_client_t;
 
 static atomic_uint_least64_t g_active_tts_instances;
 static atomic_uint_least64_t g_active_asr_instances;
@@ -62,20 +86,22 @@ static void ivr_openai_release_input(size_t bytes) {
                               memory_order_relaxed);
 }
 
-static void ivr_openai_retain_response(const http_response_t *response) {
+static void ivr_openai_retain_response(
+    const ivr_openai_http_response_t *response) {
     if (response) {
         atomic_fetch_add_explicit(&g_retained_response_bytes,
-                                  (uint64_t)response->body_len,
+                                  (uint64_t)response->body_size,
                                   memory_order_relaxed);
     }
 }
 
-static void ivr_openai_response_free(http_response_t *response) {
+static void ivr_openai_response_free(ivr_openai_http_response_t *response) {
     if (response) {
         atomic_fetch_sub_explicit(&g_retained_response_bytes,
-                                  (uint64_t)response->body_len,
+                                  (uint64_t)response->body_size,
                                   memory_order_relaxed);
-        http_response_free(response);
+        chttp_response_destroy(response);
+        free(response);
     }
 }
 
@@ -460,63 +486,247 @@ static int16_t *ivr_openai_resample_i16(const int16_t *in, size_t in_samples,
 }
 
 /* ------------------------------------------------------------------ */
-/* http_client setup helpers                                           */
+/* CHTTP setup helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-static http_client_t *ivr_openai_create_client(const ivr_openai_config_t *config) {
-    http_client_t *client;
-    turbo_tls_client_config_t tls_config;
+static native_io_backend_kind ivr_openai_http_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
 
-    if (!config || !config->base_url || config->base_url[0] == '\0') {
+static char *ivr_openai_http_copy(const char *value, size_t size) {
+    char *copy = (char *)malloc(size + 1u);
+    if (!copy) return NULL;
+    if (size) memcpy(copy, value, size);
+    copy[size] = '\0';
+    return copy;
+}
+
+static void ivr_openai_http_client_destroy(ivr_openai_http_client_t *client) {
+    if (!client) return;
+    if (client->client_initialized) {
+        (void)chttp_client_destroy(&client->client,
+                                   IVR_OPENAI_HTTP_STOP_TIMEOUT_MS);
+    }
+    if (client->tls_initialized) {
+        (void)chttp_tls_profile_destroy(&client->tls);
+    }
+    free(client->authorization);
+    free(client->base_path);
+    free(client->authority);
+    free(client->connection_uri);
+    free(client);
+}
+
+static ivr_openai_http_client_t *ivr_openai_create_client(
+    const ivr_openai_config_t *config) {
+    ivr_openai_http_client_t *client = NULL;
+    chttp_client_config http_config = {0};
+    cnet_tls_client_config tls_config = {0};
+    const char *authority_start;
+    const char *authority_end;
+    const char *base_path;
+    const char *connection_scheme;
+    size_t authority_size;
+    size_t base_path_size;
+    size_t response_max;
+    size_t asr_max;
+    size_t tts_max;
+    size_t request_max;
+    uint32_t timeout_ms;
+    uint32_t connect_timeout_ms;
+    int use_tls;
+
+    if (!config || !config->base_url || !config->base_url[0]) return NULL;
+    if (strncmp(config->base_url, "https://", 8u) == 0) {
+        authority_start = config->base_url + 8u;
+        connection_scheme = "tls://";
+        use_tls = 1;
+    } else if (strncmp(config->base_url, "http://", 7u) == 0) {
+        authority_start = config->base_url + 7u;
+        connection_scheme = "tcp://";
+        use_tls = 0;
+    } else {
         return NULL;
     }
-    client = http_client_create(config->base_url);
-    if (!client) {
+    authority_end = strchr(authority_start, '/');
+    if (!authority_end) authority_end = config->base_url + strlen(config->base_url);
+    if (authority_end == authority_start ||
+        memchr(authority_start, '@', (size_t)(authority_end - authority_start)) ||
+        strchr(authority_end, '?') || strchr(authority_end, '#')) {
         return NULL;
     }
-    /* 0 in the config selects the provider defaults (never disable the
-       timeouts: cancel()/destroy() join the worker, so an unbounded request
-       would turn a hang into an unbounded quiescence wait). */
-    http_client_set_timeout(client, config->timeout_ms
-                                 ? config->timeout_ms
-                                 : IVR_OPENAI_DEFAULT_TIMEOUT_MS);
-    http_client_set_connect_timeout(
-        client, config->connect_timeout_ms
-                    ? config->connect_timeout_ms
-                    : IVR_OPENAI_DEFAULT_CONNECT_TIMEOUT_MS);
-    http_client_set_max_response_size(
-        client, config->max_response_bytes ? config->max_response_bytes
-                                           : IVR_OPENAI_DEFAULT_MAX_RESPONSE);
-    http_client_set_user_agent(client, config->user_agent);
-    if (config->api_key && config->api_key[0] != '\0') {
-        http_client_set_bearer_token(client, config->api_key);
+    timeout_ms = config->timeout_ms > 0
+                     ? (uint32_t)config->timeout_ms
+                     : IVR_OPENAI_DEFAULT_TIMEOUT_MS;
+    connect_timeout_ms = config->connect_timeout_ms > 0
+                             ? (uint32_t)config->connect_timeout_ms
+                             : IVR_OPENAI_DEFAULT_CONNECT_TIMEOUT_MS;
+    response_max = config->max_response_bytes
+                       ? config->max_response_bytes
+                       : IVR_OPENAI_DEFAULT_MAX_RESPONSE;
+    asr_max = config->max_asr_buffer_bytes
+                  ? config->max_asr_buffer_bytes
+                  : IVR_OPENAI_DEFAULT_MAX_ASR_BUFFER;
+    tts_max = config->max_tts_input_bytes
+                  ? config->max_tts_input_bytes
+                  : IVR_OPENAI_DEFAULT_MAX_TTS_INPUT;
+    if (config->timeout_ms < 0 || config->connect_timeout_ms < 0 ||
+        tts_max > (SIZE_MAX - 4096u) / 6u || asr_max > SIZE_MAX - 8192u) {
+        return NULL;
     }
-    if (config->ca_file && config->ca_file[0] != '\0') {
-        memset(&tls_config, 0, sizeof(tls_config));
-        tls_config.ca_file = config->ca_file;
-        tls_config.verify_peer = 1;
-        if (http_client_set_tls_client_config(client, &tls_config) != 0) {
-            http_client_destroy(client);
+    request_max = tts_max * 6u + 4096u;
+    if (request_max < asr_max + 8192u) request_max = asr_max + 8192u;
+
+    client = (ivr_openai_http_client_t *)calloc(1u, sizeof(*client));
+    if (!client) return NULL;
+    authority_size = (size_t)(authority_end - authority_start);
+    base_path = authority_end;
+    base_path_size = strlen(base_path);
+    while (base_path_size > 0u && base_path[base_path_size - 1u] == '/') {
+        --base_path_size;
+    }
+    client->authority = ivr_openai_http_copy(authority_start, authority_size);
+    client->base_path = ivr_openai_http_copy(base_path, base_path_size);
+    client->connection_uri = (char *)malloc(
+        strlen(connection_scheme) + authority_size + 1u);
+    if (!client->authority || !client->base_path || !client->connection_uri) {
+        ivr_openai_http_client_destroy(client);
+        return NULL;
+    }
+    snprintf(client->connection_uri,
+             strlen(connection_scheme) + authority_size + 1u, "%s%s",
+             connection_scheme, client->authority);
+    client->timeout_ms = timeout_ms;
+    client->user_agent = config->user_agent && config->user_agent[0]
+                             ? config->user_agent
+                             : IVR_OPENAI_DEFAULT_USER_AGENT;
+    if (config->api_key && config->api_key[0]) {
+        static const char prefix[] = "Bearer ";
+        size_t key_size = strlen(config->api_key);
+        if (key_size > SIZE_MAX - sizeof(prefix)) {
+            ivr_openai_http_client_destroy(client);
             return NULL;
         }
+        client->authorization = (char *)malloc(sizeof(prefix) + key_size);
+        if (!client->authorization) {
+            ivr_openai_http_client_destroy(client);
+            return NULL;
+        }
+        memcpy(client->authorization, prefix, sizeof(prefix) - 1u);
+        memcpy(client->authorization + sizeof(prefix) - 1u,
+               config->api_key, key_size + 1u);
+    }
+
+    http_config.network = (cnet_client_config){
+        .backend = ivr_openai_http_backend(),
+        .connection_capacity = 1u,
+        .command_capacity = IVR_OPENAI_HTTP_QUEUE_CAPACITY,
+        .request_capacity = IVR_OPENAI_HTTP_QUEUE_CAPACITY,
+        .completion_batch_capacity = IVR_OPENAI_HTTP_QUEUE_CAPACITY,
+        .event_capacity = IVR_OPENAI_HTTP_QUEUE_CAPACITY,
+        .max_send_bytes = request_max,
+        .receive_buffer_bytes = IVR_OPENAI_HTTP_MAX_HEADER_BYTES,
+        .connect_timeout_ms = connect_timeout_ms,
+        .read_timeout_ms = timeout_ms,
+        .write_timeout_ms = timeout_ms,
+        .tls_io_buffer_bytes = use_tls ? CNET_TLS_MIN_IO_BUFFER_BYTES : 0u,
+        .tls_handshake_timeout_ms = use_tls ? connect_timeout_ms : 0u,
+        .command_buffer_bytes = request_max,
+        .event_buffer_bytes = response_max
+    };
+    http_config.request_capacity = 1u;
+    http_config.max_start_line_bytes = IVR_OPENAI_HTTP_MAX_START_LINE_BYTES;
+    http_config.max_header_count = IVR_OPENAI_HTTP_MAX_HEADER_COUNT;
+    http_config.max_header_bytes = IVR_OPENAI_HTTP_MAX_HEADER_BYTES;
+    http_config.max_request_body_bytes = request_max;
+    http_config.max_response_body_bytes = response_max;
+    http_config.max_informational_responses = 4u;
+    if (chttp_client_init(&client->client, &http_config) != SALTS_OK) {
+        ivr_openai_http_client_destroy(client);
+        return NULL;
+    }
+    client->client_initialized = 1;
+    if (use_tls) {
+        tls_config.size = sizeof(tls_config);
+        tls_config.ca_file = config->ca_file;
+        tls_config.server_name = config->server_name;
+        if (chttp_tls_profile_init(&client->tls, &tls_config) != SALTS_OK) {
+            ivr_openai_http_client_destroy(client);
+            return NULL;
+        }
+        client->tls_initialized = 1;
+    } else if (config->ca_file && config->ca_file[0]) {
+        ivr_openai_http_client_destroy(client);
+        return NULL;
     }
     return client;
 }
 
-static int ivr_openai_response_error(const http_response_t *response,
+static ivr_openai_http_response_t *ivr_openai_http_post(
+    ivr_openai_http_client_t *client, const char *path,
+    const char *content_type, const void *body, size_t body_size) {
+    chttp_header headers[3];
+    chttp_options options = {0};
+    chttp_error error = {0};
+    ivr_openai_http_response_t *response;
+    char target[IVR_OPENAI_HTTP_MAX_START_LINE_BYTES];
+    size_t header_count = 0;
+    int target_size;
+
+    if (!client || !path || path[0] != '/') return NULL;
+    target_size = snprintf(target, sizeof(target), "%s%s",
+                           client->base_path, path);
+    if (target_size < 0 || (size_t)target_size >= sizeof(target)) return NULL;
+    if (content_type) {
+        headers[header_count++] = (chttp_header){"Content-Type", content_type};
+    }
+    if (client->user_agent) {
+        headers[header_count++] = (chttp_header){"User-Agent", client->user_agent};
+    }
+    if (client->authorization) {
+        headers[header_count++] =
+            (chttp_header){"Authorization", client->authorization};
+    }
+    options.connection_uri = client->connection_uri;
+    options.authority = client->authority;
+    options.target = target;
+    options.headers = headers;
+    options.header_count = header_count;
+    options.body = body;
+    options.body_size = body_size;
+    options.timeout_ms = client->timeout_ms;
+    options.tls = client->tls_initialized ? &client->tls : NULL;
+    response = (ivr_openai_http_response_t *)calloc(1u, sizeof(*response));
+    if (!response) return NULL;
+    if (chttp_post(&client->client, &options, response, &error) != SALTS_OK) {
+        fprintf(stderr,
+                "ivr_openai_provider: HTTP POST failed stage=%s status=%d "
+                "native_status=%d\n",
+                error.stage ? error.stage : "unknown", error.status,
+                error.native_status);
+        chttp_response_destroy(response);
+        free(response);
+        return NULL;
+    }
+    return response;
+}
+
+static int ivr_openai_response_error(
+    const ivr_openai_http_response_t *response,
                                      char *out_msg, size_t out_cap) {
     if (!response) {
         snprintf(out_msg, out_cap, "no HTTP response");
         return -1;
     }
-    if (response->error_code != HTTP_ERROR_NONE) {
-        snprintf(out_msg, out_cap, "HTTP error: %s",
-                 http_error_to_str(response->error_code));
-        return -1;
-    }
     if (response->status_code < 200 || response->status_code >= 300) {
         const char *detail = response->body ? response->body : "";
-        size_t detail_len = response->body_len;
+        size_t detail_len = response->body_size;
         if (detail_len > 160u) {
             detail_len = 160u;
         }
@@ -613,8 +823,8 @@ static int ivr_openai_tts_deliver(ivr_openai_tts_t *tts,
 static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
                                    ivr_openai_tts_job_t *job) {
     const ivr_openai_config_t *config = tts->config;
-    http_client_t *client = NULL;
-    http_response_t *response = NULL;
+    ivr_openai_http_client_t *client = NULL;
+    ivr_openai_http_response_t *response = NULL;
     char *body = NULL;
     char error_msg[IVR_OPENAI_ERROR_MESSAGE_MAX];
     int16_t *resampled = NULL;
@@ -663,7 +873,8 @@ static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
         free(body);
         return;
     }
-    response = http_post_json(client, path, body);
+    response = ivr_openai_http_post(
+        client, path, "application/json", body, strlen(body));
     free(body);
     if (!response) {
         if (!atomic_load(&tts->cancel_requested)) {
@@ -672,7 +883,7 @@ static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
                                     "TTS: no HTTP response",
                                     job->callback_user_data);
         }
-        http_client_destroy(client);
+        ivr_openai_http_client_destroy(client);
         return;
     }
     ivr_openai_retain_response(response);
@@ -683,11 +894,11 @@ static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
                                     job->callback_user_data);
         }
         ivr_openai_response_free(response);
-        http_client_destroy(client);
+        ivr_openai_http_client_destroy(client);
         return;
     }
-    if (response->body_len == 0 ||
-        response->body_len % sizeof(int16_t) != 0) {
+    if (response->body_size == 0 ||
+        response->body_size % sizeof(int16_t) != 0) {
         if (!atomic_load(&tts->cancel_requested)) {
             tts->errors++;
             job->callbacks.on_error(TURBO_SPEECH_ERR_FORMAT,
@@ -695,11 +906,11 @@ static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
                                     job->callback_user_data);
         }
         ivr_openai_response_free(response);
-        http_client_destroy(client);
+        ivr_openai_http_client_destroy(client);
         return;
     }
     resampled = ivr_openai_resample_i16(
-        (const int16_t *)response->body, response->body_len / sizeof(int16_t),
+        (const int16_t *)response->body, response->body_size / sizeof(int16_t),
         native_rate, out_rate, &resampled_count);
     if (!resampled) {
         if (!atomic_load(&tts->cancel_requested)) {
@@ -709,14 +920,14 @@ static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
                                     job->callback_user_data);
         }
         ivr_openai_response_free(response);
-        http_client_destroy(client);
+        ivr_openai_http_client_destroy(client);
         return;
     }
     if (ivr_openai_tts_deliver(tts, job, resampled, resampled_count, out_rate,
                                channels, bits) != TURBO_SPEECH_OK) {
         free(resampled);
         ivr_openai_response_free(response);
-        http_client_destroy(client);
+        ivr_openai_http_client_destroy(client);
         if (!atomic_load(&tts->cancel_requested)) {
             tts->errors++;
             job->callbacks.on_error(TURBO_SPEECH_ERR_PROVIDER,
@@ -727,7 +938,7 @@ static void ivr_openai_tts_run_job(ivr_openai_tts_t *tts,
     }
     free(resampled);
     ivr_openai_response_free(response);
-    http_client_destroy(client);
+    ivr_openai_http_client_destroy(client);
     if (!atomic_load(&tts->cancel_requested)) {
         job->callbacks.on_complete(job->callback_user_data);
     }
@@ -912,8 +1123,8 @@ struct ivr_openai_asr {
 static void ivr_openai_asr_run_job(ivr_openai_asr_t *asr,
                                    ivr_openai_asr_job_t *job) {
     const ivr_openai_config_t *config = asr->config;
-    http_client_t *client = NULL;
-    http_response_t *response = NULL;
+    ivr_openai_http_client_t *client = NULL;
+    ivr_openai_http_response_t *response = NULL;
     char error_msg[IVR_OPENAI_ERROR_MESSAGE_MAX];
     uint8_t *wav = NULL;
     size_t wav_len = 0;
@@ -963,12 +1174,12 @@ static void ivr_openai_asr_run_job(ivr_openai_asr_t *asr,
                                     "ASR: multipart body build failed",
                                     job->callback_user_data);
         }
-        http_client_destroy(client);
+        ivr_openai_http_client_destroy(client);
         free(wav);
         return;
     }
-    http_client_set_default_header(client, "Content-Type", content_type);
-    response = http_post(client, path, body, body_len);
+    response = ivr_openai_http_post(
+        client, path, content_type, body, body_len);
     free(body);
     free(content_type);
     free(wav);
@@ -979,7 +1190,7 @@ static void ivr_openai_asr_run_job(ivr_openai_asr_t *asr,
                                     "ASR: no HTTP response",
                                     job->callback_user_data);
         }
-        http_client_destroy(client);
+        ivr_openai_http_client_destroy(client);
         return;
     }
     ivr_openai_retain_response(response);
@@ -990,12 +1201,12 @@ static void ivr_openai_asr_run_job(ivr_openai_asr_t *asr,
                                     job->callback_user_data);
         }
         ivr_openai_response_free(response);
-        http_client_destroy(client);
+        ivr_openai_http_client_destroy(client);
         return;
     }
-    transcript = ivr_openai_parse_transcript(response->body, response->body_len);
+    transcript = ivr_openai_parse_transcript(response->body, response->body_size);
     ivr_openai_response_free(response);
-    http_client_destroy(client);
+    ivr_openai_http_client_destroy(client);
     if (!transcript) {
         if (!atomic_load(&asr->cancel_requested)) {
             asr->errors++;

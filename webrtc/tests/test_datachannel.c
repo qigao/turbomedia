@@ -1,7 +1,7 @@
 /**
  * test_datachannel.c - Unit tests for turbo_datachannel
  *
- * Tests the CoroNet-based WebRTC DataChannel implementation
+ * Tests the CNet-based WebRTC DataChannel implementation
  */
 
 #include "turbo_datachannel.h"

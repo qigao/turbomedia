@@ -12,7 +12,7 @@
 #include "turbo_datachannel.h"
 #include "ice_integration.h"
 #include "turbo_sdp.h"
-#include <CoroNet/turbo_coro_context.h>
+#include <salts_thread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,7 +85,7 @@ static void on_channel_open(turbo_dc_channel_t *channel, void *user_data) {
     printf("[Channel] ✓ Opened: %s\n", turbo_dc_channel_get_label(channel));
     
     /* Send test message */
-    const char *msg = "Hello from TurboNet!";
+    const char *msg = "Hello from Salts!";
     turbo_dc_channel_send(channel, msg, strlen(msg), 0);
     printf("[Channel] Sent: %s\n", msg);
 }
@@ -335,14 +335,7 @@ int main(int argc, char **argv) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    printf("=== TurboNet WebRTC Browser Interoperability Test ===\n\n");
-    
-    /* Create event loop */
-    turbo_loop_t *loop = turbo_loop_create();
-    if (!loop) {
-        fprintf(stderr, "Failed to create event loop\n");
-        return 1;
-    }
+    printf("=== Salts WebRTC Browser Interoperability Test ===\n\n");
     
     /* Create DataChannel context (answerer mode for browser compatibility) */
     turbo_dc_config_t dc_config = {
@@ -375,7 +368,7 @@ int main(int argc, char **argv) {
     };
     
     g_ice = ice_integration_create(
-        g_peer, loop,
+        g_peer, NULL,
         use_stun ? stun_servers : NULL, use_stun ? 2 : 0,
         NULL, NULL, NULL, 0
     );
@@ -397,13 +390,12 @@ int main(int argc, char **argv) {
         ice_integration_destroy(g_ice);
         turbo_dc_peer_destroy(g_peer);
         turbo_dc_context_destroy(ctx);
-        turbo_loop_destroy(loop);
         return 1;
     }
 
     printf("[ICE] Waiting for candidate gathering to complete...\n");
     while (g_running && !ice_integration_is_gathering_complete(g_ice)) {
-        turbo_loop_poll(loop, 50, 1);
+        salts_sleep_ms(50u);
         ice_integration_poll(g_ice);
     }
     
@@ -438,7 +430,6 @@ int main(int argc, char **argv) {
                 ice_integration_destroy(g_ice);
                 turbo_dc_peer_destroy(g_peer);
                 turbo_dc_context_destroy(ctx);
-                turbo_loop_destroy(loop);
                 return 1;
             }
             
@@ -450,7 +441,7 @@ int main(int argc, char **argv) {
             
             /* Run event loop */
             while (g_running) {
-                turbo_loop_poll(loop, 50, 1);
+                salts_sleep_ms(50u);
                 ice_integration_poll(g_ice);
             }
         }
@@ -462,8 +453,6 @@ int main(int argc, char **argv) {
     ice_integration_destroy(g_ice);
     turbo_dc_peer_destroy(g_peer);
     turbo_dc_context_destroy(ctx);
-    
-    turbo_loop_destroy(loop);
     
     printf("[Cleanup] ✓ Done\n");
     

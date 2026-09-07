@@ -7,6 +7,7 @@
 #include "salts_thread.h"
 #include "salts_str.h"
 #include "tlog.h"
+#include <salts/clock.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,7 +223,7 @@ static uint64_t outbox_realtime_ms(const iris_event_outbox_t *outbox) {
     return outbox->retention.realtime_ms
                ? outbox->retention.realtime_ms(
                      outbox->retention.realtime_context)
-               : turbo_realtime_ms();
+               : salts_realtime_ms();
 }
 
 static int retention_expired(uint64_t changed_at_ms, uint64_t ttl_ms,

@@ -11,6 +11,7 @@ typedef struct {
     int status;
     char location[512];
     char etag[128];
+    char content_type[128];
     char body[IVR_HTTP_MEDIA_MAX_RESPONSE];
 } ivr_http_media_response_t;
 
@@ -24,6 +25,7 @@ typedef struct {
     const char *cert_file;
     const char *key_file;
     const char *key_password;
+    const char *server_name;
     uint64_t timeout_ms;
     int allow_plaintext_loopback;
 } ivr_http_media_client_config_t;
@@ -31,7 +33,7 @@ typedef struct {
 #define IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT                                  \
     {                                                                      \
         sizeof(ivr_http_media_client_config_t), NULL, NULL, NULL, NULL,    \
-            NULL, NULL, 0u, 0                                              \
+            NULL, NULL, NULL, 0u, 0                                        \
     }
 
 char *ivr_http_media_strdup(const char *value);

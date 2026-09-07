@@ -228,13 +228,11 @@ Android mobile 测试示例：
   )
 ```
 
-## WebRTC 与 TurboHTTP 链路
+## WebRTC 与 CHTTP/CNet 链路
 
-Android presets 构建全部功能。ARM64 Release 使用
-已安装的 `C:/projects/cpp/external/pkgs/turbohttp-android`；其他 ABI/配置从
-`C:/projects/cpp/TurboHTTP/build/android-<abi>-<config>` 查找。对应 TurboHTTP package
-必须先构建，且 TurboHTTP、TurboNet、Salts、SaltsUtils、TurboMedia 必须使用相同 ABI、构建类型、
-NDK 与 Android API。
+Android presets 构建全部功能，并从 `salts-utils-android` 解析 CHTTP/CNet、从
+`saltsnet-android` 解析 ICE/STUN。Salts、SaltsUtils、SaltsNet 与 TurboMedia 必须使用
+相同 ABI、构建类型、NDK 与 Android API。
 
 WiFi 真机运行 WebRTC signaling 测试：
 
@@ -242,8 +240,7 @@ WiFi 真机运行 WebRTC signaling 测试：
 ./tools/android-test.ps1 turbo_media_test_signaling_lifecycle -Tap `
   -Serial "adb-38101FDJG00AVU-Rx6MV9._adb-tls-connect._tcp" `
   -LibraryDirectory @(
-    'C:/projects/cpp/external/pkgs/turbohttp-android/lib',
-    '../turbonet/build/android-arm64-v8a-release/bin',
+    'C:/projects/cpp/external/pkgs/saltsnet-android/release/bin',
     'C:/projects/cpp/external/pkgs/salts-android/release/bin',
     'C:/projects/cpp/external/pkgs/salts-utils-android/release/bin'
   )
@@ -310,12 +307,11 @@ consumer 的 Android user preset 应提供这些精确 package 目录：
 {
   "environment": {
     "SALTS_ROOT": "C:/projects/cpp/external/pkgs/salts-android/release",
-    "SALTS_UTILS_ROOT": "C:/projects/cpp/external/pkgs/salts-utils-android/release"
+    "SALTS_UTILS_ROOT": "C:/projects/cpp/external/pkgs/salts-utils-android/release",
+    "SALTSNET_ROOT": "C:/projects/cpp/external/pkgs/saltsnet-android/release"
   },
   "cacheVariables": {
-    "TurboMedia_DIR": "C:/projects/cpp/external/pkgs/turbomedia-android/lib/cmake/TurboMedia",
-    "TurboHttp_DIR": "C:/projects/cpp/external/pkgs/turbohttp-android/lib/cmake/TurboHttp",
-    "TurboNet_DIR": "C:/projects/cpp/turbonet/turbonet/build/android-arm64-v8a-release"
+    "TurboMedia_DIR": "C:/projects/cpp/external/pkgs/turbomedia-android/lib/cmake/TurboMedia"
   }
 }
 ```

@@ -17,7 +17,7 @@
 | IVR-P0-01 per-call speech | P0 | `ivr_worker` / `ivr_openai_provider` | [x] | 两个以上 call 无 BUSY/cancel 串扰 |
 | IVR-P0-02 lease 与 dispatch ACK | P0 | RoomService / `ivr_room_bridge` | [x] | 无 silent dispatch success，worker-loss 行为确定 |
 | IVR-P0-03 readiness/admission | P0 | `ivr_worker` app | [x] | 缺依赖的 worker 不进入 READY |
-| IVR-P0-04 mTLS/WSS 与授权 | P0 | FlowMQ adapters / RoomService | [x] | 证书身份、scope、replay negative tests 通过 |
+| IVR-P0-04 mTLS/WSS 与授权 | P0 | CHTTP H1 WebSocket adapters / RoomService | [x] | 证书身份、scope、replay negative tests 通过 |
 | IVR-P1-01 媒体失败与重连 | P1 | WHIP/WHEP / session | [x] | disconnect/reconnect/exhausted 全路径通过 |
 | IVR-P1-02 真实 DTMF | P1 | WebRTC media / IVR input adapter | [x] | RTP telephone-event E2E 通过 |
 | IVR-P1-03 可观测性与容量 | P1 | worker / RoomService operations | [ ] | 指标、SLO、60 分钟 soak、120% burst 通过 |
@@ -28,11 +28,11 @@
 - [x] `ARCH-01` 定义 participant 正交状态归属：membership 由 Room 原生转换表拥有，
   RTC session 由 per-session TurboXML SCXML 拥有，二者不复制事实。
   证据：生产化设计 2.3 节。
-- [x] `ARCH-02` 定义 FlowMQ 边界：participant/worker 与 RoomService 之间的
+- [x] `ARCH-02` 定义 CHTTP H1 WebSocket 边界：participant/worker 与 RoomService 之间的
   command/result/event 不因同机或同进程部署而旁路；broker callback 后复制到 owner queue；
-  Room aggregate 内部 timer/control 不绕 broker，RTP/PCM 不进入 FlowMQ。
-  证据：生产化设计 2.2、2.3 节；`ivr_flowmq_gateway.c`、
-  `ivr_room_bridge.c`、`ivr_fmq_adapter.c`；`test_ivr_flowmq`、
+  Room aggregate 内部 timer/control 不绕 broker，RTP/PCM 不进入 CHTTP H1 WebSocket。
+  证据：生产化设计 2.2、2.3 节；`ivr_control_gateway.c`、
+  `ivr_room_bridge.c`、`ivr_control_adapter.c`；`test_ivr_control_gateway`、
   `test_ivr_room_bridge`、`test_ivr_room_bridge_dedup`、`test_ivr_dispatch_processes`。
 - [x] `ARCH-03` TIVR wire 收敛为 BIN/TEXT；TEXT 是 compact UTF-8 JSON，两者共享
   canonical DataBind schema，不提供格式猜测或 fallback。
@@ -56,22 +56,22 @@
 - [x] `BASE-02` per-call media bot、WHIP publisher 和 WHEP receiver 生命周期。
   证据：`test_ivr_media_bot`、`test_ivr_whip_transport`。
 - [x] `BASE-03` RoomService 精确选择唯一 caller audio track，不猜 track ID。
-  证据：`test_ivr_fmq_adapter`、`test_ivr_whip_transport`。
+  证据：`test_ivr_control_adapter`、`test_ivr_whip_transport`。
 - [x] `BASE-04` command result 回灌 session，且不推进 domain sequence。
-  证据：`test_ivr_flowmq`、`test_ivr_session`。
+  证据：`test_ivr_control_gateway`、`test_ivr_session`。
 - [x] `BASE-05` domain sequence gap 停止 mutation 并通过权威 snapshot 恢复。
   证据：`test_ivr_session`、`test_ivr_worker_e2e`。
 - [x] `BASE-06` session inbox item/byte 上限、drain deadline 和 callback quiescence。
   证据：`test_ivr_session`、`test_ivr_worker`、`test_ivr_media_bot`。
-- [x] `BASE-07` live worker 默认通过 FlowMQ 发 mutation command；DEALER callback 仅复制
+- [x] `BASE-07` live worker 默认通过 CHTTP H1 WebSocket 发 mutation command；client callback 仅复制
   TIVR frame 到固定容量 reply mailbox，由 worker main loop 解码并推进 session；关闭时
   先停止 producer，再销毁 mailbox。
   证据：`webrtc/apps/ivr_worker/main.c`、`test_ivr_dispatch_processes`。
-- [x] `BASE-08` FlowMQ peer disconnect 会失效 ROUTER route；worker selection 只接受
+- [x] `BASE-08` CHTTP H1 WebSocket peer disconnect 会失效 server route；worker selection 只接受
   live route。无可用 worker 的 `conference.join` 返回 `IVR_ESTATE + retryable`，不提交
   Room mutation；dispatch/media 失败的新增 participant 会走有界补偿，sequence reservation
   可回滚，失效 registry/route slot 可被 replacement worker 复用。
-  证据：`ivr_room_bridge.c`、`ivr_fmq_adapter.c`、`test_ivr_fmq_adapter`（无 worker、
+  证据：`ivr_room_bridge.c`、`ivr_control_adapter.c`、`test_ivr_control_adapter`（无 worker、
   media failure retry、disconnect/replacement）。
 - [x] `BASE-09` worker 在 owner loop 完成 session/media 创建后发送
   `CallDispatchResultV2` accepted/rejected ACK；bridge 校验当前 live route 后再通知
@@ -80,8 +80,8 @@
   `PENDING/ACCEPTED/REJECTED` assignment 观测表，容量满时只复用 terminal slot，不覆盖
   pending。当前 join response 仍 immediate-success，rejected ACK 只观测，不回滚已提交
   participant。
-  证据：`ivr_flowmq_gateway.c`、`ivr_room_bridge.c`、`ivr_fmq_adapter.c`、
-  `test_ivr_flowmq`、`test_ivr_worker_e2e`。
+  证据：`ivr_control_gateway.c`、`ivr_room_bridge.c`、`ivr_control_adapter.c`、
+  `test_ivr_control_gateway`、`test_ivr_worker_e2e`。
 - [x] `BASE-10` RoomService 以有界 worker record 维护 instance/generation、
   `READY/DRAINING/EXPIRED`、active/reserved/max 和 lease；selection 与 reservation 在同一
   锁域提交。worker 使用 `WorkerSyncCommandV2` 与 heartbeat 续租。`conference.leave`
@@ -92,8 +92,8 @@
   timeout/cancel 后迟到的 accepted ACK 会恢复有界 active 所有权并立即走 fail-closed
   release，不遗留无 assignment 的 worker session。release result 超时后使用同一稳定
   message ID 重发 release command，依赖 worker 幂等销毁完成闭环。
-  证据：`ivr_flowmq_gateway.c`、`ivr_room_bridge.c`、`ivr_fmq_adapter.c`、`ivr_worker.c`、
-  `test_ivr_flowmq`、`test_ivr_fmq_adapter`、`test_ivr_worker`、`test_ivr_worker_e2e`。
+  证据：`ivr_control_gateway.c`、`ivr_room_bridge.c`、`ivr_control_adapter.c`、`ivr_worker.c`、
+  `test_ivr_control_gateway`、`test_ivr_control_adapter`、`test_ivr_worker`、`test_ivr_worker_e2e`。
 
 ## P0
 
@@ -145,7 +145,7 @@ Owner：`webrtc/apps/room_service`、`webrtc/ivr/src/ivr_room_bridge.*`、IVR sc
   adapter 内永不失效的裸 worker ID 数组作为事实源。
 - [x] `P0-02.2` worker record 包含 instance ID、connection generation、state、capacity、
   active/reserved、capabilities 和 lease deadline。
-- [x] `P0-02.3` FlowMQ connect/disconnect callback 只复制事件到 owner queue，由 owner
+- [x] `P0-02.3` CHTTP H1 WebSocket connect/disconnect callback 只复制事件到 owner queue，由 owner
   推进 worker 状态和失效 route。
 - [x] `P0-02.4` 配置并验证 heartbeat `H`、lease `L`、dispatch deadline `D`，满足
   `L >= 3H` 且 `D < L`。
@@ -172,10 +172,10 @@ Owner：`webrtc/apps/room_service`、`webrtc/ivr/src/ivr_room_bridge.*`、IVR sc
 
 完成证据：
 
-- [x] `test_ivr_fmq_adapter` 覆盖 worker lease/capacity、generation、health admission、
+- [x] `test_ivr_control_adapter` 覆盖 worker lease/capacity、generation、health admission、
   deadline、release 和 stale registration。
-- [x] `test_ivr_flowmq`、`test_ivr_schema` 覆盖 V2 command/result BIN 编解码与 golden vector。
-- [x] `test_ivr_dispatch_processes` 使用真实 FlowMQ V2 worker probe 覆盖 dispatch 前、ACK 前、
+- [x] `test_ivr_control_gateway`、`test_ivr_schema` 覆盖 V2 command/result BIN 编解码与 golden vector。
+- [x] `test_ivr_dispatch_processes` 使用真实 CHTTP H1 WebSocket V2 worker probe 覆盖 dispatch 前、ACK 前、
   ACK 后 worker 退出，以及 replacement worker 重派和 orphan cleanup；真实 `ivr_worker`
   的 session/media ACK 由 `test_ivr_worker_e2e` 覆盖。
 - [x] 故障后 `reserved_sessions == 0`，且不存在成功但无 owner 的 assignment。
@@ -189,23 +189,23 @@ snapshot 的 mid-dialog 自动恢复仍不提供，必须通过显式 terminal/f
 
 ```text
 cmake --build --preset win-release-user --target room_service ivr_worker \
-  test_ivr_protocol test_ivr_schema test_ivr_flowmq test_ivr_room_bridge \
-  test_ivr_fmq_adapter test_ivr_worker_e2e test_ivr_dispatch_processes
-ctest --preset win-release-user -R '^test_ivr_fmq_adapter$' --output-on-failure
+  test_ivr_protocol test_ivr_schema test_ivr_control_gateway test_ivr_room_bridge \
+  test_ivr_control_adapter test_ivr_worker_e2e test_ivr_dispatch_processes
+ctest --preset win-release-user -R '^test_ivr_control_adapter$' --output-on-failure
 ctest --preset win-release-user -R '^test_ivr_dispatch_processes$' --output-on-failure
 ```
 
-上述两项及协议/schema/FlowMQ/E2E 独立测试通过。CTest preset 已显式注入 release runtime
-PATH；`test_ivr_room_bridge`、`test_ivr_fmq_adapter`、`test_ivr_worker_e2e`、
+上述两项及协议/schema/CHTTP H1 WebSocket/E2E 独立测试通过。CTest preset 已显式注入 release runtime
+PATH；`test_ivr_room_bridge`、`test_ivr_control_adapter`、`test_ivr_worker_e2e`、
 `test_ivr_dispatch_processes` 组合运行 4/4 通过。
 
 ASan 回归（2026-08-10）：
 
 ```text
 cmake --build --preset win-dev-user --target \
-  test_ivr_content test_ivr_fmq_adapter test_ivr_dispatch_processes
+  test_ivr_content test_ivr_control_adapter test_ivr_dispatch_processes
 ctest --preset win-dev-user -R \
-  "test_ivr_content|test_ivr_fmq_adapter|test_ivr_dispatch_processes" \
+  "test_ivr_content|test_ivr_control_adapter|test_ivr_dispatch_processes" \
   --output-on-failure
 ```
 
@@ -237,19 +237,19 @@ Owner：`webrtc/apps/ivr_worker`
 - [x] shadow worker 从不进入 active selection pool。
 - [x] readiness 恢复和失效不会产生重复 registration 或旧 generation 状态覆盖。
 
-当前实现注记：management listener 使用独立 CoroNet owner thread，默认仅绑定
-`127.0.0.1:18081`，dry-run 不监听端口。FlowMQ callback 只复制 peer connection 状态到
+当前实现注记：management listener 使用独立 CHTTP/CNet owner thread，默认仅绑定
+`127.0.0.1:18081`，dry-run 不监听端口。CHTTP H1 WebSocket callback 只复制 peer connection 状态到
 原子标志，worker owner loop 才推进 health；command/event 任一断开会撤销 readiness，
 command 仍连通时立即发送一次 not-ready heartbeat。health update 以 generation 作为
 optimistic token，统一派生 dependency、draining 和 capacity readiness，拒绝旧快照覆盖。
-TLS transport 的认证身份由 P0-04 提供；P0-03 只消费 FlowMQ 已验证的连接结果。
+TLS transport 的认证身份由 P0-04 提供；P0-03 只消费 CHTTP H1 WebSocket 已验证的连接结果。
 
 已验证：`test_ivr_worker_health` 覆盖 dependency negative matrix、容量、generation
 翻转和 stale update；`test_ivr_worker_http` 使用真实 listener 覆盖 `/live` 200、
 `/ready` 200/503、draining、只读 JSON、loopback 拒绝和 stop/join；
-`test_ivr_room_bridge` 使用真实 FlowMQ ROUTER/DEALER 覆盖单一 typed channel 的
+`test_ivr_room_bridge` 使用真实 CHTTP H1 WebSocket server/client 覆盖单一 typed channel 的
 connect/disconnect、双向 route 和身份冒用拒绝；
-`test_ivr_content`、`test_ivr_fmq_adapter` 的 `health.shadow`/无 `health.ready`
+`test_ivr_content`、`test_ivr_control_adapter` 的 `health.shadow`/无 `health.ready`
 worker negative case、`turbo_media_test_ivr_worker_dry_run`（Release）。
 `ivr_worker` 的 `--config`、`IVR_*` 环境变量、CLI 解析顺序实现为
 `CLI > env > TOML > default`；`WorkerSyncCommandV2`/`WorkerHeartbeatV1` 携带
@@ -257,15 +257,15 @@ worker negative case、`turbo_media_test_ivr_worker_dry_run`（Release）。
 非敏感 TOML 示例位于 `webrtc/apps/ivr_worker/config/ivr_worker.toml.example`；
 speech/SFU secret 仍只从环境变量读取。
 
-2026-08-24 Release 验证：`test_ivr_flowmq`、`test_ivr_room_bridge`、
+2026-08-24 Release 验证：`test_ivr_control_gateway`、`test_ivr_room_bridge`、
 `test_ivr_worker_e2e`、`turbo_media_test_ivr_worker_dry_run`、
 `test_ivr_worker_health`、`test_ivr_worker_http` 共 6/6 通过。
 
 ### IVR-P0-04：mTLS/WSS identity 与授权
 
-Owner：FlowMQ gateway/bridge、RoomService certificate identity adapter
+Owner：CHTTP H1 WebSocket gateway/bridge、RoomService certificate identity adapter
 
-- [x] `P0-04.1` gateway 和 bridge config 使用独立 FlowMQ 的 client/server TLS object，
+- [x] `P0-04.1` gateway 和 bridge config 使用独立 CHTTP H1 WebSocket 的 client/server TLS object，
   增加 CA bundle、cert、key、server name 与 peer verification；缺少对象配置时 fail closed。
 - [x] `P0-04.2` active mode 仅允许 TLS/WSS；TCP/WS 只允许显式 test/loopback/trusted
   boundary 配置，禁止自动 fallback。
@@ -287,23 +287,23 @@ Owner：FlowMQ gateway/bridge、RoomService certificate identity adapter
 - [x] replay、旧 generation 和轮换窗口前后测试通过。
 
 P0-04.1 完成证据（事实，2026-08-24）：TurboMedia 直接链接独立
-`FlowMQ::FlowMQ`，gateway 使用 typed DEALER endpoint，Room bridge 使用 typed ROUTER
-endpoint；两者在 create 时复制证书/密钥配置，并在 TLS/WSS CONNECT/BIND 前配置 CoroNet。
-内部 command/result/event/query 共用一个身份约束的 ROUTER/DEALER channel，不再创建
-独立 PUB/SUB endpoint。`test_ivr_flowmq`、`test_ivr_room_bridge`、
-`test_ivr_room_bridge_dedup` 与 `test_ivr_fmq_adapter` 覆盖 codec、route、身份绑定与去重；
+`Salts::CHTTP`，gateway 使用 typed client endpoint，Room bridge 使用 typed server
+endpoint；两者在 create 时复制证书/密钥配置，并在 TLS/WSS CONNECT/BIND 前配置 CNet。
+内部 command/result/event/query 共用一个身份约束的 server/client channel，不再创建
+独立 PUB/SUB endpoint。`test_ivr_control_gateway`、`test_ivr_room_bridge`、
+`test_ivr_room_bridge_dedup` 与 `test_ivr_control_adapter` 覆盖 codec、route、身份绑定与去重；
 不得使用进程级 `TURBONET_TLS_*` 环境变量冒充多 endpoint 配置，也不得在 TLS 失败时
 自动回退 TCP/WS。
 
 P0-04.2/04.3/04.7 完成证据（事实，2026-08-10）：`webrtc/ivr/src/ivr_certificate_identity.*`
 提供有界的 `fingerprint -> worker_id` owner。输入要求 `sha256:<64 lowercase hex>`、非空
 worker ID、正 generation；同一 worker/fingerprint 的重复映射 fail fast。BIND callback
-只比较已由 CoroNet 验证的 fingerprint 与 claimed identity，不执行网络或 Room mutation。
+只比较已由 CNet 验证的 fingerprint 与 claimed identity，不执行网络或 Room mutation。
 每项可配置 active 与 previous fingerprint，previous 在注入时钟达到 expiry 时立即失效；
 `test_ivr_certificate_identity` 覆盖 active、previous expiry、错误 identity、格式错误和
 重复映射。RoomService 配置解析并验证 TLS material 和 bounded worker identity 数组，
-server owner 将 certificate verifier 注入 ROUTER；worker DEALER 使用显式 CONNECT identity。
-每条 ROUTER 消息携带 peer identity，bridge 要求其与 claimed worker ID 完全相同。
+server owner 将 certificate verifier 注入 server；worker client 使用显式 CONNECT identity。
+每条 server 消息携带 peer identity，bridge 要求其与 claimed worker ID 完全相同。
 `test_ivr_certificate_identity` 覆盖轮换窗口，Room bridge/adapter loopback 测试覆盖冒用拒绝；
 `turbo_media_test_ivr_worker_rejects_active_plaintext` 验证 active worker
 不会回退 plaintext；`turbo_media_test_room_service_config` 验证 plaintext 仅限显式 loopback。
@@ -316,7 +316,7 @@ release reason，RoomService config summary 不再输出完整 SFU control URL/r
 `turbo_media_test_ivr_worker_log_redaction` 和
 `turbo_media_test_room_service_log_redaction` 分别向 URL、API key、node registry 与 auth
 secret 注入唯一标记，并通过 `FAIL_REGULAR_EXPRESSION` 验证 stdout/stderr 不含标记；Release
-2/2 通过。独立 FlowMQ 迁移后的 focused codec、ROUTER/DEALER、dedup、adapter 与
+2/2 通过。独立 CHTTP H1 WebSocket 迁移后的 focused codec、server/client、dedup、adapter 与
 SQLite ORM 测试另见 2026-08-24 验证记录。
 
 P0-04.4/04.5/04.6 完成证据（事实，2026-08-11）：
@@ -325,16 +325,16 @@ P0-04.4/04.5/04.6 完成证据（事实，2026-08-11）：
   `ivr_acl_tenant_allows`，tenant 采用 `<tenant>/` room_id 前缀约定）。RoomService
   `[fmq.workers]` 每项可配置 `tenant_id` / `room_scope` / `call_scope` /
   `content_capabilities`（`config.c`、`room_service.toml.example`），
-  server 注入 adapter 的 worker ACL；adapter 在 `ivr_fmq_adapter_apply` 与
-  `ivr_fmq_adapter_on_command` 入口做 command authorization（未配置 ACL 时保持
+  server 注入 adapter 的 worker ACL；adapter 在 `ivr_control_adapter_apply` 与
+  `ivr_control_adapter_on_command` 入口做 command authorization（未配置 ACL 时保持
   legacy allow-all，配置后未列名 worker fail closed），dispatch selection 与 retry
   只在 ACL 覆盖 room/call 与 content package 的 worker 间进行，且命令被拒绝不改变
-  Room version（新增 `acl_rejects` 计数）。FlowMQ transport identity 只负责连接身份，
+  Room version（新增 `acl_rejects` 计数）。CHTTP H1 WebSocket transport identity 只负责连接身份，
   tenant/room/call/content authorization 仍由 adapter 的 worker ACL 负责。
   worker 侧 `ivr_worker.toml.example` 与 `main.c` 增加同名字段，dispatch 收包时校验
   scope（`worker_dispatch_in_scope`）并拒绝 `IVR_EAUTH`。
 - `P0-04.5`：worker 在 dispatch 收包时按 `deadline_timeout_ms` 相对 TTL 求值
-  （`ivr_flowmq_gateway_dispatch_deadline_ok`），过期以 `IVR_ESTALE` +
+  （`ivr_control_gateway_dispatch_deadline_ok`），过期以 `IVR_ESTALE` +
   `dispatch.deadline` 结构化拒绝；V2 worker instance/connection generation fence、
   stable message_id 幂等与 RoomService 侧 dispatch result 的 assignment/attempt/
   instance/generation/max_sessions 校验保持既有实现并纳入回归。
@@ -343,10 +343,10 @@ P0-04.4/04.5/04.6 完成证据（事实，2026-08-11）：
   结果、窗口外以 `IVR_ESTALE` 显式拒绝（新增 `dedup_expired_rejects` 计数），容量仍受
   `dedup_capacity` 环缓冲约束。
 
-验收证据：`test_ivr_acl`（scope/tenant 规则）、`test_ivr_fmq_adapter`
+验收证据：`test_ivr_acl`（scope/tenant 规则）、`test_ivr_control_adapter`
 （`test_apply_acl_scope_denies_cross_tenant_room_call` 跨 tenant/room/call 命令不改
 Room version、`test_live_acl_blocks_out_of_scope_join` 连接成功不绕过授权）、
-`test_ivr_room_bridge_dedup`（窗口内幂等、窗口外 `IVR_ESTALE`）、`test_ivr_flowmq`
+`test_ivr_room_bridge_dedup`（窗口内幂等、窗口外 `IVR_ESTALE`）、`test_ivr_control_gateway`
 （dispatch deadline TTL）、`turbo_media_test_room_service_config`（新 worker ACL 字段
 解析）。Release 与 ASan（win-dev-user）下 `test_ivr*` 与 RoomService 进程级测试全部通过。
 
@@ -379,7 +379,7 @@ Owner：`ivr_whip_transport`、`ivr_whep_transport`、worker media adapter、ses
 - [x] `test_ivr_whip_transport` 通过 dangerous control command 按 participant 精确删除
   owned media session；WHEP 单侧断开时 WHIP 保持连接，WHEP 以新 attempt generation
   恢复；随后 WHIP 单侧断开时 WHEP 保持连接。Release 实测总耗时约 80 秒，包含两次
-  TurboNet::Ice consent expiry（单侧上限 40 秒）与一次 WHEP 重建。
+  SaltsNet::ICE consent expiry（单侧上限 40 秒）与一次 WHEP 重建。
 
 ### IVR-P1-02：真实 RTP DTMF
 
@@ -465,7 +465,7 @@ ASan executable 直接启动最初返回 `0xc0000135`；`dumpbin /dependents` �
 
 ```text
 test_room_service_app   Passed 67.79 sec
-test_ivr_fmq_adapter    Passed 15.49 sec
+test_ivr_control_adapter    Passed 15.49 sec
 test_ivr_worker_http    Passed  2.05 sec
 3/3 passed
 ```
@@ -516,7 +516,7 @@ quiescence；Release/ASan 均为 18/18、460 assertions。奇数字节 PCM 明�
 `room_service`、`sfu_node`、`ivr_worker` 和 IVR/Room/SFU 关键测试 target 成功。以下 12 项
 CTest 100% 通过，总计 89.62 秒：`test_ivr_dtmf_rtp`、`test_ivr_session`、
 `test_ivr_worker`、`test_ivr_media_supervisor`、`test_ivr_worker_media_loop`、
-`test_ivr_openai_provider`、`test_ivr_flowmq`、`test_ivr_fmq_adapter`、
+`test_ivr_openai_provider`、`test_ivr_control_gateway`、`test_ivr_control_adapter`、
 `test_ivr_worker_e2e`、`test_ivr_dispatch_processes`、`test_sfu_node_app`、
 `test_ivr_worker_http`。真实 SFU `test_ivr_whip_transport` 另行通过，78.65 秒。configure 的
 FFmpeg dev warning 与 build 的 `flv_demuxer_impl.c` C4702 为既有非 IVR warning；本组目标
@@ -556,12 +556,12 @@ P1-03 的基础 counter 可提前实现；最终容量签署必须等待 per-cal
 
 ```powershell
 cmake --build --preset win-dev-user --target room_service sfu_node ivr_worker `
-  test_ivr_flowmq test_ivr_session test_ivr_fmq_adapter `
+  test_ivr_control_gateway test_ivr_session test_ivr_control_adapter `
   test_ivr_worker_e2e test_ivr_whip_transport test_ivr_dispatch_processes `
   test_sfu_node_app
 
 ctest --preset win-dev-user `
-  -R "test_room_service_app$|test_sfu_node_app$|test_ivr_whip_transport$|test_ivr_dispatch_processes$|test_ivr_(room_bridge|flowmq$|session$|content$|fmq_adapter$|worker_e2e$)|turbo_media_test_ivr_worker_dry_run" `
+  -R "test_room_service_app$|test_sfu_node_app$|test_ivr_whip_transport$|test_ivr_dispatch_processes$|test_ivr_(room_bridge|control_gateway$|session$|content$|control_adapter$|worker_e2e$)|turbo_media_test_ivr_worker_dry_run" `
   --output-on-failure
 ```
 

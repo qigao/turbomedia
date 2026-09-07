@@ -186,7 +186,7 @@ ivr_status_t ivr_worker_create(
     const ivr_media_port_factory_ops_t *media_factory,
     ivr_worker_t **out_worker);
 ivr_status_t ivr_worker_start(ivr_worker_t *worker);
-/* Advance the process-local connection fence after FlowMQ reconnects. The
+/* Advance the process-local connection fence after CHTTP H1 WebSocket reconnects. The
    worker keeps its media slots, while subsequent inventory pages use the new
    epoch and a new revision so RoomService must reconcile before dispatch. */
 ivr_status_t ivr_worker_advance_epoch(ivr_worker_t *worker,

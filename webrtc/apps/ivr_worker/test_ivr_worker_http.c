@@ -156,7 +156,7 @@ void test_management_endpoints_follow_health_snapshot(void) {
     snapshot.speech_ready = 1;
     snapshot.sfu_ready = 1;
     snapshot.active_sessions = 3;
-    strcpy(snapshot.capabilities, "turboxml,flowmq,health.ready");
+    strcpy(snapshot.capabilities, "turboxml,control_ws,health.ready");
     strcpy(snapshot.reason, "ready");
     check_equal((int)(ivr_worker_health_update(&health, &snapshot)), (int)(0));
 

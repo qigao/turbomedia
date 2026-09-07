@@ -21,10 +21,10 @@
 static int make_uuid(char *out, size_t capacity);
 
 struct iris_media_reconciler_s {
-    iris_flowmq_provider_t *provider;
+    iris_control_provider_t *provider;
     iris_expected_media_resource_t *expected;
     unsigned char *matched;
-    ivr_fmq_worker_snapshot_t *workers;
+    ivr_control_worker_snapshot_t *workers;
     ivr_worker_inventory_envelope_t *inventory_queue;
     size_t resource_capacity;
     uint32_t worker_capacity;
@@ -38,7 +38,7 @@ struct iris_media_reconciler_s {
     uint32_t inventory_page_size;
     uint64_t close_deadline_ms;
     iris_event_outbox_t *event_outbox;
-    ivr_fmq_adapter_t *adapter;
+    ivr_control_adapter_t *adapter;
     iris_media_reconciler_ops_t ops;
     int injected_ops;
     salts_mutex_t mutex;
@@ -173,8 +173,8 @@ static ivr_status_t default_fetch_expected(
     size_t capacity, size_t *out_count) {
     iris_media_reconciler_t *reconciler =
         (iris_media_reconciler_t *)context;
-    iris_flowmq_provider_query_t query;
-    iris_flowmq_provider_observation_t observation;
+    iris_control_provider_query_t query;
+    iris_control_provider_observation_t observation;
     char query_id[SALTS_UUID_STRING_SIZE];
     char created_at[32];
     uint64_t resource_count = 0;
@@ -216,7 +216,7 @@ static ivr_status_t default_fetch_expected(
         query.cursor = cursor;
         query.limit = reconciler->inventory_page_size;
         query.payload_json = IRIS_RECONCILE_EXPECTED_QUERY_PAYLOAD;
-        if (iris_flowmq_provider_send_query(
+        if (iris_control_provider_send_query(
                 reconciler->provider, &query, reconciler->request_timeout_ms,
                 &observation) != IVR_OK) {
             return IVR_EBUSY;
@@ -229,7 +229,7 @@ static ivr_status_t default_fetch_expected(
             !json_u64(root, "resourceCount", &resource_count)) {
             json_free(root);
             root = NULL;
-            iris_flowmq_provider_observation_clear(&observation);
+            iris_control_provider_observation_clear(&observation);
             return IVR_ESTATE;
         }
         if (revision == 0u) revision = observation.revision;
@@ -243,7 +243,7 @@ static ivr_status_t default_fetch_expected(
             count + page_count > resource_count) {
             json_free(root);
             root = NULL;
-            iris_flowmq_provider_observation_clear(&observation);
+            iris_control_provider_observation_clear(&observation);
             return resource_count > capacity ? IVR_ENOSPC : IVR_ESTATE;
         }
         for (size_t i = 0; i < (size_t)page_count; ++i) {
@@ -251,7 +251,7 @@ static ivr_status_t default_fetch_expected(
                                          &resources[count + i])) {
                 json_free(root);
                 root = NULL;
-                iris_flowmq_provider_observation_clear(&observation);
+                iris_control_provider_observation_clear(&observation);
                 return IVR_ESTATE;
             }
         }
@@ -259,7 +259,7 @@ static ivr_status_t default_fetch_expected(
         cursor = observation.next_cursor;
         {
             int has_more = observation.wire.has_more ? 1 : 0;
-            iris_flowmq_provider_observation_clear(&observation);
+            iris_control_provider_observation_clear(&observation);
             json_free(root);
             root = NULL;
             root = NULL;
@@ -272,11 +272,11 @@ static ivr_status_t default_fetch_expected(
 }
 
 static ivr_status_t default_list_workers(
-    void *context, ivr_fmq_worker_snapshot_t *workers, uint32_t capacity,
+    void *context, ivr_control_worker_snapshot_t *workers, uint32_t capacity,
     uint32_t *out_count, uint32_t *out_total) {
     iris_media_reconciler_t *reconciler =
         (iris_media_reconciler_t *)context;
-    return ivr_fmq_adapter_list_workers(reconciler->adapter, workers, capacity,
+    return ivr_control_adapter_list_workers(reconciler->adapter, workers, capacity,
                                         out_count, out_total);
 }
 
@@ -284,14 +284,14 @@ static ivr_status_t default_request_inventory(
     void *context, const ivr_worker_inventory_request_t *request) {
     iris_media_reconciler_t *reconciler =
         (iris_media_reconciler_t *)context;
-    return ivr_fmq_adapter_request_inventory(reconciler->adapter, request);
+    return ivr_control_adapter_request_inventory(reconciler->adapter, request);
 }
 
 static ivr_status_t default_rebind(
     void *context, const ivr_worker_inventory_record_t *record) {
     iris_media_reconciler_t *reconciler =
         (iris_media_reconciler_t *)context;
-    return ivr_fmq_adapter_rebind_dialog(reconciler->adapter, record);
+    return ivr_control_adapter_rebind_dialog(reconciler->adapter, record);
 }
 
 static ivr_status_t default_close(
@@ -299,7 +299,7 @@ static ivr_status_t default_close(
     const char *message_id, uint64_t deadline_timeout_ms) {
     iris_media_reconciler_t *reconciler =
         (iris_media_reconciler_t *)context;
-    return ivr_fmq_adapter_close_orphan(reconciler->adapter, record,
+    return ivr_control_adapter_close_orphan(reconciler->adapter, record,
                                         message_id, deadline_timeout_ms);
 }
 
@@ -308,14 +308,14 @@ static ivr_status_t default_complete(
     uint64_t worker_epoch) {
     iris_media_reconciler_t *reconciler =
         (iris_media_reconciler_t *)context;
-    return ivr_fmq_adapter_complete_worker_reconcile(
+    return ivr_control_adapter_complete_worker_reconcile(
         reconciler->adapter, worker_id, worker_instance_id, worker_epoch);
 }
 
 static int default_required(void *context) {
     iris_media_reconciler_t *reconciler =
         (iris_media_reconciler_t *)context;
-    return ivr_fmq_adapter_reconcile_required(reconciler->adapter);
+    return ivr_control_adapter_reconcile_required(reconciler->adapter);
 }
 
 static int stable_resource_lost_id(
@@ -560,7 +560,7 @@ static ivr_status_t process_inventory_record(
 
 static ivr_status_t reconcile_worker(
     iris_media_reconciler_t *reconciler,
-    const ivr_fmq_worker_snapshot_t *worker, size_t expected_count,
+    const ivr_control_worker_snapshot_t *worker, size_t expected_count,
     int *out_cleanup_pending) {
     ivr_worker_inventory_request_t request;
     uint64_t revision = 0;
@@ -792,7 +792,7 @@ iris_media_reconciler_t *iris_media_reconciler_create(
         config->resource_capacity > SIZE_MAX /
                                         sizeof(iris_expected_media_resource_t) ||
         config->worker_capacity > SIZE_MAX /
-                                      sizeof(ivr_fmq_worker_snapshot_t) ||
+                                      sizeof(ivr_control_worker_snapshot_t) ||
         config->inventory_queue_capacity >
             SIZE_MAX / sizeof(ivr_worker_inventory_envelope_t)) {
         return NULL;
@@ -819,7 +819,7 @@ iris_media_reconciler_t *iris_media_reconciler_create(
         config->resource_capacity, sizeof(*reconciler->expected));
     reconciler->matched =
         (unsigned char *)calloc(config->resource_capacity, 1u);
-    reconciler->workers = (ivr_fmq_worker_snapshot_t *)calloc(
+    reconciler->workers = (ivr_control_worker_snapshot_t *)calloc(
         config->worker_capacity, sizeof(*reconciler->workers));
     reconciler->inventory_queue =
         (ivr_worker_inventory_envelope_t *)calloc(
@@ -860,7 +860,7 @@ fail:
 }
 
 int iris_media_reconciler_set_adapter(iris_media_reconciler_t *reconciler,
-                                      ivr_fmq_adapter_t *adapter) {
+                                      ivr_control_adapter_t *adapter) {
     if (!reconciler || !adapter || reconciler->injected_ops ||
         reconciler->thread_started || reconciler->adapter) {
         return -1;

@@ -3,7 +3,7 @@
 
 #include "iris_command_ledger_port.h"
 #include "iris_resource_observer.h"
-#include "ivr_flowmq_gateway.h"
+#include "ivr_control_gateway.h"
 #include "ivr_room_bridge.h"
 #include <stddef.h>
 #include <stdint.h>

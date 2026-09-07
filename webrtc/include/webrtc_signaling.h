@@ -19,7 +19,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <CoroNet/turbo_coro_context.h>
 #include <turbo_export.h>
 
 #ifdef __cplusplus
@@ -39,6 +38,7 @@ typedef struct webrtc_peer_s webrtc_peer_t;
 typedef struct {
     const char *host;               /**< Bind host (e.g., "0.0.0.0") */
     uint16_t port;                  /**< Bind port (e.g., 8080) */
+    size_t connection_capacity;     /**< Required hard limit for live WebSocket connections */
     int use_tls;                    /**< 1 for WSS, 0 for WS */
     const char *cert_file;          /**< Path to SSL certificate */
     const char *key_file;           /**< Path to SSL private key */
@@ -46,7 +46,7 @@ typedef struct {
     int max_rooms;                  /**< Max active rooms (0 = unlimited) */
     int peer_timeout_ms;            /**< Peer idle timeout */
     int join_timeout_ms;            /**< Fixed deadline for the first successful join */
-    size_t max_message_size;        /**< Complete WebSocket message limit (0 = unlimited) */
+    size_t max_message_size;        /**< Complete WebSocket message limit (0 = bounded 64 KiB default) */
     int messages_per_second;        /**< Per-peer token refill rate (0 = disabled) */
     int message_burst;              /**< Per-peer token bucket capacity */
     size_t max_outbox_messages;     /**< Per-peer queued message limit (0 = unlimited) */
@@ -100,12 +100,10 @@ typedef struct {
 /**
  * @brief Create WebRTC signaling server
  *
- * @param loop Opaque backend loop pointer. Prefer passing a CoroNet
- *             `turbo_loop_t *`; pass NULL to let the implementation allocate
- *             or bind lazily as supported by the active backend.
+ * @param reserved Reserved for ABI growth; must be NULL.
  */
 TURBO_MEDIA_API webrtc_signaling_server_t *webrtc_signaling_create(
-    void *loop,
+    void *reserved,
     const webrtc_signaling_config_t *config);
 
 /**
@@ -114,29 +112,16 @@ TURBO_MEDIA_API webrtc_signaling_server_t *webrtc_signaling_create(
 TURBO_MEDIA_API int webrtc_signaling_start(webrtc_signaling_server_t *server);
 
 /**
- * @brief Start asynchronous signaling server shutdown
+ * @brief Stop signaling server and drain its CHTTP/CNet owner thread
  *
- * Stops accepting new connections and wakes active peers. The listener and
- * accepted connection tasks remain owned by CoroNet until destroy drains them.
- * This function is thread-safe; listener shutdown is posted to the owning
- * coroutine context.
+ * Stops accepting new connections, closes active peers, joins the owner and
+ * cleanup threads, and releases the stopped CHTTP instance. This function is
+ * thread-safe and permits a later restart.
  */
 TURBO_MEDIA_API void webrtc_signaling_stop(webrtc_signaling_server_t *server);
 
 /**
- * @brief Drive the server's coroutine context for one iteration.
- *
- * Higher-level wrappers that embed the signaling server in their own main loop
- * should use this instead of polling the raw backend loop directly. Call from
- * the coroutine context owner thread only.
- */
-TURBO_MEDIA_API int webrtc_signaling_run(webrtc_signaling_server_t *server, turbo_run_mode_t mode);
-
-/**
- * @brief Destroy signaling server after draining all CoroNet connection tasks
- *
- * Call from the coroutine context owner thread after concurrent run calls have
- * returned.
+ * @brief Destroy a stopped signaling server and all owned state
  */
 TURBO_MEDIA_API void webrtc_signaling_destroy(webrtc_signaling_server_t *server);
 
@@ -144,6 +129,13 @@ TURBO_MEDIA_API void webrtc_signaling_destroy(webrtc_signaling_server_t *server)
  * @brief Get active peer count
  */
 TURBO_MEDIA_API int webrtc_signaling_get_peer_count(webrtc_signaling_server_t *server);
+
+/**
+ * @brief Get the bound listener port after start
+ * @return 0 on success, -1 when stopped or invalid
+ */
+TURBO_MEDIA_API int webrtc_signaling_get_port(
+    webrtc_signaling_server_t *server, uint16_t *out_port);
 
 /**
  * @brief Broadcast message to all peers in room

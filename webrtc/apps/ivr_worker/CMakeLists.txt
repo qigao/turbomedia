@@ -5,8 +5,8 @@ project(
   VERSION 1.0.0
   LANGUAGES C)
 
-# Standalone IVR worker executable. The parent IVR module requires the FlowMQ
-# typed DEALER gateway before this directory is added.
+# Standalone IVR worker executable. The parent IVR module requires the CHTTP H1 WebSocket
+# typed WebSocket control gateway before this directory is added.
 add_executable(ivr_worker
   ivr_worker_control.c
   ivr_worker_health.c
@@ -26,7 +26,7 @@ target_link_libraries(ivr_worker
     turbo_media_ivr
     turbo_media_ivr_rtc
     TurboMedia::RTC
-    TurboHttp::Iris
+    Salts::CHTTP
     Salts::TomlParser
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>)
@@ -43,12 +43,12 @@ set_target_properties(ivr_worker
     FOLDER "Applications")
 
 turbo_media_deploy_windows_runtime(
-  ivr_worker FlowMQ::FlowMQ TurboHttp::Iris TurboHttp::TurboHttp
-  TurboNet::CoroNet Salts::DataBind Salts::Capture
+  ivr_worker Salts::CHTTP
+  Salts::CNet Salts::DataBind Salts::Capture
   RulesForge::rules_forge)
 
 # Dry-run smoke test: validates config and exercises media-call admission
-# without touching FlowMQ.
+# without touching CHTTP H1 WebSocket.
 add_test(
   NAME turbo_media_test_ivr_worker_dry_run
   COMMAND ivr_worker --dry-run
@@ -127,8 +127,7 @@ cmake_add_test(
           ivr_worker_metrics.c
           ivr_worker_http.c
           ../../ivr/src/ivr_http_media_client.c
-  LIBS Salts::TinyTest Salts::Core TurboHttp::Iris
-       TurboHttp::TurboHttp TurboNet::CoroNet
+  LIBS Salts::TinyTest Salts::Core Salts::CHTTP Salts::CNet
        $<$<PLATFORM_ID:Linux>:pthread>
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
            ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
@@ -137,15 +136,14 @@ cmake_add_test(
 set_target_properties(test_ivr_worker_http
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 turbo_media_deploy_windows_runtime(
-  test_ivr_worker_http TurboHttp::Iris TurboHttp::TurboHttp TurboNet::CoroNet)
+  test_ivr_worker_http Salts::CHTTP Salts::CNet)
 
 install(FILES config/ivr_worker.toml.example
   DESTINATION etc/turbonet COMPONENT IvrWorker)
 if(WIN32)
   install(
-    FILES $<TARGET_FILE:TurboHttp::Iris>
-          $<TARGET_FILE:TurboHttp::TurboHttp>
-          $<TARGET_FILE:TurboNet::CoroNet>
+    FILES $<TARGET_FILE:Salts::CHTTP>
+          $<TARGET_FILE:Salts::CNet>
           $<TARGET_FILE:Salts::DataBind>
           $<TARGET_FILE:Salts::Capture>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>

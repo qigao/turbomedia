@@ -26,7 +26,7 @@ target_include_directories(
           ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC Salts::DataBind Salts::Core TurboMedia::Speech TurboHttp::HttpClient
+  PUBLIC Salts::DataBind Salts::Core TurboMedia::Speech Salts::CHTTP
   PRIVATE Salts::JsonParser Threads::Threads)
 set_target_properties(turbo_media_ivr PROPERTIES FOLDER "turbomedia/components")
 
@@ -44,7 +44,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_ivr_rtc
   PUBLIC turbo_media_ivr TurboMedia::RTC
-  PRIVATE TurboHttp::TurboHttp)
+  PRIVATE Salts::CHTTP)
 set_target_properties(turbo_media_ivr_rtc PROPERTIES FOLDER "turbomedia/components")
 
 file(
@@ -54,7 +54,7 @@ file(
 
 # ---------------------------------------------------------------------------
 # Gate A codegen: tbe_compiler --source-output renders owning typed .h/.c from
-# the canonical schema. FlowMQ messages require these generated typed bindings,
+# the canonical schema. CHTTP H1 WebSocket messages require these generated typed bindings,
 # so an IVR build fails fast when the compiler is unavailable.
 # ---------------------------------------------------------------------------
 turbo_media_find_tbe_compiler(TBE_COMPILER_EXECUTABLE)
@@ -84,25 +84,20 @@ target_link_libraries(turbo_media_ivr PUBLIC turbo_media_ivr_schema)
 message(STATUS "IVR codegen: ${TBE_COMPILER_EXECUTABLE}")
 
 # ---------------------------------------------------------------------------
-# FlowMQ command/event adapters. FLOWMQ_ROOT is supplied by CMakeUserPresets;
-# no deprecated package-root variable or implicit environment fallback exists.
+# CHTTP HTTP/1.1 WebSocket command/event adapters.
 # ---------------------------------------------------------------------------
-if(NOT TARGET FlowMQ::FlowMQ)
-  message(FATAL_ERROR
-    "IVR requires independent FlowMQ::FlowMQ transport")
-endif()
 target_sources(
   turbo_media_ivr
-  PRIVATE src/ivr_flowmq_gateway.c
+  PRIVATE src/ivr_control_ws.c
+          src/ivr_control_gateway.c
           src/ivr_room_bridge.c)
-target_compile_definitions(turbo_media_ivr PUBLIC TURBO_MEDIA_HAS_FLOWMQ)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC FlowMQ::FlowMQ turbo_media_ivr_schema)
+  PUBLIC turbo_media_ivr_schema)
 # Visible to sibling subdirectories (RoomService app) processed after this one.
-set(TURBO_MEDIA_HAS_IVR_FMQ ON CACHE INTERNAL
-    "IVR FlowMQ gateway/bridge/adapter available")
-message(STATUS "IVR FlowMQ gateway: required and enabled")
+set(TURBO_MEDIA_HAS_IVR_CONTROL ON CACHE INTERNAL
+    "IVR H1 WebSocket gateway/bridge/adapter available")
+message(STATUS "IVR H1 WebSocket control channel: enabled")
 
 function(turbo_media_ivr_configure_test test_name test_source)
   cmake_add_test(
@@ -121,8 +116,7 @@ function(turbo_media_ivr_configure_test test_name test_source)
     PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
   turbo_media_deploy_windows_runtime(
     ${test_name}
-    FlowMQ::FlowMQ
-    TurboNet::CoroNet
+    Salts::CNet
     Salts::DataBind
     Salts::Core
     Salts::Capture
@@ -131,6 +125,19 @@ endfunction()
 
 turbo_media_ivr_configure_test(test_ivr_frame tests/test_ivr_frame.c)
 turbo_media_ivr_configure_test(test_ivr_protocol tests/test_ivr_protocol.c)
+cmake_add_test(
+  test_ivr_control_ws
+  SOURCES tests/test_ivr_control_ws.c src/ivr_control_ws.c src/ivr_thread.c
+  LIBS Salts::CHTTP Salts::CNet Salts::Core Salts::TinyTest
+       Threads::Threads $<$<PLATFORM_ID:Windows>:ws2_32>
+  INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src
+           ${CMAKE_CURRENT_SOURCE_DIR}/include
+  FOLDER "turbomedia/tests/ivr")
+set_target_properties(
+  test_ivr_control_ws
+  PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+turbo_media_deploy_windows_runtime(
+  test_ivr_control_ws Salts::CHTTP Salts::CNet Salts::Core)
 turbo_media_ivr_configure_test(test_ivr_schema tests/test_ivr_schema.c)
 turbo_media_ivr_configure_test(test_ivr_acl tests/test_ivr_acl.c)
 turbo_media_ivr_configure_test(test_ivr_dtmf_rtp tests/test_ivr_dtmf_rtp.c)
@@ -152,7 +159,7 @@ turbo_media_ivr_configure_test(
 turbo_media_ivr_configure_test(
   test_ivr_certificate_identity tests/test_ivr_certificate_identity.c)
 turbo_media_ivr_configure_test(
-  test_ivr_flowmq tests/test_ivr_flowmq.c)
+  test_ivr_control_gateway tests/test_ivr_control_gateway.c)
 turbo_media_ivr_configure_test(
   test_ivr_room_bridge tests/test_ivr_room_bridge.c)
 turbo_media_ivr_configure_test(

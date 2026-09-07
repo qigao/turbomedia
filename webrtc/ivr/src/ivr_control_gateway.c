@@ -1,13 +1,9 @@
-#include "ivr_flowmq_gateway.h"
+#include "ivr_control_gateway.h"
 #include "ivr_internal.h"
 #include "ivr_frame.h"
+#include "ivr_control_ws.h"
 #include "turbomedia_ivr_v1.h"
-#include "flowmq_connect_endpoint.h"
-#include "flowmq_protocol.h"
-#include "salts_error.h"
-#include "salts_str.h"
 #include <stdio.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -15,8 +11,8 @@
 #define IVR_INVENTORY_WIRE_FRAME_CAPACITY                              \
     (IVR_FRAME_HEADER_SIZE + IVR_INVENTORY_WIRE_JSON_CAPACITY)
 
-struct ivr_flowmq_gateway_s {
-    flowmq_connect_endpoint_t *endpoint;
+struct ivr_control_gateway_s {
+    ivr_control_ws_client_t *endpoint;
     DataBind *codec;
     char worker_id[128];
     ivr_command_gateway_ops_t ops;
@@ -26,39 +22,16 @@ struct ivr_flowmq_gateway_s {
     void *connection_ctx;
     uint64_t sent_count;
     uint64_t rejected_count;
-    uint64_t start_timeout_ns;
-    atomic_uint_fast64_t next_completion_id;
 };
 
-static int flowmq_gateway_send_payload(ivr_flowmq_gateway_t *gateway,
+static int control_ws_gateway_send_payload(ivr_control_gateway_t *gateway,
                                        const uint8_t *payload,
                                        size_t payload_size) {
-    flowmq_protocol_frame_t frame;
-    uint64_t completion_id;
-    tstr encoded = NULL;
-    int rc;
-    if (!gateway || !gateway->endpoint || (!payload && payload_size > 0u)) {
-        return SALTS_EINVAL;
+    if (!gateway || !gateway->endpoint || !payload || payload_size == 0u) {
+        return IVR_EINVAL;
     }
-    memset(&frame, 0, sizeof(frame));
-    frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
-    frame.pattern = FLOWMQ_PROTOCOL_DEALER;
-    completion_id = atomic_fetch_add_explicit(
-        &gateway->next_completion_id, 1u, memory_order_relaxed);
-    if (completion_id == 0u) {
-        completion_id = atomic_fetch_add_explicit(
-            &gateway->next_completion_id, 1u, memory_order_relaxed);
-    }
-    frame.message_id = completion_id;
-    frame.payload = vstr_from_buf((const char *)payload, payload_size);
-    rc = flowmq_protocol_encode_frame(
-        &frame, FLOWMQ_CONNECT_ENDPOINT_DEFAULT_MAX_FRAME_SIZE, &encoded);
-    if (rc == SALTS_OK) {
-        rc = flowmq_connect_endpoint_send_copy(
-            gateway->endpoint, completion_id, encoded, tstr_len(encoded));
-    }
-    tstr_free(encoded);
-    return rc;
+    return ivr_control_ws_client_send_copy(gateway->endpoint, payload,
+                                            payload_size);
 }
 
 /* ------------------------------------------------------------------ */
@@ -138,7 +111,7 @@ static int ivr_build_command_json(const ivr_cmd_map_t *map, char *buf,
     return ivr_json_builder_ok(&jb) ? 0 : -1;
 }
 
-ivr_status_t ivr_flowmq_gateway_encode_command(
+ivr_status_t ivr_control_gateway_encode_command(
     DataBind *codec, const ivr_command_view_t *command, const char *worker_id,
     uint8_t *frame, size_t frame_cap, size_t *out_len) {
     if (!codec || !command || !worker_id || !frame || !out_len) {
@@ -148,7 +121,7 @@ ivr_status_t ivr_flowmq_gateway_encode_command(
     const ivr_cmd_map_t *map = ivr_cmd_map_find(view_text(&command->command_type));
     if (!map) {
         /* worker-local intent (rtc.*, accept, disconnect): not a RoomService
-           command, so it must not be sent on the DEALER channel */
+           command, so it must not be sent on the WebSocket control channel */
         return IVR_ESTATE;
     }
     char json[1024];
@@ -190,7 +163,7 @@ ivr_status_t ivr_flowmq_gateway_encode_command(
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_encode_worker_sync(
+ivr_status_t ivr_control_gateway_encode_worker_sync(
     DataBind *codec, const char *message_id, const char *worker_id,
     uint8_t *frame, size_t frame_cap, size_t *out_len) {
     if (!codec || !message_id || !worker_id || !frame || !out_len) {
@@ -243,7 +216,7 @@ ivr_status_t ivr_flowmq_gateway_encode_worker_sync(
     return IVR_OK;
 }
 
-static ivr_status_t ivr_flowmq_gateway_encode_worker_status(
+static ivr_status_t ivr_control_gateway_encode_worker_status(
     DataBind *codec, const char *type_name, uint16_t type_id,
     const char *message_id, const char *worker_id,
     const ivr_worker_status_view_t *status, uint8_t *frame, size_t frame_cap,
@@ -347,20 +320,20 @@ static ivr_status_t ivr_flowmq_gateway_encode_worker_status(
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_encode_worker_sync_v2(
+ivr_status_t ivr_control_gateway_encode_worker_sync_v2(
     DataBind *codec, const char *message_id, const char *worker_id,
     const ivr_worker_status_view_t *status, uint8_t *frame, size_t frame_cap,
     size_t *out_len) {
-    return ivr_flowmq_gateway_encode_worker_status(
+    return ivr_control_gateway_encode_worker_status(
         codec, "WorkerSyncCommandV2", IVR_TYPE_WORKER_SYNC_COMMAND_V2,
         message_id, worker_id, status, frame, frame_cap, out_len);
 }
 
-ivr_status_t ivr_flowmq_gateway_encode_worker_heartbeat(
+ivr_status_t ivr_control_gateway_encode_worker_heartbeat(
     DataBind *codec, const char *message_id, const char *worker_id,
     const ivr_worker_status_view_t *status, uint8_t *frame, size_t frame_cap,
     size_t *out_len) {
-    return ivr_flowmq_gateway_encode_worker_status(
+    return ivr_control_gateway_encode_worker_status(
         codec, "WorkerHeartbeatV1", IVR_TYPE_WORKER_HEARTBEAT_V1, message_id,
         worker_id, status, frame, frame_cap, out_len);
 }
@@ -436,7 +409,7 @@ static ivr_status_t encode_typed_frame(
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_decode_media_command(
+ivr_status_t ivr_control_gateway_decode_media_command(
     DataBind *codec, const uint8_t *frame, size_t len,
     ivr_media_command_t *out) {
     ivr_frame_info_t info;
@@ -542,7 +515,7 @@ ivr_status_t ivr_flowmq_gateway_decode_media_command(
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_decode_dispatch(DataBind *codec,
+ivr_status_t ivr_control_gateway_decode_dispatch(DataBind *codec,
                                                 const uint8_t *frame,
                                                 size_t len,
                                                 ivr_call_dispatch_t *out) {
@@ -616,7 +589,7 @@ ivr_status_t ivr_flowmq_gateway_decode_dispatch(DataBind *codec,
     return IVR_OK;
 }
 
-int ivr_flowmq_gateway_dispatch_deadline_ok(
+int ivr_control_gateway_dispatch_deadline_ok(
     const ivr_call_dispatch_t *dispatch, uint64_t received_at_ms,
     uint64_t now_ms) {
     uint64_t elapsed;
@@ -631,7 +604,7 @@ int ivr_flowmq_gateway_dispatch_deadline_ok(
     return elapsed < dispatch->deadline_timeout_ms;
 }
 
-ivr_status_t ivr_flowmq_gateway_decode_release(DataBind *codec,
+ivr_status_t ivr_control_gateway_decode_release(DataBind *codec,
                                                const uint8_t *frame,
                                                size_t len,
                                                ivr_call_release_t *out) {
@@ -667,7 +640,7 @@ ivr_status_t ivr_flowmq_gateway_decode_release(DataBind *codec,
     return IVR_OK;
 }
 
-static ivr_status_t ivr_flowmq_gateway_encode_call_result(
+static ivr_status_t ivr_control_gateway_encode_call_result(
     DataBind *codec, const char *type_name, uint16_t type_id,
     const char *message_id, const char *worker_id, const char *room_id,
     const char *call_id, uint64_t call_generation, int status_code,
@@ -740,21 +713,21 @@ static ivr_status_t ivr_flowmq_gateway_encode_call_result(
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_encode_dispatch_result(
+ivr_status_t ivr_control_gateway_encode_dispatch_result(
     DataBind *codec, const ivr_call_dispatch_t *dispatch, int status_code,
     const char *error_code, const char *error_message, uint8_t *frame,
     size_t frame_cap, size_t *out_len) {
     if (!dispatch) {
         return IVR_EINVAL;
     }
-    return ivr_flowmq_gateway_encode_call_result(
+    return ivr_control_gateway_encode_call_result(
         codec, "CallDispatchResultV1", IVR_TYPE_CALL_DISPATCH_RESULT_V1,
         dispatch->message_id, dispatch->worker_id, dispatch->room_id,
         dispatch->call_id, dispatch->call_generation, status_code, error_code,
         error_message, frame, frame_cap, out_len);
 }
 
-ivr_status_t ivr_flowmq_gateway_encode_dispatch_result_v2(
+ivr_status_t ivr_control_gateway_encode_dispatch_result_v2(
     DataBind *codec, const ivr_call_dispatch_t *dispatch, int status_code,
     uint32_t active_sessions, uint32_t max_sessions,
     const char *error_code, const char *error_message, uint8_t *frame,
@@ -843,40 +816,40 @@ ivr_status_t ivr_flowmq_gateway_encode_dispatch_result_v2(
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_encode_release_result(
+ivr_status_t ivr_control_gateway_encode_release_result(
     DataBind *codec, const ivr_call_release_t *release, int status_code,
     const char *error_code, const char *error_message, uint8_t *frame,
     size_t frame_cap, size_t *out_len) {
     if (!release) {
         return IVR_EINVAL;
     }
-    return ivr_flowmq_gateway_encode_call_result(
+    return ivr_control_gateway_encode_call_result(
         codec, "CallReleaseResultV1", IVR_TYPE_CALL_RELEASE_RESULT_V1,
         release->message_id, release->worker_id, release->room_id,
         release->call_id, release->call_generation, status_code, error_code,
         error_message, frame, frame_cap, out_len);
 }
 
-ivr_status_t ivr_flowmq_gateway_send_dispatch_result(
-    ivr_flowmq_gateway_t *gateway, const ivr_call_dispatch_t *dispatch,
+ivr_status_t ivr_control_gateway_send_dispatch_result(
+    ivr_control_gateway_t *gateway, const ivr_call_dispatch_t *dispatch,
     int status_code, const char *error_code, const char *error_message) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4096u];
     size_t len = 0;
     if (!gateway || !gateway->endpoint || !dispatch) {
         return IVR_EINVAL;
     }
-    if (ivr_flowmq_gateway_encode_dispatch_result(
+    if (ivr_control_gateway_encode_dispatch_result(
             gateway->codec, dispatch, status_code, error_code, error_message,
             frame, sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return flowmq_gateway_send_payload(gateway, frame, len) == SALTS_OK
+    return control_ws_gateway_send_payload(gateway, frame, len) == SALTS_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
 
-ivr_status_t ivr_flowmq_gateway_send_dispatch_result_v2(
-    ivr_flowmq_gateway_t *gateway, const ivr_call_dispatch_t *dispatch,
+ivr_status_t ivr_control_gateway_send_dispatch_result_v2(
+    ivr_control_gateway_t *gateway, const ivr_call_dispatch_t *dispatch,
     int status_code, uint32_t active_sessions, uint32_t max_sessions,
     const char *error_code, const char *error_message) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4096u];
@@ -884,36 +857,36 @@ ivr_status_t ivr_flowmq_gateway_send_dispatch_result_v2(
     if (!gateway || !gateway->endpoint || !dispatch) {
         return IVR_EINVAL;
     }
-    if (ivr_flowmq_gateway_encode_dispatch_result_v2(
+    if (ivr_control_gateway_encode_dispatch_result_v2(
             gateway->codec, dispatch, status_code, active_sessions,
             max_sessions, error_code, error_message, frame, sizeof(frame),
             &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return flowmq_gateway_send_payload(gateway, frame, len) == SALTS_OK
+    return control_ws_gateway_send_payload(gateway, frame, len) == SALTS_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
 
-ivr_status_t ivr_flowmq_gateway_send_release_result(
-    ivr_flowmq_gateway_t *gateway, const ivr_call_release_t *release,
+ivr_status_t ivr_control_gateway_send_release_result(
+    ivr_control_gateway_t *gateway, const ivr_call_release_t *release,
     int status_code, const char *error_code, const char *error_message) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4096u];
     size_t len = 0;
     if (!gateway || !gateway->endpoint || !release) {
         return IVR_EINVAL;
     }
-    if (ivr_flowmq_gateway_encode_release_result(
+    if (ivr_control_gateway_encode_release_result(
             gateway->codec, release, status_code, error_code, error_message,
             frame, sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    return flowmq_gateway_send_payload(gateway, frame, len) == SALTS_OK
+    return control_ws_gateway_send_payload(gateway, frame, len) == SALTS_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
 
-ivr_status_t ivr_flowmq_gateway_decode_result(
+ivr_status_t ivr_control_gateway_decode_result(
     DataBind *codec, const uint8_t *frame, size_t len,
     ivr_command_result_envelope_t *out) {
     ivr_frame_info_t info;
@@ -958,54 +931,43 @@ ivr_status_t ivr_flowmq_gateway_decode_result(
 }
 
 /* ------------------------------------------------------------------ */
-/* DEALER reply ingress                                                 */
+/* WebSocket reply ingress                                              */
 /* ------------------------------------------------------------------ */
 
-static int flowmq_on_message(void *ctx,
-                             const flowmq_protocol_frame_t *message,
-                             uint64_t generation) {
-    ivr_flowmq_gateway_t *g = (ivr_flowmq_gateway_t *)ctx;
-    (void)generation;
-    if (!g || !g->on_reply || !message ||
-        message->kind != FLOWMQ_PROTOCOL_FRAME_DATA ||
-        message->payload.len == 0u) {
-        return SALTS_OK;
+static void control_ws_on_message(void *ctx, const uint8_t *message,
+                              size_t message_size) {
+    ivr_control_gateway_t *g = (ivr_control_gateway_t *)ctx;
+    if (!g || !g->on_reply || !message || message_size == 0u) {
+        return;
     }
-    g->on_reply(g->reply_ctx, (const uint8_t *)message->payload.data,
-                message->payload.len);
-    return SALTS_OK;
+    g->on_reply(g->reply_ctx, message, message_size);
 }
 
-static void flowmq_on_connection_state(
-    void *ctx, flowmq_connect_endpoint_connection_state_t state,
-    int status, size_t connections_current) {
-    ivr_flowmq_gateway_t *gateway = (ivr_flowmq_gateway_t *)ctx;
-    (void)status;
+static void control_ws_on_connection_state(void *ctx, int connected) {
+    ivr_control_gateway_t *gateway = (ivr_control_gateway_t *)ctx;
     if (!gateway || !gateway->on_connection) return;
-    gateway->on_connection(
-        gateway->connection_ctx,
-        state == FLOWMQ_ENDPOINT_CONNECTION_READY && connections_current > 0u);
+    gateway->on_connection(gateway->connection_ctx, connected);
 }
 
 /* ------------------------------------------------------------------ */
 /* ivr_command_gateway_ops_t                                           */
 /* ------------------------------------------------------------------ */
 
-static ivr_status_t flowmq_submit_copy(void *context,
+static ivr_status_t control_ws_submit_copy(void *context,
                                        const ivr_command_view_t *command) {
-    ivr_flowmq_gateway_t *g = (ivr_flowmq_gateway_t *)context;
+    ivr_control_gateway_t *g = (ivr_control_gateway_t *)context;
     if (!g || !g->endpoint || !command) {
         return IVR_EINVAL;
     }
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 64u * 1024u];
     size_t len = 0;
-    ivr_status_t rc = ivr_flowmq_gateway_encode_command(
+    ivr_status_t rc = ivr_control_gateway_encode_command(
         g->codec, command, g->worker_id, frame, sizeof(frame), &len);
     if (rc != IVR_OK) {
         g->rejected_count++;
         return rc;
     }
-    int send_rc = flowmq_gateway_send_payload(g, frame, len);
+    int send_rc = control_ws_gateway_send_payload(g, frame, len);
     if (send_rc != SALTS_OK) {
         g->rejected_count++;
         return IVR_ENOSPC;
@@ -1014,26 +976,26 @@ static ivr_status_t flowmq_submit_copy(void *context,
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_send_worker_sync(
-    ivr_flowmq_gateway_t *gateway, const char *message_id) {
+ivr_status_t ivr_control_gateway_send_worker_sync(
+    ivr_control_gateway_t *gateway, const char *message_id) {
     if (!gateway || !gateway->endpoint || !message_id) {
         return IVR_EINVAL;
     }
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4u * 1024u];
     size_t len = 0;
-    if (ivr_flowmq_gateway_encode_worker_sync(gateway->codec, message_id,
+    if (ivr_control_gateway_encode_worker_sync(gateway->codec, message_id,
                                               gateway->worker_id, frame,
                                               sizeof(frame), &len) != IVR_OK) {
         return IVR_ESTATE;
     }
-    if (flowmq_gateway_send_payload(gateway, frame, len) != SALTS_OK) {
+    if (control_ws_gateway_send_payload(gateway, frame, len) != SALTS_OK) {
         return IVR_ENOSPC;
     }
     return IVR_OK;
 }
 
-static ivr_status_t ivr_flowmq_gateway_send_worker_status(
-    ivr_flowmq_gateway_t *gateway, const char *message_id,
+static ivr_status_t ivr_control_gateway_send_worker_status(
+    ivr_control_gateway_t *gateway, const char *message_id,
     const ivr_worker_status_view_t *status, int heartbeat) {
     uint8_t frame[IVR_FRAME_HEADER_SIZE + 4u * 1024u];
     size_t len = 0;
@@ -1041,47 +1003,47 @@ static ivr_status_t ivr_flowmq_gateway_send_worker_status(
     if (!gateway || !gateway->endpoint || !message_id || !status) {
         return IVR_EINVAL;
     }
-    rc = heartbeat ? ivr_flowmq_gateway_encode_worker_heartbeat(
+    rc = heartbeat ? ivr_control_gateway_encode_worker_heartbeat(
                          gateway->codec, message_id, gateway->worker_id,
                          status, frame, sizeof(frame), &len)
-                   : ivr_flowmq_gateway_encode_worker_sync_v2(
+                   : ivr_control_gateway_encode_worker_sync_v2(
                          gateway->codec, message_id, gateway->worker_id,
                          status, frame, sizeof(frame), &len);
     if (rc != IVR_OK) {
         return rc;
     }
-    return flowmq_gateway_send_payload(gateway, frame, len) == SALTS_OK
+    return control_ws_gateway_send_payload(gateway, frame, len) == SALTS_OK
                ? IVR_OK
                : IVR_ENOSPC;
 }
 
-ivr_status_t ivr_flowmq_gateway_send_worker_sync_v2(
-    ivr_flowmq_gateway_t *gateway, const char *message_id,
+ivr_status_t ivr_control_gateway_send_worker_sync_v2(
+    ivr_control_gateway_t *gateway, const char *message_id,
     const ivr_worker_status_view_t *status) {
-    return ivr_flowmq_gateway_send_worker_status(gateway, message_id, status,
+    return ivr_control_gateway_send_worker_status(gateway, message_id, status,
                                                   0);
 }
 
-ivr_status_t ivr_flowmq_gateway_send_worker_heartbeat(
-    ivr_flowmq_gateway_t *gateway, const char *message_id,
+ivr_status_t ivr_control_gateway_send_worker_heartbeat(
+    ivr_control_gateway_t *gateway, const char *message_id,
     const ivr_worker_status_view_t *status) {
-    return ivr_flowmq_gateway_send_worker_status(gateway, message_id, status,
+    return ivr_control_gateway_send_worker_status(gateway, message_id, status,
                                                   1);
 }
 
-ivr_status_t ivr_flowmq_gateway_send_frame(ivr_flowmq_gateway_t *gateway,
+ivr_status_t ivr_control_gateway_send_frame(ivr_control_gateway_t *gateway,
                                             const uint8_t *frame, size_t len) {
     if (!gateway || !gateway->endpoint || (!frame && len > 0)) {
         return IVR_EINVAL;
     }
-    if (flowmq_gateway_send_payload(gateway, frame, len) != SALTS_OK) {
+    if (control_ws_gateway_send_payload(gateway, frame, len) != SALTS_OK) {
         return IVR_ENOSPC;
     }
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_send_media_result(
-    ivr_flowmq_gateway_t *gateway, const ivr_media_command_t *command,
+ivr_status_t ivr_control_gateway_send_media_result(
+    ivr_control_gateway_t *gateway, const ivr_media_command_t *command,
     int status_code, const char *error_code, const char *error_message) {
     char json[2048];
     char number[32];
@@ -1133,11 +1095,11 @@ ivr_status_t ivr_flowmq_gateway_send_media_result(
     if (status != IVR_OK) {
         return status;
     }
-    return ivr_flowmq_gateway_send_frame(gateway, frame, frame_size);
+    return ivr_control_gateway_send_frame(gateway, frame, frame_size);
 }
 
-ivr_status_t ivr_flowmq_gateway_send_media_event(
-    ivr_flowmq_gateway_t *gateway, const char *worker_id,
+ivr_status_t ivr_control_gateway_send_media_event(
+    ivr_control_gateway_t *gateway, const char *worker_id,
     const ivr_event_view_t *event, uint64_t occurred_at_ms) {
     char json[8192];
     char number[32];
@@ -1197,10 +1159,10 @@ ivr_status_t ivr_flowmq_gateway_send_media_event(
     if (status != IVR_OK) {
         return status;
     }
-    return ivr_flowmq_gateway_send_frame(gateway, frame, frame_size);
+    return ivr_control_gateway_send_frame(gateway, frame, frame_size);
 }
 
-ivr_status_t ivr_flowmq_gateway_decode_inventory_query(
+ivr_status_t ivr_control_gateway_decode_inventory_query(
     DataBind *codec, const uint8_t *frame, size_t len,
     ivr_worker_inventory_request_t *out) {
     ivr_frame_info_t info;
@@ -1305,7 +1267,7 @@ static int inventory_page_valid(
     return 1;
 }
 
-ivr_status_t ivr_flowmq_gateway_encode_inventory_page(
+ivr_status_t ivr_control_gateway_encode_inventory_page(
     DataBind *codec, const ivr_worker_inventory_envelope_t *result,
     uint8_t *frame, size_t frame_capacity, size_t *out_size) {
     char *records_json = NULL;
@@ -1430,8 +1392,8 @@ cleanup:
     return status;
 }
 
-ivr_status_t ivr_flowmq_gateway_send_inventory_page(
-    ivr_flowmq_gateway_t *gateway,
+ivr_status_t ivr_control_gateway_send_inventory_page(
+    ivr_control_gateway_t *gateway,
     const ivr_worker_inventory_envelope_t *result) {
     uint8_t *frame;
     size_t frame_size = 0;
@@ -1443,11 +1405,11 @@ ivr_status_t ivr_flowmq_gateway_send_inventory_page(
     if (!frame) {
         return IVR_ENOSPC;
     }
-    status = ivr_flowmq_gateway_encode_inventory_page(
+    status = ivr_control_gateway_encode_inventory_page(
         gateway->codec, result, frame, IVR_INVENTORY_WIRE_FRAME_CAPACITY,
         &frame_size);
     if (status == IVR_OK) {
-        status = ivr_flowmq_gateway_send_frame(gateway, frame, frame_size);
+        status = ivr_control_gateway_send_frame(gateway, frame, frame_size);
     }
     free(frame);
     return status;
@@ -1457,15 +1419,15 @@ ivr_status_t ivr_flowmq_gateway_send_inventory_page(
 /* lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
-ivr_status_t ivr_flowmq_gateway_create(const ivr_flowmq_gateway_config_t *config,
+ivr_status_t ivr_control_gateway_create(const ivr_control_gateway_config_t *config,
                                        ivr_command_gateway_ops_t *ops,
-                                       ivr_flowmq_gateway_t **out_gateway) {
+                                       ivr_control_gateway_t **out_gateway) {
     if (!config || !config->worker_id || !config->host || config->port <= 0 ||
         !ops || !out_gateway) {
         return IVR_EINVAL;
     }
-    ivr_flowmq_gateway_t *g =
-        (ivr_flowmq_gateway_t *)calloc(1, sizeof(*g));
+    ivr_control_gateway_t *g =
+        (ivr_control_gateway_t *)calloc(1, sizeof(*g));
     if (!g) {
         return IVR_ENOSPC;
     }
@@ -1480,47 +1442,52 @@ ivr_status_t ivr_flowmq_gateway_create(const ivr_flowmq_gateway_config_t *config
         return IVR_ENOSPC;
     }
 
-    flowmq_connect_endpoint_config_t ep;
+    ivr_control_ws_client_config_t ep;
     uint64_t timeout_ms = config->timeout_ms ? config->timeout_ms : 5000u;
-    int rc;
-    if (timeout_ms > UINT64_MAX / UINT64_C(1000000)) {
+    char uri[512];
+    int written;
+    if (timeout_ms > UINT32_MAX || config->port > UINT16_MAX) {
         data_bind_free(g->codec);
         free(g);
         return IVR_EINVAL;
     }
-    flowmq_connect_endpoint_config_init(&ep);
-    ep.pattern = FLOWMQ_PROTOCOL_DEALER;
-    ep.transport = config->transport
-                       ? (flowmq_coronet_transport_t)config->transport
-                       : FLOWMQ_TRANSPORT_TCP;
-    ep.host = config->host;
-    ep.port = config->port;
+    written = snprintf(uri, sizeof(uri), "%s://%s:%d%s",
+                       config->use_tls ? "wss" : "ws", config->host,
+                       config->port,
+                       config->path && config->path[0]
+                           ? config->path
+                           : "/internal/ivr/control");
+    if (written <= 0 || (size_t)written >= sizeof(uri)) {
+        data_bind_free(g->codec);
+        free(g);
+        return IVR_EINVAL;
+    }
+    ivr_control_ws_client_config_init(&ep);
+    ep.uri = uri;
     ep.identity = g->worker_id;
-    ep.topic = "ivr.internal";
-    ep.max_frame_size = FLOWMQ_CONNECT_ENDPOINT_DEFAULT_MAX_FRAME_SIZE;
-    ep.timeouts.timeout_ms = timeout_ms;
-    ep.timeouts.set_flags = FLOWMQ_TIMEOUT_SET_DEFAULT;
+    ep.maximum_queue_messages = 64u;
+    ep.maximum_queue_bytes = 256u * 1024u;
+    ep.maximum_message_bytes = IVR_INVENTORY_WIRE_FRAME_CAPACITY;
+    ep.start_timeout_ms = (uint32_t)timeout_ms;
+    ep.io_timeout_ms = 20u;
     ep.reconnect_initial_ms =
-        config->reconnect_initial_ms ? config->reconnect_initial_ms : 1000;
+        (uint32_t)(config->reconnect_initial_ms
+                       ? config->reconnect_initial_ms
+                       : 1000u);
     ep.reconnect_max_ms =
-        config->reconnect_max_ms ? config->reconnect_max_ms : 30000;
+        (uint32_t)(config->reconnect_max_ms
+                       ? config->reconnect_max_ms
+                       : 30000u);
     ep.tls = config->tls;
-    ep.path = config->path ? config->path : "";
-    ep.context = NULL;
-    ep.drive_context = 1;
-    ep.own_context = 1;
-    ep.on_frame = flowmq_on_message;
-    ep.on_state = flowmq_on_connection_state;
-    ep.callback_ctx = g;
+    ep.on_message = control_ws_on_message;
+    ep.on_connection = control_ws_on_connection_state;
+    ep.callback_context = g;
 
     g->on_reply = config->on_reply;
     g->reply_ctx = config->reply_ctx;
     g->on_connection = config->on_connection;
     g->connection_ctx = config->connection_ctx;
-    g->start_timeout_ns = timeout_ms * UINT64_C(1000000);
-    atomic_init(&g->next_completion_id, 1u);
-    rc = flowmq_connect_endpoint_create(&ep, &g->endpoint);
-    if (rc != SALTS_OK) {
+    if (ivr_control_ws_client_create(&ep, &g->endpoint) != IVR_OK) {
         data_bind_free(g->codec);
         free(g);
         return IVR_ENOSPC;
@@ -1528,28 +1495,25 @@ ivr_status_t ivr_flowmq_gateway_create(const ivr_flowmq_gateway_config_t *config
 
     g->ops.abi_version = 1;
     g->ops.context = g;
-    g->ops.submit_copy = flowmq_submit_copy;
+    g->ops.submit_copy = control_ws_submit_copy;
     *ops = g->ops;
     *out_gateway = g;
     return IVR_OK;
 }
 
-ivr_status_t ivr_flowmq_gateway_start(ivr_flowmq_gateway_t *gateway) {
+ivr_status_t ivr_control_gateway_start(ivr_control_gateway_t *gateway) {
     if (!gateway || !gateway->endpoint) {
         return IVR_EINVAL;
     }
-    return flowmq_connect_endpoint_start(
-               gateway->endpoint, gateway->start_timeout_ns) == SALTS_OK
-               ? IVR_OK
-               : IVR_ESTATE;
+    return ivr_control_ws_client_start(gateway->endpoint);
 }
 
-void ivr_flowmq_gateway_destroy(ivr_flowmq_gateway_t *gateway) {
+void ivr_control_gateway_destroy(ivr_control_gateway_t *gateway) {
     if (!gateway) {
         return;
     }
     if (gateway->endpoint) {
-        flowmq_connect_endpoint_destroy(gateway->endpoint);
+        ivr_control_ws_client_destroy(gateway->endpoint);
         gateway->endpoint = NULL;
     }
     if (gateway->codec) {

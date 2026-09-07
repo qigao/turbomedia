@@ -7,15 +7,12 @@
 #include "tinytest.h"
 #include "turbo_datachannel.h"
 #include "ice_integration.h"
-#include "ice/turbo_ice.h"
-#include <turbo_coro_context.h>
+#include <ice/salts_ice.h>
 #include <salts_thread.h>
 #include <string.h>
 
 /* Test context */
 typedef struct {
-    turbo_loop_t *loop;
-    
     /* Peer A (offerer) */
     turbo_dc_context_t *ctx_a;
     turbo_dc_peer_t *peer_a;
@@ -25,8 +22,7 @@ typedef struct {
     turbo_dc_context_t *ctx_b;
     turbo_dc_peer_t *peer_b;
     ice_integration_ctx_t *ice_b;
-    coro_context_t *direct_ice_ctx;
-    turbo_ice_agent_t *direct_ice_agent;
+    salts_ice_agent_t *direct_ice_agent;
     
     /* State tracking */
     int peer_a_connected;
@@ -49,7 +45,6 @@ static test_context_t g_test_ctx;
 
 void setUp(void) {
     memset(&g_test_ctx, 0, sizeof(g_test_ctx));
-    g_test_ctx.loop = turbo_loop_create();
 }
 
 void tearDown(void) {
@@ -85,10 +80,6 @@ void tearDown(void) {
         ice_agent_destroy(g_test_ctx.direct_ice_agent);
         g_test_ctx.direct_ice_agent = NULL;
     }
-    if (g_test_ctx.direct_ice_ctx) {
-        coro_context_destroy(g_test_ctx.direct_ice_ctx);
-        g_test_ctx.direct_ice_ctx = NULL;
-    }
     
     /* Cleanup contexts */
     if (g_test_ctx.ctx_a) {
@@ -100,21 +91,11 @@ void tearDown(void) {
         g_test_ctx.ctx_b = NULL;
     }
     
-    /* Run loop multiple times to process all close callbacks */
-    /* Use UV_RUN_DEFAULT with a short timeout to ensure all callbacks fire */
+    /* Let the SaltsNet ICE owner finish any pending callback work. */
     for (int i = 0; i < 50; i++) {
-        turbo_loop_poll(g_test_ctx.loop, 0, 0);
         ice_integration_poll(g_test_ctx.ice_a);
         ice_integration_poll(g_test_ctx.ice_b);
-        if (!turbo_loop_alive(g_test_ctx.loop)) {
-            break;
-        }
         salts_sleep_ms(1);
-    }
-
-    if (g_test_ctx.loop) {
-        turbo_loop_destroy(g_test_ctx.loop);
-        g_test_ctx.loop = NULL;
     }
 }
 
@@ -210,14 +191,14 @@ void test_ice_integration_create(void) {
     /* This avoids DNS resolution issues during test cleanup */
     g_test_ctx.ice_a = ice_integration_create(
         g_test_ctx.peer_a,
-        g_test_ctx.loop,
+        NULL,
         NULL, 0,  /* No STUN servers */
         NULL, NULL, NULL, 0
     );
     check_not_null(g_test_ctx.ice_a);
 }
 
-void test_datachannel_attaches_turbonet_ice_agent(void) {
+void test_datachannel_attaches_saltsnet_ice_agent(void) {
     turbo_dc_config_t dc_config = {
         .is_server = 0,
         .transport = TURBO_DC_TRANSPORT_ICE
@@ -229,10 +210,7 @@ void test_datachannel_attaches_turbonet_ice_agent(void) {
     g_test_ctx.peer_a = turbo_dc_peer_create(g_test_ctx.ctx_a, NULL, 0, NULL);
     check_not_null(g_test_ctx.peer_a);
 
-    g_test_ctx.direct_ice_ctx = coro_context_create(g_test_ctx.loop);
-    check_not_null(g_test_ctx.direct_ice_ctx);
-    g_test_ctx.direct_ice_agent =
-        ice_agent_create(g_test_ctx.direct_ice_ctx, &ice_config);
+    g_test_ctx.direct_ice_agent = ice_agent_create(&ice_config);
     check_not_null(g_test_ctx.direct_ice_agent);
 
     check_equal((int)(turbo_dc_peer_set_ice_agent(NULL, g_test_ctx.direct_ice_agent)), (int)(-1));
@@ -274,7 +252,6 @@ void test_ice_integration_gathering(void) {
     
     /* Run event loop briefly to allow gathering to start */
     for (int i = 0; i < 10; i++) {
-        turbo_loop_poll(g_test_ctx.loop, 0, 0);
         ice_integration_poll(g_test_ctx.ice_a);
     }
     
@@ -295,7 +272,6 @@ void test_ice_integration_timeout(void) {
     
     /* Run event loop briefly */
     for (int i = 0; i < 5; i++) {
-        turbo_loop_poll(g_test_ctx.loop, 0, 0);
         ice_integration_poll(g_test_ctx.ice_a);
     }
     
@@ -356,7 +332,7 @@ void test_ice_integration_with_stun(void) {
     const char *stun_servers[] = {"stun:stun.l.google.com:19302"};
     g_test_ctx.ice_a = ice_integration_create(
         g_test_ctx.peer_a,
-        g_test_ctx.loop,
+        NULL,
         stun_servers, 1,
         NULL, NULL, NULL, 0
     );
@@ -372,7 +348,6 @@ void test_ice_integration_with_stun(void) {
     /* Run event loop long enough for DNS to complete and cleanup to work */
     /* This gives time for async operations to finish before tearDown */
     for (int i = 0; i < 100; i++) {
-        turbo_loop_poll(g_test_ctx.loop, 0, 0);
         ice_integration_poll(g_test_ctx.ice_a);
         salts_sleep_ms(10);
     }
@@ -386,7 +361,7 @@ spec("test_ice_integration") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
   it("test_ice_integration_create") { test_ice_integration_create(); };
-  it("test_datachannel_attaches_turbonet_ice_agent") { test_datachannel_attaches_turbonet_ice_agent(); };
+  it("test_datachannel_attaches_saltsnet_ice_agent") { test_datachannel_attaches_saltsnet_ice_agent(); };
   it("test_ice_integration_credentials") { test_ice_integration_credentials(); };
   it("test_ice_integration_gathering") { test_ice_integration_gathering(); };
   it("test_ice_integration_timeout") { test_ice_integration_timeout(); };

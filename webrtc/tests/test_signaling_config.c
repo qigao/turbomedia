@@ -91,6 +91,7 @@ spec("signaling TOML configuration") {
             "max_ttl_seconds = 900\n"
             "\n"
             "[limits]\n"
+            "connection_capacity = 8192\n"
             "max_peers = 2048\n"
             "max_rooms = 256\n"
             "peer_timeout_ms = 45000\n"
@@ -159,6 +160,7 @@ spec("signaling TOML configuration") {
                 "0000000000000000000000000000000000000000000000000000000000000000");
             check_equal(config.http_auth_clock_skew_seconds, 15);
             check_equal(config.http_auth_max_ttl_seconds, 900);
+            check_equal(config.connection_capacity, 8192);
             check_equal(config.max_peers, 2048);
             check_equal(config.max_rooms, 256);
             check_equal(config.peer_timeout_ms, 45000);
@@ -291,6 +293,22 @@ spec("signaling TOML configuration") {
         if (path) {
             check_equal(signaling_server_config_load(&config, path), -1);
             check_equal(config.peer_timeout_ms, 60000);
+        }
+        signaling_server_config_cleanup(&config);
+        remove_toml(path);
+    }
+
+    it("requires a bounded WebSocket connection capacity") {
+        static const char toml[] =
+            "[limits]\n"
+            "connection_capacity = 0\n";
+        signaling_server_config_t config;
+        char *path = write_toml(toml);
+
+        signaling_server_config_init(&config);
+        if (path) {
+            check_equal(signaling_server_config_load(&config, path), -1);
+            check_equal(config.connection_capacity, 4096);
         }
         signaling_server_config_cleanup(&config);
         remove_toml(path);

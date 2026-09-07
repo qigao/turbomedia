@@ -1,7 +1,7 @@
 /**
  * RTMP Streamer Implementation
  *
- * 基于 refer/librtmp + CoroNet 实现 RTMP 推拉流
+ * 基于 refer/librtmp + Salts CNet 实现 RTMP 推拉流
  */
 #include "turbo_streamer.h"
 #include "turbo_transport.h"
@@ -14,8 +14,6 @@
 
 #include "rtmp-client.h"
 #include "amf0.h"
-#include "CoroNet/turbo_coro_context.h"
-#include "CoroNet/turbo_coro_socket.h"
 
 static const char RTMP_METADATA_TITLE[] = "title";
 static const char RTMP_METADATA_AUTHOR[] = "author";
@@ -37,8 +35,7 @@ typedef struct {
     
     /* 网络传输 */
     turbo_transport_t *transport;
-    coro_context_t *coro_ctx;
-    int owns_context;
+    cnet_client *network_client;
     
     /* 流信息 */
     turbo_stream_info_t video_info;
@@ -325,21 +322,7 @@ static void *rtmp_streamer_create(const turbo_streamer_config_t *config) {
     ctx->stream_key = config->stream_key ? strdup(config->stream_key) : NULL;
     ctx->chunk_size = config->chunk_size > 0 ? config->chunk_size : 4096;
     
-    /* 获取或创建 CoroNet 上下文 */
-    if (config->coro_context) {
-        ctx->coro_ctx = (coro_context_t *)config->coro_context;
-        ctx->owns_context = 0;
-    } else {
-        ctx->coro_ctx = coro_context_create(NULL);
-        if (!ctx->coro_ctx) {
-            free(ctx->url);
-            free(ctx->app);
-            free(ctx->stream_key);
-            free(ctx);
-            return NULL;
-        }
-        ctx->owns_context = 1;
-    }
+    ctx->network_client = config->network_client;
     
     /* 初始化统计 */
     ctx->stats.uptime_ms = 0;
@@ -359,11 +342,6 @@ static void rtmp_streamer_destroy_impl(void *ctx_ptr) {
     /* 清理传输层 */
     if (ctx->transport) {
         turbo_transport_destroy(ctx->transport);
-    }
-    
-    /* 清理上下文 */
-    if (ctx->owns_context && ctx->coro_ctx) {
-        coro_context_destroy(ctx->coro_ctx);
     }
     
     free(ctx->url);
@@ -398,7 +376,7 @@ static int rtmp_streamer_connect_impl(void *ctx_ptr) {
         .host = host,
         .port = port,
         .connect_timeout_ms = 5000,
-        .coro_ctx = ctx->coro_ctx
+        .cnet_client = ctx->network_client
     };
     
     ctx->transport = turbo_transport_create(&transport_config);

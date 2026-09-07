@@ -8,7 +8,7 @@
 #include "http_api.h"
 #include <tlog.h>
 #include <platform.h>
-#include <turbo_coro_context.h>
+#include <salts/thread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,7 +19,8 @@ struct signaling_server_s {
     signaling_server_config_t config;
     webrtc_signaling_server_t *ws_server;
     http_api_server_t *http_server;
-    turbo_loop_t *loop;
+    salts_mutex_t mutex;
+    salts_cond_t stopped;
     int running;
 };
 
@@ -65,13 +66,8 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         TLOG_INFOF("Generated node ID: {}", server->config.node_id);
     }
     
-    /* Create event loop */
-    server->loop = turbo_loop_create();
-    if (!server->loop) {
-        TLOG_ERROR("Failed to create event loop");
-        free(server);
-        return NULL;
-    }
+    salts_mutex_init(&server->mutex);
+    salts_cond_init(&server->stopped);
     
     /* Create WebRTC signaling server */
     webrtc_signaling_config_t ws_config = {
@@ -80,6 +76,7 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         .use_tls = server->config.ws_use_tls,
         .cert_file = server->config.ws_cert_file,
         .key_file = server->config.ws_key_file,
+        .connection_capacity = (size_t)server->config.connection_capacity,
         .max_peers = server->config.max_peers,
         .max_rooms = server->config.max_rooms,
         .peer_timeout_ms = server->config.peer_timeout_ms,
@@ -110,9 +107,11 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         .jwt_algo = server->config.jwt_algorithm
     };
     
-    server->ws_server = webrtc_signaling_create(server->loop, &ws_config);
+    server->ws_server = webrtc_signaling_create(NULL, &ws_config);
     if (!server->ws_server) {
         TLOG_ERROR("Failed to create WebRTC signaling server");
+        salts_cond_destroy(&server->stopped);
+        salts_mutex_destroy(&server->mutex);
         free(server);
         return NULL;
     }
@@ -139,7 +138,9 @@ int signaling_server_start(signaling_server_t *server) {
         return -1;
     }
     
+    salts_mutex_lock(&server->mutex);
     server->running = 1;
+    salts_mutex_unlock(&server->mutex);
     
     TLOG_INFOF("WebSocket server listening on {}:{}",
               server->config.ws_host, 
@@ -171,13 +172,16 @@ int signaling_server_start(signaling_server_t *server) {
             .cert_file = server->config.http_cert_file,
             .key_file = server->config.http_key_file
         };
-        server->http_server = http_api_create(server->loop, &http_conf, server->ws_server);
+        server->http_server = http_api_create(NULL, &http_conf, server->ws_server);
         if (!server->http_server || http_api_start(server->http_server) != 0) {
             TLOG_ERROR("Failed to start HTTP API server");
             http_api_destroy(server->http_server);
             server->http_server = NULL;
             webrtc_signaling_stop(server->ws_server);
+            salts_mutex_lock(&server->mutex);
             server->running = 0;
+            salts_cond_broadcast(&server->stopped);
+            salts_mutex_unlock(&server->mutex);
             return -1;
         }
         TLOG_INFOF("{} API server started on {}:{}",
@@ -201,11 +205,13 @@ int signaling_server_run(signaling_server_t *server) {
         return -1;
     }
     
-    TLOG_INFO("Entering event loop...");
-
-    webrtc_signaling_run(server->ws_server, TURBO_RUN_DEFAULT);
-
-    TLOG_INFO("Event loop exited");
+    TLOG_INFO("Waiting for shutdown...");
+    salts_mutex_lock(&server->mutex);
+    while (server->running) {
+        salts_cond_wait(&server->stopped, &server->mutex);
+    }
+    salts_mutex_unlock(&server->mutex);
+    TLOG_INFO("Shutdown requested");
     return 0;
 }
 
@@ -219,7 +225,10 @@ void signaling_server_stop(signaling_server_t *server) {
     
     TLOG_INFO("Stopping signaling server...");
     
+    salts_mutex_lock(&server->mutex);
     server->running = 0;
+    salts_cond_broadcast(&server->stopped);
+    salts_mutex_unlock(&server->mutex);
     
     /* Stop WebSocket server */
     if (server->ws_server) {
@@ -229,11 +238,6 @@ void signaling_server_stop(signaling_server_t *server) {
     /* Stop HTTP API server */
     if (server->http_server) {
         http_api_stop(server->http_server);
-    }
-    
-    /* Stop event loop */
-    if (server->loop) {
-        turbo_loop_stop(server->loop);
     }
     
     TLOG_INFO("Signaling server stopped");
@@ -266,11 +270,8 @@ void signaling_server_destroy(signaling_server_t *server) {
         server->http_server = NULL;
     }
     
-    /* Close event loop */
-    if (server->loop) {
-        turbo_loop_destroy(server->loop);
-        server->loop = NULL;
-    }
+    salts_cond_destroy(&server->stopped);
+    salts_mutex_destroy(&server->mutex);
     
     /* Free server */
     free(server);

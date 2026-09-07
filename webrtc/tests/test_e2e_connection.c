@@ -13,17 +13,16 @@
 #include "turbo_datachannel.h"
 #include "turbo_media_engine.h"
 #include "ice_integration.h"
-#include <turbo_coro_context.h>
+#include <salts/clock.h>
+#include <salts/thread.h>
 #include <string.h>
 #include <stdio.h>
 
 #define TEST_TIMEOUT_MS 30000
 #define MESSAGE_COUNT 10
+#define TEST_CANDIDATE_CAPACITY 512
 
 typedef struct {
-    turbo_loop_t *loop;
-    salts_timer_t *timeout_timer;
-    
     /* Peer A (offerer) */
     turbo_dc_context_t *ctx_a;
     turbo_dc_peer_t *peer_a;
@@ -40,6 +39,10 @@ typedef struct {
     /* Credentials exchange */
     char ufrag_a[32], pwd_a[64];
     char ufrag_b[32], pwd_b[64];
+    char candidates_a[ICE_MAX_CANDIDATES][TEST_CANDIDATE_CAPACITY];
+    char candidates_b[ICE_MAX_CANDIDATES][TEST_CANDIDATE_CAPACITY];
+    int candidate_count_a;
+    int candidate_count_b;
     
     /* State */
     int gathering_complete_a;
@@ -84,11 +87,6 @@ static void check_test_completion(void) {
     }
 }
 
-static void on_timeout(salts_timer_t *timer) {
-    (void)timer;
-    fail_test("Test timeout");
-}
-
 /* ============================================================================
  * Forward Declarations
  * ============================================================================ */
@@ -105,9 +103,10 @@ static void on_candidate_a(const char *candidate_sdp, void *user_data) {
     
     printf("Peer A candidate: %s\n", candidate_sdp);
     
-    /* Trickle to peer B */
-    if (g_ctx.ice_b) {
-        ice_integration_add_remote_candidate(g_ctx.ice_b, candidate_sdp);
+    if (g_ctx.candidate_count_a < ICE_MAX_CANDIDATES) {
+        snprintf(g_ctx.candidates_a[g_ctx.candidate_count_a],
+                 TEST_CANDIDATE_CAPACITY, "%s", candidate_sdp);
+        g_ctx.candidate_count_a++;
     }
 }
 
@@ -116,9 +115,10 @@ static void on_candidate_b(const char *candidate_sdp, void *user_data) {
     
     printf("Peer B candidate: %s\n", candidate_sdp);
     
-    /* Trickle to peer A */
-    if (g_ctx.ice_a) {
-        ice_integration_add_remote_candidate(g_ctx.ice_a, candidate_sdp);
+    if (g_ctx.candidate_count_b < ICE_MAX_CANDIDATES) {
+        snprintf(g_ctx.candidates_b[g_ctx.candidate_count_b],
+                 TEST_CANDIDATE_CAPACITY, "%s", candidate_sdp);
+        g_ctx.candidate_count_b++;
     }
 }
 
@@ -150,7 +150,7 @@ static void on_ice_state_b(ice_state_t state, void *user_data) {
     }
 }
 
-static void on_gathering_complete_a(turbo_ice_agent_t *agent,
+static void on_gathering_complete_a(salts_ice_agent_t *agent,
                                      ice_gathering_state_t state, void *user_data) {
     (void)agent;
     (void)user_data;
@@ -165,7 +165,7 @@ static void on_gathering_complete_a(turbo_ice_agent_t *agent,
     }
 }
 
-static void on_gathering_complete_b(turbo_ice_agent_t *agent,
+static void on_gathering_complete_b(salts_ice_agent_t *agent,
                                      ice_gathering_state_t state, void *user_data) {
     (void)agent;
     (void)user_data;
@@ -302,26 +302,9 @@ static void on_incoming_channel_b(turbo_dc_peer_t *peer, turbo_dc_channel_t *cha
 
 void setUp(void) {
     memset(&g_ctx, 0, sizeof(g_ctx));
-    g_ctx.loop = turbo_loop_create();
-    
-    /* Create timeout timer */
-    g_ctx.timeout_timer = salts_timer_create(NULL);
-    if (g_ctx.timeout_timer) {
-        salts_timer_start(g_ctx.timeout_timer, on_timeout, TEST_TIMEOUT_MS, 0);
-    }
 }
 
 void tearDown(void) {
-    /* Stop timeout */
-    if (g_ctx.timeout_timer) {
-        salts_timer_stop(g_ctx.timeout_timer);
-        salts_timer_destroy(g_ctx.timeout_timer);
-        g_ctx.timeout_timer = NULL;
-    }
-    
-    /* Run loop to process timer close */
-    turbo_loop_poll(g_ctx.loop, 0, 0);
-    
     /* Cleanup channels */
     if (g_ctx.channel_a) {
         turbo_dc_channel_close(g_ctx.channel_a);
@@ -345,13 +328,15 @@ void tearDown(void) {
         turbo_dc_peer_close(g_ctx.peer_b);
     }
     for (int i = 0; i < 10; i++) {
-        turbo_loop_poll(g_ctx.loop, 0, 0);
+        if (g_ctx.peer_a) turbo_dc_peer_poll(g_ctx.peer_a);
+        if (g_ctx.peer_b) turbo_dc_peer_poll(g_ctx.peer_b);
         if (g_ctx.ice_a) {
             ice_integration_poll(g_ctx.ice_a);
         }
         if (g_ctx.ice_b) {
             ice_integration_poll(g_ctx.ice_b);
         }
+        salts_sleep_ms(1);
     }
     
     /* Clear ICE agent references from peers BEFORE destroying ICE
@@ -371,12 +356,6 @@ void tearDown(void) {
     if (g_ctx.ice_b) {
         ice_integration_destroy(g_ctx.ice_b);
         g_ctx.ice_b = NULL;
-    }
-    
-    /* Run loop multiple times to ensure all ICE handles are closed
-     * ICE agent uses deferred cleanup with pending_closes counter */
-    for (int i = 0; i < 10; i++) {
-        turbo_loop_poll(g_ctx.loop, 0, 0);
     }
     
     /* Cleanup peers */
@@ -399,12 +378,6 @@ void tearDown(void) {
         g_ctx.ctx_b = NULL;
     }
     
-    /* Final loop run to cleanup any remaining handles */
-    turbo_loop_poll(g_ctx.loop, 0, 0);
-    if (g_ctx.loop) {
-        turbo_loop_destroy(g_ctx.loop);
-        g_ctx.loop = NULL;
-    }
 }
 
 /* ============================================================================
@@ -412,6 +385,7 @@ void tearDown(void) {
  * ============================================================================ */
 
 void test_e2e_p2p_connection(void) {
+    uint64_t deadline = salts_monotonic_ms() + TEST_TIMEOUT_MS;
     /* Create peer A (offerer) */
     turbo_dc_config_t config_a = {
         .is_server = 0,
@@ -441,14 +415,14 @@ void test_e2e_p2p_connection(void) {
     
     /* Create ICE integration (no STUN servers for local testing) */
     g_ctx.ice_a = ice_integration_create(
-        g_ctx.peer_a, g_ctx.loop,
+        g_ctx.peer_a, NULL,
         NULL, 0,  /* No STUN servers */
         NULL, NULL, NULL, 0
     );
     check_not_null(g_ctx.ice_a);
     
     g_ctx.ice_b = ice_integration_create(
-        g_ctx.peer_b, g_ctx.loop,
+        g_ctx.peer_b, NULL,
         NULL, 0,  /* No STUN servers */
         NULL, NULL, NULL, 0
     );
@@ -484,16 +458,50 @@ void test_e2e_p2p_connection(void) {
     turbo_dc_peer_set_remote_fingerprint(g_ctx.peer_a, fp_hash_b, fp_b);
     turbo_dc_peer_set_remote_fingerprint(g_ctx.peer_b, fp_hash_a, fp_a);
     
-    /* Start ICE gathering */
-    ice_integration_start_gathering(g_ctx.ice_a);
-    ice_integration_start_gathering(g_ctx.ice_b);
+    /* Gather sequentially so synchronous candidate callbacks never create a
+     * cross-owner AB/BA wait in this single-process test harness. */
+    check_equal(ice_integration_start_gathering(g_ctx.ice_a), 0);
+    while (!ice_integration_is_gathering_complete(g_ctx.ice_a) &&
+           salts_monotonic_ms() < deadline) {
+        salts_sleep_ms(1);
+    }
+    check_true(ice_integration_is_gathering_complete(g_ctx.ice_a));
+
+    check_equal(ice_integration_start_gathering(g_ctx.ice_b), 0);
+    while (!ice_integration_is_gathering_complete(g_ctx.ice_b) &&
+           salts_monotonic_ms() < deadline) {
+        salts_sleep_ms(1);
+    }
+    check_true(ice_integration_is_gathering_complete(g_ctx.ice_b));
+
+    for (int i = 0; i < g_ctx.candidate_count_a; ++i) {
+        check_equal(
+            ice_integration_add_remote_candidate(
+                g_ctx.ice_b, g_ctx.candidates_a[i]),
+            0);
+    }
+    for (int i = 0; i < g_ctx.candidate_count_b; ++i) {
+        check_equal(
+            ice_integration_add_remote_candidate(
+                g_ctx.ice_a, g_ctx.candidates_b[i]),
+            0);
+    }
+    ice_integration_end_of_candidates(g_ctx.ice_a);
+    ice_integration_end_of_candidates(g_ctx.ice_b);
     
     /* Set channel callbacks */
     /* Run event loop until test completes */
     while (!g_ctx.test_complete) {
-        turbo_loop_poll(g_ctx.loop, 10, 1);
+        turbo_dc_peer_poll(g_ctx.peer_a);
+        turbo_dc_peer_poll(g_ctx.peer_b);
         ice_integration_poll(g_ctx.ice_a);
         ice_integration_poll(g_ctx.ice_b);
+        turbo_dc_handle_timers();
+        if (salts_monotonic_ms() >= deadline) {
+            fail_test("Test timeout");
+            break;
+        }
+        salts_sleep_ms(10);
     }
     
     /* Verify test passed */

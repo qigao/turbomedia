@@ -2,7 +2,7 @@
  * TurboMedia Streamer Abstraction
  *
  * 统一的流媒体协议接口，支持 HLS、DASH、RTMP 等
- * 集成 TurboNet::CoroNet 和 TurboHTTP::HttpClient
+ * 网络 I/O 由 Salts CNet/CHTTP 驱动
  */
 #ifndef TURBO_STREAMER_H
 #define TURBO_STREAMER_H
@@ -13,6 +13,8 @@
 #include <turbo_codec.h>
 #include <turbo_demuxer.h>
 #include <turbo_muxer.h>
+#include <cnet/cnet.h>
+#include <chttp/chttp.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,9 +57,11 @@ typedef struct {
     const char *stream_key;     /* 推流密钥 */
     int chunk_size;             /* RTMP chunk size */
     
-    /* 网络配置（使用 CoroNet/HttpClient）*/
-    void *coro_context;         /* CoroNet 协程上下文 */
-    void *http_client;          /* TurboHTTP 客户端 */
+    /* 网络 owner 均由调用方持有，并保证串行访问。 */
+    cnet_client *network_client;
+    const cnet_tls_client_config *network_tls;
+    chttp_client *http_client;
+    const chttp_tls_profile *http_tls_profile;
     
 } turbo_streamer_config_t;
 

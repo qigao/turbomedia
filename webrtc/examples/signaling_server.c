@@ -7,34 +7,18 @@
  * Usage: signaling_server [port]
  * Default port: 8080
  */
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#define NORPC
-#define NOSERVICE
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h> 
 
 #include "webrtc_signaling.h"
 #include "tlog.h"
-#include <turbo_coro_context.h>
+#include <salts/thread.h>
+#include <platform.h>
 
 static volatile int g_running = 1;
 static webrtc_signaling_server_t *g_server = NULL;
-enum { SIGNALING_SERVER_ACTIVE_BURST = 32 };
-
-static void signaling_server_idle_yield(void) {
-#ifdef _WIN32
-    Sleep(1);
-#else
-    usleep(1000);
-#endif
-}
+enum { SIGNALING_SERVER_STATUS_INTERVAL_MS = 5000 };
 
 static void signal_handler(int sig) {
     (void)sig;
@@ -49,20 +33,14 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    TLOG_INFO("=== TurboNet WebRTC Signaling Server ===");
-
-    /* Create event loop */
-    turbo_loop_t *loop = turbo_loop_create();
-    if (!loop) {
-        TLOG_ERROR("Failed to create event loop");
-        return 1;
-    }
+    TLOG_INFO("=== TurboMedia WebRTC Signaling Server ===");
 
     /* Configure signaling server */
     webrtc_signaling_config_t config = {
         .host = "0.0.0.0",
         .port = port,
         .use_tls = 0,
+        .connection_capacity = 128,
         .max_peers = 100,
         .peer_timeout_ms = 60000,
         .join_timeout_ms = 10000,
@@ -79,7 +57,7 @@ int main(int argc, char *argv[]) {
     };
 
     /* Create signaling server */
-    g_server = webrtc_signaling_create(loop, &config);
+    g_server = webrtc_signaling_create(NULL, &config);
     if (!g_server) {
         TLOG_ERROR("Failed to create signaling server");
         return 1;
@@ -97,21 +75,13 @@ int main(int argc, char *argv[]) {
     TLOG_INFO("Protocol: webrtc-signaling");
     TLOG_INFO("Press Ctrl+C to stop...");
 
-    /* Run event loop */
+    /* CHTTP owns its network thread; this loop only reports status. */
+    uint64_t last_check = salts_monotonic_ms();
     while (g_running) {
-        int active_handles = 0;
-        int burst = 0;
-        do {
-            active_handles = webrtc_signaling_run(g_server, TURBO_RUN_ONCE);
-            burst++;
-        } while (g_running && active_handles != 0 && burst < SIGNALING_SERVER_ACTIVE_BURST);
-        if (active_handles == 0) {
-            signaling_server_idle_yield();
-        }
-        /* Check peer count periodically */
-        static uint64_t last_check = 0;
-        uint64_t now = turbo_loop_now(loop);
-        if (now - last_check > 5000) {
+        uint64_t now;
+        salts_sleep_ms(100);
+        now = salts_monotonic_ms();
+        if (now - last_check >= SIGNALING_SERVER_STATUS_INTERVAL_MS) {
             int peer_count = webrtc_signaling_get_peer_count(g_server);
             TLOG_INFOF("Active peers: {}", peer_count);
             last_check = now;
@@ -122,9 +92,6 @@ int main(int argc, char *argv[]) {
     TLOG_INFO("Shutting down gracefully...");
     webrtc_signaling_stop(g_server);
     webrtc_signaling_destroy(g_server);
-
-    /* Close loop */
-    turbo_loop_destroy(loop);
 
     TLOG_INFO("Server stopped.");
     return 0;

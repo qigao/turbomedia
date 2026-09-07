@@ -1,8 +1,8 @@
-/* test_ivr_flowmq.c - FlowMQ DEALER gateway encoding + lifecycle.
+/* test_ivr_control.c - CHTTP H1 WebSocket client encoding + lifecycle.
  * The pure frame encoder is verified against the generated schema (decode the
- * BIN payload back and compare typed fields); no live ROUTER peer is needed.
- * Requires TURBO_MEDIA_HAS_FLOWMQ (FlowMQ + tbe_compiler present). */
-#include "ivr_flowmq_gateway.h"
+ * BIN payload back and compare typed fields); no live server peer is needed.
+ * Requires TURBO_MEDIA_HAS_CONTROL_WS (CHTTP H1 WebSocket + tbe_compiler present). */
+#include "ivr_control_gateway.h"
 #include "ivr_frame.h"
 #include "ivr_room_bridge.h"
 #include "turbomedia_ivr_v1.h"
@@ -44,7 +44,7 @@ void test_encode_conference_join(void) {
     make_join_command(&cmd);
     uint8_t frame[4096];
     size_t len = 0;
-    ivr_status_t rc = ivr_flowmq_gateway_encode_command(
+    ivr_status_t rc = ivr_control_gateway_encode_command(
         g_codec, &cmd, "ivr-worker-01", frame, sizeof(frame), &len);
     check_equal(rc, IVR_OK);
     check_true(len > IVR_FRAME_HEADER_SIZE);
@@ -90,7 +90,7 @@ void test_encode_get_snapshot(void) {
     cmd.command_type = type;
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_command(
+    check_equal(ivr_control_gateway_encode_command(
                                   g_codec, &cmd, "ivr-worker-01", frame,
                                   sizeof(frame), &len), IVR_OK);
     ivr_frame_info_t info;
@@ -114,7 +114,7 @@ void test_encode_get_snapshot(void) {
 void test_encode_worker_sync(void) {
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_worker_sync(
+    check_equal(ivr_control_gateway_encode_worker_sync(
                                   g_codec, "ws-1", "ivr-worker-01", frame,
                                   sizeof(frame), &len), IVR_OK);
     ivr_frame_info_t info;
@@ -146,7 +146,7 @@ static void make_worker_status(ivr_worker_status_view_t *status) {
     status->active_sessions = 3;
     status->reserved_sessions = 1;
     status->lease_duration_ms = 15000;
-    status->capabilities = "turboxml,flowmq,tts,asr,health.ready";
+    status->capabilities = "turboxml,control_ws,tts,asr,health.ready";
 }
 
 void test_encode_worker_sync_v2_and_heartbeat(void) {
@@ -154,7 +154,7 @@ void test_encode_worker_sync_v2_and_heartbeat(void) {
     make_worker_status(&status);
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_worker_sync_v2(
+    check_equal(ivr_control_gateway_encode_worker_sync_v2(
                                   g_codec, "sync-v2-1", "ivr-worker-01",
                                   &status, frame, sizeof(frame), &len), IVR_OK);
     ivr_frame_info_t info;
@@ -178,7 +178,7 @@ void test_encode_worker_sync_v2_and_heartbeat(void) {
                 data_bind_value_get(root, "active_sessions"))), (uint64_t)(3u));
     data_bind_object_free(obj);
 
-    check_equal(ivr_flowmq_gateway_encode_worker_heartbeat(
+    check_equal(ivr_control_gateway_encode_worker_heartbeat(
                                   g_codec, "heartbeat-1", "ivr-worker-01",
                                   &status, frame, sizeof(frame), &len), IVR_OK);
     check_equal(ivr_frame_decode(frame, len, &info), IVR_OK);
@@ -192,7 +192,7 @@ void test_encode_worker_status_rejects_invalid_capacity(void) {
     status.reserved_sessions = 1;
     uint8_t frame[4096];
     size_t len = 99;
-    check_equal(ivr_flowmq_gateway_encode_worker_sync_v2(
+    check_equal(ivr_control_gateway_encode_worker_sync_v2(
                           g_codec, "sync-v2-invalid", "ivr-worker-01",
                           &status, frame, sizeof(frame), &len), IVR_EINVAL);
 }
@@ -200,12 +200,12 @@ void test_encode_worker_status_rejects_invalid_capacity(void) {
 void test_encode_unknown_command_rejected(void) {
     ivr_command_view_t cmd;
     make_join_command(&cmd);
-    /* worker-local intent: must not be sent on the DEALER channel */
+    /* worker-local intent: must not be sent on the WebSocket channel */
     static ivr_bytes_view_t type = {"rtc.join", 8};
     cmd.command_type = type;
     uint8_t frame[4096];
     size_t len = 99;
-    check_equal(ivr_flowmq_gateway_encode_command(
+    check_equal(ivr_control_gateway_encode_command(
                           g_codec, &cmd, "ivr-worker-01", frame,
                           sizeof(frame), &len), IVR_ESTATE);
     check_equal(len, 0u); /* zeroed on entry by the encoder contract */
@@ -216,7 +216,7 @@ void test_encode_short_buffer_rejected(void) {
     make_join_command(&cmd);
     uint8_t frame[IVR_FRAME_HEADER_SIZE]; /* no room for the payload */
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_command(
+    check_equal(ivr_control_gateway_encode_command(
                           g_codec, &cmd, "ivr-worker-01", frame,
                           sizeof(frame), &len), IVR_ENOSPC);
 }
@@ -259,7 +259,7 @@ void test_encode_command_escapes_special_chars(void) {
 
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_command(
+    check_equal(ivr_control_gateway_encode_command(
                           g_codec, &cmd, "ivr-worker-01", frame,
                           sizeof(frame), &len), IVR_OK);
 
@@ -280,7 +280,7 @@ void test_encode_worker_sync_escapes_special_chars(void) {
     static const char wid[] = "worker\\\"2";
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_worker_sync(
+    check_equal(ivr_control_gateway_encode_worker_sync(
                           g_codec, mid, wid, frame, sizeof(frame), &len), IVR_OK);
     char out[128];
     decode_string_field("WorkerSyncCommandV1", frame, len, "message_id",
@@ -330,7 +330,7 @@ void test_dispatch_v2_command_roundtrip(void) {
     check_equal(ivr_room_bridge_encode_dispatch_v2(
                                   g_codec, &dispatch, frame, sizeof(frame),
                                   &len), IVR_OK);
-    check_equal(ivr_flowmq_gateway_decode_dispatch(
+    check_equal(ivr_control_gateway_decode_dispatch(
                                   g_codec, frame, len, &decoded), IVR_OK);
     check_equal((uint32_t)(decoded.wire_version), (uint32_t)(2u));
     check_equal(decoded.message_id, dispatch.message_id);
@@ -374,7 +374,7 @@ void test_dispatch_v2_result_roundtrip_and_capacity_validation(void) {
     size_t len = 0;
     make_dispatch_v2(&dispatch);
 
-    check_equal(ivr_flowmq_gateway_encode_dispatch_result_v2(
+    check_equal(ivr_control_gateway_encode_dispatch_result_v2(
                                   g_codec, &dispatch, IVR_OK, 3, 8, "", "",
                                   frame, sizeof(frame), &len), IVR_OK);
     check_equal(ivr_room_decode_dispatch_result(
@@ -388,7 +388,7 @@ void test_dispatch_v2_result_roundtrip_and_capacity_validation(void) {
     check_equal((uint32_t)(decoded.max_sessions), (uint32_t)(8u));
 
     len = 99;
-    check_equal(ivr_flowmq_gateway_encode_dispatch_result_v2(
+    check_equal(ivr_control_gateway_encode_dispatch_result_v2(
                           g_codec, &dispatch, IVR_OK, 9, 8, "", "", frame,
                           sizeof(frame), &len), IVR_EINVAL);
 }
@@ -398,7 +398,7 @@ void test_encode_dispatch_result_accepted(void) {
     make_dispatch(&dispatch);
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_dispatch_result(
+    check_equal(ivr_control_gateway_encode_dispatch_result(
                                   g_codec, &dispatch, IVR_OK, "", "", frame,
                                   sizeof(frame), &len), IVR_OK);
 
@@ -431,7 +431,7 @@ void test_encode_dispatch_result_rejected_and_escaped(void) {
     uint8_t frame[4096];
     size_t len = 0;
     static const char message[] = "session \"capacity\" exhausted\\retry";
-    check_equal(ivr_flowmq_gateway_encode_dispatch_result(
+    check_equal(ivr_control_gateway_encode_dispatch_result(
                                   g_codec, &dispatch, IVR_ENOSPC,
                                   "worker_capacity", message, frame,
                                   sizeof(frame), &len), IVR_OK);
@@ -453,7 +453,7 @@ void test_encode_dispatch_result_short_buffer_rejected(void) {
     make_dispatch(&dispatch);
     uint8_t frame[IVR_FRAME_HEADER_SIZE];
     size_t len = 99;
-    check_equal(ivr_flowmq_gateway_encode_dispatch_result(
+    check_equal(ivr_control_gateway_encode_dispatch_result(
                           g_codec, &dispatch, IVR_OK, "", "", frame,
                           sizeof(frame), &len), IVR_ENOSPC);
     check_equal(len, 0u);
@@ -464,7 +464,7 @@ void test_decode_dispatch_result(void) {
     make_dispatch(&dispatch);
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_dispatch_result(
+    check_equal(ivr_control_gateway_encode_dispatch_result(
                                   g_codec, &dispatch, IVR_ENOSPC,
                                   "worker_capacity", "at capacity", frame,
                                   sizeof(frame), &len), IVR_OK);
@@ -486,7 +486,7 @@ void test_decode_dispatch_result_rejects_wrong_type_and_short_frame(void) {
     make_join_command(&command);
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_command(
+    check_equal(ivr_control_gateway_encode_command(
                                   g_codec, &command, "ivr-worker-01", frame,
                                   sizeof(frame), &len), IVR_OK);
     ivr_dispatch_result_t decoded;
@@ -506,7 +506,7 @@ void test_release_command_and_result_roundtrip(void) {
                                   "conference.leave", frame, sizeof(frame),
                                   &len), IVR_OK);
     ivr_call_release_t release;
-    check_equal(ivr_flowmq_gateway_decode_release(
+    check_equal(ivr_control_gateway_decode_release(
                                   g_codec, frame, len, &release), IVR_OK);
     check_equal(release.message_id, "release-1");
     check_equal(release.worker_id, "ivr-worker-01");
@@ -515,7 +515,7 @@ void test_release_command_and_result_roundtrip(void) {
     check_equal((uint64_t)(release.call_generation), (uint64_t)(7u));
     check_equal(release.reason, "conference.leave");
 
-    check_equal(ivr_flowmq_gateway_encode_release_result(
+    check_equal(ivr_control_gateway_encode_release_result(
                                   g_codec, &release, IVR_ESTATE,
                                   "release_failed", "session busy", frame,
                                   sizeof(frame), &len), IVR_OK);
@@ -534,14 +534,14 @@ void test_release_decoders_reject_other_call_types(void) {
     make_dispatch(&dispatch);
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_dispatch_result(
+    check_equal(ivr_control_gateway_encode_dispatch_result(
                                   g_codec, &dispatch, IVR_OK, "", "", frame,
                                   sizeof(frame), &len), IVR_OK);
     ivr_release_result_t result;
     check_equal(ivr_room_decode_release_result(
                                       g_codec, frame, len, &result), IVR_ESTATE);
     ivr_call_release_t release;
-    check_equal(ivr_flowmq_gateway_decode_release(
+    check_equal(ivr_control_gateway_decode_release(
                                       g_codec, frame, len, &release), IVR_ESTATE);
 }
 
@@ -560,7 +560,7 @@ void test_decode_command_result(void) {
                                sizeof(frame), &len), IVR_OK);
 
     ivr_command_result_envelope_t decoded;
-    check_equal(ivr_flowmq_gateway_decode_result(
+    check_equal(ivr_control_gateway_decode_result(
                                   g_codec, frame, len, &decoded), IVR_OK);
     check_equal(decoded.message_id, "mid-result-1");
     check_equal(decoded.worker_id, "ivr-worker-01");
@@ -578,11 +578,11 @@ void test_decode_result_rejects_command_frame(void) {
     make_join_command(&command);
     uint8_t frame[4096];
     size_t len = 0;
-    check_equal(ivr_flowmq_gateway_encode_command(
+    check_equal(ivr_control_gateway_encode_command(
                                   g_codec, &command, "ivr-worker-01", frame,
                                   sizeof(frame), &len), IVR_OK);
     ivr_command_result_envelope_t decoded;
-    check_equal(ivr_flowmq_gateway_decode_result(
+    check_equal(ivr_control_gateway_decode_result(
                                       g_codec, frame, len, &decoded), IVR_ESTATE);
 }
 
@@ -593,23 +593,23 @@ void test_dispatch_deadline_ok(void) {
     dispatch.deadline_timeout_ms = 5000;
 
     /* inside the TTL */
-    check_true(ivr_flowmq_gateway_dispatch_deadline_ok(
+    check_true(ivr_control_gateway_dispatch_deadline_ok(
         &dispatch, 1000u, 1000u));
-    check_true(ivr_flowmq_gateway_dispatch_deadline_ok(
+    check_true(ivr_control_gateway_dispatch_deadline_ok(
         &dispatch, 1000u, 5999u));
     /* exactly at the deadline is expired */
-    check_false(ivr_flowmq_gateway_dispatch_deadline_ok(
+    check_false(ivr_control_gateway_dispatch_deadline_ok(
         &dispatch, 1000u, 6000u));
-    check_false(ivr_flowmq_gateway_dispatch_deadline_ok(
+    check_false(ivr_control_gateway_dispatch_deadline_ok(
         &dispatch, 1000u, 7000u));
     /* clock going backwards fails closed */
-    check_false(ivr_flowmq_gateway_dispatch_deadline_ok(
+    check_false(ivr_control_gateway_dispatch_deadline_ok(
         &dispatch, 5000u, 1000u));
     /* a zero deadline is never "ok" (V2 decode already rejects it) */
     dispatch.deadline_timeout_ms = 0;
-    check_false(ivr_flowmq_gateway_dispatch_deadline_ok(
+    check_false(ivr_control_gateway_dispatch_deadline_ok(
         &dispatch, 1000u, 1000u));
-    check_false(ivr_flowmq_gateway_dispatch_deadline_ok(
+    check_false(ivr_control_gateway_dispatch_deadline_ok(
         NULL, 1000u, 1000u));
 }
 
@@ -699,7 +699,7 @@ void test_media_commands_roundtrip(void) {
         check_equal(ivr_room_bridge_encode_media_command(
                                       g_codec, &source, frame, sizeof(frame),
                                       &frame_size), IVR_OK);
-        check_equal(ivr_flowmq_gateway_decode_media_command(
+        check_equal(ivr_control_gateway_decode_media_command(
                                       g_codec, frame, frame_size, &decoded), IVR_OK);
         check_equal((int)(decoded.kind), (int)(source.kind));
         check_equal(decoded.message_id, source.message_id);
@@ -725,7 +725,7 @@ void test_media_cancel_v1_is_rejected_without_fallback(void) {
 
     check_equal(encode_legacy_cancel_v1(
                                   frame, sizeof(frame), &frame_size), IVR_OK);
-    check_equal(ivr_flowmq_gateway_decode_media_command(
+    check_equal(ivr_control_gateway_decode_media_command(
                           g_codec, frame, frame_size, &decoded), IVR_ESTATE);
 }
 
@@ -783,7 +783,7 @@ void test_worker_inventory_query_and_page_roundtrip(void) {
     check_equal(ivr_room_bridge_encode_inventory_query(
                                   g_codec, &request, frame, sizeof(frame),
                                   &frame_size), IVR_OK);
-    check_equal(ivr_flowmq_gateway_decode_inventory_query(
+    check_equal(ivr_control_gateway_decode_inventory_query(
                                   g_codec, frame, frame_size,
                                   &decoded_request), IVR_OK);
     check_equal(decoded_request.message_id, request.message_id);
@@ -830,7 +830,7 @@ void test_worker_inventory_query_and_page_roundtrip(void) {
         record->state = IVR_WORKER_RESOURCE_ACTIVE;
         record->rebindable = 1;
     }
-    check_equal(ivr_flowmq_gateway_encode_inventory_page(
+    check_equal(ivr_control_gateway_encode_inventory_page(
                                   g_codec, &result, frame, sizeof(frame),
                                   &frame_size), IVR_OK);
     check_equal(ivr_room_decode_inventory_page(
@@ -886,12 +886,12 @@ void test_worker_inventory_rejects_unknown_version_and_oversize(void) {
     result.page.inventory_version = IVR_WORKER_INVENTORY_VERSION;
     result.page.revision = 1;
     result.page.count = IVR_WORKER_INVENTORY_MAX_PAGE_SIZE + 1u;
-    check_equal(ivr_flowmq_gateway_encode_inventory_page(
+    check_equal(ivr_control_gateway_encode_inventory_page(
                           g_codec, &result, frame, sizeof(frame),
                           &frame_size), IVR_EINVAL);
 }
 
-spec("test_ivr_flowmq") {
+spec("test_ivr_control") {
   before_each() { setUp(); }
   after_each() { tearDown(); }
 

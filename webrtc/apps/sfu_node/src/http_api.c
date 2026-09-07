@@ -1,14 +1,9 @@
 #include "sfu_node/http_api.h"
 #include "turbo_media_auth.h"
 #include "turbo_sdp.h"
-#include <iris/async.h>
-#include <iris/iris_app.h>
-#include <iris/server.h>
-#include <iris/router.h>
-#include <platform.h>
-#include <turbo_coro_context.h>
-#include <turbo_coro_socket.h>
+#include <chttp/chttp.h>
 #include <json_parser.h>
+#include <salts/error_codes.h>
 #include <turbo_crypto.h>
 #include <salts_thread.h>
 #include <inttypes.h>
@@ -29,97 +24,136 @@
 #define SFU_NODE_SCOPE_MEDIA_TRICKLE "sfu.media.trickle"
 #define SFU_NODE_SCOPE_MEDIA_DELETE "sfu.media.delete"
 
+enum {
+    OK = 200,
+    CREATED = 201,
+    NO_CONTENT = 204,
+    BAD_REQUEST = 400,
+    UNAUTHORIZED = 401,
+    NOT_FOUND = 404,
+    CONFLICT = 409,
+    PRECONDITION_FAILED = 412,
+    UNSUPPORTED_MEDIA_TYPE = 415,
+    PRECONDITION_REQUIRED = 428,
+    INTERNAL_SERVER_ERROR = 500,
+    SERVICE_UNAVAILABLE = 503
+};
+
+enum {
+    SFU_NODE_HTTP_CONNECTION_CAPACITY = 64,
+    SFU_NODE_HTTP_COMMAND_CAPACITY = 128,
+    SFU_NODE_HTTP_REQUEST_CAPACITY = 128,
+    SFU_NODE_HTTP_COMPLETION_CAPACITY = 32,
+    SFU_NODE_HTTP_EVENT_CAPACITY = 128,
+    SFU_NODE_HTTP_ROUTE_CAPACITY = 32,
+    SFU_NODE_HTTP_MAX_TARGET_BYTES = 4096,
+    SFU_NODE_HTTP_MAX_HEADER_COUNT = 64,
+    SFU_NODE_HTTP_MAX_HEADER_BYTES = 32 * 1024,
+    SFU_NODE_HTTP_MAX_REQUEST_BODY_BYTES = 1024 * 1024,
+    SFU_NODE_HTTP_MAX_RESPONSE_BODY_BYTES = 128 * 1024,
+    SFU_NODE_HTTP_MAX_SEND_BYTES = 192 * 1024,
+    SFU_NODE_HTTP_RECEIVE_BUFFER_BYTES = 32 * 1024,
+    SFU_NODE_HTTP_TLS_IO_BUFFER_BYTES = 256 * 1024,
+    SFU_NODE_HTTP_BUFFER_CAPACITY_BYTES = 16 * 1024 * 1024,
+    SFU_NODE_HTTP_TIMEOUT_MS = 5000,
+    SFU_NODE_HTTP_POLL_SLICE_MS = 10
+};
+
+typedef struct Req {
+    const chttp_server_request_view *request;
+    struct sfu_node_app_server_s *server;
+    const char *path;
+    const void *body;
+    size_t body_len;
+} Req;
+
+typedef struct Res {
+    chttp_server_response *response;
+    int status;
+} Res;
+
 struct sfu_node_http_api_s {
-    iris_app_t *app;
     sfu_node_app_server_t *server;
-    salts_thread_t thread;
-    int thread_started;
     salts_mutex_t lifecycle_mutex;
-    salts_cond_t lifecycle_cond;
-    coro_context_t *ctx;
-    coro_socket_t *listener;
+    chttp_server http;
+    int http_initialized;
     int state;
-    const char *host;
-    int port;
-    int registered;
-    struct sfu_node_http_api_s *next;
 };
 
 typedef enum sfu_node_http_state_e {
     SFU_NODE_HTTP_STOPPED = 0,
     SFU_NODE_HTTP_STARTING,
     SFU_NODE_HTTP_RUNNING,
-    SFU_NODE_HTTP_STOPPING,
-    SFU_NODE_HTTP_FAILED
+    SFU_NODE_HTTP_STOPPING
 } sfu_node_http_state_t;
 
-static salts_mutex_t g_sfu_node_http_registry_mutex;
-static salts_once_t g_sfu_node_http_registry_once = SALTS_ONCE_INIT;
-static sfu_node_http_api_t *g_sfu_node_http_registry = NULL;
-
-static void sfu_node_http_registry_init(void) {
-    salts_mutex_init(&g_sfu_node_http_registry_mutex);
-}
-
-static void sfu_node_http_registry_lock(void) {
-    salts_once(&g_sfu_node_http_registry_once, sfu_node_http_registry_init);
-    salts_mutex_lock(&g_sfu_node_http_registry_mutex);
-}
-
-static void sfu_node_http_registry_register(sfu_node_http_api_t *api) {
-    if (!api || !api->app || api->registered) {
-        return;
-    }
-
-    sfu_node_http_registry_lock();
-    api->next = g_sfu_node_http_registry;
-    g_sfu_node_http_registry = api;
-    api->registered = 1;
-    salts_mutex_unlock(&g_sfu_node_http_registry_mutex);
-}
-
-static void sfu_node_http_registry_unregister(sfu_node_http_api_t *api) {
-    sfu_node_http_api_t **cursor;
-
-    if (!api || !api->registered) {
-        return;
-    }
-
-    sfu_node_http_registry_lock();
-    cursor = &g_sfu_node_http_registry;
-    while (*cursor) {
-        if (*cursor == api) {
-            *cursor = api->next;
-            api->next = NULL;
-            api->registered = 0;
-            salts_mutex_unlock(&g_sfu_node_http_registry_mutex);
-            return;
-        }
-        cursor = &(*cursor)->next;
-    }
-    api->registered = 0;
-    salts_mutex_unlock(&g_sfu_node_http_registry_mutex);
-}
-
 static sfu_node_app_server_t *sfu_node_http_server_from_req(const Req *req) {
-    sfu_node_http_api_t *cursor;
-    sfu_node_app_server_t *server = NULL;
+    return req ? req->server : NULL;
+}
 
-    if (!req || !req->app) {
-        return NULL;
-    }
+static const char *get_headers(const Req *req, const char *name) {
+    return req && req->request
+               ? chttp_server_request_header(req->request, name)
+               : NULL;
+}
 
-    sfu_node_http_registry_lock();
-    cursor = g_sfu_node_http_registry;
-    while (cursor) {
-        if (cursor->app == req->app) {
-            server = cursor->server;
-            break;
-        }
-        cursor = cursor->next;
+static const char *get_params(const Req *req, const char *name) {
+    return req && req->request
+               ? chttp_server_request_param(req->request, name)
+               : NULL;
+}
+
+static int sfu_node_http_add_cors_headers(Res *res) {
+    int status;
+    if (!res || !res->response) {
+        return SALTS_EINVAL;
     }
-    salts_mutex_unlock(&g_sfu_node_http_registry_mutex);
-    return server;
+    status = chttp_server_response_set_header(
+        res->response, "Access-Control-Allow-Origin", "*");
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            res->response, "Access-Control-Allow-Methods",
+            "GET, POST, PATCH, DELETE, OPTIONS");
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            res->response, "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, If-Match");
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            res->response, "Access-Control-Expose-Headers",
+            "Location, ETag, Accept-Patch");
+    }
+    return status;
+}
+
+static void set_header(Res *res, const char *name, const char *value) {
+    if (!res || res->status != SALTS_OK) {
+        return;
+    }
+    res->status = chttp_server_response_set_header(res->response, name, value);
+}
+
+static void reply(Res *res, unsigned int status, const char *content_type,
+                  const void *body, size_t body_size) {
+    if (!res || res->status != SALTS_OK) {
+        return;
+    }
+    res->status = sfu_node_http_add_cors_headers(res);
+    if (res->status == SALTS_OK) {
+        res->status = chttp_server_reply(res->response, status, content_type,
+                                         body, body_size);
+    }
+}
+
+static void send_json(Res *res, unsigned int status, const char *body) {
+    reply(res, status, "application/json", body,
+          body ? strlen(body) : 0u);
+}
+
+static void send_text(Res *res, unsigned int status, const char *body) {
+    reply(res, status, "text/plain", body, body ? strlen(body) : 0u);
 }
 
 typedef enum sfu_node_command_access_e {
@@ -1787,112 +1821,184 @@ static void handle_command(Req *req, Res *res) {
     root = NULL;
 }
 
-static void sfu_node_http_mark_running(void *arg1, void *arg2) {
-    sfu_node_http_api_t *api = (sfu_node_http_api_t *)arg1;
-    (void)arg2;
+typedef void (*sfu_node_http_handler_fn)(Req *req, Res *res);
 
-    salts_mutex_lock(&api->lifecycle_mutex);
-    if (api->state == SFU_NODE_HTTP_STARTING) {
-        api->state = SFU_NODE_HTTP_RUNNING;
-        salts_cond_broadcast(&api->lifecycle_cond);
+static int sfu_node_http_dispatch(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *response, sfu_node_http_handler_fn handler) {
+    sfu_node_http_api_t *api = (sfu_node_http_api_t *)user;
+    Req req = {.request = request,
+               .server = api ? api->server : NULL,
+               .path = request ? request->path : NULL,
+               .body = request ? request->body : NULL,
+               .body_len = request ? request->body_size : 0u};
+    Res res = {.response = response, .status = SALTS_OK};
+    if (!api || !request || !response || !handler) {
+        return SALTS_EINVAL;
     }
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    handler(&req, &res);
+    return res.status;
 }
 
-static void sfu_node_http_thread(void *arg) {
-    sfu_node_http_api_t *api = (sfu_node_http_api_t *)arg;
-    const sfu_node_app_config_t *config =
-        sfu_node_app_server_get_config(api->server);
-    coro_context_t *ctx = NULL;
-    coro_socket_t *listener = NULL;
-    int async_initialized = 0;
-
-    ctx = coro_context_create(NULL);
-    if (!ctx) {
-        salts_mutex_lock(&api->lifecycle_mutex);
-        api->state = SFU_NODE_HTTP_FAILED;
-        salts_cond_broadcast(&api->lifecycle_cond);
-        salts_mutex_unlock(&api->lifecycle_mutex);
-        return;
+#define SFU_NODE_HTTP_ROUTE_ADAPTER(name)                                  \
+    static int name##_route(void *user,                                    \
+                            const chttp_server_request_view *request,       \
+                            chttp_server_response *response) {              \
+        return sfu_node_http_dispatch(user, request, response, name);       \
     }
 
-    if (iris_async_init(1) == 0) {
-        async_initialized = 1;
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_health)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_ready)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_metrics)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_get_webrtc_session)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_command)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whip_post)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whep_post)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_media_session_patch)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_media_session_delete)
+
+static int handle_options_route(void *user,
+                                const chttp_server_request_view *request,
+                                chttp_server_response *response) {
+    Res res = {.response = response, .status = SALTS_OK};
+    (void)user;
+    (void)request;
+    reply(&res, NO_CONTENT, NULL, NULL, 0u);
+    return res.status;
+}
+
+static native_io_backend_kind sfu_node_http_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static cnet_client_config sfu_node_http_network_config(int use_tls) {
+    const cnet_client_config config = {
+        .backend = sfu_node_http_backend(),
+        .connection_capacity = SFU_NODE_HTTP_CONNECTION_CAPACITY,
+        .command_capacity = SFU_NODE_HTTP_COMMAND_CAPACITY,
+        .request_capacity = SFU_NODE_HTTP_REQUEST_CAPACITY,
+        .completion_batch_capacity = SFU_NODE_HTTP_COMPLETION_CAPACITY,
+        .event_capacity = SFU_NODE_HTTP_EVENT_CAPACITY,
+        .max_send_bytes = SFU_NODE_HTTP_MAX_SEND_BYTES,
+        .receive_buffer_bytes = SFU_NODE_HTTP_RECEIVE_BUFFER_BYTES,
+        .connect_timeout_ms = SFU_NODE_HTTP_TIMEOUT_MS,
+        .read_timeout_ms = SFU_NODE_HTTP_TIMEOUT_MS,
+        .write_timeout_ms = SFU_NODE_HTTP_TIMEOUT_MS,
+        .tls_io_buffer_bytes = use_tls
+                                   ? SFU_NODE_HTTP_TLS_IO_BUFFER_BYTES
+                                   : 0u,
+        .tls_handshake_timeout_ms = use_tls
+                                        ? SFU_NODE_HTTP_TIMEOUT_MS
+                                        : 0u};
+    return config;
+}
+
+static chttp_server_config sfu_node_http_config(
+    const char *host, uint16_t port, const cnet_tls_server_config *tls) {
+    const chttp_server_config config = {
+        .host = host,
+        .port = port,
+        .backlog = SFU_NODE_HTTP_CONNECTION_CAPACITY,
+        .network = sfu_node_http_network_config(tls != NULL),
+        .route_capacity = SFU_NODE_HTTP_ROUTE_CAPACITY,
+        .max_route_param_count = 4u,
+        .max_route_param_bytes = 512u,
+        .max_target_bytes = SFU_NODE_HTTP_MAX_TARGET_BYTES,
+        .max_header_count = SFU_NODE_HTTP_MAX_HEADER_COUNT,
+        .max_header_bytes = SFU_NODE_HTTP_MAX_HEADER_BYTES,
+        .max_request_body_bytes = SFU_NODE_HTTP_MAX_REQUEST_BODY_BYTES,
+        .max_response_header_count = SFU_NODE_HTTP_MAX_HEADER_COUNT,
+        .max_response_header_bytes = SFU_NODE_HTTP_MAX_HEADER_BYTES,
+        .max_response_body_bytes = SFU_NODE_HTTP_MAX_RESPONSE_BODY_BYTES,
+        .poll_slice_ms = SFU_NODE_HTTP_POLL_SLICE_MS,
+        .tls = tls,
+        .buffer_capacity_bytes = SFU_NODE_HTTP_BUFFER_CAPACITY_BYTES};
+    return config;
+}
+
+static int sfu_node_http_register_routes(sfu_node_http_api_t *api) {
+    static const char *const option_paths[] = {
+        "/health",
+        "/ready",
+        "/metrics",
+        "/api/v1/rooms/:room_id/webrtc_sessions/:session_id",
+        "/api/v1/commands",
+        "/whip/:room_id/:participant_id",
+        "/whep/:room_id/:participant_id",
+        "/whip/:room_id/:participant_id/sessions/:session_id",
+        "/whep/:room_id/:participant_id/sessions/:session_id"};
+    int status = chttp_server_get(&api->http, "/health",
+                                  handle_health_route, api);
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&api->http, "/ready", handle_ready_route,
+                                  api);
     }
-
-    if (config && config->use_tls) {
-        turbo_tls_server_config_t tls_config;
-
-        memset(&tls_config, 0, sizeof(tls_config));
-        tls_config.size = sizeof(tls_config);
-        tls_config.cert_file = config->tls_cert_file;
-        tls_config.key_file = config->tls_key_file;
-        tls_config.client_auth = TURBO_TLS_CLIENT_AUTH_NONE;
-        listener = iris_server_start_tls_on(
-            api->app, ctx, api->host, (unsigned short)api->port,
-            &tls_config);
-    } else {
-        listener = iris_server_start_on(
-            api->app, ctx, api->host, (unsigned short)api->port);
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&api->http, "/metrics",
+                                  handle_metrics_route, api);
     }
-    if (!listener) {
-        coro_context_destroy(ctx);
-        if (async_initialized) {
-            iris_async_shutdown();
-        }
-        salts_mutex_lock(&api->lifecycle_mutex);
-        api->state = SFU_NODE_HTTP_FAILED;
-        salts_cond_broadcast(&api->lifecycle_cond);
-        salts_mutex_unlock(&api->lifecycle_mutex);
-        return;
+    if (status == SALTS_OK) {
+        status = chttp_server_get(
+            &api->http,
+            "/api/v1/rooms/:room_id/webrtc_sessions/:session_id",
+            handle_get_webrtc_session_route, api);
     }
-
-    coro_context_set_persistent(ctx, 1);
-    salts_mutex_lock(&api->lifecycle_mutex);
-    api->ctx = ctx;
-    api->listener = listener;
-    salts_mutex_unlock(&api->lifecycle_mutex);
-
-    if (coro_post(ctx, sfu_node_http_mark_running, api, NULL) != 0) {
-        salts_mutex_lock(&api->lifecycle_mutex);
-        api->listener = NULL;
-        api->ctx = NULL;
-        api->state = SFU_NODE_HTTP_FAILED;
-        salts_cond_broadcast(&api->lifecycle_cond);
-        salts_mutex_unlock(&api->lifecycle_mutex);
-        coro_context_set_persistent(ctx, 0);
-        coro_socket_destroy(listener);
-        coro_context_destroy(ctx);
-        if (async_initialized) {
-            iris_async_shutdown();
-        }
-        return;
+    if (status == SALTS_OK) {
+        status = chttp_server_post(&api->http, "/api/v1/commands",
+                                   handle_command_route, api);
     }
-
-    coro_context_run(ctx, TURBO_RUN_DEFAULT);
-
-    salts_mutex_lock(&api->lifecycle_mutex);
-    api->listener = NULL;
-    api->ctx = NULL;
-    api->state = SFU_NODE_HTTP_STOPPING;
-    salts_mutex_unlock(&api->lifecycle_mutex);
-
-    coro_context_set_persistent(ctx, 0);
-    coro_socket_destroy(listener);
-    coro_context_destroy(ctx);
-    if (async_initialized) {
-        iris_async_shutdown();
+    if (status == SALTS_OK) {
+        status = chttp_server_post(&api->http,
+                                   "/whip/:room_id/:participant_id",
+                                   handle_whip_post_route, api);
     }
-
-    salts_mutex_lock(&api->lifecycle_mutex);
-    api->state = SFU_NODE_HTTP_STOPPED;
-    salts_cond_broadcast(&api->lifecycle_cond);
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    if (status == SALTS_OK) {
+        status = chttp_server_post(&api->http,
+                                   "/whep/:room_id/:participant_id",
+                                   handle_whep_post_route, api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_patch(
+            &api->http,
+            "/whip/:room_id/:participant_id/sessions/:session_id",
+            handle_media_session_patch_route, api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_patch(
+            &api->http,
+            "/whep/:room_id/:participant_id/sessions/:session_id",
+            handle_media_session_patch_route, api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_delete(
+            &api->http,
+            "/whip/:room_id/:participant_id/sessions/:session_id",
+            handle_media_session_delete_route, api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_delete(
+            &api->http,
+            "/whep/:room_id/:participant_id/sessions/:session_id",
+            handle_media_session_delete_route, api);
+    }
+    for (size_t index = 0u;
+         status == SALTS_OK &&
+         index < sizeof(option_paths) / sizeof(option_paths[0]);
+         ++index) {
+        status = chttp_server_options(&api->http, option_paths[index],
+                                      handle_options_route, api);
+    }
+    return status;
 }
 
 sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
     sfu_node_http_api_t *api;
-    cors_t cors_opts;
 
     if (!server) {
         return NULL;
@@ -1904,50 +2010,16 @@ sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
     }
 
     salts_mutex_init(&api->lifecycle_mutex);
-    salts_cond_init(&api->lifecycle_cond);
-    api->app = iris_app_create();
-    if (!api->app) {
-        salts_cond_destroy(&api->lifecycle_cond);
-        salts_mutex_destroy(&api->lifecycle_mutex);
-        free(api);
-        return NULL;
-    }
-
     api->server = server;
-    sfu_node_http_registry_register(api);
-
-    memset(&cors_opts, 0, sizeof(cors_opts));
-    cors_opts.origin = "*";
-    cors_opts.methods = "GET, POST, PATCH, DELETE, OPTIONS";
-    cors_opts.headers = "Content-Type, Authorization, If-Match";
-    cors_opts.enabled = 1;
-    iris_app_cors(api->app, &cors_opts);
-
-    iris_app_get(api->app, "/health", handle_health);
-    iris_app_get(api->app, "/ready", handle_ready);
-    iris_app_get(api->app, "/metrics", handle_metrics);
-    iris_app_get(api->app, "/api/v1/rooms/:room_id/webrtc_sessions/:session_id",
-                 handle_get_webrtc_session);
-    iris_app_post(api->app, "/api/v1/commands", handle_command);
-    iris_app_post(api->app, "/whip/:room_id/:participant_id", handle_whip_post);
-    iris_app_post(api->app, "/whep/:room_id/:participant_id", handle_whep_post);
-    iris_app_patch(
-        api->app, "/whip/:room_id/:participant_id/sessions/:session_id",
-        handle_media_session_patch);
-    iris_app_patch(
-        api->app, "/whep/:room_id/:participant_id/sessions/:session_id",
-        handle_media_session_patch);
-    iris_app_delete(
-        api->app, "/whip/:room_id/:participant_id/sessions/:session_id",
-        handle_media_session_delete);
-    iris_app_delete(
-        api->app, "/whep/:room_id/:participant_id/sessions/:session_id",
-        handle_media_session_delete);
-
+    api->state = SFU_NODE_HTTP_STOPPED;
     return api;
 }
 
 int sfu_node_http_api_start(sfu_node_http_api_t *api, const char *host, int port) {
+    const sfu_node_app_config_t *app_config;
+    cnet_tls_server_config tls;
+    chttp_server_config config;
+    int status;
     if (!api || !host || host[0] == '\0' || port <= 0 || port > UINT16_MAX) {
         return -1;
     }
@@ -1956,59 +2028,72 @@ int sfu_node_http_api_start(sfu_node_http_api_t *api, const char *host, int port
     }
 
     salts_mutex_lock(&api->lifecycle_mutex);
-    if (api->state != SFU_NODE_HTTP_STOPPED || api->thread_started) {
+    if (api->state != SFU_NODE_HTTP_STOPPED || api->http_initialized) {
         salts_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
-    api->host = host;
-    api->port = port;
     api->state = SFU_NODE_HTTP_STARTING;
-    if (salts_thread_create(&api->thread, sfu_node_http_thread, api) != 0) {
+    salts_mutex_unlock(&api->lifecycle_mutex);
+
+    app_config = sfu_node_app_server_get_config(api->server);
+    memset(&tls, 0, sizeof(tls));
+    if (app_config && app_config->use_tls) {
+        tls.size = sizeof(tls);
+        tls.cert_file = app_config->tls_cert_file;
+        tls.key_file = app_config->tls_key_file;
+        tls.client_auth = CNET_TLS_CLIENT_AUTH_NONE;
+    }
+    config = sfu_node_http_config(
+        host, (uint16_t)port,
+        app_config && app_config->use_tls ? &tls : NULL);
+    status = chttp_server_init(&api->http, &config);
+    if (status == SALTS_OK) {
+        salts_mutex_lock(&api->lifecycle_mutex);
+        api->http_initialized = 1;
+        salts_mutex_unlock(&api->lifecycle_mutex);
+        status = sfu_node_http_register_routes(api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_start(&api->http);
+    }
+    if (status != SALTS_OK) {
+        (void)chttp_server_destroy(&api->http);
+        salts_mutex_lock(&api->lifecycle_mutex);
+        api->http_initialized = 0;
         api->state = SFU_NODE_HTTP_STOPPED;
         salts_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
-
-    api->thread_started = 1;
-    while (api->state == SFU_NODE_HTTP_STARTING) {
-        salts_cond_wait(&api->lifecycle_cond, &api->lifecycle_mutex);
-    }
-    if (api->state == SFU_NODE_HTTP_RUNNING) {
-        salts_mutex_unlock(&api->lifecycle_mutex);
-        return 0;
-    }
-    salts_mutex_unlock(&api->lifecycle_mutex);
-
-    salts_thread_join(&api->thread);
     salts_mutex_lock(&api->lifecycle_mutex);
-    api->thread_started = 0;
-    api->state = SFU_NODE_HTTP_STOPPED;
+    api->state = SFU_NODE_HTTP_RUNNING;
     salts_mutex_unlock(&api->lifecycle_mutex);
-    return -1;
+    return 0;
 }
 
 void sfu_node_http_api_stop(sfu_node_http_api_t *api) {
-    int should_join;
+    int initialized;
 
     if (!api) {
         return;
     }
 
     salts_mutex_lock(&api->lifecycle_mutex);
-    if (api->state == SFU_NODE_HTTP_RUNNING && api->ctx) {
-        api->state = SFU_NODE_HTTP_STOPPING;
-        coro_context_stop(api->ctx);
+    if (api->state == SFU_NODE_HTTP_STOPPED) {
+        salts_mutex_unlock(&api->lifecycle_mutex);
+        return;
     }
-    should_join = api->thread_started;
+    api->state = SFU_NODE_HTTP_STOPPING;
+    initialized = api->http_initialized;
     salts_mutex_unlock(&api->lifecycle_mutex);
 
-    if (should_join) {
-        salts_thread_join(&api->thread);
-        salts_mutex_lock(&api->lifecycle_mutex);
-        api->thread_started = 0;
-        api->state = SFU_NODE_HTTP_STOPPED;
-        salts_mutex_unlock(&api->lifecycle_mutex);
+    if (initialized) {
+        (void)chttp_server_stop(&api->http, 0u);
+        (void)chttp_server_destroy(&api->http);
     }
+    salts_mutex_lock(&api->lifecycle_mutex);
+    api->http_initialized = 0;
+    api->state = SFU_NODE_HTTP_STOPPED;
+    salts_mutex_unlock(&api->lifecycle_mutex);
 }
 
 void sfu_node_http_api_destroy(sfu_node_http_api_t *api) {
@@ -2017,11 +2102,6 @@ void sfu_node_http_api_destroy(sfu_node_http_api_t *api) {
     }
 
     sfu_node_http_api_stop(api);
-    if (api->app) {
-        sfu_node_http_registry_unregister(api);
-        iris_app_destroy(api->app);
-    }
-    salts_cond_destroy(&api->lifecycle_cond);
     salts_mutex_destroy(&api->lifecycle_mutex);
     free(api);
 }

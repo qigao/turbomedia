@@ -11,16 +11,17 @@
 
 #include <platform.h>
 
-#include "ice/turbo_ice.h"
+#include "ice_integration.h"
 #include "tlog.h"
 #include "turbo_datachannel.h"
+#include <chttp/chttp.h>
 #include <json_parser.h>
 #include "turbo_sdp.h"
 #include <salts_error.h>
-#include <CoroNet/turbo_coro_context.h>
-#include <CoroNet/turbo_coro_socket.h>
+#include <salts_thread.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,23 +31,13 @@
 #define MAX_SIGNAL_HOST_LEN 256
 #define MAX_SIGNAL_PATH_LEN 128
 #define MAX_CACHED_CANDIDATES 32
+#define SIGNAL_MAX_MESSAGE_BYTES (64u * 1024u)
+#define SIGNAL_MAX_HANDSHAKE_HEADER_BYTES (32u * 1024u)
+#define SIGNAL_OPERATION_TIMEOUT_MS 5000u
+#define SIGNAL_RECEIVE_TIMEOUT_MS 50u
+#define SIGNAL_SHUTDOWN_TIMEOUT_MS 1000u
 
 typedef struct signal_message_s signal_message_t;
-
-typedef struct {
-  ice_config_t config;
-  coro_context_t *ctx;
-  ice_state_t state;
-  ice_gathering_state_t gathering_state;
-  ice_role_t role;
-  uint64_t tie_breaker;
-  char local_ufrag[32];
-  char local_pwd[64];
-  char remote_ufrag[32];
-  char remote_pwd[64];
-  ice_candidate_t local_candidates[ICE_MAX_CANDIDATES];
-  int local_candidate_count;
-} ice_agent_layout_t;
 
 struct signal_message_s {
   char *json;
@@ -54,38 +45,31 @@ struct signal_message_s {
 };
 
 typedef struct {
-  coro_context_t *ctx;
-  coro_socket_t *signal_socket;
+  chttp_websocket_client signal_client;
+  int signal_client_initialized;
 
-  turbo_ice_agent_t *ice_agent;
+  ice_integration_ctx_t *ice;
   turbo_dc_context_t *dc_ctx;
   turbo_dc_peer_t *dc_peer;
-  turbo_dc_channel_t *channel;
+  _Atomic(turbo_dc_channel_t *) channel;
 
   int is_offerer;
-  int running;
+  atomic_int running;
   int ws_connected;
   int local_gathering_complete;
   int remote_credentials_set;
   int remote_candidate_count;
   int remote_end_of_candidates;
   int media_ready;
-  int signal_task_started;
-  int signal_task_done;
   int gather_task_started;
-  int gather_task_done;
   int checks_task_started;
-  int checks_task_done;
-  int dc_connect_started;
-  int timer_task_started;
-  int timer_task_done;
-  int context_stop_requested;
   int local_end_of_candidates_pending;
   int local_end_of_candidates_sent;
   int local_description_sent;
   int answer_pending;
-  int message_sent;
-  int completed;
+  atomic_int message_sent;
+  atomic_int completed;
+  atomic_int callback_failed;
   uint64_t last_peer_query_ms;
 
   char room[MAX_ROOM_LEN];
@@ -103,6 +87,10 @@ typedef struct {
   int cached_candidate_count;
   char emitted_candidates[MAX_CACHED_CANDIDATES][512];
   int emitted_candidate_count;
+
+  char pending_candidates[MAX_CACHED_CANDIDATES][512];
+  atomic_uint pending_candidate_write;
+  atomic_uint pending_candidate_read;
 
   signal_message_t *outbox_head;
   signal_message_t *outbox_tail;
@@ -134,18 +122,10 @@ static void tracef_app(const app_state_t *app, const char *fmt, ...) {
   fclose(fp);
 }
 
-static void signal_task(coro_t *co, void *arg);
-static void ice_gather_task(coro_t *co, void *arg);
-static void ice_checks_task(coro_t *co, void *arg);
-static void dc_timer_task(coro_t *co, void *arg);
+static int run_signaling(app_state_t *app);
 static char *dup_printf(const char *fmt, ...);
 static int ensure_media_runtime(app_state_t *app);
 static int enqueue_signalf(app_state_t *app, const char *fmt, ...);
-
-static void wake_context_post(void *arg1, void *arg2) {
-  (void)arg1;
-  (void)arg2;
-}
 
 static void request_peer_list(app_state_t *app) {
   if (!app || !app->ws_connected) {
@@ -163,27 +143,6 @@ static int signal_host_is_loopback(const char *host) {
   }
   return strcmp(host, "127.0.0.1") == 0 || strcmp(host, "localhost") == 0 ||
          strcmp(host, "::1") == 0;
-}
-
-static void maybe_stop_context(app_state_t *app) {
-  if (!app || !app->ctx || app->running || app->context_stop_requested) {
-    return;
-  }
-  if (app->signal_task_started && !app->signal_task_done) {
-    return;
-  }
-  if (app->gather_task_started && !app->gather_task_done) {
-    return;
-  }
-  if (app->checks_task_started && !app->checks_task_done) {
-    return;
-  }
-  if (app->timer_task_started && !app->timer_task_done) {
-    return;
-  }
-
-  app->context_stop_requested = 1;
-  coro_context_stop(app->ctx);
 }
 
 static void copy_json_string(json_value_t *value, char *buffer, size_t buffer_size) {
@@ -274,26 +233,11 @@ static char *dup_printf(const char *fmt, ...) {
   return buffer;
 }
 
-static void wake_signal_task(app_state_t *app) {
-  if (app->signal_socket) {
-    coro_socket_interrupt_wait(app->signal_socket, 0);
-  }
-}
-
 static void app_request_stop(app_state_t *app) {
-  if (!app || !app->running) {
+  if (!app) {
     return;
   }
-
-  app->running = 0;
-  if (app->ice_agent) {
-    ice_agent_close(app->ice_agent);
-  }
-  wake_signal_task(app);
-  if (app->ctx) {
-    coro_post(app->ctx, wake_context_post, NULL, NULL);
-  }
-  maybe_stop_context(app);
+  atomic_store(&app->running, 0);
 }
 
 static int enqueue_signal_text(app_state_t *app, char *json_owned) {
@@ -317,7 +261,6 @@ static int enqueue_signal_text(app_state_t *app, char *json_owned) {
     app->outbox_head = msg;
   }
   app->outbox_tail = msg;
-  wake_signal_task(app);
   return 0;
 }
 
@@ -377,8 +320,9 @@ static int flush_signal_outbox(app_state_t *app) {
     }
 
     TLOG_INFOF("Sending signaling message: {}", msg->json);
-    if (app->signal_socket &&
-        coro_socket_send_ws_text(app->signal_socket, msg->json, strlen(msg->json)) != 0) {
+    if (!app->signal_client_initialized ||
+        chttp_websocket_client_send_text(&app->signal_client, msg->json, strlen(msg->json),
+                                         SIGNAL_OPERATION_TIMEOUT_MS) != SALTS_OK) {
       free(msg->json);
       free(msg);
       return -1;
@@ -476,56 +420,19 @@ static void emit_local_candidate_sdp(app_state_t *app, const char *candidate_sdp
   }
 }
 
-static void emit_all_local_candidates(app_state_t *app) {
-  int i;
-  int count;
+static void drain_pending_candidates(app_state_t *app) {
+  unsigned int read_index = atomic_load_explicit(&app->pending_candidate_read,
+                                                  memory_order_relaxed);
+  unsigned int write_index = atomic_load_explicit(&app->pending_candidate_write,
+                                                   memory_order_acquire);
 
-  if (!app || !app->ice_agent) {
-    return;
+  while (read_index != write_index) {
+    emit_local_candidate_sdp(
+        app, app->pending_candidates[read_index % MAX_CACHED_CANDIDATES]);
+    read_index++;
   }
-
-  count = ice_agent_get_local_candidate_count(app->ice_agent);
-  for (i = 0; i < count; ++i) {
-    ice_candidate_t candidate;
-    char candidate_sdp[512];
-
-    if (ice_agent_get_local_candidate(app->ice_agent, i, &candidate) != 0) {
-      continue;
-    }
-    if (ice_candidate_to_sdp(&candidate, candidate_sdp, sizeof(candidate_sdp)) <= 0) {
-      continue;
-    }
-
-    emit_local_candidate_sdp(app, candidate_sdp);
-  }
-}
-
-static void repair_local_candidate_ports(app_state_t *app) {
-  ice_agent_layout_t *layout;
-  int i;
-
-  if (!app || !app->ice_agent) {
-    return;
-  }
-
-  layout = (ice_agent_layout_t *)app->ice_agent;
-  for (i = 0; i < layout->local_candidate_count; ++i) {
-    ice_candidate_t *candidate = &layout->local_candidates[i];
-    struct sockaddr_storage local_addr;
-
-    if (candidate->port != 0 || !candidate->socket || candidate->family != AF_INET) {
-      continue;
-    }
-
-    memset(&local_addr, 0, sizeof(local_addr));
-    if (coro_socket_get_local_address((coro_socket_t *)candidate->socket, &local_addr) == 0 &&
-        local_addr.ss_family == AF_INET) {
-      struct sockaddr_in *addr4 = (struct sockaddr_in *)&local_addr;
-      candidate->port = ntohs(addr4->sin_port);
-      TLOG_INFOF("Repaired local candidate {}:{} type={}", candidate->ip, candidate->port,
-                ice_candidate_type_name(candidate->type));
-    }
-  }
+  atomic_store_explicit(&app->pending_candidate_read, read_index,
+                        memory_order_release);
 }
 
 static void flush_end_of_candidates(app_state_t *app) {
@@ -563,25 +470,18 @@ static int sdp_candidate_to_string(const sdp_candidate_t *candidate, char *buffe
 }
 
 static void maybe_start_checks(app_state_t *app) {
-  int local_candidate_count;
-
   if (app->checks_task_started) {
     tracef_app(app, "maybe_start_checks skip: already started");
     return;
   }
-  if (!app->ice_agent || !app->remote_credentials_set) {
-    tracef_app(app, "maybe_start_checks wait: ice_agent=%p remote_credentials_set=%d",
-               (void *)app->ice_agent, app->remote_credentials_set);
+  if (!app->ice || !app->remote_credentials_set) {
+    tracef_app(app, "maybe_start_checks wait: ice=%p remote_credentials_set=%d",
+               (void *)app->ice, app->remote_credentials_set);
     return;
   }
   if (!app->local_gathering_complete) {
     tracef_app(app, "maybe_start_checks wait: local_gathering_complete=%d",
                app->local_gathering_complete);
-    return;
-  }
-  if (ice_agent_get_gathering_state(app->ice_agent) != ICE_GATHERING_COMPLETE) {
-    tracef_app(app, "maybe_start_checks wait: gathering_state=%d",
-               (int)ice_agent_get_gathering_state(app->ice_agent));
     return;
   }
   if (app->remote_candidate_count <= 0) {
@@ -594,29 +494,15 @@ static void maybe_start_checks(app_state_t *app) {
                app->remote_end_of_candidates);
     return;
   }
-  local_candidate_count = ice_agent_get_local_candidate_count(app->ice_agent);
-  if (local_candidate_count <= 0) {
-    tracef_app(app, "maybe_start_checks wait: local_candidate_count=%d", local_candidate_count);
+  if (app->emitted_candidate_count <= 0) {
+    tracef_app(app, "maybe_start_checks wait: local_candidate_count=%d",
+               app->emitted_candidate_count);
     return;
   }
 
   tracef_app(app, "maybe_start_checks start: local_candidate_count=%d remote_candidate_count=%d",
-             local_candidate_count, app->remote_candidate_count);
-  if (!app->ctx) {
-    tracef_app(app, "maybe_start_checks failed: missing context");
-    app_request_stop(app);
-    return;
-  }
-  if (coro_context_spawn(app->ctx, ice_checks_task, app) != 0) {
-    tracef_app(app, "maybe_start_checks failed: spawn");
-    TLOG_ERROR("Failed to spawn ICE checks task");
-    app_request_stop(app);
-    return;
-  }
-  if (app->signal_socket) {
-    coro_socket_set_timeout(app->signal_socket, 50);
-    wake_signal_task(app);
-  }
+             app->emitted_candidate_count, app->remote_candidate_count);
+  ice_integration_end_of_candidates(app->ice);
   app->checks_task_started = 1;
   tracef_app(app, "maybe_start_checks started");
 }
@@ -637,7 +523,10 @@ static int build_local_sdp(app_state_t *app, int answering, char *buffer, size_t
   }
 
   TLOG_INFO("build_local_sdp: fetch ICE credentials");
-  ice_agent_get_local_credentials(app->ice_agent, ufrag, sizeof(ufrag), pwd, sizeof(pwd));
+  if (ice_integration_get_local_credentials(app->ice, ufrag, sizeof(ufrag),
+                                            pwd, sizeof(pwd)) != 0) {
+    return -1;
+  }
   TLOG_INFO("build_local_sdp: attach ICE credentials");
   sdp_media_set_ice(media, ufrag, pwd);
   media->setup = answering ? SDP_ROLE_PASSIVE : SDP_ROLE_ACTPASS;
@@ -683,7 +572,8 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
     return -1;
   }
 
-  if (ice_agent_set_remote_credentials(app->ice_agent, media->ice_ufrag, media->ice_pwd) != 0) {
+  if (ice_integration_set_remote_credentials(app->ice, media->ice_ufrag,
+                                             media->ice_pwd) != 0) {
     TLOG_ERROR("Failed to apply remote ICE credentials");
     return -1;
   }
@@ -698,7 +588,7 @@ static int apply_remote_sdp(app_state_t *app, const char *type, const char *sdp_
 
   for (i = 0; i < media->candidate_count; ++i) {
     if (sdp_candidate_to_string(&media->candidates[i], candidate_line, sizeof(candidate_line)) == 0) {
-      if (ice_agent_add_remote_candidate(app->ice_agent, candidate_line) == 0) {
+      if (ice_integration_add_remote_candidate(app->ice, candidate_line) == 0) {
         app->remote_candidate_count++;
       }
     }
@@ -857,8 +747,7 @@ static void handle_offer(app_state_t *app, json_value_t *root) {
     return;
   }
   if (apply_remote_sdp(app, "offer", sdp) == 0) {
-    if (app->local_gathering_complete &&
-        ice_agent_get_gathering_state(app->ice_agent) == ICE_GATHERING_COMPLETE) {
+    if (app->local_gathering_complete) {
       send_answer(app);
       maybe_start_checks(app);
     } else {
@@ -894,7 +783,7 @@ static void handle_candidate(app_state_t *app, json_value_t *root) {
   }
 
   copy_json_string(candidate_value, candidate, sizeof(candidate));
-  if (ice_agent_add_remote_candidate(app->ice_agent, candidate) == 0) {
+  if (ice_integration_add_remote_candidate(app->ice, candidate) == 0) {
     app->remote_candidate_count++;
     tracef_app(app, "handle_candidate added count=%d candidate='%s'", app->remote_candidate_count,
                candidate);
@@ -911,7 +800,6 @@ static void handle_end_of_candidates(app_state_t *app) {
   }
 
   app->remote_end_of_candidates = 1;
-  ice_agent_end_of_candidates(app->ice_agent);
   tracef_app(app, "handle_end_of_candidates remote_candidate_count=%d",
              app->remote_candidate_count);
   maybe_start_checks(app);
@@ -978,82 +866,31 @@ static void process_signaling_message(app_state_t *app, const char *message, siz
   free(json_text);
 }
 
-static void on_ice_state_change(turbo_ice_agent_t *agent, ice_state_t old_state,
-                                ice_state_t new_state, void *user_data) {
+static void on_ice_state_change(ice_state_t new_state, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
-  (void)agent;
-  TLOG_INFOF("ICE state: {} -> {}", ice_state_name(old_state), ice_state_name(new_state));
+  TLOG_INFOF("ICE state: {}", ice_state_name(new_state));
 
-  if ((new_state == ICE_STATE_CONNECTED || new_state == ICE_STATE_COMPLETED) &&
-      !app->dc_connect_started) {
-    app->dc_connect_started = 1;
-    if (app->signal_socket) {
-      coro_socket_set_timeout(app->signal_socket, 50);
-      wake_signal_task(app);
-    }
-    if (!app->timer_task_started && app->ctx &&
-        coro_context_spawn(app->ctx, dc_timer_task, app) == 0) {
-      app->timer_task_started = 1;
-    }
-    if (turbo_dc_peer_connect(app->dc_peer) != 0) {
-      TLOG_ERROR("Failed to start DataChannel over ICE");
-      app_request_stop(app);
-    }
-  } else if (new_state == ICE_STATE_FAILED) {
+  if (new_state == ICE_STATE_FAILED) {
     app_request_stop(app);
   }
 }
 
-static void on_ice_gathering_change(turbo_ice_agent_t *agent, ice_gathering_state_t state,
-                                    void *user_data) {
+static void on_ice_candidate(const char *candidate_sdp, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
-  (void)agent;
-  switch (state) {
-  case ICE_GATHERING_NEW:
-    TLOG_INFO("ICE gathering: NEW");
-    break;
-  case ICE_GATHERING_GATHERING:
-    TLOG_INFO("ICE gathering: GATHERING");
-    break;
-  case ICE_GATHERING_COMPLETE:
-    TLOG_INFO("ICE gathering: COMPLETE");
-    break;
-  default:
-    TLOG_INFO("ICE gathering: UNKNOWN");
-    break;
-  }
-  if (state == ICE_GATHERING_COMPLETE) {
-    app->local_gathering_complete = 1;
-    app->local_end_of_candidates_pending = 1;
-    repair_local_candidate_ports(app);
-    emit_all_local_candidates(app);
-    flush_cached_candidates(app);
-    flush_end_of_candidates(app);
-    if (app->answer_pending) {
-      app->answer_pending = 0;
-      send_answer(app);
-    }
-    maybe_start_checks(app);
-  }
-}
+  unsigned int write_index = atomic_load_explicit(&app->pending_candidate_write,
+                                                   memory_order_relaxed);
+  unsigned int read_index = atomic_load_explicit(&app->pending_candidate_read,
+                                                  memory_order_acquire);
 
-static void on_ice_candidate(turbo_ice_agent_t *agent, const ice_candidate_t *candidate,
-                             void *user_data) {
-  app_state_t *app = (app_state_t *)user_data;
-  char candidate_sdp[512];
-  (void)agent;
-
-  if (ice_candidate_to_sdp(candidate, candidate_sdp, sizeof(candidate_sdp)) <= 0) {
+  if (write_index - read_index >= MAX_CACHED_CANDIDATES) {
+    atomic_store(&app->callback_failed, 1);
+    app_request_stop(app);
     return;
   }
-
-  emit_local_candidate_sdp(app, candidate_sdp);
-}
-
-static void on_ice_data(turbo_ice_agent_t *agent, const void *data, size_t len, void *user_data) {
-  app_state_t *app = (app_state_t *)user_data;
-  (void)agent;
-  turbo_dc_peer_feed_ice_data(app->dc_peer, data, len);
+  snprintf(app->pending_candidates[write_index % MAX_CACHED_CANDIDATES],
+           sizeof(app->pending_candidates[0]), "%s", candidate_sdp);
+  atomic_store_explicit(&app->pending_candidate_write, write_index + 1,
+                        memory_order_release);
 }
 
 static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t len, int is_binary,
@@ -1073,10 +910,10 @@ static void on_dc_message(turbo_dc_channel_t *channel, const void *data, size_t 
     int echo_len = snprintf(echo, sizeof(echo), "ECHO: %s", message);
     if (echo_len > 0 && (size_t)echo_len < sizeof(echo)) {
       turbo_dc_channel_send(channel, echo, (size_t)echo_len, 0);
-      app->completed = 1;
+      atomic_store(&app->completed, 1);
     }
   } else if (app->is_offerer && strncmp(message, "ECHO:", 5) == 0) {
-    app->completed = 1;
+    atomic_store(&app->completed, 1);
     app_request_stop(app);
   }
 }
@@ -1086,16 +923,15 @@ static void on_dc_open(turbo_dc_channel_t *channel, void *user_data) {
   const char *hello = "hello over signaled ICE";
   TLOG_INFOF("Channel '{}' opened", turbo_dc_channel_get_label(channel));
 
-  if (app->is_offerer && !app->message_sent) {
+  if (app->is_offerer && !atomic_exchange(&app->message_sent, 1)) {
     turbo_dc_channel_send(channel, hello, strlen(hello), 0);
-    app->message_sent = 1;
   }
 }
 
 static void on_dc_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, void *user_data) {
   app_state_t *app = (app_state_t *)user_data;
   (void)peer;
-  app->channel = channel;
+  atomic_store(&app->channel, channel);
   turbo_dc_channel_set_user_data(channel, app);
   turbo_dc_channel_on_open(channel, on_dc_open);
   turbo_dc_channel_on_message(channel, on_dc_message);
@@ -1107,22 +943,17 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
   (void)peer;
   TLOG_INFOF("DC state: {} -> {}", ENUM_NAME(old_state), ENUM_NAME(new_state));
 
-  if (new_state == TURBO_DC_STATE_CONNECTED && app->is_offerer && !app->channel) {
-    app->channel = turbo_dc_channel_create(app->dc_peer, "chat", NULL);
-    if (app->channel) {
-      turbo_dc_channel_set_user_data(app->channel, app);
-      turbo_dc_channel_on_open(app->channel, on_dc_open);
-      turbo_dc_channel_on_message(app->channel, on_dc_message);
-      turbo_dc_channel_open(app->channel);
-    }
-  } else if (new_state == TURBO_DC_STATE_CONNECTED && !app->is_offerer && !app->channel) {
-    app->channel = turbo_dc_channel_create(app->dc_peer, "chat", NULL);
-    if (app->channel) {
-      TLOG_INFO("Answerer creating fallback chat channel");
-      turbo_dc_channel_set_user_data(app->channel, app);
-      turbo_dc_channel_on_open(app->channel, on_dc_open);
-      turbo_dc_channel_on_message(app->channel, on_dc_message);
-      turbo_dc_channel_open(app->channel);
+  if (new_state == TURBO_DC_STATE_CONNECTED && !atomic_load(&app->channel)) {
+    turbo_dc_channel_t *channel = turbo_dc_channel_create(app->dc_peer, "chat", NULL);
+    if (channel) {
+      if (!app->is_offerer) {
+        TLOG_INFO("Answerer creating fallback chat channel");
+      }
+      turbo_dc_channel_set_user_data(channel, app);
+      turbo_dc_channel_on_open(channel, on_dc_open);
+      turbo_dc_channel_on_message(channel, on_dc_message);
+      atomic_store(&app->channel, channel);
+      turbo_dc_channel_open(channel);
     }
   }
 
@@ -1140,57 +971,15 @@ static void on_dc_error(turbo_dc_peer_t *peer, int error_code, const char *error
 }
 
 static int ensure_media_stack(app_state_t *app) {
-  ice_config_t ice_cfg;
-  ice_callbacks_t callbacks;
   turbo_dc_config_t dc_cfg;
+  const char *stun_servers[] = {"stun:stun.l.google.com:19302"};
+  int loopback;
 
   if (app->media_ready) {
     return 0;
   }
 
-  TLOG_INFO("ensure_media_stack: init ICE config");
-  ice_cfg = ice_default_config();
-  ice_cfg.is_controlling = app->is_offerer ? 1 : 0;
-  ice_cfg.aggressive_nomination = 1;
-  ice_cfg.use_mdns_candidates = 0;
-  if (signal_host_is_loopback(app->signal_host)) {
-    ice_cfg.allow_loopback = 1;
-    ice_cfg.stun_server_count = 0;
-    ice_cfg.turn_server_count = 0;
-  } else {
-    /*
-     * Use a literal OpenRelay address for this smoke example. The current
-     * Windows ASan build reports in CoroNet's async DNS path during TURN
-     * hostname resolution, which masks the RTC path we want to test here.
-     */
-    snprintf(ice_cfg.turn_servers[0].url, sizeof(ice_cfg.turn_servers[0].url),
-             "turn:161.97.65.129:3478");
-    snprintf(ice_cfg.turn_servers[0].username, sizeof(ice_cfg.turn_servers[0].username),
-             "turbonet");
-    snprintf(ice_cfg.turn_servers[0].credential, sizeof(ice_cfg.turn_servers[0].credential),
-             "turbonet-secret");
-    snprintf(ice_cfg.stun_servers[0].url, sizeof(ice_cfg.stun_servers[0].url),
-             "stun:162.159.207.0:3478");
-    ice_cfg.stun_server_count = 1;
-    ice_cfg.turn_server_count = 1;
-  }
-
-  TLOG_INFO("ensure_media_stack: creating ICE agent");
-  app->ice_agent = ice_agent_create(app->ctx, &ice_cfg);
-  if (!app->ice_agent) {
-    TLOG_ERROR("Failed to create ICE agent");
-    return -1;
-  }
-  if (signal_host_is_loopback(app->signal_host)) {
-    ice_agent_set_allow_loopback(app->ice_agent, 1);
-  }
-
-  memset(&callbacks, 0, sizeof(callbacks));
-  callbacks.on_state_change = on_ice_state_change;
-  callbacks.on_gathering_change = on_ice_gathering_change;
-  callbacks.on_data = on_ice_data;
-  callbacks.user_data = app;
-  ice_agent_set_callbacks(app->ice_agent, &callbacks);
+  loopback = signal_host_is_loopback(app->signal_host);
 
   TLOG_INFO("ensure_media_stack: creating DataChannel context");
   memset(&dc_cfg, 0, sizeof(dc_cfg));
@@ -1202,8 +991,6 @@ static int ensure_media_stack(app_state_t *app) {
   app->dc_ctx = turbo_dc_context_create(&dc_cfg);
   if (!app->dc_ctx) {
     TLOG_ERROR("Failed to create DataChannel context");
-    ice_agent_destroy(app->ice_agent);
-    app->ice_agent = NULL;
     return -1;
   }
 
@@ -1213,24 +1000,28 @@ static int ensure_media_stack(app_state_t *app) {
     TLOG_ERROR("Failed to create DataChannel peer");
     turbo_dc_context_destroy(app->dc_ctx);
     app->dc_ctx = NULL;
-    ice_agent_destroy(app->ice_agent);
-    app->ice_agent = NULL;
     return -1;
   }
 
   turbo_dc_peer_on_state(app->dc_peer, on_dc_state);
   turbo_dc_peer_on_channel(app->dc_peer, on_dc_channel);
   turbo_dc_peer_on_error(app->dc_peer, on_dc_error);
-  if (turbo_dc_peer_set_ice_agent(app->dc_peer, app->ice_agent) != 0) {
-    TLOG_ERROR("Failed to attach TurboNet ICE transport to DataChannel peer");
+
+  app->ice = ice_integration_create(app->dc_peer, NULL,
+                                    loopback ? NULL : stun_servers,
+                                    loopback ? 0 : 1,
+                                    NULL, NULL, NULL, 0);
+  if (!app->ice) {
+    TLOG_ERROR("Failed to attach SaltsNet ICE transport to DataChannel peer");
     turbo_dc_peer_destroy(app->dc_peer);
     app->dc_peer = NULL;
     turbo_dc_context_destroy(app->dc_ctx);
     app->dc_ctx = NULL;
-    ice_agent_destroy(app->ice_agent);
-    app->ice_agent = NULL;
     return -1;
   }
+  ice_integration_set_allow_loopback(app->ice, loopback);
+  ice_integration_on_state_change(app->ice, on_ice_state_change, app);
+  ice_integration_on_candidate(app->ice, on_ice_candidate, app);
   app->media_ready = 1;
   return 0;
 }
@@ -1243,60 +1034,119 @@ static int ensure_media_runtime(app_state_t *app) {
 
   if (!app->gather_task_started) {
     int rc;
-    TLOG_INFO("ensure_media_runtime: gather candidates inline");
-    rc = ice_agent_gather_candidates(app->ice_agent);
+    TLOG_INFO("ensure_media_runtime: start candidate gathering");
+    rc = ice_integration_start_gathering(app->ice);
     if (rc != 0) {
       TLOG_ERRORF("Failed to gather ICE candidates: {}", rc);
       app_request_stop(app);
       return -1;
     }
     app->gather_task_started = 1;
-    app->gather_task_done = 1;
   }
 
   TLOG_INFO("ensure_media_runtime: ready");
   return 0;
 }
 
-static coro_socket_type_t select_signal_socket_type(const app_state_t *app) {
-  if (app->use_tls) {
-    return CORO_SOCKET_TLS;
-  }
-  if (app->signal_host[0] != '\0' && strchr(app->signal_host, ':')) {
-    return CORO_SOCKET_TCP_V6;
-  }
-  return CORO_SOCKET_TCP_V4;
+static native_io_backend_kind signal_backend(void) {
+#if defined(_WIN32)
+  return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+  return NATIVE_IO_BACKEND_EPOLL;
+#else
+  return NATIVE_IO_BACKEND_KQUEUE;
+#endif
 }
 
-static void signal_task(coro_t *co, void *arg) {
-  app_state_t *app = (app_state_t *)arg;
-  char *data = NULL;
-  size_t len = 0;
-  int is_text = 0;
-  int rc;
-  (void)co;
+static chttp_websocket_client_config signal_client_config(void) {
+  chttp_websocket_client_config config = {0};
 
-  app->signal_socket = coro_socket_create(app->ctx, select_signal_socket_type(app));
-  if (!app->signal_socket) {
-    TLOG_ERROR("Failed to create signaling socket");
-    app_request_stop(app);
-    goto done;
+  config.size = sizeof(config);
+  config.network.backend = signal_backend();
+  config.network.connection_capacity = 1;
+  config.network.command_capacity = 16;
+  config.network.request_capacity = 16;
+  config.network.completion_batch_capacity = 16;
+  config.network.event_capacity = 16;
+  config.network.max_send_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  config.network.receive_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  config.network.connect_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
+  config.network.read_timeout_ms = SIGNAL_RECEIVE_TIMEOUT_MS;
+  config.network.write_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
+  config.network.tls_io_buffer_bytes = CNET_TLS_MIN_IO_BUFFER_BYTES;
+  config.network.tls_handshake_timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
+  config.network.command_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  config.network.event_buffer_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  config.max_frame_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  config.max_message_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  config.max_buffered_input_bytes = SIGNAL_MAX_MESSAGE_BYTES;
+  config.max_handshake_header_bytes = SIGNAL_MAX_HANDSHAKE_HEADER_BYTES;
+  config.event_capacity = 16;
+  return config;
+}
+
+static void update_ice_progress(app_state_t *app) {
+  if (!app->ice) {
+    return;
   }
 
-  coro_socket_set_timeout(app->signal_socket, 5000);
-  rc = coro_socket_connect_ws_ex(app->signal_socket, app->signal_host, app->signal_port,
-                                 app->signal_path, app->use_tls, "webrtc-signaling");
-  if (rc != 0) {
-    TLOG_ERRORF("Failed to connect to signaling WebSocket: {} ({})", rc,
-               salts_strerror(rc));
-    coro_socket_destroy(app->signal_socket);
-    app->signal_socket = NULL;
-    app_request_stop(app);
-    goto done;
+  ice_integration_poll(app->ice);
+  drain_pending_candidates(app);
+  if (!app->local_gathering_complete &&
+      ice_integration_is_gathering_complete(app->ice)) {
+    app->local_gathering_complete = 1;
+    app->local_end_of_candidates_pending = 1;
+    TLOG_INFO("ICE gathering: COMPLETE");
+    flush_cached_candidates(app);
+    flush_end_of_candidates(app);
+    if (app->answer_pending) {
+      app->answer_pending = 0;
+      send_answer(app);
+    }
+    maybe_start_checks(app);
+  }
+}
+
+static int run_signaling(app_state_t *app) {
+  chttp_websocket_client_config config = signal_client_config();
+  chttp_websocket_connect_options options = {0};
+  chttp_websocket_event event = {0};
+  char uri[512];
+  const char *uri_format = strchr(app->signal_host, ':')
+                               ? "%s://[%s]:%u%s"
+                               : "%s://%s:%u%s";
+  unsigned int http_status = 0;
+  int rc;
+  int uri_len;
+
+  uri_len = snprintf(uri, sizeof(uri), uri_format,
+                     app->use_tls ? "wss" : "ws", app->signal_host,
+                     (unsigned int)app->signal_port, app->signal_path);
+  if (uri_len < 0 || (size_t)uri_len >= sizeof(uri)) {
+    return -1;
+  }
+  rc = chttp_websocket_client_init(&app->signal_client, &config);
+  if (rc != SALTS_OK) {
+    TLOG_ERRORF("Failed to initialize signaling WebSocket: {} ({})", rc,
+                salts_strerror(rc));
+    return -1;
+  }
+  app->signal_client_initialized = 1;
+
+  options.size = sizeof(options);
+  options.uri = uri;
+  options.timeout_ms = SIGNAL_OPERATION_TIMEOUT_MS;
+  options.protocol = CHTTP_HTTP_1_1;
+  options.subprotocol = "webrtc-signaling";
+  rc = chttp_websocket_client_connect(&app->signal_client, &options,
+                                      &http_status);
+  if (rc != SALTS_OK) {
+    TLOG_ERRORF("Failed to connect to signaling WebSocket: {} ({}) HTTP {}",
+                rc, salts_strerror(rc), http_status);
+    return -1;
   }
 
   app->ws_connected = 1;
-  coro_socket_set_timeout(app->signal_socket, 500);
   TLOG_INFOF("Connected to signaling server at {}:{}{}", app->signal_host, app->signal_port,
             app->signal_path);
 
@@ -1310,15 +1160,21 @@ static void signal_task(coro_t *co, void *arg) {
   }
   if (flush_signal_outbox(app) != 0) {
     TLOG_ERROR("Failed to send initial join message");
-    if (app->signal_socket) {
-      coro_socket_destroy(app->signal_socket);
-      app->signal_socket = NULL;
-    }
-    app_request_stop(app);
-    goto done;
+    return -1;
   }
 
-  while (app->running) {
+  while (atomic_load(&app->running)) {
+    update_ice_progress(app);
+    if (atomic_load(&app->callback_failed)) {
+      TLOG_ERROR("ICE callback queue capacity exceeded");
+      break;
+    }
+
+    if (app->dc_peer) {
+      turbo_dc_handle_timers();
+      turbo_dc_peer_poll(app->dc_peer);
+    }
+
     if (app->is_offerer && app->remote_peer_id[0] == '\0' && app->ws_connected) {
       uint64_t now_ms = salts_monotonic_ms();
       if (app->last_peer_query_ms == 0 || now_ms - app->last_peer_query_ms >= 1000) {
@@ -1331,115 +1187,43 @@ static void signal_task(coro_t *co, void *arg) {
       break;
     }
 
-    data = NULL;
-    len = 0;
-    is_text = 0;
-    rc = coro_socket_recv_ws(app->signal_socket, &data, &len, &is_text);
-    if (!app->running) {
-      if (data) {
-        coro_socket_free_recv(data);
-      }
+    memset(&event, 0, sizeof(event));
+    rc = chttp_websocket_client_receive(&app->signal_client,
+                                        SIGNAL_RECEIVE_TIMEOUT_MS, &event);
+    if (!atomic_load(&app->running)) {
       break;
     }
 
     if (rc == SALTS_ETIMEDOUT) {
-      if (data) {
-        coro_socket_free_recv(data);
-      }
       continue;
     }
-    if (rc != 0) {
+    if (rc != SALTS_OK) {
       TLOG_ERRORF("Signaling socket receive failed: {} ({})", rc, salts_strerror(rc));
-      if (data) {
-        coro_socket_free_recv(data);
-      }
       break;
     }
-
-    if (!data || len == 0) {
-      if (data) {
-        coro_socket_free_recv(data);
+    if (event.kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {
+      break;
+    }
+    if (event.kind == CHTTP_WEBSOCKET_EVENT_PING) {
+      if (chttp_websocket_client_send_pong(&app->signal_client, event.data,
+                                           event.size,
+                                           SIGNAL_OPERATION_TIMEOUT_MS) != SALTS_OK) {
+        break;
       }
       continue;
     }
-
-    if (!is_text) {
+    if (event.kind != CHTTP_WEBSOCKET_EVENT_MESSAGE ||
+        event.message_type != CHTTP_WEBSOCKET_MESSAGE_TEXT) {
       TLOG_ERROR("Signaling server sent a non-text WebSocket message");
-      coro_socket_free_recv(data);
       break;
     }
 
-    process_signaling_message(app, data, len);
-    coro_socket_free_recv(data);
+    process_signaling_message(app, (const char *)event.data, event.size);
   }
 
   app->ws_connected = 0;
-  if (app->signal_socket) {
-    coro_socket_destroy(app->signal_socket);
-    app->signal_socket = NULL;
-  }
-
   app_request_stop(app);
-
-done:
-  app->signal_task_done = 1;
-  maybe_stop_context(app);
-}
-
-static void ice_gather_task(coro_t *co, void *arg) {
-  app_state_t *app = (app_state_t *)arg;
-  int rc;
-  (void)co;
-
-  rc = ice_agent_gather_candidates(app->ice_agent);
-  if (rc != 0) {
-    TLOG_ERRORF("Failed to gather ICE candidates: {}", rc);
-    app_request_stop(app);
-  }
-  app->gather_task_done = 1;
-  maybe_stop_context(app);
-}
-
-static void ice_checks_task(coro_t *co, void *arg) {
-  app_state_t *app = (app_state_t *)arg;
-  int rc;
-  (void)co;
-
-  tracef_app(app, "ice_checks_task enter");
-  while (app->running) {
-    if (ice_agent_get_gathering_state(app->ice_agent) != ICE_GATHERING_COMPLETE) {
-      coro_sleep(app->ctx, 10);
-      continue;
-    }
-
-    rc = ice_agent_start_checks(app->ice_agent);
-    tracef_app(app, "ice_checks_task ice_agent_start_checks rc=%d state=%d", rc,
-               (int)ice_agent_get_state(app->ice_agent));
-    if (rc == -2) {
-      coro_sleep(app->ctx, 10);
-      continue;
-    }
-    if (rc != 0 && app->running) {
-      TLOG_ERRORF("Failed to start ICE checks: {}", rc);
-      app_request_stop(app);
-    }
-    break;
-  }
-  app->checks_task_done = 1;
-  maybe_stop_context(app);
-}
-
-static void dc_timer_task(coro_t *co, void *arg) {
-  app_state_t *app = (app_state_t *)arg;
-  (void)co;
-
-  while (app->running) {
-    turbo_dc_handle_timers();
-    turbo_dc_peer_poll(app->dc_peer);
-    coro_sleep(app->ctx, 10);
-  }
-  app->timer_task_done = 1;
-  maybe_stop_context(app);
+  return atomic_load(&app->completed) ? 0 : -1;
 }
 
 static void print_usage(const char *argv0) {
@@ -1452,13 +1236,20 @@ static void print_usage(const char *argv0) {
 
 int main(int argc, char **argv) {
   int i;
+  int run_result;
   int role_specified = 0;
   app_state_t app;
 
   setvbuf(stdout, NULL, _IONBF, 0);
   setvbuf(stderr, NULL, _IONBF, 0);
   memset(&app, 0, sizeof(app));
-  app.running = 1;
+  atomic_init(&app.running, 1);
+  atomic_init(&app.channel, NULL);
+  atomic_init(&app.message_sent, 0);
+  atomic_init(&app.completed, 0);
+  atomic_init(&app.callback_failed, 0);
+  atomic_init(&app.pending_candidate_write, 0);
+  atomic_init(&app.pending_candidate_read, 0);
   app.signal_port = 8080;
   snprintf(app.room, sizeof(app.room), "default");
   snprintf(app.signal_host, sizeof(app.signal_host), "127.0.0.1");
@@ -1520,40 +1311,28 @@ int main(int argc, char **argv) {
   TLOG_INFOF("Mode: {}", app.is_offerer ? "offerer" : "answerer");
   TLOG_INFOF("Room: {}", app.room);
 
-  app.ctx = coro_context_create(NULL);
-  if (!app.ctx) {
-    TLOG_ERROR("Failed to create coroutine context");
-    return 1;
-  }
-  coro_context_set_persistent(app.ctx, 1);
+  run_result = run_signaling(&app);
 
-  if (coro_context_spawn(app.ctx, signal_task, &app) != 0) {
-    TLOG_ERROR("Failed to start example tasks");
-    app_request_stop(&app);
-    maybe_stop_context(&app);
-  } else {
-    app.signal_task_started = 1;
-  }
-
-  coro_context_run(app.ctx, TURBO_RUN_DEFAULT);
-
-  if (app.signal_socket) {
-    coro_socket_destroy(app.signal_socket);
-    app.signal_socket = NULL;
+  if (app.signal_client_initialized) {
+    (void)chttp_websocket_client_close(&app.signal_client, 1000, NULL, 0,
+                                       SIGNAL_SHUTDOWN_TIMEOUT_MS);
+    (void)chttp_websocket_client_destroy(&app.signal_client,
+                                         SIGNAL_SHUTDOWN_TIMEOUT_MS);
+    app.signal_client_initialized = 0;
   }
   free_signal_outbox(&app);
+  if (app.ice) {
+    ice_integration_destroy(app.ice);
+  }
   if (app.dc_peer) {
     turbo_dc_peer_destroy(app.dc_peer);
   }
   if (app.dc_ctx) {
     turbo_dc_context_destroy(app.dc_ctx);
   }
-  if (app.ice_agent) {
-    ice_agent_destroy(app.ice_agent);
-  }
-  if (app.ctx) {
-    coro_context_destroy(app.ctx);
-  }
 
-  return app.completed ? 0 : 1;
+  return run_result == 0 && atomic_load(&app.completed) &&
+                 !atomic_load(&app.callback_failed)
+             ? 0
+             : 1;
 }

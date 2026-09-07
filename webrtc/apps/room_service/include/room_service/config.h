@@ -12,9 +12,9 @@ extern "C" {
 #endif
 
 #define TURBO_ROOM_SERVICE_APP_VERSION "1.0.0"
-#define ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES 32
+#define ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES 32
 
-typedef struct room_service_fmq_worker_identity_s {
+typedef struct room_service_control_worker_identity_s {
     const char *worker_id;
     const char *active_certificate_sha256;
     const char *previous_certificate_sha256;
@@ -27,7 +27,7 @@ typedef struct room_service_fmq_worker_identity_s {
     const char *room_scope;
     const char *call_scope;
     const char *content_capabilities;
-} room_service_fmq_worker_identity_t;
+} room_service_control_worker_identity_t;
 
 typedef struct room_service_app_config_s {
     const char *config_file;
@@ -60,19 +60,18 @@ typedef struct room_service_app_config_s {
     const char *log_level;
 
     /* Iris owns workflow state; RoomService only returns provider facts. */
-    const char *iris_flowmq_host;
-    int iris_flowmq_port;
-    const char *iris_flowmq_topic;
+    const char *iris_control_host;
+    int iris_control_port;
+    const char *iris_control_path;
     const char *iris_provider_instance_id;
     const char *iris_identity;
-    const char *iris_certificate_sha256;
-    const char *iris_flowmq_ca_file;
-    const char *iris_flowmq_cert_file;
-    const char *iris_flowmq_key_file;
-    const char *iris_flowmq_key_password;
-    const char *iris_flowmq_server_name;
-    int iris_flowmq_use_tls;
-    int iris_flowmq_allow_insecure_loopback;
+    const char *iris_control_ca_file;
+    const char *iris_control_cert_file;
+    const char *iris_control_key_file;
+    const char *iris_control_key_password;
+    const char *iris_control_server_name;
+    int iris_control_use_tls;
+    int iris_control_allow_insecure_loopback;
     int iris_ack_timeout_ms;
 
     const char *iris_event_store_config;
@@ -94,22 +93,23 @@ typedef struct room_service_app_config_s {
     int iris_retry_backoff_ms;
     int iris_drain_timeout_ms;
 
-    /* IVR FlowMQ typed ROUTER endpoint. Zero disables IVR transport. */
-    const char *fmq_bind_host;
-    int fmq_bind_port;
-    int fmq_worker_heartbeat_ms;
-    int fmq_worker_lease_ms;
-    int fmq_dispatch_deadline_ms;
-    int fmq_dialog_capacity;
-    int fmq_use_tls;
-    int fmq_allow_insecure_loopback;
-    const char *fmq_ca_file;
-    const char *fmq_cert_file;
-    const char *fmq_key_file;
-    const char *fmq_key_password;
-    room_service_fmq_worker_identity_t
-        fmq_worker_identities[ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES];
-    int fmq_worker_identity_count;
+    /* IVR CHTTP HTTP/1.1 WebSocket endpoint. Zero disables IVR transport. */
+    const char *control_ws_bind_host;
+    int control_ws_bind_port;
+    const char *control_ws_path;
+    int control_ws_worker_heartbeat_ms;
+    int control_ws_worker_lease_ms;
+    int control_ws_dispatch_deadline_ms;
+    int control_ws_dialog_capacity;
+    int control_ws_use_tls;
+    int control_ws_allow_insecure_loopback;
+    const char *control_ws_ca_file;
+    const char *control_ws_cert_file;
+    const char *control_ws_key_file;
+    const char *control_ws_key_password;
+    room_service_control_worker_identity_t
+        control_ws_worker_identities[ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES];
+    int control_ws_worker_identity_count;
 
     /*
      * Owned TOML values. Internal to the room service application; callers

@@ -1,6 +1,6 @@
 #include "room_service/server.h"
 #include "room_service/http_api.h"
-#include "http_client.h"
+#include "turbo_transport.h"
 #include "turbo_media_auth.h"
 #include <json_parser.h>
 #include "turbo_room_service.h"
@@ -8,16 +8,16 @@
 #include "turbo_crypto.h"
 #include "salts_uuid.h"
 #include "tlog.h"
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 #include "iris_command_ledger.h"
 #include "iris_event_outbox.h"
 #include "iris_completion_dispatcher.h"
-#include "iris_flowmq_provider.h"
+#include "iris_control_provider.h"
 #include "iris_media_bridge.h"
 #include "iris_media_reconciler.h"
 #include "iris_room_bridge.h"
 #include "ivr_certificate_identity.h"
-#include "ivr_fmq_adapter.h"
+#include "ivr_control_adapter.h"
 #include "room_service_media.h"
 #endif
 #include <stdlib.h>
@@ -60,20 +60,20 @@ struct room_service_app_server_s {
     int64_t conference_policy_sequence;
     salts_mutex_t mutex;
     atomic_int running;
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
-    ivr_fmq_adapter_t *ivr_fmq; /* NULL only when the IVR feature is disabled */
-    ivr_certificate_identity_t *ivr_fmq_identity;
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
+    ivr_control_adapter_t *ivr_control; /* NULL only when the IVR feature is disabled */
+    ivr_certificate_identity_t *ivr_control_identity;
     iris_command_ledger_t *iris_command_ledger;
     iris_media_bridge_t *iris_media_bridge;
     iris_room_bridge_t *iris_room_bridge;
-    iris_flowmq_provider_t *iris_flowmq_provider;
+    iris_control_provider_t *iris_control_provider;
     iris_completion_dispatcher_t *iris_completion_dispatcher;
     iris_event_outbox_t *iris_event_outbox;
     iris_media_reconciler_t *iris_media_reconciler;
 #endif
 };
 
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 static int room_service_room_completion_id(
     const char *command_id, char out[SALTS_UUID_STRING_SIZE]) {
     static const char domain[] = "turbomedia.room.terminal.v1";
@@ -243,7 +243,7 @@ static ivr_status_t room_service_deliver_iris_event(
         (iris_completion_dispatcher_t *)context, event, store_revision);
 }
 
-static iris_media_bridge_result_t room_service_dispatch_flowmq_command(
+static iris_media_bridge_result_t room_service_dispatch_control_ws_command(
     void *context, const char *idempotency_key, const char *body,
     size_t body_size) {
     room_service_app_server_t *server =
@@ -334,14 +334,14 @@ static iris_media_bridge_result_t room_service_dispatch_flowmq_command(
     }
 }
 
-static ivr_status_t room_service_deliver_flowmq_completion(
+static ivr_status_t room_service_deliver_control_ws_completion(
     void *context, const iris_media_completion_t *completion,
     const ivr_media_command_result_t *result, const char *message_id,
     const char *completed_at, uint64_t completed_at_unix_ms,
     uint64_t ack_timeout_ms) {
-    iris_flowmq_completion_ack_t ack;
-    ivr_status_t status = iris_flowmq_provider_send_completion(
-        (iris_flowmq_provider_t *)context, completion, result, message_id,
+    iris_control_completion_ack_t ack;
+    ivr_status_t status = iris_control_provider_send_completion(
+        (iris_control_provider_t *)context, completion, result, message_id,
         completed_at, completed_at_unix_ms, ack_timeout_ms, &ack);
     if (status != IVR_OK) return status;
     if (ack.disposition ==
@@ -356,12 +356,12 @@ static ivr_status_t room_service_deliver_flowmq_completion(
                : IVR_EAUTH;
 }
 
-static ivr_status_t room_service_deliver_flowmq_event(
+static ivr_status_t room_service_deliver_control_ws_event(
     void *context, const ivr_media_event_t *event, const char *message_id,
     const char *occurred_at, uint64_t ack_timeout_ms) {
-    iris_flowmq_event_ack_t ack;
-    ivr_status_t status = iris_flowmq_provider_send_event(
-        (iris_flowmq_provider_t *)context, event, message_id, occurred_at,
+    iris_control_event_ack_t ack;
+    ivr_status_t status = iris_control_provider_send_event(
+        (iris_control_provider_t *)context, event, message_id, occurred_at,
         ack_timeout_ms, &ack);
     if (status != IVR_OK) return status;
     if (ack.disposition == ProviderEventAckDisposition_Committed ||
@@ -1072,40 +1072,81 @@ static int room_service_copy_sfu_route_for_room(room_service_app_server_t *serve
     return -1;
 }
 
-static http_client_t *room_service_create_sfu_client_for_route(
+static void room_service_http_response_free(chttp_response *response) {
+    if (!response) return;
+    chttp_response_destroy(response);
+    free(response);
+}
+
+static int room_service_http_response_is_json(const chttp_response *response) {
+    static const char json_type[] = "application/json";
+    const char *content_type = response
+                                   ? chttp_response_header(response,
+                                                           "Content-Type")
+                                   : NULL;
+    size_t index;
+    if (!content_type) return 0;
+    for (index = 0u; index + 1u < sizeof(json_type); ++index) {
+        if (tolower((unsigned char)content_type[index]) != json_type[index])
+            return 0;
+    }
+    return content_type[index] == '\0' || content_type[index] == ';' ||
+           isspace((unsigned char)content_type[index]);
+}
+
+static json_value_t *room_service_http_response_parse_json(
+    const chttp_response *response) {
+    if (!response || !response->body || response->body_size == 0u) return NULL;
+    return json_parse((const char *)response->body, response->body_size);
+}
+
+static chttp_response *room_service_http_post_json(
+    turbo_transport_t *client, const char *path, const char *json) {
+    const char *headers[] = {"Content-Type", "application/json"};
+    if (!client || !path || !json) return NULL;
+    return turbo_transport_http_request(
+        client, TURBO_HTTP_POST, path, (const uint8_t *)json, strlen(json),
+        headers, 2);
+}
+
+static turbo_transport_t *room_service_create_sfu_client_for_route(
     room_service_app_server_t *server, const char *control_url,
     const char *control_token) {
-    http_client_t *client;
+    turbo_transport_config_t config = {0};
+    turbo_transport_t *client;
+    cnet_tls_client_config tls_config = {0};
     const char *ca_file;
 
     if (!control_url || control_url[0] == '\0') {
         return NULL;
     }
 
-    client = http_client_create(control_url);
-    if (!client) {
+    if (turbo_transport_parse_url(control_url, &config) != 0 ||
+        config.type != TURBO_TRANSPORT_HTTP) {
+        free((void *)config.host);
+        free((void *)config.path);
         return NULL;
     }
 
     ca_file = server ? server->config.sfu_ca_file : NULL;
-    if (ca_file) {
-        turbo_tls_client_config_t tls_config;
-
-        memset(&tls_config, 0, sizeof(tls_config));
+    if (config.use_tls) {
+        tls_config.size = sizeof(tls_config);
         tls_config.ca_file = ca_file;
-        tls_config.verify_peer = 1;
-        if (http_client_set_tls_client_config(client, &tls_config) != 0) {
-            http_client_destroy(client);
-            return NULL;
-        }
+        config.tls = &tls_config;
+    } else if (ca_file && ca_file[0]) {
+        free((void *)config.host);
+        free((void *)config.path);
+        return NULL;
     }
 
-    http_client_set_timeout(client, 3000);
-    http_client_set_user_agent(client, "TurboRoomService/0.1");
-    if (control_token && control_token[0] != '\0') {
-        http_client_set_bearer_token(client, control_token);
-    }
-
+    config.connect_timeout_ms = 3000;
+    config.read_timeout_ms = 3000;
+    config.write_timeout_ms = 3000;
+    config.user_agent = "TurboRoomService/0.1";
+    config.auth_token = control_token;
+    client = turbo_transport_create(&config);
+    free((void *)config.host);
+    free((void *)config.path);
     return client;
 }
 
@@ -1176,8 +1217,8 @@ static int room_service_issue_sfu_command_token(
 static int room_service_post_sfu_command(room_service_app_server_t *server,
                                          const char *room_id,
                                          const char *command_json) {
-    http_client_t *client;
-    http_response_t *response;
+    turbo_transport_t *client;
+    chttp_response *response;
     char control_url[ROOM_SERVICE_SFU_CONTROL_URL_MAX];
     char control_token[ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX];
     char *signed_token = NULL;
@@ -1208,21 +1249,21 @@ static int room_service_post_sfu_command(room_service_app_server_t *server,
         return -1;
     }
 
-    response = http_post_json(client, "/api/v1/commands", command_json);
+    response = room_service_http_post_json(client, "/api/v1/commands",
+                                           command_json);
     if (!response) {
-        http_client_destroy(client);
+        turbo_transport_destroy(client);
         return -1;
     }
 
-    if (response->error_code != HTTP_ERROR_NONE ||
-        response->status_code < 200 || response->status_code >= 300) {
-        http_response_free(response);
-        http_client_destroy(client);
+    if (response->status_code < 200u || response->status_code >= 300u) {
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
-    http_response_free(response);
-    http_client_destroy(client);
+    room_service_http_response_free(response);
+    turbo_transport_destroy(client);
     return 0;
 }
 
@@ -1314,7 +1355,7 @@ static int64_t room_service_json_int64_field(const json_value_t *obj, const char
     return (int64_t)json_number(value);
 }
 
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 static ivr_status_t room_service_prepare_ivr_caller_audio(
     void *context, const char *room_id, const char *call_id, char *error,
     size_t error_capacity) {
@@ -1497,10 +1538,10 @@ static ivr_status_t room_service_observe_iris_media_command(
     void *context, const ivr_media_command_t *command,
     iris_resource_observation_t *observation) {
     room_service_app_server_t *server = (room_service_app_server_t *)context;
-    if (!server || !server->ivr_fmq || !command || !observation) {
+    if (!server || !server->ivr_control || !command || !observation) {
         return IVR_ESTATE;
     }
-    return ivr_fmq_adapter_observe_media_command(server->ivr_fmq, command,
+    return ivr_control_adapter_observe_media_command(server->ivr_control, command,
                                                   observation);
 }
 
@@ -1844,11 +1885,11 @@ room_service_app_server_t *room_service_app_server_create(
         free(server);
         return NULL;
     }
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
-    if (config->iris_flowmq_host) {
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
+    if (config->iris_control_host) {
         iris_media_bridge_config_t bridge_config;
         iris_room_bridge_config_t room_bridge_config;
-        iris_flowmq_provider_config_t provider_config;
+        iris_control_provider_config_t provider_config;
         iris_completion_dispatcher_config_t dispatcher_config;
         char ledger_error[256] = {0};
         server->iris_command_ledger = iris_command_ledger_create_record_store(
@@ -1911,35 +1952,31 @@ room_service_app_server_t *room_service_app_server_create(
             free(server);
             return NULL;
         }
-        iris_flowmq_provider_config_init(&provider_config);
-        provider_config.transport = config->iris_flowmq_use_tls
-                                        ? FLOWMQ_TRANSPORT_TLS
-                                        : FLOWMQ_TRANSPORT_TCP;
-        provider_config.host = config->iris_flowmq_host;
-        provider_config.port = (uint16_t)config->iris_flowmq_port;
-        provider_config.topic = config->iris_flowmq_topic;
+        iris_control_provider_config_init(&provider_config);
+        provider_config.use_tls = config->iris_control_use_tls;
+        provider_config.host = config->iris_control_host;
+        provider_config.port = (uint16_t)config->iris_control_port;
+        provider_config.path = config->iris_control_path;
         provider_config.provider_instance_id =
             config->iris_provider_instance_id;
         provider_config.iris_identity = config->iris_identity;
-        provider_config.iris_certificate_sha256 =
-            config->iris_certificate_sha256;
-        provider_config.ca_file = config->iris_flowmq_ca_file;
-        provider_config.certificate_file = config->iris_flowmq_cert_file;
-        provider_config.private_key_file = config->iris_flowmq_key_file;
+        provider_config.ca_file = config->iris_control_ca_file;
+        provider_config.certificate_file = config->iris_control_cert_file;
+        provider_config.private_key_file = config->iris_control_key_file;
         provider_config.private_key_password =
-            config->iris_flowmq_key_password;
-        provider_config.server_name = config->iris_flowmq_server_name;
+            config->iris_control_key_password;
+        provider_config.server_name = config->iris_control_server_name;
         provider_config.allow_insecure_development_loopback =
-            config->iris_flowmq_allow_insecure_loopback;
+            config->iris_control_allow_insecure_loopback;
         provider_config.maximum_ingress_messages =
             (size_t)config->iris_correlation_capacity;
         provider_config.send_queue_capacity =
             (size_t)config->iris_completion_queue_capacity;
-        provider_config.dispatch = room_service_dispatch_flowmq_command;
+        provider_config.dispatch = room_service_dispatch_control_ws_command;
         provider_config.dispatch_context = server;
-        server->iris_flowmq_provider =
-            iris_flowmq_provider_create(&provider_config);
-        if (!server->iris_flowmq_provider) {
+        server->iris_control_provider =
+            iris_control_provider_create(&provider_config);
+        if (!server->iris_control_provider) {
             iris_room_bridge_destroy(server->iris_room_bridge);
             iris_media_bridge_destroy(server->iris_media_bridge);
             iris_command_ledger_destroy(server->iris_command_ledger);
@@ -1958,14 +1995,14 @@ room_service_app_server_t *room_service_app_server_create(
         dispatcher_config.drain_timeout_ms = config->iris_drain_timeout_ms;
         dispatcher_config.bridge = server->iris_media_bridge;
         dispatcher_config.deliver_completion =
-            room_service_deliver_flowmq_completion;
-        dispatcher_config.deliver_event = room_service_deliver_flowmq_event;
-        dispatcher_config.deliver_context = server->iris_flowmq_provider;
+            room_service_deliver_control_ws_completion;
+        dispatcher_config.deliver_event = room_service_deliver_control_ws_event;
+        dispatcher_config.deliver_context = server->iris_control_provider;
         server->iris_completion_dispatcher =
             iris_completion_dispatcher_create(&dispatcher_config);
         if (!server->iris_completion_dispatcher) {
-            iris_flowmq_provider_destroy(server->iris_flowmq_provider);
-            server->iris_flowmq_provider = NULL;
+            iris_control_provider_destroy(server->iris_control_provider);
+            server->iris_control_provider = NULL;
             iris_room_bridge_destroy(server->iris_room_bridge);
             server->iris_room_bridge = NULL;
             iris_media_bridge_destroy(server->iris_media_bridge);
@@ -2013,7 +2050,7 @@ room_service_app_server_t *room_service_app_server_create(
                 iris_event_outbox_destroy(server->iris_event_outbox);
                 iris_completion_dispatcher_destroy(
                     server->iris_completion_dispatcher);
-                iris_flowmq_provider_destroy(server->iris_flowmq_provider);
+                iris_control_provider_destroy(server->iris_control_provider);
                 iris_room_bridge_destroy(server->iris_room_bridge);
                 iris_media_bridge_destroy(server->iris_media_bridge);
                 iris_command_ledger_destroy(server->iris_command_ledger);
@@ -2028,10 +2065,10 @@ room_service_app_server_t *room_service_app_server_create(
 #endif
     server->http_api = room_service_http_api_create(server);
     if (!server->http_api) {
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
         iris_event_outbox_destroy(server->iris_event_outbox);
         iris_completion_dispatcher_destroy(server->iris_completion_dispatcher);
-        iris_flowmq_provider_destroy(server->iris_flowmq_provider);
+        iris_control_provider_destroy(server->iris_control_provider);
         iris_room_bridge_destroy(server->iris_room_bridge);
         iris_media_bridge_destroy(server->iris_media_bridge);
         iris_command_ledger_destroy(server->iris_command_ledger);
@@ -2042,72 +2079,78 @@ room_service_app_server_t *room_service_app_server_create(
         free(server);
         return NULL;
     }
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
-    if (config->fmq_bind_port > 0) {
-        ivr_fmq_adapter_config_t fmq_config;
-        flowmq_coronet_tls_server_config_t fmq_tls;
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
+    if (config->control_ws_bind_port > 0) {
+        ivr_control_adapter_config_t control_ws_config;
+        cnet_tls_server_config control_ws_tls;
         ivr_certificate_identity_entry_t
-            identities[ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES];
-        ivr_fmq_worker_acl_entry_t
-            worker_acls[ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES];
+            identities[ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES];
+        ivr_control_worker_acl_entry_t
+            worker_acls[ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES];
         int i;
-        memset(&fmq_config, 0, sizeof(fmq_config));
-        memset(&fmq_tls, 0, sizeof(fmq_tls));
-        fmq_config.bind_host = config->fmq_bind_host;
-        fmq_config.bind_port = config->fmq_bind_port;
-        fmq_config.worker_lease_ms =
-            (uint64_t)config->fmq_worker_lease_ms;
-        fmq_config.worker_capacity = ROOM_SERVICE_IVR_WORKER_CAPACITY;
-        fmq_config.dispatch_deadline_ms =
-            (uint64_t)config->fmq_dispatch_deadline_ms;
-        fmq_config.dialog_capacity = (uint32_t)config->fmq_dialog_capacity;
-        fmq_config.media.context = server;
-        fmq_config.media.prepare_caller_audio =
+        memset(&control_ws_config, 0, sizeof(control_ws_config));
+        memset(&control_ws_tls, 0, sizeof(control_ws_tls));
+        control_ws_config.bind_host = config->control_ws_bind_host;
+        control_ws_config.bind_port = config->control_ws_bind_port;
+        control_ws_config.path = config->control_ws_path;
+        control_ws_config.worker_lease_ms =
+            (uint64_t)config->control_ws_worker_lease_ms;
+        control_ws_config.worker_capacity = ROOM_SERVICE_IVR_WORKER_CAPACITY;
+        control_ws_config.dispatch_deadline_ms =
+            (uint64_t)config->control_ws_dispatch_deadline_ms;
+        control_ws_config.dialog_capacity = (uint32_t)config->control_ws_dialog_capacity;
+        control_ws_config.media.context = server;
+        control_ws_config.media.prepare_caller_audio =
             room_service_prepare_ivr_caller_audio;
-        fmq_config.media.release_caller_audio =
+        control_ws_config.media.release_caller_audio =
             room_service_release_ivr_caller_audio;
         if (server->iris_completion_dispatcher) {
-            fmq_config.media_observer.context = server;
-            fmq_config.media_observer.on_media_result =
+            control_ws_config.media_observer.context = server;
+            control_ws_config.media_observer.on_media_result =
                 room_service_observe_iris_media_result;
-            fmq_config.media_observer.on_media_event =
+            control_ws_config.media_observer.on_media_event =
                 room_service_observe_iris_media_event;
         }
-        if (server->iris_flowmq_provider) {
-            fmq_config.inventory_observer.context = server;
-            fmq_config.inventory_observer.on_inventory_page =
+        if (server->iris_control_provider) {
+            control_ws_config.inventory_observer.context = server;
+            control_ws_config.inventory_observer.on_inventory_page =
                 room_service_observe_iris_inventory;
         }
-        if (config->fmq_use_tls) {
+        if (config->control_ws_use_tls) {
             ivr_certificate_identity_config_t identity_config =
                 IVR_CERTIFICATE_IDENTITY_CONFIG_INIT;
             memset(identities, 0, sizeof(identities));
             memset(worker_acls, 0, sizeof(worker_acls));
-            for (i = 0; i < config->fmq_worker_identity_count; ++i) {
+            for (i = 0; i < config->control_ws_worker_identity_count; ++i) {
                 identities[i].worker_id =
-                    config->fmq_worker_identities[i].worker_id;
+                    config->control_ws_worker_identities[i].worker_id;
                 identities[i].active_certificate_sha256 =
-                    config->fmq_worker_identities[i]
+                    config->control_ws_worker_identities[i]
                         .active_certificate_sha256;
                 identities[i].previous_certificate_sha256 =
-                    config->fmq_worker_identities[i]
+                    config->control_ws_worker_identities[i]
                         .previous_certificate_sha256;
                 identities[i].previous_expires_at_ms =
-                    config->fmq_worker_identities[i].previous_expires_at_ms;
+                    config->control_ws_worker_identities[i].previous_expires_at_ms;
                 identities[i].generation =
-                    config->fmq_worker_identities[i].generation;
+                    config->control_ws_worker_identities[i].generation;
             }
             identity_config.entries = identities;
             identity_config.entry_count =
-                (size_t)config->fmq_worker_identity_count;
-            if (ivr_certificate_identity_create(
-                    &identity_config, &server->ivr_fmq_identity) != SALTS_OK) {
+                (size_t)config->control_ws_worker_identity_count;
+            int identity_status = ivr_certificate_identity_create(
+                &identity_config, &server->ivr_control_identity);
+            if (identity_status != SALTS_OK) {
+                fprintf(stderr,
+                        "RoomService create failed: control WebSocket identity "
+                        "status=%d\n",
+                        identity_status);
                 room_service_http_api_destroy(server->http_api);
                 server->http_api = NULL;
                 iris_event_outbox_destroy(server->iris_event_outbox);
                 iris_completion_dispatcher_destroy(
                     server->iris_completion_dispatcher);
-                iris_flowmq_provider_destroy(server->iris_flowmq_provider);
+                iris_control_provider_destroy(server->iris_control_provider);
                 iris_room_bridge_destroy(server->iris_room_bridge);
                 iris_media_bridge_destroy(server->iris_media_bridge);
                 turbo_room_service_destroy(server->service);
@@ -2117,43 +2160,48 @@ room_service_app_server_t *room_service_app_server_create(
                 free(server);
                 return NULL;
             }
-            fmq_tls.ca_file = config->fmq_ca_file;
-            fmq_tls.cert_file = config->fmq_cert_file;
-            fmq_tls.key_file = config->fmq_key_file;
-            fmq_tls.key_password = config->fmq_key_password;
-            fmq_tls.require_client_certificate = 1;
-            fmq_config.transport = FLOWMQ_TRANSPORT_TLS;
-            fmq_config.tls = &fmq_tls;
-            fmq_config.verify_peer_identity =
+            control_ws_tls.ca_file = config->control_ws_ca_file;
+            control_ws_tls.cert_file = config->control_ws_cert_file;
+            control_ws_tls.key_file = config->control_ws_key_file;
+            control_ws_tls.key_password = config->control_ws_key_password;
+            control_ws_tls.size = sizeof(control_ws_tls);
+            control_ws_tls.client_auth = CNET_TLS_CLIENT_AUTH_REQUIRED;
+            control_ws_config.tls = &control_ws_tls;
+            control_ws_config.verify_peer_identity =
                 ivr_certificate_identity_verify;
-            fmq_config.verify_peer_identity_context =
-                server->ivr_fmq_identity;
+            control_ws_config.verify_peer_identity_context =
+                server->ivr_control_identity;
         }
-        for (i = 0; i < config->fmq_worker_identity_count; ++i) {
+        for (i = 0; i < config->control_ws_worker_identity_count; ++i) {
             worker_acls[i].worker_id =
-                config->fmq_worker_identities[i].worker_id;
+                config->control_ws_worker_identities[i].worker_id;
             worker_acls[i].tenant_id =
-                config->fmq_worker_identities[i].tenant_id;
+                config->control_ws_worker_identities[i].tenant_id;
             worker_acls[i].room_scope =
-                config->fmq_worker_identities[i].room_scope;
+                config->control_ws_worker_identities[i].room_scope;
             worker_acls[i].call_scope =
-                config->fmq_worker_identities[i].call_scope;
+                config->control_ws_worker_identities[i].call_scope;
             worker_acls[i].content_capabilities =
-                config->fmq_worker_identities[i].content_capabilities;
+                config->control_ws_worker_identities[i].content_capabilities;
         }
-        fmq_config.worker_acls = worker_acls;
-        fmq_config.worker_acl_count =
-            (size_t)config->fmq_worker_identity_count;
-        if (ivr_fmq_adapter_create(server->service, &fmq_config,
-                                   &server->ivr_fmq) != IVR_OK) {
-            ivr_certificate_identity_destroy(server->ivr_fmq_identity);
-            server->ivr_fmq_identity = NULL;
+        control_ws_config.worker_acls = worker_acls;
+        control_ws_config.worker_acl_count =
+            (size_t)config->control_ws_worker_identity_count;
+        ivr_status_t control_status = ivr_control_adapter_create(
+            server->service, &control_ws_config, &server->ivr_control);
+        if (control_status != IVR_OK) {
+            fprintf(stderr,
+                    "RoomService create failed: control WebSocket adapter "
+                    "status=%d\n",
+                    (int)control_status);
+            ivr_certificate_identity_destroy(server->ivr_control_identity);
+            server->ivr_control_identity = NULL;
             room_service_http_api_destroy(server->http_api);
             server->http_api = NULL;
             iris_event_outbox_destroy(server->iris_event_outbox);
             iris_completion_dispatcher_destroy(
                 server->iris_completion_dispatcher);
-            iris_flowmq_provider_destroy(server->iris_flowmq_provider);
+            iris_control_provider_destroy(server->iris_control_provider);
             iris_room_bridge_destroy(server->iris_room_bridge);
             iris_media_bridge_destroy(server->iris_media_bridge);
             iris_command_ledger_destroy(server->iris_command_ledger);
@@ -2164,10 +2212,10 @@ room_service_app_server_t *room_service_app_server_create(
             free(server);
             return NULL;
         }
-        if (server->iris_flowmq_provider) {
+        if (server->iris_control_provider) {
             iris_media_reconciler_config_t reconcile_config;
             memset(&reconcile_config, 0, sizeof(reconcile_config));
-            reconcile_config.provider = server->iris_flowmq_provider;
+            reconcile_config.provider = server->iris_control_provider;
             reconcile_config.resource_capacity =
                 (size_t)config->iris_correlation_capacity;
             reconcile_config.worker_capacity =
@@ -2191,20 +2239,20 @@ room_service_app_server_t *room_service_app_server_create(
                 iris_media_reconciler_create(&reconcile_config);
             if (!server->iris_media_reconciler ||
                 iris_media_reconciler_set_adapter(
-                    server->iris_media_reconciler, server->ivr_fmq) != 0) {
+                    server->iris_media_reconciler, server->ivr_control) != 0) {
                 iris_media_reconciler_destroy(
                     server->iris_media_reconciler);
-                ivr_fmq_adapter_destroy(server->ivr_fmq);
-                server->ivr_fmq = NULL;
-                ivr_certificate_identity_destroy(server->ivr_fmq_identity);
-                server->ivr_fmq_identity = NULL;
+                ivr_control_adapter_destroy(server->ivr_control);
+                server->ivr_control = NULL;
+                ivr_certificate_identity_destroy(server->ivr_control_identity);
+                server->ivr_control_identity = NULL;
                 room_service_http_api_destroy(server->http_api);
                 server->http_api = NULL;
                 iris_event_outbox_destroy(server->iris_event_outbox);
                 iris_completion_dispatcher_destroy(
                     server->iris_completion_dispatcher);
-                iris_flowmq_provider_destroy(
-                    server->iris_flowmq_provider);
+                iris_control_provider_destroy(
+                    server->iris_control_provider);
                 iris_room_bridge_destroy(server->iris_room_bridge);
                 iris_media_bridge_destroy(server->iris_media_bridge);
                 iris_command_ledger_destroy(server->iris_command_ledger);
@@ -2227,33 +2275,38 @@ int room_service_app_server_start(room_service_app_server_t *server) {
         return -1;
     }
 
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     if (server->iris_command_ledger &&
         iris_command_ledger_start(server->iris_command_ledger) != SALTS_OK) {
+        fprintf(stderr, "RoomService startup failed: Iris command ledger\n");
         return -1;
     }
     if (server->iris_completion_dispatcher &&
         iris_completion_dispatcher_start(
             server->iris_completion_dispatcher) != 0) {
+        fprintf(stderr, "RoomService startup failed: Iris completion dispatcher\n");
         iris_command_ledger_stop(server->iris_command_ledger);
         return -1;
     }
     if (server->iris_event_outbox &&
         iris_event_outbox_start(server->iris_event_outbox) != SALTS_OK) {
+        fprintf(stderr, "RoomService startup failed: Iris event outbox\n");
         iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
         iris_command_ledger_stop(server->iris_command_ledger);
         return -1;
     }
-    if (server->ivr_fmq &&
-        ivr_fmq_adapter_start(server->ivr_fmq) != IVR_OK) {
+    if (server->ivr_control &&
+        ivr_control_adapter_start(server->ivr_control) != IVR_OK) {
+        fprintf(stderr, "RoomService startup failed: IVR control WebSocket\n");
         iris_event_outbox_stop(server->iris_event_outbox);
         iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
         iris_command_ledger_stop(server->iris_command_ledger);
         return -1;
     }
-    if (server->iris_flowmq_provider &&
-        iris_flowmq_provider_start(server->iris_flowmq_provider) != 0) {
-        ivr_fmq_adapter_stop(server->ivr_fmq);
+    if (server->iris_control_provider &&
+        iris_control_provider_start(server->iris_control_provider) != 0) {
+        fprintf(stderr, "RoomService startup failed: Iris control WebSocket\n");
+        ivr_control_adapter_stop(server->ivr_control);
         iris_event_outbox_stop(server->iris_event_outbox);
         iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
         iris_command_ledger_stop(server->iris_command_ledger);
@@ -2261,8 +2314,9 @@ int room_service_app_server_start(room_service_app_server_t *server) {
     }
     if (server->iris_media_reconciler &&
         iris_media_reconciler_start(server->iris_media_reconciler) != 0) {
-        iris_flowmq_provider_stop(server->iris_flowmq_provider);
-        ivr_fmq_adapter_stop(server->ivr_fmq);
+        fprintf(stderr, "RoomService startup failed: Iris media reconciler\n");
+        iris_control_provider_stop(server->iris_control_provider);
+        ivr_control_adapter_stop(server->ivr_control);
         iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
         iris_event_outbox_stop(server->iris_event_outbox);
         iris_command_ledger_stop(server->iris_command_ledger);
@@ -2271,11 +2325,12 @@ int room_service_app_server_start(room_service_app_server_t *server) {
 #endif
     if (room_service_http_api_start(server->http_api, server->config.bind_host,
                                     server->config.bind_port) != 0) {
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
-        iris_flowmq_provider_stop(server->iris_flowmq_provider);
+        fprintf(stderr, "RoomService startup failed: HTTP API\n");
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
+        iris_control_provider_stop(server->iris_control_provider);
         iris_media_reconciler_stop(server->iris_media_reconciler);
-        if (server->ivr_fmq) {
-            ivr_fmq_adapter_stop(server->ivr_fmq);
+        if (server->ivr_control) {
+            ivr_control_adapter_stop(server->ivr_control);
         }
         iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
         iris_event_outbox_stop(server->iris_event_outbox);
@@ -2320,15 +2375,15 @@ void room_service_app_server_stop(room_service_app_server_t *server) {
     if (server->http_api) {
         room_service_http_api_stop(server->http_api);
     }
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     /* Quiesce producers before their consumers. Provider stop closes command
        ingress and waits for its dispatch worker; reconciler then stops
        producing adapter commands. Adapter stop establishes worker callback
        quiescence before completion/outbox consumers are drained. */
-    iris_flowmq_provider_stop(server->iris_flowmq_provider);
+    iris_control_provider_stop(server->iris_control_provider);
     iris_media_reconciler_stop(server->iris_media_reconciler);
-    if (server->ivr_fmq) {
-        ivr_fmq_adapter_stop(server->ivr_fmq);
+    if (server->ivr_control) {
+        ivr_control_adapter_stop(server->ivr_control);
     }
     iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
     iris_event_outbox_stop(server->iris_event_outbox);
@@ -2347,21 +2402,21 @@ void room_service_app_server_destroy(room_service_app_server_t *server) {
         room_service_http_api_destroy(server->http_api);
         server->http_api = NULL;
     }
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     iris_media_reconciler_destroy(server->iris_media_reconciler);
     server->iris_media_reconciler = NULL;
-    if (server->ivr_fmq) {
-        ivr_fmq_adapter_destroy(server->ivr_fmq);
-        server->ivr_fmq = NULL;
+    if (server->ivr_control) {
+        ivr_control_adapter_destroy(server->ivr_control);
+        server->ivr_control = NULL;
     }
-    ivr_certificate_identity_destroy(server->ivr_fmq_identity);
-    server->ivr_fmq_identity = NULL;
+    ivr_certificate_identity_destroy(server->ivr_control_identity);
+    server->ivr_control_identity = NULL;
     iris_event_outbox_destroy(server->iris_event_outbox);
     server->iris_event_outbox = NULL;
     iris_completion_dispatcher_destroy(server->iris_completion_dispatcher);
     server->iris_completion_dispatcher = NULL;
-    iris_flowmq_provider_destroy(server->iris_flowmq_provider);
-    server->iris_flowmq_provider = NULL;
+    iris_control_provider_destroy(server->iris_control_provider);
+    server->iris_control_provider = NULL;
     iris_room_bridge_destroy(server->iris_room_bridge);
     server->iris_room_bridge = NULL;
     iris_media_bridge_destroy(server->iris_media_bridge);
@@ -2389,15 +2444,15 @@ turbo_room_service_t *room_service_app_server_get_service(
     return server->service;
 }
 
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 ivr_status_t room_service_app_server_send_ivr_media_command(
     room_service_app_server_t *server, const ivr_media_command_t *command,
     char *out_worker_id, size_t out_worker_id_capacity) {
-    if (!server || !server->ivr_fmq) {
+    if (!server || !server->ivr_control) {
         return IVR_ESTATE;
     }
-    return ivr_fmq_adapter_send_media_command(
-        server->ivr_fmq, command, out_worker_id, out_worker_id_capacity);
+    return ivr_control_adapter_send_media_command(
+        server->ivr_control, command, out_worker_id, out_worker_id_capacity);
 }
 
 iris_media_bridge_result_t room_service_app_server_dispatch_iris_media_command(
@@ -2520,10 +2575,10 @@ int room_service_app_server_get_ivr_metrics(
     }
 
     memset(metrics, 0, sizeof(*metrics));
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
-    if (server->ivr_fmq) {
-        ivr_fmq_adapter_stats_t stats;
-        ivr_fmq_adapter_get_stats(server->ivr_fmq, &stats);
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
+    if (server->ivr_control) {
+        ivr_control_adapter_stats_t stats;
+        ivr_control_adapter_get_stats(server->ivr_control, &stats);
         metrics->enabled = 1;
         metrics->workers = stats.workers;
         metrics->worker_capacity = stats.worker_capacity;
@@ -3182,8 +3237,8 @@ int room_service_app_server_fetch_track_subscription(
     room_service_app_server_t *server, const char *room_id,
     const char *receiver_participant_id, const char *track_id,
     room_service_sfu_track_subscription_t *subscription) {
-    http_client_t *client;
-    http_response_t *response;
+    turbo_transport_t *client;
+    chttp_response *response;
     json_value_t *root = NULL;
     json_value_t *track_subscription;
     char command_json[512];
@@ -3223,38 +3278,33 @@ int room_service_app_server_fetch_track_subscription(
              "}",
              room_id, receiver_participant_id, track_id);
 
-    response = http_post_json(client, "/api/v1/commands", command_json);
+    response = room_service_http_post_json(client, "/api/v1/commands",
+                                           command_json);
     if (!response) {
-        http_client_destroy(client);
-        return -1;
-    }
-
-    if (response->error_code != HTTP_ERROR_NONE) {
-        http_response_free(response);
-        http_client_destroy(client);
+        turbo_transport_destroy(client);
         return -1;
     }
 
     if (response->status_code == 404) {
         subscription->available = 1;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return 0;
     }
 
-    if (response->status_code < 200 || response->status_code >= 300 ||
-        !http_response_is_json(response)) {
-        http_response_free(response);
-        http_client_destroy(client);
+    if (response->status_code < 200u || response->status_code >= 300u ||
+        !room_service_http_response_is_json(response)) {
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
-    root = http_response_parse_json(response);
+    root = room_service_http_response_parse_json(response);
     if (!root || json_type(root) != JSON_OBJECT) {
         json_free(root);
         root = NULL;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
@@ -3262,8 +3312,8 @@ int room_service_app_server_fetch_track_subscription(
     if (!track_subscription || json_type(track_subscription) != JSON_OBJECT) {
         json_free(root);
         root = NULL;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
@@ -3307,16 +3357,16 @@ int room_service_app_server_fetch_track_subscription(
     json_free(root);
 
     root = NULL;
-    http_response_free(response);
-    http_client_destroy(client);
+    room_service_http_response_free(response);
+    turbo_transport_destroy(client);
     return 0;
 }
 
 int room_service_app_server_fetch_participant_stats(
     room_service_app_server_t *server, const char *room_id, const char *participant_id,
     room_service_sfu_participant_stats_t *stats) {
-    http_client_t *client;
-    http_response_t *response;
+    turbo_transport_t *client;
+    chttp_response *response;
     json_value_t *root = NULL;
     json_value_t *participant_stats;
     char command_json[384];
@@ -3355,38 +3405,33 @@ int room_service_app_server_fetch_participant_stats(
              "}",
              room_id, participant_id);
 
-    response = http_post_json(client, "/api/v1/commands", command_json);
+    response = room_service_http_post_json(client, "/api/v1/commands",
+                                           command_json);
     if (!response) {
-        http_client_destroy(client);
-        return -1;
-    }
-
-    if (response->error_code != HTTP_ERROR_NONE) {
-        http_response_free(response);
-        http_client_destroy(client);
+        turbo_transport_destroy(client);
         return -1;
     }
 
     if (response->status_code == 404) {
         stats->available = 1;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return 0;
     }
 
-    if (response->status_code < 200 || response->status_code >= 300 ||
-        !http_response_is_json(response)) {
-        http_response_free(response);
-        http_client_destroy(client);
+    if (response->status_code < 200u || response->status_code >= 300u ||
+        !room_service_http_response_is_json(response)) {
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
-    root = http_response_parse_json(response);
+    root = room_service_http_response_parse_json(response);
     if (!root || json_type(root) != JSON_OBJECT) {
         json_free(root);
         root = NULL;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
@@ -3394,8 +3439,8 @@ int room_service_app_server_fetch_participant_stats(
     if (!participant_stats || json_type(participant_stats) != JSON_OBJECT) {
         json_free(root);
         root = NULL;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
@@ -3421,16 +3466,16 @@ int room_service_app_server_fetch_participant_stats(
     json_free(root);
 
     root = NULL;
-    http_response_free(response);
-    http_client_destroy(client);
+    room_service_http_response_free(response);
+    turbo_transport_destroy(client);
     return 0;
 }
 
 int room_service_app_server_fetch_recording_status(
     room_service_app_server_t *server, const char *room_id,
     room_service_sfu_recording_status_t *status) {
-    http_client_t *client;
-    http_response_t *response;
+    turbo_transport_t *client;
+    chttp_response *response;
     json_value_t *root = NULL;
     json_value_t *recording_status;
     char command_json[256];
@@ -3468,38 +3513,33 @@ int room_service_app_server_fetch_recording_status(
              "}",
              room_id);
 
-    response = http_post_json(client, "/api/v1/commands", command_json);
+    response = room_service_http_post_json(client, "/api/v1/commands",
+                                           command_json);
     if (!response) {
-        http_client_destroy(client);
-        return -1;
-    }
-
-    if (response->error_code != HTTP_ERROR_NONE) {
-        http_response_free(response);
-        http_client_destroy(client);
+        turbo_transport_destroy(client);
         return -1;
     }
 
     if (response->status_code == 404) {
         status->available = 1;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return 0;
     }
 
-    if (response->status_code < 200 || response->status_code >= 300 ||
-        !http_response_is_json(response)) {
-        http_response_free(response);
-        http_client_destroy(client);
+    if (response->status_code < 200u || response->status_code >= 300u ||
+        !room_service_http_response_is_json(response)) {
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
-    root = http_response_parse_json(response);
+    root = room_service_http_response_parse_json(response);
     if (!root || json_type(root) != JSON_OBJECT) {
         json_free(root);
         root = NULL;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
@@ -3507,8 +3547,8 @@ int room_service_app_server_fetch_recording_status(
     if (!recording_status || json_type(recording_status) != JSON_OBJECT) {
         json_free(root);
         root = NULL;
-        http_response_free(response);
-        http_client_destroy(client);
+        room_service_http_response_free(response);
+        turbo_transport_destroy(client);
         return -1;
     }
 
@@ -3527,8 +3567,8 @@ int room_service_app_server_fetch_recording_status(
     json_free(root);
 
     root = NULL;
-    http_response_free(response);
-    http_client_destroy(client);
+    room_service_http_response_free(response);
+    turbo_transport_destroy(client);
     return 0;
 }
 

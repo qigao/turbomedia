@@ -8,14 +8,14 @@ WebRTC DataChannel 实现，用于点对点通信。
 
 **Status**: Development preview; not production-ready.
 
-The repository contains the in-tree PeerConnection, TurboNet::Ice, DTLS-SRTP,
+The repository contains the in-tree PeerConnection, SaltsNet::ICE, DTLS-SRTP,
 DataChannel, RTP/RTCP, SFU and room-service building blocks. Local unit and
 loopback end-to-end tests exercise those paths, but they do not establish
 production readiness.
 
 The current tree includes authenticated WHIP/WHEP resource endpoints, real ICE
 restart and consent freshness, externally configured SFU STUN/TURN servers,
-and in-process WSS/HTTPS using CoroNet and Iris. The SFU accepts short-lived
+and in-process WSS/HTTPS using CHTTP/CNet and Iris. The SFU accepts short-lived
 HS256 tokens with audience, scope, room/participant binding and one-key
 rotation overlap; static bearer tokens remain an explicit migration mode.
 Room Service validates the same contract on its control/facade routes and
@@ -70,7 +70,7 @@ release gates.
 The legacy `ice_integration_reconnect()` helper remains a retry scheduler.
 Applications needing real restart should use
 `turbo_peer_connection_restart_ice()` or the conditional WHIP/WHEP trickle-ICE
-resource flow; both rotate credentials through the versioned TurboNet::Ice
+resource flow; both rotate credentials through the versioned SaltsNet::ICE
 restart contract.
 
 ## Quick Start

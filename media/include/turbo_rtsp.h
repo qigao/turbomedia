@@ -16,7 +16,7 @@ extern "C" {
 
 #ifdef TURBO_MEDIA_HAS_RTSP
 
-#include <CoroNet.h>
+#include <cnet/cnet.h>
 
 #define TURBO_RTSP_MAX_URI_LEN            512
 #define TURBO_RTSP_MAX_HEADER_VALUE_LEN   256
@@ -57,6 +57,12 @@ typedef enum {
     TURBO_RTSP_AUTH_BASIC,
     TURBO_RTSP_AUTH_DIGEST
 } turbo_rtsp_auth_scheme_t;
+
+/** Authenticated, ordered KCP control-plane policy copied by RTSP owners. */
+typedef struct {
+    cnet_kcp_config transport;
+    cnet_kcp_security_config security;
+} turbo_rtsp_kcp_config_t;
 
 typedef enum {
     TURBO_RTSP_TRANSPORT_DELIVERY_UNSPECIFIED = 0,
@@ -161,11 +167,18 @@ typedef struct {
     const char *server_name;        /* NULL defaults to TurboMedia RTSP */
     const char *public_methods;     /* NULL uses every built-in RTSP method handler name */
     turbo_rtsp_control_transport_t control_transport; /* 0 defaults to TCP */
+    size_t connection_capacity;     /* 0 defaults to 128 live control sessions */
+    size_t send_queue_capacity;     /* 0 defaults to 256 copied control messages */
+    size_t send_queue_bytes;        /* 0 defaults to 8 MiB retained control data */
+    const char *ws_path;            /* NULL defaults to "/" for WS/WSS */
+    const char *ws_subprotocol;     /* Optional required WebSocket subprotocol */
+    /** Required for WSS. All referenced strings are copied during create. */
+    const cnet_tls_server_config *tls;
     /**
-     * Required when control_transport is KCP. The configuration must contain a
-     * non-zero PSK accepted by CoroNet. turbo_rtsp_server_create() copies it.
+     * Required when control_transport is KCP. PSK v1 is mandatory; plaintext
+     * KCP is rejected. turbo_rtsp_server_create() copies the configuration.
      */
-    const turbo_kcp_config_t *kcp_config;
+    const turbo_rtsp_kcp_config_t *kcp_config;
 } turbo_rtsp_server_config_t;
 
 typedef struct {
@@ -263,6 +276,8 @@ typedef struct {
     turbo_rtsp_control_transport_t control_transport; /* 0 defaults to TCP */
     const char *ws_path;            /* NULL defaults to "/" for WS/WSS */
     const char *ws_subprotocol;     /* Optional Sec-WebSocket-Protocol */
+    /** Optional custom WSS trust/identity policy, consumed during create. */
+    const cnet_tls_client_config *tls;
     uint32_t h264_rtp_ssrc_seed;
     int has_h264_rtp_ssrc_seed;
     uint16_t h264_rtp_initial_sequence;
@@ -273,7 +288,7 @@ typedef struct {
      * Required when control_transport is KCP. The configuration must match the
      * server configuration. turbo_rtsp_client_create() copies it.
      */
-    const turbo_kcp_config_t *kcp_config;
+    const turbo_rtsp_kcp_config_t *kcp_config;
 } turbo_rtsp_client_config_t;
 
 typedef struct {
@@ -370,23 +385,29 @@ TURBO_MEDIA_API int turbo_rtsp_response_get_parameter(
 TURBO_MEDIA_API int turbo_rtsp_response_set_parameter(
     turbo_rtsp_response_t *response);
 
+/** Initializes secure KCP defaults. The caller must then set a non-zero PSK. */
+TURBO_MEDIA_API void turbo_rtsp_kcp_config_init(
+    turbo_rtsp_kcp_config_t *config);
+
+/** Wipes copied secret material and clears the configuration. */
+TURBO_MEDIA_API void turbo_rtsp_kcp_config_wipe(
+    turbo_rtsp_kcp_config_t *config);
+
 /**
  * @brief Create an RTSP server.
  *
  * KCP control transport requires config->kcp_config. The configuration is
  * copied, so the caller may wipe or release it after this function returns.
- * Its contents are validated by CoroNet when turbo_rtsp_server_start() creates
- * the listener; invalid values make start return -1.
+ * Its contents are validated by CNet when turbo_rtsp_server_start() creates
+ * the bounded packet endpoint; invalid values make start return -1.
  *
- * @param ctx Coroutine context that owns all server sockets.
  * @param config Optional server configuration. KCP requires kcp_config.
  * @param handlers Optional request callbacks copied by the server.
  * @param user_data Opaque callback context retained without ownership transfer.
- * @return A server instance, or NULL when ctx is NULL, required KCP
- *         configuration is absent, or allocation fails.
+ * @return A server instance, or NULL when required transport configuration is
+ *         absent or invalid, bounds cannot be represented, or allocation fails.
  */
 TURBO_MEDIA_API turbo_rtsp_server_t *turbo_rtsp_server_create(
-    coro_context_t *ctx,
     const turbo_rtsp_server_config_t *config,
     const turbo_rtsp_server_handlers_t *handlers,
     void *user_data);
@@ -404,9 +425,6 @@ TURBO_MEDIA_API void turbo_rtsp_server_destroy(turbo_rtsp_server_t *server);
 TURBO_MEDIA_API int turbo_rtsp_url_parse(
     const char *url,
     turbo_rtsp_url_t *parsed);
-
-TURBO_MEDIA_API coro_socket_t *turbo_rtsp_session_get_control_socket(
-    turbo_rtsp_session_t *session);
 
 TURBO_MEDIA_API const turbo_rtsp_request_t *turbo_rtsp_session_get_last_request(
     const turbo_rtsp_session_t *session);
@@ -454,23 +472,20 @@ TURBO_MEDIA_API int turbo_rtsp_session_recv_rtcp_udp(
  *
  * KCP control transport requires config->kcp_config. The configuration is
  * copied, so the caller may wipe or release it after this function returns.
- * Its contents are validated by CoroNet when turbo_rtsp_client_connect()
+ * Its contents are validated by CNet when turbo_rtsp_client_connect()
  * creates the socket; invalid values make connect return -1.
  *
- * @param ctx Coroutine context that owns the client socket.
  * @param config Optional client configuration. KCP requires kcp_config.
- * @return A client instance, or NULL when ctx is NULL, required KCP
- *         configuration is absent, or allocation fails.
+ * @return A client instance, or NULL when required transport configuration is
+ *         absent or invalid, or allocation fails.
  */
 TURBO_MEDIA_API turbo_rtsp_client_t *turbo_rtsp_client_create(
-    coro_context_t *ctx,
     const turbo_rtsp_client_config_t *config);
 
 TURBO_MEDIA_API int turbo_rtsp_client_connect(
     turbo_rtsp_client_t *client);
 
 TURBO_MEDIA_API turbo_rtsp_client_t *turbo_rtsp_client_open_url(
-    coro_context_t *ctx,
     const char *url,
     const turbo_rtsp_client_config_t *config);
 

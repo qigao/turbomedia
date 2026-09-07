@@ -1,8 +1,8 @@
 #include "turbo_pipeline.h"
 
-#include "CoroNet/turbo_coro_context.h"
-#include "CoroNet/turbo_coro_socket.h"
+#include <chttp/chttp.h>
 #include <rtp-packet.h>
+#include <salts/error_codes.h>
 #include <tinytest.h>
 #include <turbo_codec.h>
 #include <turbo_media_server.h>
@@ -13,9 +13,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
-#include <unistd.h>
-#endif
 
 #define PIPELINE_RTSP_E2E_PORT 20612
 #define PIPELINE_RTSP_E2E_URI "rtsp://127.0.0.1:20612/live/cam"
@@ -35,8 +32,17 @@ enum {
     PIPELINE_HLS_STABLE_POLL_COUNT = 50,
     PIPELINE_HLS_SEGMENT_COUNT = 3,
     PIPELINE_HLS_PLAYLIST_REVISION_COUNT = 2,
-    PIPELINE_HLS_HTTP_REQUEST_CAPACITY = 2048,
-    PIPELINE_HLS_HTTP_HEADER_CAPACITY = 512
+    PIPELINE_HLS_HTTP_CONNECTION_CAPACITY = 8,
+    PIPELINE_HLS_HTTP_ROUTE_CAPACITY = PIPELINE_HLS_SEGMENT_COUNT + 1,
+    PIPELINE_HLS_HTTP_MAX_TARGET_BYTES = 1024,
+    PIPELINE_HLS_HTTP_MAX_HEADER_COUNT = 16,
+    PIPELINE_HLS_HTTP_MAX_HEADER_BYTES = 8 * 1024,
+    PIPELINE_HLS_HTTP_MAX_REQUEST_BODY_BYTES = 1024,
+    PIPELINE_HLS_HTTP_MAX_BODY_BYTES = 64 * 1024,
+    PIPELINE_HLS_HTTP_RESPONSE_WIRE_OVERHEAD_BYTES = 1024,
+    PIPELINE_HLS_HTTP_BUFFER_BYTES = 1024 * 1024,
+    PIPELINE_HLS_HTTP_POLL_SLICE_MS = 5,
+    PIPELINE_HLS_HTTP_STOP_TIMEOUT_MS = 5000
 };
 
 static const char VALID_COPY_YAML[] =
@@ -163,6 +169,9 @@ typedef struct pipeline_execute_result {
 } pipeline_execute_result_t;
 
 typedef struct pipeline_hls_http_server {
+    chttp_server http;
+    int http_initialized;
+    int http_started;
     atomic_int playlist_revision;
     atomic_int playlist_requests;
     atomic_int segment_requests[PIPELINE_HLS_SEGMENT_COUNT];
@@ -175,42 +184,8 @@ typedef struct pipeline_hls_http_server {
     size_t segment_sizes[PIPELINE_HLS_SEGMENT_COUNT];
 } pipeline_hls_http_server_t;
 
-static unsigned short pipeline_pick_loopback_port(void) {
-    unsigned short port = 0;
-    struct sockaddr_in address;
-#ifdef _WIN32
-    int address_size = (int)sizeof(address);
-    SOCKET socket_handle = INVALID_SOCKET;
-#else
-    socklen_t address_size = (socklen_t)sizeof(address);
-    int socket_handle = -1;
-#endif
-
-    memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = htons(0);
-    socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-#ifdef _WIN32
-    if (socket_handle == INVALID_SOCKET) return 0;
-#else
-    if (socket_handle < 0) return 0;
-#endif
-    if (bind(socket_handle, (const struct sockaddr *)&address,
-             sizeof(address)) == 0 &&
-        getsockname(socket_handle, (struct sockaddr *)&address,
-                    &address_size) == 0)
-        port = ntohs(address.sin_port);
-#ifdef _WIN32
-    closesocket(socket_handle);
-#else
-    close(socket_handle);
-#endif
-    return port;
-}
-
+#ifdef TURBO_MEDIA_HAS_RTSP
 typedef struct pipeline_rtsp_publisher {
-    coro_context_t *context;
     turbo_media_source_t *source;
     const uint8_t *access_unit;
     size_t access_unit_size;
@@ -219,6 +194,7 @@ typedef struct pipeline_rtsp_publisher {
     int failed;
     int packets_published;
 } pipeline_rtsp_publisher_t;
+#endif
 
 typedef struct runtime_rtp_capture {
     atomic_int count;
@@ -358,49 +334,42 @@ static int format_live_hls_playlist(
     return 0;
 }
 
-static void serve_pipeline_hls_http(coro_socket_t *client, void *user_data) {
+static native_io_backend_kind pipeline_hls_http_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static int serve_pipeline_hls_http(
+    void *user_data, const chttp_server_request_view *request,
+    chttp_server_response *response) {
     pipeline_hls_http_server_t *server =
         (pipeline_hls_http_server_t *)user_data;
-    char request[PIPELINE_HLS_HTTP_REQUEST_CAPACITY] = {0};
-    char resource[PIPELINE_HLS_URI_CAPACITY] = {0};
-    char response_header[PIPELINE_HLS_HTTP_HEADER_CAPACITY];
+    const char *resource;
     const char *body = NULL;
     const char *content_type = NULL;
-    size_t request_size = 0;
     size_t body_size = 0;
     int status_code = 200;
     int segment_index;
-    int result;
 
-    if (!client || !server) return;
-    for (;;) {
-        char *chunk = NULL;
-        size_t chunk_size = 0;
-        result = coro_socket_recv(client, &chunk, &chunk_size);
-        if (result != 0 || !chunk || chunk_size == 0 ||
-            chunk_size > sizeof(request) - 1u - request_size) {
-            if (chunk) coro_socket_free_recv(chunk);
-            atomic_store_explicit(&server->failed, 1, memory_order_release);
-            return;
-        }
-        memcpy(request + request_size, chunk, chunk_size);
-        request_size += chunk_size;
-        request[request_size] = '\0';
-        coro_socket_free_recv(chunk);
-        if (strstr(request, "\r\n\r\n")) break;
-    }
-
-    if (sscanf(request, "GET /%255s HTTP/1.1", resource) != 1) {
+    if (!server || !request || !response ||
+        request->method != CHTTP_METHOD_GET || !request->target ||
+        request->target[0] != '/') {
         atomic_store_explicit(&server->failed, 1, memory_order_release);
-        return;
+        return chttp_server_reply(response, 400u, "text/plain", "", 0u);
     }
+    resource = request->target + 1;
     if (strcmp(resource, "live.m3u8") == 0) {
         int revision = atomic_load_explicit(&server->playlist_revision,
                                             memory_order_acquire);
         if (revision < 0 ||
             revision >= PIPELINE_HLS_PLAYLIST_REVISION_COUNT) {
             atomic_store_explicit(&server->failed, 1, memory_order_release);
-            return;
+            return chttp_server_reply(response, 500u, "text/plain", "", 0u);
         }
         body = server->playlists[revision];
         body_size = server->playlist_sizes[revision];
@@ -429,25 +398,116 @@ static void serve_pipeline_hls_http(coro_socket_t *client, void *user_data) {
         }
     }
 
-    result = snprintf(
-        response_header, sizeof(response_header),
-        "HTTP/1.1 %d %s\r\n"
-        "Connection: close\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %zu\r\n\r\n",
-        status_code, status_code == 200 ? "OK" : "Not Found", content_type,
-        body_size);
-    if (result <= 0 || (size_t)result >= sizeof(response_header)) {
+    if (chttp_server_response_set_header(response, "Cache-Control",
+                                         "no-cache") != SALTS_OK) {
         atomic_store_explicit(&server->failed, 1, memory_order_release);
-        return;
+        return SALTS_ENOBUFS;
     }
-    {
-        turbo_iovec_t response[] = {{response_header, (size_t)result},
-                                    {body, body_size}};
-        if (coro_socket_sendv(client, response, 2) != 0)
-            atomic_store_explicit(&server->failed, 1, memory_order_release);
+    if (chttp_server_reply(response, (unsigned int)status_code, content_type,
+                           body, body_size) != SALTS_OK) {
+        atomic_store_explicit(&server->failed, 1, memory_order_release);
+        return SALTS_EIO;
     }
+    return SALTS_OK;
+}
+
+static int pipeline_hls_http_server_start(
+    pipeline_hls_http_server_t *server, uint16_t *bound_port) {
+    chttp_server_config config = {
+        .host = "127.0.0.1",
+        .port = 0u,
+        .backlog = PIPELINE_HLS_HTTP_CONNECTION_CAPACITY,
+        .network = {
+            .backend = pipeline_hls_http_backend(),
+            .connection_capacity = PIPELINE_HLS_HTTP_CONNECTION_CAPACITY,
+            .command_capacity = PIPELINE_HLS_HTTP_CONNECTION_CAPACITY * 2u,
+            .request_capacity = PIPELINE_HLS_HTTP_CONNECTION_CAPACITY * 2u,
+            .completion_batch_capacity = PIPELINE_HLS_HTTP_CONNECTION_CAPACITY,
+            .event_capacity = PIPELINE_HLS_HTTP_CONNECTION_CAPACITY * 2u,
+            .max_send_bytes = PIPELINE_HLS_HTTP_MAX_BODY_BYTES +
+                              PIPELINE_HLS_HTTP_MAX_HEADER_BYTES +
+                              PIPELINE_HLS_HTTP_RESPONSE_WIRE_OVERHEAD_BYTES,
+            .receive_buffer_bytes = PIPELINE_HLS_HTTP_MAX_HEADER_BYTES,
+            .connect_timeout_ms = PIPELINE_HLS_HTTP_STOP_TIMEOUT_MS,
+            .read_timeout_ms = PIPELINE_HLS_HTTP_STOP_TIMEOUT_MS,
+            .write_timeout_ms = PIPELINE_HLS_HTTP_STOP_TIMEOUT_MS
+        },
+        .route_capacity = PIPELINE_HLS_HTTP_ROUTE_CAPACITY,
+        .max_target_bytes = PIPELINE_HLS_HTTP_MAX_TARGET_BYTES,
+        .max_header_count = PIPELINE_HLS_HTTP_MAX_HEADER_COUNT,
+        .max_header_bytes = PIPELINE_HLS_HTTP_MAX_HEADER_BYTES,
+        .max_request_body_bytes = PIPELINE_HLS_HTTP_MAX_REQUEST_BODY_BYTES,
+        .max_response_header_count = PIPELINE_HLS_HTTP_MAX_HEADER_COUNT,
+        .max_response_header_bytes = PIPELINE_HLS_HTTP_MAX_HEADER_BYTES,
+        .max_response_body_bytes = PIPELINE_HLS_HTTP_MAX_BODY_BYTES,
+        .max_buffered_response_body_bytes = PIPELINE_HLS_HTTP_MAX_BODY_BYTES,
+        .poll_slice_ms = PIPELINE_HLS_HTTP_POLL_SLICE_MS,
+        .buffer_capacity_bytes = PIPELINE_HLS_HTTP_BUFFER_BYTES
+    };
+    char route[PIPELINE_HLS_URI_CAPACITY + 2u];
+    const char *stage = "validate";
+    int status;
+    int segment_index;
+
+    if (!server || !bound_port) return SALTS_EINVAL;
+    for (segment_index = 0;
+         segment_index < PIPELINE_HLS_PLAYLIST_REVISION_COUNT;
+         ++segment_index) {
+        if (server->playlist_sizes[segment_index] >
+            PIPELINE_HLS_HTTP_MAX_BODY_BYTES)
+            return SALTS_EMSGSIZE;
+    }
+    for (segment_index = 0;
+         segment_index < PIPELINE_HLS_SEGMENT_COUNT;
+         ++segment_index) {
+        if (!server->segment_data[segment_index] ||
+            server->segment_sizes[segment_index] >
+                PIPELINE_HLS_HTTP_MAX_BODY_BYTES)
+            return SALTS_EMSGSIZE;
+    }
+    stage = "init";
+    status = chttp_server_init(&server->http, &config);
+    if (status != SALTS_OK) {
+        fprintf(stderr, "pipeline HLS CHTTP %s failed: %d\n", stage, status);
+        return status;
+    }
+    server->http_initialized = 1;
+    stage = "playlist route";
+    status = chttp_server_get(&server->http, "/live.m3u8",
+                              serve_pipeline_hls_http, server);
+    for (segment_index = 0;
+         status == SALTS_OK && segment_index < PIPELINE_HLS_SEGMENT_COUNT;
+         ++segment_index) {
+        int route_size = snprintf(route, sizeof(route), "/%s",
+                                  server->segment_uris[segment_index]);
+        if (route_size <= 1 || (size_t)route_size >= sizeof(route)) {
+            status = SALTS_EMSGSIZE;
+            break;
+        }
+        stage = "segment route";
+        status = chttp_server_get(&server->http, route,
+                                  serve_pipeline_hls_http, server);
+    }
+    if (status == SALTS_OK) {
+        stage = "start";
+        status = chttp_server_start(&server->http);
+    }
+    if (status == SALTS_OK) {
+        server->http_started = 1;
+        stage = "bound port";
+        status = chttp_server_port(&server->http, bound_port);
+    }
+    if (status != SALTS_OK) {
+        fprintf(stderr, "pipeline HLS CHTTP %s failed: %d\n", stage, status);
+        if (server->http_started)
+            (void)chttp_server_stop(&server->http,
+                                    PIPELINE_HLS_HTTP_STOP_TIMEOUT_MS);
+        (void)chttp_server_destroy(&server->http);
+        server->http_started = 0;
+        server->http_initialized = 0;
+        return status;
+    }
+    return 0;
 }
 
 static int capture_runtime_rtp(turbo_media_source_t *source,
@@ -487,6 +547,7 @@ static int make_rtp_packet(uint8_t *buffer,
     return rtp_packet_serialize(&packet, buffer, (int)capacity);
 }
 
+#ifdef TURBO_MEDIA_HAS_RTSP
 static int encode_test_h264_access_unit(uint8_t *output,
                                         size_t *output_size) {
     enum { WIDTH = 16, HEIGHT = 16, YUV_SIZE = WIDTH * HEIGHT * 3 / 2 };
@@ -534,7 +595,7 @@ static size_t annexb_start_code_size(const uint8_t *data,
     return 0;
 }
 
-static void publish_pipeline_rtsp_video(coro_t *coroutine, void *parameter) {
+static void publish_pipeline_rtsp_video(void *parameter) {
     enum {
         MAX_ACCESS_UNITS = 16,
         RTP_PACKET_CAPACITY = 2048,
@@ -545,8 +606,6 @@ static void publish_pipeline_rtsp_video(coro_t *coroutine, void *parameter) {
     uint8_t packet[RTP_PACKET_CAPACITY];
     uint16_t sequence = 1;
     int access_unit;
-    (void)coroutine;
-
     for (access_unit = 0; access_unit < MAX_ACCESS_UNITS; ++access_unit) {
         uint32_t timestamp = PIPELINE_RTSP_CLOCK_RATE +
                              (uint32_t)access_unit *
@@ -607,10 +666,11 @@ static void publish_pipeline_rtsp_video(coro_t *coroutine, void *parameter) {
             publisher->packets_published++;
             position = nal_end;
         }
-        coro_sleep(publisher->context, PUBLISH_INTERVAL_MS);
+        salts_sleep_ms(PUBLISH_INTERVAL_MS);
     }
     publisher->done = 1;
 }
+#endif
 
 suite("turbo_media_pipeline") {
     group("configuration") {
@@ -1530,17 +1590,15 @@ suite("turbo_media_pipeline") {
             pipeline_hls_http_server_t hls_server;
             turbo_pipeline_stats_t stats;
             salts_thread_t reader_thread = NULL;
-            coro_context_t *server_context = NULL;
-            coro_socket_t *server_socket = NULL;
             char *fixture_playlist_data = NULL;
             char *output_data = NULL;
             size_t fixture_playlist_size = 0;
             size_t output_size = 0;
             uint64_t last_packets = 0;
             uint64_t initial_packets = 0;
+            uint16_t server_port = 0;
             int fixture_status;
             int segment_index;
-            int server_port = 0;
             int yaml_size;
             int wait_count;
             int stable_poll_count = 0;
@@ -1606,20 +1664,12 @@ suite("turbo_media_pipeline") {
                             &hls_server.playlist_sizes[1]),
                         0);
 
-            server_context = coro_context_create(NULL);
-            check_not_null(server_context);
-            if (!server_context) goto cleanup_live_hls_input;
-            server_socket =
-                coro_socket_create(server_context, CORO_SOCKET_TCP_V4);
-            check_not_null(server_socket);
-            if (!server_socket) goto cleanup_live_hls_input;
-            server_port = (int)pipeline_pick_loopback_port();
-            check_true(server_port > 0);
-            if (server_port <= 0) goto cleanup_live_hls_input;
-            check_equal(coro_socket_listen_on(
-                            server_socket, "127.0.0.1", server_port,
-                            serve_pipeline_hls_http, &hls_server),
+            check_equal(pipeline_hls_http_server_start(&hls_server,
+                                                       &server_port),
                         0);
+            check_true(server_port > 0u);
+            if (!hls_server.http_started || server_port == 0u)
+                goto cleanup_live_hls_input;
 
             yaml_size = snprintf(
                 yaml, sizeof(yaml),
@@ -1635,7 +1685,7 @@ suite("turbo_media_pipeline") {
                 "  - { from: source.out, to: demux.in }\n"
                 "  - { from: demux.video, to: mux.video }\n"
                 "  - { from: mux.out, to: sink.in }\n",
-                server_port, output_path);
+                (int)server_port, output_path);
             check_true(yaml_size > 0 && (size_t)yaml_size < sizeof(yaml));
             if (yaml_size <= 0 || (size_t)yaml_size >= sizeof(yaml))
                 goto cleanup_live_hls_input;
@@ -1653,7 +1703,6 @@ suite("turbo_media_pipeline") {
 
             for (wait_count = 0; wait_count < PIPELINE_HLS_WAIT_LIMIT;
                  ++wait_count) {
-                (void)coro_context_run(server_context, TURBO_RUN_NOWAIT);
                 check_equal(turbo_pipeline_stats(reader, &stats),
                             TURBO_PIPELINE_OK);
                 if (atomic_load_explicit(&execution.done,
@@ -1697,7 +1746,6 @@ suite("turbo_media_pipeline") {
                                   memory_order_release);
             for (wait_count = 0; wait_count < PIPELINE_HLS_WAIT_LIMIT;
                  ++wait_count) {
-                (void)coro_context_run(server_context, TURBO_RUN_NOWAIT);
                 check_equal(turbo_pipeline_stats(reader, &stats),
                             TURBO_PIPELINE_OK);
                 if (stats.packets_read > initial_packets ||
@@ -1743,7 +1791,6 @@ suite("turbo_media_pipeline") {
                  wait_count < PIPELINE_HLS_WAIT_LIMIT &&
                  !atomic_load_explicit(&execution.done, memory_order_acquire);
                  ++wait_count) {
-                (void)coro_context_run(server_context, TURBO_RUN_NOWAIT);
                 salts_sleep_ms(1);
             }
             check_true(
@@ -1783,9 +1830,6 @@ suite("turbo_media_pipeline") {
                         turbo_pipeline_request_stop(reader) ==
                             TURBO_PIPELINE_OK)
                         stop_requested = 1;
-                    if (server_context)
-                        (void)coro_context_run(server_context,
-                                               TURBO_RUN_NOWAIT);
                     salts_sleep_ms(1);
                 }
             }
@@ -1798,8 +1842,17 @@ suite("turbo_media_pipeline") {
             free(output_data);
             free(fixture_playlist_data);
             turbo_pipeline_destroy(reader);
-            if (server_socket) coro_socket_destroy(server_socket);
-            if (server_context) coro_context_destroy(server_context);
+            if (hls_server.http_started) {
+                check_equal(chttp_server_stop(
+                                &hls_server.http,
+                                PIPELINE_HLS_HTTP_STOP_TIMEOUT_MS),
+                            SALTS_OK);
+                hls_server.http_started = 0;
+            }
+            if (hls_server.http_initialized) {
+                check_equal(chttp_server_destroy(&hls_server.http), SALTS_OK);
+                hls_server.http_initialized = 0;
+            }
             for (segment_index = 0;
                  segment_index < PIPELINE_HLS_SEGMENT_COUNT; ++segment_index)
                 free(hls_server.segment_data[segment_index]);
@@ -1820,7 +1873,6 @@ suite("turbo_media_pipeline") {
             char yaml[YAML_CAPACITY];
             uint8_t h264_access_unit[H264_ACCESS_UNIT_CAPACITY];
             size_t h264_access_unit_size = sizeof(h264_access_unit);
-            coro_context_t *context = NULL;
             turbo_media_server_config_t server_config;
             turbo_media_server_runtime_t *runtime = NULL;
             turbo_media_source_key_t source_key;
@@ -1858,14 +1910,10 @@ suite("turbo_media_pipeline") {
             check_true(h264_access_unit_size > 0);
             if (h264_access_unit_size == 0) goto cleanup_local_rtsp;
 
-            context = coro_context_create(NULL);
-            check_not_null(context);
-            if (!context) goto cleanup_local_rtsp;
             server_config.max_sources = SOURCE_CAPACITY;
             server_config.source_config.max_tracks = SOURCE_CAPACITY;
             server_config.source_config.max_subscribers = SOURCE_CAPACITY;
             server_config.source_config.gop_capacity = GOP_CAPACITY;
-            server_config.coro_context = (struct coro_context_s *)context;
             runtime = turbo_media_server_runtime_create(&server_config);
             check_not_null(runtime);
             if (!runtime) goto cleanup_local_rtsp;
@@ -1898,8 +1946,7 @@ suite("turbo_media_pipeline") {
             adapter_config.default_rtp_channel_count = RTP_CHANNEL_COUNT;
             adapter_config.replay_cached = 0;
             adapter = turbo_media_server_rtsp_adapter_create(
-                runtime, (struct coro_context_s *)context, &rtsp_config,
-                &adapter_config);
+                runtime, &rtsp_config, &adapter_config);
             check_not_null(adapter);
             if (!adapter) goto cleanup_local_rtsp;
             check_equal(turbo_media_server_rtsp_adapter_start(adapter),
@@ -1944,7 +1991,6 @@ suite("turbo_media_pipeline") {
             thread_started = 1;
 
             for (wait_count = 0; wait_count < WAIT_LIMIT; ++wait_count) {
-                (void)coro_context_run(context, TURBO_RUN_NOWAIT);
                 check_equal(turbo_media_source_get_stats(source, &source_stats),
                             TURBO_MEDIA_OK);
                 if (source_stats.subscriber_count > 0 ||
@@ -1959,16 +2005,12 @@ suite("turbo_media_pipeline") {
             check_equal((int)source_stats.subscriber_count, 1);
             if (source_stats.subscriber_count == 0) goto cleanup_local_rtsp;
 
-            publisher.context = context;
             publisher.source = source;
             publisher.access_unit = h264_access_unit;
             publisher.access_unit_size = h264_access_unit_size;
             publisher.track_id = track_id;
-            check_equal(coro_context_spawn(
-                            context, publish_pipeline_rtsp_video, &publisher),
-                        0);
+            publish_pipeline_rtsp_video(&publisher);
             for (wait_count = 0; wait_count < WAIT_LIMIT; ++wait_count) {
-                (void)coro_context_run(context, TURBO_RUN_NOWAIT);
                 check_equal(turbo_pipeline_stats(pipeline, &stats),
                             TURBO_PIPELINE_OK);
                 if (stats.packets_written > 0 ||
@@ -1995,8 +2037,6 @@ suite("turbo_media_pipeline") {
                                      !atomic_load_explicit(
                                          &execution.done, memory_order_acquire);
                      ++wait_count) {
-                    if (context)
-                        (void)coro_context_run(context, TURBO_RUN_NOWAIT);
                     salts_sleep_ms(1);
                 }
             }
@@ -2012,7 +2052,6 @@ suite("turbo_media_pipeline") {
             }
             turbo_pipeline_destroy(pipeline);
             turbo_media_server_runtime_destroy(runtime);
-            if (context) coro_context_destroy(context);
         }
 #endif
     }

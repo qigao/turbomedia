@@ -4,10 +4,10 @@
 #include "room_service/server.h"
 #include "sfu_node/config.h"
 #include "sfu_node/server.h"
-#include "http_client.h"
+#include "turbo_transport.h"
 #include "turbo_media_auth.h"
 #include <json_parser.h>
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 #include "ivr_room_bridge.h"
 #endif
 #include <stdlib.h>
@@ -17,7 +17,7 @@
 
 #define ROOM_SERVICE_HTTP_LIFECYCLE_STRESS_ITERATIONS 32
 #define ROOM_SERVICE_PROVIDER_LIFECYCLE_HTTP_PORT 19435
-#define ROOM_SERVICE_PROVIDER_LIFECYCLE_FMQ_PORT 19436
+#define ROOM_SERVICE_PROVIDER_LIFECYCLE_CONTROL_WS_PORT 19436
 #define ROOM_SERVICE_PROVIDER_LIFECYCLE_PUB_PORT 19437
 #define ROOM_SERVICE_PROVIDER_LIFECYCLE_IRIS_PORT 19438
 #define ROOM_SERVICE_PROVIDER_LIFECYCLE_WAIT_ATTEMPTS 1000
@@ -63,7 +63,7 @@ static void app_test_restore_env(const char *name, char *saved_value) {
   free(saved_value);
 }
 
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 extern ivr_status_t room_service_app_server_test_submit_iris_event(
     room_service_app_server_t *server, const ivr_media_event_t *event);
 
@@ -367,36 +367,100 @@ static int parse_json_text(const char *json_text, json_value_t **out_root) {
   return 0;
 }
 
+static void test_http_response_free(chttp_response *response) {
+  if (!response) {
+    return;
+  }
+  chttp_response_destroy(response);
+  free(response);
+}
+
+static int test_http_response_is_json(const chttp_response *response) {
+  static const char json_type[] = "application/json";
+  const char *content_type =
+      response ? chttp_response_header(response, "Content-Type") : NULL;
+  size_t index;
+
+  if (!content_type) {
+    return 0;
+  }
+  for (index = 0u; index + 1u < sizeof(json_type); ++index) {
+    unsigned char actual = (unsigned char)content_type[index];
+    unsigned char expected = (unsigned char)json_type[index];
+    if (actual >= 'A' && actual <= 'Z') {
+      actual = (unsigned char)(actual - 'A' + 'a');
+    }
+    if (actual != expected) {
+      return 0;
+    }
+  }
+  return content_type[index] == '\0' || content_type[index] == ';' ||
+         content_type[index] == ' ' || content_type[index] == '\t';
+}
+
+static json_value_t *test_http_response_parse_json(
+    const chttp_response *response) {
+  if (!response || !response->body || response->body_size == 0u) {
+    return NULL;
+  }
+  return json_parse((const char *)response->body, response->body_size);
+}
+
+static chttp_response *test_http_request(
+    const char *base_url, const char *path, turbo_http_method_t method,
+    const char *json_body, const char *ca_file, const char *bearer_token,
+    int timeout_ms) {
+  const char *json_headers[] = {
+      "Content-Type", "application/json"
+  };
+  turbo_transport_config_t config = {0};
+  turbo_transport_t *transport;
+  chttp_response *response;
+  const uint8_t *body = (const uint8_t *)json_body;
+  size_t body_size = json_body ? strlen(json_body) : 0u;
+
+  if (!base_url || !path || timeout_ms <= 0 ||
+      turbo_transport_parse_url(base_url, &config) != 0 ||
+      config.type != TURBO_TRANSPORT_HTTP ||
+      (ca_file && !config.use_tls)) {
+    return NULL;
+  }
+  config.connect_timeout_ms = timeout_ms;
+  config.read_timeout_ms = timeout_ms;
+  config.write_timeout_ms = timeout_ms;
+  config.ca_cert_path = ca_file;
+  config.user_agent = "TurboRoomServiceTest/0.1";
+  config.auth_token = bearer_token;
+  transport = turbo_transport_create(&config);
+  if (!transport) {
+    return NULL;
+  }
+  response = turbo_transport_http_request(
+      transport, method, path, body, body_size,
+      json_body ? json_headers : NULL, json_body ? 2 : 0);
+  turbo_transport_destroy(transport);
+  return response;
+}
+
 static json_value_t *http_get_json(const char *base_url, const char *path) {
-  http_client_t *client;
-  http_response_t *response;
+  chttp_response *response;
   json_value_t *root = NULL;
 
   if (!base_url || !path) {
     return NULL;
   }
 
-  client = http_client_create(base_url);
-  if (!client) {
-    return NULL;
-  }
-
-  http_client_set_timeout(client, 3000);
-  http_client_set_user_agent(client, "TurboRoomServiceTest/0.1");
-  response = http_get(client, path);
-  if (!response || response->error_code != HTTP_ERROR_NONE ||
+  response = test_http_request(base_url, path, TURBO_HTTP_GET, NULL, NULL,
+                               NULL, 3000);
+  if (!response ||
       response->status_code < 200 || response->status_code >= 300 ||
-      !http_response_is_json(response)) {
-    if (response) {
-      http_response_free(response);
-    }
-    http_client_destroy(client);
+      !test_http_response_is_json(response)) {
+    test_http_response_free(response);
     return NULL;
   }
 
-  root = http_response_parse_json(response);
-  http_response_free(response);
-  http_client_destroy(client);
+  root = test_http_response_parse_json(response);
+  test_http_response_free(response);
   if (!root || json_type(root) != JSON_OBJECT) {
     json_free(root);
     root = NULL;
@@ -407,33 +471,24 @@ static json_value_t *http_get_json(const char *base_url, const char *path) {
 }
 
 static char *http_get_text(const char *base_url, const char *path) {
-  http_client_t *client;
-  http_response_t *response;
+  chttp_response *response;
   char *body = NULL;
 
   if (!base_url || !path) {
     return NULL;
   }
-  client = http_client_create(base_url);
-  if (!client) {
-    return NULL;
-  }
-  http_client_set_timeout(client, 3000);
-  http_client_set_user_agent(client, "TurboRoomServiceTest/0.1");
-  response = http_get(client, path);
-  if (response && response->error_code == HTTP_ERROR_NONE &&
+  response = test_http_request(base_url, path, TURBO_HTTP_GET, NULL, NULL,
+                               NULL, 3000);
+  if (response &&
       response->status_code >= 200 && response->status_code < 300 &&
-      response->body && response->body_len < SIZE_MAX) {
-    body = (char *)malloc(response->body_len + 1u);
+      response->body && response->body_size < SIZE_MAX) {
+    body = (char *)malloc(response->body_size + 1u);
     if (body) {
-      memcpy(body, response->body, response->body_len);
-      body[response->body_len] = '\0';
+      memcpy(body, response->body, response->body_size);
+      body[response->body_size] = '\0';
     }
   }
-  if (response) {
-    http_response_free(response);
-  }
-  http_client_destroy(client);
+  test_http_response_free(response);
   return body;
 }
 
@@ -446,24 +501,12 @@ static int wait_for_http_status_ok(const char *base_url, const char *path,
   }
 
   for (i = 0; i < attempts; ++i) {
-    http_client_t *client = http_client_create(base_url);
-    http_response_t *response = NULL;
-    int ok = 0;
+    chttp_response *response = test_http_request(
+        base_url, path, TURBO_HTTP_GET, NULL, NULL, NULL, 1000);
+    int ok = response && response->status_code >= 200 &&
+             response->status_code < 300;
 
-    if (client) {
-      http_client_set_timeout(client, 1000);
-      http_client_set_user_agent(client, "TurboRoomServiceTest/0.1");
-      response = http_get(client, path);
-      ok = response && response->error_code == HTTP_ERROR_NONE &&
-           response->status_code >= 200 && response->status_code < 300;
-    }
-
-    if (response) {
-      http_response_free(response);
-    }
-    if (client) {
-      http_client_destroy(client);
-    }
+    test_http_response_free(response);
     if (ok) {
       return 0;
     }
@@ -484,25 +527,12 @@ static int wait_for_https_status_ok(const char *base_url, const char *path,
   }
 
   for (i = 0; i < attempts; ++i) {
-    http_client_t *client = http_client_create(base_url);
-    http_response_t *response = NULL;
-    turbo_tls_client_config_t tls_config = {
-        .ca_file = ca_file,
-        .verify_peer = 1
-    };
-    int ok = 0;
+    chttp_response *response = test_http_request(
+        base_url, path, TURBO_HTTP_GET, NULL, ca_file, NULL, 1000);
+    int ok = response && response->status_code >= 200 &&
+             response->status_code < 300;
 
-    if (client &&
-        http_client_set_tls_client_config(client, &tls_config) == 0) {
-      http_client_set_timeout(client, 1000);
-      response = http_get(client, path);
-      ok = response && response->error_code == HTTP_ERROR_NONE &&
-           response->status_code >= 200 && response->status_code < 300;
-    }
-    if (response) {
-      http_response_free(response);
-    }
-    http_client_destroy(client);
+    test_http_response_free(response);
     if (ok) {
       return 0;
     }
@@ -515,68 +545,43 @@ static int wait_for_https_status_ok(const char *base_url, const char *path,
 static json_value_t *https_post_json_result(
     const char *base_url, const char *path, const char *json_body,
     const char *ca_file) {
-  http_client_t *client;
-  http_response_t *response;
-  turbo_tls_client_config_t tls_config = {
-      .ca_file = ca_file,
-      .verify_peer = 1
-  };
+  chttp_response *response;
   json_value_t *root = NULL;
 
   if (!base_url || !path || !json_body || !ca_file) {
     return NULL;
   }
-  client = http_client_create(base_url);
-  if (!client ||
-      http_client_set_tls_client_config(client, &tls_config) != 0) {
-    http_client_destroy(client);
-    return NULL;
-  }
-  http_client_set_timeout(client, 3000);
-  response = http_post_json(client, path, json_body);
-  if (response && response->error_code == HTTP_ERROR_NONE &&
+  response = test_http_request(base_url, path, TURBO_HTTP_POST, json_body,
+                               ca_file, NULL, 3000);
+  if (response &&
       response->status_code >= 200 && response->status_code < 300 &&
-      http_response_is_json(response)) {
-    root = http_response_parse_json(response);
+      test_http_response_is_json(response)) {
+    root = test_http_response_parse_json(response);
   }
-  if (response) {
-    http_response_free(response);
-  }
-  http_client_destroy(client);
+  test_http_response_free(response);
   return root;
 }
 
 static json_value_t *http_post_json_result(const char *base_url, const char *path,
                                            const char *json_body) {
-  http_client_t *client;
-  http_response_t *response;
+  chttp_response *response;
   json_value_t *root = NULL;
 
   if (!base_url || !path || !json_body) {
     return NULL;
   }
 
-  client = http_client_create(base_url);
-  if (!client) {
-    return NULL;
-  }
-
-  http_client_set_timeout(client, 3000);
-  http_client_set_user_agent(client, "TurboRoomServiceTest/0.1");
-  response = http_post_json(client, path, json_body);
-  if (!response || response->error_code != HTTP_ERROR_NONE ||
+  response = test_http_request(base_url, path, TURBO_HTTP_POST, json_body,
+                               NULL, NULL, 3000);
+  if (!response ||
       response->status_code < 200 || response->status_code >= 300 ||
-      !http_response_is_json(response)) {
-    if (response) {
-      http_response_free(response);
-    }
-    http_client_destroy(client);
+      !test_http_response_is_json(response)) {
+    test_http_response_free(response);
     return NULL;
   }
 
-  root = http_response_parse_json(response);
-  http_response_free(response);
-  http_client_destroy(client);
+  root = test_http_response_parse_json(response);
+  test_http_response_free(response);
   if (!root || json_type(root) != JSON_OBJECT) {
     json_free(root);
     root = NULL;
@@ -588,8 +593,7 @@ static json_value_t *http_post_json_result(const char *base_url, const char *pat
 
 static int http_post_json_status(const char *base_url, const char *path,
                                  const char *json_body, json_value_t **out_root) {
-  http_client_t *client;
-  http_response_t *response;
+  chttp_response *response;
   json_value_t *root = NULL;
   int status = -1;
 
@@ -600,24 +604,14 @@ static int http_post_json_status(const char *base_url, const char *path,
     return -1;
   }
 
-  client = http_client_create(base_url);
-  if (!client) {
-    return -1;
-  }
-
-  http_client_set_timeout(client, 3000);
-  http_client_set_user_agent(client, "TurboRoomServiceTest/0.1");
-  response = http_post_json(client, path, json_body);
-  if (response && response->error_code == HTTP_ERROR_NONE &&
-      http_response_is_json(response)) {
+  response = test_http_request(base_url, path, TURBO_HTTP_POST, json_body,
+                               NULL, NULL, 3000);
+  if (response && test_http_response_is_json(response)) {
     status = response->status_code;
-    root = http_response_parse_json(response);
+    root = test_http_response_parse_json(response);
   }
 
-  if (response) {
-    http_response_free(response);
-  }
-  http_client_destroy(client);
+  test_http_response_free(response);
 
   if (root && json_type(root) == JSON_OBJECT && out_root) {
     *out_root = root;
@@ -633,8 +627,7 @@ static int http_post_json_status_with_token(const char *base_url, const char *pa
                                             const char *json_body,
                                             const char *bearer_token,
                                             json_value_t **out_root) {
-  http_client_t *client;
-  http_response_t *response;
+  chttp_response *response;
   json_value_t *root = NULL;
   int status = -1;
 
@@ -645,27 +638,14 @@ static int http_post_json_status_with_token(const char *base_url, const char *pa
     return -1;
   }
 
-  client = http_client_create(base_url);
-  if (!client) {
-    return -1;
-  }
-
-  http_client_set_timeout(client, 3000);
-  http_client_set_user_agent(client, "TurboRoomServiceTest/0.1");
-  if (bearer_token) {
-    http_client_set_bearer_token(client, bearer_token);
-  }
-  response = http_post_json(client, path, json_body);
-  if (response && response->error_code == HTTP_ERROR_NONE &&
-      http_response_is_json(response)) {
+  response = test_http_request(base_url, path, TURBO_HTTP_POST, json_body,
+                               NULL, bearer_token, 3000);
+  if (response && test_http_response_is_json(response)) {
     status = response->status_code;
-    root = http_response_parse_json(response);
+    root = test_http_response_parse_json(response);
   }
 
-  if (response) {
-    http_response_free(response);
-  }
-  http_client_destroy(client);
+  test_http_response_free(response);
 
   if (root && json_type(root) == JSON_OBJECT && out_root) {
     *out_root = root;
@@ -1205,7 +1185,7 @@ void test_room_service_issues_scoped_sfu_command_tokens(void) {
   const char *room_service_base_url = "http://127.0.0.1:19419";
 
   sfu_node_app_config_init(&sfu_config);
-  sfu_config.bind_host = "0.0.0.0";
+  sfu_config.bind_host = "::1";
   sfu_config.bind_port = 19418;
   sfu_config.node_id = "node-auth-forward";
   sfu_config.control_token = "legacy-sfu-token";
@@ -5043,8 +5023,8 @@ void test_room_service_http_lifecycle_repeated_start_stop(void) {
   room_service_app_server_destroy(server);
 }
 
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
-static void test_room_service_direct_destroy_closes_flowmq_provider_dependencies(void) {
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
+static void test_room_service_direct_destroy_closes_control_ws_provider_dependencies(void) {
   room_service_app_config_t config;
   room_service_app_server_t *server = NULL;
   room_service_ivr_metrics_t metrics;
@@ -5098,12 +5078,12 @@ static void test_room_service_direct_destroy_closes_flowmq_provider_dependencies
   config.bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_HTTP_PORT;
   config.node_id = "room-service-provider-lifecycle";
   config.control_token = "room-provider-lifecycle-control";
-  config.iris_flowmq_host = "127.0.0.1";
-  config.iris_flowmq_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_IRIS_PORT;
+  config.iris_control_host = "127.0.0.1";
+  config.iris_control_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_IRIS_PORT;
   config.iris_provider_instance_id = "room-service-provider-lifecycle";
   config.iris_identity = "iris-router-lifecycle";
-  config.iris_flowmq_use_tls = 0;
-  config.iris_flowmq_allow_insecure_loopback = 1;
+  config.iris_control_use_tls = 0;
+  config.iris_control_allow_insecure_loopback = 1;
   config.iris_event_store_config = yaml_path;
   config.iris_event_store_channel = "iris.media_events";
   config.iris_command_ledger_channel = "iris.provider_commands";
@@ -5115,9 +5095,9 @@ static void test_room_service_direct_destroy_closes_flowmq_provider_dependencies
   config.iris_retry_backoff_ms = 100;
   config.iris_ack_timeout_ms = 100;
   config.iris_drain_timeout_ms = 300;
-  config.fmq_bind_host = "127.0.0.1";
-  config.fmq_bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_FMQ_PORT;
-  config.fmq_allow_insecure_loopback = 1;
+  config.control_ws_bind_host = "127.0.0.1";
+  config.control_ws_bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_CONTROL_WS_PORT;
+  config.control_ws_allow_insecure_loopback = 1;
 
   check_equal((int)(room_service_app_config_validate(&config)), (int)(0));
   server = room_service_app_server_create(&config);
@@ -5177,12 +5157,12 @@ static void test_room_service_event_outbox_init_failure_destroys_ledger_once(voi
   room_service_app_config_init(&config);
   config.node_id = "room-service-provider-init-failure";
   config.control_token = "room-provider-init-failure-control";
-  config.iris_flowmq_host = "127.0.0.1";
-  config.iris_flowmq_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_IRIS_PORT;
+  config.iris_control_host = "127.0.0.1";
+  config.iris_control_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_IRIS_PORT;
   config.iris_provider_instance_id = "room-service-provider-init-failure";
   config.iris_identity = "iris-router-init-failure";
-  config.iris_flowmq_use_tls = 0;
-  config.iris_flowmq_allow_insecure_loopback = 1;
+  config.iris_control_use_tls = 0;
+  config.iris_control_allow_insecure_loopback = 1;
   config.iris_event_store_config = yaml_path;
   config.iris_event_store_channel = "iris.media_events.missing";
   config.iris_command_ledger_channel = "iris.provider_commands";
@@ -5190,9 +5170,9 @@ static void test_room_service_event_outbox_init_failure_destroys_ledger_once(voi
   config.iris_correlation_capacity = 8;
   config.iris_completion_queue_capacity = 8;
   config.iris_outbox_request_queue_capacity = 8;
-  config.fmq_bind_host = "127.0.0.1";
-  config.fmq_bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_FMQ_PORT;
-  config.fmq_allow_insecure_loopback = 1;
+  config.control_ws_bind_host = "127.0.0.1";
+  config.control_ws_bind_port = ROOM_SERVICE_PROVIDER_LIFECYCLE_CONTROL_WS_PORT;
+  config.control_ws_allow_insecure_loopback = 1;
 
   check_equal((int)(room_service_app_config_validate(&config)), (int)(0));
   server = room_service_app_server_create(&config);
@@ -5208,8 +5188,8 @@ static void test_room_service_event_outbox_init_failure_destroys_ledger_once(voi
 spec("test_room_service_app") {
   it("test_room_service_rejects_identifiers_that_do_not_fit_storage") { test_room_service_rejects_identifiers_that_do_not_fit_storage(); };
   it("test_room_service_http_lifecycle_repeated_start_stop") { test_room_service_http_lifecycle_repeated_start_stop(); };
-#ifdef TURBO_MEDIA_HAS_IVR_FMQ
-  it("test_room_service_direct_destroy_closes_flowmq_provider_dependencies") { test_room_service_direct_destroy_closes_flowmq_provider_dependencies(); };
+#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
+  it("test_room_service_direct_destroy_closes_control_ws_provider_dependencies") { test_room_service_direct_destroy_closes_control_ws_provider_dependencies(); };
   it("test_room_service_event_outbox_init_failure_destroys_ledger_once") { test_room_service_event_outbox_init_failure_destroys_ledger_once(); };
 #endif
   it("test_room_service_assign_replays_existing_state_and_closed_room_diag_stays_green") { test_room_service_assign_replays_existing_state_and_closed_room_diag_stays_green(); };

@@ -15,6 +15,7 @@
 #include <string.h>
 
 enum {
+    SIGNALING_DEFAULT_CONNECTION_CAPACITY = 4096,
     SIGNALING_DEFAULT_JOIN_TIMEOUT_MS = 10000,
     SIGNALING_DEFAULT_MAX_MESSAGE_SIZE = 64 * 1024,
     SIGNALING_DEFAULT_MESSAGES_PER_SECOND = 100,
@@ -26,6 +27,7 @@ enum {
     SIGNALING_DEFAULT_SOURCE_ADMISSION_BURST = 50,
     SIGNALING_DEFAULT_MAX_SOURCE_STATES = 4096,
     SIGNALING_DEFAULT_SOURCE_STATE_TTL_MS = 5 * 60 * 1000,
+    SIGNALING_MAX_CONNECTION_CAPACITY = 65536,
     SIGNALING_MIN_JOIN_TIMEOUT_MS = 1000,
     SIGNALING_MAX_JOIN_TIMEOUT_MS = 5 * 60 * 1000,
     SIGNALING_MIN_MESSAGE_SIZE = 8 * 1024,
@@ -378,7 +380,7 @@ static int config_apply_limits(
     const toml_table_t *table,
     signaling_server_config_t *config) {
     static const char *const allowed[] = {
-        "max_peers", "max_rooms", "peer_timeout_ms", "join_timeout_ms",
+        "connection_capacity", "max_peers", "max_rooms", "peer_timeout_ms", "join_timeout_ms",
         "max_message_size", "messages_per_second", "message_burst",
         "max_outbox_messages", "max_outbox_bytes",
         "max_connections_per_source", "source_admissions_per_second",
@@ -390,6 +392,8 @@ static int config_apply_limits(
     }
     if (config_table_keys_valid(table, "limits", allowed,
                                 sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        config_apply_int(table, "limits", "connection_capacity",
+                         &config->connection_capacity) != 0 ||
         config_apply_int(table, "limits", "max_peers", &config->max_peers) != 0 ||
         config_apply_int(table, "limits", "max_rooms", &config->max_rooms) != 0 ||
         config_apply_int(table, "limits", "peer_timeout_ms",
@@ -625,6 +629,7 @@ void signaling_server_config_init(signaling_server_config_t *config) {
         TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
     
     /* Limits */
+    config->connection_capacity = SIGNALING_DEFAULT_CONNECTION_CAPACITY;
     config->max_peers = 1000;
     config->max_rooms = 100;
     config->peer_timeout_ms = 60000; /* 60 seconds */
@@ -979,6 +984,12 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
     }
     
     /* Validate limits */
+    if (config->connection_capacity < 1 ||
+        config->connection_capacity > SIGNALING_MAX_CONNECTION_CAPACITY) {
+        TLOG_ERRORF("Invalid connection_capacity: {}",
+                   config->connection_capacity);
+        return -1;
+    }
     if (config->max_peers < 1) {
         TLOG_ERRORF("Invalid max_peers: {}", config->max_peers);
         return -1;
@@ -1150,6 +1161,7 @@ void signaling_server_config_print(const signaling_server_config_t *config) {
                 config->http_auth_active_secret[0])
                    ? "enabled"
                    : "disabled");
+    TLOG_DEBUGF("  Connection Capacity: {}", config->connection_capacity);
     TLOG_DEBUGF("  Max Peers: {}", config->max_peers);
     TLOG_DEBUGF("  Max Rooms: {}", config->max_rooms);
     TLOG_DEBUGF("  Peer Timeout: {}ms", config->peer_timeout_ms);

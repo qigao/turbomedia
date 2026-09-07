@@ -14,11 +14,11 @@ target_include_directories(
 target_link_libraries(
   turbo_media_rtc_apps
   PUBLIC TurboMedia::RTC Salts::Core
-  PRIVATE TurboMedia::Muxer TurboMedia::Transport TurboNet::Crypto)
+  PRIVATE TurboMedia::Muxer TurboMedia::Transport SaltsNet::Crypto)
 
 add_subdirectory(room_service)
 add_subdirectory(sfu_node)
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_subdirectory(ivr_worker)
 endif()
 add_subdirectory(signaling_server)

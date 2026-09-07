@@ -1,12 +1,22 @@
 #include "http_api.h"
-#include "http_client.h"
+#include "turbo_transport.h"
 #include "turbo_media_auth.h"
 #include "tinytest.h"
 #include "webrtc_signaling.h"
+#include <salts/thread.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #define SIGNALING_HTTP_LIFECYCLE_STRESS_ITERATIONS 32
+
+enum {
+  SIGNALING_WS_TEST_QUEUE_CAPACITY = 16,
+  SIGNALING_WS_TEST_MESSAGE_BYTES = 16 * 1024,
+  SIGNALING_WS_TEST_WIRE_BYTES = SIGNALING_WS_TEST_MESSAGE_BYTES + 1024,
+  SIGNALING_WS_TEST_TIMEOUT_MS = 3000
+};
 
 #ifndef TURBO_MEDIA_TEST_TLS_CERT_PATH
 #error "TURBO_MEDIA_TEST_TLS_CERT_PATH must identify the test certificate"
@@ -18,55 +28,72 @@
 
 static int get_status(const char *base_url, const char *path,
                       const char *bearer_token, const char *ca_file) {
-  http_client_t *client = http_client_create(base_url);
-  http_response_t *response;
+  turbo_transport_config_t config = {0};
+  cnet_tls_client_config tls = {0};
+  turbo_transport_t *client;
+  chttp_response *response;
   int status = 0;
 
-  if (!client) {
+  if (!base_url || !path ||
+      turbo_transport_parse_url(base_url, &config) != 0 ||
+      config.type != TURBO_TRANSPORT_HTTP ||
+      (ca_file && !config.use_tls)) {
     return 0;
   }
-  if (ca_file) {
-    turbo_tls_client_config_t tls_config = {
-        .ca_file = ca_file,
-        .verify_peer = 1
-    };
-    if (http_client_set_tls_client_config(client, &tls_config) != 0) {
-      http_client_destroy(client);
-      return 0;
-    }
+  config.connect_timeout_ms = 3000;
+  config.read_timeout_ms = 3000;
+  config.write_timeout_ms = 3000;
+  config.ca_cert_path = ca_file;
+  if (config.use_tls) {
+    tls.size = sizeof(tls);
+    tls.ca_file = ca_file;
+    tls.server_name = "localhost";
+    config.tls = &tls;
+    config.ca_cert_path = NULL;
   }
-  http_client_set_timeout(client, 3000);
-  if (bearer_token) {
-    http_client_set_bearer_token(client, bearer_token);
-  }
-  response = http_get(client, path);
+  config.auth_token = bearer_token;
+  client = turbo_transport_create(&config);
+  if (!client) return 0;
+  response = turbo_transport_http_request(
+      client, TURBO_HTTP_GET, path, NULL, 0u, NULL, 0);
   if (response) {
     status = response->status_code;
-    http_response_free(response);
+    chttp_response_destroy(response);
+    free(response);
+  } else {
+    fprintf(stderr, "GET %s%s failed: %s\n", base_url, path,
+            turbo_transport_get_error(client));
   }
-  http_client_destroy(client);
+  turbo_transport_destroy(client);
   return status;
 }
 
 static int delete_status(const char *base_url, const char *path,
                          const char *bearer_token) {
-  http_client_t *client = http_client_create(base_url);
-  http_response_t *response;
+  turbo_transport_config_t config = {0};
+  turbo_transport_t *client;
+  chttp_response *response;
   int status = 0;
 
-  if (!client) {
+  if (!base_url || !path ||
+      turbo_transport_parse_url(base_url, &config) != 0 ||
+      config.type != TURBO_TRANSPORT_HTTP) {
     return 0;
   }
-  http_client_set_timeout(client, 3000);
-  if (bearer_token) {
-    http_client_set_bearer_token(client, bearer_token);
-  }
-  response = http_del(client, path);
+  config.connect_timeout_ms = 3000;
+  config.read_timeout_ms = 3000;
+  config.write_timeout_ms = 3000;
+  config.auth_token = bearer_token;
+  client = turbo_transport_create(&config);
+  if (!client) return 0;
+  response = turbo_transport_http_request(
+      client, TURBO_HTTP_DELETE, path, NULL, 0u, NULL, 0);
   if (response) {
     status = response->status_code;
-    http_response_free(response);
+    chttp_response_destroy(response);
+    free(response);
   }
-  http_client_destroy(client);
+  turbo_transport_destroy(client);
   return status;
 }
 
@@ -95,7 +122,7 @@ static char *issue_signaling_management_token(
 }
 
 void test_signaling_and_http_api_instances_have_independent_lifecycles(void) {
-  webrtc_signaling_config_t signaling_config = {0};
+  webrtc_signaling_config_t signaling_config = {.connection_capacity = 4U};
   http_api_config_t http_config_a = {0};
   http_api_config_t http_config_b = {0};
   webrtc_signaling_server_t *signaling_a = NULL;
@@ -135,7 +162,7 @@ void test_signaling_and_http_api_instances_have_independent_lifecycles(void) {
 }
 
 void test_http_api_rejects_invalid_configuration(void) {
-  webrtc_signaling_config_t signaling_config = {0};
+  webrtc_signaling_config_t signaling_config = {.connection_capacity = 4U};
   http_api_config_t http_config = {0};
   webrtc_signaling_server_t *signaling = NULL;
 
@@ -183,7 +210,7 @@ void test_http_api_rejects_invalid_configuration(void) {
 }
 
 void test_signaling_native_websocket_listener_stops_and_restarts(void) {
-  webrtc_signaling_config_t config = {0};
+  webrtc_signaling_config_t config = {.connection_capacity = 4U};
   webrtc_signaling_server_t *server = NULL;
 
   config.host = "127.0.0.1";
@@ -199,8 +226,148 @@ void test_signaling_native_websocket_listener_stops_and_restarts(void) {
   webrtc_signaling_destroy(server);
 }
 
+static native_io_backend_kind signaling_test_backend(void) {
+#if defined(_WIN32)
+  return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+  return NATIVE_IO_BACKEND_EPOLL;
+#else
+  return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static chttp_websocket_client_config signaling_test_client_config(void) {
+  chttp_websocket_client_config config = {0};
+  config.size = sizeof(config);
+  config.network.backend = signaling_test_backend();
+  config.network.connection_capacity = 1U;
+  config.network.command_capacity = SIGNALING_WS_TEST_QUEUE_CAPACITY;
+  config.network.request_capacity = SIGNALING_WS_TEST_QUEUE_CAPACITY;
+  config.network.completion_batch_capacity = SIGNALING_WS_TEST_QUEUE_CAPACITY;
+  config.network.event_capacity = SIGNALING_WS_TEST_QUEUE_CAPACITY;
+  config.network.max_send_bytes = SIGNALING_WS_TEST_WIRE_BYTES;
+  config.network.receive_buffer_bytes = SIGNALING_WS_TEST_WIRE_BYTES;
+  config.network.connect_timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS;
+  config.network.read_timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS;
+  config.network.write_timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS;
+  config.network.command_buffer_bytes = SIGNALING_WS_TEST_WIRE_BYTES;
+  config.network.event_buffer_bytes = SIGNALING_WS_TEST_WIRE_BYTES;
+  config.max_frame_bytes = SIGNALING_WS_TEST_MESSAGE_BYTES;
+  config.max_message_bytes = SIGNALING_WS_TEST_MESSAGE_BYTES;
+  config.max_buffered_input_bytes = SIGNALING_WS_TEST_WIRE_BYTES;
+  config.max_handshake_header_bytes = SIGNALING_WS_TEST_MESSAGE_BYTES;
+  config.event_capacity = SIGNALING_WS_TEST_QUEUE_CAPACITY;
+  return config;
+}
+
+void test_signaling_websocket_protocol_round_trip(void) {
+  static const char join_message[] =
+      "{\"type\":\"join\",\"room\":\"lifecycle-room\"}";
+  webrtc_signaling_config_t config = {.connection_capacity = 4U};
+  webrtc_signaling_server_t *server = NULL;
+  chttp_websocket_client client = {0};
+  chttp_websocket_client_config client_config =
+      signaling_test_client_config();
+  chttp_websocket_connect_options options = {0};
+  chttp_websocket_event event = {0};
+  unsigned int http_status = 0U;
+  uint16_t port = 0U;
+  char uri[128];
+  int client_initialized = 0;
+  int joined_seen = 0;
+  int peers_seen = 0;
+  int index;
+  int status;
+
+  config.host = "127.0.0.1";
+  config.port = 0U;
+  config.max_message_size = SIGNALING_WS_TEST_MESSAGE_BYTES;
+  config.max_outbox_messages = SIGNALING_WS_TEST_QUEUE_CAPACITY;
+  config.max_outbox_bytes = SIGNALING_WS_TEST_MESSAGE_BYTES;
+  server = webrtc_signaling_create(NULL, &config);
+  check_not_null(server);
+  if (!server) {
+    return;
+  }
+  status = webrtc_signaling_start(server);
+  check_equal(status, 0);
+  if (status != 0) {
+    webrtc_signaling_destroy(server);
+    return;
+  }
+  status = webrtc_signaling_get_port(server, &port);
+  check_equal(status, 0);
+  check_true(port != 0U);
+
+  status = chttp_websocket_client_init(&client, &client_config);
+  check_equal(status, SALTS_OK);
+  if (status != SALTS_OK) {
+    webrtc_signaling_destroy(server);
+    return;
+  }
+  client_initialized = 1;
+  snprintf(uri, sizeof(uri), "ws://127.0.0.1:%u/", (unsigned int)port);
+  options.size = sizeof(options);
+  options.uri = uri;
+  options.timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS;
+  options.protocol = CHTTP_HTTP_1_1;
+  status = chttp_websocket_client_connect(&client, &options, &http_status);
+  check_equal(status, SALTS_OK);
+  if (status != SALTS_OK) {
+    goto cleanup;
+  }
+  check_equal((int)http_status, 101);
+  check_equal(webrtc_signaling_get_peer_count(server), 1);
+  status = chttp_websocket_client_send_text(
+      &client, join_message, sizeof(join_message) - 1U,
+      SIGNALING_WS_TEST_TIMEOUT_MS);
+  check_equal(status, SALTS_OK);
+  if (status != SALTS_OK) {
+    goto cleanup;
+  }
+
+  for (index = 0; index < 2; ++index) {
+    char message[SIGNALING_WS_TEST_MESSAGE_BYTES + 1U];
+    status = chttp_websocket_client_receive(
+        &client, SIGNALING_WS_TEST_TIMEOUT_MS, &event);
+    check_equal(status, SALTS_OK);
+    if (status != SALTS_OK) {
+      goto cleanup;
+    }
+    check_equal((int)event.kind, (int)CHTTP_WEBSOCKET_EVENT_MESSAGE);
+    check_equal((int)event.message_type, (int)CHTTP_WEBSOCKET_MESSAGE_TEXT);
+    check_true(event.size <= SIGNALING_WS_TEST_MESSAGE_BYTES);
+    if (event.size <= SIGNALING_WS_TEST_MESSAGE_BYTES) {
+      memcpy(message, event.data, event.size);
+      message[event.size] = '\0';
+      joined_seen |= strstr(message, "\"type\":\"joined\"") != NULL;
+      peers_seen |= strstr(message, "\"type\":\"peers\"") != NULL;
+    }
+  }
+  check_true(joined_seen);
+  check_true(peers_seen);
+
+  check_equal(chttp_websocket_client_close(
+                  &client, 1000U, NULL, 0U, SIGNALING_WS_TEST_TIMEOUT_MS),
+              SALTS_OK);
+  for (index = 0; index < 100 &&
+                  webrtc_signaling_get_peer_count(server) != 0;
+       ++index) {
+    salts_sleep_ms(10U);
+  }
+  check_equal(webrtc_signaling_get_peer_count(server), 0);
+
+cleanup:
+  if (client_initialized) {
+    status = chttp_websocket_client_destroy(
+        &client, SIGNALING_WS_TEST_TIMEOUT_MS);
+    check_equal(status, SALTS_OK);
+  }
+  webrtc_signaling_destroy(server);
+}
+
 void test_signaling_peer_auth_configuration_fails_fast(void) {
-  webrtc_signaling_config_t config = {0};
+  webrtc_signaling_config_t config = {.connection_capacity = 4U};
   webrtc_signaling_server_t *server = NULL;
 
   config.host = "127.0.0.1";
@@ -235,6 +402,8 @@ void test_signaling_resource_policy_configuration_fails_fast(void) {
   webrtc_signaling_config_t config = {0};
   webrtc_signaling_server_t *server = NULL;
 
+  check_null(webrtc_signaling_create(NULL, &config));
+  config.connection_capacity = 4U;
   config.messages_per_second = 100;
   check_null(webrtc_signaling_create(NULL, &config));
 
@@ -258,7 +427,7 @@ void test_signaling_resource_policy_configuration_fails_fast(void) {
 }
 
 void test_signaling_wss_listener_loads_explicit_identity(void) {
-  webrtc_signaling_config_t config = {0};
+  webrtc_signaling_config_t config = {.connection_capacity = 4U};
   webrtc_signaling_server_t *server = NULL;
 
   config.host = "127.0.0.1";
@@ -278,7 +447,7 @@ void test_signaling_wss_listener_loads_explicit_identity(void) {
 }
 
 void test_http_api_bearer_auth_protects_management_routes(void) {
-  webrtc_signaling_config_t signaling_config = {0};
+  webrtc_signaling_config_t signaling_config = {.connection_capacity = 4U};
   http_api_config_t http_config = {
       .host = "0.0.0.0",
       .port = 18083,
@@ -370,7 +539,7 @@ void test_http_api_bearer_auth_protects_management_routes(void) {
 }
 
 void test_https_management_api_requires_trusted_identity(void) {
-  webrtc_signaling_config_t signaling_config = {0};
+  webrtc_signaling_config_t signaling_config = {.connection_capacity = 4U};
   http_api_config_t http_config = {
       .host = "127.0.0.1",
       .port = 18084,
@@ -387,8 +556,8 @@ void test_https_management_api_requires_trusted_identity(void) {
   check_not_null(http);
   check_equal((int)(http_api_start(http)), (int)(0));
 
-  check_equal((int)(get_status("https://localhost:18084", "/health", NULL, NULL)), (int)(0));
-  check_equal((int)(get_status("https://localhost:18084", "/health", NULL,
+  check_equal((int)(get_status("https://127.0.0.1:18084", "/health", NULL, NULL)), (int)(0));
+  check_equal((int)(get_status("https://127.0.0.1:18084", "/health", NULL,
                       TURBO_MEDIA_TEST_TLS_CERT_PATH)), (int)(200));
 
   http_api_destroy(http);
@@ -399,6 +568,7 @@ spec("test_signaling_lifecycle") {
   it("test_signaling_and_http_api_instances_have_independent_lifecycles") { test_signaling_and_http_api_instances_have_independent_lifecycles(); };
   it("test_http_api_rejects_invalid_configuration") { test_http_api_rejects_invalid_configuration(); };
   it("test_signaling_native_websocket_listener_stops_and_restarts") { test_signaling_native_websocket_listener_stops_and_restarts(); };
+  it("test_signaling_websocket_protocol_round_trip") { test_signaling_websocket_protocol_round_trip(); };
   it("test_signaling_peer_auth_configuration_fails_fast") { test_signaling_peer_auth_configuration_fails_fast(); };
   it("test_signaling_resource_policy_configuration_fails_fast") { test_signaling_resource_policy_configuration_fails_fast(); };
   it("test_signaling_wss_listener_loads_explicit_identity") { test_signaling_wss_listener_loads_explicit_identity(); };

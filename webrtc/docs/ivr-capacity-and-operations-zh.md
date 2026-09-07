@@ -13,9 +13,9 @@
 |---|---|---|---|
 | session event inbox | 单 session control thread 消费，多 callback 复制入队 | 8 项；默认 byte budget 为 `8 * 65536 = 524288` bytes；成功后 session 拥有副本 | 满时 `IVR_ENOSPC`，不覆盖旧项；terminal/drain 唤醒 owner，join 后释放 |
 | media supervisor | 单 supervisor thread 消费，多 transport callback 复制固定 state | 16 项内联 state | 满时计 overflow、置 stop，返回 `IVR_ENOSPC`；不 `DROP_OLDEST` |
-| worker reply mailbox | worker owner loop 消费，FlowMQ callback 复制 frame | 16 项，每项上限为 frame header + 64 KiB；暴露 item/byte current/high-water | claim 失败计 queue-full；关闭先停止 producer，再 destroy 并将 current gauge 归零 |
+| worker reply mailbox | worker owner loop 消费，CHTTP H1 WebSocket callback 复制 frame | 16 项，每项上限为 frame header + 64 KiB；暴露 item/byte current/high-water | claim 失败计 queue-full；关闭先停止 producer，再 destroy 并将 current gauge 归零 |
 | provider | 每 call 一个 TTS thread 和一个 ASR thread | TTS input 64 KiB；ASR PCM 4 MiB；每个 provider response 16 MiB | 超限明确拒绝；cancel/quiesce 后释放，factory snapshot 必须归零 |
-| RTP/PCM data plane | WebRTC/media owner；不经 FlowMQ | 由 peer、jitter/history 和 provider buffer 各自有界 | control/event queue 满载不得使 RTP/PCM 改走 FlowMQ |
+| RTP/PCM data plane | WebRTC/media owner；不经 CHTTP H1 WebSocket | 由 peer、jitter/history 和 provider buffer 各自有界 | control/event queue 满载不得使 RTP/PCM 改走 CHTTP H1 WebSocket |
 
 ## 默认容量输入
 
@@ -68,7 +68,7 @@ events/s，以及最长 consumer stall；用
 该测试证明 admission、隔离和 drain 契约，不证明真实 provider/media 吞吐。
 
 60 分钟 soak 必须在 Release、目标硬件和目标网络执行；固定 `C_target` 活跃 call，并包含
-TTS、ASR、DTMF、WHIP/WHEP 与 FlowMQ heartbeat。报告至少每分钟保存：active/reserved、
+TTS、ASR、DTMF、WHIP/WHEP 与 CHTTP H1 WebSocket heartbeat。报告至少每分钟保存：active/reserved、
 RSS/commit、thread/handle/socket、peer、各 queue item/byte high-water、provider retained bytes、
 P50/P95/P99 和全部拒绝/错误计数。通过条件为无非预期 admission failure、queue full、
 deadlock/crash，drain 后 session/provider thread/peer/lease/retained bytes 全部归零。
@@ -119,7 +119,7 @@ Prometheus target label 层聚合，业务代码不添加 worker/room/call label
 
 | 信号 | 初始阈值 | 级别 | 处置 |
 |---|---|---|---|
-| worker lease expired | active/reserved call 存在时任意 1 次；空闲 worker 5 分钟内 >= 3 次 | HIGH / MED | 冻结新 assignment；核对 FlowMQ connection generation、heartbeat latency、broker ACL/TLS；不得手工把 expired 改回 ready |
+| worker lease expired | active/reserved call 存在时任意 1 次；空闲 worker 5 分钟内 >= 3 次 | HIGH / MED | 冻结新 assignment；核对 CHTTP H1 WebSocket connection generation、heartbeat latency、broker ACL/TLS；不得手工把 expired 改回 ready |
 | dispatch timeout | 5 分钟比例 >1% 或连续 3 次 | HIGH | 停止扩大 canary；按 correlation ID 检查 reservation、route、reply queue、worker generation；只由幂等 retry/补偿推进 |
 | provider error | 10 分钟比例 >1% 或同 worker 连续 3 次 | MED | 检查 endpoint status、timeout、buffer reject、credential；保持 per-call 隔离，不切 logging provider fallback |
 | media retry exhausted | 任意 active call 1 次 | HIGH | 检查 WHIP/WHEP attempt generation、ICE consent/TURN 和 SFU participant；终止仅限该 call，不重建旧 generation |
@@ -139,7 +139,7 @@ transcript 或 provider response。恢复条件必须来自权威 snapshot/ACK�
 |---|---|
 | CPU / RAM / OS / build commit | 未执行 |
 | Release preset / compiler | 未执行 |
-| provider / SFU / TURN / FlowMQ topology | 未执行 |
+| provider / SFU / TURN / CHTTP H1 WebSocket topology | 未执行 |
 | peak events/s / max measured stall | 未执行 |
 | 60 分钟 P50/P95/P99 | 未执行 |
 | peak RSS/thread/handle/socket/peer | 未执行 |

@@ -4,12 +4,13 @@
  */
 
 #include "turbo_peer_connection.h"
+#include "salts_ice_owner.h"
 #include "turbo_rtp.h"
 #include "turbo_sdp.h"
-#include "ice/turbo_ice.h"
+#include "ice/salts_ice.h"
 #include "tlog.h"
 #include <platform.h>
-#include <turbo_coro_context.h>
+#include <salts/thread.h>
 #include <salts_str.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -21,14 +22,25 @@
 #define TURBO_TURN_SCHEME "turn:"
 #define TURBO_ICE_SDPFRAG_MAX_LENGTH 65536u
 #define TURBO_ICE_SDPFRAG_CANDIDATE_CAPACITY 512u
+#define TURBO_ICE_WORKER_POLL_INTERVAL_MS 10u
+#define TURBO_ICE_WORKER_POLL_INTERVAL_NS \
+    ((uint64_t)TURBO_ICE_WORKER_POLL_INTERVAL_MS * UINT64_C(1000000))
 
 struct turbo_peer_connection_s {
     turbo_peer_config_t config;
 
     turbo_peer_callbacks_t callbacks;
     
-    turbo_ice_agent_t *ice_agent;
-    coro_context_t *ice_ctx;
+    turbo_ice_owner_t *ice_owner;
+    salts_thread_t ice_worker;
+    salts_mutex_t ice_mutex;
+    salts_cond_t ice_cond;
+    int ice_sync_initialized;
+    int ice_worker_started;
+    int ice_stop_requested;
+    int ice_gather_requested;
+    int ice_checks_requested;
+    uint32_t ice_gathering_timeout_ms;
     turbo_dc_context_t *dc_ctx;
     turbo_dc_peer_t *dc_peer;
     turbo_media_context_t *media_ctx;
@@ -163,12 +175,14 @@ static int refresh_local_ice_credentials(turbo_peer_connection_t *pc) {
     tstr next_ufrag;
     tstr next_pwd;
 
-    if (!pc || !pc->ice_agent) {
+    if (!pc || !pc->ice_owner) {
         return -1;
     }
 
-    ice_agent_get_local_credentials(
-        pc->ice_agent, ufrag, sizeof(ufrag), pwd, sizeof(pwd));
+    if (turbo_ice_owner_get_local_credentials(
+            pc->ice_owner, ufrag, sizeof(ufrag), pwd, sizeof(pwd)) != 0) {
+        return -1;
+    }
     if (!ufrag[0] || !pwd[0]) {
         return -1;
     }
@@ -192,7 +206,7 @@ static int refresh_local_ice_credentials(turbo_peer_connection_t *pc) {
  * Internal Callbacks
  * ============================================================================ */
 
-static void on_ice_candidate(turbo_ice_agent_t *agent, const ice_candidate_t *candidate, void *user_data) {
+static void on_ice_candidate(salts_ice_agent_t *agent, const ice_candidate_t *candidate, void *user_data) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)user_data;
     (void)agent;
 
@@ -242,59 +256,82 @@ static int notify_remote_track_once(turbo_peer_connection_t *pc,
     return 0;
 }
 
-static void pump_ice_context(turbo_peer_connection_t *pc) {
-    if (pc && pc->ice_ctx) {
-        coro_context_run(pc->ice_ctx, TURBO_RUN_NOWAIT);
-    }
-}
-
-static void drain_ice_coroutines(turbo_peer_connection_t *pc) {
-    if (!pc || !pc->ice_ctx) {
-        return;
-    }
-
-    /* The ICE agent is owned by its coroutines until every task has unwound. */
-    while (coro_context_coro_count(pc->ice_ctx) > 0) {
-        coro_context_run(pc->ice_ctx, TURBO_RUN_ONCE);
-    }
-}
-
-static void start_gathering_task(coro_t *co, void *arg) {
+static void ice_worker_main(void *arg) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)arg;
-    int rc;
-    (void)co;
-
-    if (!pc || pc->destroying || !pc->ice_agent) {
-        if (pc) {
+    if (!pc) return;
+    for (;;) {
+        int gather;
+        int checks;
+        int rc;
+        salts_mutex_lock(&pc->ice_mutex);
+        if (!pc->ice_stop_requested && !pc->ice_gather_requested &&
+            !pc->ice_checks_requested) {
+            (void)salts_cond_timedwait(&pc->ice_cond, &pc->ice_mutex,
+                                       TURBO_ICE_WORKER_POLL_INTERVAL_NS);
+        }
+        if (pc->ice_stop_requested) {
+            salts_mutex_unlock(&pc->ice_mutex);
+            break;
+        }
+        gather = pc->ice_gather_requested;
+        checks = pc->ice_checks_requested;
+        pc->ice_gather_requested = 0;
+        pc->ice_checks_requested = 0;
+        salts_mutex_unlock(&pc->ice_mutex);
+        if (gather) {
+            rc = turbo_ice_owner_gather_candidates(pc->ice_owner);
+            salts_mutex_lock(&pc->ice_mutex);
             pc->gathering_start_pending = 0;
+            salts_cond_broadcast(&pc->ice_cond);
+            salts_mutex_unlock(&pc->ice_mutex);
+            if (rc != 0 && !pc->destroying)
+                notify_state_change(pc, TURBO_PEER_STATE_FAILED);
         }
-        return;
-    }
-
-    rc = ice_agent_gather_candidates(pc->ice_agent);
-    pc->gathering_start_pending = 0;
-    if (rc != 0 && !pc->destroying) {
-        notify_state_change(pc, TURBO_PEER_STATE_FAILED);
+        if (checks) {
+            rc = turbo_ice_owner_start_checks(pc->ice_owner);
+            pc->checks_start_pending = 0;
+            if (rc != 0 && !pc->destroying && pc->state != TURBO_PEER_STATE_CLOSED)
+                notify_state_change(pc, TURBO_PEER_STATE_FAILED);
+        }
     }
 }
 
-static void start_checks_task(coro_t *co, void *arg) {
-    turbo_peer_connection_t *pc = (turbo_peer_connection_t *)arg;
-    int rc;
-    (void)co;
+static int wait_for_local_ice_gathering(turbo_peer_connection_t *pc) {
+    uint64_t deadline_ms;
+    int complete;
 
-    if (!pc || pc->destroying || !pc->ice_agent) {
-        if (pc) {
-            pc->checks_start_pending = 0;
+    if (!pc || !pc->ice_sync_initialized || !pc->ice_owner ||
+        pc->ice_gathering_timeout_ms == 0u) {
+        return -1;
+    }
+    deadline_ms = salts_monotonic_ms() + pc->ice_gathering_timeout_ms;
+    salts_mutex_lock(&pc->ice_mutex);
+    while (pc->gathering_start_pending && !pc->ice_stop_requested) {
+        uint64_t now_ms = salts_monotonic_ms();
+        uint64_t remaining_ms;
+        if (now_ms >= deadline_ms) {
+            break;
         }
-        return;
+        remaining_ms = deadline_ms - now_ms;
+        (void)salts_cond_timedwait(
+            &pc->ice_cond, &pc->ice_mutex,
+            remaining_ms * UINT64_C(1000000));
     }
+    complete = !pc->gathering_start_pending && !pc->ice_stop_requested;
+    salts_mutex_unlock(&pc->ice_mutex);
+    return complete &&
+                   turbo_ice_owner_get_gathering_state(pc->ice_owner) ==
+                       ICE_GATHERING_COMPLETE &&
+                   turbo_ice_owner_get_local_candidate_count(pc->ice_owner) > 0
+               ? 0
+               : -1;
+}
 
-    rc = ice_agent_start_checks(pc->ice_agent);
-    pc->checks_start_pending = 0;
-    if (rc != 0 && !pc->destroying && pc->state != TURBO_PEER_STATE_CLOSED) {
-        notify_state_change(pc, TURBO_PEER_STATE_FAILED);
-    }
+static void pump_ice_context(turbo_peer_connection_t *pc) {
+    if (!pc || !pc->ice_sync_initialized) return;
+    salts_mutex_lock(&pc->ice_mutex);
+    salts_cond_signal(&pc->ice_cond);
+    salts_mutex_unlock(&pc->ice_mutex);
 }
 
 static int sdp_candidate_to_ice_line(const sdp_candidate_t *candidate, char *buffer, size_t buffer_len) {
@@ -331,7 +368,7 @@ static int sdp_candidate_to_ice_line(const sdp_candidate_t *candidate, char *buf
 static int import_remote_candidates(turbo_peer_connection_t *pc, const sdp_session_t *remote_sdp) {
     int added = 0;
 
-    if (!pc || !pc->ice_agent || !remote_sdp) {
+    if (!pc || !pc->ice_owner || !remote_sdp) {
         return 0;
     }
 
@@ -344,7 +381,8 @@ static int import_remote_candidates(turbo_peer_connection_t *pc, const sdp_sessi
             if (sdp_candidate_to_ice_line(&media->candidates[j], candidate_line, sizeof(candidate_line)) < 0) {
                 continue;
             }
-            if (ice_agent_add_remote_candidate(pc->ice_agent, candidate_line) == 0) {
+            if (turbo_ice_owner_add_remote_candidate(
+                    pc->ice_owner, candidate_line) == 0) {
                 added++;
             }
         }
@@ -357,7 +395,7 @@ static int import_remote_candidates(turbo_peer_connection_t *pc, const sdp_sessi
 static int maybe_start_checks(turbo_peer_connection_t *pc) {
     ice_state_t ice_state;
 
-    if (!pc || pc->destroying || !pc->ice_agent) {
+    if (!pc || pc->destroying || !pc->ice_owner) {
         return -1;
     }
 
@@ -365,11 +403,12 @@ static int maybe_start_checks(turbo_peer_connection_t *pc) {
         return 0;
     }
 
-    if (ice_agent_get_gathering_state(pc->ice_agent) != ICE_GATHERING_COMPLETE) {
+    if (turbo_ice_owner_get_gathering_state(pc->ice_owner) !=
+        ICE_GATHERING_COMPLETE) {
         return 0;
     }
 
-    ice_state = ice_agent_get_state(pc->ice_agent);
+    ice_state = turbo_ice_owner_get_state(pc->ice_owner);
     if (pc->checks_start_pending ||
         ice_state == ICE_STATE_CONNECTING ||
         ice_state == ICE_STATE_CONNECTED ||
@@ -378,13 +417,11 @@ static int maybe_start_checks(turbo_peer_connection_t *pc) {
     }
 
     notify_state_change(pc, TURBO_PEER_STATE_CONNECTING);
+    salts_mutex_lock(&pc->ice_mutex);
     pc->checks_start_pending = 1;
-    if (coro_context_spawn(pc->ice_ctx, start_checks_task, pc) != 0) {
-        pc->checks_start_pending = 0;
-        return -1;
-    }
-
-    pump_ice_context(pc);
+    pc->ice_checks_requested = 1;
+    salts_cond_signal(&pc->ice_cond);
+    salts_mutex_unlock(&pc->ice_mutex);
     return 0;
 }
 
@@ -402,11 +439,11 @@ static void maybe_start_dtls(turbo_peer_connection_t *pc) {
 static void send_dc_transport(void *transport, const void *data, size_t len) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)transport;
 
-    if (!pc || pc->destroying || !pc->ice_agent) {
+    if (!pc || pc->destroying || !pc->ice_owner) {
         return;
     }
-    if (ice_agent_send(pc->ice_agent, data, len) != 0) {
-        ice_state_t ice_state = ice_agent_get_state(pc->ice_agent);
+    if (turbo_ice_owner_send_async(pc->ice_owner, data, len) != 0) {
+        ice_state_t ice_state = turbo_ice_owner_get_state(pc->ice_owner);
         pc->ice_connected = 0;
         notify_state_change(
             pc, ice_state == ICE_STATE_DISCONNECTED
@@ -417,7 +454,7 @@ static void send_dc_transport(void *transport, const void *data, size_t len) {
 
 
 
-static void on_ice_state_change(turbo_ice_agent_t *agent, ice_state_t old_state,
+static void on_ice_state_change(salts_ice_agent_t *agent, ice_state_t old_state,
                                 ice_state_t new_state, void *user_data) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)user_data;
     (void)agent; (void)old_state;
@@ -456,7 +493,7 @@ static void on_ice_state_change(turbo_ice_agent_t *agent, ice_state_t old_state,
 
 }
 
-static void on_ice_data(turbo_ice_agent_t *agent, const void *data, size_t len, void *user_data) {
+static void on_ice_data(salts_ice_agent_t *agent, const void *data, size_t len, void *user_data) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)user_data;
     (void)agent;
 
@@ -565,13 +602,15 @@ static int configure_negotiated_transport_roles(
         return -1;
     }
     if (pc->have_ice_role && pc->ice_controlling != normalized_ice_role) {
-        if (!pc->ice_agent ||
-            ice_agent_set_role(pc->ice_agent, normalized_ice_role) != 0) {
+        if (!pc->ice_owner ||
+            turbo_ice_owner_set_role(
+                pc->ice_owner, normalized_ice_role) != 0) {
             return -1;
         }
         pc->ice_controlling = normalized_ice_role;
-    } else if (!pc->have_ice_role && pc->ice_agent &&
-        ice_agent_set_role(pc->ice_agent, normalized_ice_role) != 0) {
+    } else if (!pc->have_ice_role && pc->ice_owner &&
+        turbo_ice_owner_set_role(
+            pc->ice_owner, normalized_ice_role) != 0) {
         return -1;
     }
     pc->have_ice_role = 1;
@@ -594,7 +633,7 @@ static int restart_ice_generation(turbo_peer_connection_t *pc,
                                   int locally_initiated) {
     ice_restart_options_t options;
 
-    if (!pc || pc->destroying || !pc->ice_agent ||
+    if (!pc || pc->destroying || !pc->ice_owner ||
         pc->state == TURBO_PEER_STATE_CLOSED ||
         pc->checks_start_pending) {
         return -1;
@@ -603,7 +642,7 @@ static int restart_ice_generation(turbo_peer_connection_t *pc,
     pump_ice_context(pc);
     options = ice_restart_options_default();
     {
-        int restart_result = ice_agent_restart(pc->ice_agent, &options);
+        int restart_result = turbo_ice_owner_restart(pc->ice_owner, &options);
         if (restart_result != 0) {
             return -1;
         }
@@ -856,16 +895,17 @@ static void add_common_media_security(turbo_peer_connection_t *pc, sdp_media_t *
 static void add_local_candidates_to_media(turbo_peer_connection_t *pc, sdp_media_t *media) {
     int count;
 
-    if (!pc || !pc->ice_agent || !media) {
+    if (!pc || !pc->ice_owner || !media) {
         return;
     }
 
-    count = ice_agent_get_local_candidate_count(pc->ice_agent);
+    count = turbo_ice_owner_get_local_candidate_count(pc->ice_owner);
     for (int i = 0; i < count; i++) {
         ice_candidate_t candidate;
         sdp_candidate_t sdp_candidate;
 
-        if (ice_agent_get_local_candidate(pc->ice_agent, i, &candidate) != 0) {
+        if (turbo_ice_owner_get_local_candidate(
+                pc->ice_owner, i, &candidate) != 0) {
             continue;
         }
         memset(&sdp_candidate, 0, sizeof(sdp_candidate));
@@ -1178,6 +1218,10 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     /* ice_cfg.loop is no longer needed in config */
     ice_cfg.is_controlling = 1; /* Default, will update based on role */
     ice_cfg.allow_loopback = pc->config.allow_loopback ? 1 : 0;
+    pc->ice_gathering_timeout_ms =
+        ice_cfg.gathering_timeout_ms > 0
+            ? (uint32_t)ice_cfg.gathering_timeout_ms
+            : TURBO_ICE_WORKER_POLL_INTERVAL_MS;
 
 
     
@@ -1186,35 +1230,29 @@ turbo_peer_connection_t *turbo_peer_connection_create(
         return NULL;
     }
     
-    pc->ice_ctx = coro_context_create(NULL);
-    if (!pc->ice_ctx) {
-        free(pc);
-        return NULL;
-    }
-#if defined(__linux__) && !defined(__ANDROID__)
-    coro_context_set_udp_backend(pc->ice_ctx, TURBO_UDP_BACKEND_EPOLL);
-#elif defined(_WIN32)
-    coro_context_set_udp_backend(pc->ice_ctx, TURBO_UDP_BACKEND_IOCP);
-#endif
+    salts_mutex_init(&pc->ice_mutex);
+    salts_cond_init(&pc->ice_cond);
+    pc->ice_sync_initialized = 1;
 
-    pc->ice_agent = ice_agent_create(pc->ice_ctx, &ice_cfg);
-    if (!pc->ice_agent) {
-        coro_context_destroy(pc->ice_ctx);
-        free(pc);
-        return NULL;
-    }
-    
     ice_callbacks_t ice_cb = {
         .on_state_change = on_ice_state_change,
         .on_candidate = on_ice_candidate,
         .on_data = on_ice_data,
         .user_data = pc
     };
-    ice_agent_set_callbacks(pc->ice_agent, &ice_cb);
+
+    pc->ice_owner = turbo_ice_owner_create(&ice_cfg, &ice_cb);
+    if (!pc->ice_owner) {
+        salts_cond_destroy(&pc->ice_cond);
+        salts_mutex_destroy(&pc->ice_mutex);
+        free(pc);
+        return NULL;
+    }
     
     if (refresh_local_ice_credentials(pc) != 0) {
-        ice_agent_destroy(pc->ice_agent);
-        coro_context_destroy(pc->ice_ctx);
+        turbo_ice_owner_destroy(pc->ice_owner);
+        salts_cond_destroy(&pc->ice_cond);
+        salts_mutex_destroy(&pc->ice_mutex);
         free(pc);
         return NULL;
     }
@@ -1227,8 +1265,9 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     };
     pc->dc_ctx = turbo_dc_context_create(&dc_cfg);
     if (!pc->dc_ctx) {
-        ice_agent_destroy(pc->ice_agent);
-        coro_context_destroy(pc->ice_ctx);
+        turbo_ice_owner_destroy(pc->ice_owner);
+        salts_cond_destroy(&pc->ice_cond);
+        salts_mutex_destroy(&pc->ice_mutex);
         tstr_free(pc->local_ufrag);
         tstr_free(pc->local_pwd);
         free(pc);
@@ -1239,8 +1278,9 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     pc->dc_peer = turbo_dc_peer_create(pc->dc_ctx, NULL, 0, pc);
     if (!pc->dc_peer) {
         turbo_dc_context_destroy(pc->dc_ctx);
-        ice_agent_destroy(pc->ice_agent);
-        coro_context_destroy(pc->ice_ctx);
+        turbo_ice_owner_destroy(pc->ice_owner);
+        salts_cond_destroy(&pc->ice_cond);
+        salts_mutex_destroy(&pc->ice_mutex);
         tstr_free(pc->local_ufrag);
         tstr_free(pc->local_pwd);
         free(pc);
@@ -1255,8 +1295,9 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     if (!pc->media_ctx) {
         turbo_dc_peer_destroy(pc->dc_peer);
         turbo_dc_context_destroy(pc->dc_ctx);
-        ice_agent_destroy(pc->ice_agent);
-        coro_context_destroy(pc->ice_ctx);
+        turbo_ice_owner_destroy(pc->ice_owner);
+        salts_cond_destroy(&pc->ice_cond);
+        salts_mutex_destroy(&pc->ice_mutex);
         tstr_free(pc->local_ufrag);
         tstr_free(pc->local_pwd);
         free(pc);
@@ -1264,19 +1305,24 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     }
     
     /* Start gathering candidates immediately */
-    pc->gathering_start_pending = 1;
-    if (coro_context_spawn(pc->ice_ctx, start_gathering_task, pc) != 0) {
-        pc->gathering_start_pending = 0;
+    if (salts_thread_create(&pc->ice_worker, ice_worker_main, pc) != 0) {
         turbo_media_destroy(pc->media_ctx);
         turbo_dc_peer_destroy(pc->dc_peer);
         turbo_dc_context_destroy(pc->dc_ctx);
-        ice_agent_destroy(pc->ice_agent);
-        coro_context_destroy(pc->ice_ctx);
+        turbo_ice_owner_destroy(pc->ice_owner);
+        salts_cond_destroy(&pc->ice_cond);
+        salts_mutex_destroy(&pc->ice_mutex);
         tstr_free(pc->local_ufrag);
         tstr_free(pc->local_pwd);
         free(pc);
         return NULL;
     }
+    pc->ice_worker_started = 1;
+    pc->gathering_start_pending = 1;
+    salts_mutex_lock(&pc->ice_mutex);
+    pc->ice_gather_requested = 1;
+    salts_cond_signal(&pc->ice_cond);
+    salts_mutex_unlock(&pc->ice_mutex);
     pump_ice_context(pc);
     
     return pc;
@@ -1302,24 +1348,27 @@ void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
         pc->dc_peer = NULL;
     }
     
-    if (pc->ice_agent) {
-        ice_callbacks_t callbacks = {0};
-        ice_agent_set_callbacks(pc->ice_agent, &callbacks);
-        ice_agent_close(pc->ice_agent);
-        if (pc->ice_ctx) {
-            coro_context_stop(pc->ice_ctx);
-            drain_ice_coroutines(pc);
+    if (pc->ice_owner) {
+        salts_mutex_lock(&pc->ice_mutex);
+        pc->ice_stop_requested = 1;
+        salts_cond_broadcast(&pc->ice_cond);
+        salts_mutex_unlock(&pc->ice_mutex);
+        turbo_ice_owner_close(pc->ice_owner);
+        if (pc->ice_worker_started) {
+            salts_thread_join(&pc->ice_worker);
+            salts_thread_destroy(&pc->ice_worker);
+            pc->ice_worker_started = 0;
         }
-        ice_agent_destroy(pc->ice_agent);
-        pc->ice_agent = NULL;
+        turbo_ice_owner_destroy(pc->ice_owner);
+        pc->ice_owner = NULL;
     }
     if (pc->dc_ctx) {
         turbo_dc_context_destroy(pc->dc_ctx);
     }
-    if (pc->ice_ctx) {
-        drain_ice_coroutines(pc);
-        coro_context_destroy(pc->ice_ctx);
-        pc->ice_ctx = NULL;
+    if (pc->ice_sync_initialized) {
+        salts_cond_destroy(&pc->ice_cond);
+        salts_mutex_destroy(&pc->ice_mutex);
+        pc->ice_sync_initialized = 0;
     }
     
     tstr_free(pc->local_ufrag);
@@ -1387,6 +1436,7 @@ int turbo_peer_connection_create_offer(
 
     if (!pc || !sdp_out || max_len == 0) return -1;
     if (configure_negotiated_transport_roles(pc, 1, 0, 0) != 0) return -1;
+    if (wait_for_local_ice_gathering(pc) != 0) return -1;
     pump_ice_context(pc);
     maybe_start_checks(pc);
 
@@ -1440,6 +1490,7 @@ int turbo_peer_connection_create_answer(
     int claimed_track_count = 0;
 
     if (!pc || !sdp_out || max_len == 0 || !pc->have_remote_sdp) return -1;
+    if (wait_for_local_ice_gathering(pc) != 0) return -1;
     pump_ice_context(pc);
     maybe_start_checks(pc);
 
@@ -1616,8 +1667,8 @@ int turbo_peer_connection_set_remote_description(
         tstr_free(new_fingerprint);
         return -1;
     }
-    if (ice_agent_set_remote_credentials(
-            pc->ice_agent, transport_media->ice_ufrag,
+    if (turbo_ice_owner_set_remote_credentials(
+            pc->ice_owner, transport_media->ice_ufrag,
             transport_media->ice_pwd) != 0) {
         tstr_free(new_ufrag);
         tstr_free(new_pwd);
@@ -1709,9 +1760,9 @@ int turbo_peer_connection_add_ice_candidate(
     turbo_peer_connection_t *pc,
     const char *candidate
 ) {
-    if (!pc || !pc->ice_agent) return -1;
+    if (!pc || !pc->ice_owner) return -1;
     pump_ice_context(pc);
-    if (ice_agent_add_remote_candidate(pc->ice_agent, candidate) != 0) {
+    if (turbo_ice_owner_add_remote_candidate(pc->ice_owner, candidate) != 0) {
         return -1;
     }
     pc->remote_candidate_count++;
@@ -1839,7 +1890,7 @@ int turbo_peer_connection_apply_remote_ice_sdpfrag(
     int completing_local_restart;
     int restarted = 0;
 
-    if (!pc || !pc->ice_agent || !pc->have_remote_sdp ||
+    if (!pc || !pc->ice_owner || !pc->have_remote_sdp ||
         parse_ice_sdpfrag(sdpfrag, sdpfrag_len, &parsed) != 0) {
         return -1;
     }
@@ -1865,8 +1916,8 @@ int turbo_peer_connection_apply_remote_ice_sdpfrag(
             }
         }
         {
-            int credential_result = ice_agent_set_remote_credentials(
-                pc->ice_agent, parsed.ufrag, parsed.pwd);
+            int credential_result = turbo_ice_owner_set_remote_credentials(
+                pc->ice_owner, parsed.ufrag, parsed.pwd);
             if (credential_result != 0) {
                 tstr_free(next_ufrag);
                 tstr_free(next_pwd);
@@ -1928,7 +1979,7 @@ int turbo_peer_connection_create_local_ice_sdpfrag(
     size_t length = 0;
     int candidate_count;
 
-    if (!pc || !pc->ice_agent || !pc->have_remote_sdp ||
+    if (!pc || !pc->ice_owner || !pc->have_remote_sdp ||
         !pc->local_ufrag || !pc->local_pwd || !sdpfrag_out || max_len == 0) {
         return -1;
     }
@@ -1972,12 +2023,13 @@ int turbo_peer_connection_create_local_ice_sdpfrag(
     }
 
     pump_ice_context(pc);
-    candidate_count = ice_agent_get_local_candidate_count(pc->ice_agent);
+    candidate_count = turbo_ice_owner_get_local_candidate_count(pc->ice_owner);
     for (int i = 0; i < candidate_count; ++i) {
         ice_candidate_t candidate;
         char candidate_line[TURBO_ICE_SDPFRAG_CANDIDATE_CAPACITY];
 
-        if (ice_agent_get_local_candidate(pc->ice_agent, i, &candidate) != 0 ||
+        if (turbo_ice_owner_get_local_candidate(
+                pc->ice_owner, i, &candidate) != 0 ||
             ice_candidate_to_sdp(
                 &candidate, candidate_line, sizeof(candidate_line)) < 0 ||
             append_sdpfrag(sdpfrag_out, max_len, &length, "a=%s\r\n",

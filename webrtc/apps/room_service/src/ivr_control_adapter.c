@@ -1,23 +1,24 @@
-#include "ivr_fmq_adapter.h"
+#include "ivr_control_adapter.h"
 #include "ivr/ivr_acl.h"
 #include "ivr_thread.h"
 #include "platform.h"
 #include "salts_uuid.h"
+#include <salts/clock.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define IVR_FMQ_ADAPTER_DEFAULT_SEQ_CAPACITY 256u
-#define IVR_FMQ_ADAPTER_DEFAULT_WORKER_CAPACITY 64u
-#define IVR_FMQ_ADAPTER_DEFAULT_ASSIGNMENT_CAPACITY 256u
-#define IVR_FMQ_ADAPTER_DEFAULT_DIALOG_CAPACITY 256u
-#define IVR_FMQ_ADAPTER_DEFAULT_LEGACY_WORKER_MAX_SESSIONS 1u
-#define IVR_FMQ_ADAPTER_DEFAULT_WORKER_LEASE_MS 15000u
-#define IVR_FMQ_ADAPTER_DEFAULT_DISPATCH_DEADLINE_MS 5000u
-#define IVR_FMQ_ADAPTER_DEFAULT_DISPATCH_MAX_ATTEMPTS 3u
-#define IVR_FMQ_ADAPTER_DEFAULT_DEDUP_RETENTION_MS 60000u
-#define IVR_FMQ_ADAPTER_MAX_DISPATCH_ATTEMPTS 8u
-#define IVR_FMQ_ADAPTER_DEFAULT_CONTENT_PACKAGE "conference-greeting"
+#define IVR_CONTROL_ADAPTER_DEFAULT_SEQ_CAPACITY 256u
+#define IVR_CONTROL_ADAPTER_DEFAULT_WORKER_CAPACITY 64u
+#define IVR_CONTROL_ADAPTER_DEFAULT_ASSIGNMENT_CAPACITY 256u
+#define IVR_CONTROL_ADAPTER_DEFAULT_DIALOG_CAPACITY 256u
+#define IVR_CONTROL_ADAPTER_DEFAULT_LEGACY_WORKER_MAX_SESSIONS 1u
+#define IVR_CONTROL_ADAPTER_DEFAULT_WORKER_LEASE_MS 15000u
+#define IVR_CONTROL_ADAPTER_DEFAULT_DISPATCH_DEADLINE_MS 5000u
+#define IVR_CONTROL_ADAPTER_DEFAULT_DISPATCH_MAX_ATTEMPTS 3u
+#define IVR_CONTROL_ADAPTER_DEFAULT_DEDUP_RETENTION_MS 60000u
+#define IVR_CONTROL_ADAPTER_MAX_DISPATCH_ATTEMPTS 8u
+#define IVR_CONTROL_ADAPTER_DEFAULT_CONTENT_PACKAGE "conference-greeting"
 
 /* One bounded per-call domain sequence slot. The aggregate has no per-call
    counter; this derived table advances only when a command for that call is
@@ -28,13 +29,13 @@ typedef struct {
     uint64_t call_generation;
     uint64_t last_sequence;
     int valid;
-} ivr_fmq_call_seq_t;
+} ivr_control_call_seq_t;
 
 typedef struct {
     enum {
-        IVR_FMQ_CLEANUP_NONE = 0,
-        IVR_FMQ_CLEANUP_PENDING = 1,
-        IVR_FMQ_CLEANUP_COMPLETE = 2
+        IVR_CONTROL_CLEANUP_NONE = 0,
+        IVR_CONTROL_CLEANUP_PENDING = 1,
+        IVR_CONTROL_CLEANUP_COMPLETE = 2
     } cleanup_state;
     char message_id[128];
     char attempt_id[128];
@@ -43,10 +44,10 @@ typedef struct {
     uint64_t worker_connection_generation;
     char cleanup_release_message_id[128];
     uint64_t cleanup_deadline_at_ms;
-} ivr_fmq_attempt_record_t;
+} ivr_control_attempt_record_t;
 
 typedef struct {
-    ivr_fmq_assignment_t value;
+    ivr_control_assignment_t value;
     char causation_id[128];
     uint64_t room_version;
     uint64_t sequence;
@@ -54,24 +55,24 @@ typedef struct {
     int retry_pending;
     int worker_loss_applied;
     int worker_loss_event_published;
-    ivr_fmq_attempt_record_t
-        attempts[IVR_FMQ_ADAPTER_MAX_DISPATCH_ATTEMPTS];
+    ivr_control_attempt_record_t
+        attempts[IVR_CONTROL_ADAPTER_MAX_DISPATCH_ATTEMPTS];
     int valid;
-} ivr_fmq_assignment_entry_t;
+} ivr_control_assignment_entry_t;
 
 typedef struct {
-    ivr_fmq_worker_snapshot_t value;
-    ivr_fmq_worker_state_t post_reconcile_state;
+    ivr_control_worker_snapshot_t value;
+    ivr_control_worker_state_t post_reconcile_state;
     int lease_expiry_counted;
     int valid;
-} ivr_fmq_worker_entry_t;
+} ivr_control_worker_entry_t;
 
 typedef enum {
-    IVR_FMQ_DIALOG_OPENING = 1,
-    IVR_FMQ_DIALOG_ACTIVE = 2,
-    IVR_FMQ_DIALOG_CLOSING = 3,
-    IVR_FMQ_DIALOG_WORKER_LOST = 4
-} ivr_fmq_dialog_state_t;
+    IVR_CONTROL_DIALOG_OPENING = 1,
+    IVR_CONTROL_DIALOG_ACTIVE = 2,
+    IVR_CONTROL_DIALOG_CLOSING = 3,
+    IVR_CONTROL_DIALOG_WORKER_LOST = 4
+} ivr_control_dialog_state_t;
 
 /* Authoritative media-route fact owned by RoomService. Iris owns workflow
    state; this table only binds one typed media dialog to the worker instance
@@ -94,10 +95,10 @@ typedef struct {
     uint64_t active_input_generation;
     char worker_lost_event_id[128];
     uint64_t worker_lost_occurred_at_ms;
-    ivr_fmq_dialog_state_t state;
+    ivr_control_dialog_state_t state;
     int reconciliation_only;
     int valid;
-} ivr_fmq_dialog_route_t;
+} ivr_control_dialog_route_t;
 typedef struct {
     char worker_id[128];
     char tenant_id[64];
@@ -105,16 +106,16 @@ typedef struct {
     char call_scope[512];
     char content_capabilities[512];
     int valid;
-} ivr_fmq_acl_entry_t;
+} ivr_control_acl_entry_t;
 
 
-struct ivr_fmq_adapter_s {
+struct ivr_control_adapter_s {
     turbo_room_service_t *service;
     ivr_room_bridge_t *bridge;
-    ivr_fmq_call_seq_t *seq_entries;
+    ivr_control_call_seq_t *seq_entries;
     uint32_t seq_capacity;
     uint32_t seq_count;
-    ivr_fmq_worker_entry_t *workers;
+    ivr_control_worker_entry_t *workers;
     uint32_t worker_capacity;
     uint32_t worker_count;
     uint32_t worker_high_water;
@@ -123,12 +124,12 @@ struct ivr_fmq_adapter_s {
     uint64_t worker_lease_ms;
     uint64_t dispatch_deadline_ms;
     uint32_t dispatch_max_attempts;
-    ivr_fmq_clock_ops_t clock;
-    ivr_fmq_assignment_entry_t *assignments;
+    ivr_control_clock_ops_t clock;
+    ivr_control_assignment_entry_t *assignments;
     uint32_t assignment_capacity;
     uint32_t assignment_count;
     uint32_t assignment_high_water;
-    ivr_fmq_dialog_route_t *dialogs;
+    ivr_control_dialog_route_t *dialogs;
     uint32_t dialog_capacity;
     uint32_t dialog_count;
     uint32_t dialog_high_water;
@@ -136,11 +137,11 @@ struct ivr_fmq_adapter_s {
     uint64_t dispatch_timeout_total;
     uint64_t release_timeout_total;
     char content_package[64];   /* default package for dispatched calls */
-    ivr_fmq_media_ops_t media;
-    ivr_fmq_media_observer_ops_t media_observer;
-    ivr_fmq_inventory_observer_ops_t inventory_observer;
+    ivr_control_media_ops_t media;
+    ivr_control_media_observer_ops_t media_observer;
+    ivr_control_inventory_observer_ops_t inventory_observer;
     ivr_mutex_t seq_lock;
-    ivr_fmq_acl_entry_t *acls;
+    ivr_control_acl_entry_t *acls;
     uint32_t acl_capacity;
     uint32_t acl_count;
     uint64_t dedup_retention_ms;
@@ -149,30 +150,30 @@ struct ivr_fmq_adapter_s {
     int started;
 };
 
-static ivr_fmq_worker_entry_t *ivr_fmq_worker_find_locked(
-    ivr_fmq_adapter_t *a, const char *worker_id);
-static int ivr_fmq_reconcile_required_locked(
-    const ivr_fmq_adapter_t *adapter);
-static uint64_t ivr_fmq_now_ms(const ivr_fmq_adapter_t *a);
-static ivr_fmq_worker_state_t ivr_fmq_worker_effective_state(
-    const ivr_fmq_worker_snapshot_t *worker, uint64_t now_ms);
-static ivr_fmq_dialog_route_t *ivr_fmq_dialog_find_locked(
-    ivr_fmq_adapter_t *adapter, const char *tenant_id,
+static ivr_control_worker_entry_t *ivr_control_worker_find_locked(
+    ivr_control_adapter_t *a, const char *worker_id);
+static int ivr_control_reconcile_required_locked(
+    const ivr_control_adapter_t *adapter);
+static uint64_t ivr_control_now_ms(const ivr_control_adapter_t *a);
+static ivr_control_worker_state_t ivr_control_worker_effective_state(
+    const ivr_control_worker_snapshot_t *worker, uint64_t now_ms);
+static ivr_control_dialog_route_t *ivr_control_dialog_find_locked(
+    ivr_control_adapter_t *adapter, const char *tenant_id,
     const char *provider_session_id,
     const char *dialog_id);
-static int ivr_fmq_dialog_identity_matches(
-    const ivr_fmq_dialog_route_t *route,
+static int ivr_control_dialog_identity_matches(
+    const ivr_control_dialog_route_t *route,
     const ivr_media_command_t *command);
-static ivr_status_t ivr_fmq_dialog_prepare_command(
-    ivr_fmq_adapter_t *adapter, const ivr_media_command_t *command,
-    ivr_fmq_worker_snapshot_t *out_worker);
-static void ivr_fmq_dialog_rollback_send(
-    ivr_fmq_adapter_t *adapter, const ivr_media_command_t *command);
-static void ivr_fmq_dialog_recover_worker_loss(
-    ivr_fmq_adapter_t *adapter, uint32_t index, uint64_t now_ms);
+static ivr_status_t ivr_control_dialog_prepare_command(
+    ivr_control_adapter_t *adapter, const ivr_media_command_t *command,
+    ivr_control_worker_snapshot_t *out_worker);
+static void ivr_control_dialog_rollback_send(
+    ivr_control_adapter_t *adapter, const ivr_media_command_t *command);
+static void ivr_control_dialog_recover_worker_loss(
+    ivr_control_adapter_t *adapter, uint32_t index, uint64_t now_ms);
 
-static ivr_fmq_assignment_entry_t *ivr_fmq_assignment_find_locked(
-    ivr_fmq_adapter_t *a, const char *message_id) {
+static ivr_control_assignment_entry_t *ivr_control_assignment_find_locked(
+    ivr_control_adapter_t *a, const char *message_id) {
     for (uint32_t i = 0; i < a->assignment_capacity; i++) {
         if (a->assignments[i].valid &&
             strcmp(a->assignments[i].value.message_id, message_id) == 0) {
@@ -182,22 +183,22 @@ static ivr_fmq_assignment_entry_t *ivr_fmq_assignment_find_locked(
     return NULL;
 }
 
-static ivr_fmq_assignment_entry_t *ivr_fmq_assignment_find_result_locked(
-    ivr_fmq_adapter_t *a, const ivr_dispatch_result_t *result,
-    ivr_fmq_attempt_record_t **out_attempt, int *out_is_current) {
+static ivr_control_assignment_entry_t *ivr_control_assignment_find_result_locked(
+    ivr_control_adapter_t *a, const ivr_dispatch_result_t *result,
+    ivr_control_attempt_record_t **out_attempt, int *out_is_current) {
     *out_attempt = NULL;
     *out_is_current = 0;
     if (result->wire_version != 2u) {
-        return ivr_fmq_assignment_find_locked(a, result->message_id);
+        return ivr_control_assignment_find_locked(a, result->message_id);
     }
     for (uint32_t i = 0; i < a->assignment_capacity; i++) {
-        ivr_fmq_assignment_entry_t *entry = &a->assignments[i];
+        ivr_control_assignment_entry_t *entry = &a->assignments[i];
         if (!entry->valid ||
             strcmp(entry->value.assignment_id, result->assignment_id) != 0) {
             continue;
         }
         for (uint32_t j = 0; j < entry->value.attempt_count; j++) {
-            ivr_fmq_attempt_record_t *attempt = &entry->attempts[j];
+            ivr_control_attempt_record_t *attempt = &entry->attempts[j];
             if (strcmp(attempt->message_id, result->message_id) == 0 &&
                 strcmp(attempt->attempt_id, result->attempt_id) == 0) {
                 *out_attempt = attempt;
@@ -211,25 +212,25 @@ static ivr_fmq_assignment_entry_t *ivr_fmq_assignment_find_result_locked(
     return NULL;
 }
 
-static ivr_status_t ivr_fmq_assignment_reserve(
-    ivr_fmq_adapter_t *a, const char *message_id,
-    const ivr_fmq_worker_snapshot_t *worker,
+static ivr_status_t ivr_control_assignment_reserve(
+    ivr_control_adapter_t *a, const char *message_id,
+    const ivr_control_worker_snapshot_t *worker,
     const ivr_room_command_t *command) {
     ivr_status_t rc = IVR_ENOSPC;
-    uint64_t now_ms = ivr_fmq_now_ms(a);
+    uint64_t now_ms = ivr_control_now_ms(a);
     if (UINT64_MAX - now_ms < a->dispatch_deadline_ms) {
         return IVR_ESTATE;
     }
     ivr_mutex_lock(&a->seq_lock);
-    if (ivr_fmq_assignment_find_locked(a, message_id)) {
+    if (ivr_control_assignment_find_locked(a, message_id)) {
         rc = IVR_OK;
     } else {
-        ivr_fmq_assignment_entry_t *reusable = NULL;
+        ivr_control_assignment_entry_t *reusable = NULL;
         for (uint32_t i = 0; i < a->assignment_capacity; i++) {
-            ivr_fmq_assignment_entry_t *entry = &a->assignments[i];
+            ivr_control_assignment_entry_t *entry = &a->assignments[i];
             if (entry->valid) {
                 if (!reusable &&
-                    entry->value.state == IVR_FMQ_ASSIGNMENT_REJECTED) {
+                    entry->value.state == IVR_CONTROL_ASSIGNMENT_REJECTED) {
                     reusable = entry;
                 }
                 continue;
@@ -262,7 +263,7 @@ static ivr_status_t ivr_fmq_assignment_reserve(
                      worker->instance_id);
             reusable->value.worker_connection_generation =
                 worker->connection_generation;
-            reusable->value.state = IVR_FMQ_ASSIGNMENT_PENDING;
+            reusable->value.state = IVR_CONTROL_ASSIGNMENT_PENDING;
             reusable->value.dispatch_deadline_at_ms =
                 now_ms + a->dispatch_deadline_ms;
             snprintf(reusable->attempts[0].message_id,
@@ -293,12 +294,12 @@ static ivr_status_t ivr_fmq_assignment_reserve(
     return rc;
 }
 
-static ivr_fmq_assignment_entry_t *ivr_fmq_assignment_find_active_call_locked(
-    ivr_fmq_adapter_t *a, const ivr_room_command_t *command) {
+static ivr_control_assignment_entry_t *ivr_control_assignment_find_active_call_locked(
+    ivr_control_adapter_t *a, const ivr_room_command_t *command) {
     for (uint32_t i = 0; i < a->assignment_capacity; i++) {
-        ivr_fmq_assignment_entry_t *entry = &a->assignments[i];
+        ivr_control_assignment_entry_t *entry = &a->assignments[i];
         if (entry->valid &&
-            entry->value.state == IVR_FMQ_ASSIGNMENT_ACCEPTED &&
+            entry->value.state == IVR_CONTROL_ASSIGNMENT_ACCEPTED &&
             entry->value.call_generation == command->call_generation &&
             strcmp(entry->value.room_id, command->room_id) == 0 &&
             strcmp(entry->value.call_id, command->call_id) == 0) {
@@ -308,10 +309,10 @@ static ivr_fmq_assignment_entry_t *ivr_fmq_assignment_find_active_call_locked(
     return NULL;
 }
 
-static ivr_fmq_assignment_entry_t *ivr_fmq_assignment_find_call_locked(
-    ivr_fmq_adapter_t *a, const ivr_room_command_t *command) {
+static ivr_control_assignment_entry_t *ivr_control_assignment_find_call_locked(
+    ivr_control_adapter_t *a, const ivr_room_command_t *command) {
     for (uint32_t i = 0; i < a->assignment_capacity; i++) {
-        ivr_fmq_assignment_entry_t *entry = &a->assignments[i];
+        ivr_control_assignment_entry_t *entry = &a->assignments[i];
         if (entry->valid &&
             entry->value.call_generation == command->call_generation &&
             strcmp(entry->value.room_id, command->room_id) == 0 &&
@@ -322,13 +323,13 @@ static ivr_fmq_assignment_entry_t *ivr_fmq_assignment_find_call_locked(
     return NULL;
 }
 
-static void ivr_fmq_worker_release_reservation(ivr_fmq_adapter_t *a,
+static void ivr_control_worker_release_reservation(ivr_control_adapter_t *a,
                                                 const char *worker_id,
                                                 const char *instance_id,
                                                 uint64_t generation) {
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_worker_entry_t *worker =
-        ivr_fmq_worker_find_locked(a, worker_id);
+    ivr_control_worker_entry_t *worker =
+        ivr_control_worker_find_locked(a, worker_id);
     if (worker && strcmp(worker->value.instance_id, instance_id) == 0 &&
         worker->value.connection_generation == generation &&
         worker->value.reserved_sessions > 0) {
@@ -337,15 +338,15 @@ static void ivr_fmq_worker_release_reservation(ivr_fmq_adapter_t *a,
     ivr_mutex_unlock(&a->seq_lock);
 }
 
-static int ivr_fmq_assignment_active_for_call(
-    ivr_fmq_adapter_t *a, const ivr_room_command_t *command,
-    ivr_fmq_worker_snapshot_t *worker) {
+static int ivr_control_assignment_active_for_call(
+    ivr_control_adapter_t *a, const ivr_room_command_t *command,
+    ivr_control_worker_snapshot_t *worker) {
     int found = 0;
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_assignment_entry_t *assignment =
-        ivr_fmq_assignment_find_active_call_locked(a, command);
+    ivr_control_assignment_entry_t *assignment =
+        ivr_control_assignment_find_active_call_locked(a, command);
     if (assignment) {
-        ivr_fmq_worker_entry_t *entry = ivr_fmq_worker_find_locked(
+        ivr_control_worker_entry_t *entry = ivr_control_worker_find_locked(
             a, assignment->value.worker_id);
         if (entry && strcmp(entry->value.instance_id,
                             assignment->value.worker_instance_id) == 0 &&
@@ -359,10 +360,10 @@ static int ivr_fmq_assignment_active_for_call(
     return found;
 }
 
-ivr_status_t ivr_fmq_adapter_send_media_command(
-    ivr_fmq_adapter_t *adapter, const ivr_media_command_t *command,
+ivr_status_t ivr_control_adapter_send_media_command(
+    ivr_control_adapter_t *adapter, const ivr_media_command_t *command,
     char *out_worker_id, size_t out_worker_id_capacity) {
-    ivr_fmq_worker_snapshot_t worker;
+    ivr_control_worker_snapshot_t worker;
     ivr_media_command_t routed_command;
     size_t worker_id_size;
 
@@ -383,41 +384,41 @@ ivr_status_t ivr_fmq_adapter_send_media_command(
 
     memset(&worker, 0, sizeof(worker));
     ivr_status_t status =
-        ivr_fmq_dialog_prepare_command(adapter, command, &worker);
+        ivr_control_dialog_prepare_command(adapter, command, &worker);
     if (status != IVR_OK) {
         return status;
     }
     if (!ivr_room_bridge_worker_available(adapter->bridge, worker.worker_id)) {
-        ivr_fmq_dialog_rollback_send(adapter, command);
+        ivr_control_dialog_rollback_send(adapter, command);
         return IVR_ESTATE;
     }
     worker_id_size = strlen(worker.worker_id);
     if (worker_id_size + 1 > out_worker_id_capacity) {
-        ivr_fmq_dialog_rollback_send(adapter, command);
+        ivr_control_dialog_rollback_send(adapter, command);
         return IVR_ENOSPC;
     }
 
     routed_command = *command;
     if (worker_id_size + 1 > sizeof(routed_command.worker_id)) {
-        ivr_fmq_dialog_rollback_send(adapter, command);
+        ivr_control_dialog_rollback_send(adapter, command);
         return IVR_ENOSPC;
     }
     memcpy(routed_command.worker_id, worker.worker_id, worker_id_size + 1);
     status = ivr_room_bridge_send_media_command(adapter->bridge,
                                                 &routed_command);
     if (status != IVR_OK) {
-        ivr_fmq_dialog_rollback_send(adapter, command);
+        ivr_control_dialog_rollback_send(adapter, command);
         return status;
     }
     memcpy(out_worker_id, worker.worker_id, worker_id_size + 1);
     return IVR_OK;
 }
 
-ivr_status_t ivr_fmq_adapter_observe_media_command(
-    const ivr_fmq_adapter_t *adapter, const ivr_media_command_t *command,
+ivr_status_t ivr_control_adapter_observe_media_command(
+    const ivr_control_adapter_t *adapter, const ivr_media_command_t *command,
     iris_resource_observation_t *observation) {
-    ivr_fmq_dialog_route_t *route;
-    ivr_fmq_worker_entry_t *worker;
+    ivr_control_dialog_route_t *route;
+    ivr_control_worker_entry_t *worker;
     uint64_t now_ms;
     if (!adapter || !command || !observation ||
         command->tenant_id[0] == '\0' ||
@@ -428,43 +429,43 @@ ivr_status_t ivr_fmq_adapter_observe_media_command(
         return IVR_EINVAL;
     }
     memset(observation, 0, sizeof(*observation));
-    now_ms = ivr_fmq_now_ms(adapter);
+    now_ms = ivr_control_now_ms(adapter);
     ivr_mutex_lock((ivr_mutex_t *)&adapter->seq_lock);
-    route = ivr_fmq_dialog_find_locked((ivr_fmq_adapter_t *)adapter,
+    route = ivr_control_dialog_find_locked((ivr_control_adapter_t *)adapter,
                                        command->tenant_id,
                                        command->provider_session_id,
                                        command->dialog_id);
     if (!route) {
         observation->state =
-            ivr_fmq_reconcile_required_locked(adapter)
+            ivr_control_reconcile_required_locked(adapter)
                 ? IRIS_RESOURCE_OBSERVATION_UNKNOWN
                 : IRIS_RESOURCE_OBSERVATION_ABSENT;
         ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
         return IVR_OK;
     }
-    if (!ivr_fmq_dialog_identity_matches(route, command)) {
+    if (!ivr_control_dialog_identity_matches(route, command)) {
         observation->state = IRIS_RESOURCE_OBSERVATION_ABSENT;
         ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
         return IVR_OK;
     }
-    worker = ivr_fmq_worker_find_locked((ivr_fmq_adapter_t *)adapter,
+    worker = ivr_control_worker_find_locked((ivr_control_adapter_t *)adapter,
                                         route->worker_id);
     if (!worker ||
         strcmp(worker->value.instance_id, route->worker_instance_id) != 0 ||
         worker->value.connection_generation !=
             route->worker_connection_generation ||
-        ivr_fmq_worker_effective_state(&worker->value, now_ms) ==
-            IVR_FMQ_WORKER_EXPIRED) {
+        ivr_control_worker_effective_state(&worker->value, now_ms) ==
+            IVR_CONTROL_WORKER_EXPIRED) {
         observation->state = IRIS_RESOURCE_OBSERVATION_UNKNOWN;
         ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
         return IVR_OK;
     }
     if ((command->kind == IVR_MEDIA_COMMAND_SESSION_OPEN &&
-         (route->state == IVR_FMQ_DIALOG_ACTIVE ||
-          (route->state == IVR_FMQ_DIALOG_OPENING &&
+         (route->state == IVR_CONTROL_DIALOG_ACTIVE ||
+          (route->state == IVR_CONTROL_DIALOG_OPENING &&
            strcmp(route->transition_command_id, command->message_id) == 0))) ||
         (command->kind == IVR_MEDIA_COMMAND_SESSION_CLOSE &&
-         route->state == IVR_FMQ_DIALOG_CLOSING &&
+         route->state == IVR_CONTROL_DIALOG_CLOSING &&
          strcmp(route->transition_command_id, command->message_id) == 0)) {
         observation->state = IRIS_RESOURCE_OBSERVATION_ACTIVE;
         snprintf(observation->provider_resource_id,
@@ -487,10 +488,10 @@ ivr_status_t ivr_fmq_adapter_observe_media_command(
     return IVR_OK;
 }
 
-ivr_status_t ivr_fmq_adapter_request_inventory(
-    ivr_fmq_adapter_t *adapter,
+ivr_status_t ivr_control_adapter_request_inventory(
+    ivr_control_adapter_t *adapter,
     const ivr_worker_inventory_request_t *request) {
-    ivr_fmq_worker_snapshot_t worker;
+    ivr_control_worker_snapshot_t worker;
     if (!adapter || !adapter->bridge || !request ||
         !request->message_id[0] || !request->worker_id[0] ||
         request->query.limit == 0 ||
@@ -502,11 +503,11 @@ ivr_status_t ivr_fmq_adapter_request_inventory(
         return IVR_EVERSION;
     }
     if (!adapter->inventory_observer.on_inventory_page ||
-        ivr_fmq_adapter_get_worker(adapter, request->worker_id, &worker) !=
+        ivr_control_adapter_get_worker(adapter, request->worker_id, &worker) !=
             IVR_OK ||
-        (worker.state != IVR_FMQ_WORKER_READY &&
-         worker.state != IVR_FMQ_WORKER_DRAINING &&
-         worker.state != IVR_FMQ_WORKER_RECONCILING) ||
+        (worker.state != IVR_CONTROL_WORKER_READY &&
+         worker.state != IVR_CONTROL_WORKER_DRAINING &&
+         worker.state != IVR_CONTROL_WORKER_RECONCILING) ||
         !ivr_room_bridge_worker_available(adapter->bridge,
                                           request->worker_id)) {
         return IVR_ESTATE;
@@ -514,23 +515,23 @@ ivr_status_t ivr_fmq_adapter_request_inventory(
     return ivr_room_bridge_request_inventory(adapter->bridge, request);
 }
 
-static ivr_status_t ivr_fmq_assignment_prepare_leave(
-    ivr_fmq_adapter_t *a, const ivr_room_command_t *command,
-    const char *release_message_id, ivr_fmq_assignment_t *out,
+static ivr_status_t ivr_control_assignment_prepare_leave(
+    ivr_control_adapter_t *a, const ivr_room_command_t *command,
+    const char *release_message_id, ivr_control_assignment_t *out,
     int *needs_release) {
     ivr_status_t rc = IVR_OK;
     *needs_release = 0;
     memset(out, 0, sizeof(*out));
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_assignment_entry_t *assignment =
-        ivr_fmq_assignment_find_call_locked(a, command);
+    ivr_control_assignment_entry_t *assignment =
+        ivr_control_assignment_find_call_locked(a, command);
     if (!assignment ||
-        assignment->value.state == IVR_FMQ_ASSIGNMENT_REJECTED) {
+        assignment->value.state == IVR_CONTROL_ASSIGNMENT_REJECTED) {
         ivr_mutex_unlock(&a->seq_lock);
         return IVR_OK;
     }
-    if (assignment->value.state == IVR_FMQ_ASSIGNMENT_PENDING) {
-        ivr_fmq_worker_entry_t *worker = ivr_fmq_worker_find_locked(
+    if (assignment->value.state == IVR_CONTROL_ASSIGNMENT_PENDING) {
+        ivr_control_worker_entry_t *worker = ivr_control_worker_find_locked(
             a, assignment->value.worker_id);
         if (worker &&
             strcmp(worker->value.instance_id,
@@ -540,7 +541,7 @@ static ivr_status_t ivr_fmq_assignment_prepare_leave(
             worker->value.reserved_sessions > 0) {
             worker->value.reserved_sessions--;
         }
-        assignment->value.state = IVR_FMQ_ASSIGNMENT_REJECTED;
+        assignment->value.state = IVR_CONTROL_ASSIGNMENT_REJECTED;
         assignment->value.status_code = IVR_ECLOSED;
         snprintf(assignment->value.error_code,
                  sizeof(assignment->value.error_code),
@@ -548,15 +549,15 @@ static ivr_status_t ivr_fmq_assignment_prepare_leave(
         snprintf(assignment->value.error_message,
                  sizeof(assignment->value.error_message),
                  "conference.leave cancelled pending dispatch");
-    } else if (assignment->value.state == IVR_FMQ_ASSIGNMENT_ACCEPTED) {
-        uint64_t now_ms = ivr_fmq_now_ms(a);
+    } else if (assignment->value.state == IVR_CONTROL_ASSIGNMENT_ACCEPTED) {
+        uint64_t now_ms = ivr_control_now_ms(a);
         int written = snprintf(assignment->value.release_message_id,
                                sizeof(assignment->value.release_message_id),
                                "%s", release_message_id);
         if (written > 0 &&
             (size_t)written < sizeof(assignment->value.release_message_id) &&
             UINT64_MAX - now_ms >= a->dispatch_deadline_ms) {
-            assignment->value.state = IVR_FMQ_ASSIGNMENT_RELEASING;
+            assignment->value.state = IVR_CONTROL_ASSIGNMENT_RELEASING;
             assignment->value.release_deadline_at_ms =
                 now_ms + a->dispatch_deadline_ms;
             *out = assignment->value;
@@ -571,15 +572,15 @@ static ivr_status_t ivr_fmq_assignment_prepare_leave(
     return rc;
 }
 
-static void ivr_fmq_assignment_rollback_release(
-    ivr_fmq_adapter_t *a, const char *release_message_id) {
+static void ivr_control_assignment_rollback_release(
+    ivr_control_adapter_t *a, const char *release_message_id) {
     ivr_mutex_lock(&a->seq_lock);
     for (uint32_t i = 0; i < a->assignment_capacity; i++) {
-        ivr_fmq_assignment_entry_t *entry = &a->assignments[i];
+        ivr_control_assignment_entry_t *entry = &a->assignments[i];
         if (entry->valid &&
-            entry->value.state == IVR_FMQ_ASSIGNMENT_RELEASING &&
+            entry->value.state == IVR_CONTROL_ASSIGNMENT_RELEASING &&
             strcmp(entry->value.release_message_id, release_message_id) == 0) {
-            entry->value.state = IVR_FMQ_ASSIGNMENT_ACCEPTED;
+            entry->value.state = IVR_CONTROL_ASSIGNMENT_ACCEPTED;
             entry->value.release_message_id[0] = '\0';
             entry->value.release_deadline_at_ms = 0;
             break;
@@ -588,11 +589,11 @@ static void ivr_fmq_assignment_rollback_release(
     ivr_mutex_unlock(&a->seq_lock);
 }
 
-static void ivr_fmq_assignment_remove(ivr_fmq_adapter_t *a,
+static void ivr_control_assignment_remove(ivr_control_adapter_t *a,
                                        const char *message_id) {
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_assignment_entry_t *entry =
-        ivr_fmq_assignment_find_locked(a, message_id);
+    ivr_control_assignment_entry_t *entry =
+        ivr_control_assignment_find_locked(a, message_id);
     if (entry) {
         memset(entry, 0, sizeof(*entry));
         if (a->assignment_count > 0) {
@@ -602,14 +603,14 @@ static void ivr_fmq_assignment_remove(ivr_fmq_adapter_t *a,
     ivr_mutex_unlock(&a->seq_lock);
 }
 
-static ivr_status_t ivr_fmq_assignment_set_committed_fact(
-    ivr_fmq_adapter_t *a, const char *message_id, const char *causation_id,
+static ivr_status_t ivr_control_assignment_set_committed_fact(
+    ivr_control_adapter_t *a, const char *message_id, const char *causation_id,
     uint64_t room_version, uint64_t sequence) {
     ivr_status_t rc = IVR_ESTATE;
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_assignment_entry_t *entry =
-        ivr_fmq_assignment_find_locked(a, message_id);
-    if (entry && entry->value.state == IVR_FMQ_ASSIGNMENT_PENDING &&
+    ivr_control_assignment_entry_t *entry =
+        ivr_control_assignment_find_locked(a, message_id);
+    if (entry && entry->value.state == IVR_CONTROL_ASSIGNMENT_PENDING &&
         room_version > 0 && sequence > 0) {
         snprintf(entry->causation_id, sizeof(entry->causation_id), "%s",
                  causation_id);
@@ -625,7 +626,7 @@ static ivr_status_t ivr_fmq_assignment_set_committed_fact(
 /* aggregate helpers                                                   */
 /* ------------------------------------------------------------------ */
 
-static uint64_t ivr_fmq_room_version(turbo_room_service_t *service,
+static uint64_t ivr_control_room_version(turbo_room_service_t *service,
                                      const char *room_id) {
     turbo_room_summary_t summary;
     if (!service || !room_id ||
@@ -637,7 +638,7 @@ static uint64_t ivr_fmq_room_version(turbo_room_service_t *service,
 
 /* Maps the wire participant_role string to the aggregate role enum.
    Returns 0 for unknown/empty roles (fail fast, never guess). */
-static turbo_participant_role_t ivr_fmq_role_for(const char *role) {
+static turbo_participant_role_t ivr_control_role_for(const char *role) {
     if (!role || role[0] == '\0') {
         return (turbo_participant_role_t)0;
     }
@@ -659,19 +660,19 @@ static turbo_participant_role_t ivr_fmq_role_for(const char *role) {
     return (turbo_participant_role_t)0;
 }
 
-static int ivr_fmq_call_seq_matches(const ivr_fmq_call_seq_t *entry,
+static int ivr_control_call_seq_matches(const ivr_control_call_seq_t *entry,
                                     const ivr_room_command_t *cmd) {
     return entry->valid && entry->call_generation == cmd->call_generation &&
            strcmp(entry->room_id, cmd->room_id) == 0 &&
            strcmp(entry->call_id, cmd->call_id) == 0;
 }
 
-static uint64_t ivr_fmq_seq_current(ivr_fmq_adapter_t *a,
+static uint64_t ivr_control_seq_current(ivr_control_adapter_t *a,
                                     const ivr_room_command_t *cmd) {
     uint64_t seq = 0;
     ivr_mutex_lock(&a->seq_lock);
     for (uint32_t i = 0; i < a->seq_capacity; i++) {
-        if (ivr_fmq_call_seq_matches(&a->seq_entries[i], cmd)) {
+        if (ivr_control_call_seq_matches(&a->seq_entries[i], cmd)) {
             seq = a->seq_entries[i].last_sequence;
             break;
         }
@@ -682,14 +683,14 @@ static uint64_t ivr_fmq_seq_current(ivr_fmq_adapter_t *a,
 
 /* Advance the per-call sequence; returns the new value, or 0 when the bounded
    table is full (the caller fails fast instead of dropping continuity). */
-static uint64_t ivr_fmq_seq_next(ivr_fmq_adapter_t *a,
+static uint64_t ivr_control_seq_next(ivr_control_adapter_t *a,
                                  const ivr_room_command_t *cmd) {
     uint64_t seq = 0;
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_call_seq_t *free_slot = NULL;
+    ivr_control_call_seq_t *free_slot = NULL;
     for (uint32_t i = 0; i < a->seq_capacity; i++) {
-        ivr_fmq_call_seq_t *entry = &a->seq_entries[i];
-        if (ivr_fmq_call_seq_matches(entry, cmd)) {
+        ivr_control_call_seq_t *entry = &a->seq_entries[i];
+        if (ivr_control_call_seq_matches(entry, cmd)) {
             entry->last_sequence++;
             seq = entry->last_sequence;
             break;
@@ -717,12 +718,12 @@ static uint64_t ivr_fmq_seq_next(ivr_fmq_adapter_t *a,
 /* Roll back a sequence reserved by a command whose aggregate mutation was
    compensated before any domain event was published. The bridge serializes
    command handling, so no later command for this call can overtake it. */
-static void ivr_fmq_seq_rollback(ivr_fmq_adapter_t *a,
+static void ivr_control_seq_rollback(ivr_control_adapter_t *a,
                                  const ivr_room_command_t *cmd) {
     ivr_mutex_lock(&a->seq_lock);
     for (uint32_t i = 0; i < a->seq_capacity; i++) {
-        ivr_fmq_call_seq_t *entry = &a->seq_entries[i];
-        if (!ivr_fmq_call_seq_matches(entry, cmd)) {
+        ivr_control_call_seq_t *entry = &a->seq_entries[i];
+        if (!ivr_control_call_seq_matches(entry, cmd)) {
             continue;
         }
         if (entry->last_sequence > 1) {
@@ -742,13 +743,13 @@ static void ivr_fmq_seq_rollback(ivr_fmq_adapter_t *a,
 /* authoritative bounded worker registry                              */
 /* ------------------------------------------------------------------ */
 
-static uint64_t ivr_fmq_now_ms(const ivr_fmq_adapter_t *a) {
+static uint64_t ivr_control_now_ms(const ivr_control_adapter_t *a) {
     return a->clock.now_ms ? a->clock.now_ms(a->clock.context)
                            : salts_monotonic_ms();
 }
 
-static ivr_fmq_worker_entry_t *ivr_fmq_worker_find_locked(
-    ivr_fmq_adapter_t *a, const char *worker_id) {
+static ivr_control_worker_entry_t *ivr_control_worker_find_locked(
+    ivr_control_adapter_t *a, const char *worker_id) {
     for (uint32_t i = 0; i < a->worker_capacity; i++) {
         if (a->workers[i].valid &&
             strcmp(a->workers[i].value.worker_id, worker_id) == 0) {
@@ -758,13 +759,13 @@ static ivr_fmq_worker_entry_t *ivr_fmq_worker_find_locked(
     return NULL;
 }
 
-static ivr_fmq_worker_state_t ivr_fmq_worker_effective_state(
-    const ivr_fmq_worker_snapshot_t *worker, uint64_t now_ms) {
-    return worker->lease_expires_at_ms <= now_ms ? IVR_FMQ_WORKER_EXPIRED
+static ivr_control_worker_state_t ivr_control_worker_effective_state(
+    const ivr_control_worker_snapshot_t *worker, uint64_t now_ms) {
+    return worker->lease_expires_at_ms <= now_ms ? IVR_CONTROL_WORKER_EXPIRED
                                                  : worker->state;
 }
 
-static int ivr_fmq_capability_has(const char *csv, const char *wanted) {
+static int ivr_control_capability_has(const char *csv, const char *wanted) {
     const char *p = csv;
     size_t wanted_len;
     if (!csv || !wanted || wanted[0] == '\0') {
@@ -790,7 +791,7 @@ static int ivr_fmq_capability_has(const char *csv, const char *wanted) {
 /* worker scope / content capability ACL (P0-04.4)                     */
 /* ------------------------------------------------------------------ */
 
-static ivr_fmq_acl_entry_t *ivr_fmq_acl_find_locked(ivr_fmq_adapter_t *a,
+static ivr_control_acl_entry_t *ivr_control_acl_find_locked(ivr_control_adapter_t *a,
                                                      const char *worker_id) {
     uint32_t i;
     if (!a->acls || !worker_id) {
@@ -808,16 +809,16 @@ static ivr_fmq_acl_entry_t *ivr_fmq_acl_find_locked(ivr_fmq_adapter_t *a,
 /* 1 when the worker is authorized for the room/call scope and the content
    package. With no configured ACL every registered worker stays allowed
    (legacy behavior); with an ACL, an unlisted worker is denied. */
-static int ivr_fmq_acl_worker_allows(const ivr_fmq_adapter_t *a,
+static int ivr_control_acl_worker_allows(const ivr_control_adapter_t *a,
                                      const char *worker_id,
                                      const char *room_id,
                                      const char *call_id,
                                      const char *content_package) {
-    const ivr_fmq_acl_entry_t *entry;
+    const ivr_control_acl_entry_t *entry;
     if (a->acl_count == 0u) {
         return 1;
     }
-    entry = ivr_fmq_acl_find_locked((ivr_fmq_adapter_t *)a, worker_id);
+    entry = ivr_control_acl_find_locked((ivr_control_adapter_t *)a, worker_id);
     if (!entry) {
         return 0;
     }
@@ -833,7 +834,7 @@ static int ivr_fmq_acl_worker_allows(const ivr_fmq_adapter_t *a,
 /* Authorize one room-scoped command. Fills *result with IVR_EAUTH and an
    explicit reason when denied; the authoritative room version is never
    advanced by a denied command. Returns 1 when authorized. */
-static int ivr_fmq_adapter_authorize(ivr_fmq_adapter_t *a,
+static int ivr_control_adapter_authorize(ivr_control_adapter_t *a,
                                      const ivr_room_command_t *command,
                                      ivr_room_command_result_t *result) {
     int allowed;
@@ -847,7 +848,7 @@ static int ivr_fmq_adapter_authorize(ivr_fmq_adapter_t *a,
         a->acl_rejects++;
         return 0;
     }
-    allowed = ivr_fmq_acl_worker_allows(
+    allowed = ivr_control_acl_worker_allows(
         a, command->worker_id, command->room_id, command->call_id,
         a->content_package);
     if (!allowed) {
@@ -862,33 +863,33 @@ static int ivr_fmq_adapter_authorize(ivr_fmq_adapter_t *a,
 }
 
 /* 1 when the worker registry record satisfies the ACL for a dispatch. */
-static int ivr_fmq_acl_worker_allows_snapshot(
-    const ivr_fmq_adapter_t *a, const ivr_fmq_worker_snapshot_t *worker,
+static int ivr_control_acl_worker_allows_snapshot(
+    const ivr_control_adapter_t *a, const ivr_control_worker_snapshot_t *worker,
     const char *room_id, const char *call_id, const char *content_package) {
-    return ivr_fmq_acl_worker_allows(a, worker->worker_id, room_id, call_id,
+    return ivr_control_acl_worker_allows(a, worker->worker_id, room_id, call_id,
                                      content_package);
 }
-static int ivr_fmq_worker_health_ready(
-    const ivr_fmq_worker_snapshot_t *worker) {
+static int ivr_control_worker_health_ready(
+    const ivr_control_worker_snapshot_t *worker) {
     /* V1 remains usable for compatibility/shadow deployments. V2 must
        explicitly prove that its active dependencies are ready. */
     return worker->protocol_version != 2u ||
            (worker->health_generation != 0
                 ? worker->health_ready != 0
-                : ivr_fmq_capability_has(worker->capabilities, "health.ready"));
+                : ivr_control_capability_has(worker->capabilities, "health.ready"));
 }
 
-static int ivr_fmq_worker_command_is_v2(const ivr_room_command_t *command) {
+static int ivr_control_worker_command_is_v2(const ivr_room_command_t *command) {
     return strcmp(command->command, "worker.sync.v2") == 0 ||
            strcmp(command->command, "worker.heartbeat") == 0;
 }
 
-static ivr_status_t ivr_fmq_worker_command_validate(
-    const ivr_fmq_adapter_t *a, const ivr_room_command_t *command) {
+static ivr_status_t ivr_control_worker_command_validate(
+    const ivr_control_adapter_t *a, const ivr_room_command_t *command) {
     if (!command->worker_id[0]) {
         return IVR_EINVAL;
     }
-    if (!ivr_fmq_worker_command_is_v2(command)) {
+    if (!ivr_control_worker_command_is_v2(command)) {
         return strcmp(command->command, "worker.sync") == 0 ? IVR_OK
                                                              : IVR_EINVAL;
     }
@@ -905,15 +906,15 @@ static ivr_status_t ivr_fmq_worker_command_validate(
     return IVR_OK;
 }
 
-static void ivr_fmq_worker_fill_from_command(
-    ivr_fmq_adapter_t *a, ivr_fmq_worker_snapshot_t *worker,
+static void ivr_control_worker_fill_from_command(
+    ivr_control_adapter_t *a, ivr_control_worker_snapshot_t *worker,
     const ivr_room_command_t *command, uint64_t now_ms) {
     memset(worker, 0, sizeof(*worker));
     snprintf(worker->worker_id, sizeof(worker->worker_id), "%s",
              command->worker_id);
     worker->protocol_version =
-        ivr_fmq_worker_command_is_v2(command) ? 2u : 1u;
-    if (ivr_fmq_worker_command_is_v2(command)) {
+        ivr_control_worker_command_is_v2(command) ? 2u : 1u;
+    if (ivr_control_worker_command_is_v2(command)) {
         snprintf(worker->instance_id, sizeof(worker->instance_id), "%s",
                  command->instance_id);
         worker->connection_generation = command->connection_generation;
@@ -925,43 +926,43 @@ static void ivr_fmq_worker_fill_from_command(
         snprintf(worker->capabilities, sizeof(worker->capabilities), "%s",
                  command->capabilities);
         worker->state = command->draining
-                            ? IVR_FMQ_WORKER_DRAINING
-                            : (ivr_fmq_worker_health_ready(worker)
-                                   ? IVR_FMQ_WORKER_READY
-                                   : IVR_FMQ_WORKER_SYNCED);
+                            ? IVR_CONTROL_WORKER_DRAINING
+                            : (ivr_control_worker_health_ready(worker)
+                                   ? IVR_CONTROL_WORKER_READY
+                                   : IVR_CONTROL_WORKER_SYNCED);
     } else {
         snprintf(worker->instance_id, sizeof(worker->instance_id),
                  "legacy:%s", command->worker_id);
         worker->connection_generation = 1;
         worker->max_sessions = a->legacy_worker_max_sessions;
-        worker->state = IVR_FMQ_WORKER_READY;
+        worker->state = IVR_CONTROL_WORKER_READY;
         snprintf(worker->capabilities, sizeof(worker->capabilities), "%s",
                  "legacy-v1");
     }
     worker->lease_expires_at_ms = now_ms + a->worker_lease_ms;
 }
 
-static void ivr_fmq_worker_require_reconcile(
-    ivr_fmq_worker_entry_t *entry) {
+static void ivr_control_worker_require_reconcile(
+    ivr_control_worker_entry_t *entry) {
     entry->post_reconcile_state = entry->value.state;
-    entry->value.state = IVR_FMQ_WORKER_RECONCILING;
+    entry->value.state = IVR_CONTROL_WORKER_RECONCILING;
     entry->value.requires_reconcile = 1;
 }
 
-static ivr_status_t ivr_fmq_adapter_register_worker(
-    ivr_fmq_adapter_t *a, const ivr_room_command_t *command) {
-    ivr_status_t rc = ivr_fmq_worker_command_validate(a, command);
+static ivr_status_t ivr_control_adapter_register_worker(
+    ivr_control_adapter_t *a, const ivr_room_command_t *command) {
+    ivr_status_t rc = ivr_control_worker_command_validate(a, command);
     uint64_t now_ms;
     if (rc != IVR_OK) {
         return rc;
     }
-    now_ms = ivr_fmq_now_ms(a);
+    now_ms = ivr_control_now_ms(a);
     if (UINT64_MAX - now_ms < a->worker_lease_ms) {
         return IVR_ESTATE;
     }
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_worker_entry_t *entry =
-        ivr_fmq_worker_find_locked(a, command->worker_id);
+    ivr_control_worker_entry_t *entry =
+        ivr_control_worker_find_locked(a, command->worker_id);
     if (strcmp(command->command, "worker.heartbeat") == 0) {
         if (!entry || strcmp(entry->value.instance_id, command->instance_id) != 0 ||
             entry->value.connection_generation !=
@@ -979,33 +980,42 @@ static ivr_status_t ivr_fmq_adapter_register_worker(
                  sizeof(entry->value.capabilities), "%s",
                  command->capabilities);
         entry->value.state = command->draining
-                                 ? IVR_FMQ_WORKER_DRAINING
-                                 : (ivr_fmq_worker_health_ready(&entry->value)
-                                        ? IVR_FMQ_WORKER_READY
-                                         : IVR_FMQ_WORKER_SYNCED);
+                                 ? IVR_CONTROL_WORKER_DRAINING
+                                 : (ivr_control_worker_health_ready(&entry->value)
+                                        ? IVR_CONTROL_WORKER_READY
+                                         : IVR_CONTROL_WORKER_SYNCED);
         entry->post_reconcile_state = entry->value.state;
         if (entry->value.requires_reconcile) {
-            entry->value.state = IVR_FMQ_WORKER_RECONCILING;
+            entry->value.state = IVR_CONTROL_WORKER_RECONCILING;
         }
         ivr_mutex_unlock(&a->seq_lock);
         return IVR_OK;
     }
     if (entry) {
+        int is_v2 = ivr_control_worker_command_is_v2(command);
+        int same_instance =
+            is_v2 &&
+            strcmp(entry->value.instance_id, command->instance_id) == 0;
         int same_generation =
             strcmp(entry->value.instance_id,
-                   ivr_fmq_worker_command_is_v2(command)
-                       ? command->instance_id
-                       : entry->value.instance_id) == 0 &&
-            (!ivr_fmq_worker_command_is_v2(command) ||
+                   is_v2 ? command->instance_id : entry->value.instance_id) ==
+                0 &&
+            (!is_v2 ||
              entry->value.connection_generation ==
                  command->connection_generation);
+        if (same_instance &&
+            command->connection_generation <
+                entry->value.connection_generation) {
+            ivr_mutex_unlock(&a->seq_lock);
+            return IVR_EVERSION;
+        }
         if (same_generation) {
-            if (ivr_fmq_worker_command_is_v2(command) &&
+            if (is_v2 &&
                 entry->value.max_sessions != command->max_sessions) {
                 ivr_mutex_unlock(&a->seq_lock);
                 return IVR_EVERSION;
             }
-            if (ivr_fmq_worker_command_is_v2(command)) {
+            if (is_v2) {
                 entry->value.active_sessions = command->active_sessions;
                 entry->value.health_generation = command->health_generation;
                 entry->value.health_ready = command->health_ready;
@@ -1013,39 +1023,51 @@ static ivr_status_t ivr_fmq_adapter_register_worker(
                          sizeof(entry->value.capabilities), "%s",
                          command->capabilities);
                 entry->value.state = command->draining
-                                         ? IVR_FMQ_WORKER_DRAINING
-                                         : (ivr_fmq_worker_health_ready(
+                                         ? IVR_CONTROL_WORKER_DRAINING
+                                         : (ivr_control_worker_health_ready(
                                                 &entry->value)
-                                                ? IVR_FMQ_WORKER_READY
-                                                 : IVR_FMQ_WORKER_SYNCED);
+                                                ? IVR_CONTROL_WORKER_READY
+                                                 : IVR_CONTROL_WORKER_SYNCED);
                 entry->post_reconcile_state = entry->value.state;
                 if (entry->value.requires_reconcile) {
-                    entry->value.state = IVR_FMQ_WORKER_RECONCILING;
+                    entry->value.state = IVR_CONTROL_WORKER_RECONCILING;
                 }
             } else {
                 entry->value.state = command->draining
-                                         ? IVR_FMQ_WORKER_DRAINING
-                                         : IVR_FMQ_WORKER_READY;
+                                         ? IVR_CONTROL_WORKER_DRAINING
+                                         : IVR_CONTROL_WORKER_READY;
             }
             entry->value.lease_expires_at_ms = now_ms + a->worker_lease_ms;
             entry->lease_expiry_counted = 0;
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_OK;
         }
+        if (same_instance &&
+            command->connection_generation >
+                entry->value.connection_generation) {
+            ivr_control_worker_fill_from_command(a, &entry->value, command,
+                                                 now_ms);
+            entry->post_reconcile_state = entry->value.state;
+            if (command->active_sessions != 0) {
+                ivr_control_worker_require_reconcile(entry);
+            }
+            entry->lease_expiry_counted = 0;
+            ivr_mutex_unlock(&a->seq_lock);
+            return IVR_OK;
+        }
         if (entry->value.active_sessions != 0 ||
             entry->value.reserved_sessions != 0 ||
-            (ivr_fmq_worker_effective_state(&entry->value, now_ms) !=
-                 IVR_FMQ_WORKER_EXPIRED &&
+            (ivr_control_worker_effective_state(&entry->value, now_ms) !=
+                 IVR_CONTROL_WORKER_EXPIRED &&
              (!a->bridge || ivr_room_bridge_worker_available(
                                 a->bridge, command->worker_id)))) {
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_ESTATE;
         }
-        ivr_fmq_worker_fill_from_command(a, &entry->value, command, now_ms);
+        ivr_control_worker_fill_from_command(a, &entry->value, command, now_ms);
         entry->post_reconcile_state = entry->value.state;
-        if (ivr_fmq_worker_command_is_v2(command) &&
-            command->active_sessions != 0) {
-            ivr_fmq_worker_require_reconcile(entry);
+        if (is_v2 && command->active_sessions != 0) {
+            ivr_control_worker_require_reconcile(entry);
         }
         entry->lease_expiry_counted = 0;
         ivr_mutex_unlock(&a->seq_lock);
@@ -1055,20 +1077,20 @@ static ivr_status_t ivr_fmq_adapter_register_worker(
         if (!a->workers[i].valid ||
             (a->workers[i].value.active_sessions == 0 &&
              a->workers[i].value.reserved_sessions == 0 &&
-             (ivr_fmq_worker_effective_state(&a->workers[i].value, now_ms) ==
-                  IVR_FMQ_WORKER_EXPIRED ||
+             (ivr_control_worker_effective_state(&a->workers[i].value, now_ms) ==
+                  IVR_CONTROL_WORKER_EXPIRED ||
               (a->bridge && !ivr_room_bridge_worker_available(
                                 a->bridge,
                                 a->workers[i].value.worker_id))))) {
             int was_valid = a->workers[i].valid;
             a->workers[i].valid = 1;
-            ivr_fmq_worker_fill_from_command(a, &a->workers[i].value, command,
+            ivr_control_worker_fill_from_command(a, &a->workers[i].value, command,
                                              now_ms);
             a->workers[i].post_reconcile_state =
                 a->workers[i].value.state;
-            if (ivr_fmq_worker_command_is_v2(command) &&
+            if (ivr_control_worker_command_is_v2(command) &&
                 command->active_sessions != 0) {
-                ivr_fmq_worker_require_reconcile(&a->workers[i]);
+                ivr_control_worker_require_reconcile(&a->workers[i]);
             }
             a->workers[i].lease_expiry_counted = 0;
             if (!was_valid) {
@@ -1085,27 +1107,27 @@ static ivr_status_t ivr_fmq_adapter_register_worker(
     return IVR_ENOSPC;
 }
 
-ivr_status_t ivr_fmq_adapter_get_worker(
-    const ivr_fmq_adapter_t *adapter, const char *worker_id,
-    ivr_fmq_worker_snapshot_t *out) {
+ivr_status_t ivr_control_adapter_get_worker(
+    const ivr_control_adapter_t *adapter, const char *worker_id,
+    ivr_control_worker_snapshot_t *out) {
     if (!adapter || !worker_id || !out) {
         return IVR_EINVAL;
     }
     ivr_mutex_lock((ivr_mutex_t *)&adapter->seq_lock);
-    const ivr_fmq_worker_entry_t *entry = ivr_fmq_worker_find_locked(
-        (ivr_fmq_adapter_t *)adapter, worker_id);
+    const ivr_control_worker_entry_t *entry = ivr_control_worker_find_locked(
+        (ivr_control_adapter_t *)adapter, worker_id);
     if (!entry) {
         ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
         return IVR_ESTATE;
     }
     *out = entry->value;
-    out->state = ivr_fmq_worker_effective_state(out, ivr_fmq_now_ms(adapter));
+    out->state = ivr_control_worker_effective_state(out, ivr_control_now_ms(adapter));
     ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
     return IVR_OK;
 }
 
-ivr_status_t ivr_fmq_adapter_list_workers(
-    const ivr_fmq_adapter_t *adapter, ivr_fmq_worker_snapshot_t *out_workers,
+ivr_status_t ivr_control_adapter_list_workers(
+    const ivr_control_adapter_t *adapter, ivr_control_worker_snapshot_t *out_workers,
     uint32_t capacity, uint32_t *out_count, uint32_t *out_total) {
     uint32_t count = 0;
     uint64_t now_ms;
@@ -1115,7 +1137,7 @@ ivr_status_t ivr_fmq_adapter_list_workers(
     }
     *out_count = 0;
     *out_total = 0;
-    now_ms = ivr_fmq_now_ms(adapter);
+    now_ms = ivr_control_now_ms(adapter);
     ivr_mutex_lock((ivr_mutex_t *)&adapter->seq_lock);
     for (uint32_t i = 0; i < adapter->worker_capacity; ++i) {
         if (adapter->workers[i].valid) ++count;
@@ -1130,7 +1152,7 @@ ivr_status_t ivr_fmq_adapter_list_workers(
         if (!adapter->workers[i].valid) continue;
         out_workers[count] = adapter->workers[i].value;
         out_workers[count].state =
-            ivr_fmq_worker_effective_state(&out_workers[count], now_ms);
+            ivr_control_worker_effective_state(&out_workers[count], now_ms);
         ++count;
     }
     ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
@@ -1138,18 +1160,18 @@ ivr_status_t ivr_fmq_adapter_list_workers(
     return IVR_OK;
 }
 
-int ivr_fmq_adapter_reconcile_required(
-    const ivr_fmq_adapter_t *adapter) {
+int ivr_control_adapter_reconcile_required(
+    const ivr_control_adapter_t *adapter) {
     int required;
     if (!adapter) return 1;
     ivr_mutex_lock((ivr_mutex_t *)&adapter->seq_lock);
-    required = ivr_fmq_reconcile_required_locked(adapter);
+    required = ivr_control_reconcile_required_locked(adapter);
     ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
     return required;
 }
 
-static int ivr_fmq_reconcile_required_locked(
-    const ivr_fmq_adapter_t *adapter) {
+static int ivr_control_reconcile_required_locked(
+    const ivr_control_adapter_t *adapter) {
     for (uint32_t i = 0; i < adapter->worker_capacity; ++i) {
         if (adapter->workers[i].valid &&
             adapter->workers[i].value.requires_reconcile) {
@@ -1159,11 +1181,11 @@ static int ivr_fmq_reconcile_required_locked(
     return 0;
 }
 
-ivr_status_t ivr_fmq_adapter_rebind_dialog(
-    ivr_fmq_adapter_t *adapter,
+ivr_status_t ivr_control_adapter_rebind_dialog(
+    ivr_control_adapter_t *adapter,
     const ivr_worker_inventory_record_t *record) {
-    ivr_fmq_dialog_route_t *free_route = NULL;
-    ivr_fmq_worker_entry_t *worker;
+    ivr_control_dialog_route_t *free_route = NULL;
+    ivr_control_worker_entry_t *worker;
     uint32_t bound_count = 0;
     uint64_t now_ms;
     if (!adapter || !record || !record->worker_id[0] ||
@@ -1174,23 +1196,23 @@ ivr_status_t ivr_fmq_adapter_rebind_dialog(
         record->state != IVR_WORKER_RESOURCE_ACTIVE || !record->rebindable) {
         return IVR_EINVAL;
     }
-    now_ms = ivr_fmq_now_ms(adapter);
+    now_ms = ivr_control_now_ms(adapter);
     ivr_mutex_lock(&adapter->seq_lock);
-    worker = ivr_fmq_worker_find_locked(adapter, record->worker_id);
+    worker = ivr_control_worker_find_locked(adapter, record->worker_id);
     if (!worker || !worker->value.requires_reconcile ||
-        worker->value.state != IVR_FMQ_WORKER_RECONCILING ||
-        ivr_fmq_worker_effective_state(&worker->value, now_ms) ==
-            IVR_FMQ_WORKER_EXPIRED ||
+        worker->value.state != IVR_CONTROL_WORKER_RECONCILING ||
+        ivr_control_worker_effective_state(&worker->value, now_ms) ==
+            IVR_CONTROL_WORKER_EXPIRED ||
         strcmp(worker->value.instance_id, record->worker_instance_id) != 0 ||
         worker->value.connection_generation != record->worker_epoch ||
-        !ivr_fmq_acl_worker_allows_snapshot(
+        !ivr_control_acl_worker_allows_snapshot(
             adapter, &worker->value, record->room_id, record->call_id,
             adapter->content_package)) {
         ivr_mutex_unlock(&adapter->seq_lock);
         return IVR_EVERSION;
     }
     for (uint32_t i = 0; i < adapter->dialog_capacity; ++i) {
-        ivr_fmq_dialog_route_t *route = &adapter->dialogs[i];
+        ivr_control_dialog_route_t *route = &adapter->dialogs[i];
         if (!route->valid) {
             if (!free_route) free_route = route;
             continue;
@@ -1205,7 +1227,7 @@ ivr_status_t ivr_fmq_adapter_rebind_dialog(
             strcmp(route->provider_session_id,
                    record->provider_session_id) == 0 &&
             strcmp(route->dialog_id, record->dialog_id) == 0) {
-            int exact = route->state == IVR_FMQ_DIALOG_ACTIVE &&
+            int exact = route->state == IVR_CONTROL_DIALOG_ACTIVE &&
                         route->call_generation == record->call_generation &&
                         strcmp(route->room_id, record->room_id) == 0 &&
                         strcmp(route->call_id, record->call_id) == 0 &&
@@ -1257,7 +1279,7 @@ ivr_status_t ivr_fmq_adapter_rebind_dialog(
     snprintf(free_route->active_input_id,
              sizeof(free_route->active_input_id), "%s", record->input_id);
     free_route->active_input_generation = record->input_generation;
-    free_route->state = IVR_FMQ_DIALOG_ACTIVE;
+    free_route->state = IVR_CONTROL_DIALOG_ACTIVE;
     free_route->valid = 1;
     ++adapter->dialog_count;
     if (adapter->dialog_count > adapter->dialog_high_water) {
@@ -1267,26 +1289,26 @@ ivr_status_t ivr_fmq_adapter_rebind_dialog(
     return IVR_OK;
 }
 
-ivr_status_t ivr_fmq_adapter_complete_worker_reconcile(
-    ivr_fmq_adapter_t *adapter, const char *worker_id,
+ivr_status_t ivr_control_adapter_complete_worker_reconcile(
+    ivr_control_adapter_t *adapter, const char *worker_id,
     const char *worker_instance_id, uint64_t worker_epoch) {
-    ivr_fmq_worker_entry_t *worker;
+    ivr_control_worker_entry_t *worker;
     uint32_t bound_count = 0;
     if (!adapter || !worker_id || !worker_id[0] || !worker_instance_id ||
         !worker_instance_id[0] || worker_epoch == 0) {
         return IVR_EINVAL;
     }
     ivr_mutex_lock(&adapter->seq_lock);
-    worker = ivr_fmq_worker_find_locked(adapter, worker_id);
+    worker = ivr_control_worker_find_locked(adapter, worker_id);
     if (!worker || !worker->value.requires_reconcile ||
-        worker->value.state != IVR_FMQ_WORKER_RECONCILING ||
+        worker->value.state != IVR_CONTROL_WORKER_RECONCILING ||
         strcmp(worker->value.instance_id, worker_instance_id) != 0 ||
         worker->value.connection_generation != worker_epoch) {
         ivr_mutex_unlock(&adapter->seq_lock);
         return IVR_EVERSION;
     }
     for (uint32_t i = 0; i < adapter->dialog_capacity; ++i) {
-        const ivr_fmq_dialog_route_t *route = &adapter->dialogs[i];
+        const ivr_control_dialog_route_t *route = &adapter->dialogs[i];
         if (route->valid && strcmp(route->worker_id, worker_id) == 0 &&
             strcmp(route->worker_instance_id, worker_instance_id) == 0 &&
             route->worker_connection_generation == worker_epoch) {
@@ -1304,13 +1326,13 @@ ivr_status_t ivr_fmq_adapter_complete_worker_reconcile(
     return IVR_OK;
 }
 
-ivr_status_t ivr_fmq_adapter_close_orphan(
-    ivr_fmq_adapter_t *adapter,
+ivr_status_t ivr_control_adapter_close_orphan(
+    ivr_control_adapter_t *adapter,
     const ivr_worker_inventory_record_t *record, const char *message_id,
     uint64_t deadline_timeout_ms) {
     ivr_worker_inventory_record_t adopted;
     ivr_media_command_t command;
-    ivr_fmq_dialog_route_t *route;
+    ivr_control_dialog_route_t *route;
     char worker_id[128];
     ivr_status_t status;
     if (!adapter || !record || !message_id || !message_id[0] ||
@@ -1321,14 +1343,14 @@ ivr_status_t ivr_fmq_adapter_close_orphan(
     adopted = *record;
     adopted.state = IVR_WORKER_RESOURCE_ACTIVE;
     adopted.rebindable = 1;
-    status = ivr_fmq_adapter_rebind_dialog(adapter, &adopted);
+    status = ivr_control_adapter_rebind_dialog(adapter, &adopted);
     if (status != IVR_OK) return status;
 
     ivr_mutex_lock(&adapter->seq_lock);
-    route = ivr_fmq_dialog_find_locked(
+    route = ivr_control_dialog_find_locked(
         adapter, record->tenant_id, record->provider_session_id,
         record->dialog_id);
-    if (!route || route->state != IVR_FMQ_DIALOG_ACTIVE ||
+    if (!route || route->state != IVR_CONTROL_DIALOG_ACTIVE ||
         strcmp(route->worker_id, record->worker_id) != 0 ||
         strcmp(route->worker_instance_id, record->worker_instance_id) != 0 ||
         route->worker_connection_generation != record->worker_epoch) {
@@ -1352,28 +1374,28 @@ ivr_status_t ivr_fmq_adapter_close_orphan(
     command.operation_generation = record->operation_generation + 1u;
     command.deadline_timeout_ms = deadline_timeout_ms;
     command.kind = IVR_MEDIA_COMMAND_SESSION_CLOSE;
-    return ivr_fmq_adapter_send_media_command(
+    return ivr_control_adapter_send_media_command(
         adapter, &command, worker_id, sizeof(worker_id));
 }
 
-int ivr_fmq_adapter_worker_registered(const ivr_fmq_adapter_t *adapter,
+int ivr_control_adapter_worker_registered(const ivr_control_adapter_t *adapter,
                                       const char *worker_id) {
-    ivr_fmq_worker_snapshot_t worker;
-    if (ivr_fmq_adapter_get_worker(adapter, worker_id, &worker) != IVR_OK ||
-        (worker.state != IVR_FMQ_WORKER_READY &&
-         worker.state != IVR_FMQ_WORKER_DRAINING)) {
+    ivr_control_worker_snapshot_t worker;
+    if (ivr_control_adapter_get_worker(adapter, worker_id, &worker) != IVR_OK ||
+        (worker.state != IVR_CONTROL_WORKER_READY &&
+         worker.state != IVR_CONTROL_WORKER_DRAINING)) {
         return 0;
     }
     return !adapter->bridge ||
            ivr_room_bridge_worker_available(adapter->bridge, worker_id);
 }
 
-static int ivr_fmq_adapter_pick_worker(ivr_fmq_adapter_t *a,
+static int ivr_control_adapter_pick_worker(ivr_control_adapter_t *a,
                                        const char *room_id,
                                        const char *call_id,
                                        const char *content_package,
-                                       ivr_fmq_worker_snapshot_t *out) {
-    uint64_t now_ms = ivr_fmq_now_ms(a);
+                                       ivr_control_worker_snapshot_t *out) {
+    uint64_t now_ms = ivr_control_now_ms(a);
     ivr_mutex_lock(&a->seq_lock);
     if (a->worker_count == 0) {
         ivr_mutex_unlock(&a->seq_lock);
@@ -1382,14 +1404,14 @@ static int ivr_fmq_adapter_pick_worker(ivr_fmq_adapter_t *a,
     uint32_t start = a->next_worker_index % a->worker_capacity;
     for (uint32_t offset = 0; offset < a->worker_capacity; offset++) {
         uint32_t idx = (start + offset) % a->worker_capacity;
-        ivr_fmq_worker_entry_t *entry = &a->workers[idx];
+        ivr_control_worker_entry_t *entry = &a->workers[idx];
         if (!entry->valid ||
-            ivr_fmq_worker_effective_state(&entry->value, now_ms) !=
-                IVR_FMQ_WORKER_READY ||
-            !ivr_fmq_worker_health_ready(&entry->value) ||
+            ivr_control_worker_effective_state(&entry->value, now_ms) !=
+                IVR_CONTROL_WORKER_READY ||
+            !ivr_control_worker_health_ready(&entry->value) ||
             entry->value.active_sessions + entry->value.reserved_sessions >=
                 entry->value.max_sessions ||
-            !ivr_fmq_acl_worker_allows_snapshot(
+            !ivr_control_acl_worker_allows_snapshot(
                 a, &entry->value, room_id, call_id, content_package) ||
             (a->bridge && !ivr_room_bridge_worker_available(
                               a->bridge, entry->value.worker_id))) {
@@ -1405,12 +1427,12 @@ static int ivr_fmq_adapter_pick_worker(ivr_fmq_adapter_t *a,
     return 0;
 }
 
-static ivr_fmq_dialog_route_t *ivr_fmq_dialog_find_locked(
-    ivr_fmq_adapter_t *adapter, const char *tenant_id,
+static ivr_control_dialog_route_t *ivr_control_dialog_find_locked(
+    ivr_control_adapter_t *adapter, const char *tenant_id,
     const char *provider_session_id,
     const char *dialog_id) {
     for (uint32_t i = 0; i < adapter->dialog_capacity; ++i) {
-        ivr_fmq_dialog_route_t *route = &adapter->dialogs[i];
+        ivr_control_dialog_route_t *route = &adapter->dialogs[i];
         if (route->valid && strcmp(route->tenant_id, tenant_id) == 0 &&
             strcmp(route->provider_session_id, provider_session_id) == 0 &&
             strcmp(route->dialog_id, dialog_id) == 0) {
@@ -1420,22 +1442,22 @@ static ivr_fmq_dialog_route_t *ivr_fmq_dialog_find_locked(
     return NULL;
 }
 
-static int ivr_fmq_dialog_identity_matches(
-    const ivr_fmq_dialog_route_t *route,
+static int ivr_control_dialog_identity_matches(
+    const ivr_control_dialog_route_t *route,
     const ivr_media_command_t *command) {
     return route->call_generation == command->call_generation &&
            strcmp(route->room_id, command->room_id) == 0 &&
            strcmp(route->call_id, command->call_id) == 0;
 }
 
-static ivr_status_t ivr_fmq_dialog_reserve_open_locked(
-    ivr_fmq_adapter_t *adapter, const ivr_media_command_t *command,
-    ivr_fmq_worker_snapshot_t *out_worker) {
-    ivr_fmq_dialog_route_t *route = NULL;
-    uint64_t now_ms = ivr_fmq_now_ms(adapter);
+static ivr_status_t ivr_control_dialog_reserve_open_locked(
+    ivr_control_adapter_t *adapter, const ivr_media_command_t *command,
+    ivr_control_worker_snapshot_t *out_worker) {
+    ivr_control_dialog_route_t *route = NULL;
+    uint64_t now_ms = ivr_control_now_ms(adapter);
     uint32_t start;
 
-    if (ivr_fmq_dialog_find_locked(adapter, command->tenant_id,
+    if (ivr_control_dialog_find_locked(adapter, command->tenant_id,
                                    command->provider_session_id,
                                    command->dialog_id)) {
         return IVR_ESTATE;
@@ -1453,14 +1475,14 @@ static ivr_status_t ivr_fmq_dialog_reserve_open_locked(
     start = adapter->next_worker_index % adapter->worker_capacity;
     for (uint32_t offset = 0; offset < adapter->worker_capacity; ++offset) {
         uint32_t index = (start + offset) % adapter->worker_capacity;
-        ivr_fmq_worker_entry_t *worker = &adapter->workers[index];
+        ivr_control_worker_entry_t *worker = &adapter->workers[index];
         if (!worker->valid || worker->value.protocol_version != 2u ||
-            ivr_fmq_worker_effective_state(&worker->value, now_ms) !=
-                IVR_FMQ_WORKER_READY ||
-            !ivr_fmq_worker_health_ready(&worker->value) ||
+            ivr_control_worker_effective_state(&worker->value, now_ms) !=
+                IVR_CONTROL_WORKER_READY ||
+            !ivr_control_worker_health_ready(&worker->value) ||
             worker->value.active_sessions + worker->value.reserved_sessions >=
                 worker->value.max_sessions ||
-            !ivr_fmq_acl_worker_allows_snapshot(
+            !ivr_control_acl_worker_allows_snapshot(
                 adapter, &worker->value, command->room_id, command->call_id,
                 adapter->content_package) ||
             (adapter->bridge && !ivr_room_bridge_worker_available(
@@ -1492,7 +1514,7 @@ static ivr_status_t ivr_fmq_dialog_reserve_open_locked(
         snprintf(route->transition_command_id,
                  sizeof(route->transition_command_id), "%s",
                  command->message_id);
-        route->state = IVR_FMQ_DIALOG_OPENING;
+        route->state = IVR_CONTROL_DIALOG_OPENING;
         route->valid = 1;
         worker->value.reserved_sessions++;
         adapter->dialog_count++;
@@ -1507,54 +1529,54 @@ static ivr_status_t ivr_fmq_dialog_reserve_open_locked(
     return IVR_ESTATE;
 }
 
-static ivr_status_t ivr_fmq_dialog_prepare_command(
-    ivr_fmq_adapter_t *adapter, const ivr_media_command_t *command,
-    ivr_fmq_worker_snapshot_t *out_worker) {
+static ivr_status_t ivr_control_dialog_prepare_command(
+    ivr_control_adapter_t *adapter, const ivr_media_command_t *command,
+    ivr_control_worker_snapshot_t *out_worker) {
     ivr_status_t status = IVR_OK;
-    uint64_t now_ms = ivr_fmq_now_ms(adapter);
+    uint64_t now_ms = ivr_control_now_ms(adapter);
 
     ivr_mutex_lock(&adapter->seq_lock);
     if (command->kind == IVR_MEDIA_COMMAND_SESSION_OPEN) {
-        ivr_fmq_dialog_route_t *route = ivr_fmq_dialog_find_locked(
+        ivr_control_dialog_route_t *route = ivr_control_dialog_find_locked(
             adapter, command->tenant_id, command->provider_session_id,
             command->dialog_id);
         if (!route) {
-            status = ivr_fmq_dialog_reserve_open_locked(adapter, command,
+            status = ivr_control_dialog_reserve_open_locked(adapter, command,
                                                         out_worker);
         } else {
-            ivr_fmq_worker_entry_t *worker =
-                ivr_fmq_worker_find_locked(adapter, route->worker_id);
-            ivr_fmq_worker_state_t worker_state =
-                worker ? ivr_fmq_worker_effective_state(&worker->value, now_ms)
-                       : IVR_FMQ_WORKER_EXPIRED;
-            if (route->state != IVR_FMQ_DIALOG_ACTIVE ||
-                !ivr_fmq_dialog_identity_matches(route, command) || !worker ||
+            ivr_control_worker_entry_t *worker =
+                ivr_control_worker_find_locked(adapter, route->worker_id);
+            ivr_control_worker_state_t worker_state =
+                worker ? ivr_control_worker_effective_state(&worker->value, now_ms)
+                       : IVR_CONTROL_WORKER_EXPIRED;
+            if (route->state != IVR_CONTROL_DIALOG_ACTIVE ||
+                !ivr_control_dialog_identity_matches(route, command) || !worker ||
                 strcmp(worker->value.instance_id,
                        route->worker_instance_id) != 0 ||
                 worker->value.connection_generation !=
                     route->worker_connection_generation ||
-                (worker_state != IVR_FMQ_WORKER_READY &&
-                 worker_state != IVR_FMQ_WORKER_DRAINING)) {
+                (worker_state != IVR_CONTROL_WORKER_READY &&
+                 worker_state != IVR_CONTROL_WORKER_DRAINING)) {
                 status = IVR_EVERSION;
             } else {
                 *out_worker = worker->value;
             }
         }
     } else {
-        ivr_fmq_dialog_route_t *route = ivr_fmq_dialog_find_locked(
+        ivr_control_dialog_route_t *route = ivr_control_dialog_find_locked(
             adapter, command->tenant_id, command->provider_session_id,
             command->dialog_id);
-        ivr_fmq_worker_entry_t *worker =
-            route ? ivr_fmq_worker_find_locked(adapter, route->worker_id)
+        ivr_control_worker_entry_t *worker =
+            route ? ivr_control_worker_find_locked(adapter, route->worker_id)
                   : NULL;
         if (!route) {
             status = (command->kind == IVR_MEDIA_COMMAND_SESSION_CLOSE ||
                       command->kind == IVR_MEDIA_COMMAND_CANCEL)
                          ? IVR_ENOTFOUND
                          : IVR_ESTATE;
-        } else if (!ivr_fmq_dialog_identity_matches(route, command)) {
+        } else if (!ivr_control_dialog_identity_matches(route, command)) {
             status = IVR_ESTALE;
-        } else if (route->state != IVR_FMQ_DIALOG_ACTIVE) {
+        } else if (route->state != IVR_CONTROL_DIALOG_ACTIVE) {
             status = IVR_ESTATE;
         } else if (command->kind == IVR_MEDIA_COMMAND_CANCEL &&
                    route->active_input_id[0] == '\0') {
@@ -1569,18 +1591,18 @@ static ivr_status_t ivr_fmq_dialog_prepare_command(
                           route->worker_instance_id) != 0 ||
                    worker->value.connection_generation !=
                        route->worker_connection_generation ||
-                    (ivr_fmq_worker_effective_state(&worker->value, now_ms) !=
-                         IVR_FMQ_WORKER_READY &&
-                     ivr_fmq_worker_effective_state(&worker->value, now_ms) !=
-                         IVR_FMQ_WORKER_DRAINING &&
+                    (ivr_control_worker_effective_state(&worker->value, now_ms) !=
+                         IVR_CONTROL_WORKER_READY &&
+                     ivr_control_worker_effective_state(&worker->value, now_ms) !=
+                         IVR_CONTROL_WORKER_DRAINING &&
                      !(route->reconciliation_only &&
-                       ivr_fmq_worker_effective_state(
+                       ivr_control_worker_effective_state(
                            &worker->value, now_ms) ==
-                           IVR_FMQ_WORKER_RECONCILING))) {
+                           IVR_CONTROL_WORKER_RECONCILING))) {
             status = IVR_EVERSION;
         } else {
             if (command->kind == IVR_MEDIA_COMMAND_SESSION_CLOSE) {
-                route->state = IVR_FMQ_DIALOG_CLOSING;
+                route->state = IVR_CONTROL_DIALOG_CLOSING;
                 snprintf(route->transition_command_id,
                          sizeof(route->transition_command_id), "%s",
                          command->message_id);
@@ -1607,16 +1629,16 @@ static ivr_status_t ivr_fmq_dialog_prepare_command(
     return status;
 }
 
-static void ivr_fmq_dialog_rollback_send(
-    ivr_fmq_adapter_t *adapter, const ivr_media_command_t *command) {
+static void ivr_control_dialog_rollback_send(
+    ivr_control_adapter_t *adapter, const ivr_media_command_t *command) {
     ivr_mutex_lock(&adapter->seq_lock);
-    ivr_fmq_dialog_route_t *route = ivr_fmq_dialog_find_locked(
+    ivr_control_dialog_route_t *route = ivr_control_dialog_find_locked(
         adapter, command->tenant_id, command->provider_session_id,
         command->dialog_id);
     if (route && strcmp(route->transition_command_id, command->message_id) == 0) {
-        if (route->state == IVR_FMQ_DIALOG_OPENING) {
-            ivr_fmq_worker_entry_t *worker =
-                ivr_fmq_worker_find_locked(adapter, route->worker_id);
+        if (route->state == IVR_CONTROL_DIALOG_OPENING) {
+            ivr_control_worker_entry_t *worker =
+                ivr_control_worker_find_locked(adapter, route->worker_id);
             if (worker &&
                 strcmp(worker->value.instance_id,
                        route->worker_instance_id) == 0 &&
@@ -1627,8 +1649,8 @@ static void ivr_fmq_dialog_rollback_send(
             }
             memset(route, 0, sizeof(*route));
             if (adapter->dialog_count > 0) adapter->dialog_count--;
-        } else if (route->state == IVR_FMQ_DIALOG_CLOSING) {
-            route->state = IVR_FMQ_DIALOG_ACTIVE;
+        } else if (route->state == IVR_CONTROL_DIALOG_CLOSING) {
+            route->state = IVR_CONTROL_DIALOG_ACTIVE;
             route->transition_command_id[0] = '\0';
         } else if (route->pending_operation_kind != 0) {
             route->pending_operation_kind = 0;
@@ -1640,11 +1662,11 @@ static void ivr_fmq_dialog_rollback_send(
     ivr_mutex_unlock(&adapter->seq_lock);
 }
 
-static int ivr_fmq_attempt_has_worker(
-    const ivr_fmq_assignment_entry_t *assignment,
-    const ivr_fmq_worker_snapshot_t *worker) {
+static int ivr_control_attempt_has_worker(
+    const ivr_control_assignment_entry_t *assignment,
+    const ivr_control_worker_snapshot_t *worker) {
     for (uint32_t i = 0; i < assignment->value.attempt_count; i++) {
-        const ivr_fmq_attempt_record_t *attempt = &assignment->attempts[i];
+        const ivr_control_attempt_record_t *attempt = &assignment->attempts[i];
         if (strcmp(attempt->worker_id, worker->worker_id) == 0 &&
             strcmp(attempt->worker_instance_id, worker->instance_id) == 0 &&
             attempt->worker_connection_generation ==
@@ -1656,11 +1678,11 @@ static int ivr_fmq_attempt_has_worker(
 }
 
 /* Called with seq_lock held. Selection, reservation and attempt transition
-   are committed together; the FlowMQ send happens after the lock is released. */
-static int ivr_fmq_assignment_prepare_retry_locked(
-    ivr_fmq_adapter_t *a, ivr_fmq_assignment_entry_t *assignment,
+   are committed together; the CHTTP H1 WebSocket send happens after the lock is released. */
+static int ivr_control_assignment_prepare_retry_locked(
+    ivr_control_adapter_t *a, ivr_control_assignment_entry_t *assignment,
     uint64_t now_ms, const char *content_package,
-    ivr_fmq_assignment_entry_t *out) {
+    ivr_control_assignment_entry_t *out) {
     if (!assignment->retry_pending ||
         assignment->value.attempt_count >= a->dispatch_max_attempts ||
         UINT64_MAX - now_ms < a->dispatch_deadline_ms) {
@@ -1669,17 +1691,17 @@ static int ivr_fmq_assignment_prepare_retry_locked(
     uint32_t start = a->next_worker_index % a->worker_capacity;
     for (uint32_t offset = 0; offset < a->worker_capacity; offset++) {
         uint32_t idx = (start + offset) % a->worker_capacity;
-        ivr_fmq_worker_entry_t *worker = &a->workers[idx];
+        ivr_control_worker_entry_t *worker = &a->workers[idx];
         if (!worker->valid || worker->value.protocol_version != 2u ||
-            ivr_fmq_worker_effective_state(&worker->value, now_ms) !=
-                IVR_FMQ_WORKER_READY ||
-            !ivr_fmq_worker_health_ready(&worker->value) ||
+            ivr_control_worker_effective_state(&worker->value, now_ms) !=
+                IVR_CONTROL_WORKER_READY ||
+            !ivr_control_worker_health_ready(&worker->value) ||
             worker->value.active_sessions + worker->value.reserved_sessions >=
                 worker->value.max_sessions ||
-            !ivr_fmq_acl_worker_allows_snapshot(
+            !ivr_control_acl_worker_allows_snapshot(
                 a, &worker->value, assignment->value.room_id,
                 assignment->value.call_id, content_package) ||
-            ivr_fmq_attempt_has_worker(assignment, &worker->value) ||
+            ivr_control_attempt_has_worker(assignment, &worker->value) ||
             (a->bridge && !ivr_room_bridge_worker_available(
                               a->bridge, worker->value.worker_id))) {
             continue;
@@ -1693,7 +1715,7 @@ static int ivr_fmq_assignment_prepare_retry_locked(
             (size_t)written >= sizeof(assignment->value.attempt_id)) {
             return 0;
         }
-        ivr_fmq_attempt_record_t *attempt =
+        ivr_control_attempt_record_t *attempt =
             &assignment->attempts[attempt_index];
         memset(attempt, 0, sizeof(*attempt));
         snprintf(attempt->message_id, sizeof(attempt->message_id), "%s",
@@ -1716,7 +1738,7 @@ static int ivr_fmq_assignment_prepare_retry_locked(
         assignment->value.worker_connection_generation =
             worker->value.connection_generation;
         assignment->value.attempt_count++;
-        assignment->value.state = IVR_FMQ_ASSIGNMENT_PENDING;
+        assignment->value.state = IVR_CONTROL_ASSIGNMENT_PENDING;
         assignment->value.status_code = 0;
         assignment->value.error_code[0] = '\0';
         assignment->value.error_message[0] = '\0';
@@ -1731,8 +1753,8 @@ static int ivr_fmq_assignment_prepare_retry_locked(
     return 0;
 }
 
-static ivr_status_t ivr_fmq_assignment_send_v2(
-    ivr_fmq_adapter_t *a, const ivr_fmq_assignment_entry_t *assignment) {
+static ivr_status_t ivr_control_assignment_send_v2(
+    ivr_control_adapter_t *a, const ivr_control_assignment_entry_t *assignment) {
     ivr_call_dispatch_t dispatch;
     memset(&dispatch, 0, sizeof(dispatch));
     dispatch.wire_version = 2;
@@ -1765,17 +1787,17 @@ static ivr_status_t ivr_fmq_assignment_send_v2(
 /* command application (authoritative aggregate)                       */
 /* ------------------------------------------------------------------ */
 
-static ivr_status_t ivr_fmq_apply_join(ivr_fmq_adapter_t *a,
+static ivr_status_t ivr_control_apply_join(ivr_control_adapter_t *a,
                                        const ivr_room_command_t *cmd,
                                        ivr_room_command_result_t *result) {
-    turbo_participant_role_t role = ivr_fmq_role_for(cmd->participant_role);
+    turbo_participant_role_t role = ivr_control_role_for(cmd->participant_role);
     if (role == 0) {
         result->status_code = IVR_EINVAL;
         snprintf(result->error_message, sizeof(result->error_message),
                  "unsupported participant_role '%s'", cmd->participant_role);
         return IVR_OK;
     }
-    if (ivr_fmq_room_version(a->service, cmd->room_id) == 0) {
+    if (ivr_control_room_version(a->service, cmd->room_id) == 0) {
         result->status_code = IVR_ESTATE;
         snprintf(result->error_message, sizeof(result->error_message),
                  "room not found: %s", cmd->room_id);
@@ -1794,16 +1816,16 @@ static ivr_status_t ivr_fmq_apply_join(ivr_fmq_adapter_t *a,
                      cmd->call_id);
             return IVR_OK;
         }
-        uint64_t seq = ivr_fmq_seq_current(a, cmd);
+        uint64_t seq = ivr_control_seq_current(a, cmd);
         if (seq == 0) {
-            seq = ivr_fmq_seq_next(a, cmd); /* entry evicted: resume tracking */
+            seq = ivr_control_seq_next(a, cmd); /* entry evicted: resume tracking */
         }
         result->status_code = 0;
-        result->room_version = ivr_fmq_room_version(a->service, cmd->room_id);
+        result->room_version = ivr_control_room_version(a->service, cmd->room_id);
         result->sequence = seq;
         return IVR_OK;
     }
-    uint64_t seq = ivr_fmq_seq_next(a, cmd);
+    uint64_t seq = ivr_control_seq_next(a, cmd);
     if (seq == 0) {
         result->status_code = IVR_ENOSPC;
         snprintf(result->error_message, sizeof(result->error_message),
@@ -1819,7 +1841,7 @@ static ivr_status_t ivr_fmq_apply_join(ivr_fmq_adapter_t *a,
     participant.role = role;
     if (turbo_room_service_add_participant(a->service, cmd->room_id,
                                            &participant) != 0) {
-        ivr_fmq_seq_rollback(a, cmd);
+        ivr_control_seq_rollback(a, cmd);
         result->status_code = IVR_ESTATE;
         snprintf(result->error_message, sizeof(result->error_message),
                  "add_participant failed for %s in room %s", cmd->call_id,
@@ -1827,12 +1849,12 @@ static ivr_status_t ivr_fmq_apply_join(ivr_fmq_adapter_t *a,
         return IVR_OK;
     }
     result->status_code = 0;
-    result->room_version = ivr_fmq_room_version(a->service, cmd->room_id);
+    result->room_version = ivr_control_room_version(a->service, cmd->room_id);
     result->sequence = seq;
     return IVR_OK;
 }
 
-static ivr_status_t ivr_fmq_apply_leave(ivr_fmq_adapter_t *a,
+static ivr_status_t ivr_control_apply_leave(ivr_control_adapter_t *a,
                                         const ivr_room_command_t *cmd,
                                         ivr_room_command_result_t *result) {
     turbo_room_participant_summary_t existing;
@@ -1844,7 +1866,7 @@ static ivr_status_t ivr_fmq_apply_leave(ivr_fmq_adapter_t *a,
                  "no participant %s in room %s", cmd->call_id, cmd->room_id);
         return IVR_OK;
     }
-    uint64_t seq = ivr_fmq_seq_next(a, cmd);
+    uint64_t seq = ivr_control_seq_next(a, cmd);
     if (seq == 0) {
         result->status_code = IVR_ENOSPC;
         snprintf(result->error_message, sizeof(result->error_message),
@@ -1853,7 +1875,7 @@ static ivr_status_t ivr_fmq_apply_leave(ivr_fmq_adapter_t *a,
     }
     if (turbo_room_service_remove_participant(a->service, cmd->room_id,
                                               cmd->call_id) != 0) {
-        ivr_fmq_seq_rollback(a, cmd);
+        ivr_control_seq_rollback(a, cmd);
         result->status_code = IVR_ESTATE;
         snprintf(result->error_message, sizeof(result->error_message),
                  "remove_participant failed for %s in room %s", cmd->call_id,
@@ -1861,15 +1883,15 @@ static ivr_status_t ivr_fmq_apply_leave(ivr_fmq_adapter_t *a,
         return IVR_OK;
     }
     result->status_code = 0;
-    result->room_version = ivr_fmq_room_version(a->service, cmd->room_id);
+    result->room_version = ivr_control_room_version(a->service, cmd->room_id);
     result->sequence = seq;
     return IVR_OK;
 }
 
-static ivr_status_t ivr_fmq_apply_snapshot(ivr_fmq_adapter_t *a,
+static ivr_status_t ivr_control_apply_snapshot(ivr_control_adapter_t *a,
                                            const ivr_room_command_t *cmd,
                                            ivr_room_command_result_t *result) {
-    uint64_t version = ivr_fmq_room_version(a->service, cmd->room_id);
+    uint64_t version = ivr_control_room_version(a->service, cmd->room_id);
     if (version == 0) {
         result->status_code = IVR_ESTATE;
         snprintf(result->error_message, sizeof(result->error_message),
@@ -1878,11 +1900,11 @@ static ivr_status_t ivr_fmq_apply_snapshot(ivr_fmq_adapter_t *a,
     }
     result->status_code = 0;
     result->room_version = version;
-    result->sequence = ivr_fmq_seq_current(a, cmd);
+    result->sequence = ivr_control_seq_current(a, cmd);
     return IVR_OK;
 }
 
-ivr_status_t ivr_fmq_adapter_apply(ivr_fmq_adapter_t *adapter,
+ivr_status_t ivr_control_adapter_apply(ivr_control_adapter_t *adapter,
                                    const ivr_room_command_t *command,
                                    ivr_room_command_result_t *result) {
     if (!adapter || !command || !result) {
@@ -1896,26 +1918,26 @@ ivr_status_t ivr_fmq_adapter_apply(ivr_fmq_adapter_t *adapter,
            configured tenant/room/call scope or content capability ACL.
            A denied command never advances the authoritative room; the reply
            still reports the current (unchanged) version for observability. */
-        if (!ivr_fmq_adapter_authorize(adapter, command, result)) {
+        if (!ivr_control_adapter_authorize(adapter, command, result)) {
             result->room_version =
-                ivr_fmq_room_version(adapter->service, command->room_id);
+                ivr_control_room_version(adapter->service, command->room_id);
             return IVR_OK;
         }
     }
     if (strcmp(command->command, "conference.join") == 0) {
-        return ivr_fmq_apply_join(adapter, command, result);
+        return ivr_control_apply_join(adapter, command, result);
     }
     if (strcmp(command->command, "conference.leave") == 0) {
-        return ivr_fmq_apply_leave(adapter, command, result);
+        return ivr_control_apply_leave(adapter, command, result);
     }
     if (strcmp(command->command, "get_snapshot") == 0) {
-        return ivr_fmq_apply_snapshot(adapter, command, result);
+        return ivr_control_apply_snapshot(adapter, command, result);
     }
     if (strcmp(command->command, "worker.sync") == 0 ||
         strcmp(command->command, "worker.sync.v2") == 0 ||
         strcmp(command->command, "worker.heartbeat") == 0) {
         result->status_code =
-            ivr_fmq_adapter_register_worker(adapter, command);
+            ivr_control_adapter_register_worker(adapter, command);
         if (result->status_code != IVR_OK) {
             snprintf(result->error_message, sizeof(result->error_message),
                      "worker registration failed for %s", command->worker_id);
@@ -1932,25 +1954,25 @@ ivr_status_t ivr_fmq_adapter_apply(ivr_fmq_adapter_t *adapter,
 /* bridge host handler                                                 */
 /* ------------------------------------------------------------------ */
 
-static uint64_t ivr_fmq_adapter_get_room_version(void *ctx,
+static uint64_t ivr_control_adapter_get_room_version(void *ctx,
                                                  const char *room_id) {
-    ivr_fmq_adapter_t *a = (ivr_fmq_adapter_t *)ctx;
-    return a ? ivr_fmq_room_version(a->service, room_id) : 0;
+    ivr_control_adapter_t *a = (ivr_control_adapter_t *)ctx;
+    return a ? ivr_control_room_version(a->service, room_id) : 0;
 }
 
-static ivr_status_t ivr_fmq_adapter_on_media_result(
+static ivr_status_t ivr_control_adapter_on_media_result(
     void *ctx, const ivr_media_command_result_t *result) {
-    ivr_fmq_adapter_t *adapter = (ivr_fmq_adapter_t *)ctx;
+    ivr_control_adapter_t *adapter = (ivr_control_adapter_t *)ctx;
     int reconciliation_only = 0;
     if (!adapter || !result || !adapter->media_observer.on_media_result) {
         return IVR_ESTATE;
     }
     ivr_mutex_lock(&adapter->seq_lock);
-    ivr_fmq_dialog_route_t *route = ivr_fmq_dialog_find_locked(
+    ivr_control_dialog_route_t *route = ivr_control_dialog_find_locked(
         adapter, result->tenant_id, result->provider_session_id,
         result->dialog_id);
-    ivr_fmq_worker_entry_t *worker =
-        route ? ivr_fmq_worker_find_locked(adapter, route->worker_id) : NULL;
+    ivr_control_worker_entry_t *worker =
+        route ? ivr_control_worker_find_locked(adapter, route->worker_id) : NULL;
     if (!route || !worker ||
         route->call_generation != result->call_generation ||
         strcmp(route->room_id, result->room_id) != 0 ||
@@ -1963,7 +1985,7 @@ static ivr_status_t ivr_fmq_adapter_on_media_result(
         return IVR_EVERSION;
     }
     reconciliation_only = route->reconciliation_only;
-    if (route->state == IVR_FMQ_DIALOG_OPENING) {
+    if (route->state == IVR_CONTROL_DIALOG_OPENING) {
         if (strcmp(route->transition_command_id, result->message_id) != 0 ||
             worker->value.reserved_sessions == 0 ||
             (result->status_code == IVR_OK &&
@@ -1974,13 +1996,13 @@ static ivr_status_t ivr_fmq_adapter_on_media_result(
         worker->value.reserved_sessions--;
         if (result->status_code == IVR_OK) {
             worker->value.active_sessions++;
-            route->state = IVR_FMQ_DIALOG_ACTIVE;
+            route->state = IVR_CONTROL_DIALOG_ACTIVE;
             route->transition_command_id[0] = '\0';
         } else {
             memset(route, 0, sizeof(*route));
             if (adapter->dialog_count > 0) adapter->dialog_count--;
         }
-    } else if (route->state == IVR_FMQ_DIALOG_CLOSING) {
+    } else if (route->state == IVR_CONTROL_DIALOG_CLOSING) {
         if (strcmp(route->transition_command_id, result->message_id) != 0) {
             ivr_mutex_unlock(&adapter->seq_lock);
             return IVR_EVERSION;
@@ -1992,7 +2014,7 @@ static ivr_status_t ivr_fmq_adapter_on_media_result(
             memset(route, 0, sizeof(*route));
             if (adapter->dialog_count > 0) adapter->dialog_count--;
         } else {
-            route->state = IVR_FMQ_DIALOG_ACTIVE;
+            route->state = IVR_CONTROL_DIALOG_ACTIVE;
             route->transition_command_id[0] = '\0';
         }
     } else if (route->pending_operation_kind != 0) {
@@ -2025,19 +2047,19 @@ static ivr_status_t ivr_fmq_adapter_on_media_result(
         adapter->media_observer.context, result);
 }
 
-static ivr_status_t ivr_fmq_adapter_on_media_event(
+static ivr_status_t ivr_control_adapter_on_media_event(
     void *ctx, const ivr_media_event_t *event) {
-    ivr_fmq_adapter_t *adapter = (ivr_fmq_adapter_t *)ctx;
+    ivr_control_adapter_t *adapter = (ivr_control_adapter_t *)ctx;
     if (!adapter || !event || !adapter->media_observer.on_media_event) {
         return IVR_ESTATE;
     }
     ivr_mutex_lock(&adapter->seq_lock);
-    ivr_fmq_dialog_route_t *route = ivr_fmq_dialog_find_locked(
+    ivr_control_dialog_route_t *route = ivr_control_dialog_find_locked(
         adapter, event->tenant_id, event->provider_session_id,
         event->dialog_id);
-    ivr_fmq_worker_entry_t *worker =
-        route ? ivr_fmq_worker_find_locked(adapter, route->worker_id) : NULL;
-    if (!route || route->state != IVR_FMQ_DIALOG_ACTIVE || !worker ||
+    ivr_control_worker_entry_t *worker =
+        route ? ivr_control_worker_find_locked(adapter, route->worker_id) : NULL;
+    if (!route || route->state != IVR_CONTROL_DIALOG_ACTIVE || !worker ||
         route->call_generation != event->call_generation ||
         strcmp(route->room_id, event->room_id) != 0 ||
         strcmp(route->call_id, event->call_id) != 0 ||
@@ -2053,16 +2075,16 @@ static ivr_status_t ivr_fmq_adapter_on_media_event(
         adapter->media_observer.context, event);
 }
 
-static ivr_status_t ivr_fmq_adapter_on_inventory_page(
+static ivr_status_t ivr_control_adapter_on_inventory_page(
     void *ctx, const ivr_worker_inventory_envelope_t *result) {
-    ivr_fmq_adapter_t *adapter = (ivr_fmq_adapter_t *)ctx;
-    ivr_fmq_worker_entry_t *worker;
+    ivr_control_adapter_t *adapter = (ivr_control_adapter_t *)ctx;
+    ivr_control_worker_entry_t *worker;
     if (!adapter || !result ||
         !adapter->inventory_observer.on_inventory_page) {
         return IVR_ESTATE;
     }
     ivr_mutex_lock(&adapter->seq_lock);
-    worker = ivr_fmq_worker_find_locked(adapter, result->worker_id);
+    worker = ivr_control_worker_find_locked(adapter, result->worker_id);
     if (!worker) {
         ivr_mutex_unlock(&adapter->seq_lock);
         return IVR_EVERSION;
@@ -2083,21 +2105,21 @@ static ivr_status_t ivr_fmq_adapter_on_inventory_page(
         adapter->inventory_observer.context, result);
 }
 
-static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
+static ivr_status_t ivr_control_adapter_on_dispatch_result(
     void *ctx, const ivr_dispatch_result_t *result) {
-    ivr_fmq_adapter_t *a = (ivr_fmq_adapter_t *)ctx;
-    ivr_fmq_assignment_t assignment;
+    ivr_control_adapter_t *a = (ivr_control_adapter_t *)ctx;
+    ivr_control_assignment_t assignment;
     char causation_id[128];
     uint64_t room_version = 0;
     uint64_t sequence = 0;
     int should_publish = 0;
     int is_current_attempt = 0;
-    ivr_fmq_attempt_record_t *attempt = NULL;
+    ivr_control_attempt_record_t *attempt = NULL;
     if (!a || !result) {
         return IVR_EINVAL;
     }
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_assignment_entry_t *entry = ivr_fmq_assignment_find_result_locked(
+    ivr_control_assignment_entry_t *entry = ivr_control_assignment_find_result_locked(
         a, result, &attempt, &is_current_attempt);
     if (!entry ||
         strcmp(entry->value.room_id, result->room_id) != 0 ||
@@ -2116,12 +2138,12 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
             return IVR_EVERSION;
         }
         if (result->status_code != IVR_OK ||
-            attempt->cleanup_state != IVR_FMQ_CLEANUP_NONE) {
+            attempt->cleanup_state != IVR_CONTROL_CLEANUP_NONE) {
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_OK;
         }
-        ivr_fmq_worker_entry_t *stale_worker =
-            ivr_fmq_worker_find_locked(a, attempt->worker_id);
+        ivr_control_worker_entry_t *stale_worker =
+            ivr_control_worker_find_locked(a, attempt->worker_id);
         if (!stale_worker ||
             strcmp(stale_worker->value.instance_id,
                    attempt->worker_instance_id) != 0 ||
@@ -2130,7 +2152,7 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
             stale_worker->value.max_sessions != result->max_sessions ||
             stale_worker->value.active_sessions >=
                 stale_worker->value.max_sessions ||
-            UINT64_MAX - ivr_fmq_now_ms(a) < a->dispatch_deadline_ms) {
+            UINT64_MAX - ivr_control_now_ms(a) < a->dispatch_deadline_ms) {
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_EVERSION;
         }
@@ -2144,9 +2166,9 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
             return IVR_ENOSPC;
         }
         stale_worker->value.active_sessions++;
-        attempt->cleanup_state = IVR_FMQ_CLEANUP_PENDING;
+        attempt->cleanup_state = IVR_CONTROL_CLEANUP_PENDING;
         attempt->cleanup_deadline_at_ms =
-            ivr_fmq_now_ms(a) + a->dispatch_deadline_ms;
+            ivr_control_now_ms(a) + a->dispatch_deadline_ms;
         assignment = entry->value;
         snprintf(assignment.worker_id, sizeof(assignment.worker_id), "%s",
                  attempt->worker_id);
@@ -2173,8 +2195,8 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
         ivr_mutex_unlock(&a->seq_lock);
         return IVR_EVERSION;
     }
-    ivr_fmq_worker_entry_t *result_worker =
-        ivr_fmq_worker_find_locked(a, entry->value.worker_id);
+    ivr_control_worker_entry_t *result_worker =
+        ivr_control_worker_find_locked(a, entry->value.worker_id);
     if (!result_worker ||
         strcmp(result_worker->value.instance_id,
                entry->value.worker_instance_id) != 0 ||
@@ -2186,14 +2208,14 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
         ivr_mutex_unlock(&a->seq_lock);
         return IVR_EVERSION;
     }
-    if (entry->value.state == IVR_FMQ_ASSIGNMENT_REJECTED &&
+    if (entry->value.state == IVR_CONTROL_ASSIGNMENT_REJECTED &&
         (strcmp(entry->value.error_code, "dispatch_timeout") == 0 ||
          strcmp(entry->value.error_code, "dispatch_cancelled") == 0)) {
         if (result->status_code != IVR_OK) {
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_OK;
         }
-        ivr_fmq_worker_entry_t *worker = ivr_fmq_worker_find_locked(
+        ivr_control_worker_entry_t *worker = ivr_control_worker_find_locked(
             a, entry->value.worker_id);
         if (!worker ||
             strcmp(worker->value.instance_id,
@@ -2213,11 +2235,11 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
             return IVR_ENOSPC;
         }
         worker->value.active_sessions++;
-        entry->value.state = IVR_FMQ_ASSIGNMENT_RELEASING;
-        uint64_t now_ms = ivr_fmq_now_ms(a);
+        entry->value.state = IVR_CONTROL_ASSIGNMENT_RELEASING;
+        uint64_t now_ms = ivr_control_now_ms(a);
         if (UINT64_MAX - now_ms < a->dispatch_deadline_ms) {
             worker->value.active_sessions--;
-            entry->value.state = IVR_FMQ_ASSIGNMENT_REJECTED;
+            entry->value.state = IVR_CONTROL_ASSIGNMENT_REJECTED;
             entry->value.release_message_id[0] = '\0';
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_ESTATE;
@@ -2239,40 +2261,40 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
         ivr_mutex_unlock(&a->seq_lock);
         return IVR_OK;
     }
-    ivr_fmq_assignment_state_t next_state =
-        result->status_code == IVR_OK ? IVR_FMQ_ASSIGNMENT_ACCEPTED
-                                      : IVR_FMQ_ASSIGNMENT_REJECTED;
-    int was_pending = entry->value.state == IVR_FMQ_ASSIGNMENT_PENDING;
-    if (entry->value.state != IVR_FMQ_ASSIGNMENT_PENDING &&
+    ivr_control_assignment_state_t next_state =
+        result->status_code == IVR_OK ? IVR_CONTROL_ASSIGNMENT_ACCEPTED
+                                      : IVR_CONTROL_ASSIGNMENT_REJECTED;
+    int was_pending = entry->value.state == IVR_CONTROL_ASSIGNMENT_PENDING;
+    if (entry->value.state != IVR_CONTROL_ASSIGNMENT_PENDING &&
         (entry->value.state != next_state ||
          entry->value.status_code != result->status_code)) {
         ivr_mutex_unlock(&a->seq_lock);
         return IVR_ESTATE;
     }
     if (was_pending) {
-        ivr_fmq_worker_entry_t *worker =
-            ivr_fmq_worker_find_locked(a, entry->value.worker_id);
+        ivr_control_worker_entry_t *worker =
+            ivr_control_worker_find_locked(a, entry->value.worker_id);
         if (!worker ||
             strcmp(worker->value.instance_id,
                    entry->value.worker_instance_id) != 0 ||
             worker->value.connection_generation !=
                 entry->value.worker_connection_generation ||
             worker->value.reserved_sessions == 0 ||
-            (next_state == IVR_FMQ_ASSIGNMENT_ACCEPTED &&
+            (next_state == IVR_CONTROL_ASSIGNMENT_ACCEPTED &&
              worker->value.active_sessions >= worker->value.max_sessions)) {
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_EVERSION;
         }
         worker->value.reserved_sessions--;
-        if (next_state == IVR_FMQ_ASSIGNMENT_ACCEPTED) {
+        if (next_state == IVR_CONTROL_ASSIGNMENT_ACCEPTED) {
             worker->value.active_sessions++;
         }
     }
     if (was_pending && result->wire_version == 2u &&
-        next_state == IVR_FMQ_ASSIGNMENT_REJECTED &&
+        next_state == IVR_CONTROL_ASSIGNMENT_REJECTED &&
         entry->value.attempt_count < a->dispatch_max_attempts) {
         entry->retry_pending = 1;
-        next_state = IVR_FMQ_ASSIGNMENT_PENDING;
+        next_state = IVR_CONTROL_ASSIGNMENT_PENDING;
     }
     entry->value.state = next_state;
     entry->value.status_code = result->status_code;
@@ -2280,7 +2302,7 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
              result->error_code);
     snprintf(entry->value.error_message, sizeof(entry->value.error_message),
              "%s", result->error_message);
-    if (a->events_enabled && next_state == IVR_FMQ_ASSIGNMENT_ACCEPTED &&
+    if (a->events_enabled && next_state == IVR_CONTROL_ASSIGNMENT_ACCEPTED &&
         !entry->event_published && entry->room_version > 0 &&
         entry->sequence > 0) {
         assignment = entry->value;
@@ -2303,7 +2325,7 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
             return IVR_ESTATE;
         }
         ivr_mutex_lock(&a->seq_lock);
-        entry = ivr_fmq_assignment_find_locked(a, result->message_id);
+        entry = ivr_control_assignment_find_locked(a, result->message_id);
         if (entry) {
             entry->event_published = 1;
         }
@@ -2312,21 +2334,21 @@ static ivr_status_t ivr_fmq_adapter_on_dispatch_result(
     return IVR_OK;
 }
 
-static ivr_status_t ivr_fmq_adapter_on_release_result(
+static ivr_status_t ivr_control_adapter_on_release_result(
     void *ctx, const ivr_release_result_t *result) {
-    ivr_fmq_adapter_t *a = (ivr_fmq_adapter_t *)ctx;
+    ivr_control_adapter_t *a = (ivr_control_adapter_t *)ctx;
     if (!a || !result) {
         return IVR_EINVAL;
     }
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_assignment_entry_t *entry = NULL;
-    ivr_fmq_attempt_record_t *cleanup_attempt = NULL;
+    ivr_control_assignment_entry_t *entry = NULL;
+    ivr_control_attempt_record_t *cleanup_attempt = NULL;
     for (uint32_t i = 0; i < a->assignment_capacity; i++) {
-        ivr_fmq_assignment_entry_t *candidate = &a->assignments[i];
+        ivr_control_assignment_entry_t *candidate = &a->assignments[i];
         if (candidate->valid) {
             for (uint32_t j = 0; j < candidate->value.attempt_count; j++) {
-                ivr_fmq_attempt_record_t *attempt = &candidate->attempts[j];
-                if (attempt->cleanup_state != IVR_FMQ_CLEANUP_NONE &&
+                ivr_control_attempt_record_t *attempt = &candidate->attempts[j];
+                if (attempt->cleanup_state != IVR_CONTROL_CLEANUP_NONE &&
                     strcmp(attempt->cleanup_release_message_id,
                            result->message_id) == 0) {
                     entry = candidate;
@@ -2339,7 +2361,7 @@ static ivr_status_t ivr_fmq_adapter_on_release_result(
             break;
         }
         if (candidate->valid &&
-            candidate->value.state == IVR_FMQ_ASSIGNMENT_RELEASING &&
+            candidate->value.state == IVR_CONTROL_ASSIGNMENT_RELEASING &&
             strcmp(candidate->value.release_message_id,
                    result->message_id) == 0) {
             entry = candidate;
@@ -2354,13 +2376,13 @@ static ivr_status_t ivr_fmq_adapter_on_release_result(
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_ESTATE;
         }
-        if (cleanup_attempt->cleanup_state == IVR_FMQ_CLEANUP_COMPLETE) {
+        if (cleanup_attempt->cleanup_state == IVR_CONTROL_CLEANUP_COMPLETE) {
             ivr_mutex_unlock(&a->seq_lock);
             return IVR_OK;
         }
         if (result->status_code == IVR_OK) {
-            ivr_fmq_worker_entry_t *worker =
-                ivr_fmq_worker_find_locked(a, cleanup_attempt->worker_id);
+            ivr_control_worker_entry_t *worker =
+                ivr_control_worker_find_locked(a, cleanup_attempt->worker_id);
             if (!worker ||
                 strcmp(worker->value.instance_id,
                        cleanup_attempt->worker_instance_id) != 0 ||
@@ -2372,10 +2394,10 @@ static ivr_status_t ivr_fmq_adapter_on_release_result(
             if (worker->value.active_sessions > 0) {
                 worker->value.active_sessions--;
             }
-            cleanup_attempt->cleanup_state = IVR_FMQ_CLEANUP_COMPLETE;
+            cleanup_attempt->cleanup_state = IVR_CONTROL_CLEANUP_COMPLETE;
             cleanup_attempt->cleanup_deadline_at_ms = 0;
         } else {
-            cleanup_attempt->cleanup_deadline_at_ms = ivr_fmq_now_ms(a);
+            cleanup_attempt->cleanup_deadline_at_ms = ivr_control_now_ms(a);
         }
         ivr_mutex_unlock(&a->seq_lock);
         return IVR_OK;
@@ -2388,7 +2410,7 @@ static ivr_status_t ivr_fmq_adapter_on_release_result(
         return IVR_ESTATE;
     }
     if (result->status_code == IVR_OK) {
-        ivr_fmq_worker_entry_t *worker = ivr_fmq_worker_find_locked(
+        ivr_control_worker_entry_t *worker = ivr_control_worker_find_locked(
             a, entry->value.worker_id);
         if (!worker ||
             strcmp(worker->value.instance_id,
@@ -2406,7 +2428,7 @@ static ivr_status_t ivr_fmq_adapter_on_release_result(
             a->assignment_count--;
         }
     } else {
-        entry->value.state = IVR_FMQ_ASSIGNMENT_ACCEPTED;
+        entry->value.state = IVR_CONTROL_ASSIGNMENT_ACCEPTED;
         entry->value.status_code = result->status_code;
         snprintf(entry->value.error_code, sizeof(entry->value.error_code),
                  "%s", result->error_code);
@@ -2420,23 +2442,23 @@ static ivr_status_t ivr_fmq_adapter_on_release_result(
     return IVR_OK;
 }
 
-static int ivr_fmq_assignment_mark_worker_lost(ivr_fmq_adapter_t *a,
+static int ivr_control_assignment_mark_worker_lost(ivr_control_adapter_t *a,
                                                 uint32_t index) {
-    ivr_fmq_assignment_t assignment;
-    ivr_fmq_worker_snapshot_t worker;
+    ivr_control_assignment_t assignment;
+    ivr_control_worker_snapshot_t worker;
     int worker_matches = 0;
     memset(&assignment, 0, sizeof(assignment));
     memset(&worker, 0, sizeof(worker));
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_assignment_entry_t *entry = &a->assignments[index];
+    ivr_control_assignment_entry_t *entry = &a->assignments[index];
     if (!entry->valid ||
-        entry->value.state != IVR_FMQ_ASSIGNMENT_ACCEPTED) {
+        entry->value.state != IVR_CONTROL_ASSIGNMENT_ACCEPTED) {
         ivr_mutex_unlock(&a->seq_lock);
         return 0;
     }
     assignment = entry->value;
-    ivr_fmq_worker_entry_t *worker_entry =
-        ivr_fmq_worker_find_locked(a, assignment.worker_id);
+    ivr_control_worker_entry_t *worker_entry =
+        ivr_control_worker_find_locked(a, assignment.worker_id);
     if (worker_entry &&
         strcmp(worker_entry->value.instance_id,
                assignment.worker_instance_id) == 0 &&
@@ -2448,8 +2470,8 @@ static int ivr_fmq_assignment_mark_worker_lost(ivr_fmq_adapter_t *a,
     ivr_mutex_unlock(&a->seq_lock);
 
     int lost = !worker_matches ||
-               ivr_fmq_worker_effective_state(&worker, ivr_fmq_now_ms(a)) ==
-                   IVR_FMQ_WORKER_EXPIRED ||
+               ivr_control_worker_effective_state(&worker, ivr_control_now_ms(a)) ==
+                   IVR_CONTROL_WORKER_EXPIRED ||
                (a->bridge && !ivr_room_bridge_worker_available(
                                  a->bridge, assignment.worker_id));
     if (!lost) {
@@ -2457,25 +2479,25 @@ static int ivr_fmq_assignment_mark_worker_lost(ivr_fmq_adapter_t *a,
     }
 
     ivr_mutex_lock(&a->seq_lock);
-    entry = ivr_fmq_assignment_find_locked(a, assignment.message_id);
-    if (entry && entry->value.state == IVR_FMQ_ASSIGNMENT_ACCEPTED &&
+    entry = ivr_control_assignment_find_locked(a, assignment.message_id);
+    if (entry && entry->value.state == IVR_CONTROL_ASSIGNMENT_ACCEPTED &&
         strcmp(entry->value.worker_id, assignment.worker_id) == 0 &&
         entry->value.worker_connection_generation ==
             assignment.worker_connection_generation) {
-        entry->value.state = IVR_FMQ_ASSIGNMENT_RECOVERING;
+        entry->value.state = IVR_CONTROL_ASSIGNMENT_RECOVERING;
         entry->value.status_code = IVR_ECLOSED;
         snprintf(entry->value.error_code, sizeof(entry->value.error_code),
                  "worker_lost");
         snprintf(entry->value.error_message,
                  sizeof(entry->value.error_message),
                  "worker route or lease was lost; fail-closed cleanup pending");
-        worker_entry = ivr_fmq_worker_find_locked(a, assignment.worker_id);
+        worker_entry = ivr_control_worker_find_locked(a, assignment.worker_id);
         if (worker_entry &&
             strcmp(worker_entry->value.instance_id,
                    assignment.worker_instance_id) == 0 &&
             worker_entry->value.connection_generation ==
                 assignment.worker_connection_generation) {
-            worker_entry->value.state = IVR_FMQ_WORKER_EXPIRED;
+            worker_entry->value.state = IVR_CONTROL_WORKER_EXPIRED;
         }
         ivr_mutex_unlock(&a->seq_lock);
         return 1;
@@ -2484,18 +2506,18 @@ static int ivr_fmq_assignment_mark_worker_lost(ivr_fmq_adapter_t *a,
     return 0;
 }
 
-static void ivr_fmq_assignment_recover_worker_loss(ivr_fmq_adapter_t *a,
+static void ivr_control_assignment_recover_worker_loss(ivr_control_adapter_t *a,
                                                     uint32_t index) {
-    ivr_fmq_assignment_t assignment;
+    ivr_control_assignment_t assignment;
     int cleanup_applied;
     int event_published;
     uint64_t terminal_room_version;
     uint64_t terminal_sequence;
     memset(&assignment, 0, sizeof(assignment));
     ivr_mutex_lock(&a->seq_lock);
-    ivr_fmq_assignment_entry_t *entry = &a->assignments[index];
+    ivr_control_assignment_entry_t *entry = &a->assignments[index];
     if (!entry->valid ||
-        entry->value.state != IVR_FMQ_ASSIGNMENT_RECOVERING) {
+        entry->value.state != IVR_CONTROL_ASSIGNMENT_RECOVERING) {
         ivr_mutex_unlock(&a->seq_lock);
         return;
     }
@@ -2527,34 +2549,34 @@ static void ivr_fmq_assignment_recover_worker_loss(ivr_fmq_adapter_t *a,
         if (turbo_room_service_get_participant_summary(
                 a->service, assignment.room_id, assignment.call_id,
                 &participant) == 0) {
-            sequence = ivr_fmq_seq_next(a, &command);
+            sequence = ivr_control_seq_next(a, &command);
             if (sequence == 0) {
                 return;
             }
             if (turbo_room_service_remove_participant(
                     a->service, assignment.room_id, assignment.call_id) != 0) {
-                ivr_fmq_seq_rollback(a, &command);
+                ivr_control_seq_rollback(a, &command);
                 return;
             }
         } else {
-            sequence = ivr_fmq_seq_current(a, &command);
+            sequence = ivr_control_seq_current(a, &command);
         }
         uint64_t room_version =
-            ivr_fmq_room_version(a->service, assignment.room_id);
+            ivr_control_room_version(a->service, assignment.room_id);
         if (room_version == 0 || sequence == 0) {
             return;
         }
 
         ivr_mutex_lock(&a->seq_lock);
-        entry = ivr_fmq_assignment_find_locked(a, assignment.message_id);
+        entry = ivr_control_assignment_find_locked(a, assignment.message_id);
         if (!entry ||
-            entry->value.state != IVR_FMQ_ASSIGNMENT_RECOVERING) {
+            entry->value.state != IVR_CONTROL_ASSIGNMENT_RECOVERING) {
             ivr_mutex_unlock(&a->seq_lock);
             return;
         }
         if (!entry->worker_loss_applied) {
-            ivr_fmq_worker_entry_t *worker =
-                ivr_fmq_worker_find_locked(a, assignment.worker_id);
+            ivr_control_worker_entry_t *worker =
+                ivr_control_worker_find_locked(a, assignment.worker_id);
             if (worker &&
                 strcmp(worker->value.instance_id,
                        assignment.worker_instance_id) == 0 &&
@@ -2594,8 +2616,8 @@ static void ivr_fmq_assignment_recover_worker_loss(ivr_fmq_adapter_t *a,
     }
 
     ivr_mutex_lock(&a->seq_lock);
-    entry = ivr_fmq_assignment_find_locked(a, assignment.message_id);
-    if (entry && entry->value.state == IVR_FMQ_ASSIGNMENT_RECOVERING &&
+    entry = ivr_control_assignment_find_locked(a, assignment.message_id);
+    if (entry && entry->value.state == IVR_CONTROL_ASSIGNMENT_RECOVERING &&
         entry->worker_loss_applied) {
         entry->worker_loss_event_published = 1;
         memset(entry, 0, sizeof(*entry));
@@ -2609,10 +2631,10 @@ static void ivr_fmq_assignment_recover_worker_loss(ivr_fmq_adapter_t *a,
 /* Convert a lost worker route into one durable upstream fact before releasing
    its bounded dialog/worker capacity. The observer runs outside seq_lock. A
    failed observer admission leaves the stable event on the route for retry. */
-static void ivr_fmq_dialog_recover_worker_loss(
-    ivr_fmq_adapter_t *adapter, uint32_t index, uint64_t now_ms) {
-    ivr_fmq_dialog_route_t snapshot;
-    ivr_fmq_worker_entry_t *worker;
+static void ivr_control_dialog_recover_worker_loss(
+    ivr_control_adapter_t *adapter, uint32_t index, uint64_t now_ms) {
+    ivr_control_dialog_route_t snapshot;
+    ivr_control_worker_entry_t *worker;
     salts_uuid_t event_uuid;
     char new_event_id[128];
     uint64_t occurred_at_ms = 0;
@@ -2632,25 +2654,25 @@ static void ivr_fmq_dialog_recover_worker_loss(
         return;
     }
     snapshot = adapter->dialogs[index];
-    worker = ivr_fmq_worker_find_locked(adapter, snapshot.worker_id);
+    worker = ivr_control_worker_find_locked(adapter, snapshot.worker_id);
     worker_available =
         worker &&
         strcmp(worker->value.instance_id, snapshot.worker_instance_id) == 0 &&
         worker->value.connection_generation ==
             snapshot.worker_connection_generation &&
-        (ivr_fmq_worker_effective_state(&worker->value, now_ms) ==
-             IVR_FMQ_WORKER_READY ||
-         ivr_fmq_worker_effective_state(&worker->value, now_ms) ==
-             IVR_FMQ_WORKER_DRAINING);
+        (ivr_control_worker_effective_state(&worker->value, now_ms) ==
+             IVR_CONTROL_WORKER_READY ||
+         ivr_control_worker_effective_state(&worker->value, now_ms) ==
+             IVR_CONTROL_WORKER_DRAINING);
     ivr_mutex_unlock(&adapter->seq_lock);
 
-    if (snapshot.state != IVR_FMQ_DIALOG_WORKER_LOST && worker_available &&
+    if (snapshot.state != IVR_CONTROL_DIALOG_WORKER_LOST && worker_available &&
         (!adapter->bridge || ivr_room_bridge_worker_available(
                                  adapter->bridge, snapshot.worker_id))) {
         return;
     }
-    if (snapshot.state != IVR_FMQ_DIALOG_WORKER_LOST) {
-        occurred_at_ms = turbo_realtime_ms();
+    if (snapshot.state != IVR_CONTROL_DIALOG_WORKER_LOST) {
+        occurred_at_ms = salts_realtime_ms();
         if (occurred_at_ms == 0 ||
             salts_uuid_v4_generate(&event_uuid) != SALTS_OK ||
             salts_uuid_format(&event_uuid, new_event_id,
@@ -2659,22 +2681,22 @@ static void ivr_fmq_dialog_recover_worker_loss(
         }
 
         ivr_mutex_lock(&adapter->seq_lock);
-        ivr_fmq_dialog_route_t *route = &adapter->dialogs[index];
+        ivr_control_dialog_route_t *route = &adapter->dialogs[index];
         if (route->valid &&
-            route->state != IVR_FMQ_DIALOG_WORKER_LOST &&
+            route->state != IVR_CONTROL_DIALOG_WORKER_LOST &&
             strcmp(route->provider_session_id,
                    snapshot.provider_session_id) == 0 &&
             strcmp(route->dialog_id, snapshot.dialog_id) == 0 &&
             strcmp(route->worker_id, snapshot.worker_id) == 0 &&
             route->worker_connection_generation ==
                 snapshot.worker_connection_generation) {
-            worker = ivr_fmq_worker_find_locked(adapter, route->worker_id);
+            worker = ivr_control_worker_find_locked(adapter, route->worker_id);
             if (worker &&
                 strcmp(worker->value.instance_id,
                        route->worker_instance_id) == 0 &&
                 worker->value.connection_generation ==
                     route->worker_connection_generation) {
-                if (route->state == IVR_FMQ_DIALOG_OPENING) {
+                if (route->state == IVR_CONTROL_DIALOG_OPENING) {
                     if (worker->value.reserved_sessions > 0) {
                         worker->value.reserved_sessions--;
                     }
@@ -2682,7 +2704,7 @@ static void ivr_fmq_dialog_recover_worker_loss(
                     worker->value.active_sessions--;
                 }
             }
-            route->state = IVR_FMQ_DIALOG_WORKER_LOST;
+            route->state = IVR_CONTROL_DIALOG_WORKER_LOST;
             snprintf(route->worker_lost_event_id,
                      sizeof(route->worker_lost_event_id), "%s",
                      new_event_id);
@@ -2729,7 +2751,7 @@ static void ivr_fmq_dialog_recover_worker_loss(
 
     ivr_mutex_lock(&adapter->seq_lock);
     if (adapter->dialogs[index].valid &&
-        adapter->dialogs[index].state == IVR_FMQ_DIALOG_WORKER_LOST &&
+        adapter->dialogs[index].state == IVR_CONTROL_DIALOG_WORKER_LOST &&
         strcmp(adapter->dialogs[index].worker_lost_event_id,
                snapshot.worker_lost_event_id) == 0) {
         memset(&adapter->dialogs[index], 0, sizeof(adapter->dialogs[index]));
@@ -2740,30 +2762,30 @@ static void ivr_fmq_dialog_recover_worker_loss(
     ivr_mutex_unlock(&adapter->seq_lock);
 }
 
-void ivr_fmq_adapter_poll(ivr_fmq_adapter_t *adapter) {
+void ivr_control_adapter_poll(ivr_control_adapter_t *adapter) {
     if (!adapter) {
         return;
     }
-    uint64_t now_ms = ivr_fmq_now_ms(adapter);
+    uint64_t now_ms = ivr_control_now_ms(adapter);
     ivr_mutex_lock(&adapter->seq_lock);
     for (uint32_t i = 0; i < adapter->worker_capacity; i++) {
-        ivr_fmq_worker_entry_t *worker = &adapter->workers[i];
+        ivr_control_worker_entry_t *worker = &adapter->workers[i];
         if (worker->valid && !worker->lease_expiry_counted &&
             worker->value.lease_expires_at_ms <= now_ms) {
             worker->lease_expiry_counted = 1;
-            worker->value.state = IVR_FMQ_WORKER_EXPIRED;
+            worker->value.state = IVR_CONTROL_WORKER_EXPIRED;
             adapter->lease_expired_total++;
         }
     }
     for (uint32_t i = 0; i < adapter->assignment_capacity; i++) {
-        ivr_fmq_assignment_entry_t *entry = &adapter->assignments[i];
+        ivr_control_assignment_entry_t *entry = &adapter->assignments[i];
         if (!entry->valid ||
-            entry->value.state != IVR_FMQ_ASSIGNMENT_PENDING ||
+            entry->value.state != IVR_CONTROL_ASSIGNMENT_PENDING ||
             entry->value.dispatch_deadline_at_ms == 0 ||
             entry->value.dispatch_deadline_at_ms > now_ms) {
             continue;
         }
-        ivr_fmq_worker_entry_t *worker = ivr_fmq_worker_find_locked(
+        ivr_control_worker_entry_t *worker = ivr_control_worker_find_locked(
             adapter, entry->value.worker_id);
         if (worker &&
             strcmp(worker->value.instance_id,
@@ -2776,8 +2798,8 @@ void ivr_fmq_adapter_poll(ivr_fmq_adapter_t *adapter) {
         int can_retry =
             worker && worker->value.protocol_version == 2u &&
             entry->value.attempt_count < adapter->dispatch_max_attempts;
-        entry->value.state = can_retry ? IVR_FMQ_ASSIGNMENT_PENDING
-                                       : IVR_FMQ_ASSIGNMENT_REJECTED;
+        entry->value.state = can_retry ? IVR_CONTROL_ASSIGNMENT_PENDING
+                                       : IVR_CONTROL_ASSIGNMENT_REJECTED;
         entry->retry_pending = can_retry;
         entry->value.status_code = IVR_ECLOSED;
         snprintf(entry->value.error_code, sizeof(entry->value.error_code),
@@ -2790,11 +2812,11 @@ void ivr_fmq_adapter_poll(ivr_fmq_adapter_t *adapter) {
     ivr_mutex_unlock(&adapter->seq_lock);
 
     for (uint32_t i = 0; i < adapter->assignment_capacity; i++) {
-        (void)ivr_fmq_assignment_mark_worker_lost(adapter, i);
-        ivr_fmq_assignment_recover_worker_loss(adapter, i);
+        (void)ivr_control_assignment_mark_worker_lost(adapter, i);
+        ivr_control_assignment_recover_worker_loss(adapter, i);
     }
     for (uint32_t i = 0; i < adapter->dialog_capacity; i++) {
-        ivr_fmq_dialog_recover_worker_loss(adapter, i, now_ms);
+        ivr_control_dialog_recover_worker_loss(adapter, i, now_ms);
     }
 
     if (!adapter->bridge ||
@@ -2802,28 +2824,28 @@ void ivr_fmq_adapter_poll(ivr_fmq_adapter_t *adapter) {
         return;
     }
     for (uint32_t i = 0; i < adapter->assignment_capacity; i++) {
-        ivr_fmq_assignment_entry_t retry;
+        ivr_control_assignment_entry_t retry;
         int should_dispatch = 0;
         memset(&retry, 0, sizeof(retry));
         ivr_mutex_lock(&adapter->seq_lock);
-        ivr_fmq_assignment_entry_t *entry = &adapter->assignments[i];
+        ivr_control_assignment_entry_t *entry = &adapter->assignments[i];
         if (entry->valid && entry->retry_pending) {
-            should_dispatch = ivr_fmq_assignment_prepare_retry_locked(
+            should_dispatch = ivr_control_assignment_prepare_retry_locked(
                 adapter, entry, now_ms, adapter->content_package, &retry);
             if (!should_dispatch && entry->retry_pending) {
                 entry->retry_pending = 0;
-                entry->value.state = IVR_FMQ_ASSIGNMENT_REJECTED;
+                entry->value.state = IVR_CONTROL_ASSIGNMENT_REJECTED;
             }
         }
         ivr_mutex_unlock(&adapter->seq_lock);
         if (should_dispatch &&
-            ivr_fmq_assignment_send_v2(adapter, &retry) != IVR_OK) {
-            ivr_fmq_worker_release_reservation(
+            ivr_control_assignment_send_v2(adapter, &retry) != IVR_OK) {
+            ivr_control_worker_release_reservation(
                 adapter, retry.value.worker_id,
                 retry.value.worker_instance_id,
                 retry.value.worker_connection_generation);
             ivr_mutex_lock(&adapter->seq_lock);
-            entry = ivr_fmq_assignment_find_locked(
+            entry = ivr_control_assignment_find_locked(
                 adapter, retry.value.message_id);
             if (entry &&
                 strcmp(entry->value.attempt_id,
@@ -2832,8 +2854,8 @@ void ivr_fmq_adapter_poll(ivr_fmq_adapter_t *adapter) {
                     entry->value.attempt_count <
                     adapter->dispatch_max_attempts;
                 entry->value.state = entry->retry_pending
-                                         ? IVR_FMQ_ASSIGNMENT_PENDING
-                                         : IVR_FMQ_ASSIGNMENT_REJECTED;
+                                         ? IVR_CONTROL_ASSIGNMENT_PENDING
+                                         : IVR_CONTROL_ASSIGNMENT_REJECTED;
                 entry->value.status_code = IVR_ESTATE;
                 snprintf(entry->value.error_code,
                          sizeof(entry->value.error_code),
@@ -2847,14 +2869,14 @@ void ivr_fmq_adapter_poll(ivr_fmq_adapter_t *adapter) {
     }
     for (uint32_t i = 0; i < adapter->assignment_capacity; i++) {
         for (uint32_t j = 0; j < adapter->dispatch_max_attempts; j++) {
-            ivr_fmq_assignment_t cleanup;
+            ivr_control_assignment_t cleanup;
             int should_cleanup = 0;
             memset(&cleanup, 0, sizeof(cleanup));
             ivr_mutex_lock(&adapter->seq_lock);
-            ivr_fmq_assignment_entry_t *entry = &adapter->assignments[i];
+            ivr_control_assignment_entry_t *entry = &adapter->assignments[i];
             if (entry->valid && j < entry->value.attempt_count) {
-                ivr_fmq_attempt_record_t *attempt = &entry->attempts[j];
-                if (attempt->cleanup_state == IVR_FMQ_CLEANUP_PENDING &&
+                ivr_control_attempt_record_t *attempt = &entry->attempts[j];
+                if (attempt->cleanup_state == IVR_CONTROL_CLEANUP_PENDING &&
                     attempt->cleanup_deadline_at_ms <= now_ms) {
                     cleanup = entry->value;
                     snprintf(cleanup.worker_id, sizeof(cleanup.worker_id), "%s",
@@ -2878,12 +2900,12 @@ void ivr_fmq_adapter_poll(ivr_fmq_adapter_t *adapter) {
         }
     }
     for (uint32_t i = 0; i < adapter->assignment_capacity; i++) {
-        ivr_fmq_assignment_t retry = {0};
+        ivr_control_assignment_t retry = {0};
         int should_retry = 0;
         ivr_mutex_lock(&adapter->seq_lock);
-        ivr_fmq_assignment_entry_t *entry = &adapter->assignments[i];
+        ivr_control_assignment_entry_t *entry = &adapter->assignments[i];
         if (entry->valid &&
-            entry->value.state == IVR_FMQ_ASSIGNMENT_RELEASING &&
+            entry->value.state == IVR_CONTROL_ASSIGNMENT_RELEASING &&
             entry->value.release_message_id[0] != '\0' &&
             entry->value.release_deadline_at_ms <= now_ms) {
             retry = entry->value;
@@ -2902,8 +2924,8 @@ void ivr_fmq_adapter_poll(ivr_fmq_adapter_t *adapter) {
     }
 }
 
-void ivr_fmq_adapter_get_stats(const ivr_fmq_adapter_t *adapter,
-                               ivr_fmq_adapter_stats_t *out) {
+void ivr_control_adapter_get_stats(const ivr_control_adapter_t *adapter,
+                               ivr_control_adapter_stats_t *out) {
     if (!out) {
         return;
     }
@@ -2929,14 +2951,14 @@ void ivr_fmq_adapter_get_stats(const ivr_fmq_adapter_t *adapter,
     ivr_room_bridge_get_stats(adapter->bridge, &out->bridge);
 }
 
-static void ivr_fmq_adapter_on_tick(void *ctx) {
-    ivr_fmq_adapter_poll((ivr_fmq_adapter_t *)ctx);
+static void ivr_control_adapter_on_tick(void *ctx) {
+    ivr_control_adapter_poll((ivr_control_adapter_t *)ctx);
 }
 
-static ivr_status_t ivr_fmq_adapter_on_command(
+static ivr_status_t ivr_control_adapter_on_command(
     void *ctx, const ivr_room_command_t *command,
     ivr_room_command_result_t *result) {
-    ivr_fmq_adapter_t *a = (ivr_fmq_adapter_t *)ctx;
+    ivr_control_adapter_t *a = (ivr_control_adapter_t *)ctx;
     if (!a || !command || !result) {
         return IVR_EINVAL;
     }
@@ -2945,33 +2967,33 @@ static ivr_status_t ivr_fmq_adapter_on_command(
         strcmp(command->command, "get_snapshot") == 0) {
         /* Authorize before any reservation, media side effect or aggregate
            mutation: connection success never bypasses the scope ACL. */
-        if (!ivr_fmq_adapter_authorize(a, command, result)) {
+        if (!ivr_control_adapter_authorize(a, command, result)) {
             result->room_version =
-                ivr_fmq_room_version(a->service, command->room_id);
+                ivr_control_room_version(a->service, command->room_id);
             return IVR_OK;
         }
     }
     /* Conference membership is a room-domain mutation only. Typed
        dialog.start/dialog.terminate commands independently create and destroy
        media-worker routes; a room join never starts an IVR session. */
-    return ivr_fmq_adapter_apply(a, command, result);
+    return ivr_control_adapter_apply(a, command, result);
 }
 
 /* ------------------------------------------------------------------ */
 /* lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
-ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
-                                    const ivr_fmq_adapter_config_t *config,
-                                    ivr_fmq_adapter_t **out_adapter) {
+ivr_status_t ivr_control_adapter_create(turbo_room_service_t *service,
+                                    const ivr_control_adapter_config_t *config,
+                                    ivr_control_adapter_t **out_adapter) {
     if (!service || !config || !out_adapter) {
         return IVR_EINVAL;
     }
     if (config->dispatch_max_attempts >
-        IVR_FMQ_ADAPTER_MAX_DISPATCH_ATTEMPTS) {
+        IVR_CONTROL_ADAPTER_MAX_DISPATCH_ATTEMPTS) {
         return IVR_EINVAL;
     }
-    ivr_fmq_adapter_t *a = (ivr_fmq_adapter_t *)calloc(1, sizeof(*a));
+    ivr_control_adapter_t *a = (ivr_control_adapter_t *)calloc(1, sizeof(*a));
     if (!a) {
         return IVR_ENOSPC;
     }
@@ -2983,38 +3005,38 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
     snprintf(a->content_package, sizeof(a->content_package), "%s",
              config->default_content_package
                  ? config->default_content_package
-                 : IVR_FMQ_ADAPTER_DEFAULT_CONTENT_PACKAGE);
+                 : IVR_CONTROL_ADAPTER_DEFAULT_CONTENT_PACKAGE);
     a->seq_capacity = config->seq_capacity ? config->seq_capacity
-                                           : IVR_FMQ_ADAPTER_DEFAULT_SEQ_CAPACITY;
+                                           : IVR_CONTROL_ADAPTER_DEFAULT_SEQ_CAPACITY;
     a->seq_entries =
-        (ivr_fmq_call_seq_t *)calloc(a->seq_capacity, sizeof(*a->seq_entries));
+        (ivr_control_call_seq_t *)calloc(a->seq_capacity, sizeof(*a->seq_entries));
     if (!a->seq_entries) {
         free(a);
         return IVR_ENOSPC;
     }
     a->worker_capacity = config->worker_capacity
                               ? config->worker_capacity
-                              : IVR_FMQ_ADAPTER_DEFAULT_WORKER_CAPACITY;
+                              : IVR_CONTROL_ADAPTER_DEFAULT_WORKER_CAPACITY;
     a->legacy_worker_max_sessions =
         config->legacy_worker_max_sessions
             ? config->legacy_worker_max_sessions
-            : IVR_FMQ_ADAPTER_DEFAULT_LEGACY_WORKER_MAX_SESSIONS;
+            : IVR_CONTROL_ADAPTER_DEFAULT_LEGACY_WORKER_MAX_SESSIONS;
     a->worker_lease_ms = config->worker_lease_ms
                              ? config->worker_lease_ms
-                             : IVR_FMQ_ADAPTER_DEFAULT_WORKER_LEASE_MS;
+                             : IVR_CONTROL_ADAPTER_DEFAULT_WORKER_LEASE_MS;
     a->dispatch_deadline_ms =
         config->dispatch_deadline_ms
             ? config->dispatch_deadline_ms
-            : IVR_FMQ_ADAPTER_DEFAULT_DISPATCH_DEADLINE_MS;
+            : IVR_CONTROL_ADAPTER_DEFAULT_DISPATCH_DEADLINE_MS;
     a->dispatch_max_attempts =
         config->dispatch_max_attempts
             ? config->dispatch_max_attempts
-            : IVR_FMQ_ADAPTER_DEFAULT_DISPATCH_MAX_ATTEMPTS;
+            : IVR_CONTROL_ADAPTER_DEFAULT_DISPATCH_MAX_ATTEMPTS;
     a->clock = config->clock;
     a->dedup_retention_ms =
         config->dedup_retention_ms ? config->dedup_retention_ms
-                                   : IVR_FMQ_ADAPTER_DEFAULT_DEDUP_RETENTION_MS;
-    if (config->worker_acl_count > IVR_FMQ_ADAPTER_MAX_WORKER_ACLS) {
+                                   : IVR_CONTROL_ADAPTER_DEFAULT_DEDUP_RETENTION_MS;
+    if (config->worker_acl_count > IVR_CONTROL_ADAPTER_MAX_WORKER_ACLS) {
         free(a->seq_entries);
         free(a);
         return IVR_EINVAL;
@@ -3022,7 +3044,7 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
     a->acl_capacity = (uint32_t)config->worker_acl_count;
     if (a->acl_capacity > 0u) {
         uint32_t acl_i;
-        a->acls = (ivr_fmq_acl_entry_t *)calloc(a->acl_capacity,
+        a->acls = (ivr_control_acl_entry_t *)calloc(a->acl_capacity,
                                                 sizeof(*a->acls));
         if (!a->acls) {
             free(a->seq_entries);
@@ -3030,9 +3052,9 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
             return IVR_ENOSPC;
         }
         for (acl_i = 0u; acl_i < a->acl_capacity; ++acl_i) {
-            const ivr_fmq_worker_acl_entry_t *src =
+            const ivr_control_worker_acl_entry_t *src =
                 &config->worker_acls[acl_i];
-            ivr_fmq_acl_entry_t *dst = &a->acls[acl_i];
+            ivr_control_acl_entry_t *dst = &a->acls[acl_i];
             if (!src->worker_id || src->worker_id[0] == '\0' ||
                 strlen(src->worker_id) >= sizeof(dst->worker_id) ||
                 (src->tenant_id &&
@@ -3066,7 +3088,7 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
             a->acl_count++;
         }
     }
-    a->workers = (ivr_fmq_worker_entry_t *)calloc(a->worker_capacity,
+    a->workers = (ivr_control_worker_entry_t *)calloc(a->worker_capacity,
                                                    sizeof(*a->workers));
     if (!a->workers) {
         free(a->acls);
@@ -3076,8 +3098,8 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
     }
     a->assignment_capacity =
         config->assignment_capacity ? config->assignment_capacity
-                                    : IVR_FMQ_ADAPTER_DEFAULT_ASSIGNMENT_CAPACITY;
-    a->assignments = (ivr_fmq_assignment_entry_t *)calloc(
+                                    : IVR_CONTROL_ADAPTER_DEFAULT_ASSIGNMENT_CAPACITY;
+    a->assignments = (ivr_control_assignment_entry_t *)calloc(
         a->assignment_capacity, sizeof(*a->assignments));
     if (!a->assignments) {
         free(a->acls);
@@ -3088,8 +3110,8 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
     }
     a->dialog_capacity = config->dialog_capacity
                              ? config->dialog_capacity
-                             : IVR_FMQ_ADAPTER_DEFAULT_DIALOG_CAPACITY;
-    a->dialogs = (ivr_fmq_dialog_route_t *)calloc(a->dialog_capacity,
+                             : IVR_CONTROL_ADAPTER_DEFAULT_DIALOG_CAPACITY;
+    a->dialogs = (ivr_control_dialog_route_t *)calloc(a->dialog_capacity,
                                                    sizeof(*a->dialogs));
     if (!a->dialogs) {
         free(a->acls);
@@ -3114,7 +3136,6 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
         bridge_config.host =
             config->bind_host ? config->bind_host : "127.0.0.1";
         bridge_config.port = config->bind_port;
-        bridge_config.transport = config->transport;
         bridge_config.path = config->path;
         bridge_config.tls = config->tls;
         bridge_config.verify_peer_identity = config->verify_peer_identity;
@@ -3131,18 +3152,18 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
         bridge_config.now_ms = a->clock.now_ms;
         bridge_config.now_ctx = a->clock.context;
         bridge_config.handler.context = a;
-        bridge_config.handler.get_room_version = ivr_fmq_adapter_get_room_version;
-        bridge_config.handler.on_command = ivr_fmq_adapter_on_command;
+        bridge_config.handler.get_room_version = ivr_control_adapter_get_room_version;
+        bridge_config.handler.on_command = ivr_control_adapter_on_command;
         bridge_config.handler.on_dispatch_result =
-            ivr_fmq_adapter_on_dispatch_result;
+            ivr_control_adapter_on_dispatch_result;
         bridge_config.handler.on_release_result =
-            ivr_fmq_adapter_on_release_result;
+            ivr_control_adapter_on_release_result;
         bridge_config.handler.on_media_result =
-            ivr_fmq_adapter_on_media_result;
-        bridge_config.handler.on_media_event = ivr_fmq_adapter_on_media_event;
+            ivr_control_adapter_on_media_result;
+        bridge_config.handler.on_media_event = ivr_control_adapter_on_media_event;
         bridge_config.handler.on_inventory_page =
-            ivr_fmq_adapter_on_inventory_page;
-        bridge_config.handler.on_tick = ivr_fmq_adapter_on_tick;
+            ivr_control_adapter_on_inventory_page;
+        bridge_config.handler.on_tick = ivr_control_adapter_on_tick;
         if (ivr_room_bridge_create(&bridge_config, &a->bridge) != IVR_OK) {
             ivr_mutex_destroy(&a->seq_lock);
             free(a->acls);
@@ -3158,7 +3179,7 @@ ivr_status_t ivr_fmq_adapter_create(turbo_room_service_t *service,
     return IVR_OK;
 }
 
-ivr_status_t ivr_fmq_adapter_start(ivr_fmq_adapter_t *adapter) {
+ivr_status_t ivr_control_adapter_start(ivr_control_adapter_t *adapter) {
     if (!adapter) {
         return IVR_EINVAL;
     }
@@ -3172,7 +3193,7 @@ ivr_status_t ivr_fmq_adapter_start(ivr_fmq_adapter_t *adapter) {
     return rc;
 }
 
-void ivr_fmq_adapter_stop(ivr_fmq_adapter_t *adapter) {
+void ivr_control_adapter_stop(ivr_control_adapter_t *adapter) {
     if (!adapter || !adapter->bridge || !adapter->started) {
         return;
     }
@@ -3180,7 +3201,7 @@ void ivr_fmq_adapter_stop(ivr_fmq_adapter_t *adapter) {
     adapter->started = 0;
 }
 
-void ivr_fmq_adapter_destroy(ivr_fmq_adapter_t *adapter) {
+void ivr_control_adapter_destroy(ivr_control_adapter_t *adapter) {
     if (!adapter) {
         return;
     }
@@ -3206,15 +3227,15 @@ void ivr_fmq_adapter_destroy(ivr_fmq_adapter_t *adapter) {
     free(adapter);
 }
 
-ivr_status_t ivr_fmq_adapter_get_assignment(
-    const ivr_fmq_adapter_t *adapter, const char *message_id,
-    ivr_fmq_assignment_t *out) {
+ivr_status_t ivr_control_adapter_get_assignment(
+    const ivr_control_adapter_t *adapter, const char *message_id,
+    ivr_control_assignment_t *out) {
     if (!adapter || !message_id || !out) {
         return IVR_EINVAL;
     }
     ivr_mutex_lock((ivr_mutex_t *)&adapter->seq_lock);
-    const ivr_fmq_assignment_entry_t *entry =
-        ivr_fmq_assignment_find_locked((ivr_fmq_adapter_t *)adapter,
+    const ivr_control_assignment_entry_t *entry =
+        ivr_control_assignment_find_locked((ivr_control_adapter_t *)adapter,
                                         message_id);
     if (!entry) {
         ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);

@@ -26,6 +26,7 @@ struct ivr_whep_transport_s {
     int destroying;
     int active;
     int connected;
+    int terminal;
     ivr_str_t tenant_id;
     ivr_str_t provider_session_id;
     ivr_str_t dialog_id;
@@ -155,15 +156,27 @@ static int whep_call_matches_locked(const ivr_whep_transport_t *transport,
            call_view_matches(&call->call_id, &transport->call_id);
 }
 
-static void whep_delete_session(ivr_whep_transport_t *transport,
-                                const char *location) {
+static int whep_delete_session(ivr_whep_transport_t *transport,
+                               const char *location) {
     ivr_http_media_response_t response;
+    int request_status;
 
     if (!transport || !location || location[0] == '\0') {
-        return;
+        return 0;
     }
-    (void)ivr_http_media_request(transport->http_client, "DELETE", location,
-                                 NULL, NULL, NULL, &response);
+    memset(&response, 0, sizeof(response));
+    request_status = ivr_http_media_request(
+        transport->http_client, "DELETE", location, NULL, NULL, NULL,
+        &response);
+    if (request_status != 0 ||
+        (response.status != 200 && response.status != 204 &&
+         response.status != 404)) {
+        fprintf(stderr,
+                "[ivr_whep] delete session rc=%d status=%d location=%s\n",
+                request_status, response.status, location);
+        return -1;
+    }
+    return 0;
 }
 
 static void whep_on_frame(turbo_media_track_t *track, const uint8_t *data,
@@ -268,6 +281,7 @@ static void whep_on_state_change(turbo_peer_connection_t *pc,
     ivr_whep_transport_t *transport =
         (ivr_whep_transport_t *)user_data;
     turbo_media_track_t *track;
+    int emit_connected = 0;
 
     (void)pc;
     if (!transport) {
@@ -275,20 +289,24 @@ static void whep_on_state_change(turbo_peer_connection_t *pc,
     }
     ivr_mutex_lock(&transport->lock);
     if (state == TURBO_PEER_STATE_CONNECTED) {
-        transport->connected = 1;
-        transport->last_frame_ms = salts_monotonic_ms();
-        transport->input_stalled = 0;
+        if (!transport->terminal) {
+            transport->connected = 1;
+            transport->last_frame_ms = salts_monotonic_ms();
+            transport->input_stalled = 0;
+            emit_connected = 1;
+        }
     } else if (state == TURBO_PEER_STATE_DISCONNECTED ||
                state == TURBO_PEER_STATE_FAILED ||
                state == TURBO_PEER_STATE_CLOSED) {
         transport->connected = 0;
+        transport->terminal = 1;
     }
     track = transport->audio_track;
     ivr_mutex_unlock(&transport->lock);
-    if (state == TURBO_PEER_STATE_CONNECTED && track) {
+    if (emit_connected && track) {
         (void)turbo_media_track_start(track);
     }
-    if (state == TURBO_PEER_STATE_CONNECTED) {
+    if (emit_connected) {
         whep_emit_state(transport, IVR_MEDIA_LINK_CONNECTED,
                         IVR_MEDIA_ERROR_NONE);
     } else if (state == TURBO_PEER_STATE_DISCONNECTED) {
@@ -453,7 +471,7 @@ static int whep_stop_impl(ivr_whep_transport_t *transport) {
         ivr_thread_join(&transport->poll_thread);
         transport->poll_started = 0;
     }
-    whep_delete_session(transport, location);
+    int delete_status = whep_delete_session(transport, location);
     if (pc) {
         turbo_peer_connection_destroy(pc);
     }
@@ -463,7 +481,7 @@ static int whep_stop_impl(ivr_whep_transport_t *transport) {
     transport->session_location[0] = '\0';
     transport->session_etag[0] = '\0';
     ivr_mutex_unlock(&transport->lock);
-    return 0;
+    return delete_status;
 }
 
 int ivr_whep_transport_stop(ivr_whep_transport_t *transport,
@@ -492,7 +510,7 @@ static ivr_status_t whep_start_fail(ivr_whep_transport_t *transport,
                                     const char *location,
                                     ivr_status_t status) {
     if (location && location[0]) {
-        whep_delete_session(transport, location);
+        (void)whep_delete_session(transport, location);
     }
     if (pc) {
         turbo_peer_connection_destroy(pc);
@@ -567,6 +585,7 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
     transport->active = 1;
     transport->poll_stop = 0;
     transport->connected = 0;
+    transport->terminal = 0;
     transport->last_frame_ms = 0;
     transport->input_stalled = 0;
     ivr_mutex_unlock(&transport->lock);

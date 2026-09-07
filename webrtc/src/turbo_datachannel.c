@@ -19,15 +19,19 @@
 #include <openssl/evp.h>
 #include <openssl/srtp.h>
 #include "tlog.h"
-#ifndef _WIN32
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <arpa/inet.h>
 #endif
-#include "ice/turbo_ice.h"
+#include "ice/salts_ice.h"
 #include "turbo_srtp_defs.h"
 
-/* TurboNet X.509 certificate generation */
+/* Salts X.509 certificate generation */
 #include <asn1/x509_generate.h>
 
 /* SRTP profile key length helper */
@@ -191,31 +195,30 @@ int srtp_derive_keys_from_dtls(void *ssl_ptr,
  * Transport Helpers
  * ============================================================================ */
 
-typedef struct {
-    salts_mutex_t mutex;
-    salts_cond_t cond;
-    int done;
-    coro_post_fn fn;
-    void *arg1;
-    void *arg2;
-} dc_sync_post_t;
+enum {
+    DC_CNET_CONNECTION_CAPACITY = 1,
+    DC_CNET_QUEUE_CAPACITY = 64,
+    DC_CNET_MAX_SEND_BYTES = 64 * 1024,
+    DC_CNET_RECEIVE_BYTES = 64 * 1024,
+    DC_CNET_POLL_INTERVAL_MS = 1,
+    DC_CNET_STOP_TIMEOUT_MS = 5000,
+    DC_CNET_LISTENER_BACKLOG = 128,
+    DC_CNET_DATAGRAM_SEND_CAPACITY = 64,
+    DC_CNET_DATAGRAM_REQUEST_CAPACITY = 128,
+    DC_CNET_DATAGRAM_COMPLETION_CAPACITY = 64
+};
 
-typedef struct {
-    turbo_dc_peer_t *peer;
-    size_t len;
-#if defined(_MSC_VER)
-    char data[1];
-#else
-    char data[];
-#endif
-} dc_send_task_t;
+#define DC_CNET_POLL_INTERVAL_NS \
+    ((uint64_t)DC_CNET_POLL_INTERVAL_MS * UINT64_C(1000000))
+
+static SALTS_THREAD_LOCAL turbo_dc_context_t *g_dc_transport_owner = NULL;
 
 static int dc_is_ipv6_host(const char *host) {
     return host && strchr(host, ':') != NULL;
 }
 
 static int dc_is_on_transport_thread(const turbo_dc_context_t *ctx) {
-    return ctx && ctx->transport_ctx && coro_context_current() == ctx->transport_ctx;
+    return ctx && g_dc_transport_owner == ctx;
 }
 
 int dc_peer_acquire(turbo_dc_peer_t *peer) {
@@ -329,128 +332,78 @@ static void dc_notify_closed(turbo_dc_peer_t *peer) {
     dc_notify_state(peer, TURBO_DC_STATE_CLOSED);
 }
 
-static void dc_transport_thread_main(void *arg) {
-    turbo_dc_context_t *ctx = (turbo_dc_context_t *)arg;
-    if (!ctx || !ctx->transport_ctx) return;
-    coro_context_run(ctx->transport_ctx, TURBO_RUN_DEFAULT);
-}
-
-static void dc_transport_stop_post(void *arg1, void *arg2) {
-    coro_context_t *transport_ctx = (coro_context_t *)arg1;
-    (void)arg2;
-
-    coro_context_set_persistent(transport_ctx, 0);
-    coro_context_stop(transport_ctx);
-}
-
-static void dc_sync_post_runner(void *arg1, void *arg2) {
-    dc_sync_post_t *sync = (dc_sync_post_t *)arg1;
-    (void)arg2;
-
-    sync->fn(sync->arg1, sync->arg2);
-
-    salts_mutex_lock(&sync->mutex);
-    sync->done = 1;
-    salts_cond_signal(&sync->cond);
-    salts_mutex_unlock(&sync->mutex);
-}
-
-static int dc_post_sync(turbo_dc_context_t *ctx, coro_post_fn fn, void *arg1, void *arg2) {
-    dc_sync_post_t sync;
-    int post_rc;
-
-    if (!ctx || !ctx->transport_ctx || dc_is_on_transport_thread(ctx)) {
+static int dc_post_sync(turbo_dc_context_t *ctx, dc_transport_task_fn fn,
+                        void *arg1, void *arg2) {
+    if (!ctx || !fn) {
+        return SALTS_EINVAL;
+    }
+    if (dc_is_on_transport_thread(ctx)) {
         fn(arg1, arg2);
-        return 0;
+        return SALTS_OK;
     }
 
-    memset(&sync, 0, sizeof(sync));
-    salts_mutex_init(&sync.mutex);
-    salts_cond_init(&sync.cond);
-    sync.fn = fn;
-    sync.arg1 = arg1;
-    sync.arg2 = arg2;
-
-    salts_mutex_lock(&sync.mutex);
-    post_rc = coro_post(ctx->transport_ctx, dc_sync_post_runner, &sync, NULL);
-    if (post_rc == 0) {
-        while (!sync.done) {
-            salts_cond_wait(&sync.cond, &sync.mutex);
-        }
+    salts_mutex_lock(&ctx->transport_mutex);
+    while (ctx->transport_command_pending && !ctx->transport_stop_requested) {
+        salts_cond_wait(&ctx->transport_cond, &ctx->transport_mutex);
     }
-    salts_mutex_unlock(&sync.mutex);
-
-    salts_cond_destroy(&sync.cond);
-    salts_mutex_destroy(&sync.mutex);
-    return post_rc;
+    if (ctx->transport_stop_requested) {
+        salts_mutex_unlock(&ctx->transport_mutex);
+        return SALTS_ESHUTDOWN;
+    }
+    ctx->transport_command = fn;
+    ctx->transport_command_arg1 = arg1;
+    ctx->transport_command_arg2 = arg2;
+    ctx->transport_command_done = 0;
+    ctx->transport_command_pending = 1;
+    salts_cond_broadcast(&ctx->transport_cond);
+    while (!ctx->transport_command_done && !ctx->transport_stop_requested) {
+        salts_cond_wait(&ctx->transport_cond, &ctx->transport_mutex);
+    }
+    ctx->transport_command_pending = 0;
+    salts_cond_broadcast(&ctx->transport_cond);
+    salts_mutex_unlock(&ctx->transport_mutex);
+    return ctx->transport_stop_requested ? SALTS_ESHUTDOWN : SALTS_OK;
 }
 
-static int dc_post_async(turbo_dc_context_t *ctx, coro_post_fn fn, void *arg1, void *arg2) {
-    if (!ctx || !ctx->transport_ctx || dc_is_on_transport_thread(ctx)) {
-        fn(arg1, arg2);
-        return 0;
-    }
-    return coro_post(ctx->transport_ctx, fn, arg1, arg2);
-}
-
-static void dc_copy_sockaddr(struct sockaddr_storage *dst, const struct sockaddr *src) {
-    size_t len = sizeof(*dst);
-
-    if (!dst || !src) return;
-
-    switch (src->sa_family) {
-        case AF_INET:
-            len = sizeof(struct sockaddr_in);
-            break;
-        case AF_INET6:
-            len = sizeof(struct sockaddr_in6);
-            break;
-        default:
-            break;
-    }
-
-    memset(dst, 0, sizeof(*dst));
-    memcpy(dst, src, len);
-}
-
-static int dc_resolve_bind_addr(const char *host,
-                                uint16_t port,
-                                int socktype,
-                                struct sockaddr_storage *out_addr,
-                                socklen_t *out_len) {
+static int dc_resolve_datagram_peer(const char *host, uint16_t port,
+                                    cnet_datagram_peer *out_peer) {
     struct addrinfo hints;
     struct addrinfo *result = NULL;
     char port_buf[16];
-    const char *bind_host = (host && host[0]) ? host : "0.0.0.0";
     int rc;
 
-    if (!out_addr || !out_len) return -1;
+    if (!host || !host[0] || port == 0 || !out_peer) return SALTS_EINVAL;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = socktype;
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
 
     snprintf(port_buf, sizeof(port_buf), "%u", (unsigned)port);
-    rc = getaddrinfo(bind_host, port_buf, &hints, &result);
+    rc = getaddrinfo(host, port_buf, &hints, &result);
     if (rc != 0 || !result) {
         if (result) freeaddrinfo(result);
-        return -1;
+        return SALTS_ENOENT;
     }
 
-    memset(out_addr, 0, sizeof(*out_addr));
-    memcpy(out_addr, result->ai_addr, result->ai_addrlen);
-    *out_len = (socklen_t)result->ai_addrlen;
+    memset(out_peer, 0, sizeof(*out_peer));
+    if (result->ai_family == AF_INET) {
+        const struct sockaddr_in *address = (const struct sockaddr_in *)result->ai_addr;
+        out_peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
+        out_peer->port = ntohs(address->sin_port);
+        memcpy(out_peer->address, &address->sin_addr, sizeof(address->sin_addr));
+    } else if (result->ai_family == AF_INET6) {
+        const struct sockaddr_in6 *address = (const struct sockaddr_in6 *)result->ai_addr;
+        out_peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
+        out_peer->port = ntohs(address->sin6_port);
+        out_peer->scope_id = address->sin6_scope_id;
+        memcpy(out_peer->address, &address->sin6_addr, sizeof(address->sin6_addr));
+    } else {
+        freeaddrinfo(result);
+        return SALTS_ENOTSUP;
+    }
     freeaddrinfo(result);
-    return 0;
-}
-
-static turbo_stream_kind_t dc_stream_kind_for_host(const char *host) {
-    return dc_is_ipv6_host(host) ? TURBO_STREAM_TCP6 : TURBO_STREAM_TCP4;
-}
-
-static turbo_datagram_kind_t dc_datagram_kind_for_host(const char *host) {
-    return dc_is_ipv6_host(host) ? TURBO_DATAGRAM_UDP6 : TURBO_DATAGRAM_UDP4;
+    return SALTS_OK;
 }
 
 static int dc_is_dtls_record(const uint8_t *data, size_t len) {
@@ -513,150 +466,84 @@ static void dc_handle_incoming_packet(turbo_dc_peer_t *peer, const void *data, s
     }
 }
 
-static int dc_stream_recv_cb(void *handle, const mem_slice_t *data, void *peer_ctx) {
-    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)turbo_stream_get_user_data((turbo_stream_t *)handle);
-    (void)peer_ctx;
-    if (!peer || !data || !data->data || data->length == 0) return 0;
-    dc_handle_incoming_packet(peer, data->data, data->length);
-    return 0;
-}
-
-static void dc_stream_close_cb(void *handle) {
-    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)turbo_stream_get_user_data((turbo_stream_t *)handle);
+static void dc_stream_state_cb(void *user, cnet_connection connection,
+                               cnet_connection_state state,
+                               const cnet_error *error) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)user;
+    (void)connection;
     if (!peer) return;
-
-    if (peer->server_stream == (turbo_stream_t *)handle) {
-        peer->server_stream = NULL;
+    if (state == CNET_CONNECTION_CONNECTED) {
+        if (dtls_session_init_timer(peer) != 0 ||
+            cnet_receive(&peer->stream_client, peer->stream_connection, 1u) != SALTS_OK) {
+            dc_fail_peer(peer, TURBO_DC_ERROR_CREATE_TRANSPORT,
+                         "failed to initialize CNet stream receive");
+            return;
+        }
+        dc_notify_state(peer, TURBO_DC_STATE_CONNECTING);
+        if (!peer->ctx->is_server) dtls_process_handshake(peer);
+    } else if (state == CNET_CONNECTION_FAILED) {
+        dc_fail_peer(peer, TURBO_DC_ERROR_CONNECT_FAILED,
+                     error && error->stage ? error->stage : "CNet stream failed");
+    } else if (state == CNET_CONNECTION_CLOSED) {
+        dc_notify_closed(peer);
     }
-    dc_notify_closed(peer);
 }
 
-static void dc_stream_connect_cb(void *handle, int status, void *peer_ctx) {
-    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)turbo_stream_get_user_data((turbo_stream_t *)handle);
-    (void)peer_ctx;
-
-    if (!peer) return;
-    if (status != 0) {
-        dc_fail_peer(peer, TURBO_DC_ERROR_CONNECT_FAILED, salts_strerror(status));
-        return;
-    }
-
-    if (dtls_session_init_timer(peer) != 0) {
-        dc_fail_peer(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to create DTLS timer");
-        return;
-    }
-    if (turbo_stream_recv_start((turbo_stream_t *)handle, dc_stream_recv_cb) != 0) {
-        dc_fail_peer(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to start stream receive");
-        return;
-    }
-
-    dc_notify_state(peer, TURBO_DC_STATE_CONNECTING);
-    dtls_process_handshake(peer);
+static void dc_stream_receive_cb(void *user, cnet_connection connection,
+                                 const cnet_receive_view *view) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)user;
+    if (!peer || !view) return;
+    dc_handle_incoming_packet(peer, view->data, view->size);
+    (void)cnet_receive(&peer->stream_client, connection, 1u);
 }
 
-static void dc_stream_accept_cb(void *server_handle, void *client_handle, void *peer_ctx) {
-    turbo_dc_peer_t *peer = NULL;
-    turbo_stream_t *client = (turbo_stream_t *)client_handle;
-    (void)peer_ctx;
-
-    if (server_handle) {
-        peer = (turbo_dc_peer_t *)turbo_stream_listener_get_user_data((turbo_stream_listener_t *)server_handle);
+static void dc_datagram_receive_cb(void *user, cnet_datagram *datagram,
+                                   const cnet_datagram_peer *remote,
+                                   const cnet_receive_view *view) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)user;
+    if (!peer || !remote || !view) return;
+    if (peer->ctx->is_server) {
+        peer->remote_datagram_peer = *remote;
+        peer->has_remote_datagram_peer = 1;
     }
-    if (!peer || !client) return;
-
-    if (peer->server_stream) {
-        turbo_stream_close(client);
-        turbo_stream_destroy(client);
-        return;
-    }
-
-    peer->server_stream = client;
-    turbo_stream_set_user_data(client, peer);
-
-    if (dtls_session_init_timer(peer) != 0) {
-        dc_fail_peer(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to create DTLS timer");
-        return;
-    }
-    if (turbo_stream_recv_start(client, dc_stream_recv_cb) != 0) {
-        dc_fail_peer(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to start stream receive");
-        return;
-    }
-
-    dc_notify_state(peer, TURBO_DC_STATE_CONNECTING);
+    dc_handle_incoming_packet(peer, view->data, view->size);
+    (void)cnet_datagram_receive(datagram, 1u);
 }
 
-static int dc_datagram_recv_cb(void *handle, const mem_slice_t *data, void *peer_ctx) {
-    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)turbo_datagram_get_user_data((turbo_datagram_t *)handle);
-    const struct sockaddr *src = (const struct sockaddr *)peer_ctx;
+typedef struct {
+    turbo_dc_peer_t *peer;
+    const void *data;
+    size_t len;
+    int status;
+} dc_send_command_t;
 
-    if (!peer || !data || !data->data || data->length == 0) return 0;
-
-    if (src) {
-        dc_copy_sockaddr(&peer->remote_addr, src);
-        peer->has_remote_addr = 1;
-    }
-
-    dc_handle_incoming_packet(peer, data->data, data->length);
-    return 0;
-}
-
-static void dc_async_send_task(void *arg1, void *arg2) {
-    dc_send_task_t *task = (dc_send_task_t *)arg1;
+static void dc_send_task(void *arg1, void *arg2) {
+    dc_send_command_t *command = (dc_send_command_t *)arg1;
     turbo_dc_peer_t *peer;
     (void)arg2;
-
-    if (!task || !task->peer) {
-        free(task);
-        return;
+    if (!command || !command->peer) return;
+    peer = command->peer;
+    command->status = SALTS_ENOTCONN;
+    if (peer->ctx->transport == TURBO_DC_TRANSPORT_TCP &&
+        peer->stream_client_initialized && peer->stream_connection.generation != 0u) {
+        command->status = cnet_send(&peer->stream_client, peer->stream_connection,
+                                    command->data, command->len);
+    } else if (peer->ctx->transport == TURBO_DC_TRANSPORT_UDP &&
+               peer->datagram_initialized && peer->has_remote_datagram_peer) {
+        command->status = cnet_datagram_send(&peer->datagram,
+                                             &peer->remote_datagram_peer,
+                                             command->data, command->len, 0u);
     }
-
-    peer = task->peer;
-
-    switch (peer->ctx->transport) {
-        case TURBO_DC_TRANSPORT_TCP:
-            if (peer->ctx->is_server) {
-                if (peer->server_stream) {
-                    turbo_stream_send(peer->server_stream, task->data, task->len);
-                    turbo_stream_flush(peer->server_stream);
-                }
-            } else if (peer->transport) {
-                turbo_stream_send((turbo_stream_t *)peer->transport, task->data, task->len);
-                turbo_stream_flush((turbo_stream_t *)peer->transport);
-            }
-            break;
-
-        case TURBO_DC_TRANSPORT_UDP:
-        default:
-            if (!peer->transport) break;
-            if (peer->ctx->is_server) {
-                if (peer->has_remote_addr) {
-                    turbo_datagram_sendto((turbo_datagram_t *)peer->transport,
-                                          (const struct sockaddr *)&peer->remote_addr,
-                                          task->data, task->len);
-                }
-            } else {
-                turbo_datagram_send((turbo_datagram_t *)peer->transport, task->data, task->len);
-            }
-            break;
-    }
-
-    free(task);
 }
 
 static void direct_send(turbo_dc_peer_t *peer, const void *data, size_t len) {
-    dc_send_task_t *task;
-
+    dc_send_command_t command;
     if (!peer || !data || len == 0) return;
-
-    task = (dc_send_task_t *)malloc(sizeof(*task) + len);
-    if (!task) return;
-
-    task->peer = peer;
-    task->len = len;
-    memcpy(task->data, data, len);
-
-    if (dc_post_async(peer->ctx, dc_async_send_task, task, NULL) != 0) {
-        free(task);
+    command = (dc_send_command_t){peer, data, len, SALTS_EINVAL};
+    if (dc_post_sync(peer->ctx, dc_send_task, &command, NULL) != SALTS_OK ||
+        command.status != SALTS_OK) {
+        dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT,
+                          salts_strerror(command.status));
     }
 }
 
@@ -669,22 +556,16 @@ static void dc_transport_close_task(void *arg1, void *arg2) {
 
     switch (peer->ctx->transport) {
         case TURBO_DC_TRANSPORT_TCP:
-            if (peer->server_stream) {
-                turbo_stream_close(peer->server_stream);
-            }
-            if (!peer->ctx->is_server && peer->transport) {
-                turbo_stream_close((turbo_stream_t *)peer->transport);
-            }
-            if (peer->listener) {
-                turbo_stream_listener_close(peer->listener);
-            }
+            if (peer->stream_client_initialized &&
+                peer->stream_connection.generation != 0u)
+                (void)cnet_close(&peer->stream_client, peer->stream_connection);
+            if (peer->listener_initialized) (void)cnet_listener_close(&peer->listener);
             break;
 
         case TURBO_DC_TRANSPORT_UDP:
         default:
-            if (peer->transport) {
-                turbo_datagram_close((turbo_datagram_t *)peer->transport);
-            }
+            if (peer->datagram_initialized)
+                (void)cnet_datagram_stop(&peer->datagram, DC_CNET_STOP_TIMEOUT_MS);
             break;
     }
 }
@@ -698,25 +579,24 @@ static void dc_transport_destroy_task(void *arg1, void *arg2) {
 
     switch (peer->ctx->transport) {
         case TURBO_DC_TRANSPORT_TCP:
-            if (peer->server_stream) {
-                turbo_stream_destroy(peer->server_stream);
-                peer->server_stream = NULL;
+            if (peer->stream_client_initialized) {
+                (void)cnet_client_stop(&peer->stream_client, DC_CNET_STOP_TIMEOUT_MS);
+                (void)cnet_client_destroy(&peer->stream_client);
+                peer->stream_client_initialized = 0;
             }
-            if (!peer->ctx->is_server && peer->transport) {
-                turbo_stream_destroy((turbo_stream_t *)peer->transport);
-            }
-            peer->transport = NULL;
-            if (peer->listener) {
-                turbo_stream_listener_close(peer->listener);
-                peer->listener = NULL;
+            if (peer->listener_initialized) {
+                (void)cnet_listener_close(&peer->listener);
+                (void)cnet_listener_destroy(&peer->listener);
+                peer->listener_initialized = 0;
             }
             break;
 
         case TURBO_DC_TRANSPORT_UDP:
         default:
-            if (peer->transport) {
-                turbo_datagram_destroy((turbo_datagram_t *)peer->transport);
-                peer->transport = NULL;
+            if (peer->datagram_initialized) {
+                (void)cnet_datagram_stop(&peer->datagram, DC_CNET_STOP_TIMEOUT_MS);
+                (void)cnet_datagram_destroy(&peer->datagram);
+                peer->datagram_initialized = 0;
             }
             break;
     }
@@ -745,88 +625,121 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
     int *status = (int *)arg2;
 
     if (status) *status = -1;
-    if (!peer || !peer->ctx || !peer->ctx->transport_ctx) return;
+    if (!peer || !peer->ctx) return;
 
     switch (peer->ctx->transport) {
         case TURBO_DC_TRANSPORT_TCP:
+        {
+            cnet_client_config client_config = {
+                .backend = dc_is_ipv6_host(peer->remote_host)
+#if defined(_WIN32)
+                               ? NATIVE_IO_BACKEND_IOCP : NATIVE_IO_BACKEND_IOCP,
+#else
+                               ? NATIVE_IO_BACKEND_EPOLL : NATIVE_IO_BACKEND_EPOLL,
+#endif
+                .connection_capacity = DC_CNET_CONNECTION_CAPACITY,
+                .command_capacity = DC_CNET_QUEUE_CAPACITY,
+                .request_capacity = DC_CNET_QUEUE_CAPACITY,
+                .completion_batch_capacity = DC_CNET_QUEUE_CAPACITY,
+                .event_capacity = DC_CNET_QUEUE_CAPACITY,
+                .max_send_bytes = DC_CNET_MAX_SEND_BYTES,
+                .receive_buffer_bytes = DC_CNET_RECEIVE_BYTES,
+                .connect_timeout_ms = DC_CNET_STOP_TIMEOUT_MS,
+                .read_timeout_ms = 0,
+                .write_timeout_ms = DC_CNET_STOP_TIMEOUT_MS,
+                .tls_io_buffer_bytes = 0,
+                .tls_handshake_timeout_ms = 0,
+                .command_buffer_bytes = DC_CNET_MAX_SEND_BYTES,
+                .event_buffer_bytes = DC_CNET_RECEIVE_BYTES
+            };
+            cnet_observer observer = {
+                .on_state = dc_stream_state_cb,
+                .on_receive = dc_stream_receive_cb,
+                .user = peer,
+                .on_send = NULL
+            };
+            int rc = cnet_client_init(&peer->stream_client, &client_config);
+            if (rc != SALTS_OK) {
+                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, salts_strerror(rc));
+                return;
+            }
+            peer->stream_client_initialized = 1;
             if (peer->ctx->is_server) {
-                struct sockaddr_storage bind_addr;
-                socklen_t bind_len = 0;
-                turbo_stream_kind_t kind;
-
-                if (dc_resolve_bind_addr(peer->remote_host, peer->remote_port, SOCK_STREAM,
-                                         &bind_addr, &bind_len) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, "failed to resolve bind address");
+                cnet_listener_config listener_config = {
+                    .backend = client_config.backend,
+                    .host = peer->remote_host && peer->remote_host[0]
+                                ? peer->remote_host : "0.0.0.0",
+                    .port = peer->remote_port,
+                    .backlog = DC_CNET_LISTENER_BACKLOG
+                };
+                rc = cnet_listener_init(&peer->listener, &listener_config);
+                if (rc != SALTS_OK) {
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, salts_strerror(rc));
                     return;
                 }
-
-                kind = (bind_addr.ss_family == AF_INET6) ? TURBO_STREAM_TCP6 : TURBO_STREAM_TCP4;
-                peer->listener = turbo_stream_listen(peer->ctx->transport_ctx, kind,
-                                                     (const struct sockaddr *)&bind_addr, 128,
-                                                     dc_stream_accept_cb);
-                if (!peer->listener) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
-                    return;
-                }
-
-                turbo_stream_listener_set_user_data(peer->listener, peer);
+                peer->listener_initialized = 1;
                 peer->transport_ops = &g_direct_ops;
                 dc_notify_state(peer, TURBO_DC_STATE_CONNECTING);
                 if (status) *status = 0;
             } else {
-                turbo_stream_t *stream;
-
-                stream = turbo_stream_create(peer->ctx->transport_ctx, dc_stream_kind_for_host(peer->remote_host));
-                if (!stream) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
+                char uri[512];
+                int written = snprintf(uri, sizeof(uri),
+                    dc_is_ipv6_host(peer->remote_host) ? "tcp://[%s]:%u" : "tcp://%s:%u",
+                    peer->remote_host, (unsigned)peer->remote_port);
+                cnet_connect_options options = {.uri = uri, .observer = observer};
+                if (written < 0 || (size_t)written >= sizeof(uri)) {
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, "CNet URI too long");
                     return;
                 }
-
-                turbo_stream_set_user_data(stream, peer);
-                if (turbo_stream_connect(stream, peer->remote_host, peer->remote_port,
-                                         dc_stream_connect_cb, dc_stream_close_cb) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
-                    turbo_stream_destroy(stream);
+                rc = cnet_connect(&peer->stream_client, &options,
+                                  &peer->stream_connection);
+                if (rc != SALTS_OK) {
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, salts_strerror(rc));
                     return;
                 }
-
-                peer->transport = stream;
                 peer->transport_ops = &g_direct_ops;
                 if (status) *status = 0;
             }
             break;
+        }
 
         case TURBO_DC_TRANSPORT_KCP:
             dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT,
-                              "KCP transport is not available in the installed TurboNet::CoroNet package");
+                              "KCP transport requires a configured CNet packet session");
             return;
 
         case TURBO_DC_TRANSPORT_UDP:
         default: {
-            turbo_datagram_t *dg = turbo_datagram_create(peer->ctx->transport_ctx,
-                                                         dc_datagram_kind_for_host(peer->remote_host));
-            if (!dg) {
-                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
+            cnet_datagram_config config = CNET_DATAGRAM_CONFIG_INIT;
+            const char *bind_host = dc_is_ipv6_host(peer->remote_host) ? "::" : "0.0.0.0";
+            int rc;
+            config.backend =
+#if defined(_WIN32)
+                NATIVE_IO_BACKEND_IOCP;
+#else
+                NATIVE_IO_BACKEND_EPOLL;
+#endif
+            config.host = peer->ctx->is_server && peer->remote_host && peer->remote_host[0]
+                            ? peer->remote_host : bind_host;
+            config.port = peer->ctx->is_server ? peer->remote_port : 0;
+            config.send_capacity = DC_CNET_DATAGRAM_SEND_CAPACITY;
+            config.request_capacity = DC_CNET_DATAGRAM_REQUEST_CAPACITY;
+            config.completion_batch_capacity = DC_CNET_DATAGRAM_COMPLETION_CAPACITY;
+            config.max_datagram_bytes = CNET_DATAGRAM_MAX_PAYLOAD_BYTES;
+            config.receive_buffer_bytes = CNET_DATAGRAM_MAX_PAYLOAD_BYTES;
+            config.observer.on_receive = dc_datagram_receive_cb;
+            config.observer.user = peer;
+            rc = cnet_datagram_init(&peer->datagram, &config);
+            if (rc != SALTS_OK) {
+                dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, salts_strerror(rc));
                 return;
             }
-
-            turbo_datagram_set_user_data(dg, peer);
+            peer->datagram_initialized = 1;
             if (peer->ctx->is_server) {
-                if (turbo_datagram_bind(dg,
-                                        (peer->remote_host && peer->remote_host[0]) ? peer->remote_host : "0.0.0.0",
-                                        peer->remote_port) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_LISTEN_FAILED, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
-                    turbo_datagram_destroy(dg);
-                    return;
-                }
-
-                if (turbo_datagram_recv_start(dg, dc_datagram_recv_cb) != 0) {
+                if (cnet_datagram_receive(&peer->datagram, 1u) != SALTS_OK) {
                     dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to start datagram receive");
-                    turbo_datagram_destroy(dg);
                     return;
                 }
-
-                peer->transport = dg;
                 peer->transport_ops = &g_direct_ops;
                 if (dtls_session_init_timer(peer) != 0) {
                     dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to create DTLS timer");
@@ -835,19 +748,17 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                 dc_notify_state(peer, TURBO_DC_STATE_CONNECTING);
                 if (status) *status = 0;
             } else {
-                if (turbo_datagram_connect(dg, peer->remote_host, peer->remote_port) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, salts_strerror(coro_context_get_last_error(peer->ctx->transport_ctx)));
-                    turbo_datagram_destroy(dg);
+                rc = dc_resolve_datagram_peer(peer->remote_host, peer->remote_port,
+                                              &peer->remote_datagram_peer);
+                if (rc != SALTS_OK) {
+                    dc_set_peer_error(peer, TURBO_DC_ERROR_CONNECT_FAILED, salts_strerror(rc));
                     return;
                 }
-
-                if (turbo_datagram_recv_start(dg, dc_datagram_recv_cb) != 0) {
+                peer->has_remote_datagram_peer = 1;
+                if (cnet_datagram_receive(&peer->datagram, 1u) != SALTS_OK) {
                     dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to start datagram receive");
-                    turbo_datagram_destroy(dg);
                     return;
                 }
-
-                peer->transport = dg;
                 peer->transport_ops = &g_direct_ops;
                 if (dtls_session_init_timer(peer) != 0) {
                     dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to create DTLS timer");
@@ -860,6 +771,71 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
             break;
         }
     }
+}
+
+static void dc_poll_direct_peer(turbo_dc_peer_t *peer) {
+    size_t events = 0;
+    if (!peer || peer->destroying) return;
+    if (peer->listener_initialized && peer->stream_connection.generation == 0u) {
+        int ready = 0;
+        if (cnet_listener_wait(&peer->listener, 0u, &ready) == SALTS_OK && ready) {
+            cnet_observer observer = {
+                .on_state = dc_stream_state_cb,
+                .on_receive = dc_stream_receive_cb,
+                .user = peer,
+                .on_send = NULL
+            };
+            (void)cnet_listener_accept(&peer->listener, &peer->stream_client,
+                                       &observer, &peer->stream_connection);
+        }
+    }
+    if (peer->stream_client_initialized)
+        (void)cnet_client_poll(&peer->stream_client, 0u, &events);
+    if (peer->datagram_initialized)
+        (void)cnet_datagram_poll(&peer->datagram, 0u, &events);
+}
+
+static void dc_transport_thread_main(void *arg) {
+    turbo_dc_context_t *ctx = (turbo_dc_context_t *)arg;
+    if (!ctx) return;
+    g_dc_transport_owner = ctx;
+    for (;;) {
+        dc_transport_task_fn command = NULL;
+        void *arg1 = NULL;
+        void *arg2 = NULL;
+        turbo_dc_peer_t *peer;
+
+        salts_mutex_lock(&ctx->transport_mutex);
+        if (!ctx->transport_stop_requested && !ctx->transport_command_pending) {
+            (void)salts_cond_timedwait(&ctx->transport_cond, &ctx->transport_mutex,
+                                       DC_CNET_POLL_INTERVAL_NS);
+        }
+        if (ctx->transport_stop_requested) {
+            salts_mutex_unlock(&ctx->transport_mutex);
+            break;
+        }
+        if (ctx->transport_command_pending && !ctx->transport_command_done) {
+            command = ctx->transport_command;
+            arg1 = ctx->transport_command_arg1;
+            arg2 = ctx->transport_command_arg2;
+        }
+        salts_mutex_unlock(&ctx->transport_mutex);
+
+        if (command) {
+            command(arg1, arg2);
+            salts_mutex_lock(&ctx->transport_mutex);
+            ctx->transport_command_done = 1;
+            salts_cond_broadcast(&ctx->transport_cond);
+            salts_mutex_unlock(&ctx->transport_mutex);
+            continue;
+        }
+
+        salts_mutex_lock(&ctx->peer_mutex);
+        for (peer = ctx->peers_head; peer; peer = peer->next_in_context)
+            dc_poll_direct_peer(peer);
+        salts_mutex_unlock(&ctx->peer_mutex);
+    }
+    g_dc_transport_owner = NULL;
 }
 
 /* ============================================================================
@@ -892,7 +868,7 @@ static const dc_transport_ops_t g_external_transport_ops = {
 static void ice_agent_transport_send(void *transport,
                                      const void *data,
                                      size_t len) {
-    (void)ice_agent_send((turbo_ice_agent_t *)transport, data, len);
+    (void)ice_agent_send((salts_ice_agent_t *)transport, data, len);
 }
 
 /* ============================================================================
@@ -1023,22 +999,21 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
         return NULL;
     }
 
-    if (ctx->transport != TURBO_DC_TRANSPORT_ICE) {
-        ctx->transport_ctx = coro_context_create(NULL);
-        if (!ctx->transport_ctx) {
-            dc_set_context_error(ctx, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to create CoroNet context");
-            sctp_global_cleanup();
-            SSL_CTX_free(ctx->ssl_ctx);
-            free(ctx);
-            return NULL;
-        }
+    salts_mutex_init(&ctx->peer_mutex);
+    ctx->peer_mutex_initialized = 1;
 
-        coro_context_set_persistent(ctx->transport_ctx, 1);
+    if (ctx->transport != TURBO_DC_TRANSPORT_ICE) {
+        salts_mutex_init(&ctx->transport_mutex);
+        salts_cond_init(&ctx->transport_cond);
+        ctx->transport_sync_initialized = 1;
         if (salts_thread_create(&ctx->transport_thread, dc_transport_thread_main, ctx) != 0) {
-            dc_set_context_error(ctx, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to start CoroNet transport thread");
-            coro_context_set_persistent(ctx->transport_ctx, 0);
-            coro_context_destroy(ctx->transport_ctx);
-            ctx->transport_ctx = NULL;
+            dc_set_context_error(ctx, TURBO_DC_ERROR_CREATE_TRANSPORT,
+                                 "failed to start CNet transport owner");
+            salts_cond_destroy(&ctx->transport_cond);
+            salts_mutex_destroy(&ctx->transport_mutex);
+            ctx->transport_sync_initialized = 0;
+            salts_mutex_destroy(&ctx->peer_mutex);
+            ctx->peer_mutex_initialized = 0;
             sctp_global_cleanup();
             SSL_CTX_free(ctx->ssl_ctx);
             free(ctx);
@@ -1047,20 +1022,17 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
         ctx->transport_thread_started = 1;
     }
 
-    salts_mutex_init(&ctx->peer_mutex);
-    ctx->peer_mutex_initialized = 1;
     ctx->initialized = 1;
     return ctx;
 }
 
 void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
-    int stop_rc;
     turbo_dc_peer_t *peer;
 
     if (!ctx) return;
 
     /* Context destruction is the owner-level quiesce point.  Peers must be
-     * gone before the CoroNet loop, SCTP resources, or context storage is
+     * gone before the CNet owner, SCTP resources, or context storage is
      * released. */
     if (ctx->peer_mutex_initialized) {
         salts_mutex_lock(&ctx->peer_mutex);
@@ -1078,25 +1050,21 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
         }
     }
 
-    if (ctx->transport_ctx && ctx->transport_thread_started) {
-        stop_rc = coro_post(ctx->transport_ctx,
-                            dc_transport_stop_post,
-                            ctx->transport_ctx,
-                            NULL);
-        if (stop_rc != SALTS_OK) {
-            TLOG_ERRORF("Failed to post DataChannel transport stop: {}", stop_rc);
-            coro_context_stop(ctx->transport_ctx);
-        }
+    if (ctx->transport_sync_initialized && ctx->transport_thread_started) {
+        salts_mutex_lock(&ctx->transport_mutex);
+        ctx->transport_stop_requested = 1;
+        salts_cond_broadcast(&ctx->transport_cond);
+        salts_mutex_unlock(&ctx->transport_mutex);
     }
     if (ctx->transport_thread_started) {
         salts_thread_join(&ctx->transport_thread);
         salts_thread_destroy(&ctx->transport_thread);
         ctx->transport_thread_started = 0;
     }
-    if (ctx->transport_ctx) {
-        coro_context_set_persistent(ctx->transport_ctx, 0);
-        coro_context_destroy(ctx->transport_ctx);
-        ctx->transport_ctx = NULL;
+    if (ctx->transport_sync_initialized) {
+        salts_cond_destroy(&ctx->transport_cond);
+        salts_mutex_destroy(&ctx->transport_mutex);
+        ctx->transport_sync_initialized = 0;
     }
 
     if (ctx->ssl_ctx) {
@@ -1409,7 +1377,7 @@ void turbo_dc_peer_feed_transport_data(turbo_dc_peer_t *peer,
     dc_peer_release(peer);
 }
 
-int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct turbo_ice_agent_s *ice_agent) {
+int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct salts_ice_agent_s *ice_agent) {
     if (!peer || !ice_agent || ice_agent_get_state(ice_agent) == ICE_STATE_CLOSED) {
         return -1;
     }
@@ -1448,7 +1416,8 @@ int turbo_dc_peer_connect(turbo_dc_peer_t *peer) {
         return -1;
     }
 
-    if (!peer->ctx->transport_ctx) {
+    if (!peer->ctx->transport_sync_initialized ||
+        !peer->ctx->transport_thread_started) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "transport context is not initialized");
         dc_peer_release(peer);
         return -1;

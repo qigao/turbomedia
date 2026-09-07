@@ -9,12 +9,22 @@
  */
 
 #include "ice_integration.h"
+#include "salts_ice_owner.h"
 #include "turbo_datachannel.h"
-#include "ice/turbo_ice.h"
+#include "ice/salts_ice.h"
 #include "tlog.h"
+#include <salts/clock.h>
+#include <salts/thread.h>
 
 #include <stdlib.h>
 #include <string.h>
+
+enum {
+    ICE_WORKER_POLL_INTERVAL_MS = 10
+};
+
+#define ICE_WORKER_POLL_INTERVAL_NS \
+    ((uint64_t)ICE_WORKER_POLL_INTERVAL_MS * UINT64_C(1000000))
 
 /* ============================================================================
  * ICE Integration Context
@@ -22,9 +32,15 @@
 
 struct ice_integration_ctx_s {
     turbo_dc_peer_t *peer;
-    turbo_ice_agent_t *ice_agent;
-    coro_context_t *ice_ctx;
-    void *loop;
+    turbo_ice_owner_t *ice_owner;
+    salts_thread_t worker;
+    salts_mutex_t worker_mutex;
+    salts_cond_t worker_cond;
+    int worker_sync_initialized;
+    int worker_started;
+    int stop_requested;
+    int gather_requested;
+    int checks_requested;
 
     /* Callbacks */
     void (*on_ice_candidate)(const char *candidate_sdp, void *user_data);
@@ -43,34 +59,31 @@ struct ice_integration_ctx_s {
     /* State */
     int gathering_complete;
     int gathering_start_pending;
+    int remote_candidate_count;
     int remote_candidates_complete;
     int checks_started;
     int checks_start_pending;
-    int peer_connect_pending;
 };
 
 /* ============================================================================
  * Forward Declarations
  * ============================================================================ */
 
-static void on_ice_state_changed(turbo_ice_agent_t *agent, ice_state_t old_state, 
+static void on_ice_state_changed(salts_ice_agent_t *agent, ice_state_t old_state,
                                   ice_state_t new_state, void *user_data);
-static void on_ice_gathering_changed(turbo_ice_agent_t *agent, 
+static void on_ice_gathering_changed(salts_ice_agent_t *agent,
                                       ice_gathering_state_t state, void *user_data);
-static void on_ice_candidate_discovered(turbo_ice_agent_t *agent,
+static void on_ice_candidate_discovered(salts_ice_agent_t *agent,
                                          const ice_candidate_t *candidate, void *user_data);
-static void on_ice_data_received(turbo_ice_agent_t *agent, const void *data,
+static void on_ice_data_received(salts_ice_agent_t *agent, const void *data,
                                   size_t len, void *user_data);
 static void on_connection_timeout(salts_timer_t *timer);
 static void on_reconnect_timer(salts_timer_t *timer);
-static void on_ice_connected_post(void *arg1, void *arg2);
-static void start_gathering_task(coro_t *co, void *arg);
-static void start_connectivity_checks_task(coro_t *co, void *arg);
+static void ice_worker_main(void *arg);
 static void send_ice_datagram(void *transport, const void *data, size_t len);
 
 static int start_connectivity_checks_if_ready(ice_integration_ctx_t *ctx);
 static void stop_and_destroy_timer(salts_timer_t **timer_ptr);
-static void drain_ice_context(ice_integration_ctx_t *ctx, int wait_for_coroutines_only);
 
 /* ============================================================================
  * Public API
@@ -95,14 +108,16 @@ ice_integration_ctx_t *ice_integration_create(
         return NULL;
     }
 
-    
     ice_integration_ctx_t *ctx = calloc(1, sizeof(ice_integration_ctx_t));
     if (!ctx) return NULL;
     
     ctx->peer = peer;
-    ctx->loop = loop;
+    (void)loop;
     ctx->connection_timeout_ms = 30000;  /* 30 seconds */
     ctx->max_reconnect_attempts = 5;
+    salts_mutex_init(&ctx->worker_mutex);
+    salts_cond_init(&ctx->worker_cond);
+    ctx->worker_sync_initialized = 1;
     
     /* Configure ICE agent */
     ice_config_t ice_cfg = ice_default_config();
@@ -133,33 +148,6 @@ ice_integration_ctx_t *ice_integration_create(
         ice_cfg.turn_server_count++;
     }
     
-    ctx->ice_ctx = coro_context_create(loop);
-    if (!ctx->ice_ctx) {
-        TLOG_ERROR("Failed to create ICE context");
-        free(ctx);
-        return NULL;
-    }
-#if defined(__linux__) && !defined(__ANDROID__)
-    /* The io_uring UDP path is still flaky for local ICE checks on this repo's
-     * Linux setup. Force epoll for ICE sockets until the lower-layer backend is
-     * fixed. */
-    coro_context_set_udp_backend(ctx->ice_ctx, TURBO_UDP_BACKEND_EPOLL);
-#elif defined(_WIN32)
-    /* The generic Windows UDP selection is currently unreliable for local ICE
-     * checks in this repo. Force IOCP for ICE sockets. */
-    coro_context_set_udp_backend(ctx->ice_ctx, TURBO_UDP_BACKEND_IOCP);
-#endif
-
-    /* Create ICE agent */
-    ctx->ice_agent = ice_agent_create(ctx->ice_ctx, &ice_cfg);
-    if (!ctx->ice_agent) {
-        TLOG_ERROR("Failed to create ICE agent");
-        coro_context_destroy(ctx->ice_ctx);
-        free(ctx);
-        return NULL;
-    }
-    
-    /* Set ICE callbacks */
     ice_callbacks_t callbacks = {
         .on_state_change = on_ice_state_changed,
         .on_gathering_change = on_ice_gathering_changed,
@@ -167,33 +155,52 @@ ice_integration_ctx_t *ice_integration_create(
         .on_data = on_ice_data_received,
         .user_data = ctx
     };
-    ice_agent_set_callbacks(ctx->ice_agent, &callbacks);
+
+    ctx->ice_owner = turbo_ice_owner_create(&ice_cfg, &callbacks);
+    if (!ctx->ice_owner) {
+        TLOG_ERROR("Failed to create SaltsNet ICE owner");
+        salts_cond_destroy(&ctx->worker_cond);
+        salts_mutex_destroy(&ctx->worker_mutex);
+        free(ctx);
+        return NULL;
+    }
     
     /* Create connection timeout timer */
-    ctx->connection_timer = salts_timer_create(ctx->loop);
+    ctx->connection_timer = salts_timer_create(NULL);
     if (ctx->connection_timer) {
         salts_timer_set_data(ctx->connection_timer, ctx);
     }
 
     
     /* Create reconnect timer */
-    ctx->reconnect_timer = salts_timer_create(ctx->loop);
+    ctx->reconnect_timer = salts_timer_create(NULL);
     if (ctx->reconnect_timer) {
         salts_timer_set_data(ctx->reconnect_timer, ctx);
     }
 
     
     if (turbo_dc_peer_set_external_transport(
-            peer, ctx->ice_agent, send_ice_datagram) != 0) {
-        ice_callbacks_t empty_callbacks = {0};
-        ice_agent_set_callbacks(ctx->ice_agent, &empty_callbacks);
+            peer, ctx->ice_owner, send_ice_datagram) != 0) {
         stop_and_destroy_timer(&ctx->connection_timer);
         stop_and_destroy_timer(&ctx->reconnect_timer);
-        ice_agent_destroy(ctx->ice_agent);
-        coro_context_destroy(ctx->ice_ctx);
+        turbo_ice_owner_destroy(ctx->ice_owner);
+        salts_cond_destroy(&ctx->worker_cond);
+        salts_mutex_destroy(&ctx->worker_mutex);
         free(ctx);
         return NULL;
     }
+
+    if (salts_thread_create(&ctx->worker, ice_worker_main, ctx) != 0) {
+        turbo_dc_peer_set_external_transport(peer, NULL, NULL);
+        stop_and_destroy_timer(&ctx->connection_timer);
+        stop_and_destroy_timer(&ctx->reconnect_timer);
+        turbo_ice_owner_destroy(ctx->ice_owner);
+        salts_cond_destroy(&ctx->worker_cond);
+        salts_mutex_destroy(&ctx->worker_mutex);
+        free(ctx);
+        return NULL;
+    }
+    ctx->worker_started = 1;
     
     return ctx;
 }
@@ -204,32 +211,40 @@ ice_integration_ctx_t *ice_integration_create(
 void ice_integration_destroy(ice_integration_ctx_t *ctx) {
     if (!ctx) return;
 
-    ctx->on_ice_candidate = NULL;
-    ctx->on_ice_state_change = NULL;
-    ctx->candidate_user_data = NULL;
-    ctx->state_user_data = NULL;
-    ctx->peer_connect_pending = 0;
-
     stop_and_destroy_timer(&ctx->connection_timer);
     stop_and_destroy_timer(&ctx->reconnect_timer);
 
     if (ctx->peer) {
         turbo_dc_peer_set_external_transport(ctx->peer, NULL, NULL);
     }
-    
-    if (ctx->ice_agent) {
-        ice_callbacks_t callbacks = {0};
-        ice_agent_set_callbacks(ctx->ice_agent, &callbacks);
-        ice_agent_close(ctx->ice_agent);
-        drain_ice_context(ctx, 1);
-        ice_agent_destroy(ctx->ice_agent);
-        ctx->ice_agent = NULL;
-        coro_context_stop(ctx->ice_ctx);
-        drain_ice_context(ctx, 0);
+
+    if (ctx->worker_sync_initialized) {
+        salts_mutex_lock(&ctx->worker_mutex);
+        ctx->stop_requested = 1;
+        ctx->on_ice_candidate = NULL;
+        ctx->on_ice_state_change = NULL;
+        ctx->candidate_user_data = NULL;
+        ctx->state_user_data = NULL;
+        salts_cond_broadcast(&ctx->worker_cond);
+        salts_mutex_unlock(&ctx->worker_mutex);
     }
-    if (ctx->ice_ctx) {
-        coro_context_destroy(ctx->ice_ctx);
-        ctx->ice_ctx = NULL;
+    
+    if (ctx->ice_owner) {
+        turbo_ice_owner_close(ctx->ice_owner);
+    }
+    if (ctx->worker_started) {
+        salts_thread_join(&ctx->worker);
+        salts_thread_destroy(&ctx->worker);
+        ctx->worker_started = 0;
+    }
+    if (ctx->ice_owner) {
+        turbo_ice_owner_destroy(ctx->ice_owner);
+        ctx->ice_owner = NULL;
+    }
+    if (ctx->worker_sync_initialized) {
+        salts_cond_destroy(&ctx->worker_cond);
+        salts_mutex_destroy(&ctx->worker_mutex);
+        ctx->worker_sync_initialized = 0;
     }
 
     
@@ -243,8 +258,10 @@ void ice_integration_on_candidate(ice_integration_ctx_t *ctx,
                                    void (*callback)(const char *candidate_sdp, void *user_data),
                                    void *user_data) {
     if (ctx) {
+        salts_mutex_lock(&ctx->worker_mutex);
         ctx->on_ice_candidate = callback;
         ctx->candidate_user_data = user_data;
+        salts_mutex_unlock(&ctx->worker_mutex);
     }
 }
 
@@ -255,8 +272,10 @@ void ice_integration_on_state_change(ice_integration_ctx_t *ctx,
                                       void (*callback)(ice_state_t state, void *user_data),
                                       void *user_data) {
     if (ctx) {
+        salts_mutex_lock(&ctx->worker_mutex);
         ctx->on_ice_state_change = callback;
         ctx->state_user_data = user_data;
+        salts_mutex_unlock(&ctx->worker_mutex);
     }
 }
 
@@ -266,10 +285,10 @@ void ice_integration_on_state_change(ice_integration_ctx_t *ctx,
 int ice_integration_get_local_credentials(ice_integration_ctx_t *ctx,
                                            char *ufrag, size_t ufrag_len,
                                            char *pwd, size_t pwd_len) {
-    if (!ctx || !ctx->ice_agent) return -1;
+    if (!ctx || !ctx->ice_owner) return -1;
     
-    ice_agent_get_local_credentials(ctx->ice_agent, ufrag, ufrag_len, pwd, pwd_len);
-    return 0;
+    return turbo_ice_owner_get_local_credentials(
+        ctx->ice_owner, ufrag, ufrag_len, pwd, pwd_len);
 }
 
 /**
@@ -278,30 +297,34 @@ int ice_integration_get_local_credentials(ice_integration_ctx_t *ctx,
 int ice_integration_set_remote_credentials(ice_integration_ctx_t *ctx,
                                             const char *ufrag,
                                             const char *pwd) {
-    if (!ctx || !ctx->ice_agent) return -1;
+    if (!ctx || !ctx->ice_owner) return -1;
     
-    return ice_agent_set_remote_credentials(ctx->ice_agent, ufrag, pwd);
+    return turbo_ice_owner_set_remote_credentials(ctx->ice_owner, ufrag, pwd);
 }
 
 /**
  * Start ICE gathering
  */
 int ice_integration_start_gathering(ice_integration_ctx_t *ctx) {
-    if (!ctx || !ctx->ice_agent) return -1;
-    if (ctx->gathering_complete || ctx->gathering_start_pending) return 0;
-    
+    if (!ctx || !ctx->ice_owner) return -1;
+
+    salts_mutex_lock(&ctx->worker_mutex);
+    if (ctx->stop_requested || ctx->gathering_complete ||
+        ctx->gathering_start_pending) {
+        salts_mutex_unlock(&ctx->worker_mutex);
+        return ctx->stop_requested ? -1 : 0;
+    }
+    ctx->gathering_start_pending = 1;
+    ctx->gather_requested = 1;
+    salts_cond_signal(&ctx->worker_cond);
+    salts_mutex_unlock(&ctx->worker_mutex);
+
     TLOG_INFO("Starting candidate gathering...");
-    
+
     /* Start connection timeout */
     if (ctx->connection_timer) {
         salts_timer_start(ctx->connection_timer, on_connection_timeout,
                         ctx->connection_timeout_ms, 0);
-    }
-
-    ctx->gathering_start_pending = 1;
-    if (coro_context_spawn(ctx->ice_ctx, start_gathering_task, ctx) != 0) {
-        ctx->gathering_start_pending = 0;
-        return -1;
     }
 
     return 0;
@@ -312,11 +335,17 @@ int ice_integration_start_gathering(ice_integration_ctx_t *ctx) {
  */
 int ice_integration_add_remote_candidate(ice_integration_ctx_t *ctx,
                                           const char *candidate_sdp) {
-    if (!ctx || !ctx->ice_agent || !candidate_sdp) return -1;
+    if (!ctx || !ctx->ice_owner || !candidate_sdp) return -1;
     
     TLOG_DEBUGF("Adding remote candidate: {}", candidate_sdp);
     
-    int result = ice_agent_add_remote_candidate(ctx->ice_agent, candidate_sdp);
+    int result = turbo_ice_owner_add_remote_candidate(
+        ctx->ice_owner, candidate_sdp);
+    if (result == 0) {
+        salts_mutex_lock(&ctx->worker_mutex);
+        ctx->remote_candidate_count++;
+        salts_mutex_unlock(&ctx->worker_mutex);
+    }
     
     /* Try to start checks if ready */
     start_connectivity_checks_if_ready(ctx);
@@ -328,23 +357,26 @@ int ice_integration_add_remote_candidate(ice_integration_ctx_t *ctx,
  * Signal end of remote candidates
  */
 void ice_integration_end_of_candidates(ice_integration_ctx_t *ctx) {
-    if (!ctx || !ctx->ice_agent) return;
+    if (!ctx || !ctx->ice_owner) return;
     
     TLOG_INFO("End of remote candidates signaled");
     
+    salts_mutex_lock(&ctx->worker_mutex);
     ctx->remote_candidates_complete = 1;
-    ice_agent_end_of_candidates(ctx->ice_agent);
+    salts_mutex_unlock(&ctx->worker_mutex);
+    (void)turbo_ice_owner_end_of_candidates(ctx->ice_owner);
     
     /* Try to start checks if ready */
     start_connectivity_checks_if_ready(ctx);
 }
 
 void ice_integration_poll(ice_integration_ctx_t *ctx) {
-    if (!ctx || !ctx->ice_ctx) {
+    if (!ctx || !ctx->worker_sync_initialized) {
         return;
     }
-
-    coro_context_run(ctx->ice_ctx, TURBO_RUN_NOWAIT);
+    salts_mutex_lock(&ctx->worker_mutex);
+    salts_cond_signal(&ctx->worker_cond);
+    salts_mutex_unlock(&ctx->worker_mutex);
 }
 
 int ice_integration_is_gathering_complete(ice_integration_ctx_t *ctx) {
@@ -352,7 +384,11 @@ int ice_integration_is_gathering_complete(ice_integration_ctx_t *ctx) {
         return 0;
     }
 
-    return ctx->gathering_complete ? 1 : 0;
+    int complete;
+    salts_mutex_lock(&ctx->worker_mutex);
+    complete = ctx->gathering_complete;
+    salts_mutex_unlock(&ctx->worker_mutex);
+    return complete ? 1 : 0;
 }
 
 /**
@@ -377,7 +413,7 @@ void ice_integration_set_max_reconnect_attempts(ice_integration_ctx_t *ctx, int 
  * Trigger manual reconnection
  */
 int ice_integration_reconnect(ice_integration_ctx_t *ctx) {
-    if (!ctx || !ctx->ice_agent) return -1;
+    if (!ctx || !ctx->ice_owner) return -1;
     
     int delay_ms = 2000; /* Default */
 
@@ -389,7 +425,7 @@ int ice_integration_reconnect(ice_integration_ctx_t *ctx) {
                    ctx->reconnect_attempts + 1, ctx->max_reconnect_attempts);
     } else if (ctx->reconnect_attempts <= 15) {
         /* Phase 2: Backoff (Jittered) */
-        unsigned int seed = (unsigned int)turbo_hrtime();
+        unsigned int seed = (unsigned int)salts_hrtime();
         delay_ms = 10000 + (int)(seed % 20000); /* 10-30s */
         if (ctx->reconnect_attempts % 5 == 0) {
             TLOG_DEBUGF("ICE Reconnect [Backoff]: attempt {}/{}",
@@ -397,7 +433,7 @@ int ice_integration_reconnect(ice_integration_ctx_t *ctx) {
         }
     } else {
         /* Phase 3: Standby (Long) */
-        unsigned int seed = (unsigned int)turbo_hrtime();
+        unsigned int seed = (unsigned int)salts_hrtime();
         delay_ms = 60000 + (int)(seed % 60000); /* 1-2m */
         if (ctx->reconnect_attempts % 10 == 0) {
             TLOG_DEBUGF("ICE Reconnect [Standby]: attempt {}/{}",
@@ -424,8 +460,8 @@ int ice_integration_reconnect(ice_integration_ctx_t *ctx) {
  * Enable/disable loopback candidate gathering
  */
 void ice_integration_set_allow_loopback(ice_integration_ctx_t *ctx, int allow) {
-    if (ctx && ctx->ice_agent) {
-        ice_agent_set_allow_loopback(ctx->ice_agent, allow);
+    if (ctx && ctx->ice_owner) {
+        (void)turbo_ice_owner_set_allow_loopback(ctx->ice_owner, allow);
     }
 }
 
@@ -433,7 +469,7 @@ void ice_integration_set_allow_loopback(ice_integration_ctx_t *ctx, int allow) {
  * Internal Callbacks
  * ============================================================================ */
 
-static void on_ice_state_changed(turbo_ice_agent_t *agent, ice_state_t old_state,
+static void on_ice_state_changed(salts_ice_agent_t *agent, ice_state_t old_state,
                                   ice_state_t new_state, void *user_data) {
     (void)agent;
     ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)user_data;
@@ -458,11 +494,10 @@ static void on_ice_state_changed(turbo_ice_agent_t *agent, ice_state_t old_state
             /* Reset reconnect attempts */
             ctx->reconnect_attempts = 0;
             
-            if (ctx->peer && !ctx->peer_connect_pending) {
-                ctx->peer_connect_pending = 1;
-                if (coro_post(ctx->ice_ctx, on_ice_connected_post, ctx, NULL) != 0) {
-                    ctx->peer_connect_pending = 0;
-                    TLOG_WARN("Failed to defer ICE peer connect");
+            if (ctx->peer &&
+                turbo_dc_peer_get_state(ctx->peer) == TURBO_DC_STATE_NEW) {
+                if (turbo_dc_peer_connect(ctx->peer) != 0) {
+                    TLOG_WARN("Failed to connect DataChannel peer after ICE connected");
                 }
             }
             break;
@@ -484,32 +519,18 @@ static void on_ice_state_changed(turbo_ice_agent_t *agent, ice_state_t old_state
     }
     
     /* Notify application */
-    if (ctx->on_ice_state_change) {
-        ctx->on_ice_state_change(new_state, ctx->state_user_data);
+    void (*state_callback)(ice_state_t, void *) = NULL;
+    void *state_user_data = NULL;
+    salts_mutex_lock(&ctx->worker_mutex);
+    state_callback = ctx->on_ice_state_change;
+    state_user_data = ctx->state_user_data;
+    salts_mutex_unlock(&ctx->worker_mutex);
+    if (state_callback) {
+        state_callback(new_state, state_user_data);
     }
 }
 
-static void on_ice_connected_post(void *arg1, void *arg2) {
-    ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)arg1;
-    turbo_dc_state_t peer_state;
-    (void)arg2;
-
-    if (!ctx) {
-        return;
-    }
-
-    ctx->peer_connect_pending = 0;
-    if (!ctx->peer || !ctx->ice_agent) {
-        return;
-    }
-
-    peer_state = turbo_dc_peer_get_state(ctx->peer);
-    if (peer_state == TURBO_DC_STATE_NEW) {
-        turbo_dc_peer_connect(ctx->peer);
-    }
-}
-
-static void on_ice_gathering_changed(turbo_ice_agent_t *agent,
+static void on_ice_gathering_changed(salts_ice_agent_t *agent,
                                       ice_gathering_state_t state, void *user_data) {
     (void)agent;
     ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)user_data;
@@ -518,15 +539,17 @@ static void on_ice_gathering_changed(turbo_ice_agent_t *agent,
     TLOG_INFOF("ICE gathering state: {}", state_names[state]);
     
     if (state == ICE_GATHERING_COMPLETE) {
+        salts_mutex_lock(&ctx->worker_mutex);
         ctx->gathering_complete = 1;
         ctx->gathering_start_pending = 0;
+        salts_mutex_unlock(&ctx->worker_mutex);
         
         /* Try to start checks if ready */
         start_connectivity_checks_if_ready(ctx);
     }
 }
 
-static void on_ice_candidate_discovered(turbo_ice_agent_t *agent,
+static void on_ice_candidate_discovered(salts_ice_agent_t *agent,
                                          const ice_candidate_t *candidate, void *user_data) {
     (void)agent;
     ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)user_data;
@@ -534,16 +557,23 @@ static void on_ice_candidate_discovered(turbo_ice_agent_t *agent,
     /* Convert to SDP format */
     char candidate_sdp[512];
     if (ice_candidate_to_sdp(candidate, candidate_sdp, sizeof(candidate_sdp)) > 0) {
+        void (*candidate_callback)(const char *, void *) = NULL;
+        void *candidate_user_data = NULL;
         TLOG_DEBUGF("Local candidate: {}", candidate_sdp);
-        
+
+        salts_mutex_lock(&ctx->worker_mutex);
+        candidate_callback = ctx->on_ice_candidate;
+        candidate_user_data = ctx->candidate_user_data;
+        salts_mutex_unlock(&ctx->worker_mutex);
+
         /* Trickle to application for signaling */
-        if (ctx->on_ice_candidate) {
-            ctx->on_ice_candidate(candidate_sdp, ctx->candidate_user_data);
+        if (candidate_callback) {
+            candidate_callback(candidate_sdp, candidate_user_data);
         }
     }
 }
 
-static void on_ice_data_received(turbo_ice_agent_t *agent, const void *data,
+static void on_ice_data_received(salts_ice_agent_t *agent, const void *data,
                                   size_t len, void *user_data) {
     (void)agent;
     ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)user_data;
@@ -552,7 +582,8 @@ static void on_ice_data_received(turbo_ice_agent_t *agent, const void *data,
 }
 
 static void send_ice_datagram(void *transport, const void *data, size_t len) {
-    (void)ice_agent_send((turbo_ice_agent_t *)transport, data, len);
+    (void)turbo_ice_owner_send_async(
+        (turbo_ice_owner_t *)transport, data, len);
 }
 
 static void on_connection_timeout(salts_timer_t *timer) {
@@ -562,11 +593,11 @@ static void on_connection_timeout(salts_timer_t *timer) {
 
     
     /* Check if context was destroyed (data set to NULL during cleanup) */
-    if (!ctx || !ctx->ice_agent) {
+    if (!ctx || !ctx->ice_owner) {
         return;
     }
     
-    ice_state_t state = ice_agent_get_state(ctx->ice_agent);
+    ice_state_t state = turbo_ice_owner_get_state(ctx->ice_owner);
     
     if (state != ICE_STATE_CONNECTED && state != ICE_STATE_COMPLETED) {
         TLOG_DEBUGF("Connection timeout after {} ms", ctx->connection_timeout_ms);
@@ -583,70 +614,96 @@ static void on_reconnect_timer(salts_timer_t *timer) {
 
     
     /* Check if context was destroyed (data set to NULL during cleanup) */
-    if (!ctx || !ctx->ice_agent) {
+    if (!ctx || !ctx->ice_owner) {
         return;
     }
 
     ice_integration_reconnect(ctx);
 }
 
-static void start_gathering_task(coro_t *co, void *arg) {
+static void ice_worker_main(void *arg) {
     ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)arg;
-    int rc;
-    (void)co;
-
-    if (!ctx || !ctx->ice_agent) {
+    if (!ctx) {
         return;
     }
 
-    rc = ice_agent_gather_candidates(ctx->ice_agent);
-    if (rc != 0) {
-        ctx->gathering_start_pending = 0;
-        TLOG_WARNF("Failed to start ICE candidate gathering: {}", rc);
-    }
-}
+    for (;;) {
+        int gather_requested;
+        int checks_requested;
+        int rc;
 
-static void start_connectivity_checks_task(coro_t *co, void *arg) {
-    ice_integration_ctx_t *ctx = (ice_integration_ctx_t *)arg;
-    int rc;
-    (void)co;
+        salts_mutex_lock(&ctx->worker_mutex);
+        if (!ctx->stop_requested && !ctx->gather_requested &&
+            !ctx->checks_requested) {
+            (void)salts_cond_timedwait(&ctx->worker_cond, &ctx->worker_mutex,
+                                       ICE_WORKER_POLL_INTERVAL_NS);
+        }
+        if (ctx->stop_requested) {
+            salts_mutex_unlock(&ctx->worker_mutex);
+            break;
+        }
+        gather_requested = ctx->gather_requested;
+        checks_requested = ctx->checks_requested;
+        ctx->gather_requested = 0;
+        ctx->checks_requested = 0;
+        salts_mutex_unlock(&ctx->worker_mutex);
 
-    if (!ctx || !ctx->ice_agent) {
-        return;
-    }
+        if (gather_requested) {
+            rc = turbo_ice_owner_gather_candidates(ctx->ice_owner);
+            if (rc != 0) {
+                salts_mutex_lock(&ctx->worker_mutex);
+                ctx->gathering_start_pending = 0;
+                salts_mutex_unlock(&ctx->worker_mutex);
+                TLOG_WARNF("Failed to start ICE candidate gathering: {}", rc);
+            }
+        }
 
-    rc = ice_agent_start_checks(ctx->ice_agent);
-    ctx->checks_start_pending = 0;
-    if (rc != 0) {
-        ctx->checks_started = 0;
-        TLOG_WARNF("Failed to start ICE connectivity checks: {}", rc);
+        if (checks_requested) {
+            rc = turbo_ice_owner_start_checks(ctx->ice_owner);
+            salts_mutex_lock(&ctx->worker_mutex);
+            ctx->checks_start_pending = 0;
+            if (rc != 0) {
+                ctx->checks_started = 0;
+            }
+            salts_mutex_unlock(&ctx->worker_mutex);
+            if (rc != 0) {
+                TLOG_WARNF("Failed to start ICE connectivity checks: {}", rc);
+            }
+        }
+
     }
 }
 
 static int start_connectivity_checks_if_ready(ice_integration_ctx_t *ctx) {
+    int result = 0;
+
+    salts_mutex_lock(&ctx->worker_mutex);
     if (ctx->checks_started || ctx->checks_start_pending) {
-        return 0;  /* Already started */
+        salts_mutex_unlock(&ctx->worker_mutex);
+        return 0;
     }
-    
-    /* Need both gathering complete and at least one remote candidate */
-    if (!ctx->gathering_complete) {
-        TLOG_DEBUG("Not starting checks: gathering not complete");
-        return 0;  /* Not ready yet */
+
+    /* Connectivity checks start only after the local set and the signaled
+     * remote set are complete. This keeps both peers able to service checks. */
+    if (!ctx->gathering_complete || ctx->remote_candidate_count == 0 ||
+        !ctx->remote_candidates_complete) {
+        salts_mutex_unlock(&ctx->worker_mutex);
+        return 0;
     }
-    
-    /* Check if we have remote credentials */
-    /* This is implicit - if we have remote candidates, we should have credentials */
-    
-    TLOG_INFO("Starting connectivity checks");
-    
-    ctx->checks_started = 1;
-    ctx->checks_start_pending = 1;
-    if (coro_context_spawn(ctx->ice_ctx, start_connectivity_checks_task, ctx) != 0) {
-        ctx->checks_started = 0;
-        ctx->checks_start_pending = 0;
+
+    if (ctx->stop_requested) {
+        salts_mutex_unlock(&ctx->worker_mutex);
         return -1;
     }
-    return 0;
+
+    ctx->checks_started = 1;
+    ctx->checks_start_pending = 1;
+    ctx->checks_requested = 1;
+    salts_cond_signal(&ctx->worker_cond);
+    salts_mutex_unlock(&ctx->worker_mutex);
+
+    TLOG_INFO("Starting connectivity checks");
+    return result;
 }
 
 static void stop_and_destroy_timer(salts_timer_t **timer_ptr) {
@@ -658,27 +715,4 @@ static void stop_and_destroy_timer(salts_timer_t **timer_ptr) {
     salts_timer_set_data(*timer_ptr, NULL);
     salts_timer_destroy(*timer_ptr);
     *timer_ptr = NULL;
-}
-
-static void drain_ice_context(ice_integration_ctx_t *ctx, int wait_for_coroutines_only) {
-    int spins;
-
-    if (!ctx || !ctx->ice_ctx) {
-        return;
-    }
-
-    for (spins = 0; spins < 128; ++spins) {
-        int coro_count = coro_context_coro_count(ctx->ice_ctx);
-        int alive = coro_context_alive(ctx->ice_ctx);
-
-        if (wait_for_coroutines_only) {
-            if (coro_count == 0) {
-                break;
-            }
-        } else if (!alive) {
-            break;
-        }
-
-        coro_context_run(ctx->ice_ctx, TURBO_RUN_ONCE);
-    }
 }

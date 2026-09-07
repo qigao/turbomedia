@@ -255,7 +255,7 @@ spec("Iris TurboDB ORM record store") {
         owner = iris_orm_store_owner_create(
             postgresql_yaml_path, "iris.test", 0, error, sizeof(error));
         check_null(owner);
-        check_not_null(strstr(error, "postgresql ORM backend"));
+        check_not_null(strstr(error, "cannot connect TurboDB ORM"));
         check_null(strstr(error, "not exported by TurboMedia"));
     }
 

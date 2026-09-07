@@ -22,6 +22,7 @@ struct ivr_whip_transport_s {
     int destroying;
     /* active call */
     int active;
+    int terminal;
     ivr_str_t tenant_id;
     ivr_str_t provider_session_id;
     ivr_str_t dialog_id;
@@ -149,44 +150,65 @@ static void whip_emit_state(ivr_whip_transport_t *t,
     }
 }
 
-static void whip_delete_session(ivr_whip_transport_t *t,
-                                 const char *location) {
+static int whip_delete_session(ivr_whip_transport_t *t,
+                               const char *location) {
     ivr_http_media_response_t resp;
+    int request_status;
 
     if (!t || !location || location[0] == '\0') {
-        return;
+        return 0;
     }
     memset(&resp, 0, sizeof(resp));
-    (void)ivr_http_media_request(t->http_client, "DELETE", location, NULL,
-                                 NULL, NULL, &resp);
+    request_status = ivr_http_media_request(
+        t->http_client, "DELETE", location, NULL, NULL, NULL, &resp);
+    if (request_status != 0 ||
+        (resp.status != 200 && resp.status != 204 && resp.status != 404)) {
+        fprintf(stderr,
+                "[ivr_whip] delete session rc=%d status=%d location=%s\n",
+                request_status, resp.status, location);
+        return -1;
+    }
+    return 0;
 }
 
 static void whip_state_change(turbo_peer_connection_t *pc,
                               turbo_peer_state_t state, void *user_data) {
     ivr_whip_transport_t *t = (ivr_whip_transport_t *)user_data;
+    turbo_media_track_t *track = NULL;
+    int emit = 1;
     (void)pc;
     if (state == TURBO_PEER_STATE_CONNECTED) {
         ivr_mutex_lock(&t->lock);
-        t->connected = 1;
-        turbo_media_track_t *track = t->audio_track;
+        if (t->terminal) {
+            emit = 0;
+        } else {
+            t->connected = 1;
+            track = t->audio_track;
+        }
         ivr_mutex_unlock(&t->lock);
         if (track) {
             (void)turbo_media_track_start(track);
         }
-        whip_emit_state(t, IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE);
+        if (emit) {
+            whip_emit_state(t, IVR_MEDIA_LINK_CONNECTED,
+                            IVR_MEDIA_ERROR_NONE);
+        }
     } else if (state == TURBO_PEER_STATE_DISCONNECTED) {
         ivr_mutex_lock(&t->lock);
         t->connected = 0;
+        t->terminal = 1;
         ivr_mutex_unlock(&t->lock);
         whip_emit_state(t, IVR_MEDIA_LINK_DISCONNECTED, IVR_MEDIA_ERROR_NONE);
     } else if (state == TURBO_PEER_STATE_FAILED) {
         ivr_mutex_lock(&t->lock);
         t->connected = 0;
+        t->terminal = 1;
         ivr_mutex_unlock(&t->lock);
         whip_emit_state(t, IVR_MEDIA_LINK_FAILED, IVR_MEDIA_ERROR_PEER_FAILED);
     } else if (state == TURBO_PEER_STATE_CLOSED) {
         ivr_mutex_lock(&t->lock);
         t->connected = 0;
+        t->terminal = 1;
         ivr_mutex_unlock(&t->lock);
         whip_emit_state(t, IVR_MEDIA_LINK_CLOSED, IVR_MEDIA_ERROR_STOPPED);
     }
@@ -354,11 +376,11 @@ static int whip_stop_impl(ivr_whip_transport_t *t) {
         ivr_thread_join(&t->poll_thread);
         t->poll_started = 0;
     }
-    whip_delete_session(t, location);
+    int delete_status = whip_delete_session(t, location);
     if (pc) {
         turbo_peer_connection_destroy(pc);
     }
-    return 0;
+    return delete_status;
 }
 
 static int whip_stop(void *ctx, const ivr_call_ref_t *call) {
@@ -434,6 +456,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     t->attempt_generation++;
     t->active = 1;
     t->connected = 0;
+    t->terminal = 0;
     t->poll_stop = 0;
     ivr_mutex_unlock(&t->lock);
     whip_emit_state(t, IVR_MEDIA_LINK_CONNECTING, IVR_MEDIA_ERROR_NONE);
@@ -449,6 +472,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     cb.on_track = whip_on_track;
     turbo_peer_connection_t *pc = turbo_peer_connection_create(&pc_cfg, &cb);
     if (!pc) {
+        fprintf(stderr, "[ivr_whip] start failed stage=peer_create\n");
         ivr_mutex_lock(&t->lock);
         t->active = 0;
         whip_clear_call(t);
@@ -467,6 +491,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     turbo_media_track_t *audio_track =
         turbo_peer_connection_add_track_ex(pc, &track_cfg);
     if (!audio_track) {
+        fprintf(stderr, "[ivr_whip] start failed stage=add_audio_track\n");
         turbo_peer_connection_destroy(pc);
         ivr_mutex_lock(&t->lock);
         t->active = 0;
@@ -478,6 +503,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
 
     char offer[IVR_HTTP_MEDIA_MAX_SDP];
     if (turbo_peer_connection_create_offer(pc, offer, sizeof(offer)) <= 0) {
+        fprintf(stderr, "[ivr_whip] start failed stage=create_offer\n");
         turbo_peer_connection_destroy(pc);
         ivr_mutex_lock(&t->lock);
         t->active = 0;
@@ -528,6 +554,11 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     if (whip_rc != 0 ||
         resp.status != 201 || resp.location[0] == '\0' ||
         resp.etag[0] == '\0' || resp.body[0] == '\0') {
+        fprintf(stderr,
+                "[ivr_whip] start failed stage=post rc=%d status=%d "
+                "location=%d etag=%d body=%d\n",
+                whip_rc, resp.status, resp.location[0] != '\0',
+                resp.etag[0] != '\0', resp.body[0] != '\0');
         turbo_peer_connection_destroy(pc);
         ivr_mutex_lock(&t->lock);
         t->active = 0;
@@ -538,7 +569,8 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     }
     if (turbo_peer_connection_set_remote_description(pc, "answer",
                                                      resp.body) != 0) {
-        whip_delete_session(t, resp.location);
+        fprintf(stderr, "[ivr_whip] start failed stage=remote_description\n");
+        (void)whip_delete_session(t, resp.location);
         turbo_peer_connection_destroy(pc);
         ivr_mutex_lock(&t->lock);
         t->active = 0;
@@ -561,12 +593,17 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
                                   sizeof(fragment) - used);
         ivr_http_media_response_t trickle;
         memset(&trickle, 0, sizeof(trickle));
-        if (ivr_http_media_request(
-                t->http_client, "PATCH", resp.location,
-                "application/trickle-ice-sdpfrag", resp.etag, fragment,
-                &trickle) != 0 ||
+        int patch_rc = ivr_http_media_request(
+            t->http_client, "PATCH", resp.location,
+            "application/trickle-ice-sdpfrag", resp.etag, fragment,
+            &trickle);
+        if (patch_rc != 0 ||
             (trickle.status != 200 && trickle.status != 204)) {
-            whip_delete_session(t, resp.location);
+            fprintf(stderr,
+                    "[ivr_whip] start failed stage=trickle_request rc=%d "
+                    "status=%d etag=%s\n",
+                    patch_rc, trickle.status, resp.etag);
+            (void)whip_delete_session(t, resp.location);
             turbo_peer_connection_destroy(pc);
             ivr_mutex_lock(&t->lock);
             t->active = 0;
@@ -578,7 +615,9 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         if (trickle.body[0] &&
             turbo_peer_connection_apply_remote_ice_sdpfrag(
                 pc, trickle.body, strlen(trickle.body)) != 0) {
-            whip_delete_session(t, resp.location);
+            fprintf(stderr,
+                    "[ivr_whip] start failed stage=apply_remote_sdpfrag\n");
+            (void)whip_delete_session(t, resp.location);
             turbo_peer_connection_destroy(pc);
             ivr_mutex_lock(&t->lock);
             t->active = 0;

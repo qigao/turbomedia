@@ -5,7 +5,7 @@
 #include "iris_event_outbox.h"
 #include "iris_media_bridge.h"
 #include "iris_room_bridge.h"
-#include "ivr_flowmq_gateway.h"
+#include "ivr_control_gateway.h"
 
 ivr_status_t room_service_app_server_send_ivr_media_command(
     room_service_app_server_t *server, const ivr_media_command_t *command,
