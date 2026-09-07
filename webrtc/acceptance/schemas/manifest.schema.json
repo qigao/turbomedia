@@ -160,6 +160,7 @@
       "properties": {
         "minimum_samples": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_SAMPLES_PER_CASE" },
         "maximum_duration_ms": { "$ref": "#/$defs/duration" },
+        "max_sample_gap_ms": { "$ref": "#/$defs/duration" },
         "max_rtt_ms": { "type": "number", "minimum": 0 },
         "max_jitter_ms": { "type": "number", "minimum": 0 },
         "max_loss_ratio": { "type": "number", "minimum": 0, "maximum": 1 },

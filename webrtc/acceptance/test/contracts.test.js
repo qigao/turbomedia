@@ -223,6 +223,16 @@ test('contracts reject sampling intervals below 250 milliseconds', () => {
   assertRejected('manifest', manifest);
 });
 
+test('contracts accept a manifest sampling-gap threshold and reject an invalid duration', () => {
+  const accepted = validManifest();
+  accepted.threshold_profile.stable.max_sample_gap_ms = 1_000;
+  assert.deepEqual(validateContract(validator, 'manifest', accepted), { valid: true, errors: [] });
+
+  const rejected = validManifest();
+  rejected.threshold_profile.stable.max_sample_gap_ms = 0;
+  assertRejected('manifest', rejected);
+});
+
 test('contracts reject case durations above one hour', () => {
   const manifest = validManifest();
   manifest.scenarios[0].duration_ms = 3_600_001;

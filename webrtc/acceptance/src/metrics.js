@@ -17,6 +17,13 @@ const METRIC_FIELDS = Object.freeze([
   'active_resources',
   'turn_allocations',
 ]);
+const DELTA_OR_RATE_FIELDS = Object.freeze([
+  'media_delta',
+  'media_rate_per_second',
+  'packets_lost_delta',
+  'nack_delta',
+  'nack_rate_per_second',
+]);
 const THRESHOLDS = Object.freeze([
   Object.freeze({ field: 'max_rtt_ms', metric: 'rtt_ms', statistic: 'p95', comparison: 'maximum' }),
   Object.freeze({ field: 'max_jitter_ms', metric: 'jitter_ms', statistic: 'p95', comparison: 'maximum' }),
@@ -123,6 +130,7 @@ function evaluatePhaseMetrics(series, thresholdProfile) {
   const summaries = summarizeSeries(inspected.samples, requiredMetrics);
   const incomplete = [];
   const failures = [];
+  const durationMs = observedDuration(inspected.samples);
   const minimumSamples = profile.minimum_samples;
   if (inspected.samples.length < minimumSamples) {
     incomplete.push({ metric: 'series', reason: 'insufficient samples', required: minimumSamples, actual: inspected.samples.length });
@@ -132,6 +140,11 @@ function evaluatePhaseMetrics(series, thresholdProfile) {
     if (gap !== null) {
       incomplete.push({ metric: 'series', reason: 'sampling gap', maximum_ms: profile.max_sample_gap_ms, actual_ms: gap });
     }
+  }
+  if (profile.maximum_duration_ms !== null && durationMs !== null && durationMs > profile.maximum_duration_ms) {
+    failures.push({
+      metric: 'phase_duration_ms', statistic: 'duration', threshold: profile.maximum_duration_ms, value: durationMs,
+    });
   }
   for (const threshold of profile.thresholds) {
     const summary = summaries[threshold.metric];
@@ -150,7 +163,7 @@ function evaluatePhaseMetrics(series, thresholdProfile) {
     }
   }
   const outcome = incomplete.length > 0 ? 'INCOMPLETE' : failures.length > 0 ? 'FAIL' : 'PASS';
-  return freezeResult({ outcome, summaries, failures, incomplete, errors: [] });
+  return freezeResult({ outcome, duration_ms: durationMs, summaries, failures, incomplete, errors: [] });
 }
 
 function emptyBrowserRates() {
@@ -176,7 +189,7 @@ function calculateBrowserRates(current, previous, elapsedMs) {
     packets_lost_delta: lostDelta,
     nack_delta: nackDelta,
     nack_rate_per_second: nackDelta / seconds,
-    loss_ratio: deliveredAndLost === 0 ? 0 : lostDelta / deliveredAndLost,
+    loss_ratio: deliveredAndLost === 0 ? null : lostDelta / deliveredAndLost,
   };
 }
 
@@ -241,6 +254,11 @@ function inspectSeries(series) {
         return invalidSeries('NON_FINITE', index);
       }
     }
+    for (const field of DELTA_OR_RATE_FIELDS) {
+      if (sample[field] !== undefined && sample[field] !== null && sample[field] < 0) {
+        return { valid: false, error: { code: 'NEGATIVE_DELTA_OR_RATE', index, metric: field } };
+      }
+    }
     samples.push(sample);
   }
   return { valid: true, samples };
@@ -268,6 +286,13 @@ function inspectThresholdProfile(value) {
     }
     maxGap = profile.max_sample_gap_ms;
   }
+  let maximumDuration = null;
+  if (profile.maximum_duration_ms !== undefined) {
+    if (typeof profile.maximum_duration_ms !== 'number' || !Number.isFinite(profile.maximum_duration_ms) || profile.maximum_duration_ms <= 0) {
+      return { valid: false, error: { code: 'MALFORMED_THRESHOLD_PROFILE' } };
+    }
+    maximumDuration = profile.maximum_duration_ms;
+  }
   const thresholds = [];
   for (const definition of THRESHOLDS) {
     if (profile[definition.field] === undefined) continue;
@@ -276,7 +301,13 @@ function inspectThresholdProfile(value) {
     }
     thresholds.push({ ...definition, value: profile[definition.field] });
   }
-  return { valid: true, minimum_samples: profile.minimum_samples, max_sample_gap_ms: maxGap, thresholds };
+  return {
+    valid: true,
+    minimum_samples: profile.minimum_samples,
+    max_sample_gap_ms: maxGap,
+    maximum_duration_ms: maximumDuration,
+    thresholds,
+  };
 }
 
 function summarizeSeries(samples, requiredMetrics) {
@@ -315,6 +346,11 @@ function firstSamplingGap(samples, maxGapMs) {
     if (gap > maxGapMs) return gap;
   }
   return null;
+}
+
+function observedDuration(samples) {
+  if (samples.length === 0) return null;
+  return samples[samples.length - 1].timestamp_ms - samples[0].timestamp_ms;
 }
 
 function requireSampleCap(value) {

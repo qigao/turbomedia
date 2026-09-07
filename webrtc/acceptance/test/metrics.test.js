@@ -70,6 +70,16 @@ test('browser normalization produces counter deltas rates and loss ratio from mo
   });
 });
 
+test('zero browser traffic keeps loss ratio unobserved and required loss evidence incomplete', () => {
+  const first = normalizeBrowserSnapshot(browserRaw(), null, 1_000);
+  const idle = normalizeBrowserSnapshot(browserRaw(), first, 2_000);
+  const result = evaluatePhaseMetrics([idle], { minimum_samples: 1, max_loss_ratio: 0 });
+
+  assert.equal(idle.loss_ratio, null);
+  assert.equal(result.outcome, 'INCOMPLETE');
+  assert.deepEqual(result.incomplete, [{ metric: 'loss_ratio', reason: 'missing evidence' }]);
+});
+
 test('SFU normalization preserves gauges and converts only monotonic media counter to delta and rate', () => {
   const first = normalizeSfuSnapshot(sfuRaw(), null, 1_000);
   const next = normalizeSfuSnapshot(sfuRaw({ active_resources: 1, turn_allocations: 0, media_packets: 130 }), first, 2_000);
@@ -181,4 +191,34 @@ test('phase evaluation classifies invalid normalized input as error instead of m
 
   assert.equal(result.outcome, 'ERROR');
   assert.deepEqual(result.errors, [{ code: 'TIMESTAMP_REGRESSION', index: 1 }]);
+});
+
+test('phase evaluation classifies every negative normalized delta or rate as error', () => {
+  for (const field of ['media_delta', 'media_rate_per_second', 'packets_lost_delta', 'nack_delta', 'nack_rate_per_second']) {
+    const result = evaluatePhaseMetrics([
+      { timestamp_ms: 1_000, [field]: -1 },
+    ], { minimum_samples: 1 });
+
+    assert.equal(result.outcome, 'ERROR', field);
+    assert.deepEqual(result.errors, [{ code: 'NEGATIVE_DELTA_OR_RATE', index: 0, metric: field }], field);
+  }
+});
+
+test('phase duration threshold uses first and last observed sample timestamps with equality passing', () => {
+  const equal = evaluatePhaseMetrics([
+    { timestamp_ms: 1_000 },
+    { timestamp_ms: 2_000 },
+  ], { minimum_samples: 2, maximum_duration_ms: 1_000 });
+  const exceeded = evaluatePhaseMetrics([
+    { timestamp_ms: 1_000 },
+    { timestamp_ms: 2_001 },
+  ], { minimum_samples: 2, maximum_duration_ms: 1_000 });
+
+  assert.equal(equal.outcome, 'PASS');
+  assert.equal(equal.duration_ms, 1_000);
+  assert.equal(exceeded.outcome, 'FAIL');
+  assert.equal(exceeded.duration_ms, 1_001);
+  assert.deepEqual(exceeded.failures, [{
+    metric: 'phase_duration_ms', statistic: 'duration', threshold: 1_000, value: 1_001,
+  }]);
 });
