@@ -1,7 +1,5 @@
 #include "turbo_player.h"
 
-#include "turbo_playback.h"
-
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
@@ -11,6 +9,7 @@
 #include <libswscale/swscale.h>
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -32,6 +31,18 @@ static void player_sleep_ms(unsigned int ms) {
 }
 #endif
 
+enum {
+    PLAYER_DEFAULT_AUDIO_BUFFER_MS = 500,
+    PLAYER_DRAIN_MARGIN_MS = 1000,
+    PLAYER_DRAIN_SLICE_MS = 10
+};
+
+enum {
+    PLAYER_TERMINAL_ACTIVE = 0,
+    PLAYER_TERMINAL_CANCELLED,
+    PLAYER_TERMINAL_COMPLETED
+};
+
 struct turbo_player_s {
     AVFormatContext *format;
     AVCodecContext *audio_codec;
@@ -41,19 +52,21 @@ struct turbo_player_s {
     AVPacket *packet;
     AVFrame *frame;
 
-    turbo_playback_t *playback;
+    salts_playback_t *playback;
     turbo_player_config_t config;
 
     int audio_stream;
     int video_stream;
     int audio_rate;
     int audio_channels;
-    volatile int stopped;
-    volatile int paused;
-    volatile int running;
-    volatile int thread_started;
-    volatile int seek_requested;
-    int64_t seek_target_ms;
+    _Atomic int stopped;
+    _Atomic int paused;
+    _Atomic int running;
+    _Atomic int thread_started;
+    _Atomic int terminal;
+    _Atomic uint64_t seek_sequence;
+    _Atomic int64_t seek_target_ms;
+    uint64_t consumed_seek_sequence;
     int64_t discard_until_ms;
     int last_result;
     player_thread_t thread;
@@ -80,19 +93,51 @@ static int64_t frame_pts_ms(const AVFrame *frame, const AVStream *stream) {
 }
 
 static int wait_if_paused(turbo_player_t *player) {
-    while (player && player->paused && !player->stopped) {
+    if (!player) {
+        return TURBO_PLAYER_ERR_PLAYBACK;
+    }
+    int playback_paused = 0;
+    while (player->paused && !player->stopped) {
+        if (!playback_paused && player->playback) {
+            if (salts_playback_pause(player->playback) != SALTS_PLAYBACK_OK) {
+                return TURBO_PLAYER_ERR_PLAYBACK;
+            }
+            playback_paused = 1;
+        }
         player_sleep_ms(10);
     }
-    return (!player || player->stopped) ? TURBO_PLAYER_ERR_PLAYBACK : TURBO_PLAYER_OK;
+    if (player->stopped) {
+        return TURBO_PLAYER_ERR_PLAYBACK;
+    }
+    if (playback_paused &&
+        salts_playback_resume(player->playback) != SALTS_PLAYBACK_OK) {
+        return TURBO_PLAYER_ERR_PLAYBACK;
+    }
+    return TURBO_PLAYER_OK;
 }
 
 static int apply_pending_seek(turbo_player_t *player) {
-    if (!player || !player->seek_requested) {
+    if (!player) {
         return TURBO_PLAYER_OK;
     }
 
-    int64_t target_ms = player->seek_target_ms;
-    player->seek_requested = 0;
+    uint64_t sequence_before;
+    uint64_t sequence_after;
+    int64_t target_ms;
+    do {
+        sequence_before =
+            atomic_load_explicit(&player->seek_sequence, memory_order_acquire);
+        if ((sequence_before & 1u) != 0u ||
+            sequence_before == player->consumed_seek_sequence) {
+            return TURBO_PLAYER_OK;
+        }
+        target_ms =
+            atomic_load_explicit(&player->seek_target_ms, memory_order_relaxed);
+        sequence_after =
+            atomic_load_explicit(&player->seek_sequence, memory_order_acquire);
+    } while (sequence_before != sequence_after);
+
+    player->consumed_seek_sequence = sequence_after;
     player->discard_until_ms = target_ms;
 
     int stream_index = player->video_stream >= 0 ? player->video_stream : player->audio_stream;
@@ -115,7 +160,9 @@ static int apply_pending_seek(turbo_player_t *player) {
         }
     }
     if (player->playback) {
-        turbo_playback_clear(player->playback);
+        if (salts_playback_clear(player->playback) != SALTS_PLAYBACK_OK) {
+            return TURBO_PLAYER_ERR_PLAYBACK;
+        }
     }
 
     return TURBO_PLAYER_OK;
@@ -154,14 +201,21 @@ static int init_audio(turbo_player_t *player) {
     player->audio_rate = player->config.audio_sample_rate > 0
                              ? player->config.audio_sample_rate
                              : player->audio_codec->sample_rate;
-    if (player->audio_rate <= 0) {
+    if (player->audio_rate != 8000 && player->audio_rate != 16000 &&
+        player->audio_rate != 24000 && player->audio_rate != 48000) {
+        if (player->config.audio_sample_rate > 0) {
+            return TURBO_PLAYER_ERR_PLAYBACK;
+        }
         player->audio_rate = 48000;
     }
 
     player->audio_channels = player->config.audio_channels > 0
                                  ? player->config.audio_channels
                                  : player->audio_codec->ch_layout.nb_channels;
-    if (player->audio_channels <= 0) {
+    if (player->audio_channels != 1 && player->audio_channels != 2) {
+        if (player->config.audio_channels > 0) {
+            return TURBO_PLAYER_ERR_PLAYBACK;
+        }
         player->audio_channels = 2;
     }
 
@@ -195,17 +249,19 @@ static int init_audio(turbo_player_t *player) {
     }
 
     if (player->config.play_audio) {
-        turbo_playback_config_t playback_config;
+        salts_playback_config_t playback_config;
         memset(&playback_config, 0, sizeof(playback_config));
-        playback_config.sample_rate = player->audio_rate;
-        playback_config.channels = player->audio_channels;
-        playback_config.format = TURBO_PLAYBACK_FORMAT_F32;
-        playback_config.buffer_size_ms =
-            player->config.audio_buffer_ms > 0 ? player->config.audio_buffer_ms : 500;
+        playback_config.sample_rate = (uint32_t)player->audio_rate;
+        playback_config.channels = (uint32_t)player->audio_channels;
+        playback_config.format = SALTS_PLAYBACK_FORMAT_F32;
+        playback_config.buffer_duration_ms = (uint32_t)(
+            player->config.audio_buffer_ms > 0
+                ? player->config.audio_buffer_ms
+                : PLAYER_DEFAULT_AUDIO_BUFFER_MS);
 
-        player->playback =
-            turbo_playback_create(player->config.audio_device_id, &playback_config);
-        if (!player->playback) {
+        if (salts_playback_create(player->config.audio_device,
+                                  &playback_config,
+                                  &player->playback) != SALTS_PLAYBACK_OK) {
             return TURBO_PLAYER_ERR_PLAYBACK;
         }
     }
@@ -283,7 +339,7 @@ void turbo_player_close(turbo_player_t *player) {
     turbo_player_wait(player);
 
     if (player->playback) {
-        turbo_playback_destroy(player->playback);
+        salts_playback_destroy(player->playback);
     }
     swr_free(&player->resampler);
     sws_freeContext(player->scaler);
@@ -335,8 +391,12 @@ static int write_audio_to_playback(turbo_player_t *player,
         if (wait_if_paused(player) != TURBO_PLAYER_OK) {
             break;
         }
-        size_t available = turbo_playback_get_available(player->playback);
+        size_t available = salts_playback_get_available(player->playback);
         if (available == 0) {
+            if (salts_playback_get_state(player->playback) ==
+                SALTS_PLAYBACK_STATE_ERROR) {
+                return TURBO_PLAYER_ERR_PLAYBACK;
+            }
             player_sleep_ms(5);
             continue;
         }
@@ -345,9 +405,42 @@ static int write_audio_to_playback(turbo_player_t *player,
         if (chunk > available) {
             chunk = available;
         }
-        written += turbo_playback_write(player->playback, data + written, chunk);
+        size_t chunk_written = 0;
+        if (salts_playback_write(player->playback,
+                                 data + written,
+                                 chunk,
+                                 &chunk_written) != SALTS_PLAYBACK_OK ||
+            chunk_written == 0) {
+            return TURBO_PLAYER_ERR_PLAYBACK;
+        }
+        written += chunk_written;
     }
     return written == len ? TURBO_PLAYER_OK : TURBO_PLAYER_ERR_PLAYBACK;
+}
+
+static int drain_playback(turbo_player_t *player, uint32_t timeout_ms) {
+    uint32_t elapsed_ms = 0;
+    while (salts_playback_get_buffered(player->playback) > 0) {
+        if (player->stopped) {
+            return TURBO_PLAYER_OK;
+        }
+        uint32_t remaining_ms = timeout_ms - elapsed_ms;
+        uint32_t slice_ms = remaining_ms < PLAYER_DRAIN_SLICE_MS
+                                ? remaining_ms
+                                : PLAYER_DRAIN_SLICE_MS;
+        if (slice_ms == 0) {
+            return TURBO_PLAYER_ERR_PLAYBACK;
+        }
+        int result = salts_playback_drain(player->playback, slice_ms);
+        if (result == SALTS_PLAYBACK_OK) {
+            return TURBO_PLAYER_OK;
+        }
+        if (result != SALTS_PLAYBACK_ERR_TIMEOUT) {
+            return TURBO_PLAYER_ERR_PLAYBACK;
+        }
+        elapsed_ms += slice_ms;
+    }
+    return TURBO_PLAYER_OK;
 }
 
 static int handle_audio_frame(turbo_player_t *player, const AVFrame *frame) {
@@ -536,8 +629,8 @@ static int player_decode_to_end(turbo_player_t *player) {
         return TURBO_PLAYER_ERR_OPEN;
     }
 
-    player->stopped = 0;
-    if (player->playback && turbo_playback_start(player->playback) != TURBO_PLAYBACK_OK) {
+    if (player->playback &&
+        salts_playback_start(player->playback) != SALTS_PLAYBACK_OK) {
         return TURBO_PLAYER_ERR_PLAYBACK;
     }
 
@@ -574,17 +667,46 @@ static int player_decode_to_end(turbo_player_t *player) {
         }
     }
 
-    if (player->playback) {
-        while (!player->stopped && turbo_playback_get_buffered(player->playback) > 0) {
-            player_sleep_ms(10);
-        }
-        turbo_playback_stop(player->playback);
+    if (atomic_load_explicit(&player->terminal, memory_order_acquire) ==
+        PLAYER_TERMINAL_CANCELLED) {
+        rc = TURBO_PLAYER_OK;
     }
 
-    if (rc == TURBO_PLAYER_OK && player->complete_cb) {
-        player->complete_cb(player, player->complete_user_data);
+    if (player->playback) {
+        if (rc == TURBO_PLAYER_OK &&
+            atomic_load_explicit(&player->terminal, memory_order_acquire) ==
+                PLAYER_TERMINAL_ACTIVE) {
+            uint32_t drain_timeout_ms = (uint32_t)(
+                (player->config.audio_buffer_ms > 0
+                     ? player->config.audio_buffer_ms
+                     : PLAYER_DEFAULT_AUDIO_BUFFER_MS) +
+                PLAYER_DRAIN_MARGIN_MS);
+            if (drain_playback(player, drain_timeout_ms) != TURBO_PLAYER_OK) {
+                rc = TURBO_PLAYER_ERR_PLAYBACK;
+            }
+        }
+        if (atomic_load_explicit(&player->terminal, memory_order_acquire) ==
+            PLAYER_TERMINAL_CANCELLED) {
+            rc = TURBO_PLAYER_OK;
+        }
+        if (salts_playback_stop(player->playback) != SALTS_PLAYBACK_OK &&
+            rc == TURBO_PLAYER_OK) {
+            rc = TURBO_PLAYER_ERR_PLAYBACK;
+        }
     }
-    return player->stopped ? TURBO_PLAYER_OK : rc;
+
+    if (rc == TURBO_PLAYER_OK) {
+        int expected = PLAYER_TERMINAL_ACTIVE;
+        if (atomic_compare_exchange_strong_explicit(&player->terminal,
+                                                    &expected,
+                                                    PLAYER_TERMINAL_COMPLETED,
+                                                    memory_order_acq_rel,
+                                                    memory_order_acquire) &&
+            player->complete_cb) {
+            player->complete_cb(player, player->complete_user_data);
+        }
+    }
+    return rc;
 }
 
 #ifdef _WIN32
@@ -607,6 +729,11 @@ int turbo_player_play_to_end(turbo_player_t *player) {
     if (!player || player->running) {
         return TURBO_PLAYER_ERR_OPEN;
     }
+    player->stopped = 0;
+    player->paused = 0;
+    atomic_store_explicit(&player->terminal,
+                          PLAYER_TERMINAL_ACTIVE,
+                          memory_order_release);
     return player_decode_to_end(player);
 }
 
@@ -617,6 +744,9 @@ int turbo_player_start(turbo_player_t *player) {
 
     player->stopped = 0;
     player->paused = 0;
+    atomic_store_explicit(&player->terminal,
+                          PLAYER_TERMINAL_ACTIVE,
+                          memory_order_release);
     player->last_result = TURBO_PLAYER_OK;
     player->running = 1;
 
@@ -662,10 +792,14 @@ void turbo_player_stop(turbo_player_t *player) {
     if (!player) {
         return;
     }
+    int expected = PLAYER_TERMINAL_ACTIVE;
+    atomic_compare_exchange_strong_explicit(&player->terminal,
+                                            &expected,
+                                            PLAYER_TERMINAL_CANCELLED,
+                                            memory_order_acq_rel,
+                                            memory_order_acquire);
     player->stopped = 1;
-    if (player->playback) {
-        turbo_playback_stop(player->playback);
-    }
+    player->paused = 0;
 }
 
 void turbo_player_pause(turbo_player_t *player) {
@@ -673,9 +807,6 @@ void turbo_player_pause(turbo_player_t *player) {
         return;
     }
     player->paused = 1;
-    if (player->playback) {
-        turbo_playback_pause(player->playback);
-    }
 }
 
 void turbo_player_resume(turbo_player_t *player) {
@@ -683,9 +814,6 @@ void turbo_player_resume(turbo_player_t *player) {
         return;
     }
     player->paused = 0;
-    if (player->playback) {
-        turbo_playback_resume(player->playback);
-    }
 }
 
 int turbo_player_seek_ms(turbo_player_t *player, int64_t position_ms) {
@@ -693,8 +821,9 @@ int turbo_player_seek_ms(turbo_player_t *player, int64_t position_ms) {
         return TURBO_PLAYER_ERR_OPEN;
     }
 
-    player->seek_target_ms = position_ms;
-    player->seek_requested = 1;
+    atomic_fetch_add_explicit(&player->seek_sequence, 1, memory_order_acq_rel);
+    atomic_store_explicit(&player->seek_target_ms, position_ms, memory_order_relaxed);
+    atomic_fetch_add_explicit(&player->seek_sequence, 1, memory_order_release);
     if (!player->running) {
         return apply_pending_seek(player);
     }

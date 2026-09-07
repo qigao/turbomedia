@@ -55,5 +55,5 @@ reframing are deliberately outside this interface; a provider adapter must do
 them explicitly rather than changing audio timing silently.
 
 For local speaker output, the same TTS callback may call
-`turbo_playback_write()`. A short write is explicit playback backpressure and
+`salts_playback_write()`. A short write is explicit playback backpressure and
 must be returned to the provider as `TURBO_SPEECH_ERR_BUSY`.

@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(TurboMediaPackageConsumers LANGUAGES C)
 
-find_package(TurboMedia 1.0 CONFIG REQUIRED
-             COMPONENTS Pipeline RTSP Transport WebRTC DataChannel Device Speech Recognition)
+find_package(TurboMedia 2.0 CONFIG REQUIRED
+             COMPONENTS Pipeline RTSP Transport WebRTC DataChannel Player Speech Recognition)
 
 add_executable(turbo_media_pipeline_package_consumer main.c)
 target_link_libraries(turbo_media_pipeline_package_consumer
@@ -24,9 +24,9 @@ add_executable(turbo_media_datachannel_package_consumer datachannel_consumer.c)
 target_link_libraries(turbo_media_datachannel_package_consumer
                       PRIVATE TurboMedia::DataChannel)
 
-add_executable(turbo_media_device_package_consumer device_consumer.c)
-target_link_libraries(turbo_media_device_package_consumer
-                      PRIVATE TurboMedia::Device)
+add_executable(turbo_media_player_package_consumer player_consumer.c)
+target_link_libraries(turbo_media_player_package_consumer
+                      PRIVATE TurboMedia::Player)
 
 add_executable(turbo_media_speech_package_consumer speech_consumer.c)
 target_link_libraries(turbo_media_speech_package_consumer

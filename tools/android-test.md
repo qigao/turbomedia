@@ -104,7 +104,7 @@ NDK 优先取合并后的 `ANDROID_NDK_HOME`，否则从
 项目的最低 Android API 只在 `presets/AndroidPresets.json` 的 `android-base` 中设置：
 
 ```json
-"ANDROID_PLATFORM": "android-28"
+"ANDROID_PLATFORM": "android-26"
 ```
 
 当前 vcpkg 官方 `arm64-android`、`x64-android` 与 `x86-android` triplet
@@ -288,7 +288,7 @@ MediaProjection 必须由 Activity 发起系统授权，命令行 ELF 无法独�
 测试 APK、安装和启动 Activity、等待用户在系统对话框中允许录屏。Activity 先验证
 VirtualDisplay 已连接但 native capture 尚未 start 时没有帧，再等待至少一帧 I420，最后验证
 stop 后 frame count 不再增长。默认超时 90 秒，并在结束后卸载测试 APK。此 APK 的
-`minSdkVersion` 和 `targetSdkVersion` 都是 28，与当前 Android preset 的 API 基线一致。
+`minSdkVersion` 和 `targetSdkVersion` 都是 26，与当前 Android preset 的 API 基线一致。
 
 可用参数：
 

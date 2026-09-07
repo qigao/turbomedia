@@ -6,7 +6,7 @@ endif()
 
 project(
   TurboMedia
-  VERSION 1.0.0
+  VERSION 2.0.0
   LANGUAGES C CXX)
 
 include(GNUInstallDirs)
@@ -129,6 +129,10 @@ if(NOT TARGET Salts::Capture)
   message(FATAL_ERROR
           "SaltsUtils profile does not export Salts::Capture; enable SALTS_UTILS_ENABLE_CAPTURE")
 endif()
+if(NOT TARGET Salts::Playback)
+  message(FATAL_ERROR
+          "SaltsUtils profile does not export Salts::Playback; enable SALTS_UTILS_ENABLE_PLAYBACK")
+endif()
 find_package(SaltsNet CONFIG REQUIRED
              PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_package(RulesForge CONFIG REQUIRED
@@ -144,7 +148,6 @@ find_package(unofficial-usrsctp CONFIG REQUIRED)
 find_package(roaring CONFIG REQUIRED)
 find_package(libyuv CONFIG REQUIRED)
 
-find_path(MINIAUDIO_INCLUDE_DIR NAMES miniaudio.h REQUIRED)
 find_path(STB_INCLUDE_DIR NAMES stb_sprintf.h stb_image_write.h REQUIRED)
 find_path(OPUS_INCLUDE_DIR NAMES opus/opus.h REQUIRED)
 find_library(OPUS_LIBRARY NAMES opus REQUIRED)
@@ -172,7 +175,6 @@ add_subdirectory(transport)
 add_subdirectory(server)
 add_subdirectory(streamer)
 add_subdirectory(pipeline)
-add_subdirectory(media)
 add_subdirectory(player)
 add_subdirectory(recognition)
 add_subdirectory(media/rtsp)
@@ -219,7 +221,7 @@ configure_file(
 write_basic_package_version_file(
   "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaConfigVersion.cmake"
   VERSION ${PROJECT_VERSION}
-  COMPATIBILITY AnyNewerVersion)
+  COMPATIBILITY SameMajorVersion)
 
 install(
   FILES "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaConfig.cmake"

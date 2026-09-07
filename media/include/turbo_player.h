@@ -8,6 +8,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <salts_playback.h>
 #include <turbo_export.h>
 
 #ifdef __cplusplus
@@ -31,10 +32,10 @@ typedef enum {
 } turbo_player_video_format_t;
 
 typedef struct {
-    int play_audio;                         /* Decode audio into turbo_playback. */
-    const char *audio_device_id;            /* NULL selects default output device. */
-    int audio_sample_rate;                  /* 0 keeps source rate, fallback 48000. */
-    int audio_channels;                     /* 0 keeps source channels, fallback 2. */
+    int play_audio;                         /* Decode audio into Salts::Playback. */
+    const salts_playback_device_t *audio_device; /* Read during open; NULL selects default. */
+    int audio_sample_rate;                  /* 0 uses supported source rate or 48000. */
+    int audio_channels;                     /* 0 uses mono/stereo source or stereo. */
     int audio_buffer_ms;                    /* 0 uses 500 ms. */
     turbo_player_video_format_t video_format;
 } turbo_player_config_t;
@@ -62,6 +63,14 @@ typedef void (*turbo_player_audio_cb)(turbo_player_t *player,
                                       void *user_data);
 
 typedef void (*turbo_player_complete_cb)(turbo_player_t *player, void *user_data);
+
+/*
+ * Use one control thread for start/wait/stop/pause/resume/seek. The asynchronous
+ * decode worker serializes device mutations while running. Before start, that
+ * control thread may apply seek synchronously while the worker is quiescent.
+ * Stop racing end-of-stream has one terminal winner, so completion is never
+ * reported after cancellation wins.
+ */
 
 TURBO_MEDIA_API turbo_player_t *turbo_player_open(const char *url,
                                             const turbo_player_config_t *config);
