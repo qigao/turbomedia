@@ -3,9 +3,9 @@
 include(CMakeFindDependencyMacro)
 
 find_dependency(Salts CONFIG REQUIRED
-                PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH)
+                PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_dependency(SaltsUtils CONFIG REQUIRED
-                PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH)
+                PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(NOT TARGET Salts::Capture)
   set(TurboMedia_FOUND FALSE)
   set(TurboMedia_NOT_FOUND_MESSAGE
@@ -13,7 +13,7 @@ if(NOT TARGET Salts::Capture)
   return()
 endif()
 find_dependency(SaltsNet CONFIG REQUIRED
-                PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH)
+                PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 
 
 # The exported target file contains all TurboMedia components, but FFmpeg is

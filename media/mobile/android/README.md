@@ -32,7 +32,7 @@ Complete Android implementation of TurboNet Media with native C/C++ performance 
 cmake -B build -S . \
   -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-24 \
+  -DANDROID_PLATFORM=android-26 \
   -DANDROID_STL=c++_shared
 
 # Build
@@ -313,7 +313,7 @@ VirtualDisplay, stops MediaProjection, and destroys the native ImageReader conte
 
 ## Requirements
 
-- Android API 24+ (Android 7.0+)
+- Android API 26+ (Android 8.0+)
 - NDK r25+
 - CMake 3.18.1+
 - Gradle 7.0+
@@ -328,6 +328,7 @@ VirtualDisplay, stops MediaProjection, and destroys the native ImageReader conte
   - MediaCodec
   - OpenSL ES
   - MediaProjection
+  - Salts Capture（拥有 AImageReader/ANativeWindow，并向 JNI 提供 Surface）
 
 ## Troubleshooting
 

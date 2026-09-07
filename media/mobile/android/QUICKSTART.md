@@ -33,7 +33,7 @@ cd media/android
 cmake -B build -S . \
   -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
   -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-24
+  -DANDROID_PLATFORM=android-26
 
 cmake --build build -j8
 ```
@@ -58,9 +58,16 @@ dependencies {
 ### Method 2: Copy Native Libraries
 
 ```bash
-# Copy .so files to your project
-cp -r install/*/lib/* app/src/main/jniLibs/
+# Copy TurboMedia plus the Salts capture/core runtime dependency closure.
+mkdir -p app/src/main/jniLibs/<abi>
+cp install/<abi>/lib/*.so app/src/main/jniLibs/<abi>/
+cp "$SALTS_UTILS_ROOT/lib/libsalts_capture.so" app/src/main/jniLibs/<abi>/
+cp "$SALTS_ROOT/lib/libsalts.so" app/src/main/jniLibs/<abi>/
 ```
+
+`SALTS_UTILS_ROOT` and `SALTS_ROOT` must name Android installs for the same ABI
+and build profile as TurboMedia. The loader requires all three libraries;
+desktop or mixed-ABI installs are rejected rather than used as fallbacks.
 
 **app/build.gradle**:
 ```groovy
@@ -330,7 +337,7 @@ set ANDROID_NDK=C:\path\to\ndk
 
 ## Requirements
 
-- Android 7.0+ (API 24+)
+- Android 8.0+ (API 26+)
 - Android NDK r25+
 - Gradle 7.0+
 - CMake 3.18.1+

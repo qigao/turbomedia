@@ -17,9 +17,9 @@ been narrowed away from the old TurboWebRTC media-engine APIs.
 Current adaptation status:
 
 - Camera, microphone, and C-level screen capture are provided by
-  `Salts::Capture` via `<salts_capture.h>`. Android temporarily retains only
-  the Java MediaProjection surface bridge tracked by issue #25; it does not
-  define a second `salts_capture_*` provider.
+  `Salts::Capture`. Android MediaProjection uses
+  `<salts_capture_android.h>` for the Java Surface handoff; TurboMedia no
+  longer contains a second native screen-capture backend.
 - iOS and Android mobile optimizer/monitor declarations have been moved behind
   the staged `media/include/turbo_mobile.h` header, removing their dependency on
   the old `turbo_media_engine.h` header.
@@ -45,7 +45,4 @@ Build entry points:
 
 Known remaining work:
 
-- Android screen capture still needs a public Salts MediaProjection/surface
-  handoff before TurboMedia's legacy `ScreenCapture.java` JNI bridge can be
-  removed without losing that Java-facing behavior.
 - Validate the platform targets with real iOS and Android toolchains.

@@ -25,7 +25,7 @@
   - ScreenCapture native methods
 
 #### Capture
-- ✅ **capture_android.c**: Unified capture interface
+- ✅ **Salts Capture**: Unified capture interface and native resource owner
 - ✅ **capture_video_android.c**: Camera2 API implementation
   - Front/back camera support
   - Resolution and framerate control
@@ -34,10 +34,10 @@
   - Low-latency audio capture
   - Fallback to miniaudio
   - Sample rate conversion
-- ✅ **capture_screen_android.c**: MediaProjection API
+- ✅ **salts_capture_android.h**: MediaProjection Surface bridge
   - Screen recording/sharing
   - Permission handling
-  - Hardware acceleration
+  - AImageReader/ANativeWindow lifetime owned by Salts
 
 #### Codecs
 - ✅ **hardware_codec_android.c**: MediaCodec integration
@@ -244,9 +244,9 @@
 
 ## 📝 Known Limitations
 
-1. **API Level**: Requires Android 7.0+ (API 24+)
+1. **API Level**: Requires Android 8.0+ (API 26+)
    - Camera2 API requires API 21+
-   - Some features require API 24+
+   - The MediaProjection Surface bridge uses `ANativeWindow_toSurface`, available since API 26
 
 2. **Hardware**: Requires hardware codec support
    - Not all devices have H.264/H.265 hardware encoders

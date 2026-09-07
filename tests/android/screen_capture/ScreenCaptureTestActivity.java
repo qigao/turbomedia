@@ -15,11 +15,14 @@ public final class ScreenCaptureTestActivity extends Activity
     private static final String TAG = "TurboMediaScreenTest";
     private static final long FRAME_TIMEOUT_MS = 5000;
     private static final long POLL_INTERVAL_MS = 100;
+    private static final long LIFECYCLE_QUIET_MS = 500;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ScreenCapture capture;
     private TextView statusView;
     private long deadlineMs;
+    private long stoppedFrameCount;
+    private int startedCallbackCount;
     private boolean finished;
 
     @Override
@@ -47,14 +50,19 @@ public final class ScreenCaptureTestActivity extends Activity
 
     @Override
     public void onPermissionGranted() {
-        statusView.setText("Permission granted; waiting for a native I420 frame…");
-        if (!capture.start()) {
-            fail("ScreenCapture.start returned false");
+        statusView.setText("Permission granted; checking the pre-start gate…");
+        try {
+            if (!capture.attachVirtualDisplayForTest()) {
+                fail("VirtualDisplay attachment returned false");
+                return;
+            }
+        } catch (Exception error) {
+            fail("VirtualDisplay attachment failed: " + error.getMessage());
             return;
         }
 
-        deadlineMs = android.os.SystemClock.uptimeMillis() + FRAME_TIMEOUT_MS;
-        handler.post(this::pollFrameCount);
+        deadlineMs = android.os.SystemClock.uptimeMillis() + LIFECYCLE_QUIET_MS;
+        handler.post(this::verifyPreStartGate);
     }
 
     @Override
@@ -64,6 +72,7 @@ public final class ScreenCaptureTestActivity extends Activity
 
     @Override
     public void onStarted() {
+        startedCallbackCount++;
         Log.i(TAG, "VirtualDisplay and native capture started");
     }
 
@@ -84,7 +93,19 @@ public final class ScreenCaptureTestActivity extends Activity
 
         long frameCount = capture.getCapturedFrameCountForTest();
         if (frameCount > 0) {
-            pass(frameCount);
+            if (!capture.start()) {
+                fail("Repeated public start returned false");
+                return;
+            }
+            if (startedCallbackCount != 1) {
+                fail("Repeated public start emitted " + startedCallbackCount + " start callbacks");
+                return;
+            }
+            capture.stop();
+            stoppedFrameCount = capture.getCapturedFrameCountForTest();
+            deadlineMs = android.os.SystemClock.uptimeMillis() + LIFECYCLE_QUIET_MS;
+            statusView.setText("Frame received; checking the post-stop gate…");
+            handler.post(this::verifyPostStopGate);
             return;
         }
 
@@ -94,6 +115,55 @@ public final class ScreenCaptureTestActivity extends Activity
         }
 
         handler.postDelayed(this::pollFrameCount, POLL_INTERVAL_MS);
+    }
+
+    private void verifyPreStartGate() {
+        if (finished) {
+            return;
+        }
+
+        long frameCount = capture.getCapturedFrameCountForTest();
+        if (frameCount != 0) {
+            fail("Frames arrived before native start: " + frameCount);
+            return;
+        }
+
+        if (android.os.SystemClock.uptimeMillis() < deadlineMs) {
+            handler.postDelayed(this::verifyPreStartGate, POLL_INTERVAL_MS);
+            return;
+        }
+
+        try {
+            if (!capture.start()) {
+                fail("Public screen capture start returned false");
+                return;
+            }
+        } catch (Exception error) {
+            fail("Public screen capture start failed: " + error.getMessage());
+            return;
+        }
+        statusView.setText("Native capture started; waiting for an I420 frame…");
+        deadlineMs = android.os.SystemClock.uptimeMillis() + FRAME_TIMEOUT_MS;
+        handler.post(this::pollFrameCount);
+    }
+
+    private void verifyPostStopGate() {
+        if (finished) {
+            return;
+        }
+
+        long frameCount = capture.getCapturedFrameCountForTest();
+        if (frameCount != stoppedFrameCount) {
+            fail("Frames arrived after native stop: " + stoppedFrameCount + " -> " + frameCount);
+            return;
+        }
+
+        if (android.os.SystemClock.uptimeMillis() < deadlineMs) {
+            handler.postDelayed(this::verifyPostStopGate, POLL_INTERVAL_MS);
+            return;
+        }
+
+        pass(stoppedFrameCount);
     }
 
     private void pass(long frameCount) {
