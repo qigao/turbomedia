@@ -912,16 +912,15 @@ iris_command_ledger_t *iris_command_ledger_create(
 
 iris_command_ledger_t *iris_command_ledger_create_record_store(
     const char *yaml_path, const char *channel_name,
-    int allow_development_sqlite, size_t request_queue_capacity,
+    size_t request_queue_capacity,
     size_t retention_batch_size, uint64_t terminal_retention_ms,
     uint64_t retention_sweep_interval_ms,
     char *error, size_t error_capacity) {
     iris_orm_store_owner_t *owner;
     iris_command_ledger_config_t config;
     iris_command_ledger_t *ledger;
-    owner = iris_orm_store_owner_create(
-        yaml_path, channel_name, allow_development_sqlite, error,
-        error_capacity);
+    owner = iris_orm_store_owner_create(yaml_path, channel_name, error,
+                                        error_capacity);
     if (!owner) return NULL;
     memset(&config, 0, sizeof(config));
     config.request_queue_capacity = request_queue_capacity;

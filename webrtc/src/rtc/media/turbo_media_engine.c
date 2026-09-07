@@ -6,7 +6,9 @@
 #include "turbo_media_engine.h"
 #include "jitter_buffer.h"
 #include "tlog.h"
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 #include "salts_capture.h"
+#endif
 #include "turbo_codec.h"
 #include "turbo_datachannel.h"
 #include "turbo_nack.h"
@@ -18,7 +20,9 @@
 #include <string.h>
 #include <stdatomic.h>
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 #define MEDIA_MAX_NATIVE_VIDEO_MODES 256
+#endif
 
 /* =============================================================================
  * Internal Structures
@@ -51,8 +55,10 @@ struct turbo_media_track_s {
   void *encoder;
   void *decoder;
 
-  /* Capture context */
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
+  /* Capture is a Client adapter owned by SaltsUtils. */
   void *capture;
+#endif
   turbo_asr_t *asr; /* Borrowed; owner detaches before destroying the ASR. */
   turbo_voice_detector_t *voice_detector; /* Borrowed while the track is quiescent. */
   turbo_fingerprint_extractor_t *voice_fingerprint; /* Borrowed while quiescent. */
@@ -234,7 +240,9 @@ static void handle_rtcp_psfb(turbo_media_context_t *ctx, const void *data, size_
 static void handle_rtcp_remb(turbo_media_context_t *ctx, const void *data, size_t len);
 static int init_encoder(turbo_media_track_t *track);
 static int init_decoder(turbo_media_track_t *track);
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 static int start_capture_if_present(turbo_media_track_t *track);
+#endif
 
 /* libsrtp contexts carry rollover and replay state. Keep both their state
  * transitions and their lifetime under the media context lock. */
@@ -1078,6 +1086,7 @@ static void handle_rtcp_remb(turbo_media_context_t *ctx, const void *data, size_
   }
 }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 static int capture_device_id(salts_capture_type_t type, int device_index, char *device_id,
                              size_t device_id_len) {
   device_id[0] = '\0';
@@ -1189,6 +1198,7 @@ static void on_video_captured(salts_capture_t *capture, const uint8_t *frame, si
   /* Capture clocks are microseconds; RTP pacing is owned by the track. */
   turbo_media_track_send_frame(track, frame, len, 0);
 }
+#endif
 
 /* =============================================================================
  * Track Functions
@@ -1272,6 +1282,7 @@ fail:
   return NULL;
 }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 turbo_media_track_t *turbo_media_add_screen_track(turbo_media_context_t *ctx, int screen_index,
                                                   int fps) {
   turbo_media_track_config_t config = {.type = TURBO_RTC_MEDIA_TRACK_VIDEO,
@@ -1328,6 +1339,7 @@ turbo_media_track_t *turbo_media_add_video_track(turbo_media_context_t *ctx, int
   }
   return track;
 }
+#endif
 
 void turbo_media_remove_track(turbo_media_track_t *track) {
   if (!track) return;
@@ -1370,9 +1382,11 @@ void turbo_media_remove_track(turbo_media_track_t *track) {
   if (track->twcc_receiver) {
     twcc_receiver_destroy(track->twcc_receiver);
   }
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
   if (track->capture) {
     salts_capture_destroy((salts_capture_t *)track->capture);
   }
+#endif
 
   if (track->history) {
     rtp_history_destroy(track->history);
@@ -1380,6 +1394,7 @@ void turbo_media_remove_track(turbo_media_track_t *track) {
   free(track);
 }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 int turbo_media_track_set_capture(turbo_media_track_t *track,
                                   const turbo_capture_config_t *config) {
   if (!track || !config) return -1;
@@ -1459,6 +1474,7 @@ int turbo_media_track_set_capture(turbo_media_track_t *track,
 
   return -1;
 }
+#endif
 
 int turbo_media_track_attach_asr(turbo_media_track_t *track, turbo_asr_t *asr) {
   turbo_speech_audio_format_t asr_format;
@@ -1580,11 +1596,13 @@ int turbo_media_track_start(turbo_media_track_t *track) {
       return -1;
     }
 
-    /* Start capture if present */
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
+    /* Client capture is optional; raw-frame senders do not attach one. */
     if (start_capture_if_present(track) != 0) {
       atomic_store(&track->state, TURBO_MEDIA_STATE_ERROR);
       return -1;
     }
+#endif
   }
 
   /* Initialize decoder if not already done */
@@ -1679,12 +1697,14 @@ static int init_decoder(turbo_media_track_t *track) {
   return track->decoder ? 0 : -1;
 }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /* Start capture if present */
 static int start_capture_if_present(turbo_media_track_t *track) {
   if (!track->capture) return 0;
 
   return salts_capture_start((salts_capture_t *)track->capture);
 }
+#endif
 
 void turbo_media_track_stop(turbo_media_track_t *track) {
   if (!track) return;
@@ -1692,10 +1712,12 @@ void turbo_media_track_stop(turbo_media_track_t *track) {
 
   atomic_store(&track->state, TURBO_MEDIA_STATE_STOPPING);
 
-  /* Stop capture source */
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
+  /* Stop the Client-owned SaltsUtils capture source. */
   if (track->capture) {
     salts_capture_stop((salts_capture_t *)track->capture);
   }
+#endif
 
   /* Destroy encoder/decoder */
   if (track->encoder) {
@@ -1989,8 +2011,9 @@ int turbo_media_track_get_transport_cc_ext_id(turbo_media_track_t *track) {
   return track ? track->transport_cc_ext_id : 0;
 }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /* =============================================================================
- * Device Enumeration (Stubs)
+ * Client Device Enumeration
  * ============================================================================= */
 
 int turbo_media_list_audio_inputs(turbo_media_device_t *devices, int max_count) {
@@ -2037,6 +2060,7 @@ int turbo_media_list_screens(turbo_media_device_t *devices, int max_count) {
   }
   return count;
 }
+#endif
 
 /* Handle incoming RTCP NACK (retransmission request) */
 static void handle_rtcp_nack(turbo_media_context_t *ctx, const void *data, size_t len) {

@@ -4,14 +4,14 @@ project(
   TurboRoomService
   VERSION 1.0.0
   LANGUAGES C
-  DESCRIPTION "TurboNet conference room service"
+  DESCRIPTION "TurboMedia conference room service"
 )
 
 # First-party packages are resolved once at the repository root from their
 # explicit environment roots, so every WebRTC subdirectory sees the same targets.
-if(NOT TARGET Orm::C)
+if(NOT TARGET Orm::PostgreSQL)
   message(FATAL_ERROR
-    "RoomService Iris outbox requires Orm::C")
+    "RoomService Iris outbox requires Orm::PostgreSQL")
 endif()
 
 turbo_media_find_tbe_compiler(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE)
@@ -150,7 +150,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_LIBS
     turbo_media_ivr
     room_service_iris_outbox_schema
-    Orm::C)
+    Orm::PostgreSQL)
 endif()
 
 target_link_libraries(room_service
@@ -175,7 +175,17 @@ set_target_properties(room_service
 
 turbo_media_deploy_windows_runtime(
   room_service Salts::CHTTP Salts::CNet RulesForge::rules_forge
-   Orm::C Salts::Mustache Salts::DataBind Salts::Core Salts::Capture)
+   Orm::PostgreSQL Orm::C Salts::Mustache Salts::DataBind Salts::Core)
+if(WIN32)
+  add_custom_command(
+    TARGET room_service POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${TURBO_MEDIA_ORM_PREFIX}/bin/LIBPQ.dll"
+            "${TURBO_MEDIA_ORM_PREFIX}/bin/ssl.dll"
+            "${TURBO_MEDIA_ORM_PREFIX}/bin/crypto.dll"
+            $<TARGET_FILE_DIR:room_service>
+    COMMENT "Deploying PostgreSQL runtime for room_service")
+endif()
 
 install(
   TARGETS room_service
@@ -190,16 +200,18 @@ if(WIN32)
           $<TARGET_FILE:Salts::Mustache>
           $<TARGET_FILE:Salts::DataBind>
           $<TARGET_FILE:Salts::Core>
-          $<TARGET_FILE:Salts::Capture>
+          $<TARGET_FILE:Orm::PostgreSQL>
           $<TARGET_FILE:Orm::C>
-          $<TARGET_FILE_DIR:Orm::C>/sqlite3.dll
+          "${TURBO_MEDIA_ORM_PREFIX}/bin/LIBPQ.dll"
+          "${TURBO_MEDIA_ORM_PREFIX}/bin/ssl.dll"
+          "${TURBO_MEDIA_ORM_PREFIX}/bin/crypto.dll"
     DESTINATION bin
     COMPONENT RoomService)
 endif()
 install(
   FILES config/room_service.toml.example
-        config/room_service.orm.sqlite.yaml.example
-  DESTINATION etc/turbonet
+        config/room_service.orm.postgresql.yaml.example
+  DESTINATION etc/turbomedia
   COMPONENT RoomService
 )
 
@@ -272,7 +284,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_room_service_app PRIVATE turbo_media_ivr)
   target_link_libraries(test_room_service_app PRIVATE
     room_service_iris_outbox_schema
-    Orm::C)
+    Orm::PostgreSQL)
 endif()
 
 target_compile_options(test_room_service_app
@@ -292,14 +304,15 @@ target_compile_definitions(test_room_service_app
 add_test(NAME test_room_service_app COMMAND test_room_service_app)
 set_tests_properties(test_room_service_app PROPERTIES
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  TIMEOUT 120)
+  TIMEOUT 120
+  RESOURCE_LOCK http_port_19434)
 set_target_properties(test_room_service_app PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   OUTPUT_NAME "test_room_service_app"
   FOLDER "Applications/tests")
 turbo_media_deploy_windows_runtime(
   test_room_service_app  Salts::CNet
-  Salts::Mustache Salts::DataBind Salts::Core Salts::Capture)
+  Salts::Mustache Salts::DataBind Salts::Core)
 
 if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_executable(test_iris_media_bridge
@@ -460,7 +473,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     Salts::CHTTP
     SaltsNet::Crypto
     OpenSSL::Crypto
-    Orm::C
+    Orm::PostgreSQL
     Salts::Core
     Salts::JsonParser
     Salts::CYaml
@@ -488,7 +501,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_event_outbox PRIVATE
     room_service_iris_outbox_schema
-    Orm::C
+    Orm::PostgreSQL
     Salts::Core Salts::DataBind Salts::CYaml Salts::TinyTest)
   target_compile_definitions(test_iris_event_outbox PRIVATE
     TURBO_MEDIA_HAS_IVR_CONTROL)
@@ -512,7 +525,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_command_ledger PRIVATE
     room_service_iris_outbox_schema
-    Orm::C
+    Orm::PostgreSQL
     Salts::Core Salts::DataBind Salts::CYaml
     Salts::TinyTest)
   target_compile_definitions(test_iris_command_ledger PRIVATE
@@ -532,7 +545,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_include_directories(test_iris_orm_store PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_iris_orm_store PRIVATE
-    Orm::C Salts::Core Salts::CYaml Salts::TinyTest)
+    Orm::PostgreSQL Salts::Core Salts::CYaml Salts::TinyTest)
   add_test(NAME test_iris_orm_store COMMAND test_iris_orm_store)
   set_tests_properties(test_iris_orm_store PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
@@ -568,7 +581,8 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_test(NAME test_ivr_control_adapter COMMAND test_ivr_control_adapter)
   set_tests_properties(test_ivr_control_adapter PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-    TIMEOUT 60)
+    TIMEOUT 60
+    RESOURCE_LOCK ivr_control_ws_port_17715)
   set_target_properties(test_ivr_control_adapter PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     OUTPUT_NAME "test_ivr_control_adapter"
@@ -629,13 +643,22 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   if(WIN32)
     target_link_libraries(test_ivr_dispatch_processes PRIVATE ws2_32)
   endif()
-  add_test(NAME test_ivr_dispatch_processes COMMAND test_ivr_dispatch_processes)
+  option(TURBO_MEDIA_POSTGRES_LIVE_TESTS
+    "Run RoomService process tests against PostgreSQL" OFF)
+  if(TURBO_MEDIA_POSTGRES_LIVE_TESTS)
+    if(NOT DEFINED ENV{TURBO_MEDIA_TEST_POSTGRES_SERVICE} OR
+       "$ENV{TURBO_MEDIA_TEST_POSTGRES_SERVICE}" STREQUAL "")
+      message(FATAL_ERROR
+        "TURBO_MEDIA_POSTGRES_LIVE_TESTS requires TURBO_MEDIA_TEST_POSTGRES_SERVICE")
+    endif()
+    add_test(NAME test_ivr_dispatch_processes COMMAND test_ivr_dispatch_processes)
+    set(TEST_IVR_DISPATCH_PROCESSES_TIMEOUT_SECONDS 300)
+    set_tests_properties(test_ivr_dispatch_processes PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+      TIMEOUT ${TEST_IVR_DISPATCH_PROCESSES_TIMEOUT_SECONDS})
+  endif()
   add_dependencies(test_ivr_dispatch_processes
     room_service ivr_worker ivr_dispatch_worker_probe sfu_node)
-  set(TEST_IVR_DISPATCH_PROCESSES_TIMEOUT_SECONDS 300)
-  set_tests_properties(test_ivr_dispatch_processes PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-    TIMEOUT ${TEST_IVR_DISPATCH_PROCESSES_TIMEOUT_SECONDS})
   set_target_properties(test_ivr_dispatch_processes PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     OUTPUT_NAME "test_ivr_dispatch_processes"

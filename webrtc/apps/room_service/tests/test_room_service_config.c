@@ -84,7 +84,6 @@ spec("room service TOML configuration") {
             "event_store_config = \"room-flowstore.yaml\"\n"
             "event_store_channel = \"iris.media_events\"\n"
             "command_ledger_channel = \"iris.provider_commands\"\n"
-            "allow_development_sqlite = true\n"
             "correlation_capacity = 2048\n"
              "completion_queue_capacity = 512\n"
              "reconcile_inventory_queue_capacity = 4\n"
@@ -170,7 +169,6 @@ spec("room service TOML configuration") {
                          "iris.media_events");
             check_equal(config.iris_command_ledger_channel,
                          "iris.provider_commands");
-            check_true(config.iris_allow_development_sqlite);
             check_equal(config.iris_correlation_capacity, 2048);
             check_equal(config.iris_completion_queue_capacity, 512);
             check_equal(config.iris_reconcile_inventory_queue_capacity, 4);

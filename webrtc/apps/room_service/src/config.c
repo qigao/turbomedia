@@ -316,7 +316,6 @@ void room_service_app_config_init(room_service_app_config_t *config) {
         "TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CHANNEL");
     config->iris_command_ledger_channel = room_service_env_value(
         "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_CHANNEL");
-    config->iris_allow_development_sqlite = 0;
     config->iris_correlation_capacity = 1024;
     config->iris_completion_queue_capacity = 1024;
     config->iris_reconcile_inventory_queue_capacity = 8;
@@ -862,7 +861,7 @@ static int room_service_config_apply_iris_provider(
         "event_store_channel", "outbox_request_queue_capacity",
         "command_ledger_channel", "command_ledger_queue_capacity",
         "command_terminal_retention_seconds", "command_retention_batch_size",
-        "allow_development_sqlite", "dead_retention_seconds",
+        "dead_retention_seconds",
         "archive_retention_seconds", "retention_sweep_interval_ms",
         "retention_sweep_batch_size"
     };
@@ -951,9 +950,6 @@ static int room_service_config_apply_iris_provider(
                                &config->iris_retention_sweep_interval_ms) != 0 ||
         rtc_app_toml_apply_int(table, "iris_provider", "retention_sweep_batch_size",
                                &config->iris_retention_sweep_batch_size) != 0 ||
-        rtc_app_toml_apply_bool(table, "iris_provider",
-                                "allow_development_sqlite",
-                                &config->iris_allow_development_sqlite) != 0 ||
         rtc_app_toml_apply_int(table, "iris_provider", "retry_max_attempts",
                                &config->iris_retry_max_attempts) != 0 ||
         rtc_app_toml_apply_int(table, "iris_provider", "retry_backoff_ms",
@@ -1171,9 +1167,6 @@ void room_service_app_config_apply_environment(
     value = room_service_env_value(
         "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_CHANNEL");
     if (value) config->iris_command_ledger_channel = value;
-    config->iris_allow_development_sqlite = room_service_env_bool(
-        "TURBO_ROOM_SERVICE_IRIS_ALLOW_DEVELOPMENT_SQLITE",
-        config->iris_allow_development_sqlite);
     config->iris_dead_retention_seconds = room_service_env_int(
         "TURBO_ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS",
         config->iris_dead_retention_seconds);
@@ -1356,8 +1349,6 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
             config->iris_retention_sweep_batch_size < 1 ||
             config->iris_retention_sweep_batch_size >
                 ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX ||
-            (config->iris_allow_development_sqlite != 0 &&
-             config->iris_allow_development_sqlite != 1) ||
             config->iris_retry_max_attempts < 1 ||
             config->iris_retry_max_attempts > 100 ||
             config->iris_retry_backoff_ms < 1 ||
@@ -1487,8 +1478,6 @@ void room_service_app_config_print(const room_service_app_config_t *config) {
                config->iris_control_host, config->iris_control_port,
                config->iris_control_path,
                config->iris_control_use_tls ? "mTLS" : "trusted-loopback");
-        printf("  iris_sqlite_development_opt_in: %s\n",
-               config->iris_allow_development_sqlite ? "true" : "false");
         printf("  iris_provider_limits: correlation=%d queue=%d reconcile_queue=%d outbox_queue=%d retries=%d "
                "ack_timeout=%dms drain_timeout=%dms\n",
                config->iris_correlation_capacity,

@@ -18,6 +18,7 @@ add_executable(dc_benchmark benchmark.c)
 target_link_libraries(dc_benchmark PRIVATE TurboMedia::DataChannel Salts::Core)
 set_target_properties(dc_benchmark PROPERTIES FOLDER webrtc/examples)
 
+if(TURBO_MEDIA_IS_SERVER)
 add_executable(rtc_signaled_peer signaled_peer.c)
 target_link_libraries(rtc_signaled_peer PRIVATE TurboMedia::WebRTC TurboMedia::SDP
                                                Salts::JsonParser Salts::CHTTP
@@ -48,3 +49,4 @@ set_target_properties(browser_media_interop PROPERTIES FOLDER webrtc/examples)
 add_executable(rtc_server signaling_server.c)
 target_link_libraries(rtc_server PRIVATE TurboMedia::WebRTCSignaling TurboMedia::SDP)
 set_target_properties(rtc_server PROPERTIES FOLDER webrtc/examples)
+endif()

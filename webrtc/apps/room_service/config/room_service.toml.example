@@ -89,15 +89,12 @@ level = "info"
 #control_ws_server_name = "iris.internal"
 #control_ws_use_tls = true
 #control_ws_allow_insecure_loopback = false
-# TurboMedia consumes the SQLite-only TurboDB ORM package and does not link
-# libpq. A PostgreSQL deployment must supply its ORM runtime from TurboDB's
-# build output instead of adding PostgreSQL dependencies here.
-#event_store_config = "/etc/turbonet/room-service-orm.yaml"
+# RoomService requires TurboDB's PostgreSQL-only ORM package.
+#event_store_config = "/etc/turbomedia/room-service-orm.yaml"
 #event_store_channel = "iris.media_events"
 # Command intent/outcome records require a distinct RecordStore namespace;
 # they must not share the event outbox channel.
 #command_ledger_channel = "iris.provider_commands"
-#allow_development_sqlite = false
 #correlation_capacity = 1024
 #completion_queue_capacity = 1024
 #reconcile_inventory_queue_capacity = 8

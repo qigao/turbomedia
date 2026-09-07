@@ -10,7 +10,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <salts_capture.h>
 #include <turbo_export.h>
 
 #ifdef __cplusplus
@@ -21,6 +20,7 @@ extern "C" {
 
 typedef struct turbo_asr_s turbo_asr_t;
 typedef struct turbo_tts_s turbo_tts_t;
+typedef struct salts_capture_s salts_capture_t;
 
 typedef enum {
   TURBO_SPEECH_OK = 0,

@@ -119,7 +119,6 @@ function(turbo_media_ivr_configure_test test_name test_source)
     Salts::CNet
     Salts::DataBind
     Salts::Core
-    Salts::Capture
     TurboMedia::Speech)
 endfunction()
 
@@ -162,5 +161,7 @@ turbo_media_ivr_configure_test(
   test_ivr_control_gateway tests/test_ivr_control_gateway.c)
 turbo_media_ivr_configure_test(
   test_ivr_room_bridge tests/test_ivr_room_bridge.c)
+set_tests_properties(test_ivr_room_bridge PROPERTIES
+  RESOURCE_LOCK ivr_control_ws_port_17715)
 turbo_media_ivr_configure_test(
   test_ivr_room_bridge_dedup tests/test_ivr_room_bridge_dedup.c)

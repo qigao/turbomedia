@@ -58,7 +58,7 @@ install(
 # Install configuration example
 install(
   FILES config/signaling.toml.example
-  DESTINATION etc/turbonet
+  DESTINATION etc/turbomedia
   COMPONENT SignalingServer
 )
 

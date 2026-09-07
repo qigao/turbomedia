@@ -21,8 +21,9 @@ FFmpeg 图式流水线以及 WebRTC/RTC 媒体处理。项目默认 fail fast：
 
 ## 构建
 
-机器相关的依赖前缀、工具路径和安装路径写在不提交的
-`CMakeUserPresets.json` 中。Windows 开发构建：
+构建必须通过 `TURBO_MEDIA_PRODUCT` 显式选择产品，不存在自动探测或完整包
+fallback。现有 Windows/Linux user preset 选择 `SERVER`；Android preset 固定选择
+`CLIENT`。Windows Server 开发构建：
 
 ```powershell
 cmake --preset win-dev-user
@@ -33,13 +34,25 @@ ctest --preset win-dev-user --output-on-failure
 发布构建使用对应的 `win-release-user` preset。Linux 可使用
 `linux-dev-user` 或 `linux-release-user`。
 
-根工程默认构建不会用可选开关裁剪上述多媒体模块，并会检查所有必需依赖。主要依赖包括 FFmpeg
+Windows Client 可复用同一环境并使用独立 build/install prefix：
+
+```powershell
+cmake --preset win-dev-user -DTURBO_MEDIA_PRODUCT=CLIENT -B build/Msvc-client `
+  -DCMAKE_INSTALL_PREFIX=build/install-client
+cmake --build build/Msvc-client
+ctest --test-dir build/Msvc-client --output-on-failure
+```
+
+Client 只要求 shared media/RTC 依赖以及 SaltsUtils 的 `Capture`、`Playback`；
+Server 才查找 RulesForge、TurboDB 和 PostgreSQL-only Orm，并且不查找设备
+Capture/Playback。完整 target/platform 矩阵见
+[Client/Server 产品拆分](docs/design/client-server-product-profiles.md)。主要共享依赖包括 FFmpeg
 （含 `openh264`、`opus`、`xml2` feature）、OpenH264、x265、libde265、
 libvpx、Opus、Salts、SaltsUtils、SaltsNet、CHTTP、CNet、libSRTP 和 usrsctp。
 WebRTC PeerConnection、ICE、DTLS-SRTP 与 DataChannel 由仓库内 TurboMedia 与
 SaltsNet 模块实现；安全传输强制使用 BoringSSL。
 
-Linux 桌面 Capture 由 `Salts::Capture` 提供；所选 SaltsUtils 安装 profile
+Linux Client 桌面 Capture 由 `Salts::Capture` 提供；所选 SaltsUtils 安装 profile
 必须已启用 Capture。从源码构建该 profile 时需要 `pkg-config`、
 `libpipewire-0.3-dev`、`libx11-dev` 和 `libxext-dev`。
 
@@ -95,7 +108,7 @@ api_version: turbo.media.pipeline/v1
 
 ## RTC 服务进程
 
-`webrtc/apps` 随 `webrtc` 子树默认构建并安装：
+`webrtc/apps` 只随 `SERVER` product 构建并安装：
 
 - `sfu_node`：WebRTC 会话、媒体发布/订阅、分层转发、录制和节点 drain；
 - `room_service`：房间事实源、SFU 节点路由、状态重放和会议策略。

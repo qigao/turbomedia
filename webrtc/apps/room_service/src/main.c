@@ -20,7 +20,7 @@ static void room_service_setup_signal_handlers(void) {
 }
 
 static void room_service_print_usage(const char *program_name) {
-    printf("TurboNet Room Service v%s\n\n", TURBO_ROOM_SERVICE_APP_VERSION);
+    printf("TurboMedia Room Service v%s\n\n", TURBO_ROOM_SERVICE_APP_VERSION);
     printf("Usage: %s [OPTIONS]\n\n", program_name);
     printf("Options:\n");
     printf("  -c, --config FILE      Configuration file path\n");
@@ -50,7 +50,7 @@ static void room_service_print_usage(const char *program_name) {
 }
 
 static void room_service_print_version(void) {
-    printf("TurboNet Room Service\n");
+    printf("TurboMedia Room Service\n");
     printf("Version: %s\n", TURBO_ROOM_SERVICE_APP_VERSION);
     printf("Build Date: %s %s\n", __DATE__, __TIME__);
 }

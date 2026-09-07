@@ -65,6 +65,7 @@ typedef enum {
   TURBO_CODEC_H265 = 103  /* H.265 video (dynamic PT) */
 } turbo_codec_type_t;
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 typedef enum {
   TURBO_MEDIA_CAPTURE_NONE = 0,
   TURBO_MEDIA_CAPTURE_MICROPHONE,
@@ -72,6 +73,7 @@ typedef enum {
   TURBO_MEDIA_CAPTURE_SCREEN,
   TURBO_MEDIA_CAPTURE_WINDOW
 } turbo_media_capture_type_t;
+#endif
 
 /* =============================================================================
  * Configuration Structures
@@ -125,6 +127,7 @@ typedef struct {
   uint32_t jitter_buffer_ms; /* 0 = default */
 } turbo_media_track_config_t;
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /**
  * Capture configuration
  */
@@ -138,6 +141,7 @@ typedef struct {
     turbo_screen_config_t screen;
   };
 } turbo_capture_config_t;
+#endif
 
 /* =============================================================================
  * Statistics
@@ -285,6 +289,7 @@ TURBO_MEDIA_API turbo_media_track_t *turbo_media_get_track(turbo_media_context_t
 TURBO_MEDIA_API turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
                                                      const turbo_media_track_config_t *config);
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /**
  * Add screen sharing track (convenience)
  *
@@ -307,12 +312,14 @@ TURBO_MEDIA_API turbo_media_track_t *turbo_media_add_audio_track(turbo_media_con
  */
 TURBO_MEDIA_API turbo_media_track_t *turbo_media_add_video_track(turbo_media_context_t *ctx,
                                                            int device_index);
+#endif
 
 /**
  * Remove media track
  */
 TURBO_MEDIA_API void turbo_media_remove_track(turbo_media_track_t *track);
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /**
  * Set capture source for track
  *
@@ -322,6 +329,7 @@ TURBO_MEDIA_API void turbo_media_remove_track(turbo_media_track_t *track);
  */
 TURBO_MEDIA_API int turbo_media_track_set_capture(turbo_media_track_t *track,
                                             const turbo_capture_config_t *config);
+#endif
 
 /**
  * Attach a running ASR session to the raw microphone PCM path.
@@ -506,6 +514,7 @@ TURBO_MEDIA_API void turbo_media_track_set_transport_cc_ext_id(turbo_media_track
  */
 TURBO_MEDIA_API int turbo_media_track_get_transport_cc_ext_id(turbo_media_track_t *track);
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /* =============================================================================
  * Device
  * Enumeration
@@ -536,6 +545,7 @@ TURBO_MEDIA_API int turbo_media_list_video_inputs(turbo_media_device_t *devices,
  * List screens/monitors
  */
 TURBO_MEDIA_API int turbo_media_list_screens(turbo_media_device_t *devices, int max_count);
+#endif
 
 #ifdef __cplusplus
 }

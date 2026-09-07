@@ -75,7 +75,8 @@
             "cacheVariables": {
                 "ENABLE_SANITIZER_ADDRESS": "ON",
                 "CMAKE_PREFIX_PATH": "$env{VCPKG_INSTALLED_DIR}/x64-windows/debug",
-                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/debug"
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/debug",
+                "TURBO_MEDIA_PRODUCT": "SERVER"
             },
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/debug",
@@ -93,7 +94,8 @@
             "name": "win-release-user",
             "cacheVariables": {
                 "CMAKE_PREFIX_PATH": "$env{VCPKG_INSTALLED_DIR}/x64-windows",
-                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/release"
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/release",
+                "TURBO_MEDIA_PRODUCT": "SERVER"
             },
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/release",
@@ -112,7 +114,8 @@
             "cacheVariables": {
                 "ENABLE_SANITIZER_ADDRESS": "ON",
                 "CMAKE_PREFIX_PATH": "$env{VCPKG_INSTALLED_DIR}/x64-linux/debug",
-                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/debug"
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/debug",
+                "TURBO_MEDIA_PRODUCT": "SERVER"
             },
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/debug",
@@ -130,7 +133,8 @@
             "name": "linux-release-user",
             "cacheVariables": {
                 "CMAKE_PREFIX_PATH": "$env{VCPKG_INSTALLED_DIR}/x64-linux",
-                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/release"
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/release",
+                "TURBO_MEDIA_PRODUCT": "SERVER"
             },
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/release",

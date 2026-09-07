@@ -1,0 +1,40 @@
+version: 1
+
+channels:
+  iris.media_events:
+    kind: record_store
+    config:
+      backend: postgresql
+      host: db.internal
+      port: 5432
+      user: turbomedia
+      dbname: turbomedia
+      sslmode: verify-full
+      sslrootcert: /etc/turbomedia/tls/postgresql-ca.pem
+      namespace_name: iris.media_events
+      max_records: 10000
+      max_bytes: 67108864
+      max_item_bytes: 16384
+      max_key_size: 128
+      max_value_size: 16384
+      max_batch_size: 256
+
+  iris.provider_commands:
+    kind: record_store
+    config:
+      backend: postgresql
+      host: db.internal
+      port: 5432
+      user: turbomedia
+      dbname: turbomedia
+      sslmode: verify-full
+      sslrootcert: /etc/turbomedia/tls/postgresql-ca.pem
+      namespace_name: iris.provider_commands
+      max_records: 10000
+      max_bytes: 67108864
+      max_item_bytes: 16384
+      max_key_size: 128
+      max_value_size: 16384
+      max_batch_size: 256
+
+adapters: {}
