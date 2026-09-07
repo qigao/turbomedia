@@ -2,6 +2,9 @@
 
 #ifdef TURBO_MEDIA_HAS_RTSP
 
+#include <salts/clock.h>
+
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3731,43 +3734,31 @@ int turbo_rtsp_rtp_h265_receive_stream_push(
         nal_len);
 }
 
+#define TURBO_RTSP_RTP_UDP_DEFAULT_TIMEOUT_MS 30000u
+#define TURBO_RTSP_RTP_UDP_DEFAULT_SEND_CAPACITY 16u
+
+typedef struct {
+    cnet_datagram socket;
+    cnet_datagram_peer peer;
+    uint8_t *receive_buffer;
+    size_t receive_capacity;
+    size_t *receive_size;
+    int receive_done;
+    int receive_status;
+    uint64_t next_send_tag;
+    uint64_t waiting_send_tag;
+    int send_done;
+    int send_status;
+    int initialized;
+} turbo_rtsp_rtp_udp_channel_t;
+
 struct turbo_rtsp_rtp_udp_pair_s {
-    coro_context_t *ctx;
-    coro_socket_t *rtp_socket;
-    coro_socket_t *rtcp_socket;
-    struct sockaddr_storage peer_rtp;
-    struct sockaddr_storage peer_rtcp;
+    turbo_rtsp_rtp_udp_channel_t rtp;
+    turbo_rtsp_rtp_udp_channel_t rtcp;
+    uint64_t timeout_ms;
     int family;
     int has_peer;
 };
-
-static int turbo_rtsp_sockaddr_len(const struct sockaddr_storage *addr) {
-    if (!addr) {
-        return 0;
-    }
-    if (addr->ss_family == AF_INET) {
-        return (int)sizeof(struct sockaddr_in);
-    }
-    if (addr->ss_family == AF_INET6) {
-        return (int)sizeof(struct sockaddr_in6);
-    }
-    return 0;
-}
-
-static int turbo_rtsp_sockaddr_port(const struct sockaddr_storage *addr) {
-    if (!addr) {
-        return -1;
-    }
-    if (addr->ss_family == AF_INET) {
-        const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
-        return (int)ntohs(in->sin_port);
-    }
-    if (addr->ss_family == AF_INET6) {
-        const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)addr;
-        return (int)ntohs(in6->sin6_port);
-    }
-    return -1;
-}
 
 static int turbo_rtsp_resolve_udp_addr(
     const char *host,
@@ -3804,52 +3795,147 @@ static int turbo_rtsp_resolve_udp_addr(
     return 0;
 }
 
-static coro_socket_t *turbo_rtsp_rtp_udp_socket_create(
-    coro_context_t *ctx,
-    const struct sockaddr_storage *local_addr,
-    uint64_t timeout_ms) {
-    coro_socket_t *socket = NULL;
+static native_io_backend_kind turbo_rtsp_native_backend(void) {
+#ifdef _WIN32
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_IO_URING;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
 
-    if (!ctx || !local_addr) {
-        return NULL;
+static int turbo_rtsp_sockaddr_numeric_host(
+    const struct sockaddr_storage *addr,
+    char *host,
+    size_t host_size) {
+    const void *source = NULL;
+
+    if (!addr || !host || host_size == 0) {
+        return -1;
+    }
+    if (addr->ss_family == AF_INET) {
+        source = &((const struct sockaddr_in *)addr)->sin_addr;
+    } else if (addr->ss_family == AF_INET6) {
+        source = &((const struct sockaddr_in6 *)addr)->sin6_addr;
+    } else {
+        return -1;
+    }
+    return inet_ntop(addr->ss_family, source, host, (socklen_t)host_size) ? 0 : -1;
+}
+
+static int turbo_rtsp_sockaddr_to_peer(
+    const struct sockaddr_storage *addr,
+    cnet_datagram_peer *peer) {
+    if (!addr || !peer) {
+        return -1;
     }
 
-    if (local_addr->ss_family == AF_INET6) {
-        socket = coro_socket_create_udpv6(ctx);
-    } else if (local_addr->ss_family == AF_INET) {
-        socket = coro_socket_create_udpv4(ctx);
+    memset(peer, 0, sizeof(*peer));
+    if (addr->ss_family == AF_INET) {
+        const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
+        peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
+        peer->port = ntohs(in->sin_port);
+        memcpy(peer->address, &in->sin_addr, sizeof(in->sin_addr));
+        return 0;
     }
-
-    if (!socket) {
-        return NULL;
+    if (addr->ss_family == AF_INET6) {
+        const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)addr;
+        peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
+        peer->port = ntohs(in6->sin6_port);
+        peer->scope_id = in6->sin6_scope_id;
+        memcpy(peer->address, &in6->sin6_addr, sizeof(in6->sin6_addr));
+        return 0;
     }
+    return -1;
+}
 
-    if (timeout_ms > 0) {
-        coro_socket_set_timeout(socket, timeout_ms);
+static void turbo_rtsp_rtp_udp_receive(
+    void *user,
+    cnet_datagram *datagram,
+    const cnet_datagram_peer *peer,
+    const cnet_receive_view *view) {
+    turbo_rtsp_rtp_udp_channel_t *channel =
+        (turbo_rtsp_rtp_udp_channel_t *)user;
+    (void)datagram;
+    (void)peer;
+
+    if (!channel || channel->receive_done || !channel->receive_size || !view) {
+        return;
     }
-
-    if (coro_socket_bind(socket, (const struct sockaddr *)local_addr) != 0) {
-        coro_socket_destroy(socket);
-        return NULL;
+    *channel->receive_size = view->size;
+    if (view->size > channel->receive_capacity) {
+        channel->receive_status = SALTS_EMSGSIZE;
+    } else {
+        if (view->size > 0) {
+            memcpy(channel->receive_buffer, view->data, view->size);
+        }
+        channel->receive_status = SALTS_OK;
     }
+    channel->receive_done = 1;
+}
 
-    return socket;
+static void turbo_rtsp_rtp_udp_send_complete(
+    void *user,
+    cnet_datagram *datagram,
+    const cnet_datagram_peer *peer,
+    size_t size,
+    int status,
+    uint64_t tag) {
+    turbo_rtsp_rtp_udp_channel_t *channel =
+        (turbo_rtsp_rtp_udp_channel_t *)user;
+    (void)datagram;
+    (void)peer;
+    (void)size;
+
+    if (channel && tag == channel->waiting_send_tag) {
+        channel->send_status = status;
+        channel->send_done = 1;
+    }
+}
+
+static int turbo_rtsp_rtp_udp_channel_init(
+    turbo_rtsp_rtp_udp_channel_t *channel,
+    const char *host,
+    uint16_t port,
+    size_t send_capacity,
+    size_t max_datagram_bytes) {
+    cnet_datagram_config config = CNET_DATAGRAM_CONFIG_INIT;
+
+    if (!channel || !host || send_capacity == 0 ||
+        send_capacity == SIZE_MAX || max_datagram_bytes == 0 ||
+        max_datagram_bytes > CNET_DATAGRAM_MAX_PAYLOAD_BYTES) {
+        return -1;
+    }
+    config.backend = turbo_rtsp_native_backend();
+    config.host = host;
+    config.port = port;
+    config.send_capacity = send_capacity;
+    config.request_capacity = send_capacity + 1u;
+    config.completion_batch_capacity = config.request_capacity;
+    config.max_datagram_bytes = max_datagram_bytes;
+    config.receive_buffer_bytes = max_datagram_bytes;
+    config.observer.on_receive = turbo_rtsp_rtp_udp_receive;
+    config.observer.on_send = turbo_rtsp_rtp_udp_send_complete;
+    config.observer.user = channel;
+
+    if (cnet_datagram_init(&channel->socket, &config) != SALTS_OK) {
+        return -1;
+    }
+    channel->initialized = 1;
+    return 0;
 }
 
 turbo_rtsp_rtp_udp_pair_t *turbo_rtsp_rtp_udp_pair_create(
-    coro_context_t *ctx,
     const turbo_rtsp_rtp_udp_pair_config_t *config) {
     turbo_rtsp_rtp_udp_pair_t *pair = NULL;
     struct sockaddr_storage local_rtp;
-    struct sockaddr_storage local_rtcp;
     const char *local_host = NULL;
     int local_rtp_port = 0;
     int local_rtcp_port = 0;
     uint64_t timeout_ms = 0;
-
-    if (!ctx) {
-        return NULL;
-    }
+    size_t send_capacity = 0;
+    size_t max_datagram_bytes = 0;
 
     local_host = (config && config->local_host) ? config->local_host : "0.0.0.0";
     local_rtp_port = (config && config->local_rtp_port > 0) ? config->local_rtp_port : 0;
@@ -3858,15 +3944,19 @@ turbo_rtsp_rtp_udp_pair_t *turbo_rtsp_rtp_udp_pair_create(
     } else {
         local_rtcp_port = local_rtp_port > 0 ? local_rtp_port + 1 : 0;
     }
-    timeout_ms = config ? config->timeout_ms : 0;
+    timeout_ms = (config && config->timeout_ms > 0)
+                     ? config->timeout_ms
+                     : TURBO_RTSP_RTP_UDP_DEFAULT_TIMEOUT_MS;
+    send_capacity = (config && config->send_capacity > 0)
+                        ? config->send_capacity
+                        : TURBO_RTSP_RTP_UDP_DEFAULT_SEND_CAPACITY;
+    max_datagram_bytes = (config && config->max_datagram_bytes > 0)
+                             ? config->max_datagram_bytes
+                             : CNET_DATAGRAM_MAX_PAYLOAD_BYTES;
 
-    if (local_rtcp_port > 65535 ||
-        turbo_rtsp_resolve_udp_addr(local_host, local_rtp_port, 0, &local_rtp) != 0 ||
-        turbo_rtsp_resolve_udp_addr(
-            local_host,
-            local_rtcp_port,
-            local_rtp.ss_family,
-            &local_rtcp) != 0) {
+    if (local_rtcp_port > 65535 || timeout_ms > UINT32_MAX ||
+        send_capacity == SIZE_MAX || max_datagram_bytes == 0 ||
+        max_datagram_bytes > CNET_DATAGRAM_MAX_PAYLOAD_BYTES) {
         return NULL;
     }
 
@@ -3875,11 +3965,25 @@ turbo_rtsp_rtp_udp_pair_t *turbo_rtsp_rtp_udp_pair_create(
         return NULL;
     }
 
-    pair->ctx = ctx;
+    pair->timeout_ms = timeout_ms;
+    if (turbo_rtsp_rtp_udp_channel_init(
+            &pair->rtp,
+            local_host,
+            (uint16_t)local_rtp_port,
+            send_capacity,
+            max_datagram_bytes) != 0 ||
+        turbo_rtsp_resolve_udp_addr(
+            local_host, local_rtp_port, 0, &local_rtp) != 0) {
+        turbo_rtsp_rtp_udp_pair_destroy(pair);
+        return NULL;
+    }
     pair->family = local_rtp.ss_family;
-    pair->rtp_socket = turbo_rtsp_rtp_udp_socket_create(ctx, &local_rtp, timeout_ms);
-    pair->rtcp_socket = turbo_rtsp_rtp_udp_socket_create(ctx, &local_rtcp, timeout_ms);
-    if (!pair->rtp_socket || !pair->rtcp_socket) {
+    if (turbo_rtsp_rtp_udp_channel_init(
+            &pair->rtcp,
+            local_host,
+            (uint16_t)local_rtcp_port,
+            send_capacity,
+            max_datagram_bytes) != 0) {
         turbo_rtsp_rtp_udp_pair_destroy(pair);
         return NULL;
     }
@@ -3892,11 +3996,13 @@ void turbo_rtsp_rtp_udp_pair_destroy(turbo_rtsp_rtp_udp_pair_t *pair) {
         return;
     }
 
-    if (pair->rtp_socket) {
-        coro_socket_destroy(pair->rtp_socket);
+    if (pair->rtp.initialized) {
+        (void)cnet_datagram_stop(&pair->rtp.socket, (uint32_t)pair->timeout_ms);
+        (void)cnet_datagram_destroy(&pair->rtp.socket);
     }
-    if (pair->rtcp_socket) {
-        coro_socket_destroy(pair->rtcp_socket);
+    if (pair->rtcp.initialized) {
+        (void)cnet_datagram_stop(&pair->rtcp.socket, (uint32_t)pair->timeout_ms);
+        (void)cnet_datagram_destroy(&pair->rtcp.socket);
     }
     free(pair);
 }
@@ -3905,24 +4011,20 @@ int turbo_rtsp_rtp_udp_pair_get_local_ports(
     turbo_rtsp_rtp_udp_pair_t *pair,
     int *rtp_port,
     int *rtcp_port) {
-    struct sockaddr_storage addr;
+    uint16_t local_rtp_port = 0;
+    uint16_t local_rtcp_port = 0;
 
     if (!pair || !rtp_port || !rtcp_port ||
-        !pair->rtp_socket || !pair->rtcp_socket) {
+        !pair->rtp.initialized || !pair->rtcp.initialized) {
         return -1;
     }
 
-    memset(&addr, 0, sizeof(addr));
-    if (coro_socket_get_local_address(pair->rtp_socket, &addr) != 0) {
+    if (cnet_datagram_port(&pair->rtp.socket, &local_rtp_port) != SALTS_OK ||
+        cnet_datagram_port(&pair->rtcp.socket, &local_rtcp_port) != SALTS_OK) {
         return -1;
     }
-    *rtp_port = turbo_rtsp_sockaddr_port(&addr);
-
-    memset(&addr, 0, sizeof(addr));
-    if (coro_socket_get_local_address(pair->rtcp_socket, &addr) != 0) {
-        return -1;
-    }
-    *rtcp_port = turbo_rtsp_sockaddr_port(&addr);
+    *rtp_port = (int)local_rtp_port;
+    *rtcp_port = (int)local_rtcp_port;
 
     return (*rtp_port > 0 && *rtcp_port > 0) ? 0 : -1;
 }
@@ -3943,13 +4045,19 @@ int turbo_rtsp_rtp_udp_pair_set_peer(
         return -1;
     }
 
-    if (turbo_rtsp_resolve_udp_addr(host, rtp_port, pair->family, &pair->peer_rtp) != 0 ||
+    {
+        struct sockaddr_storage peer_rtp;
+        struct sockaddr_storage peer_rtcp;
+        if (turbo_rtsp_resolve_udp_addr(host, rtp_port, pair->family, &peer_rtp) != 0 ||
         turbo_rtsp_resolve_udp_addr(
             host,
             effective_rtcp_port,
             pair->family,
-            &pair->peer_rtcp) != 0) {
-        return -1;
+            &peer_rtcp) != 0 ||
+            turbo_rtsp_sockaddr_to_peer(&peer_rtp, &pair->rtp.peer) != 0 ||
+            turbo_rtsp_sockaddr_to_peer(&peer_rtcp, &pair->rtcp.peer) != 0) {
+            return -1;
+        }
     }
 
     pair->has_peer = 1;
@@ -3957,22 +4065,40 @@ int turbo_rtsp_rtp_udp_pair_set_peer(
 }
 
 static int turbo_rtsp_rtp_udp_pair_send(
-    coro_socket_t *socket,
-    const struct sockaddr_storage *peer,
+    turbo_rtsp_rtp_udp_channel_t *channel,
+    uint64_t timeout_ms,
     const uint8_t *packet,
     size_t packet_len) {
-    if (!socket || !peer || !packet || packet_len == 0 ||
-        turbo_rtsp_sockaddr_len(peer) == 0) {
+    const uint64_t started_ms = salts_monotonic_ms();
+    uint64_t tag;
+    int status;
+
+    if (!channel || !channel->initialized || !packet || packet_len == 0) {
         return -1;
     }
 
-    return coro_socket_sendto(
-               socket,
-               (const char *)packet,
-               packet_len,
-               (const struct sockaddr *)peer) == 0
-               ? 0
-               : -1;
+    tag = ++channel->next_send_tag;
+    if (tag == 0) {
+        tag = ++channel->next_send_tag;
+    }
+    channel->waiting_send_tag = tag;
+    channel->send_done = 0;
+    channel->send_status = SALTS_EIO;
+    status = cnet_datagram_send(
+        &channel->socket, &channel->peer, packet, packet_len, tag);
+    while (status == SALTS_OK && !channel->send_done) {
+        const uint64_t elapsed_ms = salts_monotonic_ms() - started_ms;
+        size_t events = 0;
+        uint32_t wait_ms;
+        if (elapsed_ms >= timeout_ms) {
+            return -1;
+        }
+        wait_ms = (uint32_t)((timeout_ms - elapsed_ms) > UINT32_MAX
+                                 ? UINT32_MAX
+                                 : (timeout_ms - elapsed_ms));
+        status = cnet_datagram_poll(&channel->socket, wait_ms, &events);
+    }
+    return status == SALTS_OK && channel->send_status == SALTS_OK ? 0 : -1;
 }
 
 int turbo_rtsp_rtp_udp_pair_send_rtp(
@@ -3983,8 +4109,8 @@ int turbo_rtsp_rtp_udp_pair_send_rtp(
         return -1;
     }
     return turbo_rtsp_rtp_udp_pair_send(
-        pair->rtp_socket,
-        &pair->peer_rtp,
+        &pair->rtp,
+        pair->timeout_ms,
         packet,
         packet_len);
 }
@@ -3997,38 +4123,48 @@ int turbo_rtsp_rtp_udp_pair_send_rtcp(
         return -1;
     }
     return turbo_rtsp_rtp_udp_pair_send(
-        pair->rtcp_socket,
-        &pair->peer_rtcp,
+        &pair->rtcp,
+        pair->timeout_ms,
         packet,
         packet_len);
 }
 
 static int turbo_rtsp_rtp_udp_pair_recv(
-    coro_socket_t *socket,
+    turbo_rtsp_rtp_udp_channel_t *channel,
+    uint64_t timeout_ms,
     uint8_t *buffer,
     size_t buffer_size,
     size_t *packet_len) {
-    char *data = NULL;
-    size_t data_len = 0;
-    struct sockaddr_storage peer;
+    const uint64_t started_ms = salts_monotonic_ms();
+    int status;
 
-    if (!socket || !buffer || buffer_size == 0 || !packet_len) {
+    if (!channel || !channel->initialized || !buffer || buffer_size == 0 || !packet_len) {
         return -1;
     }
 
-    if (coro_socket_recvfrom(socket, &data, &data_len, &peer) != 0 || !data) {
-        return -1;
+    channel->receive_buffer = buffer;
+    channel->receive_capacity = buffer_size;
+    channel->receive_size = packet_len;
+    channel->receive_done = 0;
+    channel->receive_status = SALTS_EIO;
+    status = cnet_datagram_receive(&channel->socket, 1u);
+    while (status == SALTS_OK && !channel->receive_done) {
+        const uint64_t elapsed_ms = salts_monotonic_ms() - started_ms;
+        size_t events = 0;
+        uint32_t wait_ms;
+        if (elapsed_ms >= timeout_ms) {
+            status = SALTS_ETIMEDOUT;
+            break;
+        }
+        wait_ms = (uint32_t)((timeout_ms - elapsed_ms) > UINT32_MAX
+                                 ? UINT32_MAX
+                                 : (timeout_ms - elapsed_ms));
+        status = cnet_datagram_poll(&channel->socket, wait_ms, &events);
     }
-    if (data_len > buffer_size) {
-        *packet_len = data_len;
-        coro_socket_free_recv(data);
-        return -1;
-    }
-
-    memcpy(buffer, data, data_len);
-    *packet_len = data_len;
-    coro_socket_free_recv(data);
-    return 0;
+    channel->receive_buffer = NULL;
+    channel->receive_capacity = 0;
+    channel->receive_size = NULL;
+    return status == SALTS_OK && channel->receive_status == SALTS_OK ? 0 : -1;
 }
 
 int turbo_rtsp_rtp_udp_pair_recv_rtp(
@@ -4038,7 +4174,8 @@ int turbo_rtsp_rtp_udp_pair_recv_rtp(
     size_t *packet_len) {
     return pair
                ? turbo_rtsp_rtp_udp_pair_recv(
-                     pair->rtp_socket,
+                     &pair->rtp,
+                     pair->timeout_ms,
                      buffer,
                      buffer_size,
                      packet_len)
@@ -4052,7 +4189,8 @@ int turbo_rtsp_rtp_udp_pair_recv_rtcp(
     size_t *packet_len) {
     return pair
                ? turbo_rtsp_rtp_udp_pair_recv(
-                     pair->rtcp_socket,
+                     &pair->rtcp,
+                     pair->timeout_ms,
                      buffer,
                      buffer_size,
                      packet_len)

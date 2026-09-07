@@ -1,5 +1,5 @@
 /**
- * MPEG-TS/PS muxers using FFmpeg container algorithms and TurboUtils I/O.
+ * MPEG-TS/PS muxers using FFmpeg container algorithms and Salts I/O.
  */
 #include "turbo_muxer.h"
 
@@ -21,8 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <turbo_error.h>
-#include <turbo_vstr.h>
+#include <salts_error.h>
+#include <salts_vstr.h>
 
 enum { MPEG_AVIO_BUFFER_SIZE = 32 * 1024 };
 
@@ -37,7 +37,7 @@ typedef struct {
 static int mpeg_avio_write(void *opaque, const uint8_t *buffer, int bytes) {
     mpeg_muxer_ctx_t *ctx = (mpeg_muxer_ctx_t *)opaque;
     if (!ctx || !buffer || bytes <= 0 ||
-        turbo_container_io_write(&ctx->io, buffer, (size_t)bytes) != TURBO_OK)
+        turbo_container_io_write(&ctx->io, buffer, (size_t)bytes) != SALTS_OK)
         return AVERROR(EIO);
     return bytes;
 }
@@ -68,7 +68,7 @@ static int64_t mpeg_avio_seek(void *opaque, int64_t offset, int whence) {
         return AVERROR(EINVAL);
     target = origin == SEEK_SET ? offset
                                 : origin == SEEK_CUR ? current + offset : size + offset;
-    if (target < 0 || turbo_container_io_seek(&ctx->io, target) != TURBO_OK)
+    if (target < 0 || turbo_container_io_seek(&ctx->io, target) != SALTS_OK)
         return AVERROR(EIO);
     return turbo_container_io_tell(&ctx->io);
 }
@@ -132,7 +132,7 @@ static void *mpeg_muxer_create(const turbo_muxer_config_t *config,
     if (!config || !format_name) return NULL;
     ctx = (mpeg_muxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    if (turbo_container_io_open_writer(&ctx->io, config->output_path) != TURBO_OK ||
+    if (turbo_container_io_open_writer(&ctx->io, config->output_path) != SALTS_OK ||
         avformat_alloc_output_context2(&ctx->format, NULL, format_name, NULL) < 0 ||
         !ctx->format) {
         mpeg_muxer_destroy_impl(ctx);
@@ -265,7 +265,7 @@ static int mpeg_muxer_write_trailer_impl(void *ctx_ptr) {
     if (!ctx || !ctx->header_written || ctx->trailer_written) return -EINVAL;
     if (av_write_trailer(ctx->format) < 0) return -EIO;
     avio_flush(ctx->avio);
-    if (turbo_container_io_flush(&ctx->io) != TURBO_OK) return -EIO;
+    if (turbo_container_io_flush(&ctx->io) != SALTS_OK) return -EIO;
     ctx->trailer_written = 1;
     return 0;
 }

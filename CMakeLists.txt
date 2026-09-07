@@ -38,15 +38,15 @@ enable_testing()
 
 function(turbo_media_find_tbe_compiler output_variable)
   if(CMAKE_CROSSCOMPILING)
-    set(_turbomedia_tbe_root_name TURBOPARSER_HOST_ROOT)
+    set(_turbomedia_tbe_root_name SALTS_UTILS_HOST_ROOT)
   else()
-    set(_turbomedia_tbe_root_name TURBOPARSER_ROOT)
+    set(_turbomedia_tbe_root_name SALTS_UTILS_ROOT)
   endif()
   if(NOT DEFINED ENV{${_turbomedia_tbe_root_name}} OR
      "$ENV{${_turbomedia_tbe_root_name}}" STREQUAL "" OR
      NOT IS_DIRECTORY "$ENV{${_turbomedia_tbe_root_name}}")
     message(FATAL_ERROR
-            "${_turbomedia_tbe_root_name} must name the TurboParser host install prefix")
+            "${_turbomedia_tbe_root_name} must name the SaltsUtils host install prefix")
   endif()
 
   file(REAL_PATH "$ENV{${_turbomedia_tbe_root_name}}"
@@ -120,55 +120,29 @@ endfunction()
 add_subdirectory(tools)
 include(FindTools)
 
-foreach(_turbomedia_dependency_root IN ITEMS
-        TURBOUTILS_ROOT TURBOPARSER_ROOT TURBONET_ROOT TURBOHTTP_ROOT
-        FLOWMQ_ROOT TURBODB_ROOT RULES_FORGE_ROOT)
-  if(NOT DEFINED ENV{${_turbomedia_dependency_root}} OR
-     "$ENV{${_turbomedia_dependency_root}}" STREQUAL "")
-    message(FATAL_ERROR
-            "Required dependency root is not defined: ${_turbomedia_dependency_root}")
-  endif()
-  if(NOT IS_DIRECTORY "$ENV{${_turbomedia_dependency_root}}")
-    message(FATAL_ERROR
-            "${_turbomedia_dependency_root} is not a directory: $ENV{${_turbomedia_dependency_root}}")
-  endif()
-endforeach()
-
 find_package(Threads REQUIRED)
-find_package(TurboUtils CONFIG REQUIRED
-             PATHS "$ENV{TURBOUTILS_ROOT}" NO_DEFAULT_PATH)
-if(NOT TARGET TurboUtils::Capture)
-  message(
-    FATAL_ERROR
-      "TurboUtils::Capture is required. Reinstall TurboUtils with TURBO_ENABLE_CAPTURE=ON and point TURBOUTILS_ROOT at that package."
-  )
+find_package(Salts CONFIG REQUIRED
+             PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH)
+find_package(SaltsUtils CONFIG REQUIRED
+             PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH)
+if(NOT TARGET Salts::Capture)
+  message(FATAL_ERROR
+          "SaltsUtils profile does not export Salts::Capture; enable SALTS_UTILS_ENABLE_CAPTURE")
 endif()
-find_package(TurboParser CONFIG REQUIRED
-             PATHS "$ENV{TURBOPARSER_ROOT}" NO_DEFAULT_PATH)
-# RulesForge releases installed before its DataBind migration still export the
-# former target name in their link interface. Keep that packaging detail at the
-# build boundary; production code links TurboParser::DataBind directly.
-if(TARGET TurboParser::DataBind AND NOT TARGET TurboUtils::DataBind)
-  add_library(TurboUtils::DataBind ALIAS TurboParser::DataBind)
-endif()
-find_package(TurboNet CONFIG REQUIRED
-             PATHS "$ENV{TURBONET_ROOT}" NO_DEFAULT_PATH)
-find_package(TurboHttp CONFIG REQUIRED
-             PATHS "$ENV{TURBOHTTP_ROOT}" NO_DEFAULT_PATH)
+find_package(SaltsNet CONFIG REQUIRED
+             PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH)
 find_package(RulesForge CONFIG REQUIRED
              PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH)
-find_package(FlowMQ CONFIG REQUIRED
-             PATHS "$ENV{FLOWMQ_ROOT}" NO_DEFAULT_PATH)
 find_package(TurboDB CONFIG REQUIRED
+             PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH)
+find_package(Orm CONFIG REQUIRED
              PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH)
  
 find_package(OpenSSL REQUIRED)
 find_package(libSRTP CONFIG REQUIRED)
 find_package(unofficial-usrsctp CONFIG REQUIRED)
 find_package(roaring CONFIG REQUIRED)
-if(ANDROID)
-  find_package(libyuv CONFIG REQUIRED)
-endif()
+find_package(libyuv CONFIG REQUIRED)
 
 find_path(MINIAUDIO_INCLUDE_DIR NAMES miniaudio.h REQUIRED)
 find_path(STB_INCLUDE_DIR NAMES stb_sprintf.h stb_image_write.h REQUIRED)
@@ -202,8 +176,14 @@ add_subdirectory(media)
 add_subdirectory(player)
 add_subdirectory(recognition)
 add_subdirectory(media/rtsp)
-target_sources(turbo_media_server PRIVATE server/rtsp_server_adapter.c)
-target_link_libraries(turbo_media_server PUBLIC TurboMedia::RTSP)
+add_library(turbo_media_server_rtsp SHARED server/rtsp_server_adapter.c)
+turbo_media_configure_component(turbo_media_server_rtsp ServerRTSP)
+target_include_directories(
+  turbo_media_server_rtsp
+  PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/server/include>
+         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(
+  turbo_media_server_rtsp PUBLIC TurboMedia::Server TurboMedia::RTSP)
 add_subdirectory(media/mobile)
 
 add_subdirectory(webrtc)

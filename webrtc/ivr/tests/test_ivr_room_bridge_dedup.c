@@ -2,7 +2,7 @@
  * Verifies that a message_id replay inside the retention window returns the
  * cached result, and a replay outside the window is explicitly rejected with
  * IVR_ESTALE instead of being silently re-applied. */
-#include "ivr_flowmq_gateway.h"
+#include "ivr_control_gateway.h"
 #include "ivr_room_bridge.h"
 #include "ivr_frame.h"
 #include "ivr_thread.h"
@@ -139,18 +139,18 @@ void test_replay_within_window_is_idempotent(void) {
     check_equal(ivr_room_bridge_create(&bcfg, &bridge), IVR_OK);
     check_equal(ivr_room_bridge_start(bridge), IVR_OK);
 
-    ivr_flowmq_gateway_config_t gcfg;
+    ivr_control_gateway_config_t gcfg;
     memset(&gcfg, 0, sizeof(gcfg));
     gcfg.worker_id = "ivr-worker-dedup";
     gcfg.host = "127.0.0.1";
     gcfg.port = TEST_PORT;
     gcfg.timeout_ms = 5000;
     gcfg.on_reply = on_reply_cb;
-    ivr_flowmq_gateway_t *gateway = NULL;
-    check_equal(ivr_flowmq_gateway_create(&gcfg, &g_ops,
+    ivr_control_gateway_t *gateway = NULL;
+    check_equal(ivr_control_gateway_create(&gcfg, &g_ops,
                                                         &gateway), IVR_OK);
-    check_equal(ivr_flowmq_gateway_start(gateway), IVR_OK);
-    ivr_thread_sleep_ms(800); /* let the DEALER connect to the ROUTER */
+    check_equal(ivr_control_gateway_start(gateway), IVR_OK);
+    ivr_thread_sleep_ms(800); /* let the client connect to the server */
 
     /* first send applies the mutation */
     send_join("mid-ret-1", 0);
@@ -178,7 +178,7 @@ void test_replay_within_window_is_idempotent(void) {
     check_equal((uint64_t)(g_applied), (uint64_t)(2u));
     check_equal((int)(reply_i32("status_code")), (int)(0));
 
-    ivr_flowmq_gateway_destroy(gateway);
+    ivr_control_gateway_destroy(gateway);
     ivr_room_bridge_stop(bridge);
     ivr_room_bridge_destroy(bridge);
     data_bind_free(g_codec);

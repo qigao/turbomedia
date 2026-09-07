@@ -14,7 +14,7 @@
 
 #include "helpers.h"
 #include <turbo_codec.h>
-#include <turbo_capture.h>
+#include <salts_capture.h>
 #include <turbo_playback.h>
 #include <tinytest.h>
 #include <stdio.h>
@@ -395,8 +395,8 @@ suite("性能基准测试 - 捕获设备") {
     it("音频捕获设备枚举性能") {
         clock_t start = clock();
         
-        turbo_capture_device_t devices[TURBO_CAPTURE_MAX_DEVICES];
-        int count = turbo_capture_list_audio_devices(devices, TURBO_CAPTURE_MAX_DEVICES);
+        salts_capture_device_t devices[SALTS_CAPTURE_MAX_DEVICES];
+        int count = salts_capture_list_audio_devices(devices, SALTS_CAPTURE_MAX_DEVICES);
         
         clock_t end = clock();
         double elapsed_ms = ((double)(end - start) / CLOCKS_PER_SEC) * 1000.0;
@@ -409,8 +409,8 @@ suite("性能基准测试 - 捕获设备") {
     it("视频捕获设备枚举性能") {
         clock_t start = clock();
         
-        turbo_capture_device_t devices[TURBO_CAPTURE_MAX_DEVICES];
-        int count = turbo_capture_list_video_devices(devices, TURBO_CAPTURE_MAX_DEVICES);
+        salts_capture_device_t devices[SALTS_CAPTURE_MAX_DEVICES];
+        int count = salts_capture_list_video_devices(devices, SALTS_CAPTURE_MAX_DEVICES);
         
         clock_t end = clock();
         double elapsed_ms = ((double)(end - start) / CLOCKS_PER_SEC) * 1000.0;
@@ -559,7 +559,7 @@ suite("性能基准测试 - 内存操作") {
 suite("性能基准测试 - 端到端管道") {
     it("音频捕获-编码-解码-播放完整管道延迟") {
         // 配置捕获
-        turbo_audio_capture_config_t capture_config = {
+        salts_audio_capture_config_t capture_config = {
             .sample_rate = 48000,
             .channels = 2,
             .bits_per_sample = 16,

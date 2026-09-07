@@ -19,5 +19,5 @@ target_include_directories(
          ${CMAKE_CURRENT_SOURCE_DIR}/mov
          ${CMAKE_CURRENT_SOURCE_DIR}/mkv
          ${PROJECT_SOURCE_DIR}/media/include)
-target_link_libraries(turbo_media_common_objects PUBLIC TurboUtils::Core TurboUtils::STL)
+target_link_libraries(turbo_media_common_objects PUBLIC Salts::Core Salts::CSTL)
 set_target_properties(turbo_media_common_objects PROPERTIES FOLDER "turbomedia/components")

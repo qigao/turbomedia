@@ -1,5 +1,5 @@
 /**
- * turbo_datachannel.h - WebRTC Data Channel over CoroNet
+ * turbo_datachannel.h - WebRTC Data Channel over CNet
  *
  * Architecture:
  *   Application
@@ -10,12 +10,12 @@
  *       ↓
  *   DTLS (BoringSSL) - encryption
  *       ↓
- *   Transport: CoroNet (UDP/TCP/KCP) or ICE (NAT traversal)
+ *   Transport: CNet (UDP/TCP/KCP) or SaltsNet ICE (NAT traversal)
  *
  * Transport modes:
- * - UDP (default): Direct UDP via CoroNet
- * - TCP: Direct TCP via CoroNet
- * - KCP: Reliable UDP via CoroNet KCP
+ * - UDP (default): Direct UDP via CNet
+ * - TCP: Direct TCP via CNet
+ * - KCP: Reliable UDP via CNet KCP
  * - ICE: ICE agent for NAT traversal (requires signaling)
  */
 
@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 /* Forward declaration for ICE agent */
-struct turbo_ice_agent_s;
+struct salts_ice_agent_s;
 
 /* ============================================================================
  * Type Definitions
@@ -50,9 +50,9 @@ typedef void (*turbo_dc_transport_data_cb)(void *user_data,
 
 /* Transport type */
 typedef enum {
-    TURBO_DC_TRANSPORT_UDP = 0,   /* Direct UDP via CoroNet (default) */
-    TURBO_DC_TRANSPORT_TCP,       /* Direct TCP via CoroNet */
-    TURBO_DC_TRANSPORT_KCP,       /* Reliable UDP via CoroNet KCP */
+    TURBO_DC_TRANSPORT_UDP = 0,   /* Direct UDP via CNet (default) */
+    TURBO_DC_TRANSPORT_TCP,       /* Direct TCP via CNet */
+    TURBO_DC_TRANSPORT_KCP,       /* Reliable UDP via CNet KCP */
     TURBO_DC_TRANSPORT_ICE        /* ICE for NAT traversal */
 } turbo_dc_transport_t;
 
@@ -272,12 +272,12 @@ TURBO_MEDIA_API void turbo_dc_peer_set_transport_data_handler(
  * the peer is destroyed or its transport is detached.
  *
  * @param peer Peer connection.
- * @param ice_agent Borrowed TurboNet ICE agent that is not closed.
+ * @param ice_agent Borrowed SaltsNet ICE agent that is not closed.
  * @return 0 on success, -1 for invalid/closed input, or -2 when a different
  *         transport is already attached.
  *
  */
-TURBO_MEDIA_API int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct turbo_ice_agent_s *ice_agent);
+TURBO_MEDIA_API int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct salts_ice_agent_s *ice_agent);
 
 /**
  * Feed data from ICE agent to DataChannel

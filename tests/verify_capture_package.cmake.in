@@ -14,17 +14,15 @@ if("@MSVC@")
   set(ENV{INCLUDE} "@TURBO_MEDIA_PACKAGE_TEST_INCLUDE@")
   set(ENV{LIB} "@TURBO_MEDIA_PACKAGE_TEST_LIB@")
 endif()
+set(ENV{SALTS_ROOT} "@TURBO_MEDIA_PACKAGE_TEST_SALTS_ROOT@")
+set(ENV{SALTS_UTILS_ROOT} "@TURBO_MEDIA_PACKAGE_TEST_SALTS_UTILS_ROOT@")
+set(ENV{SALTSNET_ROOT} "@TURBO_MEDIA_PACKAGE_TEST_SALTSNET_ROOT@")
 
 set(package_prefix "${package_test_root}/prefix")
 set(positive_build "${package_test_root}/positive-build")
 set(missing_build "${package_test_root}/missing-capture-build")
-set(stale_build "${package_test_root}/stale-header-build")
 set(consumer_source "@CMAKE_CURRENT_SOURCE_DIR@/capture_package_consumer")
-set(legacy_header "${consumer_source}/fixtures/legacy_turbo_capture.h")
-set(missing_turboutils_dir "${consumer_source}/fixtures/missing_capture")
-
-file(MAKE_DIRECTORY "${package_prefix}/@CMAKE_INSTALL_INCLUDEDIR@")
-file(REMOVE "${package_prefix}/@CMAKE_INSTALL_INCLUDEDIR@/turbo_capture.h")
+set(missing_salts_utils_root "${consumer_source}/fixtures/missing_capture")
 
 function(run_checked description)
   execute_process(
@@ -50,13 +48,9 @@ set(configure_common
     -G "@CMAKE_GENERATOR@"
     "-DCMAKE_C_COMPILER=@CMAKE_C_COMPILER@"
     "-DCMAKE_MAKE_PROGRAM=@CMAKE_MAKE_PROGRAM@"
-    "-DTurboMedia_DIR=${package_prefix}/@CMAKE_INSTALL_LIBDIR@/cmake/TurboMedia"
-    "-DTurboParser_DIR=@TurboParser_DIR@"
-    "-DTurboNet_DIR=@TurboNet_DIR@"
-    "-DTurboHttp_DIR=@TurboHttp_DIR@")
+    "-DTurboMedia_DIR=${package_prefix}/@CMAKE_INSTALL_LIBDIR@/cmake/TurboMedia")
 if(NOT "@CMAKE_RC_COMPILER@" STREQUAL "")
-  list(APPEND configure_common
-       "-DCMAKE_RC_COMPILER=@CMAKE_RC_COMPILER@")
+  list(APPEND configure_common "-DCMAKE_RC_COMPILER=@CMAKE_RC_COMPILER@")
 endif()
 if(NOT "@CMAKE_MT@" STREQUAL "")
   list(APPEND configure_common "-DCMAKE_MT=@CMAKE_MT@")
@@ -74,8 +68,7 @@ endif()
 
 run_checked(
   "Capture package consumer configure"
-  "@CMAKE_COMMAND@" ${configure_common} -B "${positive_build}"
-  "-DTurboUtils_DIR=@TurboUtils_DIR@")
+  "@CMAKE_COMMAND@" ${configure_common} -B "${positive_build}")
 
 set(build_command "@CMAKE_COMMAND@" --build "${positive_build}" --parallel 1)
 if(NOT BUILD_CONFIG STREQUAL "")
@@ -83,7 +76,6 @@ if(NOT BUILD_CONFIG STREQUAL "")
 endif()
 run_checked("Capture package consumer build" ${build_command})
 
-get_filename_component(turboutils_prefix "@TurboUtils_DIR@/../../.." ABSOLUTE)
 if(WIN32)
   set(path_separator ";")
 else()
@@ -91,39 +83,23 @@ else()
 endif()
 set(original_path "$ENV{PATH}")
 set(ENV{PATH}
-    "${package_prefix}/@CMAKE_INSTALL_BINDIR@${path_separator}${turboutils_prefix}/@CMAKE_INSTALL_BINDIR@${path_separator}${original_path}")
+    "${package_prefix}/@CMAKE_INSTALL_BINDIR@${path_separator}$ENV{SALTS_ROOT}/@CMAKE_INSTALL_BINDIR@${path_separator}$ENV{SALTS_UTILS_ROOT}/@CMAKE_INSTALL_BINDIR@${path_separator}${original_path}")
 run_checked(
   "Capture package consumer run"
   "${positive_build}/turbo_media_capture_package_consumer@CMAKE_EXECUTABLE_SUFFIX@")
 set(ENV{PATH} "${original_path}")
 
+set(original_salts_utils_root "$ENV{SALTS_UTILS_ROOT}")
+set(ENV{SALTS_UTILS_ROOT} "${missing_salts_utils_root}")
 execute_process(
   COMMAND "@CMAKE_COMMAND@" ${configure_common} -B "${missing_build}"
-          "-DTurboUtils_DIR=${missing_turboutils_dir}"
   RESULT_VARIABLE missing_result
   OUTPUT_VARIABLE missing_stdout
   ERROR_VARIABLE missing_stderr)
+set(ENV{SALTS_UTILS_ROOT} "${original_salts_utils_root}")
 set(missing_output "${missing_stdout}\n${missing_stderr}")
 if(missing_result EQUAL 0 OR
-   NOT missing_output MATCHES "TURBO_ENABLE_CAPTURE=ON")
+   NOT missing_output MATCHES "does not export Salts::Capture")
   message(FATAL_ERROR
-          "Missing-Capture configure did not fail with the package contract\n${missing_output}")
-endif()
-
-configure_file(
-  "${legacy_header}"
-  "${package_prefix}/@CMAKE_INSTALL_INCLUDEDIR@/turbo_capture.h"
-  COPYONLY)
-execute_process(
-  COMMAND "@CMAKE_COMMAND@" ${configure_common} -B "${stale_build}"
-          "-DTurboUtils_DIR=@TurboUtils_DIR@"
-  RESULT_VARIABLE stale_result
-  OUTPUT_VARIABLE stale_stdout
-  ERROR_VARIABLE stale_stderr)
-file(REMOVE "${package_prefix}/@CMAKE_INSTALL_INCLUDEDIR@/turbo_capture.h")
-set(stale_output "${stale_stdout}\n${stale_stderr}")
-if(stale_result EQUAL 0 OR
-   NOT stale_output MATCHES "obsolete include/turbo_capture\\.h")
-  message(FATAL_ERROR
-          "Stale-header configure did not fail with the upgrade contract\n${stale_output}")
+          "Missing-Capture configure did not fail with the Salts package contract\n${missing_output}")
 endif()

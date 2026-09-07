@@ -242,7 +242,7 @@ int turbo_asr_get_audio_format(const turbo_asr_t *asr, turbo_speech_audio_format
   return TURBO_SPEECH_OK;
 }
 
-void turbo_asr_capture_callback(struct turbo_capture_s *capture, const uint8_t *samples, size_t len,
+void turbo_asr_capture_callback(salts_capture_t *capture, const uint8_t *samples, size_t len,
                                 uint64_t timestamp_us, void *user_data) {
   (void)capture;
   (void)turbo_asr_write_pcm((turbo_asr_t *)user_data, samples, len, timestamp_us);

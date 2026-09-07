@@ -13,7 +13,7 @@ if(result EQUAL 0)
 endif()
 
 set(output "${stdout}\n${stderr}")
-string(FIND "${output}" "active mode requires FlowMQ mTLS" match_offset)
+string(FIND "${output}" "active mode requires CHTTP H1 WebSocket mTLS" match_offset)
 if(match_offset EQUAL -1)
   message(FATAL_ERROR
           "active plaintext worker failed without the required mTLS error: ${output}")

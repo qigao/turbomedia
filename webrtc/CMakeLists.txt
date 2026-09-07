@@ -9,8 +9,7 @@ target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PUBLIC TurboParser::Parser
-  PRIVATE TurboNet::Crypto OpenSSL::Crypto)
+  PRIVATE Salts::JsonParser SaltsNet::Crypto OpenSSL::Crypto)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
 add_library(turbo_media_sdp STATIC)
@@ -27,7 +26,7 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/sdp
           ${CMAKE_CURRENT_BINARY_DIR}
           ${STB_INCLUDE_DIR})
-target_link_libraries(turbo_media_sdp PRIVATE TurboUtils::Core)
+target_link_libraries(turbo_media_sdp PRIVATE Salts::Core)
 
 set(TURBO_MEDIA_DATACHANNEL_SOURCES
     src/turbo_datachannel.c
@@ -48,15 +47,15 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(
   turbo_media_datachannel
-  PUBLIC TurboMedia::SDP TurboParser::Parser
-  PRIVATE TurboNet::CoroNet
-          TurboNet::Ice
-          TurboUtils::Core
-          TurboUtils::STL
+  PUBLIC TurboMedia::SDP Salts::LtvParser
+  PRIVATE Salts::CNet
+          SaltsNet::ICE
+          Salts::Core
+          Salts::CSTL
           unofficial::usrsctp::usrsctp
           OpenSSL::SSL
           OpenSSL::Crypto
-          TurboNet::Asn1Parser
+          SaltsNet::Asn1Parser
           roaring::roaring)
 
 add_library(turbo_media_webrtc SHARED)
@@ -66,6 +65,7 @@ target_sources(
   PRIVATE adapter/webrtc_adapter.c
           adapter/turbo_peer_backend.c
           adapter/webrtc_session.c
+          src/salts_ice_owner.c
           src/ice_integration.c)
 target_include_directories(
   turbo_media_webrtc
@@ -73,8 +73,8 @@ target_include_directories(
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(
   turbo_media_webrtc
-  PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel TurboNet::Ice
-  PRIVATE TurboMedia::RTC TurboMedia::SDP TurboUtils::Core)
+  PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel SaltsNet::ICE
+  PRIVATE TurboMedia::RTC TurboMedia::SDP Salts::Core)
 target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
 
 add_library(turbo_media_webrtc_signaling SHARED)
@@ -90,12 +90,13 @@ target_include_directories(
   PRIVATE ${STB_INCLUDE_DIR})
 target_link_libraries(
   turbo_media_webrtc_signaling
-  PUBLIC TurboNet::CoroNet TurboHttp::Iris TurboParser::Parser
-  PRIVATE turbo_media_auth TurboNet::Crypto TurboUtils::Core TurboUtils::STL)
+  PUBLIC Salts::CNet Salts::CHTTP
+  PRIVATE turbo_media_auth Salts::JsonParser SaltsNet::Crypto Salts::Core Salts::CSTL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 
 set(TURBO_MEDIA_RTC_SOURCES
+    src/salts_ice_owner.c
     src/rtc/rtp/rtp_packet.c
     src/rtc/rtp/rtcp_packet.c
     src/rtc/rtp/rtp_session.c
@@ -115,7 +116,8 @@ target_include_directories(
   turbo_media_rtc
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/rtc/media)
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+          ${CMAKE_CURRENT_SOURCE_DIR}/src/rtc/media)
 target_link_libraries(
   turbo_media_rtc
   PUBLIC TurboMedia::DataChannel
@@ -125,10 +127,10 @@ target_link_libraries(
          TurboMedia::Recognition
   PRIVATE TurboMedia::Codec
           TurboMedia::Device
-          TurboNet::Ice
-          TurboNet::CoroNet
-          TurboUtils::Core
-          TurboUtils::STL
+          SaltsNet::ICE
+          Salts::CNet
+          Salts::Core
+          Salts::CSTL
           OpenSSL::SSL
           OpenSSL::Crypto
           libSRTP::srtp2)
@@ -142,7 +144,7 @@ target_link_options(
 # Room-service / SFU server apps are desktop targets; keep them out of the
 # Android build (they were gated with NOT ANDROID before the RTC-apps split).
 if(NOT ANDROID)
-  # IVR media worker first so RoomService can consume its typed FlowMQ bridge.
+  # IVR media worker first so RoomService can consume its typed H1 WebSocket bridge.
   # The server applications remain desktop-only.
   add_subdirectory(ivr)
   add_subdirectory(apps)

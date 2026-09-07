@@ -220,9 +220,10 @@ room_service_app_server_t *room_service_app_server_create(
 int room_service_app_server_start(room_service_app_server_t *server);
 int room_service_app_server_run(room_service_app_server_t *server);
 /* Control-thread lifecycle: stop is idempotent and destroy stops a running
- * server before releasing any producer/consumer dependency. */
-void room_service_app_server_stop(room_service_app_server_t *server);
-void room_service_app_server_destroy(room_service_app_server_t *server);
+ * server before releasing any producer/consumer dependency. A nonzero result
+ * retains ownership so the caller can retry after the blocking work drains. */
+int room_service_app_server_stop(room_service_app_server_t *server);
+int room_service_app_server_destroy(room_service_app_server_t *server);
 turbo_room_service_t *room_service_app_server_get_service(
     room_service_app_server_t *server);
 const room_service_app_config_t *room_service_app_server_get_config(

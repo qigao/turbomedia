@@ -3,21 +3,23 @@
 
 /**
  * @file ivr_room_bridge.h
- * @brief RoomService-side FMQ bridge (ROUTER) for IVR commands.
+ * @brief RoomService-side H1 WebSocket bridge for IVR commands.
  *
- * Binds a FlowMQ ROUTER endpoint, decodes TIVR command frames (generated
+ * Binds a CHTTP HTTP/1.1 WebSocket endpoint, decodes TIVR command frames
+ * (generated
  * schema typed messages), enforces idempotency (message_id) and room version
  * checks, applies the command through a host-provided handler, and replies
- * with an IvrCommandResultV1 frame back to the DEALER. Processing runs on the
- * bridge's own worker thread: the FlowMQ callback only detaches the ROUTER
- * route and enqueues a clone (send APIs are not re-entered from the broker
+ * with an IvrCommandResultV1 frame back to the worker. Processing runs on the
+ * bridge's own worker thread: the WebSocket callback only captures the
+ * generation-fenced route and enqueues a clone (send APIs are not re-entered
+ * from the network
  * callback). The host (RoomService) owns the authoritative state and provides
  * get_room_version/on_command.
  */
 
 #include "ivr/ivr_worker.h"
-#include "ivr_flowmq_gateway.h"
-#include "flowmq_router_endpoint.h"
+#include "ivr_control_gateway.h"
+#include <cnet/cnet.h>
 
 #include "data_bind.h"
 #include <stdint.h>
@@ -135,7 +137,7 @@ typedef struct {
     ivr_status_t (*on_command)(void *ctx, const ivr_room_command_t *command,
                                ivr_room_command_result_t *result);
     /* Observe one authenticated dispatch result. Runs on the bridge worker
-       thread, never in the FlowMQ broker callback. */
+       thread, never in the WebSocket callback. */
     ivr_status_t (*on_dispatch_result)(void *ctx,
                                        const ivr_dispatch_result_t *result);
     ivr_status_t (*on_release_result)(void *ctx,
@@ -157,11 +159,10 @@ typedef struct {
 typedef struct {
     const char *host; /* bind address */
     int port;
-    int transport;    /* flowmq_coronet_transport_t; 0 = TCP */
-    const char *path; /* WS/WSS path; NULL = "/" */
+    const char *path; /* HTTP/1.1 WebSocket route; NULL = default route. */
     uint64_t timeout_ms;
-    /* Borrowed object-level TLS/WSS material; FlowMQ copies it during create. */
-    const flowmq_coronet_tls_server_config_t *tls;
+    /* Borrowed TLS material; CHTTP/CNet copies it during create. */
+    const cnet_tls_server_config *tls;
     uint32_t queue_capacity;  /* bounded cloned-request queue; 0 = 64 */
     uint32_t dedup_capacity;  /* bounded message_id result cache; 0 = 64 */
     /* Replay/dedup retention window in milliseconds. A mutation replayed after
@@ -183,8 +184,8 @@ typedef struct {
 ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
                                     ivr_room_bridge_t **out_bridge);
 ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge);
-void ivr_room_bridge_stop(ivr_room_bridge_t *bridge);
-void ivr_room_bridge_destroy(ivr_room_bridge_t *bridge);
+ivr_status_t ivr_room_bridge_stop(ivr_room_bridge_t *bridge);
+ivr_status_t ivr_room_bridge_destroy(ivr_room_bridge_t *bridge);
 
 /* Pure decode of one TIVR command frame into an ivr_room_command_t. */
 ivr_status_t ivr_room_decode_frame(DataBind *codec, const uint8_t *frame,
@@ -250,7 +251,7 @@ ivr_status_t ivr_room_bridge_encode_dispatch_v2(
     DataBind *codec, const ivr_call_dispatch_t *dispatch, uint8_t *frame,
     size_t frame_cap, size_t *out_len);
 
-/* Push a dispatch command to a registered worker over the ROUTER using the
+/* Push a dispatch command to a registered worker over its WebSocket route using the
    route captured at that worker's worker.sync registration. Returns IVR_OK on
    local delivery, IVR_ESTATE when the worker has no valid route (not
    registered / stale after reconnect). */
@@ -291,8 +292,8 @@ ivr_status_t ivr_room_decode_inventory_page(
     DataBind *codec, const uint8_t *frame, size_t len,
     ivr_worker_inventory_envelope_t *out);
 
-/* True only while the registered worker still has a live FlowMQ peer and a
-   reusable ROUTER route. A disconnect invalidates the captured route before
+/* True only while the registered worker still has a live WebSocket peer and a
+   reusable generation-fenced route. A disconnect invalidates it before
    another dispatch can select it; worker.sync after reconnect refreshes it. */
 int ivr_room_bridge_worker_available(const ivr_room_bridge_t *bridge,
                                      const char *worker_id);

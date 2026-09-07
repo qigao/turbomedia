@@ -24,8 +24,8 @@ target_link_libraries(
   turbo_media_demuxer
   PUBLIC TurboMedia::Codec TurboMedia::Muxer
   PRIVATE turbo_media_common_objects
-          TurboUtils::Core
-          TurboUtils::STL
+          Salts::Core
+          Salts::CSTL
           TurboMediaFFmpeg::avformat
           TurboMediaFFmpeg::avcodec
           TurboMediaFFmpeg::avutil)

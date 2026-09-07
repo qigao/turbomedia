@@ -14,8 +14,6 @@
 extern "C" {
 #endif
 
-struct coro_context_s;
-
 typedef struct turbo_media_server_s turbo_media_server_t;
 typedef struct turbo_media_server_runtime_s turbo_media_server_runtime_t;
 typedef struct turbo_media_protocol_session_s turbo_media_protocol_session_t;
@@ -41,7 +39,6 @@ typedef enum {
 typedef struct {
     size_t max_sources;
     turbo_media_source_config_t source_config;
-    struct coro_context_s *coro_context;
     void *user_data;
 } turbo_media_server_config_t;
 
@@ -86,9 +83,6 @@ TURBO_MEDIA_API turbo_media_server_runtime_t *turbo_media_server_runtime_create(
 
 TURBO_MEDIA_API void turbo_media_server_runtime_destroy(
     turbo_media_server_runtime_t *runtime);
-
-TURBO_MEDIA_API struct coro_context_s *turbo_media_server_runtime_coro_context(
-    const turbo_media_server_runtime_t *runtime);
 
 TURBO_MEDIA_API void *turbo_media_server_runtime_user_data(
     const turbo_media_server_runtime_t *runtime);
@@ -241,7 +235,6 @@ typedef struct {
 
 TURBO_MEDIA_API turbo_media_rtsp_server_adapter_t *turbo_media_server_rtsp_adapter_create(
     turbo_media_server_runtime_t *runtime,
-    struct coro_context_s *coro_context,
     const turbo_rtsp_server_config_t *rtsp_config,
     const turbo_media_rtsp_server_adapter_config_t *adapter_config);
 

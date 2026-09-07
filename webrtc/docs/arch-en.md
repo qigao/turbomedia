@@ -2,7 +2,7 @@
 
 ## Overview
 
-TurboMedia's WebRTC DataChannel implementation provides peer-to-peer data communication over TurboNet::CoroNet transports. The architecture follows a layered design with clear separation of concerns.
+TurboMedia's WebRTC DataChannel implementation provides peer-to-peer data communication over Salts CNet transports. The architecture follows a layered design with clear separation of concerns.
 
 ## Layer Stack
 
@@ -78,7 +78,7 @@ struct turbo_dc_peer_s {
     turbo_dc_context_t *ctx;           // Parent context
     struct dtls_session_s *dtls;       // DTLS session
     struct socket *sctp_socket;        // SCTP socket (usrsctp)
-    void *transport;                    // CoroNet stream/datagram or external transport
+    void *transport;                    // CNet stream/datagram or external transport
     const dc_transport_ops_t *transport_ops;
 
     turbo_dc_state_t state;            // Connection state
@@ -102,9 +102,9 @@ NEW → CONNECTING → CONNECTED → DISCONNECTING → CLOSED
 ```
 
 **Transport Integration:**
-- UDP/TCP: CoroNet `turbo_datagram_t` / `turbo_stream_t`
+- UDP/TCP: CNet `cnet_datagram` / `cnet_client`
 - ICE: Externally owned datagram transport attached with `turbo_dc_peer_set_external_transport()`
-- KCP: rejected until the installed CoroNet package exposes the required transport API
+- KCP: uses a CNet packet session and is rejected when none is configured
 
 ---
 
@@ -334,12 +334,12 @@ free(peer);
 ## Threading Model
 
 **Transport ownership:**
-- Direct TCP/UDP operations are posted to the context's dedicated CoroNet thread
-- CoroNet drives DTLS timers and transport callbacks on that owner thread
+- Direct TCP/UDP operations are submitted to the context's dedicated CNet owner thread
+- CNet drives transport callbacks on that owner thread while the context coordinates DTLS timers
 - ICE remains externally owned and feeds datagrams through the transport adapter
 
 **Multi-threading support:**
-- Public lifetime calls synchronize transport work through `coro_post()`
+- Public lifetime calls synchronize transport work through the internal command protocol
 - Callbacks must not destroy their owning peer reentrantly
 
 ---

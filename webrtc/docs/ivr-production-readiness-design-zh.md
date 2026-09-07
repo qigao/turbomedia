@@ -5,39 +5,39 @@
 1. Iris 是 XML/JS、业务 session 和 provider outbox 的唯一事实源。
 2. Room/IVR/SFU 只拥有媒体资源和必要的 generation/route/lease 派生状态。
 3. media result/event 只回传事实，不能在 TurboMedia 内选择下一条业务 command。
-4. FlowMQ 不承载 RTP/PCM，不承载 archive/XML/JS，不提供 exactly-once 声明。
+4. CHTTP H1 WebSocket 不承载 RTP/PCM，不承载 archive/XML/JS，不提供 exactly-once 声明。
 5. 所有跨 callback/thread 数据先变成有界 owning copy。
 
-FlowMQ 已是独立产品和故障域。TurboMedia 下游只允许
-`find_package(FlowMQ CONFIG REQUIRED)` 并链接唯一公开 target `FlowMQ::FlowMQ`；不得继续解析
-`TurboFlow::FMQ`，也不得绕过产品 target 直接链接 FlowMQ 内部 core/protocol target。该依赖边界同时
+CHTTP 已是独立产品和故障域。TurboMedia 下游只允许
+`find_package(CHTTP CONFIG REQUIRED)` 并链接唯一公开 target `Salts::CHTTP`；不得自行解析
+CHTTP 的内部依赖，也不得绕过产品 target 直接链接内部 core/protocol target。该依赖边界同时
 承载 Iris↔TurboMedia 的 provider command/result/event/query lane，以及 TurboMedia↔worker 的内部
 media route/inventory lane；两类消息必须使用独立 schema、route namespace 和 ACL，不允许把
 Iris/uscxml runtime 引入 TurboMedia。
 
 Iris 与 TurboMedia 的目标 wire contract 由 TurboXML repository
-`docs/architecture/iris-media-provider-flowmq-protocol.md` 定义：
-`Iris <-- FlowMQ::FlowMQ --> TurboMedia`，command、durable receipt/completion、event/ack、
-query/observation 和首次呼入 bootstrap 均使用分面的 typed FlowMQ message。TurboMedia 不包含 Iris，
+`docs/architecture/ivr-chttp-h1-websocket-control-channel.md` 定义：
+`Iris <-- Salts::CHTTP --> TurboMedia`，command、durable receipt/completion、event/ack、
+query/observation 和首次呼入 bootstrap 均使用分面的 typed CHTTP H1 WebSocket message。TurboMedia 不包含 Iris，
 其 provider/RoomService 控制面也不启动 HTTP server。WHIP/WHEP 等独立 media-edge 协议适配器不属于
-provider contract，不能承载 Iris 或 RoomService command。旧 H2 文档已废止，不能作为 FlowMQ 不可用
+provider contract，不能承载 Iris 或 RoomService command。旧 H2 文档已废止，不能作为 CHTTP H1 WebSocket 不可用
 时的 fallback。
 下述“旧 HTTP 基线”只保留迁移证据，已不属于 RoomService provider 生产组合。
 
-## 当前 FlowMQ 实现状态（2026-08-24）
+## 当前 CHTTP H1 WebSocket 实现状态（2026-08-24）
 
-- RoomService 已创建并管理 `iris_flowmq_provider_t` DEALER；配置只接受 Iris FlowMQ endpoint、
+- RoomService 已创建并管理 `iris_control_provider_t` client；配置只接受 Iris CHTTP H1 WebSocket endpoint、
   provider instance、Iris peer identity、mTLS 或显式 loopback plaintext，以及 durable store 参数。
 - command 经有界 owning ingress 解码为 canonical `ProviderCommandV1`，在 durable ledger claim 后回
   `ProviderReceiptV1`；completion/event 由有界 dispatcher 等待 `ProviderCompletionAckV1`/
   `ProviderEventAckV1`，transport send completion 不视为 durable ACK。
-- `/provider/v1/commands` 已不再注册，expected-resource reconciler 使用 FlowMQ；FlowMQ 不可用时没有
+- `/provider/v1/commands` 已不再注册，expected-resource reconciler 使用 CHTTP H1 WebSocket；CHTTP H1 WebSocket 不可用时没有
   HTTP fallback。
 - `ProviderQueryV1/ProviderObservationV1` 已实现单飞 request/response、身份/cursor/revision fence 和
   有界 payload；RoomService 启动时查询 Iris 受配置 tenant scope 限制的 provider-wide expected view，
-  再与 worker inventory 收敛，READY 前拒绝 FlowMQ command。
+  再与 worker inventory 收敛，READY 前拒绝 CHTTP H1 WebSocket command。
 - 确定性生产媒体核心进程 E2E 已串联真实 Iris process、RoomService process、独立 IVR worker、SQLite
-  TurboDB ORM RecordStore 与双向 FlowMQ，验证 VoiceXML `dialog.start`、`dialog.terminate`、completion ACK 与 session 完成；
+  TurboDB ORM RecordStore 与双向 CHTTP H1 WebSocket，验证 VoiceXML `dialog.start`、`dialog.terminate`、completion ACK 与 session 完成；
   真实 SIP/WebRTC/SFU/RTP 和远端 speech 仍属于独立 live-media gate。
 
 ## 已实现基线
@@ -52,7 +52,7 @@ provider contract，不能承载 Iris 或 RoomService command。旧 H2 文档已
   终态生成 `playback.finished`，cancel/close 会结束 ASR 与 DTMF input 状态。
 - Room bridge 对 result/event 做 DataBind decode、live route fence 和 owner-thread callback。
 - RoomService adapter 只接受带已验证 peer identity、稳定 `message_id` 和 dispatch fence 的
-  typed FlowMQ provider command；不存在 HTTP provider fallback。
+  typed CHTTP H1 WebSocket provider command；不存在 HTTP provider fallback。
 - provider ingress 将 Iris `sessionId`、`workerId`、`dispatchEpoch` 与 media worker 路由保存在
   有界相关表中，并在副作用前提交 durable receipt。
 - 同一路由按 capability 分流：`room` 同步执行 `conference.create/destroy` 与
@@ -62,7 +62,7 @@ provider contract，不能承载 Iris 或 RoomService command。旧 H2 文档已
 - command ledger 使用固定容量 owning MPSC request queue 与单一 TurboDB ORM owner，记录
   `INTENT/ACCEPTED/TERMINAL/UNKNOWN`；启动把残留 INTENT 转 UNKNOWN，周期 retention 有批次硬上限。
   bridge correlation/tombstone 只保存进程内派生状态，存储 I/O 不在 bridge mutex 内执行。
-- RoomService completion dispatcher 使用固定容量 owning MPSC queue 和单一 FlowMQ provider
+- RoomService completion dispatcher 使用固定容量 owning MPSC queue 和单一 CHTTP H1 WebSocket provider
   sender，不在 bridge callback 或相关表锁内发送；transport send 成功不视为 application ACK。
 - terminal result 通过 provider-only completion lane 回传；普通 media event
   通过 provider-scoped event lane 回传。receipt/completion/event ACK、dispatch fence、重试耗尽恢复
@@ -83,9 +83,9 @@ flowchart LR
   XML[XML + capability-checked JS]
   Iris[Iris session runtime]
   Outbox[Durable provider outbox]
-  IrisFMQ[Iris FlowMQ adapter]
-  FlowMQ[FlowMQ::FlowMQ<br/>command/result/event/query]
-  MediaFMQ[TurboMedia FlowMQ adapter]
+  IrisControl[Iris CHTTP H1 WebSocket adapter]
+  CHTTP H1 WebSocket[Salts::CHTTP<br/>command/result/event/query]
+  MediaControl[TurboMedia CHTTP H1 WebSocket adapter]
   CommandLedger[Durable command ledger]
   RoomCore[Room control-plane]
   Worker[IVR worker]
@@ -93,32 +93,32 @@ flowchart LR
   EventOutbox[RoomService durable event outbox]
   ORM[(TurboDB ORM<br/>SQLite RecordStore)]
 
-  XML --> Iris --> Outbox --> IrisFMQ --> FlowMQ --> MediaFMQ
-  MediaFMQ -->|claim before side effect| CommandLedger
-  MediaFMQ --> RoomCore
-  MediaFMQ --> Worker --> Media
+  XML --> Iris --> Outbox --> IrisControl --> CHTTP H1 WebSocket --> MediaControl
+  MediaControl -->|claim before side effect| CommandLedger
+  MediaControl --> RoomCore
+  MediaControl --> Worker --> Media
   CommandLedger <--> ORM
-  Media --> Worker --> MediaFMQ
-  MediaFMQ -->|durable event| EventOutbox
+  Media --> Worker --> MediaControl
+  MediaControl -->|durable event| EventOutbox
   EventOutbox <--> ORM
-  MediaFMQ -->|receipt / completion / event| FlowMQ --> IrisFMQ --> Iris
+  MediaControl -->|receipt / completion / event| CHTTP H1 WebSocket --> IrisControl --> Iris
 ```
 
 ## 旧 HTTP 基线已完成的能力
 
-这些证据可用于 FlowMQ 迁移时复用状态与故障语义，但不能关闭 FlowMQ provider gate。
+这些证据可用于 CHTTP H1 WebSocket 迁移时复用状态与故障语义，但不能关闭 CHTTP H1 WebSocket provider gate。
 
 | 原级别 | Gate | 实现证据 |
 | --- | --- | --- |
-| HIGH | RoomService→Iris HTTP observer | 独立有界 queue/owner thread；TurboHTTP；provider auth；2xx terminal ACK；409 fence refresh；timeout/retry；shutdown drain；bridge callback 不发 HTTP |
+| HIGH | RoomService→Iris HTTP observer | 独立有界 queue/owner thread；CHTTP；provider auth；2xx terminal ACK；409 fence refresh；timeout/retry；shutdown drain；bridge callback 不发 HTTP |
 | HIGH | Iris TurboMedia provider contract | `schemaVersion=2` command ingress；`provider_session_id=sessionId`；显式 `dialogId/roomId/callId`；provider-scoped completion/event ingress；terminal status + result event 原子提交 |
-| HIGH | Unified external Room provider | 同一 provider ingress 已支持 `conference.create/destroy` 和 `connection.join/unjoin`；Room 同步终态与 IVR 异步 fence 明确分流；durable ledger 保证响应丢失/进程重启后的幂等重放；真实多进程 HTTP 测试覆盖 create/duplicate/join/unjoin/destroy 后继续 IVR FlowMQ 链路 |
+| HIGH | Unified external Room provider | 同一 provider ingress 已支持 `conference.create/destroy` 和 `connection.join/unjoin`；Room 同步终态与 IVR 异步 fence 明确分流；durable ledger 保证响应丢失/进程重启后的幂等重放；真实多进程 HTTP 测试覆盖 create/duplicate/join/unjoin/destroy 后继续 IVR CHTTP H1 WebSocket 链路 |
 | HIGH | Typed dialog worker-loss closure | RoomService 先把稳定 `provider.media.worker_lost` 写入 durable event outbox；Iris 仅允许 provider 身份提交该保留事件，并在接纳事件的同一存储事务中把相同 provider/dialog correlation 下所有非终态命令置为 failed；重复事件与容量失败均有原子语义 |
 | MED | Component recovery | stable command/event ID；durable accepted/terminal replay；bounded correlation/tombstone；route/generation fence；retry exhaustion 后恢复 command correlation |
 | HIGH | Media event retry exhaustion | TurboDB ORM durable fact source；CAS 状态迁移；启动恢复；terminal dead letter；dangerous-scope 单条/有界批量重放；容量与拒绝指标；重复/冲突/背压/重启及真实 SQLite backend 测试 |
 | HIGH | Dead-letter archive/retention | 同一 durable RecordStore 上的 `dead -> archived -> delete` revision-CAS；双 TTL；自动与手动有界 sweep；归档只读列表；删除审计日志/指标；CAS 失败保留；重启恢复测试 |
 | MED | Observability | dispatcher/outbox queue 与 drain、HTTP retry/fence、backlog/capacity、retained payload 当前值/峰值、persist/conflict/recovery/replay、durable decode failure、stale settlement，以及 provider auth missing/invalid 分类均已导出 |
-| MED | Deterministic media-core process E2E | 真实 RoomService 进程与独立 worker 进程串联生产 `ivr_worker_t`、media bot、RFC 4733 parser 和 typed FlowMQ；仅 TTS/ASR provider 与 audio transport 为确定性 fixture；SQLite outbox、provider auth、TurboHTTP TLS listener、start/play/input/cancel/close、completion 与 playback/ASR/DTMF event 均已验证 |
+| MED | Deterministic media-core process E2E | 真实 RoomService 进程与独立 worker 进程串联生产 `ivr_worker_t`、media bot、RFC 4733 parser 和 typed CHTTP H1 WebSocket；仅 TTS/ASR provider 与 audio transport 为确定性 fixture；SQLite outbox、provider auth、CHTTP TLS listener、start/play/input/cancel/close、completion 与 playback/ASR/DTMF event 均已验证 |
 | MED | Live worker transport recovery slice | 真实 caller WHIP 与 worker WHIP/WHEP 通过 `sfu_node` 建立 ICE/DTLS/SRTP，按 caller 实际 SSRC 注册/订阅并发送 RTP；删除活动 WHEP participant 后，supervisor 各产生一次 `rtc.disconnected`/`rtc.reconnected`，generation 递增，Iris 只接收一次对应事件；Iris↔RoomService 连接级分区期间 event 先 durable 落盘、恢复后重投，dialog/caller 关闭后 SFU 资源归零 |
 
 ## 尚未完成的生产 gate
@@ -126,7 +126,7 @@ flowchart LR
 | 级别 | Gate | 验收条件 |
 | --- | --- | --- |
 | HIGH | First-call live ingress integration | `call_offer/session_bound` codec、独立 single-flight lane、Iris 原子 bootstrap 及 ACK 丢失/断线/capacity/shutdown 组件矩阵已完成；还需让真实 SIP/WebRTC request-table owner 调用该 API、持久化可重建派生 binding，并覆盖 CANCEL/BYE/DELETE 与 crash-point 进程测试 |
-| HIGH | Live media-plane E2E | Iris XML/JS→FlowMQ→TurboMedia/worker→真实 SIP/WebRTC/SFU/RTP 与远端 speech provider→event→FlowMQ→Iris，覆盖网络失败、媒体重连、超时和资源 reconcile |
+| HIGH | Live media-plane E2E | Iris XML/JS→CHTTP H1 WebSocket→TurboMedia/worker→真实 SIP/WebRTC/SFU/RTP 与远端 speech provider→event→CHTTP H1 WebSocket→Iris，覆盖网络失败、媒体重连、超时和资源 reconcile |
 
 当前代码已经建立确定性的生产媒体核心多进程链路，并补上真实 caller、worker、SFU 与 Iris 串联的
 transport recovery 子切片；这证明架构边界、组件协议、worker supervisor 以及局部真实 RTP 恢复成立，
@@ -136,7 +136,7 @@ transport recovery 子切片；这证明架构边界、组件协议、worker sup
 
 ### First-call 故障矩阵
 
-| 故障 | `iris_flowmq_provider_send_call_offer()` | 状态语义 |
+| 故障 | `iris_control_provider_send_call_offer()` | 状态语义 |
 | --- | --- | --- |
 | 正常 `session_bound` | `IVR_OK`，读取 `accepted/bound_session_id` | binding 是 Iris durable session 的派生视图 |
 | ACK 丢失或 timeout | `IVR_EBUSY` | 结果未知；调用方必须保留并原样重发 owning offer |
@@ -148,7 +148,7 @@ transport recovery 子切片；这证明架构边界、组件协议、worker sup
 offer 是固定容量 owning struct，跨 worker callback 不借用 signaling buffer；first-call、query 和
 completion/event 分别使用独立 mutex/等待代次，不互相覆盖 response fence。当前没有在 RoomService 内创建
 第二份 workflow 状态或权威 call ledger；实际 SIP/WebRTC owner 才负责 transaction cache 和派生
-call-to-session binding。真实 ROUTER/DEALER 测试覆盖 accepted、丢失响应后稳定重试、rejected
+call-to-session binding。真实 server/client 测试覆盖 accepted、丢失响应后稳定重试、rejected
 `capacity_exceeded` 与 stop 后拒绝；真实 transport send-queue 饱和仍是 live ingress gate。
 
 ## ID 与状态归属
@@ -171,7 +171,7 @@ Iris 在提交 `dialog.start` 与 workflow 状态的同一事务中生成并保�
 ### Worker 媒体资源 inventory
 
 worker 固定容量 slot 数组是实际媒体资源观察值的事实源。`WorkerMediaInventoryQueryV1`
-通过 FlowMQ 请求指定 worker 的资源页，`WorkerMediaInventoryPageV1` 返回 owning copy；每条记录包含
+通过 CHTTP H1 WebSocket 请求指定 worker 的资源页，`WorkerMediaInventoryPageV1` 返回 owning copy；每条记录包含
 `providerSessionId/dialogId/roomId/callId/callGeneration/operationGeneration`、资源状态、是否可重绑，以及
 `workerId/workerInstanceId/workerEpoch`。RoomService 不从进程内 dialog route 反推 worker 资源，
 也不让 inventory 成为第二个可独立写入的业务事实源。
@@ -187,7 +187,7 @@ inventory 协议版本当前为 `1`，单页上限为 32 条。首次查询携�
 worker 返回 `IVR_ESTALE`，调用方必须从第一页重新读取；未知版本返回 `IVR_EVERSION`，非法 cursor/limit
 返回 `IVR_EINVAL`。`nextCursor=0` 且 `hasMore=false` 表示读完，容量始终受 worker slot 和页上限约束。
 
-worker 在 mutex 内只复制固定大小记录并推进 cursor，不做 FlowMQ、HTTP 或 callback。FlowMQ gateway
+worker 在 mutex 内只复制固定大小记录并推进 cursor，不做 CHTTP H1 WebSocket、HTTP 或 callback。CHTTP H1 WebSocket gateway
 负责 DataBind 编解码；Room bridge 在 owner thread 接收结果；RoomService adapter 在通知上游前验证
 记录的 `workerId/workerInstanceId/workerEpoch` 与当前已注册 worker route 一致，旧实例或旧 epoch 的页
 被计入 reject 而不会进入恢复逻辑。
@@ -196,7 +196,7 @@ worker 在 mutex 内只复制固定大小记录并推进 cursor，不做 FlowMQ�
 sequenceDiagram
   participant R as RoomService reconcile owner
   participant B as IVR Room bridge
-  participant F as FlowMQ
+  participant F as CHTTP H1 WebSocket
   participant W as IVR worker slot owner
 
   R->>B: query(worker, version=1, revision=0, cursor=0, limit<=32)
@@ -214,21 +214,21 @@ sequenceDiagram
 ```
 
 该 inventory 查询与 epoch fence 已实现并有单元、schema、gateway、bridge 和 adapter 测试。
-Iris 从 durable VoiceXML snapshot/outbox 原子派生 provider-scoped expected-resource view；FlowMQ
+Iris 从 durable VoiceXML snapshot/outbox 原子派生 provider-scoped expected-resource view；CHTTP H1 WebSocket
 observation 使用内容 revision、cursor 和固定页上限，并携带 session revision、owner epoch 与 dispatch fence。
 
 RoomService 现已实现独立 reconcile owner。provider 启用后，启动状态按
 `NOT_READY -> FETCHING_EXPECTED -> FETCHING_INVENTORY -> APPLYING -> READY` 推进；`READY` 前的
-Room/IVR provider command 返回 FlowMQ `NotReady` 和明确的 `MEDIA_PROVIDER_NOT_READY` retryable 错误。入口还会
+Room/IVR provider command 返回 CHTTP H1 WebSocket `NotReady` 和明确的 `MEDIA_PROVIDER_NOT_READY` retryable 错误。入口还会
 即时检查 adapter 的 `requires_reconcile`，因此 worker 注册发生在一次 ready 判定之后时也不会穿过
 门禁。
 
 ```mermaid
 flowchart LR
   Start[启动<br/>provider gate closed]
-  Expected[FlowMQ Query/Observation<br/>expected pages]
+  Expected[CHTTP H1 WebSocket Query/Observation<br/>expected pages]
   Registry[读取 fenced worker registry]
-  Inventory[FlowMQ 逐 worker<br/>读取 inventory pages]
+  Inventory[CHTTP H1 WebSocket 逐 worker<br/>读取 inventory pages]
   Compare{比较 identity / generation<br/>instance / epoch}
   Rebind[合法资源 rebind]
   Close[孤儿或冲突资源 close]
@@ -248,7 +248,7 @@ flowchart LR
 bookkeeping，不冒充 Iris command completion。worker 的已重绑 route 数必须与其上报
 `activeSessions` 精确相等，才能从 `RECONCILING` 晋升为可调度状态。
 
-expected Query、worker inventory request 和 callback 均不在 reconciler/bridge mutex 内执行。FlowMQ owner callback
+expected Query、worker inventory request 和 callback 均不在 reconciler/bridge mutex 内执行。CHTTP H1 WebSocket owner callback
 只把 owning page 复制进固定容量 MPSC queue；满额返回 `IVR_ENOSPC`，timeout/version/revision/cursor
 错误结束当前 cycle，retry wait 可被 shutdown 唤醒。缺失的 dispatched 资源在有界尝试耗尽后生成稳定
 `provider.media.resource_lost`：event ID 由资源 identity 与 generation 决定，时间戳由 committed lease
@@ -297,11 +297,18 @@ WHIP/WHEP transport 现在拥有完整的
 有界 owning copy；state/audio/RTP callback 在 transport mutex 内复制到固定大小栈对象，解锁后才调用
 上游。play/stop 必须匹配完整 identity，不能让相同 room/call 下的另一 dialog 操作现有 transport。
 callback 返回后栈 view 立即失效，接收方需要跨 callback 保存时必须自行复制。
-信令统一经 `TurboHttp::TurboHttp`：生产 URL 必须为验证 peer/hostname 的 HTTPS，可选 CA 与
+信令统一经 `Salts::CHTTP`：生产 URL 必须为验证 peer/hostname 的 HTTPS，可选 CA 与
 mTLS client identity；HTTP 明文只允许显式 loopback 测试，禁止重定向和隐式降级。动态
 room/call/participant ID 按单个 path segment 做 percent encoding，控制字符和超长输入 fail fast；
 request/response body 均有硬上限。RFC 7587 Opus SDP 固定使用 `opus/48000/2`，RTP timestamp
 clock 不随内部 PCM sample rate 改变。
+
+WHIP/WHEP 是低频 HTTP/1.1 媒体边缘信令，不承载 RTP 数据面。每个 request 终态后
+重建 CHTTP client，避免下一个请求继承对端已关闭的 H1 keep-alive slot；`POST`/`PATCH`
+可能产生媒体副作用，因此不在 transport 内自动重试。`DELETE` 只在检测到 stale EOF 时
+允许重建 client 并有界重试一次。若对端已死而无法确认 `DELETE`，stop 仍完成本地
+状态与资源拆除，但返回失败以暴露远端孤儿资源的不确定性；后续恢复由上层
+expected/inventory reconciliation 收敛，不把 transport send 当作业务事实提交。
 
 ```mermaid
 flowchart LR
@@ -334,10 +341,10 @@ stateDiagram-v2
 `MediaCancelCommandV2`，并必须携带 exact `input_id/input_generation`。因此 stop 失败由父 command 或关闭
 协议收敛，不能单独提交 provider terminal fact。
 
-外部 HTTP 字段使用 `dialogId`，内部 FlowMQ/DataBind 字段使用 `dialog_id`。当前生成类型名仍保留
+外部 HTTP 字段使用 `dialogId`，内部 CHTTP H1 WebSocket/DataBind 字段使用 `dialog_id`。当前生成类型名仍保留
 `Media*V1` 后缀，但其必填 identity 集合已经改变，属于不兼容的内部协议升级，不能与旧 worker
 混部。`[fmq].dialog_capacity`（环境变量
-`TURBO_ROOM_SERVICE_FMQ_DIALOG_CAPACITY`）限制 `OPENING + ACTIVE + CLOSING + WORKER_LOST`
+`TURBO_ROOM_SERVICE_ControlWS_DIALOG_CAPACITY`）限制 `OPENING + ACTIVE + CLOSING + WORKER_LOST`
 route 总数；worker-lost event 使用稳定 ID，durable outbox 背压时保留 route 并重试，成功接收后才
 释放 route/worker capacity。Iris 收到该保留事件后，以 `provider + dialogId` 为匹配键，在事件写入
 同一事务中将该 dialog 的全部 pending/dispatched command 置为 failed；普通 tenant event 入口不能
@@ -346,16 +353,16 @@ route 总数；worker-lost event 使用稳定 ID，durable outbox 背压时保�
 ## Command completion 与普通事件
 
 Room 命令与 IVR 命令共享认证和 outbox claim，但不伪造相同执行模型：Room mutation 是
-RoomService 本地、同步、可立即返回错误的控制面事务；IVR 跨 FlowMQ/worker/media 生命周期，必须异步。
+RoomService 本地、同步、可立即返回错误的控制面事务；IVR 跨 CHTTP H1 WebSocket/worker/media 生命周期，必须异步。
 同步 `2xx` 必须携带 `terminalStatus`、`eventType`、`data`，Iris 据此原子完成当前 claim；
 `202` 只允许携带并回显原始 `workerId/dispatchEpoch`，随后走 completion route。
 
 Room core 仍是房间/成员关系的领域事实源；durable command ledger 是 provider 幂等 outcome 的事实源。
-FlowMQ provider callback 可并发提交固定大小 owning ledger request，单一 store owner 串行执行 TurboDB ORM CAS；
+CHTTP H1 WebSocket provider callback 可并发提交固定大小 owning ledger request，单一 store owner 串行执行 TurboDB ORM CAS；
 bridge cache 只保存 `EXECUTING/ACCEPTED/COMPLETING/COMPLETED` 派生状态。执行副作用、ORM I/O
-和 FlowMQ send 均不持 cache mutex；queue/record 满额返回有类型的容量错误，重复执行中的命令返回
-明确的 in-progress disposition。关闭 FlowMQ provider ingress
-后不再产生新操作，依次停止 FlowMQ/outbox/dispatcher 后才 drain ledger，最后在 quiescent 状态销毁。
+和 CHTTP H1 WebSocket send 均不持 cache mutex；queue/record 满额返回有类型的容量错误，重复执行中的命令返回
+明确的 in-progress disposition。关闭 CHTTP H1 WebSocket provider ingress
+后不再产生新操作，依次停止 CHTTP H1 WebSocket/outbox/dispatcher 后才 drain ledger，最后在 quiescent 状态销毁。
 `commandId` 重放仅允许 Iris 租约重领产生的 `workerId/dispatchEpoch` 变化；业务 data、causation 与
 deadline 必须保持不变。命令一旦进入 `EXECUTING`，即使内部结果构造失败，也会保存可重放的终态失败，
 不会清除槽并重复 Room mutation。
@@ -365,11 +372,11 @@ sequenceDiagram
   participant I as Iris durable outbox
   participant R as RoomService
   participant L as Durable command ledger
-  participant F as FlowMQ
+  participant F as CHTTP H1 WebSocket
   participant W as IVR worker
   participant O as RoomService event outbox
   participant D as Completion dispatcher
-  participant A as Iris FlowMQ adapter
+  participant A as Iris CHTTP H1 WebSocket adapter
 
   I->>R: typed ProviderCommandV1 + stable message_id
   R->>L: claim commandId + typed semantic fingerprint
@@ -483,7 +490,7 @@ Iris stall、最大 payload、worker shutdown drain。满额返回明确错误�
 或把 publish 成功当成 Iris 已提交业务事实。
 
 `[iris_provider]` 还必须配置 `event_store_config`、`event_store_channel` 和有界
-`outbox_request_queue_capacity`，并与 FlowMQ peer identity、mTLS/显式 loopback plaintext、
+`outbox_request_queue_capacity`，并与 CHTTP H1 WebSocket peer identity、mTLS/显式 loopback plaintext、
 application ACK deadline 作为完整单元启用；因此 dangerous-scope 重放不会暴露给未认证 peer。
 归档策略由 `dead_retention_seconds`、`archive_retention_seconds`、
 `retention_sweep_interval_ms` 和 `retention_sweep_batch_size` 显式配置；默认分别为 1 天、30 天、
@@ -540,9 +547,9 @@ or increase(turbo_room_service_iris_outbox_capacity_rejection_total[5m]) > 0
 
 ```mermaid
 sequenceDiagram
-  participant P as Iris FlowMQ provider
+  participant P as Iris CHTTP H1 WebSocket provider
   participant R as Reconcile owner
-  participant F as FlowMQ adapter
+  participant F as CHTTP H1 WebSocket adapter
   participant D as Completion dispatcher
   participant O as Durable event outbox
   participant L as Durable command ledger
@@ -557,7 +564,7 @@ sequenceDiagram
   O->>L: stop intake, drain owner queue, join store owner
 ```
 
-关闭顺序是 Iris FlowMQ provider、reconcile owner、worker FlowMQ adapter、completion dispatcher、
+关闭顺序是 Iris CHTTP H1 WebSocket provider、reconcile owner、worker CHTTP H1 WebSocket adapter、completion dispatcher、
 event outbox、command ledger、资源 destroy。该 producer→consumer 顺序先建立 provider/worker callback
 quiescence，再关闭仍可能被回调使用的 durable consumer；停止 dispatcher 后才停止 outbox，保证不会再
 产生 delivery/settlement 请求。deadline 到达时，尚未交付的 command completion 恢复
@@ -568,20 +575,20 @@ TurboDB ORM 恢复。dispatcher 关闭回调与 bridge restore 均在 dispatcher
 
 - pure codec tests：type registry、TEXT/BIN round trip、必填 ID、长度、generation、TTL。
 - core mock tests：media call lifecycle、idempotency、input window、deadline、drain。
-- loopback integration：真实 FlowMQ/DataBind + mock upstream observer，验证 route spoof rejection。
+- loopback integration：真实 CHTTP H1 WebSocket/DataBind + mock upstream observer，验证 route spoof rejection。
 - process E2E：真实 RoomService 进程与独立 worker 进程运行生产 `ivr_worker_t`、media bot、
-  RFC 4733 parser 和固定容量 Disruptor reply queue；FlowMQ `on_reply` 只复制/发布，不重入
-  FlowMQ。provider 场景串联真实 SQLite TurboDB ORM 与 Iris typed FlowMQ adapter，按 completion
+  RFC 4733 parser 和固定容量 Disruptor reply queue；CHTTP H1 WebSocket `on_reply` 只复制/发布，不重入
+  CHTTP H1 WebSocket。provider 场景串联真实 SQLite TurboDB ORM 与 Iris typed CHTTP H1 WebSocket adapter，按 completion
   顺序验证 start/play/input/cancel/close，以及 `playback.finished`、`asr.final`、DTMF event 的
   `inputId/inputValue`、peer auth、durable receipt/application ACK、指标和清理。测试先保持 Iris
   query/observation 不可用，验证 provider ingress 拒绝；再提供带 pending resource 的 authenticated
   lease/page，验证 ready gate 后才允许 dispatch。
-- process fault matrix（已完成子集）：通过真实 FlowMQ provider `dialog.start` 验证无 worker 时返回
+- process fault matrix（已完成子集）：通过真实 CHTTP H1 WebSocket provider `dialog.start` 验证无 worker 时返回
   有类型的 route-unavailable 终态；
   dialog open result 前 worker 退出会先 durable 提交 `provider.media.worker_lost`，随后 replacement worker
   可接受新 dialog；result 后 worker 退出会关闭 IVR route，但不会删除由 Room 服务拥有的 call
   membership。另一个场景在 `dialog.start` 完成后只强杀 RoomService，保留原 worker/slot 与 ORM store；
-  新进程先返回 FlowMQ `NotReady/MEDIA_PROVIDER_NOT_READY`，重新读取 expected observation pages 和完整 worker inventory，
+  新进程先返回 CHTTP H1 WebSocket `NotReady/MEDIA_PROVIDER_NOT_READY`，重新读取 expected observation pages 和完整 worker inventory，
   断言 `rebound_total=1` 后，使用同一 dialog/call 与递增 generation 完成 `media.play`。旧的
   `conference.join -> IVR dispatch` 测试已删除，因为 Room membership 与 IVR dialog allocation 是两个
   独立媒体职责。
@@ -607,15 +614,17 @@ TurboDB ORM 恢复。dispatcher 关闭回调与 bridge restore 均在 dispatcher
   TurboDB ORM，恢复 proxy 后再以稳定 event ID 投递。修复 deadline 后 focused 场景连续两次 67/67 assertions
   通过。该证据关闭 C2-1、whole-SFU supervisor recovery 和 Iris↔RoomService 分区子项，但没有触发
   RoomService expected/inventory reconciler，仍不关闭 REC-05/06。
-- FlowMQ/worker partition slice：同一进程测试用固定容量 TCP proxy 将 worker front port 转发至
+- CHTTP H1 WebSocket/worker partition slice：同一进程测试用固定容量 TCP proxy 将 worker front port 转发至
   RoomService backend port。分区关闭活动连接并持续超过 15 秒 lease，provider command 最终明确 503，
-  不执行媒体副作用；恢复时使用 FlowMQ 既有 1/2/4/8/16/30 秒有界抖动重连。真实 worker 原先把
+  不执行媒体副作用；恢复时使用 CHTTP H1 WebSocket 既有 1/2/4/8/16/30 秒有界抖动重连。真实 worker 原先把
   connection generation/worker epoch 固定为 1，已改为首次连接后每次成功 reconnect 推进 epoch，并在
   worker lock 下同步推进 inventory revision。RoomService 因新世代进入 reconcile，精确重绑原 active
-  slot 后才 READY。同一 command ID 重试及重复提交只产生一个 completion、一个 event 和一次 play；
-  focused 1/1、38 assertions，worker epoch/inventory 单测 10/10、103 assertions 通过。
+  slot 后才 READY。同一 command ID 重试及重复提交只产生一个 completion、一个 event 和一次 play。
+  CHTTP listener 若因连接 terminal 退出，bridge owner 先失效旧 peer/route，再在同一端口有界重建；失败采用
+  1–30 秒指数退避，且只有新 generation 的 worker sync/inventory 完成后恢复调度。focused partition
+  连续 3/3、每轮 38 assertions，随后跨进程全套 9/9 通过。
 - whole-SFU expected/inventory terminal slice：上述双 link 恢复且 Iris 只收到一次 `rtc.reconnected` 后，
-  同一场景强杀 RoomService；稳定前端 TCP proxy 将 worker 的真实 mTLS FlowMQ 连接透传至新 backend。
+  同一场景强杀 RoomService；稳定前端 TCP proxy 将 worker 的真实 mTLS CHTTP H1 WebSocket 连接透传至新 backend。
   worker 推进 connection epoch 与 inventory revision，新 RoomService 读取 Iris expected observation pages 和
   worker inventory，`rebound_total=1` 后 READY；最终资源仍按 3/3→1/1→0/0 释放。focused 1/1、
   69 assertions、约 86 秒通过。该证据关闭 whole-SFU expected/inventory rebind terminal-fact 分支。
@@ -628,10 +637,10 @@ TurboDB ORM 恢复。dispatcher 关闭回调与 bridge restore 均在 dispatcher
   live RTP shutdown deadline、SIP ingress 与远端 speech 仍属于 REC-05/06。orphan close reconcile
   action 已改用稳定资源/fence 事实的 SHA-256 派生 canonical UUIDv8；
   真实进程测试分别在副作用前、media destroy 后/result 前强杀 RoomService；同一 fence 使用相同 ID，
-  FlowMQ reconnect 推进 worker epoch 后使用新 fence ID，或从空 inventory 收敛，最终 READY 且 destroy
+  CHTTP H1 WebSocket reconnect 推进 worker epoch 后使用新 fence ID，或从空 inventory 收敛，最终 READY 且 destroy
   只发生一次。
 - HTTP component integration：dispatcher 注入 transport 验证 stable retry body、5xx retry、409
-  fence refresh、queue full、owning copy、shutdown drain；默认 TurboHTTP client 通过真实 Iris TLS
+  fence refresh、queue full、owning copy、shutdown drain；默认 CHTTP client 通过真实 Iris TLS
   listener 验证 CA/hostname、provider token、session event route 和 payload；Iris hosted tests 验证
   provider/tenant auth、source scope、completion fencing 与原子提交。
 - live RTP shutdown drain：loopback-only management listener 提供 `POST /drain`，只向主线程提交停止请求
@@ -643,8 +652,11 @@ TurboDB ORM 恢复。dispatcher 关闭回调与 bridge restore 均在 dispatcher
   fail-fast；真实 SQLite TurboDB ORM 验证关闭后重开与重投。
 - live media-plane E2E：真实 Iris HTTP API、SIP/WebRTC/SFU/RTP attachment 和远端 speech
   provider，覆盖网络失败与资源 reconcile；确定性 provider/loopback transport 不能替代该 gate。
-- 2026-08-25 FlowMQ/TurboDB/WebRTC 收敛验证：MSVC Release 全量构建通过，CTest 83/83 通过
+- 2026-08-25 CHTTP H1 WebSocket/TurboDB/WebRTC 收敛验证：MSVC Release 全量构建通过，CTest 83/83 通过
   （包含约 130 秒 WHIP/WHEP live transport 与约 182 秒跨进程故障恢复）；TurboDB ORM 相关测试
-  10/10 通过。`dumpbin /dependents` 显示 `room_service.exe` 依赖 `flowmq.dll`、`sqlite3.dll`，不依赖
+  10/10 通过。`dumpbin /dependents` 显示 `room_service.exe` 依赖 `CHTTP runtime`、`sqlite3.dll`，不依赖
   `libpq.dll`；SQLite-only `orm_c.lib` 的 linker directives 也不包含 libpq。PostgreSQL 只允许由部署方
   提供 TurboDB 的 PG-enabled 编译产物，本仓库不直接链接、复制或部署 libpq。
+- 2026-09-07 Salts 依赖与 H1 WebSocket 重构验证：CTest 88/88 通过（477.56 秒），其中
+  WHIP transport 131.97 秒、SFU app 66.28 秒、跨进程故障恢复 161.87 秒；dependency migration
+  gate 同轮通过。最终构建与静态依赖扫描结果以本次变更交付记录为准。

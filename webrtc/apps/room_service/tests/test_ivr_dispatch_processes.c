@@ -1,23 +1,20 @@
-/* test_ivr_dispatch_processes.c - Real RoomService/FlowMQ process smoke.
+/* test_ivr_dispatch_processes.c - Real RoomService/CHTTP H1 WebSocket process smoke.
  *
  * Spawns the actual room_service executable and a deterministic media-provider
  * process that runs the production ivr_worker/media-bot/DTMF core. It verifies
  * typed playback, input, cancel, close, and Iris result/event delivery across
- * HTTP, FlowMQ, and process boundaries without a live speech/SFU dependency. */
-#include "ivr_flowmq_gateway.h"
+ * HTTP, CHTTP H1 WebSocket, and process boundaries without a live speech/SFU dependency. */
+#include "ivr_control_gateway.h"
 #include "ivr_frame.h"
 #include "ivr_thread.h"
 #include "ivr_whip_transport.h"
-#include "iris_flowmq_process_peer.h"
+#include "iris_control_process_peer.h"
 #include "turbomedia_ivr_v1.h"
 #include "tinytest.h"
-#include <iris/iris_app.h>
-#include <iris/server.h>
 #include <platform.h>
-#include <turbo_coro_context.h>
-#include <turbo_coro_socket.h>
-#include <turbo_http.h>
-#include <turbo_thread.h>
+#include <chttp/chttp.h>
+#include <salts/error_codes.h>
+#include <salts_thread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,7 +50,7 @@
 #define TEST_HTTP_PORT 19091
 #define TEST_IRIS_TLS_PORT 19997
 #define TEST_IRIS_BACKEND_TLS_PORT 19998
-#define TEST_IRIS_FLOWMQ_PORT 19996
+#define TEST_IRIS_CONTROL_PORT 19996
 #define TEST_SFU_PORT 17933
 #define TEST_REAL_WORKER_HEALTH_PORT 18092
 #define TEST_CTRL_TOKEN "smoke-control-token"
@@ -83,7 +80,7 @@ enum {
     TEST_RTC_TRANSITION_ATTEMPTS = 1000,
     TEST_RTC_TRANSITION_POLL_MS = 50,
     TEST_IRIS_PARTITION_RECOVERY_ATTEMPTS = 400,
-    TEST_FMQ_PARTITION_RECOVERY_ATTEMPTS = 800,
+    TEST_CONTROL_WS_PARTITION_RECOVERY_ATTEMPTS = 800,
     TEST_SFU_PROCESS_LOSS_ATTEMPTS = 1500,
     TEST_CALLER_CONNECT_TIMEOUT_MS = 15000,
     TEST_CALLER_SAMPLE_RATE = 16000,
@@ -93,7 +90,14 @@ enum {
     TEST_TTS_RTP_ATTEMPTS = 200,
     TEST_SPEECH_PCM_SAMPLES = 4800,
     TEST_SPEECH_WAVE_HALF_PERIOD = 40,
-    TEST_SPEECH_WAVE_AMPLITUDE = 12000
+    TEST_SPEECH_WAVE_AMPLITUDE = 12000,
+    TEST_CHTTP_CONNECTION_CAPACITY = 2,
+    TEST_CHTTP_QUEUE_CAPACITY = 8,
+    TEST_CHTTP_MAX_HEADER_COUNT = 32,
+    TEST_CHTTP_MAX_HEADER_BYTES = 16 * 1024,
+    TEST_CHTTP_MAX_BODY_BYTES = 64 * 1024,
+    TEST_CHTTP_MAX_BUFFERED_RESPONSE_BYTES = 32 * 1024,
+    TEST_CHTTP_MAX_START_LINE_BYTES = 4 * 1024
 };
 
 #ifdef _WIN32
@@ -112,22 +116,59 @@ static void proc_sleep(unsigned int ms) { Sleep(ms); }
 static void proc_sleep(unsigned int ms) { usleep(ms * 1000); }
 #endif
 
-typedef enum {
-    TEST_IRIS_STARTING = 0,
-    TEST_IRIS_RUNNING,
-    TEST_IRIS_FAILED,
-    TEST_IRIS_STOPPED
-} test_iris_state_t;
+static native_io_backend_kind test_http_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static chttp_client_config test_http_client_config(void) {
+    chttp_client_config config = {0};
+
+    config.network = (cnet_client_config){
+        .backend = test_http_backend(),
+        .connection_capacity = TEST_CHTTP_CONNECTION_CAPACITY,
+        .command_capacity = TEST_CHTTP_QUEUE_CAPACITY,
+        .request_capacity = TEST_CHTTP_QUEUE_CAPACITY,
+        .completion_batch_capacity = TEST_CHTTP_QUEUE_CAPACITY,
+        .event_capacity = TEST_CHTTP_QUEUE_CAPACITY,
+        .max_send_bytes = TEST_CHTTP_MAX_BODY_BYTES,
+        .receive_buffer_bytes = TEST_CHTTP_MAX_HEADER_BYTES,
+        .connect_timeout_ms = TEST_HTTP_IO_TIMEOUT_MS,
+        .read_timeout_ms = TEST_HTTP_IO_TIMEOUT_MS,
+        .write_timeout_ms = TEST_HTTP_IO_TIMEOUT_MS,
+        .tls_io_buffer_bytes = CNET_TLS_MIN_IO_BUFFER_BYTES,
+        .tls_handshake_timeout_ms = TEST_HTTP_IO_TIMEOUT_MS,
+        .command_buffer_bytes = TEST_CHTTP_MAX_BODY_BYTES,
+        .event_buffer_bytes = TEST_CHTTP_MAX_BODY_BYTES};
+    config.request_capacity = TEST_CHTTP_QUEUE_CAPACITY;
+    config.max_start_line_bytes = TEST_CHTTP_MAX_START_LINE_BYTES;
+    config.max_header_count = TEST_CHTTP_MAX_HEADER_COUNT;
+    config.max_header_bytes = TEST_CHTTP_MAX_HEADER_BYTES;
+    config.max_request_body_bytes = TEST_CHTTP_MAX_BODY_BYTES;
+    config.max_response_body_bytes = TEST_CHTTP_MAX_BODY_BYTES;
+    config.max_informational_responses = 4u;
+    return config;
+}
+
+typedef struct Req {
+    const chttp_server_request_view *request;
+    const void *body;
+    size_t body_len;
+} Req;
+
+typedef struct Res {
+    chttp_server_response *response;
+    int status;
+} Res;
 
 typedef struct {
-    iris_app_t *app;
-    coro_context_t *context;
-    coro_socket_t *listener;
-    turbo_thread_t thread;
-    turbo_mutex_t mutex;
-    turbo_cond_t lifecycle;
-    test_iris_state_t state;
-    int thread_started;
+    chttp_server http;
+    int http_initialized;
     atomic_int completion_calls;
     atomic_int room_completion_calls;
     atomic_int event_calls;
@@ -165,7 +206,7 @@ typedef struct {
     SOCKET clients[TEST_IRIS_PROXY_CONNECTION_CAPACITY];
     SOCKET backends[TEST_IRIS_PROXY_CONNECTION_CAPACITY];
 #endif
-    turbo_thread_t thread;
+    salts_thread_t thread;
     atomic_int stopping;
     atomic_int available;
     int listen_port;
@@ -174,6 +215,27 @@ typedef struct {
 } test_iris_proxy_t;
 
 static test_iris_server_t *g_iris_server;
+
+static const char *get_headers(const Req *req, const char *name) {
+    return req && req->request
+               ? chttp_server_request_header(req->request, name)
+               : NULL;
+}
+
+static const char *get_params(const Req *req, const char *name) {
+    return req && req->request
+               ? chttp_server_request_param(req->request, name)
+               : NULL;
+}
+
+static void reply(Res *res, unsigned int status, const char *content_type,
+                  const void *body, size_t body_size) {
+    if (!res || res->status != SALTS_OK) {
+        return;
+    }
+    res->status = chttp_server_reply(res->response, status, content_type,
+                                     body, body_size);
+}
 
 static int copy_request_body(const Req *req, char *buffer, size_t capacity) {
     if (!req || !req->body || req->body_len >= capacity) return 0;
@@ -476,45 +538,97 @@ static void test_speech_tts_handler(Req *req, Res *res) {
           (const char *)server->speech_pcm, sizeof(server->speech_pcm));
 }
 
-static void test_iris_server_thread(void *context) {
-    test_iris_server_t *server = (test_iris_server_t *)context;
-    turbo_tls_server_config_t tls;
-    coro_context_t *coro_context = coro_context_create(NULL);
-    coro_socket_t *listener = NULL;
+typedef void (*test_chttp_handler_fn)(Req *req, Res *res);
 
-    memset(&tls, 0, sizeof(tls));
-    tls.size = sizeof(tls);
-    tls.cert_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
-    tls.key_file = ROOM_SERVICE_TEST_TLS_KEY_PATH;
-    tls.client_auth = TURBO_TLS_CLIENT_AUTH_NONE;
-    if (coro_context) {
-        listener = iris_server_start_tls_on(
-            server->app, coro_context, "127.0.0.1",
-            TEST_IRIS_BACKEND_TLS_PORT, &tls);
-    }
-    turbo_mutex_lock(&server->mutex);
-    server->context = coro_context;
-    server->listener = listener;
-    server->state = listener ? TEST_IRIS_RUNNING : TEST_IRIS_FAILED;
-    turbo_cond_broadcast(&server->lifecycle);
-    turbo_mutex_unlock(&server->mutex);
+static int test_chttp_dispatch(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *response, test_chttp_handler_fn handler) {
+    Req req = {.request = request,
+               .body = request ? request->body : NULL,
+               .body_len = request ? request->body_size : 0u};
+    Res res = {.response = response, .status = SALTS_OK};
 
-    if (listener) {
-        coro_context_set_persistent(coro_context, 1);
-        coro_context_run(coro_context, TURBO_RUN_DEFAULT);
-        coro_context_set_persistent(coro_context, 0);
-        coro_socket_destroy(listener);
+    if (!user || !request || !response || !handler) {
+        return SALTS_EINVAL;
     }
-    if (coro_context) coro_context_destroy(coro_context);
-    turbo_mutex_lock(&server->mutex);
-    server->context = NULL;
-    server->listener = NULL;
-    server->state = TEST_IRIS_STOPPED;
-    turbo_cond_broadcast(&server->lifecycle);
-    turbo_mutex_unlock(&server->mutex);
+    handler(&req, &res);
+    return res.status;
+}
+
+#define TEST_CHTTP_ROUTE_ADAPTER(name)                                      \
+    static int name##_route(void *user,                                     \
+                            const chttp_server_request_view *request,        \
+                            chttp_server_response *response) {               \
+        return test_chttp_dispatch(user, request, response, name);          \
+    }
+
+TEST_CHTTP_ROUTE_ADAPTER(test_iris_completion_handler)
+TEST_CHTTP_ROUTE_ADAPTER(test_iris_event_handler)
+TEST_CHTTP_ROUTE_ADAPTER(test_speech_tts_handler)
+TEST_CHTTP_ROUTE_ADAPTER(test_iris_expected_lease_handler)
+TEST_CHTTP_ROUTE_ADAPTER(test_iris_expected_page_handler)
+
+static chttp_server_config test_backend_http_server_config(
+    const cnet_tls_server_config *tls) {
+    cnet_client_config network = test_http_client_config().network;
+    network.connection_capacity = TEST_IRIS_PROXY_CONNECTION_CAPACITY;
+    const chttp_server_config config = {
+        .host = "127.0.0.1",
+        .port = TEST_IRIS_BACKEND_TLS_PORT,
+        .backlog = TEST_IRIS_PROXY_CONNECTION_CAPACITY,
+        .network = network,
+        .route_capacity = 8u,
+        .max_route_param_count = 3u,
+        .max_route_param_bytes = 1024u,
+        .max_target_bytes = TEST_CHTTP_MAX_START_LINE_BYTES,
+        .max_header_count = TEST_CHTTP_MAX_HEADER_COUNT,
+        .max_header_bytes = TEST_CHTTP_MAX_HEADER_BYTES,
+        .max_request_body_bytes = TEST_CHTTP_MAX_BODY_BYTES,
+        .max_response_header_count = TEST_CHTTP_MAX_HEADER_COUNT,
+        .max_response_header_bytes = TEST_CHTTP_MAX_HEADER_BYTES,
+        .max_response_body_bytes = TEST_CHTTP_MAX_BODY_BYTES,
+        .poll_slice_ms = 10u,
+        .tls = tls,
+        .max_buffered_response_body_bytes =
+            TEST_CHTTP_MAX_BUFFERED_RESPONSE_BYTES,
+        .buffer_capacity_bytes = 1024u * 1024u};
+    return config;
+}
+
+static int test_iris_register_routes(test_iris_server_t *server) {
+    int status = chttp_server_post(
+        &server->http,
+        "/v1/sessions/:sessionId/commands/:commandId/completions",
+        test_iris_completion_handler_route, server);
+    if (status == SALTS_OK) {
+        status = chttp_server_post(
+            &server->http, "/v1/sessions/:sessionId/events",
+            test_iris_event_handler_route, server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_post(&server->http, "/v1/audio/speech",
+                                   test_speech_tts_handler_route, server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_post(
+            &server->http,
+            "/v1/providers/:providerId/expected-resources/leases",
+            test_iris_expected_lease_handler_route, server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_get(
+            &server->http,
+            "/v1/providers/:providerId/expected-resources/leases/:leaseId/pages/:cursor",
+            test_iris_expected_page_handler_route, server);
+    }
+    return status;
 }
 
 static int test_iris_server_start(test_iris_server_t *server) {
+    cnet_tls_server_config tls = {0};
+    chttp_server_config config;
+    int status;
+
     memset(server, 0, sizeof(*server));
     for (size_t index = 0; index < TEST_SPEECH_PCM_SAMPLES; ++index) {
         server->speech_pcm[index] =
@@ -522,68 +636,38 @@ static int test_iris_server_start(test_iris_server_t *server) {
                 ? -TEST_SPEECH_WAVE_AMPLITUDE
                 : TEST_SPEECH_WAVE_AMPLITUDE;
     }
-    server->app = iris_app_create();
-    if (!server->app) return -1;
-    turbo_mutex_init(&server->mutex);
-    turbo_cond_init(&server->lifecycle);
-    server->state = TEST_IRIS_STARTING;
-    g_iris_server = server;
-    iris_app_post(server->app,
-                  "/v1/sessions/:sessionId/commands/:commandId/completions",
-                  test_iris_completion_handler);
-    iris_app_post(server->app, "/v1/sessions/:sessionId/events",
-                  test_iris_event_handler);
-    iris_app_post(server->app, "/v1/audio/speech",
-                  test_speech_tts_handler);
-    iris_app_post(server->app,
-                  "/v1/providers/:providerId/expected-resources/leases",
-                  test_iris_expected_lease_handler);
-    iris_app_get(
-        server->app,
-        "/v1/providers/:providerId/expected-resources/leases/:leaseId/pages/:cursor",
-        test_iris_expected_page_handler);
-    if (turbo_thread_create(&server->thread, test_iris_server_thread, server) !=
-        0) {
-        g_iris_server = NULL;
-        turbo_cond_destroy(&server->lifecycle);
-        turbo_mutex_destroy(&server->mutex);
-        iris_app_destroy(server->app);
-        server->app = NULL;
+    tls.size = sizeof(tls);
+    tls.cert_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
+    tls.key_file = ROOM_SERVICE_TEST_TLS_KEY_PATH;
+    tls.client_auth = CNET_TLS_CLIENT_AUTH_NONE;
+    config = test_backend_http_server_config(&tls);
+    status = chttp_server_init(&server->http, &config);
+    if (status != SALTS_OK) {
         return -1;
     }
-    server->thread_started = 1;
-    turbo_mutex_lock(&server->mutex);
-    while (server->state == TEST_IRIS_STARTING) {
-        turbo_cond_wait(&server->lifecycle, &server->mutex);
+    server->http_initialized = 1;
+    g_iris_server = server;
+    status = test_iris_register_routes(server);
+    if (status == SALTS_OK) {
+        status = chttp_server_start(&server->http);
     }
-    turbo_mutex_unlock(&server->mutex);
-    if (server->state == TEST_IRIS_RUNNING) return 0;
-    turbo_thread_join(&server->thread);
-    server->thread_started = 0;
-    g_iris_server = NULL;
-    turbo_cond_destroy(&server->lifecycle);
-    turbo_mutex_destroy(&server->mutex);
-    iris_app_destroy(server->app);
-    server->app = NULL;
-    return -1;
+    if (status != SALTS_OK) {
+        g_iris_server = NULL;
+        (void)chttp_server_destroy(&server->http);
+        server->http_initialized = 0;
+        return -1;
+    }
+    return 0;
 }
 
 static void test_iris_server_stop(test_iris_server_t *server) {
-    coro_context_t *context;
-    if (!server || !server->app) return;
-    turbo_mutex_lock(&server->mutex);
-    context = server->context;
-    turbo_mutex_unlock(&server->mutex);
-    if (context) coro_context_stop(context);
-    if (server->thread_started) {
-        turbo_thread_join(&server->thread);
-        server->thread_started = 0;
+    if (!server || !server->http_initialized) {
+        return;
     }
+    (void)chttp_server_stop(&server->http, 0u);
+    (void)chttp_server_destroy(&server->http);
+    server->http_initialized = 0;
     g_iris_server = NULL;
-    turbo_cond_destroy(&server->lifecycle);
-    turbo_mutex_destroy(&server->mutex);
-    iris_app_destroy(server->app);
-    server->app = NULL;
 }
 
 #ifdef _WIN32
@@ -736,7 +820,7 @@ static int test_iris_proxy_start(test_iris_proxy_t *proxy, int listen_port,
         listen(proxy->listener, SOMAXCONN) != 0) {
         goto fail;
     }
-    if (turbo_thread_create(&proxy->thread, test_iris_proxy_thread, proxy) !=
+    if (salts_thread_create(&proxy->thread, test_iris_proxy_thread, proxy) !=
         0) {
         goto fail;
     }
@@ -755,7 +839,7 @@ static void test_iris_proxy_stop(test_iris_proxy_t *proxy) {
     shutdown(proxy->listener, SD_BOTH);
     closesocket(proxy->listener);
     proxy->listener = INVALID_SOCKET;
-    turbo_thread_join(&proxy->thread);
+    salts_thread_join(&proxy->thread);
     proxy->thread_started = 0;
     WSACleanup();
 }
@@ -941,15 +1025,28 @@ static int file_contains(const char *path, const char *needle) {
 static void print_file_on_failure(const char *label, const char *path) {
     FILE *f = fopen(path, "rb");
     char buf[8192];
+    long file_size;
+    long start_offset = 0;
     size_t n;
     if (!f) {
         fprintf(stderr, "%s: cannot open %s\n", label, path);
         return;
     }
+    if (fseek(f, 0, SEEK_END) == 0) {
+        file_size = ftell(f);
+        if (file_size > (long)(sizeof(buf) - 1u)) {
+            start_offset = file_size - (long)(sizeof(buf) - 1u);
+        }
+    }
+    if (fseek(f, start_offset, SEEK_SET) != 0) {
+        rewind(f);
+        start_offset = 0;
+    }
     n = fread(buf, 1, sizeof(buf) - 1, f);
     fclose(f);
     buf[n] = '\0';
-    fprintf(stderr, "--- %s (%s) ---\n%s\n", label, path, buf);
+    fprintf(stderr, "--- %s (%s, offset=%ld) ---\n%s\n", label, path,
+            start_offset, buf);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1153,33 +1250,44 @@ static int wait_room_service_metric_greater_than(const char *name,
 }
 
 static int probe_restarted_iris(void) {
-    turbo_http_options_t options;
-    turbo_tls_client_config_t tls;
-    turbo_http_t *client = NULL;
-    http_response_t *response = NULL;
-    char url[256];
+    chttp_client_config client_config = test_http_client_config();
+    cnet_tls_client_config tls_config = {0};
+    chttp_tls_profile tls_profile = {0};
+    chttp_client client = {0};
+    chttp_options options = {0};
+    chttp_response response = {0};
+    chttp_error error = {0};
+    int client_initialized = 0;
+    int tls_initialized = 0;
     int status = 0;
-    if (turbo_http_options_init(&options, sizeof(options)) != TURBO_OK) {
-        return 0;
-    }
-    options.transport = TURBO_HTTP_TRANSPORT_AUTO;
-    options.timeout_ms = 1000;
-    if (turbo_http_create_sync(&options, &client) != TURBO_OK) return 0;
-    memset(&tls, 0, sizeof(tls));
-    tls.verify_peer = 1;
-    tls.ca_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
-    if (turbo_http_set_tls_config(client, &tls) != TURBO_OK) goto cleanup;
-    if (snprintf(url, sizeof(url), "https://localhost:%d/probe",
-                 TEST_IRIS_TLS_PORT) <= 0) {
+
+    if (chttp_client_init(&client, &client_config) != SALTS_OK) {
         goto cleanup;
     }
-    response = turbo_http_request_sync(client, HTTP_GET, url, NULL, 0, NULL, 0);
-    if (response && response->error_code == HTTP_ERROR_NONE) {
-        status = response->status_code;
+    client_initialized = 1;
+    tls_config.size = sizeof(tls_config);
+    tls_config.ca_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
+    tls_config.server_name = "localhost";
+    if (chttp_tls_profile_init(&tls_profile, &tls_config) != SALTS_OK) {
+        goto cleanup;
+    }
+    tls_initialized = 1;
+    options.connection_uri = "tls://127.0.0.1:19997";
+    options.authority = "localhost:19997";
+    options.target = "/probe";
+    options.timeout_ms = 1000u;
+    options.tls = &tls_profile;
+    if (chttp_get(&client, &options, &response, &error) == SALTS_OK) {
+        status = (int)response.status_code;
     }
 cleanup:
-    if (response) http_response_free(response);
-    turbo_http_destroy(client);
+    chttp_response_destroy(&response);
+    if (client_initialized) {
+        (void)chttp_client_destroy(&client, TEST_HTTP_IO_TIMEOUT_MS);
+    }
+    if (tls_initialized) {
+        (void)chttp_tls_profile_destroy(&tls_profile);
+    }
     return status;
 }
 
@@ -1222,9 +1330,10 @@ static child_t g_sfu;
 static ivr_whip_transport_t *g_caller_transport;
 static test_iris_server_t g_iris;
 static test_iris_proxy_t g_iris_proxy;
-static test_iris_proxy_t g_fmq_proxy;
-static test_iris_flowmq_peer_t *g_iris_flowmq_peer;
-static turbo_http_t *g_http_client;
+static test_iris_proxy_t g_control_ws_proxy;
+static test_iris_control_peer_t *g_iris_control_peer;
+static chttp_client g_http_client;
+static int g_http_client_initialized;
 static char g_cfg_path[1024];
 static char g_store_path[1024];
 static char g_database_path[1024];
@@ -1234,8 +1343,6 @@ static char g_wk_out[1024];
 static char g_sfu_cfg_path[1024];
 static char g_sfu_out[1024];
 static char g_orphan_resume_path[1024];
-static char *g_saved_ca_file;
-static char *g_saved_ca_path;
 static int g_seq = 0;
 static int g_router_bind_port = TEST_ROUTER_PORT;
 
@@ -1305,7 +1412,7 @@ static void normalize_config_path(char *path) {
     }
 }
 
-static int write_room_service_config(int secure_fmq) {
+static int write_room_service_config(int secure_control_ws) {
     FILE *config = fopen(g_cfg_path, "wb");
     int ok;
     if (!config) {
@@ -1321,13 +1428,13 @@ static int write_room_service_config(int secure_fmq) {
              "[runtime]\ndry_run = false\n"
              "[logging]\nlevel = \"warn\"\n"
              "[iris_provider]\n"
-             "flowmq_host = \"127.0.0.1\"\n"
-             "flowmq_port = %d\n"
-             "flowmq_topic = \"media-provider-v1\"\n"
+             "control_ws_host = \"127.0.0.1\"\n"
+             "control_ws_port = %d\n"
+             "control_ws_path = \"/internal/iris/control\"\n"
              "provider_instance_id = \"turbomedia-process\"\n"
              "iris_identity = \"iris-process\"\n"
-             "flowmq_use_tls = false\n"
-             "flowmq_allow_insecure_loopback = true\n"
+             "control_ws_use_tls = false\n"
+             "control_ws_allow_insecure_loopback = true\n"
              "event_store_config = \"%s\"\n"
              "event_store_channel = \"iris.media_events\"\n"
              "command_ledger_channel = \"iris.provider_commands\"\n"
@@ -1339,11 +1446,11 @@ static int write_room_service_config(int secure_fmq) {
              "retry_backoff_ms = 100\n"
              "ack_timeout_ms = 3000\n"
              "drain_timeout_ms = 5000\n"
-             "[fmq]\nbind_host = \"127.0.0.1\"\nbind_port = %d\n"
+             "[control_ws]\nbind_host = \"127.0.0.1\"\nbind_port = %d\n"
              "dispatch_deadline_ms = 1000\n",
-             TEST_HTTP_PORT, TEST_CTRL_TOKEN, TEST_IRIS_FLOWMQ_PORT,
+             TEST_HTTP_PORT, TEST_CTRL_TOKEN, TEST_IRIS_CONTROL_PORT,
              g_store_path, g_router_bind_port) > 0;
-    if (ok && secure_fmq) {
+    if (ok && secure_control_ws) {
         ok = fprintf(
                  config,
                  "use_tls = true\n"
@@ -1352,7 +1459,7 @@ static int write_room_service_config(int secure_fmq) {
                  "key_file = \"%s\"\n"
                  "worker_heartbeat_ms = 500\n"
                  "worker_lease_ms = 2000\n"
-                 "[[fmq.workers]]\n"
+                 "[[control_ws.workers]]\n"
                  "worker_id = \"ivr-worker-dispatch\"\n"
                  "active_certificate_sha256 = \"%s\"\n"
                  "generation = 1\n",
@@ -1855,16 +1962,18 @@ static void process_peer_event(void *context, const ProviderEventV1_t *event) {
     atomic_fetch_add_explicit(&server->event_calls, 1, memory_order_release);
 }
 
-static int facade_request(http_method_t method, const char *path,
+static int facade_request(chttp_method method, const char *path,
                           const char *token, const char *idempotency_key,
                           const char *body, char *response_body,
                           size_t response_capacity) {
-    char url[512];
     char authorization[256];
     char idempotency[256];
-    const char *headers[3];
+    chttp_header headers[3];
+    chttp_options options = {0};
+    chttp_response response = {0};
+    chttp_error error = {0};
     size_t header_count = 0u;
-    http_response_t *response;
+    int request_status;
     int status = 0;
     int written;
 
@@ -1873,16 +1982,17 @@ static int facade_request(http_method_t method, const char *path,
     }
     response_body[0] = '\0';
     if (strcmp(path, "/provider/v1/commands") == 0) {
-        test_iris_flowmq_receipt_t receipt;
+        test_iris_control_receipt_t receipt;
         const char *disposition;
         int provider_status;
         int is_room;
         int completion_before;
-        if (method != HTTP_POST || !g_iris_flowmq_peer || !idempotency_key ||
+        if (method != CHTTP_METHOD_POST || !g_iris_control_peer ||
+            !idempotency_key ||
             !body) {
             return 400;
         }
-        /* The production transport authenticates the FlowMQ peer identity.
+        /* The production transport authenticates the CHTTP H1 WebSocket peer identity.
            token remains only in this legacy-shaped test helper signature. */
         (void)token;
         is_room = strstr(body, "\"capability\":\"room\"") != NULL;
@@ -1890,13 +2000,15 @@ static int facade_request(http_method_t method, const char *path,
             is_room ? &g_iris.room_completion_calls : &g_iris.completion_calls,
             memory_order_acquire);
         {
-            int flowmq_status = test_iris_flowmq_peer_send_command(
-                g_iris_flowmq_peer, idempotency_key, body,
+            int control_ws_status = test_iris_control_peer_send_command(
+                g_iris_control_peer, idempotency_key, body,
                 TEST_HTTP_IO_TIMEOUT_MS, &receipt);
-            if (flowmq_status != TURBO_OK) {
+            if (control_ws_status != SALTS_OK) {
                 fprintf(stderr,
-                        "process Iris FlowMQ command failed status=%d id=%s\n",
-                        flowmq_status, idempotency_key);
+                        "process Iris CHTTP H1 WebSocket command failed status=%d id=%s\n",
+                        control_ws_status, idempotency_key);
+                print_file_on_failure("room_service_control_timeout", g_rs_out);
+                print_file_on_failure("worker_control_timeout", g_wk_out);
                 return 0;
             }
         }
@@ -1983,79 +2095,90 @@ static int facade_request(http_method_t method, const char *path,
         }
         return provider_status;
     }
-    if (!g_http_client) return 0;
-    written = snprintf(url, sizeof(url), "http://127.0.0.1:%u%s",
-                       TEST_HTTP_PORT, path);
-    if (written <= 0 || (size_t)written >= sizeof(url)) return 0;
-    if (body) headers[header_count++] = "Content-Type: application/json";
+    if (!g_http_client_initialized) return 0;
+    if (body) {
+        headers[header_count++] =
+            (chttp_header){"Content-Type", "application/json"};
+    }
     if (token) {
         written = snprintf(authorization, sizeof(authorization),
-                           "Authorization: Bearer %s", token);
+                           "Bearer %s", token);
         if (written <= 0 || (size_t)written >= sizeof(authorization)) return 0;
-        headers[header_count++] = authorization;
+        headers[header_count++] =
+            (chttp_header){"Authorization", authorization};
     }
     if (idempotency_key) {
         written = snprintf(idempotency, sizeof(idempotency),
-                           "Idempotency-Key: %s", idempotency_key);
+                           "%s", idempotency_key);
         if (written <= 0 || (size_t)written >= sizeof(idempotency)) return 0;
-        headers[header_count++] = idempotency;
+        headers[header_count++] =
+            (chttp_header){"Idempotency-Key", idempotency};
     }
-    response = turbo_http_request_sync(
-        g_http_client, method, url, headers, header_count, body,
-        body ? strlen(body) : 0u);
-    if (response && response->error_code == HTTP_ERROR_NONE) {
-        size_t copy_size = response->body_len;
-        status = response->status_code;
+    options.connection_uri = "tcp://127.0.0.1:19091";
+    options.authority = "127.0.0.1:19091";
+    options.target = path;
+    options.headers = header_count ? headers : NULL;
+    options.header_count = header_count;
+    options.body = body;
+    options.body_size = body ? strlen(body) : 0u;
+    options.timeout_ms = TEST_HTTP_IO_TIMEOUT_MS;
+    if (method == CHTTP_METHOD_GET) {
+        request_status = chttp_get(&g_http_client, &options, &response,
+                                   &error);
+    } else if (method == CHTTP_METHOD_POST) {
+        request_status = chttp_post(&g_http_client, &options, &response,
+                                    &error);
+    } else {
+        request_status = SALTS_EINVAL;
+    }
+    if (request_status == SALTS_OK) {
+        size_t copy_size = response.body_size;
+        status = (int)response.status_code;
         if (copy_size >= response_capacity) copy_size = response_capacity - 1u;
-        if (copy_size > 0u && response->body) {
-            memcpy(response_body, response->body, copy_size);
+        if (copy_size > 0u && response.body) {
+            memcpy(response_body, response.body, copy_size);
         }
         response_body[copy_size] = '\0';
     }
-    if (response) http_response_free(response);
+    chttp_response_destroy(&response);
     return status;
 }
 
 void setUp(void) {
-    turbo_http_options_t http_options;
-    test_iris_flowmq_peer_config_t iris_flowmq_config;
+    chttp_client_config http_config;
+    int http_status;
+    test_iris_control_peer_config_t iris_control_config;
     memset(&g_room_service, 0, sizeof(g_room_service));
     memset(&g_worker, 0, sizeof(g_worker));
     memset(&g_sfu, 0, sizeof(g_sfu));
     memset(&g_iris, 0, sizeof(g_iris));
     memset(&g_iris_proxy, 0, sizeof(g_iris_proxy));
-    memset(&g_fmq_proxy, 0, sizeof(g_fmq_proxy));
+    memset(&g_control_ws_proxy, 0, sizeof(g_control_ws_proxy));
     g_router_bind_port = TEST_ROUTER_PORT;
     g_caller_transport = NULL;
-    g_http_client = NULL;
-    g_iris_flowmq_peer = NULL;
-    g_saved_ca_file = copy_environment("TURBONET_TLS_CA_FILE");
-    g_saved_ca_path = copy_environment("TURBONET_TLS_CA_PATH");
-    check_equal((int)(set_environment("TURBONET_TLS_CA_FILE",
-                           ROOM_SERVICE_TEST_TLS_CERT_PATH)), (int)(0));
-    check_equal((int)(set_environment("TURBONET_TLS_CA_PATH", NULL)), (int)(0));
+    memset(&g_http_client, 0, sizeof(g_http_client));
+    g_http_client_initialized = 0;
+    g_iris_control_peer = NULL;
     check_equal((int)(test_iris_server_start(&g_iris)), (int)(0));
     check_equal((int)(test_iris_proxy_start(&g_iris_proxy, TEST_IRIS_TLS_PORT,
                                  TEST_IRIS_BACKEND_TLS_PORT)), (int)(0));
-    check_equal((int)(turbo_http_options_init(&http_options,
-                                                  sizeof(http_options))), (int)(TURBO_OK));
-    http_options.timeout_ms = TEST_HTTP_IO_TIMEOUT_MS;
-    http_options.follow_redirects = 0;
-    check_equal((int)(turbo_http_create_sync(&http_options,
-                                                 &g_http_client)), (int)(TURBO_OK));
+    http_config = test_http_client_config();
+    http_status = chttp_client_init(&g_http_client, &http_config);
+    check_equal((int)http_status, (int)SALTS_OK);
+    g_http_client_initialized = http_status == SALTS_OK;
     DataBindError err = DATA_BIND_ERROR_INIT;
     check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
-    memset(&iris_flowmq_config, 0, sizeof(iris_flowmq_config));
-    iris_flowmq_config.port = TEST_IRIS_FLOWMQ_PORT;
-    iris_flowmq_config.query = process_peer_query;
-    iris_flowmq_config.completion = process_peer_completion;
-    iris_flowmq_config.event = process_peer_event;
-    iris_flowmq_config.context = &g_iris;
-    check_equal(test_iris_flowmq_peer_start(&iris_flowmq_config,
-                                            &g_iris_flowmq_peer),
-                TURBO_OK);
+    memset(&iris_control_config, 0, sizeof(iris_control_config));
+    iris_control_config.port = TEST_IRIS_CONTROL_PORT;
+    iris_control_config.query = process_peer_query;
+    iris_control_config.completion = process_peer_completion;
+    iris_control_config.event = process_peer_event;
+    iris_control_config.context = &g_iris;
+    check_equal(test_iris_control_peer_start(&iris_control_config,
+                                            &g_iris_control_peer),
+                SALTS_OK);
 
-    /* temp config for room_service with FMQ and durable Iris outbox enabled */
+    /* temp config for room_service with control WebSocket and durable Iris outbox enabled */
     snprintf(g_cfg_path, sizeof(g_cfg_path), "%s/rs_dispatch_%d.toml",
              TEST_BIN_DIR, ++g_seq);
     snprintf(g_store_path, sizeof(g_store_path), "%s/rs_dispatch_%d.yaml",
@@ -2119,14 +2242,14 @@ void setUp(void) {
     remove(g_orphan_resume_path);
 
     check_true(spawn_room_service());
-    proc_sleep(2000); /* let room_service bind HTTP + FMQ */
+    proc_sleep(2000); /* let room_service bind HTTP + control WebSocket */
 
     {
         static const char readiness_probe[] =
             "{\"data\":{\"capability\":\"ivr\"}}";
         char response[TEST_HTTP_RESPONSE_CAPACITY];
         int status = facade_request(
-            HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+            CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
             "reconcile-readiness-probe", readiness_probe, response,
             sizeof(response));
         if (status == 0) {
@@ -2154,7 +2277,7 @@ void setUp(void) {
                               memory_order_release);
         for (int attempt = 0; attempt < TEST_IRIS_DELIVERY_ATTEMPTS; ++attempt) {
             status = facade_request(
-                HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+                CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
                 "reconcile-readiness-probe", readiness_probe, response,
                 sizeof(response));
             if (status == 400) break;
@@ -2177,7 +2300,7 @@ void setUp(void) {
         int status = 0;
         for (int attempt = 0; attempt < TEST_IRIS_DELIVERY_ATTEMPTS; ++attempt) {
             status = facade_request(
-                HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+                CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
                 "worker-reconcile-readiness-probe", readiness_probe, response,
                 sizeof(response));
             if (status == 400) break;
@@ -2195,24 +2318,21 @@ void tearDown(void) {
     }
     kill_child(&g_worker);
     kill_child(&g_room_service);
-    test_iris_flowmq_peer_stop(g_iris_flowmq_peer);
-    g_iris_flowmq_peer = NULL;
+    test_iris_control_peer_stop(g_iris_control_peer);
+    g_iris_control_peer = NULL;
     if (g_caller_transport) {
         ivr_whip_transport_destroy(g_caller_transport);
         g_caller_transport = NULL;
     }
     kill_child(&g_sfu);
-    test_iris_proxy_stop(&g_fmq_proxy);
-    turbo_http_destroy(g_http_client);
-    g_http_client = NULL;
+    test_iris_proxy_stop(&g_control_ws_proxy);
+    if (g_http_client_initialized) {
+        (void)chttp_client_destroy(&g_http_client,
+                                   TEST_HTTP_IO_TIMEOUT_MS);
+        g_http_client_initialized = 0;
+    }
     test_iris_proxy_stop(&g_iris_proxy);
     test_iris_server_stop(&g_iris);
-    (void)set_environment("TURBONET_TLS_CA_FILE", g_saved_ca_file);
-    (void)set_environment("TURBONET_TLS_CA_PATH", g_saved_ca_path);
-    free(g_saved_ca_file);
-    free(g_saved_ca_path);
-    g_saved_ca_file = NULL;
-    g_saved_ca_path = NULL;
     remove(g_cfg_path);
     remove(g_store_path);
     snprintf(sqlite_aux_path, sizeof(sqlite_aux_path), "%s-wal",
@@ -2311,13 +2431,15 @@ static int spawn_real_worker(void) {
     char sfu_base_url[64];
     char speech_url[64];
     environment_override_t overrides[] = {
-        {"IVR_FMQ_USE_TLS", "1", NULL},
-        {"IVR_FMQ_CA_FILE", ROOM_SERVICE_TEST_TLS_CERT_PATH, NULL},
-        {"IVR_FMQ_CERT_FILE", ROOM_SERVICE_TEST_TLS_CERT_PATH, NULL},
-        {"IVR_FMQ_KEY_FILE", ROOM_SERVICE_TEST_TLS_KEY_PATH, NULL},
-        {"IVR_FMQ_SERVER_NAME", "localhost", NULL},
+        {"IVR_CONTROL_USE_TLS", "1", NULL},
+        {"IVR_CONTROL_CA_FILE", ROOM_SERVICE_TEST_TLS_CERT_PATH, NULL},
+        {"IVR_CONTROL_CERT_FILE", ROOM_SERVICE_TEST_TLS_CERT_PATH, NULL},
+        {"IVR_CONTROL_KEY_FILE", ROOM_SERVICE_TEST_TLS_KEY_PATH, NULL},
+        {"IVR_CONTROL_SERVER_NAME", "localhost", NULL},
         {"IVR_OPENAI_BASE_URL", speech_url, NULL},
         {"OPENAI_API_KEY", TEST_SPEECH_TOKEN, NULL},
+        {"IVR_OPENAI_CA_FILE", ROOM_SERVICE_TEST_TLS_CERT_PATH, NULL},
+        {"IVR_OPENAI_SERVER_NAME", "localhost", NULL},
         {"IVR_OPENAI_TIMEOUT_MS", "5000", NULL},
         {"IVR_SFU_BASE_URL", sfu_base_url, NULL},
         {"IVR_SFU_MEDIA_TOKEN", TEST_SFU_MEDIA_TOKEN, NULL},
@@ -2327,7 +2449,7 @@ static int spawn_real_worker(void) {
     const size_t override_count = sizeof(overrides) / sizeof(overrides[0]);
     size_t prepared_count = 0u;
     const char *args[] = {
-        "--worker-id", "ivr-worker-dispatch", "--router-host", "localhost",
+        "--worker-id", "ivr-worker-dispatch", "--router-host", "127.0.0.1",
         "--router-port", router_port, "--health-host", "127.0.0.1",
         "--health-port", health_port, "--max-sessions", "4",
         "--heartbeat-ms", "500", "--lease-ms", "2000", NULL};
@@ -2340,7 +2462,7 @@ static int spawn_real_worker(void) {
                  "http://127.0.0.1:%d", TEST_SFU_PORT) > 0;
     values_valid =
         values_valid &&
-        snprintf(speech_url, sizeof(speech_url), "https://localhost:%d",
+        snprintf(speech_url, sizeof(speech_url), "https://127.0.0.1:%d",
                  TEST_IRIS_BACKEND_TLS_PORT) > 0;
     int executable_length = snprintf(executable, sizeof(executable), "%s/%s",
                                      TEST_BIN_DIR, IVR_WORKER_BIN);
@@ -2400,7 +2522,7 @@ static int wait_provider_ready(void) {
     int status = 0;
     for (int attempt = 0; attempt < TEST_IRIS_DELIVERY_ATTEMPTS; ++attempt) {
         status = facade_request(
-            HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+            CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
             "fault-readiness-probe", readiness_probe, response,
             sizeof(response));
         if (status == 400) return 1;
@@ -2414,7 +2536,7 @@ static int wait_rebound_ready_with_attempts(char *response,
                                             int attempts) {
     int status = 0;
     for (int attempt = 0; attempt < attempts; ++attempt) {
-        status = facade_request(HTTP_GET, "/metrics", NULL, NULL, NULL,
+        status = facade_request(CHTTP_METHOD_GET, "/metrics", NULL, NULL, NULL,
                                 response, response_capacity);
         if (status == 200 &&
             strstr(response,
@@ -2438,7 +2560,7 @@ static int wait_rebound_ready(char *response, size_t response_capacity) {
 
 static int wait_reconcile_ready(char *response, size_t response_capacity) {
     for (int attempt = 0; attempt < TEST_IRIS_DELIVERY_ATTEMPTS; ++attempt) {
-        int status = facade_request(HTTP_GET, "/metrics", NULL, NULL, NULL,
+        int status = facade_request(CHTTP_METHOD_GET, "/metrics", NULL, NULL, NULL,
                                     response, response_capacity);
         if (status == 200 &&
             strstr(response,
@@ -2472,7 +2594,7 @@ static int submit_fault_dialog_start(const char *command_id,
         "\"callGeneration\":1,\"operationGeneration\":1}}",
         command_id, dialog_id, dialog_id);
     if (written <= 0 || (size_t)written >= sizeof(body)) return 0;
-    return facade_request(HTTP_POST, "/provider/v1/commands",
+    return facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                           TEST_PROVIDER_TOKEN, command_id, body, response,
                           response_capacity);
 }
@@ -2482,7 +2604,7 @@ void test_worker_exit_before_dispatch_rejects_without_reservation(void) {
     int status = 0;
     check_true(file_contains(g_wk_out, "probe sync acknowledged"));
     kill_child(&g_worker);
-    /* The ROUTER disconnect callback is copied onto the bridge owner queue.
+    /* The server disconnect callback is copied onto the bridge owner queue.
        Let that bounded owner-side event invalidate the route before proving
        that no command reservation can be created. */
     proc_sleep(500u);
@@ -2563,7 +2685,7 @@ void test_room_service_restart_rebinds_active_worker_dialog(void) {
     int expected_page_calls_before_restart;
     int status = 0;
 
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-start",
                             TEST_PROCESS_START_COMMAND, response,
                             sizeof(response))), (int)(202));
@@ -2583,7 +2705,7 @@ void test_room_service_restart_rebinds_active_worker_dialog(void) {
 
     for (int attempt = 0; attempt < TEST_IRIS_DELIVERY_ATTEMPTS; ++attempt) {
         status = facade_request(
-            HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+            CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
             "restart-reconcile-readiness-probe", readiness_probe, response,
             sizeof(response));
         if (status == 503 &&
@@ -2612,7 +2734,7 @@ void test_room_service_restart_rebinds_active_worker_dialog(void) {
     check_not_null(strstr(
         response, "turbo_room_service_iris_reconcile_inventory_pages_total "));
 
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
                             sizeof(response))), (int)(202));
@@ -2636,8 +2758,11 @@ void test_room_service_restart_rebinds_active_worker_dialog(void) {
     }
     check_equal((int)(atomic_load_explicit(&g_iris.completion_valid,
                                 memory_order_acquire)), (int)(1));
-    check_equal((int)(atomic_load_explicit(&g_iris.playback_event_valid,
-                                memory_order_acquire)), (int)(1));
+    if (!atomic_load_explicit(&g_iris.playback_event_valid,
+                              memory_order_acquire)) {
+        fprintf(stderr, "invalid playback event:\n%s\n", g_iris.event_body);
+        check(0, "%s", ("playback event did not satisfy provider contract"));
+    }
 }
 
 static void run_orphan_close_crash_window(const char *mode,
@@ -2659,7 +2784,7 @@ static void run_orphan_close_crash_window(const char *mode,
                              memory_order_acquire) + 1;
     for (int attempt = 0; attempt < TEST_IRIS_DELIVERY_ATTEMPTS; ++attempt) {
         start_status = facade_request(
-            HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+            CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
             "command-process-start", TEST_PROCESS_START_COMMAND, response,
             sizeof(response));
         if (start_status == 202) break;
@@ -2726,7 +2851,7 @@ void test_reconcile_orphan_close_recovers_when_room_service_dies_after_action(
                                   "probe orphan close after applied id=", 0);
 }
 
-void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
+void test_control_ws_worker_partition_rebinds_and_deduplicates_media_command(void) {
     char response[TEST_HTTP_RESPONSE_CAPACITY];
     int completion_target;
     int event_target;
@@ -2736,7 +2861,7 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
     kill_child(&g_room_service);
     g_router_bind_port = TEST_ROUTER_BACKEND_PORT;
     check_true(write_room_service_config(0));
-    check_equal((int)(test_iris_proxy_start(&g_fmq_proxy, TEST_ROUTER_PORT,
+    check_equal((int)(test_iris_proxy_start(&g_control_ws_proxy, TEST_ROUTER_PORT,
                                  TEST_ROUTER_BACKEND_PORT)), (int)(0));
     check_true(spawn_room_service());
     check_true(spawn_probe_worker("ivr-worker-dispatch", "media-runtime"));
@@ -2745,7 +2870,7 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
     completion_target =
         atomic_load_explicit(&g_iris.completion_calls,
                              memory_order_acquire) + 1;
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-start",
                             TEST_PROCESS_START_COMMAND, response,
                             sizeof(response))), (int)(202));
@@ -2753,11 +2878,11 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
         &g_iris.completion_calls, completion_target,
         TEST_IRIS_DELIVERY_ATTEMPTS, TEST_IRIS_DELIVERY_POLL_MS));
 
-    test_iris_proxy_set_available(&g_fmq_proxy, 0);
+    test_iris_proxy_set_available(&g_control_ws_proxy, 0);
     proc_sleep(16000u); /* worker-advertised lease is 15 seconds */
     for (int attempt = 0; attempt < 3; ++attempt) {
         partition_status = facade_request(
-            HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+            CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
             "command-process-play", TEST_PROCESS_PLAY_COMMAND, response,
             sizeof(response));
         if (partition_status != 0) break;
@@ -2765,15 +2890,17 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
     check_equal((int)(partition_status), (int)(503));
     check_false(file_contains(g_wk_out, "probe media play count=1"));
 
-    test_iris_proxy_set_available(&g_fmq_proxy, 1);
-    /* FlowMQ may already be in the 8-16 second jittered reconnect step after
+    test_iris_proxy_set_available(&g_control_ws_proxy, 1);
+    /* CHTTP H1 WebSocket may already be in the 8-16 second jittered reconnect step after
        the 16-second partition. Cover that step plus the reconcile exchange. */
     if (!wait_rebound_ready_with_attempts(
             response, sizeof(response),
-            TEST_FMQ_PARTITION_RECOVERY_ATTEMPTS)) {
-        print_file_on_failure("flowmq_partition_room_service", g_rs_out);
-        print_file_on_failure("flowmq_partition_worker", g_wk_out);
-        check(0, "%s", ("FlowMQ worker partition did not rebind dialog"));
+            TEST_CONTROL_WS_PARTITION_RECOVERY_ATTEMPTS)) {
+        fprintf(stderr, "control WS partition metrics response:\n%s\n",
+                response);
+        print_file_on_failure("control_ws_partition_room_service", g_rs_out);
+        print_file_on_failure("control_ws_partition_worker", g_wk_out);
+        check(0, "%s", ("CHTTP H1 WebSocket worker partition did not rebind dialog"));
     }
 
     completion_target =
@@ -2781,7 +2908,7 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
                              memory_order_acquire) + 1;
     event_target = atomic_load_explicit(&g_iris.event_calls,
                                         memory_order_acquire) + 1;
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
                             sizeof(response))), (int)(202));
@@ -2795,7 +2922,7 @@ void test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(void) {
         g_wk_out, "probe media play count=1", TEST_PROBE_LOG_ATTEMPTS,
         TEST_PROBE_LOG_POLL_MS));
 
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
                             sizeof(response))), (int)(200));
@@ -2824,7 +2951,7 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
     kill_child(&g_room_service);
     g_router_bind_port = TEST_ROUTER_BACKEND_PORT;
     check_true(write_room_service_config(1));
-    check_equal((int)(test_iris_proxy_start(&g_fmq_proxy, TEST_ROUTER_PORT,
+    check_equal((int)(test_iris_proxy_start(&g_control_ws_proxy, TEST_ROUTER_PORT,
                                  TEST_ROUTER_BACKEND_PORT)), (int)(0));
     check_true(spawn_room_service());
     if (!provision_room_service_room()) {
@@ -2836,7 +2963,11 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
     check_true(write_sfu_config());
     check_true(spawn_sfu());
     check_true(provision_sfu_room());
-    check_true(start_sfu_caller_transport());
+    if (!start_sfu_caller_transport()) {
+        print_file_on_failure("caller_transport_room_service", g_rs_out);
+        print_file_on_failure("caller_transport_sfu", g_sfu_out);
+        check(0, "%s", ("SFU caller ICE/DTLS transport did not connect"));
+    }
     check_true(provision_sfu_caller_subscription());
     check_true(spawn_real_worker());
     if (!wait_file_contains(g_wk_out, "worker.sync acknowledged", 200, 50)) {
@@ -2853,7 +2984,7 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
 
     {
         int status = facade_request(
-            HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+            CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
             "command-process-start", TEST_PROCESS_START_COMMAND, response,
             sizeof(response));
         if (status != 202) {
@@ -2890,7 +3021,7 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
         atomic_load_explicit(&g_iris.completion_calls, memory_order_acquire) + 1;
     event_target =
         atomic_load_explicit(&g_iris.event_calls, memory_order_acquire) + 1;
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
                             sizeof(response))), (int)(202));
@@ -2900,6 +3031,13 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
     check_true(wait_atomic_int_at_least(
         &g_iris.event_calls, event_target, TEST_IRIS_DELIVERY_ATTEMPTS,
         TEST_IRIS_DELIVERY_POLL_MS));
+    if (!atomic_load_explicit(&g_iris.playback_event_valid,
+                              memory_order_acquire)) {
+        fprintf(stderr, "invalid live playback ProviderEvent=%s\n",
+                g_iris.event_body);
+        print_file_on_failure("live_playback_worker", g_wk_out);
+        print_file_on_failure("live_playback_room_service", g_rs_out);
+    }
     check_equal((int)(atomic_load_explicit(&g_iris.playback_event_valid,
                                 memory_order_acquire)), (int)(1));
     check_equal((int)(atomic_load_explicit(&g_iris.speech_tts_calls,
@@ -2940,7 +3078,7 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
 
     /* The durable ledger must replay the terminal outcome without repeating
        the remote speech side effect or emitting another terminal fact. */
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response,
                             sizeof(response))), (int)(200));
@@ -2974,6 +3112,30 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
     if (!wait_atomic_int_at_least(
             &g_iris.rtc_reconnected_calls, 1,
             TEST_RTC_TRANSITION_ATTEMPTS, TEST_RTC_TRANSITION_POLL_MS)) {
+        char metrics[16384] = {0};
+        char stats[4096] = {0};
+        (void)http_request_raw("127.0.0.1", TEST_REAL_WORKER_HEALTH_PORT,
+                               "GET", "/metrics", NULL, NULL, metrics,
+                               sizeof(metrics));
+        (void)http_post_command(
+            "127.0.0.1", TEST_SFU_PORT, TEST_SFU_CTRL_TOKEN,
+            "{\"type\":\"get_room_stats\",\"room_id\":\"room-42\"}",
+            stats, sizeof(stats));
+        fprintf(stderr,
+                "participant recovery events disconnected=%d reconnected=%d "
+                "exhausted=%d generations=%llu/%llu\nmetrics:\n%s\n"
+                "SFU stats:\n%s\n",
+                atomic_load_explicit(&g_iris.rtc_disconnected_calls,
+                                     memory_order_acquire),
+                atomic_load_explicit(&g_iris.rtc_reconnected_calls,
+                                     memory_order_acquire),
+                atomic_load_explicit(&g_iris.rtc_retry_exhausted_calls,
+                                     memory_order_acquire),
+                atomic_load_explicit(&g_iris.rtc_disconnected_generation,
+                                     memory_order_acquire),
+                atomic_load_explicit(&g_iris.rtc_reconnected_generation,
+                                     memory_order_acquire),
+                metrics, stats);
         print_file_on_failure("secure_room_service", g_rs_out);
         print_file_on_failure("real_ivr_worker", g_wk_out);
         print_file_on_failure("live_sfu", g_sfu_out);
@@ -3105,13 +3267,13 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
                              memory_order_acquire));
 
     /* Reconcile the recovered media fact through a fresh RoomService. The
-       active slot remains worker-owned; FlowMQ reconnect advances its epoch,
+       active slot remains worker-owned; CHTTP H1 WebSocket reconnect advances its epoch,
        and exact expected/inventory rebind must finish before READY. */
     kill_child(&g_room_service);
     check_true(spawn_room_service());
     if (!wait_rebound_ready_with_attempts(
             response, sizeof(response),
-            TEST_FMQ_PARTITION_RECOVERY_ATTEMPTS)) {
+            TEST_CONTROL_WS_PARTITION_RECOVERY_ATTEMPTS)) {
         fprintf(stderr, "whole-SFU reconcile metrics response:\n%s\n",
                 response);
         print_file_on_failure("whole_sfu_restarted_room_service", g_rs_out);
@@ -3169,7 +3331,7 @@ void test_real_worker_recovers_live_transport_and_releases_media_resources(void)
     check_equal((int)(atomic_load_explicit(&g_iris.event_calls, memory_order_acquire)), (int)(event_target));
 }
 
-void test_iris_flowmq_completion_and_event(void) {
+void test_iris_control_completion_and_event(void) {
     static const char create_room_command[] =
         "{"
         "\"schemaVersion\":3,\"commandId\":\"command-room-create\","
@@ -3354,7 +3516,7 @@ void test_iris_flowmq_completion_and_event(void) {
     int request_status;
 
     request_status = facade_request(
-        HTTP_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
+        CHTTP_METHOD_POST, "/provider/v1/commands", TEST_PROVIDER_TOKEN,
         "command-room-create", create_room_command, response,
         sizeof(response));
     if (request_status != 200) {
@@ -3365,39 +3527,39 @@ void test_iris_flowmq_completion_and_event(void) {
     check_not_null(strstr(response, "\"terminalStatus\":\"succeeded\""));
     check_not_null(strstr(response, "\"eventType\":\"provider.conference.created\""));
     check_not_null(strstr(response, "\"duplicate\":false"));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-create",
                             retry_create_room_command, response,
                             sizeof(response))), (int)(200));
     check_not_null(strstr(response, "\"duplicate\":true"));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-join",
                             join_room_command, response, sizeof(response))), (int)(200));
     check_not_null(strstr(response, "\"eventType\":\"provider.connection.joined\""));
     check_not_null(strstr(response, "\"callId\":\"call-process\""));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN,
                             "command-room-destroy-nonempty",
                             destroy_nonempty_room_command, response,
                             sizeof(response))), (int)(200));
     check_not_null(strstr(response, "\"terminalStatus\":\"failed\""));
     check_not_null(strstr(response, "\"code\":\"ROOM_NOT_EMPTY\""));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-unjoin",
                             unjoin_room_command, response, sizeof(response))), (int)(200));
     check_not_null(strstr(response, "\"eventType\":\"provider.connection.unjoined\""));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-unjoin-again",
                             unjoin_room_again_command, response,
                             sizeof(response))), (int)(200));
     check_not_null(strstr(response, "\"terminalStatus\":\"succeeded\""));
     check_not_null(strstr(response, "\"alreadyAbsent\":true"));
     check_not_null(strstr(response, "\"callGeneration\":1"));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-destroy",
                             destroy_room_command, response, sizeof(response))), (int)(200));
     check_not_null(strstr(response, "\"eventType\":\"provider.conference.destroyed\""));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-room-destroy-again",
                             destroy_room_again_command, response,
                             sizeof(response))), (int)(200));
@@ -3405,26 +3567,26 @@ void test_iris_flowmq_completion_and_event(void) {
     check_not_null(strstr(response, "\"alreadyAbsent\":true"));
     check_not_null(strstr(response, "\"roomGeneration\":1"));
 
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-start",
                             TEST_PROCESS_START_COMMAND, response, sizeof(response))), (int)(202));
     check_not_null(strstr(response, "\"disposition\":\"accepted\""));
     check_not_null(strstr(response, "\"workerId\":\"iris-worker-process\""));
 
     check_true(wait_iris_deliveries(1, 0));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-play",
                             TEST_PROCESS_PLAY_COMMAND, response, sizeof(response))), (int)(202));
     check_true(wait_iris_deliveries(2, 1));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-collect",
                             collect_command, response, sizeof(response))), (int)(202));
     check_true(wait_iris_deliveries(3, 3));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-cancel",
                             cancel_command, response, sizeof(response))), (int)(202));
     check_true(wait_iris_deliveries(4, 3));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN, "command-process-close",
                             close_command, response, sizeof(response))), (int)(202));
     completed = wait_iris_deliveries(5, 3);
@@ -3464,7 +3626,7 @@ void test_iris_flowmq_completion_and_event(void) {
                            "media runtime completed command-process-close",
                            TEST_PROBE_LOG_ATTEMPTS,
                            TEST_PROBE_LOG_POLL_MS));
-    check_equal((int)(facade_request(HTTP_POST, "/provider/v1/commands",
+    check_equal((int)(facade_request(CHTTP_METHOD_POST, "/provider/v1/commands",
                             TEST_PROVIDER_TOKEN,
                             "command-process-close-again",
                             close_again_command, response,
@@ -3478,7 +3640,7 @@ void test_iris_flowmq_completion_and_event(void) {
     check_not_null(strstr(response, "\"alreadyAbsent\":true"));
     check_not_null(strstr(response, "\"duplicate\":false"));
 
-    check_equal((int)(facade_request(HTTP_GET, "/metrics", NULL, NULL, NULL, response,
+    check_equal((int)(facade_request(CHTTP_METHOD_GET, "/metrics", NULL, NULL, NULL, response,
                             sizeof(response))), (int)(200));
     check_not_null(strstr(
         response, "turbo_room_service_iris_completion_success_total "));
@@ -3509,7 +3671,7 @@ spec("test_ivr_dispatch_processes") {
   it("test_room_service_restart_rebinds_active_worker_dialog") { test_room_service_restart_rebinds_active_worker_dialog(); };
   it("test_reconcile_orphan_close_recovers_when_room_service_dies_before_action") { test_reconcile_orphan_close_recovers_when_room_service_dies_before_action(); };
   it("test_reconcile_orphan_close_recovers_when_room_service_dies_after_action") { test_reconcile_orphan_close_recovers_when_room_service_dies_after_action(); };
-  it("test_flowmq_worker_partition_rebinds_and_deduplicates_media_command") { test_flowmq_worker_partition_rebinds_and_deduplicates_media_command(); };
+  it("test_control_ws_worker_partition_rebinds_and_deduplicates_media_command") { test_control_ws_worker_partition_rebinds_and_deduplicates_media_command(); };
   it("test_real_worker_recovers_live_transport_and_releases_media_resources") { test_real_worker_recovers_live_transport_and_releases_media_resources(); };
-  it("test_iris_flowmq_completion_and_event") { test_iris_flowmq_completion_and_event(); };
+  it("test_iris_control_completion_and_event") { test_iris_control_completion_and_event(); };
 }

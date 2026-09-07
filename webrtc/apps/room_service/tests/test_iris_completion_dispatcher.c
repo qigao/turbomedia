@@ -1,12 +1,8 @@
 #include "iris_completion_dispatcher.h"
 
 #include <tinytest.h>
-#include <turbo_thread.h>
-#include <iris/iris_app.h>
-#include <iris/server.h>
-#include <platform.h>
-#include <turbo_coro_context.h>
-#include <turbo_coro_socket.h>
+#include <chttp/chttp.h>
+#include <salts_thread.h>
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -28,49 +24,44 @@ enum {
         sizeof(((ivr_media_event_t *)0)->event_id)
 };
 
-typedef enum test_tls_server_state_e {
-    TEST_TLS_SERVER_STARTING = 0,
-    TEST_TLS_SERVER_RUNNING,
-    TEST_TLS_SERVER_FAILED,
-    TEST_TLS_SERVER_STOPPED
-} test_tls_server_state_t;
-
 typedef struct test_tls_server_s {
-    iris_app_t *app;
-    coro_context_t *context;
-    coro_socket_t *listener;
-    turbo_thread_t thread;
-    turbo_mutex_t mutex;
-    turbo_cond_t lifecycle;
-    test_tls_server_state_t state;
-    int thread_started;
+    chttp_server server;
     atomic_int calls;
     atomic_int request_valid;
     char body[TEST_TLS_BODY_CAPACITY];
 } test_tls_server_t;
 
-static test_tls_server_t *g_test_tls_server = NULL;
+static native_io_backend_kind test_tls_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
 
-static void test_tls_event_handler(Req *req, Res *res) {
-    test_tls_server_t *server = g_test_tls_server;
+static int test_tls_event_handler(
+    void *user, const chttp_server_request_view *req,
+    chttp_server_response *res) {
+    test_tls_server_t *server = (test_tls_server_t *)user;
     const char *authorization;
     const char *session_id;
     int valid;
 
     if (!server) {
-        reply(res, 500, "application/json", "{}", 2u);
-        return;
+        return chttp_server_reply(res, 500u, "application/json", "{}", 2u);
     }
-    authorization = get_headers(req, "Authorization");
-    session_id = get_params(req, "sessionId");
+    authorization = chttp_server_request_header(req, "Authorization");
+    session_id = chttp_server_request_param(req, "sessionId");
     valid = authorization && session_id &&
                 strcmp(authorization, "Bearer provider-token") == 0 &&
                 strcmp(session_id, "session-a") == 0 &&
-                req->body && req->body_len < sizeof(server->body);
+                req->body && req->body_size < sizeof(server->body);
 
     if (valid) {
-        memcpy(server->body, req->body, req->body_len);
-        server->body[req->body_len] = '\0';
+        memcpy(server->body, req->body, req->body_size);
+        server->body[req->body_size] = '\0';
         valid = strstr(server->body, "\"eventId\":\"event-tls\"") != NULL &&
                 strstr(server->body, "\"source\":\"turbomedia\"") != NULL &&
                 strstr(server->body,
@@ -81,103 +72,68 @@ static void test_tls_event_handler(Req *req, Res *res) {
     }
     atomic_store(&server->request_valid, valid ? 1 : 0);
     atomic_fetch_add(&server->calls, 1);
-    reply(res, valid ? 202 : 400, "application/json",
-          valid ? "{}" : "{\"error\":\"invalid request\"}",
-          valid ? 2u : sizeof("{\"error\":\"invalid request\"}") - 1u);
-}
-
-static void test_tls_server_thread(void *context) {
-    test_tls_server_t *server = (test_tls_server_t *)context;
-    turbo_tls_server_config_t tls;
-    coro_context_t *coro_context = coro_context_create(NULL);
-    coro_socket_t *listener = NULL;
-
-    memset(&tls, 0, sizeof(tls));
-    tls.size = sizeof(tls);
-    tls.cert_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
-    tls.key_file = ROOM_SERVICE_TEST_TLS_KEY_PATH;
-    tls.client_auth = TURBO_TLS_CLIENT_AUTH_NONE;
-    if (coro_context) {
-        listener = iris_server_start_tls_on(
-            server->app, coro_context, "127.0.0.1", TEST_TLS_LOOPBACK_PORT,
-            &tls);
-    }
-
-    turbo_mutex_lock(&server->mutex);
-    server->context = coro_context;
-    server->listener = listener;
-    server->state = listener ? TEST_TLS_SERVER_RUNNING : TEST_TLS_SERVER_FAILED;
-    turbo_cond_broadcast(&server->lifecycle);
-    turbo_mutex_unlock(&server->mutex);
-
-    if (listener) {
-        coro_context_set_persistent(coro_context, 1);
-        coro_context_run(coro_context, TURBO_RUN_DEFAULT);
-        coro_context_set_persistent(coro_context, 0);
-        coro_socket_destroy(listener);
-    }
-    if (coro_context) coro_context_destroy(coro_context);
-
-    turbo_mutex_lock(&server->mutex);
-    server->context = NULL;
-    server->listener = NULL;
-    server->state = TEST_TLS_SERVER_STOPPED;
-    turbo_cond_broadcast(&server->lifecycle);
-    turbo_mutex_unlock(&server->mutex);
+    return chttp_server_reply(
+        res, valid ? 202u : 400u, "application/json",
+        valid ? "{}" : "{\"error\":\"invalid request\"}",
+        valid ? 2u : sizeof("{\"error\":\"invalid request\"}") - 1u);
 }
 
 static int test_tls_server_start(test_tls_server_t *server) {
+    cnet_tls_server_config tls = {
+        .size = sizeof(tls),
+        .cert_file = ROOM_SERVICE_TEST_TLS_CERT_PATH,
+        .key_file = ROOM_SERVICE_TEST_TLS_KEY_PATH,
+        .client_auth = CNET_TLS_CLIENT_AUTH_NONE
+    };
+    chttp_server_config config = {
+        .host = "::1",
+        .port = TEST_TLS_LOOPBACK_PORT,
+        .backlog = 4u,
+        .network = {
+            .backend = test_tls_backend(),
+            .connection_capacity = 4u,
+            .command_capacity = 8u,
+            .request_capacity = 8u,
+            .completion_batch_capacity = 4u,
+            .event_capacity = 8u,
+            .max_send_bytes = 16u * 1024u,
+            .receive_buffer_bytes = 16u * 1024u,
+            .connect_timeout_ms = 5000u,
+            .read_timeout_ms = 5000u,
+            .write_timeout_ms = 5000u,
+            .tls_io_buffer_bytes = CNET_TLS_MIN_IO_BUFFER_BYTES,
+            .tls_handshake_timeout_ms = 5000u
+        },
+        .route_capacity = 2u,
+        .max_route_param_count = 2u,
+        .max_route_param_bytes = 256u,
+        .max_target_bytes = 1024u,
+        .max_header_count = 16u,
+        .max_header_bytes = 8192u,
+        .max_request_body_bytes = TEST_TLS_BODY_CAPACITY,
+        .max_response_header_count = 8u,
+        .max_response_header_bytes = 4096u,
+        .max_response_body_bytes = 1024u,
+        .poll_slice_ms = 5u,
+        .tls = &tls,
+        .buffer_capacity_bytes = 128u * 1024u
+    };
     memset(server, 0, sizeof(*server));
-    server->app = iris_app_create();
-    if (!server->app) return -1;
-    turbo_mutex_init(&server->mutex);
-    turbo_cond_init(&server->lifecycle);
-    server->state = TEST_TLS_SERVER_STARTING;
-    g_test_tls_server = server;
-    iris_app_post(server->app, "/v1/sessions/:sessionId/events",
-                  test_tls_event_handler);
-    if (turbo_thread_create(&server->thread, test_tls_server_thread, server) !=
-        0) {
-        g_test_tls_server = NULL;
-        turbo_cond_destroy(&server->lifecycle);
-        turbo_mutex_destroy(&server->mutex);
-        iris_app_destroy(server->app);
-        server->app = NULL;
+    if (chttp_server_init(&server->server, &config) != SALTS_OK) return -1;
+    if (chttp_server_post(&server->server,
+                          "/v1/sessions/:sessionId/events",
+                          test_tls_event_handler, server) != SALTS_OK ||
+        chttp_server_start(&server->server) != SALTS_OK) {
+        (void)chttp_server_destroy(&server->server);
         return -1;
     }
-    server->thread_started = 1;
-    turbo_mutex_lock(&server->mutex);
-    while (server->state == TEST_TLS_SERVER_STARTING) {
-        turbo_cond_wait(&server->lifecycle, &server->mutex);
-    }
-    turbo_mutex_unlock(&server->mutex);
-    if (server->state == TEST_TLS_SERVER_RUNNING) return 0;
-    turbo_thread_join(&server->thread);
-    server->thread_started = 0;
-    g_test_tls_server = NULL;
-    turbo_cond_destroy(&server->lifecycle);
-    turbo_mutex_destroy(&server->mutex);
-    iris_app_destroy(server->app);
-    server->app = NULL;
-    return -1;
+    return 0;
 }
 
 static void test_tls_server_stop(test_tls_server_t *server) {
-    coro_context_t *context;
-    if (!server || !server->app) return;
-    turbo_mutex_lock(&server->mutex);
-    context = server->context;
-    turbo_mutex_unlock(&server->mutex);
-    if (context) coro_context_stop(context);
-    if (server->thread_started) {
-        turbo_thread_join(&server->thread);
-        server->thread_started = 0;
-    }
-    g_test_tls_server = NULL;
-    turbo_cond_destroy(&server->lifecycle);
-    turbo_mutex_destroy(&server->mutex);
-    iris_app_destroy(server->app);
-    server->app = NULL;
+    if (!server || !server->server.impl) return;
+    (void)chttp_server_stop(&server->server, 5000u);
+    (void)chttp_server_destroy(&server->server);
 }
 
 static int test_set_environment(const char *name, const char *value) {
@@ -221,7 +177,7 @@ typedef struct test_post_s {
     char bodies[8][8192];
 } test_post_t;
 
-typedef struct test_flowmq_delivery_s {
+typedef struct test_control_ws_delivery_s {
     atomic_int completion_calls;
     atomic_int event_calls;
     int fail_first_completion;
@@ -231,7 +187,7 @@ typedef struct test_flowmq_delivery_s {
     char event_message_id[TEST_EVENT_ID_CAPACITY];
     char event_time[40];
     uint64_t ack_timeout_ms;
-} test_flowmq_delivery_t;
+} test_control_ws_delivery_t;
 
 typedef struct test_delivery_observer_s {
     iris_completion_dispatcher_t *dispatcher;
@@ -402,7 +358,7 @@ static int test_post(void *context, const char *url,
                  (int)body_size, body);
     }
     if (atomic_load(&post->blocked)) {
-        while (!atomic_load(&post->release)) turbo_sleep_ms(1u);
+        while (!atomic_load(&post->release)) salts_sleep_ms(1u);
     }
     return index < post->status_count ? post->statuses[index] : 200;
 }
@@ -412,7 +368,7 @@ static ivr_status_t test_deliver_completion(
     const ivr_media_command_result_t *result, const char *message_id,
     const char *completed_at, uint64_t completed_at_unix_ms,
     uint64_t ack_timeout_ms) {
-    test_flowmq_delivery_t *delivery = (test_flowmq_delivery_t *)context;
+    test_control_ws_delivery_t *delivery = (test_control_ws_delivery_t *)context;
     int index = atomic_load_explicit(&delivery->completion_calls,
                                      memory_order_relaxed);
     (void)completion;
@@ -437,7 +393,7 @@ static ivr_status_t test_deliver_completion(
 static ivr_status_t test_deliver_event(
     void *context, const ivr_media_event_t *event, const char *message_id,
     const char *occurred_at, uint64_t ack_timeout_ms) {
-    test_flowmq_delivery_t *delivery = (test_flowmq_delivery_t *)context;
+    test_control_ws_delivery_t *delivery = (test_control_ws_delivery_t *)context;
     (void)event;
     snprintf(delivery->event_message_id,
              sizeof(delivery->event_message_id), "%s", message_id);
@@ -496,8 +452,8 @@ static iris_completion_dispatcher_t *create_dispatcher(
     return iris_completion_dispatcher_create(&config);
 }
 
-static iris_completion_dispatcher_t *create_flowmq_dispatcher(
-    iris_media_bridge_t *bridge, test_flowmq_delivery_t *delivery,
+static iris_completion_dispatcher_t *create_control_ws_dispatcher(
+    iris_media_bridge_t *bridge, test_control_ws_delivery_t *delivery,
     int retry_attempts) {
     iris_completion_dispatcher_config_t config;
     memset(&config, 0, sizeof(config));
@@ -578,22 +534,22 @@ static ivr_media_command_result_t make_result(const char *command_id) {
 static int wait_calls(test_post_t *post, int expected) {
     for (int i = 0; i < 1000; ++i) {
         if (atomic_load(&post->calls) >= expected) return 1;
-        turbo_sleep_ms(1u);
+        salts_sleep_ms(1u);
     }
     return 0;
 }
 
 spec("Iris completion dispatcher") {
-    it("does not retry a terminal FlowMQ completion conflict") {
+    it("does not retry a terminal CHTTP H1 WebSocket completion conflict") {
         test_sender_t sender = {0};
-        test_flowmq_delivery_t delivery;
+        test_control_ws_delivery_t delivery;
         ivr_media_command_result_t result = make_result("command-conflict");
         iris_completion_dispatcher_stats_t stats;
         iris_media_bridge_t *bridge = create_bridge(&sender, 1u);
         iris_completion_dispatcher_t *dispatcher;
         memset(&delivery, 0, sizeof(delivery));
         delivery.terminal_completion_conflict = 1;
-        dispatcher = create_flowmq_dispatcher(bridge, &delivery, 5);
+        dispatcher = create_control_ws_dispatcher(bridge, &delivery, 5);
         dispatch_command(bridge, "command-conflict", "41");
         check_not_null(dispatcher);
         check_equal(iris_completion_dispatcher_start(dispatcher), 0);
@@ -602,7 +558,7 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.completion_calls) < 1; ++i) {
-            turbo_sleep_ms(1u);
+            salts_sleep_ms(1u);
         }
         iris_completion_dispatcher_stop(dispatcher);
         check_equal(atomic_load(&delivery.completion_calls), 1);
@@ -616,17 +572,17 @@ spec("Iris completion dispatcher") {
         iris_media_bridge_destroy(bridge);
     }
 
-    it("delivers stable completion and event identities through FlowMQ callbacks") {
+    it("delivers stable completion and event identities through CHTTP H1 WebSocket callbacks") {
         test_sender_t sender = {0};
-        test_flowmq_delivery_t delivery;
-        ivr_media_command_result_t result = make_result("command-flowmq");
+        test_control_ws_delivery_t delivery;
+        ivr_media_command_result_t result = make_result("command-control_ws");
         ivr_media_event_t event;
         iris_media_bridge_t *bridge = create_bridge(&sender, 1u);
         iris_completion_dispatcher_t *dispatcher;
         memset(&delivery, 0, sizeof(delivery));
         delivery.fail_first_completion = 1;
         memset(&event, 0, sizeof(event));
-        snprintf(event.event_id, sizeof(event.event_id), "event-flowmq");
+        snprintf(event.event_id, sizeof(event.event_id), "event-control_ws");
         snprintf(event.tenant_id, sizeof(event.tenant_id), "tenant-a");
         snprintf(event.provider_session_id,
                  sizeof(event.provider_session_id), "session-a");
@@ -635,8 +591,8 @@ spec("Iris completion dispatcher") {
                  "provider.media.input");
         event.sequence = 7u;
         event.occurred_at_ms = UINT64_C(2000);
-        dispatcher = create_flowmq_dispatcher(bridge, &delivery, 2);
-        dispatch_command(bridge, "command-flowmq", "41");
+        dispatcher = create_control_ws_dispatcher(bridge, &delivery, 2);
+        dispatch_command(bridge, "command-control_ws", "41");
         check_not_null(dispatcher);
         check_equal(iris_completion_dispatcher_start(dispatcher), 0);
         check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
@@ -644,7 +600,7 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.completion_calls) < 2; ++i) {
-            turbo_sleep_ms(1u);
+            salts_sleep_ms(1u);
         }
         check_equal(atomic_load(&delivery.completion_calls), 2);
         check_equal(delivery.completion_message_ids[0],
@@ -656,11 +612,11 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.event_calls) < 1; ++i) {
-            turbo_sleep_ms(1u);
+            salts_sleep_ms(1u);
         }
         iris_completion_dispatcher_stop(dispatcher);
         check_equal(atomic_load(&delivery.event_calls), 1);
-        check_equal(delivery.event_message_id, "event-flowmq");
+        check_equal(delivery.event_message_id, "event-control_ws");
         check_true(delivery.event_time[0] != '\0');
         check_equal(delivery.ack_timeout_ms, UINT64_C(250));
         iris_completion_dispatcher_destroy(dispatcher);
@@ -780,7 +736,7 @@ spec("Iris completion dispatcher") {
         check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 1));
-        turbo_sleep_ms(5u);
+        salts_sleep_ms(5u);
         check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 2));
@@ -859,7 +815,7 @@ spec("Iris completion dispatcher") {
         test_post_t post;
         test_delivery_observer_t observer;
         test_stop_context_t stop_context;
-        turbo_thread_t stop_thread;
+        salts_thread_t stop_thread;
         ivr_media_event_t first;
         ivr_media_event_t second;
         iris_media_bridge_t *bridge;
@@ -893,19 +849,19 @@ spec("Iris completion dispatcher") {
         check_equal(iris_completion_dispatcher_enqueue_event(
                          dispatcher, &second, UINT64_C(22)),
                      IVR_OK);
-        check_equal(turbo_thread_create(&stop_thread, test_stop_dispatcher,
+        check_equal(salts_thread_create(&stop_thread, test_stop_dispatcher,
                                          &stop_context),
                      0);
         for (int i = 0; i < 2000 && !atomic_load(&observer.abandoned_seen);
              ++i) {
-            turbo_sleep_ms(1u);
+            salts_sleep_ms(1u);
         }
         check_true(atomic_load(&observer.abandoned_seen));
         check_true(atomic_load(&observer.stats_read));
         check_true(atomic_load(&observer.abandoned_token) == UINT64_C(22));
         atomic_store(&post.release, 1);
-        turbo_thread_join(&stop_thread);
-        turbo_thread_destroy(&stop_thread);
+        salts_thread_join(&stop_thread);
+        salts_thread_destroy(&stop_thread);
         check_equal(atomic_load(&observer.calls), 2);
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
@@ -977,7 +933,7 @@ spec("Iris completion dispatcher") {
         iris_media_bridge_destroy(bridge);
     }
 
-    it("delivers an authenticated event through the default TurboHTTP TLS path") {
+    it("delivers an authenticated event through the Salts CHTTP TLS path") {
         test_tls_server_t tls_server;
         test_sender_t sender = {0};
         iris_media_bridge_t *bridge = NULL;
@@ -988,16 +944,16 @@ spec("Iris completion dispatcher") {
         ivr_media_event_t event;
         char base_url[128];
         char *saved_ca_file =
-            test_copy_environment("TURBONET_TLS_CA_FILE");
+            test_copy_environment("SALTS_TLS_CA_FILE");
         char *saved_ca_path =
-            test_copy_environment("TURBONET_TLS_CA_PATH");
+            test_copy_environment("SALTS_TLS_CA_PATH");
         int server_started = 0;
         int dispatcher_started = 0;
 
-        check_equal(test_set_environment("TURBONET_TLS_CA_FILE",
+        check_equal(test_set_environment("SALTS_TLS_CA_FILE",
                                           ROOM_SERVICE_TEST_TLS_CERT_PATH),
                      0);
-        check_equal(test_set_environment("TURBONET_TLS_CA_PATH", NULL), 0);
+        check_equal(test_set_environment("SALTS_TLS_CA_PATH", NULL), 0);
         server_started = test_tls_server_start(&tls_server) == 0;
         check_true(server_started);
         if (server_started) {
@@ -1006,7 +962,7 @@ spec("Iris completion dispatcher") {
         }
         if (bridge) {
             memset(&config, 0, sizeof(config));
-            snprintf(base_url, sizeof(base_url), "https://127.0.0.1:%u",
+            snprintf(base_url, sizeof(base_url), "https://[::1]:%u",
                      TEST_TLS_LOOPBACK_PORT);
             config.base_url = base_url;
             config.provider_token = "provider-token";
@@ -1040,7 +996,7 @@ spec("Iris completion dispatcher") {
                 iris_completion_dispatcher_get_stats(wrong_host_dispatcher,
                                                      &stats);
                 if (stats.event_failure_total == 1u) break;
-                turbo_sleep_ms(1u);
+                salts_sleep_ms(1u);
             }
             iris_completion_dispatcher_stop(wrong_host_dispatcher);
             iris_completion_dispatcher_get_stats(wrong_host_dispatcher,
@@ -1079,7 +1035,7 @@ spec("Iris completion dispatcher") {
                 IVR_OK);
             for (int i = 0; i < 3000 && atomic_load(&tls_server.calls) < 1;
                  ++i) {
-                turbo_sleep_ms(1u);
+                salts_sleep_ms(1u);
             }
             check_equal(atomic_load(&tls_server.calls), 1);
             iris_completion_dispatcher_stop(dispatcher);
@@ -1096,8 +1052,8 @@ spec("Iris completion dispatcher") {
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
         test_tls_server_stop(&tls_server);
-        test_restore_environment("TURBONET_TLS_CA_FILE", saved_ca_file);
-        test_restore_environment("TURBONET_TLS_CA_PATH", saved_ca_path);
+        test_restore_environment("SALTS_TLS_CA_FILE", saved_ca_file);
+        test_restore_environment("SALTS_TLS_CA_PATH", saved_ca_path);
         free(saved_ca_path);
         free(saved_ca_file);
     }

@@ -83,6 +83,7 @@ typedef struct {
     int timeout_ms;                /* 0 -> 30000 */
     int connect_timeout_ms;        /* 0 -> 5000 */
     const char *ca_file;           /* optional PEM CA bundle for TLS */
+    const char *server_name;       /* optional verified TLS identity/SNI */
     const char *user_agent;        /* optional */
     /* Optional borrowed observer, copied into each wrapper. It runs on the
        provider worker after request processing and callbacks have completed,

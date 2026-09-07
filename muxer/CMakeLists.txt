@@ -31,8 +31,8 @@ target_include_directories(
 target_link_libraries(
   turbo_media_muxer
   PUBLIC TurboMedia::Codec
-  PRIVATE TurboUtils::Core
-          TurboUtils::STL
+  PRIVATE Salts::Core
+          Salts::CSTL
           TurboMediaFFmpeg::avformat
           TurboMediaFFmpeg::avcodec
           TurboMediaFFmpeg::avutil)

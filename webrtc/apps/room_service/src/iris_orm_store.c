@@ -1,9 +1,9 @@
 #include "iris_orm_store.h"
 
 #include <orm.h>
-#include <turbo_error.h>
-#include <turbo_fs.h>
-#include <turbo_parser.h>
+#include <salts_error.h>
+#include <salts_fs.h>
+#include <cyaml/cyaml.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -88,24 +88,24 @@ static void iris_orm_write_orm_error(char *error, size_t capacity,
 static int iris_orm_status(orm_status_t status) {
     switch (status) {
     case ORM_STATUS_OK:
-        return TURBO_OK;
+        return SALTS_OK;
     case ORM_STATUS_INVALID_ARGUMENT:
     case ORM_STATUS_ABI_MISMATCH:
     case ORM_STATUS_TYPE_ERROR:
     case ORM_STATUS_OUT_OF_RANGE:
     case ORM_STATUS_INVALID_STATE:
     case ORM_STATUS_NULL_VALUE:
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     case ORM_STATUS_OUT_OF_MEMORY:
-        return TURBO_ENOMEM;
+        return SALTS_ENOMEM;
     case ORM_STATUS_BUSY:
-        return TURBO_EBUSY;
+        return SALTS_EBUSY;
     case ORM_STATUS_LIMIT_EXCEEDED:
-        return TURBO_ENOSPC;
+        return SALTS_ENOSPC;
     case ORM_STATUS_UNSUPPORTED:
-        return TURBO_ENOTSUP;
+        return SALTS_ENOTSUP;
     default:
-        return TURBO_EIO;
+        return SALTS_EIO;
     }
 }
 
@@ -135,27 +135,37 @@ static const char *iris_orm_sql(const iris_orm_store_owner_t *owner,
                : sqlite_sql;
 }
 
-static int iris_yaml_mapping(const turbo_yaml_node_t *node) {
-    return node && turbo_yaml_node_type(node) == TURBO_YAML_NODE_MAPPING;
+static cyaml_type_t iris_yaml_node_type(const cyaml_node_t *node) {
+    return node ? node->type : CYAML_NONE;
+}
+
+static cyaml_node_t *iris_yaml_mapping_key(const cyaml_node_t *mapping,
+                                           size_t index) {
+    cyaml_pair_t *pair = cyaml_map_at(mapping, (uint32_t)index);
+    return pair ? pair->key : NULL;
+}
+
+static int iris_yaml_mapping(const cyaml_node_t *node) {
+    return node && iris_yaml_node_type(node) == CYAML_MAP;
 }
 
 static int iris_yaml_mapping_keys_valid(
-    const turbo_yaml_doc_t *document, const turbo_yaml_node_t *mapping,
+    const cyaml_doc_t *document, const cyaml_node_t *mapping,
     const char *const *allowed, size_t allowed_count) {
     size_t count;
     size_t i;
     if (!document || !iris_yaml_mapping(mapping) || !allowed) return 0;
-    count = turbo_yaml_mapping_size(mapping);
+    count = cyaml_map_len(mapping);
     for (i = 0u; i < count; ++i) {
-        turbo_yaml_node_t *key_node = turbo_yaml_mapping_key(mapping, i);
+        cyaml_node_t *key_node = iris_yaml_mapping_key(mapping, i);
         char *key;
         size_t j;
         int matched = 0;
-        if (!key_node || turbo_yaml_node_type(key_node) !=
-                             TURBO_YAML_NODE_SCALAR) {
+        if (!key_node || iris_yaml_node_type(key_node) !=
+                             CYAML_SCALAR) {
             return 0;
         }
-        key = turbo_yaml_scalar_dup(document, key_node);
+        key = cyaml_scalar_str(document, key_node);
         if (!key) return 0;
         for (j = 0u; j < allowed_count; ++j) {
             if (strcmp(key, allowed[j]) == 0) {
@@ -163,26 +173,26 @@ static int iris_yaml_mapping_keys_valid(
                 break;
             }
         }
-        turbo_yaml_string_free(key);
+        free(key);
         if (!matched) return 0;
     }
     return 1;
 }
 
-static char *iris_yaml_string(const turbo_yaml_doc_t *document,
-                              const turbo_yaml_node_t *mapping,
+static char *iris_yaml_string(const cyaml_doc_t *document,
+                              const cyaml_node_t *mapping,
                               const char *key) {
-    turbo_yaml_node_t *node;
+    cyaml_node_t *node;
     if (!document || !mapping || !key) return NULL;
-    node = turbo_yaml_mapping_get(document, mapping, key);
-    if (!node || turbo_yaml_node_type(node) != TURBO_YAML_NODE_SCALAR) {
+    node = cyaml_get(document, mapping, key);
+    if (!node || iris_yaml_node_type(node) != CYAML_SCALAR) {
         return NULL;
     }
-    return turbo_yaml_scalar_dup(document, node);
+    return cyaml_scalar_str(document, node);
 }
 
-static int iris_parse_size(const turbo_yaml_doc_t *document,
-                           const turbo_yaml_node_t *mapping, const char *key,
+static int iris_parse_size(const cyaml_doc_t *document,
+                           const cyaml_node_t *mapping, const char *key,
                            size_t default_value, size_t minimum,
                            size_t maximum, size_t *out) {
     char *text;
@@ -198,10 +208,10 @@ static int iris_parse_size(const turbo_yaml_doc_t *document,
     parsed_value = strtoull(text, &end, 10);
     if (errno != 0 || !end || *end != '\0' || parsed_value < minimum ||
         parsed_value > maximum || parsed_value > SIZE_MAX) {
-        turbo_yaml_string_free(text);
+        free(text);
         return 0;
     }
-    turbo_yaml_string_free(text);
+    free(text);
     *out = (size_t)parsed_value;
     return 1;
 }
@@ -211,13 +221,13 @@ static int iris_orm_parse_config(const char *yaml_path,
                                  int allow_development_sqlite,
                                  iris_orm_store_config_t *config,
                                  char *error, size_t error_capacity) {
-    turbo_fs_buf_t yaml = {0};
-    turbo_yaml_doc_t *document = NULL;
-    turbo_yaml_error_t yaml_error;
-    turbo_yaml_node_t *root;
-    turbo_yaml_node_t *channels;
-    turbo_yaml_node_t *channel;
-    turbo_yaml_node_t *channel_config;
+    salts_fs_buf_t yaml = {0};
+    cyaml_doc_t *document = NULL;
+    cyaml_error_t yaml_error;
+    cyaml_node_t *root;
+    cyaml_node_t *channels;
+    cyaml_node_t *channel;
+    cyaml_node_t *channel_config;
     char *kind = NULL;
     char *backend = NULL;
     size_t busy_timeout;
@@ -245,20 +255,19 @@ static int iris_orm_parse_config(const char *yaml_path,
         return 0;
     }
     memset(config, 0, sizeof(*config));
-    if (turbo_fs_read_file(yaml_path, &yaml) != TURBO_OK) {
+    if (salts_fs_read_file(yaml_path, &yaml) != SALTS_OK) {
         iris_orm_write_error(error, error_capacity,
                              "cannot read ORM store YAML");
         goto cleanup;
     }
-    if (turbo_parse_yaml_ex((const uint8_t *)yaml.base, yaml.len, &document,
-                            &yaml_error) != 0 ||
-        !document) {
+    document = cyaml_parse(yaml.base, yaml.len, NULL, &yaml_error);
+    if (!document) {
         iris_orm_write_error(error, error_capacity,
-                             yaml_error.message[0] ? yaml_error.message
-                                                   : "invalid ORM store YAML");
+                             yaml_error.msg[0] ? yaml_error.msg
+                                               : "invalid ORM store YAML");
         goto cleanup;
     }
-    root = turbo_yaml_root(document);
+    root = cyaml_root(document);
     if (!iris_yaml_mapping_keys_valid(
             document, root, root_keys,
             sizeof(root_keys) / sizeof(root_keys[0]))) {
@@ -267,13 +276,13 @@ static int iris_orm_parse_config(const char *yaml_path,
         goto cleanup;
     }
     channels = iris_yaml_mapping(root)
-                   ? turbo_yaml_mapping_get(document, root, "channels")
+                   ? cyaml_get(document, root, "channels")
                    : NULL;
     channel = iris_yaml_mapping(channels)
-                  ? turbo_yaml_mapping_get(document, channels, channel_name)
+                  ? cyaml_get(document, channels, channel_name)
                   : NULL;
     channel_config = iris_yaml_mapping(channel)
-                         ? turbo_yaml_mapping_get(document, channel, "config")
+                         ? cyaml_get(document, channel, "config")
                          : NULL;
     if (!iris_yaml_mapping(channel_config)) {
         iris_orm_write_error(error, error_capacity,
@@ -424,10 +433,10 @@ static int iris_orm_parse_config(const char *yaml_path,
     }
     ok = 1;
 cleanup:
-    turbo_yaml_string_free(kind);
-    turbo_yaml_string_free(backend);
-    turbo_free_yaml(&document);
-    turbo_fs_buf_free(&yaml);
+    free(kind);
+    free(backend);
+    cyaml_free(document);
+    salts_fs_buf_free(&yaml);
     if (!ok) iris_orm_config_cleanup(config);
     return ok;
 }
@@ -442,7 +451,7 @@ static int iris_orm_execute_raw(iris_orm_store_owner_t *owner,
     orm_status_t status;
     size_t i;
     int rc;
-    if (!owner || !sql || (value_count > 0u && !values)) return TURBO_EINVAL;
+    if (!owner || !sql || (value_count > 0u && !values)) return SALTS_EINVAL;
     orm_error_init(&error);
     status = orm_raw(owner->connection, orm_view(sql), &query, &error);
     if (status != ORM_STATUS_OK) return iris_orm_status(status);
@@ -459,7 +468,7 @@ static int iris_orm_execute_raw(iris_orm_store_owner_t *owner,
                  : orm_query_execute(query, &result, &error);
     rc = iris_orm_status(status);
     orm_query_destroy(query);
-    if (rc != TURBO_OK) {
+    if (rc != SALTS_OK) {
         orm_result_destroy(result);
         return rc;
     }
@@ -468,7 +477,7 @@ static int iris_orm_execute_raw(iris_orm_store_owner_t *owner,
     } else {
         orm_result_destroy(result);
     }
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int iris_orm_current_revision(iris_orm_store_owner_t *owner,
@@ -489,18 +498,18 @@ static int iris_orm_current_revision(iris_orm_store_owner_t *owner,
     int64_t stored_revision = 0;
     int64_t stored_bytes = 0;
     int rc;
-    if (!revision || !exists || !item_bytes) return TURBO_EINVAL;
+    if (!revision || !exists || !item_bytes) return SALTS_EINVAL;
     values[0] = orm_text(owner->namespace_name);
     values[1] = orm_blob(key, key_size);
     rc = iris_orm_execute_raw(
         owner, transaction,
         iris_orm_sql(owner, sqlite_sql, postgresql_sql), values, 2u, &result);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     orm_error_init(&error);
     if (orm_result_row_count(result, &rows, &error) != ORM_STATUS_OK ||
         rows > 1u) {
         orm_result_destroy(result);
-        return TURBO_EIO;
+        return SALTS_EIO;
     }
     if (rows == 0u) {
         *exists = 0;
@@ -512,14 +521,14 @@ static int iris_orm_current_revision(iris_orm_store_owner_t *owner,
                    ORM_STATUS_OK ||
                stored_revision <= 0 || stored_bytes <= 0) {
         orm_result_destroy(result);
-        return TURBO_EIO;
+        return SALTS_EIO;
     } else {
         *exists = 1;
         *revision = (uint64_t)stored_revision;
         *item_bytes = (uint64_t)stored_bytes;
     }
     orm_result_destroy(result);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int iris_orm_record_count(iris_orm_store_owner_t *owner,
@@ -537,17 +546,17 @@ static int iris_orm_record_count(iris_orm_store_owner_t *owner,
         owner, transaction,
         iris_orm_sql(owner, sqlite_sql, postgresql_sql), &namespace_value, 1u,
         &result);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     orm_error_init(&error);
     if (orm_result_get_int64(result, 0u, 0u, &signed_count, &error) !=
             ORM_STATUS_OK ||
         signed_count < 0) {
         orm_result_destroy(result);
-        return TURBO_EIO;
+        return SALTS_EIO;
     }
     *count = (uint64_t)signed_count;
     orm_result_destroy(result);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int iris_orm_total_bytes(iris_orm_store_owner_t *owner,
@@ -564,22 +573,22 @@ static int iris_orm_total_bytes(iris_orm_store_owner_t *owner,
     orm_error_t error;
     int64_t signed_total = 0;
     int rc;
-    if (!total_bytes) return TURBO_EINVAL;
+    if (!total_bytes) return SALTS_EINVAL;
     rc = iris_orm_execute_raw(
         owner, transaction,
         iris_orm_sql(owner, sqlite_sql, postgresql_sql), &namespace_value, 1u,
         &result);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     orm_error_init(&error);
     if (orm_result_get_int64(result, 0u, 0u, &signed_total, &error) !=
             ORM_STATUS_OK ||
         signed_total < 0) {
         orm_result_destroy(result);
-        return TURBO_EIO;
+        return SALTS_EIO;
     }
     *total_bytes = (uint64_t)signed_total;
     orm_result_destroy(result);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int iris_orm_scan(void *context, iris_record_visit_fn visit,
@@ -598,17 +607,17 @@ static int iris_orm_scan(void *context, iris_record_visit_fn visit,
     uint64_t row;
     size_t scanned_bytes = 0u;
     int rc;
-    if (!owner || !visit) return TURBO_EINVAL;
+    if (!owner || !visit) return SALTS_EINVAL;
     namespace_value = orm_text(owner->namespace_name);
     rc = iris_orm_execute_raw(
         owner, NULL, iris_orm_sql(owner, sqlite_sql, postgresql_sql),
         &namespace_value, 1u, &result);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     orm_error_init(&error);
     if (orm_result_row_count(result, &rows, &error) != ORM_STATUS_OK ||
         rows > owner->store.max_records) {
         orm_result_destroy(result);
-        return TURBO_EIO;
+        return SALTS_EIO;
     }
     for (row = 0u; row < rows; ++row) {
         iris_record_view_t record = IRIS_RECORD_VIEW_INIT;
@@ -629,7 +638,7 @@ static int iris_orm_scan(void *context, iris_record_visit_fn visit,
             key.size + payload.size > owner->max_bytes ||
             scanned_bytes > owner->max_bytes - (key.size + payload.size)) {
             orm_result_destroy(result);
-            return TURBO_ENOSPC;
+            return SALTS_ENOSPC;
         }
         scanned_bytes += key.size + payload.size;
         record.key = (const uint8_t *)key.data;
@@ -638,13 +647,13 @@ static int iris_orm_scan(void *context, iris_record_visit_fn visit,
         record.value = (const uint8_t *)payload.data;
         record.value_size = payload.size;
         rc = visit(visit_context, &record);
-        if (rc != TURBO_OK) {
+        if (rc != SALTS_OK) {
             orm_result_destroy(result);
             return rc;
         }
     }
     orm_result_destroy(result);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int iris_orm_validate_mutations(
@@ -654,7 +663,7 @@ static int iris_orm_validate_mutations(
     size_t j;
     if (!owner || !mutations || mutation_count == 0u ||
         mutation_count > owner->store.max_batch_size) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     for (i = 0u; i < mutation_count; ++i) {
         const iris_record_mutation_t *mutation = &mutations[i];
@@ -662,38 +671,38 @@ static int iris_orm_validate_mutations(
             mutation->key_size == 0u ||
             mutation->key_size > owner->store.max_key_size ||
             mutation->expected_revision > IRIS_RECORD_REVISION_MAX) {
-            return TURBO_EINVAL;
+            return SALTS_EINVAL;
         }
         if (mutation->kind == IRIS_RECORD_PUT) {
             if ((!mutation->value && mutation->value_size > 0u) ||
                 mutation->value_size > owner->store.max_value_size ||
                 mutation->next_revision <= mutation->expected_revision ||
                 mutation->next_revision > IRIS_RECORD_REVISION_MAX) {
-                return TURBO_EINVAL;
+                return SALTS_EINVAL;
             }
             if (mutation->key_size > SIZE_MAX - mutation->value_size ||
                 mutation->key_size + mutation->value_size >
                     owner->max_item_bytes) {
-                return TURBO_ENOSPC;
+                return SALTS_ENOSPC;
             }
         } else if (mutation->kind == IRIS_RECORD_DELETE) {
             if (mutation->expected_revision == IRIS_RECORD_REVISION_ABSENT ||
                 mutation->next_revision != IRIS_RECORD_REVISION_ABSENT ||
                 mutation->value || mutation->value_size != 0u) {
-                return TURBO_EINVAL;
+                return SALTS_EINVAL;
             }
         } else {
-            return TURBO_EINVAL;
+            return SALTS_EINVAL;
         }
         for (j = i + 1u; j < mutation_count; ++j) {
             if (mutation->key_size == mutations[j].key_size &&
                 memcmp(mutation->key, mutations[j].key,
                        mutation->key_size) == 0) {
-                return TURBO_EINVAL;
+                return SALTS_EINVAL;
             }
         }
     }
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int iris_orm_mutate(iris_orm_store_owner_t *owner,
@@ -748,14 +757,14 @@ static int iris_orm_mutate(iris_orm_store_owner_t *owner,
             iris_orm_sql(owner, update_sqlite_sql, update_postgresql_sql),
             values, 5u, &result);
     }
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     orm_error_init(&error);
     if (orm_result_affected_rows(result, &affected, &error) != ORM_STATUS_OK) {
         orm_result_destroy(result);
-        return TURBO_EIO;
+        return SALTS_EIO;
     }
     orm_result_destroy(result);
-    return affected == 1u ? TURBO_OK : TURBO_EBUSY;
+    return affected == 1u ? SALTS_OK : SALTS_EBUSY;
 }
 
 static int iris_orm_commit(void *context,
@@ -772,18 +781,18 @@ static int iris_orm_commit(void *context,
     int rc;
     orm_status_t status;
     rc = iris_orm_validate_mutations(owner, mutations, mutation_count);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     orm_error_init(&error);
     status = orm_transaction_begin(owner->connection,
                                    ORM_ISOLATION_SERIALIZABLE,
                                    &transaction, &error);
     if (status != ORM_STATUS_OK) return iris_orm_status(status);
     rc = iris_orm_record_count(owner, transaction, &record_count);
-    if (rc != TURBO_OK) goto rollback;
+    if (rc != SALTS_OK) goto rollback;
     rc = iris_orm_total_bytes(owner, transaction, &total_bytes);
-    if (rc != TURBO_OK) goto rollback;
+    if (rc != SALTS_OK) goto rollback;
     if (total_bytes > owner->max_bytes) {
-        rc = TURBO_ENOSPC;
+        rc = SALTS_ENOSPC;
         goto rollback;
     }
     for (i = 0u; i < mutation_count; ++i) {
@@ -794,11 +803,11 @@ static int iris_orm_commit(void *context,
         rc = iris_orm_current_revision(owner, transaction, mutations[i].key,
                                        mutations[i].key_size, &revision, &exists,
                                        &old_item_bytes);
-        if (rc != TURBO_OK) goto rollback;
+        if (rc != SALTS_OK) goto rollback;
         if ((exists && revision != mutations[i].expected_revision) ||
             (!exists && mutations[i].expected_revision !=
                             IRIS_RECORD_REVISION_ABSENT)) {
-            rc = TURBO_EBUSY;
+            rc = SALTS_EBUSY;
             goto rollback;
         }
         if (!exists && mutations[i].kind == IRIS_RECORD_PUT) inserts++;
@@ -810,19 +819,19 @@ static int iris_orm_commit(void *context,
         if (total_bytes < old_item_bytes ||
             new_item_bytes > UINT64_MAX - (total_bytes - old_item_bytes) ||
             total_bytes - old_item_bytes + new_item_bytes > owner->max_bytes) {
-            rc = TURBO_ENOSPC;
+            rc = SALTS_ENOSPC;
             goto rollback;
         }
         total_bytes = total_bytes - old_item_bytes + new_item_bytes;
     }
     if (record_count + inserts < deletes ||
         record_count + inserts - deletes > owner->store.max_records) {
-        rc = TURBO_ENOSPC;
+        rc = SALTS_ENOSPC;
         goto rollback;
     }
     for (i = 0u; i < mutation_count; ++i) {
         rc = iris_orm_mutate(owner, transaction, &mutations[i]);
-        if (rc != TURBO_OK) goto rollback;
+        if (rc != SALTS_OK) goto rollback;
     }
     status = orm_transaction_commit(transaction, &error);
     orm_transaction_destroy(transaction);
@@ -941,7 +950,7 @@ iris_orm_store_owner_t *iris_orm_store_owner_create(
             owner, NULL,
             iris_orm_sql(owner, IRIS_ORM_CREATE_SQLITE_SQL,
                          IRIS_ORM_CREATE_POSTGRESQL_SQL),
-            NULL, 0u, &result) != TURBO_OK) {
+            NULL, 0u, &result) != SALTS_OK) {
         iris_orm_write_error(error, error_capacity,
                              "cannot initialize ORM record-store schema");
         goto fail;

@@ -5,9 +5,9 @@
 #include "sip-atomic.h"
 #include "sip-message.h"
 #include "platform.h"
-#include "turbo_error.h"
-#include "turbo_thread.h"
-#include <turbostl/vec.h>
+#include "salts_error.h"
+#include "salts_thread.h"
+#include <cstl/vec.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +28,7 @@ struct sip_uas_transaction_t;
 struct sip_agent_t
 {
 	sip_atomic_i32_t ref;
-	turbo_mutex_t locker;
+	salts_mutex_t locker;
 
 	//struct sip_timer_t timer;
 	//void* timerptr;
@@ -59,7 +59,7 @@ static inline int sip_random_u32(uint32_t* value)
 {
 	if (!value)
 		return -1;
-	return turbo_secure_random(value, sizeof(*value));
+	return salts_secure_random(value, sizeof(*value));
 }
 
 static inline int sip_random_u31(uint32_t* value)
@@ -85,7 +85,7 @@ static inline int sip_random_u64(uint64_t* value)
 {
 	if (!value)
 		return -1;
-	return turbo_secure_random(value, sizeof(*value));
+	return salts_secure_random(value, sizeof(*value));
 }
 
 #endif /* !_sip_internal_h_ */

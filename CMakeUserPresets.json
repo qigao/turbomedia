@@ -78,14 +78,11 @@
                 "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/debug"
             },
             "environment": {
-                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils/debug",
-                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser/debug",
-                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet/debug",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp/debug",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq/debug",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/debug",
+                "SALTS_ROOT": "$env{PKG_ROOT}/salts/debug",
+                "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/debug",
+                "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/debug",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/debug",
-                "PATH": "${sourceDir}/build/Msvc/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{TURBOUTILS_ROOT}/bin${pathListSep}$env{TURBOPARSER_ROOT}/bin${pathListSep}$env{TURBONET_ROOT}/bin${pathListSep}$env{TURBOHTTP_ROOT}/bin${pathListSep}$env{FLOWMQ_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
+                "PATH": "${sourceDir}/build/Msvc/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-dev-user",
@@ -99,14 +96,11 @@
                 "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/release"
             },
             "environment": {
-                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils/release",
-                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser/release",
-                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet/release",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp/release",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq/release",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/release",
+                "SALTS_ROOT": "$env{PKG_ROOT}/salts/release",
+                "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/release",
+                "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/release",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/release",
-                "PATH": "${sourceDir}/build/Msvc-Release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{TURBOUTILS_ROOT}/bin${pathListSep}$env{TURBOPARSER_ROOT}/bin${pathListSep}$env{TURBONET_ROOT}/bin${pathListSep}$env{TURBOHTTP_ROOT}/bin${pathListSep}$env{FLOWMQ_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
+                "PATH": "${sourceDir}/build/Msvc-Release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-release-user",
@@ -121,14 +115,11 @@
                 "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/debug"
             },
             "environment": {
-                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils/debug",
-                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser/debug",
-                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet/debug",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp/debug",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq/debug",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/debug",
+                "SALTS_ROOT": "$env{PKG_ROOT}/salts/debug",
+                "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/debug",
+                "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/debug",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/debug",
-                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/debug/lib${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{TURBOUTILS_ROOT}/lib${pathListSep}$env{TURBOPARSER_ROOT}/lib${pathListSep}$env{TURBONET_ROOT}/lib${pathListSep}$env{TURBOHTTP_ROOT}/lib${pathListSep}$env{FLOWMQ_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
+                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/debug/lib${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
             },
             "inherits": [
                 "base-linux-dev-user",
@@ -142,14 +133,11 @@
                 "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia/release"
             },
             "environment": {
-                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils/release",
-                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser/release",
-                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet/release",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp/release",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq/release",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/release",
+                "SALTS_ROOT": "$env{PKG_ROOT}/salts/release",
+                "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/release",
+                "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/release",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/release",
-                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{TURBOUTILS_ROOT}/lib${pathListSep}$env{TURBOPARSER_ROOT}/lib${pathListSep}$env{TURBONET_ROOT}/lib${pathListSep}$env{TURBOHTTP_ROOT}/lib${pathListSep}$env{FLOWMQ_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
+                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
             },
             "inherits": [
                 "release-linux-ninja",
@@ -160,13 +148,10 @@
             "name": "android-dependencies-debug",
             "hidden": true,
             "environment": {
-                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils-android/debug",
-                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser-android/debug",
-                "TURBOPARSER_HOST_ROOT": "$env{PKG_ROOT}/turboparser/release",
-                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet-android/debug",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp-android/debug",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq-android/debug",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb-android/debug",
+                "SALTS_ROOT": "$env{PKG_ROOT}/salts-android/debug",
+                "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils-android/debug",
+                "SALTS_UTILS_HOST_ROOT": "$env{PKG_ROOT}/salts-utils/release",
+                "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet-android/debug",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb-android/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge-android/debug"
             },
             "cacheVariables": {"CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia-android/debug"}
@@ -175,13 +160,10 @@
             "name": "android-dependencies-release",
             "hidden": true,
             "environment": {
-                "TURBOUTILS_ROOT": "$env{PKG_ROOT}/turboutils-android/release",
-                "TURBOPARSER_ROOT": "$env{PKG_ROOT}/turboparser-android/release",
-                "TURBOPARSER_HOST_ROOT": "$env{PKG_ROOT}/turboparser/release",
-                "TURBONET_ROOT": "$env{PKG_ROOT}/turbonet-android/release",
-                "TURBOHTTP_ROOT": "$env{PKG_ROOT}/turbohttp-android/release",
-                "FLOWMQ_ROOT": "$env{PKG_ROOT}/flowmq-android/release",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb-android/release",
+                "SALTS_ROOT": "$env{PKG_ROOT}/salts-android/release",
+                "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils-android/release",
+                "SALTS_UTILS_HOST_ROOT": "$env{PKG_ROOT}/salts-utils/release",
+                "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet-android/release",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb-android/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge-android/release"
             },
             "cacheVariables": {"CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia-android/release"}

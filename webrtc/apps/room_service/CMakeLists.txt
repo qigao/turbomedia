@@ -9,9 +9,9 @@ project(
 
 # First-party packages are resolved once at the repository root from their
 # explicit environment roots, so every WebRTC subdirectory sees the same targets.
-if(NOT TARGET TurboDB::ORM)
+if(NOT TARGET Orm::C)
   message(FATAL_ERROR
-    "RoomService Iris outbox requires TurboDB::ORM")
+    "RoomService Iris outbox requires Orm::C")
 endif()
 
 turbo_media_find_tbe_compiler(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE)
@@ -25,6 +25,10 @@ set(ROOM_SERVICE_LEDGER_GEN_HEADER
   "${ROOM_SERVICE_OUTBOX_GEN_DIR}/iris_command_ledger_v2.h")
 set(ROOM_SERVICE_LEDGER_GEN_SOURCE
   "${ROOM_SERVICE_OUTBOX_GEN_DIR}/iris_command_ledger_v2.c")
+set(ROOM_SERVICE_PROVIDER_GEN_HEADER
+  "${ROOM_SERVICE_OUTBOX_GEN_DIR}/turbomedia_iris_provider_v1.h")
+set(ROOM_SERVICE_PROVIDER_GEN_SOURCE
+  "${ROOM_SERVICE_OUTBOX_GEN_DIR}/turbomedia_iris_provider_v1.c")
 add_custom_command(
   OUTPUT ${ROOM_SERVICE_OUTBOX_GEN_HEADER} ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
   COMMAND ${ROOM_SERVICE_TBE_COMPILER_EXECUTABLE}
@@ -43,13 +47,23 @@ add_custom_command(
   DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_command_ledger_v2.schema
   COMMENT "Generating Iris provider command ledger schema"
   VERBATIM)
+add_custom_command(
+  OUTPUT ${ROOM_SERVICE_PROVIDER_GEN_HEADER} ${ROOM_SERVICE_PROVIDER_GEN_SOURCE}
+  COMMAND ${ROOM_SERVICE_TBE_COMPILER_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_iris_provider_v1.schema
+          --lang c --output ${ROOM_SERVICE_PROVIDER_GEN_HEADER}
+          --source-output ${ROOM_SERVICE_PROVIDER_GEN_SOURCE}
+  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_iris_provider_v1.schema
+  COMMENT "Generating transport-neutral Iris provider schema"
+  VERBATIM)
 add_library(room_service_iris_outbox_schema STATIC
   ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
-  ${ROOM_SERVICE_LEDGER_GEN_SOURCE})
+  ${ROOM_SERVICE_LEDGER_GEN_SOURCE}
+  ${ROOM_SERVICE_PROVIDER_GEN_SOURCE})
 target_include_directories(room_service_iris_outbox_schema
   PUBLIC ${ROOM_SERVICE_OUTBOX_GEN_DIR})
 target_link_libraries(room_service_iris_outbox_schema
-  PUBLIC TurboParser::DataBind TurboUtils::Core)
+  PUBLIC Salts::DataBind Salts::Core)
 set_target_properties(room_service_iris_outbox_schema
   PROPERTIES FOLDER "Applications/components")
 
@@ -59,19 +73,20 @@ set(ROOM_SERVICE_APP_SOURCES
   src/http_api.c
   src/server.c
 )
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_APP_SOURCES
     src/iris_event_outbox.c
     src/iris_orm_store.c
     src/iris_command_ledger.c
     src/iris_command_fingerprint.c
-    src/iris_flowmq_provider_codec.c
-    src/iris_flowmq_provider.c
+    src/iris_provider_protocol.c
+    src/iris_control_provider_codec.c
+    src/iris_control_provider.c
     src/iris_completion_dispatcher.c
     src/iris_media_reconciler.c
     src/iris_media_bridge.c
     src/iris_room_bridge.c
-    src/ivr_fmq_adapter.c)
+    src/ivr_control_adapter.c)
 endif()
 
 set(ROOM_SERVICE_APP_HEADERS
@@ -85,19 +100,20 @@ set(ROOM_SERVICE_CORE_SOURCES
   src/http_api.c
   src/server.c
 )
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_CORE_SOURCES
     src/iris_event_outbox.c
     src/iris_orm_store.c
     src/iris_command_ledger.c
     src/iris_command_fingerprint.c
-    src/iris_flowmq_provider_codec.c
-    src/iris_flowmq_provider.c
+    src/iris_provider_protocol.c
+    src/iris_control_provider_codec.c
+    src/iris_control_provider.c
     src/iris_completion_dispatcher.c
     src/iris_media_reconciler.c
     src/iris_media_bridge.c
     src/iris_room_bridge.c
-    src/ivr_fmq_adapter.c)
+    src/ivr_control_adapter.c)
 endif()
 
 add_executable(room_service
@@ -109,31 +125,32 @@ target_include_directories(room_service
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_include_directories(room_service
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
       ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_compile_definitions(room_service PRIVATE TURBO_MEDIA_HAS_IVR_FMQ)
+  target_compile_definitions(room_service PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
 endif()
 
 set(ROOM_SERVICE_LIBS
     TurboMedia::RtcApps
-    TurboHttp::HttpClient
-    TurboHttp::TurboHttp
-    TurboHttp::Iris
+    TurboMedia::Transport
+    Salts::CHTTP
     turbo_media_auth
-    TurboNet::Crypto
+    SaltsNet::Crypto
     OpenSSL::Crypto
-    TurboUtils::Core
-    TurboParser::Parser)
+    Salts::Core
+    Salts::JsonParser
+    Salts::TomlParser
+    Salts::CYaml
+    Salts::DateTimeParser)
 
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_LIBS
     turbo_media_ivr
     room_service_iris_outbox_schema
-    TurboDB::ORM)
-  list(APPEND ROOM_SERVICE_LIBS FlowMQ::FlowMQ)
+    Orm::C)
 endif()
 
 target_link_libraries(room_service
@@ -157,8 +174,8 @@ set_target_properties(room_service
 )
 
 turbo_media_deploy_windows_runtime(
-  room_service TurboHttp::Iris TurboNet::CoroNet RulesForge::rules_forge
-  FlowMQ::FlowMQ TurboParser::Mustache TurboParser::Parser TurboUtils::Core)
+  room_service Salts::CHTTP Salts::CNet RulesForge::rules_forge
+   Orm::C Salts::Mustache Salts::DataBind Salts::Core Salts::Capture)
 
 install(
   TARGETS room_service
@@ -166,25 +183,16 @@ install(
   COMPONENT RoomService
 )
 if(WIN32)
-  get_filename_component(ROOM_SERVICE_SQLITE_LIBRARY_DIR
-                         "${SQLite3_LIBRARY}" DIRECTORY)
-  get_filename_component(ROOM_SERVICE_SQLITE_RUNTIME_ROOT
-                         "${ROOM_SERVICE_SQLITE_LIBRARY_DIR}" DIRECTORY)
-  set(ROOM_SERVICE_SQLITE_RUNTIME
-      "${ROOM_SERVICE_SQLITE_RUNTIME_ROOT}/bin/sqlite3.dll")
-  if(NOT EXISTS "${ROOM_SERVICE_SQLITE_RUNTIME}")
-    message(FATAL_ERROR
-      "SQLite ORM runtime is missing: ${ROOM_SERVICE_SQLITE_RUNTIME}")
-  endif()
   install(
-    FILES $<TARGET_FILE:TurboHttp::Iris>
-          $<TARGET_FILE:TurboNet::CoroNet>
+    FILES $<TARGET_FILE:Salts::CHTTP>
+          $<TARGET_FILE:Salts::CNet>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>
-          $<TARGET_FILE:FlowMQ::FlowMQ>
-          $<TARGET_FILE:TurboParser::Mustache>
-          $<TARGET_FILE:TurboParser::Parser>
-          $<TARGET_FILE:TurboUtils::Core>
-          ${ROOM_SERVICE_SQLITE_RUNTIME}
+          $<TARGET_FILE:Salts::Mustache>
+          $<TARGET_FILE:Salts::DataBind>
+          $<TARGET_FILE:Salts::Core>
+          $<TARGET_FILE:Salts::Capture>
+          $<TARGET_FILE:Orm::C>
+          $<TARGET_FILE_DIR:Orm::C>/sqlite3.dll
     DESTINATION bin
     COMPONENT RoomService)
 endif()
@@ -240,29 +248,31 @@ target_link_libraries(test_room_service_app
   PRIVATE
     TurboMedia::RtcApps
     TurboMedia::RTC
-    TurboHttp::HttpClient
-    TurboHttp::TurboHttp
-    TurboHttp::Iris
+    TurboMedia::Transport
+    Salts::CHTTP
     turbo_media_auth
-    TurboNet::Crypto
+    SaltsNet::Crypto
     OpenSSL::Crypto
-    TurboUtils::Core
-    TurboParser::Parser
-    TurboUtils::TinyTest
+    Salts::Core
+    Salts::JsonParser
+    Salts::TomlParser
+    Salts::CYaml
+    Salts::DateTimeParser
+    Salts::TinyTest
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>
 )
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_include_directories(test_room_service_app
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
       ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_compile_definitions(test_room_service_app
-    PRIVATE TURBO_MEDIA_HAS_IVR_FMQ)
+    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_room_service_app PRIVATE turbo_media_ivr)
   target_link_libraries(test_room_service_app PRIVATE
     room_service_iris_outbox_schema
-    TurboDB::ORM)
+    Orm::C)
 endif()
 
 target_compile_options(test_room_service_app
@@ -288,10 +298,10 @@ set_target_properties(test_room_service_app PROPERTIES
   OUTPUT_NAME "test_room_service_app"
   FOLDER "Applications/tests")
 turbo_media_deploy_windows_runtime(
-  test_room_service_app FlowMQ::FlowMQ TurboNet::CoroNet
-  TurboParser::Mustache TurboParser::Parser TurboUtils::Core)
+  test_room_service_app  Salts::CNet
+  Salts::Mustache Salts::DataBind Salts::Core Salts::Capture)
 
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_executable(test_iris_media_bridge
     tests/test_iris_media_bridge.c
     src/iris_media_bridge.c
@@ -306,13 +316,14 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   target_link_libraries(test_iris_media_bridge
     PRIVATE
       turbo_media_ivr
-      TurboNet::Crypto
-      TurboUtils::Core
-      TurboParser::Parser
-      TurboUtils::TinyTest
+      SaltsNet::Crypto
+      Salts::Core
+      Salts::JsonParser
+      Salts::DateTimeParser
+      Salts::TinyTest
   )
   target_compile_definitions(test_iris_media_bridge
-    PRIVATE TURBO_MEDIA_HAS_IVR_FMQ)
+    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
   add_test(NAME test_iris_media_bridge COMMAND test_iris_media_bridge)
   set_tests_properties(test_iris_media_bridge PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
@@ -322,50 +333,57 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     OUTPUT_NAME "test_iris_media_bridge"
     FOLDER "Applications/tests")
 
-  add_executable(test_iris_flowmq_provider_codec
-    tests/test_iris_flowmq_provider_codec.c
-    src/iris_flowmq_provider_codec.c)
-  target_include_directories(test_iris_flowmq_provider_codec PRIVATE
+  add_executable(test_iris_control_provider_codec
+    tests/test_iris_control_provider_codec.c
+    src/iris_control_provider_codec.c
+    src/iris_provider_protocol.c)
+  target_include_directories(test_iris_control_provider_codec PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_flowmq_provider_codec PRIVATE
-    FlowMQ::FlowMQ
-    TurboNet::Crypto
-    TurboUtils::Core
-    TurboParser::Parser
-    TurboUtils::TinyTest)
-  target_compile_definitions(test_iris_flowmq_provider_codec
-    PRIVATE TURBO_MEDIA_HAS_IVR_FMQ)
-  add_test(NAME test_iris_flowmq_provider_codec
-    COMMAND test_iris_flowmq_provider_codec)
-  set_tests_properties(test_iris_flowmq_provider_codec PROPERTIES
+  target_link_libraries(test_iris_control_provider_codec PRIVATE
+    room_service_iris_outbox_schema
+    Salts::DataBind
+    SaltsNet::Crypto
+    Salts::Core
+    Salts::JsonParser
+    Salts::TinyTest)
+  target_compile_definitions(test_iris_control_provider_codec
+    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
+  add_test(NAME test_iris_control_provider_codec
+    COMMAND test_iris_control_provider_codec)
+  set_tests_properties(test_iris_control_provider_codec PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_flowmq_provider_codec PROPERTIES
+  set_target_properties(test_iris_control_provider_codec PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
 
-  add_executable(test_iris_flowmq_provider
-    tests/test_iris_flowmq_provider.c
-    src/iris_flowmq_provider.c
-    src/iris_flowmq_provider_codec.c)
-  target_include_directories(test_iris_flowmq_provider PRIVATE
+  add_executable(test_iris_control_provider
+    tests/test_iris_control_provider.c
+    src/iris_control_provider.c
+    src/iris_control_provider_codec.c
+    src/iris_provider_protocol.c)
+  target_include_directories(test_iris_control_provider PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_flowmq_provider PRIVATE
-    FlowMQ::FlowMQ
-    TurboNet::Crypto
-    TurboUtils::Core
-    TurboParser::Parser
-    TurboUtils::TinyTest
+  target_link_libraries(test_iris_control_provider PRIVATE
+    turbo_media_ivr
+    room_service_iris_outbox_schema
+    Salts::CHTTP
+    Salts::CNet
+    Salts::DataBind
+    SaltsNet::Crypto
+    Salts::Core
+    Salts::JsonParser
+    Salts::TinyTest
     $<$<PLATFORM_ID:Windows>:ws2_32>)
-  target_compile_definitions(test_iris_flowmq_provider
-    PRIVATE TURBO_MEDIA_HAS_IVR_FMQ)
-  add_test(NAME test_iris_flowmq_provider COMMAND test_iris_flowmq_provider)
-  set_tests_properties(test_iris_flowmq_provider PROPERTIES
+  target_compile_definitions(test_iris_control_provider
+    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
+  add_test(NAME test_iris_control_provider COMMAND test_iris_control_provider)
+  set_tests_properties(test_iris_control_provider PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_flowmq_provider PROPERTIES
+  set_target_properties(test_iris_control_provider PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
 
@@ -377,12 +395,13 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_room_bridge PRIVATE
-    TurboNet::Crypto
-    TurboUtils::Core
-    TurboParser::Parser
-    TurboUtils::TinyTest)
+    SaltsNet::Crypto
+    Salts::Core
+    Salts::JsonParser
+    Salts::DateTimeParser
+    Salts::TinyTest)
   target_compile_definitions(test_iris_room_bridge
-    PRIVATE TURBO_MEDIA_HAS_IVR_FMQ)
+    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
   add_test(NAME test_iris_room_bridge COMMAND test_iris_room_bridge)
   set_tests_properties(test_iris_room_bridge PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
@@ -401,15 +420,16 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_completion_dispatcher PRIVATE
     turbo_media_ivr
-    TurboHttp::TurboHttp
-    TurboHttp::Iris
-    TurboNet::Crypto
-    TurboUtils::Core
-    TurboParser::Parser
-    TurboUtils::TinyTest)
+    TurboMedia::Transport
+    Salts::CHTTP
+    SaltsNet::Crypto
+    Salts::Core
+    Salts::JsonParser
+    Salts::DateTimeParser
+    Salts::TinyTest)
   target_compile_definitions(test_iris_completion_dispatcher
     PRIVATE
-      TURBO_MEDIA_HAS_IVR_FMQ
+      TURBO_MEDIA_HAS_IVR_CONTROL
       ROOM_SERVICE_TEST_TLS_CERT_PATH="${CMAKE_SOURCE_DIR}/webrtc/tests/fixtures/tls/localhost-cert.pem"
       ROOM_SERVICE_TEST_TLS_KEY_PATH="${CMAKE_SOURCE_DIR}/webrtc/tests/fixtures/tls/localhost-key.pem")
   add_test(NAME test_iris_completion_dispatcher
@@ -423,29 +443,30 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   add_executable(test_iris_media_reconciler
     tests/test_iris_media_reconciler.c
     src/iris_media_reconciler.c
-    src/iris_flowmq_provider.c
-    src/iris_flowmq_provider_codec.c
+    src/iris_control_provider.c
+    src/iris_control_provider_codec.c
+    src/iris_provider_protocol.c
     src/iris_event_outbox.c
     src/iris_orm_store.c
-    src/ivr_fmq_adapter.c)
+    src/ivr_control_adapter.c)
   target_include_directories(test_iris_media_reconciler PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_media_reconciler PRIVATE
-    FlowMQ::FlowMQ
     TurboMedia::RtcApps
     turbo_media_ivr
     room_service_iris_outbox_schema
-    TurboHttp::TurboHttp
-    TurboNet::Crypto
+    Salts::CHTTP
+    SaltsNet::Crypto
     OpenSSL::Crypto
-    TurboDB::ORM
-    TurboUtils::Core
-    TurboParser::Parser
-    TurboUtils::TinyTest)
+    Orm::C
+    Salts::Core
+    Salts::JsonParser
+    Salts::CYaml
+    Salts::TinyTest)
   target_compile_definitions(test_iris_media_reconciler
-    PRIVATE TURBO_MEDIA_HAS_IVR_FMQ)
+    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
   add_test(NAME test_iris_media_reconciler
     COMMAND test_iris_media_reconciler)
   set_tests_properties(test_iris_media_reconciler PROPERTIES
@@ -454,8 +475,8 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
   turbo_media_deploy_windows_runtime(
-    test_iris_media_reconciler FlowMQ::FlowMQ TurboNet::CoroNet
-    TurboParser::Mustache TurboParser::Parser TurboUtils::Core)
+    test_iris_media_reconciler  Salts::CNet
+    Salts::Mustache Salts::Core)
 
   add_executable(test_iris_event_outbox
     tests/test_iris_event_outbox.c
@@ -466,11 +487,11 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_event_outbox PRIVATE
-    room_service_iris_outbox_schema FlowMQ::FlowMQ
-    TurboDB::ORM
-    TurboUtils::Core TurboParser::DataBind TurboUtils::TinyTest)
+    room_service_iris_outbox_schema
+    Orm::C
+    Salts::Core Salts::DataBind Salts::CYaml Salts::TinyTest)
   target_compile_definitions(test_iris_event_outbox PRIVATE
-    TURBO_MEDIA_HAS_IVR_FMQ)
+    TURBO_MEDIA_HAS_IVR_CONTROL)
   add_test(NAME test_iris_event_outbox COMMAND test_iris_event_outbox)
   set_tests_properties(test_iris_event_outbox PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
@@ -478,8 +499,8 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
   turbo_media_deploy_windows_runtime(
-    test_iris_event_outbox FlowMQ::FlowMQ TurboNet::CoroNet
-    TurboParser::Mustache TurboParser::Parser TurboUtils::Core)
+    test_iris_event_outbox  Salts::CNet
+    Salts::Mustache Salts::Core)
 
   add_executable(test_iris_command_ledger
     tests/test_iris_command_ledger.c
@@ -491,11 +512,11 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_command_ledger PRIVATE
     room_service_iris_outbox_schema
-    TurboDB::ORM
-    TurboUtils::Core TurboParser::DataBind
-    TurboUtils::TinyTest)
+    Orm::C
+    Salts::Core Salts::DataBind Salts::CYaml
+    Salts::TinyTest)
   target_compile_definitions(test_iris_command_ledger PRIVATE
-    TURBO_MEDIA_HAS_IVR_FMQ)
+    TURBO_MEDIA_HAS_IVR_CONTROL)
   add_test(NAME test_iris_command_ledger COMMAND test_iris_command_ledger)
   set_tests_properties(test_iris_command_ledger PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
@@ -503,8 +524,7 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
   turbo_media_deploy_windows_runtime(
-    test_iris_command_ledger TurboParser::Mustache TurboParser::Parser
-    TurboUtils::Core)
+    test_iris_command_ledger Salts::Mustache Salts::Core)
 
   add_executable(test_iris_orm_store
     tests/test_iris_orm_store.c
@@ -512,7 +532,7 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   target_include_directories(test_iris_orm_store PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_iris_orm_store PRIVATE
-    TurboDB::ORM TurboUtils::Core TurboParser::Parser TurboUtils::TinyTest)
+    Orm::C Salts::Core Salts::CYaml Salts::TinyTest)
   add_test(NAME test_iris_orm_store COMMAND test_iris_orm_store)
   set_tests_properties(test_iris_orm_store PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
@@ -520,14 +540,13 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
   turbo_media_deploy_windows_runtime(
-    test_iris_orm_store TurboParser::Mustache TurboParser::Parser
-    TurboUtils::Core)
+    test_iris_orm_store Salts::Mustache Salts::Core)
 
-  add_executable(test_ivr_fmq_adapter
-    tests/test_ivr_fmq_adapter.c
-    src/ivr_fmq_adapter.c
+  add_executable(test_ivr_control_adapter
+    tests/test_ivr_control_adapter.c
+    src/ivr_control_adapter.c
   )
-  target_include_directories(test_ivr_fmq_adapter
+  target_include_directories(test_ivr_control_adapter
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
       ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -535,31 +554,31 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
       ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include
       ${CMAKE_SOURCE_DIR}/webrtc/tests
   )
-  target_link_libraries(test_ivr_fmq_adapter
+  target_link_libraries(test_ivr_control_adapter
     PRIVATE
       TurboMedia::RtcApps
       TurboMedia::RTC
       turbo_media_ivr
-      TurboUtils::TinyTest
+      Salts::TinyTest
       $<$<PLATFORM_ID:Linux>:m>
       $<$<PLATFORM_ID:Linux>:pthread>
   )
-  target_compile_definitions(test_ivr_fmq_adapter
-    PRIVATE TURBO_MEDIA_HAS_IVR_FMQ)
-  add_test(NAME test_ivr_fmq_adapter COMMAND test_ivr_fmq_adapter)
-  set_tests_properties(test_ivr_fmq_adapter PROPERTIES
+  target_compile_definitions(test_ivr_control_adapter
+    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
+  add_test(NAME test_ivr_control_adapter COMMAND test_ivr_control_adapter)
+  set_tests_properties(test_ivr_control_adapter PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     TIMEOUT 60)
-  set_target_properties(test_ivr_fmq_adapter PROPERTIES
+  set_target_properties(test_ivr_control_adapter PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    OUTPUT_NAME "test_ivr_fmq_adapter"
+    OUTPUT_NAME "test_ivr_control_adapter"
     FOLDER "Applications/tests")
   turbo_media_deploy_windows_runtime(
-    test_ivr_fmq_adapter FlowMQ::FlowMQ TurboNet::CoroNet
-    TurboParser::Parser TurboUtils::Core)
+    test_ivr_control_adapter  Salts::CNet
+    Salts::Core)
 endif()
 
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_executable(ivr_dispatch_worker_probe
     tests/ivr_dispatch_worker_probe.c)
   target_include_directories(ivr_dispatch_worker_probe PRIVATE
@@ -572,11 +591,13 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
 
   add_executable(test_ivr_dispatch_processes
     tests/test_ivr_dispatch_processes.c
-    tests/iris_flowmq_process_peer.c
+    tests/iris_control_process_peer.c
+    src/iris_provider_protocol.c
   )
   target_include_directories(test_ivr_dispatch_processes
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
       ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
       ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include
       ${CMAKE_SOURCE_DIR}/webrtc/tests
@@ -584,21 +605,20 @@ if(TURBO_MEDIA_HAS_IVR_FMQ)
   target_link_libraries(test_ivr_dispatch_processes
     PRIVATE
       turbo_media_ivr_rtc
-      TurboHttp::TurboHttp
-      TurboHttp::Iris
-      FlowMQ::FlowMQ
-      TurboParser::Parser
-      TurboParser::DataBind
-      TurboNet::CoroNet
-      TurboNet::Crypto
-      TurboUtils::Core
-      TurboUtils::TinyTest
+      room_service_iris_outbox_schema
+      Salts::CHTTP
+      Salts::JsonParser
+      Salts::DataBind
+      Salts::CNet
+      SaltsNet::Crypto
+      Salts::Core
+      Salts::TinyTest
       $<$<PLATFORM_ID:Linux>:m>
       $<$<PLATFORM_ID:Linux>:pthread>
   )
   target_compile_definitions(test_ivr_dispatch_processes
     PRIVATE
-      TURBO_MEDIA_HAS_IVR_FMQ
+      TURBO_MEDIA_HAS_IVR_CONTROL
       TEST_BIN_DIR="${CMAKE_BINARY_DIR}/bin"
       ROOM_SERVICE_BIN="$<TARGET_FILE_NAME:room_service>"
       IVR_WORKER_BIN="$<TARGET_FILE_NAME:ivr_worker>"
@@ -633,7 +653,7 @@ target_include_directories(test_sfu_minimal_environment
 target_link_libraries(test_sfu_minimal_environment
   PRIVATE
     turbo_media_ivr
-    TurboUtils::TinyTest
+    Salts::TinyTest
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>)
 target_compile_definitions(test_sfu_minimal_environment
@@ -664,7 +684,7 @@ target_include_directories(test_ivr_whip_transport
 target_link_libraries(test_ivr_whip_transport
   PRIVATE
     turbo_media_ivr_rtc
-    TurboUtils::TinyTest
+    Salts::TinyTest
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>)
 add_dependencies(test_ivr_whip_transport sfu_node)
@@ -692,7 +712,7 @@ file(
 cmake_add_test(
   turbo_media_test_room_service_config
   SOURCES tests/test_room_service_config.c src/config.c
-  LIBS turbo_media_auth TurboUtils::TinyTest TurboUtils::Core TurboParser::Parser
+  LIBS turbo_media_auth Salts::TinyTest Salts::Core Salts::TomlParser
   DEFS ROOM_SERVICE_CONFIG_EXAMPLE_PATH="${ROOM_SERVICE_CONFIG_EXAMPLE_PATH}"
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include
   FOLDER "Applications/tests")

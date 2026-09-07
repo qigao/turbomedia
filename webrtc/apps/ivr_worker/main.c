@@ -1,21 +1,20 @@
 /* ivr_worker - standalone IVR worker executable.
  *
- * Wires the real pieces together: FlowMQ DEALER command gateway (worker.sync
+ * Wires the real pieces together: CHTTP HTTP/1.1 WebSocket command gateway (worker.sync
  * registration + typed media commands/results), a media-event sink, and
  * per-call WHIP/WHEP bot media. Iris remains the only XML/JavaScript workflow
  * owner; this process does not consume domain events or content packages.
  *
  * Run loop stops on SIGINT/SIGTERM: begin_drain -> stop subscriber -> destroy
  * gateway -> destroy worker. `--dry-run` validates the config and exercises
- * worker/session creation without touching FlowMQ. */
+ * worker/session creation without touching CHTTP H1 WebSocket. */
 #include "ivr/ivr_worker.h"
 #include "ivr_media_bot.h"
 #include "ivr_openai_provider.h"
 #include "ivr_speech_session_factory.h"
-#include "ivr_flowmq_gateway.h"
+#include "ivr_control_gateway.h"
 #include "ivr_http_media_client.h"
 #include "ivr/ivr_acl.h"
-#include "flowmq_coronet.h"
 #include "ivr_whip_transport.h"
 #include "ivr_whep_transport.h"
 #include "ivr_media_supervisor.h"
@@ -30,7 +29,7 @@
 #include "turbomedia_ivr_v1.h"
 #include "disruptor.h"
 #include "platform.h"
-#include "turbo_uuid.h"
+#include "salts_uuid.h"
 #include "../config_toml.h"
 #include <signal.h>
 #include <errno.h>
@@ -72,6 +71,7 @@
  *   OPENAI_API_KEY        Bearer credential (optional; endpoints without auth)
  *   IVR_OPENAI_TTS_MODEL / IVR_OPENAI_TTS_VOICE / IVR_OPENAI_ASR_MODEL
  *   IVR_OPENAI_ASR_LANGUAGE / IVR_OPENAI_SAMPLE_RATE / IVR_OPENAI_TIMEOUT_MS
+ *   IVR_OPENAI_CA_FILE / IVR_OPENAI_SERVER_NAME for HTTPS trust and identity
  * Without IVR_OPENAI_BASE_URL active mode fails readiness; only explicit
  * dry-run/shadow modes may use the logging transport. */
 static ivr_openai_config_t g_remote_config;
@@ -193,6 +193,8 @@ static int remote_speech_init(void) {
     g_remote_config.tts_voice = getenv("IVR_OPENAI_TTS_VOICE");
     g_remote_config.asr_model = getenv("IVR_OPENAI_ASR_MODEL");
     g_remote_config.asr_language = getenv("IVR_OPENAI_ASR_LANGUAGE");
+    g_remote_config.ca_file = getenv("IVR_OPENAI_CA_FILE");
+    g_remote_config.server_name = getenv("IVR_OPENAI_SERVER_NAME");
     output_sample_rate =
         speech_sample_rate && speech_sample_rate[0]
             ? env_int("IVR_OPENAI_SAMPLE_RATE", 0)
@@ -256,19 +258,20 @@ typedef struct {
     const char *worker_id;
     const char *router_host;
     int router_port;
+    const char *router_path;
     const char *health_host;
     int health_port;
     uint32_t max_sessions;
     uint64_t timeout_ms;
     uint64_t heartbeat_ms;
     uint64_t lease_ms;
-    int fmq_use_tls;
-    int fmq_allow_insecure_loopback;
-    const char *fmq_ca_file;
-    const char *fmq_cert_file;
-    const char *fmq_key_file;
-    const char *fmq_key_password;
-    const char *fmq_server_name;
+    int control_ws_use_tls;
+    int control_ws_allow_insecure_loopback;
+    const char *control_ws_ca_file;
+    const char *control_ws_cert_file;
+    const char *control_ws_key_file;
+    const char *control_ws_key_password;
+    const char *control_ws_server_name;
     /* Optional defense-in-depth scope for authenticated media commands. */
     const char *tenant_id;
     const char *room_scope;
@@ -306,14 +309,14 @@ static void toml_config_shutdown(void) {
     toml_strings_cleanup();
 }
 
-static int toml_copy_string(const turbo_toml_t *table, const char *key,
+static int toml_copy_string(const toml_table_t *table, const char *key,
                             const char **target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
     char *copy;
     if (!table || !key || !target || !rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_string(table, key);
+    value = toml_table_string(table, key);
     if (!value.ok || !value.u.s || value.u.sl < 0 ||
         strlen(value.u.s) != (size_t)value.u.sl ||
         g_toml_string_count >= sizeof(g_toml_strings) / sizeof(g_toml_strings[0])) {
@@ -330,12 +333,12 @@ static int toml_copy_string(const turbo_toml_t *table, const char *key,
     return 0;
 }
 
-static int toml_copy_int(const turbo_toml_t *table, const char *key, int *target) {
-    turbo_toml_value_t value;
+static int toml_copy_int(const toml_table_t *table, const char *key, int *target) {
+    toml_value_t value;
     if (!table || !key || !target || !rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_int(table, key);
+    value = toml_table_int(table, key);
     if (!value.ok || value.u.i < INT_MIN || value.u.i > INT_MAX) {
         return -1;
     }
@@ -343,26 +346,26 @@ static int toml_copy_int(const turbo_toml_t *table, const char *key, int *target
     return 0;
 }
 
-static int toml_copy_bool(const turbo_toml_t *table, const char *key,
+static int toml_copy_bool(const toml_table_t *table, const char *key,
                           int *target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
     if (!table || !key || !target || !rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_bool(table, key);
+    value = toml_table_bool(table, key);
     if (!value.ok) return -1;
     *target = value.u.b ? 1 : 0;
     return 0;
 }
 
 static int load_toml_config(const char *filename) {
-    turbo_toml_t *worker = NULL;
+    toml_table_t *worker = NULL;
     const char *const allowed[] = {
-        "worker_id",   "router_host",  "router_port",  "health_host",
+        "worker_id",   "router_host",  "router_port",  "router_path", "health_host",
         "health_port", "max_sessions", "heartbeat_ms", "lease_ms",
-        "fmq_use_tls", "fmq_allow_insecure_loopback", "fmq_ca_file",
-        "fmq_cert_file", "fmq_key_file", "fmq_key_password",
-        "fmq_server_name",
+        "control_ws_use_tls", "control_ws_allow_insecure_loopback", "control_ws_ca_file",
+        "control_ws_cert_file", "control_ws_key_file", "control_ws_key_password",
+        "control_ws_server_name",
         "tenant_id", "room_scope", "call_scope"};
     if (!filename || !filename[0]) {
         return 0;
@@ -376,18 +379,19 @@ static int load_toml_config(const char *filename) {
         toml_copy_string(worker, "worker_id", &g_config.worker_id) != 0 ||
         toml_copy_string(worker, "router_host", &g_config.router_host) != 0 ||
         toml_copy_int(worker, "router_port", &g_config.router_port) != 0 ||
+        toml_copy_string(worker, "router_path", &g_config.router_path) != 0 ||
         toml_copy_string(worker, "health_host", &g_config.health_host) != 0 ||
         toml_copy_int(worker, "health_port", &g_config.health_port) != 0 ||
-        toml_copy_bool(worker, "fmq_use_tls", &g_config.fmq_use_tls) != 0 ||
-        toml_copy_bool(worker, "fmq_allow_insecure_loopback",
-                       &g_config.fmq_allow_insecure_loopback) != 0 ||
-        toml_copy_string(worker, "fmq_ca_file", &g_config.fmq_ca_file) != 0 ||
-        toml_copy_string(worker, "fmq_cert_file", &g_config.fmq_cert_file) != 0 ||
-        toml_copy_string(worker, "fmq_key_file", &g_config.fmq_key_file) != 0 ||
-        toml_copy_string(worker, "fmq_key_password",
-                         &g_config.fmq_key_password) != 0 ||
-        toml_copy_string(worker, "fmq_server_name",
-                         &g_config.fmq_server_name) != 0 ||
+        toml_copy_bool(worker, "control_ws_use_tls", &g_config.control_ws_use_tls) != 0 ||
+        toml_copy_bool(worker, "control_ws_allow_insecure_loopback",
+                       &g_config.control_ws_allow_insecure_loopback) != 0 ||
+        toml_copy_string(worker, "control_ws_ca_file", &g_config.control_ws_ca_file) != 0 ||
+        toml_copy_string(worker, "control_ws_cert_file", &g_config.control_ws_cert_file) != 0 ||
+        toml_copy_string(worker, "control_ws_key_file", &g_config.control_ws_key_file) != 0 ||
+        toml_copy_string(worker, "control_ws_key_password",
+                         &g_config.control_ws_key_password) != 0 ||
+        toml_copy_string(worker, "control_ws_server_name",
+                         &g_config.control_ws_server_name) != 0 ||
         toml_copy_string(worker, "tenant_id", &g_config.tenant_id) != 0 ||
         toml_copy_string(worker, "room_scope", &g_config.room_scope) != 0 ||
         toml_copy_string(worker, "call_scope", &g_config.call_scope) != 0) {
@@ -431,12 +435,13 @@ static int apply_env_config(void) {
 #define ENV_STR(name, field) do { v = getenv(name); if (v && v[0]) g_config.field = v; } while (0)
     ENV_STR("IVR_WORKER_ID", worker_id);
     ENV_STR("IVR_ROUTER_HOST", router_host);
+    ENV_STR("IVR_ROUTER_PATH", router_path);
     ENV_STR("IVR_HEALTH_HOST", health_host);
-    ENV_STR("IVR_FMQ_CA_FILE", fmq_ca_file);
-    ENV_STR("IVR_FMQ_CERT_FILE", fmq_cert_file);
-    ENV_STR("IVR_FMQ_KEY_FILE", fmq_key_file);
-    ENV_STR("IVR_FMQ_KEY_PASSWORD", fmq_key_password);
-    ENV_STR("IVR_FMQ_SERVER_NAME", fmq_server_name);
+    ENV_STR("IVR_CONTROL_CA_FILE", control_ws_ca_file);
+    ENV_STR("IVR_CONTROL_CERT_FILE", control_ws_cert_file);
+    ENV_STR("IVR_CONTROL_KEY_FILE", control_ws_key_file);
+    ENV_STR("IVR_CONTROL_KEY_PASSWORD", control_ws_key_password);
+    ENV_STR("IVR_CONTROL_SERVER_NAME", control_ws_server_name);
 #undef ENV_STR
     v = getenv("IVR_ROUTER_PORT");
     if (v && v[0] && (parse_port_arg(v, &port) != 0)) return -1;
@@ -453,22 +458,22 @@ static int apply_env_config(void) {
     v = getenv("IVR_LEASE_MS");
     if (v && v[0] && (parse_u64_arg(v, &u64) != 0)) return -1;
     if (v && v[0]) g_config.lease_ms = u64;
-    v = getenv("IVR_FMQ_USE_TLS");
+    v = getenv("IVR_CONTROL_USE_TLS");
     if (v && v[0]) {
         if (strcmp(v, "1") == 0 || strcmp(v, "true") == 0) {
-            g_config.fmq_use_tls = 1;
+            g_config.control_ws_use_tls = 1;
         } else if (strcmp(v, "0") == 0 || strcmp(v, "false") == 0) {
-            g_config.fmq_use_tls = 0;
+            g_config.control_ws_use_tls = 0;
         } else {
             return -1;
         }
     }
-    v = getenv("IVR_FMQ_ALLOW_INSECURE_LOOPBACK");
+    v = getenv("IVR_CONTROL_ALLOW_INSECURE_LOOPBACK");
     if (v && v[0]) {
         if (strcmp(v, "1") == 0 || strcmp(v, "true") == 0) {
-            g_config.fmq_allow_insecure_loopback = 1;
+            g_config.control_ws_allow_insecure_loopback = 1;
         } else if (strcmp(v, "0") == 0 || strcmp(v, "false") == 0) {
-            g_config.fmq_allow_insecure_loopback = 0;
+            g_config.control_ws_allow_insecure_loopback = 0;
         } else {
             return -1;
         }
@@ -476,7 +481,7 @@ static int apply_env_config(void) {
     return 0;
 }
 static ivr_worker_t *g_worker = NULL;
-static ivr_flowmq_gateway_t *g_gateway = NULL;
+static ivr_control_gateway_t *g_gateway = NULL;
 static ivr_command_gateway_ops_t g_real_ops;
 static volatile sig_atomic_t g_signal_stop = 0;
 static ivr_atomic_int_t g_running;
@@ -511,7 +516,7 @@ static ivr_worker_control_state_t g_control_state;
 static ivr_atomic_int_t g_accept_replies;
 static ivr_atomic_int_t g_accept_media_events;
 static atomic_ullong g_media_event_sequence;
-static char g_instance_id[TURBO_UUID_STRING_SIZE];
+static char g_instance_id[SALTS_UUID_STRING_SIZE];
 static const char *g_sfu_base_url = NULL;
 static const char *g_sfu_media_token = NULL;
 static const char *g_sfu_ca_file = NULL;
@@ -532,7 +537,7 @@ static ivr_status_t enqueue_media_event_copy(
 
 static void metrics_observe_elapsed(ivr_worker_histogram_kind_t kind,
                                     uint64_t started_at_ms) {
-    uint64_t finished_at_ms = turbo_monotonic_ms();
+    uint64_t finished_at_ms = salts_monotonic_ms();
     ivr_worker_metrics_observe_ms(
         &g_metrics, kind,
         finished_at_ms >= started_at_ms ? finished_at_ms - started_at_ms : 0);
@@ -540,7 +545,7 @@ static void metrics_observe_elapsed(ivr_worker_histogram_kind_t kind,
 
 static uint64_t worker_now_ms(void *context) {
     (void)context;
-    return turbo_monotonic_ms();
+    return salts_monotonic_ms();
 }
 
 static void management_http_stop(void) {
@@ -581,7 +586,7 @@ static void health_publish(int content_ready, int schema_ready,
         value.active_sessions + value.reserved_sessions < value.max_sessions;
     value.ready = effective_ready;
     snprintf(value.capabilities, sizeof(value.capabilities),
-             "media-executor,flowmq%s%s%s", speech_ready ? ",tts,asr" : "",
+             "media-executor,control_ws%s%s%s", speech_ready ? ",tts,asr" : "",
              sfu_ready ? ",whip,whep" : "",
              effective_ready ? ",health.ready" : "");
     snprintf(value.reason, sizeof(value.reason), "%s", reason ? reason : "");
@@ -605,7 +610,7 @@ static int refresh_health_capacity(ivr_worker_health_snapshot_t *out) {
     }
     if (out->ready != previous_ready) {
         snprintf(out->capabilities, sizeof(out->capabilities),
-                 "media-executor,flowmq%s%s%s",
+                 "media-executor,control_ws%s%s%s",
                  out->speech_ready ? ",tts,asr" : "",
                  out->sfu_ready ? ",whip,whep" : "",
                  out->ready ? ",health.ready" : "");
@@ -643,14 +648,14 @@ static void fill_worker_status(ivr_worker_status_view_t *status) {
 static ivr_status_t send_worker_sync_v2(const char *message_id) {
     ivr_worker_status_view_t status;
     fill_worker_status(&status);
-    return ivr_flowmq_gateway_send_worker_sync_v2(g_gateway, message_id,
+    return ivr_control_gateway_send_worker_sync_v2(g_gateway, message_id,
                                                    &status);
 }
 
 static ivr_status_t send_worker_heartbeat(const char *message_id) {
     ivr_worker_status_view_t status;
     fill_worker_status(&status);
-    return ivr_flowmq_gateway_send_worker_heartbeat(g_gateway, message_id,
+    return ivr_control_gateway_send_worker_heartbeat(g_gateway, message_id,
                                                      &status);
 }
 
@@ -834,10 +839,10 @@ static uint32_t media_restart(void *context, uint64_t attempt_generation) {
     ivr_call_ref_t call;
     ivr_media_transport_t transport;
     uint32_t failed = 0;
-    (void)attempt_generation;
     if (!instance || !instance->whip || !instance->whep) {
         return IVR_MEDIA_RESTART_WHIP_FAILED | IVR_MEDIA_RESTART_WHEP_FAILED;
     }
+    (void)attempt_generation;
     media_instance_call(instance, &call);
     (void)ivr_whep_transport_stop(instance->whep, &call);
     ivr_whip_transport_get_transport(instance->whip, &transport);
@@ -1447,7 +1452,7 @@ static void configure_media_from_environment(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* DEALER command/result ingress                                      */
+/* WebSocket command/result ingress                                   */
 /* ------------------------------------------------------------------ */
 
 static const char *media_error_code(ivr_status_t status) {
@@ -1553,9 +1558,9 @@ static void reject_legacy_session_command(const uint8_t *frame, size_t len,
     }
     if (type_id == IVR_TYPE_CALL_RELEASE_COMMAND_V1) {
         ivr_call_release_t release;
-        if (ivr_flowmq_gateway_decode_release(codec, frame, len, &release) ==
+        if (ivr_control_gateway_decode_release(codec, frame, len, &release) ==
             IVR_OK && strcmp(release.worker_id, g_config.worker_id) == 0) {
-            (void)ivr_flowmq_gateway_send_release_result(
+            (void)ivr_control_gateway_send_release_result(
                 g_gateway, &release, IVR_EVERSION, "media.protocol_required",
                 "use typed media commands");
         }
@@ -1563,9 +1568,9 @@ static void reject_legacy_session_command(const uint8_t *frame, size_t len,
     }
     {
         ivr_call_dispatch_t dispatch;
-        if (ivr_flowmq_gateway_decode_dispatch(codec, frame, len, &dispatch) ==
+        if (ivr_control_gateway_decode_dispatch(codec, frame, len, &dispatch) ==
             IVR_OK && strcmp(dispatch.worker_id, g_config.worker_id) == 0) {
-            (void)ivr_flowmq_gateway_send_dispatch_result(
+            (void)ivr_control_gateway_send_dispatch_result(
                 g_gateway, &dispatch, IVR_EVERSION,
                 "media.protocol_required", "use typed media commands");
         }
@@ -1578,7 +1583,7 @@ static void handle_inventory_query(const uint8_t *frame, size_t len) {
     DataBind *codec = ensure_codec();
     ivr_status_t status;
     if (!codec) return;
-    status = ivr_flowmq_gateway_decode_inventory_query(codec, frame, len,
+    status = ivr_control_gateway_decode_inventory_query(codec, frame, len,
                                                        &request);
     if (!request.message_id[0] || !request.worker_id[0] ||
         strcmp(request.worker_id, g_config.worker_id) != 0) {
@@ -1614,7 +1619,7 @@ static void handle_inventory_query(const uint8_t *frame, size_t len) {
                                  ? "invalid inventory cursor or limit"
                                  : "worker inventory unavailable");
     }
-    status = ivr_flowmq_gateway_send_inventory_page(g_gateway, &result);
+    status = ivr_control_gateway_send_inventory_page(g_gateway, &result);
     if (status != IVR_OK) {
         fprintf(stderr,
                 "ivr_worker: inventory page send failed message=%s status=%d\n",
@@ -1640,7 +1645,7 @@ static void handle_reply(const uint8_t *frame, size_t len) {
         ivr_media_command_t command;
         DataBind *codec = ensure_codec();
         if (!codec ||
-            ivr_flowmq_gateway_decode_media_command(codec, frame, len,
+            ivr_control_gateway_decode_media_command(codec, frame, len,
                                                      &command) !=
                 IVR_OK) {
             ivr_worker_metrics_inc(&g_metrics,
@@ -1654,7 +1659,7 @@ static void handle_reply(const uint8_t *frame, size_t len) {
             return;
         }
         {
-            uint64_t received_at_ms = turbo_monotonic_ms();
+            uint64_t received_at_ms = salts_monotonic_ms();
             ivr_status_t rc = execute_media_command(&command, received_at_ms);
             const char *error_code = rc == IVR_OK ? "" : media_error_code(rc);
             const char *error_message =
@@ -1667,7 +1672,7 @@ static void handle_reply(const uint8_t *frame, size_t len) {
                             "ivr_worker: media capacity refresh failed\n");
                 }
             }
-            if (ivr_flowmq_gateway_send_media_result(
+            if (ivr_control_gateway_send_media_result(
                     g_gateway, &command, rc, error_code, error_message) !=
                 IVR_OK) {
                 fprintf(stderr,
@@ -1761,13 +1766,13 @@ static void on_reply(void *ctx, const uint8_t *frame, size_t len) {
         !g_reply_queue || !frame || len == 0 ||
         len > IVR_WORKER_REPLY_FRAME_CAPACITY) {
         ivr_worker_metrics_inc(&g_metrics, IVR_WORKER_METRIC_REPLY_INVALID);
-        fprintf(stderr, "ivr_worker: rejected invalid or closed FlowMQ reply\n");
+        fprintf(stderr, "ivr_worker: rejected invalid or closed CHTTP H1 WebSocket reply\n");
         return;
     }
     if (!disruptor_publisher_try_claim(g_reply_queue, &cursor)) {
         ivr_worker_metrics_inc(&g_metrics,
                                IVR_WORKER_METRIC_REPLY_QUEUE_FULL);
-        fprintf(stderr, "ivr_worker: FlowMQ reply queue full\n");
+        fprintf(stderr, "ivr_worker: CHTTP H1 WebSocket reply queue full\n");
         return;
     }
     entry = (ivr_worker_reply_entry_t *)disruptor_acquire_entry(g_reply_queue,
@@ -2005,9 +2010,9 @@ static void process_media_events(void) {
         event.payload_json.data = entry->payload_json;
         event.payload_json.size = strlen(entry->payload_json);
         if (g_gateway &&
-            ivr_flowmq_gateway_send_media_event(
+            ivr_control_gateway_send_media_event(
                 g_gateway, g_config.worker_id, &event,
-                turbo_monotonic_ms()) != IVR_OK) {
+                salts_monotonic_ms()) != IVR_OK) {
             fprintf(stderr,
                     "ivr_worker: media event send failed session=%s type=%s\n",
                     entry->provider_session_id, entry->event_type);
@@ -2032,10 +2037,10 @@ static void media_event_queue_destroy(void) {
 static void usage(const char *program) {
     printf("TurboNet IVR Worker v%s\n\n", IVR_WORKER_APP_VERSION);
     printf("Usage: %s [OPTIONS]\n\n", program);
-    printf("  --worker-id ID        DEALER identity (default: ivr-worker-1)\n");
+    printf("  --worker-id ID        control-channel identity (default: ivr-worker-1)\n");
     printf("  --config PATH         TOML config (below env and CLI)\n");
-    printf("  --router-host HOST    RoomService ROUTER host (default: 127.0.0.1)\n");
-    printf("  --router-port PORT    RoomService ROUTER port (required unless --dry-run)\n");
+    printf("  --router-host HOST    RoomService control host (default: 127.0.0.1)\n");
+    printf("  --router-port PORT    RoomService control port (required unless --dry-run)\n");
     printf("  --health-host HOST    Management bind (loopback only)\n");
     printf("  --health-port PORT    Management port (default: 18081)\n");
     printf("  --max-sessions N      Session slots (default: 4)\n");
@@ -2195,10 +2200,10 @@ static void print_config(void) {
            (unsigned long long)g_config.timeout_ms);
     printf("  lease_ms: %llu\n", (unsigned long long)g_config.lease_ms);
     printf("  gateway: %s\n", g_config.shadow ? "shadow (capture)" : "forward");
-    printf("  fmq_security: %s\n",
-           g_config.fmq_use_tls
+    printf("  control_ws_security: %s\n",
+           g_config.control_ws_use_tls
                ? "mTLS"
-               : (g_config.fmq_allow_insecure_loopback
+               : (g_config.control_ws_allow_insecure_loopback
                       ? "trusted-loopback"
                       : "disabled"));
     printf("  assignments: %d\n", g_config.assign_count);
@@ -2237,14 +2242,15 @@ int main(int argc, char **argv) {
     g_config.worker_id = "ivr-worker-1";
     g_config.router_host = "127.0.0.1";
     g_config.router_port = 0;
+    g_config.router_path = "/internal/ivr/control";
     g_config.health_host = "127.0.0.1";
     g_config.health_port = IVR_WORKER_DEFAULT_HEALTH_PORT;
     g_config.max_sessions = 4;
     g_config.timeout_ms = 0;
     g_config.heartbeat_ms = IVR_WORKER_DEFAULT_HEARTBEAT_MS;
     g_config.lease_ms = IVR_WORKER_DEFAULT_LEASE_MS;
-    g_config.fmq_use_tls = 0;
-    g_config.fmq_allow_insecure_loopback = 0;
+    g_config.control_ws_use_tls = 0;
+    g_config.control_ws_allow_insecure_loopback = 0;
     if (ivr_worker_health_init(&g_health, g_config.max_sessions) != 0) {
         fprintf(stderr, "ivr_worker: health snapshot init failed\n");
         return 1;
@@ -2320,7 +2326,7 @@ int main(int argc, char **argv) {
         g_health_initialized = 0;
         return 1;
     }
-    /* Keep FlowMQ's idle deadline strictly beyond the heartbeat deadline.
+    /* Keep CHTTP H1 WebSocket's idle deadline strictly beyond the heartbeat deadline.
        The lease validation above makes this multiplication overflow-safe. */
     g_config.timeout_ms =
         g_config.heartbeat_ms * IVR_WORKER_TRANSPORT_TIMEOUT_HEARTBEATS;
@@ -2330,22 +2336,22 @@ int main(int argc, char **argv) {
                 "(or use --dry-run)\n");
         return 1;
     }
-    if (g_config.fmq_use_tls) {
-        if (g_config.fmq_allow_insecure_loopback || !g_config.fmq_ca_file ||
-            !g_config.fmq_ca_file[0] || !g_config.fmq_cert_file ||
-            !g_config.fmq_cert_file[0] || !g_config.fmq_key_file ||
-            !g_config.fmq_key_file[0] || !g_config.fmq_server_name ||
-            !g_config.fmq_server_name[0]) {
+    if (g_config.control_ws_use_tls) {
+        if (g_config.control_ws_allow_insecure_loopback || !g_config.control_ws_ca_file ||
+            !g_config.control_ws_ca_file[0] || !g_config.control_ws_cert_file ||
+            !g_config.control_ws_cert_file[0] || !g_config.control_ws_key_file ||
+            !g_config.control_ws_key_file[0] || !g_config.control_ws_server_name ||
+            !g_config.control_ws_server_name[0]) {
             fprintf(stderr,
-                    "ivr_worker: complete FlowMQ mTLS identity "
+                    "ivr_worker: complete CHTTP H1 WebSocket mTLS identity "
                     "configuration is required\n");
             return 1;
         }
     } else if (!g_config.dry_run) {
-        if (!g_config.shadow || !g_config.fmq_allow_insecure_loopback ||
+        if (!g_config.shadow || !g_config.control_ws_allow_insecure_loopback ||
             !ivr_worker_is_loopback(g_config.router_host)) {
             fprintf(stderr,
-                    "ivr_worker: active mode requires FlowMQ mTLS; plaintext "
+                    "ivr_worker: active mode requires CHTTP H1 WebSocket mTLS; plaintext "
                     "is limited to explicit loopback shadow mode\n");
             return 1;
         }
@@ -2378,16 +2384,16 @@ int main(int argc, char **argv) {
     }
     print_config();
 
-    turbo_uuid_t instance_uuid;
-    if (turbo_uuid_v4_generate(&instance_uuid) != TURBO_OK ||
-        turbo_uuid_format(&instance_uuid, g_instance_id,
-                          sizeof(g_instance_id)) != TURBO_OK) {
+    salts_uuid_t instance_uuid;
+    if (salts_uuid_v4_generate(&instance_uuid) != SALTS_OK ||
+        salts_uuid_format(&instance_uuid, g_instance_id,
+                          sizeof(g_instance_id)) != SALTS_OK) {
         fprintf(stderr, "ivr_worker: instance UUID generation failed\n");
         return 1;
     }
 
     if (g_config.dry_run) {
-        /* Exercise media-call admission without touching FlowMQ. */
+        /* Exercise media-call admission without touching CHTTP H1 WebSocket. */
         ivr_media_port_factory_ops_t media_factory;
         ivr_media_event_sink_ops_t event_sink;
         memset(&media_factory, 0, sizeof(media_factory));
@@ -2480,28 +2486,28 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    flowmq_coronet_tls_client_config_t fmq_tls;
-    memset(&fmq_tls, 0, sizeof(fmq_tls));
-    if (g_config.fmq_use_tls) {
-        fmq_tls.ca_file = g_config.fmq_ca_file;
-        fmq_tls.cert_file = g_config.fmq_cert_file;
-        fmq_tls.key_file = g_config.fmq_key_file;
-        fmq_tls.key_password = g_config.fmq_key_password;
-        fmq_tls.server_name = g_config.fmq_server_name;
-        fmq_tls.verify_peer = 1;
+    cnet_tls_client_config control_ws_tls;
+    memset(&control_ws_tls, 0, sizeof(control_ws_tls));
+    if (g_config.control_ws_use_tls) {
+        control_ws_tls.size = sizeof(control_ws_tls);
+        control_ws_tls.ca_file = g_config.control_ws_ca_file;
+        control_ws_tls.cert_file = g_config.control_ws_cert_file;
+        control_ws_tls.key_file = g_config.control_ws_key_file;
+        control_ws_tls.key_password = g_config.control_ws_key_password;
+        control_ws_tls.server_name = g_config.control_ws_server_name;
     }
-    ivr_flowmq_gateway_config_t gcfg;
+    ivr_control_gateway_config_t gcfg;
     memset(&gcfg, 0, sizeof(gcfg));
     gcfg.worker_id = g_config.worker_id;
     gcfg.host = g_config.router_host;
     gcfg.port = g_config.router_port;
+    gcfg.path = g_config.router_path;
     gcfg.timeout_ms = g_config.timeout_ms;
-    gcfg.transport = g_config.fmq_use_tls ? FLOWMQ_TRANSPORT_TLS
-                                          : FLOWMQ_TRANSPORT_TCP;
-    gcfg.tls = g_config.fmq_use_tls ? &fmq_tls : NULL;
+    gcfg.use_tls = g_config.control_ws_use_tls;
+    gcfg.tls = g_config.control_ws_use_tls ? &control_ws_tls : NULL;
     gcfg.on_reply = on_reply;
     gcfg.on_connection = on_command_connection;
-    if (ivr_flowmq_gateway_create(&gcfg, &g_real_ops, &g_gateway) != IVR_OK) {
+    if (ivr_control_gateway_create(&gcfg, &g_real_ops, &g_gateway) != IVR_OK) {
         fprintf(stderr, "ivr_worker: gateway create failed\n");
         reply_queue_destroy();
         management_http_stop();
@@ -2531,7 +2537,7 @@ int main(int argc, char **argv) {
     if (ivr_worker_create(&wcfg, &event_sink, &media_factory, &g_worker) !=
         IVR_OK) {
         fprintf(stderr, "ivr_worker: worker create failed\n");
-        ivr_flowmq_gateway_destroy(g_gateway);
+        ivr_control_gateway_destroy(g_gateway);
         media_event_queue_destroy();
         reply_queue_destroy();
         management_http_stop();
@@ -2541,7 +2547,7 @@ int main(int argc, char **argv) {
     if (ivr_worker_start(g_worker) != IVR_OK) {
         fprintf(stderr, "ivr_worker: worker start failed\n");
         ivr_worker_destroy(g_worker);
-        ivr_flowmq_gateway_destroy(g_gateway);
+        ivr_control_gateway_destroy(g_gateway);
         media_event_queue_destroy();
         reply_queue_destroy();
         management_http_stop();
@@ -2549,11 +2555,13 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (ivr_flowmq_gateway_start(g_gateway) != IVR_OK) {
-        fprintf(stderr, "ivr_worker: start failed\n");
+    ivr_status_t gateway_start_status = ivr_control_gateway_start(g_gateway);
+    if (gateway_start_status != IVR_OK) {
+        fprintf(stderr, "ivr_worker: control gateway start failed status=%d\n",
+                (int)gateway_start_status);
         ivr_worker_begin_drain(g_worker);
         ivr_worker_destroy(g_worker);
-        ivr_flowmq_gateway_destroy(g_gateway);
+        ivr_control_gateway_destroy(g_gateway);
         media_event_queue_destroy();
         reply_queue_destroy();
         management_http_stop();
@@ -2597,7 +2605,7 @@ int main(int argc, char **argv) {
     uint64_t heartbeat_sequence = 0;
     uint64_t health_revocation_sequence = 0;
     uint64_t next_heartbeat_ms =
-        turbo_monotonic_ms() + g_config.heartbeat_ms;
+        salts_monotonic_ms() + g_config.heartbeat_ms;
     int ticks = 0;
     while (atomic_load_explicit(&g_running, memory_order_acquire) &&
            !g_signal_stop) {
@@ -2631,7 +2639,7 @@ int main(int argc, char **argv) {
                 g_synced = 0;
             }
         }
-        /* retry worker.sync until acknowledged: the DEALER may not be
+        /* retry worker.sync until acknowledged: the WebSocket may not be
            connected when the first attempt is sent (registration is the
            readiness prerequisite) */
         if (!g_synced && command_connected && (++ticks % 20) == 0) {
@@ -2645,7 +2653,7 @@ int main(int argc, char **argv) {
             }
         }
         if (g_synced && command_connected &&
-            turbo_monotonic_ms() >= next_heartbeat_ms) {
+            salts_monotonic_ms() >= next_heartbeat_ms) {
             char mid[64];
             snprintf(mid, sizeof(mid), "heartbeat-%llu",
                      (unsigned long long)++heartbeat_sequence);
@@ -2662,7 +2670,7 @@ int main(int argc, char **argv) {
                        (unsigned long long)g_config.timeout_ms);
             }
             next_heartbeat_ms =
-                turbo_monotonic_ms() + g_config.heartbeat_ms;
+                salts_monotonic_ms() + g_config.heartbeat_ms;
         }
     }
 
@@ -2677,12 +2685,19 @@ int main(int argc, char **argv) {
     media_event_queue_destroy();
     ivr_worker_destroy(g_worker);
     g_worker = NULL;
-    ivr_flowmq_gateway_destroy(g_gateway);
-    g_gateway = NULL;
+    ivr_status_t gateway_destroy_status =
+        ivr_control_gateway_destroy(g_gateway);
+    if (gateway_destroy_status == IVR_OK) {
+        g_gateway = NULL;
+    } else {
+        fprintf(stderr,
+                "ivr_worker: control gateway destroy failed status=%d\n",
+                (int)gateway_destroy_status);
+    }
     reply_queue_destroy();
     management_http_stop();
     control_queue_destroy();
     ivr_worker_health_destroy(&g_health);
     g_health_initialized = 0;
-    return 0;
+    return gateway_destroy_status == IVR_OK ? 0 : 1;
 }

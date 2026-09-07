@@ -1,7 +1,7 @@
 #include "iris_orm_store.h"
 
 #include <tinytest.h>
-#include <turbo_error.h>
+#include <salts_error.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -19,7 +19,7 @@ static int collect_record(void *context, const iris_record_view_t *record) {
     if (!result || !record || result->count >= 4u ||
         record->key_size >= sizeof(result->keys[0]) ||
         record->value_size >= sizeof(result->values[0])) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     index = result->count++;
     memcpy(result->keys[index], record->key, record->key_size);
@@ -27,7 +27,7 @@ static int collect_record(void *context, const iris_record_view_t *record) {
     memcpy(result->values[index], record->value, record->value_size);
     result->values[index][record->value_size] = '\0';
     result->revisions[index] = record->revision;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int write_sqlite_yaml(const char *yaml_path, const char *db_path) {
@@ -181,14 +181,14 @@ spec("Iris TurboDB ORM record store") {
         mutations[1].next_revision = 1u;
         mutations[1].value = value_a;
         mutations[1].value_size = sizeof(value_a) - 1u;
-        check_equal(store->commit(store->ctx, mutations, 2u), TURBO_OK);
+        check_equal(store->commit(store->ctx, mutations, 2u), SALTS_OK);
         iris_orm_store_owner_destroy(owner);
 
         owner = iris_orm_store_owner_create(yaml_path, "iris.test", 1,
                                             error, sizeof(error));
         check_not_null(owner);
         store = iris_orm_store_owner_store(owner);
-        check_equal(store->scan(store->ctx, collect_record, &scan), TURBO_OK);
+        check_equal(store->scan(store->ctx, collect_record, &scan), SALTS_OK);
         check_equal(scan.count, 2u);
         check_equal(scan.keys[0], "a");
         check_equal(scan.keys[1], "b");
@@ -219,7 +219,7 @@ spec("Iris TurboDB ORM record store") {
         initial.next_revision = 1u;
         initial.value = value;
         initial.value_size = sizeof(value) - 1u;
-        check_equal(store->commit(store->ctx, &initial, 1u), TURBO_OK);
+        check_equal(store->commit(store->ctx, &initial, 1u), SALTS_OK);
 
         mutations[0] = initial;
         mutations[0].expected_revision = 9u;
@@ -229,8 +229,8 @@ spec("Iris TurboDB ORM record store") {
         mutations[1].next_revision = 1u;
         mutations[1].value = value;
         mutations[1].value_size = sizeof(value) - 1u;
-        check_equal(store->commit(store->ctx, mutations, 2u), TURBO_EBUSY);
-        check_equal(store->scan(store->ctx, collect_record, &scan), TURBO_OK);
+        check_equal(store->commit(store->ctx, mutations, 2u), SALTS_EBUSY);
+        check_equal(store->scan(store->ctx, collect_record, &scan), SALTS_OK);
         check_equal(scan.count, 1u);
         check_equal(scan.keys[0], "a");
         check_equal(scan.revisions[0], 1u);
@@ -255,7 +255,7 @@ spec("Iris TurboDB ORM record store") {
         owner = iris_orm_store_owner_create(
             postgresql_yaml_path, "iris.test", 0, error, sizeof(error));
         check_null(owner);
-        check_not_null(strstr(error, "postgresql ORM backend"));
+        check_not_null(strstr(error, "cannot connect TurboDB ORM"));
         check_null(strstr(error, "not exported by TurboMedia"));
     }
 
@@ -283,18 +283,18 @@ spec("Iris TurboDB ORM record store") {
         mutation.next_revision = 1u;
         mutation.value = value_five;
         mutation.value_size = sizeof(value_five) - 1u;
-        check_equal(store->commit(store->ctx, &mutation, 1u), TURBO_ENOSPC);
+        check_equal(store->commit(store->ctx, &mutation, 1u), SALTS_ENOSPC);
 
         mutation.value = value_four;
         mutation.value_size = sizeof(value_four) - 1u;
-        check_equal(store->commit(store->ctx, &mutation, 1u), TURBO_OK);
+        check_equal(store->commit(store->ctx, &mutation, 1u), SALTS_OK);
 
         mutation.key = key_b;
         mutation.next_revision = 1u;
         mutation.value = value_three;
         mutation.value_size = sizeof(value_three) - 1u;
-        check_equal(store->commit(store->ctx, &mutation, 1u), TURBO_ENOSPC);
-        check_equal(store->scan(store->ctx, collect_record, &scan), TURBO_OK);
+        check_equal(store->commit(store->ctx, &mutation, 1u), SALTS_ENOSPC);
+        check_equal(store->scan(store->ctx, collect_record, &scan), SALTS_OK);
         check_equal(scan.count, 1u);
         check_equal(scan.keys[0], "a");
         iris_orm_store_owner_destroy(owner);

@@ -1,7 +1,5 @@
 #include "turbo_media_server.h"
 
-#include "CoroNet/turbo_coro_context.h"
-
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,8 +12,6 @@
 
 struct turbo_media_server_s {
     turbo_media_server_runtime_t *runtime;
-    struct coro_context_s *coro_context;
-    int owns_coro_context;
     int started;
 };
 
@@ -71,23 +67,8 @@ turbo_media_server_t *turbo_media_server_create(
         memset(&runtime_config, 0, sizeof(runtime_config));
     }
 
-    if (runtime_config.coro_context) {
-        server->coro_context = runtime_config.coro_context;
-    } else {
-        server->coro_context = (struct coro_context_s *)coro_context_create(NULL);
-        if (!server->coro_context) {
-            free(server);
-            return NULL;
-        }
-        server->owns_coro_context = 1;
-        runtime_config.coro_context = server->coro_context;
-    }
-
     server->runtime = turbo_media_server_runtime_create(&runtime_config);
     if (!server->runtime) {
-        if (server->owns_coro_context) {
-            coro_context_destroy((coro_context_t *)server->coro_context);
-        }
         free(server);
         return NULL;
     }
@@ -101,14 +82,11 @@ void turbo_media_server_destroy(turbo_media_server_t *server) {
     (void)turbo_media_server_stop(server);
 
     turbo_media_server_runtime_destroy(server->runtime);
-    if (server->owns_coro_context && server->coro_context) {
-        coro_context_destroy((coro_context_t *)server->coro_context);
-    }
     free(server);
 }
 
 int turbo_media_server_start(turbo_media_server_t *server) {
-    if (!server || !server->runtime || !server->coro_context) {
+    if (!server || !server->runtime) {
         return TURBO_MEDIA_ERR_INVALID;
     }
 
@@ -120,9 +98,6 @@ int turbo_media_server_stop(turbo_media_server_t *server) {
     if (!server) return TURBO_MEDIA_ERR_INVALID;
     if (!server->started) return TURBO_MEDIA_OK;
 
-    if (server->owns_coro_context && server->coro_context) {
-        coro_context_stop((coro_context_t *)server->coro_context);
-    }
     server->started = 0;
     return TURBO_MEDIA_OK;
 }
@@ -159,11 +134,6 @@ void turbo_media_server_runtime_destroy(turbo_media_server_runtime_t *runtime) {
 
     turbo_media_registry_destroy(runtime->registry);
     free(runtime);
-}
-
-struct coro_context_s *turbo_media_server_runtime_coro_context(
-    const turbo_media_server_runtime_t *runtime) {
-    return runtime ? runtime->config.coro_context : NULL;
 }
 
 void *turbo_media_server_runtime_user_data(const turbo_media_server_runtime_t *runtime) {

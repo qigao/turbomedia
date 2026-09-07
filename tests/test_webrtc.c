@@ -2,7 +2,7 @@
 #include "turbo_media_webrtc_backend.h"
 #include "turbo_pipeline.h"
 #include <tinytest.h>
-#include <turbo_thread.h>
+#include <salts_thread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -530,7 +530,7 @@ suite("turbo_media_webrtc") {
             turbo_pipeline_t *pipeline = NULL;
             turbo_pipeline_error_t pipeline_error;
             rtc_pipeline_run_t run;
-            turbo_thread_t thread = NULL;
+            salts_thread_t thread = NULL;
             char answer[64];
             int wait_count;
             uint8_t idr_packet[] = {
@@ -589,12 +589,12 @@ suite("turbo_media_webrtc") {
                          TURBO_MEDIA_WEBRTC_PEER_CONNECTED);
 
             run.pipeline = pipeline;
-            check_equal(turbo_thread_create(&thread, rtc_run_pipeline, &run), 0);
+            check_equal(salts_thread_create(&thread, rtc_run_pipeline, &run), 0);
             for (wait_count = 0; wait_count < 100 &&
                                  turbo_pipeline_state(pipeline) !=
                                      TURBO_PIPELINE_STATE_RUNNING;
                  ++wait_count)
-                turbo_sleep_ms(1);
+                salts_sleep_ms(1);
             check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_RUNNING);
             check_equal(whip_peer->config.on_rtp(
@@ -607,7 +607,7 @@ suite("turbo_media_webrtc") {
                  atomic_load_explicit(&rtc_fake.send_count,
                                       memory_order_acquire) < 1;
                  ++wait_count)
-                turbo_sleep_ms(1);
+                salts_sleep_ms(1);
             check_equal(atomic_load_explicit(&rtc_fake.send_count,
                                               memory_order_acquire),
                          1);
@@ -617,16 +617,16 @@ suite("turbo_media_webrtc") {
 
             check_equal(turbo_pipeline_request_stop(pipeline),
                          TURBO_PIPELINE_OK);
-            check_equal(turbo_thread_join(&thread), 0);
-            turbo_thread_destroy(&thread);
+            check_equal(salts_thread_join(&thread), 0);
+            salts_thread_destroy(&thread);
             thread = NULL;
             check_equal(run.status, TURBO_PIPELINE_ESTOPPED);
 
         rtc_pipeline_cleanup:
             if (thread) {
                 (void)turbo_pipeline_request_stop(pipeline);
-                (void)turbo_thread_join(&thread);
-                turbo_thread_destroy(&thread);
+                (void)salts_thread_join(&thread);
+                salts_thread_destroy(&thread);
             }
             turbo_media_webrtc_session_destroy(whep);
             turbo_pipeline_destroy(pipeline);
@@ -730,7 +730,7 @@ suite("turbo_media_webrtc") {
                     turbo_media_source_track_count(source) == 1) {
                     break;
                 }
-                turbo_sleep_ms(1);
+                salts_sleep_ms(1);
             }
             check_not_null(source);
             check_equal(turbo_media_source_track_count(source), 1);

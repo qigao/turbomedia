@@ -196,7 +196,7 @@ WebRTC Peer
   ├── turbo_datachannel (DataChannel)
   │     ├── SCTP (传输层)
   │     ├── DTLS (加密层)
-  │     └── TurboNet::CoroNet (TCP/UDP 与协程事件循环)
+  │     └── Salts::CNet (TCP/UDP 与 owner 事件循环)
   │
   ├── turbo_media (音视频)
   │     ├── turbo_capture (采集)
@@ -261,7 +261,7 @@ int len = sdp_generate(&sdp, buffer, sizeof(buffer));
 
 ```c
 #include "webrtc_signaling.h"
-#include <CoroNet/turbo_coro_context.h>
+#include <salts/time.h>
 
 turbo_loop_t *loop = turbo_loop_create();
 
@@ -359,7 +359,7 @@ OK
 
 - DTLS 1.2 加密
 - SRTP 媒体加密
-- CoroNet WSS 与 Iris HTTPS 应用内 TLS
+- CHTTP WSS 与 Iris HTTPS 应用内 TLS
 - Room Service 到 SFU 的 HTTPS 主机名及证书链校验
 - SFU 与 Room Service 的短期、作用域、房间/参与者绑定令牌
 - Room Service 通过 `http_client` 为每条 SFU 命令独立签发令牌
@@ -419,7 +419,7 @@ OK
 - ❌ 公网浏览器/TURN、容量、soak 与多节点故障测试
 
 ### 📋 待办
-- [x] TurboNet::Ice 增加 consent freshness、disconnect detection 与 restart API
+- [x] SaltsNet::ICE 增加 consent freshness、disconnect detection 与 restart API
 - [x] WHIP/WHEP SDP fragment 交换 ICE restart 凭据与候选
 - [x] 接通带独立 bearer token 的 WHIP HTTP 与 WHEP draft-04 HTTP adapter
 - [x] 接通信令 WSS、管理 API/SFU/Room Service HTTPS 与内部 SFU CA 校验

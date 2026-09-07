@@ -4,8 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <turbo_fs.h>
-#include <turbostl/vec.h>
+#include <salts_fs.h>
+#include <cstl/vec.h>
 
 typedef enum {
     TURBO_CONTAINER_IO_NONE = 0,
@@ -16,7 +16,7 @@ typedef enum {
 
 typedef struct {
     turbo_container_io_mode_t mode;
-    turbo_file_t file;
+    salts_file_t file;
     const uint8_t *input;
     size_t input_size;
     vec_t output;

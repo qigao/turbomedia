@@ -132,6 +132,38 @@ void test_duplicate_failure_does_not_move_retry_deadline(void) {
     check_equal((uint64_t)(duplicate.next_retry_at_ms), (uint64_t)(first.next_retry_at_ms));
 }
 
+void test_same_generation_connected_does_not_cancel_scheduled_rebuild(void) {
+    uint64_t generation;
+    ivr_media_reconnect_event_t event;
+    ivr_media_reconnect_snapshot_t snapshot;
+
+    check_equal(ivr_media_reconnect_start(g_reconnect, 0, &generation), IVR_OK);
+    check_equal(ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHIP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 10, &event), IVR_OK);
+    check_equal(ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHEP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 20, &event), IVR_OK);
+    check_equal(ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHEP, generation,
+            IVR_MEDIA_LINK_DISCONNECTED, IVR_MEDIA_ERROR_NONE, 30, &event), IVR_OK);
+    check_equal((int)(event), (int)(IVR_MEDIA_RECONNECT_EVENT_DISCONNECTED));
+
+    /* Salts ICE may briefly move the failed owner back to COMPLETED while its
+       peer has already disappeared. A terminal link state commits this
+       generation to rebuild, so that late state must not cancel the retry. */
+    check_equal(ivr_media_reconnect_on_state(
+            g_reconnect, IVR_MEDIA_LINK_WHEP, generation,
+            IVR_MEDIA_LINK_CONNECTED, IVR_MEDIA_ERROR_NONE, 40, &event), IVR_OK);
+    check_equal((int)(event), (int)(IVR_MEDIA_RECONNECT_EVENT_NONE));
+    check_equal(ivr_media_reconnect_snapshot(g_reconnect, &snapshot), IVR_OK);
+    check_true(snapshot.retry_pending);
+
+    check_equal(ivr_media_reconnect_poll(g_reconnect, 130, &generation, &event), IVR_OK);
+    check_equal((int)(event), (int)(IVR_MEDIA_RECONNECT_EVENT_RETRY_DUE));
+    check_equal((uint64_t)(generation), (uint64_t)(2u));
+}
+
 void test_late_failure_after_stable_connection_gets_fresh_deadline(void) {
     uint64_t generation;
     ivr_media_reconnect_event_t event;
@@ -209,6 +241,7 @@ spec("test_ivr_media_reconnect") {
   it("test_failed_retry_does_not_duplicate_disconnected_event") { test_failed_retry_does_not_duplicate_disconnected_event(); };
   it("test_input_stall_is_distinct") { test_input_stall_is_distinct(); };
   it("test_duplicate_failure_does_not_move_retry_deadline") { test_duplicate_failure_does_not_move_retry_deadline(); };
+  it("test_same_generation_connected_does_not_cancel_scheduled_rebuild") { test_same_generation_connected_does_not_cancel_scheduled_rebuild(); };
   it("test_late_failure_after_stable_connection_gets_fresh_deadline") { test_late_failure_after_stable_connection_gets_fresh_deadline(); };
   it("test_recovered_connection_starts_independent_next_recovery") { test_recovered_connection_starts_independent_next_recovery(); };
 }

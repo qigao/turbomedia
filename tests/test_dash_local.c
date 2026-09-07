@@ -2,7 +2,7 @@
 
 #include <tinytest.h>
 #include <turbo_codec.h>
-#include <turbo_fs.h>
+#include <salts_fs.h>
 #include <turbo_streamer.h>
 
 #include <stdint.h>
@@ -35,9 +35,9 @@ static void test_dash_h264_pipeline(void) {
     size_t raw_frame_size;
     size_t encoded_size;
     size_t manifest_size = 0;
-    char manifest_path[TURBO_FS_MAX_PATH];
-    char init_path[TURBO_FS_MAX_PATH];
-    char segment_path[TURBO_FS_MAX_PATH];
+    char manifest_path[SALTS_FS_MAX_PATH];
+    char init_path[SALTS_FS_MAX_PATH];
+    char segment_path[SALTS_FS_MAX_PATH];
     int stream_id = -1;
     int connected = 0;
     int result;
@@ -132,7 +132,7 @@ static void test_dash_h264_pipeline(void) {
     check_equal(result, 0);
     if (result != 0) goto cleanup;
 
-    result = turbo_fs_path_join(manifest_path, sizeof(manifest_path), output_dir,
+    result = salts_fs_path_join(manifest_path, sizeof(manifest_path), output_dir,
                                 "manifest.mpd");
     check_equal(result, 0);
     if (result != 0) goto cleanup;
@@ -150,20 +150,20 @@ static void test_dash_h264_pipeline(void) {
     check_contains(manifest, "<S t=\"1000\"");
     check_contains(manifest, "d=\"500\"");
 
-    result = turbo_fs_path_join(init_path, sizeof(init_path), output_dir,
+    result = salts_fs_path_join(init_path, sizeof(init_path), output_dir,
                                 "video-init.m4v");
     check_equal(result, 0);
     if (result == 0)
-        check_equal(turbo_fs_access(init_path, TURBO_FS_ACCESS_EXISTS), 0);
-    result = turbo_fs_path_join(segment_path, sizeof(segment_path), output_dir,
+        check_equal(salts_fs_access(init_path, SALTS_FS_ACCESS_EXISTS), 0);
+    result = salts_fs_path_join(segment_path, sizeof(segment_path), output_dir,
                                 "video-1000.m4v");
     check_equal(result, 0);
     if (result == 0)
-        check_equal(turbo_fs_access(segment_path, TURBO_FS_ACCESS_EXISTS), 0);
+        check_equal(salts_fs_access(segment_path, SALTS_FS_ACCESS_EXISTS), 0);
 
 cleanup:
     if (connected && streamer) turbo_streamer_disconnect(streamer);
-    turbo_streamer_destroy(streamer);
+    check_equal(turbo_streamer_destroy(streamer), 0);
     turbo_codec_destroy(encoder);
     turbo_streamer_registry_shutdown();
     turbo_codec_registry_shutdown();

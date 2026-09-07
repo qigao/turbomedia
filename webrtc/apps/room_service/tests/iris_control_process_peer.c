@@ -1,9 +1,11 @@
-#include "iris_flowmq_process_peer.h"
+#include "iris_control_process_peer.h"
+#include "iris_provider_protocol.h"
+#include "ivr_control_ws.h"
 
 #include <turbo_crypto.h>
-#include <turbo_parser.h>
-#include <turbo_str.h>
-#include <turbo_thread.h>
+#include <json_parser.h>
+#include <salts_str.h>
+#include <salts_thread.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -11,21 +13,18 @@
 #include <string.h>
 
 enum {
-    TEST_IRIS_FLOWMQ_MAX_FRAME_BYTES = 256 * 1024,
-    TEST_IRIS_FLOWMQ_WAIT_STEP_MS = 5
+    TEST_IRIS_CONTROL_MAX_FRAME_BYTES = 256 * 1024,
+    TEST_IRIS_CONTROL_WAIT_STEP_MS = 5
 };
-#define TEST_IRIS_FLOWMQ_START_TIMEOUT_NS UINT64_C(5000000000)
-
-struct test_iris_flowmq_peer_s {
-    flowmq_router_endpoint_t *router;
-    flowmq_router_route_t route;
+struct test_iris_control_peer_s {
+    ivr_control_ws_server_t *server;
+    ivr_control_ws_route_t route;
     DataBind *codec;
     atomic_int connected;
     atomic_uint_fast64_t receipt_generation;
-    atomic_uint_fast64_t next_message_id;
-    test_iris_flowmq_peer_config_t config;
-    turbo_mutex_t receipt_mutex;
-    test_iris_flowmq_receipt_t receipt;
+    test_iris_control_peer_config_t config;
+    salts_mutex_t receipt_mutex;
+    test_iris_control_receipt_t receipt;
 };
 
 static int copy_text(char *out, size_t capacity, const char *value) {
@@ -42,10 +41,10 @@ static int assign_text(tstr *out, const char *value) {
     return *out != NULL;
 }
 
-static const char *json_string(const json_value_t *object, const char *name) {
-    json_value_t *value = object ? turbo_json_object_get(object, name) : NULL;
-    return value && turbo_json_type(value) == TURBO_JSON_STRING
-               ? turbo_json_string(value)
+static const char *object_text(const json_value_t *object, const char *name) {
+    json_value_t *value = object ? json_object_get(object, name) : NULL;
+    return value && json_type(value) == JSON_STRING
+               ? json_string(value)
                : NULL;
 }
 
@@ -82,7 +81,7 @@ static int command_fingerprint(const char *const fields[8], char out[72]) {
     return 1;
 }
 
-static uint8_t *encode_command(test_iris_flowmq_peer_t *peer,
+static uint8_t *encode_command(test_iris_control_peer_t *peer,
                                const char *idempotency_key,
                                const char *bridge_json, size_t *out_size) {
     json_value_t *root = NULL;
@@ -108,25 +107,25 @@ static uint8_t *encode_command(test_iris_flowmq_peer_t *peer,
     uint64_t dispatch_epoch;
     int written;
     if (!peer || !idempotency_key || !bridge_json || !out_size ||
-        turbo_parse_json((const uint8_t *)bridge_json, strlen(bridge_json),
-                         &root) != 0 ||
-        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
-        turbo_free_json(&root);
+        ((root = json_parse((const char *)((const uint8_t *)bridge_json), strlen(bridge_json))) ? 0 : -1) != 0 ||
+        !root || json_type(root) != JSON_OBJECT) {
+        json_free(root);
+        root = NULL;
         return NULL;
     }
-    command_id = json_string(root, "commandId");
-    tenant_id = json_string(root, "tenantId");
-    session_id = json_string(root, "sessionId");
-    command_type = json_string(root, "type");
-    provider_id = json_string(root, "provider");
-    correlation_id = json_string(root, "correlationId");
-    causation_id = json_string(root, "causationId");
-    deadline_at = json_string(root, "deadline");
-    worker_id = json_string(root, "workerId");
-    epoch_value = turbo_json_object_get(root, "dispatchEpoch");
-    data = turbo_json_object_get(root, "data");
-    dispatch_epoch = epoch_value && turbo_json_type(epoch_value) == TURBO_JSON_NUMBER
-                         ? (uint64_t)turbo_json_number(epoch_value)
+    command_id = object_text(root, "commandId");
+    tenant_id = object_text(root, "tenantId");
+    session_id = object_text(root, "sessionId");
+    command_type = object_text(root, "type");
+    provider_id = object_text(root, "provider");
+    correlation_id = object_text(root, "correlationId");
+    causation_id = object_text(root, "causationId");
+    deadline_at = object_text(root, "deadline");
+    worker_id = object_text(root, "workerId");
+    epoch_value = json_object_get(root, "dispatchEpoch");
+    data = json_object_get(root, "data");
+    dispatch_epoch = epoch_value && json_type(epoch_value) == JSON_NUMBER
+                         ? (uint64_t)json_number(epoch_value)
                          : 1u;
     command_id = command_id ? command_id : idempotency_key;
     tenant_id = tenant_id ? tenant_id : "tenant-process";
@@ -140,15 +139,17 @@ static uint8_t *encode_command(test_iris_flowmq_peer_t *peer,
     written = snprintf(epoch, sizeof(epoch), "%llu",
                        (unsigned long long)dispatch_epoch);
     if (strcmp(command_id, idempotency_key) != 0 || dispatch_epoch == 0u ||
-        !data || turbo_json_type(data) != TURBO_JSON_OBJECT || written <= 0 ||
+        !data || json_type(data) != JSON_OBJECT || written <= 0 ||
         (size_t)written >= sizeof(epoch)) {
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return NULL;
     }
-    payload_json = turbo_json_serialize(data, &payload_size);
+    payload_json = json_serialize(data, &payload_size);
     if (!payload_json || payload_size == 0u) {
-        turbo_json_serialize_free(payload_json);
-        turbo_free_json(&root);
+        json_serialize_free(payload_json);
+        json_free(root);
+        root = NULL;
         return NULL;
     }
     fields[0] = tenant_id;
@@ -186,42 +187,28 @@ static uint8_t *encode_command(test_iris_flowmq_peer_t *peer,
         *out_size = 0u;
     }
     ProviderCommandV1_clear(&command);
-    turbo_json_serialize_free(payload_json);
-    turbo_free_json(&root);
+    json_serialize_free(payload_json);
+    json_free(root);
+    root = NULL;
     return encoded;
 }
 
-static int send_application(test_iris_flowmq_peer_t *peer,
-                            const flowmq_router_route_t *route,
-                            uint64_t message_id, const uint8_t *payload,
+static int send_application(test_iris_control_peer_t *peer,
+                            const ivr_control_ws_route_t *route,
+                            const uint8_t *payload,
                             size_t payload_size) {
-    flowmq_protocol_frame_t frame;
-    tstr encoded = NULL;
-    int status;
-    memset(&frame, 0, sizeof(frame));
-    frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
-    frame.pattern = FLOWMQ_PROTOCOL_ROUTER;
-    frame.message_id = message_id;
-    frame.payload = vstr_from_buf((const char *)payload, payload_size);
-    status = flowmq_protocol_encode_frame(
-        &frame, TEST_IRIS_FLOWMQ_MAX_FRAME_BYTES, &encoded);
-    if (status == TURBO_OK) {
-        status = flowmq_router_endpoint_send_copy(
-            peer->router, *route, message_id, encoded, tstr_len(encoded));
-    }
-    tstr_freep(&encoded);
-    return status;
+    return ivr_control_ws_server_send_copy(peer->server, route, payload,
+                                            payload_size);
 }
 
-static int send_completion_ack(test_iris_flowmq_peer_t *peer,
-                               const flowmq_router_route_t *route,
-                               const flowmq_protocol_frame_t *frame,
+static int send_completion_ack(test_iris_control_peer_t *peer,
+                               const ivr_control_ws_route_t *route,
                                const ProviderCompletionV1_t *completion) {
     ProviderCompletionAckV1_t ack;
     DataBindError error = DATA_BIND_ERROR_INIT;
     uint8_t *encoded = NULL;
     size_t encoded_size = 0u;
-    int status = TURBO_ENOMEM;
+    int status = SALTS_ENOMEM;
     ProviderCompletionAckV1_init(&ack);
     ack.schema_version = 1u;
     ack.message_kind = ProviderMessageKind_CompletionAck;
@@ -243,23 +230,21 @@ static int send_completion_ack(test_iris_flowmq_peer_t *peer,
         assign_text(&ack.error_message, "") &&
         ProviderCompletionAckV1_to_bin(&ack, &encoded, &encoded_size,
                                        &error) == DATA_BIND_OK) {
-        status = send_application(peer, route, frame->message_id, encoded,
-                                  encoded_size);
+        status = send_application(peer, route, encoded, encoded_size);
     }
     tbe_typed_serialized_free(encoded);
     ProviderCompletionAckV1_clear(&ack);
     return status;
 }
 
-static int send_event_ack(test_iris_flowmq_peer_t *peer,
-                          const flowmq_router_route_t *route,
-                          const flowmq_protocol_frame_t *frame,
+static int send_event_ack(test_iris_control_peer_t *peer,
+                          const ivr_control_ws_route_t *route,
                           const ProviderEventV1_t *event) {
     ProviderEventAckV1_t ack;
     DataBindError error = DATA_BIND_ERROR_INIT;
     uint8_t *encoded = NULL;
     size_t encoded_size = 0u;
-    int status = TURBO_ENOMEM;
+    int status = SALTS_ENOMEM;
     ProviderEventAckV1_init(&ack);
     ack.schema_version = 1u;
     ack.message_kind = ProviderMessageKind_EventAck;
@@ -280,17 +265,15 @@ static int send_event_ack(test_iris_flowmq_peer_t *peer,
         assign_text(&ack.error_message, "") &&
         ProviderEventAckV1_to_bin(&ack, &encoded, &encoded_size, &error) ==
             DATA_BIND_OK) {
-        status = send_application(peer, route, frame->message_id, encoded,
-                                  encoded_size);
+        status = send_application(peer, route, encoded, encoded_size);
     }
     tbe_typed_serialized_free(encoded);
     ProviderEventAckV1_clear(&ack);
     return status;
 }
 
-static int send_observation(test_iris_flowmq_peer_t *peer,
-                            const flowmq_router_route_t *route,
-                            const flowmq_protocol_frame_t *frame,
+static int send_observation(test_iris_control_peer_t *peer,
+                            const ivr_control_ws_route_t *route,
                             const ProviderQueryV1_t *query) {
     ProviderObservationV1_t observation;
     DataBindError error = DATA_BIND_ERROR_INIT;
@@ -298,7 +281,7 @@ static int send_observation(test_iris_flowmq_peer_t *peer,
     size_t encoded_size = 0u;
     char payload[4096];
     int available = 0;
-    int status = TURBO_EPROTO;
+    int status = SALTS_EPROTO;
     if (!peer->config.query ||
         !peer->config.query(peer->config.context, payload, sizeof(payload),
                             &available)) {
@@ -332,57 +315,48 @@ static int send_observation(test_iris_flowmq_peer_t *peer,
                     available ? "" : "expected resources are unavailable") &&
         ProviderObservationV1_to_bin(&observation, &encoded, &encoded_size,
                                      &error) == DATA_BIND_OK) {
-        status = send_application(peer, route, frame->message_id, encoded,
-                                  encoded_size);
+        status = send_application(peer, route, encoded, encoded_size);
     }
     tbe_typed_serialized_free(encoded);
     ProviderObservationV1_clear(&observation);
     return status;
 }
 
-static void router_event(void *context,
-                         const flowmq_router_endpoint_event_t *event) {
-    test_iris_flowmq_peer_t *peer = (test_iris_flowmq_peer_t *)context;
-    if (!peer || !event) return;
-    if (event->kind == FLOWMQ_ROUTER_EVENT_PEER_CONNECTED) {
-        peer->route = event->route;
+static void server_peer(void *context, const ivr_control_ws_route_t *route,
+                        const char *identity, int connected) {
+    test_iris_control_peer_t *peer = (test_iris_control_peer_t *)context;
+    if (!peer || !route || !identity ||
+        strcmp(identity, "turbomedia-process") != 0) return;
+    if (connected) {
+        peer->route = *route;
         atomic_store_explicit(&peer->connected, 1, memory_order_release);
-    } else if (event->kind == FLOWMQ_ROUTER_EVENT_PEER_DISCONNECTED) {
+    } else {
         atomic_store_explicit(&peer->connected, 0, memory_order_release);
     }
 }
 
-static int router_frame(void *context, const flowmq_router_route_t *route,
-                        vstr peer_identity, vstr peer_topic,
-                        const flowmq_protocol_frame_t *frame) {
-    test_iris_flowmq_peer_t *peer = (test_iris_flowmq_peer_t *)context;
+static int server_message(void *context, const ivr_control_ws_route_t *route,
+                          const char *peer_identity, const uint8_t *data,
+                          size_t size) {
+    test_iris_control_peer_t *peer = (test_iris_control_peer_t *)context;
     ProviderMessageKind_t kind = ProviderMessageKind_Command;
     DataBindError error = DATA_BIND_ERROR_INIT;
-    int status = TURBO_EPROTO;
-    (void)peer_topic;
-    if (!peer || !route || !frame ||
-        frame->kind != FLOWMQ_PROTOCOL_FRAME_DATA ||
-        frame->pattern != FLOWMQ_PROTOCOL_DEALER ||
-        !vstr_eq(peer_identity, vstr_from_cstr("turbomedia-process")) ||
-        flowmq_media_provider_peek_kind(frame->payload.data,
-                                        frame->payload.len, &kind) != TURBO_OK) {
+    int status = SALTS_EPROTO;
+    if (!peer || !route || !peer_identity ||
+        strcmp(peer_identity, "turbomedia-process") != 0 || !data || !size ||
+        iris_provider_peek_kind(data, size, &kind) != SALTS_OK) {
         fprintf(stderr,
-                "process Iris FlowMQ rejected frame kind=%d pattern=%d "
-                "peer=%.*s payload=%zu\n",
-                frame ? (int)frame->kind : -1,
-                frame ? (int)frame->pattern : -1,
-                (int)peer_identity.len,
-                peer_identity.data ? peer_identity.data : "",
-                frame ? frame->payload.len : 0u);
+                "process Iris H1 WebSocket rejected peer=%s payload=%zu\n",
+                peer_identity ? peer_identity : "", size);
         return status;
     }
     if (kind == ProviderMessageKind_Receipt) {
         ProviderReceiptV1_t receipt;
         ProviderReceiptV1_init(&receipt);
         if (ProviderReceiptV1_from_bin(peer->codec, &receipt,
-                                       frame->payload.data, frame->payload.len,
+                                       data, size,
                                        &error) == DATA_BIND_OK) {
-            turbo_mutex_lock(&peer->receipt_mutex);
+            salts_mutex_lock(&peer->receipt_mutex);
             memset(&peer->receipt, 0, sizeof(peer->receipt));
             peer->receipt.disposition = (int)receipt.disposition;
             peer->receipt.status_code = receipt.status_code;
@@ -401,175 +375,146 @@ static int router_frame(void *context, const flowmq_router_route_t *route,
                              copy_text(peer->receipt.error_message,
                                        sizeof(peer->receipt.error_message),
                                        receipt.error_message)
-                         ? TURBO_OK
-                         : TURBO_ENOSPC;
-            turbo_mutex_unlock(&peer->receipt_mutex);
-            if (status == TURBO_OK) {
+                         ? SALTS_OK
+                         : SALTS_ENOSPC;
+            salts_mutex_unlock(&peer->receipt_mutex);
+            if (status == SALTS_OK) {
                 atomic_fetch_add_explicit(&peer->receipt_generation, 1u,
                                           memory_order_release);
             }
         } else {
             fprintf(stderr,
-                    "process Iris FlowMQ failed to decode receipt bytes=%zu\n",
-                    frame->payload.len);
+                    "process Iris CHTTP H1 WebSocket failed to decode receipt bytes=%zu\n",
+                    size);
         }
         ProviderReceiptV1_clear(&receipt);
     } else if (kind == ProviderMessageKind_Completion) {
         ProviderCompletionV1_t completion;
         ProviderCompletionV1_init(&completion);
         if (ProviderCompletionV1_from_bin(peer->codec, &completion,
-                                          frame->payload.data,
-                                          frame->payload.len, &error) ==
+                                          data, size, &error) ==
             DATA_BIND_OK) {
             if (peer->config.completion) {
                 peer->config.completion(peer->config.context, &completion);
             }
-            status = send_completion_ack(peer, route, frame, &completion);
+            status = send_completion_ack(peer, route, &completion);
         }
         ProviderCompletionV1_clear(&completion);
     } else if (kind == ProviderMessageKind_Event) {
         ProviderEventV1_t event;
         ProviderEventV1_init(&event);
-        if (ProviderEventV1_from_bin(peer->codec, &event, frame->payload.data,
-                                     frame->payload.len, &error) ==
+        if (ProviderEventV1_from_bin(peer->codec, &event, data, size, &error) ==
             DATA_BIND_OK) {
             if (peer->config.event) {
                 peer->config.event(peer->config.context, &event);
             }
-            status = send_event_ack(peer, route, frame, &event);
+            status = send_event_ack(peer, route, &event);
         }
         ProviderEventV1_clear(&event);
     } else if (kind == ProviderMessageKind_Query) {
         ProviderQueryV1_t query;
         ProviderQueryV1_init(&query);
-        if (ProviderQueryV1_from_bin(peer->codec, &query, frame->payload.data,
-                                     frame->payload.len, &error) ==
+        if (ProviderQueryV1_from_bin(peer->codec, &query, data, size, &error) ==
             DATA_BIND_OK) {
-            status = send_observation(peer, route, frame, &query);
+            status = send_observation(peer, route, &query);
         }
         ProviderQueryV1_clear(&query);
     }
     return status;
 }
 
-int test_iris_flowmq_peer_start(
-    const test_iris_flowmq_peer_config_t *config,
-    test_iris_flowmq_peer_t **out_peer) {
-    test_iris_flowmq_peer_t *peer;
-    flowmq_router_endpoint_config_t router_config;
+int test_iris_control_peer_start(
+    const test_iris_control_peer_config_t *config,
+    test_iris_control_peer_t **out_peer) {
+    test_iris_control_peer_t *peer;
+    ivr_control_ws_server_config_t server_config;
     DataBindError error = DATA_BIND_ERROR_INIT;
     if (!config || !out_peer || config->port == 0u || !config->query) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     *out_peer = NULL;
-    peer = (test_iris_flowmq_peer_t *)calloc(1, sizeof(*peer));
-    if (!peer) return TURBO_ENOMEM;
+    peer = (test_iris_control_peer_t *)calloc(1, sizeof(*peer));
+    if (!peer) return SALTS_ENOMEM;
     peer->config = *config;
-    turbo_mutex_init(&peer->receipt_mutex);
+    salts_mutex_init(&peer->receipt_mutex);
     atomic_init(&peer->connected, 0);
     atomic_init(&peer->receipt_generation, 0u);
-    atomic_init(&peer->next_message_id, 1u);
-    if (FlowMqMediaProviderV1_codec_create(&peer->codec, &error) !=
+    if (TurboMediaIrisProviderV1_codec_create(&peer->codec, &error) !=
         DATA_BIND_OK) {
-        test_iris_flowmq_peer_stop(peer);
-        return TURBO_EPROTO;
+        test_iris_control_peer_stop(peer);
+        return SALTS_EPROTO;
     }
-    flowmq_router_endpoint_config_init(&router_config);
-    router_config.transport = FLOWMQ_TRANSPORT_TCP;
-    router_config.host = "127.0.0.1";
-    router_config.path = "";
-    router_config.topic = "media-provider-v1";
-    router_config.identity = "iris-process";
-    router_config.port = (int)config->port;
-    router_config.max_connections = 1u;
-    router_config.max_frame_size = TEST_IRIS_FLOWMQ_MAX_FRAME_BYTES;
-    router_config.context = NULL;
-    router_config.drive_context = 1;
-    router_config.own_context = 1;
-    router_config.on_frame = router_frame;
-    router_config.on_event = router_event;
-    router_config.callback_ctx = peer;
-    if (flowmq_router_endpoint_create(&router_config, &peer->router) !=
-            TURBO_OK ||
-        flowmq_router_endpoint_start(peer->router,
-                                     TEST_IRIS_FLOWMQ_START_TIMEOUT_NS) !=
-            TURBO_OK) {
-        test_iris_flowmq_peer_stop(peer);
-        return TURBO_EPROTO;
+    ivr_control_ws_server_config_init(&server_config);
+    server_config.host = "127.0.0.1";
+    server_config.path = "/internal/iris/control";
+    server_config.port = config->port;
+    server_config.maximum_connections = 1u;
+    server_config.maximum_message_bytes = TEST_IRIS_CONTROL_MAX_FRAME_BYTES;
+    server_config.on_message = server_message;
+    server_config.on_peer = server_peer;
+    server_config.callback_context = peer;
+    if (ivr_control_ws_server_create(&server_config, &peer->server) != IVR_OK ||
+        ivr_control_ws_server_start(peer->server) != IVR_OK) {
+        test_iris_control_peer_stop(peer);
+        return SALTS_EPROTO;
     }
     *out_peer = peer;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
-void test_iris_flowmq_peer_stop(test_iris_flowmq_peer_t *peer) {
+void test_iris_control_peer_stop(test_iris_control_peer_t *peer) {
     if (!peer) return;
-    flowmq_router_endpoint_stop(peer->router);
-    flowmq_router_endpoint_destroy(peer->router);
+    ivr_control_ws_server_stop(peer->server);
+    ivr_control_ws_server_destroy(peer->server);
     data_bind_free(peer->codec);
-    turbo_mutex_destroy(&peer->receipt_mutex);
+    salts_mutex_destroy(&peer->receipt_mutex);
     free(peer);
 }
 
-int test_iris_flowmq_peer_send_command(
-    test_iris_flowmq_peer_t *peer, const char *idempotency_key,
+int test_iris_control_peer_send_command(
+    test_iris_control_peer_t *peer, const char *idempotency_key,
     const char *bridge_json, uint64_t timeout_ms,
-    test_iris_flowmq_receipt_t *out_receipt) {
-    flowmq_protocol_frame_t frame;
+    test_iris_control_receipt_t *out_receipt) {
     uint8_t *application = NULL;
     size_t application_size = 0u;
-    tstr encoded = NULL;
     uint64_t baseline;
-    uint64_t message_id;
     uint64_t waited_ms = 0u;
     int status;
     if (!peer || !idempotency_key || !bridge_json || !out_receipt ||
         timeout_ms == 0u) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     while (waited_ms < timeout_ms &&
            !atomic_load_explicit(&peer->connected, memory_order_acquire)) {
-        turbo_sleep_ms(TEST_IRIS_FLOWMQ_WAIT_STEP_MS);
-        waited_ms += TEST_IRIS_FLOWMQ_WAIT_STEP_MS;
+        salts_sleep_ms(TEST_IRIS_CONTROL_WAIT_STEP_MS);
+        waited_ms += TEST_IRIS_CONTROL_WAIT_STEP_MS;
     }
     if (!atomic_load_explicit(&peer->connected, memory_order_acquire)) {
-        return TURBO_ENOTCONN;
+        return SALTS_ENOTCONN;
     }
     application = encode_command(peer, idempotency_key, bridge_json,
                                  &application_size);
-    if (!application) return TURBO_EPROTO;
+    if (!application) return SALTS_EPROTO;
     baseline = atomic_load_explicit(&peer->receipt_generation,
                                     memory_order_acquire);
-    message_id = atomic_fetch_add_explicit(&peer->next_message_id, 1u,
-                                           memory_order_relaxed);
-    memset(&frame, 0, sizeof(frame));
-    frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
-    frame.pattern = FLOWMQ_PROTOCOL_ROUTER;
-    frame.message_id = message_id;
-    frame.payload =
-        vstr_from_buf((const char *)application, application_size);
-    status = flowmq_protocol_encode_frame(
-        &frame, TEST_IRIS_FLOWMQ_MAX_FRAME_BYTES, &encoded);
-    if (status == TURBO_OK) {
-        status = flowmq_router_endpoint_send_copy(
-            peer->router, peer->route, message_id, encoded, tstr_len(encoded));
-    }
-    tstr_freep(&encoded);
+    status = ivr_control_ws_server_send_copy(
+        peer->server, &peer->route, application, application_size);
     tbe_typed_serialized_free(application);
-    if (status != TURBO_OK) return status;
+    if (status != SALTS_OK) return status;
     while (waited_ms < timeout_ms &&
            atomic_load_explicit(&peer->receipt_generation,
                                 memory_order_acquire) == baseline) {
-        turbo_sleep_ms(TEST_IRIS_FLOWMQ_WAIT_STEP_MS);
-        waited_ms += TEST_IRIS_FLOWMQ_WAIT_STEP_MS;
+        salts_sleep_ms(TEST_IRIS_CONTROL_WAIT_STEP_MS);
+        waited_ms += TEST_IRIS_CONTROL_WAIT_STEP_MS;
     }
     if (atomic_load_explicit(&peer->receipt_generation,
                              memory_order_acquire) == baseline) {
-        return TURBO_ETIMEDOUT;
+        return SALTS_ETIMEDOUT;
     }
-    turbo_mutex_lock(&peer->receipt_mutex);
+    salts_mutex_lock(&peer->receipt_mutex);
     *out_receipt = peer->receipt;
-    turbo_mutex_unlock(&peer->receipt_mutex);
+    salts_mutex_unlock(&peer->receipt_mutex);
     return strcmp(out_receipt->command_id, idempotency_key) == 0
-               ? TURBO_OK
-               : TURBO_EPROTO;
+               ? SALTS_OK
+               : SALTS_EPROTO;
 }

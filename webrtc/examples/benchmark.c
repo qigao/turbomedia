@@ -58,7 +58,7 @@ typedef struct {
  * ============================================================================ */
 
 static uint64_t get_time_us(void) {
-    return turbo_monotonic_ms() * 1000ULL;
+    return salts_monotonic_ms() * 1000ULL;
 }
 
 static void print_stats(benchmark_state_t *bench) {
@@ -351,7 +351,7 @@ int main(int argc, char **argv) {
         }
 
         update_throughput_test(&bench, now_us);
-        turbo_sleep_ms(1);
+        salts_sleep_ms(1);
     }
 
     turbo_dc_peer_destroy(bench.peer);

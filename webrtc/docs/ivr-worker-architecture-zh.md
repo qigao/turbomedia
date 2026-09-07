@@ -12,9 +12,9 @@ flowchart LR
   JS[Capability-checked JavaScript]
   Iris[Iris session runtime]
   Outbox[Transactional provider outbox]
-  IrisMQ[Iris FlowMQ adapter]
+  IrisMQ[Iris CHTTP H1 WebSocket adapter]
   Room[RoomService media adapter]
-  MQ[FlowMQ control plane]
+  MQ[CHTTP H1 WebSocket control plane]
   Worker[IVR media executor]
   Plane[WebRTC / RTP / PCM / ASR / TTS / DTMF]
 
@@ -43,7 +43,7 @@ Iris；只有 Iris 可以根据 XML/JS 决定下一条 media command。
 sequenceDiagram
   participant I as Iris XML/JS session
   participant R as RoomService adapter
-  participant F as FlowMQ
+  participant F as CHTTP H1 WebSocket
   participant W as IVR media worker
   participant M as Media engines
 
@@ -61,25 +61,25 @@ sequenceDiagram
   F-->>I: commit fact, application ACK, wake session
 ```
 
-FlowMQ 是 control plane：传输 command/result/event 和 worker health/lease，不传 RTP、PCM、
+CHTTP H1 WebSocket 是 control plane：传输 command/result/event 和 worker health/lease，不传 RTP、PCM、
 archive 或脚本。wire frame 在解码前校验 kind、format、schema type/version 和长度。
 
 ## 并发与关闭协议
 
 - worker media callback 是多 producer；只复制到容量 64 的 owning event queue。
-- FlowMQ connection/management callback 只发布到容量 32 的 control queue；仅 worker owner
+- CHTTP H1 WebSocket connection/management callback 只发布到容量 32 的 control queue；仅 worker owner
   推进 connection generation、health 与 drain。
-- application owner loop 是唯一 FlowMQ event sender。
+- application owner loop 是唯一 CHTTP H1 WebSocket event sender。
 - Room bridge broker callback 只 clone/enqueue；bridge owner thread 解码并按完整 route token
   （peer identity + route generation）做 fence 后回调。
 - Iris provider completion/event 走独立有界队列并等待 application ACK，不能阻塞 bridge owner。
 - queue 满、未知 schema、错误 route、stale generation、deadline 到期均 fail fast。
-- 关闭顺序：停止 provider command ingress，再停止 reconciler 和 worker FlowMQ adapter，随后
+- 关闭顺序：停止 provider command ingress，再停止 reconciler 和 worker CHTTP H1 WebSocket adapter，随后
   停止 completion dispatcher、durable outbox 与 command ledger，最后销毁资源。
 
 ## Mock 与验证边界
 
-Core mock 仅替代 media port，loopback bridge 测试仍使用真实 FlowMQ/DataBind。dry-run logging
+Core mock 仅替代 media port，loopback bridge 测试仍使用真实 CHTTP H1 WebSocket/DataBind。dry-run logging
 transport 仅用于 smoke，不参与 active readiness。测试必须分别覆盖正常、重复、stale、错误
 route、队列满和 shutdown drain；mock 成功不能替代真实 SFU/speech 集成验证。
 

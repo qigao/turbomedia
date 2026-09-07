@@ -2,7 +2,7 @@
 
 #include <tinytest.h>
 #include <turbo_codec.h>
-#include <turbo_fs.h>
+#include <salts_fs.h>
 #include <turbo_player.h>
 #include <turbo_recognition.h>
 #include <turbo_streamer.h>
@@ -130,7 +130,7 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
     size_t encoded_size;
     size_t playlist_size = 0;
     size_t playlist_file_size = 0;
-    char playlist_path[TURBO_FS_MAX_PATH];
+    char playlist_path[SALTS_FS_MAX_PATH];
     int stream_id = -1;
     int connected = 0;
     int result;
@@ -237,7 +237,7 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
     check_contains(playlist, "segment_1.m4s");
     check_contains(playlist, "#EXT-X-ENDLIST");
 
-    result = turbo_fs_path_join(playlist_path, sizeof(playlist_path), output_dir,
+    result = salts_fs_path_join(playlist_path, sizeof(playlist_path), output_dir,
                                 "playlist.m3u8");
     check_equal(result, 0);
     if (result != 0) goto cleanup;
@@ -282,7 +282,7 @@ cleanup:
         check_equal(fingerprint_provider_context.destroy_count, 1);
     }
     if (connected && streamer) turbo_streamer_disconnect(streamer);
-    turbo_streamer_destroy(streamer);
+    check_equal(turbo_streamer_destroy(streamer), 0);
     turbo_codec_destroy(encoder);
     turbo_streamer_registry_shutdown();
     turbo_codec_registry_shutdown();
@@ -330,7 +330,7 @@ static void test_hls_rejects_malformed_h264_config(void) {
                  -EINVAL);
 
 cleanup:
-    turbo_streamer_destroy(streamer);
+    check_equal(turbo_streamer_destroy(streamer), 0);
     turbo_streamer_registry_shutdown();
     check_equal(tt_remove_tree(output_dir), 0);
     free(output_dir);

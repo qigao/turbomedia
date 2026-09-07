@@ -176,10 +176,10 @@ int sip_uac_ack(struct sip_uac_transaction_t* invite, const void* data, int byte
 	if (0 == r)
 		r = sip_message_add_header(ack, "Via", ptr);
 	
-	turbo_mutex_lock(&invite->locker);
+	salts_mutex_lock(&invite->locker);
 	if (invite->status != SIP_UAC_TRANSACTION_ACCEPTED_UNACK)
 	{
-		turbo_mutex_unlock(&invite->locker);
+		salts_mutex_unlock(&invite->locker);
 		sip_message_destroy(ack);
 		assert(0);
 		return -1;
@@ -194,12 +194,12 @@ int sip_uac_ack(struct sip_uac_transaction_t* invite, const void* data, int byte
 
 	if (0 != r || invite->size <= 0 || invite->size >= sizeof(invite->data))
 	{
-		turbo_mutex_unlock(&invite->locker);
+		salts_mutex_unlock(&invite->locker);
 		return 0 == r ? -1 : r; // E2BIG
 	}
 
 	invite->status = SIP_UAC_TRANSACTION_ACCEPTED_ACKED;
-	turbo_mutex_unlock(&invite->locker);
+	salts_mutex_unlock(&invite->locker);
 
 	return invite->transport.send(invite->transportptr, invite->data, invite->size);
 }

@@ -1,4 +1,4 @@
-#include "turbo_capture.h"
+#include "salts_capture.h"
 #include "turbo_codec.h"
 #include "turbo_playback.h"
 #include <tinytest.h>
@@ -27,7 +27,7 @@
 
 /* Test fixture for integration tests */
 typedef struct {
-    turbo_capture_t *capture;
+    salts_capture_t *capture;
     turbo_codec_t *encoder;
     turbo_codec_t *decoder;
     turbo_playback_t *playback;
@@ -48,7 +48,7 @@ typedef struct {
 static void cleanup_integration_context(integration_test_context_t *ctx) {
     if (!ctx) return;
     
-    if (ctx->capture) turbo_capture_destroy(ctx->capture);
+    if (ctx->capture) salts_capture_destroy(ctx->capture);
     if (ctx->encoder) turbo_codec_destroy(ctx->encoder);
     if (ctx->decoder) turbo_codec_destroy(ctx->decoder);
     if (ctx->playback) turbo_playback_destroy(ctx->playback);
@@ -61,7 +61,7 @@ static void cleanup_integration_context(integration_test_context_t *ctx) {
 }
 
 /* Integration test callbacks */
-static void integration_audio_capture_cb(turbo_capture_t *capture,
+static void integration_audio_capture_cb(salts_capture_t *capture,
                                         const uint8_t *samples, size_t len,
                                         uint64_t timestamp, void *user_data) {
     integration_test_context_t *ctx = (integration_test_context_t *)user_data;
@@ -105,7 +105,7 @@ suite("TurboMedia Integration Tests") {
         
         it("should capture audio and encode with G.711") {
             integration_test_context_t ctx = {0};
-            turbo_audio_capture_config_t capture_config;
+            salts_audio_capture_config_t capture_config;
             turbo_audio_codec_config_t codec_config;
             
             // Initialize codec registry
@@ -119,9 +119,9 @@ suite("TurboMedia Integration Tests") {
             capture_config.bits_per_sample = 16;
             capture_config.frame_size_ms = 20;
             
-            ctx.capture = turbo_audio_capture_create(NULL, &capture_config);
+            ctx.capture = salts_audio_capture_create(NULL, &capture_config);
             if (ctx.capture) {
-                turbo_audio_capture_set_callback(ctx.capture, 
+                salts_audio_capture_set_callback(ctx.capture,
                                                 integration_audio_capture_cb, &ctx);
                 
                 // Setup encoder
@@ -333,7 +333,7 @@ suite("TurboMedia Integration Tests") {
         
         it("should complete full capture-encode-decode-playback flow") {
             integration_test_context_t ctx = {0};
-            turbo_audio_capture_config_t capture_config;
+            salts_audio_capture_config_t capture_config;
             turbo_audio_codec_config_t codec_config;
             turbo_playback_config_t playback_config;
             
@@ -360,7 +360,7 @@ suite("TurboMedia Integration Tests") {
             playback_config.buffer_size_ms = 50;
             
             // Create pipeline components
-            ctx.capture = turbo_audio_capture_create(NULL, &capture_config);
+            ctx.capture = salts_audio_capture_create(NULL, &capture_config);
             ctx.encoder = turbo_codec_create_encoder("pcmu", &codec_config);
             ctx.decoder = turbo_codec_create_decoder("pcmu", &codec_config);
             ctx.playback = turbo_playback_create(NULL, &playback_config);
@@ -542,7 +542,7 @@ suite("TurboMedia Integration Tests") {
         
         it("should properly clean up resources in correct order") {
             integration_test_context_t ctx = {0};
-            turbo_audio_capture_config_t capture_config;
+            salts_audio_capture_config_t capture_config;
             turbo_audio_codec_config_t codec_config;
             turbo_playback_config_t playback_config;
             
@@ -568,7 +568,7 @@ suite("TurboMedia Integration Tests") {
             playback_config.format = TURBO_PLAYBACK_FORMAT_S16;
             playback_config.buffer_size_ms = 50;
             
-            ctx.capture = turbo_audio_capture_create(NULL, &capture_config);
+            ctx.capture = salts_audio_capture_create(NULL, &capture_config);
             ctx.encoder = turbo_codec_create_encoder("pcmu", &codec_config);
             ctx.decoder = turbo_codec_create_decoder("pcmu", &codec_config);
             ctx.playback = turbo_playback_create(NULL, &playback_config);
@@ -668,7 +668,7 @@ suite("TurboMedia Integration Tests") {
         
         it("should maintain consistent state during start-stop cycles") {
             integration_test_context_t ctx = {0};
-            turbo_audio_capture_config_t capture_config;
+            salts_audio_capture_config_t capture_config;
             turbo_playback_config_t playback_config;
             
             // Setup capture
@@ -685,23 +685,23 @@ suite("TurboMedia Integration Tests") {
             playback_config.format = TURBO_PLAYBACK_FORMAT_S16;
             playback_config.buffer_size_ms = 50;
             
-            ctx.capture = turbo_audio_capture_create(NULL, &capture_config);
+            ctx.capture = salts_audio_capture_create(NULL, &capture_config);
             ctx.playback = turbo_playback_create(NULL, &playback_config);
             
             if (ctx.capture && ctx.playback) {
                 // Perform multiple start-stop cycles
                 for (int cycle = 0; cycle < 3; cycle++) {
-                    turbo_capture_start(ctx.capture);
+                    salts_capture_start(ctx.capture);
                     turbo_playback_start(ctx.playback);
                     
                     // Both should be in running/starting state
-                    turbo_capture_state_t cap_state = ctx.capture->state;
+                    salts_capture_state_t cap_state = ctx.capture->state;
                     turbo_playback_state_t play_state = turbo_playback_get_state(ctx.playback);
                     
-                    VERIFY(cap_state != TURBO_CAPTURE_STATE_ERROR);
+                    VERIFY(cap_state != SALTS_CAPTURE_STATE_ERROR);
                     VERIFY(play_state != TURBO_PLAYBACK_STATE_ERROR);
                     
-                    turbo_capture_stop(ctx.capture);
+                    salts_capture_stop(ctx.capture);
                     turbo_playback_stop(ctx.playback);
                 }
             }

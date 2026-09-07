@@ -5,8 +5,8 @@
 
 #include "signaling_server/config.h"
 #include "turbo_media_auth.h"
-#include <turbo_fs.h>
-#include <turbo_parser.h>
+#include <salts_fs.h>
+#include <toml.h>
 #include <tlog.h>
 #include <limits.h>
 #include <errno.h>
@@ -15,6 +15,7 @@
 #include <string.h>
 
 enum {
+    SIGNALING_DEFAULT_CONNECTION_CAPACITY = 4096,
     SIGNALING_DEFAULT_JOIN_TIMEOUT_MS = 10000,
     SIGNALING_DEFAULT_MAX_MESSAGE_SIZE = 64 * 1024,
     SIGNALING_DEFAULT_MESSAGES_PER_SECOND = 100,
@@ -26,6 +27,7 @@ enum {
     SIGNALING_DEFAULT_SOURCE_ADMISSION_BURST = 50,
     SIGNALING_DEFAULT_MAX_SOURCE_STATES = 4096,
     SIGNALING_DEFAULT_SOURCE_STATE_TTL_MS = 5 * 60 * 1000,
+    SIGNALING_MAX_CONNECTION_CAPACITY = 65536,
     SIGNALING_MIN_JOIN_TIMEOUT_MS = 1000,
     SIGNALING_MAX_JOIN_TIMEOUT_MS = 5 * 60 * 1000,
     SIGNALING_MIN_MESSAGE_SIZE = 8 * 1024,
@@ -192,13 +194,13 @@ static int config_key_equals(const char *key, int key_length, const char *expect
            memcmp(key, expected, expected_length) == 0;
 }
 
-static int config_table_has_key(const turbo_toml_t *table, const char *expected) {
+static int config_table_has_key(const toml_table_t *table, const char *expected) {
     int index;
-    int count = turbo_toml_len(table);
+    int count = toml_table_len(table);
 
     for (index = 0; index < count; ++index) {
         int key_length = 0;
-        const char *key = turbo_toml_key(table, index, &key_length);
+        const char *key = toml_table_key(table, index, &key_length);
         if (config_key_equals(key, key_length, expected)) {
             return 1;
         }
@@ -207,7 +209,7 @@ static int config_table_has_key(const turbo_toml_t *table, const char *expected)
 }
 
 static int config_table_keys_valid(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *const *allowed,
     size_t allowed_count) {
@@ -217,10 +219,10 @@ static int config_table_keys_valid(
     if (!table) {
         return -1;
     }
-    count = turbo_toml_len(table);
+    count = toml_table_len(table);
     for (index = 0; index < count; ++index) {
         int key_length = 0;
-        const char *key = turbo_toml_key(table, index, &key_length);
+        const char *key = toml_table_key(table, index, &key_length);
         size_t allowed_index;
         int found = 0;
 
@@ -239,18 +241,18 @@ static int config_table_keys_valid(
 }
 
 static int config_apply_string(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *key,
     signaling_config_storage_t *storage,
     signaling_config_string_t index,
     const char **target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
 
     if (!config_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_string(table, key);
+    value = toml_table_string(table, key);
     if (!value.ok || !value.u.s || value.u.sl < 0 ||
         strlen(value.u.s) != (size_t)value.u.sl) {
         free(value.ok ? value.u.s : NULL);
@@ -261,16 +263,16 @@ static int config_apply_string(
 }
 
 static int config_apply_bool(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *key,
     int *target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
 
     if (!config_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_bool(table, key);
+    value = toml_table_bool(table, key);
     if (!value.ok) {
         TLOG_ERRORF("TOML key [{}].{} must be a boolean", section, key);
         return -1;
@@ -280,16 +282,16 @@ static int config_apply_bool(
 }
 
 static int config_apply_int(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *key,
     int *target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
 
     if (!config_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_int(table, key);
+    value = toml_table_int(table, key);
     if (!value.ok || value.u.i < INT_MIN || value.u.i > INT_MAX) {
         TLOG_ERRORF("TOML key [{}].{} must be a 32-bit integer", section, key);
         return -1;
@@ -299,14 +301,14 @@ static int config_apply_int(
 }
 
 static int config_get_optional_table(
-    const turbo_toml_t *root,
+    const toml_table_t *root,
     const char *name,
-    turbo_toml_t **table) {
+    toml_table_t **table) {
     *table = NULL;
     if (!config_table_has_key(root, name)) {
         return 0;
     }
-    *table = turbo_toml_table(root, name);
+    *table = toml_table_table(root, name);
     if (!*table) {
         TLOG_ERRORF("TOML root key '{}' must be a table", name);
         return -1;
@@ -315,7 +317,7 @@ static int config_get_optional_table(
 }
 
 static int config_apply_server(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     signaling_server_config_t *config,
     signaling_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -342,7 +344,7 @@ static int config_apply_server(
 }
 
 static int config_apply_http(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     signaling_server_config_t *config,
     signaling_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -375,10 +377,10 @@ static int config_apply_http(
 }
 
 static int config_apply_limits(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     signaling_server_config_t *config) {
     static const char *const allowed[] = {
-        "max_peers", "max_rooms", "peer_timeout_ms", "join_timeout_ms",
+        "connection_capacity", "max_peers", "max_rooms", "peer_timeout_ms", "join_timeout_ms",
         "max_message_size", "messages_per_second", "message_burst",
         "max_outbox_messages", "max_outbox_bytes",
         "max_connections_per_source", "source_admissions_per_second",
@@ -390,6 +392,8 @@ static int config_apply_limits(
     }
     if (config_table_keys_valid(table, "limits", allowed,
                                 sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        config_apply_int(table, "limits", "connection_capacity",
+                         &config->connection_capacity) != 0 ||
         config_apply_int(table, "limits", "max_peers", &config->max_peers) != 0 ||
         config_apply_int(table, "limits", "max_rooms", &config->max_rooms) != 0 ||
         config_apply_int(table, "limits", "peer_timeout_ms",
@@ -422,7 +426,7 @@ static int config_apply_limits(
 }
 
 static int config_apply_http_auth(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     signaling_server_config_t *config,
     signaling_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -466,7 +470,7 @@ static int config_apply_http_auth(
 }
 
 static int config_apply_auth(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     signaling_server_config_t *config,
     signaling_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -509,7 +513,7 @@ static int config_apply_auth(
 }
 
 static int config_apply_redis(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     signaling_server_config_t *config,
     signaling_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -541,7 +545,7 @@ static int config_apply_redis(
 }
 
 static int config_apply_logging(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     signaling_server_config_t *config,
     signaling_config_storage_t *storage) {
     static const char *const allowed[] = {"level", "format", "output"};
@@ -625,6 +629,7 @@ void signaling_server_config_init(signaling_server_config_t *config) {
         TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
     
     /* Limits */
+    config->connection_capacity = SIGNALING_DEFAULT_CONNECTION_CAPACITY;
     config->max_peers = 1000;
     config->max_rooms = 100;
     config->peer_timeout_ms = 60000; /* 60 seconds */
@@ -681,15 +686,17 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
         "server", "http_api", "http_auth", "limits", "auth", "redis",
         "logging"
     };
-    turbo_fs_buf_t file = {0};
-    turbo_toml_t *root = NULL;
-    turbo_toml_t *server = NULL;
-    turbo_toml_t *http = NULL;
-    turbo_toml_t *http_auth = NULL;
-    turbo_toml_t *limits = NULL;
-    turbo_toml_t *auth = NULL;
-    turbo_toml_t *redis = NULL;
-    turbo_toml_t *logging = NULL;
+    enum { SIGNALING_TOML_ERROR_SIZE = 200 };
+    salts_fs_buf_t file = {0};
+    char parse_error[SIGNALING_TOML_ERROR_SIZE] = {0};
+    toml_table_t *root = NULL;
+    toml_table_t *server = NULL;
+    toml_table_t *http = NULL;
+    toml_table_t *http_auth = NULL;
+    toml_table_t *limits = NULL;
+    toml_table_t *auth = NULL;
+    toml_table_t *redis = NULL;
+    toml_table_t *logging = NULL;
     signaling_config_storage_t *storage = NULL;
     signaling_config_storage_t *old_storage;
     signaling_server_config_t candidate;
@@ -713,12 +720,14 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
         goto cleanup;
     }
 
-    if (turbo_fs_read_file(filename, &file) != 0) {
+    if (salts_fs_read_file(filename, &file) != 0) {
         TLOG_ERRORF("Failed to open configuration file: {}", filename);
         goto cleanup;
     }
-    if (turbo_parse_toml((const uint8_t *)file.base, file.len, &root) != 0) {
-        TLOG_ERRORF("Failed to parse TOML configuration file: {}", filename);
+    root = toml_parse(file.base, parse_error, (int)sizeof(parse_error));
+    if (!root) {
+        TLOG_ERRORF("Failed to parse TOML configuration file {}: {}", filename,
+                    parse_error);
         goto cleanup;
     }
     if (config_table_keys_valid(root, "root", root_keys,
@@ -748,8 +757,9 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
     result = 0;
 
 cleanup:
-    turbo_free_toml(&root);
-    turbo_fs_buf_free(&file);
+    toml_free(root);
+    root = NULL;
+    salts_fs_buf_free(&file);
     config_storage_destroy(storage);
     return result;
 }
@@ -974,6 +984,12 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
     }
     
     /* Validate limits */
+    if (config->connection_capacity < 1 ||
+        config->connection_capacity > SIGNALING_MAX_CONNECTION_CAPACITY) {
+        TLOG_ERRORF("Invalid connection_capacity: {}",
+                   config->connection_capacity);
+        return -1;
+    }
     if (config->max_peers < 1) {
         TLOG_ERRORF("Invalid max_peers: {}", config->max_peers);
         return -1;
@@ -1145,6 +1161,7 @@ void signaling_server_config_print(const signaling_server_config_t *config) {
                 config->http_auth_active_secret[0])
                    ? "enabled"
                    : "disabled");
+    TLOG_DEBUGF("  Connection Capacity: {}", config->connection_capacity);
     TLOG_DEBUGF("  Max Peers: {}", config->max_peers);
     TLOG_DEBUGF("  Max Rooms: {}", config->max_rooms);
     TLOG_DEBUGF("  Peer Timeout: {}ms", config->peer_timeout_ms);

@@ -2,7 +2,7 @@
 
 #include <tinytest.h>
 #include <platform.h>
-#include <turbo_uuid.h>
+#include <salts_uuid.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -12,13 +12,13 @@ typedef struct reconcile_fixture_s {
     iris_media_reconciler_t *reconciler;
     iris_expected_media_resource_t expected[4];
     size_t expected_count;
-    ivr_fmq_worker_snapshot_t worker;
+    ivr_control_worker_snapshot_t worker;
     int has_worker;
     ivr_worker_inventory_envelope_t inventory;
     int rebind_calls;
     int close_calls;
     int preserve_inventory_on_close;
-    char close_message_ids[2][TURBO_UUID_STRING_SIZE];
+    char close_message_ids[2][SALTS_UUID_STRING_SIZE];
     int complete_calls;
     int lost_calls;
     iris_expected_media_resource_t lost_resource;
@@ -51,7 +51,7 @@ static ivr_status_t mock_fetch_expected(
 }
 
 static ivr_status_t mock_list_workers(
-    void *context, ivr_fmq_worker_snapshot_t *workers, uint32_t capacity,
+    void *context, ivr_control_worker_snapshot_t *workers, uint32_t capacity,
     uint32_t *out_count, uint32_t *out_total) {
     reconcile_fixture_t *fixture = (reconcile_fixture_t *)context;
     *out_count = 0;
@@ -120,7 +120,7 @@ static ivr_status_t mock_complete(
     }
     ++fixture->complete_calls;
     fixture->worker.requires_reconcile = 0;
-    fixture->worker.state = IVR_FMQ_WORKER_READY;
+    fixture->worker.state = IVR_CONTROL_WORKER_READY;
     return IVR_OK;
 }
 
@@ -173,7 +173,7 @@ static int wait_until_accepting(reconcile_fixture_t *fixture,
         if (iris_media_reconciler_accepting_commands(fixture->reconciler)) {
             return 1;
         }
-        turbo_sleep_ms(1u);
+        salts_sleep_ms(1u);
         ++elapsed_ms;
     }
     return iris_media_reconciler_accepting_commands(fixture->reconciler);
@@ -184,7 +184,7 @@ static int wait_for_fetch_calls(reconcile_fixture_t *fixture, int expected,
     uint32_t elapsed_ms = 0u;
     while (elapsed_ms < timeout_ms) {
         if (atomic_load(&fixture->fetch_calls) >= expected) return 1;
-        turbo_sleep_ms(1u);
+        salts_sleep_ms(1u);
         ++elapsed_ms;
     }
     return atomic_load(&fixture->fetch_calls) >= expected;
@@ -229,7 +229,7 @@ static void make_worker_inventory(reconcile_fixture_t *fixture,
     snprintf(fixture->worker.instance_id, sizeof(fixture->worker.instance_id),
              "instance-a");
     fixture->worker.connection_generation = 9u;
-    fixture->worker.state = IVR_FMQ_WORKER_RECONCILING;
+    fixture->worker.state = IVR_CONTROL_WORKER_RECONCILING;
     fixture->worker.max_sessions = 4u;
     fixture->worker.active_sessions = 1u;
     fixture->worker.requires_reconcile = 1;
@@ -466,7 +466,7 @@ spec("iris_media_reconciler") {
         check_true(wait_for_fetch_calls(&fixture, 1, 500u));
         iris_media_reconciler_stop(fixture.reconciler);
         fetch_calls_after_stop = atomic_load(&fixture.fetch_calls);
-        turbo_sleep_ms(5u);
+        salts_sleep_ms(5u);
         check_equal(atomic_load(&fixture.fetch_calls),
                      fetch_calls_after_stop);
         check_equal(iris_media_reconciler_on_inventory_page(

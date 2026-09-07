@@ -298,7 +298,7 @@ int turbo_voice_detector_get_audio_format(const turbo_voice_detector_t *detector
   return TURBO_RECOGNITION_OK;
 }
 
-void turbo_voice_detector_capture_callback(struct turbo_capture_s *capture, const uint8_t *samples,
+void turbo_voice_detector_capture_callback(salts_capture_t *capture, const uint8_t *samples,
                                            size_t len, uint64_t timestamp_us, void *user_data) {
   turbo_voice_detector_t *detector = (turbo_voice_detector_t *)user_data;
   turbo_recognition_audio_frame_t frame;
@@ -615,7 +615,7 @@ int turbo_fingerprint_extractor_get_audio_format(const turbo_fingerprint_extract
   return TURBO_RECOGNITION_OK;
 }
 
-void turbo_fingerprint_capture_callback(struct turbo_capture_s *capture, const uint8_t *samples,
+void turbo_fingerprint_capture_callback(salts_capture_t *capture, const uint8_t *samples,
                                         size_t len, uint64_t timestamp_us, void *user_data) {
   turbo_fingerprint_extractor_t *extractor = (turbo_fingerprint_extractor_t *)user_data;
   turbo_recognition_audio_frame_t frame;

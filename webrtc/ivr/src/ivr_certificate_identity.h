@@ -41,7 +41,7 @@ int ivr_certificate_identity_create(
     ivr_certificate_identity_t **out_identity);
 void ivr_certificate_identity_destroy(ivr_certificate_identity_t *identity);
 
-/* FlowMQ BIND-side callback. Context is the owner returned by create(). */
+/* CHTTP H1 WebSocket BIND-side callback. Context is the owner returned by create(). */
 int ivr_certificate_identity_verify(void *context,
                                     const char *certificate_sha256,
                                     const char *claimed_identity);

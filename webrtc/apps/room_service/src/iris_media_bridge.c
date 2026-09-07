@@ -2,8 +2,10 @@
 #include "iris_command_fingerprint.h"
 
 #include <platform.h>
-#include <turbo_parser.h>
-#include <turbo_thread.h>
+#include <json_parser.h>
+#include <datetime_parser.h>
+#include <salts_thread.h>
+#include <salts/clock.h>
 
 #include <limits.h>
 #include <stdlib.h>
@@ -47,8 +49,8 @@ typedef struct iris_media_entry_s {
 struct iris_media_bridge_s {
     iris_media_entry_t *entries;
     size_t capacity;
-    turbo_mutex_t mutex;
-    turbo_cond_t state_changed;
+    salts_mutex_t mutex;
+    salts_cond_t state_changed;
     iris_media_bridge_send_fn send;
     void *send_context;
     iris_media_bridge_observe_fn observe;
@@ -235,8 +237,9 @@ static int command_identity(const iris_media_request_t *request,
 
 static int add_json_member(json_value_t *object, const char *name,
                            json_value_t *value) {
-    if (!value || !turbo_json_object_add_checked(object, name, value)) {
-        turbo_free_json(&value);
+    if (!value || !json_object_add_checked(object, name, value)) {
+        json_free(value);
+        value = NULL;
         return 0;
     }
     return 1;
@@ -245,14 +248,15 @@ static int add_json_member(json_value_t *object, const char *name,
 static int absence_terminal_outcome(
     const iris_media_request_t *request, int already_absent,
     iris_command_terminal_outcome_t *outcome) {
-    json_value_t *data = turbo_json_create_object();
+    json_value_t *data = json_create_object();
     char *json = NULL;
     size_t json_size = 0u;
     const char *event_type;
     const char *terminal_status = already_absent ? "succeeded" : "failed";
     int valid;
     if (!request || !outcome || !data) {
-        turbo_free_json(&data);
+        json_free(data);
+        data = NULL;
         return 0;
     }
     event_type = request->command.kind == IVR_MEDIA_COMMAND_SESSION_CLOSE
@@ -262,48 +266,49 @@ static int absence_terminal_outcome(
                                        : "provider.media.failed");
     valid = add_json_member(
                 data, "dialogId",
-                turbo_json_create_string(request->command.dialog_id)) &&
+                json_create_string(request->command.dialog_id)) &&
             add_json_member(
                 data, "roomId",
-                turbo_json_create_string(request->command.room_id)) &&
+                json_create_string(request->command.room_id)) &&
             add_json_member(
                 data, "callId",
-                turbo_json_create_string(request->command.call_id)) &&
+                json_create_string(request->command.call_id)) &&
             add_json_member(
                 data, "callGeneration",
-                turbo_json_create_uint64(
+                json_create_uint64(
                     request->command.call_generation)) &&
             add_json_member(
                 data, "operationGeneration",
-                turbo_json_create_uint64(
+                json_create_uint64(
                     request->command.operation_generation)) &&
             (request->command.kind != IVR_MEDIA_COMMAND_CANCEL ||
              (add_json_member(
                   data, "inputId",
-                  turbo_json_create_string(request->command.input_id)) &&
+                  json_create_string(request->command.input_id)) &&
               add_json_member(
                   data, "inputGeneration",
-                  turbo_json_create_uint64(
+                  json_create_uint64(
                       request->command.input_generation)))) &&
             add_json_member(data, "alreadyAbsent",
-                            turbo_json_create_bool(already_absent));
+                            json_create_bool(already_absent));
     if (!already_absent) {
         valid = valid &&
                 add_json_member(
                     data, "errorCode",
-                    turbo_json_create_string("MEDIA_RESOURCE_NOT_FOUND")) &&
+                    json_create_string("MEDIA_RESOURCE_NOT_FOUND")) &&
                 add_json_member(
                     data, "errorMessage",
-                    turbo_json_create_string(
+                    json_create_string(
                         "matching media resource was not found"));
     }
-    if (valid) json = turbo_json_serialize(data, &json_size);
-    turbo_free_json(&data);
+    if (valid) json = json_serialize(data, &json_size);
+    json_free(data);
+    data = NULL;
     if (!json || json_size == 0u ||
         json_size >= sizeof(outcome->result_json) ||
         strlen(terminal_status) >= sizeof(outcome->terminal_status) ||
         strlen(event_type) >= sizeof(outcome->event_type)) {
-        turbo_json_serialize_free(json);
+        json_serialize_free(json);
         return 0;
     }
     memset(outcome, 0, sizeof(*outcome));
@@ -312,7 +317,7 @@ static int absence_terminal_outcome(
     memcpy(outcome->event_type, event_type, strlen(event_type) + 1u);
     memcpy(outcome->result_json, json, json_size);
     outcome->result_json[json_size] = '\0';
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
     return 1;
 }
 
@@ -334,35 +339,35 @@ static int terminal_outcome_from_result(
     int valid = 0;
 
     memset(outcome, 0, sizeof(*outcome));
-    data = turbo_json_create_object();
+    data = json_create_object();
     if (!data ||
-        !add_json_member(data, "status", turbo_json_create_string(status)) ||
+        !add_json_member(data, "status", json_create_string(status)) ||
         !add_json_member(data, "mediaWorkerId",
-                         turbo_json_create_string(result->worker_id)) ||
+                         json_create_string(result->worker_id)) ||
         !add_json_member(data, "dialogId",
-                         turbo_json_create_string(result->dialog_id)) ||
+                         json_create_string(result->dialog_id)) ||
         !add_json_member(data, "roomId",
-                         turbo_json_create_string(result->room_id)) ||
+                         json_create_string(result->room_id)) ||
         !add_json_member(data, "callId",
-                         turbo_json_create_string(result->call_id)) ||
+                         json_create_string(result->call_id)) ||
         !add_json_member(data, "callGeneration",
-                         turbo_json_create_uint64(result->call_generation)) ||
+                         json_create_uint64(result->call_generation)) ||
         !add_json_member(
             data, "operationGeneration",
-            turbo_json_create_uint64(result->operation_generation))) {
+            json_create_uint64(result->operation_generation))) {
         goto cleanup;
     }
     if (result->error_code[0] &&
         !add_json_member(data, "errorCode",
-                         turbo_json_create_string(result->error_code))) {
+                         json_create_string(result->error_code))) {
         goto cleanup;
     }
     if (result->error_message[0] &&
         !add_json_member(data, "errorMessage",
-                         turbo_json_create_string(result->error_message))) {
+                         json_create_string(result->error_message))) {
         goto cleanup;
     }
-    json = turbo_json_serialize(data, &json_size);
+    json = json_serialize(data, &json_size);
     if (!json || json_size == 0u ||
         json_size >= sizeof(outcome->result_json) ||
         !copy_fixed(outcome->terminal_status,
@@ -376,8 +381,9 @@ static int terminal_outcome_from_result(
     valid = 1;
 
 cleanup:
-    turbo_json_serialize_free(json);
-    turbo_free_json(&data);
+    json_serialize_free(json);
+    json_free(data);
+    data = NULL;
     return valid;
 }
 
@@ -396,15 +402,15 @@ static int copy_string_field(const json_value_t *object, const char *key,
     if (!object || !key || !destination || capacity == 0u) {
         return 0;
     }
-    value = turbo_json_object_get(object, key);
+    value = json_object_get(object, key);
     if (!value) {
         destination[0] = '\0';
         return !required;
     }
-    if (turbo_json_type(value) != TURBO_JSON_STRING) {
+    if (json_type(value) != JSON_STRING) {
         return 0;
     }
-    text = turbo_json_string(value);
+    text = json_string(value);
     if (!text) {
         return 0;
     }
@@ -426,9 +432,9 @@ static int parse_u64_field(const json_value_t *object, const char *key,
     if (!object || !key || !out) {
         return 0;
     }
-    value = turbo_json_object_get(object, key);
-    text = value && turbo_json_type(value) == TURBO_JSON_NUMBER
-               ? turbo_json_number_text(value, &size)
+    value = json_object_get(object, key);
+    text = value && json_type(value) == JSON_NUMBER
+               ? json_number_text(value, &size)
                : NULL;
     if (!text || size == 0u || size > 20u || text[0] == '-') {
         return 0;
@@ -452,16 +458,16 @@ static int parse_u64_field(const json_value_t *object, const char *key,
 }
 
 static int parse_deadline(const char *text, uint64_t *out_unix_ms) {
-    turbo_datetime_t value;
+    datetime_t value;
     time_t seconds;
     uint64_t seconds_u64;
 
     if (!text || !out_unix_ms || strchr(text, 'T') == NULL ||
-        turbo_parse_datetime(text, strlen(text), &value) != 0 ||
+        datetime_parse(text, strlen(text), &value) != 0 ||
         !value.has_tz || value.millisecond < 0 || value.millisecond > 999) {
         return 0;
     }
-    seconds = turbo_datetime_to_time(&value);
+    seconds = datetime_to_time(&value);
     if (seconds < 0) {
         return 0;
     }
@@ -514,12 +520,12 @@ static int object_has_only_keys(const json_value_t *object,
                                 size_t allowed_count) {
     size_t count;
 
-    if (!object || turbo_json_type(object) != TURBO_JSON_OBJECT) {
+    if (!object || json_type(object) != JSON_OBJECT) {
         return 0;
     }
-    count = turbo_json_object_size(object);
+    count = json_object_size(object);
     for (size_t i = 0u; i < count; ++i) {
-        if (!key_in_set(turbo_json_object_key(object, i), allowed,
+        if (!key_in_set(json_object_key(object, i), allowed,
                         allowed_count)) {
             return 0;
         }
@@ -584,13 +590,13 @@ static int parse_request(const char *idempotency_key, const char *body,
         return 0;
     }
     memset(out, 0, sizeof(*out));
-    if (turbo_parse_json((const uint8_t *)body, body_size, &root) != 0 ||
-        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
+    if (((root = json_parse((const char *)((const uint8_t *)body), body_size)) ? 0 : -1) != 0 ||
+        !root || json_type(root) != JSON_OBJECT) {
         *error = invalid_result("INVALID_JSON",
                                 "provider command must be a JSON object");
         goto cleanup;
     }
-    data = turbo_json_object_get(root, "data");
+    data = json_object_get(root, "data");
     if (!parse_u64_field(root, "schemaVersion", &schema_version, 0) ||
         schema_version != IRIS_MEDIA_SCHEMA_VERSION ||
         !copy_string_field(root, "commandId", out->command.message_id,
@@ -615,7 +621,7 @@ static int parse_request(const char *idempotency_key, const char *body,
         !copy_string_field(root, "workerId", out->iris_worker_id,
                            sizeof(out->iris_worker_id), 1) ||
         !parse_u64_field(root, "dispatchEpoch", &out->dispatch_epoch, 0) ||
-        !data || turbo_json_type(data) != TURBO_JSON_OBJECT ||
+        !data || json_type(data) != JSON_OBJECT ||
         !request_keys_valid(root, data, out->command.kind) ||
         !copy_string_field(data, "capability", capability,
                            sizeof(capability), 1) ||
@@ -663,7 +669,8 @@ static int parse_request(const char *idempotency_key, const char *body,
     valid = 1;
 
 cleanup:
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
     return valid;
 }
 
@@ -694,7 +701,7 @@ static int same_request(const iris_media_request_t *left,
 static int refresh_terminal_replay_fence(
     iris_media_bridge_t *bridge, const iris_media_request_t *request) {
     int valid = 1;
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_FREE ||
@@ -717,13 +724,13 @@ static int refresh_terminal_replay_fence(
         }
         break;
     }
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
     return valid;
 }
 
 static uint64_t default_realtime_ms(void *context) {
     (void)context;
-    return turbo_realtime_ms();
+    return salts_realtime_ms();
 }
 
 iris_media_bridge_t *iris_media_bridge_create(
@@ -760,8 +767,8 @@ iris_media_bridge_t *iris_media_bridge_create(
                               : default_realtime_ms;
     bridge->realtime_context = config->realtime_context;
     bridge->ledger = config->ledger;
-    turbo_mutex_init(&bridge->mutex);
-    turbo_cond_init(&bridge->state_changed);
+    salts_mutex_init(&bridge->mutex);
+    salts_cond_init(&bridge->state_changed);
     return bridge;
 }
 
@@ -769,8 +776,8 @@ void iris_media_bridge_destroy(iris_media_bridge_t *bridge) {
     if (!bridge) {
         return;
     }
-    turbo_cond_destroy(&bridge->state_changed);
-    turbo_mutex_destroy(&bridge->mutex);
+    salts_cond_destroy(&bridge->state_changed);
+    salts_mutex_destroy(&bridge->mutex);
     free(bridge->entries);
     free(bridge);
 }
@@ -898,7 +905,7 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
                              "accepted provider command has no media worker");
     }
 
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_FREE) {
@@ -921,13 +928,13 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
             (request.dispatch_epoch == entry->request.dispatch_epoch &&
              strcmp(request.iris_worker_id,
                     entry->request.iris_worker_id) != 0)) {
-            turbo_mutex_unlock(&bridge->mutex);
+            salts_mutex_unlock(&bridge->mutex);
             return bridge_result(IRIS_MEDIA_BRIDGE_CONFLICT, &request, NULL,
                                  "COMMAND_FENCE_CONFLICT",
                                  "commandId was reused with different data or a stale fence");
         }
         if (execute) {
-            turbo_mutex_unlock(&bridge->mutex);
+            salts_mutex_unlock(&bridge->mutex);
             (void)bridge->ledger.abort_intent(bridge->ledger.context,
                                               &identity);
             return bridge_result(
@@ -950,14 +957,14 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
         entry->state = IRIS_MEDIA_ENTRY_ACCEPTED;
         memcpy(media_worker_id, claim.provider_resource_id,
                sizeof(media_worker_id));
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         return bridge_result(IRIS_MEDIA_BRIDGE_DUPLICATE, &request,
                              media_worker_id, NULL, NULL);
     }
     if (!slot) slot = oldest_completed;
     if (!slot) {
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_mutex_unlock(&bridge->mutex);
         if (execute) {
             (void)bridge->ledger.abort_intent(bridge->ledger.context,
                                               &identity);
@@ -975,30 +982,30 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
         slot->state = IRIS_MEDIA_ENTRY_ACCEPTED;
         memcpy(media_worker_id, claim.provider_resource_id,
                sizeof(media_worker_id));
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         return bridge_result(IRIS_MEDIA_BRIDGE_DUPLICATE, &request,
                              media_worker_id, NULL, NULL);
     }
     slot->state = IRIS_MEDIA_ENTRY_DISPATCHING;
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
 
     send_status = bridge->send(bridge->send_context, &request.command,
                                media_worker_id, sizeof(media_worker_id));
 
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     if (slot->state != IRIS_MEDIA_ENTRY_DISPATCHING ||
         strcmp(slot->request.command.message_id,
                request.command.message_id) != 0) {
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_mutex_unlock(&bridge->mutex);
         return bridge_result(IRIS_MEDIA_BRIDGE_INTERNAL, &request, NULL,
                              "CORRELATION_STATE_INVALID",
                              "media correlation state changed unexpectedly");
     }
     if (send_status != IVR_OK) {
         memset(slot, 0, sizeof(*slot));
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         if (send_status == IVR_ENOTFOUND &&
             (request.command.kind == IVR_MEDIA_COMMAND_SESSION_CLOSE ||
              request.command.kind == IVR_MEDIA_COMMAND_CANCEL)) {
@@ -1033,8 +1040,8 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
     }
     if (media_worker_id[0] == '\0') {
         memset(slot, 0, sizeof(*slot));
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
         return bridge_result(
             IRIS_MEDIA_BRIDGE_UNAVAILABLE, &request, NULL,
@@ -1044,40 +1051,40 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
     memcpy(slot->media_worker_id, media_worker_id,
            sizeof(slot->media_worker_id));
     slot->state = IRIS_MEDIA_ENTRY_ACCEPTING;
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
 
     ledger_status = bridge->ledger.commit_accepted(
         bridge->ledger.context, &identity, media_worker_id);
     if (ledger_status != IVR_OK) {
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
-        turbo_mutex_lock(&bridge->mutex);
+        salts_mutex_lock(&bridge->mutex);
         if (slot->state == IRIS_MEDIA_ENTRY_ACCEPTING &&
             strcmp(slot->request.command.message_id,
                    request.command.message_id) == 0) {
             memset(slot, 0, sizeof(*slot));
         }
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         return bridge_result(
             IRIS_MEDIA_BRIDGE_UNAVAILABLE, &request, NULL,
             "PROVIDER_OUTCOME_UNKNOWN",
             "media command was sent but durable acceptance failed");
     }
 
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     if (slot->state != IRIS_MEDIA_ENTRY_ACCEPTING ||
         strcmp(slot->request.command.message_id,
                request.command.message_id) != 0) {
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
         return bridge_result(IRIS_MEDIA_BRIDGE_INTERNAL, &request, NULL,
                              "CORRELATION_STATE_INVALID",
                              "media acceptance correlation was lost");
     }
     slot->state = IRIS_MEDIA_ENTRY_ACCEPTED;
-    turbo_cond_broadcast(&bridge->state_changed);
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_cond_broadcast(&bridge->state_changed);
+    salts_mutex_unlock(&bridge->mutex);
     return bridge_result(IRIS_MEDIA_BRIDGE_ACCEPTED, &request,
                          media_worker_id, NULL, NULL);
 }
@@ -1114,7 +1121,7 @@ ivr_status_t iris_media_bridge_claim_completion(
     memset(out, 0, sizeof(*out));
     memset(&identity, 0, sizeof(identity));
     memset(&completion, 0, sizeof(completion));
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
 retry_locked:
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
@@ -1125,7 +1132,7 @@ retry_locked:
         }
         if (entry->state == IRIS_MEDIA_ENTRY_DISPATCHING ||
             entry->state == IRIS_MEDIA_ENTRY_ACCEPTING) {
-            turbo_cond_wait(&bridge->state_changed, &bridge->mutex);
+            salts_cond_wait(&bridge->state_changed, &bridge->mutex);
             goto retry_locked;
         }
         if (entry->state == IRIS_MEDIA_ENTRY_TERMINAL_COMMITTING ||
@@ -1154,47 +1161,47 @@ retry_locked:
         status = IVR_OK;
         break;
     }
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
     if (status != IVR_OK || !claimed) return status;
 
     if (!terminal_outcome_from_result(result, &terminal)) {
-        turbo_mutex_lock(&bridge->mutex);
+        salts_mutex_lock(&bridge->mutex);
         if (claimed->state == IRIS_MEDIA_ENTRY_TERMINAL_COMMITTING &&
             strcmp(claimed->request.command.message_id,
                    result->message_id) == 0) {
             claimed->state = IRIS_MEDIA_ENTRY_ACCEPTED;
         }
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         return IVR_ENOSPC;
     }
     status = bridge->ledger.commit_terminal(
         bridge->ledger.context, &identity, &terminal);
     if (status != IVR_OK) {
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
-        turbo_mutex_lock(&bridge->mutex);
+        salts_mutex_lock(&bridge->mutex);
         if (claimed->state == IRIS_MEDIA_ENTRY_TERMINAL_COMMITTING &&
             strcmp(claimed->request.command.message_id,
                    result->message_id) == 0) {
             claimed->state = IRIS_MEDIA_ENTRY_ACCEPTED;
         }
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         return status;
     }
 
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     if (claimed->state != IRIS_MEDIA_ENTRY_TERMINAL_COMMITTING ||
         strcmp(claimed->request.command.message_id,
                result->message_id) != 0) {
-        turbo_cond_broadcast(&bridge->state_changed);
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_cond_broadcast(&bridge->state_changed);
+        salts_mutex_unlock(&bridge->mutex);
         return IVR_ESTATE;
     }
     claimed->state = IRIS_MEDIA_ENTRY_COMPLETING;
     *out = completion;
-    turbo_cond_broadcast(&bridge->state_changed);
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_cond_broadcast(&bridge->state_changed);
+    salts_mutex_unlock(&bridge->mutex);
     return IVR_OK;
 }
 
@@ -1205,7 +1212,7 @@ ivr_status_t iris_media_bridge_refresh_completion(
     if (!bridge || !command_id || !command_id[0] || !out) {
         return IVR_EINVAL;
     }
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_COMPLETING &&
@@ -1215,14 +1222,14 @@ ivr_status_t iris_media_bridge_refresh_completion(
             break;
         }
     }
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
     return status;
 }
 
 void iris_media_bridge_restore_completion(iris_media_bridge_t *bridge,
                                           const char *command_id) {
     if (!bridge || !command_id) return;
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_COMPLETING &&
@@ -1231,13 +1238,13 @@ void iris_media_bridge_restore_completion(iris_media_bridge_t *bridge,
             break;
         }
     }
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
 }
 
 void iris_media_bridge_release_completion(iris_media_bridge_t *bridge,
                                           const char *command_id) {
     if (!bridge || !command_id) return;
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_COMPLETING &&
@@ -1251,5 +1258,5 @@ void iris_media_bridge_release_completion(iris_media_bridge_t *bridge,
             break;
         }
     }
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
 }

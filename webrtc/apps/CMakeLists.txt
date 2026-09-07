@@ -13,12 +13,12 @@ target_include_directories(
   turbo_media_rtc_apps PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/recording)
 target_link_libraries(
   turbo_media_rtc_apps
-  PUBLIC TurboMedia::RTC TurboUtils::Core
-  PRIVATE TurboMedia::Muxer TurboMedia::Transport TurboNet::Crypto)
+  PUBLIC TurboMedia::RTC Salts::Core
+  PRIVATE TurboMedia::Muxer TurboMedia::Transport SaltsNet::Crypto)
 
 add_subdirectory(room_service)
 add_subdirectory(sfu_node)
-if(TURBO_MEDIA_HAS_IVR_FMQ)
+if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_subdirectory(ivr_worker)
 endif()
 add_subdirectory(signaling_server)

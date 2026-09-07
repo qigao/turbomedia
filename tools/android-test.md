@@ -11,8 +11,10 @@
 - PowerShell 7 或更高版本。
 - CMake、Ninja、Android SDK Platform Tools 和 Android NDK 已安装。
 - `CMakeUserPresets.json` 中的 Android Windows-host preset 路径与本机环境一致。
-- 同 ABI、同构建类型的 TurboUtils Android build tree 已生成；当前 Windows-host presets
-  默认从相邻 `../turbo-utils/build/android-<abi>-<config>` 查找它。
+- 同 ABI、同构建类型的 Salts 和 SaltsUtils Android 安装 profile 已生成；
+  Windows-host presets 通过 `SALTS_ROOT` 和 `SALTS_UTILS_ROOT` 使用精确安装根。
+- 交叉构建使用的 `SALTS_UTILS_HOST_ROOT` 已提供与当前源码版本匹配的
+  host `tbe_compiler`。
 - 构建通用 transport 组件时，同 ABI、同构建类型的 TurboNet Android build tree 也应已生成。
 - Android preset 与 vcpkg 官方 Android triplet 统一使用 API 28（Android 9）。
 - 设备 ABI 与 preset 一致。默认 preset 构建 `arm64-v8a`。
@@ -202,11 +204,14 @@ TinyTest 常用参数包括：
 ### 补充动态库
 
 脚本会自动解析可执行文件和已发现 `.so` 的 `DT_NEEDED`。TurboMedia 依赖外部
-TurboUtils build tree；链接 transport 的目标还会依赖 TurboNet。最小 crypto 测试只需：
+Salts/SaltsUtils 安装 profile；链接 transport 的目标还会依赖 TurboNet。最小 crypto 测试可显式补充：
 
 ```powershell
 ./tools/android-test.ps1 turbo_media_test_crypto `
-  -LibraryDirectory '../turbo-utils/build/android-arm64-v8a-release/bin'
+  -LibraryDirectory @(
+    'C:/projects/cpp/external/pkgs/salts-android/release/bin',
+    'C:/projects/cpp/external/pkgs/salts-utils-android/release/bin'
+  )
 ```
 
 若只有单个库位于非标准位置，也可以用 `-Library <file>` 显式部署。无法解析非系统
@@ -217,18 +222,17 @@ Android mobile 测试示例：
 ```powershell
 ./tools/android-test.ps1 turbo_media_test_mobile_optimizer -Tap `
   -LibraryDirectory @(
-    '../turbo-utils/build/android-arm64-v8a-release/bin',
+    'C:/projects/cpp/external/pkgs/salts-android/release/bin',
+    'C:/projects/cpp/external/pkgs/salts-utils-android/release/bin',
     '../turbonet/build/android-arm64-v8a-release/bin'
   )
 ```
 
-## WebRTC 与 TurboHTTP 链路
+## WebRTC 与 CHTTP/CNet 链路
 
-Android presets 构建全部功能。ARM64 Release 使用
-已安装的 `C:/projects/cpp/external/pkgs/turbohttp-android`；其他 ABI/配置从
-`C:/projects/cpp/TurboHTTP/build/android-<abi>-<config>` 查找。对应 TurboHTTP package
-必须先构建，且 TurboHTTP、TurboNet、TurboUtils、TurboMedia 必须使用相同 ABI、构建类型、
-NDK 与 Android API。
+Android presets 构建全部功能，并从 `salts-utils-android` 解析 CHTTP/CNet、从
+`saltsnet-android` 解析 ICE/STUN。Salts、SaltsUtils、SaltsNet 与 TurboMedia 必须使用
+相同 ABI、构建类型、NDK 与 Android API。
 
 WiFi 真机运行 WebRTC signaling 测试：
 
@@ -236,9 +240,9 @@ WiFi 真机运行 WebRTC signaling 测试：
 ./tools/android-test.ps1 turbo_media_test_signaling_lifecycle -Tap `
   -Serial "adb-38101FDJG00AVU-Rx6MV9._adb-tls-connect._tcp" `
   -LibraryDirectory @(
-    'C:/projects/cpp/external/pkgs/turbohttp-android/lib',
-    '../turbonet/build/android-arm64-v8a-release/bin',
-    '../turbo-utils/build/android-arm64-v8a-release/bin'
+    'C:/projects/cpp/external/pkgs/saltsnet-android/release/bin',
+    'C:/projects/cpp/external/pkgs/salts-android/release/bin',
+    'C:/projects/cpp/external/pkgs/salts-utils-android/release/bin'
   )
 ```
 
@@ -255,7 +259,7 @@ RTC 与 DataChannel 可分别使用 `turbo_media_test_media_engine` 和
 - Camera2 后置摄像头至少回调一帧 `640x480` I420 数据；
 - 音频、视频和屏幕对象的启动、停止及状态回调保持一致；
 - Android 尚未实现的 Camera2 控制和裁剪接口必须明确返回
-  `TURBO_CAPTURE_ERR_UNSUPPORTED`，并清空输出参数；
+  `SALTS_CAPTURE_ERR_UNSUPPORTED`，并清空输出参数；
 - 设备枚举同时覆盖音频、前后摄像头、屏幕和当前为空的 GPU 捕获列表。
 
 WiFi 设备示例：
@@ -264,7 +268,10 @@ WiFi 设备示例：
 ./tools/android-test.ps1 turbo_media_test_android_capture `
   -Serial "adb-38101FDJG00AVU-Rx6MV9._adb-tls-connect._tcp" `
   -JUnit artifacts/turbo_media_test_android_capture.xml `
-  -LibraryDirectory '../turbo-utils/build/android-arm64-v8a-release/bin'
+  -LibraryDirectory @(
+    'C:/projects/cpp/external/pkgs/salts-android/release/bin',
+    'C:/projects/cpp/external/pkgs/salts-utils-android/release/bin'
+  )
 ```
 
 `turbo_media_test_android_capture` 中的屏幕用例只能验证 native ImageReader surface 和生命周期。
@@ -298,10 +305,14 @@ consumer 的 Android user preset 应提供这些精确 package 目录：
 
 ```json
 {
-  "TurboMedia_DIR": "C:/projects/cpp/external/pkgs/turbomedia-android/lib/cmake/TurboMedia",
-  "TurboHttp_DIR": "C:/projects/cpp/external/pkgs/turbohttp-android/lib/cmake/TurboHttp",
-  "TurboNet_DIR": "C:/projects/cpp/turbonet/turbonet/build/android-arm64-v8a-release",
-  "TurboUtils_DIR": "C:/projects/cpp/turbonet/turbo-utils/build/android-arm64-v8a-release"
+  "environment": {
+    "SALTS_ROOT": "C:/projects/cpp/external/pkgs/salts-android/release",
+    "SALTS_UTILS_ROOT": "C:/projects/cpp/external/pkgs/salts-utils-android/release",
+    "SALTSNET_ROOT": "C:/projects/cpp/external/pkgs/saltsnet-android/release"
+  },
+  "cacheVariables": {
+    "TurboMedia_DIR": "C:/projects/cpp/external/pkgs/turbomedia-android/lib/cmake/TurboMedia"
+  }
 }
 ```
 
@@ -519,7 +530,10 @@ Android 与 Windows presets 当前共用仓库的 `vcpkg_installed`。Android co
 ```powershell
 ./tools/android-test.ps1 turbo_media_test_crypto `
   -Tap `
-  -LibraryDirectory '../turbo-utils/build/android-arm64-v8a-release/bin'
+  -LibraryDirectory @(
+    'C:/projects/cpp/external/pkgs/salts-android/release/bin',
+    'C:/projects/cpp/external/pkgs/salts-utils-android/release/bin'
+  )
 ```
 
 需要验证调试链路时：
@@ -527,11 +541,15 @@ Android 与 Windows presets 当前共用仓库的 `vcpkg_installed`。Android co
 ```powershell
 ./tools/android-test.ps1 turbo_media_test_crypto `
   -Lldb `
-  -LibraryDirectory '../turbo-utils/build/android-arm64-v8a-release/bin' `
+  -LibraryDirectory @(
+    'C:/projects/cpp/external/pkgs/salts-android/release/bin',
+    'C:/projects/cpp/external/pkgs/salts-utils-android/release/bin'
+  ) `
   -LldbCommand 'breakpoint set --name main','process continue','thread backtrace','process continue','quit'
 ```
 
-本次迁移已在 ARM64 Pixel WiFi ADB 设备复验：
+以下是依赖迁移前的 ARM64 Pixel WiFi ADB 基线。切换到 Salts/SaltsUtils profile 后
+必须重新执行，不得将此历史记录当作当前验收结果：
 
 - `turbo_media_test_crypto`：5 个测试、34 个断言通过。
 - `turbo_media_test_mobile_optimizer`：25 个测试通过。

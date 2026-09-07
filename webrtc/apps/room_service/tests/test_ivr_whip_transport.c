@@ -619,7 +619,10 @@ void test_whip_publish_connect_and_send_audio(void) {
             proc_sleep(25);
         }
     }
-    check_true(connected);
+    if (!connected) {
+        print_child_output(g_out_path);
+        check(0, "%s", ("WHIP ICE/DTLS transport did not connect"));
+    }
     media_state_counts_t whip_states = media_state_snapshot(&g_whip_states);
     check_true(whip_states.connecting >= 1);
     check_true(whip_states.connected >= 1);
@@ -875,10 +878,14 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     check_false(ivr_whip_transport_connected(g_transport));
     check_false(ivr_whep_transport_connected(g_whep_transport));
 
-    check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &g_call)), (int)(0));
+    /* Local teardown completes, but the dead SFU cannot acknowledge DELETE.
+       Preserve that remote-side uncertainty as an explicit failure; the same
+       transport must still be restartable below. */
+    check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &g_call)),
+                (int)(-1));
     ivr_whip_transport_get_transport(g_transport, &publisher);
     check_not_null(publisher.stop);
-    check_equal((int)(publisher.stop(publisher.context, &g_call)), (int)(0));
+    check_equal((int)(publisher.stop(publisher.context, &g_call)), (int)(-1));
 
     check_true(spawn_sfu());
     check_true(provision_room());

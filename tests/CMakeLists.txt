@@ -21,14 +21,15 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   endif()
   
   # 根据测试类型确定链接库
-  set(TEST_LINK_LIBS TurboUtils::TinyTest)
+  set(TEST_LINK_LIBS Salts::TinyTest)
   if(UNIX)
     list(APPEND TEST_LINK_LIBS m)
   endif()
   
   if(TEST_NAME MATCHES "rtsp")
     # RTSP 相关测试
-    list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core TurboMedia::Server)
+    list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core
+                               TurboMedia::ServerRTSP)
     if(TEST_NAME STREQUAL "test_rtsp")
       list(APPEND TEST_LINK_LIBS OpenSSL::Crypto)
     endif()
@@ -48,12 +49,13 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     list(APPEND TEST_LINK_LIBS turbo_media_android)
   elseif(TEST_NAME STREQUAL "test_webrtc")
     list(APPEND TEST_LINK_LIBS TurboMedia::WebRTC TurboMedia::Core TurboMedia::Server
-                          TurboMedia::Pipeline TurboMedia::Transport TurboUtils::Core
+                          TurboMedia::Pipeline TurboMedia::Transport Salts::Core
                           TurboMedia::RTC)
   elseif(TEST_NAME STREQUAL "test_pipeline")
     list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server
-                          TurboMedia::RTSP TurboMedia::Transport TurboMedia::Codec
-                          TurboUtils::Core)
+                          TurboMedia::RTSP TurboMedia::ServerRTSP
+                          TurboMedia::Transport TurboMedia::Codec
+                          Salts::CHTTP Salts::Core)
     if(WIN32)
       list(APPEND TEST_LINK_LIBS ws2_32)
     endif()
@@ -101,6 +103,11 @@ if(NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
              TURBO_MEDIA_PACKAGE_TEST_INCLUDE NORMALIZE)
   cmake_path(CONVERT "$ENV{LIB}" TO_CMAKE_PATH_LIST
              TURBO_MEDIA_PACKAGE_TEST_LIB NORMALIZE)
+  file(TO_CMAKE_PATH "$ENV{SALTS_ROOT}" TURBO_MEDIA_PACKAGE_TEST_SALTS_ROOT)
+  file(TO_CMAKE_PATH "$ENV{SALTS_UTILS_ROOT}"
+       TURBO_MEDIA_PACKAGE_TEST_SALTS_UTILS_ROOT)
+  file(TO_CMAKE_PATH "$ENV{SALTSNET_ROOT}"
+       TURBO_MEDIA_PACKAGE_TEST_SALTSNET_ROOT)
   configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/verify_capture_package.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/verify_capture_package.cmake

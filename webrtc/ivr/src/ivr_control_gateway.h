@@ -1,12 +1,12 @@
-#ifndef TURBO_MEDIA_IVR_FLOWMQ_GATEWAY_H
-#define TURBO_MEDIA_IVR_FLOWMQ_GATEWAY_H
+#ifndef TURBO_MEDIA_IVR_CONTROL_GATEWAY_H
+#define TURBO_MEDIA_IVR_CONTROL_GATEWAY_H
 
 /**
- * @file ivr_flowmq_gateway.h
- * @brief FlowMQ DEALER command gateway (compiled when TURBO_MEDIA_HAS_FLOWMQ).
+ * @file ivr_control_gateway.h
+ * @brief CHTTP HTTP/1.1 WebSocket command gateway.
  *
- * Implements an adapter-local command sender over a FlowMQ DEALER endpoint
- * (CONNECT to the RoomService ROUTER). Commands are encoded as TIVR frames
+ * Implements an adapter-local command sender over one CHTTP HTTP/1.1 WebSocket
+ * connection to RoomService. Commands are encoded as TIVR frames
  * (12-byte header + DataBind BIN payload) using the generated
  * turbomedia_ivr_v1 schema; the payload is the per-command typed message.
  * Commands without a RoomService schema message (rtc.*, accept, disconnect)
@@ -15,13 +15,13 @@
 
 #include "ivr/ivr_worker.h"
 #include "data_bind.h"
-#include "flowmq_coronet.h"
+#include <cnet/cnet.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct ivr_flowmq_gateway_s ivr_flowmq_gateway_t;
+typedef struct ivr_control_gateway_s ivr_control_gateway_t;
 
 /* Adapter-only envelope for RoomService control commands. This is not an IVR
    worker or workflow API; Iris-facing media commands use their own typed wire
@@ -41,39 +41,39 @@ typedef struct {
 } ivr_command_gateway_ops_t;
 
 typedef struct {
-    const char *worker_id; /* DEALER identity; also stamped on commands */
-    const char *host;      /* ROUTER host */
+    const char *worker_id; /* WebSocket identity; also stamped on commands */
+    const char *host;      /* RoomService host */
     int port;
-    int transport;         /* flowmq_coronet_transport_t; 0 = TCP */
-    const char *path;      /* WS/WSS path; NULL = "/" */
+    int use_tls;
+    const char *path;      /* WebSocket route; NULL selects the IVR default. */
     uint64_t timeout_ms;   /* 0 = 5000 */
     uint64_t reconnect_initial_ms; /* 0 = 1000 */
     uint64_t reconnect_max_ms;     /* 0 = 30000 */
-    /* Borrowed object-level TLS/WSS material; FlowMQ copies it during create. */
-    const flowmq_coronet_tls_client_config_t *tls;
-    /* Optional DEALER reply ingress (command results from the ROUTER).
+    /* Borrowed TLS material; CHTTP consumes it during create. */
+    const cnet_tls_client_config *tls;
+    /* Optional reply ingress (command results from RoomService).
        The frame bytes are borrowed for the call only; copy to retain. */
     void (*on_reply)(void *ctx, const uint8_t *frame, size_t len);
     void *reply_ctx;
-    /* Transport callback; invoked from the FlowMQ execution context. The
-       receiver must only copy/publish state and must not re-enter FlowMQ. */
+    /* Transport callback; invoked from the CHTTP H1 WebSocket execution context. The
+       receiver must only copy/publish state and must not re-enter CHTTP H1 WebSocket. */
     void (*on_connection)(void *ctx, int connected);
     void *connection_ctx;
-} ivr_flowmq_gateway_config_t;
+} ivr_control_gateway_config_t;
 
-ivr_status_t ivr_flowmq_gateway_create(const ivr_flowmq_gateway_config_t *config,
+ivr_status_t ivr_control_gateway_create(const ivr_control_gateway_config_t *config,
                                        ivr_command_gateway_ops_t *ops,
-                                       ivr_flowmq_gateway_t **out_gateway);
+                                       ivr_control_gateway_t **out_gateway);
 
-/* Start the DEALER facade (connect + receive loop). Required before send. */
-ivr_status_t ivr_flowmq_gateway_start(ivr_flowmq_gateway_t *gateway);
+/* Start the client connection and receive loop. Required before send. */
+ivr_status_t ivr_control_gateway_start(ivr_control_gateway_t *gateway);
 
-void ivr_flowmq_gateway_destroy(ivr_flowmq_gateway_t *gateway);
+ivr_status_t ivr_control_gateway_destroy(ivr_control_gateway_t *gateway);
 
 /* Encode one command as a TIVR frame (header + BIN payload). Pure function:
-   no network is touched, so it is unit-testable without a FlowMQ peer.
+   no network is touched, so it is unit-testable without a CHTTP H1 WebSocket peer.
    Returns IVR_ESTATE for commands without a RoomService schema message. */
-ivr_status_t ivr_flowmq_gateway_encode_command(DataBind *codec,
+ivr_status_t ivr_control_gateway_encode_command(DataBind *codec,
                                                const ivr_command_view_t *command,
                                                const char *worker_id,
                                                uint8_t *frame, size_t frame_cap,
@@ -81,16 +81,16 @@ ivr_status_t ivr_flowmq_gateway_encode_command(DataBind *codec,
 
 /* Encode one worker.sync registration frame (WorkerSyncCommandV1; only
    message_id + worker_id, no per-call fields). Pure function. */
-ivr_status_t ivr_flowmq_gateway_encode_worker_sync(DataBind *codec,
+ivr_status_t ivr_control_gateway_encode_worker_sync(DataBind *codec,
                                                    const char *message_id,
                                                    const char *worker_id,
                                                    uint8_t *frame,
                                                    size_t frame_cap,
                                                    size_t *out_len);
 
-/* Send worker.sync on the DEALER channel (worker-level registration; the
+/* Send worker.sync on the WebSocket channel (worker-level registration; the
    WorkerSyncResultV1 reply arrives through the configured on_reply). */
-ivr_status_t ivr_flowmq_gateway_send_worker_sync(ivr_flowmq_gateway_t *gateway,
+ivr_status_t ivr_control_gateway_send_worker_sync(ivr_control_gateway_t *gateway,
                                                  const char *message_id);
 
 typedef struct {
@@ -108,27 +108,27 @@ typedef struct {
 
 /* Encode/send production worker registration and lease renewal commands.
    WorkerSyncCommandV1 remains available for wire compatibility only. */
-ivr_status_t ivr_flowmq_gateway_encode_worker_sync_v2(
+ivr_status_t ivr_control_gateway_encode_worker_sync_v2(
     DataBind *codec, const char *message_id, const char *worker_id,
     const ivr_worker_status_view_t *status, uint8_t *frame, size_t frame_cap,
     size_t *out_len);
-ivr_status_t ivr_flowmq_gateway_encode_worker_heartbeat(
+ivr_status_t ivr_control_gateway_encode_worker_heartbeat(
     DataBind *codec, const char *message_id, const char *worker_id,
     const ivr_worker_status_view_t *status, uint8_t *frame, size_t frame_cap,
     size_t *out_len);
-ivr_status_t ivr_flowmq_gateway_send_worker_sync_v2(
-    ivr_flowmq_gateway_t *gateway, const char *message_id,
+ivr_status_t ivr_control_gateway_send_worker_sync_v2(
+    ivr_control_gateway_t *gateway, const char *message_id,
     const ivr_worker_status_view_t *status);
-ivr_status_t ivr_flowmq_gateway_send_worker_heartbeat(
-    ivr_flowmq_gateway_t *gateway, const char *message_id,
+ivr_status_t ivr_control_gateway_send_worker_heartbeat(
+    ivr_control_gateway_t *gateway, const char *message_id,
     const ivr_worker_status_view_t *status);
 
-/* Send one raw TIVR frame on the DEALER channel. Used for pre-encoded frames
+/* Send one raw TIVR frame on the WebSocket channel. Used for pre-encoded frames
    (e.g. negative identity tests) and future command types. */
-ivr_status_t ivr_flowmq_gateway_send_frame(ivr_flowmq_gateway_t *gateway,
+ivr_status_t ivr_control_gateway_send_frame(ivr_control_gateway_t *gateway,
                                            const uint8_t *frame, size_t len);
 
-/* One call dispatch pushed by the RoomService ROUTER to this worker. */
+/* One call dispatch pushed by RoomService to this worker. */
 typedef struct {
     uint32_t wire_version;
     char message_id[128];
@@ -147,7 +147,7 @@ typedef struct {
 } ivr_call_dispatch_t;
 
 /* Worker-owned outcome of one pushed dispatch. The frame is sent back on the
-   worker DEALER only after content, media and the session slot have been
+   worker WebSocket only after content, media and the session slot have been
    created (or rejected with a bounded error). */
 typedef struct {
     char message_id[128];
@@ -170,7 +170,7 @@ typedef struct {
 } ivr_call_release_t;
 
 /* One decoded IvrCommandResultV1 reply. All strings are owned by this
-   envelope, so callers may retain it after the borrowed FlowMQ callback
+   envelope, so callers may retain it after the borrowed CHTTP H1 WebSocket callback
    returns. */
 typedef struct {
     char message_id[128];
@@ -227,32 +227,32 @@ typedef struct {
     char error_message[128];
 } ivr_worker_inventory_envelope_t;
 
-ivr_status_t ivr_flowmq_gateway_decode_media_command(
+ivr_status_t ivr_control_gateway_decode_media_command(
     DataBind *codec, const uint8_t *frame, size_t len,
     ivr_media_command_t *out);
-ivr_status_t ivr_flowmq_gateway_send_media_result(
-    ivr_flowmq_gateway_t *gateway, const ivr_media_command_t *command,
+ivr_status_t ivr_control_gateway_send_media_result(
+    ivr_control_gateway_t *gateway, const ivr_media_command_t *command,
     int status_code, const char *error_code, const char *error_message);
-ivr_status_t ivr_flowmq_gateway_send_media_event(
-    ivr_flowmq_gateway_t *gateway, const char *worker_id,
+ivr_status_t ivr_control_gateway_send_media_event(
+    ivr_control_gateway_t *gateway, const char *worker_id,
     const ivr_event_view_t *event, uint64_t occurred_at_ms);
 
 /* Worker-side inventory control plane. Decode validates exact wire version,
    bounded limit and target worker identity fields. The page encoder owns no
    borrowed output: it serializes the caller-owned page before returning. */
-ivr_status_t ivr_flowmq_gateway_decode_inventory_query(
+ivr_status_t ivr_control_gateway_decode_inventory_query(
     DataBind *codec, const uint8_t *frame, size_t len,
     ivr_worker_inventory_request_t *out);
-ivr_status_t ivr_flowmq_gateway_encode_inventory_page(
+ivr_status_t ivr_control_gateway_encode_inventory_page(
     DataBind *codec, const ivr_worker_inventory_envelope_t *result,
     uint8_t *frame, size_t frame_capacity, size_t *out_size);
-ivr_status_t ivr_flowmq_gateway_send_inventory_page(
-    ivr_flowmq_gateway_t *gateway,
+ivr_status_t ivr_control_gateway_send_inventory_page(
+    ivr_control_gateway_t *gateway,
     const ivr_worker_inventory_envelope_t *result);
 
 /* Pure decode of one CallDispatchCommandV1 frame (kind=command). Returns
    IVR_OK and fills *out; IVR_ESTATE for non-dispatch/malformed frames. */
-ivr_status_t ivr_flowmq_gateway_decode_dispatch(DataBind *codec,
+ivr_status_t ivr_control_gateway_decode_dispatch(DataBind *codec,
                                                 const uint8_t *frame,
                                                 size_t len,
                                                 ivr_call_dispatch_t *out);
@@ -262,46 +262,46 @@ ivr_status_t ivr_flowmq_gateway_decode_dispatch(DataBind *codec,
 ow_ms. A zero deadline is invalid
    for V2 dispatches (decode rejects it); overflow-safe. Both timestamps use
    the same monotonic clock. */
-int ivr_flowmq_gateway_dispatch_deadline_ok(
+int ivr_control_gateway_dispatch_deadline_ok(
     const ivr_call_dispatch_t *dispatch, uint64_t received_at_ms,
     uint64_t now_ms);
 
 /* Pure BIN/TIVR encode of CallDispatchResultV1. */
-ivr_status_t ivr_flowmq_gateway_encode_dispatch_result(
+ivr_status_t ivr_control_gateway_encode_dispatch_result(
     DataBind *codec, const ivr_call_dispatch_t *dispatch, int status_code,
     const char *error_code, const char *error_message, uint8_t *frame,
     size_t frame_cap, size_t *out_len);
 
 /* V2 dispatch/result preserve V1 IDs and add assignment/attempt fencing. */
-ivr_status_t ivr_flowmq_gateway_encode_dispatch_result_v2(
+ivr_status_t ivr_control_gateway_encode_dispatch_result_v2(
     DataBind *codec, const ivr_call_dispatch_t *dispatch, int status_code,
     uint32_t active_sessions, uint32_t max_sessions,
     const char *error_code, const char *error_message, uint8_t *frame,
     size_t frame_cap, size_t *out_len);
 
-/* Send a dispatch result from the worker DEALER to RoomService. */
-ivr_status_t ivr_flowmq_gateway_send_dispatch_result(
-    ivr_flowmq_gateway_t *gateway, const ivr_call_dispatch_t *dispatch,
+/* Send a dispatch result from the worker WebSocket to RoomService. */
+ivr_status_t ivr_control_gateway_send_dispatch_result(
+    ivr_control_gateway_t *gateway, const ivr_call_dispatch_t *dispatch,
     int status_code, const char *error_code, const char *error_message);
-ivr_status_t ivr_flowmq_gateway_send_dispatch_result_v2(
-    ivr_flowmq_gateway_t *gateway, const ivr_call_dispatch_t *dispatch,
+ivr_status_t ivr_control_gateway_send_dispatch_result_v2(
+    ivr_control_gateway_t *gateway, const ivr_call_dispatch_t *dispatch,
     int status_code, uint32_t active_sessions, uint32_t max_sessions,
     const char *error_code, const char *error_message);
 
-ivr_status_t ivr_flowmq_gateway_decode_release(DataBind *codec,
+ivr_status_t ivr_control_gateway_decode_release(DataBind *codec,
                                                const uint8_t *frame,
                                                size_t len,
                                                ivr_call_release_t *out);
-ivr_status_t ivr_flowmq_gateway_encode_release_result(
+ivr_status_t ivr_control_gateway_encode_release_result(
     DataBind *codec, const ivr_call_release_t *release, int status_code,
     const char *error_code, const char *error_message, uint8_t *frame,
     size_t frame_cap, size_t *out_len);
-ivr_status_t ivr_flowmq_gateway_send_release_result(
-    ivr_flowmq_gateway_t *gateway, const ivr_call_release_t *release,
+ivr_status_t ivr_control_gateway_send_release_result(
+    ivr_control_gateway_t *gateway, const ivr_call_release_t *release,
     int status_code, const char *error_code, const char *error_message);
 
 /* Pure decode of one IvrCommandResultV1 frame (kind=result). */
-ivr_status_t ivr_flowmq_gateway_decode_result(
+ivr_status_t ivr_control_gateway_decode_result(
     DataBind *codec, const uint8_t *frame, size_t len,
     ivr_command_result_envelope_t *out);
 
@@ -309,4 +309,4 @@ ivr_status_t ivr_flowmq_gateway_decode_result(
 }
 #endif
 
-#endif /* TURBO_MEDIA_IVR_FLOWMQ_GATEWAY_H */
+#endif /* TURBO_MEDIA_IVR_CONTROL_GATEWAY_H */

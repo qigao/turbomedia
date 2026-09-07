@@ -2,12 +2,9 @@
 #include "ivr_frame.h"
 #include "ivr_thread.h"
 #include "ivr_internal.h"
+#include "ivr_control_ws.h"
 #include "turbomedia_ivr_v1.h"
-#include "flowmq_protocol.h"
-#include "flowmq_router_endpoint.h"
-#include "turbo_error.h"
-#include "turbo_str.h"
-#include "turbo_parser.h"
+#include <json_parser.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +34,7 @@ typedef struct {
 
 static uint64_t ivr_dedup_default_now(void *ctx) {
     (void)ctx;
-    return turbo_monotonic_ms();
+    return salts_monotonic_ms();
 }
 
 static uint64_t ivr_dedup_now(const ivr_dedup_t *d) {
@@ -143,7 +140,7 @@ static void ivr_dedup_store(ivr_dedup_t *d, const char *message_id,
 typedef struct ivr_route_message_s {
     uint8_t *payload;
     size_t payload_size;
-    flowmq_router_route_t route;
+    ivr_control_ws_route_t route;
     char peer_identity[128];
 } ivr_route_message_t;
 
@@ -264,8 +261,8 @@ static int ivr_req_queue_pop(ivr_req_queue_t *q, ivr_route_message_t *out) {
 }
 
 typedef struct {
-    flowmq_router_endpoint_event_kind_t kind;
-    flowmq_router_route_t route;
+    int connected;
+    ivr_control_ws_route_t route;
     char peer_identity[128];
 } ivr_peer_event_t;
 
@@ -306,10 +303,12 @@ static void ivr_peer_event_queue_destroy(ivr_peer_event_queue_t *q) {
 }
 
 static int ivr_peer_event_queue_push(ivr_peer_event_queue_t *q,
-                                     const flowmq_router_endpoint_event_t *event) {
-    size_t length = event->peer_identity.len;
+                                     const ivr_control_ws_route_t *route,
+                                     const char *peer_identity,
+                                     int connected) {
+    size_t length = peer_identity ? strlen(peer_identity) : 0u;
     ivr_mutex_lock(&q->lock);
-    if (!event->peer_identity.data || length == 0 || length >= 128 ||
+    if (!route || !peer_identity || length == 0 || length >= 128 ||
         q->count >= q->capacity) {
         q->dropped++;
         q->overflowed = 1;
@@ -317,9 +316,9 @@ static int ivr_peer_event_queue_push(ivr_peer_event_queue_t *q,
         return -1;
     }
     uint32_t tail = (q->head + q->count) % q->capacity;
-    q->items[tail].kind = event->kind;
-    q->items[tail].route = event->route;
-    memcpy(q->items[tail].peer_identity, event->peer_identity.data, length);
+    q->items[tail].connected = connected != 0;
+    q->items[tail].route = *route;
+    memcpy(q->items[tail].peer_identity, peer_identity, length);
     q->items[tail].peer_identity[length] = '\0';
     q->count++;
     if (q->count > q->high_water) {
@@ -364,13 +363,13 @@ static int ivr_peer_event_queue_pop(ivr_peer_event_queue_t *q,
 /* bridge                                                              */
 /* ------------------------------------------------------------------ */
 
-/* Bounded set of currently connected peer identities, tracked from the FMQ
-   connection events (peer_identity on PEER_CONNECTED/DISCONNECTED). Used to
-   bind worker.sync registration to a real connected DEALER so a worker cannot
+/* Bounded set of currently connected peer identities, tracked from WebSocket
+   open/close events. Used to bind worker.sync registration to a real session
+   so a worker cannot
    register under an identity it is not connected as. */
 typedef struct {
     char identity[128];
-    flowmq_router_route_t route;
+    ivr_control_ws_route_t route;
 } ivr_peer_entry_t;
 
 typedef struct {
@@ -380,16 +379,16 @@ typedef struct {
     ivr_mutex_t lock;
 } ivr_peer_set_t;
 
-/* One captured ROUTER route for a registered worker (from worker.sync). Used
-   to push CallDispatchCommandV1 to the worker's DEALER later. */
+/* One captured WebSocket route for a registered worker (from worker.sync). */
 typedef struct {
     char worker_id[128];
-    flowmq_router_route_t route;
+    ivr_control_ws_route_t route;
     int valid;
 } ivr_route_entry_t;
 
 struct ivr_room_bridge_s {
-    flowmq_router_endpoint_t *endpoint;
+    ivr_control_ws_server_t *endpoint;
+    ivr_mutex_t endpoint_lock;
     DataBind *codec;
     ivr_room_command_handler_t handler;
     ivr_dedup_t dedup;
@@ -399,13 +398,11 @@ struct ivr_room_bridge_s {
     /* Guards the worker route table (written by the worker thread during
        worker.sync, read/cloned/invalidated by the public dispatch API). */
     ivr_mutex_t routes_lock;
-    /* 1 while the worker thread and FMQ apps are running. start/stop/destroy
+    /* 1 while the worker thread and WebSocket server are running. start/stop/destroy
        use it so repeated start() or destroy-without-stop cannot leak the
        thread or free objects the thread still references. */
     atomic_int started;
     atomic_int accepting;
-    atomic_uint_fast64_t next_completion_id;
-    uint64_t start_timeout_ns;
     int (*verify_peer_identity)(void *context,
                                 const char *certificate_sha256,
                                 const char *claimed_identity);
@@ -438,52 +435,29 @@ struct ivr_room_bridge_s {
                                      memory_order_relaxed))
 
 static int ivr_room_router_send_payload(ivr_room_bridge_t *bridge,
-                                        flowmq_router_route_t route,
+                                        ivr_control_ws_route_t route,
                                         const uint8_t *payload,
                                         size_t payload_size) {
-    flowmq_protocol_frame_t frame;
-    uint64_t completion_id;
-    tstr encoded = NULL;
-    int rc;
     if (!bridge || !bridge->endpoint || (!payload && payload_size > 0u)) {
-        return TURBO_EINVAL;
+        return IVR_EINVAL;
     }
-    memset(&frame, 0, sizeof(frame));
-    frame.kind = FLOWMQ_PROTOCOL_FRAME_DATA;
-    frame.pattern = FLOWMQ_PROTOCOL_ROUTER;
-    completion_id = atomic_fetch_add_explicit(
-        &bridge->next_completion_id, 1u, memory_order_relaxed);
-    if (completion_id == 0u) {
-        completion_id = atomic_fetch_add_explicit(
-            &bridge->next_completion_id, 1u, memory_order_relaxed);
-    }
-    frame.message_id = completion_id;
-    frame.payload = vstr_from_buf((const char *)payload, payload_size);
-    rc = flowmq_protocol_encode_frame(
-        &frame, FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE, &encoded);
-    if (rc == TURBO_OK) {
-        rc = flowmq_router_endpoint_send_copy(
-            bridge->endpoint, route, completion_id, encoded,
-            tstr_len(encoded));
-    }
-    tstr_free(encoded);
-    return rc;
+    ivr_mutex_lock(&bridge->endpoint_lock);
+    int status = ivr_control_ws_server_send_copy(
+        bridge->endpoint, &route, payload, payload_size);
+    ivr_mutex_unlock(&bridge->endpoint_lock);
+    return status;
 }
 
 static int ivr_room_verify_peer_identity(void *context,
                                          const char *certificate_sha256,
-                                         vstr claimed_identity) {
+                                         const char *claimed_identity) {
     ivr_room_bridge_t *bridge = (ivr_room_bridge_t *)context;
-    char identity[128];
     if (!bridge || !bridge->verify_peer_identity ||
-        !claimed_identity.data || claimed_identity.len == 0u ||
-        claimed_identity.len >= sizeof(identity)) {
-        return TURBO_EINVAL;
+        !claimed_identity || claimed_identity[0] == '\0') {
+        return IVR_EINVAL;
     }
-    memcpy(identity, claimed_identity.data, claimed_identity.len);
-    identity[claimed_identity.len] = '\0';
     return bridge->verify_peer_identity(bridge->verify_peer_identity_context,
-                                        certificate_sha256, identity);
+                                        certificate_sha256, claimed_identity);
 }
 
 static ivr_status_t ivr_room_bridge_send_to_worker(
@@ -855,11 +829,11 @@ static int inventory_record_json_shape_valid(const json_value_t *item) {
         "state",
         "rebindable"};
     size_t count;
-    if (!item || turbo_json_type(item) != TURBO_JSON_OBJECT) return 0;
-    count = turbo_json_object_size(item);
+    if (!item || json_type(item) != JSON_OBJECT) return 0;
+    count = json_object_size(item);
     if (count != sizeof(keys) / sizeof(keys[0])) return 0;
     for (size_t i = 0; i < count; ++i) {
-        const char *key = turbo_json_object_key(item, i);
+        const char *key = json_object_key(item, i);
         int known = 0;
         for (size_t j = 0; j < sizeof(keys) / sizeof(keys[0]); ++j) {
             if (key && strcmp(key, keys[j]) == 0) {
@@ -887,15 +861,15 @@ static int decode_inventory_record(DataBind *codec, const json_value_t *item,
         !inventory_record_json_shape_valid(item)) {
         return 0;
     }
-    json = turbo_json_serialize(item, &json_size);
+    json = json_serialize(item, &json_size);
     if (!json ||
         data_bind_object_from_json(codec, "WorkerMediaInventoryRecordV2",
                                    json, json_size, &object,
                                    &error) != DATA_BIND_OK) {
-        turbo_json_serialize_free(json);
+        json_serialize_free(json);
         return 0;
     }
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
     memset(out, 0, sizeof(*out));
     root = data_bind_object_value(object);
     state = field_text(root, "state");
@@ -979,11 +953,11 @@ ivr_status_t ivr_room_decode_inventory_page(
         !field_str_checked(root, "error_message", out->error_message,
                            sizeof(out->error_message), 0) ||
         !records_json ||
-        turbo_parse_json((const uint8_t *)records_json, strlen(records_json),
-                         &records) != 0 || !records ||
-        turbo_json_type(records) != TURBO_JSON_ARRAY) {
+        ((records = json_parse((const char *)((const uint8_t *)records_json), strlen(records_json))) ? 0 : -1) != 0 || !records ||
+        json_type(records) != JSON_ARRAY) {
         data_bind_object_free(object);
-        turbo_free_json(&records);
+        json_free(records);
+        records = NULL;
         memset(out, 0, sizeof(*out));
         return IVR_ESTATE;
     }
@@ -995,7 +969,7 @@ ivr_status_t ivr_room_decode_inventory_page(
     out->page.count = field_u32(root, "count");
     out->page.has_more = field_bool(root, "has_more");
     out->status_code = status_value ? data_bind_value_as_int(status_value) : 1;
-    records_count = turbo_json_array_size(records);
+    records_count = json_array_size(records);
     if (out->status_code > 0 ||
         out->page.count > IVR_WORKER_INVENTORY_MAX_PAGE_SIZE ||
         records_count != out->page.count ||
@@ -1007,22 +981,25 @@ ivr_status_t ivr_room_decode_inventory_page(
           (!out->page.has_more && out->page.next_cursor != 0))) ||
         (out->status_code != IVR_OK && out->page.count != 0)) {
         data_bind_object_free(object);
-        turbo_free_json(&records);
+        json_free(records);
+        records = NULL;
         memset(out, 0, sizeof(*out));
         return IVR_ESTATE;
     }
     for (size_t i = 0; i < records_count; ++i) {
         if (!decode_inventory_record(
-                codec, turbo_json_array_get(records, i), out->worker_id,
+                codec, json_array_get(records, i), out->worker_id,
                 &out->page.records[i])) {
             data_bind_object_free(object);
-            turbo_free_json(&records);
+            json_free(records);
+            records = NULL;
             memset(out, 0, sizeof(*out));
             return IVR_ESTATE;
         }
     }
     data_bind_object_free(object);
-    turbo_free_json(&records);
+    json_free(records);
+    records = NULL;
     return IVR_OK;
 }
 
@@ -1415,18 +1392,20 @@ ivr_status_t ivr_room_encode_result(
 }
 
 /* ------------------------------------------------------------------ */
-/* connected peer identity set (from FMQ connection events)              */
+/* connected peer identity set (from WebSocket lifecycle events)          */
 /* ------------------------------------------------------------------ */
 
-static int route_equal(flowmq_router_route_t left,
-                       flowmq_router_route_t right) {
-    return left.endpoint_id == right.endpoint_id &&
-           left.generation == right.generation &&
-           left.session_id == right.session_id;
+static int route_equal(ivr_control_ws_route_t left,
+                       ivr_control_ws_route_t right) {
+    return left.session.impl == right.session.impl &&
+           left.session.connection_slot == right.session.connection_slot &&
+           left.session.connection_generation ==
+               right.session.connection_generation &&
+           left.session.stream_id == right.session.stream_id;
 }
 
 static void peer_add(ivr_peer_set_t *p, const char *data, size_t len,
-                     flowmq_router_route_t route) {
+                     ivr_control_ws_route_t route) {
     if (!p || !data || len == 0) {
         return;
     }
@@ -1452,7 +1431,7 @@ static void peer_add(ivr_peer_set_t *p, const char *data, size_t len,
 }
 
 static void peer_remove(ivr_peer_set_t *p, const char *data, size_t len,
-                        flowmq_router_route_t route) {
+                        ivr_control_ws_route_t route) {
     if (!p || !data || len == 0) {
         return;
     }
@@ -1492,7 +1471,7 @@ static int peer_connected(const ivr_peer_set_t *p, const char *id) {
 }
 
 static int peer_route_matches(const ivr_peer_set_t *p, const char *id,
-                              flowmq_router_route_t route) {
+                              ivr_control_ws_route_t route) {
     int found = 0;
     if (!p || !id) return 0;
     ivr_mutex_lock((ivr_mutex_t *)&p->lock);
@@ -1509,19 +1488,19 @@ static int peer_route_matches(const ivr_peer_set_t *p, const char *id,
 
 static void route_invalidate_peer(ivr_room_bridge_t *bridge,
                                   const char *peer_identity, size_t length,
-                                  flowmq_router_route_t route);
+                                  ivr_control_ws_route_t route);
 
-static void bridge_on_fmq_event(
-    void *ctx, const flowmq_router_endpoint_event_t *event) {
+static void bridge_on_control_peer(void *ctx,
+                                   const ivr_control_ws_route_t *route,
+                                   const char *peer_identity,
+                                   int connected) {
     ivr_room_bridge_t *b = (ivr_room_bridge_t *)ctx;
-    if (!b || !event ||
+    if (!b || !route || !peer_identity ||
         !atomic_load_explicit(&b->accepting, memory_order_acquire)) {
         return;
     }
-    if (event->kind == FLOWMQ_ROUTER_EVENT_PEER_CONNECTED ||
-        event->kind == FLOWMQ_ROUTER_EVENT_PEER_DISCONNECTED) {
-        (void)ivr_peer_event_queue_push(&b->peer_events, event);
-    }
+    (void)ivr_peer_event_queue_push(&b->peer_events, route, peer_identity,
+                                    connected);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1543,7 +1522,7 @@ static ivr_route_entry_t *route_find_locked(ivr_room_bridge_t *b,
 
 static void route_invalidate_peer(ivr_room_bridge_t *bridge,
                                   const char *peer_identity, size_t length,
-                                  flowmq_router_route_t route) {
+                                  ivr_control_ws_route_t route) {
     if (!bridge || !peer_identity || length == 0 || length >= 128) {
         return;
     }
@@ -1588,10 +1567,10 @@ static void ivr_bridge_process_peer_events(ivr_room_bridge_t *bridge) {
             return;
         }
         size_t identity_len = strlen(event.peer_identity);
-        if (event.kind == FLOWMQ_ROUTER_EVENT_PEER_CONNECTED) {
+        if (event.connected) {
             peer_add(&bridge->peers, event.peer_identity, identity_len,
                      event.route);
-        } else if (event.kind == FLOWMQ_ROUTER_EVENT_PEER_DISCONNECTED) {
+        } else {
             peer_remove(&bridge->peers, event.peer_identity, identity_len,
                         event.route);
             route_invalidate_peer(bridge, event.peer_identity, identity_len,
@@ -1660,7 +1639,7 @@ void ivr_room_bridge_get_stats(const ivr_room_bridge_t *bridge,
         &bridge->inventory_page_rejects, memory_order_relaxed);
 }
 
-/* Capture/refresh the ROUTER route of a registered worker (called on a
+/* Capture/refresh the WebSocket route of a registered worker (called on a
    successful worker.sync so the route is generation-fenced and current). */
 static void route_store(ivr_room_bridge_t *b, const char *worker_id,
                         ivr_route_message_t *msg) {
@@ -1690,9 +1669,9 @@ static void route_store(ivr_room_bridge_t *b, const char *worker_id,
     ivr_mutex_unlock(&b->routes_lock);
 }
 
-/* Bind an inbound result to the exact live ROUTER session captured by the
+/* Bind an inbound result to the exact live WebSocket session captured by the
    worker's latest successful worker.sync. A connected peer name alone is not
-   sufficient because another connected DEALER could spoof worker_id. */
+   sufficient because another connected client could spoof worker_id. */
 static int route_matches_worker(ivr_room_bridge_t *b, const char *worker_id,
                                 const ivr_route_message_t *msg) {
     int matches = 0;
@@ -1703,10 +1682,7 @@ static int route_matches_worker(ivr_room_bridge_t *b, const char *worker_id,
     }
     ivr_mutex_lock(&b->routes_lock);
     ivr_route_entry_t *entry = route_find_locked(b, worker_id);
-    if (entry && entry->valid &&
-        entry->route.endpoint_id == msg->route.endpoint_id &&
-        entry->route.generation == msg->route.generation &&
-        entry->route.session_id == msg->route.session_id) {
+    if (entry && entry->valid && route_equal(entry->route, msg->route)) {
         matches = 1;
     }
     ivr_mutex_unlock(&b->routes_lock);
@@ -1939,7 +1915,7 @@ ivr_status_t ivr_room_bridge_encode_dispatch_v2(
 static ivr_status_t ivr_room_bridge_send_to_worker(
     ivr_room_bridge_t *bridge, const char *worker_id, const uint8_t *frame,
     size_t len) {
-    flowmq_router_route_t route;
+    ivr_control_ws_route_t route;
     ivr_mutex_lock(&bridge->routes_lock);
     ivr_route_entry_t *entry = route_find_locked(bridge, worker_id);
     if (!entry || !entry->valid) {
@@ -1948,13 +1924,10 @@ static ivr_status_t ivr_room_bridge_send_to_worker(
     }
     route = entry->route;
     ivr_mutex_unlock(&bridge->routes_lock);
-    if (ivr_room_router_send_payload(bridge, route, frame, len) != TURBO_OK) {
+    if (ivr_room_router_send_payload(bridge, route, frame, len) != IVR_OK) {
         ivr_mutex_lock(&bridge->routes_lock);
         entry = route_find_locked(bridge, worker_id);
-        if (entry && entry->valid &&
-            entry->route.endpoint_id == route.endpoint_id &&
-            entry->route.generation == route.generation &&
-            entry->route.session_id == route.session_id) {
+        if (entry && entry->valid && route_equal(entry->route, route)) {
             entry->valid = 0;
             memset(&entry->route, 0, sizeof(entry->route));
         }
@@ -2429,8 +2402,8 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
     if (strcmp(cmd.command, "worker.sync") == 0 ||
         strcmp(cmd.command, "worker.sync.v2") == 0 ||
         strcmp(cmd.command, "worker.heartbeat") == 0) {
-        /* Independent FlowMQ supplies the authenticated identity for this
-           exact ROUTER message. Bind registration to that peer instead of
+        /* The WebSocket adapter supplies the authenticated identity for this
+           exact session message. Bind registration to that peer instead of
            accepting a claim merely because some peer with the same ID is
            connected. */
         if (msg->peer_identity[0] == '\0' ||
@@ -2478,7 +2451,7 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
         if (strcmp(cmd.command, "worker.sync") == 0 ||
             strcmp(cmd.command, "worker.sync.v2") == 0 ||
             strcmp(cmd.command, "worker.heartbeat") == 0) {
-            /* capture the worker's current ROUTER route for later dispatch
+            /* capture the worker's current WebSocket route for later dispatch
                pushes; re-registration refreshes it after a reconnect */
             route_store(b, cmd.worker_id, msg);
         }
@@ -2494,7 +2467,7 @@ static void ivr_bridge_handle_request(ivr_room_bridge_t *b,
                     result.room_version, result.sequence, "", "", ev,
                     sizeof(ev), &ev_len) == IVR_OK) {
                 if (ivr_room_router_send_payload(b, msg->route, ev, ev_len) ==
-                    TURBO_OK) {
+                    IVR_OK) {
                     IVR_BRIDGE_COUNTER_INC(b, events_published);
                 }
             }
@@ -2516,6 +2489,21 @@ static void *ivr_bridge_thread_main(void *opaque) {
         if (pop_rc < 0) {
             break;
         }
+        {
+            int restarted = 0;
+            ivr_mutex_lock(&b->endpoint_lock);
+            if (ivr_control_ws_server_maintain(b->endpoint, &restarted) !=
+                IVR_OK) {
+                restarted = 0;
+            }
+            ivr_mutex_unlock(&b->endpoint_lock);
+            if (restarted) {
+                /* A replacement listener has no valid session from the
+                   terminal generation. Workers must reconnect and sync their
+                   authoritative inventory before dispatch resumes. */
+                peer_and_routes_clear(b);
+            }
+        }
         if (pop_rc > 0) {
             ivr_bridge_process_peer_events(b);
             if (b->handler.on_tick) {
@@ -2533,46 +2521,45 @@ static void *ivr_bridge_thread_main(void *opaque) {
 }
 
 /* ------------------------------------------------------------------ */
-/* FlowMQ ROUTER ingress callback                                      */
+/* HTTP/1.1 WebSocket ingress callback                                 */
 /* ------------------------------------------------------------------ */
 
-static int bridge_on_router_request(
-    void *ctx, const flowmq_router_route_t *route, vstr peer_identity,
-    vstr peer_topic, const flowmq_protocol_frame_t *message) {
+static int bridge_on_control_message(
+    void *ctx, const ivr_control_ws_route_t *route, const char *peer_identity,
+    const uint8_t *payload, size_t payload_size) {
     ivr_room_bridge_t *b = (ivr_room_bridge_t *)ctx;
     ivr_route_message_t clone;
-    (void)peer_topic;
-    if (!b || !route || !message ||
-        !atomic_load_explicit(&b->accepting, memory_order_acquire) ||
-        message->kind != FLOWMQ_PROTOCOL_FRAME_DATA) {
-        return TURBO_EINVAL;
+    size_t identity_size = peer_identity ? strlen(peer_identity) : 0u;
+    if (!b || !route || (!payload && payload_size > 0u) ||
+        !atomic_load_explicit(&b->accepting, memory_order_acquire)) {
+        return IVR_EINVAL;
     }
     ivr_route_message_init(&clone);
-    if ((!message->payload.data && message->payload.len > 0u) ||
-        !peer_identity.data || peer_identity.len == 0u ||
-        peer_identity.len >= sizeof(clone.peer_identity)) {
-        return TURBO_EINVAL;
+    if (!peer_identity || identity_size == 0u ||
+        identity_size >= sizeof(clone.peer_identity)) {
+        return IVR_EINVAL;
     }
-    if (message->payload.len > 0u) {
-        clone.payload = (uint8_t *)malloc(message->payload.len);
+    if (payload_size > 0u) {
+        clone.payload = (uint8_t *)malloc(payload_size);
     }
-    if (message->payload.len > 0u && !clone.payload) {
+    if (payload_size > 0u && !clone.payload) {
         ivr_route_message_cleanup(&clone);
-        return TURBO_ENOMEM;
+        return IVR_ENOSPC;
     }
-    if (message->payload.len > 0u) {
-        memcpy(clone.payload, message->payload.data, message->payload.len);
+    if (payload_size > 0u) {
+        memcpy(clone.payload, payload, payload_size);
     }
-    clone.payload_size = message->payload.len;
+    clone.payload_size = payload_size;
     clone.route = *route;
-    memcpy(clone.peer_identity, peer_identity.data, peer_identity.len);
-    clone.peer_identity[peer_identity.len] = '\0';
+    memcpy(clone.peer_identity, peer_identity, identity_size);
+    clone.peer_identity[identity_size] = '\0';
     if (!atomic_load_explicit(&b->accepting, memory_order_acquire) ||
         ivr_req_queue_push(&b->queue, &clone) != 0) {
         ivr_route_message_cleanup(&clone);
         IVR_BRIDGE_COUNTER_INC(b, drops);
+        return IVR_ENOSPC;
     }
-    return TURBO_OK;
+    return IVR_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2604,13 +2591,13 @@ ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
         ivr_req_queue_init(&b->queue, config->queue_capacity) != 0 ||
         ivr_peer_event_queue_init(&b->peer_events,
                                   config->queue_capacity) != 0 ||
+        ivr_mutex_init(&b->endpoint_lock) != 0 ||
         ivr_mutex_init(&b->routes_lock) != 0 ||
         ivr_mutex_init(&b->peers.lock) != 0) {
         goto fail_resources;
     }
     atomic_init(&b->started, 0);
     atomic_init(&b->accepting, 0);
-    atomic_init(&b->next_completion_id, 1u);
     atomic_init(&b->applied, 0u);
     atomic_init(&b->dedup_hits, 0u);
     atomic_init(&b->version_rejects, 0u);
@@ -2635,39 +2622,31 @@ ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
     if (!b->peers.entries) {
         goto fail_resources;
     }
-    flowmq_router_endpoint_config_t ep;
+    ivr_control_ws_server_config_t ep;
     uint64_t timeout_ms = config->timeout_ms ? config->timeout_ms : 5000u;
-    if (timeout_ms > UINT64_MAX / UINT64_C(1000000)) {
+    if (timeout_ms > UINT32_MAX || config->port > UINT16_MAX) {
         goto fail_resources;
     }
-    b->start_timeout_ns = timeout_ms * UINT64_C(1000000);
     b->verify_peer_identity = config->verify_peer_identity;
     b->verify_peer_identity_context = config->verify_peer_identity_context;
-    flowmq_router_endpoint_config_init(&ep);
-    ep.transport = config->transport
-                       ? (flowmq_coronet_transport_t)config->transport
-                       : FLOWMQ_TRANSPORT_TCP;
+    ivr_control_ws_server_config_init(&ep);
     ep.host = config->host;
-    ep.port = config->port;
-    ep.identity = "room-service";
-    ep.topic = "ivr.internal";
-    ep.max_frame_size = FLOWMQ_ROUTER_ENDPOINT_DEFAULT_MAX_FRAME_SIZE;
-    ep.timeouts.timeout_ms = timeout_ms;
-    ep.timeouts.set_flags = FLOWMQ_TIMEOUT_SET_DEFAULT;
+    ep.port = (uint16_t)config->port;
+    ep.path = (config->path && config->path[0])
+                  ? config->path
+                  : "/internal/ivr/control";
     ep.tls = config->tls;
-    ep.path = config->path ? config->path : "";
-    ep.context = NULL;
-    ep.drive_context = 1;
-    ep.own_context = 1;
-    ep.on_frame = bridge_on_router_request;
-    ep.on_event = bridge_on_fmq_event;
-    ep.callback_ctx = b;
+    ep.maximum_connections = b->peers.capacity;
+    ep.maximum_message_bytes = IVR_FRAME_HEADER_SIZE + 128u * 1024u;
+    ep.shutdown_timeout_ms = (uint32_t)timeout_ms;
+    ep.on_message = bridge_on_control_message;
+    ep.on_peer = bridge_on_control_peer;
+    ep.callback_context = b;
     if (config->verify_peer_identity) {
-        ep.verify_peer_identity = ivr_room_verify_peer_identity;
-        ep.verify_peer_identity_ctx = b;
+        ep.verify_identity = ivr_room_verify_peer_identity;
+        ep.verify_identity_context = b;
     }
-    int app_rc = flowmq_router_endpoint_create(&ep, &b->endpoint);
-    if (app_rc != TURBO_OK) {
+    if (ivr_control_ws_server_create(&ep, &b->endpoint) != IVR_OK) {
         goto fail_resources;
     }
     *out_bridge = b;
@@ -2677,13 +2656,14 @@ fail_resources:
     /* ivr_req_queue_destroy/ivr_dedup_destroy/ivr_mutex_destroy are safe on
        zero-initialized or partially initialized members (NULL handles). */
     if (b->endpoint) {
-        flowmq_router_endpoint_destroy(b->endpoint);
+        ivr_control_ws_server_destroy(b->endpoint);
         b->endpoint = NULL;
     }
     free(b->peers.entries);
     b->peers.entries = NULL;
     ivr_mutex_destroy(&b->peers.lock);
     ivr_mutex_destroy(&b->routes_lock);
+    ivr_mutex_destroy(&b->endpoint_lock);
     ivr_peer_event_queue_destroy(&b->peer_events);
     ivr_req_queue_destroy(&b->queue);
     ivr_dedup_destroy(&b->dedup);
@@ -2696,15 +2676,20 @@ fail_resources:
     return IVR_ENOSPC;
 }
 
-static void ivr_bridge_abort_start(ivr_room_bridge_t *bridge) {
+static ivr_status_t ivr_bridge_abort_start(ivr_room_bridge_t *bridge) {
+    ivr_status_t endpoint_status;
     /* The worker thread is already running: stop it before failing so a
        caller that only destroys on start failure cannot leak the thread. */
     atomic_store_explicit(&bridge->accepting, 0, memory_order_release);
     ivr_req_queue_close_and_discard(&bridge->queue);
-    flowmq_router_endpoint_stop(bridge->endpoint);
-    ivr_thread_join(&bridge->thread);
+    ivr_mutex_lock(&bridge->endpoint_lock);
+    endpoint_status = ivr_control_ws_server_stop(bridge->endpoint);
+    ivr_mutex_unlock(&bridge->endpoint_lock);
+    if (ivr_thread_join(&bridge->thread) != 0) return IVR_ESTATE;
+    if (endpoint_status != IVR_OK) return endpoint_status;
     ivr_peer_event_queue_clear(&bridge->peer_events);
     peer_and_routes_clear(bridge);
+    return IVR_OK;
 }
 
 ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge) {
@@ -2728,46 +2713,64 @@ ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge) {
         return IVR_ENOSPC;
     }
     atomic_store_explicit(&bridge->accepting, 1, memory_order_release);
-    if (flowmq_router_endpoint_start(bridge->endpoint,
-                                     bridge->start_timeout_ns) != TURBO_OK) {
-        ivr_bridge_abort_start(bridge);
+    ivr_mutex_lock(&bridge->endpoint_lock);
+    ivr_status_t endpoint_status =
+        ivr_control_ws_server_start(bridge->endpoint);
+    ivr_mutex_unlock(&bridge->endpoint_lock);
+    if (endpoint_status != IVR_OK) {
+        (void)ivr_bridge_abort_start(bridge);
         atomic_store(&bridge->started, 0);
         return IVR_ESTATE;
     }
     return IVR_OK;
 }
 
-void ivr_room_bridge_stop(ivr_room_bridge_t *bridge) {
+ivr_status_t ivr_room_bridge_stop(ivr_room_bridge_t *bridge) {
+    ivr_status_t endpoint_status = IVR_OK;
+    int was_started;
     if (!bridge) {
-        return;
+        return IVR_EINVAL;
     }
-    if (atomic_exchange(&bridge->started, 0) == 0) {
-        return; /* not started: idempotent */
+    was_started = atomic_exchange(&bridge->started, 0);
+    if (was_started) {
+        /* Close ingress first. Queue close rejects any callback already in
+           flight; endpoint stop then establishes callback quiescence before
+           owner join. */
+        atomic_store_explicit(&bridge->accepting, 0, memory_order_release);
+        ivr_req_queue_close_and_discard(&bridge->queue);
     }
-    /* Close ingress first. Queue close rejects any callback already in flight;
-       endpoint stop then establishes callback quiescence before owner join. */
-    atomic_store_explicit(&bridge->accepting, 0, memory_order_release);
-    ivr_req_queue_close_and_discard(&bridge->queue);
-    flowmq_router_endpoint_stop(bridge->endpoint);
-    ivr_thread_join(&bridge->thread);
+    ivr_mutex_lock(&bridge->endpoint_lock);
+    endpoint_status = ivr_control_ws_server_stop(bridge->endpoint);
+    ivr_mutex_unlock(&bridge->endpoint_lock);
+    if (bridge->thread.handle) {
+        if (ivr_thread_join(&bridge->thread) != 0) return IVR_ESTATE;
+    }
+    if (endpoint_status != IVR_OK) return endpoint_status;
     ivr_peer_event_queue_clear(&bridge->peer_events);
     peer_and_routes_clear(bridge);
+    return endpoint_status;
 }
 
-void ivr_room_bridge_destroy(ivr_room_bridge_t *bridge) {
+ivr_status_t ivr_room_bridge_destroy(ivr_room_bridge_t *bridge) {
     if (!bridge) {
-        return;
+        return IVR_OK;
     }
-    /* Stop and join the worker thread (and stop the FMQ apps) before freeing
-       resources the worker thread and the FlowMQ callbacks still reference. */
-    ivr_room_bridge_stop(bridge);
+    /* Stop and join the worker thread before freeing resources referenced by
+       the CHTTP callbacks. */
+    {
+        ivr_status_t stop_status = ivr_room_bridge_stop(bridge);
+        if (stop_status != IVR_OK) return stop_status;
+    }
     if (bridge->endpoint) {
-        flowmq_router_endpoint_destroy(bridge->endpoint);
+        if (ivr_control_ws_server_destroy(bridge->endpoint) != IVR_OK) {
+            return IVR_ESTATE;
+        }
         bridge->endpoint = NULL;
     }
     ivr_req_queue_destroy(&bridge->queue);
     ivr_peer_event_queue_destroy(&bridge->peer_events);
     ivr_dedup_destroy(&bridge->dedup);
+    ivr_mutex_destroy(&bridge->endpoint_lock);
     ivr_mutex_destroy(&bridge->routes_lock);
     ivr_mutex_destroy(&bridge->peers.lock);
     free(bridge->peers.entries);
@@ -2785,4 +2788,5 @@ void ivr_room_bridge_destroy(ivr_room_bridge_t *bridge) {
         bridge->codec = NULL;
     }
     free(bridge);
+    return IVR_OK;
 }

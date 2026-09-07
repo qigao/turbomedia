@@ -21,7 +21,7 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(
   turbo_media_rtsp
-  PUBLIC TurboNet::CoroNet TurboUtils::Core
+  PUBLIC Salts::CNet Salts::CHTTP Salts::Core
   PRIVATE OpenSSL::Crypto Threads::Threads)
 if(WIN32)
   target_link_libraries(turbo_media_rtsp PRIVATE ws2_32)

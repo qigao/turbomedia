@@ -25,8 +25,8 @@ TurboMedia 是一个模块化的多媒体处理框架，提供统一的接口用
                                    ┌───────────▼────────────┐
                                    │   Network Transport    │
                                    │                        │
-                                   │ • CoroNet (TCP/UDP/WS) │
-                                   │ • TurboHTTP (HTTP/S)   │
+                                   │ • CNet (TCP/UDP/WS)    │
+                                   │ • CHTTP (HTTP/S)       │
                                    └────────────────────────┘
 ```
 
@@ -115,7 +115,7 @@ int turbo_demuxer_seek(turbo_demuxer_t *demuxer, int64_t timestamp_ms, int flags
 **支持的协议**:
 - **HLS**: HTTP Live Streaming（基于 `refer/libhls`）
 - **DASH**: MPEG-DASH（基于 `refer/libdash`）
-- **RTMP**: Real-Time Messaging Protocol（基于 `refer/librtmp` + CoroNet）
+- **RTMP**: Real-Time Messaging Protocol（基于 `refer/librtmp` + CNet）
 - **HTTP-FLV**: HTTP 传输 FLV 直播流
 
 **关键接口**:
@@ -132,8 +132,8 @@ int turbo_streamer_write_packet(turbo_streamer_t *streamer, const turbo_muxer_pa
 **职责**: 提供统一的网络传输抽象
 
 **特点**:
-- 集成 TurboNet::CoroNet（协程网络库）
-- 集成 TurboHTTP::HttpClient（HTTP 客户端）
+- 集成 Salts::CNet（网络与协议运行时）
+- 集成 Salts::CHTTP（HTTP 客户端/服务端）
 - 支持多种传输协议
 - 协程友好的异步 I/O
 
@@ -213,7 +213,7 @@ HLS Streamer
     ▼
 RTMP Streamer
     ├── RTMP Protocol Handler
-    └── CoroNet Transport (TCP)
+    └── CNet Transport (TCP)
             │
             ▼
         RTMP 服务器
@@ -284,8 +284,8 @@ const turbo_codec_ops_t turbo_av1_codec_ops = {
 ### 集成外部网络库
 
 当前支持:
-- **TurboNet::CoroNet**: 协程网络库（TCP/UDP/WebSocket/TLS）
-- **TurboHTTP::HttpClient**: HTTP 客户端库
+- **Salts::CNet**: 网络库（TCP/UDP/WebSocket/TLS）
+- **Salts::CHTTP**: HTTP 客户端/服务端库
 
 新的网络库可以通过实现 `turbo_transport_ops_t` 接口集成。
 
@@ -305,22 +305,15 @@ const turbo_codec_ops_t turbo_av1_codec_ops = {
 - x265 + libde265 (H.265)
 - libopus (Opus)
 - libvpx (VP8/VP9)
-- TurboNet (网络传输)
-- TurboHTTP (HTTP 客户端)
+- Salts CNet (网络传输)
+- Salts CHTTP (HTTP 客户端/服务端)
 
 ## 线程模型
 
-### 协程模型（推荐）
+### 网络 owner 模型（推荐）
 
-使用 TurboNet::CoroNet 的协程模型:
-- **优点**: 高并发、低开销、代码简洁
-- **适用**: 流媒体推拉流、网络传输
-
-```c
-coro_context_t *ctx = coro_context_create();
-coro_create(ctx, streaming_coroutine, user_data);
-coro_context_run(ctx);
-```
+CNet client/listener/datagram 由明确的 owner thread 驱动，跨线程调用先投递到
+有界命令队列；CHTTP 在 CNet 之上提供 HTTP 生命周期与关闭排空。
 
 ### 传统线程模型
 

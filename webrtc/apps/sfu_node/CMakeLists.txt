@@ -20,11 +20,12 @@ target_include_directories(sfu_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(SFU_NODE_LIBS
   TurboMedia::RtcApps
   TurboMedia::RTC
-  TurboHttp::Iris
+  Salts::CHTTP
   turbo_media_auth
-  TurboNet::Crypto
-  TurboUtils::Core
-  TurboParser::Parser)
+  SaltsNet::Crypto
+  Salts::Core
+  Salts::JsonParser
+  Salts::TomlParser)
 
 target_link_libraries(
   sfu_node
@@ -43,12 +44,14 @@ set_target_properties(
              FOLDER "Applications")
 
 turbo_media_deploy_windows_runtime(
-  sfu_node TurboHttp::Iris TurboNet::CoroNet RulesForge::rules_forge)
+  sfu_node Salts::CHTTP Salts::CNet RulesForge::rules_forge
+  Salts::Capture)
 
 install(TARGETS sfu_node RUNTIME DESTINATION bin COMPONENT SfuNode)
 if(WIN32)
   install(
-    FILES $<TARGET_FILE:TurboHttp::Iris> $<TARGET_FILE:TurboNet::CoroNet>
+    FILES $<TARGET_FILE:Salts::CHTTP> $<TARGET_FILE:Salts::CNet>
+          $<TARGET_FILE:Salts::Capture>
     DESTINATION bin
     COMPONENT SfuNode)
 endif()
@@ -69,20 +72,22 @@ message(STATUS "SFU Node: ${CMAKE_CURRENT_SOURCE_DIR}")
 message(STATUS "SFU Node Output: ${CMAKE_BINARY_DIR}/bin/sfu_node")
 
 add_executable(test_sfu_node_app tests/test_sfu_node_app.c
+                                 ../../ivr/src/ivr_http_media_client.c
                                  ${SFU_NODE_CORE_SOURCES})
 
 target_include_directories(
   test_sfu_node_app
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
           ${CMAKE_SOURCE_DIR}/webrtc/src/recording
-          ${CMAKE_SOURCE_DIR}/webrtc/tests)
+          ${CMAKE_SOURCE_DIR}/webrtc/tests
+          ${CMAKE_SOURCE_DIR}/webrtc/ivr/src)
 
 target_link_libraries(
   test_sfu_node_app
   PRIVATE ${SFU_NODE_LIBS}
           TurboMedia::Demuxer
-          TurboHttp::HttpClient
-          TurboUtils::TinyTest
+          Salts::CHTTP
+          Salts::TinyTest
           $<$<PLATFORM_ID:Linux>:m>
           $<$<PLATFORM_ID:Linux>:pthread>)
 
@@ -105,7 +110,7 @@ target_compile_options(
 add_test(NAME test_sfu_node_app COMMAND test_sfu_node_app)
 set_tests_properties(test_sfu_node_app PROPERTIES WORKING_DIRECTORY
                                                   ${CMAKE_BINARY_DIR}/bin
-                                                  TIMEOUT 60)
+                                                  TIMEOUT 120)
 set_target_properties(
   test_sfu_node_app
   PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -119,8 +124,8 @@ file(
 cmake_add_test(
   turbo_media_test_sfu_node_config
   SOURCES tests/test_sfu_node_config.c src/config.c
-  LIBS turbo_media_auth TurboUtils::TinyTest TurboUtils::Core
-       TurboParser::Parser
+  LIBS turbo_media_auth Salts::TinyTest Salts::Core
+       Salts::TomlParser
   DEFS SFU_NODE_CONFIG_EXAMPLE_PATH="${SFU_NODE_CONFIG_EXAMPLE_PATH}"
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include
   FOLDER "Applications/tests")

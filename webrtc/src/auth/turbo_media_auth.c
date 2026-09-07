@@ -2,7 +2,7 @@
 
 #include <openssl/base64.h>
 #include <turbo_crypto.h>
-#include <turbo_parser.h>
+#include <json_parser.h>
 
 #include <limits.h>
 #include <stdio.h>
@@ -313,18 +313,18 @@ static int auth_json_object_strict(const json_value_t *object,
                                    size_t allowed_count) {
     size_t count;
 
-    if (!object || turbo_json_type(object) != TURBO_JSON_OBJECT) {
+    if (!object || json_type(object) != JSON_OBJECT) {
         return 0;
     }
-    count = turbo_json_object_size(object);
+    count = json_object_size(object);
     for (size_t index = 0; index < count; ++index) {
-        const char *key = turbo_json_object_key(object, index);
+        const char *key = json_object_key(object, index);
         if (!key || !auth_json_key_allowed(key, allowed, allowed_count)) {
             return 0;
         }
         for (size_t previous = 0; previous < index; ++previous) {
             const char *previous_key =
-                turbo_json_object_key(object, previous);
+                json_object_key(object, previous);
             if (previous_key && strcmp(key, previous_key) == 0) {
                 return 0;
             }
@@ -335,23 +335,23 @@ static int auth_json_object_strict(const json_value_t *object,
 
 static const char *auth_json_string(const json_value_t *object,
                                     const char *key) {
-    json_value_t *value = turbo_json_object_get(object, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_STRING) {
+    json_value_t *value = json_object_get(object, key);
+    if (!value || json_type(value) != JSON_STRING) {
         return NULL;
     }
-    return turbo_json_string(value);
+    return json_string(value);
 }
 
 static int auth_json_int64(const json_value_t *object, const char *key,
                            int64_t *output) {
-    json_value_t *value = turbo_json_object_get(object, key);
+    json_value_t *value = json_object_get(object, key);
     double number;
     int64_t integer;
 
-    if (!value || turbo_json_type(value) != TURBO_JSON_NUMBER || !output) {
+    if (!value || json_type(value) != JSON_NUMBER || !output) {
         return -1;
     }
-    number = turbo_json_number(value);
+    number = json_number(value);
     if (number < 0.0 || number > 9007199254740991.0) {
         return -1;
     }
@@ -481,10 +481,10 @@ static int auth_verify_signed_token(
         signature_length != AUTH_SIGNATURE_BYTES) {
         goto cleanup;
     }
-    if (turbo_parse_json(header_text, header_length, &header) != 0) {
+    if (((header = json_parse((const char *)(header_text), header_length)) ? 0 : -1) != 0) {
         goto cleanup;
     }
-    if (turbo_parse_json(payload_text, payload_length, &payload) != 0) {
+    if (((payload = json_parse((const char *)(payload_text), payload_length)) ? 0 : -1) != 0) {
         goto cleanup;
     }
     if (!auth_json_object_strict(
@@ -553,8 +553,10 @@ static int auth_verify_signed_token(
     valid = 1;
 
 cleanup:
-    turbo_free_json(&payload);
-    turbo_free_json(&header);
+    json_free(payload);
+    payload = NULL;
+    json_free(header);
+    header = NULL;
     free(signature);
     free(payload_text);
     free(header_text);

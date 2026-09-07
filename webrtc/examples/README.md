@@ -99,7 +99,7 @@ Room-based WebRTC example demonstrating:
 - ICE candidate gathering and trickle exchange
 - SDP offer/answer over WebSocket signaling
 - DataChannel establishment over ICE
-- Current CoroNet WebSocket client APIs instead of the removed legacy client
+- Current Salts CHTTP WebSocket client APIs
 
 **Usage:**
 ```bash
@@ -212,9 +212,9 @@ turbo_dc_peer_on_error(peer, on_peer_error);
 /* 4. Connect */
 turbo_dc_peer_connect(peer);
 
-/* 5. Keep the process alive while the internal CoroNet runtime drives I/O */
+/* 5. Keep the process alive while the internal CNet runtime drives I/O */
 while (running) {
-    turbo_sleep_ms(100);
+    salts_sleep_ms(100);
 }
 ```
 
@@ -295,8 +295,8 @@ turbo_dc_channel_config_t config = {
 - Try different port number
 
 **安全上下文创建失败：**
-- 确认上游 TurboNet、TurboHTTP 与 WebRTC 依赖包来自同一安装前缀
-- BoringSSL 由上游包提供；TurboMedia 不执行额外配置或运行时校验
+- 确认 Salts CNet、CHTTP 与 WebRTC 依赖包来自同一安装前缀
+- TLS 后端由 Salts CNet 提供；TurboMedia 不执行额外配置或运行时校验
 
 **SCTP errors:**
 - Missing usrsctp library

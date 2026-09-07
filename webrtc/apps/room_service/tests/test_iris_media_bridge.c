@@ -703,7 +703,7 @@ spec("Iris media provider bridge") {
         iris_media_bridge_destroy(bridge);
     }
 
-    it("rejects a durable semantic conflict before sending to FlowMQ") {
+    it("rejects a durable semantic conflict before sending to CHTTP H1 WebSocket") {
         const uint64_t now_ms = UINT64_C(1000);
         test_sender_t sender = {0};
         char body[2048];

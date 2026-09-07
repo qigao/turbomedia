@@ -351,7 +351,7 @@ const char *sdp_media_type_str(sdp_media_type_t type);
 void sdp_generate_session_id(char *buffer, size_t size);
 
 /**
- * Generate ICE credentials with the TurboUtils system CSPRNG.
+ * Generate ICE credentials with the configured cryptographic CSPRNG.
  * Both outputs are empty when arguments are invalid or entropy acquisition
  * fails. Each capacity includes the terminating NUL byte.
  */

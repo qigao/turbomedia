@@ -7,8 +7,8 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-#include <turbo_error.h>
-#include <turbostl/vec.h>
+#include <salts_error.h>
+#include <cstl/vec.h>
 
 #ifdef TURBO_MEDIA_HAS_FLV
 
@@ -190,7 +190,7 @@ static int flv_file_read(void *param, void *buf, int len) {
     size_t bytes_read = 0;
     if (!ctx || len < 0 ||
         turbo_container_io_read_some(&ctx->io, buf, (size_t)len, &bytes_read) !=
-            TURBO_OK)
+            SALTS_OK)
         return -1;
     return bytes_read > INT_MAX ? -1 : (int)bytes_read;
 }
@@ -198,7 +198,7 @@ static int flv_file_read(void *param, void *buf, int len) {
 static int flv_file_seek(void *param, int64_t offset) {
     flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)param;
     return ctx && offset >= 0 &&
-                   turbo_container_io_seek(&ctx->io, offset) == TURBO_OK
+                   turbo_container_io_seek(&ctx->io, offset) == SALTS_OK
                ? 0
                : -1;
 }
@@ -227,11 +227,11 @@ static void *flv_demuxer_create_impl(const turbo_demuxer_config_t *config) {
         return NULL;
     ctx = (flv_demuxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    ctx->io.file = TURBO_INVALID_FILE;
+    ctx->io.file = SALTS_INVALID_FILE;
     if (vec_init_bytes(&ctx->tag_buffer, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t), SIZE_MAX / sizeof(uint8_t)) != STL_OK ||
         vec_init_bytes(&ctx->packet_buffer, sizeof(uint8_t), CMETA_ALIGNOF(uint8_t), SIZE_MAX / sizeof(uint8_t)) != STL_OK ||
         turbo_container_io_open_reader(&ctx->io, config->input_path, config->data,
-                                       config->data_size) != TURBO_OK) {
+                                       config->data_size) != SALTS_OK) {
         flv_demuxer_destroy_impl(ctx);
         return NULL;
     }
@@ -354,7 +354,7 @@ static int flv_demuxer_read_packet_impl(void *ctx_ptr, turbo_demuxer_packet_t *p
     flv_demuxer_ctx_t *ctx = (flv_demuxer_ctx_t *)ctx_ptr;
     int result;
 
-    if (!ctx || !packet) return TURBO_EINVAL;
+    if (!ctx || !packet) return SALTS_EINVAL;
     result = flv_read_next_packet(ctx);
     if (result <= 0) return result;
 

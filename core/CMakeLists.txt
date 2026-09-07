@@ -4,4 +4,4 @@ target_include_directories(
   turbo_media_core
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(turbo_media_core PRIVATE TurboUtils::Core TurboUtils::STL)
+target_link_libraries(turbo_media_core PRIVATE Salts::Core Salts::CSTL)

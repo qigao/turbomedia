@@ -1,7 +1,7 @@
 #include "iris_event_outbox.h"
 
 #include <tinytest.h>
-#include <turbo_error.h>
+#include <salts_error.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,8 +56,8 @@ static int test_scan(void *context, iris_record_visit_fn visit,
                      void *visit_context) {
     test_store_t *store = (test_store_t *)context;
     size_t i;
-    if (!store || !visit) return TURBO_EINVAL;
-    if (store->scan_status != TURBO_OK) return store->scan_status;
+    if (!store || !visit) return SALTS_EINVAL;
+    if (store->scan_status != SALTS_OK) return store->scan_status;
     for (i = 0u; i < TEST_STORE_CAPACITY; ++i) {
         iris_record_view_t view = IRIS_RECORD_VIEW_INIT;
         int rc;
@@ -68,9 +68,9 @@ static int test_scan(void *context, iris_record_visit_fn visit,
         view.value = store->records[i].value;
         view.value_size = store->records[i].value_size;
         rc = visit(visit_context, &view);
-        if (rc != TURBO_OK) return rc;
+        if (rc != SALTS_OK) return rc;
     }
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int test_commit(void *context,
@@ -81,35 +81,35 @@ static int test_commit(void *context,
     int index;
     size_t i;
     uint8_t *value = NULL;
-    if (!store || !mutations || mutation_count != 1u) return TURBO_EINVAL;
+    if (!store || !mutations || mutation_count != 1u) return SALTS_EINVAL;
     store->commit_calls++;
     if (store->fail_commit_call > 0 &&
         store->commit_calls == store->fail_commit_call) {
-        return TURBO_EIO;
+        return SALTS_EIO;
     }
     mutation = &mutations[0];
     if (!mutation->key || mutation->key_size == 0u ||
         mutation->key_size > sizeof(store->records[0].key)) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     index = test_find_record(store, mutation->key, mutation->key_size);
     if ((index < 0 && mutation->expected_revision !=
                         IRIS_RECORD_REVISION_ABSENT) ||
         (index >= 0 && store->records[index].revision !=
                            mutation->expected_revision)) {
-        return TURBO_EBUSY;
+        return SALTS_EBUSY;
     }
     if (mutation->kind == IRIS_RECORD_DELETE) {
-        if (index < 0) return TURBO_EBUSY;
+        if (index < 0) return SALTS_EBUSY;
         free(store->records[index].value);
         memset(&store->records[index], 0, sizeof(store->records[index]));
-        return TURBO_OK;
+        return SALTS_OK;
     }
     if (mutation->kind != IRIS_RECORD_PUT || !mutation->value ||
         mutation->value_size == 0u ||
         mutation->value_size > store->api.max_value_size ||
         mutation->next_revision <= mutation->expected_revision) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     if (index < 0) {
         for (i = 0u; i < TEST_STORE_CAPACITY; ++i) {
@@ -118,10 +118,10 @@ static int test_commit(void *context,
                 break;
             }
         }
-        if (index < 0) return TURBO_ENOSPC;
+        if (index < 0) return SALTS_ENOSPC;
     }
     value = (uint8_t *)malloc(mutation->value_size);
-    if (!value) return TURBO_ENOMEM;
+    if (!value) return SALTS_ENOMEM;
     memcpy(value, mutation->value, mutation->value_size);
     free(store->records[index].value);
     memset(&store->records[index], 0, sizeof(store->records[index]));
@@ -131,7 +131,7 @@ static int test_commit(void *context,
     store->records[index].value_size = mutation->value_size;
     store->records[index].revision = mutation->next_revision;
     store->records[index].used = 1;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static void test_store_init(test_store_t *store) {
@@ -249,7 +249,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         check_equal(delivery.calls, 1);
         check_equal(test_store_count(&store), 1u);
@@ -283,7 +283,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         snprintf(conflict.payload_json, sizeof(conflict.payload_json),
@@ -316,7 +316,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         revision = delivery.last_revision;
         iris_event_outbox_on_delivery_result(
@@ -350,7 +350,7 @@ spec("Iris durable media event outbox") {
         delivery.status = IVR_ENOSPC;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         index = test_find_record(&store, (const uint8_t *)event.event_id,
                                  strlen(event.event_id));
@@ -373,7 +373,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 0, 503);
@@ -420,7 +420,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         for (i = 0u; i < 3u; ++i) {
             char event_id[32];
             ivr_media_event_t event;
@@ -456,7 +456,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_replay_dead_letters(
                          outbox, 0u, &result),
                      IVR_EINVAL);
@@ -478,7 +478,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         for (i = 0u; i < 2u; ++i) {
             char event_id[32];
             ivr_media_event_t event;
@@ -517,7 +517,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(
             outbox, &event, delivery.last_revision, 0, 503);
@@ -547,7 +547,7 @@ spec("Iris durable media event outbox") {
         delivery.status = IVR_ENOSPC;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         for (i = 0u; i < TEST_STORE_CAPACITY; ++i) {
             char event_id[32];
             ivr_media_event_t event;
@@ -581,7 +581,7 @@ spec("Iris durable media event outbox") {
         delivery.status = IVR_ENOSPC;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         check_equal(test_store_count(&store), 1u);
         iris_event_outbox_destroy(outbox);
@@ -589,7 +589,7 @@ spec("Iris durable media event outbox") {
         delivery.status = IVR_OK;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(delivery.calls, 2);
         iris_event_outbox_get_stats(outbox, &stats);
         check_equal(stats.retained_payload_bytes,
@@ -615,13 +615,13 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_destroy(outbox);
 
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(delivery.calls, 2);
         check_true(delivery.last_revision > 2u);
         iris_event_outbox_destroy(outbox);
@@ -633,10 +633,10 @@ spec("Iris durable media event outbox") {
         test_delivery_t delivery = {0};
         iris_event_outbox_t *outbox;
         test_store_init(&store);
-        store.scan_status = TURBO_EIO;
+        store.scan_status = SALTS_EIO;
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_EIO);
+        check_equal(iris_event_outbox_start(outbox), SALTS_EIO);
         iris_event_outbox_destroy(outbox);
         test_store_cleanup(&store);
     }
@@ -649,7 +649,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         memset(event.event_type, 'x', sizeof(event.event_type));
         check_equal(iris_event_outbox_on_media_event(outbox, &event),
                      IVR_EINVAL);
@@ -672,7 +672,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 0, 503);
@@ -727,7 +727,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 0, 503);
@@ -755,7 +755,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         check_equal(iris_event_outbox_on_media_event(outbox, &event), IVR_OK);
         iris_event_outbox_on_delivery_result(outbox, &event,
                                              delivery.last_revision, 0, 503);
@@ -764,7 +764,7 @@ spec("Iris durable media event outbox") {
         g_test_now_ms = UINT64_C(11000);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         iris_event_outbox_get_stats(outbox, &stats);
         check_equal(stats.dead_records, 0u);
         check_equal(stats.archived_records, 1u);
@@ -773,7 +773,7 @@ spec("Iris durable media event outbox") {
         g_test_now_ms = UINT64_C(12000);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         iris_event_outbox_get_stats(outbox, &stats);
         check_equal(stats.archived_records, 0u);
         check_equal(test_store_count(&store), 0u);
@@ -790,7 +790,7 @@ spec("Iris durable media event outbox") {
         test_store_init(&store);
         outbox = test_create_outbox(&store, &delivery);
         check_not_null(outbox);
-        check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+        check_equal(iris_event_outbox_start(outbox), SALTS_OK);
         for (i = 0u; i < 3u; ++i) {
             char event_id[32];
             ivr_media_event_t event;
@@ -863,7 +863,7 @@ spec("Iris durable media event outbox") {
             check_not_null(outbox);
         }
         if (outbox) {
-            check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+            check_equal(iris_event_outbox_start(outbox), SALTS_OK);
             check_equal(iris_event_outbox_on_media_event(outbox, &event),
                          IVR_OK);
             check_equal(delivery.calls, 1);
@@ -875,7 +875,7 @@ spec("Iris durable media event outbox") {
             check_not_null(outbox);
         }
         if (outbox) {
-            check_equal(iris_event_outbox_start(outbox), TURBO_OK);
+            check_equal(iris_event_outbox_start(outbox), SALTS_OK);
             check_equal(delivery.calls, 2);
             iris_event_outbox_on_delivery_result(
                 outbox, &event, delivery.last_revision, 1, 202);

@@ -7,4 +7,4 @@ target_include_directories(
 target_link_libraries(
   turbo_media_server
   PUBLIC TurboMedia::Core TurboMedia::Transport
-  PRIVATE TurboUtils::Core)
+  PRIVATE Salts::Core)

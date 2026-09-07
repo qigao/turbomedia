@@ -2,34 +2,18 @@
 
 include(CMakeFindDependencyMacro)
 
-set(_TurboMedia_legacy_capture_header
-    "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_INCLUDEDIR@/turbo_capture.h")
-if(EXISTS "${_TurboMedia_legacy_capture_header}")
-  file(STRINGS "${_TurboMedia_legacy_capture_header}"
-       _TurboMedia_capture_export_include
-       REGEX "turbo_capture_export\\.h"
-       LIMIT_COUNT 1)
-  if(NOT _TurboMedia_capture_export_include)
-    set(TurboMedia_NOT_FOUND_MESSAGE
-        "TurboMedia found an obsolete include/turbo_capture.h from an older in-place install; remove that file or install into a clean prefix so TurboUtils::Capture remains the only header provider")
-    set(TurboMedia_FOUND FALSE)
-    return()
-  endif()
-endif()
-unset(_TurboMedia_capture_export_include)
-unset(_TurboMedia_legacy_capture_header)
-
-find_dependency(TurboUtils CONFIG)
-if(NOT TARGET TurboUtils::Capture)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "TurboMedia requires a TurboUtils package built with TURBO_ENABLE_CAPTURE=ON")
+find_dependency(Salts CONFIG REQUIRED
+                PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH)
+find_dependency(SaltsUtils CONFIG REQUIRED
+                PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH)
+if(NOT TARGET Salts::Capture)
   set(TurboMedia_FOUND FALSE)
+  set(TurboMedia_NOT_FOUND_MESSAGE
+      "SaltsUtils profile does not export Salts::Capture")
   return()
 endif()
-find_dependency(TurboParser CONFIG)
-find_dependency(OpenSSL)
-find_dependency(TurboNet CONFIG)
-find_dependency(TurboHttp CONFIG)
+find_dependency(SaltsNet CONFIG REQUIRED
+                PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH)
 
 
 # The exported target file contains all TurboMedia components, but FFmpeg is

@@ -1,5 +1,5 @@
 #include "turbo_room_service.h"
-#include "turbo_thread.h"
+#include "salts_thread.h"
 #include <platform.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -108,7 +108,7 @@ struct turbo_room_service_s {
     room_entry_t *rooms;
     int room_count;
     int room_capacity;
-    turbo_mutex_t room_mutex;
+    salts_mutex_t room_mutex;
 
     call_center_queue_entry_t *call_center_queue_entries;
     int call_center_queue_entry_count;
@@ -117,7 +117,7 @@ struct turbo_room_service_s {
     int call_center_agent_state_count;
     int call_center_agent_state_capacity;
     atomic_llong next_call_center_queue_sequence;
-    turbo_mutex_t call_center_queue_mutex;
+    salts_mutex_t call_center_queue_mutex;
 };
 
 static void copy_string(char *dest, size_t dest_size, const char *src) {
@@ -356,7 +356,7 @@ static int recover_stale_call_center_queue_claims_locked(
         return -1;
     }
 
-    now_ms = turbo_monotonic_ms();
+    now_ms = salts_monotonic_ms();
     for (i = 0; i < service->call_center_queue_entry_count; ++i) {
         call_center_queue_entry_t *entry = &service->call_center_queue_entries[i];
         if (strcmp(entry->queue_id, queue_id) != 0 ||
@@ -593,7 +593,7 @@ static int mark_call_center_queue_entry_state(
     }
 
     entry->claimed_at_ms = desired == CALL_CENTER_QUEUE_ENTRY_CLAIMED
-                               ? turbo_monotonic_ms()
+                               ? salts_monotonic_ms()
                                : 0;
     entry->version++;
     return 0;
@@ -936,8 +936,8 @@ turbo_room_service_t *turbo_room_service_create(void) {
     }
 
     atomic_init(&service->next_call_center_queue_sequence, 0);
-    turbo_mutex_init(&service->room_mutex);
-    turbo_mutex_init(&service->call_center_queue_mutex);
+    salts_mutex_init(&service->room_mutex);
+    salts_mutex_init(&service->call_center_queue_mutex);
     return service;
 }
 
@@ -954,8 +954,8 @@ void turbo_room_service_destroy(turbo_room_service_t *service) {
     free(service->rooms);
     free(service->call_center_queue_entries);
     free(service->call_center_agent_states);
-    turbo_mutex_destroy(&service->room_mutex);
-    turbo_mutex_destroy(&service->call_center_queue_mutex);
+    salts_mutex_destroy(&service->room_mutex);
+    salts_mutex_destroy(&service->call_center_queue_mutex);
     free(service);
 }
 
@@ -969,7 +969,7 @@ int turbo_room_service_create_room(turbo_room_service_t *service,
         config->room_type == 0) {
         return -1;
     }
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     if (find_room(service, config->room_id)) {
         goto out;
     }
@@ -992,7 +992,7 @@ int turbo_room_service_create_room(turbo_room_service_t *service,
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1004,29 +1004,29 @@ int turbo_room_service_close_room(turbo_room_service_t *service, const char *roo
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
     }
 
     if (room->call_center_state == TURBO_CALL_CENTER_ROOM_ACTIVE) {
-        turbo_mutex_lock(&service->call_center_queue_mutex);
+        salts_mutex_lock(&service->call_center_queue_mutex);
         if (room->call_center_agent_participant_id[0] != '\0' &&
             set_call_center_agent_state_locked(
                 service, room->call_center_agent_participant_id,
                 TURBO_CALL_CENTER_AGENT_AVAILABLE) != 0) {
-            turbo_mutex_unlock(&service->call_center_queue_mutex);
+            salts_mutex_unlock(&service->call_center_queue_mutex);
             goto out;
         }
         if (room->call_center_consult_agent_participant_id[0] != '\0' &&
             set_call_center_agent_state_locked(
                 service, room->call_center_consult_agent_participant_id,
                 TURBO_CALL_CENTER_AGENT_AVAILABLE) != 0) {
-            turbo_mutex_unlock(&service->call_center_queue_mutex);
+            salts_mutex_unlock(&service->call_center_queue_mutex);
             goto out;
         }
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
 
         room->call_center_state = TURBO_CALL_CENTER_ROOM_COMPLETED;
         room_bump_call_center_version(room);
@@ -1037,7 +1037,7 @@ int turbo_room_service_close_room(turbo_room_service_t *service, const char *roo
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1050,7 +1050,7 @@ int turbo_room_service_discard_unassigned_room(turbo_room_service_t *service,
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     for (i = 0; i < service->room_count; ++i) {
         room_entry_t *room = &service->rooms[i];
         if (strcmp(room->room_id, room_id) != 0) {
@@ -1065,7 +1065,7 @@ int turbo_room_service_discard_unassigned_room(turbo_room_service_t *service,
     }
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1079,7 +1079,7 @@ int turbo_room_service_assign_sfu_node(turbo_room_service_t *service, const char
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1090,7 +1090,7 @@ int turbo_room_service_assign_sfu_node(turbo_room_service_t *service, const char
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1103,7 +1103,7 @@ int turbo_room_service_get_room_summary(turbo_room_service_t *service, const cha
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1132,7 +1132,7 @@ int turbo_room_service_get_room_summary(turbo_room_service_t *service, const cha
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1148,7 +1148,7 @@ int turbo_room_service_add_participant(turbo_room_service_t *service, const char
         !string_fits(config->display_name, TURBO_DISPLAY_NAME_MAX, 1)) {
         return -1;
     }
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1180,7 +1180,7 @@ int turbo_room_service_add_participant(turbo_room_service_t *service, const char
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1199,7 +1199,7 @@ int turbo_room_service_remove_participant(turbo_room_service_t *service, const c
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1274,7 +1274,7 @@ int turbo_room_service_remove_participant(turbo_room_service_t *service, const c
     }
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1289,7 +1289,7 @@ int turbo_room_service_set_participant_session_state(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     participant = find_participant(room, participant_id);
     if (!participant) {
@@ -1302,7 +1302,7 @@ int turbo_room_service_set_participant_session_state(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1317,7 +1317,7 @@ int turbo_room_service_set_participant_bandwidth(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     participant = find_participant(room, participant_id);
     if (!participant) {
@@ -1331,7 +1331,7 @@ int turbo_room_service_set_participant_bandwidth(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1346,7 +1346,7 @@ int turbo_room_service_get_participant_summary(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     participant = find_participant(room, participant_id);
     if (!participant) {
@@ -1357,7 +1357,7 @@ int turbo_room_service_get_participant_summary(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1371,7 +1371,7 @@ int turbo_room_service_get_participant_summary_at(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room || index >= room->participant_count) {
         goto out;
@@ -1381,7 +1381,7 @@ int turbo_room_service_get_participant_summary_at(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1398,7 +1398,7 @@ int turbo_room_service_get_effective_receiver_bandwidth(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     participant = find_participant(room, participant_id);
     if (!participant) {
@@ -1446,7 +1446,7 @@ int turbo_room_service_get_effective_receiver_bandwidth(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1466,7 +1466,7 @@ int turbo_room_service_publish_track(turbo_room_service_t *service, const char *
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     owner = find_participant(room, config->owner_participant_id);
     if (!room || !owner || !role_can_publish(owner->role)) {
@@ -1504,7 +1504,7 @@ int turbo_room_service_publish_track(turbo_room_service_t *service, const char *
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1518,7 +1518,7 @@ int turbo_room_service_unpublish_track(turbo_room_service_t *service, const char
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1540,7 +1540,7 @@ int turbo_room_service_unpublish_track(turbo_room_service_t *service, const char
     }
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1554,7 +1554,7 @@ int turbo_room_service_set_track_muted(turbo_room_service_t *service, const char
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     track = find_track(room, track_id);
     if (!track) {
@@ -1567,7 +1567,7 @@ int turbo_room_service_set_track_muted(turbo_room_service_t *service, const char
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1582,7 +1582,7 @@ int turbo_room_service_get_track_summary(turbo_room_service_t *service, const ch
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     track = find_track(room, track_id);
     if (!track) {
@@ -1593,7 +1593,7 @@ int turbo_room_service_get_track_summary(turbo_room_service_t *service, const ch
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1607,7 +1607,7 @@ int turbo_room_service_get_track_summary_at(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room || index >= room->track_count) {
         goto out;
@@ -1617,7 +1617,7 @@ int turbo_room_service_get_track_summary_at(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1635,7 +1635,7 @@ int turbo_room_service_set_subscription(turbo_room_service_t *service, const cha
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room || !find_participant(room, config->subscriber_participant_id) ||
         !find_track(room, config->track_id)) {
@@ -1668,7 +1668,7 @@ int turbo_room_service_set_subscription(turbo_room_service_t *service, const cha
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1683,7 +1683,7 @@ int turbo_room_service_remove_subscription(turbo_room_service_t *service, const 
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1701,7 +1701,7 @@ int turbo_room_service_remove_subscription(turbo_room_service_t *service, const 
     }
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1717,7 +1717,7 @@ int turbo_room_service_get_subscription_summary(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     subscription = find_subscription(room, subscriber_participant_id, track_id);
     if (!subscription) {
@@ -1728,7 +1728,7 @@ int turbo_room_service_get_subscription_summary(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1742,7 +1742,7 @@ int turbo_room_service_get_subscription_summary_at(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room || index >= room->subscription_count) {
         goto out;
@@ -1752,7 +1752,7 @@ int turbo_room_service_get_subscription_summary_at(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1767,7 +1767,7 @@ int turbo_room_service_start_recording(turbo_room_service_t *service, const char
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1784,7 +1784,7 @@ int turbo_room_service_start_recording(turbo_room_service_t *service, const char
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1795,7 +1795,7 @@ int turbo_room_service_stop_recording(turbo_room_service_t *service, const char 
     if (!service || !room_id) {
         return -1;
     }
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1809,7 +1809,7 @@ int turbo_room_service_stop_recording(turbo_room_service_t *service, const char 
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1822,7 +1822,7 @@ int turbo_room_service_set_layout_mode(turbo_room_service_t *service, const char
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1833,7 +1833,7 @@ int turbo_room_service_set_layout_mode(turbo_room_service_t *service, const char
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1847,7 +1847,7 @@ int turbo_room_service_set_active_speaker(turbo_room_service_t *service, const c
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1863,7 +1863,7 @@ int turbo_room_service_set_active_speaker(turbo_room_service_t *service, const c
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -1877,7 +1877,7 @@ int turbo_room_service_pin_participant(turbo_room_service_t *service, const char
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -1893,7 +1893,7 @@ int turbo_room_service_pin_participant(turbo_room_service_t *service, const char
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -2102,7 +2102,7 @@ int turbo_room_service_reconcile_call_center_subscriptions(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -2163,7 +2163,7 @@ int turbo_room_service_reconcile_call_center_subscriptions(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -2185,7 +2185,7 @@ int turbo_room_service_enqueue_call_center_queue_entry(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     entry = find_call_center_queue_entry(service, config->queue_id, config->side,
                                          config->entry_id);
     if (!entry) {
@@ -2247,7 +2247,7 @@ int turbo_room_service_enqueue_call_center_queue_entry(
     }
 
 out:
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return rc;
 }
 
@@ -2261,11 +2261,11 @@ int turbo_room_service_remove_call_center_queue_entry(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     entry = find_call_center_queue_entry(service, queue_id, side, entry_id);
     rc = mark_call_center_queue_entry_state(entry, CALL_CENTER_QUEUE_ENTRY_QUEUED,
                                             CALL_CENTER_QUEUE_ENTRY_CANCELED);
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return rc;
 }
 
@@ -2279,7 +2279,7 @@ int turbo_room_service_get_call_center_queue_depth(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     (void)recover_stale_call_center_queue_claims_locked(
         service, queue_id, CALL_CENTER_QUEUE_DEFAULT_CLAIM_LEASE_MS, NULL);
     for (i = 0; i < service->call_center_queue_entry_count; ++i) {
@@ -2289,7 +2289,7 @@ int turbo_room_service_get_call_center_queue_depth(
             count++;
         }
     }
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
 
     *depth = count;
     return 0;
@@ -2305,18 +2305,18 @@ int turbo_room_service_peek_call_center_queue_entry(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     (void)recover_stale_call_center_queue_claims_locked(
         service, queue_id, CALL_CENTER_QUEUE_DEFAULT_CLAIM_LEASE_MS, NULL);
     index = find_best_call_center_queue_entry_index(service, queue_id, side);
     if (index < 0) {
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         return -1;
     }
 
     fill_call_center_queue_entry_summary(&service->call_center_queue_entries[index],
                                          summary);
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return 0;
 }
 
@@ -2330,12 +2330,12 @@ int turbo_room_service_pop_call_center_queue_entry(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     (void)recover_stale_call_center_queue_claims_locked(
         service, queue_id, CALL_CENTER_QUEUE_DEFAULT_CLAIM_LEASE_MS, NULL);
     index = find_best_call_center_queue_entry_index(service, queue_id, side);
     if (index < 0) {
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         return -1;
     }
 
@@ -2344,10 +2344,10 @@ int turbo_room_service_pop_call_center_queue_entry(
     if (mark_call_center_queue_entry_state(&service->call_center_queue_entries[index],
                                            CALL_CENTER_QUEUE_ENTRY_QUEUED,
                                            CALL_CENTER_QUEUE_ENTRY_CANCELED) != 0) {
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         return -1;
     }
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return 0;
 }
 
@@ -2412,7 +2412,7 @@ static int set_claimed_call_center_queue_match_state(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     caller = find_call_center_queue_entry(service, queue_id,
                                           TURBO_CALL_CENTER_QUEUE_CALLER,
                                           caller_entry_id);
@@ -2437,7 +2437,7 @@ static int set_claimed_call_center_queue_match_state(
         }
         rc = 0;
     }
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return rc;
 }
 
@@ -2452,7 +2452,7 @@ int turbo_room_service_match_call_center_queue(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     (void)recover_stale_call_center_queue_claims_locked(
         service, queue_id, CALL_CENTER_QUEUE_DEFAULT_CLAIM_LEASE_MS, NULL);
     rc = claim_call_center_queue_match_locked(service, queue_id, summary);
@@ -2478,7 +2478,7 @@ int turbo_room_service_match_call_center_queue(
                 service, callee->endpoint_id, TURBO_CALL_CENTER_AGENT_BUSY);
         }
     }
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
 
     return rc;
 }
@@ -2492,11 +2492,11 @@ int turbo_room_service_claim_call_center_queue_match(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     (void)recover_stale_call_center_queue_claims_locked(
         service, queue_id, CALL_CENTER_QUEUE_DEFAULT_CLAIM_LEASE_MS, NULL);
     rc = claim_call_center_queue_match_locked(service, queue_id, summary);
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return rc;
 }
 
@@ -2525,10 +2525,10 @@ int turbo_room_service_recover_stale_call_center_queue_claims(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     rc = recover_stale_call_center_queue_claims_locked(service, queue_id,
                                                        lease_ms, recovered);
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return rc;
 }
 
@@ -2543,9 +2543,9 @@ int turbo_room_service_set_call_center_agent_state(
         return -1;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     rc = set_call_center_agent_state_locked(service, endpoint_id, state);
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return rc;
 }
 
@@ -2561,18 +2561,18 @@ int turbo_room_service_get_call_center_agent_state(
     memset(summary, 0, sizeof(*summary));
     copy_string(summary->endpoint_id, sizeof(summary->endpoint_id), endpoint_id);
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     entry = find_call_center_agent_state_entry_locked(service, endpoint_id);
     if (!entry) {
         summary->state = TURBO_CALL_CENTER_AGENT_AVAILABLE;
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         return 0;
     }
 
     summary->state = entry->state;
     summary->explicit_state = 1;
     summary->version = entry->version;
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
     return 0;
 }
 
@@ -2590,7 +2590,7 @@ int turbo_room_service_start_call_center_room(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     customer = find_participant(room, customer_participant_id);
     agent = find_participant(room, agent_participant_id);
@@ -2600,13 +2600,13 @@ int turbo_room_service_start_call_center_room(
         goto out;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     if (set_call_center_agent_state_locked(service, agent_participant_id,
                                            TURBO_CALL_CENTER_AGENT_BUSY) != 0) {
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         goto out;
     }
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
 
     room->call_center_state = TURBO_CALL_CENTER_ROOM_ACTIVE;
     copy_string(room->call_center_customer_participant_id,
@@ -2620,7 +2620,7 @@ int turbo_room_service_start_call_center_room(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -2639,7 +2639,7 @@ int turbo_room_service_set_call_center_consult_agent(
     }
 
     memset(previous_consult_agent_id, 0, sizeof(previous_consult_agent_id));
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     consult_agent = find_participant(room, consult_agent_participant_id);
     if (!room || room->call_center_state != TURBO_CALL_CENTER_ROOM_ACTIVE ||
@@ -2653,12 +2653,12 @@ int turbo_room_service_set_call_center_consult_agent(
     copy_string(previous_consult_agent_id, sizeof(previous_consult_agent_id),
                 room->call_center_consult_agent_participant_id);
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     if (previous_consult_agent_id[0] != '\0' &&
         !string_equals(previous_consult_agent_id, consult_agent_participant_id) &&
         set_call_center_agent_state_locked(service, previous_consult_agent_id,
                                            TURBO_CALL_CENTER_AGENT_AVAILABLE) != 0) {
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         goto out;
     }
     if (set_call_center_agent_state_locked(service, consult_agent_participant_id,
@@ -2669,10 +2669,10 @@ int turbo_room_service_set_call_center_consult_agent(
                                                      previous_consult_agent_id,
                                                      TURBO_CALL_CENTER_AGENT_BUSY);
         }
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         goto out;
     }
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
 
     copy_string(room->call_center_consult_agent_participant_id,
                 sizeof(room->call_center_consult_agent_participant_id),
@@ -2681,7 +2681,7 @@ int turbo_room_service_set_call_center_consult_agent(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -2704,7 +2704,7 @@ int turbo_room_service_complete_call_center_transfer(
 
     memset(released_agent_id, 0, sizeof(released_agent_id));
     memset(new_agent_id, 0, sizeof(new_agent_id));
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     agent = find_participant(room, room ? room->call_center_agent_participant_id : NULL);
     consult_agent = find_participant(
@@ -2720,20 +2720,20 @@ int turbo_room_service_complete_call_center_transfer(
     copy_string(new_agent_id, sizeof(new_agent_id),
                 room->call_center_consult_agent_participant_id);
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     if (set_call_center_agent_state_locked(service, released_agent_id,
                                            released_agent_state) != 0) {
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         goto out;
     }
     if (set_call_center_agent_state_locked(service, new_agent_id,
                                            TURBO_CALL_CENTER_AGENT_BUSY) != 0) {
         (void)set_call_center_agent_state_locked(service, released_agent_id,
                                                  TURBO_CALL_CENTER_AGENT_BUSY);
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         goto out;
     }
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
 
     copy_string(room->call_center_agent_participant_id,
                 sizeof(room->call_center_agent_participant_id), new_agent_id);
@@ -2742,7 +2742,7 @@ int turbo_room_service_complete_call_center_transfer(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -2769,21 +2769,21 @@ int turbo_room_service_finalize_call_center_room(
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room || room->call_center_state == TURBO_CALL_CENTER_ROOM_NONE ||
         room->call_center_agent_participant_id[0] == '\0') {
         goto out;
     }
 
-    turbo_mutex_lock(&service->call_center_queue_mutex);
+    salts_mutex_lock(&service->call_center_queue_mutex);
     if (set_call_center_agent_state_locked(service,
                                            room->call_center_agent_participant_id,
                                            agent_state) != 0) {
-        turbo_mutex_unlock(&service->call_center_queue_mutex);
+        salts_mutex_unlock(&service->call_center_queue_mutex);
         goto out;
     }
-    turbo_mutex_unlock(&service->call_center_queue_mutex);
+    salts_mutex_unlock(&service->call_center_queue_mutex);
 
     room->call_center_state = state;
     copy_string(room->call_center_disposition_code,
@@ -2792,7 +2792,7 @@ int turbo_room_service_finalize_call_center_room(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -2807,7 +2807,7 @@ int turbo_room_service_get_call_center_room_summary(
     }
 
     memset(summary, 0, sizeof(*summary));
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room || room->call_center_state == TURBO_CALL_CENTER_ROOM_NONE) {
         goto out;
@@ -2831,7 +2831,7 @@ int turbo_room_service_get_call_center_room_summary(
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }
 
@@ -2847,7 +2847,7 @@ int turbo_room_service_reconcile_subscriptions(turbo_room_service_t *service,
         return -1;
     }
 
-    turbo_mutex_lock(&service->room_mutex);
+    salts_mutex_lock(&service->room_mutex);
     room = find_room(service, room_id);
     if (!room) {
         goto out;
@@ -2906,6 +2906,6 @@ int turbo_room_service_reconcile_subscriptions(turbo_room_service_t *service,
     rc = 0;
 
 out:
-    turbo_mutex_unlock(&service->room_mutex);
+    salts_mutex_unlock(&service->room_mutex);
     return rc;
 }

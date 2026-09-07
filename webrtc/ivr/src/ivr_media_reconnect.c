@@ -156,9 +156,15 @@ ivr_status_t ivr_media_reconnect_on_state(
         } else {
             reconnect->state.whep_connected = 1;
         }
+        /* A terminal state commits the current generation to replacement.
+           ICE can transiently report COMPLETED again while the remote session
+           is already gone; accepting that callback would cancel the bounded
+           rebuild and leave the data plane detached from the SFU. */
+        if (reconnect->state.retry_pending) {
+            return IVR_OK;
+        }
         if (!was_connected && reconnect->state.whip_connected &&
             reconnect->state.whep_connected) {
-            reconnect->state.retry_pending = 0;
             *out_event = IVR_MEDIA_RECONNECT_EVENT_RECONNECTED;
         }
         return IVR_OK;

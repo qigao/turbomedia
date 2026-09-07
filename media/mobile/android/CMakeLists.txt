@@ -4,10 +4,13 @@ set(TURBO_MEDIA_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 find_library(TURBO_MEDIA_ANDROID_LOG_LIBRARY log REQUIRED)
 find_library(TURBO_MEDIA_ANDROID_LIBRARY android REQUIRED)
 find_library(TURBO_MEDIA_ANDROID_MEDIA_LIBRARY mediandk REQUIRED)
+find_library(TURBO_MEDIA_ANDROID_JNIGRAPHICS_LIBRARY jnigraphics REQUIRED)
+find_package(libyuv CONFIG REQUIRED)
 
 add_library(
   turbo_media_android SHARED
   src/jni/turbo_media_jni.c
+  # Retained only for the Java MediaProjection surface bridge tracked by #25.
   src/capture/capture_screen_android.c
   src/codec/hardware_codec_android.c
   src/mobile/mobile_optimizations.c
@@ -26,8 +29,8 @@ target_compile_options(
 target_link_libraries(
   turbo_media_android
   PUBLIC TurboMedia::Device
-  PRIVATE TurboUtils::Core
-          yuv
-          ${TURBO_MEDIA_ANDROID_LOG_LIBRARY}
+  PRIVATE ${TURBO_MEDIA_ANDROID_LOG_LIBRARY}
           ${TURBO_MEDIA_ANDROID_LIBRARY}
-          ${TURBO_MEDIA_ANDROID_MEDIA_LIBRARY})
+          ${TURBO_MEDIA_ANDROID_MEDIA_LIBRARY}
+          ${TURBO_MEDIA_ANDROID_JNIGRAPHICS_LIBRARY}
+          yuv)

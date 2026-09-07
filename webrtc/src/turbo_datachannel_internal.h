@@ -9,14 +9,11 @@
 
 #include "turbo_datachannel.h"
 #include "turbo_datachannel_errors.h"
+#include <cnet/cnet.h>
 #include <platform.h>
-#include <turbo_str.h>
-#include <turbo_coro_context.h>
-#include <turbo_datagram.h>
-#include <turbo_kcp.h>
-#include <turbo_stream.h>
-#include <turbo_thread.h>
-#include <turbostl/hash_map.h>
+#include <salts_str.h>
+#include <salts/thread.h>
+#include <cstl/hash_map.h>
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
 #include <usrsctp.h>
@@ -66,7 +63,7 @@ typedef struct {
     BIO *read_bio;
     BIO *write_bio;
     int handshake_done;
-    turbo_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
+    salts_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
 } dtls_session_t;
 
 /* SCTP session state */
@@ -77,6 +74,8 @@ typedef struct {
 
 /* Data channel context - internal */
 struct turbo_dc_peer_s;
+
+typedef void (*dc_transport_task_fn)(void *arg1, void *arg2);
 
 struct turbo_dc_context_s {
     SSL_CTX *ssl_ctx;
@@ -89,17 +88,25 @@ struct turbo_dc_context_s {
     turbo_dc_error_t last_error;      /* Only for errors before peer exists */
     tstr local_fingerprint;         /* SHA-256 hex fingerprint */
     tstr local_fingerprint_hash;    /* "sha-256" */
-    coro_context_t *transport_ctx;    /* Private CoroNet loop context */
-    turbo_thread_t transport_thread;  /* Dedicated transport loop thread */
+    salts_thread_t transport_thread;  /* Dedicated CNet owner thread */
     int transport_thread_started;
-    turbo_mutex_t peer_mutex;
+    salts_mutex_t transport_mutex;
+    salts_cond_t transport_cond;
+    int transport_sync_initialized;
+    int transport_stop_requested;
+    int transport_command_pending;
+    int transport_command_done;
+    dc_transport_task_fn transport_command;
+    void *transport_command_arg1;
+    void *transport_command_arg2;
+    salts_mutex_t peer_mutex;
     int peer_mutex_initialized;
     int destroying;
     struct turbo_dc_peer_s *peers_head;
 };
 
 /* Forward declaration */
-struct turbo_ice_agent_s;
+struct salts_ice_agent_s;
 
 /* Transport operations vtable */
 typedef struct {
@@ -116,16 +123,21 @@ struct turbo_dc_peer_s {
     int is_dtls_server;
 
     /* External callbacks and destruction are serialized by this protocol. */
-    turbo_mutex_t operation_mutex;
-    turbo_cond_t operation_cond;
+    salts_mutex_t operation_mutex;
+    salts_cond_t operation_cond;
     int operation_sync_initialized;
     int destroying;
     uint32_t active_operations;
 
     /* Transport (unified via ops) */
-    void *transport;
-    turbo_stream_listener_t *listener;  /* Only for TCP server mode */
-    turbo_stream_t *server_stream;      /* Accepted TCP server connection */
+    cnet_client stream_client;
+    cnet_listener listener;
+    cnet_connection stream_connection;
+    cnet_datagram datagram;
+    cnet_datagram_peer remote_datagram_peer;
+    int stream_client_initialized;
+    int listener_initialized;
+    int datagram_initialized;
     const dc_transport_ops_t *transport_ops;
 
     /* Externally owned datagram transport, typically an ICE agent. */
@@ -163,8 +175,7 @@ struct turbo_dc_peer_s {
     /* Remote endpoint */
     tstr remote_host;
     uint16_t remote_port;
-    struct sockaddr_storage remote_addr;
-    int has_remote_addr;
+    int has_remote_datagram_peer;
 
     /* Security: expected remote fingerprint from SDP */
     tstr remote_fingerprint;

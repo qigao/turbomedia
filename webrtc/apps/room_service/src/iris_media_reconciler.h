@@ -2,8 +2,8 @@
 #define ROOM_SERVICE_IRIS_MEDIA_RECONCILER_H
 
 #include "iris_event_outbox.h"
-#include "iris_flowmq_provider.h"
-#include "ivr_fmq_adapter.h"
+#include "iris_control_provider.h"
+#include "ivr_control_adapter.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -64,7 +64,7 @@ typedef struct iris_media_reconciler_ops_s {
         void *context, iris_expected_media_resource_t *resources,
         size_t capacity, size_t *out_count);
     ivr_status_t (*list_workers)(
-        void *context, ivr_fmq_worker_snapshot_t *workers, uint32_t capacity,
+        void *context, ivr_control_worker_snapshot_t *workers, uint32_t capacity,
         uint32_t *out_count, uint32_t *out_total);
     ivr_status_t (*request_inventory)(
         void *context, const ivr_worker_inventory_request_t *request);
@@ -83,7 +83,7 @@ typedef struct iris_media_reconciler_ops_s {
 } iris_media_reconciler_ops_t;
 
 typedef struct iris_media_reconciler_config_s {
-    iris_flowmq_provider_t *provider;
+    iris_control_provider_t *provider;
     size_t resource_capacity;
     uint32_t worker_capacity;
     uint32_t inventory_queue_capacity;
@@ -114,10 +114,10 @@ typedef struct iris_media_reconciler_stats_s {
 iris_media_reconciler_t *iris_media_reconciler_create(
     const iris_media_reconciler_config_t *config);
 
-/* Attach the production FlowMQ adapter before start. Not valid for an
+/* Attach the production CHTTP H1 WebSocket adapter before start. Not valid for an
    injected-ops reconciler or after its thread starts. */
 int iris_media_reconciler_set_adapter(iris_media_reconciler_t *reconciler,
-                                      ivr_fmq_adapter_t *adapter);
+                                      ivr_control_adapter_t *adapter);
 
 /* The threaded lifecycle is one-shot. stop() permanently closes inventory
    intake, interrupts retry waits and joins the owner before returning. */
@@ -130,7 +130,7 @@ void iris_media_reconciler_destroy(iris_media_reconciler_t *reconciler);
 ivr_status_t iris_media_reconciler_reconcile_once(
     iris_media_reconciler_t *reconciler, int allow_missing_loss);
 
-/* FlowMQ owner-thread callback. It only copies into a bounded queue. */
+/* CHTTP H1 WebSocket owner-thread callback. It only copies into a bounded queue. */
 ivr_status_t iris_media_reconciler_on_inventory_page(
     void *context, const ivr_worker_inventory_envelope_t *page);
 

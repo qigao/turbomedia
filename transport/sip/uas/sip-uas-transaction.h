@@ -8,7 +8,7 @@
 #include "sip-message.h"
 #include "sip-transport.h"
 #include "sip-atomic.h"
-#include "turbo_thread.h"
+#include "salts_thread.h"
 
 #define UDP_PACKET_SIZE (4*1024) //1440
 
@@ -27,7 +27,7 @@ struct sip_agent_t;
 struct sip_uas_transaction_t
 {
 	int linked;
-	turbo_mutex_t locker;
+	salts_mutex_t locker;
 	sip_atomic_i32_t ref;
 
 	uint8_t data[UDP_PACKET_SIZE];
