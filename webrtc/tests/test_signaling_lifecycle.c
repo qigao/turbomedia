@@ -64,7 +64,7 @@ static int get_status(const char *base_url, const char *path,
     fprintf(stderr, "GET %s%s failed: %s\n", base_url, path,
             turbo_transport_get_error(client));
   }
-  turbo_transport_destroy(client);
+  if (turbo_transport_destroy(client) != 0) status = -1;
   return status;
 }
 
@@ -93,7 +93,7 @@ static int delete_status(const char *base_url, const char *path,
     chttp_response_destroy(response);
     free(response);
   }
-  turbo_transport_destroy(client);
+  if (turbo_transport_destroy(client) != 0) status = -1;
   return status;
 }
 
@@ -446,6 +446,57 @@ void test_signaling_wss_listener_loads_explicit_identity(void) {
   webrtc_signaling_destroy(server);
 }
 
+void test_transport_wss_uses_explicit_trust_and_server_name(void) {
+  webrtc_signaling_config_t server_config = {.connection_capacity = 4U};
+  cnet_tls_client_config tls = {0};
+  turbo_transport_config_t transport_config = {0};
+  webrtc_signaling_server_t *server;
+  turbo_transport_t *transport;
+  uint16_t port = 0U;
+
+  server_config.host = "127.0.0.1";
+  server_config.port = 0U;
+  server_config.use_tls = 1;
+  server_config.cert_file = TURBO_MEDIA_TEST_TLS_CERT_PATH;
+  server_config.key_file = TURBO_MEDIA_TEST_TLS_KEY_PATH;
+  server_config.peer_timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS;
+  server = webrtc_signaling_create(NULL, &server_config);
+  check_not_null(server);
+  check_equal(webrtc_signaling_start(server), 0);
+  check_equal(webrtc_signaling_get_port(server, &port), 0);
+  check_true(port != 0U);
+
+  tls.size = sizeof(tls);
+  tls.ca_file = TURBO_MEDIA_TEST_TLS_CERT_PATH;
+  tls.server_name = "localhost";
+  transport_config.type = TURBO_TRANSPORT_WEBSOCKET;
+  transport_config.host = "127.0.0.1";
+  transport_config.port = (int)port;
+  transport_config.path = "/";
+  transport_config.use_tls = 1;
+  transport_config.connect_timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS;
+  transport_config.read_timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS;
+  transport_config.write_timeout_ms = SIGNALING_WS_TEST_TIMEOUT_MS;
+  transport_config.tls = &tls;
+  transport = turbo_transport_create(&transport_config);
+  check_not_null(transport);
+  {
+    int connect_status = turbo_transport_connect(transport);
+    info("transport error: %s",
+         turbo_transport_get_error(transport)
+             ? turbo_transport_get_error(transport) : "none");
+    check_equal(connect_status, 0);
+  }
+  check_true(turbo_transport_is_connected(transport));
+  check_equal(turbo_transport_disconnect(transport), 0);
+  check_false(turbo_transport_is_connected(transport));
+  check_equal(turbo_transport_connect(transport), 0);
+  check_true(turbo_transport_is_connected(transport));
+
+  check_equal(turbo_transport_destroy(transport), 0);
+  webrtc_signaling_destroy(server);
+}
+
 void test_http_api_bearer_auth_protects_management_routes(void) {
   webrtc_signaling_config_t signaling_config = {.connection_capacity = 4U};
   http_api_config_t http_config = {
@@ -572,6 +623,7 @@ spec("test_signaling_lifecycle") {
   it("test_signaling_peer_auth_configuration_fails_fast") { test_signaling_peer_auth_configuration_fails_fast(); };
   it("test_signaling_resource_policy_configuration_fails_fast") { test_signaling_resource_policy_configuration_fails_fast(); };
   it("test_signaling_wss_listener_loads_explicit_identity") { test_signaling_wss_listener_loads_explicit_identity(); };
+  it("test_transport_wss_uses_explicit_trust_and_server_name") { test_transport_wss_uses_explicit_trust_and_server_name(); };
   it("test_http_api_bearer_auth_protects_management_routes") { test_http_api_bearer_auth_protects_management_routes(); };
   it("test_https_management_api_requires_trusted_identity") { test_https_management_api_requires_trusted_identity(); };
 }

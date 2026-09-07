@@ -14,6 +14,11 @@ typedef struct {
     int request_valid;
 } transport_http_test_state_t;
 
+typedef struct {
+    int connected;
+    int disconnected;
+} transport_event_probe_t;
+
 static native_io_backend_kind transport_http_test_backend(void) {
 #if defined(_WIN32)
     return NATIVE_IO_BACKEND_IOCP;
@@ -83,7 +88,67 @@ static int transport_http_server_start(transport_http_test_state_t *state) {
     return 0;
 }
 
+static cnet_client_config transport_external_client_config(void) {
+    return (cnet_client_config){
+        .backend = transport_http_test_backend(),
+        .connection_capacity = 2u,
+        .command_capacity = 8u,
+        .request_capacity = 8u,
+        .completion_batch_capacity = 8u,
+        .event_capacity = 8u,
+        .max_send_bytes = 16u * 1024u,
+        .receive_buffer_bytes = 8u * 1024u,
+        .connect_timeout_ms = 5000u,
+        .read_timeout_ms = 5000u,
+        .write_timeout_ms = 5000u
+    };
+}
+
+static void transport_event_probe(
+    turbo_transport_t *transport, turbo_transport_event_t event,
+    void *event_data, void *user_data) {
+    transport_event_probe_t *probe = (transport_event_probe_t *)user_data;
+    (void)transport;
+    (void)event_data;
+    if (event == TURBO_TRANSPORT_EVENT_CONNECTED) {
+        probe->connected += 1;
+    } else if (event == TURBO_TRANSPORT_EVENT_DISCONNECTED) {
+        probe->disconnected += 1;
+    }
+}
+
 suite("Salts CHTTP transport") {
+  it("dispatches generic transport APIs without crossing the HTTP layout") {
+    turbo_transport_config_t config = {0};
+    transport_event_probe_t probe = {0};
+    turbo_transport_t *transport;
+    cnet_connection connection = {0};
+    uint8_t byte = 0u;
+    uint8_t *received = NULL;
+    size_t received_size = 0u;
+
+    check_equal(turbo_transport_parse_url(
+                    "http://127.0.0.1:20921/base", &config), 0);
+    transport = turbo_transport_create(&config);
+    free((void *)config.host);
+    free((void *)config.path);
+    check_not_null(transport);
+
+    turbo_transport_set_event_callback(transport, transport_event_probe,
+                                       &probe);
+    check_equal(turbo_transport_connect(transport), 0);
+    check_true(turbo_transport_is_connected(transport));
+    check_equal(probe.connected, 1);
+    check_equal(turbo_transport_send(transport, &byte, 1u), -1);
+    check_equal(turbo_transport_recv(transport, &received, &received_size), -1);
+    check_equal(turbo_transport_get_connection(transport, &connection), -1);
+    check_equal(turbo_transport_disconnect(transport), 0);
+    check_false(turbo_transport_is_connected(transport));
+    check_equal(probe.disconnected, 1);
+
+    check_equal(turbo_transport_destroy(transport), 0);
+  }
+
   it("retains request configuration and prefixes the base URL path") {
     transport_http_test_state_t state = {0};
     turbo_transport_config_t config = {0};
@@ -117,7 +182,82 @@ suite("Salts CHTTP transport") {
 
     chttp_response_destroy(response);
     free(response);
-    turbo_transport_destroy(transport);
+    check_equal(turbo_transport_destroy(transport), 0);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
+  it("drains an external CNet connection before releasing callback state") {
+    transport_http_test_state_t state = {0};
+    transport_event_probe_t probe = {0};
+    cnet_client client = {0};
+    cnet_client_config client_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 100,
+        .write_timeout_ms = 5000,
+        .cnet_client = &client
+    };
+    turbo_transport_t *transport;
+    size_t events = 0u;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&client, &client_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    turbo_transport_set_event_callback(transport, transport_event_probe,
+                                       &probe);
+    check_equal(turbo_transport_connect(transport), 0);
+    check_equal(probe.connected, 1);
+
+    check_equal(turbo_transport_destroy(transport), 0);
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        check_equal(cnet_client_poll(&client, 10u, &events), SALTS_OK);
+    }
+    check_equal(probe.disconnected, 1);
+
+    check_equal(cnet_client_stop(&client, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&client), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
+  it("reconnects a disconnected CNet transport without stale terminal state") {
+    transport_http_test_state_t state = {0};
+    transport_event_probe_t probe = {0};
+    cnet_client client = {0};
+    cnet_client_config client_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 100,
+        .write_timeout_ms = 5000,
+        .cnet_client = &client
+    };
+    turbo_transport_t *transport;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&client, &client_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    turbo_transport_set_event_callback(transport, transport_event_probe,
+                                       &probe);
+
+    check_equal(turbo_transport_connect(transport), 0);
+    check_equal(turbo_transport_disconnect(transport), 0);
+    check_equal(turbo_transport_connect(transport), 0);
+    check_equal(turbo_transport_disconnect(transport), 0);
+    check_equal(probe.connected, 2);
+    check_equal(probe.disconnected, 2);
+
+    check_equal(turbo_transport_destroy(transport), 0);
+    check_equal(cnet_client_stop(&client, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&client), SALTS_OK);
     check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);
   }

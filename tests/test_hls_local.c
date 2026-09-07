@@ -282,7 +282,7 @@ cleanup:
         check_equal(fingerprint_provider_context.destroy_count, 1);
     }
     if (connected && streamer) turbo_streamer_disconnect(streamer);
-    turbo_streamer_destroy(streamer);
+    check_equal(turbo_streamer_destroy(streamer), 0);
     turbo_codec_destroy(encoder);
     turbo_streamer_registry_shutdown();
     turbo_codec_registry_shutdown();
@@ -330,7 +330,7 @@ static void test_hls_rejects_malformed_h264_config(void) {
                  -EINVAL);
 
 cleanup:
-    turbo_streamer_destroy(streamer);
+    check_equal(turbo_streamer_destroy(streamer), 0);
     turbo_streamer_registry_shutdown();
     check_equal(tt_remove_tree(output_dir), 0);
     free(output_dir);

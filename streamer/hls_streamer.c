@@ -346,15 +346,16 @@ static int hls_convert_video_sample(hls_streamer_ctx_t *ctx, const uint8_t *inpu
     return 0;
 }
 
-static void hls_streamer_destroy_impl(void *ctx_ptr) {
+static int hls_streamer_destroy_impl(void *ctx_ptr) {
     hls_streamer_ctx_t *ctx = (hls_streamer_ctx_t *)ctx_ptr;
-    if (!ctx) return;
+    if (!ctx) return 0;
     if (ctx->fmp4) hls_fmp4_destroy(ctx->fmp4);
     if (ctx->m3u8) hls_m3u8_destroy(ctx->m3u8);
     free(ctx->video_sample);
     tstr_free(ctx->output_dir);
     tstr_free(ctx->base_url);
     free(ctx);
+    return 0;
 }
 
 static void *hls_streamer_create(const turbo_streamer_config_t *config) {

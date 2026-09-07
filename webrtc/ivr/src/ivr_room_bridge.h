@@ -184,8 +184,8 @@ typedef struct {
 ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
                                     ivr_room_bridge_t **out_bridge);
 ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge);
-void ivr_room_bridge_stop(ivr_room_bridge_t *bridge);
-void ivr_room_bridge_destroy(ivr_room_bridge_t *bridge);
+ivr_status_t ivr_room_bridge_stop(ivr_room_bridge_t *bridge);
+ivr_status_t ivr_room_bridge_destroy(ivr_room_bridge_t *bridge);
 
 /* Pure decode of one TIVR command frame into an ivr_room_command_t. */
 ivr_status_t ivr_room_decode_frame(DataBind *codec, const uint8_t *frame,

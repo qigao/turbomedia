@@ -165,13 +165,13 @@ decoder/filter/encoder。
 
 若 Pipeline 生产验证失败，可停止链接 `TurboMedia::Pipeline` 并恢复原有手工流水线；
 没有持久化数据迁移。FFmpeg 图新增 `libavfilter` 运行时依赖；生产 WebRTC session
-需要随应用部署 TurboMedia/TurboNet、BoringSSL、libSRTP、usrsctp 及其上游运行时依赖。
+需要随应用部署 TurboMedia/SaltsNet、BoringSSL、libSRTP、usrsctp 及其上游运行时依赖。
 
 ## 生产 WebRTC backend
 
 `turbo_media_webrtc_session_create()` 默认使用仓库内的 TurboMedia PeerConnection；
 测试或定制接入仍可通过 `turbo_media_webrtc_session_create_with_backend()` 注入 backend
-ops。内置 backend 组合 TurboNet ICE、TurboMedia DTLS/SRTP、SDP 和媒体引擎，负责完整
+ops。内置 backend 组合 SaltsNet ICE、TurboMedia DTLS/SRTP、SDP 和媒体引擎，负责完整
 RTP packet 收发；ServerRuntime 仍是媒体 track metadata 与帧分发的主事实源。WHEP
 player 会先应用远端 offer，再按 offer 的 media type、codec 与 mid 添加本地 send track；
 不支持的 codec 或找不到兼容 m-line 时立即失败。
@@ -182,8 +182,8 @@ DTLS、SRTP、DataChannel transport 与媒体定时器。`event_queue_capacity`�
 owner thread 驱动，不再建立额外事件队列。`max_rtp_packet_bytes` 限制单个 RTP packet，
 0 使用 65535 bytes 默认值，超过上限会使 session 失败。
 
-STUN/TURN URI 遵循 TurboNet ICE 配置格式，trickle ICE candidate 继续使用现有单字符串
-ABI；`allow_loopback` 直接传给 TurboNet ICE，便于本机端到端测试。加密实现由构建期
+STUN/TURN URI 遵循 SaltsNet ICE 配置格式，trickle ICE candidate 继续使用现有单字符串
+ABI；`allow_loopback` 直接传给 SaltsNet ICE，便于本机端到端测试。加密实现由构建期
 BoringSSL 检查保证，SRTP 使用 libSRTP。
 
 ## 验证范围

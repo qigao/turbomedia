@@ -193,8 +193,12 @@ int main(int argc, char **argv) {
 
 cleanup:
     if (g_server) {
-        room_service_app_server_destroy(g_server);
-        g_server = NULL;
+        if (room_service_app_server_destroy(g_server) != 0) {
+            fprintf(stderr, "Failed to destroy room service server cleanly\n");
+            ret = 1;
+        } else {
+            g_server = NULL;
+        }
     }
     room_service_app_config_cleanup(&config);
     return ret;

@@ -60,7 +60,8 @@ typedef struct {
     const char *user_agent;
     const char *auth_token;     /* Bearer token */
     
-    /* 可选的外部 CNet owner；传入后调用方负责其生命周期与串行化。 */
+    /* 可选的外部 CNet owner；调用方负责生命周期与串行化。transport
+       销毁时会在该 owner 上推进当前连接，直到 CLOSED 或超时。 */
     cnet_client *cnet_client;
     
     /* 可选的外部 CHTTP client。 */
@@ -99,9 +100,12 @@ typedef void (*turbo_transport_event_cb)(turbo_transport_t *transport,
 TURBO_MEDIA_API turbo_transport_t *turbo_transport_create(const turbo_transport_config_t *config);
 
 /**
- * 销毁传输实例
+ * 销毁传输实例。销毁会先停止内部 I/O；成功返回 0。失败返回 -1，实例仍归
+ * 调用方所有且可再次传给本函数重试。使用外部 CNet owner 时，调用方必须保证
+ * owner 串行化，并应先调用 turbo_transport_disconnect()、检查成功后再销毁。
+ * 关闭失败时用户回调会被解除，避免 external owner 中的 observer 悬空。
  */
-TURBO_MEDIA_API void turbo_transport_destroy(turbo_transport_t *transport);
+TURBO_MEDIA_API int turbo_transport_destroy(turbo_transport_t *transport);
 
 /**
  * 连接到服务器（协程内调用）

@@ -53,6 +53,7 @@ static atomic_int g_result_handler_release;
 static atomic_int g_media_result_count;
 static atomic_int g_media_event_count;
 static atomic_int g_inventory_page_count;
+static atomic_int g_gateway_disconnect_count;
 static ivr_media_command_result_t g_media_result;
 static ivr_media_event_t g_media_event;
 static ivr_worker_inventory_envelope_t g_inventory_page;
@@ -101,6 +102,13 @@ static int wait_atomic_count(atomic_int *value, int expected,
         ivr_thread_sleep_ms(10);
     }
     return 0;
+}
+
+static void track_gateway_disconnect(void *ctx, int connected) {
+    (void)ctx;
+    if (!connected) {
+        atomic_fetch_add(&g_gateway_disconnect_count, 1);
+    }
 }
 
 /* ---- reply capture on the WebSocket client ---- */
@@ -244,6 +252,7 @@ void setUp(void) {
     atomic_store(&g_media_result_count, 0);
     atomic_store(&g_media_event_count, 0);
     atomic_store(&g_inventory_page_count, 0);
+    atomic_store(&g_gateway_disconnect_count, 0);
     memset(&g_media_result, 0, sizeof(g_media_result));
     memset(&g_media_event, 0, sizeof(g_media_event));
     memset(&g_inventory_page, 0, sizeof(g_inventory_page));
@@ -603,12 +612,12 @@ void test_restart_after_stop(void) {
        queue latch from the previous stop must not kill the new thread. (The
        client gateway reconnect after a server restart is the gateway's own
        concern, so no round-trip is asserted here.) */
-    ivr_room_bridge_stop(g_bridge);
+    check_equal(ivr_room_bridge_stop(g_bridge), IVR_OK);
     check_equal(ivr_room_bridge_start(g_bridge), IVR_OK);
     check_equal(ivr_room_bridge_start(g_bridge), IVR_ESTATE);
     /* stop is idempotent and restart works again */
-    ivr_room_bridge_stop(g_bridge);
-    ivr_room_bridge_stop(g_bridge);
+    check_equal(ivr_room_bridge_stop(g_bridge), IVR_OK);
+    check_equal(ivr_room_bridge_stop(g_bridge), IVR_OK);
     check_equal(ivr_room_bridge_start(g_bridge), IVR_OK);
 }
 
@@ -626,7 +635,7 @@ void test_destroy_without_stop(void) {
     ivr_room_bridge_t *b2 = NULL;
     check_equal(ivr_room_bridge_create(&bcfg, &b2), IVR_OK);
     check_equal(ivr_room_bridge_start(b2), IVR_OK);
-    ivr_room_bridge_destroy(b2);
+    check_equal(ivr_room_bridge_destroy(b2), IVR_OK);
 }
 
 void test_stop_discards_command_queued_behind_inflight_handler(void) {
@@ -808,8 +817,9 @@ void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
     gateway_config.worker_id = "ivr-worker-test";
     gateway_config.host = "127.0.0.1";
     gateway_config.port = TEST_PORT + 2;
-    gateway_config.timeout_ms = 5000;
+    gateway_config.timeout_ms = 30000;
     gateway_config.on_reply = on_reply_cb;
+    gateway_config.on_connection = track_gateway_disconnect;
     check_equal(ivr_control_gateway_create(
                                   &gateway_config, &unused_ops, &gateway), IVR_OK);
     check_equal(ivr_control_gateway_start(gateway), IVR_OK);
@@ -817,6 +827,7 @@ void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
     g_reply_ready = 0;
     check_equal(ivr_control_gateway_send_worker_sync(gateway, "overflow-sync"), IVR_OK);
     check_true(wait_reply(8000));
+    atomic_store(&g_gateway_disconnect_count, 0);
 
     ivr_call_dispatch_t dispatch;
     memset(&dispatch, 0, sizeof(dispatch));
@@ -851,6 +862,7 @@ void test_dispatch_result_queue_overflow_is_counted_and_fail_closed(void) {
         }
         ivr_thread_sleep_ms(5);
     }
+    check_true(wait_atomic_count(&g_gateway_disconnect_count, 1, 4000));
     atomic_store(&g_result_handler_release, 1);
     ivr_thread_sleep_ms(100);
     ivr_control_gateway_destroy(gateway);

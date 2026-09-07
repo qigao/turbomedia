@@ -80,8 +80,8 @@ typedef struct iris_completion_dispatcher_stats_s {
 iris_completion_dispatcher_t *iris_completion_dispatcher_create(
     const iris_completion_dispatcher_config_t *config);
 int iris_completion_dispatcher_start(iris_completion_dispatcher_t *dispatcher);
-void iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher);
-void iris_completion_dispatcher_destroy(iris_completion_dispatcher_t *dispatcher);
+int iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher);
+int iris_completion_dispatcher_destroy(iris_completion_dispatcher_t *dispatcher);
 void iris_completion_dispatcher_get_stats(
     iris_completion_dispatcher_t *dispatcher,
     iris_completion_dispatcher_stats_t *stats);

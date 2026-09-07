@@ -78,8 +78,8 @@ ivr_status_t ivr_control_ws_client_start(ivr_control_ws_client_t *client);
 ivr_status_t ivr_control_ws_client_send_copy(ivr_control_ws_client_t *client,
                                               const uint8_t *data,
                                               size_t size);
-void ivr_control_ws_client_stop(ivr_control_ws_client_t *client);
-void ivr_control_ws_client_destroy(ivr_control_ws_client_t *client);
+ivr_status_t ivr_control_ws_client_stop(ivr_control_ws_client_t *client);
+ivr_status_t ivr_control_ws_client_destroy(ivr_control_ws_client_t *client);
 int ivr_control_ws_client_running(const ivr_control_ws_client_t *client);
 
 void ivr_control_ws_server_config_init(
@@ -92,8 +92,10 @@ ivr_status_t ivr_control_ws_server_start(ivr_control_ws_server_t *server);
    backoff. `out_restarted` is set only after a new listener is accepting. */
 ivr_status_t ivr_control_ws_server_maintain(
     ivr_control_ws_server_t *server, int *out_restarted);
-void ivr_control_ws_server_stop(ivr_control_ws_server_t *server);
-void ivr_control_ws_server_destroy(ivr_control_ws_server_t *server);
+/* A failed stop/destroy keeps the server and callback context owned by the
+   caller so the same operation can be retried after quiescence. */
+ivr_status_t ivr_control_ws_server_stop(ivr_control_ws_server_t *server);
+ivr_status_t ivr_control_ws_server_destroy(ivr_control_ws_server_t *server);
 ivr_status_t ivr_control_ws_server_port(const ivr_control_ws_server_t *server,
                                          uint16_t *out_port);
 ivr_status_t ivr_control_ws_server_send_copy(

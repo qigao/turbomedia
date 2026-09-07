@@ -640,11 +640,11 @@ int iris_completion_dispatcher_start(iris_completion_dispatcher_t *dispatcher) {
     return 0;
 }
 
-void iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
+int iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
     uint64_t deadline;
     uint64_t drain_started;
     uint64_t drain_duration;
-    if (!dispatcher || !dispatcher->thread_started) return;
+    if (!dispatcher || !dispatcher->thread_started) return 0;
     drain_started = salts_monotonic_ms();
     salts_mutex_lock(&dispatcher->mutex);
     dispatcher->accepting = 0;
@@ -683,7 +683,7 @@ void iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
     dispatcher->running = 0;
     salts_cond_broadcast(&dispatcher->not_empty);
     salts_mutex_unlock(&dispatcher->mutex);
-    salts_thread_join(&dispatcher->thread);
+    if (salts_thread_join(&dispatcher->thread) != 0) return -1;
     salts_thread_destroy(&dispatcher->thread);
     dispatcher->thread_started = 0;
     drain_duration = salts_monotonic_ms() - drain_started;
@@ -693,6 +693,7 @@ void iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
         dispatcher->stats.max_drain_duration_ms = drain_duration;
     }
     salts_mutex_unlock(&dispatcher->mutex);
+    return 0;
 }
 
 void iris_completion_dispatcher_get_stats(
@@ -718,10 +719,11 @@ int iris_completion_dispatcher_set_event_delivery_observer(
     return 0;
 }
 
-void iris_completion_dispatcher_destroy(iris_completion_dispatcher_t *dispatcher) {
-    if (!dispatcher) return;
-    iris_completion_dispatcher_stop(dispatcher);
-    turbo_transport_destroy(dispatcher->client);
+int iris_completion_dispatcher_destroy(iris_completion_dispatcher_t *dispatcher) {
+    if (!dispatcher) return 0;
+    if (iris_completion_dispatcher_stop(dispatcher) != 0) return -1;
+    if (turbo_transport_destroy(dispatcher->client) != 0) return -1;
+    dispatcher->client = NULL;
     salts_cond_destroy(&dispatcher->drained);
     salts_cond_destroy(&dispatcher->not_empty);
     salts_mutex_destroy(&dispatcher->mutex);
@@ -733,6 +735,7 @@ void iris_completion_dispatcher_destroy(iris_completion_dispatcher_t *dispatcher
     }
     free(dispatcher->base_url);
     free(dispatcher);
+    return 0;
 }
 
 static ivr_status_t enqueue(iris_completion_dispatcher_t *dispatcher,

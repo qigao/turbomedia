@@ -3193,24 +3193,24 @@ ivr_status_t ivr_control_adapter_start(ivr_control_adapter_t *adapter) {
     return rc;
 }
 
-void ivr_control_adapter_stop(ivr_control_adapter_t *adapter) {
-    if (!adapter || !adapter->bridge || !adapter->started) {
-        return;
+ivr_status_t ivr_control_adapter_stop(ivr_control_adapter_t *adapter) {
+    ivr_status_t status;
+    if (!adapter || !adapter->bridge) {
+        return adapter ? IVR_OK : IVR_EINVAL;
     }
-    ivr_room_bridge_stop(adapter->bridge);
-    adapter->started = 0;
+    status = ivr_room_bridge_stop(adapter->bridge);
+    if (status == IVR_OK) adapter->started = 0;
+    return status;
 }
 
-void ivr_control_adapter_destroy(ivr_control_adapter_t *adapter) {
+ivr_status_t ivr_control_adapter_destroy(ivr_control_adapter_t *adapter) {
     if (!adapter) {
-        return;
+        return IVR_OK;
     }
     if (adapter->bridge) {
-        if (adapter->started) {
-            ivr_room_bridge_stop(adapter->bridge);
-            adapter->started = 0;
-        }
-        ivr_room_bridge_destroy(adapter->bridge);
+        if (ivr_control_adapter_stop(adapter) != IVR_OK) return IVR_ESTATE;
+        if (ivr_room_bridge_destroy(adapter->bridge) != IVR_OK)
+            return IVR_ESTATE;
         adapter->bridge = NULL;
     }
     free(adapter->acls);
@@ -3225,6 +3225,7 @@ void ivr_control_adapter_destroy(ivr_control_adapter_t *adapter) {
     adapter->workers = NULL;
     ivr_mutex_destroy(&adapter->seq_lock);
     free(adapter);
+    return IVR_OK;
 }
 
 ivr_status_t ivr_control_adapter_get_assignment(

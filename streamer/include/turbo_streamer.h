@@ -106,7 +106,7 @@ typedef struct {
 
     /* 创建/销毁 */
     void *(*create)(const turbo_streamer_config_t *config);
-    void (*destroy)(void *ctx);
+    int (*destroy)(void *ctx);
 
     /* 连接/断开 */
     int (*connect)(void *ctx);
@@ -184,9 +184,10 @@ TURBO_MEDIA_API turbo_streamer_protocol_t turbo_streamer_detect_protocol(const c
 TURBO_MEDIA_API turbo_streamer_t *turbo_streamer_create(const turbo_streamer_config_t *config);
 
 /**
- * 销毁 Streamer 实例
+ * 销毁 Streamer 实例。成功返回 0；失败时实例及其 context 仍归调用方
+ * 所有，可在阻塞操作结束后重试。
  */
-TURBO_MEDIA_API void turbo_streamer_destroy(turbo_streamer_t *streamer);
+TURBO_MEDIA_API int turbo_streamer_destroy(turbo_streamer_t *streamer);
 
 /**
  * 连接到流媒体服务器

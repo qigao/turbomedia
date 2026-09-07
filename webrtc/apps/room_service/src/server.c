@@ -38,6 +38,14 @@ static void room_service_sleep_ms(unsigned int ms) { Sleep(ms); }
 static void room_service_sleep_ms(unsigned int ms) { usleep(ms * 1000); }
 #endif
 
+enum { ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY = 64 };
+
+typedef struct room_service_sfu_http_client_owner_s {
+    turbo_transport_t *client;
+    int reserved;
+    int releasing;
+} room_service_sfu_http_client_owner_t;
+
 struct room_service_app_server_s {
     room_service_app_config_t config;
     turbo_room_service_t *service;
@@ -59,6 +67,8 @@ struct room_service_app_server_s {
     int64_t call_center_event_sequence;
     int64_t conference_policy_sequence;
     salts_mutex_t mutex;
+    room_service_sfu_http_client_owner_t
+        sfu_http_clients[ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY];
     atomic_int running;
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     ivr_control_adapter_t *ivr_control; /* NULL only when the IVR feature is disabled */
@@ -1109,6 +1119,71 @@ static chttp_response *room_service_http_post_json(
         headers, 2);
 }
 
+static int room_service_release_sfu_http_client(
+    room_service_app_server_t *server, turbo_transport_t *client) {
+    room_service_sfu_http_client_owner_t *owner = NULL;
+    size_t index;
+    int destroy_status;
+    if (!server || !client) return -1;
+    salts_mutex_lock(&server->mutex);
+    for (index = 0u; index < ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY; ++index) {
+        if (server->sfu_http_clients[index].client == client &&
+            !server->sfu_http_clients[index].releasing) {
+            owner = &server->sfu_http_clients[index];
+            owner->releasing = 1;
+            break;
+        }
+    }
+    salts_mutex_unlock(&server->mutex);
+    if (!owner) return -1;
+    destroy_status = turbo_transport_destroy(client);
+    salts_mutex_lock(&server->mutex);
+    if (destroy_status == 0) {
+        memset(owner, 0, sizeof(*owner));
+    } else {
+        owner->releasing = 0;
+    }
+    salts_mutex_unlock(&server->mutex);
+    return destroy_status;
+}
+
+static int room_service_drain_sfu_http_clients(
+    room_service_app_server_t *server) {
+    for (;;) {
+        room_service_sfu_http_client_owner_t *owner = NULL;
+        turbo_transport_t *client;
+        size_t index;
+        salts_mutex_lock(&server->mutex);
+        for (index = 0u; index < ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY;
+             ++index) {
+            if (server->sfu_http_clients[index].reserved) {
+                owner = &server->sfu_http_clients[index];
+                break;
+            }
+        }
+        if (!owner) {
+            salts_mutex_unlock(&server->mutex);
+            return 0;
+        }
+        if (!owner->client || owner->releasing) {
+            salts_mutex_unlock(&server->mutex);
+            return -1;
+        }
+        owner->releasing = 1;
+        client = owner->client;
+        salts_mutex_unlock(&server->mutex);
+        if (turbo_transport_destroy(client) != 0) {
+            salts_mutex_lock(&server->mutex);
+            owner->releasing = 0;
+            salts_mutex_unlock(&server->mutex);
+            return -1;
+        }
+        salts_mutex_lock(&server->mutex);
+        memset(owner, 0, sizeof(*owner));
+        salts_mutex_unlock(&server->mutex);
+    }
+}
+
 static turbo_transport_t *room_service_create_sfu_client_for_route(
     room_service_app_server_t *server, const char *control_url,
     const char *control_token) {
@@ -1116,16 +1191,29 @@ static turbo_transport_t *room_service_create_sfu_client_for_route(
     turbo_transport_t *client;
     cnet_tls_client_config tls_config = {0};
     const char *ca_file;
+    room_service_sfu_http_client_owner_t *owner = NULL;
+    size_t index;
 
-    if (!control_url || control_url[0] == '\0') {
+    if (!server || !control_url || control_url[0] == '\0') {
         return NULL;
     }
+
+    salts_mutex_lock(&server->mutex);
+    for (index = 0u; index < ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY; ++index) {
+        if (!server->sfu_http_clients[index].reserved) {
+            owner = &server->sfu_http_clients[index];
+            owner->reserved = 1;
+            break;
+        }
+    }
+    salts_mutex_unlock(&server->mutex);
+    if (!owner) return NULL;
 
     if (turbo_transport_parse_url(control_url, &config) != 0 ||
         config.type != TURBO_TRANSPORT_HTTP) {
         free((void *)config.host);
         free((void *)config.path);
-        return NULL;
+        goto fail;
     }
 
     ca_file = server ? server->config.sfu_ca_file : NULL;
@@ -1136,7 +1224,7 @@ static turbo_transport_t *room_service_create_sfu_client_for_route(
     } else if (ca_file && ca_file[0]) {
         free((void *)config.host);
         free((void *)config.path);
-        return NULL;
+        goto fail;
     }
 
     config.connect_timeout_ms = 3000;
@@ -1147,7 +1235,17 @@ static turbo_transport_t *room_service_create_sfu_client_for_route(
     client = turbo_transport_create(&config);
     free((void *)config.host);
     free((void *)config.path);
+    if (!client) goto fail;
+    salts_mutex_lock(&server->mutex);
+    owner->client = client;
+    salts_mutex_unlock(&server->mutex);
     return client;
+
+fail:
+    salts_mutex_lock(&server->mutex);
+    memset(owner, 0, sizeof(*owner));
+    salts_mutex_unlock(&server->mutex);
+    return NULL;
 }
 
 static int room_service_sfu_command_is_dangerous(const char *type) {
@@ -1252,19 +1350,18 @@ static int room_service_post_sfu_command(room_service_app_server_t *server,
     response = room_service_http_post_json(client, "/api/v1/commands",
                                            command_json);
     if (!response) {
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
     if (response->status_code < 200u || response->status_code >= 300u) {
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
     room_service_http_response_free(response);
-    turbo_transport_destroy(client);
-    return 0;
+    return room_service_release_sfu_http_client(server, client) == 0 ? 0 : -1;
 }
 
 static turbo_room_video_layer_t room_service_parse_video_layer(const char *value) {
@@ -2366,56 +2463,75 @@ int room_service_app_server_run(room_service_app_server_t *server) {
     return 0;
 }
 
-void room_service_app_server_stop(room_service_app_server_t *server) {
+int room_service_app_server_stop(room_service_app_server_t *server) {
+    int status = 0;
     if (!server) {
-        return;
+        return 0;
     }
 
     atomic_store_explicit(&server->running, 0, memory_order_release);
     if (server->http_api) {
-        room_service_http_api_stop(server->http_api);
+        if (room_service_http_api_stop(server->http_api) != 0) status = -1;
     }
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     /* Quiesce producers before their consumers. Provider stop closes command
        ingress and waits for its dispatch worker; reconciler then stops
        producing adapter commands. Adapter stop establishes worker callback
        quiescence before completion/outbox consumers are drained. */
-    iris_control_provider_stop(server->iris_control_provider);
+    if (iris_control_provider_stop(server->iris_control_provider) != 0) {
+        status = -1;
+    }
     iris_media_reconciler_stop(server->iris_media_reconciler);
     if (server->ivr_control) {
-        ivr_control_adapter_stop(server->ivr_control);
+        if (ivr_control_adapter_stop(server->ivr_control) != IVR_OK) {
+            status = -1;
+        }
     }
-    iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
+    if (iris_completion_dispatcher_stop(
+            server->iris_completion_dispatcher) != 0) {
+        status = -1;
+    }
     iris_event_outbox_stop(server->iris_event_outbox);
     iris_command_ledger_stop(server->iris_command_ledger);
 #endif
+    if (room_service_drain_sfu_http_clients(server) != 0) status = -1;
+    return status;
 }
 
-void room_service_app_server_destroy(room_service_app_server_t *server) {
+int room_service_app_server_destroy(room_service_app_server_t *server) {
     if (!server) {
-        return;
+        return 0;
     }
 
-    room_service_app_server_stop(server);
+    if (room_service_app_server_stop(server) != 0) {
+        return -1;
+    }
 
     if (server->http_api) {
-        room_service_http_api_destroy(server->http_api);
+        if (room_service_http_api_destroy(server->http_api) != 0) return -1;
         server->http_api = NULL;
     }
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     iris_media_reconciler_destroy(server->iris_media_reconciler);
     server->iris_media_reconciler = NULL;
     if (server->ivr_control) {
-        ivr_control_adapter_destroy(server->ivr_control);
+        if (ivr_control_adapter_destroy(server->ivr_control) != IVR_OK) {
+            return -1;
+        }
         server->ivr_control = NULL;
     }
     ivr_certificate_identity_destroy(server->ivr_control_identity);
     server->ivr_control_identity = NULL;
     iris_event_outbox_destroy(server->iris_event_outbox);
     server->iris_event_outbox = NULL;
-    iris_completion_dispatcher_destroy(server->iris_completion_dispatcher);
+    if (iris_completion_dispatcher_destroy(
+            server->iris_completion_dispatcher) != 0) {
+        return -1;
+    }
     server->iris_completion_dispatcher = NULL;
-    iris_control_provider_destroy(server->iris_control_provider);
+    if (iris_control_provider_destroy(server->iris_control_provider) != 0) {
+        return -1;
+    }
     server->iris_control_provider = NULL;
     iris_room_bridge_destroy(server->iris_room_bridge);
     server->iris_room_bridge = NULL;
@@ -2433,6 +2549,7 @@ void room_service_app_server_destroy(room_service_app_server_t *server) {
     free(server->room_sync_diagnostics);
     salts_mutex_destroy(&server->mutex);
     free(server);
+    return 0;
 }
 
 turbo_room_service_t *room_service_app_server_get_service(
@@ -3281,21 +3398,20 @@ int room_service_app_server_fetch_track_subscription(
     response = room_service_http_post_json(client, "/api/v1/commands",
                                            command_json);
     if (!response) {
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
     if (response->status_code == 404) {
         subscription->available = 1;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
-        return 0;
+        return room_service_release_sfu_http_client(server, client) == 0 ? 0 : -1;
     }
 
     if (response->status_code < 200u || response->status_code >= 300u ||
         !room_service_http_response_is_json(response)) {
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3304,7 +3420,7 @@ int room_service_app_server_fetch_track_subscription(
         json_free(root);
         root = NULL;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3313,7 +3429,7 @@ int room_service_app_server_fetch_track_subscription(
         json_free(root);
         root = NULL;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3358,8 +3474,7 @@ int room_service_app_server_fetch_track_subscription(
 
     root = NULL;
     room_service_http_response_free(response);
-    turbo_transport_destroy(client);
-    return 0;
+    return room_service_release_sfu_http_client(server, client) == 0 ? 0 : -1;
 }
 
 int room_service_app_server_fetch_participant_stats(
@@ -3408,21 +3523,20 @@ int room_service_app_server_fetch_participant_stats(
     response = room_service_http_post_json(client, "/api/v1/commands",
                                            command_json);
     if (!response) {
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
     if (response->status_code == 404) {
         stats->available = 1;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
-        return 0;
+        return room_service_release_sfu_http_client(server, client) == 0 ? 0 : -1;
     }
 
     if (response->status_code < 200u || response->status_code >= 300u ||
         !room_service_http_response_is_json(response)) {
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3431,7 +3545,7 @@ int room_service_app_server_fetch_participant_stats(
         json_free(root);
         root = NULL;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3440,7 +3554,7 @@ int room_service_app_server_fetch_participant_stats(
         json_free(root);
         root = NULL;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3467,8 +3581,7 @@ int room_service_app_server_fetch_participant_stats(
 
     root = NULL;
     room_service_http_response_free(response);
-    turbo_transport_destroy(client);
-    return 0;
+    return room_service_release_sfu_http_client(server, client) == 0 ? 0 : -1;
 }
 
 int room_service_app_server_fetch_recording_status(
@@ -3516,21 +3629,20 @@ int room_service_app_server_fetch_recording_status(
     response = room_service_http_post_json(client, "/api/v1/commands",
                                            command_json);
     if (!response) {
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
     if (response->status_code == 404) {
         status->available = 1;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
-        return 0;
+        return room_service_release_sfu_http_client(server, client) == 0 ? 0 : -1;
     }
 
     if (response->status_code < 200u || response->status_code >= 300u ||
         !room_service_http_response_is_json(response)) {
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3539,7 +3651,7 @@ int room_service_app_server_fetch_recording_status(
         json_free(root);
         root = NULL;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3548,7 +3660,7 @@ int room_service_app_server_fetch_recording_status(
         json_free(root);
         root = NULL;
         room_service_http_response_free(response);
-        turbo_transport_destroy(client);
+        (void)room_service_release_sfu_http_client(server, client);
         return -1;
     }
 
@@ -3568,8 +3680,7 @@ int room_service_app_server_fetch_recording_status(
 
     root = NULL;
     room_service_http_response_free(response);
-    turbo_transport_destroy(client);
-    return 0;
+    return room_service_release_sfu_http_client(server, client) == 0 ? 0 : -1;
 }
 
 int room_service_app_server_record_room_sync(

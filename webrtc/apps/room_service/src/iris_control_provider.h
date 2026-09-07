@@ -67,8 +67,8 @@ int iris_control_provider_config_validate(
 iris_control_provider_t *iris_control_provider_create(
     const iris_control_provider_config_t *config);
 int iris_control_provider_start(iris_control_provider_t *provider);
-void iris_control_provider_stop(iris_control_provider_t *provider);
-void iris_control_provider_destroy(iris_control_provider_t *provider);
+int iris_control_provider_stop(iris_control_provider_t *provider);
+int iris_control_provider_destroy(iris_control_provider_t *provider);
 int iris_control_provider_running(const iris_control_provider_t *provider);
 
 /* One owning caller may wait for an application-level completion ack at a

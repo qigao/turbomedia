@@ -5020,7 +5020,7 @@ void test_room_service_http_lifecycle_repeated_start_stop(void) {
   }
 
   room_service_http_api_destroy(http_api);
-  room_service_app_server_destroy(server);
+  check_equal(room_service_app_server_destroy(server), 0);
 }
 
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
@@ -5110,7 +5110,7 @@ static void test_room_service_direct_destroy_closes_control_ws_provider_dependen
   check_equal((uint64_t)(metrics.iris_ledger_resource_seen_total), (uint64_t)(0u));
 
   /* No start/stop: destroy owns every partially initialized dependency. */
-  room_service_app_server_destroy(server);
+  check_equal(room_service_app_server_destroy(server), 0);
   server = NULL;
 
   check_equal((int)(tt_remove_file(yaml_path)), (int)(0));

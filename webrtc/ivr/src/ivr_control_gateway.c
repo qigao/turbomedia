@@ -1508,12 +1508,15 @@ ivr_status_t ivr_control_gateway_start(ivr_control_gateway_t *gateway) {
     return ivr_control_ws_client_start(gateway->endpoint);
 }
 
-void ivr_control_gateway_destroy(ivr_control_gateway_t *gateway) {
+ivr_status_t ivr_control_gateway_destroy(ivr_control_gateway_t *gateway) {
     if (!gateway) {
-        return;
+        return IVR_OK;
     }
     if (gateway->endpoint) {
-        ivr_control_ws_client_destroy(gateway->endpoint);
+        ivr_status_t status = ivr_control_ws_client_destroy(gateway->endpoint);
+        if (status != IVR_OK) {
+            return status;
+        }
         gateway->endpoint = NULL;
     }
     if (gateway->codec) {
@@ -1521,4 +1524,5 @@ void ivr_control_gateway_destroy(ivr_control_gateway_t *gateway) {
         gateway->codec = NULL;
     }
     free(gateway);
+    return IVR_OK;
 }

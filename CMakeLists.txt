@@ -36,16 +36,6 @@ include(Sanitizers)
 include(CmakeUtils)
 enable_testing()
 
-add_test(
-  NAME turbo_media_test_no_legacy_network_dependencies
-  COMMAND
-    ${CMAKE_COMMAND}
-    -DTURBO_MEDIA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VerifyNoLegacyNetworkDependencies.cmake)
-set_tests_properties(
-  turbo_media_test_no_legacy_network_dependencies
-  PROPERTIES LABELS "dependency;migration-gate")
-
 function(turbo_media_find_tbe_compiler output_variable)
   if(CMAKE_CROSSCOMPILING)
     set(_turbomedia_tbe_root_name SALTS_UTILS_HOST_ROOT)

@@ -307,26 +307,38 @@ static int http_flv_codec(const char *name, int video, http_flv_codec_t *codec) 
 
 static int http_flv_streamer_disconnect_impl(void *ctx_ptr);
 
-static void http_flv_streamer_destroy_impl(void *ctx_ptr) {
+static int http_flv_streamer_destroy_impl(void *ctx_ptr) {
     http_flv_streamer_ctx_t *ctx = (http_flv_streamer_ctx_t *)ctx_ptr;
-    if (!ctx) return;
-    if (ctx->connected) (void)http_flv_streamer_disconnect_impl(ctx);
-    if (ctx->writer) flv_writer_destroy(ctx->writer);
-    if (ctx->muxer) flv_muxer_destroy(ctx->muxer);
+    if (!ctx) return 0;
+    if (ctx->connected && http_flv_streamer_disconnect_impl(ctx) != 0)
+        return -EIO;
+    if (ctx->writer) {
+        flv_writer_destroy(ctx->writer);
+        ctx->writer = NULL;
+    }
+    if (ctx->muxer) {
+        flv_muxer_destroy(ctx->muxer);
+        ctx->muxer = NULL;
+    }
     if (ctx->upload_thread_started) {
         salts_mutex_lock(&ctx->mutex);
         ctx->upload_closed = 1;
         salts_cond_broadcast(&ctx->cond);
         salts_mutex_unlock(&ctx->mutex);
-        (void)salts_thread_join(&ctx->upload_thread);
+        if (salts_thread_join(&ctx->upload_thread) != 0) return -EIO;
         salts_thread_destroy(&ctx->upload_thread);
+        ctx->upload_thread_started = 0;
     }
-    if (ctx->transport) turbo_transport_destroy(ctx->transport);
+    if (ctx->transport) {
+        if (turbo_transport_destroy(ctx->transport) != 0) return -EIO;
+        ctx->transport = NULL;
+    }
     http_flv_clear_queue(ctx);
     if (ctx->queue_initialized) deque_destroy(&ctx->queue);
     if (ctx->sync_initialized) { salts_cond_destroy(&ctx->cond); salts_mutex_destroy(&ctx->mutex); }
     tstr_free(ctx->url);
     free(ctx);
+    return 0;
 }
 
 static void *http_flv_streamer_create(const turbo_streamer_config_t *config) {
@@ -407,11 +419,8 @@ static int http_flv_streamer_connect_impl(void *ctx_ptr) {
     result = ctx->upload_ready ? 0 : ctx->upload_result;
     salts_mutex_unlock(&ctx->mutex);
     if (result != 0) {
-        (void)salts_thread_join(&ctx->upload_thread);
-        salts_thread_destroy(&ctx->upload_thread);
-        ctx->upload_thread_started = 0;
-        flv_writer_destroy(ctx->writer); ctx->writer = NULL; ctx->connected = 0;
-        return result;
+        int cleanup_status = http_flv_streamer_disconnect_impl(ctx);
+        return cleanup_status != 0 ? cleanup_status : result;
     }
     if (ctx->event_callback)
         ctx->event_callback(NULL, TURBO_STREAMER_EVENT_CONNECTED, NULL, ctx->event_user_data);
@@ -423,17 +432,26 @@ static int http_flv_streamer_disconnect_impl(void *ctx_ptr) {
     int result;
     if (!ctx) return -EINVAL;
     if (!ctx->connected) return 0;
-    flv_writer_destroy(ctx->writer);
-    ctx->writer = NULL;
+    if (ctx->writer) {
+        flv_writer_destroy(ctx->writer);
+        ctx->writer = NULL;
+    }
     salts_mutex_lock(&ctx->mutex);
     ctx->upload_closed = 1;
     salts_cond_broadcast(&ctx->cond);
     salts_mutex_unlock(&ctx->mutex);
-    result = salts_thread_join(&ctx->upload_thread);
-    if (result == 0) result = ctx->upload_result;
-    salts_thread_destroy(&ctx->upload_thread);
-    ctx->upload_thread_started = 0;
-    if (ctx->transport) { turbo_transport_destroy(ctx->transport); ctx->transport = NULL; }
+    result = 0;
+    if (ctx->upload_thread_started) {
+        result = salts_thread_join(&ctx->upload_thread);
+        if (result != 0) return result;
+        salts_thread_destroy(&ctx->upload_thread);
+        ctx->upload_thread_started = 0;
+    }
+    result = ctx->upload_result;
+    if (ctx->transport) {
+        if (turbo_transport_destroy(ctx->transport) != 0) return -EIO;
+        ctx->transport = NULL;
+    }
     ctx->connected = 0;
     if (result != 0) return result;
     if (ctx->event_callback)

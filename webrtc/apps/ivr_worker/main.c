@@ -2685,12 +2685,19 @@ int main(int argc, char **argv) {
     media_event_queue_destroy();
     ivr_worker_destroy(g_worker);
     g_worker = NULL;
-    ivr_control_gateway_destroy(g_gateway);
-    g_gateway = NULL;
+    ivr_status_t gateway_destroy_status =
+        ivr_control_gateway_destroy(g_gateway);
+    if (gateway_destroy_status == IVR_OK) {
+        g_gateway = NULL;
+    } else {
+        fprintf(stderr,
+                "ivr_worker: control gateway destroy failed status=%d\n",
+                (int)gateway_destroy_status);
+    }
     reply_queue_destroy();
     management_http_stop();
     control_queue_destroy();
     ivr_worker_health_destroy(&g_health);
     g_health_initialized = 0;
-    return 0;
+    return gateway_destroy_status == IVR_OK ? 0 : 1;
 }

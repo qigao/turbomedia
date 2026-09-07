@@ -282,6 +282,33 @@ spec("RoomService Iris CHTTP H1 WebSocket provider codec") {
         free(encoded);
     }
 
+    it("rejects embedded NUL bytes in canonical text fields") {
+        static const char payload[] =
+            "{\"capability\":\"ivr\",\"dialogId\":\"dialog-a\","
+            "\"roomId\":\"room-a\",\"callId\":\"call-a\","
+            "\"callGeneration\":7,\"operationGeneration\":9,"
+            "\"text\":\"Welcome\"}";
+        iris_provider_limits_t limits = IRIS_PROVIDER_LIMITS_INIT;
+        ProviderCommandV1_view_t view;
+        tbe_var_data_t message_id;
+        size_t encoded_size = 0u;
+        uint8_t *encoded = encode_command(
+            payload, "session-a", "17", TEST_SEMANTIC_FINGERPRINT,
+            &encoded_size);
+
+        check_not_null(encoded);
+        check_true(ProviderCommandV1_view_bind(&view, encoded, encoded_size));
+        check_true(ProviderCommandV1_message_id(&view, &message_id));
+        check_equal(message_id.size, strlen("command-a"));
+        ((uint8_t *)message_id.data)[7] = '\0';
+        check_equal(iris_provider_validate_command(&view, &limits),
+                    SALTS_EPROTO);
+        ((uint8_t *)message_id.data)[7] = 0xffu;
+        check_equal(iris_provider_validate_command(&view, &limits),
+                    SALTS_ECHARSET);
+        free(encoded);
+    }
+
     it("maps canonical room commands to the room bridge schema") {
         static const char payload[] =
             "{\"capability\":\"room\",\"roomId\":\"room-a\","

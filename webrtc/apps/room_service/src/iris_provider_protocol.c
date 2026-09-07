@@ -1,6 +1,7 @@
 #include "iris_provider_protocol.h"
 
 #include "salts_error.h"
+#include "salts_vstr.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -56,7 +57,11 @@ typedef struct iris_provider_envelope_view_s {
 static int iris_provider_text(tbe_var_data_t value, size_t maximum, int required) {
   if (!value.data) return SALTS_EPROTO;
   if (required && value.size == 0u) return SALTS_EPROTO;
-  return value.size <= maximum ? SALTS_OK : SALTS_EMSGSIZE;
+  if (value.size > maximum) return SALTS_EMSGSIZE;
+  if (memchr(value.data, '\0', value.size)) return SALTS_EPROTO;
+  return vstr_utf8_valid(
+             vstr_from_buf((const char *)value.data, value.size))
+             ? SALTS_OK : SALTS_ECHARSET;
 }
 
 static int iris_provider_limits_validate(const iris_provider_limits_t *limits) {
@@ -410,5 +415,3 @@ int iris_provider_validate_session_bound(const ProviderSessionBoundV1_view_t *me
 #undef IRIS_READ_ENVELOPE
 #undef IRIS_READ_FIELD
 #undef IRIS_REQUIRE_VIEW
-
-

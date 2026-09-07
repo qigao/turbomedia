@@ -268,12 +268,12 @@ int example_hls_streaming(void) {
     streaming_coroutine(&stream_ctx);
     
     /* 清理 */
-    turbo_streamer_destroy(streamer);
+    int streamer_destroy_status = turbo_streamer_destroy(streamer);
     turbo_codec_destroy(encoder);
     turbo_codec_registry_shutdown();
     turbo_streamer_registry_shutdown();
     
-    return 0;
+    return streamer_destroy_status == 0 ? 0 : 1;
 }
 
 /* =============================================================================

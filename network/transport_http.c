@@ -1,5 +1,6 @@
 /** TurboMedia HTTP transport backed by Salts CHTTP. */
 #include "turbo_transport.h"
+#include "transport_internal.h"
 
 #include <salts/error_codes.h>
 #include <stdio.h>
@@ -18,13 +19,15 @@ enum {
 };
 
 typedef struct {
-    turbo_transport_config_t config;
+    turbo_transport_base_t base;
     chttp_client owned_client;
     chttp_tls_profile tls_profile;
     chttp_client *client;
     int owns_client;
     int tls_initialized;
     int connected;
+    turbo_transport_event_cb event_callback;
+    void *event_user_data;
     char error_msg[256];
     char *connection_uri;
     char *authority;
@@ -32,6 +35,13 @@ typedef struct {
 
 typedef struct { turbo_transport_read_cb callback; void *user; } upload_source_t;
 typedef struct { turbo_transport_data_cb callback; void *user; } download_sink_t;
+
+static http_transport_impl_t *http_transport_impl(turbo_transport_t *transport) {
+    if (!transport ||
+        turbo_transport_base(transport)->config.type != TURBO_TRANSPORT_HTTP)
+        return NULL;
+    return (http_transport_impl_t *)transport;
+}
 
 static char *http_dup(const char *value) {
     size_t size;
@@ -45,8 +55,8 @@ static char *http_dup(const char *value) {
 
 static char *http_target(const http_transport_impl_t *transport,
                          const char *path) {
-    const char *base = transport && transport->config.path
-                           ? transport->config.path
+    const char *base = transport && transport->base.config.path
+                           ? transport->base.config.path
                            : "";
     const char *suffix = path && path[0] ? path : "/";
     size_t base_size = strlen(base);
@@ -181,11 +191,11 @@ static chttp_response *execute_request(http_transport_impl_t *transport,
     if (!target) return NULL;
     for (int i = 0; i < header_count; i += 2)
         local_headers[count++] = (chttp_header){headers[i], headers[i + 1]};
-    if (transport->config.user_agent && count < HTTP_MAX_HEADER_COUNT)
-        local_headers[count++] = (chttp_header){"User-Agent", transport->config.user_agent};
-    if (transport->config.auth_token && count < HTTP_MAX_HEADER_COUNT) {
+    if (transport->base.config.user_agent && count < HTTP_MAX_HEADER_COUNT)
+        local_headers[count++] = (chttp_header){"User-Agent", transport->base.config.user_agent};
+    if (transport->base.config.auth_token && count < HTTP_MAX_HEADER_COUNT) {
         int written = snprintf(authorization, sizeof(authorization), "Bearer %s",
-                               transport->config.auth_token);
+                               transport->base.config.auth_token);
         if (written < 0 || (size_t)written >= sizeof(authorization)) return NULL;
         local_headers[count++] = (chttp_header){"Authorization", authorization};
     }
@@ -201,8 +211,8 @@ static chttp_response *execute_request(http_transport_impl_t *transport,
         .body_sink = sink,
         .tls = transport->tls_initialized ? &transport->tls_profile : NULL,
         .protocol = CHTTP_HTTP_1_1,
-        .timeout_ms = transport->config.read_timeout_ms > 0
-            ? (uint32_t)transport->config.read_timeout_ms : HTTP_DEFAULT_TIMEOUT_MS
+        .timeout_ms = transport->base.config.read_timeout_ms > 0
+            ? (uint32_t)transport->base.config.read_timeout_ms : HTTP_DEFAULT_TIMEOUT_MS
     };
     response = (chttp_response *)calloc(1, sizeof(*response));
     if (!response) {
@@ -234,7 +244,7 @@ chttp_response *turbo_transport_http_request(turbo_transport_t *transport,
                                               const char *path, const uint8_t *body,
                                               size_t body_size, const char **headers,
                                               int header_count) {
-    return execute_request((http_transport_impl_t *)transport, method, path,
+    return execute_request(http_transport_impl(transport), method, path,
                            body, body_size, NULL, NULL, headers, header_count);
 }
 
@@ -245,7 +255,7 @@ chttp_response *turbo_transport_http_upload_stream(turbo_transport_t *transport,
                                                     void *user_data) {
     upload_source_t state = {callback, user_data};
     chttp_body_source source = {upload_read, &state, content_length, 1};
-    return execute_request((http_transport_impl_t *)transport, TURBO_HTTP_POST,
+    return execute_request(http_transport_impl(transport), TURBO_HTTP_POST,
                            path, NULL, 0, &source, NULL, NULL, 0);
 }
 
@@ -255,7 +265,7 @@ int turbo_transport_http_download_stream(turbo_transport_t *transport,
                                          void *user_data) {
     download_sink_t state = {callback, user_data};
     chttp_body_sink sink = {download_write, &state};
-    chttp_response *response = execute_request((http_transport_impl_t *)transport,
+    chttp_response *response = execute_request(http_transport_impl(transport),
         TURBO_HTTP_GET, path, NULL, 0, NULL, &sink, NULL, 0);
     int success;
     if (!response) return -1;
@@ -272,15 +282,15 @@ turbo_transport_t *turbo_transport_create_http(const turbo_transport_config_t *c
     if (!config) return NULL;
     transport = (http_transport_impl_t *)calloc(1, sizeof(*transport));
     if (!transport) return NULL;
-    transport->config = *config;
-    transport->config.host = http_dup(config->host);
-    transport->config.path = http_dup(config->path);
-    transport->config.user_agent = http_dup(config->user_agent);
-    transport->config.auth_token = http_dup(config->auth_token);
-    if ((config->host && !transport->config.host) ||
-        (config->path && !transport->config.path) ||
-        (config->user_agent && !transport->config.user_agent) ||
-        (config->auth_token && !transport->config.auth_token))
+    transport->base.config = *config;
+    transport->base.config.host = http_dup(config->host);
+    transport->base.config.path = http_dup(config->path);
+    transport->base.config.user_agent = http_dup(config->user_agent);
+    transport->base.config.auth_token = http_dup(config->auth_token);
+    if ((config->host && !transport->base.config.host) ||
+        (config->path && !transport->base.config.path) ||
+        (config->user_agent && !transport->base.config.user_agent) ||
+        (config->auth_token && !transport->base.config.auth_token))
         goto fail;
     if (format_endpoint(transport, config) != SALTS_OK) goto fail;
     if (config->use_tls) {
@@ -293,7 +303,7 @@ turbo_transport_t *turbo_transport_create_http(const turbo_transport_config_t *c
         if (!tls_config.server_name || !tls_config.server_name[0]) {
             /* Bind certificate verification and SNI to the parsed URL host.
                Callers may still provide an explicit name when connecting by IP. */
-            tls_config.server_name = transport->config.host;
+            tls_config.server_name = transport->base.config.host;
         }
         if (tls_config.size != sizeof(tls_config) ||
             chttp_tls_profile_init(&transport->tls_profile, &tls_config) != SALTS_OK)
@@ -317,37 +327,79 @@ fail:
         (void)chttp_tls_profile_destroy(&transport->tls_profile);
     free(transport->connection_uri);
     free(transport->authority);
-    free((void *)transport->config.host);
-    free((void *)transport->config.path);
-    free((void *)transport->config.user_agent);
-    free((void *)transport->config.auth_token);
+    free((void *)transport->base.config.host);
+    free((void *)transport->base.config.path);
+    free((void *)transport->base.config.user_agent);
+    free((void *)transport->base.config.auth_token);
     free(transport);
     return NULL;
 }
 
-void turbo_transport_destroy_http(turbo_transport_t *transport) {
+int turbo_transport_destroy_http(turbo_transport_t *transport) {
     http_transport_impl_t *impl = (http_transport_impl_t *)transport;
-    if (!impl) return;
-    if (impl->owns_client) (void)chttp_client_destroy(&impl->owned_client, HTTP_STOP_TIMEOUT_MS);
-    if (impl->tls_initialized) (void)chttp_tls_profile_destroy(&impl->tls_profile);
+    if (!impl) return -1;
+    if (impl->owns_client) {
+        if (chttp_client_destroy(&impl->owned_client, HTTP_STOP_TIMEOUT_MS) !=
+            SALTS_OK)
+            return -1;
+        memset(&impl->owned_client, 0, sizeof(impl->owned_client));
+        impl->client = NULL;
+        impl->owns_client = 0;
+    }
+    if (impl->tls_initialized) {
+        if (chttp_tls_profile_destroy(&impl->tls_profile) != SALTS_OK)
+            return -1;
+        memset(&impl->tls_profile, 0, sizeof(impl->tls_profile));
+        impl->tls_initialized = 0;
+    }
     free(impl->connection_uri);
     free(impl->authority);
-    free((void *)impl->config.host);
-    free((void *)impl->config.path);
-    free((void *)impl->config.user_agent);
-    free((void *)impl->config.auth_token);
+    free((void *)impl->base.config.host);
+    free((void *)impl->base.config.path);
+    free((void *)impl->base.config.user_agent);
+    free((void *)impl->base.config.auth_token);
     free(impl);
+    return 0;
 }
 
 int turbo_transport_connect_http(turbo_transport_t *transport) {
     http_transport_impl_t *impl = (http_transport_impl_t *)transport;
     if (!impl || !impl->client) return -1;
+    if (impl->connected) return 0;
     impl->connected = 1;
+    if (impl->event_callback)
+        impl->event_callback(transport, TURBO_TRANSPORT_EVENT_CONNECTED, NULL,
+                             impl->event_user_data);
     return 0;
 }
 
-chttp_client *turbo_transport_get_http_client(turbo_transport_t *transport) {
+int turbo_transport_disconnect_http(turbo_transport_t *transport) {
     http_transport_impl_t *impl = (http_transport_impl_t *)transport;
+    if (!impl) return -1;
+    if (!impl->connected) return 0;
+    impl->connected = 0;
+    if (impl->event_callback)
+        impl->event_callback(transport, TURBO_TRANSPORT_EVENT_DISCONNECTED,
+                             NULL, impl->event_user_data);
+    return 0;
+}
+
+int turbo_transport_is_connected_http(turbo_transport_t *transport) {
+    http_transport_impl_t *impl = (http_transport_impl_t *)transport;
+    return impl ? impl->connected : 0;
+}
+
+void turbo_transport_set_event_callback_http(
+    turbo_transport_t *transport, turbo_transport_event_cb callback,
+    void *user_data) {
+    http_transport_impl_t *impl = (http_transport_impl_t *)transport;
+    if (!impl) return;
+    impl->event_callback = callback;
+    impl->event_user_data = user_data;
+}
+
+chttp_client *turbo_transport_get_http_client(turbo_transport_t *transport) {
+    http_transport_impl_t *impl = http_transport_impl(transport);
     return impl ? impl->client : NULL;
 }
 

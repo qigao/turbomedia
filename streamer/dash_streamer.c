@@ -307,14 +307,15 @@ static int dash_convert_video_sample(dash_streamer_ctx_t *ctx, const uint8_t *in
     return 0;
 }
 
-static void dash_streamer_destroy_impl(void *ctx_ptr) {
+static int dash_streamer_destroy_impl(void *ctx_ptr) {
     dash_streamer_ctx_t *ctx = (dash_streamer_ctx_t *)ctx_ptr;
-    if (!ctx) return;
+    if (!ctx) return 0;
     if (ctx->mpd) dash_mpd_destroy(ctx->mpd);
     free(ctx->video_sample);
     tstr_free(ctx->output_dir);
     tstr_free(ctx->base_url);
     free(ctx);
+    return 0;
 }
 
 static void *dash_streamer_create(const turbo_streamer_config_t *config) {

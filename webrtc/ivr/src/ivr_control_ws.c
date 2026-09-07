@@ -3,6 +3,7 @@
 #include "ivr_thread.h"
 
 #include <platform.h>
+#include <salts/clock.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +20,9 @@ enum {
     IVR_CONTROL_WS_SERVER_RESTART_INITIAL_MS = 1000,
     IVR_CONTROL_WS_SERVER_RESTART_MAX_MS = 30000,
     IVR_CONTROL_WS_IDENTITY_CAPACITY = 128,
-    IVR_CONTROL_WS_HANDSHAKE_HEADER_BYTES = 16 * 1024
+    IVR_CONTROL_WS_HANDSHAKE_HEADER_BYTES = 16 * 1024,
+    IVR_CONTROL_WS_CLOSE_POLICY_VIOLATION = 1008,
+    IVR_CONTROL_WS_CLOSE_OVERLOADED = 1013
 };
 
 typedef struct ivr_control_ws_message_s {
@@ -330,7 +333,12 @@ static int ivr_control_ws_client_connect(ivr_control_ws_client_t *client) {
     options.protocol = CHTTP_HTTP_1_1;
     options.subprotocol = IVR_CONTROL_WS_SUBPROTOCOL;
 
-    memset(&client->websocket, 0, sizeof(client->websocket));
+    if (client->websocket.impl) {
+        status = chttp_websocket_client_destroy(&client->websocket,
+                                                client->start_timeout_ms);
+        if (status != SALTS_OK) return status;
+        memset(&client->websocket, 0, sizeof(client->websocket));
+    }
     status = chttp_websocket_client_init(&client->websocket,
                                          &client->websocket_config);
     if (status != SALTS_OK) {
@@ -347,15 +355,16 @@ static int ivr_control_ws_client_connect(ivr_control_ws_client_t *client) {
                 "IVR control WebSocket client failed: stage=connect "
                 "status=%d http_status=%u\n",
                 status, http_status);
-        (void)chttp_websocket_client_destroy(&client->websocket,
-                                             client->start_timeout_ms);
-        memset(&client->websocket, 0, sizeof(client->websocket));
+        if (chttp_websocket_client_destroy(&client->websocket,
+                                           client->start_timeout_ms) ==
+            SALTS_OK)
+            memset(&client->websocket, 0, sizeof(client->websocket));
         return status != SALTS_OK ? status : SALTS_EPROTO;
     }
     return SALTS_OK;
 }
 
-static void ivr_control_ws_client_disconnect(
+static int ivr_control_ws_client_disconnect(
     ivr_control_ws_client_t *client) {
     if (atomic_exchange_explicit(&client->connected, 0,
                                  memory_order_acq_rel)) {
@@ -364,12 +373,15 @@ static void ivr_control_ws_client_disconnect(
         }
     }
     if (client->websocket.impl) {
+        int destroy_status;
         (void)chttp_websocket_client_close(
             &client->websocket, 1000u, NULL, 0u, client->io_timeout_ms);
-        (void)chttp_websocket_client_destroy(&client->websocket,
-                                             client->start_timeout_ms);
+        destroy_status = chttp_websocket_client_destroy(
+            &client->websocket, client->start_timeout_ms);
+        if (destroy_status != SALTS_OK) return destroy_status;
         memset(&client->websocket, 0, sizeof(client->websocket));
     }
+    return SALTS_OK;
 }
 
 static int ivr_control_ws_client_send_front(
@@ -398,6 +410,22 @@ static int ivr_control_ws_client_send_front(
     return status;
 }
 
+static void ivr_control_ws_client_wait_reconnect(
+    ivr_control_ws_client_t *client, uint32_t delay_ms) {
+    uint64_t deadline_ms = salts_monotonic_ms() + delay_ms;
+    ivr_mutex_lock(&client->lock);
+    while (!atomic_load_explicit(&client->stop_requested,
+                                 memory_order_acquire)) {
+        uint64_t now_ms = salts_monotonic_ms();
+        if (now_ms >= deadline_ms) {
+            break;
+        }
+        (void)ivr_cond_timedwait(&client->changed, &client->lock,
+                                 deadline_ms - now_ms);
+    }
+    ivr_mutex_unlock(&client->lock);
+}
+
 static void *ivr_control_ws_client_thread(void *opaque) {
     ivr_control_ws_client_t *client =
         (ivr_control_ws_client_t *)opaque;
@@ -413,7 +441,7 @@ static void *ivr_control_ws_client_thread(void *opaque) {
                     client, ivr_control_ws_status(status));
                 break;
             }
-            ivr_thread_sleep_ms(reconnect_delay);
+            ivr_control_ws_client_wait_reconnect(client, reconnect_delay);
             if (reconnect_delay < client->reconnect_max_ms) {
                 uint64_t next = (uint64_t)reconnect_delay * 2u;
                 reconnect_delay =
@@ -468,13 +496,13 @@ static void *ivr_control_ws_client_thread(void *opaque) {
                 }
             }
         }
-        ivr_control_ws_client_disconnect(client);
+        (void)ivr_control_ws_client_disconnect(client);
         if (!atomic_load_explicit(&client->stop_requested,
                                   memory_order_acquire)) {
-            ivr_thread_sleep_ms(reconnect_delay);
+            ivr_control_ws_client_wait_reconnect(client, reconnect_delay);
         }
     }
-    ivr_control_ws_client_disconnect(client);
+    (void)ivr_control_ws_client_disconnect(client);
     ivr_control_ws_client_signal_start(client, IVR_ESTATE);
     return NULL;
 }
@@ -510,6 +538,10 @@ ivr_status_t ivr_control_ws_client_create(
     if (!client) {
         return IVR_ENOSPC;
     }
+    atomic_init(&client->started, 0);
+    atomic_init(&client->accepting, 0);
+    atomic_init(&client->stop_requested, 0);
+    atomic_init(&client->connected, 0);
     client->uri = ivr_control_ws_copy_string(config->uri);
     client->queue = (ivr_control_ws_message_t *)calloc(
         queue_capacity, sizeof(*client->queue));
@@ -583,10 +615,6 @@ ivr_status_t ivr_control_ws_client_create(
         }
         client->has_tls_profile = 1;
     }
-    atomic_init(&client->started, 0);
-    atomic_init(&client->accepting, 0);
-    atomic_init(&client->stop_requested, 0);
-    atomic_init(&client->connected, 0);
     *out_client = client;
     return IVR_OK;
 }
@@ -654,10 +682,11 @@ ivr_status_t ivr_control_ws_client_send_copy(ivr_control_ws_client_t *client,
     return IVR_OK;
 }
 
-void ivr_control_ws_client_stop(ivr_control_ws_client_t *client) {
-    if (!client || !atomic_exchange_explicit(&client->started, 0,
-                                              memory_order_acq_rel)) {
-        return;
+ivr_status_t ivr_control_ws_client_stop(ivr_control_ws_client_t *client) {
+    if (!client) return IVR_EINVAL;
+    if (!atomic_load_explicit(&client->started, memory_order_acquire) &&
+        !client->thread.handle) {
+        return IVR_OK;
     }
     atomic_store_explicit(&client->accepting, 0, memory_order_release);
     atomic_store_explicit(&client->stop_requested, 1,
@@ -666,27 +695,39 @@ void ivr_control_ws_client_stop(ivr_control_ws_client_t *client) {
     ivr_cond_broadcast(&client->changed);
     ivr_mutex_unlock(&client->lock);
     if (client->thread.handle) {
-        (void)ivr_thread_join(&client->thread);
+        if (ivr_thread_join(&client->thread) != 0) return IVR_ESTATE;
     }
+    atomic_store_explicit(&client->started, 0, memory_order_release);
+    return IVR_OK;
 }
 
-void ivr_control_ws_client_destroy(ivr_control_ws_client_t *client) {
+ivr_status_t ivr_control_ws_client_destroy(ivr_control_ws_client_t *client) {
+    int status;
     if (!client) {
-        return;
+        return IVR_OK;
     }
-    ivr_control_ws_client_stop(client);
+    if (ivr_control_ws_client_stop(client) != IVR_OK) return IVR_ESTATE;
+    status = ivr_control_ws_client_disconnect(client);
+    if (status != SALTS_OK) {
+        return ivr_control_ws_status(status);
+    }
+    if (client->has_tls_profile) {
+        status = chttp_tls_profile_destroy(&client->tls_profile);
+        if (status != SALTS_OK) {
+            return ivr_control_ws_status(status);
+        }
+        memset(&client->tls_profile, 0, sizeof(client->tls_profile));
+        client->has_tls_profile = 0;
+    }
     ivr_control_ws_queue_clear(client);
     free(client->queue);
     client->queue = NULL;
-    if (client->has_tls_profile) {
-        (void)chttp_tls_profile_destroy(&client->tls_profile);
-        client->has_tls_profile = 0;
-    }
     ivr_cond_destroy(&client->changed);
     ivr_mutex_destroy(&client->lock);
     free(client->uri);
     client->uri = NULL;
     free(client);
+    return IVR_OK;
 }
 
 int ivr_control_ws_client_running(const ivr_control_ws_client_t *client) {
@@ -815,14 +856,20 @@ static void ivr_control_ws_server_event(void *context,
         return;
     }
     if (event->kind == CHTTP_WEBSOCKET_EVENT_MESSAGE) {
+        int callback_status;
         if (event->message_type != CHTTP_WEBSOCKET_MESSAGE_BINARY) {
             (void)chttp_websocket_close(websocket, 1003u, NULL, 0u);
             return;
         }
-        if (server->on_message &&
-            server->on_message(server->callback_context, &route, identity,
-                               event->data, event->size) != IVR_OK) {
-            (void)chttp_websocket_close(websocket, 1008u, NULL, 0u);
+        callback_status = server->on_message
+            ? server->on_message(server->callback_context, &route, identity,
+                                 event->data, event->size)
+            : IVR_OK;
+        if (callback_status != IVR_OK) {
+            uint16_t close_code = callback_status == IVR_ENOSPC
+                ? IVR_CONTROL_WS_CLOSE_OVERLOADED
+                : IVR_CONTROL_WS_CLOSE_POLICY_VIOLATION;
+            (void)chttp_websocket_close(websocket, close_code, NULL, 0u);
         }
     } else if (remove && server->on_peer) {
         server->on_peer(server->callback_context, &route, identity, 0);
@@ -855,6 +902,7 @@ ivr_status_t ivr_control_ws_server_create(
     if (!server) {
         return IVR_ENOSPC;
     }
+    atomic_init(&server->started, 0);
     server->host = ivr_control_ws_copy_string(config->host);
     server->path = ivr_control_ws_copy_string(config->path);
     server->port = config->port;
@@ -909,7 +957,6 @@ ivr_status_t ivr_control_ws_server_create(
         ivr_control_ws_server_destroy(server);
         return ivr_control_ws_status(status);
     }
-    atomic_init(&server->started, 0);
     *out_server = server;
     return IVR_OK;
 }
@@ -1020,24 +1067,40 @@ ivr_status_t ivr_control_ws_server_maintain(
     return IVR_OK;
 }
 
-void ivr_control_ws_server_stop(ivr_control_ws_server_t *server) {
-    if (!server || !atomic_exchange_explicit(&server->started, 0,
-                                              memory_order_acq_rel)) {
-        return;
+ivr_status_t ivr_control_ws_server_stop(ivr_control_ws_server_t *server) {
+    int stop_status;
+    int destroy_status;
+    if (!server) {
+        return IVR_EINVAL;
     }
-    (void)chttp_server_stop(&server->server, server->shutdown_timeout_ms);
-    (void)chttp_server_destroy(&server->server);
+    if (!atomic_load_explicit(&server->started, memory_order_acquire)) {
+        return IVR_OK;
+    }
+    stop_status = chttp_server_stop(&server->server,
+                                    server->shutdown_timeout_ms);
+    if (stop_status == SALTS_ETIMEDOUT || stop_status == SALTS_EBUSY)
+        return ivr_control_ws_status(stop_status);
+    destroy_status = chttp_server_destroy(&server->server);
+    if (destroy_status != SALTS_OK)
+        return ivr_control_ws_status(destroy_status);
     memset(&server->server, 0, sizeof(server->server));
+    atomic_store_explicit(&server->started, 0, memory_order_release);
     ivr_control_ws_server_clear_peers(server);
+    return ivr_control_ws_status(stop_status);
 }
 
-void ivr_control_ws_server_destroy(ivr_control_ws_server_t *server) {
+ivr_status_t ivr_control_ws_server_destroy(ivr_control_ws_server_t *server) {
+    ivr_status_t stop_status;
     if (!server) {
-        return;
+        return IVR_OK;
     }
-    ivr_control_ws_server_stop(server);
+    stop_status = ivr_control_ws_server_stop(server);
     if (server->server.impl) {
-        (void)chttp_server_destroy(&server->server);
+        int status = chttp_server_destroy(&server->server);
+        if (status != SALTS_OK) {
+            return stop_status != IVR_OK ? stop_status
+                                         : ivr_control_ws_status(status);
+        }
         memset(&server->server, 0, sizeof(server->server));
     }
     ivr_mutex_destroy(&server->peers_lock);
@@ -1050,6 +1113,7 @@ void ivr_control_ws_server_destroy(ivr_control_ws_server_t *server) {
     free(server->path);
     free(server->host);
     free(server);
+    return IVR_OK;
 }
 
 ivr_status_t ivr_control_ws_server_port(const ivr_control_ws_server_t *server,

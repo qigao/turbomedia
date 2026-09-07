@@ -2557,6 +2557,7 @@ static int bridge_on_control_message(
         ivr_req_queue_push(&b->queue, &clone) != 0) {
         ivr_route_message_cleanup(&clone);
         IVR_BRIDGE_COUNTER_INC(b, drops);
+        return IVR_ENOSPC;
     }
     return IVR_OK;
 }
@@ -2675,17 +2676,20 @@ fail_resources:
     return IVR_ENOSPC;
 }
 
-static void ivr_bridge_abort_start(ivr_room_bridge_t *bridge) {
+static ivr_status_t ivr_bridge_abort_start(ivr_room_bridge_t *bridge) {
+    ivr_status_t endpoint_status;
     /* The worker thread is already running: stop it before failing so a
        caller that only destroys on start failure cannot leak the thread. */
     atomic_store_explicit(&bridge->accepting, 0, memory_order_release);
     ivr_req_queue_close_and_discard(&bridge->queue);
     ivr_mutex_lock(&bridge->endpoint_lock);
-    ivr_control_ws_server_stop(bridge->endpoint);
+    endpoint_status = ivr_control_ws_server_stop(bridge->endpoint);
     ivr_mutex_unlock(&bridge->endpoint_lock);
-    ivr_thread_join(&bridge->thread);
+    if (ivr_thread_join(&bridge->thread) != 0) return IVR_ESTATE;
+    if (endpoint_status != IVR_OK) return endpoint_status;
     ivr_peer_event_queue_clear(&bridge->peer_events);
     peer_and_routes_clear(bridge);
+    return IVR_OK;
 }
 
 ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge) {
@@ -2714,41 +2718,53 @@ ivr_status_t ivr_room_bridge_start(ivr_room_bridge_t *bridge) {
         ivr_control_ws_server_start(bridge->endpoint);
     ivr_mutex_unlock(&bridge->endpoint_lock);
     if (endpoint_status != IVR_OK) {
-        ivr_bridge_abort_start(bridge);
+        (void)ivr_bridge_abort_start(bridge);
         atomic_store(&bridge->started, 0);
         return IVR_ESTATE;
     }
     return IVR_OK;
 }
 
-void ivr_room_bridge_stop(ivr_room_bridge_t *bridge) {
+ivr_status_t ivr_room_bridge_stop(ivr_room_bridge_t *bridge) {
+    ivr_status_t endpoint_status = IVR_OK;
+    int was_started;
     if (!bridge) {
-        return;
+        return IVR_EINVAL;
     }
-    if (atomic_exchange(&bridge->started, 0) == 0) {
-        return; /* not started: idempotent */
+    was_started = atomic_exchange(&bridge->started, 0);
+    if (was_started) {
+        /* Close ingress first. Queue close rejects any callback already in
+           flight; endpoint stop then establishes callback quiescence before
+           owner join. */
+        atomic_store_explicit(&bridge->accepting, 0, memory_order_release);
+        ivr_req_queue_close_and_discard(&bridge->queue);
     }
-    /* Close ingress first. Queue close rejects any callback already in flight;
-       endpoint stop then establishes callback quiescence before owner join. */
-    atomic_store_explicit(&bridge->accepting, 0, memory_order_release);
-    ivr_req_queue_close_and_discard(&bridge->queue);
     ivr_mutex_lock(&bridge->endpoint_lock);
-    ivr_control_ws_server_stop(bridge->endpoint);
+    endpoint_status = ivr_control_ws_server_stop(bridge->endpoint);
     ivr_mutex_unlock(&bridge->endpoint_lock);
-    ivr_thread_join(&bridge->thread);
+    if (bridge->thread.handle) {
+        if (ivr_thread_join(&bridge->thread) != 0) return IVR_ESTATE;
+    }
+    if (endpoint_status != IVR_OK) return endpoint_status;
     ivr_peer_event_queue_clear(&bridge->peer_events);
     peer_and_routes_clear(bridge);
+    return endpoint_status;
 }
 
-void ivr_room_bridge_destroy(ivr_room_bridge_t *bridge) {
+ivr_status_t ivr_room_bridge_destroy(ivr_room_bridge_t *bridge) {
     if (!bridge) {
-        return;
+        return IVR_OK;
     }
     /* Stop and join the worker thread before freeing resources referenced by
        the CHTTP callbacks. */
-    ivr_room_bridge_stop(bridge);
+    {
+        ivr_status_t stop_status = ivr_room_bridge_stop(bridge);
+        if (stop_status != IVR_OK) return stop_status;
+    }
     if (bridge->endpoint) {
-        ivr_control_ws_server_destroy(bridge->endpoint);
+        if (ivr_control_ws_server_destroy(bridge->endpoint) != IVR_OK) {
+            return IVR_ESTATE;
+        }
         bridge->endpoint = NULL;
     }
     ivr_req_queue_destroy(&bridge->queue);
@@ -2772,4 +2788,5 @@ void ivr_room_bridge_destroy(ivr_room_bridge_t *bridge) {
         bridge->codec = NULL;
     }
     free(bridge);
+    return IVR_OK;
 }

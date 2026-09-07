@@ -133,7 +133,7 @@ suite("local HTTP-FLV chunked push") {
     check_equal(flv[3], 1);
     check_true((flv[4] & 0x04) != 0);
 
-    turbo_streamer_destroy(streamer);
+    check_equal(turbo_streamer_destroy(streamer), 0);
     turbo_streamer_registry_shutdown();
     check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);

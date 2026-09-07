@@ -553,14 +553,17 @@ int iris_control_provider_start(iris_control_provider_t *provider) {
     return status == IVR_OK ? SALTS_OK : SALTS_EIO;
 }
 
-void iris_control_provider_stop(iris_control_provider_t *provider) {
+int iris_control_provider_stop(iris_control_provider_t *provider) {
     unsigned attempt;
-    int endpoint_stopped = 0;
-    if (!provider || atomic_exchange_explicit(&provider->stopped, 1,
-                                               memory_order_acq_rel)) {
-        return;
-    }
+    int endpoint_status;
+    if (!provider) return 0;
+    if (atomic_load_explicit(&provider->stopped, memory_order_acquire)) return 0;
     atomic_store_explicit(&provider->accepting, 0, memory_order_release);
+    endpoint_status = provider->endpoint
+        ? ivr_control_ws_client_stop(provider->endpoint)
+        : IVR_OK;
+    atomic_store_explicit(&provider->running, 0, memory_order_release);
+    if (endpoint_status != IVR_OK) return -1;
     salts_mutex_lock(&provider->ack_mutex);
     salts_cond_broadcast(&provider->ack_changed);
     salts_mutex_unlock(&provider->ack_mutex);
@@ -580,8 +583,7 @@ void iris_control_provider_stop(iris_control_provider_t *provider) {
     }
     if (atomic_load_explicit(&provider->callback_count,
                              memory_order_acquire) != 0u) {
-        ivr_control_ws_client_stop(provider->endpoint);
-        endpoint_stopped = 1;
+        return -1;
     }
     if (provider->worker) {
         salts_threadpool_shutdown(provider->worker);
@@ -589,15 +591,18 @@ void iris_control_provider_stop(iris_control_provider_t *provider) {
         salts_threadpool_destroy(provider->worker);
         provider->worker = NULL;
     }
-    if (!endpoint_stopped) ivr_control_ws_client_stop(provider->endpoint);
-    atomic_store_explicit(&provider->running, 0, memory_order_release);
+    atomic_store_explicit(&provider->stopped, 1, memory_order_release);
+    return 0;
 }
 
-void iris_control_provider_destroy(iris_control_provider_t *provider) {
-    if (!provider) return;
-    iris_control_provider_stop(provider);
-    ivr_control_ws_client_destroy(provider->endpoint);
-    provider->endpoint = NULL;
+int iris_control_provider_destroy(iris_control_provider_t *provider) {
+    if (!provider) return 0;
+    if (iris_control_provider_stop(provider) != 0) return -1;
+    if (provider->endpoint) {
+        if (ivr_control_ws_client_destroy(provider->endpoint) != IVR_OK)
+            return -1;
+        provider->endpoint = NULL;
+    }
     iris_control_provider_observation_clear(&provider->pending_observation);
     tstr_freep(&provider->provider_id);
     tstr_freep(&provider->provider_instance_id);
@@ -608,6 +613,7 @@ void iris_control_provider_destroy(iris_control_provider_t *provider) {
     salts_mutex_destroy(&provider->query_mutex);
     salts_mutex_destroy(&provider->offer_mutex);
     free(provider);
+    return 0;
 }
 
 int iris_control_provider_running(const iris_control_provider_t *provider) {

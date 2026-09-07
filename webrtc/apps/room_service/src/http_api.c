@@ -6596,12 +6596,19 @@ int room_service_http_api_start(room_service_http_api_t *api, const char *host, 
         status = chttp_server_start(&api->http);
     }
     if (status != SALTS_OK) {
+        int destroy_status = SALTS_OK;
         fprintf(stderr,
                 "RoomService HTTP failed to %s on %s:%d (status=%d)\n",
                 stage, host, port, status);
         if (api->http_initialized) {
-            (void)chttp_server_destroy(&api->http);
+            destroy_status = chttp_server_destroy(&api->http);
         }
+        if (destroy_status != SALTS_OK) {
+            api->state = ROOM_SERVICE_HTTP_STOPPING;
+            salts_mutex_unlock(&api->lifecycle_mutex);
+            return -1;
+        }
+        memset(&api->http, 0, sizeof(api->http));
         api->http_initialized = 0;
         api->state = ROOM_SERVICE_HTTP_STOPPED;
         salts_mutex_unlock(&api->lifecycle_mutex);
@@ -6612,32 +6619,43 @@ int room_service_http_api_start(room_service_http_api_t *api, const char *host, 
     return 0;
 }
 
-void room_service_http_api_stop(room_service_http_api_t *api) {
+int room_service_http_api_stop(room_service_http_api_t *api) {
+    int stop_status = SALTS_OK;
     if (!api) {
-        return;
+        return 0;
     }
 
     salts_mutex_lock(&api->lifecycle_mutex);
     if (api->state == ROOM_SERVICE_HTTP_STOPPED) {
         salts_mutex_unlock(&api->lifecycle_mutex);
-        return;
+        return 0;
     }
     api->state = ROOM_SERVICE_HTTP_STOPPING;
     if (api->http_initialized) {
-        (void)chttp_server_stop(&api->http, 0u);
-        (void)chttp_server_destroy(&api->http);
+        stop_status = chttp_server_stop(&api->http,
+                                        ROOM_SERVICE_HTTP_TIMEOUT_MS);
+        if (stop_status == SALTS_ETIMEDOUT || stop_status == SALTS_EBUSY) {
+            salts_mutex_unlock(&api->lifecycle_mutex);
+            return -1;
+        }
+        if (chttp_server_destroy(&api->http) != SALTS_OK) {
+            salts_mutex_unlock(&api->lifecycle_mutex);
+            return -1;
+        }
+        memset(&api->http, 0, sizeof(api->http));
     }
     api->http_initialized = 0;
     api->state = ROOM_SERVICE_HTTP_STOPPED;
     salts_mutex_unlock(&api->lifecycle_mutex);
+    return stop_status == SALTS_OK || stop_status == SALTS_EALREADY ? 0 : -1;
 }
 
-void room_service_http_api_destroy(room_service_http_api_t *api) {
+int room_service_http_api_destroy(room_service_http_api_t *api) {
     if (!api) {
-        return;
+        return 0;
     }
 
-    room_service_http_api_stop(api);
+    if (room_service_http_api_stop(api) != 0) return -1;
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     if (g_room_service_http_api == api) {
         g_room_service_http_api = NULL;
@@ -6648,6 +6666,7 @@ void room_service_http_api_destroy(room_service_http_api_t *api) {
     }
     salts_mutex_destroy(&api->lifecycle_mutex);
     free(api);
+    return 0;
 }
 
 char *room_service_http_api_build_room_diagnostic(room_service_app_server_t *server,

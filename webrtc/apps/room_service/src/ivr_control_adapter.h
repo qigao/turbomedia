@@ -197,8 +197,8 @@ ivr_status_t ivr_control_adapter_create(turbo_room_service_t *service,
                                     const ivr_control_adapter_config_t *config,
                                     ivr_control_adapter_t **out_adapter);
 ivr_status_t ivr_control_adapter_start(ivr_control_adapter_t *adapter);
-void ivr_control_adapter_stop(ivr_control_adapter_t *adapter);
-void ivr_control_adapter_destroy(ivr_control_adapter_t *adapter);
+ivr_status_t ivr_control_adapter_stop(ivr_control_adapter_t *adapter);
+ivr_status_t ivr_control_adapter_destroy(ivr_control_adapter_t *adapter);
 
 /* Apply one decoded IVR command to the authoritative aggregate and fill the
    result (status_code 0 = applied; negative ivr_status_t error). Pure host

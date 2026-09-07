@@ -68,7 +68,7 @@ ivr_status_t ivr_control_gateway_create(const ivr_control_gateway_config_t *conf
 /* Start the client connection and receive loop. Required before send. */
 ivr_status_t ivr_control_gateway_start(ivr_control_gateway_t *gateway);
 
-void ivr_control_gateway_destroy(ivr_control_gateway_t *gateway);
+ivr_status_t ivr_control_gateway_destroy(ivr_control_gateway_t *gateway);
 
 /* Encode one command as a TIVR frame (header + BIN payload). Pure function:
    no network is touched, so it is unit-testable without a CHTTP H1 WebSocket peer.

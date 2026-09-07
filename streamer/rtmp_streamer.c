@@ -330,26 +330,29 @@ static void *rtmp_streamer_create(const turbo_streamer_config_t *config) {
     return ctx;
 }
 
-static void rtmp_streamer_destroy_impl(void *ctx_ptr) {
+static int rtmp_streamer_disconnect_impl(void *ctx_ptr);
+
+static int rtmp_streamer_destroy_impl(void *ctx_ptr) {
     rtmp_streamer_ctx_t *ctx = (rtmp_streamer_ctx_t *)ctx_ptr;
-    if (!ctx) return;
-    
-    /* 清理 RTMP */
+    if (!ctx) return 0;
+
+    if (ctx->connected && rtmp_streamer_disconnect_impl(ctx) != 0) return -1;
+    if (ctx->transport) {
+        if (turbo_transport_destroy(ctx->transport) != 0) return -1;
+        ctx->transport = NULL;
+    }
     if (ctx->rtmp) {
         rtmp_client_destroy(ctx->rtmp);
+        ctx->rtmp = NULL;
     }
-    
-    /* 清理传输层 */
-    if (ctx->transport) {
-        turbo_transport_destroy(ctx->transport);
-    }
-    
+
     free(ctx->url);
     free(ctx->app);
     free(ctx->stream_key);
     free(ctx->metadata_title);
     free(ctx->metadata_author);
     free(ctx);
+    return 0;
 }
 
 static int rtmp_streamer_connect_impl(void *ctx_ptr) {
@@ -434,16 +437,15 @@ static int rtmp_streamer_disconnect_impl(void *ctx_ptr) {
     /* 停止推流 */
     if (ctx->published && ctx->rtmp) {
         if (0 != rtmp_client_stop(ctx->rtmp)) return -1;
+        ctx->published = 0;
     }
     
     /* 断开连接 */
     if (ctx->transport) {
-        turbo_transport_disconnect(ctx->transport);
+        if (turbo_transport_disconnect(ctx->transport) != 0) return -1;
     }
     
     ctx->connected = 0;
-    ctx->published = 0;
-    
     return 0;
 }
 

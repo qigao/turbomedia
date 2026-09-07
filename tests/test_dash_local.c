@@ -163,7 +163,7 @@ static void test_dash_h264_pipeline(void) {
 
 cleanup:
     if (connected && streamer) turbo_streamer_disconnect(streamer);
-    turbo_streamer_destroy(streamer);
+    check_equal(turbo_streamer_destroy(streamer), 0);
     turbo_codec_destroy(encoder);
     turbo_streamer_registry_shutdown();
     turbo_codec_registry_shutdown();
