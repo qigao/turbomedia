@@ -24,6 +24,11 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot $BuildDirectory))
 $workRoot = [IO.Path]::GetFullPath((Join-Path $buildRoot 'screen-capture-apk'))
+$androidAbi = if ($Preset -match '^android-(arm64-v8a|x86_64|x86)-') {
+    $Matches[1]
+} else {
+    throw "Cannot derive Android ABI from preset: $Preset"
+}
 $repoPrefix = $repoRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
 if (-not $workRoot.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to prepare APK outside the repository: $workRoot"
@@ -104,7 +109,7 @@ foreach ($runtimeLibrary in $runtimeLibraries) {
 $classesDirectory = Join-Path $workRoot 'classes'
 $dexDirectory = Join-Path $workRoot 'dex'
 $stageDirectory = Join-Path $workRoot 'stage'
-$nativeDirectory = Join-Path $stageDirectory 'lib/arm64-v8a'
+$nativeDirectory = Join-Path $stageDirectory "lib/$androidAbi"
 New-Item -ItemType Directory -Path $classesDirectory, $dexDirectory, $nativeDirectory | Out-Null
 
 & $javac -encoding UTF-8 -source 8 -target 8 -classpath $androidJar -d $classesDirectory `

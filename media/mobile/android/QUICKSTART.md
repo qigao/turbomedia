@@ -59,7 +59,8 @@ dependencies {
 
 ```bash
 # Copy TurboMedia plus the Salts capture/core runtime dependency closure.
-cp -r install/*/lib/* app/src/main/jniLibs/
+mkdir -p app/src/main/jniLibs/<abi>
+cp install/<abi>/lib/*.so app/src/main/jniLibs/<abi>/
 cp "$SALTS_UTILS_ROOT/lib/libsalts_capture.so" app/src/main/jniLibs/<abi>/
 cp "$SALTS_ROOT/lib/libsalts.so" app/src/main/jniLibs/<abi>/
 ```
