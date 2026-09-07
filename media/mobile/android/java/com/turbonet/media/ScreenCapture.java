@@ -26,6 +26,7 @@ public class ScreenCapture {
     private MediaProjectionManager projectionManager;
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
+    private boolean nativeStarted;
     
     private long nativeHandle;
     private int width;
@@ -117,11 +118,11 @@ public class ScreenCapture {
      * Must be called after permission is granted
      */
     public boolean start() {
-        if (virtualDisplay != null) {
+        if (nativeStarted) {
             return true;
         }
         try {
-            return attachVirtualDisplayForTest() && startNativeForTest();
+            return attachVirtualDisplayForTest() && startNative();
         } catch (Exception e) {
             if (callback != null) {
                 callback.onError("Exception: " + e.getMessage());
@@ -169,7 +170,7 @@ public class ScreenCapture {
         return true;
     }
 
-    boolean startNativeForTest() {
+    private boolean startNative() {
         if (virtualDisplay == null) {
             if (callback != null) {
                 callback.onError("VirtualDisplay not attached");
@@ -186,6 +187,8 @@ public class ScreenCapture {
             return false;
         }
 
+        nativeStarted = true;
+
         if (callback != null) {
             callback.onStarted();
         }
@@ -197,9 +200,10 @@ public class ScreenCapture {
      * Stop screen capture
      */
     public void stop() {
-        boolean wasActive = virtualDisplay != null || mediaProjection != null;
+        boolean wasActive = nativeStarted || virtualDisplay != null || mediaProjection != null;
         VirtualDisplay display = virtualDisplay;
         MediaProjection projection = mediaProjection;
+        nativeStarted = false;
         virtualDisplay = null;
         mediaProjection = null;
 

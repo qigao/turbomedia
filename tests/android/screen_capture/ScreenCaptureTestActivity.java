@@ -22,6 +22,7 @@ public final class ScreenCaptureTestActivity extends Activity
     private TextView statusView;
     private long deadlineMs;
     private long stoppedFrameCount;
+    private int startedCallbackCount;
     private boolean finished;
 
     @Override
@@ -71,6 +72,7 @@ public final class ScreenCaptureTestActivity extends Activity
 
     @Override
     public void onStarted() {
+        startedCallbackCount++;
         Log.i(TAG, "VirtualDisplay and native capture started");
     }
 
@@ -91,6 +93,14 @@ public final class ScreenCaptureTestActivity extends Activity
 
         long frameCount = capture.getCapturedFrameCountForTest();
         if (frameCount > 0) {
+            if (!capture.start()) {
+                fail("Repeated public start returned false");
+                return;
+            }
+            if (startedCallbackCount != 1) {
+                fail("Repeated public start emitted " + startedCallbackCount + " start callbacks");
+                return;
+            }
             capture.stop();
             stoppedFrameCount = capture.getCapturedFrameCountForTest();
             deadlineMs = android.os.SystemClock.uptimeMillis() + LIFECYCLE_QUIET_MS;
@@ -124,12 +134,12 @@ public final class ScreenCaptureTestActivity extends Activity
         }
 
         try {
-            if (!capture.startNativeForTest()) {
-                fail("Native screen capture start returned false");
+            if (!capture.start()) {
+                fail("Public screen capture start returned false");
                 return;
             }
         } catch (Exception error) {
-            fail("Native screen capture start failed: " + error.getMessage());
+            fail("Public screen capture start failed: " + error.getMessage());
             return;
         }
         statusView.setText("Native capture started; waiting for an I420 frame…");
