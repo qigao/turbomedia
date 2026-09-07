@@ -130,20 +130,6 @@ endfunction()
 add_subdirectory(tools)
 include(FindTools)
 
-foreach(_turbomedia_dependency_root IN ITEMS
-        SALTS_ROOT SALTS_UTILS_ROOT SALTSNET_ROOT
-        TURBODB_ROOT RULES_FORGE_ROOT)
-  if(NOT DEFINED ENV{${_turbomedia_dependency_root}} OR
-     "$ENV{${_turbomedia_dependency_root}}" STREQUAL "")
-    message(FATAL_ERROR
-            "Required dependency root is not defined: ${_turbomedia_dependency_root}")
-  endif()
-  if(NOT IS_DIRECTORY "$ENV{${_turbomedia_dependency_root}}")
-    message(FATAL_ERROR
-            "${_turbomedia_dependency_root} is not a directory: $ENV{${_turbomedia_dependency_root}}")
-  endif()
-endforeach()
-
 find_package(Threads REQUIRED)
 find_package(Salts CONFIG REQUIRED
              PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH)

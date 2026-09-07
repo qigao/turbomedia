@@ -98,6 +98,29 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   message(STATUS "Added test: ${TEST_TARGET_NAME}")
 endforeach()
 
+if(NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  cmake_path(CONVERT "$ENV{INCLUDE}" TO_CMAKE_PATH_LIST
+             TURBO_MEDIA_PACKAGE_TEST_INCLUDE NORMALIZE)
+  cmake_path(CONVERT "$ENV{LIB}" TO_CMAKE_PATH_LIST
+             TURBO_MEDIA_PACKAGE_TEST_LIB NORMALIZE)
+  file(TO_CMAKE_PATH "$ENV{SALTS_ROOT}" TURBO_MEDIA_PACKAGE_TEST_SALTS_ROOT)
+  file(TO_CMAKE_PATH "$ENV{SALTS_UTILS_ROOT}"
+       TURBO_MEDIA_PACKAGE_TEST_SALTS_UTILS_ROOT)
+  file(TO_CMAKE_PATH "$ENV{SALTSNET_ROOT}"
+       TURBO_MEDIA_PACKAGE_TEST_SALTSNET_ROOT)
+  configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/verify_capture_package.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/verify_capture_package.cmake
+    @ONLY)
+  add_test(
+    NAME turbo_media_package_capture_contract
+    COMMAND ${CMAKE_COMMAND} -DBUILD_CONFIG=$<CONFIG>
+            -P ${CMAKE_CURRENT_BINARY_DIR}/verify_capture_package.cmake)
+  set_tests_properties(
+    turbo_media_package_capture_contract
+    PROPERTIES RUN_SERIAL TRUE TIMEOUT 300 LABELS "package;capture")
+endif()
+
 # 打印测试摘要
 list(LENGTH TEST_SOURCES TEST_COUNT)
 message(STATUS "Total tests configured: ${TEST_COUNT}")

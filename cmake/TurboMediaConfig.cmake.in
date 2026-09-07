@@ -2,31 +2,10 @@
 
 include(CMakeFindDependencyMacro)
 
-if(NOT DEFINED ENV{SALTS_ROOT} OR "$ENV{SALTS_ROOT}" STREQUAL "")
-  set(TurboMedia_FOUND FALSE)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "SALTS_ROOT must name the installed Salts profile")
-  return()
-endif()
-if(NOT DEFINED ENV{SALTS_UTILS_ROOT} OR "$ENV{SALTS_UTILS_ROOT}" STREQUAL "")
-  set(TurboMedia_FOUND FALSE)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "SALTS_UTILS_ROOT must name the installed SaltsUtils profile")
-  return()
-endif()
-if(NOT DEFINED ENV{SALTSNET_ROOT} OR "$ENV{SALTSNET_ROOT}" STREQUAL "")
-  set(TurboMedia_FOUND FALSE)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "SALTSNET_ROOT must name the installed SaltsNet profile")
-  return()
-endif()
-file(TO_CMAKE_PATH "$ENV{SALTS_ROOT}" TURBO_MEDIA_SALTS_ROOT_PATH)
-file(TO_CMAKE_PATH "$ENV{SALTS_UTILS_ROOT}" TURBO_MEDIA_SALTS_UTILS_ROOT_PATH)
-file(TO_CMAKE_PATH "$ENV{SALTSNET_ROOT}" TURBO_MEDIA_SALTSNET_ROOT_PATH)
 find_dependency(Salts CONFIG REQUIRED
-                PATHS "${TURBO_MEDIA_SALTS_ROOT_PATH}" NO_DEFAULT_PATH)
+                PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH)
 find_dependency(SaltsUtils CONFIG REQUIRED
-                PATHS "${TURBO_MEDIA_SALTS_UTILS_ROOT_PATH}" NO_DEFAULT_PATH)
+                PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH)
 if(NOT TARGET Salts::Capture)
   set(TurboMedia_FOUND FALSE)
   set(TurboMedia_NOT_FOUND_MESSAGE
@@ -34,7 +13,7 @@ if(NOT TARGET Salts::Capture)
   return()
 endif()
 find_dependency(SaltsNet CONFIG REQUIRED
-                PATHS "${TURBO_MEDIA_SALTSNET_ROOT_PATH}" NO_DEFAULT_PATH)
+                PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH)
 
 
 # The exported target file contains all TurboMedia components, but FFmpeg is

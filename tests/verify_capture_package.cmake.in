@@ -1,0 +1,105 @@
+cmake_minimum_required(VERSION 3.20)
+
+set(package_build_root "@CMAKE_BINARY_DIR@")
+cmake_path(ABSOLUTE_PATH package_build_root NORMALIZE)
+set(package_test_root "${package_build_root}/capture-package-test")
+cmake_path(IS_PREFIX package_build_root "${package_test_root}" NORMALIZE
+           package_test_is_in_build)
+if(NOT package_test_is_in_build)
+  message(FATAL_ERROR "Capture package test directory escaped the build tree")
+endif()
+file(REMOVE_RECURSE "${package_test_root}")
+
+if("@MSVC@")
+  set(ENV{INCLUDE} "@TURBO_MEDIA_PACKAGE_TEST_INCLUDE@")
+  set(ENV{LIB} "@TURBO_MEDIA_PACKAGE_TEST_LIB@")
+endif()
+set(ENV{SALTS_ROOT} "@TURBO_MEDIA_PACKAGE_TEST_SALTS_ROOT@")
+set(ENV{SALTS_UTILS_ROOT} "@TURBO_MEDIA_PACKAGE_TEST_SALTS_UTILS_ROOT@")
+set(ENV{SALTSNET_ROOT} "@TURBO_MEDIA_PACKAGE_TEST_SALTSNET_ROOT@")
+
+set(package_prefix "${package_test_root}/prefix")
+set(positive_build "${package_test_root}/positive-build")
+set(missing_build "${package_test_root}/missing-capture-build")
+set(consumer_source "@CMAKE_CURRENT_SOURCE_DIR@/capture_package_consumer")
+set(missing_salts_utils_root "${consumer_source}/fixtures/missing_capture")
+
+function(run_checked description)
+  execute_process(
+    COMMAND ${ARGN}
+    RESULT_VARIABLE command_result
+    OUTPUT_VARIABLE command_stdout
+    ERROR_VARIABLE command_stderr)
+  if(NOT command_result EQUAL 0)
+    message(FATAL_ERROR
+            "${description} failed (${command_result})\n${command_stdout}\n${command_stderr}")
+  endif()
+endfunction()
+
+set(install_command "@CMAKE_COMMAND@" --install "@CMAKE_BINARY_DIR@"
+                    --prefix "${package_prefix}")
+if(NOT BUILD_CONFIG STREQUAL "")
+  list(APPEND install_command --config "${BUILD_CONFIG}")
+endif()
+run_checked("TurboMedia package install" ${install_command})
+
+set(configure_common
+    -S "${consumer_source}"
+    -G "@CMAKE_GENERATOR@"
+    "-DCMAKE_C_COMPILER=@CMAKE_C_COMPILER@"
+    "-DCMAKE_MAKE_PROGRAM=@CMAKE_MAKE_PROGRAM@"
+    "-DTurboMedia_DIR=${package_prefix}/@CMAKE_INSTALL_LIBDIR@/cmake/TurboMedia")
+if(NOT "@CMAKE_RC_COMPILER@" STREQUAL "")
+  list(APPEND configure_common "-DCMAKE_RC_COMPILER=@CMAKE_RC_COMPILER@")
+endif()
+if(NOT "@CMAKE_MT@" STREQUAL "")
+  list(APPEND configure_common "-DCMAKE_MT=@CMAKE_MT@")
+endif()
+if(NOT "@CMAKE_BUILD_TYPE@" STREQUAL "")
+  list(APPEND configure_common "-DCMAKE_BUILD_TYPE=@CMAKE_BUILD_TYPE@")
+endif()
+if(NOT "@CMAKE_TOOLCHAIN_FILE@" STREQUAL "")
+  list(APPEND configure_common "-DCMAKE_TOOLCHAIN_FILE=@CMAKE_TOOLCHAIN_FILE@")
+endif()
+if(NOT "@VCPKG_TARGET_TRIPLET@" STREQUAL "")
+  list(APPEND configure_common "-DVCPKG_TARGET_TRIPLET=@VCPKG_TARGET_TRIPLET@"
+                               "-DVCPKG_MANIFEST_MODE=OFF")
+endif()
+
+run_checked(
+  "Capture package consumer configure"
+  "@CMAKE_COMMAND@" ${configure_common} -B "${positive_build}")
+
+set(build_command "@CMAKE_COMMAND@" --build "${positive_build}" --parallel 1)
+if(NOT BUILD_CONFIG STREQUAL "")
+  list(APPEND build_command --config "${BUILD_CONFIG}")
+endif()
+run_checked("Capture package consumer build" ${build_command})
+
+if(WIN32)
+  set(path_separator ";")
+else()
+  set(path_separator ":")
+endif()
+set(original_path "$ENV{PATH}")
+set(ENV{PATH}
+    "${package_prefix}/@CMAKE_INSTALL_BINDIR@${path_separator}$ENV{SALTS_ROOT}/@CMAKE_INSTALL_BINDIR@${path_separator}$ENV{SALTS_UTILS_ROOT}/@CMAKE_INSTALL_BINDIR@${path_separator}${original_path}")
+run_checked(
+  "Capture package consumer run"
+  "${positive_build}/turbo_media_capture_package_consumer@CMAKE_EXECUTABLE_SUFFIX@")
+set(ENV{PATH} "${original_path}")
+
+set(original_salts_utils_root "$ENV{SALTS_UTILS_ROOT}")
+set(ENV{SALTS_UTILS_ROOT} "${missing_salts_utils_root}")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" ${configure_common} -B "${missing_build}"
+  RESULT_VARIABLE missing_result
+  OUTPUT_VARIABLE missing_stdout
+  ERROR_VARIABLE missing_stderr)
+set(ENV{SALTS_UTILS_ROOT} "${original_salts_utils_root}")
+set(missing_output "${missing_stdout}\n${missing_stderr}")
+if(missing_result EQUAL 0 OR
+   NOT missing_output MATCHES "does not export Salts::Capture")
+  message(FATAL_ERROR
+          "Missing-Capture configure did not fail with the Salts package contract\n${missing_output}")
+endif()

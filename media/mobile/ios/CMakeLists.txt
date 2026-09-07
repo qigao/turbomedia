@@ -1,5 +1,4 @@
 set(TURBO_MEDIA_MOBILE_ROOT ${CMAKE_CURRENT_LIST_DIR}/..)
-set(TURBO_MEDIA_ROOT ${CMAKE_CURRENT_LIST_DIR}/../..)
 
 add_library(
   turbo_media_ios STATIC
