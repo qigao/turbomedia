@@ -11,6 +11,20 @@
     "outcome": { "enum": ["PASS", "FAIL", "INCOMPLETE", "ERROR"] },
     "started_at": { "type": "string", "minLength": 1 },
     "finished_at": { "type": "string", "minLength": 1 },
+    "manifest_summary": { "type": "object" },
+    "environment": { "type": "object" },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "PASS", "FAIL", "INCOMPLETE", "ERROR"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0, "$comment": "limits:maximum=MAX_CASES" },
+        "PASS": { "type": "integer", "minimum": 0, "$comment": "limits:maximum=MAX_CASES" },
+        "FAIL": { "type": "integer", "minimum": 0, "$comment": "limits:maximum=MAX_CASES" },
+        "INCOMPLETE": { "type": "integer", "minimum": 0, "$comment": "limits:maximum=MAX_CASES" },
+        "ERROR": { "type": "integer", "minimum": 0, "$comment": "limits:maximum=MAX_CASES" }
+      }
+    },
     "cases": {
       "type": "array",
       "$comment": "limits:maxItems=MAX_CASES",
@@ -23,7 +37,53 @@
           "outcome": { "enum": ["PASS", "FAIL", "INCOMPLETE", "ERROR"] },
           "started_at": { "type": "string", "minLength": 1 },
           "finished_at": { "type": "string", "minLength": 1 },
-          "evidence_id": { "type": "string", "minLength": 1 }
+          "evidence_id": { "type": "string", "minLength": 1 },
+          "browser": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["requested", "observed"],
+            "properties": {
+              "requested": { "type": "object" },
+              "observed": { "type": "object" }
+            }
+          },
+          "candidate_types": { "type": "object" },
+          "selected_pair": { "type": "object" },
+          "phase_timestamps": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "minLength": 1 }
+          },
+          "thresholds": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["inputs", "results"],
+            "properties": {
+              "inputs": { "type": "object" },
+              "results": {
+                "type": "object",
+                "required": ["outcome"],
+                "properties": { "outcome": { "enum": ["PASS", "FAIL", "INCOMPLETE", "ERROR"] } }
+              }
+            }
+          },
+          "stale_event_count": { "type": "integer", "minimum": 0 },
+          "primary_evidence": {
+            "anyOf": [{ "type": "object" }, { "type": "string" }, { "type": "null" }]
+          },
+          "cleanup_evidence": { "type": "array" },
+          "artifact_hashes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "size_bytes", "sha256"],
+              "properties": {
+                "path": { "type": "string", "minLength": 1 },
+                "size_bytes": { "type": "integer", "minimum": 0 },
+                "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+              }
+            }
+          }
         }
       }
     }
