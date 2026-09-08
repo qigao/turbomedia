@@ -5,13 +5,15 @@ const test = require('node:test');
 const { startFakeSfuServer } = require('./fixtures/fake_sfu_server');
 const { createRunIdentity, createCaseIdentity } = require('../src/ids');
 const { issueSfuToken } = require('../src/providers');
+const { createHttpClient } = require('../src/http_client');
 
 const context = Object.freeze({
   ...createCaseIdentity(createRunIdentity(() => 0, () => 'sfu', 'a'.repeat(64)), { case_key: 'chrome-relay' }, 0),
   room_id: 'room-a', publisher_id: 'publisher-a', viewer_id: 'viewer-a', publisher_session_id: 'publisher-session',
 });
 function token(scope, participant = context.publisher_id) {
-  return { schema_version: 1, provider_id: 'fake', token_id: scope, audience: 'turbomedia-sfu-control',
+  const audience = scope === 'sfu.media.delete' ? 'turbomedia-sfu-media' : 'turbomedia-sfu-control';
+  return { schema_version: 1, provider_id: 'fake', token_id: scope, audience,
     scope: [scope], subject: 'acceptance', binding: { room_id: context.room_id, participant_id: participant },
     issued_at: '2026-09-08T00:00:00Z', expires_at: '2026-09-08T01:00:00Z', token: `secret-${scope}-${participant}` };
 }
@@ -77,6 +79,8 @@ test('SFU lifecycle orders health ready baseline attach tracks subscriptions sta
   assert.equal(server.requests.filter((r) => r.url.includes('webrtc_sessions')).length, 4);
   assert.ok(!JSON.stringify(server.requests).includes('secret-'));
   assert.ok(server.requests.every((request) => request.token_outside_authorization === false));
+  assert.ok(server.requests.filter((request) => request.body?.type === 'set_track_subscription')
+    .every((request) => request.published_track_count_at_request === 2));
 });
 
 test('SFU rejects wrong mutation scope and never treats an unknown resource 404 as cleanup success', async (t) => {
@@ -93,6 +97,51 @@ test('SFU rejects wrong mutation scope and never treats an unknown resource 404 
   server.fault({ status: 503, body: 'failure', type: 'text/plain' });
   await assert.rejects(adapter.deleteMediaResource(publisher, deleteToken), { code: 'HTTP_STATUS', status: 503 });
 });
+
+test('SFU DELETE rejects a scope-correct token with the control audience', async (t) => {
+  const wrongAudience = { ...deleteToken, audience: 'turbomedia-sfu-control', token: 'secret-wrong-delete-audience' };
+  const { server, adapter } = await setup(t, { tokens: [writeToken, deleteToken, wrongAudience] });
+  await attached(adapter);
+  server.createMedia(publisher);
+  await assert.rejects(adapter.deleteMediaResource(publisher, wrongAudience), { code: 'HTTP_STATUS', status: 401 });
+  assert.equal((await adapter.getWebRtcSession(context, writeToken, publisher.session_id)).session_id, publisher.session_id);
+  assert.equal((await adapter.deleteMediaResource(publisher, deleteToken)).status, 204);
+});
+
+test('SFU control mutation rejects a scope-correct token with the media audience', async (t) => {
+  const wrongAudience = { ...writeToken, audience: 'turbomedia-sfu-media', token: 'secret-wrong-control-audience' };
+  const { adapter } = await setup(t, { tokens: [writeToken, wrongAudience] });
+  await adapter.preflight();
+  await adapter.captureBaseline();
+  await assert.rejects(adapter.attachRoom(context, wrongAudience), { code: 'HTTP_STATUS', status: 401 });
+  await adapter.attachRoom(context, writeToken);
+});
+
+for (const [name, trackIds, expectedRelayCount] of [
+  ['unknown track IDs', ['unknown-audio', 'unknown-video'], 0],
+  ['actual registered track IDs', ['publisher-a-audio', 'publisher-a-video-1'], 2],
+]) {
+  test(`SFU accepts pending ${name} subscriptions but only matching registered tracks relay`, async (t) => {
+    const { server, adapter } = await setup(t, { trackDelayPolls: 2 });
+    await attached(adapter);
+    const client = createHttpClient({ baseUrl: server.baseUrl });
+    // Characterize the existing wire boundary: unlike the acceptance adapter,
+    // the SFU accepts desired subscriptions before sender/viewer provisioning.
+    for (const trackId of trackIds) {
+      const response = await client.request({ segments: ['api', 'v1', 'commands'], method: 'POST',
+        token: writeToken.token, body: { type: 'set_track_subscription', room_id: context.room_id,
+          receiver_participant_id: context.viewer_id, track_id: trackId, enabled: true } });
+      assert.equal(response.status, 200);
+      assert.equal(response.body.ok, true);
+    }
+    server.createMedia(publisher);
+    await adapter.waitForPublishedTracks(context, writeToken, ['audio', 'video']);
+    server.createMedia(viewer);
+    const session = await adapter.getWebRtcSession(context, writeToken, viewer.session_id);
+    assert.equal(session.relay_track_count, expectedRelayCount);
+    assert.equal(session.remote_frame_count, 0);
+  });
+}
 
 for (const [name, fault, code] of [
   ['wrong content type', { body: '{}', type: 'text/html' }, 'HTTP_CONTENT_TYPE'],
