@@ -193,7 +193,7 @@ int sfu_node_app_config_copy(sfu_node_app_config_t *destination,
 }
 
 static int sfu_node_config_apply_server(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     sfu_node_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -226,7 +226,7 @@ static int sfu_node_config_apply_server(
 }
 
 static int sfu_node_config_apply_capacity(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     sfu_node_app_config_t *config) {
     static const char *const allowed[] = {"max_rooms", "default_room_capacity"};
 
@@ -245,7 +245,7 @@ static int sfu_node_config_apply_capacity(
 }
 
 static int sfu_node_config_apply_control(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     sfu_node_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {"token"};
@@ -264,7 +264,7 @@ static int sfu_node_config_apply_control(
 }
 
 static int sfu_node_config_apply_media(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     sfu_node_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {"access_token"};
@@ -283,7 +283,7 @@ static int sfu_node_config_apply_media(
 }
 
 static int sfu_node_config_apply_auth(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     sfu_node_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -326,7 +326,7 @@ static int sfu_node_config_apply_auth(
 }
 
 static int sfu_node_config_apply_ice(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     sfu_node_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -354,7 +354,7 @@ static int sfu_node_config_apply_ice(
 }
 
 static int sfu_node_config_apply_runtime(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     sfu_node_app_config_t *config) {
     static const char *const allowed[] = {"dry_run"};
 
@@ -371,7 +371,7 @@ static int sfu_node_config_apply_runtime(
 }
 
 static int sfu_node_config_apply_logging(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     sfu_node_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {"level"};
@@ -397,14 +397,14 @@ int sfu_node_app_config_load(sfu_node_app_config_t *config, const char *filename
     rtc_app_toml_document_t document;
     rtc_app_config_storage_t *storage = NULL;
     rtc_app_config_storage_t *old_storage;
-    turbo_toml_t *server = NULL;
-    turbo_toml_t *capacity = NULL;
-    turbo_toml_t *control = NULL;
-    turbo_toml_t *media = NULL;
-    turbo_toml_t *auth = NULL;
-    turbo_toml_t *ice = NULL;
-    turbo_toml_t *runtime = NULL;
-    turbo_toml_t *logging = NULL;
+    toml_table_t *server = NULL;
+    toml_table_t *capacity = NULL;
+    toml_table_t *control = NULL;
+    toml_table_t *media = NULL;
+    toml_table_t *auth = NULL;
+    toml_table_t *ice = NULL;
+    toml_table_t *runtime = NULL;
+    toml_table_t *logging = NULL;
     sfu_node_app_config_t candidate;
     int result = -1;
 

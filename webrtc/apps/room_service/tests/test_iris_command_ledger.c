@@ -1,8 +1,8 @@
 #include "iris_command_ledger.h"
 
 #include <tinytest.h>
-#include <turbo_error.h>
-#include <turbo_thread.h>
+#include <salts_error.h>
+#include <salts_thread.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,7 +50,7 @@ static int test_scan(void *context, iris_record_visit_fn visit,
                      void *visit_context) {
     test_store_t *store = (test_store_t *)context;
     size_t i;
-    if (!store || !visit) return TURBO_EINVAL;
+    if (!store || !visit) return SALTS_EINVAL;
     for (i = 0u; i < TEST_STORE_CAPACITY; ++i) {
         iris_record_view_t view = IRIS_RECORD_VIEW_INIT;
         int rc;
@@ -61,9 +61,9 @@ static int test_scan(void *context, iris_record_visit_fn visit,
         view.value_size = store->records[i].value_size;
         view.revision = store->records[i].revision;
         rc = visit(visit_context, &view);
-        if (rc != TURBO_OK) return rc;
+        if (rc != SALTS_OK) return rc;
     }
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int test_commit(void *context,
@@ -74,11 +74,11 @@ static int test_commit(void *context,
     int index;
     size_t i;
     uint8_t *copy;
-    if (!store || !mutations || mutation_count != 1u) return TURBO_EINVAL;
+    if (!store || !mutations || mutation_count != 1u) return SALTS_EINVAL;
     store->commit_calls++;
     if (store->fail_commit_call > 0 &&
         store->commit_calls == store->fail_commit_call) {
-        return TURBO_EIO;
+        return SALTS_EIO;
     }
     mutation = &mutations[0];
     index = find_record(store, mutation->key, mutation->key_size);
@@ -86,19 +86,19 @@ static int test_commit(void *context,
                         IRIS_RECORD_REVISION_ABSENT) ||
         (index >= 0 && store->records[index].revision !=
                            mutation->expected_revision)) {
-        return TURBO_EBUSY;
+        return SALTS_EBUSY;
     }
     if (mutation->kind == IRIS_RECORD_DELETE) {
-        if (index < 0) return TURBO_EBUSY;
+        if (index < 0) return SALTS_EBUSY;
         free(store->records[index].value);
         memset(&store->records[index], 0, sizeof(store->records[index]));
-        return TURBO_OK;
+        return SALTS_OK;
     }
     if (mutation->kind != IRIS_RECORD_PUT || !mutation->value ||
         mutation->value_size == 0u ||
         mutation->value_size > store->api.max_value_size ||
         mutation->next_revision <= mutation->expected_revision) {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     if (index < 0) {
         for (i = 0u; i < TEST_STORE_CAPACITY; ++i) {
@@ -107,10 +107,10 @@ static int test_commit(void *context,
                 break;
             }
         }
-        if (index < 0) return TURBO_ENOSPC;
+        if (index < 0) return SALTS_ENOSPC;
     }
     copy = (uint8_t *)malloc(mutation->value_size);
-    if (!copy) return TURBO_ENOMEM;
+    if (!copy) return SALTS_ENOMEM;
     memcpy(copy, mutation->value, mutation->value_size);
     free(store->records[index].value);
     memset(&store->records[index], 0, sizeof(store->records[index]));
@@ -120,7 +120,7 @@ static int test_commit(void *context,
     store->records[index].value_size = mutation->value_size;
     store->records[index].revision = mutation->next_revision;
     store->records[index].used = 1;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static void test_store_init(test_store_t *store) {
@@ -221,7 +221,7 @@ spec("Iris durable provider command ledger") {
         test_store_init(&store);
         ledger = test_create_ledger(&store);
         check_not_null(ledger);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
         check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
         check_equal(result.disposition, IRIS_COMMAND_CLAIM_EXECUTE);
@@ -245,7 +245,7 @@ spec("Iris durable provider command ledger") {
         iris_command_claim_result_t result;
         test_store_init(&store);
         ledger = test_create_ledger(&store);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
         check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
         check_equal(iris_command_ledger_commit_accepted(
@@ -269,7 +269,7 @@ spec("Iris durable provider command ledger") {
         iris_command_retention_result_t retention;
         test_store_init(&store);
         ledger = test_create_ledger(&store);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
         check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
         check_equal(iris_command_ledger_commit_terminal(
@@ -303,12 +303,12 @@ spec("Iris durable provider command ledger") {
         iris_command_ledger_stats_t stats;
         test_store_init(&store);
         ledger = test_create_ledger(&store);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
         check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
         iris_command_ledger_destroy(ledger);
         ledger = test_create_ledger(&store);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
         check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
         check_equal(result.disposition,
@@ -331,7 +331,7 @@ spec("Iris durable provider command ledger") {
         test_store_init(&store);
         ledger = test_create_ledger(&store);
         check_not_null(ledger);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
 
         check_equal(iris_command_ledger_claim(ledger, &accepted, &result),
                      IVR_OK);
@@ -377,7 +377,7 @@ spec("Iris durable provider command ledger") {
         test_store_init(&store);
         ledger = test_create_ledger(&store);
         check_not_null(ledger);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
 
         check_equal(iris_command_ledger_claim(ledger, &prior, &result),
                      IVR_OK);
@@ -420,7 +420,7 @@ spec("Iris durable provider command ledger") {
         test_store_init(&store);
         store.fail_commit_call = 1;
         ledger = test_create_ledger(&store);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
         check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_ESTATE);
         check_equal((int)test_store_count(&store), 0);
@@ -449,7 +449,7 @@ spec("Iris durable provider command ledger") {
         config.realtime_ms = test_now_ms;
         ledger = iris_command_ledger_create(&config);
         check_not_null(ledger);
-        check_equal(iris_command_ledger_start(ledger), TURBO_OK);
+        check_equal(iris_command_ledger_start(ledger), SALTS_OK);
         check_equal(iris_command_ledger_claim(ledger, &identity, &result),
                      IVR_OK);
         check_equal(iris_command_ledger_commit_terminal(
@@ -462,7 +462,7 @@ spec("Iris durable provider command ledger") {
                 observed = 1;
                 break;
             }
-            turbo_sleep_ms(5u);
+            salts_sleep_ms(5u);
         }
         check_true(observed);
         check_equal((int)test_store_count(&store), 0);
@@ -472,100 +472,4 @@ spec("Iris durable provider command ledger") {
         test_store_clear(&store);
     }
 
-    it("persists intent accepted and terminal states through SQLite restart") {
-        char *database_path = tt_make_temp_file("iris-ledger", ".sqlite3");
-        char *yaml_path = tt_make_temp_file("iris-ledger", ".yaml");
-        char yaml[2048];
-        char error[256] = {0};
-        iris_command_ledger_t *ledger = NULL;
-        iris_command_identity_t intent = test_identity("command-sql-intent");
-        iris_command_identity_t accepted =
-            test_identity("command-sql-accepted");
-        iris_command_identity_t terminal =
-            test_identity("command-sql-terminal");
-        iris_command_terminal_outcome_t outcome = test_terminal();
-        iris_command_claim_result_t result;
-
-        check_not_null(database_path);
-        check_not_null(yaml_path);
-        if (database_path && yaml_path) {
-            normalize_yaml_path(database_path);
-            normalize_yaml_path(yaml_path);
-            snprintf(yaml, sizeof(yaml),
-                     "version: 1\n"
-                     "channels:\n"
-                     "  iris.provider_commands:\n"
-                     "    kind: record_store\n"
-                     "    config:\n"
-                     "      backend: sqlite\n"
-                     "      database_path: '%s'\n"
-                     "      namespace_name: iris.provider_commands\n"
-                     "      busy_timeout_ms: 1000\n"
-                     "      max_records: 8\n"
-                     "      max_bytes: 1048576\n"
-                     "      max_item_bytes: 32768\n"
-                     "      max_key_size: 128\n"
-                     "      max_value_size: 16384\n"
-                     "      max_batch_size: 2\n"
-                     "adapters: {}\n",
-                     database_path);
-            check_equal(tt_write_file(yaml_path, yaml, strlen(yaml)), 0);
-            ledger = iris_command_ledger_create_record_store(
-                yaml_path, "iris.provider_commands", 0, 4u, 2u,
-                UINT64_C(86400000), UINT64_C(1000), error, sizeof(error));
-            check_null(ledger);
-            check_contains(error, "development opt-in");
-            memset(error, 0, sizeof(error));
-            ledger = iris_command_ledger_create_record_store(
-                yaml_path, "iris.provider_commands", 1, 4u, 2u,
-                UINT64_C(86400000), UINT64_C(1000), error, sizeof(error));
-            check_not_null(ledger);
-        }
-        if (ledger) {
-            check_equal(iris_command_ledger_start(ledger), TURBO_OK);
-            check_equal(iris_command_ledger_claim(ledger, &intent, &result),
-                         IVR_OK);
-            check_equal(iris_command_ledger_claim(
-                             ledger, &accepted, &result),
-                         IVR_OK);
-            check_equal(iris_command_ledger_commit_accepted(
-                             ledger, &accepted, "media-worker-sql"),
-                         IVR_OK);
-            check_equal(iris_command_ledger_claim(
-                             ledger, &terminal, &result),
-                         IVR_OK);
-            check_equal(iris_command_ledger_commit_terminal(
-                             ledger, &terminal, &outcome),
-                         IVR_OK);
-            iris_command_ledger_destroy(ledger);
-            ledger = iris_command_ledger_create_record_store(
-                yaml_path, "iris.provider_commands", 1, 4u, 2u,
-                UINT64_C(86400000), UINT64_C(1000), error, sizeof(error));
-            check_not_null(ledger);
-        }
-        if (ledger) {
-            check_equal(iris_command_ledger_start(ledger), TURBO_OK);
-            check_equal(iris_command_ledger_claim(ledger, &intent, &result),
-                         IVR_OK);
-            check_equal(result.disposition,
-                         IRIS_COMMAND_CLAIM_OUTCOME_UNKNOWN);
-            check_equal(iris_command_ledger_claim(
-                             ledger, &accepted, &result),
-                         IVR_OK);
-            check_equal(result.disposition,
-                         IRIS_COMMAND_CLAIM_REPLAY_ACCEPTED);
-            check_equal(result.provider_resource_id, "media-worker-sql");
-            check_equal(iris_command_ledger_claim(
-                             ledger, &terminal, &result),
-                         IVR_OK);
-            check_equal(result.disposition,
-                         IRIS_COMMAND_CLAIM_REPLAY_TERMINAL);
-            check_equal(result.result_json, "{\"roomId\":\"room-a\"}");
-            iris_command_ledger_destroy(ledger);
-        }
-        if (yaml_path) check_equal(tt_remove_file(yaml_path), 0);
-        if (database_path) check_equal(tt_remove_file(database_path), 0);
-        free(yaml_path);
-        free(database_path);
-    }
 }

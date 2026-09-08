@@ -9,6 +9,10 @@
 #include "disruptor.h"
 #include "platform.h"
 
+#include <chttp/chttp.h>
+#include <salts/clock.h>
+#include <salts/error_codes.h>
+#include <salts/thread.h>
 #include <openssl/evp.h>
 
 #include <ctype.h>
@@ -16,6 +20,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#endif
 
 #define TURBO_RTSP_DEFAULT_HOST "0.0.0.0"
 #define TURBO_RTSP_DEFAULT_PORT 554
@@ -39,6 +52,24 @@
 #define TURBO_RTSP_CLIENT_H264_RTP_INITIAL_TIMESTAMP 0u
 #define TURBO_RTSP_CLIENT_RTCP_COMPOUND_BUFFER_SIZE 1500u
 #define TURBO_RTSP_DIGEST_CNONCE_BYTES 16u
+#define TURBO_RTSP_DEFAULT_CONNECTION_CAPACITY 128u
+#define TURBO_RTSP_DEFAULT_SEND_QUEUE_CAPACITY 256u
+#define TURBO_RTSP_DEFAULT_SEND_QUEUE_BYTES (8u * 1024u * 1024u)
+#define TURBO_RTSP_SERVER_POLL_SLICE_MS 10u
+#define TURBO_RTSP_SERVER_STOP_TIMEOUT_MS 10000u
+#define TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY 8u
+#define TURBO_RTSP_SERVER_WS_WIRE_OVERHEAD_BYTES 64u
+#define TURBO_RTSP_SERVER_WS_HEADER_COUNT 16u
+#define TURBO_RTSP_SERVER_WS_HEADER_BYTES (16u * 1024u)
+#define TURBO_RTSP_SERVER_WS_TARGET_BYTES 1024u
+#define TURBO_RTSP_SERVER_WS_BODY_BYTES 256u
+
+typedef enum {
+    TURBO_RTSP_IO_NONE = 0,
+    TURBO_RTSP_IO_STREAM,
+    TURBO_RTSP_IO_PACKET,
+    TURBO_RTSP_IO_WEBSOCKET
+} turbo_rtsp_io_kind_t;
 
 typedef struct {
     char realm[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
@@ -68,24 +99,62 @@ typedef struct {
 } turbo_rtsp_client_interleaved_track_state_t;
 
 struct turbo_rtsp_server_s {
-    coro_context_t *ctx;
-    coro_socket_t *listener;
     turbo_rtsp_server_handlers_t handlers;
     void *user_data;
     char bind_host[64];
     char server_name[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     char public_methods[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
+    char ws_path[TURBO_RTSP_MAX_URI_LEN];
+    char ws_subprotocol[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     turbo_rtsp_control_transport_t control_transport;
-    turbo_kcp_config_t kcp_config;
+    turbo_rtsp_kcp_config_t kcp_config;
+    cnet_tls_server_config tls_config;
+    char *tls_cert_file;
+    char *tls_key_file;
+    char *tls_key_password;
+    char *tls_ca_file;
+    char *tls_ca_path;
     int port;
     uint64_t client_timeout_ms;
+    size_t connection_capacity;
+    size_t send_queue_capacity;
+    size_t send_queue_bytes;
+    struct turbo_rtsp_session_s *sessions;
+    struct turbo_rtsp_server_send_s *send_queue;
+    size_t send_head;
+    size_t send_count;
+    size_t send_bytes;
+    cnet_listener listener;
+    cnet_client network;
+    cnet_packet_endpoint packet_endpoint;
+    chttp_server http;
+    salts_mutex_t mutex;
+    salts_cond_t state_changed;
+    salts_thread_t worker;
+    int sync_initialized;
+    int listener_initialized;
+    int network_initialized;
+    int packet_initialized;
+    int http_initialized;
+    int worker_started;
+    int start_finished;
+    int start_status;
     int started;
     int stopping;
 };
 
 struct turbo_rtsp_session_s {
     turbo_rtsp_server_t *server;
-    coro_socket_t *client;
+    turbo_rtsp_io_kind_t io_kind;
+    cnet_connection connection;
+    cnet_packet_session packet_session;
+    chttp_server_websocket_session websocket_session;
+    uint32_t generation;
+    int active;
+    int close_after_flush;
+    char *pending;
+    size_t pending_len;
+    size_t pending_cap;
     turbo_rtsp_request_t last_request;
     turbo_rtsp_message_t last_message;
     turbo_rtsp_rtp_udp_pair_t *udp_pair;
@@ -94,17 +163,38 @@ struct turbo_rtsp_session_s {
     char udp_transport_header[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
 };
 
+typedef struct turbo_rtsp_server_send_s {
+    size_t session_index;
+    uint32_t session_generation;
+    uint8_t *data;
+    size_t size;
+    int close_after;
+} turbo_rtsp_server_send_t;
+
 struct turbo_rtsp_client_s {
-    coro_context_t *ctx;
-    coro_socket_t *socket;
     char host[256];
     int port;
     uint64_t timeout_ms;
     char user_agent[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
     turbo_rtsp_control_transport_t control_transport;
-    turbo_kcp_config_t kcp_config;
+    turbo_rtsp_kcp_config_t kcp_config;
     char ws_path[TURBO_RTSP_MAX_URI_LEN];
     char ws_subprotocol[TURBO_RTSP_MAX_HEADER_VALUE_LEN];
+    cnet_client network;
+    cnet_connection connection;
+    cnet_packet_endpoint packet_endpoint;
+    cnet_packet_session packet_session;
+    chttp_websocket_client websocket;
+    chttp_tls_profile tls_profile;
+    int network_initialized;
+    int packet_initialized;
+    int websocket_initialized;
+    int tls_initialized;
+    int connect_finished;
+    int connect_status;
+    int send_finished;
+    int receive_finished;
+    int receive_status;
     uint32_t h264_rtp_ssrc_seed;
     uint16_t h264_rtp_initial_sequence;
     uint32_t h264_rtp_initial_timestamp;
@@ -329,28 +419,134 @@ static int turbo_rtsp_control_transport_is_tls(turbo_rtsp_control_transport_t tr
     return transport == TURBO_RTSP_CONTROL_TRANSPORT_WSS;
 }
 
-static coro_socket_t *turbo_rtsp_control_socket_create(
-    coro_context_t *ctx,
-    turbo_rtsp_control_transport_t transport,
-    const turbo_kcp_config_t *kcp_config) {
-    if (transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
-        coro_socket_t *socket = NULL;
+static native_io_backend_kind turbo_rtsp_backend(void) {
+#ifdef _WIN32
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_IO_URING;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
 
-        if (!kcp_config) {
-            return NULL;
+static void turbo_rtsp_secure_wipe(void *value, size_t size) {
+    volatile unsigned char *cursor = (volatile unsigned char *)value;
+    while (cursor && size > 0) {
+        *cursor++ = 0;
+        --size;
+    }
+}
+
+void turbo_rtsp_kcp_config_init(turbo_rtsp_kcp_config_t *config) {
+    if (!config) {
+        return;
+    }
+    memset(config, 0, sizeof(*config));
+    config->transport = (cnet_kcp_config)CNET_KCP_CONFIG_INIT;
+    config->transport.stream_mode = false;
+    config->security = (cnet_kcp_security_config)CNET_KCP_SECURITY_CONFIG_INIT;
+    config->security.mode = CNET_KCP_SECURITY_PSK_V1;
+    config->transport.mtu =
+        config->security.fec.max_payload_bytes -
+        CNET_KCP_SECURE_RECORD_OVERHEAD;
+}
+
+void turbo_rtsp_kcp_config_wipe(turbo_rtsp_kcp_config_t *config) {
+    if (config) {
+        turbo_rtsp_secure_wipe(config, sizeof(*config));
+    }
+}
+
+static int turbo_rtsp_kcp_config_valid(const turbo_rtsp_kcp_config_t *config) {
+    size_t i;
+    int has_key = 0;
+
+    if (!config || config->transport.size != sizeof(config->transport) ||
+        config->security.size != sizeof(config->security) ||
+        config->security.mode != CNET_KCP_SECURITY_PSK_V1 ||
+        config->transport.conversation != 0 || config->transport.stream_mode ||
+        config->transport.observer.output || config->transport.observer.on_receive ||
+        config->transport.observer.user) {
+        return 0;
+    }
+    for (i = 0; i < CNET_KCP_PSK_BYTES; ++i) {
+        has_key |= config->security.pre_shared_key[i] != 0;
+    }
+    return has_key;
+}
+
+static char *turbo_rtsp_strdup(const char *value) {
+    size_t size;
+    char *copy;
+    if (!value) {
+        return NULL;
+    }
+    size = strlen(value) + 1u;
+    copy = (char *)malloc(size);
+    if (copy) {
+        memcpy(copy, value, size);
+    }
+    return copy;
+}
+
+static int turbo_rtsp_server_enqueue(
+    turbo_rtsp_session_t *session,
+    const void *data,
+    size_t size,
+    int close_after) {
+    turbo_rtsp_server_t *server;
+    turbo_rtsp_server_send_t *command;
+    uint8_t *copy;
+    size_t index;
+
+    if (!session || !session->server || !data || size == 0) {
+        return -1;
+    }
+    server = session->server;
+    if (session->io_kind == TURBO_RTSP_IO_WEBSOCKET) {
+        int status = chttp_server_websocket_send_binary(
+            &session->websocket_session, data, size);
+        if (status == SALTS_OK && close_after) {
+            status = chttp_server_websocket_close(
+                &session->websocket_session, 1002u, NULL, 0u);
         }
-        socket = coro_socket_create_kcp(ctx);
-        if (!socket) {
-            return NULL;
-        }
-        if (coro_socket_set_kcp_config(socket, kcp_config) != 0) {
-            coro_socket_destroy(socket);
-            return NULL;
-        }
-        return socket;
+        return status == SALTS_OK ? 0 : -1;
     }
 
-    return coro_socket_create_tcpv4(ctx);
+    copy = (uint8_t *)malloc(size);
+    if (!copy) {
+        return -1;
+    }
+    memcpy(copy, data, size);
+
+    salts_mutex_lock(&server->mutex);
+    if (!session->active || server->stopping ||
+        server->send_count == server->send_queue_capacity ||
+        size > server->send_queue_bytes - server->send_bytes) {
+        salts_mutex_unlock(&server->mutex);
+        free(copy);
+        return -1;
+    }
+    index = (server->send_head + server->send_count) % server->send_queue_capacity;
+    command = &server->send_queue[index];
+    command->session_index = (size_t)(session - server->sessions);
+    command->session_generation = session->generation;
+    command->data = copy;
+    command->size = size;
+    command->close_after = close_after;
+    server->send_count++;
+    server->send_bytes += size;
+    if (close_after) {
+        session->close_after_flush = 1;
+    }
+    salts_mutex_unlock(&server->mutex);
+
+    if (session->io_kind == TURBO_RTSP_IO_STREAM && server->network_initialized) {
+        (void)cnet_client_wake(&server->network);
+    } else if (session->io_kind == TURBO_RTSP_IO_PACKET && server->packet_initialized) {
+        (void)cnet_packet_wake(&server->packet_endpoint);
+    }
+    return 0;
 }
 
 static void turbo_rtsp_session_clear_udp(turbo_rtsp_session_t *session) {
@@ -398,14 +594,14 @@ static const char *turbo_rtsp_redirect_reason(int status_code) {
 }
 
 static int turbo_rtsp_send_interleaved_frame(
-    coro_socket_t *socket,
+    turbo_rtsp_session_t *session,
     uint8_t channel,
     const uint8_t *payload,
     size_t payload_len) {
     uint8_t *frame = NULL;
     int rc = 0;
 
-    if (!socket || (!payload && payload_len > 0) || payload_len > UINT16_MAX) {
+    if (!session || (!payload && payload_len > 0) || payload_len > UINT16_MAX) {
         return -1;
     }
 
@@ -425,10 +621,11 @@ static int turbo_rtsp_send_interleaved_frame(
         memcpy(frame + TURBO_RTSP_INTERLEAVED_HEADER_SIZE, payload, payload_len);
     }
 
-    rc = coro_socket_send(
-        socket,
-        (const char *)frame,
-        TURBO_RTSP_INTERLEAVED_HEADER_SIZE + payload_len);
+    rc = turbo_rtsp_server_enqueue(
+        session,
+        frame,
+        TURBO_RTSP_INTERLEAVED_HEADER_SIZE + payload_len,
+        0);
     free(frame);
     return rc == 0 ? 0 : -1;
 }
@@ -642,7 +839,7 @@ static int turbo_rtsp_write_response(
     int len = 0;
     int rc = 0;
 
-    if (!session || !session->client || !response) {
+    if (!session || !session->active || !response) {
         return -1;
     }
 
@@ -662,7 +859,7 @@ static int turbo_rtsp_write_response(
         return -1;
     }
 
-    rc = coro_socket_send(session->client, buffer, (size_t)len);
+    rc = turbo_rtsp_server_enqueue(session, buffer, (size_t)len, 0);
     free(buffer);
     return rc == 0 ? 0 : -1;
 }
@@ -761,251 +958,896 @@ static void turbo_rtsp_notify_session_close(turbo_rtsp_session_t *session) {
     }
 }
 
-static void turbo_rtsp_client_handler(coro_socket_t *client, void *arg) {
-    turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)arg;
-    turbo_rtsp_session_t session;
-    char *recv_data = NULL;
-    size_t recv_len = 0;
-    char *pending = NULL;
-    size_t pending_len = 0;
-    size_t pending_cap = 0;
-
-    memset(&session, 0, sizeof(session));
-    session.server = server;
-    session.client = client;
-
-    if (!server || server->stopping) {
-        return;
+static int turbo_rtsp_next_power_of_two(size_t minimum, size_t *out) {
+    size_t value = 1u;
+    if (!out || minimum == 0) {
+        return -1;
     }
-
-    coro_socket_set_timeout(client, server->client_timeout_ms);
-
-    while (coro_socket_recv(client, &recv_data, &recv_len) == 0) {
-        size_t offset = 0;
-
-        if (recv_len == 0) {
-            if (recv_data) {
-                coro_socket_free_recv(recv_data);
-            }
-            break;
+    while (value < minimum) {
+        if (value > SIZE_MAX / 2u) {
+            return -1;
         }
-
-        if (recv_len > TURBO_RTSP_SERVER_MAX_PENDING_BYTES - pending_len) {
-            coro_socket_free_recv(recv_data);
-            recv_data = NULL;
-            goto cleanup;
-        }
-
-        if (pending_cap - pending_len < recv_len) {
-            size_t new_cap = pending_cap == 0 ? 2048 : pending_cap;
-            char *new_pending = NULL;
-            while (new_cap - pending_len < recv_len) {
-                if (new_cap >= TURBO_RTSP_SERVER_MAX_PENDING_BYTES) {
-                    break;
-                }
-                if (new_cap > TURBO_RTSP_SERVER_MAX_PENDING_BYTES / 2u) {
-                    new_cap = TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
-                } else {
-                    new_cap *= 2u;
-                }
-            }
-            if (new_cap - pending_len < recv_len) {
-                coro_socket_free_recv(recv_data);
-                recv_data = NULL;
-                goto cleanup;
-            }
-            new_pending = (char *)realloc(pending, new_cap);
-            if (!new_pending) {
-                coro_socket_free_recv(recv_data);
-                recv_data = NULL;
-                goto cleanup;
-            }
-            pending = new_pending;
-            pending_cap = new_cap;
-        }
-
-        memcpy(pending + pending_len, recv_data, recv_len);
-        pending_len += recv_len;
-        coro_socket_free_recv(recv_data);
-        recv_data = NULL;
-        recv_len = 0;
-
-        while (offset < pending_len) {
-            size_t consumed = 0;
-            int rc = turbo_rtsp_parse_one(
-                &session,
-                pending + offset,
-                pending_len - offset,
-                &consumed);
-            if (rc > 0) {
-                break;
-            }
-            if (rc < 0 || consumed == 0) {
-                goto cleanup;
-            }
-            offset += consumed;
-        }
-
-        if (offset > 0) {
-            const size_t remaining = pending_len - offset;
-            if (remaining > 0) {
-                memmove(pending, pending + offset, remaining);
-            }
-            pending_len = remaining;
-        }
+        value *= 2u;
     }
-
-cleanup:
-    if (recv_data) {
-        coro_socket_free_recv(recv_data);
-    }
-    turbo_rtsp_notify_session_close(&session);
-    free(pending);
-    turbo_rtsp_session_clear_udp(&session);
+    *out = value;
+    return 0;
 }
 
-static void turbo_rtsp_server_drain_listener(turbo_rtsp_server_t *server) {
-    if (!server || !server->ctx || !server->listener) {
+static turbo_rtsp_session_t *turbo_rtsp_server_session_allocate(
+    turbo_rtsp_server_t *server,
+    turbo_rtsp_io_kind_t io_kind) {
+    size_t i;
+    turbo_rtsp_session_t *session = NULL;
+
+    salts_mutex_lock(&server->mutex);
+    for (i = 0; i < server->connection_capacity; ++i) {
+        if (!server->sessions[i].active) {
+            uint32_t generation = server->sessions[i].generation + 1u;
+            if (generation == 0) {
+                generation = 1u;
+            }
+            memset(&server->sessions[i], 0, sizeof(server->sessions[i]));
+            session = &server->sessions[i];
+            session->server = server;
+            session->io_kind = io_kind;
+            session->generation = generation;
+            session->active = 1;
+            break;
+        }
+    }
+    salts_mutex_unlock(&server->mutex);
+    return session;
+}
+
+static void turbo_rtsp_server_session_release(
+    turbo_rtsp_session_t *session,
+    int notify) {
+    turbo_rtsp_server_t *server;
+    uint32_t generation;
+
+    if (!session || !session->server) {
         return;
     }
-
-    while (!coro_socket_server_is_stopped(server->listener)) {
-        coro_context_run(server->ctx, TURBO_RUN_ONCE);
+    server = session->server;
+    salts_mutex_lock(&server->mutex);
+    if (!session->active) {
+        salts_mutex_unlock(&server->mutex);
+        return;
     }
-    coro_socket_destroy(server->listener);
-    server->listener = NULL;
+    session->active = 0;
+    generation = session->generation;
+    salts_mutex_unlock(&server->mutex);
+
+    if (notify) {
+        turbo_rtsp_notify_session_close(session);
+    }
+    turbo_rtsp_session_clear_udp(session);
+    free(session->pending);
+    memset(session, 0, sizeof(*session));
+    session->server = server;
+    session->generation = generation;
+}
+
+static int turbo_rtsp_server_session_append(
+    turbo_rtsp_session_t *session,
+    const void *data,
+    size_t size) {
+    size_t offset = 0;
+
+    if (!session || !session->active || !data || size == 0 ||
+        size > TURBO_RTSP_SERVER_MAX_PENDING_BYTES - session->pending_len) {
+        return -1;
+    }
+    if (session->pending_cap - session->pending_len < size) {
+        size_t capacity = session->pending_cap ? session->pending_cap : 2048u;
+        char *resized;
+        while (capacity - session->pending_len < size) {
+            if (capacity >= TURBO_RTSP_SERVER_MAX_PENDING_BYTES) {
+                return -1;
+            }
+            capacity = capacity > TURBO_RTSP_SERVER_MAX_PENDING_BYTES / 2u
+                           ? TURBO_RTSP_SERVER_MAX_PENDING_BYTES
+                           : capacity * 2u;
+        }
+        resized = (char *)realloc(session->pending, capacity);
+        if (!resized) {
+            return -1;
+        }
+        session->pending = resized;
+        session->pending_cap = capacity;
+    }
+    memcpy(session->pending + session->pending_len, data, size);
+    session->pending_len += size;
+
+    while (offset < session->pending_len) {
+        size_t consumed = 0;
+        int status = turbo_rtsp_parse_one(
+            session,
+            session->pending + offset,
+            session->pending_len - offset,
+            &consumed);
+        if (status > 0) {
+            break;
+        }
+        if (status < 0 || consumed == 0) {
+            session->close_after_flush = 1;
+            return -1;
+        }
+        offset += consumed;
+    }
+    if (offset > 0) {
+        size_t remaining = session->pending_len - offset;
+        if (remaining > 0) {
+            memmove(session->pending, session->pending + offset, remaining);
+        }
+        session->pending_len = remaining;
+    }
+    return 0;
+}
+
+static turbo_rtsp_session_t *turbo_rtsp_server_find_stream_session(
+    turbo_rtsp_server_t *server,
+    cnet_connection connection) {
+    size_t i;
+    for (i = 0; i < server->connection_capacity; ++i) {
+        turbo_rtsp_session_t *session = &server->sessions[i];
+        if (session->active && session->io_kind == TURBO_RTSP_IO_STREAM &&
+            session->connection.slot == connection.slot &&
+            session->connection.generation == connection.generation) {
+            return session;
+        }
+    }
+    return NULL;
+}
+
+static turbo_rtsp_session_t *turbo_rtsp_server_find_packet_session(
+    turbo_rtsp_server_t *server,
+    cnet_packet_session packet) {
+    size_t i;
+    for (i = 0; i < server->connection_capacity; ++i) {
+        turbo_rtsp_session_t *session = &server->sessions[i];
+        if (session->active && session->io_kind == TURBO_RTSP_IO_PACKET &&
+            session->packet_session.slot == packet.slot &&
+            session->packet_session.generation == packet.generation) {
+            return session;
+        }
+    }
+    return NULL;
+}
+
+static turbo_rtsp_session_t *turbo_rtsp_server_find_websocket_session(
+    turbo_rtsp_server_t *server,
+    const chttp_server_websocket_session *websocket) {
+    size_t i;
+    for (i = 0; i < server->connection_capacity; ++i) {
+        turbo_rtsp_session_t *session = &server->sessions[i];
+        if (session->active && session->io_kind == TURBO_RTSP_IO_WEBSOCKET &&
+            session->websocket_session.connection_slot == websocket->connection_slot &&
+            session->websocket_session.connection_generation == websocket->connection_generation &&
+            session->websocket_session.stream_id == websocket->stream_id) {
+            return session;
+        }
+    }
+    return NULL;
+}
+
+static void turbo_rtsp_server_pop_send(turbo_rtsp_server_t *server) {
+    turbo_rtsp_server_send_t *command;
+    salts_mutex_lock(&server->mutex);
+    if (server->send_count == 0) {
+        salts_mutex_unlock(&server->mutex);
+        return;
+    }
+    command = &server->send_queue[server->send_head];
+    server->send_bytes -= command->size;
+    free(command->data);
+    memset(command, 0, sizeof(*command));
+    server->send_head = (server->send_head + 1u) % server->send_queue_capacity;
+    server->send_count--;
+    salts_mutex_unlock(&server->mutex);
+}
+
+static int turbo_rtsp_server_drain_sends(turbo_rtsp_server_t *server) {
+    for (;;) {
+        turbo_rtsp_server_send_t command;
+        turbo_rtsp_session_t *session;
+        int status;
+
+        salts_mutex_lock(&server->mutex);
+        if (server->send_count == 0) {
+            salts_mutex_unlock(&server->mutex);
+            return 0;
+        }
+        command = server->send_queue[server->send_head];
+        if (command.session_index >= server->connection_capacity) {
+            salts_mutex_unlock(&server->mutex);
+            turbo_rtsp_server_pop_send(server);
+            continue;
+        }
+        session = &server->sessions[command.session_index];
+        if (!session->active || session->generation != command.session_generation) {
+            salts_mutex_unlock(&server->mutex);
+            turbo_rtsp_server_pop_send(server);
+            continue;
+        }
+        salts_mutex_unlock(&server->mutex);
+
+        if (session->io_kind == TURBO_RTSP_IO_STREAM) {
+            status = (command.close_after || session->close_after_flush)
+                         ? cnet_send_and_close(
+                               &server->network, session->connection,
+                               command.data, command.size)
+                         : cnet_send(
+                               &server->network, session->connection,
+                               command.data, command.size);
+        } else if (session->io_kind == TURBO_RTSP_IO_PACKET) {
+            status = cnet_packet_send(
+                &server->packet_endpoint, session->packet_session,
+                command.data, command.size);
+            if (status == SALTS_OK &&
+                (command.close_after || session->close_after_flush)) {
+                (void)cnet_packet_session_close(
+                    &server->packet_endpoint, session->packet_session);
+            }
+        } else {
+            status = SALTS_ENOENT;
+        }
+
+        if (status == SALTS_EBUSY || status == SALTS_ENOBUFS) {
+            return 0;
+        }
+        turbo_rtsp_server_pop_send(server);
+        if (status != SALTS_OK) {
+            if (session->io_kind == TURBO_RTSP_IO_STREAM) {
+                (void)cnet_close(&server->network, session->connection);
+            } else if (session->io_kind == TURBO_RTSP_IO_PACKET) {
+                (void)cnet_packet_session_close(
+                    &server->packet_endpoint, session->packet_session);
+            }
+            return -1;
+        }
+    }
+}
+
+static void turbo_rtsp_server_stream_state(
+    void *user,
+    cnet_connection connection,
+    cnet_connection_state state,
+    const cnet_error *error) {
+    turbo_rtsp_session_t *session = (turbo_rtsp_session_t *)user;
+    (void)error;
+    if (!session || !session->server ||
+        session->connection.slot != connection.slot ||
+        session->connection.generation != connection.generation) {
+        return;
+    }
+    if (state == CNET_CONNECTION_CONNECTED) {
+        if (cnet_receive(&session->server->network, connection, 1u) != SALTS_OK) {
+            (void)cnet_close(&session->server->network, connection);
+        }
+    } else if (state == CNET_CONNECTION_CLOSED || state == CNET_CONNECTION_FAILED) {
+        turbo_rtsp_server_session_release(session, 1);
+    }
+}
+
+static void turbo_rtsp_server_stream_receive(
+    void *user,
+    cnet_connection connection,
+    const cnet_receive_view *view) {
+    turbo_rtsp_session_t *session = (turbo_rtsp_session_t *)user;
+    if (!session || !session->active || !view ||
+        turbo_rtsp_server_session_append(session, view->data, view->size) != 0) {
+        if (session && session->active && !session->close_after_flush) {
+            (void)cnet_close(&session->server->network, connection);
+        }
+        return;
+    }
+    if (!session->close_after_flush &&
+        cnet_receive(&session->server->network, connection, 1u) != SALTS_OK) {
+        (void)cnet_close(&session->server->network, connection);
+    }
+}
+
+static void turbo_rtsp_server_stream_send(
+    void *user,
+    cnet_connection connection,
+    size_t size) {
+    turbo_rtsp_session_t *session = (turbo_rtsp_session_t *)user;
+    (void)connection;
+    (void)size;
+    if (session && session->server) {
+        (void)turbo_rtsp_server_drain_sends(session->server);
+    }
+}
+
+static int turbo_rtsp_server_packet_admit(
+    void *user,
+    cnet_packet_endpoint *endpoint,
+    cnet_packet_protocol protocol,
+    const cnet_datagram_peer *peer,
+    uint32_t conversation) {
+    turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)user;
+    size_t i;
+    (void)endpoint;
+    (void)peer;
+    (void)conversation;
+    if (!server || protocol != CNET_PACKET_KCP) {
+        return SALTS_EINVAL;
+    }
+    for (i = 0; i < server->connection_capacity; ++i) {
+        if (!server->sessions[i].active) {
+            return SALTS_OK;
+        }
+    }
+    return SALTS_ENOBUFS;
+}
+
+static void turbo_rtsp_server_packet_state(
+    void *user,
+    cnet_packet_endpoint *endpoint,
+    cnet_packet_session packet,
+    cnet_packet_session_state state,
+    const cnet_datagram_peer *peer,
+    uint32_t conversation) {
+    turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)user;
+    turbo_rtsp_session_t *session;
+    (void)endpoint;
+    (void)peer;
+    (void)conversation;
+    if (!server) {
+        return;
+    }
+    session = turbo_rtsp_server_find_packet_session(server, packet);
+    if ((state == CNET_PACKET_SESSION_CONNECTING || state == CNET_PACKET_SESSION_OPEN) &&
+        !session) {
+        session = turbo_rtsp_server_session_allocate(server, TURBO_RTSP_IO_PACKET);
+        if (session) {
+            session->packet_session = packet;
+        }
+    } else if (state == CNET_PACKET_SESSION_CLOSED && session) {
+        turbo_rtsp_server_session_release(session, 1);
+    }
+}
+
+static void turbo_rtsp_server_packet_receive(
+    void *user,
+    cnet_packet_endpoint *endpoint,
+    cnet_packet_session packet,
+    const cnet_receive_view *view) {
+    turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)user;
+    turbo_rtsp_session_t *session =
+        server ? turbo_rtsp_server_find_packet_session(server, packet) : NULL;
+    (void)endpoint;
+    if (!session || !view ||
+        turbo_rtsp_server_session_append(session, view->data, view->size) != 0) {
+        if (session && !session->close_after_flush) {
+            (void)cnet_packet_session_close(&server->packet_endpoint, packet);
+        }
+    }
+}
+
+static void turbo_rtsp_server_packet_error(
+    void *user,
+    cnet_packet_endpoint *endpoint,
+    cnet_packet_session packet,
+    int status) {
+    turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)user;
+    (void)endpoint;
+    (void)status;
+    if (server) {
+        (void)cnet_packet_session_close(&server->packet_endpoint, packet);
+    }
+}
+
+static int turbo_rtsp_server_websocket_open(
+    void *user,
+    chttp_websocket *websocket,
+    const chttp_server_request_view *request,
+    chttp_server_response *response) {
+    turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)user;
+    turbo_rtsp_session_t *session;
+    if (!server || server->stopping) {
+        return SALTS_ESHUTDOWN;
+    }
+    session = turbo_rtsp_server_session_allocate(server, TURBO_RTSP_IO_WEBSOCKET);
+    if (!session) {
+        return SALTS_ENOBUFS;
+    }
+    if (chttp_server_websocket_session_capture(
+            websocket, &session->websocket_session) != SALTS_OK ||
+        (server->ws_subprotocol[0] &&
+         chttp_server_response_select_websocket_subprotocol(
+             response, request, server->ws_subprotocol) != SALTS_OK)) {
+        turbo_rtsp_server_session_release(session, 0);
+        return SALTS_EINVAL;
+    }
+    return SALTS_OK;
+}
+
+static void turbo_rtsp_server_websocket_event(
+    void *user,
+    chttp_websocket *websocket,
+    const chttp_websocket_event *event) {
+    turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)user;
+    chttp_server_websocket_session captured = {0};
+    turbo_rtsp_session_t *session;
+    if (!server || !event ||
+        chttp_server_websocket_session_capture(websocket, &captured) != SALTS_OK) {
+        return;
+    }
+    session = turbo_rtsp_server_find_websocket_session(server, &captured);
+    if (!session) {
+        return;
+    }
+    if (event->kind == CHTTP_WEBSOCKET_EVENT_MESSAGE) {
+        if (turbo_rtsp_server_session_append(session, event->data, event->size) != 0) {
+            (void)chttp_websocket_close(websocket, 1002u, NULL, 0u);
+        }
+    } else if (event->kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {
+        turbo_rtsp_server_session_release(session, 1);
+    }
+}
+
+static int turbo_rtsp_server_stream_init(turbo_rtsp_server_t *server) {
+    cnet_client_config network = {0};
+    cnet_listener_config listener = {0};
+    size_t queue_capacity;
+    size_t event_capacity;
+
+    if (server->connection_capacity > SIZE_MAX / 2u ||
+        turbo_rtsp_next_power_of_two(
+            server->connection_capacity * 2u > TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY
+                ? server->connection_capacity * 2u
+                : TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY,
+            &queue_capacity) != 0 ||
+        turbo_rtsp_next_power_of_two(server->connection_capacity * 2u, &event_capacity) != 0) {
+        return SALTS_ERANGE;
+    }
+    network.backend = turbo_rtsp_backend();
+    network.connection_capacity = server->connection_capacity;
+    network.command_capacity = queue_capacity;
+    network.request_capacity = server->connection_capacity * 2u;
+    network.completion_batch_capacity =
+        network.request_capacity < 256u ? network.request_capacity : 256u;
+    network.event_capacity = event_capacity;
+    network.max_send_bytes = TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
+    network.receive_buffer_bytes = TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
+    network.read_timeout_ms = (uint32_t)server->client_timeout_ms;
+    network.write_timeout_ms = (uint32_t)server->client_timeout_ms;
+    if (cnet_client_init(&server->network, &network) != SALTS_OK) {
+        return SALTS_EIO;
+    }
+    server->network_initialized = 1;
+
+    listener.backend = turbo_rtsp_backend();
+    listener.host = server->bind_host;
+    listener.port = (uint16_t)server->port;
+    listener.backlog = server->connection_capacity;
+    if (cnet_listener_init(&server->listener, &listener) != SALTS_OK) {
+        return SALTS_EIO;
+    }
+    server->listener_initialized = 1;
+    {
+        uint16_t bound_port = 0;
+        int status = cnet_listener_port(&server->listener, &bound_port);
+        if (status == SALTS_OK) {
+            server->port = (int)bound_port;
+        }
+        return status;
+    }
+}
+
+static int turbo_rtsp_server_packet_init(turbo_rtsp_server_t *server) {
+    cnet_packet_endpoint_config config = CNET_PACKET_ENDPOINT_CONFIG_INIT;
+    size_t send_capacity;
+    size_t wire_bytes;
+
+    if (server->connection_capacity > (SIZE_MAX - 1u) / 2u) {
+        return SALTS_ERANGE;
+    }
+    send_capacity = server->connection_capacity * 2u;
+    if (send_capacity < TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY) {
+        send_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY;
+    }
+    wire_bytes = server->kcp_config.security.fec.max_payload_bytes +
+                 CNET_KCP_SECURE_RECORD_OVERHEAD;
+    if (wire_bytes > CNET_DATAGRAM_MAX_PAYLOAD_BYTES) {
+        return SALTS_ERANGE;
+    }
+    config.protocol = CNET_PACKET_KCP;
+    config.session_capacity = server->connection_capacity;
+    config.datagram.backend = turbo_rtsp_backend();
+    config.datagram.host = server->bind_host;
+    config.datagram.port = (uint16_t)server->port;
+    config.datagram.send_capacity = send_capacity;
+    config.datagram.request_capacity = send_capacity + 1u;
+    config.datagram.completion_batch_capacity =
+        config.datagram.request_capacity < 256u ? config.datagram.request_capacity : 256u;
+    config.datagram.max_datagram_bytes = wire_bytes;
+    config.datagram.receive_buffer_bytes = wire_bytes;
+    config.kcp = server->kcp_config.transport;
+    config.security = server->kcp_config.security;
+    config.observer.on_admit = turbo_rtsp_server_packet_admit;
+    config.observer.on_state = turbo_rtsp_server_packet_state;
+    config.observer.on_receive = turbo_rtsp_server_packet_receive;
+    config.observer.on_error = turbo_rtsp_server_packet_error;
+    config.observer.user = server;
+    if (cnet_packet_endpoint_init(&server->packet_endpoint, &config) != SALTS_OK) {
+        return SALTS_EIO;
+    }
+    server->packet_initialized = 1;
+    {
+        uint16_t bound_port = 0;
+        int status = cnet_packet_endpoint_port(&server->packet_endpoint, &bound_port);
+        if (status == SALTS_OK) {
+            server->port = (int)bound_port;
+        }
+        return status;
+    }
+}
+
+static void turbo_rtsp_server_stream_accept(turbo_rtsp_server_t *server) {
+    int ready = 0;
+    while (!server->stopping &&
+           cnet_listener_wait(&server->listener, 0u, &ready) == SALTS_OK && ready) {
+        turbo_rtsp_session_t *session =
+            turbo_rtsp_server_session_allocate(server, TURBO_RTSP_IO_STREAM);
+        cnet_observer observer;
+        cnet_stream_peer peer;
+        int status;
+        if (!session) {
+            return;
+        }
+        memset(&observer, 0, sizeof(observer));
+        observer.on_state = turbo_rtsp_server_stream_state;
+        observer.on_receive = turbo_rtsp_server_stream_receive;
+        observer.on_send = turbo_rtsp_server_stream_send;
+        observer.user = session;
+        status = cnet_listener_accept_peer(
+            &server->listener, &server->network, &observer,
+            &session->connection, &peer);
+        if (status != SALTS_OK) {
+            turbo_rtsp_server_session_release(session, 0);
+            return;
+        }
+        ready = 0;
+    }
+}
+
+static void turbo_rtsp_server_worker(void *arg) {
+    turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)arg;
+    int status = server->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP
+                     ? turbo_rtsp_server_packet_init(server)
+                     : turbo_rtsp_server_stream_init(server);
+
+    salts_mutex_lock(&server->mutex);
+    server->start_status = status;
+    server->start_finished = 1;
+    server->started = status == SALTS_OK;
+    salts_cond_broadcast(&server->state_changed);
+    salts_mutex_unlock(&server->mutex);
+
+    while (status == SALTS_OK) {
+        size_t events = 0;
+        salts_mutex_lock(&server->mutex);
+        if (server->stopping) {
+            salts_mutex_unlock(&server->mutex);
+            break;
+        }
+        salts_mutex_unlock(&server->mutex);
+        (void)turbo_rtsp_server_drain_sends(server);
+        if (server->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
+            status = cnet_packet_poll(
+                &server->packet_endpoint, TURBO_RTSP_SERVER_POLL_SLICE_MS, &events);
+        } else {
+            turbo_rtsp_server_stream_accept(server);
+            status = cnet_client_poll(
+                &server->network, TURBO_RTSP_SERVER_POLL_SLICE_MS, &events);
+        }
+        if (status == SALTS_ESHUTDOWN) {
+            status = SALTS_OK;
+            break;
+        }
+    }
+
+    if (server->listener_initialized) {
+        (void)cnet_listener_close(&server->listener);
+    }
+    if (server->network_initialized) {
+        (void)cnet_client_stop(&server->network, TURBO_RTSP_SERVER_STOP_TIMEOUT_MS);
+        (void)cnet_client_destroy(&server->network);
+        server->network_initialized = 0;
+    }
+    if (server->listener_initialized) {
+        (void)cnet_listener_destroy(&server->listener);
+        server->listener_initialized = 0;
+    }
+    if (server->packet_initialized) {
+        (void)cnet_packet_endpoint_stop(
+            &server->packet_endpoint, TURBO_RTSP_SERVER_STOP_TIMEOUT_MS);
+        (void)cnet_packet_endpoint_destroy(&server->packet_endpoint);
+        server->packet_initialized = 0;
+    }
+}
+
+static int turbo_rtsp_server_http_init(turbo_rtsp_server_t *server) {
+    chttp_server_config config = {0};
+    chttp_server_websocket_options websocket = {0};
+    size_t command_capacity;
+    size_t event_capacity;
+    uint16_t port = 0;
+
+    if (server->connection_capacity > SIZE_MAX / 2u ||
+        turbo_rtsp_next_power_of_two(
+            server->connection_capacity * 2u, &command_capacity) != 0 ||
+        turbo_rtsp_next_power_of_two(
+            server->connection_capacity * 2u, &event_capacity) != 0) {
+        return SALTS_ERANGE;
+    }
+    config.host = server->bind_host;
+    config.port = (uint16_t)server->port;
+    config.backlog = server->connection_capacity;
+    config.network.backend = turbo_rtsp_backend();
+    config.network.connection_capacity = server->connection_capacity;
+    config.network.command_capacity = command_capacity;
+    config.network.request_capacity = server->connection_capacity * 2u;
+    config.network.completion_batch_capacity =
+        config.network.request_capacity < 256u ? config.network.request_capacity : 256u;
+    config.network.event_capacity = event_capacity;
+    config.network.max_send_bytes =
+        TURBO_RTSP_RESPONSE_BUFFER_SIZE + TURBO_RTSP_SERVER_WS_WIRE_OVERHEAD_BYTES;
+    config.network.receive_buffer_bytes = TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
+    config.network.read_timeout_ms = (uint32_t)server->client_timeout_ms;
+    config.network.write_timeout_ms = (uint32_t)server->client_timeout_ms;
+    config.network.tls_io_buffer_bytes =
+        turbo_rtsp_control_transport_is_tls(server->control_transport)
+            ? CNET_TLS_MIN_IO_BUFFER_BYTES
+            : 0u;
+    config.network.tls_handshake_timeout_ms =
+        turbo_rtsp_control_transport_is_tls(server->control_transport)
+            ? (uint32_t)server->client_timeout_ms
+            : 0u;
+    config.route_capacity = 1u;
+    config.max_target_bytes = TURBO_RTSP_SERVER_WS_TARGET_BYTES;
+    config.max_header_count = TURBO_RTSP_SERVER_WS_HEADER_COUNT;
+    config.max_header_bytes = TURBO_RTSP_SERVER_WS_HEADER_BYTES;
+    config.max_request_body_bytes = TURBO_RTSP_SERVER_WS_BODY_BYTES;
+    config.max_response_header_count = TURBO_RTSP_SERVER_WS_HEADER_COUNT;
+    config.max_response_header_bytes = TURBO_RTSP_SERVER_WS_HEADER_BYTES;
+    config.max_response_body_bytes = TURBO_RTSP_SERVER_WS_BODY_BYTES;
+    config.poll_slice_ms = TURBO_RTSP_SERVER_POLL_SLICE_MS;
+    config.tls = turbo_rtsp_control_transport_is_tls(server->control_transport)
+                     ? &server->tls_config
+                     : NULL;
+    config.buffer_capacity_bytes = server->send_queue_bytes;
+
+    if (chttp_server_init(&server->http, &config) != SALTS_OK) {
+        return SALTS_EIO;
+    }
+    server->http_initialized = 1;
+    websocket.size = sizeof(websocket);
+    websocket.path = server->ws_path;
+    websocket.max_frame_bytes = TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
+    websocket.max_message_bytes = TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
+    websocket.max_buffered_input_bytes =
+        TURBO_RTSP_SERVER_MAX_PENDING_BYTES +
+        TURBO_RTSP_SERVER_WS_WIRE_OVERHEAD_BYTES;
+    websocket.on_open = turbo_rtsp_server_websocket_open;
+    websocket.on_event = turbo_rtsp_server_websocket_event;
+    websocket.user = server;
+    if (chttp_server_websocket_with(&server->http, &websocket) != SALTS_OK ||
+        chttp_server_start(&server->http) != SALTS_OK ||
+        chttp_server_port(&server->http, &port) != SALTS_OK) {
+        (void)chttp_server_destroy(&server->http);
+        server->http_initialized = 0;
+        return SALTS_EIO;
+    }
+    server->port = (int)port;
+    return SALTS_OK;
 }
 
 turbo_rtsp_server_t *turbo_rtsp_server_create(
-    coro_context_t *ctx,
     const turbo_rtsp_server_config_t *config,
     const turbo_rtsp_server_handlers_t *handlers,
     void *user_data) {
-    turbo_rtsp_server_t *server = NULL;
+    turbo_rtsp_server_t *server;
+    turbo_rtsp_control_transport_t transport =
+        config ? config->control_transport : TURBO_RTSP_CONTROL_TRANSPORT_TCP;
+    size_t connection_capacity =
+        config && config->connection_capacity
+            ? config->connection_capacity
+            : TURBO_RTSP_DEFAULT_CONNECTION_CAPACITY;
+    size_t send_queue_capacity =
+        config && config->send_queue_capacity
+            ? config->send_queue_capacity
+            : TURBO_RTSP_DEFAULT_SEND_QUEUE_CAPACITY;
+    size_t send_queue_bytes =
+        config && config->send_queue_bytes
+            ? config->send_queue_bytes
+            : TURBO_RTSP_DEFAULT_SEND_QUEUE_BYTES;
 
-    if (!ctx) {
+    if (transport < TURBO_RTSP_CONTROL_TRANSPORT_TCP ||
+        transport > TURBO_RTSP_CONTROL_TRANSPORT_WSS ||
+        connection_capacity == 0 || send_queue_capacity == 0 ||
+        send_queue_bytes < TURBO_RTSP_SERVER_MAX_PENDING_BYTES ||
+        (transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP &&
+         (!config || !turbo_rtsp_kcp_config_valid(config->kcp_config))) ||
+        (transport == TURBO_RTSP_CONTROL_TRANSPORT_WSS &&
+         (!config || !config->tls || !config->tls->cert_file ||
+          !config->tls->key_file || config->tls->alpn_protocol_count != 0))) {
         return NULL;
     }
-    if (config &&
-        config->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP &&
-        !config->kcp_config) {
-        return NULL;
-    }
-
     server = (turbo_rtsp_server_t *)calloc(1, sizeof(*server));
     if (!server) {
         return NULL;
     }
-
-    server->ctx = ctx;
-    server->user_data = user_data;
-    server->port = (config && config->port > 0) ? config->port : TURBO_RTSP_DEFAULT_PORT;
-    server->control_transport =
-        config ? config->control_transport : TURBO_RTSP_CONTROL_TRANSPORT_TCP;
-    if (server->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
-        server->kcp_config = *config->kcp_config;
+    server->sessions = (turbo_rtsp_session_t *)calloc(
+        connection_capacity, sizeof(*server->sessions));
+    server->send_queue = (turbo_rtsp_server_send_t *)calloc(
+        send_queue_capacity, sizeof(*server->send_queue));
+    if (!server->sessions || !server->send_queue) {
+        turbo_rtsp_server_destroy(server);
+        return NULL;
     }
+
+    server->user_data = user_data;
+    server->port = config && config->port > 0 ? config->port : TURBO_RTSP_DEFAULT_PORT;
+    server->control_transport = transport;
+    server->connection_capacity = connection_capacity;
+    server->send_queue_capacity = send_queue_capacity;
+    server->send_queue_bytes = send_queue_bytes;
     server->client_timeout_ms =
-        (config && config->client_timeout_ms > 0)
+        config && config->client_timeout_ms
             ? config->client_timeout_ms
             : TURBO_RTSP_DEFAULT_TIMEOUT_MS;
-
+    if (server->client_timeout_ms > UINT32_MAX) {
+        turbo_rtsp_server_destroy(server);
+        return NULL;
+    }
     turbo_rtsp_safe_copy(
-        server->bind_host,
-        sizeof(server->bind_host),
-        (config && config->bind_host) ? config->bind_host : TURBO_RTSP_DEFAULT_HOST);
+        server->bind_host, sizeof(server->bind_host),
+        config && config->bind_host ? config->bind_host : TURBO_RTSP_DEFAULT_HOST);
     turbo_rtsp_safe_copy(
-        server->server_name,
-        sizeof(server->server_name),
-        (config && config->server_name) ? config->server_name : TURBO_RTSP_DEFAULT_SERVER_NAME);
+        server->server_name, sizeof(server->server_name),
+        config && config->server_name ? config->server_name : TURBO_RTSP_DEFAULT_SERVER_NAME);
     turbo_rtsp_safe_copy(
-        server->public_methods,
-        sizeof(server->public_methods),
-        (config && config->public_methods) ? config->public_methods : TURBO_RTSP_DEFAULT_PUBLIC);
-
+        server->public_methods, sizeof(server->public_methods),
+        config && config->public_methods ? config->public_methods : TURBO_RTSP_DEFAULT_PUBLIC);
+    turbo_rtsp_safe_copy(
+        server->ws_path, sizeof(server->ws_path),
+        config && config->ws_path ? config->ws_path : "/");
+    turbo_rtsp_safe_copy(
+        server->ws_subprotocol, sizeof(server->ws_subprotocol),
+        config && config->ws_subprotocol ? config->ws_subprotocol : "");
     if (handlers) {
         server->handlers = *handlers;
     }
-
+    if (transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
+        server->kcp_config = *config->kcp_config;
+    }
+    if (transport == TURBO_RTSP_CONTROL_TRANSPORT_WSS) {
+        server->tls_config = *config->tls;
+        server->tls_cert_file = turbo_rtsp_strdup(config->tls->cert_file);
+        server->tls_key_file = turbo_rtsp_strdup(config->tls->key_file);
+        server->tls_key_password = turbo_rtsp_strdup(config->tls->key_password);
+        server->tls_ca_file = turbo_rtsp_strdup(config->tls->ca_file);
+        server->tls_ca_path = turbo_rtsp_strdup(config->tls->ca_path);
+        if (!server->tls_cert_file || !server->tls_key_file) {
+            turbo_rtsp_server_destroy(server);
+            return NULL;
+        }
+        server->tls_config.cert_file = server->tls_cert_file;
+        server->tls_config.key_file = server->tls_key_file;
+        server->tls_config.key_password = server->tls_key_password;
+        server->tls_config.ca_file = server->tls_ca_file;
+        server->tls_config.ca_path = server->tls_ca_path;
+    }
+    salts_mutex_init(&server->mutex);
+    salts_cond_init(&server->state_changed);
+    server->sync_initialized = 1;
     return server;
 }
 
 int turbo_rtsp_server_start(turbo_rtsp_server_t *server) {
-    int rc = 0;
-
-    if (!server) {
+    int status;
+    if (!server || !server->sync_initialized) {
         return -1;
     }
+    salts_mutex_lock(&server->mutex);
     if (server->started) {
+        salts_mutex_unlock(&server->mutex);
         return 0;
     }
-    if (server->listener) {
-        turbo_rtsp_server_drain_listener(server);
-    }
-
     server->stopping = 0;
-
-    server->listener = turbo_rtsp_control_socket_create(
-        server->ctx,
-        server->control_transport,
-        &server->kcp_config);
-    if (!server->listener) {
-        return -1;
-    }
-    coro_socket_set_timeout(server->listener, server->client_timeout_ms);
+    server->start_finished = 0;
+    server->start_status = SALTS_EIO;
+    salts_mutex_unlock(&server->mutex);
 
     if (turbo_rtsp_control_transport_is_ws(server->control_transport)) {
-        rc = coro_socket_listen_ws(
-            server->listener,
-            server->bind_host,
-            server->port,
-            turbo_rtsp_control_transport_is_tls(server->control_transport),
-            turbo_rtsp_client_handler,
-            server);
-    } else {
-        rc = coro_socket_listen_on(
-            server->listener,
-            server->bind_host,
-            server->port,
-            turbo_rtsp_client_handler,
-            server);
+        status = turbo_rtsp_server_http_init(server);
+        salts_mutex_lock(&server->mutex);
+        server->started = status == SALTS_OK;
+        salts_mutex_unlock(&server->mutex);
+        return status == SALTS_OK ? 0 : -1;
     }
-    if (rc != 0) {
-        (void)coro_socket_server_stop(server->listener);
-        turbo_rtsp_server_drain_listener(server);
+    status = salts_thread_create(&server->worker, turbo_rtsp_server_worker, server);
+    if (status != SALTS_OK) {
         return -1;
     }
-
-    server->started = 1;
-    return 0;
+    server->worker_started = 1;
+    salts_mutex_lock(&server->mutex);
+    while (!server->start_finished) {
+        salts_cond_wait(&server->state_changed, &server->mutex);
+    }
+    status = server->start_status;
+    salts_mutex_unlock(&server->mutex);
+    if (status != SALTS_OK) {
+        (void)salts_thread_join(&server->worker);
+        salts_thread_destroy(&server->worker);
+        server->worker_started = 0;
+    }
+    return status == SALTS_OK ? 0 : -1;
 }
 
 void turbo_rtsp_server_stop(turbo_rtsp_server_t *server) {
-    if (!server) {
+    if (!server || !server->sync_initialized) {
         return;
     }
-
+    salts_mutex_lock(&server->mutex);
     server->stopping = 1;
-    if (server->listener) {
-        (void)coro_socket_server_stop(server->listener);
-    }
     server->started = 0;
+    salts_mutex_unlock(&server->mutex);
+    if (server->network_initialized) {
+        (void)cnet_client_wake(&server->network);
+    }
+    if (server->packet_initialized) {
+        (void)cnet_packet_wake(&server->packet_endpoint);
+    }
+    if (server->worker_started) {
+        (void)salts_thread_join(&server->worker);
+        salts_thread_destroy(&server->worker);
+        server->worker_started = 0;
+    }
+    if (server->http_initialized) {
+        (void)chttp_server_stop(&server->http, TURBO_RTSP_SERVER_STOP_TIMEOUT_MS);
+        (void)chttp_server_destroy(&server->http);
+        server->http_initialized = 0;
+    }
 }
 
 void turbo_rtsp_server_destroy(turbo_rtsp_server_t *server) {
+    size_t i;
     if (!server) {
         return;
     }
-
     turbo_rtsp_server_stop(server);
-    turbo_rtsp_server_drain_listener(server);
-    turbo_kcp_config_wipe(&server->kcp_config);
+    if (server->sessions) {
+        for (i = 0; i < server->connection_capacity; ++i) {
+            if (server->sessions[i].active) {
+                turbo_rtsp_server_session_release(&server->sessions[i], 1);
+            } else {
+                free(server->sessions[i].pending);
+            }
+        }
+    }
+    if (server->send_queue) {
+        for (i = 0; i < server->send_queue_capacity; ++i) {
+            free(server->send_queue[i].data);
+        }
+    }
+    if (server->sync_initialized) {
+        salts_cond_destroy(&server->state_changed);
+        salts_mutex_destroy(&server->mutex);
+    }
+    turbo_rtsp_kcp_config_wipe(&server->kcp_config);
+    free(server->tls_cert_file);
+    free(server->tls_key_file);
+    free(server->tls_key_password);
+    free(server->tls_ca_file);
+    free(server->tls_ca_path);
+    free(server->send_queue);
+    free(server->sessions);
     free(server);
-}
-
-coro_socket_t *turbo_rtsp_session_get_control_socket(
-    turbo_rtsp_session_t *session) {
-    return session ? session->client : NULL;
 }
 
 const turbo_rtsp_request_t *turbo_rtsp_session_get_last_request(
@@ -1024,7 +1866,7 @@ int turbo_rtsp_session_send_interleaved_frame(
     const uint8_t *payload,
     size_t payload_len) {
     return turbo_rtsp_send_interleaved_frame(
-        session ? session->client : NULL,
+        session,
         channel,
         payload,
         payload_len);
@@ -1061,7 +1903,7 @@ int turbo_rtsp_session_setup_udp_transport(
     config.timeout_ms = session->server->client_timeout_ms;
 
     turbo_rtsp_session_clear_udp(session);
-    session->udp_pair = turbo_rtsp_rtp_udp_pair_create(session->server->ctx, &config);
+    session->udp_pair = turbo_rtsp_rtp_udp_pair_create(&config);
     if (!session->udp_pair ||
         turbo_rtsp_rtp_udp_pair_get_local_ports(
             session->udp_pair,
@@ -1993,7 +2835,7 @@ static int turbo_rtsp_client_build_digest_auth(
         return -1;
     }
 
-    if (turbo_secure_random(cnonce_bytes, sizeof(cnonce_bytes)) != 0) {
+    if (salts_secure_random(cnonce_bytes, sizeof(cnonce_bytes)) != 0) {
         return -1;
     }
     for (i = 0; i < sizeof(cnonce_bytes); ++i) {
@@ -2057,26 +2899,231 @@ static int turbo_rtsp_client_build_digest_auth(
     return 0;
 }
 
+static cnet_client_config turbo_rtsp_client_network_config(
+    const turbo_rtsp_client_t *client,
+    int tls) {
+    cnet_client_config config;
+    memset(&config, 0, sizeof(config));
+    config.backend = turbo_rtsp_backend();
+    config.connection_capacity = 1u;
+    config.command_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY;
+    config.request_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY;
+    config.completion_batch_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY;
+    config.event_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY;
+    config.max_send_bytes = tls
+                                ? TURBO_RTSP_SERVER_MAX_PENDING_BYTES +
+                                      TURBO_RTSP_SERVER_WS_WIRE_OVERHEAD_BYTES
+                                : TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
+    config.receive_buffer_bytes = TURBO_RTSP_CLIENT_RECV_BUFFER_SIZE;
+    config.connect_timeout_ms = (uint32_t)client->timeout_ms;
+    config.read_timeout_ms = (uint32_t)client->timeout_ms;
+    config.write_timeout_ms = (uint32_t)client->timeout_ms;
+    config.tls_io_buffer_bytes = tls ? CNET_TLS_MIN_IO_BUFFER_BYTES : 0u;
+    config.tls_handshake_timeout_ms = tls ? (uint32_t)client->timeout_ms : 0u;
+    return config;
+}
+
+static void turbo_rtsp_client_store_received(
+    turbo_rtsp_client_t *client,
+    const cnet_receive_view *view) {
+    if (!client || !view ||
+        view->size > sizeof(client->recv_buffer) - client->recv_len) {
+        if (client) {
+            client->receive_status = SALTS_EMSGSIZE;
+            client->receive_finished = 1;
+        }
+        return;
+    }
+    if (view->size > 0) {
+        memcpy(client->recv_buffer + client->recv_len, view->data, view->size);
+        client->recv_len += view->size;
+    }
+    client->receive_status = SALTS_OK;
+    client->receive_finished = 1;
+}
+
+static void turbo_rtsp_client_stream_state(
+    void *user,
+    cnet_connection connection,
+    cnet_connection_state state,
+    const cnet_error *error) {
+    turbo_rtsp_client_t *client = (turbo_rtsp_client_t *)user;
+    (void)connection;
+    if (!client) {
+        return;
+    }
+    if (state == CNET_CONNECTION_CONNECTED) {
+        client->connect_status = SALTS_OK;
+        client->connect_finished = 1;
+    } else if (state == CNET_CONNECTION_FAILED || state == CNET_CONNECTION_CLOSED) {
+        client->connect_status = error ? error->status : SALTS_EIO;
+        client->connect_finished = 1;
+        client->connected = 0;
+    }
+}
+
+static void turbo_rtsp_client_stream_receive(
+    void *user,
+    cnet_connection connection,
+    const cnet_receive_view *view) {
+    (void)connection;
+    turbo_rtsp_client_store_received((turbo_rtsp_client_t *)user, view);
+}
+
+static void turbo_rtsp_client_stream_send(
+    void *user,
+    cnet_connection connection,
+    size_t size) {
+    turbo_rtsp_client_t *client = (turbo_rtsp_client_t *)user;
+    (void)connection;
+    (void)size;
+    if (client) {
+        client->send_finished = 1;
+    }
+}
+
+static void turbo_rtsp_client_packet_state(
+    void *user,
+    cnet_packet_endpoint *endpoint,
+    cnet_packet_session packet,
+    cnet_packet_session_state state,
+    const cnet_datagram_peer *peer,
+    uint32_t conversation) {
+    turbo_rtsp_client_t *client = (turbo_rtsp_client_t *)user;
+    (void)endpoint;
+    (void)peer;
+    (void)conversation;
+    if (!client || client->packet_session.slot != packet.slot ||
+        client->packet_session.generation != packet.generation) {
+        return;
+    }
+    if (state == CNET_PACKET_SESSION_OPEN) {
+        client->connect_status = SALTS_OK;
+        client->connect_finished = 1;
+    } else if (state == CNET_PACKET_SESSION_CLOSED) {
+        client->connect_status = SALTS_EIO;
+        client->connect_finished = 1;
+        client->connected = 0;
+    }
+}
+
+static void turbo_rtsp_client_packet_receive(
+    void *user,
+    cnet_packet_endpoint *endpoint,
+    cnet_packet_session packet,
+    const cnet_receive_view *view) {
+    turbo_rtsp_client_t *client = (turbo_rtsp_client_t *)user;
+    (void)endpoint;
+    if (client && client->packet_session.slot == packet.slot &&
+        client->packet_session.generation == packet.generation) {
+        turbo_rtsp_client_store_received(client, view);
+    }
+}
+
+static void turbo_rtsp_client_packet_error(
+    void *user,
+    cnet_packet_endpoint *endpoint,
+    cnet_packet_session packet,
+    int status) {
+    turbo_rtsp_client_t *client = (turbo_rtsp_client_t *)user;
+    (void)endpoint;
+    (void)packet;
+    if (client) {
+        client->receive_status = status;
+        client->receive_finished = 1;
+        client->connect_status = status;
+        client->connect_finished = 1;
+    }
+}
+
+static int turbo_rtsp_client_poll_until(
+    turbo_rtsp_client_t *client,
+    int *finished) {
+    const uint64_t started_ms = salts_monotonic_ms();
+    int status = SALTS_OK;
+    while (!*finished) {
+        uint64_t elapsed_ms = salts_monotonic_ms() - started_ms;
+        uint32_t wait_ms;
+        size_t events = 0;
+        if (elapsed_ms >= client->timeout_ms) {
+            return SALTS_ETIMEDOUT;
+        }
+        wait_ms = (uint32_t)(client->timeout_ms - elapsed_ms);
+        status = client->packet_initialized
+                     ? cnet_packet_poll(&client->packet_endpoint, wait_ms, &events)
+                     : cnet_client_poll(&client->network, wait_ms, &events);
+        if (status != SALTS_OK) {
+            return status;
+        }
+    }
+    return SALTS_OK;
+}
+
 static int turbo_rtsp_client_recv_more(turbo_rtsp_client_t *client) {
-    char *chunk = NULL;
-    size_t chunk_len = 0;
-
-    if (!client || !client->socket || client->recv_len == sizeof(client->recv_buffer)) {
+    int status;
+    if (!client || !client->connected ||
+        client->recv_len == sizeof(client->recv_buffer)) {
         return -1;
     }
+    if (client->websocket_initialized) {
+        for (;;) {
+            chttp_websocket_event event;
+            memset(&event, 0, sizeof(event));
+            status = chttp_websocket_client_receive(
+                &client->websocket, (uint32_t)client->timeout_ms, &event);
+            if (status != SALTS_OK) {
+                return -1;
+            }
+            if (event.kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {
+                client->connected = 0;
+                return -1;
+            }
+            if (event.kind == CHTTP_WEBSOCKET_EVENT_MESSAGE) {
+                cnet_receive_view view;
+                view.data = event.data;
+                view.size = event.size;
+                view.kind = CNET_MESSAGE_BYTES;
+                turbo_rtsp_client_store_received(client, &view);
+                return client->receive_status == SALTS_OK ? 0 : -1;
+            }
+        }
+    }
 
-    if (coro_socket_recv(client->socket, &chunk, &chunk_len) != 0 || !chunk) {
+    client->receive_finished = 0;
+    client->receive_status = SALTS_EIO;
+    status = client->packet_initialized
+                 ? turbo_rtsp_client_poll_until(client, &client->receive_finished)
+                 : cnet_receive(&client->network, client->connection, 1u);
+    if (!client->packet_initialized && status == SALTS_OK) {
+        status = turbo_rtsp_client_poll_until(client, &client->receive_finished);
+    }
+    return status == SALTS_OK && client->receive_status == SALTS_OK ? 0 : -1;
+}
+
+static int turbo_rtsp_client_send_bytes(
+    turbo_rtsp_client_t *client,
+    const void *data,
+    size_t size) {
+    int status;
+    if (!client || !client->connected || !data || size == 0) {
         return -1;
     }
-    if (chunk_len > sizeof(client->recv_buffer) - client->recv_len) {
-        coro_socket_free_recv(chunk);
-        return -1;
+    if (client->websocket_initialized) {
+        status = chttp_websocket_client_send_binary(
+            &client->websocket, data, size, (uint32_t)client->timeout_ms);
+        return status == SALTS_OK ? 0 : -1;
     }
-
-    memcpy(client->recv_buffer + client->recv_len, chunk, chunk_len);
-    client->recv_len += chunk_len;
-    coro_socket_free_recv(chunk);
-    return 0;
+    if (client->packet_initialized) {
+        status = cnet_packet_send(
+            &client->packet_endpoint, client->packet_session, data, size);
+        return status == SALTS_OK ? 0 : -1;
+    }
+    client->send_finished = 0;
+    status = cnet_send(&client->network, client->connection, data, size);
+    if (status == SALTS_OK) {
+        status = turbo_rtsp_client_poll_until(client, &client->send_finished);
+    }
+    return status == SALTS_OK ? 0 : -1;
 }
 
 static int turbo_rtsp_client_frame_queue_init(turbo_rtsp_client_t *client) {
@@ -2340,7 +3387,7 @@ static int turbo_rtsp_client_send_request_once(
     int len = 0;
     int rc = 0;
 
-    if (!client || !client->socket || !uri || uri[0] == '\0' ||
+    if (!client || !client->connected || !uri || uri[0] == '\0' ||
         (header_count > 0 && !headers)) {
         return -1;
     }
@@ -2376,7 +3423,7 @@ static int turbo_rtsp_client_send_request_once(
         return -1;
     }
 
-    rc = coro_socket_send(client->socket, buffer, (size_t)len);
+    rc = turbo_rtsp_client_send_bytes(client, buffer, (size_t)len);
     free(buffer);
     if (rc != 0) {
         return -1;
@@ -2684,16 +3731,18 @@ static int turbo_rtsp_client_setup_udp_mode(
 }
 
 turbo_rtsp_client_t *turbo_rtsp_client_create(
-    coro_context_t *ctx,
     const turbo_rtsp_client_config_t *config) {
     turbo_rtsp_client_t *client = NULL;
+    turbo_rtsp_control_transport_t transport =
+        config ? config->control_transport : TURBO_RTSP_CONTROL_TRANSPORT_TCP;
+    uint64_t timeout_ms =
+        config && config->timeout_ms ? config->timeout_ms : TURBO_RTSP_DEFAULT_TIMEOUT_MS;
 
-    if (!ctx) {
-        return NULL;
-    }
-    if (config &&
-        config->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP &&
-        !config->kcp_config) {
+    if (transport < TURBO_RTSP_CONTROL_TRANSPORT_TCP ||
+        transport > TURBO_RTSP_CONTROL_TRANSPORT_WSS ||
+        timeout_ms > UINT32_MAX ||
+        (transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP &&
+         (!config || !turbo_rtsp_kcp_config_valid(config->kcp_config)))) {
         return NULL;
     }
 
@@ -2702,12 +3751,9 @@ turbo_rtsp_client_t *turbo_rtsp_client_create(
         return NULL;
     }
 
-    client->ctx = ctx;
     client->port = (config && config->port > 0) ? config->port : TURBO_RTSP_DEFAULT_PORT;
-    client->timeout_ms =
-        (config && config->timeout_ms > 0) ? config->timeout_ms : TURBO_RTSP_DEFAULT_TIMEOUT_MS;
-    client->control_transport =
-        config ? config->control_transport : TURBO_RTSP_CONTROL_TRANSPORT_TCP;
+    client->timeout_ms = timeout_ms;
+    client->control_transport = transport;
     if (client->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
         client->kcp_config = *config->kcp_config;
     }
@@ -2741,8 +3787,20 @@ turbo_rtsp_client_t *turbo_rtsp_client_create(
         sizeof(client->ws_subprotocol),
         (config && config->ws_subprotocol) ? config->ws_subprotocol : "");
 
+    if (transport == TURBO_RTSP_CONTROL_TRANSPORT_WSS && config && config->tls &&
+        chttp_tls_profile_init(&client->tls_profile, config->tls) != SALTS_OK) {
+        turbo_rtsp_kcp_config_wipe(&client->kcp_config);
+        free(client);
+        return NULL;
+    }
+    client->tls_initialized =
+        transport == TURBO_RTSP_CONTROL_TRANSPORT_WSS && config && config->tls;
+
     if (turbo_rtsp_client_frame_queue_init(client) != 0) {
-        turbo_kcp_config_wipe(&client->kcp_config);
+        if (client->tls_initialized) {
+            (void)chttp_tls_profile_destroy(&client->tls_profile);
+        }
+        turbo_rtsp_kcp_config_wipe(&client->kcp_config);
         free(client);
         return NULL;
     }
@@ -2750,47 +3808,196 @@ turbo_rtsp_client_t *turbo_rtsp_client_create(
     return client;
 }
 
+static int turbo_rtsp_resolve_packet_peer(
+    const char *host,
+    int port,
+    cnet_datagram_peer *peer,
+    const char **bind_host) {
+    struct addrinfo hints;
+    struct addrinfo *result = NULL;
+    char port_text[16];
+    int status;
+
+    if (!host || port <= 0 || port > 65535 || !peer || !bind_host) {
+        return -1;
+    }
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    if (snprintf(port_text, sizeof(port_text), "%d", port) < 0) {
+        return -1;
+    }
+    status = getaddrinfo(host, port_text, &hints, &result);
+    if (status != 0 || !result || !result->ai_addr) {
+        if (result) {
+            freeaddrinfo(result);
+        }
+        return -1;
+    }
+    memset(peer, 0, sizeof(*peer));
+    if (result->ai_family == AF_INET) {
+        const struct sockaddr_in *address =
+            (const struct sockaddr_in *)result->ai_addr;
+        peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
+        peer->port = ntohs(address->sin_port);
+        memcpy(peer->address, &address->sin_addr, sizeof(address->sin_addr));
+        *bind_host = "0.0.0.0";
+    } else if (result->ai_family == AF_INET6) {
+        const struct sockaddr_in6 *address =
+            (const struct sockaddr_in6 *)result->ai_addr;
+        peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
+        peer->port = ntohs(address->sin6_port);
+        peer->scope_id = address->sin6_scope_id;
+        memcpy(peer->address, &address->sin6_addr, sizeof(address->sin6_addr));
+        *bind_host = "::";
+    } else {
+        freeaddrinfo(result);
+        return -1;
+    }
+    freeaddrinfo(result);
+    return 0;
+}
+
+static int turbo_rtsp_client_connect_stream(turbo_rtsp_client_t *client) {
+    cnet_client_config config = turbo_rtsp_client_network_config(client, 0);
+    cnet_connect_options options;
+    char uri[TURBO_RTSP_MAX_URI_LEN];
+    size_t events = 0;
+    int status;
+
+    if (snprintf(uri, sizeof(uri), "tcp://%s:%d", client->host, client->port) < 0 ||
+        cnet_client_init(&client->network, &config) != SALTS_OK) {
+        return -1;
+    }
+    client->network_initialized = 1;
+    memset(&options, 0, sizeof(options));
+    options.uri = uri;
+    options.observer.on_state = turbo_rtsp_client_stream_state;
+    options.observer.on_receive = turbo_rtsp_client_stream_receive;
+    options.observer.on_send = turbo_rtsp_client_stream_send;
+    options.observer.user = client;
+    client->connect_finished = 0;
+    client->connect_status = SALTS_EIO;
+    status = cnet_connect(&client->network, &options, &client->connection);
+    while (status == SALTS_OK && !client->connect_finished) {
+        status = cnet_client_poll(
+            &client->network, (uint32_t)client->timeout_ms, &events);
+    }
+    return status == SALTS_OK && client->connect_status == SALTS_OK ? 0 : -1;
+}
+
+static int turbo_rtsp_client_connect_packet(turbo_rtsp_client_t *client) {
+    cnet_packet_endpoint_config config = CNET_PACKET_ENDPOINT_CONFIG_INIT;
+    cnet_datagram_peer peer;
+    const char *bind_host = NULL;
+    size_t wire_bytes =
+        client->kcp_config.security.fec.max_payload_bytes +
+        CNET_KCP_SECURE_RECORD_OVERHEAD;
+    int status;
+
+    if (wire_bytes > CNET_DATAGRAM_MAX_PAYLOAD_BYTES ||
+        turbo_rtsp_resolve_packet_peer(
+            client->host, client->port, &peer, &bind_host) != 0) {
+        return -1;
+    }
+    config.protocol = CNET_PACKET_KCP;
+    config.session_capacity = 1u;
+    config.datagram.backend = turbo_rtsp_backend();
+    config.datagram.host = bind_host;
+    config.datagram.port = 0u;
+    config.datagram.send_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY;
+    config.datagram.request_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY + 1u;
+    config.datagram.completion_batch_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY;
+    config.datagram.max_datagram_bytes = wire_bytes;
+    config.datagram.receive_buffer_bytes = wire_bytes;
+    config.kcp = client->kcp_config.transport;
+    config.security = client->kcp_config.security;
+    config.observer.on_state = turbo_rtsp_client_packet_state;
+    config.observer.on_receive = turbo_rtsp_client_packet_receive;
+    config.observer.on_error = turbo_rtsp_client_packet_error;
+    config.observer.user = client;
+    if (cnet_packet_endpoint_init(&client->packet_endpoint, &config) != SALTS_OK) {
+        return -1;
+    }
+    client->packet_initialized = 1;
+    client->connect_finished = 0;
+    client->connect_status = SALTS_EIO;
+    status = cnet_packet_session_open(
+        &client->packet_endpoint, &peer, 0u, &client->packet_session);
+    if (status == SALTS_OK) {
+        status = turbo_rtsp_client_poll_until(client, &client->connect_finished);
+    }
+    return status == SALTS_OK && client->connect_status == SALTS_OK ? 0 : -1;
+}
+
+static int turbo_rtsp_client_connect_websocket(turbo_rtsp_client_t *client) {
+    chttp_websocket_client_config config;
+    chttp_websocket_connect_options options;
+    char uri[TURBO_RTSP_MAX_URI_LEN + 64u];
+    unsigned int http_status = 0;
+    int status;
+
+    memset(&config, 0, sizeof(config));
+    config.size = sizeof(config);
+    config.network = turbo_rtsp_client_network_config(
+        client, turbo_rtsp_control_transport_is_tls(client->control_transport));
+    config.network.max_send_bytes =
+        TURBO_RTSP_SERVER_MAX_PENDING_BYTES +
+        TURBO_RTSP_SERVER_WS_WIRE_OVERHEAD_BYTES;
+    config.max_frame_bytes = TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
+    config.max_message_bytes = TURBO_RTSP_SERVER_MAX_PENDING_BYTES;
+    config.max_buffered_input_bytes =
+        TURBO_RTSP_SERVER_MAX_PENDING_BYTES +
+        TURBO_RTSP_SERVER_WS_WIRE_OVERHEAD_BYTES;
+    config.max_handshake_header_bytes = TURBO_RTSP_SERVER_WS_HEADER_BYTES;
+    config.event_capacity = TURBO_RTSP_SERVER_MIN_QUEUE_CAPACITY;
+    if (chttp_websocket_client_init(&client->websocket, &config) != SALTS_OK) {
+        return -1;
+    }
+    client->websocket_initialized = 1;
+    if (snprintf(
+            uri, sizeof(uri), "%s://%s:%d%s",
+            turbo_rtsp_control_transport_is_tls(client->control_transport) ? "wss" : "ws",
+            client->host, client->port,
+            client->ws_path[0] ? client->ws_path : "/") < 0) {
+        return -1;
+    }
+    memset(&options, 0, sizeof(options));
+    options.size = sizeof(options);
+    options.uri = uri;
+    options.tls = client->tls_initialized ? &client->tls_profile : NULL;
+    options.timeout_ms = (uint32_t)client->timeout_ms;
+    options.subprotocol = client->ws_subprotocol[0] ? client->ws_subprotocol : NULL;
+    status = chttp_websocket_client_connect(
+        &client->websocket, &options, &http_status);
+    return status == SALTS_OK ? 0 : -1;
+}
+
 int turbo_rtsp_client_connect(turbo_rtsp_client_t *client) {
+    int status;
     if (!client) {
         return -1;
     }
-    if (client->socket) {
+    if (client->connected) {
         return 0;
     }
-
-    client->socket = turbo_rtsp_control_socket_create(
-        client->ctx,
-        client->control_transport,
-        &client->kcp_config);
-    if (!client->socket) {
-        return -1;
-    }
-    coro_socket_set_timeout(client->socket, client->timeout_ms);
-
     if (turbo_rtsp_control_transport_is_ws(client->control_transport)) {
-        if (coro_socket_connect_ws_ex(
-                client->socket,
-                client->host,
-                client->port,
-                client->ws_path[0] ? client->ws_path : "/",
-                turbo_rtsp_control_transport_is_tls(client->control_transport),
-                client->ws_subprotocol[0] ? client->ws_subprotocol : NULL) != 0) {
-            coro_socket_destroy(client->socket);
-            client->socket = NULL;
-            return -1;
-        }
-    } else if (coro_socket_connect(client->socket, client->host, client->port) != 0) {
-        coro_socket_destroy(client->socket);
-        client->socket = NULL;
+        status = turbo_rtsp_client_connect_websocket(client);
+    } else if (client->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
+        status = turbo_rtsp_client_connect_packet(client);
+    } else {
+        status = turbo_rtsp_client_connect_stream(client);
+    }
+    if (status != 0) {
+        turbo_rtsp_client_close(client);
         return -1;
     }
-
     client->connected = 1;
     return 0;
 }
 
 turbo_rtsp_client_t *turbo_rtsp_client_open_url(
-    coro_context_t *ctx,
     const char *url,
     const turbo_rtsp_client_config_t *config) {
     turbo_rtsp_url_t parsed;
@@ -2809,7 +4016,7 @@ turbo_rtsp_client_t *turbo_rtsp_client_open_url(
     resolved.host = parsed.host;
     resolved.port = parsed.port;
 
-    client = turbo_rtsp_client_create(ctx, &resolved);
+    client = turbo_rtsp_client_create(&resolved);
     if (!client) {
         return NULL;
     }
@@ -2823,11 +4030,36 @@ turbo_rtsp_client_t *turbo_rtsp_client_open_url(
 }
 
 void turbo_rtsp_client_close(turbo_rtsp_client_t *client) {
-    if (!client || !client->socket) {
+    if (!client) {
         return;
     }
-    coro_socket_destroy(client->socket);
-    client->socket = NULL;
+    if (client->websocket_initialized) {
+        if (client->connected) {
+            (void)chttp_websocket_client_close(
+                &client->websocket, 1000u, NULL, 0u, (uint32_t)client->timeout_ms);
+        }
+        (void)chttp_websocket_client_destroy(
+            &client->websocket, (uint32_t)client->timeout_ms);
+        client->websocket_initialized = 0;
+    }
+    if (client->packet_initialized) {
+        if (cnet_packet_session_valid(client->packet_session)) {
+            (void)cnet_packet_session_close(
+                &client->packet_endpoint, client->packet_session);
+        }
+        (void)cnet_packet_endpoint_stop(
+            &client->packet_endpoint, (uint32_t)client->timeout_ms);
+        (void)cnet_packet_endpoint_destroy(&client->packet_endpoint);
+        client->packet_initialized = 0;
+    }
+    if (client->network_initialized) {
+        (void)cnet_close(&client->network, client->connection);
+        (void)cnet_client_stop(&client->network, (uint32_t)client->timeout_ms);
+        (void)cnet_client_destroy(&client->network);
+        client->network_initialized = 0;
+    }
+    memset(&client->connection, 0, sizeof(client->connection));
+    memset(&client->packet_session, 0, sizeof(client->packet_session));
     client->connected = 0;
     client->announced = 0;
     client->setup_done = 0;
@@ -2854,7 +4086,10 @@ void turbo_rtsp_client_destroy(turbo_rtsp_client_t *client) {
     turbo_rtsp_client_close(client);
     turbo_rtsp_client_clear_last_response(client);
     turbo_rtsp_client_frame_queue_destroy(client);
-    turbo_kcp_config_wipe(&client->kcp_config);
+    if (client->tls_initialized) {
+        (void)chttp_tls_profile_destroy(&client->tls_profile);
+    }
+    turbo_rtsp_kcp_config_wipe(&client->kcp_config);
     free(client);
 }
 
@@ -3497,15 +4732,33 @@ int turbo_rtsp_client_send_interleaved_frame(
     uint8_t channel,
     const uint8_t *payload,
     size_t payload_len) {
-    if (!client || !client->connected || (!client->recording && !client->playing)) {
+    if (!client || !client->connected || (!client->recording && !client->playing) ||
+        (!payload && payload_len > 0) || payload_len > UINT16_MAX) {
         return -1;
     }
 
-    return turbo_rtsp_send_interleaved_frame(
-        client->socket,
-        channel,
-        payload,
-        payload_len);
+    {
+        uint8_t *frame = (uint8_t *)malloc(
+            TURBO_RTSP_INTERLEAVED_HEADER_SIZE + payload_len);
+        int status;
+        if (!frame) {
+            return -1;
+        }
+        if (turbo_rtsp_interleaved_write_header(
+                frame, TURBO_RTSP_INTERLEAVED_HEADER_SIZE,
+                channel, (uint16_t)payload_len) !=
+            TURBO_RTSP_INTERLEAVED_HEADER_SIZE) {
+            free(frame);
+            return -1;
+        }
+        if (payload_len > 0) {
+            memcpy(frame + TURBO_RTSP_INTERLEAVED_HEADER_SIZE, payload, payload_len);
+        }
+        status = turbo_rtsp_client_send_bytes(
+            client, frame, TURBO_RTSP_INTERLEAVED_HEADER_SIZE + payload_len);
+        free(frame);
+        return status;
+    }
 }
 
 int turbo_rtsp_client_send_h264_nal_interleaved_track_index(

@@ -2,8 +2,9 @@
 #include "iris_command_fingerprint.h"
 
 #include <platform.h>
-#include <turbo_parser.h>
-#include <turbo_thread.h>
+#include <json_parser.h>
+#include <datetime_parser.h>
+#include <salts_thread.h>
 
 #include <limits.h>
 #include <stdlib.h>
@@ -40,7 +41,7 @@ typedef struct iris_room_entry_s {
 struct iris_room_bridge_s {
     iris_room_entry_t *entries;
     size_t capacity;
-    turbo_mutex_t mutex;
+    salts_mutex_t mutex;
     iris_room_bridge_execute_fn execute;
     void *execute_context;
     iris_room_bridge_observe_fn observe;
@@ -191,8 +192,9 @@ static iris_room_execution_t internal_failure_execution(void) {
 
 static int add_owned_json(json_value_t *object, const char *name,
                           json_value_t *value) {
-    if (!value || !turbo_json_object_add_checked(object, name, value)) {
-        turbo_free_json(&value);
+    if (!value || !json_object_add_checked(object, name, value)) {
+        json_free(value);
+        value = NULL;
         return 0;
     }
     return 1;
@@ -200,13 +202,14 @@ static int add_owned_json(json_value_t *object, const char *name,
 
 static int make_already_absent_execution(
     const iris_room_command_t *command, iris_room_execution_t *execution) {
-    json_value_t *data = turbo_json_create_object();
+    json_value_t *data = json_create_object();
     char *json = NULL;
     size_t json_size = 0u;
     const char *event_type;
     int valid;
     if (!command || !execution || !data) {
-        turbo_free_json(&data);
+        json_free(data);
+        data = NULL;
         return 0;
     }
     event_type = command->kind == IRIS_ROOM_COMMAND_DESTROY
@@ -214,24 +217,25 @@ static int make_already_absent_execution(
                      : "provider.connection.unjoined";
     valid = add_owned_json(
                 data, "roomId",
-                turbo_json_create_string(command->room_id)) &&
+                json_create_string(command->room_id)) &&
             add_owned_json(
                 data, "roomGeneration",
-                turbo_json_create_uint64(command->room_generation)) &&
+                json_create_uint64(command->room_generation)) &&
             (command->kind == IRIS_ROOM_COMMAND_DESTROY ||
              (add_owned_json(
                   data, "callId",
-                  turbo_json_create_string(command->call_id)) &&
+                  json_create_string(command->call_id)) &&
               add_owned_json(
                   data, "callGeneration",
-                  turbo_json_create_uint64(command->call_generation)))) &&
+                  json_create_uint64(command->call_generation)))) &&
             add_owned_json(data, "alreadyAbsent",
-                           turbo_json_create_bool(1));
-    if (valid) json = turbo_json_serialize(data, &json_size);
-    turbo_free_json(&data);
+                           json_create_bool(1));
+    if (valid) json = json_serialize(data, &json_size);
+    json_free(data);
+    data = NULL;
     if (!json || json_size == 0u || json_size >= sizeof(execution->data) ||
         strlen(event_type) >= sizeof(execution->event_type)) {
-        turbo_json_serialize_free(json);
+        json_serialize_free(json);
         return 0;
     }
     memset(execution, 0, sizeof(*execution));
@@ -239,7 +243,7 @@ static int make_already_absent_execution(
     memcpy(execution->event_type, event_type, strlen(event_type) + 1u);
     memcpy(execution->data, json, json_size);
     execution->data[json_size] = '\0';
-    turbo_json_serialize_free(json);
+    json_serialize_free(json);
     return 1;
 }
 
@@ -250,13 +254,13 @@ static int copy_string_field(const json_value_t *object, const char *key,
     const char *text;
     size_t size;
     if (!object || !key || !destination || capacity == 0u) return 0;
-    value = turbo_json_object_get(object, key);
+    value = json_object_get(object, key);
     if (!value) {
         destination[0] = '\0';
         return !required;
     }
-    if (turbo_json_type(value) != TURBO_JSON_STRING) return 0;
-    text = turbo_json_string(value);
+    if (json_type(value) != JSON_STRING) return 0;
+    text = json_string(value);
     if (!text) return 0;
     size = strlen(text);
     if ((required && size == 0u) || size >= capacity) return 0;
@@ -271,9 +275,9 @@ static int parse_u64_field(const json_value_t *object, const char *key,
     size_t size = 0u;
     uint64_t parsed = 0u;
     if (!object || !key || !out) return 0;
-    value = turbo_json_object_get(object, key);
-    text = value && turbo_json_type(value) == TURBO_JSON_NUMBER
-               ? turbo_json_number_text(value, &size)
+    value = json_object_get(object, key);
+    text = value && json_type(value) == JSON_NUMBER
+               ? json_number_text(value, &size)
                : NULL;
     if (!text || size == 0u || size > 20u || text[0] == '-') return 0;
     for (size_t i = 0u; i < size; ++i) {
@@ -289,15 +293,15 @@ static int parse_u64_field(const json_value_t *object, const char *key,
 }
 
 static int parse_deadline(const char *text, uint64_t *out_unix_ms) {
-    turbo_datetime_t value;
+    datetime_t value;
     time_t seconds;
     uint64_t seconds_u64;
     if (!text || !out_unix_ms || strchr(text, 'T') == NULL ||
-        turbo_parse_datetime(text, strlen(text), &value) != 0 ||
+        datetime_parse(text, strlen(text), &value) != 0 ||
         !value.has_tz || value.millisecond < 0 || value.millisecond > 999) {
         return 0;
     }
-    seconds = turbo_datetime_to_time(&value);
+    seconds = datetime_to_time(&value);
     if (seconds < 0) return 0;
     seconds_u64 = (uint64_t)seconds;
     if (seconds_u64 > (UINT64_MAX - (uint64_t)value.millisecond) /
@@ -339,10 +343,10 @@ static int object_has_only_keys(const json_value_t *object,
                                 const char *const *allowed,
                                 size_t allowed_count) {
     size_t count;
-    if (!object || turbo_json_type(object) != TURBO_JSON_OBJECT) return 0;
-    count = turbo_json_object_size(object);
+    if (!object || json_type(object) != JSON_OBJECT) return 0;
+    count = json_object_size(object);
     for (size_t i = 0u; i < count; ++i) {
-        if (!key_in_set(turbo_json_object_key(object, i), allowed,
+        if (!key_in_set(json_object_key(object, i), allowed,
                         allowed_count)) return 0;
     }
     return 1;
@@ -390,13 +394,13 @@ static int parse_request(const char *idempotency_key, const char *body,
         return 0;
     }
     memset(out, 0, sizeof(*out));
-    if (turbo_parse_json((const uint8_t *)body, body_size, &root) != 0 ||
-        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
+    if (((root = json_parse((const char *)((const uint8_t *)body), body_size)) ? 0 : -1) != 0 ||
+        !root || json_type(root) != JSON_OBJECT) {
         *error = invalid_result("INVALID_JSON",
                                 "provider command must be a JSON object");
         goto cleanup;
     }
-    data = turbo_json_object_get(root, "data");
+    data = json_object_get(root, "data");
     if (!parse_u64_field(root, "schemaVersion", &schema_version, 0) ||
         schema_version != IRIS_ROOM_SCHEMA_VERSION ||
         !copy_string_field(root, "commandId", out->command.command_id,
@@ -422,7 +426,7 @@ static int parse_request(const char *idempotency_key, const char *body,
         !copy_string_field(root, "workerId", ignored_worker,
                            sizeof(ignored_worker), 1) ||
         !parse_u64_field(root, "dispatchEpoch", &ignored_epoch, 0) ||
-        !data || turbo_json_type(data) != TURBO_JSON_OBJECT ||
+        !data || json_type(data) != JSON_OBJECT ||
         !request_keys_valid(root, data) ||
         !copy_string_field(data, "capability", capability,
                            sizeof(capability), 1) ||
@@ -464,7 +468,8 @@ static int parse_request(const char *idempotency_key, const char *body,
     }
     valid = 1;
 cleanup:
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
     return valid;
 }
 
@@ -544,13 +549,13 @@ iris_room_bridge_t *iris_room_bridge_create(
                               : system_realtime_ms;
     bridge->realtime_context = config->realtime_context;
     bridge->ledger = config->ledger;
-    turbo_mutex_init(&bridge->mutex);
+    salts_mutex_init(&bridge->mutex);
     return bridge;
 }
 
 void iris_room_bridge_destroy(iris_room_bridge_t *bridge) {
     if (!bridge) return;
-    turbo_mutex_destroy(&bridge->mutex);
+    salts_mutex_destroy(&bridge->mutex);
     free(bridge->entries);
     free(bridge);
 }
@@ -680,30 +685,30 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
                            "provider command ledger state is invalid");
     }
 
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     entry = find_entry(bridge, request.command.command_id);
     if (entry) {
         if (!same_command(&entry->request, &request)) {
-            turbo_mutex_unlock(&bridge->mutex);
+            salts_mutex_unlock(&bridge->mutex);
             return make_result(IRIS_ROOM_BRIDGE_INVALID,
                                request.command.command_id, NULL,
                                "IDEMPOTENCY_CONFLICT",
                                "commandId was reused with different room data");
         }
         if (entry->state == IRIS_ROOM_ENTRY_EXECUTING) {
-            turbo_mutex_unlock(&bridge->mutex);
+            salts_mutex_unlock(&bridge->mutex);
             return make_result(IRIS_ROOM_BRIDGE_IN_PROGRESS,
                                request.command.command_id, NULL,
                                "COMMAND_IN_PROGRESS",
                                "provider room command is still executing");
         }
         execution = entry->execution;
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_mutex_unlock(&bridge->mutex);
         return make_result(IRIS_ROOM_BRIDGE_DUPLICATE,
                            request.command.command_id, &execution, NULL, NULL);
     }
     if (request.deadline_unix_ms <= now_ms) {
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_mutex_unlock(&bridge->mutex);
         (void)bridge->ledger.abort_intent(bridge->ledger.context, &identity);
         return make_result(IRIS_ROOM_BRIDGE_EXPIRED,
                            request.command.command_id, NULL,
@@ -712,7 +717,7 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
     }
     entry = reserve_entry(bridge);
     if (!entry) {
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_mutex_unlock(&bridge->mutex);
         (void)bridge->ledger.abort_intent(bridge->ledger.context, &identity);
         return make_result(IRIS_ROOM_BRIDGE_FULL,
                            request.command.command_id, NULL,
@@ -722,7 +727,7 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
     memset(entry, 0, sizeof(*entry));
     entry->state = IRIS_ROOM_ENTRY_EXECUTING;
     entry->request = request;
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
 
     memset(&execution, 0, sizeof(execution));
     if (bridge->execute(bridge->execute_context, &request.command,
@@ -739,12 +744,12 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
         if (ledger_status != IVR_OK) {
             (void)bridge->ledger.mark_unknown(bridge->ledger.context,
                                               &identity);
-            turbo_mutex_lock(&bridge->mutex);
+            salts_mutex_lock(&bridge->mutex);
             entry = find_entry(bridge, request.command.command_id);
             if (entry && entry->state == IRIS_ROOM_ENTRY_EXECUTING) {
                 memset(entry, 0, sizeof(*entry));
             }
-            turbo_mutex_unlock(&bridge->mutex);
+            salts_mutex_unlock(&bridge->mutex);
             return make_result(
                 IRIS_ROOM_BRIDGE_UNAVAILABLE,
                 request.command.command_id, NULL,
@@ -772,22 +777,22 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
         bridge->ledger.context, &identity, &terminal);
     if (ledger_status != IVR_OK) {
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
-        turbo_mutex_lock(&bridge->mutex);
+        salts_mutex_lock(&bridge->mutex);
         entry = find_entry(bridge, request.command.command_id);
         if (entry && entry->state == IRIS_ROOM_ENTRY_EXECUTING) {
             memset(entry, 0, sizeof(*entry));
         }
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_mutex_unlock(&bridge->mutex);
         return make_result(
             IRIS_ROOM_BRIDGE_UNAVAILABLE, request.command.command_id, NULL,
             "PROVIDER_OUTCOME_UNKNOWN",
             "room side effect completed but durable outcome commit failed");
     }
 
-    turbo_mutex_lock(&bridge->mutex);
+    salts_mutex_lock(&bridge->mutex);
     entry = find_entry(bridge, request.command.command_id);
     if (!entry || entry->state != IRIS_ROOM_ENTRY_EXECUTING) {
-        turbo_mutex_unlock(&bridge->mutex);
+        salts_mutex_unlock(&bridge->mutex);
         return make_result(IRIS_ROOM_BRIDGE_INTERNAL,
                            request.command.command_id, NULL,
                            "ROOM_CORRELATION_LOST",
@@ -796,7 +801,7 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
     entry->execution = execution;
     entry->state = IRIS_ROOM_ENTRY_COMPLETED;
     entry->completed_sequence = ++bridge->next_completed_sequence;
-    turbo_mutex_unlock(&bridge->mutex);
+    salts_mutex_unlock(&bridge->mutex);
     return make_result(IRIS_ROOM_BRIDGE_TERMINAL,
                        request.command.command_id, &execution, NULL, NULL);
 }

@@ -2,15 +2,26 @@
 
 include(CMakeFindDependencyMacro)
 
-find_dependency(TurboUtils CONFIG)
-find_dependency(TurboParser CONFIG)
-find_dependency(TurboNet CONFIG)
-find_dependency(TurboHttp CONFIG)
+set(TurboMedia_PRODUCT "@TURBO_MEDIA_PRODUCT@")
+
+find_dependency(Salts CONFIG REQUIRED
+                PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+find_dependency(SaltsUtils CONFIG REQUIRED
+                PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+if(TurboMedia_PRODUCT STREQUAL "CLIENT" AND
+   (NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback))
+  set(TurboMedia_FOUND FALSE)
+  set(TurboMedia_NOT_FOUND_MESSAGE
+      "TurboMedia CLIENT requires Salts::Capture and Salts::Playback")
+  return()
+endif()
+find_dependency(SaltsNet CONFIG REQUIRED
+                PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 
 
 # The exported target file contains all TurboMedia components, but FFmpeg is
 # only a dependency of this component closure.  Keep non-media consumers
-# (for example Core, Device, or WebRTC) usable without FFmpeg development files.
+# (for example Core or WebRTC) usable without FFmpeg development files.
 set(_TurboMedia_ffmpeg_components Muxer Demuxer Player Pipeline Streamer RtcApps)
 set(_TurboMedia_requires_ffmpeg FALSE)
 if(NOT TurboMedia_FIND_COMPONENTS)

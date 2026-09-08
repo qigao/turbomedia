@@ -181,7 +181,8 @@ static void bot_emit_provider_error(ivr_media_bot_t *b, const char *provider,
 static void bot_tts_error(turbo_tts_t *tts, int error_code, const char *message,
                           void *user_data) {
     (void)tts;
-    (void)message;
+    fprintf(stderr, "ivr_media_bot: TTS provider error code=%d message=%s\n",
+            error_code, message ? message : "");
     bot_emit_provider_error((ivr_media_bot_t *)user_data, "tts", error_code);
 }
 
@@ -254,7 +255,8 @@ static void bot_asr_complete(turbo_asr_t *asr, void *user_data) {
 static void bot_asr_error(turbo_asr_t *asr, int error_code, const char *message,
                           void *user_data) {
     (void)asr;
-    (void)message;
+    fprintf(stderr, "ivr_media_bot: ASR provider error code=%d message=%s\n",
+            error_code, message ? message : "");
     bot_emit_provider_error((ivr_media_bot_t *)user_data, "asr", error_code);
 }
 

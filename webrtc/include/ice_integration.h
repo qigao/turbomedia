@@ -12,7 +12,7 @@
 #define ICE_INTEGRATION_H
 
 #include "turbo_datachannel.h"
-#include "ice/turbo_ice.h"
+#include "ice/salts_ice.h"
 #include <turbo_export.h>
 
 #ifdef __cplusplus
@@ -25,8 +25,8 @@ typedef struct ice_integration_ctx_s ice_integration_ctx_t;
  * Create ICE integration context with STUN/TURN support
  *
  * @param peer DataChannel peer
- * @param loop Opaque backend loop pointer. Prefer passing a CoroNet
- *             `turbo_loop_t *`; pass NULL to let timer primitives bind lazily.
+ * @param loop Reserved for source compatibility; pass NULL. SaltsNet owns ICE
+ *             progress on the integration worker.
  * @param stun_servers Array of STUN server URLs (e.g., "stun:stun.l.google.com:19302")
  * @param stun_count Number of STUN servers
  * @param turn_servers Array of TURN server URLs (e.g., "turn:turn.example.com:3478")
@@ -141,10 +141,10 @@ TURBO_MEDIA_API int ice_integration_add_remote_candidate(
 TURBO_MEDIA_API void ice_integration_end_of_candidates(ice_integration_ctx_t *ctx);
 
 /**
- * Drive the internal ICE coroutine context once without blocking.
+ * Wake the internal SaltsNet ICE progress worker without blocking.
  *
- * Call this regularly when the integration wraps an external `turbo_loop_t *`
- * that you are polling manually, such as from tests or simple examples.
+ * Existing polling integrations may continue calling this function; the
+ * worker also advances connected ICE sessions without external polling.
  *
  * @param ctx ICE integration context
  */

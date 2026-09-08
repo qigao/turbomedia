@@ -266,7 +266,7 @@
 1. **TurboNet Utils**（通过 `TURBONET_ROOT` 或项目构建配置定位，例如 `%TURBONET_ROOT%/turbonet/utils/include/`）— 最优先
 2. **项目内模块**（`exprtk/`、`plugins/` 等）
 3. **vendor/ 库**（sds、croar、mir、monocypher、sha2、uuid、miniblas）
-4. **vcpkg 依赖**（xxhash、sqlite3、zstd、openssl、c-ares、aklomp-base64、simde）
+4. **vcpkg 依赖**（xxhash、zstd、openssl、c-ares、aklomp-base64、simde）
 5. **C 标准库**（libc：`string.h`、`stdlib.h`、`stdio.h`）
 6. **底层系统 API**（仅允许封装在 TurboNet util/coro 或项目适配层之后使用）
 

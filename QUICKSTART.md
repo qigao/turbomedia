@@ -6,7 +6,7 @@ TurboMedia 是一个模块化的多媒体处理框架，提供：
 - **Codec**: 音视频编解码（H.264/H.265/Opus/VP8/VP9）
 - **Muxer/Demuxer**: 容器封装/解封装（FLV/MP4/MKV/MPEG-TS）
 - **Streamer**: 流媒体协议（HLS/DASH/RTMP/HTTP-FLV）
-- **Transport**: 网络传输（CoroNet/TurboHTTP）
+- **Transport**: 网络传输（CNet/CHTTP）
 
 ## 安装和编译
 
@@ -22,8 +22,8 @@ TurboMedia 是一个模块化的多媒体处理框架，提供：
 - x265 + libde265 (H.265)
 - libopus (Opus)
 - libvpx (VP8/VP9)
-- TurboNet (网络传输)
-- TurboHTTP (HTTP 客户端)
+- Salts CNet (网络传输)
+- Salts CHTTP (HTTP 客户端/服务端)
 ```
 
 ### 编译
@@ -149,56 +149,23 @@ turbo_codec_destroy(h264);
 turbo_codec_destroy(opus);
 ```
 
-### 3. HLS 直播推流（协程版本）
+### 3. HLS 直播推流
 
 ```c
 #include <turbo_codec.h>
 #include <turbo_streamer.h>
-#include <CoroNet/turbo_coro_context.h>
-#include <http_client.h>
-
-/* 流式传输协程 */
-static void streaming_coroutine(void *arg) {
-    turbo_streamer_t *streamer = (turbo_streamer_t *)arg;
-    
-    /* 连接 */
-    turbo_streamer_connect(streamer);
-    
-    /* 推流循环 */
-    for (int i = 0; i < frame_count; i++) {
-        /* 编码 */
-        turbo_codec_encode(...);
-        
-        /* 推送到 HLS */
-        turbo_muxer_packet_t packet = {...};
-        turbo_streamer_write_packet(streamer, &packet);
-    }
-    
-    /* 断开 */
-    turbo_streamer_disconnect(streamer);
-}
 
 int main() {
     /* 初始化 */
     turbo_codec_registry_init();
     turbo_streamer_registry_init();
     
-    /* 创建协程上下文 */
-    coro_context_t *ctx = coro_context_create();
-    
-    /* 创建 HTTP 客户端（用于上传分片）*/
-    http_client_t *http = http_client_create("https://cdn.example.com");
-    http_client_set_bearer_token(http, "your_token");
-    
-    /* 创建 HLS streamer */
+    /* 创建本地 HLS streamer。需要上传时由调用方注入 chttp_client。 */
     turbo_streamer_config_t config = {
         .protocol = TURBO_STREAMER_HLS,
         .segment_duration_ms = 6000,  /* 6 秒分片 */
         .playlist_size = 5,
-        .output_dir = "./hls_output",
-        .base_url = "https://cdn.example.com/live",
-        .coro_context = ctx,
-        .http_client = http
+        .output_dir = "./hls_output"
     };
     
     turbo_streamer_t *streamer = turbo_streamer_create(&config);
@@ -208,17 +175,16 @@ int main() {
     int stream_id;
     turbo_streamer_add_stream(streamer, &info, &stream_id);
     
-    /* 启动协程 */
-    coro_create(ctx, streaming_coroutine, streamer);
-    
-    /* 运行事件循环 */
-    coro_context_run(ctx);
+    turbo_streamer_connect(streamer);
+    for (int i = 0; i < frame_count; i++) {
+        turbo_codec_encode(...);
+        turbo_muxer_packet_t packet = {...};
+        turbo_streamer_write_packet(streamer, &packet);
+    }
+    turbo_streamer_disconnect(streamer);
     
     /* 清理 */
     turbo_streamer_destroy(streamer);
-    http_client_destroy(http);
-    coro_context_destroy(ctx);
-    
     return 0;
 }
 ```

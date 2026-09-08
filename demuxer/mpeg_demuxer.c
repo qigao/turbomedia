@@ -1,5 +1,5 @@
 /**
- * MPEG-TS/PS demuxers using FFmpeg container algorithms and TurboUtils I/O.
+ * MPEG-TS/PS demuxers using FFmpeg container algorithms and Salts I/O.
  */
 #include "turbo_demuxer.h"
 
@@ -21,8 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <turbo_error.h>
-#include <turbostl/vec.h>
+#include <salts_error.h>
+#include <cstl/vec.h>
 
 enum {
     MPEG_AVIO_BUFFER_SIZE = 32 * 1024,
@@ -53,7 +53,7 @@ static int mpeg_avio_read(void *opaque, uint8_t *buffer, int capacity) {
 
     if (!ctx || !buffer || capacity <= 0) return AVERROR(EINVAL);
     if (turbo_container_io_read_some(&ctx->io, buffer, (size_t)capacity,
-                                     &bytes_read) != TURBO_OK)
+                                     &bytes_read) != SALTS_OK)
         return AVERROR(EIO);
     if (bytes_read == 0) return AVERROR_EOF;
     return (int)bytes_read;
@@ -81,7 +81,7 @@ static int64_t mpeg_avio_seek(void *opaque, int64_t offset, int whence) {
         (offset < 0 && base < -offset))
         return AVERROR(EINVAL);
     target = base + offset;
-    if (target < 0 || turbo_container_io_seek(&ctx->io, target) != TURBO_OK)
+    if (target < 0 || turbo_container_io_seek(&ctx->io, target) != SALTS_OK)
         return AVERROR(EIO);
     return turbo_container_io_tell(&ctx->io);
 }
@@ -123,7 +123,7 @@ static int mpeg_add_stream(mpeg_demuxer_ctx_t *ctx, AVStream *av_stream) {
 
     if (parameters->codec_type != AVMEDIA_TYPE_VIDEO &&
         parameters->codec_type != AVMEDIA_TYPE_AUDIO)
-        return TURBO_OK;
+        return SALTS_OK;
     memset(&stream, 0, sizeof(stream));
     stream.av_stream_index = av_stream->index;
     stream.info.stream_id = av_stream->index;
@@ -143,13 +143,13 @@ static int mpeg_add_stream(mpeg_demuxer_ctx_t *ctx, AVStream *av_stream) {
     if (parameters->extradata_size > 0) {
         size_t bytes = (size_t)parameters->extradata_size;
         stream.extra_data = (uint8_t *)malloc(bytes);
-        if (!stream.extra_data) return TURBO_ENOMEM;
+        if (!stream.extra_data) return SALTS_ENOMEM;
         memcpy(stream.extra_data, parameters->extradata, bytes);
         stream.info.extradata = stream.extra_data;
         stream.info.extradata_size = bytes;
     }
     result = turbo_media_stl_status_to_error(vec_push(&ctx->streams, &stream));
-    if (result != TURBO_OK) free(stream.extra_data);
+    if (result != SALTS_OK) free(stream.extra_data);
     return result;
 }
 
@@ -188,13 +188,13 @@ static void *mpeg_demuxer_create(const turbo_demuxer_config_t *config,
         return NULL;
     ctx = (mpeg_demuxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    ctx->io.file = TURBO_INVALID_FILE;
+    ctx->io.file = SALTS_INVALID_FILE;
     ctx->format_name = format_name;
     ctx->probe_size = config->probe_size;
     if (vec_init_bytes(&ctx->streams, sizeof(mpeg_demuxer_stream_t),
                        CMETA_ALIGNOF(mpeg_demuxer_stream_t), SIZE_MAX) != STL_OK ||
         turbo_container_io_open_reader(&ctx->io, config->input_path, config->data,
-                                       config->data_size) != TURBO_OK) {
+                                       config->data_size) != SALTS_OK) {
         mpeg_demuxer_destroy_impl(ctx);
         return NULL;
     }
@@ -226,24 +226,24 @@ static int mpeg_demuxer_open_impl(void *ctx_ptr) {
     const AVInputFormat *input_format;
     size_t i;
 
-    if (!ctx || ctx->opened) return TURBO_EINVAL;
+    if (!ctx || ctx->opened) return SALTS_EINVAL;
     input_format = av_find_input_format(ctx->format_name);
-    if (!input_format) return TURBO_ENOTSUP;
+    if (!input_format) return SALTS_ENOTSUP;
     ctx->format = avformat_alloc_context();
-    if (!ctx->format) return TURBO_ENOMEM;
+    if (!ctx->format) return SALTS_ENOMEM;
     ctx->format->pb = ctx->avio;
     ctx->format->flags |= AVFMT_FLAG_CUSTOM_IO;
     if (ctx->probe_size > 0) ctx->format->probesize = ctx->probe_size;
     if (avformat_open_input(&ctx->format, NULL, input_format, NULL) < 0)
-        return TURBO_EPROTO;
-    if (avformat_find_stream_info(ctx->format, NULL) < 0) return TURBO_EPROTO;
+        return SALTS_EPROTO;
+    if (avformat_find_stream_info(ctx->format, NULL) < 0) return SALTS_EPROTO;
     for (i = 0; i < ctx->format->nb_streams; ++i) {
         int result = mpeg_add_stream(ctx, ctx->format->streams[i]);
-        if (result != TURBO_OK) return result;
+        if (result != SALTS_OK) return result;
     }
-    if (vec_empty(&ctx->streams)) return TURBO_EPROTO;
+    if (vec_empty(&ctx->streams)) return SALTS_EPROTO;
     ctx->opened = 1;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int mpeg_demuxer_read_packet_impl(void *ctx_ptr,
@@ -253,10 +253,10 @@ static int mpeg_demuxer_read_packet_impl(void *ctx_ptr,
     AVPacket *av_packet;
     int result;
 
-    if (!ctx || !ctx->opened || !packet) return TURBO_EINVAL;
+    if (!ctx || !ctx->opened || !packet) return SALTS_EINVAL;
     memset(packet, 0, sizeof(*packet));
     av_packet = av_packet_alloc();
-    if (!av_packet) return TURBO_ENOMEM;
+    if (!av_packet) return SALTS_ENOMEM;
     for (;;) {
         int public_index;
         AVStream *stream;
@@ -267,7 +267,7 @@ static int mpeg_demuxer_read_packet_impl(void *ctx_ptr,
         }
         if (result < 0) {
             av_packet_free(&av_packet);
-            return TURBO_EIO;
+            return SALTS_EIO;
         }
         public_index = mpeg_public_stream_index(ctx, av_packet->stream_index);
         if (public_index < 0) {
@@ -282,7 +282,7 @@ static int mpeg_demuxer_read_packet_impl(void *ctx_ptr,
         packet->data = (uint8_t *)malloc((size_t)av_packet->size);
         if (!packet->data) {
             av_packet_free(&av_packet);
-            return TURBO_ENOMEM;
+            return SALTS_ENOMEM;
         }
         memcpy(packet->data, av_packet->data, (size_t)av_packet->size);
         packet->size = (size_t)av_packet->size;
@@ -312,33 +312,33 @@ static int mpeg_demuxer_seek_impl(void *ctx_ptr, int64_t timestamp_ms, int flags
 
     if (!ctx || !ctx->opened || timestamp_ms < 0 ||
         timestamp_ms > INT64_MAX / 1000)
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     if (flags & TURBO_DEMUXER_SEEK_BACKWARD) av_flags |= AVSEEK_FLAG_BACKWARD;
     if (flags & TURBO_DEMUXER_SEEK_ANY) av_flags |= AVSEEK_FLAG_ANY;
     timestamp = timestamp_ms * 1000;
-    if (av_seek_frame(ctx->format, -1, timestamp, av_flags) < 0) return TURBO_EIO;
+    if (av_seek_frame(ctx->format, -1, timestamp, av_flags) < 0) return SALTS_EIO;
     avformat_flush(ctx->format);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int mpeg_demuxer_get_stream_count_impl(void *ctx_ptr) {
     mpeg_demuxer_ctx_t *ctx = (mpeg_demuxer_ctx_t *)ctx_ptr;
     size_t count;
-    if (!ctx || !ctx->opened) return TURBO_EINVAL;
+    if (!ctx || !ctx->opened) return SALTS_EINVAL;
     count = vec_size(&ctx->streams);
-    return count > INT_MAX ? TURBO_EFBIG : (int)count;
+    return count > INT_MAX ? SALTS_EFBIG : (int)count;
 }
 
 static int mpeg_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
                                              turbo_stream_info_t *info) {
     mpeg_demuxer_ctx_t *ctx = (mpeg_demuxer_ctx_t *)ctx_ptr;
     const mpeg_demuxer_stream_t *stream;
-    if (!ctx || !ctx->opened || !info || stream_index < 0) return TURBO_EINVAL;
+    if (!ctx || !ctx->opened || !info || stream_index < 0) return SALTS_EINVAL;
     stream = (const mpeg_demuxer_stream_t *)vec_at_const(
         &ctx->streams, (size_t)stream_index);
-    if (!stream) return TURBO_EINVAL;
+    if (!stream) return SALTS_EINVAL;
     *info = stream->info;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int mpeg_demuxer_get_metadata_impl(void *ctx_ptr,
@@ -346,7 +346,7 @@ static int mpeg_demuxer_get_metadata_impl(void *ctx_ptr,
     mpeg_demuxer_ctx_t *ctx = (mpeg_demuxer_ctx_t *)ctx_ptr;
     AVDictionaryEntry *entry;
 
-    if (!ctx || !ctx->opened || !metadata) return TURBO_EINVAL;
+    if (!ctx || !ctx->opened || !metadata) return SALTS_EINVAL;
     memset(metadata, 0, sizeof(*metadata));
     if (ctx->format->duration != AV_NOPTS_VALUE)
         metadata->duration_ms = ctx->format->duration / 1000;
@@ -359,7 +359,7 @@ static int mpeg_demuxer_get_metadata_impl(void *ctx_ptr,
     if (entry) metadata->copyright = entry->value;
     entry = av_dict_get(ctx->format->metadata, "comment", NULL, 0);
     if (entry) metadata->comment = entry->value;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int mpegts_probe_impl(const uint8_t *data, size_t size) {

@@ -10,6 +10,7 @@ file(GLOB TURBO_MEDIA_RTMP_SOURCES CONFIGURE_DEPENDS rtmp/*.c)
 add_library(
   turbo_media_streamer SHARED
   streamer_registry.c
+  chttp_upload.c
   hls_streamer.c
   dash_streamer.c
   http_flv_streamer.c
@@ -36,7 +37,7 @@ target_link_libraries(
          TurboMedia::Muxer
          TurboMedia::Demuxer
          TurboMedia::Transport
-  PRIVATE TurboUtils::Core TurboUtils::STL TurboHttp::HttpClient TurboNet::CoroNet)
+  PRIVATE Salts::Core Salts::CSTL Salts::CHTTP Salts::CNet)
 target_compile_definitions(
   turbo_media_streamer
   PUBLIC TURBO_MEDIA_HAS_HLS TURBO_MEDIA_HAS_DASH TURBO_MEDIA_HAS_RTMP

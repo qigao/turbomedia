@@ -12,8 +12,8 @@
 #include <rtp-packet.h>
 #include <rtp-payload.h>
 #include <turbo_media_server.h>
-#include <turbo_parser.h>
-#include <turbo_thread.h>
+#include <cyaml/cyaml.h>
+#include <salts_thread.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavfilter/avfilter.h>
@@ -212,8 +212,8 @@ typedef struct pipeline_runtime_rtp {
     int output_source_created;
     int output_source_committed;
     atomic_int async_status;
-    turbo_mutex_t mutex;
-    turbo_cond_t available;
+    salts_mutex_t mutex;
+    salts_cond_t available;
     pipeline_runtime_track_t tracks[PIPELINE_RUNTIME_TRACK_COUNT];
 } pipeline_runtime_rtp_t;
 
@@ -315,23 +315,33 @@ static int pipeline_key_allowed(const char *key, const char *const *allowed,
     return 0;
 }
 
-static int pipeline_validate_mapping_keys(const turbo_yaml_doc_t *document,
-                                          const turbo_yaml_node_t *mapping,
+static cyaml_type_t pipeline_yaml_node_type(const cyaml_node_t *node) {
+    return node ? node->type : CYAML_NONE;
+}
+
+static cyaml_node_t *pipeline_yaml_mapping_key(const cyaml_node_t *mapping,
+                                               size_t index) {
+    cyaml_pair_t *pair = cyaml_map_at(mapping, (uint32_t)index);
+    return pair ? pair->key : NULL;
+}
+
+static int pipeline_validate_mapping_keys(const cyaml_doc_t *document,
+                                          const cyaml_node_t *mapping,
                                           const char *path,
                                           const char *const *allowed,
                                           size_t allowed_count,
                                           turbo_pipeline_error_t *error) {
     size_t count;
     size_t i;
-    if (!mapping || turbo_yaml_node_type(mapping) != TURBO_YAML_NODE_MAPPING) {
+    if (!mapping || pipeline_yaml_node_type(mapping) != CYAML_MAP) {
         pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, NULL,
                            "%s must be a YAML mapping", path);
         return 0;
     }
-    count = turbo_yaml_mapping_size(mapping);
+    count = cyaml_map_len(mapping);
     for (i = 0; i < count; ++i) {
-        turbo_yaml_node_t *key_node = turbo_yaml_mapping_key(mapping, i);
-        char *key = turbo_yaml_scalar_dup(document, key_node);
+        cyaml_node_t *key_node = pipeline_yaml_mapping_key(mapping, i);
+        char *key = cyaml_scalar_str(document, key_node);
         size_t j;
         if (!key) {
             pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, NULL,
@@ -341,22 +351,22 @@ static int pipeline_validate_mapping_keys(const turbo_yaml_doc_t *document,
         if (!pipeline_key_allowed(key, allowed, allowed_count)) {
             pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, NULL,
                                "%s contains unknown field '%s'", path, key);
-            turbo_yaml_string_free(key);
+            free(key);
             return 0;
         }
         for (j = i + 1; j < count; ++j) {
-            char *other = turbo_yaml_scalar_dup(
-                document, turbo_yaml_mapping_key(mapping, j));
+            char *other = cyaml_scalar_str(
+                document, pipeline_yaml_mapping_key(mapping, j));
             int duplicate = other && strcmp(key, other) == 0;
-            turbo_yaml_string_free(other);
+            free(other);
             if (duplicate) {
                 pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, NULL,
                                    "%s contains duplicate field '%s'", path, key);
-                turbo_yaml_string_free(key);
+                free(key);
                 return 0;
             }
         }
-        turbo_yaml_string_free(key);
+        free(key);
     }
     return 1;
 }
@@ -372,76 +382,78 @@ static int pipeline_validate_yaml_shape(const char *yaml, size_t yaml_size,
         "bitrate",     "width",       "height",      "frame_rate", "sample_rate",
         "channels",    "gop_frames",  "options"};
     static const char *const edge_keys[] = {"from", "to"};
-    turbo_yaml_doc_t *document = NULL;
-    turbo_yaml_node_t *root;
-    turbo_yaml_node_t *limits;
-    turbo_yaml_node_t *nodes;
-    turbo_yaml_node_t *edges;
+    cyaml_doc_t *document = NULL;
+    cyaml_node_t *root;
+    cyaml_node_t *limits;
+    cyaml_node_t *nodes;
+    cyaml_node_t *edges;
+    cyaml_error_t yaml_error = {0};
     size_t i;
-    if (turbo_parse_yaml((const uint8_t *)yaml, yaml_size, &document) != 0 ||
-        !document) {
+    document = cyaml_parse(yaml, yaml_size, NULL, &yaml_error);
+    if (!document) {
         pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, NULL,
-                           "YAML syntax validation failed");
+                           "YAML syntax validation failed: %s",
+                           yaml_error.msg[0] ? yaml_error.msg : "parse failed");
         return 0;
     }
-    root = turbo_yaml_root(document);
+    root = cyaml_root(document);
     if (!pipeline_validate_mapping_keys(document, root, "root", root_keys,
                                         sizeof(root_keys) / sizeof(root_keys[0]), error))
         goto fail;
-    limits = turbo_yaml_mapping_get(document, root, "limits");
+    limits = cyaml_get(document, root, "limits");
     if (limits &&
         !pipeline_validate_mapping_keys(document, limits, "limits", limit_keys,
                                         sizeof(limit_keys) / sizeof(limit_keys[0]), error))
         goto fail;
-    nodes = turbo_yaml_mapping_get(document, root, "nodes");
-    if (!nodes || turbo_yaml_node_type(nodes) != TURBO_YAML_NODE_SEQUENCE) {
+    nodes = cyaml_get(document, root, "nodes");
+    if (!nodes || pipeline_yaml_node_type(nodes) != CYAML_SEQ) {
         pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, NULL,
                            "nodes must be a YAML sequence");
         goto fail;
     }
-    for (i = 0; i < turbo_yaml_sequence_size(nodes); ++i) {
-        turbo_yaml_node_t *node = turbo_yaml_sequence_get(nodes, i);
-        turbo_yaml_node_t *config;
-        turbo_yaml_node_t *options;
+    for (i = 0; i < cyaml_seq_len(nodes); ++i) {
+        cyaml_node_t *node = cyaml_seq_get(nodes, i);
+        cyaml_node_t *config;
+        cyaml_node_t *options;
         char path[64];
         snprintf(path, sizeof(path), "nodes[%zu]", i);
         if (!pipeline_validate_mapping_keys(document, node, path, node_keys,
                                             sizeof(node_keys) / sizeof(node_keys[0]),
                                             error))
             goto fail;
-        config = turbo_yaml_mapping_get(document, node, "config");
+        config = cyaml_get(document, node, "config");
         if (!config) continue;
         snprintf(path, sizeof(path), "nodes[%zu].config", i);
         if (!pipeline_validate_mapping_keys(
                 document, config, path, config_keys,
                 sizeof(config_keys) / sizeof(config_keys[0]), error))
             goto fail;
-        options = turbo_yaml_mapping_get(document, config, "options");
+        options = cyaml_get(document, config, "options");
         if (options) {
             snprintf(path, sizeof(path), "nodes[%zu].config.options", i);
             if (!pipeline_validate_mapping_keys(document, options, path, NULL, 0, error))
                 goto fail;
         }
     }
-    edges = turbo_yaml_mapping_get(document, root, "edges");
-    if (!edges || turbo_yaml_node_type(edges) != TURBO_YAML_NODE_SEQUENCE) {
+    edges = cyaml_get(document, root, "edges");
+    if (!edges || pipeline_yaml_node_type(edges) != CYAML_SEQ) {
         pipeline_error_set(error, TURBO_PIPELINE_ECONFIG, NULL,
                            "edges must be a YAML sequence");
         goto fail;
     }
-    for (i = 0; i < turbo_yaml_sequence_size(edges); ++i) {
+    for (i = 0; i < cyaml_seq_len(edges); ++i) {
         char path[64];
         snprintf(path, sizeof(path), "edges[%zu]", i);
         if (!pipeline_validate_mapping_keys(
-                document, turbo_yaml_sequence_get(edges, i), path, edge_keys,
+                document, cyaml_seq_get(edges, i), path, edge_keys,
                 sizeof(edge_keys) / sizeof(edge_keys[0]), error))
             goto fail;
     }
-    turbo_free_yaml(&document);
+    cyaml_free(document);
     return 1;
 
 fail:
-    turbo_free_yaml(&document);
+    cyaml_free(document);
     return 0;
 }
 
@@ -1612,11 +1624,11 @@ static int pipeline_runtime_on_frame(turbo_media_source_t *source,
     runtime = &pipeline->runtime_rtp;
     if (!pipeline_runtime_find_track(runtime, frame->track_id))
         return TURBO_MEDIA_OK;
-    turbo_mutex_lock(&runtime->mutex);
+    salts_mutex_lock(&runtime->mutex);
     if (!runtime->accepting ||
         atomic_load_explicit(&pipeline->stop_requested,
                              memory_order_acquire)) {
-        turbo_mutex_unlock(&runtime->mutex);
+        salts_mutex_unlock(&runtime->mutex);
         return TURBO_MEDIA_ERR_STATE;
     }
     if (frame->size == 0 || frame->size > runtime->max_packet_bytes ||
@@ -1624,8 +1636,8 @@ static int pipeline_runtime_on_frame(turbo_media_source_t *source,
         atomic_store_explicit(&runtime->async_status,
                               TURBO_PIPELINE_EBACKPRESSURE,
                               memory_order_release);
-        turbo_cond_signal(&runtime->available);
-        turbo_mutex_unlock(&runtime->mutex);
+        salts_cond_signal(&runtime->available);
+        salts_mutex_unlock(&runtime->mutex);
         return TURBO_MEDIA_ERR_FULL;
     }
     entry = &runtime->entries[runtime->tail];
@@ -1636,8 +1648,8 @@ static int pipeline_runtime_on_frame(turbo_media_source_t *source,
     entry->slot = runtime->tail;
     runtime->tail = (runtime->tail + 1u) % runtime->queue_capacity;
     runtime->count++;
-    turbo_cond_signal(&runtime->available);
-    turbo_mutex_unlock(&runtime->mutex);
+    salts_cond_signal(&runtime->available);
+    salts_mutex_unlock(&runtime->mutex);
     return TURBO_MEDIA_OK;
 }
 
@@ -1824,8 +1836,8 @@ static int pipeline_runtime_prepare(turbo_pipeline_t *pipeline,
                            "cannot allocate bounded Runtime input queue");
         return 0;
     }
-    turbo_mutex_init(&runtime->mutex);
-    turbo_cond_init(&runtime->available);
+    salts_mutex_init(&runtime->mutex);
+    salts_cond_init(&runtime->available);
     runtime->sync_initialized = 1;
     atomic_init(&runtime->async_status, TURBO_PIPELINE_OK);
     track_count = turbo_media_source_track_count(runtime->input_source);
@@ -1893,10 +1905,10 @@ static void pipeline_runtime_release(turbo_pipeline_t *pipeline) {
     runtime = &pipeline->runtime_rtp;
     server_runtime = runtime->server_runtime;
     if (runtime->sync_initialized) {
-        turbo_mutex_lock(&runtime->mutex);
+        salts_mutex_lock(&runtime->mutex);
         runtime->accepting = 0;
-        turbo_cond_broadcast(&runtime->available);
-        turbo_mutex_unlock(&runtime->mutex);
+        salts_cond_broadcast(&runtime->available);
+        salts_mutex_unlock(&runtime->mutex);
     }
     if (runtime->subscription_id && runtime->input_source) {
         (void)turbo_media_source_unsubscribe(runtime->input_source,
@@ -1916,8 +1928,8 @@ static void pipeline_runtime_release(turbo_pipeline_t *pipeline) {
             server_runtime, &runtime->output_key);
     }
     if (runtime->sync_initialized) {
-        turbo_cond_destroy(&runtime->available);
-        turbo_mutex_destroy(&runtime->mutex);
+        salts_cond_destroy(&runtime->available);
+        salts_mutex_destroy(&runtime->mutex);
     }
     free(runtime->entries);
     free(runtime->packet_slots);
@@ -3124,20 +3136,20 @@ static turbo_pipeline_status_t pipeline_run_runtime_rtp(
     for (;;) {
         turbo_media_frame_t frame;
         int rc;
-        turbo_mutex_lock(&runtime->mutex);
+        salts_mutex_lock(&runtime->mutex);
         while (runtime->count == 0 &&
                !atomic_load_explicit(&pipeline->stop_requested,
                                      memory_order_acquire) &&
                atomic_load_explicit(&runtime->async_status,
                                     memory_order_acquire) ==
                    TURBO_PIPELINE_OK)
-            turbo_cond_wait(&runtime->available, &runtime->mutex);
+            salts_cond_wait(&runtime->available, &runtime->mutex);
         status = (turbo_pipeline_status_t)atomic_load_explicit(
             &runtime->async_status, memory_order_acquire);
         if (status != TURBO_PIPELINE_OK) {
             runtime->accepting = 0;
             runtime->count = 0;
-            turbo_mutex_unlock(&runtime->mutex);
+            salts_mutex_unlock(&runtime->mutex);
             break;
         }
         if (atomic_load_explicit(&pipeline->stop_requested,
@@ -3145,18 +3157,18 @@ static turbo_pipeline_status_t pipeline_run_runtime_rtp(
             runtime->accepting = 0;
             runtime->count = 0;
             stopped = 1;
-            turbo_mutex_unlock(&runtime->mutex);
+            salts_mutex_unlock(&runtime->mutex);
             break;
         }
         frame = runtime->entries[runtime->head].frame;
-        turbo_mutex_unlock(&runtime->mutex);
+        salts_mutex_unlock(&runtime->mutex);
 
         rc = pipeline_runtime_process_packet(pipeline, &frame, error);
 
-        turbo_mutex_lock(&runtime->mutex);
+        salts_mutex_lock(&runtime->mutex);
         runtime->head = (runtime->head + 1u) % runtime->queue_capacity;
         runtime->count--;
-        turbo_mutex_unlock(&runtime->mutex);
+        salts_mutex_unlock(&runtime->mutex);
         atomic_fetch_add_explicit(&pipeline->packets_read, 1,
                                   memory_order_relaxed);
         atomic_fetch_add_explicit(&pipeline->bytes_read,
@@ -3322,10 +3334,10 @@ turbo_pipeline_status_t turbo_pipeline_request_stop(turbo_pipeline_t *pipeline) 
     atomic_store_explicit(&pipeline->stop_requested, 1, memory_order_release);
     if (pipeline->execution_mode == PIPELINE_EXECUTION_RUNTIME_RTP &&
         pipeline->runtime_rtp.sync_initialized) {
-        turbo_mutex_lock(&pipeline->runtime_rtp.mutex);
+        salts_mutex_lock(&pipeline->runtime_rtp.mutex);
         pipeline->runtime_rtp.accepting = 0;
-        turbo_cond_broadcast(&pipeline->runtime_rtp.available);
-        turbo_mutex_unlock(&pipeline->runtime_rtp.mutex);
+        salts_cond_broadcast(&pipeline->runtime_rtp.available);
+        salts_mutex_unlock(&pipeline->runtime_rtp.mutex);
     }
     if (state == TURBO_PIPELINE_STATE_RUNNING) {
         expected = TURBO_PIPELINE_STATE_RUNNING;

@@ -2,6 +2,7 @@
 #include "../../config_toml.h"
 #include "turbo_media_auth.h"
 #include "platform.h"
+#include <salts/clock.h>
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -41,32 +42,32 @@ typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID,
     ROOM_CONFIG_STRING_SFU_AUTH_SECRET,
     ROOM_CONFIG_STRING_LOG_LEVEL,
-    ROOM_CONFIG_STRING_IRIS_FLOWMQ_HOST,
-    ROOM_CONFIG_STRING_IRIS_FLOWMQ_TOPIC,
+    ROOM_CONFIG_STRING_IRIS_CONTROL_HOST,
+    ROOM_CONFIG_STRING_IRIS_CONTROL_PATH,
     ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
     ROOM_CONFIG_STRING_IRIS_IDENTITY,
-    ROOM_CONFIG_STRING_IRIS_CERTIFICATE_SHA256,
-    ROOM_CONFIG_STRING_IRIS_FLOWMQ_CA_FILE,
-    ROOM_CONFIG_STRING_IRIS_FLOWMQ_CERT_FILE,
-    ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_FILE,
-    ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_PASSWORD,
-    ROOM_CONFIG_STRING_IRIS_FLOWMQ_SERVER_NAME,
+    ROOM_CONFIG_STRING_IRIS_CONTROL_CA_FILE,
+    ROOM_CONFIG_STRING_IRIS_CONTROL_CERT_FILE,
+    ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_FILE,
+    ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_PASSWORD,
+    ROOM_CONFIG_STRING_IRIS_CONTROL_SERVER_NAME,
     ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
     ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
     ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
-    ROOM_CONFIG_STRING_FMQ_BIND_HOST,
-    ROOM_CONFIG_STRING_FMQ_CA_FILE,
-    ROOM_CONFIG_STRING_FMQ_CERT_FILE,
-    ROOM_CONFIG_STRING_FMQ_KEY_FILE,
-    ROOM_CONFIG_STRING_FMQ_KEY_PASSWORD,
-    ROOM_CONFIG_STRING_FMQ_WORKER_BASE,
+    ROOM_CONFIG_STRING_CONTROL_WS_BIND_HOST,
+    ROOM_CONFIG_STRING_CONTROL_WS_PATH,
+    ROOM_CONFIG_STRING_CONTROL_WS_CA_FILE,
+    ROOM_CONFIG_STRING_CONTROL_WS_CERT_FILE,
+    ROOM_CONFIG_STRING_CONTROL_WS_KEY_FILE,
+    ROOM_CONFIG_STRING_CONTROL_WS_KEY_PASSWORD,
+    ROOM_CONFIG_STRING_CONTROL_WS_WORKER_BASE,
     ROOM_CONFIG_STRING_COUNT =
-        ROOM_CONFIG_STRING_FMQ_WORKER_BASE +
-        ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES * 7
+        ROOM_CONFIG_STRING_CONTROL_WS_WORKER_BASE +
+        ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES * 7
 } room_service_config_string_t;
 
-#define ROOM_CONFIG_FMQ_WORKER_STRING(worker_index, field_index) \
-    (ROOM_CONFIG_STRING_FMQ_WORKER_BASE + (worker_index) * 7 + (field_index))
+#define ROOM_CONFIG_CONTROL_WS_WORKER_STRING(worker_index, field_index) \
+    (ROOM_CONFIG_STRING_CONTROL_WS_WORKER_BASE + (worker_index) * 7 + (field_index))
 
 static const char *room_service_env_value(const char *name) {
     const char *value = getenv(name);
@@ -191,19 +192,19 @@ static int room_service_scope_valid(const char *scope) {
     return 1;
 }
 
-static int room_service_fmq_identities_valid(
+static int room_service_control_identities_valid(
     const room_service_app_config_t *config) {
-    uint64_t now_ms = turbo_realtime_ms();
+    uint64_t now_ms = salts_realtime_ms();
     int i;
     int j;
-    if (config->fmq_worker_identity_count <= 0 ||
-        config->fmq_worker_identity_count >
-            ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES) {
+    if (config->control_ws_worker_identity_count <= 0 ||
+        config->control_ws_worker_identity_count >
+            ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES) {
         return 0;
     }
-    for (i = 0; i < config->fmq_worker_identity_count; ++i) {
-        const room_service_fmq_worker_identity_t *entry =
-            &config->fmq_worker_identities[i];
+    for (i = 0; i < config->control_ws_worker_identity_count; ++i) {
+        const room_service_control_worker_identity_t *entry =
+            &config->control_ws_worker_identities[i];
         if (!entry->worker_id || entry->worker_id[0] == '\0' ||
             strlen(entry->worker_id) > 127u ||
             !room_service_fingerprint_valid(
@@ -230,8 +231,8 @@ static int room_service_fmq_identities_valid(
             return 0;
         }
         for (j = 0; j < i; ++j) {
-            const room_service_fmq_worker_identity_t *prior =
-                &config->fmq_worker_identities[j];
+            const room_service_control_worker_identity_t *prior =
+                &config->control_ws_worker_identities[j];
             if (strcmp(prior->worker_id, entry->worker_id) == 0 ||
                 strcmp(prior->active_certificate_sha256,
                        entry->active_certificate_sha256) == 0 ||
@@ -295,20 +296,19 @@ void room_service_app_config_init(room_service_app_config_t *config) {
     config->auto_create_rooms = 1;
     config->dry_run = 0;
     config->log_level = "info";
-    config->iris_flowmq_host =
-        room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_HOST");
-    config->iris_flowmq_port = 0;
-    config->iris_flowmq_topic = "media-provider-v1";
+    config->iris_control_host =
+        room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_HOST");
+    config->iris_control_port = 0;
+    config->iris_control_path = "/internal/iris/control";
     config->iris_provider_instance_id = NULL;
     config->iris_identity = NULL;
-    config->iris_certificate_sha256 = NULL;
-    config->iris_flowmq_ca_file = NULL;
-    config->iris_flowmq_cert_file = NULL;
-    config->iris_flowmq_key_file = NULL;
-    config->iris_flowmq_key_password = NULL;
-    config->iris_flowmq_server_name = NULL;
-    config->iris_flowmq_use_tls = 1;
-    config->iris_flowmq_allow_insecure_loopback = 0;
+    config->iris_control_ca_file = NULL;
+    config->iris_control_cert_file = NULL;
+    config->iris_control_key_file = NULL;
+    config->iris_control_key_password = NULL;
+    config->iris_control_server_name = NULL;
+    config->iris_control_use_tls = 1;
+    config->iris_control_allow_insecure_loopback = 0;
     config->iris_ack_timeout_ms = 5000;
     config->iris_event_store_config = room_service_env_value(
         "TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CONFIG");
@@ -316,7 +316,6 @@ void room_service_app_config_init(room_service_app_config_t *config) {
         "TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CHANNEL");
     config->iris_command_ledger_channel = room_service_env_value(
         "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_CHANNEL");
-    config->iris_allow_development_sqlite = 0;
     config->iris_correlation_capacity = 1024;
     config->iris_completion_queue_capacity = 1024;
     config->iris_reconcile_inventory_queue_capacity = 8;
@@ -337,21 +336,22 @@ void room_service_app_config_init(room_service_app_config_t *config) {
     config->iris_retry_max_attempts = 8;
     config->iris_retry_backoff_ms = 250;
     config->iris_drain_timeout_ms = 30000;
-    config->fmq_bind_host = "127.0.0.1";
-    config->fmq_bind_port = 0;
-    config->fmq_worker_heartbeat_ms = 5000;
-    config->fmq_worker_lease_ms = 15000;
-    config->fmq_dispatch_deadline_ms = 5000;
-    config->fmq_dialog_capacity = 256;
-    config->fmq_use_tls = 0;
-    config->fmq_allow_insecure_loopback = 0;
-    config->fmq_ca_file = NULL;
-    config->fmq_cert_file = NULL;
-    config->fmq_key_file = NULL;
-    config->fmq_key_password = NULL;
-    memset(config->fmq_worker_identities, 0,
-           sizeof(config->fmq_worker_identities));
-    config->fmq_worker_identity_count = 0;
+    config->control_ws_bind_host = "127.0.0.1";
+    config->control_ws_bind_port = 0;
+    config->control_ws_path = "/internal/ivr/control";
+    config->control_ws_worker_heartbeat_ms = 5000;
+    config->control_ws_worker_lease_ms = 15000;
+    config->control_ws_dispatch_deadline_ms = 5000;
+    config->control_ws_dialog_capacity = 256;
+    config->control_ws_use_tls = 0;
+    config->control_ws_allow_insecure_loopback = 0;
+    config->control_ws_ca_file = NULL;
+    config->control_ws_cert_file = NULL;
+    config->control_ws_key_file = NULL;
+    config->control_ws_key_password = NULL;
+    memset(config->control_ws_worker_identities, 0,
+           sizeof(config->control_ws_worker_identities));
+    config->control_ws_worker_identity_count = 0;
     config->private_data = NULL;
 }
 
@@ -388,66 +388,65 @@ static int room_service_config_clone_strings(
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID, sfu_auth_key_id);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_SECRET, sfu_auth_secret);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_LOG_LEVEL, log_level);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_HOST, iris_flowmq_host);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_TOPIC, iris_flowmq_topic);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_HOST, iris_control_host);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_PATH, iris_control_path);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
                       iris_provider_instance_id);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_IDENTITY, iris_identity);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CERTIFICATE_SHA256,
-                      iris_certificate_sha256);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_CA_FILE,
-                      iris_flowmq_ca_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_CERT_FILE,
-                      iris_flowmq_cert_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_FILE,
-                      iris_flowmq_key_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_PASSWORD,
-                      iris_flowmq_key_password);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_FLOWMQ_SERVER_NAME,
-                      iris_flowmq_server_name);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_CA_FILE,
+                      iris_control_ca_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_CERT_FILE,
+                      iris_control_cert_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_FILE,
+                      iris_control_key_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_PASSWORD,
+                      iris_control_key_password);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_SERVER_NAME,
+                      iris_control_server_name);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
                       iris_event_store_config);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
                       iris_event_store_channel);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
                       iris_command_ledger_channel);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_BIND_HOST, fmq_bind_host);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_CA_FILE, fmq_ca_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_CERT_FILE, fmq_cert_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_KEY_FILE, fmq_key_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_FMQ_KEY_PASSWORD, fmq_key_password);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_BIND_HOST, control_ws_bind_host);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_PATH, control_ws_path);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_CA_FILE, control_ws_ca_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_CERT_FILE, control_ws_cert_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_KEY_FILE, control_ws_key_file);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_KEY_PASSWORD, control_ws_key_password);
 
-    for (int i = 0; i < ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES; ++i) {
+    for (int i = 0; i < ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES; ++i) {
         if (rtc_app_config_storage_copy(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 0),
-                source->fmq_worker_identities[i].worker_id,
-                &candidate->fmq_worker_identities[i].worker_id) != 0 ||
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 0),
+                source->control_ws_worker_identities[i].worker_id,
+                &candidate->control_ws_worker_identities[i].worker_id) != 0 ||
             rtc_app_config_storage_copy(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 1),
-                source->fmq_worker_identities[i].active_certificate_sha256,
-                &candidate->fmq_worker_identities[i]
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 1),
+                source->control_ws_worker_identities[i].active_certificate_sha256,
+                &candidate->control_ws_worker_identities[i]
                      .active_certificate_sha256) != 0 ||
             rtc_app_config_storage_copy(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 2),
-                source->fmq_worker_identities[i].previous_certificate_sha256,
-                &candidate->fmq_worker_identities[i]
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 2),
+                source->control_ws_worker_identities[i].previous_certificate_sha256,
+                &candidate->control_ws_worker_identities[i]
                      .previous_certificate_sha256) != 0 ||
             rtc_app_config_storage_copy(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 3),
-                source->fmq_worker_identities[i].tenant_id,
-                &candidate->fmq_worker_identities[i].tenant_id) != 0 ||
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 3),
+                source->control_ws_worker_identities[i].tenant_id,
+                &candidate->control_ws_worker_identities[i].tenant_id) != 0 ||
             rtc_app_config_storage_copy(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 4),
-                source->fmq_worker_identities[i].room_scope,
-                &candidate->fmq_worker_identities[i].room_scope) != 0 ||
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 4),
+                source->control_ws_worker_identities[i].room_scope,
+                &candidate->control_ws_worker_identities[i].room_scope) != 0 ||
             rtc_app_config_storage_copy(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 5),
-                source->fmq_worker_identities[i].call_scope,
-                &candidate->fmq_worker_identities[i].call_scope) != 0 ||
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 5),
+                source->control_ws_worker_identities[i].call_scope,
+                &candidate->control_ws_worker_identities[i].call_scope) != 0 ||
             rtc_app_config_storage_copy(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 6),
-                source->fmq_worker_identities[i].content_capabilities,
-                &candidate->fmq_worker_identities[i]
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 6),
+                source->control_ws_worker_identities[i].content_capabilities,
+                &candidate->control_ws_worker_identities[i]
                      .content_capabilities) != 0) {
             return -1;
         }
@@ -458,7 +457,7 @@ static int room_service_config_clone_strings(
 }
 
 static int room_service_config_apply_server(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -491,7 +490,7 @@ static int room_service_config_apply_server(
 }
 
 static int room_service_config_apply_control(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {"token"};
@@ -510,7 +509,7 @@ static int room_service_config_apply_control(
 }
 
 static int room_service_config_apply_auth(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -553,7 +552,7 @@ static int room_service_config_apply_auth(
 }
 
 static int room_service_config_apply_sfu(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -583,7 +582,7 @@ static int room_service_config_apply_sfu(
 }
 
 static int room_service_config_apply_sfu_auth(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
@@ -613,7 +612,7 @@ static int room_service_config_apply_sfu_auth(
 }
 
 static int room_service_config_apply_capacity(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config) {
     static const char *const allowed[] = {"max_rooms"};
 
@@ -630,7 +629,7 @@ static int room_service_config_apply_capacity(
 }
 
 static int room_service_config_apply_rooms(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config) {
     static const char *const allowed[] = {"auto_create"};
 
@@ -647,7 +646,7 @@ static int room_service_config_apply_rooms(
 }
 
 static int room_service_config_apply_runtime(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config) {
     static const char *const allowed[] = {"dry_run"};
 
@@ -664,7 +663,7 @@ static int room_service_config_apply_runtime(
 }
 
 static int room_service_config_apply_logging(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {"level"};
@@ -682,49 +681,49 @@ static int room_service_config_apply_logging(
     return 0;
 }
 
-static int room_service_config_apply_fmq_workers(
-    const turbo_toml_t *table, room_service_app_config_t *config,
+static int room_service_config_apply_control_ws_workers(
+    const toml_table_t *table, room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
-    turbo_toml_array_t *workers;
+    toml_array_t *workers;
     int count;
     int i;
     if (!rtc_app_toml_table_has_key(table, "workers")) {
         return 0;
     }
-    workers = turbo_toml_array(table, "workers");
+    workers = toml_table_array(table, "workers");
     if (!workers) {
-        TLOG_ERROR("TOML key [fmq].workers must be an array of tables");
+        TLOG_ERROR("TOML key [control_ws].workers must be an array of tables");
         return -1;
     }
-    count = turbo_toml_array_len(workers);
-    if (count < 0 || count > ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES) {
-        TLOG_ERRORF("TOML key [fmq].workers exceeds the maximum of {} entries",
-                   ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES);
+    count = toml_array_len(workers);
+    if (count < 0 || count > ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES) {
+        TLOG_ERRORF("TOML key [control_ws].workers exceeds the maximum of {} entries",
+                   ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES);
         return -1;
     }
-    for (i = 0; i < ROOM_SERVICE_FMQ_MAX_WORKER_IDENTITIES; ++i) {
-        room_service_fmq_worker_identity_t *identity =
-            &config->fmq_worker_identities[i];
+    for (i = 0; i < ROOM_SERVICE_CONTROL_MAX_WORKER_IDENTITIES; ++i) {
+        room_service_control_worker_identity_t *identity =
+            &config->control_ws_worker_identities[i];
         if (rtc_app_config_storage_replace(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 0), NULL,
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 0), NULL,
                 &identity->worker_id) != 0 ||
             rtc_app_config_storage_replace(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 1), NULL,
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 1), NULL,
                 &identity->active_certificate_sha256) != 0 ||
             rtc_app_config_storage_replace(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 2), NULL,
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 2), NULL,
                 &identity->previous_certificate_sha256) != 0 ||
             rtc_app_config_storage_replace(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 3), NULL,
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 3), NULL,
                 &identity->tenant_id) != 0 ||
             rtc_app_config_storage_replace(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 4), NULL,
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 4), NULL,
                 &identity->room_scope) != 0 ||
             rtc_app_config_storage_replace(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 5), NULL,
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 5), NULL,
                 &identity->call_scope) != 0 ||
             rtc_app_config_storage_replace(
-                storage, ROOM_CONFIG_FMQ_WORKER_STRING(i, 6), NULL,
+                storage, ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 6), NULL,
                 &identity->content_capabilities) != 0) {
             return -1;
         }
@@ -737,64 +736,64 @@ static int room_service_config_apply_fmq_workers(
             "previous_certificate_sha256", "previous_expires_at_ms",
             "generation", "tenant_id", "room_scope", "call_scope",
             "content_capabilities"};
-        turbo_toml_t *worker = turbo_toml_array_table(workers, i);
-        room_service_fmq_worker_identity_t *identity =
-            &config->fmq_worker_identities[i];
-        turbo_toml_value_t value;
+        toml_table_t *worker = toml_array_table(workers, i);
+        room_service_control_worker_identity_t *identity =
+            &config->control_ws_worker_identities[i];
+        toml_value_t value;
         if (!worker ||
             rtc_app_toml_table_keys_valid(
-                worker, "fmq.workers", allowed,
+                worker, "control_ws.workers", allowed,
                 sizeof(allowed) / sizeof(allowed[0])) != 0 ||
             rtc_app_toml_apply_string(
-                worker, "fmq.workers", "worker_id", storage,
-                ROOM_CONFIG_FMQ_WORKER_STRING(i, 0),
+                worker, "control_ws.workers", "worker_id", storage,
+                ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 0),
                 &identity->worker_id) != 0 ||
             rtc_app_toml_apply_string(
-                worker, "fmq.workers", "active_certificate_sha256", storage,
-                ROOM_CONFIG_FMQ_WORKER_STRING(i, 1),
+                worker, "control_ws.workers", "active_certificate_sha256", storage,
+                ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 1),
                 &identity->active_certificate_sha256) != 0 ||
             rtc_app_toml_apply_string(
-                worker, "fmq.workers", "previous_certificate_sha256", storage,
-                ROOM_CONFIG_FMQ_WORKER_STRING(i, 2),
+                worker, "control_ws.workers", "previous_certificate_sha256", storage,
+                ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 2),
                 &identity->previous_certificate_sha256) != 0 ||
             rtc_app_toml_apply_string(
-                worker, "fmq.workers", "tenant_id", storage,
-                ROOM_CONFIG_FMQ_WORKER_STRING(i, 3),
+                worker, "control_ws.workers", "tenant_id", storage,
+                ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 3),
                 &identity->tenant_id) != 0 ||
             rtc_app_toml_apply_string(
-                worker, "fmq.workers", "room_scope", storage,
-                ROOM_CONFIG_FMQ_WORKER_STRING(i, 4),
+                worker, "control_ws.workers", "room_scope", storage,
+                ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 4),
                 &identity->room_scope) != 0 ||
             rtc_app_toml_apply_string(
-                worker, "fmq.workers", "call_scope", storage,
-                ROOM_CONFIG_FMQ_WORKER_STRING(i, 5),
+                worker, "control_ws.workers", "call_scope", storage,
+                ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 5),
                 &identity->call_scope) != 0 ||
             rtc_app_toml_apply_string(
-                worker, "fmq.workers", "content_capabilities", storage,
-                ROOM_CONFIG_FMQ_WORKER_STRING(i, 6),
+                worker, "control_ws.workers", "content_capabilities", storage,
+                ROOM_CONFIG_CONTROL_WS_WORKER_STRING(i, 6),
                 &identity->content_capabilities) != 0) {
             return -1;
         }
         if (rtc_app_toml_table_has_key(worker, "previous_expires_at_ms")) {
-            value = turbo_toml_int(worker, "previous_expires_at_ms");
+            value = toml_table_int(worker, "previous_expires_at_ms");
             if (!value.ok || value.u.i <= 0) return -1;
             identity->previous_expires_at_ms = (uint64_t)value.u.i;
         }
         if (!rtc_app_toml_table_has_key(worker, "generation")) return -1;
-        value = turbo_toml_int(worker, "generation");
+        value = toml_table_int(worker, "generation");
         if (!value.ok || value.u.i <= 0) return -1;
         identity->generation = (uint64_t)value.u.i;
     }
-    config->fmq_worker_identity_count = count;
+    config->control_ws_worker_identity_count = count;
     return 0;
 }
 
-static int room_service_config_apply_fmq(
-    const turbo_toml_t *table,
+static int room_service_config_apply_control_ws(
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
-        "bind_host", "bind_port",
+        "bind_host", "bind_port", "path",
         "worker_heartbeat_ms", "worker_lease_ms", "dispatch_deadline_ms",
         "dialog_capacity",
         "use_tls", "allow_insecure_loopback", "ca_file", "cert_file",
@@ -806,52 +805,55 @@ static int room_service_config_apply_fmq(
         return 0;
     }
     if (rtc_app_toml_table_keys_valid(
-            table, "fmq", allowed, sizeof(allowed) / sizeof(allowed[0])) != 0 ||
-        rtc_app_toml_apply_string(table, "fmq", "bind_host", storage,
-                                  ROOM_CONFIG_STRING_FMQ_BIND_HOST,
-                                  &config->fmq_bind_host) != 0 ||
-        rtc_app_toml_apply_string(table, "fmq", "ca_file", storage,
-                                  ROOM_CONFIG_STRING_FMQ_CA_FILE,
-                                  &config->fmq_ca_file) != 0 ||
-        rtc_app_toml_apply_string(table, "fmq", "cert_file", storage,
-                                  ROOM_CONFIG_STRING_FMQ_CERT_FILE,
-                                  &config->fmq_cert_file) != 0 ||
-        rtc_app_toml_apply_string(table, "fmq", "key_file", storage,
-                                  ROOM_CONFIG_STRING_FMQ_KEY_FILE,
-                                  &config->fmq_key_file) != 0 ||
-        rtc_app_toml_apply_string(table, "fmq", "key_password", storage,
-                                  ROOM_CONFIG_STRING_FMQ_KEY_PASSWORD,
-                                  &config->fmq_key_password) != 0 ||
-        rtc_app_toml_apply_int(table, "fmq", "bind_port",
-                               &config->fmq_bind_port) != 0 ||
-        rtc_app_toml_apply_int(table, "fmq", "worker_heartbeat_ms",
-                               &config->fmq_worker_heartbeat_ms) != 0 ||
-        rtc_app_toml_apply_int(table, "fmq", "worker_lease_ms",
-                               &config->fmq_worker_lease_ms) != 0 ||
-        rtc_app_toml_apply_int(table, "fmq", "dispatch_deadline_ms",
-                               &config->fmq_dispatch_deadline_ms) != 0 ||
-        rtc_app_toml_apply_int(table, "fmq", "dialog_capacity",
-                               &config->fmq_dialog_capacity) != 0 ||
-        rtc_app_toml_apply_bool(table, "fmq", "use_tls",
-                                &config->fmq_use_tls) != 0 ||
-        rtc_app_toml_apply_bool(table, "fmq", "allow_insecure_loopback",
-                                &config->fmq_allow_insecure_loopback) != 0 ||
-        room_service_config_apply_fmq_workers(table, config, storage) != 0) {
+            table, "control_ws", allowed, sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        rtc_app_toml_apply_string(table, "control_ws", "bind_host", storage,
+                                  ROOM_CONFIG_STRING_CONTROL_WS_BIND_HOST,
+                                  &config->control_ws_bind_host) != 0 ||
+        rtc_app_toml_apply_string(table, "control_ws", "path", storage,
+                                  ROOM_CONFIG_STRING_CONTROL_WS_PATH,
+                                  &config->control_ws_path) != 0 ||
+        rtc_app_toml_apply_string(table, "control_ws", "ca_file", storage,
+                                  ROOM_CONFIG_STRING_CONTROL_WS_CA_FILE,
+                                  &config->control_ws_ca_file) != 0 ||
+        rtc_app_toml_apply_string(table, "control_ws", "cert_file", storage,
+                                  ROOM_CONFIG_STRING_CONTROL_WS_CERT_FILE,
+                                  &config->control_ws_cert_file) != 0 ||
+        rtc_app_toml_apply_string(table, "control_ws", "key_file", storage,
+                                  ROOM_CONFIG_STRING_CONTROL_WS_KEY_FILE,
+                                  &config->control_ws_key_file) != 0 ||
+        rtc_app_toml_apply_string(table, "control_ws", "key_password", storage,
+                                  ROOM_CONFIG_STRING_CONTROL_WS_KEY_PASSWORD,
+                                  &config->control_ws_key_password) != 0 ||
+        rtc_app_toml_apply_int(table, "control_ws", "bind_port",
+                               &config->control_ws_bind_port) != 0 ||
+        rtc_app_toml_apply_int(table, "control_ws", "worker_heartbeat_ms",
+                               &config->control_ws_worker_heartbeat_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "control_ws", "worker_lease_ms",
+                               &config->control_ws_worker_lease_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "control_ws", "dispatch_deadline_ms",
+                               &config->control_ws_dispatch_deadline_ms) != 0 ||
+        rtc_app_toml_apply_int(table, "control_ws", "dialog_capacity",
+                               &config->control_ws_dialog_capacity) != 0 ||
+        rtc_app_toml_apply_bool(table, "control_ws", "use_tls",
+                                &config->control_ws_use_tls) != 0 ||
+        rtc_app_toml_apply_bool(table, "control_ws", "allow_insecure_loopback",
+                                &config->control_ws_allow_insecure_loopback) != 0 ||
+        room_service_config_apply_control_ws_workers(table, config, storage) != 0) {
         return -1;
     }
     return 0;
 }
 
 static int room_service_config_apply_iris_provider(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
-        "flowmq_host", "flowmq_port", "flowmq_topic",
+        "control_ws_host", "control_ws_port", "control_ws_path",
         "provider_instance_id", "iris_identity",
-        "iris_certificate_sha256", "flowmq_ca_file", "flowmq_cert_file",
-        "flowmq_key_file", "flowmq_key_password", "flowmq_server_name",
-        "flowmq_use_tls", "flowmq_allow_insecure_loopback",
+        "control_ws_ca_file", "control_ws_cert_file",
+        "control_ws_key_file", "control_ws_key_password", "control_ws_server_name",
+        "control_ws_use_tls", "control_ws_allow_insecure_loopback",
         "correlation_capacity",
         "completion_queue_capacity", "reconcile_inventory_queue_capacity",
         "retry_max_attempts", "retry_backoff_ms",
@@ -859,7 +861,7 @@ static int room_service_config_apply_iris_provider(
         "event_store_channel", "outbox_request_queue_capacity",
         "command_ledger_channel", "command_ledger_queue_capacity",
         "command_terminal_retention_seconds", "command_retention_batch_size",
-        "allow_development_sqlite", "dead_retention_seconds",
+        "dead_retention_seconds",
         "archive_retention_seconds", "retention_sweep_interval_ms",
         "retention_sweep_batch_size"
     };
@@ -871,13 +873,13 @@ static int room_service_config_apply_iris_provider(
             table, "iris_provider", allowed,
             sizeof(allowed) / sizeof(allowed[0])) != 0 ||
         rtc_app_toml_apply_string(
-            table, "iris_provider", "flowmq_host", storage,
-            ROOM_CONFIG_STRING_IRIS_FLOWMQ_HOST,
-            &config->iris_flowmq_host) != 0 ||
+            table, "iris_provider", "control_ws_host", storage,
+            ROOM_CONFIG_STRING_IRIS_CONTROL_HOST,
+            &config->iris_control_host) != 0 ||
         rtc_app_toml_apply_string(
-            table, "iris_provider", "flowmq_topic", storage,
-            ROOM_CONFIG_STRING_IRIS_FLOWMQ_TOPIC,
-            &config->iris_flowmq_topic) != 0 ||
+            table, "iris_provider", "control_ws_path", storage,
+            ROOM_CONFIG_STRING_IRIS_CONTROL_PATH,
+            &config->iris_control_path) != 0 ||
         rtc_app_toml_apply_string(
             table, "iris_provider", "provider_instance_id", storage,
             ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
@@ -886,36 +888,32 @@ static int room_service_config_apply_iris_provider(
             table, "iris_provider", "iris_identity", storage,
             ROOM_CONFIG_STRING_IRIS_IDENTITY, &config->iris_identity) != 0 ||
         rtc_app_toml_apply_string(
-            table, "iris_provider", "iris_certificate_sha256", storage,
-            ROOM_CONFIG_STRING_IRIS_CERTIFICATE_SHA256,
-            &config->iris_certificate_sha256) != 0 ||
+            table, "iris_provider", "control_ws_ca_file", storage,
+            ROOM_CONFIG_STRING_IRIS_CONTROL_CA_FILE,
+            &config->iris_control_ca_file) != 0 ||
         rtc_app_toml_apply_string(
-            table, "iris_provider", "flowmq_ca_file", storage,
-            ROOM_CONFIG_STRING_IRIS_FLOWMQ_CA_FILE,
-            &config->iris_flowmq_ca_file) != 0 ||
+            table, "iris_provider", "control_ws_cert_file", storage,
+            ROOM_CONFIG_STRING_IRIS_CONTROL_CERT_FILE,
+            &config->iris_control_cert_file) != 0 ||
         rtc_app_toml_apply_string(
-            table, "iris_provider", "flowmq_cert_file", storage,
-            ROOM_CONFIG_STRING_IRIS_FLOWMQ_CERT_FILE,
-            &config->iris_flowmq_cert_file) != 0 ||
+            table, "iris_provider", "control_ws_key_file", storage,
+            ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_FILE,
+            &config->iris_control_key_file) != 0 ||
         rtc_app_toml_apply_string(
-            table, "iris_provider", "flowmq_key_file", storage,
-            ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_FILE,
-            &config->iris_flowmq_key_file) != 0 ||
+            table, "iris_provider", "control_ws_key_password", storage,
+            ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_PASSWORD,
+            &config->iris_control_key_password) != 0 ||
         rtc_app_toml_apply_string(
-            table, "iris_provider", "flowmq_key_password", storage,
-            ROOM_CONFIG_STRING_IRIS_FLOWMQ_KEY_PASSWORD,
-            &config->iris_flowmq_key_password) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "flowmq_server_name", storage,
-            ROOM_CONFIG_STRING_IRIS_FLOWMQ_SERVER_NAME,
-            &config->iris_flowmq_server_name) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "flowmq_port",
-                               &config->iris_flowmq_port) != 0 ||
-        rtc_app_toml_apply_bool(table, "iris_provider", "flowmq_use_tls",
-                                &config->iris_flowmq_use_tls) != 0 ||
+            table, "iris_provider", "control_ws_server_name", storage,
+            ROOM_CONFIG_STRING_IRIS_CONTROL_SERVER_NAME,
+            &config->iris_control_server_name) != 0 ||
+        rtc_app_toml_apply_int(table, "iris_provider", "control_ws_port",
+                               &config->iris_control_port) != 0 ||
+        rtc_app_toml_apply_bool(table, "iris_provider", "control_ws_use_tls",
+                                &config->iris_control_use_tls) != 0 ||
         rtc_app_toml_apply_bool(
-            table, "iris_provider", "flowmq_allow_insecure_loopback",
-            &config->iris_flowmq_allow_insecure_loopback) != 0 ||
+            table, "iris_provider", "control_ws_allow_insecure_loopback",
+            &config->iris_control_allow_insecure_loopback) != 0 ||
         rtc_app_toml_apply_string(
             table, "iris_provider", "event_store_config", storage,
             ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
@@ -952,9 +950,6 @@ static int room_service_config_apply_iris_provider(
                                &config->iris_retention_sweep_interval_ms) != 0 ||
         rtc_app_toml_apply_int(table, "iris_provider", "retention_sweep_batch_size",
                                &config->iris_retention_sweep_batch_size) != 0 ||
-        rtc_app_toml_apply_bool(table, "iris_provider",
-                                "allow_development_sqlite",
-                                &config->iris_allow_development_sqlite) != 0 ||
         rtc_app_toml_apply_int(table, "iris_provider", "retry_max_attempts",
                                &config->iris_retry_max_attempts) != 0 ||
         rtc_app_toml_apply_int(table, "iris_provider", "retry_backoff_ms",
@@ -972,22 +967,22 @@ int room_service_app_config_load(room_service_app_config_t *config,
                                  const char *filename) {
     static const char *const root_keys[] = {
         "server", "control", "auth", "sfu", "sfu_auth", "capacity",
-        "rooms", "runtime", "logging", "iris_provider", "fmq"
+        "rooms", "runtime", "logging", "iris_provider", "control_ws"
     };
     rtc_app_toml_document_t document;
     rtc_app_config_storage_t *storage = NULL;
     rtc_app_config_storage_t *old_storage;
-    turbo_toml_t *server = NULL;
-    turbo_toml_t *control = NULL;
-    turbo_toml_t *auth = NULL;
-    turbo_toml_t *sfu = NULL;
-    turbo_toml_t *sfu_auth = NULL;
-    turbo_toml_t *capacity = NULL;
-    turbo_toml_t *rooms = NULL;
-    turbo_toml_t *runtime = NULL;
-    turbo_toml_t *logging = NULL;
-    turbo_toml_t *iris_provider = NULL;
-    turbo_toml_t *fmq = NULL;
+    toml_table_t *server = NULL;
+    toml_table_t *control = NULL;
+    toml_table_t *auth = NULL;
+    toml_table_t *sfu = NULL;
+    toml_table_t *sfu_auth = NULL;
+    toml_table_t *capacity = NULL;
+    toml_table_t *rooms = NULL;
+    toml_table_t *runtime = NULL;
+    toml_table_t *logging = NULL;
+    toml_table_t *iris_provider = NULL;
+    toml_table_t *control_ws = NULL;
     room_service_app_config_t candidate;
     int result = -1;
 
@@ -1025,7 +1020,7 @@ int room_service_app_config_load(room_service_app_config_t *config,
         rtc_app_toml_get_optional_table(document.root, "runtime", &runtime) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "logging", &logging) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "iris_provider", &iris_provider) != 0 ||
-        rtc_app_toml_get_optional_table(document.root, "fmq", &fmq) != 0 ||
+        rtc_app_toml_get_optional_table(document.root, "control_ws", &control_ws) != 0 ||
         room_service_config_apply_server(server, &candidate, storage) != 0 ||
         room_service_config_apply_control(control, &candidate, storage) != 0 ||
         room_service_config_apply_auth(auth, &candidate, storage) != 0 ||
@@ -1036,7 +1031,7 @@ int room_service_app_config_load(room_service_app_config_t *config,
         room_service_config_apply_runtime(runtime, &candidate) != 0 ||
         room_service_config_apply_logging(logging, &candidate, storage) != 0 ||
         room_service_config_apply_iris_provider(iris_provider, &candidate, storage) != 0 ||
-        room_service_config_apply_fmq(fmq, &candidate, storage) != 0 ||
+        room_service_config_apply_control_ws(control_ws, &candidate, storage) != 0 ||
         room_service_app_config_validate(&candidate) != 0) {
         goto cleanup_document;
     }
@@ -1133,38 +1128,35 @@ void room_service_app_config_apply_environment(
     config->sfu_auth_ttl_seconds = room_service_env_int(
         "TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS",
         config->sfu_auth_ttl_seconds);
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_HOST");
-    if (value) config->iris_flowmq_host = value;
-    config->iris_flowmq_port = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_PORT", config->iris_flowmq_port);
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_TOPIC");
-    if (value) config->iris_flowmq_topic = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_HOST");
+    if (value) config->iris_control_host = value;
+    config->iris_control_port = room_service_env_int(
+        "TURBO_ROOM_SERVICE_IRIS_CONTROL_PORT", config->iris_control_port);
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_PATH");
+    if (value) config->iris_control_path = value;
     value = room_service_env_value(
         "TURBO_ROOM_SERVICE_IRIS_PROVIDER_INSTANCE_ID");
     if (value) config->iris_provider_instance_id = value;
     value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_IDENTITY");
     if (value) config->iris_identity = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_CA_FILE");
+    if (value) config->iris_control_ca_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_CERT_FILE");
+    if (value) config->iris_control_cert_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_KEY_FILE");
+    if (value) config->iris_control_key_file = value;
     value = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_CERTIFICATE_SHA256");
-    if (value) config->iris_certificate_sha256 = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_CA_FILE");
-    if (value) config->iris_flowmq_ca_file = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_CERT_FILE");
-    if (value) config->iris_flowmq_cert_file = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_FLOWMQ_KEY_FILE");
-    if (value) config->iris_flowmq_key_file = value;
+        "TURBO_ROOM_SERVICE_IRIS_CONTROL_KEY_PASSWORD");
+    if (value) config->iris_control_key_password = value;
     value = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_KEY_PASSWORD");
-    if (value) config->iris_flowmq_key_password = value;
-    value = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_SERVER_NAME");
-    if (value) config->iris_flowmq_server_name = value;
-    config->iris_flowmq_use_tls = room_service_env_bool(
-        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_USE_TLS",
-        config->iris_flowmq_use_tls);
-    config->iris_flowmq_allow_insecure_loopback = room_service_env_bool(
-        "TURBO_ROOM_SERVICE_IRIS_FLOWMQ_ALLOW_INSECURE_LOOPBACK",
-        config->iris_flowmq_allow_insecure_loopback);
+        "TURBO_ROOM_SERVICE_IRIS_CONTROL_SERVER_NAME");
+    if (value) config->iris_control_server_name = value;
+    config->iris_control_use_tls = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_IRIS_CONTROL_USE_TLS",
+        config->iris_control_use_tls);
+    config->iris_control_allow_insecure_loopback = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_IRIS_CONTROL_ALLOW_INSECURE_LOOPBACK",
+        config->iris_control_allow_insecure_loopback);
     config->iris_ack_timeout_ms = room_service_env_int(
         "TURBO_ROOM_SERVICE_IRIS_ACK_TIMEOUT_MS",
         config->iris_ack_timeout_ms);
@@ -1175,9 +1167,6 @@ void room_service_app_config_apply_environment(
     value = room_service_env_value(
         "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_CHANNEL");
     if (value) config->iris_command_ledger_channel = value;
-    config->iris_allow_development_sqlite = room_service_env_bool(
-        "TURBO_ROOM_SERVICE_IRIS_ALLOW_DEVELOPMENT_SQLITE",
-        config->iris_allow_development_sqlite);
     config->iris_dead_retention_seconds = room_service_env_int(
         "TURBO_ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS",
         config->iris_dead_retention_seconds);
@@ -1199,37 +1188,39 @@ void room_service_app_config_apply_environment(
     config->iris_command_retention_batch_size = room_service_env_int(
         "TURBO_ROOM_SERVICE_IRIS_COMMAND_RETENTION_BATCH_SIZE",
         config->iris_command_retention_batch_size);
-    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_BIND_HOST");
+    value = room_service_env_value("TURBO_ROOM_SERVICE_CONTROL_BIND_HOST");
     if (value) {
-        config->fmq_bind_host = value;
+        config->control_ws_bind_host = value;
     }
-    config->fmq_bind_port = room_service_env_int(
-        "TURBO_ROOM_SERVICE_FMQ_BIND_PORT", config->fmq_bind_port);
-    config->fmq_worker_heartbeat_ms = room_service_env_int(
-        "TURBO_ROOM_SERVICE_FMQ_WORKER_HEARTBEAT_MS",
-        config->fmq_worker_heartbeat_ms);
-    config->fmq_worker_lease_ms = room_service_env_int(
-        "TURBO_ROOM_SERVICE_FMQ_WORKER_LEASE_MS",
-        config->fmq_worker_lease_ms);
-    config->fmq_dispatch_deadline_ms = room_service_env_int(
-        "TURBO_ROOM_SERVICE_FMQ_DISPATCH_DEADLINE_MS",
-        config->fmq_dispatch_deadline_ms);
-    config->fmq_dialog_capacity = room_service_env_int(
-        "TURBO_ROOM_SERVICE_FMQ_DIALOG_CAPACITY",
-        config->fmq_dialog_capacity);
-    config->fmq_use_tls = room_service_env_bool(
-        "TURBO_ROOM_SERVICE_FMQ_USE_TLS", config->fmq_use_tls);
-    config->fmq_allow_insecure_loopback = room_service_env_bool(
-        "TURBO_ROOM_SERVICE_FMQ_ALLOW_INSECURE_LOOPBACK",
-        config->fmq_allow_insecure_loopback);
-    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_CA_FILE");
-    if (value) config->fmq_ca_file = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_CERT_FILE");
-    if (value) config->fmq_cert_file = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_KEY_FILE");
-    if (value) config->fmq_key_file = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_FMQ_KEY_PASSWORD");
-    if (value) config->fmq_key_password = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_CONTROL_PATH");
+    if (value) config->control_ws_path = value;
+    config->control_ws_bind_port = room_service_env_int(
+        "TURBO_ROOM_SERVICE_CONTROL_BIND_PORT", config->control_ws_bind_port);
+    config->control_ws_worker_heartbeat_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_CONTROL_WORKER_HEARTBEAT_MS",
+        config->control_ws_worker_heartbeat_ms);
+    config->control_ws_worker_lease_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_CONTROL_WORKER_LEASE_MS",
+        config->control_ws_worker_lease_ms);
+    config->control_ws_dispatch_deadline_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_CONTROL_DISPATCH_DEADLINE_MS",
+        config->control_ws_dispatch_deadline_ms);
+    config->control_ws_dialog_capacity = room_service_env_int(
+        "TURBO_ROOM_SERVICE_CONTROL_DIALOG_CAPACITY",
+        config->control_ws_dialog_capacity);
+    config->control_ws_use_tls = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_CONTROL_USE_TLS", config->control_ws_use_tls);
+    config->control_ws_allow_insecure_loopback = room_service_env_bool(
+        "TURBO_ROOM_SERVICE_CONTROL_ALLOW_INSECURE_LOOPBACK",
+        config->control_ws_allow_insecure_loopback);
+    value = room_service_env_value("TURBO_ROOM_SERVICE_CONTROL_CA_FILE");
+    if (value) config->control_ws_ca_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_CONTROL_CERT_FILE");
+    if (value) config->control_ws_cert_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_CONTROL_KEY_FILE");
+    if (value) config->control_ws_key_file = value;
+    value = room_service_env_value("TURBO_ROOM_SERVICE_CONTROL_KEY_PASSWORD");
+    if (value) config->control_ws_key_password = value;
 }
 
 void room_service_app_config_cleanup(room_service_app_config_t *config) {
@@ -1253,21 +1244,22 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
     }
     if (config->bind_port < 1 || config->bind_port > 65535 ||
         config->max_rooms <= 0 ||
-        config->fmq_bind_port < 0 || config->fmq_bind_port > 65535 ||
-        config->fmq_worker_heartbeat_ms <= 0 ||
-        config->fmq_worker_lease_ms < config->fmq_worker_heartbeat_ms ||
-        config->fmq_worker_heartbeat_ms > INT_MAX / 3 ||
-        config->fmq_worker_lease_ms <
-            config->fmq_worker_heartbeat_ms * 3 ||
-        config->fmq_dispatch_deadline_ms <= 0 ||
-        config->fmq_dispatch_deadline_ms >= config->fmq_worker_lease_ms ||
-        config->fmq_dialog_capacity < 1 ||
-        config->fmq_dialog_capacity > 65536 ||
-        (config->fmq_bind_port > 0 &&
-         (!config->fmq_bind_host || config->fmq_bind_host[0] == 0)) ||
-        (config->fmq_use_tls != 0 && config->fmq_use_tls != 1) ||
-        (config->fmq_allow_insecure_loopback != 0 &&
-         config->fmq_allow_insecure_loopback != 1)) {
+        config->control_ws_bind_port < 0 || config->control_ws_bind_port > 65535 ||
+        config->control_ws_worker_heartbeat_ms <= 0 ||
+        config->control_ws_worker_lease_ms < config->control_ws_worker_heartbeat_ms ||
+        config->control_ws_worker_heartbeat_ms > INT_MAX / 3 ||
+        config->control_ws_worker_lease_ms <
+            config->control_ws_worker_heartbeat_ms * 3 ||
+        config->control_ws_dispatch_deadline_ms <= 0 ||
+        config->control_ws_dispatch_deadline_ms >= config->control_ws_worker_lease_ms ||
+        config->control_ws_dialog_capacity < 1 ||
+        config->control_ws_dialog_capacity > 65536 ||
+        (config->control_ws_bind_port > 0 &&
+         (!config->control_ws_bind_host || config->control_ws_bind_host[0] == 0 ||
+          !config->control_ws_path || config->control_ws_path[0] != '/')) ||
+        (config->control_ws_use_tls != 0 && config->control_ws_use_tls != 1) ||
+        (config->control_ws_allow_insecure_loopback != 0 &&
+         config->control_ws_allow_insecure_loopback != 1)) {
         return -1;
     }
     if ((config->auto_create_rooms != 0 && config->auto_create_rooms != 1) ||
@@ -1286,51 +1278,48 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
         return -1;
     }
     {
-        int has_flowmq = config->iris_flowmq_host &&
-                         config->iris_flowmq_host[0] != '\0';
+        int has_control_ws = config->iris_control_host &&
+                         config->iris_control_host[0] != '\0';
         int has_store_config = config->iris_event_store_config &&
                                config->iris_event_store_config[0] != '\0';
         int has_store_channel = config->iris_event_store_channel &&
                                 config->iris_event_store_channel[0] != '\0';
         int has_ledger_channel = config->iris_command_ledger_channel &&
                                  config->iris_command_ledger_channel[0] != '\0';
-        if (has_flowmq != has_store_config ||
-            has_flowmq != has_store_channel ||
-            has_flowmq != has_ledger_channel ||
-            (has_flowmq && strcmp(config->iris_event_store_channel,
+        if (has_control_ws != has_store_config ||
+            has_control_ws != has_store_channel ||
+            has_control_ws != has_ledger_channel ||
+            (has_control_ws && strcmp(config->iris_event_store_channel,
                                config->iris_command_ledger_channel) == 0) ||
-            (has_flowmq &&
-             (config->iris_flowmq_port < 1 ||
-              config->iris_flowmq_port > 65535 ||
-              !config->iris_flowmq_topic ||
-              config->iris_flowmq_topic[0] == '\0' ||
+            (has_control_ws &&
+             (config->iris_control_port < 1 ||
+              config->iris_control_port > 65535 ||
+              !config->iris_control_path ||
+              config->iris_control_path[0] != '/' ||
               !config->iris_provider_instance_id ||
               config->iris_provider_instance_id[0] == '\0' ||
               !config->iris_identity || config->iris_identity[0] == '\0')) ||
-            (config->iris_flowmq_use_tls != 0 &&
-             config->iris_flowmq_use_tls != 1) ||
-            (config->iris_flowmq_allow_insecure_loopback != 0 &&
-             config->iris_flowmq_allow_insecure_loopback != 1) ||
-            (has_flowmq && config->iris_flowmq_use_tls &&
-             (!room_service_fingerprint_valid(
-                  config->iris_certificate_sha256) ||
-              !config->iris_flowmq_ca_file ||
-              config->iris_flowmq_ca_file[0] == '\0' ||
-              !config->iris_flowmq_cert_file ||
-              config->iris_flowmq_cert_file[0] == '\0' ||
-              !config->iris_flowmq_key_file ||
-              config->iris_flowmq_key_file[0] == '\0' ||
-              !config->iris_flowmq_server_name ||
-              config->iris_flowmq_server_name[0] == '\0')) ||
-            (has_flowmq && !config->iris_flowmq_use_tls &&
-             (!config->iris_flowmq_allow_insecure_loopback ||
-              !room_service_is_loopback(config->iris_flowmq_host) ||
-              config->iris_certificate_sha256 ||
-              config->iris_flowmq_ca_file ||
-              config->iris_flowmq_cert_file ||
-              config->iris_flowmq_key_file ||
-              config->iris_flowmq_key_password ||
-              config->iris_flowmq_server_name)) ||
+            (config->iris_control_use_tls != 0 &&
+             config->iris_control_use_tls != 1) ||
+            (config->iris_control_allow_insecure_loopback != 0 &&
+             config->iris_control_allow_insecure_loopback != 1) ||
+            (has_control_ws && config->iris_control_use_tls &&
+             (!config->iris_control_ca_file ||
+              config->iris_control_ca_file[0] == '\0' ||
+              !config->iris_control_cert_file ||
+              config->iris_control_cert_file[0] == '\0' ||
+              !config->iris_control_key_file ||
+              config->iris_control_key_file[0] == '\0' ||
+              !config->iris_control_server_name ||
+              config->iris_control_server_name[0] == '\0')) ||
+            (has_control_ws && !config->iris_control_use_tls &&
+             (!config->iris_control_allow_insecure_loopback ||
+              !room_service_is_loopback(config->iris_control_host) ||
+              config->iris_control_ca_file ||
+              config->iris_control_cert_file ||
+              config->iris_control_key_file ||
+              config->iris_control_key_password ||
+              config->iris_control_server_name)) ||
             config->iris_correlation_capacity < 1 ||
             config->iris_correlation_capacity > 65536 ||
             config->iris_completion_queue_capacity < 1 ||
@@ -1360,8 +1349,6 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
             config->iris_retention_sweep_batch_size < 1 ||
             config->iris_retention_sweep_batch_size >
                 ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX ||
-            (config->iris_allow_development_sqlite != 0 &&
-             config->iris_allow_development_sqlite != 1) ||
             config->iris_retry_max_attempts < 1 ||
             config->iris_retry_max_attempts > 100 ||
             config->iris_retry_backoff_ms < 1 ||
@@ -1371,7 +1358,7 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
             config->iris_drain_timeout_ms < 1 ||
             config->iris_drain_timeout_ms > 600000 ||
             config->iris_drain_timeout_ms < config->iris_ack_timeout_ms ||
-            (has_flowmq && config->fmq_bind_port == 0)) {
+            (has_control_ws && config->control_ws_bind_port == 0)) {
             return -1;
         }
     }
@@ -1438,17 +1425,17 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
     if (!room_service_sfu_nodes_syntax_valid(config->sfu_nodes)) {
         return -1;
     }
-    if (config->fmq_bind_port > 0) {
-        if (config->fmq_use_tls) {
-            if (config->fmq_allow_insecure_loopback || !config->fmq_ca_file ||
-                !config->fmq_ca_file[0] || !config->fmq_cert_file ||
-                !config->fmq_cert_file[0] || !config->fmq_key_file ||
-                !config->fmq_key_file[0] ||
-                !room_service_fmq_identities_valid(config)) {
+    if (config->control_ws_bind_port > 0) {
+        if (config->control_ws_use_tls) {
+            if (config->control_ws_allow_insecure_loopback || !config->control_ws_ca_file ||
+                !config->control_ws_ca_file[0] || !config->control_ws_cert_file ||
+                !config->control_ws_cert_file[0] || !config->control_ws_key_file ||
+                !config->control_ws_key_file[0] ||
+                !room_service_control_identities_valid(config)) {
                 return -1;
             }
-        } else if (!config->fmq_allow_insecure_loopback ||
-                   !room_service_is_loopback(config->fmq_bind_host)) {
+        } else if (!config->control_ws_allow_insecure_loopback ||
+                   !room_service_is_loopback(config->control_ws_bind_host)) {
             return -1;
         }
     }
@@ -1485,14 +1472,12 @@ void room_service_app_config_print(const room_service_app_config_t *config) {
     printf("  dry_run: %s\n", config->dry_run ? "true" : "false");
     printf("  log_level: %s\n", config->log_level);
     printf("  iris_provider: %s\n",
-           config->iris_flowmq_host ? "FlowMQ" : "disabled");
-    if (config->iris_flowmq_host) {
-        printf("  iris_flowmq: %s:%d topic=%s transport=%s\n",
-               config->iris_flowmq_host, config->iris_flowmq_port,
-               config->iris_flowmq_topic,
-               config->iris_flowmq_use_tls ? "mTLS" : "trusted-loopback");
-        printf("  iris_sqlite_development_opt_in: %s\n",
-               config->iris_allow_development_sqlite ? "true" : "false");
+           config->iris_control_host ? "CHTTP H1 WebSocket" : "disabled");
+    if (config->iris_control_host) {
+        printf("  iris_control: %s:%d path=%s transport=%s\n",
+               config->iris_control_host, config->iris_control_port,
+               config->iris_control_path,
+               config->iris_control_use_tls ? "mTLS" : "trusted-loopback");
         printf("  iris_provider_limits: correlation=%d queue=%d reconcile_queue=%d outbox_queue=%d retries=%d "
                "ack_timeout=%dms drain_timeout=%dms\n",
                config->iris_correlation_capacity,
@@ -1503,16 +1488,16 @@ void room_service_app_config_print(const room_service_app_config_t *config) {
                config->iris_ack_timeout_ms,
                config->iris_drain_timeout_ms);
     }
-    printf("  fmq_bridge: %s (router %s:%d)\n",
-           config->fmq_bind_port > 0 ? "enabled" : "disabled",
-           config->fmq_bind_host ? config->fmq_bind_host : "127.0.0.1",
-           config->fmq_bind_port);
-    printf("  fmq_worker_timing: heartbeat=%dms lease=%dms dispatch=%dms dialogs=%d\n",
-           config->fmq_worker_heartbeat_ms, config->fmq_worker_lease_ms,
-           config->fmq_dispatch_deadline_ms, config->fmq_dialog_capacity);
-    printf("  fmq_security: %s identities=%d\n",
-           config->fmq_use_tls ? "mTLS" :
-           (config->fmq_allow_insecure_loopback ? "trusted-loopback" :
+    printf("  control_ws_bridge: %s (server %s:%d)\n",
+           config->control_ws_bind_port > 0 ? "enabled" : "disabled",
+           config->control_ws_bind_host ? config->control_ws_bind_host : "127.0.0.1",
+           config->control_ws_bind_port);
+    printf("  control_ws_worker_timing: heartbeat=%dms lease=%dms dispatch=%dms dialogs=%d\n",
+           config->control_ws_worker_heartbeat_ms, config->control_ws_worker_lease_ms,
+           config->control_ws_dispatch_deadline_ms, config->control_ws_dialog_capacity);
+    printf("  control_ws_security: %s identities=%d\n",
+           config->control_ws_use_tls ? "mTLS" :
+           (config->control_ws_allow_insecure_loopback ? "trusted-loopback" :
                                                   "disabled"),
-           config->fmq_worker_identity_count);
+           config->control_ws_worker_identity_count);
 }

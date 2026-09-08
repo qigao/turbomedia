@@ -4,62 +4,66 @@
  */
 
 #include "http_api.h"
+#include "signaling_management_internal.h"
 #include "turbo_media_auth.h"
-#include <iris/iris_app.h>
-#include <iris/server.h>
-#include <iris/router.h>
-#include <platform.h>
+#include <chttp/chttp.h>
+#include <salts/error_codes.h>
+#include <salts_thread.h>
 #include <tlog.h>
-#include <turbo_coro_context.h>
-#include <turbo_coro_socket.h>
-#include <stb_sprintf.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "turbo_str.h"
+#include "salts_str.h"
 
-static const char *HTTP_API_SIGNALING_CONTEXT_PATH = "/_turbomedia/webrtc-signaling";
-static const char *HTTP_API_SERVER_CONTEXT_PATH = "/_turbomedia/http-api";
 #define SIGNALING_MANAGEMENT_AUDIENCE "turbomedia-signaling-management"
 #define SIGNALING_MANAGEMENT_SCOPE_READ "signaling.management.read"
 #define SIGNALING_MANAGEMENT_SCOPE_WRITE "signaling.management.write"
 #define SIGNALING_MANAGEMENT_SCOPE_DANGEROUS "signaling.management.dangerous"
 
-struct http_api_server_s {
-    iris_app_t *app;
-    http_api_config_t config;
-    webrtc_signaling_server_t *signaling;
-    turbo_thread_t thread;
-    int thread_started;
-    turbo_mutex_t lifecycle_mutex;
-    turbo_cond_t lifecycle_cond;
-    coro_context_t *ctx;
-    coro_socket_t *listener;
-    int state;
+enum {
+    HTTP_API_CONNECTION_CAPACITY = 64,
+    HTTP_API_COMMAND_CAPACITY = 128,
+    HTTP_API_REQUEST_CAPACITY = 128,
+    HTTP_API_COMPLETION_CAPACITY = 32,
+    HTTP_API_EVENT_CAPACITY = 128,
+    HTTP_API_ROUTE_CAPACITY = 16,
+    HTTP_API_MAX_ROUTE_PARAM_COUNT = 2,
+    HTTP_API_MAX_ROUTE_PARAM_BYTES = 1024,
+    HTTP_API_MAX_TARGET_BYTES = 4096,
+    HTTP_API_MAX_HEADER_COUNT = 64,
+    HTTP_API_MAX_HEADER_BYTES = 32 * 1024,
+    HTTP_API_MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024,
+    HTTP_API_MAX_RESPONSE_BODY_BYTES = 4 * 1024 * 1024,
+    HTTP_API_MAX_SEND_BYTES = HTTP_API_MAX_RESPONSE_BODY_BYTES + 64 * 1024,
+    HTTP_API_RECEIVE_BUFFER_BYTES = 32 * 1024,
+    HTTP_API_TLS_IO_BUFFER_BYTES = 256 * 1024,
+    HTTP_API_BUFFER_CAPACITY_BYTES = 32 * 1024 * 1024,
+    HTTP_API_TIMEOUT_MS = 5000,
+    HTTP_API_POLL_SLICE_MS = 10
 };
 
-typedef enum {
+typedef enum http_api_state_e {
     HTTP_API_STOPPED = 0,
     HTTP_API_STARTING,
     HTTP_API_RUNNING,
-    HTTP_API_STOPPING,
-    HTTP_API_FAILED
+    HTTP_API_STOPPING
 } http_api_state_t;
 
-static webrtc_signaling_server_t *signaling_from_request(const Req *req) {
-    if (!req || !req->app) {
-        return NULL;
-    }
-    return (webrtc_signaling_server_t *)iris_app_lookup_rpc_context(
-        req->app, HTTP_API_SIGNALING_CONTEXT_PATH);
-}
+struct http_api_server_s {
+    http_api_config_t config;
+    webrtc_signaling_server_t *signaling;
+    salts_mutex_t lifecycle_mutex;
+    chttp_server http;
+    int http_initialized;
+    http_api_state_t state;
+};
 
-static http_api_server_t *http_api_from_request(const Req *req) {
-    if (!req || !req->app) {
-        return NULL;
-    }
-    return (http_api_server_t *)iris_app_lookup_rpc_context(
-        req->app, HTTP_API_SERVER_CONTEXT_PATH);
-}
+typedef struct http_api_response_s {
+    http_api_server_t *server;
+    chttp_server_response *response;
+    int status;
+} http_api_response_t;
 
 static turbo_media_auth_config_t signed_auth_config(
     const http_api_config_t *config) {
@@ -79,26 +83,81 @@ static turbo_media_auth_config_t signed_auth_config(
     return auth;
 }
 
+static int http_api_add_cors_headers(http_api_response_t *response) {
+    int status;
+
+    if (!response || !response->server || !response->response) {
+        return SALTS_EINVAL;
+    }
+    if (response->server->config.auth_enabled) {
+        return SALTS_OK;
+    }
+    status = chttp_server_response_set_header(
+        response->response, "Access-Control-Allow-Origin", "*");
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            response->response, "Access-Control-Allow-Methods",
+            "GET, POST, DELETE, OPTIONS");
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            response->response, "Access-Control-Allow-Headers",
+            "Content-Type, Authorization");
+    }
+    return status;
+}
+
+static void set_header(http_api_response_t *response, const char *name,
+                       const char *value) {
+    if (!response || response->status != SALTS_OK) {
+        return;
+    }
+    response->status = chttp_server_response_set_header(
+        response->response, name, value);
+}
+
+static void reply(http_api_response_t *response, unsigned int status,
+                  const char *content_type, const void *body,
+                  size_t body_size) {
+    if (!response || response->status != SALTS_OK) {
+        return;
+    }
+    response->status = http_api_add_cors_headers(response);
+    if (response->status == SALTS_OK) {
+        response->status = chttp_server_reply(
+            response->response, status, content_type, body, body_size);
+    }
+}
+
+static void send_json(http_api_response_t *response, unsigned int status,
+                      const char *body) {
+    reply(response, status, "application/json", body,
+          body ? strlen(body) : 0u);
+}
+
+static void send_text(http_api_response_t *response, unsigned int status,
+                      const char *body) {
+    reply(response, status, "text/plain", body,
+          body ? strlen(body) : 0u);
+}
+
 static int authorize_management_request(
-    Req *req, Res *res, const char *required_scope,
+    http_api_server_t *server, const chttp_server_request_view *request,
+    http_api_response_t *response, const char *required_scope,
     const char *room_id, const char *participant_id) {
-    http_api_server_t *server = http_api_from_request(req);
     const char *authorization;
     turbo_media_auth_config_t auth;
     turbo_media_auth_policy_t policy;
 
-    if (!server) {
-        send_text(res, 500, "Server not initialized");
+    if (!server || !request || !response) {
+        send_text(response, 500, "Server not initialized");
         return 0;
     }
     if (!server->config.auth_enabled) {
         return 1;
     }
 
-    authorization = get_headers(req, "Authorization");
-    if (!authorization) {
-        authorization = get_headers(req, "authorization");
-    }
+    authorization = chttp_server_request_header(request, "Authorization");
     auth = signed_auth_config(&server->config);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SIGNALING_MANAGEMENT_AUDIENCE;
@@ -108,141 +167,170 @@ static int authorize_management_request(
     if (turbo_media_auth_authorize(
             authorization, server->config.admin_token, &auth, &policy) ==
         TURBO_MEDIA_AUTH_DENIED) {
-        set_header(res, "WWW-Authenticate", "Bearer");
-        send_text(res, 401, "Unauthorized");
+        set_header(response, "WWW-Authenticate", "Bearer");
+        send_text(response, 401, "Unauthorized");
         return 0;
     }
     return 1;
 }
 
-/* --- Handlers --- */
-
-static void handle_health(Req *req, Res *res) {
-    (void)req;
-    send_text(res, 200, "OK");
+static int handle_health(void *user,
+                         const chttp_server_request_view *request,
+                         chttp_server_response *raw_response) {
+    http_api_response_t response = {
+        (http_api_server_t *)user, raw_response, SALTS_OK};
+    (void)request;
+    send_text(&response, 200, "OK");
+    return response.status;
 }
 
-static void handle_status(Req *req, Res *res) {
+static int handle_status(void *user,
+                         const chttp_server_request_view *request,
+                         chttp_server_response *raw_response) {
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    char *json;
+
     if (!authorize_management_request(
-            req, res, SIGNALING_MANAGEMENT_SCOPE_READ, NULL, NULL)) {
-        return;
+            server, request, &response, SIGNALING_MANAGEMENT_SCOPE_READ,
+            NULL, NULL)) {
+        return response.status;
     }
-    webrtc_signaling_server_t *signaling = signaling_from_request(req);
-    if (!signaling) {
-        send_text(res, 500, "Server not initialized");
-        return;
+    json = webrtc_signaling_get_status_json(server->signaling);
+    if (!json) {
+        send_text(&response, 500, "Internal Error");
+        return response.status;
     }
-    char *json = webrtc_signaling_get_status_json(signaling);
-    if (json) {
-        send_json(res, 200, json);
-        free(json);
-    } else {
-        send_text(res, 500, "Internal Error");
-    }
+    send_json(&response, 200, json);
+    free(json);
+    return response.status;
 }
 
-static void handle_get_rooms(Req *req, Res *res) {
+static int handle_get_rooms(void *user,
+                            const chttp_server_request_view *request,
+                            chttp_server_response *raw_response) {
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    char *json;
+
     if (!authorize_management_request(
-            req, res, SIGNALING_MANAGEMENT_SCOPE_READ, NULL, NULL)) {
-        return;
+            server, request, &response, SIGNALING_MANAGEMENT_SCOPE_READ,
+            NULL, NULL)) {
+        return response.status;
     }
-    webrtc_signaling_server_t *signaling = signaling_from_request(req);
-    if (!signaling) {
-        send_text(res, 500, "Server not initialized");
-        return;
+    json = webrtc_signaling_get_rooms_json(server->signaling);
+    if (!json) {
+        send_text(&response, 500, "Internal Error");
+        return response.status;
     }
-    char *json = webrtc_signaling_get_rooms_json(signaling);
-    if (json) {
-        send_json(res, 200, json);
-        free(json);
-    } else {
-        send_text(res, 500, "Internal Error");
-    }
+    send_json(&response, 200, json);
+    free(json);
+    return response.status;
 }
 
-static void handle_get_room_peers(Req *req, Res *res) {
-    webrtc_signaling_server_t *signaling = signaling_from_request(req);
-    const char *room_id = get_params(req, "id");
+static int handle_get_room_peers(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *raw_response) {
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    const char *room_id = chttp_server_request_param(request, "id");
+    char *json;
+
     if (!authorize_management_request(
-            req, res, SIGNALING_MANAGEMENT_SCOPE_READ, room_id, NULL)) {
-        return;
-    }
-    if (!signaling) {
-        send_text(res, 500, "Server not initialized");
-        return;
+            server, request, &response, SIGNALING_MANAGEMENT_SCOPE_READ,
+            room_id, NULL)) {
+        return response.status;
     }
     if (!room_id) {
-        send_text(res, 400, "Missing room id");
-        return;
+        send_text(&response, 400, "Missing room id");
+        return response.status;
     }
-    char *json = webrtc_signaling_get_room_peers_json(signaling, room_id);
-    if (json) {
-        send_json(res, 200, json);
-        free(json);
-    } else {
-        send_text(res, 404, "Room not found");
+    json = webrtc_signaling_get_room_peers_json(server->signaling, room_id);
+    if (!json) {
+        send_text(&response, 404, "Room not found");
+        return response.status;
     }
+    send_json(&response, 200, json);
+    free(json);
+    return response.status;
 }
 
-static void handle_kick_peer(Req *req, Res *res) {
-    webrtc_signaling_server_t *signaling = signaling_from_request(req);
-    const char *room_id = get_params(req, "id");
-    const char *peer_id = get_params(req, "peer_id");
+static int handle_kick_peer(void *user,
+                            const chttp_server_request_view *request,
+                            chttp_server_response *raw_response) {
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    const char *room_id = chttp_server_request_param(request, "id");
+    const char *peer_id = chttp_server_request_param(request, "peer_id");
+    int result;
+
     if (!authorize_management_request(
-            req, res, SIGNALING_MANAGEMENT_SCOPE_DANGEROUS,
-            room_id, peer_id)) {
-        return;
-    }
-    
-    if (!signaling) {
-        send_text(res, 500, "Server not initialized");
-        return;
+            server, request, &response,
+            SIGNALING_MANAGEMENT_SCOPE_DANGEROUS, room_id, peer_id)) {
+        return response.status;
     }
     if (!room_id || !peer_id) {
-        send_text(res, 400, "Missing params");
-        return;
+        send_text(&response, 400, "Missing params");
+        return response.status;
     }
-    
-    int ret = webrtc_signaling_kick_peer(signaling, room_id, peer_id, "Kicked by admin");
-    if (ret == 0) {
-        send_json(res, 200, "{\"success\":true}");
+    result = webrtc_signaling_kick_peer(
+        server->signaling, room_id, peer_id, "Kicked by admin");
+    if (result == 0) {
+        send_json(&response, 200, "{\"success\":true}");
     } else {
-        send_text(res, 404, "Peer mismatch or not found");
+        send_text(&response, 404, "Peer mismatch or not found");
     }
+    return response.status;
 }
 
-static void handle_broadcast(Req *req, Res *res) {
-    webrtc_signaling_server_t *signaling = signaling_from_request(req);
-    const char *room_id = get_params(req, "id");
+static int handle_broadcast(void *user,
+                            const chttp_server_request_view *request,
+                            chttp_server_response *raw_response) {
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    const char *room_id = chttp_server_request_param(request, "id");
+    char result_json[64];
+    tstr message;
+    int sent;
+    int result_size;
+
     if (!authorize_management_request(
-            req, res, SIGNALING_MANAGEMENT_SCOPE_WRITE, room_id, NULL)) {
-        return;
+            server, request, &response, SIGNALING_MANAGEMENT_SCOPE_WRITE,
+            room_id, NULL)) {
+        return response.status;
     }
-    if (!signaling) {
-        send_text(res, 500, "Server not initialized");
-        return;
+    if (!room_id || !request->body || request->body_size == 0u) {
+        send_text(&response, 400, "Missing param body");
+        return response.status;
     }
-    if (!room_id || !req->body || req->body_len == 0) {
-        send_text(res, 400, "Missing param body");
-        return;
+    message = tstr_dup_len((const char *)request->body, request->body_size);
+    if (!message) {
+        send_text(&response, 500, "Allocation failed");
+        return response.status;
     }
-    
-    /* We expect body to be the message JSON */
-    tstr msg = tstr_dup_len(req->body, req->body_len);
-    if (msg) {
-        int sent = webrtc_signaling_broadcast(signaling, room_id, "admin", msg);
-        tstr_free(msg);
-        
-        tstr resp = tstr_new();
-        resp = tstr_cat_fmt(resp, "{\"sent\":%d}", sent);
-        send_json(res, 200, resp);
-        tstr_free(resp);
-    } else {
-        send_text(res, 500, "Allocation failed");
+    sent = webrtc_signaling_broadcast(
+        server->signaling, room_id, "admin", message);
+    tstr_free(message);
+    result_size = snprintf(result_json, sizeof(result_json),
+                           "{\"sent\":%d}", sent);
+    if (result_size < 0 || (size_t)result_size >= sizeof(result_json)) {
+        send_text(&response, 500, "Internal Error");
+        return response.status;
     }
+    reply(&response, 200, "application/json", result_json,
+          (size_t)result_size);
+    return response.status;
 }
 
-/* --- Lifecycle --- */
+static int handle_options(void *user,
+                          const chttp_server_request_view *request,
+                          chttp_server_response *raw_response) {
+    http_api_response_t response = {
+        (http_api_server_t *)user, raw_response, SALTS_OK};
+    (void)request;
+    reply(&response, 204, NULL, NULL, 0u);
+    return response.status;
+}
 
 static int http_api_auth_config_valid(const http_api_config_t *config) {
     turbo_media_auth_config_t auth;
@@ -291,20 +379,126 @@ static int http_api_copy_optional_string(const char *source,
     return source && !*destination ? -1 : 0;
 }
 
-http_api_server_t *http_api_create(void *loop, const http_api_config_t *config, webrtc_signaling_server_t *signaling) {
-    if (!config || !signaling || config->port <= 0 || config->port > UINT16_MAX ||
-        !config->host || config->host[0] == '\0' ||
-        !http_api_auth_config_valid(config) ||
+static native_io_backend_kind http_api_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static cnet_client_config http_api_network_config(int use_tls) {
+    const cnet_client_config config = {
+        .backend = http_api_backend(),
+        .connection_capacity = HTTP_API_CONNECTION_CAPACITY,
+        .command_capacity = HTTP_API_COMMAND_CAPACITY,
+        .request_capacity = HTTP_API_REQUEST_CAPACITY,
+        .completion_batch_capacity = HTTP_API_COMPLETION_CAPACITY,
+        .event_capacity = HTTP_API_EVENT_CAPACITY,
+        .max_send_bytes = HTTP_API_MAX_SEND_BYTES,
+        .receive_buffer_bytes = HTTP_API_RECEIVE_BUFFER_BYTES,
+        .connect_timeout_ms = HTTP_API_TIMEOUT_MS,
+        .read_timeout_ms = HTTP_API_TIMEOUT_MS,
+        .write_timeout_ms = HTTP_API_TIMEOUT_MS,
+        .tls_io_buffer_bytes = use_tls
+                                   ? HTTP_API_TLS_IO_BUFFER_BYTES
+                                   : 0u,
+        .tls_handshake_timeout_ms = use_tls ? HTTP_API_TIMEOUT_MS : 0u};
+    return config;
+}
+
+static chttp_server_config http_api_server_config(
+    const http_api_config_t *source, const cnet_tls_server_config *tls) {
+    const chttp_server_config config = {
+        .host = source->host,
+        .port = (uint16_t)source->port,
+        .backlog = HTTP_API_CONNECTION_CAPACITY,
+        .network = http_api_network_config(tls != NULL),
+        .route_capacity = HTTP_API_ROUTE_CAPACITY,
+        .max_route_param_count = HTTP_API_MAX_ROUTE_PARAM_COUNT,
+        .max_route_param_bytes = HTTP_API_MAX_ROUTE_PARAM_BYTES,
+        .max_target_bytes = HTTP_API_MAX_TARGET_BYTES,
+        .max_header_count = HTTP_API_MAX_HEADER_COUNT,
+        .max_header_bytes = HTTP_API_MAX_HEADER_BYTES,
+        .max_request_body_bytes = HTTP_API_MAX_REQUEST_BODY_BYTES,
+        .max_response_header_count = HTTP_API_MAX_HEADER_COUNT,
+        .max_response_header_bytes = HTTP_API_MAX_HEADER_BYTES,
+        .max_response_body_bytes = HTTP_API_MAX_RESPONSE_BODY_BYTES,
+        .poll_slice_ms = HTTP_API_POLL_SLICE_MS,
+        .tls = tls,
+        .max_buffered_response_body_bytes =
+            HTTP_API_MAX_RESPONSE_BODY_BYTES,
+        .buffer_capacity_bytes = HTTP_API_BUFFER_CAPACITY_BYTES};
+    return config;
+}
+
+static int http_api_register_routes(http_api_server_t *server) {
+    static const char *const option_paths[] = {
+        "/health",
+        "/api/v1/status",
+        "/api/v1/rooms",
+        "/api/v1/rooms/:id/peers",
+        "/api/v1/rooms/:id/peers/:peer_id",
+        "/api/v1/rooms/:id/broadcast"};
+    int status;
+    size_t index;
+
+    status = chttp_server_get(&server->http, "/health", handle_health,
+                              server);
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&server->http, "/api/v1/status",
+                                  handle_status, server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&server->http, "/api/v1/rooms",
+                                  handle_get_rooms, server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&server->http,
+                                  "/api/v1/rooms/:id/peers",
+                                  handle_get_room_peers, server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_delete(
+            &server->http, "/api/v1/rooms/:id/peers/:peer_id",
+            handle_kick_peer, server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_post(
+            &server->http, "/api/v1/rooms/:id/broadcast",
+            handle_broadcast, server);
+    }
+    for (index = 0u;
+         status == SALTS_OK && !server->config.auth_enabled &&
+         index < sizeof(option_paths) / sizeof(option_paths[0]);
+         ++index) {
+        status = chttp_server_options(&server->http, option_paths[index],
+                                      handle_options, server);
+    }
+    return status;
+}
+
+http_api_server_t *http_api_create(
+    void *loop, const http_api_config_t *config,
+    webrtc_signaling_server_t *signaling) {
+    http_api_server_t *server;
+
+    if (!config || !signaling || config->port <= 0 ||
+        config->port > UINT16_MAX || !config->host ||
+        config->host[0] == '\0' || !http_api_auth_config_valid(config) ||
         (config->use_tls &&
          (!config->cert_file || config->cert_file[0] == '\0' ||
           !config->key_file || config->key_file[0] == '\0'))) {
         return NULL;
     }
-    http_api_server_t *server = malloc(sizeof(http_api_server_t));
-    if (!server) return NULL;
-    memset(server, 0, sizeof(*server));
     (void)loop;
-    
+    server = (http_api_server_t *)calloc(1, sizeof(*server));
+    if (!server) {
+        return NULL;
+    }
+
     server->config = *config;
     server->config.host = tstr_dup(config->host);
     server->config.admin_token = NULL;
@@ -346,214 +540,100 @@ http_api_server_t *http_api_create(void *loop, const http_api_config_t *config, 
         }
     }
     server->signaling = signaling;
-    turbo_mutex_init(&server->lifecycle_mutex);
-    turbo_cond_init(&server->lifecycle_cond);
-    server->app = iris_app_create();
-    
-    if (!server->app) {
-        http_api_free_config_strings(&server->config);
-        turbo_cond_destroy(&server->lifecycle_cond);
-        turbo_mutex_destroy(&server->lifecycle_mutex);
-        free(server);
-        return NULL;
-    }
-    
-    if (iris_app_bind_rpc_context(server->app, HTTP_API_SIGNALING_CONTEXT_PATH,
-                                  signaling) != 0 ||
-        iris_app_bind_rpc_context(server->app, HTTP_API_SERVER_CONTEXT_PATH,
-                                  server) != 0) {
-        iris_app_unbind_rpc_context(server->app, HTTP_API_SIGNALING_CONTEXT_PATH,
-                                    signaling);
-        iris_app_destroy(server->app);
-        http_api_free_config_strings(&server->config);
-        turbo_cond_destroy(&server->lifecycle_cond);
-        turbo_mutex_destroy(&server->lifecycle_mutex);
-        free(server);
-        return NULL;
-    }
-    
-    if (!config->auth_enabled) {
-        cors_t cors_opts = {0};
-        cors_opts.origin = "*";
-        cors_opts.methods = "GET, POST, DELETE, OPTIONS";
-        cors_opts.headers = "Content-Type, Authorization";
-        cors_opts.enabled = 1;
-        iris_app_cors(server->app, &cors_opts);
-    }
-    
-    /* Register Routes */
-    iris_app_get(server->app, "/health", handle_health);
-    iris_app_get(server->app, "/api/v1/status", handle_status);
-    iris_app_get(server->app, "/api/v1/rooms", handle_get_rooms);
-    iris_app_get(server->app, "/api/v1/rooms/:id/peers", handle_get_room_peers);
-    iris_app_delete(server->app, "/api/v1/rooms/:id/peers/:peer_id", handle_kick_peer);
-    iris_app_post(server->app, "/api/v1/rooms/:id/broadcast", handle_broadcast);
-    
+    salts_mutex_init(&server->lifecycle_mutex);
+    server->state = HTTP_API_STOPPED;
     return server;
 }
 
-static void http_api_mark_running(void *arg1, void *arg2) {
-    http_api_server_t *server = (http_api_server_t *)arg1;
-    (void)arg2;
-
-    turbo_mutex_lock(&server->lifecycle_mutex);
-    if (server->state == HTTP_API_STARTING) {
-        server->state = HTTP_API_RUNNING;
-        turbo_cond_broadcast(&server->lifecycle_cond);
-    }
-    turbo_mutex_unlock(&server->lifecycle_mutex);
-}
-
-static void http_api_thread_func(void *arg) {
-    http_api_server_t *server = (http_api_server_t *)arg;
-    int run_result = 0;
-    coro_context_t *ctx = NULL;
-    coro_socket_t *listener = NULL;
-
-    TLOG_INFOF("{} API starting on {}:{}", server->config.use_tls ? "HTTPS" : "HTTP",
-              server->config.host, server->config.port);
-    ctx = coro_context_create(NULL);
-    if (!ctx) {
-        TLOG_ERROR("Failed to create HTTP API coroutine context");
-        turbo_mutex_lock(&server->lifecycle_mutex);
-        server->state = HTTP_API_FAILED;
-        turbo_cond_broadcast(&server->lifecycle_cond);
-        turbo_mutex_unlock(&server->lifecycle_mutex);
-        return;
-    }
-
-    if (server->config.use_tls) {
-        turbo_tls_server_config_t tls_config;
-
-        memset(&tls_config, 0, sizeof(tls_config));
-        tls_config.size = sizeof(tls_config);
-        tls_config.cert_file = server->config.cert_file;
-        tls_config.key_file = server->config.key_file;
-        tls_config.client_auth = TURBO_TLS_CLIENT_AUTH_NONE;
-        listener = iris_server_start_tls_on(
-            server->app, ctx, server->config.host,
-            (unsigned short)server->config.port, &tls_config);
-    } else {
-        listener = iris_server_start_on(
-            server->app, ctx, server->config.host,
-            (unsigned short)server->config.port);
-    }
-    if (!listener) {
-        TLOG_ERRORF("Failed to start HTTP API listener on port {}", server->config.port);
-        coro_context_destroy(ctx);
-        turbo_mutex_lock(&server->lifecycle_mutex);
-        server->state = HTTP_API_FAILED;
-        turbo_cond_broadcast(&server->lifecycle_cond);
-        turbo_mutex_unlock(&server->lifecycle_mutex);
-        return;
-    }
-
-    coro_context_set_persistent(ctx, 1);
-    turbo_mutex_lock(&server->lifecycle_mutex);
-    server->ctx = ctx;
-    server->listener = listener;
-    turbo_mutex_unlock(&server->lifecycle_mutex);
-
-    if (coro_post(ctx, http_api_mark_running, server, NULL) != 0) {
-        turbo_mutex_lock(&server->lifecycle_mutex);
-        server->listener = NULL;
-        server->ctx = NULL;
-        server->state = HTTP_API_FAILED;
-        turbo_cond_broadcast(&server->lifecycle_cond);
-        turbo_mutex_unlock(&server->lifecycle_mutex);
-        coro_context_set_persistent(ctx, 0);
-        coro_socket_destroy(listener);
-        coro_context_destroy(ctx);
-        return;
-    }
-
-    run_result = coro_context_run(ctx, TURBO_RUN_DEFAULT);
-    (void)run_result;
-
-    turbo_mutex_lock(&server->lifecycle_mutex);
-    server->listener = NULL;
-    server->ctx = NULL;
-    server->state = HTTP_API_STOPPING;
-    turbo_mutex_unlock(&server->lifecycle_mutex);
-
-    coro_context_set_persistent(ctx, 0);
-    coro_socket_destroy(listener);
-    coro_context_destroy(ctx);
-
-    turbo_mutex_lock(&server->lifecycle_mutex);
-    server->state = HTTP_API_STOPPED;
-    turbo_cond_broadcast(&server->lifecycle_cond);
-    turbo_mutex_unlock(&server->lifecycle_mutex);
-
-    TLOG_INFO("HTTP API thread exiting");
-}
-
 int http_api_start(http_api_server_t *server) {
-    if (!server) return -1;
-    turbo_mutex_lock(&server->lifecycle_mutex);
+    cnet_tls_server_config tls;
+    chttp_server_config config;
+    int status;
+
+    if (!server) {
+        return -1;
+    }
+    salts_mutex_lock(&server->lifecycle_mutex);
     if (server->state == HTTP_API_RUNNING) {
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+        salts_mutex_unlock(&server->lifecycle_mutex);
         return 0;
     }
-    if (server->state != HTTP_API_STOPPED || server->thread_started) {
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+    if (server->state != HTTP_API_STOPPED || server->http_initialized) {
+        salts_mutex_unlock(&server->lifecycle_mutex);
         return -1;
     }
     server->state = HTTP_API_STARTING;
-    if (turbo_thread_create(&server->thread, http_api_thread_func, server) != 0) {
+
+    memset(&tls, 0, sizeof(tls));
+    if (server->config.use_tls) {
+        tls.size = sizeof(tls);
+        tls.cert_file = server->config.cert_file;
+        tls.key_file = server->config.key_file;
+        tls.client_auth = CNET_TLS_CLIENT_AUTH_NONE;
+    }
+    config = http_api_server_config(
+        &server->config, server->config.use_tls ? &tls : NULL);
+    status = chttp_server_init(&server->http, &config);
+    if (status == SALTS_OK) {
+        server->http_initialized = 1;
+        status = http_api_register_routes(server);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_start(&server->http);
+    }
+    if (status != SALTS_OK) {
+        if (server->http_initialized) {
+            (void)chttp_server_destroy(&server->http);
+        }
+        server->http_initialized = 0;
         server->state = HTTP_API_STOPPED;
-        turbo_mutex_unlock(&server->lifecycle_mutex);
-        TLOG_ERROR("Failed to create HTTP API thread");
+        salts_mutex_unlock(&server->lifecycle_mutex);
+        TLOG_ERRORF("Failed to start HTTP management API on {}:{}: {}",
+                    server->config.host, server->config.port, status);
         return -1;
     }
-    server->thread_started = 1;
-    while (server->state == HTTP_API_STARTING) {
-        turbo_cond_wait(&server->lifecycle_cond, &server->lifecycle_mutex);
-    }
-    if (server->state == HTTP_API_RUNNING) {
-        turbo_mutex_unlock(&server->lifecycle_mutex);
-        return 0;
-    }
-    turbo_mutex_unlock(&server->lifecycle_mutex);
-    turbo_thread_join(&server->thread);
-    turbo_mutex_lock(&server->lifecycle_mutex);
-    server->thread_started = 0;
-    server->state = HTTP_API_STOPPED;
-    turbo_mutex_unlock(&server->lifecycle_mutex);
-    return -1;
+    server->state = HTTP_API_RUNNING;
+    salts_mutex_unlock(&server->lifecycle_mutex);
+    TLOG_INFOF("{} management API listening on {}:{}",
+               server->config.use_tls ? "HTTPS" : "HTTP",
+               server->config.host, server->config.port);
+    return 0;
 }
 
 void http_api_stop(http_api_server_t *server) {
-    int should_join = 0;
-    if (!server) return;
-    turbo_mutex_lock(&server->lifecycle_mutex);
-    if (server->state == HTTP_API_RUNNING && server->ctx) {
-        server->state = HTTP_API_STOPPING;
-        coro_context_stop(server->ctx);
-    }
-    should_join = server->thread_started;
-    turbo_mutex_unlock(&server->lifecycle_mutex);
+    int stop_status;
+    int destroy_status;
 
-    if (should_join) {
-        turbo_thread_join(&server->thread);
-        turbo_mutex_lock(&server->lifecycle_mutex);
-        server->thread_started = 0;
-        server->state = HTTP_API_STOPPED;
-        turbo_mutex_unlock(&server->lifecycle_mutex);
+    if (!server) {
+        return;
+    }
+    salts_mutex_lock(&server->lifecycle_mutex);
+    if (server->state == HTTP_API_STOPPED) {
+        salts_mutex_unlock(&server->lifecycle_mutex);
+        return;
+    }
+    server->state = HTTP_API_STOPPING;
+    stop_status = server->http_initialized
+                      ? chttp_server_stop(&server->http, 0u)
+                      : SALTS_OK;
+    destroy_status = server->http_initialized
+                         ? chttp_server_destroy(&server->http)
+                         : SALTS_OK;
+    server->http_initialized = 0;
+    server->state = HTTP_API_STOPPED;
+    salts_mutex_unlock(&server->lifecycle_mutex);
+    if (stop_status != SALTS_OK || destroy_status != SALTS_OK) {
+        TLOG_ERRORF("Failed to stop HTTP management API: stop={}, destroy={}",
+                    stop_status, destroy_status);
     }
 }
 
 void http_api_destroy(http_api_server_t *server) {
-    if (server) {
-        http_api_stop(server);
-        iris_app_unbind_rpc_context(server->app, HTTP_API_SIGNALING_CONTEXT_PATH,
-                                    server->signaling);
-        iris_app_unbind_rpc_context(server->app, HTTP_API_SERVER_CONTEXT_PATH,
-                                    server);
-        iris_app_destroy(server->app);
-        http_api_free_config_strings(&server->config);
-        turbo_cond_destroy(&server->lifecycle_cond);
-        turbo_mutex_destroy(&server->lifecycle_mutex);
-        free(server);
+    if (!server) {
+        return;
     }
+    http_api_stop(server);
+    http_api_free_config_strings(&server->config);
+    salts_mutex_destroy(&server->lifecycle_mutex);
+    free(server);
 }

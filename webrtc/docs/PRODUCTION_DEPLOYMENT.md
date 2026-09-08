@@ -198,7 +198,7 @@ Rotate without an authorization outage by first deploying the new SFU active
 key while retaining the old key as previous, then switching every Room signer,
 then removing the SFU previous key after the maximum token TTL plus clock
 skew. Room Service signs each internal command immediately before its
-TurboHTTP `http_client` request, binding the token to the command's
+CHTTP `chttp_client` request, binding the token to the command's
 `room_id`, optional `participant_id`, and required SFU scope. When the signed
 Room-to-SFU mode is configured it takes precedence over
 `TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN`; the static value remains only as an
@@ -381,7 +381,7 @@ ice_integration_set_max_reconnect_attempts(ice, 2);
 
 ## Reconnection Strategy
 
-TurboNet::Ice exposes a versioned restart operation, and PeerConnection exposes
+SaltsNet::ICE exposes a versioned restart operation, and PeerConnection exposes
 `turbo_peer_connection_restart_ice()`. The SFU resource API carries restart
 credentials and candidates in `application/trickle-ice-sdpfrag` under a strong
 ETag. The legacy `ice_integration_reconnect()` helper below remains retry
@@ -440,7 +440,7 @@ void schedule_reconnect(reconnect_state_t *state) {
     }
     
     // Schedule reconnection after delay
-    turbo_timer_start(timer, on_reconnect, delay, 0);
+    salts_timer_start(timer, on_reconnect, delay, 0);
     state->attempt++;
 }
 ```
@@ -520,13 +520,13 @@ turbo_dc_context_get_local_fingerprint(ctx, fp_hash, sizeof(fp_hash),
 ### 1. Use TLS for Signaling
 
 The signaling server loads an explicit certificate chain and private key for
-WSS through CoroNet. Its management API, the SFU WHIP/WHEP/control listener,
+WSS through CHTTP/CNet. Its management API, the SFU WHIP/WHEP/control listener,
 and the room-service listener use Iris HTTPS with the same explicit identity
 contract. Set `use_tls = true` and both `cert_file` and `key_file` in the
 corresponding `[server]` or `[http_api]` section. Startup fails before serving
 traffic if either identity file is missing or cannot be loaded.
 
-Room Service uses TurboHTTP `http_client` for outbound SFU control requests.
+Room Service uses CHTTP `chttp_client` for outbound SFU control requests.
 Public certificates use the system trust store. For a private PKI, set
 `[sfu].ca_file` (or `TURBO_ROOM_SERVICE_SFU_CA_FILE`); peer and hostname
 verification remain enabled. There is no insecure skip-verification option.
@@ -580,12 +580,12 @@ source_state_ttl_ms = 300000
 ```
 
 `join_timeout_ms` is a fixed deadline from WebSocket admission to the first
-successful `join`; later traffic does not extend it. CoroNet rejects a complete
+successful `join`; later traffic does not extend it. CHTTP rejects a complete
 text or fragmented WebSocket message above `max_message_size` before handing
 it to signaling. Each connection then has a token bucket and a bounded copied
 outbox. A rate or outbox violation closes that connection.
 
-After CoroNet completes TLS and the HTTP WebSocket upgrade, signaling groups
+After CHTTP/CNet completes TLS and the HTTP WebSocket upgrade, signaling groups
 connections by the socket peer's binary IPv4/IPv6 address. The ephemeral port
 is ignored and IPv4-mapped IPv6 is normalized to IPv4.
 `max_connections_per_source` bounds concurrent upgraded connections, while
@@ -610,7 +610,7 @@ and distributed enforcement where multiple signaling nodes share traffic.
 #### Policy boundary and rollback
 
 The selected design uses the direct socket peer after upgrade because that
-identity is available from CoroNet on every supported WS/WSS backend and does
+identity is available from CHTTP/CNet on every supported WS/WSS backend and does
 not require trusting attacker-controlled HTTP forwarding headers. Enforcing
 only at an external proxy would leave direct deployments unbounded; trusting
 `X-Forwarded-For` inside signaling would require an explicit trusted-proxy CIDR

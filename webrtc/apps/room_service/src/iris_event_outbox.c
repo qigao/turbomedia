@@ -3,10 +3,11 @@
 #include "iris_event_outbox_v1.h"
 #include "iris_orm_store.h"
 #include "platform.h"
-#include "turbo_error.h"
-#include "turbo_thread.h"
-#include "turbo_str.h"
+#include "salts_error.h"
+#include "salts_thread.h"
+#include "salts_str.h"
 #include "tlog.h"
+#include <salts/clock.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,8 +55,8 @@ typedef struct iris_outbox_request_s {
     iris_event_retention_result_t retention_result;
     int result;
     int completed;
-    turbo_mutex_t mutex;
-    turbo_cond_t condition;
+    salts_mutex_t mutex;
+    salts_cond_t condition;
 } iris_outbox_request_t;
 
 struct iris_outbox_candidate_s {
@@ -98,10 +99,10 @@ struct iris_event_outbox_s {
     int thread_started;
     int startup_completed;
     int startup_result;
-    turbo_mutex_t mutex;
-    turbo_cond_t not_empty;
-    turbo_cond_t startup;
-    turbo_thread_t thread;
+    salts_mutex_t mutex;
+    salts_cond_t not_empty;
+    salts_cond_t startup;
+    salts_thread_t thread;
     iris_event_outbox_stats_t stats;
 };
 
@@ -110,40 +111,40 @@ static int decode_record(DataBind *codec, const uint8_t *value,
                          IrisMediaEventOutboxRecordV1_t *record);
 
 static void stats_increment(iris_event_outbox_t *outbox, uint64_t *value) {
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     (*value)++;
-    turbo_mutex_unlock(&outbox->mutex);
+    salts_mutex_unlock(&outbox->mutex);
 }
 
 static void stats_transition(iris_event_outbox_t *outbox, size_t *from,
                              size_t *to) {
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     if (from && *from > 0u) (*from)--;
     if (to) (*to)++;
-    turbo_mutex_unlock(&outbox->mutex);
+    salts_mutex_unlock(&outbox->mutex);
 }
 
 static void stats_retain_payload(iris_event_outbox_t *outbox,
                                  size_t payload_bytes) {
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     outbox->stats.retained_payload_bytes += payload_bytes;
     if (outbox->stats.retained_payload_bytes >
         outbox->stats.peak_retained_payload_bytes) {
         outbox->stats.peak_retained_payload_bytes =
             outbox->stats.retained_payload_bytes;
     }
-    turbo_mutex_unlock(&outbox->mutex);
+    salts_mutex_unlock(&outbox->mutex);
 }
 
 static void stats_release_payload(iris_event_outbox_t *outbox,
                                   size_t payload_bytes) {
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     if (outbox->stats.retained_payload_bytes >= payload_bytes) {
         outbox->stats.retained_payload_bytes -= payload_bytes;
     } else {
         outbox->stats.retained_payload_bytes = 0u;
     }
-    turbo_mutex_unlock(&outbox->mutex);
+    salts_mutex_unlock(&outbox->mutex);
 }
 
 typedef struct iris_outbox_count_s {
@@ -161,14 +162,14 @@ static int count_visit(void *context,
     IrisMediaEventOutboxRecordV1_t record;
     int rc = decode_record(count->codec, view->value, view->value_size,
                            &record);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     {
         size_t payload_bytes = record.payload_json
                                    ? strlen(record.payload_json)
                                    : 0u;
         if (SIZE_MAX - count->payload_bytes < payload_bytes) {
             IrisMediaEventOutboxRecordV1_clear(&record);
-            return TURBO_ENOSPC;
+            return SALTS_ENOSPC;
         }
         count->payload_bytes += payload_bytes;
     }
@@ -182,7 +183,7 @@ static int count_visit(void *context,
     } else if (strcmp(record.delivery_state, IRIS_OUTBOX_STATE_ARCHIVED) == 0) {
         count->archived++;
     } else {
-        rc = TURBO_EPROTO;
+        rc = SALTS_EPROTO;
     }
     IrisMediaEventOutboxRecordV1_clear(&record);
     return rc;
@@ -194,13 +195,13 @@ static int recount_states(iris_event_outbox_t *outbox) {
     memset(&count, 0, sizeof(count));
     count.codec = outbox->codec;
     rc = outbox->store->scan(outbox->store->ctx, count_visit, &count);
-    if (rc != TURBO_OK) {
-        if (rc == TURBO_EPROTO) {
+    if (rc != SALTS_OK) {
+        if (rc == SALTS_EPROTO) {
             stats_increment(outbox, &outbox->stats.decode_failure_total);
         }
         return rc;
     }
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     outbox->stats.pending_records = count.pending;
     outbox->stats.in_flight_records = count.in_flight;
     outbox->stats.dead_records = count.dead;
@@ -209,8 +210,8 @@ static int recount_states(iris_event_outbox_t *outbox) {
     if (count.payload_bytes > outbox->stats.peak_retained_payload_bytes) {
         outbox->stats.peak_retained_payload_bytes = count.payload_bytes;
     }
-    turbo_mutex_unlock(&outbox->mutex);
-    return TURBO_OK;
+    salts_mutex_unlock(&outbox->mutex);
+    return SALTS_OK;
 }
 
 static void copy_text(char *dest, size_t capacity, const char *source) {
@@ -222,7 +223,7 @@ static uint64_t outbox_realtime_ms(const iris_event_outbox_t *outbox) {
     return outbox->retention.realtime_ms
                ? outbox->retention.realtime_ms(
                      outbox->retention.realtime_context)
-               : turbo_realtime_ms();
+               : salts_realtime_ms();
 }
 
 static int retention_expired(uint64_t changed_at_ms, uint64_t ttl_ms,
@@ -292,9 +293,9 @@ static int record_from_event(IrisMediaEventOutboxRecordV1_t *record,
         !set_owned(&record->input_value, event->input_value) ||
         !set_owned(&record->payload_json, event->payload_json)) {
         IrisMediaEventOutboxRecordV1_clear(record);
-        return TURBO_ENOMEM;
+        return SALTS_ENOMEM;
     }
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static void event_from_record(const IrisMediaEventOutboxRecordV1_t *record,
@@ -343,10 +344,10 @@ static int encode_record(DataBind *codec,
     size_t json_size = 0u;
     DataBindStatus status = IrisMediaEventOutboxRecordV1_to_json(
         codec, record, &json, &json_size, &error);
-    if (status != DATA_BIND_OK || !json) return TURBO_EPROTO;
+    if (status != DATA_BIND_OK || !json) return SALTS_EPROTO;
     *value = (uint8_t *)json;
     *value_size = json_size;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int record_text_fits(const char *value, size_t capacity) {
@@ -399,9 +400,9 @@ static int decode_record(DataBind *codec, const uint8_t *value,
         ((strcmp(record->delivery_state, IRIS_OUTBOX_STATE_ARCHIVED) == 0) !=
          (record->archived_at_ms > 0u))) {
         IrisMediaEventOutboxRecordV1_clear(record);
-        return TURBO_EPROTO;
+        return SALTS_EPROTO;
     }
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int commit_record(iris_event_outbox_t *outbox,
@@ -417,12 +418,12 @@ static int commit_record(iris_event_outbox_t *outbox,
     uint64_t archived_at_ms =
         strcmp(state, IRIS_OUTBOX_STATE_ARCHIVED) == 0 ? changed_at_ms : 0u;
     int rc;
-    if (changed_at_ms == 0u) return TURBO_EINVAL;
+    if (changed_at_ms == 0u) return SALTS_EINVAL;
     rc = record_from_event(&record, event, state, attempts, http_status,
                            changed_at_ms, archived_at_ms);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     rc = encode_record(outbox->codec, &record, &value, &value_size);
-    if (rc == TURBO_OK) {
+    if (rc == SALTS_OK) {
         mutation.key = (const uint8_t *)event->event_id;
         mutation.key_size = strlen(event->event_id);
         mutation.expected_revision = expected_revision;
@@ -451,16 +452,16 @@ static int scan_visit(void *context,
     iris_outbox_scan_t *scan = (iris_outbox_scan_t *)context;
     IrisMediaEventOutboxRecordV1_t record;
     iris_outbox_candidate_t *candidate;
-    if (scan->count >= scan->capacity) return TURBO_OK;
+    if (scan->count >= scan->capacity) return SALTS_OK;
     if (scan->event_id &&
         (strlen(scan->event_id) != view->key_size ||
          memcmp(scan->event_id, view->key, view->key_size) != 0)) {
-        return TURBO_OK;
+        return SALTS_OK;
     }
     if (decode_record(scan->codec, view->value, view->value_size, &record) !=
-        TURBO_OK) {
-        scan->decode_status = TURBO_EPROTO;
-        return TURBO_EPROTO;
+        SALTS_OK) {
+        scan->decode_status = SALTS_EPROTO;
+        return SALTS_EPROTO;
     }
     if ((scan->only_in_flight &&
          strcmp(record.delivery_state, IRIS_OUTBOX_STATE_IN_FLIGHT) != 0) ||
@@ -469,7 +470,7 @@ static int scan_visit(void *context,
         (scan->only_dead &&
          strcmp(record.delivery_state, IRIS_OUTBOX_STATE_DEAD) != 0)) {
         IrisMediaEventOutboxRecordV1_clear(&record);
-        return TURBO_OK;
+        return SALTS_OK;
     }
     candidate = &scan->items[scan->count++];
     memset(candidate, 0, sizeof(*candidate));
@@ -482,7 +483,7 @@ static int scan_visit(void *context,
     copy_text(candidate->state, sizeof(candidate->state),
               record.delivery_state);
     IrisMediaEventOutboxRecordV1_clear(&record);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int scan_records(iris_event_outbox_t *outbox,
@@ -501,8 +502,8 @@ static int scan_records(iris_event_outbox_t *outbox,
     scan.only_dead = only_dead;
     rc = outbox->store->scan(outbox->store->ctx, scan_visit, &scan);
     *count = scan.count;
-    rc = rc == TURBO_OK ? scan.decode_status : rc;
-    if (rc == TURBO_EPROTO) {
+    rc = rc == SALTS_OK ? scan.decode_status : rc;
+    if (rc == SALTS_EPROTO) {
         stats_increment(outbox, &outbox->stats.decode_failure_total);
     }
     return rc;
@@ -514,30 +515,30 @@ static int schedule_one(iris_event_outbox_t *outbox,
     int rc;
     if (candidate->revision >= IRIS_RECORD_REVISION_MAX - 1u ||
         candidate->attempts == UINT32_MAX) {
-        return TURBO_ENOSPC;
+        return SALTS_ENOSPC;
     }
     in_flight_revision = candidate->revision + 1u;
     rc = commit_record(outbox, &candidate->event,
                        IRIS_OUTBOX_STATE_IN_FLIGHT,
                        candidate->attempts + 1u, candidate->http_status,
                        candidate->revision, in_flight_revision);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     stats_transition(outbox, &outbox->stats.pending_records,
                      &outbox->stats.in_flight_records);
     if (outbox->deliver(outbox->deliver_context, &candidate->event,
                         in_flight_revision) == IVR_OK) {
         stats_increment(outbox, &outbox->stats.scheduled_total);
-        return TURBO_OK;
+        return SALTS_OK;
     }
     stats_increment(outbox, &outbox->stats.schedule_rejection_total);
     rc = commit_record(outbox, &candidate->event, IRIS_OUTBOX_STATE_PENDING,
                        candidate->attempts + 1u, candidate->http_status,
                        in_flight_revision, in_flight_revision + 1u);
-    if (rc == TURBO_OK) {
+    if (rc == SALTS_OK) {
         stats_transition(outbox, &outbox->stats.in_flight_records,
                          &outbox->stats.pending_records);
     }
-    return rc == TURBO_OK ? TURBO_ENOSPC : rc;
+    return rc == SALTS_OK ? SALTS_ENOSPC : rc;
 }
 
 static int schedule_pending(iris_event_outbox_t *outbox) {
@@ -547,45 +548,45 @@ static int schedule_pending(iris_event_outbox_t *outbox) {
     int rc;
     if (capacity == 0u || capacity > outbox->capacity) capacity = outbox->capacity;
     items = (iris_outbox_candidate_t *)calloc(capacity, sizeof(*items));
-    if (!items) return TURBO_ENOMEM;
+    if (!items) return SALTS_ENOMEM;
     do {
         count = 0u;
         rc = scan_records(outbox, items, capacity, NULL, 0, 1, 0, &count);
-        for (size_t i = 0u; rc == TURBO_OK && i < count; ++i) {
+        for (size_t i = 0u; rc == SALTS_OK && i < count; ++i) {
             rc = schedule_one(outbox, &items[i]);
-            if (rc == TURBO_ENOSPC) break;
+            if (rc == SALTS_ENOSPC) break;
         }
-    } while (rc == TURBO_OK && count == capacity);
+    } while (rc == SALTS_OK && count == capacity);
     free(items);
-    return rc == TURBO_ENOSPC ? TURBO_OK : rc;
+    return rc == SALTS_ENOSPC ? SALTS_OK : rc;
 }
 
 static int normalize_in_flight(iris_event_outbox_t *outbox) {
     size_t capacity = outbox->store->max_batch_size;
     iris_outbox_candidate_t *items;
-    int rc = TURBO_OK;
+    int rc = SALTS_OK;
     if (capacity == 0u || capacity > outbox->capacity) capacity = outbox->capacity;
     items = (iris_outbox_candidate_t *)calloc(capacity, sizeof(*items));
-    if (!items) return TURBO_ENOMEM;
+    if (!items) return SALTS_ENOMEM;
     for (;;) {
         size_t count = 0u;
         rc = scan_records(outbox, items, capacity, NULL, 1, 0, 0, &count);
-        if (rc != TURBO_OK || count == 0u) break;
+        if (rc != SALTS_OK || count == 0u) break;
         for (size_t i = 0u; i < count; ++i) {
             if (items[i].revision >= IRIS_RECORD_REVISION_MAX) {
-                rc = TURBO_ENOSPC;
+                rc = SALTS_ENOSPC;
                 break;
             }
             rc = commit_record(outbox, &items[i].event,
                                IRIS_OUTBOX_STATE_PENDING, items[i].attempts,
                                items[i].http_status, items[i].revision,
                                items[i].revision + 1u);
-            if (rc != TURBO_OK) break;
+            if (rc != SALTS_OK) break;
             stats_transition(outbox, &outbox->stats.in_flight_records,
                              &outbox->stats.pending_records);
             stats_increment(outbox, &outbox->stats.recovered_total);
         }
-        if (rc != TURBO_OK) break;
+        if (rc != SALTS_OK) break;
     }
     free(items);
     return rc;
@@ -598,7 +599,7 @@ static int process_persist(iris_event_outbox_t *outbox,
     int rc = commit_record(outbox, &request->event,
                            IRIS_OUTBOX_STATE_PENDING, 0u, 0,
                            IRIS_RECORD_REVISION_ABSENT, 1u);
-    if (rc == TURBO_OK) {
+    if (rc == SALTS_OK) {
         memset(&existing, 0, sizeof(existing));
         existing.event = request->event;
         existing.revision = 1u;
@@ -606,10 +607,10 @@ static int process_persist(iris_event_outbox_t *outbox,
         stats_transition(outbox, NULL, &outbox->stats.pending_records);
         stats_increment(outbox, &outbox->stats.persisted_total);
         rc = schedule_one(outbox, &existing);
-        return rc == TURBO_ENOSPC ? TURBO_OK : rc;
+        return rc == SALTS_ENOSPC ? SALTS_OK : rc;
     }
-    if (rc != TURBO_EBUSY) {
-        if (rc == TURBO_ENOSPC) {
+    if (rc != SALTS_EBUSY) {
+        if (rc == SALTS_ENOSPC) {
             stats_increment(outbox,
                             &outbox->stats.capacity_rejection_total);
         }
@@ -619,18 +620,18 @@ static int process_persist(iris_event_outbox_t *outbox,
     memset(&existing, 0, sizeof(existing));
     rc = scan_records(outbox, &existing, 1u, request->event.event_id,
                       0, 0, 0, &count);
-    if (rc != TURBO_OK || count != 1u) {
+    if (rc != SALTS_OK || count != 1u) {
         stats_increment(outbox, &outbox->stats.persist_failure_total);
-        return rc == TURBO_OK ? TURBO_EPROTO : rc;
+        return rc == SALTS_OK ? SALTS_EPROTO : rc;
     }
     if (!event_equal(&existing.event, &request->event)) {
         stats_increment(outbox, &outbox->stats.conflict_total);
-        return TURBO_EBUSY;
+        return SALTS_EBUSY;
     }
     stats_increment(outbox, &outbox->stats.duplicate_total);
     if (strcmp(existing.state, IRIS_OUTBOX_STATE_PENDING) == 0) {
         rc = schedule_one(outbox, &existing);
-        if (rc == TURBO_ENOSPC) rc = TURBO_OK;
+        if (rc == SALTS_ENOSPC) rc = SALTS_OK;
     }
     return rc;
 }
@@ -641,7 +642,7 @@ static int process_settle(iris_event_outbox_t *outbox,
     if (request->succeeded > 0) {
         rc = delete_record(outbox, request->event.event_id,
                            request->revision);
-        if (rc == TURBO_OK) {
+        if (rc == SALTS_OK) {
             stats_release_payload(outbox,
                                   strlen(request->event.payload_json));
             stats_transition(outbox, &outbox->stats.in_flight_records, NULL);
@@ -653,7 +654,7 @@ static int process_settle(iris_event_outbox_t *outbox,
         memset(&current, 0, sizeof(current));
         rc = scan_records(outbox, &current, 1u, request->event.event_id,
                           0, 0, 0, &count);
-        if (rc == TURBO_OK && count == 1u &&
+        if (rc == SALTS_OK && count == 1u &&
             current.revision == request->revision &&
             request->revision < IRIS_RECORD_REVISION_MAX) {
             rc = commit_record(
@@ -662,28 +663,28 @@ static int process_settle(iris_event_outbox_t *outbox,
                                        : IRIS_OUTBOX_STATE_DEAD,
                 current.attempts, request->http_status, request->revision,
                 request->revision + 1u);
-        } else if (rc == TURBO_OK) {
-            rc = TURBO_EBUSY;
+        } else if (rc == SALTS_OK) {
+            rc = SALTS_EBUSY;
         }
-        if (rc == TURBO_OK && request->succeeded == 0) {
+        if (rc == SALTS_OK && request->succeeded == 0) {
             stats_transition(outbox, &outbox->stats.in_flight_records,
                              &outbox->stats.dead_records);
             stats_increment(outbox, &outbox->stats.dead_lettered_total);
-        } else if (rc == TURBO_OK && request->succeeded < 0) {
+        } else if (rc == SALTS_OK && request->succeeded < 0) {
             stats_transition(outbox, &outbox->stats.in_flight_records,
                              &outbox->stats.pending_records);
         }
     }
-    if (rc == TURBO_EBUSY) {
+    if (rc == SALTS_EBUSY) {
         stats_increment(outbox, &outbox->stats.stale_settlement_total);
     }
-    if (rc != TURBO_OK) {
+    if (rc != SALTS_OK) {
         stats_increment(outbox, &outbox->stats.settlement_failure_total);
         TLOG_ERRORF("Iris event outbox settlement failed: event_id={}, status={}. "
                    "The durable record is retained for recovery.",
                    request->event.event_id, rc);
     }
-    if (rc == TURBO_OK) (void)schedule_pending(outbox);
+    if (rc == SALTS_OK) (void)schedule_pending(outbox);
     return rc;
 }
 
@@ -694,16 +695,16 @@ static int replay_candidate(iris_event_outbox_t *outbox,
     if (replayed) *replayed = 0;
     if (backpressured) *backpressured = 0;
     if (strcmp(candidate->state, IRIS_OUTBOX_STATE_DEAD) != 0) {
-        return TURBO_EBUSY;
+        return SALTS_EBUSY;
     }
     if (candidate->revision >= IRIS_RECORD_REVISION_MAX - 2u ||
         candidate->attempts == UINT32_MAX) {
-        return TURBO_ENOSPC;
+        return SALTS_ENOSPC;
     }
     rc = commit_record(outbox, &candidate->event, IRIS_OUTBOX_STATE_PENDING,
                        candidate->attempts, 0, candidate->revision,
                        candidate->revision + 1u);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     stats_transition(outbox, &outbox->stats.dead_records,
                      &outbox->stats.pending_records);
     candidate->revision++;
@@ -713,9 +714,9 @@ static int replay_candidate(iris_event_outbox_t *outbox,
     stats_increment(outbox, &outbox->stats.replayed_total);
     if (replayed) *replayed = 1;
     rc = schedule_one(outbox, candidate);
-    if (rc == TURBO_ENOSPC) {
+    if (rc == SALTS_ENOSPC) {
         if (backpressured) *backpressured = 1;
-        return TURBO_OK;
+        return SALTS_OK;
     }
     return rc;
 }
@@ -728,8 +729,8 @@ static int process_replay(iris_event_outbox_t *outbox,
     memset(&candidate, 0, sizeof(candidate));
     rc = scan_records(outbox, &candidate, 1u, request->event_id,
                       0, 0, 0, &count);
-    if (rc != TURBO_OK || count != 1u) {
-        return rc == TURBO_OK ? TURBO_ENOENT : rc;
+    if (rc != SALTS_OK || count != 1u) {
+        return rc == SALTS_OK ? SALTS_ENOENT : rc;
     }
     return replay_candidate(outbox, &candidate, NULL, NULL);
 }
@@ -741,7 +742,7 @@ static int process_replay_dead_batch(iris_event_outbox_t *outbox,
     int rc = scan_records(outbox, request->replay_candidates,
                           request->replay_candidate_capacity, NULL,
                           0, 0, 1, &count);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     request->replay_batch_result.selected = count;
     for (i = 0u; i < count; ++i) {
         int replayed = 0;
@@ -749,15 +750,15 @@ static int process_replay_dead_batch(iris_event_outbox_t *outbox,
         rc = replay_candidate(outbox, &request->replay_candidates[i],
                               &replayed, &backpressured);
         if (replayed) request->replay_batch_result.replayed++;
-        if (rc != TURBO_OK) break;
+        if (rc != SALTS_OK) break;
         if (backpressured) {
             request->replay_batch_result.backpressured = 1;
             break;
         }
     }
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     request->replay_batch_result.remaining_dead = outbox->stats.dead_records;
-    turbo_mutex_unlock(&outbox->mutex);
+    salts_mutex_unlock(&outbox->mutex);
     return rc;
 }
 
@@ -776,14 +777,14 @@ static int dead_list_visit(void *context,
     iris_event_dead_letter_t *item;
     int rc = decode_record(list->codec, view->value, view->value_size,
                            &record);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     if (strcmp(record.delivery_state, IRIS_OUTBOX_STATE_DEAD) != 0) {
         IrisMediaEventOutboxRecordV1_clear(&record);
-        return TURBO_OK;
+        return SALTS_OK;
     }
     if (list->total == SIZE_MAX) {
         IrisMediaEventOutboxRecordV1_clear(&record);
-        return TURBO_ENOSPC;
+        return SALTS_ENOSPC;
     }
     list->total++;
     if (list->count < list->capacity) {
@@ -803,7 +804,7 @@ static int dead_list_visit(void *context,
         item->last_http_status = record.last_http_status;
     }
     IrisMediaEventOutboxRecordV1_clear(&record);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 typedef struct iris_outbox_archive_list_s {
@@ -822,14 +823,14 @@ static int archive_list_visit(void *context,
     iris_event_archive_t *item;
     int rc = decode_record(list->codec, view->value, view->value_size,
                            &record);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     if (strcmp(record.delivery_state, IRIS_OUTBOX_STATE_ARCHIVED) != 0) {
         IrisMediaEventOutboxRecordV1_clear(&record);
-        return TURBO_OK;
+        return SALTS_OK;
     }
     if (list->total == SIZE_MAX) {
         IrisMediaEventOutboxRecordV1_clear(&record);
-        return TURBO_ENOSPC;
+        return SALTS_ENOSPC;
     }
     list->total++;
     if (list->count < list->capacity) {
@@ -849,7 +850,7 @@ static int archive_list_visit(void *context,
         item->last_http_status = record.last_http_status;
     }
     IrisMediaEventOutboxRecordV1_clear(&record);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int process_list_archived(iris_event_outbox_t *outbox,
@@ -861,10 +862,10 @@ static int process_list_archived(iris_event_outbox_t *outbox,
     list.items = request->archives;
     list.capacity = request->archive_capacity;
     rc = outbox->store->scan(outbox->store->ctx, archive_list_visit, &list);
-    if (rc == TURBO_EPROTO) {
+    if (rc == SALTS_EPROTO) {
         stats_increment(outbox, &outbox->stats.decode_failure_total);
     }
-    if (rc == TURBO_OK) {
+    if (rc == SALTS_OK) {
         request->archive_count = list.count;
         request->archive_total = list.total;
     }
@@ -890,12 +891,12 @@ static int retention_visit(void *context,
     iris_outbox_candidate_t *candidate;
     int eligible;
     int rc;
-    if (scan->count >= scan->capacity) return TURBO_OK;
+    if (scan->count >= scan->capacity) return SALTS_OK;
     rc = decode_record(scan->codec, view->value, view->value_size, &record);
-    if (rc != TURBO_OK) return rc;
+    if (rc != SALTS_OK) return rc;
     if (strcmp(record.delivery_state, scan->target_state) != 0) {
         IrisMediaEventOutboxRecordV1_clear(&record);
-        return TURBO_OK;
+        return SALTS_OK;
     }
     eligible =
         (strcmp(scan->target_state, IRIS_OUTBOX_STATE_DEAD) == 0 &&
@@ -906,7 +907,7 @@ static int retention_visit(void *context,
                            scan->archive_retention_ms, scan->now_ms));
     if (!eligible) {
         IrisMediaEventOutboxRecordV1_clear(&record);
-        return TURBO_OK;
+        return SALTS_OK;
     }
     candidate = &scan->items[scan->count++];
     memset(candidate, 0, sizeof(*candidate));
@@ -919,7 +920,7 @@ static int retention_visit(void *context,
     copy_text(candidate->state, sizeof(candidate->state),
               record.delivery_state);
     IrisMediaEventOutboxRecordV1_clear(&record);
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int process_retention(iris_event_outbox_t *outbox,
@@ -931,7 +932,7 @@ static int process_retention(iris_event_outbox_t *outbox,
     if (result) memset(result, 0, sizeof(*result));
     items = (iris_outbox_candidate_t *)calloc(
         outbox->retention.sweep_batch_size, sizeof(*items));
-    if (!items) return TURBO_ENOMEM;
+    if (!items) return SALTS_ENOMEM;
     memset(&scan, 0, sizeof(scan));
     scan.codec = outbox->codec;
     scan.items = items;
@@ -945,31 +946,31 @@ static int process_retention(iris_event_outbox_t *outbox,
     outbox->retention_delete_first = !outbox->retention_delete_first;
     if (scan.now_ms == 0u) {
         free(items);
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
     rc = outbox->store->scan(outbox->store->ctx, retention_visit, &scan);
-    if (rc == TURBO_OK && scan.count == 0u) {
+    if (rc == SALTS_OK && scan.count == 0u) {
         scan.target_state =
             strcmp(scan.target_state, IRIS_OUTBOX_STATE_DEAD) == 0
                 ? IRIS_OUTBOX_STATE_ARCHIVED
                 : IRIS_OUTBOX_STATE_DEAD;
         rc = outbox->store->scan(outbox->store->ctx, retention_visit, &scan);
     }
-    if (rc == TURBO_EPROTO) {
+    if (rc == SALTS_EPROTO) {
         stats_increment(outbox, &outbox->stats.decode_failure_total);
     }
-    for (i = 0u; rc == TURBO_OK && i < scan.count; ++i) {
+    for (i = 0u; rc == SALTS_OK && i < scan.count; ++i) {
         iris_outbox_candidate_t *candidate = &items[i];
         if (strcmp(candidate->state, IRIS_OUTBOX_STATE_DEAD) == 0) {
             if (candidate->revision >= IRIS_RECORD_REVISION_MAX) {
-                rc = TURBO_ENOSPC;
+                rc = SALTS_ENOSPC;
                 break;
             }
             rc = commit_record(outbox, &candidate->event,
                                IRIS_OUTBOX_STATE_ARCHIVED,
                                candidate->attempts, candidate->http_status,
                                candidate->revision, candidate->revision + 1u);
-            if (rc == TURBO_OK) {
+            if (rc == SALTS_OK) {
                 stats_transition(outbox, &outbox->stats.dead_records,
                                  &outbox->stats.archived_records);
                 stats_increment(outbox, &outbox->stats.archived_total);
@@ -978,7 +979,7 @@ static int process_retention(iris_event_outbox_t *outbox,
         } else {
             rc = delete_record(outbox, candidate->event.event_id,
                                candidate->revision);
-            if (rc == TURBO_OK) {
+            if (rc == SALTS_OK) {
                 stats_release_payload(outbox,
                                       strlen(candidate->event.payload_json));
                 stats_transition(outbox, &outbox->stats.archived_records,
@@ -996,12 +997,12 @@ static int process_retention(iris_event_outbox_t *outbox,
     }
     free(items);
     if (result) {
-        turbo_mutex_lock(&outbox->mutex);
+        salts_mutex_lock(&outbox->mutex);
         result->remaining_dead = outbox->stats.dead_records;
         result->remaining_archived = outbox->stats.archived_records;
-        turbo_mutex_unlock(&outbox->mutex);
+        salts_mutex_unlock(&outbox->mutex);
     }
-    if (rc != TURBO_OK) {
+    if (rc != SALTS_OK) {
         stats_increment(outbox, &outbox->stats.retention_failure_total);
         TLOG_ERRORF("Iris event retention sweep failed: status={}. Durable "
                    "records are retained for the next bounded sweep.", rc);
@@ -1018,10 +1019,10 @@ static int process_list_dead(iris_event_outbox_t *outbox,
     list.items = request->dead_letters;
     list.capacity = request->dead_letter_capacity;
     rc = outbox->store->scan(outbox->store->ctx, dead_list_visit, &list);
-    if (rc == TURBO_EPROTO) {
+    if (rc == SALTS_EPROTO) {
         stats_increment(outbox, &outbox->stats.decode_failure_total);
     }
-    if (rc == TURBO_OK) {
+    if (rc == SALTS_OK) {
         request->dead_letter_count = list.count;
         request->dead_letter_total = list.total;
     }
@@ -1029,15 +1030,15 @@ static int process_list_dead(iris_event_outbox_t *outbox,
 }
 
 static void complete_request(iris_outbox_request_t *request, int result) {
-    turbo_mutex_lock(&request->mutex);
+    salts_mutex_lock(&request->mutex);
     request->result = result;
     request->completed = 1;
-    turbo_cond_signal(&request->condition);
-    turbo_mutex_unlock(&request->mutex);
+    salts_cond_signal(&request->condition);
+    salts_mutex_unlock(&request->mutex);
 }
 
 static void reset_sweep_deadline(iris_event_outbox_t *outbox) {
-    uint64_t now_ms = turbo_monotonic_ms();
+    uint64_t now_ms = salts_monotonic_ms();
     if (UINT64_MAX - now_ms < outbox->retention.sweep_interval_ms) {
         outbox->next_sweep_monotonic_ms = UINT64_MAX;
     } else {
@@ -1049,42 +1050,42 @@ static void reset_sweep_deadline(iris_event_outbox_t *outbox) {
 static void outbox_thread(void *context) {
     iris_event_outbox_t *outbox = (iris_event_outbox_t *)context;
     int recovery = recount_states(outbox);
-    if (recovery == TURBO_OK) recovery = process_retention(outbox, NULL);
-    if (recovery == TURBO_OK) recovery = normalize_in_flight(outbox);
-    if (recovery == TURBO_OK) recovery = schedule_pending(outbox);
-    if (recovery != TURBO_OK) {
+    if (recovery == SALTS_OK) recovery = process_retention(outbox, NULL);
+    if (recovery == SALTS_OK) recovery = normalize_in_flight(outbox);
+    if (recovery == SALTS_OK) recovery = schedule_pending(outbox);
+    if (recovery != SALTS_OK) {
         TLOG_ERRORF("Iris event outbox recovery failed: status={}. "
                    "New media event admission is stopped.", recovery);
     }
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     outbox->startup_result = recovery;
     outbox->startup_completed = 1;
-    outbox->accepting = recovery == TURBO_OK;
-    turbo_cond_signal(&outbox->startup);
-    turbo_mutex_unlock(&outbox->mutex);
+    outbox->accepting = recovery == SALTS_OK;
+    salts_cond_signal(&outbox->startup);
+    salts_mutex_unlock(&outbox->mutex);
     reset_sweep_deadline(outbox);
     for (;;) {
         iris_outbox_request_t *request;
         int result;
-        turbo_mutex_lock(&outbox->mutex);
+        salts_mutex_lock(&outbox->mutex);
         while (outbox->count == 0u && outbox->running) {
-            uint64_t now_ms = turbo_monotonic_ms();
+            uint64_t now_ms = salts_monotonic_ms();
             uint64_t wait_ms;
             if (now_ms >= outbox->next_sweep_monotonic_ms) break;
             wait_ms = outbox->next_sweep_monotonic_ms - now_ms;
             if (wait_ms > outbox->retention.sweep_interval_ms) {
                 wait_ms = outbox->retention.sweep_interval_ms;
             }
-            (void)turbo_cond_timedwait(&outbox->not_empty, &outbox->mutex,
+            (void)salts_cond_timedwait(&outbox->not_empty, &outbox->mutex,
                                        wait_ms * UINT64_C(1000000));
         }
         if (outbox->count == 0u && !outbox->running) {
-            turbo_mutex_unlock(&outbox->mutex);
+            salts_mutex_unlock(&outbox->mutex);
             break;
         }
         if (outbox->running &&
-            turbo_monotonic_ms() >= outbox->next_sweep_monotonic_ms) {
-            turbo_mutex_unlock(&outbox->mutex);
+            salts_monotonic_ms() >= outbox->next_sweep_monotonic_ms) {
+            salts_mutex_unlock(&outbox->mutex);
             (void)process_retention(outbox, NULL);
             reset_sweep_deadline(outbox);
             continue;
@@ -1093,7 +1094,7 @@ static void outbox_thread(void *context) {
         outbox->requests[outbox->head] = NULL;
         outbox->head = (outbox->head + 1u) % outbox->capacity;
         outbox->count--;
-        turbo_mutex_unlock(&outbox->mutex);
+        salts_mutex_unlock(&outbox->mutex);
         if (request->kind == IRIS_OUTBOX_PERSIST) {
             result = process_persist(outbox, request);
         } else if (request->kind == IRIS_OUTBOX_SETTLE) {
@@ -1110,7 +1111,7 @@ static void outbox_thread(void *context) {
             result = process_retention(outbox, &request->retention_result);
             reset_sweep_deadline(outbox);
         } else {
-            result = TURBO_EINVAL;
+            result = SALTS_EINVAL;
         }
         complete_request(request, result);
     }
@@ -1121,8 +1122,8 @@ static iris_outbox_request_t *request_create(iris_outbox_request_kind_t kind) {
         (iris_outbox_request_t *)calloc(1u, sizeof(*request));
     if (!request) return NULL;
     request->kind = kind;
-    turbo_mutex_init(&request->mutex);
-    turbo_cond_init(&request->condition);
+    salts_mutex_init(&request->mutex);
+    salts_cond_init(&request->condition);
     return request;
 }
 
@@ -1131,8 +1132,8 @@ static void request_destroy(iris_outbox_request_t *request) {
     free(request->dead_letters);
     free(request->archives);
     free(request->replay_candidates);
-    turbo_cond_destroy(&request->condition);
-    turbo_mutex_destroy(&request->mutex);
+    salts_cond_destroy(&request->condition);
+    salts_mutex_destroy(&request->mutex);
     free(request);
 }
 
@@ -1140,14 +1141,14 @@ static int submit(iris_event_outbox_t *outbox,
                   iris_outbox_request_t *request) {
     size_t tail;
     int result;
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     if (!outbox->accepting) {
-        turbo_mutex_unlock(&outbox->mutex);
-        return TURBO_ESHUTDOWN;
+        salts_mutex_unlock(&outbox->mutex);
+        return SALTS_ESHUTDOWN;
     }
     if (outbox->count == outbox->capacity) {
-        turbo_mutex_unlock(&outbox->mutex);
-        return TURBO_ENOSPC;
+        salts_mutex_unlock(&outbox->mutex);
+        return SALTS_ENOSPC;
     }
     tail = (outbox->head + outbox->count) % outbox->capacity;
     outbox->requests[tail] = request;
@@ -1155,14 +1156,14 @@ static int submit(iris_event_outbox_t *outbox,
     if (outbox->count > outbox->stats.request_queue_high_water) {
         outbox->stats.request_queue_high_water = outbox->count;
     }
-    turbo_cond_signal(&outbox->not_empty);
-    turbo_mutex_unlock(&outbox->mutex);
-    turbo_mutex_lock(&request->mutex);
+    salts_cond_signal(&outbox->not_empty);
+    salts_mutex_unlock(&outbox->mutex);
+    salts_mutex_lock(&request->mutex);
     while (!request->completed) {
-        turbo_cond_wait(&request->condition, &request->mutex);
+        salts_cond_wait(&request->condition, &request->mutex);
     }
     result = request->result;
-    turbo_mutex_unlock(&request->mutex);
+    salts_mutex_unlock(&request->mutex);
     return result;
 }
 
@@ -1202,9 +1203,9 @@ static iris_event_outbox_t *create_common(
         free(outbox);
         return NULL;
     }
-    turbo_mutex_init(&outbox->mutex);
-    turbo_cond_init(&outbox->not_empty);
-    turbo_cond_init(&outbox->startup);
+    salts_mutex_init(&outbox->mutex);
+    salts_cond_init(&outbox->not_empty);
+    salts_cond_init(&outbox->startup);
     outbox->store = config->store;
     outbox->deliver = config->deliver;
     outbox->deliver_context = config->deliver_context;
@@ -1222,7 +1223,7 @@ iris_event_outbox_t *iris_event_outbox_create(
 
 iris_event_outbox_t *iris_event_outbox_create_record_store(
     const char *yaml_path, const char *channel_name,
-    int allow_development_sqlite, size_t request_queue_capacity,
+    size_t request_queue_capacity,
     const iris_event_outbox_retention_config_t *retention,
     iris_event_outbox_deliver_fn deliver,
     void *deliver_context, char *error_text, size_t error_capacity) {
@@ -1238,9 +1239,8 @@ iris_event_outbox_t *iris_event_outbox_create_record_store(
         }
         return NULL;
     }
-    owner = iris_orm_store_owner_create(
-        yaml_path, channel_name, allow_development_sqlite, error_text,
-        error_capacity);
+    owner = iris_orm_store_owner_create(yaml_path, channel_name, error_text,
+                                        error_capacity);
     if (!owner) return NULL;
     store = iris_orm_store_owner_store(owner);
     memset(&config, 0, sizeof(config));
@@ -1265,34 +1265,34 @@ iris_event_outbox_t *iris_event_outbox_create_record_store(
 
 int iris_event_outbox_start(iris_event_outbox_t *outbox) {
     int startup_result;
-    if (!outbox || outbox->thread_started) return TURBO_EINVAL;
-    turbo_mutex_lock(&outbox->mutex);
+    if (!outbox || outbox->thread_started) return SALTS_EINVAL;
+    salts_mutex_lock(&outbox->mutex);
     outbox->running = 1;
     outbox->accepting = 0;
     outbox->startup_completed = 0;
-    outbox->startup_result = TURBO_EINVAL;
-    turbo_mutex_unlock(&outbox->mutex);
-    if (turbo_thread_create(&outbox->thread, outbox_thread, outbox) != TURBO_OK) {
-        turbo_mutex_lock(&outbox->mutex);
+    outbox->startup_result = SALTS_EINVAL;
+    salts_mutex_unlock(&outbox->mutex);
+    if (salts_thread_create(&outbox->thread, outbox_thread, outbox) != SALTS_OK) {
+        salts_mutex_lock(&outbox->mutex);
         outbox->running = 0;
         outbox->accepting = 0;
-        turbo_mutex_unlock(&outbox->mutex);
-        return TURBO_EIO;
+        salts_mutex_unlock(&outbox->mutex);
+        return SALTS_EIO;
     }
     outbox->thread_started = 1;
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     while (!outbox->startup_completed) {
-        turbo_cond_wait(&outbox->startup, &outbox->mutex);
+        salts_cond_wait(&outbox->startup, &outbox->mutex);
     }
     startup_result = outbox->startup_result;
-    if (startup_result != TURBO_OK) {
+    if (startup_result != SALTS_OK) {
         outbox->running = 0;
-        turbo_cond_broadcast(&outbox->not_empty);
+        salts_cond_broadcast(&outbox->not_empty);
     }
-    turbo_mutex_unlock(&outbox->mutex);
-    if (startup_result != TURBO_OK) {
-        turbo_thread_join(&outbox->thread);
-        turbo_thread_destroy(&outbox->thread);
+    salts_mutex_unlock(&outbox->mutex);
+    if (startup_result != SALTS_OK) {
+        salts_thread_join(&outbox->thread);
+        salts_thread_destroy(&outbox->thread);
         outbox->thread_started = 0;
     }
     return startup_result;
@@ -1300,20 +1300,20 @@ int iris_event_outbox_start(iris_event_outbox_t *outbox) {
 
 void iris_event_outbox_stop(iris_event_outbox_t *outbox) {
     if (!outbox || !outbox->thread_started) return;
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     outbox->accepting = 0;
     while (outbox->count > 0u) {
         iris_outbox_request_t *request = outbox->requests[outbox->head];
         outbox->requests[outbox->head] = NULL;
         outbox->head = (outbox->head + 1u) % outbox->capacity;
         outbox->count--;
-        complete_request(request, TURBO_ESHUTDOWN);
+        complete_request(request, SALTS_ESHUTDOWN);
     }
     outbox->running = 0;
-    turbo_cond_broadcast(&outbox->not_empty);
-    turbo_mutex_unlock(&outbox->mutex);
-    turbo_thread_join(&outbox->thread);
-    turbo_thread_destroy(&outbox->thread);
+    salts_cond_broadcast(&outbox->not_empty);
+    salts_mutex_unlock(&outbox->mutex);
+    salts_thread_join(&outbox->thread);
+    salts_thread_destroy(&outbox->thread);
     outbox->thread_started = 0;
 }
 
@@ -1321,9 +1321,9 @@ void iris_event_outbox_destroy(iris_event_outbox_t *outbox) {
     if (!outbox) return;
     iris_event_outbox_stop(outbox);
     data_bind_free(outbox->codec);
-    turbo_cond_destroy(&outbox->startup);
-    turbo_cond_destroy(&outbox->not_empty);
-    turbo_mutex_destroy(&outbox->mutex);
+    salts_cond_destroy(&outbox->startup);
+    salts_cond_destroy(&outbox->not_empty);
+    salts_mutex_destroy(&outbox->mutex);
     free(outbox->requests);
     iris_orm_store_owner_destroy(outbox->orm_store_owner);
     free(outbox);
@@ -1331,11 +1331,11 @@ void iris_event_outbox_destroy(iris_event_outbox_t *outbox) {
 
 static ivr_status_t map_status(int status) {
     switch (status) {
-    case TURBO_OK: return IVR_OK;
-    case TURBO_ENOSPC: return IVR_ENOSPC;
-    case TURBO_ESHUTDOWN: return IVR_ECLOSED;
-    case TURBO_EBUSY: return IVR_EBUSY;
-    case TURBO_ENOENT: return IVR_EINVAL;
+    case SALTS_OK: return IVR_OK;
+    case SALTS_ENOSPC: return IVR_ENOSPC;
+    case SALTS_ESHUTDOWN: return IVR_ECLOSED;
+    case SALTS_EBUSY: return IVR_EBUSY;
+    case SALTS_ENOENT: return IVR_EINVAL;
     default: return IVR_ESTATE;
     }
 }
@@ -1373,7 +1373,7 @@ void iris_event_outbox_on_delivery_result(
     request->http_status = http_status;
     {
         int result = submit(outbox, request);
-        if (result != TURBO_OK) {
+        if (result != SALTS_OK) {
             TLOG_ERRORF("Iris event outbox settlement submission failed: "
                        "event_id={}, status={}. The durable record is retained.",
                        event->event_id, result);
@@ -1444,7 +1444,7 @@ ivr_status_t iris_event_outbox_list_dead_letters(
     }
     request->dead_letter_capacity = capacity;
     result = submit(outbox, request);
-    if (result == TURBO_OK) {
+    if (result == SALTS_OK) {
         memcpy(items, request->dead_letters,
                request->dead_letter_count * sizeof(*items));
         *count = request->dead_letter_count;
@@ -1476,7 +1476,7 @@ ivr_status_t iris_event_outbox_list_archived(
     }
     request->archive_capacity = capacity;
     result = submit(outbox, request);
-    if (result == TURBO_OK) {
+    if (result == SALTS_OK) {
         memcpy(items, request->archives,
                request->archive_count * sizeof(*items));
         *count = request->archive_count;
@@ -1505,8 +1505,8 @@ void iris_event_outbox_get_stats(iris_event_outbox_t *outbox,
     if (!stats) return;
     memset(stats, 0, sizeof(*stats));
     if (!outbox) return;
-    turbo_mutex_lock(&outbox->mutex);
+    salts_mutex_lock(&outbox->mutex);
     *stats = outbox->stats;
     stats->request_queue_items = outbox->count;
-    turbo_mutex_unlock(&outbox->mutex);
+    salts_mutex_unlock(&outbox->mutex);
 }

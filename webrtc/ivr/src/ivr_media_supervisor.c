@@ -92,7 +92,7 @@ static void supervisor_process_restart(ivr_media_supervisor_t *supervisor,
     state.attempt_generation = generation;
     state.state = IVR_MEDIA_LINK_FAILED;
     state.error_code = IVR_MEDIA_ERROR_PEER_FAILED;
-    state.occurred_at_ms = turbo_monotonic_ms();
+    state.occurred_at_ms = salts_monotonic_ms();
     if ((failed & IVR_MEDIA_RESTART_WHIP_FAILED) != 0) {
         state.link = IVR_MEDIA_LINK_WHIP;
         supervisor_process_state(supervisor, &state);
@@ -135,7 +135,7 @@ static void *supervisor_thread_main(void *opaque) {
             supervisor->queue_count--;
             have_state = 1;
         } else {
-            uint64_t now = turbo_monotonic_ms();
+            uint64_t now = salts_monotonic_ms();
             if (ivr_media_reconnect_snapshot(supervisor->reconnect,
                                              &snapshot) == IVR_OK &&
                 snapshot.retry_pending) {
@@ -163,7 +163,7 @@ static void *supervisor_thread_main(void *opaque) {
         }
         ivr_mutex_lock(&supervisor->lock);
         ivr_status_t poll_status = ivr_media_reconnect_poll(
-            supervisor->reconnect, turbo_monotonic_ms(), &generation,
+            supervisor->reconnect, salts_monotonic_ms(), &generation,
             &event);
         ivr_mutex_unlock(&supervisor->lock);
         if (poll_status == IVR_OK) {
@@ -219,7 +219,7 @@ ivr_status_t ivr_media_supervisor_start(ivr_media_supervisor_t *supervisor) {
         return IVR_ESTATE;
     }
     if (ivr_media_reconnect_start(supervisor->reconnect,
-                                  turbo_monotonic_ms(), &generation) !=
+                                  salts_monotonic_ms(), &generation) !=
         IVR_OK) {
         ivr_mutex_unlock(&supervisor->lock);
         return IVR_ESTATE;
@@ -267,7 +267,7 @@ ivr_status_t ivr_media_supervisor_submit_state(
     supervisor->queue[tail].attempt_generation = attempt_generation;
     supervisor->queue[tail].state = state;
     supervisor->queue[tail].error_code = error_code;
-    supervisor->queue[tail].occurred_at_ms = turbo_monotonic_ms();
+    supervisor->queue[tail].occurred_at_ms = salts_monotonic_ms();
     supervisor->queue_count++;
     ivr_cond_signal(&supervisor->cond);
     ivr_mutex_unlock(&supervisor->lock);

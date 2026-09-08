@@ -11,13 +11,13 @@ struct sip_agent_t* sip_agent_create(struct sip_uas_handler_t* handler)
 		return NULL;
 
 	sip->ref = 1;
-	turbo_mutex_init(&sip->locker);
+	salts_mutex_init(&sip->locker);
 	if (vec_init_bytes(&sip->uac, sizeof(struct sip_uac_transaction_t *), CMETA_ALIGNOF(struct sip_uac_transaction_t *), SIZE_MAX / sizeof(struct sip_uac_transaction_t *)) != STL_OK ||
 		vec_init_bytes(&sip->uas, sizeof(struct sip_uas_transaction_t *), CMETA_ALIGNOF(struct sip_uas_transaction_t *), SIZE_MAX / sizeof(struct sip_uas_transaction_t *)) != STL_OK)
 	{
 		vec_destroy(&sip->uac);
 		vec_destroy(&sip->uas);
-		turbo_mutex_destroy(&sip->locker);
+		salts_mutex_destroy(&sip->locker);
 		free(sip);
 		return NULL;
 	}
@@ -39,7 +39,7 @@ int sip_agent_destroy(struct sip_agent_t* sip)
 	
 	vec_destroy(&sip->uac);
 	vec_destroy(&sip->uas);
-	turbo_mutex_destroy(&sip->locker);
+	salts_mutex_destroy(&sip->locker);
 	free(sip);
 	return 0;
 }

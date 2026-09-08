@@ -1,8 +1,7 @@
 {
   "name": "turbomedia",
-  "version-semver": "1.0.0",
+  "version-semver": "2.0.0",
   "dependencies": [
-    "miniaudio",
     "stb",
     "libyuv",
     "opus",
@@ -22,7 +21,6 @@
     "boringssl",
     "libsrtp",
     "roaring",
-    "sqlite3",
     "usrsctp"
   ],
   "builtin-baseline": "a51bb4d1434e6d0927ff79db8033bed8522b85df",

@@ -1,4 +1,4 @@
-# TurboNet WebRTC Signaling Server Configuration
+# TurboMedia WebRTC Signaling Server Configuration
 
 [server]
 # Unique identifier for this node (default: auto-generated)
@@ -8,7 +8,7 @@
 host = "0.0.0.0"
 port = 8080
 
-# WSS is terminated in-process by CoroNet/BoringSSL.
+# WSS is terminated in-process by Salts CHTTP/CNet.
 use_tls = false
 # cert_file = "/etc/turbomedia/tls/signaling-chain.pem"
 # key_file = "/etc/turbomedia/tls/signaling-key.pem"
@@ -37,6 +37,7 @@ auth_enabled = true
 
 [limits]
 # Resource limits
+connection_capacity = 4096
 max_peers = 1000
 max_rooms = 100
 peer_timeout_ms = 60000  # 60 seconds
@@ -46,7 +47,7 @@ messages_per_second = 100
 message_burst = 200
 max_outbox_messages = 256
 max_outbox_bytes = 1048576
-# Applied after the WebSocket upgrade, using the socket peer IP (port ignored).
+# Applied during the WebSocket handshake using the socket peer IP (port ignored).
 max_connections_per_source = 100
 source_admissions_per_second = 20
 source_admission_burst = 50

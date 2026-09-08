@@ -33,13 +33,14 @@ static int ivr_openai_speech_factory_copy_config(
         source->base_url, source->api_key, source->tts_path,
         source->tts_model, source->tts_voice, source->asr_path,
         source->asr_model, source->asr_language, source->ca_file,
-        source->user_agent};
+        source->server_name, source->user_agent};
     const char **destinations[] = {
         &factory->config.base_url, &factory->config.api_key,
         &factory->config.tts_path, &factory->config.tts_model,
         &factory->config.tts_voice, &factory->config.asr_path,
         &factory->config.asr_model, &factory->config.asr_language,
-        &factory->config.ca_file, &factory->config.user_agent};
+        &factory->config.ca_file, &factory->config.server_name,
+        &factory->config.user_agent};
     size_t total = 0;
     size_t i;
     char *cursor;

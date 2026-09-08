@@ -74,17 +74,16 @@ spec("room service TOML configuration") {
             "[logging]\n"
             "level = \"warn\"\n"
             "[iris_provider]\n"
-            "flowmq_host = \"127.0.0.1\"\n"
-            "flowmq_port = 17715\n"
-            "flowmq_topic = \"media-provider-v1\"\n"
+            "control_ws_host = \"127.0.0.1\"\n"
+            "control_ws_port = 17715\n"
+            "control_ws_path = \"/media-provider-v1\"\n"
             "provider_instance_id = \"room-control-1\"\n"
             "iris_identity = \"iris-router-1\"\n"
-            "flowmq_use_tls = false\n"
-            "flowmq_allow_insecure_loopback = true\n"
+            "control_ws_use_tls = false\n"
+            "control_ws_allow_insecure_loopback = true\n"
             "event_store_config = \"room-flowstore.yaml\"\n"
             "event_store_channel = \"iris.media_events\"\n"
             "command_ledger_channel = \"iris.provider_commands\"\n"
-            "allow_development_sqlite = true\n"
             "correlation_capacity = 2048\n"
              "completion_queue_capacity = 512\n"
              "reconcile_inventory_queue_capacity = 4\n"
@@ -100,19 +99,20 @@ spec("room service TOML configuration") {
             "retry_backoff_ms = 125\n"
             "ack_timeout_ms = 4000\n"
             "drain_timeout_ms = 20000\n"
-            "[fmq]\n"
+            "[control_ws]\n"
             "bind_host = \"127.0.0.1\"\n"
             "bind_port = 17713\n"
+            "path = \"/internal/ivr-test\"\n"
             "worker_heartbeat_ms = 4000\n"
             "worker_lease_ms = 12000\n"
             "dispatch_deadline_ms = 3000\n"
             "dialog_capacity = 768\n"
             "use_tls = true\n"
-            "ca_file = \"flowmq-ca.pem\"\n"
-            "cert_file = \"flowmq-room-chain.pem\"\n"
-            "key_file = \"flowmq-room-key.pem\"\n"
+            "ca_file = \"control_ws-ca.pem\"\n"
+            "cert_file = \"control_ws-room-chain.pem\"\n"
+            "key_file = \"control_ws-room-key.pem\"\n"
             "key_password = \"test-key-password\"\n"
-            "[[fmq.workers]]\n"
+            "[[control_ws.workers]]\n"
             "worker_id = \"ivr-worker-a\"\n"
             "active_certificate_sha256 = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n"
             "generation = 7\n"
@@ -155,21 +155,20 @@ spec("room service TOML configuration") {
             check_false(config.auto_create_rooms);
             check_true(config.dry_run);
             check_equal(config.log_level, "warn");
-            check_equal(config.iris_flowmq_host, "127.0.0.1");
-            check_equal(config.iris_flowmq_port, 17715);
-            check_equal(config.iris_flowmq_topic, "media-provider-v1");
+            check_equal(config.iris_control_host, "127.0.0.1");
+            check_equal(config.iris_control_port, 17715);
+            check_equal(config.iris_control_path, "/media-provider-v1");
             check_equal(config.iris_provider_instance_id,
                          "room-control-1");
             check_equal(config.iris_identity, "iris-router-1");
-            check_false(config.iris_flowmq_use_tls);
-            check_true(config.iris_flowmq_allow_insecure_loopback);
+            check_false(config.iris_control_use_tls);
+            check_true(config.iris_control_allow_insecure_loopback);
             check_equal(config.iris_event_store_config,
                          "room-flowstore.yaml");
             check_equal(config.iris_event_store_channel,
                          "iris.media_events");
             check_equal(config.iris_command_ledger_channel,
                          "iris.provider_commands");
-            check_true(config.iris_allow_development_sqlite);
             check_equal(config.iris_correlation_capacity, 2048);
             check_equal(config.iris_completion_queue_capacity, 512);
             check_equal(config.iris_reconcile_inventory_queue_capacity, 4);
@@ -186,31 +185,32 @@ spec("room service TOML configuration") {
             check_equal(config.iris_retry_backoff_ms, 125);
             check_equal(config.iris_ack_timeout_ms, 4000);
             check_equal(config.iris_drain_timeout_ms, 20000);
-            check_equal(config.fmq_bind_host, "127.0.0.1");
-            check_equal(config.fmq_bind_port, 17713);
-            check_equal(config.fmq_worker_heartbeat_ms, 4000);
-            check_equal(config.fmq_worker_lease_ms, 12000);
-            check_equal(config.fmq_dispatch_deadline_ms, 3000);
-            check_equal(config.fmq_dialog_capacity, 768);
-            check_true(config.fmq_use_tls);
-            check_false(config.fmq_allow_insecure_loopback);
-            check_equal(config.fmq_ca_file, "flowmq-ca.pem");
-            check_equal(config.fmq_cert_file, "flowmq-room-chain.pem");
-            check_equal(config.fmq_key_file, "flowmq-room-key.pem");
-            check_equal(config.fmq_key_password, "test-key-password");
-            check_equal(config.fmq_worker_identity_count, 1);
-            check_equal(config.fmq_worker_identities[0].worker_id,
+            check_equal(config.control_ws_bind_host, "127.0.0.1");
+            check_equal(config.control_ws_bind_port, 17713);
+            check_equal(config.control_ws_path, "/internal/ivr-test");
+            check_equal(config.control_ws_worker_heartbeat_ms, 4000);
+            check_equal(config.control_ws_worker_lease_ms, 12000);
+            check_equal(config.control_ws_dispatch_deadline_ms, 3000);
+            check_equal(config.control_ws_dialog_capacity, 768);
+            check_true(config.control_ws_use_tls);
+            check_false(config.control_ws_allow_insecure_loopback);
+            check_equal(config.control_ws_ca_file, "control_ws-ca.pem");
+            check_equal(config.control_ws_cert_file, "control_ws-room-chain.pem");
+            check_equal(config.control_ws_key_file, "control_ws-room-key.pem");
+            check_equal(config.control_ws_key_password, "test-key-password");
+            check_equal(config.control_ws_worker_identity_count, 1);
+            check_equal(config.control_ws_worker_identities[0].worker_id,
                          "ivr-worker-a");
             check_equal(
-                config.fmq_worker_identities[0].active_certificate_sha256,
+                config.control_ws_worker_identities[0].active_certificate_sha256,
                 "sha256:0000000000000000000000000000000000000000000000000000000000000000");
-            check_equal(config.fmq_worker_identities[0].generation, 7);
-            check_equal(config.fmq_worker_identities[0].tenant_id, "acme");
-            check_equal(config.fmq_worker_identities[0].room_scope,
+            check_equal(config.control_ws_worker_identities[0].generation, 7);
+            check_equal(config.control_ws_worker_identities[0].tenant_id, "acme");
+            check_equal(config.control_ws_worker_identities[0].room_scope,
                          "acme/room-1,acme/room-2");
-            check_equal(config.fmq_worker_identities[0].call_scope,
+            check_equal(config.control_ws_worker_identities[0].call_scope,
                          "call-1,call-2");
-            check_equal(config.fmq_worker_identities[0].content_capabilities,
+            check_equal(config.control_ws_worker_identities[0].content_capabilities,
                          "conference-greeting");
             check_not_null(config.private_data);
         }
@@ -230,76 +230,76 @@ spec("room service TOML configuration") {
         room_service_app_config_cleanup(&config);
     }
 
-    it("uses one typed FlowMQ endpoint") {
+    it("uses one typed CHTTP H1 WebSocket endpoint") {
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
-        config.fmq_allow_insecure_loopback = 1;
-        config.fmq_bind_port = 17713;
+        config.control_ws_allow_insecure_loopback = 1;
+        config.control_ws_bind_port = 17713;
         check_equal(room_service_app_config_validate(&config), 0);
-        config.fmq_bind_port = 0;
+        config.control_ws_bind_port = 0;
         check_equal(room_service_app_config_validate(&config), 0);
         room_service_app_config_cleanup(&config);
     }
 
-    it("allows plaintext FlowMQ only on explicitly trusted loopback") {
+    it("allows plaintext CHTTP H1 WebSocket only on explicitly trusted loopback") {
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
-        config.fmq_bind_port = 17713;
+        config.control_ws_bind_port = 17713;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_allow_insecure_loopback = 1;
-        config.fmq_bind_host = "0.0.0.0";
+        config.control_ws_allow_insecure_loopback = 1;
+        config.control_ws_bind_host = "0.0.0.0";
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_bind_host = "::1";
+        config.control_ws_bind_host = "::1";
         check_equal(room_service_app_config_validate(&config), 0);
         room_service_app_config_cleanup(&config);
     }
 
-    it("requires complete mutually exclusive FlowMQ mTLS identity") {
+    it("requires complete mutually exclusive CHTTP H1 WebSocket mTLS identity") {
         static const char fingerprint[] =
             "sha256:0000000000000000000000000000000000000000000000000000000000000000";
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
-        config.fmq_bind_port = 17713;
-        config.fmq_use_tls = 1;
-        config.fmq_ca_file = "flowmq-ca.pem";
-        config.fmq_cert_file = "flowmq-room-chain.pem";
-        config.fmq_key_file = "flowmq-room-key.pem";
-        config.fmq_worker_identity_count = 1;
-        config.fmq_worker_identities[0].worker_id = "ivr-worker-a";
-        config.fmq_worker_identities[0].active_certificate_sha256 = fingerprint;
-        config.fmq_worker_identities[0].generation = 1u;
+        config.control_ws_bind_port = 17713;
+        config.control_ws_use_tls = 1;
+        config.control_ws_ca_file = "control_ws-ca.pem";
+        config.control_ws_cert_file = "control_ws-room-chain.pem";
+        config.control_ws_key_file = "control_ws-room-key.pem";
+        config.control_ws_worker_identity_count = 1;
+        config.control_ws_worker_identities[0].worker_id = "ivr-worker-a";
+        config.control_ws_worker_identities[0].active_certificate_sha256 = fingerprint;
+        config.control_ws_worker_identities[0].generation = 1u;
         check_equal(room_service_app_config_validate(&config), 0);
-        config.fmq_allow_insecure_loopback = 1;
+        config.control_ws_allow_insecure_loopback = 1;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_allow_insecure_loopback = 0;
-        config.fmq_key_file = NULL;
+        config.control_ws_allow_insecure_loopback = 0;
+        config.control_ws_key_file = NULL;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_key_file = "flowmq-room-key.pem";
-        config.fmq_worker_identities[0].active_certificate_sha256 = "invalid";
+        config.control_ws_key_file = "control_ws-room-key.pem";
+        config.control_ws_worker_identities[0].active_certificate_sha256 = "invalid";
         check_equal(room_service_app_config_validate(&config), -1);
         room_service_app_config_cleanup(&config);
     }
 
-    it("validates FlowMQ heartbeat lease and dispatch timing") {
+    it("validates CHTTP H1 WebSocket heartbeat lease and dispatch timing") {
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
         check_equal(room_service_app_config_validate(&config), 0);
-        config.fmq_worker_lease_ms = 14999;
+        config.control_ws_worker_lease_ms = 14999;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_worker_lease_ms = 15000;
-        config.fmq_dispatch_deadline_ms = 15000;
+        config.control_ws_worker_lease_ms = 15000;
+        config.control_ws_dispatch_deadline_ms = 15000;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_dispatch_deadline_ms = 4999;
+        config.control_ws_dispatch_deadline_ms = 4999;
         check_equal(room_service_app_config_validate(&config), 0);
-        config.fmq_dialog_capacity = 0;
+        config.control_ws_dialog_capacity = 0;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_dialog_capacity = 65537;
+        config.control_ws_dialog_capacity = 65537;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.fmq_dialog_capacity = 256;
+        config.control_ws_dialog_capacity = 256;
         check_equal(room_service_app_config_validate(&config), 0);
         room_service_app_config_cleanup(&config);
     }
@@ -308,13 +308,13 @@ spec("room service TOML configuration") {
         room_service_app_config_t config;
 
         room_service_app_config_init(&config);
-        config.fmq_allow_insecure_loopback = 1;
-        config.fmq_bind_port = 17713;
-        config.iris_flowmq_use_tls = 0;
-        config.iris_flowmq_allow_insecure_loopback = 1;
-        config.iris_flowmq_host = "127.0.0.1";
+        config.control_ws_allow_insecure_loopback = 1;
+        config.control_ws_bind_port = 17713;
+        config.iris_control_use_tls = 0;
+        config.iris_control_allow_insecure_loopback = 1;
+        config.iris_control_host = "127.0.0.1";
         check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_flowmq_port = 17715;
+        config.iris_control_port = 17715;
         config.iris_provider_instance_id = "room-service-1";
         config.iris_identity = "iris-router-1";
         check_equal(room_service_app_config_validate(&config), -1);
@@ -342,22 +342,20 @@ spec("room service TOML configuration") {
         config.iris_drain_timeout_ms = config.iris_ack_timeout_ms - 1;
         check_equal(room_service_app_config_validate(&config), -1);
         config.iris_drain_timeout_ms = 30000;
-        config.iris_flowmq_host = "iris.internal";
+        config.iris_control_host = "iris.internal";
         check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_flowmq_host = "127.0.0.1";
+        config.iris_control_host = "127.0.0.1";
         check_equal(room_service_app_config_validate(&config), 0);
-        config.iris_flowmq_host = "iris.internal";
-        config.iris_flowmq_use_tls = 1;
-        config.iris_flowmq_allow_insecure_loopback = 0;
+        config.iris_control_host = "iris.internal";
+        config.iris_control_use_tls = 1;
+        config.iris_control_allow_insecure_loopback = 0;
         check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_certificate_sha256 =
-            "sha256:0000000000000000000000000000000000000000000000000000000000000000";
-        config.iris_flowmq_ca_file = "flowmq-ca.pem";
-        config.iris_flowmq_cert_file = "room-chain.pem";
-        config.iris_flowmq_key_file = "room-key.pem";
-        config.iris_flowmq_server_name = "iris.internal";
+        config.iris_control_ca_file = "control_ws-ca.pem";
+        config.iris_control_cert_file = "room-chain.pem";
+        config.iris_control_key_file = "room-key.pem";
+        config.iris_control_server_name = "iris.internal";
         check_equal(room_service_app_config_validate(&config), 0);
-        config.iris_certificate_sha256 = "sha256:bad";
+        config.iris_control_ca_file = NULL;
         check_equal(room_service_app_config_validate(&config), -1);
         room_service_app_config_cleanup(&config);
     }

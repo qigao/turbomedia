@@ -1,5 +1,4 @@
 #include "turbo_media_server.h"
-#include "CoroNet/turbo_coro_context.h"
 #include <tinytest.h>
 
 #include <stdint.h>
@@ -71,7 +70,7 @@ static int runtime_capture_cb(turbo_media_source_t *source,
 
 suite("turbo_media_server_runtime") {
     group("lifecycle") {
-        it("creates a server facade that owns runtime and default coro context") {
+        it("creates a server facade that owns its runtime") {
             turbo_media_server_config_t config = server_config();
             turbo_media_server_t *server = turbo_media_server_create(&config);
             turbo_media_server_runtime_t *runtime;
@@ -82,36 +81,12 @@ suite("turbo_media_server_runtime") {
 
             check_equal((const void *)turbo_media_server_runtime_user_data(runtime),
                         (const void *)config.user_data);
-            check_not_null(turbo_media_server_runtime_coro_context(runtime));
-
             check_equal(turbo_media_server_start(server), TURBO_MEDIA_OK);
             check_equal(turbo_media_server_start(server), TURBO_MEDIA_OK);
             check_equal(turbo_media_server_stop(server), TURBO_MEDIA_OK);
             check_equal(turbo_media_server_stop(server), TURBO_MEDIA_OK);
 
             turbo_media_server_destroy(server);
-        }
-
-        it("reuses caller provided coro context without taking ownership") {
-            turbo_media_server_config_t config = server_config();
-            coro_context_t *coro_ctx = coro_context_create(NULL);
-            turbo_media_server_t *server;
-            turbo_media_server_runtime_t *runtime;
-
-            check_not_null(coro_ctx);
-            config.coro_context = (struct coro_context_s *)coro_ctx;
-            server = turbo_media_server_create(&config);
-            check_not_null(server);
-            runtime = turbo_media_server_get_runtime(server);
-            check_not_null(runtime);
-
-            check_equal((const void *)turbo_media_server_runtime_coro_context(runtime),
-                        (const void *)coro_ctx);
-            check_equal(turbo_media_server_start(server), TURBO_MEDIA_OK);
-            check_equal(turbo_media_server_stop(server), TURBO_MEDIA_OK);
-
-            turbo_media_server_destroy(server);
-            coro_context_destroy(coro_ctx);
         }
 
         it("owns one media registry and keeps runtime context") {
@@ -127,8 +102,6 @@ suite("turbo_media_server_runtime") {
 
             check_equal((const void *)turbo_media_server_runtime_user_data(runtime),
                         (const void *)config.user_data);
-            check_null(turbo_media_server_runtime_coro_context(runtime));
-
             check_equal(turbo_media_server_runtime_get_or_create_source(runtime, &key, &first), TURBO_MEDIA_OK);
             check_equal(turbo_media_server_runtime_get_or_create_source(runtime, &key, &second), TURBO_MEDIA_OK);
             check_equal((const void *)first, (const void *)second);

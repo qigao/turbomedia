@@ -7,7 +7,7 @@
  *
  * The header only answers "which codec/type decodes this payload". It must be
  * encoded/decoded field by field; casting network bytes to a C struct or using
- * #pragma pack is forbidden. FlowMQ provides message boundaries, so the header
+ * #pragma pack is forbidden. CHTTP H1 WebSocket provides message boundaries, so the header
  * does not carry a payload length; receivers first enforce the message byte
  * cap and size >= IVR_FRAME_HEADER_SIZE.
  *

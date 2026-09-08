@@ -60,17 +60,16 @@ dry_run = false
 [logging]
 level = "info"
 
-# Iris is the workflow owner. RoomService connects to the Iris FlowMQ ROUTER
-# as a DEALER and requires application-level receipt/completion/event ACKs.
+# Iris is the workflow owner. RoomService connects to Iris over CHTTP HTTP/1.1
+# WebSocket and requires application-level receipt/completion/event ACKs.
 # Prefer environment variables for credentials and deployment-specific paths:
-#   TURBO_ROOM_SERVICE_IRIS_FLOWMQ_HOST
-#   TURBO_ROOM_SERVICE_IRIS_FLOWMQ_PORT
+#   TURBO_ROOM_SERVICE_IRIS_CONTROL_HOST
+#   TURBO_ROOM_SERVICE_IRIS_CONTROL_PORT
 #   TURBO_ROOM_SERVICE_IRIS_PROVIDER_INSTANCE_ID
 #   TURBO_ROOM_SERVICE_IRIS_IDENTITY
-#   TURBO_ROOM_SERVICE_IRIS_CERTIFICATE_SHA256
-#   TURBO_ROOM_SERVICE_IRIS_FLOWMQ_CA_FILE
-#   TURBO_ROOM_SERVICE_IRIS_FLOWMQ_CERT_FILE
-#   TURBO_ROOM_SERVICE_IRIS_FLOWMQ_KEY_FILE
+#   TURBO_ROOM_SERVICE_IRIS_CONTROL_CA_FILE
+#   TURBO_ROOM_SERVICE_IRIS_CONTROL_CERT_FILE
+#   TURBO_ROOM_SERVICE_IRIS_CONTROL_KEY_FILE
 #   TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CONFIG
 #   TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CHANNEL
 #   TURBO_ROOM_SERVICE_IRIS_ALLOW_DEVELOPMENT_SQLITE
@@ -79,27 +78,23 @@ level = "info"
 #   TURBO_ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS
 #   TURBO_ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE
 #[iris_provider]
-#flowmq_host = "iris.internal"
-#flowmq_port = 17813
-#flowmq_topic = "media-provider-v1"
+#control_ws_host = "iris.internal"
+#control_ws_port = 17813
+#control_ws_path = "/internal/iris/control"
 #provider_instance_id = "room-service-1"
 #iris_identity = "iris-router-1"
-#iris_certificate_sha256 = "sha256:replace-with-64-lowercase-hex-digits"
-#flowmq_ca_file = "/etc/turbomedia/tls/flowmq-ca.pem"
-#flowmq_cert_file = "/etc/turbomedia/tls/room-flowmq-chain.pem"
-#flowmq_key_file = "/etc/turbomedia/tls/room-flowmq-key.pem"
-#flowmq_server_name = "iris.internal"
-#flowmq_use_tls = true
-#flowmq_allow_insecure_loopback = false
-# TurboMedia consumes the SQLite-only TurboDB ORM package and does not link
-# libpq. A PostgreSQL deployment must supply its ORM runtime from TurboDB's
-# build output instead of adding PostgreSQL dependencies here.
-#event_store_config = "/etc/turbonet/room-service-orm.yaml"
+#control_ws_ca_file = "/etc/turbomedia/tls/control_ws-ca.pem"
+#control_ws_cert_file = "/etc/turbomedia/tls/room-control_ws-chain.pem"
+#control_ws_key_file = "/etc/turbomedia/tls/room-control_ws-key.pem"
+#control_ws_server_name = "iris.internal"
+#control_ws_use_tls = true
+#control_ws_allow_insecure_loopback = false
+# RoomService requires TurboDB's PostgreSQL-only ORM package.
+#event_store_config = "/etc/turbomedia/room-service-orm.yaml"
 #event_store_channel = "iris.media_events"
 # Command intent/outcome records require a distinct RecordStore namespace;
 # they must not share the event outbox channel.
 #command_ledger_channel = "iris.provider_commands"
-#allow_development_sqlite = false
 #correlation_capacity = 1024
 #completion_queue_capacity = 1024
 #reconcile_inventory_queue_capacity = 8
@@ -119,16 +114,15 @@ level = "info"
 #ack_timeout_ms = 5000
 #drain_timeout_ms = 30000
 
-# Optional IVR FlowMQ bridge (one typed ROUTER endpoint).
+# Optional IVR CHTTP HTTP/1.1 WebSocket bridge.
 # bind_port <= 0 keeps the HTTP-only control path and disables the bridge.
 # An enabled bridge requires mTLS. Plaintext is accepted only when both the
 # bind address is loopback and allow_insecure_loopback is explicitly true.
-#[fmq]
+#[control_ws]
 #bind_host = "127.0.0.1"
 #bind_port = 17713
-# Endpoint host may carry a scheme prefix that selects the transport, e.g.
-# bind_host = "tls://127.0.0.1" or "wss://127.0.0.1" (port still in bind_port).
-# TLS/WSS require the ca_file/cert_file/key_file below.
+#path = "/internal/ivr/control"
+# TLS requires the ca_file/cert_file/key_file below.
 #worker_heartbeat_ms = 5000
 #worker_lease_ms = 15000
 #dispatch_deadline_ms = 5000
@@ -136,11 +130,11 @@ level = "info"
 # fail-fast; size this for peak active + opening + closing dialogs.
 #dialog_capacity = 256
 #use_tls = true
-#ca_file = "/etc/turbomedia/tls/flowmq-ca.pem"
-#cert_file = "/etc/turbomedia/tls/room-flowmq-chain.pem"
-#key_file = "/etc/turbomedia/tls/room-flowmq-key.pem"
+#ca_file = "/etc/turbomedia/tls/control_ws-ca.pem"
+#cert_file = "/etc/turbomedia/tls/room-control_ws-chain.pem"
+#key_file = "/etc/turbomedia/tls/room-control_ws-key.pem"
 
-#[[fmq.workers]]
+#[[control_ws.workers]]
 #worker_id = "ivr-worker-1"
 #active_certificate_sha256 = "sha256:replace-with-64-lowercase-hex-digits"
 #generation = 1

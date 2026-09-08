@@ -1,13 +1,15 @@
 /**
  * TurboMedia Network Transport Layer
  *
- * 统一的网络传输抽象，封装 CoroNet 和 TurboHTTP
+ * 统一的网络传输抽象，封装 Salts CNet 和 CHTTP
  */
 #ifndef TURBO_TRANSPORT_H
 #define TURBO_TRANSPORT_H
 
 #include <stdint.h>
 #include <stddef.h>
+#include <cnet/cnet.h>
+#include <chttp/chttp.h>
 #include <turbo_export.h>
 
 #ifdef __cplusplus
@@ -17,11 +19,6 @@ extern "C" {
 /* =============================================================================
  * 前向声明（避免直接依赖）
  * ============================================================================= */
-
-struct coro_context_s;
-struct coro_socket_s;
-struct http_client_s;
-struct http_response_s;
 
 /* =============================================================================
  * 传输协议类型
@@ -56,17 +53,19 @@ typedef struct {
     /* TLS 配置 */
     int use_tls;
     const char *ca_cert_path;   /* CA 证书路径 */
-    int verify_peer;            /* 是否验证对端证书 */
+    int verify_peer;            /* 保留字段；Salts TLS 始终验证证书与主机名 */
+    const cnet_tls_client_config *tls;
     
     /* HTTP 特定 */
     const char *user_agent;
     const char *auth_token;     /* Bearer token */
     
-    /* CoroNet 上下文（如果已有）*/
-    struct coro_context_s *coro_ctx;
+    /* 可选的外部 CNet owner；调用方负责生命周期与串行化。transport
+       销毁时会在该 owner 上推进当前连接，直到 CLOSED 或超时。 */
+    cnet_client *cnet_client;
     
-    /* HttpClient 实例（如果已有）*/
-    struct http_client_s *http_client;
+    /* 可选的外部 CHTTP client。 */
+    chttp_client *http_client;
     
 } turbo_transport_config_t;
 
@@ -101,9 +100,12 @@ typedef void (*turbo_transport_event_cb)(turbo_transport_t *transport,
 TURBO_MEDIA_API turbo_transport_t *turbo_transport_create(const turbo_transport_config_t *config);
 
 /**
- * 销毁传输实例
+ * 销毁传输实例。销毁会先停止内部 I/O；成功返回 0。失败返回 -1，实例仍归
+ * 调用方所有且可再次传给本函数重试。使用外部 CNet owner 时，调用方必须保证
+ * owner 串行化，并应先调用 turbo_transport_disconnect()、检查成功后再销毁。
+ * 关闭失败时用户回调会被解除，避免 external owner 中的 observer 悬空。
  */
-TURBO_MEDIA_API void turbo_transport_destroy(turbo_transport_t *transport);
+TURBO_MEDIA_API int turbo_transport_destroy(turbo_transport_t *transport);
 
 /**
  * 连接到服务器（协程内调用）
@@ -147,14 +149,15 @@ TURBO_MEDIA_API void turbo_transport_set_event_callback(turbo_transport_t *trans
                                                   void *user_data);
 
 /**
- * 获取底层 CoroNet socket（如果有）
+ * 获取底层 CNet connection handle（如果有）
  */
-TURBO_MEDIA_API struct coro_socket_s *turbo_transport_get_socket(turbo_transport_t *transport);
+TURBO_MEDIA_API int turbo_transport_get_connection(
+    turbo_transport_t *transport, cnet_connection *connection);
 
 /**
- * 获取底层 HttpClient（如果有）
+ * 获取底层 CHTTP client（如果有）
  */
-TURBO_MEDIA_API struct http_client_s *turbo_transport_get_http_client(turbo_transport_t *transport);
+TURBO_MEDIA_API chttp_client *turbo_transport_get_http_client(turbo_transport_t *transport);
 
 /* =============================================================================
  * HTTP 特定 API
@@ -174,7 +177,7 @@ typedef enum {
 /**
  * 发送 HTTP 请求
  */
-TURBO_MEDIA_API struct http_response_s *turbo_transport_http_request(
+TURBO_MEDIA_API chttp_response *turbo_transport_http_request(
     turbo_transport_t *transport,
     turbo_http_method_t method,
     const char *path,
@@ -188,7 +191,7 @@ TURBO_MEDIA_API struct http_response_s *turbo_transport_http_request(
  */
 typedef size_t (*turbo_transport_read_cb)(uint8_t *buffer, size_t size, void *user_data);
 
-TURBO_MEDIA_API struct http_response_s *turbo_transport_http_upload_stream(
+TURBO_MEDIA_API chttp_response *turbo_transport_http_upload_stream(
     turbo_transport_t *transport,
     const char *path,
     turbo_transport_read_cb read_cb,

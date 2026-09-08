@@ -7,7 +7,7 @@
 
 #ifdef TURBO_MEDIA_HAS_RTSP
 
-#include <CoroNet.h>
+#include <cnet/cnet.h>
 
 #ifndef TURBO_RTSP_RTP_UDP_PAIR_TYPE_DEFINED
 #define TURBO_RTSP_RTP_UDP_PAIR_TYPE_DEFINED
@@ -352,7 +352,9 @@ typedef struct {
     const char *local_host;      /* NULL defaults to 0.0.0.0 */
     int local_rtp_port;          /* 0 binds an ephemeral RTP port */
     int local_rtcp_port;         /* 0 uses local_rtp_port + 1, or ephemeral when RTP is ephemeral */
-    uint64_t timeout_ms;         /* 0 leaves CoroNet default socket timeout */
+    uint64_t timeout_ms;         /* 0 defaults to 30000 */
+    size_t send_capacity;        /* 0 defaults to 16 copied datagrams per socket */
+    size_t max_datagram_bytes;   /* 0 defaults to the UDP payload maximum */
 } turbo_rtsp_rtp_udp_pair_config_t;
 
 TURBO_MEDIA_C_API int turbo_rtsp_rtp_parse_header(
@@ -852,7 +854,6 @@ TURBO_MEDIA_C_API int turbo_rtsp_rtp_h265_receive_stream_drain_queued(
     size_t *nal_len);
 
 TURBO_MEDIA_C_API turbo_rtsp_rtp_udp_pair_t *turbo_rtsp_rtp_udp_pair_create(
-    coro_context_t *ctx,
     const turbo_rtsp_rtp_udp_pair_config_t *config);
 
 TURBO_MEDIA_C_API void turbo_rtsp_rtp_udp_pair_destroy(

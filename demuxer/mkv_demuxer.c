@@ -12,8 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <turbo_error.h>
-#include <turbostl/vec.h>
+#include <salts_error.h>
+#include <cstl/vec.h>
 
 enum { MKV_PROBE_HEADER_BYTES = 4096 };
 
@@ -78,7 +78,7 @@ static int mkv_add_stream(mkv_demuxer_ctx_t *ctx, uint32_t track,
                           const void *extra, size_t bytes) {
     mkv_demuxer_stream_t stream;
     int result;
-    if (!ctx || ctx->error != TURBO_OK) return ctx ? ctx->error : TURBO_EINVAL;
+    if (!ctx || ctx->error != SALTS_OK) return ctx ? ctx->error : SALTS_EINVAL;
     memset(&stream, 0, sizeof(stream));
     stream.track = track;
     stream.info.stream_id = (int)track;
@@ -89,15 +89,15 @@ static int mkv_add_stream(mkv_demuxer_ctx_t *ctx, uint32_t track,
     stream.info.channels = channels;
     stream.info.sample_rate = sample_rate;
     if (bytes > 0) {
-        if (!extra) return ctx->error = TURBO_EPROTO;
+        if (!extra) return ctx->error = SALTS_EPROTO;
         stream.extra_data = (uint8_t *)malloc(bytes);
-        if (!stream.extra_data) return ctx->error = TURBO_ENOMEM;
+        if (!stream.extra_data) return ctx->error = SALTS_ENOMEM;
         memcpy(stream.extra_data, extra, bytes);
         stream.info.extradata = stream.extra_data;
         stream.info.extradata_size = bytes;
     }
     result = turbo_media_stl_status_to_error(vec_push(&ctx->streams, &stream));
-    if (result != TURBO_OK) {
+    if (result != SALTS_OK) {
         free(stream.extra_data);
         ctx->error = result;
     }
@@ -129,7 +129,7 @@ static void mkv_on_subtitle(void *param, uint32_t track, enum mkv_codec_t codec,
     (void)codec;
     (void)extra;
     (void)bytes;
-    if (ctx && ctx->error == TURBO_OK) ctx->error = TURBO_ENOTSUP;
+    if (ctx && ctx->error == SALTS_OK) ctx->error = SALTS_ENOTSUP;
 }
 
 static int mkv_stream_index(const mkv_demuxer_ctx_t *ctx, uint32_t track) {
@@ -196,14 +196,14 @@ static void *mkv_demuxer_create_impl(const turbo_demuxer_config_t *config) {
         return NULL;
     ctx = (mkv_demuxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    ctx->io.file = TURBO_INVALID_FILE;
+    ctx->io.file = SALTS_INVALID_FILE;
     result = turbo_media_stl_status_to_error(vec_init_bytes(
         &ctx->streams, sizeof(mkv_demuxer_stream_t),
         CMETA_ALIGNOF(mkv_demuxer_stream_t), SIZE_MAX));
-    if (result != TURBO_OK) goto fail;
+    if (result != SALTS_OK) goto fail;
     result = turbo_container_io_open_reader(&ctx->io, config->input_path,
                                             config->data, config->data_size);
-    if (result != TURBO_OK) goto fail;
+    if (result != SALTS_OK) goto fail;
     return ctx;
 fail:
     turbo_container_io_close(&ctx->io);
@@ -234,16 +234,16 @@ static int mkv_demuxer_open_impl(void *ctx_ptr) {
         mkv_on_subtitle,
     };
     int result;
-    if (!ctx || ctx->opened) return TURBO_EINVAL;
+    if (!ctx || ctx->opened) return SALTS_EINVAL;
     ctx->reader = mkv_reader_create(&s_mkv_io, &ctx->io);
-    if (!ctx->reader) return ctx->io.error != TURBO_OK ? ctx->io.error : TURBO_EPROTO;
+    if (!ctx->reader) return ctx->io.error != SALTS_OK ? ctx->io.error : SALTS_EPROTO;
     result = mkv_reader_getinfo(ctx->reader, &callbacks, ctx);
-    if (result != TURBO_OK) return result;
-    if (ctx->error != TURBO_OK) return ctx->error;
-    if (vec_empty(&ctx->streams)) return TURBO_EPROTO;
+    if (result != SALTS_OK) return result;
+    if (ctx->error != SALTS_OK) return ctx->error;
+    if (vec_empty(&ctx->streams)) return SALTS_EPROTO;
     ctx->metadata.duration_ms = (int64_t)mkv_reader_getduration(ctx->reader);
     ctx->opened = 1;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int mkv_demuxer_read_packet_impl(void *ctx_ptr,
@@ -251,7 +251,7 @@ static int mkv_demuxer_read_packet_impl(void *ctx_ptr,
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     mkv_packet_read_t read;
     int result;
-    if (!ctx || !ctx->opened || !ctx->reader || !packet) return TURBO_EINVAL;
+    if (!ctx || !ctx->opened || !ctx->reader || !packet) return SALTS_EINVAL;
     memset(packet, 0, sizeof(*packet));
     read.ctx = ctx;
     read.packet = packet;
@@ -267,14 +267,14 @@ static int mkv_demuxer_seek_impl(void *ctx_ptr, int64_t timestamp_ms, int flags)
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     int64_t timestamp = timestamp_ms;
     (void)flags;
-    if (!ctx || !ctx->opened || timestamp_ms < 0) return TURBO_EINVAL;
+    if (!ctx || !ctx->opened || timestamp_ms < 0) return SALTS_EINVAL;
     return mkv_reader_seek(ctx->reader, &timestamp);
 }
 
 static int mkv_demuxer_get_stream_count_impl(void *ctx_ptr) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     if (!ctx || !ctx->opened || vec_size(&ctx->streams) > INT_MAX)
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     return (int)vec_size(&ctx->streams);
 }
 
@@ -282,20 +282,20 @@ static int mkv_demuxer_get_stream_info_impl(void *ctx_ptr, int stream_index,
                                             turbo_stream_info_t *info) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
     const mkv_demuxer_stream_t *stream;
-    if (!ctx || !ctx->opened || !info || stream_index < 0) return TURBO_EINVAL;
+    if (!ctx || !ctx->opened || !info || stream_index < 0) return SALTS_EINVAL;
     stream = (const mkv_demuxer_stream_t *)vec_at_const(
         &ctx->streams, (size_t)stream_index);
-    if (!stream) return TURBO_EINVAL;
+    if (!stream) return SALTS_EINVAL;
     *info = stream->info;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int mkv_demuxer_get_metadata_impl(void *ctx_ptr,
                                          turbo_container_metadata_t *metadata) {
     mkv_demuxer_ctx_t *ctx = (mkv_demuxer_ctx_t *)ctx_ptr;
-    if (!ctx || !ctx->opened || !metadata) return TURBO_EINVAL;
+    if (!ctx || !ctx->opened || !metadata) return SALTS_EINVAL;
     *metadata = ctx->metadata;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static const char *s_mkv_extensions[] = {".mkv", ".mka", NULL};

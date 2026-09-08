@@ -15,8 +15,8 @@ typedef struct room_service_http_api_s room_service_http_api_t;
 
 room_service_http_api_t *room_service_http_api_create(room_service_app_server_t *server);
 int room_service_http_api_start(room_service_http_api_t *api, const char *host, int port);
-void room_service_http_api_stop(room_service_http_api_t *api);
-void room_service_http_api_destroy(room_service_http_api_t *api);
+int room_service_http_api_stop(room_service_http_api_t *api);
+int room_service_http_api_destroy(room_service_http_api_t *api);
 char *room_service_http_api_build_room_diagnostic(room_service_app_server_t *server,
                                                   const char *room_id);
 char *room_service_http_api_build_room_sync_diagnostic(room_service_app_server_t *server,

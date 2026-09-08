@@ -3132,7 +3132,6 @@ suite("turbo_rtsp_lib") {
       check_equal(turbo_rtsp_rtcp_validate_compound(compound, total_len, NULL), -1);
       compound[0] = (uint8_t)(compound[0] & 0xdfu);
 
-      UNUSED(sdes_len);
     }
 
     it("converts RTCP NTP timestamps and delays into LSR and DLSR fields") {

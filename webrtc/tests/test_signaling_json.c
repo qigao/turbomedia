@@ -4,17 +4,19 @@
  */
 
 #include "tinytest.h"
-#include "turbo_parser.h"
+#include <json_parser.h>
 
 static void parse_and_free_signaling_message(const char *json_text) {
   json_value_t *root = NULL;
 
   check_not_null(json_text);
-  check_equal((int)(turbo_parse_json((const uint8_t *)json_text, strlen(json_text), &root)), (int)(0));
+  check_equal((int)(((root = json_parse((const char *)((const uint8_t *)json_text), strlen(json_text))) ? 0 : -1)), (int)(0));
   check_not_null(root);
-  check_equal((int)(turbo_json_type(root)), (int)(TURBO_JSON_OBJECT));
+  check_equal((int)(json_type(root)), (int)(JSON_OBJECT));
 
-  turbo_free_json(&root);
+  json_free(root);
+
+  root = NULL;
   check_null(root);
 }
 

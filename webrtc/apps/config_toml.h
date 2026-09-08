@@ -7,8 +7,10 @@
 #include <string.h>
 
 #include <tlog.h>
-#include <turbo_fs.h>
-#include <turbo_parser.h>
+#include <salts_fs.h>
+#include <toml.h>
+
+enum { RTC_APP_TOML_ERROR_SIZE = 200 };
 
 typedef struct rtc_app_config_storage_s {
     size_t count;
@@ -16,8 +18,8 @@ typedef struct rtc_app_config_storage_s {
 } rtc_app_config_storage_t;
 
 typedef struct rtc_app_toml_document_s {
-    turbo_fs_buf_t file;
-    turbo_toml_t *root;
+    salts_fs_buf_t file;
+    toml_table_t *root;
 } rtc_app_toml_document_t;
 
 static inline rtc_app_config_storage_t *rtc_app_config_storage_create(size_t count) {
@@ -104,14 +106,14 @@ static inline int rtc_app_toml_key_equals(
 }
 
 static inline int rtc_app_toml_table_has_key(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *expected) {
     int index;
-    int count = turbo_toml_len(table);
+    int count = toml_table_len(table);
 
     for (index = 0; index < count; ++index) {
         int key_length = 0;
-        const char *key = turbo_toml_key(table, index, &key_length);
+        const char *key = toml_table_key(table, index, &key_length);
         if (rtc_app_toml_key_equals(key, key_length, expected)) {
             return 1;
         }
@@ -120,7 +122,7 @@ static inline int rtc_app_toml_table_has_key(
 }
 
 static inline int rtc_app_toml_table_keys_valid(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *const *allowed,
     size_t allowed_count) {
@@ -130,10 +132,10 @@ static inline int rtc_app_toml_table_keys_valid(
     if (!table) {
         return -1;
     }
-    count = turbo_toml_len(table);
+    count = toml_table_len(table);
     for (index = 0; index < count; ++index) {
         int key_length = 0;
-        const char *key = turbo_toml_key(table, index, &key_length);
+        const char *key = toml_table_key(table, index, &key_length);
         size_t allowed_index;
         int found = 0;
 
@@ -152,14 +154,14 @@ static inline int rtc_app_toml_table_keys_valid(
 }
 
 static inline int rtc_app_toml_get_optional_table(
-    const turbo_toml_t *root,
+    const toml_table_t *root,
     const char *name,
-    turbo_toml_t **table) {
+    toml_table_t **table) {
     *table = NULL;
     if (!rtc_app_toml_table_has_key(root, name)) {
         return 0;
     }
-    *table = turbo_toml_table(root, name);
+    *table = toml_table_table(root, name);
     if (!*table) {
         TLOG_ERRORF("TOML root key '{}' must be a table", name);
         return -1;
@@ -168,18 +170,18 @@ static inline int rtc_app_toml_get_optional_table(
 }
 
 static inline int rtc_app_toml_apply_string(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *key,
     rtc_app_config_storage_t *storage,
     size_t index,
     const char **target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
 
     if (!rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_string(table, key);
+    value = toml_table_string(table, key);
     if (!value.ok || !value.u.s || value.u.sl < 0 ||
         strlen(value.u.s) != (size_t)value.u.sl) {
         free(value.ok ? value.u.s : NULL);
@@ -191,7 +193,7 @@ static inline int rtc_app_toml_apply_string(
 }
 
 static inline int rtc_app_toml_apply_string_array(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *key,
     rtc_app_config_storage_t *storage,
@@ -199,7 +201,7 @@ static inline int rtc_app_toml_apply_string_array(
     const char **targets,
     int target_capacity,
     int *target_count) {
-    turbo_toml_array_t *array;
+    toml_array_t *array;
     int count;
     int index;
 
@@ -210,13 +212,13 @@ static inline int rtc_app_toml_apply_string_array(
     if (!rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    array = turbo_toml_array(table, key);
+    array = toml_table_array(table, key);
     if (!array) {
         TLOG_ERRORF("TOML key [{}].{} must be an array of strings",
                    section, key);
         return -1;
     }
-    count = turbo_toml_array_len(array);
+    count = toml_array_len(array);
     if (count < 0 || count > target_capacity) {
         TLOG_ERRORF("TOML key [{}].{} exceeds the maximum of {} entries",
                    section, key, target_capacity);
@@ -231,7 +233,7 @@ static inline int rtc_app_toml_apply_string_array(
         }
     }
     for (index = 0; index < count; ++index) {
-        turbo_toml_value_t value = turbo_toml_array_string(array, index);
+        toml_value_t value = toml_array_string(array, index);
         if (!value.ok || !value.u.s || value.u.sl <= 0 ||
             strlen(value.u.s) != (size_t)value.u.sl) {
             free(value.ok ? value.u.s : NULL);
@@ -251,16 +253,16 @@ static inline int rtc_app_toml_apply_string_array(
 }
 
 static inline int rtc_app_toml_apply_bool(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *key,
     int *target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
 
     if (!rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_bool(table, key);
+    value = toml_table_bool(table, key);
     if (!value.ok) {
         TLOG_ERRORF("TOML key [{}].{} must be a boolean", section, key);
         return -1;
@@ -270,16 +272,16 @@ static inline int rtc_app_toml_apply_bool(
 }
 
 static inline int rtc_app_toml_apply_int(
-    const turbo_toml_t *table,
+    const toml_table_t *table,
     const char *section,
     const char *key,
     int *target) {
-    turbo_toml_value_t value;
+    toml_value_t value;
 
     if (!rtc_app_toml_table_has_key(table, key)) {
         return 0;
     }
-    value = turbo_toml_int(table, key);
+    value = toml_table_int(table, key);
     if (!value.ok || value.u.i < INT_MIN || value.u.i > INT_MAX) {
         TLOG_ERRORF("TOML key [{}].{} must be a 32-bit integer", section, key);
         return -1;
@@ -291,15 +293,19 @@ static inline int rtc_app_toml_apply_int(
 static inline int rtc_app_toml_document_open(
     rtc_app_toml_document_t *document,
     const char *filename) {
+    char parse_error[RTC_APP_TOML_ERROR_SIZE] = {0};
+
     memset(document, 0, sizeof(*document));
-    if (turbo_fs_read_file(filename, &document->file) != 0) {
+    if (salts_fs_read_file(filename, &document->file) != 0) {
         TLOG_ERRORF("Failed to open configuration file: {}", filename);
         return -1;
     }
-    if (turbo_parse_toml((const uint8_t *)document->file.base,
-                         document->file.len, &document->root) != 0) {
-        TLOG_ERRORF("Failed to parse TOML configuration file: {}", filename);
-        turbo_fs_buf_free(&document->file);
+    document->root = toml_parse(document->file.base, parse_error,
+                                (int)sizeof(parse_error));
+    if (!document->root) {
+        TLOG_ERRORF("Failed to parse TOML configuration file {}: {}", filename,
+                    parse_error);
+        salts_fs_buf_free(&document->file);
         return -1;
     }
     return 0;
@@ -310,8 +316,9 @@ static inline void rtc_app_toml_document_close(
     if (!document) {
         return;
     }
-    turbo_free_toml(&document->root);
-    turbo_fs_buf_free(&document->file);
+    toml_free(document->root);
+    document->root = NULL;
+    salts_fs_buf_free(&document->file);
 }
 
 static inline int rtc_app_config_string_in_set(

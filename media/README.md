@@ -5,10 +5,10 @@ This directory stages the mobile media platform layer migrated from
 
 Current scope:
 
-- `ios/`: iOS camera, microphone, screen capture, VideoToolbox hardware codec,
-  mobile optimization helpers, and Swift wrapper.
-- `android/`: Android camera, microphone, screen capture, MediaCodec hardware
-  codec, mobile optimization helpers, JNI bridge, and Java wrapper.
+- `ios/`: iOS VideoToolbox hardware codec, mobile optimization helpers, and
+  Swift wrapper.
+- `android/`: Android MediaCodec hardware codec, mobile optimization helpers,
+  JNI bridge, and Java wrapper.
 
 These sources are not wired into the default `turbo_media` target yet. The
 capture, mobile optimizer, hardware codec, JNI, Java, and Swift staging code has
@@ -16,10 +16,10 @@ been narrowed away from the old TurboWebRTC media-engine APIs.
 
 Current adaptation status:
 
-- iOS and Android capture entry points have been mapped to
-  `turbo_audio_capture_create`, `turbo_video_capture_create`,
-  `turbo_screen_capture_create`, callback setters, device enumeration, and
-  common start/stop/destroy dispatch from `include/turbo_capture.h`.
+- Camera, microphone, and C-level screen capture are provided by
+  `Salts::Capture`. Android MediaProjection uses
+  `<salts_capture_android.h>` for the Java Surface handoff; TurboMedia no
+  longer contains a second native screen-capture backend.
 - iOS and Android mobile optimizer/monitor declarations have been moved behind
   the staged `media/include/turbo_mobile.h` header, removing their dependency on
   the old `turbo_media_engine.h` header.
@@ -33,8 +33,6 @@ Current adaptation status:
 - The mobile CMake files are platform-aware. On desktop toolchains they expose
   source-only staging targets. On iOS/Android toolchains they configure native
   `turbo_media_ios` / `turbo_media_android` targets.
-- The capture sources are still staged and are not enabled in the default
-  desktop target.
 
 Build entry points:
 
@@ -47,7 +45,4 @@ Build entry points:
 
 Known remaining work:
 
-- Android screen capture still needs a Java/MediaProjection handoff. The
-  current public `turbo_screen_capture_config_t` does not carry that platform
-  permission/surface state.
 - Validate the platform targets with real iOS and Android toolchains.

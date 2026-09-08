@@ -142,7 +142,7 @@ turbo_streamer_t *turbo_streamer_create(const turbo_streamer_config_t *config) {
 
     turbo_streamer_t *streamer = (turbo_streamer_t *)calloc(1, sizeof(turbo_streamer_t));
     if (!streamer) {
-        ops->destroy(ctx);
+        (void)ops->destroy(ctx);
         return NULL;
     }
 
@@ -154,19 +154,21 @@ turbo_streamer_t *turbo_streamer_create(const turbo_streamer_config_t *config) {
     return streamer;
 }
 
-void turbo_streamer_destroy(turbo_streamer_t *streamer) {
-    if (!streamer) return;
+int turbo_streamer_destroy(turbo_streamer_t *streamer) {
+    if (!streamer) return 0;
 
     /* 自动断开连接 */
     if (streamer->connected) {
-        turbo_streamer_disconnect(streamer);
+        if (turbo_streamer_disconnect(streamer) != 0) return -1;
     }
 
     if (streamer->ctx && streamer->ops->destroy) {
-        streamer->ops->destroy(streamer->ctx);
+        if (streamer->ops->destroy(streamer->ctx) != 0) return -1;
+        streamer->ctx = NULL;
     }
 
     free(streamer);
+    return 0;
 }
 
 int turbo_streamer_connect(turbo_streamer_t *streamer) {
@@ -198,7 +200,7 @@ int turbo_streamer_disconnect(turbo_streamer_t *streamer) {
         ret = streamer->ops->disconnect(streamer->ctx);
     }
 
-    streamer->connected = 0;
+    if (ret == 0) streamer->connected = 0;
     return ret;
 }
 

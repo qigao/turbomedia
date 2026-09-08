@@ -12,8 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <turbo_error.h>
-#include <turbo_vstr.h>
+#include <salts_error.h>
+#include <salts_vstr.h>
 
 typedef enum {
     FLV_CODEC_NONE = 0,
@@ -81,12 +81,12 @@ static int flv_container_write(void *param, const struct flv_vec_t *vectors,
     flv_muxer_ctx_t *ctx = (flv_muxer_ctx_t *)param;
     int i;
 
-    if (!ctx || !vectors || count <= 0 || ctx->error != TURBO_OK) return -1;
+    if (!ctx || !vectors || count <= 0 || ctx->error != SALTS_OK) return -1;
     for (i = 0; i < count; ++i) {
         if (vectors[i].len < 0 ||
             turbo_container_io_write(&ctx->io, vectors[i].ptr,
-                                     (uint64_t)vectors[i].len) != TURBO_OK) {
-            ctx->error = ctx->io.error != TURBO_OK ? ctx->io.error : TURBO_EIO;
+                                     (uint64_t)vectors[i].len) != SALTS_OK) {
+            ctx->error = ctx->io.error != SALTS_OK ? ctx->io.error : SALTS_EIO;
             return -1;
         }
     }
@@ -114,11 +114,11 @@ static void *flv_muxer_create_impl(const turbo_muxer_config_t *config) {
     if (!config || config->format != TURBO_MUXER_FLV) return NULL;
     ctx = (flv_muxer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    ctx->io.file = TURBO_INVALID_FILE;
+    ctx->io.file = SALTS_INVALID_FILE;
     ctx->video_stream_id = -1;
     ctx->audio_stream_id = -1;
-    ctx->error = TURBO_OK;
-    if (turbo_container_io_open_writer(&ctx->io, config->output_path) != TURBO_OK) {
+    ctx->error = SALTS_OK;
+    if (turbo_container_io_open_writer(&ctx->io, config->output_path) != SALTS_OK) {
         flv_muxer_destroy_impl(ctx);
         return NULL;
     }
@@ -132,48 +132,48 @@ static int flv_muxer_add_stream_impl(void *ctx_ptr,
     int next_id;
 
     if (!ctx || !stream_info || !stream_id || ctx->header_written)
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     next_id = ctx->has_audio + ctx->has_video;
     if (stream_info->type == TURBO_CODEC_TYPE_VIDEO) {
         flv_codec_t codec = flv_video_codec(stream_info->codec_name);
-        if (ctx->has_video) return TURBO_EALREADY;
-        if (codec == FLV_CODEC_NONE) return TURBO_ENOTSUP;
+        if (ctx->has_video) return SALTS_EALREADY;
+        if (codec == FLV_CODEC_NONE) return SALTS_ENOTSUP;
         if (stream_info->width <= 0 || stream_info->height <= 0)
-            return TURBO_EINVAL;
+            return SALTS_EINVAL;
         ctx->has_video = 1;
         ctx->video_stream_id = next_id;
         ctx->video_codec = codec;
     } else if (stream_info->type == TURBO_CODEC_TYPE_AUDIO) {
         flv_codec_t codec = flv_audio_codec(stream_info->codec_name);
-        if (ctx->has_audio) return TURBO_EALREADY;
-        if (codec == FLV_CODEC_NONE) return TURBO_ENOTSUP;
+        if (ctx->has_audio) return SALTS_EALREADY;
+        if (codec == FLV_CODEC_NONE) return SALTS_ENOTSUP;
         if (stream_info->sample_rate <= 0 || stream_info->channels <= 0)
-            return TURBO_EINVAL;
+            return SALTS_EINVAL;
         ctx->has_audio = 1;
         ctx->audio_stream_id = next_id;
         ctx->audio_codec = codec;
     } else {
-        return TURBO_ENOTSUP;
+        return SALTS_ENOTSUP;
     }
     *stream_id = next_id;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int flv_muxer_write_header_impl(void *ctx_ptr) {
     flv_muxer_ctx_t *ctx = (flv_muxer_ctx_t *)ctx_ptr;
     if (!ctx || ctx->header_written || (!ctx->has_audio && !ctx->has_video))
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     ctx->writer = flv_writer_create2(ctx->has_audio, ctx->has_video,
                                      flv_container_write, ctx);
-    if (!ctx->writer) return ctx->error != TURBO_OK ? ctx->error : TURBO_EIO;
+    if (!ctx->writer) return ctx->error != SALTS_OK ? ctx->error : SALTS_EIO;
     ctx->flv = flv_muxer_create(flv_tag_write, ctx);
     if (!ctx->flv) {
         flv_writer_destroy(ctx->writer);
         ctx->writer = NULL;
-        return TURBO_ENOMEM;
+        return SALTS_ENOMEM;
     }
     ctx->header_written = 1;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int flv_write_video(flv_muxer_ctx_t *ctx, const void *data, size_t bytes,
@@ -184,7 +184,7 @@ static int flv_write_video(flv_muxer_ctx_t *ctx, const void *data, size_t bytes,
         case FLV_CODEC_H266: return flv_muxer_vvc(ctx->flv, data, bytes, pts, dts);
         case FLV_CODEC_AV1: return flv_muxer_av1(ctx->flv, data, bytes, pts, dts);
         case FLV_CODEC_AVS3: return flv_muxer_avs3(ctx->flv, data, bytes, pts, dts);
-        default: return TURBO_ENOTSUP;
+        default: return SALTS_ENOTSUP;
     }
 }
 
@@ -198,7 +198,7 @@ static int flv_write_audio(flv_muxer_ctx_t *ctx, const void *data, size_t bytes,
         case FLV_CODEC_OPUS: return flv_muxer_opus(ctx->flv, data, bytes, pts, dts);
         case FLV_CODEC_AC3: return flv_muxer_ac3(ctx->flv, data, bytes, pts, dts);
         case FLV_CODEC_EAC3: return flv_muxer_eac3(ctx->flv, data, bytes, pts, dts);
-        default: return TURBO_ENOTSUP;
+        default: return SALTS_ENOTSUP;
     }
 }
 
@@ -211,10 +211,10 @@ static int flv_muxer_write_packet_impl(void *ctx_ptr,
 
     if (!ctx || !packet || !ctx->header_written || ctx->trailer_written ||
         !packet->data || packet->size == 0 || packet->pts < 0 || packet->dts < 0)
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     pts_ms = (uint64_t)packet->pts / 1000;
     dts_ms = (uint64_t)packet->dts / 1000;
-    if (pts_ms > UINT32_MAX || dts_ms > UINT32_MAX) return TURBO_ERANGE;
+    if (pts_ms > UINT32_MAX || dts_ms > UINT32_MAX) return SALTS_ERANGE;
     if (packet->stream_id == ctx->video_stream_id) {
         result = flv_write_video(ctx, packet->data, packet->size, (uint32_t)pts_ms,
                                  (uint32_t)dts_ms);
@@ -222,28 +222,28 @@ static int flv_muxer_write_packet_impl(void *ctx_ptr,
         result = flv_write_audio(ctx, packet->data, packet->size, (uint32_t)pts_ms,
                                  (uint32_t)dts_ms);
     } else {
-        return TURBO_EINVAL;
+        return SALTS_EINVAL;
     }
-    return result == 0 ? TURBO_OK
-                       : ctx->error != TURBO_OK ? ctx->error : TURBO_EPROTO;
+    return result == 0 ? SALTS_OK
+                       : ctx->error != SALTS_OK ? ctx->error : SALTS_EPROTO;
 }
 
 static int flv_muxer_write_trailer_impl(void *ctx_ptr) {
     flv_muxer_ctx_t *ctx = (flv_muxer_ctx_t *)ctx_ptr;
-    if (!ctx || !ctx->header_written || ctx->trailer_written) return TURBO_EINVAL;
+    if (!ctx || !ctx->header_written || ctx->trailer_written) return SALTS_EINVAL;
     flv_muxer_destroy(ctx->flv);
     ctx->flv = NULL;
     flv_writer_destroy(ctx->writer);
     ctx->writer = NULL;
-    if (ctx->error != TURBO_OK) return ctx->error;
-    if (turbo_container_io_flush(&ctx->io) != TURBO_OK) return ctx->io.error;
+    if (ctx->error != SALTS_OK) return ctx->error;
+    if (turbo_container_io_flush(&ctx->io) != SALTS_OK) return ctx->io.error;
     ctx->trailer_written = 1;
-    return TURBO_OK;
+    return SALTS_OK;
 }
 
 static int flv_muxer_get_data_impl(void *ctx_ptr, uint8_t **data, size_t *size) {
     flv_muxer_ctx_t *ctx = (flv_muxer_ctx_t *)ctx_ptr;
-    if (!ctx || !ctx->trailer_written) return TURBO_EINVAL;
+    if (!ctx || !ctx->trailer_written) return SALTS_EINVAL;
     return turbo_container_io_get_memory(&ctx->io, data, size);
 }
 

@@ -26,6 +26,7 @@ public class ScreenCapture {
     private MediaProjectionManager projectionManager;
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
+    private boolean nativeStarted;
     
     private long nativeHandle;
     private int width;
@@ -117,6 +118,20 @@ public class ScreenCapture {
      * Must be called after permission is granted
      */
     public boolean start() {
+        if (nativeStarted) {
+            return true;
+        }
+        try {
+            return attachVirtualDisplayForTest() && startNative();
+        } catch (Exception e) {
+            if (callback != null) {
+                callback.onError("Exception: " + e.getMessage());
+            }
+            return false;
+        }
+    }
+
+    boolean attachVirtualDisplayForTest() {
         if (mediaProjection == null) {
             if (callback != null) {
                 callback.onError("Permission not granted");
@@ -127,66 +142,68 @@ public class ScreenCapture {
         if (virtualDisplay != null) {
             return true;  /* Already started */
         }
-        
-        try {
-            // Get surface from native
-            Surface surface = nativeGetSurface(nativeHandle);
-            
-            if (surface == null) {
-                if (callback != null) {
-                    callback.onError("Failed to get surface");
-                }
-                return false;
-            }
-            
-            // Create virtual display
-            virtualDisplay = mediaProjection.createVirtualDisplay(
-                "TurboNetScreenCapture",
-                width, height, dpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                surface,
-                null,  /* Callback */
-                null   /* Handler */
-            );
-            
-            if (virtualDisplay == null) {
-                if (callback != null) {
-                    callback.onError("Failed to create VirtualDisplay");
-                }
-                return false;
-            }
-            
-            // Notify native
-            if (!nativeStart(nativeHandle)) {
-                virtualDisplay.release();
-                virtualDisplay = null;
-                if (callback != null) {
-                    callback.onError("Failed to start native screen capture");
-                }
-                return false;
-            }
-            
+
+        Surface surface = nativeGetSurface(nativeHandle);
+        if (surface == null) {
             if (callback != null) {
-                callback.onStarted();
-            }
-            
-            return true;
-            
-        } catch (Exception e) {
-            if (callback != null) {
-                callback.onError("Exception: " + e.getMessage());
+                callback.onError("Failed to get surface");
             }
             return false;
         }
+
+        virtualDisplay = mediaProjection.createVirtualDisplay(
+            "TurboNetScreenCapture",
+            width, height, dpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            surface,
+            null,  /* Callback */
+            null   /* Handler */
+        );
+
+        if (virtualDisplay == null) {
+            if (callback != null) {
+                callback.onError("Failed to create VirtualDisplay");
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    private boolean startNative() {
+        if (virtualDisplay == null) {
+            if (callback != null) {
+                callback.onError("VirtualDisplay not attached");
+            }
+            return false;
+        }
+
+        if (!nativeStart(nativeHandle)) {
+            virtualDisplay.release();
+            virtualDisplay = null;
+            if (callback != null) {
+                callback.onError("Failed to start native screen capture");
+            }
+            return false;
+        }
+
+        nativeStarted = true;
+
+        if (callback != null) {
+            callback.onStarted();
+        }
+
+        return true;
     }
     
     /**
      * Stop screen capture
      */
     public void stop() {
-        boolean wasActive = virtualDisplay != null || mediaProjection != null;
+        boolean wasActive = nativeStarted || virtualDisplay != null || mediaProjection != null;
         VirtualDisplay display = virtualDisplay;
         MediaProjection projection = mediaProjection;
+        nativeStarted = false;
         virtualDisplay = null;
         mediaProjection = null;
 

@@ -1,6 +1,6 @@
 # WebRTC Quick Start Guide
 
-Get started with TurboNet WebRTC in 5 minutes.
+Get started with TurboMedia WebRTC in 5 minutes.
 
 ## Installation
 
@@ -23,8 +23,8 @@ OpenSSL; the CMake presets resolve BoringSSL through the vcpkg manifest.
 ### Build
 
 ```bash
-git clone https://github.com/your-repo/turbonet.git
-cd turbonet
+git clone https://github.com/qigao/turbomedia.git
+cd turbomedia
 cmake -B build -G Ninja
 cmake --build build
 ```
@@ -36,7 +36,7 @@ cmake --build build
 ```c
 #include "turbo_datachannel.h"
 #include "ice_integration.h"
-#include <CoroNet/turbo_coro_context.h>
+#include <salts/time.h>
 
 // Create event loop
 turbo_loop_t *loop = turbo_loop_create();

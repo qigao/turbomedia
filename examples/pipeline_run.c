@@ -1,7 +1,7 @@
 #include "turbo_pipeline.h"
 
-#include <turbo_fs.h>
-#include <turbo_thread.h>
+#include <salts_fs.h>
+#include <salts_thread.h>
 
 #include <errno.h>
 #include <inttypes.h>
@@ -17,9 +17,9 @@ static const uint64_t MAX_STOP_AFTER_MILLISECONDS = UINT32_MAX - 1u;
 
 typedef struct stop_timer {
     turbo_pipeline_t *pipeline;
-    turbo_mutex_t mutex;
-    turbo_cond_t condition;
-    turbo_thread_t thread;
+    salts_mutex_t mutex;
+    salts_cond_t condition;
+    salts_thread_t thread;
     uint64_t duration_ms;
     int cancelled;
     int fired;
@@ -64,11 +64,11 @@ static int stop_timer_init(stop_timer_t *timer, turbo_pipeline_t *pipeline,
     timer->pipeline = pipeline;
     timer->duration_ms = duration_ms;
     timer->request_status = TURBO_PIPELINE_OK;
-    turbo_mutex_init(&timer->mutex);
-    turbo_cond_init(&timer->condition);
+    salts_mutex_init(&timer->mutex);
+    salts_cond_init(&timer->condition);
     if (!timer->mutex || !timer->condition) {
-        turbo_cond_destroy(&timer->condition);
-        turbo_mutex_destroy(&timer->mutex);
+        salts_cond_destroy(&timer->condition);
+        salts_mutex_destroy(&timer->mutex);
         return 0;
     }
     return 1;
@@ -76,47 +76,47 @@ static int stop_timer_init(stop_timer_t *timer, turbo_pipeline_t *pipeline,
 
 static void stop_timer_entry(void *argument) {
     stop_timer_t *timer = (stop_timer_t *)argument;
-    uint64_t started_ms = turbo_monotonic_ms();
+    uint64_t started_ms = salts_monotonic_ms();
     uint64_t deadline_ms =
         timer->duration_ms > UINT64_MAX - started_ms
             ? UINT64_MAX
             : started_ms + timer->duration_ms;
 
-    turbo_mutex_lock(&timer->mutex);
+    salts_mutex_lock(&timer->mutex);
     while (!timer->cancelled) {
-        uint64_t now_ms = turbo_monotonic_ms();
+        uint64_t now_ms = salts_monotonic_ms();
         uint64_t remaining_ms;
         if (now_ms >= deadline_ms) {
             timer->fired = 1;
             break;
         }
         remaining_ms = deadline_ms - now_ms;
-        turbo_cond_timedwait(&timer->condition, &timer->mutex,
+        salts_cond_timedwait(&timer->condition, &timer->mutex,
                              remaining_ms * NANOSECONDS_PER_MILLISECOND);
     }
-    turbo_mutex_unlock(&timer->mutex);
+    salts_mutex_unlock(&timer->mutex);
     if (timer->fired)
         timer->request_status = turbo_pipeline_request_stop(timer->pipeline);
 }
 
 static int stop_timer_start(stop_timer_t *timer) {
-    return turbo_thread_create(&timer->thread, stop_timer_entry, timer);
+    return salts_thread_create(&timer->thread, stop_timer_entry, timer);
 }
 
 static int stop_timer_cancel_and_join(stop_timer_t *timer) {
     int join_status;
-    turbo_mutex_lock(&timer->mutex);
+    salts_mutex_lock(&timer->mutex);
     timer->cancelled = 1;
-    turbo_cond_signal(&timer->condition);
-    turbo_mutex_unlock(&timer->mutex);
-    join_status = turbo_thread_join(&timer->thread);
-    turbo_cond_destroy(&timer->condition);
-    turbo_mutex_destroy(&timer->mutex);
+    salts_cond_signal(&timer->condition);
+    salts_mutex_unlock(&timer->mutex);
+    join_status = salts_thread_join(&timer->thread);
+    salts_cond_destroy(&timer->condition);
+    salts_mutex_destroy(&timer->mutex);
     return join_status;
 }
 
 int main(int argc, char **argv) {
-    turbo_fs_buf_t yaml = {0};
+    salts_fs_buf_t yaml = {0};
     turbo_pipeline_error_t error;
     turbo_pipeline_stats_t stats;
     turbo_pipeline_t *pipeline = NULL;
@@ -142,7 +142,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    file_status = turbo_fs_read_file(graph_path, &yaml);
+    file_status = salts_fs_read_file(graph_path, &yaml);
     if (file_status != 0) {
         fprintf(stderr, "cannot read pipeline graph '%s' (status=%d)\n", graph_path,
                 file_status);
@@ -150,7 +150,7 @@ int main(int argc, char **argv) {
     }
 
     pipeline = turbo_pipeline_create_from_yaml(yaml.base, yaml.len, &error);
-    turbo_fs_buf_free(&yaml);
+    salts_fs_buf_free(&yaml);
     if (!pipeline) {
         print_pipeline_error("create pipeline", &error);
         return 1;
@@ -171,8 +171,8 @@ int main(int argc, char **argv) {
         timer_status = stop_timer_start(&stop_timer);
         if (timer_status != 0) {
             fprintf(stderr, "cannot start stop timer (status=%d)\n", timer_status);
-            turbo_cond_destroy(&stop_timer.condition);
-            turbo_mutex_destroy(&stop_timer.mutex);
+            salts_cond_destroy(&stop_timer.condition);
+            salts_mutex_destroy(&stop_timer.mutex);
             goto cleanup;
         }
         timer_started = 1;

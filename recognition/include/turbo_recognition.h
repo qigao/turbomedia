@@ -19,7 +19,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <turbo_export.h>
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 #include <turbo_player.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,7 +40,7 @@ extern "C" {
 typedef struct turbo_voice_detector_s turbo_voice_detector_t;
 typedef struct turbo_fingerprint_extractor_s turbo_fingerprint_extractor_t;
 typedef struct turbo_fingerprint_matcher_s turbo_fingerprint_matcher_t;
-struct turbo_capture_s;
+typedef struct salts_capture_s salts_capture_t;
 
 typedef enum {
   TURBO_RECOGNITION_OK = 0,
@@ -169,16 +171,18 @@ turbo_voice_detector_get_rejected_frame_count(const turbo_voice_detector_t *dete
 TURBO_MEDIA_API int turbo_voice_detector_get_audio_format(const turbo_voice_detector_t *detector,
                                                     turbo_recognition_audio_format_t *format);
 
-/** turbo_audio_capture_cb-compatible adapter for detector-only capture. */
-TURBO_MEDIA_API void turbo_voice_detector_capture_callback(struct turbo_capture_s *capture,
+/** salts_audio_capture_cb-compatible adapter for detector-only capture. */
+TURBO_MEDIA_API void turbo_voice_detector_capture_callback(salts_capture_t *capture,
                                                      const uint8_t *samples, size_t len,
                                                      uint64_t timestamp_us, void *user_data);
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /** turbo_player_audio_cb-compatible adapter for offline/VOD analysis. */
 TURBO_MEDIA_API void turbo_voice_detector_player_audio_callback(turbo_player_t *player,
                                                           const float *samples, size_t frame_count,
                                                           int sample_rate, int channels,
                                                           int64_t pts_ms, void *user_data);
+#endif
 
 typedef enum {
   TURBO_FINGERPRINT_VOICE = 1,
@@ -262,11 +266,12 @@ TURBO_MEDIA_API int
 turbo_fingerprint_extractor_get_audio_format(const turbo_fingerprint_extractor_t *extractor,
                                              turbo_recognition_audio_format_t *format);
 
-/** turbo_audio_capture_cb-compatible adapter for voice/audio fingerprints. */
-TURBO_MEDIA_API void turbo_fingerprint_capture_callback(struct turbo_capture_s *capture,
+/** salts_audio_capture_cb-compatible adapter for voice/audio fingerprints. */
+TURBO_MEDIA_API void turbo_fingerprint_capture_callback(salts_capture_t *capture,
                                                   const uint8_t *samples, size_t len,
                                                   uint64_t timestamp_us, void *user_data);
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /** turbo_player callbacks for offline/VOD audio or video fingerprinting. */
 TURBO_MEDIA_API void turbo_fingerprint_player_audio_callback(turbo_player_t *player, const float *samples,
                                                        size_t frame_count, int sample_rate,
@@ -275,6 +280,7 @@ TURBO_MEDIA_API void turbo_fingerprint_player_audio_callback(turbo_player_t *pla
 TURBO_MEDIA_API void turbo_fingerprint_player_video_callback(turbo_player_t *player,
                                                        const turbo_player_video_frame_t *frame,
                                                        void *user_data);
+#endif
 
 typedef struct {
   uint32_t abi_version;

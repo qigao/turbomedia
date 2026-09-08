@@ -64,10 +64,8 @@ static int32_t field_i32(DataBindObject *obj, const char *field) {
 }
 
 /* JSON -> BIN -> JSON, plus JSON -> XML -> JSON when with_xml is set.
-   XML round trips cover result types again: the vendored cxml empty-string
-   crash (turbo_xml_set_text(node, "") -> _cxml_is_integer(NULL, 0) NULL
-   deref) was fixed upstream in turbo-utils vendor/cxml (cxstr.c / cxliteral.c
-   / cxqapi.c) and the rebuilt turbo_parser.dll is in use. */
+   XML round trips cover result types again, including the Salts XML
+   empty-string regression that previously dereferenced a null literal. */
 
 static void roundtrip_type(const char *type, const char *json, int with_xml) {
     DataBindError err = DATA_BIND_ERROR_INIT;

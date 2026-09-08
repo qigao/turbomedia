@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 
 REM Configuration
 if "%ANDROID_NDK%"=="" set ANDROID_NDK=%LOCALAPPDATA%\Android\Sdk\ndk\25.2.9519653
-set ANDROID_API=24
+set ANDROID_API=26
 if "%BUILD_TYPE%"=="" set BUILD_TYPE=Release
 if "%ABIS%"=="" set ABIS=arm64-v8a x86_64 x86
 

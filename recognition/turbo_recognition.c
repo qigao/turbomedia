@@ -1,4 +1,7 @@
 #include "turbo_recognition.h"
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
+#include "turbo_player.h"
+#endif
 
 #include <math.h>
 #include <stdatomic.h>
@@ -298,7 +301,7 @@ int turbo_voice_detector_get_audio_format(const turbo_voice_detector_t *detector
   return TURBO_RECOGNITION_OK;
 }
 
-void turbo_voice_detector_capture_callback(struct turbo_capture_s *capture, const uint8_t *samples,
+void turbo_voice_detector_capture_callback(salts_capture_t *capture, const uint8_t *samples,
                                            size_t len, uint64_t timestamp_us, void *user_data) {
   turbo_voice_detector_t *detector = (turbo_voice_detector_t *)user_data;
   turbo_recognition_audio_frame_t frame;
@@ -313,6 +316,7 @@ void turbo_voice_detector_capture_callback(struct turbo_capture_s *capture, cons
   (void)turbo_voice_detector_write(detector, &frame);
 }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 void turbo_voice_detector_player_audio_callback(turbo_player_t *player, const float *samples,
                                                 size_t frame_count, int sample_rate, int channels,
                                                 int64_t pts_ms, void *user_data) {
@@ -330,6 +334,7 @@ void turbo_voice_detector_player_audio_callback(turbo_player_t *player, const fl
   frame.timestamp_us = timestamp_ms_to_us(pts_ms);
   (void)turbo_voice_detector_write((turbo_voice_detector_t *)user_data, &frame);
 }
+#endif
 
 static int fingerprint_domain_valid(turbo_fingerprint_domain_t domain) {
   return domain >= TURBO_FINGERPRINT_VOICE && domain <= TURBO_FINGERPRINT_VIDEO_CONTENT;
@@ -615,7 +620,7 @@ int turbo_fingerprint_extractor_get_audio_format(const turbo_fingerprint_extract
   return TURBO_RECOGNITION_OK;
 }
 
-void turbo_fingerprint_capture_callback(struct turbo_capture_s *capture, const uint8_t *samples,
+void turbo_fingerprint_capture_callback(salts_capture_t *capture, const uint8_t *samples,
                                         size_t len, uint64_t timestamp_us, void *user_data) {
   turbo_fingerprint_extractor_t *extractor = (turbo_fingerprint_extractor_t *)user_data;
   turbo_recognition_audio_frame_t frame;
@@ -630,6 +635,7 @@ void turbo_fingerprint_capture_callback(struct turbo_capture_s *capture, const u
   (void)turbo_fingerprint_extractor_write_audio(extractor, &frame);
 }
 
+#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 void turbo_fingerprint_player_audio_callback(turbo_player_t *player, const float *samples,
                                              size_t frame_count, int sample_rate, int channels,
                                              int64_t pts_ms, void *user_data) {
@@ -665,6 +671,7 @@ void turbo_fingerprint_player_video_callback(turbo_player_t *player,
   frame.timestamp_us = timestamp_ms_to_us(player_frame->pts_ms);
   (void)turbo_fingerprint_extractor_write_video((turbo_fingerprint_extractor_t *)user_data, &frame);
 }
+#endif
 
 turbo_fingerprint_matcher_t *
 turbo_fingerprint_matcher_create(const turbo_fingerprint_matcher_provider_t *provider) {

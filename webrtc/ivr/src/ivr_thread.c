@@ -64,17 +64,20 @@ int ivr_thread_create(ivr_thread_t *t, void *(*fn)(void *), void *arg) {
 }
 
 int ivr_thread_join(ivr_thread_t *t) {
+    int status;
     if (!t || !t->handle) {
         return -1;
     }
 #if defined(_WIN32)
-    WaitForSingleObject((HANDLE)t->handle, INFINITE);
-    CloseHandle((HANDLE)t->handle);
-#elif defined(__linux__)
-    pthread_join((pthread_t)t->handle, NULL);
+    if (WaitForSingleObject((HANDLE)t->handle, INFINITE) != WAIT_OBJECT_0 ||
+        !CloseHandle((HANDLE)t->handle)) {
+        return -1;
+    }
+    status = 0;
 #else
-    pthread_join((pthread_t)t->handle, NULL);
+    status = pthread_join((pthread_t)t->handle, NULL);
 #endif
+    if (status != 0) return -1;
     t->handle = NULL;
     return 0;
 }
@@ -89,7 +92,7 @@ int ivr_thread_timedjoin(ivr_thread_t *t, uint64_t timeout_ms, int *timed_out) {
                                                      : (DWORD)timeout_ms;
     DWORD rc = WaitForSingleObject((HANDLE)t->handle, ms);
     if (rc == WAIT_OBJECT_0) {
-        CloseHandle((HANDLE)t->handle);
+        if (!CloseHandle((HANDLE)t->handle)) return -1;
         t->handle = NULL;
         return 0;
     }
@@ -266,4 +269,3 @@ void ivr_cond_broadcast(ivr_cond_t *c) {
     pthread_cond_broadcast((pthread_cond_t *)c->handle);
 #endif
 }
-

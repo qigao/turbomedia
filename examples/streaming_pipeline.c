@@ -2,23 +2,17 @@
  * TurboMedia Streaming Pipeline 示例
  *
  * 演示完整的流媒体处理管道：
- * 摄像头采集 → H.264编码 → FLV封装 → HLS分片 → HTTP上传
+ * 摄像头采集 → H.264编码 → FLV封装 → HLS分片
  */
 #include <stdio.h>
 #include <stdlib.h>
 
 /* TurboMedia 模块 */
-#include <turbo_capture.h>
+#include <salts_capture.h>
 #include <turbo_codec.h>
 #include <turbo_muxer.h>
 #include <turbo_streamer.h>
 #include <turbo_transport.h>
-
-/* CoroNet */
-#include <CoroNet/turbo_coro_context.h>
-
-/* TurboHTTP */
-#include <http_client.h>
 
 /* =============================================================================
  * 示例 1: 本地视频录制为 FLV
@@ -206,8 +200,6 @@ static void streaming_coroutine(void *arg) {
         
         ctx->frame_count = frame;
         
-        /* 协程让出控制权（模拟帧率控制）*/
-        /* coro_sleep(33); // 30fps = ~33ms per frame */
     }
     
     /* 断开连接 */
@@ -220,24 +212,6 @@ int example_hls_streaming(void) {
     /* 初始化注册表 */
     turbo_codec_registry_init();
     turbo_streamer_registry_init();
-    
-    /* 创建 CoroNet 上下文 */
-    coro_context_t *coro_ctx = coro_context_create(NULL);
-    if (!coro_ctx) {
-        fprintf(stderr, "Failed to create coroutine context\n");
-        return -1;
-    }
-    
-    /* 创建 HttpClient（用于上传分片）*/
-    http_client_t *http_client = http_client_create("https://cdn.example.com");
-    if (!http_client) {
-        fprintf(stderr, "Failed to create HTTP client\n");
-        coro_context_destroy(coro_ctx);
-        return -1;
-    }
-    
-    /* 配置认证 */
-    http_client_set_bearer_token(http_client, "your_api_token_here");
     
     /* 创建 H.264 编码器 */
     turbo_video_codec_config_t video_config = {
@@ -252,8 +226,6 @@ int example_hls_streaming(void) {
     turbo_codec_t *encoder = turbo_codec_create_encoder("h264", &video_config);
     if (!encoder) {
         fprintf(stderr, "Failed to create encoder\n");
-        http_client_destroy(http_client);
-        coro_context_destroy(coro_ctx);
         return -1;
     }
     
@@ -262,18 +234,13 @@ int example_hls_streaming(void) {
         .protocol = TURBO_STREAMER_HLS,
         .segment_duration_ms = 6000,  /* 6 秒分片 */
         .playlist_size = 5,
-        .output_dir = "./hls_output",
-        .base_url = "https://cdn.example.com/live/stream",
-        .coro_context = coro_ctx,
-        .http_client = http_client
+        .output_dir = "./hls_output"
     };
     
     turbo_streamer_t *streamer = turbo_streamer_create(&streamer_config);
     if (!streamer) {
         fprintf(stderr, "Failed to create HLS streamer\n");
         turbo_codec_destroy(encoder);
-        http_client_destroy(http_client);
-        coro_context_destroy(coro_ctx);
         return -1;
     }
     
@@ -296,23 +263,17 @@ int example_hls_streaming(void) {
         .frame_count = 0
     };
     
-    /* 启动协程 */
+    /* 执行有界的本地分片流程 */
     printf("Starting HLS streaming...\n");
-    coro_create(coro_ctx, streaming_coroutine, &stream_ctx);
-    
-    /* 运行事件循环 */
-    coro_context_run(coro_ctx);
+    streaming_coroutine(&stream_ctx);
     
     /* 清理 */
-    turbo_streamer_destroy(streamer);
+    int streamer_destroy_status = turbo_streamer_destroy(streamer);
     turbo_codec_destroy(encoder);
-    http_client_destroy(http_client);
-    coro_context_destroy(coro_ctx);
-    
     turbo_codec_registry_shutdown();
     turbo_streamer_registry_shutdown();
     
-    return 0;
+    return streamer_destroy_status == 0 ? 0 : 1;
 }
 
 /* =============================================================================

@@ -13,8 +13,8 @@ not prove public-network, browser, capacity, security or recovery readiness.
 - PeerConnection, SDP, RTP/RTCP, DTLS-SRTP and DataChannel are implemented in
   the TurboMedia source tree.
 - Candidate gathering, connectivity checks and selected-pair I/O use
-  `TurboNet::Ice`.
-- TurboNet::Ice performs RFC 7675 consent freshness checks, rejects responses
+  `SaltsNet::ICE`.
+- SaltsNet::ICE performs RFC 7675 consent freshness checks, rejects responses
   from the wrong transport tuple or transaction generation, expires consent
   after 30 seconds, and exposes a versioned ICE restart operation.
 - PeerConnection and the SFU WHIP/WHEP resource path rotate ICE credentials,
@@ -55,7 +55,7 @@ not prove public-network, browser, capacity, security or recovery readiness.
   `turbomedia-signaling-peer`, scope `signaling.peer.join`, exact room/peer
   bindings, expiry, and the configured active/previous key pair before binding
   the application peer ID.
-- Signaling applies a fixed first-join deadline, CoroNet complete-message size
+- Signaling applies a fixed first-join deadline, CHTTP complete-message size
   enforcement, a per-connection token bucket, and message/byte bounds on each
   copied peer outbox. The status API exposes cumulative rejection counters for
   authentication, join timeout, message rate, and outbox overflow.
@@ -63,11 +63,11 @@ not prove public-network, browser, capacity, security or recovery readiness.
   IPv4/IPv6 address and applies process-local concurrent-connection and token
   bucket admission bounds. Inactive rate state has a TTL and the source-state
   table has a hard cardinality limit.
-- CoroNet terminates signaling WSS with an explicit PEM certificate/key.
+- CHTTP terminates signaling WSS with an explicit PEM certificate/key.
   Iris terminates HTTPS for the signaling management API, SFU, and Room
   Service. TLS startup is fail-fast when the configured server identity is
   absent or invalid.
-- Room Service configures TurboHTTP `http_client` with mandatory peer and
+- Room Service configures CHTTP `chttp_client` with mandatory peer and
   hostname verification. It uses the system trust store by default or an
   explicitly configured private CA bundle for internal SFU HTTPS.
 - The dependency manifest and overlay select BoringSSL; the

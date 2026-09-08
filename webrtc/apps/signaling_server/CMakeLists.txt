@@ -28,8 +28,8 @@ target_link_libraries(signaling_server
     ${SIGNALING_SERVER_LIBS}
     TurboMedia::WebRTCSignaling
     turbo_media_auth
-    TurboUtils::Core
-    TurboParser::Parser
+    Salts::Core
+    Salts::TomlParser
     $<$<PLATFORM_ID:Linux>:m>
     $<$<PLATFORM_ID:Linux>:pthread>
 )
@@ -58,7 +58,7 @@ install(
 # Install configuration example
 install(
   FILES config/signaling.toml.example
-  DESTINATION etc/turbonet
+  DESTINATION etc/turbomedia
   COMPONENT SignalingServer
 )
 

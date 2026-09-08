@@ -19,25 +19,57 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   if(TEST_NAME STREQUAL "test_android_capture" AND NOT ANDROID)
     continue()
   endif()
+
+  set(CLIENT_ONLY_TESTS
+      test_benchmark test_capture test_hls_public test_integration
+      test_mobile_optimizer test_android_capture test_player_audio)
+  set(SERVER_ONLY_TESTS
+      test_dash_local test_http_flv_local test_pipeline test_rtmp_metadata
+      test_server_rtsp_adapter test_server_runtime test_webrtc)
+  if(TURBO_MEDIA_IS_CLIENT AND TEST_NAME IN_LIST SERVER_ONLY_TESTS)
+    continue()
+  endif()
+  if(TURBO_MEDIA_IS_SERVER AND TEST_NAME IN_LIST CLIENT_ONLY_TESTS)
+    continue()
+  endif()
+  # This test deliberately spans Player and Streamer. Product integration is
+  # verified by installed-package consumers instead of merging both profiles.
+  if(TEST_NAME STREQUAL "test_hls_local")
+    continue()
+  endif()
   
   # 根据测试类型确定链接库
-  set(TEST_LINK_LIBS TurboUtils::TinyTest)
+  set(TEST_LINK_LIBS Salts::TinyTest)
   if(UNIX)
     list(APPEND TEST_LINK_LIBS m)
   endif()
   
-  if(TEST_NAME MATCHES "rtsp")
-    # RTSP 相关测试
-    list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core TurboMedia::Server)
+  if(TEST_NAME STREQUAL "test_server_rtsp_adapter")
+    list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core
+                               TurboMedia::ServerRTSP)
+  elseif(TEST_NAME MATCHES "rtsp")
+    list(APPEND TEST_LINK_LIBS TurboMedia::RTSP TurboMedia::Core)
     if(TEST_NAME STREQUAL "test_rtsp")
       list(APPEND TEST_LINK_LIBS OpenSSL::Crypto)
     endif()
+  elseif(TEST_NAME STREQUAL "test_benchmark")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Codec Salts::Capture Salts::Playback)
+  elseif(TEST_NAME STREQUAL "test_capture")
+    list(APPEND TEST_LINK_LIBS Salts::Capture)
+  elseif(TEST_NAME STREQUAL "test_codec")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Codec)
+  elseif(TEST_NAME STREQUAL "test_containers")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Muxer TurboMedia::Demuxer)
+  elseif(TEST_NAME STREQUAL "test_integration")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Codec Salts::Capture Salts::Playback)
   elseif(TEST_NAME STREQUAL "test_crypto")
     list(APPEND TEST_LINK_LIBS TurboMedia::Crypto)
   elseif(TEST_NAME STREQUAL "test_hls_public")
     list(APPEND TEST_LINK_LIBS TurboMedia::Player)
   elseif(TEST_NAME STREQUAL "test_hls_local")
     list(APPEND TEST_LINK_LIBS TurboMedia::Player TurboMedia::Streamer TurboMedia::Recognition)
+  elseif(TEST_NAME STREQUAL "test_player_audio")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Player)
   elseif(TEST_NAME STREQUAL "test_dash_local")
     list(APPEND TEST_LINK_LIBS TurboMedia::Codec TurboMedia::Streamer)
   elseif(TEST_NAME STREQUAL "test_http_flv_local")
@@ -46,30 +78,26 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     list(APPEND TEST_LINK_LIBS TurboMedia::Streamer)
   elseif(TEST_NAME STREQUAL "test_mobile_optimizer")
     list(APPEND TEST_LINK_LIBS turbo_media_android)
+  elseif(TEST_NAME STREQUAL "test_media_source")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Core)
   elseif(TEST_NAME STREQUAL "test_webrtc")
     list(APPEND TEST_LINK_LIBS TurboMedia::WebRTC TurboMedia::Core TurboMedia::Server
-                          TurboMedia::Pipeline TurboMedia::Transport TurboUtils::Core
+                          TurboMedia::Pipeline TurboMedia::Transport Salts::Core
                           TurboMedia::RTC)
   elseif(TEST_NAME STREQUAL "test_pipeline")
     list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server
-                          TurboMedia::RTSP TurboMedia::Transport TurboMedia::Codec
-                          TurboUtils::Core)
+                          TurboMedia::RTSP TurboMedia::ServerRTSP
+                          TurboMedia::Transport TurboMedia::Codec
+                          Salts::CHTTP Salts::Core)
     if(WIN32)
       list(APPEND TEST_LINK_LIBS ws2_32)
     endif()
+  elseif(TEST_NAME STREQUAL "test_server_runtime")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Server)
+  elseif(TEST_NAME MATCHES "transport")
+    list(APPEND TEST_LINK_LIBS TurboMedia::Transport Salts::CHTTP)
   else()
-    # 其他测试按组件链接，避免依赖已移除的兼容聚合库。
-    list(
-      APPEND
-      TEST_LINK_LIBS
-      TurboMedia::Core
-      TurboMedia::Server
-      TurboMedia::Codec
-      TurboMedia::Device
-      TurboMedia::Muxer
-      TurboMedia::Demuxer
-      TurboMedia::Transport
-      TurboMedia::Streamer)
+    list(APPEND TEST_LINK_LIBS TurboMedia::Core)
   endif()
   
   # 创建可执行目标

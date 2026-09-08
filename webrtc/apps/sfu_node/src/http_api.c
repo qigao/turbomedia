@@ -1,16 +1,11 @@
 #include "sfu_node/http_api.h"
 #include "turbo_media_auth.h"
 #include "turbo_sdp.h"
-#include <iris/async.h>
-#include <iris/iris_app.h>
-#include <iris/server.h>
-#include <iris/router.h>
-#include <platform.h>
-#include <turbo_coro_context.h>
-#include <turbo_coro_socket.h>
-#include <turbo_parser.h>
+#include <chttp/chttp.h>
+#include <json_parser.h>
+#include <salts/error_codes.h>
 #include <turbo_crypto.h>
-#include <turbo_thread.h>
+#include <salts_thread.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -29,97 +24,136 @@
 #define SFU_NODE_SCOPE_MEDIA_TRICKLE "sfu.media.trickle"
 #define SFU_NODE_SCOPE_MEDIA_DELETE "sfu.media.delete"
 
+enum {
+    OK = 200,
+    CREATED = 201,
+    NO_CONTENT = 204,
+    BAD_REQUEST = 400,
+    UNAUTHORIZED = 401,
+    NOT_FOUND = 404,
+    CONFLICT = 409,
+    PRECONDITION_FAILED = 412,
+    UNSUPPORTED_MEDIA_TYPE = 415,
+    PRECONDITION_REQUIRED = 428,
+    INTERNAL_SERVER_ERROR = 500,
+    SERVICE_UNAVAILABLE = 503
+};
+
+enum {
+    SFU_NODE_HTTP_CONNECTION_CAPACITY = 64,
+    SFU_NODE_HTTP_COMMAND_CAPACITY = 128,
+    SFU_NODE_HTTP_REQUEST_CAPACITY = 128,
+    SFU_NODE_HTTP_COMPLETION_CAPACITY = 32,
+    SFU_NODE_HTTP_EVENT_CAPACITY = 128,
+    SFU_NODE_HTTP_ROUTE_CAPACITY = 32,
+    SFU_NODE_HTTP_MAX_TARGET_BYTES = 4096,
+    SFU_NODE_HTTP_MAX_HEADER_COUNT = 64,
+    SFU_NODE_HTTP_MAX_HEADER_BYTES = 32 * 1024,
+    SFU_NODE_HTTP_MAX_REQUEST_BODY_BYTES = 1024 * 1024,
+    SFU_NODE_HTTP_MAX_RESPONSE_BODY_BYTES = 128 * 1024,
+    SFU_NODE_HTTP_MAX_SEND_BYTES = 192 * 1024,
+    SFU_NODE_HTTP_RECEIVE_BUFFER_BYTES = 32 * 1024,
+    SFU_NODE_HTTP_TLS_IO_BUFFER_BYTES = 256 * 1024,
+    SFU_NODE_HTTP_BUFFER_CAPACITY_BYTES = 16 * 1024 * 1024,
+    SFU_NODE_HTTP_TIMEOUT_MS = 5000,
+    SFU_NODE_HTTP_POLL_SLICE_MS = 10
+};
+
+typedef struct Req {
+    const chttp_server_request_view *request;
+    struct sfu_node_app_server_s *server;
+    const char *path;
+    const void *body;
+    size_t body_len;
+} Req;
+
+typedef struct Res {
+    chttp_server_response *response;
+    int status;
+} Res;
+
 struct sfu_node_http_api_s {
-    iris_app_t *app;
     sfu_node_app_server_t *server;
-    turbo_thread_t thread;
-    int thread_started;
-    turbo_mutex_t lifecycle_mutex;
-    turbo_cond_t lifecycle_cond;
-    coro_context_t *ctx;
-    coro_socket_t *listener;
+    salts_mutex_t lifecycle_mutex;
+    chttp_server http;
+    int http_initialized;
     int state;
-    const char *host;
-    int port;
-    int registered;
-    struct sfu_node_http_api_s *next;
 };
 
 typedef enum sfu_node_http_state_e {
     SFU_NODE_HTTP_STOPPED = 0,
     SFU_NODE_HTTP_STARTING,
     SFU_NODE_HTTP_RUNNING,
-    SFU_NODE_HTTP_STOPPING,
-    SFU_NODE_HTTP_FAILED
+    SFU_NODE_HTTP_STOPPING
 } sfu_node_http_state_t;
 
-static turbo_mutex_t g_sfu_node_http_registry_mutex;
-static turbo_once_t g_sfu_node_http_registry_once = TURBO_ONCE_INIT;
-static sfu_node_http_api_t *g_sfu_node_http_registry = NULL;
-
-static void sfu_node_http_registry_init(void) {
-    turbo_mutex_init(&g_sfu_node_http_registry_mutex);
-}
-
-static void sfu_node_http_registry_lock(void) {
-    turbo_once(&g_sfu_node_http_registry_once, sfu_node_http_registry_init);
-    turbo_mutex_lock(&g_sfu_node_http_registry_mutex);
-}
-
-static void sfu_node_http_registry_register(sfu_node_http_api_t *api) {
-    if (!api || !api->app || api->registered) {
-        return;
-    }
-
-    sfu_node_http_registry_lock();
-    api->next = g_sfu_node_http_registry;
-    g_sfu_node_http_registry = api;
-    api->registered = 1;
-    turbo_mutex_unlock(&g_sfu_node_http_registry_mutex);
-}
-
-static void sfu_node_http_registry_unregister(sfu_node_http_api_t *api) {
-    sfu_node_http_api_t **cursor;
-
-    if (!api || !api->registered) {
-        return;
-    }
-
-    sfu_node_http_registry_lock();
-    cursor = &g_sfu_node_http_registry;
-    while (*cursor) {
-        if (*cursor == api) {
-            *cursor = api->next;
-            api->next = NULL;
-            api->registered = 0;
-            turbo_mutex_unlock(&g_sfu_node_http_registry_mutex);
-            return;
-        }
-        cursor = &(*cursor)->next;
-    }
-    api->registered = 0;
-    turbo_mutex_unlock(&g_sfu_node_http_registry_mutex);
-}
-
 static sfu_node_app_server_t *sfu_node_http_server_from_req(const Req *req) {
-    sfu_node_http_api_t *cursor;
-    sfu_node_app_server_t *server = NULL;
+    return req ? req->server : NULL;
+}
 
-    if (!req || !req->app) {
-        return NULL;
-    }
+static const char *get_headers(const Req *req, const char *name) {
+    return req && req->request
+               ? chttp_server_request_header(req->request, name)
+               : NULL;
+}
 
-    sfu_node_http_registry_lock();
-    cursor = g_sfu_node_http_registry;
-    while (cursor) {
-        if (cursor->app == req->app) {
-            server = cursor->server;
-            break;
-        }
-        cursor = cursor->next;
+static const char *get_params(const Req *req, const char *name) {
+    return req && req->request
+               ? chttp_server_request_param(req->request, name)
+               : NULL;
+}
+
+static int sfu_node_http_add_cors_headers(Res *res) {
+    int status;
+    if (!res || !res->response) {
+        return SALTS_EINVAL;
     }
-    turbo_mutex_unlock(&g_sfu_node_http_registry_mutex);
-    return server;
+    status = chttp_server_response_set_header(
+        res->response, "Access-Control-Allow-Origin", "*");
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            res->response, "Access-Control-Allow-Methods",
+            "GET, POST, PATCH, DELETE, OPTIONS");
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            res->response, "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, If-Match");
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_response_set_header(
+            res->response, "Access-Control-Expose-Headers",
+            "Location, ETag, Accept-Patch");
+    }
+    return status;
+}
+
+static void set_header(Res *res, const char *name, const char *value) {
+    if (!res || res->status != SALTS_OK) {
+        return;
+    }
+    res->status = chttp_server_response_set_header(res->response, name, value);
+}
+
+static void reply(Res *res, unsigned int status, const char *content_type,
+                  const void *body, size_t body_size) {
+    if (!res || res->status != SALTS_OK) {
+        return;
+    }
+    res->status = sfu_node_http_add_cors_headers(res);
+    if (res->status == SALTS_OK) {
+        res->status = chttp_server_reply(res->response, status, content_type,
+                                         body, body_size);
+    }
+}
+
+static void send_json(Res *res, unsigned int status, const char *body) {
+    reply(res, status, "application/json", body,
+          body ? strlen(body) : 0u);
+}
+
+static void send_text(Res *res, unsigned int status, const char *body) {
+    reply(res, status, "text/plain", body, body ? strlen(body) : 0u);
 }
 
 typedef enum sfu_node_command_access_e {
@@ -135,12 +169,12 @@ static const char *json_string_field(const json_value_t *obj, const char *key) {
         return NULL;
     }
 
-    value = turbo_json_object_get(obj, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_STRING) {
+    value = json_object_get(obj, key);
+    if (!value || json_type(value) != JSON_STRING) {
         return NULL;
     }
 
-    return turbo_json_string(value);
+    return json_string(value);
 }
 
 static int json_int_field(const json_value_t *obj, const char *key, int def) {
@@ -150,12 +184,12 @@ static int json_int_field(const json_value_t *obj, const char *key, int def) {
         return def;
     }
 
-    value = turbo_json_object_get(obj, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_NUMBER) {
+    value = json_object_get(obj, key);
+    if (!value || json_type(value) != JSON_NUMBER) {
         return def;
     }
 
-    return (int)turbo_json_number(value);
+    return (int)json_number(value);
 }
 
 static int json_bool_field(const json_value_t *obj, const char *key, int def) {
@@ -165,12 +199,12 @@ static int json_bool_field(const json_value_t *obj, const char *key, int def) {
         return def;
     }
 
-    value = turbo_json_object_get(obj, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_BOOL) {
+    value = json_object_get(obj, key);
+    if (!value || json_type(value) != JSON_BOOL) {
         return def;
     }
 
-    return turbo_json_bool(value) ? 1 : 0;
+    return json_bool(value) ? 1 : 0;
 }
 
 static int json_uint32_field(const json_value_t *obj, const char *key,
@@ -182,12 +216,12 @@ static int json_uint32_field(const json_value_t *obj, const char *key,
         return -1;
     }
 
-    value = turbo_json_object_get(obj, key);
-    if (!value || turbo_json_type(value) != TURBO_JSON_NUMBER) {
+    value = json_object_get(obj, key);
+    if (!value || json_type(value) != JSON_NUMBER) {
         return -1;
     }
 
-    number = turbo_json_number(value);
+    number = json_number(value);
     if (number < 0 || number > 4294967295.0) {
         return -1;
     }
@@ -210,15 +244,15 @@ static int json_uint32_array_field(const json_value_t *obj, const char *key,
     *out_values = NULL;
     *out_count = 0;
 
-    array = turbo_json_object_get(obj, key);
+    array = json_object_get(obj, key);
     if (!array) {
         return 0;
     }
-    if (turbo_json_type(array) != TURBO_JSON_ARRAY) {
+    if (json_type(array) != JSON_ARRAY) {
         return -1;
     }
 
-    count = turbo_json_array_size(array);
+    count = json_array_size(array);
     if (count == 0) {
         return 0;
     }
@@ -229,15 +263,15 @@ static int json_uint32_array_field(const json_value_t *obj, const char *key,
     }
 
     for (i = 0; i < count; ++i) {
-        json_value_t *item = turbo_json_array_get(array, i);
+        json_value_t *item = json_array_get(array, i);
         double number;
 
-        if (!item || turbo_json_type(item) != TURBO_JSON_NUMBER) {
+        if (!item || json_type(item) != JSON_NUMBER) {
             free(values);
             return -1;
         }
 
-        number = turbo_json_number(item);
+        number = json_number(item);
         if (number < 0 || number > 4294967295.0) {
             free(values);
             return -1;
@@ -1298,10 +1332,11 @@ static void handle_command(Req *req, Res *res) {
         return;
     }
 
-    if (turbo_parse_json((const uint8_t *)req->body, req->body_len, &root) != 0 ||
-        !root || turbo_json_type(root) != TURBO_JSON_OBJECT) {
+    if (((root = json_parse((const char *)((const uint8_t *)req->body), req->body_len)) ? 0 : -1) != 0 ||
+        !root || json_type(root) != JSON_OBJECT) {
         send_error_json(res, 400, "INVALID_JSON", "request body must be a JSON object");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -1310,13 +1345,15 @@ static void handle_command(Req *req, Res *res) {
     auth_participant_id = json_string_field(root, "participant_id");
     if (!type) {
         send_error_json(res, 400, "INVALID_REQUEST", "missing command type");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
     if (!command_identifier_fields_valid(root)) {
         send_error_json(res, 400, "INVALID_REQUEST",
                         "invalid command identifier");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
     config = sfu_node_app_server_get_config(server);
@@ -1329,7 +1366,8 @@ static void handle_command(Req *req, Res *res) {
         !request_has_control_auth(req, config, required_scope, room_id,
                                   auth_participant_id)) {
         send_error_json(res, 401, "UNAUTHORIZED", "control token required");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -1340,28 +1378,33 @@ static void handle_command(Req *req, Res *res) {
             server, json_bool_field(root, "draining", 1));
         if (rc != 0) {
             send_error_json(res, 400, "COMMAND_FAILED", "command execution failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         json = node_stats_json(server, node);
         if (!json) {
             send_error_json(res, 500, "SERVER_NOT_READY", "sfu node unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         send_entity_ok_json(res, "node_stats", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "attach_room") == 0) {
         if (!room_id) {
             send_error_json(res, 400, "INVALID_REQUEST", "missing room_id");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         if (sfu_node_app_server_is_draining(server)) {
             send_error_json(res, 409, "NODE_DRAINING",
                             "sfu node is draining and not accepting new rooms");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         rc = turbo_sfu_node_attach_room(node, room_id,
@@ -1385,7 +1428,8 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id || !participant_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "missing room_id or participant_id");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -1403,7 +1447,8 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id || !participant_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "missing room_id or participant_id");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
         rc = sfu_node_app_server_disconnect_media_participant(
@@ -1416,7 +1461,8 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id || !participant_id || !session_id) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "missing room_id, participant_id or session_id");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -1424,19 +1470,22 @@ static void handle_command(Req *req, Res *res) {
                                                        participant_id, session_id);
         if (rc != 0) {
             send_error_json(res, 400, "COMMAND_FAILED", "command execution failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         json = webrtc_session_json(server, room_id, session_id);
         if (!json) {
             send_error_json(res, 500, "COMMAND_FAILED", "webrtc session creation incomplete");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "webrtc_session", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "set_remote_offer") == 0) {
         const char *session_id = json_string_field(root, "session_id");
@@ -1446,26 +1495,30 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id || !session_id || !sdp) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "missing room_id, session_id or sdp");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         rc = sfu_node_app_server_set_remote_offer(server, room_id, session_id, sdp);
         if (rc != 0) {
             send_error_json(res, 400, "COMMAND_FAILED", "command execution failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         json = webrtc_session_json(server, room_id, session_id);
         if (!json) {
             send_error_json(res, 500, "COMMAND_FAILED", "webrtc session update incomplete");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "webrtc_session", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "add_remote_ice_candidate") == 0) {
         const char *session_id = json_string_field(root, "session_id");
@@ -1475,7 +1528,8 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id || !session_id || !candidate) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "missing room_id, session_id or candidate");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -1483,19 +1537,22 @@ static void handle_command(Req *req, Res *res) {
                                                           session_id, candidate);
         if (rc != 0) {
             send_error_json(res, 400, "COMMAND_FAILED", "command execution failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         json = webrtc_session_json(server, room_id, session_id);
         if (!json) {
             send_error_json(res, 500, "COMMAND_FAILED", "webrtc session update incomplete");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "webrtc_session", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "register_published_track") == 0) {
         const char *participant_id = json_string_field(root, "participant_id");
@@ -1511,7 +1568,8 @@ static void handle_command(Req *req, Res *res) {
             json_uint32_array_field(root, "layer_ssrcs", &layer_ssrcs, &layer_count) != 0) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "invalid register_published_track payload");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             free(layer_ssrcs);
             return;
         }
@@ -1579,7 +1637,8 @@ static void handle_command(Req *req, Res *res) {
         if (!room_id || !recording_id || !mode) {
             send_error_json(res, 400, "INVALID_REQUEST",
                             "missing room_id, recording_id or mode");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
@@ -1587,76 +1646,88 @@ static void handle_command(Req *req, Res *res) {
                                                  recording_id, mode);
         if (rc != 0) {
             send_error_json(res, 400, "COMMAND_FAILED", "command execution failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         json = recording_status_json(server, room_id);
         if (!json) {
             send_error_json(res, 500, "COMMAND_FAILED", "recording start incomplete");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "recording_status", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "stop_recording") == 0) {
         char *json;
 
         if (!room_id) {
             send_error_json(res, 400, "INVALID_REQUEST", "missing room_id");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         rc = sfu_node_app_server_stop_recording(server, room_id);
         if (rc != 0) {
             send_error_json(res, 400, "COMMAND_FAILED", "command execution failed");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         json = recording_status_json(server, room_id);
         if (!json) {
             send_error_json(res, 500, "COMMAND_FAILED", "recording stop incomplete");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "recording_status", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_recording_status") == 0) {
         char *json;
 
         if (!room_id) {
             send_error_json(res, 400, "INVALID_REQUEST", "missing room_id");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         json = recording_status_json(server, room_id);
         if (!json) {
             send_error_json(res, 404, "RECORDING_NOT_FOUND", "recording not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "recording_status", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_room_stats") == 0) {
         char *json = room_stats_json(node, room_id);
 
         if (!json) {
             send_error_json(res, 404, "ROOM_NOT_FOUND", "room not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "room_stats", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_participant_stats") == 0) {
         char *json = participant_stats_json(node, room_id,
@@ -1664,12 +1735,14 @@ static void handle_command(Req *req, Res *res) {
 
         if (!json) {
             send_error_json(res, 404, "PARTICIPANT_NOT_FOUND", "participant not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "participant_stats", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_track_subscription") == 0) {
         char *json = track_subscription_json(
@@ -1679,12 +1752,14 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 404, "TRACK_SUBSCRIPTION_NOT_FOUND",
                             "track subscription not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "track_subscription", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_webrtc_session") == 0) {
         char *json = webrtc_session_json(server, room_id,
@@ -1693,34 +1768,40 @@ static void handle_command(Req *req, Res *res) {
         if (!json) {
             send_error_json(res, 404, "WEBRTC_SESSION_NOT_FOUND",
                             "webrtc session not found");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "webrtc_session", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else if (strcmp(type, "get_node_stats") == 0) {
         char *json = node_stats_json(server, node);
 
         if (!json) {
             send_error_json(res, 500, "SERVER_NOT_READY", "sfu node unavailable");
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
 
         send_entity_ok_json(res, "node_stats", json);
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     } else {
         send_error_json(res, 400, "UNKNOWN_COMMAND", "unsupported command type");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
     if (rc != 0) {
         send_error_json(res, 400, "COMMAND_FAILED", "command execution failed");
-        turbo_free_json(&root);
+        json_free(root);
+        root = NULL;
         return;
     }
 
@@ -1729,121 +1810,195 @@ static void handle_command(Req *req, Res *res) {
         char *json = room_stats_json(node, room_id);
         if (json) {
             send_entity_ok_json(res, "room_stats", json);
-            turbo_free_json(&root);
+            json_free(root);
+            root = NULL;
             return;
         }
     }
 
     send_json(res, 200, "{\"ok\":true}");
-    turbo_free_json(&root);
+    json_free(root);
+    root = NULL;
 }
 
-static void sfu_node_http_mark_running(void *arg1, void *arg2) {
-    sfu_node_http_api_t *api = (sfu_node_http_api_t *)arg1;
-    (void)arg2;
+typedef void (*sfu_node_http_handler_fn)(Req *req, Res *res);
 
-    turbo_mutex_lock(&api->lifecycle_mutex);
-    if (api->state == SFU_NODE_HTTP_STARTING) {
-        api->state = SFU_NODE_HTTP_RUNNING;
-        turbo_cond_broadcast(&api->lifecycle_cond);
+static int sfu_node_http_dispatch(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *response, sfu_node_http_handler_fn handler) {
+    sfu_node_http_api_t *api = (sfu_node_http_api_t *)user;
+    Req req = {.request = request,
+               .server = api ? api->server : NULL,
+               .path = request ? request->path : NULL,
+               .body = request ? request->body : NULL,
+               .body_len = request ? request->body_size : 0u};
+    Res res = {.response = response, .status = SALTS_OK};
+    if (!api || !request || !response || !handler) {
+        return SALTS_EINVAL;
     }
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    handler(&req, &res);
+    return res.status;
 }
 
-static void sfu_node_http_thread(void *arg) {
-    sfu_node_http_api_t *api = (sfu_node_http_api_t *)arg;
-    const sfu_node_app_config_t *config =
-        sfu_node_app_server_get_config(api->server);
-    coro_context_t *ctx = NULL;
-    coro_socket_t *listener = NULL;
-    int async_initialized = 0;
-
-    ctx = coro_context_create(NULL);
-    if (!ctx) {
-        turbo_mutex_lock(&api->lifecycle_mutex);
-        api->state = SFU_NODE_HTTP_FAILED;
-        turbo_cond_broadcast(&api->lifecycle_cond);
-        turbo_mutex_unlock(&api->lifecycle_mutex);
-        return;
+#define SFU_NODE_HTTP_ROUTE_ADAPTER(name)                                  \
+    static int name##_route(void *user,                                    \
+                            const chttp_server_request_view *request,       \
+                            chttp_server_response *response) {              \
+        return sfu_node_http_dispatch(user, request, response, name);       \
     }
 
-    if (iris_async_init(1) == 0) {
-        async_initialized = 1;
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_health)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_ready)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_metrics)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_get_webrtc_session)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_command)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whip_post)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whep_post)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_media_session_patch)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_media_session_delete)
+
+static int handle_options_route(void *user,
+                                const chttp_server_request_view *request,
+                                chttp_server_response *response) {
+    Res res = {.response = response, .status = SALTS_OK};
+    (void)user;
+    (void)request;
+    reply(&res, NO_CONTENT, NULL, NULL, 0u);
+    return res.status;
+}
+
+static native_io_backend_kind sfu_node_http_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static cnet_client_config sfu_node_http_network_config(int use_tls) {
+    const cnet_client_config config = {
+        .backend = sfu_node_http_backend(),
+        .connection_capacity = SFU_NODE_HTTP_CONNECTION_CAPACITY,
+        .command_capacity = SFU_NODE_HTTP_COMMAND_CAPACITY,
+        .request_capacity = SFU_NODE_HTTP_REQUEST_CAPACITY,
+        .completion_batch_capacity = SFU_NODE_HTTP_COMPLETION_CAPACITY,
+        .event_capacity = SFU_NODE_HTTP_EVENT_CAPACITY,
+        .max_send_bytes = SFU_NODE_HTTP_MAX_SEND_BYTES,
+        .receive_buffer_bytes = SFU_NODE_HTTP_RECEIVE_BUFFER_BYTES,
+        .connect_timeout_ms = SFU_NODE_HTTP_TIMEOUT_MS,
+        .read_timeout_ms = SFU_NODE_HTTP_TIMEOUT_MS,
+        .write_timeout_ms = SFU_NODE_HTTP_TIMEOUT_MS,
+        .tls_io_buffer_bytes = use_tls
+                                   ? SFU_NODE_HTTP_TLS_IO_BUFFER_BYTES
+                                   : 0u,
+        .tls_handshake_timeout_ms = use_tls
+                                        ? SFU_NODE_HTTP_TIMEOUT_MS
+                                        : 0u};
+    return config;
+}
+
+static chttp_server_config sfu_node_http_config(
+    const char *host, uint16_t port, const cnet_tls_server_config *tls) {
+    const chttp_server_config config = {
+        .host = host,
+        .port = port,
+        .backlog = SFU_NODE_HTTP_CONNECTION_CAPACITY,
+        .network = sfu_node_http_network_config(tls != NULL),
+        .route_capacity = SFU_NODE_HTTP_ROUTE_CAPACITY,
+        .max_route_param_count = 4u,
+        .max_route_param_bytes = 512u,
+        .max_target_bytes = SFU_NODE_HTTP_MAX_TARGET_BYTES,
+        .max_header_count = SFU_NODE_HTTP_MAX_HEADER_COUNT,
+        .max_header_bytes = SFU_NODE_HTTP_MAX_HEADER_BYTES,
+        .max_request_body_bytes = SFU_NODE_HTTP_MAX_REQUEST_BODY_BYTES,
+        .max_response_header_count = SFU_NODE_HTTP_MAX_HEADER_COUNT,
+        .max_response_header_bytes = SFU_NODE_HTTP_MAX_HEADER_BYTES,
+        .max_response_body_bytes = SFU_NODE_HTTP_MAX_RESPONSE_BODY_BYTES,
+        .poll_slice_ms = SFU_NODE_HTTP_POLL_SLICE_MS,
+        .tls = tls,
+        .buffer_capacity_bytes = SFU_NODE_HTTP_BUFFER_CAPACITY_BYTES};
+    return config;
+}
+
+static int sfu_node_http_register_routes(sfu_node_http_api_t *api) {
+    static const char *const option_paths[] = {
+        "/health",
+        "/ready",
+        "/metrics",
+        "/api/v1/rooms/:room_id/webrtc_sessions/:session_id",
+        "/api/v1/commands",
+        "/whip/:room_id/:participant_id",
+        "/whep/:room_id/:participant_id",
+        "/whip/:room_id/:participant_id/sessions/:session_id",
+        "/whep/:room_id/:participant_id/sessions/:session_id"};
+    int status = chttp_server_get(&api->http, "/health",
+                                  handle_health_route, api);
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&api->http, "/ready", handle_ready_route,
+                                  api);
     }
-
-    if (config && config->use_tls) {
-        turbo_tls_server_config_t tls_config;
-
-        memset(&tls_config, 0, sizeof(tls_config));
-        tls_config.size = sizeof(tls_config);
-        tls_config.cert_file = config->tls_cert_file;
-        tls_config.key_file = config->tls_key_file;
-        tls_config.client_auth = TURBO_TLS_CLIENT_AUTH_NONE;
-        listener = iris_server_start_tls_on(
-            api->app, ctx, api->host, (unsigned short)api->port,
-            &tls_config);
-    } else {
-        listener = iris_server_start_on(
-            api->app, ctx, api->host, (unsigned short)api->port);
+    if (status == SALTS_OK) {
+        status = chttp_server_get(&api->http, "/metrics",
+                                  handle_metrics_route, api);
     }
-    if (!listener) {
-        coro_context_destroy(ctx);
-        if (async_initialized) {
-            iris_async_shutdown();
-        }
-        turbo_mutex_lock(&api->lifecycle_mutex);
-        api->state = SFU_NODE_HTTP_FAILED;
-        turbo_cond_broadcast(&api->lifecycle_cond);
-        turbo_mutex_unlock(&api->lifecycle_mutex);
-        return;
+    if (status == SALTS_OK) {
+        status = chttp_server_get(
+            &api->http,
+            "/api/v1/rooms/:room_id/webrtc_sessions/:session_id",
+            handle_get_webrtc_session_route, api);
     }
-
-    coro_context_set_persistent(ctx, 1);
-    turbo_mutex_lock(&api->lifecycle_mutex);
-    api->ctx = ctx;
-    api->listener = listener;
-    turbo_mutex_unlock(&api->lifecycle_mutex);
-
-    if (coro_post(ctx, sfu_node_http_mark_running, api, NULL) != 0) {
-        turbo_mutex_lock(&api->lifecycle_mutex);
-        api->listener = NULL;
-        api->ctx = NULL;
-        api->state = SFU_NODE_HTTP_FAILED;
-        turbo_cond_broadcast(&api->lifecycle_cond);
-        turbo_mutex_unlock(&api->lifecycle_mutex);
-        coro_context_set_persistent(ctx, 0);
-        coro_socket_destroy(listener);
-        coro_context_destroy(ctx);
-        if (async_initialized) {
-            iris_async_shutdown();
-        }
-        return;
+    if (status == SALTS_OK) {
+        status = chttp_server_post(&api->http, "/api/v1/commands",
+                                   handle_command_route, api);
     }
-
-    coro_context_run(ctx, TURBO_RUN_DEFAULT);
-
-    turbo_mutex_lock(&api->lifecycle_mutex);
-    api->listener = NULL;
-    api->ctx = NULL;
-    api->state = SFU_NODE_HTTP_STOPPING;
-    turbo_mutex_unlock(&api->lifecycle_mutex);
-
-    coro_context_set_persistent(ctx, 0);
-    coro_socket_destroy(listener);
-    coro_context_destroy(ctx);
-    if (async_initialized) {
-        iris_async_shutdown();
+    if (status == SALTS_OK) {
+        status = chttp_server_post(&api->http,
+                                   "/whip/:room_id/:participant_id",
+                                   handle_whip_post_route, api);
     }
-
-    turbo_mutex_lock(&api->lifecycle_mutex);
-    api->state = SFU_NODE_HTTP_STOPPED;
-    turbo_cond_broadcast(&api->lifecycle_cond);
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    if (status == SALTS_OK) {
+        status = chttp_server_post(&api->http,
+                                   "/whep/:room_id/:participant_id",
+                                   handle_whep_post_route, api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_patch(
+            &api->http,
+            "/whip/:room_id/:participant_id/sessions/:session_id",
+            handle_media_session_patch_route, api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_patch(
+            &api->http,
+            "/whep/:room_id/:participant_id/sessions/:session_id",
+            handle_media_session_patch_route, api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_delete(
+            &api->http,
+            "/whip/:room_id/:participant_id/sessions/:session_id",
+            handle_media_session_delete_route, api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_delete(
+            &api->http,
+            "/whep/:room_id/:participant_id/sessions/:session_id",
+            handle_media_session_delete_route, api);
+    }
+    for (size_t index = 0u;
+         status == SALTS_OK &&
+         index < sizeof(option_paths) / sizeof(option_paths[0]);
+         ++index) {
+        status = chttp_server_options(&api->http, option_paths[index],
+                                      handle_options_route, api);
+    }
+    return status;
 }
 
 sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
     sfu_node_http_api_t *api;
-    cors_t cors_opts;
 
     if (!server) {
         return NULL;
@@ -1854,51 +2009,17 @@ sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
         return NULL;
     }
 
-    turbo_mutex_init(&api->lifecycle_mutex);
-    turbo_cond_init(&api->lifecycle_cond);
-    api->app = iris_app_create();
-    if (!api->app) {
-        turbo_cond_destroy(&api->lifecycle_cond);
-        turbo_mutex_destroy(&api->lifecycle_mutex);
-        free(api);
-        return NULL;
-    }
-
+    salts_mutex_init(&api->lifecycle_mutex);
     api->server = server;
-    sfu_node_http_registry_register(api);
-
-    memset(&cors_opts, 0, sizeof(cors_opts));
-    cors_opts.origin = "*";
-    cors_opts.methods = "GET, POST, PATCH, DELETE, OPTIONS";
-    cors_opts.headers = "Content-Type, Authorization, If-Match";
-    cors_opts.enabled = 1;
-    iris_app_cors(api->app, &cors_opts);
-
-    iris_app_get(api->app, "/health", handle_health);
-    iris_app_get(api->app, "/ready", handle_ready);
-    iris_app_get(api->app, "/metrics", handle_metrics);
-    iris_app_get(api->app, "/api/v1/rooms/:room_id/webrtc_sessions/:session_id",
-                 handle_get_webrtc_session);
-    iris_app_post(api->app, "/api/v1/commands", handle_command);
-    iris_app_post(api->app, "/whip/:room_id/:participant_id", handle_whip_post);
-    iris_app_post(api->app, "/whep/:room_id/:participant_id", handle_whep_post);
-    iris_app_patch(
-        api->app, "/whip/:room_id/:participant_id/sessions/:session_id",
-        handle_media_session_patch);
-    iris_app_patch(
-        api->app, "/whep/:room_id/:participant_id/sessions/:session_id",
-        handle_media_session_patch);
-    iris_app_delete(
-        api->app, "/whip/:room_id/:participant_id/sessions/:session_id",
-        handle_media_session_delete);
-    iris_app_delete(
-        api->app, "/whep/:room_id/:participant_id/sessions/:session_id",
-        handle_media_session_delete);
-
+    api->state = SFU_NODE_HTTP_STOPPED;
     return api;
 }
 
 int sfu_node_http_api_start(sfu_node_http_api_t *api, const char *host, int port) {
+    const sfu_node_app_config_t *app_config;
+    cnet_tls_server_config tls;
+    chttp_server_config config;
+    int status;
     if (!api || !host || host[0] == '\0' || port <= 0 || port > UINT16_MAX) {
         return -1;
     }
@@ -1906,60 +2027,73 @@ int sfu_node_http_api_start(sfu_node_http_api_t *api, const char *host, int port
         return -1;
     }
 
-    turbo_mutex_lock(&api->lifecycle_mutex);
-    if (api->state != SFU_NODE_HTTP_STOPPED || api->thread_started) {
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+    salts_mutex_lock(&api->lifecycle_mutex);
+    if (api->state != SFU_NODE_HTTP_STOPPED || api->http_initialized) {
+        salts_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
-    api->host = host;
-    api->port = port;
     api->state = SFU_NODE_HTTP_STARTING;
-    if (turbo_thread_create(&api->thread, sfu_node_http_thread, api) != 0) {
+    salts_mutex_unlock(&api->lifecycle_mutex);
+
+    app_config = sfu_node_app_server_get_config(api->server);
+    memset(&tls, 0, sizeof(tls));
+    if (app_config && app_config->use_tls) {
+        tls.size = sizeof(tls);
+        tls.cert_file = app_config->tls_cert_file;
+        tls.key_file = app_config->tls_key_file;
+        tls.client_auth = CNET_TLS_CLIENT_AUTH_NONE;
+    }
+    config = sfu_node_http_config(
+        host, (uint16_t)port,
+        app_config && app_config->use_tls ? &tls : NULL);
+    status = chttp_server_init(&api->http, &config);
+    if (status == SALTS_OK) {
+        salts_mutex_lock(&api->lifecycle_mutex);
+        api->http_initialized = 1;
+        salts_mutex_unlock(&api->lifecycle_mutex);
+        status = sfu_node_http_register_routes(api);
+    }
+    if (status == SALTS_OK) {
+        status = chttp_server_start(&api->http);
+    }
+    if (status != SALTS_OK) {
+        (void)chttp_server_destroy(&api->http);
+        salts_mutex_lock(&api->lifecycle_mutex);
+        api->http_initialized = 0;
         api->state = SFU_NODE_HTTP_STOPPED;
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+        salts_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
-
-    api->thread_started = 1;
-    while (api->state == SFU_NODE_HTTP_STARTING) {
-        turbo_cond_wait(&api->lifecycle_cond, &api->lifecycle_mutex);
-    }
-    if (api->state == SFU_NODE_HTTP_RUNNING) {
-        turbo_mutex_unlock(&api->lifecycle_mutex);
-        return 0;
-    }
-    turbo_mutex_unlock(&api->lifecycle_mutex);
-
-    turbo_thread_join(&api->thread);
-    turbo_mutex_lock(&api->lifecycle_mutex);
-    api->thread_started = 0;
-    api->state = SFU_NODE_HTTP_STOPPED;
-    turbo_mutex_unlock(&api->lifecycle_mutex);
-    return -1;
+    salts_mutex_lock(&api->lifecycle_mutex);
+    api->state = SFU_NODE_HTTP_RUNNING;
+    salts_mutex_unlock(&api->lifecycle_mutex);
+    return 0;
 }
 
 void sfu_node_http_api_stop(sfu_node_http_api_t *api) {
-    int should_join;
+    int initialized;
 
     if (!api) {
         return;
     }
 
-    turbo_mutex_lock(&api->lifecycle_mutex);
-    if (api->state == SFU_NODE_HTTP_RUNNING && api->ctx) {
-        api->state = SFU_NODE_HTTP_STOPPING;
-        coro_context_stop(api->ctx);
+    salts_mutex_lock(&api->lifecycle_mutex);
+    if (api->state == SFU_NODE_HTTP_STOPPED) {
+        salts_mutex_unlock(&api->lifecycle_mutex);
+        return;
     }
-    should_join = api->thread_started;
-    turbo_mutex_unlock(&api->lifecycle_mutex);
+    api->state = SFU_NODE_HTTP_STOPPING;
+    initialized = api->http_initialized;
+    salts_mutex_unlock(&api->lifecycle_mutex);
 
-    if (should_join) {
-        turbo_thread_join(&api->thread);
-        turbo_mutex_lock(&api->lifecycle_mutex);
-        api->thread_started = 0;
-        api->state = SFU_NODE_HTTP_STOPPED;
-        turbo_mutex_unlock(&api->lifecycle_mutex);
+    if (initialized) {
+        (void)chttp_server_stop(&api->http, 0u);
+        (void)chttp_server_destroy(&api->http);
     }
+    salts_mutex_lock(&api->lifecycle_mutex);
+    api->http_initialized = 0;
+    api->state = SFU_NODE_HTTP_STOPPED;
+    salts_mutex_unlock(&api->lifecycle_mutex);
 }
 
 void sfu_node_http_api_destroy(sfu_node_http_api_t *api) {
@@ -1968,11 +2102,6 @@ void sfu_node_http_api_destroy(sfu_node_http_api_t *api) {
     }
 
     sfu_node_http_api_stop(api);
-    if (api->app) {
-        sfu_node_http_registry_unregister(api);
-        iris_app_destroy(api->app);
-    }
-    turbo_cond_destroy(&api->lifecycle_cond);
-    turbo_mutex_destroy(&api->lifecycle_mutex);
+    salts_mutex_destroy(&api->lifecycle_mutex);
     free(api);
 }

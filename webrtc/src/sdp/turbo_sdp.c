@@ -480,7 +480,7 @@ static int sdp_fill_ice_credential(char *output, size_t output_size) {
     uint8_t value;
 
     if (random_offset == RANDOM_BATCH_SIZE) {
-      if (turbo_secure_random(random_bytes, sizeof(random_bytes)) != 0) {
+      if (salts_secure_random(random_bytes, sizeof(random_bytes)) != 0) {
         memset(random_bytes, 0, sizeof(random_bytes));
         return -1;
       }

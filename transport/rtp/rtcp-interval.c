@@ -32,7 +32,7 @@ static double rtcp_random_fraction(void)
 {
 	uint32_t value;
 
-	if (turbo_secure_random(&value, sizeof(value)) != 0)
+	if (salts_secure_random(&value, sizeof(value)) != 0)
 		value = rtcp_random_fallback();
 
 	return value / 4294967296.0;

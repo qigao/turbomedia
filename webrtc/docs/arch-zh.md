@@ -78,7 +78,7 @@ struct turbo_dc_peer_s {
     turbo_dc_context_t *ctx;           // 父上下文
     struct dtls_session_s *dtls;       // DTLS 会话
     struct socket *sctp_socket;        // SCTP 套接字 (usrsctp)
-    void *transport;                    // CoroNet stream/datagram 或外部传输
+    void *transport;                    // CNet stream/datagram 或外部传输
     const dc_transport_ops_t *transport_ops;
 
     turbo_dc_state_t state;            // 连接状态
@@ -102,9 +102,9 @@ NEW → CONNECTING → CONNECTED → DISCONNECTING → CLOSED
 ```
 
 **传输集成：**
-- UDP/TCP：使用 CoroNet `turbo_datagram_t` / `turbo_stream_t`
+- UDP/TCP：使用 CNet `cnet_datagram` / `cnet_client`
 - ICE：通过 `turbo_dc_peer_set_external_transport()` 挂接外部所有的 datagram 传输
-- KCP：当前安装的 CoroNet 包未公开所需传输 API，因此明确拒绝
+- KCP：使用 CNet packet session；未配置 packet session 时明确拒绝
 
 ---
 
@@ -334,12 +334,12 @@ free(peer);
 ## 线程模型
 
 **传输所有权：**
-- TCP/UDP 操作通过 `coro_post()` 投递到 context 专属的 CoroNet 线程
-- CoroNet 在该 owner 线程驱动 DTLS 定时器与传输回调
+- TCP/UDP 操作通过内部有界命令槽投递到 context 专属的 CNet owner 线程
+- CNet 在该 owner 线程驱动传输回调，DTLS 定时器由同一 context 协调
 - ICE 由外部持有，并通过传输适配器送入 datagram
 
 **多线程支持：**
-- 公开生命周期 API 通过 `coro_post()` 同步传输操作
+- 公开生命周期 API 通过内部同步投递协议串行化传输操作
 - 回调中不得重入销毁其所属 peer
 
 ---

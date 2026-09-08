@@ -28,7 +28,7 @@ that integration and supplies the operation table declared in
 When ASR is the only microphone consumer, create and start ASR with the same
 sample rate, channel count, and sample width as the capture, then pass
 `turbo_asr_capture_callback` and the ASR session to
-`turbo_audio_capture_set_callback()` before starting capture. The complete,
+`salts_audio_capture_set_callback()` before starting capture. The complete,
 executable mock-provider flow is covered by
 `speech/tests/test_speech.c`.
 
@@ -55,5 +55,5 @@ reframing are deliberately outside this interface; a provider adapter must do
 them explicitly rather than changing audio timing silently.
 
 For local speaker output, the same TTS callback may call
-`turbo_playback_write()`. A short write is explicit playback backpressure and
+`salts_playback_write()`. A short write is explicit playback backpressure and
 must be returned to the provider as `TURBO_SPEECH_ERR_BUSY`.

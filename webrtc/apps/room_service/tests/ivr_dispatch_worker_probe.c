@@ -1,8 +1,8 @@
-/* Controlled FlowMQ worker used only by process-boundary tests. */
+/* Controlled CHTTP H1 WebSocket worker used only by process-boundary tests. */
 #include "ivr/ivr_worker.h"
 #include "ivr_internal.h"
 #include "ivr_dtmf_rtp.h"
-#include "ivr_flowmq_gateway.h"
+#include "ivr_control_gateway.h"
 #include "ivr_frame.h"
 #include "ivr_media_bot.h"
 #include "ivr_thread.h"
@@ -26,7 +26,7 @@ typedef enum {
 } probe_mode_t;
 
 static DataBind *g_codec;
-static ivr_flowmq_gateway_t *g_gateway;
+static ivr_control_gateway_t *g_gateway;
 static probe_mode_t g_mode;
 static ivr_worker_t *g_worker;
 static const char *g_worker_id;
@@ -91,7 +91,7 @@ static ivr_status_t probe_publish_event(void *context,
     outbound.event_id.data = event_id;
     outbound.event_id.size = (size_t)written;
     outbound.sequence = g_event_sequence;
-    return ivr_flowmq_gateway_send_media_event(
+    return ivr_control_gateway_send_media_event(
         g_gateway, g_worker_id, &outbound,
         TEST_MEDIA_EVENT_TIMESTAMP_MS);
 }
@@ -477,7 +477,7 @@ static void handle_media_command(const uint8_t *frame, size_t length) {
     char event_id[PROBE_EVENT_ID_CAPACITY];
     int event_id_length;
 
-    if (ivr_flowmq_gateway_decode_media_command(g_codec, frame, length,
+    if (ivr_control_gateway_decode_media_command(g_codec, frame, length,
                                                 &command) != IVR_OK) {
         return;
     }
@@ -528,7 +528,7 @@ static void handle_media_command(const uint8_t *frame, size_t length) {
             }
             return;
         }
-        if (ivr_flowmq_gateway_send_media_result(
+        if (ivr_control_gateway_send_media_result(
                 g_gateway, &command, status,
                 status == IVR_OK ? "" : "media.fixture.rejected",
                 status == IVR_OK ? "" : "media fixture rejected command") !=
@@ -541,7 +541,7 @@ static void handle_media_command(const uint8_t *frame, size_t length) {
         fflush(stdout);
         return;
     }
-    if (ivr_flowmq_gateway_send_media_result(g_gateway, &command, IVR_OK, "",
+    if (ivr_control_gateway_send_media_result(g_gateway, &command, IVR_OK, "",
                                              "") != IVR_OK) {
         fprintf(stderr, "probe media result send failed\n");
         probe_exit();
@@ -580,7 +580,7 @@ static void handle_media_command(const uint8_t *frame, size_t length) {
     event.input_value.data = empty;
     event.payload_json.data = payload;
     event.payload_json.size = sizeof(payload) - 1u;
-    if (ivr_flowmq_gateway_send_media_event(
+    if (ivr_control_gateway_send_media_event(
             g_gateway, command.worker_id, &event,
             TEST_MEDIA_EVENT_TIMESTAMP_MS) != IVR_OK) {
         fprintf(stderr, "probe media event send failed\n");
@@ -591,7 +591,7 @@ static void handle_media_command(const uint8_t *frame, size_t length) {
 static void handle_inventory_query(const uint8_t *frame, size_t length) {
     ivr_worker_inventory_request_t request;
     ivr_worker_inventory_envelope_t result;
-    ivr_status_t status = ivr_flowmq_gateway_decode_inventory_query(
+    ivr_status_t status = ivr_control_gateway_decode_inventory_query(
         g_codec, frame, length, &request);
     if (!request.message_id[0] || !request.worker_id[0]) return;
     memset(&result, 0, sizeof(result));
@@ -625,7 +625,7 @@ static void handle_inventory_query(const uint8_t *frame, size_t length) {
         snprintf(result.error_message, sizeof(result.error_message),
                  "inventory query rejected");
     }
-    status = ivr_flowmq_gateway_send_inventory_page(g_gateway, &result);
+    status = ivr_control_gateway_send_inventory_page(g_gateway, &result);
     if (status != IVR_OK) {
         fprintf(stderr,
                 "probe inventory page send failed status=%d envelope=%s/%s "
@@ -698,7 +698,7 @@ static void handle_reply(const uint8_t *frame, size_t length) {
     if (info.kind == IVR_KIND_COMMAND &&
         info.schema_type_id == IVR_TYPE_CALL_DISPATCH_COMMAND_V2) {
         ivr_call_dispatch_t dispatch;
-        if (ivr_flowmq_gateway_decode_dispatch(g_codec, frame, length,
+        if (ivr_control_gateway_decode_dispatch(g_codec, frame, length,
                                                &dispatch) != IVR_OK) {
             return;
         }
@@ -708,7 +708,7 @@ static void handle_reply(const uint8_t *frame, size_t length) {
         if (g_mode == PROBE_DROP_BEFORE_ACK) {
             probe_exit();
         }
-        if (ivr_flowmq_gateway_send_dispatch_result_v2(
+        if (ivr_control_gateway_send_dispatch_result_v2(
                 g_gateway, &dispatch, IVR_OK, 1u, 1u, "", "") != IVR_OK) {
             fprintf(stderr, "probe dispatch ACK send failed\n");
             probe_exit();
@@ -735,7 +735,7 @@ static void on_reply(void *context, const uint8_t *frame, size_t length) {
     if (!g_reply_queue || !frame || length == 0u ||
         length > PROBE_REPLY_FRAME_CAPACITY ||
         !disruptor_publisher_try_claim(g_reply_queue, &cursor)) {
-        fprintf(stderr, "probe reply queue rejected FlowMQ frame\n");
+        fprintf(stderr, "probe reply queue rejected CHTTP H1 WebSocket frame\n");
         probe_exit();
     }
     entry = (probe_reply_entry_t *)disruptor_acquire_entry(g_reply_queue,
@@ -817,7 +817,7 @@ static int probe_send_worker_sync(ivr_worker_status_view_t *status,
         (size_t)message_id_length >= sizeof(message_id)) {
         return -1;
     }
-    send_status = ivr_flowmq_gateway_send_worker_sync_v2(
+    send_status = ivr_control_gateway_send_worker_sync_v2(
         g_gateway, message_id, status);
     return send_status == IVR_OK ? 1 : 0;
 }
@@ -825,7 +825,7 @@ static int probe_send_worker_sync(ivr_worker_status_view_t *status,
 int main(int argc, char **argv) {
     const char *worker_id;
     const char *mode;
-    ivr_flowmq_gateway_config_t config;
+    ivr_control_gateway_config_t config;
     ivr_command_gateway_ops_t ops;
     ivr_worker_status_view_t status;
     uint64_t sync_sequence = 0u;
@@ -904,8 +904,8 @@ int main(int argc, char **argv) {
     config.timeout_ms = 5000;
     config.on_reply = on_reply;
     config.on_connection = probe_connection_changed;
-    if (ivr_flowmq_gateway_create(&config, &ops, &g_gateway) != IVR_OK ||
-        ivr_flowmq_gateway_start(g_gateway) != IVR_OK) {
+    if (ivr_control_gateway_create(&config, &ops, &g_gateway) != IVR_OK ||
+        ivr_control_gateway_start(g_gateway) != IVR_OK) {
         return 1;
     }
     ivr_thread_sleep_ms(800);
@@ -918,8 +918,8 @@ int main(int argc, char **argv) {
     status.health_ready = 1;
     status.capabilities =
         probe_mode_uses_media_runtime()
-            ? "media-executor,flowmq,dispatch-v2,tts,asr,health.ready"
-            : "turboxml,flowmq,dispatch-v2,health.ready";
+            ? "media-executor,control_ws,dispatch-v2,tts,asr,health.ready"
+            : "turboxml,control_ws,dispatch-v2,health.ready";
     if (probe_send_worker_sync(&status, &sync_sequence) != 1) {
         return 1;
     }

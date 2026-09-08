@@ -48,6 +48,7 @@ typedef struct signaling_server_config_s {
     int http_auth_max_ttl_seconds;
     
     /* Limits */
+    int connection_capacity;
     int max_peers;
     int max_rooms;
     int peer_timeout_ms;
