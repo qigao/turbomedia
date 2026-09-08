@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://turbonet.example/schemas/webrtc-acceptance/hook-receipt-v1.json",
+  "title": "TurboMedia topology hook receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "hook_id", "topology_id", "action", "generation", "sequence", "started_at", "finished_at", "observed_at", "status", "effective", "evidence_id"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "hook_id": { "type": "string", "minLength": 1 },
+    "topology_id": { "type": "string", "minLength": 1 },
+    "action": { "enum": ["setup", "transition", "teardown", "probe"] },
+    "generation": { "type": "integer", "minimum": 0 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "started_at": { "type": "string", "minLength": 1 },
+    "finished_at": { "type": "string", "minLength": 1 },
+    "observed_at": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "minLength": 1 },
+    "effective": { "type": "boolean" },
+    "evidence_id": { "type": "string", "minLength": 1 }
+  }
+}

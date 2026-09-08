@@ -76,6 +76,10 @@ Thumbs.db
 .agent
 .worktrees/
 
+# WebRTC public-browser acceptance runtime output
+/webrtc/acceptance/node_modules/
+/artifacts/webrtc-acceptance/
+
 # Security - Entire projects directory (contains generated keys, licenses, and project-specific configs)
 # NEVER commit this directory - it contains:
 # - RSA private/public keys (private_key.rsa, public_key.rsa)
