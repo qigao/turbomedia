@@ -16,6 +16,9 @@ const OUTPUTS = Object.freeze([
   Object.freeze({ name: 'summary.md', render: renderMarkdown }),
   Object.freeze({ name: 'junit.xml', render: renderJunit }),
 ]);
+const PUBLICATION_LOCK = '.report-publish.lock';
+const COMPLETION_MARKER = '.report-complete.json';
+const MAX_CLEANUP_EVIDENCE = 8;
 const FINAL_REPORTS = new WeakSet();
 let contractValidator = null;
 
@@ -117,7 +120,8 @@ async function writeRunArtifacts(report, outputDirectory, redactor) {
       name: output.name,
       bytes: Buffer.from(output.render(redactedReport), 'utf8'),
     }));
-  } catch {
+  } catch (error) {
+    if (error instanceof ReportError) throw error;
     throw new ReportError('REPORT_RENDER_FAILED', 'a report format could not be rendered');
   }
   if (rendered.some((entry) => entry.bytes.includes(13))) {
@@ -315,15 +319,24 @@ function renderJunit(report) {
     lines.push('  </testcase>');
   }
   lines.push('</testsuite>');
-  return `${lines.join('\n')}\n`;
+  const xml = `${lines.join('\n')}\n`;
+  assertXml10Characters(xml);
+  return xml;
 }
 
 async function writeArtifactGroup(rendered, outputDirectory, outcome) {
   const staged = [];
   const published = [];
+  const lockPath = path.join(outputDirectory, PUBLICATION_LOCK);
+  const completionPath = path.join(outputDirectory, COMPLETION_MARKER);
+  let lockHandle = null;
+  let ownsLock = false;
   try {
     await fs.promises.mkdir(outputDirectory, { recursive: true });
-    await assertTargetsAbsent(rendered, outputDirectory);
+    lockHandle = await acquirePublicationLock(lockPath);
+    ownsLock = true;
+    await lockHandle.sync();
+    await assertTargetsAbsent([...rendered, { name: COMPLETION_MARKER }], outputDirectory);
     for (const artifact of rendered) {
       const temporaryPath = path.join(
         outputDirectory,
@@ -357,14 +370,85 @@ async function writeArtifactGroup(rendered, outputDirectory, outcome) {
       }
       finalInventory.push(entry);
     }
-    return deepFreeze({ outcome, artifacts: finalInventory });
+
+    const result = deepFreeze({ outcome, artifacts: finalInventory });
+    const completionBytes = Buffer.from(canonicalStringify({
+      schema_version: 1,
+      outcome,
+      artifacts: finalInventory,
+    }) + '\n', 'utf8');
+    await lockHandle.writeFile(completionBytes);
+    await lockHandle.sync();
+    await lockHandle.close();
+    lockHandle = null;
+    const actualCompletionBytes = await fs.promises.readFile(lockPath);
+    if (!actualCompletionBytes.equals(completionBytes)) {
+      throw new ReportError('ARTIFACT_HASH_MISMATCH', 'completion marker bytes differ from its artifact inventory');
+    }
+    await fs.promises.rename(lockPath, completionPath);
+    return result;
   } catch (error) {
-    await Promise.allSettled(published.map((fileName) => fs.promises.unlink(fileName)));
-    if (error instanceof ReportError) throw error;
-    throw new ReportError('ARTIFACT_WRITE_FAILED', 'report artifact group could not be committed atomically');
-  } finally {
-    await Promise.allSettled(staged.map((artifact) => fs.promises.unlink(artifact.temporaryPath)));
+    const primary = error instanceof ReportError
+      ? error
+      : new ReportError('ARTIFACT_WRITE_FAILED', 'report artifact group was not committed');
+    const cleanupEvidence = await cleanupIncompletePublication({
+      lockHandle,
+      lockPath,
+      ownsLock,
+      staged,
+      published,
+    });
+    primary.cleanup_evidence = deepFreeze(cleanupEvidence);
+    throw primary;
   }
+}
+
+async function acquirePublicationLock(lockPath) {
+  try {
+    return await fs.promises.open(lockPath, 'wx+', 0o600);
+  } catch (error) {
+    if (error && error.code === 'EEXIST') {
+      throw new ReportError('REPORT_PUBLICATION_BUSY', 'an existing publication marker owns or blocks this output directory');
+    }
+    throw new ReportError('ARTIFACT_WRITE_FAILED', 'the report publication marker could not be created');
+  }
+}
+
+async function cleanupIncompletePublication({ lockHandle, lockPath, ownsLock, staged, published }) {
+  const evidence = [];
+  if (lockHandle) {
+    try {
+      await lockHandle.close();
+    } catch (error) {
+      addCleanupEvidence(evidence, 'close', 'publication-lock', error);
+    }
+  }
+  for (const fileName of published) {
+    await cleanupPath(fileName, path.basename(fileName), evidence);
+  }
+  for (const artifact of staged) {
+    await cleanupPath(artifact.temporaryPath, `temporary:${artifact.name}`, evidence);
+  }
+  if (ownsLock) {
+    await cleanupPath(lockPath, 'publication-lock', evidence);
+  }
+  return evidence;
+}
+
+async function cleanupPath(fileName, artifact, evidence) {
+  try {
+    await fs.promises.unlink(fileName);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return;
+    addCleanupEvidence(evidence, 'unlink', artifact, error);
+  }
+}
+
+function addCleanupEvidence(evidence, operation, artifact, error) {
+  if (evidence.length >= MAX_CLEANUP_EVIDENCE) return;
+  const rawCode = error && typeof error.code === 'string' ? error.code : 'UNKNOWN';
+  const code = /^[A-Z0-9_]+$/.test(rawCode) ? rawCode.slice(0, 64) : 'UNKNOWN';
+  evidence.push({ operation, artifact, code });
 }
 
 async function assertTargetsAbsent(rendered, outputDirectory) {
@@ -467,22 +551,55 @@ function markdownCell(value) {
   return String(value)
     .replaceAll('\\', '\\\\')
     .replaceAll('|', '\\|')
-    .replaceAll('\n', '<br>');
+    .replaceAll('\t', '&#x9;')
+    .replaceAll('\n', '&#xA;')
+    .replaceAll('\r', '&#xD;');
 }
 
 function xmlAttributes(attributes) {
   return Object.entries(attributes)
-    .map(([name, value]) => `${name}="${xmlText(String(value))}"`)
+    .map(([name, value]) => `${name}="${xmlAttribute(String(value))}"`)
     .join(' ');
 }
 
+function xmlAttribute(value) {
+  const text = String(value);
+  assertXml10Characters(text);
+  return text.replace(/[&<>"'\t\n\r]/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&apos;',
+    '\t': '&#x9;',
+    '\n': '&#xA;',
+    '\r': '&#xD;',
+  })[character]);
+}
+
 function xmlText(value) {
-  return String(value)
+  const text = String(value);
+  assertXml10Characters(text);
+  return text
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&apos;');
+}
+
+function assertXml10Characters(value) {
+  for (let index = 0; index < value.length;) {
+    const codePoint = value.codePointAt(index);
+    const valid = codePoint === 0x9 || codePoint === 0xA || codePoint === 0xD ||
+      codePoint >= 0x20 && codePoint <= 0xD7FF ||
+      codePoint >= 0xE000 && codePoint <= 0xFFFD ||
+      codePoint >= 0x10000 && codePoint <= 0x10FFFF;
+    if (!valid) {
+      throw new ReportError('XML_CHARACTER_INVALID', 'JUnit data contains a character forbidden by XML 1.0');
+    }
+    index += codePoint > 0xFFFF ? 2 : 1;
+  }
 }
 
 function deepFreeze(value, seen = new Set()) {

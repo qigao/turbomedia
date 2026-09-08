@@ -20,6 +20,8 @@ const {
 const validator = createContractValidator(path.join(__dirname, '..', 'schemas'));
 const GOLDEN_DIRECTORY = path.join(__dirname, 'golden');
 const OUTPUT_FILES = Object.freeze(['run.json', 'summary.md', 'junit.xml']);
+const PUBLICATION_LOCK = '.report-publish.lock';
+const COMPLETION_MARKER = '.report-complete.json';
 const SECRET = 'turn:"secret +/?';
 
 function caseResult(overrides = {}) {
@@ -68,10 +70,10 @@ function caseResult(overrides = {}) {
   };
 }
 
-function completedReport() {
+function completedReport(runId = 'run-20260825-001') {
   const report = createRunReport(
     {
-      run_id: 'run-20260825-001',
+      run_id: runId,
       started_at: '2026-08-25T08:00:00Z',
       manifest_hash: 'b'.repeat(64),
     },
@@ -155,6 +157,10 @@ test('three formats match golden bytes, remain schema-valid, and agree on outcom
     assert.equal(firstInventory.artifacts[index].size_bytes, first[index].length);
     assert.equal(firstInventory.artifacts[index].sha256, crypto.createHash('sha256').update(first[index]).digest('hex'));
   }
+  assert.deepEqual(
+    JSON.parse(await fs.promises.readFile(path.join(firstDirectory, COMPLETION_MARKER), 'utf8')),
+    { schema_version: 1, outcome: 'FAIL', artifacts: firstInventory.artifacts }
+  );
 });
 
 test('one redactor removes raw JSON-escaped and URL-encoded secret variants before every format is written', async (t) => {
@@ -222,6 +228,123 @@ test('hash verification failure is ERROR and removes staged files before publica
   );
   assert.equal(corrupted, true);
   assert.deepEqual(await fs.promises.readdir(directory), []);
+});
+
+test('concurrent writers use one exclusive publication owner and never clobber the winner', async (t) => {
+  const directory = await temporaryDirectory(t, 'webrtc-report-concurrent-');
+  const realMkdir = fs.promises.mkdir.bind(fs.promises);
+  let arrivals = 0;
+  let releaseBoth;
+  const bothArrived = new Promise((resolve) => { releaseBoth = resolve; });
+  t.mock.method(fs.promises, 'mkdir', async (...arguments_) => {
+    const result = await realMkdir(...arguments_);
+    if (path.resolve(arguments_[0]) === path.resolve(directory)) {
+      arrivals += 1;
+      if (arrivals === 2) releaseBoth();
+      await bothArrived;
+    }
+    return result;
+  });
+
+  const results = await Promise.allSettled([
+    writeRunArtifacts(completedReport('run-concurrent-winner'), directory, createRedactor([SECRET])),
+    writeRunArtifacts(completedReport('run-concurrent-loser'), directory, createRedactor([SECRET])),
+  ]);
+
+  assert.equal(results.filter((entry) => entry.status === 'fulfilled').length, 1);
+  const rejected = results.find((entry) => entry.status === 'rejected');
+  assert.equal(rejected.reason.outcome, 'ERROR');
+  assert.equal(rejected.reason.code, 'REPORT_PUBLICATION_BUSY');
+  const canonical = JSON.parse(await fs.promises.readFile(path.join(directory, 'run.json'), 'utf8'));
+  assert.match(canonical.run_id, /^run-concurrent-(winner|loser)$/);
+  assert.equal(await fs.promises.readFile(path.join(directory, COMPLETION_MARKER), 'utf8').then(JSON.parse).then((value) => value.schema_version), 1);
+  assert.equal((await fs.promises.readdir(directory)).includes(PUBLICATION_LOCK), false);
+});
+
+test('a stale publication marker fails safe and is never stolen', async (t) => {
+  const directory = await temporaryDirectory(t, 'webrtc-report-stale-lock-');
+  const lockPath = path.join(directory, PUBLICATION_LOCK);
+  await fs.promises.writeFile(lockPath, 'stale-owner', 'utf8');
+
+  await assert.rejects(
+    writeRunArtifacts(completedReport(), directory, createRedactor([SECRET])),
+    (error) => error && error.outcome === 'ERROR' && error.code === 'REPORT_PUBLICATION_BUSY'
+  );
+  assert.equal(await fs.promises.readFile(lockPath, 'utf8'), 'stale-owner');
+  assert.deepEqual(await fs.promises.readdir(directory), [PUBLICATION_LOCK]);
+});
+
+test('rollback cleanup failure preserves primary error and leaves no completeness marker', async (t) => {
+  const directory = await temporaryDirectory(t, 'webrtc-report-cleanup-failure-');
+  const realRename = fs.promises.rename.bind(fs.promises);
+  const realUnlink = fs.promises.unlink.bind(fs.promises);
+  let renameCount = 0;
+  t.mock.method(fs.promises, 'rename', async (...arguments_) => {
+    renameCount += 1;
+    if (renameCount === 2) {
+      const error = new Error('injected rename failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return realRename(...arguments_);
+  });
+  t.mock.method(fs.promises, 'unlink', async (...arguments_) => {
+    if (path.basename(arguments_[0]) === 'run.json') {
+      const error = new Error('injected rollback failure');
+      error.code = 'EACCES';
+      throw error;
+    }
+    return realUnlink(...arguments_);
+  });
+
+  let failure;
+  try {
+    await writeRunArtifacts(completedReport(), directory, createRedactor([SECRET]));
+  } catch (error) {
+    failure = error;
+  }
+  assert.equal(failure.code, 'ARTIFACT_WRITE_FAILED');
+  assert.equal(failure.outcome, 'ERROR');
+  assert.deepEqual(failure.cleanup_evidence, [{
+    operation: 'unlink',
+    artifact: 'run.json',
+    code: 'EACCES',
+  }]);
+  const entries = await fs.promises.readdir(directory);
+  assert.deepEqual(entries, ['run.json']);
+  assert.equal(entries.includes(COMPLETION_MARKER), false);
+  assert.equal(entries.includes(PUBLICATION_LOCK), false);
+});
+
+test('JUnit rejects XML 1.0 forbidden control characters before publication', async (t) => {
+  const directory = await temporaryDirectory(t, 'webrtc-report-invalid-xml-');
+  const report = createRunReport(
+    { run_id: 'run-invalid-xml', started_at: '2026-08-25T08:00:00Z' },
+    { case_count: 1 },
+    { node_version: 'v22.18.0' }
+  );
+  addCaseResult(report, caseResult({ case_id: 'case-\u0000invalid' }));
+
+  await assert.rejects(
+    writeRunArtifacts(finalizeRunReport(report), directory, createRedactor([])),
+    (error) => error && error.outcome === 'ERROR' && error.code === 'XML_CHARACTER_INVALID'
+  );
+  assert.deepEqual(await fs.promises.readdir(directory), []);
+});
+
+test('JUnit preserves attribute TAB LF and CR with XML character references', async (t) => {
+  const directory = await temporaryDirectory(t, 'webrtc-report-xml-whitespace-');
+  const report = createRunReport(
+    { run_id: 'run-xml-whitespace', started_at: '2026-08-25T08:00:00Z' },
+    { case_count: 1 },
+    { node_version: 'v22.18.0' }
+  );
+  addCaseResult(report, caseResult({ case_id: 'case-\tline\nreturn\rfinish' }));
+
+  await writeRunArtifacts(finalizeRunReport(report), directory, createRedactor([]));
+  const xml = await fs.promises.readFile(path.join(directory, 'junit.xml'), 'utf8');
+  assert.match(xml, /name="case-&#x9;line&#xA;return&#xD;finish"/);
+  assert.equal(xml.includes('\r'), false);
 });
 
 test('a partial publish failure removes already-renamed reports and all unique temporary files', async (t) => {
