@@ -2,6 +2,9 @@
 
 const vm = require('node:vm');
 const http = require('node:http');
+const https = require('node:https');
+const fs = require('node:fs');
+const path = require('node:path');
 const { webcrypto, createHash } = require('node:crypto');
 const { Capabilities } = require('selenium-webdriver');
 const PAGE = '<!doctype html><title>acceptance fixture</title>';
@@ -89,7 +92,7 @@ async function startFakeGrid(options = {}) {
   const requests = [], sockets = new Set();
   const fake = fakeWebDriver();
   const drivers = new Map();
-  const server = http.createServer(async (req, res) => {
+  const handler = async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null;
@@ -112,10 +115,14 @@ async function startFakeGrid(options = {}) {
     }
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ value }));
-  });
+  };
+  const server = options.tls ? https.createServer({
+    key: fs.readFileSync(path.resolve(__dirname, '../../../tests/fixtures/tls/localhost-key.pem')),
+    cert: fs.readFileSync(path.resolve(__dirname, '../../../tests/fixtures/tls/localhost-cert.pem')),
+  }, handler) : http.createServer(handler);
   server.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { gridUrl: `http://127.0.0.1:${server.address().port}`, requests, drivers,
+  return { gridUrl: `${options.tls ? 'https' : 'http'}://127.0.0.1:${server.address().port}`, requests, drivers,
     close: async () => { for (const socket of sockets) socket.destroy(); await new Promise((resolve) => server.close(resolve)); } };
 }
 

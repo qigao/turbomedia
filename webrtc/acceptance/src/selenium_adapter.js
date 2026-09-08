@@ -10,6 +10,9 @@ const { createRedactor } = require('./redaction');
 const MAX_COMMAND_MS = 45_000;
 const MAX_INPUT_BYTES = 65_536;
 const MAX_RESULT_BYTES = 1_048_576;
+// Two pages may each report 512 fixed-enum cleanup failures plus local failures.
+// This separate budget is not reduced by the caller's sampling result cap.
+const MAX_CLEANUP_BYTES = 262_144;
 const MAX_STATS = 512;
 const MAX_DEPTH = 12;
 const MAX_NODES = 50_000;
@@ -36,6 +39,22 @@ const API_STATUSES = ['post_status', 'trickle_status', 'restart_status', 'stale_
 const PAGE_CLEANUP_CODES = new Set(['OPERATION_TIMEOUT', 'OPERATION_CANCELLED', 'EXTERNAL_OPERATION_FAILED',
   'HTTP_BODY_LIMIT', 'HTTP_INVALID_ETAG', 'HTTP_INVALID_LOCATION', 'HTTP_UNEXPECTED_STATUS', 'HTTP_INVALID_CONTENT_TYPE', 'HTTP_INVALID_BODY']);
 const PAGE_CLEANUP_OPERATIONS = new Set(['delete', 'closePeer', 'stopTrack', 'stopAudio', 'detachVideo', 'closeAudio']);
+// These are Task 8's fixed error codes, not arbitrary browser diagnostics.
+// Categories describe evidence for the controller; they do not decide outcome.
+const PAGE_FAILURE_CATEGORIES = Object.freeze({
+  HTTP_BODY_LIMIT: 'assertion', HTTP_INVALID_ETAG: 'assertion', HTTP_INVALID_LOCATION: 'assertion',
+  HTTP_UNEXPECTED_STATUS: 'assertion', HTTP_INVALID_CONTENT_TYPE: 'assertion', HTTP_INVALID_BODY: 'assertion',
+  HTTP_UNEXPECTED_ETAG: 'assertion', HTTP_UNCHANGED_ETAG: 'assertion', INVALID_RESTART_FRAGMENT: 'assertion',
+  UNCHANGED_REMOTE_ICE: 'assertion', UNCHANGED_LOCAL_ICE: 'assertion', INVALID_RESTART_MEDIA: 'assertion',
+  INVALID_SDP: 'assertion', INVALID_MEDIA_ORDER: 'assertion', UNEXPECTED_REMOTE_TRACK: 'assertion',
+  CRYPTO_UNAVAILABLE: 'missing_evidence', FRAME_EVIDENCE_UNAVAILABLE: 'missing_evidence',
+  CANVAS_UNAVAILABLE: 'missing_evidence', AUDIO_NOT_RUNNING: 'missing_evidence',
+  UNSUPPORTED_ICE_TRANSPORTS: 'missing_evidence',
+  INVALID_CONFIGURATION: 'harness', INVALID_PHASE: 'harness', SNAPSHOT_BUSY: 'harness', OPERATION_BUSY: 'harness',
+  OPERATION_CANCELLED: 'harness', OPERATION_TIMEOUT: 'harness', EXTERNAL_OPERATION_FAILED: 'harness',
+  INVALID_GENERATION: 'harness', GENERATION_LIMIT: 'harness', STATS_LIMIT: 'harness', INVALID_SYNTHETIC_MEDIA: 'harness',
+});
+const PAGE_FAILURE_OPERATIONS = new Set([...METHODS, ...PAGE_CLEANUP_OPERATIONS, 'trickle', 'staleEtag', 'track']);
 const trustedErrors = new WeakSet();
 
 function failure(code, operation, category = 'harness') {
@@ -140,7 +159,18 @@ function browserCommand(settings, operation, argument, done, copy) {
     }
     let value;
     try { value = await api[operation](argument); }
-    catch { return finish('BROWSER_PAGE_OPERATION_FAILED'); }
+    catch (error) {
+      const ownText = (key) => {
+        if (!error || (typeof error !== 'object' && typeof error !== 'function')) return undefined;
+        const field = Object.getOwnPropertyDescriptor(error, key);
+        return field && Object.hasOwn(field, 'value') && typeof field.value === 'string' ? field.value : undefined;
+      };
+      const code = ownText('code'), stage = ownText('operation');
+      if (settings.failureCodes.includes(code) && settings.failureOperations.includes(stage)) {
+        return done({ ok: false, code, operation: stage });
+      }
+      return finish('BROWSER_PAGE_OPERATION_FAILED');
+    }
     try { done({ ok: true, value: copy(value, settings.limits) }); }
     catch { finish('BROWSER_PAGE_RESULT_INVALID'); }
   })().catch(() => finish('BROWSER_PAGE_RESULT_INVALID'));
@@ -161,7 +191,9 @@ function safeUrl(value, loopback, operation) {
 }
 
 function commandAgent(grid, entry) {
-  const agent = grid.protocol === 'https:' ? new https.Agent({ keepAlive: false }) : new http.Agent({ keepAlive: false });
+  // Certificate verification is an adapter invariant, including diagnostics;
+  // an unrelated NODE_TLS_REJECT_UNAUTHORIZED setting cannot weaken it.
+  const agent = grid.protocol === 'https:' ? new https.Agent({ keepAlive: false, rejectUnauthorized: true }) : new http.Agent({ keepAlive: false });
   const addRequest = agent.addRequest.bind(agent);
   agent.addRequest = (request, options) => {
     const controller = entry.commandController;
@@ -335,7 +367,8 @@ function createSeleniumAdapter(options = {}) {
   const roles = new Map(), secrets = new Set();
   let secretBytes = 0, closed = false, closePromise = null, expectedBrowser = null;
   let redact = createRedactor([]);
-  const settings = { url: pageUrl, methods: METHODS, timeout, limits };
+  const settings = { url: pageUrl, methods: METHODS, timeout, limits,
+    failureCodes: Object.keys(PAGE_FAILURE_CATEGORIES), failureOperations: [...PAGE_FAILURE_OPERATIONS] };
 
   function roleEntry(role, available = true) {
     if (!ROLES.includes(role)) fail('BROWSER_ROLE_INVALID', 'role');
@@ -399,10 +432,14 @@ function createSeleniumAdapter(options = {}) {
     }
   }
   async function page(entry, operation, argument, signal) {
-    const raw = await command(entry, operation, () => entry.driver.executeAsyncScript(SCRIPT, settings, operation, argument ?? null), signal);
-    const envelope = copy(raw, 'result');
-    if (!exact(envelope, ['ok', 'value', 'code']) || typeof envelope.ok !== 'boolean') fail('BROWSER_PAGE_RESULT_INVALID', operation);
+    const pageSettings = operation === 'close' ? { ...settings, limits: { ...limits, bytes: MAX_CLEANUP_BYTES } } : settings;
+    const raw = await command(entry, operation, () => entry.driver.executeAsyncScript(SCRIPT, pageSettings, operation, argument ?? null), signal);
+    const envelope = copy(raw, 'result', pageSettings.limits.bytes);
+    if (!exact(envelope, ['ok', 'value', 'code', 'operation']) || typeof envelope.ok !== 'boolean') fail('BROWSER_PAGE_RESULT_INVALID', operation);
     if (!envelope.ok) {
+      if (typeof envelope.code === 'string' && Object.hasOwn(PAGE_FAILURE_CATEGORIES, envelope.code) && PAGE_FAILURE_OPERATIONS.has(envelope.operation)) {
+        fail(envelope.code, envelope.operation, PAGE_FAILURE_CATEGORIES[envelope.code]);
+      }
       const code = PAGE_ERROR_CODES.has(envelope.code) ? envelope.code : 'BROWSER_PAGE_RESULT_INVALID';
       fail(code, operation);
     }
@@ -502,9 +539,13 @@ function createSeleniumAdapter(options = {}) {
         code: trustedErrors.has(error) ? error.code : 'BROWSER_GRID_COMMAND_FAILED' });
     }
   }
-  function receipt(entry) { return safeResult({ cleanup_failures: entry.failures }); }
+  // Only fixed role/operation/code enums enter the accumulator. Unlike page
+  // evidence it contains no external text and needs no credential redactor.
+  function receipt(entries) {
+    return copy({ cleanup_failures: entries.flatMap((entry) => entry.failures) }, 'cleanup_result', MAX_CLEANUP_BYTES);
+  }
   async function closeEntry(entry, signal) {
-    if (entry.closePromise) { await entry.closePromise; return receipt(entry); }
+    if (entry.closePromise) return entry.closePromise;
     entry.phase = 'closed';
     entry.commandController?.abort(failure('BROWSER_COMMAND_ABORTED', 'close'));
     entry.closePromise = (async () => {
@@ -522,7 +563,6 @@ function createSeleniumAdapter(options = {}) {
       entry.agent?.destroy();
     })();
     await entry.closePromise;
-    return receipt(entry);
   }
 
   return Object.freeze({
@@ -537,7 +577,7 @@ function createSeleniumAdapter(options = {}) {
       if (entry.busy) fail('BROWSER_ROLE_BUSY', operation);
       const input = argument === undefined ? undefined : copy(argument, 'input', inputBytes);
       if (!['configure', 'restartIce'].includes(operation) && input !== undefined) fail('BROWSER_INPUT_INVALID', operation);
-      if (operation === 'close') return closeEntry(entry, signal);
+      if (operation === 'close') { await closeEntry(entry, signal); return receipt([entry]); }
       remember(input);
       return exclusive(entry, operation, async () => {
         const value = await page(entry, operation, input, signal);
@@ -559,19 +599,21 @@ function createSeleniumAdapter(options = {}) {
         const empty = { role, phase: 'closed', failures: [] };
         roles.set(role, empty);
         empty.closePromise = Promise.resolve();
-        return receipt(empty);
+        return receipt([empty]);
       }
-      return closeEntry(entry, signal);
+      await closeEntry(entry, signal);
+      return receipt([entry]);
     },
     async closeAll(signal) {
       if (!closePromise) {
         closed = true;
         closePromise = (async () => {
-          for (const entry of [...roles.values()].reverse()) await closeEntry(entry, signal);
+          // Complete every resource release before any receipt construction.
+          for (const entry of [...roles.values()].reverse()) await attempt(entry, 'close_role', () => closeEntry(entry, signal));
         })();
       }
       await closePromise;
-      return safeResult({ cleanup_failures: [...roles.values()].reverse().flatMap((entry) => entry.failures) });
+      return receipt([...roles.values()].reverse());
     },
   });
 }

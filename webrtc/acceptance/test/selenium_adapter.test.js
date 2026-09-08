@@ -363,3 +363,109 @@ test('cleanup preserves known page failure codes and stages while replacing untr
     { role: 'publisher', code: 'OPERATION_TIMEOUT', operation: 'delete' },
     { role: 'publisher', code: 'BROWSER_PAGE_CLEANUP_FAILED', operation: 'page_cleanup' } ]);
 });
+
+test('actual HTTPS Grid always rejects an untrusted certificate despite the Node TLS environment override', async (t) => {
+  const original = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  t.after(() => {
+    if (original === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = original;
+  });
+  const grid = await startFakeGrid({ tls: true });
+  t.after(() => grid.close());
+  for (const value of ['1', '0']) {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = value;
+    const adapter = factory()({ source, gridUrl: grid.gridUrl, profile: 'diagnostic', commandTimeoutMs: 250 });
+    t.after(() => adapter.closeAll());
+    await assert.rejects(adapter.preflightBrowser(context), { code: 'BROWSER_GRID_COMMAND_FAILED' });
+    assert.equal(grid.requests.length, 0);
+    await adapter.closeAll();
+  }
+});
+
+test('cleanup projection exceeding the sample budget never strands the other session', async (t) => {
+  const cleanupErrors = Array.from({ length: 6 }, () => ({ code: 'OPERATION_TIMEOUT', operation: 'delete' }));
+  const { adapter, fake } = setup(t, { sessions: [{}, { methods: { close: () => ({ phase: 'closed', cleanup_errors: cleanupErrors }) } }] },
+    { maxResultBytes: 400 });
+  await adapter.openPublisher(context); await adapter.openViewer(context);
+  let receipt, error;
+  try { receipt = await adapter.closeAll(); } catch (failure) { error = failure; }
+  assert.deepEqual(fake.events.filter((event) => event[1] === 'quit'), [[1, 'quit'], [0, 'quit']]);
+  assert.equal(error, undefined);
+  assert.equal(receipt.cleanup_failures.length, 6);
+  assert.ok(Buffer.byteLength(JSON.stringify(receipt)) > 400);
+  assert.deepEqual(await adapter.closeAll(), receipt);
+  assert.deepEqual(await adapter.closeRole('viewer'), { cleanup_failures: receipt.cleanup_failures });
+});
+
+test('page close result validation failure still quits both sessions and stays idempotent', async (t) => {
+  const { adapter, fake } = setup(t, { sessions: [{ quit: () => { throw Error(secret); } },
+    { methods: { close: () => ({ phase: 'closed', cleanup_errors: Array.from({ length: 513 }, () => ({ code: 'OPERATION_TIMEOUT', operation: 'delete' })) }) } }] });
+  await adapter.openPublisher(context); await adapter.openViewer(context);
+  const receipt = await adapter.closeAll();
+  assert.deepEqual(fake.events.filter((event) => event[1] === 'quit'), [[1, 'quit'], [0, 'quit']]);
+  assert.deepEqual(receipt.cleanup_failures.map((entry) => entry.code), ['BROWSER_PAGE_RESULT_INVALID', 'BROWSER_GRID_COMMAND_FAILED']);
+  assert.deepEqual(await adapter.closeAll(), receipt);
+});
+
+test('dedicated cleanup budget preserves the maximum admitted errors from both pages', async (t) => {
+  const errors = Array.from({ length: 512 }, () => ({ code: 'EXTERNAL_OPERATION_FAILED', operation: 'closeAudio' }));
+  const { adapter, fake } = setup(t, { methods: { close: () => ({ phase: 'closed', cleanup_errors: errors }) },
+    quit: () => { throw Error(secret); } });
+  await adapter.openPublisher(context); await adapter.openViewer(context);
+  const receipt = await adapter.closeAll();
+  assert.equal(receipt.cleanup_failures.length, 1026);
+  assert.deepEqual(fake.events.filter((event) => event[1] === 'quit'), [[1, 'quit'], [0, 'quit']]);
+  assert.deepEqual(await adapter.closeAll(), receipt);
+});
+
+for (const [code, operation, category] of [
+  ['HTTP_UNCHANGED_ETAG', 'restartIce', 'assertion'],
+  ['INVALID_RESTART_FRAGMENT', 'restartIce', 'assertion'],
+  ['HTTP_UNEXPECTED_STATUS', 'staleEtag', 'assertion'],
+  ['CRYPTO_UNAVAILABLE', 'restartIce', 'missing_evidence'],
+  ['INVALID_PHASE', 'restartIce', 'harness'],
+]) test(`page failure ${code} preserves only its classified code and operation`, async (t) => {
+  let reads = 0;
+  const failure = { code, operation };
+  for (const key of ['message', 'cause', 'stack', 'payload']) {
+    Object.defineProperty(failure, key, { get() { reads++; throw Error('UNKNOWN-browser-secret'); } });
+  }
+  const { adapter } = setup(t, { methods: { restartIce: () => { throw failure; } } });
+  await adapter.openPublisher(context);
+  await assert.rejects(adapter.execute('publisher', 'restartIce', { generation: 2 }), (error) => {
+    assert.equal(error.code, code); assert.equal(error.operation, operation); assert.equal(error.category, category);
+    assert.equal(Object.hasOwn(error, 'outcome'), false);
+    assert.ok(!JSON.stringify(error).includes('UNKNOWN-browser-secret'));
+    return true;
+  });
+  assert.equal(reads, 0);
+});
+
+test('unknown or accessor page error metadata never reaches the Grid callback or diagnostics', async (t) => {
+  let reads = 0;
+  const getter = { get() { reads++; return 'UNKNOWN-browser-secret'; } };
+  const failures = [
+    { code: 'UNKNOWN-browser-secret', operation: 'restartIce', message: 'UNKNOWN-browser-secret' },
+    { code: 'HTTP_UNCHANGED_ETAG', operation: 'UNKNOWN-browser-secret' },
+    Object.defineProperty({ operation: 'restartIce' }, 'code', getter),
+    Object.defineProperty({ code: 'HTTP_UNCHANGED_ETAG' }, 'operation', getter),
+    Object.create({ code: 'HTTP_UNCHANGED_ETAG', operation: 'restartIce' }),
+  ];
+  for (const failure of failures) {
+    const { adapter } = setup(t, { methods: { restartIce: () => { throw failure; } } });
+    await adapter.openPublisher(context);
+    await assert.rejects(adapter.execute('publisher', 'restartIce', { generation: 2 }), (error) => {
+      assert.equal(error.code, 'BROWSER_PAGE_OPERATION_FAILED');
+      assert.equal(error.category, 'harness');
+      assert.ok(!JSON.stringify(error).includes('UNKNOWN-browser-secret')); return true;
+    });
+  }
+  assert.equal(reads, 0);
+});
+
+test('malformed Grid error code data cannot trigger coercion outside the structured error boundary', async (t) => {
+  const { adapter, fake } = setup(t);
+  await adapter.openPublisher(context);
+  fake.drivers[0].executeAsyncScript = async () => ({ ok: false, code: { toString: 'UNKNOWN-browser-secret' }, operation: 'restartIce' });
+  await assert.rejects(adapter.execute('publisher', 'restartIce', { generation: 2 }), { code: 'BROWSER_PAGE_RESULT_INVALID' });
+});
