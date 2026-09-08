@@ -16,6 +16,9 @@
   const SECOND_MS = 1_000;
   const AUDIO_HZ = 440;
   const CRLF = '\r\n';
+  const ICE_HASH_DOMAIN = 'turbo-acceptance-ice-v1';
+  const HEX_RADIX = 16;
+  const HEX_BYTE_WIDTH = 2;
   const STATS_FIELDS = new Set(['id', 'type', 'timestamp', 'kind', 'mediaType', 'transportId', 'codecId',
     'ssrc', 'mid', 'trackIdentifier', 'selectedCandidatePairId', 'localCandidateId', 'remoteCandidateId',
     'state', 'nominated', 'selected', 'candidateType', 'protocol', 'relayProtocol', 'address', 'ip', 'port',
@@ -52,7 +55,9 @@
   let pc = null, audio = null, oscillator = null, destination = null, canvas = null;
   let drawTimer = null, frameHandle = null, video = null, remoteStream = null;
   let resource = null, etag = null, localIce = null, remoteAnswer = null;
+  let iceEvidence = null;
   let operationController = null, snapshotController = null, closePromise = null;
+  let terminal = false;
   let callbackFailure = null;
   const ownedTracks = new Set();
   const remoteTracks = new Map();
@@ -242,6 +247,19 @@
     return parsed;
   }
   function rtcConfiguration(turn) { return { iceServers: [turn], iceTransportPolicy: 'relay', bundlePolicy: 'max-bundle' }; }
+  async function fingerprints(context, local, remote) {
+    const digest = async (side, pair) => {
+      const input = new TextEncoder().encode(JSON.stringify([ICE_HASH_DOMAIN, generation, role, side, pair.ufrag, pair.pwd]));
+      try {
+        const hash = await context.wait(crypto.subtle.digest('SHA-256', input));
+        return Array.from(new Uint8Array(hash), (byte) => byte.toString(HEX_RADIX).padStart(HEX_BYTE_WIDTH, '0')).join('');
+      } finally { input.fill(0); }
+    };
+    const localHash = await digest('local', local);
+    const remoteHash = await digest('remote', remote);
+    context.check();
+    return { generation, local_sha256: localHash, remote_sha256: remoteHash };
+  }
   async function gather(context) {
     if (pc.iceGatheringState === 'complete') return;
     const connection = pc;
@@ -303,12 +321,20 @@
   }
   async function mutate(name, initial, next, work) {
     if (phase !== initial || operationController) fail('INVALID_PHASE', name);
+    if (snapshotController) fail('SNAPSHOT_BUSY', name);
     phase = next;
     const controller = new AbortController(); operationController = controller;
+    const checkOwner = (expectedPhase) => {
+      if (terminal || operationController !== controller || phase !== expectedPhase) fail('OPERATION_CANCELLED', name);
+    };
     try {
       await scoped(configuration.limits.operation_timeout_ms, null, name, work, controller);
+      checkOwner(next);
       if (callbackFailure) throw callbackFailure;
-      phase = 'active'; return await snapshot();
+      phase = 'active';
+      const result = await collectSnapshot();
+      checkOwner('active');
+      return result;
     } catch (error) {
       if (phase !== 'closing' && phase !== 'closed') phase = 'failed';
       throw sanitized(error, name);
@@ -317,6 +343,7 @@
   function start(requestedRole) {
     const name = requestedRole === 'publisher' ? 'startPublisher' : 'startViewer';
     return mutate(name, 'configured', 'starting', async (context) => {
+      if (typeof crypto === 'undefined' || typeof crypto.subtle?.digest !== 'function') fail('CRYPTO_UNAVAILABLE', name);
       role = requestedRole; generation = 1; pc = new RTCPeerConnection(rtcConfiguration(configuration.turn));
       if (role === 'publisher') await synthetic(context); else observeViewer();
       const offer = await context.wait(pc.createOffer());
@@ -331,15 +358,18 @@
       description(post.body, name);
       await context.wait(pc.setRemoteDescription({ type: 'answer', sdp: post.body }));
       remoteAnswer = post.body; evidence.remote_answer_applied = true;
-      if (video) await context.wait(video.play());
       await gather(context);
       const local = verifyOffer(pc.localDescription.sdp, name).fragment;
       localIce = { ufrag: local.ufrag, pwd: local.pwd };
+      const nextIce = await context.wait(fingerprints(context, localIce, description(remoteAnswer, name).fragment));
       local.media.forEach((media) => { media.endOfCandidates = true; });
       const patch = await request({ operation: 'trickle', method: 'PATCH', url: resource,
         body: buildSdpfrag(local), type: FRAGMENT_TYPE, etag, status: 204, requireEtag: true }, context);
       if (patch.etag !== etag) fail('HTTP_UNEXPECTED_ETAG', 'trickle');
       evidence.trickle_status = patch.status;
+      // Playback can depend on ICE/media; deliver the candidates before awaiting it.
+      if (video) await context.wait(video.play());
+      iceEvidence = nextIce;
     });
   }
   const startPublisher = () => start('publisher');
@@ -402,10 +432,16 @@
       const stale = await request({ operation: 'staleEtag', method: 'PATCH', url: resource, body,
         type: FRAGMENT_TYPE, etag: previousEtag, status: 412 }, context);
       evidence.stale_etag_status = stale.status;
+      iceEvidence = await context.wait(fingerprints(context, localIce, description(remoteAnswer, 'restartIce').fragment));
     });
   }
 
   async function snapshot() {
+    if (operationController) fail('OPERATION_BUSY', 'snapshot');
+    return collectSnapshot();
+  }
+
+  async function collectSnapshot() {
     if (snapshotController) fail('SNAPSHOT_BUSY', 'snapshot');
     if (callbackFailure) throw callbackFailure;
     const controller = new AbortController(); snapshotController = controller;
@@ -427,6 +463,7 @@
           stats.push(normalized);
         }
         return { schema_version: 1, phase, role, generation, timestamp_ms: performance.now(),
+          ice: iceEvidence === null ? null : { ...iceEvidence },
           connection_state: pc?.connectionState ?? null, ice_connection_state: pc?.iceConnectionState ?? null,
           signaling_state: pc?.signalingState ?? null, stats,
           api: { ...evidence, local_media_order: [...evidence.local_media_order],
@@ -442,6 +479,7 @@
 
   function close() {
     if (closePromise) return closePromise;
+    terminal = true;
     phase = 'closing';
     operationController?.abort(new BrowserAcceptanceError('OPERATION_CANCELLED', 'close'));
     snapshotController?.abort(new BrowserAcceptanceError('OPERATION_CANCELLED', 'close'));
@@ -470,7 +508,7 @@
       } finally {
         pc = null; audio = null; oscillator = null; destination = null; canvas = null; video = null; remoteStream = null;
         ownedTracks.clear(); remoteTracks.clear(); configuration = null; resource = null; etag = null;
-        localIce = null; remoteAnswer = null; secrets.clear(); callbackFailure = null; phase = 'closed';
+        localIce = null; remoteAnswer = null; iceEvidence = null; secrets.clear(); callbackFailure = null; phase = 'closed';
       }
       return { phase, cleanup_errors: cleanupErrors.map((error) => ({ ...error })) };
     })();

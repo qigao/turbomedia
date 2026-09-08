@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { webcrypto, createHash } = require('node:crypto');
 const test = require('node:test');
 const keys = ['configure', 'startPublisher', 'startViewer', 'restartIce', 'snapshot', 'close'];
 const secret = 'SECRET-never-export';
@@ -57,13 +58,14 @@ function page(options = {}) {
       if (options.remoteTracks) for (const kind of ['audio', 'video']) this.ontrack?.({ track: track(kind), streams: [] }); }
     setConfiguration(value) { this.configuration = value; }
     async getStats() { if (options.statsHang) return new Promise(() => {});
+      if (options.getStats) return options.getStats();
       return new Map((options.stats || []).map((value) => [value.id, value])); }
     close() { this.connectionState = 'closed'; this.iceConnectionState = 'closed'; this.signalingState = 'closed'; }
   }
   const canvas = { width: 0, height: 0, getContext: () => ({ fillRect() {}, fillText() {}, fillStyle: '' }),
     captureStream: () => new Stream([track('video')]) };
   const video = { srcObject: null, currentTime: 0, videoWidth: 0, videoHeight: 0,
-    async play() {}, pause() {}, requestVideoFrameCallback(fn) { this.frameCallback = fn; return 1; },
+    async play() { await options.play?.(); }, pause() {}, requestVideoFrameCallback(fn) { this.frameCallback = fn; return 1; },
     cancelVideoFrameCallback() { this.frameCallback = null; } };
   class AudioContext {
     constructor() { this.state = 'suspended'; contexts.push(this); }
@@ -72,7 +74,8 @@ function page(options = {}) {
     async resume() { this.state = 'running'; }
     async close() { this.state = 'closed'; }
   }
-  const sandbox = { window: {}, URL, TextEncoder, TextDecoder, AbortController, Event, EventTarget,
+  const sandbox = { window: {}, URL, TextEncoder, TextDecoder, crypto: options.crypto ?? webcrypto,
+    AbortController: options.AbortController ?? AbortController, Event, EventTarget,
     performance, MediaStream: Stream, RTCPeerConnection: Peer, AudioContext,
     setTimeout, clearTimeout, setInterval(fn, ms) { const id = setInterval(fn, ms); timers.add(id); return id; },
     clearInterval(id) { clearInterval(id); timers.delete(id); },
@@ -109,6 +112,25 @@ test('page exposes exactly six frozen methods and never persists configuration s
   assert.equal((await p.api.snapshot()).phase, 'closed');
   const source = fs.readFileSync(path.join(__dirname, '../web/client.js'), 'utf8');
   assert.doesNotMatch(source, /localStorage|sessionStorage|URLSearchParams|console\.|innerHTML/);
+});
+
+test('viewer delivers trickle before awaiting playback that depends on remote ICE candidates', async () => {
+  const calls = [];
+  const delivered = Promise.withResolvers();
+  const p = page({
+    play: async () => { calls.push('play'); await delivered.promise; },
+    fetch: (url, init) => {
+      calls.push(init.method);
+      if (init.method === 'POST') return response(201, sdp(9, 'sendonly'), {
+        'Content-Type': 'application/sdp', Location: `${new URL(url).pathname}/sessions/x`, ETag: '"1"' });
+      if (init.method === 'PATCH') { delivered.resolve(); return response(204, null, { ETag: '"1"' }); }
+      return response(204);
+    },
+  });
+  p.api.configure(config());
+  const started = await p.api.startViewer();
+  assert.deepEqual(calls, ['POST', 'PATCH', 'play']);
+  assert.equal(started.phase, 'active'); await p.api.close();
 });
 
 test('configuration rejects endpoint/query/unknown/policy errors before allocating resources', async () => {
@@ -308,4 +330,127 @@ test('restart rejects an unbundled answer before it can rewrite independent ICE 
       'Content-Type': 'application/sdp', Location: `${new URL(url).pathname}/sessions/x`, ETag: '"1"' }) });
   p.api.configure(config()); await assert.rejects(p.api.startViewer(), { code: 'UNSUPPORTED_ICE_TRANSPORTS' });
   await p.api.close();
+});
+
+test('close stays terminal across microtasks between PATCH completion and mutation receipt', async () => {
+  const MAX_MICROTASK_GAP = 12;
+  for (let gap = 0; gap <= MAX_MICROTASK_GAP; gap++) {
+    let closePromise, settled = false, closeBeforeSettlement = false;
+    const calls = [];
+    const closeScheduled = Promise.withResolvers();
+    const p = page({
+      getStats: () => { calls.push('stats'); return new Map(); },
+      fetch: (url, init) => {
+        calls.push(init.method);
+        if (init.method === 'POST') return response(201, sdp(9, 'recvonly'), {
+          'Content-Type': 'application/sdp', Location: `${new URL(url).pathname}/sessions/x`, ETag: '"1"' });
+        if (init.method === 'PATCH') {
+          init.signal.addEventListener('abort', () => {
+            let scheduled = Promise.resolve();
+            for (let i = 0; i < gap; i++) scheduled = scheduled.then(() => {});
+            scheduled.then(() => {
+              closeBeforeSettlement = !settled; calls.push('close'); closePromise = p.api.close(); closeScheduled.resolve();
+            });
+          }, { once: true });
+          return response(204, null, { ETag: '"1"' });
+        }
+        return response(204);
+      },
+    });
+    p.api.configure(config());
+    const started = p.api.startPublisher().then((value) => { settled = true; return { value }; },
+      (error) => { settled = true; return { error }; });
+    await closeScheduled.promise;
+    const outcome = await started; await closePromise;
+    assert.equal((await p.api.snapshot()).phase, 'closed', `gap ${gap}: ${calls}`);
+    // Once receipt sampling already completed, its promise may be resolved before
+    // the caller's .then observes it. Close cannot retroactively reject that receipt.
+    const sampledBeforeClose = calls.indexOf('stats') >= 0 && calls.indexOf('stats') < calls.indexOf('close');
+    if (closeBeforeSettlement && !sampledBeforeClose) {
+      assert.equal(outcome.error?.code, 'OPERATION_CANCELLED', `gap ${gap}: ${calls}`);
+    }
+    await assert.rejects(p.api.restartIce({ generation: 2 }), { code: 'INVALID_PHASE' });
+    assert.equal(p.requests.filter((request) => request.method === 'DELETE').length, 1);
+  }
+});
+
+test('operation-scope completion cannot restore active when close runs at its abort boundary', async () => {
+  let firstSignal, closing;
+  class ObservedAbortController extends AbortController {
+    constructor() {
+      super();
+      if (!firstSignal) {
+        firstSignal = this.signal;
+        firstSignal.addEventListener('abort', () => { closing = p.api.close(); }, { once: true });
+      }
+    }
+  }
+  const p = page({ AbortController: ObservedAbortController }); p.api.configure(config());
+  await assert.rejects(p.api.startPublisher(), { code: 'OPERATION_CANCELLED' });
+  await closing;
+  assert.equal((await p.api.snapshot()).phase, 'closed');
+  await assert.rejects(p.api.restartIce({ generation: 2 }), { code: 'INVALID_PHASE' });
+});
+
+test('pending public sampling rejects restart before generation or HTTP side effects', async () => {
+  const options = {}, p = page(options); p.api.configure(config()); await p.api.startPublisher();
+  const sampled = Promise.withResolvers(); options.getStats = () => sampled.promise;
+  const pending = p.api.snapshot();
+  const before = p.requests.length;
+  try {
+    await assert.rejects(p.api.restartIce({ generation: 2 }), { code: 'SNAPSHOT_BUSY' });
+    assert.equal(p.requests.length, before, 'no restart or stale-ETag PATCH after sampling conflict');
+  } finally { sampled.resolve(new Map()); }
+  const unchanged = await pending;
+  assert.equal(unchanged.generation, 1); assert.equal(unchanged.phase, 'active');
+  delete options.getStats;
+  const restarted = await p.api.restartIce({ generation: 2 });
+  assert.equal(restarted.phase, 'active'); assert.equal(restarted.api.stale_etag_status, 412);
+  await p.api.close();
+});
+
+test('public sampling cannot take the receipt sampler while restart is in flight', async () => {
+  const options = {}, p = page(options); p.api.configure(config()); await p.api.startPublisher();
+  const entered = Promise.withResolvers(), reply = Promise.withResolvers();
+  options.fetch = (_url, init) => {
+    if (init.method === 'DELETE') return response(204);
+    if (p.requests.filter((request) => request.method === 'PATCH').length === 3) return response(412, 'stale');
+    entered.resolve(); return reply.promise;
+  };
+  const pending = p.api.restartIce({ generation: 2 }); await entered.promise;
+  let result;
+  try { await assert.rejects(p.api.snapshot(), { code: 'OPERATION_BUSY' }); }
+  finally {
+    reply.resolve(response(200, restartFragment, { 'Content-Type': 'application/trickle-ice-sdpfrag', ETag: '"2"' }));
+    result = await pending;
+  }
+  assert.equal(result.phase, 'active'); await p.api.close();
+});
+
+test('ICE SHA-256 evidence binds applied credentials to role side and generation without exporting them', async () => {
+  const p = page(); p.api.configure(config());
+  assert.equal((await p.api.snapshot()).ice, null);
+  const first = await p.api.startPublisher();
+  const expected = createHash('sha256').update(
+    '["turbo-acceptance-ice-v1",1,"publisher","local","gen1","abcdefghijklmnopqrstuv1"]').digest('hex');
+  assert.equal(first.ice.generation, 1);
+  assert.equal(first.ice.local_sha256, expected);
+  assert.match(first.ice.remote_sha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(json((await p.api.snapshot()).ice), json(first.ice));
+  const second = await p.api.restartIce({ generation: 2 });
+  assert.equal(second.ice.generation, 2);
+  assert.notEqual(second.ice.local_sha256, first.ice.local_sha256);
+  assert.notEqual(second.ice.remote_sha256, first.ice.remote_sha256);
+  assert.doesNotMatch(JSON.stringify([first, second]), /gen1|gen2|gen9|remote2|abcdefghijkl|SECRET|ice-ufrag|ice-pwd/);
+  await p.api.close(); assert.equal((await p.api.snapshot()).ice, null);
+});
+
+test('missing or hung Web Crypto fails explicitly without fingerprint fallback', async () => {
+  const missing = page({ crypto: {} }); missing.api.configure(config());
+  await assert.rejects(missing.api.startPublisher(), { code: 'CRYPTO_UNAVAILABLE' });
+  assert.equal(missing.requests.length, 0); assert.equal(missing.pcs.length, 0); await missing.api.close();
+  const stalled = page({ crypto: { subtle: { digest: () => new Promise(() => {}) } } });
+  stalled.api.configure(config());
+  await assert.rejects(stalled.api.startPublisher(), { code: 'OPERATION_TIMEOUT' });
+  await stalled.api.close();
 });
