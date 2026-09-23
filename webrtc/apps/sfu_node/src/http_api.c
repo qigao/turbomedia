@@ -58,7 +58,13 @@ enum {
     SFU_NODE_HTTP_TLS_IO_BUFFER_BYTES = 256 * 1024,
     SFU_NODE_HTTP_BUFFER_CAPACITY_BYTES = 16 * 1024 * 1024,
     SFU_NODE_HTTP_TIMEOUT_MS = 5000,
-    SFU_NODE_HTTP_POLL_SLICE_MS = 10
+    SFU_NODE_HTTP_POLL_SLICE_MS = 10,
+    SFU_NODE_REVOCATION_BODY_BYTES = 32 * 1024,
+    SFU_NODE_REVOCATION_DIGEST_BYTES = 64,
+    SFU_NODE_REVOCATION_MAX_CSV_BYTES =
+        TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS *
+            SFU_NODE_REVOCATION_DIGEST_BYTES +
+        TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS - 1
 };
 
 typedef struct Req {
@@ -232,6 +238,71 @@ static int json_uint32_field(const json_value_t *obj, const char *key,
     return 0;
 }
 
+static int json_object_has_exact_keys(
+    const json_value_t *object, const char *const *keys, size_t key_count) {
+    size_t index;
+    size_t expected;
+
+    if (!object || json_type(object) != JSON_OBJECT ||
+        json_object_size(object) != key_count) {
+        return 0;
+    }
+    for (index = 0U; index < key_count; ++index) {
+        const char *key = json_object_key(object, index);
+        int found = 0;
+        if (!key) {
+            return 0;
+        }
+        for (expected = 0U; expected < key_count; ++expected) {
+            if (strcmp(key, keys[expected]) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            return 0;
+        }
+    }
+    for (expected = 0U; expected < key_count; ++expected) {
+        if (!json_object_get(object, keys[expected])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int json_uint32_exact_field(
+    const json_value_t *object, const char *key, uint32_t *output) {
+    json_value_t *value;
+    double number;
+    uint32_t converted;
+
+    if (!object || !key || !output) {
+        return -1;
+    }
+    value = json_object_get(object, key);
+    if (!value || json_type(value) != JSON_NUMBER) {
+        return -1;
+    }
+    number = json_number(value);
+    if (number < 0.0 || number > 4294967295.0) {
+        return -1;
+    }
+    converted = (uint32_t)number;
+    if ((double)converted != number) {
+        return -1;
+    }
+    *output = converted;
+    return 0;
+}
+
+static int json_schema_v1(const json_value_t *object) {
+    uint32_t version = 0U;
+    return json_uint32_exact_field(
+               object, "schema_version", &version) == 0 &&
+           version == 1U;
+}
+
 static int json_uint32_array_field(const json_value_t *obj, const char *key,
                                    uint32_t **out_values, int *out_count) {
     json_value_t *array;
@@ -362,6 +433,30 @@ static const char *request_header(const Req *req, const char *name,
         value = get_headers(req, lowercase_name);
     }
     return value;
+}
+
+static int request_has_security_control_auth(
+    const Req *req, const sfu_node_app_config_t *config) {
+    const char *authorization;
+    turbo_media_auth_config_t auth;
+    turbo_media_auth_policy_t policy;
+
+    if (!req || !req->server || !config ||
+        !sfu_node_app_server_dynamic_revocation_enabled(req->server) ||
+        !config->use_tls || !config->auth_active_secret ||
+        config->auth_active_secret[0] == '\0') {
+        return 0;
+    }
+
+    authorization = request_header(
+        req, "Authorization", "authorization");
+    auth = signed_auth_config(req->server, config, 0);
+    memset(&policy, 0, sizeof(policy));
+    policy.audience = SFU_NODE_SECURITY_CONTROL_AUDIENCE;
+    policy.required_scope = SFU_NODE_SECURITY_REVOCATION_SCOPE;
+    return turbo_media_auth_authorize(
+               authorization, NULL, &auth, &policy) ==
+           TURBO_MEDIA_AUTH_SIGNED_TOKEN;
 }
 
 static int ascii_equal_ignore_case_n(const char *left, const char *right,
@@ -1015,10 +1110,27 @@ static void handle_ready(Req *req, Res *res) {
     }
 
     draining = sfu_node_app_server_is_draining(server);
+    if (sfu_node_app_server_dynamic_revocation_enabled(server)) {
+        int synchronized = 0;
+        uint64_t epoch = 0U;
+        uint64_t sequence = 0U;
+        size_t count = 0U;
+        if (sfu_node_app_server_get_revocation_status(
+                server, &synchronized, &epoch, &sequence, &count) != 0 ||
+            !synchronized) {
+            snprintf(
+                json, sizeof(json),
+                "{\"ok\":false,\"draining\":%s,"
+                "\"revocation_synchronized\":false}",
+                draining ? "true" : "false");
+            send_json(res, SERVICE_UNAVAILABLE, json);
+            return;
+        }
+    }
     snprintf(json, sizeof(json), "{\"ok\":%s,\"draining\":%s}",
              draining ? "false" : "true",
              draining ? "true" : "false");
-    send_json(res, draining ? 503 : 200, json);
+    send_json(res, draining ? SERVICE_UNAVAILABLE : OK, json);
 }
 
 static void handle_metrics(Req *req, Res *res) {
@@ -1838,6 +1950,200 @@ static void handle_command(Req *req, Res *res) {
     root = NULL;
 }
 
+static void send_revocation_result(
+    Res *res, sfu_node_app_server_t *server,
+    turbo_media_revocation_apply_result_t result) {
+    int synchronized = 0;
+    uint64_t epoch = 0U;
+    uint64_t sequence = 0U;
+    size_t count = 0U;
+    const char *name = "error";
+    unsigned int status = BAD_REQUEST;
+    char body[256];
+    int length;
+
+    if (result == TURBO_MEDIA_REVOCATION_APPLY_APPLIED) {
+        name = "applied";
+        status = OK;
+    } else if (result == TURBO_MEDIA_REVOCATION_APPLY_STALE) {
+        name = "stale";
+        status = OK;
+    } else if (result == TURBO_MEDIA_REVOCATION_APPLY_GAP) {
+        name = "gap";
+        status = CONFLICT;
+    } else if (result == TURBO_MEDIA_REVOCATION_APPLY_LIMIT) {
+        name = "limit";
+        status = CONFLICT;
+    }
+
+    if (sfu_node_app_server_get_revocation_status(
+            server, &synchronized, &epoch, &sequence, &count) != 0) {
+        send_text(res, INTERNAL_SERVER_ERROR,
+                  "Revocation status unavailable");
+        return;
+    }
+
+    length = snprintf(
+        body, sizeof(body),
+        "{\"schema_version\":1,\"result\":\"%s\","
+        "\"synchronized\":%s,\"epoch\":%" PRIu64 ","
+        "\"sequence\":%" PRIu64 ",\"count\":%zu}",
+        name, synchronized ? "true" : "false",
+        epoch, sequence, count);
+    if (length < 0 || (size_t)length >= sizeof(body)) {
+        send_text(res, INTERNAL_SERVER_ERROR, "Internal Error");
+        return;
+    }
+    reply(res, status, "application/json", body, (size_t)length);
+}
+
+static void handle_revocation_snapshot(Req *req, Res *res) {
+    static const char *const keys[] = {
+        "schema_version", "epoch", "sequence", "revoked_sha256"};
+    const sfu_node_app_config_t *config =
+        req ? sfu_node_app_server_get_config(req->server) : NULL;
+    json_value_t *root = NULL;
+    json_value_t *list_value;
+    const char *csv;
+    size_t csv_size;
+    char *owned = NULL;
+    const char *digests[TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS];
+    size_t count = 0U;
+    uint32_t epoch = 0U;
+    uint32_t sequence = 0U;
+    turbo_media_revocation_apply_result_t result;
+
+    if (!request_has_security_control_auth(req, config)) {
+        set_header(res, "WWW-Authenticate", "Bearer");
+        send_text(res, UNAUTHORIZED, "Unauthorized");
+        return;
+    }
+    if (!req->body || req->body_len == 0U ||
+        req->body_len > SFU_NODE_REVOCATION_BODY_BYTES) {
+        send_text(res, BAD_REQUEST, "Invalid revocation snapshot");
+        return;
+    }
+
+    root = json_parse((const char *)req->body, req->body_len);
+    if (!root || !json_object_has_exact_keys(
+                     root, keys, sizeof(keys) / sizeof(keys[0])) ||
+        !json_schema_v1(root) ||
+        json_uint32_exact_field(root, "epoch", &epoch) != 0 ||
+        epoch == 0U ||
+        json_uint32_exact_field(root, "sequence", &sequence) != 0) {
+        json_free(root);
+        send_text(res, BAD_REQUEST, "Invalid revocation snapshot");
+        return;
+    }
+
+    list_value = json_object_get(root, "revoked_sha256");
+    if (!list_value || json_type(list_value) != JSON_STRING) {
+        json_free(root);
+        send_text(res, BAD_REQUEST, "Invalid revocation snapshot");
+        return;
+    }
+    csv = json_string(list_value);
+    csv_size = json_string_len(list_value);
+    if (!csv || csv_size > SFU_NODE_REVOCATION_MAX_CSV_BYTES) {
+        json_free(root);
+        send_text(res, BAD_REQUEST, "Invalid revocation snapshot");
+        return;
+    }
+
+    if (csv_size > 0U) {
+        char *cursor;
+        owned = (char *)malloc(csv_size + 1U);
+        if (!owned) {
+            json_free(root);
+            send_text(res, INTERNAL_SERVER_ERROR, "Allocation failed");
+            return;
+        }
+        memcpy(owned, csv, csv_size);
+        owned[csv_size] = '\0';
+        cursor = owned;
+        while (cursor && *cursor != '\0') {
+            char *comma;
+            if (count >= TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS) {
+                free(owned);
+                json_free(root);
+                send_text(res, BAD_REQUEST, "Invalid revocation snapshot");
+                return;
+            }
+            digests[count++] = cursor;
+            comma = strchr(cursor, ',');
+            if (!comma) {
+                break;
+            }
+            *comma = '\0';
+            cursor = comma + 1;
+            if (*cursor == '\0') {
+                free(owned);
+                json_free(root);
+                send_text(res, BAD_REQUEST, "Invalid revocation snapshot");
+                return;
+            }
+        }
+    }
+
+    result = sfu_node_app_server_apply_revocation_snapshot(
+        req->server, epoch, sequence,
+        count > 0U ? digests : NULL, count);
+    free(owned);
+    json_free(root);
+    send_revocation_result(res, req->server, result);
+}
+
+static void handle_revocation_revoke(Req *req, Res *res) {
+    static const char *const keys[] = {
+        "schema_version", "epoch", "sequence", "sha256"};
+    const sfu_node_app_config_t *config =
+        req ? sfu_node_app_server_get_config(req->server) : NULL;
+    json_value_t *root = NULL;
+    json_value_t *digest_value;
+    const char *digest;
+    uint32_t epoch = 0U;
+    uint32_t sequence = 0U;
+    turbo_media_revocation_apply_result_t result;
+
+    if (!request_has_security_control_auth(req, config)) {
+        set_header(res, "WWW-Authenticate", "Bearer");
+        send_text(res, UNAUTHORIZED, "Unauthorized");
+        return;
+    }
+    if (!req->body || req->body_len == 0U ||
+        req->body_len > SFU_NODE_REVOCATION_BODY_BYTES) {
+        send_text(res, BAD_REQUEST, "Invalid revocation event");
+        return;
+    }
+
+    root = json_parse((const char *)req->body, req->body_len);
+    if (!root || !json_object_has_exact_keys(
+                     root, keys, sizeof(keys) / sizeof(keys[0])) ||
+        !json_schema_v1(root) ||
+        json_uint32_exact_field(root, "epoch", &epoch) != 0 ||
+        epoch == 0U ||
+        json_uint32_exact_field(root, "sequence", &sequence) != 0 ||
+        sequence == 0U) {
+        json_free(root);
+        send_text(res, BAD_REQUEST, "Invalid revocation event");
+        return;
+    }
+
+    digest_value = json_object_get(root, "sha256");
+    if (!digest_value || json_type(digest_value) != JSON_STRING ||
+        json_string_len(digest_value) != SFU_NODE_REVOCATION_DIGEST_BYTES) {
+        json_free(root);
+        send_text(res, BAD_REQUEST, "Invalid revocation event");
+        return;
+    }
+
+    digest = json_string(digest_value);
+    result = sfu_node_app_server_apply_revocation(
+        req->server, epoch, sequence, digest);
+    json_free(root);
+    send_revocation_result(res, req->server, result);
+}
+
 typedef void (*sfu_node_http_handler_fn)(Req *req, Res *res);
 
 static int sfu_node_http_dispatch(
@@ -1873,6 +2179,8 @@ SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whip_post)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whep_post)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_media_session_patch)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_media_session_delete)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_revocation_snapshot)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_revocation_revoke)
 
 static int handle_options_route(void *user,
                                 const chttp_server_request_view *request,
@@ -1969,6 +2277,18 @@ static int sfu_node_http_register_routes(sfu_node_http_api_t *api) {
     if (status == SALTS_OK) {
         status = chttp_server_post(&api->http, "/api/v1/commands",
                                    handle_command_route, api);
+    }
+    if (status == SALTS_OK &&
+        sfu_node_app_server_dynamic_revocation_enabled(api->server)) {
+        status = chttp_server_post(
+            &api->http, "/api/v1/security/revocations/snapshot",
+            handle_revocation_snapshot_route, api);
+    }
+    if (status == SALTS_OK &&
+        sfu_node_app_server_dynamic_revocation_enabled(api->server)) {
+        status = chttp_server_post(
+            &api->http, "/api/v1/security/revocations/revoke",
+            handle_revocation_revoke_route, api);
     }
     if (status == SALTS_OK) {
         status = chttp_server_post(&api->http,
