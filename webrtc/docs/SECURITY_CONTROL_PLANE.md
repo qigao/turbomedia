@@ -29,9 +29,10 @@ existing HTTPS management listener. Revocation writes require a short-lived sign
 compatibility token is never accepted on these routes. The HTTPS listener certificate is still required,
 so control tokens are not sent over plaintext HTTP.
 
-This slice authenticates the control-plane publisher at the application layer. Deployment network ACLs
-remain required, and mutual TLS may be added as an additional edge identity layer. SFU-node consumption
-and multi-node fan-out/retry are not implemented by this slice.
+This transport authenticates the control-plane publisher at the application layer. Deployment network
+ACLs remain required, and mutual TLS may be added as an additional edge identity layer. Signaling and SFU
+nodes consume the same thread-safe revocation projection abstraction and the same v1 snapshot/revoke wire
+parser. Multi-node fan-out/retry is not implemented by this slice.
 
 ### Edge
 
@@ -123,6 +124,22 @@ result, synchronization state, version, and count. They never echo token fingerp
 Stale writes are idempotent. Sequence gaps, capacity failures, and admissible newer malformed updates
 leave the projection UNSYNCHRONIZED and therefore fail peer admission closed until a covering snapshot.
 
+### SFU projection integration
+
+When `auth_dynamic_revocation_capacity` is non-zero, the SFU node owns one shared projection used by both
+control-plane and WHIP/WHEP media authorization. The legacy static `control_token` and
+`media_access_token` cannot bypass that projection because dynamic callback mode disables static bearer
+authorization.
+
+SFU dynamic mode requires TLS plus valid signed auth configuration. The node starts UNSYNCHRONIZED, so
+signed control/media requests fail closed until a covering snapshot is applied.
+
+SFU exposes the same HTTPS paths, schema version, audience, and scope as signaling:
+`/api/v1/security/revocations/snapshot` and `/api/v1/security/revocations/revoke`.
+The security-control token is intentionally verified without consulting the target projection; otherwise an
+UNSYNCHRONIZED node could never bootstrap or recover. Static control/media compatibility tokens are never
+accepted on these security-control routes.
+
 ### Authorization
 
 The signed-token verifier computes the compact-token SHA-256 and invokes the configured dynamic revocation
@@ -164,7 +181,6 @@ other credential material are not stored in the revocation state and must not ap
 The following are intentionally not claimed complete by the dynamic-revocation slice:
 
 - authenticated fan-out/retry of revocation updates across all signaling and SFU nodes;
-- SFU-node integration with the shared revocation projection;
 - edge admission before TLS/WebSocket application allocation;
 - trusted-proxy allowlist and spoofed-header negative tests;
 - tenant/subject/IP/connection/request/media-resource quota model;

@@ -5,6 +5,7 @@
 #include "ivr_http_media_client.h"
 #include "turbo_media_auth.h"
 #include "turbo_recorder_internal.h"
+#include <turbo_crypto.h>
 #include "turbo_demuxer.h"
 #include <json_parser.h>
 #include "turbo_peer_connection.h"
@@ -511,6 +512,41 @@ static int https_get_status(const char *base_url, const char *path,
   }
   sfu_test_http_response_free(response);
   return status;
+}
+
+static int https_post_status_with_token(
+    const char *base_url, const char *path, const char *content_type,
+    const char *bearer_token, const char *body) {
+  sfu_test_http_response_t *response;
+  int status = 0;
+
+  if (!base_url || !path || !body) {
+    return 0;
+  }
+  response = sfu_test_http_request(
+      base_url, "POST", path, content_type, bearer_token, NULL,
+      body, strlen(body), SFU_NODE_TEST_TLS_CERT_PATH, "localhost", 3000u);
+  if (response) {
+    status = response->status_code;
+  }
+  sfu_test_http_response_free(response);
+  return status;
+}
+
+static void token_sha256_hex(const char *token, char output[65]) {
+  static const char hex[] = "0123456789abcdef";
+  uint8_t digest[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES];
+
+  check_not_null(token);
+  check_equal(turbo_crypto_sha256(token, strlen(token), digest),
+              TURBO_CRYPTO_OK);
+  for (size_t index = 0U;
+       index < TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES; ++index) {
+    output[index * 2U] = hex[digest[index] >> 4U];
+    output[index * 2U + 1U] = hex[digest[index] & 0x0fU];
+  }
+  output[64] = '\0';
+  memset(digest, 0, sizeof(digest));
 }
 
 static int wait_for_https_status_ok(const char *base_url, const char *path,
@@ -1321,6 +1357,185 @@ void test_sfu_node_https_uses_explicit_identity_and_verified_client(void) {
   sfu_node_app_server_destroy(server);
 }
 
+void test_sfu_node_dynamic_revocation_controls_control_and_media_auth(void) {
+  sfu_node_app_config_t config;
+  sfu_node_app_server_t *server = NULL;
+  sfu_node_http_api_t *http_api = NULL;
+  turbo_media_auth_config_t issuer;
+  turbo_media_auth_claims_t claims;
+  char *control_token = NULL;
+  char *media_token = NULL;
+  char *security_token = NULL;
+  char control_digest[65];
+  char media_digest[65];
+  char revoke_control[256];
+  char revoke_media[256];
+  int length;
+  int status;
+  int64_t now = (int64_t)time(NULL);
+  const char *base_url = "https://127.0.0.1:19431";
+  const char *attach_room =
+      "{\"type\":\"attach_room\",\"room_id\":\"room-dynamic\","
+      "\"max_participants\":4}";
+  const char *snapshot =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":0,"
+      "\"revoked_sha256\":\"\"}";
+  const char *sdp_probe = "v=0\r\n";
+
+  sfu_node_app_config_init(&config);
+  config.bind_host = "127.0.0.1";
+  config.bind_port = 19431;
+  config.node_id = "sfu-dynamic-revocation";
+  config.use_tls = 1;
+  config.tls_cert_file = SFU_NODE_TEST_TLS_CERT_PATH;
+  config.tls_key_file = SFU_NODE_TEST_TLS_KEY_PATH;
+  config.control_token = "static-control-token";
+  config.media_access_token = "static-media-token";
+  config.auth_issuer = "turbomedia";
+  config.auth_active_key_id = "sfu-security-2026-09";
+  config.auth_active_secret =
+      "sfu-security-active-secret-at-least-32-bytes";
+  config.auth_dynamic_revocation_capacity = 4;
+  config.auth_max_ttl_seconds = 300;
+  config.ice_allow_loopback = 1;
+
+  issuer = (turbo_media_auth_config_t){
+      .issuer = config.auth_issuer,
+      .active_key_id = config.auth_active_key_id,
+      .active_secret = config.auth_active_secret,
+      .clock_skew_seconds = config.auth_clock_skew_seconds,
+      .max_ttl_seconds = config.auth_max_ttl_seconds};
+
+  claims = (turbo_media_auth_claims_t){
+      .subject = "room-service",
+      .audience = "turbomedia-sfu-control",
+      .scope = "sfu.control.write",
+      .room_id = "room-dynamic",
+      .issued_at = now,
+      .expires_at = now + 120};
+  control_token = turbo_media_auth_issue(&issuer, &claims);
+  check_not_null(control_token);
+
+  claims.subject = "media-client";
+  claims.audience = "turbomedia-sfu-media";
+  claims.scope = "sfu.media.publish";
+  claims.room_id = "room-media-missing";
+  claims.participant_id = "alice";
+  media_token = turbo_media_auth_issue(&issuer, &claims);
+  check_not_null(media_token);
+
+  claims.subject = "security-control";
+  claims.audience = "turbomedia-security-control";
+  claims.scope = "security.revocation.write";
+  claims.room_id = NULL;
+  claims.participant_id = NULL;
+  security_token = turbo_media_auth_issue(&issuer, &claims);
+  check_not_null(security_token);
+
+  token_sha256_hex(control_token, control_digest);
+  token_sha256_hex(media_token, media_digest);
+
+  server = sfu_node_app_server_create(&config);
+  check_not_null(server);
+  http_api = sfu_node_http_api_create(server);
+  check_not_null(http_api);
+  check_equal(sfu_node_http_api_start(
+                  http_api, config.bind_host, config.bind_port),
+              0);
+  check_equal(wait_for_https_status_ok(
+                  base_url, "/health", SFU_NODE_TEST_TLS_CERT_PATH,
+                  30, 100),
+              0);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/commands", "application/json",
+                  control_token, attach_room),
+              401);
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/commands", "application/json",
+                  "static-control-token", attach_room),
+              401);
+  check_equal(https_post_status_with_token(
+                  base_url, "/whip/room-media-missing/alice",
+                  "application/sdp", media_token, sdp_probe),
+              401);
+  check_equal(https_post_status_with_token(
+                  base_url, "/whip/room-media-missing/alice",
+                  "application/sdp", "static-media-token", sdp_probe),
+              401);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/revocations/snapshot",
+                  "application/json", "static-control-token", snapshot),
+              401);
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/revocations/snapshot",
+                  "application/json", control_token, snapshot),
+              401);
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/revocations/snapshot",
+                  "application/json", security_token, snapshot),
+              200);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/commands", "application/json",
+                  control_token, attach_room),
+              200);
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/commands", "application/json",
+                  "static-control-token", attach_room),
+              401);
+  status = https_post_status_with_token(
+      base_url, "/whip/room-media-missing/alice",
+      "application/sdp", media_token, sdp_probe);
+  check_equal(status, 404);
+  check_equal(https_post_status_with_token(
+                  base_url, "/whip/room-media-missing/alice",
+                  "application/sdp", "static-media-token", sdp_probe),
+              401);
+
+  length = snprintf(
+      revoke_control, sizeof(revoke_control),
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"sha256\":\"%s\"}",
+      control_digest);
+  check_true(length > 0 && (size_t)length < sizeof(revoke_control));
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/revocations/revoke",
+                  "application/json", security_token, revoke_control),
+              200);
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/commands", "application/json",
+                  control_token, attach_room),
+              401);
+  check_equal(https_post_status_with_token(
+                  base_url, "/whip/room-media-missing/alice",
+                  "application/sdp", media_token, sdp_probe),
+              404);
+
+  length = snprintf(
+      revoke_media, sizeof(revoke_media),
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":2,"
+      "\"sha256\":\"%s\"}",
+      media_digest);
+  check_true(length > 0 && (size_t)length < sizeof(revoke_media));
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/revocations/revoke",
+                  "application/json", security_token, revoke_media),
+              200);
+  check_equal(https_post_status_with_token(
+                  base_url, "/whip/room-media-missing/alice",
+                  "application/sdp", media_token, sdp_probe),
+              401);
+
+  sfu_node_http_api_stop(http_api);
+  sfu_node_http_api_destroy(http_api);
+  sfu_node_app_server_destroy(server);
+  free(security_token);
+  free(media_token);
+  free(control_token);
+}
+
 void test_sfu_node_http_control_token_protects_modifying_commands(void) {
   sfu_node_app_config_t sfu_config;
   sfu_node_app_server_t *sfu_server = NULL;
@@ -1605,6 +1820,8 @@ void test_sfu_node_config_reads_security_and_ice_from_env(void) {
       app_test_save_env("TURBO_SFU_AUTH_CLOCK_SKEW_SECONDS");
   char *saved_auth_ttl =
       app_test_save_env("TURBO_SFU_AUTH_MAX_TTL_SECONDS");
+  char *saved_auth_dynamic =
+      app_test_save_env("TURBO_SFU_AUTH_DYNAMIC_REVOCATION_CAPACITY");
 
   app_test_set_env("TURBO_SFU_NODE_CONTROL_TOKEN", "env-sfu-control-token");
   app_test_set_env("TURBO_SFU_MEDIA_ACCESS_TOKEN", "env-sfu-media-token");
@@ -1623,6 +1840,7 @@ void test_sfu_node_config_reads_security_and_ice_from_env(void) {
                    "abcdef0123456789abcdef0123456789");
   app_test_set_env("TURBO_SFU_AUTH_CLOCK_SKEW_SECONDS", "17");
   app_test_set_env("TURBO_SFU_AUTH_MAX_TTL_SECONDS", "900");
+  app_test_set_env("TURBO_SFU_AUTH_DYNAMIC_REVOCATION_CAPACITY", "32");
   sfu_node_app_config_init(&sfu_config);
   sfu_node_app_config_apply_environment(&sfu_config);
   check_equal(sfu_config.control_token, "env-sfu-control-token");
@@ -1640,6 +1858,7 @@ void test_sfu_node_config_reads_security_and_ice_from_env(void) {
   check_equal(sfu_config.auth_previous_key_id, "env-previous");
   check_equal((int)(sfu_config.auth_clock_skew_seconds), (int)(17));
   check_equal((int)(sfu_config.auth_max_ttl_seconds), (int)(900));
+  check_equal((int)(sfu_config.auth_dynamic_revocation_capacity), (int)(32));
   check_equal((int)(sfu_node_app_config_validate(&sfu_config)), (int)(0));
 
   app_test_restore_env("TURBO_SFU_NODE_CONTROL_TOKEN", saved_control);
@@ -1659,6 +1878,8 @@ void test_sfu_node_config_reads_security_and_ice_from_env(void) {
   app_test_restore_env("TURBO_SFU_AUTH_CLOCK_SKEW_SECONDS",
                        saved_auth_skew);
   app_test_restore_env("TURBO_SFU_AUTH_MAX_TTL_SECONDS", saved_auth_ttl);
+  app_test_restore_env("TURBO_SFU_AUTH_DYNAMIC_REVOCATION_CAPACITY",
+                       saved_auth_dynamic);
 }
 
 void test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_session(void) {
@@ -2548,6 +2769,7 @@ spec("test_sfu_node_app") {
   it("test_sfu_node_http_roundtrips_track_subscription_metadata") { test_sfu_node_http_roundtrips_track_subscription_metadata(); };
   it("test_sfu_node_https_uses_explicit_identity_and_verified_client") { test_sfu_node_https_uses_explicit_identity_and_verified_client(); };
   it("test_sfu_node_config_reads_security_and_ice_from_env") { test_sfu_node_config_reads_security_and_ice_from_env(); };
+  it("test_sfu_node_dynamic_revocation_controls_control_and_media_auth") { test_sfu_node_dynamic_revocation_controls_control_and_media_auth(); };
   it("test_sfu_node_http_control_token_protects_modifying_commands") { test_sfu_node_http_control_token_protects_modifying_commands(); };
   it("test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation") { test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(); };
   it("test_sfu_node_ready_metrics_and_drain_control") { test_sfu_node_ready_metrics_and_drain_control(); };

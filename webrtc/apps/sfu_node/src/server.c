@@ -2,6 +2,7 @@
 #include "sfu_node/http_api.h"
 #include "turbo_recorder.h"
 #include "turbo_sfu_node.h"
+#include "turbo_media_revocation_projection.h"
 #include "turbo_peer_connection.h"
 #include "turbo_rtp.h"
 #include <platform.h>
@@ -168,6 +169,7 @@ struct sfu_node_app_server_s {
     int subscription_count;
     int subscription_capacity;
     salts_mutex_t recording_mutex;
+    turbo_media_revocation_projection_t *revocation_projection;
     sfu_node_room_recording_t *room_recordings;
     int room_recording_count;
     int room_recording_capacity;
@@ -1455,12 +1457,25 @@ sfu_node_app_server_t *sfu_node_app_server_create(const sfu_node_app_config_t *c
         free(server);
         return NULL;
     }
+    if (server->config.auth_dynamic_revocation_capacity > 0) {
+        server->revocation_projection =
+            turbo_media_revocation_projection_create(
+                (size_t)server->config.auth_dynamic_revocation_capacity);
+        if (!server->revocation_projection) {
+            sfu_node_app_config_cleanup(&server->config);
+            free(server);
+            return NULL;
+        }
+    }
     memset(&node_config, 0, sizeof(node_config));
     node_config.node_id = server->config.node_id;
     node_config.max_rooms = server->config.max_rooms;
     node_config.default_room_capacity = server->config.default_room_capacity;
     server->node = turbo_sfu_node_create(&node_config);
     if (!server->node) {
+        turbo_media_revocation_projection_destroy(
+            server->revocation_projection);
+        server->revocation_projection = NULL;
         sfu_node_app_config_cleanup(&server->config);
         free(server);
         return NULL;
@@ -1478,6 +1493,9 @@ sfu_node_app_server_t *sfu_node_app_server_create(const sfu_node_app_config_t *c
         salts_mutex_destroy(&server->recording_mutex);
         salts_mutex_destroy(&server->mutex);
         turbo_sfu_node_destroy(server->node);
+        turbo_media_revocation_projection_destroy(
+            server->revocation_projection);
+        server->revocation_projection = NULL;
         sfu_node_app_config_cleanup(&server->config);
         free(server);
         return NULL;
@@ -1609,6 +1627,9 @@ void sfu_node_app_server_destroy(sfu_node_app_server_t *server) {
     if (server->node) {
         turbo_sfu_node_destroy(server->node);
     }
+    turbo_media_revocation_projection_destroy(
+        server->revocation_projection);
+    server->revocation_projection = NULL;
     sfu_node_app_config_cleanup(&server->config);
     free(server);
 }
@@ -1619,6 +1640,56 @@ turbo_sfu_node_t *sfu_node_app_server_get_node(sfu_node_app_server_t *server) {
 
 const sfu_node_app_config_t *sfu_node_app_server_get_config(sfu_node_app_server_t *server) {
     return server ? &server->config : NULL;
+}
+
+int sfu_node_app_server_dynamic_revocation_enabled(
+    sfu_node_app_server_t *server) {
+    return server && server->revocation_projection;
+}
+
+turbo_media_auth_revocation_status_t
+sfu_node_app_server_revocation_check(
+    void *context, const uint8_t *sha256, size_t sha256_size) {
+    sfu_node_app_server_t *server =
+        (sfu_node_app_server_t *)context;
+    if (!server || !server->revocation_projection) {
+        return TURBO_MEDIA_AUTH_REVOCATION_UNKNOWN;
+    }
+    return turbo_media_revocation_projection_check_digest(
+        server->revocation_projection, sha256, sha256_size);
+}
+
+turbo_media_revocation_apply_result_t
+sfu_node_app_server_apply_revocation_snapshot(
+    sfu_node_app_server_t *server, uint64_t epoch, uint64_t sequence,
+    const char *const *sha256_hex, size_t count) {
+    if (!server || !server->revocation_projection) {
+        return TURBO_MEDIA_REVOCATION_APPLY_ERROR;
+    }
+    return turbo_media_revocation_projection_apply_snapshot(
+        server->revocation_projection, epoch, sequence, sha256_hex, count);
+}
+
+turbo_media_revocation_apply_result_t
+sfu_node_app_server_apply_revocation(
+    sfu_node_app_server_t *server, uint64_t epoch, uint64_t sequence,
+    const char *sha256_hex) {
+    if (!server || !server->revocation_projection) {
+        return TURBO_MEDIA_REVOCATION_APPLY_ERROR;
+    }
+    return turbo_media_revocation_projection_apply_revoke(
+        server->revocation_projection, epoch, sequence, sha256_hex);
+}
+
+int sfu_node_app_server_get_revocation_status(
+    sfu_node_app_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence, size_t *out_count) {
+    if (!server || !server->revocation_projection) {
+        return -1;
+    }
+    return turbo_media_revocation_projection_status(
+        server->revocation_projection, out_synchronized,
+        out_epoch, out_sequence, out_count);
 }
 
 int sfu_node_app_server_set_draining(sfu_node_app_server_t *server, int draining) {
