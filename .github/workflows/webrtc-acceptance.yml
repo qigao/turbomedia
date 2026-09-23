@@ -1,0 +1,45 @@
+name: WebRTC Acceptance Unit Tests
+
+on:
+  pull_request:
+    paths:
+      - "webrtc/acceptance/**"
+      - ".github/workflows/webrtc-acceptance.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "webrtc/acceptance/**"
+      - ".github/workflows/webrtc-acceptance.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webrtc-acceptance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Node 22 acceptance unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: webrtc/acceptance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webrtc/acceptance/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run acceptance unit tests
+        run: npm test
