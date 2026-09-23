@@ -6,6 +6,7 @@
 #include <chttp/chttp.h>
 #include <json_parser.h>
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,12 +94,21 @@ static int target_origin_valid(
     turbo_transport_config_t parsed;
     int valid = 0;
 
-    if (!target ||
-        copy_bounded((char[TURBO_MEDIA_REVOCATION_FANOUT_TARGET_ID_BYTES]){0},
-                     TURBO_MEDIA_REVOCATION_FANOUT_TARGET_ID_BYTES,
-                     target->target_id) != 0 ||
-        !target->base_url || !target->ca_file || !target->server_name ||
-        target->ca_file[0] == '\0' || target->server_name[0] == '\0') {
+    if (!target || !target->target_id || !target->base_url ||
+        !target->ca_file || !target->server_name ||
+        target->target_id[0] == '\0' || target->base_url[0] == '\0' ||
+        target->ca_file[0] == '\0' || target->server_name[0] == '\0' ||
+        strlen(target->target_id) >=
+            TURBO_MEDIA_REVOCATION_FANOUT_TARGET_ID_BYTES ||
+        strlen(target->base_url) >=
+            TURBO_MEDIA_REVOCATION_HTTP_BASE_URL_BYTES ||
+        strlen(target->ca_file) >=
+            TURBO_MEDIA_REVOCATION_HTTP_CA_PATH_BYTES ||
+        strlen(target->server_name) >=
+            TURBO_MEDIA_REVOCATION_HTTP_SERVER_NAME_BYTES ||
+        strchr(target->base_url, '@') ||
+        strchr(target->base_url, '?') ||
+        strchr(target->base_url, '#')) {
         return 0;
     }
     memset(&parsed, 0, sizeof(parsed));
@@ -251,7 +261,7 @@ real_https_request(
     uint32_t connect_timeout_ms,
     uint32_t read_timeout_ms,
     uint32_t write_timeout_ms,
-    http_response_t *response) {
+    turbo_media_revocation_fanout_response_t *response) {
     turbo_transport_config_t parsed;
     cnet_tls_client_config tls;
     http_response_t http;
@@ -267,6 +277,7 @@ real_https_request(
     }
     memset(&parsed, 0, sizeof(parsed));
     memset(&tls, 0, sizeof(tls));
+    memset(&http, 0, sizeof(http));
     memset(response, 0, sizeof(*response));
     if (turbo_transport_parse_url(target->base_url, &parsed) != 0 ||
         parsed.type != TURBO_TRANSPORT_HTTP || !parsed.use_tls ||
@@ -423,7 +434,6 @@ static turbo_media_revocation_fanout_transport_result_t send_request(
         return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
     }
     memset(bearer, 0, sizeof(bearer));
-    memset(&http, 0, sizeof(http));
     if (fanout->config.token_provider(
             fanout->config.token_context, target->target_id,
             bearer, sizeof(bearer)) != 0 ||
