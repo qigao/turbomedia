@@ -255,8 +255,18 @@ async function preflightRun(context, manifest, signal) {
   const lab = context.lab;
   const cases = context.cases || expandCases(manifest);
   const timeout = manifest.phase_deadlines.preflight_ms;
+  const preflightArtifacts = requireMethod(lab, 'preflightArtifacts', 'preflight');
+  await withDeadline('preflightArtifacts', timeout, 'harness', signal,
+    (phaseSignal) => preflightArtifacts(manifest, phaseSignal));
+
+  const preflightCase = requireMethod(lab, 'preflightCase', 'preflight');
+  for (const caseDefinition of cases) {
+    const observed = await withDeadline('preflightCase', timeout, 'missing_evidence', signal,
+      (phaseSignal) => preflightCase(caseDefinition, phaseSignal));
+    if (!observed || observed.available !== true) fail('BROWSER_CAPABILITY_MISSING', 'missing_evidence', 'preflightCase');
+  }
+
   const checks = [
-    ['preflightArtifacts', [manifest]],
     ['preflightProviders', [manifest]],
     ['preflightTopologies', [manifest]],
     ['preflightSfu', [manifest]],
@@ -265,12 +275,6 @@ async function preflightRun(context, manifest, signal) {
   for (const [name, args] of checks) {
     const method = requireMethod(lab, name, 'preflight');
     await withDeadline(name, timeout, 'harness', signal, (phaseSignal) => method(...args, phaseSignal));
-  }
-  const preflightCase = requireMethod(lab, 'preflightCase', 'preflight');
-  for (const caseDefinition of cases) {
-    const observed = await withDeadline('preflightCase', timeout, 'missing_evidence', signal,
-      (phaseSignal) => preflightCase(caseDefinition, phaseSignal));
-    if (!observed || observed.available !== true) fail('BROWSER_CAPABILITY_MISSING', 'missing_evidence', 'preflightCase');
   }
   return Object.freeze({ case_count: cases.length, cases });
 }
@@ -395,10 +399,13 @@ async function drainCase(context, runtime, primaryResult, _signal) {
       primaryResult ? primaryResult.reason : undefined);
   }
   const cleanupFailures = [];
+  const teardownSequence = runtime.machine.last_sequence + 1;
   for (const stepName of CLEANUP_STEPS) {
     try {
       const result = await withDeadline(`drain:${stepName}`, timeout, 'harness', undefined,
-        (phaseSignal) => requireMethod(lab, stepName, 'drain')(runtime, phaseSignal));
+        (phaseSignal) => stepName === 'teardownTopology'
+          ? requireMethod(lab, stepName, 'drain')(runtime, teardownSequence, phaseSignal)
+          : requireMethod(lab, stepName, 'drain')(runtime, phaseSignal));
       if (result && Array.isArray(result.cleanup_failures)) {
         for (const failure of result.cleanup_failures) {
           const code = failure && typeof failure.code === 'string' && SAFE_CODE.test(failure.code) ? failure.code : 'CLEANUP_FAILED';

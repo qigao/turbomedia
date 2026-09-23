@@ -104,7 +104,8 @@ async function startFakeSfuServer(options = {}) {
       } });
     }
     const scope = body.type === 'detach_room' ? 'sfu.control.dangerous' : 'sfu.control.write';
-    if (!authorized(req, { audience: 'turbomedia-sfu-control', scope, room: body.room_id })) {
+    if (!authorized(req, { audience: 'turbomedia-sfu-control', scope, room: body.room_id,
+      participant: body.participant_id })) {
       return send(res, 401, { ok: false });
     }
     if (body.type === 'attach_room') {

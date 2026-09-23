@@ -18,6 +18,7 @@ function token(scope, participant = context.publisher_id) {
     issued_at: '2026-09-08T00:00:00Z', expires_at: '2026-09-08T01:00:00Z', token: `secret-${scope}-${participant}` };
 }
 const writeToken = token('sfu.control.write');
+const viewerWriteToken = token('sfu.control.write', context.viewer_id);
 const dangerToken = token('sfu.control.dangerous');
 const deleteToken = token('sfu.media.delete');
 const viewerDeleteToken = token('sfu.media.delete', context.viewer_id);
@@ -30,7 +31,7 @@ async function setup(t, serverOptions = {}, adapterOptions = {}) {
   try { exports = require('../src/sfu_adapter'); } catch (error) {
     assert.fail(`SFU lifecycle adapter must exist: ${error.code}`);
   }
-  const server = await startFakeSfuServer({ tokens: [writeToken, dangerToken, deleteToken, viewerDeleteToken], ...serverOptions });
+  const server = await startFakeSfuServer({ tokens: [writeToken, viewerWriteToken, dangerToken, deleteToken, viewerDeleteToken], ...serverOptions });
   t.after(() => server.close());
   const adapter = exports.createSfuAdapter({ baseUrl: server.baseUrl, requestTimeoutMs: 250,
     maxBodyBytes: 4096, pollIntervalMs: 5, waitTimeoutMs: 100, ...adapterOptions });
@@ -54,8 +55,8 @@ test('SFU lifecycle orders health ready baseline attach tracks subscriptions sta
   server.createMedia(publisher);
   const tracks = await adapter.waitForPublishedTracks(context, issued, ['audio', 'video']);
   assert.deepEqual(tracks, ['publisher-a-audio', 'publisher-a-video-1']);
-  await adapter.setViewerSubscriptions(context, issued, tracks);
-  await adapter.setViewerSubscriptions({ ...context }, issued, tracks);
+  await adapter.setViewerSubscriptions(context, viewerWriteToken, tracks);
+  await adapter.setViewerSubscriptions({ ...context }, viewerWriteToken, tracks);
   server.createMedia(viewer);
   const session = await adapter.getWebRtcSession(context, issued, viewer.session_id);
   assert.equal(session.relay_track_count, 2);
@@ -129,8 +130,9 @@ for (const [name, trackIds, expectedRelayCount] of [
     // the SFU accepts desired subscriptions before sender/viewer provisioning.
     for (const trackId of trackIds) {
       const response = await client.request({ segments: ['api', 'v1', 'commands'], method: 'POST',
-        token: writeToken.token, body: { type: 'set_track_subscription', room_id: context.room_id,
-          receiver_participant_id: context.viewer_id, track_id: trackId, enabled: true } });
+        token: viewerWriteToken.token, body: { type: 'set_track_subscription', room_id: context.room_id,
+          participant_id: context.viewer_id, receiver_participant_id: context.viewer_id,
+          track_id: trackId, enabled: true } });
       assert.equal(response.status, 200);
       assert.equal(response.body.ok, true);
     }
@@ -183,7 +185,7 @@ test('SFU blocks subscriptions before track confirmation and validates operation
   const { adapter, server } = await setup(t);
   await assert.rejects(adapter.attachRoom(context, writeToken), { code: 'SFU_SETUP_ORDER' });
   await attached(adapter);
-  await assert.rejects(adapter.setViewerSubscriptions(context, writeToken, ['publisher-a-audio']), { code: 'SFU_TRACKS_UNCONFIRMED' });
+  await assert.rejects(adapter.setViewerSubscriptions(context, viewerWriteToken, ['publisher-a-audio']), { code: 'SFU_TRACKS_UNCONFIRMED' });
   assert.equal(server.requests.length, 4);
 });
 
@@ -217,7 +219,7 @@ test('SFU invalidates confirmed tracks when the publisher resource is deleted', 
   server.createMedia(publisher);
   const tracks = await adapter.waitForPublishedTracks(context, writeToken, ['audio', 'video']);
   await adapter.deleteMediaResource(publisher, deleteToken);
-  await assert.rejects(adapter.setViewerSubscriptions(context, writeToken, tracks), { code: 'SFU_TRACKS_UNCONFIRMED' });
+  await assert.rejects(adapter.setViewerSubscriptions(context, viewerWriteToken, tracks), { code: 'SFU_TRACKS_UNCONFIRMED' });
 });
 
 test('SFU requires a fresh successful preflight after a failed repeat preflight', async (t) => {
@@ -234,7 +236,7 @@ test('SFU only supports the audio-first track contract', async (t) => {
   await attached(adapter);
   server.createMedia(publisher);
   await assert.rejects(adapter.waitForPublishedTracks(context, writeToken, ['video', 'audio']), { code: 'SFU_INVALID_TRACK_CONTRACT' });
-  await assert.rejects(adapter.setViewerSubscriptions(context, writeToken, ['publisher-a-video-1']), { code: 'SFU_TRACKS_UNCONFIRMED' });
+  await assert.rejects(adapter.setViewerSubscriptions(context, viewerWriteToken, ['publisher-a-video-1']), { code: 'SFU_TRACKS_UNCONFIRMED' });
 });
 
 for (const [name, serverOptions] of [
