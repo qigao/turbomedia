@@ -296,7 +296,8 @@ static int control_auth_enabled(const sfu_node_app_config_t *config) {
 
 static turbo_media_auth_config_t signed_auth_config(
     sfu_node_app_server_t *server,
-    const sfu_node_app_config_t *config) {
+    const sfu_node_app_config_t *config,
+    int include_dynamic_revocation) {
     turbo_media_auth_config_t auth = {0};
 
     if (!config) {
@@ -310,7 +311,8 @@ static turbo_media_auth_config_t signed_auth_config(
     auth.revoked_token_sha256 = config->auth_revoked_token_sha256;
     auth.clock_skew_seconds = config->auth_clock_skew_seconds;
     auth.max_ttl_seconds = config->auth_max_ttl_seconds;
-    if (sfu_node_app_server_dynamic_revocation_enabled(server)) {
+    if (include_dynamic_revocation &&
+        sfu_node_app_server_dynamic_revocation_enabled(server)) {
         auth.revocation_check = sfu_node_app_server_check_revocation;
         auth.revocation_context = server;
     }
@@ -333,7 +335,7 @@ static int request_has_control_auth(
     if (!authorization) {
         authorization = get_headers(req, "authorization");
     }
-    auth = signed_auth_config(req ? req->server : NULL, config);
+    auth = signed_auth_config(req ? req->server : NULL, config, 1);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SFU_NODE_CONTROL_AUDIENCE;
     policy.required_scope = required_scope;
@@ -421,7 +423,7 @@ static int request_has_media_auth(
         return 0;
     }
     authorization = request_header(req, "Authorization", "authorization");
-    auth = signed_auth_config(req ? req->server : NULL, config);
+    auth = signed_auth_config(req ? req->server : NULL, config, 1);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SFU_NODE_MEDIA_AUDIENCE;
     policy.required_scope = required_scope;
