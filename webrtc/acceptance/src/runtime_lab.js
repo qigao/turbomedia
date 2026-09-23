@@ -187,7 +187,7 @@ function createAcceptanceLab(options = {}) {
       source: manifest.source,
       gridUrl: env[manifest.grid.endpoint_env],
       profile: manifest.profile,
-      allowLoopbackHttp: manifest.profile === 'diagnostic',
+      allowLoopbackHttp: ['diagnostic', 'contract_lab'].includes(manifest.profile),
       commandTimeoutMs: Math.min(MAX_OPERATION_MS, phaseMax),
     });
   }
