@@ -1735,6 +1735,12 @@ void test_sfu_node_dynamic_revocation_controls_https_auth_and_readiness(void) {
                   revoke_body, security_token,
                   SFU_NODE_TEST_TLS_CERT_PATH),
               200);
+  check_equal(sfu_node_app_server_get_revocation_status(
+                  server, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_true(synchronized);
+  check_equal((int)sequence, 2);
+  check_equal((int)count, 2);
   check_equal(https_media_post_status_with_token(
                   base_url, "/whip/room-dynamic-media/publisher-a",
                   invalid_offer, media_token,
