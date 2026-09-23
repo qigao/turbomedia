@@ -42,6 +42,12 @@ issuer = "turbomedia"
 # previous_key_id = "sfu-2026-06"
 # previous_secret = "replace-with-the-previous-secret"
 # revoked_token_sha256 = "one-or-more-comma-separated-lowercase-sha256-digests"
+# Set a bounded projection capacity to enable distributed dynamic revocation.
+# Dynamic mode requires TLS + signed auth and rejects legacy [control].token /
+# [media].access_token compatibility values. The node starts UNSYNCHRONIZED,
+# /ready returns 503, and control/media signed tokens are denied until a
+# security-control snapshot is applied.
+# dynamic_revocation_capacity = 256
 clock_skew_seconds = 30
 max_ttl_seconds = 3600
 
