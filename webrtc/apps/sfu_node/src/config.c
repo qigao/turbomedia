@@ -99,6 +99,7 @@ void sfu_node_app_config_init(sfu_node_app_config_t *config) {
         sfu_node_env_value("TURBO_SFU_AUTH_PREVIOUS_SECRET");
     config->auth_revoked_token_sha256 =
         sfu_node_env_value("TURBO_SFU_AUTH_REVOKED_TOKEN_SHA256");
+    config->auth_dynamic_revocation_capacity = 0;
     config->auth_clock_skew_seconds =
         TURBO_MEDIA_AUTH_DEFAULT_CLOCK_SKEW_SECONDS;
     config->auth_max_ttl_seconds =
@@ -288,7 +289,8 @@ static int sfu_node_config_apply_auth(
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
         "issuer", "active_key_id", "active_secret", "previous_key_id",
-        "previous_secret", "revoked_token_sha256", "clock_skew_seconds",
+        "previous_secret", "revoked_token_sha256",
+        "dynamic_revocation_capacity", "clock_skew_seconds",
         "max_ttl_seconds"
     };
 
@@ -316,6 +318,8 @@ static int sfu_node_config_apply_auth(
             table, "auth", "revoked_token_sha256", storage,
             SFU_CONFIG_STRING_AUTH_REVOKED_TOKEN_SHA256,
             &config->auth_revoked_token_sha256) != 0 ||
+        rtc_app_toml_apply_int(table, "auth", "dynamic_revocation_capacity",
+                               &config->auth_dynamic_revocation_capacity) != 0 ||
         rtc_app_toml_apply_int(table, "auth", "clock_skew_seconds",
                                &config->auth_clock_skew_seconds) != 0 ||
         rtc_app_toml_apply_int(table, "auth", "max_ttl_seconds",
@@ -517,6 +521,9 @@ void sfu_node_app_config_apply_environment(sfu_node_app_config_t *config) {
     if (value) {
         config->auth_revoked_token_sha256 = value;
     }
+    config->auth_dynamic_revocation_capacity = sfu_node_env_int(
+        "TURBO_SFU_AUTH_DYNAMIC_REVOCATION_CAPACITY",
+        config->auth_dynamic_revocation_capacity);
     config->auth_clock_skew_seconds = sfu_node_env_int(
         "TURBO_SFU_AUTH_CLOCK_SKEW_SECONDS",
         config->auth_clock_skew_seconds);
@@ -604,12 +611,24 @@ int sfu_node_app_config_validate(const sfu_node_app_config_t *config) {
              config->auth_previous_secret[0] != '\0') ||
             (config->auth_revoked_token_sha256 &&
              config->auth_revoked_token_sha256[0] != '\0');
-        if ((any_signed_auth &&
+        if (config->auth_dynamic_revocation_capacity < 0 ||
+            config->auth_dynamic_revocation_capacity >
+                TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS ||
+            (any_signed_auth &&
              turbo_media_auth_config_validate(&auth_config) != 0) ||
             (!any_signed_auth &&
              (!config->auth_issuer || config->auth_issuer[0] == '\0' ||
               config->auth_clock_skew_seconds < 0 ||
               config->auth_max_ttl_seconds < 1))) {
+            return -1;
+        }
+        if (config->auth_dynamic_revocation_capacity > 0 &&
+            (!config->use_tls ||
+             !config->auth_active_secret ||
+             config->auth_active_secret[0] == '\0' ||
+             (config->control_token && config->control_token[0] != '\0') ||
+             (config->media_access_token &&
+              config->media_access_token[0] != '\0'))) {
             return -1;
         }
     }
