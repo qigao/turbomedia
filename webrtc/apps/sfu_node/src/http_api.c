@@ -1,5 +1,6 @@
 #include "sfu_node/http_api.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_revocation_wire.h"
 #include "turbo_sdp.h"
 #include <chttp/chttp.h>
 #include <json_parser.h>
@@ -23,6 +24,8 @@
 #define SFU_NODE_SCOPE_MEDIA_SUBSCRIBE "sfu.media.subscribe"
 #define SFU_NODE_SCOPE_MEDIA_TRICKLE "sfu.media.trickle"
 #define SFU_NODE_SCOPE_MEDIA_DELETE "sfu.media.delete"
+#define SFU_NODE_SECURITY_CONTROL_AUDIENCE "turbomedia-security-control"
+#define SFU_NODE_SECURITY_REVOCATION_SCOPE "security.revocation.write"
 
 enum {
     OK = 200,
@@ -293,7 +296,9 @@ static int control_auth_enabled(const sfu_node_app_config_t *config) {
 }
 
 static turbo_media_auth_config_t signed_auth_config(
-    const sfu_node_app_config_t *config) {
+    const sfu_node_app_config_t *config,
+    sfu_node_app_server_t *server,
+    int apply_dynamic_revocation) {
     turbo_media_auth_config_t auth = {0};
 
     if (!config) {
@@ -307,6 +312,11 @@ static turbo_media_auth_config_t signed_auth_config(
     auth.revoked_token_sha256 = config->auth_revoked_token_sha256;
     auth.clock_skew_seconds = config->auth_clock_skew_seconds;
     auth.max_ttl_seconds = config->auth_max_ttl_seconds;
+    if (apply_dynamic_revocation &&
+        sfu_node_app_server_dynamic_revocation_enabled(server)) {
+        auth.revocation_check = sfu_node_app_server_revocation_check;
+        auth.revocation_context = server;
+    }
     return auth;
 }
 
@@ -326,7 +336,7 @@ static int request_has_control_auth(
     if (!authorization) {
         authorization = get_headers(req, "authorization");
     }
-    auth = signed_auth_config(config);
+    auth = signed_auth_config(config, req->server, 1);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SFU_NODE_CONTROL_AUDIENCE;
     policy.required_scope = required_scope;
@@ -335,6 +345,31 @@ static int request_has_control_auth(
     return turbo_media_auth_authorize(
                authorization, config->control_token, &auth, &policy) !=
            TURBO_MEDIA_AUTH_DENIED;
+}
+
+static int request_has_security_control_auth(
+    const Req *req, const sfu_node_app_config_t *config) {
+    const char *authorization;
+    turbo_media_auth_config_t auth;
+    turbo_media_auth_policy_t policy;
+
+    if (!req || !config || !req->server ||
+        !sfu_node_app_server_dynamic_revocation_enabled(req->server) ||
+        !config->use_tls || !config->auth_active_secret ||
+        config->auth_active_secret[0] == '\0') {
+        return 0;
+    }
+    authorization = get_headers(req, "Authorization");
+    if (!authorization) {
+        authorization = get_headers(req, "authorization");
+    }
+    auth = signed_auth_config(config, req->server, 0);
+    memset(&policy, 0, sizeof(policy));
+    policy.audience = SFU_NODE_SECURITY_CONTROL_AUDIENCE;
+    policy.required_scope = SFU_NODE_SECURITY_REVOCATION_SCOPE;
+    return turbo_media_auth_authorize(
+               authorization, NULL, &auth, &policy) ==
+           TURBO_MEDIA_AUTH_SIGNED_TOKEN;
 }
 
 static const char *request_header(const Req *req, const char *name,
@@ -410,7 +445,7 @@ static int request_has_media_auth(
         return 0;
     }
     authorization = request_header(req, "Authorization", "authorization");
-    auth = signed_auth_config(config);
+    auth = signed_auth_config(config, req->server, 1);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SFU_NODE_MEDIA_AUDIENCE;
     policy.required_scope = required_scope;
@@ -1821,6 +1856,104 @@ static void handle_command(Req *req, Res *res) {
     root = NULL;
 }
 
+static void send_revocation_result(
+    Res *res, sfu_node_app_server_t *server,
+    turbo_media_revocation_apply_result_t result) {
+    int synchronized = 0;
+    uint64_t epoch = 0U;
+    uint64_t sequence = 0U;
+    size_t count = 0U;
+    const char *name = "error";
+    int status = BAD_REQUEST;
+    char body[256];
+    int length;
+
+    if (result == TURBO_MEDIA_REVOCATION_APPLY_APPLIED) {
+        name = "applied";
+        status = OK;
+    } else if (result == TURBO_MEDIA_REVOCATION_APPLY_STALE) {
+        name = "stale";
+        status = OK;
+    } else if (result == TURBO_MEDIA_REVOCATION_APPLY_GAP) {
+        name = "gap";
+        status = CONFLICT;
+    } else if (result == TURBO_MEDIA_REVOCATION_APPLY_LIMIT) {
+        name = "limit";
+        status = CONFLICT;
+    }
+    if (sfu_node_app_server_get_revocation_status(
+            server, &synchronized, &epoch, &sequence, &count) != 0) {
+        send_text(res, INTERNAL_SERVER_ERROR,
+                  "Revocation status unavailable");
+        return;
+    }
+    length = snprintf(
+        body, sizeof(body),
+        "{\"schema_version\":1,\"result\":\"%s\","
+        "\"synchronized\":%s,\"epoch\":%llu,\"sequence\":%llu,"
+        "\"count\":%zu}",
+        name, synchronized ? "true" : "false",
+        (unsigned long long)epoch, (unsigned long long)sequence, count);
+    if (length < 0 || (size_t)length >= sizeof(body)) {
+        send_text(res, INTERNAL_SERVER_ERROR, "Internal Error");
+        return;
+    }
+    reply(res, (unsigned int)status, "application/json",
+          body, (size_t)length);
+}
+
+static void handle_revocation_snapshot(Req *req, Res *res) {
+    const sfu_node_app_config_t *config;
+    turbo_media_revocation_wire_snapshot_t snapshot;
+    turbo_media_revocation_apply_result_t result;
+
+    if (!req || !res || !req->server) {
+        send_text(res, INTERNAL_SERVER_ERROR, "Server not initialized");
+        return;
+    }
+    config = sfu_node_app_server_get_config(req->server);
+    if (!request_has_security_control_auth(req, config)) {
+        set_header(res, "WWW-Authenticate", "Bearer");
+        send_text(res, UNAUTHORIZED, "Unauthorized");
+        return;
+    }
+    if (turbo_media_revocation_wire_parse_snapshot(
+            (const char *)req->body, req->body_len, &snapshot) != 0) {
+        send_text(res, BAD_REQUEST, "Invalid revocation snapshot");
+        return;
+    }
+    result = sfu_node_app_server_apply_revocation_snapshot(
+        req->server, snapshot.epoch, snapshot.sequence,
+        snapshot.count > 0U ? snapshot.digests : NULL,
+        snapshot.count);
+    send_revocation_result(res, req->server, result);
+}
+
+static void handle_revocation_revoke(Req *req, Res *res) {
+    const sfu_node_app_config_t *config;
+    turbo_media_revocation_wire_revoke_t revoke;
+    turbo_media_revocation_apply_result_t result;
+
+    if (!req || !res || !req->server) {
+        send_text(res, INTERNAL_SERVER_ERROR, "Server not initialized");
+        return;
+    }
+    config = sfu_node_app_server_get_config(req->server);
+    if (!request_has_security_control_auth(req, config)) {
+        set_header(res, "WWW-Authenticate", "Bearer");
+        send_text(res, UNAUTHORIZED, "Unauthorized");
+        return;
+    }
+    if (turbo_media_revocation_wire_parse_revoke(
+            (const char *)req->body, req->body_len, &revoke) != 0) {
+        send_text(res, BAD_REQUEST, "Invalid revocation event");
+        return;
+    }
+    result = sfu_node_app_server_apply_revocation(
+        req->server, revoke.epoch, revoke.sequence, revoke.sha256);
+    send_revocation_result(res, req->server, result);
+}
+
 typedef void (*sfu_node_http_handler_fn)(Req *req, Res *res);
 
 static int sfu_node_http_dispatch(
@@ -1852,6 +1985,8 @@ SFU_NODE_HTTP_ROUTE_ADAPTER(handle_ready)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_metrics)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_get_webrtc_session)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_command)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_revocation_snapshot)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_revocation_revoke)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whip_post)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whep_post)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_media_session_patch)
@@ -1952,6 +2087,18 @@ static int sfu_node_http_register_routes(sfu_node_http_api_t *api) {
     if (status == SALTS_OK) {
         status = chttp_server_post(&api->http, "/api/v1/commands",
                                    handle_command_route, api);
+    }
+    if (status == SALTS_OK &&
+        sfu_node_app_server_dynamic_revocation_enabled(api->server)) {
+        status = chttp_server_post(
+            &api->http, "/api/v1/security/revocations/snapshot",
+            handle_revocation_snapshot_route, api);
+    }
+    if (status == SALTS_OK &&
+        sfu_node_app_server_dynamic_revocation_enabled(api->server)) {
+        status = chttp_server_post(
+            &api->http, "/api/v1/security/revocations/revoke",
+            handle_revocation_revoke_route, api);
     }
     if (status == SALTS_OK) {
         status = chttp_server_post(&api->http,

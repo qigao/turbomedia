@@ -42,6 +42,12 @@ issuer = "turbomedia"
 # previous_key_id = "sfu-2026-06"
 # previous_secret = "replace-with-the-previous-secret"
 # revoked_token_sha256 = "one-or-more-comma-separated-lowercase-sha256-digests"
+# Optional shared dynamic revocation projection. When non-zero, control/media
+# static compatibility tokens cannot bypass revocation. The node starts
+# UNSYNCHRONIZED and requires a covering snapshot over the HTTPS
+# /api/v1/security/revocations/* endpoints authenticated with audience
+# turbomedia-security-control and scope security.revocation.write.
+# dynamic_revocation_capacity = 256
 clock_skew_seconds = 30
 max_ttl_seconds = 3600
 

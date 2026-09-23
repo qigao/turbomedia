@@ -1,4 +1,5 @@
 #include "sfu_node/config.h"
+#include "turbo_media_auth.h"
 #include <tinytest.h>
 
 #include <stdlib.h>
@@ -56,6 +57,7 @@ spec("SFU node TOML configuration") {
             "active_key_id = \"sfu-key-2026-07\"\n"
             "active_secret = \"sfu-active-secret-at-least-32-bytes\"\n"
             "revoked_token_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n"
+            "dynamic_revocation_capacity = 0\n"
             "[ice]\n"
             "stun_servers = [\"stun:stun-1.example.com:3478\", "
             "\"stun:stun-2.example.com:3478\"]\n"
@@ -85,6 +87,7 @@ spec("SFU node TOML configuration") {
             check_equal(
                 config.auth_revoked_token_sha256,
                 "0000000000000000000000000000000000000000000000000000000000000000");
+            check_equal(config.auth_dynamic_revocation_capacity, 0);
             check_equal(config.stun_server_count, 2);
             check_equal(config.stun_servers[0],
                          "stun:stun-1.example.com:3478");
@@ -100,6 +103,30 @@ spec("SFU node TOML configuration") {
         }
         sfu_node_app_config_cleanup(&config);
         remove_toml(path);
+    }
+
+    it("dynamic revocation requires TLS and signed auth") {
+        sfu_node_app_config_t config;
+
+        sfu_node_app_config_init(&config);
+        config.auth_dynamic_revocation_capacity = 8;
+        check_equal(sfu_node_app_config_validate(&config), -1);
+
+        config.auth_active_key_id = "sfu-key-2026-07";
+        config.auth_active_secret =
+            "sfu-active-secret-at-least-32-bytes";
+        check_equal(sfu_node_app_config_validate(&config), -1);
+
+        config.use_tls = 1;
+        config.tls_cert_file = "sfu-chain.pem";
+        config.tls_key_file = "sfu-key.pem";
+        check_equal(sfu_node_app_config_validate(&config), 0);
+
+        config.auth_dynamic_revocation_capacity =
+            TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS + 1;
+        check_equal(sfu_node_app_config_validate(&config), -1);
+
+        sfu_node_app_config_cleanup(&config);
     }
 
     it("loads the shipped example") {

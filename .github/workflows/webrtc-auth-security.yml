@@ -9,6 +9,12 @@ on:
       - "webrtc/include/http_api.h"
       - "webrtc/include/webrtc_signaling.h"
       - "webrtc/apps/signaling_server/**"
+      - "webrtc/apps/sfu_node/include/sfu_node/config.h"
+      - "webrtc/apps/sfu_node/src/config.c"
+      - "webrtc/apps/sfu_node/src/http_api.c"
+      - "webrtc/apps/sfu_node/src/server.c"
+      - "webrtc/apps/sfu_node/tests/test_sfu_node_config.c"
+      - "webrtc/apps/sfu_node/tests/test_sfu_node_app.c"
       - "webrtc/tests/test_auth_token.c"
       - "webrtc/tests/test_revocation_state.c"
       - "webrtc/tests/test_revocation_projection.c"
@@ -29,6 +35,12 @@ on:
       - "webrtc/include/http_api.h"
       - "webrtc/include/webrtc_signaling.h"
       - "webrtc/apps/signaling_server/**"
+      - "webrtc/apps/sfu_node/include/sfu_node/config.h"
+      - "webrtc/apps/sfu_node/src/config.c"
+      - "webrtc/apps/sfu_node/src/http_api.c"
+      - "webrtc/apps/sfu_node/src/server.c"
+      - "webrtc/apps/sfu_node/tests/test_sfu_node_config.c"
+      - "webrtc/apps/sfu_node/tests/test_sfu_node_app.c"
       - "webrtc/tests/test_auth_token.c"
       - "webrtc/tests/test_revocation_state.c"
       - "webrtc/tests/test_revocation_projection.c"
@@ -414,6 +426,30 @@ jobs:
             webrtc/tests/test_revocation_projection.c \
             -o "$RUNNER_TEMP/revocation-projection-test"
           "$RUNNER_TEMP/revocation-projection-test"
+
+      - name: Syntax-check shared revocation wire parser
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -Iwebrtc/src/auth -I"$RUNNER_TEMP/auth-stubs" \
+            webrtc/src/auth/turbo_media_revocation_wire.c
+
+      - name: Syntax-check SFU dynamic revocation config surface
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          cat > "$RUNNER_TEMP/sfu-revocation-config-header.c" <<'EOF'
+          #include "sfu_node/config.h"
+          int main(void) {
+            sfu_node_app_config_t config = {0};
+            config.auth_dynamic_revocation_capacity = 16;
+            return config.auth_dynamic_revocation_capacity;
+          }
+          EOF
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -Iwebrtc/apps/sfu_node/include \
+            "$RUNNER_TEMP/sfu-revocation-config-header.c"
 
       - name: Syntax-check signaling revocation public contract
         shell: bash
