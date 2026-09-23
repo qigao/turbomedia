@@ -13,6 +13,12 @@
 #define REVOCATION_SNAPSHOT_PATH "/api/v1/security/revocations/snapshot"
 #define REVOCATION_REVOKE_PATH "/api/v1/security/revocations/revoke"
 
+typedef struct http_response_s {
+    unsigned int status_code;
+    size_t body_size;
+    char body[TURBO_MEDIA_REVOCATION_HTTP_RESPONSE_BYTES];
+} http_response_t;
+
 typedef struct http_target_state_s {
     turbo_media_revocation_http_target_t view;
     char target_id[TURBO_MEDIA_REVOCATION_FANOUT_TARGET_ID_BYTES];
@@ -162,7 +168,7 @@ static int response_object_exact(const json_value_t *object) {
 }
 
 static turbo_media_revocation_fanout_transport_result_t parse_http_response(
-    const turbo_media_revocation_http_response_t *http,
+    const http_response_t *http,
     turbo_media_revocation_fanout_response_t *response) {
     json_value_t *root = NULL;
     json_value_t *result_value;
@@ -234,7 +240,8 @@ static turbo_media_revocation_fanout_transport_result_t parse_http_response(
     return mapped;
 }
 
-static int real_https_request(
+static turbo_media_revocation_fanout_transport_result_t
+real_https_request(
     void *context,
     const turbo_media_revocation_http_target_t *target,
     const char *path,
@@ -244,17 +251,19 @@ static int real_https_request(
     uint32_t connect_timeout_ms,
     uint32_t read_timeout_ms,
     uint32_t write_timeout_ms,
-    turbo_media_revocation_http_response_t *response) {
+    http_response_t *response) {
     turbo_transport_config_t parsed;
     cnet_tls_client_config tls;
+    http_response_t http;
     turbo_transport_t *transport = NULL;
     chttp_response *raw = NULL;
     const char *headers[] = {"Content-Type", "application/json"};
-    int result = -1;
+    turbo_media_revocation_fanout_transport_result_t result =
+        TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_RETRYABLE;
     (void)context;
 
     if (!target || !path || !bearer_token || !body || !response) {
-        return -1;
+        return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
     }
     memset(&parsed, 0, sizeof(parsed));
     memset(&tls, 0, sizeof(tls));
@@ -263,7 +272,7 @@ static int real_https_request(
         parsed.type != TURBO_TRANSPORT_HTTP || !parsed.use_tls ||
         !parsed.path || strcmp(parsed.path, "/") != 0) {
         free_parsed_transport_config(&parsed);
-        return -1;
+        return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
     }
 
     tls.size = sizeof(tls);
@@ -277,28 +286,32 @@ static int real_https_request(
     transport = turbo_transport_create(&parsed);
     free_parsed_transport_config(&parsed);
     if (!transport) {
-        return -1;
+        return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_RETRYABLE;
     }
 
     raw = turbo_transport_http_request(
         transport, TURBO_HTTP_POST, path,
         (const uint8_t *)body, body_size, headers, 2);
-    if (raw && raw->body_size < sizeof(response->body)) {
-        response->status_code = raw->status_code;
-        response->body_size = raw->body_size;
-        if (raw->body_size > 0U && raw->body) {
-            memcpy(response->body, raw->body, raw->body_size);
-        }
-        response->body[response->body_size] = '\0';
-        result = 0;
-    }
     if (raw) {
+        http.status_code = raw->status_code;
+        if (raw->body_size < sizeof(http.body)) {
+            http.body_size = raw->body_size;
+            if (raw->body_size > 0U && raw->body) {
+                memcpy(http.body, raw->body, raw->body_size);
+            }
+            http.body[http.body_size] = '\0';
+            result = parse_http_response(&http, response);
+        } else {
+            result = TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
+        }
         chttp_response_destroy(raw);
         free(raw);
     }
-    if (turbo_transport_destroy(transport) != 0) {
-        result = -1;
+    if (turbo_transport_destroy(transport) != 0 &&
+        result != TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL) {
+        result = TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_RETRYABLE;
     }
+    secure_zero(&http, sizeof(http));
     return result;
 }
 
@@ -403,10 +416,8 @@ static turbo_media_revocation_fanout_transport_result_t send_request(
     size_t body_size,
     turbo_media_revocation_fanout_response_t *response) {
     char bearer[TURBO_MEDIA_REVOCATION_HTTP_BEARER_BYTES];
-    turbo_media_revocation_http_response_t http;
     turbo_media_revocation_fanout_transport_result_t result =
         TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
-    int request_status;
 
     if (!fanout || !target || !path || !body || !response) {
         return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
@@ -420,17 +431,12 @@ static turbo_media_revocation_fanout_transport_result_t send_request(
         secure_zero(bearer, sizeof(bearer));
         return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
     }
-    request_status = fanout->dependencies.request(
+    result = fanout->dependencies.request(
         fanout->dependencies.context, &target->view, path, bearer,
         body, body_size, fanout->config.connect_timeout_ms,
         fanout->config.read_timeout_ms, fanout->config.write_timeout_ms,
-        &http);
+        response);
     secure_zero(bearer, sizeof(bearer));
-    if (request_status != 0) {
-        return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_RETRYABLE;
-    }
-    result = parse_http_response(&http, response);
-    secure_zero(&http, sizeof(http));
     return result;
 }
 
