@@ -9,6 +9,7 @@ on:
       - "webrtc/include/http_api.h"
       - "webrtc/include/webrtc_signaling.h"
       - "webrtc/apps/signaling_server/**"
+      - "webrtc/apps/sfu_node/**"
       - "webrtc/tests/test_auth_token.c"
       - "webrtc/tests/test_revocation_state.c"
       - "webrtc/tests/test_revocation_projection.c"
@@ -29,6 +30,7 @@ on:
       - "webrtc/include/http_api.h"
       - "webrtc/include/webrtc_signaling.h"
       - "webrtc/apps/signaling_server/**"
+      - "webrtc/apps/sfu_node/**"
       - "webrtc/tests/test_auth_token.c"
       - "webrtc/tests/test_revocation_state.c"
       - "webrtc/tests/test_revocation_projection.c"
@@ -451,6 +453,26 @@ jobs:
             -I"$RUNNER_TEMP/auth-stubs" \
             -Iwebrtc/include -Iwebrtc/src/auth -Imedia/include \
             webrtc/src/signaling/webrtc_signaling.c
+
+      - name: Syntax-check SFU dynamic revocation public contract
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          cat > "$RUNNER_TEMP/sfu-revocation-header.c" <<'EOF'
+          #include "sfu_node/config.h"
+          #include "sfu_node/server.h"
+          int main(void) {
+            sfu_node_app_config_t config = {0};
+            turbo_media_auth_revocation_status_t status =
+                TURBO_MEDIA_AUTH_REVOCATION_UNKNOWN;
+            config.auth_dynamic_revocation_capacity = 16;
+            return config.auth_dynamic_revocation_capacity + (int)status;
+          }
+          EOF
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -Iwebrtc/apps/sfu_node/include -Iwebrtc/include \
+            -Iwebrtc/src/auth -Imedia/include \
+            "$RUNNER_TEMP/sfu-revocation-header.c"
 
       - name: Syntax-check auth integration and native test
         shell: bash
