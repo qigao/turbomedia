@@ -23,6 +23,8 @@
 #define SFU_NODE_SCOPE_MEDIA_SUBSCRIBE "sfu.media.subscribe"
 #define SFU_NODE_SCOPE_MEDIA_TRICKLE "sfu.media.trickle"
 #define SFU_NODE_SCOPE_MEDIA_DELETE "sfu.media.delete"
+#define SFU_NODE_SECURITY_CONTROL_AUDIENCE "turbomedia-security-control"
+#define SFU_NODE_SECURITY_REVOCATION_SCOPE "security.revocation.write"
 
 enum {
     OK = 200,
@@ -293,6 +295,7 @@ static int control_auth_enabled(const sfu_node_app_config_t *config) {
 }
 
 static turbo_media_auth_config_t signed_auth_config(
+    sfu_node_app_server_t *server,
     const sfu_node_app_config_t *config) {
     turbo_media_auth_config_t auth = {0};
 
@@ -307,6 +310,10 @@ static turbo_media_auth_config_t signed_auth_config(
     auth.revoked_token_sha256 = config->auth_revoked_token_sha256;
     auth.clock_skew_seconds = config->auth_clock_skew_seconds;
     auth.max_ttl_seconds = config->auth_max_ttl_seconds;
+    if (sfu_node_app_server_dynamic_revocation_enabled(server)) {
+        auth.revocation_check = sfu_node_app_server_check_revocation;
+        auth.revocation_context = server;
+    }
     return auth;
 }
 
@@ -326,15 +333,19 @@ static int request_has_control_auth(
     if (!authorization) {
         authorization = get_headers(req, "authorization");
     }
-    auth = signed_auth_config(config);
+    auth = signed_auth_config(req ? req->server : NULL, config);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SFU_NODE_CONTROL_AUDIENCE;
     policy.required_scope = required_scope;
     policy.room_id = room_id;
     policy.participant_id = participant_id;
     return turbo_media_auth_authorize(
-               authorization, config->control_token, &auth, &policy) !=
-           TURBO_MEDIA_AUTH_DENIED;
+               authorization,
+               sfu_node_app_server_dynamic_revocation_enabled(
+                   req ? req->server : NULL)
+                   ? NULL
+                   : config->control_token,
+               &auth, &policy) != TURBO_MEDIA_AUTH_DENIED;
 }
 
 static const char *request_header(const Req *req, const char *name,
@@ -410,15 +421,19 @@ static int request_has_media_auth(
         return 0;
     }
     authorization = request_header(req, "Authorization", "authorization");
-    auth = signed_auth_config(config);
+    auth = signed_auth_config(req ? req->server : NULL, config);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SFU_NODE_MEDIA_AUDIENCE;
     policy.required_scope = required_scope;
     policy.room_id = room_id;
     policy.participant_id = participant_id;
     return turbo_media_auth_authorize(
-               authorization, config->media_access_token, &auth, &policy) !=
-           TURBO_MEDIA_AUTH_DENIED;
+               authorization,
+               sfu_node_app_server_dynamic_revocation_enabled(
+                   req ? req->server : NULL)
+                   ? NULL
+                   : config->media_access_token,
+               &auth, &policy) != TURBO_MEDIA_AUTH_DENIED;
 }
 
 static int require_media_auth(Req *req, Res *res,
