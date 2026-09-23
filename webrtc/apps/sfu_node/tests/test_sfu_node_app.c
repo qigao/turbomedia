@@ -1569,6 +1569,8 @@ void test_sfu_node_dynamic_revocation_controls_https_auth_and_readiness(void) {
       "\"max_participants\":4}";
 
   sfu_node_app_config_init(&config);
+  config.control_token = NULL;
+  config.media_access_token = NULL;
   config.bind_host = "127.0.0.1";
   config.bind_port = 19431;
   config.node_id = "node-dynamic-revocation";
