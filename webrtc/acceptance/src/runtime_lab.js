@@ -100,7 +100,6 @@ function createAcceptanceLab(options = {}) {
         publisher_resource: null,
         viewer_resource: null,
         publisher_write: null,
-        viewer_write: null,
         publisher_dangerous: null,
         publisher_media: null,
         viewer_media: null,
@@ -413,8 +412,6 @@ function createAcceptanceLab(options = {}) {
       state.turn = await issueTurn(runtime, state, signal);
       state.publisher_write = await issueToken(runtime, state, 'turbomedia-sfu-control',
         ['sfu.control.write'], state.publisher_id, signal);
-      state.viewer_write = await issueToken(runtime, state, 'turbomedia-sfu-control',
-        ['sfu.control.write'], state.viewer_id, signal);
       state.publisher_dangerous = await issueToken(runtime, state, 'turbomedia-sfu-control',
         ['sfu.control.dangerous'], state.publisher_id, signal);
       state.publisher_media = await issueToken(runtime, state, 'turbomedia-sfu-media',
@@ -455,7 +452,7 @@ function createAcceptanceLab(options = {}) {
 
     async setViewerSubscriptions(runtime, trackIds, signal) {
       const state = stateFor(runtime);
-      return sfu.setViewerSubscriptions(sfuContext(runtime, state), state.viewer_write,
+      return sfu.setViewerSubscriptions(sfuContext(runtime, state), state.publisher_write,
         trackIds, signal);
     },
 
