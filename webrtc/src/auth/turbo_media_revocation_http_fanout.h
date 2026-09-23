@@ -38,13 +38,8 @@ typedef struct turbo_media_revocation_http_fanout_config_s {
     void *token_context;
 } turbo_media_revocation_http_fanout_config_t;
 
-typedef struct turbo_media_revocation_http_response_s {
-    unsigned int status_code;
-    size_t body_size;
-    char body[TURBO_MEDIA_REVOCATION_HTTP_RESPONSE_BYTES];
-} turbo_media_revocation_http_response_t;
-
-typedef int (*turbo_media_revocation_http_request_fn)(
+typedef turbo_media_revocation_fanout_transport_result_t
+(*turbo_media_revocation_http_request_fn)(
     void *context,
     const turbo_media_revocation_http_target_t *target,
     const char *path,
@@ -54,7 +49,7 @@ typedef int (*turbo_media_revocation_http_request_fn)(
     uint32_t connect_timeout_ms,
     uint32_t read_timeout_ms,
     uint32_t write_timeout_ms,
-    turbo_media_revocation_http_response_t *response);
+    turbo_media_revocation_fanout_response_t *response);
 
 typedef struct turbo_media_revocation_http_dependencies_s {
     turbo_media_revocation_http_request_fn request;
