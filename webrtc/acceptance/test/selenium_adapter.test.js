@@ -220,6 +220,26 @@ test('page cleanup errors survive session quit and closeRole is terminal and ide
   assert.equal(fake.events.filter((e) => e[1] === 'quit').length, 1);
 });
 
+test('contract_lab may explicitly use loopback Grid while release still rejects it', async (t) => {
+  const grid = await startFakeGrid();
+  t.after(() => grid.close());
+  const adapter = factory()({
+    source,
+    gridUrl: grid.gridUrl,
+    profile: 'contract_lab',
+    allowLoopbackHttp: true,
+    commandTimeoutMs: 500,
+  });
+  t.after(() => adapter.closeAll());
+  await adapter.preflightBrowser(context);
+  assert.throws(() => factory()({
+    source,
+    gridUrl: grid.gridUrl,
+    profile: 'release',
+    allowLoopbackHttp: true,
+  }), { code: 'BROWSER_UNSAFE_GRID_URL' });
+});
+
 test('actual pinned Selenium Builder honors explicit Grid and browser despite environment overrides', async (t) => {
   const grid = await startFakeGrid();
   t.after(() => grid.close());

@@ -13,9 +13,12 @@ async function startFakeSfuServer(options = {}) {
   const redact = createRedactor(tokens.map((entry) => entry.token));
   let fault = null;
   let polls = 0;
+  let mediaSequence = 0;
+  let residualSessions = options.residualSessions || 0;
+  let cleanupResidueInjected = false;
   const stats = () => ({
     node_id: 'fake-node', draining: false, room_count: rooms.size,
-    session_count: sessions.size + (options.residualSessions || 0),
+    session_count: sessions.size + residualSessions,
     published_track_count: [...sessions.values()].reduce((sum, session) => sum + session.registered_track_ids.length, 0),
     total_packets_routed: 42, total_bytes_routed: 4200, total_layer_switches: 0,
   });
@@ -24,7 +27,17 @@ async function startFakeSfuServer(options = {}) {
     res.end(typeof body === 'string' ? body : JSON.stringify(body));
   }
   function authorized(req, { audience, scope, room, participant }) {
-    return tokens.some((entry) => req.headers.authorization === `Bearer ${entry.token}` &&
+    const prefix = 'Bearer ';
+    const header = req.headers.authorization;
+    const token = typeof header === 'string' && header.startsWith(prefix) ? header.slice(prefix.length) : null;
+    if (typeof options.authorize === 'function') {
+      try {
+        return options.authorize({ token, audience, scope, room, participant }) === true;
+      } catch {
+        return false;
+      }
+    }
+    return tokens.some((entry) => token === entry.token &&
       entry.audience === audience && entry.scope.includes(scope) && entry.binding.room_id === room &&
       (!participant || entry.binding.participant_id === participant));
   }
@@ -40,7 +53,11 @@ async function startFakeSfuServer(options = {}) {
   const server = http.createServer(async (req, res) => {
     let text = '';
     for await (const chunk of req) text += chunk;
-    const body = text ? JSON.parse(text) : null;
+    let body = null;
+    if (text) {
+      try { body = JSON.parse(text); }
+      catch { body = text; }
+    }
     const nonAuthInput = JSON.stringify({ url: req.url, body,
       headers: Object.fromEntries(Object.entries(req.headers).filter(([key]) => key !== 'authorization')) });
     requests.push(JSON.parse(redact(JSON.stringify({ method: req.method, url: req.url, body,
@@ -68,6 +85,53 @@ async function startFakeSfuServer(options = {}) {
     if (req.url === '/health') return send(res, 200, { ok: true, node_stats: stats() });
     if (req.url === '/ready') return send(res, 200, { ok: true, draining: false });
     const parts = req.url.split('/').slice(1).map(decodeURIComponent);
+    if (req.method === 'POST' && ['whip', 'whep'].includes(parts[0]) && parts.length === 3) {
+      const [kind, room, participant] = parts;
+      const scope = kind === 'whip' ? 'sfu.media.publish' : 'sfu.media.subscribe';
+      if (!authorized(req, { audience: 'turbomedia-sfu-media', scope, room, participant })) {
+        return send(res, 401, 'Unauthorized', 'text/plain');
+      }
+      if (!rooms.has(room)) return send(res, 404, 'Room not found', 'text/plain');
+      const sessionId = `session-${++mediaSequence}`;
+      const key = JSON.stringify([kind, room, participant, sessionId]);
+      sessions.set(key, {
+        kind, room_id: room, participant_id: participant, session_id: sessionId,
+        state: 'connected', remote_description_set: true, registered_track_ids: [],
+        remote_frame_count: 0, local_candidate_count: 1, local_answer: null,
+        local_ice_candidates: [], version: 1,
+      });
+      res.setHeader('Location', `/${kind}/${encodeURIComponent(room)}/${encodeURIComponent(participant)}/sessions/${sessionId}`);
+      res.setHeader('ETag', '"1"');
+      return send(res, 201, 'contract-answer', 'application/sdp');
+    }
+    if (req.method === 'PATCH' && ['whip', 'whep'].includes(parts[0]) &&
+        parts.length === 5 && parts[3] === 'sessions') {
+      const [kind, room, participant, , id] = parts;
+      if (!authorized(req, { audience: 'turbomedia-sfu-media', scope: 'sfu.media.trickle', room, participant })) {
+        return send(res, 401, 'Unauthorized', 'text/plain');
+      }
+      const key = JSON.stringify([kind, room, participant, id]);
+      const session = sessions.get(key);
+      if (!session) return send(res, 404, 'Media session not found', 'text/plain');
+      const expected = `"${session.version}"`;
+      const presented = req.headers['if-match'];
+      if (presented !== expected) {
+        if (options.acceptStaleEtag === true && /^"[1-9][0-9]*"$/.test(presented || '')) {
+          res.setHeader('ETag', expected);
+          return send(res, 204, '', 'text/plain');
+        }
+        return send(res, 412, 'Media resource ETag is stale', 'text/plain');
+      }
+      if (typeof body === 'string' && body.includes('restart')) {
+        session.version += 1;
+        res.setHeader('ETag', `"${session.version}"`);
+        return send(res, 200,
+          'a=ice-ufrag:remote2\r\na=ice-pwd:remoteabcdefghijklmnopqr2\r\n',
+          'application/trickle-ice-sdpfrag');
+      }
+      res.setHeader('ETag', expected);
+      return send(res, 204, '', 'text/plain');
+    }
     if (req.method === 'DELETE') {
       const [kind, room, participant, , id] = parts;
       if (!authorized(req, { audience: 'turbomedia-sfu-media', scope: 'sfu.media.delete', room, participant })) {
@@ -76,6 +140,10 @@ async function startFakeSfuServer(options = {}) {
       const key = JSON.stringify([kind, room, participant, id]);
       if (!sessions.has(key)) return send(res, 404, 'Media session not found', 'text/plain');
       sessions.delete(key);
+      if (options.cleanupResidueOnDelete === true && !cleanupResidueInjected) {
+        cleanupResidueInjected = true;
+        residualSessions += 1;
+      }
       return send(res, 204, '', 'text/plain');
     }
     if (req.method === 'GET' && parts[0] === 'api') {

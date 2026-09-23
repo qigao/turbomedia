@@ -362,7 +362,8 @@ function createSeleniumAdapter(options = {}) {
   if (!object(source) || !HASH.test(source.test_page_sha256)) fail('BROWSER_INVALID_SOURCE', 'source');
   const pageUrl = safeUrl(source.test_page_url, false, 'source').href;
   const grid = options.gridUrl === undefined ? null : safeUrl(options.gridUrl,
-    options.profile === 'diagnostic' && options.allowLoopbackHttp === true, 'grid');
+    ['diagnostic', 'contract_lab'].includes(options.profile) &&
+      options.allowLoopbackHttp === true, 'grid');
   const builderFactory = options.builderFactory ?? (() => new Builder());
   if (typeof builderFactory !== 'function') fail('BROWSER_INVALID_OPTIONS', 'options');
   const roles = new Map(), secrets = new Set();

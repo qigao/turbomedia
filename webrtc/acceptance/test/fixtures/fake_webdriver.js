@@ -90,7 +90,7 @@ function fakeWebDriver(options = {}) {
 // command mapping and JSON serialization against this HTTP boundary.
 async function startFakeGrid(options = {}) {
   const requests = [], sockets = new Set();
-  const fake = fakeWebDriver();
+  const fake = fakeWebDriver(options.webdriver || {});
   const drivers = new Map();
   const handler = async (req, res) => {
     const chunks = [];

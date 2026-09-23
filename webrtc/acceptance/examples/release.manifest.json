@@ -1,0 +1,183 @@
+{
+  "schema_version": 2,
+  "profile": "release",
+  "source": {
+    "commit": "0000000000000000000000000000000000000000",
+    "require_clean_tree": true,
+    "test_page_url": "https://acceptance.example.test/client.html",
+    "test_page_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "grid": {
+    "endpoint_env": "TURBO_MEDIA_ACCEPTANCE_GRID_URL",
+    "browsers": [
+      {
+        "name": "chrome",
+        "version": "127.0.0",
+        "platform": "Windows 11"
+      },
+      {
+        "name": "MicrosoftEdge",
+        "version": "127.0.0",
+        "platform": "Windows 11"
+      },
+      {
+        "name": "firefox",
+        "version": "128.0.0",
+        "platform": "Linux"
+      },
+      {
+        "name": "safari",
+        "version": "18.0",
+        "platform": "macOS 15"
+      }
+    ]
+  },
+  "sfu": {
+    "base_url": "https://sfu.example.test",
+    "whip_endpoint": "/whip",
+    "whep_endpoint": "/whep",
+    "token_provider": {
+      "command": [
+        "turbomedia-sfu-token-provider",
+        "--json"
+      ]
+    }
+  },
+  "turn": {
+    "credential_provider": {
+      "command": [
+        "turbomedia-turn-credential-provider",
+        "--json"
+      ]
+    }
+  },
+  "topologies": [
+    {
+      "topology_id": "release-ipv4",
+      "relay_contract": {
+        "schema_version": 1,
+        "ip_family": "ipv4",
+        "protocol": "udp",
+        "relay_protocol": "tcp",
+        "remote_candidate_types": [
+          "host"
+        ]
+      },
+      "hooks": {
+        "setup": {
+          "command": [
+            "turbomedia-topology-hook",
+            "setup"
+          ]
+        },
+        "transition": {
+          "command": [
+            "turbomedia-topology-hook",
+            "transition"
+          ]
+        },
+        "teardown": {
+          "command": [
+            "turbomedia-topology-hook",
+            "teardown"
+          ]
+        },
+        "probe": {
+          "command": [
+            "turbomedia-topology-hook",
+            "probe"
+          ]
+        }
+      }
+    },
+    {
+      "topology_id": "release-ipv6",
+      "relay_contract": {
+        "schema_version": 1,
+        "ip_family": "ipv6",
+        "protocol": "udp",
+        "relay_protocol": "tcp",
+        "remote_candidate_types": [
+          "host"
+        ]
+      },
+      "hooks": {
+        "setup": {
+          "command": [
+            "turbomedia-topology-hook",
+            "setup"
+          ]
+        },
+        "transition": {
+          "command": [
+            "turbomedia-topology-hook",
+            "transition"
+          ]
+        },
+        "teardown": {
+          "command": [
+            "turbomedia-topology-hook",
+            "teardown"
+          ]
+        },
+        "probe": {
+          "command": [
+            "turbomedia-topology-hook",
+            "probe"
+          ]
+        }
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "scenario_id": "ipv4-expiry-migration",
+      "topology_id": "release-ipv4",
+      "workflow": {
+        "credential_expiry": true,
+        "topology_transition": true
+      },
+      "sample_interval_ms": 250,
+      "duration_ms": 15000
+    },
+    {
+      "scenario_id": "ipv6-relay-baseline",
+      "topology_id": "release-ipv6",
+      "workflow": {
+        "credential_expiry": false,
+        "topology_transition": false
+      },
+      "sample_interval_ms": 250,
+      "duration_ms": 15000
+    }
+  ],
+  "phase_deadlines": {
+    "preflight_ms": 60000,
+    "connect_ms": 60000,
+    "stable_ms": 30000,
+    "transition_ms": 30000,
+    "recovery_ms": 60000,
+    "drain_ms": 60000
+  },
+  "threshold_profile": {
+    "profile_id": "release-example",
+    "stable": {
+      "minimum_samples": 20,
+      "max_rtt_ms": 300,
+      "max_jitter_ms": 100,
+      "max_loss_ratio": 0.05,
+      "min_media_delta": 1
+    },
+    "recovery": {
+      "minimum_samples": 20,
+      "max_rtt_ms": 500,
+      "max_jitter_ms": 150,
+      "max_loss_ratio": 0.1,
+      "min_media_delta": 1
+    },
+    "drain": {
+      "maximum_duration_ms": 60000
+    }
+  },
+  "artifact_directory": "artifacts/webrtc-acceptance-release"
+}

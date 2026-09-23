@@ -7,6 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { loadManifest } = require('../src/manifest');
+const { runManifest } = require('../src/controller');
 const { createAcceptanceLab } = require('../src/runtime_lab');
 
 const fixture = path.join(__dirname, 'fixtures', 'minimal-manifest.json');
@@ -22,6 +23,24 @@ function runIdentity() {
     run_id: 'run-runtime-lab',
     manifest_hash: 'a'.repeat(64),
     started_at: '2026-09-23T00:00:00.000Z',
+  };
+}
+
+function caseRuntime(manifest) {
+  return {
+    identity: {
+      run_id: 'run-runtime-lab',
+      case_id: 'case-runtime-lab',
+    },
+    definition: {
+      topology_id: manifest.topologies[0].topology_id,
+      scenario: manifest.scenarios[0],
+    },
+    machine: {
+      generation: 0,
+      last_sequence: 0,
+    },
+    relay_contract_hash: 'b'.repeat(64),
   };
 }
 
@@ -107,6 +126,40 @@ test('runtime lab preflight uses the declared Grid env and bounded stdin provide
   assert.equal(JSON.stringify(providerCalls).includes('SECRET_TURN_CREDENTIAL'), false);
 });
 
+test('release run without Grid or providers is INCOMPLETE before provider SFU or media effects', async (t) => {
+  const output = await workspace(t);
+  const diagnostic = loadManifest(fixture, { outputDirectory: output });
+  const manifest = { ...diagnostic, profile: 'release' };
+  const providerCalls = [];
+  const sfuCalls = [];
+  const identity = runIdentity();
+  const lab = createAcceptanceLab({
+    manifest,
+    runIdentity: identity,
+    dependencies: {
+      env: {},
+      runBoundedCommand: async (options) => {
+        providerCalls.push(options);
+        throw new Error('provider must not run before missing Grid is classified');
+      },
+      createSfuAdapter: () => ({
+        async preflight() { sfuCalls.push('preflight'); return { ready: true }; },
+        async captureBaseline() {
+          sfuCalls.push('captureBaseline');
+          return { node_id: 'node', room_count: 0, session_count: 0, published_track_count: 0 };
+        },
+      }),
+    },
+  });
+
+  const result = await runManifest({ lab, run_identity: identity }, manifest);
+  assert.equal(result.outcome, 'INCOMPLETE');
+  assert.equal(result.cases.length, 0);
+  assert.equal(result.primary.reason.code, 'BROWSER_GRID_UNCONFIGURED');
+  assert.deepEqual(providerCalls, []);
+  assert.deepEqual(sfuCalls, []);
+});
+
 test('release runtime fails closed when topology probe, CORS, or TURN baseline evidence is unavailable', async (t) => {
   const output = await workspace(t);
   const diagnostic = loadManifest(fixture, { outputDirectory: output });
@@ -133,7 +186,7 @@ test('release runtime fails closed when topology probe, CORS, or TURN baseline e
     lab.preflightTurn(manifest),
     { code: 'TURN_REACHABILITY_UNVERIFIED', category: 'missing_evidence' }
   );
-  assert.deepEqual(await lab.waitTurnBaseline(), {
+  assert.deepEqual(await lab.waitTurnBaseline(caseRuntime(manifest)), {
     cleanup_failures: [{ code: 'TURN_BASELINE_UNVERIFIED' }],
   });
 });
@@ -148,7 +201,7 @@ test('credential-expiry runtime reports missing evidence instead of manufacturin
   });
 
   await assert.rejects(
-    lab.assertCredentialExpiry(),
+    lab.assertCredentialExpiry(caseRuntime(manifest)),
     { code: 'CREDENTIAL_EXPIRY_PROBE_UNAVAILABLE', category: 'missing_evidence' }
   );
 });

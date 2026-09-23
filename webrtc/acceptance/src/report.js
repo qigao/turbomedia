@@ -10,7 +10,7 @@ const { createContractValidator, validateContract } = require('./contracts');
 
 const SCHEMA_DIRECTORY = path.join(__dirname, '..', 'schemas');
 const OUTCOMES = Object.freeze(['PASS', 'FAIL', 'INCOMPLETE', 'ERROR']);
-const OUTCOME_PRIORITY = Object.freeze({ PASS: 0, INCOMPLETE: 1, FAIL: 2, ERROR: 3 });
+const OUTCOME_PRIORITY = Object.freeze({ PASS: 0, FAIL: 1, INCOMPLETE: 2, ERROR: 3 });
 const OUTPUTS = Object.freeze([
   Object.freeze({ name: 'run.json', render: renderCanonicalJson }),
   Object.freeze({ name: 'summary.md', render: renderMarkdown }),
@@ -265,6 +265,12 @@ function renderMarkdown(report) {
     `- Outcome: ${markdownInline(report.outcome)}`,
     `- Started: ${markdownInline(report.started_at)}`,
     `- Finished: ${markdownInline(report.finished_at)}`,
+    ...(typeof report.environment.kind === 'string'
+      ? [`- Environment: ${markdownInline(report.environment.kind)}`]
+      : []),
+    ...(typeof report.environment.release_eligible === 'boolean'
+      ? [`- Release eligible: ${report.environment.release_eligible ? 'true' : 'false'}`]
+      : []),
     '',
     '## Counts',
     '',
@@ -303,6 +309,12 @@ function renderJunit(report) {
     failures: report.counts.FAIL,
     errors: report.counts.ERROR,
     skipped: report.counts.INCOMPLETE,
+    ...(typeof report.environment.kind === 'string'
+      ? { environment_kind: report.environment.kind }
+      : {}),
+    ...(typeof report.environment.release_eligible === 'boolean'
+      ? { release_eligible: String(report.environment.release_eligible) }
+      : {}),
   });
   const lines = ['<?xml version="1.0" encoding="UTF-8"?>', `<testsuite ${suiteAttributes}>`];
   for (const caseResult of report.cases) {
