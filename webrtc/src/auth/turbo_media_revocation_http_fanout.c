@@ -621,11 +621,13 @@ int turbo_media_revocation_http_fanout_publish_snapshot(
     uint64_t epoch, uint64_t sequence,
     const char *const *sha256_hex, size_t count,
     turbo_media_revocation_fanout_report_t *report) {
-    return fanout && fanout->fanout
-               ? turbo_media_revocation_fanout_publish_snapshot(
-                     fanout->fanout, epoch, sequence,
-                     sha256_hex, count, report)
-               : -1;
+    if (!fanout || !fanout->fanout ||
+        epoch == 0U || epoch > UINT32_MAX ||
+        sequence > UINT32_MAX) {
+        return -1;
+    }
+    return turbo_media_revocation_fanout_publish_snapshot(
+        fanout->fanout, epoch, sequence, sha256_hex, count, report);
 }
 
 int turbo_media_revocation_http_fanout_publish_revoke(
@@ -635,11 +637,14 @@ int turbo_media_revocation_http_fanout_publish_revoke(
     const char *const *covering_sha256_hex,
     size_t covering_count,
     turbo_media_revocation_fanout_report_t *report) {
-    return fanout && fanout->fanout
-               ? turbo_media_revocation_fanout_publish_revoke(
-                     fanout->fanout, epoch, sequence, sha256_hex,
-                     covering_sha256_hex, covering_count, report)
-               : -1;
+    if (!fanout || !fanout->fanout ||
+        epoch == 0U || epoch > UINT32_MAX ||
+        sequence == 0U || sequence > UINT32_MAX) {
+        return -1;
+    }
+    return turbo_media_revocation_fanout_publish_revoke(
+        fanout->fanout, epoch, sequence, sha256_hex,
+        covering_sha256_hex, covering_count, report);
 }
 
 size_t turbo_media_revocation_http_fanout_target_count(
