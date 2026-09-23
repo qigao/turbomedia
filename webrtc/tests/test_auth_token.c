@@ -1,5 +1,6 @@
 #include "tinytest.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_revocation.h"
 #include <turbo_crypto.h>
 
 #include <stdio.h>
@@ -226,6 +227,124 @@ void test_auth_token_rejects_exact_revoked_fingerprint(void) {
     free(token);
 }
 
+void test_auth_token_dynamic_revocation_is_fail_closed_and_recovers(void) {
+    turbo_media_auth_config_t old_issuer = active_config;
+    turbo_media_auth_config_t dynamic = active_config;
+    turbo_media_revocation_state_t *state =
+        turbo_media_revocation_state_create(8);
+    char *token;
+    char *authorization;
+    char digest[65];
+
+    check_not_null(state);
+    dynamic.revocation_check = turbo_media_revocation_check_digest;
+    dynamic.revocation_context = state;
+    check_equal((int)(turbo_media_auth_config_validate(&dynamic)), (int)(0));
+
+    old_issuer.active_key_id = active_config.previous_key_id;
+    old_issuer.active_secret = active_config.previous_secret;
+    old_issuer.previous_key_id = NULL;
+    old_issuer.previous_secret = NULL;
+    token = issue_token(
+        &old_issuer, "sfu.media.publish", "room-a", "alice",
+        TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
+    check_not_null(token);
+    authorization = authorization_for(token);
+
+    check_equal((int)(authorize(
+                    authorization, &dynamic, "sfu.media.publish",
+                    "room-a", "alice", TEST_NOW_SECONDS + 1)),
+                (int)(TURBO_MEDIA_AUTH_DENIED));
+
+    check_equal((int)(turbo_media_revocation_apply_snapshot(
+                    state, 1U, 0U, NULL, 0U)),
+                (int)(TURBO_MEDIA_REVOCATION_APPLY_APPLIED));
+    check_equal((int)(authorize(
+                    authorization, &dynamic, "sfu.media.publish",
+                    "room-a", "alice", TEST_NOW_SECONDS + 1)),
+                (int)(TURBO_MEDIA_AUTH_SIGNED_TOKEN));
+
+    check_equal((int)(turbo_media_revocation_apply_revoke(
+                    state, 1U, 2U,
+                    "0000000000000000000000000000000000000000000000000000000000000000")),
+                (int)(TURBO_MEDIA_REVOCATION_APPLY_GAP));
+    check_equal((int)(authorize(
+                    authorization, &dynamic, "sfu.media.publish",
+                    "room-a", "alice", TEST_NOW_SECONDS + 1)),
+                (int)(TURBO_MEDIA_AUTH_DENIED));
+
+    check_equal((int)(turbo_media_revocation_apply_snapshot(
+                    state, 1U, 2U, NULL, 0U)),
+                (int)(TURBO_MEDIA_REVOCATION_APPLY_APPLIED));
+    check_equal((int)(authorize(
+                    authorization, &dynamic, "sfu.media.publish",
+                    "room-a", "alice", TEST_NOW_SECONDS + 1)),
+                (int)(TURBO_MEDIA_AUTH_SIGNED_TOKEN));
+
+    token_sha256_hex(token, digest);
+    check_equal((int)(turbo_media_revocation_apply_revoke(
+                    state, 1U, 3U, digest)),
+                (int)(TURBO_MEDIA_REVOCATION_APPLY_APPLIED));
+    check_equal((int)(authorize(
+                    authorization, &dynamic, "sfu.media.publish",
+                    "room-a", "alice", TEST_NOW_SECONDS + 1)),
+                (int)(TURBO_MEDIA_AUTH_DENIED));
+
+    free(authorization);
+    free(token);
+    turbo_media_revocation_state_destroy(state);
+}
+
+void test_auth_token_dynamic_revocation_disables_static_bearer_bypass(void) {
+    turbo_media_auth_config_t dynamic = active_config;
+    turbo_media_auth_policy_t policy = {
+        .audience = "turbomedia-sfu-media",
+        .required_scope = "sfu.media.publish",
+        .room_id = "room-a",
+        .participant_id = "alice",
+        .now = TEST_NOW_SECONDS
+    };
+    turbo_media_revocation_state_t *state =
+        turbo_media_revocation_state_create(1);
+
+    check_not_null(state);
+    dynamic.revocation_check = turbo_media_revocation_check_digest;
+    dynamic.revocation_context = state;
+
+    check_equal((int)(turbo_media_auth_authorize(
+                    "Bearer legacy-token", "legacy-token",
+                    &dynamic, &policy)),
+                (int)(TURBO_MEDIA_AUTH_DENIED));
+
+    check_equal((int)(turbo_media_revocation_apply_snapshot(
+                    state, 1U, 0U, NULL, 0U)),
+                (int)(TURBO_MEDIA_REVOCATION_APPLY_APPLIED));
+    check_equal((int)(turbo_media_auth_authorize(
+                    "Bearer legacy-token", "legacy-token",
+                    &dynamic, &policy)),
+                (int)(TURBO_MEDIA_AUTH_DENIED));
+
+    turbo_media_revocation_state_destroy(state);
+}
+
+void test_auth_token_requires_dynamic_revocation_callback_context_pair(void) {
+    turbo_media_auth_config_t callback_only = active_config;
+    turbo_media_auth_config_t context_only = active_config;
+    turbo_media_revocation_state_t *state =
+        turbo_media_revocation_state_create(1);
+
+    check_not_null(state);
+    callback_only.revocation_check = turbo_media_revocation_check_digest;
+    callback_only.revocation_context = NULL;
+    context_only.revocation_check = NULL;
+    context_only.revocation_context = state;
+
+    check_equal((int)(turbo_media_auth_config_validate(&callback_only)), (int)(-1));
+    check_equal((int)(turbo_media_auth_config_validate(&context_only)), (int)(-1));
+
+    turbo_media_revocation_state_destroy(state);
+}
+
 void test_auth_token_rejects_malformed_revocation_lists(void) {
     turbo_media_auth_config_t malformed = active_config;
 
@@ -275,6 +394,9 @@ spec("test_auth_token") {
     it("test_auth_token_keeps_static_bearer_compatibility_explicit") { test_auth_token_keeps_static_bearer_compatibility_explicit(); };
     it("test_auth_token_rejects_weak_or_incomplete_key_configuration") { test_auth_token_rejects_weak_or_incomplete_key_configuration(); };
     it("test_auth_token_rejects_exact_revoked_fingerprint") { test_auth_token_rejects_exact_revoked_fingerprint(); };
+    it("test_auth_token_dynamic_revocation_is_fail_closed_and_recovers") { test_auth_token_dynamic_revocation_is_fail_closed_and_recovers(); };
+    it("test_auth_token_dynamic_revocation_disables_static_bearer_bypass") { test_auth_token_dynamic_revocation_disables_static_bearer_bypass(); };
+    it("test_auth_token_requires_dynamic_revocation_callback_context_pair") { test_auth_token_requires_dynamic_revocation_callback_context_pair(); };
     it("test_auth_token_rejects_malformed_revocation_lists") { test_auth_token_rejects_malformed_revocation_lists(); };
     it("test_auth_token_bounds_revocation_list_cardinality") { test_auth_token_bounds_revocation_list_cardinality(); };
 }

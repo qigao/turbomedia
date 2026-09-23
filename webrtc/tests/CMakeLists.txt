@@ -59,6 +59,11 @@ turbo_media_add_webrtc_base_test(turbo_media_test_auth_token test_auth_token.c)
 target_link_libraries(turbo_media_test_auth_token
                       PRIVATE turbo_media_auth SaltsNet::Crypto)
 
+turbo_media_add_webrtc_base_test(turbo_media_test_revocation_state
+                                 test_revocation_state.c)
+target_link_libraries(turbo_media_test_revocation_state
+                      PRIVATE turbo_media_auth SaltsNet::Crypto)
+
 turbo_media_add_webrtc_test(turbo_media_test_signaling_internals
                             test_signaling_internals.c)
 target_link_libraries(turbo_media_test_signaling_internals
