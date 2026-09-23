@@ -1,0 +1,138 @@
+name: WebRTC Auth Security
+
+on:
+  pull_request:
+    paths:
+      - "webrtc/src/auth/**"
+      - "webrtc/tests/test_auth_token.c"
+      - "webrtc/tests/test_revocation_state.c"
+      - "webrtc/tests/CMakeLists.txt"
+      - "webrtc/CMakeLists.txt"
+      - "webrtc/docs/SECURITY_CONTROL_PLANE.md"
+      - ".github/workflows/webrtc-auth-security.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "webrtc/src/auth/**"
+      - "webrtc/tests/test_auth_token.c"
+      - "webrtc/tests/test_revocation_state.c"
+      - "webrtc/tests/CMakeLists.txt"
+      - "webrtc/CMakeLists.txt"
+      - "webrtc/docs/SECURITY_CONTROL_PLANE.md"
+      - ".github/workflows/webrtc-auth-security.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webrtc-auth-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  revocation:
+    name: C11 revocation and auth contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c') }}
+          restore-keys: |
+            webrtc-auth-security-${{ runner.os }}-
+
+      - name: Install ccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+
+      - name: Verify ccache
+        run: |
+          command -v ccache
+          ccache --version
+          ccache --zero-stats
+
+      - name: Create external declaration stubs
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/auth-stubs/openssl"
+
+          cat > "$RUNNER_TEMP/auth-stubs/tinytest.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_TINYTEST_H
+          #define TURBO_MEDIA_PORTABLE_TINYTEST_H
+          #include <assert.h>
+          #define check_not_null(v) assert((v) != NULL)
+          #define check_null(v) assert((v) == NULL)
+          #define check_equal(a, b) assert((a) == (b))
+          #define check_true(v) assert((v))
+          #define check_false(v) assert(!(v))
+          #define check_greater(a, b) assert((a) > (b))
+          #define check_greater_equal(a, b) assert((a) >= (b))
+          #define spec(name) int main(void)
+          #define it(name) if (1)
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/turbo_crypto.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_CRYPTO_H
+          #define TURBO_MEDIA_PORTABLE_CRYPTO_H
+          #include <stddef.h>
+          #include <stdint.h>
+          #define TURBO_CRYPTO_SHA256_SIZE 32
+          #define TURBO_CRYPTO_OK 0
+          int turbo_crypto_sha256(const void *, size_t, uint8_t *);
+          int turbo_crypto_hmac_sha256(const void *, size_t, const void *, size_t, uint8_t *);
+          int turbo_crypto_verify(const void *, const void *, size_t);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/json_parser.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_JSON_PARSER_H
+          #define TURBO_MEDIA_PORTABLE_JSON_PARSER_H
+          #include <stddef.h>
+          typedef struct json_value_s json_value_t;
+          enum { JSON_OBJECT = 1, JSON_STRING = 2, JSON_NUMBER = 3 };
+          json_value_t *json_parse(const char *, size_t);
+          void json_free(json_value_t *);
+          int json_type(const json_value_t *);
+          size_t json_object_size(const json_value_t *);
+          const char *json_object_key(const json_value_t *, size_t);
+          json_value_t *json_object_get(const json_value_t *, const char *);
+          const char *json_string(const json_value_t *);
+          double json_number(const json_value_t *);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/openssl/base64.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_BASE64_H
+          #define TURBO_MEDIA_PORTABLE_BASE64_H
+          #include <stddef.h>
+          #include <stdint.h>
+          int EVP_EncodedLength(size_t *, size_t);
+          size_t EVP_EncodeBlock(uint8_t *, const uint8_t *, size_t);
+          int EVP_DecodedLength(size_t *, size_t);
+          int EVP_DecodeBase64(uint8_t *, size_t *, size_t, const uint8_t *, size_t);
+          #endif
+          EOF
+
+      - name: Run exact revocation state tests
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic             -Iwebrtc/src/auth -I"$RUNNER_TEMP/auth-stubs"             webrtc/src/auth/turbo_media_revocation.c             webrtc/tests/test_revocation_state.c             -o "$RUNNER_TEMP/revocation-state-test"
+          "$RUNNER_TEMP/revocation-state-test"
+
+      - name: Syntax-check auth integration and native test
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only             -Iwebrtc/src/auth -I"$RUNNER_TEMP/auth-stubs"             webrtc/src/auth/turbo_media_auth.c
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only             -Iwebrtc/src/auth -I"$RUNNER_TEMP/auth-stubs"             webrtc/tests/test_auth_token.c
+
+      - name: Report ccache
+        run: ccache --show-stats

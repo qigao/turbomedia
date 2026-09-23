@@ -13,6 +13,9 @@
 #define AUTH_BEARER_PREFIX "Bearer "
 #define AUTH_TOKEN_TYPE "turbomedia-auth+jwt"
 #define AUTH_ALGORITHM "HS256"
+_Static_assert(TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES == TURBO_CRYPTO_SHA256_SIZE,
+               "auth token SHA-256 size must match crypto provider");
+
 #define AUTH_MAX_TOKEN_BYTES 4096U
 #define AUTH_MAX_HEADER_BYTES 512U
 #define AUTH_MAX_PAYLOAD_BYTES 2048U
@@ -185,7 +188,9 @@ int turbo_media_auth_config_validate(const turbo_media_auth_config_t *config) {
         config->clock_skew_seconds > 300 ||
         config->max_ttl_seconds < 1 ||
         config->max_ttl_seconds > 86400 ||
-        !auth_revocation_list_valid(config->revoked_token_sha256)) {
+        !auth_revocation_list_valid(config->revoked_token_sha256) ||
+        ((config->revocation_check == NULL) !=
+         (config->revocation_context == NULL))) {
         return -1;
     }
 
@@ -550,6 +555,20 @@ static int auth_verify_signed_token(
                            config->revoked_token_sha256)) {
         goto cleanup;
     }
+    if (config->revocation_check) {
+        uint8_t digest[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES];
+        turbo_media_auth_revocation_status_t revocation_status;
+        if (turbo_crypto_sha256(token, token_length, digest) !=
+            TURBO_CRYPTO_OK) {
+            goto cleanup;
+        }
+        revocation_status = config->revocation_check(
+            config->revocation_context, digest, sizeof(digest));
+        memset(digest, 0, sizeof(digest));
+        if (revocation_status != TURBO_MEDIA_AUTH_REVOCATION_CLEAR) {
+            goto cleanup;
+        }
+    }
     valid = 1;
 
 cleanup:
@@ -587,7 +606,8 @@ turbo_media_auth_result_t turbo_media_auth_authorize(
     const turbo_media_auth_policy_t *policy) {
     size_t prefix_length = strlen(AUTH_BEARER_PREFIX);
 
-    if (auth_static_token_matches(authorization, static_token)) {
+    if ((!config || !config->revocation_check) &&
+        auth_static_token_matches(authorization, static_token)) {
         return TURBO_MEDIA_AUTH_STATIC_TOKEN;
     }
     if (!authorization ||

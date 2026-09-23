@@ -1,6 +1,7 @@
 #ifndef TURBO_MEDIA_AUTH_H
 #define TURBO_MEDIA_AUTH_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -11,6 +12,19 @@ extern "C" {
 #define TURBO_MEDIA_AUTH_DEFAULT_CLOCK_SKEW_SECONDS 30
 #define TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS 3600
 #define TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS 256
+#define TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES 32
+
+typedef enum turbo_media_auth_revocation_status_e {
+    TURBO_MEDIA_AUTH_REVOCATION_UNKNOWN = -1,
+    TURBO_MEDIA_AUTH_REVOCATION_CLEAR = 0,
+    TURBO_MEDIA_AUTH_REVOCATION_REVOKED = 1
+} turbo_media_auth_revocation_status_t;
+
+typedef turbo_media_auth_revocation_status_t
+(*turbo_media_auth_revocation_check_fn)(
+    void *context,
+    const uint8_t *sha256,
+    size_t sha256_size);
 
 typedef struct turbo_media_auth_config_s {
     const char *issuer;
@@ -20,6 +34,14 @@ typedef struct turbo_media_auth_config_s {
     const char *previous_secret;
     /** Comma-separated lowercase SHA-256 digests of revoked compact tokens. */
     const char *revoked_token_sha256;
+    /**
+     * Optional dynamic signed-token revocation view.
+     *
+     * When configured, UNKNOWN and REVOKED both deny authorization. The
+     * callback/context pair must either both be set or both be NULL.
+     */
+    turbo_media_auth_revocation_check_fn revocation_check;
+    void *revocation_context;
     int clock_skew_seconds;
     int max_ttl_seconds;
 } turbo_media_auth_config_t;
@@ -55,9 +77,11 @@ int turbo_media_auth_config_validate(const turbo_media_auth_config_t *config);
  * Authorize one HTTP Authorization header.
  *
  * The static token and signed-token verifier are independent, explicit
- * compatibility modes. If both are configured, either may authorize the
- * request. Resource claims are exact: a policy without room_id or
- * participant_id only accepts an equally unbound token.
+ * compatibility modes only when dynamic revocation is not configured.
+ * Enabling revocation_check disables static-token authorization so a legacy
+ * bearer cannot bypass the shared revocation state. Resource claims are exact:
+ * a policy without room_id or participant_id only accepts an equally unbound
+ * signed token.
  */
 turbo_media_auth_result_t turbo_media_auth_authorize(
     const char *authorization,

@@ -4,7 +4,10 @@ cmake_add_grammar(
   LEXER_OUTPUT turbo_sdp_parser_gen.c
   FOLDER "turbomedia/webrtc/codegen")
 
-add_library(turbo_media_auth STATIC src/auth/turbo_media_auth.c)
+add_library(
+  turbo_media_auth STATIC
+  src/auth/turbo_media_auth.c
+  src/auth/turbo_media_revocation.c)
 target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
