@@ -42,6 +42,8 @@ test('baseline case passes and always drains in the fixed reverse-resource order
   assert.equal(result.generation,0);
   assert.equal(result.browser_ice_generation,1);
   assert.deepEqual(result.confirmed_track_ids,['publisher-audio','publisher-video-1']);
+  const teardown=fake.events.find((entry)=>entry.method==='teardownTopology');
+  assert.equal(teardown.extra,4);
 });
 
 test('transition workflow binds the effective receipt to the explicit relay contract hash', async()=>{
@@ -215,7 +217,8 @@ test('run preflight missing browser returns INCOMPLETE before any media resource
   const result=await runManifest(context(fake,m),m);
   assert.equal(result.outcome,'INCOMPLETE');
   assert.equal(result.cases.length,0);
-  assert.equal(fake.events.some(e=>['prepareCase','attachRoom','openPublisher','openViewer'].includes(e.method)),false);
+  assert.equal(fake.events.some(e=>['preflightProviders','preflightTopologies','preflightSfu','preflightTurn',
+    'prepareCase','attachRoom','openPublisher','openViewer'].includes(e.method)),false);
 });
 
 test('runManifest continues later cases after one case FAIL and aggregates without hiding it', async()=>{

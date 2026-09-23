@@ -118,7 +118,8 @@ function createSfuAdapter(options = {}) {
       if (setupReceipt !== 'baseline') fail('SFU_SETUP_ORDER', 'attach_room');
       const key = caseKey(context);
       if (!attached.has(key) && attached.size >= LIMITS.MAX_CASES) fail('SFU_RESOURCE_LIMIT', 'attach_room');
-      const response = await command('attach_room', { room_id: context.room_id, max_participants: MAX_PARTICIPANTS }, token, signal, context);
+      const response = await command('attach_room', { room_id: context.room_id,
+        participant_id: context.publisher_id, max_participants: MAX_PARTICIPANTS }, token, signal, context);
       attached.add(key);
       return response.body;
     },
@@ -135,7 +136,8 @@ function createSfuAdapter(options = {}) {
       return poll('published_tracks', 'SFU_TRACKS_TIMEOUT', signal, async (pollSignal) => {
         const session = await adapter.getWebRtcSession(context, token, context.publisher_session_id, pollSignal);
         if (session.participant_id !== context.publisher_id) fail('SFU_INVALID_RESPONSE', 'published_tracks');
-        const room = entity(await command('get_room_stats', { room_id: context.room_id }, token, pollSignal), 'room_stats', 'published_tracks');
+        const room = entity(await command('get_room_stats', { room_id: context.room_id,
+          participant_id: context.publisher_id }, token, pollSignal), 'room_stats', 'published_tracks');
         if (room.room_id !== context.room_id || !counter(room.participant_count) || !counter(room.published_track_count)) {
           fail('SFU_INVALID_RESPONSE', 'published_tracks');
         }
@@ -159,7 +161,8 @@ function createSfuAdapter(options = {}) {
       const results = [];
       for (const trackId of trackIds) {
         results.push((await command('set_track_subscription', { room_id: context.room_id,
-          receiver_participant_id: context.viewer_id, track_id: trackId, enabled: true }, token, signal, context)).body);
+          participant_id: context.viewer_id, receiver_participant_id: context.viewer_id,
+          track_id: trackId, enabled: true }, token, signal, context)).body);
       }
       return results;
     },
@@ -194,7 +197,8 @@ function createSfuAdapter(options = {}) {
     },
     async detachRoom(context, token, signal) {
       const key = caseKey(context);
-      const response = await command('detach_room', { room_id: context.room_id }, token, signal, context);
+      const response = await command('detach_room', { room_id: context.room_id,
+        participant_id: context.publisher_id }, token, signal, context);
       attached.delete(key);
       confirmedTracks.delete(key);
       return response.body;
