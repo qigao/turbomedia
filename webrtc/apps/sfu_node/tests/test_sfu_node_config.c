@@ -236,6 +236,8 @@ spec("SFU node TOML configuration") {
         sfu_node_app_config_t config;
 
         sfu_node_app_config_init(&config);
+        config.control_token = NULL;
+        config.media_access_token = NULL;
         config.auth_active_key_id = "sfu-key-2026-07";
         config.auth_active_secret =
             "0123456789abcdef0123456789abcdef";
