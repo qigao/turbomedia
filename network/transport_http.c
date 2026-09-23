@@ -53,6 +53,23 @@ static char *http_dup(const char *value) {
     return copy;
 }
 
+static void http_free_secret(const char **value) {
+    char *owned;
+    volatile unsigned char *bytes;
+    size_t size;
+
+    if (!value || !*value) return;
+    owned = (char *)*value;
+    size = strlen(owned);
+    bytes = (volatile unsigned char *)owned;
+    while (size > 0u) {
+        *bytes++ = 0u;
+        --size;
+    }
+    free(owned);
+    *value = NULL;
+}
+
 static char *http_target(const http_transport_impl_t *transport,
                          const char *path) {
     const char *base = transport && transport->base.config.path
@@ -330,7 +347,7 @@ fail:
     free((void *)transport->base.config.host);
     free((void *)transport->base.config.path);
     free((void *)transport->base.config.user_agent);
-    free((void *)transport->base.config.auth_token);
+    http_free_secret(&transport->base.config.auth_token);
     free(transport);
     return NULL;
 }
@@ -357,7 +374,7 @@ int turbo_transport_destroy_http(turbo_transport_t *transport) {
     free((void *)impl->base.config.host);
     free((void *)impl->base.config.path);
     free((void *)impl->base.config.user_agent);
-    free((void *)impl->base.config.auth_token);
+    http_free_secret(&impl->base.config.auth_token);
     free(impl);
     return 0;
 }
