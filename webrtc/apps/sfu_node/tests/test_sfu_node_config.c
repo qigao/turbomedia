@@ -232,6 +232,36 @@ spec("SFU node TOML configuration") {
         remove_toml(second_path);
     }
 
+    it("dynamic revocation requires TLS signed auth and forbids static fallbacks") {
+        sfu_node_app_config_t config;
+
+        sfu_node_app_config_init(&config);
+        config.auth_active_key_id = "sfu-key-2026-07";
+        config.auth_active_secret =
+            "0123456789abcdef0123456789abcdef";
+        config.auth_dynamic_revocation_capacity = 16;
+        check_equal(sfu_node_app_config_validate(&config), -1);
+
+        config.use_tls = 1;
+        config.tls_cert_file = "sfu.crt";
+        config.tls_key_file = "sfu.key";
+        check_equal(sfu_node_app_config_validate(&config), 0);
+
+        config.control_token = "legacy-control";
+        check_equal(sfu_node_app_config_validate(&config), -1);
+        config.control_token = NULL;
+
+        config.media_access_token = "legacy-media";
+        check_equal(sfu_node_app_config_validate(&config), -1);
+        config.media_access_token = NULL;
+
+        config.auth_dynamic_revocation_capacity =
+            TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS + 1;
+        check_equal(sfu_node_app_config_validate(&config), -1);
+
+        sfu_node_app_config_cleanup(&config);
+    }
+
     it("copies server configuration with independent string ownership") {
         static const char toml[] =
             "[server]\nnode_id = \"owned-node\"\n"
