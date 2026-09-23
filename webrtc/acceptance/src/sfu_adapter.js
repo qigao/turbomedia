@@ -136,8 +136,11 @@ function createSfuAdapter(options = {}) {
         const session = await adapter.getWebRtcSession(context, token, context.publisher_session_id, pollSignal);
         if (session.participant_id !== context.publisher_id) fail('SFU_INVALID_RESPONSE', 'published_tracks');
         const room = entity(await command('get_room_stats', { room_id: context.room_id }, token, pollSignal), 'room_stats', 'published_tracks');
-        if (room.room_id !== context.room_id || !counter(room.published_track_count)) fail('SFU_INVALID_RESPONSE', 'published_tracks');
-        if (session.remote_track_count > expectedTracks.length || room.published_track_count > expectedTracks.length) {
+        if (room.room_id !== context.room_id || !counter(room.participant_count) || !counter(room.published_track_count)) {
+          fail('SFU_INVALID_RESPONSE', 'published_tracks');
+        }
+        if (room.participant_count !== 1 ||
+            session.remote_track_count > expectedTracks.length || room.published_track_count > expectedTracks.length) {
           fail('SFU_INVALID_TRACK_CONTRACT', 'published_tracks');
         }
         if (session.remote_track_count !== expectedTracks.length || room.published_track_count !== expectedTracks.length) return null;

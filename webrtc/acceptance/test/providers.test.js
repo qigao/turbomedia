@@ -72,6 +72,7 @@ function hookRequest(extra = {}) {
     generation: 2,
     sequence: 4,
     topology_id: 'restricted-nat-ipv4',
+    relay_contract_hash: 'a'.repeat(64),
     action: 'transition',
     mode: 'success',
     ...extra,
@@ -512,6 +513,7 @@ test('topology hook validates real receipt and exact sequence topology action co
     { ...base, topology_id: 'wrong-topology' },
     { ...base, action: 'teardown' },
     { ...base, generation: 3 },
+    { ...base, relay_contract_hash: 'b'.repeat(64) },
   ]) {
     await assertSafeRejection(
       invokeTopologyHook(async () => mismatch, hookRequest()),
@@ -523,12 +525,13 @@ test('topology hook validates real receipt and exact sequence topology action co
 
 test('topology hook requires full request correlation and effective receipts', async () => {
   const valid = {
-    schema_version: 1,
+    schema_version: 2,
     hook_id: 'hook-1',
     topology_id: 'restricted-nat-ipv4',
     action: 'transition',
     generation: 2,
     sequence: 4,
+    relay_contract_hash: 'a'.repeat(64),
     started_at: '2026-08-25T08:01:00.000Z',
     finished_at: '2026-08-25T08:01:01.000Z',
     observed_at: '2026-08-25T08:01:01.000Z',

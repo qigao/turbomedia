@@ -11,12 +11,13 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => {
   const request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
   const receipt = {
-    schema_version: 1,
+    schema_version: 2,
     hook_id: 'restricted-nat-ipv4-transition',
     topology_id: request.topology_id,
     action: request.action,
     generation: request.generation,
     sequence: request.sequence,
+    relay_contract_hash: request.relay_contract_hash,
     started_at: '2026-08-25T08:01:00.000Z',
     finished_at: '2026-08-25T08:01:01.000Z',
     observed_at: '2026-08-25T08:01:01.000Z',

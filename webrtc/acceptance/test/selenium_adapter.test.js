@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { fakeWebDriver, startFakeGrid, snapshot, PAGE_HASH } = require('./fixtures/fake_webdriver');
 const browser = { name: 'chrome', version: '127.0.0', platform: 'Windows 11' };
 const source = { test_page_url: 'https://acceptance.example.test/client.html', test_page_sha256: PAGE_HASH };
-const relay_contract = { ip_family: 'ipv4', protocol: 'udp', relay_protocol: 'tcp', remote_candidate_types: ['host'] };
+const relay_contract = { schema_version: 1, ip_family: 'ipv4', protocol: 'udp', relay_protocol: 'tcp', remote_candidate_types: ['host'] };
 const context = { browser, relay_contract };
 const secret = 'SECRET-token';
 const configuration = () => ({ sfu_origin: 'https://sfu.example.test', whip_url: 'https://sfu.example.test/whip/room/publisher',
@@ -113,6 +113,15 @@ for (const [name, change, code, category] of [
   assert.equal(result.relay.verified, false);
   assert.equal(result.relay.code, code);
   assert.equal(result.relay.category, category);
+});
+
+test('duplicate relay contract candidate types are rejected before Grid effects', async (t) => {
+  const { adapter, fake } = setup(t);
+  await assert.rejects(adapter.openPublisher({
+    browser,
+    relay_contract: { ...relay_contract, remote_candidate_types: ['host', 'host'] },
+  }), { code: 'BROWSER_INPUT_INVALID' });
+  assert.equal(fake.drivers.length, 0);
 });
 
 test('missing relay contract and malformed generation hash never manufacture evidence', async (t) => {

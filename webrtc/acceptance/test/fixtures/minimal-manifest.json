@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "profile": "diagnostic",
   "source": {
     "commit": "0123456789012345678901234567890123456789",
@@ -26,6 +26,13 @@
   "topologies": [
     {
       "topology_id": "restricted-nat-ipv4",
+      "relay_contract": {
+        "schema_version": 1,
+        "ip_family": "ipv4",
+        "protocol": "udp",
+        "relay_protocol": "tcp",
+        "remote_candidate_types": ["host"]
+      },
       "hooks": {
         "setup": { "command": ["topology-hook", "setup"] },
         "transition": { "command": ["topology-hook", "transition"] },
@@ -37,12 +44,20 @@
     {
       "scenario_id": "relay-baseline",
       "topology_id": "restricted-nat-ipv4",
+      "workflow": {
+        "credential_expiry": false,
+        "topology_transition": false
+      },
       "sample_interval_ms": 250,
       "duration_ms": 1000
     },
     {
       "scenario_id": "network-migration",
       "topology_id": "restricted-nat-ipv4",
+      "workflow": {
+        "credential_expiry": true,
+        "topology_transition": true
+      },
       "sample_interval_ms": 250,
       "duration_ms": 1000
     }
