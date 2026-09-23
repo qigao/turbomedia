@@ -63,6 +63,7 @@ function createSfuAdapter(options = {}) {
     const body = { type, ...fields };
     if (context) {
       caseKey(context);
+      if (!Object.hasOwn(body, 'participant_id')) body.participant_id = context.publisher_id;
       body.correlation_id = context.case_id;
       body.message_id = `msg-${hashCanonical({ run_id: context.run_id, case_id: context.case_id, command: body })}`;
     }
