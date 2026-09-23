@@ -140,6 +140,37 @@ The security-control token is intentionally verified without consulting the targ
 UNSYNCHRONIZED node could never bootstrap or recover. Static control/media compatibility tokens are never
 accepted on these security-control routes.
 
+### Multi-node fan-out and recovery
+
+The distributor is a bounded, caller-serialized coordinator over canonical updates produced by the shared
+security control plane. It is **not** a second revocation source: it stores only target identifiers, opaque
+transport handles, per-target acknowledgement versions, and delivery status. Bearer tokens, credentials,
+and revocation fingerprint sets remain caller-owned and are only borrowed for a send operation.
+
+Targets are bounded to 64 and retry attempts to 8. Target identifiers use a restricted non-secret label
+alphabet so diagnostics cannot accidentally become credential carriers.
+
+A covering snapshot establishes the distributor's canonical cursor. Revoke events must be exact-next in
+the same epoch. Rollback, sequence gaps from the producer, malformed SHA-256 payloads, duplicate snapshot
+entries, and over-capacity payloads are rejected before any transport side effect.
+
+For each target:
+
+1. if the target is synchronized at the prior canonical version, send the exact-next revoke event;
+2. retry only transport-level RETRYABLE failures, up to the configured bound;
+3. if the node reports GAP/LIMIT/ERROR/FATAL, returns an invalid stale acknowledgement, or exhausts event
+   retries, send the caller-supplied covering snapshot for the same canonical version;
+4. a target is synchronized only when an APPLIED/STALE response explicitly reports a synchronized version
+   that covers the requested version;
+5. one failed target does not stop attempts to the remaining targets.
+
+A target that remains failed is skipped for the next incremental event and is reconciled directly with that
+event's covering snapshot. This avoids repeatedly sending events onto a known-incomplete projection.
+
+The transport callback is intentionally injected. Production adapters must use the existing HTTPS
+security-control endpoints with short-lived `turbomedia-security-control` /
+`security.revocation.write` credentials. The fan-out core never stores those credentials.
+
 ### Authorization
 
 The signed-token verifier computes the compact-token SHA-256 and invokes the configured dynamic revocation
@@ -180,7 +211,7 @@ other credential material are not stored in the revocation state and must not ap
 
 The following are intentionally not claimed complete by the dynamic-revocation slice:
 
-- authenticated fan-out/retry of revocation updates across all signaling and SFU nodes;
+- concrete authenticated HTTPS fan-out adapter / target discovery over the bounded coordinator;
 - edge admission before TLS/WebSocket application allocation;
 - trusted-proxy allowlist and spoofed-header negative tests;
 - tenant/subject/IP/connection/request/media-resource quota model;
