@@ -67,6 +67,11 @@ enabled = false
 # previous_key_id = "signaling-peer-2026-06"
 # previous_secret = "replace-with-at-least-32-random-bytes"
 # revoked_token_sha256 = "one-or-more-comma-separated-lowercase-sha256-digests"
+# Dynamic revocation is disabled by default. When enabled, the process starts
+# UNSYNCHRONIZED and rejects signed peer joins until the HTTPS security-control
+# endpoint receives a covering snapshot authenticated by a signed management
+# token. Static admin_token compatibility is never accepted for that endpoint.
+# dynamic_revocation_capacity = 256
 # clock_skew_seconds = 30
 ttl_seconds = 3600
 algorithm = "HS256"

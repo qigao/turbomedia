@@ -102,6 +102,8 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         .jwt_previous_secret = server->config.jwt_previous_secret,
         .jwt_revoked_token_sha256 =
             server->config.jwt_revoked_token_sha256,
+        .jwt_dynamic_revocation_capacity =
+            (size_t)server->config.jwt_dynamic_revocation_capacity,
         .jwt_clock_skew_seconds = server->config.jwt_clock_skew_seconds,
         .jwt_max_ttl_seconds = server->config.jwt_ttl_seconds,
         .jwt_algo = server->config.jwt_algorithm

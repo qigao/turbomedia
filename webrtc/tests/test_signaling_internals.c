@@ -431,6 +431,106 @@ void test_peer_identity_binding_is_atomic_and_immutable(void) {
   destroy_test_server(&server);
 }
 
+void test_peer_join_dynamic_revocation_starts_unknown_and_recovers(void) {
+  webrtc_signaling_config_t config = {
+      .connection_capacity = 4U,
+      .jwt_enabled = 1,
+      .jwt_issuer = "turbomedia",
+      .jwt_active_key_id = TEST_ACTIVE_KEY_ID,
+      .jwt_secret = TEST_ACTIVE_SECRET,
+      .jwt_dynamic_revocation_capacity = 4U,
+      .jwt_clock_skew_seconds = 0,
+      .jwt_max_ttl_seconds = 3600,
+      .jwt_algo = "HS256"};
+  webrtc_signaling_server_t *server =
+      webrtc_signaling_create(NULL, &config);
+  int64_t now = (int64_t)time(NULL);
+  char *token = NULL;
+  json_value_t *root = NULL;
+  tstr authorized_peer_id = NULL;
+  uint8_t digest[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES];
+  char digest_hex[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES * 2U + 1U];
+  int synchronized = 0;
+  uint64_t epoch = 0U;
+  uint64_t sequence = 0U;
+  size_t count = 0U;
+  static const char hex[] = "0123456789abcdef";
+
+  check_not_null(server);
+  token = issue_peer_join_token(
+      TEST_ACTIVE_KEY_ID, TEST_ACTIVE_SECRET, SIGNALING_PEER_JOIN_SCOPE,
+      "room-a", "alice", now, now + 60);
+  check_not_null(token);
+
+  root = parse_join_message("room-a", "alice", token);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(
+                  server, root, &authorized_peer_id)),
+              (int)(-1));
+  check_null(authorized_peer_id);
+  json_free(root);
+  root = NULL;
+
+  check_equal(webrtc_signaling_get_revocation_status(
+                  server, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_false(synchronized);
+  check_equal((int)epoch, 0);
+  check_equal((int)sequence, 0);
+  check_equal((int)count, 0);
+
+  check_equal((int)webrtc_signaling_apply_revocation_snapshot(
+                  server, 1U, 0U, NULL, 0U),
+              (int)WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED);
+  root = parse_join_message("room-a", "alice", token);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(
+                  server, root, &authorized_peer_id)),
+              (int)(0));
+  check_equal(authorized_peer_id, "alice");
+  tstr_free(authorized_peer_id);
+  authorized_peer_id = NULL;
+  json_free(root);
+  root = NULL;
+
+  check_equal(turbo_crypto_sha256(
+                  token, strlen(token), digest),
+              TURBO_CRYPTO_OK);
+  for (size_t index = 0U;
+       index < TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES; ++index) {
+    digest_hex[index * 2U] = hex[digest[index] >> 4U];
+    digest_hex[index * 2U + 1U] = hex[digest[index] & 0x0fU];
+  }
+  digest_hex[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES * 2U] = '\0';
+  memset(digest, 0, sizeof(digest));
+
+  check_equal((int)webrtc_signaling_apply_revocation(
+                  server, 1U, 1U, digest_hex),
+              (int)WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED);
+  root = parse_join_message("room-a", "alice", token);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(
+                  server, root, &authorized_peer_id)),
+              (int)(-1));
+  check_null(authorized_peer_id);
+  json_free(root);
+  root = NULL;
+
+  check_equal((int)webrtc_signaling_apply_revocation_snapshot(
+                  server, 2U, 0U, NULL, 0U),
+              (int)WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED);
+  root = parse_join_message("room-a", "alice", token);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(
+                  server, root, &authorized_peer_id)),
+              (int)(0));
+  tstr_free(authorized_peer_id);
+  json_free(root);
+
+  free(token);
+  webrtc_signaling_destroy(server);
+}
+
 void test_authenticated_join_dispatch_admits_only_valid_first_message(void) {
   webrtc_signaling_server_t server;
   webrtc_peer_t peer;
@@ -779,6 +879,7 @@ spec("test_signaling_internals") {
   it("test_management_operations_enqueue_without_external_event_loop") { test_management_operations_enqueue_without_external_event_loop(); };
   it("test_peer_join_auth_binds_room_and_identity") { test_peer_join_auth_binds_room_and_identity(); };
   it("test_peer_identity_binding_is_atomic_and_immutable") { test_peer_identity_binding_is_atomic_and_immutable(); };
+  it("test_peer_join_dynamic_revocation_starts_unknown_and_recovers") { test_peer_join_dynamic_revocation_starts_unknown_and_recovers(); };
   it("test_authenticated_join_dispatch_admits_only_valid_first_message") { test_authenticated_join_dispatch_admits_only_valid_first_message(); };
   it("test_legacy_join_remains_available_when_auth_is_disabled") { test_legacy_join_remains_available_when_auth_is_disabled(); };
   it("test_message_rate_bucket_is_bounded_and_refills_with_time") { test_message_rate_bucket_is_bounded_and_refills_with_time(); };

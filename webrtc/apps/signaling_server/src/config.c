@@ -476,7 +476,8 @@ static int config_apply_auth(
     static const char *const allowed[] = {
         "enabled", "issuer", "active_key_id", "secret",
         "previous_key_id", "previous_secret", "revoked_token_sha256",
-        "clock_skew_seconds", "ttl_seconds", "algorithm"
+        "dynamic_revocation_capacity", "clock_skew_seconds", "ttl_seconds",
+        "algorithm"
     };
 
     if (!table) {
@@ -502,6 +503,8 @@ static int config_apply_auth(
         config_apply_string(table, "auth", "revoked_token_sha256", storage,
                             CONFIG_STRING_JWT_REVOKED_TOKEN_SHA256,
                             &config->jwt_revoked_token_sha256) != 0 ||
+        config_apply_int(table, "auth", "dynamic_revocation_capacity",
+                         &config->jwt_dynamic_revocation_capacity) != 0 ||
         config_apply_int(table, "auth", "clock_skew_seconds",
                          &config->jwt_clock_skew_seconds) != 0 ||
         config_apply_int(table, "auth", "ttl_seconds", &config->jwt_ttl_seconds) != 0 ||
@@ -660,6 +663,7 @@ void signaling_server_config_init(signaling_server_config_t *config) {
         getenv("TURBO_SIGNALING_AUTH_PREVIOUS_SECRET");
     config->jwt_revoked_token_sha256 =
         getenv("TURBO_SIGNALING_AUTH_REVOKED_TOKEN_SHA256");
+    config->jwt_dynamic_revocation_capacity = 0;
     config->jwt_clock_skew_seconds =
         TURBO_MEDIA_AUTH_DEFAULT_CLOCK_SKEW_SECONDS;
     config->jwt_ttl_seconds = TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
@@ -846,6 +850,9 @@ void signaling_server_config_apply_environment(signaling_server_config_t *config
     if (value && value[0] != '\0') {
         config->jwt_revoked_token_sha256 = value;
     }
+    config->jwt_dynamic_revocation_capacity = signaling_config_env_int(
+        "TURBO_SIGNALING_AUTH_DYNAMIC_REVOCATION_CAPACITY",
+        config->jwt_dynamic_revocation_capacity);
     config->jwt_clock_skew_seconds = signaling_config_env_int(
         "TURBO_SIGNALING_AUTH_CLOCK_SKEW_SECONDS",
         config->jwt_clock_skew_seconds);
@@ -1093,11 +1100,26 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
         if ((config->jwt_enabled != 0 && config->jwt_enabled != 1) ||
             !config->jwt_algorithm ||
             strcmp(config->jwt_algorithm, "HS256") != 0 ||
+            config->jwt_dynamic_revocation_capacity < 0 ||
+            config->jwt_dynamic_revocation_capacity >
+                TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS ||
             config->jwt_clock_skew_seconds < 0 ||
             config->jwt_ttl_seconds < 1 ||
             (config->jwt_enabled &&
              turbo_media_auth_config_validate(&auth_config) != 0)) {
             TLOG_ERROR("Invalid signaling peer admission token configuration");
+            return -1;
+        }
+        if (config->jwt_dynamic_revocation_capacity > 0 &&
+            (!config->jwt_enabled ||
+             !config->http_enabled ||
+             !config->http_use_tls ||
+             !config->http_auth_enabled ||
+             !config->http_auth_active_secret ||
+             config->http_auth_active_secret[0] == '\0')) {
+            TLOG_ERROR(
+                "Dynamic revocation requires peer JWT plus HTTPS signed "
+                "management authentication");
             return -1;
         }
     }

@@ -8,6 +8,7 @@
 #include "platform.h"
 #include "tlog.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_revocation_projection.h"
 #include <chttp/chttp.h>
 #include <cstl/hash_map.h>
 #include <json_parser.h>
@@ -192,6 +193,8 @@ struct webrtc_signaling_server_s {
   uint64_t source_capacity_rejections;
   uint64_t source_rate_rejections;
   uint64_t source_concurrency_rejections;
+
+  turbo_media_revocation_projection_t *revocation_projection;
 
   int running;
   int cleanup_stop_requested;
@@ -864,7 +867,9 @@ static int consume_peer_message_budget_locked(
 }
 
 static turbo_media_auth_config_t signaling_peer_auth_config(
-    const webrtc_signaling_config_t *config) {
+    webrtc_signaling_server_t *server) {
+  const webrtc_signaling_config_t *config =
+      server ? &server->config : NULL;
   turbo_media_auth_config_t auth_config = {
       .issuer = config ? config->jwt_issuer : NULL,
       .active_key_id = config ? config->jwt_active_key_id : NULL,
@@ -878,6 +883,12 @@ static turbo_media_auth_config_t signaling_peer_auth_config(
           config && config->jwt_max_ttl_seconds > 0
               ? config->jwt_max_ttl_seconds
               : TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS};
+
+  if (server && server->revocation_projection) {
+    auth_config.revocation_check =
+        turbo_media_revocation_projection_check_digest;
+    auth_config.revocation_context = server->revocation_projection;
+  }
   return auth_config;
 }
 
@@ -916,7 +927,8 @@ static int authorize_join_message(const webrtc_signaling_server_t *server,
     return -1;
   }
 
-  auth_config = signaling_peer_auth_config(&server->config);
+  auth_config = signaling_peer_auth_config(
+      (webrtc_signaling_server_t *)server);
   memset(&policy, 0, sizeof(policy));
   policy.audience = SIGNALING_PEER_AUTH_AUDIENCE;
   policy.required_scope = SIGNALING_PEER_JOIN_SCOPE;
@@ -1872,12 +1884,30 @@ webrtc_signaling_server_t *webrtc_signaling_create(
     server->config.jwt_max_ttl_seconds =
         TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
   }
+  if (server->config.jwt_dynamic_revocation_capacity >
+          TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS ||
+      (server->config.jwt_dynamic_revocation_capacity > 0U &&
+       !server->config.jwt_enabled)) {
+    free(server);
+    return NULL;
+  }
+  if (server->config.jwt_dynamic_revocation_capacity > 0U) {
+    server->revocation_projection =
+        turbo_media_revocation_projection_create(
+            server->config.jwt_dynamic_revocation_capacity);
+    if (!server->revocation_projection) {
+      free(server);
+      return NULL;
+    }
+  }
   if (server->config.jwt_enabled) {
     turbo_media_auth_config_t auth_config =
-        signaling_peer_auth_config(&server->config);
+        signaling_peer_auth_config(server);
     if ((server->config.jwt_algo &&
          strcmp(server->config.jwt_algo, "HS256") != 0) ||
         turbo_media_auth_config_validate(&auth_config) != 0) {
+      turbo_media_revocation_projection_destroy(
+          server->revocation_projection);
       free(server);
       return NULL;
     }
@@ -1898,6 +1928,8 @@ webrtc_signaling_server_t *webrtc_signaling_create(
       (source_policy_enabled(&server->config) &&
        (server->config.max_source_states == 0U ||
         server->config.source_state_ttl_ms == 0))) {
+    turbo_media_revocation_projection_destroy(
+        server->revocation_projection);
     free(server);
     return NULL;
   }
@@ -1932,6 +1964,9 @@ webrtc_signaling_server_t *webrtc_signaling_create(
     destroy_source_states(server);
     salts_cond_destroy(&server->state_changed);
     salts_mutex_destroy(&server->mutex);
+    turbo_media_revocation_projection_destroy(
+        server->revocation_projection);
+    server->revocation_projection = NULL;
     free(server);
     return NULL;
   }
@@ -2058,6 +2093,9 @@ void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
   destroy_source_states(server);
   salts_cond_destroy(&server->state_changed);
   salts_mutex_destroy(&server->mutex);
+  turbo_media_revocation_projection_destroy(
+      server->revocation_projection);
+  server->revocation_projection = NULL;
   free(server);
 }
 
@@ -2084,6 +2122,42 @@ int webrtc_signaling_get_port(webrtc_signaling_server_t *server,
                : SALTS_EBUSY;
   salts_mutex_unlock(&server->mutex);
   return status == SALTS_OK ? 0 : -1;
+}
+
+webrtc_signaling_revocation_apply_result_t
+webrtc_signaling_apply_revocation_snapshot(
+    webrtc_signaling_server_t *server, uint64_t epoch, uint64_t sequence,
+    const char *const *sha256_hex, size_t count) {
+  if (!server || !server->revocation_projection) {
+    return WEBRTC_SIGNALING_REVOCATION_APPLY_ERROR;
+  }
+  return (webrtc_signaling_revocation_apply_result_t)
+      turbo_media_revocation_projection_apply_snapshot(
+          server->revocation_projection, epoch, sequence,
+          sha256_hex, count);
+}
+
+webrtc_signaling_revocation_apply_result_t
+webrtc_signaling_apply_revocation(
+    webrtc_signaling_server_t *server, uint64_t epoch, uint64_t sequence,
+    const char *sha256_hex) {
+  if (!server || !server->revocation_projection) {
+    return WEBRTC_SIGNALING_REVOCATION_APPLY_ERROR;
+  }
+  return (webrtc_signaling_revocation_apply_result_t)
+      turbo_media_revocation_projection_apply_revoke(
+          server->revocation_projection, epoch, sequence, sha256_hex);
+}
+
+int webrtc_signaling_get_revocation_status(
+    webrtc_signaling_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence, size_t *out_count) {
+  if (!server || !server->revocation_projection) {
+    return -1;
+  }
+  return turbo_media_revocation_projection_status(
+      server->revocation_projection, out_synchronized,
+      out_epoch, out_sequence, out_count);
 }
 
 int webrtc_signaling_broadcast(webrtc_signaling_server_t *server, const char *room,

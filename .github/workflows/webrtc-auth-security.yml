@@ -4,8 +4,17 @@ on:
   pull_request:
     paths:
       - "webrtc/src/auth/**"
+      - "webrtc/src/signaling/http_api.c"
+      - "webrtc/src/signaling/webrtc_signaling.c"
+      - "webrtc/include/http_api.h"
+      - "webrtc/include/webrtc_signaling.h"
+      - "webrtc/apps/signaling_server/**"
       - "webrtc/tests/test_auth_token.c"
       - "webrtc/tests/test_revocation_state.c"
+      - "webrtc/tests/test_revocation_projection.c"
+      - "webrtc/tests/test_signaling_internals.c"
+      - "webrtc/tests/test_signaling_lifecycle.c"
+      - "webrtc/tests/test_signaling_config.c"
       - "webrtc/tests/CMakeLists.txt"
       - "webrtc/CMakeLists.txt"
       - "webrtc/docs/SECURITY_CONTROL_PLANE.md"
@@ -15,8 +24,17 @@ on:
       - master
     paths:
       - "webrtc/src/auth/**"
+      - "webrtc/src/signaling/http_api.c"
+      - "webrtc/src/signaling/webrtc_signaling.c"
+      - "webrtc/include/http_api.h"
+      - "webrtc/include/webrtc_signaling.h"
+      - "webrtc/apps/signaling_server/**"
       - "webrtc/tests/test_auth_token.c"
       - "webrtc/tests/test_revocation_state.c"
+      - "webrtc/tests/test_revocation_projection.c"
+      - "webrtc/tests/test_signaling_internals.c"
+      - "webrtc/tests/test_signaling_lifecycle.c"
+      - "webrtc/tests/test_signaling_config.c"
       - "webrtc/tests/CMakeLists.txt"
       - "webrtc/CMakeLists.txt"
       - "webrtc/docs/SECURITY_CONTROL_PLANE.md"
@@ -60,7 +78,7 @@ jobs:
       - name: Create external declaration stubs
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/auth-stubs/openssl"
+          mkdir -p "$RUNNER_TEMP/auth-stubs/openssl" "$RUNNER_TEMP/auth-stubs/salts" "$RUNNER_TEMP/auth-stubs/chttp" "$RUNNER_TEMP/auth-stubs/cstl"
 
           cat > "$RUNNER_TEMP/auth-stubs/tinytest.h" <<'EOF'
           #ifndef TURBO_MEDIA_PORTABLE_TINYTEST_H
@@ -104,7 +122,265 @@ jobs:
           const char *json_object_key(const json_value_t *, size_t);
           json_value_t *json_object_get(const json_value_t *, const char *);
           const char *json_string(const json_value_t *);
+          size_t json_string_len(const json_value_t *);
           double json_number(const json_value_t *);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/salts/thread.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_SALTS_THREAD_H
+          #define TURBO_MEDIA_PORTABLE_SALTS_THREAD_H
+          #include <stdint.h>
+          typedef struct { int unused; } salts_mutex_t;
+          typedef struct { int unused; } salts_cond_t;
+          typedef struct { int unused; } salts_thread_t;
+          static inline void salts_mutex_init(salts_mutex_t *mutex) { (void)mutex; }
+          static inline void salts_mutex_destroy(salts_mutex_t *mutex) { (void)mutex; }
+          static inline void salts_mutex_lock(salts_mutex_t *mutex) { (void)mutex; }
+          static inline void salts_mutex_unlock(salts_mutex_t *mutex) { (void)mutex; }
+          static inline void salts_cond_init(salts_cond_t *cond) { (void)cond; }
+          static inline void salts_cond_destroy(salts_cond_t *cond) { (void)cond; }
+          static inline void salts_cond_broadcast(salts_cond_t *cond) { (void)cond; }
+          static inline int salts_cond_timedwait(
+              salts_cond_t *cond, salts_mutex_t *mutex, uint64_t timeout_ns) {
+            (void)cond; (void)mutex; (void)timeout_ns; return 0;
+          }
+          static inline int salts_thread_create(
+              salts_thread_t *thread, void (*entry)(void *), void *user) {
+            (void)thread; (void)entry; (void)user; return 0;
+          }
+          static inline int salts_thread_join(salts_thread_t *thread) {
+            (void)thread; return 0;
+          }
+          static inline void salts_thread_destroy(salts_thread_t *thread) {
+            (void)thread;
+          }
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/salts_thread.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_SALTS_THREAD_COMPAT_H
+          #define TURBO_MEDIA_PORTABLE_SALTS_THREAD_COMPAT_H
+          #include <salts/thread.h>
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/salts/error_codes.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_SALTS_ERROR_CODES_H
+          #define TURBO_MEDIA_PORTABLE_SALTS_ERROR_CODES_H
+          #define SALTS_OK 0
+          #define SALTS_EINVAL -22
+          #define SALTS_ENOMEM -12
+          #define SALTS_ENOBUFS -105
+          #define SALTS_ERANGE -34
+          #define SALTS_ETIMEDOUT -110
+          #define SALTS_EBUSY -16
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/tlog.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_TLOG_H
+          #define TURBO_MEDIA_PORTABLE_TLOG_H
+          #define TLOG_ERRORF(...) ((void)0)
+          #define TLOG_INFOF(...) ((void)0)
+          #define TLOG_DEBUGF(...) ((void)0)
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/salts_str.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_SALTS_STR_H
+          #define TURBO_MEDIA_PORTABLE_SALTS_STR_H
+          #include <stddef.h>
+          typedef char *tstr;
+          tstr tstr_new(void);
+          tstr tstr_dup(const char *);
+          tstr tstr_dup_len(const char *, size_t);
+          tstr tstr_cat(tstr, const char *);
+          tstr tstr_cat_len(tstr, const char *, size_t);
+          tstr tstr_cat_fmt(tstr, const char *, ...);
+          char *tstr_to_cstr(tstr);
+          void tstr_free(tstr);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/chttp/chttp.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_CHTTP_H
+          #define TURBO_MEDIA_PORTABLE_CHTTP_H
+          #include <stddef.h>
+          #include <stdint.h>
+
+          typedef enum {
+            NATIVE_IO_BACKEND_IOCP = 1,
+            NATIVE_IO_BACKEND_EPOLL = 2,
+            NATIVE_IO_BACKEND_KQUEUE = 3
+          } native_io_backend_kind;
+
+          enum {
+            CNET_DATAGRAM_ADDRESS_IPV4 = 4,
+            CNET_DATAGRAM_ADDRESS_IPV6 = 6,
+            CNET_TLS_CLIENT_AUTH_NONE = 0,
+            CNET_TLS_MIN_IO_BUFFER_BYTES = 4096,
+            CHTTP_WEBSOCKET_EVENT_CLOSE = 1,
+            CHTTP_WEBSOCKET_EVENT_MESSAGE = 2,
+            CHTTP_WEBSOCKET_MESSAGE_TEXT = 1
+          };
+
+          typedef struct {
+            int family;
+            uint16_t port;
+            uint8_t address[16];
+            uint32_t scope_id;
+          } cnet_stream_peer;
+
+          typedef struct {
+            native_io_backend_kind backend;
+            size_t connection_capacity;
+            size_t command_capacity;
+            size_t request_capacity;
+            size_t completion_batch_capacity;
+            size_t event_capacity;
+            size_t max_send_bytes;
+            size_t receive_buffer_bytes;
+            uint32_t connect_timeout_ms;
+            uint32_t read_timeout_ms;
+            uint32_t write_timeout_ms;
+            size_t tls_io_buffer_bytes;
+            uint32_t tls_handshake_timeout_ms;
+          } cnet_client_config;
+
+          typedef struct {
+            size_t size;
+            const char *cert_file;
+            const char *key_file;
+            int client_auth;
+          } cnet_tls_server_config;
+
+          typedef struct { int unused; } chttp_server;
+          typedef struct { int unused; } chttp_server_response;
+          typedef struct chttp_websocket_s chttp_websocket;
+          typedef struct {
+            void *impl;
+            size_t connection_slot;
+            uint64_t connection_generation;
+            uint64_t stream_id;
+          } chttp_server_websocket_session;
+          typedef struct {
+            int kind;
+            int message_type;
+            const void *data;
+            size_t size;
+          } chttp_websocket_event;
+          typedef struct {
+            const void *body;
+            size_t body_size;
+            const cnet_stream_peer *peer;
+          } chttp_server_request_view;
+
+          typedef int (*chttp_server_handler)(
+              void *, const chttp_server_request_view *,
+              chttp_server_response *);
+          typedef int (*chttp_websocket_open_handler)(
+              void *, chttp_websocket *,
+              const chttp_server_request_view *,
+              chttp_server_response *);
+          typedef void (*chttp_websocket_event_handler)(
+              void *, chttp_websocket *, const chttp_websocket_event *);
+
+          typedef struct {
+            size_t size;
+            const char *path;
+            size_t max_frame_bytes;
+            size_t max_message_bytes;
+            size_t max_buffered_input_bytes;
+            chttp_websocket_open_handler on_open;
+            chttp_websocket_event_handler on_event;
+            void *user;
+          } chttp_server_websocket_options;
+
+          typedef struct {
+            const char *host;
+            uint16_t port;
+            size_t backlog;
+            cnet_client_config network;
+            size_t route_capacity;
+            size_t max_route_param_count;
+            size_t max_route_param_bytes;
+            size_t max_target_bytes;
+            size_t max_header_count;
+            size_t max_header_bytes;
+            size_t max_request_body_bytes;
+            size_t max_response_header_count;
+            size_t max_response_header_bytes;
+            size_t max_response_body_bytes;
+            uint32_t poll_slice_ms;
+            const cnet_tls_server_config *tls;
+            size_t max_buffered_response_body_bytes;
+            size_t buffer_capacity_bytes;
+          } chttp_server_config;
+
+          const char *chttp_server_request_header(
+              const chttp_server_request_view *, const char *);
+          const char *chttp_server_request_param(
+              const chttp_server_request_view *, const char *);
+          int chttp_server_response_set_header(
+              chttp_server_response *, const char *, const char *);
+          int chttp_server_reply(
+              chttp_server_response *, unsigned int, const char *,
+              const void *, size_t);
+          int chttp_server_get(
+              chttp_server *, const char *, chttp_server_handler, void *);
+          int chttp_server_post(
+              chttp_server *, const char *, chttp_server_handler, void *);
+          int chttp_server_delete(
+              chttp_server *, const char *, chttp_server_handler, void *);
+          int chttp_server_options(
+              chttp_server *, const char *, chttp_server_handler, void *);
+          int chttp_server_init(chttp_server *, const chttp_server_config *);
+          int chttp_server_start(chttp_server *);
+          int chttp_server_stop(chttp_server *, uint32_t);
+          int chttp_server_destroy(chttp_server *);
+          int chttp_server_port(chttp_server *, uint16_t *);
+          int chttp_server_websocket_with(
+              chttp_server *, const chttp_server_websocket_options *);
+          int chttp_server_websocket_session_capture(
+              chttp_websocket *, chttp_server_websocket_session *);
+          int chttp_server_websocket_send_text(
+              chttp_server_websocket_session *, const char *, size_t);
+          int chttp_server_websocket_close(
+              chttp_server_websocket_session *, uint16_t,
+              const void *, size_t);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/cstl/hash_map.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_HASH_MAP_H
+          #define TURBO_MEDIA_PORTABLE_HASH_MAP_H
+          #include <stdbool.h>
+          #include <stddef.h>
+          #include <stdint.h>
+          typedef struct { int unused; } hash_map_t;
+          #define STL_OK 0
+          #define CMETA_ALIGNOF(type) _Alignof(type)
+          size_t hash_bytes(const void *, size_t, void *);
+          bool hash_key_equal(const void *, const void *, size_t, void *);
+          int hash_map_init_bytes(hash_map_t *, ...);
+          int hash_map_reserve(hash_map_t *, size_t);
+          void hash_map_destroy(hash_map_t *);
+          int hash_map_put(hash_map_t *, const void *, const void *);
+          int hash_map_remove(hash_map_t *, const void *, void *);
+          void *hash_map_get(hash_map_t *, const void *);
+          const void *hash_map_get_const(const hash_map_t *, const void *);
+          size_t hash_map_size(const hash_map_t *);
+          size_t hash_map_capacity(const hash_map_t *);
+          const void *hash_map_value_at_const(const hash_map_t *, size_t);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/platform.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_PLATFORM_H
+          #define TURBO_MEDIA_PORTABLE_PLATFORM_H
+          #include <stdint.h>
+          uint64_t salts_monotonic_ms(void);
           #endif
           EOF
 
@@ -126,6 +402,55 @@ jobs:
           export CCACHE_DIR="$HOME/.cache/ccache"
           ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic             -Iwebrtc/src/auth -I"$RUNNER_TEMP/auth-stubs"             webrtc/src/auth/turbo_media_revocation.c             webrtc/tests/test_revocation_state.c             -o "$RUNNER_TEMP/revocation-state-test"
           "$RUNNER_TEMP/revocation-state-test"
+
+      - name: Run exact thread-safe revocation projection tests
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
+            -Iwebrtc/src/auth -I"$RUNNER_TEMP/auth-stubs" \
+            webrtc/src/auth/turbo_media_revocation.c \
+            webrtc/src/auth/turbo_media_revocation_projection.c \
+            webrtc/tests/test_revocation_projection.c \
+            -o "$RUNNER_TEMP/revocation-projection-test"
+          "$RUNNER_TEMP/revocation-projection-test"
+
+      - name: Syntax-check signaling revocation public contract
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          cat > "$RUNNER_TEMP/signaling-revocation-header.c" <<'EOF'
+          #include "webrtc_signaling.h"
+          int main(void) {
+            webrtc_signaling_config_t config = {0};
+            webrtc_signaling_revocation_apply_result_t result =
+                WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED;
+            config.jwt_dynamic_revocation_capacity = 16U;
+            return (int)config.jwt_dynamic_revocation_capacity + (int)result;
+          }
+          EOF
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -Iwebrtc/include -Imedia/include \
+            "$RUNNER_TEMP/signaling-revocation-header.c"
+
+      - name: Syntax-check signaling revocation HTTP transport source
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            -Iwebrtc/include -Iwebrtc/src/auth -Iwebrtc/src/signaling \
+            -Imedia/include \
+            webrtc/src/signaling/http_api.c
+
+      - name: Syntax-check signaling core with dynamic revocation
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            -Iwebrtc/include -Iwebrtc/src/auth -Imedia/include \
+            webrtc/src/signaling/webrtc_signaling.c
 
       - name: Syntax-check auth integration and native test
         shell: bash

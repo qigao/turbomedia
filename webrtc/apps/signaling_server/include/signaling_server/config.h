@@ -72,6 +72,7 @@ typedef struct signaling_server_config_s {
     const char *jwt_previous_key_id;
     const char *jwt_previous_secret;
     const char *jwt_revoked_token_sha256;
+    int jwt_dynamic_revocation_capacity;
     int jwt_clock_skew_seconds;
     int jwt_ttl_seconds;
     const char *jwt_algorithm;

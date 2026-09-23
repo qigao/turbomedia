@@ -7,12 +7,13 @@ cmake_add_grammar(
 add_library(
   turbo_media_auth STATIC
   src/auth/turbo_media_auth.c
-  src/auth/turbo_media_revocation.c)
+  src/auth/turbo_media_revocation.c
+  src/auth/turbo_media_revocation_projection.c)
 target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PRIVATE Salts::JsonParser SaltsNet::Crypto OpenSSL::Crypto)
+  PRIVATE Salts::JsonParser SaltsNet::Crypto OpenSSL::Crypto Salts::Core)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
 add_library(turbo_media_sdp STATIC)
