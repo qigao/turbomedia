@@ -1,0 +1,47 @@
+name: Product Profile Rejection Matrix
+
+on:
+  pull_request:
+    paths:
+      - "CMakeLists.txt"
+      - "cmake/TurboMediaProduct.cmake"
+      - "tests/cmake/product_profile_rejection.cmake"
+      - ".github/workflows/product-profile-rejections.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "CMakeLists.txt"
+      - "cmake/TurboMediaProduct.cmake"
+      - "tests/cmake/product_profile_rejection.cmake"
+      - ".github/workflows/product-profile-rejections.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: product-profile-rejections-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reject-unsupported-server:
+    name: Reject SERVER on ${{ matrix.target_system }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        target_system:
+          - Darwin
+          - iOS
+          - Android
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify configure rejects before toolchain and package discovery
+        run: >-
+          cmake
+          -DSOURCE_DIR="${GITHUB_WORKSPACE}"
+          -DTARGET_SYSTEM="${{ matrix.target_system }}"
+          -P tests/cmake/product_profile_rejection.cmake

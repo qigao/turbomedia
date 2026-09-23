@@ -4,21 +4,17 @@ if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW)
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/TurboMediaProduct.cmake")
+turbo_media_validate_product_target()
+
 project(
   TurboMedia
   VERSION 2.0.0
   LANGUAGES C CXX)
 
-set(TURBO_MEDIA_PRODUCT "" CACHE STRING "TurboMedia product: CLIENT or SERVER")
-set_property(CACHE TURBO_MEDIA_PRODUCT PROPERTY STRINGS CLIENT SERVER)
-if(NOT TURBO_MEDIA_PRODUCT STREQUAL "CLIENT" AND
-   NOT TURBO_MEDIA_PRODUCT STREQUAL "SERVER")
-  message(FATAL_ERROR "TURBO_MEDIA_PRODUCT must be CLIENT or SERVER")
-endif()
-if(TURBO_MEDIA_PRODUCT STREQUAL "SERVER" AND
-   NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  message(FATAL_ERROR "TurboMedia SERVER supports only Windows and Linux")
-endif()
+# Validate again after project() so toolchain files that establish the target
+# system during language setup cannot bypass the pre-project product gate.
+turbo_media_validate_product_target()
 
 set(TURBO_MEDIA_IS_CLIENT OFF)
 set(TURBO_MEDIA_IS_SERVER OFF)
