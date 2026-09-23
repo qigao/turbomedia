@@ -23,15 +23,23 @@ The shared control plane is the source of truth for:
 Application nodes must not independently invent a newer control-plane version or silently continue from a
 known sequence gap.
 
-The signaling node now exposes one authenticated propagation transport for this projection over its
-existing HTTPS management listener. Revocation writes require a short-lived signed bearer with audience
-`turbomedia-security-control` and scope `security.revocation.write`. The static management bearer
-compatibility token is never accepted on these routes. The HTTPS listener certificate is still required,
-so control tokens are not sent over plaintext HTTP.
+Signaling and SFU nodes expose the same authenticated propagation contract over their HTTPS control
+listeners. Revocation writes require a short-lived signed bearer with audience
+`turbomedia-security-control` and scope `security.revocation.write`. Legacy static management,
+control, or media bearer compatibility tokens are never accepted on revocation routes.
+
+Each process owns one bounded thread-safe projection using the same implementation. Signaling peer JWT,
+SFU control JWT, and SFU media JWT authorization consume that projection. A process starts
+UNSYNCHRONIZED and those workload tokens fail closed until a covering snapshot is accepted.
+
+The security-control recovery token is intentionally verified against signature, claims, expiry, key
+rotation, and the static fingerprint revocation list, but not against the dynamic projection it repairs.
+Otherwise an UNSYNCHRONIZED node could never authenticate the snapshot needed to recover. Security-control
+routes still require HTTPS, so recovery credentials are never accepted on plaintext control listeners.
 
 This slice authenticates the control-plane publisher at the application layer. Deployment network ACLs
-remain required, and mutual TLS may be added as an additional edge identity layer. SFU-node consumption
-and multi-node fan-out/retry are not implemented by this slice.
+remain required, and mutual TLS may be added as an additional edge identity layer. Multi-node fan-out,
+retry, acknowledgement, and durable control-plane distribution are not implemented by this slice.
 
 ### Edge
 
@@ -100,16 +108,21 @@ applied. A complete covering snapshot is required for recovery.
 If the bounded local set cannot admit an event, the node also becomes UNSYNCHRONIZED instead of dropping an
 old revocation or silently continuing with incomplete state.
 
-### Signaling propagation transport
+### Node propagation transport
 
-Dynamic peer revocation is enabled with a bounded `dynamic_revocation_capacity`. Enabling it requires
-peer JWT admission plus an HTTPS management listener with valid signed management-token configuration.
-Startup fails when that recovery channel is absent.
+Dynamic revocation is enabled with a bounded `dynamic_revocation_capacity` on signaling or
+`auth.dynamic_revocation_capacity` on an SFU node.
 
-A newly started signaling process creates an empty UNSYNCHRONIZED projection. Peer JWT authorization is
-therefore denied until a covering snapshot arrives.
+A signaling node requires peer JWT admission plus an HTTPS management listener with valid signed
+management-token configuration. An SFU node requires HTTPS plus valid signed auth and forbids legacy
+static `control.token` and `media.access_token` values in dynamic mode. Invalid recovery configuration
+fails at startup.
 
-The signaling management listener accepts two bounded v1 JSON messages:
+A newly started process creates an empty UNSYNCHRONIZED projection. Signaling peer JWTs and SFU
+control/media JWTs are denied until a covering snapshot arrives. SFU `/ready` also returns 503 while the
+projection is unsynchronized so an orchestrator can keep the node out of service.
+
+Each node accepts the same two bounded v1 JSON messages:
 
 - `POST /api/v1/security/revocations/snapshot` with `schema_version`, non-zero `epoch`,
   `sequence`, and `revoked_sha256` as a comma-separated set of lowercase SHA-256 digests;
@@ -163,8 +176,8 @@ other credential material are not stored in the revocation state and must not ap
 
 The following are intentionally not claimed complete by the dynamic-revocation slice:
 
-- authenticated fan-out/retry of revocation updates across all signaling and SFU nodes;
-- SFU-node integration with the shared revocation projection;
+- authenticated fan-out/retry/acknowledgement of revocation updates across all signaling and SFU nodes;
+- durable shared-control-plane distribution and lag visibility;
 - edge admission before TLS/WebSocket application allocation;
 - trusted-proxy allowlist and spoofed-header negative tests;
 - tenant/subject/IP/connection/request/media-resource quota model;
