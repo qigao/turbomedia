@@ -250,6 +250,16 @@ for (const [name, serverOptions] of [
   });
 }
 
+test('SFU rejects a second participant before viewer subscriptions are established', async (t) => {
+  const { adapter, server } = await setup(t, { roomTrackCount: 2 });
+  await attached(adapter);
+  server.createMedia(publisher);
+  server.createMedia(viewer);
+  await assert.rejects(adapter.waitForPublishedTracks(context, writeToken, ['audio', 'video']),
+    { code: 'SFU_INVALID_TRACK_CONTRACT' });
+  assert.equal(server.requests.filter((request) => request.body?.type === 'set_track_subscription').length, 0);
+});
+
 test('SFU rejects changed node identity and malformed counters instead of accepting a zero baseline', async (t) => {
   const { adapter, server } = await setup(t);
   const baseline = await attached(adapter);

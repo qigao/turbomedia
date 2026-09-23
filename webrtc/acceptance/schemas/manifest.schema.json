@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://turbonet.example/schemas/webrtc-acceptance/manifest-v1.json",
-  "title": "TurboMedia WebRTC acceptance manifest v1",
+  "$id": "https://turbonet.example/schemas/webrtc-acceptance/manifest-v2.json",
+  "title": "TurboMedia WebRTC acceptance manifest v2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "profile", "source", "grid", "sfu", "turn", "topologies", "scenarios", "phase_deadlines", "threshold_profile", "artifact_directory"],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "profile": { "enum": ["diagnostic", "release", "contract_lab"] },
     "source": {
       "type": "object",
@@ -68,9 +68,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["topology_id", "hooks"],
+        "required": ["topology_id", "relay_contract", "hooks"],
         "properties": {
           "topology_id": { "type": "string", "minLength": 1 },
+          "relay_contract": { "$ref": "#/$defs/relay_contract" },
           "hooks": {
             "type": "object",
             "additionalProperties": false,
@@ -92,10 +93,26 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["scenario_id", "topology_id", "sample_interval_ms", "duration_ms"],
+        "required": ["scenario_id", "topology_id", "workflow", "sample_interval_ms", "duration_ms"],
         "properties": {
           "scenario_id": { "type": "string", "minLength": 1 },
           "topology_id": { "type": "string", "minLength": 1 },
+          "workflow": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["credential_expiry", "topology_transition"],
+            "properties": {
+              "credential_expiry": { "type": "boolean" },
+              "topology_transition": { "type": "boolean" }
+            },
+            "allOf": [{
+              "if": {
+                "properties": { "credential_expiry": { "const": true } },
+                "required": ["credential_expiry"]
+              },
+              "then": { "properties": { "topology_transition": { "const": true } } }
+            }]
+          },
           "sample_interval_ms": { "type": "integer", "$comment": "limits:minimum=MIN_SAMPLE_INTERVAL_MS;maximum=MAX_CASE_DURATION_MS" },
           "duration_ms": { "type": "integer", "minimum": 1, "$comment": "limits:maximum=MAX_CASE_DURATION_MS" }
         }
@@ -150,6 +167,24 @@
           "minItems": 1,
           "$comment": "limits:maxItems=MAX_CASES",
           "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "relay_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "ip_family", "protocol", "relay_protocol", "remote_candidate_types"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "ip_family": { "enum": ["ipv4", "ipv6"] },
+        "protocol": { "enum": ["udp", "tcp"] },
+        "relay_protocol": { "enum": ["udp", "tcp", "tls"] },
+        "remote_candidate_types": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "enum": ["host", "srflx", "prflx", "relay"] }
         }
       }
     },

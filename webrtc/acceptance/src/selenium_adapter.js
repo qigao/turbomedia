@@ -237,10 +237,11 @@ function normalizedBrowser(value, operation) {
 
 function validateRelayContract(value) {
   if (value === undefined) return null;
-  if (!exact(value, ['ip_family', 'protocol', 'relay_protocol', 'remote_candidate_types']) ||
-      !['ipv4', 'ipv6'].includes(value.ip_family) || !['udp', 'tcp'].includes(value.protocol) ||
+  if (!exact(value, ['schema_version', 'ip_family', 'protocol', 'relay_protocol', 'remote_candidate_types']) ||
+      value.schema_version !== 1 || !['ipv4', 'ipv6'].includes(value.ip_family) || !['udp', 'tcp'].includes(value.protocol) ||
       !['udp', 'tcp', 'tls'].includes(value.relay_protocol) || !Array.isArray(value.remote_candidate_types) ||
       !value.remote_candidate_types.length || value.remote_candidate_types.length > CANDIDATE_TYPES.length ||
+      new Set(value.remote_candidate_types).size !== value.remote_candidate_types.length ||
       !value.remote_candidate_types.every((type) => CANDIDATE_TYPES.includes(type))) fail('BROWSER_INPUT_INVALID', 'relay_contract');
   return value;
 }

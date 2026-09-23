@@ -5,6 +5,7 @@ const { createContractValidator, validateContract } = require('./contracts');
 
 const validator = createContractValidator(path.join(__dirname, '..', 'schemas'));
 const SAFE_LABEL = /^[A-Za-z0-9_.:-]+$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 const ISO_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/;
 const SAFE_PROCESS_ERROR = Symbol.for('turbonet.webrtcAcceptance.safeError');
 const PROCESS_ERROR_CODES = new Set([
@@ -80,7 +81,8 @@ async function invokeTopologyHook(adapter, request) {
       !isSafeLabel(copiedRequest.topology_id) ||
       !['setup', 'transition', 'teardown', 'probe'].includes(copiedRequest.action) ||
       !Number.isInteger(copiedRequest.generation) || copiedRequest.generation < 0 ||
-      !Number.isInteger(copiedRequest.sequence) || copiedRequest.sequence < 0) {
+      !Number.isInteger(copiedRequest.sequence) || copiedRequest.sequence < 0 ||
+      !SHA256.test(copiedRequest.relay_contract_hash)) {
     throw safeError('INVALID_HOOK_REQUEST', operation, caseId, 'request');
   }
 
@@ -100,7 +102,8 @@ async function invokeTopologyHook(adapter, request) {
   if (output.topology_id !== copiedRequest.topology_id ||
       output.action !== copiedRequest.action ||
       output.generation !== copiedRequest.generation ||
-      output.sequence !== copiedRequest.sequence) {
+      output.sequence !== copiedRequest.sequence ||
+      output.relay_contract_hash !== copiedRequest.relay_contract_hash) {
     throw safeError('HOOK_CORRELATION_MISMATCH', operation, caseId, 'correlation');
   }
   if (output.effective !== true) {
