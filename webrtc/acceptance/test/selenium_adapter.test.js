@@ -59,6 +59,13 @@ for (const [field, value, code] of [ ['browserVersion', '127.0.1', 'BROWSER_CAPA
   });
 }
 
+test('contract_lab explicitly permits loopback HTTP Grid while release still rejects it', async () => {
+  const contract = factory()({ source, gridUrl: 'http://localhost:4444', profile: 'contract_lab', allowLoopbackHttp: true });
+  await assert.rejects(contract.preflightBrowser(context), { code: 'BROWSER_GRID_COMMAND_FAILED' });
+  assert.throws(() => factory()({ source, gridUrl: 'http://localhost:4444', profile: 'release', allowLoopbackHttp: true }),
+    { code: 'BROWSER_UNSAFE_GRID_URL' });
+});
+
 test('unsafe Grid URLs fail without echo or session allocation; absent Grid is missing evidence', async () => {
   for (const gridUrl of ['http://grid.example.test', 'https://user:SECRET@grid.test', 'https://grid.test/?SECRET',
     'https://grid.test/#SECRET', 'file:///grid', 'http://localhost:4444']) {
