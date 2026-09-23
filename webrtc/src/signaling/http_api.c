@@ -6,7 +6,9 @@
 #include "http_api.h"
 #include "signaling_management_internal.h"
 #include "turbo_media_auth.h"
+#include "webrtc_signaling.h"
 #include <chttp/chttp.h>
+#include <json_parser.h>
 #include <salts/error_codes.h>
 #include <salts_thread.h>
 #include <tlog.h>
@@ -20,6 +22,8 @@
 #define SIGNALING_MANAGEMENT_SCOPE_READ "signaling.management.read"
 #define SIGNALING_MANAGEMENT_SCOPE_WRITE "signaling.management.write"
 #define SIGNALING_MANAGEMENT_SCOPE_DANGEROUS "signaling.management.dangerous"
+#define SIGNALING_SECURITY_CONTROL_AUDIENCE "turbomedia-security-control"
+#define SIGNALING_SECURITY_REVOCATION_SCOPE "security.revocation.write"
 
 enum {
     HTTP_API_CONNECTION_CAPACITY = 64,
@@ -40,7 +44,13 @@ enum {
     HTTP_API_TLS_IO_BUFFER_BYTES = 256 * 1024,
     HTTP_API_BUFFER_CAPACITY_BYTES = 32 * 1024 * 1024,
     HTTP_API_TIMEOUT_MS = 5000,
-    HTTP_API_POLL_SLICE_MS = 10
+    HTTP_API_POLL_SLICE_MS = 10,
+    HTTP_API_REVOCATION_BODY_BYTES = 32 * 1024,
+    HTTP_API_REVOCATION_DIGEST_BYTES = 64,
+    HTTP_API_REVOCATION_MAX_CSV_BYTES =
+        TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS *
+            HTTP_API_REVOCATION_DIGEST_BYTES +
+        TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS - 1
 };
 
 typedef enum http_api_state_e {
@@ -56,6 +66,7 @@ struct http_api_server_s {
     salts_mutex_t lifecycle_mutex;
     chttp_server http;
     int http_initialized;
+    int revocation_enabled;
     http_api_state_t state;
 };
 
@@ -139,6 +150,36 @@ static void send_text(http_api_response_t *response, unsigned int status,
                       const char *body) {
     reply(response, status, "text/plain", body,
           body ? strlen(body) : 0u);
+}
+
+static int authorize_security_control_request(
+    http_api_server_t *server, const chttp_server_request_view *request,
+    http_api_response_t *response) {
+    const char *authorization;
+    turbo_media_auth_config_t auth;
+    turbo_media_auth_policy_t policy;
+
+    if (!server || !request || !response || !server->revocation_enabled ||
+        !server->config.use_tls || !server->config.auth_enabled ||
+        !server->config.auth_active_secret ||
+        server->config.auth_active_secret[0] == '\0') {
+        send_text(response, 503, "Security control unavailable");
+        return 0;
+    }
+
+    authorization = chttp_server_request_header(request, "Authorization");
+    auth = signed_auth_config(&server->config);
+    memset(&policy, 0, sizeof(policy));
+    policy.audience = SIGNALING_SECURITY_CONTROL_AUDIENCE;
+    policy.required_scope = SIGNALING_SECURITY_REVOCATION_SCOPE;
+    if (turbo_media_auth_authorize(
+            authorization, NULL, &auth, &policy) !=
+        TURBO_MEDIA_AUTH_SIGNED_TOKEN) {
+        set_header(response, "WWW-Authenticate", "Bearer");
+        send_text(response, 401, "Unauthorized");
+        return 0;
+    }
+    return 1;
 }
 
 static int authorize_management_request(
@@ -322,6 +363,258 @@ static int handle_broadcast(void *user,
     return response.status;
 }
 
+static int json_object_has_exact_keys(
+    const json_value_t *object, const char *const *keys, size_t key_count) {
+    size_t index;
+    size_t expected;
+
+    if (!object || json_type(object) != JSON_OBJECT ||
+        json_object_size(object) != key_count) {
+        return 0;
+    }
+    for (index = 0U; index < key_count; ++index) {
+        const char *key = json_object_key(object, index);
+        int found = 0;
+        if (!key) {
+            return 0;
+        }
+        for (expected = 0U; expected < key_count; ++expected) {
+            if (strcmp(key, keys[expected]) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            return 0;
+        }
+    }
+    for (expected = 0U; expected < key_count; ++expected) {
+        if (!json_object_get(object, keys[expected])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int json_uint32_required(
+    const json_value_t *object, const char *key, uint32_t *output) {
+    json_value_t *value;
+    double number;
+    uint32_t converted;
+
+    if (!object || !key || !output) {
+        return -1;
+    }
+    value = json_object_get(object, key);
+    if (!value || json_type(value) != JSON_NUMBER) {
+        return -1;
+    }
+    number = json_number(value);
+    if (number < 0.0 || number > 4294967295.0) {
+        return -1;
+    }
+    converted = (uint32_t)number;
+    if ((double)converted != number) {
+        return -1;
+    }
+    *output = converted;
+    return 0;
+}
+
+static int json_schema_v1(const json_value_t *object) {
+    uint32_t version = 0U;
+    return json_uint32_required(object, "schema_version", &version) == 0 &&
+           version == 1U;
+}
+
+static void send_revocation_result(
+    http_api_response_t *response,
+    webrtc_signaling_server_t *signaling,
+    webrtc_signaling_revocation_apply_result_t result) {
+    int synchronized = 0;
+    uint64_t epoch = 0U;
+    uint64_t sequence = 0U;
+    size_t count = 0U;
+    const char *name = "error";
+    unsigned int status = 400U;
+    char body[256];
+    int length;
+
+    if (result == WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED) {
+        name = "applied";
+        status = 200U;
+    } else if (result == WEBRTC_SIGNALING_REVOCATION_APPLY_STALE) {
+        name = "stale";
+        status = 200U;
+    } else if (result == WEBRTC_SIGNALING_REVOCATION_APPLY_GAP) {
+        name = "gap";
+        status = 409U;
+    } else if (result == WEBRTC_SIGNALING_REVOCATION_APPLY_LIMIT) {
+        name = "limit";
+        status = 409U;
+    }
+    if (webrtc_signaling_get_revocation_status(
+            signaling, &synchronized, &epoch, &sequence, &count) != 0) {
+        send_text(response, 500, "Revocation status unavailable");
+        return;
+    }
+    length = snprintf(
+        body, sizeof(body),
+        "{\"schema_version\":1,\"result\":\"%s\","
+        "\"synchronized\":%s,\"epoch\":%llu,\"sequence\":%llu,"
+        "\"count\":%zu}",
+        name, synchronized ? "true" : "false",
+        (unsigned long long)epoch, (unsigned long long)sequence, count);
+    if (length < 0 || (size_t)length >= sizeof(body)) {
+        send_text(response, 500, "Internal Error");
+        return;
+    }
+    reply(response, status, "application/json", body, (size_t)length);
+}
+
+static int handle_revocation_snapshot(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *raw_response) {
+    static const char *const keys[] = {
+        "schema_version", "epoch", "sequence", "revoked_sha256"};
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    json_value_t *root = NULL;
+    json_value_t *list_value;
+    const char *csv;
+    size_t csv_size;
+    char *owned = NULL;
+    const char *digests[TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS];
+    size_t count = 0U;
+    uint32_t epoch = 0U;
+    uint32_t sequence = 0U;
+    webrtc_signaling_revocation_apply_result_t result;
+
+    if (!authorize_security_control_request(
+            server, request, &response)) {
+        return response.status;
+    }
+    if (!request->body || request->body_size == 0U ||
+        request->body_size > HTTP_API_REVOCATION_BODY_BYTES) {
+        send_text(&response, 400, "Invalid revocation snapshot");
+        return response.status;
+    }
+    root = json_parse((const char *)request->body, request->body_size);
+    if (!root || !json_object_has_exact_keys(
+                     root, keys, sizeof(keys) / sizeof(keys[0])) ||
+        !json_schema_v1(root) ||
+        json_uint32_required(root, "epoch", &epoch) != 0 || epoch == 0U ||
+        json_uint32_required(root, "sequence", &sequence) != 0) {
+        json_free(root);
+        send_text(&response, 400, "Invalid revocation snapshot");
+        return response.status;
+    }
+    list_value = json_object_get(root, "revoked_sha256");
+    if (!list_value || json_type(list_value) != JSON_STRING) {
+        json_free(root);
+        send_text(&response, 400, "Invalid revocation snapshot");
+        return response.status;
+    }
+    csv = json_string(list_value);
+    csv_size = json_string_len(list_value);
+    if (!csv || csv_size > HTTP_API_REVOCATION_MAX_CSV_BYTES) {
+        json_free(root);
+        send_text(&response, 400, "Invalid revocation snapshot");
+        return response.status;
+    }
+    if (csv_size > 0U) {
+        char *cursor;
+        owned = (char *)malloc(csv_size + 1U);
+        if (!owned) {
+            json_free(root);
+            send_text(&response, 500, "Allocation failed");
+            return response.status;
+        }
+        memcpy(owned, csv, csv_size);
+        owned[csv_size] = '\0';
+        cursor = owned;
+        while (cursor && *cursor != '\0') {
+            char *comma;
+            if (count >= TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS) {
+                free(owned);
+                json_free(root);
+                send_text(&response, 400, "Invalid revocation snapshot");
+                return response.status;
+            }
+            digests[count++] = cursor;
+            comma = strchr(cursor, ',');
+            if (!comma) {
+                break;
+            }
+            *comma = '\0';
+            cursor = comma + 1;
+            if (*cursor == '\0') {
+                free(owned);
+                json_free(root);
+                send_text(&response, 400, "Invalid revocation snapshot");
+                return response.status;
+            }
+        }
+    }
+
+    result = webrtc_signaling_apply_revocation_snapshot(
+        server->signaling, epoch, sequence,
+        count > 0U ? digests : NULL, count);
+    free(owned);
+    json_free(root);
+    send_revocation_result(&response, server->signaling, result);
+    return response.status;
+}
+
+static int handle_revocation_revoke(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *raw_response) {
+    static const char *const keys[] = {
+        "schema_version", "epoch", "sequence", "sha256"};
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    json_value_t *root = NULL;
+    json_value_t *digest_value;
+    const char *digest;
+    uint32_t epoch = 0U;
+    uint32_t sequence = 0U;
+    webrtc_signaling_revocation_apply_result_t result;
+
+    if (!authorize_security_control_request(
+            server, request, &response)) {
+        return response.status;
+    }
+    if (!request->body || request->body_size == 0U ||
+        request->body_size > HTTP_API_REVOCATION_BODY_BYTES) {
+        send_text(&response, 400, "Invalid revocation event");
+        return response.status;
+    }
+    root = json_parse((const char *)request->body, request->body_size);
+    if (!root || !json_object_has_exact_keys(
+                     root, keys, sizeof(keys) / sizeof(keys[0])) ||
+        !json_schema_v1(root) ||
+        json_uint32_required(root, "epoch", &epoch) != 0 || epoch == 0U ||
+        json_uint32_required(root, "sequence", &sequence) != 0 ||
+        sequence == 0U) {
+        json_free(root);
+        send_text(&response, 400, "Invalid revocation event");
+        return response.status;
+    }
+    digest_value = json_object_get(root, "sha256");
+    if (!digest_value || json_type(digest_value) != JSON_STRING ||
+        json_string_len(digest_value) != HTTP_API_REVOCATION_DIGEST_BYTES) {
+        json_free(root);
+        send_text(&response, 400, "Invalid revocation event");
+        return response.status;
+    }
+    digest = json_string(digest_value);
+    result = webrtc_signaling_apply_revocation(
+        server->signaling, epoch, sequence, digest);
+    json_free(root);
+    send_revocation_result(&response, server->signaling, result);
+    return response.status;
+}
+
 static int handle_options(void *user,
                           const chttp_server_request_view *request,
                           chttp_server_response *raw_response) {
@@ -441,7 +734,9 @@ static int http_api_register_routes(http_api_server_t *server) {
         "/api/v1/rooms",
         "/api/v1/rooms/:id/peers",
         "/api/v1/rooms/:id/peers/:peer_id",
-        "/api/v1/rooms/:id/broadcast"};
+        "/api/v1/rooms/:id/broadcast",
+        "/api/v1/security/revocations/snapshot",
+        "/api/v1/security/revocations/revoke"};
     int status;
     size_t index;
 
@@ -469,6 +764,16 @@ static int http_api_register_routes(http_api_server_t *server) {
         status = chttp_server_post(
             &server->http, "/api/v1/rooms/:id/broadcast",
             handle_broadcast, server);
+    }
+    if (status == SALTS_OK && server->revocation_enabled) {
+        status = chttp_server_post(
+            &server->http, "/api/v1/security/revocations/snapshot",
+            handle_revocation_snapshot, server);
+    }
+    if (status == SALTS_OK && server->revocation_enabled) {
+        status = chttp_server_post(
+            &server->http, "/api/v1/security/revocations/revoke",
+            handle_revocation_revoke, server);
     }
     for (index = 0u;
          status == SALTS_OK && !server->config.auth_enabled &&
@@ -540,6 +845,23 @@ http_api_server_t *http_api_create(
         }
     }
     server->signaling = signaling;
+    {
+        int synchronized = 0;
+        uint64_t epoch = 0U;
+        uint64_t sequence = 0U;
+        size_t count = 0U;
+        server->revocation_enabled =
+            webrtc_signaling_get_revocation_status(
+                signaling, &synchronized, &epoch, &sequence, &count) == 0;
+        if (server->revocation_enabled &&
+            (!server->config.use_tls || !server->config.auth_enabled ||
+             !server->config.auth_active_secret ||
+             server->config.auth_active_secret[0] == '\0')) {
+            http_api_free_config_strings(&server->config);
+            free(server);
+            return NULL;
+        }
+    }
     salts_mutex_init(&server->lifecycle_mutex);
     server->state = HTTP_API_STOPPED;
     return server;

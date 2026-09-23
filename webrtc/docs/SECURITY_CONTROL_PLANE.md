@@ -23,9 +23,15 @@ The shared control plane is the source of truth for:
 Application nodes must not independently invent a newer control-plane version or silently continue from a
 known sequence gap.
 
-The transport carrying revocation snapshots/events is outside this slice. A production implementation must
-authenticate that transport (for example mTLS plus explicit network policy) and must not accept arbitrary
-Internet clients as control-plane publishers.
+The signaling node now exposes one authenticated propagation transport for this projection over its
+existing HTTPS management listener. Revocation writes require a short-lived signed bearer with audience
+`turbomedia-security-control` and scope `security.revocation.write`. The static management bearer
+compatibility token is never accepted on these routes. The HTTPS listener certificate is still required,
+so control tokens are not sent over plaintext HTTP.
+
+This slice authenticates the control-plane publisher at the application layer. Deployment network ACLs
+remain required, and mutual TLS may be added as an additional edge identity layer. SFU-node consumption
+and multi-node fan-out/retry are not implemented by this slice.
 
 ### Edge
 
@@ -94,6 +100,29 @@ applied. A complete covering snapshot is required for recovery.
 If the bounded local set cannot admit an event, the node also becomes UNSYNCHRONIZED instead of dropping an
 old revocation or silently continuing with incomplete state.
 
+### Signaling propagation transport
+
+Dynamic peer revocation is enabled with a bounded `dynamic_revocation_capacity`. Enabling it requires
+peer JWT admission plus an HTTPS management listener with valid signed management-token configuration.
+Startup fails when that recovery channel is absent.
+
+A newly started signaling process creates an empty UNSYNCHRONIZED projection. Peer JWT authorization is
+therefore denied until a covering snapshot arrives.
+
+The signaling management listener accepts two bounded v1 JSON messages:
+
+- `POST /api/v1/security/revocations/snapshot` with `schema_version`, non-zero `epoch`,
+  `sequence`, and `revoked_sha256` as a comma-separated set of lowercase SHA-256 digests;
+- `POST /api/v1/security/revocations/revoke` with `schema_version`, non-zero `epoch`,
+  non-zero `sequence`, and one lowercase `sha256` digest.
+
+Epoch and sequence are limited to exact JSON uint32 values. Snapshots are capped by
+`TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS`; request bodies are independently bounded. Responses expose only
+result, synchronization state, version, and count. They never echo token fingerprints or bearer material.
+
+Stale writes are idempotent. Sequence gaps, capacity failures, and admissible newer malformed updates
+leave the projection UNSYNCHRONIZED and therefore fail peer admission closed until a covering snapshot.
+
 ### Authorization
 
 The signed-token verifier computes the compact-token SHA-256 and invokes the configured dynamic revocation
@@ -134,7 +163,8 @@ other credential material are not stored in the revocation state and must not ap
 
 The following are intentionally not claimed complete by the dynamic-revocation slice:
 
-- authenticated/distributed transport for revocation propagation;
+- authenticated fan-out/retry of revocation updates across all signaling and SFU nodes;
+- SFU-node integration with the shared revocation projection;
 - edge admission before TLS/WebSocket application allocation;
 - trusted-proxy allowlist and spoofed-header negative tests;
 - tenant/subject/IP/connection/request/media-resource quota model;
