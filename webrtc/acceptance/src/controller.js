@@ -426,6 +426,10 @@ async function drainCase(context, runtime, primaryResult, _signal) {
     stale_event_count: runtime.machine.stale_event_count,
     generation: runtime.machine.generation,
     browser_ice_generation: runtime.browser_ice_generation,
+    browser_ice: Object.freeze({
+      publisher: runtime.browser_ice.publisher || null,
+      viewer: runtime.browser_ice.viewer || null,
+    }),
     confirmed_track_ids: runtime.confirmed_track_ids,
     fresh_turn_credential_id: runtime.fresh_turn_credential_id,
     stable_metrics: runtime.stable_metrics || null,

@@ -124,6 +124,34 @@ test('finalization freezes one complete model and preserves metric results witho
   assert.throws(() => addCaseResult(report, caseResult({ case_id: 'case-003' })), /finalized/i);
 });
 
+test('report aggregation uses the controller outcome priority ERROR > INCOMPLETE > FAIL > PASS', () => {
+  const report = createRunReport(
+    { run_id: 'run-priority', started_at: '2026-08-25T08:00:00Z' },
+    { case_count: 2 },
+    { kind: 'contract_lab', release_eligible: false }
+  );
+  addCaseResult(report, caseResult({ case_id: 'case-fail', evidence_id: 'evidence-fail', outcome: 'FAIL' }));
+  addCaseResult(report, caseResult({
+    case_id: 'case-incomplete',
+    evidence_id: 'evidence-incomplete',
+    outcome: 'INCOMPLETE',
+    thresholds: {
+      inputs: {},
+      results: { outcome: 'INCOMPLETE' },
+    },
+  }));
+  assert.equal(finalizeRunReport(report).outcome, 'INCOMPLETE');
+});
+
+test('report schema forbids release eligibility for contract lab evidence', () => {
+  const report = JSON.parse(JSON.stringify(completedReport('run-contract-lab-schema')));
+  report.environment = { kind: 'contract_lab', release_eligible: true };
+  const validation = validateContract(validator, 'report', report);
+  assert.equal(validation.valid, false);
+  assert.ok(validation.errors.some((entry) =>
+    entry.instancePath === '/environment/release_eligible' || entry.keyword === 'const'));
+});
+
 test('three formats match golden bytes, remain schema-valid, and agree on outcome and case counts', async (t) => {
   const firstDirectory = await temporaryDirectory(t, 'webrtc-report-first-');
   const secondDirectory = await temporaryDirectory(t, 'webrtc-report-second-');

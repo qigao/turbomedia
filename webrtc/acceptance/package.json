@@ -9,7 +9,9 @@
   "scripts": {
     "test": "node --test",
     "validate": "node src/cli.js validate",
-    "acceptance": "node src/cli.js run"
+    "acceptance": "node src/cli.js run",
+    "audit:deps": "npm audit --audit-level=high",
+    "audit:delivery": "node --test test/delivery_audit.test.js"
   },
   "devDependencies": {
     "ajv": "8.20.0",

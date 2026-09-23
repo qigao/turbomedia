@@ -131,13 +131,22 @@ function createAcceptanceLab(options = {}) {
     return now() + budget;
   }
 
-  async function issueTurn(runtime, state, signal) {
+  async function issueTurn(runtime, state, signal, options = {}) {
+    const current = now();
+    const workflow = runtime.definition.scenario && runtime.definition.scenario.workflow;
+    const shortTtl = workflow && workflow.credential_expiry === true && options.fresh !== true;
     const request = {
-      now_ms: now(),
-      required_valid_until_ms: validityDeadline(runtime),
+      now_ms: current,
+      required_valid_until_ms: shortTtl
+        ? current + runtime.definition.scenario.duration_ms + runtime.definition.scenario.sample_interval_ms
+        : validityDeadline(runtime),
       run_id: runtime.identity.run_id,
       case_id: runtime.identity.case_id,
+      short_ttl: shortTtl,
     };
+    if (typeof options.previousCredentialId === 'string') {
+      request.previous_credential_id = options.previousCredentialId;
+    }
     return issueTurnCredential(
       (value) => invokeCommand(manifest.turn.credential_provider, value, signal,
         'turn_credential', 'provider'),
@@ -163,7 +172,7 @@ function createAcceptanceLab(options = {}) {
     );
   }
 
-  async function invokeCaseHook(runtime, action, sequence, signal) {
+  async function invokeCaseHook(runtime, action, sequence, signal, extra = {}) {
     const declared = topology(runtime.definition);
     const command = declared.hooks[action];
     if (!command) throw labError('TOPOLOGY_HOOK_UNAVAILABLE', 'missing_evidence', action);
@@ -175,9 +184,20 @@ function createAcceptanceLab(options = {}) {
       generation: runtime.machine.generation,
       sequence,
       relay_contract_hash: runtime.relay_contract_hash,
+      ...extra,
     };
     return invokeTopologyHook(
       (value) => invokeCommand(command, value, signal, 'topology_' + action, 'hook'),
+      request
+    );
+  }
+
+  async function invokeTopologyProbe(declared, request, signal, operation) {
+    if (!declared.hooks.probe) {
+      throw labError('TOPOLOGY_PROBE_UNAVAILABLE', 'missing_evidence', operation);
+    }
+    return invokeTopologyHook(
+      (value) => invokeCommand(declared.hooks.probe, value, signal, operation, 'hook'),
       request
     );
   }
@@ -187,7 +207,8 @@ function createAcceptanceLab(options = {}) {
       source: manifest.source,
       gridUrl: env[manifest.grid.endpoint_env],
       profile: manifest.profile,
-      allowLoopbackHttp: manifest.profile === 'diagnostic',
+      allowLoopbackHttp: manifest.profile === 'diagnostic' ||
+        (manifest.profile === 'contract_lab' && dependencies.allowLoopbackHttp === true),
       commandTimeoutMs: Math.min(MAX_OPERATION_MS, phaseMax),
     });
   }
@@ -392,7 +413,7 @@ function createAcceptanceLab(options = {}) {
 
     async preflightTurn(_manifest, signal) {
       const current = now();
-      await issueTurnCredential(
+      const credential = await issueTurnCredential(
         (value) => invokeCommand(manifest.turn.credential_provider, value, signal,
           'turn_preflight', 'provider'),
         {
@@ -402,10 +423,29 @@ function createAcceptanceLab(options = {}) {
           case_id: 'preflight-turn',
         }
       );
-      if (manifest.profile === 'release') {
-        throw labError('TURN_REACHABILITY_UNVERIFIED', 'missing_evidence', 'preflightTurn');
+      let verified = true;
+      for (let index = 0; index < manifest.topologies.length; index += 1) {
+        const declared = manifest.topologies[index];
+        if (!declared.hooks.probe) {
+          verified = false;
+          if (manifest.profile !== 'diagnostic') {
+            throw labError('TURN_REACHABILITY_UNVERIFIED', 'missing_evidence', 'preflightTurn');
+          }
+          continue;
+        }
+        await invokeTopologyProbe(declared, {
+          run_id: runIdentity.run_id,
+          case_id: 'preflight-turn-' + String(index),
+          topology_id: declared.topology_id,
+          action: 'probe',
+          generation: 0,
+          sequence: 0,
+          relay_contract_hash: hashCanonical(declared.relay_contract),
+          probe_kind: 'turn_reachability',
+          credential_id: credential.credential_id,
+        }, signal, 'turn_reachability_probe');
       }
-      return Object.freeze({ credential_ready: true, reachability_verified: false });
+      return Object.freeze({ credential_ready: true, reachability_verified: verified });
     },
 
     async prepareCase(runtime, sequence, signal) {
@@ -474,9 +514,48 @@ function createAcceptanceLab(options = {}) {
 
     samplePhase: sample,
 
-    async assertCredentialExpiry() {
-      throw labError('CREDENTIAL_EXPIRY_PROBE_UNAVAILABLE',
-        'missing_evidence', 'credential_expiry');
+    async assertCredentialExpiry(runtime, signal) {
+      const state = stateFor(runtime);
+      if (!state.turn || typeof state.turn.credential_id !== 'string') {
+        throw labError('CREDENTIAL_EXPIRY_PROBE_UNAVAILABLE',
+          'missing_evidence', 'credential_expiry');
+      }
+      const expiresAt = Date.parse(state.turn.expires_at);
+      if (!Number.isFinite(expiresAt)) {
+        throw labError('CREDENTIAL_EXPIRY_TIME_INVALID', 'harness', 'credential_expiry');
+      }
+      const remaining = Math.max(0, expiresAt - now() + 10);
+      if (remaining >= manifest.phase_deadlines.transition_ms) {
+        throw labError('CREDENTIAL_EXPIRY_WINDOW_UNAVAILABLE',
+          'missing_evidence', 'credential_expiry');
+      }
+      if (remaining > 0) await delay(remaining, undefined, { signal });
+
+      let rejected = true;
+      try {
+        await invokeCaseHook(runtime, 'probe', runtime.machine.last_sequence, signal, {
+          probe_kind: 'credential_expiry',
+          credential_id: state.turn.credential_id,
+        });
+      } catch (error) {
+        if (error && error.code === 'HOOK_NOT_EFFECTIVE') rejected = false;
+        else throw error;
+      }
+      if (!rejected) return Object.freeze({ old_credential_rejected: false });
+
+      const previousCredentialId = state.turn.credential_id;
+      const fresh = await issueTurn(runtime, state, signal, {
+        fresh: true,
+        previousCredentialId,
+      });
+      if (fresh.credential_id === previousCredentialId) {
+        throw labError('FRESH_CREDENTIAL_REUSED', 'harness', 'credential_expiry');
+      }
+      state.turn = fresh;
+      return Object.freeze({
+        old_credential_rejected: true,
+        fresh_credential_id: fresh.credential_id,
+      });
     },
 
     async transitionTopology(runtime, sequence, signal) {
@@ -485,14 +564,20 @@ function createAcceptanceLab(options = {}) {
 
     async restartIce(runtime, expectedIceGeneration, freshCredentialId, signal) {
       const state = stateFor(runtime);
-      if (freshCredentialId !== null && freshCredentialId !== undefined) {
-        throw labError('FRESH_CREDENTIAL_RESTART_UNAVAILABLE',
-          'missing_evidence', 'recovery');
-      }
       const input = { generation: expectedIceGeneration };
+      if (freshCredentialId !== null && freshCredentialId !== undefined) {
+        if (!state.turn || state.turn.credential_id !== freshCredentialId) {
+          throw labError('FRESH_CREDENTIAL_RESTART_MISMATCH', 'harness', 'recovery');
+        }
+        input.turn = {
+          urls: Array.from(state.turn.urls),
+          username: state.turn.username,
+          credential: state.turn.credential,
+        };
+      }
       const publisher = await state.browser.execute('publisher', 'restartIce', input, signal);
       const viewer = await state.browser.execute('viewer', 'restartIce', input, signal);
-      return Object.freeze({ credential_id: null, publisher, viewer });
+      return Object.freeze({ credential_id: freshCredentialId ?? null, publisher, viewer });
     },
 
     async stopSampling() {
@@ -543,13 +628,26 @@ function createAcceptanceLab(options = {}) {
       return Object.freeze({ cleanup_failures: [] });
     },
 
-    async waitTurnBaseline() {
-      if (manifest.profile === 'release') {
+    async waitTurnBaseline(runtime, signal) {
+      const declared = topology(runtime.definition);
+      if (!declared.hooks.probe) {
+        return manifest.profile === 'diagnostic'
+          ? Object.freeze({ cleanup_failures: [] })
+          : Object.freeze({
+            cleanup_failures: Object.freeze([{ code: 'TURN_BASELINE_UNVERIFIED' }]),
+          });
+      }
+      try {
+        await invokeCaseHook(runtime, 'probe', runtime.machine.last_sequence, signal, {
+          probe_kind: 'turn_baseline',
+          credential_id: stateFor(runtime).turn && stateFor(runtime).turn.credential_id,
+        });
+        return Object.freeze({ cleanup_failures: [] });
+      } catch {
         return Object.freeze({
-          cleanup_failures: Object.freeze([{ code: 'TURN_BASELINE_UNVERIFIED' }]),
+          cleanup_failures: Object.freeze([{ code: 'TURN_BASELINE_NOT_RESTORED' }]),
         });
       }
-      return Object.freeze({ cleanup_failures: [] });
     },
 
     async teardownTopology(runtime, sequence, signal) {

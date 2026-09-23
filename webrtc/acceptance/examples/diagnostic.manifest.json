@@ -1,0 +1,116 @@
+{
+  "schema_version": 2,
+  "profile": "diagnostic",
+  "source": {
+    "commit": "0000000000000000000000000000000000000000",
+    "require_clean_tree": true,
+    "test_page_url": "https://acceptance.example.test/client.html",
+    "test_page_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "grid": {
+    "endpoint_env": "TURBO_MEDIA_ACCEPTANCE_GRID_URL",
+    "browsers": [
+      {
+        "name": "chrome",
+        "version": "127.0.0",
+        "platform": "Linux"
+      }
+    ]
+  },
+  "sfu": {
+    "base_url": "https://sfu.example.test",
+    "whip_endpoint": "/whip",
+    "whep_endpoint": "/whep",
+    "token_provider": {
+      "command": [
+        "turbomedia-sfu-token-provider",
+        "--json"
+      ]
+    }
+  },
+  "turn": {
+    "credential_provider": {
+      "command": [
+        "turbomedia-turn-credential-provider",
+        "--json"
+      ]
+    }
+  },
+  "topologies": [
+    {
+      "topology_id": "diagnostic-ipv4",
+      "relay_contract": {
+        "schema_version": 1,
+        "ip_family": "ipv4",
+        "protocol": "udp",
+        "relay_protocol": "tcp",
+        "remote_candidate_types": [
+          "host"
+        ]
+      },
+      "hooks": {
+        "setup": {
+          "command": [
+            "turbomedia-topology-hook",
+            "setup"
+          ]
+        },
+        "transition": {
+          "command": [
+            "turbomedia-topology-hook",
+            "transition"
+          ]
+        },
+        "teardown": {
+          "command": [
+            "turbomedia-topology-hook",
+            "teardown"
+          ]
+        },
+        "probe": {
+          "command": [
+            "turbomedia-topology-hook",
+            "probe"
+          ]
+        }
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "scenario_id": "relay-baseline",
+      "topology_id": "diagnostic-ipv4",
+      "workflow": {
+        "credential_expiry": false,
+        "topology_transition": false
+      },
+      "sample_interval_ms": 250,
+      "duration_ms": 5000
+    }
+  ],
+  "phase_deadlines": {
+    "preflight_ms": 30000,
+    "connect_ms": 30000,
+    "stable_ms": 10000,
+    "transition_ms": 15000,
+    "recovery_ms": 30000,
+    "drain_ms": 30000
+  },
+  "threshold_profile": {
+    "profile_id": "diagnostic-example",
+    "stable": {
+      "minimum_samples": 4,
+      "max_rtt_ms": 500,
+      "min_media_delta": 1
+    },
+    "recovery": {
+      "minimum_samples": 4,
+      "max_rtt_ms": 500,
+      "min_media_delta": 1
+    },
+    "drain": {
+      "maximum_duration_ms": 30000
+    }
+  },
+  "artifact_directory": "artifacts/webrtc-acceptance-diagnostic"
+}

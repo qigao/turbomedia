@@ -12,7 +12,23 @@
     "started_at": { "type": "string", "minLength": 1 },
     "finished_at": { "type": "string", "minLength": 1 },
     "manifest_summary": { "type": "object" },
-    "environment": { "type": "object" },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "kind": { "enum": ["diagnostic", "release", "contract_lab"] },
+        "release_eligible": { "type": "boolean" }
+      },
+      "allOf": [{
+        "if": {
+          "properties": { "kind": { "const": "contract_lab" } },
+          "required": ["kind"]
+        },
+        "then": {
+          "required": ["release_eligible"],
+          "properties": { "release_eligible": { "const": false } }
+        }
+      }]
+    },
     "counts": {
       "type": "object",
       "additionalProperties": false,

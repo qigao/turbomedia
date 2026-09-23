@@ -41,5 +41,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
 
+      - name: Audit locked dependencies
+        run: npm run audit:deps
+
+      - name: Audit delivery examples and secret patterns
+        run: npm run audit:delivery
+
       - name: Run acceptance unit tests
         run: npm test
