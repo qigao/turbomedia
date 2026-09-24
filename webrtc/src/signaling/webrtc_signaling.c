@@ -2085,6 +2085,9 @@ webrtc_signaling_server_t *webrtc_signaling_create(
           &server->trusted_proxy_count) != 0 ||
       ((server->config.trusted_proxy_addresses != NULL) !=
        (server->config.trusted_proxy_ca_file != NULL)) ||
+      (server->config.trusted_proxy_addresses &&
+       (server->config.trusted_proxy_addresses[0] == '\0' ||
+        server->config.trusted_proxy_ca_file[0] == '\0')) ||
       (server->trusted_proxy_count > 0U &&
        (!server->config.use_tls ||
         !source_policy_enabled(&server->config)))) {
