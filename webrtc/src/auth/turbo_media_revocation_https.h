@@ -14,11 +14,20 @@ extern "C" {
 #define TURBO_MEDIA_REVOCATION_HTTPS_PATH_BYTES 128U
 #define TURBO_MEDIA_REVOCATION_HTTPS_TLS_NAME_BYTES 256U
 #define TURBO_MEDIA_REVOCATION_HTTPS_CA_PATH_BYTES 512U
+#define TURBO_MEDIA_REVOCATION_HTTPS_TOKEN_BYTES 4096U
 
-typedef const char *(*turbo_media_revocation_https_token_fn)(
+/**
+ * Fill one short-lived bearer for exactly one delivery attempt.
+ *
+ * The adapter owns the output buffer and clears it after the request. The
+ * callback must not retain the buffer pointer. Return 0 on success.
+ */
+typedef int (*turbo_media_revocation_https_token_fn)(
     void *token_context,
     const char *target_id,
-    unsigned int attempt);
+    unsigned int attempt,
+    char *out_token,
+    size_t out_token_capacity);
 
 typedef struct turbo_media_revocation_https_target_config_s {
     const char *target_id;
