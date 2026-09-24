@@ -72,7 +72,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c') }}
+          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/src/signaling/**', 'webrtc/apps/sfu_node/src/http_api.c', 'webrtc/apps/sfu_node/include/sfu_node/**', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c', 'webrtc/tests/test_revocation_projection.c') }}
           restore-keys: |
             webrtc-auth-security-${{ runner.os }}-
 
@@ -450,6 +450,16 @@ jobs:
           ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
             -Iwebrtc/apps/sfu_node/include \
             "$RUNNER_TEMP/sfu-revocation-config-header.c"
+
+      - name: Syntax-check SFU revocation HTTP transport source
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            -Iwebrtc/include -Iwebrtc/src/auth \
+            -Iwebrtc/apps/sfu_node/include -Imedia/include \
+            webrtc/apps/sfu_node/src/http_api.c
 
       - name: Syntax-check signaling revocation public contract
         shell: bash
