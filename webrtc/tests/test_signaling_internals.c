@@ -245,6 +245,36 @@ void test_trusted_proxy_allowlist_is_exact_bounded_and_normalized(void) {
                   &server.trusted_proxy_count), -1);
 }
 
+void test_trusted_proxy_create_rejects_malformed_or_duplicate_allowlists(void) {
+  webrtc_signaling_config_t config = {
+      .connection_capacity = 4U,
+      .use_tls = 1,
+      .cert_file = "server.crt",
+      .key_file = "server.key",
+      .max_connections_per_source = 2,
+      .max_source_states = 8U,
+      .source_state_ttl_ms = 1000,
+      .trusted_proxy_ca_file = "proxy-ca.pem"};
+  webrtc_signaling_server_t *server;
+
+  config.trusted_proxy_addresses = "not-an-ip";
+  check_null(webrtc_signaling_create(NULL, &config));
+
+  config.trusted_proxy_addresses = "10.0.0.10,10.0.0.10";
+  check_null(webrtc_signaling_create(NULL, &config));
+
+  config.trusted_proxy_addresses = "10.0.0.10";
+  server = webrtc_signaling_create(NULL, &config);
+  check_not_null(server);
+  if (server) {
+    check_equal((size_t)server->trusted_proxy_count, (size_t)1);
+    webrtc_signaling_destroy(server);
+  }
+
+  config.trusted_proxy_ca_file = NULL;
+  check_null(webrtc_signaling_create(NULL, &config));
+}
+
 void test_remove_peer_from_room_clears_room_links(void) {
   webrtc_signaling_server_t server;
   webrtc_room_t *room = NULL;
@@ -980,6 +1010,7 @@ spec("test_signaling_internals") {
   it("test_trusted_proxy_source_identity_ignores_untrusted_spoofed_headers") { test_trusted_proxy_source_identity_ignores_untrusted_spoofed_headers(); };
   it("test_trusted_proxy_source_identity_requires_one_valid_forwarded_ip") { test_trusted_proxy_source_identity_requires_one_valid_forwarded_ip(); };
   it("test_trusted_proxy_allowlist_is_exact_bounded_and_normalized") { test_trusted_proxy_allowlist_is_exact_bounded_and_normalized(); };
+  it("test_trusted_proxy_create_rejects_malformed_or_duplicate_allowlists") { test_trusted_proxy_create_rejects_malformed_or_duplicate_allowlists(); };
   it("test_remove_peer_from_room_clears_room_links") { test_remove_peer_from_room_clears_room_links(); };
   it("test_json_string_maybe_escape_skips_plain_candidate_strings") { test_json_string_maybe_escape_skips_plain_candidate_strings(); };
   it("test_json_string_maybe_escape_escapes_room_names") { test_json_string_maybe_escape_escapes_room_names(); };
