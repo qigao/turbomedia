@@ -20,6 +20,7 @@ add_executable(signaling_server
 target_include_directories(signaling_server
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/signaling
 )
 
 # Link libraries
