@@ -56,6 +56,17 @@ typedef struct {
     int source_admission_burst;     /**< Upgraded connection admission burst capacity */
     size_t max_source_states;       /**< Tracked source IP limit (0 only when policy is disabled) */
     int source_state_ttl_ms;        /**< Retain inactive source rate state for this duration */
+
+    /*
+     * Optional trusted reverse-proxy mode for source admission. Addresses are
+     * a comma-separated list of exact proxy IPv4/IPv6 literals. When present,
+     * WSS client-certificate authentication is required using
+     * trusted_proxy_ca_file. Only allowlisted socket peers may supply one
+     * single-value X-Forwarded-For identity; forwarded headers from every
+     * other peer are ignored.
+     */
+    const char *trusted_proxy_addresses;
+    const char *trusted_proxy_ca_file;
     
     /* Authentication */
     int jwt_enabled;                /**< Require a signed token in the join message */
