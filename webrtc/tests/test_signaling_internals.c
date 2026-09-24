@@ -138,6 +138,113 @@ static void join_test_peer(webrtc_signaling_server_t *server,
   handle_message(server, peer, message, (size_t)length);
 }
 
+static void source_key_to_test_peer(
+    const signaling_source_key_t *key, cnet_stream_peer *peer) {
+  memset(peer, 0, sizeof(*peer));
+  if (key->family == SIGNALING_SOURCE_FAMILY_IPV4) {
+    peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
+    memcpy(peer->address, key->address, 4U);
+  } else {
+    peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
+    memcpy(peer->address, key->address, 16U);
+    peer->scope_id = key->scope_id;
+  }
+}
+
+void test_trusted_proxy_source_identity_ignores_untrusted_spoofed_headers(void) {
+  webrtc_signaling_server_t server;
+  signaling_source_key_t direct_key;
+  signaling_source_key_t spoofed_key;
+  signaling_source_key_t resolved;
+  cnet_stream_peer peer;
+
+  memset(&server, 0, sizeof(server));
+  check_equal(trusted_proxy_list_parse(
+                  "10.0.0.10,2001:db8::10",
+                  server.trusted_proxies,
+                  &server.trusted_proxy_count), 0);
+  check_equal(source_key_from_text_span(
+                  "198.51.100.20", strlen("198.51.100.20"),
+                  &direct_key), 0);
+  check_equal(source_key_from_text_span(
+                  "203.0.113.99", strlen("203.0.113.99"),
+                  &spoofed_key), 0);
+  source_key_to_test_peer(&direct_key, &peer);
+
+  check_equal(source_key_resolve(
+                  &server, &peer, "203.0.113.99", &resolved), 0);
+  check_true(source_key_equal_value(&resolved, &direct_key));
+  check_false(source_key_equal_value(&resolved, &spoofed_key));
+}
+
+void test_trusted_proxy_source_identity_requires_one_valid_forwarded_ip(void) {
+  webrtc_signaling_server_t server;
+  signaling_source_key_t proxy_key;
+  signaling_source_key_t client_key;
+  signaling_source_key_t resolved;
+  cnet_stream_peer peer;
+
+  memset(&server, 0, sizeof(server));
+  check_equal(trusted_proxy_list_parse(
+                  "10.0.0.10",
+                  server.trusted_proxies,
+                  &server.trusted_proxy_count), 0);
+  check_equal(source_key_from_text_span(
+                  "10.0.0.10", strlen("10.0.0.10"),
+                  &proxy_key), 0);
+  check_equal(source_key_from_text_span(
+                  "203.0.113.7", strlen("203.0.113.7"),
+                  &client_key), 0);
+  source_key_to_test_peer(&proxy_key, &peer);
+
+  check_equal(source_key_resolve(
+                  &server, &peer, "203.0.113.7", &resolved), 0);
+  check_true(source_key_equal_value(&resolved, &client_key));
+
+  check_equal(source_key_resolve(
+                  &server, &peer, NULL, &resolved), -1);
+  check_equal(source_key_resolve(
+                  &server, &peer,
+                  "203.0.113.7, 198.51.100.1", &resolved), -1);
+  check_equal(source_key_resolve(
+                  &server, &peer, "client.example", &resolved), -1);
+  check_equal(source_key_resolve(
+                  &server, &peer, "[2001:db8::1]", &resolved), -1);
+}
+
+void test_trusted_proxy_allowlist_is_exact_bounded_and_normalized(void) {
+  webrtc_signaling_server_t server;
+  signaling_source_key_t resolved;
+  cnet_stream_peer mapped_peer = {0};
+  uint8_t mapped[16] = {
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff,
+      10, 0, 0, 10};
+
+  memset(&server, 0, sizeof(server));
+  check_equal(trusted_proxy_list_parse(
+                  "10.0.0.10",
+                  server.trusted_proxies,
+                  &server.trusted_proxy_count), 0);
+  mapped_peer.family = CNET_DATAGRAM_ADDRESS_IPV6;
+  memcpy(mapped_peer.address, mapped, sizeof(mapped));
+  check_equal(source_key_resolve(
+                  &server, &mapped_peer, "2001:db8::55", &resolved), 0);
+  check_equal((int)resolved.family, SIGNALING_SOURCE_FAMILY_IPV6);
+
+  check_equal(trusted_proxy_list_parse(
+                  "10.0.0.10,10.0.0.10",
+                  server.trusted_proxies,
+                  &server.trusted_proxy_count), -1);
+  check_equal(trusted_proxy_list_parse(
+                  "10.0.0.10/32",
+                  server.trusted_proxies,
+                  &server.trusted_proxy_count), -1);
+  check_equal(trusted_proxy_list_parse(
+                  "2001:db8::1%eth0",
+                  server.trusted_proxies,
+                  &server.trusted_proxy_count), -1);
+}
+
 void test_remove_peer_from_room_clears_room_links(void) {
   webrtc_signaling_server_t server;
   webrtc_room_t *room = NULL;
@@ -870,6 +977,9 @@ void test_status_reports_resource_rejection_counters(void) {
 }
 
 spec("test_signaling_internals") {
+  it("test_trusted_proxy_source_identity_ignores_untrusted_spoofed_headers") { test_trusted_proxy_source_identity_ignores_untrusted_spoofed_headers(); };
+  it("test_trusted_proxy_source_identity_requires_one_valid_forwarded_ip") { test_trusted_proxy_source_identity_requires_one_valid_forwarded_ip(); };
+  it("test_trusted_proxy_allowlist_is_exact_bounded_and_normalized") { test_trusted_proxy_allowlist_is_exact_bounded_and_normalized(); };
   it("test_remove_peer_from_room_clears_room_links") { test_remove_peer_from_room_clears_room_links(); };
   it("test_json_string_maybe_escape_skips_plain_candidate_strings") { test_json_string_maybe_escape_skips_plain_candidate_strings(); };
   it("test_json_string_maybe_escape_escapes_room_names") { test_json_string_maybe_escape_escapes_room_names(); };
