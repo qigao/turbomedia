@@ -63,6 +63,10 @@ typedef struct signaling_server_config_s {
     int source_admission_burst;
     int max_source_states;
     int source_state_ttl_ms;
+
+    /* Trusted reverse proxy source identity */
+    const char *trusted_proxy_addresses;
+    const char *trusted_proxy_ca_file;
     
     /* JWT authentication */
     int jwt_enabled;
