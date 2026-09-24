@@ -81,22 +81,15 @@ target_link_libraries(turbo_media_test_revocation_https
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_internals
                             test_signaling_internals.c)
-target_sources(turbo_media_test_signaling_internals
-               PRIVATE ../src/signaling/source_identity.c)
-target_include_directories(turbo_media_test_signaling_internals
-                           PRIVATE ../src/signaling)
 target_link_libraries(turbo_media_test_signaling_internals
                       PRIVATE Salts::CNet Salts::CHTTP turbo_media_auth
+                              turbo_media_signaling_source_identity
                               Salts::JsonParser)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_source_identity
                             test_signaling_source_identity.c)
-target_sources(turbo_media_test_signaling_source_identity
-               PRIVATE ../src/signaling/source_identity.c)
-target_include_directories(turbo_media_test_signaling_source_identity
-                           PRIVATE ../src/signaling)
 target_link_libraries(turbo_media_test_signaling_source_identity
-                      PRIVATE Salts::CNet Salts::CHTTP)
+                      PRIVATE turbo_media_signaling_source_identity)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
@@ -119,15 +112,13 @@ if(TURBO_MEDIA_IS_SERVER)
   turbo_media_add_webrtc_test(
     turbo_media_test_signaling_config
     test_signaling_config.c
-    ../apps/signaling_server/src/config.c
-    ../src/signaling/source_identity.c)
+    ../apps/signaling_server/src/config.c)
   target_include_directories(
     turbo_media_test_signaling_config
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/../src/signaling)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include)
   target_link_libraries(turbo_media_test_signaling_config
                         PRIVATE turbo_media_auth Salts::TomlParser
-                                Salts::CNet Salts::CHTTP)
+                                turbo_media_signaling_source_identity)
   file(
     TO_CMAKE_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/config/signaling.toml.example"
