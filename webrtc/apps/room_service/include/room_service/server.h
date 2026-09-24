@@ -7,6 +7,7 @@
 
 #include "room_service/config.h"
 #include "turbo_room_service.h"
+#include "turbo_media_revocation_fanout.h"
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -240,6 +241,35 @@ int room_service_app_server_has_sfu_node(room_service_app_server_t *server,
                                          const char *node_id);
 int room_service_app_server_choose_sfu_node(room_service_app_server_t *server,
                                             char *node_id, size_t node_id_size);
+
+/**
+ * Publish a complete revocation snapshot to every currently registered SFU.
+ *
+ * The Room Service SFU registry is the source of truth. Targets are rebuilt
+ * when that registry changes. Requires signed SFU auth and explicit TLS trust.
+ */
+int room_service_app_server_publish_revocation_snapshot(
+    room_service_app_server_t *server,
+    uint64_t epoch,
+    uint64_t sequence,
+    const char *const *sha256_hex,
+    size_t count,
+    turbo_media_revocation_fanout_report_t *report);
+
+/**
+ * Publish one exact-next revoke. When the SFU registry changed (or no
+ * canonical version has been distributed yet), the supplied covering snapshot
+ * is sent instead so new/changed nodes never consume an incremental event
+ * without its base state.
+ */
+int room_service_app_server_publish_revocation(
+    room_service_app_server_t *server,
+    uint64_t epoch,
+    uint64_t sequence,
+    const char *sha256_hex,
+    const char *const *covering_sha256_hex,
+    size_t covering_count,
+    turbo_media_revocation_fanout_report_t *report);
 int room_service_app_server_sync_attach_room(room_service_app_server_t *server,
                                              const char *room_id);
 int room_service_app_server_sync_detach_room(room_service_app_server_t *server,
