@@ -278,43 +278,6 @@ static int trusted_proxy_list_parse(
   return 0;
 }
 
-static int source_key_is_trusted_proxy(
-    const webrtc_signaling_server_t *server,
-    const signaling_source_key_t *socket_key) {
-  if (!server || !socket_key) {
-    return 0;
-  }
-  for (size_t index = 0U; index < server->trusted_proxy_count; ++index) {
-    if (source_key_equal_value(
-            &server->trusted_proxies[index], socket_key)) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static int source_key_resolve(
-    const webrtc_signaling_server_t *server,
-    const cnet_stream_peer *peer,
-    const char *forwarded_for,
-    signaling_source_key_t *key) {
-  signaling_source_key_t socket_key;
-
-  if (!server || !key ||
-      source_key_from_peer(peer, &socket_key) != 0) {
-    return -1;
-  }
-  if (!source_key_is_trusted_proxy(server, &socket_key)) {
-    *key = socket_key;
-    return 0;
-  }
-  if (!forwarded_for ||
-      source_key_from_text_span(
-          forwarded_for, strlen(forwarded_for), key) != 0) {
-    return -1;
-  }
-  return 0;
-}
 
 struct webrtc_signaling_server_s {
   chttp_server http;
@@ -358,6 +321,44 @@ struct webrtc_signaling_server_s {
   salts_cond_t state_changed;
   salts_mutex_t mutex;
 };
+
+static int source_key_is_trusted_proxy(
+    const webrtc_signaling_server_t *server,
+    const signaling_source_key_t *socket_key) {
+  if (!server || !socket_key) {
+    return 0;
+  }
+  for (size_t index = 0U; index < server->trusted_proxy_count; ++index) {
+    if (source_key_equal_value(
+            &server->trusted_proxies[index], socket_key)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int source_key_resolve(
+    const webrtc_signaling_server_t *server,
+    const cnet_stream_peer *peer,
+    const char *forwarded_for,
+    signaling_source_key_t *key) {
+  signaling_source_key_t socket_key;
+
+  if (!server || !key ||
+      source_key_from_peer(peer, &socket_key) != 0) {
+    return -1;
+  }
+  if (!source_key_is_trusted_proxy(server, &socket_key)) {
+    *key = socket_key;
+    return 0;
+  }
+  if (!forwarded_for ||
+      source_key_from_text_span(
+          forwarded_for, strlen(forwarded_for), key) != 0) {
+    return -1;
+  }
+  return 0;
+}
 
 static int source_policy_enabled(const webrtc_signaling_config_t *config) {
   return config &&
