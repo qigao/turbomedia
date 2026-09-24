@@ -79,8 +79,17 @@ turbo_media_add_webrtc_base_test(turbo_media_test_revocation_https
 target_link_libraries(turbo_media_test_revocation_https
                       PRIVATE turbo_media_revocation_https)
 
-turbo_media_add_webrtc_test(turbo_media_test_signaling_internals
-                            test_signaling_internals.c)
+turbo_media_add_webrtc_base_test(
+  turbo_media_test_signaling_source_identity
+  test_signaling_source_identity.c
+  ../src/signaling/signaling_source_identity.c)
+target_link_libraries(turbo_media_test_signaling_source_identity
+                      PRIVATE Salts::CNet)
+
+turbo_media_add_webrtc_test(
+  turbo_media_test_signaling_internals
+  test_signaling_internals.c
+  ../src/signaling/signaling_source_identity.c)
 target_link_libraries(turbo_media_test_signaling_internals
                       PRIVATE Salts::CNet Salts::CHTTP turbo_media_auth
                               Salts::JsonParser)
@@ -106,12 +115,14 @@ if(TURBO_MEDIA_IS_SERVER)
   turbo_media_add_webrtc_test(
     turbo_media_test_signaling_config
     test_signaling_config.c
-    ../apps/signaling_server/src/config.c)
+    ../apps/signaling_server/src/config.c
+    ../src/signaling/signaling_source_identity.c)
   target_include_directories(
     turbo_media_test_signaling_config
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src/signaling)
   target_link_libraries(turbo_media_test_signaling_config
-                        PRIVATE turbo_media_auth Salts::TomlParser)
+                        PRIVATE turbo_media_auth Salts::TomlParser Salts::CNet)
   file(
     TO_CMAKE_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/config/signaling.toml.example"

@@ -42,6 +42,13 @@ typedef struct {
     int use_tls;                    /**< 1 for WSS, 0 for WS */
     const char *cert_file;          /**< Path to SSL certificate */
     const char *key_file;           /**< Path to SSL private key */
+    /**
+     * Optional trusted-proxy map: numeric-ip=64-lowercase-client-cert-sha256.
+     * When configured, the WSS listener requires mTLS and source policy uses
+     * exactly one X-Forwarded-For numeric address from a matching proxy.
+     */
+    const char *trusted_proxy_map;
+    const char *trusted_proxy_ca_file; /**< CA used to verify trusted proxy client certificates */
     int max_peers;                  /**< Max peers per room (0 = unlimited) */
     int max_rooms;                  /**< Max active rooms (0 = unlimited) */
     int peer_timeout_ms;            /**< Peer idle timeout */

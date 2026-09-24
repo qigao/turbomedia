@@ -74,6 +74,10 @@ spec("signaling TOML configuration") {
             "cert_file = \"signaling-chain.pem\"\n"
             "key_file = \"signaling-key.pem\"\n"
             "\n"
+            "[trusted_proxy]\n"
+            "map = \"10.0.0.10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n"
+            "client_ca_file = \"proxy-client-ca.pem\"\n"
+            "\n"
             "[http_api]\n"
             "enabled = false\n"
             "host = \"127.0.0.1\"\n"
@@ -148,6 +152,10 @@ spec("signaling TOML configuration") {
             check_true(config.ws_use_tls);
             check_equal(config.ws_cert_file, "signaling-chain.pem");
             check_equal(config.ws_key_file, "signaling-key.pem");
+            check_equal(
+                config.trusted_proxy_map,
+                "10.0.0.10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            check_equal(config.trusted_proxy_ca_file, "proxy-client-ca.pem");
             check_false(config.http_enabled);
             check_equal(config.http_host, "127.0.0.1");
             check_equal(config.http_port, 9001);
@@ -515,6 +523,56 @@ spec("signaling TOML configuration") {
         remove_toml(invalid_http_path);
     }
 
+    it("trusted proxy mode requires pinned mTLS and source policy") {
+        signaling_server_config_t config;
+        static const char valid_map[] =
+            "10.0.0.10="
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        static const char duplicate_map[] =
+            "10.0.0.10="
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,"
+            "10.0.0.10="
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        static const char uppercase_map[] =
+            "10.0.0.10="
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+        signaling_server_config_init(&config);
+        config.ws_use_tls = 1;
+        config.ws_cert_file = "server.crt";
+        config.ws_key_file = "server.key";
+        config.trusted_proxy_map = valid_map;
+
+        check_equal(signaling_server_config_validate(&config), -1);
+        config.trusted_proxy_ca_file = "proxy-ca.pem";
+        check_equal(signaling_server_config_validate(&config), 0);
+
+        config.ws_use_tls = 0;
+        check_equal(signaling_server_config_validate(&config), -1);
+        config.ws_use_tls = 1;
+
+        config.max_connections_per_source = 0;
+        config.source_admissions_per_second = 0;
+        config.source_admission_burst = 0;
+        config.max_source_states = 0;
+        config.source_state_ttl_ms = 0;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.max_connections_per_source = 100;
+        config.source_admissions_per_second = 20;
+        config.source_admission_burst = 50;
+        config.max_source_states = 4096;
+        config.source_state_ttl_ms = 300000;
+        config.trusted_proxy_map = uppercase_map;
+        check_equal(signaling_server_config_validate(&config), -1);
+        config.trusted_proxy_map = duplicate_map;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.trusted_proxy_map = valid_map;
+        check_equal(signaling_server_config_validate(&config), 0);
+        signaling_server_config_cleanup(&config);
+    }
+
     it("requires complete static or scoped management authentication") {
         signaling_server_config_t config;
 
@@ -547,6 +605,8 @@ spec("signaling TOML configuration") {
             "TURBO_SIGNALING_USE_TLS",
             "TURBO_SIGNALING_TLS_CERT_FILE",
             "TURBO_SIGNALING_TLS_KEY_FILE",
+            "TURBO_SIGNALING_TRUSTED_PROXY_MAP",
+            "TURBO_SIGNALING_TRUSTED_PROXY_CA_FILE",
             "TURBO_SIGNALING_HTTP_USE_TLS",
             "TURBO_SIGNALING_HTTP_TLS_CERT_FILE",
             "TURBO_SIGNALING_HTTP_TLS_KEY_FILE",
@@ -568,17 +628,21 @@ spec("signaling TOML configuration") {
         signaling_config_test_set_env(names[1], "true");
         signaling_config_test_set_env(names[2], "signaling-chain.pem");
         signaling_config_test_set_env(names[3], "signaling-key.pem");
-        signaling_config_test_set_env(names[4], "1");
-        signaling_config_test_set_env(names[5], "management-chain.pem");
-        signaling_config_test_set_env(names[6], "management-key.pem");
-        signaling_config_test_set_env(names[7], "env-management-key");
         signaling_config_test_set_env(
-            names[8], "env-management-secret-at-least-32-bytes");
-        signaling_config_test_set_env(names[9], "900");
-        signaling_config_test_set_env(names[10], "env-peer-key");
+            names[4],
+            "10.0.0.10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        signaling_config_test_set_env(names[5], "proxy-ca.pem");
+        signaling_config_test_set_env(names[6], "1");
+        signaling_config_test_set_env(names[7], "management-chain.pem");
+        signaling_config_test_set_env(names[8], "management-key.pem");
+        signaling_config_test_set_env(names[9], "env-management-key");
         signaling_config_test_set_env(
-            names[11], "env-peer-secret-at-least-32-bytes");
-        signaling_config_test_set_env(names[12], "32");
+            names[10], "env-management-secret-at-least-32-bytes");
+        signaling_config_test_set_env(names[11], "900");
+        signaling_config_test_set_env(names[12], "env-peer-key");
+        signaling_config_test_set_env(
+            names[13], "env-peer-secret-at-least-32-bytes");
+        signaling_config_test_set_env(names[14], "32");
 
         signaling_server_config_init(&config);
         config.http_enabled = 1;
@@ -587,6 +651,10 @@ spec("signaling TOML configuration") {
         check_true(config.ws_use_tls);
         check_equal(config.ws_cert_file, "signaling-chain.pem");
         check_equal(config.ws_key_file, "signaling-key.pem");
+        check_equal(
+            config.trusted_proxy_map,
+            "10.0.0.10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        check_equal(config.trusted_proxy_ca_file, "proxy-ca.pem");
         check_true(config.http_use_tls);
         check_equal(config.http_cert_file, "management-chain.pem");
         check_equal(config.http_key_file, "management-key.pem");

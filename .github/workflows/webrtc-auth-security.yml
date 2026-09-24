@@ -5,8 +5,7 @@ on:
     paths:
       - "webrtc/src/auth/**"
       - "network/include/turbo_transport.h"
-      - "webrtc/src/signaling/http_api.c"
-      - "webrtc/src/signaling/webrtc_signaling.c"
+      - "webrtc/src/signaling/**"
       - "webrtc/include/http_api.h"
       - "webrtc/include/webrtc_signaling.h"
       - "webrtc/apps/signaling_server/**"
@@ -29,6 +28,7 @@ on:
       - "webrtc/tests/test_revocation_projection.c"
       - "webrtc/tests/test_revocation_fanout.c"
       - "webrtc/tests/test_signaling_internals.c"
+      - "webrtc/tests/test_signaling_source_identity.c"
       - "webrtc/tests/test_signaling_lifecycle.c"
       - "webrtc/tests/test_signaling_config.c"
       - "webrtc/tests/CMakeLists.txt"
@@ -41,8 +41,7 @@ on:
     paths:
       - "webrtc/src/auth/**"
       - "network/include/turbo_transport.h"
-      - "webrtc/src/signaling/http_api.c"
-      - "webrtc/src/signaling/webrtc_signaling.c"
+      - "webrtc/src/signaling/**"
       - "webrtc/include/http_api.h"
       - "webrtc/include/webrtc_signaling.h"
       - "webrtc/apps/signaling_server/**"
@@ -65,6 +64,7 @@ on:
       - "webrtc/tests/test_revocation_projection.c"
       - "webrtc/tests/test_revocation_fanout.c"
       - "webrtc/tests/test_signaling_internals.c"
+      - "webrtc/tests/test_signaling_source_identity.c"
       - "webrtc/tests/test_signaling_lifecycle.c"
       - "webrtc/tests/test_signaling_config.c"
       - "webrtc/tests/CMakeLists.txt"
@@ -92,7 +92,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/apps/room_service/include/room_service/**', 'webrtc/apps/room_service/src/config.c', 'webrtc/apps/room_service/src/server.c', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c', 'webrtc/tests/test_revocation_fanout.c') }}
+          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/src/signaling/signaling_source_identity.*', 'webrtc/apps/room_service/include/room_service/**', 'webrtc/apps/room_service/src/config.c', 'webrtc/apps/room_service/src/server.c', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c', 'webrtc/tests/test_revocation_fanout.c', 'webrtc/tests/test_signaling_source_identity.c') }}
           restore-keys: |
             webrtc-auth-security-${{ runner.os }}-
 
@@ -230,6 +230,7 @@ jobs:
           #define TLOG_ERROR(...) turbo_media_portable_tlog(__VA_ARGS__)
           #define TLOG_ERRORF(...) turbo_media_portable_tlog(__VA_ARGS__)
           #define TLOG_INFOF(...) turbo_media_portable_tlog(__VA_ARGS__)
+          #define TLOG_DEBUG(...) turbo_media_portable_tlog(__VA_ARGS__)
           #define TLOG_DEBUGF(...) turbo_media_portable_tlog(__VA_ARGS__)
           #endif
           EOF
@@ -316,8 +317,19 @@ jobs:
           #ifndef TURBO_MEDIA_PORTABLE_CNET_H
           #define TURBO_MEDIA_PORTABLE_CNET_H
           #include <stddef.h>
+          #include <stdint.h>
           typedef struct { int unused; } cnet_client;
           typedef struct { int unused; } cnet_connection;
+          typedef enum {
+            CNET_DATAGRAM_ADDRESS_IPV4 = 4,
+            CNET_DATAGRAM_ADDRESS_IPV6 = 6
+          } cnet_datagram_address_family;
+          typedef struct {
+            cnet_datagram_address_family family;
+            uint16_t port;
+            uint32_t scope_id;
+            uint8_t address[16];
+          } cnet_stream_peer;
           typedef struct {
             size_t size;
             const char *ca_file;
@@ -331,6 +343,7 @@ jobs:
           #define TURBO_MEDIA_PORTABLE_CHTTP_H
           #include <stddef.h>
           #include <stdint.h>
+          #include <cnet/cnet.h>
 
           typedef enum {
             NATIVE_IO_BACKEND_IOCP = 1,
@@ -339,21 +352,13 @@ jobs:
           } native_io_backend_kind;
 
           enum {
-            CNET_DATAGRAM_ADDRESS_IPV4 = 4,
-            CNET_DATAGRAM_ADDRESS_IPV6 = 6,
             CNET_TLS_CLIENT_AUTH_NONE = 0,
+            CNET_TLS_CLIENT_AUTH_REQUIRED = 1,
             CNET_TLS_MIN_IO_BUFFER_BYTES = 4096,
             CHTTP_WEBSOCKET_EVENT_CLOSE = 1,
             CHTTP_WEBSOCKET_EVENT_MESSAGE = 2,
             CHTTP_WEBSOCKET_MESSAGE_TEXT = 1
           };
-
-          typedef struct {
-            int family;
-            uint16_t port;
-            uint8_t address[16];
-            uint32_t scope_id;
-          } cnet_stream_peer;
 
           typedef struct {
             native_io_backend_kind backend;
@@ -375,12 +380,19 @@ jobs:
             size_t size;
             const char *cert_file;
             const char *key_file;
+            const char *key_password;
+            const char *ca_file;
+            const char *ca_path;
             int client_auth;
           } cnet_tls_server_config;
 
           typedef struct { int unused; } chttp_server;
           typedef struct { int unused; } chttp_server_response;
           typedef struct { int unused; } chttp_client;
+          typedef struct {
+            const char *name;
+            const char *value;
+          } chttp_header;
           typedef struct {
             unsigned int status_code;
             const void *body;
@@ -400,14 +412,25 @@ jobs:
             size_t size;
           } chttp_websocket_event;
           typedef struct {
+            const chttp_header *headers;
+            size_t header_count;
             const void *body;
             size_t body_size;
             const cnet_stream_peer *peer;
+            const char *peer_certificate_sha256;
           } chttp_server_request_view;
+
+          typedef struct {
+            unsigned int status_code;
+            uint32_t retry_after_seconds;
+          } chttp_server_admission_result;
 
           typedef int (*chttp_server_handler)(
               void *, const chttp_server_request_view *,
               chttp_server_response *);
+          typedef int (*chttp_server_admission_fn)(
+              void *, const chttp_server_request_view *,
+              chttp_server_admission_result *);
           typedef int (*chttp_websocket_open_handler)(
               void *, chttp_websocket *,
               const chttp_server_request_view *,
@@ -465,6 +488,8 @@ jobs:
           int chttp_server_options(
               chttp_server *, const char *, chttp_server_handler, void *);
           int chttp_server_init(chttp_server *, const chttp_server_config *);
+          int chttp_server_set_admission(
+              chttp_server *, chttp_server_admission_fn, void *);
           int chttp_server_start(chttp_server *);
           int chttp_server_stop(chttp_server *, uint32_t);
           int chttp_server_destroy(chttp_server *);
@@ -527,6 +552,18 @@ jobs:
           int EVP_DecodeBase64(uint8_t *, size_t *, size_t, const uint8_t *, size_t);
           #endif
           EOF
+
+      - name: Run exact trusted proxy source identity tests
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
+            -Iwebrtc/src -Iwebrtc/src/signaling \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            webrtc/src/signaling/signaling_source_identity.c \
+            webrtc/tests/test_signaling_source_identity.c \
+            -o "$RUNNER_TEMP/signaling-source-identity-test"
+          "$RUNNER_TEMP/signaling-source-identity-test"
 
       - name: Run exact revocation state tests
         shell: bash
@@ -631,6 +668,16 @@ jobs:
             -Inetwork/include -Imedia/include \
             webrtc/apps/room_service/src/server.c
 
+      - name: Syntax-check signaling trusted proxy config implementation
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            -Iwebrtc/apps/signaling_server/include \
+            -Iwebrtc/src/signaling -Iwebrtc/src/auth \
+            webrtc/apps/signaling_server/src/config.c
+
       - name: Syntax-check signaling revocation public contract
         shell: bash
         run: |
@@ -665,7 +712,8 @@ jobs:
           export CCACHE_DIR="$HOME/.cache/ccache"
           ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
             -I"$RUNNER_TEMP/auth-stubs" \
-            -Iwebrtc/include -Iwebrtc/src/auth -Imedia/include \
+            -Iwebrtc/include -Iwebrtc/src/auth -Iwebrtc/src/signaling \
+            -Imedia/include \
             webrtc/src/signaling/webrtc_signaling.c
 
       - name: Syntax-check auth integration and native test
