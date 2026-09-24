@@ -29,6 +29,7 @@ target_link_libraries(signaling_server
     ${SIGNALING_SERVER_LIBS}
     TurboMedia::WebRTCSignaling
     turbo_media_auth
+    turbo_media_signaling_source_identity
     Salts::Core
     Salts::TomlParser
     $<$<PLATFORM_ID:Linux>:m>
