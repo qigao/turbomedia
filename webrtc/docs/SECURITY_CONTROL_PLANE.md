@@ -100,6 +100,43 @@ resource admission by this slice. Those runtime integrations must consume the sa
 and the same control-plane lease stream; they must not introduce a second tenant namespace, a local
 "global" counter, or a permissive fallback when lease state is UNKNOWN.
 
+### Authenticated tenant quota lease transport
+
+Signaling and SFU nodes now expose the same bounded HTTPS ingress for their local tenant quota projection:
+
+- `POST /api/v1/security/tenant-quotas/snapshot`
+- `POST /api/v1/security/tenant-quotas/update`
+
+Both routes use audience `turbomedia-security-control` and the dedicated scope
+`security.tenant_quota.write`. Static admin/control/media compatibility bearers are never accepted on
+these routes. Quota bootstrap authorization intentionally does not consult the target quota projection,
+so an UNKNOWN node can receive the covering snapshot required to recover.
+
+The v1 wire contract is strict JSON. Snapshot and update messages bind an explicit target `node_id`,
+control-plane epoch/sequence, and bounded lease data. Lease limits cover signaling connections, rooms,
+participants, media sessions, and published tracks. Epoch, sequence, expiry, and limit values are parsed
+from raw decimal JSON number text; fractional, negative, or overflowing values are rejected rather than
+rounded through binary floating point.
+
+Each process owns exactly one caller-serialized quota projection protected by a process-local mutex.
+The signaling application enables that projection with its canonical signaling node id; the SFU enables
+it with its canonical SFU node id. A message for a different node is rejected before projection mutation,
+including an empty snapshot where no lease entry exists to reveal the target.
+
+Quota mode also closes legacy identity bypasses before runtime reservation is added. A signaling process
+cannot enable quota projection without signed peer JWT admission. An SFU quota process cannot retain
+static control or media bearer compatibility tokens; it must use signed control/media identities. This
+ensures the next reservation slice can consume the signed `tenant_id` fact on every quota-controlled
+resource path instead of inventing an unauthenticated/default tenant.
+
+Transport structure and quota semantics remain deliberately separated. Structurally valid exact-next input
+is passed to the quota projection. A semantically invalid exact-next lease therefore makes the projection
+UNSYNCHRONIZED exactly like any other unusable control-plane update; a covering snapshot is then required.
+
+This slice is a distribution **sink**, not the global allocator/issuer. The shared control plane still owns
+the tenant-wide budget invariant and canonical lease stream. Runtime resource admission/release has not yet
+been wired to the projection by this slice.
+
 ### Application process
 
 The application process verifies:
@@ -314,7 +351,7 @@ The following are intentionally not claimed complete by the dynamic-revocation s
 - shared-control-plane producer integration for canonical revocation publication;
 - TLS-connection-level admission before handshake CPU allocation (source HTTP/WebSocket admission is now pre-application);
 - trusted-proxy allowlist and spoofed-header negative tests;
-- authenticated/versioned quota lease issuer and distribution from the shared control plane;
+- shared-control-plane quota allocator/issuer and authenticated multi-node lease publication using the node ingress above;
 - runtime reservation/release wiring for signaling connections, rooms, participants, media sessions, and published tracks;
 - subject/IP/request/byte/time quota dimensions beyond the initial tenant resource lease model;
 - deterministic multi-node tenant-wide quota evidence proving the allocator never over-issues per-node leases;

@@ -5,6 +5,7 @@
 
 #include "webrtc_signaling.h"
 #include "signaling_source_identity.h"
+#include "signaling_tenant_quota_internal.h"
 
 #include "platform.h"
 #include "tlog.h"
@@ -151,6 +152,10 @@ struct webrtc_signaling_server_s {
   uint64_t source_concurrency_rejections;
 
   turbo_media_revocation_projection_t *revocation_projection;
+  turbo_media_tenant_quota_projection_t *tenant_quota_projection;
+  char tenant_quota_node_id[TURBO_MEDIA_TENANT_QUOTA_NODE_ID_BYTES];
+  salts_mutex_t tenant_quota_mutex;
+  int tenant_quota_mutex_initialized;
 
   int running;
   int cleanup_stop_requested;
@@ -2287,7 +2292,141 @@ void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
   turbo_media_revocation_projection_destroy(
       server->revocation_projection);
   server->revocation_projection = NULL;
+  if (server->tenant_quota_projection) {
+    turbo_media_tenant_quota_projection_destroy(
+        server->tenant_quota_projection);
+    server->tenant_quota_projection = NULL;
+  }
+  if (server->tenant_quota_mutex_initialized) {
+    salts_mutex_destroy(&server->tenant_quota_mutex);
+    server->tenant_quota_mutex_initialized = 0;
+  }
   free(server);
+}
+
+int signaling_tenant_quota_enable(
+    webrtc_signaling_server_t *server, const char *node_id,
+    size_t max_tenants) {
+  turbo_media_tenant_quota_projection_t *projection;
+
+  if (!server || !node_id || max_tenants == 0U ||
+      max_tenants > TURBO_MEDIA_TENANT_QUOTA_MAX_TENANTS) {
+    return -1;
+  }
+  projection = turbo_media_tenant_quota_projection_create(
+      node_id, max_tenants);
+  if (!projection) {
+    return -1;
+  }
+
+  salts_mutex_lock(&server->mutex);
+  if (server->running || server->tenant_quota_projection ||
+      server->tenant_quota_mutex_initialized) {
+    salts_mutex_unlock(&server->mutex);
+    turbo_media_tenant_quota_projection_destroy(projection);
+    return -1;
+  }
+  salts_mutex_init(&server->tenant_quota_mutex);
+  server->tenant_quota_mutex_initialized = 1;
+  server->tenant_quota_projection = projection;
+  memcpy(server->tenant_quota_node_id, node_id, strlen(node_id) + 1U);
+  salts_mutex_unlock(&server->mutex);
+  return 0;
+}
+
+int signaling_tenant_quota_enabled(
+    webrtc_signaling_server_t *server) {
+  return server && server->tenant_quota_projection &&
+         server->tenant_quota_mutex_initialized;
+}
+
+turbo_media_tenant_quota_apply_result_t
+signaling_tenant_quota_apply_snapshot(
+    webrtc_signaling_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *leases,
+    size_t lease_count) {
+  turbo_media_tenant_quota_apply_result_t result;
+
+  if (!signaling_tenant_quota_enabled(server) || !node_id ||
+      strcmp(server->tenant_quota_node_id, node_id) != 0) {
+    return TURBO_MEDIA_TENANT_QUOTA_APPLY_ERROR;
+  }
+  salts_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_apply_snapshot(
+      server->tenant_quota_projection, epoch, sequence,
+      leases, lease_count);
+  salts_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
+}
+
+turbo_media_tenant_quota_apply_result_t
+signaling_tenant_quota_apply_update(
+    webrtc_signaling_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *lease) {
+  turbo_media_tenant_quota_apply_result_t result;
+
+  if (!signaling_tenant_quota_enabled(server) || !node_id ||
+      strcmp(server->tenant_quota_node_id, node_id) != 0) {
+    return TURBO_MEDIA_TENANT_QUOTA_APPLY_ERROR;
+  }
+  salts_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_apply_update(
+      server->tenant_quota_projection, epoch, sequence, lease);
+  salts_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
+}
+
+int signaling_tenant_quota_status(
+    webrtc_signaling_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence,
+    size_t *out_lease_count) {
+  int result;
+
+  if (!signaling_tenant_quota_enabled(server)) {
+    return -1;
+  }
+  salts_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_status(
+      server->tenant_quota_projection, out_synchronized,
+      out_epoch, out_sequence, out_lease_count);
+  salts_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
+}
+
+turbo_media_tenant_quota_reserve_result_t
+signaling_tenant_quota_reserve(
+    webrtc_signaling_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount, uint64_t now_unix_ms) {
+  turbo_media_tenant_quota_reserve_result_t result;
+
+  if (!signaling_tenant_quota_enabled(server)) {
+    return TURBO_MEDIA_TENANT_QUOTA_RESERVE_UNKNOWN;
+  }
+  salts_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_reserve(
+      server->tenant_quota_projection, tenant_id, resource,
+      amount, now_unix_ms);
+  salts_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
+}
+
+int signaling_tenant_quota_release(
+    webrtc_signaling_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount) {
+  int result;
+
+  if (!signaling_tenant_quota_enabled(server)) {
+    return -1;
+  }
+  salts_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_release(
+      server->tenant_quota_projection, tenant_id, resource, amount);
+  salts_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
 }
 
 int webrtc_signaling_get_peer_count(webrtc_signaling_server_t *server) {

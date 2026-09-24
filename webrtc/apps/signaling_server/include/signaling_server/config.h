@@ -80,6 +80,9 @@ typedef struct signaling_server_config_s {
     int jwt_clock_skew_seconds;
     int jwt_ttl_seconds;
     const char *jwt_algorithm;
+
+    /* Per-node tenant quota lease projection. Zero disables. */
+    int tenant_quota_capacity;
     
     /* Redis */
     int redis_enabled;

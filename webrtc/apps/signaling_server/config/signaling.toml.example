@@ -87,6 +87,16 @@ enabled = false
 ttl_seconds = 3600
 algorithm = "HS256"
 
+[tenant_quota]
+# Optional bounded per-node lease projection. Non-zero capacity starts
+# UNSYNCHRONIZED and requires covering lease snapshots over HTTPS
+# /api/v1/security/tenant-quotas/* authenticated with audience
+# turbomedia-security-control and scope security.tenant_quota.write.
+# Static admin bearer compatibility is never accepted on those routes.
+# Non-zero capacity also requires [auth].enabled=true so runtime resources
+# cannot enter quota mode without a signed tenant-capable peer identity.
+capacity = 0
+
 [redis]
 # Reserved settings. The current signaling server rejects enabled=true.
 enabled = false

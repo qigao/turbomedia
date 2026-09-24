@@ -170,6 +170,9 @@ struct sfu_node_app_server_s {
     int subscription_capacity;
     salts_mutex_t recording_mutex;
     turbo_media_revocation_projection_t *revocation_projection;
+    turbo_media_tenant_quota_projection_t *tenant_quota_projection;
+    salts_mutex_t tenant_quota_mutex;
+    int tenant_quota_mutex_initialized;
     sfu_node_room_recording_t *room_recordings;
     int room_recording_count;
     int room_recording_capacity;
@@ -1480,6 +1483,24 @@ sfu_node_app_server_t *sfu_node_app_server_create(const sfu_node_app_config_t *c
         free(server);
         return NULL;
     }
+    if (server->config.tenant_quota_capacity > 0) {
+        server->tenant_quota_projection =
+            turbo_media_tenant_quota_projection_create(
+                server->config.node_id,
+                (size_t)server->config.tenant_quota_capacity);
+        if (!server->tenant_quota_projection) {
+            turbo_sfu_node_destroy(server->node);
+            server->node = NULL;
+            turbo_media_revocation_projection_destroy(
+                server->revocation_projection);
+            server->revocation_projection = NULL;
+            sfu_node_app_config_cleanup(&server->config);
+            free(server);
+            return NULL;
+        }
+        salts_mutex_init(&server->tenant_quota_mutex);
+        server->tenant_quota_mutex_initialized = 1;
+    }
 
     salts_mutex_init(&server->mutex);
     salts_mutex_init(&server->recording_mutex);
@@ -1493,6 +1514,15 @@ sfu_node_app_server_t *sfu_node_app_server_create(const sfu_node_app_config_t *c
         salts_mutex_destroy(&server->recording_mutex);
         salts_mutex_destroy(&server->mutex);
         turbo_sfu_node_destroy(server->node);
+        if (server->tenant_quota_projection) {
+            turbo_media_tenant_quota_projection_destroy(
+                server->tenant_quota_projection);
+            server->tenant_quota_projection = NULL;
+        }
+        if (server->tenant_quota_mutex_initialized) {
+            salts_mutex_destroy(&server->tenant_quota_mutex);
+            server->tenant_quota_mutex_initialized = 0;
+        }
         turbo_media_revocation_projection_destroy(
             server->revocation_projection);
         server->revocation_projection = NULL;
@@ -1630,6 +1660,15 @@ void sfu_node_app_server_destroy(sfu_node_app_server_t *server) {
     turbo_media_revocation_projection_destroy(
         server->revocation_projection);
     server->revocation_projection = NULL;
+    if (server->tenant_quota_projection) {
+        turbo_media_tenant_quota_projection_destroy(
+            server->tenant_quota_projection);
+        server->tenant_quota_projection = NULL;
+    }
+    if (server->tenant_quota_mutex_initialized) {
+        salts_mutex_destroy(&server->tenant_quota_mutex);
+        server->tenant_quota_mutex_initialized = 0;
+    }
     sfu_node_app_config_cleanup(&server->config);
     free(server);
 }
@@ -1690,6 +1729,101 @@ int sfu_node_app_server_get_revocation_status(
     return turbo_media_revocation_projection_status(
         server->revocation_projection, out_synchronized,
         out_epoch, out_sequence, out_count);
+}
+
+int sfu_node_app_server_tenant_quota_enabled(
+    sfu_node_app_server_t *server) {
+    return server && server->tenant_quota_projection &&
+           server->tenant_quota_mutex_initialized;
+}
+
+turbo_media_tenant_quota_apply_result_t
+sfu_node_app_server_apply_tenant_quota_snapshot(
+    sfu_node_app_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *leases,
+    size_t lease_count) {
+    turbo_media_tenant_quota_apply_result_t result;
+
+    if (!sfu_node_app_server_tenant_quota_enabled(server) ||
+        !node_id || strcmp(server->config.node_id, node_id) != 0) {
+        return TURBO_MEDIA_TENANT_QUOTA_APPLY_ERROR;
+    }
+    salts_mutex_lock(&server->tenant_quota_mutex);
+    result = turbo_media_tenant_quota_apply_snapshot(
+        server->tenant_quota_projection, epoch, sequence,
+        leases, lease_count);
+    salts_mutex_unlock(&server->tenant_quota_mutex);
+    return result;
+}
+
+turbo_media_tenant_quota_apply_result_t
+sfu_node_app_server_apply_tenant_quota_update(
+    sfu_node_app_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *lease) {
+    turbo_media_tenant_quota_apply_result_t result;
+
+    if (!sfu_node_app_server_tenant_quota_enabled(server) ||
+        !node_id || strcmp(server->config.node_id, node_id) != 0) {
+        return TURBO_MEDIA_TENANT_QUOTA_APPLY_ERROR;
+    }
+    salts_mutex_lock(&server->tenant_quota_mutex);
+    result = turbo_media_tenant_quota_apply_update(
+        server->tenant_quota_projection, epoch, sequence, lease);
+    salts_mutex_unlock(&server->tenant_quota_mutex);
+    return result;
+}
+
+int sfu_node_app_server_get_tenant_quota_status(
+    sfu_node_app_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence,
+    size_t *out_lease_count) {
+    int result;
+
+    if (!sfu_node_app_server_tenant_quota_enabled(server)) {
+        return -1;
+    }
+    salts_mutex_lock(&server->tenant_quota_mutex);
+    result = turbo_media_tenant_quota_status(
+        server->tenant_quota_projection, out_synchronized,
+        out_epoch, out_sequence, out_lease_count);
+    salts_mutex_unlock(&server->tenant_quota_mutex);
+    return result;
+}
+
+turbo_media_tenant_quota_reserve_result_t
+sfu_node_app_server_tenant_quota_reserve(
+    sfu_node_app_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount, uint64_t now_unix_ms) {
+    turbo_media_tenant_quota_reserve_result_t result;
+
+    if (!sfu_node_app_server_tenant_quota_enabled(server)) {
+        return TURBO_MEDIA_TENANT_QUOTA_RESERVE_UNKNOWN;
+    }
+    salts_mutex_lock(&server->tenant_quota_mutex);
+    result = turbo_media_tenant_quota_reserve(
+        server->tenant_quota_projection, tenant_id, resource,
+        amount, now_unix_ms);
+    salts_mutex_unlock(&server->tenant_quota_mutex);
+    return result;
+}
+
+int sfu_node_app_server_tenant_quota_release(
+    sfu_node_app_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount) {
+    int result;
+
+    if (!sfu_node_app_server_tenant_quota_enabled(server)) {
+        return -1;
+    }
+    salts_mutex_lock(&server->tenant_quota_mutex);
+    result = turbo_media_tenant_quota_release(
+        server->tenant_quota_projection, tenant_id, resource, amount);
+    salts_mutex_unlock(&server->tenant_quota_mutex);
+    return result;
 }
 
 int sfu_node_app_server_set_draining(sfu_node_app_server_t *server, int draining) {

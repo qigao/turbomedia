@@ -51,6 +51,16 @@ issuer = "turbomedia"
 clock_skew_seconds = 30
 max_ttl_seconds = 3600
 
+[tenant_quota]
+# Optional bounded per-node lease projection. Non-zero capacity starts
+# UNSYNCHRONIZED and requires covering lease snapshots over HTTPS
+# /api/v1/security/tenant-quotas/* authenticated with audience
+# turbomedia-security-control and scope security.tenant_quota.write.
+# Non-zero capacity requires signed auth and forbids legacy control/media
+# static compatibility tokens so every future quota-controlled resource has
+# one signed tenant identity fact.
+capacity = 0
+
 [ice]
 # Production deployments need at least one public STUN server and normally a
 # TURN server. Prefer TURBO_SFU_TURN_SERVER for credentials.

@@ -27,6 +27,18 @@ set_target_properties(
   turbo_media_tenant_quota PROPERTIES FOLDER "turbomedia/components")
 
 add_library(
+  turbo_media_tenant_quota_wire STATIC
+  src/security/turbo_media_tenant_quota_wire.c)
+target_include_directories(
+  turbo_media_tenant_quota_wire
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/security)
+target_link_libraries(
+  turbo_media_tenant_quota_wire
+  PRIVATE turbo_media_tenant_quota Salts::JsonParser)
+set_target_properties(
+  turbo_media_tenant_quota_wire PROPERTIES FOLDER "turbomedia/components")
+
+add_library(
   turbo_media_revocation_https STATIC
   src/auth/turbo_media_revocation_https.c)
 target_include_directories(
@@ -119,7 +131,9 @@ target_include_directories(
 target_link_libraries(
   turbo_media_webrtc_signaling
   PUBLIC Salts::CNet Salts::CHTTP
-  PRIVATE turbo_media_auth Salts::JsonParser SaltsNet::Crypto Salts::Core Salts::CSTL)
+  PRIVATE turbo_media_auth turbo_media_tenant_quota
+          turbo_media_tenant_quota_wire
+          Salts::JsonParser SaltsNet::Crypto Salts::Core Salts::CSTL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 

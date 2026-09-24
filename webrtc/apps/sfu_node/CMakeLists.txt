@@ -22,6 +22,8 @@ set(SFU_NODE_LIBS
   TurboMedia::RTC
   Salts::CHTTP
   turbo_media_auth
+  turbo_media_tenant_quota
+  turbo_media_tenant_quota_wire
   SaltsNet::Crypto
   Salts::Core
   Salts::JsonParser
@@ -120,8 +122,8 @@ file(
 cmake_add_test(
   turbo_media_test_sfu_node_config
   SOURCES tests/test_sfu_node_config.c src/config.c
-  LIBS turbo_media_auth Salts::TinyTest Salts::Core
-       Salts::TomlParser
+  LIBS turbo_media_auth turbo_media_tenant_quota
+       Salts::TinyTest Salts::Core Salts::TomlParser
   DEFS SFU_NODE_CONFIG_EXAMPLE_PATH="${SFU_NODE_CONFIG_EXAMPLE_PATH}"
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include
   FOLDER "Applications/tests")
