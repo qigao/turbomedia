@@ -2,13 +2,20 @@
 #include "turbo_media_revocation_https.h"
 
 #include <stddef.h>
+#include <string.h>
 
-static const char *test_token(
-    void *context, const char *target_id, unsigned int attempt) {
+static int test_token(
+    void *context, const char *target_id, unsigned int attempt,
+    char *out_token, size_t out_token_capacity) {
+    static const char token[] = "ephemeral-security-token";
     (void)context;
     (void)target_id;
     (void)attempt;
-    return "ephemeral-security-token";
+    if (!out_token || out_token_capacity < sizeof(token)) {
+        return -1;
+    }
+    memcpy(out_token, token, sizeof(token));
+    return 0;
 }
 
 void test_revocation_https_discovers_only_bounded_https_targets(void) {
