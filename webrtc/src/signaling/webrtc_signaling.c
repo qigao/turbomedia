@@ -9,6 +9,7 @@
 #include "tlog.h"
 #include "turbo_media_auth.h"
 #include "turbo_media_revocation_projection.h"
+#include "source_identity.h"
 #include <chttp/chttp.h>
 #include <cstl/hash_map.h>
 #include <json_parser.h>
@@ -17,12 +18,6 @@
 #include "salts_str.h"
 
 #include <limits.h>
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,10 +41,7 @@ enum {
   SIGNALING_RECEIVE_BUFFER_BYTES = 16 * 1024,
   SIGNALING_POLL_SLICE_MS = 10,
   SIGNALING_MIN_COMMAND_CAPACITY = 64,
-  SIGNALING_RATE_TOKEN_UNITS = 1000,
-  SIGNALING_SOURCE_FAMILY_IPV4 = 4,
-  SIGNALING_SOURCE_FAMILY_IPV6 = 6,
-  SIGNALING_MAX_TRUSTED_PROXIES = 32
+  SIGNALING_RATE_TOKEN_UNITS = 1000
 };
 
 typedef enum {
@@ -63,12 +55,6 @@ typedef enum {
 
 #define SIGNALING_PEER_AUTH_AUDIENCE "turbomedia-signaling-peer"
 #define SIGNALING_PEER_JOIN_SCOPE "signaling.peer.join"
-
-typedef struct {
-  uint8_t family;
-  uint8_t address[16];
-  uint32_t scope_id;
-} signaling_source_key_t;
 
 struct signaling_source_state_s {
   signaling_source_key_t key;
@@ -134,151 +120,6 @@ static bool webrtc_str_equal(const void *left, const void *right, size_t key_siz
   return strcmp(left_str, right_str) == 0;
 }
 
-static int source_key_from_peer(const cnet_stream_peer *peer,
-                                signaling_source_key_t *key) {
-  const uint8_t *ipv6_bytes;
-  size_t index;
-  int mapped_ipv4 = 1;
-
-  if (!peer || !key) {
-    return -1;
-  }
-  memset(key, 0, sizeof(*key));
-  if (peer->family == CNET_DATAGRAM_ADDRESS_IPV4) {
-    key->family = SIGNALING_SOURCE_FAMILY_IPV4;
-    memcpy(key->address, peer->address, 4U);
-    return 0;
-  }
-  if (peer->family != CNET_DATAGRAM_ADDRESS_IPV6) {
-    return -1;
-  }
-
-  ipv6_bytes = peer->address;
-  for (index = 0U; index < 10U; ++index) {
-    if (ipv6_bytes[index] != 0U) {
-      mapped_ipv4 = 0;
-      break;
-    }
-  }
-  if (mapped_ipv4 && ipv6_bytes[10] == 0xffU && ipv6_bytes[11] == 0xffU) {
-    key->family = SIGNALING_SOURCE_FAMILY_IPV4;
-    memcpy(key->address, ipv6_bytes + 12U, 4U);
-    return 0;
-  }
-
-  key->family = SIGNALING_SOURCE_FAMILY_IPV6;
-  memcpy(key->address, ipv6_bytes, sizeof(key->address));
-  key->scope_id = peer->scope_id;
-  return 0;
-}
-
-static int source_key_equal_value(const signaling_source_key_t *left,
-                                  const signaling_source_key_t *right) {
-  size_t bytes;
-
-  if (!left || !right || left->family != right->family) {
-    return 0;
-  }
-  bytes = left->family == SIGNALING_SOURCE_FAMILY_IPV4 ? 4U : 16U;
-  return memcmp(left->address, right->address, bytes) == 0 &&
-         (left->family == SIGNALING_SOURCE_FAMILY_IPV4 ||
-          left->scope_id == right->scope_id);
-}
-
-static int source_key_from_text_span(const char *value, size_t length,
-                                     signaling_source_key_t *key) {
-  char text[INET6_ADDRSTRLEN];
-  const char *start = value;
-  const char *end = value ? value + length : NULL;
-  uint8_t address[16];
-  size_t index;
-  int mapped_ipv4 = 1;
-
-  if (!value || !key) {
-    return -1;
-  }
-  while (start < end && (*start == ' ' || *start == '\t')) {
-    start++;
-  }
-  while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
-    end--;
-  }
-  length = (size_t)(end - start);
-  if (length == 0U || length >= sizeof(text) ||
-      memchr(start, ',', length) != NULL ||
-      memchr(start, '%', length) != NULL ||
-      memchr(start, '[', length) != NULL ||
-      memchr(start, ']', length) != NULL) {
-    return -1;
-  }
-  memcpy(text, start, length);
-  text[length] = '\0';
-  memset(key, 0, sizeof(*key));
-  if (inet_pton(AF_INET, text, address) == 1) {
-    key->family = SIGNALING_SOURCE_FAMILY_IPV4;
-    memcpy(key->address, address, 4U);
-    return 0;
-  }
-  if (inet_pton(AF_INET6, text, address) != 1) {
-    return -1;
-  }
-  for (index = 0U; index < 10U; ++index) {
-    if (address[index] != 0U) {
-      mapped_ipv4 = 0;
-      break;
-    }
-  }
-  if (mapped_ipv4 && address[10] == 0xffU && address[11] == 0xffU) {
-    key->family = SIGNALING_SOURCE_FAMILY_IPV4;
-    memcpy(key->address, address + 12U, 4U);
-    return 0;
-  }
-  key->family = SIGNALING_SOURCE_FAMILY_IPV6;
-  memcpy(key->address, address, sizeof(key->address));
-  return 0;
-}
-
-static int trusted_proxy_list_parse(
-    const char *addresses,
-    signaling_source_key_t proxies[SIGNALING_MAX_TRUSTED_PROXIES],
-    size_t *out_count) {
-  const char *cursor;
-  size_t count = 0U;
-
-  if (!out_count) {
-    return -1;
-  }
-  *out_count = 0U;
-  if (!addresses || addresses[0] == '\0') {
-    return 0;
-  }
-  cursor = addresses;
-  while (cursor && *cursor != '\0') {
-    const char *comma = strchr(cursor, ',');
-    const char *end = comma ? comma : cursor + strlen(cursor);
-    signaling_source_key_t parsed;
-
-    if (count >= SIGNALING_MAX_TRUSTED_PROXIES ||
-        source_key_from_text_span(
-            cursor, (size_t)(end - cursor), &parsed) != 0) {
-      return -1;
-    }
-    for (size_t index = 0U; index < count; ++index) {
-      if (source_key_equal_value(&proxies[index], &parsed)) {
-        return -1;
-      }
-    }
-    proxies[count++] = parsed;
-    cursor = comma ? comma + 1 : NULL;
-    if (comma && (!cursor || *cursor == '\0')) {
-      return -1;
-    }
-  }
-  *out_count = count;
-  return 0;
-}
-
-
 struct webrtc_signaling_server_s {
   chttp_server http;
   int http_initialized;
@@ -310,9 +151,7 @@ struct webrtc_signaling_server_s {
 
   turbo_media_revocation_projection_t *revocation_projection;
 
-  signaling_source_key_t
-      trusted_proxies[SIGNALING_MAX_TRUSTED_PROXIES];
-  size_t trusted_proxy_count;
+  signaling_trusted_proxy_set_t trusted_proxies;
 
   int running;
   int cleanup_stop_requested;
@@ -321,44 +160,6 @@ struct webrtc_signaling_server_s {
   salts_cond_t state_changed;
   salts_mutex_t mutex;
 };
-
-static int source_key_is_trusted_proxy(
-    const webrtc_signaling_server_t *server,
-    const signaling_source_key_t *socket_key) {
-  if (!server || !socket_key) {
-    return 0;
-  }
-  for (size_t index = 0U; index < server->trusted_proxy_count; ++index) {
-    if (source_key_equal_value(
-            &server->trusted_proxies[index], socket_key)) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static int source_key_resolve(
-    const webrtc_signaling_server_t *server,
-    const cnet_stream_peer *peer,
-    const char *forwarded_for,
-    signaling_source_key_t *key) {
-  signaling_source_key_t socket_key;
-
-  if (!server || !key ||
-      source_key_from_peer(peer, &socket_key) != 0) {
-    return -1;
-  }
-  if (!source_key_is_trusted_proxy(server, &socket_key)) {
-    *key = socket_key;
-    return 0;
-  }
-  if (!forwarded_for ||
-      source_key_from_text_span(
-          forwarded_for, strlen(forwarded_for), key) != 0) {
-    return -1;
-  }
-  return 0;
-}
 
 static int source_policy_enabled(const webrtc_signaling_config_t *config) {
   return config &&
@@ -1745,7 +1546,7 @@ static int signaling_websocket_open(
     const char *forwarded_for = NULL;
     signaling_source_key_t socket_key;
 
-    if (source_key_from_peer(request->peer, &socket_key) != 0) {
+    if (signaling_source_key_from_peer(request->peer, &socket_key) != 0) {
       salts_mutex_lock(&server->mutex);
       record_source_rejection_locked(
           server, SIGNALING_SOURCE_REJECT_ADDRESS);
@@ -1754,12 +1555,13 @@ static int signaling_websocket_open(
           response, 400U, "text/plain", "Invalid peer address",
           sizeof("Invalid peer address") - 1U);
     }
-    if (source_key_is_trusted_proxy(server, &socket_key)) {
+    if (signaling_source_identity_is_trusted_proxy(&server->trusted_proxies, &socket_key)) {
       forwarded_for =
           chttp_server_request_header(request, "X-Forwarded-For");
     }
-    if (source_key_resolve(
-            server, request->peer, forwarded_for, &source_key) != 0) {
+    if (signaling_source_identity_resolve(
+            &server->trusted_proxies, request->peer,
+            forwarded_for, &source_key) != 0) {
       salts_mutex_lock(&server->mutex);
       record_source_rejection_locked(
           server, SIGNALING_SOURCE_REJECT_ADDRESS);
@@ -1995,12 +1797,12 @@ static int signaling_http_init(webrtc_signaling_server_t *server) {
   if (server->config.use_tls) {
     tls = (cnet_tls_server_config){
         .size = sizeof(tls),
-        .ca_file = server->trusted_proxy_count > 0U
+        .ca_file = server->trusted_proxies.count > 0U
                        ? server->config.trusted_proxy_ca_file
                        : NULL,
         .cert_file = server->config.cert_file,
         .key_file = server->config.key_file,
-        .client_auth = server->trusted_proxy_count > 0U
+        .client_auth = server->trusted_proxies.count > 0U
                            ? CNET_TLS_CLIENT_AUTH_REQUIRED
                            : CNET_TLS_CLIENT_AUTH_NONE};
   }
@@ -2079,16 +1881,15 @@ webrtc_signaling_server_t *webrtc_signaling_create(
   }
 
   server->config = *config;
-  if (trusted_proxy_list_parse(
+  if (signaling_trusted_proxy_set_parse(
           server->config.trusted_proxy_addresses,
-          server->trusted_proxies,
-          &server->trusted_proxy_count) != 0 ||
+          &server->trusted_proxies) != 0 ||
       ((server->config.trusted_proxy_addresses != NULL) !=
        (server->config.trusted_proxy_ca_file != NULL)) ||
       (server->config.trusted_proxy_addresses &&
        (server->config.trusted_proxy_addresses[0] == '\0' ||
         server->config.trusted_proxy_ca_file[0] == '\0')) ||
-      (server->trusted_proxy_count > 0U &&
+      (server->trusted_proxies.count > 0U &&
        (!server->config.use_tls ||
         !source_policy_enabled(&server->config)))) {
     free(server);
