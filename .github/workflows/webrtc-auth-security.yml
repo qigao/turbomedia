@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "webrtc/src/auth/**"
+      - "webrtc/src/security/**"
       - "network/include/turbo_transport.h"
       - "webrtc/src/signaling/**"
       - "webrtc/include/http_api.h"
@@ -27,6 +28,7 @@ on:
       - "webrtc/tests/test_revocation_state.c"
       - "webrtc/tests/test_revocation_projection.c"
       - "webrtc/tests/test_revocation_fanout.c"
+      - "webrtc/tests/test_tenant_quota.c"
       - "webrtc/tests/test_signaling_internals.c"
       - "webrtc/tests/test_signaling_source_identity.c"
       - "webrtc/tests/test_signaling_lifecycle.c"
@@ -40,6 +42,7 @@ on:
       - master
     paths:
       - "webrtc/src/auth/**"
+      - "webrtc/src/security/**"
       - "network/include/turbo_transport.h"
       - "webrtc/src/signaling/**"
       - "webrtc/include/http_api.h"
@@ -63,6 +66,7 @@ on:
       - "webrtc/tests/test_revocation_state.c"
       - "webrtc/tests/test_revocation_projection.c"
       - "webrtc/tests/test_revocation_fanout.c"
+      - "webrtc/tests/test_tenant_quota.c"
       - "webrtc/tests/test_signaling_internals.c"
       - "webrtc/tests/test_signaling_source_identity.c"
       - "webrtc/tests/test_signaling_lifecycle.c"
@@ -92,7 +96,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/src/signaling/signaling_source_identity.*', 'webrtc/apps/room_service/include/room_service/**', 'webrtc/apps/room_service/src/config.c', 'webrtc/apps/room_service/src/server.c', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c', 'webrtc/tests/test_revocation_fanout.c', 'webrtc/tests/test_signaling_source_identity.c') }}
+          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/src/security/**', 'webrtc/src/signaling/signaling_source_identity.*', 'webrtc/apps/room_service/include/room_service/**', 'webrtc/apps/room_service/src/config.c', 'webrtc/apps/room_service/src/server.c', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c', 'webrtc/tests/test_revocation_fanout.c', 'webrtc/tests/test_tenant_quota.c', 'webrtc/tests/test_signaling_source_identity.c') }}
           restore-keys: |
             webrtc-auth-security-${{ runner.os }}-
 
@@ -564,6 +568,17 @@ jobs:
             webrtc/tests/test_signaling_source_identity.c \
             -o "$RUNNER_TEMP/signaling-source-identity-test"
           "$RUNNER_TEMP/signaling-source-identity-test"
+
+      - name: Run exact tenant quota lease tests
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic \
+            -Iwebrtc/src/security -I"$RUNNER_TEMP/auth-stubs" \
+            webrtc/src/security/turbo_media_tenant_quota.c \
+            webrtc/tests/test_tenant_quota.c \
+            -o "$RUNNER_TEMP/tenant-quota-test"
+          "$RUNNER_TEMP/tenant-quota-test"
 
       - name: Run exact revocation state tests
         shell: bash

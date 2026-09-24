@@ -74,6 +74,11 @@ turbo_media_add_webrtc_base_test(turbo_media_test_revocation_fanout
 target_link_libraries(turbo_media_test_revocation_fanout
                       PRIVATE turbo_media_auth)
 
+turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota
+                                 test_tenant_quota.c)
+target_link_libraries(turbo_media_test_tenant_quota
+                      PRIVATE turbo_media_tenant_quota)
+
 turbo_media_add_webrtc_base_test(turbo_media_test_revocation_https
                                  test_revocation_https.c)
 target_link_libraries(turbo_media_test_revocation_https
