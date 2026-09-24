@@ -99,6 +99,28 @@ typedef enum {
 } webrtc_signaling_revocation_apply_result_t;
 
 /**
+ * Token-free security health snapshot. No source address, forwarded identity,
+ * certificate fingerprint, bearer, credential, or revocation digest is
+ * exposed through this structure.
+ */
+typedef struct webrtc_signaling_security_status_s {
+    int trusted_proxy_enabled;
+    int dynamic_revocation_enabled;
+    int revocation_synchronized;
+    int alert_revocation_unsynchronized;
+    uint64_t revocation_epoch;
+    uint64_t revocation_sequence;
+    size_t revoked_count;
+    uint64_t authentication_rejections;
+    uint64_t trusted_proxy_rejections;
+    uint64_t forwarded_identity_rejections;
+    uint64_t source_address_rejections;
+    uint64_t source_capacity_rejections;
+    uint64_t source_rate_rejections;
+    uint64_t source_concurrency_rejections;
+} webrtc_signaling_security_status_t;
+
+/**
  * @brief Signaling message
  */
 typedef struct {
@@ -187,6 +209,13 @@ TURBO_MEDIA_API int webrtc_signaling_get_revocation_status(
     uint64_t *out_epoch,
     uint64_t *out_sequence,
     size_t *out_count);
+
+/**
+ * Read one token-free security status snapshot.
+ */
+TURBO_MEDIA_API int webrtc_signaling_get_security_status(
+    webrtc_signaling_server_t *server,
+    webrtc_signaling_security_status_t *status);
 
 /**
  * @brief Broadcast message to all peers in room
