@@ -79,6 +79,11 @@ turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota
 target_link_libraries(turbo_media_test_tenant_quota
                       PRIVATE turbo_media_tenant_quota)
 
+turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota_allocator
+                                 test_tenant_quota_allocator.c)
+target_link_libraries(turbo_media_test_tenant_quota_allocator
+                      PRIVATE turbo_media_tenant_quota)
+
 turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota_wire
                                  test_tenant_quota_wire.c)
 target_link_libraries(turbo_media_test_tenant_quota_wire

@@ -100,6 +100,40 @@ resource admission by this slice. Those runtime integrations must consume the sa
 and the same control-plane lease stream; they must not introduce a second tenant namespace, a local
 "global" counter, or a permissive fallback when lease state is UNKNOWN.
 
+### Tenant-wide quota allocator
+
+The shared control plane now has a bounded allocator contract that owns tenant global caps and the
+currently issued per-node lease limits. It is the only component allowed to decide whether another node
+lease may be issued.
+
+The allocator starts UNSYNCHRONIZED and is restored from one complete snapshot containing both tenant
+policies and all currently live issued leases. A snapshot is accepted only when every lease references a
+known tenant policy, targets a valid node identity, is unexpired at the supplied Unix-ms time, is unique by
+tenant/node, and the aggregate issued limits for every tenant/resource are less than or equal to the
+tenant-wide policy.
+
+Canonical grant, replacement, revoke, and policy-change proposals are exact-next in the allocator's
+epoch/sequence. A sequence gap or epoch jump means the control-plane mutation stream is incomplete and
+moves the allocator to UNKNOWN until a covering policy+lease snapshot arrives. A newer covering snapshot
+that cannot be validated or installed also moves the allocator to UNKNOWN; continuing to issue from an
+older global budget would be unsafe. In contrast, an overcommitted grant or policy-tightening proposal is
+rejected before becoming a canonical mutation, does not consume the next sequence, and does not poison a
+healthy allocator.
+
+Grant replacement subtracts the previous lease for the same tenant/node before checking the new limits.
+Expired leases are pruned before commitment checks, so their budget can be safely reissued. A tighter
+tenant policy is rejected while currently live issued leases exceed the proposed cap; the control plane
+must first shrink/revoke/expire those leases.
+
+The allocator can materialize a complete node-specific lease snapshot at its current canonical version.
+Those snapshots are the only lease facts that the multi-node publisher may send to node projections. The
+allocator does not store runtime usage and nodes do not report local usage as an alternative global
+counter. The tenant-wide invariant is purely that the sum of all simultaneously live issued lease limits
+never exceeds the global tenant policy.
+
+The authenticated node ingress below is already implemented. Allocator-to-target publication and runtime
+resource reserve/release wiring remain separate slices.
+
 ### Authenticated tenant quota lease transport
 
 Signaling and SFU nodes now expose the same bounded HTTPS ingress for their local tenant quota projection:
@@ -351,10 +385,10 @@ The following are intentionally not claimed complete by the dynamic-revocation s
 - shared-control-plane producer integration for canonical revocation publication;
 - TLS-connection-level admission before handshake CPU allocation (source HTTP/WebSocket admission is now pre-application);
 - trusted-proxy allowlist and spoofed-header negative tests;
-- shared-control-plane quota allocator/issuer and authenticated multi-node lease publication using the node ingress above;
+- authenticated multi-node lease publication from the shared allocator using the node ingress above;
 - runtime reservation/release wiring for signaling connections, rooms, participants, media sessions, and published tracks;
 - subject/IP/request/byte/time quota dimensions beyond the initial tenant resource lease model;
-- deterministic multi-node tenant-wide quota evidence proving the allocator never over-issues per-node leases;
+- deterministic allocator-to-node multi-node quota evidence beyond the exact global over-issue contract test;
 - security metrics/alerts/audit integration;
 - public handshake-flood / abuse / attack-capacity evidence.
 
