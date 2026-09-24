@@ -296,7 +296,7 @@ static turbo_media_revocation_fanout_transport_result_t post_json(
     turbo_transport_t *transport = NULL;
     chttp_response *raw = NULL;
     const char *headers[] = {"Content-Type", "application/json"};
-    const char *token;
+    char token[TURBO_MEDIA_REVOCATION_HTTPS_TOKEN_BYTES];
     turbo_media_revocation_fanout_transport_result_t result =
         TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
 
@@ -305,12 +305,16 @@ static turbo_media_revocation_fanout_transport_result_t post_json(
         return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
     }
     memset(response, 0, sizeof(*response));
-    token = adapter->config.acquire_token(
-        adapter->config.token_context, target_id, attempt);
-    if (!token || token[0] == '\0') {
+    memset(token, 0, sizeof(token));
+    if (adapter->config.acquire_token(
+            adapter->config.token_context, target_id, attempt,
+            token, sizeof(token)) != 0 ||
+        token[0] == '\0') {
+        memset(token, 0, sizeof(token));
         return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
     }
     if (turbo_transport_parse_url(target->base_url, &config) != 0) {
+        memset(token, 0, sizeof(token));
         return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_FATAL;
     }
     config.connect_timeout_ms = (int)adapter->config.timeout_ms;
@@ -324,6 +328,7 @@ static turbo_media_revocation_fanout_transport_result_t post_json(
 
     transport = turbo_transport_create(&config);
     free_parsed_url(&config);
+    memset(token, 0, sizeof(token));
     if (!transport) {
         return TURBO_MEDIA_REVOCATION_FANOUT_TRANSPORT_RETRYABLE;
     }
