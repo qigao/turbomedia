@@ -159,22 +159,16 @@ void test_trusted_proxy_source_identity_ignores_untrusted_spoofed_headers(void) 
   cnet_stream_peer peer;
 
   memset(&server, 0, sizeof(server));
-  check_equal(trusted_proxy_list_parse(
-                  "10.0.0.10,2001:db8::10",
-                  server.trusted_proxies,
-                  &server.trusted_proxy_count), 0);
-  check_equal(source_key_from_text_span(
-                  "198.51.100.20", strlen("198.51.100.20"),
-                  &direct_key), 0);
-  check_equal(source_key_from_text_span(
-                  "203.0.113.99", strlen("203.0.113.99"),
-                  &spoofed_key), 0);
+  check_equal(signaling_trusted_proxy_set_parse(
+                  "10.0.0.10,2001:db8::10", &server.trusted_proxies), 0);
+  check_equal(signaling_source_key_from_text("198.51.100.20", &direct_key), 0);
+  check_equal(signaling_source_key_from_text("203.0.113.99", &spoofed_key), 0);
   source_key_to_test_peer(&direct_key, &peer);
 
-  check_equal(source_key_resolve(
-                  &server, &peer, "203.0.113.99", &resolved), 0);
-  check_true(source_key_equal_value(&resolved, &direct_key));
-  check_false(source_key_equal_value(&resolved, &spoofed_key));
+  check_equal(signaling_source_identity_resolve(
+                  &server.trusted_proxies, &peer, "203.0.113.99", &resolved), 0);
+  check_true(signaling_source_key_equal(&resolved, &direct_key));
+  check_false(signaling_source_key_equal(&resolved, &spoofed_key));
 }
 
 void test_trusted_proxy_source_identity_requires_one_valid_forwarded_ip(void) {
@@ -185,31 +179,25 @@ void test_trusted_proxy_source_identity_requires_one_valid_forwarded_ip(void) {
   cnet_stream_peer peer;
 
   memset(&server, 0, sizeof(server));
-  check_equal(trusted_proxy_list_parse(
-                  "10.0.0.10",
-                  server.trusted_proxies,
-                  &server.trusted_proxy_count), 0);
-  check_equal(source_key_from_text_span(
-                  "10.0.0.10", strlen("10.0.0.10"),
-                  &proxy_key), 0);
-  check_equal(source_key_from_text_span(
-                  "203.0.113.7", strlen("203.0.113.7"),
-                  &client_key), 0);
+  check_equal(signaling_trusted_proxy_set_parse(
+                  "10.0.0.10", &server.trusted_proxies), 0);
+  check_equal(signaling_source_key_from_text("10.0.0.10", &proxy_key), 0);
+  check_equal(signaling_source_key_from_text("203.0.113.7", &client_key), 0);
   source_key_to_test_peer(&proxy_key, &peer);
 
-  check_equal(source_key_resolve(
-                  &server, &peer, "203.0.113.7", &resolved), 0);
-  check_true(source_key_equal_value(&resolved, &client_key));
+  check_equal(signaling_source_identity_resolve(
+                  &server.trusted_proxies, &peer, "203.0.113.7", &resolved), 0);
+  check_true(signaling_source_key_equal(&resolved, &client_key));
 
-  check_equal(source_key_resolve(
-                  &server, &peer, NULL, &resolved), -1);
-  check_equal(source_key_resolve(
-                  &server, &peer,
+  check_equal(signaling_source_identity_resolve(
+                  &server.trusted_proxies, &peer, NULL, &resolved), -1);
+  check_equal(signaling_source_identity_resolve(
+                  &server.trusted_proxies, &peer,
                   "203.0.113.7, 198.51.100.1", &resolved), -1);
-  check_equal(source_key_resolve(
-                  &server, &peer, "client.example", &resolved), -1);
-  check_equal(source_key_resolve(
-                  &server, &peer, "[2001:db8::1]", &resolved), -1);
+  check_equal(signaling_source_identity_resolve(
+                  &server.trusted_proxies, &peer, "client.example", &resolved), -1);
+  check_equal(signaling_source_identity_resolve(
+                  &server.trusted_proxies, &peer, "[2001:db8::1]", &resolved), -1);
 }
 
 void test_trusted_proxy_allowlist_is_exact_bounded_and_normalized(void) {
@@ -221,28 +209,20 @@ void test_trusted_proxy_allowlist_is_exact_bounded_and_normalized(void) {
       10, 0, 0, 10};
 
   memset(&server, 0, sizeof(server));
-  check_equal(trusted_proxy_list_parse(
-                  "10.0.0.10",
-                  server.trusted_proxies,
-                  &server.trusted_proxy_count), 0);
+  check_equal(signaling_trusted_proxy_set_parse(
+                  "10.0.0.10", &server.trusted_proxies), 0);
   mapped_peer.family = CNET_DATAGRAM_ADDRESS_IPV6;
   memcpy(mapped_peer.address, mapped, sizeof(mapped));
-  check_equal(source_key_resolve(
+  check_equal(signaling_source_identity_resolve(
                   &server, &mapped_peer, "2001:db8::55", &resolved), 0);
   check_equal((int)resolved.family, SIGNALING_SOURCE_FAMILY_IPV6);
 
-  check_equal(trusted_proxy_list_parse(
-                  "10.0.0.10,10.0.0.10",
-                  server.trusted_proxies,
-                  &server.trusted_proxy_count), -1);
-  check_equal(trusted_proxy_list_parse(
-                  "10.0.0.10/32",
-                  server.trusted_proxies,
-                  &server.trusted_proxy_count), -1);
-  check_equal(trusted_proxy_list_parse(
-                  "2001:db8::1%eth0",
-                  server.trusted_proxies,
-                  &server.trusted_proxy_count), -1);
+  check_equal(signaling_trusted_proxy_set_parse(
+                  "10.0.0.10,10.0.0.10", &server.trusted_proxies), -1);
+  check_equal(signaling_trusted_proxy_set_parse(
+                  "10.0.0.10/32", &server.trusted_proxies), -1);
+  check_equal(signaling_trusted_proxy_set_parse(
+                  "2001:db8::1%eth0", &server.trusted_proxies), -1);
 }
 
 void test_trusted_proxy_create_rejects_malformed_or_duplicate_allowlists(void) {
