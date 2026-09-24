@@ -101,6 +101,7 @@ turbo_media_configure_component(turbo_media_webrtc_signaling WebRTCSignaling)
 target_sources(
   turbo_media_webrtc_signaling
   PRIVATE src/signaling/webrtc_signaling.c
+          src/signaling/signaling_source_identity.c
           src/signaling/http_api.c)
 target_include_directories(
   turbo_media_webrtc_signaling

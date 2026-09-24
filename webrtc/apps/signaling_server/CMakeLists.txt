@@ -3,6 +3,7 @@ set(SIGNALING_SERVER_SOURCES
   src/main.c
   src/config.c
   src/server.c
+  ../../src/signaling/signaling_source_identity.c
 )
 
 set(SIGNALING_SERVER_HEADERS
@@ -20,6 +21,7 @@ add_executable(signaling_server
 target_include_directories(signaling_server
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/signaling
 )
 
 # Link libraries

@@ -76,6 +76,8 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         .use_tls = server->config.ws_use_tls,
         .cert_file = server->config.ws_cert_file,
         .key_file = server->config.ws_key_file,
+        .trusted_proxy_map = server->config.trusted_proxy_map,
+        .trusted_proxy_ca_file = server->config.trusted_proxy_ca_file,
         .connection_capacity = (size_t)server->config.connection_capacity,
         .max_peers = server->config.max_peers,
         .max_rooms = server->config.max_rooms,

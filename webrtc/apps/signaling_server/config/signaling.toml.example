@@ -13,6 +13,15 @@ use_tls = false
 # cert_file = "/etc/turbomedia/tls/signaling-chain.pem"
 # key_file = "/etc/turbomedia/tls/signaling-key.pem"
 
+# Optional reverse-proxy-only ingress. When configured, the WebSocket listener
+# requires a client certificate and accepts X-Forwarded-For only when BOTH the
+# socket peer numeric IP and verified leaf certificate SHA-256 match this map.
+# The value is a comma-separated list of numeric-ip=64-lowercase-sha256 entries.
+# Direct browser connections are not valid in this mode.
+#[trusted_proxy]
+#map = "10.0.0.10=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+#client_ca_file = "/etc/turbomedia/tls/proxy-client-ca.pem"
+
 [http_api]
 # Management and monitoring API. Configure either the scoped [http_auth]
 # verifier or the static TURBO_SIGNALING_ADMIN_TOKEN compatibility token
@@ -47,7 +56,9 @@ messages_per_second = 100
 message_burst = 200
 max_outbox_messages = 256
 max_outbox_bytes = 1048576
-# Applied during the WebSocket handshake using the socket peer IP (port ignored).
+# Applied before WebSocket application allocation. By default the source is
+# the socket peer IP. In [trusted_proxy] mode it is the strict single-value
+# X-Forwarded-For address from the mTLS-pinned proxy.
 max_connections_per_source = 100
 source_admissions_per_second = 20
 source_admission_burst = 50

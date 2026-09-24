@@ -196,6 +196,28 @@ version to the rebuilt target set instead of sending an incremental event to a n
 This wiring does not make Room Service a second revocation source: canonical epoch/sequence and covering
 snapshot payloads remain caller-supplied facts from the shared security control plane.
 
+### Signaling source identity and trusted proxies
+
+The default signaling source identity is the TCP socket peer IP. Forwarded headers are ignored in this
+mode, so an Internet client cannot change the source key used by connection/rate admission.
+
+Trusted-proxy mode is explicit and all-or-nothing. It requires WSS, an mTLS client CA, enabled source
+admission limits, and a bounded map of at most 32 `numeric-ip=leaf-sha256` proxy identities. The WSS
+listener then requires client certificates for every connection. A request is considered proxied only when
+both the actual socket peer IP and the verified TLS client leaf SHA-256 match the same configured entry.
+
+Only one `X-Forwarded-For` header is accepted. Its value must be one bare numeric IPv4 or IPv6 literal.
+Repeated headers, comma-separated chains, whitespace, hostnames, ports, bracketed IPv6, and zone identifiers
+are rejected. Other forwarding headers are not identity inputs. IPv4-mapped IPv6 is normalized to IPv4.
+
+The CHTTP admission hook resolves the source identity and consumes the bounded source admission/rate budget
+before WebSocket application allocation. Active-connection accounting is bound during WebSocket open and
+released on peer teardown. An untrusted proxy is rejected with 403; malformed source/forwarded identity is
+rejected with 400; rate/concurrency rejection is 429 with a bounded Retry-After.
+
+This application-layer proxy allowlist complements deployment network ACLs. The certificate pin is derived
+from CHTTP's already verified TLS client certificate; no unverified certificate/header value is trusted.
+
 ### Authorization
 
 The signed-token verifier computes the compact-token SHA-256 and invokes the configured dynamic revocation
@@ -236,9 +258,9 @@ other credential material are not stored in the revocation state and must not ap
 
 The following are intentionally not claimed complete by the dynamic-revocation slice:
 
-- signaling-node production membership/source wiring into the shared fan-out path;
+- signaling-node production membership/source wiring into the shared fan-out path, if required by the final control-plane owner;
 - shared-control-plane producer integration for canonical revocation publication;
-- edge admission before TLS/WebSocket application allocation;
+- TLS-connection-level admission before handshake CPU allocation (source HTTP/WebSocket admission is now pre-application);
 - trusted-proxy allowlist and spoofed-header negative tests;
 - tenant/subject/IP/connection/request/media-resource quota model;
 - deterministic multi-node tenant-wide quota enforcement;

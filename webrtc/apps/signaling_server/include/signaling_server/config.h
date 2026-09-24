@@ -28,6 +28,10 @@ typedef struct signaling_server_config_s {
     int ws_use_tls;
     const char *ws_cert_file;
     const char *ws_key_file;
+
+    /* Optional trusted reverse-proxy source identity */
+    const char *trusted_proxy_map;
+    const char *trusted_proxy_ca_file;
     
     /* HTTP API server */
     int http_enabled;
