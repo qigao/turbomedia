@@ -6,7 +6,7 @@ This document defines the public multi-tenant security boundary tracked by #42.
 
 The first implemented slice is the **dynamic signed-token revocation view**. It provides a bounded,
 versioned in-process state machine and integrates it with the existing signed-token verifier. The remaining
-edge identity, trusted-proxy, tenant-wide quota, and Internet abuse-capacity work is still open under #42.
+tenant-wide quota, pre-TLS edge admission, and Internet abuse-capacity work is still open under #42.
 This slice alone does not make TurboMedia public multi-tenant ready.
 
 ## Trust boundaries
@@ -34,19 +34,26 @@ ACLs remain required, and mutual TLS may be added as an additional edge identity
 nodes consume the same thread-safe revocation projection abstraction and the same v1 snapshot/revoke wire
 parser. Multi-node fan-out/retry is not implemented by this slice.
 
-### Edge
+### Edge and trusted proxy identity
 
-The edge terminates Internet-facing transport and performs handshake admission before expensive application
-work. Trusted proxy/client identity is **not implemented by this slice**.
+The Internet edge remains responsible for connection/handshake admission before traffic reaches the
+application process. The signaling backend now has one strict trusted-proxy identity contract for its
+per-source WebSocket admission limits:
 
-Future proxy-derived client identity may be accepted only when all of the following are true:
+1. trusted-proxy mode requires WSS;
+2. the WSS listener requires a client certificate chained to the configured proxy CA;
+3. the direct socket peer must match one exact IPv4/IPv6 literal in the bounded proxy allowlist;
+4. deployment network ACLs must independently restrict the backend to those proxies;
+5. only then may the proxy supply `X-Forwarded-For`, and the value must be exactly one IPv4/IPv6 literal.
 
-1. the direct peer is authenticated as an approved proxy;
-2. network ACLs restrict the proxy path;
-3. the proxy is present in an explicit allowlist;
-4. the forwarded identity/header format is versioned and bounded.
+CIDR strings, hostnames, bracketed IPv6, scoped IPv6, comma-separated forwarding chains, duplicate proxy
+allowlist entries, and missing forwarding identity from a trusted proxy are rejected. An untrusted direct
+peer may send any forwarding header it wants; the signaling process never uses that header and applies
+source limits to the real socket peer instead.
 
-Until then, forwarded identity headers are not a trusted fact source.
+The effective source identity is resolved and admitted before WebSocket application-session capture and
+before peer allocation. This does **not** move policy before the TLS handshake itself: handshake-flood
+admission remains an external edge/L4-L7 responsibility and still requires public abuse/load evidence.
 
 ### Application process
 
@@ -238,8 +245,7 @@ The following are intentionally not claimed complete by the dynamic-revocation s
 
 - signaling-node production membership/source wiring into the shared fan-out path;
 - shared-control-plane producer integration for canonical revocation publication;
-- edge admission before TLS/WebSocket application allocation;
-- trusted-proxy allowlist and spoofed-header negative tests;
+- edge admission before TLS handshake / HTTP upgrade work;
 - tenant/subject/IP/connection/request/media-resource quota model;
 - deterministic multi-node tenant-wide quota enforcement;
 - security metrics/alerts/audit integration;
