@@ -2067,7 +2067,9 @@ static int sfu_node_http_register_routes(sfu_node_http_api_t *api) {
         "/whip/:room_id/:participant_id",
         "/whep/:room_id/:participant_id",
         "/whip/:room_id/:participant_id/sessions/:session_id",
-        "/whep/:room_id/:participant_id/sessions/:session_id"};
+        "/whep/:room_id/:participant_id/sessions/:session_id",
+        "/api/v1/security/revocations/snapshot",
+        "/api/v1/security/revocations/revoke"};
     int status = chttp_server_get(&api->http, "/health",
                                   handle_health_route, api);
     if (status == SALTS_OK) {
