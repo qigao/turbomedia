@@ -119,12 +119,15 @@ if(TURBO_MEDIA_IS_SERVER)
   turbo_media_add_webrtc_test(
     turbo_media_test_signaling_config
     test_signaling_config.c
-    ../apps/signaling_server/src/config.c)
+    ../apps/signaling_server/src/config.c
+    ../src/signaling/source_identity.c)
   target_include_directories(
     turbo_media_test_signaling_config
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src/signaling)
   target_link_libraries(turbo_media_test_signaling_config
-                        PRIVATE turbo_media_auth Salts::TomlParser)
+                        PRIVATE turbo_media_auth Salts::TomlParser
+                                Salts::CNet Salts::CHTTP)
   file(
     TO_CMAKE_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/config/signaling.toml.example"
