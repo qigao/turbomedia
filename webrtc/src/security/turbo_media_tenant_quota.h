@@ -47,6 +47,10 @@ typedef enum turbo_media_tenant_quota_reserve_result_e {
     TURBO_MEDIA_TENANT_QUOTA_RESERVE_LIMIT = 4
 } turbo_media_tenant_quota_reserve_result_t;
 
+/** Shared tenant/node identifier admission used by projection and allocator. */
+int turbo_media_tenant_quota_tenant_id_valid(const char *tenant_id);
+int turbo_media_tenant_quota_node_id_valid(const char *node_id);
+
 typedef struct turbo_media_tenant_quota_projection_s
     turbo_media_tenant_quota_projection_t;
 

@@ -48,12 +48,12 @@ static int quota_identifier_valid(const char *value, size_t capacity) {
     return 1;
 }
 
-static int quota_tenant_valid(const char *tenant_id) {
+int turbo_media_tenant_quota_tenant_id_valid(const char *tenant_id) {
     return quota_identifier_valid(
         tenant_id, TURBO_MEDIA_TENANT_QUOTA_TENANT_ID_BYTES);
 }
 
-static int quota_node_valid(const char *node_id) {
+int turbo_media_tenant_quota_node_id_valid(const char *node_id) {
     return quota_identifier_valid(
         node_id, TURBO_MEDIA_TENANT_QUOTA_NODE_ID_BYTES);
 }
@@ -149,8 +149,8 @@ static int quota_lease_valid(
     const turbo_media_tenant_quota_projection_t *projection,
     const turbo_media_tenant_quota_lease_t *lease) {
     return projection && lease &&
-           quota_tenant_valid(lease->tenant_id) &&
-           quota_node_valid(lease->node_id) &&
+           turbo_media_tenant_quota_tenant_id_valid(lease->tenant_id) &&
+           turbo_media_tenant_quota_node_id_valid(lease->node_id) &&
            strcmp(lease->node_id, projection->node_id) == 0 &&
            lease->expires_at_unix_ms != 0U;
 }
@@ -205,7 +205,7 @@ turbo_media_tenant_quota_projection_create(
     const char *node_id, size_t max_tenants) {
     turbo_media_tenant_quota_projection_t *projection;
 
-    if (!quota_node_valid(node_id) ||
+    if (!turbo_media_tenant_quota_node_id_valid(node_id) ||
         max_tenants == 0U ||
         max_tenants > TURBO_MEDIA_TENANT_QUOTA_MAX_TENANTS) {
         return NULL;
@@ -418,7 +418,7 @@ turbo_media_tenant_quota_reserve(
     uint32_t limit;
     uint32_t used;
 
-    if (!projection || !quota_tenant_valid(tenant_id) ||
+    if (!projection || !turbo_media_tenant_quota_tenant_id_valid(tenant_id) ||
         (int)resource < 0 ||
         (int)resource >= TURBO_MEDIA_TENANT_QUOTA_RESOURCE_COUNT ||
         amount == 0U) {
@@ -453,7 +453,7 @@ int turbo_media_tenant_quota_release(
     size_t index;
     int any_used = 0;
 
-    if (!projection || !quota_tenant_valid(tenant_id) ||
+    if (!projection || !turbo_media_tenant_quota_tenant_id_valid(tenant_id) ||
         (int)resource < 0 ||
         (int)resource >= TURBO_MEDIA_TENANT_QUOTA_RESOURCE_COUNT ||
         amount == 0U) {
@@ -514,7 +514,7 @@ int turbo_media_tenant_quota_usage(
     int *out_has_lease) {
     const turbo_media_tenant_quota_slot_t *slot;
 
-    if (!projection || !quota_tenant_valid(tenant_id) ||
+    if (!projection || !turbo_media_tenant_quota_tenant_id_valid(tenant_id) ||
         (int)resource < 0 ||
         (int)resource >= TURBO_MEDIA_TENANT_QUOTA_RESOURCE_COUNT ||
         !out_used || !out_limit || !out_expires_at_unix_ms ||

@@ -20,7 +20,8 @@ set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components"
 
 add_library(
   turbo_media_tenant_quota STATIC
-  src/security/turbo_media_tenant_quota.c)
+  src/security/turbo_media_tenant_quota.c
+  src/security/turbo_media_tenant_quota_allocator.c)
 target_include_directories(
   turbo_media_tenant_quota PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/security)
 set_target_properties(
