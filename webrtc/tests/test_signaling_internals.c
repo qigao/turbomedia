@@ -214,7 +214,8 @@ void test_trusted_proxy_allowlist_is_exact_bounded_and_normalized(void) {
   mapped_peer.family = CNET_DATAGRAM_ADDRESS_IPV6;
   memcpy(mapped_peer.address, mapped, sizeof(mapped));
   check_equal(signaling_source_identity_resolve(
-                  &server, &mapped_peer, "2001:db8::55", &resolved), 0);
+                  &server.trusted_proxies, &mapped_peer,
+                  "2001:db8::55", &resolved), 0);
   check_equal((int)resolved.family, SIGNALING_SOURCE_FAMILY_IPV6);
 
   check_equal(signaling_trusted_proxy_set_parse(
@@ -247,7 +248,7 @@ void test_trusted_proxy_create_rejects_malformed_or_duplicate_allowlists(void) {
   server = webrtc_signaling_create(NULL, &config);
   check_not_null(server);
   if (server) {
-    check_equal((size_t)server->trusted_proxy_count, (size_t)1);
+    check_equal((size_t)server->trusted_proxies.count, (size_t)1);
     webrtc_signaling_destroy(server);
   }
 
