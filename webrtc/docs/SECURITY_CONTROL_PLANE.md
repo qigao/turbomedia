@@ -4,10 +4,11 @@
 
 This document defines the public multi-tenant security boundary tracked by #42.
 
-The first implemented slice is the **dynamic signed-token revocation view**. It provides a bounded,
-versioned in-process state machine and integrates it with the existing signed-token verifier. The remaining
-edge identity, trusted-proxy, tenant-wide quota, and Internet abuse-capacity work is still open under #42.
-This slice alone does not make TurboMedia public multi-tenant ready.
+Implemented security-control slices now include bounded dynamic revocation, authenticated multi-node
+revocation fan-out, SFU production target/token wiring, and signaling trusted-proxy source identity.
+Tenant-wide quota, security audit/metrics/alerts, TLS-handshake CPU admission, and public abuse-capacity
+evidence remain open under #42. These implemented slices alone do not make TurboMedia public multi-tenant
+ready.
 
 ## Trust boundaries
 
@@ -36,17 +37,18 @@ parser. Multi-node fan-out/retry is not implemented by this slice.
 
 ### Edge
 
-The edge terminates Internet-facing transport and performs handshake admission before expensive application
-work. Trusted proxy/client identity is **not implemented by this slice**.
+The default Internet-facing signaling identity is the verified TCP socket peer address; forwarded headers
+are ignored.
 
-Future proxy-derived client identity may be accepted only when all of the following are true:
+An explicit trusted-proxy mode is now implemented for deployments that terminate Internet transport at an
+approved proxy. It requires WSS with client-certificate authentication, an explicit socket-IP plus verified
+leaf-certificate SHA-256 allowlist, and a strict single-value numeric `X-Forwarded-For` contract.
+Deployment network ACLs remain required so the configured proxy path is not reachable from arbitrary
+networks.
 
-1. the direct peer is authenticated as an approved proxy;
-2. network ACLs restrict the proxy path;
-3. the proxy is present in an explicit allowlist;
-4. the forwarded identity/header format is versioned and bounded.
-
-Until then, forwarded identity headers are not a trusted fact source.
+The CHTTP admission hook applies source admission/rate policy after TLS identity is available but before
+WebSocket application allocation. This does **not** protect the CPU/memory spent performing the TLS
+handshake itself; pre-TLS/handshake-flood admission remains an open edge requirement.
 
 ### Application process
 
@@ -261,7 +263,6 @@ The following are intentionally not claimed complete by the dynamic-revocation s
 - signaling-node production membership/source wiring into the shared fan-out path, if required by the final control-plane owner;
 - shared-control-plane producer integration for canonical revocation publication;
 - TLS-connection-level admission before handshake CPU allocation (source HTTP/WebSocket admission is now pre-application);
-- trusted-proxy allowlist and spoofed-header negative tests;
 - tenant/subject/IP/connection/request/media-resource quota model;
 - deterministic multi-node tenant-wide quota enforcement;
 - security metrics/alerts/audit integration;
