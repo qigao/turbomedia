@@ -48,12 +48,15 @@ typedef struct room_service_app_config_s {
     int auth_max_ttl_seconds;
     const char *sfu_control_url;
     const char *sfu_nodes;
+    const char *sfu_revocation_server_names;
     const char *sfu_control_token;
     const char *sfu_ca_file;
     const char *sfu_auth_issuer;
     const char *sfu_auth_key_id;
     const char *sfu_auth_secret;
     int sfu_auth_ttl_seconds;
+    int sfu_revocation_timeout_ms;
+    int sfu_revocation_max_attempts;
     int max_rooms;
     int auto_create_rooms;
     int dry_run;

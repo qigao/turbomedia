@@ -2,6 +2,7 @@
 #include "room_service/http_api.h"
 #include "turbo_transport.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_revocation_https.h"
 #include <json_parser.h>
 #include "turbo_room_service.h"
 #include "salts_thread.h"
@@ -54,6 +55,12 @@ struct room_service_app_server_s {
     int sfu_node_count;
     int sfu_node_capacity;
     int next_sfu_node_index;
+    uint64_t sfu_membership_version;
+    salts_mutex_t revocation_mutex;
+    turbo_media_revocation_https_t *revocation_https;
+    turbo_media_revocation_fanout_t *revocation_fanout;
+    uint64_t revocation_membership_version;
+    char *revocation_ephemeral_token;
     room_service_room_sync_diagnostic_t *room_sync_diagnostics;
     int room_sync_diagnostic_count;
     int room_sync_diagnostic_capacity;
@@ -445,6 +452,12 @@ typedef struct {
 #define ROOM_SERVICE_MAX_CALL_CENTER_EVENTS 512
 #define ROOM_SERVICE_SFU_CONTROL_URL_MAX 512
 #define ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX 256
+#define ROOM_SERVICE_SFU_SECURITY_SERVER_NAME_MAX \
+    TURBO_MEDIA_REVOCATION_HTTPS_TLS_NAME_BYTES
+#define ROOM_SERVICE_SECURITY_CONTROL_AUDIENCE \
+    "turbomedia-security-control"
+#define ROOM_SERVICE_SECURITY_REVOCATION_SCOPE \
+    "security.revocation.write"
 #define ROOM_SERVICE_SFU_CONTROL_AUDIENCE "turbomedia-sfu-control"
 #define ROOM_SERVICE_SFU_SCOPE_CONTROL_WRITE "sfu.control.write"
 #define ROOM_SERVICE_SFU_SCOPE_CONTROL_DANGEROUS "sfu.control.dangerous"
@@ -453,6 +466,7 @@ typedef struct room_service_sfu_node_entry_s {
     char node_id[TURBO_NODE_ID_MAX];
     char control_url[ROOM_SERVICE_SFU_CONTROL_URL_MAX];
     char control_token[ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX];
+    char security_server_name[ROOM_SERVICE_SFU_SECURITY_SERVER_NAME_MAX];
 } room_service_sfu_node_entry_t;
 
 static const char *room_service_json_string_field(
@@ -900,36 +914,127 @@ static room_service_sfu_node_entry_t *room_service_find_sfu_node_locked(
     return NULL;
 }
 
-int room_service_app_server_register_sfu_node(room_service_app_server_t *server,
-                                              const char *node_id,
-                                              const char *control_url,
-                                              const char *control_token) {
+static int room_service_bump_sfu_membership_version_locked(
+    room_service_app_server_t *server) {
+    if (!server || server->sfu_membership_version == UINT64_MAX) {
+        return -1;
+    }
+    server->sfu_membership_version++;
+    return 0;
+}
+
+static int room_service_security_target_url_valid(
+    const char *control_url) {
+    turbo_transport_config_t parsed = {0};
+    int valid;
+
+    if (!control_url ||
+        turbo_transport_parse_url(control_url, &parsed) != 0) {
+        return 0;
+    }
+    valid = parsed.type == TURBO_TRANSPORT_HTTP && parsed.use_tls &&
+            parsed.host && parsed.host[0] != '\0' &&
+            (!parsed.path || strcmp(parsed.path, "/") == 0);
+    free((void *)parsed.host);
+    free((void *)parsed.path);
+    return valid;
+}
+
+static int room_service_register_sfu_node_internal(
+    room_service_app_server_t *server, const char *node_id,
+    const char *control_url, const char *control_token,
+    const char *security_server_name, int update_security_name) {
     room_service_sfu_node_entry_t *entry;
+    int is_new;
+    int target_changed;
 
     if (!server || !node_id || node_id[0] == '\0' || !control_url ||
-        control_url[0] == '\0') {
+        control_url[0] == '\0' ||
+        strlen(node_id) >= TURBO_NODE_ID_MAX ||
+        strlen(control_url) >= ROOM_SERVICE_SFU_CONTROL_URL_MAX ||
+        (control_token &&
+         strlen(control_token) >= ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX) ||
+        (update_security_name &&
+         (!security_server_name || security_server_name[0] == '\0' ||
+          strlen(security_server_name) >=
+              ROOM_SERVICE_SFU_SECURITY_SERVER_NAME_MAX ||
+          !room_service_security_target_url_valid(control_url)))) {
         return -1;
     }
 
     salts_mutex_lock(&server->mutex);
     entry = room_service_find_sfu_node_locked(server, node_id);
-    if (!entry) {
-        if (room_service_ensure_capacity((void **)&server->sfu_nodes,
-                                         &server->sfu_node_capacity,
-                                         sizeof(*server->sfu_nodes),
-                                         server->sfu_node_count + 1) != 0) {
+    is_new = entry == NULL;
+    target_changed =
+        is_new ||
+        strcmp(entry->control_url, control_url) != 0 ||
+        (update_security_name &&
+         strcmp(entry->security_server_name, security_server_name) != 0);
+    if (target_changed &&
+        server->sfu_membership_version == UINT64_MAX) {
+        salts_mutex_unlock(&server->mutex);
+        return -1;
+    }
+
+    if (is_new) {
+        if (room_service_ensure_capacity(
+                (void **)&server->sfu_nodes,
+                &server->sfu_node_capacity,
+                sizeof(*server->sfu_nodes),
+                server->sfu_node_count + 1) != 0) {
             salts_mutex_unlock(&server->mutex);
             return -1;
         }
         entry = &server->sfu_nodes[server->sfu_node_count++];
         memset(entry, 0, sizeof(*entry));
-        room_service_copy_string(entry->node_id, sizeof(entry->node_id), node_id);
+        room_service_copy_string(
+            entry->node_id, sizeof(entry->node_id), node_id);
     }
-    room_service_copy_string(entry->control_url, sizeof(entry->control_url), control_url);
-    room_service_copy_string(entry->control_token, sizeof(entry->control_token),
-                             control_token);
+    room_service_copy_string(
+        entry->control_url, sizeof(entry->control_url), control_url);
+    room_service_copy_string(
+        entry->control_token, sizeof(entry->control_token), control_token);
+    if (update_security_name) {
+        room_service_copy_string(
+            entry->security_server_name,
+            sizeof(entry->security_server_name),
+            security_server_name);
+    }
+    if (target_changed &&
+        room_service_bump_sfu_membership_version_locked(server) != 0) {
+        salts_mutex_unlock(&server->mutex);
+        return -1;
+    }
     salts_mutex_unlock(&server->mutex);
     return 0;
+}
+
+int room_service_app_server_register_sfu_node(
+    room_service_app_server_t *server, const char *node_id,
+    const char *control_url, const char *control_token) {
+    return room_service_register_sfu_node_internal(
+        server, node_id, control_url, control_token, NULL, 0);
+}
+
+int room_service_app_server_register_sfu_node_secure(
+    room_service_app_server_t *server, const char *node_id,
+    const char *control_url, const char *control_token,
+    const char *security_server_name) {
+    return room_service_register_sfu_node_internal(
+        server, node_id, control_url, control_token,
+        security_server_name, 1);
+}
+
+uint64_t room_service_app_server_sfu_membership_version(
+    room_service_app_server_t *server) {
+    uint64_t version = 0U;
+    if (!server) {
+        return 0U;
+    }
+    salts_mutex_lock(&server->mutex);
+    version = server->sfu_membership_version;
+    salts_mutex_unlock(&server->mutex);
+    return version;
 }
 
 int room_service_app_server_has_sfu_node(room_service_app_server_t *server,
@@ -959,13 +1064,15 @@ int room_service_app_server_choose_sfu_node(room_service_app_server_t *server,
     if (server->sfu_node_count > 0) {
         index = server->next_sfu_node_index % server->sfu_node_count;
         server->next_sfu_node_index++;
-        room_service_copy_string(node_id, node_id_size, server->sfu_nodes[index].node_id);
+        room_service_copy_string(
+            node_id, node_id_size, server->sfu_nodes[index].node_id);
         salts_mutex_unlock(&server->mutex);
         return 0;
     }
     salts_mutex_unlock(&server->mutex);
 
-    if (server->config.sfu_control_url && server->config.sfu_control_url[0] != '\0') {
+    if (server->config.sfu_control_url &&
+        server->config.sfu_control_url[0] != '\0') {
         room_service_copy_string(node_id, node_id_size, "default-sfu");
         return 0;
     }
@@ -973,17 +1080,121 @@ int room_service_app_server_choose_sfu_node(room_service_app_server_t *server,
     return -1;
 }
 
+static int room_service_mapping_lookup(
+    const char *mapping, const char *node_id,
+    char *output, size_t output_size) {
+    char *copy;
+    char *cursor;
+    int matches = 0;
+
+    if (!mapping || !node_id || !output || output_size == 0U) {
+        return -1;
+    }
+    output[0] = '\0';
+    copy = (char *)malloc(strlen(mapping) + 1U);
+    if (!copy) {
+        return -1;
+    }
+    strcpy(copy, mapping);
+    cursor = copy;
+    while (cursor && *cursor != '\0') {
+        char *entry = cursor;
+        char *comma = strchr(entry, ',');
+        char *equals;
+        char *key;
+        char *value;
+        if (comma) {
+            *comma = '\0';
+            cursor = comma + 1;
+        } else {
+            cursor = NULL;
+        }
+        entry = room_service_trim_token(entry);
+        if (!entry || entry[0] == '\0') {
+            continue;
+        }
+        equals = strchr(entry, '=');
+        if (!equals) {
+            free(copy);
+            return -1;
+        }
+        *equals = '\0';
+        key = room_service_trim_token(entry);
+        value = room_service_trim_token(equals + 1);
+        if (!key || !value || !key[0] || !value[0]) {
+            free(copy);
+            return -1;
+        }
+        if (strcmp(key, node_id) == 0) {
+            if (++matches > 1 || strlen(value) >= output_size) {
+                free(copy);
+                return -1;
+            }
+            room_service_copy_string(output, output_size, value);
+        }
+    }
+    free(copy);
+    return matches == 1 ? 0 : -1;
+}
+
+static int room_service_security_mapping_covers_membership(
+    room_service_app_server_t *server, const char *mapping) {
+    char *copy;
+    char *cursor;
+
+    if (!mapping) {
+        return 1;
+    }
+    copy = (char *)malloc(strlen(mapping) + 1U);
+    if (!copy) {
+        return 0;
+    }
+    strcpy(copy, mapping);
+    cursor = copy;
+    while (cursor && *cursor != '\0') {
+        char *entry = cursor;
+        char *comma = strchr(entry, ',');
+        char *equals;
+        char *key;
+        if (comma) {
+            *comma = '\0';
+            cursor = comma + 1;
+        } else {
+            cursor = NULL;
+        }
+        entry = room_service_trim_token(entry);
+        if (!entry || !entry[0]) {
+            continue;
+        }
+        equals = strchr(entry, '=');
+        if (!equals) {
+            free(copy);
+            return 0;
+        }
+        *equals = '\0';
+        key = room_service_trim_token(entry);
+        if (!key || !key[0] ||
+            !room_service_app_server_has_sfu_node(server, key)) {
+            free(copy);
+            return 0;
+        }
+    }
+    free(copy);
+    return 1;
+}
+
 static int room_service_register_sfu_nodes_from_config(
-    room_service_app_server_t *server, const char *nodes) {
+    room_service_app_server_t *server, const char *nodes,
+    const char *security_server_names) {
     char *copy;
     char *cursor;
     char *entry;
 
     if (!server || !nodes || nodes[0] == '\0') {
-        return 0;
+        return security_server_names ? -1 : 0;
     }
 
-    copy = (char *)malloc(strlen(nodes) + 1);
+    copy = (char *)malloc(strlen(nodes) + 1U);
     if (!copy) {
         return -1;
     }
@@ -995,6 +1206,9 @@ static int room_service_register_sfu_nodes_from_config(
         char *equals;
         char *node_id;
         char *url;
+        char security_server_name[
+            ROOM_SERVICE_SFU_SECURITY_SERVER_NAME_MAX];
+        int status;
 
         if (comma) {
             *comma = '\0';
@@ -1016,16 +1230,278 @@ static int room_service_register_sfu_nodes_from_config(
         *equals = '\0';
         node_id = room_service_trim_token(entry);
         url = room_service_trim_token(equals + 1);
-        if (!node_id || node_id[0] == '\0' || !url || url[0] == '\0' ||
-            room_service_app_server_register_sfu_node(server, node_id, url,
-                                                      server->config.sfu_control_token) != 0) {
+        if (!node_id || node_id[0] == '\0' || !url || url[0] == '\0') {
+            free(copy);
+            return -1;
+        }
+
+        if (security_server_names) {
+            if (room_service_mapping_lookup(
+                    security_server_names, node_id,
+                    security_server_name,
+                    sizeof(security_server_name)) != 0) {
+                free(copy);
+                return -1;
+            }
+            status = room_service_app_server_register_sfu_node_secure(
+                server, node_id, url, server->config.sfu_control_token,
+                security_server_name);
+        } else {
+            status = room_service_app_server_register_sfu_node(
+                server, node_id, url, server->config.sfu_control_token);
+        }
+        if (status != 0) {
             free(copy);
             return -1;
         }
     }
 
     free(copy);
+    if (security_server_names &&
+        (!room_service_security_mapping_covers_membership(
+             server, security_server_names) ||
+         server->sfu_node_count >
+             (int)TURBO_MEDIA_REVOCATION_FANOUT_MAX_TARGETS)) {
+        return -1;
+    }
     return 0;
+}
+
+static void room_service_clear_revocation_token(
+    room_service_app_server_t *server) {
+    if (!server || !server->revocation_ephemeral_token) {
+        return;
+    }
+    memset(server->revocation_ephemeral_token, 0,
+           strlen(server->revocation_ephemeral_token));
+    free(server->revocation_ephemeral_token);
+    server->revocation_ephemeral_token = NULL;
+}
+
+static const char *room_service_acquire_sfu_revocation_token(
+    void *context, const char *target_id, unsigned int attempt) {
+    room_service_app_server_t *server =
+        (room_service_app_server_t *)context;
+    turbo_media_auth_config_t auth = {0};
+    turbo_media_auth_claims_t claims = {0};
+    int64_t now;
+
+    (void)attempt;
+    if (!server || !target_id || target_id[0] == '\0' ||
+        !room_service_app_server_has_sfu_node(server, target_id) ||
+        !server->config.sfu_auth_key_id ||
+        !server->config.sfu_auth_secret) {
+        return NULL;
+    }
+
+    room_service_clear_revocation_token(server);
+    auth.issuer = server->config.sfu_auth_issuer;
+    auth.active_key_id = server->config.sfu_auth_key_id;
+    auth.active_secret = server->config.sfu_auth_secret;
+    auth.clock_skew_seconds = 0;
+    auth.max_ttl_seconds = server->config.sfu_auth_ttl_seconds;
+    now = (int64_t)time(NULL);
+    claims.subject = server->config.node_id;
+    claims.audience = ROOM_SERVICE_SECURITY_CONTROL_AUDIENCE;
+    claims.scope = ROOM_SERVICE_SECURITY_REVOCATION_SCOPE;
+    claims.issued_at = now;
+    claims.expires_at = now + server->config.sfu_auth_ttl_seconds;
+    server->revocation_ephemeral_token =
+        turbo_media_auth_issue(&auth, &claims);
+    return server->revocation_ephemeral_token;
+}
+
+static void room_service_destroy_revocation_fanout_locked(
+    room_service_app_server_t *server) {
+    if (!server) {
+        return;
+    }
+    turbo_media_revocation_fanout_destroy(server->revocation_fanout);
+    server->revocation_fanout = NULL;
+    turbo_media_revocation_https_destroy(server->revocation_https);
+    server->revocation_https = NULL;
+    server->revocation_membership_version = 0U;
+    room_service_clear_revocation_token(server);
+}
+
+static int room_service_rebuild_revocation_fanout_locked(
+    room_service_app_server_t *server) {
+    turbo_media_revocation_https_target_config_t
+        targets[TURBO_MEDIA_REVOCATION_FANOUT_MAX_TARGETS];
+    turbo_media_revocation_fanout_target_t
+        fanout_targets[TURBO_MEDIA_REVOCATION_FANOUT_MAX_TARGETS];
+    turbo_media_revocation_https_config_t https_config = {0};
+    turbo_media_revocation_fanout_config_t fanout_config = {0};
+    turbo_media_revocation_https_t *https = NULL;
+    turbo_media_revocation_fanout_t *fanout = NULL;
+    uint64_t membership_version;
+    size_t count;
+
+    if (!server || !server->config.sfu_revocation_server_names ||
+        !server->config.sfu_ca_file) {
+        return -1;
+    }
+
+    salts_mutex_lock(&server->mutex);
+    if (server->sfu_node_count <= 0 ||
+        server->sfu_node_count >
+            (int)TURBO_MEDIA_REVOCATION_FANOUT_MAX_TARGETS) {
+        salts_mutex_unlock(&server->mutex);
+        return -1;
+    }
+    count = (size_t)server->sfu_node_count;
+    membership_version = server->sfu_membership_version;
+    for (size_t index = 0U; index < count; ++index) {
+        room_service_sfu_node_entry_t *entry = &server->sfu_nodes[index];
+        if (!entry->security_server_name[0]) {
+            salts_mutex_unlock(&server->mutex);
+            return -1;
+        }
+        targets[index].target_id = entry->node_id;
+        targets[index].base_url = entry->control_url;
+        targets[index].ca_file = server->config.sfu_ca_file;
+        targets[index].server_name = entry->security_server_name;
+    }
+
+    https_config.timeout_ms =
+        (unsigned int)server->config.sfu_revocation_timeout_ms;
+    https_config.acquire_token =
+        room_service_acquire_sfu_revocation_token;
+    https_config.token_context = server;
+    https = turbo_media_revocation_https_create(
+        &https_config, targets, count);
+    if (!https) {
+        salts_mutex_unlock(&server->mutex);
+        return -1;
+    }
+
+    for (size_t index = 0U; index < count; ++index) {
+        if (turbo_media_revocation_https_get_fanout_target(
+                https, index, &fanout_targets[index]) != 0) {
+            turbo_media_revocation_https_destroy(https);
+            salts_mutex_unlock(&server->mutex);
+            return -1;
+        }
+    }
+    fanout_config.max_attempts =
+        (unsigned int)server->config.sfu_revocation_max_attempts;
+    fanout_config.send_snapshot =
+        turbo_media_revocation_https_send_snapshot;
+    fanout_config.send_revoke =
+        turbo_media_revocation_https_send_revoke;
+    fanout_config.transport_context = https;
+    fanout = turbo_media_revocation_fanout_create(
+        &fanout_config, fanout_targets, count);
+    if (!fanout) {
+        turbo_media_revocation_https_destroy(https);
+        salts_mutex_unlock(&server->mutex);
+        return -1;
+    }
+
+    room_service_destroy_revocation_fanout_locked(server);
+    server->revocation_https = https;
+    server->revocation_fanout = fanout;
+    server->revocation_membership_version = membership_version;
+    salts_mutex_unlock(&server->mutex);
+    return 0;
+}
+
+static int room_service_ensure_revocation_fanout_locked(
+    room_service_app_server_t *server, int *rebuilt) {
+    uint64_t membership_version;
+
+    if (rebuilt) {
+        *rebuilt = 0;
+    }
+    if (!server || !server->config.sfu_revocation_server_names) {
+        return -1;
+    }
+    membership_version =
+        room_service_app_server_sfu_membership_version(server);
+    if (server->revocation_fanout &&
+        server->revocation_https &&
+        server->revocation_membership_version == membership_version) {
+        return 0;
+    }
+    if (room_service_rebuild_revocation_fanout_locked(server) != 0) {
+        return -1;
+    }
+    if (rebuilt) {
+        *rebuilt = 1;
+    }
+    return 0;
+}
+
+int room_service_app_server_publish_sfu_revocation_snapshot(
+    room_service_app_server_t *server, uint64_t epoch,
+    uint64_t sequence, const char *const *sha256_hex,
+    size_t count, turbo_media_revocation_fanout_report_t *report) {
+    int result;
+
+    if (!server || !report) {
+        return -1;
+    }
+    salts_mutex_lock(&server->revocation_mutex);
+    if (room_service_ensure_revocation_fanout_locked(
+            server, NULL) != 0) {
+        salts_mutex_unlock(&server->revocation_mutex);
+        return -1;
+    }
+    result = turbo_media_revocation_fanout_publish_snapshot(
+        server->revocation_fanout, epoch, sequence,
+        sha256_hex, count, report);
+    room_service_clear_revocation_token(server);
+    salts_mutex_unlock(&server->revocation_mutex);
+    return result;
+}
+
+static int room_service_covering_snapshot_contains_digest(
+    const char *sha256_hex, const char *const *covering_sha256_hex,
+    size_t covering_count) {
+    if (!sha256_hex || !covering_sha256_hex || covering_count == 0U) {
+        return 0;
+    }
+    for (size_t index = 0U; index < covering_count; ++index) {
+        if (covering_sha256_hex[index] &&
+            strcmp(covering_sha256_hex[index], sha256_hex) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int room_service_app_server_publish_sfu_revocation(
+    room_service_app_server_t *server, uint64_t epoch,
+    uint64_t sequence, const char *sha256_hex,
+    const char *const *covering_sha256_hex,
+    size_t covering_count,
+    turbo_media_revocation_fanout_report_t *report) {
+    int rebuilt = 0;
+    int result;
+
+    if (!server || !report ||
+        !room_service_covering_snapshot_contains_digest(
+            sha256_hex, covering_sha256_hex, covering_count)) {
+        return -1;
+    }
+    salts_mutex_lock(&server->revocation_mutex);
+    if (room_service_ensure_revocation_fanout_locked(
+            server, &rebuilt) != 0) {
+        salts_mutex_unlock(&server->revocation_mutex);
+        return -1;
+    }
+    if (rebuilt) {
+        result = turbo_media_revocation_fanout_publish_snapshot(
+            server->revocation_fanout, epoch, sequence,
+            covering_sha256_hex, covering_count, report);
+    } else {
+        result = turbo_media_revocation_fanout_publish_revoke(
+            server->revocation_fanout, epoch, sequence, sha256_hex,
+            covering_sha256_hex, covering_count, report);
+    }
+    room_service_clear_revocation_token(server);
+    salts_mutex_unlock(&server->revocation_mutex);
+    return result;
 }
 
 static int room_service_copy_sfu_route_for_room(room_service_app_server_t *server,
@@ -1975,7 +2451,9 @@ room_service_app_server_t *room_service_app_server_create(
         free(server);
         return NULL;
     }
-    if (room_service_register_sfu_nodes_from_config(server, config->sfu_nodes) != 0) {
+    if (room_service_register_sfu_nodes_from_config(
+            server, config->sfu_nodes,
+            config->sfu_revocation_server_names) != 0) {
         turbo_room_service_destroy(server->service);
         free(server->sfu_nodes);
         salts_mutex_destroy(&server->mutex);
@@ -2362,6 +2840,7 @@ room_service_app_server_t *room_service_app_server_create(
     }
 #endif
 
+    salts_mutex_init(&server->revocation_mutex);
     return server;
 }
 
@@ -2541,6 +3020,10 @@ int room_service_app_server_destroy(room_service_app_server_t *server) {
     if (server->service) {
         turbo_room_service_destroy(server->service);
     }
+    salts_mutex_lock(&server->revocation_mutex);
+    room_service_destroy_revocation_fanout_locked(server);
+    salts_mutex_unlock(&server->revocation_mutex);
+    salts_mutex_destroy(&server->revocation_mutex);
     free(server->sfu_nodes);
     free(server->call_center_events);
     free(server->conference_policies);

@@ -1,6 +1,7 @@
 #include "room_service/config.h"
 #include "../../config_toml.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_revocation_fanout.h"
 #include "platform.h"
 #include <salts/clock.h>
 #include <ctype.h>
@@ -36,6 +37,7 @@ typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_AUTH_REVOKED_TOKEN_SHA256,
     ROOM_CONFIG_STRING_SFU_CONTROL_URL,
     ROOM_CONFIG_STRING_SFU_NODES,
+    ROOM_CONFIG_STRING_SFU_REVOCATION_SERVER_NAMES,
     ROOM_CONFIG_STRING_SFU_CONTROL_TOKEN,
     ROOM_CONFIG_STRING_SFU_CA_FILE,
     ROOM_CONFIG_STRING_SFU_AUTH_ISSUER,
@@ -284,7 +286,11 @@ void room_service_app_config_init(room_service_app_config_t *config) {
         TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
     config->sfu_control_url = NULL;
     config->sfu_nodes = room_service_env_value("TURBO_ROOM_SERVICE_SFU_NODES");
-    config->sfu_control_token = room_service_env_value("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN");
+    config->sfu_revocation_server_names =
+        room_service_env_value(
+            "TURBO_ROOM_SERVICE_SFU_REVOCATION_SERVER_NAMES");
+    config->sfu_control_token =
+        room_service_env_value("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN");
     config->sfu_ca_file = room_service_env_value("TURBO_ROOM_SERVICE_SFU_CA_FILE");
     config->sfu_auth_issuer = "turbomedia";
     config->sfu_auth_key_id =
@@ -292,6 +298,8 @@ void room_service_app_config_init(room_service_app_config_t *config) {
     config->sfu_auth_secret =
         room_service_env_value("TURBO_ROOM_SERVICE_SFU_AUTH_SECRET");
     config->sfu_auth_ttl_seconds = 60;
+    config->sfu_revocation_timeout_ms = 3000;
+    config->sfu_revocation_max_attempts = 3;
     config->max_rooms = 1024;
     config->auto_create_rooms = 1;
     config->dry_run = 0;
@@ -382,6 +390,8 @@ static int room_service_config_clone_strings(
                       auth_revoked_token_sha256);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_CONTROL_URL, sfu_control_url);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_NODES, sfu_nodes);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_REVOCATION_SERVER_NAMES,
+                      sfu_revocation_server_names);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_CONTROL_TOKEN, sfu_control_token);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_CA_FILE, sfu_ca_file);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_ISSUER, sfu_auth_issuer);
@@ -556,7 +566,8 @@ static int room_service_config_apply_sfu(
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
-        "control_url", "nodes", "control_token", "ca_file"
+        "control_url", "nodes", "revocation_server_names",
+        "control_token", "ca_file"
     };
 
     if (!table) {
@@ -570,6 +581,10 @@ static int room_service_config_apply_sfu(
         rtc_app_toml_apply_string(table, "sfu", "nodes", storage,
                                   ROOM_CONFIG_STRING_SFU_NODES,
                                   &config->sfu_nodes) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "sfu", "revocation_server_names", storage,
+            ROOM_CONFIG_STRING_SFU_REVOCATION_SERVER_NAMES,
+            &config->sfu_revocation_server_names) != 0 ||
         rtc_app_toml_apply_string(table, "sfu", "control_token", storage,
                                   ROOM_CONFIG_STRING_SFU_CONTROL_TOKEN,
                                   &config->sfu_control_token) != 0 ||
@@ -586,7 +601,8 @@ static int room_service_config_apply_sfu_auth(
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
-        "issuer", "key_id", "secret", "ttl_seconds"
+        "issuer", "key_id", "secret", "ttl_seconds",
+        "revocation_timeout_ms", "revocation_max_attempts"
     };
 
     if (!table) {
@@ -605,7 +621,13 @@ static int room_service_config_apply_sfu_auth(
                                   ROOM_CONFIG_STRING_SFU_AUTH_SECRET,
                                   &config->sfu_auth_secret) != 0 ||
         rtc_app_toml_apply_int(table, "sfu_auth", "ttl_seconds",
-                               &config->sfu_auth_ttl_seconds) != 0) {
+                               &config->sfu_auth_ttl_seconds) != 0 ||
+        rtc_app_toml_apply_int(
+            table, "sfu_auth", "revocation_timeout_ms",
+            &config->sfu_revocation_timeout_ms) != 0 ||
+        rtc_app_toml_apply_int(
+            table, "sfu_auth", "revocation_max_attempts",
+            &config->sfu_revocation_max_attempts) != 0) {
         return -1;
     }
     return 0;
@@ -1105,6 +1127,11 @@ void room_service_app_config_apply_environment(
     if (value) {
         config->sfu_nodes = value;
     }
+    value = room_service_env_value(
+        "TURBO_ROOM_SERVICE_SFU_REVOCATION_SERVER_NAMES");
+    if (value) {
+        config->sfu_revocation_server_names = value;
+    }
     value = room_service_env_value("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN");
     if (value) {
         config->sfu_control_token = value;
@@ -1128,6 +1155,12 @@ void room_service_app_config_apply_environment(
     config->sfu_auth_ttl_seconds = room_service_env_int(
         "TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS",
         config->sfu_auth_ttl_seconds);
+    config->sfu_revocation_timeout_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_SFU_REVOCATION_TIMEOUT_MS",
+        config->sfu_revocation_timeout_ms);
+    config->sfu_revocation_max_attempts = room_service_env_int(
+        "TURBO_ROOM_SERVICE_SFU_REVOCATION_MAX_ATTEMPTS",
+        config->sfu_revocation_max_attempts);
     value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_HOST");
     if (value) config->iris_control_host = value;
     config->iris_control_port = room_service_env_int(
@@ -1273,6 +1306,8 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
     if ((config->control_token && config->control_token[0] == '\0') ||
         (config->sfu_control_url && config->sfu_control_url[0] == '\0') ||
         (config->sfu_nodes && config->sfu_nodes[0] == '\0') ||
+        (config->sfu_revocation_server_names &&
+         config->sfu_revocation_server_names[0] == '\0') ||
         (config->sfu_control_token && config->sfu_control_token[0] == '\0') ||
         (config->sfu_ca_file && config->sfu_ca_file[0] == '\0')) {
         return -1;
@@ -1422,7 +1457,21 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
          !config->tls_key_file || config->tls_key_file[0] == '\0')) {
         return -1;
     }
-    if (!room_service_sfu_nodes_syntax_valid(config->sfu_nodes)) {
+    if (!room_service_sfu_nodes_syntax_valid(config->sfu_nodes) ||
+        !room_service_sfu_nodes_syntax_valid(
+            config->sfu_revocation_server_names) ||
+        config->sfu_revocation_timeout_ms < 1 ||
+        config->sfu_revocation_timeout_ms > 30000 ||
+        config->sfu_revocation_max_attempts < 1 ||
+        config->sfu_revocation_max_attempts >
+            (int)TURBO_MEDIA_REVOCATION_FANOUT_MAX_ATTEMPTS) {
+        return -1;
+    }
+    if (config->sfu_revocation_server_names &&
+        (!config->sfu_nodes || !config->sfu_ca_file ||
+         !config->sfu_auth_key_id || !config->sfu_auth_secret ||
+         (int64_t)config->sfu_auth_ttl_seconds * INT64_C(1000) <=
+             (int64_t)config->sfu_revocation_timeout_ms)) {
         return -1;
     }
     if (config->control_ws_bind_port > 0) {

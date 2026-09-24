@@ -58,6 +58,7 @@ spec("room service TOML configuration") {
             "[sfu]\n"
             "control_url = \"https://sfu-a.internal:19190\"\n"
             "nodes = \"sfu-a=https://sfu-a.internal:19190,sfu-b=https://sfu-b.internal:19191\"\n"
+            "revocation_server_names = \"sfu-a=sfu-a.internal,sfu-b=sfu-b.internal\"\n"
             "control_token = \"sfu-token\"\n"
             "ca_file = \"internal-ca.pem\"\n"
             "[sfu_auth]\n"
@@ -65,6 +66,8 @@ spec("room service TOML configuration") {
             "key_id = \"sfu-key-2026-07\"\n"
             "secret = \"sfu-command-secret-at-least-32-bytes\"\n"
             "ttl_seconds = 45\n"
+            "revocation_timeout_ms = 2500\n"
+            "revocation_max_attempts = 4\n"
             "[capacity]\n"
             "max_rooms = 512\n"
             "[rooms]\n"
@@ -147,10 +150,15 @@ spec("room service TOML configuration") {
                 config.sfu_nodes,
                 "sfu-a=https://sfu-a.internal:19190,sfu-b=https://sfu-b.internal:19191");
             check_equal(config.sfu_control_token, "sfu-token");
+            check_equal(
+                config.sfu_revocation_server_names,
+                "sfu-a=sfu-a.internal,sfu-b=sfu-b.internal");
             check_equal(config.sfu_ca_file, "internal-ca.pem");
             check_equal(config.sfu_auth_issuer, "sfu-command-issuer");
             check_equal(config.sfu_auth_key_id, "sfu-key-2026-07");
             check_equal(config.sfu_auth_ttl_seconds, 45);
+            check_equal(config.sfu_revocation_timeout_ms, 2500);
+            check_equal(config.sfu_revocation_max_attempts, 4);
             check_equal(config.max_rooms, 512);
             check_false(config.auto_create_rooms);
             check_true(config.dry_run);
@@ -216,6 +224,42 @@ spec("room service TOML configuration") {
         }
         room_service_app_config_cleanup(&config);
         remove_toml(path);
+    }
+
+    it("requires complete bounded SFU revocation fanout metadata") {
+        room_service_app_config_t config;
+
+        room_service_app_config_init(&config);
+        config.sfu_revocation_server_names = "sfu-a=sfu-a.internal";
+        check_equal(room_service_app_config_validate(&config), -1);
+
+        config.sfu_nodes = "sfu-a=https://sfu-a.internal:9190";
+        check_equal(room_service_app_config_validate(&config), -1);
+
+        config.sfu_ca_file = "internal-ca.pem";
+        check_equal(room_service_app_config_validate(&config), -1);
+
+        config.sfu_auth_key_id = "sfu-security-2026-09";
+        config.sfu_auth_secret =
+            "sfu-security-secret-at-least-32-bytes";
+        check_equal(room_service_app_config_validate(&config), 0);
+
+        config.sfu_revocation_timeout_ms = 0;
+        check_equal(room_service_app_config_validate(&config), -1);
+        config.sfu_revocation_timeout_ms = 3000;
+
+        config.sfu_revocation_max_attempts = 9;
+        check_equal(room_service_app_config_validate(&config), -1);
+        config.sfu_revocation_max_attempts = 8;
+        check_equal(room_service_app_config_validate(&config), 0);
+
+        config.sfu_auth_ttl_seconds = 3;
+        config.sfu_revocation_timeout_ms = 3000;
+        check_equal(room_service_app_config_validate(&config), -1);
+        config.sfu_auth_ttl_seconds = 4;
+        check_equal(room_service_app_config_validate(&config), 0);
+
+        room_service_app_config_cleanup(&config);
     }
 
     it("loads the shipped example") {

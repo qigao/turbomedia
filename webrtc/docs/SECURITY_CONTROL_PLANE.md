@@ -171,6 +171,31 @@ The transport callback is intentionally injected. Production adapters must use t
 security-control endpoints with short-lived `turbomedia-security-control` /
 `security.revocation.write` credentials. The fan-out core never stores those credentials.
 
+### Production SFU target and token wiring
+
+Room Service is the source of truth for the SFU membership it already uses for room placement and
+control routing. Revocation fan-out does not maintain a second SFU URL registry.
+
+When `sfu.revocation_server_names` is configured, each existing `sfu.nodes` member must have exactly
+one explicit TLS server-name mapping. The target URL remains the existing membership URL, the CA remains
+the existing `sfu.ca_file`, and the target set is bounded by the 64-node fan-out limit. Plain HTTP,
+non-root target URLs, missing CA material, missing mappings, duplicate mappings, or membership that
+exceeds the bound fail closed.
+
+Room Service uses the existing `[sfu_auth]` issuer/key/secret as the security-control signer. For every
+delivery attempt it creates a short-lived bearer with audience `turbomedia-security-control` and scope
+`security.revocation.write`; the HTTPS adapter borrows that bearer for one attempt and never retains it.
+Room Service zeroes and frees the transient bearer after the publish operation. The configured token TTL
+must exceed one fan-out request deadline.
+
+SFU membership has a local monotonic version. A node add or target URL/TLS-name change invalidates the
+current adapter/coordinator. The next publish rebuilds from the same Room Service membership. If the next
+canonical update is a revoke event, Room Service sends the caller-provided covering snapshot at that
+version to the rebuilt target set instead of sending an incremental event to a newly UNKNOWN node.
+
+This wiring does not make Room Service a second revocation source: canonical epoch/sequence and covering
+snapshot payloads remain caller-supplied facts from the shared security control plane.
+
 ### Authorization
 
 The signed-token verifier computes the compact-token SHA-256 and invokes the configured dynamic revocation
@@ -211,7 +236,8 @@ other credential material are not stored in the revocation state and must not ap
 
 The following are intentionally not claimed complete by the dynamic-revocation slice:
 
-- concrete authenticated HTTPS fan-out adapter / target discovery over the bounded coordinator;
+- signaling-node production membership/source wiring into the shared fan-out path;
+- shared-control-plane producer integration for canonical revocation publication;
 - edge admission before TLS/WebSocket application allocation;
 - trusted-proxy allowlist and spoofed-header negative tests;
 - tenant/subject/IP/connection/request/media-resource quota model;
