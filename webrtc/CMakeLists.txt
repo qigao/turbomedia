@@ -96,12 +96,23 @@ if(TURBO_MEDIA_IS_SERVER)
   target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
 endif()
 
+add_library(turbo_media_signaling_source_identity STATIC
+  src/signaling/source_identity.c)
+target_include_directories(
+  turbo_media_signaling_source_identity
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/signaling)
+target_link_libraries(
+  turbo_media_signaling_source_identity
+  PUBLIC Salts::CHTTP)
+set_target_properties(
+  turbo_media_signaling_source_identity
+  PROPERTIES FOLDER "turbomedia/components")
+
 add_library(turbo_media_webrtc_signaling SHARED)
 turbo_media_configure_component(turbo_media_webrtc_signaling WebRTCSignaling)
 target_sources(
   turbo_media_webrtc_signaling
   PRIVATE src/signaling/webrtc_signaling.c
-          src/signaling/source_identity.c
           src/signaling/http_api.c)
 target_include_directories(
   turbo_media_webrtc_signaling
@@ -111,7 +122,9 @@ target_include_directories(
 target_link_libraries(
   turbo_media_webrtc_signaling
   PUBLIC Salts::CNet Salts::CHTTP
-  PRIVATE turbo_media_auth Salts::JsonParser SaltsNet::Crypto Salts::Core Salts::CSTL)
+  PRIVATE turbo_media_auth
+          turbo_media_signaling_source_identity
+          Salts::JsonParser SaltsNet::Crypto Salts::Core Salts::CSTL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 
