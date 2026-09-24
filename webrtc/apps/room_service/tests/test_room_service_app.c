@@ -1625,6 +1625,177 @@ void test_room_service_facade_join_publish_and_subscribe(void) {
   room_service_app_server_destroy(room_server);
 }
 
+void test_room_service_revocation_fanout_tracks_live_sfu_membership(void) {
+  static const char digest_zero[] =
+      "0000000000000000000000000000000000000000000000000000000000000000";
+  static const char digest_one[] =
+      "1111111111111111111111111111111111111111111111111111111111111111";
+  const char *covering_one[] = {digest_zero};
+  const char *covering_two[] = {digest_zero, digest_one};
+  sfu_node_app_config_t sfu_a_config;
+  sfu_node_app_config_t sfu_b_config;
+  sfu_node_app_config_t sfu_c_config;
+  room_service_app_config_t room_config;
+  sfu_node_app_server_t *sfu_a = NULL;
+  sfu_node_app_server_t *sfu_b = NULL;
+  sfu_node_app_server_t *sfu_c = NULL;
+  room_service_app_server_t *room = NULL;
+  turbo_media_revocation_fanout_report_t report;
+  int synchronized = 0;
+  uint64_t epoch = 0U;
+  uint64_t sequence = 0U;
+  size_t count = 0U;
+  uint64_t membership_before;
+
+  sfu_node_app_config_init(&sfu_a_config);
+  sfu_a_config.bind_host = "127.0.0.1";
+  sfu_a_config.bind_port = 19440;
+  sfu_a_config.node_id = "sfu-rev-a";
+  sfu_a_config.use_tls = 1;
+  sfu_a_config.tls_cert_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
+  sfu_a_config.tls_key_file = ROOM_SERVICE_TEST_TLS_KEY_PATH;
+  sfu_a_config.auth_issuer = "turbomedia";
+  sfu_a_config.auth_active_key_id = "sfu-security-2026-09";
+  sfu_a_config.auth_active_secret =
+      "sfu-security-secret-at-least-32-bytes";
+  sfu_a_config.auth_dynamic_revocation_capacity = 8;
+  sfu_a_config.auth_max_ttl_seconds = 120;
+  sfu_a_config.ice_allow_loopback = 1;
+
+  sfu_b_config = sfu_a_config;
+  sfu_b_config.bind_port = 19441;
+  sfu_b_config.node_id = "sfu-rev-b";
+  sfu_c_config = sfu_a_config;
+  sfu_c_config.bind_port = 19442;
+  sfu_c_config.node_id = "sfu-rev-c";
+
+  sfu_a = sfu_node_app_server_create(&sfu_a_config);
+  sfu_b = sfu_node_app_server_create(&sfu_b_config);
+  check_not_null(sfu_a);
+  check_not_null(sfu_b);
+  check_equal(sfu_node_app_server_start(sfu_a), 0);
+  check_equal(sfu_node_app_server_start(sfu_b), 0);
+  check_equal(wait_for_https_status_ok(
+                  "https://127.0.0.1:19440", "/health",
+                  ROOM_SERVICE_TEST_TLS_CERT_PATH, 30, 100), 0);
+  check_equal(wait_for_https_status_ok(
+                  "https://127.0.0.1:19441", "/health",
+                  ROOM_SERVICE_TEST_TLS_CERT_PATH, 30, 100), 0);
+
+  room_service_app_config_init(&room_config);
+  room_config.sfu_nodes =
+      "sfu-rev-a=https://127.0.0.1:19440,"
+      "sfu-rev-b=https://127.0.0.1:19441";
+  room_config.sfu_revocation_server_names =
+      "sfu-rev-a=localhost,sfu-rev-b=localhost";
+  room_config.sfu_ca_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
+  room_config.sfu_auth_issuer = "turbomedia";
+  room_config.sfu_auth_key_id = "sfu-security-2026-09";
+  room_config.sfu_auth_secret =
+      "sfu-security-secret-at-least-32-bytes";
+  room_config.sfu_auth_ttl_seconds = 30;
+  room_config.sfu_revocation_timeout_ms = 3000;
+  room_config.sfu_revocation_max_attempts = 2;
+
+  room = room_service_app_server_create(&room_config);
+  check_not_null(room);
+  membership_before =
+      room_service_app_server_sfu_membership_version(room);
+  check_true(membership_before >= 2U);
+
+  memset(&report, 0, sizeof(report));
+  check_equal(room_service_app_server_publish_sfu_revocation_snapshot(
+                  room, 1U, 0U, NULL, 0U, &report), 0);
+  check_equal((int)report.target_count, 2);
+  check_equal((int)report.synchronized_count, 2);
+
+  memset(&report, 0, sizeof(report));
+  check_equal(room_service_app_server_publish_sfu_revocation(
+                  room, 1U, 1U, digest_zero,
+                  covering_one, 1U, &report), 0);
+  check_equal((int)report.target_count, 2);
+  check_equal((int)report.synchronized_count, 2);
+
+  check_equal(sfu_node_app_server_get_revocation_status(
+                  sfu_a, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)epoch, 1);
+  check_equal((int)sequence, 1);
+  check_equal((int)count, 1);
+  check_equal(sfu_node_app_server_get_revocation_status(
+                  sfu_b, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 1);
+  check_equal((int)count, 1);
+
+  sfu_c = sfu_node_app_server_create(&sfu_c_config);
+  check_not_null(sfu_c);
+  check_equal(sfu_node_app_server_start(sfu_c), 0);
+  check_equal(wait_for_https_status_ok(
+                  "https://127.0.0.1:19442", "/health",
+                  ROOM_SERVICE_TEST_TLS_CERT_PATH, 30, 100), 0);
+  check_equal(room_service_app_server_register_sfu_node_secure(
+                  room, "sfu-rev-c", "https://127.0.0.1:19442",
+                  NULL, "localhost"), 0);
+  check_true(room_service_app_server_sfu_membership_version(room) >
+             membership_before);
+
+  /*
+   * The target set changed. A malformed covering snapshot must be rejected
+   * before rebuilding/sending anything, so existing targets stay at seq=1
+   * and the newly added target stays UNKNOWN.
+   */
+  memset(&report, 0, sizeof(report));
+  check_equal(room_service_app_server_publish_sfu_revocation(
+                  room, 1U, 2U, digest_one,
+                  covering_one, 1U, &report), -1);
+  check_equal(sfu_node_app_server_get_revocation_status(
+                  sfu_a, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 1);
+  check_equal((int)count, 1);
+  check_equal(sfu_node_app_server_get_revocation_status(
+                  sfu_c, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+
+  /*
+   * With a valid covering snapshot, sequence-2 rebuilds the adapter and
+   * reconciles all three targets instead of sending an incremental event to
+   * the newly UNKNOWN node.
+   */
+  memset(&report, 0, sizeof(report));
+  check_equal(room_service_app_server_publish_sfu_revocation(
+                  room, 1U, 2U, digest_one,
+                  covering_two, 2U, &report), 0);
+  check_equal((int)report.target_count, 3);
+  check_equal((int)report.synchronized_count, 3);
+
+  check_equal(sfu_node_app_server_get_revocation_status(
+                  sfu_a, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 2);
+  check_equal((int)count, 2);
+  check_equal(sfu_node_app_server_get_revocation_status(
+                  sfu_b, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 2);
+  check_equal((int)count, 2);
+  check_equal(sfu_node_app_server_get_revocation_status(
+                  sfu_c, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)epoch, 1);
+  check_equal((int)sequence, 2);
+  check_equal((int)count, 2);
+
+  check_equal(room_service_app_server_destroy(room), 0);
+  sfu_node_app_server_stop(sfu_c);
+  sfu_node_app_server_destroy(sfu_c);
+  sfu_node_app_server_stop(sfu_b);
+  sfu_node_app_server_destroy(sfu_b);
+  sfu_node_app_server_stop(sfu_a);
+  sfu_node_app_server_destroy(sfu_a);
+}
+
 void test_room_service_routes_rooms_to_registered_sfu_nodes(void) {
   sfu_node_app_config_t sfu_a_config;
   sfu_node_app_config_t sfu_b_config;
@@ -1791,6 +1962,12 @@ void test_room_service_config_reads_control_tokens_from_env(void) {
   char *saved_sfu_control_token =
       app_test_save_env("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN");
   char *saved_sfu_nodes = app_test_save_env("TURBO_ROOM_SERVICE_SFU_NODES");
+  char *saved_sfu_revocation_names =
+      app_test_save_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_SERVER_NAMES");
+  char *saved_sfu_revocation_timeout =
+      app_test_save_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_TIMEOUT_MS");
+  char *saved_sfu_revocation_attempts =
+      app_test_save_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_MAX_ATTEMPTS");
   char *saved_use_tls = app_test_save_env("TURBO_ROOM_SERVICE_USE_TLS");
   char *saved_tls_cert =
       app_test_save_env("TURBO_ROOM_SERVICE_TLS_CERT_FILE");
@@ -1812,7 +1989,11 @@ void test_room_service_config_reads_control_tokens_from_env(void) {
   app_test_set_env("TURBO_ROOM_SERVICE_CONTROL_TOKEN", "env-room-control-token");
   app_test_set_env("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN", "env-sfu-control-token");
   app_test_set_env("TURBO_ROOM_SERVICE_SFU_NODES",
-                   "node-a=http://127.0.0.1:19423,node-b=http://127.0.0.1:19424");
+                   "node-a=https://127.0.0.1:19423,node-b=https://127.0.0.1:19424");
+  app_test_set_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_SERVER_NAMES",
+                   "node-a=localhost,node-b=localhost");
+  app_test_set_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_TIMEOUT_MS", "2500");
+  app_test_set_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_MAX_ATTEMPTS", "4");
   app_test_set_env("TURBO_ROOM_SERVICE_USE_TLS", "true");
   app_test_set_env("TURBO_ROOM_SERVICE_TLS_CERT_FILE",
                    ROOM_SERVICE_TEST_TLS_CERT_PATH);
@@ -1834,7 +2015,11 @@ void test_room_service_config_reads_control_tokens_from_env(void) {
   room_service_app_config_apply_environment(&room_config);
   check_equal(room_config.control_token, "env-room-control-token");
   check_equal(room_config.sfu_control_token, "env-sfu-control-token");
-  check_equal(room_config.sfu_nodes, "node-a=http://127.0.0.1:19423,node-b=http://127.0.0.1:19424");
+  check_equal(room_config.sfu_nodes, "node-a=https://127.0.0.1:19423,node-b=https://127.0.0.1:19424");
+  check_equal(room_config.sfu_revocation_server_names,
+              "node-a=localhost,node-b=localhost");
+  check_equal((int)(room_config.sfu_revocation_timeout_ms), (int)(2500));
+  check_equal((int)(room_config.sfu_revocation_max_attempts), (int)(4));
   check_equal((int)(room_config.use_tls), (int)(1));
   check_equal(room_config.tls_cert_file, ROOM_SERVICE_TEST_TLS_CERT_PATH);
   check_equal(room_config.tls_key_file, ROOM_SERVICE_TEST_TLS_KEY_PATH);
@@ -1849,6 +2034,12 @@ void test_room_service_config_reads_control_tokens_from_env(void) {
   app_test_restore_env("TURBO_ROOM_SERVICE_CONTROL_TOKEN", saved_control_token);
   app_test_restore_env("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN", saved_sfu_control_token);
   app_test_restore_env("TURBO_ROOM_SERVICE_SFU_NODES", saved_sfu_nodes);
+  app_test_restore_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_SERVER_NAMES",
+                       saved_sfu_revocation_names);
+  app_test_restore_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_TIMEOUT_MS",
+                       saved_sfu_revocation_timeout);
+  app_test_restore_env("TURBO_ROOM_SERVICE_SFU_REVOCATION_MAX_ATTEMPTS",
+                       saved_sfu_revocation_attempts);
   app_test_restore_env("TURBO_ROOM_SERVICE_USE_TLS", saved_use_tls);
   app_test_restore_env("TURBO_ROOM_SERVICE_TLS_CERT_FILE", saved_tls_cert);
   app_test_restore_env("TURBO_ROOM_SERVICE_TLS_KEY_FILE", saved_tls_key);
@@ -5034,6 +5225,7 @@ spec("test_room_service_app") {
   it("test_room_service_config_reads_control_tokens_from_env") { test_room_service_config_reads_control_tokens_from_env(); };
   it("test_room_service_http_control_token_protects_modifying_commands") { test_room_service_http_control_token_protects_modifying_commands(); };
   it("test_room_service_facade_join_publish_and_subscribe") { test_room_service_facade_join_publish_and_subscribe(); };
+  it("test_room_service_revocation_fanout_tracks_live_sfu_membership") { test_room_service_revocation_fanout_tracks_live_sfu_membership(); };
   it("test_room_service_routes_rooms_to_registered_sfu_nodes") { test_room_service_routes_rooms_to_registered_sfu_nodes(); };
   it("test_room_sync_http_warning_paths_surface_skipped_replay_state") { test_room_sync_http_warning_paths_surface_skipped_replay_state(); };
   it("test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic") { test_room_sync_http_failed_replay_is_reflected_in_room_sync_diagnostic(); };

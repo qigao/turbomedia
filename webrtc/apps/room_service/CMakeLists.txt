@@ -138,6 +138,7 @@ set(ROOM_SERVICE_LIBS
     TurboMedia::Transport
     Salts::CHTTP
     turbo_media_auth
+    turbo_media_revocation_https
     SaltsNet::Crypto
     OpenSSL::Crypto
     Salts::Core
@@ -249,6 +250,7 @@ target_link_libraries(test_room_service_app
     TurboMedia::Transport
     Salts::CHTTP
     turbo_media_auth
+    turbo_media_revocation_https
     SaltsNet::Crypto
     OpenSSL::Crypto
     Salts::Core

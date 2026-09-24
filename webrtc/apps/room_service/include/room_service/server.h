@@ -7,6 +7,7 @@
 
 #include "room_service/config.h"
 #include "turbo_room_service.h"
+#include "turbo_media_revocation_fanout.h"
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -236,6 +237,46 @@ int room_service_app_server_register_sfu_node(room_service_app_server_t *server,
                                               const char *node_id,
                                               const char *control_url,
                                               const char *control_token);
+
+/**
+ * Register/update one SFU membership entry with explicit TLS identity metadata
+ * for security-control revocation fan-out. This is the same SFU membership
+ * used for room routing; no parallel node registry is created.
+ */
+int room_service_app_server_register_sfu_node_secure(
+    room_service_app_server_t *server,
+    const char *node_id,
+    const char *control_url,
+    const char *control_token,
+    const char *security_server_name);
+
+/**
+ * Publish a canonical revocation snapshot to the current SFU membership.
+ */
+int room_service_app_server_publish_sfu_revocation_snapshot(
+    room_service_app_server_t *server,
+    uint64_t epoch,
+    uint64_t sequence,
+    const char *const *sha256_hex,
+    size_t count,
+    turbo_media_revocation_fanout_report_t *report);
+
+/**
+ * Publish one exact-next revoke. If SFU membership changed since the previous
+ * publish, the implementation reconciles the rebuilt target set using the
+ * caller-supplied covering snapshot instead of sending an incremental event.
+ */
+int room_service_app_server_publish_sfu_revocation(
+    room_service_app_server_t *server,
+    uint64_t epoch,
+    uint64_t sequence,
+    const char *sha256_hex,
+    const char *const *covering_sha256_hex,
+    size_t covering_count,
+    turbo_media_revocation_fanout_report_t *report);
+
+uint64_t room_service_app_server_sfu_membership_version(
+    room_service_app_server_t *server);
 int room_service_app_server_has_sfu_node(room_service_app_server_t *server,
                                          const char *node_id);
 int room_service_app_server_choose_sfu_node(room_service_app_server_t *server,

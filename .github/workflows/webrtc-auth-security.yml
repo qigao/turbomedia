@@ -16,6 +16,14 @@ on:
       - "webrtc/apps/sfu_node/src/server.c"
       - "webrtc/apps/sfu_node/tests/test_sfu_node_config.c"
       - "webrtc/apps/sfu_node/tests/test_sfu_node_app.c"
+      - "webrtc/apps/room_service/include/room_service/config.h"
+      - "webrtc/apps/room_service/include/room_service/server.h"
+      - "webrtc/apps/room_service/src/config.c"
+      - "webrtc/apps/room_service/src/server.c"
+      - "webrtc/apps/room_service/tests/test_room_service_config.c"
+      - "webrtc/apps/room_service/tests/test_room_service_app.c"
+      - "webrtc/apps/room_service/config/room_service.toml.example"
+      - "webrtc/apps/room_service/CMakeLists.txt"
       - "webrtc/tests/test_auth_token.c"
       - "webrtc/tests/test_revocation_state.c"
       - "webrtc/tests/test_revocation_projection.c"
@@ -44,6 +52,14 @@ on:
       - "webrtc/apps/sfu_node/src/server.c"
       - "webrtc/apps/sfu_node/tests/test_sfu_node_config.c"
       - "webrtc/apps/sfu_node/tests/test_sfu_node_app.c"
+      - "webrtc/apps/room_service/include/room_service/config.h"
+      - "webrtc/apps/room_service/include/room_service/server.h"
+      - "webrtc/apps/room_service/src/config.c"
+      - "webrtc/apps/room_service/src/server.c"
+      - "webrtc/apps/room_service/tests/test_room_service_config.c"
+      - "webrtc/apps/room_service/tests/test_room_service_app.c"
+      - "webrtc/apps/room_service/config/room_service.toml.example"
+      - "webrtc/apps/room_service/CMakeLists.txt"
       - "webrtc/tests/test_auth_token.c"
       - "webrtc/tests/test_revocation_state.c"
       - "webrtc/tests/test_revocation_projection.c"
@@ -76,7 +92,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c') }}
+          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/apps/room_service/include/room_service/**', 'webrtc/apps/room_service/src/config.c', 'webrtc/apps/room_service/src/server.c', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c', 'webrtc/tests/test_revocation_fanout.c') }}
           restore-keys: |
             webrtc-auth-security-${{ runner.os }}-
 
@@ -149,6 +165,7 @@ jobs:
           double json_number(const json_value_t *);
           const char *json_number_text(const json_value_t *, size_t *);
           int json_bool(const json_value_t *);
+          int json_get_int(const json_value_t *, const char *, int);
           #endif
           EOF
 
@@ -206,9 +223,76 @@ jobs:
           cat > "$RUNNER_TEMP/auth-stubs/tlog.h" <<'EOF'
           #ifndef TURBO_MEDIA_PORTABLE_TLOG_H
           #define TURBO_MEDIA_PORTABLE_TLOG_H
-          #define TLOG_ERRORF(...) ((void)0)
-          #define TLOG_INFOF(...) ((void)0)
-          #define TLOG_DEBUGF(...) ((void)0)
+          static inline void turbo_media_portable_tlog(
+              const char *format, ...) {
+            (void)format;
+          }
+          #define TLOG_ERROR(...) turbo_media_portable_tlog(__VA_ARGS__)
+          #define TLOG_ERRORF(...) turbo_media_portable_tlog(__VA_ARGS__)
+          #define TLOG_INFOF(...) turbo_media_portable_tlog(__VA_ARGS__)
+          #define TLOG_DEBUGF(...) turbo_media_portable_tlog(__VA_ARGS__)
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/salts_fs.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_SALTS_FS_H
+          #define TURBO_MEDIA_PORTABLE_SALTS_FS_H
+          #include <stddef.h>
+          typedef struct {
+            char *base;
+            size_t size;
+          } salts_fs_buf_t;
+          int salts_fs_read_file(const char *, salts_fs_buf_t *);
+          void salts_fs_buf_free(salts_fs_buf_t *);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/salts/clock.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_SALTS_CLOCK_H
+          #define TURBO_MEDIA_PORTABLE_SALTS_CLOCK_H
+          #include <stdint.h>
+          uint64_t salts_realtime_ms(void);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/salts_uuid.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_SALTS_UUID_H
+          #define TURBO_MEDIA_PORTABLE_SALTS_UUID_H
+          #include <stddef.h>
+          #include <stdint.h>
+          #define SALTS_UUID_STRING_SIZE 37
+          typedef struct { uint8_t bytes[16]; } salts_uuid_t;
+          int salts_uuid_format(const salts_uuid_t *, char *, size_t);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/toml.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_TOML_H
+          #define TURBO_MEDIA_PORTABLE_TOML_H
+          #include <stdint.h>
+          typedef struct toml_table_s toml_table_t;
+          typedef struct toml_array_s toml_array_t;
+          typedef struct {
+            int ok;
+            union {
+              char *s;
+              int sl;
+              int b;
+              int64_t i;
+            } u;
+          } toml_value_t;
+          int toml_table_len(const toml_table_t *);
+          const char *toml_table_key(const toml_table_t *, int, int *);
+          toml_table_t *toml_table_table(const toml_table_t *, const char *);
+          toml_array_t *toml_table_array(const toml_table_t *, const char *);
+          toml_value_t toml_table_string(const toml_table_t *, const char *);
+          toml_value_t toml_table_bool(const toml_table_t *, const char *);
+          toml_value_t toml_table_int(const toml_table_t *, const char *);
+          int toml_array_len(const toml_array_t *);
+          toml_value_t toml_array_string(const toml_array_t *, int);
+          toml_table_t *toml_array_table(const toml_array_t *, int);
+          toml_table_t *toml_parse(char *, char *, int);
+          void toml_free(toml_table_t *);
           #endif
           EOF
 
@@ -394,6 +478,8 @@ jobs:
           int chttp_server_websocket_close(
               chttp_server_websocket_session *, uint16_t,
               const void *, size_t);
+          const char *chttp_response_header(
+              const chttp_response *, const char *);
           void chttp_response_destroy(chttp_response *);
           #endif
           EOF
@@ -504,6 +590,46 @@ jobs:
           ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
             -Iwebrtc/apps/sfu_node/include \
             "$RUNNER_TEMP/sfu-revocation-config-header.c"
+
+      - name: Syntax-check RoomService SFU revocation config surface
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          cat > "$RUNNER_TEMP/room-service-revocation-config-header.c" <<'EOF'
+          #include "room_service/config.h"
+          int main(void) {
+            room_service_app_config_t config = {0};
+            config.sfu_revocation_server_names = "sfu-a=sfu-a.internal";
+            config.sfu_revocation_timeout_ms = 3000;
+            config.sfu_revocation_max_attempts = 3;
+            return config.sfu_revocation_max_attempts;
+          }
+          EOF
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -Iwebrtc/apps/room_service/include \
+            "$RUNNER_TEMP/room-service-revocation-config-header.c"
+
+      - name: Syntax-check RoomService revocation config implementation
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            -Iwebrtc/apps -Iwebrtc/apps/room_service/include \
+            -Iwebrtc/include -Iwebrtc/src/auth -Imedia/include \
+            webrtc/apps/room_service/src/config.c
+
+      - name: Syntax-check RoomService revocation fanout implementation
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -D_DEFAULT_SOURCE \
+            -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            -Iwebrtc/apps/room_service/include \
+            -Iwebrtc/include -Iwebrtc/src/auth \
+            -Inetwork/include -Imedia/include \
+            webrtc/apps/room_service/src/server.c
 
       - name: Syntax-check signaling revocation public contract
         shell: bash

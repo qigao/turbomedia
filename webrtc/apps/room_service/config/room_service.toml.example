@@ -34,6 +34,11 @@ token = "replace-with-a-control-token"
 [sfu]
 control_url = "https://sfu-node-1.internal:9190"
 nodes = "sfu-node-1=https://sfu-node-1.internal:9190"
+# Optional production revocation fan-out metadata. URLs still come exclusively
+# from nodes above; this mapping supplies the explicit TLS server-name required
+# by the security-control HTTPS adapter. When configured, every nodes entry
+# must have exactly one matching server name and ca_file/[sfu_auth] are required.
+# revocation_server_names = "sfu-node-1=sfu-node-1.internal"
 # Omit ca_file for public/system-trusted certificates. For a private PKI,
 # configure its CA bundle; peer and hostname verification remain mandatory.
 # ca_file = "/etc/turbomedia/tls/internal-ca.pem"
@@ -47,6 +52,9 @@ control_token = "replace-with-the-sfu-control-token"
 #key_id = "sfu-control-2026-07"
 #secret = "replace-with-at-least-32-random-bytes"
 #ttl_seconds = 60
+# Bounded security-control propagation policy (hard max attempts is 8).
+# revocation_timeout_ms = 3000
+# revocation_max_attempts = 3
 
 [capacity]
 max_rooms = 1024
