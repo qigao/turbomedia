@@ -7,6 +7,9 @@ on:
       - "network/include/turbo_transport.h"
       - "webrtc/src/signaling/http_api.c"
       - "webrtc/src/signaling/webrtc_signaling.c"
+      - "webrtc/src/signaling/source_identity.c"
+      - "webrtc/src/signaling/source_identity.h"
+      - "webrtc/tests/test_signaling_source_identity.c"
       - "webrtc/include/http_api.h"
       - "webrtc/include/webrtc_signaling.h"
       - "webrtc/apps/signaling_server/**"
@@ -43,6 +46,9 @@ on:
       - "network/include/turbo_transport.h"
       - "webrtc/src/signaling/http_api.c"
       - "webrtc/src/signaling/webrtc_signaling.c"
+      - "webrtc/src/signaling/source_identity.c"
+      - "webrtc/src/signaling/source_identity.h"
+      - "webrtc/tests/test_signaling_source_identity.c"
       - "webrtc/include/http_api.h"
       - "webrtc/include/webrtc_signaling.h"
       - "webrtc/apps/signaling_server/**"
@@ -92,7 +98,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/apps/room_service/include/room_service/**', 'webrtc/apps/room_service/src/config.c', 'webrtc/apps/room_service/src/server.c', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c', 'webrtc/tests/test_revocation_fanout.c') }}
+          key: webrtc-auth-security-${{ runner.os }}-${{ hashFiles('webrtc/src/auth/**', 'webrtc/apps/room_service/include/room_service/**', 'webrtc/apps/room_service/src/config.c', 'webrtc/apps/room_service/src/server.c', 'webrtc/tests/test_auth_token.c', 'webrtc/tests/test_revocation_state.c', 'webrtc/tests/test_revocation_fanout.c', 'webrtc/src/signaling/source_identity.*', 'webrtc/tests/test_signaling_source_identity.c') }}
           restore-keys: |
             webrtc-auth-security-${{ runner.os }}-
 
@@ -632,6 +638,19 @@ jobs:
             -Iwebrtc/include -Iwebrtc/src/auth \
             -Inetwork/include -Imedia/include \
             webrtc/apps/room_service/src/server.c
+
+      - name: Run exact trusted proxy source identity tests
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -D_DEFAULT_SOURCE \
+            -Wall -Wextra -Werror -Wpedantic \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            -Iwebrtc/src/signaling \
+            webrtc/src/signaling/source_identity.c \
+            webrtc/tests/test_signaling_source_identity.c \
+            -o "$RUNNER_TEMP/signaling-source-identity-test"
+          "$RUNNER_TEMP/signaling-source-identity-test"
 
       - name: Syntax-check signaling revocation public contract
         shell: bash
