@@ -81,9 +81,22 @@ target_link_libraries(turbo_media_test_revocation_https
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_internals
                             test_signaling_internals.c)
+target_sources(turbo_media_test_signaling_internals
+               PRIVATE ../src/signaling/source_identity.c)
+target_include_directories(turbo_media_test_signaling_internals
+                           PRIVATE ../src/signaling)
 target_link_libraries(turbo_media_test_signaling_internals
                       PRIVATE Salts::CNet Salts::CHTTP turbo_media_auth
                               Salts::JsonParser)
+
+turbo_media_add_webrtc_test(turbo_media_test_signaling_source_identity
+                            test_signaling_source_identity.c)
+target_sources(turbo_media_test_signaling_source_identity
+               PRIVATE ../src/signaling/source_identity.c)
+target_include_directories(turbo_media_test_signaling_source_identity
+                           PRIVATE ../src/signaling)
+target_link_libraries(turbo_media_test_signaling_source_identity
+                      PRIVATE Salts::CNet Salts::CHTTP)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
