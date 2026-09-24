@@ -50,6 +50,8 @@ typedef enum signaling_config_string_e {
     CONFIG_STRING_WS_HOST,
     CONFIG_STRING_WS_CERT_FILE,
     CONFIG_STRING_WS_KEY_FILE,
+    CONFIG_STRING_TRUSTED_PROXY_ADDRESSES,
+    CONFIG_STRING_TRUSTED_PROXY_CA_FILE,
     CONFIG_STRING_HTTP_HOST,
     CONFIG_STRING_HTTP_CERT_FILE,
     CONFIG_STRING_HTTP_KEY_FILE,
@@ -150,6 +152,10 @@ static int config_clone_strings(
     CONFIG_CLONE(CONFIG_STRING_WS_HOST, ws_host);
     CONFIG_CLONE(CONFIG_STRING_WS_CERT_FILE, ws_cert_file);
     CONFIG_CLONE(CONFIG_STRING_WS_KEY_FILE, ws_key_file);
+    CONFIG_CLONE(CONFIG_STRING_TRUSTED_PROXY_ADDRESSES,
+                 trusted_proxy_addresses);
+    CONFIG_CLONE(CONFIG_STRING_TRUSTED_PROXY_CA_FILE,
+                 trusted_proxy_ca_file);
     CONFIG_CLONE(CONFIG_STRING_HTTP_HOST, http_host);
     CONFIG_CLONE(CONFIG_STRING_HTTP_CERT_FILE, http_cert_file);
     CONFIG_CLONE(CONFIG_STRING_HTTP_KEY_FILE, http_key_file);
@@ -338,6 +344,33 @@ static int config_apply_server(
                             CONFIG_STRING_WS_CERT_FILE, &config->ws_cert_file) != 0 ||
         config_apply_string(table, "server", "key_file", storage,
                             CONFIG_STRING_WS_KEY_FILE, &config->ws_key_file) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int config_apply_trusted_proxy(
+    const toml_table_t *table,
+    signaling_server_config_t *config,
+    signaling_config_storage_t *storage) {
+    static const char *const allowed[] = {
+        "addresses", "ca_file"
+    };
+
+    if (!table) {
+        return 0;
+    }
+    if (config_table_keys_valid(
+            table, "trusted_proxy", allowed,
+            sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        config_apply_string(
+            table, "trusted_proxy", "addresses", storage,
+            CONFIG_STRING_TRUSTED_PROXY_ADDRESSES,
+            &config->trusted_proxy_addresses) != 0 ||
+        config_apply_string(
+            table, "trusted_proxy", "ca_file", storage,
+            CONFIG_STRING_TRUSTED_PROXY_CA_FILE,
+            &config->trusted_proxy_ca_file) != 0) {
         return -1;
     }
     return 0;
@@ -605,6 +638,10 @@ void signaling_server_config_init(signaling_server_config_t *config) {
     config->ws_use_tls = 0;
     config->ws_cert_file = NULL;
     config->ws_key_file = NULL;
+    config->trusted_proxy_addresses =
+        getenv("TURBO_SIGNALING_TRUSTED_PROXY_ADDRESSES");
+    config->trusted_proxy_ca_file =
+        getenv("TURBO_SIGNALING_TRUSTED_PROXY_CA_FILE");
     
     /* HTTP API */
     config->http_enabled = 0;
@@ -687,14 +724,15 @@ void signaling_server_config_init(signaling_server_config_t *config) {
 
 int signaling_server_config_load(signaling_server_config_t *config, const char *filename) {
     static const char *const root_keys[] = {
-        "server", "http_api", "http_auth", "limits", "auth", "redis",
-        "logging"
+        "server", "trusted_proxy", "http_api", "http_auth", "limits",
+        "auth", "redis", "logging"
     };
     enum { SIGNALING_TOML_ERROR_SIZE = 200 };
     salts_fs_buf_t file = {0};
     char parse_error[SIGNALING_TOML_ERROR_SIZE] = {0};
     toml_table_t *root = NULL;
     toml_table_t *server = NULL;
+    toml_table_t *trusted_proxy = NULL;
     toml_table_t *http = NULL;
     toml_table_t *http_auth = NULL;
     toml_table_t *limits = NULL;
@@ -737,6 +775,8 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
     if (config_table_keys_valid(root, "root", root_keys,
                                 sizeof(root_keys) / sizeof(root_keys[0])) != 0 ||
         config_get_optional_table(root, "server", &server) != 0 ||
+        config_get_optional_table(
+            root, "trusted_proxy", &trusted_proxy) != 0 ||
         config_get_optional_table(root, "http_api", &http) != 0 ||
         config_get_optional_table(root, "http_auth", &http_auth) != 0 ||
         config_get_optional_table(root, "limits", &limits) != 0 ||
@@ -744,6 +784,8 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
         config_get_optional_table(root, "redis", &redis) != 0 ||
         config_get_optional_table(root, "logging", &logging) != 0 ||
         config_apply_server(server, &candidate, storage) != 0 ||
+        config_apply_trusted_proxy(
+            trusted_proxy, &candidate, storage) != 0 ||
         config_apply_http(http, &candidate, storage) != 0 ||
         config_apply_http_auth(http_auth, &candidate, storage) != 0 ||
         config_apply_limits(limits, &candidate) != 0 ||
@@ -875,6 +917,14 @@ void signaling_server_config_apply_environment(signaling_server_config_t *config
     if (value && value[0] != '\0') {
         config->ws_key_file = value;
     }
+    value = getenv("TURBO_SIGNALING_TRUSTED_PROXY_ADDRESSES");
+    if (value && value[0] != '\0') {
+        config->trusted_proxy_addresses = value;
+    }
+    value = getenv("TURBO_SIGNALING_TRUSTED_PROXY_CA_FILE");
+    if (value && value[0] != '\0') {
+        config->trusted_proxy_ca_file = value;
+    }
     value = getenv("TURBO_SIGNALING_HTTP_USE_TLS");
     if (value && value[0] != '\0') {
         config->http_use_tls =
@@ -929,6 +979,22 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
         (config->http_auth_enabled != 0 &&
          config->http_auth_enabled != 1)) {
         TLOG_ERROR("Invalid signaling boolean configuration");
+        return -1;
+    }
+    if ((config->trusted_proxy_addresses != NULL) !=
+        (config->trusted_proxy_ca_file != NULL)) {
+        TLOG_ERROR(
+            "Trusted proxy mode requires both addresses and client CA");
+        return -1;
+    }
+    if (config->trusted_proxy_addresses &&
+        (config->trusted_proxy_addresses[0] == '\0' ||
+         config->trusted_proxy_ca_file[0] == '\0' ||
+         !config->ws_use_tls ||
+         (config->max_connections_per_source == 0 &&
+          config->source_admissions_per_second == 0))) {
+        TLOG_ERROR(
+            "Trusted proxy mode requires WSS and source admission limits");
         return -1;
     }
     
