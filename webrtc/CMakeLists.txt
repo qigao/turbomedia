@@ -18,6 +18,17 @@ target_link_libraries(
   PRIVATE Salts::JsonParser SaltsNet::Crypto OpenSSL::Crypto Salts::Core)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
+add_library(
+  turbo_media_revocation_https STATIC
+  src/auth/turbo_media_revocation_https.c)
+target_include_directories(
+  turbo_media_revocation_https PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
+target_link_libraries(
+  turbo_media_revocation_https
+  PRIVATE turbo_media_auth TurboMedia::Transport Salts::JsonParser)
+set_target_properties(
+  turbo_media_revocation_https PROPERTIES FOLDER "turbomedia/components")
+
 add_library(turbo_media_sdp STATIC)
 turbo_media_configure_component(turbo_media_sdp SDP)
 target_sources(

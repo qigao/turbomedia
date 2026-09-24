@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "webrtc/src/auth/**"
+      - "network/include/turbo_transport.h"
       - "webrtc/src/signaling/http_api.c"
       - "webrtc/src/signaling/webrtc_signaling.c"
       - "webrtc/include/http_api.h"
@@ -31,6 +32,7 @@ on:
       - master
     paths:
       - "webrtc/src/auth/**"
+      - "network/include/turbo_transport.h"
       - "webrtc/src/signaling/http_api.c"
       - "webrtc/src/signaling/webrtc_signaling.c"
       - "webrtc/include/http_api.h"
@@ -92,7 +94,7 @@ jobs:
       - name: Create external declaration stubs
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/auth-stubs/openssl" "$RUNNER_TEMP/auth-stubs/salts" "$RUNNER_TEMP/auth-stubs/chttp" "$RUNNER_TEMP/auth-stubs/cstl"
+          mkdir -p "$RUNNER_TEMP/auth-stubs/openssl" "$RUNNER_TEMP/auth-stubs/salts" "$RUNNER_TEMP/auth-stubs/chttp" "$RUNNER_TEMP/auth-stubs/cnet" "$RUNNER_TEMP/auth-stubs/cstl"
 
           cat > "$RUNNER_TEMP/auth-stubs/tinytest.h" <<'EOF'
           #ifndef TURBO_MEDIA_PORTABLE_TINYTEST_H
@@ -128,7 +130,14 @@ jobs:
           #define TURBO_MEDIA_PORTABLE_JSON_PARSER_H
           #include <stddef.h>
           typedef struct json_value_s json_value_t;
-          enum { JSON_OBJECT = 1, JSON_STRING = 2, JSON_NUMBER = 3 };
+          enum {
+            JSON_NULL = 0,
+            JSON_BOOL = 1,
+            JSON_NUMBER = 2,
+            JSON_STRING = 3,
+            JSON_ARRAY = 4,
+            JSON_OBJECT = 5
+          };
           json_value_t *json_parse(const char *, size_t);
           void json_free(json_value_t *);
           int json_type(const json_value_t *);
@@ -138,6 +147,8 @@ jobs:
           const char *json_string(const json_value_t *);
           size_t json_string_len(const json_value_t *);
           double json_number(const json_value_t *);
+          const char *json_number_text(const json_value_t *, size_t *);
+          int json_bool(const json_value_t *);
           #endif
           EOF
 
@@ -217,6 +228,20 @@ jobs:
           #endif
           EOF
 
+          cat > "$RUNNER_TEMP/auth-stubs/cnet/cnet.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_CNET_H
+          #define TURBO_MEDIA_PORTABLE_CNET_H
+          #include <stddef.h>
+          typedef struct { int unused; } cnet_client;
+          typedef struct { int unused; } cnet_connection;
+          typedef struct {
+            size_t size;
+            const char *ca_file;
+            const char *server_name;
+          } cnet_tls_client_config;
+          #endif
+          EOF
+
           cat > "$RUNNER_TEMP/auth-stubs/chttp/chttp.h" <<'EOF'
           #ifndef TURBO_MEDIA_PORTABLE_CHTTP_H
           #define TURBO_MEDIA_PORTABLE_CHTTP_H
@@ -271,6 +296,12 @@ jobs:
 
           typedef struct { int unused; } chttp_server;
           typedef struct { int unused; } chttp_server_response;
+          typedef struct { int unused; } chttp_client;
+          typedef struct {
+            unsigned int status_code;
+            const void *body;
+            size_t body_size;
+          } chttp_response;
           typedef struct chttp_websocket_s chttp_websocket;
           typedef struct {
             void *impl;
@@ -363,6 +394,7 @@ jobs:
           int chttp_server_websocket_close(
               chttp_server_websocket_session *, uint16_t,
               const void *, size_t);
+          void chttp_response_destroy(chttp_response *);
           #endif
           EOF
 
@@ -447,6 +479,15 @@ jobs:
           ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
             -Iwebrtc/src/auth -I"$RUNNER_TEMP/auth-stubs" \
             webrtc/src/auth/turbo_media_revocation_wire.c
+
+      - name: Syntax-check HTTPS revocation fan-out adapter
+        shell: bash
+        run: |
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          ccache gcc -std=c11 -Wall -Wextra -Werror -Wpedantic -fsyntax-only \
+            -I"$RUNNER_TEMP/auth-stubs" \
+            -Iwebrtc/src/auth -Inetwork/include -Imedia/include \
+            webrtc/src/auth/turbo_media_revocation_https.c
 
       - name: Syntax-check SFU dynamic revocation config surface
         shell: bash
