@@ -321,13 +321,32 @@ spec("signaling TOML configuration") {
             "key_file = \"signaling-key.pem\"\n"
             "[trusted_proxy]\n"
             "addresses = \"10.0.0.10\"\n";
+        static const char malformed_addresses[] =
+            "[server]\n"
+            "use_tls = true\n"
+            "cert_file = \"signaling-chain.pem\"\n"
+            "key_file = \"signaling-key.pem\"\n"
+            "[trusted_proxy]\n"
+            "addresses = \"10.0.0.10/32\"\n"
+            "ca_file = \"edge-client-ca.pem\"\n";
+        static const char duplicate_addresses[] =
+            "[server]\n"
+            "use_tls = true\n"
+            "cert_file = \"signaling-chain.pem\"\n"
+            "key_file = \"signaling-key.pem\"\n"
+            "[trusted_proxy]\n"
+            "addresses = \"10.0.0.10,10.0.0.10\"\n"
+            "ca_file = \"edge-client-ca.pem\"\n";
         signaling_server_config_t config;
         char *valid_path = write_toml(valid);
         char *missing_tls_path = write_toml(missing_tls);
         char *missing_ca_path = write_toml(missing_ca);
+        char *malformed_path = write_toml(malformed_addresses);
+        char *duplicate_path = write_toml(duplicate_addresses);
 
         signaling_server_config_init(&config);
-        if (valid_path && missing_tls_path && missing_ca_path) {
+        if (valid_path && missing_tls_path && missing_ca_path &&
+            malformed_path && duplicate_path) {
             check_equal(signaling_server_config_load(&config, valid_path), 0);
             check_equal(config.trusted_proxy_addresses,
                         "10.0.0.10,2001:db8::10");
@@ -342,6 +361,16 @@ spec("signaling TOML configuration") {
             signaling_server_config_init(&config);
             check_equal(
                 signaling_server_config_load(&config, missing_ca_path), -1);
+            signaling_server_config_cleanup(&config);
+
+            signaling_server_config_init(&config);
+            check_equal(
+                signaling_server_config_load(&config, malformed_path), -1);
+            signaling_server_config_cleanup(&config);
+
+            signaling_server_config_init(&config);
+            check_equal(
+                signaling_server_config_load(&config, duplicate_path), -1);
             signaling_server_config_cleanup(&config);
         } else {
             signaling_server_config_cleanup(&config);
@@ -364,6 +393,8 @@ spec("signaling TOML configuration") {
         remove_toml(valid_path);
         remove_toml(missing_tls_path);
         remove_toml(missing_ca_path);
+        remove_toml(malformed_path);
+        remove_toml(duplicate_path);
     }
 
     it("requires a bounded WebSocket connection capacity") {
