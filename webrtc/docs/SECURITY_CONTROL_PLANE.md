@@ -65,6 +65,41 @@ This keeps the existing unbound token contract valid while preventing a future q
 `tenant-a` and `tenant-b/room` as one identity. The quota layer is not implemented by this slice; it
 must consume this signed tenant fact instead of reconstructing a second tenant namespace locally.
 
+### Tenant quota lease projection
+
+The shared security control plane is the only source of tenant-wide quota budget. Application nodes do not
+independently compute a tenant-wide count and do not infer spare global capacity from local usage.
+
+The quota projection is a bounded, caller-serialized local view of leases assigned to one node. A lease
+binds:
+
+- the signed `tenant_id` fact;
+- the exact target `node_id`;
+- control-plane `epoch/sequence` ordering;
+- an absolute `expires_at_unix_ms`;
+- bounded limits for signaling connections, rooms, participants, media sessions, and published tracks.
+
+The control plane must maintain the invariant that the sum of simultaneously valid per-node leases for a
+tenant/resource does not exceed that tenant's global policy. Nodes consume only their own lease; they do
+not reconstruct or reconcile the global sum themselves.
+
+A newly created projection is UNSYNCHRONIZED and rejects new reservations until a complete covering
+snapshot is applied. Lease updates are exact-next in the current epoch. Sequence gaps, epoch jumps,
+capacity exhaustion, and unusable admissible updates make the projection UNSYNCHRONIZED and therefore
+fail new reservations closed until a covering snapshot arrives.
+
+Lease expiry uses Unix epoch milliseconds and rejects new reservations at or after expiry. Tightening a
+lease below current live usage never destroys or silently forgets owned resources: new reservations are
+denied until usage drains below the new limit. Removing a tenant from a covering snapshot removes its
+lease immediately, but a bounded no-lease tombstone retains only the live local usage counts needed to
+permit deterministic release. Release is allowed while UNSYNCHRONIZED, expired, or lease-less so cleanup
+can always drain ownership.
+
+This projection is not the distributed quota issuer and is not yet wired into signaling/SFU/Room Service
+resource admission by this slice. Those runtime integrations must consume the same signed tenant identity
+and the same control-plane lease stream; they must not introduce a second tenant namespace, a local
+"global" counter, or a permissive fallback when lease state is UNKNOWN.
+
 ### Application process
 
 The application process verifies:
@@ -279,9 +314,10 @@ The following are intentionally not claimed complete by the dynamic-revocation s
 - shared-control-plane producer integration for canonical revocation publication;
 - TLS-connection-level admission before handshake CPU allocation (source HTTP/WebSocket admission is now pre-application);
 - trusted-proxy allowlist and spoofed-header negative tests;
-- quota lease/reservation model consuming the signed tenant identity fact;
-- tenant/subject/IP/connection/request/media-resource quota model;
-- deterministic multi-node tenant-wide quota enforcement;
+- authenticated/versioned quota lease issuer and distribution from the shared control plane;
+- runtime reservation/release wiring for signaling connections, rooms, participants, media sessions, and published tracks;
+- subject/IP/request/byte/time quota dimensions beyond the initial tenant resource lease model;
+- deterministic multi-node tenant-wide quota evidence proving the allocator never over-issues per-node leases;
 - security metrics/alerts/audit integration;
 - public handshake-flood / abuse / attack-capacity evidence.
 

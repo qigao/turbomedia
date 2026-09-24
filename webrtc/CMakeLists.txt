@@ -19,6 +19,14 @@ target_link_libraries(
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
 add_library(
+  turbo_media_tenant_quota STATIC
+  src/security/turbo_media_tenant_quota.c)
+target_include_directories(
+  turbo_media_tenant_quota PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/security)
+set_target_properties(
+  turbo_media_tenant_quota PROPERTIES FOLDER "turbomedia/components")
+
+add_library(
   turbo_media_revocation_https STATIC
   src/auth/turbo_media_revocation_https.c)
 target_include_directories(
