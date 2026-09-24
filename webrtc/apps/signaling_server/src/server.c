@@ -94,6 +94,10 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         .source_admission_burst = server->config.source_admission_burst,
         .max_source_states = (size_t)server->config.max_source_states,
         .source_state_ttl_ms = server->config.source_state_ttl_ms,
+        .trusted_proxy_addresses =
+            server->config.trusted_proxy_addresses,
+        .trusted_proxy_ca_file =
+            server->config.trusted_proxy_ca_file,
         .jwt_enabled = server->config.jwt_enabled,
         .jwt_issuer = server->config.jwt_issuer,
         .jwt_active_key_id = server->config.jwt_active_key_id,
