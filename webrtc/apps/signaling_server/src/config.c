@@ -5,6 +5,7 @@
 
 #include "signaling_server/config.h"
 #include "turbo_media_auth.h"
+#include "source_identity.h"
 #include <salts_fs.h>
 #include <toml.h>
 #include <tlog.h>
@@ -987,15 +988,21 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
             "Trusted proxy mode requires both addresses and client CA");
         return -1;
     }
-    if (config->trusted_proxy_addresses &&
-        (config->trusted_proxy_addresses[0] == '\0' ||
-         config->trusted_proxy_ca_file[0] == '\0' ||
-         !config->ws_use_tls ||
-         (config->max_connections_per_source == 0 &&
-          config->source_admissions_per_second == 0))) {
-        TLOG_ERROR(
-            "Trusted proxy mode requires WSS and source admission limits");
-        return -1;
+    if (config->trusted_proxy_addresses) {
+        signaling_trusted_proxy_set_t proxies;
+        if (config->trusted_proxy_addresses[0] == '\0' ||
+            config->trusted_proxy_ca_file[0] == '\0' ||
+            !config->ws_use_tls ||
+            (config->max_connections_per_source == 0 &&
+             config->source_admissions_per_second == 0) ||
+            signaling_trusted_proxy_set_parse(
+                config->trusted_proxy_addresses, &proxies) != 0 ||
+            proxies.count == 0U) {
+            TLOG_ERROR(
+                "Trusted proxy mode requires valid exact addresses, "
+                "WSS/mTLS, and source admission limits");
+            return -1;
+        }
     }
     
     if (config->http_enabled && (config->http_port < 1 || config->http_port > 65535)) {
