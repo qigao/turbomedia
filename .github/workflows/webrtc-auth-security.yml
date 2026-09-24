@@ -342,6 +342,7 @@ jobs:
             CNET_DATAGRAM_ADDRESS_IPV4 = 4,
             CNET_DATAGRAM_ADDRESS_IPV6 = 6,
             CNET_TLS_CLIENT_AUTH_NONE = 0,
+            CNET_TLS_CLIENT_AUTH_REQUIRED = 1,
             CNET_TLS_MIN_IO_BUFFER_BYTES = 4096,
             CHTTP_WEBSOCKET_EVENT_CLOSE = 1,
             CHTTP_WEBSOCKET_EVENT_MESSAGE = 2,
@@ -373,6 +374,7 @@ jobs:
 
           typedef struct {
             size_t size;
+            const char *ca_file;
             const char *cert_file;
             const char *key_file;
             int client_auth;
@@ -642,6 +644,8 @@ jobs:
             webrtc_signaling_revocation_apply_result_t result =
                 WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED;
             config.jwt_dynamic_revocation_capacity = 16U;
+            config.trusted_proxy_addresses = "10.0.0.10";
+            config.trusted_proxy_ca_file = "proxy-ca.pem";
             return (int)config.jwt_dynamic_revocation_capacity + (int)result;
           }
           EOF
