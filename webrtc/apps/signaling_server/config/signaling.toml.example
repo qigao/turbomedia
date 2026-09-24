@@ -13,6 +13,16 @@ use_tls = false
 # cert_file = "/etc/turbomedia/tls/signaling-chain.pem"
 # key_file = "/etc/turbomedia/tls/signaling-key.pem"
 
+# Optional reverse-proxy source identity mode. This is for a dedicated internal
+# WSS backend behind an Internet edge; browsers must not connect directly to
+# this listener when enabled. The backend requires a client certificate issued
+# by ca_file AND the socket peer must match one exact IP literal below.
+# Only then is a single-value X-Forwarded-For IP accepted for source limits.
+# Network ACLs must independently restrict this backend to the same proxies.
+#[trusted_proxy]
+#addresses = "10.0.0.10,2001:db8::10"
+#ca_file = "/etc/turbomedia/tls/edge-client-ca.pem"
+
 [http_api]
 # Management and monitoring API. Configure either the scoped [http_auth]
 # verifier or the static TURBO_SIGNALING_ADMIN_TOKEN compatibility token
@@ -47,7 +57,9 @@ messages_per_second = 100
 message_burst = 200
 max_outbox_messages = 256
 max_outbox_bytes = 1048576
-# Applied during the WebSocket handshake using the socket peer IP (port ignored).
+# Applied before WebSocket application-session capture. By default the source
+# is the socket peer IP (port ignored). In [trusted_proxy] mode only an
+# authenticated+allowlisted proxy may replace it with one X-Forwarded-For IP.
 max_connections_per_source = 100
 source_admissions_per_second = 20
 source_admission_burst = 50
