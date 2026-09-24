@@ -79,6 +79,12 @@ turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota
 target_link_libraries(turbo_media_test_tenant_quota
                       PRIVATE turbo_media_tenant_quota)
 
+turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota_wire
+                                 test_tenant_quota_wire.c)
+target_link_libraries(turbo_media_test_tenant_quota_wire
+                      PRIVATE turbo_media_tenant_quota_wire
+                              turbo_media_tenant_quota)
+
 turbo_media_add_webrtc_base_test(turbo_media_test_revocation_https
                                  test_revocation_https.c)
 target_link_libraries(turbo_media_test_revocation_https
@@ -101,10 +107,10 @@ target_link_libraries(turbo_media_test_signaling_internals
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
-target_link_libraries(turbo_media_test_signaling_lifecycle
-                      PRIVATE TurboMedia::WebRTCSignaling TurboMedia::Transport
-                              Salts::CHTTP
-                              turbo_media_auth)
+target_link_libraries(
+  turbo_media_test_signaling_lifecycle
+  PRIVATE TurboMedia::WebRTCSignaling TurboMedia::Transport
+          Salts::CHTTP turbo_media_auth turbo_media_tenant_quota)
 file(TO_CMAKE_PATH
      "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tls/localhost-cert.pem"
      TURBO_MEDIA_TEST_TLS_CERT_PATH)
@@ -126,8 +132,10 @@ if(TURBO_MEDIA_IS_SERVER)
     turbo_media_test_signaling_config
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include
             ${CMAKE_CURRENT_SOURCE_DIR}/../src/signaling)
-  target_link_libraries(turbo_media_test_signaling_config
-                        PRIVATE turbo_media_auth Salts::TomlParser Salts::CNet)
+  target_link_libraries(
+    turbo_media_test_signaling_config
+    PRIVATE turbo_media_auth turbo_media_tenant_quota
+            Salts::TomlParser Salts::CNet)
   file(
     TO_CMAKE_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/config/signaling.toml.example"

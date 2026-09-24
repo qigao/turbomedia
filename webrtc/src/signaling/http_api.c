@@ -5,8 +5,10 @@
 
 #include "http_api.h"
 #include "signaling_management_internal.h"
+#include "signaling_tenant_quota_internal.h"
 #include "turbo_media_auth.h"
 #include "turbo_media_revocation_wire.h"
+#include "turbo_media_tenant_quota_wire.h"
 #include "webrtc_signaling.h"
 #include <chttp/chttp.h>
 #include <json_parser.h>
@@ -25,6 +27,7 @@
 #define SIGNALING_MANAGEMENT_SCOPE_DANGEROUS "signaling.management.dangerous"
 #define SIGNALING_SECURITY_CONTROL_AUDIENCE "turbomedia-security-control"
 #define SIGNALING_SECURITY_REVOCATION_SCOPE "security.revocation.write"
+#define SIGNALING_SECURITY_TENANT_QUOTA_SCOPE "security.tenant_quota.write"
 
 enum {
     HTTP_API_CONNECTION_CAPACITY = 64,
@@ -32,7 +35,7 @@ enum {
     HTTP_API_REQUEST_CAPACITY = 128,
     HTTP_API_COMPLETION_CAPACITY = 32,
     HTTP_API_EVENT_CAPACITY = 128,
-    HTTP_API_ROUTE_CAPACITY = 16,
+    HTTP_API_ROUTE_CAPACITY = 20,
     HTTP_API_MAX_ROUTE_PARAM_COUNT = 2,
     HTTP_API_MAX_ROUTE_PARAM_BYTES = 1024,
     HTTP_API_MAX_TARGET_BYTES = 4096,
@@ -68,6 +71,7 @@ struct http_api_server_s {
     chttp_server http;
     int http_initialized;
     int revocation_enabled;
+    int tenant_quota_enabled;
     http_api_state_t state;
 };
 
@@ -155,13 +159,15 @@ static void send_text(http_api_response_t *response, unsigned int status,
 
 static int authorize_security_control_request(
     http_api_server_t *server, const chttp_server_request_view *request,
-    http_api_response_t *response) {
+    http_api_response_t *response, int feature_enabled,
+    const char *required_scope) {
     const char *authorization;
     turbo_media_auth_config_t auth;
     turbo_media_auth_policy_t policy;
 
-    if (!server || !request || !response || !server->revocation_enabled ||
-        !server->config.use_tls || !server->config.auth_enabled ||
+    if (!server || !request || !response || !feature_enabled ||
+        !required_scope || !server->config.use_tls ||
+        !server->config.auth_enabled ||
         !server->config.auth_active_secret ||
         server->config.auth_active_secret[0] == '\0') {
         send_text(response, 503, "Security control unavailable");
@@ -172,7 +178,7 @@ static int authorize_security_control_request(
     auth = signed_auth_config(&server->config);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SIGNALING_SECURITY_CONTROL_AUDIENCE;
-    policy.required_scope = SIGNALING_SECURITY_REVOCATION_SCOPE;
+    policy.required_scope = required_scope;
     if (turbo_media_auth_authorize(
             authorization, NULL, &auth, &policy) !=
         TURBO_MEDIA_AUTH_SIGNED_TOKEN) {
@@ -418,7 +424,8 @@ static int handle_revocation_snapshot(
     webrtc_signaling_revocation_apply_result_t result;
 
     if (!authorize_security_control_request(
-            server, request, &response)) {
+            server, request, &response, server->revocation_enabled,
+            SIGNALING_SECURITY_REVOCATION_SCOPE)) {
         return response.status;
     }
     if (turbo_media_revocation_wire_parse_snapshot(
@@ -444,7 +451,8 @@ static int handle_revocation_revoke(
     webrtc_signaling_revocation_apply_result_t result;
 
     if (!authorize_security_control_request(
-            server, request, &response)) {
+            server, request, &response, server->revocation_enabled,
+            SIGNALING_SECURITY_REVOCATION_SCOPE)) {
         return response.status;
     }
     if (turbo_media_revocation_wire_parse_revoke(
@@ -457,6 +465,112 @@ static int handle_revocation_revoke(
     result = webrtc_signaling_apply_revocation(
         server->signaling, revoke.epoch, revoke.sequence, revoke.sha256);
     send_revocation_result(&response, server->signaling, result);
+    return response.status;
+}
+
+static void send_tenant_quota_result(
+    http_api_response_t *response,
+    webrtc_signaling_server_t *signaling,
+    turbo_media_tenant_quota_apply_result_t result) {
+    int synchronized = 0;
+    uint64_t epoch = 0U;
+    uint64_t sequence = 0U;
+    size_t lease_count = 0U;
+    const char *name = "error";
+    unsigned int status = 400U;
+    char body[256];
+    int length;
+
+    if (result == TURBO_MEDIA_TENANT_QUOTA_APPLY_APPLIED) {
+        name = "applied";
+        status = 200U;
+    } else if (result == TURBO_MEDIA_TENANT_QUOTA_APPLY_STALE) {
+        name = "stale";
+        status = 200U;
+    } else if (result == TURBO_MEDIA_TENANT_QUOTA_APPLY_GAP) {
+        name = "gap";
+        status = 409U;
+    } else if (result == TURBO_MEDIA_TENANT_QUOTA_APPLY_LIMIT) {
+        name = "limit";
+        status = 409U;
+    }
+    if (signaling_tenant_quota_status(
+            signaling, &synchronized, &epoch, &sequence,
+            &lease_count) != 0) {
+        send_text(response, 500, "Tenant quota status unavailable");
+        return;
+    }
+    length = snprintf(
+        body, sizeof(body),
+        "{\"schema_version\":1,\"result\":\"%s\","
+        "\"synchronized\":%s,\"epoch\":%llu,\"sequence\":%llu,"
+        "\"lease_count\":%zu}",
+        name, synchronized ? "true" : "false",
+        (unsigned long long)epoch, (unsigned long long)sequence,
+        lease_count);
+    if (length < 0 || (size_t)length >= sizeof(body)) {
+        send_text(response, 500, "Internal Error");
+        return;
+    }
+    reply(response, status, "application/json", body, (size_t)length);
+}
+
+static int handle_tenant_quota_snapshot(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *raw_response) {
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    turbo_media_tenant_quota_wire_snapshot_t *snapshot = NULL;
+    turbo_media_tenant_quota_apply_result_t result;
+
+    if (!authorize_security_control_request(
+            server, request, &response, server->tenant_quota_enabled,
+            SIGNALING_SECURITY_TENANT_QUOTA_SCOPE)) {
+        return response.status;
+    }
+    snapshot = turbo_media_tenant_quota_wire_parse_snapshot(
+        (const char *)request->body, request->body_size);
+    if (!snapshot) {
+        send_text(&response, 400, "Invalid tenant quota snapshot");
+        return response.status;
+    }
+
+    result = signaling_tenant_quota_apply_snapshot(
+        server->signaling,
+        turbo_media_tenant_quota_wire_snapshot_node_id(snapshot),
+        turbo_media_tenant_quota_wire_snapshot_epoch(snapshot),
+        turbo_media_tenant_quota_wire_snapshot_sequence(snapshot),
+        turbo_media_tenant_quota_wire_snapshot_leases(snapshot),
+        turbo_media_tenant_quota_wire_snapshot_count(snapshot));
+    turbo_media_tenant_quota_wire_snapshot_destroy(snapshot);
+    send_tenant_quota_result(&response, server->signaling, result);
+    return response.status;
+}
+
+static int handle_tenant_quota_update(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_response *raw_response) {
+    http_api_server_t *server = (http_api_server_t *)user;
+    http_api_response_t response = {server, raw_response, SALTS_OK};
+    turbo_media_tenant_quota_wire_update_t update;
+    turbo_media_tenant_quota_apply_result_t result;
+
+    if (!authorize_security_control_request(
+            server, request, &response, server->tenant_quota_enabled,
+            SIGNALING_SECURITY_TENANT_QUOTA_SCOPE)) {
+        return response.status;
+    }
+    if (turbo_media_tenant_quota_wire_parse_update(
+            (const char *)request->body, request->body_size,
+            &update) != 0) {
+        send_text(&response, 400, "Invalid tenant quota update");
+        return response.status;
+    }
+
+    result = signaling_tenant_quota_apply_update(
+        server->signaling, update.node_id, update.epoch,
+        update.sequence, &update.lease);
+    send_tenant_quota_result(&response, server->signaling, result);
     return response.status;
 }
 
@@ -581,7 +695,9 @@ static int http_api_register_routes(http_api_server_t *server) {
         "/api/v1/rooms/:id/peers/:peer_id",
         "/api/v1/rooms/:id/broadcast",
         "/api/v1/security/revocations/snapshot",
-        "/api/v1/security/revocations/revoke"};
+        "/api/v1/security/revocations/revoke",
+        "/api/v1/security/tenant-quotas/snapshot",
+        "/api/v1/security/tenant-quotas/update"};
     int status;
     size_t index;
 
@@ -619,6 +735,16 @@ static int http_api_register_routes(http_api_server_t *server) {
         status = chttp_server_post(
             &server->http, "/api/v1/security/revocations/revoke",
             handle_revocation_revoke, server);
+    }
+    if (status == SALTS_OK && server->tenant_quota_enabled) {
+        status = chttp_server_post(
+            &server->http, "/api/v1/security/tenant-quotas/snapshot",
+            handle_tenant_quota_snapshot, server);
+    }
+    if (status == SALTS_OK && server->tenant_quota_enabled) {
+        status = chttp_server_post(
+            &server->http, "/api/v1/security/tenant-quotas/update",
+            handle_tenant_quota_update, server);
     }
     for (index = 0u;
          status == SALTS_OK && !server->config.auth_enabled &&
@@ -698,7 +824,10 @@ http_api_server_t *http_api_create(
         server->revocation_enabled =
             webrtc_signaling_get_revocation_status(
                 signaling, &synchronized, &epoch, &sequence, &count) == 0;
-        if (server->revocation_enabled &&
+        server->tenant_quota_enabled =
+            signaling_tenant_quota_status(
+                signaling, &synchronized, &epoch, &sequence, &count) == 0;
+        if ((server->revocation_enabled || server->tenant_quota_enabled) &&
             (!server->config.use_tls || !server->config.auth_enabled ||
              !server->config.auth_active_secret ||
              server->config.auth_active_secret[0] == '\0')) {

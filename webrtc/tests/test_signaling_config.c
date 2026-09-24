@@ -1,5 +1,6 @@
 #include <signaling_server/config.h>
 #include "turbo_media_auth.h"
+#include "turbo_media_tenant_quota.h"
 #include <tinytest.h>
 
 #include <stdlib.h>
@@ -125,6 +126,9 @@ spec("signaling TOML configuration") {
             "ttl_seconds = 7200\n"
             "algorithm = \"HS256\"\n"
             "\n"
+            "[tenant_quota]\n"
+            "capacity = 0\n"
+            "\n"
             "[redis]\n"
             "enabled = false\n"
             "host = \"redis.internal\"\n"
@@ -196,6 +200,7 @@ spec("signaling TOML configuration") {
             check_equal(config.jwt_previous_key_id, "peer-key-2026-06");
             check_equal(config.jwt_dynamic_revocation_capacity, 0);
             check_equal(config.jwt_clock_skew_seconds, 20);
+            check_equal(config.tenant_quota_capacity, 0);
             check_equal(config.redis_host, "redis.internal");
             check_equal(config.redis_port, 6380);
             check_equal(config.redis_db, 2);
@@ -573,6 +578,38 @@ spec("signaling TOML configuration") {
         signaling_server_config_cleanup(&config);
     }
 
+    it("tenant quota requires HTTPS signed management recovery") {
+        signaling_server_config_t config;
+
+        signaling_server_config_init(&config);
+        config.tenant_quota_capacity = 16;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.http_enabled = 1;
+        config.http_host = "127.0.0.1";
+        config.http_auth_enabled = 1;
+        config.http_auth_active_key_id = "management-key";
+        config.http_auth_active_secret =
+            "management-active-secret-at-least-32-bytes";
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.http_use_tls = 1;
+        config.http_cert_file = "management.crt";
+        config.http_key_file = "management.key";
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.jwt_enabled = 1;
+        config.jwt_active_key_id = "peer-key";
+        config.jwt_secret = "peer-active-secret-at-least-32-bytes";
+        check_equal(signaling_server_config_validate(&config), 0);
+
+        config.tenant_quota_capacity =
+            TURBO_MEDIA_TENANT_QUOTA_MAX_TENANTS + 1;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        signaling_server_config_cleanup(&config);
+    }
+
     it("requires complete static or scoped management authentication") {
         signaling_server_config_t config;
 
@@ -615,7 +652,8 @@ spec("signaling TOML configuration") {
             "TURBO_SIGNALING_HTTP_AUTH_MAX_TTL_SECONDS",
             "TURBO_SIGNALING_AUTH_ACTIVE_KEY_ID",
             "TURBO_SIGNALING_AUTH_ACTIVE_SECRET",
-            "TURBO_SIGNALING_AUTH_DYNAMIC_REVOCATION_CAPACITY"
+            "TURBO_SIGNALING_AUTH_DYNAMIC_REVOCATION_CAPACITY",
+            "TURBO_SIGNALING_TENANT_QUOTA_CAPACITY"
         };
         char *saved[sizeof(names) / sizeof(names[0])] = {0};
         signaling_server_config_t config;
@@ -643,6 +681,7 @@ spec("signaling TOML configuration") {
         signaling_config_test_set_env(
             names[13], "env-peer-secret-at-least-32-bytes");
         signaling_config_test_set_env(names[14], "32");
+        signaling_config_test_set_env(names[15], "16");
 
         signaling_server_config_init(&config);
         config.http_enabled = 1;
@@ -666,6 +705,7 @@ spec("signaling TOML configuration") {
         check_equal(config.jwt_active_key_id, "env-peer-key");
         check_equal(config.jwt_secret, "env-peer-secret-at-least-32-bytes");
         check_equal(config.jwt_dynamic_revocation_capacity, 32);
+        check_equal(config.tenant_quota_capacity, 16);
         check_equal(signaling_server_config_validate(&config), 0);
 
         signaling_config_test_set_env(names[1], "not-a-boolean");

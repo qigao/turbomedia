@@ -1389,7 +1389,6 @@ void test_sfu_node_dynamic_revocation_controls_control_and_media_auth(void) {
   config.use_tls = 1;
   config.tls_cert_file = SFU_NODE_TEST_TLS_CERT_PATH;
   config.tls_key_file = SFU_NODE_TEST_TLS_KEY_PATH;
-  config.control_token = "static-control-token";
   config.media_access_token = "static-media-token";
   config.auth_issuer = "turbomedia";
   config.auth_active_key_id = "sfu-security-2026-09";
@@ -1534,6 +1533,174 @@ void test_sfu_node_dynamic_revocation_controls_control_and_media_auth(void) {
   free(security_token);
   free(media_token);
   free(control_token);
+}
+
+void test_sfu_node_tenant_quota_transport_requires_dedicated_signed_control_token(void) {
+  sfu_node_app_config_t config;
+  sfu_node_app_server_t *server = NULL;
+  sfu_node_http_api_t *http_api = NULL;
+  turbo_media_auth_config_t issuer;
+  turbo_media_auth_claims_t claims;
+  char *quota_token = NULL;
+  char *wrong_scope_token = NULL;
+  int synchronized = 0;
+  uint64_t epoch = 0U;
+  uint64_t sequence = 0U;
+  size_t count = 0U;
+  int64_t now = (int64_t)time(NULL);
+  const char *base_url = "https://127.0.0.1:19432";
+  static const char snapshot[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":0,"
+      "\"node_id\":\"sfu-tenant-quota\",\"leases\":[{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":0,\"rooms\":2,"
+      "\"participants\":8,\"media_sessions\":4,"
+      "\"published_tracks\":8}}]}";
+  static const char wrong_node[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"node_id\":\"other-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":0,\"rooms\":3,"
+      "\"participants\":8,\"media_sessions\":4,"
+      "\"published_tracks\":8}}}";
+  static const char update[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"node_id\":\"sfu-tenant-quota\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":0,\"rooms\":3,"
+      "\"participants\":8,\"media_sessions\":4,"
+      "\"published_tracks\":8}}}";
+  static const char gap[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":3,"
+      "\"node_id\":\"sfu-tenant-quota\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":0,\"rooms\":4,"
+      "\"participants\":8,\"media_sessions\":4,"
+      "\"published_tracks\":8}}}";
+  static const char recover[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":3,"
+      "\"node_id\":\"sfu-tenant-quota\",\"leases\":[{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":0,\"rooms\":4,"
+      "\"participants\":8,\"media_sessions\":4,"
+      "\"published_tracks\":8}}]}";
+  static const char semantic_invalid[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":4,"
+      "\"node_id\":\"sfu-tenant-quota\",\"lease\":{"
+      "\"tenant_id\":\"tenant/a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":0,\"rooms\":4,"
+      "\"participants\":8,\"media_sessions\":4,"
+      "\"published_tracks\":8}}}";
+
+  sfu_node_app_config_init(&config);
+  config.bind_host = "127.0.0.1";
+  config.bind_port = 19432;
+  config.node_id = "sfu-tenant-quota";
+  config.use_tls = 1;
+  config.tls_cert_file = SFU_NODE_TEST_TLS_CERT_PATH;
+  config.tls_key_file = SFU_NODE_TEST_TLS_KEY_PATH;
+  config.control_token = "static-control-token";
+  config.auth_issuer = "turbomedia";
+  config.auth_active_key_id = "sfu-security-2026-09";
+  config.auth_active_secret =
+      "sfu-security-active-secret-at-least-32-bytes";
+  config.auth_max_ttl_seconds = 300;
+  config.tenant_quota_capacity = 4;
+  config.ice_allow_loopback = 1;
+
+  issuer = (turbo_media_auth_config_t){
+      .issuer = config.auth_issuer,
+      .active_key_id = config.auth_active_key_id,
+      .active_secret = config.auth_active_secret,
+      .clock_skew_seconds = config.auth_clock_skew_seconds,
+      .max_ttl_seconds = config.auth_max_ttl_seconds};
+
+  claims = (turbo_media_auth_claims_t){
+      .subject = "security-control",
+      .audience = "turbomedia-security-control",
+      .scope = "security.tenant_quota.write",
+      .issued_at = now,
+      .expires_at = now + 120};
+  quota_token = turbo_media_auth_issue(&issuer, &claims);
+  check_not_null(quota_token);
+
+  claims.scope = "security.revocation.write";
+  wrong_scope_token = turbo_media_auth_issue(&issuer, &claims);
+  check_not_null(wrong_scope_token);
+
+  server = sfu_node_app_server_create(&config);
+  check_not_null(server);
+  http_api = sfu_node_http_api_create(server);
+  check_not_null(http_api);
+  check_equal(sfu_node_http_api_start(
+                  http_api, config.bind_host, config.bind_port), 0);
+  check_equal(wait_for_https_status_ok(
+                  base_url, "/health", SFU_NODE_TEST_TLS_CERT_PATH,
+                  30, 100), 0);
+
+  check_equal(sfu_node_app_server_get_tenant_quota_status(
+                  server, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/tenant-quotas/snapshot",
+                  "application/json", "static-control-token", snapshot), 401);
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/tenant-quotas/snapshot",
+                  "application/json", wrong_scope_token, snapshot), 401);
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/tenant-quotas/snapshot",
+                  "application/json", quota_token, snapshot), 200);
+  check_equal(sfu_node_app_server_get_tenant_quota_status(
+                  server, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 0);
+  check_equal((int)count, 1);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/tenant-quotas/update",
+                  "application/json", quota_token, wrong_node), 400);
+  check_equal(sfu_node_app_server_get_tenant_quota_status(
+                  server, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 0);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/tenant-quotas/update",
+                  "application/json", quota_token, update), 200);
+  check_equal(sfu_node_app_server_get_tenant_quota_status(
+                  server, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 1);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/tenant-quotas/update",
+                  "application/json", quota_token, gap), 409);
+  check_equal(sfu_node_app_server_get_tenant_quota_status(
+                  server, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/tenant-quotas/snapshot",
+                  "application/json", quota_token, recover), 200);
+  check_equal(sfu_node_app_server_get_tenant_quota_status(
+                  server, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 3);
+
+  check_equal(https_post_status_with_token(
+                  base_url, "/api/v1/security/tenant-quotas/update",
+                  "application/json", quota_token, semantic_invalid), 400);
+  check_equal(sfu_node_app_server_get_tenant_quota_status(
+                  server, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+  check_equal((int)sequence, 3);
+
+  sfu_node_http_api_stop(http_api);
+  sfu_node_http_api_destroy(http_api);
+  sfu_node_app_server_destroy(server);
+  free(wrong_scope_token);
+  free(quota_token);
 }
 
 void test_sfu_node_http_control_token_protects_modifying_commands(void) {
@@ -1880,6 +2047,42 @@ void test_sfu_node_config_reads_security_and_ice_from_env(void) {
   app_test_restore_env("TURBO_SFU_AUTH_MAX_TTL_SECONDS", saved_auth_ttl);
   app_test_restore_env("TURBO_SFU_AUTH_DYNAMIC_REVOCATION_CAPACITY",
                        saved_auth_dynamic);
+}
+
+void test_sfu_node_config_reads_signed_only_tenant_quota_from_env(void) {
+  sfu_node_app_config_t config;
+  char *saved_use_tls = app_test_save_env("TURBO_SFU_USE_TLS");
+  char *saved_tls_cert = app_test_save_env("TURBO_SFU_TLS_CERT_FILE");
+  char *saved_tls_key = app_test_save_env("TURBO_SFU_TLS_KEY_FILE");
+  char *saved_auth_key =
+      app_test_save_env("TURBO_SFU_AUTH_ACTIVE_KEY_ID");
+  char *saved_auth_secret =
+      app_test_save_env("TURBO_SFU_AUTH_ACTIVE_SECRET");
+  char *saved_quota =
+      app_test_save_env("TURBO_SFU_TENANT_QUOTA_CAPACITY");
+
+  app_test_set_env("TURBO_SFU_USE_TLS", "true");
+  app_test_set_env("TURBO_SFU_TLS_CERT_FILE", SFU_NODE_TEST_TLS_CERT_PATH);
+  app_test_set_env("TURBO_SFU_TLS_KEY_FILE", SFU_NODE_TEST_TLS_KEY_PATH);
+  app_test_set_env("TURBO_SFU_AUTH_ACTIVE_KEY_ID", "quota-active");
+  app_test_set_env("TURBO_SFU_AUTH_ACTIVE_SECRET",
+                   "quota-active-secret-at-least-32-bytes");
+  app_test_set_env("TURBO_SFU_TENANT_QUOTA_CAPACITY", "16");
+
+  sfu_node_app_config_init(&config);
+  sfu_node_app_config_apply_environment(&config);
+  check_equal((int)config.tenant_quota_capacity, 16);
+  check_null(config.control_token);
+  check_null(config.media_access_token);
+  check_equal((int)sfu_node_app_config_validate(&config), 0);
+  sfu_node_app_config_cleanup(&config);
+
+  app_test_restore_env("TURBO_SFU_USE_TLS", saved_use_tls);
+  app_test_restore_env("TURBO_SFU_TLS_CERT_FILE", saved_tls_cert);
+  app_test_restore_env("TURBO_SFU_TLS_KEY_FILE", saved_tls_key);
+  app_test_restore_env("TURBO_SFU_AUTH_ACTIVE_KEY_ID", saved_auth_key);
+  app_test_restore_env("TURBO_SFU_AUTH_ACTIVE_SECRET", saved_auth_secret);
+  app_test_restore_env("TURBO_SFU_TENANT_QUOTA_CAPACITY", saved_quota);
 }
 
 void test_sfu_node_webrtc_session_http_commands_roundtrip_offer_and_query_session(void) {
@@ -2769,7 +2972,9 @@ spec("test_sfu_node_app") {
   it("test_sfu_node_http_roundtrips_track_subscription_metadata") { test_sfu_node_http_roundtrips_track_subscription_metadata(); };
   it("test_sfu_node_https_uses_explicit_identity_and_verified_client") { test_sfu_node_https_uses_explicit_identity_and_verified_client(); };
   it("test_sfu_node_config_reads_security_and_ice_from_env") { test_sfu_node_config_reads_security_and_ice_from_env(); };
+  it("test_sfu_node_config_reads_signed_only_tenant_quota_from_env") { test_sfu_node_config_reads_signed_only_tenant_quota_from_env(); };
   it("test_sfu_node_dynamic_revocation_controls_control_and_media_auth") { test_sfu_node_dynamic_revocation_controls_control_and_media_auth(); };
+  it("test_sfu_node_tenant_quota_transport_requires_dedicated_signed_control_token") { test_sfu_node_tenant_quota_transport_requires_dedicated_signed_control_token(); };
   it("test_sfu_node_http_control_token_protects_modifying_commands") { test_sfu_node_http_control_token_protects_modifying_commands(); };
   it("test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation") { test_sfu_node_signed_control_token_enforces_scope_room_expiry_and_rotation(); };
   it("test_sfu_node_ready_metrics_and_drain_control") { test_sfu_node_ready_metrics_and_drain_control(); };

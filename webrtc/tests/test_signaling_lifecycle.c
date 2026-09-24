@@ -1,4 +1,5 @@
 #include "http_api.h"
+#include "signaling/signaling_tenant_quota_internal.h"
 #include "turbo_transport.h"
 #include "turbo_media_auth.h"
 #include "tinytest.h"
@@ -165,9 +166,9 @@ static char *issue_signaling_management_token(
   return turbo_media_auth_issue(&config, &claims);
 }
 
-static char *issue_security_control_token(
-    const char *key_id, const char *secret, int64_t issued_at,
-    int64_t expires_at) {
+static char *issue_security_control_token_for_scope(
+    const char *key_id, const char *secret, const char *scope,
+    int64_t issued_at, int64_t expires_at) {
   turbo_media_auth_config_t config = {
       .issuer = "turbomedia",
       .active_key_id = key_id,
@@ -178,12 +179,20 @@ static char *issue_security_control_token(
   turbo_media_auth_claims_t claims = {
       .subject = "security-control-test",
       .audience = "turbomedia-security-control",
-      .scope = "security.revocation.write",
+      .scope = scope,
       .issued_at = issued_at,
       .expires_at = expires_at,
   };
 
   return turbo_media_auth_issue(&config, &claims);
+}
+
+static char *issue_security_control_token(
+    const char *key_id, const char *secret, int64_t issued_at,
+    int64_t expires_at) {
+  return issue_security_control_token_for_scope(
+      key_id, secret, "security.revocation.write",
+      issued_at, expires_at);
 }
 
 void test_signaling_and_http_api_instances_have_independent_lifecycles(void) {
@@ -814,6 +823,170 @@ void test_https_revocation_transport_requires_dedicated_signed_control_token(voi
   free(security_token);
 }
 
+void test_https_tenant_quota_transport_requires_dedicated_signed_control_token(void) {
+  webrtc_signaling_config_t signaling_config = {
+      .connection_capacity = 4U};
+  http_api_config_t http_config = {
+      .host = "127.0.0.1",
+      .port = 18086,
+      .use_tls = 1,
+      .cert_file = TURBO_MEDIA_TEST_TLS_CERT_PATH,
+      .key_file = TURBO_MEDIA_TEST_TLS_KEY_PATH,
+      .auth_enabled = 1,
+      .admin_token = "legacy-admin-token",
+      .auth_issuer = "turbomedia",
+      .auth_active_key_id = "signaling-management-2026-07",
+      .auth_active_secret =
+          "signaling-management-active-secret-at-least-32-bytes",
+      .auth_clock_skew_seconds = 0,
+      .auth_max_ttl_seconds = 3600};
+  webrtc_signaling_server_t *signaling =
+      webrtc_signaling_create(NULL, &signaling_config);
+  http_api_server_t *http;
+  int64_t now = (int64_t)time(NULL);
+  char *quota_token = issue_security_control_token_for_scope(
+      "signaling-management-2026-07",
+      "signaling-management-active-secret-at-least-32-bytes",
+      "security.tenant_quota.write", now, now + 60);
+  char *wrong_scope_token = issue_security_control_token(
+      "signaling-management-2026-07",
+      "signaling-management-active-secret-at-least-32-bytes",
+      now, now + 60);
+  int synchronized = 0;
+  uint64_t epoch = 0U;
+  uint64_t sequence = 0U;
+  size_t count = 0U;
+  static const char snapshot[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":0,"
+      "\"node_id\":\"signaling-quota-node\",\"leases\":[{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":2,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}]}";
+  static const char wrong_node[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"node_id\":\"other-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":3,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}}";
+  static const char update[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"node_id\":\"signaling-quota-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":3,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}}";
+  static const char gap[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":3,"
+      "\"node_id\":\"signaling-quota-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":4,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}}";
+  static const char recover[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":3,"
+      "\"node_id\":\"signaling-quota-node\",\"leases\":[{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":4,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}]}";
+  static const char semantic_invalid[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":4,"
+      "\"node_id\":\"signaling-quota-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant/a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":4,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}}";
+
+  check_not_null(signaling);
+  check_equal(signaling_tenant_quota_enable(
+                  signaling, "signaling-quota-node", 4U), 0);
+  check_not_null(quota_token);
+  check_not_null(wrong_scope_token);
+  http = http_api_create(NULL, &http_config, signaling);
+  check_not_null(http);
+  check_equal((int)http_api_start(http), 0);
+
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/snapshot",
+                  "legacy-admin-token", TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  snapshot), 401);
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/snapshot",
+                  wrong_scope_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  snapshot), 401);
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/snapshot",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH, snapshot), 200);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 0);
+  check_equal((int)count, 1);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/update",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  wrong_node), 400);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 0);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/update",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  update), 200);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 1);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/update",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  gap), 409);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/snapshot",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  recover), 200);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 3);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/update",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  semantic_invalid), 400);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+  check_equal((int)sequence, 3);
+
+  http_api_destroy(http);
+  webrtc_signaling_destroy(signaling);
+  free(wrong_scope_token);
+  free(quota_token);
+}
+
 void test_https_management_api_requires_trusted_identity(void) {
   webrtc_signaling_config_t signaling_config = {.connection_capacity = 4U};
   http_api_config_t http_config = {
@@ -851,5 +1024,6 @@ spec("test_signaling_lifecycle") {
   it("test_transport_wss_uses_explicit_trust_and_server_name") { test_transport_wss_uses_explicit_trust_and_server_name(); };
   it("test_http_api_bearer_auth_protects_management_routes") { test_http_api_bearer_auth_protects_management_routes(); };
   it("test_https_revocation_transport_requires_dedicated_signed_control_token") { test_https_revocation_transport_requires_dedicated_signed_control_token(); };
+  it("test_https_tenant_quota_transport_requires_dedicated_signed_control_token") { test_https_tenant_quota_transport_requires_dedicated_signed_control_token(); };
   it("test_https_management_api_requires_trusted_identity") { test_https_management_api_requires_trusted_identity(); };
 }

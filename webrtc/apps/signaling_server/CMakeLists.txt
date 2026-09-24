@@ -22,6 +22,7 @@ target_include_directories(signaling_server
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/signaling
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/security
 )
 
 # Link libraries

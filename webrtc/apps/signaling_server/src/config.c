@@ -6,6 +6,7 @@
 #include "signaling_server/config.h"
 #include "signaling_source_identity.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_tenant_quota.h"
 #include <salts_fs.h>
 #include <toml.h>
 #include <tlog.h>
@@ -374,6 +375,25 @@ static int config_apply_trusted_proxy(
     return 0;
 }
 
+static int config_apply_tenant_quota(
+    const toml_table_t *table,
+    signaling_server_config_t *config) {
+    static const char *const allowed[] = {"capacity"};
+
+    if (!table) {
+        return 0;
+    }
+    if (config_table_keys_valid(
+            table, "tenant_quota", allowed,
+            sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        config_apply_int(
+            table, "tenant_quota", "capacity",
+            &config->tenant_quota_capacity) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int config_apply_http(
     const toml_table_t *table,
     signaling_server_config_t *config,
@@ -703,6 +723,7 @@ void signaling_server_config_init(signaling_server_config_t *config) {
         TURBO_MEDIA_AUTH_DEFAULT_CLOCK_SKEW_SECONDS;
     config->jwt_ttl_seconds = TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
     config->jwt_algorithm = "HS256";
+    config->tenant_quota_capacity = 0;
     
     /* Redis */
     config->redis_enabled = 0; /* Disabled by default */
@@ -723,7 +744,7 @@ void signaling_server_config_init(signaling_server_config_t *config) {
 int signaling_server_config_load(signaling_server_config_t *config, const char *filename) {
     static const char *const root_keys[] = {
         "server", "trusted_proxy", "http_api", "http_auth", "limits",
-        "auth", "redis", "logging"
+        "auth", "tenant_quota", "redis", "logging"
     };
     enum { SIGNALING_TOML_ERROR_SIZE = 200 };
     salts_fs_buf_t file = {0};
@@ -735,6 +756,7 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
     toml_table_t *http_auth = NULL;
     toml_table_t *limits = NULL;
     toml_table_t *auth = NULL;
+    toml_table_t *tenant_quota = NULL;
     toml_table_t *redis = NULL;
     toml_table_t *logging = NULL;
     signaling_config_storage_t *storage = NULL;
@@ -779,6 +801,8 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
         config_get_optional_table(root, "http_auth", &http_auth) != 0 ||
         config_get_optional_table(root, "limits", &limits) != 0 ||
         config_get_optional_table(root, "auth", &auth) != 0 ||
+        config_get_optional_table(
+            root, "tenant_quota", &tenant_quota) != 0 ||
         config_get_optional_table(root, "redis", &redis) != 0 ||
         config_get_optional_table(root, "logging", &logging) != 0 ||
         config_apply_server(server, &candidate, storage) != 0 ||
@@ -788,6 +812,7 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
         config_apply_http_auth(http_auth, &candidate, storage) != 0 ||
         config_apply_limits(limits, &candidate) != 0 ||
         config_apply_auth(auth, &candidate, storage) != 0 ||
+        config_apply_tenant_quota(tenant_quota, &candidate) != 0 ||
         config_apply_redis(redis, &candidate, storage) != 0 ||
         config_apply_logging(logging, &candidate, storage) != 0 ||
         signaling_server_config_validate(&candidate) != 0) {
@@ -899,6 +924,9 @@ void signaling_server_config_apply_environment(signaling_server_config_t *config
     config->jwt_ttl_seconds = signaling_config_env_int(
         "TURBO_SIGNALING_AUTH_MAX_TTL_SECONDS",
         config->jwt_ttl_seconds);
+    config->tenant_quota_capacity = signaling_config_env_int(
+        "TURBO_SIGNALING_TENANT_QUOTA_CAPACITY",
+        config->tenant_quota_capacity);
     value = getenv("TURBO_SIGNALING_TRUSTED_PROXY_MAP");
     if (value && value[0] != '\0') {
         config->trusted_proxy_map = value;
@@ -1170,6 +1198,21 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
                 "management authentication");
             return -1;
         }
+    }
+
+    if (config->tenant_quota_capacity < 0 ||
+        config->tenant_quota_capacity >
+            TURBO_MEDIA_TENANT_QUOTA_MAX_TENANTS ||
+        (config->tenant_quota_capacity > 0 &&
+         (!config->jwt_enabled ||
+          !config->http_enabled || !config->http_use_tls ||
+          !config->http_auth_enabled ||
+          !config->http_auth_active_secret ||
+          config->http_auth_active_secret[0] == '\0'))) {
+        TLOG_ERROR(
+            "Tenant quota projection requires bounded capacity plus HTTPS "
+            "signed management authentication");
+        return -1;
     }
 
     {

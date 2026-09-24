@@ -8,6 +8,7 @@
 #include "sfu_node/config.h"
 #include "turbo_sfu_node.h"
 #include "turbo_media_revocation.h"
+#include "turbo_media_tenant_quota.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +44,33 @@ sfu_node_app_server_apply_revocation(
 int sfu_node_app_server_get_revocation_status(
     sfu_node_app_server_t *server, int *out_synchronized,
     uint64_t *out_epoch, uint64_t *out_sequence, size_t *out_count);
+
+int sfu_node_app_server_tenant_quota_enabled(
+    sfu_node_app_server_t *server);
+turbo_media_tenant_quota_apply_result_t
+sfu_node_app_server_apply_tenant_quota_snapshot(
+    sfu_node_app_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *leases,
+    size_t lease_count);
+turbo_media_tenant_quota_apply_result_t
+sfu_node_app_server_apply_tenant_quota_update(
+    sfu_node_app_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *lease);
+int sfu_node_app_server_get_tenant_quota_status(
+    sfu_node_app_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence,
+    size_t *out_lease_count);
+turbo_media_tenant_quota_reserve_result_t
+sfu_node_app_server_tenant_quota_reserve(
+    sfu_node_app_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount, uint64_t now_unix_ms);
+int sfu_node_app_server_tenant_quota_release(
+    sfu_node_app_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount);
 int sfu_node_app_server_set_draining(sfu_node_app_server_t *server, int draining);
 int sfu_node_app_server_is_draining(sfu_node_app_server_t *server);
 void sfu_node_app_server_poll_webrtc(sfu_node_app_server_t *server);

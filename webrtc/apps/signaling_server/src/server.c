@@ -6,6 +6,7 @@
 #include "signaling_server/server.h"
 #include "signaling_server/config.h"
 #include "http_api.h"
+#include "signaling_tenant_quota_internal.h"
 #include <tlog.h>
 #include <platform.h>
 #include <salts/thread.h>
@@ -114,6 +115,18 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
     server->ws_server = webrtc_signaling_create(NULL, &ws_config);
     if (!server->ws_server) {
         TLOG_ERROR("Failed to create WebRTC signaling server");
+        salts_cond_destroy(&server->stopped);
+        salts_mutex_destroy(&server->mutex);
+        free(server);
+        return NULL;
+    }
+    if (server->config.tenant_quota_capacity > 0 &&
+        signaling_tenant_quota_enable(
+            server->ws_server, server->config.node_id,
+            (size_t)server->config.tenant_quota_capacity) != 0) {
+        TLOG_ERROR("Failed to initialize tenant quota projection");
+        webrtc_signaling_destroy(server->ws_server);
+        server->ws_server = NULL;
         salts_cond_destroy(&server->stopped);
         salts_mutex_destroy(&server->mutex);
         free(server);

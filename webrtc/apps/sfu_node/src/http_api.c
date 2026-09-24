@@ -1,6 +1,7 @@
 #include "sfu_node/http_api.h"
 #include "turbo_media_auth.h"
 #include "turbo_media_revocation_wire.h"
+#include "turbo_media_tenant_quota_wire.h"
 #include "turbo_sdp.h"
 #include <chttp/chttp.h>
 #include <json_parser.h>
@@ -26,6 +27,7 @@
 #define SFU_NODE_SCOPE_MEDIA_DELETE "sfu.media.delete"
 #define SFU_NODE_SECURITY_CONTROL_AUDIENCE "turbomedia-security-control"
 #define SFU_NODE_SECURITY_REVOCATION_SCOPE "security.revocation.write"
+#define SFU_NODE_SECURITY_TENANT_QUOTA_SCOPE "security.tenant_quota.write"
 
 enum {
     OK = 200,
@@ -348,14 +350,15 @@ static int request_has_control_auth(
 }
 
 static int request_has_security_control_auth(
-    const Req *req, const sfu_node_app_config_t *config) {
+    const Req *req, const sfu_node_app_config_t *config,
+    int feature_enabled, const char *required_scope) {
     const char *authorization;
     turbo_media_auth_config_t auth;
     turbo_media_auth_policy_t policy;
 
-    if (!req || !config || !req->server ||
-        !sfu_node_app_server_dynamic_revocation_enabled(req->server) ||
-        !config->use_tls || !config->auth_active_secret ||
+    if (!req || !config || !req->server || !feature_enabled ||
+        !required_scope || !config->use_tls ||
+        !config->auth_active_secret ||
         config->auth_active_secret[0] == '\0') {
         return 0;
     }
@@ -366,7 +369,7 @@ static int request_has_security_control_auth(
     auth = signed_auth_config(config, req->server, 0);
     memset(&policy, 0, sizeof(policy));
     policy.audience = SFU_NODE_SECURITY_CONTROL_AUDIENCE;
-    policy.required_scope = SFU_NODE_SECURITY_REVOCATION_SCOPE;
+    policy.required_scope = required_scope;
     return turbo_media_auth_authorize(
                authorization, NULL, &auth, &policy) ==
            TURBO_MEDIA_AUTH_SIGNED_TOKEN;
@@ -1912,7 +1915,10 @@ static void handle_revocation_snapshot(Req *req, Res *res) {
         return;
     }
     config = sfu_node_app_server_get_config(req->server);
-    if (!request_has_security_control_auth(req, config)) {
+    if (!request_has_security_control_auth(
+            req, config,
+            sfu_node_app_server_dynamic_revocation_enabled(req->server),
+            SFU_NODE_SECURITY_REVOCATION_SCOPE)) {
         set_header(res, "WWW-Authenticate", "Bearer");
         send_text(res, UNAUTHORIZED, "Unauthorized");
         return;
@@ -1939,7 +1945,10 @@ static void handle_revocation_revoke(Req *req, Res *res) {
         return;
     }
     config = sfu_node_app_server_get_config(req->server);
-    if (!request_has_security_control_auth(req, config)) {
+    if (!request_has_security_control_auth(
+            req, config,
+            sfu_node_app_server_dynamic_revocation_enabled(req->server),
+            SFU_NODE_SECURITY_REVOCATION_SCOPE)) {
         set_header(res, "WWW-Authenticate", "Bearer");
         send_text(res, UNAUTHORIZED, "Unauthorized");
         return;
@@ -1952,6 +1961,118 @@ static void handle_revocation_revoke(Req *req, Res *res) {
     result = sfu_node_app_server_apply_revocation(
         req->server, revoke.epoch, revoke.sequence, revoke.sha256);
     send_revocation_result(res, req->server, result);
+}
+
+static void send_tenant_quota_result(
+    Res *res, sfu_node_app_server_t *server,
+    turbo_media_tenant_quota_apply_result_t result) {
+    int synchronized = 0;
+    uint64_t epoch = 0U;
+    uint64_t sequence = 0U;
+    size_t lease_count = 0U;
+    const char *name = "error";
+    int status = BAD_REQUEST;
+    char body[256];
+    int length;
+
+    if (result == TURBO_MEDIA_TENANT_QUOTA_APPLY_APPLIED) {
+        name = "applied";
+        status = OK;
+    } else if (result == TURBO_MEDIA_TENANT_QUOTA_APPLY_STALE) {
+        name = "stale";
+        status = OK;
+    } else if (result == TURBO_MEDIA_TENANT_QUOTA_APPLY_GAP) {
+        name = "gap";
+        status = CONFLICT;
+    } else if (result == TURBO_MEDIA_TENANT_QUOTA_APPLY_LIMIT) {
+        name = "limit";
+        status = CONFLICT;
+    }
+    if (sfu_node_app_server_get_tenant_quota_status(
+            server, &synchronized, &epoch, &sequence,
+            &lease_count) != 0) {
+        send_text(res, INTERNAL_SERVER_ERROR,
+                  "Tenant quota status unavailable");
+        return;
+    }
+    length = snprintf(
+        body, sizeof(body),
+        "{\"schema_version\":1,\"result\":\"%s\","
+        "\"synchronized\":%s,\"epoch\":%llu,\"sequence\":%llu,"
+        "\"lease_count\":%zu}",
+        name, synchronized ? "true" : "false",
+        (unsigned long long)epoch, (unsigned long long)sequence,
+        lease_count);
+    if (length < 0 || (size_t)length >= sizeof(body)) {
+        send_text(res, INTERNAL_SERVER_ERROR, "Internal Error");
+        return;
+    }
+    reply(res, (unsigned int)status, "application/json",
+          body, (size_t)length);
+}
+
+static void handle_tenant_quota_snapshot(Req *req, Res *res) {
+    const sfu_node_app_config_t *config;
+    turbo_media_tenant_quota_wire_snapshot_t *snapshot = NULL;
+    turbo_media_tenant_quota_apply_result_t result;
+
+    if (!req || !res || !req->server) {
+        send_text(res, INTERNAL_SERVER_ERROR, "Server not initialized");
+        return;
+    }
+    config = sfu_node_app_server_get_config(req->server);
+    if (!request_has_security_control_auth(
+            req, config,
+            sfu_node_app_server_tenant_quota_enabled(req->server),
+            SFU_NODE_SECURITY_TENANT_QUOTA_SCOPE)) {
+        set_header(res, "WWW-Authenticate", "Bearer");
+        send_text(res, UNAUTHORIZED, "Unauthorized");
+        return;
+    }
+    snapshot = turbo_media_tenant_quota_wire_parse_snapshot(
+        (const char *)req->body, req->body_len);
+    if (!snapshot) {
+        send_text(res, BAD_REQUEST, "Invalid tenant quota snapshot");
+        return;
+    }
+    result = sfu_node_app_server_apply_tenant_quota_snapshot(
+        req->server,
+        turbo_media_tenant_quota_wire_snapshot_node_id(snapshot),
+        turbo_media_tenant_quota_wire_snapshot_epoch(snapshot),
+        turbo_media_tenant_quota_wire_snapshot_sequence(snapshot),
+        turbo_media_tenant_quota_wire_snapshot_leases(snapshot),
+        turbo_media_tenant_quota_wire_snapshot_count(snapshot));
+    turbo_media_tenant_quota_wire_snapshot_destroy(snapshot);
+    send_tenant_quota_result(res, req->server, result);
+}
+
+static void handle_tenant_quota_update(Req *req, Res *res) {
+    const sfu_node_app_config_t *config;
+    turbo_media_tenant_quota_wire_update_t update;
+    turbo_media_tenant_quota_apply_result_t result;
+
+    if (!req || !res || !req->server) {
+        send_text(res, INTERNAL_SERVER_ERROR, "Server not initialized");
+        return;
+    }
+    config = sfu_node_app_server_get_config(req->server);
+    if (!request_has_security_control_auth(
+            req, config,
+            sfu_node_app_server_tenant_quota_enabled(req->server),
+            SFU_NODE_SECURITY_TENANT_QUOTA_SCOPE)) {
+        set_header(res, "WWW-Authenticate", "Bearer");
+        send_text(res, UNAUTHORIZED, "Unauthorized");
+        return;
+    }
+    if (turbo_media_tenant_quota_wire_parse_update(
+            (const char *)req->body, req->body_len, &update) != 0) {
+        send_text(res, BAD_REQUEST, "Invalid tenant quota update");
+        return;
+    }
+    result = sfu_node_app_server_apply_tenant_quota_update(
+        req->server, update.node_id, update.epoch,
+        update.sequence, &update.lease);
+    send_tenant_quota_result(res, req->server, result);
 }
 
 typedef void (*sfu_node_http_handler_fn)(Req *req, Res *res);
@@ -1987,6 +2108,8 @@ SFU_NODE_HTTP_ROUTE_ADAPTER(handle_get_webrtc_session)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_command)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_revocation_snapshot)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_revocation_revoke)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_tenant_quota_snapshot)
+SFU_NODE_HTTP_ROUTE_ADAPTER(handle_tenant_quota_update)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whip_post)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_whep_post)
 SFU_NODE_HTTP_ROUTE_ADAPTER(handle_media_session_patch)
@@ -2067,7 +2190,11 @@ static int sfu_node_http_register_routes(sfu_node_http_api_t *api) {
         "/whip/:room_id/:participant_id",
         "/whep/:room_id/:participant_id",
         "/whip/:room_id/:participant_id/sessions/:session_id",
-        "/whep/:room_id/:participant_id/sessions/:session_id"};
+        "/whep/:room_id/:participant_id/sessions/:session_id",
+        "/api/v1/security/revocations/snapshot",
+        "/api/v1/security/revocations/revoke",
+        "/api/v1/security/tenant-quotas/snapshot",
+        "/api/v1/security/tenant-quotas/update"};
     int status = chttp_server_get(&api->http, "/health",
                                   handle_health_route, api);
     if (status == SALTS_OK) {
@@ -2099,6 +2226,18 @@ static int sfu_node_http_register_routes(sfu_node_http_api_t *api) {
         status = chttp_server_post(
             &api->http, "/api/v1/security/revocations/revoke",
             handle_revocation_revoke_route, api);
+    }
+    if (status == SALTS_OK &&
+        sfu_node_app_server_tenant_quota_enabled(api->server)) {
+        status = chttp_server_post(
+            &api->http, "/api/v1/security/tenant-quotas/snapshot",
+            handle_tenant_quota_snapshot_route, api);
+    }
+    if (status == SALTS_OK &&
+        sfu_node_app_server_tenant_quota_enabled(api->server)) {
+        status = chttp_server_post(
+            &api->http, "/api/v1/security/tenant-quotas/update",
+            handle_tenant_quota_update_route, api);
     }
     if (status == SALTS_OK) {
         status = chttp_server_post(&api->http,
