@@ -301,6 +301,71 @@ spec("signaling TOML configuration") {
         remove_toml(path);
     }
 
+    it("trusted proxy config requires WSS mTLS allowlist and source policy") {
+        static const char valid[] =
+            "[server]\n"
+            "use_tls = true\n"
+            "cert_file = \"signaling-chain.pem\"\n"
+            "key_file = \"signaling-key.pem\"\n"
+            "[trusted_proxy]\n"
+            "addresses = \"10.0.0.10,2001:db8::10\"\n"
+            "ca_file = \"edge-client-ca.pem\"\n";
+        static const char missing_tls[] =
+            "[trusted_proxy]\n"
+            "addresses = \"10.0.0.10\"\n"
+            "ca_file = \"edge-client-ca.pem\"\n";
+        static const char missing_ca[] =
+            "[server]\n"
+            "use_tls = true\n"
+            "cert_file = \"signaling-chain.pem\"\n"
+            "key_file = \"signaling-key.pem\"\n"
+            "[trusted_proxy]\n"
+            "addresses = \"10.0.0.10\"\n";
+        signaling_server_config_t config;
+        char *valid_path = write_toml(valid);
+        char *missing_tls_path = write_toml(missing_tls);
+        char *missing_ca_path = write_toml(missing_ca);
+
+        signaling_server_config_init(&config);
+        if (valid_path && missing_tls_path && missing_ca_path) {
+            check_equal(signaling_server_config_load(&config, valid_path), 0);
+            check_equal(config.trusted_proxy_addresses,
+                        "10.0.0.10,2001:db8::10");
+            check_equal(config.trusted_proxy_ca_file, "edge-client-ca.pem");
+            signaling_server_config_cleanup(&config);
+
+            signaling_server_config_init(&config);
+            check_equal(
+                signaling_server_config_load(&config, missing_tls_path), -1);
+            signaling_server_config_cleanup(&config);
+
+            signaling_server_config_init(&config);
+            check_equal(
+                signaling_server_config_load(&config, missing_ca_path), -1);
+            signaling_server_config_cleanup(&config);
+        } else {
+            signaling_server_config_cleanup(&config);
+        }
+
+        signaling_server_config_init(&config);
+        config.ws_use_tls = 1;
+        config.ws_cert_file = "signaling-chain.pem";
+        config.ws_key_file = "signaling-key.pem";
+        config.trusted_proxy_addresses = "10.0.0.10";
+        config.trusted_proxy_ca_file = "edge-client-ca.pem";
+        config.max_connections_per_source = 0;
+        config.source_admissions_per_second = 0;
+        config.source_admission_burst = 0;
+        config.max_source_states = 0;
+        config.source_state_ttl_ms = 0;
+        check_equal(signaling_server_config_validate(&config), -1);
+        signaling_server_config_cleanup(&config);
+
+        remove_toml(valid_path);
+        remove_toml(missing_tls_path);
+        remove_toml(missing_ca_path);
+    }
+
     it("requires a bounded WebSocket connection capacity") {
         static const char toml[] =
             "[limits]\n"
@@ -555,7 +620,9 @@ spec("signaling TOML configuration") {
             "TURBO_SIGNALING_HTTP_AUTH_MAX_TTL_SECONDS",
             "TURBO_SIGNALING_AUTH_ACTIVE_KEY_ID",
             "TURBO_SIGNALING_AUTH_ACTIVE_SECRET",
-            "TURBO_SIGNALING_AUTH_DYNAMIC_REVOCATION_CAPACITY"
+            "TURBO_SIGNALING_AUTH_DYNAMIC_REVOCATION_CAPACITY",
+            "TURBO_SIGNALING_TRUSTED_PROXY_ADDRESSES",
+            "TURBO_SIGNALING_TRUSTED_PROXY_CA_FILE"
         };
         char *saved[sizeof(names) / sizeof(names[0])] = {0};
         signaling_server_config_t config;
@@ -579,6 +646,9 @@ spec("signaling TOML configuration") {
         signaling_config_test_set_env(
             names[11], "env-peer-secret-at-least-32-bytes");
         signaling_config_test_set_env(names[12], "32");
+        signaling_config_test_set_env(
+            names[13], "10.0.0.10,2001:db8::10");
+        signaling_config_test_set_env(names[14], "edge-client-ca.pem");
 
         signaling_server_config_init(&config);
         config.http_enabled = 1;
@@ -598,6 +668,9 @@ spec("signaling TOML configuration") {
         check_equal(config.jwt_active_key_id, "env-peer-key");
         check_equal(config.jwt_secret, "env-peer-secret-at-least-32-bytes");
         check_equal(config.jwt_dynamic_revocation_capacity, 32);
+        check_equal(config.trusted_proxy_addresses,
+                    "10.0.0.10,2001:db8::10");
+        check_equal(config.trusted_proxy_ca_file, "edge-client-ca.pem");
         check_equal(signaling_server_config_validate(&config), 0);
 
         signaling_config_test_set_env(names[1], "not-a-boolean");
