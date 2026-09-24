@@ -5,6 +5,7 @@
 #include <json_parser.h>
 
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,23 @@ static int auth_identifier_valid(const char *value) {
         }
     }
     return 1;
+}
+
+static int auth_tenant_identifier_valid(const char *value) {
+    return auth_identifier_valid(value) && strchr(value, '/') == NULL;
+}
+
+static int auth_tenant_room_consistent(
+    const char *tenant_id, const char *room_id) {
+    size_t tenant_length;
+
+    if (!tenant_id || !room_id) {
+        return 1;
+    }
+    tenant_length = strlen(tenant_id);
+    return strncmp(room_id, tenant_id, tenant_length) == 0 &&
+           room_id[tenant_length] == '/' &&
+           room_id[tenant_length + 1U] != '\0';
 }
 
 static int auth_scope_list_valid(const char *scope) {
@@ -420,8 +438,8 @@ static int auth_verify_signed_token(
     const turbo_media_auth_policy_t *policy) {
     static const char *const header_keys[] = {"alg", "typ", "kid"};
     static const char *const payload_keys[] = {
-        "iss", "sub", "aud", "scope", "iat", "exp", "room_id",
-        "participant_id"
+        "iss", "sub", "aud", "scope", "iat", "exp", "tenant_id",
+        "room_id", "participant_id"
     };
     const char *first_dot;
     const char *second_dot;
@@ -442,6 +460,7 @@ static int auth_verify_signed_token(
     const char *subject;
     const char *audience;
     const char *scope;
+    const char *tenant_id;
     const char *room_id;
     const char *participant_id;
     uint8_t expected_signature[AUTH_SIGNATURE_BYTES];
@@ -454,7 +473,10 @@ static int auth_verify_signed_token(
         turbo_media_auth_config_validate(config) != 0 ||
         !auth_identifier_valid(policy->audience) ||
         !auth_identifier_valid(policy->required_scope) ||
+        (policy->tenant_id &&
+         !auth_tenant_identifier_valid(policy->tenant_id)) ||
         (policy->room_id && !auth_identifier_valid(policy->room_id)) ||
+        !auth_tenant_room_consistent(policy->tenant_id, policy->room_id) ||
         (policy->participant_id &&
          !auth_identifier_valid(policy->participant_id))) {
         return 0;
@@ -525,6 +547,7 @@ static int auth_verify_signed_token(
     subject = auth_json_string(payload, "sub");
     audience = auth_json_string(payload, "aud");
     scope = auth_json_string(payload, "scope");
+    tenant_id = auth_json_string(payload, "tenant_id");
     room_id = auth_json_string(payload, "room_id");
     participant_id = auth_json_string(payload, "participant_id");
     if (!auth_identifier_valid(issuer) ||
@@ -533,9 +556,12 @@ static int auth_verify_signed_token(
         !auth_identifier_valid(audience) ||
         strcmp(audience, policy->audience) != 0 ||
         !auth_scope_contains(scope, policy->required_scope) ||
+        (tenant_id && !auth_tenant_identifier_valid(tenant_id)) ||
         (room_id && !auth_identifier_valid(room_id)) ||
+        !auth_tenant_room_consistent(tenant_id, room_id) ||
         (participant_id && !auth_identifier_valid(participant_id)) ||
         (participant_id && !room_id) ||
+        !auth_resource_claim_matches(tenant_id, policy->tenant_id) ||
         !auth_resource_claim_matches(room_id, policy->room_id) ||
         !auth_resource_claim_matches(participant_id,
                                      policy->participant_id) ||
@@ -631,77 +657,105 @@ turbo_media_auth_result_t turbo_media_auth_authorize_token(
     return TURBO_MEDIA_AUTH_SIGNED_TOKEN;
 }
 
+static int auth_payload_append(
+    char *output, size_t capacity, size_t *used,
+    const char *format, ...) {
+    va_list args;
+    int written;
+    size_t available;
+
+    if (!used || !format) {
+        return -1;
+    }
+    available = output && capacity > *used ? capacity - *used : 0U;
+    va_start(args, format);
+    written = vsnprintf(output ? output + *used : NULL, available,
+                        format, args);
+    va_end(args);
+    if (written < 0) {
+        return -1;
+    }
+    if ((size_t)written > AUTH_MAX_PAYLOAD_BYTES - *used) {
+        return -1;
+    }
+    if (output && (size_t)written >= available) {
+        return -1;
+    }
+    *used += (size_t)written;
+    return 0;
+}
+
 static char *auth_format_payload(const turbo_media_auth_config_t *config,
                                  const turbo_media_auth_claims_t *claims) {
-    const char *format;
-    int required;
+    size_t required = 0U;
+    size_t used = 0U;
     char *output;
 
-    if (claims->room_id && claims->participant_id) {
-        format =
+    if (auth_payload_append(
+            NULL, 0U, &required,
             "{\"iss\":\"%s\",\"sub\":\"%s\",\"aud\":\"%s\","
-            "\"scope\":\"%s\",\"room_id\":\"%s\","
-            "\"participant_id\":\"%s\",\"iat\":%lld,\"exp\":%lld}";
-        required = snprintf(
-            NULL, 0, format, config->issuer, claims->subject,
-            claims->audience, claims->scope, claims->room_id,
-            claims->participant_id, (long long)claims->issued_at,
-            (long long)claims->expires_at);
-    } else if (claims->room_id) {
-        format =
-            "{\"iss\":\"%s\",\"sub\":\"%s\",\"aud\":\"%s\","
-            "\"scope\":\"%s\",\"room_id\":\"%s\","
-            "\"iat\":%lld,\"exp\":%lld}";
-        required = snprintf(
-            NULL, 0, format, config->issuer, claims->subject,
-            claims->audience, claims->scope, claims->room_id,
-            (long long)claims->issued_at, (long long)claims->expires_at);
-    } else if (claims->participant_id) {
-        format =
-            "{\"iss\":\"%s\",\"sub\":\"%s\",\"aud\":\"%s\","
-            "\"scope\":\"%s\",\"participant_id\":\"%s\","
-            "\"iat\":%lld,\"exp\":%lld}";
-        required = snprintf(
-            NULL, 0, format, config->issuer, claims->subject,
-            claims->audience, claims->scope, claims->participant_id,
-            (long long)claims->issued_at, (long long)claims->expires_at);
-    } else {
-        format =
-            "{\"iss\":\"%s\",\"sub\":\"%s\",\"aud\":\"%s\","
-            "\"scope\":\"%s\",\"iat\":%lld,\"exp\":%lld}";
-        required = snprintf(
-            NULL, 0, format, config->issuer, claims->subject,
-            claims->audience, claims->scope,
-            (long long)claims->issued_at, (long long)claims->expires_at);
-    }
-    if (required < 0 || (size_t)required > AUTH_MAX_PAYLOAD_BYTES) {
+            "\"scope\":\"%s\"",
+            config->issuer, claims->subject, claims->audience,
+            claims->scope) != 0) {
         return NULL;
     }
-    output = (char *)malloc((size_t)required + 1U);
+    if (claims->tenant_id &&
+        auth_payload_append(NULL, 0U, &required,
+                            ",\"tenant_id\":\"%s\"",
+                            claims->tenant_id) != 0) {
+        return NULL;
+    }
+    if (claims->room_id &&
+        auth_payload_append(NULL, 0U, &required,
+                            ",\"room_id\":\"%s\"",
+                            claims->room_id) != 0) {
+        return NULL;
+    }
+    if (claims->participant_id &&
+        auth_payload_append(NULL, 0U, &required,
+                            ",\"participant_id\":\"%s\"",
+                            claims->participant_id) != 0) {
+        return NULL;
+    }
+    if (auth_payload_append(
+            NULL, 0U, &required,
+            ",\"iat\":%lld,\"exp\":%lld}",
+            (long long)claims->issued_at,
+            (long long)claims->expires_at) != 0 ||
+        required > AUTH_MAX_PAYLOAD_BYTES) {
+        return NULL;
+    }
+
+    output = (char *)malloc(required + 1U);
     if (!output) {
         return NULL;
     }
-    if (claims->room_id && claims->participant_id) {
-        snprintf(output, (size_t)required + 1U, format, config->issuer,
-                 claims->subject, claims->audience, claims->scope,
-                 claims->room_id, claims->participant_id,
-                 (long long)claims->issued_at,
-                 (long long)claims->expires_at);
-    } else if (claims->room_id) {
-        snprintf(output, (size_t)required + 1U, format, config->issuer,
-                 claims->subject, claims->audience, claims->scope,
-                 claims->room_id, (long long)claims->issued_at,
-                 (long long)claims->expires_at);
-    } else if (claims->participant_id) {
-        snprintf(output, (size_t)required + 1U, format, config->issuer,
-                 claims->subject, claims->audience, claims->scope,
-                 claims->participant_id, (long long)claims->issued_at,
-                 (long long)claims->expires_at);
-    } else {
-        snprintf(output, (size_t)required + 1U, format, config->issuer,
-                 claims->subject, claims->audience, claims->scope,
-                 (long long)claims->issued_at,
-                 (long long)claims->expires_at);
+    if (auth_payload_append(
+            output, required + 1U, &used,
+            "{\"iss\":\"%s\",\"sub\":\"%s\",\"aud\":\"%s\","
+            "\"scope\":\"%s\"",
+            config->issuer, claims->subject, claims->audience,
+            claims->scope) != 0 ||
+        (claims->tenant_id &&
+         auth_payload_append(output, required + 1U, &used,
+                             ",\"tenant_id\":\"%s\"",
+                             claims->tenant_id) != 0) ||
+        (claims->room_id &&
+         auth_payload_append(output, required + 1U, &used,
+                             ",\"room_id\":\"%s\"",
+                             claims->room_id) != 0) ||
+        (claims->participant_id &&
+         auth_payload_append(output, required + 1U, &used,
+                             ",\"participant_id\":\"%s\"",
+                             claims->participant_id) != 0) ||
+        auth_payload_append(
+            output, required + 1U, &used,
+            ",\"iat\":%lld,\"exp\":%lld}",
+            (long long)claims->issued_at,
+            (long long)claims->expires_at) != 0 ||
+        used != required) {
+        free(output);
+        return NULL;
     }
     return output;
 }
@@ -724,7 +778,11 @@ char *turbo_media_auth_issue(const turbo_media_auth_config_t *config,
         !auth_identifier_valid(claims->subject) ||
         !auth_identifier_valid(claims->audience) ||
         !auth_scope_list_valid(claims->scope) ||
+        (claims->tenant_id &&
+         !auth_tenant_identifier_valid(claims->tenant_id)) ||
         (claims->room_id && !auth_identifier_valid(claims->room_id)) ||
+        !auth_tenant_room_consistent(
+            claims->tenant_id, claims->room_id) ||
         (claims->participant_id &&
          !auth_identifier_valid(claims->participant_id)) ||
         (claims->participant_id && !claims->room_id) ||

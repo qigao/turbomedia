@@ -52,6 +52,7 @@ typedef struct turbo_media_auth_policy_s {
     const char *room_id;
     const char *participant_id;
     int64_t now;
+    const char *tenant_id;
 } turbo_media_auth_policy_t;
 
 typedef struct turbo_media_auth_claims_s {
@@ -62,6 +63,7 @@ typedef struct turbo_media_auth_claims_s {
     const char *participant_id;
     int64_t issued_at;
     int64_t expires_at;
+    const char *tenant_id;
 } turbo_media_auth_claims_t;
 
 typedef enum turbo_media_auth_result_e {
@@ -80,8 +82,9 @@ int turbo_media_auth_config_validate(const turbo_media_auth_config_t *config);
  * compatibility modes only when dynamic revocation is not configured.
  * Enabling revocation_check disables static-token authorization so a legacy
  * bearer cannot bypass the shared revocation state. Resource claims are exact:
- * a policy without room_id or participant_id only accepts an equally unbound
- * signed token.
+ * tenant_id, room_id, and participant_id must each be either absent on both
+ * policy/token or exactly equal. A tenant-bound token is never accepted by an
+ * unbound policy.
  */
 turbo_media_auth_result_t turbo_media_auth_authorize(
     const char *authorization,
