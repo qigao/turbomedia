@@ -48,11 +48,28 @@ Future proxy-derived client identity may be accepted only when all of the follow
 
 Until then, forwarded identity headers are not a trusted fact source.
 
+### Tenant identity fact source
+
+Tenant-wide quota must not infer tenant identity independently in signaling, SFU, and Room Service. The
+shared signed-token contract therefore defines one optional `tenant_id` resource claim.
+
+Tenant binding follows the same exact-match rule as room/participant binding:
+
+- policy and token both omit `tenant_id`, or both contain the exact same identifier;
+- a tenant-bound token is never accepted by an unbound policy;
+- `tenant_id` uses the bounded identifier alphabet but cannot contain `/`;
+- when both tenant and room are present, `room_id` must be in the existing
+  `<tenant_id>/...` namespace and must contain a non-empty suffix.
+
+This keeps the existing unbound token contract valid while preventing a future quota layer from treating
+`tenant-a` and `tenant-b/room` as one identity. The quota layer is not implemented by this slice; it
+must consume this signed tenant fact instead of reconstructing a second tenant namespace locally.
+
 ### Application process
 
 The application process verifies:
 
-- signed-token issuer, key id/signature, audience, scope, expiry, room and participant binding;
+- signed-token issuer, key id/signature, audience, scope, expiry, tenant, room and participant binding;
 - static fingerprint revocation where legacy configuration still uses it;
 - the dynamic revocation view when configured.
 
@@ -262,6 +279,7 @@ The following are intentionally not claimed complete by the dynamic-revocation s
 - shared-control-plane producer integration for canonical revocation publication;
 - TLS-connection-level admission before handshake CPU allocation (source HTTP/WebSocket admission is now pre-application);
 - trusted-proxy allowlist and spoofed-header negative tests;
+- quota lease/reservation model consuming the signed tenant identity fact;
 - tenant/subject/IP/connection/request/media-resource quota model;
 - deterministic multi-node tenant-wide quota enforcement;
 - security metrics/alerts/audit integration;

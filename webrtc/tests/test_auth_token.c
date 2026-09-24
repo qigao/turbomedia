@@ -57,6 +57,39 @@ static turbo_media_auth_result_t authorize(
     return turbo_media_auth_authorize(authorization, NULL, config, &policy);
 }
 
+static char *issue_tenant_token(
+    const turbo_media_auth_config_t *config, const char *tenant_id,
+    const char *scope, const char *room_id, const char *participant_id,
+    int64_t issued_at, int64_t expires_at) {
+    turbo_media_auth_claims_t claims = {
+        .subject = "room-service",
+        .audience = "turbomedia-sfu-media",
+        .scope = scope,
+        .tenant_id = tenant_id,
+        .room_id = room_id,
+        .participant_id = participant_id,
+        .issued_at = issued_at,
+        .expires_at = expires_at
+    };
+    return turbo_media_auth_issue(config, &claims);
+}
+
+static turbo_media_auth_result_t authorize_tenant(
+    const char *authorization, const turbo_media_auth_config_t *config,
+    const char *tenant_id, const char *scope, const char *room_id,
+    const char *participant_id, int64_t now) {
+    turbo_media_auth_policy_t policy = {
+        .audience = "turbomedia-sfu-media",
+        .required_scope = scope,
+        .tenant_id = tenant_id,
+        .room_id = room_id,
+        .participant_id = participant_id,
+        .now = now
+    };
+    return turbo_media_auth_authorize(
+        authorization, NULL, config, &policy);
+}
+
 static void token_sha256_hex(const char *token, char output[65]) {
     static const char hex[] = "0123456789abcdef";
     uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
@@ -82,6 +115,100 @@ void test_auth_token_accepts_exact_scope_and_resource(void) {
                   "room-a", "alice", TEST_NOW_SECONDS + 1)), (int)(TURBO_MEDIA_AUTH_SIGNED_TOKEN));
 
     free(authorization);
+    free(token);
+}
+
+void test_auth_token_tenant_binding_is_exact_and_unbound_is_not_global(void) {
+    char *tenant_token = issue_tenant_token(
+        &active_config, "tenant-a", "sfu.media.publish",
+        "tenant-a/room-a", "alice",
+        TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
+    char *legacy_unbound = issue_token(
+        &active_config, "sfu.media.publish",
+        "tenant-a/room-a", "alice",
+        TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
+    char *authorization;
+
+    check_not_null(tenant_token);
+    check_not_null(legacy_unbound);
+
+    authorization = authorization_for(tenant_token);
+    check_equal(
+        (int)authorize_tenant(
+            authorization, &active_config, "tenant-a",
+            "sfu.media.publish", "tenant-a/room-a", "alice",
+            TEST_NOW_SECONDS + 1),
+        (int)TURBO_MEDIA_AUTH_SIGNED_TOKEN);
+    check_equal(
+        (int)authorize_tenant(
+            authorization, &active_config, "tenant-b",
+            "sfu.media.publish", "tenant-a/room-a", "alice",
+            TEST_NOW_SECONDS + 1),
+        (int)TURBO_MEDIA_AUTH_DENIED);
+    check_equal(
+        (int)authorize_tenant(
+            authorization, &active_config, NULL,
+            "sfu.media.publish", "tenant-a/room-a", "alice",
+            TEST_NOW_SECONDS + 1),
+        (int)TURBO_MEDIA_AUTH_DENIED);
+    free(authorization);
+
+    authorization = authorization_for(legacy_unbound);
+    check_equal(
+        (int)authorize_tenant(
+            authorization, &active_config, NULL,
+            "sfu.media.publish", "tenant-a/room-a", "alice",
+            TEST_NOW_SECONDS + 1),
+        (int)TURBO_MEDIA_AUTH_SIGNED_TOKEN);
+    check_equal(
+        (int)authorize_tenant(
+            authorization, &active_config, "tenant-a",
+            "sfu.media.publish", "tenant-a/room-a", "alice",
+            TEST_NOW_SECONDS + 1),
+        (int)TURBO_MEDIA_AUTH_DENIED);
+
+    free(authorization);
+    free(legacy_unbound);
+    free(tenant_token);
+}
+
+void test_auth_token_rejects_invalid_or_inconsistent_tenant_identity(void) {
+    char *token = issue_tenant_token(
+        &active_config, "tenant a", "sfu.media.publish",
+        "room-a", "alice",
+        TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
+    turbo_media_auth_policy_t policy = {
+        .audience = "turbomedia-sfu-media",
+        .required_scope = "sfu.media.publish",
+        .room_id = "tenant-b/room-a",
+        .participant_id = "alice",
+        .now = TEST_NOW_SECONDS + 1,
+        .tenant_id = "tenant-a"
+    };
+
+    check_null(token);
+
+    token = issue_tenant_token(
+        &active_config, "tenant/a", "sfu.media.publish",
+        "tenant/a/room-a", "alice",
+        TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
+    check_null(token);
+
+    token = issue_tenant_token(
+        &active_config, "tenant-a", "sfu.media.publish",
+        "tenant-b/room-a", "alice",
+        TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
+    check_null(token);
+
+    token = issue_token(
+        &active_config, "sfu.media.publish",
+        "tenant-b/room-a", "alice",
+        TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
+    check_not_null(token);
+    check_equal(
+        (int)turbo_media_auth_authorize_token(
+            token, &active_config, &policy),
+        (int)TURBO_MEDIA_AUTH_DENIED);
     free(token);
 }
 
@@ -387,6 +514,8 @@ void test_auth_token_bounds_revocation_list_cardinality(void) {
 
 spec("test_auth_token") {
     it("test_auth_token_accepts_exact_scope_and_resource") { test_auth_token_accepts_exact_scope_and_resource(); };
+    it("test_auth_token_tenant_binding_is_exact_and_unbound_is_not_global") { test_auth_token_tenant_binding_is_exact_and_unbound_is_not_global(); };
+    it("test_auth_token_rejects_invalid_or_inconsistent_tenant_identity") { test_auth_token_rejects_invalid_or_inconsistent_tenant_identity(); };
     it("test_auth_token_rejects_cross_room_and_participant_use") { test_auth_token_rejects_cross_room_and_participant_use(); };
     it("test_auth_token_rejects_expired_and_overlong_tokens") { test_auth_token_rejects_expired_and_overlong_tokens(); };
     it("test_auth_token_supports_one_previous_rotation_key") { test_auth_token_supports_one_previous_rotation_key(); };
