@@ -1,0 +1,310 @@
+name: Linux Client Installed Package
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/linux-client-package.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "presets/**"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
+      - "vcpkg-overlays/**"
+      - "common/**"
+      - "core/**"
+      - "crypto/**"
+      - "speech/**"
+      - "codec/**"
+      - "muxer/**"
+      - "demuxer/**"
+      - "network/**"
+      - "transport/**"
+      - "player/**"
+      - "recognition/**"
+      - "media/**"
+      - "webrtc/**"
+      - "tests/**"
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/linux-client-package.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "presets/**"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
+      - "vcpkg-overlays/**"
+      - "common/**"
+      - "core/**"
+      - "crypto/**"
+      - "speech/**"
+      - "codec/**"
+      - "muxer/**"
+      - "demuxer/**"
+      - "network/**"
+      - "transport/**"
+      - "player/**"
+      - "recognition/**"
+      - "media/**"
+      - "webrtc/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: linux-client-package-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client:
+    name: Linux CLIENT clean package contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      VCPKG_DISABLE_METRICS: "1"
+      PKG_ROOT: ${{ github.workspace }}/.ci/pkgs
+      SALTS_ROOT: ${{ github.workspace }}/.ci/pkgs/salts/release
+      SALTS_UTILS_ROOT: ${{ github.workspace }}/.ci/pkgs/salts-utils/release
+      SALTSNET_ROOT: ${{ github.workspace }}/.ci/pkgs/saltsnet/release
+      TURBOMEDIA_ROOT: ${{ github.workspace }}/.ci/pkgs/turbomedia/release
+      LD_LIBRARY_PATH: >-
+        ${{ github.workspace }}/build/linux-client-ci/bin:
+        ${{ github.workspace }}/vcpkg_installed/x64-linux/lib:
+        ${{ github.workspace }}/.ci/salts/vcpkg_installed/x64-linux/lib:
+        ${{ github.workspace }}/.ci/salts-utils/vcpkg_installed/x64-linux/lib:
+        ${{ github.workspace }}/.ci/salts-net/vcpkg_installed/x64-linux/lib:
+        ${{ github.workspace }}/.ci/pkgs/salts/release/lib:
+        ${{ github.workspace }}/.ci/pkgs/salts-utils/release/lib:
+        ${{ github.workspace }}/.ci/pkgs/saltsnet/release/lib
+
+    steps:
+      - name: Checkout TurboMedia
+        uses: actions/checkout@v7
+
+      - name: Checkout Salts master
+        uses: actions/checkout@v7
+        with:
+          repository: qigao/salts
+          ref: master
+          path: .ci/salts
+          fetch-depth: 1
+
+      - name: Checkout SaltsUtils master
+        uses: actions/checkout@v7
+        with:
+          repository: qigao/salts-utils
+          ref: master
+          path: .ci/salts-utils
+          fetch-depth: 1
+
+      - name: Checkout SaltsNet master
+        uses: actions/checkout@v7
+        with:
+          repository: qigao/salts-net
+          ref: master
+          path: .ci/salts-net
+          fetch-depth: 1
+
+      - name: Record exact upstream heads
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "salts=$(git -C .ci/salts rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "salts_utils=$(git -C .ci/salts-utils rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "salts_net=$(git -C .ci/salts-net rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git -C .ci/salts status --short
+          git -C .ci/salts-utils status --short
+          git -C .ci/salts-net status --short
+
+      - name: Set up shared vcpkg binary cache
+        uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+
+      - name: Set up versioned re2c host tools
+        uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+
+      - name: Install Linux capture prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm \
+            libpipewire-0.3-dev libx11-dev libxext-dev
+
+      - name: Restore Salts installed SDK
+        id: salts-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci/pkgs/salts/release
+            .ci/salts/vcpkg_installed
+          key: >-
+            turbomedia-linux-client-salts-v1-${{ runner.os }}-${{ runner.arch }}-
+            ${{ steps.deps.outputs.salts }}-
+            ${{ hashFiles('.ci/salts/vcpkg.json', '.ci/salts/vcpkg-configuration.json') }}
+
+      - name: Build and install Salts master
+        if: steps.salts-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .ci/salts/build/turbomedia-client "$SALTS_ROOT"
+          cmake -S .ci/salts -B .ci/salts/build/turbomedia-client -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/.ci/salts/vcpkg_installed" \
+            -DCMAKE_INSTALL_PREFIX="$SALTS_ROOT" \
+            -DSALTS_ENABLE_EPOLL_READINESS=ON \
+            -DENABLE_TESTS=OFF -DBUILD_TESTS=OFF \
+            -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF
+          cmake --build .ci/salts/build/turbomedia-client --parallel 4
+          cmake --install .ci/salts/build/turbomedia-client
+          test -f "$SALTS_ROOT/lib/cmake/Salts/SaltsConfig.cmake"
+
+      - name: Validate Salts installed SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$SALTS_ROOT/lib/cmake/Salts/SaltsConfig.cmake"
+          test -f "$SALTS_ROOT/lib/cmake/Salts/SaltsTargets.cmake"
+
+      - name: Restore SaltsUtils capture SDK
+        id: salts-utils-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci/pkgs/salts-utils/release
+            .ci/salts-utils/vcpkg_installed
+          key: >-
+            turbomedia-linux-client-salts-utils-v1-${{ runner.os }}-${{ runner.arch }}-
+            ${{ steps.deps.outputs.salts }}-${{ steps.deps.outputs.salts_utils }}-
+            ${{ hashFiles('.ci/salts-utils/vcpkg.json', '.ci/salts-utils/vcpkg-configuration.json') }}
+
+      - name: Build and install SaltsUtils capture master
+        if: steps.salts-utils-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .ci/salts-utils/build/turbomedia-client "$SALTS_UTILS_ROOT"
+          cmake -S .ci/salts-utils -B .ci/salts-utils/build/turbomedia-client -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/.ci/salts-utils/vcpkg_installed" \
+            -DVCPKG_MANIFEST_FEATURES=capture \
+            -DSALTS_UTILS_ENABLE_CAPTURE=ON \
+            -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX="$SALTS_UTILS_ROOT"
+          cmake --build .ci/salts-utils/build/turbomedia-client --parallel 4
+          cmake --install .ci/salts-utils/build/turbomedia-client
+          test -f "$SALTS_UTILS_ROOT/lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
+
+      - name: Validate SaltsUtils CLIENT targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          targets="$SALTS_UTILS_ROOT/lib/cmake/SaltsUtils/SaltsUtilsTargets.cmake"
+          test -f "$targets"
+          grep -F "Salts::Capture" "$targets"
+          grep -F "Salts::Playback" "$targets"
+
+      - name: Restore SaltsNet installed SDK
+        id: salts-net-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci/pkgs/saltsnet/release
+            .ci/salts-net/vcpkg_installed
+          key: >-
+            turbomedia-linux-client-salts-net-v1-${{ runner.os }}-${{ runner.arch }}-
+            ${{ steps.deps.outputs.salts }}-${{ steps.deps.outputs.salts_net }}-
+            ${{ hashFiles('.ci/salts-net/vcpkg.json', '.ci/salts-net/vcpkg-configuration.json') }}
+
+      - name: Build and install SaltsNet master
+        if: steps.salts-net-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .ci/salts-net/build/turbomedia-client "$SALTSNET_ROOT"
+          cmake -S .ci/salts-net -B .ci/salts-net/build/turbomedia-client -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/.ci/salts-net/vcpkg_installed" \
+            -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX="$SALTSNET_ROOT"
+          cmake --build .ci/salts-net/build/turbomedia-client --parallel 4
+          cmake --install .ci/salts-net/build/turbomedia-client
+          test -f "$SALTSNET_ROOT/lib/cmake/SaltsNet/SaltsNetConfig.cmake"
+
+      - name: Validate SaltsNet installed SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$SALTSNET_ROOT/lib/cmake/SaltsNet/SaltsNetConfig.cmake"
+          test -f "$SALTSNET_ROOT/lib/cmake/SaltsNet/SaltsNetTargets.cmake"
+
+      - name: Restore TurboMedia vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          path: vcpkg_installed
+          key: >-
+            turbomedia-vcpkg-linux-client-v1-${{ runner.os }}-${{ runner.arch }}-
+            ${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**') }}
+          restore-keys: |
+            turbomedia-vcpkg-linux-client-v1-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Configure clean Linux CLIENT
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/linux-client-ci "$TURBOMEDIA_ROOT"
+          cmake -S . -B build/linux-client-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTURBO_MEDIA_PRODUCT=CLIENT \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed" \
+            -DCMAKE_INSTALL_PREFIX="$TURBOMEDIA_ROOT"
+
+      - name: Build Linux CLIENT
+        shell: bash
+        run: cmake --build build/linux-client-ci --parallel 4
+
+      - name: Test Linux CLIENT
+        shell: bash
+        run: ctest --test-dir build/linux-client-ci --output-on-failure --no-tests=error
+
+      - name: Install Linux CLIENT
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --install build/linux-client-ci
+          test -f "$TURBOMEDIA_ROOT/lib/cmake/TurboMedia/TurboMediaConfig.cmake"
+          grep -F 'set(TurboMedia_PRODUCT "CLIENT")' \
+            "$TURBOMEDIA_ROOT/lib/cmake/TurboMedia/TurboMediaConfig.cmake"
+
+      - name: Configure fresh installed-package consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/linux-client-consumer
+          cmake -S tests/package_consumer -B build/linux-client-consumer -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTurboMedia_EXPECTED_PRODUCT=CLIENT \
+            -DTurboMedia_DIR="$TURBOMEDIA_ROOT/lib/cmake/TurboMedia" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_MANIFEST_MODE=OFF \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed"
+
+      - name: Build fresh installed-package consumer
+        shell: bash
+        run: cmake --build build/linux-client-consumer --parallel 4
