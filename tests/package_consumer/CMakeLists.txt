@@ -8,7 +8,7 @@ endif()
 
 set(turbo_media_components RTSP Transport DataChannel Speech Recognition)
 if(TurboMedia_EXPECTED_PRODUCT STREQUAL "CLIENT")
-  list(APPEND turbo_media_components Player)
+  list(APPEND turbo_media_components ClientProcessing Player)
 else()
   list(APPEND turbo_media_components Pipeline WebRTC)
 endif()
@@ -20,8 +20,9 @@ if(NOT TurboMedia_PRODUCT STREQUAL TurboMedia_EXPECTED_PRODUCT)
 endif()
 
 if(TurboMedia_EXPECTED_PRODUCT STREQUAL "SERVER")
-  if(TARGET TurboMedia::Player)
-    message(FATAL_ERROR "SERVER package unexpectedly exports Player")
+  if(TARGET TurboMedia::Player OR TARGET TurboMedia::ClientProcessing)
+    message(FATAL_ERROR
+            "SERVER package unexpectedly exports CLIENT-only targets")
   endif()
   add_executable(turbo_media_pipeline_package_consumer main.c)
   target_link_libraries(turbo_media_pipeline_package_consumer
@@ -34,6 +35,11 @@ else()
   if(TARGET TurboMedia::Pipeline OR TARGET TurboMedia::WebRTC)
     message(FATAL_ERROR "CLIENT package unexpectedly exports server targets")
   endif()
+  add_executable(turbo_media_client_processing_package_consumer
+                 client_processing_consumer.c)
+  target_link_libraries(turbo_media_client_processing_package_consumer
+                        PRIVATE TurboMedia::ClientProcessing)
+
   add_executable(turbo_media_player_package_consumer player_consumer.c)
   target_link_libraries(turbo_media_player_package_consumer
                         PRIVATE TurboMedia::Player)
