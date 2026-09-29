@@ -667,4 +667,79 @@ spec("TurboMedia ClientProcessing core") {
                 TURBO_CLIENT_PROCESSING_OK);
   }
 
+  it("uses the full audio byte budget across ring wrap") {
+    turbo_client_processing_config_t config;
+    turbo_client_processing_audio_capture_config_t audio_config;
+    turbo_client_processing_audio_frame_info_t info;
+    turbo_client_processing_t *processing = NULL;
+    const uint8_t a[3] = {1u, 2u, 3u};
+    const uint8_t b[5] = {4u, 5u, 6u, 7u, 8u};
+    const uint8_t cframe[5] = {9u, 10u, 11u, 12u, 13u};
+    uint8_t output[5] = {0};
+    size_t output_size = 0u;
+
+    turbo_client_processing_config_init(&config);
+    check_equal(turbo_client_processing_create(&config, &processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    turbo_client_processing_audio_capture_config_init(&audio_config);
+    audio_config.queue_capacity = 3u;
+    audio_config.queue_max_bytes = 10u;
+    audio_config.queue_max_duration_us = 1000u;
+    audio_config.sample_rate = 16000u;
+    audio_config.channels = 1u;
+    audio_config.bits_per_sample = 16u;
+    /*
+     * S16 mono requires 2-byte alignment, so use 4/4/4 bytes to force a
+     * split write after popping the first record from a 10-byte arena.
+     */
+    check_equal(turbo_client_processing_set_audio_capture_config(
+                    processing, &audio_config),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_prepare(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    {
+      const uint8_t first[4] = {1u, 2u, 3u, 4u};
+      const uint8_t second[4] = {5u, 6u, 7u, 8u};
+      const uint8_t wrapped[4] = {9u, 10u, 11u, 12u};
+      turbo_client_processing_audio_frame_info_init(&info);
+      check_equal(turbo_client_processing_admit_audio_frame(
+                      processing, first, sizeof(first), 100u),
+                  TURBO_CLIENT_PROCESSING_OK);
+      check_equal(turbo_client_processing_admit_audio_frame(
+                      processing, second, sizeof(second), 110u),
+                  TURBO_CLIENT_PROCESSING_OK);
+      check_equal(turbo_client_processing_pop_audio_frame(
+                      processing, output, sizeof(output), &output_size, &info),
+                  TURBO_CLIENT_PROCESSING_OK);
+      check_equal(turbo_client_processing_admit_audio_frame(
+                      processing, wrapped, sizeof(wrapped), 120u),
+                  TURBO_CLIENT_PROCESSING_OK);
+
+      check_equal(turbo_client_processing_pop_audio_frame(
+                      processing, output, sizeof(output), &output_size, &info),
+                  TURBO_CLIENT_PROCESSING_OK);
+      check_equal(output[0], 5);
+      check_equal(output[3], 8);
+      check_equal(turbo_client_processing_pop_audio_frame(
+                      processing, output, sizeof(output), &output_size, &info),
+                  TURBO_CLIENT_PROCESSING_OK);
+      check_equal(output[0], 9);
+      check_equal(output[3], 12);
+    }
+
+    check_equal(turbo_client_processing_request_stop(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_drain(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_destroy(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    (void)a;
+    (void)b;
+    (void)cframe;
+  }
+
 }
