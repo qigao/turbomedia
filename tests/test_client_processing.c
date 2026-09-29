@@ -295,4 +295,187 @@ spec("TurboMedia ClientProcessing core") {
     check_equal(turbo_client_processing_destroy(processing),
                 TURBO_CLIENT_PROCESSING_OK);
   }
+  it("copies borrowed Salts video frames before callback return") {
+    turbo_client_processing_config_t config;
+    turbo_client_processing_snapshot_t snapshot;
+    turbo_client_processing_video_frame_info_t info;
+    turbo_client_processing_t *processing = NULL;
+    uint8_t borrowed[4] = {1u, 2u, 3u, 4u};
+    uint8_t copied[4] = {0};
+    size_t copied_size = 0u;
+
+    turbo_client_processing_config_init(&config);
+    config.frame_queue_capacity = 2u;
+    config.frame_queue_max_bytes = 16u;
+    config.frame_queue_max_duration_us = 1000u;
+    check_equal(turbo_client_processing_create(&config, &processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_prepare(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    turbo_client_processing_video_capture_callback(
+        NULL, borrowed, sizeof(borrowed), 2, 2, 100u, processing);
+    memset(borrowed, 9, sizeof(borrowed));
+
+    turbo_client_processing_video_frame_info_init(&info);
+    check_equal(turbo_client_processing_pop_video_frame(
+                    processing, copied, sizeof(copied), &copied_size, &info),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(copied_size, sizeof(copied));
+    check_equal(copied[0], 1);
+    check_equal(copied[1], 2);
+    check_equal(copied[2], 3);
+    check_equal(copied[3], 4);
+    check_equal(info.data_size, sizeof(copied));
+    check_equal(info.width, 2);
+    check_equal(info.height, 2);
+    check_equal(info.timestamp_us, 100u);
+
+    turbo_client_processing_snapshot_init(&snapshot);
+    check_equal(turbo_client_processing_snapshot(processing, &snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(snapshot.admitted_frames, 1u);
+    check_equal(snapshot.rejected_frames, 0u);
+    check_equal(snapshot.queued_frames, 0u);
+
+    check_equal(turbo_client_processing_request_stop(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_drain(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_destroy(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+  }
+
+  it("enforces item byte and time bounds without dropping older frames") {
+    turbo_client_processing_config_t config;
+    turbo_client_processing_snapshot_t snapshot;
+    turbo_client_processing_video_frame_info_t info;
+    turbo_client_processing_t *processing = NULL;
+    const uint8_t frame_a[4] = {1u, 1u, 1u, 1u};
+    const uint8_t frame_b[4] = {2u, 2u, 2u, 2u};
+    const uint8_t frame_c[3] = {3u, 3u, 3u};
+    uint8_t output[4] = {0};
+    size_t output_size = 0u;
+
+    turbo_client_processing_config_init(&config);
+    config.frame_queue_capacity = 2u;
+    config.frame_queue_max_bytes = 8u;
+    config.frame_queue_max_duration_us = 50u;
+    check_equal(turbo_client_processing_create(&config, &processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_prepare(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, frame_a, sizeof(frame_a), 2, 2, 100u),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, frame_b, sizeof(frame_b), 2, 2, 150u),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, frame_c, sizeof(frame_c), 1, 3, 151u),
+                TURBO_CLIENT_PROCESSING_EFULL);
+
+    turbo_client_processing_snapshot_init(&snapshot);
+    check_equal(turbo_client_processing_snapshot(processing, &snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(snapshot.queued_frames, 2u);
+    check_equal(snapshot.queued_bytes, 8u);
+    check_equal(snapshot.queued_duration_us, 50u);
+    check_equal(snapshot.admitted_frames, 2u);
+    check_equal(snapshot.rejected_frames, 1u);
+
+    turbo_client_processing_video_frame_info_init(&info);
+    check_equal(turbo_client_processing_pop_video_frame(
+                    processing, output, 2u, &output_size, &info),
+                TURBO_CLIENT_PROCESSING_EFULL);
+    check_equal(output_size, sizeof(frame_a));
+    check_equal(turbo_client_processing_snapshot(processing, &snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(snapshot.queued_frames, 2u);
+
+    check_equal(turbo_client_processing_pop_video_frame(
+                    processing, output, sizeof(output), &output_size, &info),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(output[0], 1);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, frame_c, sizeof(frame_c), 1, 3, 151u),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_pause(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, frame_a, sizeof(frame_a), 2, 2, 152u),
+                TURBO_CLIENT_PROCESSING_ESTATE);
+    check_equal(turbo_client_processing_resume(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_request_stop(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_drain(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    turbo_client_processing_snapshot_init(&snapshot);
+    check_equal(turbo_client_processing_snapshot(processing, &snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(snapshot.queued_frames, 0u);
+    check_equal(snapshot.queued_bytes, 0u);
+    check_equal(snapshot.queued_duration_us, 0u);
+    check_equal(snapshot.rejected_frames, 2u);
+    check_equal(turbo_client_processing_destroy(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+  }
+
+  it("enforces retained-byte and timestamp-span bounds independently") {
+    turbo_client_processing_config_t config;
+    turbo_client_processing_t *processing = NULL;
+    const uint8_t four[4] = {1u, 2u, 3u, 4u};
+    const uint8_t three[3] = {5u, 6u, 7u};
+    uint8_t output[4];
+    size_t output_size = 0u;
+    turbo_client_processing_video_frame_info_t info;
+
+    turbo_client_processing_config_init(&config);
+    config.frame_queue_capacity = 4u;
+    config.frame_queue_max_bytes = 6u;
+    config.frame_queue_max_duration_us = 10u;
+    check_equal(turbo_client_processing_create(&config, &processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_prepare(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, four, sizeof(four), 2, 2, 100u),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, three, sizeof(three), 1, 3, 105u),
+                TURBO_CLIENT_PROCESSING_EFULL);
+
+    turbo_client_processing_video_frame_info_init(&info);
+    check_equal(turbo_client_processing_pop_video_frame(
+                    processing, output, sizeof(output), &output_size, &info),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, three, sizeof(three), 1, 3, 200u),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, three, sizeof(three), 1, 3, 211u),
+                TURBO_CLIENT_PROCESSING_EFULL);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, three, sizeof(three), 1, 3, 199u),
+                TURBO_CLIENT_PROCESSING_EINVAL);
+
+    check_equal(turbo_client_processing_request_stop(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_drain(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_destroy(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+  }
+
 }
