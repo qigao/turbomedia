@@ -4,6 +4,7 @@
  */
 
 #include "tinytest.h"
+#include "turbo_crypto.h"
 
 #include "../src/signaling/webrtc_signaling.c"
 
