@@ -1,6 +1,7 @@
 #include <tinytest.h>
 
-#include <chttp/chttp.h>
+#include <http_client/http.h>
+#include <http_server/http.h>
 #include <salts/error_codes.h>
 #include <turbo_transport.h>
 
