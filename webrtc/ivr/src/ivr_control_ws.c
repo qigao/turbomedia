@@ -1095,11 +1095,16 @@ ivr_status_t ivr_control_ws_server_destroy(ivr_control_ws_server_t *server) {
         return IVR_OK;
     }
     stop_status = ivr_control_ws_server_stop(server);
+    if (stop_status != IVR_OK) {
+        /* Keep the wrapper, CHttp server, peer table, and callback context
+           owned by the caller when shutdown has not quiesced. The caller may
+           retry destroy after the in-flight callback returns. */
+        return stop_status;
+    }
     if (server->server.impl) {
         int status = chttp_server_destroy(&server->server);
         if (status != SALTS_OK) {
-            return stop_status != IVR_OK ? stop_status
-                                         : ivr_control_ws_status(status);
+            return ivr_control_ws_status(status);
         }
         memset(&server->server, 0, sizeof(server->server));
     }
