@@ -1,7 +1,7 @@
 #include "iris_provider_protocol.h"
 
 #include "salts_error.h"
-#include "salts_vstr.h"
+#include <vstr.h>
 
 #include <stdint.h>
 #include <string.h>
