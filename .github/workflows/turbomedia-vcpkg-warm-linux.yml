@@ -1,0 +1,50 @@
+name: TurboMedia Linux vcpkg cache warm
+
+on:
+  push:
+    branches:
+      - ci/released-sdk-linux-client
+    paths:
+      - ".github/workflows/turbomedia-vcpkg-warm-linux.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: turbomedia-linux-vcpkg-warm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    name: Warm TurboMedia x64-linux vcpkg ABI set
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: readwrite
+
+      - name: Prepare native toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             ninja-build pkg-config nasm             autoconf automake libtool gettext             yasm
+
+      - name: Warm product-owned manifest into shared binary cache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf vcpkg_installed
+          "$VCPKG_ROOT/vcpkg" install             --x-manifest-root=.             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed"             --triplet x64-linux
+
+      - name: Verify key TurboMedia ABI entries are installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pkg in ffmpeg opus libvpx openh264 x265 libde265 libsrtp libyuv llhttp roaring usrsctp zlib; do
+            grep -Eq "^$pkg:" "$GITHUB_WORKSPACE/vcpkg_installed/vcpkg/status"
+          done
