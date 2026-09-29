@@ -1,1 +1,25 @@
-add_library(\n  turbo_media_client_processing SHARED\n  client_processing.c\n  core/client_processing_queues.c\n  adapters/client_processing_salts.c\n  ffmpeg/client_processing_ffmpeg.c)\nturbo_media_configure_component(turbo_media_client_processing ClientProcessing)\ntarget_include_directories(\n  turbo_media_client_processing\n  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>\n         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>\n  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})\ntarget_link_libraries(\n  turbo_media_client_processing\n  PUBLIC Salts::Capture Salts::Playback\n  PRIVATE Salts::Platform\n          TurboMediaFFmpeg::avformat\n          TurboMediaFFmpeg::avcodec\n          TurboMediaFFmpeg::avutil\n          TurboMediaFFmpeg::swscale)\n\ninstall(\n  DIRECTORY include/\n  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}\n  FILES_MATCHING PATTERN "*.h")\n
+add_library(
+  turbo_media_client_processing SHARED
+  client_processing.c
+  core/client_processing_queues.c
+  adapters/client_processing_salts.c
+  ffmpeg/client_processing_ffmpeg.c)
+turbo_media_configure_component(turbo_media_client_processing ClientProcessing)
+target_include_directories(
+  turbo_media_client_processing
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(
+  turbo_media_client_processing
+  PUBLIC Salts::Capture Salts::Playback
+  PRIVATE Salts::Platform
+          TurboMediaFFmpeg::avformat
+          TurboMediaFFmpeg::avcodec
+          TurboMediaFFmpeg::avutil
+          TurboMediaFFmpeg::swscale)
+
+install(
+  DIRECTORY include/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILES_MATCHING PATTERN "*.h")
