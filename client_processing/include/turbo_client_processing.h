@@ -16,7 +16,11 @@ typedef enum turbo_client_processing_status_t {
     TURBO_CLIENT_PROCESSING_EINVAL = -1,
     TURBO_CLIENT_PROCESSING_ENOMEM = -2,
     TURBO_CLIENT_PROCESSING_ESTATE = -3,
-    TURBO_CLIENT_PROCESSING_EFULL = -4
+    TURBO_CLIENT_PROCESSING_EFULL = -4,
+    TURBO_CLIENT_PROCESSING_EOPEN = -5,
+    TURBO_CLIENT_PROCESSING_ECODEC = -6,
+    TURBO_CLIENT_PROCESSING_EIO = -7,
+    TURBO_CLIENT_PROCESSING_EUNSUPPORTED = -8
 } turbo_client_processing_status_t;
 
 typedef enum turbo_client_processing_state_t {
@@ -35,6 +39,19 @@ typedef struct turbo_client_processing_config_t {
     size_t frame_queue_max_bytes;
     uint64_t frame_queue_max_duration_us;
 } turbo_client_processing_config_t;
+
+typedef struct turbo_client_processing_file_plan_t {
+    size_t size;
+    const char *input_path;
+    const char *output_path;
+    const char *output_format;
+    const char *video_codec;
+    uint32_t output_width;
+    uint32_t output_height;
+    uint32_t frame_rate_num;
+    uint32_t frame_rate_den;
+    uint64_t bitrate;
+} turbo_client_processing_file_plan_t;
 
 typedef struct turbo_client_processing_snapshot_t {
     size_t size;
@@ -62,6 +79,19 @@ TURBO_MEDIA_C_API void turbo_client_processing_config_init(
 TURBO_MEDIA_C_API void turbo_client_processing_snapshot_init(
     turbo_client_processing_snapshot_t *snapshot);
 
+TURBO_MEDIA_C_API void turbo_client_processing_file_plan_init(
+    turbo_client_processing_file_plan_t *plan);
+
+/*
+ * Copies every string and scalar from plan. Valid only in CREATED state.
+ * All fields are explicit: no codec, container, size, or frame-rate fallback
+ * is selected by ClientProcessing.
+ */
+TURBO_MEDIA_C_API turbo_client_processing_status_t
+turbo_client_processing_set_file_plan(
+    turbo_client_processing_t *processing,
+    const turbo_client_processing_file_plan_t *plan);
+
 TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_create(
     const turbo_client_processing_config_t *config,
@@ -72,6 +102,13 @@ turbo_client_processing_prepare(turbo_client_processing_t *processing);
 
 TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_start(turbo_client_processing_t *processing);
+
+/*
+ * Executes the prepared file plan synchronously on the owner thread. Normal
+ * EOF drains decoder/transform/encoder/mux resources and ends in STOPPED.
+ */
+TURBO_MEDIA_C_API turbo_client_processing_status_t
+turbo_client_processing_run_file(turbo_client_processing_t *processing);
 
 TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_pause(turbo_client_processing_t *processing);
