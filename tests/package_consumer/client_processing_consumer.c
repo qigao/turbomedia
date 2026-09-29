@@ -3,11 +3,19 @@
 int main(void) {
     salts_video_capture_cb video_callback =
         turbo_client_processing_video_capture_callback;
+    salts_audio_capture_cb audio_callback =
+        turbo_client_processing_audio_capture_callback;
+    turbo_client_processing_status_t (*playback_writer)(
+        turbo_client_processing_t *, salts_playback_t *,
+        const void *, size_t, size_t *) =
+        turbo_client_processing_write_playback;
     turbo_client_processing_config_t config;
     turbo_client_processing_snapshot_t snapshot;
     turbo_client_processing_t *processing = NULL;
 
     (void)video_callback;
+    (void)audio_callback;
+    (void)playback_writer;
     turbo_client_processing_config_init(&config);
     if (turbo_client_processing_create(&config, &processing) !=
         TURBO_CLIENT_PROCESSING_OK) {

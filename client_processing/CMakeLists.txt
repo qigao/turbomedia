@@ -6,7 +6,7 @@ target_include_directories(
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(
   turbo_media_client_processing
-  PUBLIC Salts::Capture
+  PUBLIC Salts::Capture Salts::Playback
   PRIVATE Salts::Platform
           TurboMediaFFmpeg::avformat
           TurboMediaFFmpeg::avcodec

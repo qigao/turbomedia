@@ -8,6 +8,7 @@
 #include "base64_utils.h"
 #include "disruptor.h"
 #include "platform.h"
+#include "turbo_cnet_send_internal.h"
 
 #include <http_client/http.h>
 #include <http_server/http.h>
@@ -1184,13 +1185,10 @@ static int turbo_rtsp_server_drain_sends(turbo_rtsp_server_t *server) {
         salts_mutex_unlock(&server->mutex);
 
         if (session->io_kind == TURBO_RTSP_IO_STREAM) {
-            status = (command.close_after || session->close_after_flush)
-                         ? cnet_send_and_close(
-                               &server->network, session->connection,
-                               command.data, command.size)
-                         : cnet_send(
-                               &server->network, session->connection,
-                               command.data, command.size);
+            status = turbo_media_cnet_send_copy(
+                &server->network, session->connection,
+                command.data, command.size,
+                command.close_after || session->close_after_flush);
         } else if (session->io_kind == TURBO_RTSP_IO_PACKET) {
             status = cnet_packet_send(
                 &server->packet_endpoint, session->packet_session,
@@ -3130,7 +3128,8 @@ static int turbo_rtsp_client_send_bytes(
         return status == SALTS_OK ? 0 : -1;
     }
     client->send_finished = 0;
-    status = cnet_send(&client->network, client->connection, data, size);
+    status = turbo_media_cnet_send_copy(
+        &client->network, client->connection, data, size, 0);
     if (status == SALTS_OK) {
         status = turbo_rtsp_client_poll_until(client, &client->send_finished);
     }

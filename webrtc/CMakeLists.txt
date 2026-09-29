@@ -86,7 +86,8 @@ target_include_directories(
 target_link_libraries(
   turbo_media_datachannel
   PUBLIC TurboMedia::SDP Salts::LtvParser
-  PRIVATE Salts::CNet
+  PRIVATE turbo_media_cnet_adapter
+          Salts::CNet
           SaltsNet::ICE
           Salts::Core
           Salts::CSTL

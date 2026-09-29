@@ -9,6 +9,7 @@
  */
 
 #include "turbo_datachannel_internal.h"
+#include "turbo_cnet_send_internal.h"
 #include <salts_error.h>
 #include <stdlib.h>
 #include <string.h>
@@ -526,8 +527,9 @@ static void dc_send_task(void *arg1, void *arg2) {
     command->status = SALTS_ENOTCONN;
     if (peer->ctx->transport == TURBO_DC_TRANSPORT_TCP &&
         peer->stream_client_initialized && peer->stream_connection.generation != 0u) {
-        command->status = cnet_send(&peer->stream_client, peer->stream_connection,
-                                    command->data, command->len);
+        command->status = turbo_media_cnet_send_copy(
+            &peer->stream_client, peer->stream_connection,
+            command->data, command->len, 0);
     } else if (peer->ctx->transport == TURBO_DC_TRANSPORT_UDP &&
                peer->datagram_initialized && peer->has_remote_datagram_peer) {
         command->status = cnet_datagram_send(&peer->datagram,
