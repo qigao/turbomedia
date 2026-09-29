@@ -478,4 +478,193 @@ spec("TurboMedia ClientProcessing core") {
                 TURBO_CLIENT_PROCESSING_OK);
   }
 
+  it("copies borrowed Salts audio frames into an independent bounded queue") {
+    turbo_client_processing_config_t config;
+    turbo_client_processing_audio_capture_config_t audio_config;
+    turbo_client_processing_audio_snapshot_t audio_snapshot;
+    turbo_client_processing_audio_frame_info_t info;
+    turbo_client_processing_t *processing = NULL;
+    uint8_t borrowed[8] = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u};
+    uint8_t copied[8] = {0};
+    size_t copied_size = 0u;
+
+    turbo_client_processing_config_init(&config);
+    check_equal(turbo_client_processing_create(&config, &processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    turbo_client_processing_audio_capture_config_init(&audio_config);
+    audio_config.queue_capacity = 2u;
+    audio_config.queue_max_bytes = 16u;
+    audio_config.queue_max_duration_us = 20000u;
+    audio_config.sample_rate = 48000u;
+    audio_config.channels = 2u;
+    audio_config.bits_per_sample = 16u;
+    check_equal(turbo_client_processing_set_audio_capture_config(
+                    processing, &audio_config),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_prepare(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    turbo_client_processing_audio_capture_callback(
+        NULL, borrowed, sizeof(borrowed), 1000u, processing);
+    memset(borrowed, 9, sizeof(borrowed));
+
+    turbo_client_processing_audio_frame_info_init(&info);
+    check_equal(turbo_client_processing_pop_audio_frame(
+                    processing, copied, sizeof(copied), &copied_size, &info),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(copied_size, sizeof(copied));
+    check_equal(copied[0], 1);
+    check_equal(copied[7], 8);
+    check_equal(info.data_size, sizeof(copied));
+    check_equal(info.timestamp_us, 1000u);
+    check_equal(info.sample_rate, 48000u);
+    check_equal(info.channels, 2u);
+    check_equal(info.bits_per_sample, 16u);
+
+    turbo_client_processing_audio_snapshot_init(&audio_snapshot);
+    check_equal(turbo_client_processing_audio_snapshot(
+                    processing, &audio_snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(audio_snapshot.admitted_frames, 1u);
+    check_equal(audio_snapshot.rejected_frames, 0u);
+    check_equal(audio_snapshot.queued_frames, 0u);
+
+    check_equal(turbo_client_processing_request_stop(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_drain(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_destroy(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+  }
+
+  it("enforces audio item byte alignment and timestamp-span bounds") {
+    turbo_client_processing_config_t config;
+    turbo_client_processing_audio_capture_config_t audio_config;
+    turbo_client_processing_audio_snapshot_t audio_snapshot;
+    turbo_client_processing_audio_frame_info_t info;
+    turbo_client_processing_t *processing = NULL;
+    const uint8_t pcm_a[8] = {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u};
+    const uint8_t pcm_b[8] = {9u, 10u, 11u, 12u, 13u, 14u, 15u, 16u};
+    const uint8_t misaligned[3] = {1u, 2u, 3u};
+    uint8_t output[8] = {0};
+    size_t output_size = 0u;
+
+    turbo_client_processing_config_init(&config);
+    check_equal(turbo_client_processing_create(&config, &processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    turbo_client_processing_audio_capture_config_init(&audio_config);
+    audio_config.queue_capacity = 2u;
+    audio_config.queue_max_bytes = 16u;
+    audio_config.queue_max_duration_us = 10000u;
+    audio_config.sample_rate = 48000u;
+    audio_config.channels = 2u;
+    audio_config.bits_per_sample = 16u;
+    check_equal(turbo_client_processing_set_audio_capture_config(
+                    processing, &audio_config),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_prepare(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_admit_audio_frame(
+                    processing, misaligned, sizeof(misaligned), 1000u),
+                TURBO_CLIENT_PROCESSING_EINVAL);
+    check_equal(turbo_client_processing_admit_audio_frame(
+                    processing, pcm_a, sizeof(pcm_a), 1000u),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_audio_frame(
+                    processing, pcm_b, sizeof(pcm_b), 11000u),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_audio_frame(
+                    processing, pcm_b, sizeof(pcm_b), 11001u),
+                TURBO_CLIENT_PROCESSING_EFULL);
+
+    turbo_client_processing_audio_snapshot_init(&audio_snapshot);
+    check_equal(turbo_client_processing_audio_snapshot(
+                    processing, &audio_snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(audio_snapshot.queued_frames, 2u);
+    check_equal(audio_snapshot.queued_bytes, 16u);
+    check_equal(audio_snapshot.queued_duration_us, 10000u);
+    check_equal(audio_snapshot.admitted_frames, 2u);
+    check_equal(audio_snapshot.rejected_frames, 2u);
+
+    turbo_client_processing_audio_frame_info_init(&info);
+    check_equal(turbo_client_processing_pop_audio_frame(
+                    processing, output, 4u, &output_size, &info),
+                TURBO_CLIENT_PROCESSING_EFULL);
+    check_equal(output_size, sizeof(pcm_a));
+    check_equal(turbo_client_processing_audio_snapshot(
+                    processing, &audio_snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(audio_snapshot.queued_frames, 2u);
+
+    check_equal(turbo_client_processing_pop_audio_frame(
+                    processing, output, sizeof(output), &output_size, &info),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(output[0], 1);
+
+    check_equal(turbo_client_processing_pause(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_admit_audio_frame(
+                    processing, pcm_a, sizeof(pcm_a), 12000u),
+                TURBO_CLIENT_PROCESSING_ESTATE);
+    check_equal(turbo_client_processing_resume(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_request_stop(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_drain(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    turbo_client_processing_audio_snapshot_init(&audio_snapshot);
+    check_equal(turbo_client_processing_audio_snapshot(
+                    processing, &audio_snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(audio_snapshot.queued_frames, 0u);
+    check_equal(audio_snapshot.queued_bytes, 0u);
+    check_equal(audio_snapshot.queued_duration_us, 0u);
+    check_equal(audio_snapshot.rejected_frames, 3u);
+    check_equal(turbo_client_processing_destroy(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+  }
+
+  it("validates playback borrowing without taking device lifecycle ownership") {
+    turbo_client_processing_config_t config;
+    turbo_client_processing_t *processing = NULL;
+    const int16_t pcm[2] = {0, 0};
+    size_t written = 99u;
+
+    turbo_client_processing_config_init(&config);
+    check_equal(turbo_client_processing_create(&config, &processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_prepare(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_write_playback(
+                    processing, NULL, pcm, sizeof(pcm), &written),
+                TURBO_CLIENT_PROCESSING_EINVAL);
+    check_equal(written, 0u);
+
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_write_playback(
+                    processing, NULL, pcm, sizeof(pcm), &written),
+                TURBO_CLIENT_PROCESSING_EINVAL);
+    check_equal(written, 0u);
+
+    check_equal(turbo_client_processing_request_stop(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_drain(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_destroy(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+  }
+
 }
