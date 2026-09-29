@@ -248,7 +248,7 @@ jobs:
             if ($matches.Count -ne 1) {
               throw "expected exactly one restored version for $packageId, found $($matches.Count)"
             }
-            return (Join-Path $matches[0].FullName "sdk/windows-x64")
+            return (Join-Path $matches[0].FullName "sdk/windows-x64").Replace('\', '/')
           }
 
           "SALTS_ROOT=$(Resolve-SdkRoot 'salts.native')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
