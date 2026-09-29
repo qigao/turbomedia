@@ -109,9 +109,13 @@ turbo_media_add_webrtc_test(
 target_include_directories(
   turbo_media_test_signaling_internals
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/security)
-target_link_libraries(turbo_media_test_signaling_internals
-                      PRIVATE Salts::CNet CHttp::Client CHttp::Server turbo_media_auth
-                              Salts::JsonParser Salts::Crypto)
+target_link_libraries(
+  turbo_media_test_signaling_internals
+  PRIVATE Salts::CNet CHttp::Client CHttp::Server
+          turbo_media_auth
+          turbo_media_tenant_quota
+          turbo_media_tenant_quota_wire
+          Salts::JsonParser Salts::Crypto)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
