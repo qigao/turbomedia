@@ -136,7 +136,7 @@ endif()
 set(ROOM_SERVICE_LIBS
     TurboMedia::RtcApps
     TurboMedia::Transport
-    Salts::CHTTP
+    CHttp::Client CHttp::Server
     turbo_media_auth
     turbo_media_revocation_https
     SaltsNet::Crypto
@@ -181,7 +181,8 @@ install(
 )
 if(WIN32)
   install(
-    FILES $<TARGET_FILE:Salts::CHTTP>
+    FILES $<TARGET_FILE:CHttp::Client>
+          $<TARGET_FILE:CHttp::Server>
           $<TARGET_FILE:Salts::CNet>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>
           $<TARGET_FILE:Salts::Mustache>
@@ -244,7 +245,7 @@ target_link_libraries(test_room_service_app
     TurboMedia::RtcApps
     TurboMedia::RTC
     TurboMedia::Transport
-    Salts::CHTTP
+    CHttp::Client CHttp::Server
     turbo_media_auth
     turbo_media_revocation_https
     SaltsNet::Crypto
@@ -364,7 +365,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_iris_control_provider PRIVATE
     turbo_media_ivr
     room_service_iris_outbox_schema
-    Salts::CHTTP
+    CHttp::Client CHttp::Server
     Salts::CNet
     Salts::DataBind
     SaltsNet::Crypto
@@ -415,7 +416,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_iris_completion_dispatcher PRIVATE
     turbo_media_ivr
     TurboMedia::Transport
-    Salts::CHTTP
+    CHttp::Client CHttp::Server
     SaltsNet::Crypto
     Salts::Core
     Salts::JsonParser
@@ -451,7 +452,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     TurboMedia::RtcApps
     turbo_media_ivr
     room_service_iris_outbox_schema
-    Salts::CHTTP
+    CHttp::Client CHttp::Server
     SaltsNet::Crypto
     OpenSSL::Crypto
     Orm::C
@@ -588,7 +589,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     PRIVATE
       turbo_media_ivr_rtc
       room_service_iris_outbox_schema
-      Salts::CHTTP
+      CHttp::Client CHttp::Server
       Salts::JsonParser
       Salts::DataBind
       Salts::CNet
