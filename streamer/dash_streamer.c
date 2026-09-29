@@ -14,7 +14,7 @@
 #include "mov-format.h"
 #include "salts_fs.h"
 #include "salts_str.h"
-#include "salts_vstr.h"
+#include <vstr.h>
 
 #include <errno.h>
 #include <stdint.h>
