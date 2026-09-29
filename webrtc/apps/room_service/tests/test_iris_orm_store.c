@@ -56,6 +56,7 @@ spec("Iris PostgreSQL ORM record store") {
                                    "    kind: record_store\n"
                                    "    config:\n"
                                    "      backend: postgresql\n"
+                                   "      driver_module: /definitely/missing/turbodb_driver_postgresql\n"
                                    "      host: 127.0.0.1\n"
                                    "      namespace_name: iris.test\n"
                                    "      silent_fallback: true\n"
