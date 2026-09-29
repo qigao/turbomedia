@@ -6,7 +6,7 @@
 // canonical TBE field order: fixed-width fields first, then variable data.
 // Old declaration-order wire layouts are intentionally unsupported.
 //
-// Codegen (release gate): `tbe_compiler turbomedia_ivr_v1.schema --lang c
+// Codegen (release gate): `salts-idlc turbomedia_ivr_v1.schema --lang c
 // --output ... --source-output ...` renders owning .h/.c bound to the same
 // schema; the runtime DataBind object API used by tests shares this schema.
 
