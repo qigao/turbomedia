@@ -4,6 +4,12 @@ target_include_directories(
   turbo_media_client_processing
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(
+  turbo_media_client_processing
+  PRIVATE TurboMediaFFmpeg::avformat
+          TurboMediaFFmpeg::avcodec
+          TurboMediaFFmpeg::avutil
+          TurboMediaFFmpeg::swscale)
 
 install(
   DIRECTORY include/
