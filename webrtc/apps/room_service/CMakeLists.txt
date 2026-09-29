@@ -9,12 +9,12 @@ project(
 
 # First-party packages are resolved once at the repository root from their
 # explicit environment roots, so every WebRTC subdirectory sees the same targets.
-if(NOT TARGET Orm::PostgreSQL)
+if(NOT TARGET Orm::C)
   message(FATAL_ERROR
-    "RoomService Iris outbox requires Orm::PostgreSQL")
+    "RoomService Iris outbox requires the generic Orm::C runtime")
 endif()
 
-turbo_media_find_tbe_compiler(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE)
+turbo_media_find_idlc(ROOM_SERVICE_IDL_COMPILER_EXECUTABLE)
 set(ROOM_SERVICE_OUTBOX_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ROOM_SERVICE_OUTBOX_GEN_DIR}")
 set(ROOM_SERVICE_OUTBOX_GEN_HEADER
@@ -31,7 +31,7 @@ set(ROOM_SERVICE_PROVIDER_GEN_SOURCE
   "${ROOM_SERVICE_OUTBOX_GEN_DIR}/turbomedia_iris_provider_v1.c")
 add_custom_command(
   OUTPUT ${ROOM_SERVICE_OUTBOX_GEN_HEADER} ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_TBE_COMPILER_EXECUTABLE}
+  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_event_outbox_v1.schema
           --lang c --output ${ROOM_SERVICE_OUTBOX_GEN_HEADER}
           --source-output ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
@@ -40,7 +40,7 @@ add_custom_command(
   VERBATIM)
 add_custom_command(
   OUTPUT ${ROOM_SERVICE_LEDGER_GEN_HEADER} ${ROOM_SERVICE_LEDGER_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_TBE_COMPILER_EXECUTABLE}
+  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_command_ledger_v2.schema
           --lang c --output ${ROOM_SERVICE_LEDGER_GEN_HEADER}
           --source-output ${ROOM_SERVICE_LEDGER_GEN_SOURCE}
@@ -49,7 +49,7 @@ add_custom_command(
   VERBATIM)
 add_custom_command(
   OUTPUT ${ROOM_SERVICE_PROVIDER_GEN_HEADER} ${ROOM_SERVICE_PROVIDER_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_TBE_COMPILER_EXECUTABLE}
+  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_iris_provider_v1.schema
           --lang c --output ${ROOM_SERVICE_PROVIDER_GEN_HEADER}
           --source-output ${ROOM_SERVICE_PROVIDER_GEN_SOURCE}
@@ -79,11 +79,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     src/iris_orm_store.c
     src/iris_command_ledger.c
     src/iris_command_fingerprint.c
-    src/iris_provider_protocol.c
-    src/iris_control_provider_codec.c
-    src/iris_control_provider.c
     src/iris_completion_dispatcher.c
-    src/iris_media_reconciler.c
     src/iris_media_bridge.c
     src/iris_room_bridge.c
     src/ivr_control_adapter.c)
@@ -106,11 +102,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     src/iris_orm_store.c
     src/iris_command_ledger.c
     src/iris_command_fingerprint.c
-    src/iris_provider_protocol.c
-    src/iris_control_provider_codec.c
-    src/iris_control_provider.c
     src/iris_completion_dispatcher.c
-    src/iris_media_reconciler.c
     src/iris_media_bridge.c
     src/iris_room_bridge.c
     src/ivr_control_adapter.c)
@@ -136,7 +128,7 @@ endif()
 set(ROOM_SERVICE_LIBS
     TurboMedia::RtcApps
     TurboMedia::Transport
-    Salts::CHTTP
+    CHttp::Client CHttp::Server
     turbo_media_auth
     turbo_media_revocation_https
     SaltsNet::Crypto
@@ -151,7 +143,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_LIBS
     turbo_media_ivr
     room_service_iris_outbox_schema
-    Orm::PostgreSQL)
+    Orm::C)
 endif()
 
 target_link_libraries(room_service
@@ -181,17 +173,14 @@ install(
 )
 if(WIN32)
   install(
-    FILES $<TARGET_FILE:Salts::CHTTP>
+    FILES $<TARGET_FILE:CHttp::Client>
+          $<TARGET_FILE:CHttp::Server>
           $<TARGET_FILE:Salts::CNet>
           $<$<TARGET_EXISTS:RulesForge::rules_forge>:$<TARGET_FILE:RulesForge::rules_forge>>
           $<TARGET_FILE:Salts::Mustache>
           $<TARGET_FILE:Salts::DataBind>
           $<TARGET_FILE:Salts::Core>
-          $<TARGET_FILE:Orm::PostgreSQL>
           $<TARGET_FILE:Orm::C>
-          "${TURBO_MEDIA_ORM_PREFIX}/bin/LIBPQ.dll"
-          "${TURBO_MEDIA_ORM_PREFIX}/bin/ssl.dll"
-          "${TURBO_MEDIA_ORM_PREFIX}/bin/crypto.dll"
     DESTINATION bin
     COMPONENT RoomService)
 endif()
@@ -248,9 +237,11 @@ target_link_libraries(test_room_service_app
     TurboMedia::RtcApps
     TurboMedia::RTC
     TurboMedia::Transport
-    Salts::CHTTP
+    CHttp::Client CHttp::Server
     turbo_media_auth
     turbo_media_revocation_https
+    turbo_media_tenant_quota
+    turbo_media_tenant_quota_wire
     SaltsNet::Crypto
     OpenSSL::Crypto
     Salts::Core
@@ -272,7 +263,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_room_service_app PRIVATE turbo_media_ivr)
   target_link_libraries(test_room_service_app PRIVATE
     room_service_iris_outbox_schema
-    Orm::PostgreSQL)
+    Orm::C)
 endif()
 
 target_compile_options(test_room_service_app
@@ -331,60 +322,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     OUTPUT_NAME "test_iris_media_bridge"
     FOLDER "Applications/tests")
 
-  add_executable(test_iris_control_provider_codec
-    tests/test_iris_control_provider_codec.c
-    src/iris_control_provider_codec.c
-    src/iris_provider_protocol.c)
-  target_include_directories(test_iris_control_provider_codec PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_control_provider_codec PRIVATE
-    room_service_iris_outbox_schema
-    Salts::DataBind
-    SaltsNet::Crypto
-    Salts::Core
-    Salts::JsonParser
-    Salts::TinyTest)
-  target_compile_definitions(test_iris_control_provider_codec
-    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_control_provider_codec
-    COMMAND test_iris_control_provider_codec)
-  set_tests_properties(test_iris_control_provider_codec PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_control_provider_codec PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
-  add_executable(test_iris_control_provider
-    tests/test_iris_control_provider.c
-    src/iris_control_provider.c
-    src/iris_control_provider_codec.c
-    src/iris_provider_protocol.c)
-  target_include_directories(test_iris_control_provider PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_control_provider PRIVATE
-    turbo_media_ivr
-    room_service_iris_outbox_schema
-    Salts::CHTTP
-    Salts::CNet
-    Salts::DataBind
-    SaltsNet::Crypto
-    Salts::Core
-    Salts::JsonParser
-    Salts::TinyTest
-    $<$<PLATFORM_ID:Windows>:ws2_32>)
-  target_compile_definitions(test_iris_control_provider
-    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_control_provider COMMAND test_iris_control_provider)
-  set_tests_properties(test_iris_control_provider PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_control_provider PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
   add_executable(test_iris_room_bridge
     tests/test_iris_room_bridge.c
     src/iris_room_bridge.c
@@ -419,7 +356,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_iris_completion_dispatcher PRIVATE
     turbo_media_ivr
     TurboMedia::Transport
-    Salts::CHTTP
+    CHttp::Client CHttp::Server
     SaltsNet::Crypto
     Salts::Core
     Salts::JsonParser
@@ -438,41 +375,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
 
-  add_executable(test_iris_media_reconciler
-    tests/test_iris_media_reconciler.c
-    src/iris_media_reconciler.c
-    src/iris_control_provider.c
-    src/iris_control_provider_codec.c
-    src/iris_provider_protocol.c
-    src/iris_event_outbox.c
-    src/iris_orm_store.c
-    src/ivr_control_adapter.c)
-  target_include_directories(test_iris_media_reconciler PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_media_reconciler PRIVATE
-    TurboMedia::RtcApps
-    turbo_media_ivr
-    room_service_iris_outbox_schema
-    Salts::CHTTP
-    SaltsNet::Crypto
-    OpenSSL::Crypto
-    Orm::PostgreSQL
-    Salts::Core
-    Salts::JsonParser
-    Salts::CYaml
-    Salts::TinyTest)
-  target_compile_definitions(test_iris_media_reconciler
-    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_media_reconciler
-    COMMAND test_iris_media_reconciler)
-  set_tests_properties(test_iris_media_reconciler PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_media_reconciler PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
   add_executable(test_iris_event_outbox
     tests/test_iris_event_outbox.c
     src/iris_event_outbox.c
@@ -483,7 +385,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_event_outbox PRIVATE
     room_service_iris_outbox_schema
-    Orm::PostgreSQL
+    Orm::C
     Salts::Core Salts::DataBind Salts::CYaml Salts::TinyTest)
   target_compile_definitions(test_iris_event_outbox PRIVATE
     TURBO_MEDIA_HAS_IVR_CONTROL)
@@ -504,7 +406,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_command_ledger PRIVATE
     room_service_iris_outbox_schema
-    Orm::PostgreSQL
+    Orm::C
     Salts::Core Salts::DataBind Salts::CYaml
     Salts::TinyTest)
   target_compile_definitions(test_iris_command_ledger PRIVATE
@@ -522,7 +424,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_include_directories(test_iris_orm_store PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_iris_orm_store PRIVATE
-    Orm::PostgreSQL Salts::Core Salts::CYaml Salts::TinyTest)
+    Orm::C Salts::Core Salts::CYaml Salts::TinyTest)
   add_test(NAME test_iris_orm_store COMMAND test_iris_orm_store)
   set_tests_properties(test_iris_orm_store PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
@@ -592,7 +494,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     PRIVATE
       turbo_media_ivr_rtc
       room_service_iris_outbox_schema
-      Salts::CHTTP
+      CHttp::Client CHttp::Server
       Salts::JsonParser
       Salts::DataBind
       Salts::CNet

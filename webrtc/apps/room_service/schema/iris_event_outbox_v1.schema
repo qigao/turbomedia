@@ -3,16 +3,20 @@
 // The media event remains a provider fact. This record adds only transport
 // delivery state; it never owns Iris workflow/session state.
 
+// Canonical TBE layout only; historical declaration-order records are unsupported.
 schema IrisEventOutboxV1 [id(22001), byte_order(little)];
 
 [id(1)]
 message IrisMediaEventOutboxRecordV1 {
   uint32 schema_version;
-  string delivery_state; // pending | in_flight | dead | archived
   uint64 state_changed_at_ms;
   uint64 archived_at_ms;
   uint32 delivery_attempts;
   int32 last_http_status;
+  uint64 call_generation;
+  uint64 sequence;
+  uint64 occurred_at_ms;
+  string delivery_state; // pending | in_flight | dead | archived
   string event_id;
   string tenant_id;
   string provider_session_id;
@@ -20,10 +24,7 @@ message IrisMediaEventOutboxRecordV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 sequence;
   string event_type;
-  uint64 occurred_at_ms;
   string input_id;
   string input_value;
   string payload_json;

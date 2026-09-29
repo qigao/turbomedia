@@ -51,14 +51,32 @@ include(Sanitizers)
 include(CmakeUtils)
 enable_testing()
 
-function(turbo_media_find_tbe_compiler output_variable)
-  if(CMAKE_CROSSCOMPILING)
-    set(_turbomedia_tbe_root_name SALTS_UTILS_HOST_ROOT)
-  else()
-    set(_turbomedia_tbe_root_name SALTS_UTILS_ROOT)
+function(turbo_media_find_idlc output_variable)
+  if(SaltsUtils_IDLC_EXECUTABLE)
+    if(NOT EXISTS "${SaltsUtils_IDLC_EXECUTABLE}")
+      message(FATAL_ERROR
+              "SaltsUtils_IDLC_EXECUTABLE does not exist: ${SaltsUtils_IDLC_EXECUTABLE}")
+    endif()
+    set(${output_variable} "${SaltsUtils_IDLC_EXECUTABLE}" PARENT_SCOPE)
+    return()
   endif()
-  find_program(${output_variable} NAMES tbe_compiler tbe_compiler.exe
-               PATHS "$ENV{${_turbomedia_tbe_root_name}}/bin"
+
+  set(_turbomedia_idlc_hints)
+  if(DEFINED SaltsUtils_IDLC_HINT AND
+     NOT "${SaltsUtils_IDLC_HINT}" STREQUAL "")
+    list(APPEND _turbomedia_idlc_hints "${SaltsUtils_IDLC_HINT}")
+  endif()
+  if(CMAKE_CROSSCOMPILING AND DEFINED ENV{SALTS_UTILS_HOST_ROOT} AND
+     NOT "$ENV{SALTS_UTILS_HOST_ROOT}" STREQUAL "")
+    list(APPEND _turbomedia_idlc_hints "$ENV{SALTS_UTILS_HOST_ROOT}/bin")
+  elseif(DEFINED ENV{SALTS_UTILS_ROOT} AND
+         NOT "$ENV{SALTS_UTILS_ROOT}" STREQUAL "")
+    list(APPEND _turbomedia_idlc_hints "$ENV{SALTS_UTILS_ROOT}/bin")
+  endif()
+
+  find_program(${output_variable}
+               NAMES salts-idlc salts-idlc.exe
+               HINTS ${_turbomedia_idlc_hints}
                NO_DEFAULT_PATH REQUIRED)
   set(${output_variable} "${${output_variable}}" PARENT_SCOPE)
 endfunction()
@@ -119,19 +137,12 @@ endif()
 if(TURBO_MEDIA_IS_SERVER)
   find_package(RulesForge CONFIG REQUIRED
                PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  find_package(TurboDB CONFIG REQUIRED
-               PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
   find_package(Orm CONFIG REQUIRED
                PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  if(NOT DEFINED Orm_WITH_SQLITE OR NOT DEFINED Orm_WITH_POSTGRESQL)
+  if(NOT TARGET Orm::C)
     message(FATAL_ERROR
-            "TurboMedia SERVER requires an Orm package that exports backend capabilities")
+            "TurboMedia SERVER requires the generic Orm::C runtime package")
   endif()
-  if(Orm_WITH_SQLITE OR NOT Orm_WITH_POSTGRESQL OR NOT TARGET Orm::PostgreSQL)
-    message(FATAL_ERROR
-            "TurboMedia SERVER requires PostgreSQL-only Orm (SQLite OFF, PostgreSQL ON)")
-  endif()
-  get_filename_component(TURBO_MEDIA_ORM_PREFIX "${Orm_DIR}/../../.." ABSOLUTE)
 endif()
  
 find_package(OpenSSL REQUIRED)

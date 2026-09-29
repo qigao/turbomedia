@@ -21,7 +21,7 @@ set_target_properties(dc_benchmark PROPERTIES FOLDER webrtc/examples)
 if(TURBO_MEDIA_IS_SERVER)
 add_executable(rtc_signaled_peer signaled_peer.c)
 target_link_libraries(rtc_signaled_peer PRIVATE TurboMedia::WebRTC TurboMedia::SDP
-                                               Salts::JsonParser Salts::CHTTP
+                                               Salts::JsonParser CHttp::Client
                                                Salts::Core
                                                $<$<PLATFORM_ID:Windows>:ws2_32>)
 set_target_properties(rtc_signaled_peer PROPERTIES FOLDER webrtc/examples)

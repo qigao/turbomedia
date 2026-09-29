@@ -76,7 +76,7 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   elseif(TEST_NAME STREQUAL "test_dash_local")
     list(APPEND TEST_LINK_LIBS TurboMedia::Codec TurboMedia::Streamer)
   elseif(TEST_NAME STREQUAL "test_http_flv_local")
-    list(APPEND TEST_LINK_LIBS TurboMedia::Streamer)
+    list(APPEND TEST_LINK_LIBS TurboMedia::Streamer CHttp::Server)
   elseif(TEST_NAME STREQUAL "test_rtmp_metadata")
     list(APPEND TEST_LINK_LIBS TurboMedia::Streamer)
   elseif(TEST_NAME STREQUAL "test_mobile_optimizer")
@@ -122,6 +122,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
+    if(TEST_NAME STREQUAL "test_benchmark")
+      set_tests_properties(${TEST_TARGET_NAME} PROPERTIES LABELS performance)
+    endif()
   endif()
   
   message(STATUS "Added test: ${TEST_TARGET_NAME}")

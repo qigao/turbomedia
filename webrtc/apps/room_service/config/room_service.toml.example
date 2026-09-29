@@ -68,62 +68,12 @@ dry_run = false
 [logging]
 level = "info"
 
-# Iris is the workflow owner. RoomService connects to Iris over CHTTP HTTP/1.1
-# WebSocket and requires application-level receipt/completion/event ACKs.
-# Prefer environment variables for credentials and deployment-specific paths:
-#   TURBO_ROOM_SERVICE_IRIS_CONTROL_HOST
-#   TURBO_ROOM_SERVICE_IRIS_CONTROL_PORT
-#   TURBO_ROOM_SERVICE_IRIS_PROVIDER_INSTANCE_ID
-#   TURBO_ROOM_SERVICE_IRIS_IDENTITY
-#   TURBO_ROOM_SERVICE_IRIS_CONTROL_CA_FILE
-#   TURBO_ROOM_SERVICE_IRIS_CONTROL_CERT_FILE
-#   TURBO_ROOM_SERVICE_IRIS_CONTROL_KEY_FILE
-#   TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CONFIG
-#   TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CHANNEL
-#   TURBO_ROOM_SERVICE_IRIS_ALLOW_DEVELOPMENT_SQLITE
-#   TURBO_ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS
-#   TURBO_ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS
-#   TURBO_ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS
-#   TURBO_ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE
-#[iris_provider]
-#control_ws_host = "iris.internal"
-#control_ws_port = 17813
-#control_ws_path = "/internal/iris/control"
-#provider_instance_id = "room-service-1"
-#iris_identity = "iris-router-1"
-#control_ws_ca_file = "/etc/turbomedia/tls/control_ws-ca.pem"
-#control_ws_cert_file = "/etc/turbomedia/tls/room-control_ws-chain.pem"
-#control_ws_key_file = "/etc/turbomedia/tls/room-control_ws-key.pem"
-#control_ws_server_name = "iris.internal"
-#control_ws_use_tls = true
-#control_ws_allow_insecure_loopback = false
-# RoomService requires TurboDB's PostgreSQL-only ORM package.
-#event_store_config = "/etc/turbomedia/room-service-orm.yaml"
-#event_store_channel = "iris.media_events"
-# Command intent/outcome records require a distinct RecordStore namespace;
-# they must not share the event outbox channel.
-#command_ledger_channel = "iris.provider_commands"
-#correlation_capacity = 1024
-#completion_queue_capacity = 1024
-#reconcile_inventory_queue_capacity = 8
-#outbox_request_queue_capacity = 1024
-#command_ledger_queue_capacity = 1024
-#command_terminal_retention_seconds = 2592000
-#command_retention_batch_size = 128
-# A terminal dead letter remains replayable for this interval. It is then
-# atomically rewritten as an immutable archive record. Archive records are
-# CAS-deleted only after the second interval.
-#dead_retention_seconds = 86400
-#archive_retention_seconds = 2592000
-#retention_sweep_interval_ms = 60000
-#retention_sweep_batch_size = 128
-#retry_max_attempts = 8
-#retry_backoff_ms = 250
-#ack_timeout_ms = 5000
-#drain_timeout_ms = 30000
+# Internal IVR control is served only by CHttp HTTP/1.1 WebSocket.
+# The retired [iris_provider] outbound transport is intentionally unsupported;
+# there is no dual-transport fallback.
 
-# Optional IVR CHTTP HTTP/1.1 WebSocket bridge.
-# bind_port <= 0 keeps the HTTP-only control path and disables the bridge.
+# Optional internal IVR CHttp HTTP/1.1 WebSocket server.
+# bind_port <= 0 disables the internal control WebSocket listener.
 # An enabled bridge requires mTLS. Plaintext is accepted only when both the
 # bind address is loopback and allow_insecure_loopback is explicitly true.
 #[control_ws]
@@ -134,7 +84,7 @@ level = "info"
 #worker_heartbeat_ms = 5000
 #worker_lease_ms = 15000
 #dispatch_deadline_ms = 5000
-# Maximum simultaneously tracked Iris IVR dialogs. Queue-full behavior is
+# Maximum simultaneously tracked IVR dialogs. Queue-full behavior is
 # fail-fast; size this for peak active + opening + closing dialogs.
 #dialog_capacity = 256
 #use_tls = true

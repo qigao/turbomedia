@@ -5,7 +5,7 @@
 #include "ivr_openai_provider.h"
 #include "ivr_thread.h"
 #include "platform.h"
-#include <chttp/chttp.h>
+#include <http_client/http.h>
 #include <json_parser.h>
 #include <salts/error_codes.h>
 

@@ -20,7 +20,8 @@ target_include_directories(sfu_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(SFU_NODE_LIBS
   TurboMedia::RtcApps
   TurboMedia::RTC
-  Salts::CHTTP
+  CHttp::Client
+  CHttp::Server
   turbo_media_auth
   turbo_media_tenant_quota
   turbo_media_tenant_quota_wire
@@ -48,7 +49,9 @@ set_target_properties(
 install(TARGETS sfu_node RUNTIME DESTINATION bin COMPONENT SfuNode)
 if(WIN32)
   install(
-    FILES $<TARGET_FILE:Salts::CHTTP> $<TARGET_FILE:Salts::CNet>
+    FILES $<TARGET_FILE:CHttp::Client>
+          $<TARGET_FILE:CHttp::Server>
+          $<TARGET_FILE:Salts::CNet>
     DESTINATION bin
     COMPONENT SfuNode)
 endif()
@@ -83,7 +86,7 @@ target_link_libraries(
   test_sfu_node_app
   PRIVATE ${SFU_NODE_LIBS}
           TurboMedia::Demuxer
-          Salts::CHTTP
+          CHttp::Client CHttp::Server
           Salts::TinyTest
           $<$<PLATFORM_ID:Linux>:m>
           $<$<PLATFORM_ID:Linux>:pthread>)

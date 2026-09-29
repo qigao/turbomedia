@@ -2,7 +2,7 @@
 
 #include "salts_thread.h"
 
-#include <chttp/chttp.h>
+#include <http_server/http.h>
 #include <salts/error_codes.h>
 
 #include <stdint.h>

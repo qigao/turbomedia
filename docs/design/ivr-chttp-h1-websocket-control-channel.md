@@ -2,9 +2,11 @@
 
 ## 决策
 
-TurboMedia 的内部控制面使用 CHTTP HTTP/1.1 WebSocket：IVR Worker 主动连接
-RoomService，RoomService 以捕获的 generation-checked WebSocket session 定向回复和推送。
-不再使用已退役的消息总线传输，不启用 HTTP/2 WebSocket，也不做协议或传输自动降级。
+TurboMedia 的 HTTP/REST 服务与内部控制面统一由 CHttp Server 承载。内部控制面使用
+CHTTP HTTP/1.1 WebSocket：IVR Worker 主动连接 RoomService，RoomService 以捕获的
+generation-checked WebSocket session 定向回复和推送。旧的 Iris outbound provider
+transport 已退役，不再作为 RoomService 的 server/runtime 依赖；不启用双 transport、
+HTTP/2 WebSocket 或自动降级。
 
 ## 边界
 
@@ -70,8 +72,10 @@ IVR / Iris domain command, result, event
 
 ## 兼容与迁移
 
-- 传输配置统一为 `control_ws` / `control_ws_*`；退役字段被明确拒绝，
-  避免看似成功却运行在不同安全语义下。
+- 传输配置统一为 `control_ws` / `control_ws_*`；`[iris_provider]` 与旧 Iris
+  transport 环境变量不再激活运行时，旧字段被明确拒绝。
+- RoomService 的 REST listener 与内部 WebSocket listener 都只使用 CHttp Server；
+  不保留 Iris transport compatibility layer。
 - 先保持 V1 payload bytes，待 H1 WebSocket 迁移稳定后再单独引入带 payload length 和
   公共 correlation metadata 的 envelope V2。
 - 回滚通过切回迁移前构建完成，不在同一进程中保留双 transport fallback。

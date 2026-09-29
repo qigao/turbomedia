@@ -36,6 +36,19 @@ spec("Iris PostgreSQL ORM record store") {
         expect_create_failure(yaml, "requires the PostgreSQL ORM backend");
     }
 
+    it("requires an explicit PostgreSQL runtime driver module") {
+        static const char yaml[] = "version: 1\n"
+                                   "channels:\n"
+                                   "  iris.test:\n"
+                                   "    kind: record_store\n"
+                                   "    config:\n"
+                                   "      backend: postgresql\n"
+                                   "      host: 127.0.0.1\n"
+                                   "      namespace_name: iris.test\n"
+                                   "adapters: {}\n";
+        expect_create_failure(yaml, "requires an explicit driver_module");
+    }
+
     it("rejects unknown PostgreSQL fields") {
         static const char yaml[] = "version: 1\n"
                                    "channels:\n"
@@ -43,6 +56,7 @@ spec("Iris PostgreSQL ORM record store") {
                                    "    kind: record_store\n"
                                    "    config:\n"
                                    "      backend: postgresql\n"
+                                   "      driver_module: /definitely/missing/turbodb_driver_postgresql\n"
                                    "      host: 127.0.0.1\n"
                                    "      namespace_name: iris.test\n"
                                    "      silent_fallback: true\n"
@@ -50,13 +64,14 @@ spec("Iris PostgreSQL ORM record store") {
         expect_create_failure(yaml, "unknown PostgreSQL");
     }
 
-    it("passes a valid PostgreSQL profile to the connector") {
+    it("passes a valid PostgreSQL profile to the runtime driver loader") {
         static const char yaml[] = "version: 1\n"
                                    "channels:\n"
                                    "  iris.test:\n"
                                    "    kind: record_store\n"
                                    "    config:\n"
                                    "      backend: postgresql\n"
+                                   "      driver_module: /definitely/missing/turbodb_driver_postgresql\n"
                                    "      host: 127.0.0.1\n"
                                    "      port: 1\n"
                                    "      user: turbomedia-test\n"
@@ -64,6 +79,6 @@ spec("Iris PostgreSQL ORM record store") {
                                    "      connect_timeout: 1\n"
                                    "      namespace_name: iris.test\n"
                                    "adapters: {}\n";
-        expect_create_failure(yaml, "cannot connect TurboDB ORM");
+        expect_create_failure(yaml, "cannot load TurboDB PostgreSQL driver");
     }
 }
