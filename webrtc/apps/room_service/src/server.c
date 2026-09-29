@@ -2460,192 +2460,8 @@ room_service_app_server_t *room_service_app_server_create(
         free(server);
         return NULL;
     }
-#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-    if (config->iris_control_host) {
-        iris_media_bridge_config_t bridge_config;
-        iris_room_bridge_config_t room_bridge_config;
-        iris_control_provider_config_t provider_config;
-        iris_completion_dispatcher_config_t dispatcher_config;
-        char ledger_error[256] = {0};
-        server->iris_command_ledger = iris_command_ledger_create_record_store(
-            config->iris_event_store_config,
-            config->iris_command_ledger_channel,
-            (size_t)config->iris_command_ledger_queue_capacity,
-            (size_t)config->iris_command_retention_batch_size,
-            (uint64_t)config->iris_command_terminal_retention_seconds *
-                UINT64_C(1000),
-            (uint64_t)config->iris_retention_sweep_interval_ms,
-            ledger_error, sizeof(ledger_error));
-        if (!server->iris_command_ledger) {
-            if (ledger_error[0]) {
-                TLOG_ERRORF("Iris command ledger initialization failed: {}",
-                           ledger_error);
-            }
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        memset(&bridge_config, 0, sizeof(bridge_config));
-        bridge_config.correlation_capacity =
-            (size_t)config->iris_correlation_capacity;
-        bridge_config.send = room_service_send_iris_media_command;
-        bridge_config.send_context = server;
-        bridge_config.observe = room_service_observe_iris_media_command;
-        bridge_config.observe_context = server;
-        bridge_config.ledger =
-            iris_command_ledger_port(server->iris_command_ledger);
-        server->iris_media_bridge = iris_media_bridge_create(&bridge_config);
-        if (!server->iris_media_bridge) {
-            iris_command_ledger_destroy(server->iris_command_ledger);
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        memset(&room_bridge_config, 0, sizeof(room_bridge_config));
-        room_bridge_config.capacity =
-            (size_t)config->iris_correlation_capacity;
-        room_bridge_config.execute = room_service_execute_iris_room_command;
-        room_bridge_config.execute_context = server;
-        room_bridge_config.observe = room_service_observe_iris_room_command;
-        room_bridge_config.observe_context = server;
-        room_bridge_config.ledger =
-            iris_command_ledger_port(server->iris_command_ledger);
-        server->iris_room_bridge = iris_room_bridge_create(&room_bridge_config);
-        if (!server->iris_room_bridge) {
-            iris_media_bridge_destroy(server->iris_media_bridge);
-            server->iris_media_bridge = NULL;
-            iris_command_ledger_destroy(server->iris_command_ledger);
-            server->iris_command_ledger = NULL;
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        iris_control_provider_config_init(&provider_config);
-        provider_config.use_tls = config->iris_control_use_tls;
-        provider_config.host = config->iris_control_host;
-        provider_config.port = (uint16_t)config->iris_control_port;
-        provider_config.path = config->iris_control_path;
-        provider_config.provider_instance_id =
-            config->iris_provider_instance_id;
-        provider_config.iris_identity = config->iris_identity;
-        provider_config.ca_file = config->iris_control_ca_file;
-        provider_config.certificate_file = config->iris_control_cert_file;
-        provider_config.private_key_file = config->iris_control_key_file;
-        provider_config.private_key_password =
-            config->iris_control_key_password;
-        provider_config.server_name = config->iris_control_server_name;
-        provider_config.allow_insecure_development_loopback =
-            config->iris_control_allow_insecure_loopback;
-        provider_config.maximum_ingress_messages =
-            (size_t)config->iris_correlation_capacity;
-        provider_config.send_queue_capacity =
-            (size_t)config->iris_completion_queue_capacity;
-        provider_config.dispatch = room_service_dispatch_control_ws_command;
-        provider_config.dispatch_context = server;
-        server->iris_control_provider =
-            iris_control_provider_create(&provider_config);
-        if (!server->iris_control_provider) {
-            iris_room_bridge_destroy(server->iris_room_bridge);
-            iris_media_bridge_destroy(server->iris_media_bridge);
-            iris_command_ledger_destroy(server->iris_command_ledger);
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        memset(&dispatcher_config, 0, sizeof(dispatcher_config));
-        dispatcher_config.queue_capacity =
-            (size_t)config->iris_completion_queue_capacity;
-        dispatcher_config.retry_max_attempts = config->iris_retry_max_attempts;
-        dispatcher_config.retry_backoff_ms = config->iris_retry_backoff_ms;
-        dispatcher_config.request_timeout_ms = config->iris_ack_timeout_ms;
-        dispatcher_config.drain_timeout_ms = config->iris_drain_timeout_ms;
-        dispatcher_config.bridge = server->iris_media_bridge;
-        dispatcher_config.deliver_completion =
-            room_service_deliver_control_ws_completion;
-        dispatcher_config.deliver_event = room_service_deliver_control_ws_event;
-        dispatcher_config.deliver_context = server->iris_control_provider;
-        server->iris_completion_dispatcher =
-            iris_completion_dispatcher_create(&dispatcher_config);
-        if (!server->iris_completion_dispatcher) {
-            iris_control_provider_destroy(server->iris_control_provider);
-            server->iris_control_provider = NULL;
-            iris_room_bridge_destroy(server->iris_room_bridge);
-            server->iris_room_bridge = NULL;
-            iris_media_bridge_destroy(server->iris_media_bridge);
-            server->iris_media_bridge = NULL;
-            iris_command_ledger_destroy(server->iris_command_ledger);
-            server->iris_command_ledger = NULL;
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        {
-            char outbox_error[256] = {0};
-            iris_event_outbox_retention_config_t retention;
-            memset(&retention, 0, sizeof(retention));
-            retention.dead_retention_ms =
-                (uint64_t)config->iris_dead_retention_seconds *
-                UINT64_C(1000);
-            retention.archive_retention_ms =
-                (uint64_t)config->iris_archive_retention_seconds *
-                UINT64_C(1000);
-            retention.sweep_interval_ms =
-                (uint32_t)config->iris_retention_sweep_interval_ms;
-            retention.sweep_batch_size =
-                (size_t)config->iris_retention_sweep_batch_size;
-            server->iris_event_outbox = iris_event_outbox_create_record_store(
-                config->iris_event_store_config,
-                config->iris_event_store_channel,
-                (size_t)config->iris_outbox_request_queue_capacity,
-                &retention,
-                room_service_deliver_iris_event,
-                server->iris_completion_dispatcher,
-                outbox_error, sizeof(outbox_error));
-            if (!server->iris_event_outbox ||
-                iris_completion_dispatcher_set_event_delivery_observer(
-                    server->iris_completion_dispatcher,
-                    room_service_settle_iris_event,
-                    server->iris_event_outbox) != 0) {
-                if (outbox_error[0]) {
-                    TLOG_ERRORF("Iris event outbox initialization failed: {}",
-                               outbox_error);
-                }
-                iris_event_outbox_destroy(server->iris_event_outbox);
-                iris_completion_dispatcher_destroy(
-                    server->iris_completion_dispatcher);
-                iris_control_provider_destroy(server->iris_control_provider);
-                iris_room_bridge_destroy(server->iris_room_bridge);
-                iris_media_bridge_destroy(server->iris_media_bridge);
-                iris_command_ledger_destroy(server->iris_command_ledger);
-                turbo_room_service_destroy(server->service);
-                free(server->sfu_nodes);
-                salts_mutex_destroy(&server->mutex);
-                free(server);
-                return NULL;
-            }
-        }
-    }
-#endif
     server->http_api = room_service_http_api_create(server);
     if (!server->http_api) {
-#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-        iris_event_outbox_destroy(server->iris_event_outbox);
-        iris_completion_dispatcher_destroy(server->iris_completion_dispatcher);
-        iris_control_provider_destroy(server->iris_control_provider);
-        iris_room_bridge_destroy(server->iris_room_bridge);
-        iris_media_bridge_destroy(server->iris_media_bridge);
-        iris_command_ledger_destroy(server->iris_command_ledger);
-#endif
         turbo_room_service_destroy(server->service);
         free(server->sfu_nodes);
         salts_mutex_destroy(&server->mutex);
@@ -2677,18 +2493,6 @@ room_service_app_server_t *room_service_app_server_create(
             room_service_prepare_ivr_caller_audio;
         control_ws_config.media.release_caller_audio =
             room_service_release_ivr_caller_audio;
-        if (server->iris_completion_dispatcher) {
-            control_ws_config.media_observer.context = server;
-            control_ws_config.media_observer.on_media_result =
-                room_service_observe_iris_media_result;
-            control_ws_config.media_observer.on_media_event =
-                room_service_observe_iris_media_event;
-        }
-        if (server->iris_control_provider) {
-            control_ws_config.inventory_observer.context = server;
-            control_ws_config.inventory_observer.on_inventory_page =
-                room_service_observe_iris_inventory;
-        }
         if (config->control_ws_use_tls) {
             ivr_certificate_identity_config_t identity_config =
                 IVR_CERTIFICATE_IDENTITY_CONFIG_INIT;
@@ -2785,58 +2589,7 @@ room_service_app_server_t *room_service_app_server_create(
             free(server);
             return NULL;
         }
-        if (server->iris_control_provider) {
-            iris_media_reconciler_config_t reconcile_config;
-            memset(&reconcile_config, 0, sizeof(reconcile_config));
-            reconcile_config.provider = server->iris_control_provider;
-            reconcile_config.resource_capacity =
-                (size_t)config->iris_correlation_capacity;
-            reconcile_config.worker_capacity =
-                ROOM_SERVICE_IVR_WORKER_CAPACITY;
-            reconcile_config.inventory_queue_capacity =
-                (uint32_t)config->iris_reconcile_inventory_queue_capacity;
-            reconcile_config.retry_max_attempts =
-                (uint32_t)config->iris_retry_max_attempts;
-            reconcile_config.retry_backoff_ms =
-                (uint32_t)config->iris_retry_backoff_ms;
-            reconcile_config.request_timeout_ms =
-                (uint32_t)config->iris_ack_timeout_ms;
-            reconcile_config.drain_timeout_ms =
-                (uint32_t)config->iris_drain_timeout_ms;
-            reconcile_config.inventory_page_size =
-                ROOM_SERVICE_RECONCILE_INVENTORY_PAGE_SIZE;
-            reconcile_config.close_deadline_ms =
-                (uint64_t)config->iris_ack_timeout_ms;
-            reconcile_config.event_outbox = server->iris_event_outbox;
-            server->iris_media_reconciler =
-                iris_media_reconciler_create(&reconcile_config);
-            if (!server->iris_media_reconciler ||
-                iris_media_reconciler_set_adapter(
-                    server->iris_media_reconciler, server->ivr_control) != 0) {
-                iris_media_reconciler_destroy(
-                    server->iris_media_reconciler);
-                ivr_control_adapter_destroy(server->ivr_control);
-                server->ivr_control = NULL;
-                ivr_certificate_identity_destroy(server->ivr_control_identity);
-                server->ivr_control_identity = NULL;
-                room_service_http_api_destroy(server->http_api);
-                server->http_api = NULL;
-                iris_event_outbox_destroy(server->iris_event_outbox);
-                iris_completion_dispatcher_destroy(
-                    server->iris_completion_dispatcher);
-                iris_control_provider_destroy(
-                    server->iris_control_provider);
-                iris_room_bridge_destroy(server->iris_room_bridge);
-                iris_media_bridge_destroy(server->iris_media_bridge);
-                iris_command_ledger_destroy(server->iris_command_ledger);
-                turbo_room_service_destroy(server->service);
-                server->service = NULL;
-                free(server->sfu_nodes);
-                salts_mutex_destroy(&server->mutex);
-                free(server);
-                return NULL;
-            }
-        }
+
     }
 #endif
 
@@ -2850,50 +2603,9 @@ int room_service_app_server_start(room_service_app_server_t *server) {
     }
 
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-    if (server->iris_command_ledger &&
-        iris_command_ledger_start(server->iris_command_ledger) != SALTS_OK) {
-        fprintf(stderr, "RoomService startup failed: Iris command ledger\n");
-        return -1;
-    }
-    if (server->iris_completion_dispatcher &&
-        iris_completion_dispatcher_start(
-            server->iris_completion_dispatcher) != 0) {
-        fprintf(stderr, "RoomService startup failed: Iris completion dispatcher\n");
-        iris_command_ledger_stop(server->iris_command_ledger);
-        return -1;
-    }
-    if (server->iris_event_outbox &&
-        iris_event_outbox_start(server->iris_event_outbox) != SALTS_OK) {
-        fprintf(stderr, "RoomService startup failed: Iris event outbox\n");
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_command_ledger_stop(server->iris_command_ledger);
-        return -1;
-    }
     if (server->ivr_control &&
         ivr_control_adapter_start(server->ivr_control) != IVR_OK) {
-        fprintf(stderr, "RoomService startup failed: IVR control WebSocket\n");
-        iris_event_outbox_stop(server->iris_event_outbox);
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_command_ledger_stop(server->iris_command_ledger);
-        return -1;
-    }
-    if (server->iris_control_provider &&
-        iris_control_provider_start(server->iris_control_provider) != 0) {
-        fprintf(stderr, "RoomService startup failed: Iris control WebSocket\n");
-        ivr_control_adapter_stop(server->ivr_control);
-        iris_event_outbox_stop(server->iris_event_outbox);
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_command_ledger_stop(server->iris_command_ledger);
-        return -1;
-    }
-    if (server->iris_media_reconciler &&
-        iris_media_reconciler_start(server->iris_media_reconciler) != 0) {
-        fprintf(stderr, "RoomService startup failed: Iris media reconciler\n");
-        iris_control_provider_stop(server->iris_control_provider);
-        ivr_control_adapter_stop(server->ivr_control);
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_event_outbox_stop(server->iris_event_outbox);
-        iris_command_ledger_stop(server->iris_command_ledger);
+        fprintf(stderr, "RoomService startup failed: CHttp control WebSocket\n");
         return -1;
     }
 #endif
@@ -2901,14 +2613,9 @@ int room_service_app_server_start(room_service_app_server_t *server) {
                                     server->config.bind_port) != 0) {
         fprintf(stderr, "RoomService startup failed: HTTP API\n");
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-        iris_control_provider_stop(server->iris_control_provider);
-        iris_media_reconciler_stop(server->iris_media_reconciler);
         if (server->ivr_control) {
             ivr_control_adapter_stop(server->ivr_control);
         }
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_event_outbox_stop(server->iris_event_outbox);
-        iris_command_ledger_stop(server->iris_command_ledger);
 #endif
         return -1;
     }
@@ -2951,25 +2658,10 @@ int room_service_app_server_stop(room_service_app_server_t *server) {
         if (room_service_http_api_stop(server->http_api) != 0) status = -1;
     }
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-    /* Quiesce producers before their consumers. Provider stop closes command
-       ingress and waits for its dispatch worker; reconciler then stops
-       producing adapter commands. Adapter stop establishes worker callback
-       quiescence before completion/outbox consumers are drained. */
-    if (iris_control_provider_stop(server->iris_control_provider) != 0) {
+    if (server->ivr_control &&
+        ivr_control_adapter_stop(server->ivr_control) != IVR_OK) {
         status = -1;
     }
-    iris_media_reconciler_stop(server->iris_media_reconciler);
-    if (server->ivr_control) {
-        if (ivr_control_adapter_stop(server->ivr_control) != IVR_OK) {
-            status = -1;
-        }
-    }
-    if (iris_completion_dispatcher_stop(
-            server->iris_completion_dispatcher) != 0) {
-        status = -1;
-    }
-    iris_event_outbox_stop(server->iris_event_outbox);
-    iris_command_ledger_stop(server->iris_command_ledger);
 #endif
     if (room_service_drain_sfu_http_clients(server) != 0) status = -1;
     return status;
@@ -2989,8 +2681,6 @@ int room_service_app_server_destroy(room_service_app_server_t *server) {
         server->http_api = NULL;
     }
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-    iris_media_reconciler_destroy(server->iris_media_reconciler);
-    server->iris_media_reconciler = NULL;
     if (server->ivr_control) {
         if (ivr_control_adapter_destroy(server->ivr_control) != IVR_OK) {
             return -1;
@@ -2999,23 +2689,6 @@ int room_service_app_server_destroy(room_service_app_server_t *server) {
     }
     ivr_certificate_identity_destroy(server->ivr_control_identity);
     server->ivr_control_identity = NULL;
-    iris_event_outbox_destroy(server->iris_event_outbox);
-    server->iris_event_outbox = NULL;
-    if (iris_completion_dispatcher_destroy(
-            server->iris_completion_dispatcher) != 0) {
-        return -1;
-    }
-    server->iris_completion_dispatcher = NULL;
-    if (iris_control_provider_destroy(server->iris_control_provider) != 0) {
-        return -1;
-    }
-    server->iris_control_provider = NULL;
-    iris_room_bridge_destroy(server->iris_room_bridge);
-    server->iris_room_bridge = NULL;
-    iris_media_bridge_destroy(server->iris_media_bridge);
-    server->iris_media_bridge = NULL;
-    iris_command_ledger_destroy(server->iris_command_ledger);
-    server->iris_command_ledger = NULL;
 #endif
     if (server->service) {
         turbo_room_service_destroy(server->service);
