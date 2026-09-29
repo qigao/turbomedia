@@ -210,8 +210,10 @@ turbo_client_processing_pop_video_frame(
 
 /*
  * Copies one borrowed Salts audio callback payload into the configured audio
- * queue. The payload length must be sample-frame aligned. A full queue returns
- * EFULL without dropping existing audio.
+ * queue. The payload length must be sample-frame aligned. The time hard bound
+ * covers the retained PCM span from the oldest frame timestamp through the
+ * newest frame's sample duration, including timestamp gaps. A full queue
+ * returns EFULL without dropping existing audio.
  */
 TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_admit_audio_frame(

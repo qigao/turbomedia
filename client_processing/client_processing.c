@@ -33,6 +33,7 @@ typedef struct turbo_client_processing_audio_slot_t {
     size_t offset;
     size_t size;
     uint64_t timestamp_us;
+    uint64_t duration_us;
 } turbo_client_processing_audio_slot_t;
 
 struct turbo_client_processing_s {
@@ -168,8 +169,10 @@ static void turbo_client_processing_audio_recompute_duration_locked(
     turbo_client_processing_t *processing) {
     size_t tail_index;
     uint64_t first_timestamp;
-    uint64_t last_timestamp;
-    if (processing->queued_audio_frames <= 1u) {
+    uint64_t last_end;
+    turbo_client_processing_audio_slot_t *tail;
+
+    if (processing->queued_audio_frames == 0u) {
         processing->queued_audio_duration_us = 0u;
         return;
     }
@@ -178,11 +181,16 @@ static void turbo_client_processing_audio_recompute_duration_locked(
         processing->audio_config.queue_capacity;
     first_timestamp =
         processing->audio_slots[processing->audio_head].timestamp_us;
-    last_timestamp = processing->audio_slots[tail_index].timestamp_us;
+    tail = &processing->audio_slots[tail_index];
+    if (tail->duration_us > UINT64_MAX - tail->timestamp_us) {
+        processing->queued_audio_duration_us = UINT64_MAX;
+        return;
+    }
+    last_end = tail->timestamp_us + tail->duration_us;
     processing->queued_audio_duration_us =
-        last_timestamp >= first_timestamp
-            ? last_timestamp - first_timestamp
-            : 0u;
+        last_end >= first_timestamp
+            ? last_end - first_timestamp
+            : UINT64_MAX;
 }
 
 static void turbo_client_processing_audio_clear_locked(
@@ -221,6 +229,42 @@ static int turbo_client_processing_audio_config_valid(
 static size_t turbo_client_processing_audio_frame_bytes(
     const turbo_client_processing_audio_capture_config_t *config) {
     return (size_t)config->channels * (size_t)(config->bits_per_sample / 8u);
+}
+
+static int turbo_client_processing_audio_payload_duration_us(
+    const turbo_client_processing_audio_capture_config_t *config,
+    size_t len, uint64_t *out_duration_us) {
+    size_t frame_bytes;
+    size_t sample_frames;
+    uint64_t whole_seconds;
+    uint64_t remainder_frames;
+    uint64_t remainder_us;
+    uint64_t duration_us;
+
+    if (config == NULL || out_duration_us == NULL || config->sample_rate == 0u) {
+        return 0;
+    }
+    frame_bytes = turbo_client_processing_audio_frame_bytes(config);
+    if (frame_bytes == 0u || len == 0u || len % frame_bytes != 0u) {
+        return 0;
+    }
+
+    sample_frames = len / frame_bytes;
+    whole_seconds = (uint64_t)(sample_frames / config->sample_rate);
+    remainder_frames = (uint64_t)(sample_frames % config->sample_rate);
+    if (whole_seconds > UINT64_MAX / UINT64_C(1000000)) {
+        return 0;
+    }
+    remainder_us =
+        (remainder_frames * UINT64_C(1000000) +
+         (uint64_t)config->sample_rate - UINT64_C(1)) /
+        (uint64_t)config->sample_rate;
+    duration_us = whole_seconds * UINT64_C(1000000);
+    if (duration_us > UINT64_MAX - remainder_us) {
+        return 0;
+    }
+    *out_duration_us = duration_us + remainder_us;
+    return 1;
 }
 
 static int turbo_client_processing_config_valid(
@@ -1039,9 +1083,11 @@ turbo_client_processing_admit_audio_frame(
     size_t write_offset;
     size_t storage_capacity;
     size_t frame_bytes;
-    uint64_t oldest_timestamp = 0u;
+    uint64_t frame_duration_us;
+    uint64_t frame_end_us;
+    uint64_t oldest_timestamp;
     uint64_t newest_timestamp = 0u;
-    uint64_t prospective_duration = 0u;
+    uint64_t prospective_duration;
 
     if (processing == NULL || samples == NULL || len == 0u) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
@@ -1074,7 +1120,15 @@ turbo_client_processing_admit_audio_frame(
         salts_mutex_unlock(&processing->audio_mutex);
         return TURBO_CLIENT_PROCESSING_EFULL;
     }
+    if (!turbo_client_processing_audio_payload_duration_us(
+            &processing->audio_config, len, &frame_duration_us) ||
+        frame_duration_us > UINT64_MAX - timestamp_us) {
+        processing->rejected_audio_frames++;
+        salts_mutex_unlock(&processing->audio_mutex);
+        return TURBO_CLIENT_PROCESSING_EINVAL;
+    }
 
+    oldest_timestamp = timestamp_us;
     if (processing->queued_audio_frames != 0u) {
         size_t newest_index =
             (processing->audio_head + processing->queued_audio_frames - 1u) %
@@ -1088,13 +1142,15 @@ turbo_client_processing_admit_audio_frame(
             salts_mutex_unlock(&processing->audio_mutex);
             return TURBO_CLIENT_PROCESSING_EINVAL;
         }
-        prospective_duration = timestamp_us - oldest_timestamp;
-        if (prospective_duration >
-            processing->audio_config.queue_max_duration_us) {
-            processing->rejected_audio_frames++;
-            salts_mutex_unlock(&processing->audio_mutex);
-            return TURBO_CLIENT_PROCESSING_EFULL;
-        }
+    }
+
+    frame_end_us = timestamp_us + frame_duration_us;
+    prospective_duration = frame_end_us - oldest_timestamp;
+    if (prospective_duration >
+        processing->audio_config.queue_max_duration_us) {
+        processing->rejected_audio_frames++;
+        salts_mutex_unlock(&processing->audio_mutex);
+        return TURBO_CLIENT_PROCESSING_EFULL;
     }
 
     storage_capacity = processing->audio_config.queue_max_bytes;
@@ -1108,6 +1164,7 @@ turbo_client_processing_admit_audio_frame(
     slot->offset = write_offset;
     slot->size = len;
     slot->timestamp_us = timestamp_us;
+    slot->duration_us = frame_duration_us;
 
     processing->audio_storage_tail =
         (write_offset + len) % storage_capacity;
