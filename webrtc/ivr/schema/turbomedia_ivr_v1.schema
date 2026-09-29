@@ -1,10 +1,10 @@
 // TurboMedia IVR v1 canonical schema.
 //
-// This file is the single source of truth for the IVR wire contract. TEXT
-// (compact UTF-8 JSON) and BIN are representations of the same schema objects;
-// no second hand-written wire struct set exists. Message ids below are the published
-// schema_type_id values and match the versioned constant table in
-// webrtc/ivr/src/ivr_frame.c. Published ids are never reused.
+// This file is the single source of truth for the current IVR wire contract.
+// TEXT (compact UTF-8 JSON) and BIN are representations of the same schema
+// objects; no second hand-written wire struct set exists. BIN layout is
+// canonical TBE field order: fixed-width fields first, then variable data.
+// Old declaration-order wire layouts are intentionally unsupported.
 //
 // Codegen (release gate): `tbe_compiler turbomedia_ivr_v1.schema --lang c
 // --output ... --source-output ...` renders owning .h/.c bound to the same
@@ -16,33 +16,33 @@ schema TurboMediaIvrV1 [id(21001), byte_order(little)];
 
 [id(1001)]
 message ConferenceJoinCommandV1 {
+  uint64 call_generation;
+  uint64 expected_room_version;
   string message_id;
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 expected_room_version;
   string participant_role;
 }
 
 [id(1002)]
 message ConferenceLeaveCommandV1 {
+  uint64 call_generation;
+  uint64 expected_room_version;
   string message_id;
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 expected_room_version;
 }
 
 [id(1003)]
 message TransferCommandV1 {
+  uint64 call_generation;
+  uint64 expected_room_version;
   string message_id;
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 expected_room_version;
   string queue_id;
 }
 
@@ -54,87 +54,90 @@ message WorkerSyncCommandV1 {
 
 [id(1005)]
 message GetSnapshotCommandV1 {
+  uint64 call_generation;
   string message_id;
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
 }
 
 [id(1006)]
 message CallDispatchCommandV1 {
+  uint64 call_generation;
+  uint64 expected_room_version;
   string message_id;
   string worker_id;         // target worker
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 expected_room_version;
   string content_package;   // e.g. "conference-greeting"
 }
 
 [id(1007)]
 message WorkerSyncCommandV2 {
-  string message_id;
-  string worker_id;
-  string instance_id;
   uint64 connection_generation;
   uint32 max_sessions;
   uint32 active_sessions;
   uint32 reserved_sessions;
   uint64 lease_duration_ms;
   bool draining;
-  string capabilities;
   uint64 health_generation;
   bool health_ready;
+  string message_id;
+  string worker_id;
+  string instance_id;
+  string capabilities;
 }
 
 [id(1008)]
 message WorkerHeartbeatV1 {
-  string message_id;
-  string worker_id;
-  string instance_id;
   uint64 connection_generation;
   uint32 max_sessions;
   uint32 active_sessions;
   uint32 reserved_sessions;
   uint64 lease_duration_ms;
   bool draining;
-  string capabilities;
   uint64 health_generation;
   bool health_ready;
+  string message_id;
+  string worker_id;
+  string instance_id;
+  string capabilities;
 }
 
 [id(1009)]
 message CallReleaseCommandV1 {
+  uint64 call_generation;
   string message_id;
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
   string reason;
 }
 
 [id(1010)]
 message CallDispatchCommandV2 {
+  uint64 worker_connection_generation;
+  uint64 call_generation;
+  uint64 expected_room_version;
+  uint64 deadline_timeout_ms; // relative TTL, evaluated on worker receipt
   string message_id;        // stable idempotency key for this attempt
   string assignment_id;     // stable across all attempts for one call
   string attempt_id;        // changes only when selecting another worker
   string worker_id;
   string worker_instance_id;
-  uint64 worker_connection_generation;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 expected_room_version;
   string content_package;
   string content_version;
-  uint64 deadline_timeout_ms; // relative TTL, evaluated on worker receipt
 }
 
 // Iris-owned media commands. These messages contain no content package or
 // workflow state; the worker executes exactly one media operation.
 [id(1011)]
 message MediaSessionOpenCommandV1 {
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
   string message_id;
   string tenant_id;
   string provider_session_id;
@@ -142,13 +145,13 @@ message MediaSessionOpenCommandV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 operation_generation;
-  uint64 deadline_timeout_ms;
 }
 
 [id(1012)]
 message MediaPlayCommandV1 {
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
   string message_id;
   string tenant_id;
   string provider_session_id;
@@ -156,14 +159,15 @@ message MediaPlayCommandV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 operation_generation;
-  uint64 deadline_timeout_ms;
   string text;
 }
 
 [id(1013)]
 message MediaInputStartCommandV1 {
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+  uint64 input_generation;
   string message_id;
   string tenant_id;
   string provider_session_id;
@@ -171,15 +175,15 @@ message MediaInputStartCommandV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 operation_generation;
-  uint64 deadline_timeout_ms;
   string input_id;
-  uint64 input_generation;
 }
 
 [id(1014)]
 message MediaInputStopCommandV1 {
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+  uint64 input_generation;
   string message_id;
   string tenant_id;
   string provider_session_id;
@@ -187,15 +191,14 @@ message MediaInputStopCommandV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 operation_generation;
-  uint64 deadline_timeout_ms;
   string input_id;
-  uint64 input_generation;
 }
 
 [id(1015)]
 message MediaCancelCommandV1 {
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
   string message_id;
   string tenant_id;
   string provider_session_id;
@@ -203,13 +206,13 @@ message MediaCancelCommandV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 operation_generation;
-  uint64 deadline_timeout_ms;
 }
 
 [id(1016)]
 message MediaSessionCloseCommandV1 {
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
   string message_id;
   string tenant_id;
   string provider_session_id;
@@ -217,9 +220,6 @@ message MediaSessionCloseCommandV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 operation_generation;
-  uint64 deadline_timeout_ms;
   string reason;
 }
 
@@ -228,18 +228,22 @@ message MediaSessionCloseCommandV1 {
 // pages must echo the returned revision.
 [id(1017)]
 message WorkerMediaInventoryQueryV1 {
-  string message_id;
-  string worker_id;
   uint32 inventory_version;
   uint64 expected_revision;
   uint32 cursor;
   uint32 limit;
+  string message_id;
+  string worker_id;
 }
 
-// Replaces MediaCancelCommandV1. V2 fences cancellation to one exact input
-// incarnation; workers intentionally do not accept V1 as a fallback.
+// V2 fences cancellation to one exact input incarnation. The active runtime
+// accepts only the canonical current contract; no legacy wire fallback exists.
 [id(1018)]
 message MediaCancelCommandV2 {
+  uint64 call_generation;
+  uint64 operation_generation;
+  uint64 deadline_timeout_ms;
+  uint64 input_generation;
   string message_id;
   string tenant_id;
   string provider_session_id;
@@ -247,60 +251,58 @@ message MediaCancelCommandV2 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 operation_generation;
-  uint64 deadline_timeout_ms;
   string input_id;
-  uint64 input_generation;
 }
 
-// Dispatch acceptance/rejection is a separate result frame. It does not
-// change CallDispatchCommandV1, so existing workers can continue decoding the
-// command while newer workers report the post-create session outcome.
+// Dispatch acceptance/rejection is a separate result frame in the current
+// canonical control contract.
 [id(2004)]
 message CallDispatchResultV1 {
+  uint64 call_generation;
+  int32 status_code;         // 0 = accepted, negative = rejected
   string message_id;        // dispatch message_id / idempotency key
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  int32 status_code;         // 0 = accepted, negative = rejected
   string error_code;
   string error_message;
 }
 
 [id(2005)]
 message CallReleaseResultV1 {
+  uint64 call_generation;
+  int32 status_code;
   string message_id;
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  int32 status_code;
   string error_code;
   string error_message;
 }
 
 [id(2006)]
 message CallDispatchResultV2 {
+  uint64 worker_connection_generation;
+  uint64 call_generation;
+  int32 status_code;
+  uint32 active_sessions;
+  uint32 max_sessions;
   string message_id;
   string assignment_id;
   string attempt_id;
   string worker_id;
   string worker_instance_id;
-  uint64 worker_connection_generation;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  int32 status_code;
-  uint32 active_sessions;
-  uint32 max_sessions;
   string error_code;
   string error_message;
 }
 
 [id(2007)]
 message MediaCommandResultV1 {
+  uint64 call_generation;
+  uint64 operation_generation;
+  int32 status_code;
   string message_id;
   string tenant_id;
   string provider_session_id;
@@ -308,9 +310,6 @@ message MediaCommandResultV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 operation_generation;
-  int32 status_code;
   string error_code;
   string error_message;
 }
@@ -320,8 +319,6 @@ message MediaCommandResultV1 {
 // by inventory_version and validated before the page reaches RoomService.
 [id(2008)]
 message WorkerMediaInventoryPageV1 {
-  string message_id;
-  string worker_id;
   uint32 inventory_version;
   uint64 revision;
   uint32 cursor;
@@ -329,8 +326,10 @@ message WorkerMediaInventoryPageV1 {
   uint32 total_active;
   uint32 count;
   bool has_more;
-  string records_json;
   int32 status_code;
+  string message_id;
+  string worker_id;
+  string records_json;
   string error_code;
   string error_message;
 }
@@ -339,71 +338,71 @@ message WorkerMediaInventoryPageV1 {
 // sent as a standalone TIVR frame; the id reserves its generated binding.
 [id(4001)]
 message WorkerMediaInventoryRecordV1 {
+  uint64 workerEpoch;
+  uint64 callGeneration;
+  uint64 operationGeneration;
+  bool rebindable;
   string workerId;
   string workerInstanceId;
-  uint64 workerEpoch;
   string tenantId;
   string providerSessionId;
   string dialogId;
   string roomId;
   string callId;
-  uint64 callGeneration;
-  uint64 operationGeneration;
   string state;
-  bool rebindable;
 }
 
 [id(4002)]
 message WorkerMediaInventoryRecordV2 {
+  uint64 workerEpoch;
+  uint64 callGeneration;
+  uint64 operationGeneration;
+  uint64 inputGeneration;
+  bool inputActive;
+  bool rebindable;
   string workerId;
   string workerInstanceId;
-  uint64 workerEpoch;
   string tenantId;
   string providerSessionId;
   string dialogId;
   string roomId;
   string callId;
-  uint64 callGeneration;
-  uint64 operationGeneration;
   string inputId;
-  uint64 inputGeneration;
-  bool inputActive;
   string state;
-  bool rebindable;
 }
 
 // ---- results (kind=result) ----
 
 [id(2001)]
 message IvrCommandResultV1 {
-  string message_id;
-  string worker_id;
-  string room_id;
-  string call_id;
   uint64 call_generation;
   int32 status_code;
   uint64 room_version;
   uint64 sequence;
+  string message_id;
+  string worker_id;
+  string room_id;
+  string call_id;
   string error_code;
   string error_message;
 }
 
 [id(2002)]
 message WorkerSyncResultV1 {
+  int32 status_code;
   string message_id;
   string worker_id;
-  int32 status_code;
   string error_code;
   string error_message;
 }
 
 [id(2003)]
 message RoomSnapshotV1 {
-  string room_id;
-  string call_id;
   uint64 call_generation;
   uint64 room_version;
   uint64 last_sequence;
+  string room_id;
+  string call_id;
   string participant_role;
   string call_state; // alerting | accepted | dialog_active | closed
 }
@@ -412,72 +411,75 @@ message RoomSnapshotV1 {
 
 [id(3001)]
 message ConferenceParticipantJoinedEventV1 {
+  uint64 call_generation;
+  uint64 room_version;
+  uint64 sequence;
+  uint64 occurred_at_ms;
   string event_id;
   string causation_id;
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 room_version;
-  uint64 sequence;
-  uint64 occurred_at_ms;
   string participant_id;
   string participant_role;
 }
 
 [id(3002)]
 message DtmfFinalEventV1 {
+  uint64 call_generation;
+  uint64 occurred_at_ms;
   string event_id;
   string call_id;
-  uint64 call_generation;
   string input_id;
   string input_value;
-  uint64 occurred_at_ms;
 }
 
 [id(3003)]
 message AsrFinalEventV1 {
+  uint64 call_generation;
+  uint64 occurred_at_ms;
   string event_id;
   string call_id;
-  uint64 call_generation;
   string input_id;
   string input_value;
-  uint64 occurred_at_ms;
 }
 
 [id(3004)]
 message InputTimeoutEventV1 {
+  uint64 call_generation;
+  uint64 occurred_at_ms;
   string event_id;
   string call_id;
-  uint64 call_generation;
   string input_id;
-  uint64 occurred_at_ms;
 }
 
 [id(3005)]
 message PlaybackFinishedEventV1 {
-  string event_id;
-  string call_id;
   uint64 call_generation;
   uint64 occurred_at_ms;
+  string event_id;
+  string call_id;
 }
 
 [id(3006)]
 message IvrWorkerLostEventV1 {
+  uint64 call_generation;
+  uint64 room_version;
+  uint64 sequence;
+  uint64 occurred_at_ms;
   string event_id;
   string causation_id;
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 room_version;
-  uint64 sequence;
-  uint64 occurred_at_ms;
   string reason;
 }
 
 [id(3007)]
 message MediaEventV1 {
+  uint64 call_generation;
+  uint64 sequence;
+  uint64 occurred_at_ms;
   string event_id;
   string tenant_id;
   string provider_session_id;
@@ -485,10 +487,7 @@ message MediaEventV1 {
   string worker_id;
   string room_id;
   string call_id;
-  uint64 call_generation;
-  uint64 sequence;
   string event_type;
-  uint64 occurred_at_ms;
   string input_id;
   string input_value;
   string payload_json;
