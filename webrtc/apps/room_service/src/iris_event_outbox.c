@@ -5,7 +5,7 @@
 #include "platform.h"
 #include "salts_error.h"
 #include "salts_thread.h"
-#include "salts_str.h"
+#include <tstr.h>
 #include "tlog.h"
 #include <salts/clock.h>
 
