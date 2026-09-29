@@ -118,7 +118,7 @@ jobs:
       - name: Create external declaration stubs
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/auth-stubs/openssl" "$RUNNER_TEMP/auth-stubs/salts" "$RUNNER_TEMP/auth-stubs/chttp" "$RUNNER_TEMP/auth-stubs/cnet" "$RUNNER_TEMP/auth-stubs/cstl"
+          mkdir -p "$RUNNER_TEMP/auth-stubs/openssl" "$RUNNER_TEMP/auth-stubs/salts" "$RUNNER_TEMP/auth-stubs/chttp" "$RUNNER_TEMP/auth-stubs/http_client" "$RUNNER_TEMP/auth-stubs/http_server" "$RUNNER_TEMP/auth-stubs/cnet" "$RUNNER_TEMP/auth-stubs/cstl"
 
           cat > "$RUNNER_TEMP/auth-stubs/tinytest.h" <<'EOF'
           #ifndef TURBO_MEDIA_PORTABLE_TINYTEST_H
@@ -516,6 +516,20 @@ jobs:
           const char *chttp_response_header(
               const chttp_response *, const char *);
           void chttp_response_destroy(chttp_response *);
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/http_client/http.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_HTTP_CLIENT_HTTP_H
+          #define TURBO_MEDIA_PORTABLE_HTTP_CLIENT_HTTP_H
+          #include <chttp/chttp.h>
+          #endif
+          EOF
+
+          cat > "$RUNNER_TEMP/auth-stubs/http_server/http.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_HTTP_SERVER_HTTP_H
+          #define TURBO_MEDIA_PORTABLE_HTTP_SERVER_HTTP_H
+          #include <chttp/chttp.h>
           #endif
           EOF
 
