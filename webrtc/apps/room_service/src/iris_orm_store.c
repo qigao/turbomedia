@@ -1,6 +1,6 @@
 #include "iris_orm_store.h"
 
-#include <cyaml/cyaml.h>
+#include <cyaml.h>
 #include <orm.h>
 #include <orm_runtime.h>
 #include <salts_error.h>
