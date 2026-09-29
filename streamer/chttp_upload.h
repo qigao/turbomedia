@@ -1,7 +1,7 @@
 #ifndef TURBO_MEDIA_STREAMER_CHTTP_UPLOAD_H
 #define TURBO_MEDIA_STREAMER_CHTTP_UPLOAD_H
 
-#include <chttp/chttp.h>
+#include <http_client/http.h>
 #include <stdint.h>
 
 int turbo_streamer_chttp_post_file(
