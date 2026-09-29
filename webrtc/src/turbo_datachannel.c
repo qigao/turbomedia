@@ -12,7 +12,7 @@
 #include <salts_error.h>
 #include <stdlib.h>
 #include <string.h>
-#include <salts_str.h>
+#include <tstr.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
