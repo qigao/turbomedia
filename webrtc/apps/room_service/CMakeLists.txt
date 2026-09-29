@@ -14,7 +14,7 @@ if(NOT TARGET Orm::C)
     "RoomService Iris outbox requires the generic Orm::C runtime")
 endif()
 
-turbo_media_find_tbe_compiler(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE)
+turbo_media_find_idlc(ROOM_SERVICE_IDL_COMPILER_EXECUTABLE)
 set(ROOM_SERVICE_OUTBOX_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ROOM_SERVICE_OUTBOX_GEN_DIR}")
 set(ROOM_SERVICE_OUTBOX_GEN_HEADER
@@ -31,7 +31,7 @@ set(ROOM_SERVICE_PROVIDER_GEN_SOURCE
   "${ROOM_SERVICE_OUTBOX_GEN_DIR}/turbomedia_iris_provider_v1.c")
 add_custom_command(
   OUTPUT ${ROOM_SERVICE_OUTBOX_GEN_HEADER} ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_TBE_COMPILER_EXECUTABLE}
+  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_event_outbox_v1.schema
           --lang c --output ${ROOM_SERVICE_OUTBOX_GEN_HEADER}
           --source-output ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
@@ -40,7 +40,7 @@ add_custom_command(
   VERBATIM)
 add_custom_command(
   OUTPUT ${ROOM_SERVICE_LEDGER_GEN_HEADER} ${ROOM_SERVICE_LEDGER_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_TBE_COMPILER_EXECUTABLE}
+  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_command_ledger_v2.schema
           --lang c --output ${ROOM_SERVICE_LEDGER_GEN_HEADER}
           --source-output ${ROOM_SERVICE_LEDGER_GEN_SOURCE}
@@ -49,7 +49,7 @@ add_custom_command(
   VERBATIM)
 add_custom_command(
   OUTPUT ${ROOM_SERVICE_PROVIDER_GEN_HEADER} ${ROOM_SERVICE_PROVIDER_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_TBE_COMPILER_EXECUTABLE}
+  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_iris_provider_v1.schema
           --lang c --output ${ROOM_SERVICE_PROVIDER_GEN_HEADER}
           --source-output ${ROOM_SERVICE_PROVIDER_GEN_SOURCE}
