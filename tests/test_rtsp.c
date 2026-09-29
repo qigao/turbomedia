@@ -1,8 +1,10 @@
 #include "turbo_rtsp.h"
 #include "turbo_rtsp_rtp.h"
 
+#include <salts/random.h>
 #include <salts/thread.h>
 #include <tinytest.h>
+#include <openssl/evp.h>
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -18,6 +20,19 @@ enum {
     RTSP_TEST_UDP_PORT = 20558,
     RTSP_TEST_TIMEOUT_MS = 5000
 };
+
+static void rtsp_test_websocket_handshake_primitives(void) {
+    static const char probe[] = "rtsp-websocket-probe";
+    unsigned char nonce[16] = {0};
+    unsigned char digest[EVP_MAX_MD_SIZE] = {0};
+    unsigned int digest_size = 0u;
+
+    check_equal(salts_platform_secure_random(nonce, sizeof(nonce)), SALTS_OK);
+    check_equal(EVP_Digest(probe, sizeof(probe) - 1u, digest, &digest_size,
+                           EVP_sha1(), NULL),
+                1);
+    check_equal((int)digest_size, 20);
+}
 
 static const uint8_t RTSP_TEST_KCP_PSK[CNET_KCP_PSK_BYTES] = {
     0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98,
@@ -538,6 +553,10 @@ suite("TurboMedia RTSP over Salts") {
     it("runs RECORD and interleaved media over CNet TCP") {
         rtsp_test_record_flow(
             TURBO_RTSP_CONTROL_TRANSPORT_TCP, RTSP_TEST_TCP_PORT, NULL);
+    }
+
+    it("provides CHTTP WebSocket handshake primitives") {
+        rtsp_test_websocket_handshake_primitives();
     }
 
     it("runs RECORD and interleaved media over CHTTP WebSocket") {
