@@ -2,7 +2,7 @@
 
 #include <cyaml/cyaml.h>
 #include <orm.h>
-#include <orm_postgresql.h>
+#include <orm_runtime.h>
 #include <salts_error.h>
 #include <salts_fs.h>
 
@@ -27,6 +27,7 @@ static const char IRIS_ORM_CREATE_POSTGRESQL_SQL[] =
 
 typedef struct iris_orm_store_config_s {
     char *namespace_name;
+    char *driver_module;
     char *pg_host;
     char *pg_port;
     char *pg_user;
@@ -47,6 +48,7 @@ typedef struct iris_orm_store_config_s {
 } iris_orm_store_config_t;
 
 struct iris_orm_store_owner_s {
+    orm_runtime_t *runtime;
     orm_connection_t *connection;
     char *namespace_name;
     size_t max_bytes;
@@ -101,6 +103,7 @@ static void iris_orm_config_cleanup(iris_orm_store_config_t *config) {
     if (!config)
         return;
     free(config->namespace_name);
+    free(config->driver_module);
     free(config->pg_host);
     free(config->pg_port);
     free(config->pg_user);
@@ -219,13 +222,13 @@ static int iris_orm_parse_config(const char *yaml_path,
     static const char *const root_keys[] = {"version", "channels", "adapters"};
     static const char *const channel_keys[] = {"kind", "config"};
     static const char *const postgresql_config_keys[] = {
-        "backend",        "namespace_name", "host",
-        "port",           "user",           "password",
-        "dbname",         "service",        "connect_timeout",
-        "sslmode",        "sslrootcert",    "sslcert",
-        "sslkey",         "max_records",    "max_bytes",
-        "max_item_bytes", "max_key_size",   "max_value_size",
-        "max_batch_size"};
+        "backend",        "driver_module",  "namespace_name",
+        "host",           "port",           "user",
+        "password",       "dbname",         "service",
+        "connect_timeout","sslmode",        "sslrootcert",
+        "sslcert",        "sslkey",         "max_records",
+        "max_bytes",      "max_item_bytes", "max_key_size",
+        "max_value_size", "max_batch_size"};
 
     memset(&yaml_error, 0, sizeof(yaml_error));
     if (!yaml_path || !yaml_path[0] || !channel_name || !channel_name[0] ||
@@ -285,6 +288,14 @@ static int iris_orm_parse_config(const char *yaml_path,
     if (strcmp(backend, "postgresql") != 0) {
         iris_orm_write_error(error, error_capacity,
                              "RoomService requires the PostgreSQL ORM backend");
+        goto cleanup;
+    }
+    config->driver_module =
+        iris_yaml_string(document, channel_config, "driver_module");
+    if (!config->driver_module || !config->driver_module[0]) {
+        iris_orm_write_error(
+            error, error_capacity,
+            "PostgreSQL ORM requires an explicit driver_module path");
         goto cleanup;
     }
     config->namespace_name =
@@ -787,6 +798,8 @@ iris_orm_store_owner_t *iris_orm_store_owner_create(const char *yaml_path,
                                                     size_t error_capacity) {
     iris_orm_store_config_t parsed;
     iris_orm_store_owner_t *owner = NULL;
+    orm_runtime_config_t runtime_configuration;
+    orm_driver_load_config_t driver_load;
     orm_config_t orm_configuration;
     orm_option_t options[11];
     orm_error_t orm_error;
@@ -812,6 +825,32 @@ iris_orm_store_owner_t *iris_orm_store_owner_create(const char *yaml_path,
     parsed.namespace_name = NULL;
     owner->max_bytes = parsed.max_bytes;
     owner->max_item_bytes = parsed.max_item_bytes;
+
+    orm_error_init(&orm_error);
+    orm_runtime_config_init(&runtime_configuration);
+    status = orm_runtime_create(
+        &runtime_configuration, &owner->runtime, &orm_error);
+    if (status != ORM_STATUS_OK) {
+        iris_orm_write_orm_error(
+            error, error_capacity, "cannot create TurboDB ORM runtime",
+            &orm_error);
+        goto fail;
+    }
+
+    memset(&driver_load, 0, sizeof(driver_load));
+    driver_load.struct_size = (uint32_t)sizeof(driver_load);
+    driver_load.abi_version = ORM_RUNTIME_ABI_VERSION;
+    driver_load.module_path = orm_view(parsed.driver_module);
+    driver_load.expected_driver_id = orm_view("postgresql");
+    status = orm_runtime_load_driver(
+        owner->runtime, &driver_load, &orm_error);
+    if (status != ORM_STATUS_OK) {
+        iris_orm_write_orm_error(
+            error, error_capacity, "cannot load TurboDB PostgreSQL driver",
+            &orm_error);
+        goto fail;
+    }
+
     orm_config(&orm_configuration);
     iris_orm_add_option(options, 11u, &option_count, "host", parsed.pg_host);
     iris_orm_add_option(options, 11u, &option_count, "port", parsed.pg_port);
@@ -853,9 +892,8 @@ iris_orm_store_owner_t *iris_orm_store_owner_create(const char *yaml_path,
         parsed.max_records > UINT64_MAX / result_bytes_per_record
             ? UINT64_MAX
             : (uint64_t)parsed.max_records * result_bytes_per_record;
-    orm_error_init(&orm_error);
-    status = orm_postgresql_connect(&orm_configuration, &owner->connection,
-                                    &orm_error);
+    status = orm_runtime_connect(
+        owner->runtime, &orm_configuration, &owner->connection, &orm_error);
     if (status != ORM_STATUS_OK) {
         iris_orm_write_orm_error(error, error_capacity,
                                  "cannot connect TurboDB ORM", &orm_error);
@@ -893,9 +931,17 @@ iris_record_store_t *iris_orm_store_owner_store(iris_orm_store_owner_t *owner) {
 }
 
 void iris_orm_store_owner_destroy(iris_orm_store_owner_t *owner) {
+    orm_error_t error;
     if (!owner)
         return;
     orm_disconnect(owner->connection);
+    owner->connection = NULL;
+    if (owner->runtime) {
+        orm_error_init(&error);
+        (void)orm_runtime_close(owner->runtime, &error);
+        orm_runtime_release(owner->runtime);
+        owner->runtime = NULL;
+    }
     free(owner->namespace_name);
     free(owner);
 }
