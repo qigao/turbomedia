@@ -7,7 +7,10 @@
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 
+#include <salts/thread.h>
+
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,9 +21,22 @@ enum {
 #define TURBO_CLIENT_PROCESSING_DEFAULT_QUEUE_BYTES (8u * 1024u * 1024u)
 #define TURBO_CLIENT_PROCESSING_DEFAULT_QUEUE_DURATION_US UINT64_C(500000)
 
+typedef struct turbo_client_processing_video_slot_t {
+    size_t offset;
+    size_t size;
+    int width;
+    int height;
+    uint64_t timestamp_us;
+} turbo_client_processing_video_slot_t;
+
 struct turbo_client_processing_s {
     turbo_client_processing_config_t config;
-    turbo_client_processing_state_t state;
+    atomic_int state;
+    salts_mutex_t frame_mutex;
+    turbo_client_processing_video_slot_t *frame_slots;
+    uint8_t *frame_storage;
+    size_t frame_head;
+    size_t frame_storage_tail;
     size_t queued_frames;
     size_t queued_bytes;
     uint64_t queued_duration_us;
@@ -58,11 +74,60 @@ struct turbo_client_processing_s {
     int output_header_written;
 };
 
+static turbo_client_processing_state_t turbo_client_processing_state_get(
+    const turbo_client_processing_t *processing) {
+    return (turbo_client_processing_state_t)atomic_load_explicit(
+        &processing->state, memory_order_acquire);
+}
+
+static void turbo_client_processing_state_set(
+    turbo_client_processing_t *processing,
+    turbo_client_processing_state_t state) {
+    atomic_store_explicit(&processing->state, (int)state, memory_order_release);
+}
+
+static void turbo_client_processing_queue_recompute_duration_locked(
+    turbo_client_processing_t *processing) {
+    size_t tail_index;
+    uint64_t first_timestamp;
+    uint64_t last_timestamp;
+    if (processing->queued_frames <= 1u) {
+        processing->queued_duration_us = 0u;
+        return;
+    }
+    tail_index = (processing->frame_head + processing->queued_frames - 1u) %
+                 processing->config.frame_queue_capacity;
+    first_timestamp =
+        processing->frame_slots[processing->frame_head].timestamp_us;
+    last_timestamp = processing->frame_slots[tail_index].timestamp_us;
+    processing->queued_duration_us =
+        last_timestamp >= first_timestamp
+            ? last_timestamp - first_timestamp
+            : 0u;
+}
+
+static void turbo_client_processing_queue_clear_locked(
+    turbo_client_processing_t *processing) {
+    if (processing == NULL) {
+        return;
+    }
+    memset(processing->frame_slots, 0,
+           processing->config.frame_queue_capacity *
+               sizeof(*processing->frame_slots));
+    processing->frame_head = 0u;
+    processing->frame_storage_tail = 0u;
+    processing->queued_frames = 0u;
+    processing->queued_bytes = 0u;
+    processing->queued_duration_us = 0u;
+}
+
 static int turbo_client_processing_config_valid(
     const turbo_client_processing_config_t *config) {
     return config != NULL &&
            config->size == sizeof(*config) &&
            config->frame_queue_capacity > 0u &&
+           config->frame_queue_capacity <=
+               SIZE_MAX / sizeof(turbo_client_processing_video_slot_t) &&
            config->frame_queue_max_bytes > 0u &&
            config->frame_queue_max_duration_us > 0u;
 }
@@ -382,7 +447,9 @@ turbo_client_processing_transform_frame(
         processing->converted_frame->pts = processing->next_pts;
     }
     processing->next_pts = processing->converted_frame->pts + 1;
+    salts_mutex_lock(&processing->frame_mutex);
     processing->admitted_frames++;
+    salts_mutex_unlock(&processing->frame_mutex);
 
     return turbo_client_processing_encode_frame(
         processing, processing->converted_frame);
@@ -456,6 +523,15 @@ void turbo_client_processing_snapshot_init(
     snapshot->size = sizeof(*snapshot);
 }
 
+void turbo_client_processing_video_frame_info_init(
+    turbo_client_processing_video_frame_info_t *info) {
+    if (info == NULL) {
+        return;
+    }
+    memset(info, 0, sizeof(*info));
+    info->size = sizeof(*info);
+}
+
 void turbo_client_processing_file_plan_init(
     turbo_client_processing_file_plan_t *plan) {
     if (plan == NULL) {
@@ -482,8 +558,20 @@ turbo_client_processing_status_t turbo_client_processing_create(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_ENOMEM;
     }
+    processing->frame_slots = (turbo_client_processing_video_slot_t *)calloc(
+        config->frame_queue_capacity, sizeof(*processing->frame_slots));
+    processing->frame_storage = (uint8_t *)malloc(config->frame_queue_max_bytes);
+    salts_mutex_init(&processing->frame_mutex);
+    if (processing->frame_slots == NULL || processing->frame_storage == NULL ||
+        processing->frame_mutex == NULL) {
+        salts_mutex_destroy(&processing->frame_mutex);
+        free(processing->frame_storage);
+        free(processing->frame_slots);
+        free(processing);
+        return TURBO_CLIENT_PROCESSING_ENOMEM;
+    }
     processing->config = *config;
-    processing->state = TURBO_CLIENT_PROCESSING_CREATED;
+    atomic_init(&processing->state, TURBO_CLIENT_PROCESSING_CREATED);
     processing->video_stream_index = -1;
     processing->source_format = AV_PIX_FMT_NONE;
     *out_processing = processing;
@@ -501,7 +589,7 @@ turbo_client_processing_status_t turbo_client_processing_set_file_plan(
     if (processing == NULL || !turbo_client_processing_file_plan_valid(plan)) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state != TURBO_CLIENT_PROCESSING_CREATED) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_CREATED) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
 
@@ -538,7 +626,7 @@ turbo_client_processing_status_t turbo_client_processing_prepare(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state != TURBO_CLIENT_PROCESSING_CREATED) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_CREATED) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
 
@@ -546,11 +634,11 @@ turbo_client_processing_status_t turbo_client_processing_prepare(
         status = turbo_client_processing_file_prepare(processing);
         if (status != TURBO_CLIENT_PROCESSING_OK) {
             turbo_client_processing_file_runtime_clear(processing);
-            processing->state = TURBO_CLIENT_PROCESSING_FAILED;
+            turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_FAILED);
             return status;
         }
     }
-    processing->state = TURBO_CLIENT_PROCESSING_PREPARED;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_PREPARED);
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -559,10 +647,10 @@ turbo_client_processing_status_t turbo_client_processing_start(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state != TURBO_CLIENT_PROCESSING_PREPARED) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PREPARED) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
-    processing->state = TURBO_CLIENT_PROCESSING_RUNNING;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_RUNNING);
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -575,12 +663,12 @@ turbo_client_processing_status_t turbo_client_processing_run_file(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state != TURBO_CLIENT_PROCESSING_PREPARED ||
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PREPARED ||
         !processing->file_plan_set || !processing->file_prepared) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
 
-    processing->state = TURBO_CLIENT_PROCESSING_RUNNING;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_RUNNING);
     for (;;) {
         result = av_read_frame(
             processing->input, processing->input_packet);
@@ -615,15 +703,174 @@ turbo_client_processing_status_t turbo_client_processing_run_file(
         goto failed;
     }
     processing->output_header_written = 0;
-    processing->state = TURBO_CLIENT_PROCESSING_STOPPED;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_STOPPED);
     turbo_client_processing_file_runtime_clear(processing);
     return TURBO_CLIENT_PROCESSING_OK;
 
 failed:
     av_packet_unref(processing->input_packet);
-    processing->state = TURBO_CLIENT_PROCESSING_FAILED;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_FAILED);
     turbo_client_processing_file_runtime_clear(processing);
     return status;
+}
+
+turbo_client_processing_status_t
+turbo_client_processing_admit_video_frame(
+    turbo_client_processing_t *processing,
+    const uint8_t *frame, size_t len,
+    int width, int height, uint64_t timestamp_us) {
+    turbo_client_processing_video_slot_t *slot;
+    size_t slot_index;
+    size_t write_offset;
+    size_t storage_capacity;
+    size_t storage_head = 0u;
+    uint64_t oldest_timestamp = 0u;
+    uint64_t newest_timestamp = 0u;
+    uint64_t prospective_duration = 0u;
+
+    if (processing == NULL || frame == NULL || len == 0u ||
+        width <= 0 || height <= 0) {
+        return TURBO_CLIENT_PROCESSING_EINVAL;
+    }
+
+    salts_mutex_lock(&processing->frame_mutex);
+    if (turbo_client_processing_state_get(processing) !=
+        TURBO_CLIENT_PROCESSING_RUNNING) {
+        processing->rejected_frames++;
+        salts_mutex_unlock(&processing->frame_mutex);
+        return TURBO_CLIENT_PROCESSING_ESTATE;
+    }
+    if (processing->queued_frames >= processing->config.frame_queue_capacity ||
+        len > processing->config.frame_queue_max_bytes -
+                  processing->queued_bytes) {
+        processing->rejected_frames++;
+        salts_mutex_unlock(&processing->frame_mutex);
+        return TURBO_CLIENT_PROCESSING_EFULL;
+    }
+
+    if (processing->queued_frames != 0u) {
+        size_t newest_index =
+            (processing->frame_head + processing->queued_frames - 1u) %
+            processing->config.frame_queue_capacity;
+        storage_head =
+            processing->frame_slots[processing->frame_head].offset;
+        oldest_timestamp =
+            processing->frame_slots[processing->frame_head].timestamp_us;
+        newest_timestamp =
+            processing->frame_slots[newest_index].timestamp_us;
+        if (timestamp_us < newest_timestamp) {
+            processing->rejected_frames++;
+            salts_mutex_unlock(&processing->frame_mutex);
+            return TURBO_CLIENT_PROCESSING_EINVAL;
+        }
+        prospective_duration = timestamp_us - oldest_timestamp;
+        if (prospective_duration >
+            processing->config.frame_queue_max_duration_us) {
+            processing->rejected_frames++;
+            salts_mutex_unlock(&processing->frame_mutex);
+            return TURBO_CLIENT_PROCESSING_EFULL;
+        }
+    }
+
+    storage_capacity = processing->config.frame_queue_max_bytes;
+    write_offset = processing->frame_storage_tail;
+    if (processing->queued_frames == 0u) {
+        write_offset = 0u;
+    } else if (processing->frame_storage_tail >= storage_head) {
+        size_t tail_space = storage_capacity - processing->frame_storage_tail;
+        if (len > tail_space) {
+            if (len > storage_head) {
+                processing->rejected_frames++;
+                salts_mutex_unlock(&processing->frame_mutex);
+                return TURBO_CLIENT_PROCESSING_EFULL;
+            }
+            write_offset = 0u;
+        }
+    } else if (len > storage_head - processing->frame_storage_tail) {
+        processing->rejected_frames++;
+        salts_mutex_unlock(&processing->frame_mutex);
+        return TURBO_CLIENT_PROCESSING_EFULL;
+    }
+
+    memcpy(processing->frame_storage + write_offset, frame, len);
+    slot_index =
+        (processing->frame_head + processing->queued_frames) %
+        processing->config.frame_queue_capacity;
+    slot = &processing->frame_slots[slot_index];
+    slot->offset = write_offset;
+    slot->size = len;
+    slot->width = width;
+    slot->height = height;
+    slot->timestamp_us = timestamp_us;
+
+    processing->frame_storage_tail = write_offset + len;
+    if (processing->frame_storage_tail == storage_capacity) {
+        processing->frame_storage_tail = 0u;
+    }
+    processing->queued_frames++;
+    processing->queued_bytes += len;
+    processing->queued_duration_us = prospective_duration;
+    processing->admitted_frames++;
+    salts_mutex_unlock(&processing->frame_mutex);
+    return TURBO_CLIENT_PROCESSING_OK;
+}
+
+void turbo_client_processing_video_capture_callback(
+    salts_capture_t *capture,
+    const uint8_t *frame, size_t len,
+    int width, int height,
+    uint64_t timestamp_us, void *user_data) {
+    (void)capture;
+    (void)turbo_client_processing_admit_video_frame(
+        (turbo_client_processing_t *)user_data,
+        frame, len, width, height, timestamp_us);
+}
+
+turbo_client_processing_status_t turbo_client_processing_pop_video_frame(
+    turbo_client_processing_t *processing,
+    void *destination, size_t destination_capacity,
+    size_t *out_size,
+    turbo_client_processing_video_frame_info_t *info) {
+    turbo_client_processing_video_slot_t *slot;
+
+    if (processing == NULL || out_size == NULL || info == NULL ||
+        info->size != sizeof(*info)) {
+        return TURBO_CLIENT_PROCESSING_EINVAL;
+    }
+
+    salts_mutex_lock(&processing->frame_mutex);
+    if (processing->queued_frames == 0u) {
+        *out_size = 0u;
+        salts_mutex_unlock(&processing->frame_mutex);
+        return TURBO_CLIENT_PROCESSING_ESTATE;
+    }
+
+    slot = &processing->frame_slots[processing->frame_head];
+    *out_size = slot->size;
+    if (destination == NULL || destination_capacity < slot->size) {
+        salts_mutex_unlock(&processing->frame_mutex);
+        return TURBO_CLIENT_PROCESSING_EFULL;
+    }
+
+    memcpy(destination, processing->frame_storage + slot->offset, slot->size);
+    info->data_size = slot->size;
+    info->width = slot->width;
+    info->height = slot->height;
+    info->timestamp_us = slot->timestamp_us;
+
+    processing->queued_bytes -= slot->size;
+    memset(slot, 0, sizeof(*slot));
+    processing->frame_head =
+        (processing->frame_head + 1u) %
+        processing->config.frame_queue_capacity;
+    processing->queued_frames--;
+    if (processing->queued_frames == 0u) {
+        processing->frame_head = 0u;
+        processing->frame_storage_tail = 0u;
+    }
+    turbo_client_processing_queue_recompute_duration_locked(processing);
+    salts_mutex_unlock(&processing->frame_mutex);
+    return TURBO_CLIENT_PROCESSING_OK;
 }
 
 turbo_client_processing_status_t turbo_client_processing_pause(
@@ -631,10 +878,10 @@ turbo_client_processing_status_t turbo_client_processing_pause(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state != TURBO_CLIENT_PROCESSING_RUNNING) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_RUNNING) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
-    processing->state = TURBO_CLIENT_PROCESSING_PAUSED;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_PAUSED);
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -643,10 +890,10 @@ turbo_client_processing_status_t turbo_client_processing_resume(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state != TURBO_CLIENT_PROCESSING_PAUSED) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PAUSED) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
-    processing->state = TURBO_CLIENT_PROCESSING_RUNNING;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_RUNNING);
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -655,12 +902,12 @@ turbo_client_processing_status_t turbo_client_processing_request_stop(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state != TURBO_CLIENT_PROCESSING_PREPARED &&
-        processing->state != TURBO_CLIENT_PROCESSING_RUNNING &&
-        processing->state != TURBO_CLIENT_PROCESSING_PAUSED) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PREPARED &&
+        turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_RUNNING &&
+        turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PAUSED) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
-    processing->state = TURBO_CLIENT_PROCESSING_DRAINING;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_DRAINING);
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -669,15 +916,15 @@ turbo_client_processing_status_t turbo_client_processing_drain(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state != TURBO_CLIENT_PROCESSING_DRAINING) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_DRAINING) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
 
-    processing->queued_frames = 0u;
-    processing->queued_bytes = 0u;
-    processing->queued_duration_us = 0u;
+    salts_mutex_lock(&processing->frame_mutex);
+    turbo_client_processing_queue_clear_locked(processing);
+    salts_mutex_unlock(&processing->frame_mutex);
     turbo_client_processing_file_runtime_clear(processing);
-    processing->state = TURBO_CLIENT_PROCESSING_STOPPED;
+    turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_STOPPED);
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -689,17 +936,19 @@ turbo_client_processing_status_t turbo_client_processing_snapshot(
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
 
-    snapshot->state = processing->state;
+    snapshot->state = turbo_client_processing_state_get(processing);
     snapshot->frame_queue_capacity = processing->config.frame_queue_capacity;
     snapshot->frame_queue_max_bytes =
         processing->config.frame_queue_max_bytes;
     snapshot->frame_queue_max_duration_us =
         processing->config.frame_queue_max_duration_us;
+    salts_mutex_lock((salts_mutex_t *)&processing->frame_mutex);
     snapshot->queued_frames = processing->queued_frames;
     snapshot->queued_bytes = processing->queued_bytes;
     snapshot->queued_duration_us = processing->queued_duration_us;
     snapshot->admitted_frames = processing->admitted_frames;
     snapshot->rejected_frames = processing->rejected_frames;
+    salts_mutex_unlock((salts_mutex_t *)&processing->frame_mutex);
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -708,13 +957,19 @@ turbo_client_processing_status_t turbo_client_processing_destroy(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (processing->state == TURBO_CLIENT_PROCESSING_RUNNING ||
-        processing->state == TURBO_CLIENT_PROCESSING_PAUSED ||
-        processing->state == TURBO_CLIENT_PROCESSING_DRAINING) {
+    if (turbo_client_processing_state_get(processing) == TURBO_CLIENT_PROCESSING_RUNNING ||
+        turbo_client_processing_state_get(processing) == TURBO_CLIENT_PROCESSING_PAUSED ||
+        turbo_client_processing_state_get(processing) == TURBO_CLIENT_PROCESSING_DRAINING) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
     turbo_client_processing_file_runtime_clear(processing);
     turbo_client_processing_file_plan_clear(processing);
+    salts_mutex_lock(&processing->frame_mutex);
+    turbo_client_processing_queue_clear_locked(processing);
+    salts_mutex_unlock(&processing->frame_mutex);
+    salts_mutex_destroy(&processing->frame_mutex);
+    free(processing->frame_storage);
+    free(processing->frame_slots);
     free(processing);
     return TURBO_CLIENT_PROCESSING_OK;
 }
