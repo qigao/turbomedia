@@ -55,12 +55,6 @@ concurrency:
   group: linux-client-released-sdk-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  SALTS_SDK_VERSION: "1.8.3"
-  SALTS_UTILS_SDK_VERSION: "4.1.4"
-  SALTSNET_SDK_VERSION: "1.0.0"
-  CHTTP_SDK_VERSION: "1.1.6"
-
 jobs:
   client:
     name: Linux CLIENT released-SDK contract
@@ -101,18 +95,29 @@ jobs:
           <Project Sdk="Microsoft.NET.Sdk">
             <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
             <ItemGroup>
-              <PackageReference Include="Salts.Native" Version="[$SALTS_SDK_VERSION]" />
-              <PackageReference Include="SaltsUtils.Native" Version="[$SALTS_UTILS_SDK_VERSION]" />
-              <PackageReference Include="SaltsNet.Native" Version="[$SALTSNET_SDK_VERSION]" />
-              <PackageReference Include="CHttp.Native" Version="[$CHTTP_SDK_VERSION]" />
+              <PackageReference Include="Salts.Native" Version="*" />
+              <PackageReference Include="SaltsUtils.Native" Version="*" />
+              <PackageReference Include="SaltsNet.Native" Version="*" />
+              <PackageReference Include="CHttp.Native" Version="*" />
             </ItemGroup>
           </Project>
           EOF
           dotnet restore "$project" --configfile "$config" --packages "$packages"
-          echo "SALTS_ROOT=$packages/salts.native/$SALTS_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
-          echo "SALTS_UTILS_ROOT=$packages/saltsutils.native/$SALTS_UTILS_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
-          echo "SALTSNET_ROOT=$packages/saltsnet.native/$SALTSNET_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
-          echo "CHTTP_ROOT=$packages/chttp.native/$CHTTP_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
+          resolve_sdk_root() {
+            local package_id="$1"
+            local package_root="$packages/$package_id"
+            local matches=()
+            mapfile -t matches < <(find "$package_root" -mindepth 1 -maxdepth 1 -type d -print)
+            if [ "${#matches[@]}" -ne 1 ]; then
+              printf 'expected exactly one restored version for %s, found %s\n'                 "$package_id" "${#matches[@]}" >&2
+              return 1
+            fi
+            printf '%s/sdk/linux-x64\n' "${matches[0]}"
+          }
+          echo "SALTS_ROOT=$(resolve_sdk_root salts.native)" >> "$GITHUB_ENV"
+          echo "SALTS_UTILS_ROOT=$(resolve_sdk_root saltsutils.native)" >> "$GITHUB_ENV"
+          echo "SALTSNET_ROOT=$(resolve_sdk_root saltsnet.native)" >> "$GITHUB_ENV"
+          echo "CHTTP_ROOT=$(resolve_sdk_root chttp.native)" >> "$GITHUB_ENV"
 
       - name: Verify released SDK contracts
         shell: bash
