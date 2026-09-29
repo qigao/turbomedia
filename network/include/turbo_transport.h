@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <cnet/cnet.h>
-#include <chttp/chttp.h>
+#include <http_client/http.h>
 #include <turbo_export.h>
 
 #ifdef __cplusplus
