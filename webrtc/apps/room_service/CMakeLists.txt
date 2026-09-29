@@ -79,11 +79,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     src/iris_orm_store.c
     src/iris_command_ledger.c
     src/iris_command_fingerprint.c
-    src/iris_provider_protocol.c
-    src/iris_control_provider_codec.c
-    src/iris_control_provider.c
     src/iris_completion_dispatcher.c
-    src/iris_media_reconciler.c
     src/iris_media_bridge.c
     src/iris_room_bridge.c
     src/ivr_control_adapter.c)
@@ -106,11 +102,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     src/iris_orm_store.c
     src/iris_command_ledger.c
     src/iris_command_fingerprint.c
-    src/iris_provider_protocol.c
-    src/iris_control_provider_codec.c
-    src/iris_control_provider.c
     src/iris_completion_dispatcher.c
-    src/iris_media_reconciler.c
     src/iris_media_bridge.c
     src/iris_room_bridge.c
     src/ivr_control_adapter.c)
@@ -330,60 +322,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     OUTPUT_NAME "test_iris_media_bridge"
     FOLDER "Applications/tests")
 
-  add_executable(test_iris_control_provider_codec
-    tests/test_iris_control_provider_codec.c
-    src/iris_control_provider_codec.c
-    src/iris_provider_protocol.c)
-  target_include_directories(test_iris_control_provider_codec PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_control_provider_codec PRIVATE
-    room_service_iris_outbox_schema
-    Salts::DataBind
-    SaltsNet::Crypto
-    Salts::Core
-    Salts::JsonParser
-    Salts::TinyTest)
-  target_compile_definitions(test_iris_control_provider_codec
-    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_control_provider_codec
-    COMMAND test_iris_control_provider_codec)
-  set_tests_properties(test_iris_control_provider_codec PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_control_provider_codec PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
-  add_executable(test_iris_control_provider
-    tests/test_iris_control_provider.c
-    src/iris_control_provider.c
-    src/iris_control_provider_codec.c
-    src/iris_provider_protocol.c)
-  target_include_directories(test_iris_control_provider PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_control_provider PRIVATE
-    turbo_media_ivr
-    room_service_iris_outbox_schema
-    CHttp::Client CHttp::Server
-    Salts::CNet
-    Salts::DataBind
-    SaltsNet::Crypto
-    Salts::Core
-    Salts::JsonParser
-    Salts::TinyTest
-    $<$<PLATFORM_ID:Windows>:ws2_32>)
-  target_compile_definitions(test_iris_control_provider
-    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_control_provider COMMAND test_iris_control_provider)
-  set_tests_properties(test_iris_control_provider PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_control_provider PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
   add_executable(test_iris_room_bridge
     tests/test_iris_room_bridge.c
     src/iris_room_bridge.c
@@ -434,41 +372,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   set_tests_properties(test_iris_completion_dispatcher PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
   set_target_properties(test_iris_completion_dispatcher PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
-  add_executable(test_iris_media_reconciler
-    tests/test_iris_media_reconciler.c
-    src/iris_media_reconciler.c
-    src/iris_control_provider.c
-    src/iris_control_provider_codec.c
-    src/iris_provider_protocol.c
-    src/iris_event_outbox.c
-    src/iris_orm_store.c
-    src/ivr_control_adapter.c)
-  target_include_directories(test_iris_media_reconciler PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_media_reconciler PRIVATE
-    TurboMedia::RtcApps
-    turbo_media_ivr
-    room_service_iris_outbox_schema
-    CHttp::Client CHttp::Server
-    SaltsNet::Crypto
-    OpenSSL::Crypto
-    Orm::C
-    Salts::Core
-    Salts::JsonParser
-    Salts::CYaml
-    Salts::TinyTest)
-  target_compile_definitions(test_iris_media_reconciler
-    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_media_reconciler
-    COMMAND test_iris_media_reconciler)
-  set_tests_properties(test_iris_media_reconciler PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_media_reconciler PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
 
@@ -577,7 +480,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_executable(test_ivr_dispatch_processes
     tests/test_ivr_dispatch_processes.c
     tests/iris_control_process_peer.c
-    src/iris_provider_protocol.c
   )
   target_include_directories(test_ivr_dispatch_processes
     PRIVATE
