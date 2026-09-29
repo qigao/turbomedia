@@ -9,9 +9,9 @@ project(
 
 # First-party packages are resolved once at the repository root from their
 # explicit environment roots, so every WebRTC subdirectory sees the same targets.
-if(NOT TARGET Orm::PostgreSQL)
+if(NOT TARGET Orm::C)
   message(FATAL_ERROR
-    "RoomService Iris outbox requires Orm::PostgreSQL")
+    "RoomService Iris outbox requires the generic Orm::C runtime SDK")
 endif()
 
 turbo_media_find_tbe_compiler(ROOM_SERVICE_TBE_COMPILER_EXECUTABLE)
@@ -151,7 +151,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_LIBS
     turbo_media_ivr
     room_service_iris_outbox_schema
-    Orm::PostgreSQL)
+    Orm::C)
 endif()
 
 target_link_libraries(room_service
@@ -187,11 +187,7 @@ if(WIN32)
           $<TARGET_FILE:Salts::Mustache>
           $<TARGET_FILE:Salts::DataBind>
           $<TARGET_FILE:Salts::Core>
-          $<TARGET_FILE:Orm::PostgreSQL>
           $<TARGET_FILE:Orm::C>
-          "${TURBO_MEDIA_ORM_PREFIX}/bin/LIBPQ.dll"
-          "${TURBO_MEDIA_ORM_PREFIX}/bin/ssl.dll"
-          "${TURBO_MEDIA_ORM_PREFIX}/bin/crypto.dll"
     DESTINATION bin
     COMPONENT RoomService)
 endif()
@@ -272,7 +268,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_room_service_app PRIVATE turbo_media_ivr)
   target_link_libraries(test_room_service_app PRIVATE
     room_service_iris_outbox_schema
-    Orm::PostgreSQL)
+    Orm::C)
 endif()
 
 target_compile_options(test_room_service_app
@@ -458,7 +454,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     Salts::CHTTP
     SaltsNet::Crypto
     OpenSSL::Crypto
-    Orm::PostgreSQL
+    Orm::C
     Salts::Core
     Salts::JsonParser
     Salts::CYaml
@@ -483,7 +479,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_event_outbox PRIVATE
     room_service_iris_outbox_schema
-    Orm::PostgreSQL
+    Orm::C
     Salts::Core Salts::DataBind Salts::CYaml Salts::TinyTest)
   target_compile_definitions(test_iris_event_outbox PRIVATE
     TURBO_MEDIA_HAS_IVR_CONTROL)
@@ -504,7 +500,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
   target_link_libraries(test_iris_command_ledger PRIVATE
     room_service_iris_outbox_schema
-    Orm::PostgreSQL
+    Orm::C
     Salts::Core Salts::DataBind Salts::CYaml
     Salts::TinyTest)
   target_compile_definitions(test_iris_command_ledger PRIVATE
@@ -522,7 +518,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_include_directories(test_iris_orm_store PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_iris_orm_store PRIVATE
-    Orm::PostgreSQL Salts::Core Salts::CYaml Salts::TinyTest)
+    Orm::C Salts::Core Salts::CYaml Salts::TinyTest)
   add_test(NAME test_iris_orm_store COMMAND test_iris_orm_store)
   set_tests_properties(test_iris_orm_store PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)

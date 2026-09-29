@@ -119,19 +119,12 @@ endif()
 if(TURBO_MEDIA_IS_SERVER)
   find_package(RulesForge CONFIG REQUIRED
                PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  find_package(TurboDB CONFIG REQUIRED
-               PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
   find_package(Orm CONFIG REQUIRED
                PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  if(NOT DEFINED Orm_WITH_SQLITE OR NOT DEFINED Orm_WITH_POSTGRESQL)
+  if(NOT TARGET Orm::C)
     message(FATAL_ERROR
-            "TurboMedia SERVER requires an Orm package that exports backend capabilities")
+            "TurboMedia SERVER requires the published generic Orm::C runtime SDK")
   endif()
-  if(Orm_WITH_SQLITE OR NOT Orm_WITH_POSTGRESQL OR NOT TARGET Orm::PostgreSQL)
-    message(FATAL_ERROR
-            "TurboMedia SERVER requires PostgreSQL-only Orm (SQLite OFF, PostgreSQL ON)")
-  endif()
-  get_filename_component(TURBO_MEDIA_ORM_PREFIX "${Orm_DIR}/../../.." ABSOLUTE)
 endif()
  
 find_package(OpenSSL REQUIRED)

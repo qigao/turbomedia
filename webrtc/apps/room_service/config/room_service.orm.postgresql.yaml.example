@@ -5,6 +5,7 @@ channels:
     kind: record_store
     config:
       backend: postgresql
+      driver_module: /opt/turbodb/drivers/turbodb_driver_postgresql.so
       host: db.internal
       port: 5432
       user: turbomedia
@@ -23,6 +24,7 @@ channels:
     kind: record_store
     config:
       backend: postgresql
+      driver_module: /opt/turbodb/drivers/turbodb_driver_postgresql.so
       host: db.internal
       port: 5432
       user: turbomedia
