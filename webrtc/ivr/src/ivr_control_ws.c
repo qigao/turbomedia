@@ -14,6 +14,7 @@ enum {
     IVR_CONTROL_WS_DEFAULT_QUEUE_BYTES = 256 * 1024,
     IVR_CONTROL_WS_DEFAULT_MESSAGE_BYTES = 64 * 1024,
     IVR_CONTROL_WS_DEFAULT_TIMEOUT_MS = 5000,
+    IVR_CONTROL_WS_SERVER_READ_TIMEOUT_MS = 30000,
     IVR_CONTROL_WS_DEFAULT_IO_SLICE_MS = 20,
     IVR_CONTROL_WS_DEFAULT_RECONNECT_INITIAL_MS = 1000,
     IVR_CONTROL_WS_DEFAULT_RECONNECT_MAX_MS = 30000,
@@ -190,12 +191,16 @@ static int ivr_control_ws_server_init_runtime(
         server->peer_capacity * 4u + 16u);
     config.network.max_send_bytes = wire_capacity;
     config.network.receive_buffer_bytes = wire_capacity;
-    config.network.connect_timeout_ms = server->shutdown_timeout_ms;
-    config.network.read_timeout_ms = server->shutdown_timeout_ms;
-    config.network.write_timeout_ms = server->shutdown_timeout_ms;
+    /* Listener I/O lifetime is independent of stop/drain timeout. Workers
+       keep this WebSocket alive with heartbeats; a short shutdown timeout
+       must not turn into an equally short connection read timeout. */
+    config.network.connect_timeout_ms = IVR_CONTROL_WS_DEFAULT_TIMEOUT_MS;
+    config.network.read_timeout_ms = IVR_CONTROL_WS_SERVER_READ_TIMEOUT_MS;
+    config.network.write_timeout_ms = IVR_CONTROL_WS_DEFAULT_TIMEOUT_MS;
     if (server->has_tls) {
         config.network.tls_io_buffer_bytes = CNET_TLS_MIN_IO_BUFFER_BYTES;
-        config.network.tls_handshake_timeout_ms = server->shutdown_timeout_ms;
+        config.network.tls_handshake_timeout_ms =
+            IVR_CONTROL_WS_DEFAULT_TIMEOUT_MS;
     }
     config.route_capacity = 1u;
     config.middleware_capacity = 1u;
@@ -1095,11 +1100,16 @@ ivr_status_t ivr_control_ws_server_destroy(ivr_control_ws_server_t *server) {
         return IVR_OK;
     }
     stop_status = ivr_control_ws_server_stop(server);
+    if (stop_status != IVR_OK) {
+        /* Keep the wrapper, CHttp server, peer table, and callback context
+           owned by the caller when shutdown has not quiesced. The caller may
+           retry destroy after the in-flight callback returns. */
+        return stop_status;
+    }
     if (server->server.impl) {
         int status = chttp_server_destroy(&server->server);
         if (status != SALTS_OK) {
-            return stop_status != IVR_OK ? stop_status
-                                         : ivr_control_ws_status(status);
+            return ivr_control_ws_status(status);
         }
         memset(&server->server, 0, sizeof(server->server));
     }

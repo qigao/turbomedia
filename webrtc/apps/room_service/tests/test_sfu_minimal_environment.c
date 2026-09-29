@@ -36,6 +36,8 @@ static void proc_sleep(unsigned int ms) { Sleep(ms); }
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <sys/wait.h>
 typedef pid_t proc_handle_t;
 static void proc_sleep(unsigned int ms) { usleep(ms * 1000); }
 #endif
@@ -90,11 +92,44 @@ static int spawn_with_stdout(const char *exe, const char *const *args,
     out->stdout_path = _strdup(stdout_path);
     return 0;
 #else
-    (void)exe;
-    (void)args;
-    (void)stdout_path;
-    (void)out;
-    return -1; /* POSIX spawn not exercised on this host */
+    pid_t pid;
+    if (!exe || !args || !stdout_path || !out) {
+        return -1;
+    }
+    pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(stdout_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        const char *argv[16];
+        size_t argc = 0u;
+        if (fd < 0) {
+            _exit(127);
+        }
+        if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
+            close(fd);
+            _exit(127);
+        }
+        close(fd);
+        argv[argc++] = exe;
+        while (args[argc - 1u] && argc + 1u < sizeof(argv) / sizeof(argv[0])) {
+            argv[argc] = args[argc - 1u];
+            ++argc;
+        }
+        argv[argc] = NULL;
+        execv(exe, (char *const *)argv);
+        _exit(127);
+    }
+    out->handle = pid;
+    out->stdout_path = strdup(stdout_path);
+    if (!out->stdout_path) {
+        kill(pid, SIGKILL);
+        (void)waitpid(pid, NULL, 0);
+        out->handle = 0;
+        return -1;
+    }
+    return 0;
 #endif
 }
 
@@ -107,8 +142,13 @@ static void kill_child(child_t *child) {
     CloseHandle(child->handle);
 #else
     kill(child->handle, SIGKILL);
+    (void)waitpid(child->handle, NULL, 0);
 #endif
+#ifdef _WIN32
     child->handle = NULL;
+#else
+    child->handle = 0;
+#endif
     free(child->stdout_path);
     child->stdout_path = NULL;
 }
