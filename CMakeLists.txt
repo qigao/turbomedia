@@ -110,11 +110,11 @@ if(TURBO_MEDIA_IS_CLIENT)
 endif()
 find_package(SaltsNet CONFIG REQUIRED
              PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-find_package(Chttp 1.1.5 EXACT CONFIG REQUIRED
+find_package(Chttp 1.1.6 EXACT CONFIG REQUIRED
              PATHS "$ENV{CHTTP_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(NOT TARGET CHttp::Client OR NOT TARGET CHttp::Server)
   message(FATAL_ERROR
-          "TurboMedia requires CHttp 1.1.5 Client and Server targets")
+          "TurboMedia requires CHttp 1.1.6 Client and Server targets")
 endif()
 if(TURBO_MEDIA_IS_SERVER)
   find_package(RulesForge CONFIG REQUIRED
