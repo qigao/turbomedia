@@ -1599,7 +1599,6 @@ void test_sfu_node_tenant_quota_transport_requires_dedicated_signed_control_toke
   config.use_tls = 1;
   config.tls_cert_file = SFU_NODE_TEST_TLS_CERT_PATH;
   config.tls_key_file = SFU_NODE_TEST_TLS_KEY_PATH;
-  config.control_token = "static-control-token";
   config.auth_issuer = "turbomedia";
   config.auth_active_key_id = "sfu-security-2026-09";
   config.auth_active_secret =
