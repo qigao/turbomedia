@@ -3972,6 +3972,11 @@ static int turbo_rtsp_client_connect_websocket(turbo_rtsp_client_t *client) {
     options.subprotocol = client->ws_subprotocol[0] ? client->ws_subprotocol : NULL;
     status = chttp_websocket_client_connect(
         &client->websocket, &options, &http_status);
+    if (status != SALTS_OK) {
+        fprintf(stderr,
+                "TurboMedia RTSP WebSocket connect failed: status=%d http_status=%u\n",
+                status, http_status);
+    }
     return status == SALTS_OK ? 0 : -1;
 }
 
