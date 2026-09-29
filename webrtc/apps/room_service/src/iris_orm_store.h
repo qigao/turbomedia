@@ -14,6 +14,12 @@ iris_orm_store_owner_t *iris_orm_store_owner_create(const char *yaml_path,
 
 iris_record_store_t *iris_orm_store_owner_store(iris_orm_store_owner_t *owner);
 
+/* Close the connection/runtime without releasing the owner allocation.
+   BUSY preserves ownership and may be retried after dependent work quiesces. */
+int iris_orm_store_owner_close(iris_orm_store_owner_t *owner,
+                               char *error,
+                               size_t error_capacity);
+
 void iris_orm_store_owner_destroy(iris_orm_store_owner_t *owner);
 
 #endif
