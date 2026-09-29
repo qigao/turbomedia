@@ -9,7 +9,8 @@
 #include "disruptor.h"
 #include "platform.h"
 
-#include <chttp/chttp.h>
+#include <http_client/http.h>
+#include <http_server/http.h>
 #include <salts/clock.h>
 #include <salts/error_codes.h>
 #include <salts/thread.h>
@@ -424,6 +425,16 @@ static native_io_backend_kind turbo_rtsp_backend(void) {
     return NATIVE_IO_BACKEND_IOCP;
 #elif defined(__linux__)
     return NATIVE_IO_BACKEND_IO_URING;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static native_io_backend_kind turbo_rtsp_http_backend(void) {
+#ifdef _WIN32
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
 #else
     return NATIVE_IO_BACKEND_KQUEUE;
 #endif
@@ -1587,7 +1598,7 @@ static int turbo_rtsp_server_http_init(turbo_rtsp_server_t *server) {
     config.host = server->bind_host;
     config.port = (uint16_t)server->port;
     config.backlog = server->connection_capacity;
-    config.network.backend = turbo_rtsp_backend();
+    config.network.backend = turbo_rtsp_http_backend();
     config.network.connection_capacity = server->connection_capacity;
     config.network.command_capacity = command_capacity;
     config.network.request_capacity = server->connection_capacity * 2u;
@@ -3942,6 +3953,7 @@ static int turbo_rtsp_client_connect_websocket(turbo_rtsp_client_t *client) {
     config.size = sizeof(config);
     config.network = turbo_rtsp_client_network_config(
         client, turbo_rtsp_control_transport_is_tls(client->control_transport));
+    config.network.backend = turbo_rtsp_http_backend();
     config.network.max_send_bytes =
         TURBO_RTSP_SERVER_MAX_PENDING_BYTES +
         TURBO_RTSP_SERVER_WS_WIRE_OVERHEAD_BYTES;

@@ -10,5 +10,5 @@ target_include_directories(
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(
   turbo_media_transport
-  PUBLIC Salts::CNet Salts::CHTTP
+  PUBLIC Salts::CNet CHttp::Client
   PRIVATE Salts::UriParser Salts::Core Salts::CSTL Threads::Threads)

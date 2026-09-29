@@ -88,14 +88,14 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     list(APPEND TEST_LINK_LIBS TurboMedia::Pipeline TurboMedia::Server
                           TurboMedia::RTSP TurboMedia::ServerRTSP
                           TurboMedia::Transport TurboMedia::Codec
-                          Salts::CHTTP Salts::Core)
+                          CHttp::Client CHttp::Server Salts::Core)
     if(WIN32)
       list(APPEND TEST_LINK_LIBS ws2_32)
     endif()
   elseif(TEST_NAME STREQUAL "test_server_runtime")
     list(APPEND TEST_LINK_LIBS TurboMedia::Server)
   elseif(TEST_NAME MATCHES "transport")
-    list(APPEND TEST_LINK_LIBS TurboMedia::Transport Salts::CHTTP)
+    list(APPEND TEST_LINK_LIBS TurboMedia::Transport CHttp::Client CHttp::Server)
   else()
     list(APPEND TEST_LINK_LIBS TurboMedia::Core)
   endif()

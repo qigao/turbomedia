@@ -106,16 +106,23 @@ turbo_media_add_webrtc_test(
   turbo_media_test_signaling_internals
   test_signaling_internals.c
   ../src/signaling/signaling_source_identity.c)
-target_link_libraries(turbo_media_test_signaling_internals
-                      PRIVATE Salts::CNet Salts::CHTTP turbo_media_auth
-                              Salts::JsonParser)
+target_include_directories(
+  turbo_media_test_signaling_internals
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/security)
+target_link_libraries(
+  turbo_media_test_signaling_internals
+  PRIVATE Salts::CNet CHttp::Client CHttp::Server
+          turbo_media_auth
+          turbo_media_tenant_quota
+          turbo_media_tenant_quota_wire
+          Salts::JsonParser Salts::Crypto)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
 target_link_libraries(
   turbo_media_test_signaling_lifecycle
   PRIVATE TurboMedia::WebRTCSignaling TurboMedia::Transport
-          Salts::CHTTP turbo_media_auth turbo_media_tenant_quota)
+          CHttp::Client CHttp::Server turbo_media_auth turbo_media_tenant_quota)
 file(TO_CMAKE_PATH
      "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tls/localhost-cert.pem"
      TURBO_MEDIA_TEST_TLS_CERT_PATH)

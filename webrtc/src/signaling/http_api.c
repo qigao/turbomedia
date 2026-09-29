@@ -10,7 +10,7 @@
 #include "turbo_media_revocation_wire.h"
 #include "turbo_media_tenant_quota_wire.h"
 #include "webrtc_signaling.h"
-#include <chttp/chttp.h>
+#include <http_server/http.h>
 #include <json_parser.h>
 #include <salts/error_codes.h>
 #include <salts_thread.h>
@@ -19,7 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "salts_str.h"
+#include <tstr.h>
 
 #define SIGNALING_MANAGEMENT_AUDIENCE "turbomedia-signaling-management"
 #define SIGNALING_MANAGEMENT_SCOPE_READ "signaling.management.read"

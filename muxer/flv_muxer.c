@@ -13,7 +13,7 @@
 #include <string.h>
 
 #include <salts_error.h>
-#include <salts_vstr.h>
+#include <vstr.h>
 
 typedef enum {
     FLV_CODEC_NONE = 0,

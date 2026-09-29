@@ -1,7 +1,9 @@
 #include "turbo_media_auth.h"
 
 #include <openssl/base64.h>
-#include <turbo_crypto.h>
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <json_parser.h>
 
 #include <limits.h>
@@ -14,18 +16,54 @@
 #define AUTH_BEARER_PREFIX "Bearer "
 #define AUTH_TOKEN_TYPE "turbomedia-auth+jwt"
 #define AUTH_ALGORITHM "HS256"
-_Static_assert(TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES == TURBO_CRYPTO_SHA256_SIZE,
-               "auth token SHA-256 size must match crypto provider");
-
 #define AUTH_MAX_TOKEN_BYTES 4096U
 #define AUTH_MAX_HEADER_BYTES 512U
 #define AUTH_MAX_PAYLOAD_BYTES 2048U
 #define AUTH_MAX_CLAIM_BYTES 255U
 #define AUTH_SIGNATURE_BYTES 32U
-#define AUTH_SHA256_HEX_BYTES (TURBO_CRYPTO_SHA256_SIZE * 2U)
+#define AUTH_SHA256_HEX_BYTES (TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES * 2U)
 #define AUTH_MAX_REVOCATION_LIST_BYTES                                      \
     (TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS * AUTH_SHA256_HEX_BYTES +          \
      TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS - 1U)
+
+static int auth_sha256(
+    const void *data, size_t data_size,
+    uint8_t digest[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES]) {
+    unsigned int digest_size = 0U;
+
+    if ((!data && data_size != 0U) ||
+        EVP_Digest(data, data_size, digest, &digest_size,
+                   EVP_sha256(), NULL) != 1 ||
+        digest_size != TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES) {
+        return -1;
+    }
+    return 0;
+}
+
+static int auth_hmac_sha256(
+    const void *key, size_t key_size,
+    const void *data, size_t data_size,
+    uint8_t digest[AUTH_SIGNATURE_BYTES]) {
+    unsigned int digest_size = 0U;
+
+    if ((!key && key_size != 0U) || (!data && data_size != 0U) ||
+        key_size > (size_t)INT_MAX ||
+        HMAC(EVP_sha256(), key, (int)key_size,
+             (const unsigned char *)data, data_size,
+             digest, &digest_size) == NULL ||
+        digest_size != AUTH_SIGNATURE_BYTES) {
+        return -1;
+    }
+    return 0;
+}
+
+static int auth_bytes_equal(
+    const void *left, const void *right, size_t size) {
+    if ((!left || !right) && size != 0U) {
+        return 0;
+    }
+    return CRYPTO_memcmp(left, right, size) == 0;
+}
 
 static int auth_string_present(const char *value) {
     return value && value[0] != '\0';
@@ -157,19 +195,19 @@ static int auth_revocation_list_valid(const char *list) {
 
 static int auth_token_revoked(const char *token, size_t token_length,
                               const char *list) {
-    uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
+    uint8_t digest[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES];
     const char *entry;
 
     if (!auth_string_present(list)) {
         return 0;
     }
-    if (turbo_crypto_sha256(token, token_length, digest) != TURBO_CRYPTO_OK) {
+    if (auth_sha256(token, token_length, digest) != 0) {
         return 1;
     }
     entry = list;
     while (*entry != '\0') {
-        uint8_t expected[TURBO_CRYPTO_SHA256_SIZE];
-        for (size_t index = 0; index < TURBO_CRYPTO_SHA256_SIZE; ++index) {
+        uint8_t expected[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES];
+        for (size_t index = 0; index < TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES; ++index) {
             uint8_t high;
             uint8_t low;
             if (auth_hex_nibble(entry[index * 2U], &high) != 0 ||
@@ -178,8 +216,7 @@ static int auth_token_revoked(const char *token, size_t token_length,
             }
             expected[index] = (uint8_t)((high << 4U) | low);
         }
-        if (turbo_crypto_verify(digest, expected, sizeof(digest)) ==
-            TURBO_CRYPTO_OK) {
+        if (auth_bytes_equal(digest, expected, sizeof(digest))) {
             return 1;
         }
         entry += AUTH_SHA256_HEX_BYTES;
@@ -535,11 +572,11 @@ static int auth_verify_signed_token(
     }
     secret = auth_select_secret(config, key_id);
     if (!secret ||
-        turbo_crypto_hmac_sha256(
+        auth_hmac_sha256(
             secret, strlen(secret), token, (size_t)(second_dot - token),
-            expected_signature) != TURBO_CRYPTO_OK ||
-        turbo_crypto_verify(signature, expected_signature,
-                            AUTH_SIGNATURE_BYTES) != TURBO_CRYPTO_OK) {
+            expected_signature) != 0 ||
+        !auth_bytes_equal(signature, expected_signature,
+                          AUTH_SIGNATURE_BYTES)) {
         goto cleanup;
     }
 
@@ -584,8 +621,7 @@ static int auth_verify_signed_token(
     if (config->revocation_check) {
         uint8_t digest[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES];
         turbo_media_auth_revocation_status_t revocation_status;
-        if (turbo_crypto_sha256(token, token_length, digest) !=
-            TURBO_CRYPTO_OK) {
+        if (auth_sha256(token, token_length, digest) != 0) {
             goto cleanup;
         }
         revocation_status = config->revocation_check(
@@ -621,8 +657,7 @@ static int auth_static_token_matches(const char *authorization,
     presented = authorization + prefix_length;
     token_length = strlen(static_token);
     return strlen(presented) == token_length &&
-           turbo_crypto_verify(static_token, presented, token_length) ==
-               TURBO_CRYPTO_OK;
+           auth_bytes_equal(static_token, presented, token_length);
 }
 
 turbo_media_auth_result_t turbo_media_auth_authorize(
@@ -822,10 +857,10 @@ char *turbo_media_auth_issue(const turbo_media_auth_config_t *config,
     if (!signing_input ||
         snprintf(signing_input, (size_t)signing_length + 1U, "%s.%s",
                  encoded_header, encoded_payload) != signing_length ||
-        turbo_crypto_hmac_sha256(
+        auth_hmac_sha256(
             config->active_secret, strlen(config->active_secret),
             signing_input, (size_t)signing_length,
-            signature) != TURBO_CRYPTO_OK) {
+            signature) != 0) {
         goto cleanup;
     }
     encoded_signature =

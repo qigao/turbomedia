@@ -15,7 +15,7 @@ target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PRIVATE Salts::JsonParser SaltsNet::Crypto OpenSSL::Crypto Salts::Core)
+  PRIVATE Salts::JsonParser OpenSSL::Crypto Salts::Core)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
 add_library(
@@ -131,10 +131,10 @@ target_include_directories(
   PRIVATE ${STB_INCLUDE_DIR})
 target_link_libraries(
   turbo_media_webrtc_signaling
-  PUBLIC Salts::CNet Salts::CHTTP
+  PUBLIC Salts::CNet CHttp::Server
   PRIVATE turbo_media_auth turbo_media_tenant_quota
           turbo_media_tenant_quota_wire
-          Salts::JsonParser SaltsNet::Crypto Salts::Core Salts::CSTL)
+          Salts::JsonParser Salts::Core Salts::CSTL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 

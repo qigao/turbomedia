@@ -3,7 +3,7 @@
 #ifdef TURBO_MEDIA_HAS_RTSP
 
 #include "turbo_rtsp_sdp.h"
-#include "salts_str.h"
+#include <tstr.h>
 #include "salts_uuid.h"
 
 #include <stdio.h>
