@@ -480,6 +480,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   add_executable(test_ivr_dispatch_processes
     tests/test_ivr_dispatch_processes.c
     tests/iris_control_process_peer.c
+    src/iris_provider_protocol.c
   )
   target_include_directories(test_ivr_dispatch_processes
     PRIVATE
