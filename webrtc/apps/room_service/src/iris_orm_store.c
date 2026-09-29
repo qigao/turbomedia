@@ -930,18 +930,37 @@ iris_record_store_t *iris_orm_store_owner_store(iris_orm_store_owner_t *owner) {
     return owner ? &owner->store : NULL;
 }
 
+int iris_orm_store_owner_close(iris_orm_store_owner_t *owner,
+                               char *error,
+                               size_t error_capacity) {
+    orm_error_t orm_error;
+    orm_status_t status;
+    if (!owner)
+        return SALTS_OK;
+    if (owner->connection) {
+        orm_disconnect(owner->connection);
+        owner->connection = NULL;
+    }
+    if (!owner->runtime)
+        return SALTS_OK;
+    orm_error_init(&orm_error);
+    status = orm_runtime_close(owner->runtime, &orm_error);
+    if (status != ORM_STATUS_OK) {
+        iris_orm_write_orm_error(error, error_capacity,
+                                "cannot close TurboDB ORM runtime",
+                                &orm_error);
+        return iris_orm_status(status);
+    }
+    orm_runtime_release(owner->runtime);
+    owner->runtime = NULL;
+    return SALTS_OK;
+}
+
 void iris_orm_store_owner_destroy(iris_orm_store_owner_t *owner) {
-    orm_error_t error;
     if (!owner)
         return;
-    orm_disconnect(owner->connection);
-    owner->connection = NULL;
-    if (owner->runtime) {
-        orm_error_init(&error);
-        (void)orm_runtime_close(owner->runtime, &error);
-        orm_runtime_release(owner->runtime);
-        owner->runtime = NULL;
-    }
+    if (iris_orm_store_owner_close(owner, NULL, 0u) != SALTS_OK)
+        return;
     free(owner->namespace_name);
     free(owner);
 }
