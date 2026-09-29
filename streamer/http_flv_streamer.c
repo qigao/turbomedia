@@ -6,7 +6,7 @@
 #include "flv_muxer_internal.h"
 #include "flv_writer.h"
 #include "salts_str.h"
-#include "salts_vstr.h"
+#include <vstr.h>
 #include "turbo_transport.h"
 
 #include <cstl/deque.h>
