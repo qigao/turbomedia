@@ -48,8 +48,7 @@ static salts_plugin_status SALTS_PLUGIN_CALL fixture_start(void *self) {
 static salts_plugin_status SALTS_PLUGIN_CALL fixture_request_stop(void *self) {
     fixture_module_t *module = (fixture_module_t *)self;
     if (module != &g_module) return SALTS_PLUGIN_INVALID_ARGUMENT;
-    if (fixture_env_enabled("TURBOMEDIA_ORM_TEST_BUSY_CLOSE") ||
-        module->live_connections != 0u)
+    if (module->live_connections != 0u)
         return SALTS_PLUGIN_BUSY;
     module->started = 0u;
     return SALTS_PLUGIN_OK;
@@ -58,7 +57,8 @@ static salts_plugin_status SALTS_PLUGIN_CALL fixture_request_stop(void *self) {
 static bool SALTS_PLUGIN_CALL fixture_is_quiescent(const void *self) {
     const fixture_module_t *module = (const fixture_module_t *)self;
     return module == &g_module && module->started == 0u &&
-           module->live_connections == 0u;
+           module->live_connections == 0u &&
+           !fixture_env_enabled("TURBOMEDIA_ORM_TEST_BUSY_CLOSE");
 }
 
 static void SALTS_PLUGIN_CALL fixture_destroy(void *self) {
