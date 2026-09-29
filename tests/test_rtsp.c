@@ -1,6 +1,8 @@
 #include "turbo_rtsp.h"
 #include "turbo_rtsp_rtp.h"
 
+#include <http_client/http.h>
+#include <http_server/http.h>
 #include <salts/random.h>
 #include <salts/thread.h>
 #include <tinytest.h>
@@ -32,6 +34,162 @@ static void rtsp_test_websocket_handshake_primitives(void) {
                            EVP_sha1(), NULL),
                 1);
     check_equal((int)digest_size, 20);
+}
+
+static native_io_backend_kind rtsp_test_chttp_backend(void) {
+#if defined(_WIN32)
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static cnet_client_config rtsp_test_chttp_network(size_t connections) {
+    cnet_client_config config;
+    memset(&config, 0, sizeof(config));
+    config.backend = rtsp_test_chttp_backend();
+    config.connection_capacity = connections;
+    config.command_capacity = 16u;
+    config.request_capacity = 8u;
+    config.completion_batch_capacity = 8u;
+    config.event_capacity = 16u;
+    config.max_send_bytes = 4096u;
+    config.receive_buffer_bytes = 4096u;
+    config.connect_timeout_ms = RTSP_TEST_TIMEOUT_MS;
+    config.read_timeout_ms = RTSP_TEST_TIMEOUT_MS;
+    config.write_timeout_ms = RTSP_TEST_TIMEOUT_MS;
+    return config;
+}
+
+static int rtsp_test_chttp_websocket_open(
+    void *user,
+    chttp_websocket *websocket,
+    const chttp_server_request_view *request,
+    chttp_server_response *response) {
+    int *opened = (int *)user;
+    int status;
+    (void)websocket;
+    status = chttp_server_response_select_websocket_subprotocol(
+        response, request, "rtsp");
+    if (status == SALTS_OK && opened) {
+        *opened = 1;
+    }
+    return status;
+}
+
+static void rtsp_test_chttp_websocket_event(
+    void *user,
+    chttp_websocket *websocket,
+    const chttp_websocket_event *event) {
+    (void)user;
+    (void)websocket;
+    (void)event;
+}
+
+static void rtsp_test_chttp_websocket_smoke(void) {
+    chttp_server server = {0};
+    chttp_server_config server_config = {0};
+    chttp_server_websocket_options route = {0};
+    chttp_websocket_client client = {0};
+    chttp_websocket_client_config client_config = {0};
+    chttp_websocket_connect_options options = {0};
+    unsigned int http_status = 0u;
+    uint16_t port = 0u;
+    char uri[128];
+    int opened = 0;
+    int status;
+    int server_initialized = 0;
+    int client_initialized = 0;
+
+    server_config.host = "127.0.0.1";
+    server_config.port = 0u;
+    server_config.backlog = 8u;
+    server_config.network = rtsp_test_chttp_network(4u);
+    server_config.route_capacity = 4u;
+    server_config.middleware_capacity = 2u;
+    server_config.max_route_middleware_count = 2u;
+    server_config.max_route_param_count = 2u;
+    server_config.max_route_param_bytes = 64u;
+    server_config.max_target_bytes = 256u;
+    server_config.max_header_count = 16u;
+    server_config.max_header_bytes = 2048u;
+    server_config.max_request_body_bytes = 256u;
+    server_config.max_response_header_count = 16u;
+    server_config.max_response_header_bytes = 1024u;
+    server_config.max_response_body_bytes = 256u;
+    server_config.poll_slice_ms = 2u;
+
+    status = chttp_server_init(&server, &server_config);
+    check_equal(status, SALTS_OK);
+    if (status != SALTS_OK) {
+        return;
+    }
+    server_initialized = 1;
+
+    route.size = sizeof(route);
+    route.path = "/rtsp";
+    route.max_frame_bytes = 1024u;
+    route.max_message_bytes = 1024u;
+    route.max_buffered_input_bytes = 2048u;
+    route.on_open = rtsp_test_chttp_websocket_open;
+    route.on_event = rtsp_test_chttp_websocket_event;
+    route.user = &opened;
+    status = chttp_server_websocket_with(&server, &route);
+    check_equal(status, SALTS_OK);
+    if (status != SALTS_OK) {
+        goto cleanup;
+    }
+    status = chttp_server_start(&server);
+    check_equal(status, SALTS_OK);
+    if (status != SALTS_OK) {
+        goto cleanup;
+    }
+    status = chttp_server_port(&server, &port);
+    check_equal(status, SALTS_OK);
+    if (status != SALTS_OK) {
+        goto cleanup;
+    }
+
+    client_config.size = sizeof(client_config);
+    client_config.network = rtsp_test_chttp_network(1u);
+    client_config.max_handshake_header_bytes = 4096u;
+    client_config.event_capacity = 8u;
+    status = chttp_websocket_client_init(&client, &client_config);
+    check_equal(status, SALTS_OK);
+    if (status != SALTS_OK) {
+        goto cleanup;
+    }
+    client_initialized = 1;
+
+    check(snprintf(uri, sizeof(uri), "ws://127.0.0.1:%u/rtsp",
+                   (unsigned int)port) > 0);
+    options.size = sizeof(options);
+    options.uri = uri;
+    options.timeout_ms = RTSP_TEST_TIMEOUT_MS;
+    options.subprotocol = "rtsp";
+    status = chttp_websocket_client_connect(&client, &options, &http_status);
+    if (status != SALTS_OK) {
+        fprintf(stderr,
+                "TurboMedia direct CHTTP WebSocket smoke failed: status=%d http_status=%u opened=%d\n",
+                status, http_status, opened);
+    }
+    check_equal(status, SALTS_OK);
+    if (status == SALTS_OK) {
+        check_equal((int)http_status, 101);
+        check_equal(opened, 1);
+        (void)chttp_websocket_client_close(
+            &client, 1000u, NULL, 0u, RTSP_TEST_TIMEOUT_MS);
+    }
+
+cleanup:
+    if (client_initialized) {
+        (void)chttp_websocket_client_destroy(&client);
+    }
+    if (server_initialized) {
+        (void)chttp_server_destroy(&server);
+    }
 }
 
 static const uint8_t RTSP_TEST_KCP_PSK[CNET_KCP_PSK_BYTES] = {
@@ -557,6 +715,10 @@ suite("TurboMedia RTSP over Salts") {
 
     it("provides CHTTP WebSocket handshake primitives") {
         rtsp_test_websocket_handshake_primitives();
+    }
+
+    it("runs a direct CHTTP WebSocket smoke contract") {
+        rtsp_test_chttp_websocket_smoke();
     }
 
     it("runs RECORD and interleaved media over CHTTP WebSocket") {
