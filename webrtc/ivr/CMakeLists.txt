@@ -26,7 +26,8 @@ target_include_directories(
           ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC Salts::DataBind Salts::Core TurboMedia::Speech Salts::CHTTP
+  PUBLIC Salts::DataBind Salts::Core TurboMedia::Speech
+         CHttp::Client CHttp::Server
   PRIVATE Salts::JsonParser Threads::Threads)
 set_target_properties(turbo_media_ivr PROPERTIES FOLDER "turbomedia/components")
 
@@ -44,7 +45,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_ivr_rtc
   PUBLIC turbo_media_ivr TurboMedia::RTC
-  PRIVATE Salts::CHTTP)
+  PRIVATE CHttp::Client)
 set_target_properties(turbo_media_ivr_rtc PROPERTIES FOLDER "turbomedia/components")
 
 file(
@@ -121,7 +122,7 @@ turbo_media_ivr_configure_test(test_ivr_protocol tests/test_ivr_protocol.c)
 cmake_add_test(
   test_ivr_control_ws
   SOURCES tests/test_ivr_control_ws.c src/ivr_control_ws.c src/ivr_thread.c
-  LIBS Salts::CHTTP Salts::CNet Salts::Core Salts::TinyTest
+  LIBS CHttp::Client CHttp::Server Salts::CNet Salts::Core Salts::TinyTest
        Threads::Threads $<$<PLATFORM_ID:Windows>:ws2_32>
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src
            ${CMAKE_CURRENT_SOURCE_DIR}/include
