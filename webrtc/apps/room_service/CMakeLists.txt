@@ -139,8 +139,6 @@ set(ROOM_SERVICE_LIBS
     CHttp::Client CHttp::Server
     turbo_media_auth
     turbo_media_revocation_https
-    turbo_media_tenant_quota
-    turbo_media_tenant_quota_wire
     SaltsNet::Crypto
     OpenSSL::Crypto
     Salts::Core
