@@ -424,7 +424,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_include_directories(room_service_orm_test_driver PRIVATE
     $<TARGET_PROPERTY:Orm::C,INTERFACE_INCLUDE_DIRECTORIES>)
   target_link_libraries(room_service_orm_test_driver PRIVATE
-    Salts::PluginABI Salts::Platform Salts::CFlow)
+    Salts::PluginABI Salts::CFlow)
   set_target_properties(room_service_orm_test_driver PROPERTIES
     PREFIX ""
     C_STANDARD_REQUIRED ON
@@ -442,7 +442,7 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_include_directories(room_service_orm_wrong_driver PRIVATE
     $<TARGET_PROPERTY:Orm::C,INTERFACE_INCLUDE_DIRECTORIES>)
   target_link_libraries(room_service_orm_wrong_driver PRIVATE
-    Salts::PluginABI Salts::Platform Salts::CFlow)
+    Salts::PluginABI Salts::CFlow)
   set_target_properties(room_service_orm_wrong_driver PROPERTIES
     PREFIX ""
     C_STANDARD_REQUIRED ON
