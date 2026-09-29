@@ -19,7 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "salts_str.h"
+#include <tstr.h>
 
 #define SIGNALING_MANAGEMENT_AUDIENCE "turbomedia-signaling-management"
 #define SIGNALING_MANAGEMENT_SCOPE_READ "signaling.management.read"
