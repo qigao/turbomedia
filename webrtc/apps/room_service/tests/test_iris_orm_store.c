@@ -63,6 +63,23 @@ static void remove_profile(char *yaml_path) {
     free(yaml_path);
 }
 
+static int test_file_exists(const char *path) {
+    FILE *stream;
+    if (!path)
+        return 0;
+    stream = fopen(path, "rb");
+    if (!stream)
+        return 0;
+    fclose(stream);
+    return 1;
+}
+
+static int accept_record(void *context, const iris_record_view_t *record) {
+    (void)context;
+    (void)record;
+    return SALTS_OK;
+}
+
 static void expect_create_failure(const char *yaml, const char *message) {
     char *yaml_path = tt_make_temp_file("iris-orm-store", ".yaml");
     char error[256] = {0};
@@ -171,6 +188,86 @@ spec("Iris PostgreSQL ORM record store") {
         check_null(owner);
         check_not_null(strstr(error, "cannot connect TurboDB ORM"));
         iris_orm_store_owner_destroy(owner);
+        remove_profile(yaml_path);
+    }
+
+    it("propagates Driver cursor failure through materialized scan") {
+        char *yaml_path = write_runtime_profile(TEST_ORM_RUNTIME_DRIVER);
+        char error[256] = {0};
+        iris_orm_store_owner_t *owner;
+        iris_record_store_t *store;
+
+        check_not_null(yaml_path);
+        if (!yaml_path)
+            return;
+        owner = iris_orm_store_owner_create(yaml_path, "iris.test", error,
+                                            sizeof(error));
+        check_not_null(owner);
+        if (!owner) {
+            remove_profile(yaml_path);
+            return;
+        }
+        store = iris_orm_store_owner_store(owner);
+        check_not_null(store);
+
+        check_equal(test_set_env("TURBOMEDIA_ORM_TEST_FAIL_QUERY", "1"), 0);
+        check_equal(store->scan(store->ctx, accept_record, NULL), SALTS_EIO);
+        check_equal(test_set_env("TURBOMEDIA_ORM_TEST_FAIL_QUERY", NULL), 0);
+
+        iris_orm_store_owner_destroy(owner);
+        remove_profile(yaml_path);
+    }
+
+    it("rolls back a transaction when a pre-commit query fails") {
+        static const uint8_t key[] = {'k'};
+        static const uint8_t value[] = {'v'};
+        char *yaml_path = write_runtime_profile(TEST_ORM_RUNTIME_DRIVER);
+        char *marker = tt_make_temp_file("iris-orm-rollback", ".marker");
+        char error[256] = {0};
+        iris_orm_store_owner_t *owner;
+        iris_record_store_t *store;
+        iris_record_mutation_t mutation = IRIS_RECORD_MUTATION_INIT;
+
+        check_not_null(yaml_path);
+        check_not_null(marker);
+        if (!yaml_path || !marker) {
+            remove_profile(yaml_path);
+            free(marker);
+            return;
+        }
+        check_equal(tt_remove_file(marker), 0);
+
+        owner = iris_orm_store_owner_create(yaml_path, "iris.test", error,
+                                            sizeof(error));
+        check_not_null(owner);
+        if (!owner) {
+            remove_profile(yaml_path);
+            free(marker);
+            return;
+        }
+        store = iris_orm_store_owner_store(owner);
+        check_not_null(store);
+
+        mutation.kind = IRIS_RECORD_PUT;
+        mutation.key = key;
+        mutation.key_size = sizeof(key);
+        mutation.expected_revision = IRIS_RECORD_REVISION_ABSENT;
+        mutation.next_revision = 1u;
+        mutation.value = value;
+        mutation.value_size = sizeof(value);
+
+        check_equal(test_set_env("TURBOMEDIA_ORM_TEST_ROLLBACK_MARKER",
+                                 marker), 0);
+        check_equal(test_set_env("TURBOMEDIA_ORM_TEST_FAIL_QUERY", "1"), 0);
+        check_equal(store->commit(store->ctx, &mutation, 1u), SALTS_EIO);
+        check_equal(test_set_env("TURBOMEDIA_ORM_TEST_FAIL_QUERY", NULL), 0);
+        check_equal(test_set_env("TURBOMEDIA_ORM_TEST_ROLLBACK_MARKER", NULL),
+                    0);
+        check_true(test_file_exists(marker));
+
+        iris_orm_store_owner_destroy(owner);
+        check_equal(tt_remove_file(marker), 0);
+        free(marker);
         remove_profile(yaml_path);
     }
 
