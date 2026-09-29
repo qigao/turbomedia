@@ -143,7 +143,8 @@ jobs:
           test -f "$CHTTP_ROOT/lib/cmake/Chttp/ChttpConfig.cmake"
           test -f "$RULES_FORGE_ROOT/lib/cmake/RulesForge/RulesForgeConfig.cmake"
           test -f "$TURBODB_ROOT/lib/cmake/Orm/OrmConfig.cmake"
-          test -f "$TURBODB_ROOT/include/orm_runtime.h"
+          test -f "$TURBODB_ROOT/include/shared/orm/orm_runtime.h"
+          test -f "$TURBODB_ROOT/include/shared/orm/orm.h"
           test ! -f "$TURBODB_ROOT/lib/cmake/OrmPostgreSQL/OrmPostgreSQLConfig.cmake"
 
       - name: Restore TurboMedia vcpkg dependencies cache-only
