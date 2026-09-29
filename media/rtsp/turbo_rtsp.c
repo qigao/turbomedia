@@ -1364,23 +1364,14 @@ static int turbo_rtsp_server_websocket_open(
     if (!session) {
         return SALTS_ENOBUFS;
     }
-    {
-        int capture_status = chttp_server_websocket_session_capture(
-            websocket, &session->websocket_session);
-        int subprotocol_status = SALTS_OK;
-        if (capture_status == SALTS_OK && server->ws_subprotocol[0]) {
-            subprotocol_status = chttp_server_response_select_websocket_subprotocol(
-                response, request, server->ws_subprotocol);
-        }
-        if (capture_status != SALTS_OK || subprotocol_status != SALTS_OK) {
-            fprintf(stderr,
-                    "TurboMedia RTSP WebSocket server open failed: capture=%d subprotocol=%d\n",
-                    capture_status, subprotocol_status);
-            turbo_rtsp_server_session_release(session, 0);
-            return SALTS_EINVAL;
-        }
+    if (chttp_server_websocket_session_capture(
+            websocket, &session->websocket_session) != SALTS_OK ||
+        (server->ws_subprotocol[0] &&
+         chttp_server_response_select_websocket_subprotocol(
+             response, request, server->ws_subprotocol) != SALTS_OK)) {
+        turbo_rtsp_server_session_release(session, 0);
+        return SALTS_EINVAL;
     }
-    fprintf(stderr, "TurboMedia RTSP WebSocket server open accepted\n");
     return SALTS_OK;
 }
 
@@ -3992,11 +3983,6 @@ static int turbo_rtsp_client_connect_websocket(turbo_rtsp_client_t *client) {
     options.subprotocol = client->ws_subprotocol[0] ? client->ws_subprotocol : NULL;
     status = chttp_websocket_client_connect(
         &client->websocket, &options, &http_status);
-    if (status != SALTS_OK) {
-        fprintf(stderr,
-                "TurboMedia RTSP WebSocket connect failed: status=%d http_status=%u\n",
-                status, http_status);
-    }
     return status == SALTS_OK ? 0 : -1;
 }
 
