@@ -59,6 +59,7 @@ env:
   SALTS_SDK_VERSION: "1.8.3"
   SALTS_UTILS_SDK_VERSION: "4.1.4"
   SALTSNET_SDK_VERSION: "1.0.0"
+  CHTTP_SDK_VERSION: "1.1.5"
 
 jobs:
   client:
@@ -103,6 +104,7 @@ jobs:
               <PackageReference Include="Salts.Native" Version="[$SALTS_SDK_VERSION]" />
               <PackageReference Include="SaltsUtils.Native" Version="[$SALTS_UTILS_SDK_VERSION]" />
               <PackageReference Include="SaltsNet.Native" Version="[$SALTSNET_SDK_VERSION]" />
+              <PackageReference Include="CHttp.Native" Version="[$CHTTP_SDK_VERSION]" />
             </ItemGroup>
           </Project>
           EOF
@@ -110,6 +112,7 @@ jobs:
           echo "SALTS_ROOT=$packages/salts.native/$SALTS_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
           echo "SALTS_UTILS_ROOT=$packages/saltsutils.native/$SALTS_UTILS_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
           echo "SALTSNET_ROOT=$packages/saltsnet.native/$SALTSNET_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
+          echo "CHTTP_ROOT=$packages/chttp.native/$CHTTP_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
 
       - name: Verify released SDK contracts
         shell: bash
@@ -118,6 +121,7 @@ jobs:
           test -f "$SALTS_ROOT/lib/cmake/Salts/SaltsConfig.cmake"
           test -f "$SALTS_UTILS_ROOT/lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
           test -f "$SALTSNET_ROOT/lib/cmake/SaltsNet/SaltsNetConfig.cmake"
+          test -f "$CHTTP_ROOT/lib/cmake/Chttp/ChttpConfig.cmake"
           test -f "$SALTS_UTILS_ROOT/include/salts_capture.h"
           test -f "$SALTS_UTILS_ROOT/include/salts_playback.h"
           # TurboMedia's own configure remains the canonical imported-target check:
