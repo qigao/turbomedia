@@ -2382,11 +2382,6 @@ room_service_app_server_t *room_service_app_server_create(
                         identity_status);
                 room_service_http_api_destroy(server->http_api);
                 server->http_api = NULL;
-                iris_event_outbox_destroy(server->iris_event_outbox);
-                iris_completion_dispatcher_destroy(
-                    server->iris_completion_dispatcher);
-                iris_room_bridge_destroy(server->iris_room_bridge);
-                iris_media_bridge_destroy(server->iris_media_bridge);
                 turbo_room_service_destroy(server->service);
                 server->service = NULL;
                 free(server->sfu_nodes);
@@ -2432,13 +2427,6 @@ room_service_app_server_t *room_service_app_server_create(
             server->ivr_control_identity = NULL;
             room_service_http_api_destroy(server->http_api);
             server->http_api = NULL;
-            iris_event_outbox_destroy(server->iris_event_outbox);
-            iris_completion_dispatcher_destroy(
-                server->iris_completion_dispatcher);
-            iris_control_provider_destroy(server->iris_control_provider);
-            iris_room_bridge_destroy(server->iris_room_bridge);
-            iris_media_bridge_destroy(server->iris_media_bridge);
-            iris_command_ledger_destroy(server->iris_command_ledger);
             turbo_room_service_destroy(server->service);
             server->service = NULL;
             free(server->sfu_nodes);
