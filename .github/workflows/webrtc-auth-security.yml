@@ -323,6 +323,13 @@ jobs:
           #endif
           EOF
 
+          cat > "$RUNNER_TEMP/auth-stubs/tstr.h" <<'EOF'
+          #ifndef TURBO_MEDIA_PORTABLE_TSTR_H
+          #define TURBO_MEDIA_PORTABLE_TSTR_H
+          #include <salts_str.h>
+          #endif
+          EOF
+
           cat > "$RUNNER_TEMP/auth-stubs/cnet/cnet.h" <<'EOF'
           #ifndef TURBO_MEDIA_PORTABLE_CNET_H
           #define TURBO_MEDIA_PORTABLE_CNET_H
