@@ -16,7 +16,7 @@
 #include <json_parser.h>
 #include <salts/error_codes.h>
 #include <salts/thread.h>
-#include "salts_str.h"
+#include <tstr.h>
 
 #include <limits.h>
 #include <stdio.h>
