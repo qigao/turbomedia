@@ -1,10 +1,12 @@
-#include <orm_driver_plugin.h>
+#include <orm_driver_interface.h>
+#include <salts/plugin.h>
 
 #include <stdlib.h>
 #include <string.h>
 
 #define FIXTURE_HEADER(T) {(uint32_t)sizeof(T), ORM_DRIVER_ABI_VERSION}
 #define FIXTURE_TABLE(p) {(p), (uint32_t)sizeof(*(p)), 0u}
+#define FIXTURE_EXPORT_ID "driver"
 
 #ifndef TURBOMEDIA_ORM_TEST_DRIVER_ID
 #define TURBOMEDIA_ORM_TEST_DRIVER_ID "postgresql"
@@ -160,7 +162,7 @@ static const salts_plugin_export g_exports[] = {{
     .kind = SALTS_PLUGIN_EXPORT_INTERFACE,
     .contract_version = ORM_DRIVER_INTERFACE_CONTRACT_VERSION,
     .capabilities = FIXTURE_CAPABILITIES,
-    .export_id = ORM_DRIVER_PLUGIN_EXPORT_ID,
+    .export_id = FIXTURE_EXPORT_ID,
     .contract_id = ORM_DRIVER_INTERFACE_CONTRACT_ID,
     .value.interface = {&TurboDb_Driver_interface_meta, &g_driver}}};
 
