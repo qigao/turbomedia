@@ -163,8 +163,11 @@ static void rtsp_test_chttp_websocket_smoke(void) {
     }
     client_initialized = 1;
 
-    check(snprintf(uri, sizeof(uri), "ws://127.0.0.1:%u/rtsp",
-                   (unsigned int)port) > 0);
+    {
+        int uri_length = snprintf(uri, sizeof(uri), "ws://127.0.0.1:%u/rtsp",
+                                  (unsigned int)port);
+        check_true(uri_length > 0 && (size_t)uri_length < sizeof(uri));
+    }
     options.size = sizeof(options);
     options.uri = uri;
     options.timeout_ms = RTSP_TEST_TIMEOUT_MS;
@@ -185,7 +188,7 @@ static void rtsp_test_chttp_websocket_smoke(void) {
 
 cleanup:
     if (client_initialized) {
-        (void)chttp_websocket_client_destroy(&client);
+        (void)chttp_websocket_client_destroy(&client, RTSP_TEST_TIMEOUT_MS);
     }
     if (server_initialized) {
         (void)chttp_server_destroy(&server);
