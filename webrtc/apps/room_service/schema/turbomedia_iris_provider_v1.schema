@@ -7,7 +7,8 @@
 // JSON's exact integer range are decimal strings and must be range-checked by
 // the receiving adapter.
 //
-// Schema and message IDs intentionally preserve the deployed v1 wire format.
+// Schema and message IDs identify the current canonical contract. Historical
+// declaration-order wire layouts are intentionally unsupported.
 
 schema TurboMediaIrisProviderV1 [id(22001), byte_order(little)];
 
@@ -87,10 +88,10 @@ message ProviderCommandV1 {
 [id(2001)]
 message ProviderReceiptV1 {
   uint32 schema_version;
-  ProviderMessageKind message_kind;
-  ProviderReceiptDisposition disposition;
   int32 status_code;
   uint32 retry_after_ms;
+  ProviderMessageKind message_kind;
+  ProviderReceiptDisposition disposition;
   string message_id;
   string correlation_id;
   string causation_id;
@@ -203,8 +204,8 @@ message ProviderEventAckV1 {
 [id(4001)]
 message ProviderQueryV1 {
   uint32 schema_version;
-  ProviderMessageKind message_kind;
   uint32 limit;
+  ProviderMessageKind message_kind;
   string message_id;
   string correlation_id;
   string causation_id;
@@ -225,9 +226,9 @@ message ProviderQueryV1 {
 [id(4002)]
 message ProviderObservationV1 {
   uint32 schema_version;
+  uint8 has_more;
   ProviderMessageKind message_kind;
   ProviderQueryStatus status;
-  uint8 has_more;
   string message_id;
   string correlation_id;
   string causation_id;
@@ -274,8 +275,8 @@ message ProviderCallOfferV1 {
 [id(5002)]
 message ProviderSessionBoundV1 {
   uint32 schema_version;
-  ProviderMessageKind message_kind;
   uint8 accepted;
+  ProviderMessageKind message_kind;
   string message_id;
   string correlation_id;
   string causation_id;
