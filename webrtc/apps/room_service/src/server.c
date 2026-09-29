@@ -13,9 +13,7 @@
 #include "iris_command_ledger.h"
 #include "iris_event_outbox.h"
 #include "iris_completion_dispatcher.h"
-#include "iris_control_provider.h"
 #include "iris_media_bridge.h"
-#include "iris_media_reconciler.h"
 #include "iris_room_bridge.h"
 #include "ivr_certificate_identity.h"
 #include "ivr_control_adapter.h"
@@ -83,10 +81,8 @@ struct room_service_app_server_s {
     iris_command_ledger_t *iris_command_ledger;
     iris_media_bridge_t *iris_media_bridge;
     iris_room_bridge_t *iris_room_bridge;
-    iris_control_provider_t *iris_control_provider;
     iris_completion_dispatcher_t *iris_completion_dispatcher;
     iris_event_outbox_t *iris_event_outbox;
-    iris_media_reconciler_t *iris_media_reconciler;
 #endif
 };
 
@@ -260,136 +256,6 @@ static ivr_status_t room_service_deliver_iris_event(
         (iris_completion_dispatcher_t *)context, event, store_revision);
 }
 
-static iris_media_bridge_result_t room_service_dispatch_control_ws_command(
-    void *context, const char *idempotency_key, const char *body,
-    size_t body_size) {
-    room_service_app_server_t *server =
-        (room_service_app_server_t *)context;
-    int is_room = room_service_is_room_provider_command(body, body_size);
-    if (server && server->iris_media_reconciler &&
-        !iris_media_reconciler_accepting_commands(
-            server->iris_media_reconciler)) {
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        result.error_code = is_room ? "ROOM_PROVIDER_RECONCILING"
-                                    : "MEDIA_PROVIDER_RECONCILING";
-        result.error_message =
-            "provider is reconciling durable and worker state";
-        return result;
-    }
-    if (!server ||
-        !atomic_load_explicit(&server->running, memory_order_acquire) ||
-        !server->iris_media_bridge || !server->iris_room_bridge) {
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        result.error_code = is_room ? "ROOM_PROVIDER_NOT_READY"
-                                    : "MEDIA_PROVIDER_NOT_READY";
-        result.error_message = "provider command intake is closed";
-        return result;
-    }
-    if (is_room) {
-        iris_room_bridge_result_t room_result =
-            iris_room_bridge_dispatch_json(server->iris_room_bridge,
-                                           idempotency_key, body, body_size);
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = room_service_room_receipt_status(room_result.status);
-        snprintf(result.command_id, sizeof(result.command_id), "%s",
-                 room_result.command_id);
-        result.error_code = room_result.error_code;
-        result.error_message = room_result.error_message;
-        if (room_result.status == IRIS_ROOM_BRIDGE_TERMINAL ||
-            room_result.status == IRIS_ROOM_BRIDGE_DUPLICATE) {
-            iris_media_completion_t completion;
-            ivr_media_command_result_t terminal;
-            char event_id[SALTS_UUID_STRING_SIZE];
-            if (!server->iris_completion_dispatcher ||
-                !room_service_build_provider_completion(
-                    body, body_size, room_result.command_id,
-                    room_result.terminal_status == IRIS_ROOM_TERMINAL_SUCCEEDED
-                        ? "succeeded"
-                        : "failed",
-                    room_result.event_type, room_result.data,
-                    room_result.error_code, room_result.error_message,
-                    &completion, &terminal, event_id) ||
-                iris_completion_dispatcher_enqueue_terminal(
-                    server->iris_completion_dispatcher, &completion, &terminal,
-                    event_id) != IVR_OK) {
-                result.status = IRIS_MEDIA_BRIDGE_INTERNAL;
-                result.error_code = "ROOM_COMPLETION_QUEUE_UNAVAILABLE";
-                result.error_message =
-                    "durable room terminal could not be queued for delivery";
-            }
-        }
-        return result;
-    }
-    {
-        iris_media_bridge_result_t result =
-            iris_media_bridge_dispatch_json(server->iris_media_bridge,
-                                            idempotency_key, body, body_size);
-        if (result.status == IRIS_MEDIA_BRIDGE_TERMINAL) {
-            iris_media_completion_t completion;
-            ivr_media_command_result_t terminal;
-            char event_id[SALTS_UUID_STRING_SIZE];
-            if (!server->iris_completion_dispatcher ||
-                !room_service_build_provider_completion(
-                    body, body_size, result.command_id, result.terminal_status,
-                    result.event_type, result.data, result.error_code,
-                    result.error_message, &completion, &terminal, event_id) ||
-                iris_completion_dispatcher_enqueue_terminal(
-                    server->iris_completion_dispatcher, &completion, &terminal,
-                    event_id) != IVR_OK) {
-                result.status = IRIS_MEDIA_BRIDGE_INTERNAL;
-                result.error_code = "MEDIA_COMPLETION_QUEUE_UNAVAILABLE";
-                result.error_message =
-                    "durable media terminal could not be queued for delivery";
-            }
-        }
-        return result;
-    }
-}
-
-static ivr_status_t room_service_deliver_control_ws_completion(
-    void *context, const iris_media_completion_t *completion,
-    const ivr_media_command_result_t *result, const char *message_id,
-    const char *completed_at, uint64_t completed_at_unix_ms,
-    uint64_t ack_timeout_ms) {
-    iris_control_completion_ack_t ack;
-    ivr_status_t status = iris_control_provider_send_completion(
-        (iris_control_provider_t *)context, completion, result, message_id,
-        completed_at, completed_at_unix_ms, ack_timeout_ms, &ack);
-    if (status != IVR_OK) return status;
-    if (ack.disposition ==
-            ProviderCompletionAckDisposition_CompletionCommitted ||
-        ack.disposition ==
-            ProviderCompletionAckDisposition_DuplicateCompletion) {
-        return IVR_OK;
-    }
-    return ack.disposition ==
-                   ProviderCompletionAckDisposition_CompletionConflict
-               ? IVR_ESTALE
-               : IVR_EAUTH;
-}
-
-static ivr_status_t room_service_deliver_control_ws_event(
-    void *context, const ivr_media_event_t *event, const char *message_id,
-    const char *occurred_at, uint64_t ack_timeout_ms) {
-    iris_control_event_ack_t ack;
-    ivr_status_t status = iris_control_provider_send_event(
-        (iris_control_provider_t *)context, event, message_id, occurred_at,
-        ack_timeout_ms, &ack);
-    if (status != IVR_OK) return status;
-    if (ack.disposition == ProviderEventAckDisposition_Committed ||
-        ack.disposition == ProviderEventAckDisposition_DuplicateEvent) {
-        return IVR_OK;
-    }
-    return ack.disposition == ProviderEventAckDisposition_EventConflict
-               ? IVR_ESTALE
-               : IVR_EAUTH;
-}
-
 static void room_service_settle_iris_event(
     void *context, const ivr_media_event_t *event, uint64_t store_revision,
     iris_event_delivery_outcome_t outcome, int http_status) {
@@ -411,14 +277,6 @@ static ivr_status_t room_service_observe_iris_media_event(
         (room_service_app_server_t *)context;
     return iris_event_outbox_on_media_event(
         server ? server->iris_event_outbox : NULL, event);
-}
-
-static ivr_status_t room_service_observe_iris_inventory(
-    void *context, const ivr_worker_inventory_envelope_t *page) {
-    room_service_app_server_t *server =
-        (room_service_app_server_t *)context;
-    return iris_media_reconciler_on_inventory_page(
-        server ? server->iris_media_reconciler : NULL, page);
 }
 
 #ifdef ROOM_SERVICE_ENABLE_TEST_HOOKS
@@ -2527,7 +2385,6 @@ room_service_app_server_t *room_service_app_server_create(
                 iris_event_outbox_destroy(server->iris_event_outbox);
                 iris_completion_dispatcher_destroy(
                     server->iris_completion_dispatcher);
-                iris_control_provider_destroy(server->iris_control_provider);
                 iris_room_bridge_destroy(server->iris_room_bridge);
                 iris_media_bridge_destroy(server->iris_media_bridge);
                 turbo_room_service_destroy(server->service);
@@ -2737,17 +2594,6 @@ iris_media_bridge_result_t room_service_app_server_dispatch_iris_media_command(
         result.error_message = "Iris media provider is not configured";
         return result;
     }
-    if (server->iris_media_reconciler &&
-        !iris_media_reconciler_accepting_commands(
-            server->iris_media_reconciler)) {
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        result.error_code = "MEDIA_PROVIDER_RECONCILING";
-        result.error_message =
-            "media provider is reconciling durable and worker state";
-        return result;
-    }
     return iris_media_bridge_dispatch_json(server->iris_media_bridge,
                                            idempotency_key, body, body_size);
 }
@@ -2761,17 +2607,6 @@ iris_room_bridge_result_t room_service_app_server_dispatch_iris_room_command(
         result.status = IRIS_ROOM_BRIDGE_UNAVAILABLE;
         result.error_code = "ROOM_PROVIDER_UNAVAILABLE";
         result.error_message = "Iris room provider is not configured";
-        return result;
-    }
-    if (server->iris_media_reconciler &&
-        !iris_media_reconciler_accepting_commands(
-            server->iris_media_reconciler)) {
-        iris_room_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_ROOM_BRIDGE_UNAVAILABLE;
-        result.error_code = "ROOM_PROVIDER_RECONCILING";
-        result.error_message =
-            "room provider is reconciling durable and worker state";
         return result;
     }
     return iris_room_bridge_dispatch_json(server->iris_room_bridge,
@@ -2988,32 +2823,6 @@ int room_service_app_server_get_ivr_metrics(
             stats.archive_deleted_total;
         metrics->iris_outbox_retention_failure_total =
             stats.retention_failure_total;
-    }
-    if (server->iris_media_reconciler) {
-        iris_media_reconciler_stats_t stats;
-        iris_media_reconciler_get_stats(server->iris_media_reconciler, &stats);
-        metrics->iris_reconcile_state = (int)stats.state;
-        metrics->iris_reconcile_accepting_commands =
-            iris_media_reconciler_accepting_commands(
-                server->iris_media_reconciler);
-        metrics->iris_reconcile_inventory_queue_items =
-            (uint32_t)stats.inventory_queue_items;
-        metrics->iris_reconcile_inventory_queue_capacity =
-            (uint32_t)stats.inventory_queue_capacity;
-        metrics->iris_reconcile_cycles_total = stats.reconcile_cycles_total;
-        metrics->iris_reconcile_failures_total =
-            stats.reconcile_failures_total;
-        metrics->iris_reconcile_expected_fetches_total =
-            stats.expected_fetches_total;
-        metrics->iris_reconcile_inventory_pages_total =
-            stats.inventory_pages_total;
-        metrics->iris_reconcile_rebound_total = stats.rebound_total;
-        metrics->iris_reconcile_orphan_close_total =
-            stats.orphan_close_total;
-        metrics->iris_reconcile_resource_lost_total =
-            stats.resource_lost_total;
-        metrics->iris_reconcile_inventory_queue_full_total =
-            stats.inventory_queue_full_total;
     }
 #endif
     return 0;
