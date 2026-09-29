@@ -201,7 +201,8 @@ jobs:
             throw "x64 MSVC was not found"
           }
           $vsdev = Join-Path $vs "Common7/Tools/VsDevCmd.bat"
-          $lines = & cmd.exe /s /c "`"`"$vsdev`" -arch=x64 -host_arch=x64 >nul && set`""
+          $command = 'call "' + $vsdev + '" -arch=x64 -host_arch=x64 >nul && set'
+          $lines = & cmd.exe /d /s /c $command
           if ($LASTEXITCODE -ne 0) {
             throw "VsDevCmd failed"
           }
