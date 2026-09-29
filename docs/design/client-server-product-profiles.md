@@ -55,6 +55,12 @@ Capture callback 只把 borrowed frame 同步送入 track；Server 的网络、�
 `RTC`、`DataChannel`、`SDP` 和 `WebRTCSignaling` 提供。未来若需要同名的客户端
 facade，应建立不含 ServerRuntime 的新接口，而不是在现有结构上增加 fallback。
 
+客户端媒体编辑/转码能力也不复用 Server `Pipeline`。该边界由
+[`client-media-processing.md`](client-media-processing.md) 定义为独立的
+`TurboMedia::ClientProcessing` 方向：只复用共享 Codec/Demuxer/Muxer 与
+format-neutral frame/packet contract，Capture/Playback 继续由 Salts 独占，
+不得反向依赖 ServerRuntime、Streamer、TurboDB 或 RulesForge。
+
 ## 错误与状态语义
 
 - 配置错误在 CMake configure 阶段返回明确错误，不延迟到链接阶段。
