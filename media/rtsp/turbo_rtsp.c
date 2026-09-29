@@ -9,7 +9,8 @@
 #include "disruptor.h"
 #include "platform.h"
 
-#include <chttp/chttp.h>
+#include <http_client/http.h>
+#include <http_server/http.h>
 #include <salts/clock.h>
 #include <salts/error_codes.h>
 #include <salts/thread.h>
