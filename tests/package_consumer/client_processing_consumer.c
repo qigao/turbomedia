@@ -1,10 +1,13 @@
 #include <turbo_client_processing.h>
 
 int main(void) {
+    salts_video_capture_cb video_callback =
+        turbo_client_processing_video_capture_callback;
     turbo_client_processing_config_t config;
     turbo_client_processing_snapshot_t snapshot;
     turbo_client_processing_t *processing = NULL;
 
+    (void)video_callback;
     turbo_client_processing_config_init(&config);
     if (turbo_client_processing_create(&config, &processing) !=
         TURBO_CLIENT_PROCESSING_OK) {
