@@ -118,8 +118,10 @@ jobs:
           test -f "$SALTS_ROOT/lib/cmake/Salts/SaltsConfig.cmake"
           test -f "$SALTS_UTILS_ROOT/lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
           test -f "$SALTSNET_ROOT/lib/cmake/SaltsNet/SaltsNetConfig.cmake"
-          # TurboMedia's own configure is the canonical capability check:
-          # CLIENT requires the imported Salts::Capture and Salts::Playback targets.
+          test -f "$SALTS_UTILS_ROOT/include/salts_capture.h"
+          test -f "$SALTS_UTILS_ROOT/include/salts_playback.h"
+          # TurboMedia's own configure remains the canonical imported-target check:
+          # CLIENT requires Salts::Capture and Salts::Playback.
 
       - name: Restore TurboMedia vcpkg dependencies cache-only
         shell: bash
