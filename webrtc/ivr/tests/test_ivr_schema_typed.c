@@ -25,15 +25,40 @@ void test_typed_conference_join_roundtrip(void) {
     check_equal((uint64_t)(cmd.call_generation), (uint64_t)(7u));
     check_equal((uint64_t)(cmd.expected_room_version), (uint64_t)(42u));
 
-    /* Typed BIN encoding requires the schema to declare an explicit fixed-first
-       wire layout (wire offsets); our canonical schema keeps the wire field
-       order from the architecture draft (strings first), so typed BIN is not
-       available. BIN stability is covered by the dynamic-API golden vector in
-       test_ivr_schema.c; the typed route is exercised via JSON here. */
+    static const uint8_t expected_bin[] = {
+        0x07,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x2A,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x03,0x00,0x00,0x00,0x6D,0x2D,0x31,
+        0x02,0x00,0x00,0x00,0x77,0x31,
+        0x02,0x00,0x00,0x00,0x72,0x31,
+        0x02,0x00,0x00,0x00,0x63,0x31,
+        0x07,0x00,0x00,0x00,0x69,0x76,0x72,0x2D,0x62,0x6F,0x74
+    };
+    uint8_t *bin = NULL;
+    size_t bin_len = 0;
+    ConferenceJoinCommandV1_t decoded;
+    ConferenceJoinCommandV1_init(&decoded);
+    check_equal(ConferenceJoinCommandV1_to_bin(
+                    &cmd, &bin, &bin_len, &err),
+                DATA_BIND_OK);
+    check_equal(bin_len, sizeof(expected_bin));
+    if (bin != NULL && bin_len == sizeof(expected_bin))
+        check_equal(bin, expected_bin, sizeof(expected_bin));
+    check_equal(ConferenceJoinCommandV1_from_bin(
+                    codec, &decoded, bin, bin_len, &err),
+                DATA_BIND_OK);
+    check_equal(decoded.call_generation, UINT64_C(7));
+    check_equal(decoded.expected_room_version, UINT64_C(42));
+    check_equal(strcmp(decoded.message_id, "m-1"), 0);
+    check_equal(strcmp(decoded.participant_role, "ivr-bot"), 0);
+    tbe_typed_serialized_free(bin);
+    ConferenceJoinCommandV1_clear(&decoded);
+
     char *out = NULL;
     size_t out_len = 0;
-    check_equal(ConferenceJoinCommandV1_to_json(codec, &cmd, &out,
-                                                      &out_len, &err), DATA_BIND_OK);
+    check_equal(ConferenceJoinCommandV1_to_json(
+                    codec, &cmd, &out, &out_len, &err),
+                DATA_BIND_OK);
     check_not_null(out);
     check_true(strstr(out, "ivr-bot") != NULL);
     tbe_typed_serialized_free(out);
