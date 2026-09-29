@@ -93,6 +93,30 @@ struct turbo_client_processing_s {
     int output_header_written;
 };
 
+static void turbo_client_processing_ring_copy_in(
+    uint8_t *storage, size_t capacity, size_t offset,
+    const void *source, size_t size) {
+    size_t first;
+    if (size == 0u) return;
+    first = capacity - offset;
+    if (first > size) first = size;
+    memcpy(storage + offset, source, first);
+    if (first < size)
+        memcpy(storage, (const uint8_t *)source + first, size - first);
+}
+
+static void turbo_client_processing_ring_copy_out(
+    void *destination, const uint8_t *storage,
+    size_t capacity, size_t offset, size_t size) {
+    size_t first;
+    if (size == 0u) return;
+    first = capacity - offset;
+    if (first > size) first = size;
+    memcpy(destination, storage + offset, first);
+    if (first < size)
+        memcpy((uint8_t *)destination + first, storage, size - first);
+}
+
 static turbo_client_processing_state_t turbo_client_processing_state_get(
     const turbo_client_processing_t *processing) {
     return (turbo_client_processing_state_t)atomic_load_explicit(
@@ -875,7 +899,6 @@ turbo_client_processing_admit_video_frame(
     size_t slot_index;
     size_t write_offset;
     size_t storage_capacity;
-    size_t storage_head = 0u;
     uint64_t oldest_timestamp = 0u;
     uint64_t newest_timestamp = 0u;
     uint64_t prospective_duration = 0u;
@@ -904,8 +927,6 @@ turbo_client_processing_admit_video_frame(
         size_t newest_index =
             (processing->frame_head + processing->queued_frames - 1u) %
             processing->config.frame_queue_capacity;
-        storage_head =
-            processing->frame_slots[processing->frame_head].offset;
         oldest_timestamp =
             processing->frame_slots[processing->frame_head].timestamp_us;
         newest_timestamp =
@@ -926,25 +947,8 @@ turbo_client_processing_admit_video_frame(
 
     storage_capacity = processing->config.frame_queue_max_bytes;
     write_offset = processing->frame_storage_tail;
-    if (processing->queued_frames == 0u) {
-        write_offset = 0u;
-    } else if (processing->frame_storage_tail >= storage_head) {
-        size_t tail_space = storage_capacity - processing->frame_storage_tail;
-        if (len > tail_space) {
-            if (len > storage_head) {
-                processing->rejected_frames++;
-                salts_mutex_unlock(&processing->frame_mutex);
-                return TURBO_CLIENT_PROCESSING_EFULL;
-            }
-            write_offset = 0u;
-        }
-    } else if (len > storage_head - processing->frame_storage_tail) {
-        processing->rejected_frames++;
-        salts_mutex_unlock(&processing->frame_mutex);
-        return TURBO_CLIENT_PROCESSING_EFULL;
-    }
-
-    memcpy(processing->frame_storage + write_offset, frame, len);
+    turbo_client_processing_ring_copy_in(
+        processing->frame_storage, storage_capacity, write_offset, frame, len);
     slot_index =
         (processing->frame_head + processing->queued_frames) %
         processing->config.frame_queue_capacity;
@@ -955,10 +959,8 @@ turbo_client_processing_admit_video_frame(
     slot->height = height;
     slot->timestamp_us = timestamp_us;
 
-    processing->frame_storage_tail = write_offset + len;
-    if (processing->frame_storage_tail == storage_capacity) {
-        processing->frame_storage_tail = 0u;
-    }
+    processing->frame_storage_tail =
+        (write_offset + len) % storage_capacity;
     processing->queued_frames++;
     processing->queued_bytes += len;
     processing->queued_duration_us = prospective_duration;
@@ -1004,7 +1006,10 @@ turbo_client_processing_status_t turbo_client_processing_pop_video_frame(
         return TURBO_CLIENT_PROCESSING_EFULL;
     }
 
-    memcpy(destination, processing->frame_storage + slot->offset, slot->size);
+    turbo_client_processing_ring_copy_out(
+        destination, processing->frame_storage,
+        processing->config.frame_queue_max_bytes,
+        slot->offset, slot->size);
     info->data_size = slot->size;
     info->width = slot->width;
     info->height = slot->height;
@@ -1033,7 +1038,6 @@ turbo_client_processing_admit_audio_frame(
     size_t slot_index;
     size_t write_offset;
     size_t storage_capacity;
-    size_t storage_head = 0u;
     size_t frame_bytes;
     uint64_t oldest_timestamp = 0u;
     uint64_t newest_timestamp = 0u;
@@ -1075,8 +1079,6 @@ turbo_client_processing_admit_audio_frame(
         size_t newest_index =
             (processing->audio_head + processing->queued_audio_frames - 1u) %
             processing->audio_config.queue_capacity;
-        storage_head =
-            processing->audio_slots[processing->audio_head].offset;
         oldest_timestamp =
             processing->audio_slots[processing->audio_head].timestamp_us;
         newest_timestamp =
@@ -1097,25 +1099,8 @@ turbo_client_processing_admit_audio_frame(
 
     storage_capacity = processing->audio_config.queue_max_bytes;
     write_offset = processing->audio_storage_tail;
-    if (processing->queued_audio_frames == 0u) {
-        write_offset = 0u;
-    } else if (processing->audio_storage_tail >= storage_head) {
-        size_t tail_space = storage_capacity - processing->audio_storage_tail;
-        if (len > tail_space) {
-            if (len > storage_head) {
-                processing->rejected_audio_frames++;
-                salts_mutex_unlock(&processing->audio_mutex);
-                return TURBO_CLIENT_PROCESSING_EFULL;
-            }
-            write_offset = 0u;
-        }
-    } else if (len > storage_head - processing->audio_storage_tail) {
-        processing->rejected_audio_frames++;
-        salts_mutex_unlock(&processing->audio_mutex);
-        return TURBO_CLIENT_PROCESSING_EFULL;
-    }
-
-    memcpy(processing->audio_storage + write_offset, samples, len);
+    turbo_client_processing_ring_copy_in(
+        processing->audio_storage, storage_capacity, write_offset, samples, len);
     slot_index =
         (processing->audio_head + processing->queued_audio_frames) %
         processing->audio_config.queue_capacity;
@@ -1124,10 +1109,8 @@ turbo_client_processing_admit_audio_frame(
     slot->size = len;
     slot->timestamp_us = timestamp_us;
 
-    processing->audio_storage_tail = write_offset + len;
-    if (processing->audio_storage_tail == storage_capacity) {
-        processing->audio_storage_tail = 0u;
-    }
+    processing->audio_storage_tail =
+        (write_offset + len) % storage_capacity;
     processing->queued_audio_frames++;
     processing->queued_audio_bytes += len;
     processing->queued_audio_duration_us = prospective_duration;
@@ -1172,7 +1155,10 @@ turbo_client_processing_status_t turbo_client_processing_pop_audio_frame(
         return TURBO_CLIENT_PROCESSING_EFULL;
     }
 
-    memcpy(destination, processing->audio_storage + slot->offset, slot->size);
+    turbo_client_processing_ring_copy_out(
+        destination, processing->audio_storage,
+        processing->audio_config.queue_max_bytes,
+        slot->offset, slot->size);
     info->data_size = slot->size;
     info->timestamp_us = slot->timestamp_us;
     info->sample_rate = processing->audio_config.sample_rate;
