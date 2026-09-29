@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <salts_capture.h>
+#include <salts_playback.h>
 #include <turbo_export.h>
 
 #ifdef __cplusplus
@@ -54,6 +55,37 @@ typedef struct turbo_client_processing_file_plan_t {
     uint64_t bitrate;
 } turbo_client_processing_file_plan_t;
 
+typedef struct turbo_client_processing_audio_capture_config_t {
+    size_t size;
+    size_t queue_capacity;
+    size_t queue_max_bytes;
+    uint64_t queue_max_duration_us;
+    uint32_t sample_rate;
+    uint32_t channels;
+    uint32_t bits_per_sample;
+} turbo_client_processing_audio_capture_config_t;
+
+typedef struct turbo_client_processing_audio_frame_info_t {
+    size_t size;
+    size_t data_size;
+    uint64_t timestamp_us;
+    uint32_t sample_rate;
+    uint32_t channels;
+    uint32_t bits_per_sample;
+} turbo_client_processing_audio_frame_info_t;
+
+typedef struct turbo_client_processing_audio_snapshot_t {
+    size_t size;
+    size_t queue_capacity;
+    size_t queue_max_bytes;
+    uint64_t queue_max_duration_us;
+    size_t queued_frames;
+    size_t queued_bytes;
+    uint64_t queued_duration_us;
+    uint64_t admitted_frames;
+    uint64_t rejected_frames;
+} turbo_client_processing_audio_snapshot_t;
+
 typedef struct turbo_client_processing_video_frame_info_t {
     size_t size;
     size_t data_size;
@@ -91,6 +123,15 @@ TURBO_MEDIA_C_API void turbo_client_processing_snapshot_init(
 TURBO_MEDIA_C_API void turbo_client_processing_video_frame_info_init(
     turbo_client_processing_video_frame_info_t *info);
 
+TURBO_MEDIA_C_API void turbo_client_processing_audio_capture_config_init(
+    turbo_client_processing_audio_capture_config_t *config);
+
+TURBO_MEDIA_C_API void turbo_client_processing_audio_frame_info_init(
+    turbo_client_processing_audio_frame_info_t *info);
+
+TURBO_MEDIA_C_API void turbo_client_processing_audio_snapshot_init(
+    turbo_client_processing_audio_snapshot_t *snapshot);
+
 TURBO_MEDIA_C_API void turbo_client_processing_file_plan_init(
     turbo_client_processing_file_plan_t *plan);
 
@@ -103,6 +144,16 @@ TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_set_file_plan(
     turbo_client_processing_t *processing,
     const turbo_client_processing_file_plan_t *plan);
+
+/*
+ * Configures the independent bounded audio-capture queue. Valid only in
+ * CREATED state. sample_rate/channels/bits_per_sample describe the borrowed
+ * Salts callback payload and are copied by value.
+ */
+TURBO_MEDIA_C_API turbo_client_processing_status_t
+turbo_client_processing_set_audio_capture_config(
+    turbo_client_processing_t *processing,
+    const turbo_client_processing_audio_capture_config_t *config);
 
 TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_create(
@@ -156,6 +207,46 @@ turbo_client_processing_pop_video_frame(
     void *destination, size_t destination_capacity,
     size_t *out_size,
     turbo_client_processing_video_frame_info_t *info);
+
+/*
+ * Copies one borrowed Salts audio callback payload into the configured audio
+ * queue. The payload length must be sample-frame aligned. A full queue returns
+ * EFULL without dropping existing audio.
+ */
+TURBO_MEDIA_C_API turbo_client_processing_status_t
+turbo_client_processing_admit_audio_frame(
+    turbo_client_processing_t *processing,
+    const uint8_t *samples, size_t len, uint64_t timestamp_us);
+
+TURBO_MEDIA_C_API void turbo_client_processing_audio_capture_callback(
+    salts_capture_t *capture,
+    const uint8_t *samples, size_t len,
+    uint64_t timestamp_us, void *user_data);
+
+TURBO_MEDIA_C_API turbo_client_processing_status_t
+turbo_client_processing_pop_audio_frame(
+    turbo_client_processing_t *processing,
+    void *destination, size_t destination_capacity,
+    size_t *out_size,
+    turbo_client_processing_audio_frame_info_t *info);
+
+TURBO_MEDIA_C_API turbo_client_processing_status_t
+turbo_client_processing_audio_snapshot(
+    const turbo_client_processing_t *processing,
+    turbo_client_processing_audio_snapshot_t *snapshot);
+
+/*
+ * Borrows a Salts playback handle and writes PCM without taking lifecycle
+ * ownership. A short successful write is surfaced as EFULL while out_written
+ * preserves the bytes accepted by Salts. ClientProcessing never starts,
+ * pauses, stops, drains, clears, or destroys playback.
+ */
+TURBO_MEDIA_C_API turbo_client_processing_status_t
+turbo_client_processing_write_playback(
+    turbo_client_processing_t *processing,
+    salts_playback_t *playback,
+    const void *samples, size_t len,
+    size_t *out_written);
 
 TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_pause(turbo_client_processing_t *processing);
