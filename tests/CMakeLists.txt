@@ -122,6 +122,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
+    if(TEST_NAME STREQUAL "test_benchmark")
+      set_tests_properties(${TEST_TARGET_NAME} PROPERTIES LABELS performance)
+    endif()
   endif()
   
   message(STATUS "Added test: ${TEST_TARGET_NAME}")
