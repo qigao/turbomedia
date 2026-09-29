@@ -131,7 +131,7 @@ target_include_directories(
   PRIVATE ${STB_INCLUDE_DIR})
 target_link_libraries(
   turbo_media_webrtc_signaling
-  PUBLIC Salts::CNet Salts::CHTTP
+  PUBLIC Salts::CNet CHttp::Server
   PRIVATE turbo_media_auth turbo_media_tenant_quota
           turbo_media_tenant_quota_wire
           Salts::JsonParser SaltsNet::Crypto Salts::Core Salts::CSTL)
