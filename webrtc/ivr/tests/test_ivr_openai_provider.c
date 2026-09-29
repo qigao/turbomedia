@@ -411,7 +411,11 @@ static void *mock_server_thread(void *opaque) {
         FD_SET((mock_sock_t)s->listen_sock, &rfds);
         tv.tv_sec = 0;
         tv.tv_usec = 200000;
+#ifdef _WIN32
         sel = select(0, &rfds, NULL, NULL, &tv);
+#else
+        sel = select((int)s->listen_sock + 1, &rfds, NULL, NULL, &tv);
+#endif
         if (sel > 0) {
             mock_sock_t fd = accept(s->listen_sock, NULL, NULL);
             if (fd != MOCK_INVALID_SOCKET) {
