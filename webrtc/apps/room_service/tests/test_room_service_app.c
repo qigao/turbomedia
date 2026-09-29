@@ -1648,7 +1648,7 @@ void test_room_service_revocation_fanout_tracks_live_sfu_membership(void) {
   uint64_t membership_before;
 
   sfu_node_app_config_init(&sfu_a_config);
-  sfu_a_config.bind_host = "127.0.0.1";
+  sfu_a_config.bind_host = "::1";
   sfu_a_config.bind_port = 19440;
   sfu_a_config.node_id = "sfu-rev-a";
   sfu_a_config.use_tls = 1;
@@ -1676,16 +1676,16 @@ void test_room_service_revocation_fanout_tracks_live_sfu_membership(void) {
   check_equal(sfu_node_app_server_start(sfu_a), 0);
   check_equal(sfu_node_app_server_start(sfu_b), 0);
   check_equal(wait_for_https_status_ok(
-                  "https://127.0.0.1:19440", "/health",
+                  "https://localhost:19440", "/health",
                   ROOM_SERVICE_TEST_TLS_CERT_PATH, 30, 100), 0);
   check_equal(wait_for_https_status_ok(
-                  "https://127.0.0.1:19441", "/health",
+                  "https://localhost:19441", "/health",
                   ROOM_SERVICE_TEST_TLS_CERT_PATH, 30, 100), 0);
 
   room_service_app_config_init(&room_config);
   room_config.sfu_nodes =
-      "sfu-rev-a=https://127.0.0.1:19440,"
-      "sfu-rev-b=https://127.0.0.1:19441";
+      "sfu-rev-a=https://localhost:19440,"
+      "sfu-rev-b=https://localhost:19441";
   room_config.sfu_revocation_server_names =
       "sfu-rev-a=localhost,sfu-rev-b=localhost";
   room_config.sfu_ca_file = ROOM_SERVICE_TEST_TLS_CERT_PATH;
@@ -1732,10 +1732,10 @@ void test_room_service_revocation_fanout_tracks_live_sfu_membership(void) {
   check_not_null(sfu_c);
   check_equal(sfu_node_app_server_start(sfu_c), 0);
   check_equal(wait_for_https_status_ok(
-                  "https://127.0.0.1:19442", "/health",
+                  "https://localhost:19442", "/health",
                   ROOM_SERVICE_TEST_TLS_CERT_PATH, 30, 100), 0);
   check_equal(room_service_app_server_register_sfu_node_secure(
-                  room, "sfu-rev-c", "https://127.0.0.1:19442",
+                  room, "sfu-rev-c", "https://localhost:19442",
                   NULL, "localhost"), 0);
   check_true(room_service_app_server_sfu_membership_version(room) >
              membership_before);
