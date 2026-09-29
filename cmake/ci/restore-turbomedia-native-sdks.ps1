@@ -66,7 +66,7 @@ function Resolve-SdkRoot([string]$PackageId) {
   }
   $root = Join-Path $versions[0].FullName "sdk/$Rid"
   if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-    throw "RID SDK is missing for $PackageId: $root"
+    throw "RID SDK is missing for ${PackageId}: $root"
   }
   return $root.Replace('\', '/')
 }
