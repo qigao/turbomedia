@@ -11,6 +11,12 @@
 #include <salts/thread.h>
 #include <stdatomic.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TURBO_CLIENT_PROCESSING_INTERNAL __attribute__((visibility("hidden")))
+#else
+#define TURBO_CLIENT_PROCESSING_INTERNAL
+#endif
+
 typedef struct turbo_client_processing_video_slot_t {
     size_t offset;
     size_t size;
@@ -96,14 +102,19 @@ static inline void turbo_client_processing_state_set(
     atomic_store_explicit(&processing->state, (int)state, memory_order_release);
 }
 
+TURBO_CLIENT_PROCESSING_INTERNAL
 void turbo_client_processing_queue_clear_locked(
     turbo_client_processing_t *processing);
+TURBO_CLIENT_PROCESSING_INTERNAL
 void turbo_client_processing_audio_clear_locked(
     turbo_client_processing_t *processing);
+TURBO_CLIENT_PROCESSING_INTERNAL
 turbo_client_processing_status_t turbo_client_processing_file_prepare(
     turbo_client_processing_t *processing);
+TURBO_CLIENT_PROCESSING_INTERNAL
 void turbo_client_processing_file_runtime_clear(
     turbo_client_processing_t *processing);
+TURBO_CLIENT_PROCESSING_INTERNAL
 void turbo_client_processing_file_plan_clear(
     turbo_client_processing_t *processing);
 
