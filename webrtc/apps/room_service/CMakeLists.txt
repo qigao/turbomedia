@@ -250,6 +250,8 @@ target_link_libraries(test_room_service_app
     CHttp::Client CHttp::Server
     turbo_media_auth
     turbo_media_revocation_https
+    turbo_media_tenant_quota
+    turbo_media_tenant_quota_wire
     SaltsNet::Crypto
     OpenSSL::Crypto
     Salts::Core
