@@ -9,8 +9,8 @@
  */
 
 #include "turbo_datachannel_internal.h"
+#include "turbo_cnet_send_internal.h"
 #include <salts_error.h>
-#include <salts_buffer.h>
 #include <stdlib.h>
 #include <string.h>
 #include <tstr.h>
@@ -518,22 +518,6 @@ typedef struct {
     int status;
 } dc_send_command_t;
 
-static int dc_stream_send_bytes(cnet_client *client,
-                                cnet_connection connection,
-                                const void *data,
-                                size_t size) {
-    mem_buffer_t *buffer;
-    int status;
-    if (!client || !data || size == 0u) return SALTS_EINVAL;
-    buffer = mem_get_buffer(mem_global(), size);
-    if (!buffer) return SALTS_ENOMEM;
-    memcpy(mem_buffer_data(buffer), data, size);
-    mem_set_used(buffer, size);
-    status = cnet_send_buffer(client, connection, buffer);
-    mem_buffer_release(buffer);
-    return status;
-}
-
 static void dc_send_task(void *arg1, void *arg2) {
     dc_send_command_t *command = (dc_send_command_t *)arg1;
     turbo_dc_peer_t *peer;
@@ -543,9 +527,9 @@ static void dc_send_task(void *arg1, void *arg2) {
     command->status = SALTS_ENOTCONN;
     if (peer->ctx->transport == TURBO_DC_TRANSPORT_TCP &&
         peer->stream_client_initialized && peer->stream_connection.generation != 0u) {
-        command->status = dc_stream_send_bytes(
+        command->status = turbo_media_cnet_send_copy(
             &peer->stream_client, peer->stream_connection,
-            command->data, command->len);
+            command->data, command->len, 0);
     } else if (peer->ctx->transport == TURBO_DC_TRANSPORT_UDP &&
                peer->datagram_initialized && peer->has_remote_datagram_peer) {
         command->status = cnet_datagram_send(&peer->datagram,
