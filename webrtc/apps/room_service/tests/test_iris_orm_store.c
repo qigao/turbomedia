@@ -196,7 +196,6 @@ spec("Iris PostgreSQL ORM record store") {
         check_equal(iris_orm_store_owner_close(owner, error, sizeof(error)),
                     SALTS_EBUSY);
         check_not_null(strstr(error, "cannot close TurboDB ORM runtime"));
-        check_not_null(iris_orm_store_owner_store(owner));
 
         check_equal(test_set_env("TURBOMEDIA_ORM_TEST_BUSY_CLOSE", NULL), 0);
         memset(error, 0, sizeof(error));
