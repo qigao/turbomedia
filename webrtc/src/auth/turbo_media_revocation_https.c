@@ -3,7 +3,7 @@
 #include "turbo_media_revocation_wire.h"
 #include "turbo_transport.h"
 
-#include <chttp/chttp.h>
+#include <http_client/http.h>
 #include <json_parser.h>
 
 #include <errno.h>
