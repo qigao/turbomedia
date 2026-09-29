@@ -1,0 +1,122 @@
+name: TurboMedia vcpkg Cache Contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/vcpkg-cache-contract.yml"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
+      - "vcpkg-overlays/**"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/vcpkg-cache-contract.yml"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
+      - "vcpkg-overlays/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: turbomedia-vcpkg-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Linux x64 cache
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+
+      - name: Prepare Linux build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool
+
+      - name: Verify Linux ABI set from shared cache only
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf vcpkg_installed "$VCPKG_BINARY_CACHE"
+          mkdir -p "$VCPKG_BINARY_CACHE"
+          "$VCPKG_ROOT/vcpkg" install \
+            --x-manifest-root=. \
+            --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
+            --triplet x64-linux \
+            --only-binarycaching
+
+  windows:
+    name: Windows x64 cache
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+
+      - name: Prepare Windows build tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install ninja nasm strawberryperl -y --no-progress
+
+      - name: Verify Windows ABI set from shared cache only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          if (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Recurse -Force }
+          if (Test-Path -LiteralPath $env:VCPKG_BINARY_CACHE) { Remove-Item -LiteralPath $env:VCPKG_BINARY_CACHE -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_BINARY_CACHE | Out-Null
+          $args = @("install", "--x-manifest-root=.", "--x-install-root=$installed", "--triplet=x64-windows", "--only-binarycaching")
+          & "$env:VCPKG_ROOT\vcpkg.exe" @args
+          if ($LASTEXITCODE -ne 0) { throw "Windows shared-cache-only restore failed" }
+
+  android:
+    name: Android arm64-v8a cache
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+
+      - name: Prepare Android build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool
+          test -n "${ANDROID_NDK_HOME:-}"
+          test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+
+      - name: Verify Android ABI set from shared cache only
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf vcpkg_installed "$VCPKG_BINARY_CACHE"
+          mkdir -p "$VCPKG_BINARY_CACHE"
+          "$VCPKG_ROOT/vcpkg" install \
+            --x-manifest-root=. \
+            --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
+            --triplet arm64-android \
+            --only-binarycaching
