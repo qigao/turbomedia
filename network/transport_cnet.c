@@ -4,6 +4,7 @@
 
 #include <salts/clock.h>
 #include <salts/error_codes.h>
+#include <salts_buffer.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,6 +63,22 @@ typedef struct turbo_transport_s {
     turbo_transport_event_cb event_callback;
     void *event_user_data;
 } turbo_transport_impl_t;
+
+static int transport_stream_send_bytes(cnet_client *client,
+                                       cnet_connection connection,
+                                       const void *data,
+                                       size_t size) {
+    mem_buffer_t *buffer;
+    int status;
+    if (!client || !data || size == 0u) return SALTS_EINVAL;
+    buffer = mem_get_buffer(mem_global(), size);
+    if (!buffer) return SALTS_ENOMEM;
+    memcpy(mem_buffer_data(buffer), data, size);
+    mem_set_used(buffer, size);
+    status = cnet_send_buffer(client, connection, buffer);
+    mem_buffer_release(buffer);
+    return status;
+}
 
 static char *transport_dup(const char *value) {
     size_t size;
@@ -453,7 +470,8 @@ int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, 
     else {
         transport->send_pending = 1;
         transport->send_completed = 0;
-        status = cnet_send(transport->client, transport->connection, data, size);
+        status = transport_stream_send_bytes(
+            transport->client, transport->connection, data, size);
         if (status != SALTS_OK) transport->send_pending = 0;
         while (status == SALTS_OK && transport->send_pending && !transport->terminal)
             status = cnet_client_poll(
