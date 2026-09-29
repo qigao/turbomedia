@@ -111,7 +111,7 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/security)
 target_link_libraries(turbo_media_test_signaling_internals
                       PRIVATE Salts::CNet CHttp::Client CHttp::Server turbo_media_auth
-                              Salts::JsonParser)
+                              Salts::JsonParser Salts::Crypto)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
