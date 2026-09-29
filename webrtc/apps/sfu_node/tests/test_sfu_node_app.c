@@ -1548,7 +1548,7 @@ void test_sfu_node_tenant_quota_transport_requires_dedicated_signed_control_toke
   uint64_t sequence = 0U;
   size_t count = 0U;
   int64_t now = (int64_t)time(NULL);
-  const char *base_url = "https://127.0.0.1:19432";
+  const char *base_url = "https://localhost:19432";
   static const char snapshot[] =
       "{\"schema_version\":1,\"epoch\":1,\"sequence\":0,"
       "\"node_id\":\"sfu-tenant-quota\",\"leases\":[{"
@@ -1593,7 +1593,7 @@ void test_sfu_node_tenant_quota_transport_requires_dedicated_signed_control_toke
       "\"published_tracks\":8}}}";
 
   sfu_node_app_config_init(&config);
-  config.bind_host = "127.0.0.1";
+  config.bind_host = "::1";
   config.bind_port = 19432;
   config.node_id = "sfu-tenant-quota";
   config.use_tls = 1;
