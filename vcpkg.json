@@ -23,7 +23,7 @@
     "roaring",
     "usrsctp"
   ],
-  "builtin-baseline": "b1b19307e2d2ec1eefbdb7ea069de7d4bcd31f01",
+  "builtin-baseline": "a51bb4d1434e6d0927ff79db8033bed8522b85df",
   "overrides": [
     {
       "name": "boringssl",
