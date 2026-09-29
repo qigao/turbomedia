@@ -18,7 +18,7 @@ on:
 
 permissions:
   contents: read
-  packages: write
+  packages: read
 
 concurrency:
   group: turbomedia-vcpkg-cache-${{ github.ref }}
@@ -35,7 +35,7 @@ jobs:
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
         with:
-          mode: readwrite
+          mode: read
 
       - name: Prepare Linux build tools
         shell: bash
@@ -44,16 +44,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build pkg-config nasm autoconf automake libtool
-
-      - name: Build and publish Linux ABI set
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf vcpkg_installed
-          "$VCPKG_ROOT/vcpkg" install \
-            --x-manifest-root=. \
-            --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
-            --triplet x64-linux
 
       - name: Verify Linux ABI set from shared cache only
         shell: bash
@@ -77,23 +67,13 @@ jobs:
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
         with:
-          mode: readwrite
+          mode: read
 
       - name: Prepare Windows build tools
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           choco install ninja nasm strawberryperl -y --no-progress
-
-      - name: Build and publish Windows ABI set
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
-          if (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Recurse -Force }
-          $args = @("install", "--x-manifest-root=.", "--x-install-root=$installed", "--triplet=x64-windows")
-          & "$env:VCPKG_ROOT\vcpkg.exe" @args
-          if ($LASTEXITCODE -ne 0) { throw "Windows vcpkg cache production failed" }
 
       - name: Verify Windows ABI set from shared cache only
         shell: pwsh
@@ -117,7 +97,7 @@ jobs:
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
         with:
-          mode: readwrite
+          mode: read
 
       - name: Prepare Android build tools
         shell: bash
@@ -128,16 +108,6 @@ jobs:
             ninja-build pkg-config nasm autoconf automake libtool
           test -n "${ANDROID_NDK_HOME:-}"
           test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
-
-      - name: Build and publish Android ABI set
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf vcpkg_installed
-          "$VCPKG_ROOT/vcpkg" install \
-            --x-manifest-root=. \
-            --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
-            --triplet arm64-android
 
       - name: Verify Android ABI set from shared cache only
         shell: bash
