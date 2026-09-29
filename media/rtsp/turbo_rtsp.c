@@ -13,6 +13,7 @@
 #include <http_server/http.h>
 #include <salts/clock.h>
 #include <salts/error_codes.h>
+#include <salts_buffer.h>
 #include <salts/thread.h>
 #include <openssl/evp.h>
 
@@ -64,6 +65,25 @@
 #define TURBO_RTSP_SERVER_WS_HEADER_BYTES (16u * 1024u)
 #define TURBO_RTSP_SERVER_WS_TARGET_BYTES 1024u
 #define TURBO_RTSP_SERVER_WS_BODY_BYTES 256u
+
+static int turbo_rtsp_stream_send_bytes(cnet_client *client,
+                                        cnet_connection connection,
+                                        const void *data,
+                                        size_t size,
+                                        int close_after) {
+    mem_buffer_t *buffer;
+    int status;
+    if (!client || !data || size == 0u) return SALTS_EINVAL;
+    buffer = mem_get_buffer(mem_global(), size);
+    if (!buffer) return SALTS_ENOMEM;
+    memcpy(mem_buffer_data(buffer), data, size);
+    mem_set_used(buffer, size);
+    status = close_after
+                 ? cnet_send_buffer_and_close(client, connection, buffer)
+                 : cnet_send_buffer(client, connection, buffer);
+    mem_buffer_release(buffer);
+    return status;
+}
 
 typedef enum {
     TURBO_RTSP_IO_NONE = 0,
@@ -1184,13 +1204,10 @@ static int turbo_rtsp_server_drain_sends(turbo_rtsp_server_t *server) {
         salts_mutex_unlock(&server->mutex);
 
         if (session->io_kind == TURBO_RTSP_IO_STREAM) {
-            status = (command.close_after || session->close_after_flush)
-                         ? cnet_send_and_close(
-                               &server->network, session->connection,
-                               command.data, command.size)
-                         : cnet_send(
-                               &server->network, session->connection,
-                               command.data, command.size);
+            status = turbo_rtsp_stream_send_bytes(
+                &server->network, session->connection,
+                command.data, command.size,
+                command.close_after || session->close_after_flush);
         } else if (session->io_kind == TURBO_RTSP_IO_PACKET) {
             status = cnet_packet_send(
                 &server->packet_endpoint, session->packet_session,
@@ -3130,7 +3147,8 @@ static int turbo_rtsp_client_send_bytes(
         return status == SALTS_OK ? 0 : -1;
     }
     client->send_finished = 0;
-    status = cnet_send(&client->network, client->connection, data, size);
+    status = turbo_rtsp_stream_send_bytes(
+        &client->network, client->connection, data, size, 0);
     if (status == SALTS_OK) {
         status = turbo_rtsp_client_poll_until(client, &client->send_finished);
     }
