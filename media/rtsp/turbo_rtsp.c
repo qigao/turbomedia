@@ -1370,6 +1370,7 @@ static int turbo_rtsp_server_websocket_open(
             return SALTS_EINVAL;
         }
     }
+    fprintf(stderr, "TurboMedia RTSP WebSocket server open accepted\n");
     return SALTS_OK;
 }
 
