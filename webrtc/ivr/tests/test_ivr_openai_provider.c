@@ -236,7 +236,11 @@ static int mock_read_request(mock_sock_t fd, char *hdr, size_t hdr_cap,
 static int mock_send_all(mock_sock_t fd, const char *data, size_t len) {
     size_t off = 0;
     while (off < len) {
+#ifdef MSG_NOSIGNAL
+        int n = send(fd, data + off, (int)(len - off), MSG_NOSIGNAL);
+#else
         int n = send(fd, data + off, (int)(len - off), 0);
+#endif
         if (n <= 0) {
             return -1;
         }
