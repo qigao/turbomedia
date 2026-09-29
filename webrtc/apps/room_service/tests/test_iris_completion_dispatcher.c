@@ -1,7 +1,7 @@
 #include "iris_completion_dispatcher.h"
 
 #include <tinytest.h>
-#include <chttp/chttp.h>
+#include <http_server/http.h>
 #include <salts_thread.h>
 
 #include <stdatomic.h>
