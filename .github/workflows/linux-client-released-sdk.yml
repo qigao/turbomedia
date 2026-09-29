@@ -200,27 +200,20 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vs)) {
             throw "x64 MSVC was not found"
           }
+          $canonicalVcpkgRoot = $env:VCPKG_ROOT
           $vsdev = Join-Path $vs "Common7/Tools/VsDevCmd.bat"
           $command = 'call "' + $vsdev + '" -arch=x64 -host_arch=x64 >nul && set'
           $lines = & cmd.exe /d /s /c $command
           if ($LASTEXITCODE -ne 0) {
             throw "VsDevCmd failed"
           }
-          $exportNames = @(
-            "Path", "INCLUDE", "LIB", "LIBPATH",
-            "VCINSTALLDIR", "VCToolsInstallDir", "VCToolsRedistDir",
-            "VSINSTALLDIR", "WindowsSdkDir", "WindowsSDKVersion",
-            "UniversalCRTSdkDir", "UCRTVersion",
-            "VSCMD_ARG_TGT_ARCH", "VSCMD_ARG_HOST_ARCH"
-          )
           foreach ($line in $lines) {
-            $parts = $line.Split("=", 2)
-            if ($parts.Count -eq 2 -and
-                $exportNames -contains $parts[0]) {
-              "$($parts[0])=$($parts[1])" |
-                Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             }
           }
+          "VCPKG_ROOT=$canonicalVcpkgRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Restore released Salts ecosystem SDKs
         shell: pwsh
