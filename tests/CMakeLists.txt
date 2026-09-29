@@ -21,7 +21,7 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   endif()
 
   set(CLIENT_ONLY_TESTS
-      test_benchmark test_capture test_hls_public test_integration
+      test_benchmark test_capture test_client_processing test_hls_public test_integration
       test_mobile_optimizer test_android_capture test_player_audio)
   set(SERVER_ONLY_TESTS
       test_dash_local test_http_flv_local test_pipeline test_rtmp_metadata
@@ -52,6 +52,8 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_rtsp")
       list(APPEND TEST_LINK_LIBS OpenSSL::Crypto)
     endif()
+  elseif(TEST_NAME STREQUAL "test_client_processing")
+    list(APPEND TEST_LINK_LIBS TurboMedia::ClientProcessing)
   elseif(TEST_NAME STREQUAL "test_benchmark")
     list(APPEND TEST_LINK_LIBS TurboMedia::Codec Salts::Capture Salts::Playback)
   elseif(TEST_NAME STREQUAL "test_capture")
