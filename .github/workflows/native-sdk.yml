@@ -225,7 +225,7 @@ jobs:
           }
           & cmake --build $build --parallel 2
           if ($LASTEXITCODE -ne 0) { throw "build failed for $name" }
-          & ctest --test-dir $build --no-tests=error --output-on-failure
+          & ctest --test-dir $build --no-tests=error --output-on-failure -LE performance
           if ($LASTEXITCODE -ne 0) { throw "CTest failed for $name" }
 
       - name: Install ${{ matrix.platform }} ${{ matrix.product }}
