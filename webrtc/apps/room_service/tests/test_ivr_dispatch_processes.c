@@ -12,7 +12,8 @@
 #include "turbomedia_ivr_v1.h"
 #include "tinytest.h"
 #include <platform.h>
-#include <chttp/chttp.h>
+#include <http_client/http.h>
+#include <http_server/http.h>
 #include <salts/error_codes.h>
 #include <salts_thread.h>
 #include <stdatomic.h>
