@@ -1,0 +1,160 @@
+name: Linux Client Released SDK
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/linux-client-released-sdk.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
+      - "vcpkg-overlays/**"
+      - "common/**"
+      - "core/**"
+      - "crypto/**"
+      - "speech/**"
+      - "codec/**"
+      - "muxer/**"
+      - "demuxer/**"
+      - "network/**"
+      - "transport/**"
+      - "player/**"
+      - "recognition/**"
+      - "media/**"
+      - "webrtc/**"
+      - "tests/**"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/linux-client-released-sdk.yml"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
+      - "vcpkg-overlays/**"
+      - "common/**"
+      - "core/**"
+      - "crypto/**"
+      - "speech/**"
+      - "codec/**"
+      - "muxer/**"
+      - "demuxer/**"
+      - "network/**"
+      - "transport/**"
+      - "player/**"
+      - "recognition/**"
+      - "media/**"
+      - "webrtc/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: linux-client-released-sdk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SALTS_SDK_VERSION: "1.8.3"
+  SALTS_UTILS_SDK_VERSION: "4.1.3"
+  SALTSNET_SDK_VERSION: "1.0.0"
+
+jobs:
+  client:
+    name: Linux CLIENT released-SDK contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Prepare build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             ninja-build pkg-config nasm             libpipewire-0.3-dev libx11-dev libxext-dev
+
+      - name: Restore released Salts ecosystem SDKs
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          config="$RUNNER_TEMP/turbomedia-linux-client.config"
+          project="$RUNNER_TEMP/turbomedia-linux-client.csproj"
+          packages="$RUNNER_TEMP/turbomedia-linux-client-packages"
+          printf '<configuration><packageSources><clear /></packageSources></configuration>\n' > "$config"
+          dotnet nuget add source https://nuget.pkg.github.com/qigao/index.json             --name github --username qigao --password "$GITHUB_TOKEN"             --store-password-in-clear-text --configfile "$config"
+          cat > "$project" <<EOF
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="Salts.Native" Version="[$SALTS_SDK_VERSION]" />
+              <PackageReference Include="SaltsUtils.Native" Version="[$SALTS_UTILS_SDK_VERSION]" />
+              <PackageReference Include="SaltsNet.Native" Version="[$SALTSNET_SDK_VERSION]" />
+            </ItemGroup>
+          </Project>
+          EOF
+          dotnet restore "$project" --configfile "$config" --packages "$packages"
+          echo "SALTS_ROOT=$packages/salts.native/$SALTS_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
+          echo "SALTS_UTILS_ROOT=$packages/saltsutils.native/$SALTS_UTILS_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
+          echo "SALTSNET_ROOT=$packages/saltsnet.native/$SALTSNET_SDK_VERSION/sdk/linux-x64" >> "$GITHUB_ENV"
+
+      - name: Verify released SDK contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$SALTS_ROOT/lib/cmake/Salts/SaltsConfig.cmake"
+          test -f "$SALTS_UTILS_ROOT/lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
+          test -f "$SALTSNET_ROOT/lib/cmake/SaltsNet/SaltsNetConfig.cmake"
+          grep -R -F "Salts::Capture" "$SALTS_UTILS_ROOT/lib/cmake/SaltsUtils"
+          grep -R -F "Salts::Playback" "$SALTS_UTILS_ROOT/lib/cmake/SaltsUtils"
+
+      - name: Restore TurboMedia vcpkg dependencies cache-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf vcpkg_installed
+          "$VCPKG_ROOT/vcpkg" install             --x-manifest-root=.             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed"             --triplet x64-linux             --only-binarycaching
+
+      - name: Configure Linux CLIENT
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/linux-client-sdk stage/linux-client
+          cmake -S . -B build/linux-client-sdk -G Ninja             -DCMAKE_BUILD_TYPE=Release             -DTURBO_MEDIA_PRODUCT=CLIENT             -DCMAKE_TOOLCHAIN_FILE="$QIGAO_VCPKG_TOOLCHAIN_FILE"             -DVCPKG_TARGET_TRIPLET=x64-linux             -DVCPKG_MANIFEST_MODE=OFF             -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed"             -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/stage/linux-client"
+
+      - name: Build and test Linux CLIENT
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH="$SALTSNET_ROOT/lib:$SALTS_UTILS_ROOT/lib:$SALTS_ROOT/lib:$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/lib:${LD_LIBRARY_PATH:-}"
+          cmake --build build/linux-client-sdk --parallel 2
+          ctest --test-dir build/linux-client-sdk --no-tests=error --output-on-failure
+
+      - name: Install Linux CLIENT
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --install build/linux-client-sdk
+          test -f "$GITHUB_WORKSPACE/stage/linux-client/lib/cmake/TurboMedia/TurboMediaConfig.cmake"
+          grep -F 'set(TurboMedia_PRODUCT "CLIENT")'             "$GITHUB_WORKSPACE/stage/linux-client/lib/cmake/TurboMedia/TurboMediaConfig.cmake"
+
+      - name: Build fresh installed-package consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/linux-client-consumer
+          cmake -S tests/package_consumer -B build/linux-client-consumer -G Ninja             -DCMAKE_BUILD_TYPE=Release             -DTurboMedia_EXPECTED_PRODUCT=CLIENT             -DTurboMedia_DIR="$GITHUB_WORKSPACE/stage/linux-client/lib/cmake/TurboMedia"             -DCMAKE_TOOLCHAIN_FILE="$QIGAO_VCPKG_TOOLCHAIN_FILE"             -DVCPKG_TARGET_TRIPLET=x64-linux             -DVCPKG_MANIFEST_MODE=OFF             -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed"
+          cmake --build build/linux-client-consumer --parallel 2
