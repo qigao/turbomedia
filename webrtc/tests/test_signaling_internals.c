@@ -4,7 +4,7 @@
  */
 
 #include "tinytest.h"
-#include "turbo_crypto.h"
+#include <salts/crypto.h>
 
 #include "../src/signaling/webrtc_signaling.c"
 
@@ -494,9 +494,9 @@ void test_peer_join_dynamic_revocation_starts_unknown_and_recovers(void) {
   json_free(root);
   root = NULL;
 
-  check_equal(turbo_crypto_sha256(
+  check_equal(salts_crypto_sha256(
                   token, strlen(token), digest),
-              TURBO_CRYPTO_OK);
+              SALTS_CRYPTO_OK);
   for (size_t index = 0U;
        index < TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES; ++index) {
     digest_hex[index * 2U] = hex[digest[index] >> 4U];
