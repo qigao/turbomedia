@@ -1,4 +1,4 @@
-name: TurboMedia vcpkg Cache
+name: TurboMedia vcpkg Cache Contract
 
 on:
   pull_request:
