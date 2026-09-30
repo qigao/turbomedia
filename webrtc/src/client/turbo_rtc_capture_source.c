@@ -138,9 +138,9 @@ static void capture_source_on_audio(
             alignment;
         if (alignment == 0u || expected_len == 0u ||
             len != expected_len || len > source->max_frame_bytes) {
-        source->frames_rejected++;
-        source->frame_error = 1;
-        source->accepting = 0;
+            source->frames_rejected++;
+            source->frame_error = 1;
+            source->accepting = 0;
             salts_mutex_unlock(&source->lock);
             return;
         }
