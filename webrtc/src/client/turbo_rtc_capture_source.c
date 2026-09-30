@@ -356,13 +356,25 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
 
         status = turbo_rtc_client_send_audio(
             client, source->delivery_buffer, length, timestamp);
+        if (status == TURBO_RTC_CLIENT_ESTATE) {
+            /*
+             * CONNECTING/restart is the one recoverable RTCClient condition.
+             * Keep the exact queue-head frame for a later owner poll.
+             */
+            return status;
+        }
         if (status != TURBO_RTC_CLIENT_OK) {
+            salts_mutex_lock(&source->lock);
+            source->accepting = 0;
+            source->frames_rejected++;
+            salts_mutex_unlock(&source->lock);
+            source->state = TURBO_RTC_CAPTURE_SOURCE_FAILED;
             return status;
         }
 
         /*
-         * Dequeue only after RTCClient accepted the exact frame. Backpressure
-         * or ESTATE leaves queue_head untouched; overflow never evicts old PCM.
+         * Dequeue only after RTCClient accepted the exact frame. ESTATE leaves
+         * queue_head untouched; overflow never evicts old PCM.
          */
         salts_mutex_lock(&source->lock);
         source->queue_head =
