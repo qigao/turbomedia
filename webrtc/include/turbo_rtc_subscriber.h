@@ -22,7 +22,9 @@ typedef struct turbo_rtc_subscriber_s turbo_rtc_subscriber_t;
  *
  * pcm is borrowed and is valid only for the duration of the callback.
  * Return 0 when the frame was consumed. A non-zero result fails the subscriber
- * instead of silently dropping or retrying the frame.
+ * instead of silently dropping or retrying the frame. The callback must not
+ * re-enter poll(), stop(), or destroy(); those calls return ESTATE while the
+ * callback is active.
  */
 typedef int (*turbo_rtc_subscriber_audio_cb)(
     void *context,
