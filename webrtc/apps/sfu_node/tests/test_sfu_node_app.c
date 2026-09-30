@@ -2226,6 +2226,7 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   turbo_peer_config_t peer_config;
   turbo_peer_callbacks_t peer_callbacks;
   offerer_callback_state_t publisher_state;
+  offerer_callback_state_t viewer_state;
   char offer[16384];
   char restart_offer[16384];
   char fragment[2048];
@@ -2234,6 +2235,8 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   char *location = NULL;
   char *etag = NULL;
   char *next_etag = NULL;
+  char *viewer_etag = NULL;
+  char *viewer_next_etag = NULL;
   char *content_type = NULL;
   char *signed_publish_token = NULL;
   char *signed_subscribe_token = NULL;
@@ -2431,8 +2434,9 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   sfu_test_http_response_free(response);
   response = NULL;
 
-  peer_config.user_data = NULL;
-  viewer = turbo_peer_connection_create(&peer_config, NULL);
+  memset(&viewer_state, 0, sizeof(viewer_state));
+  peer_config.user_data = &viewer_state;
+  viewer = turbo_peer_connection_create(&peer_config, &peer_callbacks);
   check_not_null(viewer);
   check_not_null(turbo_peer_connection_add_track(
       viewer, TURBO_RTC_MEDIA_TRACK_VIDEO, TURBO_MEDIA_DIRECTION_RECVONLY));
@@ -2442,18 +2446,89 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
       "application/sdp", "test-media-token", NULL, offer, strlen(offer));
   check_not_null(response);
   check_equal((int)(response->status_code), (int)(201));
+  check_greater((int)response->body_len, 0);
   free(location);
   location = sfu_test_http_response_get_header(response, "Location");
+  viewer_etag = sfu_test_http_response_get_header(response, "ETag");
   check_not_null(location);
+  check_not_null(viewer_etag);
   check_not_null(strstr(location, "/whep/room-media-http/bob/sessions/"));
+  check_equal((int)(turbo_peer_connection_set_remote_description(
+             viewer, "answer", response->body)), (int)(0));
   sfu_test_http_response_free(response);
   response = NULL;
+
+  check_equal((int)(copy_sdp_attribute_value(
+             offer, "a=ice-ufrag:", ufrag, sizeof(ufrag))), (int)(0));
+  check_equal((int)(copy_sdp_attribute_value(
+             offer, "a=ice-pwd:", pwd, sizeof(pwd))), (int)(0));
+  check_greater(snprintf(fragment, sizeof(fragment),
+                  "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n", ufrag, pwd), 0);
+
+  response = http_media_request(
+      base_url, "PATCH", location,
+      "application/trickle-ice-sdpfrag", "test-media-token", viewer_etag,
+      fragment, strlen(fragment));
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(204));
+  sfu_test_http_response_free(response);
+  response = NULL;
+
+  connect_deadline_ms =
+      app_test_now_ms() + SFU_NODE_TEST_WHIP_CONNECT_TIMEOUT_MS;
+  while (!viewer_state.connected &&
+         app_test_now_ms() < connect_deadline_ms) {
+    turbo_peer_connection_poll(viewer);
+    app_test_sleep_ms(SFU_NODE_TEST_ICE_POLL_INTERVAL_MS);
+  }
+  check_true(viewer_state.connected);
+
+  viewer_state.connected = 0;
+  check_equal((int)(turbo_peer_connection_restart_ice(viewer)), (int)(0));
+  check_greater((int)(turbo_peer_connection_create_local_ice_sdpfrag(
+             viewer, restart_offer, sizeof(restart_offer))), 0);
+
+  response = http_media_request(
+      base_url, "PATCH", location,
+      "application/trickle-ice-sdpfrag", "test-media-token", viewer_etag,
+      restart_offer, strlen(restart_offer));
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(200));
+  check_greater((int)response->body_len, 0);
+  viewer_next_etag = sfu_test_http_response_get_header(response, "ETag");
+  check_not_null(viewer_next_etag);
+  check_true(strcmp(viewer_etag, viewer_next_etag) != 0);
+  check_equal((int)(turbo_peer_connection_apply_remote_ice_sdpfrag(
+             viewer, response->body, response->body_len)), (int)(1));
+  sfu_test_http_response_free(response);
+  response = NULL;
+
+  connect_deadline_ms =
+      app_test_now_ms() + SFU_NODE_TEST_WHIP_CONNECT_TIMEOUT_MS;
+  while (!viewer_state.connected &&
+         app_test_now_ms() < connect_deadline_ms) {
+    turbo_peer_connection_poll(viewer);
+    app_test_sleep_ms(SFU_NODE_TEST_ICE_POLL_INTERVAL_MS);
+  }
+  check_true(viewer_state.connected);
+
+  response = http_media_request(
+      base_url, "PATCH", location,
+      "application/trickle-ice-sdpfrag", "test-media-token", viewer_etag,
+      restart_offer, strlen(restart_offer));
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(412));
+  sfu_test_http_response_free(response);
+  response = NULL;
+
   response = http_media_request(
       base_url, "DELETE", location, NULL, "test-media-token", NULL, NULL, 0);
   check_not_null(response);
   check_equal((int)(response->status_code), (int)(204));
   sfu_test_http_response_free(response);
 
+  free(viewer_next_etag);
+  free(viewer_etag);
   free(next_etag);
   free(etag);
   free(location);
