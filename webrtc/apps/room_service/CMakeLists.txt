@@ -564,6 +564,27 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
       message(FATAL_ERROR
         "TURBO_MEDIA_POSTGRES_LIVE_TESTS requires TURBO_MEDIA_TEST_POSTGRES_SERVICE")
     endif()
+    if(NOT DEFINED ENV{TURBODB_POSTGRES_DRIVER_MODULE} OR
+       "$ENV{TURBODB_POSTGRES_DRIVER_MODULE}" STREQUAL "")
+      message(FATAL_ERROR
+        "TURBO_MEDIA_POSTGRES_LIVE_TESTS requires TURBODB_POSTGRES_DRIVER_MODULE")
+    endif()
+
+    add_executable(test_iris_orm_store_live
+      tests/test_iris_orm_store_live.c
+      src/iris_orm_store.c)
+    target_include_directories(test_iris_orm_store_live PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_iris_orm_store_live PRIVATE
+      Orm::C Salts::Core Salts::CYaml Salts::TinyTest)
+    add_test(NAME test_iris_orm_store_live COMMAND test_iris_orm_store_live)
+    set_tests_properties(test_iris_orm_store_live PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+      TIMEOUT 60)
+    set_target_properties(test_iris_orm_store_live PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+      FOLDER "Applications/tests")
+
     add_test(NAME test_ivr_dispatch_processes COMMAND test_ivr_dispatch_processes)
     set(TEST_IVR_DISPATCH_PROCESSES_TIMEOUT_SECONDS 300)
     set_tests_properties(test_ivr_dispatch_processes PROPERTIES
