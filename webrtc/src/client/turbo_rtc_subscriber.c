@@ -8,6 +8,7 @@
 
 #include <limits.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -424,6 +425,9 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_create(
         return TURBO_RTC_CLIENT_ENOMEM;
     }
 
+    subscriber->stun_server_count = config->stun_server_count;
+    subscriber->turn_server_count = config->turn_server_count;
+
     subscriber->whep_base_url = subscriber_strdup(config->whep_base_url);
     subscriber->whep_path = subscriber_strdup(config->whep_path);
     if (!subscriber->whep_base_url || !subscriber->whep_path ||
@@ -465,8 +469,6 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_create(
         return TURBO_RTC_CLIENT_ENOMEM;
     }
 
-    subscriber->stun_server_count = config->stun_server_count;
-    subscriber->turn_server_count = config->turn_server_count;
     subscriber->request_timeout_ms = config->request_timeout_ms;
     subscriber->connect_timeout_ms = config->connect_timeout_ms;
     subscriber->allow_plaintext_loopback =
