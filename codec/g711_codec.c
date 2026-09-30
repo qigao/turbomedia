@@ -191,6 +191,13 @@ static int g711_is_valid_config(const turbo_audio_codec_config_t *cfg) {
            g711_is_valid_frame_size(cfg->frame_size_ms);
 }
 
+int turbo_g711_validate_audio_config(
+    const turbo_audio_codec_config_t *cfg) {
+    return cfg && g711_is_valid_config(cfg)
+               ? TURBO_CODEC_OK
+               : TURBO_CODEC_ERR_INVALID;
+}
+
 static void *g711_create_context(const void *config, int is_mulaw) {
     const turbo_audio_codec_config_t *cfg = (const turbo_audio_codec_config_t *)config;
     if (!g711_is_valid_config(cfg)) return NULL;
