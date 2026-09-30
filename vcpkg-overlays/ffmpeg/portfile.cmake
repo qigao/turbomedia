@@ -987,6 +987,16 @@ endfunction()
 append_dependencies_from_libs(FFMPEG_DEPENDENCIES_RELEASE LIBS "${FFMPEG_PKGCONFIG_LIBS_RELEASE}")
 append_dependencies_from_libs(FFMPEG_DEPENDENCIES_DEBUG   LIBS "${FFMPEG_PKGCONFIG_LIBS_DEBUG}")
 
+if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND "xml2" IN_LIST FEATURES)
+    # libxml2's Android static archive is built with GNU libiconv, but FFmpeg's
+    # pkg-config aggregation does not preserve that private dependency in the
+    # generated FindFFMPEG metadata. Export it from the package closure here so
+    # consumers receive the complete static dependency set without linker
+    # fallbacks or Android-specific consumer logic.
+    list(APPEND FFMPEG_DEPENDENCIES_RELEASE iconv)
+    list(APPEND FFMPEG_DEPENDENCIES_DEBUG iconv)
+endif()
+
 # must remove duplicates from the front to respect link order so reverse first
 list(REVERSE FFMPEG_DEPENDENCIES_RELEASE)
 list(REVERSE FFMPEG_DEPENDENCIES_DEBUG)
