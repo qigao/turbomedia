@@ -234,6 +234,7 @@ if(TURBO_MEDIA_IS_CLIENT)
           webrtc/include/turbo_rtc_client.h
           webrtc/include/turbo_rtc_subscriber.h
           webrtc/include/turbo_rtc_playback_sink.h
+          webrtc/include/turbo_rtc_capture_source.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 else()
   install(
