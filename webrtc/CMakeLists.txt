@@ -200,6 +200,22 @@ target_link_options(
   turbo_media_rtc
   PRIVATE "$<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>")
 
+if(TURBO_MEDIA_IS_CLIENT)
+  add_library(turbo_media_rtc_client SHARED
+    src/client/turbo_rtc_client.c)
+  turbo_media_configure_component(turbo_media_rtc_client RTCClient)
+  target_include_directories(
+    turbo_media_rtc_client
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/http)
+  target_link_libraries(
+    turbo_media_rtc_client
+    PRIVATE TurboMedia::RTC
+            turbo_media_http_media_client
+            Salts::Platform)
+endif()
+
 # Room-service / SFU server apps are desktop targets; keep them out of the
 # Android build (they were gated with NOT ANDROID before the RTC-apps split).
 if(TURBO_MEDIA_IS_SERVER)
