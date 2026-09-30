@@ -255,6 +255,15 @@ static void test_audio_codec_config_validation(void) {
     turbo_codec_registry_shutdown();
     turbo_codec_registry_init();
 
+    CHECK_INT(TURBO_CODEC_OK,
+              turbo_codec_validate_audio_config("pcmu", &config));
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_audio_config("missing", &config));
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_audio_config(NULL, &config));
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_audio_config("pcmu", NULL));
+
     // Test invalid sample rates
     config.sample_rate = 0;
     CHECK_TRUE(turbo_codec_create_encoder("pcmu", &config) == NULL);
@@ -264,6 +273,17 @@ static void test_audio_codec_config_validation(void) {
     
     config.sample_rate = 999999; // Unrealistic rate
     CHECK_TRUE(turbo_codec_create_encoder("pcmu", &config) == NULL);
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_audio_config("pcmu", &config));
+
+#ifdef TURBO_MEDIA_HAS_OPUS
+    config = g711_config();
+    config.sample_rate = 12000;
+    config.bitrate = 32000;
+    config.complexity = 5;
+    CHECK_INT(TURBO_CODEC_OK,
+              turbo_codec_validate_audio_config("opus", &config));
+#endif
 
     // Test invalid channels
     config = g711_config();
