@@ -201,8 +201,7 @@ jobs:
           )
           if ("${{ matrix.product }}" -eq "SERVER") {
             $depRoots += @(
-              $env:RULES_FORGE_ROOT,
-              $env:TURBODB_ROOT
+              $env:RULES_FORGE_ROOT
             )
           }
           $runtimeDirs = @()
