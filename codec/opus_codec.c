@@ -56,6 +56,12 @@ static int opus_config_valid(const turbo_audio_codec_config_t *cfg) {
     return 1;
 }
 
+static int opus_validate_config(const void *config) {
+    return opus_config_valid((const turbo_audio_codec_config_t *)config)
+               ? TURBO_CODEC_OK
+               : TURBO_CODEC_ERR_INVALID;
+}
+
 /* =============================================================================
  * Encoder Functions
  * ============================================================================= */
@@ -287,7 +293,8 @@ const turbo_codec_ops_t turbo_opus_codec_ops = {
     .depacketize = NULL,
     .request_keyframe = NULL,
     .plc = turbo_opus_plc,
-    .set_bitrate = turbo_opus_set_bitrate
+    .set_bitrate = turbo_opus_set_bitrate,
+    .validate_config = opus_validate_config
 };
 
 #endif /* TURBO_MEDIA_HAS_OPUS */
