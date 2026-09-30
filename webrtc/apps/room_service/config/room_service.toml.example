@@ -69,8 +69,6 @@ dry_run = false
 level = "info"
 
 # Internal IVR control is served only by CHttp HTTP/1.1 WebSocket.
-# The retired [iris_provider] outbound transport is intentionally unsupported;
-# there is no dual-transport fallback.
 
 # Optional internal IVR CHttp HTTP/1.1 WebSocket server.
 # bind_port <= 0 disables the internal control WebSocket listener.
