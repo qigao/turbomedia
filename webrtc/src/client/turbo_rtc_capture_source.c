@@ -478,9 +478,12 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_destroy(
 
     if (source->capture) {
         capture_state = salts_capture_get_state(source->capture);
-        if (capture_state == SALTS_CAPTURE_STATE_RUNNING ||
-            capture_state == SALTS_CAPTURE_STATE_STARTING ||
-            capture_state == SALTS_CAPTURE_STATE_STOPPING ||
+        /*
+         * Salts owns the native callback/device lifetime. Even ERROR must be
+         * normalized through stop() before destroy so backend delivery is
+         * quiescent under the producer contract.
+         */
+        if (capture_state != SALTS_CAPTURE_STATE_STOPPED ||
             source->state == TURBO_RTC_CAPTURE_SOURCE_STARTED) {
             return TURBO_RTC_CLIENT_ESTATE;
         }
