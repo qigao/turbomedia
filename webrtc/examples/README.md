@@ -93,7 +93,57 @@ Average RTT: 0.523 ms
 
 ---
 
-### 4. Signaled Peer (`rtc_signaled_peer`)
+
+### 4. RTC Live Audio Client (`rtc_live_audio`)
+
+A CLIENT-only desktop example for the production WHIP/WHEP path:
+
+- `publish`: Salts Capture → bounded RTCClient queue → Opus → ICE/DTLS-SRTP → WHIP/SFU.
+- `subscribe`: WHEP/SFU → ICE/DTLS-SRTP → Opus decode → bounded subscriber queue → Salts Playback.
+- The application thread owns all RTC session transitions and polling.
+- Capture/playback callbacks never mutate the RTC session.
+- Transport failures use in-place ICE restart on the existing WHIP/WHEP resource; the example does not recreate sessions or fall back to another transport.
+- Shutdown follows device quiescence order before destroying session/device handles.
+
+List devices:
+
+```bash
+./rtc_live_audio list
+```
+
+Publish from the default microphone:
+
+```bash
+export TURBO_RTC_TOKEN='...'
+./rtc_live_audio publish \
+  --base-url https://127.0.0.1:8443 \
+  --path /whip/demo/alice \
+  --allow-loopback
+```
+
+Subscribe to the default playback device:
+
+```bash
+export TURBO_RTC_TOKEN='...'
+./rtc_live_audio subscribe \
+  --base-url https://127.0.0.1:8443 \
+  --path /whep/demo/bob \
+  --allow-loopback
+```
+
+Use `--capture-device ID` or `--playback-device INDEX` with values from
+`rtc_live_audio list`. TURN credentials should be kept out of the command line:
+put the complete TURN URL in an environment variable and pass
+`--turn-env NAME`. The bearer token is read from `TURBO_RTC_TOKEN` by default
+(or another environment variable selected with `--token-env`).
+
+For local HTTP-only development, `--allow-plaintext-loopback` is explicit and
+limited to loopback. The example never logs bearer tokens, TURN credentials,
+full SDP, or media payloads.
+
+---
+
+### 5. Signaled Peer (`rtc_signaled_peer`)
 
 Room-based WebRTC example demonstrating:
 - ICE candidate gathering and trickle exchange
@@ -120,7 +170,7 @@ Room-based WebRTC example demonstrating:
 
 ---
 
-### 5. Browser DataChannel Interop (`browser_interop`)
+### 6. Browser DataChannel Interop (`browser_interop`)
 
 Browser-facing answerer example demonstrating:
 - Browser SDP offer -> native SDP answer flow
@@ -140,7 +190,7 @@ node webrtc/examples/browser_interop_smoke.js --native build/Msvc-Release/bin/br
 
 ---
 
-### 6. Browser Audio/Video Interop (`browser_media_interop`)
+### 7. Browser Audio/Video Interop (`browser_media_interop`)
 
 Browser-facing native audio/video sender and receiver demonstrating:
 - Browser audio+video offer -> native SDP answer flow
@@ -178,6 +228,7 @@ Examples are built automatically with the project:
 cmake --build build --target dc_simple_echo
 cmake --build build --target dc_file_transfer
 cmake --build build --target dc_benchmark
+cmake --build build --target rtc_live_audio
 cmake --build build --target rtc_signaled_peer
 cmake --build build --target browser_interop
 cmake --build build --target browser_media_interop
