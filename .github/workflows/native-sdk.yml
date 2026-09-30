@@ -150,10 +150,17 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
-          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
           $vcpkg = Join-Path $env:VCPKG_ROOT $(if ($IsWindows) { "vcpkg.exe" } else { "vcpkg" })
-          & $vcpkg install "--x-manifest-root=." "--x-install-root=$installed" "--triplet=${{ matrix.triplet }}" --only-binarycaching
-          if ($LASTEXITCODE -ne 0) { throw "cache-only vcpkg restore failed" }
+          foreach ($attempt in 1..8) {
+            Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+            & $vcpkg install "--x-manifest-root=." "--x-install-root=$installed" "--triplet=${{ matrix.triplet }}" --only-binarycaching
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            if ($attempt -lt 8) {
+              Write-Host "Media cache is not complete yet; retrying cache-only restore in 60 seconds ($attempt/8)."
+              Start-Sleep -Seconds 60
+            }
+          }
+          throw "cache-only vcpkg restore failed after waiting for media cache publication"
 
       - name: Configure ${{ matrix.platform }} ${{ matrix.product }}
         shell: pwsh

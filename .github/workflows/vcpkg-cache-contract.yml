@@ -18,11 +18,11 @@ on:
 
 permissions:
   contents: read
-  packages: read
+  packages: write
 
 concurrency:
-  group: turbomedia-vcpkg-cache-${{ github.ref }}
-  cancel-in-progress: false
+  group: turbomedia-media-vcpkg-v2-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
@@ -35,7 +35,7 @@ jobs:
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
         with:
-          mode: read
+          mode: readwrite
 
       - name: Prepare Linux build tools
         shell: bash
@@ -45,7 +45,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build pkg-config nasm autoconf automake libtool
 
-      - name: Verify Linux ABI set from shared cache only
+      - name: Warm Linux media ABI set
         shell: bash
         run: |
           set -euo pipefail
@@ -54,8 +54,7 @@ jobs:
           "$VCPKG_ROOT/vcpkg" install \
             --x-manifest-root=. \
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
-            --triplet x64-linux \
-            --only-binarycaching
+            --triplet x64-linux
 
   windows:
     name: Windows x64 cache
@@ -67,7 +66,7 @@ jobs:
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
         with:
-          mode: read
+          mode: readwrite
 
       - name: Prepare Windows build tools
         shell: pwsh
@@ -75,7 +74,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           choco install ninja nasm strawberryperl -y --no-progress
 
-      - name: Verify Windows ABI set from shared cache only
+      - name: Warm Windows media ABI set
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -83,9 +82,9 @@ jobs:
           if (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Recurse -Force }
           if (Test-Path -LiteralPath $env:VCPKG_BINARY_CACHE) { Remove-Item -LiteralPath $env:VCPKG_BINARY_CACHE -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $env:VCPKG_BINARY_CACHE | Out-Null
-          $args = @("install", "--x-manifest-root=.", "--x-install-root=$installed", "--triplet=x64-windows", "--only-binarycaching")
+          $args = @("install", "--x-manifest-root=.", "--x-install-root=$installed", "--triplet=x64-windows")
           & "$env:VCPKG_ROOT\vcpkg.exe" @args
-          if ($LASTEXITCODE -ne 0) { throw "Windows shared-cache-only restore failed" }
+          if ($LASTEXITCODE -ne 0) { throw "Windows media cache warm failed" }
 
   android:
     name: Android arm64-v8a cache
@@ -97,7 +96,7 @@ jobs:
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
         with:
-          mode: read
+          mode: readwrite
 
       - name: Prepare Android build tools
         shell: bash
@@ -109,7 +108,7 @@ jobs:
           test -n "${ANDROID_NDK_HOME:-}"
           test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
 
-      - name: Verify Android ABI set from shared cache only
+      - name: Warm Android media ABI set
         shell: bash
         run: |
           set -euo pipefail
@@ -118,5 +117,34 @@ jobs:
           "$VCPKG_ROOT/vcpkg" install \
             --x-manifest-root=. \
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
-            --triplet arm64-android \
-            --only-binarycaching
+            --triplet arm64-android
+
+  macos:
+    name: macOS arm64 media cache
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: readwrite
+
+      - name: Prepare macOS build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install ninja nasm autoconf automake autoconf-archive libtool
+          test "$(uname -m)" = "arm64"
+
+      - name: Warm macOS media ABI set
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf vcpkg_installed "$VCPKG_BINARY_CACHE"
+          mkdir -p "$VCPKG_BINARY_CACHE"
+          "$VCPKG_ROOT/vcpkg" install \
+            --x-manifest-root=. \
+            --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
+            --triplet arm64-osx
