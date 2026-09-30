@@ -76,7 +76,6 @@ struct turbo_rtc_subscriber_s {
 
     uint64_t frames_received;
     uint64_t frames_delivered;
-    uint64_t frames_deferred;
     uint64_t frames_rejected;
 };
 
@@ -762,10 +761,8 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
             subscriber->queue_count--;
             subscriber->queue_bytes -= length;
             subscriber->frames_delivered++;
-        } else if (callback_status ==
+        } else if (callback_status !=
                    TURBO_RTC_SUBSCRIBER_AUDIO_RETRY) {
-            subscriber->frames_deferred++;
-        } else {
             subscriber->frames_rejected++;
         }
         salts_mutex_unlock(&subscriber->lock);
@@ -925,8 +922,6 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_snapshot(
         subscriber->frames_received;
     snapshot->frames_delivered =
         subscriber->frames_delivered;
-    snapshot->frames_deferred =
-        subscriber->frames_deferred;
     snapshot->frames_rejected =
         subscriber->frames_rejected;
     snapshot->queue_items =
