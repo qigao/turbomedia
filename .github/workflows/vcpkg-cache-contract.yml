@@ -54,7 +54,7 @@ jobs:
           "$VCPKG_ROOT/vcpkg" install \
             --x-manifest-root=. \
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
-            --triplet x64-linux \
+            --triplet x64-linux
 
   windows:
     name: Windows x64 cache
@@ -82,7 +82,7 @@ jobs:
           if (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Recurse -Force }
           if (Test-Path -LiteralPath $env:VCPKG_BINARY_CACHE) { Remove-Item -LiteralPath $env:VCPKG_BINARY_CACHE -Recurse -Force }
           New-Item -ItemType Directory -Force -Path $env:VCPKG_BINARY_CACHE | Out-Null
-          $args = @("install", "--x-manifest-root=.", "--x-install-root=$installed", "--triplet=x64-windows", "--only-binarycaching")
+          $args = @("install", "--x-manifest-root=.", "--x-install-root=$installed", "--triplet=x64-windows")
           & "$env:VCPKG_ROOT\vcpkg.exe" @args
           if ($LASTEXITCODE -ne 0) { throw "Windows media cache warm failed" }
 
@@ -117,7 +117,7 @@ jobs:
           "$VCPKG_ROOT/vcpkg" install \
             --x-manifest-root=. \
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
-            --triplet arm64-android \
+            --triplet arm64-android
 
   macos:
     name: macOS arm64 media cache
