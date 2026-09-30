@@ -81,6 +81,11 @@ jobs:
             triplet: x64-windows
             product: CLIENT
           - os: ubuntu-24.04
+            platform: Android
+            rid: android-arm64-v8a
+            triplet: arm64-android
+            product: CLIENT
+          - os: ubuntu-24.04
             platform: Linux
             rid: linux-x64
             triplet: x64-linux
@@ -105,12 +110,23 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Prepare Linux build tools
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.platform != 'Android'
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends             ninja-build pkg-config nasm autoconf automake libtool             libpipewire-0.3-dev libx11-dev libxext-dev
+
+      - name: Prepare Android build tools and NDK
+        if: matrix.platform == 'Android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build nasm autoconf automake libtool pkg-config
+          test -n "${ANDROID_NDK_HOME:-}"
+          test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
 
       - name: Prepare Windows build tools and MSVC environment
         if: runner.os == 'Windows'
@@ -175,6 +191,22 @@ jobs:
             "-DVCPKG_INSTALLED_DIR=$installed",
             "-DCMAKE_INSTALL_PREFIX=$stage"
           )
+          if ("${{ matrix.platform }}" -eq "Android") {
+            if ([string]::IsNullOrWhiteSpace($env:ANDROID_NDK_HOME)) {
+              throw "ANDROID_NDK_HOME is required for Android"
+            }
+            $ndkToolchain = Join-Path $env:ANDROID_NDK_HOME "build/cmake/android.toolchain.cmake"
+            if (-not (Test-Path -LiteralPath $ndkToolchain -PathType Leaf)) {
+              throw "Android NDK toolchain is missing: $ndkToolchain"
+            }
+            $args += @(
+              "-DCMAKE_SYSTEM_NAME=Android",
+              "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$ndkToolchain",
+              "-DANDROID_ABI=arm64-v8a",
+              "-DANDROID_PLATFORM=android-26",
+              "-DANDROID_STL=c++_shared"
+            )
+          }
           & cmake @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for $name" }
 
@@ -222,8 +254,12 @@ jobs:
           }
           & cmake --build $build --parallel 2
           if ($LASTEXITCODE -ne 0) { throw "build failed for $name" }
-          & ctest --test-dir $build --no-tests=error --output-on-failure -LE performance
-          if ($LASTEXITCODE -ne 0) { throw "CTest failed for $name" }
+          if ("${{ matrix.platform }}" -ne "Android") {
+            & ctest --test-dir $build --no-tests=error --output-on-failure -LE performance
+            if ($LASTEXITCODE -ne 0) { throw "CTest failed for $name" }
+          } else {
+            Write-Host "Android test executables were cross-compiled; host CTest execution is intentionally skipped."
+          }
 
       - name: Install ${{ matrix.platform }} ${{ matrix.product }}
         shell: pwsh
