@@ -97,8 +97,11 @@ TURBO_MEDIA_C_API int turbo_rtc_playback_sink_on_audio(
     uint64_t rtp_timestamp);
 
 /*
- * Performs a bounded drain using config.drain_timeout_ms and then stops the
- * device. A drain timeout is surfaced as ETIMEDOUT after the device is stopped.
+ * Performs a bounded drain using config.drain_timeout_ms, stops the device,
+ * and clears any retained PCM before restart. A drain timeout is surfaced as
+ * ETIMEDOUT after local stop/clear has restored an empty buffer.
+ *
+ * The subscriber producer must already be quiescent before this call.
  */
 TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_playback_sink_stop(
     turbo_rtc_playback_sink_t *sink);
