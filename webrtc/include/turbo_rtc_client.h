@@ -22,7 +22,8 @@ typedef enum turbo_rtc_client_status_t {
     TURBO_RTC_CLIENT_ESDP = -5,
     TURBO_RTC_CLIENT_EPEER = -6,
     TURBO_RTC_CLIENT_ETIMEDOUT = -7,
-    TURBO_RTC_CLIENT_EIO = -8
+    TURBO_RTC_CLIENT_EIO = -8,
+    TURBO_RTC_CLIENT_EQUEUE = -9
 } turbo_rtc_client_status_t;
 
 typedef enum turbo_rtc_client_state_t {
