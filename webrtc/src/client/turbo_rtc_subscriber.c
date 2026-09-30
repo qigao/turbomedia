@@ -798,6 +798,13 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_restart_ice(
         return TURBO_RTC_CLIENT_EHTTP;
     }
 
+    /*
+     * The SFU has committed this resource generation once it returns 200.
+     * Preserve the new strong ETag even if local SDP-fragment application
+     * fails, so local resource identity does not drift behind the server.
+     */
+    memcpy(subscriber->session_etag, response.etag,
+           strlen(response.etag) + 1u);
     apply_result = turbo_peer_connection_apply_remote_ice_sdpfrag(
         subscriber->pc, response.body, strlen(response.body));
     if (apply_result != 1) {
@@ -805,8 +812,6 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_restart_ice(
         return TURBO_RTC_CLIENT_ESDP;
     }
 
-    memcpy(subscriber->session_etag, response.etag,
-           strlen(response.etag) + 1u);
     subscriber->connect_started_ms = salts_monotonic_ms();
 
     salts_mutex_lock(&subscriber->lock);
