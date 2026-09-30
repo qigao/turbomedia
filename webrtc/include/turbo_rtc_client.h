@@ -114,6 +114,21 @@ TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_client_start(
     turbo_rtc_client_t *client);
 
 /*
+ * Performs an in-place WHIP ICE restart for an existing live resource.
+ *
+ * Valid from CONNECTED or from FAILED while a remote session still exists.
+ * The client rotates local ICE credentials, PATCHes the current resource with
+ * its strong ETag, requires a 200 response with a new ETag and remote restart
+ * SDP fragment, applies that fragment, then enters CONNECTING.
+ *
+ * There is no session recreation or stale-ETag fallback. Any signaling or
+ * restart-fragment failure moves the client to FAILED; stop() remains the
+ * cleanup path for the existing remote resource.
+ */
+TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_client_restart_ice(
+    turbo_rtc_client_t *client);
+
+/*
  * Advances PeerConnection once. There is no hidden poll thread.
  * A connect deadline failure moves the client to FAILED.
  */

@@ -7,6 +7,7 @@
 
 #include <limits.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,7 @@ struct turbo_rtc_client_s {
     int last_http_status;
     uint64_t frames_sent;
     uint64_t connect_started_ms;
+    _Atomic int peer_state;
 };
 
 static char *turbo_rtc_client_strdup(const char *value) {
@@ -169,22 +171,35 @@ static void turbo_rtc_client_state_change(
     turbo_peer_connection_t *pc, turbo_peer_state_t state, void *user_data) {
     turbo_rtc_client_t *client = (turbo_rtc_client_t *)user_data;
     (void)pc;
-    if (!client || client->state == TURBO_RTC_CLIENT_DRAINING ||
-        client->state == TURBO_RTC_CLIENT_CLOSED) {
+    if (!client) {
         return;
     }
-    if (state == TURBO_PEER_STATE_CONNECTED) {
-        if (client->audio_track &&
-            turbo_media_track_start(client->audio_track) == 0) {
-            client->state = TURBO_RTC_CLIENT_CONNECTED;
-        } else {
-            client->state = TURBO_RTC_CLIENT_FAILED;
-        }
-    } else if (state == TURBO_PEER_STATE_DISCONNECTED ||
-               state == TURBO_PEER_STATE_FAILED ||
-               state == TURBO_PEER_STATE_CLOSED) {
-        client->state = TURBO_RTC_CLIENT_FAILED;
+    atomic_store_explicit(
+        &client->peer_state, (int)state, memory_order_release);
+}
+
+static turbo_rtc_client_status_t turbo_rtc_client_refresh_peer_state(
+    turbo_rtc_client_t *client) {
+    turbo_peer_state_t peer_state;
+    if (!client || !client->audio_track) {
+        return TURBO_RTC_CLIENT_ESTATE;
     }
+    peer_state = (turbo_peer_state_t)atomic_load_explicit(
+        &client->peer_state, memory_order_acquire);
+    if (peer_state == TURBO_PEER_STATE_FAILED ||
+        peer_state == TURBO_PEER_STATE_DISCONNECTED ||
+        peer_state == TURBO_PEER_STATE_CLOSED) {
+        client->state = TURBO_RTC_CLIENT_FAILED;
+        return TURBO_RTC_CLIENT_EPEER;
+    }
+    if (peer_state == TURBO_PEER_STATE_CONNECTED) {
+        if (turbo_media_track_start(client->audio_track) != 0) {
+            client->state = TURBO_RTC_CLIENT_FAILED;
+            return TURBO_RTC_CLIENT_EPEER;
+        }
+        client->state = TURBO_RTC_CLIENT_CONNECTED;
+    }
+    return TURBO_RTC_CLIENT_OK;
 }
 
 static turbo_rtc_client_status_t turbo_rtc_client_delete_remote(
@@ -266,6 +281,7 @@ turbo_rtc_client_status_t turbo_rtc_client_create(
     if (!client) {
         return TURBO_RTC_CLIENT_ENOMEM;
     }
+    atomic_init(&client->peer_state, TURBO_PEER_STATE_NEW);
     client->whip_base_url = turbo_rtc_client_strdup(config->whip_base_url);
     client->whip_path = turbo_rtc_client_strdup(config->whip_path);
     client->bearer_token = turbo_rtc_client_strdup(config->bearer_token);
@@ -345,6 +361,9 @@ turbo_rtc_client_status_t turbo_rtc_client_prepare(
     peer_config.allow_loopback = client->allow_loopback;
     peer_config.disable_datachannel = 1;
     peer_config.user_data = client;
+
+    atomic_store_explicit(
+        &client->peer_state, TURBO_PEER_STATE_NEW, memory_order_release);
 
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.on_state_change = turbo_rtc_client_state_change;
@@ -475,8 +494,87 @@ turbo_rtc_client_status_t turbo_rtc_client_start(
     memcpy(client->session_etag, response.etag,
            strlen(response.etag) + 1u);
     client->connect_started_ms = salts_monotonic_ms();
-    if (client->state == TURBO_RTC_CLIENT_FAILED) {
+    if (turbo_rtc_client_refresh_peer_state(client) !=
+        TURBO_RTC_CLIENT_OK) {
         (void)turbo_rtc_client_delete_remote(client, response.location);
+        return TURBO_RTC_CLIENT_EPEER;
+    }
+    if (client->state != TURBO_RTC_CLIENT_CONNECTED) {
+        client->state = TURBO_RTC_CLIENT_CONNECTING;
+    }
+    return TURBO_RTC_CLIENT_OK;
+}
+
+turbo_rtc_client_status_t turbo_rtc_client_restart_ice(
+    turbo_rtc_client_t *client) {
+    char fragment[TURBO_HTTP_MEDIA_MAX_SDP];
+    turbo_http_media_response_t response;
+    turbo_peer_state_t peer_state;
+    int fragment_length;
+    int status;
+    int apply_result;
+
+    if (!client) {
+        return TURBO_RTC_CLIENT_EINVAL;
+    }
+    if ((client->state != TURBO_RTC_CLIENT_CONNECTED &&
+         client->state != TURBO_RTC_CLIENT_FAILED) ||
+        !client->http || !client->pc ||
+        client->session_location[0] == '\0' ||
+        client->session_etag[0] == '\0') {
+        return TURBO_RTC_CLIENT_ESTATE;
+    }
+
+    peer_state = (turbo_peer_state_t)atomic_load_explicit(
+        &client->peer_state, memory_order_acquire);
+    if (peer_state == TURBO_PEER_STATE_CLOSED) {
+        return TURBO_RTC_CLIENT_ESTATE;
+    }
+
+    client->state = TURBO_RTC_CLIENT_NEGOTIATING;
+    if (turbo_peer_connection_restart_ice(client->pc) != 0) {
+        client->state = TURBO_RTC_CLIENT_FAILED;
+        return TURBO_RTC_CLIENT_EPEER;
+    }
+
+    fragment_length = turbo_peer_connection_create_local_ice_sdpfrag(
+        client->pc, fragment, sizeof(fragment));
+    if (fragment_length <= 0) {
+        client->state = TURBO_RTC_CLIENT_FAILED;
+        return TURBO_RTC_CLIENT_ESDP;
+    }
+
+    memset(&response, 0, sizeof(response));
+    status = turbo_http_media_request(
+        client->http, "PATCH", client->session_location,
+        "application/trickle-ice-sdpfrag", client->session_etag,
+        fragment, &response);
+    client->last_http_status = response.status;
+    if (status != 0 || response.status != 200 ||
+        response.body[0] == '\0' || response.etag[0] == '\0' ||
+        strcmp(response.etag, client->session_etag) == 0) {
+        client->state = TURBO_RTC_CLIENT_FAILED;
+        return TURBO_RTC_CLIENT_EHTTP;
+    }
+
+    /*
+     * A 200 restart response commits the remote resource generation before
+     * local application of the returned fragment. Track the new strong ETag
+     * even if the local PeerConnection later rejects that fragment.
+     */
+    memcpy(client->session_etag, response.etag,
+           strlen(response.etag) + 1u);
+    apply_result = turbo_peer_connection_apply_remote_ice_sdpfrag(
+        client->pc, response.body, strlen(response.body));
+    if (apply_result != 1) {
+        client->state = TURBO_RTC_CLIENT_FAILED;
+        return TURBO_RTC_CLIENT_ESDP;
+    }
+
+    client->connect_started_ms = salts_monotonic_ms();
+
+    if (turbo_rtc_client_refresh_peer_state(client) !=
+        TURBO_RTC_CLIENT_OK) {
         return TURBO_RTC_CLIENT_EPEER;
     }
     if (client->state != TURBO_RTC_CLIENT_CONNECTED) {
@@ -498,7 +596,8 @@ turbo_rtc_client_status_t turbo_rtc_client_poll(
     }
 
     turbo_peer_connection_poll(client->pc);
-    if (client->state == TURBO_RTC_CLIENT_FAILED) {
+    if (turbo_rtc_client_refresh_peer_state(client) !=
+        TURBO_RTC_CLIENT_OK) {
         return TURBO_RTC_CLIENT_EPEER;
     }
     if (client->state == TURBO_RTC_CLIENT_CONNECTING) {
