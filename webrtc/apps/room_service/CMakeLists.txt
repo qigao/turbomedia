@@ -363,7 +363,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_ivr_dispatch_processes
     PRIVATE
       turbo_media_ivr_rtc
-      room_service_iris_outbox_schema
       CHttp::Client CHttp::Server
       Salts::JsonParser
       Salts::DataBind
