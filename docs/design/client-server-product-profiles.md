@@ -37,13 +37,10 @@ flowchart LR
   Server[Server\nRuntime Streamer Pipeline WebRTC adapter]
   Services[RoomService SFU IVR]
   Capture[Salts Capture/Playback]
-  Persistence[PostgreSQL ORM profile]
-
   Client --> Shared
   Server --> Shared
   Services --> Server
   Client --> Capture
-  Services --> Persistence
 ```
 
 `turbo_media_track_t` 及 RTC 会话状态仍由 RTC owner context 推进。Client 的
@@ -59,7 +56,7 @@ facade，应建立不含 ServerRuntime 的新接口，而不是在现有结构�
 [`client-media-processing.md`](client-media-processing.md) 定义为独立的
 `TurboMedia::ClientProcessing` 方向：只复用共享 Codec/Demuxer/Muxer 与
 format-neutral frame/packet contract，Capture/Playback 继续由 Salts 独占，
-不得反向依赖 ServerRuntime、Streamer、TurboDB 或 RulesForge。
+不得反向依赖 ServerRuntime、Streamer 或 RulesForge。
 
 ## 错误与状态语义
 
@@ -68,8 +65,8 @@ format-neutral frame/packet contract，Capture/Playback 继续由 Salts 独占�
   frame adapter。
 - Server 的 RTC send track 必须由调用方通过 `turbo_media_track_send_frame()`
   提供数据，不存在自动探测设备或静默启用本机采集。
-- 服务持久化只接受 PostgreSQL ORM profile。SQLite 配置、测试 fixture 和运行时
-  DLL 不属于 TurboMedia Server 安装。
+- RoomService 当前不隐式选择或加载数据库 runtime/Driver；数据库能力若未来加入，
+  必须由应用显式选择，并保持在产品依赖图中可见，不提供 fallback。
 
 ## 迁移路径
 
@@ -77,10 +74,10 @@ format-neutral frame/packet contract，Capture/Playback 继续由 Salts 独占�
 2. 从 Speech/Recognition 的 provider-neutral ABI 移除设备头文件耦合；adapter
    参数使用 opaque 前置声明。
 3. 将 RTC 设备入口限定到 Client 编译契约；Server 只保留 raw-frame 路径。
-4. 将 RoomService 固定到 PostgreSQL，并删除 SQLite 配置、测试与安装文件。
+4. 删除 RoomService 已退役的 Iris persistence/provider compatibility 路径和隐式数据库依赖。
 5. Server 配置统一安装到 `etc/turbomedia`，不再生成旧品牌目录。
-6. 分别执行 Windows Client/Server 全量测试、干净安装和 package-consumer；在
-   依赖 profile 可用后执行 Linux、macOS、Android 26 和 iOS 矩阵。
+6. Windows/Linux Client/Server 使用同一 released-SDK configure/build/CTest/install
+   路径；缺依赖或错误导出直接 fail fast，不再维护额外 installed/package-consumer harness。
 
 迁移期间每个提交只改变一个可验证边界。若回滚，回滚对应提交和安装 prefix；
 不在运行时切换产品，也不自动加载另一产品的库。
@@ -92,7 +89,7 @@ format-neutral frame/packet contract，Capture/Playback 继续由 Salts 独占�
 - `SERVER` 导出 Server/shared target，不导出 Player 或 Mobile，且目标依赖图与
   安装目录均不出现 `Salts::Capture`、`Salts::Playback` 或 `sqlite3`。
 - Android 的 `SERVER` configure 必须失败；Android API 固定为 26。
-- 两个 profile 都必须通过各自 CTest、install 和按组件消费测试。
-- PostgreSQL 多进程用例属于显式 live gate：配置
-  `TURBO_MEDIA_POSTGRES_LIVE_TESTS=ON` 时必须同时提供
-  `TURBO_MEDIA_TEST_POSTGRES_SERVICE`；缺少服务配置会在 configure 阶段失败。
+- 两个 profile 都通过各自 configure/build/CTest/install 路径；不维护额外
+  installed/package-consumer qualification harness。
+- RoomService 不恢复、不链接 TurboDB/Orm；若未来显式选择数据库 Driver，应在
+  对应产品路径中直接 fail fast，而不是增加兼容或源码构建 fallback。

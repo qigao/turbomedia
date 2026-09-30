@@ -44,8 +44,9 @@ ctest --test-dir build/Msvc-client --output-on-failure
 ```
 
 Client 只要求 shared media/RTC 依赖以及 SaltsUtils 的 `Capture`、`Playback`；
-Server 才查找 RulesForge、TurboDB 和 PostgreSQL-only Orm，并且不查找设备
-Capture/Playback。完整 target/platform 矩阵见
+Server 额外查找 RulesForge，并且不查找设备 Capture/Playback。TurboDB/Orm 不属于
+当前 TurboMedia 2.0 SERVER dependency graph；数据库 Driver 不由 RoomService 隐式
+选择或加载。完整 target/platform 矩阵见
 [Client/Server 产品拆分](docs/design/client-server-product-profiles.md)。主要共享依赖包括 FFmpeg
 （含 `openh264`、`opus`、`xml2` feature）、OpenH264、x265、libde265、
 libvpx、Opus、Salts、SaltsUtils、SaltsNet、CHTTP、CNet、libSRTP 和 usrsctp。
