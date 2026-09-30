@@ -987,14 +987,22 @@ endfunction()
 append_dependencies_from_libs(FFMPEG_DEPENDENCIES_RELEASE LIBS "${FFMPEG_PKGCONFIG_LIBS_RELEASE}")
 append_dependencies_from_libs(FFMPEG_DEPENDENCIES_DEBUG   LIBS "${FFMPEG_PKGCONFIG_LIBS_DEBUG}")
 
+set(FFMPEG_NEEDS_ICONV FALSE)
 if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND "xml2" IN_LIST FEATURES)
     # libxml2's Android static archive is built with GNU libiconv, but FFmpeg's
-    # pkg-config aggregation does not preserve that private dependency in the
-    # generated FindFFMPEG metadata. Export it from the package closure here so
-    # consumers receive the complete static dependency set without linker
-    # fallbacks or Android-specific consumer logic.
+    # pkg-config aggregation does not preserve that private dependency.
     list(APPEND FFMPEG_DEPENDENCIES_RELEASE iconv)
     list(APPEND FFMPEG_DEPENDENCIES_DEBUG iconv)
+endif()
+
+# iconv is a CMake package contract, not just a bare library name. The vcpkg
+# wrapper selects the system or GNU implementation and carries libcharset when
+# required. Export it as Iconv::Iconv from FindFFMPEG instead of resolving
+# libiconv manually under a cross toolchain.
+if("iconv" IN_LIST FFMPEG_DEPENDENCIES_RELEASE OR "iconv" IN_LIST FFMPEG_DEPENDENCIES_DEBUG)
+    set(FFMPEG_NEEDS_ICONV TRUE)
+    list(REMOVE_ITEM FFMPEG_DEPENDENCIES_RELEASE iconv)
+    list(REMOVE_ITEM FFMPEG_DEPENDENCIES_DEBUG iconv)
 endif()
 
 # must remove duplicates from the front to respect link order so reverse first
