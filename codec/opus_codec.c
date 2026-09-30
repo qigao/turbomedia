@@ -56,6 +56,11 @@ static int opus_config_valid(const turbo_audio_codec_config_t *cfg) {
     return 1;
 }
 
+int turbo_opus_validate_audio_config(
+    const turbo_audio_codec_config_t *cfg) {
+    return opus_config_valid(cfg) ? TURBO_CODEC_OK : TURBO_CODEC_ERR_INVALID;
+}
+
 /* =============================================================================
  * Encoder Functions
  * ============================================================================= */
