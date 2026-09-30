@@ -266,6 +266,7 @@ turbo_rtc_client_status_t turbo_rtc_client_create(
     if (!client) {
         return TURBO_RTC_CLIENT_ENOMEM;
     }
+    atomic_init(&client->peer_state, TURBO_PEER_STATE_NEW);
     client->whip_base_url = turbo_rtc_client_strdup(config->whip_base_url);
     client->whip_path = turbo_rtc_client_strdup(config->whip_path);
     client->bearer_token = turbo_rtc_client_strdup(config->bearer_token);
