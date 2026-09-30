@@ -21,6 +21,12 @@ static int consume_audio(
 }
 
 spec("TurboMedia RTCClient WHEP audio core") {
+  it("defines explicit audio callback flow control") {
+    check_equal((int)TURBO_RTC_SUBSCRIBER_AUDIO_CONSUMED, 0);
+    check_equal((int)TURBO_RTC_SUBSCRIBER_AUDIO_RETRY, 1);
+    check_equal((int)TURBO_RTC_SUBSCRIBER_AUDIO_FATAL, -1);
+  }
+
   it("initializes explicit bounded subscriber configuration") {
     turbo_rtc_subscriber_config_t config;
     turbo_rtc_subscriber_snapshot_t snapshot;
@@ -129,6 +135,9 @@ spec("TurboMedia RTCClient WHEP audio core") {
 
     check_equal(
         turbo_rtc_subscriber_poll(subscriber),
+        TURBO_RTC_CLIENT_ESTATE);
+    check_equal(
+        turbo_rtc_subscriber_restart_ice(subscriber),
         TURBO_RTC_CLIENT_ESTATE);
     check_equal(
         turbo_rtc_subscriber_stop(subscriber),
