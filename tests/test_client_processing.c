@@ -181,6 +181,118 @@ spec("TurboMedia ClientProcessing core") {
                 TURBO_CLIENT_PROCESSING_OK);
   }
 
+  it("requires explicit lifecycle revalidation before resume") {
+    turbo_client_processing_config_t config;
+    turbo_client_processing_snapshot_t snapshot;
+    turbo_client_processing_t *processing = NULL;
+    const uint8_t frame[4] = {1u, 2u, 3u, 4u};
+
+    turbo_client_processing_config_init(&config);
+    check_equal(turbo_client_processing_create(&config, &processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_prepare(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_PERMISSION_REVOKED),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_ESTATE);
+
+    turbo_client_processing_snapshot_init(&snapshot);
+    check_equal(turbo_client_processing_snapshot(processing, &snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_true((snapshot.lifecycle_flags &
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_PERMISSION_REVOKED) != 0u);
+
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_PERMISSION_RESTORED),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_start(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_DEVICE_LOST),
+                TURBO_CLIENT_PROCESSING_OK);
+    turbo_client_processing_snapshot_init(&snapshot);
+    check_equal(turbo_client_processing_snapshot(processing, &snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(snapshot.state, TURBO_CLIENT_PROCESSING_PAUSED);
+    check_true((snapshot.lifecycle_flags &
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_DEVICE_LOST) != 0u);
+    check_equal(turbo_client_processing_admit_video_frame(
+                    processing, frame, sizeof(frame), 2, 2, 100u),
+                TURBO_CLIENT_PROCESSING_ESTATE);
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing, TURBO_CLIENT_PROCESSING_LIFECYCLE_APP_RESUME),
+                TURBO_CLIENT_PROCESSING_ESTATE);
+
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_DEVICE_REVALIDATED),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing, TURBO_CLIENT_PROCESSING_LIFECYCLE_APP_RESUME),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_VIDEO_SURFACE_LOST),
+                TURBO_CLIENT_PROCESSING_OK);
+    turbo_client_processing_snapshot_init(&snapshot);
+    check_equal(turbo_client_processing_snapshot(processing, &snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(snapshot.state, TURBO_CLIENT_PROCESSING_RUNNING);
+    check_true((snapshot.lifecycle_flags &
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_VIDEO_SURFACE_LOST) != 0u);
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_VIDEO_SURFACE_REPLACED),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_PLAYBACK_DEVICE_LOST),
+                TURBO_CLIENT_PROCESSING_OK);
+    turbo_client_processing_snapshot_init(&snapshot);
+    check_equal(turbo_client_processing_snapshot(processing, &snapshot),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(snapshot.state, TURBO_CLIENT_PROCESSING_RUNNING);
+    check_true((snapshot.lifecycle_flags &
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_PLAYBACK_DEVICE_LOST) != 0u);
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_PLAYBACK_DEVICE_REVALIDATED),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_BACKGROUND_DENIED),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_resume(processing),
+                TURBO_CLIENT_PROCESSING_ESTATE);
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_BACKGROUND_ALLOWED),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_resume(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+
+    check_equal(turbo_client_processing_request_stop(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_drain(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+    check_equal(turbo_client_processing_handle_lifecycle_event(
+                    processing,
+                    TURBO_CLIENT_PROCESSING_LIFECYCLE_VIDEO_SURFACE_LOST),
+                TURBO_CLIENT_PROCESSING_ESTATE);
+    check_equal(turbo_client_processing_destroy(processing),
+                TURBO_CLIENT_PROCESSING_OK);
+  }
+
   it("requires versioned snapshot storage") {
     turbo_client_processing_config_t config;
     turbo_client_processing_snapshot_t snapshot = {0};

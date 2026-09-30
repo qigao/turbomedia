@@ -39,6 +39,10 @@ turbo_client_processing_status_t turbo_client_processing_write_playback(
         TURBO_CLIENT_PROCESSING_RUNNING) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
+    if ((turbo_client_processing_lifecycle_flags_get(processing) &
+         TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_PLAYBACK_DEVICE_LOST) != 0u) {
+        return TURBO_CLIENT_PROCESSING_EIO;
+    }
 
     status = salts_playback_write(playback, samples, len, out_written);
     if (status == SALTS_PLAYBACK_ERR_FORMAT) {

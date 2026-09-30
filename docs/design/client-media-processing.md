@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed architecture for issue #50.
+Implemented client-core architecture for issue #50. Platform bindings may add
+native lifecycle translation, but the ClientProcessing product/ownership
+boundary is established in TurboMedia 2.0.
 
 This decision keeps the existing `TurboMedia::Pipeline` contract server-only and
 introduces a separate client media-processing product boundary. The client
@@ -12,7 +14,7 @@ applications.
 
 ## Decision
 
-Add a future installed component named `TurboMedia::ClientProcessing`.
+`TurboMedia::ClientProcessing` is an installed CLIENT-only component.
 
 It is not an alias, subset build, or compatibility mode of
 `TurboMedia::Pipeline`. The two products may reuse lower-level TurboMedia
@@ -103,7 +105,7 @@ return. Any adapter crossing a thread, queue, coroutine, Java/Objective-C
 boundary, or asynchronous encoder boundary must copy or move the payload into
 bounded owned storage first.
 
-The initial API should expose:
+The current API exposes:
 
 - create from an immutable plan;
 - prepare;
@@ -210,18 +212,20 @@ use.
 
 ## Mobile lifecycle
 
-The core models platform events explicitly:
+The core models platform events explicitly through
+`turbo_client_processing_handle_lifecycle_event()`:
 
-- app pause;
-- app resume;
-- permission revoked;
-- capture device lost;
-- playback device lost;
-- video surface lost;
-- video surface replaced;
-- background execution denied.
+- app pause/resume;
+- capture permission revoked/restored;
+- capture device lost/revalidated;
+- playback device lost/revalidated;
+- video surface lost/replaced;
+- background execution denied/allowed.
 
-These events are not translated into automatic fallback.
+These events are not translated into automatic fallback. Permission/capture
+loss and background denial pause active admission. Recovery clears the blocker
+only; the caller must explicitly resume. Playback/surface loss is observable in
+the lifecycle flags without silently selecting another backend.
 
 Expected behavior:
 
@@ -284,7 +288,7 @@ record that names the backend and supported formats.
 
 ## CMake / installed target boundary
 
-Proposed target:
+Installed target:
 
 ```text
 TurboMedia::ClientProcessing
@@ -299,11 +303,11 @@ Rules:
 - may link shared TurboMedia Codec/Demuxer/Muxer targets;
 - Capture/Playback adapter targets may link `Salts::Capture` and
   `Salts::Playback`;
-- installed package consumers must be able to request ClientProcessing without
-  resolving any SERVER target.
+- the target must not resolve any SERVER-only dependency.
 
-The package contract test must fail if a future change introduces a
-Server/Pipeline dependency edge.
+TurboMedia does not maintain an extra installed/package-consumer qualification
+harness. Product configure/build/CTest/install and the exported target graph are
+the fail-fast contract.
 
 ## Platform capability matrix
 
@@ -340,11 +344,10 @@ way that changes the shipping capability contract.
 
 ## Verification
 
-Phase 1 design/package gate:
+Phase 1 design/product gate:
 
-- CLIENT configure exports no SERVER targets;
+- CLIENT configure excludes SERVER-only build targets;
 - ClientProcessing target dependency graph contains no server-only edge;
-- installed-package consumer includes only public ClientProcessing headers;
 - unsupported platform/product combinations fail at configure time.
 
 Phase 2 deterministic core gate:

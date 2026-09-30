@@ -35,6 +35,7 @@ typedef struct turbo_client_processing_audio_slot_t {
 struct turbo_client_processing_s {
     turbo_client_processing_config_t config;
     atomic_int state;
+    atomic_uint lifecycle_flags;
     salts_mutex_t frame_mutex;
     turbo_client_processing_video_slot_t *frame_slots;
     uint8_t *frame_storage;
@@ -100,6 +101,12 @@ static inline void turbo_client_processing_state_set(
     turbo_client_processing_t *processing,
     turbo_client_processing_state_t state) {
     atomic_store_explicit(&processing->state, (int)state, memory_order_release);
+}
+
+static inline uint32_t turbo_client_processing_lifecycle_flags_get(
+    const turbo_client_processing_t *processing) {
+    return (uint32_t)atomic_load_explicit(
+        &processing->lifecycle_flags, memory_order_acquire);
 }
 
 TURBO_CLIENT_PROCESSING_INTERNAL
