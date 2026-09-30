@@ -124,6 +124,11 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-15
     timeout-minutes: 120
+    env:
+      # Keep TurboMedia's macOS packages in a product-owned NuGet namespace.
+      # The legacy unprefixed package IDs are owned by other repositories and
+      # reject this repository's GITHUB_TOKEN with 403 on push.
+      X_VCPKG_NUGET_ID_PREFIX: turbomedia
     steps:
       - uses: actions/checkout@v4
 
@@ -148,3 +153,22 @@ jobs:
             --x-manifest-root=. \
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
             --triplet arm64-osx
+
+      - name: Verify macOS clean L2 restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          installed="$GITHUB_WORKSPACE/vcpkg_installed"
+          log="$RUNNER_TEMP/turbomedia-macos-clean-l2.log"
+          rm -rf "$installed" "$VCPKG_BINARY_CACHE"
+          mkdir -p "$VCPKG_BINARY_CACHE"
+          "$VCPKG_ROOT/vcpkg" install \
+            --x-manifest-root=. \
+            --x-install-root="$installed" \
+            --triplet arm64-osx \
+            --only-binarycaching 2>&1 | tee "$log"
+          grep -Eq 'Restored [1-9][0-9]* package\(s\) from NuGet' "$log"
+          if grep -Eq '^Building ' "$log"; then
+            echo "macOS clean-L2 verification attempted a source build" >&2
+            exit 1
+          fi
