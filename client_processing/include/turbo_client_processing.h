@@ -35,6 +35,30 @@ typedef enum turbo_client_processing_state_t {
     TURBO_CLIENT_PROCESSING_FAILED
 } turbo_client_processing_state_t;
 
+typedef enum turbo_client_processing_lifecycle_event_t {
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_APP_PAUSE = 0,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_APP_RESUME,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_PERMISSION_REVOKED,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_PERMISSION_RESTORED,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_DEVICE_LOST,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_DEVICE_REVALIDATED,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_PLAYBACK_DEVICE_LOST,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_PLAYBACK_DEVICE_REVALIDATED,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_VIDEO_SURFACE_LOST,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_VIDEO_SURFACE_REPLACED,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_BACKGROUND_DENIED,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_BACKGROUND_ALLOWED
+} turbo_client_processing_lifecycle_event_t;
+
+typedef enum turbo_client_processing_lifecycle_flag_t {
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_NONE = 0,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_PERMISSION_REVOKED = 1u << 0,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_DEVICE_LOST = 1u << 1,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_PLAYBACK_DEVICE_LOST = 1u << 2,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_VIDEO_SURFACE_LOST = 1u << 3,
+    TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_BACKGROUND_DENIED = 1u << 4
+} turbo_client_processing_lifecycle_flag_t;
+
 typedef struct turbo_client_processing_config_t {
     size_t size;
     size_t frame_queue_capacity;
@@ -105,6 +129,7 @@ typedef struct turbo_client_processing_snapshot_t {
     uint64_t queued_duration_us;
     uint64_t admitted_frames;
     uint64_t rejected_frames;
+    uint32_t lifecycle_flags;
 } turbo_client_processing_snapshot_t;
 
 /*
@@ -255,6 +280,18 @@ turbo_client_processing_pause(turbo_client_processing_t *processing);
 
 TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_resume(turbo_client_processing_t *processing);
+
+/*
+ * Applies an explicit application/device lifecycle event. The core never
+ * selects another device/backend automatically. Permission/capture/background
+ * loss pauses active admission; recovery clears only the blocker and the
+ * caller must explicitly resume. Playback/surface loss is recorded without
+ * changing the processing state.
+ */
+TURBO_MEDIA_C_API turbo_client_processing_status_t
+turbo_client_processing_handle_lifecycle_event(
+    turbo_client_processing_t *processing,
+    turbo_client_processing_lifecycle_event_t event);
 
 TURBO_MEDIA_C_API turbo_client_processing_status_t
 turbo_client_processing_request_stop(turbo_client_processing_t *processing);
