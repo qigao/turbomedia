@@ -113,7 +113,9 @@ TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_capture_source_snapshot(
     turbo_rtc_capture_source_snapshot_t *snapshot);
 
 /*
- * Destroy is rejected while native capture may still be running.
+ * Destroy is valid only after the Salts capture handle is STOPPED. A FAILED
+ * source with an ERROR/RUNNING backend must call stop() first so native
+ * callbacks are quiescent before device destruction.
  */
 TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_capture_source_destroy(
     turbo_rtc_capture_source_t *source);
