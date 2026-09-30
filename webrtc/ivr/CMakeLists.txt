@@ -34,7 +34,6 @@ set_target_properties(turbo_media_ivr PROPERTIES FOLDER "turbomedia/components")
 # Real WebRTC media adapters are kept separate from the provider-neutral IVR
 # core.  The RTC target is linked only by applications that opt into WHIP/WHEP.
 add_library(turbo_media_ivr_rtc STATIC
-  src/ivr_http_media_client.c
   src/ivr_whep_transport.c
   src/ivr_whip_transport.c)
 target_include_directories(
@@ -45,7 +44,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_ivr_rtc
   PUBLIC turbo_media_ivr TurboMedia::RTC
-  PRIVATE CHttp::Client)
+  PRIVATE turbo_media_http_media_client CHttp::Client)
 set_target_properties(turbo_media_ivr_rtc PROPERTIES FOLDER "turbomedia/components")
 
 file(
