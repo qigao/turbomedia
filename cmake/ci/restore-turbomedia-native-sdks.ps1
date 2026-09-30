@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("linux-x64", "windows-x64")]
+  [ValidateSet("linux-x64", "windows-x64", "android-arm64-v8a")]
   [string]$Rid,
   [Parameter(Mandatory = $true)]
   [ValidateSet("CLIENT", "SERVER")]
@@ -54,7 +54,10 @@ $serverReferences
 dotnet restore $project --configfile $config --packages $packages
 if ($LASTEXITCODE -ne 0) { throw "native SDK restore failed" }
 
-function Resolve-SdkRoot([string]$PackageId) {
+function Resolve-SdkRoot([string]$PackageId, [string]$SdkRid = "") {
+  if ([string]::IsNullOrWhiteSpace($SdkRid)) {
+    $SdkRid = $Rid
+  }
   $packageRoot = Join-Path $packages $PackageId.ToLowerInvariant()
   if (-not (Test-Path -LiteralPath $packageRoot -PathType Container)) {
     throw "restored package directory is missing: $packageRoot"
@@ -63,7 +66,7 @@ function Resolve-SdkRoot([string]$PackageId) {
   if ($versions.Count -ne 1) {
     throw "expected exactly one restored version for $PackageId, found $($versions.Count)"
   }
-  $root = Join-Path $versions[0].FullName "sdk/$Rid"
+  $root = Join-Path $versions[0].FullName "sdk/$SdkRid"
   if (-not (Test-Path -LiteralPath $root -PathType Container)) {
     throw "RID SDK is missing for ${PackageId}: $root"
   }
@@ -80,6 +83,13 @@ if ($Product -eq "SERVER") {
   $roots["RULES_FORGE_ROOT"] = Resolve-SdkRoot "RulesForge.Native"
 }
 
+$saltsUtilsHostRoot = $null
+if ($Rid -eq "android-arm64-v8a") {
+  $saltsUtilsHostRoot = Resolve-SdkRoot "SaltsUtils.Native" "linux-x64"
+  "SALTS_UTILS_HOST_ROOT=$saltsUtilsHostRoot" |
+    Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+}
+
 foreach ($pair in $roots.GetEnumerator()) {
   "$($pair.Key)=$($pair.Value)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 }
@@ -92,7 +102,8 @@ $requiredFiles = @(
 )
 
 $idlcName = if ($Rid -eq "windows-x64") { "salts-idlc.exe" } else { "salts-idlc" }
-$idlc = Join-Path $roots.SALTS_UTILS_ROOT "bin/$idlcName"
+$idlcRoot = if ($saltsUtilsHostRoot) { $saltsUtilsHostRoot } else { $roots.SALTS_UTILS_ROOT }
+$idlc = Join-Path $idlcRoot "bin/$idlcName"
 $requiredFiles += $idlc
 
 if ($Product -eq "CLIENT") {
@@ -112,11 +123,19 @@ foreach ($file in $requiredFiles) {
   }
 }
 
-foreach ($root in $roots.Values) {
-  foreach ($subdir in @("bin", "lib")) {
-    $candidate = Join-Path $root $subdir
-    if (Test-Path -LiteralPath $candidate -PathType Container) {
-      $candidate | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+if ($Rid -eq "android-arm64-v8a") {
+  $hostBin = Join-Path $saltsUtilsHostRoot "bin"
+  if (-not (Test-Path -LiteralPath $hostBin -PathType Container)) {
+    throw "SaltsUtils host bin directory is missing: $hostBin"
+  }
+  $hostBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+} else {
+  foreach ($root in $roots.Values) {
+    foreach ($subdir in @("bin", "lib")) {
+      $candidate = Join-Path $root $subdir
+      if (Test-Path -LiteralPath $candidate -PathType Container) {
+        $candidate | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      }
     }
   }
 }
