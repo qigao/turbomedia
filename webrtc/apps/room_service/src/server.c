@@ -10,7 +10,6 @@
 #include "salts_uuid.h"
 #include "tlog.h"
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-#include "iris_event_outbox.h"
 #include "iris_completion_dispatcher.h"
 #include "iris_media_bridge.h"
 #include "iris_room_bridge.h"
@@ -2563,51 +2562,6 @@ iris_room_bridge_result_t room_service_app_server_dispatch_iris_room_command(
                                           idempotency_key, body, body_size);
 }
 
-ivr_status_t room_service_app_server_replay_iris_event(
-    room_service_app_server_t *server, const char *event_id) {
-    (void)server;
-    (void)event_id;
-    return IVR_ESTATE;
-}
-
-ivr_status_t room_service_app_server_replay_iris_dead_letters(
-    room_service_app_server_t *server, size_t limit,
-    iris_event_replay_batch_result_t *result) {
-    (void)server;
-    (void)limit;
-    (void)result;
-    return IVR_ECLOSED;
-}
-
-ivr_status_t room_service_app_server_list_iris_dead_letters(
-    room_service_app_server_t *server, iris_event_dead_letter_t *items,
-    size_t capacity, size_t *count, size_t *total) {
-    (void)server;
-    (void)items;
-    (void)capacity;
-    if (count) *count = 0u;
-    if (total) *total = 0u;
-    return IVR_ESTATE;
-}
-
-ivr_status_t room_service_app_server_list_iris_archived_events(
-    room_service_app_server_t *server, iris_event_archive_t *items,
-    size_t capacity, size_t *count, size_t *total) {
-    (void)server;
-    (void)items;
-    (void)capacity;
-    if (count) *count = 0u;
-    if (total) *total = 0u;
-    return IVR_ESTATE;
-}
-
-ivr_status_t room_service_app_server_run_iris_event_retention(
-    room_service_app_server_t *server,
-    iris_event_retention_result_t *result) {
-    (void)server;
-    (void)result;
-    return IVR_ECLOSED;
-}
 #endif
 
 const room_service_app_config_t *room_service_app_server_get_config(
