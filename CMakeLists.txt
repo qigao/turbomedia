@@ -231,6 +231,7 @@ if(TURBO_MEDIA_IS_CLIENT)
     FILES media/include/turbo_player.h
           media/mobile/turbo_mobile.h
           media/mobile/turbo_mobile_codec.h
+          webrtc/include/turbo_rtc_client.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 else()
   install(
