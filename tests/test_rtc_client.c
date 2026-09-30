@@ -81,6 +81,8 @@ spec("TurboMedia RTCClient WHIP audio core") {
     check_equal(turbo_rtc_client_send_audio(
                     client, pcm, sizeof(pcm), 0u),
                 TURBO_RTC_CLIENT_ESTATE);
+    check_equal(turbo_rtc_client_restart_ice(client),
+                TURBO_RTC_CLIENT_ESTATE);
     check_equal(turbo_rtc_client_stop(client), TURBO_RTC_CLIENT_OK);
     turbo_rtc_client_snapshot_init(&snapshot);
     check_equal(turbo_rtc_client_snapshot(client, &snapshot),
