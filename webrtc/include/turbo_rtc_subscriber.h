@@ -84,7 +84,6 @@ typedef struct turbo_rtc_subscriber_snapshot_t {
 
     uint64_t frames_received;
     uint64_t frames_delivered;
-    uint64_t frames_deferred;
     uint64_t frames_rejected;
 
     uint32_t queue_items;
