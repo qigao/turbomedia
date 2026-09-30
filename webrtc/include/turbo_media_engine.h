@@ -83,7 +83,7 @@ typedef enum {
  * Audio configuration
  */
 typedef struct {
-  int sample_rate;   /* 8000, 16000, 24000, 48000 */
+  int sample_rate;   /* Must be supported by the selected codec */
   int channels;      /* 1 (mono) or 2 (stereo) */
   int bitrate;       /* Target bitrate in bps (0 = auto) */
   int frame_size_ms; /* 10, 20, 40, or 60 ms */
