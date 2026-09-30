@@ -6,13 +6,8 @@
 #include <json_parser.h>
 #include "turbo_room_service.h"
 #include "salts_thread.h"
-#include "turbo_crypto.h"
-#include "salts_uuid.h"
 #include "tlog.h"
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-#include "iris_completion_dispatcher.h"
-#include "iris_media_bridge.h"
-#include "iris_room_bridge.h"
 #include "ivr_certificate_identity.h"
 #include "ivr_control_adapter.h"
 #include "room_service_media.h"
@@ -76,177 +71,9 @@ struct room_service_app_server_s {
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     ivr_control_adapter_t *ivr_control; /* NULL only when the IVR feature is disabled */
     ivr_certificate_identity_t *ivr_control_identity;
-    iris_media_bridge_t *iris_media_bridge;
-    iris_room_bridge_t *iris_room_bridge;
-    iris_completion_dispatcher_t *iris_completion_dispatcher;
 #endif
 };
 
-#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-static int room_service_room_completion_id(
-    const char *command_id, char out[SALTS_UUID_STRING_SIZE]) {
-    static const char domain[] = "turbomedia.room.terminal.v1";
-    turbo_crypto_sha256_ctx_t hash;
-    uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
-    salts_uuid_t uuid;
-    if (!command_id || !command_id[0] ||
-        turbo_crypto_sha256_init(&hash) != 0 ||
-        turbo_crypto_sha256_update(&hash, domain, sizeof(domain) - 1u) != 0 ||
-        turbo_crypto_sha256_update(&hash, command_id, strlen(command_id)) != 0 ||
-        turbo_crypto_sha256_final(&hash, digest) != 0) {
-        return 0;
-    }
-    memcpy(uuid.bytes, digest, sizeof(uuid.bytes));
-    uuid.bytes[6] = (uint8_t)((uuid.bytes[6] & 0x0fu) | 0x80u);
-    uuid.bytes[8] = (uint8_t)((uuid.bytes[8] & 0x3fu) | 0x80u);
-    return salts_uuid_format(&uuid, out, SALTS_UUID_STRING_SIZE) == SALTS_OK;
-}
-
-static const char *room_service_provider_json_string(
-    const json_value_t *object, const char *name) {
-    json_value_t *value = object ? json_object_get(object, name) : NULL;
-    return value && json_type(value) == JSON_STRING
-               ? json_string(value)
-               : NULL;
-}
-
-static int room_service_provider_copy(char *out, size_t capacity,
-                                      const char *value) {
-    size_t size;
-    if (!out || capacity == 0u || !value) return 0;
-    size = strlen(value);
-    if (size >= capacity) return 0;
-    memcpy(out, value, size + 1u);
-    return 1;
-}
-
-static iris_media_bridge_status_t room_service_room_receipt_status(
-    iris_room_bridge_status_t status) {
-    switch (status) {
-        case IRIS_ROOM_BRIDGE_TERMINAL:
-            return IRIS_MEDIA_BRIDGE_TERMINAL;
-        case IRIS_ROOM_BRIDGE_DUPLICATE:
-            return IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY;
-        case IRIS_ROOM_BRIDGE_IN_PROGRESS:
-            return IRIS_MEDIA_BRIDGE_DUPLICATE;
-        case IRIS_ROOM_BRIDGE_INVALID:
-            return IRIS_MEDIA_BRIDGE_INVALID;
-        case IRIS_ROOM_BRIDGE_CONFLICT:
-            return IRIS_MEDIA_BRIDGE_CONFLICT;
-        case IRIS_ROOM_BRIDGE_EXPIRED:
-            return IRIS_MEDIA_BRIDGE_EXPIRED;
-        case IRIS_ROOM_BRIDGE_FULL:
-            return IRIS_MEDIA_BRIDGE_FULL;
-        case IRIS_ROOM_BRIDGE_UNAVAILABLE:
-            return IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        case IRIS_ROOM_BRIDGE_INTERNAL:
-        default:
-            return IRIS_MEDIA_BRIDGE_INTERNAL;
-    }
-}
-
-static int room_service_is_room_provider_command(const char *body,
-                                                 size_t body_size) {
-    json_value_t *root = NULL;
-    json_value_t *data;
-    json_value_t *capability;
-    int is_room = 0;
-    if (body && body_size > 0u &&
-        ((root = json_parse((const char *)((const uint8_t *)body), body_size)) ? 0 : -1) == 0 &&
-        root && json_type(root) == JSON_OBJECT) {
-        data = json_object_get(root, "data");
-        capability = data && json_type(data) == JSON_OBJECT
-                         ? json_object_get(data, "capability")
-                         : NULL;
-        is_room = capability &&
-                  json_type(capability) == JSON_STRING &&
-                  strcmp(json_string(capability), "room") == 0;
-    }
-    json_free(root);
-    root = NULL;
-    return is_room;
-}
-
-static int room_service_build_provider_completion(
-    const char *body, size_t body_size, const char *command_id,
-    const char *terminal_status, const char *event_type,
-    const char *result_json, const char *error_code,
-    const char *error_message,
-    iris_media_completion_t *completion,
-    ivr_media_command_result_t *result,
-    char event_id[SALTS_UUID_STRING_SIZE]) {
-    json_value_t *root = NULL;
-    json_value_t *epoch_value;
-    const char *tenant_id;
-    const char *session_id;
-    const char *worker_id;
-    const char *correlation_id;
-    uint64_t epoch;
-    int valid = 0;
-    if (!body || !command_id || !command_id[0] || !terminal_status ||
-        !terminal_status[0] || !event_type || !event_type[0] || !result_json ||
-        !result_json[0] || !completion || !result ||
-        ((root = json_parse((const char *)((const uint8_t *)body), body_size)) ? 0 : -1) != 0 ||
-        !root || json_type(root) != JSON_OBJECT) {
-        json_free(root);
-        root = NULL;
-        return 0;
-    }
-    tenant_id = room_service_provider_json_string(root, "tenantId");
-    session_id = room_service_provider_json_string(root, "sessionId");
-    worker_id = room_service_provider_json_string(root, "workerId");
-    correlation_id = room_service_provider_json_string(root, "correlationId");
-    epoch_value = json_object_get(root, "dispatchEpoch");
-    epoch = epoch_value && json_type(epoch_value) == JSON_NUMBER
-                ? (uint64_t)json_number(epoch_value)
-                : 0u;
-    memset(completion, 0, sizeof(*completion));
-    memset(result, 0, sizeof(*result));
-    if (tenant_id && tenant_id[0] && session_id && session_id[0] && worker_id &&
-        worker_id[0] && correlation_id && correlation_id[0] && epoch > 0u &&
-        room_service_provider_copy(completion->command_id,
-                                   sizeof(completion->command_id),
-                                   command_id) &&
-        room_service_provider_copy(completion->tenant_id,
-                                   sizeof(completion->tenant_id), tenant_id) &&
-        room_service_provider_copy(completion->provider_session_id,
-                                   sizeof(completion->provider_session_id),
-                                   session_id) &&
-        room_service_provider_copy(completion->iris_worker_id,
-                                   sizeof(completion->iris_worker_id), worker_id) &&
-        room_service_provider_copy(completion->correlation_id,
-                                   sizeof(completion->correlation_id),
-                                   correlation_id) &&
-        room_service_provider_copy(
-            completion->terminal_status, sizeof(completion->terminal_status),
-            terminal_status) &&
-        room_service_provider_copy(completion->event_type,
-                                   sizeof(completion->event_type),
-                                   event_type) &&
-        room_service_provider_copy(completion->result_json,
-                                   sizeof(completion->result_json),
-                                   result_json) &&
-        room_service_room_completion_id(command_id, event_id)) {
-        completion->dispatch_epoch = epoch;
-        result->status_code = strcmp(terminal_status, "succeeded") == 0
-                                  ? IVR_OK
-                                  : IVR_ESTATE;
-        if (error_code) {
-            snprintf(result->error_code, sizeof(result->error_code), "%s",
-                     error_code);
-        }
-        if (error_message) {
-            snprintf(result->error_message, sizeof(result->error_message), "%s",
-                     error_message);
-        }
-        valid = 1;
-    }
-    json_free(root);
-    root = NULL;
-    return valid;
-}
-
-#endif
 
 typedef struct {
     char subscriber_participant_id[TURBO_PARTICIPANT_ID_MAX];
@@ -2532,35 +2359,6 @@ ivr_status_t room_service_app_server_send_ivr_media_command(
         server->ivr_control, command, out_worker_id, out_worker_id_capacity);
 }
 
-iris_media_bridge_result_t room_service_app_server_dispatch_iris_media_command(
-    room_service_app_server_t *server, const char *idempotency_key,
-    const char *body, size_t body_size) {
-    if (!server || !server->iris_media_bridge) {
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        result.error_code = "MEDIA_PROVIDER_UNAVAILABLE";
-        result.error_message = "Iris media provider is not configured";
-        return result;
-    }
-    return iris_media_bridge_dispatch_json(server->iris_media_bridge,
-                                           idempotency_key, body, body_size);
-}
-
-iris_room_bridge_result_t room_service_app_server_dispatch_iris_room_command(
-    room_service_app_server_t *server, const char *idempotency_key,
-    const char *body, size_t body_size) {
-    if (!server || !server->iris_room_bridge) {
-        iris_room_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_ROOM_BRIDGE_UNAVAILABLE;
-        result.error_code = "ROOM_PROVIDER_UNAVAILABLE";
-        result.error_message = "Iris room provider is not configured";
-        return result;
-    }
-    return iris_room_bridge_dispatch_json(server->iris_room_bridge,
-                                          idempotency_key, body, body_size);
-}
 
 #endif
 
@@ -2626,37 +2424,6 @@ int room_service_app_server_get_ivr_metrics(
             stats.bridge.peer_event_queue_drops;
         metrics->peer_event_queue_overflowed =
             stats.bridge.peer_event_queue_overflowed;
-    }
-    if (server->iris_completion_dispatcher) {
-        iris_completion_dispatcher_stats_t stats;
-        iris_completion_dispatcher_get_stats(
-            server->iris_completion_dispatcher, &stats);
-        metrics->iris_provider_enabled = 1;
-        metrics->iris_queue_items = (uint32_t)stats.queue_items;
-        metrics->iris_queue_capacity = (uint32_t)stats.queue_capacity;
-        metrics->iris_queue_high_water = (uint32_t)stats.queue_high_water;
-        metrics->iris_in_flight = (uint32_t)stats.in_flight;
-        metrics->iris_enqueued_total = stats.enqueued_total;
-        metrics->iris_queue_full_total = stats.queue_full_total;
-        metrics->iris_closed_rejections_total = stats.closed_rejections_total;
-        metrics->iris_delivery_attempts_total =
-            stats.delivery_attempts_total;
-        metrics->iris_retries_total = stats.retries_total;
-        metrics->iris_fence_conflicts_total = stats.fence_conflicts_total;
-        metrics->iris_fence_refresh_failures_total =
-            stats.fence_refresh_failures_total;
-        metrics->iris_completion_success_total =
-            stats.completion_success_total;
-        metrics->iris_completion_failure_total =
-            stats.completion_failure_total;
-        metrics->iris_event_success_total = stats.event_success_total;
-        metrics->iris_event_failure_total = stats.event_failure_total;
-        metrics->iris_shutdown_restored_completions_total =
-            stats.shutdown_restored_completions_total;
-        metrics->iris_shutdown_dropped_events_total =
-            stats.shutdown_dropped_events_total;
-        metrics->iris_last_drain_duration_ms = stats.last_drain_duration_ms;
-        metrics->iris_max_drain_duration_ms = stats.max_drain_duration_ms;
     }
 #endif
     return 0;

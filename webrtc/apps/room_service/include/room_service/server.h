@@ -140,38 +140,6 @@ typedef struct {
     uint32_t peer_event_queue_high_water;
     uint64_t peer_event_queue_drops_total;
     int peer_event_queue_overflowed;
-    int iris_provider_enabled;
-    uint32_t iris_queue_items;
-    uint32_t iris_queue_capacity;
-    uint32_t iris_queue_high_water;
-    uint32_t iris_in_flight;
-    uint64_t iris_enqueued_total;
-    uint64_t iris_queue_full_total;
-    uint64_t iris_closed_rejections_total;
-    uint64_t iris_delivery_attempts_total;
-    uint64_t iris_retries_total;
-    uint64_t iris_fence_conflicts_total;
-    uint64_t iris_fence_refresh_failures_total;
-    uint64_t iris_completion_success_total;
-    uint64_t iris_completion_failure_total;
-    uint64_t iris_event_success_total;
-    uint64_t iris_event_failure_total;
-    uint64_t iris_shutdown_restored_completions_total;
-    uint64_t iris_shutdown_dropped_events_total;
-    uint64_t iris_last_drain_duration_ms;
-    uint64_t iris_max_drain_duration_ms;
-    int iris_reconcile_state;
-    int iris_reconcile_accepting_commands;
-    uint32_t iris_reconcile_inventory_queue_items;
-    uint32_t iris_reconcile_inventory_queue_capacity;
-    uint64_t iris_reconcile_cycles_total;
-    uint64_t iris_reconcile_failures_total;
-    uint64_t iris_reconcile_expected_fetches_total;
-    uint64_t iris_reconcile_inventory_pages_total;
-    uint64_t iris_reconcile_rebound_total;
-    uint64_t iris_reconcile_orphan_close_total;
-    uint64_t iris_reconcile_resource_lost_total;
-    uint64_t iris_reconcile_inventory_queue_full_total;
 } room_service_ivr_metrics_t;
 
 room_service_app_server_t *room_service_app_server_create(
