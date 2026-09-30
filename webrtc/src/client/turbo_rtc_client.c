@@ -557,6 +557,13 @@ turbo_rtc_client_status_t turbo_rtc_client_restart_ice(
         return TURBO_RTC_CLIENT_EHTTP;
     }
 
+    /*
+     * A 200 restart response commits the remote resource generation before
+     * local application of the returned fragment. Track the new strong ETag
+     * even if the local PeerConnection later rejects that fragment.
+     */
+    memcpy(client->session_etag, response.etag,
+           strlen(response.etag) + 1u);
     apply_result = turbo_peer_connection_apply_remote_ice_sdpfrag(
         client->pc, response.body, strlen(response.body));
     if (apply_result != 1) {
@@ -564,8 +571,6 @@ turbo_rtc_client_status_t turbo_rtc_client_restart_ice(
         return TURBO_RTC_CLIENT_ESDP;
     }
 
-    memcpy(client->session_etag, response.etag,
-           strlen(response.etag) + 1u);
     client->connect_started_ms = salts_monotonic_ms();
 
     if (turbo_rtc_client_refresh_peer_state(client) !=
