@@ -15,6 +15,7 @@
       "features": [
         "openh264",
         "opus",
+        "iconv",
         "xml2"
       ]
     },
