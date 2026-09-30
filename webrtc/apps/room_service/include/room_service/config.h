@@ -62,39 +62,6 @@ typedef struct room_service_app_config_s {
     int dry_run;
     const char *log_level;
 
-    /* Iris owns workflow state; RoomService only returns provider facts. */
-    const char *iris_control_host;
-    int iris_control_port;
-    const char *iris_control_path;
-    const char *iris_provider_instance_id;
-    const char *iris_identity;
-    const char *iris_control_ca_file;
-    const char *iris_control_cert_file;
-    const char *iris_control_key_file;
-    const char *iris_control_key_password;
-    const char *iris_control_server_name;
-    int iris_control_use_tls;
-    int iris_control_allow_insecure_loopback;
-    int iris_ack_timeout_ms;
-
-    const char *iris_event_store_config;
-    const char *iris_event_store_channel;
-    const char *iris_command_ledger_channel;
-    int iris_correlation_capacity;
-    int iris_completion_queue_capacity;
-    int iris_reconcile_inventory_queue_capacity;
-    int iris_outbox_request_queue_capacity;
-    int iris_command_ledger_queue_capacity;
-    int iris_command_terminal_retention_seconds;
-    int iris_command_retention_batch_size;
-    int iris_dead_retention_seconds;
-    int iris_archive_retention_seconds;
-    int iris_retention_sweep_interval_ms;
-    int iris_retention_sweep_batch_size;
-    int iris_retry_max_attempts;
-    int iris_retry_backoff_ms;
-    int iris_drain_timeout_ms;
-
     /* IVR CHTTP HTTP/1.1 WebSocket endpoint. Zero disables IVR transport. */
     const char *control_ws_bind_host;
     int control_ws_bind_port;

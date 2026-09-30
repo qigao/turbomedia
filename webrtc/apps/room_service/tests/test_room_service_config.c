@@ -292,24 +292,6 @@ spec("room service TOML configuration") {
         room_service_app_config_cleanup(&config);
     }
 
-    it("rejects the retired Iris provider transport") {
-        static const char retired[] =
-            "[iris_provider]\n"
-            "control_ws_host = \"127.0.0.1\"\n";
-        room_service_app_config_t config;
-        char *path = write_toml(retired);
-
-        room_service_app_config_init(&config);
-        if (path) {
-            check_equal(room_service_app_config_load(&config, path), -1);
-            check_null(config.private_data);
-        }
-        config.iris_control_host = "127.0.0.1";
-        check_equal(room_service_app_config_validate(&config), -1);
-        room_service_app_config_cleanup(&config);
-        remove_toml(path);
-    }
-
     it("rejects unknown sections without changing the current configuration") {
         static const char toml[] = "[unexpected]\nenabled = true\n";
         room_service_app_config_t config;
