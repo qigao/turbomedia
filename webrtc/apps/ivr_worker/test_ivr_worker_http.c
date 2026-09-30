@@ -79,7 +79,7 @@ void test_opus_offer_uses_rfc7587_rtp_clock(void) {
     char offer[TURBO_HTTP_MEDIA_MAX_SDP];
 
     memset(offer, 0, sizeof(offer));
-    ivr_sdp_build_minimal_audio_offer(source, offer, sizeof(offer), 16000,
+    turbo_http_media_sdp_build_minimal_audio_offer(source, offer, sizeof(offer), 16000,
                                       "sendonly");
 
     check_not_null(strstr(offer,
