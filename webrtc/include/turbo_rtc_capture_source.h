@@ -92,8 +92,9 @@ TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_capture_source_start(
  *
  * A disconnected/connecting client returns ESTATE and retains the exact
  * queue-head frame. Continued capture remains bounded and will fail with
- * EQUEUE if the fixed queue fills; no DROP_OLDEST or unbounded buffering is
- * used.
+ * EQUEUE if the fixed queue fills. Any other RTCClient send failure is fatal
+ * for the source and stops new capture admission. No DROP_OLDEST or unbounded
+ * buffering is used.
  */
 TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
     turbo_rtc_capture_source_t *source,
