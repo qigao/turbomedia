@@ -611,14 +611,19 @@ turbo_rtc_client_status_t turbo_rtc_client_poll(
 }
 
 turbo_rtc_client_status_t turbo_rtc_client_send_audio(
-    turbo_rtc_client_t *client, const void *pcm, size_t len,
-    uint64_t timestamp_us) {
+    turbo_rtc_client_t *client, const void *pcm, size_t len) {
     size_t frame_bytes;
+    size_t expected_samples;
+    size_t expected_len;
     if (!client || !pcm || len == 0u) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
-    frame_bytes = (size_t)client->channels * 2u;
-    if (frame_bytes == 0u || len % frame_bytes != 0u) {
+    frame_bytes = (size_t)client->channels * sizeof(int16_t);
+    expected_samples =
+        (size_t)client->sample_rate * client->frame_size_ms / 1000u;
+    expected_len = expected_samples * frame_bytes;
+    if (frame_bytes == 0u || expected_samples == 0u ||
+        len != expected_len) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
     if (client->state != TURBO_RTC_CLIENT_CONNECTED ||
@@ -626,8 +631,7 @@ turbo_rtc_client_status_t turbo_rtc_client_send_audio(
         return TURBO_RTC_CLIENT_ESTATE;
     }
     if (turbo_media_track_send_frame(
-            client->audio_track, (const uint8_t *)pcm, len,
-            timestamp_us) != 0) {
+            client->audio_track, (const uint8_t *)pcm, len, 0u) != 0) {
         return TURBO_RTC_CLIENT_EIO;
     }
     client->frames_sent++;
