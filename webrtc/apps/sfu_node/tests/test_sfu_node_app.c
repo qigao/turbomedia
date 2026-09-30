@@ -2423,8 +2423,18 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   response = NULL;
 
   /*
+   * WHEP relays only explicitly desired subscriptions. The WHIP session
+   * auto-registers its first video track as "alice-video"; record the desired
+   * receiver state before the WHEP session exists so creation can materialize
+   * exactly that relay track.
+   */
+  check_equal((int)(sfu_node_app_server_set_track_subscription(
+                     sfu_server, "room-media-http", "bob", "alice-video", 1,
+                     TURBO_ROOM_VIDEO_LAYER_LOW)), (int)(0));
+
+  /*
    * Keep WHIP alive while qualifying WHEP so the recv-only viewer negotiates
-   * against an actually published track.
+   * against an actually published, explicitly subscribed track.
    */
   memset(&viewer_state, 0, sizeof(viewer_state));
   peer_config.user_data = &viewer_state;
