@@ -23,7 +23,6 @@
 
 #include "ivr/ivr_worker.h"
 #include "ivr_room_bridge.h"
-#include "iris_resource_observer.h"
 #include "turbo_room_service.h"
 #include <stdint.h>
 
@@ -97,8 +96,8 @@ typedef struct {
                                          size_t error_capacity);
 } ivr_control_media_ops_t;
 
-/* Upstream Iris/provider observation boundary. RoomService forwards owning
-   media facts through this interface and never interprets them as workflow
+/* Upstream media observation boundary. RoomService forwards owning media
+   facts through this interface and never interprets them as workflow
    transitions. */
 typedef struct {
     void *context;
@@ -216,7 +215,7 @@ ivr_status_t ivr_control_adapter_get_assignment(
     const ivr_control_adapter_t *adapter, const char *message_id,
     ivr_control_assignment_t *out);
 
-/* Route one Iris-owned media command to the worker that owns the accepted
+/* Route one upstream media command to the worker that owns the accepted
    (room_id, call_id, call_generation) assignment. The caller must leave
    command->worker_id empty; the adapter derives and stamps the authenticated
    media worker route. On success out_worker_id receives that worker id.
@@ -231,12 +230,6 @@ ivr_status_t ivr_control_adapter_send_media_command(
 ivr_status_t ivr_control_adapter_request_inventory(
     ivr_control_adapter_t *adapter,
     const ivr_worker_inventory_request_t *request);
-
-/* Copies the current exact dialog-route observation under the adapter lock.
-   It performs no CHTTP H1 WebSocket I/O and invokes no callback. */
-ivr_status_t ivr_control_adapter_observe_media_command(
-    const ivr_control_adapter_t *adapter, const ivr_media_command_t *command,
-    iris_resource_observation_t *observation);
 
 /* Copy a bounded worker-registry snapshot without retaining adapter storage.
    If capacity is too small, returns IVR_ENOSPC and sets out_total to the
