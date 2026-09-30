@@ -25,6 +25,7 @@ target_link_libraries(ivr_worker
   PRIVATE
     turbo_media_ivr
     turbo_media_ivr_rtc
+    turbo_media_http_media_client
     TurboMedia::RTC
     CHttp::Client
     CHttp::Server
