@@ -11,16 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum {
-    ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS_DEFAULT = 86400,
-    ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT = 2592000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_DEFAULT = 60000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MIN = 1000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT = 128,
-    ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX = 31536000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MAX = 3600000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX = 256
-};
 
 typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_FILE = 0,
@@ -44,18 +34,6 @@ typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID,
     ROOM_CONFIG_STRING_SFU_AUTH_SECRET,
     ROOM_CONFIG_STRING_LOG_LEVEL,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_HOST,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_PATH,
-    ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
-    ROOM_CONFIG_STRING_IRIS_IDENTITY,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_CA_FILE,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_CERT_FILE,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_FILE,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_PASSWORD,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_SERVER_NAME,
-    ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
-    ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
-    ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
     ROOM_CONFIG_STRING_CONTROL_WS_BIND_HOST,
     ROOM_CONFIG_STRING_CONTROL_WS_PATH,
     ROOM_CONFIG_STRING_CONTROL_WS_CA_FILE,
@@ -304,42 +282,6 @@ void room_service_app_config_init(room_service_app_config_t *config) {
     config->auto_create_rooms = 1;
     config->dry_run = 0;
     config->log_level = "info";
-    config->iris_control_host = NULL;
-    config->iris_control_port = 0;
-    config->iris_control_path = "/internal/iris/control";
-    config->iris_provider_instance_id = NULL;
-    config->iris_identity = NULL;
-    config->iris_control_ca_file = NULL;
-    config->iris_control_cert_file = NULL;
-    config->iris_control_key_file = NULL;
-    config->iris_control_key_password = NULL;
-    config->iris_control_server_name = NULL;
-    config->iris_control_use_tls = 1;
-    config->iris_control_allow_insecure_loopback = 0;
-    config->iris_ack_timeout_ms = 5000;
-    config->iris_event_store_config = NULL;
-    config->iris_event_store_channel = NULL;
-    config->iris_command_ledger_channel = NULL;
-    config->iris_correlation_capacity = 1024;
-    config->iris_completion_queue_capacity = 1024;
-    config->iris_reconcile_inventory_queue_capacity = 8;
-    config->iris_outbox_request_queue_capacity = 1024;
-    config->iris_command_ledger_queue_capacity = 1024;
-    config->iris_command_terminal_retention_seconds =
-        ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT;
-    config->iris_command_retention_batch_size =
-        ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT;
-    config->iris_dead_retention_seconds =
-        ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS_DEFAULT;
-    config->iris_archive_retention_seconds =
-        ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT;
-    config->iris_retention_sweep_interval_ms =
-        ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_DEFAULT;
-    config->iris_retention_sweep_batch_size =
-        ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT;
-    config->iris_retry_max_attempts = 8;
-    config->iris_retry_backoff_ms = 250;
-    config->iris_drain_timeout_ms = 30000;
     config->control_ws_bind_host = "127.0.0.1";
     config->control_ws_bind_port = 0;
     config->control_ws_path = "/internal/ivr/control";
@@ -394,27 +336,6 @@ static int room_service_config_clone_strings(
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID, sfu_auth_key_id);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_SECRET, sfu_auth_secret);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_LOG_LEVEL, log_level);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_HOST, iris_control_host);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_PATH, iris_control_path);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
-                      iris_provider_instance_id);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_IDENTITY, iris_identity);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_CA_FILE,
-                      iris_control_ca_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_CERT_FILE,
-                      iris_control_cert_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_FILE,
-                      iris_control_key_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_PASSWORD,
-                      iris_control_key_password);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_SERVER_NAME,
-                      iris_control_server_name);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
-                      iris_event_store_config);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
-                      iris_event_store_channel);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
-                      iris_command_ledger_channel);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_BIND_HOST, control_ws_bind_host);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_PATH, control_ws_path);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_CA_FILE, control_ws_ca_file);
@@ -1124,18 +1045,6 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
          config->sfu_revocation_server_names[0] == '\0') ||
         (config->sfu_control_token && config->sfu_control_token[0] == '\0') ||
         (config->sfu_ca_file && config->sfu_ca_file[0] == '\0')) {
-        return -1;
-    }
-    /* The legacy Iris outbound provider transport is retired. HTTP/REST and
-       internal H1 WebSocket ingress are owned exclusively by CHttp Server.
-       Keep these fields only as source-level tombstones until the config ABI is
-       compacted; any attempt to configure them is rejected. */
-    if (config->iris_control_host || config->iris_event_store_config ||
-        config->iris_event_store_channel || config->iris_command_ledger_channel ||
-        config->iris_provider_instance_id || config->iris_identity ||
-        config->iris_control_ca_file || config->iris_control_cert_file ||
-        config->iris_control_key_file || config->iris_control_key_password ||
-        config->iris_control_server_name) {
         return -1;
     }
     {
