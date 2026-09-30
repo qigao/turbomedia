@@ -99,6 +99,14 @@ const turbo_codec_ops_t *turbo_codec_find_by_name(const char *name) {
     return NULL;
 }
 
+int turbo_codec_validate_config(const char *name, const void *config) {
+    const turbo_codec_ops_t *ops = turbo_codec_find_by_name(name);
+    if (!ops || !config || !ops->validate_config) {
+        return TURBO_CODEC_ERR_INVALID;
+    }
+    return ops->validate_config(config);
+}
+
 /* =============================================================================
  * Codec Instance Functions
  * ============================================================================= */
