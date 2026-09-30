@@ -122,8 +122,7 @@ cmake_add_test(
           ivr_worker_health.c
           ivr_worker_metrics.c
           ivr_worker_http.c
-          ../../ivr/src/ivr_http_media_client.c
-  LIBS Salts::TinyTest Salts::Core CHttp::Client CHttp::Server Salts::CNet
+  LIBS turbo_media_http_media_client Salts::TinyTest Salts::Core CHttp::Client CHttp::Server Salts::CNet
        $<$<PLATFORM_ID:Linux>:pthread>
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}
            ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src

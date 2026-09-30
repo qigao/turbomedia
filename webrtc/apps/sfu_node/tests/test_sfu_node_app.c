@@ -2,7 +2,7 @@
 #include "sfu_node/config.h"
 #include "sfu_node/http_api.h"
 #include "sfu_node/server.h"
-#include "ivr_http_media_client.h"
+#include "turbo_http_media_client.h"
 #include "turbo_media_auth.h"
 #include "turbo_recorder_internal.h"
 #include <turbo_crypto.h>
@@ -252,10 +252,10 @@ static int parse_json_text(const char *json_text, json_value_t **out_root) {
 typedef struct sfu_test_http_response_s {
   int status_code;
   size_t body_len;
-  char location[sizeof(((ivr_http_media_response_t *)0)->location)];
-  char etag[sizeof(((ivr_http_media_response_t *)0)->etag)];
-  char content_type[sizeof(((ivr_http_media_response_t *)0)->content_type)];
-  char body[sizeof(((ivr_http_media_response_t *)0)->body)];
+  char location[sizeof(((turbo_http_media_response_t *)0)->location)];
+  char etag[sizeof(((turbo_http_media_response_t *)0)->etag)];
+  char content_type[sizeof(((turbo_http_media_response_t *)0)->content_type)];
+  char body[sizeof(((turbo_http_media_response_t *)0)->body)];
 } sfu_test_http_response_t;
 
 static void sfu_test_http_response_free(sfu_test_http_response_t *response) {
@@ -283,9 +283,9 @@ static sfu_test_http_response_t *sfu_test_http_request(
     const char *content_type, const char *bearer_token, const char *if_match,
     const char *body, size_t body_len, const char *ca_file,
     const char *server_name, uint64_t timeout_ms) {
-  ivr_http_media_client_config_t config = IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
-  ivr_http_media_client_t *client = NULL;
-  ivr_http_media_response_t response;
+  turbo_http_media_client_config_t config = TURBO_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+  turbo_http_media_client_t *client = NULL;
+  turbo_http_media_response_t response;
   sfu_test_http_response_t *copy;
   int status;
 
@@ -299,12 +299,12 @@ static sfu_test_http_response_t *sfu_test_http_request(
   config.server_name = server_name;
   config.timeout_ms = timeout_ms;
   config.allow_plaintext_loopback = strncmp(base_url, "http://", 7u) == 0;
-  if (ivr_http_media_client_create(&config, &client) != 0) {
+  if (turbo_http_media_client_create(&config, &client) != 0) {
     return NULL;
   }
-  status = ivr_http_media_request(client, method, path, content_type,
+  status = turbo_http_media_request(client, method, path, content_type,
                                   if_match, body, &response);
-  ivr_http_media_client_destroy(client);
+  turbo_http_media_client_destroy(client);
   if (status != 0) {
     return NULL;
   }

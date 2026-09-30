@@ -72,7 +72,6 @@ message(STATUS "SFU Node: ${CMAKE_CURRENT_SOURCE_DIR}")
 message(STATUS "SFU Node Output: ${CMAKE_BINARY_DIR}/bin/sfu_node")
 
 add_executable(test_sfu_node_app tests/test_sfu_node_app.c
-                                 ../../ivr/src/ivr_http_media_client.c
                                  ${SFU_NODE_CORE_SOURCES})
 
 target_include_directories(
@@ -86,6 +85,7 @@ target_link_libraries(
   test_sfu_node_app
   PRIVATE ${SFU_NODE_LIBS}
           TurboMedia::Demuxer
+          turbo_media_http_media_client
           CHttp::Client CHttp::Server
           Salts::TinyTest
           $<$<PLATFORM_ID:Linux>:m>
