@@ -360,6 +360,10 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
             return status;
         }
 
+        /*
+         * Dequeue only after RTCClient accepted the exact frame. Backpressure
+         * or ESTATE leaves queue_head untouched; overflow never evicts old PCM.
+         */
         salts_mutex_lock(&source->lock);
         source->queue_head =
             (source->queue_head + 1u) % source->frame_queue_capacity;
