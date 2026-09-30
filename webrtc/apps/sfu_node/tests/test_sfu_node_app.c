@@ -2233,6 +2233,7 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   char ufrag[64];
   char pwd[96];
   char *location = NULL;
+  char *publisher_location = NULL;
   char *etag = NULL;
   char *next_etag = NULL;
   char *viewer_etag = NULL;
@@ -2421,19 +2422,10 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   sfu_test_http_response_free(response);
   response = NULL;
 
-  response = http_media_request(
-      base_url, "DELETE", location, NULL, "test-media-token", NULL, NULL, 0);
-  check_not_null(response);
-  check_equal((int)(response->status_code), (int)(204));
-  sfu_test_http_response_free(response);
-  response = NULL;
-  response = http_media_request(
-      base_url, "DELETE", location, NULL, "test-media-token", NULL, NULL, 0);
-  check_not_null(response);
-  check_equal((int)(response->status_code), (int)(404));
-  sfu_test_http_response_free(response);
-  response = NULL;
-
+  /*
+   * Keep WHIP alive while qualifying WHEP so the recv-only viewer negotiates
+   * against an actually published track.
+   */
   memset(&viewer_state, 0, sizeof(viewer_state));
   peer_config.user_data = &viewer_state;
   viewer = turbo_peer_connection_create(&peer_config, &peer_callbacks);
@@ -2447,7 +2439,7 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   check_not_null(response);
   check_equal((int)(response->status_code), (int)(201));
   check_greater((int)response->body_len, 0);
-  free(location);
+  publisher_location = location;
   location = sfu_test_http_response_get_header(response, "Location");
   viewer_etag = sfu_test_http_response_get_header(response, "ETag");
   check_not_null(location);
@@ -2526,12 +2518,28 @@ void test_sfu_node_whip_whep_resources_auth_restart_and_delete(void) {
   check_not_null(response);
   check_equal((int)(response->status_code), (int)(204));
   sfu_test_http_response_free(response);
+  response = NULL;
+
+  response = http_media_request(
+      base_url, "DELETE", publisher_location, NULL,
+      "test-media-token", NULL, NULL, 0);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(204));
+  sfu_test_http_response_free(response);
+  response = NULL;
+  response = http_media_request(
+      base_url, "DELETE", publisher_location, NULL,
+      "test-media-token", NULL, NULL, 0);
+  check_not_null(response);
+  check_equal((int)(response->status_code), (int)(404));
+  sfu_test_http_response_free(response);
 
   free(viewer_next_etag);
   free(viewer_etag);
   free(next_etag);
   free(etag);
   free(location);
+  free(publisher_location);
   free(signed_subscribe_token);
   free(signed_publish_token);
   turbo_peer_connection_destroy(viewer);
