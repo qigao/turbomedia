@@ -313,6 +313,7 @@ static int live_run_publish(const live_options_t *options) {
     turbo_rtc_client_status_t status;
     const char *token = live_token(options);
     int client_prepared = 0;
+    int capture_start_attempted = 0;
     int capture_started = 0;
     int result = 1;
 
@@ -379,6 +380,7 @@ static int live_run_publish(const live_options_t *options) {
         }
 
         if (client_snapshot.connected && !capture_started) {
+            capture_start_attempted = 1;
             status = turbo_rtc_capture_source_start(capture);
             if (status != TURBO_RTC_CLIENT_OK) {
                 fprintf(stderr, "capture source start failed: %d\n", (int)status);
@@ -402,11 +404,18 @@ static int live_run_publish(const live_options_t *options) {
     result = 0;
 
 cleanup:
-    if (capture_started) {
-        status = turbo_rtc_capture_source_stop(capture);
-        if (status != TURBO_RTC_CLIENT_OK) {
-            fprintf(stderr, "capture source stop failed: %d\n", (int)status);
-            result = 1;
+    if (capture_started || capture_start_attempted) {
+        turbo_rtc_capture_source_snapshot_t capture_snapshot;
+        turbo_rtc_capture_source_snapshot_init(&capture_snapshot);
+        if (turbo_rtc_capture_source_snapshot(capture, &capture_snapshot) ==
+                TURBO_RTC_CLIENT_OK &&
+            (capture_snapshot.state == TURBO_RTC_CAPTURE_SOURCE_STARTED ||
+             capture_snapshot.state == TURBO_RTC_CAPTURE_SOURCE_FAILED)) {
+            status = turbo_rtc_capture_source_stop(capture);
+            if (status != TURBO_RTC_CLIENT_OK) {
+                fprintf(stderr, "capture source stop failed: %d\n", (int)status);
+                result = 1;
+            }
         }
     }
     if (client_prepared) {
