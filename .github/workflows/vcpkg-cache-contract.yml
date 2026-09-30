@@ -56,6 +56,28 @@ jobs:
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
             --triplet x64-linux
 
+      - name: Verify Linux clean L2 restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_root="$RUNNER_TEMP/turbomedia-linux-clean-l2"
+          log="$RUNNER_TEMP/turbomedia-linux-clean-l2.log"
+          config="$RUNNER_TEMP/qigao-vcpkg-nuget.config"
+          test -f "$config"
+          rm -rf "$clean_root" "$VCPKG_BINARY_CACHE" "$VCPKG_ROOT/packages"
+          mkdir -p "$VCPKG_BINARY_CACHE"
+          export VCPKG_BINARY_SOURCES="clear;nugettimeout,1800;nugetconfig,$config,read"
+          "$VCPKG_ROOT/vcpkg" install \
+            --x-manifest-root=. \
+            --x-install-root="$clean_root" \
+            --triplet x64-linux \
+            --only-binarycaching 2>&1 | tee "$log"
+          grep -Eq 'Restored [1-9][0-9]* package\(s\) from NuGet' "$log"
+          if grep -Eq '^Building ' "$log"; then
+            echo "clean L2 verification unexpectedly attempted a source build" >&2
+            exit 1
+          fi
+
   windows:
     name: Windows x64 cache
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -85,6 +107,25 @@ jobs:
           $args = @("install", "--x-manifest-root=.", "--x-install-root=$installed", "--triplet=x64-windows")
           & "$env:VCPKG_ROOT\vcpkg.exe" @args
           if ($LASTEXITCODE -ne 0) { throw "Windows media cache warm failed" }
+
+      - name: Verify Windows clean L2 restore
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $cleanRoot = Join-Path $env:RUNNER_TEMP "turbomedia-windows-clean-l2"
+          $log = Join-Path $env:RUNNER_TEMP "turbomedia-windows-clean-l2.log"
+          $config = Join-Path $env:RUNNER_TEMP "qigao-vcpkg-nuget.config"
+          if (-not (Test-Path -LiteralPath $config -PathType Leaf)) { throw "NuGet config is unavailable" }
+          Remove-Item -LiteralPath $cleanRoot -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $env:VCPKG_BINARY_CACHE -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath (Join-Path $env:VCPKG_ROOT "packages") -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_BINARY_CACHE | Out-Null
+          $env:VCPKG_BINARY_SOURCES = "clear;nugettimeout,1800;nugetconfig,$config,read"
+          & "$env:VCPKG_ROOT\vcpkg.exe" install "--x-manifest-root=." "--x-install-root=$cleanRoot" "--triplet=x64-windows" --only-binarycaching 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw "Windows clean L2 restore failed" }
+          $text = Get-Content -LiteralPath $log -Raw
+          if ($text -notmatch 'Restored [1-9][0-9]* package\(s\) from NuGet') { throw "Windows clean L2 restore did not use NuGet" }
+          if ($text -match '(?m)^Building ') { throw "Windows clean L2 verification attempted a source build" }
 
   android:
     name: Android arm64-v8a cache
@@ -119,11 +160,35 @@ jobs:
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
             --triplet arm64-android
 
+      - name: Verify Android clean L2 restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_root="$RUNNER_TEMP/turbomedia-android-clean-l2"
+          log="$RUNNER_TEMP/turbomedia-android-clean-l2.log"
+          config="$RUNNER_TEMP/qigao-vcpkg-nuget.config"
+          test -f "$config"
+          rm -rf "$clean_root" "$VCPKG_BINARY_CACHE" "$VCPKG_ROOT/packages"
+          mkdir -p "$VCPKG_BINARY_CACHE"
+          export VCPKG_BINARY_SOURCES="clear;nugettimeout,1800;nugetconfig,$config,read"
+          "$VCPKG_ROOT/vcpkg" install \
+            --x-manifest-root=. \
+            --x-install-root="$clean_root" \
+            --triplet arm64-android \
+            --only-binarycaching 2>&1 | tee "$log"
+          grep -Eq 'Restored [1-9][0-9]* package\(s\) from NuGet' "$log"
+          if grep -Eq '^Building ' "$log"; then
+            echo "clean L2 verification unexpectedly attempted a source build" >&2
+            exit 1
+          fi
+
   macos:
     name: macOS arm64 media cache
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: macos-15
     timeout-minutes: 120
+    env:
+      X_VCPKG_NUGET_ID_PREFIX: turbomedia
     steps:
       - uses: actions/checkout@v4
 
@@ -148,3 +213,25 @@ jobs:
             --x-manifest-root=. \
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
             --triplet arm64-osx
+
+      - name: Verify macOS clean L2 restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_root="$RUNNER_TEMP/turbomedia-macos-clean-l2"
+          log="$RUNNER_TEMP/turbomedia-macos-clean-l2.log"
+          config="$RUNNER_TEMP/qigao-vcpkg-nuget.config"
+          test -f "$config"
+          rm -rf "$clean_root" "$VCPKG_BINARY_CACHE" "$VCPKG_ROOT/packages"
+          mkdir -p "$VCPKG_BINARY_CACHE"
+          export VCPKG_BINARY_SOURCES="clear;nugettimeout,1800;nugetconfig,$config,read"
+          "$VCPKG_ROOT/vcpkg" install \
+            --x-manifest-root=. \
+            --x-install-root="$clean_root" \
+            --triplet arm64-osx \
+            --only-binarycaching 2>&1 | tee "$log"
+          grep -Eq 'Restored [1-9][0-9]* package\(s\) from NuGet' "$log"
+          if grep -Eq '^Building ' "$log"; then
+            echo "clean L2 verification unexpectedly attempted a source build" >&2
+            exit 1
+          fi
