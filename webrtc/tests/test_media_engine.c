@@ -156,6 +156,28 @@ static void test_media_track_rejects_invalid_configuration(void) {
   check_null(turbo_media_add_track(media, &track_config));
   check_equal((int)(turbo_media_get_track_count(media)), (int)(0));
 
+  track_config.direction = TURBO_MEDIA_DIRECTION_SENDONLY;
+  track_config.codec = TURBO_CODEC_PCMU;
+  track_config.audio.sample_rate = 44100;
+  track_config.audio.channels = 1;
+  track_config.audio.frame_size_ms = 20;
+  check_null(turbo_media_add_track(media, &track_config));
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(0));
+
+  track_config.audio.sample_rate = 8000;
+  track_config.audio.channels = 3;
+  check_null(turbo_media_add_track(media, &track_config));
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(0));
+
+  track_config.audio.channels = 1;
+  track_config.audio.frame_size_ms = 15;
+  check_null(turbo_media_add_track(media, &track_config));
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(0));
+
+  track_config.audio.frame_size_ms = 20;
+  check_not_null(turbo_media_add_track(media, &track_config));
+  check_equal((int)(turbo_media_get_track_count(media)), (int)(1));
+
   turbo_media_destroy(media);
   turbo_dc_peer_destroy(peer);
   turbo_dc_context_destroy(dc);
