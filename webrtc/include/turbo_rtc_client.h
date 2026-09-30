@@ -136,14 +136,17 @@ TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_client_poll(
     turbo_rtc_client_t *client);
 
 /*
- * Sends one borrowed interleaved signed-16 PCM frame through the connected
- * Opus track. The payload is consumed synchronously and is not retained.
+ * Sends exactly one configured Opus PCM frame through the connected track.
+ *
+ * The payload is borrowed interleaved signed-16 PCM and must contain exactly
+ * sample_rate * frame_size_ms / 1000 samples per channel. RTP timestamp
+ * ownership remains inside the track; callers do not project device/wall-clock
+ * timestamps into RTP time.
  */
 TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_client_send_audio(
     turbo_rtc_client_t *client,
     const void *pcm,
-    size_t len,
-    uint64_t timestamp_us);
+    size_t len);
 
 /*
  * Stops local media/PeerConnection ownership and DELETEs the WHIP resource.
