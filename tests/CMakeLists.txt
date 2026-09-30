@@ -22,7 +22,8 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
 
   set(CLIENT_ONLY_TESTS
       test_benchmark test_capture test_client_processing test_hls_public test_integration
-      test_mobile_optimizer test_android_capture test_player_audio test_rtc_client test_rtc_subscriber)
+      test_mobile_optimizer test_android_capture test_player_audio test_rtc_client
+      test_rtc_subscriber test_rtc_playback_sink)
   set(SERVER_ONLY_TESTS
       test_dash_local test_http_flv_local test_pipeline test_rtmp_metadata
       test_server_rtsp_adapter test_server_runtime test_webrtc)
@@ -55,7 +56,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   elseif(TEST_NAME STREQUAL "test_client_processing")
     list(APPEND TEST_LINK_LIBS TurboMedia::ClientProcessing
                                TurboMediaFFmpeg::avformat)
-  elseif(TEST_NAME STREQUAL "test_rtc_client" OR TEST_NAME STREQUAL "test_rtc_subscriber")
+  elseif(TEST_NAME STREQUAL "test_rtc_client" OR
+         TEST_NAME STREQUAL "test_rtc_subscriber" OR
+         TEST_NAME STREQUAL "test_rtc_playback_sink")
     list(APPEND TEST_LINK_LIBS TurboMedia::RTCClient)
   elseif(TEST_NAME STREQUAL "test_benchmark")
     list(APPEND TEST_LINK_LIBS TurboMedia::Codec Salts::Capture Salts::Playback)
