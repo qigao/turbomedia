@@ -1,6 +1,7 @@
 #include <orm_driver_interface.h>
 #include <salts/plugin.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,10 +21,24 @@ typedef struct fixture_module_s {
 typedef struct fixture_connection_s {
     fixture_module_t *module;
     uint32_t live;
+    uint32_t active_cursors;
+    uint32_t active_transactions;
 } fixture_connection_t;
+
+typedef struct fixture_cursor_s {
+    fixture_connection_t *connection;
+    uint32_t live;
+} fixture_cursor_t;
+
+typedef struct fixture_transaction_s {
+    fixture_connection_t *connection;
+    uint32_t live;
+} fixture_transaction_t;
 
 static fixture_module_t g_module;
 static fixture_connection_t g_connections[4];
+static fixture_cursor_t g_cursors[8];
+static fixture_transaction_t g_transactions[4];
 static const char g_driver_id[] = TURBOMEDIA_ORM_TEST_DRIVER_ID;
 
 static void fixture_error(orm_error_t *error, orm_status_t status) {
@@ -36,6 +51,16 @@ static void fixture_error(orm_error_t *error, orm_status_t status) {
 static int fixture_env_enabled(const char *name) {
     const char *value = getenv(name);
     return value && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static void fixture_write_marker(const char *env_name) {
+    const char *path = getenv(env_name);
+    FILE *stream;
+    if (!path || path[0] == '\0') return;
+    stream = fopen(path, "wb");
+    if (!stream) return;
+    fputc('1', stream);
+    fclose(stream);
 }
 
 static salts_plugin_status SALTS_PLUGIN_CALL fixture_start(void *self) {
@@ -68,9 +93,84 @@ static void SALTS_PLUGIN_CALL fixture_destroy(void *self) {
 static void ORM_DRIVER_CALL fixture_destroy_connection(void *context) {
     fixture_connection_t *connection = (fixture_connection_t *)context;
     if (!connection || !connection->live || !connection->module) return;
+    if (connection->active_cursors != 0u ||
+        connection->active_transactions != 0u)
+        abort();
     if (connection->module->live_connections > 0u)
         --connection->module->live_connections;
     memset(connection, 0, sizeof(*connection));
+}
+
+static orm_status_t ORM_DRIVER_CALL fixture_cursor_next(
+    void *context, cserde_reader *reader, orm_driver_step_v1 *step,
+    orm_error_t *error) {
+    fixture_cursor_t *cursor = (fixture_cursor_t *)context;
+    if (reader) memset(reader, 0, sizeof(*reader));
+    if (step) {
+        memset(step, 0, sizeof(*step));
+        step->header =
+            (orm_driver_header_v1)FIXTURE_HEADER(orm_driver_step_v1);
+        step->kind = ORM_DRIVER_STEP_ERROR;
+    }
+    if (!cursor || !cursor->live || !reader || !step) {
+        fixture_error(error, ORM_STATUS_INVALID_ARGUMENT);
+        return ORM_STATUS_INVALID_ARGUMENT;
+    }
+    if (fixture_env_enabled("TURBOMEDIA_ORM_TEST_FAIL_QUERY")) {
+        fixture_error(error, ORM_STATUS_INTERNAL_ERROR);
+        return ORM_STATUS_INTERNAL_ERROR;
+    }
+    step->kind = ORM_DRIVER_STEP_DONE;
+    fixture_error(error, ORM_STATUS_OK);
+    return ORM_STATUS_OK;
+}
+
+static void ORM_DRIVER_CALL fixture_cursor_cancel(void *context) {
+    (void)context;
+}
+
+static void ORM_DRIVER_CALL fixture_cursor_destroy(void *context) {
+    fixture_cursor_t *cursor = (fixture_cursor_t *)context;
+    if (!cursor || !cursor->live || !cursor->connection) return;
+    if (cursor->connection->active_cursors == 0u) abort();
+    --cursor->connection->active_cursors;
+    memset(cursor, 0, sizeof(*cursor));
+}
+
+static const orm_driver_cursor_ops_v1 g_cursor_ops = {
+    FIXTURE_HEADER(orm_driver_cursor_ops_v1),
+    fixture_cursor_next,
+    fixture_cursor_cancel,
+    fixture_cursor_destroy,
+    NULL,
+    NULL};
+
+static orm_status_t ORM_DRIVER_CALL fixture_open_cursor(
+    void *context, const orm_driver_plan_view_v1 *plan,
+    const orm_driver_limits_v1 *limits, orm_driver_cursor_v1 *out,
+    orm_error_t *error) {
+    fixture_connection_t *connection = (fixture_connection_t *)context;
+    size_t i;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!connection || !connection->live || !plan || !limits || !out) {
+        fixture_error(error, ORM_STATUS_INVALID_ARGUMENT);
+        return ORM_STATUS_INVALID_ARGUMENT;
+    }
+    for (i = 0u; i < sizeof(g_cursors) / sizeof(g_cursors[0]); ++i) {
+        if (!g_cursors[i].live) {
+            g_cursors[i].connection = connection;
+            g_cursors[i].live = 1u;
+            ++connection->active_cursors;
+            out->header =
+                (orm_driver_header_v1)FIXTURE_HEADER(orm_driver_cursor_v1);
+            out->context = &g_cursors[i];
+            out->ops = (orm_driver_table_v1)FIXTURE_TABLE(&g_cursor_ops);
+            fixture_error(error, ORM_STATUS_OK);
+            return ORM_STATUS_OK;
+        }
+    }
+    fixture_error(error, ORM_STATUS_LIMIT_EXCEEDED);
+    return ORM_STATUS_LIMIT_EXCEEDED;
 }
 
 static orm_status_t ORM_DRIVER_CALL fixture_execute_command(
@@ -89,12 +189,111 @@ static orm_status_t ORM_DRIVER_CALL fixture_execute_command(
     return ORM_STATUS_OK;
 }
 
+static void ORM_DRIVER_CALL fixture_destroy_transaction(void *context) {
+    fixture_transaction_t *transaction = (fixture_transaction_t *)context;
+    if (!transaction || !transaction->live || !transaction->connection)
+        return;
+    if (transaction->connection->active_transactions > 0u)
+        --transaction->connection->active_transactions;
+    memset(transaction, 0, sizeof(*transaction));
+}
+
+static orm_status_t ORM_DRIVER_CALL fixture_transaction_open_cursor(
+    void *context, const orm_driver_plan_view_v1 *plan,
+    const orm_driver_limits_v1 *limits, orm_driver_cursor_v1 *out,
+    orm_error_t *error) {
+    fixture_transaction_t *transaction = (fixture_transaction_t *)context;
+    if (!transaction || !transaction->live || !transaction->connection) {
+        if (out) memset(out, 0, sizeof(*out));
+        fixture_error(error, ORM_STATUS_INVALID_ARGUMENT);
+        return ORM_STATUS_INVALID_ARGUMENT;
+    }
+    return fixture_open_cursor(transaction->connection, plan, limits, out,
+                               error);
+}
+
+static orm_status_t ORM_DRIVER_CALL fixture_transaction_execute_command(
+    void *context, const orm_driver_plan_view_v1 *plan,
+    const orm_driver_limits_v1 *limits, uint64_t *affected_rows,
+    orm_error_t *error) {
+    fixture_transaction_t *transaction = (fixture_transaction_t *)context;
+    if (!transaction || !transaction->live || !transaction->connection) {
+        if (affected_rows) *affected_rows = 0u;
+        fixture_error(error, ORM_STATUS_INVALID_ARGUMENT);
+        return ORM_STATUS_INVALID_ARGUMENT;
+    }
+    return fixture_execute_command(transaction->connection, plan, limits,
+                                   affected_rows, error);
+}
+
+static orm_status_t ORM_DRIVER_CALL fixture_transaction_commit(
+    void *context, orm_error_t *error) {
+    fixture_transaction_t *transaction = (fixture_transaction_t *)context;
+    if (!transaction || !transaction->live) {
+        fixture_error(error, ORM_STATUS_INVALID_ARGUMENT);
+        return ORM_STATUS_INVALID_ARGUMENT;
+    }
+    fixture_error(error, ORM_STATUS_OK);
+    return ORM_STATUS_OK;
+}
+
+static orm_status_t ORM_DRIVER_CALL fixture_transaction_rollback(
+    void *context, orm_error_t *error) {
+    fixture_transaction_t *transaction = (fixture_transaction_t *)context;
+    if (!transaction || !transaction->live) {
+        fixture_error(error, ORM_STATUS_INVALID_ARGUMENT);
+        return ORM_STATUS_INVALID_ARGUMENT;
+    }
+    fixture_write_marker("TURBOMEDIA_ORM_TEST_ROLLBACK_MARKER");
+    fixture_error(error, ORM_STATUS_OK);
+    return ORM_STATUS_OK;
+}
+
+static const orm_driver_transaction_ops_v1 g_transaction_ops = {
+    FIXTURE_HEADER(orm_driver_transaction_ops_v1),
+    fixture_destroy_transaction,
+    fixture_transaction_open_cursor,
+    fixture_transaction_execute_command,
+    fixture_transaction_commit,
+    fixture_transaction_rollback,
+    NULL,
+    NULL,
+    NULL};
+
+static orm_status_t ORM_DRIVER_CALL fixture_begin_transaction(
+    void *context, orm_isolation_t isolation, orm_driver_transaction_v1 *out,
+    orm_error_t *error) {
+    fixture_connection_t *connection = (fixture_connection_t *)context;
+    size_t i;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!connection || !connection->live || !out ||
+        isolation != ORM_ISOLATION_SERIALIZABLE) {
+        fixture_error(error, ORM_STATUS_INVALID_ARGUMENT);
+        return ORM_STATUS_INVALID_ARGUMENT;
+    }
+    for (i = 0u; i < sizeof(g_transactions) / sizeof(g_transactions[0]); ++i) {
+        if (!g_transactions[i].live) {
+            g_transactions[i].connection = connection;
+            g_transactions[i].live = 1u;
+            ++connection->active_transactions;
+            out->header =
+                (orm_driver_header_v1)FIXTURE_HEADER(orm_driver_transaction_v1);
+            out->context = &g_transactions[i];
+            out->ops = (orm_driver_table_v1)FIXTURE_TABLE(&g_transaction_ops);
+            fixture_error(error, ORM_STATUS_OK);
+            return ORM_STATUS_OK;
+        }
+    }
+    fixture_error(error, ORM_STATUS_LIMIT_EXCEEDED);
+    return ORM_STATUS_LIMIT_EXCEEDED;
+}
+
 static const orm_driver_connection_ops_v1 g_connection_ops = {
     FIXTURE_HEADER(orm_driver_connection_ops_v1),
     fixture_destroy_connection,
-    NULL,
+    fixture_open_cursor,
     fixture_execute_command,
-    NULL};
+    fixture_begin_transaction};
 
 static orm_status_t ORM_DRIVER_CALL fixture_create_connection(
     void *self, const orm_config_t *config,
@@ -146,7 +345,10 @@ static uint64_t ORM_DRIVER_CALL fixture_execution_models(void *self) {
     return self == &g_module ? ORM_DRIVER_EXEC_CALLER_BLOCKING : UINT64_C(0);
 }
 
-#define FIXTURE_CAPABILITIES ORM_DRIVER_CAP_RAW_SQL
+#define FIXTURE_CAPABILITIES                                                \
+    (ORM_DRIVER_CAP_SELECT | ORM_DRIVER_CAP_RAW_SQL |                        \
+     ORM_DRIVER_CAP_TRANSACTION | ORM_DRIVER_CAP_INCREMENTAL_ROWS |          \
+     ORM_DRIVER_CAP_SERIALIZABLE)
 
 static const TurboDb_Driver_vtable g_driver_vtable = {
     .implementation = g_driver_id,
