@@ -3369,46 +3369,7 @@ static void handle_metrics(Req *req, Res *res) {
              "turbo_room_service_ivr_peer_event_queue_drops_total %llu\n"
              "# TYPE turbo_room_service_ivr_peer_event_queue_overflowed gauge\n"
              "turbo_room_service_ivr_peer_event_queue_overflowed %d\n"
-             "# TYPE turbo_room_service_iris_provider_enabled gauge\n"
-             "turbo_room_service_iris_provider_enabled %d\n"
-             "# TYPE turbo_room_service_iris_queue_items gauge\n"
-             "turbo_room_service_iris_queue_items %u\n"
-             "# TYPE turbo_room_service_iris_queue_capacity gauge\n"
-             "turbo_room_service_iris_queue_capacity %u\n"
-             "# TYPE turbo_room_service_iris_queue_high_water gauge\n"
-             "turbo_room_service_iris_queue_high_water %u\n"
-             "# TYPE turbo_room_service_iris_in_flight gauge\n"
-             "turbo_room_service_iris_in_flight %u\n"
-             "# TYPE turbo_room_service_iris_enqueued_total counter\n"
-             "turbo_room_service_iris_enqueued_total %llu\n"
-             "# TYPE turbo_room_service_iris_queue_full_total counter\n"
-             "turbo_room_service_iris_queue_full_total %llu\n"
-             "# TYPE turbo_room_service_iris_closed_rejections_total counter\n"
-             "turbo_room_service_iris_closed_rejections_total %llu\n"
-             "# TYPE turbo_room_service_iris_delivery_attempts_total counter\n"
-             "turbo_room_service_iris_delivery_attempts_total %llu\n"
-             "# TYPE turbo_room_service_iris_retries_total counter\n"
-             "turbo_room_service_iris_retries_total %llu\n"
-             "# TYPE turbo_room_service_iris_fence_conflicts_total counter\n"
-             "turbo_room_service_iris_fence_conflicts_total %llu\n"
-             "# TYPE turbo_room_service_iris_fence_refresh_failures_total counter\n"
-             "turbo_room_service_iris_fence_refresh_failures_total %llu\n"
-             "# TYPE turbo_room_service_iris_completion_success_total counter\n"
-             "turbo_room_service_iris_completion_success_total %llu\n"
-             "# TYPE turbo_room_service_iris_completion_failure_total counter\n"
-             "turbo_room_service_iris_completion_failure_total %llu\n"
-             "# TYPE turbo_room_service_iris_event_success_total counter\n"
-             "turbo_room_service_iris_event_success_total %llu\n"
-             "# TYPE turbo_room_service_iris_event_failure_total counter\n"
-             "turbo_room_service_iris_event_failure_total %llu\n"
-             "# TYPE turbo_room_service_iris_shutdown_restored_completions_total counter\n"
-             "turbo_room_service_iris_shutdown_restored_completions_total %llu\n"
-             "# TYPE turbo_room_service_iris_shutdown_dropped_events_total counter\n"
-             "turbo_room_service_iris_shutdown_dropped_events_total %llu\n"
-             "# TYPE turbo_room_service_iris_last_drain_duration_ms gauge\n"
-             "turbo_room_service_iris_last_drain_duration_ms %llu\n"
-             "# TYPE turbo_room_service_iris_max_drain_duration_ms gauge\n"
-             "turbo_room_service_iris_max_drain_duration_ms %llu\n",
+",
              stats.running ? 1 : 0,
              control_auth_enabled(config) ? 1 : 0,
              (config && config->sfu_control_token && config->sfu_control_token[0] != '\0') ? 1 : 0,
@@ -3437,76 +3398,7 @@ static void handle_metrics(Req *req, Res *res) {
              ivr.peer_event_queue_capacity,
              ivr.peer_event_queue_high_water,
              (unsigned long long)ivr.peer_event_queue_drops_total,
-             ivr.peer_event_queue_overflowed,
-             ivr.iris_provider_enabled,
-             ivr.iris_queue_items,
-             ivr.iris_queue_capacity,
-             ivr.iris_queue_high_water,
-             ivr.iris_in_flight,
-             (unsigned long long)ivr.iris_enqueued_total,
-             (unsigned long long)ivr.iris_queue_full_total,
-             (unsigned long long)ivr.iris_closed_rejections_total,
-             (unsigned long long)ivr.iris_delivery_attempts_total,
-             (unsigned long long)ivr.iris_retries_total,
-             (unsigned long long)ivr.iris_fence_conflicts_total,
-             (unsigned long long)ivr.iris_fence_refresh_failures_total,
-             (unsigned long long)ivr.iris_completion_success_total,
-             (unsigned long long)ivr.iris_completion_failure_total,
-             (unsigned long long)ivr.iris_event_success_total,
-             (unsigned long long)ivr.iris_event_failure_total,
-             (unsigned long long)
-                 ivr.iris_shutdown_restored_completions_total,
-             (unsigned long long)ivr.iris_shutdown_dropped_events_total,
-             (unsigned long long)ivr.iris_last_drain_duration_ms,
-             (unsigned long long)ivr.iris_max_drain_duration_ms);
-
-    if (written >= 0 && (size_t)written < sizeof(text)) {
-        int appended = snprintf(
-            text + written, sizeof(text) - (size_t)written,
-            "# TYPE turbo_room_service_iris_reconcile_state gauge\n"
-            "turbo_room_service_iris_reconcile_state %d\n"
-            "# TYPE turbo_room_service_iris_reconcile_accepting_commands gauge\n"
-            "turbo_room_service_iris_reconcile_accepting_commands %d\n"
-            "# TYPE turbo_room_service_iris_reconcile_inventory_queue_items gauge\n"
-            "turbo_room_service_iris_reconcile_inventory_queue_items %u\n"
-            "# TYPE turbo_room_service_iris_reconcile_inventory_queue_capacity gauge\n"
-            "turbo_room_service_iris_reconcile_inventory_queue_capacity %u\n"
-            "# TYPE turbo_room_service_iris_reconcile_cycles_total counter\n"
-            "turbo_room_service_iris_reconcile_cycles_total %llu\n"
-            "# TYPE turbo_room_service_iris_reconcile_failures_total counter\n"
-            "turbo_room_service_iris_reconcile_failures_total %llu\n"
-            "# TYPE turbo_room_service_iris_reconcile_expected_fetches_total counter\n"
-            "turbo_room_service_iris_reconcile_expected_fetches_total %llu\n"
-            "# TYPE turbo_room_service_iris_reconcile_inventory_pages_total counter\n"
-            "turbo_room_service_iris_reconcile_inventory_pages_total %llu\n"
-            "# TYPE turbo_room_service_iris_reconcile_rebound_total counter\n"
-            "turbo_room_service_iris_reconcile_rebound_total %llu\n"
-            "# TYPE turbo_room_service_iris_reconcile_orphan_close_total counter\n"
-            "turbo_room_service_iris_reconcile_orphan_close_total %llu\n"
-            "# TYPE turbo_room_service_iris_reconcile_resource_lost_total counter\n"
-            "turbo_room_service_iris_reconcile_resource_lost_total %llu\n"
-            "# TYPE turbo_room_service_iris_reconcile_inventory_queue_full_total counter\n"
-            "turbo_room_service_iris_reconcile_inventory_queue_full_total %llu\n",
-            ivr.iris_reconcile_state,
-            ivr.iris_reconcile_accepting_commands,
-            ivr.iris_reconcile_inventory_queue_items,
-            ivr.iris_reconcile_inventory_queue_capacity,
-            (unsigned long long)ivr.iris_reconcile_cycles_total,
-            (unsigned long long)ivr.iris_reconcile_failures_total,
-            (unsigned long long)ivr.iris_reconcile_expected_fetches_total,
-            (unsigned long long)ivr.iris_reconcile_inventory_pages_total,
-            (unsigned long long)ivr.iris_reconcile_rebound_total,
-            (unsigned long long)ivr.iris_reconcile_orphan_close_total,
-            (unsigned long long)ivr.iris_reconcile_resource_lost_total,
-            (unsigned long long)
-                ivr.iris_reconcile_inventory_queue_full_total);
-        if (appended < 0 ||
-            (size_t)appended >= sizeof(text) - (size_t)written) {
-            written = -1;
-        } else {
-            written += appended;
-        }
-    }
+             ivr.peer_event_queue_overflowed);
 
     if (written < 0 || (size_t)written >= sizeof(text)) {
         send_text(res, 500, "room service metrics overflow\n");
