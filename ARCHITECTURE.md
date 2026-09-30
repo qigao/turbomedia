@@ -1,373 +1,433 @@
-# TurboMedia 架构文档
+# TurboMedia 2.0 Architecture
 
-## 概述
+TurboMedia 2.0 is a C11/C++17 multimedia runtime with explicit product profiles,
+bounded ownership, fail-fast configuration, and separate client/server execution
+boundaries.
 
-TurboMedia 是一个模块化的多媒体处理框架，提供统一的接口用于音视频编解码、容器封装/解封装和流媒体传输。
+This document describes the current repository structure. When documentation and
+code disagree, the CMake graph, public headers, and runtime behavior are the
+source of truth.
 
-## 核心架构
+## 1. Architectural rules
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       Application Layer                      │
-└─────────────────────────────────────────────────────────────┘
-                            │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-┌───────▼────────┐  ┌──────▼───────┐  ┌───────▼────────┐
-│  Codec Layer   │  │ Muxer/Demuxer│  │ Streamer Layer │
-│                │  │    Layer     │  │                │
-│ • H.264/H.265  │  │ • FLV        │  │ • HLS          │
-│ • VP8/VP9      │  │ • MP4/MOV    │  │ • DASH         │
-│ • Opus/G.711   │  │ • MKV/WebM   │  │ • RTMP         │
-│                │  │ • MPEG-TS/PS │  │ • HTTP-FLV     │
-└────────────────┘  └──────────────┘  └────────┬───────┘
-                                               │
-                                   ┌───────────▼────────────┐
-                                   │   Network Transport    │
-                                   │                        │
-                                   │ • CNet (TCP/UDP/WS)    │
-                                   │ • CHTTP (HTTP/S)       │
-                                   └────────────────────────┘
-```
+TurboMedia 2.0 follows five rules:
 
-## 模块说明
+1. **The product is explicit.** `TURBO_MEDIA_PRODUCT` must be `CLIENT` or
+   `SERVER`. There is no `AUTO`, `FULL`, implicit profile detection, or
+   runtime fallback between products.
+2. **Ownership is explicit.** Network objects, queues, media buffers, runtime
+   graphs, and server sessions have one owner. Cross-thread work is queued or
+   copied into bounded storage instead of borrowing untracked pointers.
+3. **Resources are bounded.** Queue items, bytes, packet sizes, retained audio
+   duration, graph nodes, and transport capacities have hard limits.
+4. **Unsupported paths fail immediately.** Missing packages, unsupported
+   platforms/codecs, invalid configuration, queue overflow, and ABI mismatches
+   are errors. TurboMedia does not silently downgrade to another backend.
+5. **Deployment and qualification are separate.** The repository builds,
+   tests, and installs the selected product. It does not maintain a second
+   installed/package-consumer harness as another compatibility layer.
 
-### 1. Codec Layer（编解码层）
+## 2. Product profiles
 
-**位置**: `codec/`
+The product gate lives in `cmake/TurboMediaProduct.cmake` and runs both before
+and after `project()`.
 
-**职责**: 音视频压缩和解压缩
+| Profile | Build/platform contract | Product-only modules |
+| --- | --- | --- |
+| `CLIENT` | Client-capable toolchains; repository profiles include desktop and mobile | `ClientProcessing`, `Player`, mobile adapters, device Capture/Playback integration |
+| `SERVER` | Windows and Linux only; other target systems fail during configure | `Server`, `Streamer`, `Pipeline`, `ServerRTSP`, server WebRTC facade, RoomService/SFU/IVR apps |
 
-**特点**:
-- 统一的 `turbo_codec_ops_t` 接口
-- 插件式注册机制
-- 支持内置和外部编解码器
-- 独立的编码器/解码器实例
+Both profiles share codec/container/network/RTC foundations. The current native
+SDK workflow exercises Linux/Windows CLIENT and SERVER builds. Other client
+platforms are governed by their toolchain/preset and dependency support; they do
+not change the product boundary.
 
-**支持的编解码器**:
-- **视频**: H.264, H.265, VP8, VP9, AV1 (未来)
-- **音频**: Opus, G.711, AAC (未来), MP3 (未来)
+```mermaid
+flowchart TB
+  Product["TURBO_MEDIA_PRODUCT\nCLIENT | SERVER"]
 
-**关键接口**:
-```c
-turbo_codec_t *turbo_codec_create_encoder(const char *name, const void *config);
-turbo_codec_t *turbo_codec_create_decoder(const char *name, const void *config);
-int turbo_codec_encode(turbo_codec_t *codec, ...);
-int turbo_codec_decode(turbo_codec_t *codec, ...);
-```
+  Shared["Shared media/runtime\nCore · Crypto · Speech · Recognition\nCodec · Muxer · Demuxer\nTransport · RTSP\nSDP · DataChannel · RTC · WebRTCSignaling"]
 
-### 2. Muxer Layer（容器封装层）
+  Client["CLIENT only\nClientProcessing\nPlayer\nMobile adapters\nSalts Capture/Playback"]
 
-**位置**: `muxer/`
+  Server["SERVER only\nServerRuntime\nStreamer\nPipeline\nServerRTSP\nWebRTC server facade"]
 
-**职责**: 将编码后的音视频流封装成容器格式
+  Apps["SERVER apps\nRoomService\nSFU Node\nIVR Worker\nSignaling Server"]
 
-**特点**:
-- 统一的 `turbo_muxer_ops_t` 接口
-- 支持文件模式和内存模式
-- 多轨道支持
-- 分片支持（HLS/DASH）
-
-**支持的容器格式**:
-- **FLV**: Flash Video（基于 `refer/libflv`）
-- **MP4/MOV**: MPEG-4 Part 14（基于 `refer/libmov`）
-- **MKV/WebM**: Matroska（基于 `refer/libmkv`）
-- **MPEG-TS/PS**: MPEG Transport/Program Stream（基于 `refer/libmpeg`）
-
-**关键接口**:
-```c
-turbo_muxer_t *turbo_muxer_create(const turbo_muxer_config_t *config);
-int turbo_muxer_add_stream(turbo_muxer_t *muxer, const turbo_stream_info_t *info);
-int turbo_muxer_write_packet(turbo_muxer_t *muxer, const turbo_muxer_packet_t *packet);
+  Product --> Shared
+  Product --> Client
+  Product --> Server
+  Server --> Apps
 ```
 
-### 3. Demuxer Layer（容器解封装层）
+## 3. Shared media core
 
-**位置**: `demuxer/`
+The shared layer is built before product-specific modules.
 
-**职责**: 从容器格式中提取音视频流
+### Codec and container layer
 
-**特点**:
-- 统一的 `turbo_demuxer_ops_t` 接口
-- 自动格式探测
-- Seek 支持
-- 元数据提取
+- `TurboMedia::Codec` owns codec-facing media conversion.
+- `TurboMedia::Muxer` / `TurboMedia::Demuxer` own container boundaries.
+- Existing `common/codec_helpers` remain internal to the classic
+  muxer/demuxer/streamer path.
+- FFmpeg types are not part of the public media ABI.
 
-**关键接口**:
-```c
-turbo_demuxer_t *turbo_demuxer_create(const turbo_demuxer_config_t *config);
-int turbo_demuxer_read_packet(turbo_demuxer_t *demuxer, turbo_demuxer_packet_t *packet);
-int turbo_demuxer_seek(turbo_demuxer_t *demuxer, int64_t timestamp_ms, int flags);
+The shared codec/container APIs and Pipeline intentionally remain separate.
+Pipeline uses native FFmpeg packet/frame timing internally instead of forcing
+the classic packet contracts to model every FFmpeg concept.
+
+### Transport layer
+
+`TurboMedia::Transport` is implemented by `network/` plus `transport/`.
+
+```mermaid
+flowchart LR
+  Caller["TurboMedia caller"]
+  Adapter["turbo_media_cnet_adapter\nowned-buffer send"]
+  CNet["Salts::CNet"]
+  CHttp["CHttp::Client / CHttp::Server"]
+  Proto["RTP/RTCP · SIP · RTSP · WebRTC"]
+
+  Caller --> Adapter --> CNet
+  Caller --> CHttp
+  CNet --> Proto
 ```
 
-### 4. Streamer Layer（流媒体协议层）
+The internal `turbo_media_cnet_adapter` is the shared ownership adapter for
+CNet-backed sends. Generic transport, RTSP/DataChannel paths must not grow
+parallel ad-hoc ownership glue.
 
-**位置**: `streamer/`
+The public transport target links CNet and CHttp Client. Higher server layers
+use CHttp Server explicitly where they own HTTP/WebSocket listeners.
 
-**职责**: 实现流媒体协议（推流/拉流）
+## 4. RTC and WebRTC
 
-**特点**:
-- 统一的 `turbo_streamer_ops_t` 接口
-- 集成网络传输层
-- 自动分片管理（HLS/DASH）
-- 事件回调机制
+WebRTC is a current capability, not a future item.
 
-**支持的协议**:
-- **HLS**: HTTP Live Streaming（基于 `refer/libhls`）
-- **DASH**: MPEG-DASH（基于 `refer/libdash`）
-- **RTMP**: Real-Time Messaging Protocol（基于 `refer/librtmp` + CNet）
-- **HTTP-FLV**: HTTP 传输 FLV 直播流
+The shared WebRTC subtree provides:
 
-**关键接口**:
-```c
-turbo_streamer_t *turbo_streamer_create(const turbo_streamer_config_t *config);
-int turbo_streamer_connect(turbo_streamer_t *streamer);
-int turbo_streamer_write_packet(turbo_streamer_t *streamer, const turbo_muxer_packet_t *packet);
+- `TurboMedia::SDP`
+- `TurboMedia::DataChannel`
+- `TurboMedia::RTC`
+- `TurboMedia::WebRTCSignaling`
+
+The SERVER profile additionally builds `TurboMedia::WebRTC`, the facade that
+owns `ServerRuntime` integration.
+
+```mermaid
+flowchart LR
+  SDP["SDP"]
+  ICE["SaltsNet::ICE"]
+  DTLS["DTLS"]
+  SRTP["libSRTP"]
+  DC["DataChannel / SCTP"]
+  RTC["TurboMedia::RTC"]
+  WebRTC["SERVER: TurboMedia::WebRTC"]
+  Runtime["ServerRuntime"]
+
+  SDP --> RTC
+  ICE --> RTC
+  DTLS --> RTC
+  SRTP --> RTC
+  DC --> RTC
+  RTC --> WebRTC --> Runtime
 ```
 
-### 5. Network Transport Layer（网络传输层）
+`TurboMedia::RTC` owns RTP/RTCP, NACK, TWCC, simulcast, jitter, SRTP, media
+engine, and PeerConnection state. Owner-thread pumping advances ICE, DTLS,
+SRTP, DataChannel transport, and media timers.
 
-**位置**: `network/`
+On CLIENT builds RTC may consume `Salts::Capture`. SERVER does not own local
+capture devices; server media is supplied through explicit frame/track/runtime
+paths.
 
-**职责**: 提供统一的网络传输抽象
+The legacy transport RTP ABI and RTC RTP ABI intentionally have different packet
+layouts. Linux shared objects bind internal calls locally so ELF symbol
+preemption cannot route packets through the wrong implementation.
 
-**特点**:
-- 集成 Salts::CNet（网络与协议运行时）
-- 集成 Salts::CHTTP（HTTP 客户端/服务端）
-- 支持多种传输协议
-- 协程友好的异步 I/O
+## 5. Client execution path
 
-**支持的传输类型**:
-- **TCP**: 原始 TCP 连接
-- **TLS**: TLS 加密连接
-- **UDP**: UDP 数据报
-- **WebSocket**: WebSocket 连接
-- **HTTP/HTTPS**: HTTP 请求/响应
+CLIENT-only modules are intentionally independent of ServerRuntime, Streamer,
+Pipeline, RulesForge, and server applications.
 
-**关键接口**:
-```c
-turbo_transport_t *turbo_transport_create(const turbo_transport_config_t *config);
-int turbo_transport_connect(turbo_transport_t *transport);
-int turbo_transport_send(turbo_transport_t *transport, const uint8_t *data, size_t size);
-int turbo_transport_recv(turbo_transport_t *transport, uint8_t **data, size_t *size);
+### ClientProcessing
+
+`TurboMedia::ClientProcessing` is split into:
+
+- core lifecycle
+- bounded queues
+- Salts Capture/Playback adapters
+- FFmpeg file-processing implementation
+
+Its CMake target links Salts Capture/Playback publicly and FFmpeg internally.
+It does not depend on the SERVER Pipeline.
+
+### Player
+
+`TurboMedia::Player` combines TurboMedia Codec/Demuxer with
+`Salts::Playback`; FFmpeg remains an implementation dependency.
+
+### Client data flow
+
+```mermaid
+flowchart LR
+  Capture["Salts::Capture"]
+  CP["ClientProcessing"]
+  Queue["bounded audio/video queues"]
+  FF["FFmpeg processing"]
+  Playback["Salts::Playback"]
+
+  Capture --> CP --> Queue --> FF --> Playback
 ```
 
-## 数据流示例
+Queue capacity and retained-duration limits are hard bounds. A producer cannot
+turn a bounded queue into implicit buffering by varying frame duration.
 
-### 本地录制流程
+## 6. Server execution path
 
-```
-摄像头/麦克风
-    │
-    ▼
-Capture API
-    │
-    ▼
-原始数据 (YUV420/PCM)
-    │
-    ▼
-Codec Encoder (H.264/Opus)
-    │
-    ▼
-编码数据 (NAL/OpusPacket)
-    │
-    ▼
-Muxer (FLV/MP4)
-    │
-    ▼
-容器文件
-```
+SERVER adds the runtime and service-facing components:
 
-### HLS 直播推流
+- `TurboMedia::Server`
+- `TurboMedia::Streamer`
+- `TurboMedia::Pipeline`
+- `TurboMedia::ServerRTSP`
+- `TurboMedia::WebRTC`
+- `TurboMedia::RtcApps`
 
-```
-摄像头/麦克风
-    │
-    ▼
-Capture API
-    │
-    ▼
-原始数据 (YUV420/PCM)
-    │
-    ▼
-Codec Encoder (H.264/AAC)
-    │
-    ▼
-编码数据
-    │
-    ▼
-HLS Streamer
-    ├── TS Muxer (MPEG-TS 分片)
-    ├── M3U8 Generator (播放列表)
-    └── HTTP Transport (上传分片)
-            │
-            ▼
-        CDN/服务器
-```
+The root build adds server modules only when `TURBO_MEDIA_PRODUCT=SERVER`.
 
-### RTMP 推流
+### ServerRuntime
 
-```
-编码数据
-    │
-    ▼
-RTMP Streamer
-    ├── RTMP Protocol Handler
-    └── CNet Transport (TCP)
-            │
-            ▼
-        RTMP 服务器
+`TurboMedia::Server` owns source/track runtime state on top of
+`TurboMedia::Core` and `TurboMedia::Transport`.
+
+### Streamer
+
+`TurboMedia::Streamer` provides HLS, DASH, RTMP, and HTTP-FLV on top of the
+server/media/container/transport targets. CHttp Client and CNet remain private
+runtime dependencies.
+
+### ServerRTSP
+
+`TurboMedia::ServerRTSP` adapts the shared RTSP implementation to the
+SERVER runtime.
+
+## 7. Pipeline
+
+`TurboMedia::Pipeline` is SERVER-only.
+
+There are two explicit execution families.
+
+```mermaid
+flowchart TB
+  YAML["pipeline/v1 YAML"]
+  Validate["parse + validate + compile bounded plan"]
+
+  FFIn["FFmpeg input/demux"]
+  FFGraph["decode → filter → encode"]
+  FFOut["mux → output"]
+
+  RuntimeIn["ServerRuntime source"]
+  RTP["RTP depacketize / packetize"]
+  RuntimeOut["ServerRuntime sink"]
+
+  YAML --> Validate
+  Validate --> FFIn --> FFGraph --> FFOut
+  Validate --> RuntimeIn --> RTP --> RuntimeOut
 ```
 
-### 播放流程
+### FFmpeg path
 
-```
-网络流/文件
-    │
-    ▼
-Demuxer (自动探测格式)
-    │
-    ▼
-编码数据包
-    │
-    ▼
-Codec Decoder
-    │
-    ▼
-原始数据
-    │
-    ▼
-Playback API (音视频渲染)
-```
+File/network URL graphs use libavformat/libavcodec/libavfilter directly. FFmpeg
+packet/frame ownership stays inside Pipeline.
 
-## 集成外部库
+### Runtime/RTP path
 
-### 从 refer/ 目录导入
+Runtime graphs borrow a `ServerRuntime`, copy complete RTP packets into a
+preallocated bounded ring, and consume them from one execution thread.
 
-TurboMedia 已经包含了以下库（位于 `refer/` 目录）:
+Current v1 limits are intentional:
 
-- **libflv**: FLV muxer/demuxer
-- **libhls**: HLS packager
-- **libmov**: MP4/MOV muxer/demuxer
-- **libmkv**: MKV muxer/demuxer
-- **libmpeg**: MPEG-TS/PS muxer/demuxer
-- **librtmp**: RTMP client/server
-- **librtp**: RTP/RTCP
-- **librtsp**: RTSP client/server
+- best audio + best video track
+- H.264 video and Opus audio for Runtime/RTP transcode
+- single-input/single-output filter chains
+- no runtime graph mutation
+- Runtime/RTP has one sink
+- FFmpeg path supports bounded multi-sink fan-out
 
-这些库通过 CMake 自动集成。
+The next capability expansion is tracked by #46–#49. Those issues must extend
+the model explicitly rather than weakening v1 bounds.
 
-### 添加新的编解码器
+## 8. RoomService, SFU, and IVR
 
-1. 在 `codec/` 目录创建实现文件
-2. 实现 `turbo_codec_ops_t` 接口
-3. 在 `codec_registry.c` 中注册
-4. 更新 `codec/CMakeLists.txt`
+SERVER builds the application/model layer under `webrtc/apps`:
 
-示例（添加 AV1）:
-```c
-// av1_codec.c
-const turbo_codec_ops_t turbo_av1_codec_ops = {
-    .name = "av1",
-    .type = TURBO_CODEC_TYPE_VIDEO,
-    .create_encoder = av1_create_encoder,
-    .create_decoder = av1_create_decoder,
-    // ...
-};
+```mermaid
+flowchart LR
+  Room["room_service"]
+  SFU["sfu_node"]
+  IVR["ivr_worker"]
+  Sig["signaling_server"]
+  Apps["TurboMedia::RtcApps"]
+  RTC["TurboMedia::RTC"]
+  CHttp["CHttp Server"]
+  WS["ivr_control_adapter\nH1 WebSocket"]
 
-// codec_registry.c
-#ifdef TURBO_MEDIA_HAS_AV1
-    turbo_codec_register(&turbo_av1_codec_ops);
-#endif
+  Room --> Apps
+  SFU --> Apps
+  Apps --> RTC
+  Room --> CHttp
+  Room --> WS --> CHttp
+  Sig --> CHttp
 ```
 
-### 集成外部网络库
+RoomService owns room facts, SFU membership/routing, replay of room state to SFU
+nodes, conference policy, and the internal IVR control listener.
 
-当前支持:
-- **Salts::CNet**: 网络库（TCP/UDP/WebSocket/TLS）
-- **Salts::CHTTP**: HTTP 客户端/服务端库
+The active IVR control transport is only CHttp Server / HTTP/1.1 WebSocket via
+`ivr_control_adapter`. The retired Iris outbound provider transport,
+persistence/outbox/ledger layer, provider façade, reconciler, and compatibility
+configuration have been removed.
 
-新的网络库可以通过实现 `turbo_transport_ops_t` 接口集成。
+RoomService currently does not select or load a database runtime, so TurboDB/Orm
+is not part of the TurboMedia SERVER dependency graph. A future application that
+chooses a database must do so explicitly; it must not be introduced as an
+implicit RoomService dependency or fallback.
 
-## 编译配置
+## 9. Ownership and shutdown
 
-所有功能进入默认构建，不存在功能 CMake 选项。依赖和工具位置由本机
-`CMakeUserPresets.json` 提供；项目配置只消费标准 CMake package/target，并在缺失时失败。
+### CNet owner model
 
-### 依赖项
+CNet endpoints/listeners/datagrams are driven by their owning context. Cross-
+thread work enters bounded command/event queues. Send adapters transfer owned
+buffers according to the CNet contract instead of borrowing caller memory after
+return.
 
-**必需**:
-- C11 编译器
-- CMake >= 3.20
+### CHttp lifecycle
 
-**必需**:
-- libx264/OpenH264 (H.264)
-- x265 + libde265 (H.265)
-- libopus (Opus)
-- libvpx (VP8/VP9)
-- Salts CNet (网络传输)
-- Salts CHTTP (HTTP 客户端/服务端)
+CHttp Client/Server objects have explicit init/start/stop/destroy ownership.
+Shutdown must quiesce callbacks before their backing context is released. A
+failed/busy close retains ownership for the caller; it is not treated as
+successful destruction.
 
-## 线程模型
+### RTC/IVR ownership
 
-### 网络 owner 模型（推荐）
+- PeerConnection and RTC state progress on the owner thread.
+- IVR worker/session queues are bounded.
+- WebSocket callback context outlives in-flight callbacks.
+- Stop/drain order is explicit; destruction does not race active producers.
 
-CNet client/listener/datagram 由明确的 owner thread 驱动，跨线程调用先投递到
-有界命令队列；CHTTP 在 CNet 之上提供 HTTP 生命周期与关闭排空。
+### Pipeline ownership
 
-### 传统线程模型
+- Pipeline owns immutable config and FFmpeg contexts.
+- Runtime/RTP Pipeline borrows ServerRuntime.
+- Rings own copied RTP packets.
+- `request_stop` is an atomic cooperative stop request.
+- Error paths do not masquerade as EOF/success.
 
-也支持传统的多线程模型:
-- **优点**: 灵活性高
-- **适用**: 本地文件处理、离线转码
+## 10. Bounded-resource model
 
-## 性能考虑
+TurboMedia treats bounds as part of correctness, not tuning hints.
 
-1. **零拷贝**: 尽可能使用引用而非拷贝数据
-2. **批处理**: 批量处理多个数据包以减少系统调用
-3. **内存池**: 复用缓冲区以减少分配开销
-4. **硬件加速**: 支持硬件编解码器（iOS VideoToolbox、Android MediaCodec）
+| Resource | Example bound |
+| --- | --- |
+| Network commands/events | queue item capacity |
+| HTTP | connection/request/event/body/header limits |
+| RTP | max packet/access-unit bytes |
+| Audio | queue items + retained PCM duration |
+| Pipeline | node/edge/output/ring capacity |
+| IVR | worker/dialog/request/event capacities |
+| SFU/Room | configured node/session/room limits |
 
-## 安全性
+Overflow/backpressure is surfaced to the caller. There is no unbounded fallback
+queue.
 
-1. **输入验证**: 所有公共 API 验证输入参数
-2. **缓冲区保护**: 防止缓冲区溢出
-3. **资源限制**: 限制内存使用和并发连接数
-4. **TLS 支持**: 网络传输支持 TLS 加密
+## 11. Build, install, and CMake export
 
-## 扩展性
+Every public component is exported through `TurboMediaTargets.cmake` with the
+`TurboMedia::` namespace.
 
-TurboMedia 设计为高度可扩展:
+`TurboMediaConfig.cmake` records the product used to build the install tree:
 
-1. **插件式架构**: 通过注册表添加新的编解码器/容器/协议
-2. **统一接口**: 所有模块使用一致的 ops 表模式
-3. **模块化构建**: 可选择性编译需要的功能
-4. **跨平台**: 支持 Windows、Linux、macOS、iOS、Android
+```cmake
+find_package(TurboMedia CONFIG REQUIRED COMPONENTS RTC DataChannel)
+# TurboMedia_PRODUCT is CLIENT or SERVER.
+```
 
-## 示例代码
+Requested components are validated after importing the target file. FFmpeg
+lookup is conditional on requesting an FFmpeg-backed component such as Muxer,
+Demuxer, Player, Pipeline, Streamer, or RtcApps.
 
-参见 `examples/` 目录:
-- `streaming_pipeline.c`: 完整的流媒体处理管道
-- `codec_g711_smoke.c`: G.711 编解码示例
-- `capture_save_image.c`: 摄像头采集示例
+The installed tree is product-specific. One install prefix must not be treated
+as the other product.
 
-## 未来规划
+TurboMedia intentionally does **not** maintain a second installed/package-
+consumer harness. Native CI configures, builds, runs the repository tests, and
+installs the selected profile; missing export/dependency/install contracts fail
+at the point they are used.
 
-- [ ] WebRTC 支持
-- [ ] AV1 编解码器
-- [ ] SRT (Secure Reliable Transport)
-- [ ] NDI 支持
-- [ ] GPU 加速编解码
-- [ ] 完善的 Python 绑定
+## 12. CI and evidence boundary
 
-## 贡献指南
+The native SDK workflow currently covers Linux/Windows CLIENT and SERVER. It
+uses released first-party SDKs plus cache-only vcpkg dependencies and follows the
+normal configure/build/CTest/install path.
 
-1. 遵循现有代码风格
-2. 所有新功能需提供示例
-3. 更新相关文档
-4. 确保跨平台兼容性
-5. 添加单元测试
+That CI proves repository and install behavior for those runner/platform
+combinations. It does **not** prove production Internet/WebRTC readiness.
 
-## 许可证
+The following evidence remains separate:
 
-参见项目根目录的 LICENSE 文件。
+- #17 — browser + TURN-only public acceptance
+- #44 — capacity/backpressure/long-soak baseline
+- #45 — multi-node failure, rolling upgrade, and reconciliation acceptance
+
+Local CTest, loopback HTTP/WebSocket, fake peers, or synthetic RTC tests must not
+be described as substitutes for those deployment tests.
+
+## 13. Current product dependency direction
+
+```mermaid
+flowchart TB
+  Salts["Salts / SaltsUtils"]
+  SaltsNet["SaltsNet"]
+  CHttp["CHttp"]
+  Media["TurboMedia shared media"]
+  Client["CLIENT modules"]
+  Server["SERVER modules"]
+  Apps["SERVER apps"]
+  Rules["RulesForge"]
+
+  Salts --> Media
+  SaltsNet --> Media
+  CHttp --> Media
+  Media --> Client
+  Media --> Server
+  Rules --> Apps
+  Server --> Apps
+```
+
+There is no runtime dependency edge from TurboMedia SERVER to TurboDB/Orm in the
+current 2.0 tree.
+
+## 14. Follow-up roadmap
+
+Architecture changes after 2.0 are tracked explicitly rather than hidden behind
+fallbacks:
+
+- #46 — multi-track/extensible Runtime/RTP codec model
+- #47 — structured multi-input/filter graphs
+- #48 — per-output track/transcode policy
+- #49 — bounded transactional runtime graph reconfiguration
+- #50 — cross-platform client media-processing kernel
+- #51 — production SIP/WebRTC live client
+- #17/#44/#45 — external acceptance and production evidence
+
+## 15. Related design documents
+
+- `docs/design/client-server-product-profiles.md`
+- `pipeline/README.md`
+- `webrtc/docs/README.md`
+- `README.md`
+
+The root architecture document defines dependency direction and ownership.
+Module-specific operational details belong in their module documentation.
