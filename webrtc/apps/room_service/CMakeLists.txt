@@ -116,7 +116,6 @@ if(WIN32)
 endif()
 install(
   FILES config/room_service.toml.example
-        config/room_service.orm.postgresql.yaml.example
   DESTINATION etc/turbomedia
   COMPONENT RoomService
 )
