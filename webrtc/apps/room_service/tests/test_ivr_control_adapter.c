@@ -493,7 +493,6 @@ void test_fresh_registry_requires_fenced_reconcile_for_active_worker(void) {
     ivr_control_worker_snapshot_t worker;
     ivr_control_worker_snapshot_t workers[1];
     ivr_worker_inventory_record_t record;
-    ivr_media_command_t media_command;
     uint32_t count = 99;
     uint32_t total = 99;
     make_worker_control(&command, "worker.sync.v2", "worker-restart",
@@ -517,25 +516,6 @@ void test_fresh_registry_requires_fenced_reconcile_for_active_worker(void) {
     check_equal((uint32_t)(count), (uint32_t)(1));
     check_equal((int)(workers[0].state), (int)(IVR_CONTROL_WORKER_RECONCILING));
 
-    memset(&media_command, 0, sizeof(media_command));
-    media_command.kind = IVR_MEDIA_COMMAND_CANCEL;
-    snprintf(media_command.message_id, sizeof(media_command.message_id),
-             "cancel-before-inventory");
-    snprintf(media_command.tenant_id, sizeof(media_command.tenant_id),
-             "tenant-a");
-    snprintf(media_command.provider_session_id,
-             sizeof(media_command.provider_session_id), "session-restart");
-    snprintf(media_command.dialog_id, sizeof(media_command.dialog_id),
-             "dialog-restart");
-    snprintf(media_command.room_id, sizeof(media_command.room_id),
-             "room-restart");
-    snprintf(media_command.call_id, sizeof(media_command.call_id),
-             "call-restart");
-    media_command.call_generation = 3;
-    media_command.operation_generation = 8;
-    snprintf(media_command.input_id, sizeof(media_command.input_id),
-             "input-restart");
-    media_command.input_generation = 2;
     memset(&record, 0, sizeof(record));
     snprintf(record.worker_id, sizeof(record.worker_id), "worker-restart");
     snprintf(record.worker_instance_id, sizeof(record.worker_instance_id),
@@ -1011,7 +991,6 @@ void test_media_cancel_tracks_the_exact_active_input(void) {
 
     make_live_media_command(&command, IVR_MEDIA_COMMAND_CANCEL,
                             "input-fence-cancel", 3);
-    snprintf(command.input_id, sizeof(command.input_id), "input-current");
     command.input_generation = 7;
     snprintf(command.input_id, sizeof(command.input_id), "input-old");
     check_equal(ivr_control_adapter_send_media_command(
