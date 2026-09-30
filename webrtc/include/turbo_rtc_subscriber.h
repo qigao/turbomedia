@@ -127,6 +127,20 @@ TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_subscriber_start(
     turbo_rtc_subscriber_t *subscriber);
 
 /*
+ * Performs an in-place WHEP ICE restart for an existing live resource.
+ *
+ * Valid from CONNECTED or from a transport FAILED state while the remote
+ * resource still exists. Any queued decoded PCM from the old ICE generation is
+ * discarded before the restart. The subscriber requires a 200 PATCH response
+ * with a new ETag and a remote restart SDP fragment before entering CONNECTING.
+ *
+ * Queue/format/consumer failures are not recoverable with ICE restart and
+ * return ESTATE. There is no session recreation or stale-ETag fallback.
+ */
+TURBO_MEDIA_C_API turbo_rtc_client_status_t turbo_rtc_subscriber_restart_ice(
+    turbo_rtc_subscriber_t *subscriber);
+
+/*
  * Advances PeerConnection once and drains the bounded decoded-audio queue.
  * User audio callbacks are invoked only from this function on the owner thread.
  *
