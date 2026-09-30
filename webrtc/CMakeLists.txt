@@ -202,7 +202,8 @@ target_link_options(
 
 if(TURBO_MEDIA_IS_CLIENT)
   add_library(turbo_media_rtc_client SHARED
-    src/client/turbo_rtc_client.c)
+    src/client/turbo_rtc_client.c
+    src/client/turbo_rtc_subscriber.c)
   turbo_media_configure_component(turbo_media_rtc_client RTCClient)
   target_include_directories(
     turbo_media_rtc_client
@@ -213,7 +214,8 @@ if(TURBO_MEDIA_IS_CLIENT)
     turbo_media_rtc_client
     PRIVATE TurboMedia::RTC
             turbo_media_http_media_client
-            Salts::Platform)
+            Salts::Platform
+            Salts::Core)
 endif()
 
 # Room-service / SFU server apps are desktop targets; keep them out of the
