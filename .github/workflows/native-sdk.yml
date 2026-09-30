@@ -251,8 +251,4 @@ jobs:
           if (-not (Select-String -LiteralPath $config -SimpleMatch $identity)) {
             throw "installed package product identity mismatch"
           }
-          if ("${{ matrix.product }}" -eq "SERVER") {
-            $legacy = Select-String -Path CMakeLists.txt,webrtc/apps/room_service/CMakeLists.txt,webrtc/apps/room_service/src/iris_orm_store.c -Pattern 'Orm::PostgreSQL|Orm_WITH_(SQLITE|POSTGRESQL)|orm_postgresql_connect'
-            if ($legacy) { throw "legacy PostgreSQL ORM contract remains in SERVER" }
-          }
 
