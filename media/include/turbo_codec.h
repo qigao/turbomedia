@@ -199,6 +199,20 @@ TURBO_MEDIA_API const turbo_codec_ops_t *turbo_codec_find_by_name(const char *na
  */
 TURBO_MEDIA_API int turbo_codec_register(const turbo_codec_ops_t *ops);
 
+/**
+ * Validate an audio configuration against a built-in audio codec's exact
+ * capabilities without allocating an encoder/decoder instance.
+ *
+ * This helper covers the codec identities accepted by TurboMedia media-track
+ * configuration; arbitrary externally registered codec names are not implied.
+ *
+ * @param name    Built-in audio codec name.
+ * @param config  Required audio configuration.
+ * @return        TURBO_CODEC_OK when supported, TURBO_CODEC_ERR_INVALID otherwise.
+ */
+TURBO_MEDIA_API int turbo_codec_validate_audio_config(
+    const char *name, const turbo_audio_codec_config_t *config);
+
 /* =============================================================================
  * Codec Instance Functions
  * ============================================================================= */
