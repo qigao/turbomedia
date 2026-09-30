@@ -15,10 +15,6 @@ set(ROOM_SERVICE_APP_SOURCES
 )
 if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_APP_SOURCES
-    src/iris_command_fingerprint.c
-    src/iris_completion_dispatcher.c
-    src/iris_media_bridge.c
-    src/iris_room_bridge.c
     src/ivr_control_adapter.c)
 endif()
 
@@ -35,10 +31,6 @@ set(ROOM_SERVICE_CORE_SOURCES
 )
 if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_CORE_SOURCES
-    src/iris_command_fingerprint.c
-    src/iris_completion_dispatcher.c
-    src/iris_media_bridge.c
-    src/iris_room_bridge.c
     src/ivr_control_adapter.c)
 endif()
 
@@ -217,90 +209,6 @@ set_target_properties(test_room_service_app PROPERTIES
   FOLDER "Applications/tests")
 
 if(TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_executable(test_iris_media_bridge
-    tests/test_iris_media_bridge.c
-    src/iris_media_bridge.c
-    src/iris_command_fingerprint.c
-  )
-  target_include_directories(test_iris_media_bridge
-    PRIVATE
-      ${CMAKE_CURRENT_SOURCE_DIR}/src
-      ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-      ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include
-  )
-  target_link_libraries(test_iris_media_bridge
-    PRIVATE
-      turbo_media_ivr
-      SaltsNet::Crypto
-      Salts::Core
-      Salts::JsonParser
-      Salts::DateTimeParser
-      Salts::TinyTest
-  )
-  target_compile_definitions(test_iris_media_bridge
-    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_media_bridge COMMAND test_iris_media_bridge)
-  set_tests_properties(test_iris_media_bridge PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-    TIMEOUT 30)
-  set_target_properties(test_iris_media_bridge PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    OUTPUT_NAME "test_iris_media_bridge"
-    FOLDER "Applications/tests")
-
-  add_executable(test_iris_room_bridge
-    tests/test_iris_room_bridge.c
-    src/iris_room_bridge.c
-    src/iris_command_fingerprint.c)
-  target_include_directories(test_iris_room_bridge PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_room_bridge PRIVATE
-    SaltsNet::Crypto
-    Salts::Core
-    Salts::JsonParser
-    Salts::DateTimeParser
-    Salts::TinyTest)
-  target_compile_definitions(test_iris_room_bridge
-    PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_room_bridge COMMAND test_iris_room_bridge)
-  set_tests_properties(test_iris_room_bridge PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_room_bridge PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
-  add_executable(test_iris_completion_dispatcher
-    tests/test_iris_completion_dispatcher.c
-    src/iris_completion_dispatcher.c
-    src/iris_media_bridge.c
-    src/iris_command_fingerprint.c)
-  target_include_directories(test_iris_completion_dispatcher PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_completion_dispatcher PRIVATE
-    turbo_media_ivr
-    TurboMedia::Transport
-    CHttp::Client CHttp::Server
-    SaltsNet::Crypto
-    Salts::Core
-    Salts::JsonParser
-    Salts::DateTimeParser
-    Salts::TinyTest)
-  target_compile_definitions(test_iris_completion_dispatcher
-    PRIVATE
-      TURBO_MEDIA_HAS_IVR_CONTROL
-      ROOM_SERVICE_TEST_TLS_CERT_PATH="${CMAKE_SOURCE_DIR}/webrtc/tests/fixtures/tls/localhost-cert.pem"
-      ROOM_SERVICE_TEST_TLS_KEY_PATH="${CMAKE_SOURCE_DIR}/webrtc/tests/fixtures/tls/localhost-key.pem")
-  add_test(NAME test_iris_completion_dispatcher
-    COMMAND test_iris_completion_dispatcher)
-  set_tests_properties(test_iris_completion_dispatcher PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_completion_dispatcher PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
   add_executable(test_ivr_control_adapter
     tests/test_ivr_control_adapter.c
     src/ivr_control_adapter.c
