@@ -202,14 +202,12 @@ static void subscriber_reset_queue_locked(
 }
 
 static void subscriber_clear_peer(turbo_rtc_subscriber_t *subscriber) {
-    turbo_media_track_t *track;
-    turbo_peer_connection_t *pc;
+    turbo_media_track_t *track = NULL;
+    turbo_peer_connection_t *pc = NULL;
     if (!subscriber) {
         return;
     }
 
-    track = subscriber->audio_track;
-    pc = subscriber->pc;
     if (subscriber->lock_initialized) {
         salts_mutex_lock(&subscriber->lock);
         subscriber->accept_frames = 0;
