@@ -5,6 +5,19 @@ cmake_add_grammar(
   FOLDER "turbomedia/webrtc/codegen")
 
 add_library(
+  turbo_media_http_media_client STATIC
+  src/http/turbo_http_media_client.c)
+target_include_directories(
+  turbo_media_http_media_client
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/http)
+target_link_libraries(
+  turbo_media_http_media_client
+  PRIVATE CHttp::Client Salts::CNet Salts::Core)
+set_target_properties(
+  turbo_media_http_media_client
+  PROPERTIES FOLDER "turbomedia/components")
+
+add_library(
   turbo_media_auth STATIC
   src/auth/turbo_media_auth.c
   src/auth/turbo_media_revocation.c
