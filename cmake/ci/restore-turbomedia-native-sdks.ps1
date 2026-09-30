@@ -31,7 +31,6 @@ if ($LASTEXITCODE -ne 0) { throw "failed to configure GitHub Packages source" }
 $serverReferences = if ($Product -eq "SERVER") {
 @'
               <PackageReference Include="RulesForge.Native" Version="*" />
-              <PackageReference Include="TurboDB.Native" Version="*" />
 '@
 } else {
   ""
@@ -79,7 +78,6 @@ $roots = [ordered]@{
 }
 if ($Product -eq "SERVER") {
   $roots["RULES_FORGE_ROOT"] = Resolve-SdkRoot "RulesForge.Native"
-  $roots["TURBODB_ROOT"] = Resolve-SdkRoot "TurboDB.Native"
 }
 
 foreach ($pair in $roots.GetEnumerator()) {
@@ -104,24 +102,13 @@ if ($Product -eq "CLIENT") {
   )
 } else {
   $requiredFiles += @(
-    (Join-Path $roots.RULES_FORGE_ROOT "lib/cmake/RulesForge/RulesForgeConfig.cmake"),
-    (Join-Path $roots.TURBODB_ROOT "lib/cmake/Orm/OrmConfig.cmake"),
-    (Join-Path $roots.TURBODB_ROOT "include/shared/orm/orm_runtime.h")
+    (Join-Path $roots.RULES_FORGE_ROOT "lib/cmake/RulesForge/RulesForgeConfig.cmake")
   )
 }
 
 foreach ($file in $requiredFiles) {
   if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
     throw "missing released SDK contract: $file"
-  }
-}
-
-if ($Product -eq "SERVER") {
-  $postgresModules = @(Get-ChildItem -Path $roots.TURBODB_ROOT -Recurse -File | Where-Object {
-    $_.Name -eq "turbodb_driver_postgresql.dll" -or $_.Name -eq "libturbodb_driver_postgresql.so"
-  })
-  if ($postgresModules.Count -ne 0) {
-    throw "generic TurboDB.Native unexpectedly bundled PostgreSQL Driver"
   }
 }
 

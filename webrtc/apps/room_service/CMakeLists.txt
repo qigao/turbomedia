@@ -7,66 +7,6 @@ project(
   DESCRIPTION "TurboMedia conference room service"
 )
 
-# First-party packages are resolved once at the repository root from their
-# explicit environment roots, so every WebRTC subdirectory sees the same targets.
-if(NOT TARGET Orm::C)
-  message(FATAL_ERROR
-    "RoomService Iris outbox requires the generic Orm::C runtime")
-endif()
-
-turbo_media_find_idlc(ROOM_SERVICE_IDL_COMPILER_EXECUTABLE)
-set(ROOM_SERVICE_OUTBOX_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-file(MAKE_DIRECTORY "${ROOM_SERVICE_OUTBOX_GEN_DIR}")
-set(ROOM_SERVICE_OUTBOX_GEN_HEADER
-  "${ROOM_SERVICE_OUTBOX_GEN_DIR}/iris_event_outbox_v1.h")
-set(ROOM_SERVICE_OUTBOX_GEN_SOURCE
-  "${ROOM_SERVICE_OUTBOX_GEN_DIR}/iris_event_outbox_v1.c")
-set(ROOM_SERVICE_LEDGER_GEN_HEADER
-  "${ROOM_SERVICE_OUTBOX_GEN_DIR}/iris_command_ledger_v2.h")
-set(ROOM_SERVICE_LEDGER_GEN_SOURCE
-  "${ROOM_SERVICE_OUTBOX_GEN_DIR}/iris_command_ledger_v2.c")
-set(ROOM_SERVICE_PROVIDER_GEN_HEADER
-  "${ROOM_SERVICE_OUTBOX_GEN_DIR}/turbomedia_iris_provider_v1.h")
-set(ROOM_SERVICE_PROVIDER_GEN_SOURCE
-  "${ROOM_SERVICE_OUTBOX_GEN_DIR}/turbomedia_iris_provider_v1.c")
-add_custom_command(
-  OUTPUT ${ROOM_SERVICE_OUTBOX_GEN_HEADER} ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_event_outbox_v1.schema
-          --lang c --output ${ROOM_SERVICE_OUTBOX_GEN_HEADER}
-          --source-output ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_event_outbox_v1.schema
-  COMMENT "Generating Iris media event outbox schema"
-  VERBATIM)
-add_custom_command(
-  OUTPUT ${ROOM_SERVICE_LEDGER_GEN_HEADER} ${ROOM_SERVICE_LEDGER_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_command_ledger_v2.schema
-          --lang c --output ${ROOM_SERVICE_LEDGER_GEN_HEADER}
-          --source-output ${ROOM_SERVICE_LEDGER_GEN_SOURCE}
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/schema/iris_command_ledger_v2.schema
-  COMMENT "Generating Iris provider command ledger schema"
-  VERBATIM)
-add_custom_command(
-  OUTPUT ${ROOM_SERVICE_PROVIDER_GEN_HEADER} ${ROOM_SERVICE_PROVIDER_GEN_SOURCE}
-  COMMAND ${ROOM_SERVICE_IDL_COMPILER_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_iris_provider_v1.schema
-          --lang c --output ${ROOM_SERVICE_PROVIDER_GEN_HEADER}
-          --source-output ${ROOM_SERVICE_PROVIDER_GEN_SOURCE}
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_iris_provider_v1.schema
-  COMMENT "Generating transport-neutral Iris provider schema"
-  VERBATIM)
-add_library(room_service_iris_outbox_schema STATIC
-  ${ROOM_SERVICE_OUTBOX_GEN_SOURCE}
-  ${ROOM_SERVICE_LEDGER_GEN_SOURCE}
-  ${ROOM_SERVICE_PROVIDER_GEN_SOURCE})
-target_include_directories(room_service_iris_outbox_schema
-  PUBLIC ${ROOM_SERVICE_OUTBOX_GEN_DIR})
-target_link_libraries(room_service_iris_outbox_schema
-  PUBLIC Salts::DataBind Salts::Core)
-set_target_properties(room_service_iris_outbox_schema
-  PROPERTIES FOLDER "Applications/components")
-
 set(ROOM_SERVICE_APP_SOURCES
   src/main.c
   src/config.c
@@ -75,9 +15,6 @@ set(ROOM_SERVICE_APP_SOURCES
 )
 if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_APP_SOURCES
-    src/iris_event_outbox.c
-    src/iris_orm_store.c
-    src/iris_command_ledger.c
     src/iris_command_fingerprint.c
     src/iris_completion_dispatcher.c
     src/iris_media_bridge.c
@@ -98,9 +35,6 @@ set(ROOM_SERVICE_CORE_SOURCES
 )
 if(TURBO_MEDIA_HAS_IVR_CONTROL)
   list(APPEND ROOM_SERVICE_CORE_SOURCES
-    src/iris_event_outbox.c
-    src/iris_orm_store.c
-    src/iris_command_ledger.c
     src/iris_command_fingerprint.c
     src/iris_completion_dispatcher.c
     src/iris_media_bridge.c
@@ -140,10 +74,7 @@ set(ROOM_SERVICE_LIBS
     Salts::DateTimeParser)
 
 if(TURBO_MEDIA_HAS_IVR_CONTROL)
-  list(APPEND ROOM_SERVICE_LIBS
-    turbo_media_ivr
-    room_service_iris_outbox_schema
-    Orm::C)
+  list(APPEND ROOM_SERVICE_LIBS turbo_media_ivr)
 endif()
 
 target_link_libraries(room_service
@@ -180,13 +111,11 @@ if(WIN32)
           $<TARGET_FILE:Salts::Mustache>
           $<TARGET_FILE:Salts::DataBind>
           $<TARGET_FILE:Salts::Core>
-          $<TARGET_FILE:Orm::C>
     DESTINATION bin
     COMPONENT RoomService)
 endif()
 install(
   FILES config/room_service.toml.example
-        config/room_service.orm.postgresql.yaml.example
   DESTINATION etc/turbomedia
   COMPONENT RoomService
 )
@@ -261,9 +190,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_compile_definitions(test_room_service_app
     PRIVATE TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_room_service_app PRIVATE turbo_media_ivr)
-  target_link_libraries(test_room_service_app PRIVATE
-    room_service_iris_outbox_schema
-    Orm::C)
 endif()
 
 target_compile_options(test_room_service_app
@@ -375,102 +301,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
 
-  add_executable(test_iris_event_outbox
-    tests/test_iris_event_outbox.c
-    src/iris_event_outbox.c
-    src/iris_orm_store.c)
-  target_include_directories(test_iris_event_outbox PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_event_outbox PRIVATE
-    room_service_iris_outbox_schema
-    Orm::C
-    Salts::Core Salts::DataBind Salts::CYaml Salts::TinyTest)
-  target_compile_definitions(test_iris_event_outbox PRIVATE
-    TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_event_outbox COMMAND test_iris_event_outbox)
-  set_tests_properties(test_iris_event_outbox PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_event_outbox PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
-  add_executable(test_iris_command_ledger
-    tests/test_iris_command_ledger.c
-    src/iris_command_ledger.c
-    src/iris_orm_store.c)
-  target_include_directories(test_iris_command_ledger PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../ivr/include)
-  target_link_libraries(test_iris_command_ledger PRIVATE
-    room_service_iris_outbox_schema
-    Orm::C
-    Salts::Core Salts::DataBind Salts::CYaml
-    Salts::TinyTest)
-  target_compile_definitions(test_iris_command_ledger PRIVATE
-    TURBO_MEDIA_HAS_IVR_CONTROL)
-  add_test(NAME test_iris_command_ledger COMMAND test_iris_command_ledger)
-  set_tests_properties(test_iris_command_ledger PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_command_ledger PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
-  add_library(room_service_orm_test_driver MODULE
-    tests/orm_runtime_test_driver.c)
-  target_compile_features(room_service_orm_test_driver PRIVATE c_std_11)
-  target_include_directories(room_service_orm_test_driver PRIVATE
-    $<TARGET_PROPERTY:Orm::C,INTERFACE_INCLUDE_DIRECTORIES>)
-  target_link_libraries(room_service_orm_test_driver PRIVATE
-    Salts::PluginABI Salts::CFlow)
-  set_target_properties(room_service_orm_test_driver PROPERTIES
-    PREFIX ""
-    C_STANDARD_REQUIRED ON
-    C_VISIBILITY_PRESET hidden
-    WINDOWS_EXPORT_ALL_SYMBOLS OFF
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
-  add_library(room_service_orm_wrong_driver MODULE
-    tests/orm_runtime_test_driver.c)
-  target_compile_features(room_service_orm_wrong_driver PRIVATE c_std_11)
-  target_compile_definitions(room_service_orm_wrong_driver PRIVATE
-    TURBOMEDIA_ORM_TEST_DRIVER_ID="not-postgresql")
-  target_include_directories(room_service_orm_wrong_driver PRIVATE
-    $<TARGET_PROPERTY:Orm::C,INTERFACE_INCLUDE_DIRECTORIES>)
-  target_link_libraries(room_service_orm_wrong_driver PRIVATE
-    Salts::PluginABI Salts::CFlow)
-  set_target_properties(room_service_orm_wrong_driver PROPERTIES
-    PREFIX ""
-    C_STANDARD_REQUIRED ON
-    C_VISIBILITY_PRESET hidden
-    WINDOWS_EXPORT_ALL_SYMBOLS OFF
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
-  add_executable(test_iris_orm_store
-    tests/test_iris_orm_store.c
-    src/iris_orm_store.c)
-  target_include_directories(test_iris_orm_store PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_compile_definitions(test_iris_orm_store PRIVATE
-    TEST_ORM_RUNTIME_DRIVER="$<TARGET_FILE:room_service_orm_test_driver>"
-    TEST_ORM_WRONG_DRIVER="$<TARGET_FILE:room_service_orm_wrong_driver>")
-  target_link_libraries(test_iris_orm_store PRIVATE
-    Orm::C Salts::Core Salts::CYaml Salts::TinyTest)
-  add_dependencies(test_iris_orm_store
-    room_service_orm_test_driver room_service_orm_wrong_driver)
-  add_test(NAME test_iris_orm_store COMMAND test_iris_orm_store)
-  set_tests_properties(test_iris_orm_store PROPERTIES
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
-  set_target_properties(test_iris_orm_store PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    FOLDER "Applications/tests")
-
   add_executable(test_ivr_control_adapter
     tests/test_ivr_control_adapter.c
     src/ivr_control_adapter.c
@@ -532,7 +362,6 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
   target_link_libraries(test_ivr_dispatch_processes
     PRIVATE
       turbo_media_ivr_rtc
-      room_service_iris_outbox_schema
       CHttp::Client CHttp::Server
       Salts::JsonParser
       Salts::DataBind

@@ -63,39 +63,6 @@ static void app_test_restore_env(const char *name, char *saved_value) {
   free(saved_value);
 }
 
-#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-extern ivr_status_t room_service_app_server_test_submit_iris_event(
-    room_service_app_server_t *server, const ivr_media_event_t *event);
-
-static void app_test_normalize_config_path(char *path) {
-  if (!path) {
-    return;
-  }
-  for (; *path; ++path) {
-    if (*path == '\\') {
-      *path = '/';
-    }
-  }
-}
-
-static int app_test_wait_for_iris_event_in_flight(
-    room_service_app_server_t *server) {
-  room_service_ivr_metrics_t metrics;
-  int attempt;
-
-  for (attempt = 0;
-       attempt < ROOM_SERVICE_PROVIDER_LIFECYCLE_WAIT_ATTEMPTS; ++attempt) {
-    if (room_service_app_server_get_ivr_metrics(server, &metrics) == 0 &&
-        metrics.iris_outbox_persisted_total > 0u &&
-        metrics.iris_delivery_attempts_total > 0u &&
-        (metrics.iris_queue_items > 0u || metrics.iris_in_flight > 0u)) {
-      return 0;
-    }
-    app_test_sleep_ms(ROOM_SERVICE_PROVIDER_LIFECYCLE_WAIT_MS);
-  }
-  return -1;
-}
-#endif
 
 void test_room_service_rejects_identifiers_that_do_not_fit_storage(void) {
   turbo_room_service_t *service = NULL;
@@ -1335,25 +1302,7 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
       "{"
       "\"type\":\"get_mutating_like_name\""
       "}";
-  const char *replay_iris_dead_letters_command =
-      "{"
-      "\"type\":\"replay_iris_dead_letters\","
-      "\"limit\":16"
-      "}";
-  const char *replay_iris_dead_letters_invalid_limit_command =
-      "{"
-      "\"type\":\"replay_iris_dead_letters\","
-      "\"limit\":257"
-      "}";
-  const char *list_iris_archived_events_command =
-      "{"
-      "\"type\":\"list_iris_archived_events\","
-      "\"limit\":16"
-      "}";
-  const char *run_iris_event_retention_command =
-      "{"
-      "\"type\":\"run_iris_event_retention\""
-      "}";
+
 
   room_service_app_config_init(&room_config);
   room_config.bind_host = "0.0.0.0";
@@ -1439,34 +1388,6 @@ void test_room_service_http_control_token_protects_modifying_commands(void) {
   check_equal((int)(http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/commands",
                                  close_room_command, write_token, NULL)), (int)(401));
-  check_equal((int)(http_post_json_status_with_token(
-                                 room_service_base_url, "/api/v1/commands",
-                                 replay_iris_dead_letters_command,
-                                 write_token, NULL)), (int)(401));
-  check_equal((int)(http_post_json_status_with_token(
-                                 room_service_base_url, "/api/v1/commands",
-                                 list_iris_archived_events_command,
-                                 write_token, NULL)), (int)(401));
-  check_equal((int)(http_post_json_status_with_token(
-                                 room_service_base_url, "/api/v1/commands",
-                                 run_iris_event_retention_command,
-                                 write_token, NULL)), (int)(401));
-  check_equal((int)(http_post_json_status_with_token(
-                                 room_service_base_url, "/api/v1/commands",
-                                 replay_iris_dead_letters_command,
-                                 "room-service-control-token", NULL)), (int)(404));
-  check_equal((int)(http_post_json_status_with_token(
-                                 room_service_base_url, "/api/v1/commands",
-                                 list_iris_archived_events_command,
-                                 "room-service-control-token", NULL)), (int)(404));
-  check_equal((int)(http_post_json_status_with_token(
-                                 room_service_base_url, "/api/v1/commands",
-                                 run_iris_event_retention_command,
-                                 "room-service-control-token", NULL)), (int)(404));
-  check_equal((int)(http_post_json_status_with_token(
-                                 room_service_base_url, "/api/v1/commands",
-                                 replay_iris_dead_letters_invalid_limit_command,
-                                 "room-service-control-token", NULL)), (int)(400));
   check_equal((int)(http_post_json_status_with_token(
                                  room_service_base_url, "/api/v1/commands",
                                  close_room_command, previous_dangerous_token, NULL)), (int)(200));
@@ -5192,12 +5113,6 @@ void test_room_service_http_lifecycle_repeated_start_stop(void) {
           metrics, "turbo_room_service_iris_queue_capacity 0\n"));
       check_not_null(strstr(
           metrics, "turbo_room_service_iris_delivery_attempts_total 0\n"));
-      check_not_null(strstr(
-          metrics,
-          "turbo_room_service_iris_ledger_resource_queries_total 0\n"));
-      check_not_null(strstr(
-          metrics,
-          "turbo_room_service_iris_ledger_resource_seen_total 0\n"));
       check_not_null(strstr(
           metrics, "turbo_room_service_iris_reconcile_state 0\n"));
       check_not_null(strstr(

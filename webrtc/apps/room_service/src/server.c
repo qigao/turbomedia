@@ -10,8 +10,6 @@
 #include "salts_uuid.h"
 #include "tlog.h"
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-#include "iris_command_ledger.h"
-#include "iris_event_outbox.h"
 #include "iris_completion_dispatcher.h"
 #include "iris_media_bridge.h"
 #include "iris_room_bridge.h"
@@ -78,11 +76,9 @@ struct room_service_app_server_s {
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     ivr_control_adapter_t *ivr_control; /* NULL only when the IVR feature is disabled */
     ivr_certificate_identity_t *ivr_control_identity;
-    iris_command_ledger_t *iris_command_ledger;
     iris_media_bridge_t *iris_media_bridge;
     iris_room_bridge_t *iris_room_bridge;
     iris_completion_dispatcher_t *iris_completion_dispatcher;
-    iris_event_outbox_t *iris_event_outbox;
 #endif
 };
 
@@ -250,41 +246,6 @@ static int room_service_build_provider_completion(
     return valid;
 }
 
-static ivr_status_t room_service_deliver_iris_event(
-    void *context, const ivr_media_event_t *event, uint64_t store_revision) {
-    return iris_completion_dispatcher_enqueue_event(
-        (iris_completion_dispatcher_t *)context, event, store_revision);
-}
-
-static void room_service_settle_iris_event(
-    void *context, const ivr_media_event_t *event, uint64_t store_revision,
-    iris_event_delivery_outcome_t outcome, int http_status) {
-    iris_event_outbox_on_delivery_result(context, event, store_revision,
-                                         (int)outcome, http_status);
-}
-
-static ivr_status_t room_service_observe_iris_media_result(
-    void *context, const ivr_media_command_result_t *result) {
-    room_service_app_server_t *server =
-        (room_service_app_server_t *)context;
-    return iris_completion_dispatcher_on_media_result(
-        server ? server->iris_completion_dispatcher : NULL, result);
-}
-
-static ivr_status_t room_service_observe_iris_media_event(
-    void *context, const ivr_media_event_t *event) {
-    room_service_app_server_t *server =
-        (room_service_app_server_t *)context;
-    return iris_event_outbox_on_media_event(
-        server ? server->iris_event_outbox : NULL, event);
-}
-
-#ifdef ROOM_SERVICE_ENABLE_TEST_HOOKS
-ivr_status_t room_service_app_server_test_submit_iris_event(
-    room_service_app_server_t *server, const ivr_media_event_t *event) {
-    return room_service_observe_iris_media_event(server, event);
-}
-#endif
 #endif
 
 typedef struct {
@@ -2601,42 +2562,6 @@ iris_room_bridge_result_t room_service_app_server_dispatch_iris_room_command(
                                           idempotency_key, body, body_size);
 }
 
-ivr_status_t room_service_app_server_replay_iris_event(
-    room_service_app_server_t *server, const char *event_id) {
-    if (!server || !server->iris_event_outbox) return IVR_ESTATE;
-    return iris_event_outbox_replay(server->iris_event_outbox, event_id);
-}
-
-ivr_status_t room_service_app_server_replay_iris_dead_letters(
-    room_service_app_server_t *server, size_t limit,
-    iris_event_replay_batch_result_t *result) {
-    if (!server || !server->iris_event_outbox) return IVR_ECLOSED;
-    return iris_event_outbox_replay_dead_letters(
-        server->iris_event_outbox, limit, result);
-}
-
-ivr_status_t room_service_app_server_list_iris_dead_letters(
-    room_service_app_server_t *server, iris_event_dead_letter_t *items,
-    size_t capacity, size_t *count, size_t *total) {
-    if (!server || !server->iris_event_outbox) return IVR_ESTATE;
-    return iris_event_outbox_list_dead_letters(
-        server->iris_event_outbox, items, capacity, count, total);
-}
-
-ivr_status_t room_service_app_server_list_iris_archived_events(
-    room_service_app_server_t *server, iris_event_archive_t *items,
-    size_t capacity, size_t *count, size_t *total) {
-    if (!server || !server->iris_event_outbox) return IVR_ESTATE;
-    return iris_event_outbox_list_archived(
-        server->iris_event_outbox, items, capacity, count, total);
-}
-
-ivr_status_t room_service_app_server_run_iris_event_retention(
-    room_service_app_server_t *server,
-    iris_event_retention_result_t *result) {
-    if (!server || !server->iris_event_outbox) return IVR_ECLOSED;
-    return iris_event_outbox_run_retention(server->iris_event_outbox, result);
-}
 #endif
 
 const room_service_app_config_t *room_service_app_server_get_config(
@@ -2732,85 +2657,6 @@ int room_service_app_server_get_ivr_metrics(
             stats.shutdown_dropped_events_total;
         metrics->iris_last_drain_duration_ms = stats.last_drain_duration_ms;
         metrics->iris_max_drain_duration_ms = stats.max_drain_duration_ms;
-    }
-    if (server->iris_command_ledger) {
-        iris_command_ledger_stats_t stats;
-        iris_command_ledger_get_stats(server->iris_command_ledger, &stats);
-        metrics->iris_ledger_request_queue_items =
-            (uint32_t)stats.request_queue_items;
-        metrics->iris_ledger_request_queue_capacity =
-            (uint32_t)stats.request_queue_capacity;
-        metrics->iris_ledger_request_queue_high_water =
-            (uint32_t)stats.request_queue_high_water;
-        metrics->iris_ledger_record_capacity =
-            (uint64_t)stats.record_capacity;
-        metrics->iris_ledger_claims_total = stats.claims_total;
-        metrics->iris_ledger_replays_total = stats.duplicates_total;
-        metrics->iris_ledger_conflicts_total = stats.conflicts_total;
-        metrics->iris_ledger_unknown_total = stats.unknown_total;
-        metrics->iris_ledger_storage_failures_total =
-            stats.storage_failures_total;
-        metrics->iris_ledger_queue_rejections_total =
-            stats.queue_rejections_total;
-        metrics->iris_ledger_recovered_unknown_total =
-            stats.recovered_unknown_total;
-        metrics->iris_ledger_resource_queries_total =
-            stats.resource_queries_total;
-        metrics->iris_ledger_resource_seen_total = stats.resource_seen_total;
-        metrics->iris_ledger_retained_deleted_total =
-            stats.retained_deleted_total;
-        metrics->iris_ledger_retention_sweeps_total =
-            stats.retention_sweeps_total;
-        metrics->iris_ledger_retention_failures_total =
-            stats.retention_failures_total;
-    }
-    if (server->iris_event_outbox) {
-        iris_event_outbox_stats_t stats;
-        iris_event_outbox_get_stats(server->iris_event_outbox, &stats);
-        metrics->iris_outbox_request_queue_items =
-            (uint32_t)stats.request_queue_items;
-        metrics->iris_outbox_request_queue_capacity =
-            (uint32_t)stats.request_queue_capacity;
-        metrics->iris_outbox_request_queue_high_water =
-            (uint32_t)stats.request_queue_high_water;
-        metrics->iris_outbox_pending_records =
-            (uint32_t)stats.pending_records;
-        metrics->iris_outbox_in_flight_records =
-            (uint32_t)stats.in_flight_records;
-        metrics->iris_outbox_dead_records = (uint32_t)stats.dead_records;
-        metrics->iris_outbox_archived_records =
-            (uint32_t)stats.archived_records;
-        metrics->iris_outbox_record_capacity =
-            (uint64_t)stats.record_capacity;
-        metrics->iris_outbox_retained_payload_bytes =
-            (uint64_t)stats.retained_payload_bytes;
-        metrics->iris_outbox_peak_retained_payload_bytes =
-            (uint64_t)stats.peak_retained_payload_bytes;
-        metrics->iris_outbox_persisted_total = stats.persisted_total;
-        metrics->iris_outbox_duplicate_total = stats.duplicate_total;
-        metrics->iris_outbox_conflict_total = stats.conflict_total;
-        metrics->iris_outbox_persist_failure_total =
-            stats.persist_failure_total;
-        metrics->iris_outbox_capacity_rejection_total =
-            stats.capacity_rejection_total;
-        metrics->iris_outbox_schedule_rejection_total =
-            stats.schedule_rejection_total;
-        metrics->iris_outbox_delivered_total = stats.delivered_total;
-        metrics->iris_outbox_dead_lettered_total =
-            stats.dead_lettered_total;
-        metrics->iris_outbox_settlement_failure_total =
-            stats.settlement_failure_total;
-        metrics->iris_outbox_stale_settlement_total =
-            stats.stale_settlement_total;
-        metrics->iris_outbox_decode_failure_total =
-            stats.decode_failure_total;
-        metrics->iris_outbox_recovered_total = stats.recovered_total;
-        metrics->iris_outbox_replayed_total = stats.replayed_total;
-        metrics->iris_outbox_archived_total = stats.archived_total;
-        metrics->iris_outbox_archive_deleted_total =
-            stats.archive_deleted_total;
-        metrics->iris_outbox_retention_failure_total =
-            stats.retention_failure_total;
     }
 #endif
     return 0;

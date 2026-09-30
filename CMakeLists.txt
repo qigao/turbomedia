@@ -137,12 +137,6 @@ endif()
 if(TURBO_MEDIA_IS_SERVER)
   find_package(RulesForge CONFIG REQUIRED
                PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  find_package(Orm CONFIG REQUIRED
-               PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  if(NOT TARGET Orm::C)
-    message(FATAL_ERROR
-            "TurboMedia SERVER requires the generic Orm::C runtime package")
-  endif()
 endif()
  
 find_package(OpenSSL REQUIRED)
