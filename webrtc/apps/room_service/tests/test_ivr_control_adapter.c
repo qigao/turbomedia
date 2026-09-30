@@ -493,8 +493,6 @@ void test_fresh_registry_requires_fenced_reconcile_for_active_worker(void) {
     ivr_control_worker_snapshot_t worker;
     ivr_control_worker_snapshot_t workers[1];
     ivr_worker_inventory_record_t record;
-    ivr_media_command_t media_command;
-    iris_resource_observation_t observation;
     uint32_t count = 99;
     uint32_t total = 99;
     make_worker_control(&command, "worker.sync.v2", "worker-restart",
@@ -517,29 +515,6 @@ void test_fresh_registry_requires_fenced_reconcile_for_active_worker(void) {
                                       adapter, workers, 1, &count, &total), IVR_OK);
     check_equal((uint32_t)(count), (uint32_t)(1));
     check_equal((int)(workers[0].state), (int)(IVR_CONTROL_WORKER_RECONCILING));
-
-    memset(&media_command, 0, sizeof(media_command));
-    media_command.kind = IVR_MEDIA_COMMAND_CANCEL;
-    snprintf(media_command.message_id, sizeof(media_command.message_id),
-             "cancel-before-inventory");
-    snprintf(media_command.tenant_id, sizeof(media_command.tenant_id),
-             "tenant-a");
-    snprintf(media_command.provider_session_id,
-             sizeof(media_command.provider_session_id), "session-restart");
-    snprintf(media_command.dialog_id, sizeof(media_command.dialog_id),
-             "dialog-restart");
-    snprintf(media_command.room_id, sizeof(media_command.room_id),
-             "room-restart");
-    snprintf(media_command.call_id, sizeof(media_command.call_id),
-             "call-restart");
-    media_command.call_generation = 3;
-    media_command.operation_generation = 8;
-    snprintf(media_command.input_id, sizeof(media_command.input_id),
-             "input-restart");
-    media_command.input_generation = 2;
-    check_equal(ivr_control_adapter_observe_media_command(
-                                  adapter, &media_command, &observation), IVR_OK);
-    check_equal((int)(observation.state), (int)(IRIS_RESOURCE_OBSERVATION_UNKNOWN));
 
     memset(&record, 0, sizeof(record));
     snprintf(record.worker_id, sizeof(record.worker_id), "worker-restart");
@@ -986,7 +961,7 @@ void test_dialog_start_creates_media_route_for_following_commands(void) {
 void test_media_cancel_tracks_the_exact_active_input(void) {
     ivr_media_command_t command;
     ivr_media_command_t received;
-    iris_resource_observation_t observation;
+    char worker_id[128];
 
     check_true(sync_media_worker_v2("ws-input-fence"));
 
@@ -1016,22 +991,12 @@ void test_media_cancel_tracks_the_exact_active_input(void) {
 
     make_live_media_command(&command, IVR_MEDIA_COMMAND_CANCEL,
                             "input-fence-cancel", 3);
-    snprintf(command.input_id, sizeof(command.input_id), "input-current");
     command.input_generation = 7;
-    check_equal(ivr_control_adapter_observe_media_command(
-                                  g_adapter, &command, &observation), IVR_OK);
-    check_equal((int)(observation.state), (int)(IRIS_RESOURCE_OBSERVATION_ACTIVE));
-    check_equal(observation.provider_resource_id, "ivr-worker-test");
-
     snprintf(command.input_id, sizeof(command.input_id), "input-old");
     check_equal(ivr_control_adapter_send_media_command(
                                      g_adapter, &command,
-                                     observation.provider_resource_id,
-                                     sizeof(observation.provider_resource_id)), IVR_ESTALE);
-    check_equal(ivr_control_adapter_observe_media_command(
-                                  g_adapter, &command, &observation), IVR_OK);
-    check_equal((int)(observation.state), (int)(IRIS_RESOURCE_OBSERVATION_ABSENT));
-
+                                     worker_id,
+                                     sizeof(worker_id)), IVR_ESTALE);
     snprintf(command.input_id, sizeof(command.input_id), "input-current");
     check_equal(send_and_decode_media_command(&command, &received), IVR_OK);
     check_equal(received.input_id, "input-current");
@@ -1042,19 +1007,16 @@ void test_media_cancel_tracks_the_exact_active_input(void) {
         ivr_thread_sleep_ms(20);
     }
     check_equal((int)(atomic_load(&g_media_result_calls)), (int)(3));
-    check_equal(ivr_control_adapter_observe_media_command(
-                                  g_adapter, &command, &observation), IVR_OK);
-    check_equal((int)(observation.state), (int)(IRIS_RESOURCE_OBSERVATION_ABSENT));
     check_equal(ivr_control_adapter_send_media_command(
                                         g_adapter, &command,
-                                        observation.provider_resource_id,
-                                        sizeof(observation.provider_resource_id)), IVR_ENOTFOUND);
+                                        worker_id,
+                                        sizeof(worker_id)), IVR_ENOTFOUND);
 
     snprintf(command.dialog_id, sizeof(command.dialog_id), "dialog-missing");
     check_equal(ivr_control_adapter_send_media_command(
                                         g_adapter, &command,
-                                        observation.provider_resource_id,
-                                        sizeof(observation.provider_resource_id)), IVR_ENOTFOUND);
+                                        worker_id,
+                                        sizeof(worker_id)), IVR_ENOTFOUND);
 }
 
 void test_worker_inventory_page_is_epoch_fenced_by_adapter(void) {

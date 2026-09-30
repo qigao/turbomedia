@@ -74,8 +74,8 @@ typedef enum {
     IVR_CONTROL_DIALOG_WORKER_LOST = 4
 } ivr_control_dialog_state_t;
 
-/* Authoritative media-route fact owned by RoomService. Iris owns workflow
-   state; this table only binds one typed media dialog to the worker instance
+/* Authoritative media-route fact owned by RoomService. Upstream workflow
+   state stays outside this table; it only binds one typed media dialog to the worker instance
    that owns its media resources. */
 typedef struct {
     char tenant_id[IVR_MEDIA_ID_CAPACITY];
@@ -411,80 +411,6 @@ ivr_status_t ivr_control_adapter_send_media_command(
         return status;
     }
     memcpy(out_worker_id, worker.worker_id, worker_id_size + 1);
-    return IVR_OK;
-}
-
-ivr_status_t ivr_control_adapter_observe_media_command(
-    const ivr_control_adapter_t *adapter, const ivr_media_command_t *command,
-    iris_resource_observation_t *observation) {
-    ivr_control_dialog_route_t *route;
-    ivr_control_worker_entry_t *worker;
-    uint64_t now_ms;
-    if (!adapter || !command || !observation ||
-        command->tenant_id[0] == '\0' ||
-        command->provider_session_id[0] == '\0' ||
-        command->dialog_id[0] == '\0' || command->room_id[0] == '\0' ||
-        command->call_id[0] == '\0' || command->call_generation == 0u ||
-        command->operation_generation == 0u) {
-        return IVR_EINVAL;
-    }
-    memset(observation, 0, sizeof(*observation));
-    now_ms = ivr_control_now_ms(adapter);
-    ivr_mutex_lock((ivr_mutex_t *)&adapter->seq_lock);
-    route = ivr_control_dialog_find_locked((ivr_control_adapter_t *)adapter,
-                                       command->tenant_id,
-                                       command->provider_session_id,
-                                       command->dialog_id);
-    if (!route) {
-        observation->state =
-            ivr_control_reconcile_required_locked(adapter)
-                ? IRIS_RESOURCE_OBSERVATION_UNKNOWN
-                : IRIS_RESOURCE_OBSERVATION_ABSENT;
-        ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
-        return IVR_OK;
-    }
-    if (!ivr_control_dialog_identity_matches(route, command)) {
-        observation->state = IRIS_RESOURCE_OBSERVATION_ABSENT;
-        ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
-        return IVR_OK;
-    }
-    worker = ivr_control_worker_find_locked((ivr_control_adapter_t *)adapter,
-                                        route->worker_id);
-    if (!worker ||
-        strcmp(worker->value.instance_id, route->worker_instance_id) != 0 ||
-        worker->value.connection_generation !=
-            route->worker_connection_generation ||
-        ivr_control_worker_effective_state(&worker->value, now_ms) ==
-            IVR_CONTROL_WORKER_EXPIRED) {
-        observation->state = IRIS_RESOURCE_OBSERVATION_UNKNOWN;
-        ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
-        return IVR_OK;
-    }
-    if ((command->kind == IVR_MEDIA_COMMAND_SESSION_OPEN &&
-         (route->state == IVR_CONTROL_DIALOG_ACTIVE ||
-          (route->state == IVR_CONTROL_DIALOG_OPENING &&
-           strcmp(route->transition_command_id, command->message_id) == 0))) ||
-        (command->kind == IVR_MEDIA_COMMAND_SESSION_CLOSE &&
-         route->state == IVR_CONTROL_DIALOG_CLOSING &&
-         strcmp(route->transition_command_id, command->message_id) == 0)) {
-        observation->state = IRIS_RESOURCE_OBSERVATION_ACTIVE;
-        snprintf(observation->provider_resource_id,
-                 sizeof(observation->provider_resource_id), "%s",
-                 route->worker_id);
-    } else if (command->kind == IVR_MEDIA_COMMAND_CANCEL) {
-        if (route->active_input_generation == command->input_generation &&
-            strcmp(route->active_input_id, command->input_id) == 0) {
-            observation->state = IRIS_RESOURCE_OBSERVATION_ACTIVE;
-            snprintf(observation->provider_resource_id,
-                     sizeof(observation->provider_resource_id), "%s",
-                     route->worker_id);
-        } else {
-            observation->state = IRIS_RESOURCE_OBSERVATION_ABSENT;
-        }
-    } else {
-        observation->state = IRIS_RESOURCE_OBSERVATION_UNKNOWN;
-    }
-    ivr_mutex_unlock((ivr_mutex_t *)&adapter->seq_lock);
     return IVR_OK;
 }
 
