@@ -174,17 +174,32 @@ static void turbo_rtc_client_state_change(
     if (!client) {
         return;
     }
-    if (state == TURBO_PEER_STATE_CONNECTED) {
-        if (!client->audio_track ||
-            turbo_media_track_start(client->audio_track) != 0) {
-            atomic_store_explicit(
-                &client->peer_state, TURBO_PEER_STATE_FAILED,
-                memory_order_release);
-            return;
-        }
-    }
     atomic_store_explicit(
         &client->peer_state, (int)state, memory_order_release);
+}
+
+static turbo_rtc_client_status_t turbo_rtc_client_refresh_peer_state(
+    turbo_rtc_client_t *client) {
+    turbo_peer_state_t peer_state;
+    if (!client || !client->audio_track) {
+        return TURBO_RTC_CLIENT_ESTATE;
+    }
+    peer_state = (turbo_peer_state_t)atomic_load_explicit(
+        &client->peer_state, memory_order_acquire);
+    if (peer_state == TURBO_PEER_STATE_FAILED ||
+        peer_state == TURBO_PEER_STATE_DISCONNECTED ||
+        peer_state == TURBO_PEER_STATE_CLOSED) {
+        client->state = TURBO_RTC_CLIENT_FAILED;
+        return TURBO_RTC_CLIENT_EPEER;
+    }
+    if (peer_state == TURBO_PEER_STATE_CONNECTED) {
+        if (turbo_media_track_start(client->audio_track) != 0) {
+            client->state = TURBO_RTC_CLIENT_FAILED;
+            return TURBO_RTC_CLIENT_EPEER;
+        }
+        client->state = TURBO_RTC_CLIENT_CONNECTED;
+    }
+    return TURBO_RTC_CLIENT_OK;
 }
 
 static turbo_rtc_client_status_t turbo_rtc_client_delete_remote(
@@ -479,21 +494,13 @@ turbo_rtc_client_status_t turbo_rtc_client_start(
     memcpy(client->session_etag, response.etag,
            strlen(response.etag) + 1u);
     client->connect_started_ms = salts_monotonic_ms();
-    {
-        turbo_peer_state_t peer_state = (turbo_peer_state_t)
-            atomic_load_explicit(
-                &client->peer_state, memory_order_acquire);
-        if (peer_state == TURBO_PEER_STATE_FAILED ||
-            peer_state == TURBO_PEER_STATE_DISCONNECTED ||
-            peer_state == TURBO_PEER_STATE_CLOSED) {
-            (void)turbo_rtc_client_delete_remote(client, response.location);
-            client->state = TURBO_RTC_CLIENT_FAILED;
-            return TURBO_RTC_CLIENT_EPEER;
-        }
-        client->state =
-            peer_state == TURBO_PEER_STATE_CONNECTED
-                ? TURBO_RTC_CLIENT_CONNECTED
-                : TURBO_RTC_CLIENT_CONNECTING;
+    if (turbo_rtc_client_refresh_peer_state(client) !=
+        TURBO_RTC_CLIENT_OK) {
+        (void)turbo_rtc_client_delete_remote(client, response.location);
+        return TURBO_RTC_CLIENT_EPEER;
+    }
+    if (client->state != TURBO_RTC_CLIENT_CONNECTED) {
+        client->state = TURBO_RTC_CLIENT_CONNECTING;
     }
     return TURBO_RTC_CLIENT_OK;
 }
@@ -561,24 +568,18 @@ turbo_rtc_client_status_t turbo_rtc_client_restart_ice(
            strlen(response.etag) + 1u);
     client->connect_started_ms = salts_monotonic_ms();
 
-    peer_state = (turbo_peer_state_t)atomic_load_explicit(
-        &client->peer_state, memory_order_acquire);
-    if (peer_state == TURBO_PEER_STATE_FAILED ||
-        peer_state == TURBO_PEER_STATE_DISCONNECTED ||
-        peer_state == TURBO_PEER_STATE_CLOSED) {
-        client->state = TURBO_RTC_CLIENT_FAILED;
+    if (turbo_rtc_client_refresh_peer_state(client) !=
+        TURBO_RTC_CLIENT_OK) {
         return TURBO_RTC_CLIENT_EPEER;
     }
-    client->state =
-        peer_state == TURBO_PEER_STATE_CONNECTED
-            ? TURBO_RTC_CLIENT_CONNECTED
-            : TURBO_RTC_CLIENT_CONNECTING;
+    if (client->state != TURBO_RTC_CLIENT_CONNECTED) {
+        client->state = TURBO_RTC_CLIENT_CONNECTING;
+    }
     return TURBO_RTC_CLIENT_OK;
 }
 
 turbo_rtc_client_status_t turbo_rtc_client_poll(
     turbo_rtc_client_t *client) {
-    turbo_peer_state_t peer_state;
     uint64_t now;
     if (!client) {
         return TURBO_RTC_CLIENT_EINVAL;
@@ -590,16 +591,9 @@ turbo_rtc_client_status_t turbo_rtc_client_poll(
     }
 
     turbo_peer_connection_poll(client->pc);
-    peer_state = (turbo_peer_state_t)atomic_load_explicit(
-        &client->peer_state, memory_order_acquire);
-    if (peer_state == TURBO_PEER_STATE_FAILED ||
-        peer_state == TURBO_PEER_STATE_DISCONNECTED ||
-        peer_state == TURBO_PEER_STATE_CLOSED) {
-        client->state = TURBO_RTC_CLIENT_FAILED;
+    if (turbo_rtc_client_refresh_peer_state(client) !=
+        TURBO_RTC_CLIENT_OK) {
         return TURBO_RTC_CLIENT_EPEER;
-    }
-    if (peer_state == TURBO_PEER_STATE_CONNECTED) {
-        client->state = TURBO_RTC_CLIENT_CONNECTED;
     }
     if (client->state == TURBO_RTC_CLIENT_CONNECTING) {
         now = salts_monotonic_ms();
