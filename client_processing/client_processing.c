@@ -7,6 +7,11 @@ enum { TURBO_CLIENT_PROCESSING_DEFAULT_QUEUE_CAPACITY = 8 };
 #define TURBO_CLIENT_PROCESSING_DEFAULT_QUEUE_BYTES (8u * 1024u * 1024u)
 #define TURBO_CLIENT_PROCESSING_DEFAULT_QUEUE_DURATION_US UINT64_C(500000)
 
+#define TURBO_CLIENT_PROCESSING_CAPTURE_BLOCKERS                              \
+    (TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_PERMISSION_REVOKED |      \
+     TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_DEVICE_LOST |             \
+     TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_BACKGROUND_DENIED)
+
 static int turbo_client_processing_config_valid(
     const turbo_client_processing_config_t *config) {
     return config != NULL &&
@@ -123,6 +128,8 @@ turbo_client_processing_status_t turbo_client_processing_create(
     }
     processing->config = *config;
     atomic_init(&processing->state, TURBO_CLIENT_PROCESSING_CREATED);
+    atomic_init(&processing->lifecycle_flags,
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_NONE);
     processing->video_stream_index = -1;
     processing->source_format = AV_PIX_FMT_NONE;
     *out_processing = processing;
@@ -156,7 +163,9 @@ turbo_client_processing_status_t turbo_client_processing_start(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PREPARED) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PREPARED ||
+        (turbo_client_processing_lifecycle_flags_get(processing) &
+         TURBO_CLIENT_PROCESSING_CAPTURE_BLOCKERS) != 0u) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
     turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_RUNNING);
@@ -180,10 +189,100 @@ turbo_client_processing_status_t turbo_client_processing_resume(
     if (processing == NULL) {
         return TURBO_CLIENT_PROCESSING_EINVAL;
     }
-    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PAUSED) {
+    if (turbo_client_processing_state_get(processing) != TURBO_CLIENT_PROCESSING_PAUSED ||
+        (turbo_client_processing_lifecycle_flags_get(processing) &
+         TURBO_CLIENT_PROCESSING_CAPTURE_BLOCKERS) != 0u) {
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
     turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_RUNNING);
+    return TURBO_CLIENT_PROCESSING_OK;
+}
+turbo_client_processing_status_t
+turbo_client_processing_handle_lifecycle_event(
+    turbo_client_processing_t *processing,
+    turbo_client_processing_lifecycle_event_t event) {
+    turbo_client_processing_state_t state;
+    uint32_t set_flags = 0u;
+    uint32_t clear_flags = 0u;
+    int pause_admission = 0;
+
+    if (processing == NULL) {
+        return TURBO_CLIENT_PROCESSING_EINVAL;
+    }
+    if (event == TURBO_CLIENT_PROCESSING_LIFECYCLE_APP_PAUSE) {
+        return turbo_client_processing_pause(processing);
+    }
+    if (event == TURBO_CLIENT_PROCESSING_LIFECYCLE_APP_RESUME) {
+        return turbo_client_processing_resume(processing);
+    }
+
+    state = turbo_client_processing_state_get(processing);
+    if (state == TURBO_CLIENT_PROCESSING_DRAINING ||
+        state == TURBO_CLIENT_PROCESSING_STOPPED ||
+        state == TURBO_CLIENT_PROCESSING_FAILED) {
+        return TURBO_CLIENT_PROCESSING_ESTATE;
+    }
+
+    switch (event) {
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_PERMISSION_REVOKED:
+            set_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_PERMISSION_REVOKED;
+            pause_admission = 1;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_PERMISSION_RESTORED:
+            clear_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_PERMISSION_REVOKED;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_DEVICE_LOST:
+            set_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_DEVICE_LOST;
+            pause_admission = 1;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_CAPTURE_DEVICE_REVALIDATED:
+            clear_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_CAPTURE_DEVICE_LOST;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_PLAYBACK_DEVICE_LOST:
+            set_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_PLAYBACK_DEVICE_LOST;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_PLAYBACK_DEVICE_REVALIDATED:
+            clear_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_PLAYBACK_DEVICE_LOST;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_VIDEO_SURFACE_LOST:
+            set_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_VIDEO_SURFACE_LOST;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_VIDEO_SURFACE_REPLACED:
+            clear_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_VIDEO_SURFACE_LOST;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_BACKGROUND_DENIED:
+            set_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_BACKGROUND_DENIED;
+            pause_admission = 1;
+            break;
+        case TURBO_CLIENT_PROCESSING_LIFECYCLE_BACKGROUND_ALLOWED:
+            clear_flags =
+                TURBO_CLIENT_PROCESSING_LIFECYCLE_FLAG_BACKGROUND_DENIED;
+            break;
+        default:
+            return TURBO_CLIENT_PROCESSING_EINVAL;
+    }
+
+    if (set_flags != 0u) {
+        atomic_fetch_or_explicit(&processing->lifecycle_flags, set_flags,
+                                 memory_order_acq_rel);
+    }
+    if (clear_flags != 0u) {
+        atomic_fetch_and_explicit(&processing->lifecycle_flags, ~clear_flags,
+                                  memory_order_acq_rel);
+    }
+    if (pause_admission && state == TURBO_CLIENT_PROCESSING_RUNNING) {
+        turbo_client_processing_state_set(processing,
+                                          TURBO_CLIENT_PROCESSING_PAUSED);
+    }
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -241,6 +340,8 @@ turbo_client_processing_status_t turbo_client_processing_snapshot(
     snapshot->queued_duration_us = processing->queued_duration_us;
     snapshot->admitted_frames = processing->admitted_frames;
     snapshot->rejected_frames = processing->rejected_frames;
+    snapshot->lifecycle_flags =
+        turbo_client_processing_lifecycle_flags_get(processing);
     salts_mutex_unlock((salts_mutex_t *)&processing->frame_mutex);
     return TURBO_CLIENT_PROCESSING_OK;
 }
