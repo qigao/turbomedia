@@ -31,7 +31,6 @@ struct turbo_rtc_capture_source_s {
     uint8_t *frame_storage;
     uint8_t *delivery_buffer;
     size_t *frame_lengths;
-    uint64_t *frame_timestamps;
     size_t queue_head;
     size_t queue_tail;
     size_t queue_count;
@@ -120,6 +119,7 @@ static void capture_source_on_audio(
     size_t slot_offset;
 
     (void)capture;
+    (void)timestamp;
     if (!source || !samples || len == 0u || !source->lock_initialized) {
         return;
     }
@@ -132,13 +132,18 @@ static void capture_source_on_audio(
 
     source->frames_captured++;
     alignment = (size_t)source->channels * sizeof(int16_t);
-    if (alignment == 0u || len > source->max_frame_bytes ||
-        (len % alignment) != 0u) {
+    {
+        size_t expected_len =
+            (size_t)source->sample_rate * source->frame_size_ms / 1000u *
+            alignment;
+        if (alignment == 0u || expected_len == 0u ||
+            len != expected_len || len > source->max_frame_bytes) {
         source->frames_rejected++;
         source->frame_error = 1;
         source->accepting = 0;
-        salts_mutex_unlock(&source->lock);
-        return;
+            salts_mutex_unlock(&source->lock);
+            return;
+        }
     }
 
     if (source->queue_count >= source->frame_queue_capacity) {
@@ -152,7 +157,6 @@ static void capture_source_on_audio(
     slot_offset = source->queue_tail * source->max_frame_bytes;
     memcpy(source->frame_storage + slot_offset, samples, len);
     source->frame_lengths[source->queue_tail] = len;
-    source->frame_timestamps[source->queue_tail] = timestamp;
     source->queue_tail =
         (source->queue_tail + 1u) % source->frame_queue_capacity;
     source->queue_count++;
@@ -227,11 +231,8 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_create(
     source->delivery_buffer = (uint8_t *)malloc(config->max_frame_bytes);
     source->frame_lengths = (size_t *)calloc(
         config->frame_queue_capacity, sizeof(*source->frame_lengths));
-    source->frame_timestamps = (uint64_t *)calloc(
-        config->frame_queue_capacity, sizeof(*source->frame_timestamps));
     if (!source->frame_storage || !source->delivery_buffer ||
-        !source->frame_lengths || !source->frame_timestamps) {
-        free(source->frame_timestamps);
+        !source->frame_lengths) {
         free(source->frame_lengths);
         free(source->delivery_buffer);
         free(source->frame_storage);
@@ -337,7 +338,6 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
     while (budget-- != 0u) {
         size_t length;
         size_t slot_offset;
-        uint64_t timestamp;
         turbo_rtc_client_status_t status;
         int overflowed;
         int frame_error;
@@ -358,14 +358,13 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
         }
 
         length = source->frame_lengths[source->queue_head];
-        timestamp = source->frame_timestamps[source->queue_head];
         slot_offset = source->queue_head * source->max_frame_bytes;
         memcpy(source->delivery_buffer,
                source->frame_storage + slot_offset, length);
         salts_mutex_unlock(&source->lock);
 
         status = turbo_rtc_client_send_audio(
-            client, source->delivery_buffer, length, timestamp);
+            client, source->delivery_buffer, length);
         if (status == TURBO_RTC_CLIENT_ESTATE) {
             /*
              * CONNECTING/restart is the one recoverable RTCClient condition.
@@ -493,7 +492,6 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_destroy(
         salts_mutex_destroy(&source->lock);
         source->lock_initialized = 0;
     }
-    free(source->frame_timestamps);
     free(source->frame_lengths);
     free(source->delivery_buffer);
     free(source->frame_storage);
