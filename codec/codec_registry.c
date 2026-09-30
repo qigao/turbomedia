@@ -105,6 +105,22 @@ const turbo_codec_ops_t *turbo_codec_find_by_name(const char *name) {
     return NULL;
 }
 
+int turbo_codec_audio_rtp_clock_rate(const char *name) {
+    if (!name) return 0;
+    if (strcmp(name, "pcmu") == 0) {
+        return turbo_g711_pcmu_codec_ops.clock_rate;
+    }
+    if (strcmp(name, "pcma") == 0) {
+        return turbo_g711_pcma_codec_ops.clock_rate;
+    }
+#ifdef TURBO_MEDIA_HAS_OPUS
+    if (strcmp(name, "opus") == 0) {
+        return turbo_opus_codec_ops.clock_rate;
+    }
+#endif
+    return 0;
+}
+
 int turbo_codec_validate_audio_config(
     const char *name, const turbo_audio_codec_config_t *config) {
     if (!name || !config) {

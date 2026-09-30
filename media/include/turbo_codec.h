@@ -192,6 +192,14 @@ TURBO_MEDIA_API const turbo_codec_ops_t *turbo_codec_find_by_pt(int payload_type
 TURBO_MEDIA_API const turbo_codec_ops_t *turbo_codec_find_by_name(const char *name);
 
 /**
+ * Return the codec-owned RTP clock rate for a built-in audio codec without
+ * requiring registry initialization.
+ *
+ * @return Positive RTP clock rate, or 0 for unknown/unavailable audio codecs.
+ */
+TURBO_MEDIA_API int turbo_codec_audio_rtp_clock_rate(const char *name);
+
+/**
  * Register a codec
  *
  * @param ops   Codec operations
