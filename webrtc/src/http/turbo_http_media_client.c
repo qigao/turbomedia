@@ -29,6 +29,7 @@ struct turbo_http_media_client_s {
     int http_initialized;
     int tls_initialized;
     uint32_t timeout_ms;
+    int https;
     char *connection_uri;
     char *authority;
     char *base_path;
@@ -224,6 +225,47 @@ static int turbo_http_media_method(const char *method, chttp_method *out_method)
     return 0;
 }
 
+static int turbo_http_media_build_target(
+    const turbo_http_media_client_t *client, const char *path,
+    char *target, size_t capacity) {
+    const char *relative = path;
+    const char *authority;
+    const char *authority_end;
+    const char *scheme;
+    size_t authority_length;
+    int written;
+
+    if (!client || !path || !target || capacity == 0u ||
+        turbo_http_media_has_forbidden_byte(path)) {
+        return -1;
+    }
+
+    if (path[0] == '/') {
+        written = snprintf(target, capacity, "%s%s", client->base_path, path);
+        return written >= 0 && (size_t)written < capacity ? 0 : -1;
+    }
+
+    scheme = client->https ? "https://" : "http://";
+    if (strncmp(path, scheme, strlen(scheme)) != 0) {
+        return -1;
+    }
+    authority = path + strlen(scheme);
+    authority_end = strchr(authority, '/');
+    if (!authority_end) {
+        authority_end = path + strlen(path);
+        relative = "/";
+    } else {
+        relative = authority_end;
+    }
+    authority_length = (size_t)(authority_end - authority);
+    if (authority_length != strlen(client->authority) ||
+        memcmp(authority, client->authority, authority_length) != 0) {
+        return -1;
+    }
+    written = snprintf(target, capacity, "%s", relative);
+    return written >= 0 && (size_t)written < capacity ? 0 : -1;
+}
+
 static int turbo_http_media_send(chttp_client *client, chttp_method method,
                                const chttp_options *options,
                                chttp_response *response,
@@ -307,6 +349,7 @@ int turbo_http_media_client_create(
         return -1;
     }
     client->timeout_ms = (uint32_t)timeout_ms;
+    client->https = https;
     authority_start = config->base_url + (https ? 8u : 7u);
     authority_end = strchr(authority_start, '/');
     if (!authority_end) {
@@ -440,9 +483,8 @@ int turbo_http_media_request(turbo_http_media_client_t *client,
     int status;
     int result = -1;
 
-    if (!client || !client->http_initialized || !method || !path || path[0] != '/' ||
-        turbo_http_media_has_forbidden_byte(path) || !response ||
-        turbo_http_media_method(method, &http_method) != 0) {
+    if (!client || !client->http_initialized || !method || !path ||
+        !response || turbo_http_media_method(method, &http_method) != 0) {
         return -1;
     }
     memset(response, 0, sizeof(*response));
@@ -462,9 +504,9 @@ int turbo_http_media_request(turbo_http_media_client_t *client,
         headers[header_count++] =
             (chttp_header){"Authorization", client->authorization};
     }
-    target_length = snprintf(target, sizeof(target), "%s%s",
-                             client->base_path, path);
-    if (target_length < 0 || (size_t)target_length >= sizeof(target)) {
+    target_length =
+        turbo_http_media_build_target(client, path, target, sizeof(target));
+    if (target_length != 0) {
         return -1;
     }
     options.connection_uri = client->connection_uri;
