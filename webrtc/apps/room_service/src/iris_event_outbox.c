@@ -1320,6 +1320,10 @@ void iris_event_outbox_stop(iris_event_outbox_t *outbox) {
 void iris_event_outbox_destroy(iris_event_outbox_t *outbox) {
     if (!outbox) return;
     iris_event_outbox_stop(outbox);
+    if (outbox->orm_store_owner &&
+        iris_orm_store_owner_close(outbox->orm_store_owner, NULL, 0u) !=
+            SALTS_OK)
+        return;
     data_bind_free(outbox->codec);
     salts_cond_destroy(&outbox->startup);
     salts_cond_destroy(&outbox->not_empty);

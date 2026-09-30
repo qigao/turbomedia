@@ -984,6 +984,10 @@ void iris_command_ledger_stop(iris_command_ledger_t *ledger) {
 void iris_command_ledger_destroy(iris_command_ledger_t *ledger) {
     if (!ledger) return;
     iris_command_ledger_stop(ledger);
+    if (ledger->orm_store_owner &&
+        iris_orm_store_owner_close(ledger->orm_store_owner, NULL, 0u) !=
+            SALTS_OK)
+        return;
     salts_cond_destroy(&ledger->startup);
     salts_cond_destroy(&ledger->not_empty);
     salts_mutex_destroy(&ledger->mutex);

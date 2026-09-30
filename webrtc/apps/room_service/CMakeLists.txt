@@ -418,13 +418,52 @@ if(TURBO_MEDIA_HAS_IVR_CONTROL)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     FOLDER "Applications/tests")
 
+  add_library(room_service_orm_test_driver MODULE
+    tests/orm_runtime_test_driver.c)
+  target_compile_features(room_service_orm_test_driver PRIVATE c_std_11)
+  target_include_directories(room_service_orm_test_driver PRIVATE
+    $<TARGET_PROPERTY:Orm::C,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_link_libraries(room_service_orm_test_driver PRIVATE
+    Salts::PluginABI Salts::CFlow)
+  set_target_properties(room_service_orm_test_driver PROPERTIES
+    PREFIX ""
+    C_STANDARD_REQUIRED ON
+    C_VISIBILITY_PRESET hidden
+    WINDOWS_EXPORT_ALL_SYMBOLS OFF
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    FOLDER "Applications/tests")
+
+  add_library(room_service_orm_wrong_driver MODULE
+    tests/orm_runtime_test_driver.c)
+  target_compile_features(room_service_orm_wrong_driver PRIVATE c_std_11)
+  target_compile_definitions(room_service_orm_wrong_driver PRIVATE
+    TURBOMEDIA_ORM_TEST_DRIVER_ID="not-postgresql")
+  target_include_directories(room_service_orm_wrong_driver PRIVATE
+    $<TARGET_PROPERTY:Orm::C,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_link_libraries(room_service_orm_wrong_driver PRIVATE
+    Salts::PluginABI Salts::CFlow)
+  set_target_properties(room_service_orm_wrong_driver PROPERTIES
+    PREFIX ""
+    C_STANDARD_REQUIRED ON
+    C_VISIBILITY_PRESET hidden
+    WINDOWS_EXPORT_ALL_SYMBOLS OFF
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    FOLDER "Applications/tests")
+
   add_executable(test_iris_orm_store
     tests/test_iris_orm_store.c
     src/iris_orm_store.c)
   target_include_directories(test_iris_orm_store PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(test_iris_orm_store PRIVATE
+    TEST_ORM_RUNTIME_DRIVER="$<TARGET_FILE:room_service_orm_test_driver>"
+    TEST_ORM_WRONG_DRIVER="$<TARGET_FILE:room_service_orm_wrong_driver>")
   target_link_libraries(test_iris_orm_store PRIVATE
     Orm::C Salts::Core Salts::CYaml Salts::TinyTest)
+  add_dependencies(test_iris_orm_store
+    room_service_orm_test_driver room_service_orm_wrong_driver)
   add_test(NAME test_iris_orm_store COMMAND test_iris_orm_store)
   set_tests_properties(test_iris_orm_store PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin TIMEOUT 30)
