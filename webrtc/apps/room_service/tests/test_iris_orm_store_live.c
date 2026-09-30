@@ -66,12 +66,12 @@ static int live_value_equal(const uint8_t *actual, size_t actual_size,
            memcmp(actual, expected, expected_size) == 0;
 }
 
-static void live_put(iris_record_mutation_t *mutation, uint8_t key,
+static void live_put(iris_record_mutation_t *mutation, const uint8_t *key,
                      uint64_t expected_revision, uint64_t next_revision,
                      const char *value) {
     *mutation = (iris_record_mutation_t)IRIS_RECORD_MUTATION_INIT;
     mutation->kind = IRIS_RECORD_PUT;
-    mutation->key = &key; /* overwritten by caller with stable key storage */
+    mutation->key = key;
     mutation->key_size = 1u;
     mutation->expected_revision = expected_revision;
     mutation->next_revision = next_revision;
@@ -163,12 +163,10 @@ spec("Iris PostgreSQL ORM live record store") {
         check_equal(live_scan(store, &snapshot), SALTS_OK);
         check_equal(snapshot.count, (size_t)0u);
 
-        live_put(&mutations[0], key_a[0], IRIS_RECORD_REVISION_ABSENT, 1u,
+        live_put(&mutations[0], key_a, IRIS_RECORD_REVISION_ABSENT, 1u,
                  "a1");
-        mutations[0].key = key_a;
-        live_put(&mutations[1], key_b[0], IRIS_RECORD_REVISION_ABSENT, 1u,
+        live_put(&mutations[1], key_b, IRIS_RECORD_REVISION_ABSENT, 1u,
                  "b1");
-        mutations[1].key = key_b;
         check_equal(store->commit(store->ctx, mutations, 2u), SALTS_OK);
 
         check_equal(live_scan(store, &snapshot), SALTS_OK);
@@ -180,22 +178,18 @@ spec("Iris PostgreSQL ORM live record store") {
         check_true(live_value_equal(snapshot.value_a, snapshot.value_a_size, "a1"));
         check_true(live_value_equal(snapshot.value_b, snapshot.value_b_size, "b1"));
 
-        live_put(&mutations[0], key_a[0], IRIS_RECORD_REVISION_ABSENT, 2u,
+        live_put(&mutations[0], key_a, IRIS_RECORD_REVISION_ABSENT, 2u,
                  "stale");
-        mutations[0].key = key_a;
         check_equal(store->commit(store->ctx, mutations, 1u), SALTS_EBUSY);
         check_equal(live_scan(store, &snapshot), SALTS_OK);
         check_equal(snapshot.revision_a, UINT64_C(1));
         check_true(live_value_equal(snapshot.value_a, snapshot.value_a_size, "a1"));
 
-        live_put(&mutations[0], key_a[0], 1u, 2u, "a2");
-        mutations[0].key = key_a;
+        live_put(&mutations[0], key_a, 1u, 2u, "a2");
         check_equal(store->commit(store->ctx, mutations, 1u), SALTS_OK);
 
-        live_put(&mutations[0], key_a[0], 2u, 3u, "a3-rolled-back");
-        mutations[0].key = key_a;
-        live_put(&mutations[1], key_b[0], 99u, 100u, "b-stale");
-        mutations[1].key = key_b;
+        live_put(&mutations[0], key_a, 2u, 3u, "a3-rolled-back");
+        live_put(&mutations[1], key_b, 99u, 100u, "b-stale");
         check_equal(store->commit(store->ctx, mutations, 2u), SALTS_EBUSY);
 
         check_equal(live_scan(store, &snapshot), SALTS_OK);
@@ -204,10 +198,8 @@ spec("Iris PostgreSQL ORM live record store") {
         check_true(live_value_equal(snapshot.value_a, snapshot.value_a_size, "a2"));
         check_true(live_value_equal(snapshot.value_b, snapshot.value_b_size, "b1"));
 
-        live_put(&mutations[0], key_a[0], 2u, 3u, "a3");
-        mutations[0].key = key_a;
-        live_put(&mutations[1], key_b[0], 1u, 2u, "b2");
-        mutations[1].key = key_b;
+        live_put(&mutations[0], key_a, 2u, 3u, "a3");
+        live_put(&mutations[1], key_b, 1u, 2u, "b2");
         check_equal(store->commit(store->ctx, mutations, 2u), SALTS_OK);
 
         check_equal(live_scan(store, &snapshot), SALTS_OK);
