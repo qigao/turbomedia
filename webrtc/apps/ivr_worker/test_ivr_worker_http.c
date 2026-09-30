@@ -1,4 +1,4 @@
-#include "ivr_http_media_client.h"
+#include "turbo_http_media_client.h"
 #include "ivr_worker_health.h"
 #include "ivr_worker_http.h"
 #include "ivr_worker_metrics.h"
@@ -25,42 +25,42 @@ static int start_on_available_port(ivr_worker_http_t *server) {
 }
 
 static int get_path(int port, const char *path,
-                    ivr_http_media_response_t *response) {
+                    turbo_http_media_response_t *response) {
     char base_url[64];
-    ivr_http_media_client_config_t config =
-        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
-    ivr_http_media_client_t *client = NULL;
+    turbo_http_media_client_config_t config =
+        TURBO_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    turbo_http_media_client_t *client = NULL;
     int result;
 
     snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", port);
     config.base_url = base_url;
     config.allow_plaintext_loopback = 1;
-    if (ivr_http_media_client_create(&config, &client) != 0) {
+    if (turbo_http_media_client_create(&config, &client) != 0) {
         return -1;
     }
-    result = ivr_http_media_request(client, "GET", path, NULL, NULL, NULL,
+    result = turbo_http_media_request(client, "GET", path, NULL, NULL, NULL,
                                     response);
-    ivr_http_media_client_destroy(client);
+    turbo_http_media_client_destroy(client);
     return result;
 }
 
 static int post_path(int port, const char *path,
-                     ivr_http_media_response_t *response) {
+                     turbo_http_media_response_t *response) {
     char base_url[64];
-    ivr_http_media_client_config_t config =
-        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
-    ivr_http_media_client_t *client = NULL;
+    turbo_http_media_client_config_t config =
+        TURBO_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    turbo_http_media_client_t *client = NULL;
     int result;
 
     snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d", port);
     config.base_url = base_url;
     config.allow_plaintext_loopback = 1;
-    if (ivr_http_media_client_create(&config, &client) != 0) {
+    if (turbo_http_media_client_create(&config, &client) != 0) {
         return -1;
     }
-    result = ivr_http_media_request(client, "POST", path, NULL, NULL, NULL,
+    result = turbo_http_media_request(client, "POST", path, NULL, NULL, NULL,
                                     response);
-    ivr_http_media_client_destroy(client);
+    turbo_http_media_client_destroy(client);
     return result;
 }
 
@@ -76,7 +76,7 @@ void test_opus_offer_uses_rfc7587_rtp_clock(void) {
         "a=ice-ufrag:test-ufrag\r\n"
         "a=ice-pwd:test-password\r\n"
         "a=fingerprint:sha-256 00:11:22:33\r\n";
-    char offer[IVR_HTTP_MEDIA_MAX_SDP];
+    char offer[TURBO_HTTP_MEDIA_MAX_SDP];
 
     memset(offer, 0, sizeof(offer));
     ivr_sdp_build_minimal_audio_offer(source, offer, sizeof(offer), 16000,
@@ -88,34 +88,34 @@ void test_opus_offer_uses_rfc7587_rtp_clock(void) {
 }
 
 void test_media_path_segment_is_encoded_and_rejects_controls(void) {
-    char *encoded = ivr_http_media_encode_path_segment("room/a?b c");
+    char *encoded = turbo_http_media_encode_path_segment("room/a?b c");
 
     check_not_null(encoded);
     if (encoded) {
         check_equal(encoded, "room%2Fa%3Fb%20c");
     }
     free(encoded);
-    check_null(ivr_http_media_encode_path_segment("bad\r\nid"));
-    check_null(ivr_http_media_encode_path_segment("bad\x1f" "id"));
+    check_null(turbo_http_media_encode_path_segment("bad\r\nid"));
+    check_null(turbo_http_media_encode_path_segment("bad\x1f" "id"));
 }
 
 void test_media_client_plaintext_requires_explicit_loopback(void) {
-    ivr_http_media_client_config_t config =
-        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
-    ivr_http_media_client_t *client = NULL;
+    turbo_http_media_client_config_t config =
+        TURBO_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    turbo_http_media_client_t *client = NULL;
 
     config.base_url = "http://127.0.0.1:8080";
-    check_equal((int)ivr_http_media_client_create(&config, &client), (int)-1);
+    check_equal((int)turbo_http_media_client_create(&config, &client), (int)-1);
     check_null(client);
 
     config.allow_plaintext_loopback = 1;
-    check_equal((int)ivr_http_media_client_create(&config, &client), (int)0);
+    check_equal((int)turbo_http_media_client_create(&config, &client), (int)0);
     check_not_null(client);
-    ivr_http_media_client_destroy(client);
+    turbo_http_media_client_destroy(client);
     client = NULL;
 
     config.base_url = "http://example.invalid:8080";
-    check_equal((int)ivr_http_media_client_create(&config, &client), (int)-1);
+    check_equal((int)turbo_http_media_client_create(&config, &client), (int)-1);
     check_null(client);
 }
 
@@ -124,7 +124,7 @@ void test_management_endpoints_follow_health_snapshot(void) {
     ivr_worker_health_snapshot_t snapshot;
     ivr_worker_metrics_t metrics;
     ivr_worker_http_t *server = NULL;
-    ivr_http_media_response_t response;
+    turbo_http_media_response_t response;
     int drain_calls = 0;
     int port;
 
@@ -279,7 +279,7 @@ void test_metrics_dependency_must_be_set_before_start(void) {
     ivr_worker_metrics_t metrics;
     ivr_worker_http_t *server = NULL;
     int port;
-    ivr_http_media_response_t response;
+    turbo_http_media_response_t response;
 
     check_equal((int)(ivr_worker_health_init(&health, 1)), (int)(0));
     ivr_worker_metrics_init(&metrics);
