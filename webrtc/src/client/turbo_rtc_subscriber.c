@@ -59,6 +59,7 @@ struct turbo_rtc_subscriber_s {
     turbo_peer_state_t peer_state;
     int accept_frames;
     int stopping;
+    int in_audio_callback;
     int queue_overflowed;
     int frame_error;
 
@@ -745,6 +746,10 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
         subscriber->queue_bytes -= length;
         salts_mutex_unlock(&subscriber->lock);
 
+        salts_mutex_lock(&subscriber->lock);
+        subscriber->in_audio_callback = 1;
+        salts_mutex_unlock(&subscriber->lock);
+
         callback_status = subscriber->on_audio(
             subscriber->audio_context,
             subscriber->delivery_buffer,
@@ -754,6 +759,7 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
             timestamp);
 
         salts_mutex_lock(&subscriber->lock);
+        subscriber->in_audio_callback = 0;
         if (callback_status == 0) {
             subscriber->frames_delivered++;
         } else {
@@ -781,6 +787,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_poll(
     if (!subscriber) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
+    salts_mutex_lock(&subscriber->lock);
+    if (subscriber->in_audio_callback) {
+        salts_mutex_unlock(&subscriber->lock);
+        return TURBO_RTC_CLIENT_ESTATE;
+    }
+    salts_mutex_unlock(&subscriber->lock);
     if ((subscriber->state != TURBO_RTC_CLIENT_CONNECTING &&
          subscriber->state != TURBO_RTC_CLIENT_CONNECTED) ||
         !subscriber->pc) {
@@ -838,6 +850,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_stop(
     if (!subscriber) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
+    salts_mutex_lock(&subscriber->lock);
+    if (subscriber->in_audio_callback) {
+        salts_mutex_unlock(&subscriber->lock);
+        return TURBO_RTC_CLIENT_ESTATE;
+    }
+    salts_mutex_unlock(&subscriber->lock);
     if (subscriber->state != TURBO_RTC_CLIENT_PREPARED &&
         subscriber->state != TURBO_RTC_CLIENT_NEGOTIATING &&
         subscriber->state != TURBO_RTC_CLIENT_CONNECTING &&
@@ -912,6 +930,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_destroy(
     if (!subscriber) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
+    salts_mutex_lock(&subscriber->lock);
+    if (subscriber->in_audio_callback) {
+        salts_mutex_unlock(&subscriber->lock);
+        return TURBO_RTC_CLIENT_ESTATE;
+    }
+    salts_mutex_unlock(&subscriber->lock);
     if (subscriber->state == TURBO_RTC_CLIENT_NEGOTIATING ||
         subscriber->state == TURBO_RTC_CLIENT_CONNECTING ||
         subscriber->state == TURBO_RTC_CLIENT_CONNECTED ||
