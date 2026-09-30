@@ -228,6 +228,16 @@ turbo_rtc_client_status_t turbo_rtc_playback_sink_stop(
         return TURBO_RTC_CLIENT_EIO;
     }
 
+    /*
+     * Salts stop() deliberately preserves retained PCM. The producer is
+     * required to be quiescent before this owner call, so clear any remainder
+     * after stop to prevent a timed-out drain from leaking audio into restart.
+     */
+    if (salts_playback_clear(sink->playback) != SALTS_PLAYBACK_OK) {
+        sink->state = TURBO_RTC_PLAYBACK_SINK_FAILED;
+        return TURBO_RTC_CLIENT_EIO;
+    }
+
     sink->state = TURBO_RTC_PLAYBACK_SINK_STOPPED;
     if (drain_result == SALTS_PLAYBACK_ERR_TIMEOUT) {
         return TURBO_RTC_CLIENT_ETIMEDOUT;
