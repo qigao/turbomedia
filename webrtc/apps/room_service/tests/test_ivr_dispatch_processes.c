@@ -2147,6 +2147,8 @@ void setUp(void) {
     int http_status;
     const char *postgres_service =
         getenv("TURBO_MEDIA_TEST_POSTGRES_SERVICE");
+    const char *postgres_driver =
+        getenv("TURBODB_POSTGRES_DRIVER_MODULE");
     test_iris_control_peer_config_t iris_control_config;
     memset(&g_room_service, 0, sizeof(g_room_service));
     memset(&g_worker, 0, sizeof(g_worker));
@@ -2160,6 +2162,7 @@ void setUp(void) {
     g_http_client_initialized = 0;
     g_iris_control_peer = NULL;
     check_not_null(postgres_service);
+    check_not_null(postgres_driver);
     check_equal((int)(test_iris_server_start(&g_iris)), (int)(0));
     check_equal((int)(test_iris_proxy_start(&g_iris_proxy, TEST_IRIS_TLS_PORT,
                                  TEST_IRIS_BACKEND_TLS_PORT)), (int)(0));
@@ -2195,6 +2198,7 @@ void setUp(void) {
                 "    kind: record_store\n"
                 "    config:\n"
                 "      backend: postgresql\n"
+                "      driver_module: '%s'\n"
                 "      service: '%s'\n"
                 "      namespace_name: iris.media_events.%d\n"
                 "      max_records: 32\n"
@@ -2207,6 +2211,7 @@ void setUp(void) {
                 "    kind: record_store\n"
                 "    config:\n"
                 "      backend: postgresql\n"
+                "      driver_module: '%s'\n"
                 "      service: '%s'\n"
                 "      namespace_name: iris.provider_commands.%d\n"
                 "      max_records: 32\n"
@@ -2216,7 +2221,8 @@ void setUp(void) {
                 "      max_value_size: 16384\n"
                 "      max_batch_size: 8\n"
                 "adapters: {}\n",
-                postgres_service, g_seq, postgres_service, g_seq) > 0);
+                postgres_driver, postgres_service, g_seq,
+                postgres_driver, postgres_service, g_seq) > 0);
     fclose(store);
     check_true(write_room_service_config(0));
 
