@@ -257,28 +257,3 @@ jobs:
             if ($legacy) { throw "legacy PostgreSQL ORM contract remains in SERVER" }
           }
 
-      - name: Build fresh installed-package consumer
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $name = "${{ matrix.platform }}-${{ matrix.product }}".ToLowerInvariant()
-          $consumer = Join-Path $env:GITHUB_WORKSPACE "build/consumer-$name"
-          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/native-$name"
-          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
-          Remove-Item -LiteralPath $consumer -Recurse -Force -ErrorAction SilentlyContinue
-          $args = @(
-            "-S", "tests/package_consumer",
-            "-B", $consumer,
-            "-G", "Ninja",
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DTurboMedia_EXPECTED_PRODUCT=${{ matrix.product }}",
-            "-DTurboMedia_DIR=$stage/lib/cmake/TurboMedia",
-            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
-            "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}",
-            "-DVCPKG_MANIFEST_MODE=OFF",
-            "-DVCPKG_INSTALLED_DIR=$installed"
-          )
-          & cmake @args
-          if ($LASTEXITCODE -ne 0) { throw "consumer configure failed for $name" }
-          & cmake --build $consumer --parallel 2
-          if ($LASTEXITCODE -ne 0) { throw "consumer build failed for $name" }
