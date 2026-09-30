@@ -68,6 +68,37 @@ static void test_registry_rejects_duplicate_codec(void) {
     turbo_codec_registry_shutdown();
 }
 
+static void test_codec_config_validation_is_codec_owned(void) {
+    turbo_audio_codec_config_t config = g711_config();
+
+    turbo_codec_registry_shutdown();
+    turbo_codec_registry_init();
+
+    CHECK_INT(TURBO_CODEC_OK,
+              turbo_codec_validate_config("pcmu", &config));
+
+    config.sample_rate = 44100;
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_config("pcmu", &config));
+
+    config = g711_config();
+    config.channels = 3;
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_config("pcma", &config));
+
+    config = g711_config();
+    config.frame_size_ms = 15;
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_config("pcmu", &config));
+
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_config("missing", &config));
+    CHECK_INT(TURBO_CODEC_ERR_INVALID,
+              turbo_codec_validate_config("pcmu", NULL));
+
+    turbo_codec_registry_shutdown();
+}
+
 static void test_unknown_codec_creation_fails(void) {
     turbo_audio_codec_config_t config = g711_config();
 
@@ -347,6 +378,10 @@ suite("turbo_media_codec") {
     }
 
     group("Codec Configuration Validation") {
+        it("delegates configuration validation to the codec") {
+            test_codec_config_validation_is_codec_owned();
+        }
+
         it("validates audio codec configuration parameters") {
             test_audio_codec_config_validation();
         }
