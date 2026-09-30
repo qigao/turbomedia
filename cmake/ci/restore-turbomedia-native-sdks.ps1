@@ -4,8 +4,13 @@ param(
   [string]$Rid,
   [Parameter(Mandatory = $true)]
   [ValidateSet("CLIENT", "SERVER")]
-  [string]$Product
+  [string]$Product,
+  [switch]$PostgreSQLDriver
 )
+
+if ($PostgreSQLDriver -and $Product -ne "SERVER") {
+  throw "-PostgreSQLDriver is valid only for SERVER restores"
+}
 
 $ErrorActionPreference = "Stop"
 
@@ -35,6 +40,11 @@ $serverReferences = if ($Product -eq "SERVER") {
 '@
 } else {
   ""
+}
+if ($PostgreSQLDriver) {
+  $serverReferences += @'
+              <PackageReference Include="TurboDB.Driver.PostgreSQL.Native" Version="*" />
+'@
 }
 
 @"
@@ -82,8 +92,29 @@ if ($Product -eq "SERVER") {
   $roots["TURBODB_ROOT"] = Resolve-SdkRoot "TurboDB.Native"
 }
 
+$postgresDriverRoot = $null
+$postgresDriverModule = $null
+if ($PostgreSQLDriver) {
+  $postgresDriverRoot = Resolve-SdkRoot "TurboDB.Driver.PostgreSQL.Native"
+  $moduleRelative = if ($Rid -eq "windows-x64") {
+    "bin/turbodb/drivers/turbodb_driver_postgresql.dll"
+  } else {
+    "lib/turbodb/drivers/turbodb_driver_postgresql.so"
+  }
+  $postgresDriverModule = Join-Path $postgresDriverRoot $moduleRelative
+  if (-not (Test-Path -LiteralPath $postgresDriverModule -PathType Leaf)) {
+    throw "released PostgreSQL Driver module is missing: $postgresDriverModule"
+  }
+  $postgresDriverRoot = $postgresDriverRoot.Replace('\', '/')
+  $postgresDriverModule = (Resolve-Path -LiteralPath $postgresDriverModule).Path.Replace('\', '/')
+}
+
 foreach ($pair in $roots.GetEnumerator()) {
   "$($pair.Key)=$($pair.Value)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+}
+if ($PostgreSQLDriver) {
+  "TURBODB_POSTGRES_DRIVER_ROOT=$postgresDriverRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+  "TURBODB_POSTGRES_DRIVER_MODULE=$postgresDriverModule" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 }
 
 $requiredFiles = @(
@@ -136,3 +167,6 @@ foreach ($root in $roots.Values) {
 
 Write-Host "Resolved $Product native SDKs for $Rid"
 Write-Host "salts-idlc: $idlc"
+if ($PostgreSQLDriver) {
+  Write-Host "PostgreSQL Driver module: $postgresDriverModule"
+}
