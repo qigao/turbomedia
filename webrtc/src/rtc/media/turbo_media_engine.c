@@ -1214,6 +1214,24 @@ turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
       config->direction > TURBO_MEDIA_DIRECTION_SENDRECV)
     return NULL;
 
+  if (config->type == TURBO_RTC_MEDIA_TRACK_AUDIO) {
+    const char *codec_name = media_audio_codec_name(config->codec);
+    turbo_audio_codec_config_t codec_config = {
+        .sample_rate = config->audio.sample_rate,
+        .channels = config->audio.channels,
+        .bitrate = config->audio.bitrate,
+        .frame_size_ms = config->audio.frame_size_ms,
+        .enable_fec = config->audio.enable_fec,
+        .enable_dtx = config->audio.enable_dtx,
+        .complexity = 5,
+    };
+    if (!codec_name ||
+        turbo_codec_validate_audio_config(codec_name, &codec_config) !=
+            TURBO_CODEC_OK) {
+      return NULL;
+    }
+  }
+
   turbo_media_track_t *track = (turbo_media_track_t *)calloc(1, sizeof(turbo_media_track_t));
   if (!track) return NULL;
 
