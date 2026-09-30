@@ -5,7 +5,9 @@
 
 #include <salts/clock.h>
 
+#include <limits.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -93,6 +95,7 @@ static int turbo_rtc_client_config_valid(
         !turbo_rtc_client_bool_valid(config->allow_plaintext_loopback) ||
         !turbo_rtc_client_bool_valid(config->allow_loopback) ||
         !turbo_rtc_client_sample_rate_valid(config->sample_rate) ||
+        config->bitrate > (uint32_t)INT_MAX ||
         (config->channels != 1u && config->channels != 2u) ||
         !turbo_rtc_client_frame_size_valid(config->frame_size_ms) ||
         !turbo_rtc_client_bool_valid(config->enable_fec) ||
@@ -472,6 +475,10 @@ turbo_rtc_client_status_t turbo_rtc_client_start(
     memcpy(client->session_etag, response.etag,
            strlen(response.etag) + 1u);
     client->connect_started_ms = salts_monotonic_ms();
+    if (client->state == TURBO_RTC_CLIENT_FAILED) {
+        (void)turbo_rtc_client_delete_remote(client, response.location);
+        return TURBO_RTC_CLIENT_EPEER;
+    }
     if (client->state != TURBO_RTC_CLIENT_CONNECTED) {
         client->state = TURBO_RTC_CLIENT_CONNECTING;
     }
