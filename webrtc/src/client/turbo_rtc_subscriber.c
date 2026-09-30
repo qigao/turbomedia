@@ -724,6 +724,7 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
         uint64_t timestamp;
         size_t slot_offset;
         int callback_status;
+        int overflowed;
 
         salts_mutex_lock(&subscriber->lock);
         if (subscriber->queue_count == 0u) {
@@ -738,15 +739,6 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
             subscriber->queue_head * subscriber->max_frame_bytes;
         memcpy(subscriber->delivery_buffer,
                subscriber->frame_storage + slot_offset, length);
-
-        subscriber->queue_head =
-            (subscriber->queue_head + 1u) %
-            subscriber->frame_queue_capacity;
-        subscriber->queue_count--;
-        subscriber->queue_bytes -= length;
-        salts_mutex_unlock(&subscriber->lock);
-
-        salts_mutex_lock(&subscriber->lock);
         subscriber->in_audio_callback = 1;
         salts_mutex_unlock(&subscriber->lock);
 
@@ -760,14 +752,33 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
 
         salts_mutex_lock(&subscriber->lock);
         subscriber->in_audio_callback = 0;
-        if (callback_status == 0) {
+        overflowed = subscriber->queue_overflowed;
+
+        if (callback_status == TURBO_RTC_SUBSCRIBER_AUDIO_CONSUMED) {
+            subscriber->queue_head =
+                (subscriber->queue_head + 1u) %
+                subscriber->frame_queue_capacity;
+            subscriber->queue_count--;
+            subscriber->queue_bytes -= length;
             subscriber->frames_delivered++;
-        } else {
+        } else if (callback_status !=
+                   TURBO_RTC_SUBSCRIBER_AUDIO_RETRY) {
             subscriber->frames_rejected++;
         }
         salts_mutex_unlock(&subscriber->lock);
 
-        if (callback_status != 0) {
+        if (overflowed) {
+            salts_mutex_lock(&subscriber->lock);
+            subscriber->accept_frames = 0;
+            salts_mutex_unlock(&subscriber->lock);
+            subscriber->state = TURBO_RTC_CLIENT_FAILED;
+            return TURBO_RTC_CLIENT_EQUEUE;
+        }
+
+        if (callback_status == TURBO_RTC_SUBSCRIBER_AUDIO_RETRY) {
+            return TURBO_RTC_CLIENT_OK;
+        }
+        if (callback_status != TURBO_RTC_SUBSCRIBER_AUDIO_CONSUMED) {
             salts_mutex_lock(&subscriber->lock);
             subscriber->accept_frames = 0;
             salts_mutex_unlock(&subscriber->lock);

@@ -203,7 +203,8 @@ target_link_options(
 if(TURBO_MEDIA_IS_CLIENT)
   add_library(turbo_media_rtc_client SHARED
     src/client/turbo_rtc_client.c
-    src/client/turbo_rtc_subscriber.c)
+    src/client/turbo_rtc_subscriber.c
+    src/client/turbo_rtc_playback_sink.c)
   turbo_media_configure_component(turbo_media_rtc_client RTCClient)
   target_include_directories(
     turbo_media_rtc_client
@@ -212,6 +213,7 @@ if(TURBO_MEDIA_IS_CLIENT)
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/http)
   target_link_libraries(
     turbo_media_rtc_client
+    PUBLIC Salts::Playback
     PRIVATE TurboMedia::RTC
             turbo_media_http_media_client
             Salts::Platform

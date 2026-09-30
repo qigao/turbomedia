@@ -17,14 +17,23 @@ extern "C" {
 
 typedef struct turbo_rtc_subscriber_s turbo_rtc_subscriber_t;
 
+typedef enum turbo_rtc_subscriber_audio_result_t {
+    TURBO_RTC_SUBSCRIBER_AUDIO_CONSUMED = 0,
+    TURBO_RTC_SUBSCRIBER_AUDIO_RETRY = 1,
+    TURBO_RTC_SUBSCRIBER_AUDIO_FATAL = -1
+} turbo_rtc_subscriber_audio_result_t;
+
 /*
  * Called from turbo_rtc_subscriber_poll() on the owner thread.
  *
  * pcm is borrowed and is valid only for the duration of the callback.
- * Return 0 when the frame was consumed. A non-zero result fails the subscriber
- * instead of silently dropping or retrying the frame. The callback must not
- * re-enter poll(), stop(), or destroy(); those calls return ESTATE while the
- * callback is active.
+ *
+ * CONSUMED removes the queue-head frame. RETRY leaves that exact frame at the
+ * queue head and makes poll() return without busy-spinning, so bounded sink
+ * backpressure can recover on a later poll. Any other result is fatal.
+ *
+ * The callback must not re-enter poll(), stop(), or destroy(); those calls
+ * return ESTATE while the callback is active.
  */
 typedef int (*turbo_rtc_subscriber_audio_cb)(
     void *context,
