@@ -33,6 +33,14 @@ elseif(VCPKG_TARGET_IS_WINDOWS)
     list(APPEND OPTIONS "-DENABLE_ASSEMBLY=OFF")
 endif()
 
+# ARM64 Android assembly in static x265 contains non-PIC references (for
+# example x265_entropyStateBits from pixel-util.S). That archive is linked into
+# TurboMedia shared libraries, so disable the assembly path for static Android
+# builds instead of accepting an unusable cache artifact.
+if(VCPKG_TARGET_IS_ANDROID AND VCPKG_LIBRARY_LINKAGE STREQUAL "static")
+    list(APPEND OPTIONS "-DENABLE_ASSEMBLY=OFF")
+endif()
+
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" ENABLE_SHARED)
 
 vcpkg_cmake_configure(
