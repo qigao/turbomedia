@@ -3368,8 +3368,7 @@ static void handle_metrics(Req *req, Res *res) {
              "# TYPE turbo_room_service_ivr_peer_event_queue_drops_total counter\n"
              "turbo_room_service_ivr_peer_event_queue_drops_total %llu\n"
              "# TYPE turbo_room_service_ivr_peer_event_queue_overflowed gauge\n"
-             "turbo_room_service_ivr_peer_event_queue_overflowed %d\n"
-",
+             "turbo_room_service_ivr_peer_event_queue_overflowed %d\n",
              stats.running ? 1 : 0,
              control_auth_enabled(config) ? 1 : 0,
              (config && config->sfu_control_token && config->sfu_control_token[0] != '\0') ? 1 : 0,
