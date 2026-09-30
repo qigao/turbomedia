@@ -146,6 +146,9 @@ typedef struct {
     /* Get packet loss concealment frame (audio decoder only) */
     int (*plc)(void *ctx, uint8_t *output, size_t *output_len);
 
+    /* Validate codec-specific configuration without allocating codec state. */
+    int (*validate_config)(const void *config);
+
 } turbo_codec_ops_t;
 
 /**
@@ -198,6 +201,16 @@ TURBO_MEDIA_API const turbo_codec_ops_t *turbo_codec_find_by_name(const char *na
  * @return      0 on success
  */
 TURBO_MEDIA_API int turbo_codec_register(const turbo_codec_ops_t *ops);
+
+/**
+ * Validate codec-specific configuration without allocating codec state.
+ *
+ * Returns TURBO_CODEC_OK only when the named codec exposes a validator and
+ * accepts config. Unknown codecs, NULL config, or unsupported validation return
+ * TURBO_CODEC_ERR_INVALID.
+ */
+TURBO_MEDIA_API int turbo_codec_validate_config(const char *name,
+                                                const void *config);
 
 /* =============================================================================
  * Codec Instance Functions
