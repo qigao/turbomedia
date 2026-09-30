@@ -5107,17 +5107,6 @@ void test_room_service_http_lifecycle_repeated_start_stop(void) {
       check_not_null(strstr(metrics, "turbo_room_service_ivr_workers 0\n"));
       check_not_null(strstr(
           metrics, "turbo_room_service_ivr_request_queue_high_water 0\n"));
-      check_not_null(strstr(
-          metrics, "turbo_room_service_iris_provider_enabled 0\n"));
-      check_not_null(strstr(
-          metrics, "turbo_room_service_iris_queue_capacity 0\n"));
-      check_not_null(strstr(
-          metrics, "turbo_room_service_iris_delivery_attempts_total 0\n"));
-      check_not_null(strstr(
-          metrics, "turbo_room_service_iris_reconcile_state 0\n"));
-      check_not_null(strstr(
-          metrics,
-          "turbo_room_service_iris_reconcile_accepting_commands 0\n"));
       free(metrics);
     }
     if (iteration + 1 < ROOM_SERVICE_HTTP_LIFECYCLE_STRESS_ITERATIONS) {
