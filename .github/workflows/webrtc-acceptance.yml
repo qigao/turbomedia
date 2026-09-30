@@ -4,16 +4,25 @@ on:
   pull_request:
     paths:
       - "webrtc/acceptance/**"
+      - "webrtc/apps/room_service/**"
+      - "cmake/ci/restore-turbomedia-native-sdks.ps1"
+      - "CMakeLists.txt"
+      - "vcpkg.json"
       - ".github/workflows/webrtc-acceptance.yml"
   push:
     branches:
       - master
     paths:
       - "webrtc/acceptance/**"
+      - "webrtc/apps/room_service/**"
+      - "cmake/ci/restore-turbomedia-native-sdks.ps1"
+      - "CMakeLists.txt"
+      - "vcpkg.json"
       - ".github/workflows/webrtc-acceptance.yml"
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: webrtc-acceptance-${{ github.workflow }}-${{ github.ref }}
@@ -49,3 +58,106 @@ jobs:
 
       - name: Run acceptance unit tests
         run: npm test
+
+
+  postgresql-live:
+    name: PostgreSQL live RoomService store
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17.6-alpine3.22
+        env:
+          POSTGRES_DB: turbomedia
+          POSTGRES_USER: turbomedia
+          POSTGRES_PASSWORD: turbomedia
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U turbomedia -d turbomedia"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Prepare Linux build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool \
+            libpipewire-0.3-dev libx11-dev libxext-dev
+
+      - name: Restore released SERVER SDKs and PostgreSQL Driver
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./cmake/ci/restore-turbomedia-native-sdks.ps1 -Rid linux-x64 -Product SERVER -PostgreSQLDriver
+
+      - name: Restore TurboMedia vcpkg dependencies cache-only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+          & "$env:VCPKG_ROOT/vcpkg" install "--x-manifest-root=." "--x-install-root=$installed" --triplet=x64-linux --only-binarycaching
+          if ($LASTEXITCODE -ne 0) { throw "cache-only vcpkg restore failed" }
+          "VCPKG_INSTALLED_DIR=$installed" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure PostgreSQL service identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          service_file="$RUNNER_TEMP/turbomedia-pg-service.conf"
+          cat > "$service_file" <<'EOF'
+          [turbomedia]
+          host=127.0.0.1
+          port=5432
+          dbname=turbomedia
+          user=turbomedia
+          password=turbomedia
+          EOF
+          echo "PGSERVICEFILE=$service_file" >> "$GITHUB_ENV"
+          echo "TURBO_MEDIA_TEST_POSTGRES_SERVICE=turbomedia" >> "$GITHUB_ENV"
+
+      - name: Configure SERVER live gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/postgresql-live -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTURBO_MEDIA_PRODUCT=SERVER \
+            -DTURBO_MEDIA_POSTGRES_LIVE_TESTS=ON \
+            -DCMAKE_TOOLCHAIN_FILE="$QIGAO_VCPKG_TOOLCHAIN_FILE" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_MANIFEST_MODE=OFF \
+            -DVCPKG_INSTALLED_DIR="$VCPKG_INSTALLED_DIR"
+
+      - name: Build focused live contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build/postgresql-live \
+            --target test_iris_orm_store_live test_ivr_dispatch_processes \
+            --parallel 4
+
+      - name: Run PostgreSQL live contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/postgresql-live \
+            -R '^(test_iris_orm_store_live|test_ivr_dispatch_processes)$' \
+            --output-on-failure --no-tests=error
