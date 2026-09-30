@@ -204,7 +204,8 @@ if(TURBO_MEDIA_IS_CLIENT)
   add_library(turbo_media_rtc_client SHARED
     src/client/turbo_rtc_client.c
     src/client/turbo_rtc_subscriber.c
-    src/client/turbo_rtc_playback_sink.c)
+    src/client/turbo_rtc_playback_sink.c
+    src/client/turbo_rtc_capture_source.c)
   turbo_media_configure_component(turbo_media_rtc_client RTCClient)
   target_include_directories(
     turbo_media_rtc_client
@@ -216,6 +217,7 @@ if(TURBO_MEDIA_IS_CLIENT)
     PUBLIC Salts::Playback
     PRIVATE TurboMedia::RTC
             turbo_media_http_media_client
+            Salts::Capture
             Salts::Platform
             Salts::Core)
 endif()

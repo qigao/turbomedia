@@ -57,7 +57,7 @@ spec("TurboMedia RTCClient WHIP audio core") {
     turbo_rtc_client_config_t config;
     turbo_rtc_client_snapshot_t snapshot;
     turbo_rtc_client_t *client = NULL;
-    const int16_t pcm[2] = {0, 0};
+    const int16_t pcm[960] = {0};
 
     turbo_rtc_client_config_init(&config);
     config.whip_base_url = "http://127.0.0.1:1";
@@ -79,7 +79,10 @@ spec("TurboMedia RTCClient WHIP audio core") {
     check_equal(snapshot.frames_sent, 0u);
 
     check_equal(turbo_rtc_client_send_audio(
-                    client, pcm, sizeof(pcm), 0u),
+                    client, pcm, sizeof(pcm) - sizeof(pcm[0])),
+                TURBO_RTC_CLIENT_EINVAL);
+    check_equal(turbo_rtc_client_send_audio(
+                    client, pcm, sizeof(pcm)),
                 TURBO_RTC_CLIENT_ESTATE);
     check_equal(turbo_rtc_client_restart_ice(client),
                 TURBO_RTC_CLIENT_ESTATE);

@@ -1742,6 +1742,27 @@ int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data
   if (atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) return -1;
   if (!(track->direction & TURBO_MEDIA_DIRECTION_SENDONLY)) return -1;
 
+  if (track->type == TURBO_RTC_MEDIA_TRACK_AUDIO) {
+    size_t frame_bytes;
+    size_t frame_samples;
+    size_t expected_len;
+
+    if (track->config.audio.sample_rate <= 0 ||
+        track->config.audio.channels <= 0 ||
+        track->config.audio.frame_size_ms <= 0) {
+      return -1;
+    }
+    frame_bytes =
+        (size_t)track->config.audio.channels * sizeof(int16_t);
+    frame_samples =
+        (size_t)track->config.audio.sample_rate *
+        (size_t)track->config.audio.frame_size_ms / 1000u;
+    expected_len = frame_samples * frame_bytes;
+    if (frame_samples == 0u || expected_len == 0u || len != expected_len) {
+      return -1;
+    }
+  }
+
   if (!track->encoder || !track->rtp_session) return -1;
 
   turbo_codec_t *codec = (turbo_codec_t *)track->encoder;
