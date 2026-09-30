@@ -316,6 +316,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_start(
 turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
     turbo_rtc_capture_source_t *source,
     turbo_rtc_client_t *client) {
+    size_t budget;
     if (!source || !client) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
@@ -324,7 +325,16 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
         return TURBO_RTC_CLIENT_ESTATE;
     }
 
-    for (;;) {
+    /*
+     * Bound one owner poll to the frames visible on entry. Native capture may
+     * continue producing concurrently; newly queued frames wait for the next
+     * owner iteration so media draining cannot starve PeerConnection polling.
+     */
+    salts_mutex_lock(&source->lock);
+    budget = source->queue_count;
+    salts_mutex_unlock(&source->lock);
+
+    while (budget-- != 0u) {
         size_t length;
         size_t slot_offset;
         uint64_t timestamp;
@@ -395,6 +405,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
                               : TURBO_RTC_CLIENT_EIO;
         }
     }
+    return TURBO_RTC_CLIENT_OK;
 }
 
 turbo_rtc_client_status_t turbo_rtc_capture_source_stop(
