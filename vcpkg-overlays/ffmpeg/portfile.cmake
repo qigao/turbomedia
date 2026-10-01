@@ -988,19 +988,22 @@ append_dependencies_from_libs(FFMPEG_DEPENDENCIES_RELEASE LIBS "${FFMPEG_PKGCONF
 append_dependencies_from_libs(FFMPEG_DEPENDENCIES_DEBUG   LIBS "${FFMPEG_PKGCONFIG_LIBS_DEBUG}")
 
 set(FFMPEG_NEEDS_ICONV FALSE)
+set(FFMPEG_ANDROID_GNU_ICONV FALSE)
 if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND "xml2" IN_LIST FEATURES)
-    # libxml2's Android static archive is built with GNU libiconv, but FFmpeg's
-    # pkg-config aggregation does not preserve that private dependency.
+    # libxml2's Android static archive uses GNU libiconv before API 28, but
+    # FFmpeg's pkg-config aggregation does not preserve that private dependency.
     list(APPEND FFMPEG_DEPENDENCIES_RELEASE iconv)
     list(APPEND FFMPEG_DEPENDENCIES_DEBUG iconv)
 endif()
 
-# iconv is a CMake package contract, not just a bare library name. The vcpkg
-# wrapper selects the system or GNU implementation and carries libcharset when
-# required. Export it as Iconv::Iconv from FindFFMPEG instead of resolving
-# libiconv manually under a cross toolchain.
+# Keep iconv out of the generic bare-library list. On Android, detect whether
+# the vcpkg libiconv dependency actually installed GNU libiconv; API 28+ may
+# instead use the platform libc implementation.
 if("iconv" IN_LIST FFMPEG_DEPENDENCIES_RELEASE OR "iconv" IN_LIST FFMPEG_DEPENDENCIES_DEBUG)
     set(FFMPEG_NEEDS_ICONV TRUE)
+    if(VCPKG_TARGET_IS_ANDROID AND EXISTS "${CURRENT_INSTALLED_DIR}/lib/libiconv.a")
+        set(FFMPEG_ANDROID_GNU_ICONV TRUE)
+    endif()
     list(REMOVE_ITEM FFMPEG_DEPENDENCIES_RELEASE iconv)
     list(REMOVE_ITEM FFMPEG_DEPENDENCIES_DEBUG iconv)
 endif()
