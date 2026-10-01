@@ -148,7 +148,40 @@ if (FFMPEG_libavutil_FOUND)
     list(APPEND FFMPEG_LIBRARIES ${FFMPEG_DEPS_LIBRARY})
   endif()
 
-  if(@FFMPEG_NEEDS_ICONV@)
+  if(@FFMPEG_ANDROID_GNU_ICONV@)
+    # Android's CMake toolchain roots find_library() in the NDK sysroot. GNU
+    # libiconv for API < 28 lives in the vcpkg install tree beside FFmpeg, so
+    # resolve that package closure explicitly without re-rooting the paths.
+    find_library(FFMPEG_ICONV_LIBRARY_RELEASE
+      NAMES iconv libiconv
+      PATHS "${SEARCH_PATH}/lib"
+      NO_DEFAULT_PATH
+      NO_CMAKE_FIND_ROOT_PATH
+      REQUIRED)
+    find_library(FFMPEG_ICONV_LIBRARY_DEBUG
+      NAMES iconv libiconv
+      PATHS "${SEARCH_PATH}/debug/lib"
+      NO_DEFAULT_PATH
+      NO_CMAKE_FIND_ROOT_PATH
+      REQUIRED)
+    select_library_configurations(FFMPEG_ICONV)
+    list(APPEND FFMPEG_LIBRARIES ${FFMPEG_ICONV_LIBRARY})
+
+    find_library(FFMPEG_CHARSET_LIBRARY_RELEASE
+      NAMES charset libcharset
+      PATHS "${SEARCH_PATH}/lib"
+      NO_DEFAULT_PATH
+      NO_CMAKE_FIND_ROOT_PATH)
+    find_library(FFMPEG_CHARSET_LIBRARY_DEBUG
+      NAMES charset libcharset
+      PATHS "${SEARCH_PATH}/debug/lib"
+      NO_DEFAULT_PATH
+      NO_CMAKE_FIND_ROOT_PATH)
+    if(FFMPEG_CHARSET_LIBRARY_RELEASE OR FFMPEG_CHARSET_LIBRARY_DEBUG)
+      select_library_configurations(FFMPEG_CHARSET)
+      list(APPEND FFMPEG_LIBRARIES ${FFMPEG_CHARSET_LIBRARY})
+    endif()
+  elseif(@FFMPEG_NEEDS_ICONV@)
     find_dependency(Iconv)
     if(NOT TARGET Iconv::Iconv)
       message(FATAL_ERROR "FFMPEG requires Iconv::Iconv but the Iconv package did not provide it")
