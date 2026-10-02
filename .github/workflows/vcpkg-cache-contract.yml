@@ -119,6 +119,33 @@ jobs:
             --x-install-root="$GITHUB_WORKSPACE/vcpkg_installed" \
             --triplet arm64-android
 
+      - name: Verify Android FFmpeg package config
+        shell: bash
+        run: |
+          set -euo pipefail
+          contract="$RUNNER_TEMP/turbomedia-ffmpeg-android-contract"
+          rm -rf "$contract"
+          mkdir -p "$contract"
+          cat > "$contract/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.25)
+          project(turbomedia_ffmpeg_android_contract C)
+          find_package(FFMPEG REQUIRED)
+          if(NOT FFMPEG_LIBRARIES)
+            message(FATAL_ERROR "FFMPEG_LIBRARIES is empty")
+          endif()
+          EOF
+          cmake -S "$contract" -B "$contract/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$QIGAO_VCPKG_TOOLCHAIN_FILE" \
+            -DVCPKG_TARGET_TRIPLET=arm64-android \
+            -DVCPKG_MANIFEST_MODE=OFF \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed" \
+            -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_STL=c++_shared
+
   macos:
     name: macOS arm64 media cache
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
