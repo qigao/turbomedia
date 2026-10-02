@@ -1002,7 +1002,7 @@ endif()
 # from the vcpkg_cmake_get_vars() result loaded above.
 if("iconv" IN_LIST FFMPEG_DEPENDENCIES_RELEASE OR "iconv" IN_LIST FFMPEG_DEPENDENCIES_DEBUG)
     set(FFMPEG_NEEDS_ICONV TRUE)
-    if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND
+    if(VCPKG_TARGET_IS_ANDROID AND
        VCPKG_DETECTED_CMAKE_SYSTEM_VERSION VERSION_LESS "28")
         set(FFMPEG_ANDROID_GNU_ICONV TRUE)
     endif()
@@ -1102,6 +1102,13 @@ elseif(LICENSE_STRING STREQUAL "License: nonfree and unredistributable")
     file(WRITE "${SOURCE_PATH}/${LICENSE_FILE}" "${LICENSE_STRING}")
 else()
     message(FATAL_ERROR "Failed to identify license (${LICENSE_STRING})")
+endif()
+
+if(VCPKG_TARGET_IS_ANDROID AND
+   VCPKG_DETECTED_CMAKE_SYSTEM_VERSION VERSION_LESS "28" AND
+   NOT FFMPEG_ANDROID_GNU_ICONV)
+    message(FATAL_ERROR
+            "Android API ${VCPKG_DETECTED_CMAKE_SYSTEM_VERSION} requires GNU libiconv metadata")
 endif()
 
 configure_file("${CMAKE_CURRENT_LIST_DIR}/FindFFMPEG.cmake.in" "${CURRENT_PACKAGES_DIR}/share/${PORT}/FindFFMPEG.cmake" @ONLY)
