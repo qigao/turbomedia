@@ -996,12 +996,14 @@ if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND "xml2" IN_LIST FEATURES)
     list(APPEND FFMPEG_DEPENDENCIES_DEBUG iconv)
 endif()
 
-# Keep iconv out of the generic bare-library list. On Android, detect whether
-# the vcpkg libiconv dependency actually installed GNU libiconv; API 28+ may
-# instead use the platform libc implementation.
+# Keep iconv out of the generic bare-library list. Mirror vcpkg's libiconv
+# Android contract exactly: GNU libiconv is built below API 28; API 28+ uses
+# the platform libc implementation. VCPKG_DETECTED_CMAKE_SYSTEM_VERSION comes
+# from the vcpkg_cmake_get_vars() result loaded above.
 if("iconv" IN_LIST FFMPEG_DEPENDENCIES_RELEASE OR "iconv" IN_LIST FFMPEG_DEPENDENCIES_DEBUG)
     set(FFMPEG_NEEDS_ICONV TRUE)
-    if(VCPKG_TARGET_IS_ANDROID AND EXISTS "${CURRENT_INSTALLED_DIR}/lib/libiconv.a")
+    if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND
+       VCPKG_DETECTED_CMAKE_SYSTEM_VERSION VERSION_LESS "28")
         set(FFMPEG_ANDROID_GNU_ICONV TRUE)
     endif()
     list(REMOVE_ITEM FFMPEG_DEPENDENCIES_RELEASE iconv)
