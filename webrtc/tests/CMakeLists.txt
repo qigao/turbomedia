@@ -39,7 +39,7 @@ turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
 
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   turbo_media_add_webrtc_test(turbo_media_test_ice_integration
                               test_ice_integration.c)
   target_link_libraries(turbo_media_test_ice_integration
@@ -57,17 +57,17 @@ target_link_libraries(turbo_media_test_signaling_json PRIVATE Salts::JsonParser)
 
 turbo_media_add_webrtc_base_test(turbo_media_test_auth_token test_auth_token.c)
 target_link_libraries(turbo_media_test_auth_token
-                      PRIVATE turbo_media_auth SaltsNet::Crypto)
+                      PRIVATE turbo_media_auth Salts::Crypto)
 
 turbo_media_add_webrtc_base_test(turbo_media_test_revocation_state
                                  test_revocation_state.c)
 target_link_libraries(turbo_media_test_revocation_state
-                      PRIVATE turbo_media_auth SaltsNet::Crypto)
+                      PRIVATE turbo_media_auth Salts::Crypto)
 
 turbo_media_add_webrtc_base_test(turbo_media_test_revocation_projection
                                  test_revocation_projection.c)
 target_link_libraries(turbo_media_test_revocation_projection
-                      PRIVATE turbo_media_auth SaltsNet::Crypto)
+                      PRIVATE turbo_media_auth Salts::Crypto)
 
 turbo_media_add_webrtc_base_test(turbo_media_test_revocation_fanout
                                  test_revocation_fanout.c)
@@ -134,7 +134,7 @@ target_compile_definitions(
   PRIVATE TURBO_MEDIA_TEST_TLS_CERT_PATH="${TURBO_MEDIA_TEST_TLS_CERT_PATH}"
           TURBO_MEDIA_TEST_TLS_KEY_PATH="${TURBO_MEDIA_TEST_TLS_KEY_PATH}")
 
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   turbo_media_add_webrtc_test(
     turbo_media_test_signaling_config
     test_signaling_config.c

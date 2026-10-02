@@ -4,24 +4,17 @@ if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW)
 endif()
 
-include("${CMAKE_CURRENT_LIST_DIR}/cmake/TurboMediaProduct.cmake")
-turbo_media_validate_product_target()
-
 project(
   TurboMedia
   VERSION 2.0.0
   LANGUAGES C CXX)
 
-# Validate again after project() so toolchain files that establish the target
-# system during language setup cannot bypass the pre-project product gate.
-turbo_media_validate_product_target()
-
-set(TURBO_MEDIA_IS_CLIENT OFF)
-set(TURBO_MEDIA_IS_SERVER OFF)
-if(TURBO_MEDIA_PRODUCT STREQUAL "CLIENT")
-  set(TURBO_MEDIA_IS_CLIENT ON)
-else()
-  set(TURBO_MEDIA_IS_SERVER ON)
+# Server/service targets are a desktop platform capability, not a product
+# profile selected by the caller.
+set(TURBO_MEDIA_HAS_DESKTOP_SERVICES OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" OR
+   CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(TURBO_MEDIA_HAS_DESKTOP_SERVICES ON)
 endif()
 
 include(GNUInstallDirs)
@@ -102,8 +95,6 @@ function(turbo_media_configure_component target_name export_name)
   else()
     target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wno-unused-parameter)
   endif()
-  target_compile_definitions(
-    ${target_name} PUBLIC TURBO_MEDIA_PRODUCT_${TURBO_MEDIA_PRODUCT}=1)
   install(
     TARGETS ${target_name}
     EXPORT TurboMediaTargets
@@ -120,11 +111,9 @@ find_package(Salts CONFIG REQUIRED
              PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_package(SaltsUtils CONFIG REQUIRED
              PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(TURBO_MEDIA_IS_CLIENT)
-  if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
-    message(FATAL_ERROR
-            "TurboMedia CLIENT requires Salts::Capture and Salts::Playback")
-  endif()
+if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
+  message(FATAL_ERROR
+          "TurboMedia requires Salts::Capture and Salts::Playback")
 endif()
 find_package(SaltsNet CONFIG REQUIRED
              PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
@@ -134,7 +123,7 @@ if(NOT TARGET CHttp::Client OR NOT TARGET CHttp::Server)
   message(FATAL_ERROR
           "TurboMedia requires CHttp Client and Server targets")
 endif()
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   find_package(RulesForge CONFIG REQUIRED
                PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 endif()
@@ -169,15 +158,12 @@ add_subdirectory(muxer)
 add_subdirectory(demuxer)
 add_subdirectory(network)
 add_subdirectory(transport)
-if(TURBO_MEDIA_IS_CLIENT)
-  add_subdirectory(client_processing)
-  add_subdirectory(player)
-endif()
+add_subdirectory(client_processing)
+add_subdirectory(player)
 add_subdirectory(recognition)
 add_subdirectory(media/rtsp)
-if(TURBO_MEDIA_IS_CLIENT)
-  add_subdirectory(media/mobile)
-else()
+add_subdirectory(media/mobile)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   add_subdirectory(server)
   add_subdirectory(streamer)
   add_subdirectory(pipeline)
@@ -226,17 +212,16 @@ install(
         webrtc/include/turbo_srtp_defs.h
         webrtc/include/webrtc_signaling.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-if(TURBO_MEDIA_IS_CLIENT)
-  install(
-    FILES media/include/turbo_player.h
-          media/mobile/turbo_mobile.h
-          media/mobile/turbo_mobile_codec.h
-          webrtc/include/turbo_rtc_client.h
-          webrtc/include/turbo_rtc_subscriber.h
-          webrtc/include/turbo_rtc_playback_sink.h
-          webrtc/include/turbo_rtc_capture_source.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-else()
+install(
+  FILES media/include/turbo_player.h
+        media/mobile/turbo_mobile.h
+        media/mobile/turbo_mobile_codec.h
+        webrtc/include/turbo_rtc_client.h
+        webrtc/include/turbo_rtc_subscriber.h
+        webrtc/include/turbo_rtc_playback_sink.h
+        webrtc/include/turbo_rtc_capture_source.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   install(
     DIRECTORY server/include/ streamer/include/ pipeline/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}

@@ -1,0 +1,266 @@
+name: Platform Build
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/platform-build.yml"
+      - "cmake/ci/restore-turbomedia-platform-deps.ps1"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "CMakeUserPresets.json"
+      - "presets/**"
+      - "cmake/**"
+      - "common/**"
+      - "core/**"
+      - "crypto/**"
+      - "speech/**"
+      - "codec/**"
+      - "muxer/**"
+      - "demuxer/**"
+      - "network/**"
+      - "transport/**"
+      - "player/**"
+      - "client_processing/**"
+      - "recognition/**"
+      - "media/**"
+      - "server/**"
+      - "streamer/**"
+      - "pipeline/**"
+      - "webrtc/**"
+      - "examples/**"
+      - "tests/**"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/platform-build.yml"
+      - "cmake/ci/restore-turbomedia-platform-deps.ps1"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "CMakeUserPresets.json"
+      - "presets/**"
+      - "cmake/**"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
+      - "vcpkg-overlays/**"
+      - "common/**"
+      - "core/**"
+      - "crypto/**"
+      - "speech/**"
+      - "codec/**"
+      - "muxer/**"
+      - "demuxer/**"
+      - "network/**"
+      - "transport/**"
+      - "player/**"
+      - "client_processing/**"
+      - "recognition/**"
+      - "media/**"
+      - "server/**"
+      - "streamer/**"
+      - "pipeline/**"
+      - "webrtc/**"
+      - "examples/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  # Persistent media binary packages are produced and owned by qigao/vcpkg-cache.
+  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+
+concurrency:
+  group: platform-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            os: ubuntu-24.04
+            rid: linux-x64
+            triplet: x64-linux
+          - platform: Windows
+            os: windows-2022
+            rid: windows-x64
+            triplet: x64-windows
+          - platform: Android
+            os: ubuntu-24.04
+            rid: android-arm64-v8a
+            triplet: arm64-android-api26
+          - platform: macOS
+            os: macos-15
+            rid: macos-arm64
+            triplet: arm64-osx
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Prepare Linux and Android build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool
+          if [ "${{ matrix.platform }}" = "Linux" ]; then
+            sudo apt-get install -y --no-install-recommends \
+              libpipewire-0.3-dev libx11-dev libxext-dev
+          else
+            test -n "${ANDROID_NDK_HOME:-}"
+            test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+          fi
+
+      - name: Prepare Windows build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install ninja nasm strawberryperl -y --no-progress
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vs)) {
+            throw "x64 MSVC was not found"
+          }
+          $canonicalVcpkgRoot = $env:VCPKG_ROOT
+          $vsdev = Join-Path $vs "Common7/Tools/VsDevCmd.bat"
+          $command = 'call "' + $vsdev + '" -arch=x64 -host_arch=x64 >nul && set'
+          $lines = & cmd.exe /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw "VsDevCmd failed" }
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          "VCPKG_ROOT=$canonicalVcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prepare macOS build tools
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          brew install ninja nasm autoconf automake libtool
+
+      - name: Restore latest platform SDKs
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid "${{ matrix.rid }}"
+
+      - name: Restore media dependencies cache-only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          $vcpkg = Join-Path $env:VCPKG_ROOT $(if ($IsWindows) { "vcpkg.exe" } else { "vcpkg" })
+          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+          & $vcpkg install "--x-manifest-root=." "--x-install-root=$installed" "--triplet=${{ matrix.triplet }}" --only-binarycaching
+          if ($LASTEXITCODE -ne 0) { throw "cache-only vcpkg restore failed" }
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/platform-${{ matrix.platform }}"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          Remove-Item -LiteralPath $build -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          $args = @(
+            "-S", ".",
+            "-B", $build,
+            "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
+            "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}",
+            "-DVCPKG_MANIFEST_MODE=OFF",
+            "-DVCPKG_INSTALLED_DIR=$installed",
+            "-DCMAKE_INSTALL_PREFIX=$stage"
+          )
+          if ("${{ matrix.platform }}" -eq "Android") {
+            $args += @(
+              "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$env:ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake",
+              "-DCMAKE_SYSTEM_NAME=Android",
+              "-DANDROID_ABI=arm64-v8a",
+              "-DANDROID_PLATFORM=android-26",
+              "-DANDROID_STL=c++_shared"
+            )
+          }
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
+
+      - name: Build and test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
+          $runtimeDirs = @()
+          foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
+            $root = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("bin", "lib")) {
+              $candidate = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $candidate -PathType Container) {
+                $runtimeDirs += $candidate
+              }
+            }
+          }
+          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/${{ matrix.triplet }}"
+          foreach ($leaf in @("bin", "lib")) {
+            $candidate = Join-Path $vcpkgRuntime $leaf
+            if (Test-Path -LiteralPath $candidate -PathType Container) {
+              $runtimeDirs += $candidate
+            }
+          }
+          if ($IsWindows) {
+            $env:PATH = ($runtimeDirs + $env:PATH) -join [IO.Path]::PathSeparator
+          } elseif ($IsMacOS) {
+            $parts = @($runtimeDirs)
+            if (-not [string]::IsNullOrWhiteSpace($env:DYLD_LIBRARY_PATH)) { $parts += $env:DYLD_LIBRARY_PATH }
+            $env:DYLD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          } else {
+            $parts = @($runtimeDirs)
+            if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
+            $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          }
+          & cmake --build $build --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw "build failed for ${{ matrix.platform }}" }
+          if ("${{ matrix.platform }}" -ne "Android") {
+            & ctest --test-dir $build --no-tests=error --output-on-failure -LE performance
+            if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
+          }
+
+      - name: Install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/platform-${{ matrix.platform }}"
+          & cmake --install $build
+          if ($LASTEXITCODE -ne 0) { throw "install failed for ${{ matrix.platform }}" }
+          $config = Join-Path $stage "lib/cmake/TurboMedia/TurboMediaConfig.cmake"
+          if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
+            throw "missing installed TurboMediaConfig.cmake"
+          }
+          if (Select-String -LiteralPath $config -SimpleMatch "TurboMedia_PRODUCT") {
+            throw "installed package still exposes obsolete product identity"
+          }

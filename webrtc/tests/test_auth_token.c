@@ -1,7 +1,7 @@
 #include "tinytest.h"
 #include "turbo_media_auth.h"
 #include "turbo_media_revocation.h"
-#include <turbo_crypto.h>
+#include <salts/crypto.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,9 +92,9 @@ static turbo_media_auth_result_t authorize_tenant(
 
 static void token_sha256_hex(const char *token, char output[65]) {
     static const char hex[] = "0123456789abcdef";
-    uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
+    uint8_t digest[SALTS_CRYPTO_SHA256_DIGEST_SIZE];
 
-    check_equal((int)(turbo_crypto_sha256(token, strlen(token), digest)), (int)(TURBO_CRYPTO_OK));
+    check_equal((int)(salts_crypto_sha256(token, strlen(token), digest)), (int)(SALTS_CRYPTO_OK));
     for (size_t index = 0; index < sizeof(digest); ++index) {
         output[index * 2U] = hex[digest[index] >> 4U];
         output[index * 2U + 1U] = hex[digest[index] & 0x0fU];

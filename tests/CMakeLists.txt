@@ -20,22 +20,11 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     continue()
   endif()
 
-  set(CLIENT_ONLY_TESTS
-      test_benchmark test_capture test_client_processing test_hls_public test_integration
-      test_mobile_optimizer test_android_capture test_player_audio test_rtc_client
-      test_rtc_subscriber test_rtc_playback_sink test_rtc_capture_source)
-  set(SERVER_ONLY_TESTS
-      test_dash_local test_http_flv_local test_pipeline test_rtmp_metadata
-      test_server_rtsp_adapter test_server_runtime test_webrtc)
-  if(TURBO_MEDIA_IS_CLIENT AND TEST_NAME IN_LIST SERVER_ONLY_TESTS)
-    continue()
-  endif()
-  if(TURBO_MEDIA_IS_SERVER AND TEST_NAME IN_LIST CLIENT_ONLY_TESTS)
-    continue()
-  endif()
-  # This test deliberately spans Player and Streamer. Product integration is
-  # verified by installed-package consumers instead of merging both profiles.
-  if(TEST_NAME STREQUAL "test_hls_local")
+  set(DESKTOP_SERVICE_TESTS
+      test_dash_local test_hls_local test_http_flv_local test_pipeline
+      test_rtmp_metadata test_server_rtsp_adapter test_server_runtime test_webrtc)
+  if(NOT TURBO_MEDIA_HAS_DESKTOP_SERVICES AND
+     TEST_NAME IN_LIST DESKTOP_SERVICE_TESTS)
     continue()
   endif()
   

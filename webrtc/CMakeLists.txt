@@ -110,7 +110,7 @@ target_link_libraries(
           SaltsNet::Asn1Parser
           roaring::roaring)
 
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   add_library(turbo_media_webrtc SHARED)
   turbo_media_configure_component(turbo_media_webrtc WebRTC)
   target_sources(
@@ -191,17 +191,14 @@ target_link_libraries(
           OpenSSL::Crypto
           libSRTP::srtp2)
 target_compile_definitions(turbo_media_rtc PUBLIC TURBO_MEDIA_HAS_RTC)
-if(TURBO_MEDIA_IS_CLIENT)
-  target_link_libraries(turbo_media_rtc PRIVATE Salts::Capture)
-endif()
+target_link_libraries(turbo_media_rtc PRIVATE Salts::Capture)
 # See transport/CMakeLists.txt: RTC and legacy transport packets have distinct
 # layouts, so internal calls must never be preempted by the peer shared object.
 target_link_options(
   turbo_media_rtc
   PRIVATE "$<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>")
 
-if(TURBO_MEDIA_IS_CLIENT)
-  add_library(turbo_media_rtc_client SHARED
+add_library(turbo_media_rtc_client SHARED
     src/client/turbo_rtc_client.c
     src/client/turbo_rtc_subscriber.c
     src/client/turbo_rtc_playback_sink.c
@@ -220,11 +217,10 @@ if(TURBO_MEDIA_IS_CLIENT)
             Salts::Capture
             Salts::Platform
             Salts::Core)
-endif()
 
 # Room-service / SFU server apps are desktop targets; keep them out of the
 # Android build (they were gated with NOT ANDROID before the RTC-apps split).
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   # IVR media worker first so RoomService can consume its typed H1 WebSocket bridge.
   # The server applications remain desktop-only.
   add_subdirectory(ivr)

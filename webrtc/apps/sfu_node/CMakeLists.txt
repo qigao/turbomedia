@@ -25,7 +25,8 @@ set(SFU_NODE_LIBS
   turbo_media_auth
   turbo_media_tenant_quota
   turbo_media_tenant_quota_wire
-  SaltsNet::Crypto
+  Salts::Crypto
+  Salts::Platform
   Salts::Core
   Salts::JsonParser
   Salts::TomlParser)
