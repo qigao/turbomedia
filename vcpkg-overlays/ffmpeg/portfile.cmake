@@ -988,7 +988,6 @@ append_dependencies_from_libs(FFMPEG_DEPENDENCIES_RELEASE LIBS "${FFMPEG_PKGCONF
 append_dependencies_from_libs(FFMPEG_DEPENDENCIES_DEBUG   LIBS "${FFMPEG_PKGCONFIG_LIBS_DEBUG}")
 
 set(FFMPEG_NEEDS_ICONV FALSE)
-set(FFMPEG_ANDROID_GNU_ICONV FALSE)
 if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND "xml2" IN_LIST FEATURES)
     # libxml2's Android static archive uses GNU libiconv before API 28, but
     # FFmpeg's pkg-config aggregation does not preserve that private dependency.
@@ -996,16 +995,11 @@ if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND "xml2" IN_LIST FEATURES)
     list(APPEND FFMPEG_DEPENDENCIES_DEBUG iconv)
 endif()
 
-# Keep iconv out of the generic bare-library list. Mirror vcpkg's libiconv
-# Android contract exactly: GNU libiconv is built below API 28; API 28+ uses
-# the platform libc implementation. VCPKG_DETECTED_CMAKE_SYSTEM_VERSION comes
-# from the vcpkg_cmake_get_vars() result loaded above.
+# Keep iconv out of the generic bare-library list. Android API selection is a
+# consumer-toolchain property, so FindFFMPEG.cmake resolves GNU libiconv versus
+# platform libc at package-consume time instead of baking that choice here.
 if("iconv" IN_LIST FFMPEG_DEPENDENCIES_RELEASE OR "iconv" IN_LIST FFMPEG_DEPENDENCIES_DEBUG)
     set(FFMPEG_NEEDS_ICONV TRUE)
-    if(VCPKG_CMAKE_SYSTEM_NAME STREQUAL "Android" AND
-       VCPKG_DETECTED_CMAKE_SYSTEM_VERSION VERSION_LESS "28")
-        set(FFMPEG_ANDROID_GNU_ICONV TRUE)
-    endif()
     list(REMOVE_ITEM FFMPEG_DEPENDENCIES_RELEASE iconv)
     list(REMOVE_ITEM FFMPEG_DEPENDENCIES_DEBUG iconv)
 endif()
