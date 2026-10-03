@@ -9,8 +9,22 @@ vcpkg_from_github(
     PATCHES
         fix_export.patch
         mingw.diff
-        ios-route-monitor.patch
 )
+
+if(VCPKG_TARGET_IS_IOS)
+    set(_usrsctp_recv_thread "${SOURCE_PATH}/usrsctplib/user_recv_thread.c")
+    vcpkg_replace_string(
+        "${_usrsctp_recv_thread}"
+        "#if defined(__APPLE__) || defined(__DragonFly__) || defined(__FreeBSD__)\n#include <net/route.h>"
+        "#include <TargetConditionals.h>\n#if (defined(__APPLE__) && !TARGET_OS_IPHONE) || defined(__DragonFly__) || defined(__FreeBSD__)\n#include <net/route.h>"
+    )
+    vcpkg_replace_string(
+        "${_usrsctp_recv_thread}"
+        "#if defined(__APPLE__) || defined(__DragonFly__) || defined(__FreeBSD__)"
+        "#if (defined(__APPLE__) && !TARGET_OS_IPHONE) || defined(__DragonFly__) || defined(__FreeBSD__)"
+        IGNORE_UNCHANGED
+    )
+endif()
 
 vcpkg_cmake_configure(
     SOURCE_PATH ${SOURCE_PATH}
