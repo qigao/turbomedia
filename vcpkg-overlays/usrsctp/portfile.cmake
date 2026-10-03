@@ -15,8 +15,8 @@ if(VCPKG_TARGET_IS_IOS)
     set(_usrsctp_recv_thread "${SOURCE_PATH}/usrsctplib/user_recv_thread.c")
     vcpkg_replace_string(
         "${_usrsctp_recv_thread}"
-        "#if defined(__APPLE__) || defined(__DragonFly__) || defined(__FreeBSD__)\n#include <net/route.h>"
-        "#include <TargetConditionals.h>\n#if (defined(__APPLE__) && !TARGET_OS_IPHONE) || defined(__DragonFly__) || defined(__FreeBSD__)\n#include <net/route.h>"
+        "#if defined(INET) || defined(INET6)\n#include <sys/types.h>"
+        "#include <TargetConditionals.h>\n#if TARGET_OS_IPHONE\n#define __APPLE_USE_RFC_3542 1\n#endif\n\n#if defined(INET) || defined(INET6)\n#include <sys/types.h>"
     )
     vcpkg_replace_string(
         "${_usrsctp_recv_thread}"
