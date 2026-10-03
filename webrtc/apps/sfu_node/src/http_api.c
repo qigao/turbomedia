@@ -6,7 +6,7 @@
 #include <http_server/http.h>
 #include <json_parser.h>
 #include <salts/error_codes.h>
-#include <turbo_crypto.h>
+#include <salts/random.h>
 #include <salts_thread.h>
 #include <inttypes.h>
 #include <stdint.h>
@@ -534,8 +534,7 @@ static int generate_media_session_id(char output[TURBO_PARTICIPANT_ID_MAX]) {
     uint8_t random_bytes[16];
 
     if (!output ||
-        turbo_crypto_random(random_bytes, sizeof(random_bytes)) !=
-            TURBO_CRYPTO_OK) {
+        salts_platform_secure_random(random_bytes, sizeof(random_bytes)) != 0) {
         return -1;
     }
     for (size_t i = 0; i < sizeof(random_bytes); ++i) {

@@ -19,9 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <turbo_export.h>
-#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 #include <turbo_player.h>
-#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -176,13 +174,11 @@ TURBO_MEDIA_API void turbo_voice_detector_capture_callback(salts_capture_t *capt
                                                      const uint8_t *samples, size_t len,
                                                      uint64_t timestamp_us, void *user_data);
 
-#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /** turbo_player_audio_cb-compatible adapter for offline/VOD analysis. */
 TURBO_MEDIA_API void turbo_voice_detector_player_audio_callback(turbo_player_t *player,
                                                           const float *samples, size_t frame_count,
                                                           int sample_rate, int channels,
                                                           int64_t pts_ms, void *user_data);
-#endif
 
 typedef enum {
   TURBO_FINGERPRINT_VOICE = 1,
@@ -271,7 +267,6 @@ TURBO_MEDIA_API void turbo_fingerprint_capture_callback(salts_capture_t *capture
                                                   const uint8_t *samples, size_t len,
                                                   uint64_t timestamp_us, void *user_data);
 
-#if defined(TURBO_MEDIA_PRODUCT_CLIENT)
 /** turbo_player callbacks for offline/VOD audio or video fingerprinting. */
 TURBO_MEDIA_API void turbo_fingerprint_player_audio_callback(turbo_player_t *player, const float *samples,
                                                        size_t frame_count, int sample_rate,
@@ -280,7 +275,6 @@ TURBO_MEDIA_API void turbo_fingerprint_player_audio_callback(turbo_player_t *pla
 TURBO_MEDIA_API void turbo_fingerprint_player_video_callback(turbo_player_t *player,
                                                        const turbo_player_video_frame_t *frame,
                                                        void *user_data);
-#endif
 
 typedef struct {
   uint32_t abi_version;

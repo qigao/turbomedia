@@ -1,118 +1,112 @@
 # TurboMedia 2.0 Architecture
 
-TurboMedia 2.0 is a C11/C++17 multimedia runtime with explicit product profiles,
-bounded ownership, fail-fast configuration, and separate client/server execution
-boundaries.
+TurboMedia 2.0 is a C11/C++17 multimedia runtime with one build graph, explicit
+ownership, bounded resources, fail-fast configuration, and platform-selected
+capabilities.
 
-This document describes the current repository structure. When documentation and
-code disagree, the CMake graph, public headers, and runtime behavior are the
-source of truth.
+When documentation and code disagree, the CMake graph, public headers, and
+runtime behavior are the source of truth.
 
 ## 1. Architectural rules
 
-TurboMedia 2.0 follows five rules:
-
-1. **The product is explicit.** `TURBO_MEDIA_PRODUCT` must be `CLIENT` or
-   `SERVER`. There is no `AUTO`, `FULL`, implicit profile detection, or
-   runtime fallback between products.
+1. **One build graph.** Callers do not select a product profile. The target
+   platform determines which capabilities exist.
 2. **Ownership is explicit.** Network objects, queues, media buffers, runtime
-   graphs, and server sessions have one owner. Cross-thread work is queued or
-   copied into bounded storage instead of borrowing untracked pointers.
-3. **Resources are bounded.** Queue items, bytes, packet sizes, retained audio
-   duration, graph nodes, and transport capacities have hard limits.
-4. **Unsupported paths fail immediately.** Missing packages, unsupported
-   platforms/codecs, invalid configuration, queue overflow, and ABI mismatches
-   are errors. TurboMedia does not silently downgrade to another backend.
-5. **Deployment and qualification are separate.** The repository builds,
-   tests, and installs the selected product. It does not maintain a second
-   installed/package-consumer harness as another compatibility layer.
+   graphs, and sessions have one owner.
+3. **Resources are bounded.** Queues, packet sizes, retained media duration,
+   graph nodes, and transport capacities have hard limits.
+4. **Unsupported paths fail immediately.** Missing SDKs, cache entries,
+   toolchains, codecs, or platform capabilities are errors.
+5. **No compatibility fallback.** TurboMedia does not silently switch backend,
+   dependency source, transport, or platform behavior.
 
-## 2. Product profiles
+## 2. Platform capability model
 
-The product gate lives in `cmake/TurboMediaProduct.cmake` and runs both before
-and after `project()`.
+| Platform | Capability set |
+| --- | --- |
+| Linux | shared media + device I/O + RTC client + desktop services/apps |
+| Windows | shared media + device I/O + RTC client + desktop services/apps |
+| Android | shared media + device I/O + RTC client + mobile adapter |
+| macOS | shared media + device I/O + RTC client |
+| iOS | shared media + device I/O + RTC client + mobile adapter |
 
-| Profile | Build/platform contract | Product-only modules |
-| --- | --- | --- |
-| `CLIENT` | Client-capable toolchains; repository profiles include desktop and mobile | `ClientProcessing`, `Player`, mobile adapters, device Capture/Playback integration |
-| `SERVER` | Windows and Linux only; other target systems fail during configure | `Server`, `Streamer`, `Pipeline`, `ServerRTSP`, server WebRTC facade, RoomService/SFU/IVR apps |
-
-Both profiles share codec/container/network/RTC foundations. The current native
-SDK workflow exercises Linux/Windows CLIENT and SERVER builds. Other client
-platforms are governed by their toolchain/preset and dependency support; they do
-not change the product boundary.
+Desktop services are enabled only when the target system is Linux or Windows.
+This is an internal platform capability, not a user-selectable build mode.
 
 ```mermaid
 flowchart TB
-  Product["TURBO_MEDIA_PRODUCT\nCLIENT | SERVER"]
+  Platform["target platform"]
 
-  Shared["Shared media/runtime\nCore · Crypto · Speech · Recognition\nCodec · Muxer · Demuxer\nTransport · RTSP\nSDP · DataChannel · RTC · WebRTCSignaling"]
+  Shared["Shared media/runtime
+Core · Crypto · Speech · Recognition
+Codec · Muxer · Demuxer · Transport · RTSP
+SDP · DataChannel · RTC · WebRTCSignaling"]
 
-  Client["CLIENT only\nClientProcessing\nPlayer\nMobile adapters\nSalts Capture/Playback"]
+  Device["Device/client capability
+ClientProcessing · Player · RTCClient
+Salts Capture/Playback"]
 
-  Server["SERVER only\nServerRuntime\nStreamer\nPipeline\nServerRTSP\nWebRTC server facade"]
+  Desktop["Linux/Windows capability
+Server · Streamer · Pipeline · ServerRTSP
+WebRTC facade · Room/SFU/IVR apps"]
 
-  Apps["SERVER apps\nRoomService\nSFU Node\nIVR Worker\nSignaling Server"]
+  Mobile["Android/iOS capability
+mobile adapters"]
 
-  Product --> Shared
-  Product --> Client
-  Product --> Server
-  Server --> Apps
+  Platform --> Shared
+  Shared --> Device
+  Platform --> Desktop
+  Platform --> Mobile
 ```
 
 ## 3. Shared media core
 
-The shared layer is built before product-specific modules.
+The shared layer is always built.
 
-### Codec and container layer
-
-- `TurboMedia::Codec` owns codec-facing media conversion.
+- `TurboMedia::Core` owns common media/runtime primitives.
+- `TurboMedia::Codec` owns codec-facing conversion.
 - `TurboMedia::Muxer` / `TurboMedia::Demuxer` own container boundaries.
-- Existing `common/codec_helpers` remain internal to the classic
-  muxer/demuxer/streamer path.
-- FFmpeg types are not part of the public media ABI.
+- `TurboMedia::Transport` owns shared network transport.
+- `TurboMedia::RTSP` owns protocol parsing/session logic.
+- FFmpeg types do not enter the public media ABI.
 
-The shared codec/container APIs and Pipeline intentionally remain separate.
-Pipeline uses native FFmpeg packet/frame timing internally instead of forcing
-the classic packet contracts to model every FFmpeg concept.
+`common/codec_helpers` remains internal to the classic
+muxer/demuxer/streamer path. Pipeline keeps native FFmpeg packet/frame timing
+inside its own graph.
 
-### Transport layer
+## 4. Device and local media path
 
-`TurboMedia::Transport` is implemented by `network/` plus `transport/`.
+Capture and playback are normal TurboMedia dependencies on every supported
+platform.
 
 ```mermaid
 flowchart LR
-  Caller["TurboMedia caller"]
-  Adapter["turbo_media_cnet_adapter\nowned-buffer send"]
-  CNet["Salts::CNet"]
-  CHttp["CHttp::Client / CHttp::Server"]
-  Proto["RTP/RTCP · SIP · RTSP · WebRTC"]
+  Capture["Salts::Capture"]
+  Processing["ClientProcessing"]
+  Queue["bounded queues"]
+  Codec["Codec / FFmpeg"]
+  Playback["Salts::Playback"]
 
-  Caller --> Adapter --> CNet
-  Caller --> CHttp
-  CNet --> Proto
+  Capture --> Processing --> Queue --> Codec --> Playback
 ```
 
-The internal `turbo_media_cnet_adapter` is the shared ownership adapter for
-CNet-backed sends. Generic transport, RTSP/DataChannel paths must not grow
-parallel ad-hoc ownership glue.
+`TurboMedia::ClientProcessing` owns processing lifecycle and bounded queues.
+`TurboMedia::Player` combines container/codec logic with playback.
+Platform adapters never replace Salts device ownership.
 
-The public transport target links CNet and CHttp Client. Higher server layers
-use CHttp Server explicitly where they own HTTP/WebSocket listeners.
-
-## 4. RTC and WebRTC
-
-WebRTC is a current capability, not a future item.
+## 5. RTC and WebRTC
 
 The shared WebRTC subtree provides:
 
 - `TurboMedia::SDP`
 - `TurboMedia::DataChannel`
 - `TurboMedia::RTC`
+- `TurboMedia::RTCClient`
 - `TurboMedia::WebRTCSignaling`
 
-The SERVER profile additionally builds `TurboMedia::WebRTC`, the facade that
-owns `ServerRuntime` integration.
+RTC owns RTP/RTCP, NACK, TWCC, simulcast, jitter, SRTP, media engine, and
+PeerConnection state. Owner-driven polling advances ICE, DTLS, SRTP,
+DataChannel transport, and timers.
 
 ```mermaid
 flowchart LR
@@ -122,312 +116,187 @@ flowchart LR
   SRTP["libSRTP"]
   DC["DataChannel / SCTP"]
   RTC["TurboMedia::RTC"]
-  WebRTC["SERVER: TurboMedia::WebRTC"]
-  Runtime["ServerRuntime"]
+  Client["RTCClient"]
+  Desktop["Linux/Windows WebRTC facade"]
 
   SDP --> RTC
   ICE --> RTC
   DTLS --> RTC
   SRTP --> RTC
   DC --> RTC
-  RTC --> WebRTC --> Runtime
+  RTC --> Client
+  RTC --> Desktop
 ```
 
-`TurboMedia::RTC` owns RTP/RTCP, NACK, TWCC, simulcast, jitter, SRTP, media
-engine, and PeerConnection state. Owner-thread pumping advances ICE, DTLS,
-SRTP, DataChannel transport, and media timers.
+The Linux/Windows WebRTC facade additionally integrates desktop
+`ServerRuntime`. Android/macOS/iOS do not create that target.
 
-On CLIENT builds RTC may consume `Salts::Capture`. SERVER does not own local
-capture devices; server media is supplied through explicit frame/track/runtime
-paths.
-
-The legacy transport RTP ABI and RTC RTP ABI intentionally have different packet
-layouts. Linux shared objects bind internal calls locally so ELF symbol
+The legacy transport RTP ABI and RTC RTP ABI intentionally have different
+packet layouts. Linux shared objects bind internal calls locally so ELF symbol
 preemption cannot route packets through the wrong implementation.
 
-## 5. Client execution path
+## 6. Desktop services
 
-CLIENT-only modules are intentionally independent of ServerRuntime, Streamer,
-Pipeline, RulesForge, and server applications.
-
-### ClientProcessing
-
-`TurboMedia::ClientProcessing` is split into:
-
-- core lifecycle
-- bounded queues
-- Salts Capture/Playback adapters
-- FFmpeg file-processing implementation
-
-Its CMake target links Salts Capture/Playback publicly and FFmpeg internally.
-It does not depend on the SERVER Pipeline.
-
-### Player
-
-`TurboMedia::Player` combines TurboMedia Codec/Demuxer with
-`Salts::Playback`; FFmpeg remains an implementation dependency.
-
-### Client data flow
-
-```mermaid
-flowchart LR
-  Capture["Salts::Capture"]
-  CP["ClientProcessing"]
-  Queue["bounded audio/video queues"]
-  FF["FFmpeg processing"]
-  Playback["Salts::Playback"]
-
-  Capture --> CP --> Queue --> FF --> Playback
-```
-
-Queue capacity and retained-duration limits are hard bounds. A producer cannot
-turn a bounded queue into implicit buffering by varying frame duration.
-
-## 6. Server execution path
-
-SERVER adds the runtime and service-facing components:
+Linux and Windows additionally build:
 
 - `TurboMedia::Server`
 - `TurboMedia::Streamer`
 - `TurboMedia::Pipeline`
 - `TurboMedia::ServerRTSP`
 - `TurboMedia::WebRTC`
-- `TurboMedia::RtcApps`
+- RoomService / SFU / IVR / signaling applications
 
-The root build adds server modules only when `TURBO_MEDIA_PRODUCT=SERVER`.
-
-### ServerRuntime
-
-`TurboMedia::Server` owns source/track runtime state on top of
-`TurboMedia::Core` and `TurboMedia::Transport`.
+RulesForge is required only for this desktop capability.
 
 ### Streamer
 
 `TurboMedia::Streamer` provides HLS, DASH, RTMP, and HTTP-FLV on top of the
-server/media/container/transport targets. CHttp Client and CNet remain private
-runtime dependencies.
+shared codec/container/transport graph.
 
-### ServerRTSP
+### Pipeline
 
-`TurboMedia::ServerRTSP` adapts the shared RTSP implementation to the
-SERVER runtime.
-
-## 7. Pipeline
-
-`TurboMedia::Pipeline` is SERVER-only.
-
-There are two explicit execution families.
+`TurboMedia::Pipeline` executes bounded YAML graphs.
 
 ```mermaid
 flowchart TB
   YAML["pipeline/v1 YAML"]
-  Validate["parse + validate + compile bounded plan"]
+  Validate["parse + validate + compile"]
 
-  FFIn["FFmpeg input/demux"]
-  FFGraph["decode → filter → encode"]
-  FFOut["mux → output"]
+  FFIn["FFmpeg input"]
+  Graph["decode → filter → encode"]
+  Output["mux / output"]
 
-  RuntimeIn["ServerRuntime source"]
-  RTP["RTP depacketize / packetize"]
-  RuntimeOut["ServerRuntime sink"]
+  Runtime["runtime/RTP input"]
+  Relay["relay / transcode"]
 
   YAML --> Validate
-  Validate --> FFIn --> FFGraph --> FFOut
-  Validate --> RuntimeIn --> RTP --> RuntimeOut
+  Validate --> FFIn --> Graph --> Output
+  Validate --> Runtime --> Relay
 ```
 
-### FFmpeg path
+Pipeline does not become a hidden generic state machine. Orchestration/state
+semantics remain separate from media graph execution.
 
-File/network URL graphs use libavformat/libavcodec/libavfilter directly. FFmpeg
-packet/frame ownership stays inside Pipeline.
+## 7. Mobile adapters
 
-### Runtime/RTP path
+`media/mobile` selects adapters only from target platform:
 
-Runtime graphs borrow a `ServerRuntime`, copy complete RTP packets into a
-preallocated bounded ring, and consume them from one execution thread.
+- Android → `media/mobile/android`
+- iOS → `media/mobile/ios`
 
-Current v1 limits are intentional:
+There is no mobile-only compatibility build. The normal platform build must
+configure, compile, and install the same TurboMedia graph.
 
-- best audio + best video track
-- H.264 video and Opus audio for Runtime/RTP transcode
-- single-input/single-output filter chains
-- no runtime graph mutation
-- Runtime/RTP has one sink
-- FFmpeg path supports bounded multi-sink fan-out
+## 8. Build, install, and package export
 
-The next capability expansion is tracked by #46–#49. Those issues must extend
-the model explicitly rather than weakening v1 bounds.
-
-## 8. RoomService, SFU, and IVR
-
-SERVER builds the application/model layer under `webrtc/apps`:
-
-```mermaid
-flowchart LR
-  Room["room_service"]
-  SFU["sfu_node"]
-  IVR["ivr_worker"]
-  Sig["signaling_server"]
-  Apps["TurboMedia::RtcApps"]
-  RTC["TurboMedia::RTC"]
-  CHttp["CHttp Server"]
-  WS["ivr_control_adapter\nH1 WebSocket"]
-
-  Room --> Apps
-  SFU --> Apps
-  Apps --> RTC
-  Room --> CHttp
-  Room --> WS --> CHttp
-  Sig --> CHttp
-```
-
-RoomService owns room facts, SFU membership/routing, replay of room state to SFU
-nodes, conference policy, and the internal IVR control listener.
-
-The active IVR control transport is only CHttp Server / HTTP/1.1 WebSocket via
-`ivr_control_adapter`. The retired Iris outbound provider transport,
-persistence/outbox/ledger layer, provider façade, reconciler, and compatibility
-configuration have been removed.
-
-RoomService currently does not select or load a database runtime, so TurboDB/Orm
-is not part of the TurboMedia SERVER dependency graph. A future application that
-chooses a database must do so explicitly; it must not be introduced as an
-implicit RoomService dependency or fallback.
-
-## 9. Ownership and shutdown
-
-### CNet owner model
-
-CNet endpoints/listeners/datagrams are driven by their owning context. Cross-
-thread work enters bounded command/event queues. Send adapters transfer owned
-buffers according to the CNet contract instead of borrowing caller memory after
-return.
-
-### CHttp lifecycle
-
-CHttp Client/Server objects have explicit init/start/stop/destroy ownership.
-Shutdown must quiesce callbacks before their backing context is released. A
-failed/busy close retains ownership for the caller; it is not treated as
-successful destruction.
-
-### RTC/IVR ownership
-
-- PeerConnection and RTC state progress on the owner thread.
-- IVR worker/session queues are bounded.
-- WebSocket callback context outlives in-flight callbacks.
-- Stop/drain order is explicit; destruction does not race active producers.
-
-### Pipeline ownership
-
-- Pipeline owns immutable config and FFmpeg contexts.
-- Runtime/RTP Pipeline borrows ServerRuntime.
-- Rings own copied RTP packets.
-- `request_stop` is an atomic cooperative stop request.
-- Error paths do not masquerade as EOF/success.
-
-## 10. Bounded-resource model
-
-TurboMedia treats bounds as part of correctness, not tuning hints.
-
-| Resource | Example bound |
-| --- | --- |
-| Network commands/events | queue item capacity |
-| HTTP | connection/request/event/body/header limits |
-| RTP | max packet/access-unit bytes |
-| Audio | queue items + retained PCM duration |
-| Pipeline | node/edge/output/ring capacity |
-| IVR | worker/dialog/request/event capacities |
-| SFU/Room | configured node/session/room limits |
-
-Overflow/backpressure is surfaced to the caller. There is no unbounded fallback
-queue.
-
-## 11. Build, install, and CMake export
-
-Every public component is exported through `TurboMediaTargets.cmake` with the
-`TurboMedia::` namespace.
-
-`TurboMediaConfig.cmake` records the product used to build the install tree:
+Every public component is exported through `TurboMediaTargets.cmake` under
+the `TurboMedia::` namespace.
 
 ```cmake
 find_package(TurboMedia CONFIG REQUIRED COMPONENTS RTC DataChannel)
-# TurboMedia_PRODUCT is CLIENT or SERVER.
 ```
 
-Requested components are validated after importing the target file. FFmpeg
-lookup is conditional on requesting an FFmpeg-backed component such as Muxer,
+The installed package does not record or require a product identity. Requested
+components are checked against targets that exist for the current platform.
+
+FFmpeg lookup remains conditional on FFmpeg-backed components such as Muxer,
 Demuxer, Player, Pipeline, Streamer, or RtcApps.
 
-The installed tree is product-specific. One install prefix must not be treated
-as the other product.
+## 9. CI contract
 
-TurboMedia intentionally does **not** maintain a second installed/package-
-consumer harness. Native CI configures, builds, runs the repository tests, and
-installs the selected profile; missing export/dependency/install contracts fail
-at the point they are used.
+The only native qualification dimension is platform:
 
-## 12. CI and evidence boundary
+```text
+Linux
+Windows
+Android arm64-v8a
+macOS arm64
+iOS device/simulator   # tracked until native path is ready
+```
 
-The native SDK workflow currently covers Linux/Windows CLIENT and SERVER. It
-uses released first-party SDKs plus cache-only vcpkg dependencies and follows the
-normal configure/build/CTest/install path.
+Each platform follows:
 
-That CI proves repository and install behavior for those runner/platform
-combinations. It does **not** prove production Internet/WebRTC readiness.
+```text
+latest released SDKs
+→ vcpkg --only-binarycaching
+→ configure
+→ build
+→ test where executable
+→ install
+```
 
-The following evidence remains separate:
+No source-build fallback is permitted in a consumer gate.
 
-- #17 — browser + TURN-only public acceptance
-- #44 — capacity/backpressure/long-soak baseline
-- #45 — multi-node failure, rolling upgrade, and reconciliation acceptance
+## 10. Media dependency cache
 
-Local CTest, loopback HTTP/WebSocket, fake peers, or synthetic RTC tests must not
-be described as substitutes for those deployment tests.
+TurboMedia owns product-specific media recipes:
 
-## 13. Current product dependency direction
+```text
+vcpkg-overlays/ffmpeg
+vcpkg-overlays/x265
+vcpkg-overlays/libsrtp
+```
+
+Persistent multi-platform binary-cache production belongs to
+`qigao/vcpkg-cache`. TurboMedia platform builds consume that L2 read-only.
+
+```mermaid
+flowchart LR
+  Recipe["TurboMedia media recipes"]
+  Producer["qigao/vcpkg-cache producer"]
+  L2["GitHub Packages L2"]
+  Build["TurboMedia platform build"]
+
+  Recipe --> Producer --> L2 --> Build
+```
+
+## 11. Dependency direction
 
 ```mermaid
 flowchart TB
   Salts["Salts / SaltsUtils"]
   SaltsNet["SaltsNet"]
   CHttp["CHttp"]
-  Media["TurboMedia shared media"]
-  Client["CLIENT modules"]
-  Server["SERVER modules"]
-  Apps["SERVER apps"]
   Rules["RulesForge"]
+  Media["TurboMedia shared media"]
+  Device["Device / RTC client"]
+  Desktop["Linux/Windows services"]
 
   Salts --> Media
   SaltsNet --> Media
   CHttp --> Media
-  Media --> Client
-  Media --> Server
-  Rules --> Apps
-  Server --> Apps
+  Media --> Device
+  Media --> Desktop
+  Rules --> Desktop
 ```
 
-There is no runtime dependency edge from TurboMedia SERVER to TurboDB/Orm in the
-current 2.0 tree.
+TurboDB/Orm is not a hidden runtime dependency of TurboMedia. If an application
+uses a database driver, that choice remains explicit outside the media runtime.
 
-## 14. Follow-up roadmap
+## 12. Evidence boundary
 
-Architecture changes after 2.0 are tracked explicitly rather than hidden behind
-fallbacks:
+Local CI proves repository build/install behavior for the named platform. It
+does not substitute for deployment evidence such as browser/TURN interoperability,
+capacity, soak, or multi-node failure testing.
 
+Tracked external evidence includes:
+
+- #17 — browser + TURN-only public acceptance
+- #44 — capacity/backpressure/long-soak baseline
+- #45 — multi-node failure, rolling upgrade, reconciliation
+
+## 13. Follow-up roadmap
+
+- #35 — unified cross-platform build matrix
 - #46 — multi-track/extensible Runtime/RTP codec model
 - #47 — structured multi-input/filter graphs
 - #48 — per-output track/transcode policy
 - #49 — bounded transactional runtime graph reconfiguration
-- #50 — cross-platform client media-processing kernel
+- #50 — cross-platform media-processing kernel
 - #51 — production SIP/WebRTC live client
-- #17/#44/#45 — external acceptance and production evidence
 
-## 15. Related design documents
+## 14. Related documents
 
-- `docs/design/client-server-product-profiles.md`
 - `pipeline/README.md`
 - `webrtc/docs/README.md`
 - `README.md`
-
-The root architecture document defines dependency direction and ownership.
-Module-specific operational details belong in their module documentation.

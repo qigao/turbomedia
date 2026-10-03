@@ -14,7 +14,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_rtc_apps
   PUBLIC TurboMedia::RTC Salts::Core
-  PRIVATE TurboMedia::Muxer TurboMedia::Transport SaltsNet::Crypto)
+  PRIVATE TurboMedia::Muxer TurboMedia::Transport Salts::Crypto)
 
 add_subdirectory(room_service)
 add_subdirectory(sfu_node)
