@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet("linux-x64", "windows-x64", "android-arm64-v8a", "macos-arm64")]
+  [ValidateSet("linux-x64", "windows-x64", "android-arm64-v8a", "macos-arm64", "ios-arm64", "ios-simulator-arm64")]
   [string]$Rid
 )
 
@@ -89,6 +89,10 @@ if ($desktopServices) {
 $saltsUtilsHostRoot = $null
 if ($Rid -eq "android-arm64-v8a") {
   $saltsUtilsHostRoot = Resolve-SdkRoot "SaltsUtils.Native" "linux-x64"
+} elseif ($Rid -eq "ios-arm64" -or $Rid -eq "ios-simulator-arm64") {
+  $saltsUtilsHostRoot = Resolve-SdkRoot "SaltsUtils.Native" "macos-arm64"
+}
+if ($saltsUtilsHostRoot) {
   "SALTS_UTILS_HOST_ROOT=$saltsUtilsHostRoot" |
     Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 }
