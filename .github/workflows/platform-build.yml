@@ -214,8 +214,15 @@ jobs:
             )
           }
           if ("${{ matrix.platform }}" -like "iOS*") {
+            $iosSysroot = if ("${{ matrix.platform }}" -eq "iOS simulator") {
+              "iphonesimulator"
+            } else {
+              "iphoneos"
+            }
             $args += @(
               "-DCMAKE_SYSTEM_NAME=iOS",
+              "-DCMAKE_OSX_SYSROOT=$iosSysroot",
+              "-DCMAKE_OSX_ARCHITECTURES=arm64",
               "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
             )
           }
