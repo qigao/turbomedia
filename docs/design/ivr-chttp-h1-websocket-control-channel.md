@@ -19,11 +19,13 @@ IVR / Iris domain command, result, event
              CNet/TLS
 ```
 
-- TIVR V1 schema、published type id、BIN/TEXT 语义、message id、generation、ACK、
-  sequence 和 dedup 行为保持不变。
+- TIVR 使用 schema major 2，定长字段在前并分配新 type ID；两端须同步升级。
+  详见 [SDK 迁移设计](../superpowers/specs/2026-09-05-salts-dependency-refactor-design.md)。
+  BIN/TEXT、message id、generation、ACK、sequence 和 dedup 的业务语义保持不变。
 - 每个 WebSocket binary message 恰好承载一个完整 TIVR frame；不探测格式，不允许
   一个 WebSocket message 拼接多个 frame。
-- WebSocket subprotocol 固定为 `turbomedia.control.v1.bin`。
+- WebSocket subprotocol 固定为 `turbomedia.control.v1.bin`，表示传输封装，
+  不代替 TIVR payload 的 schema 主版本校验。
 - Worker 身份在 Upgrade 阶段由 `X-TurboMedia-Identity` 提交；RoomService 将其与
   `peer_certificate_sha256` 一起交给配置的 verifier。已认证 session 是 source identity
   的唯一事实源，payload 中的 worker id 必须与 session identity 相等。

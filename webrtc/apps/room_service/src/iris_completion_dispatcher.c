@@ -2,10 +2,10 @@
 
 #include <turbo_transport.h>
 #include <json_parser.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 #include <salts/clock.h>
-#include <salts_uuid.h>
-#include <turbo_crypto.h>
+#include <cmeta_uuid.h>
+#include <cmeta_crypto.h>
 #include <tlog.h>
 
 #include <stdio.h>
@@ -50,10 +50,10 @@ struct iris_completion_dispatcher_s {
     int retry_backoff_ms;
     int request_timeout_ms;
     int drain_timeout_ms;
-    salts_mutex_t mutex;
-    salts_cond_t not_empty;
-    salts_cond_t drained;
-    salts_thread_t thread;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t not_empty;
+    cmeta_cond_t drained;
+    cmeta_thread_t thread;
     turbo_transport_t *client;
     iris_media_bridge_t *bridge;
     iris_completion_post_fn post;
@@ -70,20 +70,20 @@ struct iris_completion_dispatcher_s {
 static void record_delivery_attempt(iris_completion_dispatcher_t *dispatcher,
                                     int retry, int fence_conflict,
                                     int fence_refresh_failed) {
-    salts_mutex_lock(&dispatcher->mutex);
+    cmeta_mutex_lock(&dispatcher->mutex);
     dispatcher->stats.delivery_attempts_total++;
     if (retry) dispatcher->stats.retries_total++;
     if (fence_conflict) dispatcher->stats.fence_conflicts_total++;
     if (fence_refresh_failed) {
         dispatcher->stats.fence_refresh_failures_total++;
     }
-    salts_mutex_unlock(&dispatcher->mutex);
+    cmeta_mutex_unlock(&dispatcher->mutex);
 }
 
 static void record_delivery_result(iris_completion_dispatcher_t *dispatcher,
                                    iris_dispatch_item_kind_t kind,
                                    int succeeded) {
-    salts_mutex_lock(&dispatcher->mutex);
+    cmeta_mutex_lock(&dispatcher->mutex);
     if (kind == IRIS_DISPATCH_COMPLETION) {
         if (succeeded) {
             dispatcher->stats.completion_success_total++;
@@ -95,21 +95,21 @@ static void record_delivery_result(iris_completion_dispatcher_t *dispatcher,
     } else {
         dispatcher->stats.event_failure_total++;
     }
-    salts_mutex_unlock(&dispatcher->mutex);
+    cmeta_mutex_unlock(&dispatcher->mutex);
 }
 
 static void retry_wait(iris_completion_dispatcher_t *dispatcher,
                        uint64_t delay_ms) {
     while (delay_ms > 0u) {
         uint64_t deadline = atomic_load(&dispatcher->stop_deadline_ms);
-        uint64_t now = salts_monotonic_ms();
+        uint64_t now = cmeta_monotonic_ms();
         uint64_t slice = delay_ms > 10u ? 10u : delay_ms;
         if (deadline) {
             if (now >= deadline) return;
             if (slice > deadline - now) slice = deadline - now;
         }
         if (slice == 0u) return;
-        salts_sleep_ms((uint32_t)slice);
+        cmeta_sleep_ms((uint32_t)slice);
         delay_ms -= slice;
     }
 }
@@ -394,7 +394,7 @@ static void process_item(iris_completion_dispatcher_t *dispatcher,
         size_t body_size = 0u;
         int status;
         uint64_t stop_deadline = atomic_load(&dispatcher->stop_deadline_ms);
-        if (stop_deadline && salts_monotonic_ms() >= stop_deadline) break;
+        if (stop_deadline && cmeta_monotonic_ms() >= stop_deadline) break;
         if (dispatcher->deliver_completion) {
             if (item->kind == IRIS_DISPATCH_COMPLETION) {
                 status = dispatcher->deliver_completion(
@@ -506,12 +506,12 @@ static void dispatcher_thread(void *context) {
         (iris_completion_dispatcher_t *)context;
     for (;;) {
         iris_dispatch_item_t item;
-        salts_mutex_lock(&dispatcher->mutex);
+        cmeta_mutex_lock(&dispatcher->mutex);
         while (dispatcher->count == 0u && dispatcher->running) {
-            salts_cond_wait(&dispatcher->not_empty, &dispatcher->mutex);
+            cmeta_cond_wait(&dispatcher->not_empty, &dispatcher->mutex);
         }
         if (dispatcher->count == 0u && !dispatcher->running) {
-            salts_mutex_unlock(&dispatcher->mutex);
+            cmeta_mutex_unlock(&dispatcher->mutex);
             break;
         }
         item = dispatcher->items[dispatcher->head];
@@ -520,14 +520,14 @@ static void dispatcher_thread(void *context) {
         dispatcher->head = (dispatcher->head + 1u) % dispatcher->capacity;
         dispatcher->count--;
         dispatcher->in_flight++;
-        salts_mutex_unlock(&dispatcher->mutex);
+        cmeta_mutex_unlock(&dispatcher->mutex);
         process_item(dispatcher, &item);
-        salts_mutex_lock(&dispatcher->mutex);
+        cmeta_mutex_lock(&dispatcher->mutex);
         dispatcher->in_flight--;
         if (dispatcher->count == 0u && dispatcher->in_flight == 0u) {
-            salts_cond_broadcast(&dispatcher->drained);
+            cmeta_cond_broadcast(&dispatcher->drained);
         }
-        salts_mutex_unlock(&dispatcher->mutex);
+        cmeta_mutex_unlock(&dispatcher->mutex);
     }
 }
 
@@ -576,17 +576,17 @@ iris_completion_dispatcher_t *iris_completion_dispatcher_create(
     dispatcher->event_delivery_result = config->event_delivery_result;
     dispatcher->event_delivery_context = config->event_delivery_context;
     atomic_init(&dispatcher->stop_deadline_ms, 0u);
-    salts_mutex_init(&dispatcher->mutex);
-    salts_cond_init(&dispatcher->not_empty);
-    salts_cond_init(&dispatcher->drained);
+    cmeta_mutex_init(&dispatcher->mutex);
+    cmeta_cond_init(&dispatcher->not_empty);
+    cmeta_cond_init(&dispatcher->drained);
     if (!config->post && !config->deliver_completion) {
         if (turbo_transport_parse_url(dispatcher->base_url, &http_config) != 0 ||
             http_config.type != TURBO_TRANSPORT_HTTP) {
             free((void *)http_config.host);
             free((void *)http_config.path);
-            salts_cond_destroy(&dispatcher->drained);
-            salts_cond_destroy(&dispatcher->not_empty);
-            salts_mutex_destroy(&dispatcher->mutex);
+            cmeta_cond_destroy(&dispatcher->drained);
+            cmeta_cond_destroy(&dispatcher->not_empty);
+            cmeta_mutex_destroy(&dispatcher->mutex);
             goto fail;
         }
         http_config.connect_timeout_ms = config->request_timeout_ms;
@@ -606,9 +606,9 @@ iris_completion_dispatcher_t *iris_completion_dispatcher_create(
         free((void *)http_config.host);
         free((void *)http_config.path);
         if (!dispatcher->client) {
-            salts_cond_destroy(&dispatcher->drained);
-            salts_cond_destroy(&dispatcher->not_empty);
-            salts_mutex_destroy(&dispatcher->mutex);
+            cmeta_cond_destroy(&dispatcher->drained);
+            cmeta_cond_destroy(&dispatcher->not_empty);
+            cmeta_mutex_destroy(&dispatcher->mutex);
             goto fail;
         }
     }
@@ -624,16 +624,16 @@ fail:
 int iris_completion_dispatcher_start(iris_completion_dispatcher_t *dispatcher) {
     if (!dispatcher || dispatcher->thread_started) return -1;
     atomic_store(&dispatcher->stop_deadline_ms, 0u);
-    salts_mutex_lock(&dispatcher->mutex);
+    cmeta_mutex_lock(&dispatcher->mutex);
     dispatcher->accepting = 1;
     dispatcher->running = 1;
-    salts_mutex_unlock(&dispatcher->mutex);
-    if (salts_thread_create(&dispatcher->thread, dispatcher_thread,
+    cmeta_mutex_unlock(&dispatcher->mutex);
+    if (cmeta_thread_create(&dispatcher->thread, dispatcher_thread,
                             dispatcher) != 0) {
-        salts_mutex_lock(&dispatcher->mutex);
+        cmeta_mutex_lock(&dispatcher->mutex);
         dispatcher->accepting = 0;
         dispatcher->running = 0;
-        salts_mutex_unlock(&dispatcher->mutex);
+        cmeta_mutex_unlock(&dispatcher->mutex);
         return -1;
     }
     dispatcher->thread_started = 1;
@@ -645,15 +645,15 @@ int iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
     uint64_t drain_started;
     uint64_t drain_duration;
     if (!dispatcher || !dispatcher->thread_started) return 0;
-    drain_started = salts_monotonic_ms();
-    salts_mutex_lock(&dispatcher->mutex);
+    drain_started = cmeta_monotonic_ms();
+    cmeta_mutex_lock(&dispatcher->mutex);
     dispatcher->accepting = 0;
-    deadline = salts_monotonic_ms() + (uint64_t)dispatcher->drain_timeout_ms;
+    deadline = cmeta_monotonic_ms() + (uint64_t)dispatcher->drain_timeout_ms;
     atomic_store(&dispatcher->stop_deadline_ms, deadline);
     while ((dispatcher->count > 0u || dispatcher->in_flight > 0u) &&
-           salts_monotonic_ms() < deadline) {
-        uint64_t remaining = deadline - salts_monotonic_ms();
-        (void)salts_cond_timedwait(&dispatcher->drained, &dispatcher->mutex,
+           cmeta_monotonic_ms() < deadline) {
+        uint64_t remaining = deadline - cmeta_monotonic_ms();
+        (void)cmeta_cond_timedwait(&dispatcher->drained, &dispatcher->mutex,
                                   remaining * UINT64_C(1000000));
     }
     while (dispatcher->count > 0u) {
@@ -667,7 +667,7 @@ int iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
         } else if (item.kind == IRIS_DISPATCH_EVENT) {
             dispatcher->stats.shutdown_dropped_events_total++;
         }
-        salts_mutex_unlock(&dispatcher->mutex);
+        cmeta_mutex_unlock(&dispatcher->mutex);
         if (item.kind == IRIS_DISPATCH_COMPLETION) {
             iris_media_bridge_restore_completion(
                 dispatcher->bridge, item.completion.command_id);
@@ -678,21 +678,21 @@ int iris_completion_dispatcher_stop(iris_completion_dispatcher_t *dispatcher) {
                     item.delivery_token, IRIS_EVENT_DELIVERY_ABANDONED, 0);
             }
         }
-        salts_mutex_lock(&dispatcher->mutex);
+        cmeta_mutex_lock(&dispatcher->mutex);
     }
     dispatcher->running = 0;
-    salts_cond_broadcast(&dispatcher->not_empty);
-    salts_mutex_unlock(&dispatcher->mutex);
-    if (salts_thread_join(&dispatcher->thread) != 0) return -1;
-    salts_thread_destroy(&dispatcher->thread);
+    cmeta_cond_broadcast(&dispatcher->not_empty);
+    cmeta_mutex_unlock(&dispatcher->mutex);
+    if (cmeta_thread_join(&dispatcher->thread) != 0) return -1;
+    cmeta_thread_destroy(&dispatcher->thread);
     dispatcher->thread_started = 0;
-    drain_duration = salts_monotonic_ms() - drain_started;
-    salts_mutex_lock(&dispatcher->mutex);
+    drain_duration = cmeta_monotonic_ms() - drain_started;
+    cmeta_mutex_lock(&dispatcher->mutex);
     dispatcher->stats.last_drain_duration_ms = drain_duration;
     if (drain_duration > dispatcher->stats.max_drain_duration_ms) {
         dispatcher->stats.max_drain_duration_ms = drain_duration;
     }
-    salts_mutex_unlock(&dispatcher->mutex);
+    cmeta_mutex_unlock(&dispatcher->mutex);
     return 0;
 }
 
@@ -702,12 +702,12 @@ void iris_completion_dispatcher_get_stats(
     if (!stats) return;
     memset(stats, 0, sizeof(*stats));
     if (!dispatcher) return;
-    salts_mutex_lock(&dispatcher->mutex);
+    cmeta_mutex_lock(&dispatcher->mutex);
     *stats = dispatcher->stats;
     stats->queue_items = dispatcher->count;
     stats->queue_capacity = dispatcher->capacity;
     stats->in_flight = dispatcher->in_flight;
-    salts_mutex_unlock(&dispatcher->mutex);
+    cmeta_mutex_unlock(&dispatcher->mutex);
 }
 
 int iris_completion_dispatcher_set_event_delivery_observer(
@@ -724,12 +724,12 @@ int iris_completion_dispatcher_destroy(iris_completion_dispatcher_t *dispatcher)
     if (iris_completion_dispatcher_stop(dispatcher) != 0) return -1;
     if (turbo_transport_destroy(dispatcher->client) != 0) return -1;
     dispatcher->client = NULL;
-    salts_cond_destroy(&dispatcher->drained);
-    salts_cond_destroy(&dispatcher->not_empty);
-    salts_mutex_destroy(&dispatcher->mutex);
+    cmeta_cond_destroy(&dispatcher->drained);
+    cmeta_cond_destroy(&dispatcher->not_empty);
+    cmeta_mutex_destroy(&dispatcher->mutex);
     free(dispatcher->items);
     if (dispatcher->provider_token) {
-        turbo_crypto_wipe(dispatcher->provider_token,
+        cmeta_crypto_clear(dispatcher->provider_token,
                           strlen(dispatcher->provider_token));
         free(dispatcher->provider_token);
     }
@@ -742,15 +742,15 @@ static ivr_status_t enqueue(iris_completion_dispatcher_t *dispatcher,
                             const iris_dispatch_item_t *item) {
     size_t tail;
     if (!dispatcher || !item) return IVR_EINVAL;
-    salts_mutex_lock(&dispatcher->mutex);
+    cmeta_mutex_lock(&dispatcher->mutex);
     if (!dispatcher->accepting) {
         dispatcher->stats.closed_rejections_total++;
-        salts_mutex_unlock(&dispatcher->mutex);
+        cmeta_mutex_unlock(&dispatcher->mutex);
         return IVR_ECLOSED;
     }
     if (dispatcher->count == dispatcher->capacity) {
         dispatcher->stats.queue_full_total++;
-        salts_mutex_unlock(&dispatcher->mutex);
+        cmeta_mutex_unlock(&dispatcher->mutex);
         return IVR_ENOSPC;
     }
     tail = (dispatcher->head + dispatcher->count) % dispatcher->capacity;
@@ -760,8 +760,8 @@ static ivr_status_t enqueue(iris_completion_dispatcher_t *dispatcher,
     if (dispatcher->count > dispatcher->stats.queue_high_water) {
         dispatcher->stats.queue_high_water = dispatcher->count;
     }
-    salts_cond_signal(&dispatcher->not_empty);
-    salts_mutex_unlock(&dispatcher->mutex);
+    cmeta_cond_signal(&dispatcher->not_empty);
+    cmeta_mutex_unlock(&dispatcher->mutex);
     return IVR_OK;
 }
 
@@ -776,12 +776,12 @@ ivr_status_t iris_completion_dispatcher_on_media_result(
     item.kind = IRIS_DISPATCH_COMPLETION;
     item.settle_media_bridge = 1;
     item.result = *result;
-    item.completed_at_ms = salts_realtime_ms();
+    item.completed_at_ms = cmeta_realtime_ms();
     {
-        salts_uuid_t uuid;
+        cmeta_uuid_t uuid;
         if (item.completed_at_ms == 0u ||
-            salts_uuid_v4_generate(&uuid) != SALTS_OK ||
-            salts_uuid_format(&uuid, item.completion_event_id,
+            cmeta_uuid_v4_generate(&uuid) != SALTS_OK ||
+            cmeta_uuid_format(&uuid, item.completion_event_id,
                               sizeof(item.completion_event_id)) != SALTS_OK ||
             format_rfc3339(item.completed_at_ms,
                            item.completion_occurred_at,
@@ -819,7 +819,7 @@ ivr_status_t iris_completion_dispatcher_enqueue_terminal(
     item.kind = IRIS_DISPATCH_COMPLETION;
     item.completion = *completion;
     item.result = *result;
-    item.completed_at_ms = salts_realtime_ms();
+    item.completed_at_ms = cmeta_realtime_ms();
     if (item.completed_at_ms == 0u ||
         snprintf(item.completion_event_id,
                  sizeof(item.completion_event_id), "%s", stable_event_id) <= 0 ||

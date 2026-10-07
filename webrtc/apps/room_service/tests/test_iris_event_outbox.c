@@ -1,7 +1,7 @@
 #include "iris_event_outbox.h"
 
 #include <tinytest.h>
-#include <salts_error.h>
+#include <cmeta_error.h>
 
 #include <stdio.h>
 #include <stdlib.h>

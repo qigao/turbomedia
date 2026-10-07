@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include "platform.h"
-#include "salts_thread.h"
+#include "cmeta_thread.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,7 +35,7 @@ typedef struct {
 } ivr_worker_health_snapshot_t;
 
 struct ivr_worker_health_s {
-    salts_mutex_t mutex;
+    cmeta_mutex_t mutex;
     ivr_worker_health_snapshot_t value;
 };
 

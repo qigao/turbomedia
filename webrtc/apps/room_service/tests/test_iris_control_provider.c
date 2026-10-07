@@ -3,10 +3,10 @@
 #include "ivr_control_ws.h"
 
 #include <tinytest.h>
-#include <salts_error.h>
+#include <cmeta_error.h>
 
-#include <salts_str.h>
-#include <salts_thread.h>
+#include <str.h>
+#include <cmeta_thread.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -187,7 +187,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
                 assign_string(&ack.error_code, "") &&
                 assign_string(&ack.error_message, "") &&
                 ProviderCompletionAckV1_to_bin(
-                    &ack, &application, &application_size, &error) ==
+                    codec, &ack, &application, &application_size, &error) ==
                     DATA_BIND_OK) {
                 status = ivr_control_ws_server_send_copy(
                     harness->server, route, application, application_size);
@@ -197,7 +197,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
                 }
             }
         }
-        tbe_typed_serialized_free(application);
+        TurboMediaIrisProviderV1_schema_codec()->free_output(application);
         ProviderCompletionAckV1_clear(&ack);
         ProviderCompletionV1_clear(&completion);
     } else if (kind == ProviderMessageKind_Event) {
@@ -228,7 +228,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
                 assign_string(&ack.error_code, "") &&
                 assign_string(&ack.error_message, "") &&
                 ProviderEventAckV1_to_bin(
-                    &ack, &application, &application_size, &error) ==
+                    codec, &ack, &application, &application_size, &error) ==
                     DATA_BIND_OK) {
                 status = ivr_control_ws_server_send_copy(
                     harness->server, route, application, application_size);
@@ -238,7 +238,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
                 }
             }
         }
-        tbe_typed_serialized_free(application);
+        TurboMediaIrisProviderV1_schema_codec()->free_output(application);
         ProviderEventAckV1_clear(&ack);
         ProviderEventV1_clear(&event);
     } else if (kind == ProviderMessageKind_Query) {
@@ -253,7 +253,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
             atomic_fetch_add_explicit(&harness->queries_received, 1,
                                       memory_order_acq_rel);
             if (harness->query_response_delay_ms > 0u) {
-                salts_sleep_ms(harness->query_response_delay_ms);
+                cmeta_sleep_ms(harness->query_response_delay_ms);
             }
             observation.schema_version = 1u;
             observation.message_kind = ProviderMessageKind_Observation;
@@ -282,7 +282,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
                 assign_string(&observation.error_code, "") &&
                 assign_string(&observation.error_message, "") &&
                 ProviderObservationV1_to_bin(
-                    &observation, &application, &application_size, &error) ==
+                    codec, &observation, &application, &application_size, &error) ==
                     DATA_BIND_OK) {
                 status = ivr_control_ws_server_send_copy(
                     harness->server, route, application, application_size);
@@ -292,7 +292,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
                 }
             }
         }
-        tbe_typed_serialized_free(application);
+        TurboMediaIrisProviderV1_schema_codec()->free_output(application);
         ProviderObservationV1_clear(&observation);
         ProviderQueryV1_clear(&query);
     } else if (kind == ProviderMessageKind_CallOffer) {
@@ -344,14 +344,14 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
                                       ? "session capacity exhausted"
                                       : "") &&
                     ProviderSessionBoundV1_to_bin(
-                        &bound, &application, &application_size, &error) ==
+                        codec, &bound, &application, &application_size, &error) ==
                         DATA_BIND_OK) {
                     status = ivr_control_ws_server_send_copy(
                         harness->server, route, application, application_size);
                 }
             }
         }
-        tbe_typed_serialized_free(application);
+        TurboMediaIrisProviderV1_schema_codec()->free_output(application);
         ProviderSessionBoundV1_clear(&bound);
         ProviderCallOfferV1_clear(&offer);
     }
@@ -395,7 +395,7 @@ static int wait_atomic(const atomic_int *value, int expected) {
         if (atomic_load_explicit(value, memory_order_acquire) == expected) {
             return SALTS_OK;
         }
-        salts_sleep_ms(TEST_WAIT_STEP_MS);
+        cmeta_sleep_ms(TEST_WAIT_STEP_MS);
     }
     return SALTS_ETIMEDOUT;
 }
@@ -437,9 +437,9 @@ static uint8_t *encode_command(DataBind *codec, size_t *out_size) {
     ProviderCommandV1_init(&command);
     if (ProviderCommandV1_from_json(codec, &command, json, sizeof(json) - 1u,
                                     &error) != DATA_BIND_OK ||
-        ProviderCommandV1_to_bin(&command, &encoded, out_size, &error) !=
+        ProviderCommandV1_to_bin(codec, &command, &encoded, out_size, &error) !=
             DATA_BIND_OK) {
-        tbe_typed_serialized_free(encoded);
+        TurboMediaIrisProviderV1_schema_codec()->free_output(encoded);
         encoded = NULL;
         *out_size = 0u;
     }
@@ -455,7 +455,7 @@ static int send_command(provider_harness_t *harness, DataBind *codec) {
     if (!application) return SALTS_EPROTO;
     status = ivr_control_ws_server_send_copy(
         harness->server, &harness->route, application, application_size);
-    tbe_typed_serialized_free(application);
+    TurboMediaIrisProviderV1_schema_codec()->free_output(application);
     return status;
 }
 
@@ -495,7 +495,7 @@ spec("RoomService Iris CHTTP HTTP/1.1 WebSocket provider") {
         iris_control_session_bound_t session_bound;
         query_send_context_t concurrent_query;
         iris_control_completion_ack_t concurrent_completion_ack;
-        salts_thread_t query_thread;
+        cmeta_thread_t query_thread;
         DataBind *codec = NULL;
         DataBindError error = DATA_BIND_ERROR_INIT;
         unsigned short port = available_port();
@@ -638,7 +638,7 @@ spec("RoomService Iris CHTTP HTTP/1.1 WebSocket provider") {
             query.query_id = "query-concurrent";
             concurrent_query.provider = provider;
             concurrent_query.query = &query;
-            check_equal(salts_thread_create(&query_thread, send_query_thread,
+            check_equal(cmeta_thread_create(&query_thread, send_query_thread,
                                              &concurrent_query),
                          0);
             check_equal(wait_atomic(&harness.queries_received, 2), SALTS_OK);
@@ -648,8 +648,8 @@ spec("RoomService Iris CHTTP HTTP/1.1 WebSocket provider") {
                              "2026-08-14T00:00:08Z", 43u, 2000u,
                              &concurrent_completion_ack),
                          IVR_OK);
-            salts_thread_join(&query_thread);
-            salts_thread_destroy(&query_thread);
+            cmeta_thread_join(&query_thread);
+            cmeta_thread_destroy(&query_thread);
             check_equal(concurrent_query.status, IVR_OK);
             check_equal(concurrent_query.observation.revision, 47u);
             check_equal(concurrent_completion_ack.disposition,

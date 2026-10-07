@@ -3,9 +3,9 @@
 #include "iris_event_outbox_v1.h"
 #include "iris_orm_store.h"
 #include "platform.h"
-#include "salts_error.h"
-#include "salts_thread.h"
-#include "salts_str.h"
+#include "cmeta_error.h"
+#include "cmeta_thread.h"
+#include "str.h"
 #include "tlog.h"
 #include <salts/clock.h>
 
@@ -55,8 +55,8 @@ typedef struct iris_outbox_request_s {
     iris_event_retention_result_t retention_result;
     int result;
     int completed;
-    salts_mutex_t mutex;
-    salts_cond_t condition;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t condition;
 } iris_outbox_request_t;
 
 struct iris_outbox_candidate_s {
@@ -99,10 +99,10 @@ struct iris_event_outbox_s {
     int thread_started;
     int startup_completed;
     int startup_result;
-    salts_mutex_t mutex;
-    salts_cond_t not_empty;
-    salts_cond_t startup;
-    salts_thread_t thread;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t not_empty;
+    cmeta_cond_t startup;
+    cmeta_thread_t thread;
     iris_event_outbox_stats_t stats;
 };
 
@@ -111,40 +111,40 @@ static int decode_record(DataBind *codec, const uint8_t *value,
                          IrisMediaEventOutboxRecordV1_t *record);
 
 static void stats_increment(iris_event_outbox_t *outbox, uint64_t *value) {
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     (*value)++;
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
 }
 
 static void stats_transition(iris_event_outbox_t *outbox, size_t *from,
                              size_t *to) {
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     if (from && *from > 0u) (*from)--;
     if (to) (*to)++;
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
 }
 
 static void stats_retain_payload(iris_event_outbox_t *outbox,
                                  size_t payload_bytes) {
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     outbox->stats.retained_payload_bytes += payload_bytes;
     if (outbox->stats.retained_payload_bytes >
         outbox->stats.peak_retained_payload_bytes) {
         outbox->stats.peak_retained_payload_bytes =
             outbox->stats.retained_payload_bytes;
     }
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
 }
 
 static void stats_release_payload(iris_event_outbox_t *outbox,
                                   size_t payload_bytes) {
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     if (outbox->stats.retained_payload_bytes >= payload_bytes) {
         outbox->stats.retained_payload_bytes -= payload_bytes;
     } else {
         outbox->stats.retained_payload_bytes = 0u;
     }
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
 }
 
 typedef struct iris_outbox_count_s {
@@ -201,7 +201,7 @@ static int recount_states(iris_event_outbox_t *outbox) {
         }
         return rc;
     }
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     outbox->stats.pending_records = count.pending;
     outbox->stats.in_flight_records = count.in_flight;
     outbox->stats.dead_records = count.dead;
@@ -210,7 +210,7 @@ static int recount_states(iris_event_outbox_t *outbox) {
     if (count.payload_bytes > outbox->stats.peak_retained_payload_bytes) {
         outbox->stats.peak_retained_payload_bytes = count.payload_bytes;
     }
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
     return SALTS_OK;
 }
 
@@ -223,7 +223,7 @@ static uint64_t outbox_realtime_ms(const iris_event_outbox_t *outbox) {
     return outbox->retention.realtime_ms
                ? outbox->retention.realtime_ms(
                      outbox->retention.realtime_context)
-               : salts_realtime_ms();
+               : cmeta_realtime_ms();
 }
 
 static int retention_expired(uint64_t changed_at_ms, uint64_t ttl_ms,
@@ -432,7 +432,7 @@ static int commit_record(iris_event_outbox_t *outbox,
         mutation.value_size = value_size;
         rc = outbox->store->commit(outbox->store->ctx, &mutation, 1u);
     }
-    tbe_typed_serialized_free(value);
+    IrisEventOutboxV1_schema_codec()->free_output(value);
     IrisMediaEventOutboxRecordV1_clear(&record);
     return rc;
 }
@@ -756,9 +756,9 @@ static int process_replay_dead_batch(iris_event_outbox_t *outbox,
             break;
         }
     }
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     request->replay_batch_result.remaining_dead = outbox->stats.dead_records;
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
     return rc;
 }
 
@@ -997,10 +997,10 @@ static int process_retention(iris_event_outbox_t *outbox,
     }
     free(items);
     if (result) {
-        salts_mutex_lock(&outbox->mutex);
+        cmeta_mutex_lock(&outbox->mutex);
         result->remaining_dead = outbox->stats.dead_records;
         result->remaining_archived = outbox->stats.archived_records;
-        salts_mutex_unlock(&outbox->mutex);
+        cmeta_mutex_unlock(&outbox->mutex);
     }
     if (rc != SALTS_OK) {
         stats_increment(outbox, &outbox->stats.retention_failure_total);
@@ -1030,15 +1030,15 @@ static int process_list_dead(iris_event_outbox_t *outbox,
 }
 
 static void complete_request(iris_outbox_request_t *request, int result) {
-    salts_mutex_lock(&request->mutex);
+    cmeta_mutex_lock(&request->mutex);
     request->result = result;
     request->completed = 1;
-    salts_cond_signal(&request->condition);
-    salts_mutex_unlock(&request->mutex);
+    cmeta_cond_signal(&request->condition);
+    cmeta_mutex_unlock(&request->mutex);
 }
 
 static void reset_sweep_deadline(iris_event_outbox_t *outbox) {
-    uint64_t now_ms = salts_monotonic_ms();
+    uint64_t now_ms = cmeta_monotonic_ms();
     if (UINT64_MAX - now_ms < outbox->retention.sweep_interval_ms) {
         outbox->next_sweep_monotonic_ms = UINT64_MAX;
     } else {
@@ -1057,35 +1057,35 @@ static void outbox_thread(void *context) {
         TLOG_ERRORF("Iris event outbox recovery failed: status={}. "
                    "New media event admission is stopped.", recovery);
     }
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     outbox->startup_result = recovery;
     outbox->startup_completed = 1;
     outbox->accepting = recovery == SALTS_OK;
-    salts_cond_signal(&outbox->startup);
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_cond_signal(&outbox->startup);
+    cmeta_mutex_unlock(&outbox->mutex);
     reset_sweep_deadline(outbox);
     for (;;) {
         iris_outbox_request_t *request;
         int result;
-        salts_mutex_lock(&outbox->mutex);
+        cmeta_mutex_lock(&outbox->mutex);
         while (outbox->count == 0u && outbox->running) {
-            uint64_t now_ms = salts_monotonic_ms();
+            uint64_t now_ms = cmeta_monotonic_ms();
             uint64_t wait_ms;
             if (now_ms >= outbox->next_sweep_monotonic_ms) break;
             wait_ms = outbox->next_sweep_monotonic_ms - now_ms;
             if (wait_ms > outbox->retention.sweep_interval_ms) {
                 wait_ms = outbox->retention.sweep_interval_ms;
             }
-            (void)salts_cond_timedwait(&outbox->not_empty, &outbox->mutex,
+            (void)cmeta_cond_timedwait(&outbox->not_empty, &outbox->mutex,
                                        wait_ms * UINT64_C(1000000));
         }
         if (outbox->count == 0u && !outbox->running) {
-            salts_mutex_unlock(&outbox->mutex);
+            cmeta_mutex_unlock(&outbox->mutex);
             break;
         }
         if (outbox->running &&
-            salts_monotonic_ms() >= outbox->next_sweep_monotonic_ms) {
-            salts_mutex_unlock(&outbox->mutex);
+            cmeta_monotonic_ms() >= outbox->next_sweep_monotonic_ms) {
+            cmeta_mutex_unlock(&outbox->mutex);
             (void)process_retention(outbox, NULL);
             reset_sweep_deadline(outbox);
             continue;
@@ -1094,7 +1094,7 @@ static void outbox_thread(void *context) {
         outbox->requests[outbox->head] = NULL;
         outbox->head = (outbox->head + 1u) % outbox->capacity;
         outbox->count--;
-        salts_mutex_unlock(&outbox->mutex);
+        cmeta_mutex_unlock(&outbox->mutex);
         if (request->kind == IRIS_OUTBOX_PERSIST) {
             result = process_persist(outbox, request);
         } else if (request->kind == IRIS_OUTBOX_SETTLE) {
@@ -1122,8 +1122,8 @@ static iris_outbox_request_t *request_create(iris_outbox_request_kind_t kind) {
         (iris_outbox_request_t *)calloc(1u, sizeof(*request));
     if (!request) return NULL;
     request->kind = kind;
-    salts_mutex_init(&request->mutex);
-    salts_cond_init(&request->condition);
+    cmeta_mutex_init(&request->mutex);
+    cmeta_cond_init(&request->condition);
     return request;
 }
 
@@ -1132,8 +1132,8 @@ static void request_destroy(iris_outbox_request_t *request) {
     free(request->dead_letters);
     free(request->archives);
     free(request->replay_candidates);
-    salts_cond_destroy(&request->condition);
-    salts_mutex_destroy(&request->mutex);
+    cmeta_cond_destroy(&request->condition);
+    cmeta_mutex_destroy(&request->mutex);
     free(request);
 }
 
@@ -1141,13 +1141,13 @@ static int submit(iris_event_outbox_t *outbox,
                   iris_outbox_request_t *request) {
     size_t tail;
     int result;
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     if (!outbox->accepting) {
-        salts_mutex_unlock(&outbox->mutex);
+        cmeta_mutex_unlock(&outbox->mutex);
         return SALTS_ESHUTDOWN;
     }
     if (outbox->count == outbox->capacity) {
-        salts_mutex_unlock(&outbox->mutex);
+        cmeta_mutex_unlock(&outbox->mutex);
         return SALTS_ENOSPC;
     }
     tail = (outbox->head + outbox->count) % outbox->capacity;
@@ -1156,14 +1156,14 @@ static int submit(iris_event_outbox_t *outbox,
     if (outbox->count > outbox->stats.request_queue_high_water) {
         outbox->stats.request_queue_high_water = outbox->count;
     }
-    salts_cond_signal(&outbox->not_empty);
-    salts_mutex_unlock(&outbox->mutex);
-    salts_mutex_lock(&request->mutex);
+    cmeta_cond_signal(&outbox->not_empty);
+    cmeta_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_lock(&request->mutex);
     while (!request->completed) {
-        salts_cond_wait(&request->condition, &request->mutex);
+        cmeta_cond_wait(&request->condition, &request->mutex);
     }
     result = request->result;
-    salts_mutex_unlock(&request->mutex);
+    cmeta_mutex_unlock(&request->mutex);
     return result;
 }
 
@@ -1203,9 +1203,9 @@ static iris_event_outbox_t *create_common(
         free(outbox);
         return NULL;
     }
-    salts_mutex_init(&outbox->mutex);
-    salts_cond_init(&outbox->not_empty);
-    salts_cond_init(&outbox->startup);
+    cmeta_mutex_init(&outbox->mutex);
+    cmeta_cond_init(&outbox->not_empty);
+    cmeta_cond_init(&outbox->startup);
     outbox->store = config->store;
     outbox->deliver = config->deliver;
     outbox->deliver_context = config->deliver_context;
@@ -1266,33 +1266,33 @@ iris_event_outbox_t *iris_event_outbox_create_record_store(
 int iris_event_outbox_start(iris_event_outbox_t *outbox) {
     int startup_result;
     if (!outbox || outbox->thread_started) return SALTS_EINVAL;
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     outbox->running = 1;
     outbox->accepting = 0;
     outbox->startup_completed = 0;
     outbox->startup_result = SALTS_EINVAL;
-    salts_mutex_unlock(&outbox->mutex);
-    if (salts_thread_create(&outbox->thread, outbox_thread, outbox) != SALTS_OK) {
-        salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
+    if (cmeta_thread_create(&outbox->thread, outbox_thread, outbox) != SALTS_OK) {
+        cmeta_mutex_lock(&outbox->mutex);
         outbox->running = 0;
         outbox->accepting = 0;
-        salts_mutex_unlock(&outbox->mutex);
+        cmeta_mutex_unlock(&outbox->mutex);
         return SALTS_EIO;
     }
     outbox->thread_started = 1;
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     while (!outbox->startup_completed) {
-        salts_cond_wait(&outbox->startup, &outbox->mutex);
+        cmeta_cond_wait(&outbox->startup, &outbox->mutex);
     }
     startup_result = outbox->startup_result;
     if (startup_result != SALTS_OK) {
         outbox->running = 0;
-        salts_cond_broadcast(&outbox->not_empty);
+        cmeta_cond_broadcast(&outbox->not_empty);
     }
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
     if (startup_result != SALTS_OK) {
-        salts_thread_join(&outbox->thread);
-        salts_thread_destroy(&outbox->thread);
+        cmeta_thread_join(&outbox->thread);
+        cmeta_thread_destroy(&outbox->thread);
         outbox->thread_started = 0;
     }
     return startup_result;
@@ -1300,7 +1300,7 @@ int iris_event_outbox_start(iris_event_outbox_t *outbox) {
 
 void iris_event_outbox_stop(iris_event_outbox_t *outbox) {
     if (!outbox || !outbox->thread_started) return;
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     outbox->accepting = 0;
     while (outbox->count > 0u) {
         iris_outbox_request_t *request = outbox->requests[outbox->head];
@@ -1310,10 +1310,10 @@ void iris_event_outbox_stop(iris_event_outbox_t *outbox) {
         complete_request(request, SALTS_ESHUTDOWN);
     }
     outbox->running = 0;
-    salts_cond_broadcast(&outbox->not_empty);
-    salts_mutex_unlock(&outbox->mutex);
-    salts_thread_join(&outbox->thread);
-    salts_thread_destroy(&outbox->thread);
+    cmeta_cond_broadcast(&outbox->not_empty);
+    cmeta_mutex_unlock(&outbox->mutex);
+    cmeta_thread_join(&outbox->thread);
+    cmeta_thread_destroy(&outbox->thread);
     outbox->thread_started = 0;
 }
 
@@ -1321,9 +1321,9 @@ void iris_event_outbox_destroy(iris_event_outbox_t *outbox) {
     if (!outbox) return;
     iris_event_outbox_stop(outbox);
     data_bind_free(outbox->codec);
-    salts_cond_destroy(&outbox->startup);
-    salts_cond_destroy(&outbox->not_empty);
-    salts_mutex_destroy(&outbox->mutex);
+    cmeta_cond_destroy(&outbox->startup);
+    cmeta_cond_destroy(&outbox->not_empty);
+    cmeta_mutex_destroy(&outbox->mutex);
     free(outbox->requests);
     iris_orm_store_owner_destroy(outbox->orm_store_owner);
     free(outbox);
@@ -1505,8 +1505,8 @@ void iris_event_outbox_get_stats(iris_event_outbox_t *outbox,
     if (!stats) return;
     memset(stats, 0, sizeof(*stats));
     if (!outbox) return;
-    salts_mutex_lock(&outbox->mutex);
+    cmeta_mutex_lock(&outbox->mutex);
     *stats = outbox->stats;
     stats->request_queue_items = outbox->count;
-    salts_mutex_unlock(&outbox->mutex);
+    cmeta_mutex_unlock(&outbox->mutex);
 }

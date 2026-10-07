@@ -9,7 +9,7 @@
 5. 所有跨 callback/thread 数据先变成有界 owning copy。
 
 CHTTP 已是独立产品和故障域。TurboMedia 下游只允许
-`find_package(CHTTP CONFIG REQUIRED)` 并链接唯一公开 target `Salts::CHTTP`；不得自行解析
+`find_package(Chttp CONFIG REQUIRED PATHS "$ENV{HTTP_SERVICES_ROOT}" NO_DEFAULT_PATH)`，按用途链接公开 target `CHttp::Client` / `CHttp::Server`；不得自行解析
 CHTTP 的内部依赖，也不得绕过产品 target 直接链接内部 core/protocol target。该依赖边界同时
 承载 Iris↔TurboMedia 的 provider command/result/event/query lane，以及 TurboMedia↔worker 的内部
 media route/inventory lane；两类消息必须使用独立 schema、route namespace 和 ACL，不允许把
@@ -17,7 +17,7 @@ Iris/uscxml runtime 引入 TurboMedia。
 
 Iris 与 TurboMedia 的目标 wire contract 由 TurboXML repository
 `docs/architecture/ivr-chttp-h1-websocket-control-channel.md` 定义：
-`Iris <-- Salts::CHTTP --> TurboMedia`，command、durable receipt/completion、event/ack、
+`Iris <-- CHttp::Client / CHttp::Server --> TurboMedia`，command、durable receipt/completion、event/ack、
 query/observation 和首次呼入 bootstrap 均使用分面的 typed CHTTP H1 WebSocket message。TurboMedia 不包含 Iris，
 其 provider/RoomService 控制面也不启动 HTTP server。WHIP/WHEP 等独立 media-edge 协议适配器不属于
 provider contract，不能承载 Iris 或 RoomService command。旧 H2 文档已废止，不能作为 CHTTP H1 WebSocket 不可用
@@ -84,7 +84,7 @@ flowchart LR
   Iris[Iris session runtime]
   Outbox[Durable provider outbox]
   IrisControl[Iris CHTTP H1 WebSocket adapter]
-  CHTTP H1 WebSocket[Salts::CHTTP<br/>command/result/event/query]
+  CHTTP H1 WebSocket[CHttp::Client / CHttp::Server<br/>command/result/event/query]
   MediaControl[TurboMedia CHTTP H1 WebSocket adapter]
   CommandLedger[Durable command ledger]
   RoomCore[Room control-plane]
@@ -297,7 +297,7 @@ WHIP/WHEP transport 现在拥有完整的
 有界 owning copy；state/audio/RTP callback 在 transport mutex 内复制到固定大小栈对象，解锁后才调用
 上游。play/stop 必须匹配完整 identity，不能让相同 room/call 下的另一 dialog 操作现有 transport。
 callback 返回后栈 view 立即失效，接收方需要跨 callback 保存时必须自行复制。
-信令统一经 `Salts::CHTTP`：生产 URL 必须为验证 peer/hostname 的 HTTPS，可选 CA 与
+信令统一经 `CHttp::Client`：生产 URL 必须为验证 peer/hostname 的 HTTPS，可选 CA 与
 mTLS client identity；HTTP 明文只允许显式 loopback 测试，禁止重定向和隐式降级。动态
 room/call/participant ID 按单个 path segment 做 percent encoding，控制字符和超长输入 fail fast；
 request/response body 均有硬上限。RFC 7587 Opus SDP 固定使用 `opus/48000/2`，RTP timestamp

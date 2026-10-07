@@ -1,6 +1,7 @@
 #include <tinytest.h>
 
-#include <chttp/chttp.h>
+#include <http_client/http.h>
+#include <http_server/http.h>
 #include <salts/error_codes.h>
 #include <turbo_transport.h>
 
@@ -260,5 +261,50 @@ suite("Salts CHTTP transport") {
     check_equal(cnet_client_destroy(&client), SALTS_OK);
     check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
+  it("sends retained stream bytes after rejecting an oversized write") {
+    transport_http_test_state_t state = {0};
+    cnet_client client = {0};
+    cnet_client_config client_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 5000,
+        .write_timeout_ms = 5000,
+        .cnet_client = &client
+    };
+    uint8_t oversized[16u * 1024u + 1u] = {0};
+    uint8_t request[] =
+        "POST /base/api/v1/commands HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Authorization: Bearer original-token\r\n"
+        "User-Agent: TurboMediaTransportTest/1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 2\r\n\r\n{}";
+    uint8_t *response = NULL;
+    size_t response_size = 0u;
+    turbo_transport_t *transport;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&client, &client_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    check_equal(turbo_transport_connect(transport), 0);
+    check_equal(turbo_transport_send(transport, oversized, sizeof(oversized)), -1);
+    check_equal(turbo_transport_send(transport, request, sizeof(request) - 1u),
+                (int)(sizeof(request) - 1u));
+    memset(request, 0, sizeof(request));
+    check_greater(turbo_transport_recv(transport, &response, &response_size), 0);
+    check_not_null(response);
+    turbo_transport_free_recv(transport, response);
+    check_equal(turbo_transport_destroy(transport), 0);
+    check_equal(cnet_client_stop(&client, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&client), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+    check_equal(state.request_valid, 1);
   }
 }

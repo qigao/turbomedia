@@ -1,7 +1,7 @@
 #include "iris_provider_protocol.h"
 
-#include "salts_error.h"
-#include "salts_vstr.h"
+#include "cmeta_error.h"
+#include "vstr.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -9,16 +9,16 @@
 typedef struct iris_provider_envelope_view_s {
   uint32_t schema_version;
   ProviderMessageKind_t message_kind;
-  tbe_var_data_t message_id;
-  tbe_var_data_t correlation_id;
-  tbe_var_data_t causation_id;
-  tbe_var_data_t tenant_id;
-  tbe_var_data_t provider_id;
-  tbe_var_data_t session_id;
-  tbe_var_data_t partition_key;
-  tbe_var_data_t producer_id;
-  tbe_var_data_t created_at;
-  tbe_var_data_t deadline_at;
+  DataBindBinaryVarData message_id;
+  DataBindBinaryVarData correlation_id;
+  DataBindBinaryVarData causation_id;
+  DataBindBinaryVarData tenant_id;
+  DataBindBinaryVarData provider_id;
+  DataBindBinaryVarData session_id;
+  DataBindBinaryVarData partition_key;
+  DataBindBinaryVarData producer_id;
+  DataBindBinaryVarData created_at;
+  DataBindBinaryVarData deadline_at;
 } iris_provider_envelope_view_t;
 
 #define IRIS_REQUIRE_VIEW(record, view)                                                          \
@@ -54,7 +54,7 @@ typedef struct iris_provider_envelope_view_s {
     if (rc != SALTS_OK) return rc;                                                                 \
   } while (0)
 
-static int iris_provider_text(tbe_var_data_t value, size_t maximum, int required) {
+static int iris_provider_text(DataBindBinaryVarData value, size_t maximum, int required) {
   if (!value.data) return SALTS_EPROTO;
   if (required && value.size == 0u) return SALTS_EPROTO;
   if (value.size > maximum) return SALTS_EMSGSIZE;
@@ -134,8 +134,8 @@ int iris_provider_peek_kind(const void *encoded, size_t encoded_size,
 int iris_provider_validate_command(const ProviderCommandV1_view_t *message,
                                            const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t command_id, command_type, worker_id, dispatch_epoch, semantic_fingerprint;
-  tbe_var_data_t payload_json;
+  DataBindBinaryVarData command_id, command_type, worker_id, dispatch_epoch, semantic_fingerprint;
+  DataBindBinaryVarData payload_json;
   uint64_t epoch;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderCommandV1, message);
@@ -160,7 +160,7 @@ int iris_provider_validate_command(const ProviderCommandV1_view_t *message,
 int iris_provider_validate_receipt(const ProviderReceiptV1_view_t *message,
                                            const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t command_id, worker_id, dispatch_epoch, error_code, error_message;
+  DataBindBinaryVarData command_id, worker_id, dispatch_epoch, error_code, error_message;
   uint64_t epoch;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderReceiptV1, message);
@@ -185,8 +185,8 @@ int iris_provider_validate_receipt(const ProviderReceiptV1_view_t *message,
 int iris_provider_validate_completion(const ProviderCompletionV1_view_t *message,
                                               const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t command_id, worker_id, dispatch_epoch, event_id, event_type, completed_at;
-  tbe_var_data_t completed_at_unix_ms, result_json, error_code, error_message;
+  DataBindBinaryVarData command_id, worker_id, dispatch_epoch, event_id, event_type, completed_at;
+  DataBindBinaryVarData completed_at_unix_ms, result_json, error_code, error_message;
   uint64_t epoch, completed_at_ms;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderCompletionV1, message);
@@ -225,7 +225,7 @@ int iris_provider_validate_completion(const ProviderCompletionV1_view_t *message
 int iris_provider_validate_completion_ack(const ProviderCompletionAckV1_view_t *message,
                                                   const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t command_id, dispatch_epoch, committed_sequence, error_code, error_message;
+  DataBindBinaryVarData command_id, dispatch_epoch, committed_sequence, error_code, error_message;
   uint64_t epoch, sequence;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderCompletionAckV1, message);
@@ -252,7 +252,7 @@ int iris_provider_validate_completion_ack(const ProviderCompletionAckV1_view_t *
 int iris_provider_validate_event(const ProviderEventV1_view_t *message,
                                          const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t event_id, event_type, aggregate_id, sequence_text, occurred_at, payload_json;
+  DataBindBinaryVarData event_id, event_type, aggregate_id, sequence_text, occurred_at, payload_json;
   uint64_t sequence;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderEventV1, message);
@@ -276,7 +276,7 @@ int iris_provider_validate_event(const ProviderEventV1_view_t *message,
 int iris_provider_validate_event_ack(const ProviderEventAckV1_view_t *message,
                                              const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t event_id, committed_sequence, error_code, error_message;
+  DataBindBinaryVarData event_id, committed_sequence, error_code, error_message;
   uint64_t sequence;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderEventAckV1, message);
@@ -299,7 +299,7 @@ int iris_provider_validate_event_ack(const ProviderEventAckV1_view_t *message,
 int iris_provider_validate_query(const ProviderQueryV1_view_t *message,
                                          const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t query_id, query_type, expected_revision, cursor, payload_json;
+  DataBindBinaryVarData query_id, query_type, expected_revision, cursor, payload_json;
   uint64_t revision;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderQueryV1, message);
@@ -323,8 +323,8 @@ int iris_provider_validate_query(const ProviderQueryV1_view_t *message,
 int iris_provider_validate_observation(const ProviderObservationV1_view_t *message,
                                                const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t query_id, observation_type, revision_text, cursor, next_cursor, payload_json;
-  tbe_var_data_t error_code, error_message;
+  DataBindBinaryVarData query_id, observation_type, revision_text, cursor, next_cursor, payload_json;
+  DataBindBinaryVarData error_code, error_message;
   uint64_t revision;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderObservationV1, message);
@@ -356,8 +356,8 @@ int iris_provider_validate_observation(const ProviderObservationV1_view_t *messa
 int iris_provider_validate_call_offer(const ProviderCallOfferV1_view_t *message,
                                               const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t ingress_event_id, call_id, call_generation, transport, source, destination;
-  tbe_var_data_t payload_json;
+  DataBindBinaryVarData ingress_event_id, call_id, call_generation, transport, source, destination;
+  DataBindBinaryVarData payload_json;
   uint64_t generation;
   int rc;
   IRIS_REQUIRE_VIEW(ProviderCallOfferV1, message);
@@ -384,8 +384,8 @@ int iris_provider_validate_call_offer(const ProviderCallOfferV1_view_t *message,
 int iris_provider_validate_session_bound(const ProviderSessionBoundV1_view_t *message,
                                                  const iris_provider_limits_t *limits) {
   iris_provider_envelope_view_t envelope;
-  tbe_var_data_t ingress_event_id, call_id, call_generation, bound_session_id;
-  tbe_var_data_t error_code, error_message;
+  DataBindBinaryVarData ingress_event_id, call_id, call_generation, bound_session_id;
+  DataBindBinaryVarData error_code, error_message;
   uint64_t generation;
   uint8_t accepted;
   int rc;

@@ -3,7 +3,7 @@
 #include "sip-header.h"
 #include "sip-dialog.h"
 #include "sip-internal.h"
-#include "salts_uuid.h"
+#include "cmeta_uuid.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -150,13 +150,13 @@ int sip_message_init(struct sip_message_t* msg, const char* method, const char* 
 {
 	char tag[16];
 	char callid[SALTS_UUID_STRING_SIZE];
-	salts_uuid_t callid_uuid;
+	cmeta_uuid_t callid_uuid;
 	uint32_t tag_value;
 	vstr u, f, t;
 	struct sip_contact_t contact;
 
-	if (salts_uuid_v4_generate(&callid_uuid) != SALTS_OK ||
-		salts_uuid_format(&callid_uuid, callid, sizeof(callid)) != SALTS_OK)
+	if (cmeta_uuid_v4_generate(&callid_uuid) != SALTS_OK ||
+		cmeta_uuid_format(&callid_uuid, callid, sizeof(callid)) != SALTS_OK)
 		return -1;
 	sip_message_copy(msg, &u, uri);
 	sip_message_copy(msg, &t, to);

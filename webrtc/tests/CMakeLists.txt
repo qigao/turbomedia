@@ -57,19 +57,19 @@ target_link_libraries(turbo_media_test_signaling_json PRIVATE Salts::JsonParser)
 
 turbo_media_add_webrtc_base_test(turbo_media_test_auth_token test_auth_token.c)
 target_link_libraries(turbo_media_test_auth_token
-                      PRIVATE turbo_media_auth SaltsNet::Crypto)
+                      PRIVATE turbo_media_auth Salts::Crypto)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_internals
                             test_signaling_internals.c)
 target_link_libraries(turbo_media_test_signaling_internals
-                      PRIVATE Salts::CNet Salts::CHTTP turbo_media_auth
+                      PRIVATE Salts::CNet CHttp::Server turbo_media_auth
                               Salts::JsonParser)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
 target_link_libraries(turbo_media_test_signaling_lifecycle
                       PRIVATE TurboMedia::WebRTCSignaling TurboMedia::Transport
-                              Salts::CHTTP
+                              CHttp::Server
                               turbo_media_auth)
 file(TO_CMAKE_PATH
      "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tls/localhost-cert.pem"

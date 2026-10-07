@@ -1,9 +1,8 @@
 #include "iris_media_reconciler.h"
 
-#include <turbo_crypto.h>
 #include <json_parser.h>
-#include <salts_thread.h>
-#include <salts_uuid.h>
+#include <cmeta_thread.h>
+#include <cmeta_uuid.h>
 
 #include <openssl/digest.h>
 
@@ -41,9 +40,9 @@ struct iris_media_reconciler_s {
     ivr_control_adapter_t *adapter;
     iris_media_reconciler_ops_t ops;
     int injected_ops;
-    salts_mutex_t mutex;
-    salts_cond_t wake;
-    salts_thread_t thread;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t wake;
+    cmeta_thread_t thread;
     atomic_int running;
     int thread_started;
     int intake_closed;
@@ -52,12 +51,12 @@ struct iris_media_reconciler_s {
 
 static void set_state(iris_media_reconciler_t *reconciler,
                       iris_media_reconcile_state_t state) {
-    salts_mutex_lock(&reconciler->mutex);
+    cmeta_mutex_lock(&reconciler->mutex);
     if (state == IRIS_MEDIA_RECONCILE_DRAINING ||
         reconciler->stats.state != IRIS_MEDIA_RECONCILE_DRAINING) {
         reconciler->stats.state = state;
     }
-    salts_mutex_unlock(&reconciler->mutex);
+    cmeta_mutex_unlock(&reconciler->mutex);
 }
 
 static int copy_json_string(const json_value_t *object, const char *key,
@@ -452,10 +451,10 @@ static int expected_rebind_matches(
 }
 
 static int make_uuid(char *out, size_t capacity) {
-    salts_uuid_t uuid;
+    cmeta_uuid_t uuid;
     return out && capacity >= SALTS_UUID_STRING_SIZE &&
-           salts_uuid_v7_generate(&uuid) == SALTS_OK &&
-           salts_uuid_format(&uuid, out, capacity) == SALTS_OK;
+           cmeta_uuid_v7_generate(&uuid) == SALTS_OK &&
+           cmeta_uuid_format(&uuid, out, capacity) == SALTS_OK;
 }
 
 static int stable_orphan_close_id(
@@ -464,7 +463,7 @@ static int stable_orphan_close_id(
     char input[1024];
     uint8_t digest[EVP_MAX_MD_SIZE];
     unsigned digest_size = 0u;
-    salts_uuid_t uuid;
+    cmeta_uuid_t uuid;
     int written;
     if (!record || !out || capacity < SALTS_UUID_STRING_SIZE) return 0;
     written = snprintf(
@@ -484,14 +483,14 @@ static int stable_orphan_close_id(
        retaining the canonical 36-byte message-id representation. */
     uuid.bytes[6] = (uint8_t)((uuid.bytes[6] & 0x0fu) | 0x80u);
     uuid.bytes[8] = (uint8_t)((uuid.bytes[8] & 0x3fu) | 0x80u);
-    return salts_uuid_format(&uuid, out, capacity) == SALTS_OK;
+    return cmeta_uuid_format(&uuid, out, capacity) == SALTS_OK;
 }
 
 static ivr_status_t wait_inventory_page(
     iris_media_reconciler_t *reconciler, const char *message_id,
     ivr_worker_inventory_envelope_t *out) {
-    uint64_t deadline = salts_monotonic_ms() + reconciler->request_timeout_ms;
-    salts_mutex_lock(&reconciler->mutex);
+    uint64_t deadline = cmeta_monotonic_ms() + reconciler->request_timeout_ms;
+    cmeta_mutex_lock(&reconciler->mutex);
     while (atomic_load(&reconciler->running) || !reconciler->thread_started) {
         while (reconciler->inventory_count > 0u) {
             ivr_worker_inventory_envelope_t page =
@@ -504,16 +503,16 @@ static ivr_status_t wait_inventory_page(
             --reconciler->inventory_count;
             if (strcmp(page.message_id, message_id) == 0) {
                 *out = page;
-                salts_mutex_unlock(&reconciler->mutex);
+                cmeta_mutex_unlock(&reconciler->mutex);
                 return IVR_OK;
             }
         }
-        if (salts_monotonic_ms() >= deadline) break;
-        (void)salts_cond_timedwait(
+        if (cmeta_monotonic_ms() >= deadline) break;
+        (void)cmeta_cond_timedwait(
             &reconciler->wake, &reconciler->mutex,
-            (deadline - salts_monotonic_ms()) * UINT64_C(1000000));
+            (deadline - cmeta_monotonic_ms()) * UINT64_C(1000000));
     }
-    salts_mutex_unlock(&reconciler->mutex);
+    cmeta_mutex_unlock(&reconciler->mutex);
     return IVR_EBUSY;
 }
 
@@ -534,9 +533,9 @@ static ivr_status_t process_inventory_record(
             reconciler->ops.context, record);
         if (status != IVR_OK) return status;
         reconciler->matched[found] = 1u;
-        salts_mutex_lock(&reconciler->mutex);
+        cmeta_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.rebound_total;
-        salts_mutex_unlock(&reconciler->mutex);
+        cmeta_mutex_unlock(&reconciler->mutex);
         return IVR_OK;
     }
     {
@@ -551,9 +550,9 @@ static ivr_status_t process_inventory_record(
             reconciler->close_deadline_ms);
         if (status != IVR_OK) return status;
         *out_cleanup_pending = 1;
-        salts_mutex_lock(&reconciler->mutex);
+        cmeta_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.orphan_close_total;
-        salts_mutex_unlock(&reconciler->mutex);
+        cmeta_mutex_unlock(&reconciler->mutex);
     }
     return IVR_OK;
 }
@@ -594,9 +593,9 @@ static ivr_status_t reconcile_worker(
         }
         if (revision == 0u) revision = page.page.revision;
         observed += page.page.count;
-        salts_mutex_lock(&reconciler->mutex);
+        cmeta_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.inventory_pages_total;
-        salts_mutex_unlock(&reconciler->mutex);
+        cmeta_mutex_unlock(&reconciler->mutex);
         for (uint32_t i = 0; i < page.page.count; ++i) {
             status = process_inventory_record(
                 reconciler, &page.page.records[i], expected_count,
@@ -627,12 +626,12 @@ ivr_status_t iris_media_reconciler_reconcile_once(
     if (!reconciler || (allow_missing_loss != 0 && allow_missing_loss != 1)) {
         return IVR_EINVAL;
     }
-    salts_mutex_lock(&reconciler->mutex);
+    cmeta_mutex_lock(&reconciler->mutex);
     if (reconciler->intake_closed) {
-        salts_mutex_unlock(&reconciler->mutex);
+        cmeta_mutex_unlock(&reconciler->mutex);
         return IVR_ECLOSED;
     }
-    salts_mutex_unlock(&reconciler->mutex);
+    cmeta_mutex_unlock(&reconciler->mutex);
     if (reconciler->thread_started && !atomic_load(&reconciler->running)) {
         return IVR_ECLOSED;
     }
@@ -643,9 +642,9 @@ ivr_status_t iris_media_reconciler_reconcile_once(
     status = reconciler->ops.fetch_expected(
         reconciler->ops.context, reconciler->expected,
         reconciler->resource_capacity, &expected_count);
-    salts_mutex_lock(&reconciler->mutex);
+    cmeta_mutex_lock(&reconciler->mutex);
     ++reconciler->stats.expected_fetches_total;
-    salts_mutex_unlock(&reconciler->mutex);
+    cmeta_mutex_unlock(&reconciler->mutex);
     if (status != IVR_OK || expected_count > reconciler->resource_capacity) {
         return status == IVR_OK ? IVR_EVERSION : status;
     }
@@ -677,9 +676,9 @@ ivr_status_t iris_media_reconciler_reconcile_once(
             has_reconciling_worker ? "generation_or_owner_conflict"
                                    : "inventory_missing");
         if (status != IVR_OK) return status;
-        salts_mutex_lock(&reconciler->mutex);
+        cmeta_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.resource_lost_total;
-        salts_mutex_unlock(&reconciler->mutex);
+        cmeta_mutex_unlock(&reconciler->mutex);
         cleanup_pending = 1;
     }
     if (cleanup_pending) return IVR_EBUSY;
@@ -695,7 +694,7 @@ ivr_status_t iris_media_reconciler_on_inventory_page(
     int queue_full;
     int intake_closed;
     if (!reconciler || !page) return IVR_EINVAL;
-    salts_mutex_lock(&reconciler->mutex);
+    cmeta_mutex_lock(&reconciler->mutex);
     intake_closed = reconciler->intake_closed;
     queue_full = reconciler->inventory_count ==
                  reconciler->inventory_queue_capacity;
@@ -705,7 +704,7 @@ ivr_status_t iris_media_reconciler_on_inventory_page(
         if (queue_full) {
             ++reconciler->stats.inventory_queue_full_total;
         }
-        salts_mutex_unlock(&reconciler->mutex);
+        cmeta_mutex_unlock(&reconciler->mutex);
         if (intake_closed) return IVR_ECLOSED;
         return queue_full ? IVR_ENOSPC : IVR_ECLOSED;
     }
@@ -713,19 +712,19 @@ ivr_status_t iris_media_reconciler_on_inventory_page(
            reconciler->inventory_queue_capacity;
     reconciler->inventory_queue[tail] = *page;
     ++reconciler->inventory_count;
-    salts_cond_broadcast(&reconciler->wake);
-    salts_mutex_unlock(&reconciler->mutex);
+    cmeta_cond_broadcast(&reconciler->wake);
+    cmeta_mutex_unlock(&reconciler->mutex);
     return IVR_OK;
 }
 
 static void interruptible_wait(iris_media_reconciler_t *reconciler,
                                uint32_t milliseconds) {
-    salts_mutex_lock(&reconciler->mutex);
+    cmeta_mutex_lock(&reconciler->mutex);
     if (atomic_load(&reconciler->running)) {
-        (void)salts_cond_timedwait(&reconciler->wake, &reconciler->mutex,
+        (void)cmeta_cond_timedwait(&reconciler->wake, &reconciler->mutex,
                                    (uint64_t)milliseconds * UINT64_C(1000000));
     }
-    salts_mutex_unlock(&reconciler->mutex);
+    cmeta_mutex_unlock(&reconciler->mutex);
 }
 
 static void reconcile_thread(void *context) {
@@ -734,9 +733,9 @@ static void reconcile_thread(void *context) {
     uint32_t attempts = 0;
     while (atomic_load(&reconciler->running)) {
         ivr_status_t status;
-        salts_mutex_lock(&reconciler->mutex);
+        cmeta_mutex_lock(&reconciler->mutex);
         iris_media_reconcile_state_t state = reconciler->stats.state;
-        salts_mutex_unlock(&reconciler->mutex);
+        cmeta_mutex_unlock(&reconciler->mutex);
         if (state == IRIS_MEDIA_RECONCILE_READY &&
             !reconciler->ops.reconcile_required(reconciler->ops.context)) {
             interruptible_wait(reconciler, IRIS_RECONCILE_IDLE_POLL_MS);
@@ -745,7 +744,7 @@ static void reconcile_thread(void *context) {
         set_state(reconciler, IRIS_MEDIA_RECONCILE_NOT_READY);
         status = iris_media_reconciler_reconcile_once(
             reconciler, attempts + 1u >= reconciler->retry_max_attempts);
-        salts_mutex_lock(&reconciler->mutex);
+        cmeta_mutex_lock(&reconciler->mutex);
         ++reconciler->stats.reconcile_cycles_total;
         if (status != IVR_OK && status != IVR_EBUSY) {
             ++reconciler->stats.reconcile_failures_total;
@@ -757,7 +756,7 @@ static void reconcile_thread(void *context) {
                 reconciler->stats.state = IRIS_MEDIA_RECONCILE_FAILED;
             }
         }
-        salts_mutex_unlock(&reconciler->mutex);
+        cmeta_mutex_unlock(&reconciler->mutex);
         if (status == IVR_OK) {
             attempts = 0;
         } else if (attempts < reconciler->retry_max_attempts) {
@@ -829,8 +828,8 @@ iris_media_reconciler_t *iris_media_reconciler_create(
         !reconciler->workers || !reconciler->inventory_queue) {
         goto fail;
     }
-    salts_mutex_init(&reconciler->mutex);
-    salts_cond_init(&reconciler->wake);
+    cmeta_mutex_init(&reconciler->mutex);
+    cmeta_cond_init(&reconciler->wake);
     atomic_init(&reconciler->running, 0);
     reconciler->stats.state = IRIS_MEDIA_RECONCILE_NOT_READY;
     reconciler->stats.inventory_queue_capacity =
@@ -877,7 +876,7 @@ int iris_media_reconciler_start(iris_media_reconciler_t *reconciler) {
     }
     atomic_store(&reconciler->running, 1);
     set_state(reconciler, IRIS_MEDIA_RECONCILE_NOT_READY);
-    if (salts_thread_create(&reconciler->thread, reconcile_thread,
+    if (cmeta_thread_create(&reconciler->thread, reconcile_thread,
                             reconciler) != 0) {
         atomic_store(&reconciler->running, 0);
         return -1;
@@ -890,12 +889,12 @@ void iris_media_reconciler_stop(iris_media_reconciler_t *reconciler) {
     if (!reconciler || !reconciler->thread_started) return;
     set_state(reconciler, IRIS_MEDIA_RECONCILE_DRAINING);
     atomic_store(&reconciler->running, 0);
-    salts_mutex_lock(&reconciler->mutex);
+    cmeta_mutex_lock(&reconciler->mutex);
     reconciler->intake_closed = 1;
-    salts_cond_broadcast(&reconciler->wake);
-    salts_mutex_unlock(&reconciler->mutex);
-    salts_thread_join(&reconciler->thread);
-    salts_thread_destroy(&reconciler->thread);
+    cmeta_cond_broadcast(&reconciler->wake);
+    cmeta_mutex_unlock(&reconciler->mutex);
+    cmeta_thread_join(&reconciler->thread);
+    cmeta_thread_destroy(&reconciler->thread);
     reconciler->thread_started = 0;
 }
 
@@ -903,9 +902,9 @@ int iris_media_reconciler_accepting_commands(
     iris_media_reconciler_t *reconciler) {
     iris_media_reconcile_state_t state;
     if (!reconciler) return 0;
-    salts_mutex_lock(&reconciler->mutex);
+    cmeta_mutex_lock(&reconciler->mutex);
     state = reconciler->stats.state;
-    salts_mutex_unlock(&reconciler->mutex);
+    cmeta_mutex_unlock(&reconciler->mutex);
     return state == IRIS_MEDIA_RECONCILE_READY &&
            !reconciler->ops.reconcile_required(reconciler->ops.context);
 }
@@ -916,17 +915,17 @@ void iris_media_reconciler_get_stats(
     if (!stats) return;
     memset(stats, 0, sizeof(*stats));
     if (!reconciler) return;
-    salts_mutex_lock(&reconciler->mutex);
+    cmeta_mutex_lock(&reconciler->mutex);
     *stats = reconciler->stats;
     stats->inventory_queue_items = reconciler->inventory_count;
-    salts_mutex_unlock(&reconciler->mutex);
+    cmeta_mutex_unlock(&reconciler->mutex);
 }
 
 void iris_media_reconciler_destroy(iris_media_reconciler_t *reconciler) {
     if (!reconciler) return;
     iris_media_reconciler_stop(reconciler);
-    salts_cond_destroy(&reconciler->wake);
-    salts_mutex_destroy(&reconciler->mutex);
+    cmeta_cond_destroy(&reconciler->wake);
+    cmeta_mutex_destroy(&reconciler->mutex);
     free(reconciler->inventory_queue);
     free(reconciler->workers);
     free(reconciler->matched);

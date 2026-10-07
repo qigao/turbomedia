@@ -3,7 +3,7 @@
 
 #include "ivr/ivr_worker.h"
 
-#include <chttp/chttp.h>
+#include <http_server/http.h>
 
 #include <stddef.h>
 #include <stdint.h>

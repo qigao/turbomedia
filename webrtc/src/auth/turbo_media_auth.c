@@ -1,7 +1,7 @@
 #include "turbo_media_auth.h"
 
 #include <openssl/base64.h>
-#include <turbo_crypto.h>
+#include <cmeta_crypto.h>
 #include <json_parser.h>
 
 #include <limits.h>
@@ -18,7 +18,7 @@
 #define AUTH_MAX_PAYLOAD_BYTES 2048U
 #define AUTH_MAX_CLAIM_BYTES 255U
 #define AUTH_SIGNATURE_BYTES 32U
-#define AUTH_SHA256_HEX_BYTES (TURBO_CRYPTO_SHA256_SIZE * 2U)
+#define AUTH_SHA256_HEX_BYTES (SALTS_SHA256_DIGEST_BYTES * 2U)
 #define AUTH_MAX_REVOCATION_LIST_BYTES                                      \
     (TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS * AUTH_SHA256_HEX_BYTES +          \
      TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS - 1U)
@@ -134,21 +134,26 @@ static int auth_revocation_list_valid(const char *list) {
     return entry_length == AUTH_SHA256_HEX_BYTES;
 }
 
+static int auth_bytes_equal(const void *left, const void *right, size_t size) {
+    int equal = 0;
+    return cmeta_crypto_equal(left, right, size, &equal) == SALTS_OK && equal;
+}
+
 static int auth_token_revoked(const char *token, size_t token_length,
                               const char *list) {
-    uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
+    uint8_t digest[SALTS_SHA256_DIGEST_BYTES];
     const char *entry;
 
     if (!auth_string_present(list)) {
         return 0;
     }
-    if (turbo_crypto_sha256(token, token_length, digest) != TURBO_CRYPTO_OK) {
+    if (cmeta_sha256(token, token_length, digest) != SALTS_OK) {
         return 1;
     }
     entry = list;
     while (*entry != '\0') {
-        uint8_t expected[TURBO_CRYPTO_SHA256_SIZE];
-        for (size_t index = 0; index < TURBO_CRYPTO_SHA256_SIZE; ++index) {
+        uint8_t expected[SALTS_SHA256_DIGEST_BYTES];
+        for (size_t index = 0; index < SALTS_SHA256_DIGEST_BYTES; ++index) {
             uint8_t high;
             uint8_t low;
             if (auth_hex_nibble(entry[index * 2U], &high) != 0 ||
@@ -157,8 +162,7 @@ static int auth_token_revoked(const char *token, size_t token_length,
             }
             expected[index] = (uint8_t)((high << 4U) | low);
         }
-        if (turbo_crypto_verify(digest, expected, sizeof(digest)) ==
-            TURBO_CRYPTO_OK) {
+        if (auth_bytes_equal(digest, expected, sizeof(digest))) {
             return 1;
         }
         entry += AUTH_SHA256_HEX_BYTES;
@@ -508,11 +512,10 @@ static int auth_verify_signed_token(
     }
     secret = auth_select_secret(config, key_id);
     if (!secret ||
-        turbo_crypto_hmac_sha256(
+        cmeta_hmac_sha256(
             secret, strlen(secret), token, (size_t)(second_dot - token),
-            expected_signature) != TURBO_CRYPTO_OK ||
-        turbo_crypto_verify(signature, expected_signature,
-                            AUTH_SIGNATURE_BYTES) != TURBO_CRYPTO_OK) {
+            expected_signature) != SALTS_OK ||
+        !auth_bytes_equal(signature, expected_signature, AUTH_SIGNATURE_BYTES)) {
         goto cleanup;
     }
 
@@ -576,8 +579,7 @@ static int auth_static_token_matches(const char *authorization,
     presented = authorization + prefix_length;
     token_length = strlen(static_token);
     return strlen(presented) == token_length &&
-           turbo_crypto_verify(static_token, presented, token_length) ==
-               TURBO_CRYPTO_OK;
+           auth_bytes_equal(static_token, presented, token_length);
 }
 
 turbo_media_auth_result_t turbo_media_auth_authorize(
@@ -744,10 +746,10 @@ char *turbo_media_auth_issue(const turbo_media_auth_config_t *config,
     if (!signing_input ||
         snprintf(signing_input, (size_t)signing_length + 1U, "%s.%s",
                  encoded_header, encoded_payload) != signing_length ||
-        turbo_crypto_hmac_sha256(
+        cmeta_hmac_sha256(
             config->active_secret, strlen(config->active_secret),
             signing_input, (size_t)signing_length,
-            signature) != TURBO_CRYPTO_OK) {
+            signature) != SALTS_OK) {
         goto cleanup;
     }
     encoded_signature =

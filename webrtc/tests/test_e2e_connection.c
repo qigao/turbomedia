@@ -336,7 +336,7 @@ void tearDown(void) {
         if (g_ctx.ice_b) {
             ice_integration_poll(g_ctx.ice_b);
         }
-        salts_sleep_ms(1);
+        cmeta_sleep_ms(1);
     }
     
     /* Clear ICE agent references from peers BEFORE destroying ICE
@@ -385,7 +385,7 @@ void tearDown(void) {
  * ============================================================================ */
 
 void test_e2e_p2p_connection(void) {
-    uint64_t deadline = salts_monotonic_ms() + TEST_TIMEOUT_MS;
+    uint64_t deadline = cmeta_monotonic_ms() + TEST_TIMEOUT_MS;
     /* Create peer A (offerer) */
     turbo_dc_config_t config_a = {
         .is_server = 0,
@@ -462,15 +462,15 @@ void test_e2e_p2p_connection(void) {
      * cross-owner AB/BA wait in this single-process test harness. */
     check_equal(ice_integration_start_gathering(g_ctx.ice_a), 0);
     while (!ice_integration_is_gathering_complete(g_ctx.ice_a) &&
-           salts_monotonic_ms() < deadline) {
-        salts_sleep_ms(1);
+           cmeta_monotonic_ms() < deadline) {
+        cmeta_sleep_ms(1);
     }
     check_true(ice_integration_is_gathering_complete(g_ctx.ice_a));
 
     check_equal(ice_integration_start_gathering(g_ctx.ice_b), 0);
     while (!ice_integration_is_gathering_complete(g_ctx.ice_b) &&
-           salts_monotonic_ms() < deadline) {
-        salts_sleep_ms(1);
+           cmeta_monotonic_ms() < deadline) {
+        cmeta_sleep_ms(1);
     }
     check_true(ice_integration_is_gathering_complete(g_ctx.ice_b));
 
@@ -497,11 +497,11 @@ void test_e2e_p2p_connection(void) {
         ice_integration_poll(g_ctx.ice_a);
         ice_integration_poll(g_ctx.ice_b);
         turbo_dc_handle_timers();
-        if (salts_monotonic_ms() >= deadline) {
+        if (cmeta_monotonic_ms() >= deadline) {
             fail_test("Test timeout");
             break;
         }
-        salts_sleep_ms(10);
+        cmeta_sleep_ms(10);
     }
     
     /* Verify test passed */

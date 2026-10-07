@@ -55,14 +55,22 @@ include(Sanitizers)
 include(CmakeUtils)
 enable_testing()
 
-function(turbo_media_find_tbe_compiler output_variable)
+function(turbo_media_find_idlc output_variable)
   if(CMAKE_CROSSCOMPILING)
-    set(_turbomedia_tbe_root_name SALTS_UTILS_HOST_ROOT)
+    set(_turbomedia_idlc_root_name SALTS_UTILS_HOST_ROOT)
   else()
-    set(_turbomedia_tbe_root_name SALTS_UTILS_ROOT)
+    set(_turbomedia_idlc_root_name SALTS_UTILS_ROOT)
   endif()
-  find_program(${output_variable} NAMES tbe_compiler tbe_compiler.exe
-               PATHS "$ENV{${_turbomedia_tbe_root_name}}/bin"
+  if(NOT DEFINED ENV{${_turbomedia_idlc_root_name}} OR
+     NOT IS_DIRECTORY "$ENV{${_turbomedia_idlc_root_name}}")
+    message(FATAL_ERROR
+      "${_turbomedia_idlc_root_name} must name the host SaltsUtils SDK")
+  endif()
+  # A previous configure must not retain a compiler from a different SDK.
+  unset(${output_variable} CACHE)
+  unset(${output_variable})
+  find_program(${output_variable} NAMES salts-idlc
+               PATHS "$ENV{${_turbomedia_idlc_root_name}}/bin"
                NO_DEFAULT_PATH REQUIRED)
   set(${output_variable} "${${output_variable}}" PARENT_SCOPE)
 endfunction()
@@ -102,10 +110,31 @@ add_subdirectory(tools)
 include(FindTools)
 
 find_package(Threads REQUIRED)
+foreach(_turbomedia_package IN ITEMS Salts SaltsUtils)
+  if(_turbomedia_package STREQUAL "Salts")
+    set(_turbomedia_root SALTS_ROOT)
+  else()
+    set(_turbomedia_root SALTS_UTILS_ROOT)
+  endif()
+  if(NOT DEFINED ENV{${_turbomedia_root}} OR
+     NOT IS_DIRECTORY "$ENV{${_turbomedia_root}}")
+    message(FATAL_ERROR "${_turbomedia_root} must name the installed SDK")
+  endif()
+  unset(${_turbomedia_package}_DIR CACHE)
+  unset(${_turbomedia_package}_DIR)
+endforeach()
 find_package(Salts CONFIG REQUIRED
              PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_package(SaltsUtils CONFIG REQUIRED
              PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+if(NOT DEFINED ENV{HTTP_SERVICES_ROOT} OR
+   NOT IS_DIRECTORY "$ENV{HTTP_SERVICES_ROOT}")
+  message(FATAL_ERROR "HTTP_SERVICES_ROOT must name the installed Chttp SDK")
+endif()
+unset(Chttp_DIR CACHE)
+unset(Chttp_DIR)
+find_package(Chttp CONFIG REQUIRED
+             PATHS "$ENV{HTTP_SERVICES_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(TURBO_MEDIA_IS_CLIENT)
   if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
     message(FATAL_ERROR
@@ -117,19 +146,23 @@ find_package(SaltsNet CONFIG REQUIRED
 if(TURBO_MEDIA_IS_SERVER)
   find_package(RulesForge CONFIG REQUIRED
                PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+  if(NOT DEFINED ENV{TURBODB_ROOT} OR NOT IS_DIRECTORY "$ENV{TURBODB_ROOT}")
+    message(FATAL_ERROR "TURBODB_ROOT must name the installed TurboDB SDK")
+  endif()
+  unset(TurboDB_DIR CACHE)
+  unset(TurboDB_DIR)
   find_package(TurboDB CONFIG REQUIRED
                PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  find_package(Orm CONFIG REQUIRED
-               PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  if(NOT DEFINED Orm_WITH_SQLITE OR NOT DEFINED Orm_WITH_POSTGRESQL)
-    message(FATAL_ERROR
-            "TurboMedia SERVER requires an Orm package that exports backend capabilities")
+  if(NOT TARGET Orm::C OR NOT IS_DIRECTORY "${TurboDB_DRIVER_DIR}")
+    message(FATAL_ERROR "TurboMedia SERVER requires TurboDB ORM and its driver SDK")
   endif()
-  if(Orm_WITH_SQLITE OR NOT Orm_WITH_POSTGRESQL OR NOT TARGET Orm::PostgreSQL)
-    message(FATAL_ERROR
-            "TurboMedia SERVER requires PostgreSQL-only Orm (SQLite OFF, PostgreSQL ON)")
+  set(TURBO_MEDIA_ORM_DRIVER_RELATIVE_PATH
+      "lib/turbodb/drivers/turbodb_driver_postgresql${CMAKE_SHARED_MODULE_SUFFIX}")
+  set(TURBO_MEDIA_ORM_POSTGRESQL_DRIVER
+      "$ENV{TURBODB_ROOT}/${TURBO_MEDIA_ORM_DRIVER_RELATIVE_PATH}")
+  if(NOT EXISTS "${TURBO_MEDIA_ORM_POSTGRESQL_DRIVER}")
+    message(FATAL_ERROR "TurboMedia SERVER requires the PostgreSQL driver module")
   endif()
-  get_filename_component(TURBO_MEDIA_ORM_PREFIX "${Orm_DIR}/../../.." ABSOLUTE)
 endif()
  
 find_package(OpenSSL REQUIRED)

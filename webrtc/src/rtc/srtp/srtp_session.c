@@ -4,7 +4,7 @@
  * Wraps libsrtp for RTP/RTCP encryption and DTLS-SRTP key derivation
  */
 #include "turbo_srtp.h"
-#include "salts_thread.h"
+#include "cmeta_thread.h"
 #pragma push_macro("SRTP_MAX_KEY_LEN")
 #pragma push_macro("SRTP_MAX_TRAILER_LEN")
 #undef SRTP_MAX_KEY_LEN
@@ -84,13 +84,13 @@ static int srtp_build_master_key(const srtp_keying_material_t *keys, int use_cli
 
 /* libsrtp has process-wide initialization state. Session references defer a
  * concurrent shutdown until the last active session has been destroyed. */
-static salts_once_t g_srtp_lock_once = SALTS_ONCE_INIT;
-static salts_mutex_t g_srtp_lock;
+static cmeta_once_t g_srtp_lock_once = SALTS_ONCE_INIT;
+static cmeta_mutex_t g_srtp_lock;
 static int g_srtp_initialized = 0;
 static size_t g_srtp_session_count = 0;
 static int g_srtp_shutdown_pending = 0;
 
-static void srtp_init_lock(void) { salts_mutex_init(&g_srtp_lock); }
+static void srtp_init_lock(void) { cmeta_mutex_init(&g_srtp_lock); }
 
 static int srtp_init_locked(void) {
   srtp_err_status_t status;
@@ -111,20 +111,20 @@ static int srtp_init_locked(void) {
 static int srtp_session_acquire(void) {
   int result;
 
-  salts_once(&g_srtp_lock_once, srtp_init_lock);
-  salts_mutex_lock(&g_srtp_lock);
+  cmeta_once(&g_srtp_lock_once, srtp_init_lock);
+  cmeta_mutex_lock(&g_srtp_lock);
   result = srtp_init_locked();
   if (result == 0) {
     g_srtp_session_count++;
     g_srtp_shutdown_pending = 0;
   }
-  salts_mutex_unlock(&g_srtp_lock);
+  cmeta_mutex_unlock(&g_srtp_lock);
   return result;
 }
 
 static void srtp_session_release(void) {
-  salts_once(&g_srtp_lock_once, srtp_init_lock);
-  salts_mutex_lock(&g_srtp_lock);
+  cmeta_once(&g_srtp_lock_once, srtp_init_lock);
+  cmeta_mutex_lock(&g_srtp_lock);
   if (g_srtp_session_count > 0) {
     g_srtp_session_count--;
   }
@@ -133,32 +133,32 @@ static void srtp_session_release(void) {
     g_srtp_initialized = 0;
     g_srtp_shutdown_pending = 0;
   }
-  salts_mutex_unlock(&g_srtp_lock);
+  cmeta_mutex_unlock(&g_srtp_lock);
 }
 
 int srtp_lib_init(void) {
   int result;
 
-  salts_once(&g_srtp_lock_once, srtp_init_lock);
-  salts_mutex_lock(&g_srtp_lock);
+  cmeta_once(&g_srtp_lock_once, srtp_init_lock);
+  cmeta_mutex_lock(&g_srtp_lock);
   result = srtp_init_locked();
   if (result == 0) {
     g_srtp_shutdown_pending = 0;
   }
-  salts_mutex_unlock(&g_srtp_lock);
+  cmeta_mutex_unlock(&g_srtp_lock);
   return result;
 }
 
 void srtp_lib_shutdown(void) {
-  salts_once(&g_srtp_lock_once, srtp_init_lock);
-  salts_mutex_lock(&g_srtp_lock);
+  cmeta_once(&g_srtp_lock_once, srtp_init_lock);
+  cmeta_mutex_lock(&g_srtp_lock);
   if (g_srtp_session_count == 0 && g_srtp_initialized) {
     srtp_shutdown();
     g_srtp_initialized = 0;
   } else if (g_srtp_session_count > 0) {
     g_srtp_shutdown_pending = 1;
   }
-  salts_mutex_unlock(&g_srtp_lock);
+  cmeta_mutex_unlock(&g_srtp_lock);
 }
 
 srtp_session_t *srtp_session_create(const srtp_session_config_t *config) {

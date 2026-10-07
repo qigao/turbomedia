@@ -5,6 +5,18 @@
     ],
     "configurePresets": [
         {
+            "name": "win-client-release-user",
+            "inherits": "win-release-user",
+            "binaryDir": "${sourceDir}/build/Msvc-Client-Release",
+            "cacheVariables": {
+                "TURBO_MEDIA_PRODUCT": "CLIENT",
+                "CMAKE_INSTALL_PREFIX": "$env{PKG_ROOT}/turbomedia-client/release"
+            },
+            "environment": {
+                "PATH": "${sourceDir}/build/Msvc-Client-Release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{HTTP_SERVICES_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$penv{PATH}"
+            }
+        },
+        {
             "name": "win-toolchain",
             "hidden": true,
             "environment": {
@@ -81,9 +93,10 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/debug",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/debug",
+                "HTTP_SERVICES_ROOT": "$env{PKG_ROOT}/http-services/debug",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/debug",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/debug",
-                "PATH": "${sourceDir}/build/Msvc/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
+                "PATH": "${sourceDir}/build/Msvc/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{HTTP_SERVICES_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-dev-user",
@@ -100,9 +113,10 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/release",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/release",
+                "HTTP_SERVICES_ROOT": "$env{PKG_ROOT}/http-services/release",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/release",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/release",
-                "PATH": "${sourceDir}/build/Msvc-Release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
+                "PATH": "${sourceDir}/build/Msvc-Release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{HTTP_SERVICES_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-release-user",
@@ -120,9 +134,10 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/debug",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/debug",
+                "HTTP_SERVICES_ROOT": "$env{PKG_ROOT}/http-services/debug",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/debug",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/debug",
-                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/debug/lib${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
+                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/debug/lib${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{HTTP_SERVICES_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
             },
             "inherits": [
                 "base-linux-dev-user",
@@ -139,9 +154,10 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/release",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/release",
+                "HTTP_SERVICES_ROOT": "$env{PKG_ROOT}/http-services/release",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/release",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/release",
-                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
+                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{HTTP_SERVICES_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
             },
             "inherits": [
                 "release-linux-ninja",
@@ -154,6 +170,7 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts-android/debug",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils-android/debug",
+                "HTTP_SERVICES_ROOT": "$env{PKG_ROOT}/http-services-android/debug",
                 "SALTS_UTILS_HOST_ROOT": "$env{PKG_ROOT}/salts-utils/release",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet-android/debug",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb-android/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge-android/debug"
@@ -166,6 +183,7 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts-android/release",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils-android/release",
+                "HTTP_SERVICES_ROOT": "$env{PKG_ROOT}/http-services-android/release",
                 "SALTS_UTILS_HOST_ROOT": "$env{PKG_ROOT}/salts-utils/release",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet-android/release",                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb-android/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge-android/release"
@@ -228,6 +246,17 @@
         }
     ],
     "buildPresets": [
+        {
+            "name": "win-client-release-user",
+            "configurePreset": "win-client-release-user"
+        },
+        {
+            "name": "install-win-client-release-user",
+            "configurePreset": "win-client-release-user",
+            "targets": [
+                "install"
+            ]
+        },
         {
             "name": "win-dev-user",
             "configurePreset": "win-dev-user"
@@ -316,6 +345,11 @@
         }
     ],
     "testPresets": [
+        {
+            "name": "win-client-release-user",
+            "inherits": "base-test",
+            "configurePreset": "win-client-release-user"
+        },
         {
             "name": "win-dev-user",
             "inherits": "base-test",

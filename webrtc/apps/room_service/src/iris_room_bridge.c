@@ -4,7 +4,7 @@
 #include <platform.h>
 #include <json_parser.h>
 #include <datetime_parser.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 
 #include <limits.h>
 #include <stdlib.h>
@@ -41,7 +41,7 @@ typedef struct iris_room_entry_s {
 struct iris_room_bridge_s {
     iris_room_entry_t *entries;
     size_t capacity;
-    salts_mutex_t mutex;
+    cmeta_mutex_t mutex;
     iris_room_bridge_execute_fn execute;
     void *execute_context;
     iris_room_bridge_observe_fn observe;
@@ -549,13 +549,13 @@ iris_room_bridge_t *iris_room_bridge_create(
                               : system_realtime_ms;
     bridge->realtime_context = config->realtime_context;
     bridge->ledger = config->ledger;
-    salts_mutex_init(&bridge->mutex);
+    cmeta_mutex_init(&bridge->mutex);
     return bridge;
 }
 
 void iris_room_bridge_destroy(iris_room_bridge_t *bridge) {
     if (!bridge) return;
-    salts_mutex_destroy(&bridge->mutex);
+    cmeta_mutex_destroy(&bridge->mutex);
     free(bridge->entries);
     free(bridge);
 }
@@ -685,30 +685,30 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
                            "provider command ledger state is invalid");
     }
 
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     entry = find_entry(bridge, request.command.command_id);
     if (entry) {
         if (!same_command(&entry->request, &request)) {
-            salts_mutex_unlock(&bridge->mutex);
+            cmeta_mutex_unlock(&bridge->mutex);
             return make_result(IRIS_ROOM_BRIDGE_INVALID,
                                request.command.command_id, NULL,
                                "IDEMPOTENCY_CONFLICT",
                                "commandId was reused with different room data");
         }
         if (entry->state == IRIS_ROOM_ENTRY_EXECUTING) {
-            salts_mutex_unlock(&bridge->mutex);
+            cmeta_mutex_unlock(&bridge->mutex);
             return make_result(IRIS_ROOM_BRIDGE_IN_PROGRESS,
                                request.command.command_id, NULL,
                                "COMMAND_IN_PROGRESS",
                                "provider room command is still executing");
         }
         execution = entry->execution;
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_mutex_unlock(&bridge->mutex);
         return make_result(IRIS_ROOM_BRIDGE_DUPLICATE,
                            request.command.command_id, &execution, NULL, NULL);
     }
     if (request.deadline_unix_ms <= now_ms) {
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_mutex_unlock(&bridge->mutex);
         (void)bridge->ledger.abort_intent(bridge->ledger.context, &identity);
         return make_result(IRIS_ROOM_BRIDGE_EXPIRED,
                            request.command.command_id, NULL,
@@ -717,7 +717,7 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
     }
     entry = reserve_entry(bridge);
     if (!entry) {
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_mutex_unlock(&bridge->mutex);
         (void)bridge->ledger.abort_intent(bridge->ledger.context, &identity);
         return make_result(IRIS_ROOM_BRIDGE_FULL,
                            request.command.command_id, NULL,
@@ -727,7 +727,7 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
     memset(entry, 0, sizeof(*entry));
     entry->state = IRIS_ROOM_ENTRY_EXECUTING;
     entry->request = request;
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
 
     memset(&execution, 0, sizeof(execution));
     if (bridge->execute(bridge->execute_context, &request.command,
@@ -744,12 +744,12 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
         if (ledger_status != IVR_OK) {
             (void)bridge->ledger.mark_unknown(bridge->ledger.context,
                                               &identity);
-            salts_mutex_lock(&bridge->mutex);
+            cmeta_mutex_lock(&bridge->mutex);
             entry = find_entry(bridge, request.command.command_id);
             if (entry && entry->state == IRIS_ROOM_ENTRY_EXECUTING) {
                 memset(entry, 0, sizeof(*entry));
             }
-            salts_mutex_unlock(&bridge->mutex);
+            cmeta_mutex_unlock(&bridge->mutex);
             return make_result(
                 IRIS_ROOM_BRIDGE_UNAVAILABLE,
                 request.command.command_id, NULL,
@@ -777,22 +777,22 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
         bridge->ledger.context, &identity, &terminal);
     if (ledger_status != IVR_OK) {
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
-        salts_mutex_lock(&bridge->mutex);
+        cmeta_mutex_lock(&bridge->mutex);
         entry = find_entry(bridge, request.command.command_id);
         if (entry && entry->state == IRIS_ROOM_ENTRY_EXECUTING) {
             memset(entry, 0, sizeof(*entry));
         }
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_mutex_unlock(&bridge->mutex);
         return make_result(
             IRIS_ROOM_BRIDGE_UNAVAILABLE, request.command.command_id, NULL,
             "PROVIDER_OUTCOME_UNKNOWN",
             "room side effect completed but durable outcome commit failed");
     }
 
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     entry = find_entry(bridge, request.command.command_id);
     if (!entry || entry->state != IRIS_ROOM_ENTRY_EXECUTING) {
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_mutex_unlock(&bridge->mutex);
         return make_result(IRIS_ROOM_BRIDGE_INTERNAL,
                            request.command.command_id, NULL,
                            "ROOM_CORRELATION_LOST",
@@ -801,7 +801,7 @@ iris_room_bridge_result_t iris_room_bridge_dispatch_json(
     entry->execution = execution;
     entry->state = IRIS_ROOM_ENTRY_COMPLETED;
     entry->completed_sequence = ++bridge->next_completed_sequence;
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
     return make_result(IRIS_ROOM_BRIDGE_TERMINAL,
                        request.command.command_id, &execution, NULL, NULL);
 }

@@ -1,8 +1,8 @@
 #include "iris_completion_dispatcher.h"
 
 #include <tinytest.h>
-#include <chttp/chttp.h>
-#include <salts_thread.h>
+#include <http_server/http.h>
+#include <cmeta_thread.h>
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -358,7 +358,7 @@ static int test_post(void *context, const char *url,
                  (int)body_size, body);
     }
     if (atomic_load(&post->blocked)) {
-        while (!atomic_load(&post->release)) salts_sleep_ms(1u);
+        while (!atomic_load(&post->release)) cmeta_sleep_ms(1u);
     }
     return index < post->status_count ? post->statuses[index] : 200;
 }
@@ -534,7 +534,7 @@ static ivr_media_command_result_t make_result(const char *command_id) {
 static int wait_calls(test_post_t *post, int expected) {
     for (int i = 0; i < 1000; ++i) {
         if (atomic_load(&post->calls) >= expected) return 1;
-        salts_sleep_ms(1u);
+        cmeta_sleep_ms(1u);
     }
     return 0;
 }
@@ -558,7 +558,7 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.completion_calls) < 1; ++i) {
-            salts_sleep_ms(1u);
+            cmeta_sleep_ms(1u);
         }
         iris_completion_dispatcher_stop(dispatcher);
         check_equal(atomic_load(&delivery.completion_calls), 1);
@@ -600,7 +600,7 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.completion_calls) < 2; ++i) {
-            salts_sleep_ms(1u);
+            cmeta_sleep_ms(1u);
         }
         check_equal(atomic_load(&delivery.completion_calls), 2);
         check_equal(delivery.completion_message_ids[0],
@@ -612,7 +612,7 @@ spec("Iris completion dispatcher") {
                      IVR_OK);
         for (int i = 0;
              i < 1000 && atomic_load(&delivery.event_calls) < 1; ++i) {
-            salts_sleep_ms(1u);
+            cmeta_sleep_ms(1u);
         }
         iris_completion_dispatcher_stop(dispatcher);
         check_equal(atomic_load(&delivery.event_calls), 1);
@@ -736,7 +736,7 @@ spec("Iris completion dispatcher") {
         check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 1));
-        salts_sleep_ms(5u);
+        cmeta_sleep_ms(5u);
         check_equal(iris_completion_dispatcher_on_media_result(dispatcher,
                                                                 &result), IVR_OK);
         check_true(wait_calls(&post, 2));
@@ -815,7 +815,7 @@ spec("Iris completion dispatcher") {
         test_post_t post;
         test_delivery_observer_t observer;
         test_stop_context_t stop_context;
-        salts_thread_t stop_thread;
+        cmeta_thread_t stop_thread;
         ivr_media_event_t first;
         ivr_media_event_t second;
         iris_media_bridge_t *bridge;
@@ -849,19 +849,19 @@ spec("Iris completion dispatcher") {
         check_equal(iris_completion_dispatcher_enqueue_event(
                          dispatcher, &second, UINT64_C(22)),
                      IVR_OK);
-        check_equal(salts_thread_create(&stop_thread, test_stop_dispatcher,
+        check_equal(cmeta_thread_create(&stop_thread, test_stop_dispatcher,
                                          &stop_context),
                      0);
         for (int i = 0; i < 2000 && !atomic_load(&observer.abandoned_seen);
              ++i) {
-            salts_sleep_ms(1u);
+            cmeta_sleep_ms(1u);
         }
         check_true(atomic_load(&observer.abandoned_seen));
         check_true(atomic_load(&observer.stats_read));
         check_true(atomic_load(&observer.abandoned_token) == UINT64_C(22));
         atomic_store(&post.release, 1);
-        salts_thread_join(&stop_thread);
-        salts_thread_destroy(&stop_thread);
+        cmeta_thread_join(&stop_thread);
+        cmeta_thread_destroy(&stop_thread);
         check_equal(atomic_load(&observer.calls), 2);
         iris_completion_dispatcher_destroy(dispatcher);
         iris_media_bridge_destroy(bridge);
@@ -996,7 +996,7 @@ spec("Iris completion dispatcher") {
                 iris_completion_dispatcher_get_stats(wrong_host_dispatcher,
                                                      &stats);
                 if (stats.event_failure_total == 1u) break;
-                salts_sleep_ms(1u);
+                cmeta_sleep_ms(1u);
             }
             iris_completion_dispatcher_stop(wrong_host_dispatcher);
             iris_completion_dispatcher_get_stats(wrong_host_dispatcher,
@@ -1035,7 +1035,7 @@ spec("Iris completion dispatcher") {
                 IVR_OK);
             for (int i = 0; i < 3000 && atomic_load(&tls_server.calls) < 1;
                  ++i) {
-                salts_sleep_ms(1u);
+                cmeta_sleep_ms(1u);
             }
             check_equal(atomic_load(&tls_server.calls), 1);
             iris_completion_dispatcher_stop(dispatcher);

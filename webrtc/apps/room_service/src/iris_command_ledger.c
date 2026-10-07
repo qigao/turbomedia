@@ -5,8 +5,9 @@
 
 #include <data_bind.h>
 #include <platform.h>
-#include <salts_error.h>
-#include <salts_thread.h>
+#include <cmeta_error.h>
+#include <cmeta_thread.h>
+#include <vstr.h>
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -39,8 +40,8 @@ typedef struct ledger_request_s {
     int resource_seen;
     iris_command_retention_result_t retention_result;
     ivr_status_t result;
-    salts_mutex_t mutex;
-    salts_cond_t condition;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t condition;
     int completed;
 } ledger_request_t;
 
@@ -64,10 +65,10 @@ struct iris_command_ledger_s {
     uint64_t next_sweep_monotonic_ms;
     iris_command_ledger_realtime_ms_fn realtime_ms;
     void *realtime_context;
-    salts_mutex_t mutex;
-    salts_cond_t not_empty;
-    salts_cond_t startup;
-    salts_thread_t thread;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t not_empty;
+    cmeta_cond_t startup;
+    cmeta_thread_t thread;
     int thread_started;
     int running;
     int accepting;
@@ -90,7 +91,13 @@ static uint64_t ledger_now_ms(const iris_command_ledger_t *ledger) {
 static int copy_text(char *destination, size_t capacity, const char *source,
                      int required) {
     size_t size;
-    if (!destination || capacity == 0u || !source) return 0;
+    if (!destination || capacity == 0u) return 0;
+    /* CMeta represents an empty owned string by its semantic zero, NULL. */
+    if (!source) {
+        if (required) return 0;
+        destination[0] = '\0';
+        return 1;
+    }
     size = strlen(source);
     if ((required && size == 0u) || size >= capacity) return 0;
     memcpy(destination, source, size + 1u);
@@ -160,8 +167,8 @@ static int record_identity_matches(
            strcmp(record->provider_session_id,
                   identity->provider_session_id) == 0 &&
            strcmp(record->command_type, identity->command_type) == 0 &&
-           strcmp(record->resource_scope_id,
-                  identity->resource_scope_id) == 0 &&
+           vstr_eq(vstr_from_cstr(record->resource_scope_id),
+                   vstr_from_cstr(identity->resource_scope_id)) &&
            record->resource_scope_generation ==
                identity->resource_scope_generation &&
            strcmp(record->resource_id, identity->resource_id) == 0 &&
@@ -234,29 +241,25 @@ static int decode_record(DataBind *codec, const uint8_t *value,
             IRIS_COMMAND_SESSION_ID_CAPACITY ||
         !record->command_type || record->command_type[0] == '\0' ||
         strlen(record->command_type) >= IRIS_COMMAND_TYPE_CAPACITY ||
-        !record->resource_scope_id ||
-        strlen(record->resource_scope_id) >=
+        tstr_len(record->resource_scope_id) >=
             IRIS_COMMAND_RESOURCE_ID_CAPACITY ||
-        ((record->resource_scope_id[0] == '\0' &&
+        ((tstr_empty(record->resource_scope_id) &&
           record->resource_scope_generation != 0u) ||
-         (record->resource_scope_id[0] != '\0' &&
+         (!tstr_empty(record->resource_scope_id) &&
           record->resource_scope_generation == 0u)) ||
         !record->resource_id || record->resource_id[0] == '\0' ||
         strlen(record->resource_id) >= IRIS_COMMAND_RESOURCE_ID_CAPACITY ||
         record->resource_generation == 0u ||
-        !record->provider_resource_id ||
-        strlen(record->provider_resource_id) >=
+        tstr_len(record->provider_resource_id) >=
             IRIS_COMMAND_RESOURCE_ID_CAPACITY ||
-        !record->terminal_status || strlen(record->terminal_status) >= 16u ||
-        !record->event_type ||
-        strlen(record->event_type) >= IRIS_COMMAND_EVENT_TYPE_CAPACITY ||
-        !record->result_json ||
-        strlen(record->result_json) >= IRIS_COMMAND_RESULT_JSON_CAPACITY ||
+        tstr_len(record->terminal_status) >= 16u ||
+        tstr_len(record->event_type) >= IRIS_COMMAND_EVENT_TYPE_CAPACITY ||
+        tstr_len(record->result_json) >= IRIS_COMMAND_RESULT_JSON_CAPACITY ||
         record->state_changed_at_ms == 0u ||
         (strcmp(record->command_state, IRIS_COMMAND_STATE_TERMINAL) == 0 &&
          (record->terminal_at_ms == 0u ||
           !terminal_status_valid(record->terminal_status) ||
-          record->event_type[0] == '\0' || record->result_json[0] == '\0')) ||
+          tstr_empty(record->event_type) || tstr_empty(record->result_json))) ||
         (strcmp(record->command_state, IRIS_COMMAND_STATE_TERMINAL) != 0 &&
          record->terminal_at_ms != 0u)) {
         IrisProviderCommandRecordV2_clear(record);
@@ -287,7 +290,7 @@ static int commit_record(iris_command_ledger_t *ledger,
         mutation.value_size = value_size;
         rc = ledger->store->commit(ledger->store->ctx, &mutation, 1u);
     }
-    tbe_typed_serialized_free(value);
+    IrisCommandLedgerV2_schema_codec()->free_output(value);
     return rc;
 }
 
@@ -348,8 +351,8 @@ static int same_resource_incarnation(
     const iris_command_identity_t *identity) {
     return strcmp(record->provider_session_id,
                   identity->provider_session_id) == 0 &&
-           strcmp(record->resource_scope_id,
-                  identity->resource_scope_id) == 0 &&
+           vstr_eq(vstr_from_cstr(record->resource_scope_id),
+                   vstr_from_cstr(identity->resource_scope_id)) &&
            record->resource_scope_generation ==
                identity->resource_scope_generation &&
            strcmp(record->resource_id, identity->resource_id) == 0 &&
@@ -397,9 +400,9 @@ static ivr_status_t process_resource_seen(
 
 static void stats_add(iris_command_ledger_t *ledger, uint64_t *counter,
                       uint64_t amount) {
-    salts_mutex_lock(&ledger->mutex);
+    cmeta_mutex_lock(&ledger->mutex);
     *counter += amount;
-    salts_mutex_unlock(&ledger->mutex);
+    cmeta_mutex_unlock(&ledger->mutex);
 }
 
 static ivr_status_t storage_failure(iris_command_ledger_t *ledger) {
@@ -741,15 +744,15 @@ static ivr_status_t process_request(iris_command_ledger_t *ledger,
 }
 
 static void complete_request(ledger_request_t *request, ivr_status_t result) {
-    salts_mutex_lock(&request->mutex);
+    cmeta_mutex_lock(&request->mutex);
     request->result = result;
     request->completed = 1;
-    salts_cond_signal(&request->condition);
-    salts_mutex_unlock(&request->mutex);
+    cmeta_cond_signal(&request->condition);
+    cmeta_mutex_unlock(&request->mutex);
 }
 
 static void reset_sweep_deadline(iris_command_ledger_t *ledger) {
-    uint64_t now_ms = salts_monotonic_ms();
+    uint64_t now_ms = cmeta_monotonic_ms();
     if (UINT64_MAX - now_ms < ledger->retention_sweep_interval_ms) {
         ledger->next_sweep_monotonic_ms = UINT64_MAX;
     } else {
@@ -767,35 +770,35 @@ static void ledger_thread(void *context) {
     if (startup_result == SALTS_OK) {
         startup_result = process_retention(ledger, &retention_request);
     }
-    salts_mutex_lock(&ledger->mutex);
+    cmeta_mutex_lock(&ledger->mutex);
     ledger->startup_result = startup_result;
     ledger->startup_completed = 1;
     ledger->accepting = startup_result == SALTS_OK;
-    salts_cond_broadcast(&ledger->startup);
-    salts_mutex_unlock(&ledger->mutex);
+    cmeta_cond_broadcast(&ledger->startup);
+    cmeta_mutex_unlock(&ledger->mutex);
     if (startup_result != SALTS_OK) return;
     reset_sweep_deadline(ledger);
     for (;;) {
         ledger_request_t *request;
-        salts_mutex_lock(&ledger->mutex);
+        cmeta_mutex_lock(&ledger->mutex);
         while (ledger->count == 0u && ledger->running) {
-            uint64_t now_ms = salts_monotonic_ms();
+            uint64_t now_ms = cmeta_monotonic_ms();
             uint64_t wait_ms;
             if (now_ms >= ledger->next_sweep_monotonic_ms) break;
             wait_ms = ledger->next_sweep_monotonic_ms - now_ms;
             if (wait_ms > ledger->retention_sweep_interval_ms) {
                 wait_ms = ledger->retention_sweep_interval_ms;
             }
-            (void)salts_cond_timedwait(&ledger->not_empty, &ledger->mutex,
+            (void)cmeta_cond_timedwait(&ledger->not_empty, &ledger->mutex,
                                        wait_ms * UINT64_C(1000000));
         }
         if (ledger->count == 0u && !ledger->running) {
-            salts_mutex_unlock(&ledger->mutex);
+            cmeta_mutex_unlock(&ledger->mutex);
             break;
         }
         if (ledger->running &&
-            salts_monotonic_ms() >= ledger->next_sweep_monotonic_ms) {
-            salts_mutex_unlock(&ledger->mutex);
+            cmeta_monotonic_ms() >= ledger->next_sweep_monotonic_ms) {
+            cmeta_mutex_unlock(&ledger->mutex);
             memset(&retention_request, 0, sizeof(retention_request));
             retention_request.kind = LEDGER_REQUEST_RETENTION;
             (void)process_retention(ledger, &retention_request);
@@ -807,7 +810,7 @@ static void ledger_thread(void *context) {
         ledger->head = (ledger->head + 1u) % ledger->capacity;
         ledger->count--;
         ledger->stats.request_queue_items = ledger->count;
-        salts_mutex_unlock(&ledger->mutex);
+        cmeta_mutex_unlock(&ledger->mutex);
         complete_request(request, process_request(ledger, request));
         if (request->kind == LEDGER_REQUEST_RETENTION) {
             reset_sweep_deadline(ledger);
@@ -819,26 +822,26 @@ static void request_init(ledger_request_t *request,
                          ledger_request_kind_t kind) {
     memset(request, 0, sizeof(*request));
     request->kind = kind;
-    salts_mutex_init(&request->mutex);
-    salts_cond_init(&request->condition);
+    cmeta_mutex_init(&request->mutex);
+    cmeta_cond_init(&request->condition);
 }
 
 static void request_clear(ledger_request_t *request) {
-    salts_cond_destroy(&request->condition);
-    salts_mutex_destroy(&request->mutex);
+    cmeta_cond_destroy(&request->condition);
+    cmeta_mutex_destroy(&request->mutex);
 }
 
 static ivr_status_t submit(iris_command_ledger_t *ledger,
                            ledger_request_t *request) {
     ivr_status_t result;
-    salts_mutex_lock(&ledger->mutex);
+    cmeta_mutex_lock(&ledger->mutex);
     if (!ledger->accepting) {
-        salts_mutex_unlock(&ledger->mutex);
+        cmeta_mutex_unlock(&ledger->mutex);
         return IVR_ECLOSED;
     }
     if (ledger->count == ledger->capacity) {
         ledger->stats.queue_rejections_total++;
-        salts_mutex_unlock(&ledger->mutex);
+        cmeta_mutex_unlock(&ledger->mutex);
         return IVR_ENOSPC;
     }
     ledger->requests[ledger->tail] = request;
@@ -848,14 +851,14 @@ static ivr_status_t submit(iris_command_ledger_t *ledger,
     if (ledger->count > ledger->stats.request_queue_high_water) {
         ledger->stats.request_queue_high_water = ledger->count;
     }
-    salts_cond_signal(&ledger->not_empty);
-    salts_mutex_unlock(&ledger->mutex);
-    salts_mutex_lock(&request->mutex);
+    cmeta_cond_signal(&ledger->not_empty);
+    cmeta_mutex_unlock(&ledger->mutex);
+    cmeta_mutex_lock(&request->mutex);
     while (!request->completed) {
-        salts_cond_wait(&request->condition, &request->mutex);
+        cmeta_cond_wait(&request->condition, &request->mutex);
     }
     result = request->result;
-    salts_mutex_unlock(&request->mutex);
+    cmeta_mutex_unlock(&request->mutex);
     return result;
 }
 
@@ -904,9 +907,9 @@ iris_command_ledger_t *iris_command_ledger_create(
     ledger->realtime_context = config->realtime_context;
     ledger->stats.request_queue_capacity = config->request_queue_capacity;
     ledger->stats.record_capacity = config->store->max_records;
-    salts_mutex_init(&ledger->mutex);
-    salts_cond_init(&ledger->not_empty);
-    salts_cond_init(&ledger->startup);
+    cmeta_mutex_init(&ledger->mutex);
+    cmeta_cond_init(&ledger->not_empty);
+    cmeta_cond_init(&ledger->startup);
     return ledger;
 }
 
@@ -940,30 +943,30 @@ iris_command_ledger_t *iris_command_ledger_create_record_store(
 int iris_command_ledger_start(iris_command_ledger_t *ledger) {
     int startup_result;
     if (!ledger || ledger->thread_started) return SALTS_EINVAL;
-    salts_mutex_lock(&ledger->mutex);
+    cmeta_mutex_lock(&ledger->mutex);
     ledger->running = 1;
     ledger->accepting = 0;
     ledger->startup_completed = 0;
     ledger->startup_result = SALTS_EINVAL;
-    salts_mutex_unlock(&ledger->mutex);
-    if (salts_thread_create(&ledger->thread, ledger_thread, ledger) !=
+    cmeta_mutex_unlock(&ledger->mutex);
+    if (cmeta_thread_create(&ledger->thread, ledger_thread, ledger) !=
         SALTS_OK) {
-        salts_mutex_lock(&ledger->mutex);
+        cmeta_mutex_lock(&ledger->mutex);
         ledger->running = 0;
-        salts_mutex_unlock(&ledger->mutex);
+        cmeta_mutex_unlock(&ledger->mutex);
         return SALTS_EIO;
     }
     ledger->thread_started = 1;
-    salts_mutex_lock(&ledger->mutex);
+    cmeta_mutex_lock(&ledger->mutex);
     while (!ledger->startup_completed) {
-        salts_cond_wait(&ledger->startup, &ledger->mutex);
+        cmeta_cond_wait(&ledger->startup, &ledger->mutex);
     }
     startup_result = ledger->startup_result;
     if (startup_result != SALTS_OK) ledger->running = 0;
-    salts_mutex_unlock(&ledger->mutex);
+    cmeta_mutex_unlock(&ledger->mutex);
     if (startup_result != SALTS_OK) {
-        salts_thread_join(&ledger->thread);
-        salts_thread_destroy(&ledger->thread);
+        cmeta_thread_join(&ledger->thread);
+        cmeta_thread_destroy(&ledger->thread);
         ledger->thread_started = 0;
     }
     return startup_result;
@@ -971,22 +974,22 @@ int iris_command_ledger_start(iris_command_ledger_t *ledger) {
 
 void iris_command_ledger_stop(iris_command_ledger_t *ledger) {
     if (!ledger || !ledger->thread_started) return;
-    salts_mutex_lock(&ledger->mutex);
+    cmeta_mutex_lock(&ledger->mutex);
     ledger->accepting = 0;
     ledger->running = 0;
-    salts_cond_broadcast(&ledger->not_empty);
-    salts_mutex_unlock(&ledger->mutex);
-    salts_thread_join(&ledger->thread);
-    salts_thread_destroy(&ledger->thread);
+    cmeta_cond_broadcast(&ledger->not_empty);
+    cmeta_mutex_unlock(&ledger->mutex);
+    cmeta_thread_join(&ledger->thread);
+    cmeta_thread_destroy(&ledger->thread);
     ledger->thread_started = 0;
 }
 
 void iris_command_ledger_destroy(iris_command_ledger_t *ledger) {
     if (!ledger) return;
     iris_command_ledger_stop(ledger);
-    salts_cond_destroy(&ledger->startup);
-    salts_cond_destroy(&ledger->not_empty);
-    salts_mutex_destroy(&ledger->mutex);
+    cmeta_cond_destroy(&ledger->startup);
+    cmeta_cond_destroy(&ledger->not_empty);
+    cmeta_mutex_destroy(&ledger->mutex);
     data_bind_free(ledger->codec);
     free(ledger->requests);
     iris_orm_store_owner_destroy(ledger->orm_store_owner);
@@ -1098,9 +1101,9 @@ ivr_status_t iris_command_ledger_run_retention(
 void iris_command_ledger_get_stats(iris_command_ledger_t *ledger,
                                    iris_command_ledger_stats_t *stats) {
     if (!ledger || !stats) return;
-    salts_mutex_lock(&ledger->mutex);
+    cmeta_mutex_lock(&ledger->mutex);
     *stats = ledger->stats;
-    salts_mutex_unlock(&ledger->mutex);
+    cmeta_mutex_unlock(&ledger->mutex);
 }
 
 static ivr_status_t port_claim(

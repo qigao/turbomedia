@@ -1,13 +1,13 @@
 #ifndef TURBO_ROOM_SERVICE_IRIS_COMMAND_FINGERPRINT_H
 #define TURBO_ROOM_SERVICE_IRIS_COMMAND_FINGERPRINT_H
 
-#include <turbo_crypto.h>
+#include <salts/crypto.h>
 
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct iris_command_fingerprint_s {
-    turbo_crypto_sha256_ctx_t hash;
+    salts_crypto_sha256_ctx_t hash;
     int valid;
 } iris_command_fingerprint_t;
 

@@ -1,5 +1,103 @@
 # TurboMedia Salts 依赖重构设计
 
+## 2026-10-07 发布 SDK 对齐
+
+本节更新下文历史迁移方案中的 API 与包归属。本轮依据
+[Salts](https://github.com/qigao/salts/releases)、
+[SaltsUtils](https://github.com/qigao/salts-utils/releases) 和
+[CHttp](https://github.com/qigao/chttp/releases)、
+[SaltsNet](https://github.com/qigao/salts-net/releases) 与
+[TurboDB](https://github.com/qigao/turbodb/releases) 发布 SDK 的安装契约；
+消费配置从指定安装根加载 SDK，不显式指定依赖版本。
+
+- Core 的线程、文件、时钟、UUID 和错误转换调用使用 `cmeta_*`；对应旧的
+  `salts_error.h`、`salts_fs.h`、`salts_thread.h`、`salts_uuid.h` 更名为
+  `cmeta_*.h`，字符串头使用 `str.h` / `vstr.h`。错误码与 `SALTS_*` 宏、
+  `<salts/thread.h>` 等模块路径，以及 SaltsUtils Capture/Playback、SaltsNet ICE
+  API 保持各自发布契约。
+- HTTP 已归独立 Chttp SDK，显式从 `HTTP_SERVICES_ROOT` 查找；按用途链接
+  `CHttp::Client` / `CHttp::Server`，并包含 `http_client/http.h` /
+  `http_server/http.h`。不保留 `Salts::CHTTP` 或旧聚合头的本地别名。
+- IVR/Iris 的宿主生成器切换为 `salts-idlc`，并将其加入生成文件的依赖。
+  变长字段视图改用 `DataBindBinaryVarData`；生成类型的二进制编码传入
+  显式 codec，序列化结果由对应 `*_schema_codec()->free_output` 释放。升级时重新生成、重新编译，
+  outbox/ledger 仅持久化 JSON，调整内部声明顺序后保持字段名与旧记录读取兼容；
+  pipeline 的 YAML 配置同样保持字段语义。IVR 二进制迁移见下节。TurboMedia 未消费 VM 绑定，不引入
+  Lua/QuickJS 运行时依赖。
+- 选择直接迁移已发布入口，避免维护旧 ABI 的兼容层。影响范围为 Core 调用、
+  HTTP 链接边界、生成绑定、公开 include 及相应测试；对象归属、状态推进、
+  错误传播和 TLS 策略不变。Windows Client Release 使用独立 user preset 与
+  build/install 目录，Server 仍使用现有 profile。
+- CNet stream 发送使用 `cnet_send_buffer` / `cnet_send_buffer_and_close`。
+  输入仍由调用方借用，提交前复制到 Salts buffer；CNet 成功接纳后持有独立引用，
+  无论接纳结果如何，调用点均释放本地引用。RTSP 的待发队列和 DataChannel 的
+  同步命令可按原有时机释放其输入，队列容量、busy 重试、终态与关闭顺序不变。
+  分配失败沿原错误路径退出，不保留半提交对象。
+- 旧 `SaltsNet::Crypto` 不再作为哈希与令牌的来源：固定存储 SHA-256 context
+  使用 `Salts::Crypto`，认证 SHA-256/HMAC、比较及敏感内存清理由 Core 提供；
+  Iris 指纹比较复用已接入 BoringSSL 的 `CRYPTO_memcmp`。算法、32 字节摘要、
+  HS256 签名、常量时间比较和拒绝策略不变，须运行既有认证/指纹测试验证。
+- 回滚须一起恢复消费源码、生成文件和匹配的 SDK/依赖二进制；不能混用旧头、
+  新库或旧生成绑定。验证先覆盖 Client 的编译与正式 CTest，再覆盖具备匹配
+  RulesForge/TurboDB SDK 的 Server 图；未具备依赖或平台环境的范围单独报告。
+
+### TurboDB、CMeta 与资源生命周期
+
+TurboDB 的 package 已统一导出 `Orm::C`；消费方不再单独查找 Orm 或链接旧的
+`Orm::PostgreSQL`。每个 store owner 显式拥有一个 ORM runtime 和一个连接，
+runtime 通过上游 Plugin/CMeta 契约校验加载唯一的 `postgresql` 驱动。
+关闭顺序为释放连接、释放 runtime；query/result 使用 `cmeta_scope` 与原生
+lifecycle 描述符按逆序清理，返回的 result 显式转移给调用方，不重复释放。
+
+运行时 `TURBODB_ROOT` 必须为绝对路径，指向匹配的 SDK 根或部署前缀；驱动位于
+`lib/turbodb/drivers/turbodb_driver_postgresql.dll`（Linux 后缀 `.so`）。安装规则
+保留该布局；Windows 同时安装 ORM 与 `libpq.dll`。不扫描驱动目录、不自动切换后端，
+既有 PostgreSQL 配置字段与存储错误语义保留。
+
+DataChannel 不再调用已移除的 SaltsNet 证书生成入口。使用已接入 BoringSSL 的
+`bssl::UniquePtr` 管理 EC key、X509 和序列号，SSL context 成功接管后才提交
+SHA-256 指纹。保留 P-256、自签名、独立随机序列号及原有 fingerprint 表示。
+生成的 DataBind native binding 复用其 CMeta 描述符与 tstr 生命周期；空字符串
+允许 canonical NULL 存储，消费者以 `tstr_empty` / `tstr_len` 或 vstr 比较语义值。
+
+### IVR schema 主版本迁移（已授权）
+
+**HIGH：这是需要协调部署的 wire 变更。** 新生成器要求定长字段在变长字段前；
+原 IVR 二进制直接使用声明顺序，因此无法仅重编译并保持旧 payload 字节布局。
+已排除静默重排旧版本、手写第二套序列化器和自动降级三种方案。
+
+选择 `turbomedia_ivr_v2.schema` / `TurboMediaIvrV2`，schema ID 为 `21002`，
+TIVR `schema_major=2`、`schema_minor=0`。每条消息保留原字段类型、名称和业务含义，
+将定长字段按原相对顺序放在字符串之前；原消息 ID 加 `10000`，旧 ID 永久保留不复用。
+消息名中的 V1/V2 是业务语义修订号，与外层 schema 主版本独立。
+12 字节 envelope、frame version 和 WebSocket subprotocol 保持原样，版本分界由
+接收端的 schema 校验负责：旧主版本返回 `IVR_EVERSION`，冒用新主版本的旧 type ID
+返回 `IVR_EINVAL`，均在 payload 解码与业务副作用前拒绝。TEXT 同样要求新主版本。
+
+RoomService bridge、worker gateway、worker app 与进程测试探针统一链接新生成绑定。
+消息身份、generation fencing、ACK、dedup、容量与重试语义不变；不新增持久化迁移。
+
+部署时先停止新会话接纳，排空或终止已有会话和在途控制消息，再停止旧 worker 与
+RoomService，一起替换两端可执行文件及匹配 SDK。重启 RoomService，再启动 worker，
+确认注册、健康与媒体命令链路后恢复接纳。禁止混合主版本滚动发布；独立实现的
+worker 必须同步采用新 schema。回滚也须先排空并同时恢复两端旧二进制、绑定和 SDK，
+不能仅回滚其中一端。JSON outbox/ledger 字段格式未变，旧记录读取有正式回归覆盖。
+
+验证覆盖 BIN/TEXT round trip、固定字节向量、typed/dynamic 二进制互通、旧版本及
+旧 type ID 拒绝，以及实际 loopback WebSocket 控制链路。独立进程 dispatch live gate 已编译，
+需提供真实 PostgreSQL 服务才能执行。
+
+### 当前验证边界（2026-10-07）
+
+- Windows Client Release 全量编译与 32 项 CTest 通过。
+- Windows Server Release 全量编译通过；80 项正式 CTest 中 79 项首轮通过，
+  余下 typed-schema 空字符串断言修复后重跑通过。新增的 envelope 字节与旧版本拒绝、
+  typed/dynamic 互通也已通过。
+- `install-win-release-user` 与 `install-win-client-release-user` 均执行成功，
+  安装到各自既有 profile 前缀；Server 安装包含 PostgreSQL 驱动模块及 `libpq.dll`。
+- Linux、Android、Debug/ASan 及真实 PostgreSQL 成功事务尚未验证；ORM 正式单测
+  覆盖配置错误、非 PostgreSQL 拒绝以及真实驱动加载后的连接拒绝路径。
+
 - 日期：2026-09-05
 - 状态：待确认
 - 目标仓库：`qigao/turbomedia`

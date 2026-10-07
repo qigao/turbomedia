@@ -1,6 +1,6 @@
 #include "ivr_http_media_client.h"
 
-#include <chttp/chttp.h>
+#include <http_client/http.h>
 #include <salts/error_codes.h>
 
 #include <ctype.h>

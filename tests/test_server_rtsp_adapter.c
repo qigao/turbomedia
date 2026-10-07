@@ -1,6 +1,6 @@
 #include "turbo_media_server.h"
-#include "salts_uuid.h"
-#include <salts_thread.h>
+#include "cmeta_uuid.h"
+#include <cmeta_thread.h>
 #include <tinytest.h>
 
 #ifdef TURBO_MEDIA_HAS_RTSP
@@ -70,13 +70,13 @@ static turbo_rtsp_client_t *adapter_client_connect(int port) {
 static int adapter_session_has_uuid_suffix(
     const turbo_rtsp_session_header_t *session,
     const char *prefix) {
-    salts_uuid_t uuid;
+    cmeta_uuid_t uuid;
     const size_t prefix_len = prefix ? strlen(prefix) : 0u;
     if (!session || !prefix || strncmp(session->id, prefix, prefix_len) != 0 ||
         session->id[prefix_len] != '-') {
         return 0;
     }
-    return salts_uuid_parse(session->id + prefix_len + 1u, &uuid) == SALTS_OK;
+    return cmeta_uuid_parse(session->id + prefix_len + 1u, &uuid) == SALTS_OK;
 }
 
 static int adapter_wait_for_frames(
@@ -89,7 +89,7 @@ static int adapter_wait_for_frames(
             stats->frames_published >= expected) {
             return 0;
         }
-        salts_sleep_ms(1u);
+        cmeta_sleep_ms(1u);
     }
     return -1;
 }

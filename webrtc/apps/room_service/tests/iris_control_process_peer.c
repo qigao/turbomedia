@@ -2,10 +2,10 @@
 #include "iris_provider_protocol.h"
 #include "ivr_control_ws.h"
 
-#include <turbo_crypto.h>
+#include <salts/crypto.h>
 #include <json_parser.h>
-#include <salts_str.h>
-#include <salts_thread.h>
+#include <str.h>
+#include <cmeta_thread.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -23,7 +23,7 @@ struct test_iris_control_peer_s {
     atomic_int connected;
     atomic_uint_fast64_t receipt_generation;
     test_iris_control_peer_config_t config;
-    salts_mutex_t receipt_mutex;
+    cmeta_mutex_t receipt_mutex;
     test_iris_control_receipt_t receipt;
 };
 
@@ -50,10 +50,10 @@ static const char *object_text(const json_value_t *object, const char *name) {
 
 static int command_fingerprint(const char *const fields[8], char out[72]) {
     static const char hex[] = "0123456789abcdef";
-    turbo_crypto_sha256_ctx_t hash;
-    uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
+    salts_crypto_sha256_ctx_t hash;
+    uint8_t digest[SALTS_CRYPTO_SHA256_DIGEST_SIZE];
     size_t field_index;
-    if (turbo_crypto_sha256_init(&hash) != 0) return 0;
+    if (salts_crypto_sha256_init(&hash) != 0) return 0;
     for (field_index = 0u; field_index < 8u; ++field_index) {
         uint64_t length = (uint64_t)strlen(fields[field_index]);
         uint8_t encoded_length[8];
@@ -63,15 +63,15 @@ static int command_fingerprint(const char *const fields[8], char out[72]) {
             encoded_length[byte_index] =
                 (uint8_t)(length >> (byte_index * 8u));
         }
-        if (turbo_crypto_sha256_update(&hash, encoded_length,
+        if (salts_crypto_sha256_update(&hash, encoded_length,
                                        sizeof(encoded_length)) != 0 ||
             (length > 0u &&
-             turbo_crypto_sha256_update(&hash, fields[field_index],
+             salts_crypto_sha256_update(&hash, fields[field_index],
                                         (size_t)length) != 0)) {
             return 0;
         }
     }
-    if (turbo_crypto_sha256_final(&hash, digest) != 0) return 0;
+    if (salts_crypto_sha256_final(&hash, digest) != 0) return 0;
     memcpy(out, "sha256:", 7u);
     for (field_index = 0u; field_index < sizeof(digest); ++field_index) {
         out[7u + field_index * 2u] = hex[digest[field_index] >> 4u];
@@ -180,9 +180,9 @@ static uint8_t *encode_command(test_iris_control_peer_t *peer,
         !assign_text(&command.dispatch_epoch, epoch) ||
         !assign_text(&command.semantic_fingerprint, fingerprint) ||
         !assign_text(&command.payload_json, payload_json) ||
-        ProviderCommandV1_to_bin(&command, &encoded, out_size, &error) !=
+        ProviderCommandV1_to_bin(peer->codec, &command, &encoded, out_size, &error) !=
             DATA_BIND_OK) {
-        tbe_typed_serialized_free(encoded);
+        TurboMediaIrisProviderV1_schema_codec()->free_output(encoded);
         encoded = NULL;
         *out_size = 0u;
     }
@@ -228,11 +228,11 @@ static int send_completion_ack(test_iris_control_peer_t *peer,
         assign_text(&ack.committed_sequence, "1") &&
         assign_text(&ack.error_code, "") &&
         assign_text(&ack.error_message, "") &&
-        ProviderCompletionAckV1_to_bin(&ack, &encoded, &encoded_size,
+        ProviderCompletionAckV1_to_bin(peer->codec, &ack, &encoded, &encoded_size,
                                        &error) == DATA_BIND_OK) {
         status = send_application(peer, route, encoded, encoded_size);
     }
-    tbe_typed_serialized_free(encoded);
+    TurboMediaIrisProviderV1_schema_codec()->free_output(encoded);
     ProviderCompletionAckV1_clear(&ack);
     return status;
 }
@@ -263,11 +263,11 @@ static int send_event_ack(test_iris_control_peer_t *peer,
         assign_text(&ack.committed_sequence, "1") &&
         assign_text(&ack.error_code, "") &&
         assign_text(&ack.error_message, "") &&
-        ProviderEventAckV1_to_bin(&ack, &encoded, &encoded_size, &error) ==
+        ProviderEventAckV1_to_bin(peer->codec, &ack, &encoded, &encoded_size, &error) ==
             DATA_BIND_OK) {
         status = send_application(peer, route, encoded, encoded_size);
     }
-    tbe_typed_serialized_free(encoded);
+    TurboMediaIrisProviderV1_schema_codec()->free_output(encoded);
     ProviderEventAckV1_clear(&ack);
     return status;
 }
@@ -313,11 +313,11 @@ static int send_observation(test_iris_control_peer_t *peer,
                     available ? "" : "EXPECTED_RESOURCES_UNAVAILABLE") &&
         assign_text(&observation.error_message,
                     available ? "" : "expected resources are unavailable") &&
-        ProviderObservationV1_to_bin(&observation, &encoded, &encoded_size,
+        ProviderObservationV1_to_bin(peer->codec, &observation, &encoded, &encoded_size,
                                      &error) == DATA_BIND_OK) {
         status = send_application(peer, route, encoded, encoded_size);
     }
-    tbe_typed_serialized_free(encoded);
+    TurboMediaIrisProviderV1_schema_codec()->free_output(encoded);
     ProviderObservationV1_clear(&observation);
     return status;
 }
@@ -356,7 +356,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
         if (ProviderReceiptV1_from_bin(peer->codec, &receipt,
                                        data, size,
                                        &error) == DATA_BIND_OK) {
-            salts_mutex_lock(&peer->receipt_mutex);
+            cmeta_mutex_lock(&peer->receipt_mutex);
             memset(&peer->receipt, 0, sizeof(peer->receipt));
             peer->receipt.disposition = (int)receipt.disposition;
             peer->receipt.status_code = receipt.status_code;
@@ -377,7 +377,7 @@ static int server_message(void *context, const ivr_control_ws_route_t *route,
                                        receipt.error_message)
                          ? SALTS_OK
                          : SALTS_ENOSPC;
-            salts_mutex_unlock(&peer->receipt_mutex);
+            cmeta_mutex_unlock(&peer->receipt_mutex);
             if (status == SALTS_OK) {
                 atomic_fetch_add_explicit(&peer->receipt_generation, 1u,
                                           memory_order_release);
@@ -436,7 +436,7 @@ int test_iris_control_peer_start(
     peer = (test_iris_control_peer_t *)calloc(1, sizeof(*peer));
     if (!peer) return SALTS_ENOMEM;
     peer->config = *config;
-    salts_mutex_init(&peer->receipt_mutex);
+    cmeta_mutex_init(&peer->receipt_mutex);
     atomic_init(&peer->connected, 0);
     atomic_init(&peer->receipt_generation, 0u);
     if (TurboMediaIrisProviderV1_codec_create(&peer->codec, &error) !=
@@ -467,7 +467,7 @@ void test_iris_control_peer_stop(test_iris_control_peer_t *peer) {
     ivr_control_ws_server_stop(peer->server);
     ivr_control_ws_server_destroy(peer->server);
     data_bind_free(peer->codec);
-    salts_mutex_destroy(&peer->receipt_mutex);
+    cmeta_mutex_destroy(&peer->receipt_mutex);
     free(peer);
 }
 
@@ -486,7 +486,7 @@ int test_iris_control_peer_send_command(
     }
     while (waited_ms < timeout_ms &&
            !atomic_load_explicit(&peer->connected, memory_order_acquire)) {
-        salts_sleep_ms(TEST_IRIS_CONTROL_WAIT_STEP_MS);
+        cmeta_sleep_ms(TEST_IRIS_CONTROL_WAIT_STEP_MS);
         waited_ms += TEST_IRIS_CONTROL_WAIT_STEP_MS;
     }
     if (!atomic_load_explicit(&peer->connected, memory_order_acquire)) {
@@ -499,21 +499,21 @@ int test_iris_control_peer_send_command(
                                     memory_order_acquire);
     status = ivr_control_ws_server_send_copy(
         peer->server, &peer->route, application, application_size);
-    tbe_typed_serialized_free(application);
+    TurboMediaIrisProviderV1_schema_codec()->free_output(application);
     if (status != SALTS_OK) return status;
     while (waited_ms < timeout_ms &&
            atomic_load_explicit(&peer->receipt_generation,
                                 memory_order_acquire) == baseline) {
-        salts_sleep_ms(TEST_IRIS_CONTROL_WAIT_STEP_MS);
+        cmeta_sleep_ms(TEST_IRIS_CONTROL_WAIT_STEP_MS);
         waited_ms += TEST_IRIS_CONTROL_WAIT_STEP_MS;
     }
     if (atomic_load_explicit(&peer->receipt_generation,
                              memory_order_acquire) == baseline) {
         return SALTS_ETIMEDOUT;
     }
-    salts_mutex_lock(&peer->receipt_mutex);
+    cmeta_mutex_lock(&peer->receipt_mutex);
     *out_receipt = peer->receipt;
-    salts_mutex_unlock(&peer->receipt_mutex);
+    cmeta_mutex_unlock(&peer->receipt_mutex);
     return strcmp(out_receipt->command_id, idempotency_key) == 0
                ? SALTS_OK
                : SALTS_EPROTO;

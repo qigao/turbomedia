@@ -12,8 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <salts_error.h>
-#include <salts_vstr.h>
+#include <cmeta_error.h>
+#include <vstr.h>
 
 typedef enum {
     FLV_CODEC_NONE = 0,

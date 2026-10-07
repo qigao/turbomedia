@@ -1,8 +1,10 @@
 #include "iris_command_ledger.h"
+#include "iris_command_ledger_v2.h"
+#include "iris_event_outbox_v1.h"
 
 #include <tinytest.h>
-#include <salts_error.h>
-#include <salts_thread.h>
+#include <cmeta_error.h>
+#include <cmeta_thread.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -201,7 +203,66 @@ static void normalize_yaml_path(char *path) {
     }
 }
 
+static void test_stored_json_field_order(void) {
+    /* Original persisted order deliberately interleaves strings and numbers. */
+    static const char ledger_json[] =
+        "{\"schema_version\":2,\"command_state\":\"intent\","
+        "\"state_changed_at_ms\":1000,\"terminal_at_ms\":0,"
+        "\"command_id\":\"command-a\",\"semantic_fingerprint\":\"sha256:a\","
+        "\"provider_session_id\":\"session-a\",\"command_type\":\"media.play\","
+        "\"resource_scope_id\":\"room-a\",\"resource_scope_generation\":7,"
+        "\"resource_id\":\"dialog-a\",\"resource_generation\":9,"
+        "\"provider_resource_id\":\"\",\"terminal_status\":\"\","
+        "\"event_type\":\"\",\"result_json\":\"{}\"}";
+    static const char outbox_json[] =
+        "{\"schema_version\":1,\"delivery_state\":\"pending\","
+        "\"state_changed_at_ms\":1000,\"archived_at_ms\":0,"
+        "\"delivery_attempts\":2,\"last_http_status\":503,"
+        "\"event_id\":\"event-a\",\"tenant_id\":\"tenant-a\","
+        "\"provider_session_id\":\"session-a\",\"dialog_id\":\"dialog-a\","
+        "\"worker_id\":\"worker-a\",\"room_id\":\"room-a\",\"call_id\":\"call-a\","
+        "\"call_generation\":7,\"sequence\":9,\"event_type\":\"media.completed\","
+        "\"occurred_at_ms\":900,\"input_id\":\"\",\"input_value\":\"\","
+        "\"payload_json\":\"{}\"}";
+    DataBind *codec = NULL;
+    DataBindError error = DATA_BIND_ERROR_INIT;
+    IrisProviderCommandRecordV2_t ledger;
+    IrisMediaEventOutboxRecordV1_t outbox;
+    IrisProviderCommandRecordV2_init(&ledger);
+    check_equal(IrisCommandLedgerV2_codec_create(&codec, &error), DATA_BIND_OK);
+    if (codec) {
+        check_equal(IrisProviderCommandRecordV2_from_json(codec, &ledger,
+            ledger_json, sizeof(ledger_json) - 1u, &error), DATA_BIND_OK);
+        check_equal(ledger.command_state, "intent");
+        check_equal(ledger.command_id, "command-a");
+        check_equal(ledger.state_changed_at_ms, UINT64_C(1000));
+        check_equal(ledger.resource_scope_generation, UINT64_C(7));
+        check_equal(ledger.resource_generation, UINT64_C(9));
+    }
+    IrisProviderCommandRecordV2_clear(&ledger);
+    data_bind_free(codec);
+    codec = NULL;
+    IrisMediaEventOutboxRecordV1_init(&outbox);
+    check_equal(IrisEventOutboxV1_codec_create(&codec, &error), DATA_BIND_OK);
+    if (codec) {
+        check_equal(IrisMediaEventOutboxRecordV1_from_json(codec, &outbox,
+            outbox_json, sizeof(outbox_json) - 1u, &error), DATA_BIND_OK);
+        check_equal(outbox.delivery_state, "pending");
+        check_equal(outbox.event_id, "event-a");
+        check_equal(outbox.state_changed_at_ms, UINT64_C(1000));
+        check_equal(outbox.call_generation, UINT64_C(7));
+        check_equal(outbox.sequence, UINT64_C(9));
+        check_equal(outbox.last_http_status, 503);
+    }
+    IrisMediaEventOutboxRecordV1_clear(&outbox);
+    data_bind_free(codec);
+}
+
 spec("Iris durable provider command ledger") {
+    it("reads stored JSON in the original field order") {
+        test_stored_json_field_order();
+    }
+
     it("rejects a volatile RecordStore") {
         test_store_t store;
         iris_command_ledger_t *ledger;
@@ -462,7 +523,7 @@ spec("Iris durable provider command ledger") {
                 observed = 1;
                 break;
             }
-            salts_sleep_ms(5u);
+            cmeta_sleep_ms(5u);
         }
         check_true(observed);
         check_equal((int)test_store_count(&store), 0);

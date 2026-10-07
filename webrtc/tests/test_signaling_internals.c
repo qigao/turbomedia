@@ -16,7 +16,7 @@ static const char *const TEST_PREVIOUS_SECRET =
 
 static void init_test_server(webrtc_signaling_server_t *server) {
   memset(server, 0, sizeof(*server));
-  salts_mutex_init(&server->mutex);
+  cmeta_mutex_init(&server->mutex);
   check_equal(
       hash_map_init_bytes(
           &server->local_peers, sizeof(tstr), CMETA_ALIGNOF(tstr),
@@ -105,7 +105,7 @@ static void destroy_test_server(webrtc_signaling_server_t *server) {
   hash_map_destroy(&server->local_peers);
   hash_map_destroy(&server->local_rooms);
   destroy_source_states(server);
-  salts_mutex_destroy(&server->mutex);
+  cmeta_mutex_destroy(&server->mutex);
 }
 
 static void init_test_peer(webrtc_signaling_server_t *server,
@@ -553,7 +553,7 @@ void test_message_rate_violation_closes_peer_and_reports_rejection(void) {
   server.config.messages_per_second = 1;
   server.config.message_burst = 1;
   peer.server = &server;
-  peer.rate_last_refill_ms = salts_monotonic_ms();
+  peer.rate_last_refill_ms = cmeta_monotonic_ms();
   peer.rate_tokens = SIGNALING_RATE_TOKEN_UNITS;
 
   handle_message(&server, &peer, message, strlen(message));

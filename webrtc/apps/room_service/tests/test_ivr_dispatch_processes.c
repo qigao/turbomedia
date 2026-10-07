@@ -9,12 +9,13 @@
 #include "ivr_thread.h"
 #include "ivr_whip_transport.h"
 #include "iris_control_process_peer.h"
-#include "turbomedia_ivr_v1.h"
+#include "turbomedia_ivr_v2.h"
 #include "tinytest.h"
 #include <platform.h>
-#include <chttp/chttp.h>
+#include <http_client/http.h>
+#include <http_server/http.h>
 #include <salts/error_codes.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -206,7 +207,7 @@ typedef struct {
     SOCKET clients[TEST_IRIS_PROXY_CONNECTION_CAPACITY];
     SOCKET backends[TEST_IRIS_PROXY_CONNECTION_CAPACITY];
 #endif
-    salts_thread_t thread;
+    cmeta_thread_t thread;
     atomic_int stopping;
     atomic_int available;
     int listen_port;
@@ -820,7 +821,7 @@ static int test_iris_proxy_start(test_iris_proxy_t *proxy, int listen_port,
         listen(proxy->listener, SOMAXCONN) != 0) {
         goto fail;
     }
-    if (salts_thread_create(&proxy->thread, test_iris_proxy_thread, proxy) !=
+    if (cmeta_thread_create(&proxy->thread, test_iris_proxy_thread, proxy) !=
         0) {
         goto fail;
     }
@@ -839,7 +840,7 @@ static void test_iris_proxy_stop(test_iris_proxy_t *proxy) {
     shutdown(proxy->listener, SD_BOTH);
     closesocket(proxy->listener);
     proxy->listener = INVALID_SOCKET;
-    salts_thread_join(&proxy->thread);
+    cmeta_thread_join(&proxy->thread);
     proxy->thread_started = 0;
     WSACleanup();
 }
@@ -2167,7 +2168,7 @@ void setUp(void) {
     check_equal((int)http_status, (int)SALTS_OK);
     g_http_client_initialized = http_status == SALTS_OK;
     DataBindError err = DATA_BIND_ERROR_INIT;
-    check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
+    check_equal(TurboMediaIvrV2_codec_create(&g_codec, &err), DATA_BIND_OK);
     memset(&iris_control_config, 0, sizeof(iris_control_config));
     iris_control_config.port = TEST_IRIS_CONTROL_PORT;
     iris_control_config.query = process_peer_query;

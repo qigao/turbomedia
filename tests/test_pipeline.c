@@ -1,12 +1,12 @@
 #include "turbo_pipeline.h"
 
-#include <chttp/chttp.h>
+#include <http_server/http.h>
 #include <rtp-packet.h>
 #include <salts/error_codes.h>
 #include <tinytest.h>
 #include <turbo_codec.h>
 #include <turbo_media_server.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 
 #include <stdint.h>
 #include <stdatomic.h>
@@ -666,7 +666,7 @@ static void publish_pipeline_rtsp_video(void *parameter) {
             publisher->packets_published++;
             position = nal_end;
         }
-        salts_sleep_ms(PUBLISH_INTERVAL_MS);
+        cmeta_sleep_ms(PUBLISH_INTERVAL_MS);
     }
     publisher->done = 1;
 }
@@ -1589,7 +1589,7 @@ suite("turbo_media_pipeline") {
             pipeline_execute_result_t execution;
             pipeline_hls_http_server_t hls_server;
             turbo_pipeline_stats_t stats;
-            salts_thread_t reader_thread = NULL;
+            cmeta_thread_t reader_thread = NULL;
             char *fixture_playlist_data = NULL;
             char *output_data = NULL;
             size_t fixture_playlist_size = 0;
@@ -1695,7 +1695,7 @@ suite("turbo_media_pipeline") {
             if (!reader) goto cleanup_live_hls_input;
 
             execution.pipeline = reader;
-            check_equal(salts_thread_create(&reader_thread,
+            check_equal(cmeta_thread_create(&reader_thread,
                                             execute_pipeline_thread, &execution),
                         0);
             if (!reader_thread) goto cleanup_live_hls_input;
@@ -1719,7 +1719,7 @@ suite("turbo_media_pipeline") {
                     if (stable_poll_count >= PIPELINE_HLS_STABLE_POLL_COUNT)
                         break;
                 }
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             }
             if (atomic_load_explicit(&execution.done, memory_order_acquire))
                 fprintf(stderr, "local live HLS reader exited early: %s\n",
@@ -1752,7 +1752,7 @@ suite("turbo_media_pipeline") {
                     atomic_load_explicit(&execution.done,
                                          memory_order_acquire))
                     break;
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             }
             if (atomic_load_explicit(&execution.done, memory_order_acquire))
                 fprintf(
@@ -1791,14 +1791,14 @@ suite("turbo_media_pipeline") {
                  wait_count < PIPELINE_HLS_WAIT_LIMIT &&
                  !atomic_load_explicit(&execution.done, memory_order_acquire);
                  ++wait_count) {
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             }
             check_true(
                 atomic_load_explicit(&execution.done, memory_order_acquire));
             if (!atomic_load_explicit(&execution.done, memory_order_acquire))
                 goto cleanup_live_hls_input;
-            check_equal(salts_thread_join(&reader_thread), 0);
-            salts_thread_destroy(&reader_thread);
+            check_equal(cmeta_thread_join(&reader_thread), 0);
+            cmeta_thread_destroy(&reader_thread);
             thread_started = 0;
             check_equal(execution.status, TURBO_PIPELINE_ESTOPPED);
             check_equal(turbo_pipeline_state(reader),
@@ -1830,12 +1830,12 @@ suite("turbo_media_pipeline") {
                         turbo_pipeline_request_stop(reader) ==
                             TURBO_PIPELINE_OK)
                         stop_requested = 1;
-                    salts_sleep_ms(1);
+                    cmeta_sleep_ms(1);
                 }
             }
             if (thread_started) {
-                check_equal(salts_thread_join(&reader_thread), 0);
-                salts_thread_destroy(&reader_thread);
+                check_equal(cmeta_thread_join(&reader_thread), 0);
+                cmeta_thread_destroy(&reader_thread);
                 if (stop_requested)
                     check_equal(execution.status, TURBO_PIPELINE_ESTOPPED);
             }
@@ -1885,7 +1885,7 @@ suite("turbo_media_pipeline") {
             turbo_pipeline_t *pipeline = NULL;
             pipeline_execute_result_t execution;
             pipeline_rtsp_publisher_t publisher;
-            salts_thread_t pipeline_thread = NULL;
+            cmeta_thread_t pipeline_thread = NULL;
             turbo_pipeline_error_t create_error;
             turbo_pipeline_stats_t stats;
             int track_id = -1;
@@ -1984,7 +1984,7 @@ suite("turbo_media_pipeline") {
             if (!pipeline) goto cleanup_local_rtsp;
 
             execution.pipeline = pipeline;
-            check_equal(salts_thread_create(
+            check_equal(cmeta_thread_create(
                             &pipeline_thread, execute_pipeline_thread, &execution),
                         0);
             if (!pipeline_thread) goto cleanup_local_rtsp;
@@ -1996,7 +1996,7 @@ suite("turbo_media_pipeline") {
                 if (source_stats.subscriber_count > 0 ||
                     atomic_load_explicit(&execution.done, memory_order_acquire))
                     break;
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             }
             if (atomic_load_explicit(&execution.done, memory_order_acquire) &&
                 source_stats.subscriber_count == 0)
@@ -2016,7 +2016,7 @@ suite("turbo_media_pipeline") {
                 if (stats.packets_written > 0 ||
                     atomic_load_explicit(&execution.done, memory_order_acquire))
                     break;
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             }
             check_false(publisher.failed);
             check_true(publisher.done);
@@ -2037,12 +2037,12 @@ suite("turbo_media_pipeline") {
                                      !atomic_load_explicit(
                                          &execution.done, memory_order_acquire);
                      ++wait_count) {
-                    salts_sleep_ms(1);
+                    cmeta_sleep_ms(1);
                 }
             }
             if (thread_started) {
-                check_equal(salts_thread_join(&pipeline_thread), 0);
-                salts_thread_destroy(&pipeline_thread);
+                check_equal(cmeta_thread_join(&pipeline_thread), 0);
+                cmeta_thread_destroy(&pipeline_thread);
                 check_equal(execution.status, TURBO_PIPELINE_ESTOPPED);
             }
             if (adapter) {
@@ -2089,7 +2089,7 @@ suite("turbo_media_pipeline") {
             turbo_media_frame_t frame;
             runtime_rtp_capture_t capture;
             pipeline_run_result_t run_result;
-            salts_thread_t thread = NULL;
+            cmeta_thread_t thread = NULL;
             turbo_pipeline_error_t error;
             turbo_pipeline_stats_t stats;
             uint64_t output_subscription = 0;
@@ -2158,14 +2158,14 @@ suite("turbo_media_pipeline") {
                          TURBO_MEDIA_OK);
 
             run_result.pipeline = pipeline;
-            check_equal(salts_thread_create(
+            check_equal(cmeta_thread_create(
                              &thread, run_pipeline_thread, &run_result),
                          0);
             for (wait_count = 0; wait_count < 100 &&
                                  turbo_pipeline_state(pipeline) !=
                                      TURBO_PIPELINE_STATE_RUNNING;
                  ++wait_count)
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_RUNNING);
 
@@ -2192,14 +2192,14 @@ suite("turbo_media_pipeline") {
                  wait_count < 1000 &&
                  atomic_load_explicit(&capture.count, memory_order_acquire) < 2;
                  ++wait_count)
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             check_equal(
                 atomic_load_explicit(&capture.count, memory_order_acquire), 2);
 
             check_equal(turbo_pipeline_request_stop(pipeline),
                          TURBO_PIPELINE_OK);
-            check_equal(salts_thread_join(&thread), 0);
-            salts_thread_destroy(&thread);
+            check_equal(cmeta_thread_join(&thread), 0);
+            cmeta_thread_destroy(&thread);
             thread = NULL;
             check_equal(run_result.status, TURBO_PIPELINE_ESTOPPED);
             check_equal(turbo_pipeline_stats(pipeline, &stats),
@@ -2233,8 +2233,8 @@ suite("turbo_media_pipeline") {
         runtime_cleanup:
             if (thread) {
                 (void)turbo_pipeline_request_stop(pipeline);
-                (void)salts_thread_join(&thread);
-                salts_thread_destroy(&thread);
+                (void)cmeta_thread_join(&thread);
+                cmeta_thread_destroy(&thread);
             }
             if (output_source && output_subscription)
                 (void)turbo_media_source_unsubscribe(
@@ -2281,7 +2281,7 @@ suite("turbo_media_pipeline") {
             turbo_media_frame_t frame;
             runtime_rtp_capture_t capture;
             pipeline_run_result_t run_result;
-            salts_thread_t thread = NULL;
+            cmeta_thread_t thread = NULL;
             turbo_pipeline_error_t error;
             turbo_pipeline_stats_t stats;
             uint64_t output_subscription = 0;
@@ -2362,7 +2362,7 @@ suite("turbo_media_pipeline") {
                              &output_subscription),
                          TURBO_MEDIA_OK);
             run_result.pipeline = pipeline;
-            check_equal(salts_thread_create(
+            check_equal(cmeta_thread_create(
                              &thread, run_pipeline_thread, &run_result),
                          0);
             for (wait_count = 0;
@@ -2370,7 +2370,7 @@ suite("turbo_media_pipeline") {
                  turbo_pipeline_state(pipeline) !=
                      TURBO_PIPELINE_STATE_RUNNING;
                  ++wait_count)
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             check_equal(turbo_pipeline_state(pipeline),
                          TURBO_PIPELINE_STATE_RUNNING);
 
@@ -2409,13 +2409,13 @@ suite("turbo_media_pipeline") {
                  turbo_pipeline_state(pipeline) ==
                      TURBO_PIPELINE_STATE_RUNNING;
                  ++wait_count)
-                salts_sleep_ms(1);
+                cmeta_sleep_ms(1);
             if (turbo_pipeline_state(pipeline) ==
                 TURBO_PIPELINE_STATE_RUNNING)
                 check_equal(turbo_pipeline_request_stop(pipeline),
                              TURBO_PIPELINE_OK);
-            check_equal(salts_thread_join(&thread), 0);
-            salts_thread_destroy(&thread);
+            check_equal(cmeta_thread_join(&thread), 0);
+            cmeta_thread_destroy(&thread);
             thread = NULL;
             if (run_result.status != TURBO_PIPELINE_ESTOPPED)
                 fprintf(stderr, "Runtime Opus run error: %s\n",
@@ -2439,8 +2439,8 @@ suite("turbo_media_pipeline") {
         transcode_cleanup:
             if (thread) {
                 (void)turbo_pipeline_request_stop(pipeline);
-                (void)salts_thread_join(&thread);
-                salts_thread_destroy(&thread);
+                (void)cmeta_thread_join(&thread);
+                cmeta_thread_destroy(&thread);
             }
             if (output_source && output_subscription)
                 (void)turbo_media_source_unsubscribe(

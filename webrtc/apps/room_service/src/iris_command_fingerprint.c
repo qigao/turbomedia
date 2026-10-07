@@ -6,7 +6,7 @@ int iris_command_fingerprint_init(iris_command_fingerprint_t *fingerprint) {
     if (!fingerprint) return 0;
     memset(fingerprint, 0, sizeof(*fingerprint));
     fingerprint->valid =
-        turbo_crypto_sha256_init(&fingerprint->hash) == 0;
+        salts_crypto_sha256_init(&fingerprint->hash) == 0;
     return fingerprint->valid;
 }
 
@@ -23,9 +23,9 @@ int iris_command_fingerprint_add_bytes(
         value >>= 8u;
     }
     fingerprint->valid =
-        turbo_crypto_sha256_update(&fingerprint->hash, length,
+        salts_crypto_sha256_update(&fingerprint->hash, length,
                                    sizeof(length)) == 0 &&
-        turbo_crypto_sha256_update(&fingerprint->hash, data, size) == 0;
+        salts_crypto_sha256_update(&fingerprint->hash, data, size) == 0;
     return fingerprint->valid;
 }
 
@@ -49,11 +49,11 @@ int iris_command_fingerprint_add_u64(
 
 int iris_command_fingerprint_final(
     iris_command_fingerprint_t *fingerprint, char output[65]) {
-    uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
+    uint8_t digest[SALTS_CRYPTO_SHA256_DIGEST_SIZE];
     static const char hex[] = "0123456789abcdef";
     size_t i;
     if (!fingerprint || !fingerprint->valid || !output ||
-        turbo_crypto_sha256_final(&fingerprint->hash, digest) != 0) {
+        salts_crypto_sha256_final(&fingerprint->hash, digest) != 0) {
         return 0;
     }
     for (i = 0u; i < sizeof(digest); ++i) {

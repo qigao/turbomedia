@@ -26,11 +26,15 @@ flowchart LR
 
 ## Wire contract
 
-Canonical schema: `schema/turbomedia_ivr_v1.schema`.
+Canonical schema: `schema/turbomedia_ivr_v2.schema`, TIVR schema major 2.
+RoomService and worker must be upgraded together after draining active sessions.
+Major 1 frames and retired type IDs are rejected before payload decoding; there is
+no mixed-version fallback. Message-name suffixes identify semantic revisions, not
+the outer schema major. See the [migration and rollback procedure](../../docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md#ivr-schema-主版本迁移已授权).
 
-- media commands: type IDs `1011..1016`
-- media result: `MediaCommandResultV1`, type ID `2007`
-- media event: `MediaEventV1`, type ID `3007`
+- media commands: type IDs `11011..11016`
+- media result: `MediaCommandResultV1`, type ID `12007`
+- media event: `MediaEventV1`, type ID `13007`
 - `provider_session_id` correlates every media fact with an Iris session.
 - `call_generation` fences call reuse; `operation_generation` makes media operations
   idempotent; input commands additionally use `input_generation`.
@@ -85,7 +89,7 @@ receipt，completion/event 必须收到 application ACK；transport send 成功�
 断线期间 event 先进入 TurboDB ORM durable outbox，发现 sequence gap 时通过 query/observation
 恢复。不存在 HTTP provider fallback，也不得从 broker callback 直接推进 workflow。
 
-WHIP/WHEP 是独立 media-edge 协议：信令经 `Salts::CHTTP`，生产仅允许验证过的 HTTPS
+WHIP/WHEP 是独立 media-edge 协议：信令经 `CHttp::Client`，生产仅允许验证过的 HTTPS
 （可选 mTLS），明文只允许显式 loopback 测试。动态 room/call/participant ID 必须按单个 URL
 segment 编码；Opus SDP 的 RTP clock 固定为 48000 Hz，与 PCM 处理采样率解耦。
 

@@ -4,10 +4,9 @@
 #include "iris_provider_protocol.h"
 #include "ivr_control_ws.h"
 
-#include <turbo_crypto.h>
-#include <salts_error.h>
-#include <salts_str.h>
-#include <salts_thread.h>
+#include <cmeta_error.h>
+#include <str.h>
+#include <cmeta_thread.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -34,7 +33,7 @@ typedef struct iris_control_work_item_s {
 
 struct iris_control_provider_s {
     ivr_control_ws_client_t *endpoint;
-    salts_threadpool_t *worker;
+    cmeta_threadpool_t *worker;
     tstr provider_id;
     tstr provider_instance_id;
     tstr iris_identity;
@@ -44,11 +43,11 @@ struct iris_control_provider_s {
     void *dispatch_context;
     iris_control_provider_now_fn now;
     void *now_context;
-    salts_mutex_t delivery_mutex;
-    salts_mutex_t query_mutex;
-    salts_mutex_t offer_mutex;
-    salts_mutex_t ack_mutex;
-    salts_cond_t ack_changed;
+    cmeta_mutex_t delivery_mutex;
+    cmeta_mutex_t query_mutex;
+    cmeta_mutex_t offer_mutex;
+    cmeta_mutex_t ack_mutex;
+    cmeta_cond_t ack_changed;
     iris_media_completion_t pending_completion;
     iris_control_completion_ack_t pending_completion_ack;
     char pending_completion_message_id[256];
@@ -206,13 +205,13 @@ static void process_completion_ack(iris_control_provider_t *provider,
     char message_id[256];
     uint64_t generation;
     int active;
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     active = provider->pending_completion_active;
     completion = provider->pending_completion;
     memcpy(message_id, provider->pending_completion_message_id,
            sizeof(message_id));
     generation = provider->pending_delivery_generation;
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
     if (!active ||
         iris_control_provider_decode_completion_ack(
             payload, payload_size, &completion,
@@ -220,15 +219,15 @@ static void process_completion_ack(iris_control_provider_t *provider,
             &ack) != IVR_OK) {
         return;
     }
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     if (provider->pending_completion_active &&
         provider->pending_delivery_generation == generation &&
         strcmp(provider->pending_completion_message_id, message_id) == 0) {
         provider->pending_completion_ack = ack;
         provider->pending_completion_done = 1;
-        salts_cond_broadcast(&provider->ack_changed);
+        cmeta_cond_broadcast(&provider->ack_changed);
     }
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
 }
 
 static void process_event_ack(iris_control_provider_t *provider,
@@ -239,13 +238,13 @@ static void process_event_ack(iris_control_provider_t *provider,
     char message_id[256];
     uint64_t generation;
     int active;
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     active = provider->pending_event_active;
     event = provider->pending_event;
     memcpy(message_id, provider->pending_event_message_id,
            sizeof(message_id));
     generation = provider->pending_delivery_generation;
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
     if (!active ||
         iris_control_provider_decode_event_ack(
             payload, payload_size, &event,
@@ -253,15 +252,15 @@ static void process_event_ack(iris_control_provider_t *provider,
             &ack) != IVR_OK) {
         return;
     }
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     if (provider->pending_event_active &&
         provider->pending_delivery_generation == generation &&
         strcmp(provider->pending_event_message_id, message_id) == 0) {
         provider->pending_event_ack = ack;
         provider->pending_event_done = 1;
-        salts_cond_broadcast(&provider->ack_changed);
+        cmeta_cond_broadcast(&provider->ack_changed);
     }
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
 }
 
 static void process_observation(iris_control_provider_t *provider,
@@ -274,14 +273,14 @@ static void process_observation(iris_control_provider_t *provider,
     uint64_t cursor;
     uint64_t generation;
     int active;
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     active = provider->pending_query_active;
     memcpy(tenant_id, provider->pending_query_tenant_id, sizeof(tenant_id));
     memcpy(query_id, provider->pending_query_id, sizeof(query_id));
     memcpy(query_type, provider->pending_query_type, sizeof(query_type));
     cursor = provider->pending_query_cursor;
     generation = provider->pending_query_generation;
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
     if (!active ||
         iris_control_provider_decode_observation(
             payload, payload_size, tenant_id,
@@ -289,7 +288,7 @@ static void process_observation(iris_control_provider_t *provider,
             query_type, cursor, &observation) != IVR_OK) {
         return;
     }
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     if (provider->pending_query_active &&
         provider->pending_query_generation == generation &&
         strcmp(provider->pending_query_id, query_id) == 0) {
@@ -298,9 +297,9 @@ static void process_observation(iris_control_provider_t *provider,
         provider->pending_observation = observation;
         iris_control_provider_observation_init(&observation);
         provider->pending_query_done = 1;
-        salts_cond_broadcast(&provider->ack_changed);
+        cmeta_cond_broadcast(&provider->ack_changed);
     }
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
     iris_control_provider_observation_clear(&observation);
 }
 
@@ -311,27 +310,27 @@ static void process_session_bound(iris_control_provider_t *provider,
     iris_control_session_bound_t bound;
     uint64_t generation;
     int active;
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     active = provider->pending_offer_active;
     offer = provider->pending_offer;
     generation = provider->pending_offer_generation;
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
     if (!active ||
         iris_control_provider_decode_session_bound(
             payload, payload_size, &offer,
             provider->provider_id, provider->iris_identity, &bound) != IVR_OK) {
         return;
     }
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     if (provider->pending_offer_active &&
         provider->pending_offer_generation == generation &&
         strcmp(provider->pending_offer.ingress_event_id,
                offer.ingress_event_id) == 0) {
         provider->pending_session_bound = bound;
         provider->pending_offer_done = 1;
-        salts_cond_broadcast(&provider->ack_changed);
+        cmeta_cond_broadcast(&provider->ack_changed);
     }
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
 }
 
 static iris_media_bridge_result_t rejected_result(const char *code,
@@ -431,7 +430,7 @@ static void on_message(void *context, const uint8_t *payload,
             item->frame_message_id = 0u;
             item->payload_size = payload_size;
             memcpy(item->payload, payload, payload_size);
-            if (salts_threadpool_try_submit(provider->worker, process_command,
+            if (cmeta_threadpool_try_submit(provider->worker, process_command,
                                             item) != 0) {
                 atomic_fetch_sub_explicit(&provider->pending_ingress_bytes,
                                           payload_size,
@@ -450,9 +449,9 @@ static void on_connection(void *context, int connected) {
     if (!provider) return;
     atomic_store_explicit(&provider->running, connected != 0,
                           memory_order_release);
-    salts_mutex_lock(&provider->ack_mutex);
-    salts_cond_broadcast(&provider->ack_changed);
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
+    cmeta_cond_broadcast(&provider->ack_changed);
+    cmeta_mutex_unlock(&provider->ack_mutex);
 }
 
 iris_control_provider_t *iris_control_provider_create(
@@ -460,17 +459,17 @@ iris_control_provider_t *iris_control_provider_create(
     iris_control_provider_t *provider = NULL;
     ivr_control_ws_client_config_t endpoint_config;
     cnet_tls_client_config tls;
-    salts_threadpool_config_t worker_config;
+    cmeta_threadpool_config_t worker_config;
     char uri[512];
     int written;
     if (iris_control_provider_config_validate(config) != SALTS_OK) return NULL;
     provider = (iris_control_provider_t *)calloc(1u, sizeof(*provider));
     if (!provider) return NULL;
-    salts_mutex_init(&provider->delivery_mutex);
-    salts_mutex_init(&provider->query_mutex);
-    salts_mutex_init(&provider->offer_mutex);
-    salts_mutex_init(&provider->ack_mutex);
-    salts_cond_init(&provider->ack_changed);
+    cmeta_mutex_init(&provider->delivery_mutex);
+    cmeta_mutex_init(&provider->query_mutex);
+    cmeta_mutex_init(&provider->offer_mutex);
+    cmeta_mutex_init(&provider->ack_mutex);
+    cmeta_cond_init(&provider->ack_changed);
     atomic_init(&provider->pending_ingress_bytes, 0u);
     atomic_init(&provider->callback_count, 0u);
     atomic_init(&provider->running, 0);
@@ -494,7 +493,7 @@ iris_control_provider_t *iris_control_provider_create(
     memset(&worker_config, 0, sizeof(worker_config));
     worker_config.num_threads = 1;
     worker_config.queue_capacity = config->maximum_ingress_messages;
-    provider->worker = salts_threadpool_create_with_config(&worker_config);
+    provider->worker = cmeta_threadpool_create_with_config(&worker_config);
     if (!provider->worker) {
         iris_control_provider_destroy(provider);
         return NULL;
@@ -564,31 +563,31 @@ int iris_control_provider_stop(iris_control_provider_t *provider) {
         : IVR_OK;
     atomic_store_explicit(&provider->running, 0, memory_order_release);
     if (endpoint_status != IVR_OK) return -1;
-    salts_mutex_lock(&provider->ack_mutex);
-    salts_cond_broadcast(&provider->ack_changed);
-    salts_mutex_unlock(&provider->ack_mutex);
-    salts_mutex_lock(&provider->delivery_mutex);
-    salts_mutex_unlock(&provider->delivery_mutex);
-    salts_mutex_lock(&provider->query_mutex);
-    salts_mutex_unlock(&provider->query_mutex);
-    salts_mutex_lock(&provider->offer_mutex);
-    salts_mutex_unlock(&provider->offer_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
+    cmeta_cond_broadcast(&provider->ack_changed);
+    cmeta_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->delivery_mutex);
+    cmeta_mutex_unlock(&provider->delivery_mutex);
+    cmeta_mutex_lock(&provider->query_mutex);
+    cmeta_mutex_unlock(&provider->query_mutex);
+    cmeta_mutex_lock(&provider->offer_mutex);
+    cmeta_mutex_unlock(&provider->offer_mutex);
     for (attempt = 0u; attempt < IRIS_CONTROL_CALLBACK_QUIESCE_ATTEMPTS;
          ++attempt) {
         if (atomic_load_explicit(&provider->callback_count,
                                  memory_order_acquire) == 0u) {
             break;
         }
-        salts_sleep_ms(IRIS_CONTROL_CALLBACK_QUIESCE_STEP_MS);
+        cmeta_sleep_ms(IRIS_CONTROL_CALLBACK_QUIESCE_STEP_MS);
     }
     if (atomic_load_explicit(&provider->callback_count,
                              memory_order_acquire) != 0u) {
         return -1;
     }
     if (provider->worker) {
-        salts_threadpool_shutdown(provider->worker);
-        salts_threadpool_wait(provider->worker);
-        salts_threadpool_destroy(provider->worker);
+        cmeta_threadpool_shutdown(provider->worker);
+        cmeta_threadpool_wait(provider->worker);
+        cmeta_threadpool_destroy(provider->worker);
         provider->worker = NULL;
     }
     atomic_store_explicit(&provider->stopped, 1, memory_order_release);
@@ -607,11 +606,11 @@ int iris_control_provider_destroy(iris_control_provider_t *provider) {
     tstr_freep(&provider->provider_id);
     tstr_freep(&provider->provider_instance_id);
     tstr_freep(&provider->iris_identity);
-    salts_cond_destroy(&provider->ack_changed);
-    salts_mutex_destroy(&provider->ack_mutex);
-    salts_mutex_destroy(&provider->delivery_mutex);
-    salts_mutex_destroy(&provider->query_mutex);
-    salts_mutex_destroy(&provider->offer_mutex);
+    cmeta_cond_destroy(&provider->ack_changed);
+    cmeta_mutex_destroy(&provider->ack_mutex);
+    cmeta_mutex_destroy(&provider->delivery_mutex);
+    cmeta_mutex_destroy(&provider->query_mutex);
+    cmeta_mutex_destroy(&provider->offer_mutex);
     free(provider);
     return 0;
 }
@@ -648,11 +647,11 @@ ivr_status_t iris_control_provider_send_completion(
             completed_at_unix_ms, &application, &application_size) != IVR_OK) {
         return IVR_EINVAL;
     }
-    salts_mutex_lock(&provider->delivery_mutex);
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->delivery_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     if (provider->pending_completion_active) {
-        salts_mutex_unlock(&provider->ack_mutex);
-        salts_mutex_unlock(&provider->delivery_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->delivery_mutex);
         free(application);
         return IVR_EBUSY;
     }
@@ -662,8 +661,8 @@ ivr_status_t iris_control_provider_send_completion(
                  message_id) <= 0 ||
         strlen(message_id) >=
             sizeof(provider->pending_completion_message_id)) {
-        salts_mutex_unlock(&provider->ack_mutex);
-        salts_mutex_unlock(&provider->delivery_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->delivery_mutex);
         free(application);
         return IVR_ENOSPC;
     }
@@ -676,26 +675,26 @@ ivr_status_t iris_control_provider_send_completion(
     provider->pending_completion_done = 0;
     memset(&provider->pending_completion_ack, 0,
            sizeof(provider->pending_completion_ack));
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
 
     if (send_application(provider, provider->pending_delivery_generation,
                          application,
                          application_size) != SALTS_OK) {
         status = IVR_EBUSY;
     } else {
-        deadline = salts_monotonic_ms();
+        deadline = cmeta_monotonic_ms();
         deadline = UINT64_MAX - deadline < ack_timeout_ms
                        ? UINT64_MAX
                        : deadline + ack_timeout_ms;
-        salts_mutex_lock(&provider->ack_mutex);
+        cmeta_mutex_lock(&provider->ack_mutex);
         while (!provider->pending_completion_done &&
                !atomic_load_explicit(&provider->stopped,
                                      memory_order_acquire)) {
-            uint64_t now = salts_monotonic_ms();
+            uint64_t now = cmeta_monotonic_ms();
             uint64_t remaining;
             if (now >= deadline) break;
             remaining = deadline - now;
-            (void)salts_cond_timedwait(&provider->ack_changed,
+            (void)cmeta_cond_timedwait(&provider->ack_changed,
                                        &provider->ack_mutex,
                                        remaining * UINT64_C(1000000));
         }
@@ -710,15 +709,15 @@ ivr_status_t iris_control_provider_send_completion(
         }
         provider->pending_completion_active = 0;
         provider->pending_completion_done = 0;
-        salts_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
     }
     if (status != IVR_OK) {
-        salts_mutex_lock(&provider->ack_mutex);
+        cmeta_mutex_lock(&provider->ack_mutex);
         provider->pending_completion_active = 0;
         provider->pending_completion_done = 0;
-        salts_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
     }
-    salts_mutex_unlock(&provider->delivery_mutex);
+    cmeta_mutex_unlock(&provider->delivery_mutex);
     free(application);
     return status;
 }
@@ -747,11 +746,11 @@ ivr_status_t iris_control_provider_send_event(
             &application_size) != IVR_OK) {
         return IVR_EINVAL;
     }
-    salts_mutex_lock(&provider->delivery_mutex);
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->delivery_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     if (provider->pending_event_active || provider->pending_completion_active) {
-        salts_mutex_unlock(&provider->ack_mutex);
-        salts_mutex_unlock(&provider->delivery_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->delivery_mutex);
         free(application);
         return IVR_EBUSY;
     }
@@ -760,8 +759,8 @@ ivr_status_t iris_control_provider_send_event(
                  sizeof(provider->pending_event_message_id), "%s",
                  message_id) <= 0 ||
         strlen(message_id) >= sizeof(provider->pending_event_message_id)) {
-        salts_mutex_unlock(&provider->ack_mutex);
-        salts_mutex_unlock(&provider->delivery_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->delivery_mutex);
         free(application);
         return IVR_ENOSPC;
     }
@@ -774,26 +773,26 @@ ivr_status_t iris_control_provider_send_event(
     provider->pending_event_done = 0;
     memset(&provider->pending_event_ack, 0,
            sizeof(provider->pending_event_ack));
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
 
     if (send_application(provider, provider->pending_delivery_generation,
                          application,
                          application_size) != SALTS_OK) {
         status = IVR_EBUSY;
     } else {
-        deadline = salts_monotonic_ms();
+        deadline = cmeta_monotonic_ms();
         deadline = UINT64_MAX - deadline < ack_timeout_ms
                        ? UINT64_MAX
                        : deadline + ack_timeout_ms;
-        salts_mutex_lock(&provider->ack_mutex);
+        cmeta_mutex_lock(&provider->ack_mutex);
         while (!provider->pending_event_done &&
                !atomic_load_explicit(&provider->stopped,
                                      memory_order_acquire)) {
-            uint64_t now = salts_monotonic_ms();
+            uint64_t now = cmeta_monotonic_ms();
             uint64_t remaining;
             if (now >= deadline) break;
             remaining = deadline - now;
-            (void)salts_cond_timedwait(&provider->ack_changed,
+            (void)cmeta_cond_timedwait(&provider->ack_changed,
                                        &provider->ack_mutex,
                                        remaining * UINT64_C(1000000));
         }
@@ -808,15 +807,15 @@ ivr_status_t iris_control_provider_send_event(
         }
         provider->pending_event_active = 0;
         provider->pending_event_done = 0;
-        salts_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
     }
     if (status != IVR_OK) {
-        salts_mutex_lock(&provider->ack_mutex);
+        cmeta_mutex_lock(&provider->ack_mutex);
         provider->pending_event_active = 0;
         provider->pending_event_done = 0;
-        salts_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
     }
-    salts_mutex_unlock(&provider->delivery_mutex);
+    cmeta_mutex_unlock(&provider->delivery_mutex);
     free(application);
     return status;
 }
@@ -855,8 +854,8 @@ ivr_status_t iris_control_provider_send_query(
             query->payload_json, &application, &application_size) != IVR_OK) {
         return IVR_EINVAL;
     }
-    salts_mutex_lock(&provider->query_mutex);
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->query_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     if (provider->pending_query_active ||
         !copy_pending_text(provider->pending_query_tenant_id,
                            sizeof(provider->pending_query_tenant_id),
@@ -866,8 +865,8 @@ ivr_status_t iris_control_provider_send_query(
         !copy_pending_text(provider->pending_query_type,
                            sizeof(provider->pending_query_type),
                            query->query_type)) {
-        salts_mutex_unlock(&provider->ack_mutex);
-        salts_mutex_unlock(&provider->query_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->query_mutex);
         free(application);
         return IVR_EBUSY;
     }
@@ -881,26 +880,26 @@ ivr_status_t iris_control_provider_send_query(
     provider->pending_query_done = 0;
     iris_control_provider_observation_clear(&provider->pending_observation);
     iris_control_provider_observation_init(&provider->pending_observation);
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
 
     if (send_application(provider, provider->pending_query_generation,
                          application,
                          application_size) != SALTS_OK) {
         status = IVR_EBUSY;
     } else {
-        deadline = salts_monotonic_ms();
+        deadline = cmeta_monotonic_ms();
         deadline = UINT64_MAX - deadline < timeout_ms
                        ? UINT64_MAX
                        : deadline + timeout_ms;
-        salts_mutex_lock(&provider->ack_mutex);
+        cmeta_mutex_lock(&provider->ack_mutex);
         while (!provider->pending_query_done &&
                !atomic_load_explicit(&provider->stopped,
                                      memory_order_acquire)) {
-            uint64_t now = salts_monotonic_ms();
+            uint64_t now = cmeta_monotonic_ms();
             uint64_t remaining;
             if (now >= deadline) break;
             remaining = deadline - now;
-            (void)salts_cond_timedwait(&provider->ack_changed,
+            (void)cmeta_cond_timedwait(&provider->ack_changed,
                                        &provider->ack_mutex,
                                        remaining * UINT64_C(1000000));
         }
@@ -917,18 +916,18 @@ ivr_status_t iris_control_provider_send_query(
         }
         provider->pending_query_active = 0;
         provider->pending_query_done = 0;
-        salts_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
     }
     if (status != IVR_OK) {
-        salts_mutex_lock(&provider->ack_mutex);
+        cmeta_mutex_lock(&provider->ack_mutex);
         provider->pending_query_active = 0;
         provider->pending_query_done = 0;
         iris_control_provider_observation_clear(
             &provider->pending_observation);
         iris_control_provider_observation_init(&provider->pending_observation);
-        salts_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
     }
-    salts_mutex_unlock(&provider->query_mutex);
+    cmeta_mutex_unlock(&provider->query_mutex);
     free(application);
     return status;
 }
@@ -957,11 +956,11 @@ ivr_status_t iris_control_provider_send_call_offer(
         return IVR_EINVAL;
     }
 
-    salts_mutex_lock(&provider->offer_mutex);
-    salts_mutex_lock(&provider->ack_mutex);
+    cmeta_mutex_lock(&provider->offer_mutex);
+    cmeta_mutex_lock(&provider->ack_mutex);
     if (provider->pending_offer_active) {
-        salts_mutex_unlock(&provider->ack_mutex);
-        salts_mutex_unlock(&provider->offer_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->offer_mutex);
         free(application);
         return IVR_EBUSY;
     }
@@ -975,28 +974,28 @@ ivr_status_t iris_control_provider_send_call_offer(
            sizeof(provider->pending_session_bound));
     provider->pending_offer_active = 1;
     provider->pending_offer_done = 0;
-    salts_mutex_unlock(&provider->ack_mutex);
+    cmeta_mutex_unlock(&provider->ack_mutex);
 
     send_status = send_application(provider, provider->pending_offer_generation,
                                    application, application_size);
     if (send_status != SALTS_OK) {
         status = send_status == SALTS_ENOSPC ? IVR_ENOSPC : IVR_EBUSY;
     } else {
-        deadline = salts_monotonic_ms();
+        deadline = cmeta_monotonic_ms();
         deadline = UINT64_MAX - deadline < timeout_ms
                        ? UINT64_MAX
                        : deadline + timeout_ms;
-        salts_mutex_lock(&provider->ack_mutex);
+        cmeta_mutex_lock(&provider->ack_mutex);
         while (!provider->pending_offer_done &&
                !atomic_load_explicit(&provider->stopped,
                                      memory_order_acquire) &&
                atomic_load_explicit(&provider->running,
                                     memory_order_acquire)) {
-            uint64_t now = salts_monotonic_ms();
+            uint64_t now = cmeta_monotonic_ms();
             uint64_t remaining;
             if (now >= deadline) break;
             remaining = deadline - now;
-            (void)salts_cond_timedwait(&provider->ack_changed,
+            (void)cmeta_cond_timedwait(&provider->ack_changed,
                                        &provider->ack_mutex,
                                        remaining * UINT64_C(1000000));
         }
@@ -1011,15 +1010,15 @@ ivr_status_t iris_control_provider_send_call_offer(
         }
         provider->pending_offer_active = 0;
         provider->pending_offer_done = 0;
-        salts_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
     }
     if (status != IVR_OK) {
-        salts_mutex_lock(&provider->ack_mutex);
+        cmeta_mutex_lock(&provider->ack_mutex);
         provider->pending_offer_active = 0;
         provider->pending_offer_done = 0;
-        salts_mutex_unlock(&provider->ack_mutex);
+        cmeta_mutex_unlock(&provider->ack_mutex);
     }
-    salts_mutex_unlock(&provider->offer_mutex);
+    cmeta_mutex_unlock(&provider->offer_mutex);
     free(application);
     return status;
 }

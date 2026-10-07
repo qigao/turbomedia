@@ -4,10 +4,40 @@ include(CMakeFindDependencyMacro)
 
 set(TurboMedia_PRODUCT "@TURBO_MEDIA_PRODUCT@")
 
+foreach(_TurboMedia_package IN ITEMS Salts SaltsUtils)
+  if(_TurboMedia_package STREQUAL "Salts")
+    set(_TurboMedia_root SALTS_ROOT)
+  else()
+    set(_TurboMedia_root SALTS_UTILS_ROOT)
+  endif()
+  if(NOT DEFINED ENV{${_TurboMedia_root}} OR
+     NOT IS_DIRECTORY "$ENV{${_TurboMedia_root}}")
+    set(TurboMedia_FOUND FALSE)
+    set(TurboMedia_NOT_FOUND_MESSAGE
+        "${_TurboMedia_root} must name the installed SDK")
+    return()
+  endif()
+  unset(${_TurboMedia_package}_DIR CACHE)
+  unset(${_TurboMedia_package}_DIR)
+endforeach()
+unset(_TurboMedia_package)
+unset(_TurboMedia_root)
+
 find_dependency(Salts CONFIG REQUIRED
                 PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_dependency(SaltsUtils CONFIG REQUIRED
                 PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+if(NOT DEFINED ENV{HTTP_SERVICES_ROOT} OR
+   NOT IS_DIRECTORY "$ENV{HTTP_SERVICES_ROOT}")
+  set(TurboMedia_FOUND FALSE)
+  set(TurboMedia_NOT_FOUND_MESSAGE
+      "HTTP_SERVICES_ROOT must name the installed Chttp SDK")
+  return()
+endif()
+unset(Chttp_DIR CACHE)
+unset(Chttp_DIR)
+find_dependency(Chttp CONFIG REQUIRED
+                PATHS "$ENV{HTTP_SERVICES_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(TurboMedia_PRODUCT STREQUAL "CLIENT" AND
    (NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback))
   set(TurboMedia_FOUND FALSE)

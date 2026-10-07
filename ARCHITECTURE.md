@@ -133,7 +133,7 @@ int turbo_streamer_write_packet(turbo_streamer_t *streamer, const turbo_muxer_pa
 
 **特点**:
 - 集成 Salts::CNet（网络与协议运行时）
-- 集成 Salts::CHTTP（HTTP 客户端/服务端）
+- 集成 CHttp::Client / CHttp::Server（HTTP 客户端/服务端）
 - 支持多种传输协议
 - 协程友好的异步 I/O
 
@@ -285,7 +285,7 @@ const turbo_codec_ops_t turbo_av1_codec_ops = {
 
 当前支持:
 - **Salts::CNet**: 网络库（TCP/UDP/WebSocket/TLS）
-- **Salts::CHTTP**: HTTP 客户端/服务端库
+- **CHttp::Client / CHttp::Server**: HTTP 客户端/服务端库
 
 新的网络库可以通过实现 `turbo_transport_ops_t` 接口集成。
 

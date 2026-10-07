@@ -37,7 +37,7 @@ target_link_libraries(
          TurboMedia::Muxer
          TurboMedia::Demuxer
          TurboMedia::Transport
-  PRIVATE Salts::Core Salts::CSTL Salts::CHTTP Salts::CNet)
+  PRIVATE Salts::Core Salts::CSTL CHttp::Client Salts::CNet)
 target_compile_definitions(
   turbo_media_streamer
   PUBLIC TURBO_MEDIA_HAS_HLS TURBO_MEDIA_HAS_DASH TURBO_MEDIA_HAS_RTMP

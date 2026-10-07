@@ -9,7 +9,7 @@ target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PRIVATE Salts::JsonParser SaltsNet::Crypto OpenSSL::Crypto)
+  PRIVATE Salts::JsonParser Salts::Crypto OpenSSL::Crypto)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
 add_library(turbo_media_sdp STATIC)
@@ -30,6 +30,7 @@ target_link_libraries(turbo_media_sdp PRIVATE Salts::Core)
 
 set(TURBO_MEDIA_DATACHANNEL_SOURCES
     src/turbo_datachannel.c
+    src/dc_certificate.cpp
     src/turbo_datachannel_errors.c
     src/turbo_dc_msg.c
     src/dcep_protocol.c
@@ -55,7 +56,6 @@ target_link_libraries(
           unofficial::usrsctp::usrsctp
           OpenSSL::SSL
           OpenSSL::Crypto
-          SaltsNet::Asn1Parser
           roaring::roaring)
 
 if(TURBO_MEDIA_IS_SERVER)
@@ -92,8 +92,8 @@ target_include_directories(
   PRIVATE ${STB_INCLUDE_DIR})
 target_link_libraries(
   turbo_media_webrtc_signaling
-  PUBLIC Salts::CNet Salts::CHTTP
-  PRIVATE turbo_media_auth Salts::JsonParser SaltsNet::Crypto Salts::Core Salts::CSTL)
+  PUBLIC Salts::CNet CHttp::Server
+  PRIVATE turbo_media_auth Salts::JsonParser Salts::Crypto Salts::Core Salts::CSTL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 

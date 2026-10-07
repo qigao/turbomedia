@@ -1,10 +1,11 @@
 #include "iris_orm_store.h"
 
-#include <cyaml/cyaml.h>
+#include <cyaml.h>
 #include <orm.h>
-#include <orm_postgresql.h>
-#include <salts_error.h>
-#include <salts_fs.h>
+#include <orm_runtime.h>
+#include <cmeta_error.h>
+#include <cmeta_fs.h>
+#include <cmeta/scope.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -47,6 +48,7 @@ typedef struct iris_orm_store_config_s {
 } iris_orm_store_config_t;
 
 struct iris_orm_store_owner_s {
+    orm_runtime_t *runtime;
     orm_connection_t *connection;
     char *namespace_name;
     size_t max_bytes;
@@ -204,7 +206,7 @@ static int iris_orm_parse_config(const char *yaml_path,
                                  const char *channel_name,
                                  iris_orm_store_config_t *config, char *error,
                                  size_t error_capacity) {
-    salts_fs_buf_t yaml = {0};
+    cmeta_fs_buf_t yaml = {0};
     cyaml_doc_t *document = NULL;
     cyaml_error_t yaml_error;
     cyaml_node_t *root;
@@ -235,7 +237,7 @@ static int iris_orm_parse_config(const char *yaml_path,
         return 0;
     }
     memset(config, 0, sizeof(*config));
-    if (salts_fs_read_file(yaml_path, &yaml) != SALTS_OK) {
+    if (cmeta_fs_read_file(yaml_path, &yaml) != SALTS_OK) {
         iris_orm_write_error(error, error_capacity,
                              "cannot read ORM store YAML");
         goto cleanup;
@@ -377,50 +379,84 @@ cleanup:
     free(kind);
     free(backend);
     cyaml_free(document);
-    salts_fs_buf_free(&yaml);
+    cmeta_fs_buf_free(&yaml);
     if (!ok)
         iris_orm_config_cleanup(config);
     return ok;
+}
+
+/* The call owns its query and any result not transferred to the caller.
+ * CMeta scope releases them in reverse acquisition order on every body return. */
+typedef struct iris_orm_call_s {
+    orm_query_t *query;
+    orm_result_t *result;
+} iris_orm_call_t;
+
+static cmeta_status iris_orm_call_init(iris_orm_call_t *call) {
+    *call = (iris_orm_call_t){0};
+    return CMETA_OK;
+}
+
+static void iris_orm_call_restore(iris_orm_call_t *call) {
+    orm_result_destroy(call->result);
+    orm_query_destroy(call->query);
+    *call = (iris_orm_call_t){0};
+}
+
+static void iris_orm_call_move(iris_orm_call_t *out, iris_orm_call_t *call) {
+    *out = *call;
+    *call = (iris_orm_call_t){0};
+}
+
+static const cmeta_type_identity IRIS_ORM_CALL_ID =
+    CMETA_TYPE_ID_ATOM_INIT("turbomedia.iris.orm.call");
+static const cmeta_type_desc IRIS_ORM_CALL_TYPE = {
+    .name = "iris_orm_call_t", .size = sizeof(iris_orm_call_t),
+    .align = _Alignof(iris_orm_call_t), .kind = CMETA_T_OBJECT,
+    .identity = &IRIS_ORM_CALL_ID};
+CMETA_DEFINE_LIFECYCLE(iris_orm_call_t, &IRIS_ORM_CALL_TYPE,
+    iris_orm_call_init, iris_orm_call_restore, iris_orm_call_move,
+    CMETA_LIFECYCLE_INIT_NOFAIL | CMETA_LIFECYCLE_TRIVIAL_ZERO |
+        CMETA_LIFECYCLE_MOVABLE);
+
+static int iris_orm_execute_owned(iris_orm_call_t *call,
+                                   iris_orm_store_owner_t *owner,
+                                   orm_transaction_t *transaction,
+                                   const char *sql, const orm_value_t *values,
+                                   size_t value_count, orm_result_t **out_result) {
+    orm_error_t error;
+    orm_status_t status;
+    size_t i;
+    orm_error_init(&error);
+    status = orm_raw(owner->connection, orm_view(sql), &call->query, &error);
+    if (status != ORM_STATUS_OK) return iris_orm_status(status);
+    for (i = 0u; i < value_count; ++i) {
+        status = orm_query_bind(call->query, values[i], &error);
+        if (status != ORM_STATUS_OK) return iris_orm_status(status);
+    }
+    status = transaction
+        ? orm_query_execute_in_transaction(call->query, transaction,
+                                            &call->result, &error)
+        : orm_query_execute(call->query, &call->result, &error);
+    if (status != ORM_STATUS_OK) return iris_orm_status(status);
+    if (out_result) {
+        *out_result = call->result;
+        call->result = NULL;
+    }
+    return SALTS_OK;
 }
 
 static int iris_orm_execute_raw(iris_orm_store_owner_t *owner,
                                 orm_transaction_t *transaction, const char *sql,
                                 const orm_value_t *values, size_t value_count,
                                 orm_result_t **out_result) {
-    orm_error_t error;
-    orm_query_t *query = NULL;
-    orm_result_t *result = NULL;
-    orm_status_t status;
-    size_t i;
-    int rc;
-    if (!owner || !sql || (value_count > 0u && !values))
-        return SALTS_EINVAL;
-    orm_error_init(&error);
-    status = orm_raw(owner->connection, orm_view(sql), &query, &error);
-    if (status != ORM_STATUS_OK)
-        return iris_orm_status(status);
-    for (i = 0u; i < value_count; ++i) {
-        status = orm_query_bind(query, values[i], &error);
-        if (status != ORM_STATUS_OK) {
-            orm_query_destroy(query);
-            return iris_orm_status(status);
-        }
-    }
-    status = transaction ? orm_query_execute_in_transaction(query, transaction,
-                                                            &result, &error)
-                         : orm_query_execute(query, &result, &error);
-    rc = iris_orm_status(status);
-    orm_query_destroy(query);
-    if (rc != SALTS_OK) {
-        orm_result_destroy(result);
-        return rc;
-    }
-    if (out_result) {
-        *out_result = result;
-    } else {
-        orm_result_destroy(result);
-    }
-    return SALTS_OK;
+    int status;
+    if (out_result) *out_result = NULL;
+    if (!owner || !sql || (value_count > 0u && !values)) return SALTS_EINVAL;
+    cmeta_scope(status, cmeta_autos((iris_orm_call_t, call)),
+        cmeta_body(iris_orm_execute_owned(&call, owner, transaction, sql,
+                                         values, value_count, out_result)));
+    return status;
 }
 
 static int iris_orm_current_revision(iris_orm_store_owner_t *owner,
@@ -788,6 +824,10 @@ iris_orm_store_owner_t *iris_orm_store_owner_create(const char *yaml_path,
     iris_orm_store_config_t parsed;
     iris_orm_store_owner_t *owner = NULL;
     orm_config_t orm_configuration;
+    orm_runtime_config_t runtime_configuration;
+    orm_driver_load_config_t driver = {0};
+    char driver_path[SALTS_FS_MAX_PATH];
+    const char *sdk_root = getenv("TURBODB_ROOT");
     orm_option_t options[11];
     orm_error_t orm_error;
     orm_result_t *result = NULL;
@@ -854,8 +894,37 @@ iris_orm_store_owner_t *iris_orm_store_owner_create(const char *yaml_path,
             ? UINT64_MAX
             : (uint64_t)parsed.max_records * result_bytes_per_record;
     orm_error_init(&orm_error);
-    status = orm_postgresql_connect(&orm_configuration, &owner->connection,
-                                    &orm_error);
+    if (!sdk_root || !cmeta_fs_path_is_absolute(sdk_root) ||
+        cmeta_fs_path_join(driver_path, sizeof(driver_path), sdk_root,
+                           IRIS_ORM_DRIVER_RELATIVE_PATH) != SALTS_OK) {
+        iris_orm_write_error(error, error_capacity,
+                             "TURBODB_ROOT must name an absolute TurboDB SDK root");
+        goto fail;
+    }
+    orm_runtime_config_init(&runtime_configuration);
+    runtime_configuration.max_drivers = 1u;
+    runtime_configuration.max_connections = 1u;
+    status = orm_runtime_create(&runtime_configuration, &owner->runtime,
+                                 &orm_error);
+    if (status != ORM_STATUS_OK) {
+        iris_orm_write_orm_error(error, error_capacity,
+                                 "cannot create TurboDB runtime", &orm_error);
+        goto fail;
+    }
+    driver.struct_size = sizeof(driver);
+    driver.abi_version = ORM_RUNTIME_ABI_VERSION;
+    driver.module_path = orm_view(driver_path);
+    driver.expected_driver_id = orm_view("postgresql");
+    /* ORM admits the reflected TurboDb.Driver interface and retains its Plugin
+     * lease through the connection. Do not duplicate its ABI/metadata registry. */
+    status = orm_runtime_load_driver(owner->runtime, &driver, &orm_error);
+    if (status != ORM_STATUS_OK) {
+        iris_orm_write_orm_error(error, error_capacity,
+                                 "cannot load PostgreSQL driver", &orm_error);
+        goto fail;
+    }
+    status = orm_runtime_connect(owner->runtime, &orm_configuration,
+                                  &owner->connection, &orm_error);
     if (status != ORM_STATUS_OK) {
         iris_orm_write_orm_error(error, error_capacity,
                                  "cannot connect TurboDB ORM", &orm_error);
@@ -895,7 +964,9 @@ iris_record_store_t *iris_orm_store_owner_store(iris_orm_store_owner_t *owner) {
 void iris_orm_store_owner_destroy(iris_orm_store_owner_t *owner) {
     if (!owner)
         return;
-    orm_disconnect(owner->connection);
+    orm_connection_release(owner->connection);
+    /* Runtime final release closes the registry after connection dependents. */
+    orm_runtime_release(owner->runtime);
     free(owner->namespace_name);
     free(owner);
 }

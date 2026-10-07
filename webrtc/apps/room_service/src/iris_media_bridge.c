@@ -4,7 +4,7 @@
 #include <platform.h>
 #include <json_parser.h>
 #include <datetime_parser.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 #include <salts/clock.h>
 
 #include <limits.h>
@@ -49,8 +49,8 @@ typedef struct iris_media_entry_s {
 struct iris_media_bridge_s {
     iris_media_entry_t *entries;
     size_t capacity;
-    salts_mutex_t mutex;
-    salts_cond_t state_changed;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t state_changed;
     iris_media_bridge_send_fn send;
     void *send_context;
     iris_media_bridge_observe_fn observe;
@@ -701,7 +701,7 @@ static int same_request(const iris_media_request_t *left,
 static int refresh_terminal_replay_fence(
     iris_media_bridge_t *bridge, const iris_media_request_t *request) {
     int valid = 1;
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_FREE ||
@@ -724,13 +724,13 @@ static int refresh_terminal_replay_fence(
         }
         break;
     }
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
     return valid;
 }
 
 static uint64_t default_realtime_ms(void *context) {
     (void)context;
-    return salts_realtime_ms();
+    return cmeta_realtime_ms();
 }
 
 iris_media_bridge_t *iris_media_bridge_create(
@@ -767,8 +767,8 @@ iris_media_bridge_t *iris_media_bridge_create(
                               : default_realtime_ms;
     bridge->realtime_context = config->realtime_context;
     bridge->ledger = config->ledger;
-    salts_mutex_init(&bridge->mutex);
-    salts_cond_init(&bridge->state_changed);
+    cmeta_mutex_init(&bridge->mutex);
+    cmeta_cond_init(&bridge->state_changed);
     return bridge;
 }
 
@@ -776,8 +776,8 @@ void iris_media_bridge_destroy(iris_media_bridge_t *bridge) {
     if (!bridge) {
         return;
     }
-    salts_cond_destroy(&bridge->state_changed);
-    salts_mutex_destroy(&bridge->mutex);
+    cmeta_cond_destroy(&bridge->state_changed);
+    cmeta_mutex_destroy(&bridge->mutex);
     free(bridge->entries);
     free(bridge);
 }
@@ -905,7 +905,7 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
                              "accepted provider command has no media worker");
     }
 
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_FREE) {
@@ -928,13 +928,13 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
             (request.dispatch_epoch == entry->request.dispatch_epoch &&
              strcmp(request.iris_worker_id,
                     entry->request.iris_worker_id) != 0)) {
-            salts_mutex_unlock(&bridge->mutex);
+            cmeta_mutex_unlock(&bridge->mutex);
             return bridge_result(IRIS_MEDIA_BRIDGE_CONFLICT, &request, NULL,
                                  "COMMAND_FENCE_CONFLICT",
                                  "commandId was reused with different data or a stale fence");
         }
         if (execute) {
-            salts_mutex_unlock(&bridge->mutex);
+            cmeta_mutex_unlock(&bridge->mutex);
             (void)bridge->ledger.abort_intent(bridge->ledger.context,
                                               &identity);
             return bridge_result(
@@ -957,14 +957,14 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
         entry->state = IRIS_MEDIA_ENTRY_ACCEPTED;
         memcpy(media_worker_id, claim.provider_resource_id,
                sizeof(media_worker_id));
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         return bridge_result(IRIS_MEDIA_BRIDGE_DUPLICATE, &request,
                              media_worker_id, NULL, NULL);
     }
     if (!slot) slot = oldest_completed;
     if (!slot) {
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_mutex_unlock(&bridge->mutex);
         if (execute) {
             (void)bridge->ledger.abort_intent(bridge->ledger.context,
                                               &identity);
@@ -982,30 +982,30 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
         slot->state = IRIS_MEDIA_ENTRY_ACCEPTED;
         memcpy(media_worker_id, claim.provider_resource_id,
                sizeof(media_worker_id));
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         return bridge_result(IRIS_MEDIA_BRIDGE_DUPLICATE, &request,
                              media_worker_id, NULL, NULL);
     }
     slot->state = IRIS_MEDIA_ENTRY_DISPATCHING;
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
 
     send_status = bridge->send(bridge->send_context, &request.command,
                                media_worker_id, sizeof(media_worker_id));
 
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     if (slot->state != IRIS_MEDIA_ENTRY_DISPATCHING ||
         strcmp(slot->request.command.message_id,
                request.command.message_id) != 0) {
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_mutex_unlock(&bridge->mutex);
         return bridge_result(IRIS_MEDIA_BRIDGE_INTERNAL, &request, NULL,
                              "CORRELATION_STATE_INVALID",
                              "media correlation state changed unexpectedly");
     }
     if (send_status != IVR_OK) {
         memset(slot, 0, sizeof(*slot));
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         if (send_status == IVR_ENOTFOUND &&
             (request.command.kind == IVR_MEDIA_COMMAND_SESSION_CLOSE ||
              request.command.kind == IVR_MEDIA_COMMAND_CANCEL)) {
@@ -1040,8 +1040,8 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
     }
     if (media_worker_id[0] == '\0') {
         memset(slot, 0, sizeof(*slot));
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
         return bridge_result(
             IRIS_MEDIA_BRIDGE_UNAVAILABLE, &request, NULL,
@@ -1051,40 +1051,40 @@ iris_media_bridge_result_t iris_media_bridge_dispatch_json(
     memcpy(slot->media_worker_id, media_worker_id,
            sizeof(slot->media_worker_id));
     slot->state = IRIS_MEDIA_ENTRY_ACCEPTING;
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
 
     ledger_status = bridge->ledger.commit_accepted(
         bridge->ledger.context, &identity, media_worker_id);
     if (ledger_status != IVR_OK) {
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
-        salts_mutex_lock(&bridge->mutex);
+        cmeta_mutex_lock(&bridge->mutex);
         if (slot->state == IRIS_MEDIA_ENTRY_ACCEPTING &&
             strcmp(slot->request.command.message_id,
                    request.command.message_id) == 0) {
             memset(slot, 0, sizeof(*slot));
         }
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         return bridge_result(
             IRIS_MEDIA_BRIDGE_UNAVAILABLE, &request, NULL,
             "PROVIDER_OUTCOME_UNKNOWN",
             "media command was sent but durable acceptance failed");
     }
 
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     if (slot->state != IRIS_MEDIA_ENTRY_ACCEPTING ||
         strcmp(slot->request.command.message_id,
                request.command.message_id) != 0) {
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
         return bridge_result(IRIS_MEDIA_BRIDGE_INTERNAL, &request, NULL,
                              "CORRELATION_STATE_INVALID",
                              "media acceptance correlation was lost");
     }
     slot->state = IRIS_MEDIA_ENTRY_ACCEPTED;
-    salts_cond_broadcast(&bridge->state_changed);
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_cond_broadcast(&bridge->state_changed);
+    cmeta_mutex_unlock(&bridge->mutex);
     return bridge_result(IRIS_MEDIA_BRIDGE_ACCEPTED, &request,
                          media_worker_id, NULL, NULL);
 }
@@ -1121,7 +1121,7 @@ ivr_status_t iris_media_bridge_claim_completion(
     memset(out, 0, sizeof(*out));
     memset(&identity, 0, sizeof(identity));
     memset(&completion, 0, sizeof(completion));
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
 retry_locked:
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
@@ -1132,7 +1132,7 @@ retry_locked:
         }
         if (entry->state == IRIS_MEDIA_ENTRY_DISPATCHING ||
             entry->state == IRIS_MEDIA_ENTRY_ACCEPTING) {
-            salts_cond_wait(&bridge->state_changed, &bridge->mutex);
+            cmeta_cond_wait(&bridge->state_changed, &bridge->mutex);
             goto retry_locked;
         }
         if (entry->state == IRIS_MEDIA_ENTRY_TERMINAL_COMMITTING ||
@@ -1161,47 +1161,47 @@ retry_locked:
         status = IVR_OK;
         break;
     }
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
     if (status != IVR_OK || !claimed) return status;
 
     if (!terminal_outcome_from_result(result, &terminal)) {
-        salts_mutex_lock(&bridge->mutex);
+        cmeta_mutex_lock(&bridge->mutex);
         if (claimed->state == IRIS_MEDIA_ENTRY_TERMINAL_COMMITTING &&
             strcmp(claimed->request.command.message_id,
                    result->message_id) == 0) {
             claimed->state = IRIS_MEDIA_ENTRY_ACCEPTED;
         }
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         return IVR_ENOSPC;
     }
     status = bridge->ledger.commit_terminal(
         bridge->ledger.context, &identity, &terminal);
     if (status != IVR_OK) {
         (void)bridge->ledger.mark_unknown(bridge->ledger.context, &identity);
-        salts_mutex_lock(&bridge->mutex);
+        cmeta_mutex_lock(&bridge->mutex);
         if (claimed->state == IRIS_MEDIA_ENTRY_TERMINAL_COMMITTING &&
             strcmp(claimed->request.command.message_id,
                    result->message_id) == 0) {
             claimed->state = IRIS_MEDIA_ENTRY_ACCEPTED;
         }
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         return status;
     }
 
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     if (claimed->state != IRIS_MEDIA_ENTRY_TERMINAL_COMMITTING ||
         strcmp(claimed->request.command.message_id,
                result->message_id) != 0) {
-        salts_cond_broadcast(&bridge->state_changed);
-        salts_mutex_unlock(&bridge->mutex);
+        cmeta_cond_broadcast(&bridge->state_changed);
+        cmeta_mutex_unlock(&bridge->mutex);
         return IVR_ESTATE;
     }
     claimed->state = IRIS_MEDIA_ENTRY_COMPLETING;
     *out = completion;
-    salts_cond_broadcast(&bridge->state_changed);
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_cond_broadcast(&bridge->state_changed);
+    cmeta_mutex_unlock(&bridge->mutex);
     return IVR_OK;
 }
 
@@ -1212,7 +1212,7 @@ ivr_status_t iris_media_bridge_refresh_completion(
     if (!bridge || !command_id || !command_id[0] || !out) {
         return IVR_EINVAL;
     }
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_COMPLETING &&
@@ -1222,14 +1222,14 @@ ivr_status_t iris_media_bridge_refresh_completion(
             break;
         }
     }
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
     return status;
 }
 
 void iris_media_bridge_restore_completion(iris_media_bridge_t *bridge,
                                           const char *command_id) {
     if (!bridge || !command_id) return;
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_COMPLETING &&
@@ -1238,13 +1238,13 @@ void iris_media_bridge_restore_completion(iris_media_bridge_t *bridge,
             break;
         }
     }
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
 }
 
 void iris_media_bridge_release_completion(iris_media_bridge_t *bridge,
                                           const char *command_id) {
     if (!bridge || !command_id) return;
-    salts_mutex_lock(&bridge->mutex);
+    cmeta_mutex_lock(&bridge->mutex);
     for (size_t i = 0u; i < bridge->capacity; ++i) {
         iris_media_entry_t *entry = &bridge->entries[i];
         if (entry->state == IRIS_MEDIA_ENTRY_COMPLETING &&
@@ -1258,5 +1258,5 @@ void iris_media_bridge_release_completion(iris_media_bridge_t *bridge,
             break;
         }
     }
-    salts_mutex_unlock(&bridge->mutex);
+    cmeta_mutex_unlock(&bridge->mutex);
 }

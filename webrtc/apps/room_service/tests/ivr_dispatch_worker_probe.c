@@ -6,7 +6,7 @@
 #include "ivr_frame.h"
 #include "ivr_media_bot.h"
 #include "ivr_thread.h"
-#include "turbomedia_ivr_v1.h"
+#include "turbomedia_ivr_v2.h"
 #include "turbo_speech.h"
 #include "disruptor.h"
 
@@ -861,7 +861,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    if (TurboMediaIvrV1_codec_create(&g_codec, &error) != DATA_BIND_OK) {
+    if (TurboMediaIvrV2_codec_create(&g_codec, &error) != DATA_BIND_OK) {
         return 1;
     }
     if (probe_reply_queue_create() != 0) {

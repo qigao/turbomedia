@@ -18,7 +18,7 @@
 
 #define CHECK_TEXT(record, view, member, expected)                         \
     do {                                                                    \
-        tbe_var_data_t actual_;                                             \
+        DataBindBinaryVarData actual_;                                             \
         check_true(record##_##member(&(view), &actual_));                   \
         check_equal(actual_.size, strlen(expected));                        \
         check_true(actual_.size == 0u ||                                    \
@@ -290,7 +290,7 @@ spec("RoomService Iris CHTTP H1 WebSocket provider codec") {
             "\"text\":\"Welcome\"}";
         iris_provider_limits_t limits = IRIS_PROVIDER_LIMITS_INIT;
         ProviderCommandV1_view_t view;
-        tbe_var_data_t message_id;
+        DataBindBinaryVarData message_id;
         size_t encoded_size = 0u;
         uint8_t *encoded = encode_command(
             payload, "session-a", "17", TEST_SEMANTIC_FINGERPRINT,

@@ -2,6 +2,7 @@
 
 #include "ivr_thread.h"
 
+#include <http_client/http.h>
 #include <platform.h>
 #include <salts/clock.h>
 #include <stdatomic.h>
@@ -412,11 +413,11 @@ static int ivr_control_ws_client_send_front(
 
 static void ivr_control_ws_client_wait_reconnect(
     ivr_control_ws_client_t *client, uint32_t delay_ms) {
-    uint64_t deadline_ms = salts_monotonic_ms() + delay_ms;
+    uint64_t deadline_ms = cmeta_monotonic_ms() + delay_ms;
     ivr_mutex_lock(&client->lock);
     while (!atomic_load_explicit(&client->stop_requested,
                                  memory_order_acquire)) {
-        uint64_t now_ms = salts_monotonic_ms();
+        uint64_t now_ms = cmeta_monotonic_ms();
         if (now_ms >= deadline_ms) {
             break;
         }
@@ -1021,7 +1022,7 @@ ivr_status_t ivr_control_ws_server_maintain(
     if (status == SALTS_OK) {
         terminal_status = stats.terminal_status;
     }
-    now_ms = salts_monotonic_ms();
+    now_ms = cmeta_monotonic_ms();
     if (server->next_restart_ms && now_ms < server->next_restart_ms) {
         return IVR_ESTATE;
     }

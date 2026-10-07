@@ -26,7 +26,7 @@ static const uint8_t RTSP_TEST_KCP_PSK[CNET_KCP_PSK_BYTES] = {
     0xb9, 0xca, 0xdb, 0xec, 0xfd, 0x0e, 0x1f, 0x20};
 
 typedef struct {
-    salts_mutex_t mutex;
+    cmeta_mutex_t mutex;
     int mutex_initialized;
     int options_count;
     int describe_count;
@@ -46,28 +46,28 @@ typedef struct {
 
 static void rtsp_test_state_init(rtsp_test_state_t *state) {
     memset(state, 0, sizeof(*state));
-    salts_mutex_init(&state->mutex);
+    cmeta_mutex_init(&state->mutex);
     state->mutex_initialized = 1;
 }
 
 static void rtsp_test_state_destroy(rtsp_test_state_t *state) {
     if (state && state->mutex_initialized) {
-        salts_mutex_destroy(&state->mutex);
+        cmeta_mutex_destroy(&state->mutex);
         state->mutex_initialized = 0;
     }
 }
 
 static void rtsp_test_increment(rtsp_test_state_t *state, int *counter) {
-    salts_mutex_lock(&state->mutex);
+    cmeta_mutex_lock(&state->mutex);
     ++*counter;
-    salts_mutex_unlock(&state->mutex);
+    cmeta_mutex_unlock(&state->mutex);
 }
 
 static int rtsp_test_read(rtsp_test_state_t *state, const int *value) {
     int result;
-    salts_mutex_lock(&state->mutex);
+    cmeta_mutex_lock(&state->mutex);
     result = *value;
-    salts_mutex_unlock(&state->mutex);
+    cmeta_mutex_unlock(&state->mutex);
     return result;
 }
 
@@ -113,9 +113,9 @@ static int rtsp_test_options(
          memcmp(authorization->value, "Digest ", 7u) == 0) ||
         (!state->auth_digest && authorization->value_len >= 6u &&
          memcmp(authorization->value, "Basic ", 6u) == 0)) {
-        salts_mutex_lock(&state->mutex);
+        cmeta_mutex_lock(&state->mutex);
         state->auth_accepted = 1;
-        salts_mutex_unlock(&state->mutex);
+        cmeta_mutex_unlock(&state->mutex);
         return turbo_rtsp_response_options(response, NULL);
     }
     return turbo_rtsp_response_status(response, 403, "Forbidden");

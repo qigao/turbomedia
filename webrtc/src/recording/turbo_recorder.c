@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <salts_str.h>
+#include <str.h>
 #include <cstl/vec.h>
 #include <stdio.h>
 

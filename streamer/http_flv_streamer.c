@@ -5,8 +5,8 @@
 
 #include "flv_muxer_internal.h"
 #include "flv_writer.h"
-#include "salts_str.h"
-#include "salts_vstr.h"
+#include "str.h"
+#include "vstr.h"
 #include "turbo_transport.h"
 
 #include <cstl/deque.h>
@@ -54,9 +54,9 @@ typedef struct {
     cnet_client *network_client;
     const cnet_tls_client_config *network_tls;
     turbo_transport_t *transport;
-    salts_thread_t upload_thread;
-    salts_mutex_t mutex;
-    salts_cond_t cond;
+    cmeta_thread_t upload_thread;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t cond;
     int sync_initialized;
     int upload_thread_started;
     int upload_ready;
@@ -153,19 +153,19 @@ static int http_flv_enqueue_vectors(void *param, const struct flv_vec_t *vectors
         memcpy(chunk.data + offset, vectors[i].ptr, (size_t)vectors[i].len);
         offset += (size_t)vectors[i].len;
     }
-    salts_mutex_lock(&ctx->mutex);
+    cmeta_mutex_lock(&ctx->mutex);
     while (ctx->connected && !ctx->upload_done &&
            ctx->queue_bytes > ctx->queue_capacity - total)
-        salts_cond_wait(&ctx->cond, &ctx->mutex);
+        cmeta_cond_wait(&ctx->cond, &ctx->mutex);
     if (!ctx->connected || ctx->upload_done || ctx->upload_result != 0 ||
         deque_push_back(&ctx->queue, &chunk) != STL_OK) {
-        salts_mutex_unlock(&ctx->mutex);
+        cmeta_mutex_unlock(&ctx->mutex);
         free(chunk.data);
         return -EPIPE;
     }
     ctx->queue_bytes += total;
-    salts_cond_signal(&ctx->cond);
-    salts_mutex_unlock(&ctx->mutex);
+    cmeta_cond_signal(&ctx->cond);
+    cmeta_mutex_unlock(&ctx->mutex);
     return 0;
 }
 
@@ -250,25 +250,25 @@ static void http_flv_upload_thread(void *arg) {
         if (size <= 0 || (size_t)size >= sizeof(request) ||
             http_flv_send_all(ctx, request, (size_t)size) != 0) result = -EIO;
     }
-    salts_mutex_lock(&ctx->mutex);
+    cmeta_mutex_lock(&ctx->mutex);
     ctx->upload_ready = result == 0;
     if (result != 0) { ctx->upload_result = result; ctx->upload_done = 1; }
-    salts_cond_broadcast(&ctx->cond);
-    salts_mutex_unlock(&ctx->mutex);
+    cmeta_cond_broadcast(&ctx->cond);
+    cmeta_mutex_unlock(&ctx->mutex);
     while (result == 0) {
         http_flv_chunk_t chunk = {0};
-        salts_mutex_lock(&ctx->mutex);
+        cmeta_mutex_lock(&ctx->mutex);
         while (deque_empty(&ctx->queue) && !ctx->upload_closed)
-            salts_cond_wait(&ctx->cond, &ctx->mutex);
+            cmeta_cond_wait(&ctx->cond, &ctx->mutex);
         if (!deque_empty(&ctx->queue)) {
             if (deque_pop_front(&ctx->queue, &chunk) != STL_OK) result = -EIO;
             else ctx->queue_bytes -= chunk.size;
-            salts_cond_broadcast(&ctx->cond);
+            cmeta_cond_broadcast(&ctx->cond);
         } else {
-            salts_mutex_unlock(&ctx->mutex);
+            cmeta_mutex_unlock(&ctx->mutex);
             break;
         }
-        salts_mutex_unlock(&ctx->mutex);
+        cmeta_mutex_unlock(&ctx->mutex);
         if (result == 0) result = http_flv_send_chunk(ctx, &chunk);
         free(chunk.data);
     }
@@ -276,11 +276,11 @@ static void http_flv_upload_thread(void *arg) {
         result = http_flv_send_all(ctx, "0\r\n\r\n", 5u);
         if (result == 0) result = http_flv_read_response(ctx);
     }
-    salts_mutex_lock(&ctx->mutex);
+    cmeta_mutex_lock(&ctx->mutex);
     ctx->upload_result = result;
     ctx->upload_done = 1;
-    salts_cond_broadcast(&ctx->cond);
-    salts_mutex_unlock(&ctx->mutex);
+    cmeta_cond_broadcast(&ctx->cond);
+    cmeta_mutex_unlock(&ctx->mutex);
 }
 
 static int http_flv_codec(const char *name, int video, http_flv_codec_t *codec) {
@@ -321,12 +321,12 @@ static int http_flv_streamer_destroy_impl(void *ctx_ptr) {
         ctx->muxer = NULL;
     }
     if (ctx->upload_thread_started) {
-        salts_mutex_lock(&ctx->mutex);
+        cmeta_mutex_lock(&ctx->mutex);
         ctx->upload_closed = 1;
-        salts_cond_broadcast(&ctx->cond);
-        salts_mutex_unlock(&ctx->mutex);
-        if (salts_thread_join(&ctx->upload_thread) != 0) return -EIO;
-        salts_thread_destroy(&ctx->upload_thread);
+        cmeta_cond_broadcast(&ctx->cond);
+        cmeta_mutex_unlock(&ctx->mutex);
+        if (cmeta_thread_join(&ctx->upload_thread) != 0) return -EIO;
+        cmeta_thread_destroy(&ctx->upload_thread);
         ctx->upload_thread_started = 0;
     }
     if (ctx->transport) {
@@ -335,7 +335,7 @@ static int http_flv_streamer_destroy_impl(void *ctx_ptr) {
     }
     http_flv_clear_queue(ctx);
     if (ctx->queue_initialized) deque_destroy(&ctx->queue);
-    if (ctx->sync_initialized) { salts_cond_destroy(&ctx->cond); salts_mutex_destroy(&ctx->mutex); }
+    if (ctx->sync_initialized) { cmeta_cond_destroy(&ctx->cond); cmeta_mutex_destroy(&ctx->mutex); }
     tstr_free(ctx->url);
     free(ctx);
     return 0;
@@ -355,8 +355,8 @@ static void *http_flv_streamer_create(const turbo_streamer_config_t *config) {
     ctx->queue_capacity = (size_t)config->buffer_size;
     ctx->video_stream_id = ctx->audio_stream_id = -1;
     ctx->stats.uptime_ms = (int64_t)time(NULL) * 1000;
-    salts_mutex_init(&ctx->mutex);
-    salts_cond_init(&ctx->cond);
+    cmeta_mutex_init(&ctx->mutex);
+    cmeta_cond_init(&ctx->cond);
     ctx->sync_initialized = 1;
     if (!ctx->url || deque_init_bytes(&ctx->queue, sizeof(http_flv_chunk_t),
                                       CMETA_ALIGNOF(http_flv_chunk_t),
@@ -409,15 +409,15 @@ static int http_flv_streamer_connect_impl(void *ctx_ptr) {
                                      ctx->video_stream_id >= 0,
                                      http_flv_enqueue_vectors, ctx);
     if (!ctx->writer) { ctx->connected = 0; return -EIO; }
-    if (salts_thread_create(&ctx->upload_thread, http_flv_upload_thread, ctx) != 0) {
+    if (cmeta_thread_create(&ctx->upload_thread, http_flv_upload_thread, ctx) != 0) {
         flv_writer_destroy(ctx->writer); ctx->writer = NULL; ctx->connected = 0;
         return -ENOMEM;
     }
     ctx->upload_thread_started = 1;
-    salts_mutex_lock(&ctx->mutex);
-    while (!ctx->upload_ready && !ctx->upload_done) salts_cond_wait(&ctx->cond, &ctx->mutex);
+    cmeta_mutex_lock(&ctx->mutex);
+    while (!ctx->upload_ready && !ctx->upload_done) cmeta_cond_wait(&ctx->cond, &ctx->mutex);
     result = ctx->upload_ready ? 0 : ctx->upload_result;
-    salts_mutex_unlock(&ctx->mutex);
+    cmeta_mutex_unlock(&ctx->mutex);
     if (result != 0) {
         int cleanup_status = http_flv_streamer_disconnect_impl(ctx);
         return cleanup_status != 0 ? cleanup_status : result;
@@ -436,15 +436,15 @@ static int http_flv_streamer_disconnect_impl(void *ctx_ptr) {
         flv_writer_destroy(ctx->writer);
         ctx->writer = NULL;
     }
-    salts_mutex_lock(&ctx->mutex);
+    cmeta_mutex_lock(&ctx->mutex);
     ctx->upload_closed = 1;
-    salts_cond_broadcast(&ctx->cond);
-    salts_mutex_unlock(&ctx->mutex);
+    cmeta_cond_broadcast(&ctx->cond);
+    cmeta_mutex_unlock(&ctx->mutex);
     result = 0;
     if (ctx->upload_thread_started) {
-        result = salts_thread_join(&ctx->upload_thread);
+        result = cmeta_thread_join(&ctx->upload_thread);
         if (result != 0) return result;
-        salts_thread_destroy(&ctx->upload_thread);
+        cmeta_thread_destroy(&ctx->upload_thread);
         ctx->upload_thread_started = 0;
     }
     result = ctx->upload_result;
@@ -466,9 +466,9 @@ static int http_flv_streamer_write_packet_impl(
     int result;
     if (!ctx || !packet || !ctx->connected || !packet->data || packet->size == 0 ||
         packet->pts < 0 || packet->dts < 0) return -EINVAL;
-    salts_mutex_lock(&ctx->mutex);
+    cmeta_mutex_lock(&ctx->mutex);
     result = ctx->upload_done || ctx->upload_result != 0 ? -EPIPE : 0;
-    salts_mutex_unlock(&ctx->mutex);
+    cmeta_mutex_unlock(&ctx->mutex);
     if (result != 0) return result;
     pts_ms = (uint64_t)packet->pts / 1000;
     dts_ms = (uint64_t)packet->dts / 1000;

@@ -2,7 +2,7 @@
 
 #include <tinytest.h>
 #include <platform.h>
-#include <salts_uuid.h>
+#include <cmeta_uuid.h>
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -173,7 +173,7 @@ static int wait_until_accepting(reconcile_fixture_t *fixture,
         if (iris_media_reconciler_accepting_commands(fixture->reconciler)) {
             return 1;
         }
-        salts_sleep_ms(1u);
+        cmeta_sleep_ms(1u);
         ++elapsed_ms;
     }
     return iris_media_reconciler_accepting_commands(fixture->reconciler);
@@ -184,7 +184,7 @@ static int wait_for_fetch_calls(reconcile_fixture_t *fixture, int expected,
     uint32_t elapsed_ms = 0u;
     while (elapsed_ms < timeout_ms) {
         if (atomic_load(&fixture->fetch_calls) >= expected) return 1;
-        salts_sleep_ms(1u);
+        cmeta_sleep_ms(1u);
         ++elapsed_ms;
     }
     return atomic_load(&fixture->fetch_calls) >= expected;
@@ -466,7 +466,7 @@ spec("iris_media_reconciler") {
         check_true(wait_for_fetch_calls(&fixture, 1, 500u));
         iris_media_reconciler_stop(fixture.reconciler);
         fetch_calls_after_stop = atomic_load(&fixture.fetch_calls);
-        salts_sleep_ms(5u);
+        cmeta_sleep_ms(5u);
         check_equal(atomic_load(&fixture.fetch_calls),
                      fetch_calls_after_stop);
         check_equal(iris_media_reconciler_on_inventory_page(

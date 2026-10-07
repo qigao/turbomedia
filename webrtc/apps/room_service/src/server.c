@@ -4,9 +4,9 @@
 #include "turbo_media_auth.h"
 #include <json_parser.h>
 #include "turbo_room_service.h"
-#include "salts_thread.h"
-#include "turbo_crypto.h"
-#include "salts_uuid.h"
+#include "cmeta_thread.h"
+#include <salts/crypto.h>
+#include "cmeta_uuid.h"
 #include "tlog.h"
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
 #include "iris_command_ledger.h"
@@ -66,7 +66,7 @@ struct room_service_app_server_s {
     int64_t room_sync_sequence;
     int64_t call_center_event_sequence;
     int64_t conference_policy_sequence;
-    salts_mutex_t mutex;
+    cmeta_mutex_t mutex;
     room_service_sfu_http_client_owner_t
         sfu_http_clients[ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY];
     atomic_int running;
@@ -87,20 +87,20 @@ struct room_service_app_server_s {
 static int room_service_room_completion_id(
     const char *command_id, char out[SALTS_UUID_STRING_SIZE]) {
     static const char domain[] = "turbomedia.room.terminal.v1";
-    turbo_crypto_sha256_ctx_t hash;
-    uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
-    salts_uuid_t uuid;
+    salts_crypto_sha256_ctx_t hash;
+    uint8_t digest[SALTS_CRYPTO_SHA256_DIGEST_SIZE];
+    cmeta_uuid_t uuid;
     if (!command_id || !command_id[0] ||
-        turbo_crypto_sha256_init(&hash) != 0 ||
-        turbo_crypto_sha256_update(&hash, domain, sizeof(domain) - 1u) != 0 ||
-        turbo_crypto_sha256_update(&hash, command_id, strlen(command_id)) != 0 ||
-        turbo_crypto_sha256_final(&hash, digest) != 0) {
+        salts_crypto_sha256_init(&hash) != 0 ||
+        salts_crypto_sha256_update(&hash, domain, sizeof(domain) - 1u) != 0 ||
+        salts_crypto_sha256_update(&hash, command_id, strlen(command_id)) != 0 ||
+        salts_crypto_sha256_final(&hash, digest) != 0) {
         return 0;
     }
     memcpy(uuid.bytes, digest, sizeof(uuid.bytes));
     uuid.bytes[6] = (uint8_t)((uuid.bytes[6] & 0x0fu) | 0x80u);
     uuid.bytes[8] = (uint8_t)((uuid.bytes[8] & 0x3fu) | 0x80u);
-    return salts_uuid_format(&uuid, out, SALTS_UUID_STRING_SIZE) == SALTS_OK;
+    return cmeta_uuid_format(&uuid, out, SALTS_UUID_STRING_SIZE) == SALTS_OK;
 }
 
 static const char *room_service_provider_json_string(
@@ -615,7 +615,7 @@ static int room_service_fill_conference_policy(room_service_app_server_t *server
     }
 
     memset(out_policy, 0, sizeof(*out_policy));
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     policy = room_service_find_conference_policy(server, room_id);
     if (policy) {
         *out_policy = *policy;
@@ -629,7 +629,7 @@ static int room_service_fill_conference_policy(room_service_app_server_t *server
     out_policy->supervisor_mode = TURBO_CALL_CENTER_SUPERVISOR_NONE;
 
 out:
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return rc;
 }
 
@@ -911,14 +911,14 @@ int room_service_app_server_register_sfu_node(room_service_app_server_t *server,
         return -1;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     entry = room_service_find_sfu_node_locked(server, node_id);
     if (!entry) {
         if (room_service_ensure_capacity((void **)&server->sfu_nodes,
                                          &server->sfu_node_capacity,
                                          sizeof(*server->sfu_nodes),
                                          server->sfu_node_count + 1) != 0) {
-            salts_mutex_unlock(&server->mutex);
+            cmeta_mutex_unlock(&server->mutex);
             return -1;
         }
         entry = &server->sfu_nodes[server->sfu_node_count++];
@@ -928,7 +928,7 @@ int room_service_app_server_register_sfu_node(room_service_app_server_t *server,
     room_service_copy_string(entry->control_url, sizeof(entry->control_url), control_url);
     room_service_copy_string(entry->control_token, sizeof(entry->control_token),
                              control_token);
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return 0;
 }
 
@@ -940,9 +940,9 @@ int room_service_app_server_has_sfu_node(room_service_app_server_t *server,
         return 0;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     found = room_service_find_sfu_node_locked(server, node_id) != NULL;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return found;
 }
 
@@ -955,15 +955,15 @@ int room_service_app_server_choose_sfu_node(room_service_app_server_t *server,
     }
 
     node_id[0] = '\0';
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     if (server->sfu_node_count > 0) {
         index = server->next_sfu_node_index % server->sfu_node_count;
         server->next_sfu_node_index++;
         room_service_copy_string(node_id, node_id_size, server->sfu_nodes[index].node_id);
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         return 0;
     }
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
 
     if (server->config.sfu_control_url && server->config.sfu_control_url[0] != '\0') {
         room_service_copy_string(node_id, node_id_size, "default-sfu");
@@ -1059,16 +1059,16 @@ static int room_service_copy_sfu_route_for_room(room_service_app_server_t *serve
         return 0;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     sfu_node_count = server->sfu_node_count;
     entry = room_service_find_sfu_node_locked(server, room_summary.assigned_sfu_node);
     if (entry) {
         room_service_copy_string(control_url, control_url_size, entry->control_url);
         room_service_copy_string(control_token, control_token_size, entry->control_token);
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         return 0;
     }
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
 
     if (sfu_node_count == 0 && server->config.sfu_control_url &&
         server->config.sfu_control_url[0] != '\0') {
@@ -1125,7 +1125,7 @@ static int room_service_release_sfu_http_client(
     size_t index;
     int destroy_status;
     if (!server || !client) return -1;
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     for (index = 0u; index < ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY; ++index) {
         if (server->sfu_http_clients[index].client == client &&
             !server->sfu_http_clients[index].releasing) {
@@ -1134,16 +1134,16 @@ static int room_service_release_sfu_http_client(
             break;
         }
     }
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     if (!owner) return -1;
     destroy_status = turbo_transport_destroy(client);
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     if (destroy_status == 0) {
         memset(owner, 0, sizeof(*owner));
     } else {
         owner->releasing = 0;
     }
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return destroy_status;
 }
 
@@ -1153,7 +1153,7 @@ static int room_service_drain_sfu_http_clients(
         room_service_sfu_http_client_owner_t *owner = NULL;
         turbo_transport_t *client;
         size_t index;
-        salts_mutex_lock(&server->mutex);
+        cmeta_mutex_lock(&server->mutex);
         for (index = 0u; index < ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY;
              ++index) {
             if (server->sfu_http_clients[index].reserved) {
@@ -1162,25 +1162,25 @@ static int room_service_drain_sfu_http_clients(
             }
         }
         if (!owner) {
-            salts_mutex_unlock(&server->mutex);
+            cmeta_mutex_unlock(&server->mutex);
             return 0;
         }
         if (!owner->client || owner->releasing) {
-            salts_mutex_unlock(&server->mutex);
+            cmeta_mutex_unlock(&server->mutex);
             return -1;
         }
         owner->releasing = 1;
         client = owner->client;
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         if (turbo_transport_destroy(client) != 0) {
-            salts_mutex_lock(&server->mutex);
+            cmeta_mutex_lock(&server->mutex);
             owner->releasing = 0;
-            salts_mutex_unlock(&server->mutex);
+            cmeta_mutex_unlock(&server->mutex);
             return -1;
         }
-        salts_mutex_lock(&server->mutex);
+        cmeta_mutex_lock(&server->mutex);
         memset(owner, 0, sizeof(*owner));
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
     }
 }
 
@@ -1198,7 +1198,7 @@ static turbo_transport_t *room_service_create_sfu_client_for_route(
         return NULL;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     for (index = 0u; index < ROOM_SERVICE_SFU_HTTP_CLIENT_CAPACITY; ++index) {
         if (!server->sfu_http_clients[index].reserved) {
             owner = &server->sfu_http_clients[index];
@@ -1206,7 +1206,7 @@ static turbo_transport_t *room_service_create_sfu_client_for_route(
             break;
         }
     }
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     if (!owner) return NULL;
 
     if (turbo_transport_parse_url(control_url, &config) != 0 ||
@@ -1236,15 +1236,15 @@ static turbo_transport_t *room_service_create_sfu_client_for_route(
     free((void *)config.host);
     free((void *)config.path);
     if (!client) goto fail;
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     owner->client = client;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return client;
 
 fail:
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     memset(owner, 0, sizeof(*owner));
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return NULL;
 }
 
@@ -1968,17 +1968,17 @@ room_service_app_server_t *room_service_app_server_create(
 
     memcpy(&server->config, config, sizeof(*config));
     atomic_init(&server->running, 0);
-    salts_mutex_init(&server->mutex);
+    cmeta_mutex_init(&server->mutex);
     server->service = turbo_room_service_create();
     if (!server->service) {
-        salts_mutex_destroy(&server->mutex);
+        cmeta_mutex_destroy(&server->mutex);
         free(server);
         return NULL;
     }
     if (room_service_register_sfu_nodes_from_config(server, config->sfu_nodes) != 0) {
         turbo_room_service_destroy(server->service);
         free(server->sfu_nodes);
-        salts_mutex_destroy(&server->mutex);
+        cmeta_mutex_destroy(&server->mutex);
         free(server);
         return NULL;
     }
@@ -2005,7 +2005,7 @@ room_service_app_server_t *room_service_app_server_create(
             }
             turbo_room_service_destroy(server->service);
             free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
+            cmeta_mutex_destroy(&server->mutex);
             free(server);
             return NULL;
         }
@@ -2023,7 +2023,7 @@ room_service_app_server_t *room_service_app_server_create(
             iris_command_ledger_destroy(server->iris_command_ledger);
             turbo_room_service_destroy(server->service);
             free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
+            cmeta_mutex_destroy(&server->mutex);
             free(server);
             return NULL;
         }
@@ -2044,7 +2044,7 @@ room_service_app_server_t *room_service_app_server_create(
             server->iris_command_ledger = NULL;
             turbo_room_service_destroy(server->service);
             free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
+            cmeta_mutex_destroy(&server->mutex);
             free(server);
             return NULL;
         }
@@ -2078,7 +2078,7 @@ room_service_app_server_t *room_service_app_server_create(
             iris_command_ledger_destroy(server->iris_command_ledger);
             turbo_room_service_destroy(server->service);
             free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
+            cmeta_mutex_destroy(&server->mutex);
             free(server);
             return NULL;
         }
@@ -2107,7 +2107,7 @@ room_service_app_server_t *room_service_app_server_create(
             server->iris_command_ledger = NULL;
             turbo_room_service_destroy(server->service);
             free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
+            cmeta_mutex_destroy(&server->mutex);
             free(server);
             return NULL;
         }
@@ -2151,7 +2151,7 @@ room_service_app_server_t *room_service_app_server_create(
                 iris_command_ledger_destroy(server->iris_command_ledger);
                 turbo_room_service_destroy(server->service);
                 free(server->sfu_nodes);
-                salts_mutex_destroy(&server->mutex);
+                cmeta_mutex_destroy(&server->mutex);
                 free(server);
                 return NULL;
             }
@@ -2170,7 +2170,7 @@ room_service_app_server_t *room_service_app_server_create(
 #endif
         turbo_room_service_destroy(server->service);
         free(server->sfu_nodes);
-        salts_mutex_destroy(&server->mutex);
+        cmeta_mutex_destroy(&server->mutex);
         free(server);
         return NULL;
     }
@@ -2251,7 +2251,7 @@ room_service_app_server_t *room_service_app_server_create(
                 turbo_room_service_destroy(server->service);
                 server->service = NULL;
                 free(server->sfu_nodes);
-                salts_mutex_destroy(&server->mutex);
+                cmeta_mutex_destroy(&server->mutex);
                 free(server);
                 return NULL;
             }
@@ -2303,7 +2303,7 @@ room_service_app_server_t *room_service_app_server_create(
             turbo_room_service_destroy(server->service);
             server->service = NULL;
             free(server->sfu_nodes);
-            salts_mutex_destroy(&server->mutex);
+            cmeta_mutex_destroy(&server->mutex);
             free(server);
             return NULL;
         }
@@ -2354,7 +2354,7 @@ room_service_app_server_t *room_service_app_server_create(
                 turbo_room_service_destroy(server->service);
                 server->service = NULL;
                 free(server->sfu_nodes);
-                salts_mutex_destroy(&server->mutex);
+                cmeta_mutex_destroy(&server->mutex);
                 free(server);
                 return NULL;
             }
@@ -2545,7 +2545,7 @@ int room_service_app_server_destroy(room_service_app_server_t *server) {
     free(server->call_center_events);
     free(server->conference_policies);
     free(server->room_sync_diagnostics);
-    salts_mutex_destroy(&server->mutex);
+    cmeta_mutex_destroy(&server->mutex);
     free(server);
     return 0;
 }
@@ -2672,14 +2672,14 @@ int room_service_app_server_get_stats(room_service_app_server_t *server,
     }
 
     memset(stats, 0, sizeof(*stats));
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     stats->running =
         atomic_load_explicit(&server->running, memory_order_acquire);
     stats->room_sync_diagnostic_count = server->room_sync_diagnostic_count;
     stats->call_center_event_count = server->call_center_event_count;
     stats->conference_policy_count = server->conference_policy_count;
     stats->sfu_node_count = server->sfu_node_count;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return 0;
 }
 
@@ -3692,7 +3692,7 @@ int room_service_app_server_record_room_sync(
         return -1;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     diagnostic = room_service_find_room_sync_diagnostic(server, room_id);
     if (!diagnostic) {
         if (room_service_ensure_capacity((void **)&server->room_sync_diagnostics,
@@ -3719,7 +3719,7 @@ int room_service_app_server_record_room_sync(
     rc = 0;
 
 out:
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return rc;
 }
 
@@ -3733,15 +3733,15 @@ int room_service_app_server_get_room_sync_diagnostic(
     }
 
     memset(diagnostic, 0, sizeof(*diagnostic));
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     stored = room_service_find_room_sync_diagnostic(server, room_id);
     if (!stored) {
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         return -1;
     }
 
     *diagnostic = *stored;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return 0;
 }
 
@@ -3756,7 +3756,7 @@ int room_service_app_server_record_call_center_event(
         return -1;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     if (room_service_ensure_capacity((void **)&server->call_center_events,
                                      &server->call_center_event_capacity,
                                      sizeof(*server->call_center_events),
@@ -3780,7 +3780,7 @@ int room_service_app_server_record_call_center_event(
     rc = 0;
 
 out:
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return rc;
 }
 
@@ -3801,7 +3801,7 @@ int room_service_app_server_list_call_center_events(
         return -1;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     if (limit == 0 || limit > event_capacity) {
         limit = event_capacity;
     }
@@ -3822,7 +3822,7 @@ int room_service_app_server_list_call_center_events(
         }
     }
 
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
 
     if (out_count) {
         *out_count = count;
@@ -3841,7 +3841,7 @@ int room_service_app_server_set_conference_layout_mode(
         return -1;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     policy = room_service_get_or_create_conference_policy_locked(server, room_id);
     if (!policy) {
         goto out;
@@ -3865,7 +3865,7 @@ int room_service_app_server_set_conference_layout_mode(
     rc = 0;
 
 out:
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return rc;
 }
 
@@ -3884,7 +3884,7 @@ int room_service_app_server_set_conference_active_speaker(
         return -1;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     policy = room_service_get_or_create_conference_policy_locked(server, room_id);
     if (!policy) {
         goto out;
@@ -3908,7 +3908,7 @@ int room_service_app_server_set_conference_active_speaker(
     rc = 0;
 
 out:
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return rc;
 }
 
@@ -3928,7 +3928,7 @@ int room_service_app_server_set_conference_pin(room_service_app_server_t *server
         return -1;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     policy = room_service_get_or_create_conference_policy_locked(server, room_id);
     if (!policy) {
         goto out;
@@ -3952,7 +3952,7 @@ int room_service_app_server_set_conference_pin(room_service_app_server_t *server
     rc = 0;
 
 out:
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return rc;
 }
 
@@ -4235,16 +4235,16 @@ int room_service_app_server_apply_call_center_policy(
         return -1;
     }
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     policy = room_service_get_or_create_conference_policy_locked(server, room_id);
     if (!policy) {
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         free(before_subscriptions);
         return -1;
     }
     policy->supervisor_mode = supervisor_mode;
     policy->version = ++server->conference_policy_sequence;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
 
     if (room_service_capture_policy_subscriptions(
             server->service, room_id, room_service_policy_has_call_center_source,

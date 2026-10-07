@@ -2,8 +2,9 @@
 
 #include "iris_provider_protocol.h"
 #include <json_parser.h>
-#include <salts_error.h>
-#include <turbo_crypto.h>
+#include <cmeta_error.h>
+#include <salts/crypto.h>
+#include <openssl/mem.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,11 +25,11 @@ static int add_member(json_value_t *object, const char *name,
     return 1;
 }
 
-static json_value_t *wire_string(tbe_var_data_t value) {
+static json_value_t *wire_string(DataBindBinaryVarData value) {
     return json_create_string_n((const char *)value.data, value.size);
 }
 
-static int wire_text_equal(tbe_var_data_t value, const char *expected) {
+static int wire_text_equal(DataBindBinaryVarData value, const char *expected) {
     size_t expected_size;
     if (!expected) return 0;
     expected_size = strlen(expected);
@@ -36,21 +37,21 @@ static int wire_text_equal(tbe_var_data_t value, const char *expected) {
            (value.size == 0u || memcmp(value.data, expected, value.size) == 0);
 }
 
-static int wire_text_same(tbe_var_data_t left, tbe_var_data_t right) {
+static int wire_text_same(DataBindBinaryVarData left, DataBindBinaryVarData right) {
     return left.size == right.size &&
            (left.size == 0u || memcmp(left.data, right.data, left.size) == 0);
 }
 
-static int wire_text_empty(tbe_var_data_t value) { return value.size == 0u; }
+static int wire_text_empty(DataBindBinaryVarData value) { return value.size == 0u; }
 
-static int copy_wire_text(char *out, size_t capacity, tbe_var_data_t value) {
+static int copy_wire_text(char *out, size_t capacity, DataBindBinaryVarData value) {
     if (!out || capacity == 0u || value.size >= capacity) return 0;
     if (value.size != 0u) memcpy(out, value.data, value.size);
     out[value.size] = '\0';
     return 1;
 }
 
-static int duplicate_wire_text(char **out, tbe_var_data_t value) {
+static int duplicate_wire_text(char **out, DataBindBinaryVarData value) {
     char *copy;
     if (!out || value.size == SIZE_MAX) return 0;
     copy = (char *)malloc(value.size + 1u);
@@ -61,7 +62,7 @@ static int duplicate_wire_text(char **out, tbe_var_data_t value) {
     return 1;
 }
 
-static int parse_wire_u64(tbe_var_data_t value, uint64_t *out) {
+static int parse_wire_u64(DataBindBinaryVarData value, uint64_t *out) {
     char text[IRIS_CONTROL_U64_CAPACITY];
     return copy_wire_text(text, sizeof(text), value) &&
            iris_provider_parse_u64(text, out) == SALTS_OK;
@@ -92,28 +93,28 @@ static int allocate_wire(size_t block_length, const char *const *fields,
     return 1;
 }
 
-static int hash_field(turbo_crypto_sha256_ctx_t *context,
-                      tbe_var_data_t value) {
+static int hash_field(salts_crypto_sha256_ctx_t *context,
+                      DataBindBinaryVarData value) {
     uint64_t length = (uint64_t)value.size;
     uint8_t encoded_length[sizeof(length)];
     size_t index;
     for (index = 0u; index < sizeof(encoded_length); ++index) {
         encoded_length[index] = (uint8_t)(length >> (index * 8u));
     }
-    return turbo_crypto_sha256_update(context, encoded_length,
+    return salts_crypto_sha256_update(context, encoded_length,
                                       sizeof(encoded_length)) == 0 &&
            (value.size == 0u ||
-            turbo_crypto_sha256_update(context, value.data, value.size) == 0);
+            salts_crypto_sha256_update(context, value.data, value.size) == 0);
 }
 
 static int command_fingerprint_valid(const ProviderCommandV1_view_t *command) {
     static const char hex[] = "0123456789abcdef";
-    turbo_crypto_sha256_ctx_t context;
-    uint8_t digest[TURBO_CRYPTO_SHA256_SIZE];
-    char expected[sizeof("sha256:") - 1u + TURBO_CRYPTO_SHA256_SIZE * 2u + 1u];
-    tbe_var_data_t tenant_id, session_id, command_type, provider_id;
-    tbe_var_data_t correlation_id, causation_id, deadline_at, payload_json;
-    tbe_var_data_t fingerprint;
+    salts_crypto_sha256_ctx_t context;
+    uint8_t digest[SALTS_CRYPTO_SHA256_DIGEST_SIZE];
+    char expected[sizeof("sha256:") - 1u + SALTS_CRYPTO_SHA256_DIGEST_SIZE * 2u + 1u];
+    DataBindBinaryVarData tenant_id, session_id, command_type, provider_id;
+    DataBindBinaryVarData correlation_id, causation_id, deadline_at, payload_json;
+    DataBindBinaryVarData fingerprint;
     size_t index;
     if (!command ||
         !ProviderCommandV1_tenant_id(command, &tenant_id) ||
@@ -125,12 +126,12 @@ static int command_fingerprint_valid(const ProviderCommandV1_view_t *command) {
         !ProviderCommandV1_deadline_at(command, &deadline_at) ||
         !ProviderCommandV1_payload_json(command, &payload_json) ||
         !ProviderCommandV1_semantic_fingerprint(command, &fingerprint) ||
-        turbo_crypto_sha256_init(&context) != 0 ||
+        salts_crypto_sha256_init(&context) != 0 ||
         !hash_field(&context, tenant_id) || !hash_field(&context, session_id) ||
         !hash_field(&context, command_type) || !hash_field(&context, provider_id) ||
         !hash_field(&context, correlation_id) || !hash_field(&context, causation_id) ||
         !hash_field(&context, deadline_at) || !hash_field(&context, payload_json) ||
-        turbo_crypto_sha256_final(&context, digest) != 0) {
+        salts_crypto_sha256_final(&context, digest) != 0) {
         return 0;
     }
     memcpy(expected, "sha256:", sizeof("sha256:") - 1u);
@@ -140,7 +141,7 @@ static int command_fingerprint_valid(const ProviderCommandV1_view_t *command) {
     }
     expected[sizeof(expected) - 1u] = '\0';
     return fingerprint.size == sizeof(expected) - 1u &&
-           turbo_crypto_verify(expected, fingerprint.data,
+           CRYPTO_memcmp(expected, fingerprint.data,
                                sizeof(expected) - 1u) == 0;
 }
 
@@ -152,9 +153,9 @@ static char *build_bridge_json(const ProviderCommandV1_view_t *command,
     const char *capability;
     uint64_t bridge_schema_version;
     char *json = NULL;
-    tbe_var_data_t command_id, tenant_id, session_id, command_type, provider_id;
-    tbe_var_data_t correlation_id, causation_id, deadline_at, worker_id;
-    tbe_var_data_t payload_json;
+    DataBindBinaryVarData command_id, tenant_id, session_id, command_type, provider_id;
+    DataBindBinaryVarData correlation_id, causation_id, deadline_at, worker_id;
+    DataBindBinaryVarData payload_json;
     if (!ProviderCommandV1_command_id(command, &command_id) ||
         !ProviderCommandV1_tenant_id(command, &tenant_id) ||
         !ProviderCommandV1_session_id(command, &session_id) ||
@@ -219,9 +220,9 @@ ivr_status_t iris_control_provider_decode_command(
     iris_provider_limits_t limits = IRIS_PROVIDER_LIMITS_INIT;
     ProviderCommandV1_view_t view;
     ProviderMessageKind_t kind = ProviderMessageKind_Receipt;
-    tbe_var_data_t message_id, command_id, tenant_id, provider_id, session_id;
-    tbe_var_data_t partition_key, producer_id, deadline_at, worker_id;
-    tbe_var_data_t dispatch_epoch_text, fingerprint;
+    DataBindBinaryVarData message_id, command_id, tenant_id, provider_id, session_id;
+    DataBindBinaryVarData partition_key, producer_id, deadline_at, worker_id;
+    DataBindBinaryVarData dispatch_epoch_text, fingerprint;
     uint64_t dispatch_epoch = 0u;
     if (!encoded || encoded_size == 0u || !out) return IVR_EINVAL;
     iris_control_provider_command_init(out);
@@ -504,9 +505,9 @@ ivr_status_t iris_control_provider_decode_completion_ack(
     iris_provider_limits_t limits = IRIS_PROVIDER_LIMITS_INIT;
     ProviderCompletionAckV1_view_t ack;
     ProviderMessageKind_t kind = ProviderMessageKind_Command;
-    tbe_var_data_t causation_id, correlation_id, tenant_id, wire_provider_id;
-    tbe_var_data_t session_id, partition_key, producer_id, command_id;
-    tbe_var_data_t epoch_text, sequence_text;
+    DataBindBinaryVarData causation_id, correlation_id, tenant_id, wire_provider_id;
+    DataBindBinaryVarData session_id, partition_key, producer_id, command_id;
+    DataBindBinaryVarData epoch_text, sequence_text;
     uint64_t epoch = 0u, sequence = 0u;
     if (!encoded || encoded_size == 0u || !completion ||
         !provider_id || !iris_identity || !completion_message_id || !out) {
@@ -659,8 +660,8 @@ ivr_status_t iris_control_provider_decode_event_ack(
     ProviderEventAckV1_view_t ack;
     ProviderMessageKind_t kind = ProviderMessageKind_Command;
     ProviderEventAckDisposition_t disposition;
-    tbe_var_data_t causation_id, correlation_id, tenant_id, wire_provider_id;
-    tbe_var_data_t session_id, partition_key, producer_id, event_id, sequence_text;
+    DataBindBinaryVarData causation_id, correlation_id, tenant_id, wire_provider_id;
+    DataBindBinaryVarData session_id, partition_key, producer_id, event_id, sequence_text;
     uint64_t sequence = 0u;
     if (!encoded || encoded_size == 0u || !event || !provider_id ||
         !iris_identity || !event_message_id || !out) return IVR_EINVAL;
@@ -787,10 +788,10 @@ ivr_status_t iris_control_provider_decode_observation(
     ProviderMessageKind_t kind = ProviderMessageKind_Command;
     ProviderQueryStatus_t status;
     uint8_t has_more;
-    tbe_var_data_t correlation_id, causation_id, wire_tenant_id, wire_provider_id;
-    tbe_var_data_t session_id, partition_key, producer_id, wire_query_id;
-    tbe_var_data_t observation_type, revision_text, cursor_text, next_cursor_text;
-    tbe_var_data_t payload_json, error_code, error_message;
+    DataBindBinaryVarData correlation_id, causation_id, wire_tenant_id, wire_provider_id;
+    DataBindBinaryVarData session_id, partition_key, producer_id, wire_query_id;
+    DataBindBinaryVarData observation_type, revision_text, cursor_text, next_cursor_text;
+    DataBindBinaryVarData payload_json, error_code, error_message;
     uint64_t revision = 0u, cursor = 0u, next_cursor = 0u;
     if (!encoded || encoded_size == 0u || !tenant_id ||
         !provider_id || !iris_identity || !query_id || !query_type || !out) {
@@ -930,10 +931,10 @@ ivr_status_t iris_control_provider_decode_session_bound(
     iris_provider_limits_t limits = IRIS_PROVIDER_LIMITS_INIT;
     ProviderSessionBoundV1_view_t view;
     ProviderMessageKind_t kind = ProviderMessageKind_Command;
-    tbe_var_data_t message_id, correlation_id, causation_id, tenant_id;
-    tbe_var_data_t wire_provider_id, session_id, partition_key, producer_id;
-    tbe_var_data_t ingress_event_id, call_id, generation_text;
-    tbe_var_data_t bound_session_id, error_code, error_message;
+    DataBindBinaryVarData message_id, correlation_id, causation_id, tenant_id;
+    DataBindBinaryVarData wire_provider_id, session_id, partition_key, producer_id;
+    DataBindBinaryVarData ingress_event_id, call_id, generation_text;
+    DataBindBinaryVarData bound_session_id, error_code, error_message;
     uint64_t generation = 0u;
     int accepted;
     if (!encoded || encoded_size == 0u || !offer || !provider_id ||
