@@ -42,6 +42,13 @@ typedef struct {
     int use_tls;                    /**< 1 for WSS, 0 for WS */
     const char *cert_file;          /**< Path to SSL certificate */
     const char *key_file;           /**< Path to SSL private key */
+    /**
+     * Optional trusted-proxy map: numeric-ip=64-lowercase-client-cert-sha256.
+     * When configured, the WSS listener requires mTLS and source policy uses
+     * exactly one X-Forwarded-For numeric address from a matching proxy.
+     */
+    const char *trusted_proxy_map;
+    const char *trusted_proxy_ca_file; /**< CA used to verify trusted proxy client certificates */
     int max_peers;                  /**< Max peers per room (0 = unlimited) */
     int max_rooms;                  /**< Max active rooms (0 = unlimited) */
     int peer_timeout_ms;            /**< Peer idle timeout */
@@ -65,6 +72,7 @@ typedef struct {
     const char *jwt_previous_key_id; /**< Previous key identifier during rotation */
     const char *jwt_previous_secret; /**< Previous secret during rotation */
     const char *jwt_revoked_token_sha256; /**< Comma-separated revoked token digests */
+    size_t jwt_dynamic_revocation_capacity; /**< 0 disables dynamic revocation; otherwise bounded entries */
     int jwt_clock_skew_seconds;     /**< Accepted clock skew (0..300) */
     int jwt_max_ttl_seconds;        /**< Maximum token lifetime (1..86400) */
     const char *jwt_algo;           /**< Must be HS256 when specified */
@@ -81,6 +89,14 @@ typedef enum {
     SIGNAL_MSG_CANDIDATE,           /**< ICE candidate */
     SIGNAL_MSG_ERROR                /**< Error message */
 } webrtc_signal_msg_type_t;
+
+typedef enum {
+    WEBRTC_SIGNALING_REVOCATION_APPLY_ERROR = -1,
+    WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED = 0,
+    WEBRTC_SIGNALING_REVOCATION_APPLY_STALE = 1,
+    WEBRTC_SIGNALING_REVOCATION_APPLY_GAP = 2,
+    WEBRTC_SIGNALING_REVOCATION_APPLY_LIMIT = 3
+} webrtc_signaling_revocation_apply_result_t;
 
 /**
  * @brief Signaling message
@@ -136,6 +152,41 @@ TURBO_MEDIA_API int webrtc_signaling_get_peer_count(webrtc_signaling_server_t *s
  */
 TURBO_MEDIA_API int webrtc_signaling_get_port(
     webrtc_signaling_server_t *server, uint16_t *out_port);
+
+/**
+ * Apply one complete dynamic revocation snapshot.
+ *
+ * Dynamic revocation must be enabled by jwt_dynamic_revocation_capacity.
+ * A newly created server starts unsynchronized and signed peer admission
+ * fails closed until a covering snapshot is applied.
+ */
+TURBO_MEDIA_API webrtc_signaling_revocation_apply_result_t
+webrtc_signaling_apply_revocation_snapshot(
+    webrtc_signaling_server_t *server,
+    uint64_t epoch,
+    uint64_t sequence,
+    const char *const *sha256_hex,
+    size_t count);
+
+/**
+ * Apply one exact-next dynamic revoke event.
+ */
+TURBO_MEDIA_API webrtc_signaling_revocation_apply_result_t
+webrtc_signaling_apply_revocation(
+    webrtc_signaling_server_t *server,
+    uint64_t epoch,
+    uint64_t sequence,
+    const char *sha256_hex);
+
+/**
+ * Read the bounded dynamic revocation projection status.
+ */
+TURBO_MEDIA_API int webrtc_signaling_get_revocation_status(
+    webrtc_signaling_server_t *server,
+    int *out_synchronized,
+    uint64_t *out_epoch,
+    uint64_t *out_sequence,
+    size_t *out_count);
 
 /**
  * @brief Broadcast message to all peers in room

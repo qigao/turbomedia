@@ -18,7 +18,19 @@ add_executable(dc_benchmark benchmark.c)
 target_link_libraries(dc_benchmark PRIVATE TurboMedia::DataChannel Salts::Core)
 set_target_properties(dc_benchmark PROPERTIES FOLDER webrtc/examples)
 
-if(TURBO_MEDIA_IS_SERVER)
+
+if(NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+  add_executable(rtc_live_audio rtc_live_audio.c)
+  target_link_libraries(
+    rtc_live_audio
+    PRIVATE TurboMedia::RTCClient
+            Salts::Capture
+            Salts::Playback
+            Salts::Platform)
+  set_target_properties(rtc_live_audio PROPERTIES FOLDER webrtc/examples)
+endif()
+
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
 add_executable(rtc_signaled_peer signaled_peer.c)
 target_link_libraries(rtc_signaled_peer PRIVATE TurboMedia::WebRTC TurboMedia::SDP
                                                Salts::JsonParser CHttp::Client

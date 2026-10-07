@@ -5,8 +5,8 @@
 
 #include "flv_muxer_internal.h"
 #include "flv_writer.h"
-#include "str.h"
-#include "vstr.h"
+#include <tstr.h>
+#include <vstr.h>
 #include "turbo_transport.h"
 
 #include <cstl/deque.h>

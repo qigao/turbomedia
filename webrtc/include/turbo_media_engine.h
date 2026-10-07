@@ -83,7 +83,7 @@ typedef enum {
  * Audio configuration
  */
 typedef struct {
-  int sample_rate;   /* 8000, 16000, 24000, 48000 */
+  int sample_rate;   /* Must be supported by the selected codec */
   int channels;      /* 1 (mono) or 2 (stereo) */
   int bitrate;       /* Target bitrate in bps (0 = auto) */
   int frame_size_ms; /* 10, 20, 40, or 60 ms */
@@ -403,13 +403,15 @@ TURBO_MEDIA_API void turbo_media_track_stop(turbo_media_track_t *track);
 /**
  * Send raw frame (alternative to capture)
  *
- * For audio: PCM samples (16-bit signed, interleaved)
- * For video: YUV420 or RGB frame
+ * For audio: PCM samples (16-bit signed, interleaved). len must be exactly
+ * one configured audio frame: sample_rate * frame_size_ms / 1000 samples per
+ * channel. Extra or short PCM is rejected rather than truncated/coerced.
+ * For video: YUV420 or RGB frame.
  *
  * @param track     Media track
  * @param data      Frame data
  * @param len       Data length
- * @param timestamp Frame timestamp (0 = auto)
+ * @param timestamp RTP/media timestamp (0 = track-owned auto clock)
  * @return          0 on success, -1 on error
  */
 TURBO_MEDIA_API int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data,

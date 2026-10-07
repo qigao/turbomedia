@@ -26,14 +26,14 @@ target_include_directories(
           ${CMAKE_CURRENT_SOURCE_DIR}/../../speech/include)
 target_link_libraries(
   turbo_media_ivr
-  PUBLIC Salts::DataBind Salts::Core TurboMedia::Speech CHttp::Client CHttp::Server
+  PUBLIC Salts::DataBind Salts::Core TurboMedia::Speech
+         CHttp::Client CHttp::Server
   PRIVATE Salts::JsonParser Threads::Threads)
 set_target_properties(turbo_media_ivr PROPERTIES FOLDER "turbomedia/components")
 
 # Real WebRTC media adapters are kept separate from the provider-neutral IVR
 # core.  The RTC target is linked only by applications that opt into WHIP/WHEP.
 add_library(turbo_media_ivr_rtc STATIC
-  src/ivr_http_media_client.c
   src/ivr_whep_transport.c
   src/ivr_whip_transport.c)
 target_include_directories(
@@ -44,7 +44,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_ivr_rtc
   PUBLIC turbo_media_ivr TurboMedia::RTC
-  PRIVATE CHttp::Client CHttp::Server)
+  PRIVATE turbo_media_http_media_client CHttp::Client)
 set_target_properties(turbo_media_ivr_rtc PROPERTIES FOLDER "turbomedia/components")
 
 file(
@@ -57,17 +57,17 @@ file(
 # the canonical schema. CHTTP H1 WebSocket messages require these generated typed bindings,
 # so an IVR build fails fast when the compiler is unavailable.
 # ---------------------------------------------------------------------------
-turbo_media_find_idlc(IDLC_EXECUTABLE)
+turbo_media_find_idlc(IDL_COMPILER_EXECUTABLE)
 set(IVR_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${IVR_GEN_DIR}")
 set(IVR_GEN_HEADER "${IVR_GEN_DIR}/turbomedia_ivr_v2.h")
 set(IVR_GEN_SOURCE "${IVR_GEN_DIR}/turbomedia_ivr_v2.c")
 add_custom_command(
   OUTPUT ${IVR_GEN_HEADER} ${IVR_GEN_SOURCE}
-  COMMAND ${IDLC_EXECUTABLE}
+  COMMAND ${IDL_COMPILER_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v2.schema
           --lang c --output ${IVR_GEN_HEADER} --source-output ${IVR_GEN_SOURCE}
-  DEPENDS ${IDLC_EXECUTABLE}
+  DEPENDS ${IDL_COMPILER_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v2.schema
   COMMENT "Generating IVR schema typed code with salts-idlc"
   VERBATIM)
@@ -82,7 +82,7 @@ set_target_properties(
   turbo_media_ivr_schema
   PROPERTIES FOLDER "turbomedia/components")
 target_link_libraries(turbo_media_ivr PUBLIC turbo_media_ivr_schema)
-message(STATUS "IVR codegen: ${IDLC_EXECUTABLE}")
+message(STATUS "IVR codegen: ${IDL_COMPILER_EXECUTABLE}")
 
 # ---------------------------------------------------------------------------
 # CHTTP HTTP/1.1 WebSocket command/event adapters.

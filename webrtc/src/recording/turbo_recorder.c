@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <str.h>
+#include <tstr.h>
 #include <cstl/vec.h>
 #include <stdio.h>
 

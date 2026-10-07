@@ -1,6 +1,7 @@
 #include "room_service/config.h"
 #include "../../config_toml.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_revocation_fanout.h"
 #include "platform.h"
 #include <salts/clock.h>
 #include <ctype.h>
@@ -10,16 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum {
-    ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS_DEFAULT = 86400,
-    ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT = 2592000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_DEFAULT = 60000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MIN = 1000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT = 128,
-    ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX = 31536000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MAX = 3600000,
-    ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX = 256
-};
 
 typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_FILE = 0,
@@ -36,24 +27,13 @@ typedef enum room_service_config_string_e {
     ROOM_CONFIG_STRING_AUTH_REVOKED_TOKEN_SHA256,
     ROOM_CONFIG_STRING_SFU_CONTROL_URL,
     ROOM_CONFIG_STRING_SFU_NODES,
+    ROOM_CONFIG_STRING_SFU_REVOCATION_SERVER_NAMES,
     ROOM_CONFIG_STRING_SFU_CONTROL_TOKEN,
     ROOM_CONFIG_STRING_SFU_CA_FILE,
     ROOM_CONFIG_STRING_SFU_AUTH_ISSUER,
     ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID,
     ROOM_CONFIG_STRING_SFU_AUTH_SECRET,
     ROOM_CONFIG_STRING_LOG_LEVEL,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_HOST,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_PATH,
-    ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
-    ROOM_CONFIG_STRING_IRIS_IDENTITY,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_CA_FILE,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_CERT_FILE,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_FILE,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_PASSWORD,
-    ROOM_CONFIG_STRING_IRIS_CONTROL_SERVER_NAME,
-    ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
-    ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
-    ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
     ROOM_CONFIG_STRING_CONTROL_WS_BIND_HOST,
     ROOM_CONFIG_STRING_CONTROL_WS_PATH,
     ROOM_CONFIG_STRING_CONTROL_WS_CA_FILE,
@@ -284,7 +264,11 @@ void room_service_app_config_init(room_service_app_config_t *config) {
         TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
     config->sfu_control_url = NULL;
     config->sfu_nodes = room_service_env_value("TURBO_ROOM_SERVICE_SFU_NODES");
-    config->sfu_control_token = room_service_env_value("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN");
+    config->sfu_revocation_server_names =
+        room_service_env_value(
+            "TURBO_ROOM_SERVICE_SFU_REVOCATION_SERVER_NAMES");
+    config->sfu_control_token =
+        room_service_env_value("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN");
     config->sfu_ca_file = room_service_env_value("TURBO_ROOM_SERVICE_SFU_CA_FILE");
     config->sfu_auth_issuer = "turbomedia";
     config->sfu_auth_key_id =
@@ -292,50 +276,12 @@ void room_service_app_config_init(room_service_app_config_t *config) {
     config->sfu_auth_secret =
         room_service_env_value("TURBO_ROOM_SERVICE_SFU_AUTH_SECRET");
     config->sfu_auth_ttl_seconds = 60;
+    config->sfu_revocation_timeout_ms = 3000;
+    config->sfu_revocation_max_attempts = 3;
     config->max_rooms = 1024;
     config->auto_create_rooms = 1;
     config->dry_run = 0;
     config->log_level = "info";
-    config->iris_control_host =
-        room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_HOST");
-    config->iris_control_port = 0;
-    config->iris_control_path = "/internal/iris/control";
-    config->iris_provider_instance_id = NULL;
-    config->iris_identity = NULL;
-    config->iris_control_ca_file = NULL;
-    config->iris_control_cert_file = NULL;
-    config->iris_control_key_file = NULL;
-    config->iris_control_key_password = NULL;
-    config->iris_control_server_name = NULL;
-    config->iris_control_use_tls = 1;
-    config->iris_control_allow_insecure_loopback = 0;
-    config->iris_ack_timeout_ms = 5000;
-    config->iris_event_store_config = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CONFIG");
-    config->iris_event_store_channel = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CHANNEL");
-    config->iris_command_ledger_channel = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_CHANNEL");
-    config->iris_correlation_capacity = 1024;
-    config->iris_completion_queue_capacity = 1024;
-    config->iris_reconcile_inventory_queue_capacity = 8;
-    config->iris_outbox_request_queue_capacity = 1024;
-    config->iris_command_ledger_queue_capacity = 1024;
-    config->iris_command_terminal_retention_seconds =
-        ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT;
-    config->iris_command_retention_batch_size =
-        ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT;
-    config->iris_dead_retention_seconds =
-        ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS_DEFAULT;
-    config->iris_archive_retention_seconds =
-        ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS_DEFAULT;
-    config->iris_retention_sweep_interval_ms =
-        ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_DEFAULT;
-    config->iris_retention_sweep_batch_size =
-        ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_DEFAULT;
-    config->iris_retry_max_attempts = 8;
-    config->iris_retry_backoff_ms = 250;
-    config->iris_drain_timeout_ms = 30000;
     config->control_ws_bind_host = "127.0.0.1";
     config->control_ws_bind_port = 0;
     config->control_ws_path = "/internal/ivr/control";
@@ -382,33 +328,14 @@ static int room_service_config_clone_strings(
                       auth_revoked_token_sha256);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_CONTROL_URL, sfu_control_url);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_NODES, sfu_nodes);
+    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_REVOCATION_SERVER_NAMES,
+                      sfu_revocation_server_names);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_CONTROL_TOKEN, sfu_control_token);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_CA_FILE, sfu_ca_file);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_ISSUER, sfu_auth_issuer);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_KEY_ID, sfu_auth_key_id);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_SFU_AUTH_SECRET, sfu_auth_secret);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_LOG_LEVEL, log_level);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_HOST, iris_control_host);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_PATH, iris_control_path);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
-                      iris_provider_instance_id);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_IDENTITY, iris_identity);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_CA_FILE,
-                      iris_control_ca_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_CERT_FILE,
-                      iris_control_cert_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_FILE,
-                      iris_control_key_file);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_PASSWORD,
-                      iris_control_key_password);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_CONTROL_SERVER_NAME,
-                      iris_control_server_name);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
-                      iris_event_store_config);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
-                      iris_event_store_channel);
-    ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
-                      iris_command_ledger_channel);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_BIND_HOST, control_ws_bind_host);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_PATH, control_ws_path);
     ROOM_CONFIG_CLONE(ROOM_CONFIG_STRING_CONTROL_WS_CA_FILE, control_ws_ca_file);
@@ -556,7 +483,8 @@ static int room_service_config_apply_sfu(
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
-        "control_url", "nodes", "control_token", "ca_file"
+        "control_url", "nodes", "revocation_server_names",
+        "control_token", "ca_file"
     };
 
     if (!table) {
@@ -570,6 +498,10 @@ static int room_service_config_apply_sfu(
         rtc_app_toml_apply_string(table, "sfu", "nodes", storage,
                                   ROOM_CONFIG_STRING_SFU_NODES,
                                   &config->sfu_nodes) != 0 ||
+        rtc_app_toml_apply_string(
+            table, "sfu", "revocation_server_names", storage,
+            ROOM_CONFIG_STRING_SFU_REVOCATION_SERVER_NAMES,
+            &config->sfu_revocation_server_names) != 0 ||
         rtc_app_toml_apply_string(table, "sfu", "control_token", storage,
                                   ROOM_CONFIG_STRING_SFU_CONTROL_TOKEN,
                                   &config->sfu_control_token) != 0 ||
@@ -586,7 +518,8 @@ static int room_service_config_apply_sfu_auth(
     room_service_app_config_t *config,
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
-        "issuer", "key_id", "secret", "ttl_seconds"
+        "issuer", "key_id", "secret", "ttl_seconds",
+        "revocation_timeout_ms", "revocation_max_attempts"
     };
 
     if (!table) {
@@ -605,7 +538,13 @@ static int room_service_config_apply_sfu_auth(
                                   ROOM_CONFIG_STRING_SFU_AUTH_SECRET,
                                   &config->sfu_auth_secret) != 0 ||
         rtc_app_toml_apply_int(table, "sfu_auth", "ttl_seconds",
-                               &config->sfu_auth_ttl_seconds) != 0) {
+                               &config->sfu_auth_ttl_seconds) != 0 ||
+        rtc_app_toml_apply_int(
+            table, "sfu_auth", "revocation_timeout_ms",
+            &config->sfu_revocation_timeout_ms) != 0 ||
+        rtc_app_toml_apply_int(
+            table, "sfu_auth", "revocation_max_attempts",
+            &config->sfu_revocation_max_attempts) != 0) {
         return -1;
     }
     return 0;
@@ -844,130 +783,11 @@ static int room_service_config_apply_control_ws(
     return 0;
 }
 
-static int room_service_config_apply_iris_provider(
-    const toml_table_t *table,
-    room_service_app_config_t *config,
-    rtc_app_config_storage_t *storage) {
-    static const char *const allowed[] = {
-        "control_ws_host", "control_ws_port", "control_ws_path",
-        "provider_instance_id", "iris_identity",
-        "control_ws_ca_file", "control_ws_cert_file",
-        "control_ws_key_file", "control_ws_key_password", "control_ws_server_name",
-        "control_ws_use_tls", "control_ws_allow_insecure_loopback",
-        "correlation_capacity",
-        "completion_queue_capacity", "reconcile_inventory_queue_capacity",
-        "retry_max_attempts", "retry_backoff_ms",
-        "ack_timeout_ms", "drain_timeout_ms", "event_store_config",
-        "event_store_channel", "outbox_request_queue_capacity",
-        "command_ledger_channel", "command_ledger_queue_capacity",
-        "command_terminal_retention_seconds", "command_retention_batch_size",
-        "dead_retention_seconds",
-        "archive_retention_seconds", "retention_sweep_interval_ms",
-        "retention_sweep_batch_size"
-    };
-
-    if (!table) {
-        return 0;
-    }
-    if (rtc_app_toml_table_keys_valid(
-            table, "iris_provider", allowed,
-            sizeof(allowed) / sizeof(allowed[0])) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "control_ws_host", storage,
-            ROOM_CONFIG_STRING_IRIS_CONTROL_HOST,
-            &config->iris_control_host) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "control_ws_path", storage,
-            ROOM_CONFIG_STRING_IRIS_CONTROL_PATH,
-            &config->iris_control_path) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "provider_instance_id", storage,
-            ROOM_CONFIG_STRING_IRIS_PROVIDER_INSTANCE_ID,
-            &config->iris_provider_instance_id) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "iris_identity", storage,
-            ROOM_CONFIG_STRING_IRIS_IDENTITY, &config->iris_identity) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "control_ws_ca_file", storage,
-            ROOM_CONFIG_STRING_IRIS_CONTROL_CA_FILE,
-            &config->iris_control_ca_file) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "control_ws_cert_file", storage,
-            ROOM_CONFIG_STRING_IRIS_CONTROL_CERT_FILE,
-            &config->iris_control_cert_file) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "control_ws_key_file", storage,
-            ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_FILE,
-            &config->iris_control_key_file) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "control_ws_key_password", storage,
-            ROOM_CONFIG_STRING_IRIS_CONTROL_KEY_PASSWORD,
-            &config->iris_control_key_password) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "control_ws_server_name", storage,
-            ROOM_CONFIG_STRING_IRIS_CONTROL_SERVER_NAME,
-            &config->iris_control_server_name) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "control_ws_port",
-                               &config->iris_control_port) != 0 ||
-        rtc_app_toml_apply_bool(table, "iris_provider", "control_ws_use_tls",
-                                &config->iris_control_use_tls) != 0 ||
-        rtc_app_toml_apply_bool(
-            table, "iris_provider", "control_ws_allow_insecure_loopback",
-            &config->iris_control_allow_insecure_loopback) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "event_store_config", storage,
-            ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CONFIG,
-            &config->iris_event_store_config) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "event_store_channel", storage,
-            ROOM_CONFIG_STRING_IRIS_EVENT_STORE_CHANNEL,
-            &config->iris_event_store_channel) != 0 ||
-        rtc_app_toml_apply_string(
-            table, "iris_provider", "command_ledger_channel", storage,
-            ROOM_CONFIG_STRING_IRIS_COMMAND_LEDGER_CHANNEL,
-            &config->iris_command_ledger_channel) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "correlation_capacity",
-                               &config->iris_correlation_capacity) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "completion_queue_capacity",
-                               &config->iris_completion_queue_capacity) != 0 ||
-        rtc_app_toml_apply_int(
-            table, "iris_provider", "reconcile_inventory_queue_capacity",
-            &config->iris_reconcile_inventory_queue_capacity) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "outbox_request_queue_capacity",
-                               &config->iris_outbox_request_queue_capacity) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "command_ledger_queue_capacity",
-                               &config->iris_command_ledger_queue_capacity) != 0 ||
-        rtc_app_toml_apply_int(
-            table, "iris_provider", "command_terminal_retention_seconds",
-            &config->iris_command_terminal_retention_seconds) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "command_retention_batch_size",
-                               &config->iris_command_retention_batch_size) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "dead_retention_seconds",
-                               &config->iris_dead_retention_seconds) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "archive_retention_seconds",
-                               &config->iris_archive_retention_seconds) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "retention_sweep_interval_ms",
-                               &config->iris_retention_sweep_interval_ms) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "retention_sweep_batch_size",
-                               &config->iris_retention_sweep_batch_size) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "retry_max_attempts",
-                               &config->iris_retry_max_attempts) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "retry_backoff_ms",
-                               &config->iris_retry_backoff_ms) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "ack_timeout_ms",
-                               &config->iris_ack_timeout_ms) != 0 ||
-        rtc_app_toml_apply_int(table, "iris_provider", "drain_timeout_ms",
-                               &config->iris_drain_timeout_ms) != 0) {
-        return -1;
-    }
-    return 0;
-}
-
 int room_service_app_config_load(room_service_app_config_t *config,
                                  const char *filename) {
     static const char *const root_keys[] = {
         "server", "control", "auth", "sfu", "sfu_auth", "capacity",
-        "rooms", "runtime", "logging", "iris_provider", "control_ws"
+        "rooms", "runtime", "logging", "control_ws"
     };
     rtc_app_toml_document_t document;
     rtc_app_config_storage_t *storage = NULL;
@@ -981,7 +801,6 @@ int room_service_app_config_load(room_service_app_config_t *config,
     toml_table_t *rooms = NULL;
     toml_table_t *runtime = NULL;
     toml_table_t *logging = NULL;
-    toml_table_t *iris_provider = NULL;
     toml_table_t *control_ws = NULL;
     room_service_app_config_t candidate;
     int result = -1;
@@ -1019,7 +838,6 @@ int room_service_app_config_load(room_service_app_config_t *config,
         rtc_app_toml_get_optional_table(document.root, "rooms", &rooms) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "runtime", &runtime) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "logging", &logging) != 0 ||
-        rtc_app_toml_get_optional_table(document.root, "iris_provider", &iris_provider) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "control_ws", &control_ws) != 0 ||
         room_service_config_apply_server(server, &candidate, storage) != 0 ||
         room_service_config_apply_control(control, &candidate, storage) != 0 ||
@@ -1030,7 +848,6 @@ int room_service_app_config_load(room_service_app_config_t *config,
         room_service_config_apply_rooms(rooms, &candidate) != 0 ||
         room_service_config_apply_runtime(runtime, &candidate) != 0 ||
         room_service_config_apply_logging(logging, &candidate, storage) != 0 ||
-        room_service_config_apply_iris_provider(iris_provider, &candidate, storage) != 0 ||
         room_service_config_apply_control_ws(control_ws, &candidate, storage) != 0 ||
         room_service_app_config_validate(&candidate) != 0) {
         goto cleanup_document;
@@ -1105,6 +922,11 @@ void room_service_app_config_apply_environment(
     if (value) {
         config->sfu_nodes = value;
     }
+    value = room_service_env_value(
+        "TURBO_ROOM_SERVICE_SFU_REVOCATION_SERVER_NAMES");
+    if (value) {
+        config->sfu_revocation_server_names = value;
+    }
     value = room_service_env_value("TURBO_ROOM_SERVICE_SFU_CONTROL_TOKEN");
     if (value) {
         config->sfu_control_token = value;
@@ -1128,66 +950,12 @@ void room_service_app_config_apply_environment(
     config->sfu_auth_ttl_seconds = room_service_env_int(
         "TURBO_ROOM_SERVICE_SFU_AUTH_TTL_SECONDS",
         config->sfu_auth_ttl_seconds);
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_HOST");
-    if (value) config->iris_control_host = value;
-    config->iris_control_port = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_CONTROL_PORT", config->iris_control_port);
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_PATH");
-    if (value) config->iris_control_path = value;
-    value = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_PROVIDER_INSTANCE_ID");
-    if (value) config->iris_provider_instance_id = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_IDENTITY");
-    if (value) config->iris_identity = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_CA_FILE");
-    if (value) config->iris_control_ca_file = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_CERT_FILE");
-    if (value) config->iris_control_cert_file = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_CONTROL_KEY_FILE");
-    if (value) config->iris_control_key_file = value;
-    value = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_CONTROL_KEY_PASSWORD");
-    if (value) config->iris_control_key_password = value;
-    value = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_CONTROL_SERVER_NAME");
-    if (value) config->iris_control_server_name = value;
-    config->iris_control_use_tls = room_service_env_bool(
-        "TURBO_ROOM_SERVICE_IRIS_CONTROL_USE_TLS",
-        config->iris_control_use_tls);
-    config->iris_control_allow_insecure_loopback = room_service_env_bool(
-        "TURBO_ROOM_SERVICE_IRIS_CONTROL_ALLOW_INSECURE_LOOPBACK",
-        config->iris_control_allow_insecure_loopback);
-    config->iris_ack_timeout_ms = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_ACK_TIMEOUT_MS",
-        config->iris_ack_timeout_ms);
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CONFIG");
-    if (value) config->iris_event_store_config = value;
-    value = room_service_env_value("TURBO_ROOM_SERVICE_IRIS_EVENT_STORE_CHANNEL");
-    if (value) config->iris_event_store_channel = value;
-    value = room_service_env_value(
-        "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_CHANNEL");
-    if (value) config->iris_command_ledger_channel = value;
-    config->iris_dead_retention_seconds = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_DEAD_RETENTION_SECONDS",
-        config->iris_dead_retention_seconds);
-    config->iris_archive_retention_seconds = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_ARCHIVE_RETENTION_SECONDS",
-        config->iris_archive_retention_seconds);
-    config->iris_retention_sweep_interval_ms = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS",
-        config->iris_retention_sweep_interval_ms);
-    config->iris_retention_sweep_batch_size = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE",
-        config->iris_retention_sweep_batch_size);
-    config->iris_command_ledger_queue_capacity = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_COMMAND_LEDGER_QUEUE_CAPACITY",
-        config->iris_command_ledger_queue_capacity);
-    config->iris_command_terminal_retention_seconds = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_COMMAND_TERMINAL_RETENTION_SECONDS",
-        config->iris_command_terminal_retention_seconds);
-    config->iris_command_retention_batch_size = room_service_env_int(
-        "TURBO_ROOM_SERVICE_IRIS_COMMAND_RETENTION_BATCH_SIZE",
-        config->iris_command_retention_batch_size);
+    config->sfu_revocation_timeout_ms = room_service_env_int(
+        "TURBO_ROOM_SERVICE_SFU_REVOCATION_TIMEOUT_MS",
+        config->sfu_revocation_timeout_ms);
+    config->sfu_revocation_max_attempts = room_service_env_int(
+        "TURBO_ROOM_SERVICE_SFU_REVOCATION_MAX_ATTEMPTS",
+        config->sfu_revocation_max_attempts);
     value = room_service_env_value("TURBO_ROOM_SERVICE_CONTROL_BIND_HOST");
     if (value) {
         config->control_ws_bind_host = value;
@@ -1273,94 +1041,11 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
     if ((config->control_token && config->control_token[0] == '\0') ||
         (config->sfu_control_url && config->sfu_control_url[0] == '\0') ||
         (config->sfu_nodes && config->sfu_nodes[0] == '\0') ||
+        (config->sfu_revocation_server_names &&
+         config->sfu_revocation_server_names[0] == '\0') ||
         (config->sfu_control_token && config->sfu_control_token[0] == '\0') ||
         (config->sfu_ca_file && config->sfu_ca_file[0] == '\0')) {
         return -1;
-    }
-    {
-        int has_control_ws = config->iris_control_host &&
-                         config->iris_control_host[0] != '\0';
-        int has_store_config = config->iris_event_store_config &&
-                               config->iris_event_store_config[0] != '\0';
-        int has_store_channel = config->iris_event_store_channel &&
-                                config->iris_event_store_channel[0] != '\0';
-        int has_ledger_channel = config->iris_command_ledger_channel &&
-                                 config->iris_command_ledger_channel[0] != '\0';
-        if (has_control_ws != has_store_config ||
-            has_control_ws != has_store_channel ||
-            has_control_ws != has_ledger_channel ||
-            (has_control_ws && strcmp(config->iris_event_store_channel,
-                               config->iris_command_ledger_channel) == 0) ||
-            (has_control_ws &&
-             (config->iris_control_port < 1 ||
-              config->iris_control_port > 65535 ||
-              !config->iris_control_path ||
-              config->iris_control_path[0] != '/' ||
-              !config->iris_provider_instance_id ||
-              config->iris_provider_instance_id[0] == '\0' ||
-              !config->iris_identity || config->iris_identity[0] == '\0')) ||
-            (config->iris_control_use_tls != 0 &&
-             config->iris_control_use_tls != 1) ||
-            (config->iris_control_allow_insecure_loopback != 0 &&
-             config->iris_control_allow_insecure_loopback != 1) ||
-            (has_control_ws && config->iris_control_use_tls &&
-             (!config->iris_control_ca_file ||
-              config->iris_control_ca_file[0] == '\0' ||
-              !config->iris_control_cert_file ||
-              config->iris_control_cert_file[0] == '\0' ||
-              !config->iris_control_key_file ||
-              config->iris_control_key_file[0] == '\0' ||
-              !config->iris_control_server_name ||
-              config->iris_control_server_name[0] == '\0')) ||
-            (has_control_ws && !config->iris_control_use_tls &&
-             (!config->iris_control_allow_insecure_loopback ||
-              !room_service_is_loopback(config->iris_control_host) ||
-              config->iris_control_ca_file ||
-              config->iris_control_cert_file ||
-              config->iris_control_key_file ||
-              config->iris_control_key_password ||
-              config->iris_control_server_name)) ||
-            config->iris_correlation_capacity < 1 ||
-            config->iris_correlation_capacity > 65536 ||
-            config->iris_completion_queue_capacity < 1 ||
-            config->iris_completion_queue_capacity > 65536 ||
-            config->iris_reconcile_inventory_queue_capacity < 1 ||
-            config->iris_reconcile_inventory_queue_capacity > 64 ||
-            config->iris_outbox_request_queue_capacity < 1 ||
-            config->iris_outbox_request_queue_capacity > 65536 ||
-            config->iris_command_ledger_queue_capacity < 1 ||
-            config->iris_command_ledger_queue_capacity > 65536 ||
-            config->iris_command_terminal_retention_seconds < 1 ||
-            config->iris_command_terminal_retention_seconds >
-                ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX ||
-            config->iris_command_retention_batch_size < 1 ||
-            config->iris_command_retention_batch_size >
-                ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX ||
-            config->iris_dead_retention_seconds < 1 ||
-            config->iris_dead_retention_seconds >
-                ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX ||
-            config->iris_archive_retention_seconds < 1 ||
-            config->iris_archive_retention_seconds >
-                ROOM_SERVICE_IRIS_RETENTION_SECONDS_MAX ||
-            config->iris_retention_sweep_interval_ms <
-                ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MIN ||
-            config->iris_retention_sweep_interval_ms >
-                ROOM_SERVICE_IRIS_RETENTION_SWEEP_INTERVAL_MS_MAX ||
-            config->iris_retention_sweep_batch_size < 1 ||
-            config->iris_retention_sweep_batch_size >
-                ROOM_SERVICE_IRIS_RETENTION_SWEEP_BATCH_SIZE_MAX ||
-            config->iris_retry_max_attempts < 1 ||
-            config->iris_retry_max_attempts > 100 ||
-            config->iris_retry_backoff_ms < 1 ||
-            config->iris_retry_backoff_ms > 60000 ||
-            config->iris_ack_timeout_ms < 1 ||
-            config->iris_ack_timeout_ms > 300000 ||
-            config->iris_drain_timeout_ms < 1 ||
-            config->iris_drain_timeout_ms > 600000 ||
-            config->iris_drain_timeout_ms < config->iris_ack_timeout_ms ||
-            (has_control_ws && config->control_ws_bind_port == 0)) {
-            return -1;
-        }
     }
     {
         turbo_media_auth_config_t auth_config = {
@@ -1422,7 +1107,21 @@ int room_service_app_config_validate(const room_service_app_config_t *config) {
          !config->tls_key_file || config->tls_key_file[0] == '\0')) {
         return -1;
     }
-    if (!room_service_sfu_nodes_syntax_valid(config->sfu_nodes)) {
+    if (!room_service_sfu_nodes_syntax_valid(config->sfu_nodes) ||
+        !room_service_sfu_nodes_syntax_valid(
+            config->sfu_revocation_server_names) ||
+        config->sfu_revocation_timeout_ms < 1 ||
+        config->sfu_revocation_timeout_ms > 30000 ||
+        config->sfu_revocation_max_attempts < 1 ||
+        config->sfu_revocation_max_attempts >
+            (int)TURBO_MEDIA_REVOCATION_FANOUT_MAX_ATTEMPTS) {
+        return -1;
+    }
+    if (config->sfu_revocation_server_names &&
+        (!config->sfu_nodes || !config->sfu_ca_file ||
+         !config->sfu_auth_key_id || !config->sfu_auth_secret ||
+         (int64_t)config->sfu_auth_ttl_seconds * INT64_C(1000) <=
+             (int64_t)config->sfu_revocation_timeout_ms)) {
         return -1;
     }
     if (config->control_ws_bind_port > 0) {
@@ -1471,23 +1170,6 @@ void room_service_app_config_print(const room_service_app_config_t *config) {
     printf("  auto_create_rooms: %s\n", config->auto_create_rooms ? "true" : "false");
     printf("  dry_run: %s\n", config->dry_run ? "true" : "false");
     printf("  log_level: %s\n", config->log_level);
-    printf("  iris_provider: %s\n",
-           config->iris_control_host ? "CHTTP H1 WebSocket" : "disabled");
-    if (config->iris_control_host) {
-        printf("  iris_control: %s:%d path=%s transport=%s\n",
-               config->iris_control_host, config->iris_control_port,
-               config->iris_control_path,
-               config->iris_control_use_tls ? "mTLS" : "trusted-loopback");
-        printf("  iris_provider_limits: correlation=%d queue=%d reconcile_queue=%d outbox_queue=%d retries=%d "
-               "ack_timeout=%dms drain_timeout=%dms\n",
-               config->iris_correlation_capacity,
-                config->iris_completion_queue_capacity,
-                config->iris_reconcile_inventory_queue_capacity,
-                config->iris_outbox_request_queue_capacity,
-               config->iris_retry_max_attempts,
-               config->iris_ack_timeout_ms,
-               config->iris_drain_timeout_ms);
-    }
     printf("  control_ws_bridge: %s (server %s:%d)\n",
            config->control_ws_bind_port > 0 ? "enabled" : "disabled",
            config->control_ws_bind_host ? config->control_ws_bind_host : "127.0.0.1",

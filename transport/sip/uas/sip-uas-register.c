@@ -1,7 +1,8 @@
 #include "sip-uas-transaction.h"
 #include "fmt.h"
 #include "cmeta_error.h"
-#include "str.h"
+#include <fmt.h>
+#include <vstr.h>
 
 /*
 REGISTER sip:registrar.biloxi.com SIP/2.0

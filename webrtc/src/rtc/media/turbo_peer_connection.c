@@ -11,7 +11,7 @@
 #include "tlog.h"
 #include <platform.h>
 #include <salts/thread.h>
-#include <str.h>
+#include <tstr.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>

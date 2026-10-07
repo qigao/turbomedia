@@ -20,21 +20,11 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     continue()
   endif()
 
-  set(CLIENT_ONLY_TESTS
-      test_benchmark test_capture test_hls_public test_integration
-      test_mobile_optimizer test_android_capture test_player_audio)
-  set(SERVER_ONLY_TESTS
-      test_dash_local test_http_flv_local test_pipeline test_rtmp_metadata
-      test_server_rtsp_adapter test_server_runtime test_webrtc)
-  if(TURBO_MEDIA_IS_CLIENT AND TEST_NAME IN_LIST SERVER_ONLY_TESTS)
-    continue()
-  endif()
-  if(TURBO_MEDIA_IS_SERVER AND TEST_NAME IN_LIST CLIENT_ONLY_TESTS)
-    continue()
-  endif()
-  # This test deliberately spans Player and Streamer. Product integration is
-  # verified by installed-package consumers instead of merging both profiles.
-  if(TEST_NAME STREQUAL "test_hls_local")
+  set(DESKTOP_SERVICE_TESTS
+      test_dash_local test_hls_local test_http_flv_local test_pipeline
+      test_rtmp_metadata test_server_rtsp_adapter test_server_runtime test_webrtc)
+  if(NOT TURBO_MEDIA_HAS_DESKTOP_SERVICES AND
+     TEST_NAME IN_LIST DESKTOP_SERVICE_TESTS)
     continue()
   endif()
   
@@ -52,6 +42,14 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     if(TEST_NAME STREQUAL "test_rtsp")
       list(APPEND TEST_LINK_LIBS OpenSSL::Crypto)
     endif()
+  elseif(TEST_NAME STREQUAL "test_client_processing")
+    list(APPEND TEST_LINK_LIBS TurboMedia::ClientProcessing
+                               TurboMediaFFmpeg::avformat)
+  elseif(TEST_NAME STREQUAL "test_rtc_client" OR
+         TEST_NAME STREQUAL "test_rtc_subscriber" OR
+         TEST_NAME STREQUAL "test_rtc_playback_sink" OR
+         TEST_NAME STREQUAL "test_rtc_capture_source")
+    list(APPEND TEST_LINK_LIBS TurboMedia::RTCClient)
   elseif(TEST_NAME STREQUAL "test_benchmark")
     list(APPEND TEST_LINK_LIBS TurboMedia::Codec Salts::Capture Salts::Playback)
   elseif(TEST_NAME STREQUAL "test_capture")
@@ -78,6 +76,8 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     list(APPEND TEST_LINK_LIBS TurboMedia::Streamer)
   elseif(TEST_NAME STREQUAL "test_mobile_optimizer")
     list(APPEND TEST_LINK_LIBS turbo_media_android)
+  elseif(TEST_NAME STREQUAL "test_android_capture")
+    list(APPEND TEST_LINK_LIBS Salts::Capture Salts::Platform)
   elseif(TEST_NAME STREQUAL "test_media_source")
     list(APPEND TEST_LINK_LIBS TurboMedia::Core)
   elseif(TEST_NAME STREQUAL "test_webrtc")
@@ -119,6 +119,9 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
+    if(TEST_NAME STREQUAL "test_benchmark")
+      set_tests_properties(${TEST_TARGET_NAME} PROPERTIES LABELS performance)
+    endif()
   endif()
   
   message(STATUS "Added test: ${TEST_TARGET_NAME}")

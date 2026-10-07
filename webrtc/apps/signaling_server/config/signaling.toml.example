@@ -13,6 +13,15 @@ use_tls = false
 # cert_file = "/etc/turbomedia/tls/signaling-chain.pem"
 # key_file = "/etc/turbomedia/tls/signaling-key.pem"
 
+# Optional reverse-proxy-only ingress. When configured, the WebSocket listener
+# requires a client certificate and accepts X-Forwarded-For only when BOTH the
+# socket peer numeric IP and verified leaf certificate SHA-256 match this map.
+# The value is a comma-separated list of numeric-ip=64-lowercase-sha256 entries.
+# Direct browser connections are not valid in this mode.
+#[trusted_proxy]
+#map = "10.0.0.10=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+#client_ca_file = "/etc/turbomedia/tls/proxy-client-ca.pem"
+
 [http_api]
 # Management and monitoring API. Configure either the scoped [http_auth]
 # verifier or the static TURBO_SIGNALING_ADMIN_TOKEN compatibility token
@@ -47,7 +56,9 @@ messages_per_second = 100
 message_burst = 200
 max_outbox_messages = 256
 max_outbox_bytes = 1048576
-# Applied during the WebSocket handshake using the socket peer IP (port ignored).
+# Applied before WebSocket application allocation. By default the source is
+# the socket peer IP. In [trusted_proxy] mode it is the strict single-value
+# X-Forwarded-For address from the mTLS-pinned proxy.
 max_connections_per_source = 100
 source_admissions_per_second = 20
 source_admission_burst = 50
@@ -67,9 +78,24 @@ enabled = false
 # previous_key_id = "signaling-peer-2026-06"
 # previous_secret = "replace-with-at-least-32-random-bytes"
 # revoked_token_sha256 = "one-or-more-comma-separated-lowercase-sha256-digests"
+# Dynamic revocation is disabled by default. When enabled, the process starts
+# UNSYNCHRONIZED and rejects signed peer joins until the HTTPS security-control
+# endpoint receives a covering snapshot authenticated by a signed management
+# token. Static admin_token compatibility is never accepted for that endpoint.
+# dynamic_revocation_capacity = 256
 # clock_skew_seconds = 30
 ttl_seconds = 3600
 algorithm = "HS256"
+
+[tenant_quota]
+# Optional bounded per-node lease projection. Non-zero capacity starts
+# UNSYNCHRONIZED and requires covering lease snapshots over HTTPS
+# /api/v1/security/tenant-quotas/* authenticated with audience
+# turbomedia-security-control and scope security.tenant_quota.write.
+# Static admin bearer compatibility is never accepted on those routes.
+# Non-zero capacity also requires [auth].enabled=true so runtime resources
+# cannot enter quota mode without a signed tenant-capable peer identity.
+capacity = 0
 
 [redis]
 # Reserved settings. The current signaling server rejects enabled=true.

@@ -12,8 +12,7 @@
             "cacheVariables": {
                 "CMAKE_SYSTEM_NAME": "Android",
                 "ANDROID_STL": "c++_shared",
-                "ANDROID_PLATFORM": "android-24",
-                "BUILD_TESTING": false
+                "ANDROID_PLATFORM": "android-26"
             }
         },
         {

@@ -58,6 +58,7 @@ spec("room service TOML configuration") {
             "[sfu]\n"
             "control_url = \"https://sfu-a.internal:19190\"\n"
             "nodes = \"sfu-a=https://sfu-a.internal:19190,sfu-b=https://sfu-b.internal:19191\"\n"
+            "revocation_server_names = \"sfu-a=sfu-a.internal,sfu-b=sfu-b.internal\"\n"
             "control_token = \"sfu-token\"\n"
             "ca_file = \"internal-ca.pem\"\n"
             "[sfu_auth]\n"
@@ -65,6 +66,8 @@ spec("room service TOML configuration") {
             "key_id = \"sfu-key-2026-07\"\n"
             "secret = \"sfu-command-secret-at-least-32-bytes\"\n"
             "ttl_seconds = 45\n"
+            "revocation_timeout_ms = 2500\n"
+            "revocation_max_attempts = 4\n"
             "[capacity]\n"
             "max_rooms = 512\n"
             "[rooms]\n"
@@ -73,32 +76,6 @@ spec("room service TOML configuration") {
             "dry_run = true\n"
             "[logging]\n"
             "level = \"warn\"\n"
-            "[iris_provider]\n"
-            "control_ws_host = \"127.0.0.1\"\n"
-            "control_ws_port = 17715\n"
-            "control_ws_path = \"/media-provider-v1\"\n"
-            "provider_instance_id = \"room-control-1\"\n"
-            "iris_identity = \"iris-router-1\"\n"
-            "control_ws_use_tls = false\n"
-            "control_ws_allow_insecure_loopback = true\n"
-            "event_store_config = \"room-flowstore.yaml\"\n"
-            "event_store_channel = \"iris.media_events\"\n"
-            "command_ledger_channel = \"iris.provider_commands\"\n"
-            "correlation_capacity = 2048\n"
-             "completion_queue_capacity = 512\n"
-             "reconcile_inventory_queue_capacity = 4\n"
-            "outbox_request_queue_capacity = 256\n"
-            "command_ledger_queue_capacity = 128\n"
-            "command_terminal_retention_seconds = 7200\n"
-            "command_retention_batch_size = 32\n"
-            "dead_retention_seconds = 3600\n"
-            "archive_retention_seconds = 604800\n"
-            "retention_sweep_interval_ms = 30000\n"
-            "retention_sweep_batch_size = 64\n"
-            "retry_max_attempts = 6\n"
-            "retry_backoff_ms = 125\n"
-            "ack_timeout_ms = 4000\n"
-            "drain_timeout_ms = 20000\n"
             "[control_ws]\n"
             "bind_host = \"127.0.0.1\"\n"
             "bind_port = 17713\n"
@@ -147,44 +124,19 @@ spec("room service TOML configuration") {
                 config.sfu_nodes,
                 "sfu-a=https://sfu-a.internal:19190,sfu-b=https://sfu-b.internal:19191");
             check_equal(config.sfu_control_token, "sfu-token");
+            check_equal(
+                config.sfu_revocation_server_names,
+                "sfu-a=sfu-a.internal,sfu-b=sfu-b.internal");
             check_equal(config.sfu_ca_file, "internal-ca.pem");
             check_equal(config.sfu_auth_issuer, "sfu-command-issuer");
             check_equal(config.sfu_auth_key_id, "sfu-key-2026-07");
             check_equal(config.sfu_auth_ttl_seconds, 45);
+            check_equal(config.sfu_revocation_timeout_ms, 2500);
+            check_equal(config.sfu_revocation_max_attempts, 4);
             check_equal(config.max_rooms, 512);
             check_false(config.auto_create_rooms);
             check_true(config.dry_run);
             check_equal(config.log_level, "warn");
-            check_equal(config.iris_control_host, "127.0.0.1");
-            check_equal(config.iris_control_port, 17715);
-            check_equal(config.iris_control_path, "/media-provider-v1");
-            check_equal(config.iris_provider_instance_id,
-                         "room-control-1");
-            check_equal(config.iris_identity, "iris-router-1");
-            check_false(config.iris_control_use_tls);
-            check_true(config.iris_control_allow_insecure_loopback);
-            check_equal(config.iris_event_store_config,
-                         "room-flowstore.yaml");
-            check_equal(config.iris_event_store_channel,
-                         "iris.media_events");
-            check_equal(config.iris_command_ledger_channel,
-                         "iris.provider_commands");
-            check_equal(config.iris_correlation_capacity, 2048);
-            check_equal(config.iris_completion_queue_capacity, 512);
-            check_equal(config.iris_reconcile_inventory_queue_capacity, 4);
-            check_equal(config.iris_outbox_request_queue_capacity, 256);
-            check_equal(config.iris_command_ledger_queue_capacity, 128);
-            check_equal(config.iris_command_terminal_retention_seconds,
-                         7200);
-            check_equal(config.iris_command_retention_batch_size, 32);
-            check_equal(config.iris_dead_retention_seconds, 3600);
-            check_equal(config.iris_archive_retention_seconds, 604800);
-            check_equal(config.iris_retention_sweep_interval_ms, 30000);
-            check_equal(config.iris_retention_sweep_batch_size, 64);
-            check_equal(config.iris_retry_max_attempts, 6);
-            check_equal(config.iris_retry_backoff_ms, 125);
-            check_equal(config.iris_ack_timeout_ms, 4000);
-            check_equal(config.iris_drain_timeout_ms, 20000);
             check_equal(config.control_ws_bind_host, "127.0.0.1");
             check_equal(config.control_ws_bind_port, 17713);
             check_equal(config.control_ws_path, "/internal/ivr-test");
@@ -216,6 +168,42 @@ spec("room service TOML configuration") {
         }
         room_service_app_config_cleanup(&config);
         remove_toml(path);
+    }
+
+    it("requires complete bounded SFU revocation fanout metadata") {
+        room_service_app_config_t config;
+
+        room_service_app_config_init(&config);
+        config.sfu_revocation_server_names = "sfu-a=sfu-a.internal";
+        check_equal(room_service_app_config_validate(&config), -1);
+
+        config.sfu_nodes = "sfu-a=https://sfu-a.internal:9190";
+        check_equal(room_service_app_config_validate(&config), -1);
+
+        config.sfu_ca_file = "internal-ca.pem";
+        check_equal(room_service_app_config_validate(&config), -1);
+
+        config.sfu_auth_key_id = "sfu-security-2026-09";
+        config.sfu_auth_secret =
+            "sfu-security-secret-at-least-32-bytes";
+        check_equal(room_service_app_config_validate(&config), 0);
+
+        config.sfu_revocation_timeout_ms = 0;
+        check_equal(room_service_app_config_validate(&config), -1);
+        config.sfu_revocation_timeout_ms = 3000;
+
+        config.sfu_revocation_max_attempts = 9;
+        check_equal(room_service_app_config_validate(&config), -1);
+        config.sfu_revocation_max_attempts = 8;
+        check_equal(room_service_app_config_validate(&config), 0);
+
+        config.sfu_auth_ttl_seconds = 3;
+        config.sfu_revocation_timeout_ms = 3000;
+        check_equal(room_service_app_config_validate(&config), -1);
+        config.sfu_auth_ttl_seconds = 4;
+        check_equal(room_service_app_config_validate(&config), 0);
+
+        room_service_app_config_cleanup(&config);
     }
 
     it("loads the shipped example") {
@@ -301,62 +289,6 @@ spec("room service TOML configuration") {
         check_equal(room_service_app_config_validate(&config), -1);
         config.control_ws_dialog_capacity = 256;
         check_equal(room_service_app_config_validate(&config), 0);
-        room_service_app_config_cleanup(&config);
-    }
-
-    it("requires a complete bounded Iris provider configuration") {
-        room_service_app_config_t config;
-
-        room_service_app_config_init(&config);
-        config.control_ws_allow_insecure_loopback = 1;
-        config.control_ws_bind_port = 17713;
-        config.iris_control_use_tls = 0;
-        config.iris_control_allow_insecure_loopback = 1;
-        config.iris_control_host = "127.0.0.1";
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_control_port = 17715;
-        config.iris_provider_instance_id = "room-service-1";
-        config.iris_identity = "iris-router-1";
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_event_store_config = "room-flowstore.yaml";
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_event_store_channel = "iris.media_events";
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_command_ledger_channel = "iris.provider_commands";
-        check_equal(room_service_app_config_validate(&config), 0);
-        config.iris_completion_queue_capacity = 0;
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_completion_queue_capacity = 1024;
-        config.iris_reconcile_inventory_queue_capacity = 0;
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_reconcile_inventory_queue_capacity = 8;
-        config.iris_retention_sweep_batch_size = 257;
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_retention_sweep_batch_size = 128;
-        config.iris_archive_retention_seconds = 0;
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_archive_retention_seconds = 2592000;
-        config.iris_retention_sweep_interval_ms = 999;
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_retention_sweep_interval_ms = 60000;
-        config.iris_drain_timeout_ms = config.iris_ack_timeout_ms - 1;
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_drain_timeout_ms = 30000;
-        config.iris_control_host = "iris.internal";
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_control_host = "127.0.0.1";
-        check_equal(room_service_app_config_validate(&config), 0);
-        config.iris_control_host = "iris.internal";
-        config.iris_control_use_tls = 1;
-        config.iris_control_allow_insecure_loopback = 0;
-        check_equal(room_service_app_config_validate(&config), -1);
-        config.iris_control_ca_file = "control_ws-ca.pem";
-        config.iris_control_cert_file = "room-chain.pem";
-        config.iris_control_key_file = "room-key.pem";
-        config.iris_control_server_name = "iris.internal";
-        check_equal(room_service_app_config_validate(&config), 0);
-        config.iris_control_ca_file = NULL;
-        check_equal(room_service_app_config_validate(&config), -1);
         room_service_app_config_cleanup(&config);
     }
 

@@ -9,23 +9,12 @@ project(
   VERSION 2.0.0
   LANGUAGES C CXX)
 
-set(TURBO_MEDIA_PRODUCT "" CACHE STRING "TurboMedia product: CLIENT or SERVER")
-set_property(CACHE TURBO_MEDIA_PRODUCT PROPERTY STRINGS CLIENT SERVER)
-if(NOT TURBO_MEDIA_PRODUCT STREQUAL "CLIENT" AND
-   NOT TURBO_MEDIA_PRODUCT STREQUAL "SERVER")
-  message(FATAL_ERROR "TURBO_MEDIA_PRODUCT must be CLIENT or SERVER")
-endif()
-if(TURBO_MEDIA_PRODUCT STREQUAL "SERVER" AND
-   NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  message(FATAL_ERROR "TurboMedia SERVER supports only Windows and Linux")
-endif()
-
-set(TURBO_MEDIA_IS_CLIENT OFF)
-set(TURBO_MEDIA_IS_SERVER OFF)
-if(TURBO_MEDIA_PRODUCT STREQUAL "CLIENT")
-  set(TURBO_MEDIA_IS_CLIENT ON)
-else()
-  set(TURBO_MEDIA_IS_SERVER ON)
+# Server/service targets are a desktop platform capability, not a product
+# profile selected by the caller.
+set(TURBO_MEDIA_HAS_DESKTOP_SERVICES OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" OR
+   CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(TURBO_MEDIA_HAS_DESKTOP_SERVICES ON)
 endif()
 
 include(GNUInstallDirs)
@@ -71,7 +60,7 @@ function(turbo_media_find_idlc output_variable)
   unset(${output_variable})
   find_program(${output_variable} NAMES salts-idlc
                PATHS "$ENV{${_turbomedia_idlc_root_name}}/bin"
-               NO_DEFAULT_PATH REQUIRED)
+               NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH REQUIRED)
   set(${output_variable} "${${output_variable}}" PARENT_SCOPE)
 endfunction()
 
@@ -96,8 +85,6 @@ function(turbo_media_configure_component target_name export_name)
   else()
     target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wno-unused-parameter)
   endif()
-  target_compile_definitions(
-    ${target_name} PUBLIC TURBO_MEDIA_PRODUCT_${TURBO_MEDIA_PRODUCT}=1)
   install(
     TARGETS ${target_name}
     EXPORT TurboMediaTargets
@@ -127,42 +114,27 @@ find_package(Salts CONFIG REQUIRED
              PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_package(SaltsUtils CONFIG REQUIRED
              PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT DEFINED ENV{HTTP_SERVICES_ROOT} OR
-   NOT IS_DIRECTORY "$ENV{HTTP_SERVICES_ROOT}")
-  message(FATAL_ERROR "HTTP_SERVICES_ROOT must name the installed Chttp SDK")
+if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
+  message(FATAL_ERROR
+          "TurboMedia requires Salts::Capture and Salts::Playback")
+endif()
+find_package(SaltsNet CONFIG REQUIRED
+             PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+if(NOT DEFINED ENV{CHTTP_ROOT} OR
+   NOT IS_DIRECTORY "$ENV{CHTTP_ROOT}")
+  message(FATAL_ERROR "CHTTP_ROOT must name the installed Chttp SDK")
 endif()
 unset(Chttp_DIR CACHE)
 unset(Chttp_DIR)
 find_package(Chttp CONFIG REQUIRED
-             PATHS "$ENV{HTTP_SERVICES_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(TURBO_MEDIA_IS_CLIENT)
-  if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
-    message(FATAL_ERROR
-            "TurboMedia CLIENT requires Salts::Capture and Salts::Playback")
-  endif()
+             PATHS "$ENV{CHTTP_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+if(NOT TARGET CHttp::Client OR NOT TARGET CHttp::Server)
+  message(FATAL_ERROR
+          "TurboMedia requires CHttp Client and Server targets")
 endif()
-find_package(SaltsNet CONFIG REQUIRED
-             PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   find_package(RulesForge CONFIG REQUIRED
                PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  if(NOT DEFINED ENV{TURBODB_ROOT} OR NOT IS_DIRECTORY "$ENV{TURBODB_ROOT}")
-    message(FATAL_ERROR "TURBODB_ROOT must name the installed TurboDB SDK")
-  endif()
-  unset(TurboDB_DIR CACHE)
-  unset(TurboDB_DIR)
-  find_package(TurboDB CONFIG REQUIRED
-               PATHS "$ENV{TURBODB_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-  if(NOT TARGET Orm::C OR NOT IS_DIRECTORY "${TurboDB_DRIVER_DIR}")
-    message(FATAL_ERROR "TurboMedia SERVER requires TurboDB ORM and its driver SDK")
-  endif()
-  set(TURBO_MEDIA_ORM_DRIVER_RELATIVE_PATH
-      "lib/turbodb/drivers/turbodb_driver_postgresql${CMAKE_SHARED_MODULE_SUFFIX}")
-  set(TURBO_MEDIA_ORM_POSTGRESQL_DRIVER
-      "$ENV{TURBODB_ROOT}/${TURBO_MEDIA_ORM_DRIVER_RELATIVE_PATH}")
-  if(NOT EXISTS "${TURBO_MEDIA_ORM_POSTGRESQL_DRIVER}")
-    message(FATAL_ERROR "TurboMedia SERVER requires the PostgreSQL driver module")
-  endif()
 endif()
  
 find_package(OpenSSL REQUIRED)
@@ -195,14 +167,12 @@ add_subdirectory(muxer)
 add_subdirectory(demuxer)
 add_subdirectory(network)
 add_subdirectory(transport)
-if(TURBO_MEDIA_IS_CLIENT)
-  add_subdirectory(player)
-endif()
+add_subdirectory(client_processing)
+add_subdirectory(player)
 add_subdirectory(recognition)
 add_subdirectory(media/rtsp)
-if(TURBO_MEDIA_IS_CLIENT)
-  add_subdirectory(media/mobile)
-else()
+add_subdirectory(media/mobile)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   add_subdirectory(server)
   add_subdirectory(streamer)
   add_subdirectory(pipeline)
@@ -251,13 +221,16 @@ install(
         webrtc/include/turbo_srtp_defs.h
         webrtc/include/webrtc_signaling.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-if(TURBO_MEDIA_IS_CLIENT)
-  install(
-    FILES media/include/turbo_player.h
-          media/mobile/turbo_mobile.h
-          media/mobile/turbo_mobile_codec.h
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-else()
+install(
+  FILES media/include/turbo_player.h
+        media/mobile/turbo_mobile.h
+        media/mobile/turbo_mobile_codec.h
+        webrtc/include/turbo_rtc_client.h
+        webrtc/include/turbo_rtc_subscriber.h
+        webrtc/include/turbo_rtc_playback_sink.h
+        webrtc/include/turbo_rtc_capture_source.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   install(
     DIRECTORY server/include/ streamer/include/ pipeline/include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}

@@ -1,5 +1,5 @@
 #include "ivr_whip_transport.h"
-#include "ivr_http_media_client.h"
+#include "turbo_http_media_client.h"
 #include "ivr_internal.h"
 #include "ivr_thread.h"
 #include "turbo_peer_connection.h"
@@ -15,7 +15,7 @@
 
 struct ivr_whip_transport_s {
     ivr_whip_transport_config_t config;
-    ivr_http_media_client_t *http_client;
+    turbo_http_media_client_t *http_client;
     ivr_mutex_t lock;
     ivr_mutex_t lifecycle_lock;
     int lifecycle_lock_initialized;
@@ -152,14 +152,14 @@ static void whip_emit_state(ivr_whip_transport_t *t,
 
 static int whip_delete_session(ivr_whip_transport_t *t,
                                const char *location) {
-    ivr_http_media_response_t resp;
+    turbo_http_media_response_t resp;
     int request_status;
 
     if (!t || !location || location[0] == '\0') {
         return 0;
     }
     memset(&resp, 0, sizeof(resp));
-    request_status = ivr_http_media_request(
+    request_status = turbo_http_media_request(
         t->http_client, "DELETE", location, NULL, NULL, NULL, &resp);
     if (request_status != 0 ||
         (resp.status != 200 && resp.status != 204 && resp.status != 404)) {
@@ -261,8 +261,8 @@ static void *whip_poll_thread_main(void *opaque) {
 
 ivr_status_t ivr_whip_transport_create(const ivr_whip_transport_config_t *config,
                                        ivr_whip_transport_t **out_transport) {
-    ivr_http_media_client_config_t http_config =
-        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    turbo_http_media_client_config_t http_config =
+        TURBO_HTTP_MEDIA_CLIENT_CONFIG_INIT;
     if (!config || !config->sfu_base_url || !out_transport) {
         return IVR_EINVAL;
     }
@@ -289,7 +289,7 @@ ivr_status_t ivr_whip_transport_create(const ivr_whip_transport_config_t *config
     http_config.key_password = config->key_password;
     http_config.timeout_ms = config->http_timeout_ms;
     http_config.allow_plaintext_loopback = config->allow_plaintext_loopback;
-    if (ivr_http_media_client_create(&http_config, &t->http_client) != 0) {
+    if (turbo_http_media_client_create(&http_config, &t->http_client) != 0) {
         free(t);
         return IVR_EINVAL;
     }
@@ -301,13 +301,13 @@ ivr_status_t ivr_whip_transport_create(const ivr_whip_transport_config_t *config
     ivr_str_init(&t->room_id);
     ivr_str_init(&t->call_id);
     if (ivr_mutex_init(&t->lock) != 0) {
-        ivr_http_media_client_destroy(t->http_client);
+        turbo_http_media_client_destroy(t->http_client);
         free(t);
         return IVR_ENOSPC;
     }
     if (ivr_mutex_init(&t->lifecycle_lock) != 0) {
         ivr_mutex_destroy(&t->lock);
-        ivr_http_media_client_destroy(t->http_client);
+        turbo_http_media_client_destroy(t->http_client);
         free(t);
         return IVR_ENOSPC;
     }
@@ -501,7 +501,7 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         return IVR_ENOSPC;
     }
 
-    char offer[IVR_HTTP_MEDIA_MAX_SDP];
+    char offer[TURBO_HTTP_MEDIA_MAX_SDP];
     if (turbo_peer_connection_create_offer(pc, offer, sizeof(offer)) <= 0) {
         fprintf(stderr, "[ivr_whip] start failed stage=create_offer\n");
         turbo_peer_connection_destroy(pc);
@@ -514,8 +514,8 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     }
 
     char path[IVR_MEDIA_ID_CAPACITY * 6u + 16u];
-    char *room_segment = ivr_http_media_encode_path_segment(t->room_id.data);
-    char *call_segment = ivr_http_media_encode_path_segment(t->call_id.data);
+    char *room_segment = turbo_http_media_encode_path_segment(t->room_id.data);
+    char *call_segment = turbo_http_media_encode_path_segment(t->call_id.data);
     int path_length;
     if (!room_segment || !call_segment) {
         free(room_segment);
@@ -541,14 +541,14 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
         ivr_mutex_unlock(&t->lifecycle_lock);
         return IVR_EINVAL;
     }
-    ivr_http_media_response_t resp;
+    turbo_http_media_response_t resp;
     memset(&resp, 0, sizeof(resp));
     /* Build a minimal WHIP offer from the peer connection ICE credentials and
        fingerprint (candidates go via PATCH; the SFU answers a minimal offer). */
-    char offer_min[IVR_HTTP_MEDIA_MAX_SDP];
-    ivr_sdp_build_minimal_audio_offer(offer, offer_min, sizeof(offer_min),
+    char offer_min[TURBO_HTTP_MEDIA_MAX_SDP];
+    turbo_http_media_sdp_build_minimal_audio_offer(offer, offer_min, sizeof(offer_min),
                                       (int)t->config.sample_rate, "sendonly");
-    int whip_rc = ivr_http_media_request(t->http_client, "POST", path,
+    int whip_rc = turbo_http_media_request(t->http_client, "POST", path,
                                          "application/sdp", NULL, offer_min,
                                          &resp);
     if (whip_rc != 0 ||
@@ -584,16 +584,16 @@ ivr_status_t ivr_whip_transport_start(ivr_whip_transport_t *t,
     char fragment[2048];
     char ufrag[64];
     char pwd[96];
-    if (ivr_sdp_attr_value(offer, "a=ice-ufrag:", ufrag, sizeof(ufrag)) &&
-        ivr_sdp_attr_value(offer, "a=ice-pwd:", pwd, sizeof(pwd))) {
+    if (turbo_http_media_sdp_attr_value(offer, "a=ice-ufrag:", ufrag, sizeof(ufrag)) &&
+        turbo_http_media_sdp_attr_value(offer, "a=ice-pwd:", pwd, sizeof(pwd))) {
         snprintf(fragment, sizeof(fragment),
                  "a=ice-ufrag:%s\r\na=ice-pwd:%s\r\n", ufrag, pwd);
         size_t used = strlen(fragment);
-        ivr_sdp_append_candidates(offer, fragment + used,
+        turbo_http_media_sdp_append_candidates(offer, fragment + used,
                                   sizeof(fragment) - used);
-        ivr_http_media_response_t trickle;
+        turbo_http_media_response_t trickle;
         memset(&trickle, 0, sizeof(trickle));
-        int patch_rc = ivr_http_media_request(
+        int patch_rc = turbo_http_media_request(
             t->http_client, "PATCH", resp.location,
             "application/trickle-ice-sdpfrag", resp.etag, fragment,
             &trickle);
@@ -721,6 +721,6 @@ void ivr_whip_transport_destroy(ivr_whip_transport_t *t) {
         t->lifecycle_lock_initialized = 0;
     }
     ivr_mutex_destroy(&t->lock);
-    ivr_http_media_client_destroy(t->http_client);
+    turbo_http_media_client_destroy(t->http_client);
     free(t);
 }

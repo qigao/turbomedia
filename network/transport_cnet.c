@@ -1,6 +1,7 @@
 /** TurboMedia stream/datagram transport backed by Salts CNet/CHTTP. */
 #include "turbo_transport.h"
 #include "transport_internal.h"
+#include "turbo_cnet_send_internal.h"
 
 #include <salts/clock.h>
 #include <salts/error_codes.h>
@@ -452,14 +453,10 @@ int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, 
                                     data, size, 0);
     else {
         if (transport->owns_client && size > TRANSPORT_MAX_BYTES) return -1;
-        mem_buffer_t *buffer = mem_get_buffer(mem_global(), size);
-        if (!buffer) return -1;
-        memcpy(mem_buffer_data(buffer), data, size);
-        mem_set_used(buffer, size);
         transport->send_pending = 1;
         transport->send_completed = 0;
-        status = cnet_send_buffer(transport->client, transport->connection, buffer);
-        mem_buffer_release(buffer);
+        status = turbo_media_cnet_send_copy(
+            transport->client, transport->connection, data, size, 0);
         if (status != SALTS_OK) transport->send_pending = 0;
         while (status == SALTS_OK && transport->send_pending && !transport->terminal)
             status = cnet_client_poll(

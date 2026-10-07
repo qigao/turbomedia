@@ -4,16 +4,19 @@
  */
 
 #include "webrtc_signaling.h"
+#include "signaling_source_identity.h"
+#include "signaling_tenant_quota_internal.h"
 
 #include "platform.h"
 #include "tlog.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_revocation_projection.h"
 #include <http_server/http.h>
 #include <cstl/hash_map.h>
 #include <json_parser.h>
 #include <salts/error_codes.h>
 #include <salts/thread.h>
-#include "str.h"
+#include <tstr.h>
 
 #include <limits.h>
 #include <stdio.h>
@@ -39,9 +42,7 @@ enum {
   SIGNALING_RECEIVE_BUFFER_BYTES = 16 * 1024,
   SIGNALING_POLL_SLICE_MS = 10,
   SIGNALING_MIN_COMMAND_CAPACITY = 64,
-  SIGNALING_RATE_TOKEN_UNITS = 1000,
-  SIGNALING_SOURCE_FAMILY_IPV4 = 4,
-  SIGNALING_SOURCE_FAMILY_IPV6 = 6
+  SIGNALING_RATE_TOKEN_UNITS = 1000
 };
 
 typedef enum {
@@ -55,12 +56,6 @@ typedef enum {
 
 #define SIGNALING_PEER_AUTH_AUDIENCE "turbomedia-signaling-peer"
 #define SIGNALING_PEER_JOIN_SCOPE "signaling.peer.join"
-
-typedef struct {
-  uint8_t family;
-  uint8_t address[16];
-  uint32_t scope_id;
-} signaling_source_key_t;
 
 struct signaling_source_state_s {
   signaling_source_key_t key;
@@ -126,44 +121,6 @@ static bool webrtc_str_equal(const void *left, const void *right, size_t key_siz
   return strcmp(left_str, right_str) == 0;
 }
 
-static int source_key_from_peer(const cnet_stream_peer *peer,
-                                signaling_source_key_t *key) {
-  const uint8_t *ipv6_bytes;
-  size_t index;
-  int mapped_ipv4 = 1;
-
-  if (!peer || !key) {
-    return -1;
-  }
-  memset(key, 0, sizeof(*key));
-  if (peer->family == CNET_DATAGRAM_ADDRESS_IPV4) {
-    key->family = SIGNALING_SOURCE_FAMILY_IPV4;
-    memcpy(key->address, peer->address, 4U);
-    return 0;
-  }
-  if (peer->family != CNET_DATAGRAM_ADDRESS_IPV6) {
-    return -1;
-  }
-
-  ipv6_bytes = peer->address;
-  for (index = 0U; index < 10U; ++index) {
-    if (ipv6_bytes[index] != 0U) {
-      mapped_ipv4 = 0;
-      break;
-    }
-  }
-  if (mapped_ipv4 && ipv6_bytes[10] == 0xffU && ipv6_bytes[11] == 0xffU) {
-    key->family = SIGNALING_SOURCE_FAMILY_IPV4;
-    memcpy(key->address, ipv6_bytes + 12U, 4U);
-    return 0;
-  }
-
-  key->family = SIGNALING_SOURCE_FAMILY_IPV6;
-  memcpy(key->address, ipv6_bytes, sizeof(key->address));
-  key->scope_id = peer->scope_id;
-  return 0;
-}
-
 struct webrtc_signaling_server_s {
   chttp_server http;
   int http_initialized;
@@ -172,6 +129,7 @@ struct webrtc_signaling_server_s {
   hash_map_t local_peers;
   hash_map_t local_rooms;
   hash_map_t source_states;
+  signaling_source_identity_policy_t source_identity_policy;
 
   signaling_source_state_t *inactive_sources_head;
   signaling_source_state_t *inactive_sources_tail;
@@ -192,6 +150,12 @@ struct webrtc_signaling_server_s {
   uint64_t source_capacity_rejections;
   uint64_t source_rate_rejections;
   uint64_t source_concurrency_rejections;
+
+  turbo_media_revocation_projection_t *revocation_projection;
+  turbo_media_tenant_quota_projection_t *tenant_quota_projection;
+  char tenant_quota_node_id[TURBO_MEDIA_TENANT_QUOTA_NODE_ID_BYTES];
+  cmeta_mutex_t tenant_quota_mutex;
+  int tenant_quota_mutex_initialized;
 
   int running;
   int cleanup_stop_requested;
@@ -305,7 +269,98 @@ static void expire_source_states_locked(webrtc_signaling_server_t *server,
   }
 }
 
-static signaling_source_admission_result_t admit_source_locked(
+static signaling_source_state_t *source_state_get_or_create_locked(
+    webrtc_signaling_server_t *server, const signaling_source_key_t *key,
+    uint64_t now_ms, signaling_source_admission_result_t *result) {
+  signaling_source_state_t **entry;
+  signaling_source_state_t *source;
+
+  if (result) {
+    *result = SIGNALING_SOURCE_ADMITTED;
+  }
+  if (!server || !key) {
+    if (result) {
+      *result = SIGNALING_SOURCE_REJECT_ADDRESS;
+    }
+    return NULL;
+  }
+
+  entry = (signaling_source_state_t **)hash_map_get(
+      &server->source_states, key);
+  source = entry ? *entry : NULL;
+  if (source) {
+    return source;
+  }
+
+  expire_source_states_locked(server, now_ms);
+  if (hash_map_size(&server->source_states) >=
+      server->config.max_source_states) {
+    if (result) {
+      *result = SIGNALING_SOURCE_REJECT_CAPACITY;
+    }
+    return NULL;
+  }
+  source = (signaling_source_state_t *)calloc(1, sizeof(*source));
+  if (!source) {
+    if (result) {
+      *result = SIGNALING_SOURCE_REJECT_MEMORY;
+    }
+    return NULL;
+  }
+  source->key = *key;
+  if (hash_map_put(&server->source_states, &source->key, &source) !=
+      STL_OK) {
+    free(source);
+    if (result) {
+      *result = SIGNALING_SOURCE_REJECT_MEMORY;
+    }
+    return NULL;
+  }
+  return source;
+}
+
+static signaling_source_admission_result_t pre_admit_source_locked(
+    webrtc_signaling_server_t *server, const signaling_source_key_t *key,
+    uint64_t now_ms) {
+  signaling_source_admission_result_t result =
+      SIGNALING_SOURCE_ADMITTED;
+  signaling_source_state_t *source;
+
+  if (!server || !key) {
+    return SIGNALING_SOURCE_REJECT_ADDRESS;
+  }
+  if (!source_policy_enabled(&server->config)) {
+    return SIGNALING_SOURCE_ADMITTED;
+  }
+
+  source = source_state_get_or_create_locked(
+      server, key, now_ms, &result);
+  if (!source) {
+    return result;
+  }
+  source->last_seen_ms = now_ms;
+
+  if (!consume_token_bucket(server->config.source_admissions_per_second,
+                            server->config.source_admission_burst,
+                            &source->rate_last_refill_ms,
+                            &source->rate_tokens, now_ms)) {
+    if (source->active_connections == 0U) {
+      link_inactive_source_locked(server, source, now_ms);
+    }
+    return SIGNALING_SOURCE_REJECT_RATE;
+  }
+  if (server->config.max_connections_per_source > 0 &&
+      source->active_connections >=
+          (size_t)server->config.max_connections_per_source) {
+    return SIGNALING_SOURCE_REJECT_CONCURRENCY;
+  }
+  if (source->active_connections == 0U) {
+    link_inactive_source_locked(server, source, now_ms);
+  }
+  return SIGNALING_SOURCE_ADMITTED;
+}
+
+static signaling_source_admission_result_t bind_source_connection_locked(
     webrtc_signaling_server_t *server, const signaling_source_key_t *key,
     uint64_t now_ms) {
   signaling_source_state_t **entry;
@@ -322,34 +377,7 @@ static signaling_source_admission_result_t admit_source_locked(
       &server->source_states, key);
   source = entry ? *entry : NULL;
   if (!source) {
-    expire_source_states_locked(server, now_ms);
-    if (hash_map_size(&server->source_states) >=
-        server->config.max_source_states) {
-      return SIGNALING_SOURCE_REJECT_CAPACITY;
-    }
-    source = (signaling_source_state_t *)calloc(1, sizeof(*source));
-    if (!source) {
-      return SIGNALING_SOURCE_REJECT_MEMORY;
-    }
-    source->key = *key;
-    if (hash_map_put(&server->source_states, &source->key, &source) !=
-        STL_OK) {
-      free(source);
-      return SIGNALING_SOURCE_REJECT_MEMORY;
-    }
-  } else {
-    unlink_inactive_source_locked(server, source);
-  }
-
-  source->last_seen_ms = now_ms;
-  if (!consume_token_bucket(server->config.source_admissions_per_second,
-                            server->config.source_admission_burst,
-                            &source->rate_last_refill_ms,
-                            &source->rate_tokens, now_ms)) {
-    if (source->active_connections == 0U) {
-      link_inactive_source_locked(server, source, now_ms);
-    }
-    return SIGNALING_SOURCE_REJECT_RATE;
+    return SIGNALING_SOURCE_REJECT_CAPACITY;
   }
   if (server->config.max_connections_per_source > 0 &&
       source->active_connections >=
@@ -357,6 +385,8 @@ static signaling_source_admission_result_t admit_source_locked(
     return SIGNALING_SOURCE_REJECT_CONCURRENCY;
   }
 
+  unlink_inactive_source_locked(server, source);
+  source->last_seen_ms = now_ms;
   source->active_connections++;
   return SIGNALING_SOURCE_ADMITTED;
 }
@@ -864,7 +894,9 @@ static int consume_peer_message_budget_locked(
 }
 
 static turbo_media_auth_config_t signaling_peer_auth_config(
-    const webrtc_signaling_config_t *config) {
+    webrtc_signaling_server_t *server) {
+  const webrtc_signaling_config_t *config =
+      server ? &server->config : NULL;
   turbo_media_auth_config_t auth_config = {
       .issuer = config ? config->jwt_issuer : NULL,
       .active_key_id = config ? config->jwt_active_key_id : NULL,
@@ -878,6 +910,12 @@ static turbo_media_auth_config_t signaling_peer_auth_config(
           config && config->jwt_max_ttl_seconds > 0
               ? config->jwt_max_ttl_seconds
               : TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS};
+
+  if (server && server->revocation_projection) {
+    auth_config.revocation_check =
+        turbo_media_revocation_projection_check_digest;
+    auth_config.revocation_context = server->revocation_projection;
+  }
   return auth_config;
 }
 
@@ -916,7 +954,8 @@ static int authorize_join_message(const webrtc_signaling_server_t *server,
     return -1;
   }
 
-  auth_config = signaling_peer_auth_config(&server->config);
+  auth_config = signaling_peer_auth_config(
+      (webrtc_signaling_server_t *)server);
   memset(&policy, 0, sizeof(policy));
   policy.audience = SIGNALING_PEER_AUTH_AUDIENCE;
   policy.required_scope = SIGNALING_PEER_JOIN_SCOPE;
@@ -1549,6 +1588,83 @@ static void remove_peer_and_notify_locked(webrtc_signaling_server_t *server,
   remove_peer_locked(server, peer);
 }
 
+static int signaling_ascii_case_equal(
+    const char *left, const char *right) {
+  unsigned char a;
+  unsigned char b;
+
+  if (!left || !right) {
+    return 0;
+  }
+  while (*left && *right) {
+    a = (unsigned char)*left++;
+    b = (unsigned char)*right++;
+    if (a >= 'A' && a <= 'Z') {
+      a = (unsigned char)(a - 'A' + 'a');
+    }
+    if (b >= 'A' && b <= 'Z') {
+      b = (unsigned char)(b - 'A' + 'a');
+    }
+    if (a != b) {
+      return 0;
+    }
+  }
+  return *left == '\0' && *right == '\0';
+}
+
+static int signaling_request_forwarded_for(
+    const chttp_server_request_view *request, const char **out_value) {
+  size_t index;
+  size_t count = 0U;
+  const char *value = NULL;
+
+  if (!request || !out_value) {
+    return -1;
+  }
+  *out_value = NULL;
+  for (index = 0U; index < request->header_count; ++index) {
+    const chttp_header *header = &request->headers[index];
+    if (header->name &&
+        signaling_ascii_case_equal(header->name, "X-Forwarded-For")) {
+      count++;
+      value = header->value;
+    }
+  }
+  if (count != 1U || !value || value[0] == '\0') {
+    return -1;
+  }
+  *out_value = value;
+  return 0;
+}
+
+static signaling_source_identity_result_t
+signaling_source_key_from_request(
+    webrtc_signaling_server_t *server,
+    const chttp_server_request_view *request,
+    signaling_source_key_t *source_key) {
+  const char *forwarded_for = NULL;
+
+  if (!server || !request || !source_key) {
+    return SIGNALING_SOURCE_IDENTITY_INVALID_PEER;
+  }
+  if (signaling_source_identity_policy_enabled(
+          &server->source_identity_policy) &&
+      signaling_request_forwarded_for(request, &forwarded_for) != 0) {
+    return SIGNALING_SOURCE_IDENTITY_INVALID_FORWARDED;
+  }
+  return signaling_source_identity_resolve(
+      &server->source_identity_policy, request->peer,
+      request->peer_certificate_sha256, forwarded_for,
+      source_key, NULL);
+}
+
+static unsigned int signaling_identity_rejection_http_status(
+    signaling_source_identity_result_t result) {
+  return result == SIGNALING_SOURCE_IDENTITY_UNTRUSTED_PROXY
+             ? 403U
+             : 400U;
+}
+
 static unsigned int signaling_source_rejection_http_status(
     signaling_source_admission_result_t result) {
   return result == SIGNALING_SOURCE_REJECT_RATE ||
@@ -1577,13 +1693,19 @@ static int signaling_websocket_open(
     return status;
   }
   memset(&source_key, 0, sizeof(source_key));
-  if (source_policy_enabled(&server->config) &&
-      source_key_from_peer(request->peer, &source_key) != 0) {
-    cmeta_mutex_lock(&server->mutex);
-    record_source_rejection_locked(server, SIGNALING_SOURCE_REJECT_ADDRESS);
-    cmeta_mutex_unlock(&server->mutex);
-    return chttp_server_reply(response, 400U, "text/plain", "Invalid peer address",
-                              sizeof("Invalid peer address") - 1U);
+  if (source_policy_enabled(&server->config)) {
+    signaling_source_identity_result_t identity_result =
+        signaling_source_key_from_request(server, request, &source_key);
+    if (identity_result != SIGNALING_SOURCE_IDENTITY_OK) {
+      cmeta_mutex_lock(&server->mutex);
+      record_source_rejection_locked(
+          server, SIGNALING_SOURCE_REJECT_ADDRESS);
+      cmeta_mutex_unlock(&server->mutex);
+      return chttp_server_reply(
+          response, signaling_identity_rejection_http_status(identity_result),
+          "text/plain", "Invalid source identity",
+          sizeof("Invalid source identity") - 1U);
+    }
   }
 
   cmeta_mutex_lock(&server->mutex);
@@ -1593,7 +1715,8 @@ static int signaling_websocket_open(
                               sizeof("Server stopping") - 1U);
   }
   if (source_policy_enabled(&server->config)) {
-    source_result = admit_source_locked(server, &source_key, cmeta_monotonic_ms());
+    source_result = bind_source_connection_locked(
+        server, &source_key, cmeta_monotonic_ms());
     if (source_result != SIGNALING_SOURCE_ADMITTED) {
       record_source_rejection_locked(server, source_result);
       cmeta_mutex_unlock(&server->mutex);
@@ -1727,6 +1850,58 @@ static int signaling_next_power_of_two(size_t minimum, size_t *out) {
   return SALTS_OK;
 }
 
+static int signaling_http_admission(
+    void *user, const chttp_server_request_view *request,
+    chttp_server_admission_result *result) {
+  webrtc_signaling_server_t *server =
+      (webrtc_signaling_server_t *)user;
+  signaling_source_key_t source_key;
+  signaling_source_identity_result_t identity_result;
+  signaling_source_admission_result_t source_result;
+
+  if (!server || !request || !result) {
+    return SALTS_EINVAL;
+  }
+  result->status_code = 0U;
+  result->retry_after_seconds = 0U;
+  if (!source_policy_enabled(&server->config)) {
+    return SALTS_OK;
+  }
+
+  memset(&source_key, 0, sizeof(source_key));
+  identity_result =
+      signaling_source_key_from_request(server, request, &source_key);
+  if (identity_result != SIGNALING_SOURCE_IDENTITY_OK) {
+    cmeta_mutex_lock(&server->mutex);
+    record_source_rejection_locked(
+        server, SIGNALING_SOURCE_REJECT_ADDRESS);
+    cmeta_mutex_unlock(&server->mutex);
+    result->status_code =
+        signaling_identity_rejection_http_status(identity_result);
+    return SALTS_OK;
+  }
+
+  cmeta_mutex_lock(&server->mutex);
+  if (!server->running) {
+    cmeta_mutex_unlock(&server->mutex);
+    result->status_code = 503U;
+    return SALTS_OK;
+  }
+  source_result = pre_admit_source_locked(
+      server, &source_key, cmeta_monotonic_ms());
+  if (source_result != SIGNALING_SOURCE_ADMITTED) {
+    record_source_rejection_locked(server, source_result);
+    result->status_code =
+        signaling_source_rejection_http_status(source_result);
+    if (source_result == SIGNALING_SOURCE_REJECT_RATE ||
+        source_result == SIGNALING_SOURCE_REJECT_CONCURRENCY) {
+      result->retry_after_seconds = 1U;
+    }
+  }
+  cmeta_mutex_unlock(&server->mutex);
+  return SALTS_OK;
+}
+
 static int signaling_cleanup_enabled(
     const webrtc_signaling_server_t *server) {
   return server &&
@@ -1784,11 +1959,19 @@ static int signaling_http_init(webrtc_signaling_server_t *server) {
                          : message_bytes);
 
   if (server->config.use_tls) {
+    int trusted_proxy_mode =
+        signaling_source_identity_policy_enabled(
+            &server->source_identity_policy);
     tls = (cnet_tls_server_config){
         .size = sizeof(tls),
         .cert_file = server->config.cert_file,
         .key_file = server->config.key_file,
-        .client_auth = CNET_TLS_CLIENT_AUTH_NONE};
+        .ca_file = trusted_proxy_mode
+                       ? server->config.trusted_proxy_ca_file
+                       : NULL,
+        .client_auth = trusted_proxy_mode
+                           ? CNET_TLS_CLIENT_AUTH_REQUIRED
+                           : CNET_TLS_CLIENT_AUTH_NONE};
   }
   config = (chttp_server_config){
       .host = server->config.host ? server->config.host : "0.0.0.0",
@@ -1833,6 +2016,13 @@ static int signaling_http_init(webrtc_signaling_server_t *server) {
     return status;
   }
   server->http_initialized = 1;
+  status = chttp_server_set_admission(
+      &server->http, signaling_http_admission, server);
+  if (status != SALTS_OK) {
+    (void)chttp_server_destroy(&server->http);
+    server->http_initialized = 0;
+    return status;
+  }
   websocket = (chttp_server_websocket_options){
       .size = sizeof(websocket),
       .path = "/",
@@ -1872,12 +2062,48 @@ webrtc_signaling_server_t *webrtc_signaling_create(
     server->config.jwt_max_ttl_seconds =
         TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
   }
+  if ((server->config.trusted_proxy_map &&
+       server->config.trusted_proxy_map[0] == '\0') ||
+      (server->config.trusted_proxy_ca_file &&
+       server->config.trusted_proxy_ca_file[0] == '\0') ||
+      signaling_source_identity_policy_init(
+          &server->source_identity_policy,
+          server->config.trusted_proxy_map) != 0 ||
+      ((server->config.trusted_proxy_map &&
+        server->config.trusted_proxy_map[0] != '\0') !=
+       (server->config.trusted_proxy_ca_file &&
+        server->config.trusted_proxy_ca_file[0] != '\0')) ||
+      (signaling_source_identity_policy_enabled(
+           &server->source_identity_policy) &&
+       (!server->config.use_tls ||
+        !source_policy_enabled(&server->config)))) {
+    free(server);
+    return NULL;
+  }
+  if (server->config.jwt_dynamic_revocation_capacity >
+          TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS ||
+      (server->config.jwt_dynamic_revocation_capacity > 0U &&
+       !server->config.jwt_enabled)) {
+    free(server);
+    return NULL;
+  }
+  if (server->config.jwt_dynamic_revocation_capacity > 0U) {
+    server->revocation_projection =
+        turbo_media_revocation_projection_create(
+            server->config.jwt_dynamic_revocation_capacity);
+    if (!server->revocation_projection) {
+      free(server);
+      return NULL;
+    }
+  }
   if (server->config.jwt_enabled) {
     turbo_media_auth_config_t auth_config =
-        signaling_peer_auth_config(&server->config);
+        signaling_peer_auth_config(server);
     if ((server->config.jwt_algo &&
          strcmp(server->config.jwt_algo, "HS256") != 0) ||
         turbo_media_auth_config_validate(&auth_config) != 0) {
+      turbo_media_revocation_projection_destroy(
+          server->revocation_projection);
       free(server);
       return NULL;
     }
@@ -1898,6 +2124,8 @@ webrtc_signaling_server_t *webrtc_signaling_create(
       (source_policy_enabled(&server->config) &&
        (server->config.max_source_states == 0U ||
         server->config.source_state_ttl_ms == 0))) {
+    turbo_media_revocation_projection_destroy(
+        server->revocation_projection);
     free(server);
     return NULL;
   }
@@ -1932,6 +2160,9 @@ webrtc_signaling_server_t *webrtc_signaling_create(
     destroy_source_states(server);
     cmeta_cond_destroy(&server->state_changed);
     cmeta_mutex_destroy(&server->mutex);
+    turbo_media_revocation_projection_destroy(
+        server->revocation_projection);
+    server->revocation_projection = NULL;
     free(server);
     return NULL;
   }
@@ -2058,7 +2289,144 @@ void webrtc_signaling_destroy(webrtc_signaling_server_t *server) {
   destroy_source_states(server);
   cmeta_cond_destroy(&server->state_changed);
   cmeta_mutex_destroy(&server->mutex);
+  turbo_media_revocation_projection_destroy(
+      server->revocation_projection);
+  server->revocation_projection = NULL;
+  if (server->tenant_quota_projection) {
+    turbo_media_tenant_quota_projection_destroy(
+        server->tenant_quota_projection);
+    server->tenant_quota_projection = NULL;
+  }
+  if (server->tenant_quota_mutex_initialized) {
+    cmeta_mutex_destroy(&server->tenant_quota_mutex);
+    server->tenant_quota_mutex_initialized = 0;
+  }
   free(server);
+}
+
+int signaling_tenant_quota_enable(
+    webrtc_signaling_server_t *server, const char *node_id,
+    size_t max_tenants) {
+  turbo_media_tenant_quota_projection_t *projection;
+
+  if (!server || !node_id || max_tenants == 0U ||
+      max_tenants > TURBO_MEDIA_TENANT_QUOTA_MAX_TENANTS) {
+    return -1;
+  }
+  projection = turbo_media_tenant_quota_projection_create(
+      node_id, max_tenants);
+  if (!projection) {
+    return -1;
+  }
+
+  cmeta_mutex_lock(&server->mutex);
+  if (server->running || server->tenant_quota_projection ||
+      server->tenant_quota_mutex_initialized) {
+    cmeta_mutex_unlock(&server->mutex);
+    turbo_media_tenant_quota_projection_destroy(projection);
+    return -1;
+  }
+  cmeta_mutex_init(&server->tenant_quota_mutex);
+  server->tenant_quota_mutex_initialized = 1;
+  server->tenant_quota_projection = projection;
+  memcpy(server->tenant_quota_node_id, node_id, strlen(node_id) + 1U);
+  cmeta_mutex_unlock(&server->mutex);
+  return 0;
+}
+
+int signaling_tenant_quota_enabled(
+    webrtc_signaling_server_t *server) {
+  return server && server->tenant_quota_projection &&
+         server->tenant_quota_mutex_initialized;
+}
+
+turbo_media_tenant_quota_apply_result_t
+signaling_tenant_quota_apply_snapshot(
+    webrtc_signaling_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *leases,
+    size_t lease_count) {
+  turbo_media_tenant_quota_apply_result_t result;
+
+  if (!signaling_tenant_quota_enabled(server) || !node_id ||
+      strcmp(server->tenant_quota_node_id, node_id) != 0) {
+    return TURBO_MEDIA_TENANT_QUOTA_APPLY_ERROR;
+  }
+  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_apply_snapshot(
+      server->tenant_quota_projection, epoch, sequence,
+      leases, lease_count);
+  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
+}
+
+turbo_media_tenant_quota_apply_result_t
+signaling_tenant_quota_apply_update(
+    webrtc_signaling_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *lease) {
+  turbo_media_tenant_quota_apply_result_t result;
+
+  if (!signaling_tenant_quota_enabled(server) || !node_id ||
+      strcmp(server->tenant_quota_node_id, node_id) != 0) {
+    return TURBO_MEDIA_TENANT_QUOTA_APPLY_ERROR;
+  }
+  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_apply_update(
+      server->tenant_quota_projection, epoch, sequence, lease);
+  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
+}
+
+int signaling_tenant_quota_status(
+    webrtc_signaling_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence,
+    size_t *out_lease_count) {
+  int result;
+
+  if (!signaling_tenant_quota_enabled(server)) {
+    return -1;
+  }
+  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_status(
+      server->tenant_quota_projection, out_synchronized,
+      out_epoch, out_sequence, out_lease_count);
+  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
+}
+
+turbo_media_tenant_quota_reserve_result_t
+signaling_tenant_quota_reserve(
+    webrtc_signaling_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount, uint64_t now_unix_ms) {
+  turbo_media_tenant_quota_reserve_result_t result;
+
+  if (!signaling_tenant_quota_enabled(server)) {
+    return TURBO_MEDIA_TENANT_QUOTA_RESERVE_UNKNOWN;
+  }
+  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_reserve(
+      server->tenant_quota_projection, tenant_id, resource,
+      amount, now_unix_ms);
+  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
+}
+
+int signaling_tenant_quota_release(
+    webrtc_signaling_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount) {
+  int result;
+
+  if (!signaling_tenant_quota_enabled(server)) {
+    return -1;
+  }
+  cmeta_mutex_lock(&server->tenant_quota_mutex);
+  result = turbo_media_tenant_quota_release(
+      server->tenant_quota_projection, tenant_id, resource, amount);
+  cmeta_mutex_unlock(&server->tenant_quota_mutex);
+  return result;
 }
 
 int webrtc_signaling_get_peer_count(webrtc_signaling_server_t *server) {
@@ -2084,6 +2452,42 @@ int webrtc_signaling_get_port(webrtc_signaling_server_t *server,
                : SALTS_EBUSY;
   cmeta_mutex_unlock(&server->mutex);
   return status == SALTS_OK ? 0 : -1;
+}
+
+webrtc_signaling_revocation_apply_result_t
+webrtc_signaling_apply_revocation_snapshot(
+    webrtc_signaling_server_t *server, uint64_t epoch, uint64_t sequence,
+    const char *const *sha256_hex, size_t count) {
+  if (!server || !server->revocation_projection) {
+    return WEBRTC_SIGNALING_REVOCATION_APPLY_ERROR;
+  }
+  return (webrtc_signaling_revocation_apply_result_t)
+      turbo_media_revocation_projection_apply_snapshot(
+          server->revocation_projection, epoch, sequence,
+          sha256_hex, count);
+}
+
+webrtc_signaling_revocation_apply_result_t
+webrtc_signaling_apply_revocation(
+    webrtc_signaling_server_t *server, uint64_t epoch, uint64_t sequence,
+    const char *sha256_hex) {
+  if (!server || !server->revocation_projection) {
+    return WEBRTC_SIGNALING_REVOCATION_APPLY_ERROR;
+  }
+  return (webrtc_signaling_revocation_apply_result_t)
+      turbo_media_revocation_projection_apply_revoke(
+          server->revocation_projection, epoch, sequence, sha256_hex);
+}
+
+int webrtc_signaling_get_revocation_status(
+    webrtc_signaling_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence, size_t *out_count) {
+  if (!server || !server->revocation_projection) {
+    return -1;
+  }
+  return turbo_media_revocation_projection_status(
+      server->revocation_projection, out_synchronized,
+      out_epoch, out_sequence, out_count);
 }
 
 int webrtc_signaling_broadcast(webrtc_signaling_server_t *server, const char *room,

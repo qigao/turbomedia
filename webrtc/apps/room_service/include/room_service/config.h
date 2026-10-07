@@ -48,49 +48,19 @@ typedef struct room_service_app_config_s {
     int auth_max_ttl_seconds;
     const char *sfu_control_url;
     const char *sfu_nodes;
+    const char *sfu_revocation_server_names;
     const char *sfu_control_token;
     const char *sfu_ca_file;
     const char *sfu_auth_issuer;
     const char *sfu_auth_key_id;
     const char *sfu_auth_secret;
     int sfu_auth_ttl_seconds;
+    int sfu_revocation_timeout_ms;
+    int sfu_revocation_max_attempts;
     int max_rooms;
     int auto_create_rooms;
     int dry_run;
     const char *log_level;
-
-    /* Iris owns workflow state; RoomService only returns provider facts. */
-    const char *iris_control_host;
-    int iris_control_port;
-    const char *iris_control_path;
-    const char *iris_provider_instance_id;
-    const char *iris_identity;
-    const char *iris_control_ca_file;
-    const char *iris_control_cert_file;
-    const char *iris_control_key_file;
-    const char *iris_control_key_password;
-    const char *iris_control_server_name;
-    int iris_control_use_tls;
-    int iris_control_allow_insecure_loopback;
-    int iris_ack_timeout_ms;
-
-    const char *iris_event_store_config;
-    const char *iris_event_store_channel;
-    const char *iris_command_ledger_channel;
-    int iris_correlation_capacity;
-    int iris_completion_queue_capacity;
-    int iris_reconcile_inventory_queue_capacity;
-    int iris_outbox_request_queue_capacity;
-    int iris_command_ledger_queue_capacity;
-    int iris_command_terminal_retention_seconds;
-    int iris_command_retention_batch_size;
-    int iris_dead_retention_seconds;
-    int iris_archive_retention_seconds;
-    int iris_retention_sweep_interval_ms;
-    int iris_retention_sweep_batch_size;
-    int iris_retry_max_attempts;
-    int iris_retry_backoff_ms;
-    int iris_drain_timeout_ms;
 
     /* IVR CHTTP HTTP/1.1 WebSocket endpoint. Zero disables IVR transport. */
     const char *control_ws_bind_host;

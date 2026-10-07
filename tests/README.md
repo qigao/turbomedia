@@ -2,7 +2,7 @@
 
 全面的 TDD/BDD 测试套件，基于 TinyTest 框架构建。
 
-Windows Client Release 使用 `win-client-release-user` 的 configure/build/test
+Windows Release 使用 `win-release-user` 的 configure/build/test
 preset，须在 VS 开发环境中执行。Salts、SaltsUtils、CHttp 与 SaltsNet 的
 运行库应来自匹配的 SDK；旧 `SaltsICE.dll` 对旧 Core/CNet 的依赖不能通过
 复制旧 DLL 到新 build 目录解决。
@@ -13,7 +13,7 @@ KeyUsage、serverAuth 与仅含 localhost 的 SAN，有效期为 2026-03-01 至
 2036-03-01。更新 fixture 时需保留未配置可信 CA 时拒绝连接、显式信任与
 正确 server name 时连接成功的断言，不关闭生产证书验证。
 
-Server 发布 profile 使用 `win-release-user`。在 VS x64 环境执行：
+Windows 发布 profile 使用 `win-release-user`。在 VS x64 环境执行：
 
 ```powershell
 cmake --preset win-release-user
@@ -23,9 +23,7 @@ ctest --preset win-release-user --output-on-failure
 
 IVR 协议专项可用 `-R "^test_ivr_(frame|protocol|schema|schema_typed)$"`，
 覆盖新 envelope/二进制字节、旧主版本拒绝和 generated/dynamic 互通。
-`test_iris_command_ledger` 同时覆盖升级前 outbox/ledger JSON 的读取。
-PostgreSQL 独立进程 live gate 不属于默认测试：需按产品文档启用
-`TURBO_MEDIA_POSTGRES_LIVE_TESTS` 并提供 `TURBO_MEDIA_TEST_POSTGRES_SERVICE`。
+Iris/ORM 模块及对应 PostgreSQL live gate 已随主线退役，不属于当前测试图。
 
 ## 测试文件概览
 
@@ -54,24 +52,24 @@ PostgreSQL 独立进程 live gate 不属于默认测试：需按产品文档启�
 
 ## 构建和运行测试
 
-### 构建所有 Client 测试
+### 构建所有 Windows 测试
 
 在 VS x64 开发环境执行：
 
 ```powershell
-cmake --preset win-client-release-user
-cmake --build --preset win-client-release-user
+cmake --preset win-release-user
+cmake --build --preset win-release-user
 ```
 
 ### 运行测试
 
 ```powershell
-ctest --preset win-client-release-user --output-on-failure
-ctest --preset win-client-release-user -R "^turbo_media_test_(transport_http|auth_token|signaling_lifecycle)$" --output-on-failure
+ctest --preset win-release-user --output-on-failure
+ctest --preset win-release-user -R "^turbo_media_test_(transport_http|auth_token|signaling_lifecycle)$" --output-on-failure
 ```
 
-Server 使用 `win-release-user`；其 SDK 和 schema 兼容性阻塞见
-[依赖迁移验证边界](../docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md#当前验证边界2026-10-07)。
+平台能力与 SDK 迁移边界见
+[依赖迁移设计](../docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md)。
 
 ### 添加新测试
 

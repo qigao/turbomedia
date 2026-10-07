@@ -33,8 +33,10 @@ typedef struct sfu_node_app_config_s {
     const char *auth_previous_key_id;
     const char *auth_previous_secret;
     const char *auth_revoked_token_sha256;
+    int auth_dynamic_revocation_capacity;
     int auth_clock_skew_seconds;
     int auth_max_ttl_seconds;
+    int tenant_quota_capacity;
     const char *stun_servers[TURBO_SFU_NODE_MAX_STUN_SERVERS];
     int stun_server_count;
     const char *turn_servers[TURBO_SFU_NODE_MAX_TURN_SERVERS];

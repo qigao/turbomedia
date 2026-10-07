@@ -237,10 +237,11 @@ function normalizedBrowser(value, operation) {
 
 function validateRelayContract(value) {
   if (value === undefined) return null;
-  if (!exact(value, ['ip_family', 'protocol', 'relay_protocol', 'remote_candidate_types']) ||
-      !['ipv4', 'ipv6'].includes(value.ip_family) || !['udp', 'tcp'].includes(value.protocol) ||
+  if (!exact(value, ['schema_version', 'ip_family', 'protocol', 'relay_protocol', 'remote_candidate_types']) ||
+      value.schema_version !== 1 || !['ipv4', 'ipv6'].includes(value.ip_family) || !['udp', 'tcp'].includes(value.protocol) ||
       !['udp', 'tcp', 'tls'].includes(value.relay_protocol) || !Array.isArray(value.remote_candidate_types) ||
       !value.remote_candidate_types.length || value.remote_candidate_types.length > CANDIDATE_TYPES.length ||
+      new Set(value.remote_candidate_types).size !== value.remote_candidate_types.length ||
       !value.remote_candidate_types.every((type) => CANDIDATE_TYPES.includes(type))) fail('BROWSER_INPUT_INVALID', 'relay_contract');
   return value;
 }
@@ -361,7 +362,8 @@ function createSeleniumAdapter(options = {}) {
   if (!object(source) || !HASH.test(source.test_page_sha256)) fail('BROWSER_INVALID_SOURCE', 'source');
   const pageUrl = safeUrl(source.test_page_url, false, 'source').href;
   const grid = options.gridUrl === undefined ? null : safeUrl(options.gridUrl,
-    options.profile === 'diagnostic' && options.allowLoopbackHttp === true, 'grid');
+    ['diagnostic', 'contract_lab'].includes(options.profile) &&
+      options.allowLoopbackHttp === true, 'grid');
   const builderFactory = options.builderFactory ?? (() => new Builder());
   if (typeof builderFactory !== 'function') fail('BROWSER_INVALID_OPTIONS', 'options');
   const roles = new Map(), secrets = new Set();

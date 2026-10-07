@@ -2,8 +2,6 @@
 
 include(CMakeFindDependencyMacro)
 
-set(TurboMedia_PRODUCT "@TURBO_MEDIA_PRODUCT@")
-
 foreach(_TurboMedia_package IN ITEMS Salts SaltsUtils)
   if(_TurboMedia_package STREQUAL "Salts")
     set(_TurboMedia_root SALTS_ROOT)
@@ -27,26 +25,25 @@ find_dependency(Salts CONFIG REQUIRED
                 PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_dependency(SaltsUtils CONFIG REQUIRED
                 PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT DEFINED ENV{HTTP_SERVICES_ROOT} OR
-   NOT IS_DIRECTORY "$ENV{HTTP_SERVICES_ROOT}")
+if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
   set(TurboMedia_FOUND FALSE)
   set(TurboMedia_NOT_FOUND_MESSAGE
-      "HTTP_SERVICES_ROOT must name the installed Chttp SDK")
+      "TurboMedia requires Salts::Capture and Salts::Playback")
+  return()
+endif()
+find_dependency(SaltsNet CONFIG REQUIRED
+                PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+if(NOT DEFINED ENV{CHTTP_ROOT} OR
+   NOT IS_DIRECTORY "$ENV{CHTTP_ROOT}")
+  set(TurboMedia_FOUND FALSE)
+  set(TurboMedia_NOT_FOUND_MESSAGE
+      "CHTTP_ROOT must name the installed Chttp SDK")
   return()
 endif()
 unset(Chttp_DIR CACHE)
 unset(Chttp_DIR)
 find_dependency(Chttp CONFIG REQUIRED
-                PATHS "$ENV{HTTP_SERVICES_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(TurboMedia_PRODUCT STREQUAL "CLIENT" AND
-   (NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback))
-  set(TurboMedia_FOUND FALSE)
-  set(TurboMedia_NOT_FOUND_MESSAGE
-      "TurboMedia CLIENT requires Salts::Capture and Salts::Playback")
-  return()
-endif()
-find_dependency(SaltsNet CONFIG REQUIRED
-                PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+                PATHS "$ENV{CHTTP_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 
 
 # The exported target file contains all TurboMedia components, but FFmpeg is

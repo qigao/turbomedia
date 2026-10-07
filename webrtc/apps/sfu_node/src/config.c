@@ -1,6 +1,7 @@
 #include "sfu_node/config.h"
 #include "../../config_toml.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_tenant_quota.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -99,10 +100,12 @@ void sfu_node_app_config_init(sfu_node_app_config_t *config) {
         sfu_node_env_value("TURBO_SFU_AUTH_PREVIOUS_SECRET");
     config->auth_revoked_token_sha256 =
         sfu_node_env_value("TURBO_SFU_AUTH_REVOKED_TOKEN_SHA256");
+    config->auth_dynamic_revocation_capacity = 0;
     config->auth_clock_skew_seconds =
         TURBO_MEDIA_AUTH_DEFAULT_CLOCK_SKEW_SECONDS;
     config->auth_max_ttl_seconds =
         TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
+    config->tenant_quota_capacity = 0;
     for (int index = 0; index < TURBO_SFU_NODE_MAX_STUN_SERVERS; ++index) {
         config->stun_servers[index] = NULL;
     }
@@ -288,7 +291,8 @@ static int sfu_node_config_apply_auth(
     rtc_app_config_storage_t *storage) {
     static const char *const allowed[] = {
         "issuer", "active_key_id", "active_secret", "previous_key_id",
-        "previous_secret", "revoked_token_sha256", "clock_skew_seconds",
+        "previous_secret", "revoked_token_sha256",
+        "dynamic_revocation_capacity", "clock_skew_seconds",
         "max_ttl_seconds"
     };
 
@@ -316,10 +320,31 @@ static int sfu_node_config_apply_auth(
             table, "auth", "revoked_token_sha256", storage,
             SFU_CONFIG_STRING_AUTH_REVOKED_TOKEN_SHA256,
             &config->auth_revoked_token_sha256) != 0 ||
+        rtc_app_toml_apply_int(table, "auth", "dynamic_revocation_capacity",
+                               &config->auth_dynamic_revocation_capacity) != 0 ||
         rtc_app_toml_apply_int(table, "auth", "clock_skew_seconds",
                                &config->auth_clock_skew_seconds) != 0 ||
         rtc_app_toml_apply_int(table, "auth", "max_ttl_seconds",
                                &config->auth_max_ttl_seconds) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int sfu_node_config_apply_tenant_quota(
+    const toml_table_t *table,
+    sfu_node_app_config_t *config) {
+    static const char *const allowed[] = {"capacity"};
+
+    if (!table) {
+        return 0;
+    }
+    if (rtc_app_toml_table_keys_valid(
+            table, "tenant_quota", allowed,
+            sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        rtc_app_toml_apply_int(
+            table, "tenant_quota", "capacity",
+            &config->tenant_quota_capacity) != 0) {
         return -1;
     }
     return 0;
@@ -391,8 +416,8 @@ static int sfu_node_config_apply_logging(
 
 int sfu_node_app_config_load(sfu_node_app_config_t *config, const char *filename) {
     static const char *const root_keys[] = {
-        "server", "capacity", "control", "media", "auth", "ice", "runtime",
-        "logging"
+        "server", "capacity", "control", "media", "auth", "tenant_quota",
+        "ice", "runtime", "logging"
     };
     rtc_app_toml_document_t document;
     rtc_app_config_storage_t *storage = NULL;
@@ -402,6 +427,7 @@ int sfu_node_app_config_load(sfu_node_app_config_t *config, const char *filename
     toml_table_t *control = NULL;
     toml_table_t *media = NULL;
     toml_table_t *auth = NULL;
+    toml_table_t *tenant_quota = NULL;
     toml_table_t *ice = NULL;
     toml_table_t *runtime = NULL;
     toml_table_t *logging = NULL;
@@ -437,6 +463,8 @@ int sfu_node_app_config_load(sfu_node_app_config_t *config, const char *filename
         rtc_app_toml_get_optional_table(document.root, "control", &control) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "media", &media) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "auth", &auth) != 0 ||
+        rtc_app_toml_get_optional_table(
+            document.root, "tenant_quota", &tenant_quota) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "ice", &ice) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "runtime", &runtime) != 0 ||
         rtc_app_toml_get_optional_table(document.root, "logging", &logging) != 0 ||
@@ -445,6 +473,8 @@ int sfu_node_app_config_load(sfu_node_app_config_t *config, const char *filename
         sfu_node_config_apply_control(control, &candidate, storage) != 0 ||
         sfu_node_config_apply_media(media, &candidate, storage) != 0 ||
         sfu_node_config_apply_auth(auth, &candidate, storage) != 0 ||
+        sfu_node_config_apply_tenant_quota(
+            tenant_quota, &candidate) != 0 ||
         sfu_node_config_apply_ice(ice, &candidate, storage) != 0 ||
         sfu_node_config_apply_runtime(runtime, &candidate) != 0 ||
         sfu_node_config_apply_logging(logging, &candidate, storage) != 0 ||
@@ -517,11 +547,17 @@ void sfu_node_app_config_apply_environment(sfu_node_app_config_t *config) {
     if (value) {
         config->auth_revoked_token_sha256 = value;
     }
+    config->auth_dynamic_revocation_capacity = sfu_node_env_int(
+        "TURBO_SFU_AUTH_DYNAMIC_REVOCATION_CAPACITY",
+        config->auth_dynamic_revocation_capacity);
     config->auth_clock_skew_seconds = sfu_node_env_int(
         "TURBO_SFU_AUTH_CLOCK_SKEW_SECONDS",
         config->auth_clock_skew_seconds);
     config->auth_max_ttl_seconds = sfu_node_env_int(
         "TURBO_SFU_AUTH_MAX_TTL_SECONDS", config->auth_max_ttl_seconds);
+    config->tenant_quota_capacity = sfu_node_env_int(
+        "TURBO_SFU_TENANT_QUOTA_CAPACITY",
+        config->tenant_quota_capacity);
     stun_server = sfu_node_env_value("TURBO_SFU_STUN_SERVER");
     if (stun_server) {
         for (int index = 0; index < TURBO_SFU_NODE_MAX_STUN_SERVERS; ++index) {
@@ -604,7 +640,10 @@ int sfu_node_app_config_validate(const sfu_node_app_config_t *config) {
              config->auth_previous_secret[0] != '\0') ||
             (config->auth_revoked_token_sha256 &&
              config->auth_revoked_token_sha256[0] != '\0');
-        if ((any_signed_auth &&
+        if (config->auth_dynamic_revocation_capacity < 0 ||
+            config->auth_dynamic_revocation_capacity >
+                TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS ||
+            (any_signed_auth &&
              turbo_media_auth_config_validate(&auth_config) != 0) ||
             (!any_signed_auth &&
              (!config->auth_issuer || config->auth_issuer[0] == '\0' ||
@@ -612,6 +651,22 @@ int sfu_node_app_config_validate(const sfu_node_app_config_t *config) {
               config->auth_max_ttl_seconds < 1))) {
             return -1;
         }
+        if (config->auth_dynamic_revocation_capacity > 0 &&
+            (!config->use_tls || !config->auth_active_secret ||
+             config->auth_active_secret[0] == '\0')) {
+            return -1;
+        }
+    }
+    if (config->tenant_quota_capacity < 0 ||
+        config->tenant_quota_capacity >
+            TURBO_MEDIA_TENANT_QUOTA_MAX_TENANTS ||
+        (config->tenant_quota_capacity > 0 &&
+         (!config->use_tls || !config->auth_active_secret ||
+          config->auth_active_secret[0] == '\0' ||
+          (config->control_token && config->control_token[0] != '\0') ||
+          (config->media_access_token &&
+           config->media_access_token[0] != '\0')))) {
+        return -1;
     }
     if (config->stun_server_count < 0 ||
         config->stun_server_count > TURBO_SFU_NODE_MAX_STUN_SERVERS ||

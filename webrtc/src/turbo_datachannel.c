@@ -9,10 +9,11 @@
  */
 
 #include "turbo_datachannel_internal.h"
+#include "turbo_cnet_send_internal.h"
 #include <cmeta_error.h>
 #include <stdlib.h>
 #include <string.h>
-#include <str.h>
+#include <tstr.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
@@ -462,22 +463,13 @@ static void dc_send_task(void *arg1, void *arg2) {
     command->status = SALTS_ENOTCONN;
     if (peer->ctx->transport == TURBO_DC_TRANSPORT_TCP &&
         peer->stream_client_initialized && peer->stream_connection.generation != 0u) {
-        mem_buffer_t *buffer;
         if (command->len > DC_CNET_MAX_SEND_BYTES) {
             command->status = SALTS_EMSGSIZE;
             return;
         }
-        buffer = mem_get_buffer(mem_global(), command->len);
-        if (!buffer) {
-            command->status = SALTS_ENOMEM;
-            return;
-        }
-        /* The synchronous command borrows its bytes only until this task returns. */
-        memcpy(mem_buffer_data(buffer), command->data, command->len);
-        mem_set_used(buffer, command->len);
-        command->status = cnet_send_buffer(
-            &peer->stream_client, peer->stream_connection, buffer);
-        mem_buffer_release(buffer);
+        command->status = turbo_media_cnet_send_copy(
+            &peer->stream_client, peer->stream_connection,
+            command->data, command->len, 0);
     } else if (peer->ctx->transport == TURBO_DC_TRANSPORT_UDP &&
                peer->datagram_initialized && peer->has_remote_datagram_peer) {
         command->status = cnet_datagram_send(&peer->datagram,

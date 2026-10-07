@@ -4,7 +4,9 @@
  */
 
 #include "signaling_server/config.h"
+#include "signaling_source_identity.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_tenant_quota.h"
 #include <cmeta_fs.h>
 #include <toml.h>
 #include <tlog.h>
@@ -50,6 +52,8 @@ typedef enum signaling_config_string_e {
     CONFIG_STRING_WS_HOST,
     CONFIG_STRING_WS_CERT_FILE,
     CONFIG_STRING_WS_KEY_FILE,
+    CONFIG_STRING_TRUSTED_PROXY_MAP,
+    CONFIG_STRING_TRUSTED_PROXY_CA_FILE,
     CONFIG_STRING_HTTP_HOST,
     CONFIG_STRING_HTTP_CERT_FILE,
     CONFIG_STRING_HTTP_KEY_FILE,
@@ -150,6 +154,9 @@ static int config_clone_strings(
     CONFIG_CLONE(CONFIG_STRING_WS_HOST, ws_host);
     CONFIG_CLONE(CONFIG_STRING_WS_CERT_FILE, ws_cert_file);
     CONFIG_CLONE(CONFIG_STRING_WS_KEY_FILE, ws_key_file);
+    CONFIG_CLONE(CONFIG_STRING_TRUSTED_PROXY_MAP, trusted_proxy_map);
+    CONFIG_CLONE(CONFIG_STRING_TRUSTED_PROXY_CA_FILE,
+                 trusted_proxy_ca_file);
     CONFIG_CLONE(CONFIG_STRING_HTTP_HOST, http_host);
     CONFIG_CLONE(CONFIG_STRING_HTTP_CERT_FILE, http_cert_file);
     CONFIG_CLONE(CONFIG_STRING_HTTP_KEY_FILE, http_key_file);
@@ -343,6 +350,50 @@ static int config_apply_server(
     return 0;
 }
 
+static int config_apply_trusted_proxy(
+    const toml_table_t *table,
+    signaling_server_config_t *config,
+    signaling_config_storage_t *storage) {
+    static const char *const allowed[] = {"map", "client_ca_file"};
+
+    if (!table) {
+        return 0;
+    }
+    if (config_table_keys_valid(
+            table, "trusted_proxy", allowed,
+            sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        config_apply_string(
+            table, "trusted_proxy", "map", storage,
+            CONFIG_STRING_TRUSTED_PROXY_MAP,
+            &config->trusted_proxy_map) != 0 ||
+        config_apply_string(
+            table, "trusted_proxy", "client_ca_file", storage,
+            CONFIG_STRING_TRUSTED_PROXY_CA_FILE,
+            &config->trusted_proxy_ca_file) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int config_apply_tenant_quota(
+    const toml_table_t *table,
+    signaling_server_config_t *config) {
+    static const char *const allowed[] = {"capacity"};
+
+    if (!table) {
+        return 0;
+    }
+    if (config_table_keys_valid(
+            table, "tenant_quota", allowed,
+            sizeof(allowed) / sizeof(allowed[0])) != 0 ||
+        config_apply_int(
+            table, "tenant_quota", "capacity",
+            &config->tenant_quota_capacity) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int config_apply_http(
     const toml_table_t *table,
     signaling_server_config_t *config,
@@ -476,7 +527,8 @@ static int config_apply_auth(
     static const char *const allowed[] = {
         "enabled", "issuer", "active_key_id", "secret",
         "previous_key_id", "previous_secret", "revoked_token_sha256",
-        "clock_skew_seconds", "ttl_seconds", "algorithm"
+        "dynamic_revocation_capacity", "clock_skew_seconds", "ttl_seconds",
+        "algorithm"
     };
 
     if (!table) {
@@ -502,6 +554,8 @@ static int config_apply_auth(
         config_apply_string(table, "auth", "revoked_token_sha256", storage,
                             CONFIG_STRING_JWT_REVOKED_TOKEN_SHA256,
                             &config->jwt_revoked_token_sha256) != 0 ||
+        config_apply_int(table, "auth", "dynamic_revocation_capacity",
+                         &config->jwt_dynamic_revocation_capacity) != 0 ||
         config_apply_int(table, "auth", "clock_skew_seconds",
                          &config->jwt_clock_skew_seconds) != 0 ||
         config_apply_int(table, "auth", "ttl_seconds", &config->jwt_ttl_seconds) != 0 ||
@@ -602,6 +656,10 @@ void signaling_server_config_init(signaling_server_config_t *config) {
     config->ws_use_tls = 0;
     config->ws_cert_file = NULL;
     config->ws_key_file = NULL;
+    config->trusted_proxy_map =
+        getenv("TURBO_SIGNALING_TRUSTED_PROXY_MAP");
+    config->trusted_proxy_ca_file =
+        getenv("TURBO_SIGNALING_TRUSTED_PROXY_CA_FILE");
     
     /* HTTP API */
     config->http_enabled = 0;
@@ -660,10 +718,12 @@ void signaling_server_config_init(signaling_server_config_t *config) {
         getenv("TURBO_SIGNALING_AUTH_PREVIOUS_SECRET");
     config->jwt_revoked_token_sha256 =
         getenv("TURBO_SIGNALING_AUTH_REVOKED_TOKEN_SHA256");
+    config->jwt_dynamic_revocation_capacity = 0;
     config->jwt_clock_skew_seconds =
         TURBO_MEDIA_AUTH_DEFAULT_CLOCK_SKEW_SECONDS;
     config->jwt_ttl_seconds = TURBO_MEDIA_AUTH_DEFAULT_MAX_TTL_SECONDS;
     config->jwt_algorithm = "HS256";
+    config->tenant_quota_capacity = 0;
     
     /* Redis */
     config->redis_enabled = 0; /* Disabled by default */
@@ -683,18 +743,20 @@ void signaling_server_config_init(signaling_server_config_t *config) {
 
 int signaling_server_config_load(signaling_server_config_t *config, const char *filename) {
     static const char *const root_keys[] = {
-        "server", "http_api", "http_auth", "limits", "auth", "redis",
-        "logging"
+        "server", "trusted_proxy", "http_api", "http_auth", "limits",
+        "auth", "tenant_quota", "redis", "logging"
     };
     enum { SIGNALING_TOML_ERROR_SIZE = 200 };
     cmeta_fs_buf_t file = {0};
     char parse_error[SIGNALING_TOML_ERROR_SIZE] = {0};
     toml_table_t *root = NULL;
     toml_table_t *server = NULL;
+    toml_table_t *trusted_proxy = NULL;
     toml_table_t *http = NULL;
     toml_table_t *http_auth = NULL;
     toml_table_t *limits = NULL;
     toml_table_t *auth = NULL;
+    toml_table_t *tenant_quota = NULL;
     toml_table_t *redis = NULL;
     toml_table_t *logging = NULL;
     signaling_config_storage_t *storage = NULL;
@@ -733,17 +795,24 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
     if (config_table_keys_valid(root, "root", root_keys,
                                 sizeof(root_keys) / sizeof(root_keys[0])) != 0 ||
         config_get_optional_table(root, "server", &server) != 0 ||
+        config_get_optional_table(
+            root, "trusted_proxy", &trusted_proxy) != 0 ||
         config_get_optional_table(root, "http_api", &http) != 0 ||
         config_get_optional_table(root, "http_auth", &http_auth) != 0 ||
         config_get_optional_table(root, "limits", &limits) != 0 ||
         config_get_optional_table(root, "auth", &auth) != 0 ||
+        config_get_optional_table(
+            root, "tenant_quota", &tenant_quota) != 0 ||
         config_get_optional_table(root, "redis", &redis) != 0 ||
         config_get_optional_table(root, "logging", &logging) != 0 ||
         config_apply_server(server, &candidate, storage) != 0 ||
+        config_apply_trusted_proxy(
+            trusted_proxy, &candidate, storage) != 0 ||
         config_apply_http(http, &candidate, storage) != 0 ||
         config_apply_http_auth(http_auth, &candidate, storage) != 0 ||
         config_apply_limits(limits, &candidate) != 0 ||
         config_apply_auth(auth, &candidate, storage) != 0 ||
+        config_apply_tenant_quota(tenant_quota, &candidate) != 0 ||
         config_apply_redis(redis, &candidate, storage) != 0 ||
         config_apply_logging(logging, &candidate, storage) != 0 ||
         signaling_server_config_validate(&candidate) != 0) {
@@ -846,12 +915,26 @@ void signaling_server_config_apply_environment(signaling_server_config_t *config
     if (value && value[0] != '\0') {
         config->jwt_revoked_token_sha256 = value;
     }
+    config->jwt_dynamic_revocation_capacity = signaling_config_env_int(
+        "TURBO_SIGNALING_AUTH_DYNAMIC_REVOCATION_CAPACITY",
+        config->jwt_dynamic_revocation_capacity);
     config->jwt_clock_skew_seconds = signaling_config_env_int(
         "TURBO_SIGNALING_AUTH_CLOCK_SKEW_SECONDS",
         config->jwt_clock_skew_seconds);
     config->jwt_ttl_seconds = signaling_config_env_int(
         "TURBO_SIGNALING_AUTH_MAX_TTL_SECONDS",
         config->jwt_ttl_seconds);
+    config->tenant_quota_capacity = signaling_config_env_int(
+        "TURBO_SIGNALING_TENANT_QUOTA_CAPACITY",
+        config->tenant_quota_capacity);
+    value = getenv("TURBO_SIGNALING_TRUSTED_PROXY_MAP");
+    if (value && value[0] != '\0') {
+        config->trusted_proxy_map = value;
+    }
+    value = getenv("TURBO_SIGNALING_TRUSTED_PROXY_CA_FILE");
+    if (value && value[0] != '\0') {
+        config->trusted_proxy_ca_file = value;
+    }
     value = getenv("TURBO_SIGNALING_USE_TLS");
     if (value && value[0] != '\0') {
         config->ws_use_tls =
@@ -1093,11 +1176,68 @@ int signaling_server_config_validate(const signaling_server_config_t *config) {
         if ((config->jwt_enabled != 0 && config->jwt_enabled != 1) ||
             !config->jwt_algorithm ||
             strcmp(config->jwt_algorithm, "HS256") != 0 ||
+            config->jwt_dynamic_revocation_capacity < 0 ||
+            config->jwt_dynamic_revocation_capacity >
+                TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS ||
             config->jwt_clock_skew_seconds < 0 ||
             config->jwt_ttl_seconds < 1 ||
             (config->jwt_enabled &&
              turbo_media_auth_config_validate(&auth_config) != 0)) {
             TLOG_ERROR("Invalid signaling peer admission token configuration");
+            return -1;
+        }
+        if (config->jwt_dynamic_revocation_capacity > 0 &&
+            (!config->jwt_enabled ||
+             !config->http_enabled ||
+             !config->http_use_tls ||
+             !config->http_auth_enabled ||
+             !config->http_auth_active_secret ||
+             config->http_auth_active_secret[0] == '\0')) {
+            TLOG_ERROR(
+                "Dynamic revocation requires peer JWT plus HTTPS signed "
+                "management authentication");
+            return -1;
+        }
+    }
+
+    if (config->tenant_quota_capacity < 0 ||
+        config->tenant_quota_capacity >
+            TURBO_MEDIA_TENANT_QUOTA_MAX_TENANTS ||
+        (config->tenant_quota_capacity > 0 &&
+         (!config->jwt_enabled ||
+          !config->http_enabled || !config->http_use_tls ||
+          !config->http_auth_enabled ||
+          !config->http_auth_active_secret ||
+          config->http_auth_active_secret[0] == '\0'))) {
+        TLOG_ERROR(
+            "Tenant quota projection requires bounded capacity plus HTTPS "
+            "signed management authentication");
+        return -1;
+    }
+
+    {
+        int has_proxy_map =
+            config->trusted_proxy_map &&
+            config->trusted_proxy_map[0] != '\0';
+        int has_proxy_ca =
+            config->trusted_proxy_ca_file &&
+            config->trusted_proxy_ca_file[0] != '\0';
+        signaling_source_identity_policy_t proxy_policy;
+
+        if ((config->trusted_proxy_map &&
+             config->trusted_proxy_map[0] == '\0') ||
+            (config->trusted_proxy_ca_file &&
+             config->trusted_proxy_ca_file[0] == '\0') ||
+            has_proxy_map != has_proxy_ca ||
+            (has_proxy_map &&
+             (!config->ws_use_tls ||
+              (config->max_connections_per_source == 0 &&
+               config->source_admissions_per_second == 0))) ||
+            signaling_source_identity_policy_init(
+                &proxy_policy, config->trusted_proxy_map) != 0) {
+            TLOG_ERROR(
+                "Trusted proxy mode requires a valid proxy map, client CA, "
+                "WSS, and enabled source admission policy");
             return -1;
         }
     }

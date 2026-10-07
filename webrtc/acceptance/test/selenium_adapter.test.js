@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { fakeWebDriver, startFakeGrid, snapshot, PAGE_HASH } = require('./fixtures/fake_webdriver');
 const browser = { name: 'chrome', version: '127.0.0', platform: 'Windows 11' };
 const source = { test_page_url: 'https://acceptance.example.test/client.html', test_page_sha256: PAGE_HASH };
-const relay_contract = { ip_family: 'ipv4', protocol: 'udp', relay_protocol: 'tcp', remote_candidate_types: ['host'] };
+const relay_contract = { schema_version: 1, ip_family: 'ipv4', protocol: 'udp', relay_protocol: 'tcp', remote_candidate_types: ['host'] };
 const context = { browser, relay_contract };
 const secret = 'SECRET-token';
 const configuration = () => ({ sfu_origin: 'https://sfu.example.test', whip_url: 'https://sfu.example.test/whip/room/publisher',
@@ -115,6 +115,15 @@ for (const [name, change, code, category] of [
   assert.equal(result.relay.category, category);
 });
 
+test('duplicate relay contract candidate types are rejected before Grid effects', async (t) => {
+  const { adapter, fake } = setup(t);
+  await assert.rejects(adapter.openPublisher({
+    browser,
+    relay_contract: { ...relay_contract, remote_candidate_types: ['host', 'host'] },
+  }), { code: 'BROWSER_INPUT_INVALID' });
+  assert.equal(fake.drivers.length, 0);
+});
+
 test('missing relay contract and malformed generation hash never manufacture evidence', async (t) => {
   const { adapter } = setup(t);
   await adapter.openPublisher({ browser });
@@ -209,6 +218,26 @@ test('page cleanup errors survive session quit and closeRole is terminal and ide
   assert.deepEqual(await adapter.closeRole('publisher'), result);
   await assert.rejects(adapter.execute('publisher', 'snapshot'), { code: 'BROWSER_ROLE_UNAVAILABLE' });
   assert.equal(fake.events.filter((e) => e[1] === 'quit').length, 1);
+});
+
+test('contract_lab may explicitly use loopback Grid while release still rejects it', async (t) => {
+  const grid = await startFakeGrid();
+  t.after(() => grid.close());
+  const adapter = factory()({
+    source,
+    gridUrl: grid.gridUrl,
+    profile: 'contract_lab',
+    allowLoopbackHttp: true,
+    commandTimeoutMs: 500,
+  });
+  t.after(() => adapter.closeAll());
+  await adapter.preflightBrowser(context);
+  assert.throws(() => factory()({
+    source,
+    gridUrl: grid.gridUrl,
+    profile: 'release',
+    allowLoopbackHttp: true,
+  }), { code: 'BROWSER_UNSAFE_GRID_URL' });
 });
 
 test('actual pinned Selenium Builder honors explicit Grid and browser despite environment overrides', async (t) => {

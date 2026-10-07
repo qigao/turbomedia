@@ -3,7 +3,7 @@
 #ifdef TURBO_MEDIA_HAS_RTSP
 
 #include "turbo_rtsp_sdp.h"
-#include "str.h"
+#include <tstr.h>
 #include "cmeta_uuid.h"
 
 #include <stdio.h>

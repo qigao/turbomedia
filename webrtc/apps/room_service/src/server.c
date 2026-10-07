@@ -2,20 +2,12 @@
 #include "room_service/http_api.h"
 #include "turbo_transport.h"
 #include "turbo_media_auth.h"
+#include "turbo_media_revocation_https.h"
 #include <json_parser.h>
 #include "turbo_room_service.h"
 #include "cmeta_thread.h"
-#include <salts/crypto.h>
-#include "cmeta_uuid.h"
 #include "tlog.h"
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-#include "iris_command_ledger.h"
-#include "iris_event_outbox.h"
-#include "iris_completion_dispatcher.h"
-#include "iris_control_provider.h"
-#include "iris_media_bridge.h"
-#include "iris_media_reconciler.h"
-#include "iris_room_bridge.h"
 #include "ivr_certificate_identity.h"
 #include "ivr_control_adapter.h"
 #include "room_service_media.h"
@@ -54,6 +46,12 @@ struct room_service_app_server_s {
     int sfu_node_count;
     int sfu_node_capacity;
     int next_sfu_node_index;
+    uint64_t sfu_membership_version;
+    cmeta_mutex_t revocation_mutex;
+    turbo_media_revocation_https_t *revocation_https;
+    turbo_media_revocation_fanout_t *revocation_fanout;
+    uint64_t revocation_membership_version;
+    char *revocation_ephemeral_token;
     room_service_room_sync_diagnostic_t *room_sync_diagnostics;
     int room_sync_diagnostic_count;
     int room_sync_diagnostic_capacity;
@@ -73,354 +71,9 @@ struct room_service_app_server_s {
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
     ivr_control_adapter_t *ivr_control; /* NULL only when the IVR feature is disabled */
     ivr_certificate_identity_t *ivr_control_identity;
-    iris_command_ledger_t *iris_command_ledger;
-    iris_media_bridge_t *iris_media_bridge;
-    iris_room_bridge_t *iris_room_bridge;
-    iris_control_provider_t *iris_control_provider;
-    iris_completion_dispatcher_t *iris_completion_dispatcher;
-    iris_event_outbox_t *iris_event_outbox;
-    iris_media_reconciler_t *iris_media_reconciler;
 #endif
 };
 
-#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-static int room_service_room_completion_id(
-    const char *command_id, char out[SALTS_UUID_STRING_SIZE]) {
-    static const char domain[] = "turbomedia.room.terminal.v1";
-    salts_crypto_sha256_ctx_t hash;
-    uint8_t digest[SALTS_CRYPTO_SHA256_DIGEST_SIZE];
-    cmeta_uuid_t uuid;
-    if (!command_id || !command_id[0] ||
-        salts_crypto_sha256_init(&hash) != 0 ||
-        salts_crypto_sha256_update(&hash, domain, sizeof(domain) - 1u) != 0 ||
-        salts_crypto_sha256_update(&hash, command_id, strlen(command_id)) != 0 ||
-        salts_crypto_sha256_final(&hash, digest) != 0) {
-        return 0;
-    }
-    memcpy(uuid.bytes, digest, sizeof(uuid.bytes));
-    uuid.bytes[6] = (uint8_t)((uuid.bytes[6] & 0x0fu) | 0x80u);
-    uuid.bytes[8] = (uint8_t)((uuid.bytes[8] & 0x3fu) | 0x80u);
-    return cmeta_uuid_format(&uuid, out, SALTS_UUID_STRING_SIZE) == SALTS_OK;
-}
-
-static const char *room_service_provider_json_string(
-    const json_value_t *object, const char *name) {
-    json_value_t *value = object ? json_object_get(object, name) : NULL;
-    return value && json_type(value) == JSON_STRING
-               ? json_string(value)
-               : NULL;
-}
-
-static int room_service_provider_copy(char *out, size_t capacity,
-                                      const char *value) {
-    size_t size;
-    if (!out || capacity == 0u || !value) return 0;
-    size = strlen(value);
-    if (size >= capacity) return 0;
-    memcpy(out, value, size + 1u);
-    return 1;
-}
-
-static iris_media_bridge_status_t room_service_room_receipt_status(
-    iris_room_bridge_status_t status) {
-    switch (status) {
-        case IRIS_ROOM_BRIDGE_TERMINAL:
-            return IRIS_MEDIA_BRIDGE_TERMINAL;
-        case IRIS_ROOM_BRIDGE_DUPLICATE:
-            return IRIS_MEDIA_BRIDGE_TERMINAL_REPLAY;
-        case IRIS_ROOM_BRIDGE_IN_PROGRESS:
-            return IRIS_MEDIA_BRIDGE_DUPLICATE;
-        case IRIS_ROOM_BRIDGE_INVALID:
-            return IRIS_MEDIA_BRIDGE_INVALID;
-        case IRIS_ROOM_BRIDGE_CONFLICT:
-            return IRIS_MEDIA_BRIDGE_CONFLICT;
-        case IRIS_ROOM_BRIDGE_EXPIRED:
-            return IRIS_MEDIA_BRIDGE_EXPIRED;
-        case IRIS_ROOM_BRIDGE_FULL:
-            return IRIS_MEDIA_BRIDGE_FULL;
-        case IRIS_ROOM_BRIDGE_UNAVAILABLE:
-            return IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        case IRIS_ROOM_BRIDGE_INTERNAL:
-        default:
-            return IRIS_MEDIA_BRIDGE_INTERNAL;
-    }
-}
-
-static int room_service_is_room_provider_command(const char *body,
-                                                 size_t body_size) {
-    json_value_t *root = NULL;
-    json_value_t *data;
-    json_value_t *capability;
-    int is_room = 0;
-    if (body && body_size > 0u &&
-        ((root = json_parse((const char *)((const uint8_t *)body), body_size)) ? 0 : -1) == 0 &&
-        root && json_type(root) == JSON_OBJECT) {
-        data = json_object_get(root, "data");
-        capability = data && json_type(data) == JSON_OBJECT
-                         ? json_object_get(data, "capability")
-                         : NULL;
-        is_room = capability &&
-                  json_type(capability) == JSON_STRING &&
-                  strcmp(json_string(capability), "room") == 0;
-    }
-    json_free(root);
-    root = NULL;
-    return is_room;
-}
-
-static int room_service_build_provider_completion(
-    const char *body, size_t body_size, const char *command_id,
-    const char *terminal_status, const char *event_type,
-    const char *result_json, const char *error_code,
-    const char *error_message,
-    iris_media_completion_t *completion,
-    ivr_media_command_result_t *result,
-    char event_id[SALTS_UUID_STRING_SIZE]) {
-    json_value_t *root = NULL;
-    json_value_t *epoch_value;
-    const char *tenant_id;
-    const char *session_id;
-    const char *worker_id;
-    const char *correlation_id;
-    uint64_t epoch;
-    int valid = 0;
-    if (!body || !command_id || !command_id[0] || !terminal_status ||
-        !terminal_status[0] || !event_type || !event_type[0] || !result_json ||
-        !result_json[0] || !completion || !result ||
-        ((root = json_parse((const char *)((const uint8_t *)body), body_size)) ? 0 : -1) != 0 ||
-        !root || json_type(root) != JSON_OBJECT) {
-        json_free(root);
-        root = NULL;
-        return 0;
-    }
-    tenant_id = room_service_provider_json_string(root, "tenantId");
-    session_id = room_service_provider_json_string(root, "sessionId");
-    worker_id = room_service_provider_json_string(root, "workerId");
-    correlation_id = room_service_provider_json_string(root, "correlationId");
-    epoch_value = json_object_get(root, "dispatchEpoch");
-    epoch = epoch_value && json_type(epoch_value) == JSON_NUMBER
-                ? (uint64_t)json_number(epoch_value)
-                : 0u;
-    memset(completion, 0, sizeof(*completion));
-    memset(result, 0, sizeof(*result));
-    if (tenant_id && tenant_id[0] && session_id && session_id[0] && worker_id &&
-        worker_id[0] && correlation_id && correlation_id[0] && epoch > 0u &&
-        room_service_provider_copy(completion->command_id,
-                                   sizeof(completion->command_id),
-                                   command_id) &&
-        room_service_provider_copy(completion->tenant_id,
-                                   sizeof(completion->tenant_id), tenant_id) &&
-        room_service_provider_copy(completion->provider_session_id,
-                                   sizeof(completion->provider_session_id),
-                                   session_id) &&
-        room_service_provider_copy(completion->iris_worker_id,
-                                   sizeof(completion->iris_worker_id), worker_id) &&
-        room_service_provider_copy(completion->correlation_id,
-                                   sizeof(completion->correlation_id),
-                                   correlation_id) &&
-        room_service_provider_copy(
-            completion->terminal_status, sizeof(completion->terminal_status),
-            terminal_status) &&
-        room_service_provider_copy(completion->event_type,
-                                   sizeof(completion->event_type),
-                                   event_type) &&
-        room_service_provider_copy(completion->result_json,
-                                   sizeof(completion->result_json),
-                                   result_json) &&
-        room_service_room_completion_id(command_id, event_id)) {
-        completion->dispatch_epoch = epoch;
-        result->status_code = strcmp(terminal_status, "succeeded") == 0
-                                  ? IVR_OK
-                                  : IVR_ESTATE;
-        if (error_code) {
-            snprintf(result->error_code, sizeof(result->error_code), "%s",
-                     error_code);
-        }
-        if (error_message) {
-            snprintf(result->error_message, sizeof(result->error_message), "%s",
-                     error_message);
-        }
-        valid = 1;
-    }
-    json_free(root);
-    root = NULL;
-    return valid;
-}
-
-static ivr_status_t room_service_deliver_iris_event(
-    void *context, const ivr_media_event_t *event, uint64_t store_revision) {
-    return iris_completion_dispatcher_enqueue_event(
-        (iris_completion_dispatcher_t *)context, event, store_revision);
-}
-
-static iris_media_bridge_result_t room_service_dispatch_control_ws_command(
-    void *context, const char *idempotency_key, const char *body,
-    size_t body_size) {
-    room_service_app_server_t *server =
-        (room_service_app_server_t *)context;
-    int is_room = room_service_is_room_provider_command(body, body_size);
-    if (server && server->iris_media_reconciler &&
-        !iris_media_reconciler_accepting_commands(
-            server->iris_media_reconciler)) {
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        result.error_code = is_room ? "ROOM_PROVIDER_RECONCILING"
-                                    : "MEDIA_PROVIDER_RECONCILING";
-        result.error_message =
-            "provider is reconciling durable and worker state";
-        return result;
-    }
-    if (!server ||
-        !atomic_load_explicit(&server->running, memory_order_acquire) ||
-        !server->iris_media_bridge || !server->iris_room_bridge) {
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        result.error_code = is_room ? "ROOM_PROVIDER_NOT_READY"
-                                    : "MEDIA_PROVIDER_NOT_READY";
-        result.error_message = "provider command intake is closed";
-        return result;
-    }
-    if (is_room) {
-        iris_room_bridge_result_t room_result =
-            iris_room_bridge_dispatch_json(server->iris_room_bridge,
-                                           idempotency_key, body, body_size);
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = room_service_room_receipt_status(room_result.status);
-        snprintf(result.command_id, sizeof(result.command_id), "%s",
-                 room_result.command_id);
-        result.error_code = room_result.error_code;
-        result.error_message = room_result.error_message;
-        if (room_result.status == IRIS_ROOM_BRIDGE_TERMINAL ||
-            room_result.status == IRIS_ROOM_BRIDGE_DUPLICATE) {
-            iris_media_completion_t completion;
-            ivr_media_command_result_t terminal;
-            char event_id[SALTS_UUID_STRING_SIZE];
-            if (!server->iris_completion_dispatcher ||
-                !room_service_build_provider_completion(
-                    body, body_size, room_result.command_id,
-                    room_result.terminal_status == IRIS_ROOM_TERMINAL_SUCCEEDED
-                        ? "succeeded"
-                        : "failed",
-                    room_result.event_type, room_result.data,
-                    room_result.error_code, room_result.error_message,
-                    &completion, &terminal, event_id) ||
-                iris_completion_dispatcher_enqueue_terminal(
-                    server->iris_completion_dispatcher, &completion, &terminal,
-                    event_id) != IVR_OK) {
-                result.status = IRIS_MEDIA_BRIDGE_INTERNAL;
-                result.error_code = "ROOM_COMPLETION_QUEUE_UNAVAILABLE";
-                result.error_message =
-                    "durable room terminal could not be queued for delivery";
-            }
-        }
-        return result;
-    }
-    {
-        iris_media_bridge_result_t result =
-            iris_media_bridge_dispatch_json(server->iris_media_bridge,
-                                            idempotency_key, body, body_size);
-        if (result.status == IRIS_MEDIA_BRIDGE_TERMINAL) {
-            iris_media_completion_t completion;
-            ivr_media_command_result_t terminal;
-            char event_id[SALTS_UUID_STRING_SIZE];
-            if (!server->iris_completion_dispatcher ||
-                !room_service_build_provider_completion(
-                    body, body_size, result.command_id, result.terminal_status,
-                    result.event_type, result.data, result.error_code,
-                    result.error_message, &completion, &terminal, event_id) ||
-                iris_completion_dispatcher_enqueue_terminal(
-                    server->iris_completion_dispatcher, &completion, &terminal,
-                    event_id) != IVR_OK) {
-                result.status = IRIS_MEDIA_BRIDGE_INTERNAL;
-                result.error_code = "MEDIA_COMPLETION_QUEUE_UNAVAILABLE";
-                result.error_message =
-                    "durable media terminal could not be queued for delivery";
-            }
-        }
-        return result;
-    }
-}
-
-static ivr_status_t room_service_deliver_control_ws_completion(
-    void *context, const iris_media_completion_t *completion,
-    const ivr_media_command_result_t *result, const char *message_id,
-    const char *completed_at, uint64_t completed_at_unix_ms,
-    uint64_t ack_timeout_ms) {
-    iris_control_completion_ack_t ack;
-    ivr_status_t status = iris_control_provider_send_completion(
-        (iris_control_provider_t *)context, completion, result, message_id,
-        completed_at, completed_at_unix_ms, ack_timeout_ms, &ack);
-    if (status != IVR_OK) return status;
-    if (ack.disposition ==
-            ProviderCompletionAckDisposition_CompletionCommitted ||
-        ack.disposition ==
-            ProviderCompletionAckDisposition_DuplicateCompletion) {
-        return IVR_OK;
-    }
-    return ack.disposition ==
-                   ProviderCompletionAckDisposition_CompletionConflict
-               ? IVR_ESTALE
-               : IVR_EAUTH;
-}
-
-static ivr_status_t room_service_deliver_control_ws_event(
-    void *context, const ivr_media_event_t *event, const char *message_id,
-    const char *occurred_at, uint64_t ack_timeout_ms) {
-    iris_control_event_ack_t ack;
-    ivr_status_t status = iris_control_provider_send_event(
-        (iris_control_provider_t *)context, event, message_id, occurred_at,
-        ack_timeout_ms, &ack);
-    if (status != IVR_OK) return status;
-    if (ack.disposition == ProviderEventAckDisposition_Committed ||
-        ack.disposition == ProviderEventAckDisposition_DuplicateEvent) {
-        return IVR_OK;
-    }
-    return ack.disposition == ProviderEventAckDisposition_EventConflict
-               ? IVR_ESTALE
-               : IVR_EAUTH;
-}
-
-static void room_service_settle_iris_event(
-    void *context, const ivr_media_event_t *event, uint64_t store_revision,
-    iris_event_delivery_outcome_t outcome, int http_status) {
-    iris_event_outbox_on_delivery_result(context, event, store_revision,
-                                         (int)outcome, http_status);
-}
-
-static ivr_status_t room_service_observe_iris_media_result(
-    void *context, const ivr_media_command_result_t *result) {
-    room_service_app_server_t *server =
-        (room_service_app_server_t *)context;
-    return iris_completion_dispatcher_on_media_result(
-        server ? server->iris_completion_dispatcher : NULL, result);
-}
-
-static ivr_status_t room_service_observe_iris_media_event(
-    void *context, const ivr_media_event_t *event) {
-    room_service_app_server_t *server =
-        (room_service_app_server_t *)context;
-    return iris_event_outbox_on_media_event(
-        server ? server->iris_event_outbox : NULL, event);
-}
-
-static ivr_status_t room_service_observe_iris_inventory(
-    void *context, const ivr_worker_inventory_envelope_t *page) {
-    room_service_app_server_t *server =
-        (room_service_app_server_t *)context;
-    return iris_media_reconciler_on_inventory_page(
-        server ? server->iris_media_reconciler : NULL, page);
-}
-
-#ifdef ROOM_SERVICE_ENABLE_TEST_HOOKS
-ivr_status_t room_service_app_server_test_submit_iris_event(
-    room_service_app_server_t *server, const ivr_media_event_t *event) {
-    return room_service_observe_iris_media_event(server, event);
-}
-#endif
-#endif
 
 typedef struct {
     char subscriber_participant_id[TURBO_PARTICIPANT_ID_MAX];
@@ -445,6 +98,12 @@ typedef struct {
 #define ROOM_SERVICE_MAX_CALL_CENTER_EVENTS 512
 #define ROOM_SERVICE_SFU_CONTROL_URL_MAX 512
 #define ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX 256
+#define ROOM_SERVICE_SFU_SECURITY_SERVER_NAME_MAX \
+    TURBO_MEDIA_REVOCATION_HTTPS_TLS_NAME_BYTES
+#define ROOM_SERVICE_SECURITY_CONTROL_AUDIENCE \
+    "turbomedia-security-control"
+#define ROOM_SERVICE_SECURITY_REVOCATION_SCOPE \
+    "security.revocation.write"
 #define ROOM_SERVICE_SFU_CONTROL_AUDIENCE "turbomedia-sfu-control"
 #define ROOM_SERVICE_SFU_SCOPE_CONTROL_WRITE "sfu.control.write"
 #define ROOM_SERVICE_SFU_SCOPE_CONTROL_DANGEROUS "sfu.control.dangerous"
@@ -453,6 +112,7 @@ typedef struct room_service_sfu_node_entry_s {
     char node_id[TURBO_NODE_ID_MAX];
     char control_url[ROOM_SERVICE_SFU_CONTROL_URL_MAX];
     char control_token[ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX];
+    char security_server_name[ROOM_SERVICE_SFU_SECURITY_SERVER_NAME_MAX];
 } room_service_sfu_node_entry_t;
 
 static const char *room_service_json_string_field(
@@ -900,36 +560,127 @@ static room_service_sfu_node_entry_t *room_service_find_sfu_node_locked(
     return NULL;
 }
 
-int room_service_app_server_register_sfu_node(room_service_app_server_t *server,
-                                              const char *node_id,
-                                              const char *control_url,
-                                              const char *control_token) {
+static int room_service_bump_sfu_membership_version_locked(
+    room_service_app_server_t *server) {
+    if (!server || server->sfu_membership_version == UINT64_MAX) {
+        return -1;
+    }
+    server->sfu_membership_version++;
+    return 0;
+}
+
+static int room_service_security_target_url_valid(
+    const char *control_url) {
+    turbo_transport_config_t parsed = {0};
+    int valid;
+
+    if (!control_url ||
+        turbo_transport_parse_url(control_url, &parsed) != 0) {
+        return 0;
+    }
+    valid = parsed.type == TURBO_TRANSPORT_HTTP && parsed.use_tls &&
+            parsed.host && parsed.host[0] != '\0' &&
+            (!parsed.path || strcmp(parsed.path, "/") == 0);
+    free((void *)parsed.host);
+    free((void *)parsed.path);
+    return valid;
+}
+
+static int room_service_register_sfu_node_internal(
+    room_service_app_server_t *server, const char *node_id,
+    const char *control_url, const char *control_token,
+    const char *security_server_name, int update_security_name) {
     room_service_sfu_node_entry_t *entry;
+    int is_new;
+    int target_changed;
 
     if (!server || !node_id || node_id[0] == '\0' || !control_url ||
-        control_url[0] == '\0') {
+        control_url[0] == '\0' ||
+        strlen(node_id) >= TURBO_NODE_ID_MAX ||
+        strlen(control_url) >= ROOM_SERVICE_SFU_CONTROL_URL_MAX ||
+        (control_token &&
+         strlen(control_token) >= ROOM_SERVICE_SFU_CONTROL_TOKEN_MAX) ||
+        (update_security_name &&
+         (!security_server_name || security_server_name[0] == '\0' ||
+          strlen(security_server_name) >=
+              ROOM_SERVICE_SFU_SECURITY_SERVER_NAME_MAX ||
+          !room_service_security_target_url_valid(control_url)))) {
         return -1;
     }
 
     cmeta_mutex_lock(&server->mutex);
     entry = room_service_find_sfu_node_locked(server, node_id);
-    if (!entry) {
-        if (room_service_ensure_capacity((void **)&server->sfu_nodes,
-                                         &server->sfu_node_capacity,
-                                         sizeof(*server->sfu_nodes),
-                                         server->sfu_node_count + 1) != 0) {
+    is_new = entry == NULL;
+    target_changed =
+        is_new ||
+        strcmp(entry->control_url, control_url) != 0 ||
+        (update_security_name &&
+         strcmp(entry->security_server_name, security_server_name) != 0);
+    if (target_changed &&
+        server->sfu_membership_version == UINT64_MAX) {
+        cmeta_mutex_unlock(&server->mutex);
+        return -1;
+    }
+
+    if (is_new) {
+        if (room_service_ensure_capacity(
+                (void **)&server->sfu_nodes,
+                &server->sfu_node_capacity,
+                sizeof(*server->sfu_nodes),
+                server->sfu_node_count + 1) != 0) {
             cmeta_mutex_unlock(&server->mutex);
             return -1;
         }
         entry = &server->sfu_nodes[server->sfu_node_count++];
         memset(entry, 0, sizeof(*entry));
-        room_service_copy_string(entry->node_id, sizeof(entry->node_id), node_id);
+        room_service_copy_string(
+            entry->node_id, sizeof(entry->node_id), node_id);
     }
-    room_service_copy_string(entry->control_url, sizeof(entry->control_url), control_url);
-    room_service_copy_string(entry->control_token, sizeof(entry->control_token),
-                             control_token);
+    room_service_copy_string(
+        entry->control_url, sizeof(entry->control_url), control_url);
+    room_service_copy_string(
+        entry->control_token, sizeof(entry->control_token), control_token);
+    if (update_security_name) {
+        room_service_copy_string(
+            entry->security_server_name,
+            sizeof(entry->security_server_name),
+            security_server_name);
+    }
+    if (target_changed &&
+        room_service_bump_sfu_membership_version_locked(server) != 0) {
+        cmeta_mutex_unlock(&server->mutex);
+        return -1;
+    }
     cmeta_mutex_unlock(&server->mutex);
     return 0;
+}
+
+int room_service_app_server_register_sfu_node(
+    room_service_app_server_t *server, const char *node_id,
+    const char *control_url, const char *control_token) {
+    return room_service_register_sfu_node_internal(
+        server, node_id, control_url, control_token, NULL, 0);
+}
+
+int room_service_app_server_register_sfu_node_secure(
+    room_service_app_server_t *server, const char *node_id,
+    const char *control_url, const char *control_token,
+    const char *security_server_name) {
+    return room_service_register_sfu_node_internal(
+        server, node_id, control_url, control_token,
+        security_server_name, 1);
+}
+
+uint64_t room_service_app_server_sfu_membership_version(
+    room_service_app_server_t *server) {
+    uint64_t version = 0U;
+    if (!server) {
+        return 0U;
+    }
+    cmeta_mutex_lock(&server->mutex);
+    version = server->sfu_membership_version;
+    cmeta_mutex_unlock(&server->mutex);
+    return version;
 }
 
 int room_service_app_server_has_sfu_node(room_service_app_server_t *server,
@@ -959,13 +710,15 @@ int room_service_app_server_choose_sfu_node(room_service_app_server_t *server,
     if (server->sfu_node_count > 0) {
         index = server->next_sfu_node_index % server->sfu_node_count;
         server->next_sfu_node_index++;
-        room_service_copy_string(node_id, node_id_size, server->sfu_nodes[index].node_id);
+        room_service_copy_string(
+            node_id, node_id_size, server->sfu_nodes[index].node_id);
         cmeta_mutex_unlock(&server->mutex);
         return 0;
     }
     cmeta_mutex_unlock(&server->mutex);
 
-    if (server->config.sfu_control_url && server->config.sfu_control_url[0] != '\0') {
+    if (server->config.sfu_control_url &&
+        server->config.sfu_control_url[0] != '\0') {
         room_service_copy_string(node_id, node_id_size, "default-sfu");
         return 0;
     }
@@ -973,17 +726,121 @@ int room_service_app_server_choose_sfu_node(room_service_app_server_t *server,
     return -1;
 }
 
+static int room_service_mapping_lookup(
+    const char *mapping, const char *node_id,
+    char *output, size_t output_size) {
+    char *copy;
+    char *cursor;
+    int matches = 0;
+
+    if (!mapping || !node_id || !output || output_size == 0U) {
+        return -1;
+    }
+    output[0] = '\0';
+    copy = (char *)malloc(strlen(mapping) + 1U);
+    if (!copy) {
+        return -1;
+    }
+    strcpy(copy, mapping);
+    cursor = copy;
+    while (cursor && *cursor != '\0') {
+        char *entry = cursor;
+        char *comma = strchr(entry, ',');
+        char *equals;
+        char *key;
+        char *value;
+        if (comma) {
+            *comma = '\0';
+            cursor = comma + 1;
+        } else {
+            cursor = NULL;
+        }
+        entry = room_service_trim_token(entry);
+        if (!entry || entry[0] == '\0') {
+            continue;
+        }
+        equals = strchr(entry, '=');
+        if (!equals) {
+            free(copy);
+            return -1;
+        }
+        *equals = '\0';
+        key = room_service_trim_token(entry);
+        value = room_service_trim_token(equals + 1);
+        if (!key || !value || !key[0] || !value[0]) {
+            free(copy);
+            return -1;
+        }
+        if (strcmp(key, node_id) == 0) {
+            if (++matches > 1 || strlen(value) >= output_size) {
+                free(copy);
+                return -1;
+            }
+            room_service_copy_string(output, output_size, value);
+        }
+    }
+    free(copy);
+    return matches == 1 ? 0 : -1;
+}
+
+static int room_service_security_mapping_covers_membership(
+    room_service_app_server_t *server, const char *mapping) {
+    char *copy;
+    char *cursor;
+
+    if (!mapping) {
+        return 1;
+    }
+    copy = (char *)malloc(strlen(mapping) + 1U);
+    if (!copy) {
+        return 0;
+    }
+    strcpy(copy, mapping);
+    cursor = copy;
+    while (cursor && *cursor != '\0') {
+        char *entry = cursor;
+        char *comma = strchr(entry, ',');
+        char *equals;
+        char *key;
+        if (comma) {
+            *comma = '\0';
+            cursor = comma + 1;
+        } else {
+            cursor = NULL;
+        }
+        entry = room_service_trim_token(entry);
+        if (!entry || !entry[0]) {
+            continue;
+        }
+        equals = strchr(entry, '=');
+        if (!equals) {
+            free(copy);
+            return 0;
+        }
+        *equals = '\0';
+        key = room_service_trim_token(entry);
+        if (!key || !key[0] ||
+            !room_service_app_server_has_sfu_node(server, key)) {
+            free(copy);
+            return 0;
+        }
+    }
+    free(copy);
+    return 1;
+}
+
 static int room_service_register_sfu_nodes_from_config(
-    room_service_app_server_t *server, const char *nodes) {
+    room_service_app_server_t *server, const char *nodes,
+    const char *security_server_names) {
     char *copy;
     char *cursor;
     char *entry;
 
     if (!server || !nodes || nodes[0] == '\0') {
-        return 0;
+        return security_server_names ? -1 : 0;
     }
 
-    copy = (char *)malloc(strlen(nodes) + 1);
+    copy = (char *)malloc(strlen(nodes) + 1U);
     if (!copy) {
         return -1;
     }
@@ -995,6 +852,9 @@ static int room_service_register_sfu_nodes_from_config(
         char *equals;
         char *node_id;
         char *url;
+        char security_server_name[
+            ROOM_SERVICE_SFU_SECURITY_SERVER_NAME_MAX];
+        int status;
 
         if (comma) {
             *comma = '\0';
@@ -1016,16 +876,278 @@ static int room_service_register_sfu_nodes_from_config(
         *equals = '\0';
         node_id = room_service_trim_token(entry);
         url = room_service_trim_token(equals + 1);
-        if (!node_id || node_id[0] == '\0' || !url || url[0] == '\0' ||
-            room_service_app_server_register_sfu_node(server, node_id, url,
-                                                      server->config.sfu_control_token) != 0) {
+        if (!node_id || node_id[0] == '\0' || !url || url[0] == '\0') {
+            free(copy);
+            return -1;
+        }
+
+        if (security_server_names) {
+            if (room_service_mapping_lookup(
+                    security_server_names, node_id,
+                    security_server_name,
+                    sizeof(security_server_name)) != 0) {
+                free(copy);
+                return -1;
+            }
+            status = room_service_app_server_register_sfu_node_secure(
+                server, node_id, url, server->config.sfu_control_token,
+                security_server_name);
+        } else {
+            status = room_service_app_server_register_sfu_node(
+                server, node_id, url, server->config.sfu_control_token);
+        }
+        if (status != 0) {
             free(copy);
             return -1;
         }
     }
 
     free(copy);
+    if (security_server_names &&
+        (!room_service_security_mapping_covers_membership(
+             server, security_server_names) ||
+         server->sfu_node_count >
+             (int)TURBO_MEDIA_REVOCATION_FANOUT_MAX_TARGETS)) {
+        return -1;
+    }
     return 0;
+}
+
+static void room_service_clear_revocation_token(
+    room_service_app_server_t *server) {
+    if (!server || !server->revocation_ephemeral_token) {
+        return;
+    }
+    memset(server->revocation_ephemeral_token, 0,
+           strlen(server->revocation_ephemeral_token));
+    free(server->revocation_ephemeral_token);
+    server->revocation_ephemeral_token = NULL;
+}
+
+static const char *room_service_acquire_sfu_revocation_token(
+    void *context, const char *target_id, unsigned int attempt) {
+    room_service_app_server_t *server =
+        (room_service_app_server_t *)context;
+    turbo_media_auth_config_t auth = {0};
+    turbo_media_auth_claims_t claims = {0};
+    int64_t now;
+
+    (void)attempt;
+    if (!server || !target_id || target_id[0] == '\0' ||
+        !room_service_app_server_has_sfu_node(server, target_id) ||
+        !server->config.sfu_auth_key_id ||
+        !server->config.sfu_auth_secret) {
+        return NULL;
+    }
+
+    room_service_clear_revocation_token(server);
+    auth.issuer = server->config.sfu_auth_issuer;
+    auth.active_key_id = server->config.sfu_auth_key_id;
+    auth.active_secret = server->config.sfu_auth_secret;
+    auth.clock_skew_seconds = 0;
+    auth.max_ttl_seconds = server->config.sfu_auth_ttl_seconds;
+    now = (int64_t)time(NULL);
+    claims.subject = server->config.node_id;
+    claims.audience = ROOM_SERVICE_SECURITY_CONTROL_AUDIENCE;
+    claims.scope = ROOM_SERVICE_SECURITY_REVOCATION_SCOPE;
+    claims.issued_at = now;
+    claims.expires_at = now + server->config.sfu_auth_ttl_seconds;
+    server->revocation_ephemeral_token =
+        turbo_media_auth_issue(&auth, &claims);
+    return server->revocation_ephemeral_token;
+}
+
+static void room_service_destroy_revocation_fanout_locked(
+    room_service_app_server_t *server) {
+    if (!server) {
+        return;
+    }
+    turbo_media_revocation_fanout_destroy(server->revocation_fanout);
+    server->revocation_fanout = NULL;
+    turbo_media_revocation_https_destroy(server->revocation_https);
+    server->revocation_https = NULL;
+    server->revocation_membership_version = 0U;
+    room_service_clear_revocation_token(server);
+}
+
+static int room_service_rebuild_revocation_fanout_locked(
+    room_service_app_server_t *server) {
+    turbo_media_revocation_https_target_config_t
+        targets[TURBO_MEDIA_REVOCATION_FANOUT_MAX_TARGETS];
+    turbo_media_revocation_fanout_target_t
+        fanout_targets[TURBO_MEDIA_REVOCATION_FANOUT_MAX_TARGETS];
+    turbo_media_revocation_https_config_t https_config = {0};
+    turbo_media_revocation_fanout_config_t fanout_config = {0};
+    turbo_media_revocation_https_t *https = NULL;
+    turbo_media_revocation_fanout_t *fanout = NULL;
+    uint64_t membership_version;
+    size_t count;
+
+    if (!server || !server->config.sfu_revocation_server_names ||
+        !server->config.sfu_ca_file) {
+        return -1;
+    }
+
+    cmeta_mutex_lock(&server->mutex);
+    if (server->sfu_node_count <= 0 ||
+        server->sfu_node_count >
+            (int)TURBO_MEDIA_REVOCATION_FANOUT_MAX_TARGETS) {
+        cmeta_mutex_unlock(&server->mutex);
+        return -1;
+    }
+    count = (size_t)server->sfu_node_count;
+    membership_version = server->sfu_membership_version;
+    for (size_t index = 0U; index < count; ++index) {
+        room_service_sfu_node_entry_t *entry = &server->sfu_nodes[index];
+        if (!entry->security_server_name[0]) {
+            cmeta_mutex_unlock(&server->mutex);
+            return -1;
+        }
+        targets[index].target_id = entry->node_id;
+        targets[index].base_url = entry->control_url;
+        targets[index].ca_file = server->config.sfu_ca_file;
+        targets[index].server_name = entry->security_server_name;
+    }
+
+    https_config.timeout_ms =
+        (unsigned int)server->config.sfu_revocation_timeout_ms;
+    https_config.acquire_token =
+        room_service_acquire_sfu_revocation_token;
+    https_config.token_context = server;
+    https = turbo_media_revocation_https_create(
+        &https_config, targets, count);
+    if (!https) {
+        cmeta_mutex_unlock(&server->mutex);
+        return -1;
+    }
+
+    for (size_t index = 0U; index < count; ++index) {
+        if (turbo_media_revocation_https_get_fanout_target(
+                https, index, &fanout_targets[index]) != 0) {
+            turbo_media_revocation_https_destroy(https);
+            cmeta_mutex_unlock(&server->mutex);
+            return -1;
+        }
+    }
+    fanout_config.max_attempts =
+        (unsigned int)server->config.sfu_revocation_max_attempts;
+    fanout_config.send_snapshot =
+        turbo_media_revocation_https_send_snapshot;
+    fanout_config.send_revoke =
+        turbo_media_revocation_https_send_revoke;
+    fanout_config.transport_context = https;
+    fanout = turbo_media_revocation_fanout_create(
+        &fanout_config, fanout_targets, count);
+    if (!fanout) {
+        turbo_media_revocation_https_destroy(https);
+        cmeta_mutex_unlock(&server->mutex);
+        return -1;
+    }
+
+    room_service_destroy_revocation_fanout_locked(server);
+    server->revocation_https = https;
+    server->revocation_fanout = fanout;
+    server->revocation_membership_version = membership_version;
+    cmeta_mutex_unlock(&server->mutex);
+    return 0;
+}
+
+static int room_service_ensure_revocation_fanout_locked(
+    room_service_app_server_t *server, int *rebuilt) {
+    uint64_t membership_version;
+
+    if (rebuilt) {
+        *rebuilt = 0;
+    }
+    if (!server || !server->config.sfu_revocation_server_names) {
+        return -1;
+    }
+    membership_version =
+        room_service_app_server_sfu_membership_version(server);
+    if (server->revocation_fanout &&
+        server->revocation_https &&
+        server->revocation_membership_version == membership_version) {
+        return 0;
+    }
+    if (room_service_rebuild_revocation_fanout_locked(server) != 0) {
+        return -1;
+    }
+    if (rebuilt) {
+        *rebuilt = 1;
+    }
+    return 0;
+}
+
+int room_service_app_server_publish_sfu_revocation_snapshot(
+    room_service_app_server_t *server, uint64_t epoch,
+    uint64_t sequence, const char *const *sha256_hex,
+    size_t count, turbo_media_revocation_fanout_report_t *report) {
+    int result;
+
+    if (!server || !report) {
+        return -1;
+    }
+    cmeta_mutex_lock(&server->revocation_mutex);
+    if (room_service_ensure_revocation_fanout_locked(
+            server, NULL) != 0) {
+        cmeta_mutex_unlock(&server->revocation_mutex);
+        return -1;
+    }
+    result = turbo_media_revocation_fanout_publish_snapshot(
+        server->revocation_fanout, epoch, sequence,
+        sha256_hex, count, report);
+    room_service_clear_revocation_token(server);
+    cmeta_mutex_unlock(&server->revocation_mutex);
+    return result;
+}
+
+static int room_service_covering_snapshot_contains_digest(
+    const char *sha256_hex, const char *const *covering_sha256_hex,
+    size_t covering_count) {
+    if (!sha256_hex || !covering_sha256_hex || covering_count == 0U) {
+        return 0;
+    }
+    for (size_t index = 0U; index < covering_count; ++index) {
+        if (covering_sha256_hex[index] &&
+            strcmp(covering_sha256_hex[index], sha256_hex) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int room_service_app_server_publish_sfu_revocation(
+    room_service_app_server_t *server, uint64_t epoch,
+    uint64_t sequence, const char *sha256_hex,
+    const char *const *covering_sha256_hex,
+    size_t covering_count,
+    turbo_media_revocation_fanout_report_t *report) {
+    int rebuilt = 0;
+    int result;
+
+    if (!server || !report ||
+        !room_service_covering_snapshot_contains_digest(
+            sha256_hex, covering_sha256_hex, covering_count)) {
+        return -1;
+    }
+    cmeta_mutex_lock(&server->revocation_mutex);
+    if (room_service_ensure_revocation_fanout_locked(
+            server, &rebuilt) != 0) {
+        cmeta_mutex_unlock(&server->revocation_mutex);
+        return -1;
+    }
+    if (rebuilt) {
+        result = turbo_media_revocation_fanout_publish_snapshot(
+            server->revocation_fanout, epoch, sequence,
+            covering_sha256_hex, covering_count, report);
+    } else {
+        result = turbo_media_revocation_fanout_publish_revoke(
+            server->revocation_fanout, epoch, sequence, sha256_hex,
+            covering_sha256_hex, covering_count, report);
+    }
+    room_service_clear_revocation_token(server);
+    cmeta_mutex_unlock(&server->revocation_mutex);
+    return result;
 }
 
 static int room_service_copy_sfu_route_for_room(room_service_app_server_t *server,
@@ -1623,334 +1745,6 @@ static ivr_status_t room_service_release_ivr_caller_audio(
     return IVR_OK;
 }
 
-static ivr_status_t room_service_send_iris_media_command(
-    void *context, const ivr_media_command_t *command,
-    char *out_media_worker_id, size_t out_media_worker_id_capacity) {
-    return room_service_app_server_send_ivr_media_command(
-        (room_service_app_server_t *)context, command, out_media_worker_id,
-        out_media_worker_id_capacity);
-}
-
-static ivr_status_t room_service_observe_iris_media_command(
-    void *context, const ivr_media_command_t *command,
-    iris_resource_observation_t *observation) {
-    room_service_app_server_t *server = (room_service_app_server_t *)context;
-    if (!server || !server->ivr_control || !command || !observation) {
-        return IVR_ESTATE;
-    }
-    return ivr_control_adapter_observe_media_command(server->ivr_control, command,
-                                                  observation);
-}
-
-static turbo_participant_role_t room_service_iris_room_role(
-    const char *role) {
-    if (!role || !role[0] || strcmp(role, "guest") == 0) {
-        return TURBO_PARTICIPANT_ROLE_GUEST;
-    }
-    if (strcmp(role, "host") == 0) return TURBO_PARTICIPANT_ROLE_HOST;
-    if (strcmp(role, "cohost") == 0) return TURBO_PARTICIPANT_ROLE_COHOST;
-    if (strcmp(role, "audience") == 0) return TURBO_PARTICIPANT_ROLE_AUDIENCE;
-    if (strcmp(role, "customer") == 0) return TURBO_PARTICIPANT_ROLE_CUSTOMER;
-    if (strcmp(role, "agent") == 0) return TURBO_PARTICIPANT_ROLE_AGENT;
-    if (strcmp(role, "supervisor") == 0) return TURBO_PARTICIPANT_ROLE_SUPERVISOR;
-    if (strcmp(role, "qa_observer") == 0) return TURBO_PARTICIPANT_ROLE_QA_OBSERVER;
-    if (strcmp(role, "bot") == 0) return TURBO_PARTICIPANT_ROLE_BOT;
-    return 0;
-}
-
-static int room_service_iris_add_json(json_value_t *object, const char *key,
-                                      json_value_t *value) {
-    if (!value || !json_object_add_checked(object, key, value)) {
-        json_free(value);
-        value = NULL;
-        return 0;
-    }
-    return 1;
-}
-
-static int room_service_iris_room_execution(
-    iris_room_execution_t *result, iris_room_terminal_status_t status,
-    const char *event_type, const char *code, const char *message,
-    const char *room_id, const char *call_id,
-    const turbo_room_summary_t *summary, const char *warning_code,
-    const char *warning_message) {
-    json_value_t *data = json_create_object();
-    char *json;
-    size_t json_size = 0u;
-    int valid;
-    if (!result || !event_type || !data) {
-        json_free(data);
-        data = NULL;
-        return -1;
-    }
-    valid = room_service_iris_add_json(
-                data, "roomId", json_create_string(room_id ? room_id : "")) &&
-            (!call_id || room_service_iris_add_json(
-                             data, "callId", json_create_string(call_id))) &&
-            (!summary ||
-             (room_service_iris_add_json(
-                  data, "roomVersion", json_create_int64(summary->version)) &&
-              room_service_iris_add_json(
-                  data, "participantCount",
-                  json_create_int64(summary->participant_count)))) &&
-            (!code || room_service_iris_add_json(
-                         data, "code", json_create_string(code))) &&
-            (!message || room_service_iris_add_json(
-                            data, "message", json_create_string(message))) &&
-            (!warning_code || room_service_iris_add_json(
-                                 data, "warningCode",
-                                 json_create_string(warning_code))) &&
-            (!warning_message || room_service_iris_add_json(
-                                    data, "warning",
-                                    json_create_string(warning_message)));
-    if (!valid) {
-        json_free(data);
-        data = NULL;
-        return -1;
-    }
-    json = json_serialize(data, &json_size);
-    json_free(data);
-    data = NULL;
-    if (!json || json_size == 0u || json_size >= sizeof(result->data) ||
-        strlen(event_type) >= sizeof(result->event_type)) {
-        json_serialize_free(json);
-        return -1;
-    }
-    memset(result, 0, sizeof(*result));
-    result->terminal_status = status;
-    memcpy(result->event_type, event_type, strlen(event_type) + 1u);
-    memcpy(result->data, json, json_size);
-    result->data[json_size] = '\0';
-    json_serialize_free(json);
-    return 0;
-}
-
-static int room_service_iris_absent_execution(
-    iris_room_execution_t *result, const iris_room_command_t *command,
-    const char *event_type, const char *code, const char *message) {
-    int rc;
-    if (!result || !command) return -1;
-    rc = room_service_iris_room_execution(
-        result, IRIS_ROOM_TERMINAL_FAILED, event_type, code, message,
-        command->room_id,
-        command->kind == IRIS_ROOM_COMMAND_UNJOIN ? command->call_id : NULL,
-        NULL, NULL, NULL);
-    if (rc == 0) result->resource_absent = 1;
-    return rc;
-}
-
-static int room_service_execute_iris_room_command(
-    void *context, const iris_room_command_t *command,
-    iris_room_execution_t *result) {
-    room_service_app_server_t *server = (room_service_app_server_t *)context;
-    turbo_room_summary_t summary;
-    char room_id[TURBO_ROOM_ID_MAX] = {0};
-    char call_id[TURBO_PARTICIPANT_ID_MAX] = {0};
-    const char *warning_code = NULL;
-    const char *warning_message = NULL;
-    if (!server || !command || !result) return -1;
-
-    if (command->kind == IRIS_ROOM_COMMAND_CREATE) {
-        turbo_room_config_t config;
-        if (turbo_room_service_get_room_summary(
-                server->service, command->room_id, &summary) == 0) {
-            return room_service_iris_room_execution(
-                result, IRIS_ROOM_TERMINAL_FAILED,
-                "provider.conference.failed", "ROOM_ALREADY_EXISTS",
-                "conference room already exists", command->room_id, NULL,
-                &summary, NULL, NULL);
-        }
-        memset(&config, 0, sizeof(config));
-        config.room_id = command->room_id;
-        config.room_generation = command->room_generation;
-        config.room_type = TURBO_ROOM_TYPE_CONFERENCE;
-        config.created_by = command->provider_session_id;
-        if (turbo_room_service_create_room(server->service, &config) != 0 ||
-            turbo_room_service_get_room_summary(
-                server->service, command->room_id, &summary) != 0) {
-            return room_service_iris_room_execution(
-                result, IRIS_ROOM_TERMINAL_FAILED,
-                "provider.conference.failed", "ROOM_CREATE_FAILED",
-                "conference room could not be created", command->room_id,
-                NULL, NULL, NULL, NULL);
-        }
-        return room_service_iris_room_execution(
-            result, IRIS_ROOM_TERMINAL_SUCCEEDED,
-            "provider.conference.created", NULL, NULL, command->room_id,
-            NULL, &summary, NULL, NULL);
-    }
-
-    if (command->kind == IRIS_ROOM_COMMAND_DESTROY) {
-        if (turbo_room_service_get_room_summary(
-                server->service, command->room_id, &summary) != 0) {
-            return room_service_iris_absent_execution(
-                result, command, "provider.conference.failed",
-                "ROOM_NOT_FOUND", "conference room does not exist");
-        }
-        if (summary.status == TURBO_ROOM_STATUS_CLOSED) {
-            return room_service_iris_absent_execution(
-                result, command, "provider.conference.failed",
-                "ROOM_ALREADY_CLOSED", "conference room is already closed");
-        }
-        if (summary.participant_count != 0) {
-            return room_service_iris_room_execution(
-                result, IRIS_ROOM_TERMINAL_FAILED,
-                "provider.conference.failed", "ROOM_NOT_EMPTY",
-                "conference room still has participants", command->room_id,
-                NULL, &summary, NULL, NULL);
-        }
-        if (turbo_room_service_close_room(server->service,
-                                          command->room_id) != 0 ||
-            turbo_room_service_get_room_summary(
-                server->service, command->room_id, &summary) != 0) {
-            return room_service_iris_room_execution(
-                result, IRIS_ROOM_TERMINAL_FAILED,
-                "provider.conference.failed", "ROOM_CLOSE_FAILED",
-                "conference room could not be closed", command->room_id,
-                NULL, NULL, NULL, NULL);
-        }
-        if (summary.assigned_sfu_node[0] &&
-            room_service_app_server_sync_force_close_room(
-                server, command->room_id) != 0) {
-            warning_code = "SFU_SYNC_FAILED";
-            warning_message =
-                "room state committed locally; force_close_room was not forwarded to sfu node";
-        }
-        return room_service_iris_room_execution(
-            result, IRIS_ROOM_TERMINAL_SUCCEEDED,
-            "provider.conference.destroyed", NULL, NULL, command->room_id,
-            NULL, &summary, warning_code, warning_message);
-    }
-
-    if (strlen(command->room_id) >= sizeof(room_id) ||
-        strlen(command->call_id) >= sizeof(call_id)) {
-        return room_service_iris_room_execution(
-            result, IRIS_ROOM_TERMINAL_FAILED,
-            "provider.connection.failed", "MEMBERSHIP_IDS_INVALID",
-            "membership resource identity is invalid",
-            command->room_id, command->call_id, NULL, NULL, NULL);
-    }
-    memcpy(room_id, command->room_id, strlen(command->room_id) + 1u);
-    memcpy(call_id, command->call_id, strlen(command->call_id) + 1u);
-
-    if (command->kind == IRIS_ROOM_COMMAND_JOIN) {
-        turbo_room_participant_config_t participant;
-        turbo_participant_role_t role =
-            room_service_iris_room_role(command->role);
-        if (role == 0) {
-            return room_service_iris_room_execution(
-                result, IRIS_ROOM_TERMINAL_FAILED,
-                "provider.connection.failed", "PARTICIPANT_ROLE_INVALID",
-                "membership role is invalid", room_id, call_id, NULL,
-                NULL, NULL);
-        }
-        memset(&participant, 0, sizeof(participant));
-        participant.participant_id = call_id;
-        participant.call_generation = command->call_generation;
-        participant.user_id = command->user_id;
-        participant.display_name = command->display_name[0]
-                                       ? command->display_name
-                                       : call_id;
-        participant.role = role;
-        if (turbo_room_service_add_participant(
-                server->service, room_id, &participant) != 0 ||
-            turbo_room_service_get_room_summary(
-                server->service, room_id, &summary) != 0) {
-            return room_service_iris_room_execution(
-                result, IRIS_ROOM_TERMINAL_FAILED,
-                "provider.connection.failed", "MEMBERSHIP_JOIN_FAILED",
-                "call could not join the conference room", room_id, call_id,
-                NULL, NULL, NULL);
-        }
-        if (summary.assigned_sfu_node[0] &&
-            room_service_app_server_sync_add_session(
-                server, room_id, call_id) != 0) {
-            warning_code = "SFU_SYNC_FAILED";
-            warning_message =
-                "participant state committed locally; add_session was not forwarded to sfu node";
-        }
-        return room_service_iris_room_execution(
-            result, IRIS_ROOM_TERMINAL_SUCCEEDED,
-            "provider.connection.joined", NULL, NULL, room_id, call_id,
-            &summary, warning_code, warning_message);
-    }
-
-    {
-        turbo_room_participant_summary_t participant;
-        if (turbo_room_service_get_room_summary(
-                server->service, room_id, &summary) != 0 ||
-            turbo_room_service_get_participant_summary(
-                server->service, room_id, call_id, &participant) != 0) {
-            return room_service_iris_absent_execution(
-                result, command, "provider.connection.failed",
-                "MEMBERSHIP_NOT_FOUND",
-                "conference membership does not exist");
-        }
-    }
-    if (turbo_room_service_remove_participant(
-            server->service, room_id, call_id) != 0 ||
-        turbo_room_service_get_room_summary(
-            server->service, room_id, &summary) != 0) {
-        return room_service_iris_room_execution(
-            result, IRIS_ROOM_TERMINAL_FAILED,
-            "provider.connection.failed", "MEMBERSHIP_UNJOIN_FAILED",
-            "call could not leave the conference room", room_id, call_id,
-            NULL, NULL, NULL);
-    }
-    if (summary.assigned_sfu_node[0] &&
-        room_service_app_server_sync_remove_session(
-            server, room_id, call_id) != 0) {
-        warning_code = "SFU_SYNC_FAILED";
-        warning_message =
-            "participant state committed locally; remove_session was not forwarded to sfu node";
-    }
-    return room_service_iris_room_execution(
-        result, IRIS_ROOM_TERMINAL_SUCCEEDED,
-        "provider.connection.unjoined", NULL, NULL, room_id, call_id,
-        &summary, warning_code, warning_message);
-}
-
-static ivr_status_t room_service_observe_iris_room_command(
-    void *context, const iris_room_command_t *command,
-    iris_resource_observation_t *observation) {
-    room_service_app_server_t *server = (room_service_app_server_t *)context;
-    turbo_room_summary_t room;
-
-    if (!server || !server->service || !command || !observation) {
-        return IVR_ESTATE;
-    }
-    memset(observation, 0, sizeof(*observation));
-    observation->state = IRIS_RESOURCE_OBSERVATION_ABSENT;
-
-    if (turbo_room_service_get_room_summary(
-            server->service, command->room_id, &room) != 0 ||
-        room.room_generation != command->room_generation ||
-        room.status == TURBO_ROOM_STATUS_CLOSING ||
-        room.status == TURBO_ROOM_STATUS_CLOSED) {
-        return IVR_OK;
-    }
-
-    if (command->kind == IRIS_ROOM_COMMAND_CREATE ||
-        command->kind == IRIS_ROOM_COMMAND_DESTROY) {
-        observation->state = IRIS_RESOURCE_OBSERVATION_ACTIVE;
-        return IVR_OK;
-    }
-
-    if (command->kind == IRIS_ROOM_COMMAND_JOIN ||
-        command->kind == IRIS_ROOM_COMMAND_UNJOIN) {
-        turbo_room_participant_summary_t participant;
-        if (turbo_room_service_get_participant_summary(
-                server->service, command->room_id, command->call_id,
-                &participant) == 0 &&
-            participant.call_generation == command->call_generation) {
-            observation->state = IRIS_RESOURCE_OBSERVATION_ACTIVE;
-        }
-        return IVR_OK;
-    }
-
-    observation->state = IRIS_RESOURCE_OBSERVATION_UNKNOWN;
-    return IVR_EINVAL;
-}
 #endif
 
 room_service_app_server_t *room_service_app_server_create(
@@ -1975,199 +1769,17 @@ room_service_app_server_t *room_service_app_server_create(
         free(server);
         return NULL;
     }
-    if (room_service_register_sfu_nodes_from_config(server, config->sfu_nodes) != 0) {
+    if (room_service_register_sfu_nodes_from_config(
+            server, config->sfu_nodes,
+            config->sfu_revocation_server_names) != 0) {
         turbo_room_service_destroy(server->service);
         free(server->sfu_nodes);
         cmeta_mutex_destroy(&server->mutex);
         free(server);
         return NULL;
     }
-#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-    if (config->iris_control_host) {
-        iris_media_bridge_config_t bridge_config;
-        iris_room_bridge_config_t room_bridge_config;
-        iris_control_provider_config_t provider_config;
-        iris_completion_dispatcher_config_t dispatcher_config;
-        char ledger_error[256] = {0};
-        server->iris_command_ledger = iris_command_ledger_create_record_store(
-            config->iris_event_store_config,
-            config->iris_command_ledger_channel,
-            (size_t)config->iris_command_ledger_queue_capacity,
-            (size_t)config->iris_command_retention_batch_size,
-            (uint64_t)config->iris_command_terminal_retention_seconds *
-                UINT64_C(1000),
-            (uint64_t)config->iris_retention_sweep_interval_ms,
-            ledger_error, sizeof(ledger_error));
-        if (!server->iris_command_ledger) {
-            if (ledger_error[0]) {
-                TLOG_ERRORF("Iris command ledger initialization failed: {}",
-                           ledger_error);
-            }
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            cmeta_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        memset(&bridge_config, 0, sizeof(bridge_config));
-        bridge_config.correlation_capacity =
-            (size_t)config->iris_correlation_capacity;
-        bridge_config.send = room_service_send_iris_media_command;
-        bridge_config.send_context = server;
-        bridge_config.observe = room_service_observe_iris_media_command;
-        bridge_config.observe_context = server;
-        bridge_config.ledger =
-            iris_command_ledger_port(server->iris_command_ledger);
-        server->iris_media_bridge = iris_media_bridge_create(&bridge_config);
-        if (!server->iris_media_bridge) {
-            iris_command_ledger_destroy(server->iris_command_ledger);
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            cmeta_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        memset(&room_bridge_config, 0, sizeof(room_bridge_config));
-        room_bridge_config.capacity =
-            (size_t)config->iris_correlation_capacity;
-        room_bridge_config.execute = room_service_execute_iris_room_command;
-        room_bridge_config.execute_context = server;
-        room_bridge_config.observe = room_service_observe_iris_room_command;
-        room_bridge_config.observe_context = server;
-        room_bridge_config.ledger =
-            iris_command_ledger_port(server->iris_command_ledger);
-        server->iris_room_bridge = iris_room_bridge_create(&room_bridge_config);
-        if (!server->iris_room_bridge) {
-            iris_media_bridge_destroy(server->iris_media_bridge);
-            server->iris_media_bridge = NULL;
-            iris_command_ledger_destroy(server->iris_command_ledger);
-            server->iris_command_ledger = NULL;
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            cmeta_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        iris_control_provider_config_init(&provider_config);
-        provider_config.use_tls = config->iris_control_use_tls;
-        provider_config.host = config->iris_control_host;
-        provider_config.port = (uint16_t)config->iris_control_port;
-        provider_config.path = config->iris_control_path;
-        provider_config.provider_instance_id =
-            config->iris_provider_instance_id;
-        provider_config.iris_identity = config->iris_identity;
-        provider_config.ca_file = config->iris_control_ca_file;
-        provider_config.certificate_file = config->iris_control_cert_file;
-        provider_config.private_key_file = config->iris_control_key_file;
-        provider_config.private_key_password =
-            config->iris_control_key_password;
-        provider_config.server_name = config->iris_control_server_name;
-        provider_config.allow_insecure_development_loopback =
-            config->iris_control_allow_insecure_loopback;
-        provider_config.maximum_ingress_messages =
-            (size_t)config->iris_correlation_capacity;
-        provider_config.send_queue_capacity =
-            (size_t)config->iris_completion_queue_capacity;
-        provider_config.dispatch = room_service_dispatch_control_ws_command;
-        provider_config.dispatch_context = server;
-        server->iris_control_provider =
-            iris_control_provider_create(&provider_config);
-        if (!server->iris_control_provider) {
-            iris_room_bridge_destroy(server->iris_room_bridge);
-            iris_media_bridge_destroy(server->iris_media_bridge);
-            iris_command_ledger_destroy(server->iris_command_ledger);
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            cmeta_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        memset(&dispatcher_config, 0, sizeof(dispatcher_config));
-        dispatcher_config.queue_capacity =
-            (size_t)config->iris_completion_queue_capacity;
-        dispatcher_config.retry_max_attempts = config->iris_retry_max_attempts;
-        dispatcher_config.retry_backoff_ms = config->iris_retry_backoff_ms;
-        dispatcher_config.request_timeout_ms = config->iris_ack_timeout_ms;
-        dispatcher_config.drain_timeout_ms = config->iris_drain_timeout_ms;
-        dispatcher_config.bridge = server->iris_media_bridge;
-        dispatcher_config.deliver_completion =
-            room_service_deliver_control_ws_completion;
-        dispatcher_config.deliver_event = room_service_deliver_control_ws_event;
-        dispatcher_config.deliver_context = server->iris_control_provider;
-        server->iris_completion_dispatcher =
-            iris_completion_dispatcher_create(&dispatcher_config);
-        if (!server->iris_completion_dispatcher) {
-            iris_control_provider_destroy(server->iris_control_provider);
-            server->iris_control_provider = NULL;
-            iris_room_bridge_destroy(server->iris_room_bridge);
-            server->iris_room_bridge = NULL;
-            iris_media_bridge_destroy(server->iris_media_bridge);
-            server->iris_media_bridge = NULL;
-            iris_command_ledger_destroy(server->iris_command_ledger);
-            server->iris_command_ledger = NULL;
-            turbo_room_service_destroy(server->service);
-            free(server->sfu_nodes);
-            cmeta_mutex_destroy(&server->mutex);
-            free(server);
-            return NULL;
-        }
-        {
-            char outbox_error[256] = {0};
-            iris_event_outbox_retention_config_t retention;
-            memset(&retention, 0, sizeof(retention));
-            retention.dead_retention_ms =
-                (uint64_t)config->iris_dead_retention_seconds *
-                UINT64_C(1000);
-            retention.archive_retention_ms =
-                (uint64_t)config->iris_archive_retention_seconds *
-                UINT64_C(1000);
-            retention.sweep_interval_ms =
-                (uint32_t)config->iris_retention_sweep_interval_ms;
-            retention.sweep_batch_size =
-                (size_t)config->iris_retention_sweep_batch_size;
-            server->iris_event_outbox = iris_event_outbox_create_record_store(
-                config->iris_event_store_config,
-                config->iris_event_store_channel,
-                (size_t)config->iris_outbox_request_queue_capacity,
-                &retention,
-                room_service_deliver_iris_event,
-                server->iris_completion_dispatcher,
-                outbox_error, sizeof(outbox_error));
-            if (!server->iris_event_outbox ||
-                iris_completion_dispatcher_set_event_delivery_observer(
-                    server->iris_completion_dispatcher,
-                    room_service_settle_iris_event,
-                    server->iris_event_outbox) != 0) {
-                if (outbox_error[0]) {
-                    TLOG_ERRORF("Iris event outbox initialization failed: {}",
-                               outbox_error);
-                }
-                iris_event_outbox_destroy(server->iris_event_outbox);
-                iris_completion_dispatcher_destroy(
-                    server->iris_completion_dispatcher);
-                iris_control_provider_destroy(server->iris_control_provider);
-                iris_room_bridge_destroy(server->iris_room_bridge);
-                iris_media_bridge_destroy(server->iris_media_bridge);
-                iris_command_ledger_destroy(server->iris_command_ledger);
-                turbo_room_service_destroy(server->service);
-                free(server->sfu_nodes);
-                cmeta_mutex_destroy(&server->mutex);
-                free(server);
-                return NULL;
-            }
-        }
-    }
-#endif
     server->http_api = room_service_http_api_create(server);
     if (!server->http_api) {
-#ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-        iris_event_outbox_destroy(server->iris_event_outbox);
-        iris_completion_dispatcher_destroy(server->iris_completion_dispatcher);
-        iris_control_provider_destroy(server->iris_control_provider);
-        iris_room_bridge_destroy(server->iris_room_bridge);
-        iris_media_bridge_destroy(server->iris_media_bridge);
-        iris_command_ledger_destroy(server->iris_command_ledger);
-#endif
         turbo_room_service_destroy(server->service);
         free(server->sfu_nodes);
         cmeta_mutex_destroy(&server->mutex);
@@ -2199,18 +1811,6 @@ room_service_app_server_t *room_service_app_server_create(
             room_service_prepare_ivr_caller_audio;
         control_ws_config.media.release_caller_audio =
             room_service_release_ivr_caller_audio;
-        if (server->iris_completion_dispatcher) {
-            control_ws_config.media_observer.context = server;
-            control_ws_config.media_observer.on_media_result =
-                room_service_observe_iris_media_result;
-            control_ws_config.media_observer.on_media_event =
-                room_service_observe_iris_media_event;
-        }
-        if (server->iris_control_provider) {
-            control_ws_config.inventory_observer.context = server;
-            control_ws_config.inventory_observer.on_inventory_page =
-                room_service_observe_iris_inventory;
-        }
         if (config->control_ws_use_tls) {
             ivr_certificate_identity_config_t identity_config =
                 IVR_CERTIFICATE_IDENTITY_CONFIG_INIT;
@@ -2242,12 +1842,6 @@ room_service_app_server_t *room_service_app_server_create(
                         identity_status);
                 room_service_http_api_destroy(server->http_api);
                 server->http_api = NULL;
-                iris_event_outbox_destroy(server->iris_event_outbox);
-                iris_completion_dispatcher_destroy(
-                    server->iris_completion_dispatcher);
-                iris_control_provider_destroy(server->iris_control_provider);
-                iris_room_bridge_destroy(server->iris_room_bridge);
-                iris_media_bridge_destroy(server->iris_media_bridge);
                 turbo_room_service_destroy(server->service);
                 server->service = NULL;
                 free(server->sfu_nodes);
@@ -2293,13 +1887,6 @@ room_service_app_server_t *room_service_app_server_create(
             server->ivr_control_identity = NULL;
             room_service_http_api_destroy(server->http_api);
             server->http_api = NULL;
-            iris_event_outbox_destroy(server->iris_event_outbox);
-            iris_completion_dispatcher_destroy(
-                server->iris_completion_dispatcher);
-            iris_control_provider_destroy(server->iris_control_provider);
-            iris_room_bridge_destroy(server->iris_room_bridge);
-            iris_media_bridge_destroy(server->iris_media_bridge);
-            iris_command_ledger_destroy(server->iris_command_ledger);
             turbo_room_service_destroy(server->service);
             server->service = NULL;
             free(server->sfu_nodes);
@@ -2307,61 +1894,11 @@ room_service_app_server_t *room_service_app_server_create(
             free(server);
             return NULL;
         }
-        if (server->iris_control_provider) {
-            iris_media_reconciler_config_t reconcile_config;
-            memset(&reconcile_config, 0, sizeof(reconcile_config));
-            reconcile_config.provider = server->iris_control_provider;
-            reconcile_config.resource_capacity =
-                (size_t)config->iris_correlation_capacity;
-            reconcile_config.worker_capacity =
-                ROOM_SERVICE_IVR_WORKER_CAPACITY;
-            reconcile_config.inventory_queue_capacity =
-                (uint32_t)config->iris_reconcile_inventory_queue_capacity;
-            reconcile_config.retry_max_attempts =
-                (uint32_t)config->iris_retry_max_attempts;
-            reconcile_config.retry_backoff_ms =
-                (uint32_t)config->iris_retry_backoff_ms;
-            reconcile_config.request_timeout_ms =
-                (uint32_t)config->iris_ack_timeout_ms;
-            reconcile_config.drain_timeout_ms =
-                (uint32_t)config->iris_drain_timeout_ms;
-            reconcile_config.inventory_page_size =
-                ROOM_SERVICE_RECONCILE_INVENTORY_PAGE_SIZE;
-            reconcile_config.close_deadline_ms =
-                (uint64_t)config->iris_ack_timeout_ms;
-            reconcile_config.event_outbox = server->iris_event_outbox;
-            server->iris_media_reconciler =
-                iris_media_reconciler_create(&reconcile_config);
-            if (!server->iris_media_reconciler ||
-                iris_media_reconciler_set_adapter(
-                    server->iris_media_reconciler, server->ivr_control) != 0) {
-                iris_media_reconciler_destroy(
-                    server->iris_media_reconciler);
-                ivr_control_adapter_destroy(server->ivr_control);
-                server->ivr_control = NULL;
-                ivr_certificate_identity_destroy(server->ivr_control_identity);
-                server->ivr_control_identity = NULL;
-                room_service_http_api_destroy(server->http_api);
-                server->http_api = NULL;
-                iris_event_outbox_destroy(server->iris_event_outbox);
-                iris_completion_dispatcher_destroy(
-                    server->iris_completion_dispatcher);
-                iris_control_provider_destroy(
-                    server->iris_control_provider);
-                iris_room_bridge_destroy(server->iris_room_bridge);
-                iris_media_bridge_destroy(server->iris_media_bridge);
-                iris_command_ledger_destroy(server->iris_command_ledger);
-                turbo_room_service_destroy(server->service);
-                server->service = NULL;
-                free(server->sfu_nodes);
-                cmeta_mutex_destroy(&server->mutex);
-                free(server);
-                return NULL;
-            }
-        }
+
     }
 #endif
 
+    cmeta_mutex_init(&server->revocation_mutex);
     return server;
 }
 
@@ -2371,50 +1908,9 @@ int room_service_app_server_start(room_service_app_server_t *server) {
     }
 
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-    if (server->iris_command_ledger &&
-        iris_command_ledger_start(server->iris_command_ledger) != SALTS_OK) {
-        fprintf(stderr, "RoomService startup failed: Iris command ledger\n");
-        return -1;
-    }
-    if (server->iris_completion_dispatcher &&
-        iris_completion_dispatcher_start(
-            server->iris_completion_dispatcher) != 0) {
-        fprintf(stderr, "RoomService startup failed: Iris completion dispatcher\n");
-        iris_command_ledger_stop(server->iris_command_ledger);
-        return -1;
-    }
-    if (server->iris_event_outbox &&
-        iris_event_outbox_start(server->iris_event_outbox) != SALTS_OK) {
-        fprintf(stderr, "RoomService startup failed: Iris event outbox\n");
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_command_ledger_stop(server->iris_command_ledger);
-        return -1;
-    }
     if (server->ivr_control &&
         ivr_control_adapter_start(server->ivr_control) != IVR_OK) {
-        fprintf(stderr, "RoomService startup failed: IVR control WebSocket\n");
-        iris_event_outbox_stop(server->iris_event_outbox);
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_command_ledger_stop(server->iris_command_ledger);
-        return -1;
-    }
-    if (server->iris_control_provider &&
-        iris_control_provider_start(server->iris_control_provider) != 0) {
-        fprintf(stderr, "RoomService startup failed: Iris control WebSocket\n");
-        ivr_control_adapter_stop(server->ivr_control);
-        iris_event_outbox_stop(server->iris_event_outbox);
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_command_ledger_stop(server->iris_command_ledger);
-        return -1;
-    }
-    if (server->iris_media_reconciler &&
-        iris_media_reconciler_start(server->iris_media_reconciler) != 0) {
-        fprintf(stderr, "RoomService startup failed: Iris media reconciler\n");
-        iris_control_provider_stop(server->iris_control_provider);
-        ivr_control_adapter_stop(server->ivr_control);
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_event_outbox_stop(server->iris_event_outbox);
-        iris_command_ledger_stop(server->iris_command_ledger);
+        fprintf(stderr, "RoomService startup failed: CHttp control WebSocket\n");
         return -1;
     }
 #endif
@@ -2422,14 +1918,9 @@ int room_service_app_server_start(room_service_app_server_t *server) {
                                     server->config.bind_port) != 0) {
         fprintf(stderr, "RoomService startup failed: HTTP API\n");
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-        iris_control_provider_stop(server->iris_control_provider);
-        iris_media_reconciler_stop(server->iris_media_reconciler);
         if (server->ivr_control) {
             ivr_control_adapter_stop(server->ivr_control);
         }
-        iris_completion_dispatcher_stop(server->iris_completion_dispatcher);
-        iris_event_outbox_stop(server->iris_event_outbox);
-        iris_command_ledger_stop(server->iris_command_ledger);
 #endif
         return -1;
     }
@@ -2472,25 +1963,10 @@ int room_service_app_server_stop(room_service_app_server_t *server) {
         if (room_service_http_api_stop(server->http_api) != 0) status = -1;
     }
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-    /* Quiesce producers before their consumers. Provider stop closes command
-       ingress and waits for its dispatch worker; reconciler then stops
-       producing adapter commands. Adapter stop establishes worker callback
-       quiescence before completion/outbox consumers are drained. */
-    if (iris_control_provider_stop(server->iris_control_provider) != 0) {
+    if (server->ivr_control &&
+        ivr_control_adapter_stop(server->ivr_control) != IVR_OK) {
         status = -1;
     }
-    iris_media_reconciler_stop(server->iris_media_reconciler);
-    if (server->ivr_control) {
-        if (ivr_control_adapter_stop(server->ivr_control) != IVR_OK) {
-            status = -1;
-        }
-    }
-    if (iris_completion_dispatcher_stop(
-            server->iris_completion_dispatcher) != 0) {
-        status = -1;
-    }
-    iris_event_outbox_stop(server->iris_event_outbox);
-    iris_command_ledger_stop(server->iris_command_ledger);
 #endif
     if (room_service_drain_sfu_http_clients(server) != 0) status = -1;
     return status;
@@ -2510,8 +1986,6 @@ int room_service_app_server_destroy(room_service_app_server_t *server) {
         server->http_api = NULL;
     }
 #ifdef TURBO_MEDIA_HAS_IVR_CONTROL
-    iris_media_reconciler_destroy(server->iris_media_reconciler);
-    server->iris_media_reconciler = NULL;
     if (server->ivr_control) {
         if (ivr_control_adapter_destroy(server->ivr_control) != IVR_OK) {
             return -1;
@@ -2520,27 +1994,14 @@ int room_service_app_server_destroy(room_service_app_server_t *server) {
     }
     ivr_certificate_identity_destroy(server->ivr_control_identity);
     server->ivr_control_identity = NULL;
-    iris_event_outbox_destroy(server->iris_event_outbox);
-    server->iris_event_outbox = NULL;
-    if (iris_completion_dispatcher_destroy(
-            server->iris_completion_dispatcher) != 0) {
-        return -1;
-    }
-    server->iris_completion_dispatcher = NULL;
-    if (iris_control_provider_destroy(server->iris_control_provider) != 0) {
-        return -1;
-    }
-    server->iris_control_provider = NULL;
-    iris_room_bridge_destroy(server->iris_room_bridge);
-    server->iris_room_bridge = NULL;
-    iris_media_bridge_destroy(server->iris_media_bridge);
-    server->iris_media_bridge = NULL;
-    iris_command_ledger_destroy(server->iris_command_ledger);
-    server->iris_command_ledger = NULL;
 #endif
     if (server->service) {
         turbo_room_service_destroy(server->service);
     }
+    cmeta_mutex_lock(&server->revocation_mutex);
+    room_service_destroy_revocation_fanout_locked(server);
+    cmeta_mutex_unlock(&server->revocation_mutex);
+    cmeta_mutex_destroy(&server->revocation_mutex);
     free(server->sfu_nodes);
     free(server->call_center_events);
     free(server->conference_policies);
@@ -2570,94 +2031,7 @@ ivr_status_t room_service_app_server_send_ivr_media_command(
         server->ivr_control, command, out_worker_id, out_worker_id_capacity);
 }
 
-iris_media_bridge_result_t room_service_app_server_dispatch_iris_media_command(
-    room_service_app_server_t *server, const char *idempotency_key,
-    const char *body, size_t body_size) {
-    if (!server || !server->iris_media_bridge) {
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        result.error_code = "MEDIA_PROVIDER_UNAVAILABLE";
-        result.error_message = "Iris media provider is not configured";
-        return result;
-    }
-    if (server->iris_media_reconciler &&
-        !iris_media_reconciler_accepting_commands(
-            server->iris_media_reconciler)) {
-        iris_media_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_MEDIA_BRIDGE_UNAVAILABLE;
-        result.error_code = "MEDIA_PROVIDER_RECONCILING";
-        result.error_message =
-            "media provider is reconciling durable and worker state";
-        return result;
-    }
-    return iris_media_bridge_dispatch_json(server->iris_media_bridge,
-                                           idempotency_key, body, body_size);
-}
 
-iris_room_bridge_result_t room_service_app_server_dispatch_iris_room_command(
-    room_service_app_server_t *server, const char *idempotency_key,
-    const char *body, size_t body_size) {
-    if (!server || !server->iris_room_bridge) {
-        iris_room_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_ROOM_BRIDGE_UNAVAILABLE;
-        result.error_code = "ROOM_PROVIDER_UNAVAILABLE";
-        result.error_message = "Iris room provider is not configured";
-        return result;
-    }
-    if (server->iris_media_reconciler &&
-        !iris_media_reconciler_accepting_commands(
-            server->iris_media_reconciler)) {
-        iris_room_bridge_result_t result;
-        memset(&result, 0, sizeof(result));
-        result.status = IRIS_ROOM_BRIDGE_UNAVAILABLE;
-        result.error_code = "ROOM_PROVIDER_RECONCILING";
-        result.error_message =
-            "room provider is reconciling durable and worker state";
-        return result;
-    }
-    return iris_room_bridge_dispatch_json(server->iris_room_bridge,
-                                          idempotency_key, body, body_size);
-}
-
-ivr_status_t room_service_app_server_replay_iris_event(
-    room_service_app_server_t *server, const char *event_id) {
-    if (!server || !server->iris_event_outbox) return IVR_ESTATE;
-    return iris_event_outbox_replay(server->iris_event_outbox, event_id);
-}
-
-ivr_status_t room_service_app_server_replay_iris_dead_letters(
-    room_service_app_server_t *server, size_t limit,
-    iris_event_replay_batch_result_t *result) {
-    if (!server || !server->iris_event_outbox) return IVR_ECLOSED;
-    return iris_event_outbox_replay_dead_letters(
-        server->iris_event_outbox, limit, result);
-}
-
-ivr_status_t room_service_app_server_list_iris_dead_letters(
-    room_service_app_server_t *server, iris_event_dead_letter_t *items,
-    size_t capacity, size_t *count, size_t *total) {
-    if (!server || !server->iris_event_outbox) return IVR_ESTATE;
-    return iris_event_outbox_list_dead_letters(
-        server->iris_event_outbox, items, capacity, count, total);
-}
-
-ivr_status_t room_service_app_server_list_iris_archived_events(
-    room_service_app_server_t *server, iris_event_archive_t *items,
-    size_t capacity, size_t *count, size_t *total) {
-    if (!server || !server->iris_event_outbox) return IVR_ESTATE;
-    return iris_event_outbox_list_archived(
-        server->iris_event_outbox, items, capacity, count, total);
-}
-
-ivr_status_t room_service_app_server_run_iris_event_retention(
-    room_service_app_server_t *server,
-    iris_event_retention_result_t *result) {
-    if (!server || !server->iris_event_outbox) return IVR_ECLOSED;
-    return iris_event_outbox_run_retention(server->iris_event_outbox, result);
-}
 #endif
 
 const room_service_app_config_t *room_service_app_server_get_config(
@@ -2722,142 +2096,6 @@ int room_service_app_server_get_ivr_metrics(
             stats.bridge.peer_event_queue_drops;
         metrics->peer_event_queue_overflowed =
             stats.bridge.peer_event_queue_overflowed;
-    }
-    if (server->iris_completion_dispatcher) {
-        iris_completion_dispatcher_stats_t stats;
-        iris_completion_dispatcher_get_stats(
-            server->iris_completion_dispatcher, &stats);
-        metrics->iris_provider_enabled = 1;
-        metrics->iris_queue_items = (uint32_t)stats.queue_items;
-        metrics->iris_queue_capacity = (uint32_t)stats.queue_capacity;
-        metrics->iris_queue_high_water = (uint32_t)stats.queue_high_water;
-        metrics->iris_in_flight = (uint32_t)stats.in_flight;
-        metrics->iris_enqueued_total = stats.enqueued_total;
-        metrics->iris_queue_full_total = stats.queue_full_total;
-        metrics->iris_closed_rejections_total = stats.closed_rejections_total;
-        metrics->iris_delivery_attempts_total =
-            stats.delivery_attempts_total;
-        metrics->iris_retries_total = stats.retries_total;
-        metrics->iris_fence_conflicts_total = stats.fence_conflicts_total;
-        metrics->iris_fence_refresh_failures_total =
-            stats.fence_refresh_failures_total;
-        metrics->iris_completion_success_total =
-            stats.completion_success_total;
-        metrics->iris_completion_failure_total =
-            stats.completion_failure_total;
-        metrics->iris_event_success_total = stats.event_success_total;
-        metrics->iris_event_failure_total = stats.event_failure_total;
-        metrics->iris_shutdown_restored_completions_total =
-            stats.shutdown_restored_completions_total;
-        metrics->iris_shutdown_dropped_events_total =
-            stats.shutdown_dropped_events_total;
-        metrics->iris_last_drain_duration_ms = stats.last_drain_duration_ms;
-        metrics->iris_max_drain_duration_ms = stats.max_drain_duration_ms;
-    }
-    if (server->iris_command_ledger) {
-        iris_command_ledger_stats_t stats;
-        iris_command_ledger_get_stats(server->iris_command_ledger, &stats);
-        metrics->iris_ledger_request_queue_items =
-            (uint32_t)stats.request_queue_items;
-        metrics->iris_ledger_request_queue_capacity =
-            (uint32_t)stats.request_queue_capacity;
-        metrics->iris_ledger_request_queue_high_water =
-            (uint32_t)stats.request_queue_high_water;
-        metrics->iris_ledger_record_capacity =
-            (uint64_t)stats.record_capacity;
-        metrics->iris_ledger_claims_total = stats.claims_total;
-        metrics->iris_ledger_replays_total = stats.duplicates_total;
-        metrics->iris_ledger_conflicts_total = stats.conflicts_total;
-        metrics->iris_ledger_unknown_total = stats.unknown_total;
-        metrics->iris_ledger_storage_failures_total =
-            stats.storage_failures_total;
-        metrics->iris_ledger_queue_rejections_total =
-            stats.queue_rejections_total;
-        metrics->iris_ledger_recovered_unknown_total =
-            stats.recovered_unknown_total;
-        metrics->iris_ledger_resource_queries_total =
-            stats.resource_queries_total;
-        metrics->iris_ledger_resource_seen_total = stats.resource_seen_total;
-        metrics->iris_ledger_retained_deleted_total =
-            stats.retained_deleted_total;
-        metrics->iris_ledger_retention_sweeps_total =
-            stats.retention_sweeps_total;
-        metrics->iris_ledger_retention_failures_total =
-            stats.retention_failures_total;
-    }
-    if (server->iris_event_outbox) {
-        iris_event_outbox_stats_t stats;
-        iris_event_outbox_get_stats(server->iris_event_outbox, &stats);
-        metrics->iris_outbox_request_queue_items =
-            (uint32_t)stats.request_queue_items;
-        metrics->iris_outbox_request_queue_capacity =
-            (uint32_t)stats.request_queue_capacity;
-        metrics->iris_outbox_request_queue_high_water =
-            (uint32_t)stats.request_queue_high_water;
-        metrics->iris_outbox_pending_records =
-            (uint32_t)stats.pending_records;
-        metrics->iris_outbox_in_flight_records =
-            (uint32_t)stats.in_flight_records;
-        metrics->iris_outbox_dead_records = (uint32_t)stats.dead_records;
-        metrics->iris_outbox_archived_records =
-            (uint32_t)stats.archived_records;
-        metrics->iris_outbox_record_capacity =
-            (uint64_t)stats.record_capacity;
-        metrics->iris_outbox_retained_payload_bytes =
-            (uint64_t)stats.retained_payload_bytes;
-        metrics->iris_outbox_peak_retained_payload_bytes =
-            (uint64_t)stats.peak_retained_payload_bytes;
-        metrics->iris_outbox_persisted_total = stats.persisted_total;
-        metrics->iris_outbox_duplicate_total = stats.duplicate_total;
-        metrics->iris_outbox_conflict_total = stats.conflict_total;
-        metrics->iris_outbox_persist_failure_total =
-            stats.persist_failure_total;
-        metrics->iris_outbox_capacity_rejection_total =
-            stats.capacity_rejection_total;
-        metrics->iris_outbox_schedule_rejection_total =
-            stats.schedule_rejection_total;
-        metrics->iris_outbox_delivered_total = stats.delivered_total;
-        metrics->iris_outbox_dead_lettered_total =
-            stats.dead_lettered_total;
-        metrics->iris_outbox_settlement_failure_total =
-            stats.settlement_failure_total;
-        metrics->iris_outbox_stale_settlement_total =
-            stats.stale_settlement_total;
-        metrics->iris_outbox_decode_failure_total =
-            stats.decode_failure_total;
-        metrics->iris_outbox_recovered_total = stats.recovered_total;
-        metrics->iris_outbox_replayed_total = stats.replayed_total;
-        metrics->iris_outbox_archived_total = stats.archived_total;
-        metrics->iris_outbox_archive_deleted_total =
-            stats.archive_deleted_total;
-        metrics->iris_outbox_retention_failure_total =
-            stats.retention_failure_total;
-    }
-    if (server->iris_media_reconciler) {
-        iris_media_reconciler_stats_t stats;
-        iris_media_reconciler_get_stats(server->iris_media_reconciler, &stats);
-        metrics->iris_reconcile_state = (int)stats.state;
-        metrics->iris_reconcile_accepting_commands =
-            iris_media_reconciler_accepting_commands(
-                server->iris_media_reconciler);
-        metrics->iris_reconcile_inventory_queue_items =
-            (uint32_t)stats.inventory_queue_items;
-        metrics->iris_reconcile_inventory_queue_capacity =
-            (uint32_t)stats.inventory_queue_capacity;
-        metrics->iris_reconcile_cycles_total = stats.reconcile_cycles_total;
-        metrics->iris_reconcile_failures_total =
-            stats.reconcile_failures_total;
-        metrics->iris_reconcile_expected_fetches_total =
-            stats.expected_fetches_total;
-        metrics->iris_reconcile_inventory_pages_total =
-            stats.inventory_pages_total;
-        metrics->iris_reconcile_rebound_total = stats.rebound_total;
-        metrics->iris_reconcile_orphan_close_total =
-            stats.orphan_close_total;
-        metrics->iris_reconcile_resource_lost_total =
-            stats.resource_lost_total;
-        metrics->iris_reconcile_inventory_queue_full_total =
-            stats.inventory_queue_full_total;
     }
 #endif
     return 0;

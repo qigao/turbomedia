@@ -13,8 +13,8 @@
 #include "mpeg4-vvc.h"
 #include "mov-format.h"
 #include "cmeta_fs.h"
-#include "str.h"
-#include "vstr.h"
+#include <tstr.h>
+#include <vstr.h>
 
 #include <errno.h>
 #include <stdint.h>

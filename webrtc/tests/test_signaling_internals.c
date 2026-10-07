@@ -4,6 +4,7 @@
  */
 
 #include "tinytest.h"
+#include <salts/crypto.h>
 
 #include "../src/signaling/webrtc_signaling.c"
 
@@ -431,6 +432,106 @@ void test_peer_identity_binding_is_atomic_and_immutable(void) {
   destroy_test_server(&server);
 }
 
+void test_peer_join_dynamic_revocation_starts_unknown_and_recovers(void) {
+  webrtc_signaling_config_t config = {
+      .connection_capacity = 4U,
+      .jwt_enabled = 1,
+      .jwt_issuer = "turbomedia",
+      .jwt_active_key_id = TEST_ACTIVE_KEY_ID,
+      .jwt_secret = TEST_ACTIVE_SECRET,
+      .jwt_dynamic_revocation_capacity = 4U,
+      .jwt_clock_skew_seconds = 0,
+      .jwt_max_ttl_seconds = 3600,
+      .jwt_algo = "HS256"};
+  webrtc_signaling_server_t *server =
+      webrtc_signaling_create(NULL, &config);
+  int64_t now = (int64_t)time(NULL);
+  char *token = NULL;
+  json_value_t *root = NULL;
+  tstr authorized_peer_id = NULL;
+  uint8_t digest[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES];
+  char digest_hex[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES * 2U + 1U];
+  int synchronized = 0;
+  uint64_t epoch = 0U;
+  uint64_t sequence = 0U;
+  size_t count = 0U;
+  static const char hex[] = "0123456789abcdef";
+
+  check_not_null(server);
+  token = issue_peer_join_token(
+      TEST_ACTIVE_KEY_ID, TEST_ACTIVE_SECRET, SIGNALING_PEER_JOIN_SCOPE,
+      "room-a", "alice", now, now + 60);
+  check_not_null(token);
+
+  root = parse_join_message("room-a", "alice", token);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(
+                  server, root, &authorized_peer_id)),
+              (int)(-1));
+  check_null(authorized_peer_id);
+  json_free(root);
+  root = NULL;
+
+  check_equal(webrtc_signaling_get_revocation_status(
+                  server, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_false(synchronized);
+  check_equal((int)epoch, 0);
+  check_equal((int)sequence, 0);
+  check_equal((int)count, 0);
+
+  check_equal((int)webrtc_signaling_apply_revocation_snapshot(
+                  server, 1U, 0U, NULL, 0U),
+              (int)WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED);
+  root = parse_join_message("room-a", "alice", token);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(
+                  server, root, &authorized_peer_id)),
+              (int)(0));
+  check_equal(authorized_peer_id, "alice");
+  tstr_free(authorized_peer_id);
+  authorized_peer_id = NULL;
+  json_free(root);
+  root = NULL;
+
+  check_equal(salts_crypto_sha256(
+                  token, strlen(token), digest),
+              SALTS_CRYPTO_OK);
+  for (size_t index = 0U;
+       index < TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES; ++index) {
+    digest_hex[index * 2U] = hex[digest[index] >> 4U];
+    digest_hex[index * 2U + 1U] = hex[digest[index] & 0x0fU];
+  }
+  digest_hex[TURBO_MEDIA_AUTH_TOKEN_SHA256_BYTES * 2U] = '\0';
+  memset(digest, 0, sizeof(digest));
+
+  check_equal((int)webrtc_signaling_apply_revocation(
+                  server, 1U, 1U, digest_hex),
+              (int)WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED);
+  root = parse_join_message("room-a", "alice", token);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(
+                  server, root, &authorized_peer_id)),
+              (int)(-1));
+  check_null(authorized_peer_id);
+  json_free(root);
+  root = NULL;
+
+  check_equal((int)webrtc_signaling_apply_revocation_snapshot(
+                  server, 2U, 0U, NULL, 0U),
+              (int)WEBRTC_SIGNALING_REVOCATION_APPLY_APPLIED);
+  root = parse_join_message("room-a", "alice", token);
+  check_not_null(root);
+  check_equal((int)(authorize_join_message(
+                  server, root, &authorized_peer_id)),
+              (int)(0));
+  tstr_free(authorized_peer_id);
+  json_free(root);
+
+  free(token);
+  webrtc_signaling_destroy(server);
+}
+
 void test_authenticated_join_dispatch_admits_only_valid_first_message(void) {
   webrtc_signaling_server_t server;
   webrtc_peer_t peer;
@@ -662,9 +763,9 @@ void test_source_key_ignores_port_and_normalizes_mapped_ipv4(void) {
   mapped_ipv4.address[11] = 0xffU;
   memcpy(mapped_ipv4.address + 12U, ipv4_a.address, 4U);
 
-  check_equal((int)(source_key_from_peer(&ipv4_a, &key_a)), (int)(0));
-  check_equal((int)(source_key_from_peer(&ipv4_b, &key_b)), (int)(0));
-  check_equal((int)(source_key_from_peer(&mapped_ipv4, &mapped_key)), (int)(0));
+  check_equal((int)(signaling_source_key_from_peer(&ipv4_a, &key_a)), (int)(0));
+  check_equal((int)(signaling_source_key_from_peer(&ipv4_b, &key_b)), (int)(0));
+  check_equal((int)(signaling_source_key_from_peer(&mapped_ipv4, &mapped_key)), (int)(0));
   check_equal((int)(memcmp(&key_a, &key_b, sizeof(key_a))), (int)(0));
   check_equal((int)(memcmp(&key_a, &mapped_key, sizeof(key_a))), (int)(0));
   check_equal((int)(key_a.family), (int)(SIGNALING_SOURCE_FAMILY_IPV4));
@@ -685,11 +786,14 @@ void test_source_concurrency_releases_and_expires_state(void) {
   server.config.max_source_states = 2U;
   server.config.source_state_ttl_ms = 1000;
 
-  check_equal((int)(admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
-  check_equal((int)(admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
-  check_equal((int)(admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_REJECT_CONCURRENCY));
+  check_equal((int)(pre_admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(bind_source_connection_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(pre_admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(bind_source_connection_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(pre_admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_REJECT_CONCURRENCY));
   release_source_key_locked(&server, &key, 1000);
-  check_equal((int)(admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(pre_admit_source_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(bind_source_connection_locked(&server, &key, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
   release_source_key_locked(&server, &key, 1000);
   release_source_key_locked(&server, &key, 1000);
   check_equal((size_t)(hash_map_size(&server.source_states)), (size_t)(1));
@@ -719,17 +823,106 @@ void test_source_admission_rate_and_state_capacity_are_bounded(void) {
   server.config.max_source_states = 1U;
   server.config.source_state_ttl_ms = 1000;
 
-  check_equal((int)(admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
-  check_equal((int)(admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
-  check_equal((int)(admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_REJECT_RATE));
-  release_source_key_locked(&server, &key_a, 1000);
-  release_source_key_locked(&server, &key_a, 1000);
-  check_equal((int)(admit_source_locked(&server, &key_b, 1000)), (int)(SIGNALING_SOURCE_REJECT_CAPACITY));
-  check_equal((int)(admit_source_locked(&server, &key_a, 1500)), (int)(SIGNALING_SOURCE_ADMITTED));
-  release_source_key_locked(&server, &key_a, 1500);
+  check_equal((int)(pre_admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(pre_admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_ADMITTED));
+  check_equal((int)(pre_admit_source_locked(&server, &key_a, 1000)), (int)(SIGNALING_SOURCE_REJECT_RATE));
+  check_equal((int)(pre_admit_source_locked(&server, &key_b, 1000)), (int)(SIGNALING_SOURCE_REJECT_CAPACITY));
+  check_equal((int)(pre_admit_source_locked(&server, &key_a, 1500)), (int)(SIGNALING_SOURCE_ADMITTED));
   expire_source_states_locked(&server, 2500);
-  check_equal((int)(admit_source_locked(&server, &key_b, 2500)), (int)(SIGNALING_SOURCE_ADMITTED));
-  release_source_key_locked(&server, &key_b, 2500);
+  check_equal((int)(pre_admit_source_locked(&server, &key_b, 2500)), (int)(SIGNALING_SOURCE_ADMITTED));
+
+  destroy_test_server(&server);
+}
+
+void test_trusted_proxy_admission_runs_before_active_binding(void) {
+  static const char cert[] =
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  webrtc_signaling_server_t server;
+  cnet_stream_peer proxy;
+  chttp_header headers[2];
+  chttp_server_request_view request;
+  chttp_server_admission_result decision;
+  signaling_source_key_t forwarded_key;
+  signaling_source_state_t **entry;
+  signaling_source_state_t *source;
+
+  init_test_server(&server);
+  server.running = 1;
+  server.config.source_admissions_per_second = 1;
+  server.config.source_admission_burst = 1;
+  server.config.max_source_states = 4U;
+  server.config.source_state_ttl_ms = 60000;
+  check_equal(
+      signaling_source_identity_policy_init(
+          &server.source_identity_policy,
+          "10.0.0.10="
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+      0);
+
+  memset(&proxy, 0, sizeof(proxy));
+  proxy.family = CNET_DATAGRAM_ADDRESS_IPV4;
+  proxy.address[0] = 10U;
+  proxy.address[3] = 10U;
+  headers[0].name = "X-Forwarded-For";
+  headers[0].value = "203.0.113.7";
+  memset(&request, 0, sizeof(request));
+  request.peer = &proxy;
+  request.peer_certificate_sha256 = cert;
+  request.headers = headers;
+  request.header_count = 1U;
+
+  memset(&decision, 0, sizeof(decision));
+  check_equal(
+      signaling_http_admission(&server, &request, &decision), SALTS_OK);
+  check_equal((int)decision.status_code, 0);
+  check_equal(
+      signaling_source_key_from_numeric("203.0.113.7", &forwarded_key), 0);
+  entry = (signaling_source_state_t **)hash_map_get(
+      &server.source_states, &forwarded_key);
+  check_not_null(entry);
+  source = entry ? *entry : NULL;
+  check_not_null(source);
+  check_equal((size_t)source->active_connections, (size_t)0);
+
+  memset(&decision, 0, sizeof(decision));
+  check_equal(
+      signaling_http_admission(&server, &request, &decision), SALTS_OK);
+  check_equal((int)decision.status_code, 429);
+  check_equal((size_t)source->active_connections, (size_t)0);
+
+  server.config.source_admissions_per_second = 0;
+  server.config.source_admission_burst = 0;
+  server.config.max_connections_per_source = 1;
+  source->rate_last_refill_ms = 0U;
+  source->rate_tokens = 0U;
+  check_equal(
+      (int)bind_source_connection_locked(
+          &server, &forwarded_key, cmeta_monotonic_ms()),
+      (int)SIGNALING_SOURCE_ADMITTED);
+  check_equal((size_t)source->active_connections, (size_t)1);
+
+  memset(&decision, 0, sizeof(decision));
+  check_equal(
+      signaling_http_admission(&server, &request, &decision), SALTS_OK);
+  check_equal((int)decision.status_code, 429);
+  release_source_key_locked(
+      &server, &forwarded_key, cmeta_monotonic_ms());
+
+  request.peer_certificate_sha256 =
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  memset(&decision, 0, sizeof(decision));
+  check_equal(
+      signaling_http_admission(&server, &request, &decision), SALTS_OK);
+  check_equal((int)decision.status_code, 403);
+
+  request.peer_certificate_sha256 = cert;
+  headers[1].name = "x-forwarded-for";
+  headers[1].value = "198.51.100.9";
+  request.header_count = 2U;
+  memset(&decision, 0, sizeof(decision));
+  check_equal(
+      signaling_http_admission(&server, &request, &decision), SALTS_OK);
+  check_equal((int)decision.status_code, 400);
 
   destroy_test_server(&server);
 }
@@ -779,6 +972,7 @@ spec("test_signaling_internals") {
   it("test_management_operations_enqueue_without_external_event_loop") { test_management_operations_enqueue_without_external_event_loop(); };
   it("test_peer_join_auth_binds_room_and_identity") { test_peer_join_auth_binds_room_and_identity(); };
   it("test_peer_identity_binding_is_atomic_and_immutable") { test_peer_identity_binding_is_atomic_and_immutable(); };
+  it("test_peer_join_dynamic_revocation_starts_unknown_and_recovers") { test_peer_join_dynamic_revocation_starts_unknown_and_recovers(); };
   it("test_authenticated_join_dispatch_admits_only_valid_first_message") { test_authenticated_join_dispatch_admits_only_valid_first_message(); };
   it("test_legacy_join_remains_available_when_auth_is_disabled") { test_legacy_join_remains_available_when_auth_is_disabled(); };
   it("test_message_rate_bucket_is_bounded_and_refills_with_time") { test_message_rate_bucket_is_bounded_and_refills_with_time(); };
@@ -788,5 +982,6 @@ spec("test_signaling_internals") {
   it("test_source_key_ignores_port_and_normalizes_mapped_ipv4") { test_source_key_ignores_port_and_normalizes_mapped_ipv4(); };
   it("test_source_concurrency_releases_and_expires_state") { test_source_concurrency_releases_and_expires_state(); };
   it("test_source_admission_rate_and_state_capacity_are_bounded") { test_source_admission_rate_and_state_capacity_are_bounded(); };
+  it("test_trusted_proxy_admission_runs_before_active_binding") { test_trusted_proxy_admission_runs_before_active_binding(); };
   it("test_status_reports_resource_rejection_counters") { test_status_reports_resource_rejection_counters(); };
 }

@@ -9,7 +9,7 @@
 
 #include "turbo_datachannel_internal.h"
 #include <platform.h>
-#include <str.h>
+#include <tstr.h>
 #include <string.h>
 #include <errno.h>
 #include "tlog.h"

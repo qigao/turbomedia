@@ -84,10 +84,8 @@ ctest --preset win-dev-user -R "test_ivr_worker|test_ivr_room_bridge|test_ivr_co
 
 ## Production provider boundary
 
-Iris 与 RoomService 之间只使用 typed CHTTP H1 WebSocket provider lane：command 必须收到 durable
-receipt，completion/event 必须收到 application ACK；transport send 成功不等于 Iris 已提交。
-断线期间 event 先进入 TurboDB ORM durable outbox，发现 sequence gap 时通过 query/observation
-恢复。不存在 HTTP provider fallback，也不得从 broker callback 直接推进 workflow。
+RoomService 的 Iris outbound provider、durable outbox 与 ORM store 已退役。
+当前控制通道只负责 RoomService 与 worker 的媒体命令、结果和事件，不提供数据库持久化。
 
 WHIP/WHEP 是独立 media-edge 协议：信令经 `CHttp::Client`，生产仅允许验证过的 HTTPS
 （可选 mTLS），明文只允许显式 loopback 测试。动态 room/call/participant ID 必须按单个 URL

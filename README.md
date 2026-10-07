@@ -21,9 +21,16 @@ FFmpeg 图式流水线以及 WebRTC/RTC 媒体处理。项目默认 fail fast：
 
 ## 构建
 
-构建必须通过 `TURBO_MEDIA_PRODUCT` 显式选择产品，不存在自动探测或完整包
-fallback。默认 Windows/Linux user preset 选择 `SERVER`；Android preset 固定选择
-`CLIENT`。Windows Server 开发构建：
+TurboMedia 只有一套构建图，不要求调用方选择产品 profile。平台决定可用能力：
+
+| 平台 | 正常构建能力 |
+| --- | --- |
+| Linux / Windows | Core、设备 I/O、RTC/WebRTC、Player、Server、Streamer、Pipeline、desktop RTC apps |
+| Android | Core、设备 I/O、RTC/RTCClient、Player、mobile adapter |
+| macOS | Core、设备 I/O、RTC/RTCClient、Player |
+| iOS | Core、设备 I/O、RTC/RTCClient、Player、mobile adapter |
+
+Windows 开发构建：
 
 ```powershell
 cmake --preset win-dev-user
@@ -31,45 +38,29 @@ cmake --build --preset win-dev-user
 ctest --preset win-dev-user --output-on-failure
 ```
 
-发布构建使用对应的 `win-release-user` preset。Linux 可使用
-`linux-dev-user` 或 `linux-release-user`。
+Linux 使用 `linux-dev-user` / `linux-release-user`。Android 使用对应
+`android-*-win` preset。平台依赖缺失直接 configure 失败，不回退到其他平台、
+后端或源码依赖。
 
-Windows Client Release 使用独立的 build/install prefix：
+TurboMedia 统一要求 Salts Capture/Playback。Linux/Windows 额外启用 desktop
+service capability，因此还要求 RulesForge。TurboDB/Orm 不属于当前 TurboMedia
+依赖图；数据库 Driver 不由 RoomService 隐式选择或加载。
 
-```powershell
-cmake --preset win-client-release-user
-cmake --build --preset win-client-release-user
-ctest --preset win-client-release-user --output-on-failure
-```
+主要共享依赖包括 FFmpeg（含 `openh264`、`opus`、`xml2` feature）、
+OpenH264、x265、libde265、libvpx、Opus、Salts、SaltsUtils、SaltsNet、CHttp、
+CNet、libSRTP 和 usrsctp。WebRTC PeerConnection、ICE、DTLS-SRTP 与
+DataChannel 由仓库内 TurboMedia 与 SaltsNet 模块实现；安全传输强制使用
+BoringSSL。
 
-Client 只要求 shared media/RTC 依赖以及 SaltsUtils 的 `Capture`、`Playback`；
-Server 才查找 RulesForge、TurboDB 及其 PostgreSQL 驱动，并且不查找设备
-Capture/Playback。完整 target/platform 矩阵见
-[Client/Server 产品拆分](docs/design/client-server-product-profiles.md)。主要共享依赖包括 FFmpeg
-（含 `openh264`、`opus`、`xml2` feature）、OpenH264、x265、libde265、
-libvpx、Opus、Salts、SaltsUtils、SaltsNet、Chttp、CNet、libSRTP 和 usrsctp。
-WebRTC PeerConnection、ICE、DTLS-SRTP 与 DataChannel 由仓库内 TurboMedia 与
-SaltsNet 模块实现；DTLS-SRTP 使用 BoringSSL，HTTP/RTSP TLS 由所选
-Salts CNet SDK 提供并执行证书及主机身份校验。
+SDK 从 `SALTS_ROOT`、`SALTS_UTILS_ROOT`、`SALTSNET_ROOT`、`CHTTP_ROOT`
+各自安装根加载，不显式指定依赖版本；本工程无需 Lua/QuickJS 绑定。
+IVR schema 由 `salts-idlc` 重新生成，当前协议要求 RoomService 与 worker 同步升级。
+资源归属、合并边界与回滚说明见
+[SDK 迁移设计](docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md)。
+Windows 构建应在 `VsDevCmd.bat -arch=x64 -host_arch=x64` 环境执行。
 
-使用发布的 Salts、SaltsUtils、CHttp、SaltsNet 与 TurboDB SDK，不显式指定依赖版本。
-`SALTS_ROOT`、
-`SALTS_UTILS_ROOT`、`HTTP_SERVICES_ROOT` 分别指向对应 profile 的安装根。
-CHttp 的客户端与服务端分别链接 `CHttp::Client`、`CHttp::Server`；
-本工程不使用 Lua/QuickJS 绑定，无需在 manifest 中引入其运行时。
-Windows 构建命令应在 `VsDevCmd.bat -arch=x64 -host_arch=x64` 环境中执行。
-发布 SDK 为 Release；Debug/ASan profile 需要匹配的 Debug SDK。
-Server 运行时设置绝对路径 `TURBODB_ROOT`，指向含
-`lib/turbodb/drivers/turbodb_driver_postgresql` 动态模块的 SDK 根或部署前缀。
-
-Salts Core 调用和头文件使用当前 `cmeta_*` API，字符串使用 `str.h` / `vstr.h`。
-升级后须重编译依赖与 TurboMedia。Server 的 IVR/Iris schema 使用当前 SDK 的
-`salts-idlc` 重新生成，生成规则同时依赖 schema 和编译器文件；交叉编译仍由
-`SALTS_UTILS_HOST_ROOT` 指定宿主工具。迁移边界与回滚说明见
-[Salts 依赖迁移设计](docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md)。
-
-Linux Client 桌面 Capture 由 `Salts::Capture` 提供；所选 SaltsUtils 安装 profile
-必须已启用 Capture。从源码构建该 profile 时需要 `pkg-config`、
+Linux 桌面 Capture 由 `Salts::Capture` 提供；所选 SaltsUtils 安装必须已包含
+Capture/Playback。从源码构建对应 SDK 时需要 `pkg-config`、
 `libpipewire-0.3-dev`、`libx11-dev` 和 `libxext-dev`。
 
 ## FFmpeg 图式流水线
@@ -124,7 +115,7 @@ api_version: turbo.media.pipeline/v1
 
 ## RTC 服务进程
 
-`webrtc/apps` 只随 `SERVER` product 构建并安装：
+`webrtc/apps` 属于 Linux/Windows desktop-service capability：
 
 - `sfu_node`：WebRTC 会话、媒体发布/订阅、分层转发、录制和节点 drain；
 - `room_service`：房间事实源、SFU 节点路由、状态重放和会议策略。

@@ -8,6 +8,7 @@
 #include "base64_utils.h"
 #include "disruptor.h"
 #include "platform.h"
+#include "turbo_cnet_send_internal.h"
 
 #include <http_client/http.h>
 #include <http_server/http.h>
@@ -425,6 +426,16 @@ static native_io_backend_kind turbo_rtsp_backend(void) {
     return NATIVE_IO_BACKEND_IOCP;
 #elif defined(__linux__)
     return NATIVE_IO_BACKEND_IO_URING;
+#else
+    return NATIVE_IO_BACKEND_KQUEUE;
+#endif
+}
+
+static native_io_backend_kind turbo_rtsp_http_backend(void) {
+#ifdef _WIN32
+    return NATIVE_IO_BACKEND_IOCP;
+#elif defined(__linux__)
+    return NATIVE_IO_BACKEND_EPOLL;
 #else
     return NATIVE_IO_BACKEND_KQUEUE;
 #endif
@@ -1174,19 +1185,10 @@ static int turbo_rtsp_server_drain_sends(turbo_rtsp_server_t *server) {
         cmeta_mutex_unlock(&server->mutex);
 
         if (session->io_kind == TURBO_RTSP_IO_STREAM) {
-            mem_buffer_t *buffer = mem_get_buffer(mem_global(), command.size);
-            status = SALTS_ENOMEM;
-            if (buffer) {
-                /* The queue releases command.data after admission; CNet retains this copy. */
-                memcpy(mem_buffer_data(buffer), command.data, command.size);
-                mem_set_used(buffer, command.size);
-                status = (command.close_after || session->close_after_flush)
-                             ? cnet_send_buffer_and_close(
-                                   &server->network, session->connection, buffer)
-                             : cnet_send_buffer(
-                                   &server->network, session->connection, buffer);
-                mem_buffer_release(buffer);
-            }
+            status = turbo_media_cnet_send_copy(
+                &server->network, session->connection,
+                command.data, command.size,
+                command.close_after || session->close_after_flush);
         } else if (session->io_kind == TURBO_RTSP_IO_PACKET) {
             status = cnet_packet_send(
                 &server->packet_endpoint, session->packet_session,
@@ -1594,7 +1596,7 @@ static int turbo_rtsp_server_http_init(turbo_rtsp_server_t *server) {
     config.host = server->bind_host;
     config.port = (uint16_t)server->port;
     config.backlog = server->connection_capacity;
-    config.network.backend = turbo_rtsp_backend();
+    config.network.backend = turbo_rtsp_http_backend();
     config.network.connection_capacity = server->connection_capacity;
     config.network.command_capacity = command_capacity;
     config.network.request_capacity = server->connection_capacity * 2u;
@@ -3112,7 +3114,6 @@ static int turbo_rtsp_client_send_bytes(
     const void *data,
     size_t size) {
     int status;
-    mem_buffer_t *buffer;
     if (!client || !client->connected || !data || size == 0) {
         return -1;
     }
@@ -3126,15 +3127,11 @@ static int turbo_rtsp_client_send_bytes(
             &client->packet_endpoint, client->packet_session, data, size);
         return status == SALTS_OK ? 0 : -1;
     }
+    client->send_finished = 0;
     if (size > turbo_rtsp_client_network_config(client, client->tls_initialized).max_send_bytes)
         return -1;
-    buffer = mem_get_buffer(mem_global(), size);
-    if (!buffer) return -1;
-    memcpy(mem_buffer_data(buffer), data, size);
-    mem_set_used(buffer, size);
-    client->send_finished = 0;
-    status = cnet_send_buffer(&client->network, client->connection, buffer);
-    mem_buffer_release(buffer);
+    status = turbo_media_cnet_send_copy(
+        &client->network, client->connection, data, size, 0);
     if (status == SALTS_OK) {
         status = turbo_rtsp_client_poll_until(client, &client->send_finished);
     }
@@ -3957,6 +3954,7 @@ static int turbo_rtsp_client_connect_websocket(turbo_rtsp_client_t *client) {
     config.size = sizeof(config);
     config.network = turbo_rtsp_client_network_config(
         client, turbo_rtsp_control_transport_is_tls(client->control_transport));
+    config.network.backend = turbo_rtsp_http_backend();
     config.network.max_send_bytes =
         TURBO_RTSP_SERVER_MAX_PENDING_BYTES +
         TURBO_RTSP_SERVER_WS_WIRE_OVERHEAD_BYTES;

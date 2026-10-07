@@ -4,13 +4,64 @@ cmake_add_grammar(
   LEXER_OUTPUT turbo_sdp_parser_gen.c
   FOLDER "turbomedia/webrtc/codegen")
 
-add_library(turbo_media_auth STATIC src/auth/turbo_media_auth.c)
+add_library(
+  turbo_media_http_media_client STATIC
+  src/http/turbo_http_media_client.c)
+target_include_directories(
+  turbo_media_http_media_client
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/http)
+target_link_libraries(
+  turbo_media_http_media_client
+  PRIVATE CHttp::Client Salts::CNet Salts::Core)
+set_target_properties(
+  turbo_media_http_media_client
+  PROPERTIES FOLDER "turbomedia/components")
+
+add_library(
+  turbo_media_auth STATIC
+  src/auth/turbo_media_auth.c
+  src/auth/turbo_media_revocation.c
+  src/auth/turbo_media_revocation_projection.c
+  src/auth/turbo_media_revocation_wire.c
+  src/auth/turbo_media_revocation_fanout.c)
 target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PRIVATE Salts::JsonParser Salts::Crypto OpenSSL::Crypto)
+  PRIVATE Salts::JsonParser OpenSSL::Crypto Salts::Core)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
+
+add_library(
+  turbo_media_tenant_quota STATIC
+  src/security/turbo_media_tenant_quota.c
+  src/security/turbo_media_tenant_quota_allocator.c)
+target_include_directories(
+  turbo_media_tenant_quota PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/security)
+set_target_properties(
+  turbo_media_tenant_quota PROPERTIES FOLDER "turbomedia/components")
+
+add_library(
+  turbo_media_tenant_quota_wire STATIC
+  src/security/turbo_media_tenant_quota_wire.c)
+target_include_directories(
+  turbo_media_tenant_quota_wire
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/security)
+target_link_libraries(
+  turbo_media_tenant_quota_wire
+  PRIVATE turbo_media_tenant_quota Salts::JsonParser)
+set_target_properties(
+  turbo_media_tenant_quota_wire PROPERTIES FOLDER "turbomedia/components")
+
+add_library(
+  turbo_media_revocation_https STATIC
+  src/auth/turbo_media_revocation_https.c)
+target_include_directories(
+  turbo_media_revocation_https PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
+target_link_libraries(
+  turbo_media_revocation_https
+  PRIVATE turbo_media_auth TurboMedia::Transport Salts::JsonParser)
+set_target_properties(
+  turbo_media_revocation_https PROPERTIES FOLDER "turbomedia/components")
 
 add_library(turbo_media_sdp STATIC)
 turbo_media_configure_component(turbo_media_sdp SDP)
@@ -49,7 +100,8 @@ target_include_directories(
 target_link_libraries(
   turbo_media_datachannel
   PUBLIC TurboMedia::SDP Salts::LtvParser
-  PRIVATE Salts::CNet
+  PRIVATE turbo_media_cnet_adapter
+          Salts::CNet
           SaltsNet::ICE
           Salts::Core
           Salts::CSTL
@@ -58,7 +110,7 @@ target_link_libraries(
           OpenSSL::Crypto
           roaring::roaring)
 
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   add_library(turbo_media_webrtc SHARED)
   turbo_media_configure_component(turbo_media_webrtc WebRTC)
   target_sources(
@@ -84,6 +136,7 @@ turbo_media_configure_component(turbo_media_webrtc_signaling WebRTCSignaling)
 target_sources(
   turbo_media_webrtc_signaling
   PRIVATE src/signaling/webrtc_signaling.c
+          src/signaling/signaling_source_identity.c
           src/signaling/http_api.c)
 target_include_directories(
   turbo_media_webrtc_signaling
@@ -93,7 +146,9 @@ target_include_directories(
 target_link_libraries(
   turbo_media_webrtc_signaling
   PUBLIC Salts::CNet CHttp::Server
-  PRIVATE turbo_media_auth Salts::JsonParser Salts::Crypto Salts::Core Salts::CSTL)
+  PRIVATE turbo_media_auth turbo_media_tenant_quota
+          turbo_media_tenant_quota_wire
+          Salts::JsonParser Salts::Core Salts::CSTL)
 target_compile_definitions(turbo_media_webrtc_signaling
                            PUBLIC TURBO_MEDIA_HAS_WEBRTC_SIGNALING)
 
@@ -136,18 +191,36 @@ target_link_libraries(
           OpenSSL::Crypto
           libSRTP::srtp2)
 target_compile_definitions(turbo_media_rtc PUBLIC TURBO_MEDIA_HAS_RTC)
-if(TURBO_MEDIA_IS_CLIENT)
-  target_link_libraries(turbo_media_rtc PRIVATE Salts::Capture)
-endif()
+target_link_libraries(turbo_media_rtc PRIVATE Salts::Capture)
 # See transport/CMakeLists.txt: RTC and legacy transport packets have distinct
 # layouts, so internal calls must never be preempted by the peer shared object.
 target_link_options(
   turbo_media_rtc
   PRIVATE "$<$<PLATFORM_ID:Linux>:LINKER:-Bsymbolic-functions>")
 
+add_library(turbo_media_rtc_client SHARED
+    src/client/turbo_rtc_client.c
+    src/client/turbo_rtc_subscriber.c
+    src/client/turbo_rtc_playback_sink.c
+    src/client/turbo_rtc_capture_source.c)
+  turbo_media_configure_component(turbo_media_rtc_client RTCClient)
+  target_include_directories(
+    turbo_media_rtc_client
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/http)
+  target_link_libraries(
+    turbo_media_rtc_client
+    PUBLIC Salts::Playback
+    PRIVATE TurboMedia::RTC
+            turbo_media_http_media_client
+            Salts::Capture
+            Salts::Platform
+            Salts::Core)
+
 # Room-service / SFU server apps are desktop targets; keep them out of the
 # Android build (they were gated with NOT ANDROID before the RTC-apps split).
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   # IVR media worker first so RoomService can consume its typed H1 WebSocket bridge.
   # The server applications remain desktop-only.
   add_subdirectory(ivr)

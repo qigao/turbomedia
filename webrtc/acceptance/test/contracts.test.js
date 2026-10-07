@@ -17,7 +17,7 @@ function clone(value) {
 
 function validManifest() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     profile: 'diagnostic',
     source: {
       commit: '0123456789012345678901234567890123456789',
@@ -40,6 +40,13 @@ function validManifest() {
     },
     topologies: [{
       topology_id: 'restricted-nat-ipv4',
+      relay_contract: {
+        schema_version: 1,
+        ip_family: 'ipv4',
+        protocol: 'udp',
+        relay_protocol: 'tcp',
+        remote_candidate_types: ['host'],
+      },
       hooks: {
         setup: { command: ['topology-hook', 'setup'] },
         transition: { command: ['topology-hook', 'transition'] },
@@ -49,6 +56,7 @@ function validManifest() {
     scenarios: [{
       scenario_id: 'relay-baseline',
       topology_id: 'restricted-nat-ipv4',
+      workflow: { credential_expiry: false, topology_transition: false },
       sample_interval_ms: 250,
       duration_ms: 1_000,
     }],
@@ -86,12 +94,13 @@ function validTurnCredential() {
 
 function validHookReceipt() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     hook_id: 'restricted-nat-ipv4-transition',
     topology_id: 'restricted-nat-ipv4',
     action: 'transition',
     generation: 2,
     sequence: 4,
+    relay_contract_hash: 'a'.repeat(64),
     started_at: '2026-08-25T08:01:00Z',
     finished_at: '2026-08-25T08:01:01Z',
     observed_at: '2026-08-25T08:01:01Z',
@@ -195,14 +204,46 @@ function assertRejectedWith(contractApi, contractValidator, schemaName, value) {
   assert.ok(result.errors.length > 0, `${schemaName} should expose schema errors`);
 }
 
+test('contracts reject legacy manifest and hook receipt v1 without fallback', () => {
+  const manifest = validManifest();
+  manifest.schema_version = 1;
+  assertRejected('manifest', manifest);
+
+  const receipt = validHookReceipt();
+  receipt.schema_version = 1;
+  assertRejected('hook-receipt', receipt);
+});
+
 test('contracts accepts a legal minimum manifest', () => {
   const result = validateContract(validator, 'manifest', validManifest());
   assert.deepEqual(result, { valid: true, errors: [] });
 });
 
+test('contracts require an explicit versioned relay contract for every topology', () => {
+  const missing = validManifest();
+  delete missing.topologies[0].relay_contract;
+  assertRejected('manifest', missing);
+
+  const duplicateRemoteType = validManifest();
+  duplicateRemoteType.topologies[0].relay_contract.remote_candidate_types = ['host', 'host'];
+  assertRejected('manifest', duplicateRemoteType);
+});
+
 test('contracts reject manifest fields outside the declared contract', () => {
   const manifest = validManifest();
   manifest.grid.untrusted_fallback = true;
+  assertRejected('manifest', manifest);
+});
+
+test('contracts require explicit scenario workflow semantics', () => {
+  const manifest = validManifest();
+  delete manifest.scenarios[0].workflow;
+  assertRejected('manifest', manifest);
+});
+
+test('contracts reject credential-expiry workflows without transition recovery', () => {
+  const manifest = validManifest();
+  manifest.scenarios[0].workflow = { credential_expiry: true, topology_transition: false };
   assertRejected('manifest', manifest);
 });
 

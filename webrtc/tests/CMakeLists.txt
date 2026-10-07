@@ -39,7 +39,7 @@ turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
 
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   turbo_media_add_webrtc_test(turbo_media_test_ice_integration
                               test_ice_integration.c)
   target_link_libraries(turbo_media_test_ice_integration
@@ -59,18 +59,70 @@ turbo_media_add_webrtc_base_test(turbo_media_test_auth_token test_auth_token.c)
 target_link_libraries(turbo_media_test_auth_token
                       PRIVATE turbo_media_auth Salts::Crypto)
 
-turbo_media_add_webrtc_test(turbo_media_test_signaling_internals
-                            test_signaling_internals.c)
-target_link_libraries(turbo_media_test_signaling_internals
-                      PRIVATE Salts::CNet CHttp::Server turbo_media_auth
-                              Salts::JsonParser)
+turbo_media_add_webrtc_base_test(turbo_media_test_revocation_state
+                                 test_revocation_state.c)
+target_link_libraries(turbo_media_test_revocation_state
+                      PRIVATE turbo_media_auth Salts::Crypto)
+
+turbo_media_add_webrtc_base_test(turbo_media_test_revocation_projection
+                                 test_revocation_projection.c)
+target_link_libraries(turbo_media_test_revocation_projection
+                      PRIVATE turbo_media_auth Salts::Crypto)
+
+turbo_media_add_webrtc_base_test(turbo_media_test_revocation_fanout
+                                 test_revocation_fanout.c)
+target_link_libraries(turbo_media_test_revocation_fanout
+                      PRIVATE turbo_media_auth)
+
+turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota
+                                 test_tenant_quota.c)
+target_link_libraries(turbo_media_test_tenant_quota
+                      PRIVATE turbo_media_tenant_quota)
+
+turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota_allocator
+                                 test_tenant_quota_allocator.c)
+target_link_libraries(turbo_media_test_tenant_quota_allocator
+                      PRIVATE turbo_media_tenant_quota)
+
+turbo_media_add_webrtc_base_test(turbo_media_test_tenant_quota_wire
+                                 test_tenant_quota_wire.c)
+target_link_libraries(turbo_media_test_tenant_quota_wire
+                      PRIVATE turbo_media_tenant_quota_wire
+                              turbo_media_tenant_quota)
+
+turbo_media_add_webrtc_base_test(turbo_media_test_revocation_https
+                                 test_revocation_https.c)
+target_link_libraries(turbo_media_test_revocation_https
+                      PRIVATE turbo_media_revocation_https)
+
+turbo_media_add_webrtc_base_test(
+  turbo_media_test_signaling_source_identity
+  test_signaling_source_identity.c
+  ../src/signaling/signaling_source_identity.c)
+target_link_libraries(turbo_media_test_signaling_source_identity
+                      PRIVATE Salts::CNet)
+
+turbo_media_add_webrtc_test(
+  turbo_media_test_signaling_internals
+  test_signaling_internals.c
+  ../src/signaling/signaling_source_identity.c)
+target_include_directories(
+  turbo_media_test_signaling_internals
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src/security)
+target_link_libraries(
+  turbo_media_test_signaling_internals
+  PRIVATE Salts::CNet CHttp::Client CHttp::Server
+          turbo_media_auth
+          turbo_media_tenant_quota
+          turbo_media_tenant_quota_wire
+          Salts::JsonParser Salts::Crypto)
 
 turbo_media_add_webrtc_test(turbo_media_test_signaling_lifecycle
                             test_signaling_lifecycle.c)
-target_link_libraries(turbo_media_test_signaling_lifecycle
-                      PRIVATE TurboMedia::WebRTCSignaling TurboMedia::Transport
-                              CHttp::Server
-                              turbo_media_auth)
+target_link_libraries(
+  turbo_media_test_signaling_lifecycle
+  PRIVATE TurboMedia::WebRTCSignaling TurboMedia::Transport
+          CHttp::Client CHttp::Server turbo_media_auth turbo_media_tenant_quota)
 file(TO_CMAKE_PATH
      "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tls/localhost-cert.pem"
      TURBO_MEDIA_TEST_TLS_CERT_PATH)
@@ -82,16 +134,20 @@ target_compile_definitions(
   PRIVATE TURBO_MEDIA_TEST_TLS_CERT_PATH="${TURBO_MEDIA_TEST_TLS_CERT_PATH}"
           TURBO_MEDIA_TEST_TLS_KEY_PATH="${TURBO_MEDIA_TEST_TLS_KEY_PATH}")
 
-if(TURBO_MEDIA_IS_SERVER)
+if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   turbo_media_add_webrtc_test(
     turbo_media_test_signaling_config
     test_signaling_config.c
-    ../apps/signaling_server/src/config.c)
+    ../apps/signaling_server/src/config.c
+    ../src/signaling/signaling_source_identity.c)
   target_include_directories(
     turbo_media_test_signaling_config
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include)
-  target_link_libraries(turbo_media_test_signaling_config
-                        PRIVATE turbo_media_auth Salts::TomlParser)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src/signaling)
+  target_link_libraries(
+    turbo_media_test_signaling_config
+    PRIVATE turbo_media_auth turbo_media_tenant_quota
+            Salts::TomlParser Salts::CNet)
   file(
     TO_CMAKE_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/../apps/signaling_server/config/signaling.toml.example"

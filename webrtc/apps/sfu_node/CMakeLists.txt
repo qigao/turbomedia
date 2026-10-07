@@ -20,9 +20,13 @@ target_include_directories(sfu_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(SFU_NODE_LIBS
   TurboMedia::RtcApps
   TurboMedia::RTC
-  CHttp::Client CHttp::Server
+  CHttp::Client
+  CHttp::Server
   turbo_media_auth
+  turbo_media_tenant_quota
+  turbo_media_tenant_quota_wire
   Salts::Crypto
+  Salts::Platform
   Salts::Core
   Salts::JsonParser
   Salts::TomlParser)
@@ -46,7 +50,9 @@ set_target_properties(
 install(TARGETS sfu_node RUNTIME DESTINATION bin COMPONENT SfuNode)
 if(WIN32)
   install(
-    FILES $<TARGET_FILE:CHttp::Client> $<TARGET_FILE:CHttp::Server> $<TARGET_FILE:Salts::CNet>
+    FILES $<TARGET_FILE:CHttp::Client>
+          $<TARGET_FILE:CHttp::Server>
+          $<TARGET_FILE:Salts::CNet>
     DESTINATION bin
     COMPONENT SfuNode)
 endif()
@@ -67,7 +73,6 @@ message(STATUS "SFU Node: ${CMAKE_CURRENT_SOURCE_DIR}")
 message(STATUS "SFU Node Output: ${CMAKE_BINARY_DIR}/bin/sfu_node")
 
 add_executable(test_sfu_node_app tests/test_sfu_node_app.c
-                                 ../../ivr/src/ivr_http_media_client.c
                                  ${SFU_NODE_CORE_SOURCES})
 
 target_include_directories(
@@ -81,6 +86,7 @@ target_link_libraries(
   test_sfu_node_app
   PRIVATE ${SFU_NODE_LIBS}
           TurboMedia::Demuxer
+          turbo_media_http_media_client
           CHttp::Client CHttp::Server
           Salts::TinyTest
           $<$<PLATFORM_ID:Linux>:m>
@@ -120,8 +126,8 @@ file(
 cmake_add_test(
   turbo_media_test_sfu_node_config
   SOURCES tests/test_sfu_node_config.c src/config.c
-  LIBS turbo_media_auth Salts::TinyTest Salts::Core
-       Salts::TomlParser
+  LIBS turbo_media_auth turbo_media_tenant_quota
+       Salts::TinyTest Salts::Core Salts::TomlParser
   DEFS SFU_NODE_CONFIG_EXAMPLE_PATH="${SFU_NODE_CONFIG_EXAMPLE_PATH}"
   INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include
   FOLDER "Applications/tests")

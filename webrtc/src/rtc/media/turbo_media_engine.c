@@ -1206,6 +1206,7 @@ static void on_video_captured(salts_capture_t *capture, const uint8_t *frame, si
 
 turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
                                            const turbo_media_track_config_t *config) {
+  int audio_rtp_clock_rate = 0;
   if (!ctx || !config) return NULL;
   if (ctx->track_count >= TURBO_MEDIA_MAX_TRACKS) return NULL;
   if (config->type != TURBO_RTC_MEDIA_TRACK_AUDIO && config->type != TURBO_RTC_MEDIA_TRACK_VIDEO)
@@ -1213,6 +1214,28 @@ turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
   if (config->direction < TURBO_MEDIA_DIRECTION_SENDONLY ||
       config->direction > TURBO_MEDIA_DIRECTION_SENDRECV)
     return NULL;
+
+  if (config->type == TURBO_RTC_MEDIA_TRACK_AUDIO) {
+    const char *codec_name = media_audio_codec_name(config->codec);
+    turbo_audio_codec_config_t codec_config = {
+        .sample_rate = config->audio.sample_rate,
+        .channels = config->audio.channels,
+        .bitrate = config->audio.bitrate,
+        .frame_size_ms = config->audio.frame_size_ms,
+        .enable_fec = config->audio.enable_fec,
+        .enable_dtx = config->audio.enable_dtx,
+        .complexity = 5,
+    };
+    if (!codec_name ||
+        turbo_codec_validate_audio_config(codec_name, &codec_config) !=
+            TURBO_CODEC_OK) {
+      return NULL;
+    }
+    audio_rtp_clock_rate = turbo_codec_audio_rtp_clock_rate(codec_name);
+    if (audio_rtp_clock_rate <= 0) {
+      return NULL;
+    }
+  }
 
   turbo_media_track_t *track = (turbo_media_track_t *)calloc(1, sizeof(turbo_media_track_t));
   if (!track) return NULL;
@@ -1235,7 +1258,7 @@ turbo_media_track_t *turbo_media_add_track(turbo_media_context_t *ctx,
   rtp_session_config_t rtp_cfg = {.ssrc = 0, /* Will be generated */
                                   .payload_type = track->payload_type,
                                   .clock_rate = (config->type == TURBO_RTC_MEDIA_TRACK_AUDIO)
-                                                    ? RTP_CLOCK_AUDIO
+                                                    ? audio_rtp_clock_rate
                                                     : RTP_CLOCK_VIDEO,
                                   .is_audio = (config->type == TURBO_RTC_MEDIA_TRACK_AUDIO)};
   track->rtp_session = rtp_session_create(&rtp_cfg);
@@ -1741,6 +1764,27 @@ int turbo_media_track_send_frame(turbo_media_track_t *track, const uint8_t *data
   if (!track || !data) return -1;
   if (atomic_load(&track->state) != TURBO_MEDIA_STATE_ACTIVE) return -1;
   if (!(track->direction & TURBO_MEDIA_DIRECTION_SENDONLY)) return -1;
+
+  if (track->type == TURBO_RTC_MEDIA_TRACK_AUDIO) {
+    size_t frame_bytes;
+    size_t frame_samples;
+    size_t expected_len;
+
+    if (track->config.audio.sample_rate <= 0 ||
+        track->config.audio.channels <= 0 ||
+        track->config.audio.frame_size_ms <= 0) {
+      return -1;
+    }
+    frame_bytes =
+        (size_t)track->config.audio.channels * sizeof(int16_t);
+    frame_samples =
+        (size_t)track->config.audio.sample_rate *
+        (size_t)track->config.audio.frame_size_ms / 1000u;
+    expected_len = frame_samples * frame_bytes;
+    if (frame_samples == 0u || expected_len == 0u || len != expected_len) {
+      return -1;
+    }
+  }
 
   if (!track->encoder || !track->rtp_session) return -1;
 

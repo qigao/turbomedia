@@ -1,4 +1,6 @@
 #include <signaling_server/config.h>
+#include "turbo_media_auth.h"
+#include "turbo_media_tenant_quota.h"
 #include <tinytest.h>
 
 #include <stdlib.h>
@@ -73,6 +75,10 @@ spec("signaling TOML configuration") {
             "cert_file = \"signaling-chain.pem\"\n"
             "key_file = \"signaling-key.pem\"\n"
             "\n"
+            "[trusted_proxy]\n"
+            "map = \"10.0.0.10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n"
+            "client_ca_file = \"proxy-client-ca.pem\"\n"
+            "\n"
             "[http_api]\n"
             "enabled = false\n"
             "host = \"127.0.0.1\"\n"
@@ -115,9 +121,13 @@ spec("signaling TOML configuration") {
             "previous_key_id = \"peer-key-2026-06\"\n"
             "previous_secret = \"peer-previous-secret-at-least-32-bytes\"\n"
             "revoked_token_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\n"
+            "dynamic_revocation_capacity = 0\n"
             "clock_skew_seconds = 20\n"
             "ttl_seconds = 7200\n"
             "algorithm = \"HS256\"\n"
+            "\n"
+            "[tenant_quota]\n"
+            "capacity = 0\n"
             "\n"
             "[redis]\n"
             "enabled = false\n"
@@ -146,6 +156,10 @@ spec("signaling TOML configuration") {
             check_true(config.ws_use_tls);
             check_equal(config.ws_cert_file, "signaling-chain.pem");
             check_equal(config.ws_key_file, "signaling-key.pem");
+            check_equal(
+                config.trusted_proxy_map,
+                "10.0.0.10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            check_equal(config.trusted_proxy_ca_file, "proxy-client-ca.pem");
             check_false(config.http_enabled);
             check_equal(config.http_host, "127.0.0.1");
             check_equal(config.http_port, 9001);
@@ -184,7 +198,9 @@ spec("signaling TOML configuration") {
             check_equal(config.jwt_secret,
                          "peer-active-secret-at-least-32-bytes");
             check_equal(config.jwt_previous_key_id, "peer-key-2026-06");
+            check_equal(config.jwt_dynamic_revocation_capacity, 0);
             check_equal(config.jwt_clock_skew_seconds, 20);
+            check_equal(config.tenant_quota_capacity, 0);
             check_equal(config.redis_host, "redis.internal");
             check_equal(config.redis_port, 6380);
             check_equal(config.redis_db, 2);
@@ -417,6 +433,38 @@ spec("signaling TOML configuration") {
         remove_toml(invalid_path);
     }
 
+    it("dynamic peer revocation requires HTTPS signed management recovery") {
+        signaling_server_config_t config;
+
+        signaling_server_config_init(&config);
+        config.jwt_enabled = 1;
+        config.jwt_active_key_id = "peer-key-2026-07";
+        config.jwt_secret = "peer-active-secret-at-least-32-bytes";
+        config.jwt_dynamic_revocation_capacity = 16;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.http_enabled = 1;
+        config.http_auth_enabled = 1;
+        config.http_admin_token = "legacy-admin-token";
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.http_use_tls = 1;
+        config.http_cert_file = "management.crt";
+        config.http_key_file = "management.key";
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.http_auth_active_key_id = "management-key-2026-07";
+        config.http_auth_active_secret =
+            "management-active-secret-at-least-32-bytes";
+        check_equal(signaling_server_config_validate(&config), 0);
+
+        config.jwt_dynamic_revocation_capacity =
+            TURBO_MEDIA_AUTH_MAX_REVOKED_TOKENS + 1;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        signaling_server_config_cleanup(&config);
+    }
+
     it("fails fast when reserved Redis integration is enabled") {
         static const char redis_toml[] =
             "[redis]\n"
@@ -480,6 +528,88 @@ spec("signaling TOML configuration") {
         remove_toml(invalid_http_path);
     }
 
+    it("trusted proxy mode requires pinned mTLS and source policy") {
+        signaling_server_config_t config;
+        static const char valid_map[] =
+            "10.0.0.10="
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        static const char duplicate_map[] =
+            "10.0.0.10="
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,"
+            "10.0.0.10="
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        static const char uppercase_map[] =
+            "10.0.0.10="
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+        signaling_server_config_init(&config);
+        config.ws_use_tls = 1;
+        config.ws_cert_file = "server.crt";
+        config.ws_key_file = "server.key";
+        config.trusted_proxy_map = valid_map;
+
+        check_equal(signaling_server_config_validate(&config), -1);
+        config.trusted_proxy_ca_file = "proxy-ca.pem";
+        check_equal(signaling_server_config_validate(&config), 0);
+
+        config.ws_use_tls = 0;
+        check_equal(signaling_server_config_validate(&config), -1);
+        config.ws_use_tls = 1;
+
+        config.max_connections_per_source = 0;
+        config.source_admissions_per_second = 0;
+        config.source_admission_burst = 0;
+        config.max_source_states = 0;
+        config.source_state_ttl_ms = 0;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.max_connections_per_source = 100;
+        config.source_admissions_per_second = 20;
+        config.source_admission_burst = 50;
+        config.max_source_states = 4096;
+        config.source_state_ttl_ms = 300000;
+        config.trusted_proxy_map = uppercase_map;
+        check_equal(signaling_server_config_validate(&config), -1);
+        config.trusted_proxy_map = duplicate_map;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.trusted_proxy_map = valid_map;
+        check_equal(signaling_server_config_validate(&config), 0);
+        signaling_server_config_cleanup(&config);
+    }
+
+    it("tenant quota requires HTTPS signed management recovery") {
+        signaling_server_config_t config;
+
+        signaling_server_config_init(&config);
+        config.tenant_quota_capacity = 16;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.http_enabled = 1;
+        config.http_host = "127.0.0.1";
+        config.http_auth_enabled = 1;
+        config.http_auth_active_key_id = "management-key";
+        config.http_auth_active_secret =
+            "management-active-secret-at-least-32-bytes";
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.http_use_tls = 1;
+        config.http_cert_file = "management.crt";
+        config.http_key_file = "management.key";
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        config.jwt_enabled = 1;
+        config.jwt_active_key_id = "peer-key";
+        config.jwt_secret = "peer-active-secret-at-least-32-bytes";
+        check_equal(signaling_server_config_validate(&config), 0);
+
+        config.tenant_quota_capacity =
+            TURBO_MEDIA_TENANT_QUOTA_MAX_TENANTS + 1;
+        check_equal(signaling_server_config_validate(&config), -1);
+
+        signaling_server_config_cleanup(&config);
+    }
+
     it("requires complete static or scoped management authentication") {
         signaling_server_config_t config;
 
@@ -512,12 +642,18 @@ spec("signaling TOML configuration") {
             "TURBO_SIGNALING_USE_TLS",
             "TURBO_SIGNALING_TLS_CERT_FILE",
             "TURBO_SIGNALING_TLS_KEY_FILE",
+            "TURBO_SIGNALING_TRUSTED_PROXY_MAP",
+            "TURBO_SIGNALING_TRUSTED_PROXY_CA_FILE",
             "TURBO_SIGNALING_HTTP_USE_TLS",
             "TURBO_SIGNALING_HTTP_TLS_CERT_FILE",
             "TURBO_SIGNALING_HTTP_TLS_KEY_FILE",
             "TURBO_SIGNALING_HTTP_AUTH_ACTIVE_KEY_ID",
             "TURBO_SIGNALING_HTTP_AUTH_ACTIVE_SECRET",
-            "TURBO_SIGNALING_HTTP_AUTH_MAX_TTL_SECONDS"
+            "TURBO_SIGNALING_HTTP_AUTH_MAX_TTL_SECONDS",
+            "TURBO_SIGNALING_AUTH_ACTIVE_KEY_ID",
+            "TURBO_SIGNALING_AUTH_ACTIVE_SECRET",
+            "TURBO_SIGNALING_AUTH_DYNAMIC_REVOCATION_CAPACITY",
+            "TURBO_SIGNALING_TENANT_QUOTA_CAPACITY"
         };
         char *saved[sizeof(names) / sizeof(names[0])] = {0};
         signaling_server_config_t config;
@@ -530,20 +666,34 @@ spec("signaling TOML configuration") {
         signaling_config_test_set_env(names[1], "true");
         signaling_config_test_set_env(names[2], "signaling-chain.pem");
         signaling_config_test_set_env(names[3], "signaling-key.pem");
-        signaling_config_test_set_env(names[4], "1");
-        signaling_config_test_set_env(names[5], "management-chain.pem");
-        signaling_config_test_set_env(names[6], "management-key.pem");
-        signaling_config_test_set_env(names[7], "env-management-key");
         signaling_config_test_set_env(
-            names[8], "env-management-secret-at-least-32-bytes");
-        signaling_config_test_set_env(names[9], "900");
+            names[4],
+            "10.0.0.10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        signaling_config_test_set_env(names[5], "proxy-ca.pem");
+        signaling_config_test_set_env(names[6], "1");
+        signaling_config_test_set_env(names[7], "management-chain.pem");
+        signaling_config_test_set_env(names[8], "management-key.pem");
+        signaling_config_test_set_env(names[9], "env-management-key");
+        signaling_config_test_set_env(
+            names[10], "env-management-secret-at-least-32-bytes");
+        signaling_config_test_set_env(names[11], "900");
+        signaling_config_test_set_env(names[12], "env-peer-key");
+        signaling_config_test_set_env(
+            names[13], "env-peer-secret-at-least-32-bytes");
+        signaling_config_test_set_env(names[14], "32");
+        signaling_config_test_set_env(names[15], "16");
 
         signaling_server_config_init(&config);
         config.http_enabled = 1;
+        config.jwt_enabled = 1;
         signaling_server_config_apply_environment(&config);
         check_true(config.ws_use_tls);
         check_equal(config.ws_cert_file, "signaling-chain.pem");
         check_equal(config.ws_key_file, "signaling-key.pem");
+        check_equal(
+            config.trusted_proxy_map,
+            "10.0.0.10=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        check_equal(config.trusted_proxy_ca_file, "proxy-ca.pem");
         check_true(config.http_use_tls);
         check_equal(config.http_cert_file, "management-chain.pem");
         check_equal(config.http_key_file, "management-key.pem");
@@ -552,6 +702,10 @@ spec("signaling TOML configuration") {
         check_equal(config.http_auth_active_secret,
                      "env-management-secret-at-least-32-bytes");
         check_equal(config.http_auth_max_ttl_seconds, 900);
+        check_equal(config.jwt_active_key_id, "env-peer-key");
+        check_equal(config.jwt_secret, "env-peer-secret-at-least-32-bytes");
+        check_equal(config.jwt_dynamic_revocation_capacity, 32);
+        check_equal(config.tenant_quota_capacity, 16);
         check_equal(signaling_server_config_validate(&config), 0);
 
         signaling_config_test_set_env(names[1], "not-a-boolean");

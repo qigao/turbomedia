@@ -6,6 +6,7 @@
 #include "signaling_server/server.h"
 #include "signaling_server/config.h"
 #include "http_api.h"
+#include "signaling_tenant_quota_internal.h"
 #include <tlog.h>
 #include <platform.h>
 #include <salts/thread.h>
@@ -76,6 +77,8 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         .use_tls = server->config.ws_use_tls,
         .cert_file = server->config.ws_cert_file,
         .key_file = server->config.ws_key_file,
+        .trusted_proxy_map = server->config.trusted_proxy_map,
+        .trusted_proxy_ca_file = server->config.trusted_proxy_ca_file,
         .connection_capacity = (size_t)server->config.connection_capacity,
         .max_peers = server->config.max_peers,
         .max_rooms = server->config.max_rooms,
@@ -102,6 +105,8 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         .jwt_previous_secret = server->config.jwt_previous_secret,
         .jwt_revoked_token_sha256 =
             server->config.jwt_revoked_token_sha256,
+        .jwt_dynamic_revocation_capacity =
+            (size_t)server->config.jwt_dynamic_revocation_capacity,
         .jwt_clock_skew_seconds = server->config.jwt_clock_skew_seconds,
         .jwt_max_ttl_seconds = server->config.jwt_ttl_seconds,
         .jwt_algo = server->config.jwt_algorithm
@@ -110,6 +115,18 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
     server->ws_server = webrtc_signaling_create(NULL, &ws_config);
     if (!server->ws_server) {
         TLOG_ERROR("Failed to create WebRTC signaling server");
+        cmeta_cond_destroy(&server->stopped);
+        cmeta_mutex_destroy(&server->mutex);
+        free(server);
+        return NULL;
+    }
+    if (server->config.tenant_quota_capacity > 0 &&
+        signaling_tenant_quota_enable(
+            server->ws_server, server->config.node_id,
+            (size_t)server->config.tenant_quota_capacity) != 0) {
+        TLOG_ERROR("Failed to initialize tenant quota projection");
+        webrtc_signaling_destroy(server->ws_server);
+        server->ws_server = NULL;
         cmeta_cond_destroy(&server->stopped);
         cmeta_mutex_destroy(&server->mutex);
         free(server);

@@ -7,6 +7,8 @@
 
 #include "sfu_node/config.h"
 #include "turbo_sfu_node.h"
+#include "turbo_media_revocation.h"
+#include "turbo_media_tenant_quota.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,6 +27,50 @@ void sfu_node_app_server_stop(sfu_node_app_server_t *server);
 void sfu_node_app_server_destroy(sfu_node_app_server_t *server);
 turbo_sfu_node_t *sfu_node_app_server_get_node(sfu_node_app_server_t *server);
 const sfu_node_app_config_t *sfu_node_app_server_get_config(sfu_node_app_server_t *server);
+
+int sfu_node_app_server_dynamic_revocation_enabled(
+    sfu_node_app_server_t *server);
+turbo_media_auth_revocation_status_t
+sfu_node_app_server_revocation_check(
+    void *context, const uint8_t *sha256, size_t sha256_size);
+turbo_media_revocation_apply_result_t
+sfu_node_app_server_apply_revocation_snapshot(
+    sfu_node_app_server_t *server, uint64_t epoch, uint64_t sequence,
+    const char *const *sha256_hex, size_t count);
+turbo_media_revocation_apply_result_t
+sfu_node_app_server_apply_revocation(
+    sfu_node_app_server_t *server, uint64_t epoch, uint64_t sequence,
+    const char *sha256_hex);
+int sfu_node_app_server_get_revocation_status(
+    sfu_node_app_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence, size_t *out_count);
+
+int sfu_node_app_server_tenant_quota_enabled(
+    sfu_node_app_server_t *server);
+turbo_media_tenant_quota_apply_result_t
+sfu_node_app_server_apply_tenant_quota_snapshot(
+    sfu_node_app_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *leases,
+    size_t lease_count);
+turbo_media_tenant_quota_apply_result_t
+sfu_node_app_server_apply_tenant_quota_update(
+    sfu_node_app_server_t *server, const char *node_id,
+    uint64_t epoch, uint64_t sequence,
+    const turbo_media_tenant_quota_lease_t *lease);
+int sfu_node_app_server_get_tenant_quota_status(
+    sfu_node_app_server_t *server, int *out_synchronized,
+    uint64_t *out_epoch, uint64_t *out_sequence,
+    size_t *out_lease_count);
+turbo_media_tenant_quota_reserve_result_t
+sfu_node_app_server_tenant_quota_reserve(
+    sfu_node_app_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount, uint64_t now_unix_ms);
+int sfu_node_app_server_tenant_quota_release(
+    sfu_node_app_server_t *server, const char *tenant_id,
+    turbo_media_tenant_quota_resource_t resource,
+    uint32_t amount);
 int sfu_node_app_server_set_draining(sfu_node_app_server_t *server, int draining);
 int sfu_node_app_server_is_draining(sfu_node_app_server_t *server);
 void sfu_node_app_server_poll_webrtc(sfu_node_app_server_t *server);

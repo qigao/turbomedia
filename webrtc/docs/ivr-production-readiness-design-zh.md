@@ -9,7 +9,7 @@
 5. 所有跨 callback/thread 数据先变成有界 owning copy。
 
 CHTTP 已是独立产品和故障域。TurboMedia 下游只允许
-`find_package(Chttp CONFIG REQUIRED PATHS "$ENV{HTTP_SERVICES_ROOT}" NO_DEFAULT_PATH)`，按用途链接公开 target `CHttp::Client` / `CHttp::Server`；不得自行解析
+`find_package(Chttp CONFIG REQUIRED PATHS "$ENV{CHTTP_ROOT}" NO_DEFAULT_PATH)`，按用途链接公开 target `CHttp::Client` / `CHttp::Server`；不得自行解析
 CHTTP 的内部依赖，也不得绕过产品 target 直接链接内部 core/protocol target。该依赖边界同时
 承载 Iris↔TurboMedia 的 provider command/result/event/query lane，以及 TurboMedia↔worker 的内部
 media route/inventory lane；两类消息必须使用独立 schema、route namespace 和 ACL，不允许把

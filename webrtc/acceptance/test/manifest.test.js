@@ -97,8 +97,18 @@ test('manifest expansion retains declared browser then scenario order', () => {
   assert.ok(cases.every((entry) => entry.publisher === 'publisher'));
   assert.ok(cases.every((entry) => entry.viewer === 'viewer'));
   assert.ok(cases.every((entry) => entry.topology_id === 'restricted-nat-ipv4'));
+  assert.ok(cases.every((entry) => entry.relay_contract === manifest.topologies[0].relay_contract));
+  assert.deepEqual(cases[0].relay_contract, {
+    schema_version: 1,
+    ip_family: 'ipv4',
+    protocol: 'udp',
+    relay_protocol: 'tcp',
+    remote_candidate_types: ['host'],
+  });
   assert.ok(cases.every((entry) => /^[0-9a-f]{64}$/.test(entry.credential_profile)));
   assert.deepEqual(cases.map((entry) => entry.scenario.duration_ms), [1000, 1000, 1000, 1000]);
+  assert.deepEqual(cases.map((entry) => entry.scenario.workflow.topology_transition),
+    [false, true, false, true]);
 });
 
 test('manifest without a run label remains canonical JSON data', () => {

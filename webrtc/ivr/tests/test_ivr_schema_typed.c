@@ -27,6 +27,15 @@ void test_typed_conference_join_roundtrip(void) {
 
     /* Both endpoints use the same fixed-first major 2 contract. Verify the
        generated owning route and dynamic decoder agree on the binary payload. */
+    static const uint8_t expected_bin[] = {
+        0x07,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x2A,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x03,0x00,0x00,0x00,0x6D,0x2D,0x31,
+        0x02,0x00,0x00,0x00,0x77,0x31,
+        0x02,0x00,0x00,0x00,0x72,0x31,
+        0x02,0x00,0x00,0x00,0x63,0x31,
+        0x07,0x00,0x00,0x00,0x69,0x76,0x72,0x2D,0x62,0x6F,0x74
+    };
     uint8_t *binary = NULL;
     size_t binary_len = 0;
     DataBindObject *dynamic = NULL;
@@ -34,10 +43,14 @@ void test_typed_conference_join_roundtrip(void) {
     ConferenceJoinCommandV1_init(&decoded);
     check_equal(ConferenceJoinCommandV1_to_bin(codec, &cmd, &binary,
                                               &binary_len, &err), DATA_BIND_OK);
+    check_equal(binary_len, sizeof(expected_bin));
+    check_equal(binary, expected_bin, sizeof(expected_bin));
     check_equal(ConferenceJoinCommandV1_from_bin(codec, &decoded, binary,
                                                 binary_len, &err), DATA_BIND_OK);
     check_equal(decoded.message_id, "m-1");
     check_equal(decoded.call_generation, (uint64_t)7);
+    check_equal(decoded.expected_room_version, (uint64_t)42);
+    check_equal(decoded.participant_role, "ivr-bot");
     check_equal(data_bind_object_from_bin(codec, "ConferenceJoinCommandV1",
                                           binary, binary_len, &dynamic, &err),
                 DATA_BIND_OK);
@@ -48,8 +61,9 @@ void test_typed_conference_join_roundtrip(void) {
     TurboMediaIvrV2_schema_codec()->free_output(binary);
     char *out = NULL;
     size_t out_len = 0;
-    check_equal(ConferenceJoinCommandV1_to_json(codec, &cmd, &out,
-                                                      &out_len, &err), DATA_BIND_OK);
+    check_equal(ConferenceJoinCommandV1_to_json(
+                    codec, &cmd, &out, &out_len, &err),
+                DATA_BIND_OK);
     check_not_null(out);
     check_true(strstr(out, "ivr-bot") != NULL);
     TurboMediaIvrV2_schema_codec()->free_output(out);

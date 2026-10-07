@@ -82,6 +82,7 @@ function expandCases(manifest) {
       if (!topologiesById.has(scenario.topology_id)) {
         throw new RangeError(`scenario references undeclared topology_id: ${scenario.topology_id}`);
       }
+      const topology = topologiesById.get(scenario.topology_id);
       if (cases.length >= maxCases) {
         throw new RangeError(`expanded case count exceeds ${maxCases}`);
       }
@@ -109,6 +110,7 @@ function expandCases(manifest) {
         scenario,
         scenario_id: scenario.scenario_id,
         topology_id: scenario.topology_id,
+        relay_contract: topology.relay_contract,
         viewer: 'viewer',
       }));
     }

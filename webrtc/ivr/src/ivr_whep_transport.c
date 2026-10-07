@@ -1,6 +1,6 @@
 #include "ivr_whep_transport.h"
 
-#include "ivr_http_media_client.h"
+#include "turbo_http_media_client.h"
 #include "ivr_internal.h"
 #include "ivr_thread.h"
 #include "turbo_peer_connection.h"
@@ -18,7 +18,7 @@
 
 struct ivr_whep_transport_s {
     ivr_whep_transport_config_t config;
-    ivr_http_media_client_t *http_client;
+    turbo_http_media_client_t *http_client;
     ivr_mutex_t lock;
     ivr_mutex_t lifecycle_lock;
     int lock_initialized;
@@ -158,14 +158,14 @@ static int whep_call_matches_locked(const ivr_whep_transport_t *transport,
 
 static int whep_delete_session(ivr_whep_transport_t *transport,
                                const char *location) {
-    ivr_http_media_response_t response;
+    turbo_http_media_response_t response;
     int request_status;
 
     if (!transport || !location || location[0] == '\0') {
         return 0;
     }
     memset(&response, 0, sizeof(response));
-    request_status = ivr_http_media_request(
+    request_status = turbo_http_media_request(
         transport->http_client, "DELETE", location, NULL, NULL, NULL,
         &response);
     if (request_status != 0 ||
@@ -385,8 +385,8 @@ static void *whep_poll_thread_main(void *opaque) {
 ivr_status_t ivr_whep_transport_create(
     const ivr_whep_transport_config_t *config,
     ivr_whep_transport_t **out_transport) {
-    ivr_http_media_client_config_t http_config =
-        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    turbo_http_media_client_config_t http_config =
+        TURBO_HTTP_MEDIA_CLIENT_CONFIG_INIT;
     ivr_whep_transport_t *transport;
 
     if (!config || !config->sfu_base_url ||
@@ -419,7 +419,7 @@ ivr_status_t ivr_whep_transport_create(
     http_config.key_password = config->key_password;
     http_config.timeout_ms = config->http_timeout_ms;
     http_config.allow_plaintext_loopback = config->allow_plaintext_loopback;
-    if (ivr_http_media_client_create(&http_config,
+    if (turbo_http_media_client_create(&http_config,
                                      &transport->http_client) != 0) {
         free(transport);
         return IVR_EINVAL;
@@ -533,9 +533,9 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
     turbo_media_track_config_t track_config;
     turbo_peer_connection_t *pc;
     turbo_media_track_t *track;
-    ivr_http_media_response_t response;
-    char offer[IVR_HTTP_MEDIA_MAX_SDP];
-    char minimal_offer[IVR_HTTP_MEDIA_MAX_SDP];
+    turbo_http_media_response_t response;
+    char offer[TURBO_HTTP_MEDIA_MAX_SDP];
+    char minimal_offer[TURBO_HTTP_MEDIA_MAX_SDP];
     char path[IVR_MEDIA_ID_CAPACITY * 6u + 16u];
     char fragment[2048];
     char ufrag[64];
@@ -623,13 +623,13 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
     if (turbo_peer_connection_create_offer(pc, offer, sizeof(offer)) <= 0) {
         return whep_start_fail(transport, pc, NULL, IVR_ESTATE);
     }
-    ivr_sdp_build_minimal_audio_offer(
+    turbo_http_media_sdp_build_minimal_audio_offer(
         offer, minimal_offer, sizeof(minimal_offer),
         (int)transport->config.sample_rate, "recvonly");
     char *room_segment =
-        ivr_http_media_encode_path_segment(transport->room_id.data);
+        turbo_http_media_encode_path_segment(transport->room_id.data);
     char *participant_segment =
-        ivr_http_media_encode_path_segment(transport->participant_id.data);
+        turbo_http_media_encode_path_segment(transport->participant_id.data);
     if (!room_segment || !participant_segment) {
         free(room_segment);
         free(participant_segment);
@@ -643,7 +643,7 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
         fprintf(stderr, "[ivr_whep] start failed: session path too long\n");
         return whep_start_fail(transport, pc, NULL, IVR_EINVAL);
     }
-    if (ivr_http_media_request(transport->http_client, "POST", path,
+    if (turbo_http_media_request(transport->http_client, "POST", path,
                                "application/sdp", NULL, minimal_offer,
                                &response) != 0) {
         fprintf(stderr, "[ivr_whep] start failed: POST request failed\n");
@@ -663,10 +663,10 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
                 "[ivr_whep] start failed: invalid SDP answer\n");
         return whep_start_fail(transport, pc, response.location, IVR_ESTATE);
     }
-    if (ivr_sdp_attr_value(offer, "a=ice-ufrag:", ufrag, sizeof(ufrag)) &&
-        ivr_sdp_attr_value(offer, "a=ice-pwd:", password,
+    if (turbo_http_media_sdp_attr_value(offer, "a=ice-ufrag:", ufrag, sizeof(ufrag)) &&
+        turbo_http_media_sdp_attr_value(offer, "a=ice-pwd:", password,
                            sizeof(password))) {
-        ivr_http_media_response_t trickle;
+        turbo_http_media_response_t trickle;
         memset(&trickle, 0, sizeof(trickle));
         int prefix_length = snprintf(
             fragment, sizeof(fragment),
@@ -677,9 +677,9 @@ ivr_status_t ivr_whep_transport_start(ivr_whep_transport_t *transport,
             return whep_start_fail(transport, pc, response.location,
                                    IVR_ESTATE);
         }
-        ivr_sdp_append_candidates(offer, fragment + prefix_length,
+        turbo_http_media_sdp_append_candidates(offer, fragment + prefix_length,
                                   sizeof(fragment) - (size_t)prefix_length);
-        if (ivr_http_media_request(
+        if (turbo_http_media_request(
                 transport->http_client, "PATCH", response.location,
                 "application/trickle-ice-sdpfrag", response.etag, fragment,
                 &trickle) != 0 ||
@@ -768,6 +768,6 @@ void ivr_whep_transport_destroy(ivr_whep_transport_t *transport) {
     if (transport->lock_initialized) {
         ivr_mutex_destroy(&transport->lock);
     }
-    ivr_http_media_client_destroy(transport->http_client);
+    turbo_http_media_client_destroy(transport->http_client);
     free(transport);
 }

@@ -1,4 +1,5 @@
 #include "http_api.h"
+#include "signaling/signaling_tenant_quota_internal.h"
 #include "turbo_transport.h"
 #include "turbo_media_auth.h"
 #include "tinytest.h"
@@ -68,6 +69,50 @@ static int get_status(const char *base_url, const char *path,
   return status;
 }
 
+static int post_json_status(
+    const char *base_url, const char *path, const char *bearer_token,
+    const char *ca_file, const char *body) {
+  turbo_transport_config_t config = {0};
+  cnet_tls_client_config tls = {0};
+  turbo_transport_t *client;
+  chttp_response *response;
+  const char *headers[] = {"Content-Type", "application/json"};
+  int status = 0;
+
+  if (!base_url || !path || !body ||
+      turbo_transport_parse_url(base_url, &config) != 0 ||
+      config.type != TURBO_TRANSPORT_HTTP ||
+      (ca_file && !config.use_tls)) {
+    return 0;
+  }
+  config.connect_timeout_ms = 3000;
+  config.read_timeout_ms = 3000;
+  config.write_timeout_ms = 3000;
+  if (config.use_tls) {
+    tls.size = sizeof(tls);
+    tls.ca_file = ca_file;
+    tls.server_name = "localhost";
+    config.tls = &tls;
+  }
+  config.auth_token = bearer_token;
+  client = turbo_transport_create(&config);
+  if (!client) {
+    return 0;
+  }
+  response = turbo_transport_http_request(
+      client, TURBO_HTTP_POST, path, (const uint8_t *)body, strlen(body),
+      headers, 2);
+  if (response) {
+    status = response->status_code;
+    chttp_response_destroy(response);
+    free(response);
+  }
+  if (turbo_transport_destroy(client) != 0) {
+    status = -1;
+  }
+  return status;
+}
+
 static int delete_status(const char *base_url, const char *path,
                          const char *bearer_token) {
   turbo_transport_config_t config = {0};
@@ -119,6 +164,35 @@ static char *issue_signaling_management_token(
   };
 
   return turbo_media_auth_issue(&config, &claims);
+}
+
+static char *issue_security_control_token_for_scope(
+    const char *key_id, const char *secret, const char *scope,
+    int64_t issued_at, int64_t expires_at) {
+  turbo_media_auth_config_t config = {
+      .issuer = "turbomedia",
+      .active_key_id = key_id,
+      .active_secret = secret,
+      .clock_skew_seconds = 0,
+      .max_ttl_seconds = 3600,
+  };
+  turbo_media_auth_claims_t claims = {
+      .subject = "security-control-test",
+      .audience = "turbomedia-security-control",
+      .scope = scope,
+      .issued_at = issued_at,
+      .expires_at = expires_at,
+  };
+
+  return turbo_media_auth_issue(&config, &claims);
+}
+
+static char *issue_security_control_token(
+    const char *key_id, const char *secret, int64_t issued_at,
+    int64_t expires_at) {
+  return issue_security_control_token_for_scope(
+      key_id, secret, "security.revocation.write",
+      issued_at, expires_at);
 }
 
 void test_signaling_and_http_api_instances_have_independent_lifecycles(void) {
@@ -589,6 +663,330 @@ void test_http_api_bearer_auth_protects_management_routes(void) {
   free(read_token);
 }
 
+void test_https_revocation_transport_requires_dedicated_signed_control_token(void) {
+  webrtc_signaling_config_t signaling_config = {
+      .connection_capacity = 4U,
+      .jwt_enabled = 1,
+      .jwt_issuer = "turbomedia",
+      .jwt_active_key_id = "signaling-peer-2026-07",
+      .jwt_secret = "signaling-peer-active-secret-at-least-32-bytes",
+      .jwt_dynamic_revocation_capacity = 4U,
+      .jwt_clock_skew_seconds = 0,
+      .jwt_max_ttl_seconds = 3600,
+      .jwt_algo = "HS256"};
+  http_api_config_t http_config = {
+      .host = "127.0.0.1",
+      .port = 18085,
+      .use_tls = 1,
+      .cert_file = TURBO_MEDIA_TEST_TLS_CERT_PATH,
+      .key_file = TURBO_MEDIA_TEST_TLS_KEY_PATH,
+      .auth_enabled = 1,
+      .admin_token = "legacy-admin-token",
+      .auth_issuer = "turbomedia",
+      .auth_active_key_id = "signaling-management-2026-07",
+      .auth_active_secret =
+          "signaling-management-active-secret-at-least-32-bytes",
+      .auth_clock_skew_seconds = 0,
+      .auth_max_ttl_seconds = 3600};
+  webrtc_signaling_server_t *signaling =
+      webrtc_signaling_create(NULL, &signaling_config);
+  http_api_server_t *http;
+  int64_t now = (int64_t)time(NULL);
+  char *security_token = issue_security_control_token(
+      "signaling-management-2026-07",
+      "signaling-management-active-secret-at-least-32-bytes",
+      now, now + 60);
+  char *wrong_audience_token = issue_signaling_management_token(
+      "signaling-management-2026-07",
+      "signaling-management-active-secret-at-least-32-bytes",
+      "security.revocation.write", NULL, NULL, now, now + 60);
+  int synchronized = 0;
+  uint64_t epoch = 0U;
+  uint64_t sequence = 0U;
+  size_t count = 0U;
+  static const char snapshot[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":0,"
+      "\"revoked_sha256\":\"\"}";
+  static const char revoke[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}";
+  static const char gap[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":3,"
+      "\"sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\"}";
+  static const char recover[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":3,"
+      "\"revoked_sha256\":\"\"}";
+  static const char stale_malformed[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}";
+  static const char next_malformed[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":4,"
+      "\"sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}";
+
+  check_not_null(signaling);
+  check_not_null(security_token);
+  check_not_null(wrong_audience_token);
+  http = http_api_create(NULL, &http_config, signaling);
+  check_not_null(http);
+  check_equal((int)(http_api_start(http)), (int)(0));
+
+  check_equal(webrtc_signaling_get_revocation_status(
+                  signaling, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_false(synchronized);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18085",
+                  "/api/v1/security/revocations/snapshot",
+                  "legacy-admin-token", TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  snapshot),
+              401);
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18085",
+                  "/api/v1/security/revocations/snapshot",
+                  wrong_audience_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  snapshot),
+              401);
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18085",
+                  "/api/v1/security/revocations/snapshot",
+                  security_token, TURBO_MEDIA_TEST_TLS_CERT_PATH, snapshot),
+              200);
+  check_equal(webrtc_signaling_get_revocation_status(
+                  signaling, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_true(synchronized);
+  check_equal((int)epoch, 1);
+  check_equal((int)sequence, 0);
+  check_equal((int)count, 0);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18085",
+                  "/api/v1/security/revocations/revoke",
+                  security_token, TURBO_MEDIA_TEST_TLS_CERT_PATH, revoke),
+              200);
+  check_equal(webrtc_signaling_get_revocation_status(
+                  signaling, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_true(synchronized);
+  check_equal((int)sequence, 1);
+  check_equal((int)count, 1);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18085",
+                  "/api/v1/security/revocations/revoke",
+                  security_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  stale_malformed),
+              200);
+  check_equal(webrtc_signaling_get_revocation_status(
+                  signaling, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_true(synchronized);
+  check_equal((int)sequence, 1);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18085",
+                  "/api/v1/security/revocations/revoke",
+                  security_token, TURBO_MEDIA_TEST_TLS_CERT_PATH, gap),
+              409);
+  check_equal(webrtc_signaling_get_revocation_status(
+                  signaling, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_false(synchronized);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18085",
+                  "/api/v1/security/revocations/snapshot",
+                  security_token, TURBO_MEDIA_TEST_TLS_CERT_PATH, recover),
+              200);
+  check_equal(webrtc_signaling_get_revocation_status(
+                  signaling, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_true(synchronized);
+  check_equal((int)sequence, 3);
+  check_equal((int)count, 0);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18085",
+                  "/api/v1/security/revocations/revoke",
+                  security_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  next_malformed),
+              400);
+  check_equal(webrtc_signaling_get_revocation_status(
+                  signaling, &synchronized, &epoch, &sequence, &count),
+              0);
+  check_false(synchronized);
+
+  http_api_destroy(http);
+  webrtc_signaling_destroy(signaling);
+  free(wrong_audience_token);
+  free(security_token);
+}
+
+void test_https_tenant_quota_transport_requires_dedicated_signed_control_token(void) {
+  webrtc_signaling_config_t signaling_config = {
+      .connection_capacity = 4U};
+  http_api_config_t http_config = {
+      .host = "127.0.0.1",
+      .port = 18086,
+      .use_tls = 1,
+      .cert_file = TURBO_MEDIA_TEST_TLS_CERT_PATH,
+      .key_file = TURBO_MEDIA_TEST_TLS_KEY_PATH,
+      .auth_enabled = 1,
+      .admin_token = "legacy-admin-token",
+      .auth_issuer = "turbomedia",
+      .auth_active_key_id = "signaling-management-2026-07",
+      .auth_active_secret =
+          "signaling-management-active-secret-at-least-32-bytes",
+      .auth_clock_skew_seconds = 0,
+      .auth_max_ttl_seconds = 3600};
+  webrtc_signaling_server_t *signaling =
+      webrtc_signaling_create(NULL, &signaling_config);
+  http_api_server_t *http;
+  int64_t now = (int64_t)time(NULL);
+  char *quota_token = issue_security_control_token_for_scope(
+      "signaling-management-2026-07",
+      "signaling-management-active-secret-at-least-32-bytes",
+      "security.tenant_quota.write", now, now + 60);
+  char *wrong_scope_token = issue_security_control_token(
+      "signaling-management-2026-07",
+      "signaling-management-active-secret-at-least-32-bytes",
+      now, now + 60);
+  int synchronized = 0;
+  uint64_t epoch = 0U;
+  uint64_t sequence = 0U;
+  size_t count = 0U;
+  static const char snapshot[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":0,"
+      "\"node_id\":\"signaling-quota-node\",\"leases\":[{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":2,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}]}";
+  static const char wrong_node[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"node_id\":\"other-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":3,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}}";
+  static const char update[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":1,"
+      "\"node_id\":\"signaling-quota-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":3,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}}";
+  static const char gap[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":3,"
+      "\"node_id\":\"signaling-quota-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":4,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}}";
+  static const char recover[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":3,"
+      "\"node_id\":\"signaling-quota-node\",\"leases\":[{"
+      "\"tenant_id\":\"tenant-a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":4,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}]}";
+  static const char semantic_invalid[] =
+      "{\"schema_version\":1,\"epoch\":1,\"sequence\":4,"
+      "\"node_id\":\"signaling-quota-node\",\"lease\":{"
+      "\"tenant_id\":\"tenant/a\",\"expires_at_unix_ms\":9999999999999,"
+      "\"limits\":{\"signaling_connections\":4,\"rooms\":1,"
+      "\"participants\":4,\"media_sessions\":2,"
+      "\"published_tracks\":4}}}";
+
+  check_not_null(signaling);
+  check_equal(signaling_tenant_quota_enable(
+                  signaling, "signaling-quota-node", 4U), 0);
+  check_not_null(quota_token);
+  check_not_null(wrong_scope_token);
+  http = http_api_create(NULL, &http_config, signaling);
+  check_not_null(http);
+  check_equal((int)http_api_start(http), 0);
+
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/snapshot",
+                  "legacy-admin-token", TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  snapshot), 401);
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/snapshot",
+                  wrong_scope_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  snapshot), 401);
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/snapshot",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH, snapshot), 200);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 0);
+  check_equal((int)count, 1);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/update",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  wrong_node), 400);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 0);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/update",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  update), 200);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 1);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/update",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  gap), 409);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/snapshot",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  recover), 200);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_true(synchronized);
+  check_equal((int)sequence, 3);
+
+  check_equal(post_json_status(
+                  "https://127.0.0.1:18086",
+                  "/api/v1/security/tenant-quotas/update",
+                  quota_token, TURBO_MEDIA_TEST_TLS_CERT_PATH,
+                  semantic_invalid), 400);
+  check_equal(signaling_tenant_quota_status(
+                  signaling, &synchronized, &epoch, &sequence, &count), 0);
+  check_false(synchronized);
+  check_equal((int)sequence, 3);
+
+  http_api_destroy(http);
+  webrtc_signaling_destroy(signaling);
+  free(wrong_scope_token);
+  free(quota_token);
+}
+
 void test_https_management_api_requires_trusted_identity(void) {
   webrtc_signaling_config_t signaling_config = {.connection_capacity = 4U};
   http_api_config_t http_config = {
@@ -625,5 +1023,7 @@ spec("test_signaling_lifecycle") {
   it("test_signaling_wss_listener_loads_explicit_identity") { test_signaling_wss_listener_loads_explicit_identity(); };
   it("test_transport_wss_uses_explicit_trust_and_server_name") { test_transport_wss_uses_explicit_trust_and_server_name(); };
   it("test_http_api_bearer_auth_protects_management_routes") { test_http_api_bearer_auth_protects_management_routes(); };
+  it("test_https_revocation_transport_requires_dedicated_signed_control_token") { test_https_revocation_transport_requires_dedicated_signed_control_token(); };
+  it("test_https_tenant_quota_transport_requires_dedicated_signed_control_token") { test_https_tenant_quota_transport_requires_dedicated_signed_control_token(); };
   it("test_https_management_api_requires_trusted_identity") { test_https_management_api_requires_trusted_identity(); };
 }

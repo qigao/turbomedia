@@ -1,5 +1,34 @@
 # TurboMedia Salts 依赖重构设计
 
+## 合入当前主线的决议
+
+本节优先于下文合并前的记录。主线已改为按平台能力构建：Windows/Linux 同时
+提供设备 I/O 与桌面服务，不再选择 CLIENT/SERVER 产品。对应 user preset 统一为
+`win-release-user`，不保留独立 Client preset。CHttp 安装根沿用主线的 `CHTTP_ROOT`。
+
+主线已移除 RoomService 的 Iris provider、ledger/outbox 和 ORM store，也已移除
+TurboDB package 依赖。本次合并保留该退役决定，不恢复这些源文件、数据库加载或
+安装规则；下文的 TurboDB/CMeta scope 改动仅记述合并前分支，当前构建不消费它。
+既有记录格式未因合并而迁移，运行中的旧服务必须按其退役部署方案处理。
+
+保留本轮 Core API 更新、DataChannel RAII、新版生成绑定及 IVR schema major 2。
+接收端继续在 payload 解码前拒绝旧主版本/旧 type ID，RoomService 与 worker 仍须
+同步切换。主线的权限、撤销、租户配额、共享 HTTP media client 和共享 CNet buffer
+发送适配器全部保留；发送前容量检查继续由各 owner 的配置决定。
+
+合并后的 Windows Release 全量构建、90 项正式 CTest（262.49 秒）及安装均通过。
+此前先运行 IVR 协议、DataChannel、HTTP 传输、认证撤销与租户配额相关的
+14 项回归，全部通过。验证命令在 VS x64 开发环境执行：
+
+```powershell
+cmake --fresh --preset win-release-user
+cmake --build --preset win-release-user --parallel 6
+ctest --preset win-release-user --output-on-failure
+cmake --build --preset install-win-release-user
+```
+
+本次未执行 Linux、Android、macOS、iOS 构建或公网浏览器/TURN 验收。
+
 ## 2026-10-07 发布 SDK 对齐
 
 本节更新下文历史迁移方案中的 API 与包归属。本轮依据
@@ -87,7 +116,7 @@ worker 必须同步采用新 schema。回滚也须先排空并同时恢复两端
 旧 type ID 拒绝，以及实际 loopback WebSocket 控制链路。独立进程 dispatch live gate 已编译，
 需提供真实 PostgreSQL 服务才能执行。
 
-### 当前验证边界（2026-10-07）
+### 合并前验证记录（2026-10-07）
 
 - Windows Client Release 全量编译与 32 项 CTest 通过。
 - Windows Server Release 全量编译通过；80 项正式 CTest 中 79 项首轮通过，

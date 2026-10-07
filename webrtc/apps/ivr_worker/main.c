@@ -13,7 +13,7 @@
 #include "ivr_openai_provider.h"
 #include "ivr_speech_session_factory.h"
 #include "ivr_control_gateway.h"
-#include "ivr_http_media_client.h"
+#include "turbo_http_media_client.h"
 #include "ivr/ivr_acl.h"
 #include "ivr_whip_transport.h"
 #include "ivr_whep_transport.h"
@@ -1409,9 +1409,9 @@ static void media_factory_destroy(void *ctx, void *opaque_instance) {
 }
 
 static void configure_media_from_environment(void) {
-    ivr_http_media_client_config_t http_config =
-        IVR_HTTP_MEDIA_CLIENT_CONFIG_INIT;
-    ivr_http_media_client_t *validation_client = NULL;
+    turbo_http_media_client_config_t http_config =
+        TURBO_HTTP_MEDIA_CLIENT_CONFIG_INIT;
+    turbo_http_media_client_t *validation_client = NULL;
 
     g_sfu_base_url = getenv("IVR_SFU_BASE_URL");
     g_sfu_media_token = getenv("IVR_SFU_MEDIA_TOKEN");
@@ -1438,13 +1438,13 @@ static void configure_media_from_environment(void) {
         http_config.timeout_ms = g_sfu_http_timeout_ms;
         http_config.allow_plaintext_loopback =
             g_sfu_allow_plaintext_loopback;
-        if (ivr_http_media_client_create(&http_config, &validation_client) !=
+        if (turbo_http_media_client_create(&http_config, &validation_client) !=
             0) {
             fprintf(stderr, "ivr_worker: invalid SFU HTTPS configuration\n");
             g_env_parse_failed = 1;
             return;
         }
-        ivr_http_media_client_destroy(validation_client);
+        turbo_http_media_client_destroy(validation_client);
         printf("[ivr_worker] media: WebRTC WHIP/WHEP endpoint enabled\n");
     } else {
         printf("[ivr_worker] media: SFU endpoint not configured; dry-run/logging transport\n");

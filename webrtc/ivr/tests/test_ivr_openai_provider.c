@@ -236,7 +236,11 @@ static int mock_read_request(mock_sock_t fd, char *hdr, size_t hdr_cap,
 static int mock_send_all(mock_sock_t fd, const char *data, size_t len) {
     size_t off = 0;
     while (off < len) {
+#ifdef MSG_NOSIGNAL
+        int n = send(fd, data + off, (int)(len - off), MSG_NOSIGNAL);
+#else
         int n = send(fd, data + off, (int)(len - off), 0);
+#endif
         if (n <= 0) {
             return -1;
         }
@@ -411,7 +415,11 @@ static void *mock_server_thread(void *opaque) {
         FD_SET((mock_sock_t)s->listen_sock, &rfds);
         tv.tv_sec = 0;
         tv.tv_usec = 200000;
+#ifdef _WIN32
         sel = select(0, &rfds, NULL, NULL, &tv);
+#else
+        sel = select((int)s->listen_sock + 1, &rfds, NULL, NULL, &tv);
+#endif
         if (sel > 0) {
             mock_sock_t fd = accept(s->listen_sock, NULL, NULL);
             if (fd != MOCK_INVALID_SOCKET) {

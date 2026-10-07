@@ -22,7 +22,7 @@ target_include_directories(
 target_link_libraries(
   turbo_media_rtsp
   PUBLIC Salts::CNet CHttp::Client CHttp::Server Salts::Core
-  PRIVATE OpenSSL::Crypto Threads::Threads)
+  PRIVATE turbo_media_cnet_adapter OpenSSL::Crypto Threads::Threads)
 if(WIN32)
   target_link_libraries(turbo_media_rtsp PRIVATE ws2_32)
 endif()
