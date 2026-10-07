@@ -2,7 +2,6 @@
     "version": 6,
     "include": [
         "presets/BuildPresets.json",
-        "presets/TestPresets.json",
         "presets/AndroidPresets.json"
     ],
     "configurePresets": [
@@ -32,6 +31,37 @@
                 "dev-linux-ninja",
                 "pkg-vcpkg"
             ]
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "base-test",
+            "hidden": true,
+            "displayName": "Base Test Preset",
+            "description": "Base configuration for running tests",
+            "filter": {
+                "exclude": {
+                    "label": "benchmark"
+                }
+            },
+            "execution": {
+                "noTestsAction": "error",
+                "stopOnFailure": false
+            },
+            "output": {
+                "outputOnFailure": true
+            }
+        },
+        {
+            "name": "test-release-mac",
+            "displayName": "Release macOS Tests",
+            "inherits": "base-test",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            },
+            "configurePreset": "release-mac-ninja"
         }
     ]
 }
