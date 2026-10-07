@@ -1,6 +1,6 @@
 #include "ivr_worker_http.h"
 
-#include "salts_thread.h"
+#include "cmeta_thread.h"
 
 #include <http_server/http.h>
 #include <salts/error_codes.h>
@@ -42,7 +42,7 @@ struct ivr_worker_http_s {
     ivr_worker_metrics_t *metrics;
     ivr_worker_http_drain_fn drain_callback;
     void *drain_context;
-    salts_mutex_t lock;
+    cmeta_mutex_t lock;
     chttp_server http;
     int http_initialized;
     int state;
@@ -174,10 +174,10 @@ static int handle_drain(void *user,
     void *context = NULL;
     (void)request;
     if (server) {
-        salts_mutex_lock(&server->lock);
+        cmeta_mutex_lock(&server->lock);
         callback = server->drain_callback;
         context = server->drain_context;
-        salts_mutex_unlock(&server->lock);
+        cmeta_mutex_unlock(&server->lock);
     }
     if (!callback || callback(context) != 0) {
         return ivr_worker_http_reply(response, 503u, "application/json",
@@ -220,7 +220,7 @@ int ivr_worker_http_create(ivr_worker_health_t *health,
     if (!server) {
         return -1;
     }
-    salts_mutex_init(&server->lock);
+    cmeta_mutex_init(&server->lock);
     server->health = health;
     server->state = IVR_WORKER_HTTP_STOPPED;
     *out_server = server;
@@ -232,13 +232,13 @@ int ivr_worker_http_set_metrics(ivr_worker_http_t *server,
     if (!server || !metrics) {
         return -1;
     }
-    salts_mutex_lock(&server->lock);
+    cmeta_mutex_lock(&server->lock);
     if (server->state != IVR_WORKER_HTTP_STOPPED) {
-        salts_mutex_unlock(&server->lock);
+        cmeta_mutex_unlock(&server->lock);
         return -1;
     }
     server->metrics = metrics;
-    salts_mutex_unlock(&server->lock);
+    cmeta_mutex_unlock(&server->lock);
     return 0;
 }
 
@@ -248,14 +248,14 @@ int ivr_worker_http_set_drain_handler(ivr_worker_http_t *server,
     if (!server || !callback) {
         return -1;
     }
-    salts_mutex_lock(&server->lock);
+    cmeta_mutex_lock(&server->lock);
     if (server->state != IVR_WORKER_HTTP_STOPPED) {
-        salts_mutex_unlock(&server->lock);
+        cmeta_mutex_unlock(&server->lock);
         return -1;
     }
     server->drain_callback = callback;
     server->drain_context = context;
-    salts_mutex_unlock(&server->lock);
+    cmeta_mutex_unlock(&server->lock);
     return 0;
 }
 
@@ -268,21 +268,21 @@ int ivr_worker_http_start(ivr_worker_http_t *server, const char *host,
         port <= 0 || port > UINT16_MAX) {
         return -1;
     }
-    salts_mutex_lock(&server->lock);
+    cmeta_mutex_lock(&server->lock);
     if (server->state != IVR_WORKER_HTTP_STOPPED ||
         server->http_initialized) {
-        salts_mutex_unlock(&server->lock);
+        cmeta_mutex_unlock(&server->lock);
         return -1;
     }
     server->state = IVR_WORKER_HTTP_STARTING;
-    salts_mutex_unlock(&server->lock);
+    cmeta_mutex_unlock(&server->lock);
 
     config = ivr_worker_http_config(host, (uint16_t)port);
     status = chttp_server_init(&server->http, &config);
     if (status == SALTS_OK) {
-        salts_mutex_lock(&server->lock);
+        cmeta_mutex_lock(&server->lock);
         server->http_initialized = 1;
-        salts_mutex_unlock(&server->lock);
+        cmeta_mutex_unlock(&server->lock);
         status = ivr_worker_http_register_routes(server);
     }
     if (status == SALTS_OK) {
@@ -290,16 +290,16 @@ int ivr_worker_http_start(ivr_worker_http_t *server, const char *host,
     }
     if (status != SALTS_OK) {
         (void)chttp_server_destroy(&server->http);
-        salts_mutex_lock(&server->lock);
+        cmeta_mutex_lock(&server->lock);
         server->http_initialized = 0;
         server->state = IVR_WORKER_HTTP_STOPPED;
-        salts_mutex_unlock(&server->lock);
+        cmeta_mutex_unlock(&server->lock);
         return -1;
     }
 
-    salts_mutex_lock(&server->lock);
+    cmeta_mutex_lock(&server->lock);
     server->state = IVR_WORKER_HTTP_RUNNING;
-    salts_mutex_unlock(&server->lock);
+    cmeta_mutex_unlock(&server->lock);
     return 0;
 }
 
@@ -308,24 +308,24 @@ void ivr_worker_http_stop(ivr_worker_http_t *server) {
     if (!server) {
         return;
     }
-    salts_mutex_lock(&server->lock);
+    cmeta_mutex_lock(&server->lock);
     if (server->state == IVR_WORKER_HTTP_STOPPED) {
-        salts_mutex_unlock(&server->lock);
+        cmeta_mutex_unlock(&server->lock);
         return;
     }
     server->state = IVR_WORKER_HTTP_STOPPING;
     initialized = server->http_initialized;
-    salts_mutex_unlock(&server->lock);
+    cmeta_mutex_unlock(&server->lock);
 
     if (initialized) {
         (void)chttp_server_stop(&server->http, 0u);
         (void)chttp_server_destroy(&server->http);
     }
 
-    salts_mutex_lock(&server->lock);
+    cmeta_mutex_lock(&server->lock);
     server->http_initialized = 0;
     server->state = IVR_WORKER_HTTP_STOPPED;
-    salts_mutex_unlock(&server->lock);
+    cmeta_mutex_unlock(&server->lock);
 }
 
 void ivr_worker_http_destroy(ivr_worker_http_t *server) {
@@ -333,6 +333,6 @@ void ivr_worker_http_destroy(ivr_worker_http_t *server) {
         return;
     }
     ivr_worker_http_stop(server);
-    salts_mutex_destroy(&server->lock);
+    cmeta_mutex_destroy(&server->lock);
     free(server);
 }

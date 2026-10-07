@@ -7,7 +7,7 @@
 #include <platform.h>
 #include <json_parser.h>
 #include <salts/error_codes.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,7 +49,7 @@ enum {
 
 struct room_service_http_api_s {
     room_service_app_server_t *server;
-    salts_mutex_t lifecycle_mutex;
+    cmeta_mutex_t lifecycle_mutex;
     chttp_server http;
     int http_initialized;
     int state;
@@ -5592,7 +5592,7 @@ room_service_http_api_t *room_service_http_api_create(room_service_app_server_t 
         return NULL;
     }
 
-    salts_mutex_init(&api->lifecycle_mutex);
+    cmeta_mutex_init(&api->lifecycle_mutex);
     api->server = server;
     api->state = ROOM_SERVICE_HTTP_STOPPED;
 
@@ -5615,9 +5615,9 @@ int room_service_http_api_start(room_service_http_api_t *api, const char *host, 
         return -1;
     }
 
-    salts_mutex_lock(&api->lifecycle_mutex);
+    cmeta_mutex_lock(&api->lifecycle_mutex);
     if (api->state != ROOM_SERVICE_HTTP_STOPPED || api->http_initialized) {
-        salts_mutex_unlock(&api->lifecycle_mutex);
+        cmeta_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
     api->state = ROOM_SERVICE_HTTP_STARTING;
@@ -5652,17 +5652,17 @@ int room_service_http_api_start(room_service_http_api_t *api, const char *host, 
         }
         if (destroy_status != SALTS_OK) {
             api->state = ROOM_SERVICE_HTTP_STOPPING;
-            salts_mutex_unlock(&api->lifecycle_mutex);
+            cmeta_mutex_unlock(&api->lifecycle_mutex);
             return -1;
         }
         memset(&api->http, 0, sizeof(api->http));
         api->http_initialized = 0;
         api->state = ROOM_SERVICE_HTTP_STOPPED;
-        salts_mutex_unlock(&api->lifecycle_mutex);
+        cmeta_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
     api->state = ROOM_SERVICE_HTTP_RUNNING;
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    cmeta_mutex_unlock(&api->lifecycle_mutex);
     return 0;
 }
 
@@ -5672,9 +5672,9 @@ int room_service_http_api_stop(room_service_http_api_t *api) {
         return 0;
     }
 
-    salts_mutex_lock(&api->lifecycle_mutex);
+    cmeta_mutex_lock(&api->lifecycle_mutex);
     if (api->state == ROOM_SERVICE_HTTP_STOPPED) {
-        salts_mutex_unlock(&api->lifecycle_mutex);
+        cmeta_mutex_unlock(&api->lifecycle_mutex);
         return 0;
     }
     api->state = ROOM_SERVICE_HTTP_STOPPING;
@@ -5682,18 +5682,18 @@ int room_service_http_api_stop(room_service_http_api_t *api) {
         stop_status = chttp_server_stop(&api->http,
                                         ROOM_SERVICE_HTTP_TIMEOUT_MS);
         if (stop_status == SALTS_ETIMEDOUT || stop_status == SALTS_EBUSY) {
-            salts_mutex_unlock(&api->lifecycle_mutex);
+            cmeta_mutex_unlock(&api->lifecycle_mutex);
             return -1;
         }
         if (chttp_server_destroy(&api->http) != SALTS_OK) {
-            salts_mutex_unlock(&api->lifecycle_mutex);
+            cmeta_mutex_unlock(&api->lifecycle_mutex);
             return -1;
         }
         memset(&api->http, 0, sizeof(api->http));
     }
     api->http_initialized = 0;
     api->state = ROOM_SERVICE_HTTP_STOPPED;
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    cmeta_mutex_unlock(&api->lifecycle_mutex);
     return stop_status == SALTS_OK || stop_status == SALTS_EALREADY ? 0 : -1;
 }
 
@@ -5711,7 +5711,7 @@ int room_service_http_api_destroy(room_service_http_api_t *api) {
     if (g_room_service_server == api->server) {
         g_room_service_server = NULL;
     }
-    salts_mutex_destroy(&api->lifecycle_mutex);
+    cmeta_mutex_destroy(&api->lifecycle_mutex);
     free(api);
     return 0;
 }

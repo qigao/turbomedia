@@ -146,7 +146,7 @@ struct sip_subscribe_t* sip_subscribe_internal_create(struct sip_agent_t* sip, c
 	subscribe = sip_subscribe_create(event);
 	if (!subscribe)
 	{
-		salts_mutex_unlock(&sip->locker);
+		cmeta_mutex_unlock(&sip->locker);
 		return NULL; // exist
 	}
 

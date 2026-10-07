@@ -6,8 +6,8 @@
 #include <http_server/http.h>
 #include <json_parser.h>
 #include <salts/error_codes.h>
-#include <salts/random.h>
-#include <salts_thread.h>
+#include <platform.h>
+#include <cmeta_thread.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -79,7 +79,7 @@ typedef struct Res {
 
 struct sfu_node_http_api_s {
     sfu_node_app_server_t *server;
-    salts_mutex_t lifecycle_mutex;
+    cmeta_mutex_t lifecycle_mutex;
     chttp_server http;
     int http_initialized;
     int state;
@@ -534,7 +534,8 @@ static int generate_media_session_id(char output[TURBO_PARTICIPANT_ID_MAX]) {
     uint8_t random_bytes[16];
 
     if (!output ||
-        salts_platform_secure_random(random_bytes, sizeof(random_bytes)) != 0) {
+        cmeta_secure_random(random_bytes, sizeof(random_bytes)) !=
+            SALTS_OK) {
         return -1;
     }
     for (size_t i = 0; i < sizeof(random_bytes); ++i) {
@@ -2294,7 +2295,7 @@ sfu_node_http_api_t *sfu_node_http_api_create(sfu_node_app_server_t *server) {
         return NULL;
     }
 
-    salts_mutex_init(&api->lifecycle_mutex);
+    cmeta_mutex_init(&api->lifecycle_mutex);
     api->server = server;
     api->state = SFU_NODE_HTTP_STOPPED;
     return api;
@@ -2312,13 +2313,13 @@ int sfu_node_http_api_start(sfu_node_http_api_t *api, const char *host, int port
         return -1;
     }
 
-    salts_mutex_lock(&api->lifecycle_mutex);
+    cmeta_mutex_lock(&api->lifecycle_mutex);
     if (api->state != SFU_NODE_HTTP_STOPPED || api->http_initialized) {
-        salts_mutex_unlock(&api->lifecycle_mutex);
+        cmeta_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
     api->state = SFU_NODE_HTTP_STARTING;
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    cmeta_mutex_unlock(&api->lifecycle_mutex);
 
     app_config = sfu_node_app_server_get_config(api->server);
     memset(&tls, 0, sizeof(tls));
@@ -2333,9 +2334,9 @@ int sfu_node_http_api_start(sfu_node_http_api_t *api, const char *host, int port
         app_config && app_config->use_tls ? &tls : NULL);
     status = chttp_server_init(&api->http, &config);
     if (status == SALTS_OK) {
-        salts_mutex_lock(&api->lifecycle_mutex);
+        cmeta_mutex_lock(&api->lifecycle_mutex);
         api->http_initialized = 1;
-        salts_mutex_unlock(&api->lifecycle_mutex);
+        cmeta_mutex_unlock(&api->lifecycle_mutex);
         status = sfu_node_http_register_routes(api);
     }
     if (status == SALTS_OK) {
@@ -2343,15 +2344,15 @@ int sfu_node_http_api_start(sfu_node_http_api_t *api, const char *host, int port
     }
     if (status != SALTS_OK) {
         (void)chttp_server_destroy(&api->http);
-        salts_mutex_lock(&api->lifecycle_mutex);
+        cmeta_mutex_lock(&api->lifecycle_mutex);
         api->http_initialized = 0;
         api->state = SFU_NODE_HTTP_STOPPED;
-        salts_mutex_unlock(&api->lifecycle_mutex);
+        cmeta_mutex_unlock(&api->lifecycle_mutex);
         return -1;
     }
-    salts_mutex_lock(&api->lifecycle_mutex);
+    cmeta_mutex_lock(&api->lifecycle_mutex);
     api->state = SFU_NODE_HTTP_RUNNING;
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    cmeta_mutex_unlock(&api->lifecycle_mutex);
     return 0;
 }
 
@@ -2362,23 +2363,23 @@ void sfu_node_http_api_stop(sfu_node_http_api_t *api) {
         return;
     }
 
-    salts_mutex_lock(&api->lifecycle_mutex);
+    cmeta_mutex_lock(&api->lifecycle_mutex);
     if (api->state == SFU_NODE_HTTP_STOPPED) {
-        salts_mutex_unlock(&api->lifecycle_mutex);
+        cmeta_mutex_unlock(&api->lifecycle_mutex);
         return;
     }
     api->state = SFU_NODE_HTTP_STOPPING;
     initialized = api->http_initialized;
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    cmeta_mutex_unlock(&api->lifecycle_mutex);
 
     if (initialized) {
         (void)chttp_server_stop(&api->http, 0u);
         (void)chttp_server_destroy(&api->http);
     }
-    salts_mutex_lock(&api->lifecycle_mutex);
+    cmeta_mutex_lock(&api->lifecycle_mutex);
     api->http_initialized = 0;
     api->state = SFU_NODE_HTTP_STOPPED;
-    salts_mutex_unlock(&api->lifecycle_mutex);
+    cmeta_mutex_unlock(&api->lifecycle_mutex);
 }
 
 void sfu_node_http_api_destroy(sfu_node_http_api_t *api) {
@@ -2387,6 +2388,6 @@ void sfu_node_http_api_destroy(sfu_node_http_api_t *api) {
     }
 
     sfu_node_http_api_stop(api);
-    salts_mutex_destroy(&api->lifecycle_mutex);
+    cmeta_mutex_destroy(&api->lifecycle_mutex);
     free(api);
 }

@@ -26,10 +26,10 @@
 #include "ivr_worker_http.h"
 #include "ivr_worker_control.h"
 #include "ivr_worker_metrics.h"
-#include "turbomedia_ivr_v1.h"
+#include "turbomedia_ivr_v2.h"
 #include "disruptor.h"
 #include "platform.h"
-#include "salts_uuid.h"
+#include "cmeta_uuid.h"
 #include "../config_toml.h"
 #include <signal.h>
 #include <errno.h>
@@ -537,7 +537,7 @@ static ivr_status_t enqueue_media_event_copy(
 
 static void metrics_observe_elapsed(ivr_worker_histogram_kind_t kind,
                                     uint64_t started_at_ms) {
-    uint64_t finished_at_ms = salts_monotonic_ms();
+    uint64_t finished_at_ms = cmeta_monotonic_ms();
     ivr_worker_metrics_observe_ms(
         &g_metrics, kind,
         finished_at_ms >= started_at_ms ? finished_at_ms - started_at_ms : 0);
@@ -545,7 +545,7 @@ static void metrics_observe_elapsed(ivr_worker_histogram_kind_t kind,
 
 static uint64_t worker_now_ms(void *context) {
     (void)context;
-    return salts_monotonic_ms();
+    return cmeta_monotonic_ms();
 }
 
 static void management_http_stop(void) {
@@ -662,7 +662,7 @@ static ivr_status_t send_worker_heartbeat(const char *message_id) {
 static DataBind *ensure_codec(void) {
     if (!g_codec) {
         DataBindError err = DATA_BIND_ERROR_INIT;
-        if (TurboMediaIvrV1_codec_create(&g_codec, &err) != DATA_BIND_OK) {
+        if (TurboMediaIvrV2_codec_create(&g_codec, &err) != DATA_BIND_OK) {
             g_codec = NULL;
         }
     }
@@ -1659,7 +1659,7 @@ static void handle_reply(const uint8_t *frame, size_t len) {
             return;
         }
         {
-            uint64_t received_at_ms = salts_monotonic_ms();
+            uint64_t received_at_ms = cmeta_monotonic_ms();
             ivr_status_t rc = execute_media_command(&command, received_at_ms);
             const char *error_code = rc == IVR_OK ? "" : media_error_code(rc);
             const char *error_message =
@@ -2012,7 +2012,7 @@ static void process_media_events(void) {
         if (g_gateway &&
             ivr_control_gateway_send_media_event(
                 g_gateway, g_config.worker_id, &event,
-                salts_monotonic_ms()) != IVR_OK) {
+                cmeta_monotonic_ms()) != IVR_OK) {
             fprintf(stderr,
                     "ivr_worker: media event send failed session=%s type=%s\n",
                     entry->provider_session_id, entry->event_type);
@@ -2384,9 +2384,9 @@ int main(int argc, char **argv) {
     }
     print_config();
 
-    salts_uuid_t instance_uuid;
-    if (salts_uuid_v4_generate(&instance_uuid) != SALTS_OK ||
-        salts_uuid_format(&instance_uuid, g_instance_id,
+    cmeta_uuid_t instance_uuid;
+    if (cmeta_uuid_v4_generate(&instance_uuid) != SALTS_OK ||
+        cmeta_uuid_format(&instance_uuid, g_instance_id,
                           sizeof(g_instance_id)) != SALTS_OK) {
         fprintf(stderr, "ivr_worker: instance UUID generation failed\n");
         return 1;
@@ -2605,7 +2605,7 @@ int main(int argc, char **argv) {
     uint64_t heartbeat_sequence = 0;
     uint64_t health_revocation_sequence = 0;
     uint64_t next_heartbeat_ms =
-        salts_monotonic_ms() + g_config.heartbeat_ms;
+        cmeta_monotonic_ms() + g_config.heartbeat_ms;
     int ticks = 0;
     while (atomic_load_explicit(&g_running, memory_order_acquire) &&
            !g_signal_stop) {
@@ -2653,7 +2653,7 @@ int main(int argc, char **argv) {
             }
         }
         if (g_synced && command_connected &&
-            salts_monotonic_ms() >= next_heartbeat_ms) {
+            cmeta_monotonic_ms() >= next_heartbeat_ms) {
             char mid[64];
             snprintf(mid, sizeof(mid), "heartbeat-%llu",
                      (unsigned long long)++heartbeat_sequence);
@@ -2670,7 +2670,7 @@ int main(int argc, char **argv) {
                        (unsigned long long)g_config.timeout_ms);
             }
             next_heartbeat_ms =
-                salts_monotonic_ms() + g_config.heartbeat_ms;
+                cmeta_monotonic_ms() + g_config.heartbeat_ms;
         }
     }
 

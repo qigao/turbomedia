@@ -13,7 +13,7 @@
 #include "mpeg4-hevc.h"
 #include "mpeg4-vvc.h"
 #include "mov-format.h"
-#include "salts_fs.h"
+#include "cmeta_fs.h"
 #include <tstr.h>
 #include <vstr.h>
 
@@ -77,7 +77,7 @@ typedef struct {
 
 static int hls_make_path(const hls_streamer_ctx_t *ctx, const char *name,
                          char path[SALTS_FS_MAX_PATH]) {
-    return salts_fs_path_join(path, SALTS_FS_MAX_PATH, ctx->output_dir, name);
+    return cmeta_fs_path_join(path, SALTS_FS_MAX_PATH, ctx->output_dir, name);
 }
 
 static tstr hls_make_url(const hls_streamer_ctx_t *ctx, const char *name) {
@@ -100,11 +100,11 @@ static tstr hls_make_url(const hls_streamer_ctx_t *ctx, const char *name) {
 
 static int hls_write_file(const hls_streamer_ctx_t *ctx, const char *name,
                           const void *data, size_t bytes, char path[SALTS_FS_MAX_PATH]) {
-    salts_fs_buf_t buffer;
+    cmeta_fs_buf_t buffer;
 
     if (hls_make_path(ctx, name, path) != 0) return -ENAMETOOLONG;
-    buffer = salts_fs_buf_init((char *)data, bytes);
-    return salts_fs_write_file(path, &buffer);
+    buffer = cmeta_fs_buf_init((char *)data, bytes);
+    return cmeta_fs_write_file(path, &buffer);
 }
 
 static int hls_upload_file(const hls_streamer_ctx_t *ctx, const char *name,
@@ -368,11 +368,11 @@ static void *hls_streamer_create(const turbo_streamer_config_t *config) {
         return NULL;
     }
 
-    if (salts_fs_access(config->output_dir, SALTS_FS_ACCESS_EXISTS) != 0 &&
-        salts_fs_mkdir(config->output_dir, 0755) != 0) {
+    if (cmeta_fs_access(config->output_dir, SALTS_FS_ACCESS_EXISTS) != 0 &&
+        cmeta_fs_mkdir(config->output_dir, 0755) != 0) {
         return NULL;
     }
-    if (salts_fs_access(config->output_dir, SALTS_FS_ACCESS_WRITE) != 0) return NULL;
+    if (cmeta_fs_access(config->output_dir, SALTS_FS_ACCESS_WRITE) != 0) return NULL;
 
     ctx = (hls_streamer_ctx_t *)calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;

@@ -14,7 +14,7 @@
 - 同 ABI、同构建类型的 Salts 和 SaltsUtils Android 安装 profile 已生成；
   Windows-host presets 通过 `SALTS_ROOT` 和 `SALTS_UTILS_ROOT` 使用精确安装根。
 - 交叉构建使用的 `SALTS_UTILS_HOST_ROOT` 已提供与当前源码版本匹配的
-  host `tbe_compiler`。
+  host `salts-idlc`。
 - 构建通用 transport 组件时，同 ABI、同构建类型的 TurboNet Android build tree 也应已生成。
 - Android preset 与 vcpkg 官方 Android triplet 统一使用 API 28（Android 9）。
 - 设备 ABI 与 preset 一致。默认 preset 构建 `arm64-v8a`。

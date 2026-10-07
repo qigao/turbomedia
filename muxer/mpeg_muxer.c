@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <salts_error.h>
+#include <cmeta_error.h>
 #include <vstr.h>
 
 enum { MPEG_AVIO_BUFFER_SIZE = 32 * 1024 };

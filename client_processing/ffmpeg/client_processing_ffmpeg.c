@@ -320,9 +320,9 @@ turbo_client_processing_transform_frame(
         processing->converted_frame->pts = processing->next_pts;
     }
     processing->next_pts = processing->converted_frame->pts + 1;
-    salts_mutex_lock(&processing->frame_mutex);
+    cmeta_mutex_lock(&processing->frame_mutex);
     processing->admitted_frames++;
-    salts_mutex_unlock(&processing->frame_mutex);
+    cmeta_mutex_unlock(&processing->frame_mutex);
 
     return turbo_client_processing_encode_frame(
         processing, processing->converted_frame);

@@ -76,11 +76,11 @@ int main(int argc, char *argv[]) {
     TLOG_INFO("Press Ctrl+C to stop...");
 
     /* CHTTP owns its network thread; this loop only reports status. */
-    uint64_t last_check = salts_monotonic_ms();
+    uint64_t last_check = cmeta_monotonic_ms();
     while (g_running) {
         uint64_t now;
-        salts_sleep_ms(100);
-        now = salts_monotonic_ms();
+        cmeta_sleep_ms(100);
+        now = cmeta_monotonic_ms();
         if (now - last_check >= SIGNALING_SERVER_STATUS_INTERVAL_MS) {
             int peer_count = webrtc_signaling_get_peer_count(g_server);
             TLOG_INFOF("Active peers: {}", peer_count);

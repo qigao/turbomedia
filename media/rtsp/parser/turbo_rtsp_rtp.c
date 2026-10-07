@@ -4069,7 +4069,7 @@ static int turbo_rtsp_rtp_udp_pair_send(
     uint64_t timeout_ms,
     const uint8_t *packet,
     size_t packet_len) {
-    const uint64_t started_ms = salts_monotonic_ms();
+    const uint64_t started_ms = cmeta_monotonic_ms();
     uint64_t tag;
     int status;
 
@@ -4087,7 +4087,7 @@ static int turbo_rtsp_rtp_udp_pair_send(
     status = cnet_datagram_send(
         &channel->socket, &channel->peer, packet, packet_len, tag);
     while (status == SALTS_OK && !channel->send_done) {
-        const uint64_t elapsed_ms = salts_monotonic_ms() - started_ms;
+        const uint64_t elapsed_ms = cmeta_monotonic_ms() - started_ms;
         size_t events = 0;
         uint32_t wait_ms;
         if (elapsed_ms >= timeout_ms) {
@@ -4135,7 +4135,7 @@ static int turbo_rtsp_rtp_udp_pair_recv(
     uint8_t *buffer,
     size_t buffer_size,
     size_t *packet_len) {
-    const uint64_t started_ms = salts_monotonic_ms();
+    const uint64_t started_ms = cmeta_monotonic_ms();
     int status;
 
     if (!channel || !channel->initialized || !buffer || buffer_size == 0 || !packet_len) {
@@ -4149,7 +4149,7 @@ static int turbo_rtsp_rtp_udp_pair_recv(
     channel->receive_status = SALTS_EIO;
     status = cnet_datagram_receive(&channel->socket, 1u);
     while (status == SALTS_OK && !channel->receive_done) {
-        const uint64_t elapsed_ms = salts_monotonic_ms() - started_ms;
+        const uint64_t elapsed_ms = cmeta_monotonic_ms() - started_ms;
         size_t events = 0;
         uint32_t wait_ms;
         if (elapsed_ms >= timeout_ms) {

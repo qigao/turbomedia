@@ -22,7 +22,7 @@ struct sip_uas_transaction_t* sip_uas_transaction_create(struct sip_agent_t* sip
 	t->ref = 1; // for agent uac link, don't destory it
 	t->agent = sip;
 	t->initparam = param;
-	salts_mutex_init(&t->locker);
+	cmeta_mutex_init(&t->locker);
 	t->status = SIP_UAS_TRANSACTION_INIT;
 
 	// 17.1.1.1 Overview of INVITE Transaction (p125)
@@ -79,7 +79,7 @@ int sip_uas_transaction_release(struct sip_uas_transaction_t* t)
         t->dialog = NULL;
     }
     
-	salts_mutex_destroy(&t->locker);
+	cmeta_mutex_destroy(&t->locker);
 	free(t);
 	sip_atomic_decrement(&s_gc.uas);
 	return 0;
@@ -199,7 +199,7 @@ void sip_uas_transaction_ontimeout(void* usrptr)
 	vstr id;
 	struct sip_uas_transaction_t* t;
 	t = (struct sip_uas_transaction_t*)usrptr;
-	salts_mutex_lock(&t->locker);
+	cmeta_mutex_lock(&t->locker);
 	sip_uas_stop_timer(t->agent, t, &t->timerh); // hijack free timer only, don't release transaction
 
 	if (t->status < SIP_UAS_TRANSACTION_CONFIRMED)
@@ -218,7 +218,7 @@ void sip_uas_transaction_ontimeout(void* usrptr)
 		}
 	}
 
-	salts_mutex_unlock(&t->locker);
+	cmeta_mutex_unlock(&t->locker);
 	sip_uas_transaction_release(t);
 }
 
@@ -227,11 +227,11 @@ static void sip_uas_transaction_onterminated(void* usrptr)
 	struct sip_uas_transaction_t* t;
 	t = (struct sip_uas_transaction_t*)usrptr;
 
-	salts_mutex_lock(&t->locker);
+	cmeta_mutex_lock(&t->locker);
 	sip_uas_stop_timer(t->agent, t, &t->timerij); // hijack free timer only, don't release transaction
 	if(SIP_UAS_TRANSACTION_TERMINATED != t->status)
 		sip_uas_transaction_terminated(t);
-	salts_mutex_unlock(&t->locker);
+	cmeta_mutex_unlock(&t->locker);
 	sip_uas_transaction_release(t);
 }
 

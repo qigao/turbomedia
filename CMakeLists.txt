@@ -45,32 +45,22 @@ include(CmakeUtils)
 enable_testing()
 
 function(turbo_media_find_idlc output_variable)
-  if(SaltsUtils_IDLC_EXECUTABLE)
-    if(NOT EXISTS "${SaltsUtils_IDLC_EXECUTABLE}")
-      message(FATAL_ERROR
-              "SaltsUtils_IDLC_EXECUTABLE does not exist: ${SaltsUtils_IDLC_EXECUTABLE}")
-    endif()
-    set(${output_variable} "${SaltsUtils_IDLC_EXECUTABLE}" PARENT_SCOPE)
-    return()
+  if(CMAKE_CROSSCOMPILING)
+    set(_turbomedia_idlc_root_name SALTS_UTILS_HOST_ROOT)
+  else()
+    set(_turbomedia_idlc_root_name SALTS_UTILS_ROOT)
   endif()
-
-  set(_turbomedia_idlc_hints)
-  if(DEFINED SaltsUtils_IDLC_HINT AND
-     NOT "${SaltsUtils_IDLC_HINT}" STREQUAL "")
-    list(APPEND _turbomedia_idlc_hints "${SaltsUtils_IDLC_HINT}")
+  if(NOT DEFINED ENV{${_turbomedia_idlc_root_name}} OR
+     NOT IS_DIRECTORY "$ENV{${_turbomedia_idlc_root_name}}")
+    message(FATAL_ERROR
+      "${_turbomedia_idlc_root_name} must name the host SaltsUtils SDK")
   endif()
-  if(CMAKE_CROSSCOMPILING AND DEFINED ENV{SALTS_UTILS_HOST_ROOT} AND
-     NOT "$ENV{SALTS_UTILS_HOST_ROOT}" STREQUAL "")
-    list(APPEND _turbomedia_idlc_hints "$ENV{SALTS_UTILS_HOST_ROOT}/bin")
-  elseif(DEFINED ENV{SALTS_UTILS_ROOT} AND
-         NOT "$ENV{SALTS_UTILS_ROOT}" STREQUAL "")
-    list(APPEND _turbomedia_idlc_hints "$ENV{SALTS_UTILS_ROOT}/bin")
-  endif()
-
-  find_program(${output_variable}
-               NAMES salts-idlc salts-idlc.exe
-               HINTS ${_turbomedia_idlc_hints}
-               NO_DEFAULT_PATH REQUIRED)
+  # A previous configure must not retain a compiler from a different SDK.
+  unset(${output_variable} CACHE)
+  unset(${output_variable})
+  find_program(${output_variable} NAMES salts-idlc
+               PATHS "$ENV{${_turbomedia_idlc_root_name}}/bin"
+               NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH REQUIRED)
   set(${output_variable} "${${output_variable}}" PARENT_SCOPE)
 endfunction()
 
@@ -107,6 +97,19 @@ add_subdirectory(tools)
 include(FindTools)
 
 find_package(Threads REQUIRED)
+foreach(_turbomedia_package IN ITEMS Salts SaltsUtils)
+  if(_turbomedia_package STREQUAL "Salts")
+    set(_turbomedia_root SALTS_ROOT)
+  else()
+    set(_turbomedia_root SALTS_UTILS_ROOT)
+  endif()
+  if(NOT DEFINED ENV{${_turbomedia_root}} OR
+     NOT IS_DIRECTORY "$ENV{${_turbomedia_root}}")
+    message(FATAL_ERROR "${_turbomedia_root} must name the installed SDK")
+  endif()
+  unset(${_turbomedia_package}_DIR CACHE)
+  unset(${_turbomedia_package}_DIR)
+endforeach()
 find_package(Salts CONFIG REQUIRED
              PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 find_package(SaltsUtils CONFIG REQUIRED
@@ -117,6 +120,12 @@ if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
 endif()
 find_package(SaltsNet CONFIG REQUIRED
              PATHS "$ENV{SALTSNET_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+if(NOT DEFINED ENV{CHTTP_ROOT} OR
+   NOT IS_DIRECTORY "$ENV{CHTTP_ROOT}")
+  message(FATAL_ERROR "CHTTP_ROOT must name the installed Chttp SDK")
+endif()
+unset(Chttp_DIR CACHE)
+unset(Chttp_DIR)
 find_package(Chttp CONFIG REQUIRED
              PATHS "$ENV{CHTTP_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(NOT TARGET CHttp::Client OR NOT TARGET CHttp::Server)

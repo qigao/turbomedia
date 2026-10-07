@@ -22,7 +22,7 @@ struct turbo_rtc_capture_source_s {
 
     salts_capture_t *capture;
 
-    salts_mutex_t lock;
+    cmeta_mutex_t lock;
     int lock_initialized;
     int accepting;
     int queue_overflowed;
@@ -124,9 +124,9 @@ static void capture_source_on_audio(
         return;
     }
 
-    salts_mutex_lock(&source->lock);
+    cmeta_mutex_lock(&source->lock);
     if (!source->accepting) {
-        salts_mutex_unlock(&source->lock);
+        cmeta_mutex_unlock(&source->lock);
         return;
     }
 
@@ -141,7 +141,7 @@ static void capture_source_on_audio(
             source->frames_rejected++;
             source->frame_error = 1;
             source->accepting = 0;
-            salts_mutex_unlock(&source->lock);
+            cmeta_mutex_unlock(&source->lock);
             return;
         }
     }
@@ -150,7 +150,7 @@ static void capture_source_on_audio(
         source->frames_rejected++;
         source->queue_overflowed = 1;
         source->accepting = 0;
-        salts_mutex_unlock(&source->lock);
+        cmeta_mutex_unlock(&source->lock);
         return;
     }
 
@@ -167,7 +167,7 @@ static void capture_source_on_audio(
     if (source->queue_bytes > source->queue_bytes_high_water) {
         source->queue_bytes_high_water = source->queue_bytes;
     }
-    salts_mutex_unlock(&source->lock);
+    cmeta_mutex_unlock(&source->lock);
 }
 
 void turbo_rtc_capture_source_config_init(
@@ -248,7 +248,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_create(
     source->max_frame_bytes = config->max_frame_bytes;
     source->state = TURBO_RTC_CAPTURE_SOURCE_CREATED;
 
-    salts_mutex_init(&source->lock);
+    cmeta_mutex_init(&source->lock);
     source->lock_initialized = 1;
 
     *out_source = source;
@@ -297,15 +297,15 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_start(
         return TURBO_RTC_CLIENT_ESTATE;
     }
 
-    salts_mutex_lock(&source->lock);
+    cmeta_mutex_lock(&source->lock);
     capture_source_reset_queue_locked(source);
     source->accepting = 1;
-    salts_mutex_unlock(&source->lock);
+    cmeta_mutex_unlock(&source->lock);
 
     if (salts_capture_start(source->capture) != SALTS_CAPTURE_OK) {
-        salts_mutex_lock(&source->lock);
+        cmeta_mutex_lock(&source->lock);
         source->accepting = 0;
-        salts_mutex_unlock(&source->lock);
+        cmeta_mutex_unlock(&source->lock);
         source->state = TURBO_RTC_CAPTURE_SOURCE_FAILED;
         return TURBO_RTC_CLIENT_EIO;
     }
@@ -331,9 +331,9 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
      * continue producing concurrently; newly queued frames wait for the next
      * owner iteration so media draining cannot starve PeerConnection polling.
      */
-    salts_mutex_lock(&source->lock);
+    cmeta_mutex_lock(&source->lock);
     budget = source->queue_count;
-    salts_mutex_unlock(&source->lock);
+    cmeta_mutex_unlock(&source->lock);
 
     while (budget-- != 0u) {
         size_t length;
@@ -342,18 +342,18 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
         int overflowed;
         int frame_error;
 
-        salts_mutex_lock(&source->lock);
+        cmeta_mutex_lock(&source->lock);
         overflowed = source->queue_overflowed;
         frame_error = source->frame_error;
         if (overflowed || frame_error) {
             source->accepting = 0;
-            salts_mutex_unlock(&source->lock);
+            cmeta_mutex_unlock(&source->lock);
             source->state = TURBO_RTC_CAPTURE_SOURCE_FAILED;
             return overflowed ? TURBO_RTC_CLIENT_EQUEUE
                               : TURBO_RTC_CLIENT_EIO;
         }
         if (source->queue_count == 0u) {
-            salts_mutex_unlock(&source->lock);
+            cmeta_mutex_unlock(&source->lock);
             return TURBO_RTC_CLIENT_OK;
         }
 
@@ -361,7 +361,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
         slot_offset = source->queue_head * source->max_frame_bytes;
         memcpy(source->delivery_buffer,
                source->frame_storage + slot_offset, length);
-        salts_mutex_unlock(&source->lock);
+        cmeta_mutex_unlock(&source->lock);
 
         status = turbo_rtc_client_send_audio(
             client, source->delivery_buffer, length);
@@ -373,10 +373,10 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
             return status;
         }
         if (status != TURBO_RTC_CLIENT_OK) {
-            salts_mutex_lock(&source->lock);
+            cmeta_mutex_lock(&source->lock);
             source->accepting = 0;
             source->frames_rejected++;
-            salts_mutex_unlock(&source->lock);
+            cmeta_mutex_unlock(&source->lock);
             source->state = TURBO_RTC_CAPTURE_SOURCE_FAILED;
             return status;
         }
@@ -385,7 +385,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
          * Dequeue only after RTCClient accepted the exact frame. ESTATE leaves
          * queue_head untouched; overflow never evicts old PCM.
          */
-        salts_mutex_lock(&source->lock);
+        cmeta_mutex_lock(&source->lock);
         source->queue_head =
             (source->queue_head + 1u) % source->frame_queue_capacity;
         source->queue_count--;
@@ -396,7 +396,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_poll(
         if (overflowed || frame_error) {
             source->accepting = 0;
         }
-        salts_mutex_unlock(&source->lock);
+        cmeta_mutex_unlock(&source->lock);
 
         if (overflowed || frame_error) {
             source->state = TURBO_RTC_CAPTURE_SOURCE_FAILED;
@@ -420,15 +420,15 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_stop(
         return TURBO_RTC_CLIENT_ESTATE;
     }
 
-    salts_mutex_lock(&source->lock);
+    cmeta_mutex_lock(&source->lock);
     source->accepting = 0;
-    salts_mutex_unlock(&source->lock);
+    cmeta_mutex_unlock(&source->lock);
 
     salts_capture_stop(source->capture);
 
-    salts_mutex_lock(&source->lock);
+    cmeta_mutex_lock(&source->lock);
     capture_source_reset_queue_locked(source);
-    salts_mutex_unlock(&source->lock);
+    cmeta_mutex_unlock(&source->lock);
 
     capture_state = salts_capture_get_state(source->capture);
     if (capture_state == SALTS_CAPTURE_STATE_RUNNING ||
@@ -455,7 +455,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_snapshot(
     mutable_source = (turbo_rtc_capture_source_t *)source;
     snapshot->state = source->state;
 
-    salts_mutex_lock(&mutable_source->lock);
+    cmeta_mutex_lock(&mutable_source->lock);
     snapshot->frames_captured = source->frames_captured;
     snapshot->frames_sent = source->frames_sent;
     snapshot->frames_rejected = source->frames_rejected;
@@ -464,7 +464,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_snapshot(
     snapshot->queue_bytes = (uint64_t)source->queue_bytes;
     snapshot->queue_bytes_high_water =
         (uint64_t)source->queue_bytes_high_water;
-    salts_mutex_unlock(&mutable_source->lock);
+    cmeta_mutex_unlock(&mutable_source->lock);
     return TURBO_RTC_CLIENT_OK;
 }
 
@@ -492,7 +492,7 @@ turbo_rtc_client_status_t turbo_rtc_capture_source_destroy(
     }
 
     if (source->lock_initialized) {
-        salts_mutex_destroy(&source->lock);
+        cmeta_mutex_destroy(&source->lock);
         source->lock_initialized = 0;
     }
     free(source->frame_lengths);

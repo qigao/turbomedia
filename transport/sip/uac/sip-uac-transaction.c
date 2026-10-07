@@ -14,7 +14,7 @@ struct sip_uac_transaction_t* sip_uac_transaction_create(struct sip_agent_t* sip
 	t->ref = 1;
 	t->req = req; 
 	t->agent = sip;
-	salts_mutex_init(&t->locker);
+	cmeta_mutex_init(&t->locker);
 	t->status = SIP_UAC_TRANSACTION_CALLING;
 
 	// 17.1.1.1 Overview of INVITE Transaction (p125)
@@ -48,7 +48,7 @@ int sip_uac_transaction_release(struct sip_uac_transaction_t* t)
 	sip_dialog_release(t->dialog);
 	assert(NULL == t->onhandle);
 	sip_message_destroy(t->req);
-	salts_mutex_destroy(&t->locker);
+	cmeta_mutex_destroy(&t->locker);
 	free(t);
 	sip_atomic_decrement(&s_gc.uac);
 	return 0;
@@ -81,7 +81,7 @@ static void sip_uac_transaction_onretransmission(void* usrptr)
 	struct sip_uac_transaction_t* t;
 	t = (struct sip_uac_transaction_t*)usrptr;
 
-	salts_mutex_lock(&t->locker);
+	cmeta_mutex_lock(&t->locker);
 	sip_uac_stop_timer(t->agent, t, &t->timera); // hijack free timer only, don't release transaction
 
 	if (SIP_UAC_TRANSACTION_CALLING == t->status || (t->status <= SIP_UAC_TRANSACTION_PROCEEDING && !sip_message_isinvite(t->req)))
@@ -101,7 +101,7 @@ static void sip_uac_transaction_onretransmission(void* usrptr)
 		timeout = T1 * (1 << t->retries++);
 		t->timera = sip_uac_start_timer(t->agent, t, sip_int_min(t->t2, sip_int_max(T1, timeout)), sip_uac_transaction_onretransmission);
 	}
-	salts_mutex_unlock(&t->locker);
+	cmeta_mutex_unlock(&t->locker);
 
 	sip_uac_transaction_release(t);
 }
@@ -123,7 +123,7 @@ static void sip_uac_transaction_ontimeout(void* usrptr)
 	struct sip_uac_transaction_t* t;
 	t = (struct sip_uac_transaction_t*)usrptr;
 	
-	salts_mutex_lock(&t->locker);
+	cmeta_mutex_lock(&t->locker);
 	sip_uac_stop_timer(t->agent, t, &t->timerb); // hijack free timer only, don't release transaction
 
 	//if (SIP_UAC_TRANSACTION_CALLING == t->status || (t->status <= SIP_UAC_TRANSACTION_PROCEEDING && !sip_message_isinvite(&t->req)))
@@ -150,7 +150,7 @@ static void sip_uac_transaction_ontimeout(void* usrptr)
 			t->onhandle = NULL;
 		}
 	}
-	salts_mutex_unlock(&t->locker);
+	cmeta_mutex_unlock(&t->locker);
 	sip_uac_transaction_release(t);
 }
 
@@ -158,10 +158,10 @@ static void sip_uac_transaction_onterminate(void* usrptr)
 {
 	struct sip_uac_transaction_t* t;
 	t = (struct sip_uac_transaction_t*)usrptr;
-	salts_mutex_lock(&t->locker);
+	cmeta_mutex_lock(&t->locker);
 	if (SIP_UAC_TRANSACTION_TERMINATED != t->status)
 		sip_uac_transaction_terminate(t);
-	salts_mutex_unlock(&t->locker);
+	cmeta_mutex_unlock(&t->locker);
 	sip_uac_transaction_release(t);
 }
 

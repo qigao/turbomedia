@@ -30,7 +30,7 @@ int ivr_worker_health_init(ivr_worker_health_t *health,
         return -1;
     }
     memset(health, 0, sizeof(*health));
-    salts_mutex_init(&health->mutex);
+    cmeta_mutex_init(&health->mutex);
     health->value.generation = 1;
     health->value.max_sessions = max_sessions;
     copy_text(health->value.reason, sizeof(health->value.reason),
@@ -42,7 +42,7 @@ void ivr_worker_health_destroy(ivr_worker_health_t *health) {
     if (!health) {
         return;
     }
-    salts_mutex_destroy(&health->mutex);
+    cmeta_mutex_destroy(&health->mutex);
     memset(health, 0, sizeof(*health));
 }
 
@@ -55,16 +55,16 @@ int ivr_worker_health_update(ivr_worker_health_t *health,
         value->generation == 0) {
         return -1;
     }
-    salts_mutex_lock(&health->mutex);
+    cmeta_mutex_lock(&health->mutex);
     if (value->generation != health->value.generation) {
-        salts_mutex_unlock(&health->mutex);
+        cmeta_mutex_unlock(&health->mutex);
         return -1;
     }
     next = *value;
     next.ready = readiness_conditions_met(value);
     if (next.ready != health->value.ready) {
         if (health->value.generation == UINT64_MAX) {
-            salts_mutex_unlock(&health->mutex);
+            cmeta_mutex_unlock(&health->mutex);
             return -1;
         }
         next.generation = health->value.generation + 1;
@@ -72,7 +72,7 @@ int ivr_worker_health_update(ivr_worker_health_t *health,
     health->value = next;
     health->value.capabilities[sizeof(health->value.capabilities) - 1] = '\0';
     health->value.reason[sizeof(health->value.reason) - 1] = '\0';
-    salts_mutex_unlock(&health->mutex);
+    cmeta_mutex_unlock(&health->mutex);
     return 0;
 }
 
@@ -81,9 +81,9 @@ int ivr_worker_health_snapshot(const ivr_worker_health_t *health,
     if (!health || !out) {
         return -1;
     }
-    salts_mutex_lock((salts_mutex_t *)&health->mutex);
+    cmeta_mutex_lock((cmeta_mutex_t *)&health->mutex);
     *out = health->value;
-    salts_mutex_unlock((salts_mutex_t *)&health->mutex);
+    cmeta_mutex_unlock((cmeta_mutex_t *)&health->mutex);
     return 0;
 }
 

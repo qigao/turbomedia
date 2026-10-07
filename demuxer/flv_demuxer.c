@@ -7,7 +7,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-#include <salts_error.h>
+#include <cmeta_error.h>
 #include <cstl/vec.h>
 
 #ifdef TURBO_MEDIA_HAS_FLV

@@ -52,6 +52,13 @@ CNet、libSRTP 和 usrsctp。WebRTC PeerConnection、ICE、DTLS-SRTP 与
 DataChannel 由仓库内 TurboMedia 与 SaltsNet 模块实现；安全传输强制使用
 BoringSSL。
 
+SDK 从 `SALTS_ROOT`、`SALTS_UTILS_ROOT`、`SALTSNET_ROOT`、`CHTTP_ROOT`
+各自安装根加载，不显式指定依赖版本；本工程无需 Lua/QuickJS 绑定。
+IVR schema 由 `salts-idlc` 重新生成，当前协议要求 RoomService 与 worker 同步升级。
+资源归属、合并边界与回滚说明见
+[SDK 迁移设计](docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md)。
+Windows 构建应在 `VsDevCmd.bat -arch=x64 -host_arch=x64` 环境执行。
+
 Linux 桌面 Capture 由 `Salts::Capture` 提供；所选 SaltsUtils 安装必须已包含
 Capture/Playback。从源码构建对应 SDK 时需要 `pkg-config`、
 `libpipewire-0.3-dev`、`libx11-dev` 和 `libxext-dev`。

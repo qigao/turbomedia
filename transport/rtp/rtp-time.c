@@ -9,9 +9,9 @@
 uint64_t rtpclock()
 {
 	static uint64_t last_clock = 0;
-	salts_timeval_t tv;
+	cmeta_timeval_t tv;
 
-	if (salts_gettimeofday(&tv, NULL) == 0)
+	if (cmeta_gettimeofday(&tv, NULL) == 0)
 		last_clock = (uint64_t)tv.tv_sec * 1000000ULL + (uint32_t)tv.tv_usec;
 
 	/* gettimeofday failure is unexpected; reuse the last successful clock

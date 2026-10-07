@@ -54,7 +54,7 @@ struct turbo_rtc_subscriber_s {
     int last_http_status;
     uint64_t connect_started_ms;
 
-    salts_mutex_t lock;
+    cmeta_mutex_t lock;
     int lock_initialized;
     turbo_peer_state_t peer_state;
     int accept_frames;
@@ -212,14 +212,14 @@ static void subscriber_clear_peer(turbo_rtc_subscriber_t *subscriber) {
     }
 
     if (subscriber->lock_initialized) {
-        salts_mutex_lock(&subscriber->lock);
+        cmeta_mutex_lock(&subscriber->lock);
         subscriber->accept_frames = 0;
         subscriber->stopping = 1;
         track = subscriber->audio_track;
         pc = subscriber->pc;
         subscriber->audio_track = NULL;
         subscriber->pc = NULL;
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
     } else {
         subscriber->audio_track = NULL;
         subscriber->pc = NULL;
@@ -233,10 +233,10 @@ static void subscriber_clear_peer(turbo_rtc_subscriber_t *subscriber) {
     }
 
     if (subscriber->lock_initialized) {
-        salts_mutex_lock(&subscriber->lock);
+        cmeta_mutex_lock(&subscriber->lock);
         subscriber->peer_state = TURBO_PEER_STATE_CLOSED;
         subscriber_reset_queue_locked(subscriber);
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
     }
 }
 
@@ -276,9 +276,9 @@ static void subscriber_on_frame(
         return;
     }
 
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     if (!subscriber->accept_frames) {
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
         return;
     }
 
@@ -288,14 +288,14 @@ static void subscriber_on_frame(
         (length % alignment) != 0u) {
         subscriber->frames_rejected++;
         subscriber->frame_error = 1;
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
         return;
     }
 
     if (subscriber->queue_count >= subscriber->frame_queue_capacity) {
         subscriber->frames_rejected++;
         subscriber->queue_overflowed = 1;
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
         return;
     }
 
@@ -313,7 +313,7 @@ static void subscriber_on_frame(
     if (subscriber->queue_bytes > subscriber->queue_bytes_high_water) {
         subscriber->queue_bytes_high_water = subscriber->queue_bytes;
     }
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 }
 
 static void subscriber_on_track(
@@ -332,11 +332,11 @@ static void subscriber_on_track(
     turbo_media_track_set_user_data(track, subscriber);
     turbo_media_track_on_frame(track, subscriber_on_frame);
     if (subscriber->lock_initialized) {
-        salts_mutex_lock(&subscriber->lock);
+        cmeta_mutex_lock(&subscriber->lock);
         if (!subscriber->stopping) {
             subscriber->audio_track = track;
         }
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
     }
 }
 
@@ -350,7 +350,7 @@ static void subscriber_on_state_change(
     if (!subscriber || !subscriber->lock_initialized) {
         return;
     }
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     subscriber->peer_state = state;
     if (state == TURBO_PEER_STATE_CONNECTED && !subscriber->stopping) {
         subscriber->accept_frames = 1;
@@ -360,7 +360,7 @@ static void subscriber_on_state_change(
                state == TURBO_PEER_STATE_CLOSED) {
         subscriber->accept_frames = 0;
     }
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 }
 
 static void subscriber_free(turbo_rtc_subscriber_t *subscriber) {
@@ -372,7 +372,7 @@ static void subscriber_free(turbo_rtc_subscriber_t *subscriber) {
     subscriber->http = NULL;
 
     if (subscriber->lock_initialized) {
-        salts_mutex_destroy(&subscriber->lock);
+        cmeta_mutex_destroy(&subscriber->lock);
         subscriber->lock_initialized = 0;
     }
 
@@ -508,7 +508,7 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_create(
     subscriber->state = TURBO_RTC_CLIENT_CREATED;
     subscriber->peer_state = TURBO_PEER_STATE_NEW;
 
-    salts_mutex_init(&subscriber->lock);
+    cmeta_mutex_init(&subscriber->lock);
     subscriber->lock_initialized = 1;
 
     *out_subscriber = subscriber;
@@ -557,12 +557,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_prepare(
     peer_config.disable_datachannel = 1;
     peer_config.user_data = subscriber;
 
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     subscriber->stopping = 0;
     subscriber->accept_frames = 0;
     subscriber->peer_state = TURBO_PEER_STATE_NEW;
     subscriber_reset_queue_locked(subscriber);
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.on_state_change = subscriber_on_state_change;
@@ -703,16 +703,16 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_start(
            strlen(response.location) + 1u);
     memcpy(subscriber->session_etag, response.etag,
            strlen(response.etag) + 1u);
-    subscriber->connect_started_ms = salts_monotonic_ms();
+    subscriber->connect_started_ms = cmeta_monotonic_ms();
 
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     subscriber->queue_overflowed = 0;
     subscriber->frame_error = 0;
     subscriber->consumer_failed = 0;
     peer_state = subscriber->peer_state;
     subscriber->accept_frames =
         peer_state == TURBO_PEER_STATE_CONNECTED ? 1 : 0;
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 
     if (peer_state == TURBO_PEER_STATE_FAILED ||
         peer_state == TURBO_PEER_STATE_DISCONNECTED ||
@@ -745,16 +745,16 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_restart_ice(
         return TURBO_RTC_CLIENT_EINVAL;
     }
 
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     if (subscriber->in_audio_callback) {
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
         return TURBO_RTC_CLIENT_ESTATE;
     }
     peer_state = subscriber->peer_state;
     queue_overflowed = subscriber->queue_overflowed;
     frame_error = subscriber->frame_error;
     consumer_failed = subscriber->consumer_failed;
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 
     if ((subscriber->state != TURBO_RTC_CLIENT_CONNECTED &&
          subscriber->state != TURBO_RTC_CLIENT_FAILED) ||
@@ -766,11 +766,11 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_restart_ice(
         return TURBO_RTC_CLIENT_ESTATE;
     }
 
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     subscriber->accept_frames = 0;
     subscriber_reset_queue_locked(subscriber);
     peer_state = subscriber->peer_state;
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 
     subscriber->state = TURBO_RTC_CLIENT_NEGOTIATING;
     if (turbo_peer_connection_restart_ice(subscriber->pc) != 0) {
@@ -812,15 +812,15 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_restart_ice(
         return TURBO_RTC_CLIENT_ESDP;
     }
 
-    subscriber->connect_started_ms = salts_monotonic_ms();
+    subscriber->connect_started_ms = cmeta_monotonic_ms();
 
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     peer_state = subscriber->peer_state;
     subscriber->accept_frames =
         peer_state == TURBO_PEER_STATE_CONNECTED && !subscriber->stopping
             ? 1
             : 0;
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 
     if (peer_state == TURBO_PEER_STATE_FAILED ||
         peer_state == TURBO_PEER_STATE_DISCONNECTED ||
@@ -845,9 +845,9 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
         int callback_status;
         int overflowed;
 
-        salts_mutex_lock(&subscriber->lock);
+        cmeta_mutex_lock(&subscriber->lock);
         if (subscriber->queue_count == 0u) {
-            salts_mutex_unlock(&subscriber->lock);
+            cmeta_mutex_unlock(&subscriber->lock);
             return TURBO_RTC_CLIENT_OK;
         }
 
@@ -859,7 +859,7 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
         memcpy(subscriber->delivery_buffer,
                subscriber->frame_storage + slot_offset, length);
         subscriber->in_audio_callback = 1;
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
 
         callback_status = subscriber->on_audio(
             subscriber->audio_context,
@@ -869,7 +869,7 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
             subscriber->channels,
             timestamp);
 
-        salts_mutex_lock(&subscriber->lock);
+        cmeta_mutex_lock(&subscriber->lock);
         subscriber->in_audio_callback = 0;
         overflowed = subscriber->queue_overflowed;
 
@@ -884,12 +884,12 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
                    TURBO_RTC_SUBSCRIBER_AUDIO_RETRY) {
             subscriber->frames_rejected++;
         }
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
 
         if (overflowed) {
-            salts_mutex_lock(&subscriber->lock);
+            cmeta_mutex_lock(&subscriber->lock);
             subscriber->accept_frames = 0;
-            salts_mutex_unlock(&subscriber->lock);
+            cmeta_mutex_unlock(&subscriber->lock);
             subscriber->state = TURBO_RTC_CLIENT_FAILED;
             return TURBO_RTC_CLIENT_EQUEUE;
         }
@@ -898,10 +898,10 @@ static turbo_rtc_client_status_t subscriber_drain_audio(
             return TURBO_RTC_CLIENT_OK;
         }
         if (callback_status != TURBO_RTC_SUBSCRIBER_AUDIO_CONSUMED) {
-            salts_mutex_lock(&subscriber->lock);
+            cmeta_mutex_lock(&subscriber->lock);
             subscriber->accept_frames = 0;
             subscriber->consumer_failed = 1;
-            salts_mutex_unlock(&subscriber->lock);
+            cmeta_mutex_unlock(&subscriber->lock);
             subscriber->state = TURBO_RTC_CLIENT_FAILED;
             return TURBO_RTC_CLIENT_EIO;
         }
@@ -919,12 +919,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_poll(
     if (!subscriber) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     if (subscriber->in_audio_callback) {
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
         return TURBO_RTC_CLIENT_ESTATE;
     }
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
     if ((subscriber->state != TURBO_RTC_CLIENT_CONNECTING &&
          subscriber->state != TURBO_RTC_CLIENT_CONNECTED) ||
         !subscriber->pc) {
@@ -933,12 +933,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_poll(
 
     turbo_peer_connection_poll(subscriber->pc);
 
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     peer_state = subscriber->peer_state;
     queue_overflowed = subscriber->queue_overflowed;
     frame_error = subscriber->frame_error;
     consumer_failed = subscriber->consumer_failed;
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 
     if (queue_overflowed || frame_error || consumer_failed ||
         peer_state == TURBO_PEER_STATE_FAILED ||
@@ -950,9 +950,9 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_poll(
                 : ((frame_error || consumer_failed)
                        ? TURBO_RTC_CLIENT_EIO
                        : TURBO_RTC_CLIENT_EPEER);
-        salts_mutex_lock(&subscriber->lock);
+        cmeta_mutex_lock(&subscriber->lock);
         subscriber->accept_frames = 0;
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
         subscriber->state = TURBO_RTC_CLIENT_FAILED;
         return failure_status;
     }
@@ -961,12 +961,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_poll(
     }
 
     if (subscriber->state == TURBO_RTC_CLIENT_CONNECTING) {
-        now = salts_monotonic_ms();
+        now = cmeta_monotonic_ms();
         if (now - subscriber->connect_started_ms >=
             subscriber->connect_timeout_ms) {
-            salts_mutex_lock(&subscriber->lock);
+            cmeta_mutex_lock(&subscriber->lock);
             subscriber->accept_frames = 0;
-            salts_mutex_unlock(&subscriber->lock);
+            cmeta_mutex_unlock(&subscriber->lock);
             subscriber->state = TURBO_RTC_CLIENT_FAILED;
             return TURBO_RTC_CLIENT_ETIMEDOUT;
         }
@@ -984,12 +984,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_stop(
     if (!subscriber) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     if (subscriber->in_audio_callback) {
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
         return TURBO_RTC_CLIENT_ESTATE;
     }
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
     if (subscriber->state != TURBO_RTC_CLIENT_PREPARED &&
         subscriber->state != TURBO_RTC_CLIENT_NEGOTIATING &&
         subscriber->state != TURBO_RTC_CLIENT_CONNECTING &&
@@ -999,9 +999,9 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_stop(
     }
 
     subscriber->state = TURBO_RTC_CLIENT_DRAINING;
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     subscriber->accept_frames = 0;
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
 
     if (subscriber->session_location[0] != '\0') {
         remote_status = subscriber_delete_remote(
@@ -1040,7 +1040,7 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_snapshot(
     snapshot->connect_started_ms =
         subscriber->connect_started_ms;
 
-    salts_mutex_lock(&mutable_subscriber->lock);
+    cmeta_mutex_lock(&mutable_subscriber->lock);
     snapshot->frames_received =
         subscriber->frames_received;
     snapshot->frames_delivered =
@@ -1055,7 +1055,7 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_snapshot(
         (uint64_t)subscriber->queue_bytes;
     snapshot->queue_bytes_high_water =
         (uint64_t)subscriber->queue_bytes_high_water;
-    salts_mutex_unlock(&mutable_subscriber->lock);
+    cmeta_mutex_unlock(&mutable_subscriber->lock);
     return TURBO_RTC_CLIENT_OK;
 }
 
@@ -1064,12 +1064,12 @@ turbo_rtc_client_status_t turbo_rtc_subscriber_destroy(
     if (!subscriber) {
         return TURBO_RTC_CLIENT_EINVAL;
     }
-    salts_mutex_lock(&subscriber->lock);
+    cmeta_mutex_lock(&subscriber->lock);
     if (subscriber->in_audio_callback) {
-        salts_mutex_unlock(&subscriber->lock);
+        cmeta_mutex_unlock(&subscriber->lock);
         return TURBO_RTC_CLIENT_ESTATE;
     }
-    salts_mutex_unlock(&subscriber->lock);
+    cmeta_mutex_unlock(&subscriber->lock);
     if (subscriber->state == TURBO_RTC_CLIENT_NEGOTIATING ||
         subscriber->state == TURBO_RTC_CLIENT_CONNECTING ||
         subscriber->state == TURBO_RTC_CLIENT_CONNECTED ||

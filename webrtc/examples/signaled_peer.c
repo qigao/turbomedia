@@ -17,8 +17,8 @@
 #include <http_client/http.h>
 #include <json_parser.h>
 #include "turbo_sdp.h"
-#include <salts_error.h>
-#include <salts_thread.h>
+#include <cmeta_error.h>
+#include <cmeta_thread.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -132,7 +132,7 @@ static void request_peer_list(app_state_t *app) {
     return;
   }
   if (enqueue_signalf(app, "{\"type\":\"list-peers\"}") == 0) {
-    app->last_peer_query_ms = salts_monotonic_ms();
+    app->last_peer_query_ms = cmeta_monotonic_ms();
   }
 }
 
@@ -1128,7 +1128,7 @@ static int run_signaling(app_state_t *app) {
   rc = chttp_websocket_client_init(&app->signal_client, &config);
   if (rc != SALTS_OK) {
     TLOG_ERRORF("Failed to initialize signaling WebSocket: {} ({})", rc,
-                salts_strerror(rc));
+                cmeta_strerror(rc));
     return -1;
   }
   app->signal_client_initialized = 1;
@@ -1142,7 +1142,7 @@ static int run_signaling(app_state_t *app) {
                                       &http_status);
   if (rc != SALTS_OK) {
     TLOG_ERRORF("Failed to connect to signaling WebSocket: {} ({}) HTTP {}",
-                rc, salts_strerror(rc), http_status);
+                rc, cmeta_strerror(rc), http_status);
     return -1;
   }
 
@@ -1176,7 +1176,7 @@ static int run_signaling(app_state_t *app) {
     }
 
     if (app->is_offerer && app->remote_peer_id[0] == '\0' && app->ws_connected) {
-      uint64_t now_ms = salts_monotonic_ms();
+      uint64_t now_ms = cmeta_monotonic_ms();
       if (app->last_peer_query_ms == 0 || now_ms - app->last_peer_query_ms >= 1000) {
         request_peer_list(app);
       }
@@ -1198,7 +1198,7 @@ static int run_signaling(app_state_t *app) {
       continue;
     }
     if (rc != SALTS_OK) {
-      TLOG_ERRORF("Signaling socket receive failed: {} ({})", rc, salts_strerror(rc));
+      TLOG_ERRORF("Signaling socket receive failed: {} ({})", rc, cmeta_strerror(rc));
       break;
     }
     if (event.kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {

@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <salts_error.h>
+#include <cmeta_error.h>
 #include <vstr.h>
 #include <cstl/vec.h>
 

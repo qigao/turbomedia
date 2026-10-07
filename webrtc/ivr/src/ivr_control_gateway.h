@@ -8,7 +8,7 @@
  * Implements an adapter-local command sender over one CHTTP HTTP/1.1 WebSocket
  * connection to RoomService. Commands are encoded as TIVR frames
  * (12-byte header + DataBind BIN payload) using the generated
- * turbomedia_ivr_v1 schema; the payload is the per-command typed message.
+ * turbomedia_ivr_v2 schema; the payload is the per-command typed message.
  * Commands without a RoomService schema message (rtc.*, accept, disconnect)
  * are worker-local and are rejected here with IVR_ESTATE.
  */

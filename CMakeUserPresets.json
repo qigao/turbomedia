@@ -5,6 +5,49 @@
     ],
     "configurePresets": [
         {
+            "name": "vcpkg-cache-ci",
+            "hidden": true,
+            "inherits": "vcpkg-cache",
+            "environment": {
+                "VCPKG_CACHE_REPOSITORY_ROOT": "$penv{VCPKG_CACHE_REPOSITORY_ROOT}",
+                "VCPKG_BINARY_SOURCES": "$penv{VCPKG_BINARY_SOURCES}"
+            }
+        },
+        {
+            "name": "vcpkg-cache-linux",
+            "hidden": true,
+            "inherits": "vcpkg-cache",
+            "cacheVariables": {
+                "VCPKG_HOST_TRIPLET": "x64-linux"
+            },
+            "environment": {
+                "VCPKG_CACHE_REPOSITORY_ROOT": "$penv{HOME}/.cache/qigao/vcpkg-cache"
+            }
+        },
+        {
+            "name": "vcpkg-cache-windows",
+            "hidden": true,
+            "inherits": "vcpkg-cache",
+            "cacheVariables": {
+                "VCPKG_HOST_TRIPLET": "x64-windows"
+            },
+            "environment": {
+                "VCPKG_CACHE_REPOSITORY_ROOT": "$penv{LOCALAPPDATA}/qigao/vcpkg-cache",
+                "RE2C_ROOT": "$env{PKG_ROOT}/re2c/windows-x64"
+            }
+        },
+        {
+            "name": "vcpkg-cache",
+            "hidden": true,
+            "toolchainFile": "$env{VCPKG_CACHE_REPOSITORY_ROOT}/cmake/QigaoVcpkgToolchain.cmake",
+            "environment": {
+                "VCPKG_BINARY_SOURCES": "clear;default,readwrite;nugettimeout,1800;nugetconfig,${sourceDir}/cmake/vcpkg-cache.nuget.config,read",
+                "VCPKG_OVERLAY_PORTS": "$env{VCPKG_CACHE_REPOSITORY_ROOT}/ports",
+                "RE2C_ROOT": "$penv{RE2C_ROOT}",
+                "PATH": "$env{RE2C_ROOT}/bin${pathListSep}$penv{PATH}"
+            }
+        },
+        {
             "name": "win-toolchain",
             "hidden": true,
             "environment": {
@@ -13,13 +56,15 @@
                 "VCPKG_ROOT": "C:/tools/vcpkg",
                 "USER_ROOT": "C:/Users/lockg",
                 "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
-            }
+            },
+            "inherits": [
+                "vcpkg-cache-windows"
+            ]
         },
         {
             "name": "win-paths",
             "hidden": true,
             "inherits": "win-toolchain",
-            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
             "cacheVariables": {
                 "VCPKG_INSTALLED_DIR": "$env{VCPKG_INSTALLED_DIR}",
                 "PKG_CONFIG_EXECUTABLE": "$env{VCPKG_INSTALLED_DIR}/x64-windows/tools/pkgconf/pkgconf.exe",
@@ -38,7 +83,6 @@
         {
             "name": "linux-paths",
             "hidden": true,
-            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
             "cacheVariables": {
                 "VCPKG_TARGET_TRIPLET": "x64-linux",
                 "VCPKG_MANIFEST_MODE": "ON",
@@ -48,7 +92,10 @@
                 "PKG_ROOT": "/opt",
                 "VCPKG_ROOT": "/opt/vcpkg",
                 "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
-            }
+            },
+            "inherits": [
+                "vcpkg-cache-linux"
+            ]
         },
         {
             "name": "android-win-environment",
@@ -61,12 +108,14 @@
             }
         },
         {
-            "name": "android-win-paths",
+            "name": "android-win-user-paths",
             "hidden": true,
-            "inherits": "ISWindows",
-            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "inherits": [
+                "vcpkg-cache-windows",
+                "android-win-paths",
+                "ISWindows"
+            ],
             "cacheVariables": {
-                "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
                 "VCPKG_INSTALLED_DIR": "$env{VCPKG_INSTALLED_DIR}"
             }
         },
@@ -80,10 +129,10 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/debug",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/debug",
+                "CHTTP_ROOT": "$env{PKG_ROOT}/http-services/debug",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/debug",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/debug",
-                "PATH": "${sourceDir}/build/Msvc/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
+                "PATH": "$env{RE2C_ROOT}/bin${pathListSep}${sourceDir}/build/Msvc/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{CHTTP_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-dev-user",
@@ -99,10 +148,10 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/release",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/release",
+                "CHTTP_ROOT": "$env{PKG_ROOT}/http-services/release",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/release",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/release",
-                "PATH": "${sourceDir}/build/Msvc-Release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{TURBODB_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
+                "PATH": "$env{RE2C_ROOT}/bin${pathListSep}${sourceDir}/build/Msvc-Release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-windows/bin${pathListSep}$env{SALTS_ROOT}/bin${pathListSep}$env{SALTS_UTILS_ROOT}/bin${pathListSep}$env{CHTTP_ROOT}/bin${pathListSep}$env{SALTSNET_ROOT}/bin${pathListSep}$env{RULES_FORGE_ROOT}/bin${pathListSep}$penv{PATH}"
             },
             "inherits": [
                 "base-win-release-user",
@@ -119,10 +168,10 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/debug",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/debug",
+                "CHTTP_ROOT": "$env{PKG_ROOT}/http-services/debug",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/debug",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/debug",
-                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/debug/lib${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
+                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-debug/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/debug/lib${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{CHTTP_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
             },
             "inherits": [
                 "base-linux-dev-user",
@@ -138,10 +187,10 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts/release",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils/release",
+                "CHTTP_ROOT": "$env{PKG_ROOT}/http-services/release",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet/release",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge/release",
-                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{TURBODB_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
+                "LD_LIBRARY_PATH": "${sourceDir}/build/linux-gcc-release/bin${pathListSep}$env{VCPKG_INSTALLED_DIR}/x64-linux/lib${pathListSep}$env{SALTS_ROOT}/lib${pathListSep}$env{SALTS_UTILS_ROOT}/lib${pathListSep}$env{CHTTP_ROOT}/lib${pathListSep}$env{SALTSNET_ROOT}/lib${pathListSep}$env{RULES_FORGE_ROOT}/lib${pathListSep}$penv{LD_LIBRARY_PATH}"
             },
             "inherits": [
                 "release-linux-ninja",
@@ -154,9 +203,9 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts-android/debug",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils-android/debug",
+                "CHTTP_ROOT": "$env{PKG_ROOT}/http-services-android/debug",
                 "SALTS_UTILS_HOST_ROOT": "$env{PKG_ROOT}/salts-utils/release",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet-android/debug",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb-android/debug",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge-android/debug"
             },
             "cacheVariables": {
@@ -169,9 +218,9 @@
             "environment": {
                 "SALTS_ROOT": "$env{PKG_ROOT}/salts-android/release",
                 "SALTS_UTILS_ROOT": "$env{PKG_ROOT}/salts-utils-android/release",
+                "CHTTP_ROOT": "$env{PKG_ROOT}/http-services-android/release",
                 "SALTS_UTILS_HOST_ROOT": "$env{PKG_ROOT}/salts-utils/release",
                 "SALTSNET_ROOT": "$env{PKG_ROOT}/saltsnet-android/release",
-                "TURBODB_ROOT": "$env{PKG_ROOT}/turbodb-android/release",
                 "RULES_FORGE_ROOT": "$env{PKG_ROOT}/rules_forge-android/release"
             },
             "cacheVariables": {
@@ -183,7 +232,7 @@
             "inherits": [
                 "android-arm64-v8a-debug",
                 "android-dependencies-debug",
-                "android-win-paths",
+                "android-win-user-paths",
                 "android-win-environment"
             ]
         },
@@ -192,7 +241,7 @@
             "inherits": [
                 "android-arm64-v8a-release",
                 "android-dependencies-release",
-                "android-win-paths",
+                "android-win-user-paths",
                 "android-win-environment"
             ]
         },
@@ -201,7 +250,7 @@
             "inherits": [
                 "android-x86_64-debug",
                 "android-dependencies-debug",
-                "android-win-paths",
+                "android-win-user-paths",
                 "android-win-environment"
             ]
         },
@@ -210,7 +259,7 @@
             "inherits": [
                 "android-x86_64-release",
                 "android-dependencies-release",
-                "android-win-paths",
+                "android-win-user-paths",
                 "android-win-environment"
             ]
         },
@@ -219,7 +268,7 @@
             "inherits": [
                 "android-x86-debug",
                 "android-dependencies-debug",
-                "android-win-paths",
+                "android-win-user-paths",
                 "android-win-environment"
             ]
         },
@@ -228,7 +277,7 @@
             "inherits": [
                 "android-x86-release",
                 "android-dependencies-release",
-                "android-win-paths",
+                "android-win-user-paths",
                 "android-win-environment"
             ]
         }

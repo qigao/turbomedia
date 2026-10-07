@@ -49,7 +49,7 @@ set_target_properties(turbo_media_ivr_rtc PROPERTIES FOLDER "turbomedia/componen
 
 file(
   TO_CMAKE_PATH
-  "${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v1.schema"
+  "${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v2.schema"
   IVR_TEST_SCHEMA_PATH)
 
 # ---------------------------------------------------------------------------
@@ -60,14 +60,15 @@ file(
 turbo_media_find_idlc(IDL_COMPILER_EXECUTABLE)
 set(IVR_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${IVR_GEN_DIR}")
-set(IVR_GEN_HEADER "${IVR_GEN_DIR}/turbomedia_ivr_v1.h")
-set(IVR_GEN_SOURCE "${IVR_GEN_DIR}/turbomedia_ivr_v1.c")
+set(IVR_GEN_HEADER "${IVR_GEN_DIR}/turbomedia_ivr_v2.h")
+set(IVR_GEN_SOURCE "${IVR_GEN_DIR}/turbomedia_ivr_v2.c")
 add_custom_command(
   OUTPUT ${IVR_GEN_HEADER} ${IVR_GEN_SOURCE}
   COMMAND ${IDL_COMPILER_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v1.schema
+          ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v2.schema
           --lang c --output ${IVR_GEN_HEADER} --source-output ${IVR_GEN_SOURCE}
-  DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v1.schema
+  DEPENDS ${IDL_COMPILER_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/schema/turbomedia_ivr_v2.schema
   COMMENT "Generating IVR schema typed code with salts-idlc"
   VERBATIM)
 add_library(turbo_media_ivr_schema STATIC ${IVR_GEN_SOURCE})

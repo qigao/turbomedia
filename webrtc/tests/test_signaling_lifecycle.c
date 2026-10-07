@@ -427,7 +427,7 @@ void test_signaling_websocket_protocol_round_trip(void) {
   for (index = 0; index < 100 &&
                   webrtc_signaling_get_peer_count(server) != 0;
        ++index) {
-    salts_sleep_ms(10U);
+    cmeta_sleep_ms(10U);
   }
   check_equal(webrtc_signaling_get_peer_count(server), 0);
 

@@ -70,7 +70,7 @@ static void ivr_openai_observe_request(
     if (!config || !config->observer.on_request_complete) {
         return;
     }
-    finished_at_ms = salts_monotonic_ms();
+    finished_at_ms = cmeta_monotonic_ms();
     config->observer.on_request_complete(
         config->observer.context, kind,
         finished_at_ms >= started_at_ms ? finished_at_ms - started_at_ms : 0);
@@ -970,7 +970,7 @@ static void *ivr_openai_tts_thread(void *opaque) {
         ivr_mutex_unlock(&tts->lock);
 
         if (job) {
-            uint64_t started_at_ms = salts_monotonic_ms();
+            uint64_t started_at_ms = cmeta_monotonic_ms();
             ivr_openai_tts_run_job(tts, job);
             ivr_openai_observe_request(tts->config, IVR_OPENAI_REQUEST_TTS,
                                        started_at_ms);
@@ -1258,7 +1258,7 @@ static void *ivr_openai_asr_thread(void *opaque) {
         ivr_mutex_unlock(&asr->lock);
 
         if (job) {
-            uint64_t started_at_ms = salts_monotonic_ms();
+            uint64_t started_at_ms = cmeta_monotonic_ms();
             ivr_openai_asr_run_job(asr, job);
             ivr_openai_observe_request(asr->config, IVR_OPENAI_REQUEST_ASR,
                                        started_at_ms);

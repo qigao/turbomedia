@@ -130,9 +130,9 @@ struct turbo_rtsp_server_s {
     cnet_client network;
     cnet_packet_endpoint packet_endpoint;
     chttp_server http;
-    salts_mutex_t mutex;
-    salts_cond_t state_changed;
-    salts_thread_t worker;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t state_changed;
+    cmeta_thread_t worker;
     int sync_initialized;
     int listener_initialized;
     int network_initialized;
@@ -531,11 +531,11 @@ static int turbo_rtsp_server_enqueue(
     }
     memcpy(copy, data, size);
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     if (!session->active || server->stopping ||
         server->send_count == server->send_queue_capacity ||
         size > server->send_queue_bytes - server->send_bytes) {
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         free(copy);
         return -1;
     }
@@ -551,7 +551,7 @@ static int turbo_rtsp_server_enqueue(
     if (close_after) {
         session->close_after_flush = 1;
     }
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
 
     if (session->io_kind == TURBO_RTSP_IO_STREAM && server->network_initialized) {
         (void)cnet_client_wake(&server->network);
@@ -991,7 +991,7 @@ static turbo_rtsp_session_t *turbo_rtsp_server_session_allocate(
     size_t i;
     turbo_rtsp_session_t *session = NULL;
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     for (i = 0; i < server->connection_capacity; ++i) {
         if (!server->sessions[i].active) {
             uint32_t generation = server->sessions[i].generation + 1u;
@@ -1007,7 +1007,7 @@ static turbo_rtsp_session_t *turbo_rtsp_server_session_allocate(
             break;
         }
     }
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     return session;
 }
 
@@ -1021,14 +1021,14 @@ static void turbo_rtsp_server_session_release(
         return;
     }
     server = session->server;
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     if (!session->active) {
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         return;
     }
     session->active = 0;
     generation = session->generation;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
 
     if (notify) {
         turbo_rtsp_notify_session_close(session);
@@ -1145,9 +1145,9 @@ static turbo_rtsp_session_t *turbo_rtsp_server_find_websocket_session(
 
 static void turbo_rtsp_server_pop_send(turbo_rtsp_server_t *server) {
     turbo_rtsp_server_send_t *command;
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     if (server->send_count == 0) {
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         return;
     }
     command = &server->send_queue[server->send_head];
@@ -1156,7 +1156,7 @@ static void turbo_rtsp_server_pop_send(turbo_rtsp_server_t *server) {
     memset(command, 0, sizeof(*command));
     server->send_head = (server->send_head + 1u) % server->send_queue_capacity;
     server->send_count--;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
 }
 
 static int turbo_rtsp_server_drain_sends(turbo_rtsp_server_t *server) {
@@ -1165,24 +1165,24 @@ static int turbo_rtsp_server_drain_sends(turbo_rtsp_server_t *server) {
         turbo_rtsp_session_t *session;
         int status;
 
-        salts_mutex_lock(&server->mutex);
+        cmeta_mutex_lock(&server->mutex);
         if (server->send_count == 0) {
-            salts_mutex_unlock(&server->mutex);
+            cmeta_mutex_unlock(&server->mutex);
             return 0;
         }
         command = server->send_queue[server->send_head];
         if (command.session_index >= server->connection_capacity) {
-            salts_mutex_unlock(&server->mutex);
+            cmeta_mutex_unlock(&server->mutex);
             turbo_rtsp_server_pop_send(server);
             continue;
         }
         session = &server->sessions[command.session_index];
         if (!session->active || session->generation != command.session_generation) {
-            salts_mutex_unlock(&server->mutex);
+            cmeta_mutex_unlock(&server->mutex);
             turbo_rtsp_server_pop_send(server);
             continue;
         }
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
 
         if (session->io_kind == TURBO_RTSP_IO_STREAM) {
             status = turbo_media_cnet_send_copy(
@@ -1529,21 +1529,21 @@ static void turbo_rtsp_server_worker(void *arg) {
                      ? turbo_rtsp_server_packet_init(server)
                      : turbo_rtsp_server_stream_init(server);
 
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     server->start_status = status;
     server->start_finished = 1;
     server->started = status == SALTS_OK;
-    salts_cond_broadcast(&server->state_changed);
-    salts_mutex_unlock(&server->mutex);
+    cmeta_cond_broadcast(&server->state_changed);
+    cmeta_mutex_unlock(&server->mutex);
 
     while (status == SALTS_OK) {
         size_t events = 0;
-        salts_mutex_lock(&server->mutex);
+        cmeta_mutex_lock(&server->mutex);
         if (server->stopping) {
-            salts_mutex_unlock(&server->mutex);
+            cmeta_mutex_unlock(&server->mutex);
             break;
         }
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         (void)turbo_rtsp_server_drain_sends(server);
         if (server->control_transport == TURBO_RTSP_CONTROL_TRANSPORT_KCP) {
             status = cnet_packet_poll(
@@ -1751,8 +1751,8 @@ turbo_rtsp_server_t *turbo_rtsp_server_create(
         server->tls_config.ca_file = server->tls_ca_file;
         server->tls_config.ca_path = server->tls_ca_path;
     }
-    salts_mutex_init(&server->mutex);
-    salts_cond_init(&server->state_changed);
+    cmeta_mutex_init(&server->mutex);
+    cmeta_cond_init(&server->state_changed);
     server->sync_initialized = 1;
     return server;
 }
@@ -1762,37 +1762,37 @@ int turbo_rtsp_server_start(turbo_rtsp_server_t *server) {
     if (!server || !server->sync_initialized) {
         return -1;
     }
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     if (server->started) {
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         return 0;
     }
     server->stopping = 0;
     server->start_finished = 0;
     server->start_status = SALTS_EIO;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
 
     if (turbo_rtsp_control_transport_is_ws(server->control_transport)) {
         status = turbo_rtsp_server_http_init(server);
-        salts_mutex_lock(&server->mutex);
+        cmeta_mutex_lock(&server->mutex);
         server->started = status == SALTS_OK;
-        salts_mutex_unlock(&server->mutex);
+        cmeta_mutex_unlock(&server->mutex);
         return status == SALTS_OK ? 0 : -1;
     }
-    status = salts_thread_create(&server->worker, turbo_rtsp_server_worker, server);
+    status = cmeta_thread_create(&server->worker, turbo_rtsp_server_worker, server);
     if (status != SALTS_OK) {
         return -1;
     }
     server->worker_started = 1;
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     while (!server->start_finished) {
-        salts_cond_wait(&server->state_changed, &server->mutex);
+        cmeta_cond_wait(&server->state_changed, &server->mutex);
     }
     status = server->start_status;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     if (status != SALTS_OK) {
-        (void)salts_thread_join(&server->worker);
-        salts_thread_destroy(&server->worker);
+        (void)cmeta_thread_join(&server->worker);
+        cmeta_thread_destroy(&server->worker);
         server->worker_started = 0;
     }
     return status == SALTS_OK ? 0 : -1;
@@ -1802,10 +1802,10 @@ void turbo_rtsp_server_stop(turbo_rtsp_server_t *server) {
     if (!server || !server->sync_initialized) {
         return;
     }
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     server->stopping = 1;
     server->started = 0;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     if (server->network_initialized) {
         (void)cnet_client_wake(&server->network);
     }
@@ -1813,8 +1813,8 @@ void turbo_rtsp_server_stop(turbo_rtsp_server_t *server) {
         (void)cnet_packet_wake(&server->packet_endpoint);
     }
     if (server->worker_started) {
-        (void)salts_thread_join(&server->worker);
-        salts_thread_destroy(&server->worker);
+        (void)cmeta_thread_join(&server->worker);
+        cmeta_thread_destroy(&server->worker);
         server->worker_started = 0;
     }
     if (server->http_initialized) {
@@ -1845,8 +1845,8 @@ void turbo_rtsp_server_destroy(turbo_rtsp_server_t *server) {
         }
     }
     if (server->sync_initialized) {
-        salts_cond_destroy(&server->state_changed);
-        salts_mutex_destroy(&server->mutex);
+        cmeta_cond_destroy(&server->state_changed);
+        cmeta_mutex_destroy(&server->mutex);
     }
     turbo_rtsp_kcp_config_wipe(&server->kcp_config);
     free(server->tls_cert_file);
@@ -2844,7 +2844,7 @@ static int turbo_rtsp_client_build_digest_auth(
         return -1;
     }
 
-    if (salts_secure_random(cnonce_bytes, sizeof(cnonce_bytes)) != 0) {
+    if (cmeta_secure_random(cnonce_bytes, sizeof(cnonce_bytes)) != 0) {
         return -1;
     }
     for (i = 0; i < sizeof(cnonce_bytes); ++i) {
@@ -3048,10 +3048,10 @@ static void turbo_rtsp_client_packet_error(
 static int turbo_rtsp_client_poll_until(
     turbo_rtsp_client_t *client,
     int *finished) {
-    const uint64_t started_ms = salts_monotonic_ms();
+    const uint64_t started_ms = cmeta_monotonic_ms();
     int status = SALTS_OK;
     while (!*finished) {
-        uint64_t elapsed_ms = salts_monotonic_ms() - started_ms;
+        uint64_t elapsed_ms = cmeta_monotonic_ms() - started_ms;
         uint32_t wait_ms;
         size_t events = 0;
         if (elapsed_ms >= client->timeout_ms) {
@@ -3128,6 +3128,8 @@ static int turbo_rtsp_client_send_bytes(
         return status == SALTS_OK ? 0 : -1;
     }
     client->send_finished = 0;
+    if (size > turbo_rtsp_client_network_config(client, client->tls_initialized).max_send_bytes)
+        return -1;
     status = turbo_media_cnet_send_copy(
         &client->network, client->connection, data, size, 0);
     if (status == SALTS_OK) {

@@ -276,7 +276,7 @@ static void sip_uas_transaction_onretransmission(void* usrptr)
 	int r, timeout;
 	struct sip_uas_transaction_t* t;
 	t = (struct sip_uas_transaction_t*)usrptr;
-	salts_mutex_lock(&t->locker);
+	cmeta_mutex_lock(&t->locker);
 	sip_uas_stop_timer(t->agent, t, &t->timerg); // hijack free timer only, don't release transaction
 	
 	if (t->status < SIP_UAS_TRANSACTION_CONFIRMED)
@@ -294,6 +294,6 @@ static void sip_uas_transaction_onretransmission(void* usrptr)
 		t->timerg = sip_uas_start_timer(t->agent, t, sip_int_min(t->t2, sip_int_max(T1, timeout)), sip_uas_transaction_onretransmission);
 	}
 
-	salts_mutex_unlock(&t->locker);
+	cmeta_mutex_unlock(&t->locker);
 	sip_uas_transaction_release(t);
 }

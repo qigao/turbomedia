@@ -414,12 +414,12 @@ int turbo_transport_disconnect(turbo_transport_t *transport_ptr) {
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_DISCONNECTED,
                              NULL);
     } else if (transport->client) {
-        uint64_t start_ms = salts_monotonic_ms();
+        uint64_t start_ms = cmeta_monotonic_ms();
         uint64_t deadline_ms = start_ms + TRANSPORT_STOP_TIMEOUT_MS;
         status = cnet_close(transport->client, transport->connection);
         if (status != SALTS_OK && status != SALTS_EALREADY) return -1;
         while (!transport->terminal) {
-            uint64_t now_ms = salts_monotonic_ms();
+            uint64_t now_ms = cmeta_monotonic_ms();
             uint32_t remaining_ms;
             size_t events = 0u;
             if (now_ms >= deadline_ms) return -1;
@@ -452,6 +452,7 @@ int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, 
         status = cnet_datagram_send(&transport->datagram, &transport->datagram_peer,
                                     data, size, 0);
     else {
+        if (transport->owns_client && size > TRANSPORT_MAX_BYTES) return -1;
         transport->send_pending = 1;
         transport->send_completed = 0;
         status = turbo_media_cnet_send_copy(

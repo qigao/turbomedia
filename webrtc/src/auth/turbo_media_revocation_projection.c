@@ -5,7 +5,7 @@
 
 struct turbo_media_revocation_projection_s {
     turbo_media_revocation_state_t *state;
-    salts_mutex_t mutex;
+    cmeta_mutex_t mutex;
     int mutex_initialized;
 };
 
@@ -18,11 +18,11 @@ turbo_media_revocation_projection_create(size_t max_entries) {
     if (!projection) {
         return NULL;
     }
-    salts_mutex_init(&projection->mutex);
+    cmeta_mutex_init(&projection->mutex);
     projection->mutex_initialized = 1;
     projection->state = turbo_media_revocation_state_create(max_entries);
     if (!projection->state) {
-        salts_mutex_destroy(&projection->mutex);
+        cmeta_mutex_destroy(&projection->mutex);
         free(projection);
         return NULL;
     }
@@ -37,7 +37,7 @@ void turbo_media_revocation_projection_destroy(
     turbo_media_revocation_state_destroy(projection->state);
     projection->state = NULL;
     if (projection->mutex_initialized) {
-        salts_mutex_destroy(&projection->mutex);
+        cmeta_mutex_destroy(&projection->mutex);
         projection->mutex_initialized = 0;
     }
     free(projection);
@@ -54,10 +54,10 @@ turbo_media_revocation_projection_check_digest(
         !projection->mutex_initialized) {
         return TURBO_MEDIA_AUTH_REVOCATION_UNKNOWN;
     }
-    salts_mutex_lock(&projection->mutex);
+    cmeta_mutex_lock(&projection->mutex);
     result = turbo_media_revocation_check_digest(
         projection->state, sha256, sha256_size);
-    salts_mutex_unlock(&projection->mutex);
+    cmeta_mutex_unlock(&projection->mutex);
     return result;
 }
 
@@ -72,10 +72,10 @@ turbo_media_revocation_projection_apply_snapshot(
         !projection->mutex_initialized) {
         return TURBO_MEDIA_REVOCATION_APPLY_ERROR;
     }
-    salts_mutex_lock(&projection->mutex);
+    cmeta_mutex_lock(&projection->mutex);
     result = turbo_media_revocation_apply_snapshot(
         projection->state, epoch, sequence, sha256_hex, count);
-    salts_mutex_unlock(&projection->mutex);
+    cmeta_mutex_unlock(&projection->mutex);
     return result;
 }
 
@@ -89,10 +89,10 @@ turbo_media_revocation_projection_apply_revoke(
         !projection->mutex_initialized) {
         return TURBO_MEDIA_REVOCATION_APPLY_ERROR;
     }
-    salts_mutex_lock(&projection->mutex);
+    cmeta_mutex_lock(&projection->mutex);
     result = turbo_media_revocation_apply_revoke(
         projection->state, epoch, sequence, sha256_hex);
-    salts_mutex_unlock(&projection->mutex);
+    cmeta_mutex_unlock(&projection->mutex);
     return result;
 }
 
@@ -106,12 +106,12 @@ int turbo_media_revocation_projection_status(
         return -1;
     }
 
-    salts_mutex_lock(&projection->mutex);
+    cmeta_mutex_lock(&projection->mutex);
     *out_synchronized =
         turbo_media_revocation_is_synchronized(projection->state);
     *out_epoch = turbo_media_revocation_epoch(projection->state);
     *out_sequence = turbo_media_revocation_sequence(projection->state);
     *out_count = turbo_media_revocation_count(projection->state);
-    salts_mutex_unlock(&projection->mutex);
+    cmeta_mutex_unlock(&projection->mutex);
     return 0;
 }
