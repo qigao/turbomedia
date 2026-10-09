@@ -619,6 +619,30 @@ int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, 
     return status == SALTS_OK ? (int)size : -1;
 }
 
+/* Admission is separate from waiting: request/reply protocols can reserve
+ * their one CNet receive credit before writing a final request chunk. The
+ * callback stores exactly one owned completion; no implicit replay/poll.
+ */
+static int transport_admit_receive(turbo_transport_impl_t *transport) {
+    int status;
+    if (!transport || !transport->connected || transport->websocket_initialized)
+        return -1;
+    if (transport->receive_ready || transport->receive_pending) return 0;
+    status = transport->datagram_initialized
+        ? cnet_datagram_receive(&transport->datagram, 1u)
+        : cnet_receive(transport->client, transport->connection, 1u);
+    if (status != SALTS_OK) return -1;
+    transport->receive_pending = 1;
+    return 0;
+}
+
+int turbo_transport_request_receive(turbo_transport_t *transport_ptr) {
+    if (!transport_ptr ||
+        turbo_transport_base(transport_ptr)->config.type == TURBO_TRANSPORT_HTTP)
+        return -1;
+    return transport_admit_receive((turbo_transport_impl_t *)transport_ptr);
+}
+
 int turbo_transport_recv(turbo_transport_t *transport_ptr, uint8_t **data, size_t *size) {
     turbo_transport_impl_t *transport;
     size_t events = 0u;
@@ -643,13 +667,7 @@ int turbo_transport_recv(turbo_transport_t *transport_ptr, uint8_t **data, size_
     /* A previous timeout leaves its admitted receive demand with CNet.
      * Never drop a ready result or submit another demand until it completes.
      */
-    if (!transport->receive_ready && !transport->receive_pending) {
-        status = transport->datagram_initialized
-            ? cnet_datagram_receive(&transport->datagram, 1u)
-            : cnet_receive(transport->client, transport->connection, 1u);
-        if (status != SALTS_OK) return -1;
-        transport->receive_pending = 1;
-    }
+    if (transport_admit_receive(transport) != 0) return -1;
     {
         const uint64_t started_ms = cmeta_monotonic_ms();
         const uint32_t budget_ms = transport_timeout(transport);

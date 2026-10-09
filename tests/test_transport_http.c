@@ -407,6 +407,11 @@ suite("Salts CHTTP transport") {
     transport = turbo_transport_create(&config);
     check_not_null(transport);
     check_equal(turbo_transport_connect(transport), 0);
+    /* Explicit admission is bounded and idempotent before any request bytes.
+     * The following recv must reuse this exact credit after timeout.
+     */
+    check_equal(turbo_transport_request_receive(transport), 0);
+    check_equal(turbo_transport_request_receive(transport), 0);
     /* The temporary timeout does NOT cancel CNet's one outstanding demand. */
     check_equal(turbo_transport_recv(transport, &response, &response_size), -1);
     check_null(response);

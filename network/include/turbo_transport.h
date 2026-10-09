@@ -145,6 +145,15 @@ TURBO_MEDIA_API int turbo_transport_recv(turbo_transport_t *transport,
                                    size_t *size);
 
 /**
+ * Explicitly admit one CNet receive demand before sending a request whose
+ * peer may reply and close immediately. Repeated calls with one outstanding
+ * demand or buffered result are idempotent. The existing owner, buffer bound,
+ * completion callback and recv() remain authoritative. Returns 0 or -1;
+ * HTTP/WebSocket transports do not support this CNet stream operation.
+ */
+TURBO_MEDIA_API int turbo_transport_request_receive(turbo_transport_t *transport);
+
+/**
  * 释放接收到的数据
  */
 TURBO_MEDIA_API void turbo_transport_free_recv(turbo_transport_t *transport, uint8_t *data);

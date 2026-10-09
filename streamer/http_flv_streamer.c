@@ -240,7 +240,14 @@ static void http_flv_upload_thread(void *arg) {
         config.cnet_client = ctx->network_client;
         config.tls = ctx->network_tls;
         ctx->transport = turbo_transport_create(&config);
-        if (!ctx->transport || turbo_transport_connect(ctx->transport) != 0) result = -EIO;
+        if (!ctx->transport || turbo_transport_connect(ctx->transport) != 0 ||
+            turbo_transport_request_receive(ctx->transport) != 0) {
+            /* Reserve one bounded receive credit before the request. The
+             * server may send its final reply and close during our last
+             * send completion; waiting until then can lose that reply.
+             */
+            result = -EIO;
+        }
     }
     if (result == 0) {
         int size = snprintf(request, sizeof(request),

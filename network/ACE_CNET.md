@@ -25,6 +25,10 @@ until its real completion or terminal. The public signed-int byte count rejects
 writes beyond `INT_MAX` before accessing the caller buffer.
 
 Receive demand belongs to CNet from admission until its callback or terminal.
+Request/reply protocols may call `turbo_transport_request_receive()` before
+sending their final request bytes: admission is bounded to one credit and
+idempotent until completion is consumed. This prevents an immediate response
+plus peer close from racing a later blocking `recv()` on the same owner.
 A read timeout does not revoke demand and the next caller cannot add a second
 outstanding demand; data delivered while another API polls is buffered as an
 owned copy, retained for the next `recv()` (including after the connection
