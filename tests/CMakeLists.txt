@@ -106,6 +106,10 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   
   # 链接库
   target_link_libraries(${TEST_TARGET_NAME} PRIVATE ${TEST_LINK_LIBS})
+  if(TEST_NAME STREQUAL "test_http_flv_local" AND TURBO_MEDIA_TEST_FAULT_INJECTION)
+    target_compile_definitions(${TEST_TARGET_NAME} PRIVATE
+                               TURBO_MEDIA_HTTP_FLV_TEST_HOOKS)
+  endif()
   
   # 设置目标属性
   set_target_properties(${TEST_TARGET_NAME} PROPERTIES 
