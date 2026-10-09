@@ -211,7 +211,10 @@ jobs:
       # artifacts. Never publish these packages or ship their SHA as a
       # permanent dependency: released SDK restores remain authoritative.
       - name: Stage qualified ACE/CNet candidate consumers
-        if: github.event_name == 'pull_request' && github.head_ref == 'feature/ace-cnet-owner-transport'
+        if: >-
+          github.event_name == 'pull_request' &&
+          (github.head_ref == 'feature/ace-cnet-owner-transport' ||
+           github.head_ref == 'fix/http-flv-owner-drain-recovery')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
