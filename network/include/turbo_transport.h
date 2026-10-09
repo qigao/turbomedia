@@ -60,8 +60,11 @@ typedef struct {
     const char *user_agent;
     const char *auth_token;     /* Bearer token */
     
-    /* 可选的外部 CNet owner；调用方负责生命周期与串行化。transport
-       销毁时会在该 owner 上推进当前连接，直到 CLOSED 或超时。 */
+    /* Optional externally owned CNet client. TurboMedia borrows it and
+       attaches exactly one owner-local CNet Manager record per TCP/TLS
+       transport. The caller serializes use on the CNet owner thread and
+       keeps the client initialized until every transport is destroyed.
+       Closing a transport never stops unrelated client connections. */
     cnet_client *cnet_client;
     
     /* 可选的外部 CHTTP client。 */
@@ -100,15 +103,18 @@ typedef void (*turbo_transport_event_cb)(turbo_transport_t *transport,
 TURBO_MEDIA_API turbo_transport_t *turbo_transport_create(const turbo_transport_config_t *config);
 
 /**
- * 销毁传输实例。销毁会先停止内部 I/O；成功返回 0。失败返回 -1，实例仍归
- * 调用方所有且可再次传给本函数重试。使用外部 CNet owner 时，调用方必须保证
- * owner 串行化，并应先调用 turbo_transport_disconnect()、检查成功后再销毁。
- * 关闭失败时用户回调会被解除，避免 external owner 中的 observer 悬空。
+ * Destroy after the real terminal and CNet Manager recycle on the owner.
+ * Returns 0 on success. On incomplete close/drain it returns -1 and leaves
+ * the wrapper owned by the caller for an explicit owner-thread retry; user
+ * callbacks are detached while the borrowed CNet observer remains valid.
+ * The external client is never stopped or destroyed here.
  */
 TURBO_MEDIA_API int turbo_transport_destroy(turbo_transport_t *transport);
 
 /**
- * 连接到服务器（协程内调用）
+ * Connect synchronously on the CNet owner. TCP/TLS reservation uses
+ * cnet_manager and polls the original client; no automatic retry, worker
+ * or Actor hop is created. Reconnect after terminal requires prior recycle.
  */
 TURBO_MEDIA_API int turbo_transport_connect(turbo_transport_t *transport);
 
@@ -149,7 +155,9 @@ TURBO_MEDIA_API void turbo_transport_set_event_callback(turbo_transport_t *trans
                                                   void *user_data);
 
 /**
- * 获取底层 CNet connection handle（如果有）
+ * Borrow the active TCP/TLS CNet connection value. Returns -1 before the
+ * connection is active or after terminal/recycle. A connection identity
+ * does not retain transport lifetime and MUST NOT be reused after close.
  */
 TURBO_MEDIA_API int turbo_transport_get_connection(
     turbo_transport_t *transport, cnet_connection *connection);
