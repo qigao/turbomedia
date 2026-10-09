@@ -411,7 +411,8 @@ int turbo_transport_connect(turbo_transport_t *transport_ptr) {
     /* Last terminal (or a failed admission) must be recycled before the
      * next generation is admitted; no fallback raw cnet_connect() path.
      */
-    if (transport->client && transport_manager_drained(transport) != SALTS_OK) {
+    if (transport->client &&
+        (!transport->manager.impl || transport_manager_drained(transport) != SALTS_OK)) {
         transport_set_error(transport, "CNet Manager has outstanding obligations");
         return -1;
     }
@@ -479,7 +480,7 @@ int turbo_transport_disconnect(turbo_transport_t *transport_ptr) {
         return turbo_transport_disconnect_http(transport_ptr);
     transport = (turbo_transport_impl_t *)transport_ptr;
     if (!transport->connected && !transport->connection_active) {
-        return !transport->client || transport_manager_drained(transport) == SALTS_OK
+        return !transport->manager.impl || transport_manager_drained(transport) == SALTS_OK
                    ? 0 : -1;
     }
     if (transport->websocket_initialized) {
@@ -608,7 +609,8 @@ int turbo_transport_get_connection(turbo_transport_t *transport,
         turbo_transport_base(transport)->config.type == TURBO_TRANSPORT_HTTP)
         return -1;
     impl = (turbo_transport_impl_t *)transport;
-    if (!impl->client) return -1;
+    /* A recycled generation must not leak a stale connection identity. */
+    if (!impl->client || !impl->connection_active) return -1;
     *connection = impl->connection;
     return 0;
 }

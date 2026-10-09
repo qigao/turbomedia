@@ -249,10 +249,18 @@ suite("Salts CHTTP transport") {
     turbo_transport_set_event_callback(transport, transport_event_probe,
                                        &probe);
 
-    check_equal(turbo_transport_connect(transport), 0);
-    check_equal(turbo_transport_disconnect(transport), 0);
-    check_equal(turbo_transport_connect(transport), 0);
-    check_equal(turbo_transport_disconnect(transport), 0);
+    {
+        cnet_connection live = {0};
+        check_equal(turbo_transport_get_connection(transport, &live), -1);
+        check_equal(turbo_transport_connect(transport), 0);
+        check_equal(turbo_transport_get_connection(transport, &live), 0);
+        check_equal(turbo_transport_disconnect(transport), 0);
+        check_equal(turbo_transport_get_connection(transport, &live), -1);
+        check_equal(turbo_transport_connect(transport), 0);
+        check_equal(turbo_transport_get_connection(transport, &live), 0);
+        check_equal(turbo_transport_disconnect(transport), 0);
+        check_equal(turbo_transport_get_connection(transport, &live), -1);
+    }
     check_equal(probe.connected, 2);
     check_equal(probe.disconnected, 2);
 
