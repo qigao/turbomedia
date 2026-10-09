@@ -307,4 +307,66 @@ suite("Salts CHTTP transport") {
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);
     check_equal(state.request_valid, 1);
   }
+  it("keeps a neighboring managed TCP transport live on a shared CNet owner") {
+    transport_http_test_state_t state = {0};
+    transport_event_probe_t first_probe = {0};
+    transport_event_probe_t second_probe = {0};
+    cnet_client owner = {0};
+    cnet_client_config owner_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 5000,
+        .write_timeout_ms = 5000,
+        .cnet_client = &owner
+    };
+    const char request[] =
+        "POST /base/api/v1/commands HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Authorization: Bearer original-token\r\n"
+        "User-Agent: TurboMediaTransportTest/1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 2\r\n\r\n{}";
+    turbo_transport_t *first;
+    turbo_transport_t *second;
+    uint8_t *response = NULL;
+    size_t response_size = 0u;
+    size_t events = 0u;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
+    first = turbo_transport_create(&config);
+    second = turbo_transport_create(&config);
+    check_not_null(first);
+    check_not_null(second);
+    turbo_transport_set_event_callback(first, transport_event_probe, &first_probe);
+    turbo_transport_set_event_callback(second, transport_event_probe, &second_probe);
+    check_equal(turbo_transport_connect(first), 0);
+    check_equal(turbo_transport_connect(second), 0);
+    check_equal(first_probe.connected, 1);
+    check_equal(second_probe.connected, 1);
+    check_equal(turbo_transport_disconnect(first), 0);
+    check_equal(turbo_transport_destroy(first), 0);
+    check_true(turbo_transport_is_connected(second));
+    check_equal(second_probe.disconnected, 0);
+    check_equal(turbo_transport_send(second, (const uint8_t *)request,
+                                     sizeof(request) - 1u),
+                (int)(sizeof(request) - 1u));
+    check_greater(turbo_transport_recv(second, &response, &response_size), 0);
+    check_not_null(response);
+    turbo_transport_free_recv(second, response);
+    check_equal(state.request_valid, 1);
+    check_equal(turbo_transport_destroy(second), 0);
+    for (int attempt = 0; attempt < 8; ++attempt)
+        check_equal(cnet_client_poll(&owner, 10u, &events), SALTS_OK);
+    check_equal(first_probe.disconnected, 1);
+    check_equal(second_probe.disconnected, 1);
+    check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&owner), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
 }

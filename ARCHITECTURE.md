@@ -66,7 +66,7 @@ The shared layer is always built.
 - `TurboMedia::Core` owns common media/runtime primitives.
 - `TurboMedia::Codec` owns codec-facing conversion.
 - `TurboMedia::Muxer` / `TurboMedia::Demuxer` own container boundaries.
-- `TurboMedia::Transport` owns shared network transport.
+- `TurboMedia::Transport` owns shared network transport. See [ACE/CNet 2.3 transport lifecycle](network/ACE_CNET.md) for owner-local TCP/TLS Manager rules and planned Component phases.
 - `TurboMedia::RTSP` owns protocol parsing/session logic.
 - FFmpeg types do not enter the public media ABI.
 
