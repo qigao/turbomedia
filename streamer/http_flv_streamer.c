@@ -230,7 +230,9 @@ static void http_flv_upload_thread(void *arg) {
     turbo_transport_config_t config = {0};
     char request[HTTP_FLV_TARGET_CAPACITY + HTTP_FLV_AUTHORITY_CAPACITY + 256u];
     int result = http_flv_parse_url(ctx->url, &url);
+    const char *failure_stage = "url";
     if (result == 0) {
+        failure_stage = "connect-and-receive-admission";
         config.type = url.use_tls ? TURBO_TRANSPORT_TLS : TURBO_TRANSPORT_TCP;
         config.host = url.host;
         config.port = url.port;
@@ -250,6 +252,7 @@ static void http_flv_upload_thread(void *arg) {
         }
     }
     if (result == 0) {
+        failure_stage = "send-request-headers";
         int size = snprintf(request, sizeof(request),
             "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: video/x-flv\r\n"
             "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
@@ -268,6 +271,7 @@ static void http_flv_upload_thread(void *arg) {
         while (deque_empty(&ctx->queue) && !ctx->upload_closed)
             cmeta_cond_wait(&ctx->cond, &ctx->mutex);
         if (!deque_empty(&ctx->queue)) {
+            failure_stage = "pop-queued-chunk";
             if (deque_pop_front(&ctx->queue, &chunk) != STL_OK) result = -EIO;
             else ctx->queue_bytes -= chunk.size;
             cmeta_cond_broadcast(&ctx->cond);
@@ -276,12 +280,26 @@ static void http_flv_upload_thread(void *arg) {
             break;
         }
         cmeta_mutex_unlock(&ctx->mutex);
-        if (result == 0) result = http_flv_send_chunk(ctx, &chunk);
+        if (result == 0) {
+            failure_stage = "send-chunk";
+            result = http_flv_send_chunk(ctx, &chunk);
+        }
         free(chunk.data);
     }
     if (result == 0) {
+        failure_stage = "send-last-chunk";
         result = http_flv_send_all(ctx, "0\r\n\r\n", 5u);
-        if (result == 0) result = http_flv_read_response(ctx);
+        if (result == 0) {
+            failure_stage = "read-response";
+            result = http_flv_read_response(ctx);
+        }
+    }
+    /* Diagnostics are opt-in; never dump request headers, media or secrets. */
+    if (result != 0 && getenv("TURBOMEDIA_HTTP_FLV_TRACE")) {
+        const char *reason = ctx->transport
+            ? turbo_transport_get_error(ctx->transport) : NULL;
+        fprintf(stderr, "HTTP-FLV failure stage=%s status=%d cnet=%s\n",
+                failure_stage, result, reason ? reason : "(none)");
     }
     cmeta_mutex_lock(&ctx->mutex);
     ctx->upload_result = result;
@@ -456,7 +474,11 @@ static int http_flv_streamer_disconnect_impl(void *ctx_ptr) {
     }
     result = ctx->upload_result;
     if (ctx->transport) {
-        if (turbo_transport_destroy(ctx->transport) != 0) return -EIO;
+        if (turbo_transport_destroy(ctx->transport) != 0) {
+            if (getenv("TURBOMEDIA_HTTP_FLV_TRACE"))
+                fprintf(stderr, "HTTP-FLV failure stage=destroy-transport status=%d\n", -EIO);
+            return -EIO;
+        }
         ctx->transport = NULL;
     }
     ctx->connected = 0;
