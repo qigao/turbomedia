@@ -405,8 +405,17 @@ static int http_flv_streamer_disconnect_internal(void *ctx_ptr, int allow_retry)
 static int http_flv_streamer_destroy_impl(void *ctx_ptr) {
     http_flv_streamer_ctx_t *ctx = (http_flv_streamer_ctx_t *)ctx_ptr;
     if (!ctx) return 0;
-    if (ctx->connected && http_flv_streamer_disconnect_impl(ctx) != 0)
-        return -EIO;
+    if (ctx->connected) {
+        const int close_status = http_flv_streamer_disconnect_impl(ctx);
+        /* A failed request/response may still drain CNet completely.
+         * Treat protocol failure as an API error but not as an excuse to
+         * retain a now-quiescent outer streamer forever. Only the still-
+         * living callback owner/Manager obliges a fail-closed return.
+         */
+        if (close_status != 0 &&
+            (ctx->connected || ctx->transport || ctx->upload_thread_started))
+            return -EIO;
+    }
     if (ctx->writer) {
         flv_writer_destroy(ctx->writer);
         ctx->writer = NULL;

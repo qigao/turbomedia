@@ -250,6 +250,39 @@ suite("local HTTP-FLV chunked push") {
   }
 
 #if defined(TURBO_MEDIA_HTTP_FLV_TEST_HOOKS)
+  it("cleans an admission-failed upload after explicit owner-side retry") {
+    /* Invalid TLS admission fails before any network DATA; the worker's
+     * first Manager drain is artificially refused, and the caller then
+     * explicitly uses destroy() as its one owner-side retry request.
+     */
+    cnet_tls_client_config bad_tls = {0};
+    turbo_streamer_config_t config = {0};
+    turbo_stream_info_t info = {0};
+    turbo_streamer_t *streamer;
+    int stream_id = -1;
+    config.protocol = TURBO_STREAMER_HTTP_FLV;
+    config.url = "https://127.0.0.1:20920/live.flv";
+    config.buffer_size = HTTP_FLV_TEST_QUEUE_CAPACITY;
+    config.network_tls = &bad_tls;
+    turbo_streamer_registry_init();
+    streamer = turbo_streamer_create(&config);
+    check_not_null(streamer);
+    info.type = TURBO_CODEC_TYPE_AUDIO;
+    info.codec_name = "pcmu";
+    info.sample_rate = 8000;
+    info.channels = 1;
+    check_equal(turbo_streamer_add_stream(streamer, &info, &stream_id), 0);
+    http_flv_test_fail_first_drain(1);
+    check_equal(turbo_streamer_connect(streamer), -EIO);
+    /* The transport is still held by its original worker, not returned to
+     * the control thread or settled by an implicit connection retry.
+     * Explicit destroy triggers one bounded original-owner cleanup.
+     */
+    check_equal(turbo_streamer_destroy(streamer), 0);
+    http_flv_test_fail_first_drain(0);
+    turbo_streamer_registry_shutdown();
+  }
+
   it("retains a living CNet owner after failed drain until an explicit retry") {
     http_flv_test_state_t state = {0};
     turbo_streamer_config_t config = {0};

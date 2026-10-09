@@ -80,3 +80,5 @@ under leak detection and fail-fast undefined-behavior checks. This gate is
 Draft-only and does not alter production flags. NativeIO/third-party binaries
 remain externally compiled SDKs; the sanitizer result primarily covers the
 instrumented TurboMedia wrappers and test code.
+
+On a request/protocol error that has nonetheless reached `OWNER_DRAINED`, the outer streamer `destroy()` may free its own context: a failed response is **not** a live native callback lease. Only `connected`, `upload_thread_started`, or a non-NULL transport after a failed native drain causes fail-closed retention. The test suite exercises a rejected TLS admission followed by caller-explicit destruction after the first owner cleanup refusal.
