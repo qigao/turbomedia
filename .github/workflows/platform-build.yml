@@ -471,6 +471,16 @@ jobs:
           if ("${{ matrix.platform }}" -ne "Android") {
             & ctest --preset ci-platform-test
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
+            # Draft diagnostics only: two additional source-identical real
+            # SFU restarts must both pass. No skipped tests, wider production
+            # deadlines, application replay or automatic settlement retry.
+            if ("${{ matrix.platform }}" -eq "Windows" -and
+                "${{ github.head_ref }}" -eq "diagnostics/whip-sfu-restart-windows") {
+              & ctest --preset ci-platform-test -R "^test_ivr_whip_transport$" --repeat "until-fail:2" --output-on-failure --timeout 180
+              if ($LASTEXITCODE -ne 0) {
+                throw "Windows SFU/WHIP restart repeatability gate failed"
+              }
+            }
           }
 
       # Separate test-only build: compile TurboMedia wrappers with ASan/UBSan
