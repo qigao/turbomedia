@@ -69,3 +69,14 @@ the owner parking and command/acknowledgment protocol; it does not yet assert
 recovery from every underlying NativeIO error.
 
 An additional CI-only `TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE` case first performs **real** `turbo_transport_disconnect()` (CNet terminal + Manager recycle) on the owner, then simulates a post-drain wrapper-destroy refusal. A separate explicit caller close must complete that retained wrapper on the same worker. This supplements, rather than replaces, the prior early refusal test.
+
+### Linux ACE owner ASan+UBSan qualification
+
+The stacked owner-recovery Draft runs an additional **CMake Preset owned** Linux
+ASan+UBSan build against the same exact-source installed SDKs; it compiles the
+TurboMedia graph with `-fsanitize=address,undefined` and runs only
+`turbo_media_test_http_flv_local` and `turbo_media_test_transport_http`
+under leak detection and fail-fast undefined-behavior checks. This gate is
+Draft-only and does not alter production flags. NativeIO/third-party binaries
+remain externally compiled SDKs; the sanitizer result primarily covers the
+instrumented TurboMedia wrappers and test code.
