@@ -225,6 +225,23 @@ jobs:
               root = "CHTTP_ROOT"
             }
           )
+          # The published Salts.Native 2.3.0-rc.1 macOS archive uses GCC
+          # emulated TLS, incompatible with AppleClang C11 TinyTest consumers.
+          # The canonical master CI at this exact source SHA independently
+          # installed, compiled and ran the native-TLS C11 smoke. This is a
+          # macOS-only, draft-only test artifact; NEVER a release substitute.
+          if ($rid -eq "macos-arm64") {
+            $candidates += @{
+              name = "Salts"
+              repo = "qigao/salts"
+              run = "37963767058"
+              artifact = "salts-sdk-macos-tinytest-candidate"
+              expected = "10c17c9c2b0d558addf2490c93cc13aa430906b0"
+              manifest = "salts-sdk-manifest.txt"
+              config = "lib/cmake/Salts/SaltsConfig.cmake"
+              root = "SALTS_ROOT"
+            }
+          }
           foreach ($candidate in $candidates) {
             $details = & gh api "repos/$($candidate.repo)/actions/runs/$($candidate.run)" --jq "{head_sha: .head_sha, conclusion: .conclusion}"
             if ($LASTEXITCODE -ne 0) { throw "$($candidate.name): GitHub Actions run metadata unavailable" }
@@ -247,6 +264,16 @@ jobs:
             $expectedLine = "commit=$($candidate.expected)"
             if ($manifestText -notmatch "(?m)^$([regex]::Escape($expectedLine))\r?$") {
               throw "$($candidate.name): SDK install commit differs from its exact source"
+            }
+            if ($candidate.name -eq "Salts") {
+              foreach ($required in @("os=macos", "arch=ARM64", "profile=release")) {
+                if ($manifestText -notmatch "(?m)^$([regex]::Escape($required))\r?$") {
+                  throw "Salts: candidate SDK identity mismatch: $required"
+                }
+              }
+              if (-not (Test-Path -LiteralPath (Join-Path $root "lib/libtinytest.a") -PathType Leaf)) {
+                throw "Salts: native TinyTest archive absent from qualified macOS candidate"
+              }
             }
             $root = $root.Replace('\', '/')
             "$($candidate.root)=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
