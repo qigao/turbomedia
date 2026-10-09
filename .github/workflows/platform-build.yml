@@ -111,6 +111,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # PRs are validated at the authored source commit, not a synthetic
+          # merge-ref revision. Stacked PR #154 carries its #152 base commits.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact checked-out source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expected = "${{ github.event.pull_request.head.sha || github.sha }}"
+          $actual = & git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual.Trim() -ne $expected) {
+            throw "CI checkout does not match its exact PR source SHA"
+          }
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
         with:
