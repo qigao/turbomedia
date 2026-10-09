@@ -19,6 +19,7 @@ typedef struct {
 typedef struct {
     int connected;
     int disconnected;
+    int data_received;
 } transport_event_probe_t;
 
 static native_io_backend_kind transport_http_test_backend(void) {
@@ -116,6 +117,8 @@ static void transport_event_probe(
         probe->connected += 1;
     } else if (event == TURBO_TRANSPORT_EVENT_DISCONNECTED) {
         probe->disconnected += 1;
+    } else if (event == TURBO_TRANSPORT_EVENT_DATA_RECEIVED) {
+        probe->data_received += 1;
     }
 }
 
@@ -465,8 +468,9 @@ suite("Salts CHTTP transport") {
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);
   }
 
-  it("consumes a completed HTTP reply after CNet reports peer close") {
+  it("consumes a copied HTTP reply after the real CNet terminal") {
     transport_http_test_state_t state = {0};
+    transport_event_probe_t probe = {0};
     cnet_client owner = {0};
     cnet_client_config owner_config = transport_external_client_config();
     turbo_transport_config_t config = {
@@ -495,17 +499,22 @@ suite("Salts CHTTP transport") {
     check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
     transport = turbo_transport_create(&config);
     check_not_null(transport);
+    turbo_transport_set_event_callback(transport, transport_event_probe, &probe);
     check_equal(turbo_transport_connect(transport), 0);
     check_equal(turbo_transport_request_receive(transport), 0);
     check_equal(turbo_transport_send(transport, (const uint8_t *)request,
                                      sizeof(request) - 1u),
                 (int)(sizeof(request) - 1u));
-    /* Allow both the receive callback and the real peer terminal to occur
-     * before handing the bounded owned receive back to the application.
+    /* Connection: close does not guarantee an immediate server terminal.
+     * Wait for the real receive callback, then explicitly close through the
+     * CNet owner so terminal/recycle is observed before consuming the copy.
      */
-    for (int n = 0; n < 300 && turbo_transport_is_connected(transport); ++n)
+    for (int n = 0; n < 300 && probe.data_received == 0; ++n)
         check_equal(cnet_client_poll(&owner, 10u, &events), SALTS_OK);
+    check_greater(probe.data_received, 0);
+    check_equal(turbo_transport_disconnect(transport), 0);
     check_false(turbo_transport_is_connected(transport));
+    check_greater(probe.disconnected, 0);
     check_equal(turbo_transport_request_receive(transport), 0);
     check_greater(turbo_transport_recv(transport, &response, &response_size), 0);
     check_not_null(response);
