@@ -41,6 +41,17 @@ typedef enum {
 
 typedef struct { uint8_t *data; size_t size; } http_flv_chunk_t;
 
+/* Failed drain keeps the original Manager owner thread alive. Only a later
+ * explicit API call may request another bounded owner-local attempt.
+ */
+typedef enum {
+    HTTP_FLV_OWNER_RUNNING = 0,
+    HTTP_FLV_OWNER_CLOSE_REQUESTED,
+    HTTP_FLV_OWNER_DRAINING,
+    HTTP_FLV_OWNER_RETAINED_FAILURE,
+    HTTP_FLV_OWNER_DRAINED
+} http_flv_owner_state_t;
+
 typedef struct {
     char host[HTTP_FLV_HOST_CAPACITY];
     char authority[HTTP_FLV_AUTHORITY_CAPACITY];
@@ -74,6 +85,11 @@ typedef struct {
     int upload_closed;
     int upload_done;
     int upload_result;
+    http_flv_owner_state_t owner_state;
+    uint64_t owner_retry_requested;
+    uint64_t owner_retry_completed;
+    int owner_failure_reported;
+    int owner_cleanup_status;
     turbo_streamer_event_cb event_callback;
     void *event_user_data;
     turbo_streamer_stats_t stats;
@@ -294,34 +310,59 @@ static void http_flv_upload_thread(void *arg) {
             result = http_flv_read_response(ctx);
         }
     }
-    /* The upload worker created the owner-local CNet Manager. Complete and
-     * destroy its wrapper on this same thread, before the controller joins.
-     * On failed drain retain the wrapper rather than freeing borrowed state.
+    /* Exactly one first drain attempt, followed only by explicit API
+     * retry commands on this original living CNet Manager owner. Inability
+     * to drain parks this worker instead of releasing borrowed callbacks.
      */
-    if (ctx->transport) {
-        int cleanup_status = turbo_transport_destroy(ctx->transport);
-        if (cleanup_status == 0) {
-            ctx->transport = NULL;
-        } else if (result == 0) {
-            result = -EIO;
-            failure_stage = "destroy-on-cnet-owner";
-        } else if (getenv("TURBOMEDIA_HTTP_FLV_TRACE")) {
-            fprintf(stderr, "HTTP-FLV owner cleanup also failed status=%d\n",
-                    cleanup_status);
+    {
+        const int protocol_result = result;
+        uint64_t attempt = 0u;
+        for (;;) {
+            int cleanup_status = 0;
+            cmeta_mutex_lock(&ctx->mutex);
+            ctx->owner_state = HTTP_FLV_OWNER_DRAINING;
+            cmeta_mutex_unlock(&ctx->mutex);
+#if defined(TURBO_MEDIA_HTTP_FLV_TEST_HOOKS)
+            /* A deterministic once-only fault for the test-enabled shared
+             * library. The production library has no injected failure path.
+             */
+            if (attempt == 0u &&
+                getenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_ONCE") != NULL)
+                cleanup_status = -1;
+            else
+#endif
+            if (ctx->transport) {
+                cleanup_status = turbo_transport_destroy(ctx->transport);
+                if (cleanup_status == 0) ctx->transport = NULL;
+            }
+            if (cleanup_status != 0 && getenv("TURBOMEDIA_HTTP_FLV_TRACE")) {
+                const char *reason = ctx->transport
+                    ? turbo_transport_get_error(ctx->transport) : NULL;
+                fprintf(stderr, "HTTP-FLV owner drain failure attempt=%llu"
+                        " status=%d stage=%s cnet=%s\n",
+                        (unsigned long long)attempt, cleanup_status,
+                        failure_stage, reason ? reason : "(none)");
+            }
+            cmeta_mutex_lock(&ctx->mutex);
+            ctx->owner_cleanup_status = cleanup_status;
+            ctx->owner_retry_completed = attempt;
+            ctx->owner_state = cleanup_status == 0
+                ? HTTP_FLV_OWNER_DRAINED : HTTP_FLV_OWNER_RETAINED_FAILURE;
+            ctx->upload_result = cleanup_status == 0 ? protocol_result
+                : protocol_result == 0 ? -EIO : protocol_result;
+            ctx->upload_done = 1;
+            cmeta_cond_broadcast(&ctx->cond);
+            if (cleanup_status == 0) {
+                cmeta_mutex_unlock(&ctx->mutex);
+                break;
+            }
+            /* No timer, implicit retry, or foreign-thread destroy. */
+            while (ctx->owner_retry_requested == attempt)
+                cmeta_cond_wait(&ctx->cond, &ctx->mutex);
+            attempt = ctx->owner_retry_requested;
+            cmeta_mutex_unlock(&ctx->mutex);
         }
     }
-    /* Diagnostics are opt-in; never dump request headers, media or secrets. */
-    if (result != 0 && getenv("TURBOMEDIA_HTTP_FLV_TRACE")) {
-        const char *reason = ctx->transport
-            ? turbo_transport_get_error(ctx->transport) : NULL;
-        fprintf(stderr, "HTTP-FLV failure stage=%s status=%d cnet=%s\n",
-                failure_stage, result, reason ? reason : "(none)");
-    }
-    cmeta_mutex_lock(&ctx->mutex);
-    ctx->upload_result = result;
-    ctx->upload_done = 1;
-    cmeta_cond_broadcast(&ctx->cond);
-    cmeta_mutex_unlock(&ctx->mutex);
 }
 
 static int http_flv_codec(const char *name, int video, http_flv_codec_t *codec) {
@@ -347,6 +388,7 @@ static int http_flv_codec(const char *name, int video, http_flv_codec_t *codec) 
 }
 
 static int http_flv_streamer_disconnect_impl(void *ctx_ptr);
+static int http_flv_streamer_disconnect_internal(void *ctx_ptr, int allow_retry);
 
 static int http_flv_streamer_destroy_impl(void *ctx_ptr) {
     http_flv_streamer_ctx_t *ctx = (http_flv_streamer_ctx_t *)ctx_ptr;
@@ -443,6 +485,11 @@ static int http_flv_streamer_connect_impl(void *ctx_ptr) {
     if (ctx->connected) return 0;
     ctx->upload_closed = ctx->upload_done = ctx->upload_ready = 0;
     ctx->upload_result = 0;
+    ctx->owner_state = HTTP_FLV_OWNER_RUNNING;
+    ctx->owner_retry_requested = 0u;
+    ctx->owner_retry_completed = 0u;
+    ctx->owner_failure_reported = 0;
+    ctx->owner_cleanup_status = 0;
     http_flv_clear_queue(ctx);
     if (flv_muxer_reset(ctx->muxer) != 0) return -EIO;
     ctx->connected = 1;
@@ -460,7 +507,10 @@ static int http_flv_streamer_connect_impl(void *ctx_ptr) {
     result = ctx->upload_ready ? 0 : ctx->upload_result;
     cmeta_mutex_unlock(&ctx->mutex);
     if (result != 0) {
-        int cleanup_status = http_flv_streamer_disconnect_impl(ctx);
+        /* A failed connect may settle its first owner drain, but must not
+         * authorize an implicit retry from this connect operation.
+         */
+        int cleanup_status = http_flv_streamer_disconnect_internal(ctx, 0);
         return cleanup_status != 0 ? cleanup_status : result;
     }
     if (ctx->event_callback)
@@ -468,8 +518,9 @@ static int http_flv_streamer_connect_impl(void *ctx_ptr) {
     return 0;
 }
 
-static int http_flv_streamer_disconnect_impl(void *ctx_ptr) {
+static int http_flv_streamer_disconnect_internal(void *ctx_ptr, int allow_retry) {
     http_flv_streamer_ctx_t *ctx = (http_flv_streamer_ctx_t *)ctx_ptr;
+    uint64_t requested_attempt = 0u;
     int result;
     if (!ctx) return -EINVAL;
     if (!ctx->connected) return 0;
@@ -479,30 +530,47 @@ static int http_flv_streamer_disconnect_impl(void *ctx_ptr) {
     }
     cmeta_mutex_lock(&ctx->mutex);
     ctx->upload_closed = 1;
+    if (ctx->owner_state == HTTP_FLV_OWNER_RUNNING)
+        ctx->owner_state = HTTP_FLV_OWNER_CLOSE_REQUESTED;
+    if (allow_retry && ctx->owner_failure_reported &&
+        ctx->owner_state == HTTP_FLV_OWNER_RETAINED_FAILURE) {
+        if (ctx->owner_retry_requested == UINT64_MAX) {
+            cmeta_mutex_unlock(&ctx->mutex);
+            return -EOVERFLOW;
+        }
+        requested_attempt = ++ctx->owner_retry_requested;
+    }
     cmeta_cond_broadcast(&ctx->cond);
+    /* One initial drain or one explicitly requested retry per call. A failed
+     * drain leaves the worker alive: no controller-side cnet_manager_destroy.
+     */
+    while (!ctx->upload_done ||
+           (requested_attempt != 0u &&
+            ctx->owner_retry_completed < requested_attempt))
+        cmeta_cond_wait(&ctx->cond, &ctx->mutex);
+    if (ctx->owner_state != HTTP_FLV_OWNER_DRAINED) {
+        ctx->owner_failure_reported = 1;
+        cmeta_mutex_unlock(&ctx->mutex);
+        return -EIO;
+    }
+    result = ctx->upload_result;
     cmeta_mutex_unlock(&ctx->mutex);
-    result = 0;
+
     if (ctx->upload_thread_started) {
-        result = cmeta_thread_join(&ctx->upload_thread);
-        if (result != 0) return result;
+        if (cmeta_thread_join(&ctx->upload_thread) != 0) return -EIO;
         cmeta_thread_destroy(&ctx->upload_thread);
         ctx->upload_thread_started = 0;
     }
-    result = ctx->upload_result;
-    /* Only the upload worker is authorized to destroy its CNet Manager.
-     * Its final state is visible after the join. Never transfer owner by
-     * treating join() as permission to destroy from this control thread.
-     */
-    if (ctx->transport) {
-        if (getenv("TURBOMEDIA_HTTP_FLV_TRACE"))
-            fprintf(stderr, "HTTP-FLV failure stage=owner-drain-pending status=%d\n", -EIO);
-        return -EIO;
-    }
+    if (ctx->transport) return -EIO;
     ctx->connected = 0;
     if (result != 0) return result;
     if (ctx->event_callback)
         ctx->event_callback(NULL, TURBO_STREAMER_EVENT_DISCONNECTED, NULL, ctx->event_user_data);
     return 0;
+}
+
+static int http_flv_streamer_disconnect_impl(void *ctx_ptr) {
+    return http_flv_streamer_disconnect_internal(ctx_ptr, 1);
 }
 
 static int http_flv_streamer_write_packet_impl(
