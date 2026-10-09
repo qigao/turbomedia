@@ -13,7 +13,9 @@ foreach ($required in @("GITHUB_TOKEN", "RUNNER_TEMP", "GITHUB_ENV", "GITHUB_PAT
 }
 
 $config = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk.config"
-$project = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk.csproj"
+$restoreRoot = Join-Path $env:RUNNER_TEMP "turbomedia-native-sdk-restore"
+New-Item -ItemType Directory -Path $restoreRoot -Force | Out-Null
+$project = Join-Path $restoreRoot "turbomedia-platform-sdk.csproj"
 $packages = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk-packages"
 if (Test-Path -LiteralPath $packages) {
   Remove-Item -LiteralPath $packages -Recurse -Force
@@ -45,8 +47,14 @@ $desktopReference = if ($desktopServices) {
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Salts.Native" Version="*" />
-    <PackageReference Include="SaltsUtils.Native" Version="*" />
+    <PackageReference Include="Salts.Native" Version="2.3.0-*" />
+    <PackageReference Include="SaltsUtils.Native" Version="4.3.0-*" />
+    <!-- Qualified CI selects a published stable or numeric RC without
+         hardcoding a permanent version or admitting rc.sha snapshots. -->
+    <PackageReference Update="Salts.Native" Version="`$(SaltsNativeQualifiedVersion)"
+                      Condition="'`$(SaltsNativeQualifiedVersion)' != ''" />
+    <PackageReference Update="SaltsUtils.Native" Version="`$(SaltsUtilsNativeQualifiedVersion)"
+                      Condition="'`$(SaltsUtilsNativeQualifiedVersion)' != ''" />
     <PackageReference Include="SaltsNet.Native" Version="*" />
     <PackageReference Include="CHttp.Native" Version="*" />
 $desktopReference
@@ -54,8 +62,81 @@ $desktopReference
 </Project>
 "@ | Set-Content -LiteralPath $project -Encoding utf8
 
-dotnet restore $project --configfile $config --packages $packages
+# NuGet's prerelease sort can incorrectly prefer an ephemeral Linux-only
+# 2.3.0-rc.sha... over an immutable public 2.3.0-rc.N. Keep the repository's
+# floating PackageReference, but qualify the highest officially tagged RC (or
+# stable) from GitHub Releases and verify its exact restored identity.
+function Get-OfficialNativeVersion([string]$repository, [string]$line,
+                                   [string]$packageName) {
+  $url = "https://api.github.com/repos/qigao/$repository/releases?per_page=100"
+  $headers = @{
+    Accept = "application/vnd.github+json"
+    Authorization = "Bearer $env:GITHUB_TOKEN"
+    "User-Agent" = "turbomedia-native-sdk-qualification"
+  }
+  $releases = Invoke-RestMethod -Method Get -Uri $url -Headers $headers
+  $rcPattern = "^v" + [regex]::Escape($line) + "-rc\.([0-9]+)$"
+  $choices = @(
+    foreach ($release in $releases) {
+      if ($release.draft) { continue }
+      $tag = [string]$release.tag_name
+      if ($tag -eq "v$line" -and -not $release.prerelease) {
+        $priority = [int]::MaxValue
+      } elseif ($release.prerelease -and $tag -match $rcPattern) {
+        $priority = [int]$Matches[1]
+      } else {
+        continue
+      }
+      [pscustomobject]@{
+        Priority = $priority
+        Version = $tag.Substring(1)
+        Release = $release
+      }
+    }
+  )
+  if ($choices.Count -eq 0) {
+    throw "No published stable or numeric RC native release for $line in qigao/$repository"
+  }
+  $selected = $choices | Sort-Object Priority -Descending | Select-Object -First 1
+  $asset = "$packageName.$($selected.Version).nupkg"
+  if (@($selected.Release.assets | Where-Object { $_.name -eq $asset }).Count -ne 1) {
+    throw "Official native release $($selected.Release.tag_name) lacks asset $asset"
+  }
+  return $selected.Version
+}
+
+$saltsExpected = Get-OfficialNativeVersion "salts" "2.3.0" "Salts.Native"
+$saltsUtilsExpected = Get-OfficialNativeVersion "salts-utils" "4.3.0" "SaltsUtils.Native"
+$properties = @(
+  "-p:SaltsNativeQualifiedVersion=$saltsExpected",
+  "-p:SaltsUtilsNativeQualifiedVersion=$saltsUtilsExpected"
+)
+Write-Host "Qualifying native SDK versions Salts.Native $saltsExpected / SaltsUtils.Native $saltsUtilsExpected"
+
+dotnet restore $project --configfile $config --packages $packages --no-cache --force-evaluate @properties
 if ($LASTEXITCODE -ne 0) { throw "platform SDK restore failed" }
+
+$assetsPath = Join-Path $restoreRoot "obj/project.assets.json"
+if (-not (Test-Path -LiteralPath $assetsPath -PathType Leaf)) {
+  throw "NuGet resolved asset graph is missing: $assetsPath"
+}
+$assets = Get-Content -LiteralPath $assetsPath -Raw | ConvertFrom-Json -AsHashtable
+function Check-ResolvedPackage([string]$name, [string]$expected) {
+  $matched = @($assets.libraries.Keys | Where-Object {
+    $_.StartsWith("$name/", [StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($matched.Count -ne 1) { throw "Expected exactly one resolved $name package" }
+  $version = $matched[0].Substring($name.Length + 1)
+  if ($version -ne $expected) {
+    throw "$name restored $version, expected qualified official version $expected"
+  }
+}
+Check-ResolvedPackage "Salts.Native" $saltsExpected
+Check-ResolvedPackage "SaltsUtils.Native" $saltsUtilsExpected
+"SALTS_SDK_RESOLVED_VERSION=$saltsExpected" |
+  Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+"SALTS_UTILS_SDK_RESOLVED_VERSION=$saltsUtilsExpected" |
+  Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
 function Resolve-SdkRoot([string]$PackageId, [string]$SdkRid = "") {
   if ([string]::IsNullOrWhiteSpace($SdkRid)) {

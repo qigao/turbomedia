@@ -10,6 +10,9 @@ on:
       - "CMakeUserPresets.json"
       - "presets/**"
       - "cmake/**"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
+      - "vcpkg-overlays/**"
       - "common/**"
       - "core/**"
       - "crypto/**"
@@ -79,6 +82,11 @@ jobs:
     name: ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      TURBOMEDIA_CI_TRIPLET: ${{ matrix.triplet }}
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_COMPRESS: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -101,7 +109,7 @@ jobs:
             triplet: arm64-osx
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
         with:
@@ -109,7 +117,7 @@ jobs:
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
 
@@ -160,6 +168,23 @@ jobs:
           test "$(uname -m)" = "arm64"
           brew install ninja nasm autoconf automake libtool
 
+      # TurboMedia object caching is separate from the central, read-only
+      # vcpkg binary packages and released platform SDKs restored below.
+      - name: Restore compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: turbomedia-${{ matrix.rid }}-${{ matrix.triplet }}-release-v1
+          max-size: 500M
+
+      - name: Verify compiler cache
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & ccache --version
+          if ($LASTEXITCODE -ne 0) { throw "ccache is unavailable" }
+          & ccache --zero-stats
+          if ($LASTEXITCODE -ne 0) { throw "failed to initialize ccache statistics" }
+
       - name: Restore latest platform SDKs
         shell: pwsh
         env:
@@ -180,22 +205,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
-          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/platform-${{ matrix.platform }}"
-          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
-          Remove-Item -LiteralPath $build -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-          $args = @(
-            "-S", ".",
-            "-B", $build,
-            "-G", "Ninja",
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
-            "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}",
-            "-DVCPKG_MANIFEST_MODE=OFF",
-            "-DVCPKG_INSTALLED_DIR=$installed",
-            "-DCMAKE_INSTALL_PREFIX=$stage"
-          )
+          foreach ($directory in @("build/ci-platform", "stage/ci-platform")) {
+            $path = Join-Path $env:GITHUB_WORKSPACE $directory
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          $args = @()
           if ("${{ matrix.platform }}" -eq "Android") {
             $args += @(
               "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$env:ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake",
@@ -205,14 +219,14 @@ jobs:
               "-DANDROID_STL=c++_shared"
             )
           }
-          & cmake @args
+          & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
 
       - name: Build and test
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform"
           $runtimeDirs = @()
           foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
             $root = [Environment]::GetEnvironmentVariable($name)
@@ -242,10 +256,12 @@ jobs:
             if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
             $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
           }
-          & cmake --build $build --parallel 2
+          & cmake --build --preset ci-platform-build
           if ($LASTEXITCODE -ne 0) { throw "build failed for ${{ matrix.platform }}" }
+          & ccache --show-stats
+          if ($LASTEXITCODE -ne 0) { throw "ccache stats failed" }
           if ("${{ matrix.platform }}" -ne "Android") {
-            & ctest --test-dir $build --no-tests=error --output-on-failure -LE performance
+            & ctest --preset ci-platform-test
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }
 
@@ -253,8 +269,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
-          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/platform-${{ matrix.platform }}"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/ci-platform"
           & cmake --install $build
           if ($LASTEXITCODE -ne 0) { throw "install failed for ${{ matrix.platform }}" }
           $config = Join-Path $stage "lib/cmake/TurboMedia/TurboMediaConfig.cmake"
