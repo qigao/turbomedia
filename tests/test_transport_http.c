@@ -377,4 +377,30 @@ suite("Salts CHTTP transport") {
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);
   }
 
+  it("recycles rejected TLS admission without a hidden reconnect") {
+    cnet_tls_client_config invalid_tls = {0};
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TLS,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 250,
+        .read_timeout_ms = 250,
+        .write_timeout_ms = 250,
+        .tls = &invalid_tls
+    };
+    turbo_transport_t *transport = turbo_transport_create(&config);
+    cnet_connection connection = {0};
+
+    check_not_null(transport);
+    /* Invalid TLS policy is fail-closed at CNet admission. A valid Manager
+     * reservation is consumed even when CNet rejects synchronously.
+     */
+    check_equal(turbo_transport_connect(transport), -1);
+    check_not_null(turbo_transport_get_error(transport));
+    check_equal(turbo_transport_get_connection(transport, &connection), -1);
+    /* A second explicit call can reserve again; nothing auto-retries. */
+    check_equal(turbo_transport_connect(transport), -1);
+    check_equal(turbo_transport_destroy(transport), 0);
+  }
+
 }
