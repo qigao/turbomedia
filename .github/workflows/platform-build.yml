@@ -356,6 +356,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # Only emits bounded stage/status codes on HTTP-FLV upload failure.
+          $env:TURBOMEDIA_HTTP_FLV_TRACE = "1"
           $build = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform"
           $runtimeDirs = @()
           foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
