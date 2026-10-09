@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifndef TEST_BIN_DIR
 #define TEST_BIN_DIR "."
@@ -35,6 +36,7 @@
 #include <ws2tcpip.h>
 typedef HANDLE proc_handle_t;
 static void proc_sleep(unsigned int ms) { Sleep(ms); }
+static uint64_t test_monotonic_ms(void) { return (uint64_t)GetTickCount64(); }
 #else
 #include <unistd.h>
 #include <sys/socket.h>
@@ -45,6 +47,11 @@ static void proc_sleep(unsigned int ms) { Sleep(ms); }
 #include <sys/wait.h>
 typedef pid_t proc_handle_t;
 static void proc_sleep(unsigned int ms) { usleep(ms * 1000); }
+static uint64_t test_monotonic_ms(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
 #endif
 
 typedef struct {
@@ -958,6 +965,9 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     uint64_t frames_before_restart;
     uint64_t frames_after_reconnect;
     uint32_t publisher_ssrc;
+    uint64_t stamp = test_monotonic_ms();
+    uint64_t initial_ms, shutdown_ms, termination_ms, restart_ms;
+    uint64_t whip_ms, whep_ms, rtp_ms;
 
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
     check_true(wait_whip_connected());
@@ -979,11 +989,17 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     /* A completed process stop, rather than a best-effort kill request, is
      * the barrier before reusing the same SFU control/media ports.
      */
+    initial_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
     check_equal(kill_child(&g_sfu), 0);
+    shutdown_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
     check_true(wait_for_media_terminal(&g_whip_states, whip_terminal_before));
     check_true(wait_for_media_terminal(&g_whep_states, whep_terminal_before));
     check_false(ivr_whip_transport_connected(g_transport));
     check_false(ivr_whep_transport_connected(g_whep_transport));
+    termination_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
 
     /* Local teardown completes, but the dead SFU cannot acknowledge DELETE.
        Preserve that remote-side uncertainty as an explicit failure; the same
@@ -999,12 +1015,16 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     check_true(sfu_process_alive());
     check_true(provision_room());
     check_true(sfu_process_alive());
+    restart_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
     {
         const int reconnected = wait_whip_connected();
         if (!reconnected) print_whip_restart_failure_snapshot("post-sfu-restart");
         check_true(reconnected);
     }
+    whip_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
     publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
     check_true(publisher_ssrc != 0u);
     check_true(configure_audio_route(publisher_ssrc));
@@ -1015,6 +1035,8 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
         if (!reconnected) print_whip_restart_failure_snapshot("post-sfu-restart-whep");
         check_true(reconnected);
     }
+    whep_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
 
     whip_after = media_state_snapshot(&g_whip_states);
     whep_after = media_state_snapshot(&g_whep_states);
@@ -1033,6 +1055,12 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
         if (!resumed) print_whip_restart_failure_snapshot("post-sfu-restart-rtp");
         check_true(resumed);
     }
+    rtp_ms = test_monotonic_ms() - stamp;
+    fprintf(stderr, "[whip-restart-timing] initial_ms=%llu shutdown_ms=%llu terminal_ms=%llu restart_ms=%llu whip_ms=%llu whep_ms=%llu rtp_ms=%llu\n",
+            (unsigned long long)initial_ms, (unsigned long long)shutdown_ms,
+            (unsigned long long)termination_ms, (unsigned long long)restart_ms,
+            (unsigned long long)whip_ms, (unsigned long long)whep_ms,
+            (unsigned long long)rtp_ms);
     check_true(ivr_whip_transport_connected(g_transport));
     check_true(ivr_whep_transport_connected(g_whep_transport));
 
