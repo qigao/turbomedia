@@ -3,6 +3,7 @@
  */
 #include <cnet/manager.h>
 #include <salts/error_codes.h>
+#include <salts/clock.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -17,16 +18,24 @@
     } \
 } while (0)
 
+typedef struct smoke_probe {
+    unsigned connected;
+    unsigned terminal;
+    unsigned recycled;
+} smoke_probe;
+
 static void on_state(void *user, cnet_connection connection,
                      cnet_connection_state state, const cnet_error *error) {
-    (void)user;
+    smoke_probe *probe = (smoke_probe *)user;
     (void)connection;
-    (void)state;
     (void)error;
+    if (state == CNET_CONNECTION_CONNECTED) ++probe->connected;
+    if (state == CNET_CONNECTION_CLOSED || state == CNET_CONNECTION_FAILED)
+        ++probe->terminal;
 }
 
 static void on_recycle(void *user) {
-    ++*(unsigned *)user;
+    ++((smoke_probe *)user)->recycled;
 }
 
 int main(void) {
@@ -38,7 +47,17 @@ int main(void) {
     cnet_managed_connection first = {0}, second = {0};
     cnet_manager_entry entry = {0};
     cnet_manager_snapshot snapshot = {0};
-    unsigned recycled = 0u;
+    smoke_probe probe = {0};
+    cnet_listener listener = {0};
+    cnet_listener_config listener_config = {0};
+    cnet_accepted_stream accepted = CNET_ACCEPTED_STREAM_INIT;
+    cnet_connect_options options = {0};
+    cnet_connection connection = {0};
+    uint16_t port = 0u;
+    char uri[96];
+    size_t events = 0u;
+    uint64_t started_ms;
+    int status;
     size_t work = 0u;
 
 #if defined(_WIN32)
@@ -67,7 +86,7 @@ int main(void) {
     manager_config.connection_capacity = 1u;
     REQUIRE(cnet_manager_init(&manager, &manager_config) == SALTS_OK);
     attachment.observer.on_state = on_state;
-    attachment.observer.user = &recycled;
+    attachment.observer.user = &probe;
     attachment.on_recycle = on_recycle;
 
     REQUIRE(cnet_manager_reserve(&manager, &attachment, &first) == SALTS_OK);
@@ -77,7 +96,7 @@ int main(void) {
     REQUIRE(cnet_manager_cancel(&manager, first) == SALTS_OK);
     REQUIRE(cnet_manager_cancel(&manager, first) == SALTS_EALREADY);
     REQUIRE(cnet_manager_advance(&manager, 1u, &work) == SALTS_OK);
-    REQUIRE(work == 1u && recycled == 1u);
+    REQUIRE(work == 1u && probe.recycled == 1u);
     REQUIRE(cnet_manager_get_snapshot(&manager, &snapshot) == SALTS_OK);
     REQUIRE(snapshot.drained);
 
@@ -86,7 +105,50 @@ int main(void) {
     REQUIRE(second.generation != first.generation);
     REQUIRE(cnet_manager_cancel(&manager, second) == SALTS_OK);
     REQUIRE(cnet_manager_advance(&manager, 1u, &work) == SALTS_OK);
-    REQUIRE(recycled == 2u);
+    REQUIRE(probe.recycled == 2u);
+
+    /* Real TCP test of installed CNet's adopted owner-local lifetime. The
+     * Manager is reused after cancellation; no new backend or worker exists.
+     */
+    listener_config.backend = client_config.backend;
+    listener_config.host = "127.0.0.1";
+    listener_config.port = 0u;
+    listener_config.backlog = 4u;
+    REQUIRE(cnet_listener_init(&listener, &listener_config) == SALTS_OK);
+    REQUIRE(cnet_listener_port(&listener, &port) == SALTS_OK);
+    status = snprintf(uri, sizeof(uri), "tcp://127.0.0.1:%u", (unsigned)port);
+    REQUIRE(status > 0 && (size_t)status < sizeof(uri));
+    options.uri = uri;
+    REQUIRE(cnet_manager_reserve(&manager, &attachment, &second) == SALTS_OK);
+    REQUIRE(cnet_manager_connect(&manager, second, &options, &connection) == SALTS_OK);
+
+    started_ms = cmeta_monotonic_ms();
+    while (probe.connected == 0u && probe.terminal == 0u &&
+           cmeta_monotonic_ms() - started_ms < 3000u) {
+        REQUIRE(cnet_client_poll(&client, 10u, &events) == SALTS_OK);
+    }
+    REQUIRE(probe.connected == 1u && probe.terminal == 0u);
+    started_ms = cmeta_monotonic_ms();
+    for (;;) {
+        status = cnet_listener_accept_detached(&listener, &accepted);
+        if (status == SALTS_OK) break;
+        REQUIRE(status == SALTS_ETIMEDOUT);
+        REQUIRE(cmeta_monotonic_ms() - started_ms < 3000u);
+        REQUIRE(cnet_client_poll(&client, 10u, &events) == SALTS_OK);
+    }
+    REQUIRE(cnet_accepted_stream_close(&accepted) == SALTS_OK);
+    REQUIRE(cnet_close(&client, connection) == SALTS_OK);
+    started_ms = cmeta_monotonic_ms();
+    while (probe.terminal == 0u && cmeta_monotonic_ms() - started_ms < 3000u) {
+        REQUIRE(cnet_client_poll(&client, 10u, &events) == SALTS_OK);
+    }
+    REQUIRE(probe.terminal == 1u);
+    REQUIRE(cnet_manager_advance(&manager, 1u, &work) == SALTS_OK);
+    REQUIRE(probe.recycled == 3u);
+    REQUIRE(cnet_manager_get_snapshot(&manager, &snapshot) == SALTS_OK);
+    REQUIRE(snapshot.drained);
+    REQUIRE(cnet_listener_close(&listener) == SALTS_OK);
+    REQUIRE(cnet_listener_destroy(&listener) == SALTS_OK);
     REQUIRE(cnet_manager_destroy(&manager) == SALTS_OK);
     REQUIRE(cnet_client_stop(&client, 1000u) == SALTS_OK);
     REQUIRE(cnet_client_destroy(&client) == SALTS_OK);
