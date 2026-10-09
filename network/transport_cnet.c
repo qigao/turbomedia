@@ -6,6 +6,7 @@
 
 #include <salts/clock.h>
 #include <salts/error_codes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,8 @@ typedef struct turbo_transport_s {
     int connection_active;
     int terminal;
     int receive_ready;
+    int receive_pending; /* One admitted CNet receive demand at a time. */
+    int receive_status;
     int receive_is_text;
     int send_pending;
     int send_completed;
@@ -181,12 +184,14 @@ static void cnet_state(void *user, cnet_connection connection,
     } else if (state == CNET_CONNECTION_FAILED) {
         transport->connected = 0;
         transport->connection_active = 0;
+        transport->receive_pending = 0;
         transport->terminal = 1;
         transport_set_error(transport, error && error->stage ? error->stage : "CNet connect failed");
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_ERROR, transport->error_msg);
     } else if (state == CNET_CONNECTION_CLOSED) {
         transport->connected = 0;
         transport->connection_active = 0;
+        transport->receive_pending = 0;
         transport->terminal = 1;
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_DISCONNECTED, NULL);
     }
@@ -196,7 +201,10 @@ static void cnet_receive_cb(void *user, cnet_connection connection,
                             const cnet_receive_view *view) {
     turbo_transport_impl_t *transport = (turbo_transport_impl_t *)user;
     (void)connection;
-    if (view && copy_receive(transport, view->data, view->size, 0) == SALTS_OK)
+    transport->receive_pending = 0;
+    transport->receive_status = view
+        ? copy_receive(transport, view->data, view->size, 0) : SALTS_EIO;
+    if (transport->receive_status == SALTS_OK)
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_DATA_RECEIVED,
                              transport->receive_data);
 }
@@ -214,7 +222,10 @@ static void datagram_receive_cb(void *user, cnet_datagram *datagram,
                                 const cnet_receive_view *view) {
     turbo_transport_impl_t *transport = (turbo_transport_impl_t *)user;
     (void)datagram; (void)peer;
-    if (view && copy_receive(transport, view->data, view->size, 0) == SALTS_OK)
+    transport->receive_pending = 0;
+    transport->receive_status = view
+        ? copy_receive(transport, view->data, view->size, 0) : SALTS_EIO;
+    if (transport->receive_status == SALTS_OK)
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_DATA_RECEIVED,
                              transport->receive_data);
 }
@@ -416,8 +427,14 @@ int turbo_transport_connect(turbo_transport_t *transport_ptr) {
         transport_set_error(transport, "CNet Manager has outstanding obligations");
         return -1;
     }
+    /* A new connection generation cannot borrow an earlier receive result. */
+    free(transport->receive_data);
+    transport->receive_data = NULL;
+    transport->receive_size = 0u;
     transport->terminal = 0;
     transport->receive_ready = 0;
+    transport->receive_pending = 0;
+    transport->receive_status = SALTS_OK;
     transport->send_pending = 0;
     transport->send_completed = 0;
     if (transport->base.config.type == TURBO_TRANSPORT_WEBSOCKET) return connect_websocket(transport);
@@ -550,28 +567,53 @@ int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, 
 
 int turbo_transport_recv(turbo_transport_t *transport_ptr, uint8_t **data, size_t *size) {
     turbo_transport_impl_t *transport;
-    size_t events = 0;
-    int status;
+    size_t events = 0u;
+    int status = SALTS_OK;
     if (!transport_ptr ||
         turbo_transport_base(transport_ptr)->config.type == TURBO_TRANSPORT_HTTP)
         return -1;
     transport = (turbo_transport_impl_t *)transport_ptr;
-    if (!transport->connected || !data || !size) return -1;
-    transport->receive_ready = 0;
-    if (transport->datagram_initialized) status = cnet_datagram_receive(&transport->datagram, 1);
-    else status = cnet_receive(transport->client, transport->connection, 1);
-    if (status != SALTS_OK) return -1;
-    while (!transport->receive_ready && transport->connected) {
+    if (!data || !size) return -1;
+    *data = NULL;
+    *size = 0u;
+    /* The CHttp WebSocket endpoint has its own receive API. A completed
+     * CNet-owned copy can still be consumed after a terminal callback.
+     */
+    if (transport->websocket_initialized ||
+        (!transport->connected && !transport->receive_ready))
+        return -1;
+    if (transport->receive_status != SALTS_OK) {
+        transport->receive_status = SALTS_OK;
+        return -1;
+    }
+    /* A previous timeout leaves its admitted receive demand with CNet.
+     * Never drop a ready result or submit another demand until it completes.
+     */
+    if (!transport->receive_ready && !transport->receive_pending) {
+        status = transport->datagram_initialized
+            ? cnet_datagram_receive(&transport->datagram, 1u)
+            : cnet_receive(transport->client, transport->connection, 1u);
+        if (status != SALTS_OK) return -1;
+        transport->receive_pending = 1;
+    }
+    while (!transport->receive_ready && transport->connected &&
+           transport->receive_status == SALTS_OK) {
         status = transport->datagram_initialized
             ? cnet_datagram_poll(&transport->datagram, transport_timeout(transport), &events)
             : transport_owner_poll(transport, transport_timeout(transport), &events);
         if (status != SALTS_OK) return -1;
     }
+    if (transport->receive_status != SALTS_OK) {
+        transport->receive_status = SALTS_OK;
+        return -1;
+    }
     if (!transport->receive_ready) return 0;
+    if (transport->receive_size > INT_MAX) return -1;
     *data = transport->receive_data;
     *size = transport->receive_size;
     transport->receive_data = NULL;
-    transport->receive_size = 0;
+    transport->receive_size = 0u;
+    transport->receive_ready = 0;
     return (int)*size;
 }
 
