@@ -256,6 +256,20 @@ jobs:
               config = "lib/cmake/Salts/SaltsConfig.cmake"
               root = "SALTS_ROOT"
             }
+            # The old SaltsUtils.Native 4.3.0-rc.1 exports another
+            # Salts::Unicode, which CMake correctly rejects. This paired
+            # macOS candidate removed the duplicate and independently passed
+            # 235/235 native CTests plus 2/2 installed C11/C++17 consumers.
+            $candidates += @{
+              name = "SaltsUtils"
+              repo = "qigao/salts-utils"
+              run = "37967646451"
+              artifact = "saltsutils-sdk-macos-unicode-candidate"
+              expected = "997b2768a8f0ffaad48108dbd9c68863f250a270"
+              manifest = "salts-utils-sdk-manifest.txt"
+              config = "lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
+              root = "SALTS_UTILS_ROOT"
+            }
           }
           foreach ($candidate in $candidates) {
             $details = & gh api "repos/$($candidate.repo)/actions/runs/$($candidate.run)" --jq "{head_sha: .head_sha, conclusion: .conclusion}"
@@ -288,6 +302,22 @@ jobs:
               }
               if (-not (Test-Path -LiteralPath (Join-Path $root "lib/libtinytest.a") -PathType Leaf)) {
                 throw "Salts: native TinyTest archive absent from qualified macOS candidate"
+              }
+            }
+            if ($candidate.name -eq "SaltsUtils") {
+              $qualifiedSalts = "salts_sha=10c17c9c2b0d558addf2490c93cc13aa430906b0"
+              foreach ($required in @($qualifiedSalts, "os=macos", "arch=ARM64",
+                                       "profile=release", "release_qualified=false")) {
+                if ($manifestText -notmatch "(?m)^$([regex]::Escape($required))\r?$") {
+                  throw "SaltsUtils: paired SDK identity mismatch: $required"
+                }
+              }
+              $targets = Join-Path $root "lib/cmake/SaltsUtils/SaltsUtilsTargets.cmake"
+              if (-not (Test-Path -LiteralPath $targets -PathType Leaf)) {
+                throw "SaltsUtils: installed CMake target export absent"
+              }
+              if (Select-String -LiteralPath $targets -SimpleMatch "add_library(Salts::Unicode") {
+                throw "SaltsUtils: duplicate Unicode target remains in candidate export"
               }
             }
             $root = $root.Replace('\', '/')
