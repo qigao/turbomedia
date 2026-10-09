@@ -1792,7 +1792,11 @@ int main(int argc, char **argv){
   }
   memset(&lem, 0, sizeof(lem));
   lem.errorcnt = 0;
-  qsort(azDefine, nDefine, sizeof(azDefine[0]), defineCmp);
+  /* No -D macros is a valid invocation and leaves azDefine NULL. Keep
+  ** the empty/one-item case out of qsort instead of relying on libc's
+  ** tolerance for a null base (which is undefined behavior in C11).
+  */
+  if( nDefine>1 ) qsort(azDefine, nDefine, sizeof(azDefine[0]), defineCmp);
 
   /* Initialize the machine */
   Strsafe_init();

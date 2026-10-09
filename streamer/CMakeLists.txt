@@ -42,3 +42,11 @@ target_compile_definitions(
   turbo_media_streamer
   PUBLIC TURBO_MEDIA_HAS_HLS TURBO_MEDIA_HAS_DASH TURBO_MEDIA_HAS_RTMP
          TURBO_MEDIA_HAS_HTTP_FLV)
+
+# Internal fault injection is opt-in for the native regression build only.
+# No production SDK or public interface contains this error-injection seam.
+option(TURBO_MEDIA_TEST_FAULT_INJECTION "Enable HTTP-FLV one-shot owner drain fault test" OFF)
+if(TURBO_MEDIA_TEST_FAULT_INJECTION)
+  target_compile_definitions(turbo_media_streamer PRIVATE
+                             TURBO_MEDIA_HTTP_FLV_TEST_HOOKS)
+endif()

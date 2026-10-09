@@ -46,7 +46,22 @@
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/stage/ci-platform",
                 "CMAKE_C_COMPILER_LAUNCHER": "ccache",
                 "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
-                "CMAKE_OBJC_COMPILER_LAUNCHER": "ccache"
+                "CMAKE_OBJC_COMPILER_LAUNCHER": "ccache",
+                "TURBO_MEDIA_TEST_FAULT_INJECTION": "ON"
+            }
+        },
+        {
+            "name": "ci-platform-linux-asan-ubsan",
+            "inherits": "ci-platform-release",
+            "description": "Draft-only exact installed-SDK Linux ACE/CNet HTTP-FLV ASan+UBSan qualification",
+            "binaryDir": "${sourceDir}/build/ci-platform-linux-asan-ubsan",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_C_FLAGS_RELEASE": "-O1 -g -DNDEBUG -fno-omit-frame-pointer -fsanitize=address,undefined",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O1 -g -DNDEBUG -fno-omit-frame-pointer -fsanitize=address,undefined",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "TURBO_MEDIA_TEST_FAULT_INJECTION": "ON"
             }
         }
     ],
@@ -89,12 +104,31 @@
                     "label": "performance"
                 }
             }
+        },
+        {
+            "name": "ci-platform-linux-asan-ubsan",
+            "inherits": "base-test",
+            "configurePreset": "ci-platform-linux-asan-ubsan",
+            "filter": {
+                "include": {
+                    "name": "^turbo_media_test_(http_flv_local|transport_http)$"
+                }
+            },
+            "execution": {
+                "noTestsAction": "error",
+                "timeout": 180
+            }
         }
     ],
     "buildPresets": [
         {
             "name": "ci-platform-build",
             "configurePreset": "ci-platform-release",
+            "jobs": 2
+        },
+        {
+            "name": "ci-platform-linux-asan-ubsan-build",
+            "configurePreset": "ci-platform-linux-asan-ubsan",
             "jobs": 2
         }
     ]

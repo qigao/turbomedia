@@ -1,3 +1,6 @@
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <tinytest.h>
 
 #include <http_server/http.h>
@@ -6,6 +9,7 @@
 #include <cstl/vec.h>
 
 #include <stdint.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -88,6 +92,31 @@ static int http_flv_test_server_start(http_flv_test_state_t *state) {
     return 0;
 }
 
+#if defined(TURBO_MEDIA_HTTP_FLV_TEST_HOOKS)
+/* Test-only: inject one failed cleanup attempt without creating a second
+ * public runtime ABI or requiring a broken real network provider.
+ */
+static void http_flv_test_fail_first_drain(int enabled) {
+#if defined(_WIN32)
+    (void)_putenv_s("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_ONCE", enabled ? "1" : "");
+#else
+    if (enabled) (void)setenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_ONCE", "1", 1);
+    else (void)unsetenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_ONCE");
+#endif
+}
+static void http_flv_test_fail_after_real_terminal(int enabled) {
+#if defined(_WIN32)
+    (void)_putenv_s("TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE",
+                    enabled ? "1" : "");
+#else
+    if (enabled) (void)setenv("TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE", "1", 1);
+    else (void)unsetenv("TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE");
+#endif
+}
+
+
+#endif
+
 suite("local HTTP-FLV chunked push") {
   it("streams one FLV request through CNet") {
     http_flv_test_state_t state = {0};
@@ -150,4 +179,216 @@ suite("local HTTP-FLV chunked push") {
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);
     vec_destroy(&state.received);
   }
+
+  it("keeps an externally borrowed CNet client alive across HTTP-FLV drain") {
+    http_flv_test_state_t state = {0};
+    cnet_client borrowed = {0};
+    cnet_client_config borrowed_config = {
+        .backend = http_flv_test_backend(),
+        .connection_capacity = 2u,
+        .command_capacity = 16u,
+        .request_capacity = 16u,
+        .completion_batch_capacity = 8u,
+        .event_capacity = 8u,
+        .max_send_bytes = HTTP_FLV_TEST_QUEUE_CAPACITY,
+        .receive_buffer_bytes = 8u * 1024u,
+        .connect_timeout_ms = 5000u,
+        .read_timeout_ms = 5000u,
+        .write_timeout_ms = 5000u
+    };
+    turbo_streamer_config_t config = {0};
+    turbo_stream_info_t info = {0};
+    turbo_muxer_packet_t packet = {0};
+    turbo_streamer_t *streamer;
+    uint8_t pcmu[HTTP_FLV_TEST_PACKET_BYTES];
+    int stream_id = -1;
+
+    check_equal(vec_init_bytes(&state.received, sizeof(uint8_t),
+                               CMETA_ALIGNOF(uint8_t),
+                               HTTP_FLV_TEST_QUEUE_CAPACITY), STL_OK);
+    check_equal(http_flv_test_server_start(&state), 0);
+    check_equal(cnet_client_init(&borrowed, &borrowed_config), SALTS_OK);
+    turbo_streamer_registry_init();
+    config.protocol = TURBO_STREAMER_HTTP_FLV;
+    config.url = "http://127.0.0.1:20920/live.flv";
+    config.buffer_size = HTTP_FLV_TEST_QUEUE_CAPACITY;
+    config.network_client = &borrowed;
+    streamer = turbo_streamer_create(&config);
+    check_not_null(streamer);
+
+    info.type = TURBO_CODEC_TYPE_AUDIO;
+    info.codec_name = "pcmu";
+    info.sample_rate = 8000;
+    info.channels = 1;
+    check_equal(turbo_streamer_add_stream(streamer, &info, &stream_id), 0);
+    check_equal(turbo_streamer_connect(streamer), 0);
+    memset(pcmu, 0x7f, sizeof(pcmu));
+    packet.stream_id = stream_id;
+    packet.data = pcmu;
+    packet.size = sizeof(pcmu);
+    packet.duration = 20000;
+    check_equal(turbo_streamer_write_packet(streamer, &packet), 0);
+    check_equal(turbo_streamer_disconnect(streamer), 0);
+    check_equal(state.handler_result, 0);
+    check_equal(state.saw_chunked, 1);
+    check_greater(vec_size(&state.received), 5);
+    check_equal(turbo_streamer_destroy(streamer), 0);
+    turbo_streamer_registry_shutdown();
+
+    /* The borrower released only its Manager/record and never stopped the
+     * supplied CNet client. Its caller still owns the stop/destroy authority.
+     */
+    {
+      size_t events = 0u;
+      check_equal(cnet_client_poll(&borrowed, 0u, &events), SALTS_OK);
+    }
+    check_equal(cnet_client_stop(&borrowed, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&borrowed), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+    vec_destroy(&state.received);
+  }
+
+#if defined(TURBO_MEDIA_HTTP_FLV_TEST_HOOKS)
+  it("cleans an admission-failed upload after explicit owner-side retry") {
+    /* Invalid TLS admission fails before any network DATA; the worker's
+     * first Manager drain is artificially refused, and the caller then
+     * explicitly uses destroy() as its one owner-side retry request.
+     */
+    cnet_tls_client_config bad_tls = {0};
+    turbo_streamer_config_t config = {0};
+    turbo_stream_info_t info = {0};
+    turbo_streamer_t *streamer;
+    int stream_id = -1;
+    config.protocol = TURBO_STREAMER_HTTP_FLV;
+    config.url = "https://127.0.0.1:20920/live.flv";
+    config.buffer_size = HTTP_FLV_TEST_QUEUE_CAPACITY;
+    config.network_tls = &bad_tls;
+    turbo_streamer_registry_init();
+    streamer = turbo_streamer_create(&config);
+    check_not_null(streamer);
+    info.type = TURBO_CODEC_TYPE_AUDIO;
+    info.codec_name = "pcmu";
+    info.sample_rate = 8000;
+    info.channels = 1;
+    check_equal(turbo_streamer_add_stream(streamer, &info, &stream_id), 0);
+    http_flv_test_fail_first_drain(1);
+    check_equal(turbo_streamer_connect(streamer), -EIO);
+    /* The transport is still held by its original worker, not returned to
+     * the control thread or settled by an implicit connection retry.
+     * Explicit destroy triggers one bounded original-owner cleanup.
+     */
+    check_equal(turbo_streamer_destroy(streamer), 0);
+    http_flv_test_fail_first_drain(0);
+    turbo_streamer_registry_shutdown();
+  }
+
+  it("retains a living CNet owner after failed drain until an explicit retry") {
+    http_flv_test_state_t state = {0};
+    turbo_streamer_config_t config = {0};
+    turbo_stream_info_t stream_info = {0};
+    turbo_muxer_packet_t packet = {0};
+    turbo_streamer_t *streamer = NULL;
+    uint8_t pcmu[HTTP_FLV_TEST_PACKET_BYTES];
+    int stream_id = -1;
+
+    check_equal(vec_init_bytes(&state.received, sizeof(uint8_t),
+                               CMETA_ALIGNOF(uint8_t),
+                               HTTP_FLV_TEST_QUEUE_CAPACITY), STL_OK);
+    check_equal(http_flv_test_server_start(&state), 0);
+    turbo_streamer_registry_init();
+    config.protocol = TURBO_STREAMER_HTTP_FLV;
+    config.url = "http://127.0.0.1:20920/live.flv";
+    config.buffer_size = HTTP_FLV_TEST_QUEUE_CAPACITY;
+    streamer = turbo_streamer_create(&config);
+    check_not_null(streamer);
+    stream_info.type = TURBO_CODEC_TYPE_AUDIO;
+    stream_info.codec_name = "pcmu";
+    stream_info.sample_rate = 8000;
+    stream_info.channels = 1;
+    check_equal(turbo_streamer_add_stream(streamer, &stream_info, &stream_id), 0);
+    check_equal(turbo_streamer_connect(streamer), 0);
+    memset(pcmu, 0x7f, sizeof(pcmu));
+    packet.stream_id = stream_id;
+    packet.data = pcmu;
+    packet.size = sizeof(pcmu);
+    packet.duration = 20000;
+    check_equal(turbo_streamer_write_packet(streamer, &packet), 0);
+
+    http_flv_test_fail_first_drain(1);
+    /* The first attempted drain leaves the real Manager wrapper and
+     * original owner thread alive; no implicit second attempt is scheduled.
+     */
+    check_equal(turbo_streamer_disconnect(streamer), -EIO);
+    /* One subsequent explicit API call wakes the *same* owner to complete
+     * its outstanding native ownership settlement exactly once.
+     */
+    check_equal(turbo_streamer_disconnect(streamer), 0);
+    http_flv_test_fail_first_drain(0);
+    check_equal(state.handler_result, 0);
+    check_equal(state.saw_chunked, 1);
+    check_greater(vec_size(&state.received), 5);
+    check_equal(turbo_streamer_destroy(streamer), 0);
+    turbo_streamer_registry_shutdown();
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+    vec_destroy(&state.received);
+  }
+
+
+  it("resumes real CNet terminal and recycled Manager after explicit retry") {
+    http_flv_test_state_t state = {0};
+    turbo_streamer_config_t config = {0};
+    turbo_stream_info_t stream_info = {0};
+    turbo_muxer_packet_t packet = {0};
+    turbo_streamer_t *streamer = NULL;
+    uint8_t pcmu[HTTP_FLV_TEST_PACKET_BYTES];
+    int stream_id = -1;
+
+    check_equal(vec_init_bytes(&state.received, sizeof(uint8_t),
+                               CMETA_ALIGNOF(uint8_t),
+                               HTTP_FLV_TEST_QUEUE_CAPACITY), STL_OK);
+    check_equal(http_flv_test_server_start(&state), 0);
+    turbo_streamer_registry_init();
+    config.protocol = TURBO_STREAMER_HTTP_FLV;
+    config.url = "http://127.0.0.1:20920/live.flv";
+    config.buffer_size = HTTP_FLV_TEST_QUEUE_CAPACITY;
+    streamer = turbo_streamer_create(&config);
+    check_not_null(streamer);
+    stream_info.type = TURBO_CODEC_TYPE_AUDIO;
+    stream_info.codec_name = "pcmu";
+    stream_info.sample_rate = 8000;
+    stream_info.channels = 1;
+    check_equal(turbo_streamer_add_stream(streamer, &stream_info, &stream_id), 0);
+    check_equal(turbo_streamer_connect(streamer), 0);
+    memset(pcmu, 0x7f, sizeof(pcmu));
+    packet.stream_id = stream_id;
+    packet.data = pcmu;
+    packet.size = sizeof(pcmu);
+    packet.duration = 20000;
+    check_equal(turbo_streamer_write_packet(streamer, &packet), 0);
+
+    /* The next fault still invokes the real CNet close and Manager drain;
+     * only the wrapper's final destroy is temporarily refused.
+     */
+    http_flv_test_fail_after_real_terminal(1);
+    /* Real CNet terminal and Manager recycle have completed; the wrapper
+     * remains on its living original owner until the next explicit call.
+     */
+    check_equal(turbo_streamer_disconnect(streamer), -EIO);
+    /* One subsequent explicit API call wakes the *same* owner to complete
+     * its outstanding native ownership settlement exactly once.
+     */
+    check_equal(turbo_streamer_disconnect(streamer), 0);
+    http_flv_test_fail_after_real_terminal(0);
+    check_equal(state.handler_result, 0);
+    check_equal(state.saw_chunked, 1);
+    check_greater(vec_size(&state.received), 5);
+    check_equal(turbo_streamer_destroy(streamer), 0);
+    turbo_streamer_registry_shutdown();
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+    vec_destroy(&state.received);
+  }
+#endif
 }

@@ -211,7 +211,10 @@ jobs:
       # artifacts. Never publish these packages or ship their SHA as a
       # permanent dependency: released SDK restores remain authoritative.
       - name: Stage qualified ACE/CNet candidate consumers
-        if: github.event_name == 'pull_request' && github.head_ref == 'feature/ace-cnet-owner-transport'
+        if: >-
+          github.event_name == 'pull_request' &&
+          (github.head_ref == 'feature/ace-cnet-owner-transport' ||
+           github.head_ref == 'fix/http-flv-owner-drain-recovery')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -468,6 +471,43 @@ jobs:
             & ctest --preset ci-platform-test
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }
+
+      # Separate test-only build: compile TurboMedia wrappers with ASan/UBSan
+      # against the same exact installed candidate SDK graph. Build targets,
+      # test selection and sanitizer flags are CMake Preset owned.
+      - name: Linux ACE owner ASan and UBSan
+        if: >-
+          matrix.platform == 'Linux' &&
+          github.event_name == 'pull_request' &&
+          github.head_ref == 'fix/http-flv-owner-drain-recovery'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runtimeDirs = @()
+          foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
+            $root = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("bin", "lib")) {
+              $candidate = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
+            }
+          }
+          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/${{ matrix.triplet }}"
+          foreach ($leaf in @("bin", "lib")) {
+            $candidate = Join-Path $vcpkgRuntime $leaf
+            if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
+          }
+          $parts = @($runtimeDirs)
+          if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
+          $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          $env:ASAN_OPTIONS = "detect_leaks=1:halt_on_error=1:abort_on_error=1"
+          $env:UBSAN_OPTIONS = "halt_on_error=1:print_stacktrace=1"
+          & cmake --preset ci-platform-linux-asan-ubsan
+          if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan configure failed" }
+          & cmake --build --preset ci-platform-linux-asan-ubsan-build
+          if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan build failed" }
+          & ctest --preset ci-platform-linux-asan-ubsan
+          if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan native tests failed" }
 
       - name: Install
         shell: pwsh
