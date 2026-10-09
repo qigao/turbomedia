@@ -124,14 +124,21 @@ TURBO_MEDIA_API int turbo_transport_connect(turbo_transport_t *transport);
 TURBO_MEDIA_API int turbo_transport_disconnect(turbo_transport_t *transport);
 
 /**
- * 发送数据（协程内调用）
+ * Send with an operation-wide deadline, returning a byte count or -1.
+ * An in-flight TCP/TLS write may still complete after timeout; the caller
+ * must NOT replay it without an explicit application-level contract.
+ * Admission is rejected while a prior write is unsettled.
  */
 TURBO_MEDIA_API int turbo_transport_send(turbo_transport_t *transport,
                                    const uint8_t *data,
                                    size_t size);
 
 /**
- * 接收数据（协程内调用，会挂起等待）
+ * Receive on the CNet owner with one outstanding demand. A timeout returns
+ * -1 without cancelling that demand; subsequent calls reuse its completion.
+ * A buffered completion may be consumed after terminal. The caller owns the
+ * returned data until turbo_transport_free_recv(). HTTP/WebSocket use their
+ * own protocol APIs.
  */
 TURBO_MEDIA_API int turbo_transport_recv(turbo_transport_t *transport,
                                    uint8_t **data,

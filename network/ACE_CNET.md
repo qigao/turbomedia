@@ -13,6 +13,24 @@ TurboMedia's TCP/TLS transport uses the existing Salts CNet Reactor/Proactor own
 | `cnet_connection` | CNet transport owner, not Manager's observer record | Explicit close, real terminal callback, bounded recycling |
 | HTTP/WebSocket, UDP | CHttp or CNet datagram owners respectively | Not double-wrapped with another TCP manager |
 
+### Bounded synchronous calls and data ownership
+
+Connect, send and receive deadlines cover the whole operation across all CNet
+poll turns, not one fresh timeout per empty poll. A connect timeout explicitly
+closes only the newly admitted stream; the real terminal must still be observed
+and Manager recycled before another generation can connect. A send timeout
+returns failure but **does not** authorize application DATA replay: the
+original CNet write may still be in flight, so further sends are rejected
+until its real completion or terminal. The public signed-int byte count rejects
+writes beyond `INT_MAX` before accessing the caller buffer.
+
+Receive demand belongs to CNet from admission until its callback or terminal.
+A read timeout does not revoke demand and the next caller cannot add a second
+outstanding demand; data delivered while another API polls is buffered as an
+owned copy, retained for the next `recv()` (including after the connection
+terminal). Callback allocation failure is surfaced, not silently considered
+success. HTTP/WebSocket retain their separate CHttp receive contracts.
+
 The admission path is `manager_reserve → manager_connect → CNet poll → real terminal → manager_advance → manager_destroy` (or another bounded reservation after recycle). The Manager consumes a valid reservation even if connect is immediately rejected; no callback is fabricated. The wrapper advances its Manager **after** returning from CNet poll so callbacks cannot recursively run Manager cleanup. Reconnect is initiated only by an explicit caller request and only after the prior record is drained; raw `cnet_connect` is not a fallback.
 
 ## Shutdown and sharing

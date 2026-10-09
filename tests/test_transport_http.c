@@ -5,6 +5,7 @@
 #include <salts/error_codes.h>
 #include <turbo_transport.h>
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -371,6 +372,88 @@ suite("Salts CHTTP transport") {
         check_equal(cnet_client_poll(&owner, 10u, &events), SALTS_OK);
     check_equal(first_probe.disconnected, 1);
     check_equal(second_probe.disconnected, 1);
+    check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&owner), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
+  it("retains one receive demand and the buffered response after timeout") {
+    transport_http_test_state_t state = {0};
+    cnet_client owner = {0};
+    cnet_client_config owner_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 40,
+        .write_timeout_ms = 5000,
+        .cnet_client = &owner
+    };
+    const char request[] =
+        "POST /base/api/v1/commands HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Authorization: Bearer original-token\r\n"
+        "User-Agent: TurboMediaTransportTest/1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 2\r\n\r\n{}";
+    turbo_transport_t *transport;
+    uint8_t *response = (uint8_t *)1;
+    size_t response_size = 99u;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    check_equal(turbo_transport_connect(transport), 0);
+    /* The temporary timeout does NOT cancel CNet's one outstanding demand. */
+    check_equal(turbo_transport_recv(transport, &response, &response_size), -1);
+    check_null(response);
+    check_equal(response_size, 0u);
+    check_true(turbo_transport_is_connected(transport));
+
+    /* The reply may arrive while send() advances the same client. The next
+     * recv() must consume that retained completion without a second demand.
+     */
+    check_equal(turbo_transport_send(transport, (const uint8_t *)request,
+                                     sizeof(request) - 1u),
+                (int)(sizeof(request) - 1u));
+    check_greater(turbo_transport_recv(transport, &response, &response_size), 0);
+    check_not_null(response);
+    turbo_transport_free_recv(transport, response);
+    check_equal(state.request_valid, 1);
+    check_equal(turbo_transport_destroy(transport), 0);
+    check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&owner), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
+  it("rejects send sizes beyond the public int result before reading memory") {
+    transport_http_test_state_t state = {0};
+    cnet_client owner = {0};
+    cnet_client_config owner_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 5000,
+        .write_timeout_ms = 5000,
+        .cnet_client = &owner
+    };
+    turbo_transport_t *transport;
+    uint8_t byte = 0x5a;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    check_equal(turbo_transport_connect(transport), 0);
+    check_equal(turbo_transport_send(transport, &byte, (size_t)INT_MAX + 1u), -1);
+    check_true(turbo_transport_is_connected(transport));
+    check_equal(turbo_transport_destroy(transport), 0);
     check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
     check_equal(cnet_client_destroy(&owner), SALTS_OK);
     check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
