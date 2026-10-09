@@ -455,6 +455,7 @@ int turbo_transport_connect(turbo_transport_t *transport_ptr) {
     transport->receive_ready = 0;
     transport->receive_pending = 0;
     transport->receive_status = SALTS_OK;
+    transport->error_msg[0] = '\0';
     transport->send_pending = 0;
     transport->send_completed = 0;
     if (transport->base.config.type == TURBO_TRANSPORT_WEBSOCKET) return connect_websocket(transport);
@@ -512,13 +513,16 @@ int turbo_transport_connect(turbo_transport_t *transport_ptr) {
             progress_status = transport_owner_poll(transport, wait_ms, &events);
             if (progress_status != SALTS_OK) break;
         }
-        if (!transport->connected && !transport->terminal) {
-            /* Timeout/error leaves the in-flight connection owned by CNet.
-             * Close it; the real terminal is still required before recycle.
+        if (progress_status != SALTS_OK) {
+            /* Even if a CONNECTED notification was observed, a failed owner
+             * poll is not a successful API return. Close only this stream;
+             * retain its observer until real terminal and Manager recycle.
              */
-            (void)cnet_close(transport->client, transport->connection);
+            if (!transport->terminal)
+                (void)cnet_close(transport->client, transport->connection);
             snprintf(transport->error_msg, sizeof(transport->error_msg),
                      "CNet connect progress failed: status=%d", progress_status);
+            return -1;
         }
     }
     return transport->connected ? 0 : -1;
@@ -793,8 +797,14 @@ int turbo_transport_destroy(turbo_transport_t *transport_ptr) {
     }
     if (transport->manager.impl) {
         if (transport_manager_drained(transport) != SALTS_OK ||
-            cnet_manager_destroy(&transport->manager) != SALTS_OK)
+            cnet_manager_destroy(&transport->manager) != SALTS_OK) {
+            /* A wrong-owner call or a still-retiring record cannot release
+             * callback storage; keep it for a later owner-side retry.
+             */
+            transport->event_callback = NULL;
+            transport->event_user_data = NULL;
             return -1;
+        }
     }
     if (transport->websocket_initialized) {
         if (chttp_websocket_client_destroy(&transport->websocket,
