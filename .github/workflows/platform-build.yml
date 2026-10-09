@@ -335,6 +335,23 @@ jobs:
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
 
+      # Diagnostics only: the released macOS TinyTest archive currently
+      # produces an undefined _ttest_active_config__ in test_speech. Do not
+      # disable that test, redefine its TLS global, or link a fallback runtime.
+      - name: Diagnose macOS released TinyTest linkage
+        if: matrix.platform == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$SALTS_ROOT/lib/libtinytest.a"
+          test -f "$archive"
+          echo "TinyTest externally visible definitions:"
+          nm -gU "$archive" | grep -E 'ttest_active_config__|ttest_run__|ttest_specs__' || true
+          echo "TinyTest complete symbol table matches:"
+          nm -m "$archive" | grep -E 'ttest_active_config__|ttest_run__|ttest_specs__' || true
+          echo "TinyTest architecture:"
+          lipo -info "$archive"
+
       - name: Build and test
         shell: pwsh
         run: |
