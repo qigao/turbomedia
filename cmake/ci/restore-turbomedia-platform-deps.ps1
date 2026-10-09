@@ -45,8 +45,8 @@ $desktopReference = if ($desktopServices) {
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Salts.Native" Version="*" />
-    <PackageReference Include="SaltsUtils.Native" Version="*" />
+    <PackageReference Include="Salts.Native" Version="2.3.0-*" />
+    <PackageReference Include="SaltsUtils.Native" Version="4.3.0-*" />
     <PackageReference Include="SaltsNet.Native" Version="*" />
     <PackageReference Include="CHttp.Native" Version="*" />
 $desktopReference
