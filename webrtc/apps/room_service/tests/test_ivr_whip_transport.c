@@ -12,6 +12,7 @@
 #include "ivr_whip_transport.h"
 #include "tinytest.h"
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -133,25 +134,34 @@ static int spawn_with_stdout(const char *exe, const char *const *args,
 #endif
 }
 
-static void kill_child(child_t *child) {
-    if (!child || child->handle == NULL) {
-        return;
+/* A restarted SFU must never reuse the same TCP/UDP port while the old
+ * child is still live. Retain its handle on a failed termination barrier so
+ * a subsequent cleanup remains possible; join/port readiness are distinct.
+ */
+static int kill_child(child_t *child) {
+    if (!child || child->handle == NULL) return 0;
+#ifdef _WIN32
+    DWORD outcome = WaitForSingleObject(child->handle, 0);
+    if (outcome == WAIT_TIMEOUT) {
+        (void)TerminateProcess(child->handle, 0);
+        outcome = WaitForSingleObject(child->handle, 5000);
     }
-#ifdef _WIN32
-    TerminateProcess(child->handle, 0);
-    WaitForSingleObject(child->handle, 5000);
+    if (outcome != WAIT_OBJECT_0) return -1;
     CloseHandle(child->handle);
-#else
-    kill(child->handle, SIGKILL);
-    (void)waitpid(child->handle, NULL, 0);
-#endif
-#ifdef _WIN32
     child->handle = NULL;
 #else
+    pid_t collected;
+    if (kill(child->handle, SIGKILL) != 0 && errno != ESRCH) return -1;
+    do {
+        collected = waitpid(child->handle, NULL, 0);
+    } while (collected < 0 && errno == EINTR);
+    if (collected != child->handle && !(collected < 0 && errno == ECHILD))
+        return -1;
     child->handle = 0;
 #endif
     free(child->stdout_path);
     child->stdout_path = NULL;
+    return 0;
 }
 
 static void print_child_output(const char *path) {
@@ -269,6 +279,7 @@ static child_t g_sfu;
 static char g_cfg_path[1024];
 static char g_out_path[1024];
 static int g_seq = 0;
+static unsigned g_spawn_generation = 0;
 static ivr_whip_transport_t *g_transport = NULL;
 static ivr_whep_transport_t *g_whep_transport = NULL;
 static uint64_t g_whep_audio_frames = 0;
@@ -327,7 +338,9 @@ static int spawn_sfu(void) {
         return 0;
     }
     snprintf(bin, sizeof(bin), "%s/%s", TEST_BIN_DIR, SFU_NODE_BIN);
-    return spawn_with_stdout(bin, args, g_out_path, &g_sfu) == 0;
+    if (spawn_with_stdout(bin, args, g_out_path, &g_sfu) != 0) return 0;
+    ++g_spawn_generation;
+    return 1;
 }
 
 static int provision_room(void) {
@@ -554,6 +567,7 @@ static void on_media_state(void *context, const ivr_call_ref_t *call,
 
 void setUp(void) {
     memset(&g_sfu, 0, sizeof(g_sfu));
+    g_spawn_generation = 0;
     memset(&g_whip_states, 0, sizeof(g_whip_states));
     memset(&g_whep_states, 0, sizeof(g_whep_states));
     memset(&g_dtmf_input, 0, sizeof(g_dtmf_input));
@@ -883,6 +897,56 @@ void test_whep_subscribe_connect_and_stop(void) {
     check_false(ivr_whep_transport_connected(g_whep_transport));
 }
 
+/* Bounded, secret-free failure evidence: no raw SDP, credentials,
+ * Authorization headers, media payload, or full SFU output is emitted.
+ */
+static int sfu_process_alive(void) {
+#ifdef _WIN32
+    DWORD exit_code = 0;
+    return g_sfu.handle &&
+           GetExitCodeProcess(g_sfu.handle, &exit_code) &&
+           exit_code == STILL_ACTIVE;
+#else
+    return g_sfu.handle > 0 &&
+           (kill(g_sfu.handle, 0) == 0 || errno == EPERM);
+#endif
+}
+
+static void print_whip_restart_failure_snapshot(const char *stage) {
+    media_state_counts_t whip = media_state_snapshot(&g_whip_states);
+    media_state_counts_t whep = media_state_snapshot(&g_whep_states);
+    unsigned processed = 0, ice_lines = 0, dtls_lines = 0, error_lines = 0;
+    char line[512];
+    FILE *out = fopen(g_out_path, "rb");
+    if (out) {
+        while (processed < 2048u && fgets(line, sizeof(line), out)) {
+            ++processed;
+            if (strstr(line, "ICE") || strstr(line, "ice")) ++ice_lines;
+            if (strstr(line, "DTLS") || strstr(line, "dtls")) ++dtls_lines;
+            if (strstr(line, "ERROR") || strstr(line, "error")) ++error_lines;
+        }
+        fclose(out);
+    }
+    fprintf(stderr,
+            "[whip-restart] stage=%s sfu_generation=%u child_alive=%d "
+            "whip_connected_now=%d whep_connected_now=%d "
+            "whip_states={connecting:%u,connected:%u,disconnected:%u,"
+            "failed:%u,closed:%u,identity_invalid:%u,attempt:%llu} "
+            "whep_states={connecting:%u,connected:%u,disconnected:%u,"
+            "failed:%u,closed:%u,identity_invalid:%u,attempt:%llu} "
+            "child_log_lines=%u ice=%u dtls=%u errors=%u\n",
+            stage, g_spawn_generation, sfu_process_alive(),
+            ivr_whip_transport_connected(g_transport),
+            ivr_whep_transport_connected(g_whep_transport),
+            whip.connecting, whip.connected, whip.disconnected,
+            whip.failed, whip.closed, whip.invalid_identity,
+            (unsigned long long)whip.last_generation,
+            whep.connecting, whep.connected, whep.disconnected,
+            whep.failed, whep.closed, whep.invalid_identity,
+            (unsigned long long)whep.last_generation,
+            processed, ice_lines, dtls_lines, error_lines);
+}
+
 void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     ivr_media_transport_t publisher;
     media_state_counts_t whip_before;
@@ -912,7 +976,10 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     whep_terminal_before = media_terminal_count(&g_whep_states);
     frames_before_restart = g_whep_audio_frames;
 
-    kill_child(&g_sfu);
+    /* A completed process stop, rather than a best-effort kill request, is
+     * the barrier before reusing the same SFU control/media ports.
+     */
+    check_equal(kill_child(&g_sfu), 0);
     check_true(wait_for_media_terminal(&g_whip_states, whip_terminal_before));
     check_true(wait_for_media_terminal(&g_whep_states, whep_terminal_before));
     check_false(ivr_whip_transport_connected(g_transport));
@@ -928,9 +995,16 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     check_equal((int)(publisher.stop(publisher.context, &g_call)), (int)(-1));
 
     check_true(spawn_sfu());
+    check_equal(g_spawn_generation, 2u);
+    check_true(sfu_process_alive());
     check_true(provision_room());
+    check_true(sfu_process_alive());
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
-    check_true(wait_whip_connected());
+    {
+        const int reconnected = wait_whip_connected();
+        if (!reconnected) print_whip_restart_failure_snapshot("post-sfu-restart");
+        check_true(reconnected);
+    }
     publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
     check_true(publisher_ssrc != 0u);
     check_true(configure_audio_route(publisher_ssrc));
