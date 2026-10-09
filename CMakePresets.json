@@ -31,6 +31,23 @@
                 "dev-linux-ninja",
                 "pkg-vcpkg"
             ]
+        },
+        {
+            "name": "ci-platform-release",
+            "displayName": "CI platform Release (installed SDKs and compiler cache)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/ci-platform",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_TOOLCHAIN_FILE": "$env{QIGAO_VCPKG_TOOLCHAIN_FILE}",
+                "VCPKG_TARGET_TRIPLET": "$env{TURBOMEDIA_CI_TRIPLET}",
+                "VCPKG_MANIFEST_MODE": "OFF",
+                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/stage/ci-platform",
+                "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+                "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+                "CMAKE_OBJC_COMPILER_LAUNCHER": "ccache"
+            }
         }
     ],
     "testPresets": [
@@ -62,6 +79,23 @@
                 "rhs": "Darwin"
             },
             "configurePreset": "release-mac-ninja"
+        },
+        {
+            "name": "ci-platform-test",
+            "inherits": "base-test",
+            "configurePreset": "ci-platform-release",
+            "filter": {
+                "exclude": {
+                    "label": "performance"
+                }
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "ci-platform-build",
+            "configurePreset": "ci-platform-release",
+            "jobs": 2
         }
     ]
 }
