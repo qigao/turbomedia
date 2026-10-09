@@ -161,6 +161,26 @@ static int transport_owner_poll(turbo_transport_impl_t *transport,
     return status != SALTS_OK ? status : manager_status;
 }
 
+/* Timeouts bound the whole synchronous API call, not each empty poll. The
+ * remaining time is computed with subtraction to avoid deadline overflow.
+ */
+static int transport_remaining(uint64_t started_ms, uint32_t budget_ms,
+                               uint32_t *out_wait_ms) {
+    const uint64_t now_ms = cmeta_monotonic_ms();
+    uint64_t elapsed_ms;
+    if (!out_wait_ms || now_ms < started_ms) return SALTS_EIO;
+    elapsed_ms = now_ms - started_ms;
+    if (elapsed_ms >= budget_ms) return SALTS_ETIMEDOUT;
+    *out_wait_ms = (uint32_t)(budget_ms - elapsed_ms);
+    return SALTS_OK;
+}
+
+static uint32_t transport_connect_timeout(const turbo_transport_impl_t *transport) {
+    return transport->base.config.connect_timeout_ms > 0
+        ? (uint32_t)transport->base.config.connect_timeout_ms
+        : TRANSPORT_CONNECT_TIMEOUT_MS;
+}
+
 static int copy_receive(turbo_transport_impl_t *transport,
                         const void *data, size_t size, int is_text) {
     uint8_t *copy = (uint8_t *)malloc(size ? size : 1);
@@ -481,10 +501,25 @@ int turbo_transport_connect(turbo_transport_t *transport_ptr) {
         }
     }
     transport->connection_active = 1;
-    while (!transport->connected && !transport->terminal) {
-        if (transport_owner_poll(transport, transport_timeout(transport),
-                                 &events) != SALTS_OK)
-            break;
+    {
+        const uint64_t started_ms = cmeta_monotonic_ms();
+        const uint32_t budget_ms = transport_connect_timeout(transport);
+        int progress_status = SALTS_OK;
+        while (!transport->connected && !transport->terminal) {
+            uint32_t wait_ms = 0u;
+            progress_status = transport_remaining(started_ms, budget_ms, &wait_ms);
+            if (progress_status != SALTS_OK) break;
+            progress_status = transport_owner_poll(transport, wait_ms, &events);
+            if (progress_status != SALTS_OK) break;
+        }
+        if (!transport->connected && !transport->terminal) {
+            /* Timeout/error leaves the in-flight connection owned by CNet.
+             * Close it; the real terminal is still required before recycle.
+             */
+            (void)cnet_close(transport->client, transport->connection);
+            snprintf(transport->error_msg, sizeof(transport->error_msg),
+                     "CNet connect progress failed: status=%d", progress_status);
+        }
     }
     return transport->connected ? 0 : -1;
 }
@@ -538,13 +573,16 @@ int turbo_transport_disconnect(turbo_transport_t *transport_ptr) {
 
 int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, size_t size) {
     turbo_transport_impl_t *transport;
-    size_t events = 0;
+    size_t events = 0u;
     int status;
     if (!transport_ptr ||
         turbo_transport_base(transport_ptr)->config.type == TURBO_TRANSPORT_HTTP)
         return -1;
     transport = (turbo_transport_impl_t *)transport_ptr;
-    if (!transport->connected || !data || size == 0) return -1;
+    /* Public byte count is int: reject representational overflow before
+     * touching caller storage or admitting a CNet send.
+     */
+    if (!transport->connected || !data || size == 0u || size > INT_MAX) return -1;
     if (transport->websocket_initialized)
         status = chttp_websocket_client_send_binary(&transport->websocket, data, size,
                                                     transport_timeout(transport));
@@ -552,15 +590,27 @@ int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, 
         status = cnet_datagram_send(&transport->datagram, &transport->datagram_peer,
                                     data, size, 0);
     else {
-        if (transport->owns_client && size > TRANSPORT_MAX_BYTES) return -1;
+        const uint64_t started_ms = cmeta_monotonic_ms();
+        const uint32_t budget_ms = transport_timeout(transport);
+        if (transport->send_pending ||
+            (transport->owns_client && size > TRANSPORT_MAX_BYTES))
+            return -1;
         transport->send_pending = 1;
         transport->send_completed = 0;
         status = turbo_media_cnet_send_copy(
             transport->client, transport->connection, data, size, 0);
         if (status != SALTS_OK) transport->send_pending = 0;
-        while (status == SALTS_OK && transport->send_pending && !transport->terminal)
-            status = transport_owner_poll(transport, transport_timeout(transport), &events);
-        if (!transport->send_completed) status = SALTS_EIO;
+        while (status == SALTS_OK && transport->send_pending && !transport->terminal) {
+            uint32_t wait_ms = 0u;
+            status = transport_remaining(started_ms, budget_ms, &wait_ms);
+            if (status != SALTS_OK) break;
+            status = transport_owner_poll(transport, wait_ms, &events);
+        }
+        /* A timed-out send is still outstanding until its real completion or
+         * terminal. Never submit another send on the same connection while
+         * that obligation exists, and never automatically replay DATA.
+         */
+        if (status == SALTS_OK && !transport->send_completed) status = SALTS_EIO;
     }
     return status == SALTS_OK ? (int)size : -1;
 }
@@ -596,19 +646,32 @@ int turbo_transport_recv(turbo_transport_t *transport_ptr, uint8_t **data, size_
         if (status != SALTS_OK) return -1;
         transport->receive_pending = 1;
     }
-    while (!transport->receive_ready && transport->connected &&
-           transport->receive_status == SALTS_OK) {
-        status = transport->datagram_initialized
-            ? cnet_datagram_poll(&transport->datagram, transport_timeout(transport), &events)
-            : transport_owner_poll(transport, transport_timeout(transport), &events);
-        if (status != SALTS_OK) return -1;
+    {
+        const uint64_t started_ms = cmeta_monotonic_ms();
+        const uint32_t budget_ms = transport_timeout(transport);
+        while (!transport->receive_ready && transport->connected &&
+               transport->receive_status == SALTS_OK) {
+            uint32_t wait_ms = 0u;
+            status = transport_remaining(started_ms, budget_ms, &wait_ms);
+            if (status != SALTS_OK) return -1;
+            status = transport->datagram_initialized
+                ? cnet_datagram_poll(&transport->datagram, wait_ms, &events)
+                : transport_owner_poll(transport, wait_ms, &events);
+            if (status != SALTS_OK) return -1;
+        }
     }
     if (transport->receive_status != SALTS_OK) {
         transport->receive_status = SALTS_OK;
         return -1;
     }
     if (!transport->receive_ready) return 0;
-    if (transport->receive_size > INT_MAX) return -1;
+    if (transport->receive_size > INT_MAX) {
+        free(transport->receive_data);
+        transport->receive_data = NULL;
+        transport->receive_size = 0u;
+        transport->receive_ready = 0;
+        return -1;
+    }
     *data = transport->receive_data;
     *size = transport->receive_size;
     transport->receive_data = NULL;
