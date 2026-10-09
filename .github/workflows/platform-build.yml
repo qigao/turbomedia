@@ -482,7 +482,10 @@ jobs:
               & ctest --preset ci-platform-test -R "^test_ivr_whip_transport$" --repeat "until-fail:2" --output-on-failure --timeout 180 -V 2>&1 |
                 ForEach-Object {
                   $line = [string]$_
-                  if ($line -match '\[whip-restart-timing\] (?:[a-z_]+_ms=\d+ ?){7}') {
+                  if ($line -match '\[whip-restart-timing\] initial_ms=\d+ shutdown_ms=\d+ terminal_ms=\d+ restart_ms=\d+ whip_ms=\d+ whep_ms=\d+ rtp_ms=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[whip-restart\] stage=(?:post-sfu-restart|post-sfu-restart-whep|post-sfu-restart-rtp) sfu_generation=\d+ child_alive=[01] whip_connected_now=[01] whep_connected_now=[01] whip_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+\} whep_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+\} child_log_lines=\d+ ice=\d+ dtls=\d+ errors=\d+') {
+                    # Only the schema-validated, token-free counters can escape.
                     Write-Host $Matches[0]
                   }
                 }
