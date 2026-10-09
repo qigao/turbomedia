@@ -2,9 +2,11 @@
 #include "turbo_transport.h"
 #include "transport_internal.h"
 #include "turbo_cnet_send_internal.h"
+#include <cnet/manager.h>
 
 #include <salts/clock.h>
 #include <salts/error_codes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +43,9 @@ typedef struct turbo_transport_s {
     turbo_transport_base_t base;
     cnet_client owned_client;
     cnet_client *client;
+    /* ACE Connector / Handler: bounded attachment owned on the CNet poll owner. */
+    cnet_manager manager;
+    cnet_managed_connection managed;
     cnet_connection connection;
     cnet_datagram datagram;
     cnet_datagram_peer datagram_peer;
@@ -54,6 +59,8 @@ typedef struct turbo_transport_s {
     int connection_active;
     int terminal;
     int receive_ready;
+    int receive_pending; /* One admitted CNet receive demand at a time. */
+    int receive_status;
     int receive_is_text;
     int send_pending;
     int send_completed;
@@ -125,6 +132,55 @@ static cnet_client_config transport_client_config(
     };
 }
 
+/* CNet remains the only Reactor/Proactor execution owner. After callbacks
+ * return, settle any terminal Manager record before reusing or freeing the
+ * borrowed observer storage. Never advance a Manager from its callbacks.
+ * A live connection is intentionally NOT considered drained.
+ */
+static int transport_manager_drained(turbo_transport_impl_t *transport) {
+    cnet_manager_snapshot snapshot = {0};
+    size_t work = 0u;
+    int status = cnet_manager_advance(&transport->manager, 1u, &work);
+    if (status != SALTS_OK) return status;
+    status = cnet_manager_get_snapshot(&transport->manager, &snapshot);
+    if (status != SALTS_OK) return status;
+    if (!snapshot.drained) return SALTS_EBUSY;
+    transport->managed = (cnet_managed_connection){0};
+    transport->connection = (cnet_connection){0};
+    return SALTS_OK;
+}
+
+/* Both owned and externally borrowed CNet clients progress on their original
+ * owner. This wrapper never polls a second backend or schedules a worker.
+ */
+static int transport_owner_poll(turbo_transport_impl_t *transport,
+                                uint32_t timeout_ms, size_t *events) {
+    size_t work = 0u;
+    int status = cnet_client_poll(transport->client, timeout_ms, events);
+    int manager_status = cnet_manager_advance(&transport->manager, 1u, &work);
+    return status != SALTS_OK ? status : manager_status;
+}
+
+/* Timeouts bound the whole synchronous API call, not each empty poll. The
+ * remaining time is computed with subtraction to avoid deadline overflow.
+ */
+static int transport_remaining(uint64_t started_ms, uint32_t budget_ms,
+                               uint32_t *out_wait_ms) {
+    const uint64_t now_ms = cmeta_monotonic_ms();
+    uint64_t elapsed_ms;
+    if (!out_wait_ms || now_ms < started_ms) return SALTS_EIO;
+    elapsed_ms = now_ms - started_ms;
+    if (elapsed_ms >= budget_ms) return SALTS_ETIMEDOUT;
+    *out_wait_ms = (uint32_t)(budget_ms - elapsed_ms);
+    return SALTS_OK;
+}
+
+static uint32_t transport_connect_timeout(const turbo_transport_impl_t *transport) {
+    return transport->base.config.connect_timeout_ms > 0
+        ? (uint32_t)transport->base.config.connect_timeout_ms
+        : TRANSPORT_CONNECT_TIMEOUT_MS;
+}
+
 static int copy_receive(turbo_transport_impl_t *transport,
                         const void *data, size_t size, int is_text) {
     uint8_t *copy = (uint8_t *)malloc(size ? size : 1);
@@ -148,12 +204,14 @@ static void cnet_state(void *user, cnet_connection connection,
     } else if (state == CNET_CONNECTION_FAILED) {
         transport->connected = 0;
         transport->connection_active = 0;
+        transport->receive_pending = 0;
         transport->terminal = 1;
         transport_set_error(transport, error && error->stage ? error->stage : "CNet connect failed");
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_ERROR, transport->error_msg);
     } else if (state == CNET_CONNECTION_CLOSED) {
         transport->connected = 0;
         transport->connection_active = 0;
+        transport->receive_pending = 0;
         transport->terminal = 1;
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_DISCONNECTED, NULL);
     }
@@ -163,7 +221,10 @@ static void cnet_receive_cb(void *user, cnet_connection connection,
                             const cnet_receive_view *view) {
     turbo_transport_impl_t *transport = (turbo_transport_impl_t *)user;
     (void)connection;
-    if (view && copy_receive(transport, view->data, view->size, 0) == SALTS_OK)
+    transport->receive_pending = 0;
+    transport->receive_status = view
+        ? copy_receive(transport, view->data, view->size, 0) : SALTS_EIO;
+    if (transport->receive_status == SALTS_OK)
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_DATA_RECEIVED,
                              transport->receive_data);
 }
@@ -181,7 +242,10 @@ static void datagram_receive_cb(void *user, cnet_datagram *datagram,
                                 const cnet_receive_view *view) {
     turbo_transport_impl_t *transport = (turbo_transport_impl_t *)user;
     (void)datagram; (void)peer;
-    if (view && copy_receive(transport, view->data, view->size, 0) == SALTS_OK)
+    transport->receive_pending = 0;
+    transport->receive_status = view
+        ? copy_receive(transport, view->data, view->size, 0) : SALTS_EIO;
+    if (transport->receive_status == SALTS_OK)
         transport_fire_event(transport, TURBO_TRANSPORT_EVENT_DATA_RECEIVED,
                              transport->receive_data);
 }
@@ -265,6 +329,7 @@ turbo_transport_t *turbo_transport_create(const turbo_transport_config_t *config
             cnet_datagram_init(&transport->datagram, &datagram_config) != SALTS_OK) goto fail;
         transport->datagram_initialized = 1;
     } else if (config->type != TURBO_TRANSPORT_WEBSOCKET) {
+        cnet_manager_config manager_config;
         if (config->cnet_client) {
             transport->client = config->cnet_client;
         } else {
@@ -273,9 +338,24 @@ turbo_transport_t *turbo_transport_create(const turbo_transport_config_t *config
             transport->client = &transport->owned_client;
             transport->owns_client = 1;
         }
+        /* Each TurboMedia TCP/TLS transport owns exactly one bounded Manager
+         * record, including when the underlying CNet client is shared/borrowed.
+         * Manager never owns that client or its polling thread.
+         */
+        manager_config = (cnet_manager_config){
+            sizeof(manager_config), CNET_MANAGER_VERSION, transport->client, 1u, 1u
+        };
+        if (cnet_manager_init(&transport->manager, &manager_config) != SALTS_OK)
+            goto fail;
     }
     return (turbo_transport_t *)transport;
 fail:
+    if (transport->manager.impl)
+        (void)cnet_manager_destroy(&transport->manager);
+    if (transport->owns_client) {
+        (void)cnet_client_stop(&transport->owned_client, TRANSPORT_STOP_TIMEOUT_MS);
+        (void)cnet_client_destroy(&transport->owned_client);
+    }
     if (transport->websocket_tls_initialized)
         (void)chttp_tls_profile_destroy(&transport->websocket_tls);
     free((void *)transport->base.config.host);
@@ -359,8 +439,23 @@ int turbo_transport_connect(turbo_transport_t *transport_ptr) {
     transport = (turbo_transport_impl_t *)transport_ptr;
     if (transport->connected) return 0;
     if (transport->connection_active) return -1;
+    /* Last terminal (or a failed admission) must be recycled before the
+     * next generation is admitted; no fallback raw cnet_connect() path.
+     */
+    if (transport->client &&
+        (!transport->manager.impl || transport_manager_drained(transport) != SALTS_OK)) {
+        transport_set_error(transport, "CNet Manager has outstanding obligations");
+        return -1;
+    }
+    /* A new connection generation cannot borrow an earlier receive result. */
+    free(transport->receive_data);
+    transport->receive_data = NULL;
+    transport->receive_size = 0u;
     transport->terminal = 0;
     transport->receive_ready = 0;
+    transport->receive_pending = 0;
+    transport->receive_status = SALTS_OK;
+    transport->error_msg[0] = '\0';
     transport->send_pending = 0;
     transport->send_completed = 0;
     if (transport->base.config.type == TURBO_TRANSPORT_WEBSOCKET) return connect_websocket(transport);
@@ -378,17 +473,57 @@ int turbo_transport_connect(turbo_transport_t *transport_ptr) {
         transport_set_error(transport, "CNet URI exceeds transport limit");
         return -1;
     }
-    options.uri = uri;
-    options.observer = (cnet_observer){cnet_state, cnet_receive_cb, transport, cnet_send_cb};
-    options.tls = transport->base.config.type == TURBO_TRANSPORT_TLS
-                      ? transport->base.config.tls
-                      : NULL;
-    if (cnet_connect(transport->client, &options, &transport->connection) != SALTS_OK)
-        return -1;
+    {
+        cnet_manager_attachment attachment = {0};
+        int status;
+        attachment.observer = (cnet_observer){cnet_state, cnet_receive_cb,
+                                               transport, cnet_send_cb};
+        status = cnet_manager_reserve(&transport->manager, &attachment,
+                                      &transport->managed);
+        if (status != SALTS_OK) {
+            snprintf(transport->error_msg, sizeof(transport->error_msg),
+                     "CNet Manager reserve failed: status=%d", status);
+            return -1;
+        }
+        options.uri = uri;
+        options.tls = transport->base.config.type == TURBO_TRANSPORT_TLS
+                          ? transport->base.config.tls
+                          : NULL;
+        /* A valid reserve is consumed on both success and failure. The real
+         * terminal callback is authoritative; Manager never fabricates it.
+         */
+        status = cnet_manager_connect(&transport->manager, transport->managed,
+                                      &options, &transport->connection);
+        if (status != SALTS_OK) {
+            (void)transport_manager_drained(transport);
+            snprintf(transport->error_msg, sizeof(transport->error_msg),
+                     "CNet Manager connect failed: status=%d", status);
+            return -1;
+        }
+    }
     transport->connection_active = 1;
-    while (!transport->connected && !transport->terminal) {
-        if (cnet_client_poll(transport->client, transport_timeout(transport), &events) != SALTS_OK)
-            break;
+    {
+        const uint64_t started_ms = cmeta_monotonic_ms();
+        const uint32_t budget_ms = transport_connect_timeout(transport);
+        int progress_status = SALTS_OK;
+        while (!transport->connected && !transport->terminal) {
+            uint32_t wait_ms = 0u;
+            progress_status = transport_remaining(started_ms, budget_ms, &wait_ms);
+            if (progress_status != SALTS_OK) break;
+            progress_status = transport_owner_poll(transport, wait_ms, &events);
+            if (progress_status != SALTS_OK) break;
+        }
+        if (progress_status != SALTS_OK) {
+            /* Even if a CONNECTED notification was observed, a failed owner
+             * poll is not a successful API return. Close only this stream;
+             * retain its observer until real terminal and Manager recycle.
+             */
+            if (!transport->terminal)
+                (void)cnet_close(transport->client, transport->connection);
+            snprintf(transport->error_msg, sizeof(transport->error_msg),
+                     "CNet connect progress failed: status=%d", progress_status);
+            return -1;
+        }
     }
     return transport->connected ? 0 : -1;
 }
@@ -400,7 +535,10 @@ int turbo_transport_disconnect(turbo_transport_t *transport_ptr) {
     if (turbo_transport_base(transport_ptr)->config.type == TURBO_TRANSPORT_HTTP)
         return turbo_transport_disconnect_http(transport_ptr);
     transport = (turbo_transport_impl_t *)transport_ptr;
-    if (!transport->connected && !transport->connection_active) return 0;
+    if (!transport->connected && !transport->connection_active) {
+        return !transport->manager.impl || transport_manager_drained(transport) == SALTS_OK
+                   ? 0 : -1;
+    }
     if (transport->websocket_initialized) {
         (void)chttp_websocket_client_close(
             &transport->websocket, 1000, NULL, 0, TRANSPORT_STOP_TIMEOUT_MS);
@@ -424,9 +562,10 @@ int turbo_transport_disconnect(turbo_transport_t *transport_ptr) {
             size_t events = 0u;
             if (now_ms >= deadline_ms) return -1;
             remaining_ms = (uint32_t)(deadline_ms - now_ms);
-            status = cnet_client_poll(transport->client, remaining_ms, &events);
+            status = transport_owner_poll(transport, remaining_ms, &events);
             if (status != SALTS_OK) return -1;
         }
+        if (transport_manager_drained(transport) != SALTS_OK) return -1;
     } else {
         transport->connected = 0;
         transport->terminal = 1;
@@ -438,13 +577,16 @@ int turbo_transport_disconnect(turbo_transport_t *transport_ptr) {
 
 int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, size_t size) {
     turbo_transport_impl_t *transport;
-    size_t events = 0;
+    size_t events = 0u;
     int status;
     if (!transport_ptr ||
         turbo_transport_base(transport_ptr)->config.type == TURBO_TRANSPORT_HTTP)
         return -1;
     transport = (turbo_transport_impl_t *)transport_ptr;
-    if (!transport->connected || !data || size == 0) return -1;
+    /* Public byte count is int: reject representational overflow before
+     * touching caller storage or admitting a CNet send.
+     */
+    if (!transport->connected || !data || size == 0u || size > INT_MAX) return -1;
     if (transport->websocket_initialized)
         status = chttp_websocket_client_send_binary(&transport->websocket, data, size,
                                                     transport_timeout(transport));
@@ -452,44 +594,115 @@ int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, 
         status = cnet_datagram_send(&transport->datagram, &transport->datagram_peer,
                                     data, size, 0);
     else {
-        if (transport->owns_client && size > TRANSPORT_MAX_BYTES) return -1;
+        const uint64_t started_ms = cmeta_monotonic_ms();
+        const uint32_t budget_ms = transport_timeout(transport);
+        if (transport->send_pending ||
+            (transport->owns_client && size > TRANSPORT_MAX_BYTES))
+            return -1;
         transport->send_pending = 1;
         transport->send_completed = 0;
         status = turbo_media_cnet_send_copy(
             transport->client, transport->connection, data, size, 0);
         if (status != SALTS_OK) transport->send_pending = 0;
-        while (status == SALTS_OK && transport->send_pending && !transport->terminal)
-            status = cnet_client_poll(
-                transport->client, transport_timeout(transport), &events);
-        if (!transport->send_completed) status = SALTS_EIO;
+        while (status == SALTS_OK && transport->send_pending && !transport->terminal) {
+            uint32_t wait_ms = 0u;
+            status = transport_remaining(started_ms, budget_ms, &wait_ms);
+            if (status != SALTS_OK) break;
+            status = transport_owner_poll(transport, wait_ms, &events);
+        }
+        /* A timed-out send is still outstanding until its real completion or
+         * terminal. Never submit another send on the same connection while
+         * that obligation exists, and never automatically replay DATA.
+         */
+        if (status == SALTS_OK && !transport->send_completed) status = SALTS_EIO;
     }
     return status == SALTS_OK ? (int)size : -1;
 }
 
+/* Admission is separate from waiting: request/reply protocols can reserve
+ * their one CNet receive credit before writing a final request chunk. The
+ * callback stores exactly one owned completion; no implicit replay/poll.
+ */
+static int transport_admit_receive(turbo_transport_impl_t *transport) {
+    int status;
+    if (!transport || transport->websocket_initialized) return -1;
+    /* A completed receive belongs to the wrapper even after CNet's real
+     * CLOSED event: consuming it must not require another live connection.
+     */
+    if (transport->receive_ready) return 0;
+    if (!transport->connected) return -1;
+    if (transport->receive_pending) return 0;
+    status = transport->datagram_initialized
+        ? cnet_datagram_receive(&transport->datagram, 1u)
+        : cnet_receive(transport->client, transport->connection, 1u);
+    if (status != SALTS_OK) return -1;
+    transport->receive_pending = 1;
+    return 0;
+}
+
+int turbo_transport_request_receive(turbo_transport_t *transport_ptr) {
+    if (!transport_ptr ||
+        turbo_transport_base(transport_ptr)->config.type == TURBO_TRANSPORT_HTTP)
+        return -1;
+    return transport_admit_receive((turbo_transport_impl_t *)transport_ptr);
+}
+
 int turbo_transport_recv(turbo_transport_t *transport_ptr, uint8_t **data, size_t *size) {
     turbo_transport_impl_t *transport;
-    size_t events = 0;
-    int status;
+    size_t events = 0u;
+    int status = SALTS_OK;
     if (!transport_ptr ||
         turbo_transport_base(transport_ptr)->config.type == TURBO_TRANSPORT_HTTP)
         return -1;
     transport = (turbo_transport_impl_t *)transport_ptr;
-    if (!transport->connected || !data || !size) return -1;
-    transport->receive_ready = 0;
-    if (transport->datagram_initialized) status = cnet_datagram_receive(&transport->datagram, 1);
-    else status = cnet_receive(transport->client, transport->connection, 1);
-    if (status != SALTS_OK) return -1;
-    while (!transport->receive_ready && transport->connected) {
-        status = transport->datagram_initialized
-            ? cnet_datagram_poll(&transport->datagram, transport_timeout(transport), &events)
-            : cnet_client_poll(transport->client, transport_timeout(transport), &events);
-        if (status != SALTS_OK) return -1;
+    if (!data || !size) return -1;
+    *data = NULL;
+    *size = 0u;
+    /* The CHttp WebSocket endpoint has its own receive API. A completed
+     * CNet-owned copy can still be consumed after a terminal callback.
+     */
+    if (transport->websocket_initialized ||
+        (!transport->connected && !transport->receive_ready))
+        return -1;
+    if (transport->receive_status != SALTS_OK) {
+        transport->receive_status = SALTS_OK;
+        return -1;
+    }
+    /* A previous timeout leaves its admitted receive demand with CNet.
+     * Never drop a ready result or submit another demand until it completes.
+     */
+    if (transport_admit_receive(transport) != 0) return -1;
+    {
+        const uint64_t started_ms = cmeta_monotonic_ms();
+        const uint32_t budget_ms = transport_timeout(transport);
+        while (!transport->receive_ready && transport->connected &&
+               transport->receive_status == SALTS_OK) {
+            uint32_t wait_ms = 0u;
+            status = transport_remaining(started_ms, budget_ms, &wait_ms);
+            if (status != SALTS_OK) return -1;
+            status = transport->datagram_initialized
+                ? cnet_datagram_poll(&transport->datagram, wait_ms, &events)
+                : transport_owner_poll(transport, wait_ms, &events);
+            if (status != SALTS_OK) return -1;
+        }
+    }
+    if (transport->receive_status != SALTS_OK) {
+        transport->receive_status = SALTS_OK;
+        return -1;
     }
     if (!transport->receive_ready) return 0;
+    if (transport->receive_size > INT_MAX) {
+        free(transport->receive_data);
+        transport->receive_data = NULL;
+        transport->receive_size = 0u;
+        transport->receive_ready = 0;
+        return -1;
+    }
     *data = transport->receive_data;
     *size = transport->receive_size;
     transport->receive_data = NULL;
-    transport->receive_size = 0;
+    transport->receive_size = 0u;
+    transport->receive_ready = 0;
     return (int)*size;
 }
 
@@ -527,7 +740,8 @@ int turbo_transport_get_connection(turbo_transport_t *transport,
         turbo_transport_base(transport)->config.type == TURBO_TRANSPORT_HTTP)
         return -1;
     impl = (turbo_transport_impl_t *)transport;
-    if (!impl->client) return -1;
+    /* A recycled generation must not leak a stale connection identity. */
+    if (!impl->client || !impl->connection_active) return -1;
     *connection = impl->connection;
     return 0;
 }
@@ -594,13 +808,25 @@ int turbo_transport_destroy(turbo_transport_t *transport_ptr) {
     }
     transport = (turbo_transport_impl_t *)transport_ptr;
     if ((transport->connected || transport->connection_active) &&
-        turbo_transport_disconnect(transport_ptr) != 0 && transport->client &&
-        !transport->owns_client) {
-        /* The external CNet owner still retains this observer. Suppress every
-           user callback before retaining the wrapper for owner-side retry. */
+        turbo_transport_disconnect(transport_ptr) != 0) {
+        /* Never free borrowed callback storage while CNet still owns it,
+         * even if the transport created its own CNet client. The owner must
+         * progress the real terminal and retry destruction.
+         */
         transport->event_callback = NULL;
         transport->event_user_data = NULL;
         return -1;
+    }
+    if (transport->manager.impl) {
+        if (transport_manager_drained(transport) != SALTS_OK ||
+            cnet_manager_destroy(&transport->manager) != SALTS_OK) {
+            /* A wrong-owner call or a still-retiring record cannot release
+             * callback storage; keep it for a later owner-side retry.
+             */
+            transport->event_callback = NULL;
+            transport->event_user_data = NULL;
+            return -1;
+        }
     }
     if (transport->websocket_initialized) {
         if (chttp_websocket_client_destroy(&transport->websocket,
@@ -626,7 +852,7 @@ int turbo_transport_destroy(turbo_transport_t *transport_ptr) {
     if (transport->owns_client) {
         stop_status = cnet_client_stop(&transport->owned_client,
                                        TRANSPORT_STOP_TIMEOUT_MS);
-        if (stop_status == SALTS_ETIMEDOUT ||
+        if ((stop_status != SALTS_OK && stop_status != SALTS_EALREADY) ||
             cnet_client_destroy(&transport->owned_client) != SALTS_OK)
             return -1;
         memset(&transport->owned_client, 0, sizeof(transport->owned_client));

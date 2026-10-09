@@ -110,9 +110,9 @@ foreach(_turbomedia_package IN ITEMS Salts SaltsUtils)
   unset(${_turbomedia_package}_DIR CACHE)
   unset(${_turbomedia_package}_DIR)
 endforeach()
-find_package(Salts CONFIG REQUIRED
+find_package(Salts 2.3 CONFIG REQUIRED
              PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-find_package(SaltsUtils CONFIG REQUIRED
+find_package(SaltsUtils 4.3 CONFIG REQUIRED
              PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
   message(FATAL_ERROR

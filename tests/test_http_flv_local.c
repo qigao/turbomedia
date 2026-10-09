@@ -6,6 +6,8 @@
 #include <cstl/vec.h>
 
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum {
@@ -124,7 +126,16 @@ suite("local HTTP-FLV chunked push") {
       packet.dts = packet.pts;
       check_equal(turbo_streamer_write_packet(streamer, &packet), 0);
     }
-    check_equal(turbo_streamer_disconnect(streamer), 0);
+    {
+      int disconnect_status = turbo_streamer_disconnect(streamer);
+      if (disconnect_status != 0 && getenv("TURBOMEDIA_HTTP_FLV_TRACE")) {
+        fprintf(stderr,
+                "HTTP-FLV test disconnect=%d server_handler=%d saw_chunked=%d received=%zu\n",
+                disconnect_status, state.handler_result, state.saw_chunked,
+                vec_size(&state.received));
+      }
+      check_equal(disconnect_status, 0);
+    }
     check_equal(state.handler_result, 0);
     check_equal(state.saw_chunked, 1);
     check_greater(vec_size(&state.received), 5);

@@ -5,6 +5,7 @@
 #include <salts/error_codes.h>
 #include <turbo_transport.h>
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,6 +19,7 @@ typedef struct {
 typedef struct {
     int connected;
     int disconnected;
+    int data_received;
 } transport_event_probe_t;
 
 static native_io_backend_kind transport_http_test_backend(void) {
@@ -115,6 +117,8 @@ static void transport_event_probe(
         probe->connected += 1;
     } else if (event == TURBO_TRANSPORT_EVENT_DISCONNECTED) {
         probe->disconnected += 1;
+    } else if (event == TURBO_TRANSPORT_EVENT_DATA_RECEIVED) {
+        probe->data_received += 1;
     }
 }
 
@@ -249,10 +253,18 @@ suite("Salts CHTTP transport") {
     turbo_transport_set_event_callback(transport, transport_event_probe,
                                        &probe);
 
-    check_equal(turbo_transport_connect(transport), 0);
-    check_equal(turbo_transport_disconnect(transport), 0);
-    check_equal(turbo_transport_connect(transport), 0);
-    check_equal(turbo_transport_disconnect(transport), 0);
+    {
+        cnet_connection live = {0};
+        check_equal(turbo_transport_get_connection(transport, &live), -1);
+        check_equal(turbo_transport_connect(transport), 0);
+        check_equal(turbo_transport_get_connection(transport, &live), 0);
+        check_equal(turbo_transport_disconnect(transport), 0);
+        check_equal(turbo_transport_get_connection(transport, &live), -1);
+        check_equal(turbo_transport_connect(transport), 0);
+        check_equal(turbo_transport_get_connection(transport, &live), 0);
+        check_equal(turbo_transport_disconnect(transport), 0);
+        check_equal(turbo_transport_get_connection(transport, &live), -1);
+    }
     check_equal(probe.connected, 2);
     check_equal(probe.disconnected, 2);
 
@@ -307,4 +319,238 @@ suite("Salts CHTTP transport") {
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);
     check_equal(state.request_valid, 1);
   }
+  it("keeps a neighboring managed TCP transport live on a shared CNet owner") {
+    transport_http_test_state_t state = {0};
+    transport_event_probe_t first_probe = {0};
+    transport_event_probe_t second_probe = {0};
+    cnet_client owner = {0};
+    cnet_client_config owner_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 5000,
+        .write_timeout_ms = 5000,
+        .cnet_client = &owner
+    };
+    const char request[] =
+        "POST /base/api/v1/commands HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Authorization: Bearer original-token\r\n"
+        "User-Agent: TurboMediaTransportTest/1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 2\r\n\r\n{}";
+    turbo_transport_t *first;
+    turbo_transport_t *second;
+    uint8_t *response = NULL;
+    size_t response_size = 0u;
+    size_t events = 0u;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
+    first = turbo_transport_create(&config);
+    second = turbo_transport_create(&config);
+    check_not_null(first);
+    check_not_null(second);
+    turbo_transport_set_event_callback(first, transport_event_probe, &first_probe);
+    turbo_transport_set_event_callback(second, transport_event_probe, &second_probe);
+    check_equal(turbo_transport_connect(first), 0);
+    check_equal(turbo_transport_connect(second), 0);
+    check_equal(first_probe.connected, 1);
+    check_equal(second_probe.connected, 1);
+    check_equal(turbo_transport_disconnect(first), 0);
+    check_equal(turbo_transport_destroy(first), 0);
+    check_true(turbo_transport_is_connected(second));
+    check_equal(second_probe.disconnected, 0);
+    check_equal(turbo_transport_send(second, (const uint8_t *)request,
+                                     sizeof(request) - 1u),
+                (int)(sizeof(request) - 1u));
+    check_greater(turbo_transport_recv(second, &response, &response_size), 0);
+    check_not_null(response);
+    turbo_transport_free_recv(second, response);
+    check_equal(state.request_valid, 1);
+    check_equal(turbo_transport_destroy(second), 0);
+    for (int attempt = 0; attempt < 8; ++attempt)
+        check_equal(cnet_client_poll(&owner, 10u, &events), SALTS_OK);
+    check_equal(first_probe.disconnected, 1);
+    check_equal(second_probe.disconnected, 1);
+    check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&owner), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
+  it("retains one receive demand and the buffered response after timeout") {
+    transport_http_test_state_t state = {0};
+    cnet_client owner = {0};
+    cnet_client_config owner_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 40,
+        .write_timeout_ms = 5000,
+        .cnet_client = &owner
+    };
+    const char request[] =
+        "POST /base/api/v1/commands HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Authorization: Bearer original-token\r\n"
+        "User-Agent: TurboMediaTransportTest/1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 2\r\n\r\n{}";
+    turbo_transport_t *transport;
+    uint8_t *response = (uint8_t *)1;
+    size_t response_size = 99u;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    check_equal(turbo_transport_connect(transport), 0);
+    /* Explicit admission is bounded and idempotent before any request bytes.
+     * The following recv must reuse this exact credit after timeout.
+     */
+    check_equal(turbo_transport_request_receive(transport), 0);
+    check_equal(turbo_transport_request_receive(transport), 0);
+    /* The temporary timeout does NOT cancel CNet's one outstanding demand. */
+    check_equal(turbo_transport_recv(transport, &response, &response_size), -1);
+    check_null(response);
+    check_equal(response_size, 0u);
+    check_true(turbo_transport_is_connected(transport));
+
+    /* The reply may arrive while send() advances the same client. The next
+     * recv() must consume that retained completion without a second demand.
+     */
+    check_equal(turbo_transport_send(transport, (const uint8_t *)request,
+                                     sizeof(request) - 1u),
+                (int)(sizeof(request) - 1u));
+    check_greater(turbo_transport_recv(transport, &response, &response_size), 0);
+    check_not_null(response);
+    turbo_transport_free_recv(transport, response);
+    check_equal(state.request_valid, 1);
+    check_equal(turbo_transport_destroy(transport), 0);
+    check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&owner), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
+  it("rejects send sizes beyond the public int result before reading memory") {
+    transport_http_test_state_t state = {0};
+    cnet_client owner = {0};
+    cnet_client_config owner_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 5000,
+        .write_timeout_ms = 5000,
+        .cnet_client = &owner
+    };
+    turbo_transport_t *transport;
+    uint8_t byte = 0x5a;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    check_equal(turbo_transport_connect(transport), 0);
+    check_equal(turbo_transport_send(transport, &byte, (size_t)INT_MAX + 1u), -1);
+    check_true(turbo_transport_is_connected(transport));
+    check_equal(turbo_transport_destroy(transport), 0);
+    check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&owner), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+
+  it("consumes a copied HTTP reply after the real CNet terminal") {
+    transport_http_test_state_t state = {0};
+    transport_event_probe_t probe = {0};
+    cnet_client owner = {0};
+    cnet_client_config owner_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 5000,
+        .write_timeout_ms = 5000,
+        .cnet_client = &owner
+    };
+    const char request[] =
+        "POST /base/api/v1/commands HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Authorization: Bearer original-token\r\n"
+        "User-Agent: TurboMediaTransportTest/1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 2\r\n"
+        "Connection: close\r\n\r\n{}";
+    turbo_transport_t *transport;
+    uint8_t *response = NULL;
+    size_t response_size = 0u;
+    size_t events = 0u;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    turbo_transport_set_event_callback(transport, transport_event_probe, &probe);
+    check_equal(turbo_transport_connect(transport), 0);
+    check_equal(turbo_transport_request_receive(transport), 0);
+    check_equal(turbo_transport_send(transport, (const uint8_t *)request,
+                                     sizeof(request) - 1u),
+                (int)(sizeof(request) - 1u));
+    /* Connection: close does not guarantee an immediate server terminal.
+     * Wait for the real receive callback, then explicitly close through the
+     * CNet owner so terminal/recycle is observed before consuming the copy.
+     */
+    for (int n = 0; n < 300 && probe.data_received == 0; ++n)
+        check_equal(cnet_client_poll(&owner, 10u, &events), SALTS_OK);
+    check_greater(probe.data_received, 0);
+    check_equal(turbo_transport_disconnect(transport), 0);
+    check_false(turbo_transport_is_connected(transport));
+    check_greater(probe.disconnected, 0);
+    check_equal(turbo_transport_request_receive(transport), 0);
+    check_greater(turbo_transport_recv(transport, &response, &response_size), 0);
+    check_not_null(response);
+    check_greater(response_size, 12u);
+    turbo_transport_free_recv(transport, response);
+    check_equal(state.request_valid, 1);
+    check_equal(turbo_transport_destroy(transport), 0);
+    check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&owner), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
+  it("recycles rejected TLS admission without a hidden reconnect") {
+    cnet_tls_client_config invalid_tls = {0};
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TLS,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 250,
+        .read_timeout_ms = 250,
+        .write_timeout_ms = 250,
+        .tls = &invalid_tls
+    };
+    turbo_transport_t *transport = turbo_transport_create(&config);
+    cnet_connection connection = {0};
+
+    check_not_null(transport);
+    /* Invalid TLS policy is fail-closed at CNet admission. A valid Manager
+     * reservation is consumed even when CNet rejects synchronously.
+     */
+    check_equal(turbo_transport_connect(transport), -1);
+    check_not_null(turbo_transport_get_error(transport));
+    check_equal(turbo_transport_get_connection(transport, &connection), -1);
+    /* A second explicit call can reserve again; nothing auto-retries. */
+    check_equal(turbo_transport_connect(transport), -1);
+    check_equal(turbo_transport_destroy(transport), 0);
+  }
+
 }
