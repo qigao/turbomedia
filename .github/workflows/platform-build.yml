@@ -476,7 +476,16 @@ jobs:
             # deadlines, application replay or automatic settlement retry.
             if ("${{ matrix.platform }}" -eq "Windows" -and
                 "${{ github.head_ref }}" -eq "diagnostics/whip-sfu-restart-windows") {
-              & ctest --preset ci-platform-test -R "^test_ivr_whip_transport$" --repeat "until-fail:2" --output-on-failure --timeout 180
+              # CTest normally hides successful test stdout. Capture only the
+              # generated numeric timing record; never print verbose SFU/SDP
+              # output, Authorization headers or raw test logs.
+              & ctest --preset ci-platform-test -R "^test_ivr_whip_transport$" --repeat "until-fail:2" --output-on-failure --timeout 180 -V 2>&1 |
+                ForEach-Object {
+                  $line = [string]$_
+                  if ($line -match '\[whip-restart-timing\] (?:[a-z_]+_ms=\d+ ?){7}') {
+                    Write-Host $Matches[0]
+                  }
+                }
               if ($LASTEXITCODE -ne 0) {
                 throw "Windows SFU/WHIP restart repeatability gate failed"
               }
