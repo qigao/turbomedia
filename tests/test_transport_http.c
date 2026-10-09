@@ -465,6 +465,59 @@ suite("Salts CHTTP transport") {
     check_equal(chttp_server_destroy(&state.server), SALTS_OK);
   }
 
+  it("consumes a completed HTTP reply after CNet reports peer close") {
+    transport_http_test_state_t state = {0};
+    cnet_client owner = {0};
+    cnet_client_config owner_config = transport_external_client_config();
+    turbo_transport_config_t config = {
+        .type = TURBO_TRANSPORT_TCP,
+        .host = "127.0.0.1",
+        .port = TRANSPORT_HTTP_TEST_PORT,
+        .connect_timeout_ms = 5000,
+        .read_timeout_ms = 5000,
+        .write_timeout_ms = 5000,
+        .cnet_client = &owner
+    };
+    const char request[] =
+        "POST /base/api/v1/commands HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        "Authorization: Bearer original-token\r\n"
+        "User-Agent: TurboMediaTransportTest/1\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 2\r\n"
+        "Connection: close\r\n\r\n{}";
+    turbo_transport_t *transport;
+    uint8_t *response = NULL;
+    size_t response_size = 0u;
+    size_t events = 0u;
+
+    check_equal(transport_http_server_start(&state), 0);
+    check_equal(cnet_client_init(&owner, &owner_config), SALTS_OK);
+    transport = turbo_transport_create(&config);
+    check_not_null(transport);
+    check_equal(turbo_transport_connect(transport), 0);
+    check_equal(turbo_transport_request_receive(transport), 0);
+    check_equal(turbo_transport_send(transport, (const uint8_t *)request,
+                                     sizeof(request) - 1u),
+                (int)(sizeof(request) - 1u));
+    /* Allow both the receive callback and the real peer terminal to occur
+     * before handing the bounded owned receive back to the application.
+     */
+    for (int n = 0; n < 300 && turbo_transport_is_connected(transport); ++n)
+        check_equal(cnet_client_poll(&owner, 10u, &events), SALTS_OK);
+    check_false(turbo_transport_is_connected(transport));
+    check_equal(turbo_transport_request_receive(transport), 0);
+    check_greater(turbo_transport_recv(transport, &response, &response_size), 0);
+    check_not_null(response);
+    check_greater(response_size, 12u);
+    turbo_transport_free_recv(transport, response);
+    check_equal(state.request_valid, 1);
+    check_equal(turbo_transport_destroy(transport), 0);
+    check_equal(cnet_client_stop(&owner, 5000u), SALTS_OK);
+    check_equal(cnet_client_destroy(&owner), SALTS_OK);
+    check_equal(chttp_server_stop(&state.server, 5000u), SALTS_OK);
+    check_equal(chttp_server_destroy(&state.server), SALTS_OK);
+  }
   it("recycles rejected TLS admission without a hidden reconnect") {
     cnet_tls_client_config invalid_tls = {0};
     turbo_transport_config_t config = {

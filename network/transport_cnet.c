@@ -625,9 +625,13 @@ int turbo_transport_send(turbo_transport_t *transport_ptr, const uint8_t *data, 
  */
 static int transport_admit_receive(turbo_transport_impl_t *transport) {
     int status;
-    if (!transport || !transport->connected || transport->websocket_initialized)
-        return -1;
-    if (transport->receive_ready || transport->receive_pending) return 0;
+    if (!transport || transport->websocket_initialized) return -1;
+    /* A completed receive belongs to the wrapper even after CNet's real
+     * CLOSED event: consuming it must not require another live connection.
+     */
+    if (transport->receive_ready) return 0;
+    if (!transport->connected) return -1;
+    if (transport->receive_pending) return 0;
     status = transport->datagram_initialized
         ? cnet_datagram_receive(&transport->datagram, 1u)
         : cnet_receive(transport->client, transport->connection, 1u);

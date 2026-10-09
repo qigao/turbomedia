@@ -32,8 +32,9 @@ plus peer close from racing a later blocking `recv()` on the same owner.
 A read timeout does not revoke demand and the next caller cannot add a second
 outstanding demand; data delivered while another API polls is buffered as an
 owned copy, retained for the next `recv()` (including after the connection
-terminal). Callback allocation failure is surfaced, not silently considered
-success. HTTP/WebSocket retain their separate CHttp receive contracts.
+terminal). A fully copied completion can be retrieved after `CLOSED` without
+rechecking `connected` or admitting a second receive demand. Callback
+allocation failure is surfaced, not silently considered success. HTTP/WebSocket retain their separate CHttp receive contracts.
 
 The admission path is `manager_reserve → manager_connect → CNet poll → real terminal → manager_advance → manager_destroy` (or another bounded reservation after recycle). The Manager consumes a valid reservation even if connect is immediately rejected; no callback is fabricated. The wrapper advances its Manager **after** returning from CNet poll so callbacks cannot recursively run Manager cleanup. Reconnect is initiated only by an explicit caller request and only after the prior record is drained; raw `cnet_connect` is not a fallback.
 
