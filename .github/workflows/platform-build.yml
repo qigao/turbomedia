@@ -68,6 +68,7 @@ on:
 permissions:
   contents: read
   packages: read
+  actions: read
 
 env:
   # Persistent media binary packages are produced and owned by qigao/vcpkg-cache.
@@ -190,6 +191,73 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid "${{ matrix.rid }}"
+
+      # Only this Draft branch can consume unpublished, exact-source CI
+      # artifacts. Never publish these packages or ship their SHA as a
+      # permanent dependency: released SDK restores remain authoritative.
+      - name: Stage qualified ACE/CNet candidate consumers
+        if: github.event_name == 'pull_request' && github.head_ref == 'feature/ace-cnet-owner-transport'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $rid = "${{ matrix.rid }}"
+          $candidates = @(
+            @{
+              name = "SaltsNet"
+              repo = "qigao/salts-net"
+              run = "37952520605"
+              artifact = "saltsnet-sdk-$rid"
+              expected = "a74b3a8ed8a7f297a57307aac99d541c63dd0c7c"
+              manifest = "saltsnet-sdk-manifest.txt"
+              config = "lib/cmake/SaltsNet/SaltsNetConfig.cmake"
+              root = "SALTSNET_ROOT"
+            },
+            @{
+              name = "CHttp"
+              repo = "qigao/chttp"
+              run = "37951497030"
+              artifact = $(if ($rid -eq "macos-arm64") { "chttp-sdk-macos" } else { "chttp-sdk-$rid" })
+              expected = "e46187214dca7d4572811704c159b9a29ad26b4a"
+              manifest = "chttp-sdk-manifest.txt"
+              config = "lib/cmake/Chttp/ChttpConfig.cmake"
+              root = "CHTTP_ROOT"
+            }
+          )
+          foreach ($candidate in $candidates) {
+            $details = & gh api "repos/$($candidate.repo)/actions/runs/$($candidate.run)" --jq "{head_sha: .head_sha, conclusion: .conclusion}"
+            if ($LASTEXITCODE -ne 0) { throw "$($candidate.name): GitHub Actions run metadata unavailable" }
+            $runInfo = $details | ConvertFrom-Json
+            if ($runInfo.conclusion -ne "success" -or $runInfo.head_sha -ne $candidate.expected) {
+              throw "$($candidate.name): candidate run does not match the exact successful source SHA"
+            }
+            $destination = Join-Path $env:RUNNER_TEMP "turbomedia-ace-candidate-$($candidate.name)"
+            New-Item -ItemType Directory -Path $destination -Force | Out-Null
+            & gh run download $candidate.run -R $candidate.repo -n $candidate.artifact -D $destination
+            if ($LASTEXITCODE -ne 0) { throw "$($candidate.name): exact CI artifact missing" }
+            $root = Join-Path $destination $rid
+            $config = Join-Path $root $candidate.config
+            $manifest = Join-Path $root $candidate.manifest
+            if (-not (Test-Path -LiteralPath $config -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+              throw "$($candidate.name): candidate RID configuration/provenance missing: $rid"
+            }
+            $manifestText = Get-Content -LiteralPath $manifest -Raw
+            $expectedLine = "commit=$($candidate.expected)"
+            if ($manifestText -notmatch "(?m)^$([regex]::Escape($expectedLine))\r?$") {
+              throw "$($candidate.name): SDK install commit differs from its exact source"
+            }
+            $root = $root.Replace('\', '/')
+            "$($candidate.root)=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            foreach ($leaf in @("bin", "lib")) {
+              $entry = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $entry -PathType Container) {
+                $entry | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              }
+            }
+            Write-Host "Qualified $($candidate.name) from $($candidate.repo) at $($candidate.expected), RID=$rid"
+          }
 
       - name: Restore media dependencies cache-only
         shell: pwsh
