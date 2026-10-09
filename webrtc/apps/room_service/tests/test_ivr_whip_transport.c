@@ -1010,7 +1010,11 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     check_true(configure_audio_route(publisher_ssrc));
     check_equal(ivr_whep_transport_start(g_whep_transport, &g_call,
                                          "call-42-rx"), IVR_OK);
-    check_true(wait_whep_connected());
+    {
+        const int reconnected = wait_whep_connected();
+        if (!reconnected) print_whip_restart_failure_snapshot("post-sfu-restart-whep");
+        check_true(reconnected);
+    }
 
     whip_after = media_state_snapshot(&g_whip_states);
     whep_after = media_state_snapshot(&g_whep_states);
@@ -1024,7 +1028,11 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     frames_after_reconnect = g_whep_audio_frames;
     check_true(frames_after_reconnect >= frames_before_restart);
     check_true(send_audio_frames(30u));
-    check_true(wait_whep_frames_greater_than(frames_after_reconnect));
+    {
+        const int resumed = wait_whep_frames_greater_than(frames_after_reconnect);
+        if (!resumed) print_whip_restart_failure_snapshot("post-sfu-restart-rtp");
+        check_true(resumed);
+    }
     check_true(ivr_whip_transport_connected(g_transport));
     check_true(ivr_whep_transport_connected(g_whep_transport));
 
