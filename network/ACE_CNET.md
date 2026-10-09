@@ -67,3 +67,5 @@ The CI native regression uses an opt-in one-shot fault under
 Production builds default to disabled and compile no test hook. This verifies
 the owner parking and command/acknowledgment protocol; it does not yet assert
 recovery from every underlying NativeIO error.
+
+An additional CI-only `TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE` case first performs **real** `turbo_transport_disconnect()` (CNet terminal + Manager recycle) on the owner, then simulates a post-drain wrapper-destroy refusal. A separate explicit caller close must complete that retained wrapper on the same worker. This supplements, rather than replaces, the prior early refusal test.

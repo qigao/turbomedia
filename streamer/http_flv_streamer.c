@@ -328,9 +328,20 @@ static void http_flv_upload_thread(void *arg) {
              * library. The production library has no injected failure path.
              */
             if (attempt == 0u &&
-                getenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_ONCE") != NULL)
+                getenv("TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE") != NULL) {
+                /* First really drive CNet CLOSED + Manager recycle on its
+                 * original owner. Report a simulated post-drain refusal
+                 * before destroying the wrapper. Explicit retry must finish
+                 * the retained Manager without a second stream close.
+                 */
+                cleanup_status = ctx->transport
+                    ? turbo_transport_disconnect(ctx->transport) : 0;
+                if (cleanup_status == 0) cleanup_status = -1;
+            } else if (attempt == 0u &&
+                       getenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_ONCE") != NULL) {
+                /* Earlier admission-failure-style refusal, no native close. */
                 cleanup_status = -1;
-            else
+            } else
 #endif
             if (ctx->transport) {
                 cleanup_status = turbo_transport_destroy(ctx->transport);
