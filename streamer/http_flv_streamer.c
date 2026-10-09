@@ -294,6 +294,22 @@ static void http_flv_upload_thread(void *arg) {
             result = http_flv_read_response(ctx);
         }
     }
+    /* The upload worker created the owner-local CNet Manager. Complete and
+     * destroy its wrapper on this same thread, before the controller joins.
+     * On failed drain retain the wrapper rather than freeing borrowed state.
+     */
+    if (ctx->transport) {
+        int cleanup_status = turbo_transport_destroy(ctx->transport);
+        if (cleanup_status == 0) {
+            ctx->transport = NULL;
+        } else if (result == 0) {
+            result = -EIO;
+            failure_stage = "destroy-on-cnet-owner";
+        } else if (getenv("TURBOMEDIA_HTTP_FLV_TRACE")) {
+            fprintf(stderr, "HTTP-FLV owner cleanup also failed status=%d\n",
+                    cleanup_status);
+        }
+    }
     /* Diagnostics are opt-in; never dump request headers, media or secrets. */
     if (result != 0 && getenv("TURBOMEDIA_HTTP_FLV_TRACE")) {
         const char *reason = ctx->transport
@@ -354,10 +370,10 @@ static int http_flv_streamer_destroy_impl(void *ctx_ptr) {
         cmeta_thread_destroy(&ctx->upload_thread);
         ctx->upload_thread_started = 0;
     }
-    if (ctx->transport) {
-        if (turbo_transport_destroy(ctx->transport) != 0) return -EIO;
-        ctx->transport = NULL;
-    }
+    /* Joined worker owns all CNet callbacks and Manager records. A remaining
+     * transport denotes a failed owner drain; never free it cross-thread.
+     */
+    if (ctx->transport) return -EIO;
     http_flv_clear_queue(ctx);
     if (ctx->queue_initialized) deque_destroy(&ctx->queue);
     if (ctx->sync_initialized) { cmeta_cond_destroy(&ctx->cond); cmeta_mutex_destroy(&ctx->mutex); }
@@ -473,13 +489,14 @@ static int http_flv_streamer_disconnect_impl(void *ctx_ptr) {
         ctx->upload_thread_started = 0;
     }
     result = ctx->upload_result;
+    /* Only the upload worker is authorized to destroy its CNet Manager.
+     * Its final state is visible after the join. Never transfer owner by
+     * treating join() as permission to destroy from this control thread.
+     */
     if (ctx->transport) {
-        if (turbo_transport_destroy(ctx->transport) != 0) {
-            if (getenv("TURBOMEDIA_HTTP_FLV_TRACE"))
-                fprintf(stderr, "HTTP-FLV failure stage=destroy-transport status=%d\n", -EIO);
-            return -EIO;
-        }
-        ctx->transport = NULL;
+        if (getenv("TURBOMEDIA_HTTP_FLV_TRACE"))
+            fprintf(stderr, "HTTP-FLV failure stage=owner-drain-pending status=%d\n", -EIO);
+        return -EIO;
     }
     ctx->connected = 0;
     if (result != 0) return result;

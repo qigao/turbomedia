@@ -40,7 +40,7 @@ The admission path is `manager_reserve → manager_connect → CNet poll → rea
 
 ## Shutdown and sharing
 
-`turbo_transport_disconnect` closes only the transport's own connection. It never stops a caller-owned CNet client or unrelated active connections. `turbo_transport_destroy` returns an error while the Manager still has callback/record obligations, retains the original wrapper, and allows a later owner-thread retry. For an internally created client, Manager destruction precedes `cnet_client_stop/destroy`. HTTP and WebSocket continue to use CHttp's existing lifetime/lease semantics. UDP retains CNet datagram semantics.
+`turbo_transport_disconnect` closes only the transport's own connection. It never stops a caller-owned CNet client or unrelated active connections. `turbo_transport_destroy` returns an error while the Manager still has callback/record obligations, retains the original wrapper, and allows a later owner-thread retry. For an internally created client, Manager destruction precedes `cnet_client_stop/destroy`. HTTP and WebSocket continue to use CHttp's existing lifetime/lease semantics. UDP retains CNet datagram semantics. HTTP-FLV's dedicated upload worker is the **CNet Manager owner** and must complete/destroy its transport on that worker before signaling upload completion. Joining the worker does not transfer its Manager authority to the control thread. A failed owner drain is reported and the wrapper remains retained; never destruct it from the foreign thread.
 
 ## Next ACE/CMeta layers (not implemented by this slice)
 
