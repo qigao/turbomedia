@@ -214,7 +214,8 @@ jobs:
         if: >-
           github.event_name == 'pull_request' &&
           (github.head_ref == 'feature/ace-cnet-owner-transport' ||
-           github.head_ref == 'fix/http-flv-owner-drain-recovery')
+           github.head_ref == 'fix/http-flv-owner-drain-recovery' ||
+           github.head_ref == 'diagnostics/whip-sfu-restart-windows')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
