@@ -99,6 +99,14 @@ jobs:
             os: macos-15
             rid: macos-arm64
             triplet: arm64-osx
+          - platform: iOS device
+            os: macos-15
+            rid: ios-arm64
+            triplet: arm64-ios
+          - platform: iOS simulator
+            os: macos-15
+            rid: ios-simulator-arm64
+            triplet: arm64-ios-simulator
 
     steps:
       - uses: actions/checkout@v4
@@ -205,6 +213,19 @@ jobs:
               "-DANDROID_STL=c++_shared"
             )
           }
+          if ("${{ matrix.platform }}" -like "iOS*") {
+            $iosSysroot = if ("${{ matrix.platform }}" -eq "iOS simulator") {
+              "iphonesimulator"
+            } else {
+              "iphoneos"
+            }
+            $args += @(
+              "-DCMAKE_SYSTEM_NAME=iOS",
+              "-DCMAKE_OSX_SYSROOT=$iosSysroot",
+              "-DCMAKE_OSX_ARCHITECTURES=arm64",
+              "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
+            )
+          }
           & cmake @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
 
@@ -244,7 +265,8 @@ jobs:
           }
           & cmake --build $build --parallel 2
           if ($LASTEXITCODE -ne 0) { throw "build failed for ${{ matrix.platform }}" }
-          if ("${{ matrix.platform }}" -ne "Android") {
+          if ("${{ matrix.platform }}" -ne "Android" -and
+              "${{ matrix.platform }}" -notlike "iOS*") {
             & ctest --test-dir $build --no-tests=error --output-on-failure -LE performance
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }

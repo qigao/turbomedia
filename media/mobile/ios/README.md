@@ -8,6 +8,16 @@ by TurboMedia.
 The parent TurboMedia CMake graph adds `media/mobile/ios` only when
 `CMAKE_SYSTEM_NAME=iOS`.
 
+Native qualification is platform-matrix driven. The canonical rows are:
+
+- device: `ios-arm64` / vcpkg `arm64-ios`;
+- Apple Silicon simulator: `ios-simulator-arm64` / vcpkg `arm64-ios-simulator`.
+
+Both consume released SDKs and the central `vcpkg-cache_*` namespace read-only,
+then configure/build/install the normal TurboMedia graph. Cross-built target
+tests are compiled but are not executed on the macOS host. There is no separate
+iOS build script or universal x86_64 compatibility path.
+
 The native target is:
 
 ```

@@ -16,5 +16,6 @@
       "description": "Build the command line tool",
       "supports": "!uwp"
     }
-  }
+  },
+  "port-version": 1
 }
