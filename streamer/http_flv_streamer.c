@@ -11,6 +11,7 @@
 
 #include <cstl/deque.h>
 #include <salts/thread.h>
+#include <salts/clock.h>
 
 #include <errno.h>
 #include <stdint.h>
@@ -541,13 +542,32 @@ static int http_flv_streamer_disconnect_internal(void *ctx_ptr, int allow_retry)
         requested_attempt = ++ctx->owner_retry_requested;
     }
     cmeta_cond_broadcast(&ctx->cond);
-    /* One initial drain or one explicitly requested retry per call. A failed
-     * drain leaves the worker alive: no controller-side cnet_manager_destroy.
+    /* upload_done signals protocol completion, NOT native quiescence: it
+     * may be set early on connect admission failure. Wait for the owner's
+     * actual first drain/explicit retry acknowledgment, with a bounded
+     * operation-wide deadline. A timeout keeps the wrapper and worker alive.
      */
-    while (!ctx->upload_done ||
-           (requested_attempt != 0u &&
-            ctx->owner_retry_completed < requested_attempt))
-        cmeta_cond_wait(&ctx->cond, &ctx->mutex);
+    {
+        const uint64_t started_ms = cmeta_monotonic_ms();
+        while ((ctx->owner_state != HTTP_FLV_OWNER_DRAINED &&
+                ctx->owner_state != HTTP_FLV_OWNER_RETAINED_FAILURE) ||
+               (requested_attempt != 0u &&
+                ctx->owner_retry_completed < requested_attempt)) {
+            const uint64_t elapsed_ms = cmeta_monotonic_ms() - started_ms;
+            int wait_status;
+            if (elapsed_ms >= HTTP_FLV_DEFAULT_TIMEOUT_MS) {
+                cmeta_mutex_unlock(&ctx->mutex);
+                return -ETIMEDOUT;
+            }
+            wait_status = cmeta_cond_timedwait(
+                &ctx->cond, &ctx->mutex,
+                (uint64_t)(HTTP_FLV_DEFAULT_TIMEOUT_MS - elapsed_ms) * 1000000u);
+            if (wait_status != 0 && wait_status != -ETIMEDOUT) {
+                cmeta_mutex_unlock(&ctx->mutex);
+                return -EIO;
+            }
+        }
+    }
     if (ctx->owner_state != HTTP_FLV_OWNER_DRAINED) {
         ctx->owner_failure_reported = 1;
         cmeta_mutex_unlock(&ctx->mutex);
