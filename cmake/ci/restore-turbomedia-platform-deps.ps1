@@ -13,7 +13,9 @@ foreach ($required in @("GITHUB_TOKEN", "RUNNER_TEMP", "GITHUB_ENV", "GITHUB_PAT
 }
 
 $config = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk.config"
-$project = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk.csproj"
+$restoreRoot = Join-Path $env:RUNNER_TEMP "turbomedia-native-sdk-restore"
+New-Item -ItemType Directory -Path $restoreRoot -Force | Out-Null
+$project = Join-Path $restoreRoot "turbomedia-platform-sdk.csproj"
 $packages = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk-packages"
 if (Test-Path -LiteralPath $packages) {
   Remove-Item -LiteralPath $packages -Recurse -Force
@@ -73,7 +75,7 @@ function Get-OfficialNativeVersion([string]$repository, [string]$line,
     "User-Agent" = "turbomedia-native-sdk-qualification"
   }
   $releases = Invoke-RestMethod -Method Get -Uri $url -Headers $headers
-  $rcPattern = "^v" + [regex]::Escape($line) + "-rc\\.([0-9]+)$"
+  $rcPattern = "^v" + [regex]::Escape($line) + "-rc\.([0-9]+)$"
   $choices = @(
     foreach ($release in $releases) {
       if ($release.draft) { continue }
@@ -114,7 +116,7 @@ Write-Host "Qualifying native SDK versions Salts.Native $saltsExpected / SaltsUt
 dotnet restore $project --configfile $config --packages $packages --no-cache --force-evaluate @properties
 if ($LASTEXITCODE -ne 0) { throw "platform SDK restore failed" }
 
-$assetsPath = Join-Path $env:RUNNER_TEMP "obj/project.assets.json"
+$assetsPath = Join-Path $restoreRoot "obj/project.assets.json"
 if (-not (Test-Path -LiteralPath $assetsPath -PathType Leaf)) {
   throw "NuGet resolved asset graph is missing: $assetsPath"
 }
