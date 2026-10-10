@@ -70,15 +70,16 @@ function Resolve-OfficialNativeRelease([string]$Repository, [string]$PackageId,
 
 $saltsVersion = Resolve-OfficialNativeRelease "qigao/salts" "Salts.Native" "2.3.0"
 $saltsUtilsVersion = Resolve-OfficialNativeRelease "qigao/salts-utils" "SaltsUtils.Native" "4.3.0"
-$saltsTrack = $saltsVersion.Substring("2.3.0".Length)
-$utilsTrack = $saltsUtilsVersion.Substring("4.3.0".Length)
-if ($saltsTrack -cne $utilsTrack) {
-  throw "unqualified mixed Unicode SDK versions: Salts $saltsVersion, SaltsUtils $saltsUtilsVersion"
+# RC sequences belong to each package, not to a shared release counter.
+# For example, Salts 2.3.0-rc.10 and SaltsUtils 4.3.0-rc.7 are the current
+# official releases. Keep both post-cutover; installed package contracts and
+# the native build/CTest graph qualify their actual compatibility.
+foreach ($version in @($saltsVersion, $saltsUtilsVersion)) {
+  if ($version -match '-rc\.([1-9][0-9]*)$' -and [int]$Matches[1] -lt 2) {
+    throw "Unicode owner cutover requires rc.2+ SDK releases: $version"
+  }
 }
-if ($saltsTrack -match '^-rc\.([1-9][0-9]*)$' -and [int]$Matches[1] -lt 2) {
-  throw "Unicode owner cutover requires matching rc.2+ SDK releases"
-}
-Write-Host "Official paired SDKs: Salts.Native $saltsVersion, SaltsUtils.Native $saltsUtilsVersion"
+Write-Host "Official SDKs: Salts.Native $saltsVersion, SaltsUtils.Native $saltsUtilsVersion"
 
 $desktopServices = $Rid -eq "linux-x64" -or $Rid -eq "windows-x64"
 $desktopReference = if ($desktopServices) {

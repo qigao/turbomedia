@@ -455,7 +455,8 @@ jobs:
         if: >-
           matrix.platform == 'Linux' &&
           github.event_name == 'pull_request' &&
-          github.head_ref == 'fix/http-flv-owner-drain-recovery'
+          (github.head_ref == 'fix/http-flv-owner-drain-recovery' ||
+           github.head_ref == 'diagnostics/whip-sfu-restart-windows')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
