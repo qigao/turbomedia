@@ -12,3 +12,10 @@ The components below retain their upstream license terms.
 
 Dependencies downloaded by vcpkg or another package manager are not relicensed
 by TurboMedia and remain governed by their respective upstream licenses.
+
+GmSSL is a static provider dependency of the installed SaltsUtils Crypto
+component used by SaltsNet/CHttp. It is restored through the existing vcpkg
+manifest and shared cache, not vendored here. [GmSSL](https://github.com/guanzhi/GmSSL)
+uses Apache-2.0; the shared [GmSSL port](https://github.com/qigao/vcpkg-cache/tree/master/ports/gmssl)
+records its source revision, local patches and packaged license. The current
+provider recipe is 3.2.0 port revision 9.

@@ -53,7 +53,11 @@ DataChannel 由仓库内 TurboMedia 与 SaltsNet 模块实现；安全传输强�
 BoringSSL。
 
 SDK 从 `SALTS_ROOT`、`SALTS_UTILS_ROOT`、`SALTSNET_ROOT`、`CHTTP_ROOT`
-各自安装根加载，不显式指定依赖版本；本工程无需 Lua/QuickJS 绑定。
+各自安装根加载；当前要求 Salts 2.3 和 SaltsUtils 4.3。本工程无需 Lua/QuickJS 绑定。
+平台 CI 独立选择两个版本系列中最新的正式 numeric RC/stable 发布，RC 序号无需相同。
+升级后需重新构建并运行原有平台测试；历史组合通过不代表新组合已经验收。
+SaltsNet/CHttp 的 `Salts::Crypto` 链接闭包通过 SaltsUtils `Crypto` 组件解析
+GmSSL，由既有 vcpkg manifest 和共享缓存提供；不能用空 target 或旧 SDK 替代。
 IVR schema 由 `salts-idlc` 重新生成，当前协议要求 RoomService 与 worker 同步升级。
 资源归属、合并边界与回滚说明见
 [SDK 迁移设计](docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md)。
