@@ -314,6 +314,8 @@ typedef struct {
     unsigned input_stalled;
     unsigned invalid_identity;
     uint64_t last_generation;
+    int last_state;
+    int last_error;
     /* Test-only callback event time, protected by g_media_state_lock. */
     uint64_t first_terminal_at_ms;
 } media_state_counts_t;
@@ -566,8 +568,6 @@ static void on_media_state(void *context, const ivr_call_ref_t *call,
                            uint64_t attempt_generation,
                            ivr_media_link_state_t state, int error_code) {
     media_state_counts_t *counts = (media_state_counts_t *)context;
-    (void)call;
-    (void)error_code;
     if (!counts) {
         return;
     }
@@ -578,6 +578,8 @@ static void on_media_state(void *context, const ivr_call_ref_t *call,
         return;
     }
     counts->last_generation = attempt_generation;
+    counts->last_state = (int)state;
+    counts->last_error = error_code;
     if (error_code == IVR_MEDIA_ERROR_INPUT_STALLED) {
         counts->input_stalled++;
     } else {
@@ -965,9 +967,9 @@ static void print_whip_restart_failure_snapshot(const char *stage) {
             "[whip-restart] stage=%s sfu_generation=%u child_alive=%d "
             "whip_connected_now=%d whep_connected_now=%d "
             "whip_states={connecting:%u,connected:%u,disconnected:%u,"
-            "failed:%u,closed:%u,identity_invalid:%u,attempt:%llu} "
+            "failed:%u,closed:%u,identity_invalid:%u,attempt:%llu,state:%d,error:%d} "
             "whep_states={connecting:%u,connected:%u,disconnected:%u,"
-            "failed:%u,closed:%u,identity_invalid:%u,attempt:%llu} "
+            "failed:%u,closed:%u,identity_invalid:%u,attempt:%llu,state:%d,error:%d} "
             "child_log_lines=%u ice=%u dtls=%u errors=%u\n",
             stage, g_spawn_generation, sfu_process_alive(),
             ivr_whip_transport_connected(g_transport),
@@ -975,9 +977,11 @@ static void print_whip_restart_failure_snapshot(const char *stage) {
             whip.connecting, whip.connected, whip.disconnected,
             whip.failed, whip.closed, whip.invalid_identity,
             (unsigned long long)whip.last_generation,
+            whip.last_state, whip.last_error,
             whep.connecting, whep.connected, whep.disconnected,
             whep.failed, whep.closed, whep.invalid_identity,
             (unsigned long long)whep.last_generation,
+            whep.last_state, whep.last_error,
             processed, ice_lines, dtls_lines, error_lines);
 }
 
@@ -1004,15 +1008,29 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     uint64_t whep_terminal_since_kill_ms;
 
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
-    check_true(wait_whip_connected());
+    /* #160's original line 899 failed here, before kill_child. Capture the
+     * live first-generation state before fatal-check teardown closes ICE. */
+    {
+        const int connected = wait_whip_connected();
+        if (!connected) print_whip_restart_failure_snapshot("initial-whip");
+        check_true(connected);
+    }
     publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
     check_true(publisher_ssrc != 0u);
     check_true(configure_audio_route(publisher_ssrc));
     check_equal(ivr_whep_transport_start(g_whep_transport, &g_call,
                                          "call-42-rx"), IVR_OK);
-    check_true(wait_whep_connected());
+    {
+        const int connected = wait_whep_connected();
+        if (!connected) print_whip_restart_failure_snapshot("initial-whep");
+        check_true(connected);
+    }
     check_true(send_audio_frames(30u));
-    check_true(wait_whep_frames_greater_than(0u));
+    {
+        const int received = wait_whep_frames_greater_than(0u);
+        if (!received) print_whip_restart_failure_snapshot("initial-rtp");
+        check_true(received);
+    }
 
     whip_before = media_state_snapshot(&g_whip_states);
     whep_before = media_state_snapshot(&g_whep_states);

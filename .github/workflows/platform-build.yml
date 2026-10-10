@@ -375,6 +375,8 @@ jobs:
 
       - name: Build and test
         shell: pwsh
+        env:
+          TURBOMEDIA_CI_HEAD_REF: ${{ github.head_ref }}
         run: |
           $ErrorActionPreference = "Stop"
           # Only emits bounded stage/status codes on HTTP-FLV upload failure.
@@ -420,7 +422,7 @@ jobs:
             # SFU restarts must both pass. No skipped tests, wider production
             # deadlines, application replay or automatic settlement retry.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                "${{ github.head_ref }}" -eq "diagnostics/whip-sfu-restart-windows") {
+                $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
               # CTest normally hides successful test stdout. Capture only the
               # schema-validated numeric timing and redacted failure counters;
               # never print verbose SFU/SDP, Authorization or raw test logs.
@@ -433,7 +435,7 @@ jobs:
                     Write-Host $Matches[0]
                   } elseif ($line -match '\[whip-restart-terminal-events\] whip_since_kill_ms=\d+ whep_since_kill_ms=\d+') {
                     Write-Host $Matches[0]
-                  } elseif ($line -match '\[whip-restart\] stage=(?:post-sfu-restart|post-sfu-restart-whep|post-sfu-restart-rtp|post-sfu-stop-whip-terminal|post-sfu-stop-whep-terminal|post-sfu-restart-room) sfu_generation=\d+ child_alive=[01] whip_connected_now=[01] whep_connected_now=[01] whip_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+\} whep_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+\} child_log_lines=\d+ ice=\d+ dtls=\d+ errors=\d+') {
+                  } elseif ($line -match '\[whip-restart\] stage=(?:initial-whip|initial-whep|initial-rtp|post-sfu-restart|post-sfu-restart-whep|post-sfu-restart-rtp|post-sfu-stop-whip-terminal|post-sfu-stop-whep-terminal|post-sfu-restart-room) sfu_generation=\d+ child_alive=[01] whip_connected_now=[01] whep_connected_now=[01] whip_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} whep_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} child_log_lines=\d+ ice=\d+ dtls=\d+ errors=\d+') {
                     # Only the schema-validated, token-free counters can escape.
                     Write-Host $Matches[0]
                   } elseif ($line -match '\[sfu-log-summary\] available=[01] chunks=\d+ ice=\d+ dtls=\d+ errors=\d+') {
