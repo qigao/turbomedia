@@ -422,8 +422,8 @@ jobs:
             if ("${{ matrix.platform }}" -eq "Windows" -and
                 "${{ github.head_ref }}" -eq "diagnostics/whip-sfu-restart-windows") {
               # CTest normally hides successful test stdout. Capture only the
-              # generated numeric timing record; never print verbose SFU/SDP
-              # output, Authorization headers or raw test logs.
+              # schema-validated numeric timing and redacted failure counters;
+              # never print verbose SFU/SDP, Authorization or raw test logs.
               & ctest --preset ci-platform-test -R "^test_ivr_whip_transport$" --repeat "until-fail:2" --output-on-failure --timeout 180 -V 2>&1 |
                 ForEach-Object {
                   $line = [string]$_
@@ -431,6 +431,10 @@ jobs:
                     Write-Host $Matches[0]
                   } elseif ($line -match '\[whip-restart\] stage=(?:post-sfu-restart|post-sfu-restart-whep|post-sfu-restart-rtp) sfu_generation=\d+ child_alive=[01] whip_connected_now=[01] whep_connected_now=[01] whip_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+\} whep_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+\} child_log_lines=\d+ ice=\d+ dtls=\d+ errors=\d+') {
                     # Only the schema-validated, token-free counters can escape.
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[sfu-log-summary\] available=[01] chunks=\d+ ice=\d+ dtls=\d+ errors=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[sfu-provision\] attach_failed=1 attempts=10 status_class=[0-5]') {
                     Write-Host $Matches[0]
                   }
                 }
