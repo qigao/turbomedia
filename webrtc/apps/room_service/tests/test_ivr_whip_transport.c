@@ -987,6 +987,9 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     uint64_t stamp = test_monotonic_ms();
     uint64_t initial_ms, shutdown_ms, termination_ms, restart_ms;
     uint64_t whip_ms, whep_ms, rtp_ms;
+    uint64_t whip_terminal_ms, whep_terminal_ms;
+    uint64_t whep_stop_ms, whip_stop_ms, spawn_ms, room_ms;
+    uint64_t phase_stamp;
 
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
     check_true(wait_whip_connected());
@@ -1013,8 +1016,24 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     check_equal(kill_child(&g_sfu), 0);
     shutdown_ms = test_monotonic_ms() - stamp;
     stamp = test_monotonic_ms();
-    check_true(wait_for_media_terminal(&g_whip_states, whip_terminal_before));
-    check_true(wait_for_media_terminal(&g_whep_states, whep_terminal_before));
+    phase_stamp = test_monotonic_ms();
+    {
+        const int reached = wait_for_media_terminal(
+            &g_whip_states, whip_terminal_before);
+        if (!reached) print_whip_restart_failure_snapshot(
+            "post-sfu-stop-whip-terminal");
+        check_true(reached);
+    }
+    whip_terminal_ms = test_monotonic_ms() - phase_stamp;
+    phase_stamp = test_monotonic_ms();
+    {
+        const int reached = wait_for_media_terminal(
+            &g_whep_states, whep_terminal_before);
+        if (!reached) print_whip_restart_failure_snapshot(
+            "post-sfu-stop-whep-terminal");
+        check_true(reached);
+    }
+    whep_terminal_ms = test_monotonic_ms() - phase_stamp;
     check_false(ivr_whip_transport_connected(g_transport));
     check_false(ivr_whep_transport_connected(g_whep_transport));
     termination_ms = test_monotonic_ms() - stamp;
@@ -1023,17 +1042,30 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     /* Local teardown completes, but the dead SFU cannot acknowledge DELETE.
        Preserve that remote-side uncertainty as an explicit failure; the same
        transport must still be restartable below. */
+    phase_stamp = test_monotonic_ms();
     check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &g_call)),
                 (int)(-1));
+    whep_stop_ms = test_monotonic_ms() - phase_stamp;
+    phase_stamp = test_monotonic_ms();
     ivr_whip_transport_get_transport(g_transport, &publisher);
     check_not_null(publisher.stop);
     check_equal((int)(publisher.stop(publisher.context, &g_call)), (int)(-1));
+    whip_stop_ms = test_monotonic_ms() - phase_stamp;
 
+    phase_stamp = test_monotonic_ms();
     check_true(spawn_sfu());
     check_equal(g_spawn_generation, 2u);
     check_true(sfu_process_alive());
-    check_true(provision_room());
+    spawn_ms = test_monotonic_ms() - phase_stamp;
+    phase_stamp = test_monotonic_ms();
+    {
+        const int room_ready = provision_room();
+        if (!room_ready) print_whip_restart_failure_snapshot(
+            "post-sfu-restart-room");
+        check_true(room_ready);
+    }
     check_true(sfu_process_alive());
+    room_ms = test_monotonic_ms() - phase_stamp;
     restart_ms = test_monotonic_ms() - stamp;
     stamp = test_monotonic_ms();
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
@@ -1080,6 +1112,15 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
             (unsigned long long)termination_ms, (unsigned long long)restart_ms,
             (unsigned long long)whip_ms, (unsigned long long)whep_ms,
             (unsigned long long)rtp_ms);
+    fprintf(stderr,
+            "[whip-restart-subtiming] whip_terminal_ms=%llu whep_terminal_ms=%llu "
+            "whep_stop_ms=%llu whip_stop_ms=%llu spawn_ms=%llu room_ms=%llu\n",
+            (unsigned long long)whip_terminal_ms,
+            (unsigned long long)whep_terminal_ms,
+            (unsigned long long)whep_stop_ms,
+            (unsigned long long)whip_stop_ms,
+            (unsigned long long)spawn_ms,
+            (unsigned long long)room_ms);
     check_true(ivr_whip_transport_connected(g_transport));
     check_true(ivr_whep_transport_connected(g_whep_transport));
 
