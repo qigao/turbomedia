@@ -314,6 +314,8 @@ typedef struct {
     unsigned input_stalled;
     unsigned invalid_identity;
     uint64_t last_generation;
+    /* Test-only callback event time, protected by g_media_state_lock. */
+    uint64_t first_terminal_at_ms;
 } media_state_counts_t;
 static media_state_counts_t g_whip_states;
 static media_state_counts_t g_whep_states;
@@ -586,6 +588,12 @@ static void on_media_state(void *context, const ivr_call_ref_t *call,
             case IVR_MEDIA_LINK_FAILED: counts->failed++; break;
             case IVR_MEDIA_LINK_CLOSED: counts->closed++; break;
             default: break;
+        }
+        if ((state == IVR_MEDIA_LINK_DISCONNECTED ||
+             state == IVR_MEDIA_LINK_FAILED ||
+             state == IVR_MEDIA_LINK_CLOSED) &&
+            counts->first_terminal_at_ms == 0u) {
+            counts->first_terminal_at_ms = test_monotonic_ms();
         }
     }
     ivr_mutex_unlock(&g_media_state_lock);
@@ -977,6 +985,8 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     ivr_media_transport_t publisher;
     media_state_counts_t whip_before;
     media_state_counts_t whep_before;
+    media_state_counts_t whip_stopped;
+    media_state_counts_t whep_stopped;
     media_state_counts_t whip_after;
     media_state_counts_t whep_after;
     unsigned whip_terminal_before;
@@ -990,6 +1000,8 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     uint64_t whip_terminal_ms, whep_terminal_ms;
     uint64_t whep_stop_ms, whip_stop_ms, spawn_ms, room_ms;
     uint64_t phase_stamp;
+    uint64_t kill_started_ms, whip_terminal_since_kill_ms;
+    uint64_t whep_terminal_since_kill_ms;
 
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
     check_true(wait_whip_connected());
@@ -1011,8 +1023,16 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     /* A completed process stop, rather than a best-effort kill request, is
      * the barrier before reusing the same SFU control/media ports.
      */
+    /* Observe both transport callbacks relative to one SFU stop epoch.
+     * The subsequent sequential waits remain unchanged and are not
+     * independent failure-detection latencies. */
+    ivr_mutex_lock(&g_media_state_lock);
+    g_whip_states.first_terminal_at_ms = 0u;
+    g_whep_states.first_terminal_at_ms = 0u;
+    ivr_mutex_unlock(&g_media_state_lock);
     initial_ms = test_monotonic_ms() - stamp;
     stamp = test_monotonic_ms();
+    kill_started_ms = stamp;
     check_equal(kill_child(&g_sfu), 0);
     shutdown_ms = test_monotonic_ms() - stamp;
     stamp = test_monotonic_ms();
@@ -1036,6 +1056,14 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     whep_terminal_ms = test_monotonic_ms() - phase_stamp;
     check_false(ivr_whip_transport_connected(g_transport));
     check_false(ivr_whep_transport_connected(g_whep_transport));
+    whip_stopped = media_state_snapshot(&g_whip_states);
+    whep_stopped = media_state_snapshot(&g_whep_states);
+    whip_terminal_since_kill_ms =
+        whip_stopped.first_terminal_at_ms >= kill_started_ms
+            ? whip_stopped.first_terminal_at_ms - kill_started_ms : 0u;
+    whep_terminal_since_kill_ms =
+        whep_stopped.first_terminal_at_ms >= kill_started_ms
+            ? whep_stopped.first_terminal_at_ms - kill_started_ms : 0u;
     termination_ms = test_monotonic_ms() - stamp;
     stamp = test_monotonic_ms();
 
@@ -1121,6 +1149,10 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
             (unsigned long long)whip_stop_ms,
             (unsigned long long)spawn_ms,
             (unsigned long long)room_ms);
+    fprintf(stderr,
+            "[whip-restart-terminal-events] whip_since_kill_ms=%llu whep_since_kill_ms=%llu\n",
+            (unsigned long long)whip_terminal_since_kill_ms,
+            (unsigned long long)whep_terminal_since_kill_ms);
     check_true(ivr_whip_transport_connected(g_transport));
     check_true(ivr_whep_transport_connected(g_whep_transport));
 
