@@ -171,20 +171,29 @@ static int kill_child(child_t *child) {
     return 0;
 }
 
-static void print_child_output(const char *path) {
+/* Failure-only SFU diagnostics are bounded and classified. Never emit raw
+ * child output: the SFU trace may contain SDP, credentials or user media.
+ */
+static void print_child_log_counts(const char *path) {
     FILE *stream;
     char line[512];
-    if (!path) {
-        return;
-    }
+    unsigned chunks = 0u, ice = 0u, dtls = 0u, errors = 0u;
+    if (!path) return;
     stream = fopen(path, "rb");
     if (!stream) {
+        fprintf(stderr, "[sfu-log-summary] available=0 chunks=0 ice=0 dtls=0 errors=0\n");
         return;
     }
-    while (fgets(line, sizeof(line), stream)) {
-        fputs(line, stderr);
+    while (chunks < 2048u && fgets(line, sizeof(line), stream)) {
+        ++chunks;
+        if (strstr(line, "ICE") || strstr(line, "ice")) ++ice;
+        if (strstr(line, "DTLS") || strstr(line, "dtls")) ++dtls;
+        if (strstr(line, "ERROR") || strstr(line, "error")) ++errors;
     }
     fclose(stream);
+    fprintf(stderr,
+            "[sfu-log-summary] available=1 chunks=%u ice=%u dtls=%u errors=%u\n",
+            chunks, ice, dtls, errors);
 }
 
 static int http_post(const char *path, const char *token, const char *body,
@@ -364,7 +373,17 @@ static int provision_room(void) {
         }
         proc_sleep(500);
     }
-    fprintf(stderr, "last attach_room response:\n%s\n", response);
+    /* Only classify the HTTP status. The raw control-plane response may
+     * contain sensitive headers or media negotiation data.
+     */
+    int http_status = 0;
+    unsigned status_class = 0u;
+    if (sscanf(response, "HTTP/%*u.%*u %d", &http_status) == 1 &&
+        http_status >= 100 && http_status <= 599) {
+        status_class = (unsigned)http_status / 100u;
+    }
+    fprintf(stderr, "[sfu-provision] attach_failed=1 attempts=10 status_class=%u\n",
+            status_class);
     return 0;
 }
 
@@ -611,7 +630,7 @@ void setUp(void) {
     int room_ready = provision_room();
     if (!room_ready) {
         kill_child(&g_sfu);
-        print_child_output(g_out_path);
+        print_child_log_counts(g_out_path);
     }
     check_true(room_ready);
 
@@ -681,7 +700,7 @@ void test_whip_publish_connect_and_send_audio(void) {
         }
     }
     if (!connected) {
-        print_child_output(g_out_path);
+        print_child_log_counts(g_out_path);
         check(0, "%s", ("WHIP ICE/DTLS transport did not connect"));
     }
     media_state_counts_t whip_states = media_state_snapshot(&g_whip_states);
