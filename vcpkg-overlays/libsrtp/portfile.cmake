@@ -6,9 +6,11 @@ vcpkg_from_github(
     PATCHES
         cmake-config.diff
         fix-runtime-destination.patch
-        boringssl-compat.patch
-        mandatory-boringssl.patch
+        mandatory-gmssl.patch
 )
+
+file(COPY "${CMAKE_CURRENT_LIST_DIR}/gmssl_crypto.c"
+     DESTINATION "${SOURCE_PATH}/crypto/cipher")
 
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
