@@ -562,6 +562,17 @@ to GmSSL AES-CTR, AES-GCM and HMAC-SHA1. All existing
 AES-CM and GCM profiles remain available, including AES-256-GCM. Replacing the
 whole SRTP stack or disabling AEAD is rejected. DTLS qualification remains separate.
 
+The SRTP session wrapper validates key and salt lengths against libSRTP's profile
+helpers before acquiring library state. Its immutable sessions query RTP/SRTCP
+trailer lengths once at creation; protect calls reject insufficient capacity or
+an output length exceeding `INT_MAX` before mutating the caller-owned packet.
+The public RTP trailer reserve is 16 bytes (the GCM tag); SRTCP additionally needs
+four index bytes. Callers using the former 14-byte reserve must rebuild or increase
+their buffers. No MKI is configured. Formal SRTP tests cover all four profiles,
+exact capacity, unchanged input on rejection, corrected configuration after a
+rejected key/salt length, and successful packet round trips. These wrapper fixes
+do not establish the historical cause of #160.
+
 Each libSRTP cipher/auth context exclusively owns its GmSSL state under the
 existing session's serialization contract. ICM retains the unused bytes of the
 last CTR block between calls. GCM copies successive AAD inputs because SRTCP

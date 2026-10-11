@@ -21,7 +21,7 @@ extern "C" {
 #define SRTP_MAX_KEY_LEN        32
 #define SRTP_MAX_SALT_LEN       14
 #define SRTP_AUTH_TAG_LEN       10      /* HMAC-SHA1-80 */
-#define SRTP_MAX_TRAILER_LEN    (SRTP_AUTH_TAG_LEN + 4)  /* Tag + potential MKI */
+#define SRTP_MAX_TRAILER_LEN    16      /* Largest supported RTP tag (GCM); no MKI */
 
 /* SRTP Profiles (RFC 5764) */
 #define SRTP_PROFILE_AES128_CM_SHA1_80      0x0001

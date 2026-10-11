@@ -358,6 +358,83 @@ spec("SRTP crypto provider compatibility") {
   }
   after_each() { provider_cleanup(); }
 
+  it("requires the profile's exact key and salt lengths before creating a session") {
+    for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
+      srtp_keying_material_t keys;
+      fill_keying_material(&keys);
+      const size_t key_length = provider_profiles[p] == SRTP_PROFILE_AEAD_AES_256_GCM ? 32 : 16;
+      const size_t salt_length = p < 2 ? 14 : 12;
+      const size_t invalid_lengths[][2] = {
+          {0, salt_length}, {key_length, 0},
+          {key_length - 1, salt_length}, {key_length + 1, salt_length},
+          {key_length, salt_length - 1}, {key_length, salt_length + 1},
+          /* Equal combined sizes must not permit a different key/salt split. */
+          {key_length - 1, salt_length + 1}, {key_length + 1, salt_length - 1},
+          {SIZE_MAX, salt_length}, {key_length, SIZE_MAX}
+      };
+      srtp_session_config_t config = {
+          .is_sender = 1, .is_dtls_client = 1,
+          .profile = provider_profiles[p], .keys = &keys
+      };
+      for (size_t i = 0; i < sizeof(invalid_lengths) / sizeof(invalid_lengths[0]); ++i) {
+        keys.key_len = invalid_lengths[i][0];
+        keys.salt_len = invalid_lengths[i][1];
+        srtp_keying_material_t original;
+        memcpy(&original, &keys, sizeof(original));
+        provider_sender = srtp_session_create(&config);
+        check_null(provider_sender);
+        check_equal(memcmp(&keys, &original, sizeof(keys)), 0);
+      }
+      keys.key_len = key_length;
+      keys.salt_len = salt_length;
+      provider_sender = srtp_session_create(&config);
+      check_not_null(provider_sender);
+      provider_cleanup();
+      config.profile = UINT16_MAX;
+      provider_sender = srtp_session_create(&config);
+      check_null(provider_sender);
+    }
+  }
+
+  it("checks exact RTP and SRTCP trailer capacity before changing the packet") {
+    static const size_t rtp_trailers[] = {10, 4, 16, 16};
+    static const size_t rtcp_trailers[] = {14, 14, 20, 20};
+    for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
+      for (int rtcp = 0; rtcp < 2; ++rtcp) {
+        /* Storage is deliberately larger than the declared capacity. These
+         * assertions check rejection and immutability without an out-of-bounds write. */
+        uint8_t packet[256] = {0}, original[256];
+        provider_setup(provider_profiles[p], 1);
+        size_t length = rtcp ? build_test_rtcp_packet(packet, sizeof(packet))
+                            : build_test_rtp_packet(packet, sizeof(packet), 1, 90000, 0x12345678);
+        size_t original_length = length;
+        size_t trailer = rtcp ? rtcp_trailers[p] : rtp_trailers[p];
+        check_less_equal(trailer, (size_t)SRTP_MAX_TRAILER_LEN + (rtcp ? 4 : 0));
+        memcpy(original, packet, sizeof(packet));
+        for (size_t available = 0; available < trailer; ++available) {
+          check_equal(rtcp ? turbo_srtcp_protect(provider_sender, packet, &length, length + available)
+                           : turbo_srtp_protect(provider_sender, packet, &length, length + available), -1);
+          check_equal(length, original_length);
+          check_equal(memcmp(packet, original, sizeof(packet)), 0);
+        }
+        check_equal(rtcp ? turbo_srtcp_protect(provider_sender, packet, &length, length + trailer)
+                         : turbo_srtp_protect(provider_sender, packet, &length, length + trailer), 0);
+        check_equal(length, original_length + trailer);
+        check_equal(rtcp ? turbo_srtcp_unprotect(provider_receiver, packet, &length)
+                         : turbo_srtp_unprotect(provider_receiver, packet, &length), 0);
+        check_equal(length, original_length);
+        check_equal(memcmp(packet, original, length), 0);
+
+        length = (size_t)INT_MAX - trailer + 1;
+        size_t rejected_length = length;
+        check_equal(rtcp ? turbo_srtcp_protect(provider_sender, packet, &length, SIZE_MAX)
+                         : turbo_srtp_protect(provider_sender, packet, &length, SIZE_MAX), -1);
+        check_equal(length, rejected_length);
+        provider_cleanup();
+      }
+    }
+  }
+
   it("preserves RTP bytes for every profile and both DTLS key directions") {
     for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
       for (int client = 0; client < 2; ++client) {
