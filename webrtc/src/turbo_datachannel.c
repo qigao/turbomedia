@@ -1610,7 +1610,12 @@ int turbo_dc_channel_send(
         spa.sendv_prinfo.pr_value = (uint32_t)channel->config.max_lifetime_ms;
     }
 
-    ssize_t sent = usrsctp_sendv(peer->sctp.socket, data, len,
+    /* RFC 8831 section 6.6: SCTP cannot carry a zero-length user message.
+     * The empty PPID carries one zero byte, which the receiver ignores. */
+    const uint8_t empty_payload = 0;
+    const void *payload = len ? data : &empty_payload;
+    size_t payload_len = len ? len : sizeof(empty_payload);
+    ssize_t sent = usrsctp_sendv(peer->sctp.socket, payload, payload_len,
                                   NULL, 0, &spa, sizeof(spa),
                                   SCTP_SENDV_SPA, 0);
 

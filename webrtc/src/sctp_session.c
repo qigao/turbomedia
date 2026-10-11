@@ -182,6 +182,10 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
 
     if (channel && channel->on_message && channel->is_open) {
         int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
+        /* Empty-message PPIDs describe the application length independently
+         * of the SCTP placeholder payload (RFC 8831 section 6.6). */
+        if (ppid == SCTP_PPID_STRING_EMPTY || ppid == SCTP_PPID_BINARY_EMPTY)
+            datalen = 0;
         channel->on_message(channel, data, datalen, is_binary, channel->user_data);
     }
 

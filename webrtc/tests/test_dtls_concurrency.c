@@ -274,6 +274,7 @@ typedef struct {
     size_t max_application_packet;
     uint8_t message[4096];
     size_t message_size;
+    int message_binary;
     unsigned messages;
     int message_invalid;
 } packet_endpoint_t;
@@ -507,7 +508,8 @@ static void record_channel_message(turbo_dc_channel_t *channel, const void *data
     cmeta_mutex_lock(&endpoint->mutex);
     ++endpoint->messages;
     endpoint->message_size = size;
-    if (!binary || size > sizeof(endpoint->message)) endpoint->message_invalid = 1;
+    endpoint->message_binary = binary;
+    if (size > sizeof(endpoint->message)) endpoint->message_invalid = 1;
     else memcpy(endpoint->message, data, size);
     cmeta_mutex_unlock(&endpoint->mutex);
 }
@@ -520,6 +522,70 @@ static void record_incoming_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *c
     cmeta_mutex_lock(&endpoint->mutex);
     endpoint->channel = channel;
     cmeta_mutex_unlock(&endpoint->mutex);
+}
+
+static void open_packet_channel(void) {
+    turbo_dc_peer_on_channel(endpoints[1].peer, record_incoming_channel);
+    check_equal(turbo_dc_peer_connect(endpoints[1].peer), 0);
+    check_equal(turbo_dc_peer_connect(endpoints[0].peer), 0);
+    uint64_t deadline = cmeta_monotonic_ms() + 5000;
+    int connected = 0;
+    do {
+        deliver_packets(0); deliver_packets(1);
+        connected = 1;
+        for (int i = 0; i < 2; ++i) {
+            cmeta_mutex_lock(&endpoints[i].mutex);
+            connected &= endpoints[i].connected_events != 0;
+            cmeta_mutex_unlock(&endpoints[i].mutex);
+        }
+        if (connected) break;
+        cmeta_sleep_ms(1);
+    } while (cmeta_monotonic_ms() < deadline);
+    check_true(connected);
+    endpoints[0].channel = turbo_dc_channel_create(endpoints[0].peer, "message-test", NULL);
+    check_not_null(endpoints[0].channel);
+    turbo_dc_channel_set_user_data(endpoints[0].channel, &endpoints[0]);
+    turbo_dc_channel_on_message(endpoints[0].channel, record_channel_message);
+    check_equal(turbo_dc_channel_open(endpoints[0].channel), 0);
+    deadline = cmeta_monotonic_ms() + 5000;
+    while (!turbo_dc_channel_is_open(endpoints[0].channel) && cmeta_monotonic_ms() < deadline) {
+        deliver_packets(0); deliver_packets(1);
+        cmeta_sleep_ms(1);
+    }
+    check_true(turbo_dc_channel_is_open(endpoints[0].channel));
+    check_not_null(endpoints[1].channel);
+    check_true(turbo_dc_channel_is_open(endpoints[1].channel));
+}
+
+static void expect_packet_messages(unsigned count, const void *payload, size_t size, int binary) {
+    uint64_t deadline = cmeta_monotonic_ms() + 5000;
+    int received;
+    do {
+        deliver_packets(0); deliver_packets(1);
+        received = 1;
+        for (int i = 0; i < 2; ++i) {
+            cmeta_mutex_lock(&endpoints[i].mutex);
+            received &= endpoints[i].messages >= count;
+            cmeta_mutex_unlock(&endpoints[i].mutex);
+        }
+        if (received) break;
+        cmeta_sleep_ms(1);
+    } while (cmeta_monotonic_ms() < deadline);
+    check_true(received);
+    for (int i = 0; i < 2; ++i) {
+        cmeta_mutex_lock(&endpoints[i].mutex);
+        unsigned messages = endpoints[i].messages;
+        size_t actual_size = endpoints[i].message_size;
+        int actual_binary = endpoints[i].message_binary;
+        int invalid = endpoints[i].message_invalid || endpoints[i].send_failed;
+        int equal = size == 0 || memcmp(endpoints[i].message, payload, size) == 0;
+        cmeta_mutex_unlock(&endpoints[i].mutex);
+        check_false(invalid);
+        check_equal(messages, count);
+        check_equal(actual_size, size);
+        check_equal(actual_binary, binary);
+        check_true(equal);
+    }
 }
 
 spec("SCTP over GmSSL configured datagram limits") {
@@ -535,42 +601,13 @@ spec("SCTP over GmSSL configured datagram limits") {
             check_equal(params.spp_pathmtu, (uint32_t)1000);
             check_true((params.spp_flags & SPP_PMTUD_DISABLE) != 0);
         }
-        turbo_dc_peer_on_channel(endpoints[1].peer, record_incoming_channel);
-        check_equal(turbo_dc_peer_connect(endpoints[1].peer), 0);
-        check_equal(turbo_dc_peer_connect(endpoints[0].peer), 0);
-        uint64_t deadline = cmeta_monotonic_ms() + 5000;
-        int connected = 0;
-        do {
-            deliver_packets(0); deliver_packets(1);
-            connected = 1;
-            for (int i = 0; i < 2; ++i) {
-                cmeta_mutex_lock(&endpoints[i].mutex);
-                connected &= endpoints[i].connected_events != 0;
-                cmeta_mutex_unlock(&endpoints[i].mutex);
-            }
-            if (connected) break;
-            cmeta_sleep_ms(1);
-        } while (cmeta_monotonic_ms() < deadline);
-        check_true(connected);
-        endpoints[0].channel = turbo_dc_channel_create(endpoints[0].peer, "mtu-test", NULL);
-        check_not_null(endpoints[0].channel);
-        turbo_dc_channel_set_user_data(endpoints[0].channel, &endpoints[0]);
-        turbo_dc_channel_on_message(endpoints[0].channel, record_channel_message);
-        check_equal(turbo_dc_channel_open(endpoints[0].channel), 0);
-        deadline = cmeta_monotonic_ms() + 5000;
-        while (!turbo_dc_channel_is_open(endpoints[0].channel) && cmeta_monotonic_ms() < deadline) {
-            deliver_packets(0); deliver_packets(1);
-            cmeta_sleep_ms(1);
-        }
-        check_true(turbo_dc_channel_is_open(endpoints[0].channel));
-        check_not_null(endpoints[1].channel);
-        check_true(turbo_dc_channel_is_open(endpoints[1].channel));
+        open_packet_channel();
 
         uint8_t payload[4096];
         for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (uint8_t)(i * 17);
         for (int i = 0; i < 2; ++i)
             check_equal(turbo_dc_channel_send(endpoints[i].channel, payload, sizeof(payload), 1), 0);
-        deadline = cmeta_monotonic_ms() + 5000;
+        uint64_t deadline = cmeta_monotonic_ms() + 5000;
         int received = 0;
         do {
             deliver_packets(0); deliver_packets(1);
@@ -588,6 +625,7 @@ spec("SCTP over GmSSL configured datagram limits") {
             cmeta_mutex_lock(&endpoints[i].mutex);
             unsigned messages = endpoints[i].messages;
             size_t message_size = endpoints[i].message_size;
+            int binary = endpoints[i].message_binary;
             size_t max_packet = endpoints[i].max_packet;
             size_t max_application = endpoints[i].max_application_packet;
             int invalid = endpoints[i].message_invalid || endpoints[i].send_failed;
@@ -596,11 +634,49 @@ spec("SCTP over GmSSL configured datagram limits") {
             check_false(invalid);
             check_equal(messages, 1u);
             check_equal(message_size, sizeof(payload));
+            check_equal(binary, 1);
             check_true(equal);
             check_true(max_packet <= 1200);
             check_true(max_application > 37);
             check_true(max_application <= 1000 + 12 + 37);
             check_equal(turbo_dc_peer_get_state(endpoints[i].peer), TURBO_DC_STATE_CONNECTED);
+        }
+    }
+}
+
+spec("SCTP over GmSSL empty messages") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("delivers empty text and binary messages followed by nonempty messages in both directions") {
+        open_packet_channel();
+        unsigned count = 0;
+        /* A nonzero caller byte must not become the empty message payload. */
+        const uint8_t payload = 'x';
+        for (int binary = 0; binary <= 1; ++binary) {
+            for (int i = 0; i < 2; ++i)
+                check_equal(turbo_dc_channel_send(endpoints[i].channel, &payload, 0, binary), 0);
+            expect_packet_messages(++count, &payload, 0, binary);
+            for (int i = 0; i < 2; ++i)
+                check_equal(turbo_dc_channel_send(endpoints[i].channel, &payload, 1, binary), 0);
+            expect_packet_messages(++count, &payload, 1, binary);
+        }
+    }
+
+    it("ignores SCTP payload for empty PPIDs independently of the channel send adapter") {
+        open_packet_channel();
+        const uint8_t payload[] = {0x41, 0x42, 0x43};
+        unsigned count = 0;
+        for (int binary = 0; binary <= 1; ++binary) {
+            for (int i = 0; i < 2; ++i) {
+                struct sctp_sndinfo info = {0};
+                info.snd_sid = turbo_dc_channel_get_id(endpoints[i].channel);
+                info.snd_ppid = htonl(binary ? SCTP_PPID_BINARY_EMPTY : SCTP_PPID_STRING_EMPTY);
+                check_equal(usrsctp_sendv(endpoints[i].peer->sctp.socket,
+                    payload, sizeof(payload), NULL, 0, &info, sizeof(info),
+                    SCTP_SENDV_SNDINFO, 0), (ssize_t)sizeof(payload));
+            }
+            expect_packet_messages(++count, payload, 0, binary);
         }
     }
 }

@@ -116,7 +116,8 @@ typedef void (*turbo_dc_open_cb)(
     void *user_data
 );
 
-/* Called when message received on data channel */
+/* Called when a message is received on a data channel. Data is borrowed only
+ * for the callback duration; len is zero for empty text or binary messages. */
 typedef void (*turbo_dc_message_cb)(
     turbo_dc_channel_t *channel,
     const void *data,
@@ -391,8 +392,9 @@ TURBO_MEDIA_API void *turbo_dc_channel_get_user_data(turbo_dc_channel_t *channel
  * Send data on channel
  *
  * @param channel Channel handle
- * @param data Data to send
- * @param len Data length
+ * @param data Data to send; must be non-NULL even when len is zero.
+ *             Borrowed for the duration of this call.
+ * @param len Data length; zero sends an empty text or binary message.
  * @param is_binary TRUE for binary, FALSE for text
  * @return 0 on success, negative on error
  */
