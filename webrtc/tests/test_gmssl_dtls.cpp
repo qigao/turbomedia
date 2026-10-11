@@ -4,7 +4,10 @@
 #include <tinytest.hpp>
 #include <cmeta_crypto.h>
 #include <cstl/deque.h>
+#include <openssl/bn.h>
+#include <openssl/bytestring.h>
 #include <openssl/err.h>
+#include <openssl/rsa.h>
 #include <openssl/srtp.h>
 #include <openssl/x509.h>
 
@@ -70,6 +73,40 @@ const BIO_METHOD datagram_method = {
     bio_read, nullptr, nullptr, bio_ctrl, bio_create, bio_free, nullptr
 };
 int accept_pinned_test_peer(int, X509_STORE_CTX *) { return 1; }
+// Generate independent RSA fixtures at runtime; no reusable private keys live
+// in the repository. Only the test peer/fixture uses BoringSSL primitives.
+bool rsa_identity(SSL_CTX *context, tstr *certificate = nullptr, tstr *private_key = nullptr) {
+    bssl::UniquePtr<RSA> rsa(RSA_new());
+    bssl::UniquePtr<BIGNUM> exponent(BN_new());
+    bssl::UniquePtr<EVP_PKEY> key(EVP_PKEY_new());
+    bssl::UniquePtr<X509> cert(X509_new());
+    if (!rsa || !exponent || !key || !cert || BN_set_word(exponent.get(), RSA_F4) != 1 ||
+        RSA_generate_key_ex(rsa.get(), 2048, exponent.get(), nullptr) != 1 ||
+        EVP_PKEY_set1_RSA(key.get(), rsa.get()) != 1 || X509_set_version(cert.get(), 2) != 1 ||
+        ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), 1) != 1 ||
+        !X509_gmtime_adj(X509_getm_notBefore(cert.get()), -60) ||
+        !X509_gmtime_adj(X509_getm_notAfter(cert.get()), 86400) ||
+        X509_set_pubkey(cert.get(), key.get()) != 1) return false;
+    X509_NAME *name = X509_get_subject_name(cert.get());
+    constexpr unsigned char cn[] = "DTLS RSA interoperability fixture";
+    if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, cn, -1, -1, 0) != 1 ||
+        X509_set_issuer_name(cert.get(), name) != 1 ||
+        X509_sign(cert.get(), key.get(), EVP_sha256()) <= 0) return false;
+    if (context && (SSL_CTX_use_certificate(context, cert.get()) != 1 ||
+        SSL_CTX_use_PrivateKey(context, key.get()) != 1)) return false;
+    if (certificate && private_key) {
+        int size = i2d_X509(cert.get(), nullptr);
+        if (size <= 0 || !(*certificate = tstr_new_len(nullptr, static_cast<size_t>(size)))) return false;
+        auto *out = reinterpret_cast<uint8_t *>(*certificate);
+        if (i2d_X509(cert.get(), &out) != size) return false;
+        bssl::ScopedCBB bytes;
+        if (!CBB_init(bytes.get(), 2048) || !EVP_marshal_private_key(bytes.get(), key.get())) return false;
+        *private_key = tstr_new_len(CBB_data(bytes.get()), CBB_len(bytes.get()));
+        cmeta_crypto_clear(const_cast<uint8_t *>(CBB_data(bytes.get())), CBB_len(bytes.get()));
+        if (!*private_key) return false;
+    }
+    return true;
+}
 bool contains_finished_record(const void *data, size_t size) {
     const auto *p = static_cast<const uint8_t *>(data);
     while (size >= 13) {
@@ -106,10 +143,15 @@ struct Fixture {
         tstr_free(owned_packet); owned_packet = nullptr;
         tstr_free(held_packet); held_packet = nullptr;
     }
-    bool init(bool server_role, uint16_t profile, bool aes256 = false, bool wrong_pin = false) {
+    bool init(bool server_role, uint16_t profile, bool aes256 = false, bool wrong_pin = false,
+              bool engine_rsa = false, bool reference_rsa = false) {
+        ERR_clear_error();
         server = server_role; clock_ms = 1000000;
         reference_context = SSL_CTX_new(DTLS_method());
-        if (!reference_context || turbo_dc_generate_identity(reference_context, &fingerprint) != 0 ||
+        if (!reference_context) return false;
+        if (reference_rsa ? !rsa_identity(reference_context) :
+            turbo_dc_generate_identity(reference_context, &fingerprint) != 0) return false;
+        if (engine_rsa ? !rsa_identity(nullptr, &certificate, &private_key) :
             turbo_dc_generate_certificate_der(&certificate, &private_key) != 0) return false;
         context = turbo_gdtls_context_create(certificate, tstr_len(certificate),
                                              private_key, tstr_len(private_key));
@@ -123,9 +165,15 @@ struct Fixture {
         const char *profile_name = profile == 1 ? "SRTP_AES128_CM_SHA1_80" :
             profile == 2 ? "SRTP_AES128_CM_SHA1_32" :
             profile == 7 ? "SRTP_AEAD_AES_128_GCM" : "SRTP_AEAD_AES_256_GCM";
+        bool rsa_server = server ? engine_rsa : reference_rsa;
+        const char *cipher = rsa_server ? (aes256 ? "ECDHE-RSA-AES256-GCM-SHA384" : "ECDHE-RSA-AES128-GCM-SHA256") :
+            (aes256 ? "ECDHE-ECDSA-AES256-GCM-SHA384" : "ECDHE-ECDSA-AES128-GCM-SHA256");
+        // The engine admits SHA-256 signatures for both supported identity types.
+        const uint16_t signatures[] = {SSL_SIGN_ECDSA_SECP256R1_SHA256, SSL_SIGN_RSA_PKCS1_SHA256};
         if (SSL_CTX_set_tlsext_use_srtp(reference_context, profile_name) != 0 ||
-            SSL_CTX_set_cipher_list(reference_context, aes256 ? "ECDHE-ECDSA-AES256-GCM-SHA384" :
-                                                               "ECDHE-ECDSA-AES128-GCM-SHA256") != 1 ||
+            SSL_CTX_set_verify_algorithm_prefs(reference_context, signatures, 2) != 1 ||
+            SSL_CTX_set_signing_algorithm_prefs(reference_context, signatures, 2) != 1 ||
+            SSL_CTX_set_cipher_list(reference_context, cipher) != 1 ||
             SSL_CTX_set_min_proto_version(reference_context, DTLS1_2_VERSION) != 1 ||
             SSL_CTX_set_max_proto_version(reference_context, DTLS1_2_VERSION) != 1) return false;
         SSL_CTX_set_current_time_cb(reference_context, test_clock);
@@ -193,6 +241,19 @@ struct Fixture {
         }
         return false;
     }
+    bool capture_reference_record() {
+        if (owned_packet) return false;
+        constexpr char payload[] = "authenticated datagram";
+        if (SSL_write(reference, payload, sizeof(payload)) != static_cast<int>(sizeof(payload))) return false;
+        uint8_t bytes[65535];
+        int size = BIO_read(SSL_get_wbio(reference), bytes, sizeof(bytes));
+        if (size <= 0) return false;
+        owned_packet = tstr_new_len(bytes, static_cast<size_t>(size));
+        return owned_packet != nullptr;
+    }
+    int receive_owned() {
+        return turbo_gdtls_receive(session, owned_packet, tstr_len(owned_packet), clock_ms);
+    }
 };
 Fixture fixture;
 void check_interop(uint16_t profile) {
@@ -237,6 +298,16 @@ void check_interop(uint16_t profile) {
 suite("GmSSL DTLS-SRTP independent interoperability") {
     after_each() { fixture.clear(); fixture = Fixture{}; }
     for (int server = 0; server < 2; ++server) {
+        for (int engine_rsa = 0; engine_rsa < 2; ++engine_rsa) {
+            for (int reference_rsa = 0; reference_rsa < 2; ++reference_rsa) {
+                if (!engine_rsa && !reference_rsa) continue;
+                it("role=%d engine RSA=%d reference RSA=%d, mutual identity and exporter", server,
+                   engine_rsa, reference_rsa) {
+                    check_true(fixture.init(server != 0, 8, true, false, engine_rsa != 0, reference_rsa != 0));
+                    check_interop(8);
+                }
+            }
+        }
         for (uint16_t profile : {uint16_t{1}, uint16_t{2}, uint16_t{7}, uint16_t{8}}) {
             for (int aes256 = 0; aes256 < 2; ++aes256) {
                 it("role=%d profile=%u AES-%d, fragmented mutual handshake and payload", server,
@@ -269,6 +340,95 @@ suite("GmSSL DTLS-SRTP independent interoperability") {
             uint8_t keys[88]; size_t size = 123;
             check_equal(turbo_gdtls_export_srtp(fixture.session, keys, sizeof(keys), &size), TURBO_GDTLS_AUTH);
             check_equal(size, size_t{0});
+        }
+        it("role=%d discards damaged and repeated records without losing the association", server) {
+            check_true(fixture.init(server != 0, 1));
+            check_true(fixture.handshake());
+            check_true(fixture.capture_reference_record());
+            size_t last = tstr_len(fixture.owned_packet) - 1;
+            fixture.owned_packet[last] ^= 1;
+            check_equal(fixture.receive_owned(), 0);
+            check_null(turbo_gdtls_take_plaintext(fixture.session));
+            fixture.owned_packet[last] ^= 1;
+            check_equal(fixture.receive_owned(), 0);
+            fixture.held_packet = turbo_gdtls_take_plaintext(fixture.session);
+            check_not_null(fixture.held_packet);
+            check_equal(fixture.held_packet, "authenticated datagram");
+            check_equal(fixture.receive_owned(), 0);
+            check_null(turbo_gdtls_take_plaintext(fixture.session));
+            check_true(turbo_gdtls_ready(fixture.session));
+        }
+        it("role=%d enforces export readiness and capacity without partial keys", server) {
+            check_true(fixture.init(server != 0, 8));
+            uint8_t keys[88]; memset(keys, 0xa5, sizeof(keys));
+            size_t size = 123;
+            check_equal(turbo_gdtls_export_srtp(fixture.session, keys, sizeof(keys), &size), TURBO_GDTLS_AUTH);
+            check_equal(size, size_t{0});
+            check_true(fixture.handshake());
+            check_equal(turbo_gdtls_export_srtp(fixture.session, keys, sizeof(keys) - 1, &size), TURBO_GDTLS_CAPACITY);
+            check_equal(size, size_t{0});
+            for (uint8_t byte : keys) check_equal(byte, uint8_t{0xa5});
+            check_equal(turbo_gdtls_export_srtp(fixture.session, keys, sizeof(keys), &size), 0);
+            check_equal(size, sizeof(keys));
+        }
+        it("role=%d exposes the handshake lifetime even with no incoming flight", server) {
+            check_true(fixture.init(server != 0, 1));
+            check_equal(turbo_gdtls_deadline(fixture.session), clock_ms + (server ? 60000u : 1000u));
+            clock_ms += 60000;
+            check_equal(turbo_gdtls_poll(fixture.session, clock_ms), TURBO_GDTLS_TIMEOUT);
+            check_equal(turbo_gdtls_deadline(fixture.session), uint64_t{0});
+            check_null(turbo_gdtls_take_datagram(fixture.session));
+            check_false(turbo_gdtls_ready(fixture.session));
+        }
+        it("role=%d cannot extend the handshake lifetime by receiving without polling", server) {
+            check_true(fixture.init(server != 0, 1));
+            clock_ms += 60000;
+            check_equal(turbo_gdtls_receive(fixture.session, nullptr, 0, clock_ms), TURBO_GDTLS_TIMEOUT);
+            check_equal(turbo_gdtls_deadline(fixture.session), uint64_t{0});
+        }
+        it("role=%d fails explicitly when the admitted output packet budget is exhausted", server) {
+            check_true(fixture.init(server != 0, 1));
+            check_true(fixture.handshake());
+            for (unsigned i = 0; i < 256; ++i)
+                check_equal(turbo_gdtls_write(fixture.session, "x", 1), 0);
+            check_equal(turbo_gdtls_write(fixture.session, "x", 1), TURBO_GDTLS_CAPACITY);
+            check_false(turbo_gdtls_ready(fixture.session));
+            check_equal(turbo_gdtls_poll(fixture.session, clock_ms), TURBO_GDTLS_CAPACITY);
+            check_null(turbo_gdtls_take_datagram(fixture.session));
+        }
+        it("role=%d drains local close_notify after revoking readiness and exporter access", server) {
+            check_true(fixture.init(server != 0, 1));
+            check_true(fixture.handshake());
+            check_equal(turbo_gdtls_close(fixture.session), 0);
+            check_false(turbo_gdtls_ready(fixture.session));
+            check_equal(turbo_gdtls_close(fixture.session), TURBO_GDTLS_CLOSED);
+            uint8_t keys[88]; size_t size = 123;
+            check_equal(turbo_gdtls_export_srtp(fixture.session, keys, sizeof(keys), &size), TURBO_GDTLS_AUTH);
+            check_equal(size, size_t{0});
+            fixture.owned_packet = turbo_gdtls_take_datagram(fixture.session);
+            check_not_null(fixture.owned_packet);
+            check_true(fixture.transfer_to_reference(fixture.owned_packet));
+            uint8_t data[1];
+            int result = SSL_read(fixture.reference, data, sizeof(data));
+            check_equal(result, 0);
+            check_equal(SSL_get_error(fixture.reference, result), SSL_ERROR_ZERO_RETURN);
+        }
+        it("role=%d closes on authenticated close_notify and returns the closing alert", server) {
+            check_true(fixture.init(server != 0, 1));
+            check_true(fixture.handshake());
+            check_equal(SSL_shutdown(fixture.reference), 0);
+            uint8_t packet[512];
+            int size = BIO_read(SSL_get_wbio(fixture.reference), packet, sizeof(packet));
+            check_greater(size, 0);
+            check_equal(turbo_gdtls_receive(fixture.session, packet, static_cast<size_t>(size), clock_ms), TURBO_GDTLS_CLOSED);
+            check_false(turbo_gdtls_ready(fixture.session));
+            check_equal(turbo_gdtls_deadline(fixture.session), uint64_t{0});
+            fixture.owned_packet = turbo_gdtls_take_datagram(fixture.session);
+            check_not_null(fixture.owned_packet);
+            check_true(fixture.transfer_to_reference(fixture.owned_packet));
+            check_equal(SSL_shutdown(fixture.reference), 1);
+            check_equal(turbo_gdtls_poll(fixture.session, clock_ms), TURBO_GDTLS_CLOSED);
+            check_equal(turbo_gdtls_write(fixture.session, "x", 1), TURBO_GDTLS_CLOSED);
         }
     }
 }

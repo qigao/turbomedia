@@ -44,11 +44,17 @@ int turbo_gdtls_start(turbo_gdtls *session, uint64_t now_ms);
 int turbo_gdtls_receive(turbo_gdtls *session, const void *packet, size_t size,
                        uint64_t now_ms);
 int turbo_gdtls_poll(turbo_gdtls *session, uint64_t now_ms);
-uint64_t turbo_gdtls_deadline(const turbo_gdtls *session); /* 0: inactive */
+/* Next retransmission, handshake expiry or final-flight retirement, whichever
+ * comes first. 0 means no pending timer, including before start/after close. */
+uint64_t turbo_gdtls_deadline(const turbo_gdtls *session);
 tstr turbo_gdtls_take_datagram(turbo_gdtls *session);
 tstr turbo_gdtls_take_plaintext(turbo_gdtls *session);
 int turbo_gdtls_ready(const turbo_gdtls *session);
 int turbo_gdtls_write(turbo_gdtls *session, const void *data, size_t size);
+/* Local close returns OK once, then CLOSED. Authenticated peer close returns
+ * CLOSED from receive; in both cases drain take_datagram for close_notify.
+ * Closing/failure revokes key export and clears retained plaintext/secrets.
+ * Capacity failures during admitted processing are terminal and discard queues. */
 int turbo_gdtls_close(turbo_gdtls *session);
 uint16_t turbo_gdtls_srtp_profile(const turbo_gdtls *session);
 int turbo_gdtls_export_srtp(const turbo_gdtls *session, uint8_t *out, size_t capacity,

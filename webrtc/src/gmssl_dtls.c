@@ -172,17 +172,27 @@ static void clear_assembly(turbo_gdtls *s, assembly *a) {
     clear_string(a->body); clear_string(a->coverage);
     memset(a, 0, sizeof(*a));
 }
-static int stop_session(turbo_gdtls *s, int error) {
-    s->state = FAILED; s->error = error; s->deadline = 0;
+static int finish_session(turbo_gdtls *s, int error, int keep_output) {
+    s->state = error == TURBO_GDTLS_CLOSED ? CLOSED : FAILED;
+    s->error = error;
+    clear_flight(s);
+    for (size_t i = 0; i < MAX_REASSEMBLY; ++i) clear_assembly(s, &s->fragments[i]);
+    clear_string(s->transcript); s->transcript = NULL;
     cmeta_crypto_clear(s->master, sizeof(s->master));
     cmeta_crypto_clear(&s->write_key, sizeof(s->write_key));
     cmeta_crypto_clear(&s->read_key, sizeof(s->read_key));
+    s->keys_ready = 0;
+    x509_key_cleanup(&s->peer_key);
     secp256r1_key_cleanup(&s->ephemeral);
     tstr packet;
-    while ((packet = queue_take(&s->output)) != NULL) clear_string(packet);
+    if (!keep_output)
+        while ((packet = queue_take(&s->output)) != NULL) clear_string(packet);
     while ((packet = queue_take(&s->plaintext)) != NULL) clear_string(packet);
     while ((packet = queue_take(&s->future)) != NULL) clear_string(packet);
     return error;
+}
+static int stop_session(turbo_gdtls *s, int error) {
+    return finish_session(s, error, 0);
 }
 static int append_transcript(turbo_gdtls *s, const void *data, size_t size) {
     size_t used = tstr_len(s->transcript);
@@ -956,7 +966,11 @@ static int receive_record(turbo_gdtls *s, const uint8_t *record, size_t size, in
     } else if (type == REC_APPLICATION && epoch && s->state == READY) {
         if (body_size) result = queue_push(&s->plaintext, body, body_size, MAX_PACKETS);
     } else if (type == REC_ALERT && body_size == 2) {
-        if (body[1] == 0 && epoch) result = TURBO_GDTLS_CLOSED;
+        if (body[1] == 0 && epoch) {
+            const uint8_t alert[] = {1, 0};
+            result = emit_record(s, REC_ALERT, 1, alert, sizeof(alert));
+            if (!result) result = TURBO_GDTLS_CLOSED;
+        }
         else if (body[0] == 2) result = TURBO_GDTLS_PROTOCOL;
     } else result = TURBO_GDTLS_PROTOCOL;
     cmeta_crypto_clear(plain, sizeof(plain));
@@ -977,6 +991,8 @@ int turbo_gdtls_receive(turbo_gdtls *s, const void *packet, size_t size, uint64_
     if (s->state == FAILED) return s->error;
     if (s->state == CLOSED) return TURBO_GDTLS_CLOSED;
     s->now = now_ms;
+    if (s->state != READY && now_ms - s->started_at >= HANDSHAKE_LIFETIME)
+        return stop_session(s, TURBO_GDTLS_TIMEOUT);
     const uint8_t *p = packet;
     while (size) {
         if (size < RECORD_HEADER) return 0;
@@ -984,13 +1000,13 @@ int turbo_gdtls_receive(turbo_gdtls *s, const void *packet, size_t size, uint64_
         if (n > size || n > RECORD_HEADER + MAX_PLAIN + GCM_OVERHEAD ||
             (load16(p + 1) != DTLS12 && load16(p + 1) != DTLS10)) return 0;
         int result = receive_record(s, p, n, 1);
-        if (result) return stop_session(s, result);
+        if (result) return finish_session(s, result, result == TURBO_GDTLS_CLOSED);
         if (s->read_epoch) {
             tstr future;
             while ((future = queue_take(&s->future)) != NULL) {
                 result = receive_record(s, (const uint8_t *)future, tstr_len(future), 0);
                 clear_string(future);
-                if (result) return stop_session(s, result);
+                if (result) return finish_session(s, result, result == TURBO_GDTLS_CLOSED);
             }
         }
         p += n; size -= n;
@@ -1016,7 +1032,12 @@ int turbo_gdtls_poll(turbo_gdtls *s, uint64_t now_ms) {
     }
     return 0;
 }
-uint64_t turbo_gdtls_deadline(const turbo_gdtls *s) { return s ? s->deadline : 0; }
+uint64_t turbo_gdtls_deadline(const turbo_gdtls *s) {
+    if (!s || !s->started || s->state == CLOSED || s->state == FAILED) return 0;
+    if (s->state == READY) return s->deadline;
+    uint64_t expires = s->started_at + HANDSHAKE_LIFETIME;
+    return s->deadline && s->deadline < expires ? s->deadline : expires;
+}
 tstr turbo_gdtls_take_datagram(turbo_gdtls *s) { return s ? queue_take(&s->output) : NULL; }
 tstr turbo_gdtls_take_plaintext(turbo_gdtls *s) {
     return s && s->state == READY ? queue_take(&s->plaintext) : NULL;
@@ -1034,10 +1055,7 @@ int turbo_gdtls_close(turbo_gdtls *s) {
     const uint8_t alert[] = {1, 0};
     int result = emit_record(s, REC_ALERT, 1, alert, sizeof(alert));
     if (result) return stop_session(s, result);
-    s->state = CLOSED; s->deadline = 0;
-    cmeta_crypto_clear(s->master, sizeof(s->master));
-    cmeta_crypto_clear(&s->write_key, sizeof(s->write_key));
-    cmeta_crypto_clear(&s->read_key, sizeof(s->read_key));
+    finish_session(s, TURBO_GDTLS_CLOSED, 1);
     return 0;
 }
 uint16_t turbo_gdtls_srtp_profile(const turbo_gdtls *s) {
