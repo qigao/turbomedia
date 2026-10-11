@@ -3,7 +3,6 @@
 #include "turbo_srtp_defs.h"
 #include "tinytest.h"
 #include <cstl/deque.h>
-#include <openssl/err.h>
 #include <string.h>
 
 typedef struct {
@@ -203,9 +202,7 @@ spec("DTLS concurrent entry and timer drain") {
         char output;
         for (unsigned i = 0; i < DTLS_BIO_MAX_PACKETS; ++i)
             check_equal(BIO_write(bio, "a", 1), 1);
-        ERR_clear_error();
         check_equal(BIO_write(bio, "b", 1), -1);
-        check_not_equal(ERR_get_error(), 0ul);
         check_false(BIO_should_retry(bio));
         for (unsigned i = 0; i < DTLS_BIO_MAX_PACKETS; ++i) {
             check_equal(BIO_read(bio, &output, 1), 1);
@@ -221,13 +218,25 @@ spec("DTLS concurrent entry and timer drain") {
         static const char payload[32768] = {0};
         for (size_t bytes = 0; bytes < DTLS_BIO_MAX_BYTES; bytes += sizeof(payload))
             check_equal(BIO_write(bio, payload, sizeof(payload)), (int)sizeof(payload));
-        ERR_clear_error();
         check_equal(BIO_write(bio, "a", 1), -1);
-        check_not_equal(ERR_get_error(), 0ul);
+        check_false(BIO_should_retry(bio));
         check_equal(BIO_reset(bio), 1);
         check_equal(BIO_pending(bio), (size_t)0);
         check_equal(BIO_write(bio, payload, sizeof(payload)), (int)sizeof(payload));
         /* Teardown must also release packets left in a nonempty BIO. */
+    }
+
+    it("propagates full output storage as a terminal handshake failure") {
+        BIO *bio = fixture.peer->dtls.write_bio;
+        for (unsigned i = 0; i < DTLS_BIO_MAX_PACKETS; ++i)
+            check_equal(BIO_write(bio, "a", 1), 1);
+        /* Error classification must happen inside the DataChannel library:
+         * the executable may link a distinct BoringSSL error-queue instance. */
+        check_equal(turbo_dc_peer_connect(fixture.peer), 0);
+        check_equal(turbo_dc_peer_get_state(fixture.peer), TURBO_DC_STATE_FAILED);
+        srtp_keying_material_t keys;
+        check_equal(turbo_dc_peer_get_srtp_keys(fixture.peer, &keys), (uint16_t)0);
+        check_equal(fixture.sends, 0);
     }
 
     it("serializes key export with an in-progress SSL handshake") {
