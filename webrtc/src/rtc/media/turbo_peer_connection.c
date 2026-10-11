@@ -13,6 +13,7 @@
 #include <salts/thread.h>
 #include <tstr.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,7 +46,7 @@ struct turbo_peer_connection_s {
     turbo_dc_peer_t *dc_peer;
     turbo_media_context_t *media_ctx;
     
-    turbo_peer_state_t state;
+    atomic_int state;
     
     /* Local credentials */
     tstr local_ufrag;
@@ -59,11 +60,11 @@ struct turbo_peer_connection_s {
     int have_remote_sdp;
     
     /* Internal */
-    int ice_connected;
-    int dtls_connected;
-    int dtls_connect_pending;
-    int gathering_start_pending;
-    int checks_start_pending;
+    atomic_int ice_connected;
+    atomic_int dtls_connected;
+    atomic_int dtls_connect_pending;
+    atomic_int gathering_start_pending;
+    atomic_int checks_start_pending;
     int remote_candidate_count;
     int have_ice_role;
     int have_dtls_role;
@@ -72,8 +73,32 @@ struct turbo_peer_connection_s {
     int local_ice_restart_pending;
     turbo_media_track_t *notified_remote_tracks[TURBO_MEDIA_MAX_TRACKS];
     int notified_remote_track_count;
-    int destroying;
+    atomic_int destroying;
+    unsigned active_callbacks; /* Protected by ice_mutex. */
 };
+
+/* A flag rejects future callbacks; the count keeps dependencies alive for
+ * callbacks that already entered. Never hold ice_mutex across callback work. */
+static int peer_callback_enter(turbo_peer_connection_t *pc) {
+    if (!pc) return 0;
+    cmeta_mutex_lock(&pc->ice_mutex);
+    if (pc->destroying) {
+        cmeta_mutex_unlock(&pc->ice_mutex);
+        return 0;
+    }
+    pc->active_callbacks++;
+    cmeta_mutex_unlock(&pc->ice_mutex);
+    return 1;
+}
+
+static void peer_callback_leave(turbo_peer_connection_t *pc) {
+    cmeta_mutex_lock(&pc->ice_mutex);
+    pc->active_callbacks--;
+    if (pc->destroying && pc->active_callbacks == 0) {
+        cmeta_cond_broadcast(&pc->ice_cond);
+    }
+    cmeta_mutex_unlock(&pc->ice_mutex);
+}
 
 static int copy_ice_server_url(char *destination, size_t destination_size,
                                const char *source, const char *scheme) {
@@ -210,7 +235,7 @@ static void on_ice_candidate(salts_ice_agent_t *agent, const ice_candidate_t *ca
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)user_data;
     (void)agent;
 
-    if (!pc || pc->destroying) {
+    if (!peer_callback_enter(pc)) {
         return;
     }
 
@@ -219,20 +244,19 @@ static void on_ice_candidate(salts_ice_agent_t *agent, const ice_candidate_t *ca
         ice_candidate_to_sdp(candidate, sdp_line, sizeof(sdp_line));
         pc->callbacks.on_ice_candidate(pc, sdp_line, pc->config.user_data);
     }
+    peer_callback_leave(pc);
 }
 
 static void notify_state_change(turbo_peer_connection_t *pc, turbo_peer_state_t state) {
-    if (!pc || pc->destroying) {
+    if (!peer_callback_enter(pc)) {
         return;
     }
 
-    if (pc->state == state) {
-        return;
-    }
-    pc->state = state;
-    if (pc->callbacks.on_state_change) {
+    if (atomic_exchange(&pc->state, state) != (int)state &&
+        pc->callbacks.on_state_change) {
         pc->callbacks.on_state_change(pc, state, pc->config.user_data);
     }
+    peer_callback_leave(pc);
 }
 
 static int notify_remote_track_once(turbo_peer_connection_t *pc,
@@ -426,11 +450,11 @@ static int maybe_start_checks(turbo_peer_connection_t *pc) {
 }
 
 static void maybe_start_dtls(turbo_peer_connection_t *pc) {
-    if (!pc || pc->destroying || !pc->dtls_connect_pending || !pc->dc_peer) {
+    if (!pc || pc->destroying || !pc->dc_peer ||
+        !atomic_exchange(&pc->dtls_connect_pending, 0)) {
         return;
     }
 
-    pc->dtls_connect_pending = 0;
     if (turbo_dc_peer_connect(pc->dc_peer) != 0) {
         notify_state_change(pc, TURBO_PEER_STATE_FAILED);
     }
@@ -439,7 +463,7 @@ static void maybe_start_dtls(turbo_peer_connection_t *pc) {
 static void send_dc_transport(void *transport, const void *data, size_t len) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)transport;
 
-    if (!pc || pc->destroying || !pc->ice_owner) {
+    if (!peer_callback_enter(pc)) {
         return;
     }
     if (turbo_ice_owner_send_async(pc->ice_owner, data, len) != 0) {
@@ -450,6 +474,7 @@ static void send_dc_transport(void *transport, const void *data, size_t len) {
                     ? TURBO_PEER_STATE_DISCONNECTED
                     : TURBO_PEER_STATE_FAILED);
     }
+    peer_callback_leave(pc);
 }
 
 
@@ -459,21 +484,13 @@ static void on_ice_state_change(salts_ice_agent_t *agent, ice_state_t old_state,
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)user_data;
     (void)agent; (void)old_state;
 
-    if (!pc || pc->destroying) {
+    if (!peer_callback_enter(pc)) {
         return;
     }
 
     if (new_state == ICE_STATE_CONNECTED || new_state == ICE_STATE_COMPLETED) {
-        if (!pc->ice_connected) {
-            pc->ice_connected = 1;
-            /* Bridge ICE and DataChannel if ready */
+        if (!atomic_exchange(&pc->ice_connected, 1)) {
             if (pc->dc_peer) {
-                if (turbo_dc_peer_set_external_transport(
-                        pc->dc_peer, pc, send_dc_transport) != 0) {
-                    pc->ice_connected = 0;
-                    notify_state_change(pc, TURBO_PEER_STATE_FAILED);
-                    return;
-                }
                 if (pc->dtls_connected) {
                     notify_state_change(pc, TURBO_PEER_STATE_CONNECTED);
                 } else {
@@ -490,18 +507,17 @@ static void on_ice_state_change(salts_ice_agent_t *agent, ice_state_t old_state,
         pc->dtls_connect_pending = 0;
         notify_state_change(pc, TURBO_PEER_STATE_FAILED);
     }
-
+    peer_callback_leave(pc);
 }
 
 static void on_ice_data(salts_ice_agent_t *agent, const void *data, size_t len, void *user_data) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)user_data;
     (void)agent;
 
-    if (!pc || pc->destroying) {
+    if (!data || len == 0 || !peer_callback_enter(pc)) {
         return;
     }
 
-    if (len == 0) return;
     uint8_t first_byte = ((const uint8_t *)data)[0];
 
     if (first_byte >= 128 && first_byte <= 191) {
@@ -515,6 +531,7 @@ static void on_ice_data(salts_ice_agent_t *agent, const void *data, size_t len, 
             turbo_dc_peer_feed_transport_data(pc->dc_peer, data, len);
         }
     }
+    peer_callback_leave(pc);
 }
 
 static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
@@ -523,7 +540,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
     int track_count;
     (void)peer; (void)old_state;
 
-    if (!pc || pc->destroying) {
+    if (!peer_callback_enter(pc)) {
         return;
     }
 
@@ -534,6 +551,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
              if (turbo_media_setup_srtp(pc->media_ctx) != 0) {
                  TLOG_ERROR("PeerConnection SRTP setup failed");
                  notify_state_change(pc, TURBO_PEER_STATE_FAILED);
+                 peer_callback_leave(pc);
                  return;
              }
 
@@ -550,6 +568,7 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
                          turbo_media_track_start(track) != 0) {
                          TLOG_ERRORF("PeerConnection failed to start recv track[{}]", i);
                          notify_state_change(pc, TURBO_PEER_STATE_FAILED);
+                         peer_callback_leave(pc);
                          return;
                      }
                  }
@@ -564,20 +583,21 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
         pc->dtls_connected = 0;
         notify_state_change(pc, TURBO_PEER_STATE_DISCONNECTED);
     }
-
+    peer_callback_leave(pc);
 }
 
 static void on_dc_channel(turbo_dc_peer_t *peer, turbo_dc_channel_t *channel, void *user_data) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)user_data;
     (void)peer;
 
-    if (!pc || pc->destroying) {
+    if (!peer_callback_enter(pc)) {
         return;
     }
 
     if (pc->callbacks.on_datachannel) {
         pc->callbacks.on_datachannel(pc, channel, pc->config.user_data);
     }
+    peer_callback_leave(pc);
 }
 
 static int configure_negotiated_transport_roles(
@@ -1211,7 +1231,13 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     if (config) pc->config = *config;
 
     if (callbacks) pc->callbacks = *callbacks;
-    pc->state = TURBO_PEER_STATE_NEW;
+    atomic_init(&pc->state, TURBO_PEER_STATE_NEW);
+    atomic_init(&pc->destroying, 0);
+    atomic_init(&pc->ice_connected, 0);
+    atomic_init(&pc->dtls_connected, 0);
+    atomic_init(&pc->dtls_connect_pending, 0);
+    atomic_init(&pc->gathering_start_pending, 0);
+    atomic_init(&pc->checks_start_pending, 0);
     
     /* 1. Create ICE Agent */
     ice_config_t ice_cfg = ice_default_config();
@@ -1293,28 +1319,20 @@ turbo_peer_connection_t *turbo_peer_connection_create(
     /* 4. Create Media Context */
     pc->media_ctx = turbo_media_create(pc->dc_peer, pc);
     if (!pc->media_ctx) {
-        turbo_dc_peer_destroy(pc->dc_peer);
-        turbo_dc_context_destroy(pc->dc_ctx);
-        turbo_ice_owner_destroy(pc->ice_owner);
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
-        tstr_free(pc->local_ufrag);
-        tstr_free(pc->local_pwd);
-        free(pc);
+        turbo_peer_connection_destroy(pc);
+        return NULL;
+    }
+
+    /* Keep this binding immutable once ICE and DTLS can make progress. */
+    if (turbo_dc_peer_set_external_transport(
+            pc->dc_peer, pc, send_dc_transport) != 0) {
+        turbo_peer_connection_destroy(pc);
         return NULL;
     }
     
     /* Start gathering candidates immediately */
     if (cmeta_thread_create(&pc->ice_worker, ice_worker_main, pc) != 0) {
-        turbo_media_destroy(pc->media_ctx);
-        turbo_dc_peer_destroy(pc->dc_peer);
-        turbo_dc_context_destroy(pc->dc_ctx);
-        turbo_ice_owner_destroy(pc->ice_owner);
-        cmeta_cond_destroy(&pc->ice_cond);
-        cmeta_mutex_destroy(&pc->ice_mutex);
-        tstr_free(pc->local_ufrag);
-        tstr_free(pc->local_pwd);
-        free(pc);
+        turbo_peer_connection_destroy(pc);
         return NULL;
     }
     pc->ice_worker_started = 1;
@@ -1331,8 +1349,26 @@ turbo_peer_connection_t *turbo_peer_connection_create(
 void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
     if (!pc) return;
 
+    cmeta_mutex_lock(&pc->ice_mutex);
     pc->destroying = 1;
+    pc->ice_stop_requested = 1;
+    cmeta_cond_broadcast(&pc->ice_cond);
+    cmeta_mutex_unlock(&pc->ice_mutex);
+
+    /* Cancel blocking ICE commands before joining their submitting worker.
+     * Keep ICE, DC and media alive until every admitted callback has returned. */
+    if (pc->ice_owner) turbo_ice_owner_close(pc->ice_owner);
+    if (pc->ice_worker_started) {
+        cmeta_thread_join(&pc->ice_worker);
+        cmeta_thread_destroy(&pc->ice_worker);
+        pc->ice_worker_started = 0;
+    }
+    cmeta_mutex_lock(&pc->ice_mutex);
+    while (pc->active_callbacks != 0) {
+        cmeta_cond_wait(&pc->ice_cond, &pc->ice_mutex);
+    }
     pc->state = TURBO_PEER_STATE_CLOSED;
+    cmeta_mutex_unlock(&pc->ice_mutex);
 
     if (pc->media_ctx) {
         turbo_media_destroy(pc->media_ctx);
@@ -1340,25 +1376,13 @@ void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
     }
 
     if (pc->dc_peer) {
-        turbo_dc_peer_on_state(pc->dc_peer, NULL);
-        turbo_dc_peer_on_channel(pc->dc_peer, NULL);
-        turbo_dc_peer_on_error(pc->dc_peer, NULL);
-        turbo_dc_peer_set_external_transport(pc->dc_peer, NULL, NULL);
+        /* Registered callbacks reject admission until DC's own drain finishes.
+         * Do not race worker reads by replacing callback/transport pointers. */
         turbo_dc_peer_destroy(pc->dc_peer);
         pc->dc_peer = NULL;
     }
     
     if (pc->ice_owner) {
-        cmeta_mutex_lock(&pc->ice_mutex);
-        pc->ice_stop_requested = 1;
-        cmeta_cond_broadcast(&pc->ice_cond);
-        cmeta_mutex_unlock(&pc->ice_mutex);
-        turbo_ice_owner_close(pc->ice_owner);
-        if (pc->ice_worker_started) {
-            cmeta_thread_join(&pc->ice_worker);
-            cmeta_thread_destroy(&pc->ice_worker);
-            pc->ice_worker_started = 0;
-        }
         turbo_ice_owner_destroy(pc->ice_owner);
         pc->ice_owner = NULL;
     }

@@ -217,6 +217,21 @@ int send_cb(void *addr, void *data, size_t len, ...) {
 
 ---
 
+## PeerConnection 回调生命周期
+
+PeerConnection 拥有 ICE owner、DC peer 和媒体 context。内部 ICE/DC 回调通过
+现有 ICE mutex/condition 登记进入和退出；回调借用这些资源，不转移所有权。
+销毁先关闭回调入口、请求取消 ICE 操作并 join 协调 worker，再等待已进入的回调
+返回。此时三个依赖均保持存活。随后排空媒体传输回调，释放媒体，排空并销毁 DC，
+最后 join 并销毁 ICE owner。锁不跨越外部回调、owner 命令或线程 join；没有新增
+队列、复制或线程。不返回的回调会阻止销毁完成。
+
+跨线程状态标志使用 C11 原子操作；ICE→DC 绑定在开始 gathering 前安装一次，
+重启与销毁时不再改写。原子标志不等于 SDP/track 多字段事务：应用仍须协调信令
+和 track 修改，在销毁前停止自身 poll/control/media 操作，且不能从本对象的回调
+中销毁它。公开签名与报文语义不变；仅设置 closing 或清空回调指针不能代替排空。
+设计与回滚约束见 [PeerConnection callback lifetime](arch-en.md#peerconnection-callback-lifetime)。
+
 ## DTLS 集成
 
 ### 会话创建

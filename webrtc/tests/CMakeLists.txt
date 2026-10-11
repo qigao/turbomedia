@@ -180,6 +180,11 @@ turbo_media_add_rtc_test(turbo_media_test_jitter_buffer test_jitter_buffer.c)
 turbo_media_add_rtc_test(turbo_media_test_twcc test_twcc.c)
 turbo_media_add_rtc_test(turbo_media_test_nack test_nack.c)
 turbo_media_add_rtc_test(turbo_media_test_media_engine test_media_engine.c)
+turbo_media_add_rtc_test(turbo_media_test_peer_connection_lifecycle
+                         test_peer_connection_lifecycle.c)
+if(NOT ANDROID)
+  set_tests_properties(turbo_media_test_peer_connection_lifecycle PROPERTIES TIMEOUT 30)
+endif()
 turbo_media_add_rtc_test(turbo_media_test_speech_integration
                          test_speech_integration.c)
 turbo_media_add_rtc_test(turbo_media_test_recognition_integration

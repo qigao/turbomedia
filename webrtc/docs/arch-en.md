@@ -217,6 +217,31 @@ int send_cb(void *addr, void *data, size_t len, ...) {
 
 ---
 
+## PeerConnection callback lifetime
+
+PeerConnection owns its ICE owner, DC peer and media context. ICE receive,
+ICE coordination and the DC deadline worker may execute concurrently with
+the application's control thread. Internal callbacks borrow those objects;
+they do not transfer ownership or retain packet views after returning.
+
+Callback admission and an in-flight count use the existing ICE mutex/condition.
+Destruction closes admission, requests ICE cancellation, joins the coordination
+worker and waits for admitted callbacks while all three dependencies remain
+alive. It then detaches/drains the media transport callback, destroys media,
+drains/destroys DC, and finally joins/destroys the ICE owner. Rejected callbacks
+touch only the still-live PeerConnection admission state. No mutex is held
+across external callbacks, owner commands or thread joins. This adds no queue,
+payload copy or thread; a callback that does not return delays destruction.
+
+Cross-thread status flags use C11 atomics; this publishes individual flags, not
+an atomic SDP/track transaction. The ICE-to-DC binding is installed once before
+gathering starts and remains immutable through ICE restarts and teardown.
+Callers must stop their own poll/control/media operations before destroy and
+must not destroy a PeerConnection from its own callback. Track and signaling
+mutation still require application coordination. Public signatures and packet
+semantics do not change. Merely setting a closing flag or detaching callback
+pointers cannot replace drain; reverting this protocol would restore that gap.
+
 ## DTLS Integration
 
 ### Session Creation
