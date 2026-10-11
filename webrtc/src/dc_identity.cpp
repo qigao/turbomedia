@@ -38,7 +38,11 @@ int load_pem(const char *cert_path, const char *key_path, tstr *cert, tstr *key)
     CBB_init_fixed(encoded.get(), reinterpret_cast<uint8_t *>(*key), max_private_der);
     if (!EVP_marshal_private_key(encoded.get(), SSL_CTX_get0_privatekey(parser.get())) ||
         !CBB_flush(encoded.get())) return -1;
-    return tstr_set_len_checked(*key, CBB_len(encoded.get())) ? 0 : -1;
+    const size_t key_size = CBB_len(encoded.get());
+    // ASN.1 prefix compaction can leave private bytes past the final DER end.
+    // Wipe that tail before shortening the length used by the owning deleter.
+    cmeta_crypto_clear(*key + key_size, max_private_der - key_size);
+    return tstr_set_len_checked(*key, key_size) ? 0 : -1;
 }
 }
 
