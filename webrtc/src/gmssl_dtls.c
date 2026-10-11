@@ -8,6 +8,7 @@
 #include <gmssl/rand.h>
 #include <gmssl/tls.h>
 #include <gmssl/x509.h>
+#include <gmssl/x509_alg.h>
 #include <stdlib.h>
 #include <string.h>
 

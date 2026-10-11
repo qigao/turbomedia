@@ -70,6 +70,16 @@ const BIO_METHOD datagram_method = {
     bio_read, nullptr, nullptr, bio_ctrl, bio_create, bio_free, nullptr
 };
 int accept_pinned_test_peer(int, X509_STORE_CTX *) { return 1; }
+bool contains_finished_record(const void *data, size_t size) {
+    const auto *p = static_cast<const uint8_t *>(data);
+    while (size >= 13) {
+        size_t record_size = 13 + (static_cast<size_t>(p[11]) << 8) + p[12];
+        if (record_size > size) return false;
+        if (p[0] == 22 && p[3] == 0 && p[4] == 1) return true;
+        p += record_size; size -= record_size;
+    }
+    return false;
+}
 
 struct Fixture {
     SSL_CTX *reference_context = nullptr;
@@ -138,8 +148,7 @@ struct Fixture {
         gm_error = turbo_gdtls_poll(session, clock_ms);
         if (gm_error) return false;
         while ((owned_packet = turbo_gdtls_take_datagram(session)) != nullptr) {
-            bool encrypted_handshake = tstr_len(owned_packet) >= 13 && owned_packet[0] == 22 &&
-                                       static_cast<uint8_t>(owned_packet[4]) == 1;
+            bool encrypted_handshake = contains_finished_record(owned_packet, tstr_len(owned_packet));
             if (!dropped && (drop_first || (drop_final && server && encrypted_handshake))) dropped = true;
             else if (reorder && !held_packet) { held_packet = owned_packet; owned_packet = nullptr; }
             else {
@@ -168,7 +177,7 @@ struct Fixture {
         if (DTLSv1_handle_timeout(reference) < 0) return false;
         uint8_t packet[65535];
         while ((result = BIO_read(SSL_get_wbio(reference), packet, sizeof(packet))) > 0) {
-            bool encrypted_handshake = result >= 13 && packet[0] == 22 && packet[4] == 1;
+            bool encrypted_handshake = contains_finished_record(packet, static_cast<size_t>(result));
             if (!dropped && drop_final && !server && encrypted_handshake) dropped = true;
             else {
                 gm_error = turbo_gdtls_receive(session, packet, static_cast<size_t>(result), clock_ms);
