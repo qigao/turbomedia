@@ -410,6 +410,14 @@ DTLS 常量并不代表已实现 DTLS-SRTP。DataChannel/RTC 的 DTLS 仍需 Bor
 完整替换须先提供经过互通验证的 DTLS-SRTP 后端，不能靠替换库名或禁用 AEAD
 完成。证据、取舍、验证与回滚见 [GmSSL migration boundary](arch-en.md#gmssl-migration-boundary)。
 
+正在实现的 `gmssl_dtls.h` 为私有、未安装的 DTLS 1.2 引擎，当前只进入正式互通
+测试，不替换生产后端。它复用缓存 GmSSL 的 X.509、ECDH/签名、TLS PRF 和
+AES-GCM，支持 EMS 和现有四种 SRTP profile，强制校验对端 SHA-256 指纹。
+状态由现有 transport owner 串行推进，输入仅在调用内借用，输出以拥有型 tstr
+转移；context 必须晚于所有 session 销毁。重组、flight、transcript 和报文队列均
+设硬上限，完成/失败路径清理密钥。具体范围、容量、迁移门槛与未支持算法见英文
+文档的私有 DTLS 实现章节；通过独立双向互通及生产回归后再切换，不设自动降级。
+
 libsrtp 的现有 overlay 独立改用 GmSSL AES-CTR、AES-GCM 和 HMAC-SHA1，保留
 四种公开 profile、密钥派生、重放保护与 RTP/SRTCP 行为。ICM 保留跨调用的剩余
 密钥流；GCM 复制并复用 AAD 存储以覆盖 SRTCP 的临时 trailer，容量受 libsrtp 的

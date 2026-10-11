@@ -476,6 +476,46 @@ evidence for the regression scenario, not a packet trace of historical #160.
 
 ### GmSSL migration boundary
 
+#### Private DTLS implementation work
+
+The next migration implements a datagram state machine over GmSSL's existing
+X.509, ECDH/signature, TLS PRF and AES-GCM APIs. `gmssl_dtls.h` is private and is
+not installed. Production continues to use the qualified provider until the new
+engine passes independent client/server interoperability and existing ownership
+tests. It is not a stream-TLS-over-UDP adapter or an automatic fallback.
+
+The transport owner serializes each session, supplies monotonic time and drains
+owned output datagrams outside admission. A session borrows its immutable
+identity context; context destruction requires all sessions to be gone. Input
+is callback-scoped borrowing. Reassembly, retained flights and output queues own
+their bytes. Destruction drains these objects and wipes session secrets.
+
+Initial scope is DTLS 1.2, ECDHE with P-256, ECDSA/RSA SHA-256 signatures,
+AES-128/256-GCM record protection, Extended Master Secret and all four existing
+SRTP profiles. No resumption, renegotiation, DTLS 1.0/1.3, finite-field DHE or
+ChaCha20 is claimed. Unsupported negotiation fails; it never downgrades to an
+unauthenticated connection. Peer SHA-256 fingerprints are mandatory. Both
+Finished and CertificateVerify are verified before readiness or key export.
+
+Resource limits are per session: 64 KiB per handshake message, eight reassembly
+slots with a combined 256 KiB body/coverage budget, sixteen retained flight
+records/messages with 256 KiB payload, 256 KiB transcript, and 256 packets /
+256 KiB for each output/plaintext queue. Datagram size is at most 65535 bytes;
+encrypted plaintext records are at most 16384 bytes and outgoing records fit
+the configured MTU. Arithmetic and queue admission are checked before mutation.
+Unauthenticated unusable datagrams may be discarded as DTLS requires; accepted
+application/output data is never silently dropped. Authenticated protocol or
+capacity failures stop the session. The outer connection deadline is unchanged.
+
+Qualification includes an independent BoringSSL peer in both roles, each SRTP
+profile and matching exporter bytes, identity rejection, application data,
+fragmentation, ordinary datagram loss/reordering and final-flight recovery.
+Production cutover also requires the existing SCTP, lifetime, WHIP and platform
+suites. The reference contracts are [DTLS 1.2](https://www.rfc-editor.org/rfc/rfc6347),
+[DTLS-SRTP](https://www.rfc-editor.org/rfc/rfc5764),
+[AEAD SRTP](https://www.rfc-editor.org/rfc/rfc7714) and
+[Extended Master Secret](https://www.rfc-editor.org/rfc/rfc7627).
+
 Authentication uses Salts Core's provider-neutral `cmeta_sha256`,
 `cmeta_hmac_sha256`, `cmeta_crypto_equal` and Base64 helpers. Salts 2.3.0-rc.10
 owns the GmSSL crypto backend; the auth target no longer links OpenSSL::Crypto.
