@@ -398,6 +398,13 @@ free(peer);
 **GmSSL 迁移边界：**认证模块的 SHA-256、HMAC-SHA256、常量时间比较已改用
 Salts Core 的 GmSSL 后端，Base64 复用 Core 的 libbase64；认证 target 不再直接链接
 OpenSSL::Crypto。Salts 保持 2.3.0-rc.10，token 格式、校验规则与公开接口不变。
+临时身份的 P-256 密钥、随机正序列号和 ECDSA/SHA-256 自签名也由已有 GmSSL 包
+生成，保留 v3、CN、365 天有效期与大写 SHA-256 指纹格式。Salts Core 计算 DER
+摘要；私有 DER 边界隔离两套库的头文件，BoringSSL 仅导入证书/PKCS#8 私钥并
+检查匹配。所有返回路径清理生成端密钥，私钥 DER 在导入后或失败时擦除；成功安装
+后才发布指纹。配置的 PEM 身份加载行为不变。正式证书测试通过导入端独立验证
+自签名、曲线、算法、名称、序列号、有效期与指纹，实际握手由已有 DTLS/SRTP 测试
+覆盖。迁移可在私有证书 helper 内回滚，不影响公开接口或信令格式。
 中央缓存 GmSSL 3.2.0#9 的 `tls_ctx_init` 只接受 TLS 1.2、TLS 1.3 和 TLCP，
 DTLS 常量并不代表已实现 DTLS-SRTP。DataChannel/RTC 的 DTLS 仍需 BoringSSL；
 完整替换须先提供经过互通验证的 DTLS-SRTP 后端，不能靠替换库名或禁用 AEAD

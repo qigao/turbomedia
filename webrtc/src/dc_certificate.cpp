@@ -1,12 +1,13 @@
 #include "dc_certificate.h"
+#include "dc_certificate_der.h"
 
+#include <cmeta_crypto.h>
 #include <fmt.h>
-#include <openssl/bn.h>
-#include <openssl/ec_key.h>
+#include <openssl/bytestring.h>
 #include <openssl/evp.h>
-#include <openssl/rand.h>
 #include <openssl/x509.h>
 
+#include <limits>
 #include <memory>
 
 int turbo_dc_generate_identity(SSL_CTX *context, tstr *fingerprint) {
@@ -14,32 +15,28 @@ int turbo_dc_generate_identity(SSL_CTX *context, tstr *fingerprint) {
     *fingerprint = nullptr;
     if (!context) return -1;
 
-    bssl::UniquePtr<EC_KEY> ec(EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
-    bssl::UniquePtr<EVP_PKEY> key(EVP_PKEY_new());
-    bssl::UniquePtr<X509> certificate(X509_new());
-    if (!ec || !key || !certificate || EC_KEY_generate_key(ec.get()) != 1 ||
-        EVP_PKEY_set1_EC_KEY(key.get(), ec.get()) != 1) return -1;
+    tstr cert_bytes = nullptr, key_bytes = nullptr;
+    if (turbo_dc_generate_certificate_der(&cert_bytes, &key_bytes) != 0) return -1;
+    auto clear_private_key = [](char *bytes) {
+        if (bytes) cmeta_crypto_clear(bytes, tstr_len(bytes));
+        tstr_free(bytes);
+    };
+    std::unique_ptr<char, decltype(&tstr_free)> cert_der(cert_bytes, &tstr_free);
+    std::unique_ptr<char, decltype(clear_private_key)> key_der(key_bytes, clear_private_key);
+    if (tstr_len(cert_bytes) > static_cast<size_t>(std::numeric_limits<long>::max())) return -1;
 
-    unsigned char serial_bytes[16];
-    if (RAND_bytes(serial_bytes, sizeof(serial_bytes)) != 1) return -1;
-    serial_bytes[0] |= 1; // Keep the positive certificate serial nonzero.
-    bssl::UniquePtr<BIGNUM> serial(BN_bin2bn(serial_bytes, sizeof(serial_bytes), nullptr));
-    if (!serial || !BN_to_ASN1_INTEGER(serial.get(), X509_get_serialNumber(certificate.get())) ||
-        X509_set_version(certificate.get(), 2) != 1 ||
-        !X509_gmtime_adj(X509_get_notBefore(certificate.get()), 0) ||
-        !X509_gmtime_adj(X509_get_notAfter(certificate.get()), 365L * 24 * 60 * 60) ||
-        X509_set_pubkey(certificate.get(), key.get()) != 1) return -1;
-
-    X509_NAME *subject = X509_get_subject_name(certificate.get());
-    if (!subject || X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC,
-            reinterpret_cast<const unsigned char *>("TurboNet DataChannel"), -1, -1, 0) != 1 ||
-        X509_set_issuer_name(certificate.get(), subject) != 1 ||
-        X509_sign(certificate.get(), key.get(), EVP_sha256()) <= 0) return -1;
+    const auto *cert_in = reinterpret_cast<const uint8_t *>(cert_bytes);
+    bssl::UniquePtr<X509> certificate(d2i_X509(nullptr, &cert_in,
+        static_cast<long>(tstr_len(cert_bytes))));
+    CBS key_in;
+    CBS_init(&key_in, reinterpret_cast<const uint8_t *>(key_bytes), tstr_len(key_bytes));
+    bssl::UniquePtr<EVP_PKEY> key(EVP_parse_private_key(&key_in));
+    if (!certificate || !key || CBS_len(&key_in) != 0 ||
+        cert_in != reinterpret_cast<const uint8_t *>(cert_bytes) + tstr_len(cert_bytes)) return -1;
+    key_der.reset(); // Import owns its key; do not retain the plaintext PKCS#8 copy.
 
     unsigned char digest[32];
-    unsigned int digest_size = 0;
-    if (X509_digest(certificate.get(), EVP_sha256(), digest, &digest_size) != 1 ||
-        digest_size != sizeof(digest)) return -1;
+    if (cmeta_sha256(cert_bytes, tstr_len(cert_bytes), digest) != SALTS_OK) return -1;
 
     constexpr size_t fingerprint_size = sizeof(digest) * 3 - 1;
     std::unique_ptr<char, decltype(&tstr_free)> text(

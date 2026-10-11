@@ -483,6 +483,23 @@ HS256 token encoding, claim validation, limits and constant-time comparison are
 preserved, with an independent known token vector in the formal auth suite.
 Base64 is supplied by Core's existing libbase64 dependency, not by GmSSL.
 
+Ephemeral identity generation also uses that existing GmSSL package: P-256 key
+generation, the random positive serial and ECDSA/SHA-256 self-signing. The existing
+v3 certificate, CN, 365-day validity and uppercase SHA-256 fingerprint contract
+remain unchanged. Salts Core hashes the certificate DER. A private DER boundary
+separates provider headers; BoringSSL imports the certificate/PKCS#8 key into its
+DTLS context and checks the pair. No GmSSL type enters a public API. Provider key
+state is cleared on every return; owned PKCS#8 bytes are cleared after import or
+on failure. Fingerprints are published only after successful installation.
+Configured PEM identities retain their existing loading behavior.
+
+The formal certificate test verifies the imported self-signature, P-256 curve,
+SHA-256 algorithm, subject/issuer, serial, validity and fingerprint using the
+importing provider. Existing real DTLS/SRTP tests cover identity use in handshakes.
+This isolates a supported migration from the DTLS blocker without adding another
+dependency or a crypto abstraction framework. It can be rolled back within the
+private certificate helper without changing signaling or configured identities.
+
 Full WebRTC provider replacement is blocked by the current central
 [GmSSL port](https://github.com/qigao/vcpkg-cache/tree/master/ports/gmssl)
 (3.2.0#9, upstream commit `7c9f02904ef33e59c87b4f16621cc8fd434e7579`).

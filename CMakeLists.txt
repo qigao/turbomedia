@@ -139,6 +139,7 @@ if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
 endif()
  
 find_package(OpenSSL REQUIRED)
+find_package(GmSSL CONFIG REQUIRED)
 find_package(libSRTP CONFIG REQUIRED)
 find_package(unofficial-usrsctp CONFIG REQUIRED)
 find_package(roaring CONFIG REQUIRED)
