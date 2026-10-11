@@ -11,6 +11,115 @@
 #include "tlog.h"
 #include <stb_sprintf.h>
 #include <limits.h>
+#include <cstl/deque.h>
+
+/* BoringSSL's DTLS BIO contract is packet-oriented. A stream BIO loses both
+ * MTU and record boundaries. All access here is under the peer's SSL admission;
+ * raw deque entries transfer owned tstr pointers explicitly. */
+typedef struct {
+    deque_t packets;
+    size_t bytes;
+} dtls_bio_t;
+
+static tstr dtls_bio_take(BIO *bio) {
+    dtls_bio_t *queue = BIO_get_data(bio);
+    tstr packet = NULL;
+    if (deque_pop_front(&queue->packets, &packet) == STL_OK)
+        queue->bytes -= tstr_len(packet);
+    return packet;
+}
+
+static int dtls_bio_create(BIO *bio) {
+    dtls_bio_t *queue = calloc(1, sizeof(*queue));
+    if (!queue) return 0;
+    if (deque_init_bytes(&queue->packets, sizeof(tstr), _Alignof(tstr),
+                         DTLS_BIO_MAX_PACKETS) != STL_OK) {
+        free(queue);
+        return 0;
+    }
+    BIO_set_data(bio, queue);
+    BIO_set_init(bio, 1);
+    return 1;
+}
+
+static void dtls_bio_clear(BIO *bio) {
+    tstr packet;
+    while ((packet = dtls_bio_take(bio)) != NULL) tstr_free(packet);
+}
+
+static int dtls_bio_destroy(BIO *bio) {
+    dtls_bio_t *queue = BIO_get_data(bio);
+    if (queue) {
+        dtls_bio_clear(bio);
+        deque_destroy(&queue->packets);
+        free(queue);
+    }
+    return 1;
+}
+
+static int dtls_bio_write(BIO *bio, const char *data, int len) {
+    dtls_bio_t *queue = BIO_get_data(bio);
+    BIO_clear_retry_flags(bio);
+    if (len <= 0) return 0;
+    if ((size_t)len > DTLS_BIO_MAX_PACKET_BYTES ||
+        (size_t)len > DTLS_BIO_MAX_BYTES - queue->bytes ||
+        deque_size(&queue->packets) == DTLS_BIO_MAX_PACKETS) {
+        OPENSSL_PUT_ERROR(BIO, ERR_R_OVERFLOW);
+        return -1;
+    }
+    tstr packet = tstr_new_len(data, (size_t)len);
+    if (!packet || deque_push_back(&queue->packets, &packet) != STL_OK) {
+        tstr_free(packet);
+        OPENSSL_PUT_ERROR(BIO, ERR_R_MALLOC_FAILURE);
+        return -1;
+    }
+    queue->bytes += (size_t)len;
+    return len;
+}
+
+static int dtls_bio_read(BIO *bio, char *data, int len) {
+    BIO_clear_retry_flags(bio);
+    if (len <= 0) return 0;
+    tstr packet = dtls_bio_take(bio);
+    if (!packet) {
+        BIO_set_retry_read(bio);
+        return -1;
+    }
+    size_t copied = tstr_len(packet);
+    if (copied > (size_t)len) copied = (size_t)len;
+    memcpy(data, packet, copied);
+    /* Like a datagram socket, a short read consumes the entire packet. */
+    tstr_free(packet);
+    return (int)copied;
+}
+
+static long dtls_bio_ctrl(BIO *bio, int command, long arg, void *ptr) {
+    dtls_bio_t *queue = BIO_get_data(bio);
+    (void)arg; (void)ptr;
+    switch (command) {
+        case BIO_CTRL_FLUSH: return 1;
+        case BIO_CTRL_EOF: return deque_empty(&queue->packets);
+        case BIO_CTRL_PENDING: {
+            tstr *packet = deque_front(&queue->packets);
+            return packet ? (long)tstr_len(*packet) : 0;
+        }
+        case BIO_CTRL_RESET:
+            dtls_bio_clear(bio);
+            BIO_clear_retry_flags(bio);
+            return 1;
+        default: return 0;
+    }
+}
+
+static const BIO_METHOD dtls_bio_method = {
+    .type = BIO_TYPE_SOURCE_SINK,
+    .name = "TurboMedia DTLS datagrams",
+    .bwrite = dtls_bio_write,
+    .bread = dtls_bio_read,
+    .ctrl = dtls_bio_ctrl,
+    .create = dtls_bio_create,
+    .destroy = dtls_bio_destroy
+};
 
 /* ============================================================================
  * DTLS Retransmission Timer
@@ -124,8 +233,8 @@ int dtls_session_init(turbo_dc_peer_t *peer) {
         return -1;
     }
 
-    peer->dtls.read_bio = BIO_new(BIO_s_mem());
-    peer->dtls.write_bio = BIO_new(BIO_s_mem());
+    peer->dtls.read_bio = BIO_new(&dtls_bio_method);
+    peer->dtls.write_bio = BIO_new(&dtls_bio_method);
     if (!peer->dtls.read_bio || !peer->dtls.write_bio) {
         if (peer->dtls.read_bio) BIO_free(peer->dtls.read_bio);
         if (peer->dtls.write_bio) BIO_free(peer->dtls.write_bio);
@@ -134,9 +243,6 @@ int dtls_session_init(turbo_dc_peer_t *peer) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_SSL_CREATE, "BIO allocation failed");
         return -1;
     }
-    BIO_set_mem_eof_return(peer->dtls.read_bio, -1);
-    BIO_set_mem_eof_return(peer->dtls.write_bio, -1);
-
     SSL_set_bio(peer->dtls.ssl, peer->dtls.read_bio, peer->dtls.write_bio);
 
     if (peer->is_dtls_server) {
@@ -190,23 +296,13 @@ int dtls_write_application_data(turbo_dc_peer_t *peer, const void *data, size_t 
  * ============================================================================ */
 
 void dtls_send_output(turbo_dc_peer_t *peer) {
-    /* Buffer must be large enough to hold the largest possible DTLS record.
-     * We use 2KB to be safe even if MTU is slightly larger.
-     */
-    char encrypted[2048];
-    int encrypted_len;
-
-    /* Read ALL available data from the BIO.
-     * Note: BIO_s_mem might coalesce multiple records.
-     * BoringSSL's DTLS stack handles receiving multiple records in one packet.
-     */
     for (;;) {
         dtls_session_lock(peer);
-        encrypted_len = peer->dtls.stopped ? 0 :
-            BIO_read(peer->dtls.write_bio, encrypted, sizeof(encrypted));
+        tstr packet = peer->dtls.stopped ? NULL : dtls_bio_take(peer->dtls.write_bio);
         dtls_session_unlock(peer);
-        if (encrypted_len <= 0) break;
-        dc_send_transport_data(peer, encrypted, encrypted_len);
+        if (!packet) break;
+        dc_send_transport_data(peer, packet, tstr_len(packet));
+        tstr_free(packet);
     }
 }
 
@@ -403,8 +499,17 @@ void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len) {
         dtls_session_unlock(peer);
         return;
     }
-    BIO_write(peer->dtls.read_bio, data, (int)len);
+    int accepted = BIO_write(peer->dtls.read_bio, data, (int)len);
+    if (accepted != (int)len) {
+        peer->dtls.stopped = 1;
+        dtls_set_timer_active(peer, 0);
+    }
     dtls_session_unlock(peer);
+    if (accepted != (int)len) {
+        dc_fail_peer(peer, TURBO_DC_ERROR_DTLS_HANDSHAKE,
+                     "DTLS input datagram admission failed");
+        return;
+    }
     dtls_process_handshake(peer);
     dtls_drain_application_data(peer);
 }

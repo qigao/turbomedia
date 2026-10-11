@@ -386,7 +386,7 @@ it does not serialize `SSL` or its BIOs. Each SSL transaction therefore acquires
 exclusive DTLS admission through the existing operation mutex/condition. The
 mutex protects admission only; the admitted thread owns SSL, BIOs, handshake
 readiness and shutdown state until it releases admission. Receive data remains
-borrowed for the synchronous call. No packet queue is introduced.
+borrowed for the synchronous call and is copied into the input BIO before return.
 
 The context transport worker also observes DTLS deadlines and is now created
 for ICE contexts. ICE receive and ordinary calls remain on their existing
@@ -428,10 +428,41 @@ the direct-CNet worker would change callback affinity and introduce synchronous
 cross-owner waits. Native timer self-rearm also complicates proving callback
 quiescence on the rc.10 Windows timer implementation. Reusing the context worker
 for deadlines trades an ICE-context thread for explicit join/drain semantics,
-while preserving receive/caller affinity and avoiding a new queue. This local
+while preserving receive/caller affinity. This local
 admission protocol preserves those boundaries and the public ABI. Reverting it
 restores the prior concurrency risk; a rollback
 must instead keep all SSL entries on one caller-owned thread.
+
+### DTLS datagram BIO boundary
+
+BoringSSL writes one datagram per BIO write and reads one datagram per BIO read
+(`ssl/d1_both.cc` and `ssl/ssl_buffer.cc` in the pinned 0.20240913.0 dependency).
+A memory BIO loses that boundary: a fixed-size drain may merge packets, exceed
+the configured MTU, or split a record. Both BIOs therefore use the existing CSTL
+deque to hold owned `tstr` byte packets. This is a private adapter, not a DTLS
+record parser; certificate verification and handshake/retransmission policy stay
+with BoringSSL. Each BIO is bounded to 256 packets and 256 KiB of payload, with
+at most 65535 bytes per packet. Capacity/allocation failure accepts no partial
+packet and reports an error; there is no overwrite, wait, or unbounded growth.
+
+All queue access uses the existing exclusive SSL admission, even when callers
+come from different threads. Writes copy the caller's bytes; reads consume one
+packet (a short read discards that packet's remainder, as a datagram read does).
+Output dequeue transfers the owned packet to the sender, which releases SSL
+admission before invoking transport code and frees the packet after the callback.
+Concurrent send callbacks may reorder whole datagrams, as UDP can. Close stops
+new SSL work; destruction drains operation leases before SSL frees both BIOs and
+their queued packets. Queue storage is allocated on demand under a hard limit;
+no allocation or throughput improvement is claimed.
+
+Keeping the memory BIO and parsing DTLS record headers was rejected because it
+would duplicate protocol framing and fail to preserve the library's packetization.
+The adapter preserves the public ABI and existing transport callback lifetime.
+Rolling back requires another boundary-preserving BIO, not a larger byte buffer.
+The formal DTLS test uses real small-MTU handshakes and SRTP key export, alongside
+packet isolation, short-read, capacity, and callback reentry checks. This fixes a
+source-confirmed transport defect; the original #160 log contains no packet trace
+and does not by itself establish this defect as that run's cause.
 
 ---
 

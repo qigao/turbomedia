@@ -377,6 +377,20 @@ free(peer);
   任意并发 channel 修改、transport 替换或上层 peer-connection 字段访问安全。
   背景、候选方案与回滚边界见 [DTLS operation ownership](arch-en.md#dtls-operation-ownership)。
 
+**DTLS 数据报边界：**
+- BoringSSL 的每次 BIO 写入/读取对应一个数据报。普通 memory BIO 会合并报文，
+  固定 2048 字节的输出读取还可能截断 record。输入、输出现均由私有 BIO 适配器
+  使用 CSTL deque 保存拥有型 `tstr` 字节报文，不解析或重建 DTLS record。
+- 每个 BIO 限制为 256 个报文、256 KiB payload，单报文最多 65535 字节。
+  容量或分配失败时不接纳部分报文，明确返回错误；不覆盖、不阻塞、不无限扩容。
+  读取消费一个报文，短读取丢弃该报文余下部分，保持数据报语义。
+- 所有队列操作受现有 SSL 准入保护。输入复制调用方数据；输出出队转移所有权，
+  释放准入后调用 transport，回调返回后释放报文。并发发送可以使完整数据报乱序。
+  销毁排空操作租约后，由 SSL 释放 BIO 和残留报文。
+- 正式测试覆盖真实证书、小 MTU 双端握手、SRTP 密钥一致性、报文隔离、短读取、
+  容量恢复及回调重入。原 #160 日志没有数据报追踪，因此此源码缺陷的修复不能单独
+  证明历史失败的原因。取舍与回滚见 [DTLS datagram BIO boundary](arch-en.md#dtls-datagram-bio-boundary)。
+
 ---
 
 ## 错误处理
