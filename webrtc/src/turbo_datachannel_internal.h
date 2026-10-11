@@ -63,6 +63,11 @@ typedef struct {
     BIO *read_bio;
     BIO *write_bio;
     int handshake_done;
+    int application_ready;
+    int stopped;
+    /* Admission is protected by operation_mutex; SSL/BIO state by busy. */
+    int busy;
+    int timer_started;
     cmeta_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
 } dtls_session_t;
 
@@ -122,7 +127,7 @@ struct turbo_dc_peer_s {
     void *user_data;
     int is_dtls_server;
 
-    /* External callbacks and destruction are serialized by this protocol. */
+    /* Lifetime admission/drain, distinct from DTLS operation serialization. */
     cmeta_mutex_t operation_mutex;
     cmeta_cond_t operation_cond;
     int operation_sync_initialized;
@@ -228,6 +233,13 @@ void dtls_session_cleanup(turbo_dc_peer_t *peer);
 void dtls_send_output(turbo_dc_peer_t *peer);
 void dtls_process_handshake(turbo_dc_peer_t *peer);
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len);
+/* Caller holds a peer operation lease (or exclusive create/destroy ownership).
+ * Never call application callbacks, SCTP or transport code while admitted. */
+void dtls_session_lock(turbo_dc_peer_t *peer);
+void dtls_session_unlock(turbo_dc_peer_t *peer);
+void dtls_session_shutdown(turbo_dc_peer_t *peer);
+int dtls_session_is_ready(turbo_dc_peer_t *peer);
+int dtls_write_application_data(turbo_dc_peer_t *peer, const void *data, size_t len);
 
 /* ============================================================================
  * SCTP Session API (internal)

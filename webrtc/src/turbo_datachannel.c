@@ -1233,16 +1233,30 @@ int turbo_dc_peer_set_remote_fingerprint(
         if (*p >= 'a' && *p <= 'f') *p = (char)(*p - ('a' - 'A'));
     }
 
+    if (dc_peer_acquire(peer) != 0) {
+        tstr_free(new_hash);
+        tstr_free(new_fingerprint);
+        return -1;
+    }
+    dtls_session_lock(peer);
     tstr_free(peer->remote_fingerprint_hash);
     tstr_free(peer->remote_fingerprint);
     peer->remote_fingerprint_hash = new_hash;
     peer->remote_fingerprint = new_fingerprint;
+    dtls_session_unlock(peer);
+    dc_peer_release(peer);
     return 0;
 }
 
 int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
-    if (!peer || !peer->dtls.ssl) return -1;
-    if (peer->state != TURBO_DC_STATE_NEW) return -2;
+    if (!peer || dc_peer_acquire(peer) != 0) return -1;
+    dtls_session_lock(peer);
+    if (peer->state != TURBO_DC_STATE_NEW || peer->dtls.timer_started ||
+        peer->dtls.handshake_done || peer->dtls.stopped) {
+        dtls_session_unlock(peer);
+        dc_peer_release(peer);
+        return -2;
+    }
 
     peer->is_dtls_server = is_server ? 1 : 0;
     if (peer->is_dtls_server) {
@@ -1251,6 +1265,8 @@ int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
         SSL_set_connect_state(peer->dtls.ssl);
     }
 
+    dtls_session_unlock(peer);
+    dc_peer_release(peer);
     return 0;
 }
 
@@ -1341,7 +1357,10 @@ int turbo_dc_peer_connect(turbo_dc_peer_t *peer) {
 
     if (peer->external_transport) {
         TLOG_INFO("DC peer connect via ICE");
-        peer->state = TURBO_DC_STATE_CONNECTING;
+        dtls_session_lock(peer);
+        if (!peer->dtls.handshake_done && !peer->dtls.stopped)
+            peer->state = TURBO_DC_STATE_CONNECTING;
+        dtls_session_unlock(peer);
 
         /* Start DTLS handshake - the ICE agent should already be connected */
         /* Use dtls_process_handshake to properly schedule retransmit timer */
@@ -1403,9 +1422,7 @@ static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
         peer->sctp.socket = NULL;
     }
 
-    if (peer->dtls.ssl) {
-        SSL_shutdown(peer->dtls.ssl);
-    }
+    dtls_session_shutdown(peer);
 
     if (peer->transport_ops && peer->transport_ops->close) {
         peer->transport_ops->close(peer);
@@ -1501,19 +1518,21 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
 }
  
 uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material) {
-    if (!peer || !peer->dtls.ssl || !material) return 0;
-    if (!SSL_is_init_finished(peer->dtls.ssl)) return 0;
- 
-    /* Get negotiated SRTP profile */
-    const SRTP_PROTECTION_PROFILE *profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
-    if (!profile) return 0;
- 
-    /* Derive keys */
-    if (srtp_derive_keys_from_dtls(peer->dtls.ssl, (srtp_keying_material_t *)material, (uint16_t)profile->id) != 0) {
-        return 0;
+    uint16_t result = 0;
+    if (!peer || !material || dc_peer_acquire(peer) != 0) return 0;
+    dtls_session_lock(peer);
+    /* Admission includes successful fingerprint verification, not merely
+     * completion of SSL's cryptographic handshake. */
+    if (peer->dtls.handshake_done && !peer->dtls.stopped) {
+        const SRTP_PROTECTION_PROFILE *profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
+        if (profile && srtp_derive_keys_from_dtls(peer->dtls.ssl,
+                (srtp_keying_material_t *)material, (uint16_t)profile->id) == 0) {
+            result = (uint16_t)profile->id;
+        }
     }
- 
-    return (uint16_t)profile->id;
+    dtls_session_unlock(peer);
+    dc_peer_release(peer);
+    return result;
 }
 
 /* ============================================================================

@@ -342,6 +342,53 @@ free(peer);
 - Public lifetime calls synchronize transport work through the internal command protocol
 - Callbacks must not destroy their owning peer reentrantly
 
+### DTLS operation ownership
+
+ICE receive, connection startup, SCTP output and native retransmission timers
+can enter from different threads. The peer's operation count keeps storage alive;
+it does not serialize `SSL` or its BIOs. Each SSL transaction therefore acquires
+exclusive DTLS admission through the existing operation mutex/condition. The
+mutex protects admission only; the admitted thread owns SSL, BIOs, handshake
+readiness and shutdown state until it releases admission. Receive data remains
+borrowed for the synchronous call. No packet queue or new worker is introduced.
+
+Salts timer replacement and stop may wait for the native callback to return.
+Only the first handshake step starts the native one-shot timer; only its callback
+rearms it thereafter. Ordinary SSL operations never replace or stop a running
+timer. The callback can therefore wait for SSL admission without a stop/wait
+cycle, and reentrant transport callbacks can acquire SSL admission as well.
+The timer checks BoringSSL's actual deadline at most every 10ms during the
+handshake, because a newly received flight can shorten that deadline. This
+introduces up to 10ms of deadline observation latency and up to 100 wakeups per
+second per handshaking peer; it does not change DTLS retransmission deadlines.
+The one-shot is rearmed only after transport work returns, preventing periodic
+callbacks from piling up behind a blocked sender. Once handshake completion,
+failure or close is observed, the callback does not rearm it.
+
+SSL error classification and fingerprint verification occur in the transaction
+that produced them. SCTP entry, state/error callbacks and transport sends occur
+after admission is released, avoiding lock cycles with those external owners.
+Handshake completion is claimed once; application reads wait until the elected
+thread finishes SCTP startup. Output is copied from the BIO into callback-scoped
+storage before sending; concurrent datagram sends may reorder records, which
+DTLS already tolerates. No TLS identity or fingerprint check is relaxed.
+
+Shutdown marks DTLS stopped under admission. Destruction
+first rejects new peer operations and drains admitted callers, then destroys the
+native timer before freeing SSL and peer storage. Callback reentrant destruction
+remains unsupported. This does not make arbitrary concurrent channel mutation,
+transport replacement or higher-level peer-connection state access safe; those
+retain their existing owner obligations.
+
+A single coarse lock around handshake/receive was rejected because of timer
+stop/wait deadlock and SCTP callback lock inversion. Moving ICE processing onto
+the direct-CNet worker would change callback affinity and introduce synchronous
+cross-owner waits. The bounded handshake-only timer checks trade wakeup cost for
+preserving callback affinity and avoiding a new queue or worker. This local
+admission protocol preserves those boundaries and the public ABI. Reverting it
+restores the prior concurrency risk; a rollback
+must instead keep all SSL entries on one caller-owned thread.
+
 ---
 
 ## Error Handling

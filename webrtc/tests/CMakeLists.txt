@@ -36,6 +36,12 @@ target_link_libraries(
 
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
+turbo_media_add_webrtc_test(turbo_media_test_dtls_concurrency test_dtls_concurrency.c)
+target_link_libraries(turbo_media_test_dtls_concurrency PRIVATE
+  Salts::CNet unofficial::usrsctp::usrsctp OpenSSL::SSL roaring::roaring)
+if(NOT ANDROID)
+  set_tests_properties(turbo_media_test_dtls_concurrency PROPERTIES TIMEOUT 30)
+endif()
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
 
