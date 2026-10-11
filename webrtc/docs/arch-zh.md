@@ -390,6 +390,18 @@ free(peer);
 - 正式测试覆盖真实证书、小 MTU 双端握手、SRTP 密钥一致性、报文隔离、短读取、
   容量恢复及回调重入。原 #160 日志没有数据报追踪，因此此源码缺陷的修复不能单独
   证明历史失败的原因。取舍与回滚见 [DTLS datagram BIO boundary](arch-en.md#dtls-datagram-bio-boundary)。
+- 握手完成后的 `SSL_read` 即使返回 WANT_READ，也可能因重复 Finished 生成末次
+  握手报文。因此每次读取都在错误处理后、SSL 准入外发送输出；停止状态不再发送。
+  正式回归丢弃服务端第一个末次握手数据报，验证原有重传计时器能够恢复握手、
+  双方 SRTP 密钥一致且各只通知一次 CONNECTED，不依赖 SCTP 写入推动进度。
+
+**GmSSL 迁移边界：**认证模块的 SHA-256、HMAC-SHA256、常量时间比较已改用
+Salts Core 的 GmSSL 后端，Base64 复用 Core 的 libbase64；认证 target 不再直接链接
+OpenSSL::Crypto。Salts 保持 2.3.0-rc.10，token 格式、校验规则与公开接口不变。
+中央缓存 GmSSL 3.2.0#9 的 `tls_ctx_init` 只接受 TLS 1.2、TLS 1.3 和 TLCP，
+DTLS 常量并不代表已实现 DTLS-SRTP。DataChannel/RTC 与 libsrtp 仍需 BoringSSL；
+完整替换须先提供经过互通验证的 DTLS-SRTP 后端，不能靠替换库名或禁用 AEAD
+完成。证据、取舍、验证与回滚见 [GmSSL migration boundary](arch-en.md#gmssl-migration-boundary)。
 
 ---
 

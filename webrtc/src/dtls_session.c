@@ -201,10 +201,12 @@ static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
             error = ERR_peek_error();
         }
         dtls_session_unlock(peer);
-        if (decrypted_len <= 0) {
-            if (decrypted_len < 0) dtls_handle_error(peer, ssl_error, error);
-            return;
-        }
+        if (decrypted_len < 0) dtls_handle_error(peer, ssl_error, error);
+        /* A repeated Finished can regenerate our last handshake flight even
+         * when SSL_read returns WANT_READ and there is no application data.
+         * Send outside SSL admission; terminal errors suppress output. */
+        dtls_send_output(peer);
+        if (decrypted_len <= 0) return;
         if (!peer->ctx->disable_sctp) {
             usrsctp_conninput(peer, decrypted, decrypted_len, 0);
             sctp_poll_status(peer, "post-conninput");

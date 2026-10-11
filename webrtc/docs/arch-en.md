@@ -464,6 +464,42 @@ packet isolation, short-read, capacity, and callback reentry checks. This fixes 
 source-confirmed transport defect; the original #160 log contains no packet trace
 and does not by itself establish this defect as that run's cause.
 
+After handshake completion, `SSL_read` can regenerate the final handshake flight
+in response to a repeated Finished without returning application bytes. The read
+drain therefore flushes output after every read, including WANT_READ, outside
+SSL admission and after terminal-error handling. A stopped session sends nothing.
+The formal regression drops the server's first final-flight datagram and checks
+recovery using the client's existing retransmission deadline, matching SRTP keys
+and exactly one CONNECTED notification per peer. No SCTP write is needed to make
+progress. The test failed before this fix on macOS in run 38105245427; this is
+evidence for the regression scenario, not a packet trace of historical #160.
+
+### GmSSL migration boundary
+
+Authentication uses Salts Core's provider-neutral `cmeta_sha256`,
+`cmeta_hmac_sha256`, `cmeta_crypto_equal` and Base64 helpers. Salts 2.3.0-rc.10
+owns the GmSSL crypto backend; the auth target no longer links OpenSSL::Crypto.
+HS256 token encoding, claim validation, limits and constant-time comparison are
+preserved, with an independent known token vector in the formal auth suite.
+Base64 is supplied by Core's existing libbase64 dependency, not by GmSSL.
+
+Full WebRTC provider replacement is blocked by the current central
+[GmSSL port](https://github.com/qigao/vcpkg-cache/tree/master/ports/gmssl)
+(3.2.0#9, upstream commit `7c9f02904ef33e59c87b4f16621cc8fd434e7579`).
+The patched `tls_ctx_init` accepts TLS 1.2, TLS 1.3 and TLCP only. DTLS constants
+and trace names do not implement datagram records, handshake fragmentation,
+retransmission or DTLS-SRTP negotiation. Stream TLS/exporter support cannot
+replace that contract. DataChannel/RTC still use BoringSSL, and the libsrtp
+overlay still requires its crypto backend, including existing AEAD profiles.
+
+Replacing library names or disabling profiles would break browser interop.
+The next prerequisite is a qualified DTLS-SRTP-capable provider in the central
+cache, including certificate fingerprints, SRTP exporter/profile negotiation,
+loss recovery and browser interop. Until then, keep this dependency explicit;
+do not present the auth migration as complete BoringSSL removal. Existing
+cache-only restoration remains in use. The auth change can be rolled back
+independently without changing tokens or the public API.
+
 ---
 
 ## Error Handling
