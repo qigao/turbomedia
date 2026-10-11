@@ -1,5 +1,19 @@
 # TurboMedia Salts 依赖重构设计
 
+## 2026-10-11 GmSSL 迁移更新（PR #161）
+
+[PR #161](https://github.com/qigao/turbomedia/pull/161) 的当前实现已从生产、测试和
+依赖清单移除 BoringSSL，不保留备用后端。下文的 `CRYPTO_memcmp`、
+`bssl::UniquePtr` 和 BoringSSL 证书方案仅是历史记录，不再是该分支的实施要求。
+证书生成和 DTLS-SRTP 使用 GmSSL；配置身份采用叶证书和未加密 PKCS#8 私钥，
+旧 SSL 指针导出接口已删除。当前能力、调用方迁移和验证限制以
+[WebRTC 架构的 GmSSL 迁移与兼容边界](../../../webrtc/docs/arch-zh.md#线程模型)
+及其[英文说明](../../../webrtc/docs/arch-en.md#gmssl-migration-boundary)为准。
+
+该 PR 仍为 Draft / DO NOT MERGE；本更新不表示已经合入主线。GmSSL 双端测试不证明
+独立 provider 或浏览器互通，也不能证明 [#160](https://github.com/qigao/turbomedia/issues/160)
+历史首次连接失败的根因；该 issue 保持开放。下文各平台结果属于各自注明的历史版本。
+
 ## 合入当前主线的决议
 
 本节优先于下文合并前的记录。主线已改为按平台能力构建：Windows/Linux 同时

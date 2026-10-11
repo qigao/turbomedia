@@ -2,7 +2,7 @@
 
 ## 使用规则
 
-- 最后更新：2026-08-11
+- 最后更新：2026-10-11（仅澄清 GmSSL 迁移后的历史证据边界，未重验其他完成项）
 - 设计契约：[IVR 生产化缺口解决方案](./ivr-production-readiness-design-zh.md)
 - 基线架构：[独立 IVR Worker 架构](./ivr-worker-architecture-zh.md)
 - `[x]` 只表示代码、自动化测试和要求的验收证据均已完成。
@@ -39,12 +39,16 @@
   证据：`ivr_protocol.c`、`test_ivr_protocol`、生产化设计 2.4 节。
 - [ ] `ARCH-04` `RtcSessionWorkflow` 删除 `.hpp/.cpp`，纯 C 实现使用 TurboXML C API 和
   Salts Parser，并通过全部 C API 状态/command/非法输入/cleanup 测试。
-  当前证据（2026-08-10）：外部 `turbo-webrtc` 已完成 `win-release-user`、BoringSSL
+  历史证据（2026-08-10）：外部 `turbo-webrtc` 已完成 `win-release-user`、BoringSSL
   probe、`turbo_rtc_session_workflow` 和 `test_rtc_session_workflow` 编译；workflow
   target 已补 `SHARED_CXX` 导出，C wrapper 已有界驱动 TurboXML 初始化和事件宏步。
   但安装的 `uscxml-static` DLL 在 `<send>` execution point 仅返回内部 `id`，不返回
   `target/event/param.*`，导致两条 command 行为测试失败。必须重建/发布与当前 C API
   头和实现一致的 TurboXML package 后重新运行完整 CTest，之前不得勾选完成。
+  2026-10-11 注：该 BoringSSL probe 属于旧实现，不是当前构建入口或验收要求。
+  [PR #161](https://github.com/qigao/turbomedia/pull/161) 已改为 GmSSL-only，仍为 Draft；
+  迁移和覆盖限制见 [GmSSL migration boundary](./arch-en.md#gmssl-migration-boundary)。
+  此依赖变更不构成 `ARCH-04` 的完成证据，也不证明浏览器互通或 #160 的历史根因。
 - [x] `ARCH-05` re2c/Lemon 不用于 TIVR JSON/BIN；仅在未来有独立自定义 DSL grammar 和
   AST 需求时重新评估。
   证据：生产化设计 2.4 节。
