@@ -457,6 +457,29 @@ suite("GmSSL DTLS-SRTP independent interoperability") {
             check_equal(turbo_gdtls_poll(fixture.session, clock_ms), TURBO_GDTLS_CLOSED);
             check_equal(turbo_gdtls_write(fixture.session, "x", 1), TURBO_GDTLS_CLOSED);
         }
+        it("role=%d preserves authenticated trailing data coalesced with close_notify", server) {
+            check_true(fixture.init(server != 0, 1));
+            check_true(fixture.handshake());
+            check_true(fixture.capture_reference_record());
+            check_equal(SSL_shutdown(fixture.reference), 0);
+            uint8_t closing[512];
+            int count = BIO_read(SSL_get_wbio(fixture.reference), closing, sizeof(closing));
+            check_greater(count, 0);
+            size_t data_size = tstr_len(fixture.owned_packet);
+            fixture.held_packet = tstr_new_len(nullptr, data_size + static_cast<size_t>(count));
+            check_not_null(fixture.held_packet);
+            memcpy(fixture.held_packet, fixture.owned_packet, data_size);
+            memcpy(fixture.held_packet + data_size, closing, static_cast<size_t>(count));
+            check_equal(turbo_gdtls_receive(fixture.session, fixture.held_packet,
+                tstr_len(fixture.held_packet), clock_ms), TURBO_GDTLS_CLOSED);
+            check_false(turbo_gdtls_ready(fixture.session));
+            tstr_free(fixture.owned_packet);
+            fixture.owned_packet = turbo_gdtls_take_plaintext(fixture.session);
+            check_not_null(fixture.owned_packet);
+            check_equal(fixture.owned_packet, "authenticated datagram");
+            check_null(turbo_gdtls_take_plaintext(fixture.session));
+            check_equal(turbo_gdtls_poll(fixture.session, clock_ms), TURBO_GDTLS_CLOSED);
+        }
     }
     it("accepts Finished when UDP delivers authenticated application data ahead of it") {
         check_true(fixture.init(false, 1));

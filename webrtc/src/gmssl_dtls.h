@@ -53,7 +53,8 @@ int turbo_gdtls_ready(const turbo_gdtls *session);
 int turbo_gdtls_write(turbo_gdtls *session, const void *data, size_t size);
 /* Local close returns OK once, then CLOSED. Authenticated peer close returns
  * CLOSED from receive; in both cases drain take_datagram for close_notify.
- * Closing/failure revokes key export and clears retained plaintext/secrets.
+ * Closing/failure revokes key export and clears secrets. Clean close preserves
+ * already authenticated plaintext for take_plaintext; destroy clears leftovers.
  * Capacity failures during admitted processing are terminal and discard queues. */
 int turbo_gdtls_close(turbo_gdtls *session);
 uint16_t turbo_gdtls_srtp_profile(const turbo_gdtls *session);

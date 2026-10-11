@@ -512,7 +512,10 @@ The engine reports the earlier of its next retransmission and its 60-second
 handshake lifetime, including a server waiting for ClientHello. Both receive
 and poll enforce that lifetime. The outer connection deadline is unchanged.
 Local and authenticated remote close revoke readiness/export access, clear
-secrets and retained input, and leave a closing alert for the caller to drain.
+secrets and retained handshake input, and leave a closing alert for the caller
+to drain. Already authenticated application data remains drainable after clean
+close, including records coalesced ahead of close_notify; destruction clears any
+undrained data. Terminal failures discard all queued data.
 
 Qualification includes an independent BoringSSL peer in both roles, each SRTP
 profile and matching exporter bytes, identity rejection, application data,

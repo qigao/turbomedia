@@ -187,7 +187,10 @@ static int finish_session(turbo_gdtls *s, int error, int keep_output) {
     tstr packet;
     if (!keep_output)
         while ((packet = queue_take(&s->output)) != NULL) clear_string(packet);
-    while ((packet = queue_take(&s->plaintext)) != NULL) clear_string(packet);
+    // A clean close may follow application records in the same datagram. Keep
+    // those already authenticated bytes drainable; failure discards everything.
+    if (error != TURBO_GDTLS_CLOSED)
+        while ((packet = queue_take(&s->plaintext)) != NULL) clear_string(packet);
     while ((packet = queue_take(&s->future)) != NULL) clear_string(packet);
     return error;
 }
@@ -1059,7 +1062,7 @@ uint64_t turbo_gdtls_deadline(const turbo_gdtls *s) {
 }
 tstr turbo_gdtls_take_datagram(turbo_gdtls *s) { return s ? queue_take(&s->output) : NULL; }
 tstr turbo_gdtls_take_plaintext(turbo_gdtls *s) {
-    return s && s->state == READY ? queue_take(&s->plaintext) : NULL;
+    return s && (s->state == READY || s->state == CLOSED) ? queue_take(&s->plaintext) : NULL;
 }
 int turbo_gdtls_ready(const turbo_gdtls *s) { return s && s->state == READY; }
 int turbo_gdtls_write(turbo_gdtls *s, const void *data, size_t size) {
