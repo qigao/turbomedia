@@ -835,15 +835,25 @@ static int process_handshake(turbo_gdtls *s, const uint8_t *message, size_t size
     return result;
 }
 
-static int receive_fragments(turbo_gdtls *s, const uint8_t *data, size_t size, uint16_t epoch) {
+static int valid_handshake_record(const uint8_t *data, size_t size, uint16_t epoch) {
+    // Validate the complete record before committing any fragment. DTLS drops
+    // structurally invalid records so a later valid retransmission can recover.
     while (size) {
-        if (size < HANDSHAKE_HEADER) return TURBO_GDTLS_PROTOCOL;
+        if (size < HANDSHAKE_HEADER) return 0;
+        size_t total = load24(data + 1), offset = load24(data + 6), length = load24(data + 9);
+        if (total > MAX_HANDSHAKE || offset > total || length > total - offset ||
+            length > size - HANDSHAKE_HEADER || (data[0] == HS_FINISHED ? epoch != 1 : epoch != 0))
+            return 0;
+        data += HANDSHAKE_HEADER + length; size -= HANDSHAKE_HEADER + length;
+    }
+    return 1;
+}
+static int receive_fragments(turbo_gdtls *s, const uint8_t *data, size_t size, uint16_t epoch) {
+    if (!valid_handshake_record(data, size, epoch)) return 0;
+    while (size) {
         uint8_t type = data[0];
         size_t total = load24(data + 1), offset = load24(data + 6), length = load24(data + 9);
         uint16_t sequence = load16(data + 4);
-        if (total > MAX_HANDSHAKE || offset > total || length > total - offset ||
-            length > size - HANDSHAKE_HEADER || (type == HS_FINISHED ? epoch != 1 : epoch != 0))
-            return TURBO_GDTLS_PROTOCOL;
         if (s->state == READY) {
             // A valid repeated peer Finished asks the server for its last flight.
             // The record has already passed AEAD authentication, even if replayed.
@@ -880,13 +890,18 @@ static int receive_fragments(turbo_gdtls *s, const uint8_t *data, size_t size, u
                 a->sequence = sequence; a->type = type;
                 s->fragment_bytes += total + coverage_size;
             }
-            if (tstr_len(a->body) != total || a->type != type) return TURBO_GDTLS_PROTOCOL;
+            if (tstr_len(a->body) != total || a->type != type) return 0;
+            // An overlapping retransmission must agree with already accepted
+            // bytes. Do not partially mutate the assembly before that check.
+            for (size_t i = 0; i < length; ++i) {
+                size_t index = offset + i;
+                if (((uint8_t)a->coverage[index / 8] & (1u << (index % 8))) &&
+                    (uint8_t)a->body[index] != data[HANDSHAKE_HEADER + i]) return 0;
+            }
             for (size_t i = 0; i < length; ++i) {
                 size_t index = offset + i;
                 uint8_t bit = (uint8_t)(1u << (index % 8));
-                if ((uint8_t)a->coverage[index / 8] & bit) {
-                    if ((uint8_t)a->body[index] != data[HANDSHAKE_HEADER + i]) return TURBO_GDTLS_PROTOCOL;
-                } else {
+                if (!((uint8_t)a->coverage[index / 8] & bit)) {
                     a->coverage[index / 8] = (char)((uint8_t)a->coverage[index / 8] | bit);
                     a->body[index] = (char)data[HANDSHAKE_HEADER + i]; ++a->received;
                 }
@@ -936,7 +951,8 @@ static int receive_record(turbo_gdtls *s, const uint8_t *record, size_t size, in
     const uint8_t *body = record + RECORD_HEADER;
     size_t body_size = size - RECORD_HEADER;
     uint8_t plain[MAX_PLAIN];
-    if (epoch > 1 || (epoch && load16(record + 1) != DTLS12)) return 0;
+    if (epoch > 1 || (epoch && load16(record + 1) != DTLS12) ||
+        type < REC_CCS || type > REC_APPLICATION) return 0;
     if (epoch && !s->read_epoch) {
         if (!may_queue || s->state == READY || s->state == CLOSED ||
             deque_size(&s->future.values) >= MAX_FUTURE) return 0;
@@ -963,8 +979,11 @@ static int receive_record(turbo_gdtls *s, const uint8_t *record, size_t size, in
     if (type == REC_HANDSHAKE) result = receive_fragments(s, body, body_size, epoch);
     else if (type == REC_CCS && !epoch && body_size == 1 && body[0] == 1) {
         s->pending_ccs = 1; promote_ccs(s);
-    } else if (type == REC_APPLICATION && epoch && s->state == READY) {
-        if (body_size) result = queue_push(&s->plaintext, body, body_size, MAX_PACKETS);
+    } else if (type == REC_APPLICATION && epoch) {
+        // UDP can deliver the peer's first application record before Finished.
+        // It is authenticated but cannot be exposed before handshake admission.
+        if (s->state == READY && body_size)
+            result = queue_push(&s->plaintext, body, body_size, MAX_PACKETS);
     } else if (type == REC_ALERT && body_size == 2) {
         if (body[1] == 0 && epoch) {
             const uint8_t alert[] = {1, 0};
@@ -972,7 +991,7 @@ static int receive_record(turbo_gdtls *s, const uint8_t *record, size_t size, in
             if (!result) result = TURBO_GDTLS_CLOSED;
         }
         else if (body[0] == 2) result = TURBO_GDTLS_PROTOCOL;
-    } else result = TURBO_GDTLS_PROTOCOL;
+    } /* Ignore records that cannot belong to this epoch/content type. */
     cmeta_crypto_clear(plain, sizeof(plain));
     return result;
 }

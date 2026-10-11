@@ -417,6 +417,11 @@ AES-GCM，支持 EMS 和现有四种 SRTP profile，强制校验对端 SHA-256 �
 转移；context 必须晚于所有 session 销毁。重组、flight、transcript 和报文队列均
 设硬上限，完成/失败路径清理密钥。具体范围、容量、迁移门槛与未支持算法见英文
 文档的私有 DTLS 实现章节；通过独立双向互通及生产回归后再切换，不设自动降级。
+引擎对外报告重传与 60 秒握手有效期中较早的截止时间，包含等待首包的服务端；
+receive/poll 均执行超时检查。关闭后撤销 ready/export 权限并擦除保留输入与密钥，
+关闭 alert 留给 owner 排空。合法应用报文若因 UDP 乱序先于 Finished 到达，会被
+丢弃并等待上层重传，不终止握手。正式测试另覆盖 RSA/P-256 混合身份、损坏标签、
+重复报文、容量、关闭、超时以及 GmSSL 双端 profile 偏好和最终 flight 退役。
 
 libsrtp 的现有 overlay 独立改用 GmSSL AES-CTR、AES-GCM 和 HMAC-SHA1，保留
 四种公开 profile、密钥派生、重放保护与 RTP/SRTCP 行为。ICM 保留跨调用的剩余

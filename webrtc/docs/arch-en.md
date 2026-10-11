@@ -505,11 +505,22 @@ encrypted plaintext records are at most 16384 bytes and outgoing records fit
 the configured MTU. Arithmetic and queue admission are checked before mutation.
 Unauthenticated unusable datagrams may be discarded as DTLS requires; accepted
 application/output data is never silently dropped. Authenticated protocol or
-capacity failures stop the session. The outer connection deadline is unchanged.
+capacity failures stop the session and discard its queued data explicitly.
+Authenticated application records that arrive before Finished are discarded
+without advancing handshake state; UDP/SCTP supplies any required retransmission.
+The engine reports the earlier of its next retransmission and its 60-second
+handshake lifetime, including a server waiting for ClientHello. Both receive
+and poll enforce that lifetime. The outer connection deadline is unchanged.
+Local and authenticated remote close revoke readiness/export access, clear
+secrets and retained input, and leave a closing alert for the caller to drain.
 
 Qualification includes an independent BoringSSL peer in both roles, each SRTP
 profile and matching exporter bytes, identity rejection, application data,
 fragmentation, ordinary datagram loss/reordering and final-flight recovery.
+The same formal suite covers mixed RSA/P-256 identities, damaged-tag discard,
+replay suppression, export capacity, bounded output failure, deadlines, closing
+alerts, early application records and paired GmSSL profile preference/final-flight
+retirement. These tests use runtime-generated identities, not reusable keys.
 Production cutover also requires the existing SCTP, lifetime, WHIP and platform
 suites. The reference contracts are [DTLS 1.2](https://www.rfc-editor.org/rfc/rfc6347),
 [DTLS-SRTP](https://www.rfc-editor.org/rfc/rfc5764),

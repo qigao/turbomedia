@@ -124,9 +124,10 @@ struct Fixture {
     turbo_gdtls_context *context = nullptr;
     turbo_gdtls *session = nullptr;
     tstr certificate = nullptr, private_key = nullptr, fingerprint = nullptr;
-    tstr owned_packet = nullptr, held_packet = nullptr;
+    tstr owned_packet = nullptr, held_packet = nullptr, reference_held_packet = nullptr;
     bool server = false;
     bool drop_first = false, drop_final = false, reorder = false, dropped = false;
+    bool reorder_reference = false, early_application = false, early_sent = false;
     int gm_error = 0, ssl_error = 0;
     uint8_t reference_plain[16384]{};
     size_t reference_plain_size = 0;
@@ -142,6 +143,7 @@ struct Fixture {
         tstr_free(fingerprint); fingerprint = nullptr;
         tstr_free(owned_packet); owned_packet = nullptr;
         tstr_free(held_packet); held_packet = nullptr;
+        tstr_free(reference_held_packet); reference_held_packet = nullptr;
     }
     bool init(bool server_role, uint16_t profile, bool aes256 = false, bool wrong_pin = false,
               bool engine_rsa = false, bool reference_rsa = false) {
@@ -223,14 +225,34 @@ struct Fixture {
             if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) return false;
         }
         if (DTLSv1_handle_timeout(reference) < 0) return false;
+        if (early_application && !early_sent && SSL_is_init_finished(reference)) {
+            if (SSL_write(reference, "early", 5) != 5) return false;
+            early_sent = true;
+        }
         uint8_t packet[65535];
         while ((result = BIO_read(SSL_get_wbio(reference), packet, sizeof(packet))) > 0) {
             bool encrypted_handshake = contains_finished_record(packet, static_cast<size_t>(result));
             if (!dropped && drop_final && !server && encrypted_handshake) dropped = true;
+            else if (reorder_reference && !reference_held_packet) {
+                reference_held_packet = tstr_new_len(packet, static_cast<size_t>(result));
+                if (!reference_held_packet) return false;
+            }
             else {
                 gm_error = turbo_gdtls_receive(session, packet, static_cast<size_t>(result), clock_ms);
                 if (gm_error) return false;
+                if (reference_held_packet) {
+                    gm_error = turbo_gdtls_receive(session, reference_held_packet,
+                                                   tstr_len(reference_held_packet), clock_ms);
+                    tstr_free(reference_held_packet); reference_held_packet = nullptr;
+                    if (gm_error) return false;
+                }
             }
+        }
+        if (reference_held_packet) {
+            gm_error = turbo_gdtls_receive(session, reference_held_packet,
+                                           tstr_len(reference_held_packet), clock_ms);
+            tstr_free(reference_held_packet); reference_held_packet = nullptr;
+            if (gm_error) return false;
         }
         return true;
     }
@@ -332,6 +354,11 @@ suite("GmSSL DTLS-SRTP independent interoperability") {
             fixture.reorder = true;
             check_interop(8);
         }
+        it("role=%d reassembles independently reordered reference flight fragments", server) {
+            check_true(fixture.init(server != 0, 8));
+            fixture.reorder_reference = true;
+            check_interop(8);
+        }
         it("role=%d rejects an incorrect peer fingerprint before key export", server) {
             check_true(fixture.init(server != 0, 1, false, true));
             check_false(fixture.handshake());
@@ -430,5 +457,75 @@ suite("GmSSL DTLS-SRTP independent interoperability") {
             check_equal(turbo_gdtls_poll(fixture.session, clock_ms), TURBO_GDTLS_CLOSED);
             check_equal(turbo_gdtls_write(fixture.session, "x", 1), TURBO_GDTLS_CLOSED);
         }
+    }
+    it("accepts Finished when UDP delivers authenticated application data ahead of it") {
+        check_true(fixture.init(false, 1));
+        fixture.reorder_reference = true;
+        fixture.early_application = true;
+        check_interop(1);
+        check_true(fixture.early_sent);
+    }
+}
+
+suite("GmSSL DTLS-SRTP paired owner contracts") {
+    static turbo_gdtls_context *contexts[2];
+    static turbo_gdtls *sessions[2];
+    static tstr certificate, key, packet;
+    before_each() {
+        clock_ms = 1000000;
+        for (auto &context : contexts) {
+            check_equal(turbo_dc_generate_certificate_der(&certificate, &key), 0);
+            context = turbo_gdtls_context_create(certificate, tstr_len(certificate), key, tstr_len(key));
+            cmeta_crypto_clear(key, tstr_len(key));
+            tstr_free(key); key = nullptr;
+            tstr_free(certificate); certificate = nullptr;
+            check_not_null(context);
+        }
+    }
+    after_each() {
+        for (auto &session : sessions) { turbo_gdtls_destroy(session); session = nullptr; }
+        for (auto &context : contexts) { turbo_gdtls_context_destroy(context); context = nullptr; }
+        if (key) cmeta_crypto_clear(key, tstr_len(key));
+        tstr_free(key); key = nullptr;
+        tstr_free(certificate); certificate = nullptr;
+        tstr_free(packet); packet = nullptr;
+    }
+    it("negotiates server preference, exports matching keys and retires the retained final flight") {
+        constexpr uint16_t profiles[2][4] = {{1, 2, 7, 8}, {8, 7, 2, 1}};
+        for (int i = 0; i < 2; ++i) {
+            uint8_t pin[32];
+            check_equal(turbo_gdtls_context_fingerprint(contexts[1 - i], pin), 0);
+            sessions[i] = turbo_gdtls_create(contexts[i], i, 300, pin, profiles[i], 4);
+            check_not_null(sessions[i]);
+            check_equal(turbo_gdtls_start(sessions[i], clock_ms), 0);
+        }
+        for (unsigned step = 0; step < 2000; ++step) {
+            clock_ms += 20;
+            for (int sender = 0; sender < 2; ++sender) {
+                check_equal(turbo_gdtls_poll(sessions[sender], clock_ms), 0);
+                while ((packet = turbo_gdtls_take_datagram(sessions[sender])) != nullptr) {
+                    check_equal(turbo_gdtls_receive(sessions[1 - sender], packet, tstr_len(packet), clock_ms), 0);
+                    tstr_free(packet); packet = nullptr;
+                }
+            }
+            if (turbo_gdtls_ready(sessions[0]) && turbo_gdtls_ready(sessions[1])) break;
+        }
+        uint8_t keys[2][88]; size_t sizes[2];
+        for (int i = 0; i < 2; ++i) {
+            check_true(turbo_gdtls_ready(sessions[i]));
+            check_equal(turbo_gdtls_srtp_profile(sessions[i]), uint16_t{8});
+            check_equal(turbo_gdtls_export_srtp(sessions[i], keys[i], sizeof(keys[i]), &sizes[i]), 0);
+            check_equal(sizes[i], sizeof(keys[i]));
+        }
+        check_equal(keys[0], keys[1], sizeof(keys[0]));
+        check_equal(turbo_gdtls_deadline(sessions[0]), uint64_t{0});
+        uint64_t retires = turbo_gdtls_deadline(sessions[1]);
+        check_greater(retires, clock_ms);
+        check_equal(turbo_gdtls_poll(sessions[1], retires), 0);
+        check_equal(turbo_gdtls_deadline(sessions[1]), uint64_t{0});
+        check_null(turbo_gdtls_take_datagram(sessions[1]));
+        check_true(turbo_gdtls_ready(sessions[1]));
+        check_equal(turbo_gdtls_export_srtp(sessions[1], keys[1], sizeof(keys[1]), &sizes[1]), 0);
+        check_equal(keys[0], keys[1], sizeof(keys[0]));
     }
 }
