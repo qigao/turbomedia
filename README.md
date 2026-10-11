@@ -49,11 +49,16 @@ service capability，因此还要求 RulesForge。TurboDB/Orm 不属于当前 Tu
 主要共享依赖包括 FFmpeg（含 `openh264`、`opus`、`xml2` feature）、
 OpenH264、x265、libde265、libvpx、Opus、Salts、SaltsUtils、SaltsNet、CHttp、
 CNet、libSRTP 和 usrsctp。WebRTC PeerConnection、ICE、DTLS-SRTP 与
-DataChannel 由仓库内 TurboMedia 与 SaltsNet 模块实现；安全传输强制使用
-BoringSSL。
+DataChannel 由仓库内 TurboMedia 与 SaltsNet 模块实现。DTLS-SRTP 使用基于 GmSSL
+的私有引擎；BoringSSL 仍用于配置 PEM 兼容、旧 SSL 指针导出接口及独立互通测试。
+具体算法范围和迁移限制见 [WebRTC 架构](webrtc/docs/arch-zh.md)。
 
 SDK 从 `SALTS_ROOT`、`SALTS_UTILS_ROOT`、`SALTSNET_ROOT`、`CHTTP_ROOT`
-各自安装根加载，不显式指定依赖版本；本工程无需 Lua/QuickJS 绑定。
+各自安装根加载；当前要求 Salts 2.3 和 SaltsUtils 4.3。本工程无需 Lua/QuickJS 绑定。
+平台 CI 独立选择两个版本系列中最新的正式 numeric RC/stable 发布，RC 序号无需相同。
+升级后需重新构建并运行原有平台测试；历史组合通过不代表新组合已经验收。
+SaltsNet/CHttp 的 `Salts::Crypto` 链接闭包通过 SaltsUtils `Crypto` 组件解析
+GmSSL，由既有 vcpkg manifest 和共享缓存提供；不能用空 target 或旧 SDK 替代。
 IVR schema 由 `salts-idlc` 重新生成，当前协议要求 RoomService 与 worker 同步升级。
 资源归属、合并边界与回滚说明见
 [SDK 迁移设计](docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md)。

@@ -14,8 +14,7 @@
 #include <tstr.h>
 #include <salts/thread.h>
 #include <cstl/hash_map.h>
-#include <openssl/ssl.h>
-#include <openssl/bio.h>
+#include "gmssl_dtls.h"
 #include <usrsctp.h>
 #include <roaring/roaring.h>
 
@@ -59,11 +58,14 @@ extern "C" {
 
 /* DTLS session state */
 typedef struct {
-    SSL *ssl;
-    BIO *read_bio;
-    BIO *write_bio;
+    turbo_gdtls *engine;
     int handshake_done;
-    cmeta_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
+    int application_ready;
+    int stopped;
+    /* Admission is protected by operation_mutex; engine state by busy. */
+    int busy;
+    int handshake_started;
+    int timer_active;
 } dtls_session_t;
 
 /* SCTP session state */
@@ -78,7 +80,7 @@ struct turbo_dc_peer_s;
 typedef void (*dc_transport_task_fn)(void *arg1, void *arg2);
 
 struct turbo_dc_context_s {
-    SSL_CTX *ssl_ctx;
+    turbo_gdtls_context *dtls_context;
     int is_server;
     int initialized;
     int disable_sctp;
@@ -88,7 +90,7 @@ struct turbo_dc_context_s {
     turbo_dc_error_t last_error;      /* Only for errors before peer exists */
     tstr local_fingerprint;         /* SHA-256 hex fingerprint */
     tstr local_fingerprint_hash;    /* "sha-256" */
-    cmeta_thread_t transport_thread;  /* Dedicated CNet owner thread */
+    cmeta_thread_t transport_thread;  /* CNet progress and DTLS deadline owner */
     int transport_thread_started;
     cmeta_mutex_t transport_mutex;
     cmeta_cond_t transport_cond;
@@ -96,6 +98,7 @@ struct turbo_dc_context_s {
     int transport_stop_requested;
     int transport_command_pending;
     int transport_command_done;
+    uint32_t active_dtls_timers;     /* Protected by transport_mutex */
     dc_transport_task_fn transport_command;
     void *transport_command_arg1;
     void *transport_command_arg2;
@@ -122,7 +125,7 @@ struct turbo_dc_peer_s {
     void *user_data;
     int is_dtls_server;
 
-    /* External callbacks and destruction are serialized by this protocol. */
+    /* Lifetime admission/drain, distinct from DTLS operation serialization. */
     cmeta_mutex_t operation_mutex;
     cmeta_cond_t operation_cond;
     int operation_sync_initialized;
@@ -222,12 +225,17 @@ void dc_set_context_error(turbo_dc_context_t *ctx, turbo_dc_error_code_t code, c
  * ============================================================================ */
 
 int dtls_session_init(turbo_dc_peer_t *peer);
-int dtls_session_init_timer(turbo_dc_peer_t *peer);
-
-void dtls_session_cleanup(turbo_dc_peer_t *peer);
+void dtls_session_poll_timeout(turbo_dc_peer_t *peer);
 void dtls_send_output(turbo_dc_peer_t *peer);
 void dtls_process_handshake(turbo_dc_peer_t *peer);
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len);
+/* Caller holds a peer operation lease (or exclusive create/destroy ownership).
+ * Never call application callbacks, SCTP or transport code while admitted. */
+void dtls_session_lock(turbo_dc_peer_t *peer);
+void dtls_session_unlock(turbo_dc_peer_t *peer);
+void dtls_session_shutdown(turbo_dc_peer_t *peer);
+int dtls_session_is_ready(turbo_dc_peer_t *peer);
+int dtls_write_application_data(turbo_dc_peer_t *peer, const void *data, size_t len);
 
 /* ============================================================================
  * SCTP Session API (internal)

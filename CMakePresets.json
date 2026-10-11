@@ -53,7 +53,7 @@
         {
             "name": "ci-platform-linux-asan-ubsan",
             "inherits": "ci-platform-release",
-            "description": "Draft-only exact installed-SDK Linux ACE/CNet HTTP-FLV ASan+UBSan qualification",
+            "description": "Draft-only installed-SDK Linux ACE/CNet and DTLS ASan+UBSan qualification",
             "binaryDir": "${sourceDir}/build/ci-platform-linux-asan-ubsan",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
@@ -111,7 +111,7 @@
             "configurePreset": "ci-platform-linux-asan-ubsan",
             "filter": {
                 "include": {
-                    "name": "^turbo_media_test_(http_flv_local|transport_http)$"
+                    "name": "^turbo_media_test_(http_flv_local|transport_http|datachannel|dtls_concurrency|gmssl_dtls|peer_connection_lifecycle|peer_connection_readiness)$"
                 }
             },
             "execution": {

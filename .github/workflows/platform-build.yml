@@ -207,14 +207,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid "${{ matrix.rid }}"
 
-      # Only this Draft branch can consume unpublished, exact-source CI
-      # artifacts. Never publish these packages or ship their SHA as a
-      # permanent dependency: released SDK restores remain authoritative.
+      # Only qualified SaltsNet/CHttp SDK candidates are overlaid here on
+      # Draft branches. Salts/SaltsUtils always use the released paired RCs;
+      # never publish or permanently pin these downstream candidates.
       - name: Stage qualified ACE/CNet candidate consumers
         if: >-
           github.event_name == 'pull_request' &&
           (github.head_ref == 'feature/ace-cnet-owner-transport' ||
-           github.head_ref == 'fix/http-flv-owner-drain-recovery')
+           github.head_ref == 'fix/http-flv-owner-drain-recovery' ||
+           github.head_ref == 'diagnostics/whip-sfu-restart-windows')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -243,37 +244,8 @@ jobs:
               root = "CHTTP_ROOT"
             }
           )
-          # The published Salts.Native 2.3.0-rc.1 macOS archive uses GCC
-          # emulated TLS, incompatible with AppleClang C11 TinyTest consumers.
-          # The canonical master CI at this exact source SHA independently
-          # installed, compiled and ran the native-TLS C11 smoke. This is a
-          # macOS-only, draft-only test artifact; NEVER a release substitute.
-          if ($rid -eq "macos-arm64") {
-            $candidates += @{
-              name = "Salts"
-              repo = "qigao/salts"
-              run = "37963767058"
-              artifact = "salts-sdk-macos-tinytest-candidate"
-              expected = "10c17c9c2b0d558addf2490c93cc13aa430906b0"
-              manifest = "salts-sdk-manifest.txt"
-              config = "lib/cmake/Salts/SaltsConfig.cmake"
-              root = "SALTS_ROOT"
-            }
-            # The old SaltsUtils.Native 4.3.0-rc.1 exports another
-            # Salts::Unicode, which CMake correctly rejects. This paired
-            # macOS candidate removed the duplicate and independently passed
-            # 235/235 native CTests plus 2/2 installed C11/C++17 consumers.
-            $candidates += @{
-              name = "SaltsUtils"
-              repo = "qigao/salts-utils"
-              run = "37967646451"
-              artifact = "saltsutils-sdk-macos-unicode-candidate"
-              expected = "997b2768a8f0ffaad48108dbd9c68863f250a270"
-              manifest = "salts-utils-sdk-manifest.txt"
-              config = "lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
-              root = "SALTS_UTILS_ROOT"
-            }
-          }
+          # Salts and SaltsUtils always come from the verified paired
+          # official published SDKs restored above on every RID.
           foreach ($candidate in $candidates) {
             $details = & gh api "repos/$($candidate.repo)/actions/runs/$($candidate.run)" --jq "{head_sha: .head_sha, conclusion: .conclusion}"
             if ($LASTEXITCODE -ne 0) { throw "$($candidate.name): GitHub Actions run metadata unavailable" }
@@ -296,32 +268,6 @@ jobs:
             $expectedLine = "commit=$($candidate.expected)"
             if ($manifestText -notmatch "(?m)^$([regex]::Escape($expectedLine))\r?$") {
               throw "$($candidate.name): SDK install commit differs from its exact source"
-            }
-            if ($candidate.name -eq "Salts") {
-              foreach ($required in @("os=macos", "arch=ARM64", "profile=release")) {
-                if ($manifestText -notmatch "(?m)^$([regex]::Escape($required))\r?$") {
-                  throw "Salts: candidate SDK identity mismatch: $required"
-                }
-              }
-              if (-not (Test-Path -LiteralPath (Join-Path $root "lib/libtinytest.a") -PathType Leaf)) {
-                throw "Salts: native TinyTest archive absent from qualified macOS candidate"
-              }
-            }
-            if ($candidate.name -eq "SaltsUtils") {
-              $qualifiedSalts = "salts_sha=10c17c9c2b0d558addf2490c93cc13aa430906b0"
-              foreach ($required in @($qualifiedSalts, "os=macos", "arch=ARM64",
-                                       "profile=release", "release_qualified=false")) {
-                if ($manifestText -notmatch "(?m)^$([regex]::Escape($required))\r?$") {
-                  throw "SaltsUtils: paired SDK identity mismatch: $required"
-                }
-              }
-              $targets = Join-Path $root "lib/cmake/SaltsUtils/SaltsUtilsTargets.cmake"
-              if (-not (Test-Path -LiteralPath $targets -PathType Leaf)) {
-                throw "SaltsUtils: installed CMake target export absent"
-              }
-              if (Select-String -LiteralPath $targets -SimpleMatch "add_library(Salts::Unicode") {
-                throw "SaltsUtils: duplicate Unicode target remains in candidate export"
-              }
             }
             $root = $root.Replace('\', '/')
             "$($candidate.root)=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -429,6 +375,8 @@ jobs:
 
       - name: Build and test
         shell: pwsh
+        env:
+          TURBOMEDIA_CI_HEAD_REF: ${{ github.head_ref }}
         run: |
           $ErrorActionPreference = "Stop"
           # Only emits bounded stage/status codes on HTTP-FLV upload failure.
@@ -470,6 +418,36 @@ jobs:
           if ("${{ matrix.platform }}" -ne "Android") {
             & ctest --preset ci-platform-test
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
+            # Draft diagnostics only: two additional source-identical real
+            # SFU restarts must both pass. No skipped tests, wider production
+            # deadlines, application replay or automatic settlement retry.
+            if ("${{ matrix.platform }}" -eq "Windows" -and
+                $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+              # CTest normally hides successful test stdout. Capture only the
+              # schema-validated numeric timing and redacted failure counters;
+              # never print verbose SFU/SDP, Authorization or raw test logs.
+              & ctest --preset ci-platform-test -R "^test_ivr_whip_transport$" --repeat "until-fail:2" --output-on-failure --timeout 180 -V 2>&1 |
+                ForEach-Object {
+                  $line = [string]$_
+                  if ($line -match '\[whip-restart-timing\] initial_ms=\d+ shutdown_ms=\d+ terminal_ms=\d+ restart_ms=\d+ whip_ms=\d+ whep_ms=\d+ rtp_ms=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[whip-restart-subtiming\] whip_terminal_ms=\d+ whep_terminal_ms=\d+ whep_stop_ms=\d+ whip_stop_ms=\d+ spawn_ms=\d+ room_ms=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[whip-restart-terminal-events\] whip_since_kill_ms=\d+ whep_since_kill_ms=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[whip-restart\] stage=(?:initial-whip|initial-whep|initial-rtp|post-sfu-restart|post-sfu-restart-whep|post-sfu-restart-rtp|post-sfu-stop-whip-terminal|post-sfu-stop-whep-terminal|post-sfu-restart-room) sfu_generation=\d+ child_alive=[01] whip_connected_now=[01] whep_connected_now=[01] whip_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} whep_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} child_log_lines=\d+ ice=\d+ dtls=\d+ errors=\d+') {
+                    # Only the schema-validated, token-free counters can escape.
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[sfu-log-summary\] available=[01] chunks=\d+ ice=\d+ dtls=\d+ errors=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[sfu-provision\] attach_failed=1 attempts=10 status_class=[0-5]') {
+                    Write-Host $Matches[0]
+                  }
+                }
+              if ($LASTEXITCODE -ne 0) {
+                throw "Windows SFU/WHIP restart repeatability gate failed"
+              }
+            }
           }
 
       # Separate test-only build: compile TurboMedia wrappers with ASan/UBSan
@@ -479,7 +457,8 @@ jobs:
         if: >-
           matrix.platform == 'Linux' &&
           github.event_name == 'pull_request' &&
-          github.head_ref == 'fix/http-flv-owner-drain-recovery'
+          (github.head_ref == 'fix/http-flv-owner-drain-recovery' ||
+           github.head_ref == 'diagnostics/whip-sfu-restart-windows')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"

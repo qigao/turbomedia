@@ -13,12 +13,12 @@ sudo apt-get install cmake ninja-build
 # macOS
 brew install cmake ninja
 
-# Windows (vcpkg)
-vcpkg install boringssl usrsctp
+# Windows: use the repository CMake user presets and vcpkg manifest below.
 ```
 
-The project requires BoringSSL on every platform. Do not install or substitute
-OpenSSL; the CMake presets resolve BoringSSL through the vcpkg manifest.
+The presets and manifest restore GmSSL for DTLS-SRTP and BoringSSL for PEM/legacy
+API compatibility and independent tests. Do not substitute OpenSSL for the
+BoringSSL compatibility targets. See [algorithm limits](arch-en.md#gmssl-migration-boundary).
 
 ### Build
 

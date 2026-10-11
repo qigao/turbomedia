@@ -36,6 +36,32 @@ target_link_libraries(
 
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
+turbo_media_add_webrtc_base_test(turbo_media_test_dc_certificate
+  test_dc_certificate.cpp ../src/dc_certificate.cpp ../src/dc_certificate_gmssl.cpp
+  ../src/dc_identity.cpp ../src/gmssl_dtls.c)
+target_link_libraries(turbo_media_test_dc_certificate PRIVATE OpenSSL::SSL GmSSL::GmSSL)
+turbo_media_add_webrtc_base_test(turbo_media_test_gmssl_dtls
+  test_gmssl_dtls.cpp ../src/gmssl_dtls.c
+  ../src/dc_certificate.cpp ../src/dc_certificate_gmssl.cpp)
+target_link_libraries(turbo_media_test_gmssl_dtls PRIVATE OpenSSL::SSL GmSSL::GmSSL)
+if(NOT ANDROID)
+  set_tests_properties(turbo_media_test_gmssl_dtls PROPERTIES TIMEOUT 60)
+endif()
+# Internal ownership barriers require private engine/admission functions, which
+# are intentionally absent from the Windows DLL ABI. Compile the production
+# source list into this formal test; public integration tests still use the DLL.
+turbo_media_add_webrtc_base_test(turbo_media_test_dtls_concurrency test_dtls_concurrency.c)
+foreach(_dc_source IN LISTS TURBO_MEDIA_DATACHANNEL_SOURCES)
+  target_sources(turbo_media_test_dtls_concurrency PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
+endforeach()
+get_target_property(_dc_test_libraries turbo_media_datachannel LINK_LIBRARIES)
+target_link_libraries(turbo_media_test_dtls_concurrency PRIVATE ${_dc_test_libraries})
+unset(_dc_test_libraries)
+unset(_dc_source)
+if(NOT ANDROID)
+  set_tests_properties(turbo_media_test_dtls_concurrency PROPERTIES TIMEOUT 30)
+endif()
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
 
@@ -171,6 +197,16 @@ turbo_media_add_rtc_test(turbo_media_test_jitter_buffer test_jitter_buffer.c)
 turbo_media_add_rtc_test(turbo_media_test_twcc test_twcc.c)
 turbo_media_add_rtc_test(turbo_media_test_nack test_nack.c)
 turbo_media_add_rtc_test(turbo_media_test_media_engine test_media_engine.c)
+turbo_media_add_rtc_test(turbo_media_test_peer_connection_lifecycle
+                         test_peer_connection_lifecycle.c)
+turbo_media_add_rtc_test(turbo_media_test_peer_connection_readiness
+                         test_peer_connection_readiness.c)
+target_sources(turbo_media_test_peer_connection_readiness PRIVATE ../src/salts_ice_owner.c)
+target_link_libraries(turbo_media_test_peer_connection_readiness PRIVATE SaltsNet::ICE)
+if(NOT ANDROID)
+  set_tests_properties(turbo_media_test_peer_connection_lifecycle
+                      turbo_media_test_peer_connection_readiness PROPERTIES TIMEOUT 30)
+endif()
 turbo_media_add_rtc_test(turbo_media_test_speech_integration
                          test_speech_integration.c)
 turbo_media_add_rtc_test(turbo_media_test_recognition_integration

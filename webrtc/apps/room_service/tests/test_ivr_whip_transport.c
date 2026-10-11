@@ -12,8 +12,10 @@
 #include "ivr_whip_transport.h"
 #include "tinytest.h"
 #include <stdio.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifndef TEST_BIN_DIR
 #define TEST_BIN_DIR "."
@@ -34,6 +36,7 @@
 #include <ws2tcpip.h>
 typedef HANDLE proc_handle_t;
 static void proc_sleep(unsigned int ms) { Sleep(ms); }
+static uint64_t test_monotonic_ms(void) { return (uint64_t)GetTickCount64(); }
 #else
 #include <unistd.h>
 #include <sys/socket.h>
@@ -44,6 +47,11 @@ static void proc_sleep(unsigned int ms) { Sleep(ms); }
 #include <sys/wait.h>
 typedef pid_t proc_handle_t;
 static void proc_sleep(unsigned int ms) { usleep(ms * 1000); }
+static uint64_t test_monotonic_ms(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
 #endif
 
 typedef struct {
@@ -133,41 +141,59 @@ static int spawn_with_stdout(const char *exe, const char *const *args,
 #endif
 }
 
-static void kill_child(child_t *child) {
-    if (!child || child->handle == NULL) {
-        return;
+/* A restarted SFU must never reuse the same TCP/UDP port while the old
+ * child is still live. Retain its handle on a failed termination barrier so
+ * a subsequent cleanup remains possible; join/port readiness are distinct.
+ */
+static int kill_child(child_t *child) {
+    if (!child || child->handle == NULL) return 0;
+#ifdef _WIN32
+    DWORD outcome = WaitForSingleObject(child->handle, 0);
+    if (outcome == WAIT_TIMEOUT) {
+        (void)TerminateProcess(child->handle, 0);
+        outcome = WaitForSingleObject(child->handle, 5000);
     }
-#ifdef _WIN32
-    TerminateProcess(child->handle, 0);
-    WaitForSingleObject(child->handle, 5000);
+    if (outcome != WAIT_OBJECT_0) return -1;
     CloseHandle(child->handle);
-#else
-    kill(child->handle, SIGKILL);
-    (void)waitpid(child->handle, NULL, 0);
-#endif
-#ifdef _WIN32
     child->handle = NULL;
 #else
+    pid_t collected;
+    if (kill(child->handle, SIGKILL) != 0 && errno != ESRCH) return -1;
+    do {
+        collected = waitpid(child->handle, NULL, 0);
+    } while (collected < 0 && errno == EINTR);
+    if (collected != child->handle && !(collected < 0 && errno == ECHILD))
+        return -1;
     child->handle = 0;
 #endif
     free(child->stdout_path);
     child->stdout_path = NULL;
+    return 0;
 }
 
-static void print_child_output(const char *path) {
+/* Failure-only SFU diagnostics are bounded and classified. Never emit raw
+ * child output: the SFU trace may contain SDP, credentials or user media.
+ */
+static void print_child_log_counts(const char *path) {
     FILE *stream;
     char line[512];
-    if (!path) {
-        return;
-    }
+    unsigned chunks = 0u, ice = 0u, dtls = 0u, errors = 0u;
+    if (!path) return;
     stream = fopen(path, "rb");
     if (!stream) {
+        fprintf(stderr, "[sfu-log-summary] available=0 chunks=0 ice=0 dtls=0 errors=0\n");
         return;
     }
-    while (fgets(line, sizeof(line), stream)) {
-        fputs(line, stderr);
+    while (chunks < 2048u && fgets(line, sizeof(line), stream)) {
+        ++chunks;
+        if (strstr(line, "ICE") || strstr(line, "ice")) ++ice;
+        if (strstr(line, "DTLS") || strstr(line, "dtls")) ++dtls;
+        if (strstr(line, "ERROR") || strstr(line, "error")) ++errors;
     }
     fclose(stream);
+    fprintf(stderr,
+            "[sfu-log-summary] available=1 chunks=%u ice=%u dtls=%u errors=%u\n",
+            chunks, ice, dtls, errors);
 }
 
 static int http_post(const char *path, const char *token, const char *body,
@@ -269,6 +295,7 @@ static child_t g_sfu;
 static char g_cfg_path[1024];
 static char g_out_path[1024];
 static int g_seq = 0;
+static unsigned g_spawn_generation = 0;
 static ivr_whip_transport_t *g_transport = NULL;
 static ivr_whep_transport_t *g_whep_transport = NULL;
 static uint64_t g_whep_audio_frames = 0;
@@ -287,6 +314,10 @@ typedef struct {
     unsigned input_stalled;
     unsigned invalid_identity;
     uint64_t last_generation;
+    int last_state;
+    int last_error;
+    /* Test-only callback event time, protected by g_media_state_lock. */
+    uint64_t first_terminal_at_ms;
 } media_state_counts_t;
 static media_state_counts_t g_whip_states;
 static media_state_counts_t g_whep_states;
@@ -327,7 +358,9 @@ static int spawn_sfu(void) {
         return 0;
     }
     snprintf(bin, sizeof(bin), "%s/%s", TEST_BIN_DIR, SFU_NODE_BIN);
-    return spawn_with_stdout(bin, args, g_out_path, &g_sfu) == 0;
+    if (spawn_with_stdout(bin, args, g_out_path, &g_sfu) != 0) return 0;
+    ++g_spawn_generation;
+    return 1;
 }
 
 static int provision_room(void) {
@@ -344,7 +377,17 @@ static int provision_room(void) {
         }
         proc_sleep(500);
     }
-    fprintf(stderr, "last attach_room response:\n%s\n", response);
+    /* Only classify the HTTP status. The raw control-plane response may
+     * contain sensitive headers or media negotiation data.
+     */
+    int http_status = 0;
+    unsigned status_class = 0u;
+    if (sscanf(response, "HTTP/%*u.%*u %d", &http_status) == 1 &&
+        http_status >= 100 && http_status <= 599) {
+        status_class = (unsigned)http_status / 100u;
+    }
+    fprintf(stderr, "[sfu-provision] attach_failed=1 attempts=10 status_class=%u\n",
+            status_class);
     return 0;
 }
 
@@ -525,8 +568,6 @@ static void on_media_state(void *context, const ivr_call_ref_t *call,
                            uint64_t attempt_generation,
                            ivr_media_link_state_t state, int error_code) {
     media_state_counts_t *counts = (media_state_counts_t *)context;
-    (void)call;
-    (void)error_code;
     if (!counts) {
         return;
     }
@@ -537,6 +578,8 @@ static void on_media_state(void *context, const ivr_call_ref_t *call,
         return;
     }
     counts->last_generation = attempt_generation;
+    counts->last_state = (int)state;
+    counts->last_error = error_code;
     if (error_code == IVR_MEDIA_ERROR_INPUT_STALLED) {
         counts->input_stalled++;
     } else {
@@ -548,12 +591,19 @@ static void on_media_state(void *context, const ivr_call_ref_t *call,
             case IVR_MEDIA_LINK_CLOSED: counts->closed++; break;
             default: break;
         }
+        if ((state == IVR_MEDIA_LINK_DISCONNECTED ||
+             state == IVR_MEDIA_LINK_FAILED ||
+             state == IVR_MEDIA_LINK_CLOSED) &&
+            counts->first_terminal_at_ms == 0u) {
+            counts->first_terminal_at_ms = test_monotonic_ms();
+        }
     }
     ivr_mutex_unlock(&g_media_state_lock);
 }
 
 void setUp(void) {
     memset(&g_sfu, 0, sizeof(g_sfu));
+    g_spawn_generation = 0;
     memset(&g_whip_states, 0, sizeof(g_whip_states));
     memset(&g_whep_states, 0, sizeof(g_whep_states));
     memset(&g_dtmf_input, 0, sizeof(g_dtmf_input));
@@ -590,7 +640,7 @@ void setUp(void) {
     int room_ready = provision_room();
     if (!room_ready) {
         kill_child(&g_sfu);
-        print_child_output(g_out_path);
+        print_child_log_counts(g_out_path);
     }
     check_true(room_ready);
 
@@ -660,7 +710,7 @@ void test_whip_publish_connect_and_send_audio(void) {
         }
     }
     if (!connected) {
-        print_child_output(g_out_path);
+        print_child_log_counts(g_out_path);
         check(0, "%s", ("WHIP ICE/DTLS transport did not connect"));
     }
     media_state_counts_t whip_states = media_state_snapshot(&g_whip_states);
@@ -883,10 +933,64 @@ void test_whep_subscribe_connect_and_stop(void) {
     check_false(ivr_whep_transport_connected(g_whep_transport));
 }
 
+/* Bounded, secret-free failure evidence: no raw SDP, credentials,
+ * Authorization headers, media payload, or full SFU output is emitted.
+ */
+static int sfu_process_alive(void) {
+#ifdef _WIN32
+    DWORD exit_code = 0;
+    return g_sfu.handle &&
+           GetExitCodeProcess(g_sfu.handle, &exit_code) &&
+           exit_code == STILL_ACTIVE;
+#else
+    return g_sfu.handle > 0 &&
+           (kill(g_sfu.handle, 0) == 0 || errno == EPERM);
+#endif
+}
+
+static void print_whip_restart_failure_snapshot(const char *stage) {
+    media_state_counts_t whip = media_state_snapshot(&g_whip_states);
+    media_state_counts_t whep = media_state_snapshot(&g_whep_states);
+    unsigned processed = 0, ice_lines = 0, dtls_lines = 0, error_lines = 0;
+    char line[512];
+    FILE *out = fopen(g_out_path, "rb");
+    if (out) {
+        while (processed < 2048u && fgets(line, sizeof(line), out)) {
+            ++processed;
+            if (strstr(line, "ICE") || strstr(line, "ice")) ++ice_lines;
+            if (strstr(line, "DTLS") || strstr(line, "dtls")) ++dtls_lines;
+            if (strstr(line, "ERROR") || strstr(line, "error")) ++error_lines;
+        }
+        fclose(out);
+    }
+    fprintf(stderr,
+            "[whip-restart] stage=%s sfu_generation=%u child_alive=%d "
+            "whip_connected_now=%d whep_connected_now=%d "
+            "whip_states={connecting:%u,connected:%u,disconnected:%u,"
+            "failed:%u,closed:%u,identity_invalid:%u,attempt:%llu,state:%d,error:%d} "
+            "whep_states={connecting:%u,connected:%u,disconnected:%u,"
+            "failed:%u,closed:%u,identity_invalid:%u,attempt:%llu,state:%d,error:%d} "
+            "child_log_lines=%u ice=%u dtls=%u errors=%u\n",
+            stage, g_spawn_generation, sfu_process_alive(),
+            ivr_whip_transport_connected(g_transport),
+            ivr_whep_transport_connected(g_whep_transport),
+            whip.connecting, whip.connected, whip.disconnected,
+            whip.failed, whip.closed, whip.invalid_identity,
+            (unsigned long long)whip.last_generation,
+            whip.last_state, whip.last_error,
+            whep.connecting, whep.connected, whep.disconnected,
+            whep.failed, whep.closed, whep.invalid_identity,
+            (unsigned long long)whep.last_generation,
+            whep.last_state, whep.last_error,
+            processed, ice_lines, dtls_lines, error_lines);
+}
+
 void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     ivr_media_transport_t publisher;
     media_state_counts_t whip_before;
     media_state_counts_t whep_before;
+    media_state_counts_t whip_stopped;
+    media_state_counts_t whep_stopped;
     media_state_counts_t whip_after;
     media_state_counts_t whep_after;
     unsigned whip_terminal_before;
@@ -894,17 +998,39 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     uint64_t frames_before_restart;
     uint64_t frames_after_reconnect;
     uint32_t publisher_ssrc;
+    uint64_t stamp = test_monotonic_ms();
+    uint64_t initial_ms, shutdown_ms, termination_ms, restart_ms;
+    uint64_t whip_ms, whep_ms, rtp_ms;
+    uint64_t whip_terminal_ms, whep_terminal_ms;
+    uint64_t whep_stop_ms, whip_stop_ms, spawn_ms, room_ms;
+    uint64_t phase_stamp;
+    uint64_t kill_started_ms, whip_terminal_since_kill_ms;
+    uint64_t whep_terminal_since_kill_ms;
 
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
-    check_true(wait_whip_connected());
+    /* #160's original line 899 failed here, before kill_child. Capture the
+     * live first-generation state before fatal-check teardown closes ICE. */
+    {
+        const int connected = wait_whip_connected();
+        if (!connected) print_whip_restart_failure_snapshot("initial-whip");
+        check_true(connected);
+    }
     publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
     check_true(publisher_ssrc != 0u);
     check_true(configure_audio_route(publisher_ssrc));
     check_equal(ivr_whep_transport_start(g_whep_transport, &g_call,
                                          "call-42-rx"), IVR_OK);
-    check_true(wait_whep_connected());
+    {
+        const int connected = wait_whep_connected();
+        if (!connected) print_whip_restart_failure_snapshot("initial-whep");
+        check_true(connected);
+    }
     check_true(send_audio_frames(30u));
-    check_true(wait_whep_frames_greater_than(0u));
+    {
+        const int received = wait_whep_frames_greater_than(0u);
+        if (!received) print_whip_restart_failure_snapshot("initial-rtp");
+        check_true(received);
+    }
 
     whip_before = media_state_snapshot(&g_whip_states);
     whep_before = media_state_snapshot(&g_whep_states);
@@ -912,31 +1038,102 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     whep_terminal_before = media_terminal_count(&g_whep_states);
     frames_before_restart = g_whep_audio_frames;
 
-    kill_child(&g_sfu);
-    check_true(wait_for_media_terminal(&g_whip_states, whip_terminal_before));
-    check_true(wait_for_media_terminal(&g_whep_states, whep_terminal_before));
+    /* A completed process stop, rather than a best-effort kill request, is
+     * the barrier before reusing the same SFU control/media ports.
+     */
+    /* Observe both transport callbacks relative to one SFU stop epoch.
+     * The subsequent sequential waits remain unchanged and are not
+     * independent failure-detection latencies. */
+    ivr_mutex_lock(&g_media_state_lock);
+    g_whip_states.first_terminal_at_ms = 0u;
+    g_whep_states.first_terminal_at_ms = 0u;
+    ivr_mutex_unlock(&g_media_state_lock);
+    initial_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
+    kill_started_ms = stamp;
+    check_equal(kill_child(&g_sfu), 0);
+    shutdown_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
+    phase_stamp = test_monotonic_ms();
+    {
+        const int reached = wait_for_media_terminal(
+            &g_whip_states, whip_terminal_before);
+        if (!reached) print_whip_restart_failure_snapshot(
+            "post-sfu-stop-whip-terminal");
+        check_true(reached);
+    }
+    whip_terminal_ms = test_monotonic_ms() - phase_stamp;
+    phase_stamp = test_monotonic_ms();
+    {
+        const int reached = wait_for_media_terminal(
+            &g_whep_states, whep_terminal_before);
+        if (!reached) print_whip_restart_failure_snapshot(
+            "post-sfu-stop-whep-terminal");
+        check_true(reached);
+    }
+    whep_terminal_ms = test_monotonic_ms() - phase_stamp;
     check_false(ivr_whip_transport_connected(g_transport));
     check_false(ivr_whep_transport_connected(g_whep_transport));
+    whip_stopped = media_state_snapshot(&g_whip_states);
+    whep_stopped = media_state_snapshot(&g_whep_states);
+    whip_terminal_since_kill_ms =
+        whip_stopped.first_terminal_at_ms >= kill_started_ms
+            ? whip_stopped.first_terminal_at_ms - kill_started_ms : 0u;
+    whep_terminal_since_kill_ms =
+        whep_stopped.first_terminal_at_ms >= kill_started_ms
+            ? whep_stopped.first_terminal_at_ms - kill_started_ms : 0u;
+    termination_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
 
     /* Local teardown completes, but the dead SFU cannot acknowledge DELETE.
        Preserve that remote-side uncertainty as an explicit failure; the same
        transport must still be restartable below. */
+    phase_stamp = test_monotonic_ms();
     check_equal((int)(ivr_whep_transport_stop(g_whep_transport, &g_call)),
                 (int)(-1));
+    whep_stop_ms = test_monotonic_ms() - phase_stamp;
+    phase_stamp = test_monotonic_ms();
     ivr_whip_transport_get_transport(g_transport, &publisher);
     check_not_null(publisher.stop);
     check_equal((int)(publisher.stop(publisher.context, &g_call)), (int)(-1));
+    whip_stop_ms = test_monotonic_ms() - phase_stamp;
 
+    phase_stamp = test_monotonic_ms();
     check_true(spawn_sfu());
-    check_true(provision_room());
+    check_equal(g_spawn_generation, 2u);
+    check_true(sfu_process_alive());
+    spawn_ms = test_monotonic_ms() - phase_stamp;
+    phase_stamp = test_monotonic_ms();
+    {
+        const int room_ready = provision_room();
+        if (!room_ready) print_whip_restart_failure_snapshot(
+            "post-sfu-restart-room");
+        check_true(room_ready);
+    }
+    check_true(sfu_process_alive());
+    room_ms = test_monotonic_ms() - phase_stamp;
+    restart_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
     check_equal(ivr_whip_transport_start(g_transport, &g_call), IVR_OK);
-    check_true(wait_whip_connected());
+    {
+        const int reconnected = wait_whip_connected();
+        if (!reconnected) print_whip_restart_failure_snapshot("post-sfu-restart");
+        check_true(reconnected);
+    }
+    whip_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
     publisher_ssrc = ivr_whip_transport_ssrc(g_transport);
     check_true(publisher_ssrc != 0u);
     check_true(configure_audio_route(publisher_ssrc));
     check_equal(ivr_whep_transport_start(g_whep_transport, &g_call,
                                          "call-42-rx"), IVR_OK);
-    check_true(wait_whep_connected());
+    {
+        const int reconnected = wait_whep_connected();
+        if (!reconnected) print_whip_restart_failure_snapshot("post-sfu-restart-whep");
+        check_true(reconnected);
+    }
+    whep_ms = test_monotonic_ms() - stamp;
+    stamp = test_monotonic_ms();
 
     whip_after = media_state_snapshot(&g_whip_states);
     whep_after = media_state_snapshot(&g_whep_states);
@@ -950,7 +1147,30 @@ void test_sfu_restart_reconnects_same_call_and_resumes_rtp(void) {
     frames_after_reconnect = g_whep_audio_frames;
     check_true(frames_after_reconnect >= frames_before_restart);
     check_true(send_audio_frames(30u));
-    check_true(wait_whep_frames_greater_than(frames_after_reconnect));
+    {
+        const int resumed = wait_whep_frames_greater_than(frames_after_reconnect);
+        if (!resumed) print_whip_restart_failure_snapshot("post-sfu-restart-rtp");
+        check_true(resumed);
+    }
+    rtp_ms = test_monotonic_ms() - stamp;
+    fprintf(stderr, "[whip-restart-timing] initial_ms=%llu shutdown_ms=%llu terminal_ms=%llu restart_ms=%llu whip_ms=%llu whep_ms=%llu rtp_ms=%llu\n",
+            (unsigned long long)initial_ms, (unsigned long long)shutdown_ms,
+            (unsigned long long)termination_ms, (unsigned long long)restart_ms,
+            (unsigned long long)whip_ms, (unsigned long long)whep_ms,
+            (unsigned long long)rtp_ms);
+    fprintf(stderr,
+            "[whip-restart-subtiming] whip_terminal_ms=%llu whep_terminal_ms=%llu "
+            "whep_stop_ms=%llu whip_stop_ms=%llu spawn_ms=%llu room_ms=%llu\n",
+            (unsigned long long)whip_terminal_ms,
+            (unsigned long long)whep_terminal_ms,
+            (unsigned long long)whep_stop_ms,
+            (unsigned long long)whip_stop_ms,
+            (unsigned long long)spawn_ms,
+            (unsigned long long)room_ms);
+    fprintf(stderr,
+            "[whip-restart-terminal-events] whip_since_kill_ms=%llu whep_since_kill_ms=%llu\n",
+            (unsigned long long)whip_terminal_since_kill_ms,
+            (unsigned long long)whep_terminal_since_kill_ms);
     check_true(ivr_whip_transport_connected(g_transport));
     check_true(ivr_whep_transport_connected(g_whep_transport));
 

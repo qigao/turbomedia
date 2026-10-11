@@ -48,7 +48,7 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
     struct sctp_status status;
     socklen_t status_len = sizeof(status);
 
-    if (!peer || !peer->sctp.socket || !peer->dtls.handshake_done) {
+    if (!peer || !peer->sctp.socket || !dtls_session_is_ready(peer)) {
         return;
     }
 
@@ -111,22 +111,21 @@ int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, 
     if (!peer || dc_peer_acquire(peer) != 0) {
         return -1;
     }
-    if (!peer->dtls.handshake_done) {
+    if (!dtls_session_is_ready(peer)) {
         TLOG_WARNF("SCTP outbound dropped before DTLS handshake: bytes={}",
                   length);
         dc_peer_release(peer);
         return -1;
     }
 
-    int written = SSL_write(peer->dtls.ssl, data, (int)length);
+    int written = dtls_write_application_data(peer, data, length);
     if (written <= 0) {
-        TLOG_ERRORF("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
+        TLOG_ERRORF("SCTP outbound DTLS write failed bytes={} ret={} errno={}",
                    length, written, errno);
         dc_peer_release(peer);
         return -1;
     }
 
-    dtls_send_output(peer);
     dc_peer_release(peer);
     return 0;
 }

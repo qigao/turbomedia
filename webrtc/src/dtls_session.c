@@ -1,357 +1,226 @@
-/**
- * dtls_session.c - DTLS session management wrapper
- *
- * Wraps BoringSSL DTLS for WebRTC DataChannel usage.
- * Handles DTLS handshake and encryption/decryption.
- */
-
+/** DTLS session owner: serialized GmSSL engine, callbacks outside admission. */
 #include "turbo_datachannel_internal.h"
-#include <openssl/err.h>
-#include <platform.h>
+#include <cmeta_crypto.h>
+#include <salts/clock.h>
+#include <string.h>
 #include "tlog.h"
-#include <stb_sprintf.h>
 
-/* ============================================================================
- * DTLS Retransmission Timer
- * ============================================================================ */
-
-static void dtls_handle_error(turbo_dc_peer_t *peer, int ret);
-
-static void on_dtls_retransmit_timer(cmeta_timer_t *timer) {
-    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)cmeta_timer_get_data(timer);
-    if (!peer || dc_peer_acquire(peer) != 0) {
-        cmeta_timer_stop(timer);
-        return;
-    }
-
-    if (peer->dtls.handshake_done) {
-        cmeta_timer_stop(timer);
-        dc_peer_release(peer);
-        return;
-    }
-
-    /* Handle DTLS timeout - triggers retransmission */
-    DTLSv1_handle_timeout(peer->dtls.ssl);
-    dtls_send_output(peer);
-
-    /* Schedule next timeout if handshake still in progress */
-    if (!peer->dtls.handshake_done) {
-        struct timeval tv;
-        if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-            uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-            if (timeout_ms == 0) timeout_ms = 1;  /* Minimum 1ms */
-            cmeta_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
-        }
-    }
-
-    dc_peer_release(peer);
+static void dtls_set_timer_active(turbo_dc_peer_t *peer, int active) {
+    if (peer->dtls.timer_active == active) return;
+    cmeta_mutex_lock(&peer->ctx->transport_mutex);
+    peer->dtls.timer_active = active;
+    if (active) ++peer->ctx->active_dtls_timers;
+    else --peer->ctx->active_dtls_timers;
+    cmeta_cond_broadcast(&peer->ctx->transport_cond);
+    cmeta_mutex_unlock(&peer->ctx->transport_mutex);
 }
 
-static void dtls_schedule_retransmit(turbo_dc_peer_t *peer) {
-    if (!peer->dtls.retransmit_timer || peer->dtls.handshake_done) {
+void dtls_session_lock(turbo_dc_peer_t *peer) {
+    cmeta_mutex_lock(&peer->operation_mutex);
+    while (peer->dtls.busy) {
+        cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+    }
+    peer->dtls.busy = 1;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+void dtls_session_unlock(turbo_dc_peer_t *peer) {
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->dtls.busy = 0;
+    cmeta_cond_broadcast(&peer->operation_cond);
+    cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+/* Under admission: commit terminal status and publish timer demand together. */
+static void dtls_commit_result(turbo_dc_peer_t *peer, int result) {
+    if (result) peer->dtls.stopped = 1;
+    dtls_set_timer_active(peer, !peer->dtls.stopped &&
+        turbo_gdtls_deadline(peer->dtls.engine) != 0);
+}
+
+static void dtls_report_error(turbo_dc_peer_t *peer, int result) {
+    if (!result) return;
+    if (result == TURBO_GDTLS_CLOSED) {
+        dc_notify_state(peer, TURBO_DC_STATE_CLOSED);
         return;
     }
-
-    struct timeval tv;
-    if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-        uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-        if (timeout_ms == 0) timeout_ms = 1;
-        cmeta_timer_start(peer->dtls.retransmit_timer, on_dtls_retransmit_timer, timeout_ms, 0);
+    const char *detail = "DTLS protocol failure";
+    turbo_dc_error_code_t code = TURBO_DC_ERROR_DTLS_HANDSHAKE;
+    switch (result) {
+        case TURBO_GDTLS_AUTH:
+            code = TURBO_DC_ERROR_DTLS_FINGERPRINT;
+            detail = "DTLS identity or handshake authentication failed";
+            break;
+        case TURBO_GDTLS_NOMEM: detail = "DTLS allocation failed"; break;
+        case TURBO_GDTLS_CAPACITY: detail = "DTLS capacity exceeded"; break;
+        case TURBO_GDTLS_TIMEOUT: detail = "DTLS handshake deadline expired"; break;
+        case TURBO_GDTLS_INVALID: detail = "DTLS input or session configuration invalid"; break;
+        default: break;
     }
+    dc_fail_peer(peer, code, detail);
 }
 
-static void dtls_stop_retransmit_timer(turbo_dc_peer_t *peer) {
-    if (peer->dtls.retransmit_timer) {
-        cmeta_timer_stop(peer->dtls.retransmit_timer);
+/* The public setter validates and canonicalizes the colon-separated pin.
+ * Create lazily: signaling can select the role/pin after peer allocation. */
+static int dtls_start_locked(turbo_dc_peer_t *peer) {
+    if (peer->dtls.handshake_started) return 0;
+    peer->dtls.handshake_started = 1;
+    if (!peer->remote_fingerprint || tstr_len(peer->remote_fingerprint) != 95)
+        return TURBO_GDTLS_AUTH;
+    uint8_t expected[32];
+    for (size_t i = 0; i < sizeof(expected); ++i) {
+        unsigned char high = (unsigned char)peer->remote_fingerprint[i * 3];
+        unsigned char low = (unsigned char)peer->remote_fingerprint[i * 3 + 1];
+        high = high <= '9' ? high - '0' : high - 'A' + 10;
+        low = low <= '9' ? low - '0' : low - 'A' + 10;
+        expected[i] = (uint8_t)((high << 4) | low);
     }
-}
-
-static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
-    /* Once DTLS finishes, the same datagram can already contain SCTP payload.
-     * Drain any pending application records immediately instead of waiting for
-     * a later network event that may never arrive. */
-    size_t buf_size;
-    char *decrypted;
-    int decrypted_len;
-
-    if (!peer || !peer->dtls.handshake_done) {
-        return;
-    }
-
-    buf_size = peer->ctx->dtls_mtu > DTLS_MTU_DEFAULT
-             ? peer->ctx->dtls_mtu
-             : DTLS_MTU_DEFAULT;
-    decrypted = (char *)alloca(buf_size);
-
-    while ((decrypted_len = SSL_read(peer->dtls.ssl, decrypted, (int)buf_size)) > 0) {
-        usrsctp_conninput(peer, decrypted, decrypted_len, 0);
-        sctp_poll_status(peer, "post-conninput");
-    }
-
-    if (decrypted_len < 0) {
-        int ssl_error = SSL_get_error(peer->dtls.ssl, decrypted_len);
-        if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) {
-            dtls_handle_error(peer, decrypted_len);
-        }
-    }
-}
-
-/* ============================================================================
- * DTLS Session API
- * ============================================================================ */
-
-static int dtls_verify_callback(int preverify_ok, X509_STORE_CTX *ctx) {
-    /* Always return 1 to allow the handshake to proceed with self-signed certs.
-     * We verify the fingerprint manually in verify_remote_fingerprint().
-     * (preverify_ok is usually 0 for self-signed certs because CA is not known)
-     */
-    (void)preverify_ok;
-    (void)ctx;
-    return 1;
+    static const uint16_t profiles[] = {1, 2, 7, 8};
+    peer->dtls.engine = turbo_gdtls_create(peer->ctx->dtls_context,
+        peer->is_dtls_server, peer->ctx->dtls_mtu, expected, profiles,
+        sizeof(profiles) / sizeof(profiles[0]));
+    if (!peer->dtls.engine) return TURBO_GDTLS_NOMEM;
+    return turbo_gdtls_start(peer->dtls.engine, cmeta_monotonic_ms());
 }
 
 int dtls_session_init(turbo_dc_peer_t *peer) {
-    peer->dtls.ssl = SSL_new(peer->ctx->ssl_ctx);
-    if (!peer->dtls.ssl) {
-        dc_set_peer_error(peer, TURBO_DC_ERROR_SSL_CREATE, NULL);
-        return -1;
-    }
-
-    peer->dtls.read_bio = BIO_new(BIO_s_mem());
-    peer->dtls.write_bio = BIO_new(BIO_s_mem());
-    if (!peer->dtls.read_bio || !peer->dtls.write_bio) {
-        if (peer->dtls.read_bio) BIO_free(peer->dtls.read_bio);
-        if (peer->dtls.write_bio) BIO_free(peer->dtls.write_bio);
-        SSL_free(peer->dtls.ssl);
-        peer->dtls.ssl = NULL;
-        dc_set_peer_error(peer, TURBO_DC_ERROR_SSL_CREATE, "BIO allocation failed");
-        return -1;
-    }
-    BIO_set_mem_eof_return(peer->dtls.read_bio, -1);
-    BIO_set_mem_eof_return(peer->dtls.write_bio, -1);
-
-    SSL_set_bio(peer->dtls.ssl, peer->dtls.read_bio, peer->dtls.write_bio);
-
-    if (peer->is_dtls_server) {
-        SSL_set_accept_state(peer->dtls.ssl);
-    } else {
-        SSL_set_connect_state(peer->dtls.ssl);
-    }
- 
-    /* Request remote certificate for fingerprint verification */
-    /* Verify callback must return 1 to allow self-signed certs */
-    SSL_set_verify(peer->dtls.ssl, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, dtls_verify_callback);
-
-    /* Enforce MTU to prevent BoringSSL from exceeding the transport buffer. */
-    long mtu = peer->ctx->dtls_mtu ? peer->ctx->dtls_mtu : DTLS_MTU_DEFAULT;
-    SSL_set_mtu(peer->dtls.ssl, mtu);
-
-    /* Timer is created later for ICE mode via dtls_session_init_timer() */
-    peer->dtls.retransmit_timer = NULL;
-
-    return 0;
+    /* The context is already validated; the session awaits the signaling pin. */
+    return peer->ctx->dtls_context ? 0 : -1;
 }
 
-int dtls_session_init_timer(turbo_dc_peer_t *peer) {
-    if (!peer) return -1;
-
-    if (peer->dtls.retransmit_timer) return 0;  /* Already initialized */
-
-    /* Use the backend-native timer abstraction instead of reaching for libuv. */
-    peer->dtls.retransmit_timer = cmeta_timer_create(NULL);
-
-    if (peer->dtls.retransmit_timer) {
-        cmeta_timer_set_data(peer->dtls.retransmit_timer, peer);
-        return 0;
-    }
-    return -1;
+void dtls_session_shutdown(turbo_dc_peer_t *peer) {
+    dtls_session_lock(peer);
+    peer->dtls.stopped = 1;
+    dtls_set_timer_active(peer, 0);
+    /* Local shutdown has historically suppressed network callbacks. Destroy
+     * here also wipes incomplete-handshake secrets immediately. */
+    turbo_gdtls_destroy(peer->dtls.engine);
+    peer->dtls.engine = NULL;
+    dtls_session_unlock(peer);
 }
 
-void dtls_session_cleanup(turbo_dc_peer_t *peer) {
-    /* Stop and close retransmit timer */
-    if (peer->dtls.retransmit_timer) {
-        cmeta_timer_destroy(peer->dtls.retransmit_timer);
-        peer->dtls.retransmit_timer = NULL;
-    }
+int dtls_session_is_ready(turbo_dc_peer_t *peer) {
+    dtls_session_lock(peer);
+    int ready = !peer->dtls.stopped && turbo_gdtls_ready(peer->dtls.engine);
+    dtls_session_unlock(peer);
+    return ready;
 }
 
-/* ============================================================================
- * DTLS Helpers
- * ============================================================================ */
+static void dtls_send_queued(turbo_dc_peer_t *peer, int closing) {
+    for (;;) {
+        dtls_session_lock(peer);
+        tstr packet = peer->dtls.stopped && !closing
+            ? NULL : turbo_gdtls_take_datagram(peer->dtls.engine);
+        dtls_session_unlock(peer);
+        if (!packet) return;
+        dc_send_transport_data(peer, packet, tstr_len(packet));
+        tstr_free(packet);
+    }
+}
 
 void dtls_send_output(turbo_dc_peer_t *peer) {
-    /* Buffer must be large enough to hold the largest possible DTLS record.
-     * We use 2KB to be safe even if MTU is slightly larger.
-     */
-    char encrypted[2048];
-    int encrypted_len;
+    dtls_send_queued(peer, 0);
+}
 
-    /* Read ALL available data from the BIO.
-     * Note: BIO_s_mem might coalesce multiple records.
-     * BoringSSL's DTLS stack handles receiving multiple records in one packet.
-     */
-    while ((encrypted_len = BIO_read(peer->dtls.write_bio, encrypted, sizeof(encrypted))) > 0) {
-        dc_send_transport_data(peer, encrypted, encrypted_len);
+static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
+    for (;;) {
+        dtls_session_lock(peer);
+        /* Clean peer close may leave authenticated tail records. Engine
+         * failure and explicit local shutdown leave no drainable payload. */
+        tstr plaintext = peer->dtls.application_ready
+            ? turbo_gdtls_take_plaintext(peer->dtls.engine) : NULL;
+        dtls_session_unlock(peer);
+        if (!plaintext) return;
+        if (!peer->ctx->disable_sctp) {
+            usrsctp_conninput(peer, plaintext, tstr_len(plaintext), 0);
+            sctp_poll_status(peer, "post-conninput");
+        }
+        cmeta_crypto_clear(plaintext, tstr_len(plaintext));
+        tstr_free(plaintext);
     }
 }
 
-static void dtls_handle_error(turbo_dc_peer_t *peer, int ret) {
-    int ssl_error = SSL_get_error(peer->dtls.ssl, ret);
-
-    switch (ssl_error) {
-        case SSL_ERROR_WANT_READ:
-        case SSL_ERROR_WANT_WRITE:
-            /* Non-fatal, need more data - normal for async DTLS */
-            break;
-
-        case SSL_ERROR_SYSCALL: {
-            /* For UDP DTLS, SYSCALL with ret=-1 during handshake often just means
-             * we need to wait for response. Only treat as error if there's an
-             * actual error in the queue. */
-            unsigned long err = ERR_peek_error();
-            if (err == 0) {
-                /* No error - just need to wait */
-                break;
-            }
-            /* Fall through to error handling */
-        }
-        /* fallthrough */
-
-        case SSL_ERROR_ZERO_RETURN: {
-            turbo_dc_state_t old_state = peer->state;
-            if (old_state != TURBO_DC_STATE_CLOSED) {
-                peer->state = TURBO_DC_STATE_CLOSED;
-                if (peer->on_state) {
-                    peer->on_state(peer, old_state, TURBO_DC_STATE_CLOSED, peer->user_data);
-                }
-            }
-            break;
-        }
-
-        default: {
-            turbo_dc_state_t old_state = peer->state;
-            if (old_state != TURBO_DC_STATE_FAILED) {
-                peer->state = TURBO_DC_STATE_FAILED;
-
-                unsigned long err = ERR_get_error();
-                char err_buf[256];
-                if (err) {
-                    ERR_error_string_n(err, err_buf, sizeof(err_buf));
-                    TLOG_DEBUGF("DTLS handshake error: {}", err_buf);
-                } else {
-                    stbsp_snprintf(err_buf, sizeof(err_buf), "SSL error %d", ssl_error);
-                    TLOG_DEBUGF("DTLS handshake error: {}", err_buf);
-                }
-
-                if (peer->on_error) {
-                    peer->on_error(peer, TURBO_DC_ERROR_DTLS_HANDSHAKE, err_buf, peer->user_data);
-                }
-
-                if (peer->on_state) {
-                    peer->on_state(peer, old_state, TURBO_DC_STATE_FAILED, peer->user_data);
-                }
-            }
-            break;
-        }
-    }
+/* Exactly one transaction elects the completion owner under admission. */
+static int dtls_elect_completion(turbo_dc_peer_t *peer) {
+    if (peer->dtls.handshake_done || peer->dtls.stopped ||
+        !turbo_gdtls_ready(peer->dtls.engine)) return 0;
+    peer->dtls.handshake_done = 1;
+    return 1;
 }
- 
- static int verify_remote_fingerprint(turbo_dc_peer_t *peer) {
-     if (!peer->remote_fingerprint || !peer->remote_fingerprint[0]) {
-         dc_set_peer_error(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT,
-                           "remote fingerprint is required");
-         return -1;
-     }
- 
-     X509 *cert = SSL_get_peer_certificate(peer->dtls.ssl);
-     if (!cert) {
-         dc_set_peer_error(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT, "no peer certificate provided");
-         return -1;
-     }
- 
-     unsigned char md[EVP_MAX_MD_SIZE];
-     unsigned int md_len;
-     if (X509_digest(cert, EVP_sha256(), md, &md_len) != 1) {
-         X509_free(cert);
-         dc_set_peer_error(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT, "failed to calculate fingerprint");
-         return -1;
-     }
-     X509_free(cert);
- 
-    char actual_fp[128];
-    static const char hex[] = "0123456789ABCDEF";
-    size_t fp_pos = 0;
 
-    if (md_len == 0 || ((size_t)md_len * 3) > sizeof(actual_fp)) {
-        dc_set_peer_error(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT, "fingerprint buffer too small");
-        return -1;
+static void dtls_complete(turbo_dc_peer_t *peer) {
+    TLOG_INFO("DTLS handshake completed");
+    if (!peer->ctx->disable_sctp && sctp_start_association(peer) != 0) {
+        dtls_session_shutdown(peer);
+        dc_fail_peer(peer, TURBO_DC_ERROR_SCTP_CONNECT, "SCTP association failed");
+        return;
     }
+    dtls_session_lock(peer);
+    int active = !peer->dtls.stopped;
+    if (active) peer->dtls.application_ready = 1;
+    dtls_session_unlock(peer);
+    if (active && peer->ctx->disable_sctp) dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+}
 
-    for (unsigned int i = 0; i < md_len; ++i) {
-        actual_fp[fp_pos++] = hex[(md[i] >> 4) & 0x0F];
-        actual_fp[fp_pos++] = hex[md[i] & 0x0F];
-        if (i + 1 != md_len) {
-            actual_fp[fp_pos++] = ':';
-        }
+void dtls_session_poll_timeout(turbo_dc_peer_t *peer) {
+    int result = 0;
+    dtls_session_lock(peer);
+    if (peer->dtls.timer_active && !peer->dtls.stopped) {
+        uint64_t now = cmeta_monotonic_ms();
+        uint64_t deadline = turbo_gdtls_deadline(peer->dtls.engine);
+        if (deadline && now >= deadline) result = turbo_gdtls_poll(peer->dtls.engine, now);
+        dtls_commit_result(peer, result);
     }
-    actual_fp[fp_pos] = '\0';
- 
-    if (strcmp(actual_fp, peer->remote_fingerprint) != 0) {
-        TLOG_ERRORF("DTLS fingerprint mismatch: expected {}, got {}",
-                   peer->remote_fingerprint, actual_fp);
-        dc_set_peer_error(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT, "fingerprint mismatch");
-        return -1;
+    dtls_session_unlock(peer);
+    dtls_report_error(peer, result);
+    dtls_send_output(peer);
+}
+
+int dtls_write_application_data(turbo_dc_peer_t *peer, const void *data, size_t len) {
+    if (!data || !len || len > 16384) return -1;
+    int result = TURBO_GDTLS_CLOSED;
+    int attempted = 0;
+    dtls_session_lock(peer);
+    if (!peer->dtls.stopped && turbo_gdtls_ready(peer->dtls.engine)) {
+        attempted = 1;
+        result = turbo_gdtls_write(peer->dtls.engine, data, len);
+        dtls_commit_result(peer, result);
     }
- 
-     return 0;
- }
- 
- void dtls_process_handshake(turbo_dc_peer_t *peer) {
-    int ret = SSL_do_handshake(peer->dtls.ssl);
-    TLOG_DEBUGF("DTLS handshake step ret={} state={}", ret, peer ? (int)peer->state : -1);
+    dtls_session_unlock(peer);
+    if (attempted) dtls_report_error(peer, result);
+    if (!result) dtls_send_output(peer);
+    return result ? -1 : (int)len;
+}
 
-    if (ret == 1) {
-        /* Verify fingerprint before proceeding */
-        if (verify_remote_fingerprint(peer) != 0) {
-            turbo_dc_error_t error = turbo_dc_peer_get_error(peer);
-            dc_fail_peer(peer, TURBO_DC_ERROR_DTLS_FINGERPRINT, error.detail);
-            return;
-        }
-        TLOG_INFO("DTLS handshake completed");
- 
-        peer->dtls.handshake_done = 1;
-        dtls_stop_retransmit_timer(peer);
-
-        if (peer->ctx->disable_sctp) {
-            dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
-            dtls_send_output(peer);
-            return;
-        }
-
-        /* Start SCTP association after DTLS is ready.
-         * The peer is only CONNECTED after SCTP reports COMM_UP. */
-        if (sctp_start_association(peer) != 0) {
-            turbo_dc_state_t old_state = peer->state;
-            peer->state = TURBO_DC_STATE_FAILED;
-            if (peer->on_state) {
-                peer->on_state(peer, old_state, TURBO_DC_STATE_FAILED, peer->user_data);
-            }
-        }
-    } else {
-        dtls_handle_error(peer, ret);
-        /* Schedule retransmit timer for handshake packets */
-        dtls_schedule_retransmit(peer);
+void dtls_process_handshake(turbo_dc_peer_t *peer) {
+    dtls_session_lock(peer);
+    if (peer->dtls.stopped || peer->dtls.handshake_started) {
+        dtls_session_unlock(peer);
+        return;
     }
-
+    int result = dtls_start_locked(peer);
+    dtls_commit_result(peer, result);
+    dtls_session_unlock(peer);
+    dtls_report_error(peer, result);
     dtls_send_output(peer);
 }
 
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len) {
-    BIO_write(peer->dtls.read_bio, data, (int)len);
-
-    if (!peer->dtls.handshake_done) {
-        dtls_process_handshake(peer);
+    dtls_session_lock(peer);
+    if (peer->dtls.stopped) {
+        dtls_session_unlock(peer);
+        return;
     }
-
+    int result = dtls_start_locked(peer);
+    if (!result) result = turbo_gdtls_receive(peer->dtls.engine, data, len, cmeta_monotonic_ms());
+    dtls_commit_result(peer, result);
+    int complete = dtls_elect_completion(peer);
+    dtls_session_unlock(peer);
+    if (complete) dtls_complete(peer);
+    dtls_send_output(peer);
     dtls_drain_application_data(peer);
+    /* Clean close retains the closing alert behind any admitted output.
+     * Drain the complete queue before CLOSED; failures suppress all output. */
+    if (result == TURBO_GDTLS_CLOSED) dtls_send_queued(peer, 1);
+    dtls_report_error(peer, result);
 }

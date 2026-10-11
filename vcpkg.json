@@ -2,6 +2,7 @@
   "name": "turbomedia",
   "version-semver": "2.0.0",
   "dependencies": [
+    "gmssl",
     "stb",
     "libyuv",
     "opus",
