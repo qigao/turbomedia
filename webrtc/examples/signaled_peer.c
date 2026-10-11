@@ -530,7 +530,7 @@ static int build_local_sdp(app_state_t *app, int answering, char *buffer, size_t
   TLOG_INFO("build_local_sdp: attach ICE credentials");
   sdp_media_set_ice(media, ufrag, pwd);
   media->setup = answering ? SDP_ROLE_PASSIVE : SDP_ROLE_ACTPASS;
-  media->max_message_size = 262144;
+  media->max_message_size = TURBO_DC_MAX_MESSAGE_SIZE;
 
   TLOG_INFO("build_local_sdp: fetch DTLS fingerprint");
   if (turbo_dc_context_get_local_fingerprint(app->dc_ctx, fp_hash, sizeof(fp_hash),

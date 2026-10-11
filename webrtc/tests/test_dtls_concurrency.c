@@ -4,6 +4,7 @@
 #include "tinytest.h"
 #include <cstl/deque.h>
 #include <string.h>
+#include <stdlib.h>
 
 typedef struct {
     turbo_dc_context_t *context;
@@ -272,7 +273,8 @@ typedef struct {
     int send_failed;
     turbo_dc_channel_t *channel; /* Borrowed from the peer. */
     size_t max_application_packet;
-    uint8_t message[4096];
+    uint8_t message[TURBO_DC_MAX_MESSAGE_SIZE];
+    int partial_observed;
     size_t message_size;
     int message_binary;
     unsigned messages;
@@ -371,7 +373,12 @@ static void deliver_packets(int sender) {
         (void)deque_pop_front(&endpoint->outgoing, &packet);
         cmeta_mutex_unlock(&endpoint->mutex);
         if (!packet) return;
-        turbo_dc_peer_feed_transport_data(endpoints[1 - sender].peer, packet, tstr_len(packet));
+        turbo_dc_peer_t *receiver = endpoints[1 - sender].peer;
+        turbo_dc_peer_feed_transport_data(receiver, packet, tstr_len(packet));
+        cmeta_mutex_lock(&receiver->operation_mutex);
+        for (size_t i = 0; i < SCTP_RECEIVE_SLOTS; ++i)
+            if (receiver->sctp.receive[i].active) endpoints[1 - sender].partial_observed = 1;
+        cmeta_mutex_unlock(&receiver->operation_mutex);
         tstr_free(packet);
     }
 }
@@ -677,6 +684,219 @@ spec("SCTP over GmSSL empty messages") {
                     SCTP_SENDV_SNDINFO, 0), (ssize_t)sizeof(payload));
             }
             expect_packet_messages(++count, payload, 0, binary);
+        }
+    }
+}
+
+static void feed_sctp_fragment(uint16_t stream, uint16_t sequence, uint32_t ppid,
+                               const void *payload, size_t size, int flags) {
+    void *owned = malloc(size ? size : 1);
+    check_not_null(owned);
+    if (size) memcpy(owned, payload, size);
+    struct sctp_rcvinfo info = {0};
+    union sctp_sockstore address = {0};
+    info.rcv_sid = stream;
+    info.rcv_ssn = sequence;
+    info.rcv_ppid = htonl(ppid);
+    check_equal(sctp_inbound_packet_cb(NULL, address, owned, size, info, flags, endpoints[0].peer), 1);
+}
+
+static void close_receiving_channel(turbo_dc_channel_t *channel, const void *data,
+                                    size_t size, int binary, void *user) {
+    packet_endpoint_t *endpoint = user;
+    turbo_dc_channel_close(channel);
+    endpoint->channel = NULL;
+    /* The completed buffer remains borrowed even after the channel closes. */
+    record_channel_message(NULL, data, size, binary, user);
+    cmeta_mutex_lock(&endpoint->peer->operation_mutex);
+    if (endpoint->peer->sctp.receive_buffers != 1) endpoint->message_invalid = 1;
+    cmeta_mutex_unlock(&endpoint->peer->operation_mutex);
+}
+
+static void setup_receive_channel(void) {
+    setup_packet_endpoints(0, 1200, 1000);
+    endpoints[0].channel = turbo_dc_channel_create(endpoints[0].peer, "partial", NULL);
+    check_not_null(endpoints[0].channel);
+    /* The adapter tests supply usrsctp-owned callback buffers directly;
+     * the paired test below separately exercises association and wire delivery. */
+    endpoints[0].channel->is_open = 1;
+    turbo_dc_channel_set_user_data(endpoints[0].channel, &endpoints[0]);
+    turbo_dc_channel_on_message(endpoints[0].channel, record_channel_message);
+}
+
+spec("SCTP complete-message receive adapter") {
+    before_each() { setup_receive_channel(); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("waits for EOR and isolates interleaved streams") {
+        const uint8_t first[] = {1, 2}, last[] = {3, 4};
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        feed_sctp_fragment(sid, 7, SCTP_PPID_BINARY, first, sizeof(first), 0);
+        feed_sctp_fragment(sid + 2, 9, SCTP_PPID_STRING, first, sizeof(first), 0);
+        check_equal(endpoints[0].messages, 0u);
+        feed_sctp_fragment(sid, 7, SCTP_PPID_BINARY, last, sizeof(last), MSG_EOR);
+        const uint8_t expected[] = {1, 2, 3, 4};
+        check_equal(endpoints[0].messages, 1u);
+        check_equal(endpoints[0].message_size, sizeof(expected));
+        check_equal(memcmp(endpoints[0].message, expected, sizeof(expected)), 0);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 1u);
+        feed_sctp_fragment(sid + 2, 9, SCTP_PPID_STRING, last, sizeof(last), MSG_EOR);
+        check_equal(endpoints[0].messages, 1u);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+    }
+
+    it("normalizes an empty message only after its final fragment") {
+        const uint8_t payload = 1;
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_STRING_EMPTY, &payload, 1, 0);
+        check_equal(endpoints[0].messages, 0u);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_STRING_EMPTY, &payload, 1, MSG_EOR);
+        check_equal(endpoints[0].messages, 1u);
+        check_equal(endpoints[0].message_size, (size_t)0);
+        check_equal(endpoints[0].message_binary, 0);
+    }
+
+    it("assembles DCEP before publishing an incoming channel") {
+        const uint8_t open[] = {3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 'x'};
+        feed_sctp_fragment(1, 0, SCTP_PPID_DCEP, open, 6, 0);
+        check_null(peer_get_channel(endpoints[0].peer, 1));
+        feed_sctp_fragment(1, 0, SCTP_PPID_DCEP, open + 6, sizeof(open) - 6, MSG_EOR);
+        turbo_dc_channel_t *channel = peer_get_channel(endpoints[0].peer, 1);
+        check_not_null(channel);
+        check_equal(turbo_dc_channel_get_label(channel), "x");
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+    }
+
+    it("delivers exactly the advertised receive capacity") {
+        static uint8_t payload[TURBO_DC_MAX_MESSAGE_SIZE];
+        for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (uint8_t)i;
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, payload, sizeof(payload) - 1, 0);
+        check_equal(endpoints[0].messages, 0u);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, payload + sizeof(payload) - 1, 1, MSG_EOR);
+        check_equal(endpoints[0].messages, 1u);
+        check_equal(endpoints[0].message_size, sizeof(payload));
+        check_equal(memcmp(endpoints[0].message, payload, sizeof(payload)), 0);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+    }
+
+    it("rejects excess retained payload without delivering a prefix") {
+        static const uint8_t payload[TURBO_DC_MAX_MESSAGE_SIZE] = {0};
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, payload, sizeof(payload), 0);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, payload, 1, MSG_EOR);
+        check_equal(endpoints[0].messages, 0u);
+        check_equal(turbo_dc_peer_get_error(endpoints[0].peer).code, TURBO_DC_ERROR_SCTP_RECEIVE);
+        check_equal(turbo_dc_peer_get_state(endpoints[0].peer), TURBO_DC_STATE_FAILED);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+    }
+
+    it("bounds simultaneous partial messages and releases them on failure") {
+        const uint8_t payload = 1;
+        for (uint16_t i = 0; i < SCTP_RECEIVE_SLOTS; ++i)
+            feed_sctp_fragment(i, 0, SCTP_PPID_BINARY, &payload, 1, 0);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, SCTP_RECEIVE_SLOTS);
+        feed_sctp_fragment(SCTP_RECEIVE_SLOTS, 0, SCTP_PPID_BINARY, &payload, 1, 0);
+        check_equal(endpoints[0].messages, 0u);
+        check_equal(turbo_dc_peer_get_error(endpoints[0].peer).code, TURBO_DC_ERROR_SCTP_RECEIVE);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+    }
+
+    it("discards an aborted partial message before accepting the next message") {
+        const uint8_t payload = 1, next = 2;
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        feed_sctp_fragment(sid, 5, SCTP_PPID_BINARY, &payload, 1, 0);
+        struct sctp_pdapi_event event = {0};
+        event.pdapi_type = SCTP_PARTIAL_DELIVERY_EVENT;
+        event.pdapi_length = sizeof(event);
+        event.pdapi_indication = SCTP_PARTIAL_DELIVERY_ABORTED;
+        event.pdapi_stream = sid;
+        event.pdapi_seq = 5;
+        feed_sctp_fragment(0, 0, 0, &event, sizeof(event), MSG_NOTIFICATION);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+        feed_sctp_fragment(sid, 6, SCTP_PPID_BINARY, &next, 1, MSG_EOR);
+        check_equal(endpoints[0].messages, 1u);
+        check_equal(endpoints[0].message_size, (size_t)1);
+        check_equal(endpoints[0].message[0], next);
+    }
+
+    it("releases a reset stream without affecting other partial messages") {
+        const uint8_t payload = 1;
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        feed_sctp_fragment(sid, 5, SCTP_PPID_BINARY, &payload, 1, 0);
+        feed_sctp_fragment(sid + 2, 9, SCTP_PPID_BINARY, &payload, 1, 0);
+        uint8_t notification[sizeof(struct sctp_stream_reset_event) + sizeof(uint16_t)] = {0};
+        struct sctp_stream_reset_event header = {0};
+        header.strreset_type = SCTP_STREAM_RESET_EVENT;
+        header.strreset_flags = SCTP_STREAM_RESET_INCOMING_SSN;
+        header.strreset_length = sizeof(notification);
+        memcpy(notification, &header, sizeof(header));
+        memcpy(notification + sizeof(header), &sid, sizeof(sid));
+        feed_sctp_fragment(0, 0, 0, notification, sizeof(notification), MSG_NOTIFICATION);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 1u);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, &payload, 1, MSG_EOR);
+        check_equal(endpoints[0].messages, 1u);
+        check_equal(endpoints[0].message_size, (size_t)1);
+    }
+
+    it("rejects a changed partial-message identity instead of joining different messages") {
+        const uint8_t payload = 1;
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        feed_sctp_fragment(sid, 5, SCTP_PPID_BINARY, &payload, 1, 0);
+        feed_sctp_fragment(sid, 6, SCTP_PPID_BINARY, &payload, 1, MSG_EOR);
+        check_equal(endpoints[0].messages, 0u);
+        check_equal(turbo_dc_peer_get_error(endpoints[0].peer).code, TURBO_DC_ERROR_SCTP_RECEIVE);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+    }
+
+    it("retains a completed buffer and its budget through callback channel close") {
+        const uint8_t payload = 1;
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        turbo_dc_channel_on_message(endpoints[0].channel, close_receiving_channel);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, &payload, 1, 0);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, &payload, 1, MSG_EOR);
+        check_equal(endpoints[0].messages, 1u);
+        check_equal(endpoints[0].message_size, (size_t)2);
+        check_false(endpoints[0].message_invalid);
+        check_equal(endpoints[0].message[0], payload);
+        check_equal(endpoints[0].message[1], payload);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+    }
+
+    it("releases partial storage at close and never publishes the tail") {
+        const uint8_t payload = 1;
+        uint16_t sid = turbo_dc_channel_get_id(endpoints[0].channel);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, &payload, 1, 0);
+        turbo_dc_channel_close(endpoints[0].channel);
+        endpoints[0].channel = NULL;
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+        feed_sctp_fragment(sid, 0, SCTP_PPID_BINARY, &payload, 1, MSG_EOR);
+        check_equal(endpoints[0].messages, 0u);
+        feed_sctp_fragment(sid, 1, SCTP_PPID_BINARY, &payload, 1, 0);
+        turbo_dc_peer_close(endpoints[0].peer);
+        check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
+    }
+}
+
+spec("SCTP partial delivery over GmSSL") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("delivers one complete 64 KiB message per direction across partial callbacks") {
+        open_packet_channel();
+        for (int i = 0; i < 2; ++i) {
+            uint32_t point = 1024;
+            check_equal(usrsctp_setsockopt(endpoints[i].peer->sctp.socket, IPPROTO_SCTP,
+                SCTP_PARTIAL_DELIVERY_POINT, &point, sizeof(point)), 0);
+        }
+        static uint8_t payload[64 * 1024];
+        for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (uint8_t)(i * 17);
+        for (int i = 0; i < 2; ++i)
+            check_equal(turbo_dc_channel_send(endpoints[i].channel, payload, sizeof(payload), 1), 0);
+        expect_packet_messages(1, payload, sizeof(payload), 1);
+        for (int i = 0; i < 2; ++i) {
+            check_true(endpoints[i].partial_observed);
+            check_equal(endpoints[i].peer->sctp.receive_buffers, 0u);
         }
     }
 }

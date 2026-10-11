@@ -180,6 +180,7 @@ void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char 
 
     if (!peer) return;
 
+    sctp_receive_stop(peer);
     dtls_session_shutdown(peer);
     dc_set_peer_error(peer, code, detail);
     message = detail ? detail : turbo_dc_error_string(code);
@@ -198,6 +199,7 @@ void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char 
 
 static void dc_notify_closed(turbo_dc_peer_t *peer) {
     if (!peer || peer->state == TURBO_DC_STATE_CLOSED) return;
+    sctp_receive_stop(peer);
     dtls_session_shutdown(peer);
     dc_notify_state(peer, TURBO_DC_STATE_CLOSED);
 }
@@ -1307,6 +1309,7 @@ turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer) {
 }
 
 static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
+    if (peer) sctp_receive_stop(peer);
     if (!peer || peer->state == TURBO_DC_STATE_CLOSED) {
         return;
     }
@@ -1651,6 +1654,7 @@ void turbo_dc_channel_close(turbo_dc_channel_t *channel) {
 
     /* Mark as closed first */
     channel->is_open = 0;
+    if (peer) sctp_receive_discard_stream(peer, id);
 
     /* Reset the SCTP stream before detaching the local channel. */
     if (peer && peer->sctp.socket) {

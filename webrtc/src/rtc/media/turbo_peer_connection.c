@@ -1521,7 +1521,7 @@ int turbo_peer_connection_create_offer(
         if (m) {
             add_common_media_security(pc, m, SDP_ROLE_ACTPASS);
             add_local_candidates_to_media(pc, m);
-            m->max_message_size = 262144;
+            m->max_message_size = TURBO_DC_MAX_MESSAGE_SIZE;
         }
     }
 
@@ -1575,7 +1575,9 @@ int turbo_peer_connection_create_answer(
             }
             add_common_media_security(pc, m, SDP_ROLE_PASSIVE);
             add_local_candidates_to_media(pc, m);
-            m->max_message_size = remote_media->max_message_size > 0 ? remote_media->max_message_size : 262144;
+            /* SDP advertises our receive limit, independently of the remote
+             * endpoint's receive capability. */
+            m->max_message_size = TURBO_DC_MAX_MESSAGE_SIZE;
             continue;
         }
 

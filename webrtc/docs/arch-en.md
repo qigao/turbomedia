@@ -413,6 +413,49 @@ Moving ICE to the CNet worker would alter affinity and add synchronous owner wai
 Retaining the admission/lease split costs one worker per context; no performance
 benefit is claimed.
 
+### SCTP complete-message delivery
+
+The usrsctp callback can return part of a message without `MSG_EOR` (see
+[RFC 6458](https://www.rfc-editor.org/rfc/rfc6458.html#section-8.1.20)). The adapter
+copies those borrowed fragments into peer-owned `tstr` storage and delivers only
+a complete message. Per-stream identity includes SSN, association, PPID and
+ordered/unordered mode. DCEP follows the same assembly path before channel
+creation. Empty-message PPIDs normalize application length only at completion.
+
+`TURBO_DC_MAX_MESSAGE_SIZE` is the existing 256 KiB local SDP receive limit.
+Offers, answers and the signaled-peer example share this constant; answers must
+advertise our receive capacity, not copy the remote receive limit. Sending code
+must separately respect the remote limit. DCEP is bounded by its existing
+512-byte packet limit. Each peer admits eight partial messages, each with one
+fixed-capacity allocation on first partial delivery: at most 2 MiB of payload,
+plus `tstr` metadata and eight fixed records. This budget excludes usrsctp's own
+socket storage. Complete messages received in one callback need no adapter copy.
+
+The peer operation mutex protects assembly state. An operation lease covers
+receive processing; a completed buffer detaches before the application callback,
+which runs outside the mutex. Its allocation stays charged until callback return,
+including reentrant calls. Stream abort/reset releases pending fragments; local
+channel close releases storage and discards the remaining tail through EOR.
+Peer failure, close and destruction stop admission and release pending buffers.
+Oversize messages, identity changes, exhausted slots or allocation failure report
+`TURBO_DC_ERROR_SCTP_RECEIVE` and fail the peer without publishing partial bytes.
+
+A single association-wide buffer cannot handle stream interleaving; unbounded
+per-channel growth has no defensible memory ceiling. The bounded per-stream
+records retain normal message delivery and explicitly reject exhausted capacity.
+Existing arbitrary concurrent channel mutation and callback-reentrant peer
+destruction remain unsupported. Migration adds no configuration field or ABI
+layout change to opaque handles; code relying on oversized messages or unlimited
+partial deliveries must split messages and obey SDP limits. Rollback must revert
+the assembler and associated SDP/header/test changes together; it restores the
+old partial-delivery defect rather than providing a runtime fallback.
+
+Formal tests cover interleaved streams, DCEP, empty PPIDs, exact 256 KiB, excess
+size, eight-slot exhaustion, partial-delivery abort and close. A paired GmSSL test
+lowers the SCTP partial-delivery point and checks one complete 64 KiB message in
+each direction, with observed partial state before completion. Sanitizer coverage
+is first-party code only; cached usrsctp/GmSSL binaries are not reinstrumented.
+
 ### DTLS datagram boundary
 
 Context admission validates SCTP's configured AF_CONN MTU against one DTLS-GCM

@@ -41,6 +41,7 @@ static void dtls_commit_result(turbo_dc_peer_t *peer, int result) {
 static void dtls_report_error(turbo_dc_peer_t *peer, int result) {
     if (!result) return;
     if (result == TURBO_GDTLS_CLOSED) {
+        sctp_receive_stop(peer);
         dc_notify_state(peer, TURBO_DC_STATE_CLOSED);
         return;
     }

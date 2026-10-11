@@ -35,6 +35,7 @@ extern "C" {
 #define SCTP_ASSOCIATION_PORT 5000
 #define SCTP_MAX_STREAMS 65535u
 #define DCEP_MAX_PACKET_SIZE 512
+#define SCTP_RECEIVE_SLOTS 8u /* At most 2 MiB of retained application payload. */
 
 /* SCTP PPIDs */
 #define SCTP_PPID_DCEP 50
@@ -71,8 +72,24 @@ typedef struct {
 
 /* SCTP session state */
 typedef struct {
+    tstr body;
+    uint32_t ppid;
+    sctp_assoc_t association;
+    uint16_t stream;
+    uint16_t sequence;
+    uint16_t unordered;
+    int active;
+    int discard;
+} sctp_receive_message_t;
+
+typedef struct {
     struct socket *socket;
     int connected;
+    /* operation_mutex protects partial messages and buffer admission. Completed
+     * buffers remain charged until their callback returns, outside the lock. */
+    sctp_receive_message_t receive[SCTP_RECEIVE_SLOTS];
+    unsigned receive_buffers;
+    int receive_stopped;
 } sctp_session_t;
 
 /* Data channel context - internal */
@@ -248,6 +265,8 @@ void sctp_global_cleanup(void);
 int sctp_session_init(turbo_dc_peer_t *peer);
 int sctp_start_association(turbo_dc_peer_t *peer);
 int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
+void sctp_receive_stop(turbo_dc_peer_t *peer);
+void sctp_receive_discard_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
 void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason);
 
 /* SCTP callbacks (called by usrsctp) */

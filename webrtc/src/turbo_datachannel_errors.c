@@ -59,6 +59,8 @@ const char *turbo_dc_error_string(turbo_dc_error_code_t code) {
             return "SCTP connect failed";
         case TURBO_DC_ERROR_SCTP_SEND:
             return "SCTP send failed";
+        case TURBO_DC_ERROR_SCTP_RECEIVE:
+            return "SCTP message receive failed";
 
         /* Channel errors */
         case TURBO_DC_ERROR_NULL_LABEL:

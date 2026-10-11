@@ -7,6 +7,7 @@
  */
 
 #include "turbo_sdp.h"
+#include "turbo_datachannel.h"
 #include "platform.h"
 #include <limits.h>
 #include <stdarg.h>
@@ -100,7 +101,7 @@ sdp_media_t *sdp_add_datachannel(sdp_session_t *sdp, const char *mid, int sctp_p
   media->port = 9;
   strcpy(media->protocol, "UDP/DTLS/SCTP");
   media->sctp_port = sctp_port;
-  media->max_message_size = 262144;
+  media->max_message_size = TURBO_DC_MAX_MESSAGE_SIZE;
 
   if (mid) {
     strncpy(media->mid, mid, sizeof(media->mid) - 1);

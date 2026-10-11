@@ -26,6 +26,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Local receive limit advertised in SDP. Applications must also respect the
+ * remote endpoint's advertised limit when sending. */
+#define TURBO_DC_MAX_MESSAGE_SIZE 262144u
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -116,8 +120,11 @@ typedef void (*turbo_dc_open_cb)(
     void *user_data
 );
 
-/* Called when a message is received on a data channel. Data is borrowed only
- * for the callback duration; len is zero for empty text or binary messages. */
+/* Called once per complete message, never for an SCTP partial delivery. Data is
+ * borrowed only for the callback duration; len is zero for empty messages.
+ * Receive limit: TURBO_DC_MAX_MESSAGE_SIZE. A peer admits eight simultaneous
+ * reassembly buffers (including callbacks holding completed buffers); excess
+ * size/capacity or allocation failure fails the peer with SCTP_RECEIVE. */
 typedef void (*turbo_dc_message_cb)(
     turbo_dc_channel_t *channel,
     const void *data,

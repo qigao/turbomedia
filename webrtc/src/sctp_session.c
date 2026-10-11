@@ -130,6 +130,127 @@ int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, 
     return 0;
 }
 
+/* Partial deliveries are borrowed from usrsctp only for this callback. Keep
+ * bounded, peer-owned copies; DCEP uses the same message boundary as user data. */
+static void sctp_receive_reset_locked(turbo_dc_peer_t *peer, sctp_receive_message_t *message) {
+    if (message->body) {
+        tstr_free(message->body);
+        --peer->sctp.receive_buffers;
+    }
+    memset(message, 0, sizeof(*message));
+}
+
+void sctp_receive_stop(turbo_dc_peer_t *peer) {
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->sctp.receive_stopped = 1;
+    for (size_t i = 0; i < SCTP_RECEIVE_SLOTS; ++i)
+        sctp_receive_reset_locked(peer, &peer->sctp.receive[i]);
+    cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+void sctp_receive_discard_stream(turbo_dc_peer_t *peer, uint16_t stream) {
+    cmeta_mutex_lock(&peer->operation_mutex);
+    for (size_t i = 0; i < SCTP_RECEIVE_SLOTS; ++i) {
+        sctp_receive_message_t *message = &peer->sctp.receive[i];
+        if (message->active && message->stream == stream) {
+            if (message->body) {
+                tstr_free(message->body);
+                message->body = NULL;
+                --peer->sctp.receive_buffers;
+            }
+            /* Consume the old message through EOR before permitting SID reuse. */
+            message->discard = 1;
+        }
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+static void sctp_receive_abort(turbo_dc_peer_t *peer, uint32_t stream) {
+    cmeta_mutex_lock(&peer->operation_mutex);
+    for (size_t i = 0; i < SCTP_RECEIVE_SLOTS; ++i) {
+        sctp_receive_message_t *message = &peer->sctp.receive[i];
+        if (message->active && (stream == UINT32_MAX || message->stream == stream))
+            sctp_receive_reset_locked(peer, message);
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+/* Return 1 only for a complete message; *owned transfers an assembled buffer
+ * to the callback caller. Zero means pending/discarded or a reported failure. */
+static int sctp_receive_fragment(turbo_dc_peer_t *peer, const void *data, size_t size,
+                                 struct sctp_rcvinfo rcv, int flags, tstr *owned) {
+    sctp_receive_message_t *message = NULL, *available = NULL;
+    const char *error = NULL;
+    uint32_t ppid = ntohl(rcv.rcv_ppid);
+    size_t limit = ppid == SCTP_PPID_DCEP ? DCEP_MAX_PACKET_SIZE : TURBO_DC_MAX_MESSAGE_SIZE;
+    int complete = 0;
+    *owned = NULL;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (peer->sctp.receive_stopped) goto done;
+    for (size_t i = 0; i < SCTP_RECEIVE_SLOTS; ++i) {
+        sctp_receive_message_t *candidate = &peer->sctp.receive[i];
+        if (candidate->active && candidate->stream == rcv.rcv_sid) message = candidate;
+        if (!candidate->active && !available) available = candidate;
+    }
+    if (message && message->discard) {
+        if (flags & MSG_EOR) sctp_receive_reset_locked(peer, message);
+        goto done;
+    }
+    if (size > limit) {
+        error = "SCTP message exceeds local receive limit";
+        goto done;
+    }
+    if (!message && (flags & MSG_EOR)) {
+        complete = 1;
+        goto done;
+    }
+    if (!message) {
+        if (!available || peer->sctp.receive_buffers >= SCTP_RECEIVE_SLOTS) {
+            error = "SCTP partial-message capacity exhausted";
+            goto done;
+        }
+        /* One bounded allocation, with no geometric growth or retained spare
+         * buffers. Maximum charged storage is eight times 256 KiB. */
+        tstr body = tstr_new_len(NULL, limit);
+        if (!body) {
+            error = "SCTP message allocation failed";
+            goto done;
+        }
+        tstr_set_len(body, 0);
+        message = available;
+        message->body = body;
+        message->active = 1;
+        message->stream = rcv.rcv_sid;
+        message->sequence = rcv.rcv_ssn;
+        message->association = rcv.rcv_assoc_id;
+        message->unordered = rcv.rcv_flags & SCTP_UNORDERED;
+        message->ppid = ppid;
+        ++peer->sctp.receive_buffers;
+    }
+    if (message->sequence != rcv.rcv_ssn || message->association != rcv.rcv_assoc_id ||
+        message->unordered != (rcv.rcv_flags & SCTP_UNORDERED) || message->ppid != ppid) {
+        error = "SCTP partial-message identity changed";
+        goto done;
+    }
+    size_t used = tstr_len(message->body);
+    if (size > limit - used) {
+        error = "SCTP message exceeds local receive limit";
+        goto done;
+    }
+    memcpy(message->body + used, data, size);
+    tstr_set_len(message->body, used + size);
+    if (flags & MSG_EOR) {
+        *owned = message->body;
+        /* Keep the allocation charged while the external callback borrows it. */
+        memset(message, 0, sizeof(*message));
+        complete = 1;
+    }
+done:
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (error) dc_fail_peer(peer, TURBO_DC_ERROR_SCTP_RECEIVE, error);
+    return complete;
+}
+
 int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
                            void *data, size_t datalen,
                            struct sctp_rcvinfo rcv, int flags, void *ulp_info) {
@@ -137,8 +258,13 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
     (void)addr;
 
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)ulp_info;
-    if (!peer || !data || dc_peer_acquire(peer) != 0) {
+    if (!peer || dc_peer_acquire(peer) != 0) {
         if (data) free(data);
+        return 1;
+    }
+    if (!data) {
+        sctp_receive_stop(peer);
+        dc_peer_release(peer);
         return 1;
     }
 
@@ -160,6 +286,31 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
             if (assoc->sac_state == SCTP_COMM_UP) {
                 peer->sctp.connected = 1;
                 dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+            } else if (assoc->sac_state == SCTP_RESTART || assoc->sac_state == SCTP_COMM_LOST ||
+                       assoc->sac_state == SCTP_SHUTDOWN_COMP) {
+                sctp_receive_abort(peer, UINT32_MAX);
+            }
+        } else if (notif->sn_header.sn_type == SCTP_PARTIAL_DELIVERY_EVENT &&
+                   datalen >= sizeof(struct sctp_pdapi_event) &&
+                   notif->sn_pdapi_event.pdapi_indication == SCTP_PARTIAL_DELIVERY_ABORTED) {
+            sctp_receive_abort(peer, notif->sn_pdapi_event.pdapi_stream);
+        } else if (notif->sn_header.sn_type == SCTP_STREAM_RESET_EVENT &&
+                   datalen >= sizeof(struct sctp_stream_reset_event) &&
+                   !(notif->sn_strreset_event.strreset_flags &
+                     (SCTP_STREAM_RESET_DENIED | SCTP_STREAM_RESET_FAILED)) &&
+                   (notif->sn_strreset_event.strreset_flags & SCTP_STREAM_RESET_INCOMING_SSN)) {
+            /* The variable-length stream list is not contained in the local
+             * notification header copy. Read aligned values via memcpy. */
+            size_t offset = sizeof(struct sctp_stream_reset_event);
+            if (offset == datalen) {
+                sctp_receive_abort(peer, UINT32_MAX);
+            } else {
+                while (datalen - offset >= sizeof(uint16_t)) {
+                    uint16_t stream;
+                    memcpy(&stream, (const uint8_t *)data + offset, sizeof(stream));
+                    sctp_receive_abort(peer, stream);
+                    offset += sizeof(stream);
+                }
             }
         }
 
@@ -168,27 +319,36 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         return 1;
     }
 
-    uint16_t stream_id = rcv.rcv_sid;
-    uint32_t ppid = ntohl(rcv.rcv_ppid);
-    if (ppid == SCTP_PPID_DCEP) {
-        dcep_handle_message(peer, stream_id, (const uint8_t *)data, datalen);
+    tstr assembled = NULL;
+    if (!sctp_receive_fragment(peer, data, datalen, rcv, flags, &assembled)) {
         free(data);
         dc_peer_release(peer);
         return 1;
     }
-
-    turbo_dc_channel_t *channel = NULL;
-    channel = peer_get_channel(peer, stream_id);
-
-    if (channel && channel->on_message && channel->is_open) {
-        int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
-        /* Empty-message PPIDs describe the application length independently
-         * of the SCTP placeholder payload (RFC 8831 section 6.6). */
-        if (ppid == SCTP_PPID_STRING_EMPTY || ppid == SCTP_PPID_BINARY_EMPTY)
-            datalen = 0;
-        channel->on_message(channel, data, datalen, is_binary, channel->user_data);
+    const void *payload = assembled ? assembled : data;
+    if (assembled) datalen = tstr_len(assembled);
+    uint16_t stream_id = rcv.rcv_sid;
+    uint32_t ppid = ntohl(rcv.rcv_ppid);
+    if (ppid == SCTP_PPID_DCEP) {
+        dcep_handle_message(peer, stream_id, (const uint8_t *)payload, datalen);
+    } else {
+        turbo_dc_channel_t *channel = peer_get_channel(peer, stream_id);
+        if (channel && channel->on_message && channel->is_open) {
+            int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
+            /* Empty-message PPIDs describe the application length independently
+             * of the SCTP placeholder payload (RFC 8831 section 6.6). */
+            if (ppid == SCTP_PPID_STRING_EMPTY || ppid == SCTP_PPID_BINARY_EMPTY)
+                datalen = 0;
+            channel->on_message(channel, payload, datalen, is_binary, channel->user_data);
+        }
     }
 
+    if (assembled) {
+        tstr_free(assembled);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        --peer->sctp.receive_buffers;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+    }
     free(data);
     dc_peer_release(peer);
     return 1;
@@ -236,12 +396,14 @@ static int configure_sctp_socket(struct socket *sock, uint16_t mtu) {
         SCTP_PEER_ADDR_CHANGE,
         SCTP_SEND_FAILED_EVENT,
         SCTP_SENDER_DRY_EVENT,
-        SCTP_STREAM_RESET_EVENT
+        SCTP_STREAM_RESET_EVENT,
+        SCTP_PARTIAL_DELIVERY_EVENT
     };
 
     for (size_t i = 0; i < sizeof(event_types) / sizeof(event_types[0]); i++) {
         event.se_type = event_types[i];
-        usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_EVENT, &event, sizeof(event));
+        if (usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_EVENT, &event, sizeof(event)) != 0)
+            return -1;
     }
 
     {
