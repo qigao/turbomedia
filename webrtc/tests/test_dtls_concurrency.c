@@ -21,6 +21,7 @@ typedef struct {
     int release_retransmit;
     int sends;
     int callback_export_returned;
+    int callback_peer_created;
     int connect_result;
     uint16_t exported_profile;
 } dtls_fixture_t;
@@ -64,6 +65,15 @@ static void discard_transport(void *transport, const void *data, size_t len) {
     f->callback_export_returned = 1;
     ++f->sends;
     if (f->block_retransmit && f->sends == 2) {
+        cmeta_mutex_unlock(&f->mutex);
+        /* Timer dispatch must release the context list mutex before calling
+         * user transport code. This also exercises insertion/removal while
+         * the worker retains its current list node. */
+        turbo_dc_peer_t *sibling = turbo_dc_peer_create(f->context, NULL, 0, NULL);
+        int created = sibling != NULL;
+        turbo_dc_peer_destroy(sibling);
+        cmeta_mutex_lock(&f->mutex);
+        f->callback_peer_created = created;
         f->retransmit_entered = 1;
         cmeta_cond_broadcast(&f->cond);
         while (!f->release_retransmit) cmeta_cond_wait(&f->cond, &f->mutex);
@@ -204,6 +214,7 @@ spec("DTLS concurrent entry and timer drain") {
          * waiting on the caller's transport owner, as it is here. */
         check_true(wait_flag(&fixture.other_done));
         check_true(fixture.callback_export_returned);
+        check_true(fixture.callback_peer_created);
         check_equal(turbo_dc_peer_get_state(fixture.peer), TURBO_DC_STATE_CLOSED);
     }
 }

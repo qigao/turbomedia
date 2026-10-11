@@ -93,7 +93,7 @@ struct turbo_dc_context_s {
     turbo_dc_error_t last_error;      /* Only for errors before peer exists */
     tstr local_fingerprint;         /* SHA-256 hex fingerprint */
     tstr local_fingerprint_hash;    /* "sha-256" */
-    cmeta_thread_t transport_thread;  /* Dedicated CNet owner thread */
+    cmeta_thread_t transport_thread;  /* CNet progress and DTLS deadline owner */
     int transport_thread_started;
     cmeta_mutex_t transport_mutex;
     cmeta_cond_t transport_cond;

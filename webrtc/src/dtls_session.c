@@ -96,8 +96,10 @@ static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
             if (decrypted_len < 0) dtls_handle_error(peer, ssl_error, error);
             return;
         }
-        usrsctp_conninput(peer, decrypted, decrypted_len, 0);
-        sctp_poll_status(peer, "post-conninput");
+        if (!peer->ctx->disable_sctp) {
+            usrsctp_conninput(peer, decrypted, decrypted_len, 0);
+            sctp_poll_status(peer, "post-conninput");
+        }
     }
 }
 
@@ -364,8 +366,12 @@ static void dtls_handle_error(turbo_dc_peer_t *peer, int ssl_error,
         TLOG_INFO("DTLS handshake completed");
  
         if (peer->ctx->disable_sctp) {
+            dtls_session_lock(peer);
+            peer->dtls.application_ready = 1;
+            dtls_session_unlock(peer);
             dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
             dtls_send_output(peer);
+            dtls_drain_application_data(peer);
             return;
         }
 

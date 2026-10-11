@@ -318,6 +318,7 @@ TURBO_MEDIA_API void turbo_dc_peer_destroy(turbo_dc_peer_t *peer);
 
 /**
  * Get negotiated SRTP keys from DTLS session
+ * The handshake and remote fingerprint verification must both have succeeded.
  *
  * @param peer      Peer handle
  * @param material  Output buffer for keys
