@@ -8,7 +8,7 @@
  *       ↓
  *   SCTP (usrsctp) - reliable/unreliable messaging
  *       ↓
- *   DTLS (BoringSSL) - encryption
+ *   DTLS 1.2 (GmSSL primitives) - encryption
  *       ↓
  *   Transport: CNet (UDP/TCP/KCP) or SaltsNet ICE (NAT traversal)
  *
@@ -76,8 +76,9 @@ typedef struct {
 
 /* Context configuration */
 typedef struct {
-    const char *cert_pem;     /* Optional: PEM certificate for DTLS */
-    const char *key_pem;      /* Optional: PEM private key for DTLS */
+    const char *cert_pem;     /* Optional PEM certificate file; supply with key_pem.
+                              * Identity: P-256 ECDSA or RSA >= 2048 bits. */
+    const char *key_pem;      /* Optional PEM private-key file matching cert_pem. */
     int is_server;            /* TRUE if this is the server/answerer side */
     turbo_dc_transport_t transport;  /* Transport type (default = UDP) */
     uint16_t sctp_mtu;        /* SCTP path MTU (0 = default 1188) */
@@ -210,9 +211,12 @@ TURBO_MEDIA_API void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_erro
  * @param fingerprint Hex fingerprint string
  *
  * Only SHA-256 fingerprints in colon-separated hexadecimal form are accepted.
+ * Set before starting DTLS. Once started, only the identical pin may be reapplied;
+ * replacing the remote identity requires a new peer association.
  *
  * @return 0 on success, -1 for invalid arguments, -2 for an unsupported hash,
- *         -3 for a malformed fingerprint, or -4 on allocation failure
+ *         -3 for a malformed fingerprint, -4 on allocation failure, or -5 when
+ *         changing the pin after DTLS starts or stops
  */
 TURBO_MEDIA_API int turbo_dc_peer_set_remote_fingerprint(
     turbo_dc_peer_t *peer,

@@ -32,7 +32,7 @@ TurboMedia's WebRTC DataChannel implementation provides peer-to-peer data commun
 │  - Encryption/Decryption            │
 │  - Certificate Validation           │
 │  - Handshake                        │
-│  (BoringSSL)                        │
+│  (GmSSL)                            │
 └──────────────┬──────────────────────┘
                │
        ┌───────┴────────┬─────────┬──────────┐
@@ -380,109 +380,59 @@ free(peer);
 
 ### DTLS operation ownership
 
-ICE receive, connection startup, SCTP output and retransmission processing
-can enter from different threads. The peer's operation count keeps storage alive;
-it does not serialize `SSL` or its BIOs. Each SSL transaction therefore acquires
-exclusive DTLS admission through the existing operation mutex/condition. The
-mutex protects admission only; the admitted thread owns SSL, BIOs, handshake
-readiness and shutdown state until it releases admission. Receive data remains
-borrowed for the synchronous call and is copied into the input BIO before return.
+ICE receive, startup, SCTP output and deadlines can enter from different threads.
+Peer operation leases keep storage alive; the existing mutex/condition admission
+serializes the GmSSL engine. Contexts own immutable identities. Sessions are created
+lazily after signaling supplies the role and mandatory SHA-256 pin. Changing an
+admitted pin returns -5; reapplying the identical pin succeeds. A new identity
+requires a new association.
 
-The context transport worker also observes DTLS deadlines and is now created
-for ICE contexts. ICE receive and ordinary calls remain on their existing
-threads; only retransmission processing uses the worker. BoringSSL remains the
-deadline authority. Active handshakes are counted under the context command
-mutex; startup wakes the worker and completion/failure/close removes the peer
-from that count. With no active handshakes an ICE worker sleeps on its condition
-variable. During handshakes it checks every 10ms (direct CNet retains its existing
-1ms poll). These are observation intervals, not changed protocol timeouts; OS
-scheduling or a blocked callback can add delay.
+The context worker observes engine retransmission, 60-second handshake expiry and
+ready-server 120-second final-flight retirement. ICE calls retain their affinity.
+The worker checks every 10ms while deadlines exist (direct CNet keeps its 1ms poll),
+otherwise sleeps on the condition variable. It holds a peer lease but releases
+the peer-list mutex before engine entry and callbacks. Error status and timer
+demand commit under admission. Completion elects one SCTP startup owner; plaintext
+waits for application readiness. SCTP, transport and user callbacks run outside
+admission. Input is borrowed synchronously; retained fragments are copied. Owned
+`tstr` output/plaintext packets transfer to the callback owner, who frees them
+after return and wipes plaintext. Whole datagrams may be reordered by concurrent
+callbacks, as UDP permits.
 
-The worker holds a peer operation lease while processing it, and releases the
-context peer-list mutex before polling or invoking callbacks. The lease keeps
-the current list node alive until the worker reacquires the list mutex and reads
-its successor. Timer processing needs no native timer handle, retained payload,
-or synchronous cross-owner command. The resource cost is one worker per context,
-including ICE contexts, and wakeups during active handshakes; no throughput or
-memory improvement is claimed.
+Explicit shutdown removes timer demand and destroys the engine, wiping even
+incomplete-handshake secrets. Local close preserves the prior behavior of not
+sending network callbacks. Authenticated remote close revokes export, drains
+already authenticated tail data and replies before CLOSED. Destruction rejects
+new operations and drains leases; contexts drain peers before joining the worker
+and freeing identities. Callback reentrant destruction remains unsupported.
+Arbitrary concurrent channel mutation, transport replacement and higher-level
+state still require their existing owners.
 
-SSL error classification and fingerprint verification occur in the transaction
-that produced them. SCTP entry, state/error callbacks and transport sends occur
-after admission is released, avoiding lock cycles with those external owners.
-Handshake completion is claimed once; application reads wait until the elected
-thread finishes SCTP startup. Output is copied from the BIO into callback-scoped
-storage before sending; concurrent datagram sends may reorder records, which
-DTLS already tolerates. No TLS identity or fingerprint check is relaxed.
+A coarse handshake lock would introduce SCTP/timer callback lock inversion.
+Moving ICE to the CNet worker would alter affinity and add synchronous owner waits.
+Retaining the admission/lease split costs one worker per context; no performance
+benefit is claimed.
 
-Shutdown marks DTLS stopped under admission. Destruction
-first rejects new peer operations and drains admitted callers, including the
-timer worker, before freeing SSL and peer storage. Context destruction drains
-its peers before stopping and joining the worker. Callback reentrant destruction
-remains unsupported. This does not make arbitrary concurrent channel mutation,
-transport replacement or higher-level peer-connection state access safe; those
-retain their existing owner obligations.
+### DTLS datagram boundary
 
-A single coarse lock around handshake/receive was rejected because of timer
-stop/wait deadlock and SCTP callback lock inversion. Moving ICE processing onto
-the direct-CNet worker would change callback affinity and introduce synchronous
-cross-owner waits. Native timer self-rearm also complicates proving callback
-quiescence on the rc.10 Windows timer implementation. Reusing the context worker
-for deadlines trades an ICE-context thread for explicit join/drain semantics,
-while preserving receive/caller affinity. This local
-admission protocol preserves those boundaries and the public ABI. Reverting it
-restores the prior concurrency risk; a rollback
-must instead keep all SSL entries on one caller-owned thread.
-
-### DTLS datagram BIO boundary
-
-BoringSSL writes one datagram per BIO write and reads one datagram per BIO read
-(`ssl/d1_both.cc` and `ssl/ssl_buffer.cc` in the pinned 0.20240913.0 dependency).
-A memory BIO loses that boundary: a fixed-size drain may merge packets, exceed
-the configured MTU, or split a record. Both BIOs therefore use the existing CSTL
-deque to hold owned `tstr` byte packets. This is a private adapter, not a DTLS
-record parser; certificate verification and handshake/retransmission policy stay
-with BoringSSL. Each BIO is bounded to 256 packets and 256 KiB of payload, with
-at most 65535 bytes per packet. Capacity/allocation failure accepts no partial
-packet and reports an error; there is no overwrite, wait, or unbounded growth.
-
-All queue access uses the existing exclusive SSL admission, even when callers
-come from different threads. Writes copy the caller's bytes; reads consume one
-packet (a short read discards that packet's remainder, as a datagram read does).
-Output dequeue transfers the owned packet to the sender, which releases SSL
-admission before invoking transport code and frees the packet after the callback.
-Concurrent send callbacks may reorder whole datagrams, as UDP can. Close stops
-new SSL work; destruction drains operation leases before SSL frees both BIOs and
-their queued packets. Queue storage is allocated on demand under a hard limit;
-no allocation or throughput improvement is claimed.
-
-Keeping the memory BIO and parsing DTLS record headers was rejected because it
-would duplicate protocol framing and fail to preserve the library's packetization.
-The adapter preserves the public ABI and existing transport callback lifetime.
-Rolling back requires another boundary-preserving BIO, not a larger byte buffer.
-The formal DTLS test uses real small-MTU handshakes and SRTP key export, alongside
-packet isolation, short-read, capacity, and callback reentry checks. This fixes a
-source-confirmed transport defect; the original #160 log contains no packet trace
-and does not by itself establish this defect as that run's cause.
-
-After handshake completion, `SSL_read` can regenerate the final handshake flight
-in response to a repeated Finished without returning application bytes. The read
-drain therefore flushes output after every read, including WANT_READ, outside
-SSL admission and after terminal-error handling. A stopped session sends nothing.
-The formal regression drops the server's first final-flight datagram and checks
-recovery using the client's existing retransmission deadline, matching SRTP keys
-and exactly one CONNECTED notification per peer. No SCTP write is needed to make
-progress. The test failed before this fix on macOS in run 38105245427; this is
-evidence for the regression scenario, not a packet trace of historical #160.
+Production packetization, MTU fragmentation and bounded queues now belong to the
+engine, with no stream BIO or partial output packets. The old packet BIO remains
+only in the independent test endpoint; its short-read/reset implementation is no
+longer a production contract. A ready server retains its final flight and resends
+it on authenticated repeated Finished, without application writes. Production
+regressions retain small-MTU handshakes/export, final-flight loss, one CONNECTED
+event, transaction/export serialization, destroy draining and callback reentry.
+#160 lacks a packet trace; green regressions alone do not establish its old cause.
 
 ### GmSSL migration boundary
 
-#### Private DTLS implementation work
+#### Production DTLS integration
 
-The next migration implements a datagram state machine over GmSSL's existing
-X.509, ECDH/signature, TLS PRF and AES-GCM APIs. `gmssl_dtls.h` is private and is
-not installed. Production continues to use the qualified provider until the new
-engine passes independent client/server interoperability and existing ownership
-tests. It is not a stream-TLS-over-UDP adapter or an automatic fallback.
+DataChannel now uses the private DTLS 1.2 engine over cached GmSSL X.509,
+ECDH/signature, TLS PRF and AES-GCM primitives. `gmssl_dtls.h` remains uninstalled.
+This is a datagram state machine, not stream TLS over UDP, with no automatic
+BoringSSL fallback. Production qualification requires this head's SCTP, lifetime,
+WHIP and platform results; older private-engine results are insufficient.
 
 The transport owner serializes each session, supplies monotonic time and drains
 owned output datagrams outside admission. A session borrows its immutable
@@ -493,7 +443,9 @@ their bytes. Destruction drains these objects and wipes session secrets.
 Initial scope is DTLS 1.2, ECDHE with P-256, ECDSA/RSA SHA-256 signatures,
 AES-128/256-GCM record protection, Extended Master Secret and all four existing
 SRTP profiles. No resumption, renegotiation, DTLS 1.0/1.3, finite-field DHE or
-ChaCha20 is claimed. Unsupported negotiation fails; it never downgrades to an
+ChaCha20 is claimed. EC identities must use P-256; RSA requires at least 2048
+bits. This narrows the former identity/cipher set: other-curve, DTLS-1.0-only,
+DHE-only or ChaCha-only peers cannot connect. Unsupported negotiation fails; it never downgrades to an
 unauthenticated connection. Peer SHA-256 fingerprints are mandatory. Both
 Finished and CertificateVerify are verified before readiness or key export.
 
@@ -540,44 +492,48 @@ Base64 is supplied by Core's existing libbase64 dependency, not by GmSSL.
 Ephemeral identity generation also uses that existing GmSSL package: P-256 key
 generation, the random positive serial and ECDSA/SHA-256 self-signing. The existing
 v3 certificate, CN, 365-day validity and uppercase SHA-256 fingerprint contract
-remain unchanged. Salts Core hashes the certificate DER. A private DER boundary
-separates provider headers; BoringSSL imports the certificate/PKCS#8 key into its
-DTLS context and checks the pair. No GmSSL type enters a public API. Provider key
-state is cleared on every return; owned PKCS#8 bytes are cleared after import or
-on failure. Fingerprints are published only after successful installation.
-Configured PEM identities retain their existing loading behavior.
+remain unchanged. Salts Core hashes certificate DER; production imports DER and
+PKCS#8 directly into the GmSSL context, verifying the key pair. Temporary private
+key bytes are wiped on import/failure; fingerprints publish only after admission.
 
-The formal certificate test verifies the imported self-signature, P-256 curve,
-SHA-256 algorithm, subject/issuer, serial, validity and fingerprint using the
-importing provider. Existing real DTLS/SRTP tests cover identity use in handshakes.
-This isolates a supported migration from the DTLS blocker without adding another
-dependency or a crypto abstraction framework. It can be rolled back within the
-private certificate helper without changing signaling or configured identities.
+Two BoringSSL compatibility boundaries remain. `dc_identity.cpp` uses a temporary
+SSL context only to normalize configured PEM files (PKCS#8, SEC1 EC, PKCS#1 RSA).
+`dc_srtp_legacy.c` preserves the installed `srtp_derive_keys_from_dtls(void *ssl, ...)`
+contract accepting BoringSSL SSL*. Never pass it a GmSSL session. Production uses
+`turbo_dc_peer_get_srtp_keys` to export directly from the admitted engine.
+Certificate/key paths must be supplied together. Unreadable, mismatched or
+unsupported identities fail creation without generating a replacement. The old
+single-leaf PEM behavior is retained; no chain-file or password configuration is
+added. Configured identities now publish their SHA-256 fingerprint too.
 
-Full WebRTC provider replacement is blocked by the current central
-[GmSSL port](https://github.com/qigao/vcpkg-cache/tree/master/ports/gmssl)
-(3.2.0#9, upstream commit `7c9f02904ef33e59c87b4f16621cc8fd434e7579`).
-The patched `tls_ctx_init` accepts TLS 1.2, TLS 1.3 and TLCP only. DTLS constants
-and trace names do not implement datagram records, handshake fragmentation,
-retransmission or DTLS-SRTP negotiation. Stream TLS/exporter support cannot
-replace that contract. DataChannel/RTC still use BoringSSL for DTLS. The libsrtp
-overlay is independently migrated to GmSSL while retaining existing AEAD profiles.
-RTC no longer directly links OpenSSL::SSL or OpenSSL::Crypto; its DTLS dependency
-is the existing public DataChannel component.
+The formal identity suite independently checks generated certificates and PEM
+normalization, fingerprints and rejection. Per the
+[pinned byte-builder contract](https://github.com/google/boringssl/blob/0.20240913.0/include/openssl/bytestring.h),
+failed builders may only be cleaned up. PEM normalization uses fixed, owned
+16 KiB storage so partial private DER can be wiped without inspecting failed
+builder state. Removing BoringSSL today would break these installed/PEM contracts
+and the independent test endpoint; this is not complete package removal.
 
-Replacing library names or disabling profiles would break browser interop.
-The next prerequisite is a qualified DTLS-SRTP-capable provider in the central
-cache, including certificate fingerprints, SRTP exporter/profile negotiation,
-loss recovery and browser interop. Until then, keep this dependency explicit;
-do not present the auth migration as complete BoringSSL removal. Existing
-cache-only restoration remains in use. The auth change can be rolled back
-independently without changing tokens or the public API.
+The central [GmSSL port](https://github.com/qigao/vcpkg-cache/tree/master/ports/gmssl)
+(3.2.0#9, upstream `7c9f02904ef33e59c87b4f16621cc8fd434e7579`) provides crypto and
+stream TLS primitives, not a DTLS-SRTP owner. Merely replacing library names was
+rejected. Retaining BoringSSL sessions costs less migration work but does not meet
+the requested cutover. The private engine adds no dependency; its cost is ongoing
+DTLS framing/retransmission maintenance and qualification of the narrower algorithm
+set. Browser interoperability, mobile runtime and TSAN are not implied by provider
+tests or platform cross-builds.
+
+Rollback must restore the former session/context owner, certificate import and
+matching tests together, retaining the earlier admission, datagram-boundary and
+final-flight recovery fixes. It is not a runtime fallback after authentication
+failure. RTC depends on the public DataChannel component; SRTP/auth migrations can
+be rolled back independently. Cache-only dependency restoration stays unchanged.
 
 The libSRTP provider lives in the existing product overlay. It keeps libSRTP's
 packet policy, key derivation and replay state, and adapts its cipher/auth tables
 to GmSSL AES-CTR, AES-GCM and HMAC-SHA1. All existing
 AES-CM and GCM profiles remain available, including AES-256-GCM. Replacing the
-whole SRTP stack or disabling AEAD is rejected. DTLS remains a separate blocker.
+whole SRTP stack or disabling AEAD is rejected. DTLS qualification remains separate.
 
 Each libSRTP cipher/auth context exclusively owns its GmSSL state under the
 existing session's serialization contract. ICM retains the unused bytes of the

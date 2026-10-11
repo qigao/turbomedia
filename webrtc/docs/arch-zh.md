@@ -32,7 +32,7 @@ TurboNet 的 WebRTC DataChannel 实现提供了点对点数据通信，支持多
 │  - 加密/解密                         │
 │  - 证书验证                          │
 │  - 握手                              │
-│  (BoringSSL)                        │
+│  (GmSSL)                            │
 └──────────────┬──────────────────────┘
                │
        ┌───────┴────────┬─────────┬──────────┐
@@ -364,66 +364,57 @@ free(peer);
 - 公开生命周期 API 通过内部同步投递协议串行化传输操作
 - 回调中不得重入销毁其所属 peer
 
-**DTLS 并发与重传：**
-- peer 的操作计数只保护存活期。SSL/BIO、握手完成与停止标志通过独立的
-  串行准入保护；SCTP、状态回调和 transport 发送在准入释放后执行，避免重入锁环。
-- context worker 观察 BoringSSL 的重传截止时间，因此 ICE context 也创建一个
-  worker。ICE 收包和普通调用保持原线程；没有在途握手时 worker 等待条件变量，
-  握手期间按 10ms 间隔检查，直接 CNet 仍沿用 1ms poll。协议超时值不变。
-- worker 持有 peer 操作租约，但在执行传输或应用回调前释放 peer-list mutex。
-  销毁先拒绝新操作并排空租约，再释放 SSL；context 最后停止并 join worker。
-  不再依赖原生 timer 自重排与销毁之间的隐含同步。
-- 取舍是每个 ICE context 增加一个 worker；没有宣称性能收益。此协议不保证
-  任意并发 channel 修改、transport 替换或上层 peer-connection 字段访问安全。
-  背景、候选方案与回滚边界见 [DTLS operation ownership](arch-en.md#dtls-operation-ownership)。
+**DTLS 生产接入与归属：**
+DataChannel 已接入基于缓存 GmSSL primitives 的私有 DTLS 1.2 引擎。
+context 独占不可变身份；peer 在信令提供角色和 SHA-256 指纹后创建会话。
+操作租约保活，现有 mutex/condition 准入串行化引擎调用。握手后更换指纹
+返回 -5，重复设置同一指纹仍成功；更换身份须新建关联。
 
-**DTLS 数据报边界：**
-- BoringSSL 的每次 BIO 写入/读取对应一个数据报。普通 memory BIO 会合并报文，
-  固定 2048 字节的输出读取还可能截断 record。输入、输出现均由私有 BIO 适配器
-  使用 CSTL deque 保存拥有型 `tstr` 字节报文，不解析或重建 DTLS record。
-- 每个 BIO 限制为 256 个报文、256 KiB payload，单报文最多 65535 字节。
-  容量或分配失败时不接纳部分报文，明确返回错误；不覆盖、不阻塞、不无限扩容。
-  读取消费一个报文，短读取丢弃该报文余下部分，保持数据报语义。
-- 所有队列操作受现有 SSL 准入保护。输入复制调用方数据；输出出队转移所有权，
-  释放准入后调用 transport，回调返回后释放报文。并发发送可以使完整数据报乱序。
-  销毁排空操作租约后，由 SSL 释放 BIO 和残留报文。
-- 正式测试覆盖真实证书、小 MTU 双端握手、SRTP 密钥一致性、报文隔离、短读取、
-  容量恢复及回调重入。原 #160 日志没有数据报追踪，因此此源码缺陷的修复不能单独
-  证明历史失败的原因。取舍与回滚见 [DTLS datagram BIO boundary](arch-en.md#dtls-datagram-bio-boundary)。
-- 握手完成后的 `SSL_read` 即使返回 WANT_READ，也可能因重复 Finished 生成末次
-  握手报文。因此每次读取都在错误处理后、SSL 准入外发送输出；停止状态不再发送。
-  正式回归丢弃服务端第一个末次握手数据报，验证原有重传计时器能够恢复握手、
-  双方 SRTP 密钥一致且各只通知一次 CONNECTED，不依赖 SCTP 写入推动进度。
+context worker 观察重传、60 秒握手有效期及服务端完成后 120 秒最终 flight
+退役期限。有期限时按 10ms 检查，直接 CNet 保留 1ms poll；否则等待条件变量。
+ICE 收包保持原线程。worker 持有 peer 租约，但不在 peer-list mutex 或 DTLS
+准入内调用 transport、SCTP、用户回调。输入在调用内借用；引擎有界保存
+重组、暂存密文、flight、transcript。输出和明文以拥有型 tstr 转移，回调
+仅借用，返回后释放并擦除明文。输出/明文队列各最多 256 报文、256 KiB。
 
-**GmSSL 迁移边界：**认证模块的 SHA-256、HMAC-SHA256、常量时间比较已改用
-Salts Core 的 GmSSL 后端，Base64 复用 Core 的 libbase64；认证 target 不再直接链接
-OpenSSL::Crypto。Salts 保持 2.3.0-rc.10，token 格式、校验规则与公开接口不变。
-临时身份的 P-256 密钥、随机正序列号和 ECDSA/SHA-256 自签名也由已有 GmSSL 包
-生成，保留 v3、CN、365 天有效期与大写 SHA-256 指纹格式。Salts Core 计算 DER
-摘要；私有 DER 边界隔离两套库的头文件，BoringSSL 仅导入证书/PKCS#8 私钥并
-检查匹配。所有返回路径清理生成端密钥，私钥 DER 在导入后或失败时擦除；成功安装
-后才发布指纹。配置的 PEM 身份加载行为不变。正式证书测试通过导入端独立验证
-自签名、曲线、算法、名称、序列号、有效期与指纹，实际握手由已有 DTLS/SRTP 测试
-覆盖。迁移可在私有证书 helper 内回滚，不影响公开接口或信令格式。
-中央缓存 GmSSL 3.2.0#9 的 `tls_ctx_init` 只接受 TLS 1.2、TLS 1.3 和 TLCP，
-DTLS 常量并不代表已实现 DTLS-SRTP。DataChannel/RTC 的 DTLS 仍需 BoringSSL；
-完整替换须先提供经过互通验证的 DTLS-SRTP 后端，不能靠替换库名或禁用 AEAD
-完成。证据、取舍、验证与回滚见 [GmSSL migration boundary](arch-en.md#gmssl-migration-boundary)。
+只选举一次握手完成者，SCTP 启动后排空应用数据。显式本地关闭沿用不发送
+网络回调的行为，注销期限并销毁引擎，立即清除未完成握手秘密。已认证远端
+关闭撤销导出、排空已认证尾包并回复后通知 CLOSED。销毁先拒绝新操作并排空
+租约，context 最后 join worker、释放身份。回调内重入销毁仍不支持；channel
+修改、transport 替换及上层状态访问仍须遵守原 owner 约束。
 
-正在实现的 `gmssl_dtls.h` 为私有、未安装的 DTLS 1.2 引擎，当前只进入正式互通
-测试，不替换生产后端。它复用缓存 GmSSL 的 X.509、ECDH/签名、TLS PRF 和
-AES-GCM，支持 EMS 和现有四种 SRTP profile，强制校验对端 SHA-256 指纹。
-状态由现有 transport owner 串行推进，输入仅在调用内借用，输出以拥有型 tstr
-转移；context 必须晚于所有 session 销毁。重组、flight、transcript 和报文队列均
-设硬上限，完成/失败路径清理密钥。具体范围、容量、迁移门槛与未支持算法见英文
-文档的私有 DTLS 实现章节；通过独立双向互通及生产回归后再切换，不设自动降级。
-引擎对外报告重传与 60 秒握手有效期中较早的截止时间，包含等待首包的服务端；
-receive/poll 均执行超时检查。关闭后撤销 ready/export 权限并擦除握手输入与密钥，
-关闭 alert 留给 owner 排空；正常关闭前已认证的应用数据仍可排空，避免丢失与
-close_notify 合并到达的尾包，销毁时清理未取走的数据。合法应用报文若因 UDP
-乱序先于 Finished 到达，会被
-丢弃并等待上层重传，不终止握手。正式测试另覆盖 RSA/P-256 混合身份、损坏标签、
-重复报文、容量、关闭、超时以及 GmSSL 双端 profile 偏好和最终 flight 退役。
+生产不再使用 BoringSSL BIO；独立互通测试对端保留 packet BIO。生产回归保留
+小 MTU、SRTP 一致、最终 flight 丢包恢复、一次 CONNECTED、事务串行化、销毁
+等待和定时器回调重入。ready 服务端收到已认证重复 Finished 后重发保留 flight，
+不依赖应用写入。#160 缺少历史报文追踪，回归通过不能单独证明旧失败原因。
+候选方案和取舍见 [DTLS operation ownership](arch-en.md#dtls-operation-ownership)。
+
+**GmSSL 迁移与兼容边界：**
+认证使用 Salts Core 的 SHA-256、HMAC-SHA256、常量时间比较，Base64 复用
+libbase64。Salts 保持 2.3.0-rc.10。临时身份以 GmSSL 生成并直接导入 DER/PKCS#8，
+保留 v3、CN、365 天有效期和 SHA-256 指纹，私钥临时存储在导入后或失败时擦除。
+
+支持 DTLS 1.2、P-256 ECDHE、P-256 ECDSA/RSA SHA-256 签名、AES-128/256-GCM、
+EMS 和四种 SRTP profile。RSA 身份至少 2048 位。不支持恢复、重协商、DTLS
+1.0/1.3、其他 EC 身份曲线、有限域 DHE、ChaCha20。仅支持旧算法组合的对端会
+明确失败，不自动降级。Finished、CertificateVerify 和指纹通过后才发布 ready/export。
+
+仍保留两个 BoringSSL 兼容入口：`dc_identity.cpp` 用临时 SSL context 将
+PKCS#8、SEC1 EC、PKCS#1 RSA PEM 文件规范化；`dc_srtp_legacy.c` 保持已安装
+`srtp_derive_keys_from_dtls(void *ssl, ...)` 接收 BoringSSL SSL*。生产 peer
+通过 `turbo_dc_peer_get_srtp_keys` 使用 GmSSL 导出，不得将新指针传给旧接口。
+证书/密钥路径必须同时提供，不可读、不匹配或不支持的身份直接创建失败，
+不回退生成身份。保持原单叶证书语义，未增加链文件或加密密钥密码配置。
+配置身份现在也发布指纹。PEM 私钥编码使用固定 16 KiB 拥有型存储，失败时
+擦除部分结果。此阶段不能宣称已完全移除 BoringSSL 包。
+
+引擎保持私有且不安装。GmSSL 3.2.0#9 不提供现成 DTLS-SRTP owner；状态机
+复用成熟密码算法且无新依赖，代价是维护分片/重传并验证收窄的算法范围。
+独立双向互通、四种 profile、混合身份、损坏标签、重放、容量、关闭、超时
+测试不能替代本次生产 SCTP、WHIP 和平台回归，不代表浏览器、移动端运行或
+TSAN 已验证。回滚须成套恢复旧 owner、证书导入和测试，并保留此前准入、
+数据报边界和最终 flight 修复。SRTP/auth 可独立回滚，缓存只读恢复不变。
+容量、一手资料及迁移边界见 [GmSSL migration boundary](arch-en.md#gmssl-migration-boundary)。
 
 libsrtp 的现有 overlay 独立改用 GmSSL AES-CTR、AES-GCM 和 HMAC-SHA1，保留
 四种公开 profile、密钥派生、重放保护与 RTP/SRTCP 行为。ICM 保留跨调用的剩余

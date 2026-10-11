@@ -14,8 +14,7 @@
 #include <tstr.h>
 #include <salts/thread.h>
 #include <cstl/hash_map.h>
-#include <openssl/ssl.h>
-#include <openssl/bio.h>
+#include "gmssl_dtls.h"
 #include <usrsctp.h>
 #include <roaring/roaring.h>
 
@@ -31,9 +30,6 @@ extern "C" {
 #define MAX_PROTOCOL_LEN 256
 #define SCTP_MTU_DEFAULT 1188
 #define DTLS_MTU_DEFAULT 1280
-#define DTLS_BIO_MAX_PACKETS 256u
-#define DTLS_BIO_MAX_BYTES (256u * 1024u)
-#define DTLS_BIO_MAX_PACKET_BYTES 65535u
 #define MAX_CHANNELS 65536u
 #define SCTP_ASSOCIATION_PORT 5000
 #define SCTP_MAX_STREAMS 65535u
@@ -62,13 +58,11 @@ extern "C" {
 
 /* DTLS session state */
 typedef struct {
-    SSL *ssl;
-    BIO *read_bio;
-    BIO *write_bio;
+    turbo_gdtls *engine;
     int handshake_done;
     int application_ready;
     int stopped;
-    /* Admission is protected by operation_mutex; SSL/BIO state by busy. */
+    /* Admission is protected by operation_mutex; engine state by busy. */
     int busy;
     int handshake_started;
     int timer_active;
@@ -86,7 +80,7 @@ struct turbo_dc_peer_s;
 typedef void (*dc_transport_task_fn)(void *arg1, void *arg2);
 
 struct turbo_dc_context_s {
-    SSL_CTX *ssl_ctx;
+    turbo_gdtls_context *dtls_context;
     int is_server;
     int initialized;
     int disable_sctp;

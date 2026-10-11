@@ -81,7 +81,9 @@ target_link_libraries(turbo_media_sdp PRIVATE Salts::Core)
 
 set(TURBO_MEDIA_DATACHANNEL_SOURCES
     src/turbo_datachannel.c
-    src/dc_certificate.cpp
+    src/dc_identity.cpp
+    src/dc_srtp_legacy.c
+    src/gmssl_dtls.c
     src/dc_certificate_gmssl.cpp
     src/turbo_datachannel_errors.c
     src/turbo_dc_msg.c
