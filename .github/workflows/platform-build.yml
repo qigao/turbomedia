@@ -226,9 +226,9 @@ jobs:
             @{
               name = "SaltsNet"
               repo = "qigao/salts-net"
-              run = "37952520605"
+              run = "38130946558"
               artifact = "saltsnet-sdk-$rid"
-              expected = "a74b3a8ed8a7f297a57307aac99d541c63dd0c7c"
+              expected = "c5f1f1a0d458eaabc263b4c975bcd18c9311af39"
               manifest = "saltsnet-sdk-manifest.txt"
               config = "lib/cmake/SaltsNet/SaltsNetConfig.cmake"
               root = "SALTSNET_ROOT"
