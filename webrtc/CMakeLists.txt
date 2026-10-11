@@ -187,8 +187,6 @@ target_link_libraries(
           Salts::CNet
           Salts::Core
           Salts::CSTL
-          OpenSSL::SSL
-          OpenSSL::Crypto
           libSRTP::srtp2)
 target_compile_definitions(turbo_media_rtc PUBLIC TURBO_MEDIA_HAS_RTC)
 target_link_libraries(turbo_media_rtc PRIVATE Salts::Capture)

@@ -491,6 +491,8 @@ and trace names do not implement datagram records, handshake fragmentation,
 retransmission or DTLS-SRTP negotiation. Stream TLS/exporter support cannot
 replace that contract. DataChannel/RTC still use BoringSSL for DTLS. The libsrtp
 overlay is independently migrated to GmSSL while retaining existing AEAD profiles.
+RTC no longer directly links OpenSSL::SSL or OpenSSL::Crypto; its DTLS dependency
+is the existing public DataChannel component.
 
 Replacing library names or disabling profiles would break browser interop.
 The next prerequisite is a qualified DTLS-SRTP-capable provider in the central
