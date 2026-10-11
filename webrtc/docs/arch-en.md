@@ -242,6 +242,17 @@ mutation still require application coordination. Public signatures and packet
 semantics do not change. Merely setting a closing flag or detaching callback
 pointers cannot replace drain; reverting this protocol would restore that gap.
 
+Connection readiness has three prerequisites: a usable ICE pair, established
+DTLS, and successful SRTP/receive-track initialization. The DTLS flag remains
+the transport fact used to protect the negotiated fingerprint; media readiness
+is a separate fact, published only after initialization succeeds. ICE restart
+retains successful media readiness, whereas DC failure/closure invalidates it.
+ICE recovery cannot turn a failed media initialization into CONNECTED or restart
+an already-established DTLS session. Flag updates and the CONNECTED predicate
+commit under the existing ICE mutex; user callbacks remain outside that lock.
+This prevents a delayed CONNECTED request from overriding a committed transport
+loss. It does not serialize application callbacks or signaling/track mutation.
+
 ## DTLS Integration
 
 ### Session Creation

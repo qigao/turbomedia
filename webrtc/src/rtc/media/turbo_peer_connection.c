@@ -62,6 +62,7 @@ struct turbo_peer_connection_s {
     /* Internal */
     atomic_int ice_connected;
     atomic_int dtls_connected;
+    int media_ready; /* Protected by ice_mutex; distinct from DTLS identity. */
     atomic_int dtls_connect_pending;
     atomic_int gathering_start_pending;
     atomic_int checks_start_pending;
@@ -252,8 +253,15 @@ static void notify_state_change(turbo_peer_connection_t *pc, turbo_peer_state_t 
         return;
     }
 
-    if (atomic_exchange(&pc->state, state) != (int)state &&
-        pc->callbacks.on_state_change) {
+    cmeta_mutex_lock(&pc->ice_mutex);
+    int changed = 0;
+    if (!pc->destroying &&
+        (state != TURBO_PEER_STATE_CONNECTED ||
+         (pc->ice_connected && pc->dtls_connected && pc->media_ready))) {
+        changed = atomic_exchange(&pc->state, state) != (int)state;
+    }
+    cmeta_mutex_unlock(&pc->ice_mutex);
+    if (changed && pc->callbacks.on_state_change) {
         pc->callbacks.on_state_change(pc, state, pc->config.user_data);
     }
     peer_callback_leave(pc);
@@ -460,6 +468,13 @@ static void maybe_start_dtls(turbo_peer_connection_t *pc) {
     }
 }
 
+static void clear_ice_connection(turbo_peer_connection_t *pc) {
+    cmeta_mutex_lock(&pc->ice_mutex);
+    pc->ice_connected = 0;
+    pc->dtls_connect_pending = 0;
+    cmeta_mutex_unlock(&pc->ice_mutex);
+}
+
 static void send_dc_transport(void *transport, const void *data, size_t len) {
     turbo_peer_connection_t *pc = (turbo_peer_connection_t *)transport;
 
@@ -468,7 +483,7 @@ static void send_dc_transport(void *transport, const void *data, size_t len) {
     }
     if (turbo_ice_owner_send_async(pc->ice_owner, data, len) != 0) {
         ice_state_t ice_state = turbo_ice_owner_get_state(pc->ice_owner);
-        pc->ice_connected = 0;
+        clear_ice_connection(pc);
         notify_state_change(
             pc, ice_state == ICE_STATE_DISCONNECTED
                     ? TURBO_PEER_STATE_DISCONNECTED
@@ -489,22 +504,24 @@ static void on_ice_state_change(salts_ice_agent_t *agent, ice_state_t old_state,
     }
 
     if (new_state == ICE_STATE_CONNECTED || new_state == ICE_STATE_COMPLETED) {
+        int ready = 0;
+        cmeta_mutex_lock(&pc->ice_mutex);
         if (!atomic_exchange(&pc->ice_connected, 1)) {
             if (pc->dc_peer) {
                 if (pc->dtls_connected) {
-                    notify_state_change(pc, TURBO_PEER_STATE_CONNECTED);
+                    ready = pc->media_ready;
                 } else {
                     pc->dtls_connect_pending = 1;
                 }
             }
         }
+        cmeta_mutex_unlock(&pc->ice_mutex);
+        if (ready) notify_state_change(pc, TURBO_PEER_STATE_CONNECTED);
     } else if (new_state == ICE_STATE_DISCONNECTED) {
-        pc->ice_connected = 0;
-        pc->dtls_connect_pending = 0;
+        clear_ice_connection(pc);
         notify_state_change(pc, TURBO_PEER_STATE_DISCONNECTED);
     } else if (new_state == ICE_STATE_FAILED) {
-        pc->ice_connected = 0;
-        pc->dtls_connect_pending = 0;
+        clear_ice_connection(pc);
         notify_state_change(pc, TURBO_PEER_STATE_FAILED);
     }
     peer_callback_leave(pc);
@@ -545,7 +562,10 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
     }
 
     if (new_state == TURBO_DC_STATE_CONNECTED) {
+        cmeta_mutex_lock(&pc->ice_mutex);
         pc->dtls_connected = 1;
+        pc->media_ready = 0;
+        cmeta_mutex_unlock(&pc->ice_mutex);
         /* Initialize SRTP for media */
         if (pc->media_ctx) {
              if (turbo_media_setup_srtp(pc->media_ctx) != 0) {
@@ -575,12 +595,22 @@ static void on_dc_state(turbo_dc_peer_t *peer, turbo_dc_state_t old_state,
              }
          }
 
+        cmeta_mutex_lock(&pc->ice_mutex);
+        /* A terminal DC callback may have arrived during initialization. */
+        if (pc->dtls_connected) pc->media_ready = 1;
+        cmeta_mutex_unlock(&pc->ice_mutex);
         notify_state_change(pc, TURBO_PEER_STATE_CONNECTED);
     } else if (new_state == TURBO_DC_STATE_FAILED) {
+        cmeta_mutex_lock(&pc->ice_mutex);
         pc->dtls_connected = 0;
+        pc->media_ready = 0;
+        cmeta_mutex_unlock(&pc->ice_mutex);
         notify_state_change(pc, TURBO_PEER_STATE_FAILED);
     } else if (new_state == TURBO_DC_STATE_CLOSED) {
+        cmeta_mutex_lock(&pc->ice_mutex);
         pc->dtls_connected = 0;
+        pc->media_ready = 0;
+        cmeta_mutex_unlock(&pc->ice_mutex);
         notify_state_change(pc, TURBO_PEER_STATE_DISCONNECTED);
     }
     peer_callback_leave(pc);
@@ -668,14 +698,12 @@ static int restart_ice_generation(turbo_peer_connection_t *pc,
         }
     }
     if (refresh_local_ice_credentials(pc) != 0) {
-        pc->ice_connected = 0;
-        pc->dtls_connect_pending = 0;
+        clear_ice_connection(pc);
         notify_state_change(pc, TURBO_PEER_STATE_FAILED);
         return -1;
     }
 
-    pc->ice_connected = 0;
-    pc->dtls_connect_pending = 0;
+    clear_ice_connection(pc);
     pc->remote_candidate_count = 0;
     pc->local_ice_restart_pending = locally_initiated ? 1 : 0;
     notify_state_change(pc, TURBO_PEER_STATE_CONNECTING);

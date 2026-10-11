@@ -232,6 +232,13 @@ PeerConnection 拥有 ICE owner、DC peer 和媒体 context。内部 ICE/DC 回�
 中销毁它。公开签名与报文语义不变；仅设置 closing 或清空回调指针不能代替排空。
 设计与回滚约束见 [PeerConnection callback lifetime](arch-en.md#peerconnection-callback-lifetime)。
 
+CONNECTED 要求 ICE pair 可用、DTLS 已建立、SRTP 与接收 track 初始化成功。
+DTLS 标志继续保护已协商的远端指纹；媒体就绪单独记录，仅在初始化成功后发布。
+ICE restart 保留成功的媒体就绪状态，DC 失败或关闭则使其失效。ICE 恢复不能把
+媒体初始化失败变成 CONNECTED，也不能重启已经建立的 DTLS。相关标志更新与
+CONNECTED 条件的状态提交共用 ICE mutex，用户回调仍在锁外执行；不承诺回调
+全局排序或任意并发信令/track 修改。
+
 ## DTLS 集成
 
 ### 会话创建

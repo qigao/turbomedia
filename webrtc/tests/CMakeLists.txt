@@ -182,8 +182,13 @@ turbo_media_add_rtc_test(turbo_media_test_nack test_nack.c)
 turbo_media_add_rtc_test(turbo_media_test_media_engine test_media_engine.c)
 turbo_media_add_rtc_test(turbo_media_test_peer_connection_lifecycle
                          test_peer_connection_lifecycle.c)
+turbo_media_add_rtc_test(turbo_media_test_peer_connection_readiness
+                         test_peer_connection_readiness.c)
+target_sources(turbo_media_test_peer_connection_readiness PRIVATE ../src/salts_ice_owner.c)
+target_link_libraries(turbo_media_test_peer_connection_readiness PRIVATE SaltsNet::ICE)
 if(NOT ANDROID)
-  set_tests_properties(turbo_media_test_peer_connection_lifecycle PROPERTIES TIMEOUT 30)
+  set_tests_properties(turbo_media_test_peer_connection_lifecycle
+                      turbo_media_test_peer_connection_readiness PROPERTIES TIMEOUT 30)
 endif()
 turbo_media_add_rtc_test(turbo_media_test_speech_integration
                          test_speech_integration.c)
