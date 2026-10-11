@@ -50,7 +50,8 @@ service capability，因此还要求 RulesForge。TurboDB/Orm 不属于当前 Tu
 OpenH264、x265、libde265、libvpx、Opus、Salts、SaltsUtils、SaltsNet、CHttp、
 CNet、libSRTP 和 usrsctp。WebRTC PeerConnection、ICE、DTLS-SRTP 与
 DataChannel 由仓库内 TurboMedia 与 SaltsNet 模块实现。DTLS-SRTP 使用基于 GmSSL
-的私有引擎；BoringSSL 仍用于配置 PEM 兼容、旧 SSL 指针导出接口及独立互通测试。
+的私有引擎，生产与测试均不依赖 BoringSSL。配置私钥使用未加密 PKCS#8 PEM；
+旧 SSL 指针导出接口已移除，调用方使用 `turbo_dc_peer_get_srtp_keys`。
 具体算法范围和迁移限制见 [WebRTC 架构](webrtc/docs/arch-zh.md)。
 
 SDK 从 `SALTS_ROOT`、`SALTS_UTILS_ROOT`、`SALTSNET_ROOT`、`CHTTP_ROOT`

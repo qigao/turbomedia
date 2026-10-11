@@ -16,9 +16,9 @@ brew install cmake ninja
 # Windows: use the repository CMake user presets and vcpkg manifest below.
 ```
 
-The presets and manifest restore GmSSL for DTLS-SRTP and BoringSSL for PEM/legacy
-API compatibility and independent tests. Do not substitute OpenSSL for the
-BoringSSL compatibility targets. See [algorithm limits](arch-en.md#gmssl-migration-boundary).
+The presets and manifest restore GmSSL for DTLS-SRTP and PEM identities.
+Configured keys must be unencrypted PKCS#8 (`PRIVATE KEY`) PEM; SEC1, PKCS#1
+and encrypted keys are rejected. See [migration limits](arch-en.md#gmssl-migration-boundary).
 
 ### Build
 

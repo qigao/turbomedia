@@ -20,17 +20,9 @@
         "xml2"
       ]
     },
-    "boringssl",
     "libsrtp",
     "roaring",
     "usrsctp"
   ],
-  "builtin-baseline": "a51bb4d1434e6d0927ff79db8033bed8522b85df",
-  "overrides": [
-    {
-      "name": "boringssl",
-      "version-date": "2024-09-13",
-      "port-version": 1
-    }
-  ]
+  "builtin-baseline": "a51bb4d1434e6d0927ff79db8033bed8522b85df"
 }

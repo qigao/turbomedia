@@ -475,13 +475,19 @@ to drain. Already authenticated application data remains drainable after clean
 close, including records coalesced ahead of close_notify; destruction clears any
 undrained data. Terminal failures discard all queued data.
 
-Qualification includes an independent BoringSSL peer in both roles, each SRTP
-profile and matching exporter bytes, identity rejection, application data,
-fragmentation, ordinary datagram loss/reordering and final-flight recovery.
-The same formal suite covers mixed RSA/P-256 identities, damaged-tag discard,
-replay suppression, export capacity, bounded output failure, deadlines, closing
-alerts, early application records and paired GmSSL profile preference/final-flight
-retirement. These tests use runtime-generated identities, not reusable keys.
+The formal protocol suite uses paired GmSSL sessions in both roles, each SRTP
+profile, both AES record key sizes and matching exporter bytes. It retains
+identity rejection, application data, fragmentation, datagram loss/reordering,
+final-flight recovery, mixed RSA/P-256 identities, damaged-tag discard, replay
+suppression, export capacity, bounded output failure, deadlines, closing alerts,
+early application records, profile preference and final-flight retirement.
+The private constructor can restrict AES key size to 128 or 256 for these tests;
+production admits both with its original preference. P-256 identities are freshly
+generated. RSA uses a published .NET-generated test-only fixture because this
+GmSSL provider imports RSA private keys but has no RSA key generator.
+These are same-provider regressions: independent-provider interoperability is
+no longer exercised after removing the test dependency. Historical independent
+results do not qualify a changed head or establish browser interoperability.
 Production cutover also requires the existing SCTP, lifetime, WHIP and platform
 suites. The reference contracts are [DTLS 1.2](https://www.rfc-editor.org/rfc/rfc6347),
 [DTLS-SRTP](https://www.rfc-editor.org/rfc/rfc5764),
@@ -502,23 +508,38 @@ remain unchanged. Salts Core hashes certificate DER; production imports DER and
 PKCS#8 directly into the GmSSL context, verifying the key pair. Temporary private
 key bytes are wiped on import/failure; fingerprints publish only after admission.
 
-Two BoringSSL compatibility boundaries remain. `dc_identity.cpp` uses a temporary
-SSL context only to normalize configured PEM files (PKCS#8, SEC1 EC, PKCS#1 RSA).
-`dc_srtp_legacy.c` preserves the installed `srtp_derive_keys_from_dtls(void *ssl, ...)`
-contract accepting BoringSSL SSL*. Never pass it a GmSSL session. Production uses
-`turbo_dc_peer_get_srtp_keys` to export directly from the admitted engine.
-Certificate/key paths must be supplied together. Unreadable, mismatched or
-unsupported identities fail creation without generating a replacement. The old
-single-leaf PEM behavior is retained; no chain-file or password configuration is
-added. Configured identities now publish their SHA-256 fingerprint too.
+#### Complete dependency removal and caller migration
 
-The formal identity suite independently checks generated certificates and PEM
-normalization, fingerprints and rejection. Per the
-[pinned byte-builder contract](https://github.com/google/boringssl/blob/0.20240913.0/include/openssl/bytestring.h),
-failed builders may only be cleaned up. PEM normalization uses fixed, owned
-16 KiB storage so partial private DER can be wiped without inspecting failed
-builder state. Removing BoringSSL today would break these installed/PEM contracts
-and the independent test endpoint; this is not complete package removal.
+BoringSSL is removed from the manifest, package discovery, link targets,
+production adapters and tests. Retaining it only for PEM conversion or test peers
+would still require the package; replacing it with another crypto provider would
+add a dependency. The requested GmSSL-only graph instead uses GmSSL's native PEM
+reader and paired protocol tests, accepting the independent-interop coverage gap.
+RTSP Digest MD5 now uses Salts Core without changing its protocol digest. Obsolete
+RoomService/test links and the unused RTMP OpenSSL branch are removed.
+
+`dc_identity.cpp` reads a leaf `CERTIFICATE` and an unencrypted PKCS#8
+`PRIVATE KEY` directly. Certificate/key paths must be supplied together.
+Unreadable, mismatched, malformed or unsupported identities fail creation without
+generating a replacement. SEC1 `EC PRIVATE KEY`, PKCS#1 `RSA PRIVATE KEY` and
+`ENCRYPTED PRIVATE KEY` files are rejected; deployments must provision PKCS#8
+before upgrading. The single-leaf behavior remains; no chain-file or password
+configuration is added. Configured identities publish their SHA-256 fingerprint.
+
+Each decoded PEM object has a 16 KiB bound. The synchronous factory owns the
+file and fixed-capacity tstr buffers; nothing crosses a callback or thread.
+Partial reads retain the full allocation length for cleanup. On success unused
+tail bytes are cleared before shortening the buffer. Private DER is wiped after
+context admission or on any failure; no identity/fingerprint is published until
+key matching succeeds. Certificate tests cover P-256 generation, RSA/P-256 PKCS#8,
+fingerprints, mismatches, malformed/truncated/oversized input and rejected labels.
+
+The installed `srtp_derive_keys_from_dtls(void *ssl, ...)` API and its implementation
+are removed, with no alias, stub or pointer reinterpretation. This is a source
+and binary compatibility break for callers of that function. Rebuild callers
+against `turbo_dc_peer_get_srtp_keys` after authenticated connection readiness;
+its nonzero return value is the negotiated profile (zero means not ready/error).
+No production caller in this repository used the removed function.
 
 The central [GmSSL port](https://github.com/qigao/vcpkg-cache/tree/master/ports/gmssl)
 (3.2.0#9, upstream `7c9f02904ef33e59c87b4f16621cc8fd434e7579`) provides crypto and

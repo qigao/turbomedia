@@ -138,7 +138,6 @@ if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
                PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 endif()
  
-find_package(OpenSSL REQUIRED)
 find_package(GmSSL CONFIG REQUIRED)
 find_package(libSRTP CONFIG REQUIRED)
 find_package(unofficial-usrsctp CONFIG REQUIRED)

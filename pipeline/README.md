@@ -165,7 +165,7 @@ decoder/filter/encoder。
 
 若 Pipeline 生产验证失败，可停止链接 `TurboMedia::Pipeline` 并恢复原有手工流水线；
 没有持久化数据迁移。FFmpeg 图新增 `libavfilter` 运行时依赖；生产 WebRTC session
-需要随应用部署 TurboMedia/SaltsNet、BoringSSL、libSRTP、usrsctp 及其上游运行时依赖。
+需要随应用部署 TurboMedia/SaltsNet、GmSSL、libSRTP、usrsctp 及其上游运行时依赖。
 
 ## 生产 WebRTC backend
 
@@ -183,8 +183,8 @@ owner thread 驱动，不再建立额外事件队列。`max_rtp_packet_bytes` �
 0 使用 65535 bytes 默认值，超过上限会使 session 失败。
 
 STUN/TURN URI 遵循 SaltsNet ICE 配置格式，trickle ICE candidate 继续使用现有单字符串
-ABI；`allow_loopback` 直接传给 SaltsNet ICE，便于本机端到端测试。加密实现由构建期
-BoringSSL 检查保证，SRTP 使用 libSRTP。
+ABI；`allow_loopback` 直接传给 SaltsNet ICE，便于本机端到端测试。DTLS 使用基于
+GmSSL 的私有引擎，SRTP 使用 GmSSL 后端的 libSRTP。
 
 ## 验证范围
 

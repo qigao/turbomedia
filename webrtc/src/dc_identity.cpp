@@ -3,10 +3,7 @@
 
 #include <cmeta_crypto.h>
 #include <fmt.h>
-#include <openssl/bytestring.h>
-#include <openssl/evp.h>
-#include <openssl/ssl.h>
-#include <openssl/x509.h>
+#include <gmssl/pem.h>
 #include <memory>
 
 namespace {
@@ -15,34 +12,28 @@ void clear_key(char *bytes) {
     tstr_free(bytes);
 }
 
+int read_pem(const char *path, const char *label, size_t capacity, tstr *bytes) {
+    // FILE is the GmSSL PEM boundary. A single owned, bounded allocation is
+    // retained at full length on failure so the caller wipes partial secrets.
+    std::unique_ptr<FILE, decltype(&fclose)> input(fopen(path, "rb"), &fclose);
+    if (!input) return -1;
+    *bytes = tstr_new_len(nullptr, capacity);
+    if (!*bytes) return -1;
+    size_t size = 0;
+    if (pem_read(input.get(), label, reinterpret_cast<uint8_t *>(*bytes),
+                 &size, capacity) != 1 || !size || size > capacity || ferror(input.get()))
+        return -1;
+    cmeta_crypto_clear(*bytes + size, capacity - size);
+    return tstr_set_len_checked(*bytes, size) ? 0 : -1;
+}
+
 int load_pem(const char *cert_path, const char *key_path, tstr *cert, tstr *key) {
-    // Preserve the existing PEM formats (including SEC1 EC and PKCS#1 RSA).
-    // This temporary owner never creates a DTLS session or negotiates a cipher.
-    bssl::UniquePtr<SSL_CTX> parser(SSL_CTX_new(DTLS_method()));
-    if (!parser || SSL_CTX_use_certificate_file(parser.get(), cert_path, SSL_FILETYPE_PEM) != 1 ||
-        SSL_CTX_use_PrivateKey_file(parser.get(), key_path, SSL_FILETYPE_PEM) != 1 ||
-        SSL_CTX_check_private_key(parser.get()) != 1) return -1;
-    X509 *leaf = SSL_CTX_get0_certificate(parser.get());
-    int cert_size = i2d_X509(leaf, nullptr);
-    if (cert_size <= 0) return -1;
-    *cert = tstr_new_len(nullptr, static_cast<size_t>(cert_size));
-    if (!*cert) return -1;
-    auto *out = reinterpret_cast<uint8_t *>(*cert);
-    if (i2d_X509(leaf, &out) != cert_size) return -1;
-    // Fixed owned storage lets failure cleanup wipe partial DER without
-    // inspecting a failed CBB, and avoids retaining realloc copies of secrets.
+    constexpr size_t max_certificate_der = 16 * 1024;
     constexpr size_t max_private_der = 16 * 1024;
-    *key = tstr_new_len(nullptr, max_private_der);
-    if (!*key) return -1;
-    bssl::ScopedCBB encoded;
-    CBB_init_fixed(encoded.get(), reinterpret_cast<uint8_t *>(*key), max_private_der);
-    if (!EVP_marshal_private_key(encoded.get(), SSL_CTX_get0_privatekey(parser.get())) ||
-        !CBB_flush(encoded.get())) return -1;
-    const size_t key_size = CBB_len(encoded.get());
-    // ASN.1 prefix compaction can leave private bytes past the final DER end.
-    // Wipe that tail before shortening the length used by the owning deleter.
-    cmeta_crypto_clear(*key + key_size, max_private_der - key_size);
-    return tstr_set_len_checked(*key, key_size) ? 0 : -1;
+    if (read_pem(cert_path, "CERTIFICATE", max_certificate_der, cert)) return -1;
+    // PKCS#8 is the engine's native key format. Do not retry other encodings,
+    // decrypt keys, or silently generate an identity after a configured failure.
+    return read_pem(key_path, "PRIVATE KEY", max_private_der, key);
 }
 }
 

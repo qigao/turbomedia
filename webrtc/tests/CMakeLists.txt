@@ -37,13 +37,13 @@ target_link_libraries(
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
 turbo_media_add_webrtc_base_test(turbo_media_test_dc_certificate
-  test_dc_certificate.cpp ../src/dc_certificate.cpp ../src/dc_certificate_gmssl.cpp
+  test_dc_certificate.cpp ../src/dc_certificate_gmssl.cpp
   ../src/dc_identity.cpp ../src/gmssl_dtls.c)
-target_link_libraries(turbo_media_test_dc_certificate PRIVATE OpenSSL::SSL GmSSL::GmSSL)
+target_link_libraries(turbo_media_test_dc_certificate PRIVATE GmSSL::GmSSL)
 turbo_media_add_webrtc_base_test(turbo_media_test_gmssl_dtls
   test_gmssl_dtls.cpp ../src/gmssl_dtls.c
-  ../src/dc_certificate.cpp ../src/dc_certificate_gmssl.cpp)
-target_link_libraries(turbo_media_test_gmssl_dtls PRIVATE OpenSSL::SSL GmSSL::GmSSL)
+  ../src/dc_certificate_gmssl.cpp)
+target_link_libraries(turbo_media_test_gmssl_dtls PRIVATE GmSSL::GmSSL)
 if(NOT ANDROID)
   set_tests_properties(turbo_media_test_gmssl_dtls PROPERTIES TIMEOUT 60)
 endif()

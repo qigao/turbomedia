@@ -78,7 +78,9 @@ typedef struct {
 typedef struct {
     const char *cert_pem;     /* Optional PEM certificate file; supply with key_pem.
                               * Identity: P-256 ECDSA or RSA >= 2048 bits. */
-    const char *key_pem;      /* Optional PEM private-key file matching cert_pem. */
+    const char *key_pem;      /* Unencrypted PKCS#8 PRIVATE KEY PEM matching cert_pem.
+                              * Each decoded PEM object is limited to 16 KiB.
+                              * SEC1, PKCS#1 and encrypted keys are rejected. */
     int is_server;            /* TRUE if this is the server/answerer side */
     turbo_dc_transport_t transport;  /* Transport type (default = UDP) */
     uint16_t sctp_mtu;        /* SCTP path MTU (0 = default 1188) */

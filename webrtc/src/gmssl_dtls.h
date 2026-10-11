@@ -35,10 +35,13 @@ void turbo_gdtls_context_destroy(turbo_gdtls_context *ctx);
 int turbo_gdtls_context_fingerprint(const turbo_gdtls_context *ctx, uint8_t out[32]);
 
 /* Expected SHA-256 leaf fingerprint is mandatory. Profiles are RFC 5764/7714
- * IDs, in preference order, at most four; MTU is the complete UDP payload. */
+ * IDs, in preference order, at most four; MTU is the complete UDP payload.
+ * aes_key_bits is 0 (both supported sizes), 128 or 256. Production uses 0;
+ * the restriction also permits paired tests of each record cipher. */
 turbo_gdtls *turbo_gdtls_create(const turbo_gdtls_context *ctx, int server,
                               size_t mtu, const uint8_t expected_sha256[32],
-                              const uint16_t *profiles, size_t profile_count);
+                              const uint16_t *profiles, size_t profile_count,
+                              unsigned aes_key_bits);
 void turbo_gdtls_destroy(turbo_gdtls *session);
 int turbo_gdtls_start(turbo_gdtls *session, uint64_t now_ms);
 int turbo_gdtls_receive(turbo_gdtls *session, const void *packet, size_t size,

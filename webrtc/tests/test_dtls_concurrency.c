@@ -78,7 +78,7 @@ static void admitted_handshake(void *arg) {
     const uint16_t profiles[] = {1, 2, 7, 8};
     f->connect_result = turbo_gdtls_context_fingerprint(f->context->dtls_context, pin);
     f->peer->dtls.engine = turbo_gdtls_create(f->context->dtls_context, 0,
-        f->context->dtls_mtu, pin, profiles, 4);
+        f->context->dtls_mtu, pin, profiles, 4, 0);
     if (!f->connect_result && f->peer->dtls.engine) {
         f->peer->dtls.handshake_started = 1;
         f->connect_result = turbo_gdtls_start(f->peer->dtls.engine, cmeta_monotonic_ms());

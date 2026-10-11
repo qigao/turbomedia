@@ -383,7 +383,7 @@ ICE 收包保持原线程。worker 持有 peer 租约，但不在 peer-list mute
 租约，context 最后 join worker、释放身份。回调内重入销毁仍不支持；channel
 修改、transport 替换及上层状态访问仍须遵守原 owner 约束。
 
-生产不再使用 BoringSSL BIO；独立互通测试对端保留 packet BIO。生产回归保留
+生产和测试均移除 BoringSSL；协议测试改用 GmSSL 双端。生产回归保留
 小 MTU、SRTP 一致、最终 flight 丢包恢复、一次 CONNECTED、事务串行化、销毁
 等待和定时器回调重入。ready 服务端收到已认证重复 Finished 后重发保留 flight，
 不依赖应用写入。第一次已认证重试立即回复，后续每秒最多一次，避免客户端更早
@@ -402,19 +402,30 @@ EMS 和四种 SRTP profile。RSA 身份至少 2048 位。不支持恢复、重�
 1.0/1.3、其他 EC 身份曲线、有限域 DHE、ChaCha20。仅支持旧算法组合的对端会
 明确失败，不自动降级。Finished、CertificateVerify 和指纹通过后才发布 ready/export。
 
-仍保留两个 BoringSSL 兼容入口：`dc_identity.cpp` 用临时 SSL context 将
-PKCS#8、SEC1 EC、PKCS#1 RSA PEM 文件规范化；`dc_srtp_legacy.c` 保持已安装
-`srtp_derive_keys_from_dtls(void *ssl, ...)` 接收 BoringSSL SSL*。生产 peer
-通过 `turbo_dc_peer_get_srtp_keys` 使用 GmSSL 导出，不得将新指针传给旧接口。
-证书/密钥路径必须同时提供，不可读、不匹配或不支持的身份直接创建失败，
-不回退生成身份。保持原单叶证书语义，未增加链文件或加密密钥密码配置。
-配置身份现在也发布指纹。PEM 私钥编码使用固定 16 KiB 拥有型存储，失败时
-擦除部分结果。此阶段不能宣称已完全移除 BoringSSL 包。
+BoringSSL 已从 manifest、包发现、链接、生产适配和测试中移除，不保留备用后端。
+保留仅用于 PEM/测试的依赖仍不满足移除要求，引入其他 provider 会增加依赖；因此
+改用 GmSSL 原生 PEM 和双端测试，并明确接受独立互通覆盖的缺口。
+
+`dc_identity.cpp` 直接读取叶证书 `CERTIFICATE` 和未加密 PKCS#8 `PRIVATE KEY`。
+移除 SEC1 EC、PKCS#1 RSA 转换；加密私钥也不支持，升级前须准备 PKCS#8 文件。
+证书/密钥路径必须同时提供，不可读、不匹配、格式错误或不支持的身份直接失败，
+不回退生成身份。保持单叶证书语义，未增加链文件或密码配置。
+每个解码对象最多 16 KiB，同步工厂独占文件和 tstr 存储；失败保留完整长度用于
+清理，成功先擦除未用尾部再缩短。私钥在导入后或失败时擦除，准入前不发布输出。
+
+已删除公开 `srtp_derive_keys_from_dtls(void *ssl, ...)` 声明及实现，没有别名或
+空实现。这会破坏使用该函数的外部调用方源码/二进制兼容性，须重编译并改用
+`turbo_dc_peer_get_srtp_keys`，其非零返回值是协商 profile，零表示未就绪或错误；
+仓库内无旧接口调用。
+RTSP Digest MD5 改用 Salts Core，保持摘要行为；清理 RoomService/test 旧链接和
+未使用的 RTMP OpenSSL 分支。
 
 引擎保持私有且不安装。GmSSL 3.2.0#9 不提供现成 DTLS-SRTP owner；状态机
 复用成熟密码算法且无新依赖，代价是维护分片/重传并验证收窄的算法范围。
-独立双向互通、四种 profile、混合身份、损坏标签、重放、容量、关闭、超时
-测试不能替代本次生产 SCTP、WHIP 和平台回归，不代表浏览器、移动端运行或
+GmSSL 双端保留两种 AES 记录密钥长度、四种 profile、混合身份、损坏标签、重放、
+容量、关闭和超时测试。P-256 临时生成，RSA 使用公开的 .NET 测试专用夹具；
+provider 没有 RSA 生成入口。当前不再执行独立 provider 互通，历史结果不能替代
+新提交的验证。双端测试不能替代生产 SCTP、WHIP 和平台回归，不代表浏览器、移动端运行或
 TSAN 已验证。回滚须成套恢复旧 owner、证书导入和测试，并保留此前准入、
 数据报边界和最终 flight 修复。SRTP/auth 可独立回滚，缓存只读恢复不变。
 容量、一手资料及迁移边界见 [GmSSL migration boundary](arch-en.md#gmssl-migration-boundary)。

@@ -58,7 +58,6 @@ set(ROOM_SERVICE_LIBS
     turbo_media_auth
     turbo_media_revocation_https
     Salts::Crypto
-    OpenSSL::Crypto
     Salts::Core
     Salts::JsonParser
     Salts::TomlParser
@@ -164,7 +163,6 @@ target_link_libraries(test_room_service_app
     turbo_media_tenant_quota
     turbo_media_tenant_quota_wire
     Salts::Crypto
-    OpenSSL::Crypto
     Salts::Core
     Salts::JsonParser
     Salts::TomlParser

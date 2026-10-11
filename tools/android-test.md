@@ -329,7 +329,7 @@ target_link_libraries(
           TurboMedia::Android)
 ```
 
-consumer 还必须通过相同 `arm64-android` vcpkg installed tree 提供 OpenSSL、libSRTP 等
+consumer 还必须通过相同 `arm64-android` vcpkg installed tree 提供 GmSSL、libSRTP 等
 静态依赖。不能把 Windows package 或另一 ABI 的 package 放进 Android 查找路径。
 
 ## 选择其他 Android preset

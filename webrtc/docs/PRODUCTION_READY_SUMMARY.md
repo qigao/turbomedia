@@ -70,9 +70,9 @@ not prove public-network, browser, capacity, security or recovery readiness.
 - Room Service configures CHTTP `chttp_client` with mandatory peer and
   hostname verification. It uses the system trust store by default or an
   explicitly configured private CA bundle for internal SFU HTTPS.
-- Production DTLS uses the private GmSSL engine. BoringSSL remains for configured
-  PEM normalization, the legacy SSL-pointer exporter and independent tests;
-  `OpenSSL::SSL` / `OpenSSL::Crypto` are its compatibility CMake target names.
+- DTLS and PEM identity loading use GmSSL exclusively. The legacy SSL-pointer
+  exporter is removed; callers use `turbo_dc_peer_get_srtp_keys`. Tests use paired
+  GmSSL sessions and do not qualify independent-provider interoperability.
   See [migration limits](arch-en.md#gmssl-migration-boundary) for supported
   identities/ciphers and outstanding qualification.
 - Remote SDP must provide one valid SHA-256 DTLS fingerprint for every active

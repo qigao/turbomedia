@@ -62,6 +62,7 @@ struct turbo_gdtls {
     int requested_certificate, ems;
     size_t mtu;
     uint16_t profiles[4], selected_profile, cipher;
+    unsigned aes_key_bits;
     size_t profile_count;
     uint8_t expected_fingerprint[32], client_random[32], server_random[32];
     uint8_t cookie[255];
@@ -367,8 +368,10 @@ int turbo_gdtls_context_fingerprint(const turbo_gdtls_context *ctx, uint8_t out[
 }
 turbo_gdtls *turbo_gdtls_create(const turbo_gdtls_context *ctx, int server,
                               size_t mtu, const uint8_t expected_sha256[32],
-                              const uint16_t *profiles, size_t profile_count) {
+                              const uint16_t *profiles, size_t profile_count,
+                              unsigned aes_key_bits) {
     if (!ctx || !expected_sha256 || !profiles || !profile_count || profile_count > 4 ||
+        (aes_key_bits != 0 && aes_key_bits != 128 && aes_key_bits != 256) ||
         mtu < 256 || mtu > MAX_DATAGRAM || (server != 0 && server != 1)) return NULL;
     for (size_t i = 0; i < profile_count; ++i) {
         if (profiles[i] != 1 && profiles[i] != 2 && profiles[i] != 7 && profiles[i] != 8) return NULL;
@@ -377,6 +380,7 @@ turbo_gdtls *turbo_gdtls_create(const turbo_gdtls_context *ctx, int server,
     turbo_gdtls *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->context = ctx; s->server = server; s->mtu = mtu;
+    s->aes_key_bits = aes_key_bits;
     s->profile_count = profile_count;
     memcpy(s->profiles, profiles, profile_count * sizeof(*profiles));
     memcpy(s->expected_fingerprint, expected_sha256, 32);
@@ -490,8 +494,9 @@ static int send_client_hello(turbo_gdtls *s) {
     if (!hello_extensions(s, &ext, 0) || !write16(&w, DTLS12) ||
         !write_bytes(&w, s->client_random, 32) || !write_bytes(&w, &empty, 1) ||
         !write_bytes(&w, &cookie_size, 1) || !write_bytes(&w, s->cookie, s->cookie_size) ||
-        !write16(&w, 8) || !write16(&w, CIPHER_ECDSA128) || !write16(&w, CIPHER_RSA128) ||
-        !write16(&w, CIPHER_ECDSA256) || !write16(&w, CIPHER_RSA256) ||
+        !write16(&w, s->aes_key_bits ? 4 : 8) ||
+        (s->aes_key_bits != 256 && (!write16(&w, CIPHER_ECDSA128) || !write16(&w, CIPHER_RSA128))) ||
+        (s->aes_key_bits != 128 && (!write16(&w, CIPHER_ECDSA256) || !write16(&w, CIPHER_RSA256))) ||
         !write_bytes(&w, compression, sizeof(compression)) ||
         !write16(&w, (uint16_t)ext.size) || !write_bytes(&w, ext.data, ext.size))
         return TURBO_GDTLS_CAPACITY;
@@ -704,7 +709,8 @@ static int receive_client_hello(turbo_gdtls *s, const uint8_t *message, size_t s
         !equal_secret(hello_hash, s->cookie_hello_hash, sizeof(hello_hash))) return TURBO_GDTLS_AUTH;
     uint16_t first = s->context->signature == SIG_RSA ? CIPHER_RSA128 : CIPHER_ECDSA128;
     uint16_t second = s->context->signature == SIG_RSA ? CIPHER_RSA256 : CIPHER_ECDSA256;
-    s->cipher = has16(ciphers, first) ? first : has16(ciphers, second) ? second : 0;
+    s->cipher = s->aes_key_bits != 256 && has16(ciphers, first) ? first :
+        s->aes_key_bits != 128 && has16(ciphers, second) ? second : 0;
     if (!s->cipher) return TURBO_GDTLS_PROTOCOL;
     int result = parse_extensions(s, extensions, 0);
     if (result) return result;
@@ -723,6 +729,8 @@ static int receive_server_hello(turbo_gdtls *s, reader body) {
     uint16_t selected = load16(cipher);
     if (selected != CIPHER_ECDSA128 && selected != CIPHER_ECDSA256 &&
         selected != CIPHER_RSA128 && selected != CIPHER_RSA256) return TURBO_GDTLS_PROTOCOL;
+    unsigned bits = selected == CIPHER_ECDSA256 || selected == CIPHER_RSA256 ? 256 : 128;
+    if (s->aes_key_bits && s->aes_key_bits != bits) return TURBO_GDTLS_PROTOCOL;
     int result = parse_extensions(s, extensions, 1);
     if (result) return result;
     s->cipher = selected; memcpy(s->server_random, random, 32);

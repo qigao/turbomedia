@@ -78,7 +78,7 @@ static int dtls_start_locked(turbo_dc_peer_t *peer) {
     static const uint16_t profiles[] = {1, 2, 7, 8};
     peer->dtls.engine = turbo_gdtls_create(peer->ctx->dtls_context,
         peer->is_dtls_server, peer->ctx->dtls_mtu, expected, profiles,
-        sizeof(profiles) / sizeof(profiles[0]));
+        sizeof(profiles) / sizeof(profiles[0]), 0);
     if (!peer->dtls.engine) return TURBO_GDTLS_NOMEM;
     return turbo_gdtls_start(peer->dtls.engine, cmeta_monotonic_ms());
 }

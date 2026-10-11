@@ -20,8 +20,10 @@ uses Apache-2.0; the shared [GmSSL port](https://github.com/qigao/vcpkg-cache/tr
 records its source revision, local patches and packaged license. The current
 provider recipe is 3.2.0 port revision 9.
 DataChannel also uses this package for ephemeral P-256 X.509 identities and the
-private DTLS-SRTP engine. BoringSSL remains for configured PEM normalization,
-the installed legacy SSL-pointer exporter and independent interoperability tests.
+private DTLS-SRTP engine and native PKCS#8 PEM loading. TurboMedia no longer
+depends on BoringSSL, including in its formal test targets. The public test-only
+RSA identity in `webrtc/tests/dtls_rsa_fixture.h` was generated locally with .NET
+RSA-2048/SHA-256; it is test data, never a deployment identity.
 
 The libSRTP 2.8.0 overlay also uses that GmSSL provider for AES-CTR, AES-GCM and
 HMAC-SHA1. [libSRTP](https://github.com/cisco/libsrtp) retains its BSD-3-Clause

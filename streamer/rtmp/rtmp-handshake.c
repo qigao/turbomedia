@@ -5,11 +5,7 @@
 #include <assert.h>
 #include <math.h>
 
-#if defined(_OPENSSL_)
-#include <openssl/sha.h>
-#include <openssl/hmac.h>
-#define _FLASH_HANDSHAKE_
-#elif defined(_IETF_HMAC_)
+#if defined(_IETF_HMAC_)
 #include "sha.h"
 #define SHA256_DIGEST_LENGTH SHA256HashSize
 #define _FLASH_HANDSHAKE_
@@ -47,39 +43,6 @@ static const uint8_t rtmp_client_version[] = {
 	0x0C, 0x00, 0x0D, 0x0E
 };
 
-#if defined(_OPENSSL_)
-static int rtmp_handshake_make_digest(const uint8_t* key, size_t len, const uint8_t* ptr, size_t ptrlen, const uint8_t* digest, uint8_t* dst)
-{
-	static HMAC_CTX        *hmac;
-	unsigned int            digestlen;
-
-	if (hmac == NULL) {
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-		static HMAC_CTX  shmac;
-		hmac = &shmac;
-		HMAC_CTX_init(hmac);
-#else
-		hmac = HMAC_CTX_new();
-#endif
-	}
-
-	HMAC_Init_ex(hmac, key, len, EVP_sha256(), NULL);
-	if (digest)
-	{
-		assert(digest + SHA256_DIGEST_LENGTH <= ptr + ptrlen);
-		HMAC_Update(hmac, ptr, digest - ptr);
-		if (digest + SHA256_DIGEST_LENGTH < ptr + ptrlen)
-			HMAC_Update(hmac, digest + SHA256_DIGEST_LENGTH, ptrlen - (digest - ptr) - SHA256_DIGEST_LENGTH);
-	}
-	else
-	{
-		HMAC_Update(hmac, ptr, ptrlen);
-	}
-	HMAC_Final(hmac, dst, &digestlen);
-	assert(digestlen == SHA256_DIGEST_LENGTH);
-	return 0;
-}
-#else
 static int rtmp_handshake_make_digest(const uint8_t* key, size_t len, const uint8_t* ptr, size_t ptrlen, const uint8_t* digest, uint8_t* dst)
 {
 	HMACContext hmac;
@@ -98,7 +61,6 @@ static int rtmp_handshake_make_digest(const uint8_t* key, size_t len, const uint
 	hmacResult(&hmac, dst);
 	return 0;
 }
-#endif
 
 /*
 // http://blog.csdn.net/win_lin/article/details/13006803

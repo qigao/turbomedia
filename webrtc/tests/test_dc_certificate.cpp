@@ -1,124 +1,44 @@
-#include "dc_certificate.h"
-#include "dc_certificate_der.h"
 #include "dc_identity.h"
+#include "dtls_test_identity.h"
 #include <cmeta_crypto.h>
-#include <openssl/pem.h>
-#include <openssl/rsa.h>
+#include <gmssl/pem.h>
+#include <gmssl/x509.h>
 #include <tinytest.hpp>
-
-#include <openssl/bn.h>
-#include <openssl/ec_key.h>
-#include <openssl/evp.h>
-#include <openssl/x509.h>
-
 #include <ctime>
+#include <memory>
 
-suite("DataChannel ephemeral identity") {
-    static bssl::UniquePtr<SSL_CTX> context;
-    static bssl::UniquePtr<EVP_PKEY> public_key;
-    static bssl::UniquePtr<BIGNUM> serial;
-    static tstr fingerprint;
-
-    before_each() {
-        fingerprint = nullptr;
-        context.reset(SSL_CTX_new(DTLS_method()));
-    }
-    after_each() {
-        tstr_free(fingerprint);
-        fingerprint = nullptr;
-        serial.reset();
-        public_key.reset();
-        context.reset();
-    }
-
-    it("imports a self-signed P-256 identity and advertises its exact SHA-256 digest") {
-        check_not_null(context.get());
-        const time_t before = std::time(nullptr);
-        check_equal(turbo_dc_generate_identity(context.get(), &fingerprint), 0);
-        const time_t after = std::time(nullptr);
-        X509 *certificate = SSL_CTX_get0_certificate(context.get());
-        check_not_null(certificate);
-        check_equal(SSL_CTX_check_private_key(context.get()), 1);
-        public_key.reset(X509_get_pubkey(certificate));
-        check_not_null(public_key.get());
-        check_equal(EVP_PKEY_id(public_key.get()), EVP_PKEY_EC);
-        const EC_KEY *ec = EVP_PKEY_get0_EC_KEY(public_key.get());
-        check_not_null(ec);
-        check_equal(EC_GROUP_get_curve_name(EC_KEY_get0_group(ec)), NID_X9_62_prime256v1);
-        check_equal(X509_get_signature_nid(certificate), NID_ecdsa_with_SHA256);
-        check_equal(X509_verify(certificate, public_key.get()), 1);
-        check_equal(X509_get_version(certificate), 2L);
-        check_equal(X509_NAME_cmp(X509_get_subject_name(certificate),
-                                 X509_get_issuer_name(certificate)), 0);
-        char common_name[64] = {};
-        check_equal(X509_NAME_get_text_by_NID(X509_get_subject_name(certificate),
-            NID_commonName, common_name, sizeof(common_name)),
-            static_cast<int>(sizeof("TurboNet DataChannel") - 1));
-        check_equal(common_name, "TurboNet DataChannel");
-
-        serial.reset(ASN1_INTEGER_to_BN(X509_get_serialNumber(certificate), nullptr));
-        check_not_null(serial.get());
-        check_false(BN_is_negative(serial.get()));
-        check_false(BN_is_zero(serial.get()));
-        check_less_equal(BN_num_bits(serial.get()), 128u);
-        int days = 0, seconds = 0;
-        check_equal(ASN1_TIME_diff(&days, &seconds, X509_get0_notBefore(certificate),
-                                  X509_get0_notAfter(certificate)), 1);
-        check_equal(days, 365);
-        check_equal(seconds, 0);
-        time_t not_before = 0;
-        check_equal(ASN1_TIME_to_time_t(X509_get0_notBefore(certificate), &not_before), 1);
-        check_greater_equal(not_before, before);
-        check_less_equal(not_before, after);
-
-        // Compute through the importing provider, independently of Salts Core.
-        unsigned char digest[32];
-        unsigned int digest_size = 0;
-        check_equal(X509_digest(certificate, EVP_sha256(), digest, &digest_size), 1);
-        check_equal(digest_size, 32u);
-        check_not_null(fingerprint);
-        check_equal(tstr_len(fingerprint), size_t{95});
-        constexpr char hex[] = "0123456789ABCDEF";
-        for (size_t i = 0; i < sizeof(digest); ++i) {
-            check_equal(fingerprint[i * 3], hex[digest[i] >> 4]);
-            check_equal(fingerprint[i * 3 + 1], hex[digest[i] & 15]);
-            if (i + 1 < sizeof(digest)) check_equal(fingerprint[i * 3 + 2], ':');
-        }
-    }
-
-    it("rejects invalid owners without publishing an identity") {
-        check_not_null(context.get());
-        check_equal(turbo_dc_generate_identity(nullptr, &fingerprint), -1);
-        check_null(fingerprint);
-        check_equal(turbo_dc_generate_identity(context.get(), nullptr), -1);
-        check_null(SSL_CTX_get0_certificate(context.get()));
-        tstr output = nullptr;
-        check_equal(turbo_dc_generate_certificate_der(nullptr, &output), -1);
-        check_null(output);
-        check_equal(turbo_dc_generate_certificate_der(&output, nullptr), -1);
-        check_null(output);
-        check_equal(turbo_dc_generate_certificate_der(&output, &output), -1);
-        check_null(output);
+namespace {
+bool write_pem_file(const char *path, const char *label, const void *data, size_t size) {
+    std::unique_ptr<FILE, decltype(&fclose)> file(fopen(path, "wb"), &fclose);
+    if (!file || pem_write(file.get(), label, static_cast<const uint8_t *>(data), size) != 1 ||
+        fflush(file.get()) || ferror(file.get())) return false;
+    return fclose(file.release()) == 0;
+}
+void check_fingerprint(turbo_gdtls_context *identity, tstr text, tstr certificate) {
+    uint8_t expected[32], actual[32];
+    check_equal(cmeta_sha256(certificate, tstr_len(certificate), expected), SALTS_OK);
+    check_equal(turbo_gdtls_context_fingerprint(identity, actual), 0);
+    check_equal(actual, expected, sizeof(expected));
+    check_not_null(text);
+    check_equal(tstr_len(text), size_t{95});
+    constexpr char hex[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < sizeof(actual); ++i) {
+        check_equal(text[i * 3], hex[actual[i] >> 4]);
+        check_equal(text[i * 3 + 1], hex[actual[i] & 15]);
+        if (i < 31) check_equal(text[i * 3 + 2], ':');
     }
 }
+}
 
-
-suite("GmSSL production identity admission") {
-    static bssl::UniquePtr<SSL_CTX> source;
-    static bssl::UniquePtr<BIO> certificate_pem, private_pem;
+suite("GmSSL DataChannel identities") {
     static turbo_gdtls_context *identity;
-    static tstr expected, actual;
+    static tstr certificate, key, other_certificate, other_key, fingerprint, oversized;
     static char *certificate_path, *key_path;
-
+    static X509_KEY public_key;
     before_each() {
         identity = nullptr;
-        expected = actual = nullptr;
-        certificate_path = key_path = nullptr;
-        source.reset(SSL_CTX_new(DTLS_method()));
-        check_not_null(source.get());
-        check_equal(turbo_dc_generate_identity(source.get(), &expected), 0);
-        certificate_pem.reset(BIO_new(BIO_s_mem()));
-        private_pem.reset(BIO_new(BIO_s_mem()));
+        certificate = key = other_certificate = other_key = fingerprint = oversized = nullptr;
+        public_key = {};
         certificate_path = tt_make_temp_file("dtls-cert-", ".pem");
         key_path = tt_make_temp_file("dtls-key-", ".pem");
         check_not_null(certificate_path);
@@ -126,93 +46,136 @@ suite("GmSSL production identity admission") {
     }
     after_each() {
         turbo_gdtls_context_destroy(identity);
-        tstr_free(expected);
-        tstr_free(actual);
+        if (key) cmeta_crypto_clear(key, tstr_len(key));
+        if (other_key) cmeta_crypto_clear(other_key, tstr_len(other_key));
+        tstr_free(certificate); tstr_free(key);
+        tstr_free(other_certificate); tstr_free(other_key);
+        tstr_free(fingerprint); tstr_free(oversized);
+        x509_key_cleanup(&public_key);
         if (certificate_path) { tt_remove_file(certificate_path); free(certificate_path); }
         if (key_path) { tt_remove_file(key_path); free(key_path); }
-        if (private_pem) {
-            char *bytes = nullptr;
-            long size = BIO_get_mem_data(private_pem.get(), &bytes);
-            if (size > 0) cmeta_crypto_clear(bytes, static_cast<size_t>(size));
-        }
-        private_pem.reset();
-        certificate_pem.reset();
-        source.reset();
     }
 
-    for (int format = 0; format < 3; ++format) {
-        it("normalizes PEM identity format %d and publishes its exact fingerprint", format) {
-            if (format == 2) {
-                bssl::UniquePtr<RSA> rsa(RSA_new());
-                bssl::UniquePtr<BIGNUM> exponent(BN_new());
-                bssl::UniquePtr<EVP_PKEY> key(EVP_PKEY_new());
-                bssl::UniquePtr<X509> cert(X509_dup(SSL_CTX_get0_certificate(source.get())));
-                check_equal(BN_set_word(exponent.get(), RSA_F4), 1);
-                check_equal(RSA_generate_key_ex(rsa.get(), 2048, exponent.get(), nullptr), 1);
-                check_equal(EVP_PKEY_set1_RSA(key.get(), rsa.get()), 1);
-                check_equal(X509_set_pubkey(cert.get(), key.get()), 1);
-                check_greater(X509_sign(cert.get(), key.get(), EVP_sha256()), 0);
-                check_equal(SSL_CTX_use_certificate(source.get(), cert.get()), 1);
-                check_equal(SSL_CTX_use_PrivateKey(source.get(), key.get()), 1);
-            }
-            X509 *cert = SSL_CTX_get0_certificate(source.get());
-            EVP_PKEY *key = SSL_CTX_get0_privatekey(source.get());
-            check_equal(PEM_write_bio_X509(certificate_pem.get(), cert), 1);
-            if (format == 0) {
-                check_equal(PEM_write_bio_PKCS8PrivateKey(private_pem.get(), key,
-                    nullptr, nullptr, 0, nullptr, nullptr), 1);
-            } else if (format == 1) {
-                check_equal(PEM_write_bio_ECPrivateKey(private_pem.get(), EVP_PKEY_get0_EC_KEY(key),
-                    nullptr, nullptr, 0, nullptr, nullptr), 1);
-            } else {
-                check_equal(PEM_write_bio_RSAPrivateKey(private_pem.get(), EVP_PKEY_get0_RSA(key),
-                    nullptr, nullptr, 0, nullptr, nullptr), 1);
-            }
-            char *bytes = nullptr;
-            long size = BIO_get_mem_data(certificate_pem.get(), &bytes);
-            check_greater(size, 0L);
-            check_equal(tt_write_file(certificate_path, bytes, static_cast<size_t>(size)), 0);
-            size = BIO_get_mem_data(private_pem.get(), &bytes);
-            check_greater(size, 0L);
-            check_equal(tt_write_file(key_path, bytes, static_cast<size_t>(size)), 0);
-            check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &actual), 0);
+    it("generates a self-signed P-256 identity with the expected name, serial and validity") {
+        const time_t before = std::time(nullptr);
+        check_equal(turbo_dc_generate_certificate_der(&certificate, &key), 0);
+        const time_t after = std::time(nullptr);
+        const auto *der = reinterpret_cast<const uint8_t *>(certificate);
+        size_t size = tstr_len(certificate);
+        check_equal(x509_cert_verify_by_ca_cert(der, size, der, size, nullptr, 0), 1);
+        int version, inner_algorithm, algorithm;
+        const uint8_t *serial, *issuer, *subject;
+        size_t serial_size, issuer_size, subject_size;
+        time_t not_before, not_after;
+        check_equal(x509_cert_get_details(der, size, &version, &serial, &serial_size,
+            &inner_algorithm, &issuer, &issuer_size, &not_before, &not_after,
+            &subject, &subject_size, &public_key, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, &algorithm, nullptr, nullptr), 1);
+        check_equal(version, X509_version_v3);
+        check_equal(inner_algorithm, OID_ecdsa_with_sha256);
+        check_equal(algorithm, OID_ecdsa_with_sha256);
+        check_equal(public_key.algor, OID_ec_public_key);
+        check_equal(public_key.algor_param, OID_secp256r1);
+        check_equal(issuer_size, subject_size);
+        check_equal(issuer, subject, subject_size);
+        check_greater(serial_size, size_t{0});
+        check_less_equal(serial_size, size_t{16});
+        bool nonzero = false;
+        for (size_t i = 0; i < serial_size; ++i) nonzero |= serial[i] != 0;
+        check_true(nonzero);
+        check_greater_equal(not_before, before);
+        check_less_equal(not_before, after);
+        check_equal(not_after - not_before, time_t{365L * 24 * 60 * 60});
+        int tag;
+        const uint8_t *name; size_t name_size;
+        check_equal(x509_name_get_common_name(subject, subject_size, &tag, &name, &name_size), 1);
+        constexpr char expected[] = "TurboNet DataChannel";
+        check_equal(name_size, sizeof(expected) - 1);
+        check_equal(name, expected, name_size);
+        identity = turbo_gdtls_context_create(certificate, tstr_len(certificate), key, tstr_len(key));
+        check_not_null(identity);
+    }
+
+    it("creates an ephemeral identity only when both paths are absent") {
+        check_equal(turbo_dc_identity_create(nullptr, nullptr, &identity, &fingerprint), 0);
+        check_not_null(identity);
+        check_equal(tstr_len(fingerprint), size_t{95});
+    }
+
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        it("loads native PKCS#8 PEM, RSA=%d, and advertises the exact leaf fingerprint", rsa) {
+            check_equal(dtls_test_identity(rsa != 0, &certificate, &key), 0);
+            check_true(write_pem_file(certificate_path, "CERTIFICATE", certificate, tstr_len(certificate)));
+            check_true(write_pem_file(key_path, "PRIVATE KEY", key, tstr_len(key)));
+            check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &fingerprint), 0);
             check_not_null(identity);
-            uint8_t digest[32], independent[32];
-            unsigned length = 0;
-            check_equal(X509_digest(cert, EVP_sha256(), independent, &length), 1);
-            check_equal(length, 32u);
-            check_equal(turbo_gdtls_context_fingerprint(identity, digest), 0);
-            check_equal(memcmp(digest, independent, sizeof(digest)), 0);
-            check_equal(tstr_len(actual), size_t{95});
-            constexpr char hex[] = "0123456789ABCDEF";
-            for (size_t i = 0; i < sizeof(digest); ++i) {
-                check_equal(actual[i * 3], hex[digest[i] >> 4]);
-                check_equal(actual[i * 3 + 1], hex[digest[i] & 15]);
-                if (i < 31) check_equal(actual[i * 3 + 2], ':');
-            }
+            check_fingerprint(identity, fingerprint, certificate);
         }
     }
 
-    it("rejects missing, partial and mismatched configured identities without fallback") {
-        check_equal(turbo_dc_identity_create(certificate_path, nullptr, &identity, &actual), -1);
+    it("rejects invalid owners, partial paths and empty or missing files without publishing outputs") {
+        check_equal(turbo_dc_generate_certificate_der(nullptr, &key), -1);
+        check_null(key);
+        check_equal(turbo_dc_generate_certificate_der(&certificate, nullptr), -1);
+        check_null(certificate);
+        check_equal(turbo_dc_generate_certificate_der(&key, &key), -1);
+        check_null(key);
+        check_equal(turbo_dc_identity_create(nullptr, nullptr, nullptr, &fingerprint), -1);
+        check_null(fingerprint);
+        check_equal(turbo_dc_identity_create(nullptr, nullptr, &identity, nullptr), -1);
         check_null(identity);
-        check_null(actual);
-        check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &actual), -1);
-        check_null(identity);
-        check_null(actual);
-        check_equal(PEM_write_bio_X509(certificate_pem.get(), SSL_CTX_get0_certificate(source.get())), 1);
-        tstr_free(expected);
-        expected = nullptr;
-        check_equal(turbo_dc_generate_identity(source.get(), &expected), 0);
-        check_equal(PEM_write_bio_PKCS8PrivateKey(private_pem.get(), SSL_CTX_get0_privatekey(source.get()),
-            nullptr, nullptr, 0, nullptr, nullptr), 1);
-        char *bytes = nullptr;
-        long size = BIO_get_mem_data(certificate_pem.get(), &bytes);
-        check_equal(tt_write_file(certificate_path, bytes, static_cast<size_t>(size)), 0);
-        size = BIO_get_mem_data(private_pem.get(), &bytes);
-        check_equal(tt_write_file(key_path, bytes, static_cast<size_t>(size)), 0);
-        check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &actual), -1);
-        check_null(identity);
-        check_null(actual);
+        check_equal(turbo_dc_identity_create(certificate_path, nullptr, &identity, &fingerprint), -1);
+        check_equal(turbo_dc_identity_create(nullptr, key_path, &identity, &fingerprint), -1);
+        check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &fingerprint), -1);
+        tt_remove_file(certificate_path);
+        check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &fingerprint), -1);
+        check_null(identity); check_null(fingerprint);
+    }
+
+    it("rejects mismatched keys and malformed DER without generating a replacement identity") {
+        check_equal(turbo_dc_generate_certificate_der(&certificate, &key), 0);
+        check_equal(turbo_dc_generate_certificate_der(&other_certificate, &other_key), 0);
+        check_true(write_pem_file(certificate_path, "CERTIFICATE", certificate, tstr_len(certificate)));
+        check_true(write_pem_file(key_path, "PRIVATE KEY", other_key, tstr_len(other_key)));
+        check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &fingerprint), -1);
+        check_null(identity); check_null(fingerprint);
+        key[0] = 0;
+        check_true(write_pem_file(key_path, "PRIVATE KEY", key, tstr_len(key)));
+        check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &fingerprint), -1);
+        check_null(identity); check_null(fingerprint);
+    }
+
+    for (const char *label : {"EC PRIVATE KEY", "RSA PRIVATE KEY", "ENCRYPTED PRIVATE KEY"}) {
+        it("rejects unsupported %s encoding without a compatibility parser", label) {
+            check_equal(turbo_dc_generate_certificate_der(&certificate, &key), 0);
+            check_true(write_pem_file(certificate_path, "CERTIFICATE", certificate, tstr_len(certificate)));
+            check_true(write_pem_file(key_path, label, key, tstr_len(key)));
+            check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &fingerprint), -1);
+            check_null(identity); check_null(fingerprint);
+        }
+    }
+
+    it("rejects truncated PEM after partially decoding private bytes") {
+        check_equal(turbo_dc_generate_certificate_der(&certificate, &key), 0);
+        check_true(write_pem_file(certificate_path, "CERTIFICATE", certificate, tstr_len(certificate)));
+        constexpr char partial[] = "-----BEGIN PRIVATE KEY-----\nMAECAwQFBgcICQoLDA0ODw==\n";
+        check_equal(tt_write_file(key_path, partial, sizeof(partial) - 1), 0);
+        check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &fingerprint), -1);
+        check_null(identity); check_null(fingerprint);
+    }
+
+    for (int oversized_key = 0; oversized_key < 2; ++oversized_key) {
+        it("rejects a decoded object exceeding 16 KiB, private=%d", oversized_key) {
+            check_equal(turbo_dc_generate_certificate_der(&certificate, &key), 0);
+            oversized = tstr_new_len(nullptr, 16 * 1024 + 1);
+            check_not_null(oversized);
+            memset(oversized, 0xa5, tstr_len(oversized));
+            tstr cert_data = oversized_key ? certificate : oversized;
+            tstr key_data = oversized_key ? oversized : key;
+            check_true(write_pem_file(certificate_path, "CERTIFICATE", cert_data, tstr_len(cert_data)));
+            check_true(write_pem_file(key_path, "PRIVATE KEY", key_data, tstr_len(key_data)));
+            check_equal(turbo_dc_identity_create(certificate_path, key_path, &identity, &fingerprint), -1);
+            check_null(identity); check_null(fingerprint);
+        }
     }
 }
