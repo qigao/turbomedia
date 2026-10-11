@@ -23,7 +23,7 @@ int turbo_dc_generate_identity(SSL_CTX *context, tstr *fingerprint) {
     };
     std::unique_ptr<char, decltype(&tstr_free)> cert_der(cert_bytes, &tstr_free);
     std::unique_ptr<char, decltype(clear_private_key)> key_der(key_bytes, clear_private_key);
-    if (tstr_len(cert_bytes) > static_cast<size_t>(std::numeric_limits<long>::max())) return -1;
+    if (tstr_len(cert_bytes) > static_cast<size_t>((std::numeric_limits<long>::max)())) return -1;
 
     const auto *cert_in = reinterpret_cast<const uint8_t *>(cert_bytes);
     bssl::UniquePtr<X509> certificate(d2i_X509(nullptr, &cert_in,

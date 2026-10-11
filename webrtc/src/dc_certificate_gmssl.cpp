@@ -41,7 +41,7 @@ int turbo_dc_generate_certificate_der(tstr *certificate, tstr *private_key) {
     constexpr time_t validity_seconds = 365L * 24 * 60 * 60;
     const time_t not_before = std::time(nullptr);
     if (not_before < 0 || not_before == static_cast<time_t>(-1) ||
-        not_before > std::numeric_limits<time_t>::max() - validity_seconds) return -1;
+        not_before > (std::numeric_limits<time_t>::max)() - validity_seconds) return -1;
     const time_t not_after = not_before + validity_seconds;
 
     auto sign_certificate = [&](uint8_t **out, size_t *size) {

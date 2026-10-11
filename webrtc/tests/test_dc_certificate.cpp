@@ -48,7 +48,8 @@ suite("DataChannel ephemeral identity") {
                                  X509_get_issuer_name(certificate)), 0);
         char common_name[64] = {};
         check_equal(X509_NAME_get_text_by_NID(X509_get_subject_name(certificate),
-            NID_commonName, common_name, sizeof(common_name)), 19);
+            NID_commonName, common_name, sizeof(common_name)),
+            static_cast<int>(sizeof("TurboNet DataChannel") - 1));
         check_equal(common_name, "TurboNet DataChannel");
 
         serial.reset(ASN1_INTEGER_to_BN(X509_get_serialNumber(certificate), nullptr));
