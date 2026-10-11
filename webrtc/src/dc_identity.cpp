@@ -4,6 +4,7 @@
 #include <cmeta_crypto.h>
 #include <fmt.h>
 #include <openssl/bytestring.h>
+#include <openssl/evp.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <memory>

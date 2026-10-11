@@ -84,6 +84,7 @@ struct turbo_gdtls {
     int replay_initialized;
     uint8_t peer_finished[12];
     uint16_t peer_finished_sequence;
+    int final_flight_retried;
     uint64_t now, started_at, deadline, last_flight_sent, final_until;
     uint32_t rto;
 };
@@ -863,9 +864,14 @@ static int receive_fragments(turbo_gdtls *s, const uint8_t *data, size_t size, u
             if (s->server && type == HS_FINISHED && sequence == s->peer_finished_sequence &&
                 total == 12 && offset == 0 && length == 12 &&
                 equal_secret(data + HANDSHAKE_HEADER, s->peer_finished, 12) &&
-                s->now < s->final_until && s->now - s->last_flight_sent >= INITIAL_RTO) {
+                s->now < s->final_until && (!s->final_flight_retried ||
+                    s->now - s->last_flight_sent >= INITIAL_RTO)) {
+                // The client's RTO starts before we receive its Finished.
+                // Do not suppress its first retry relative to our later send
+                // time; rate-limit subsequent authenticated requests instead.
                 int result = resend_flight(s);
                 if (result) return result;
+                s->final_flight_retried = 1;
             }
         } else if (sequence < s->receive_handshake) {
             if (s->flight_count && s->now - s->last_flight_sent >= INITIAL_RTO) {

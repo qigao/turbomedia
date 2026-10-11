@@ -70,9 +70,11 @@ not prove public-network, browser, capacity, security or recovery readiness.
 - Room Service configures CHTTP `chttp_client` with mandatory peer and
   hostname verification. It uses the system trust store by default or an
   explicitly configured private CA bundle for internal SFU HTTPS.
-- The dependency manifest and overlay select BoringSSL; the
-  `OpenSSL::SSL` and `OpenSSL::Crypto` names in CMake are compatibility target
-  names exported by the package.
+- Production DTLS uses the private GmSSL engine. BoringSSL remains for configured
+  PEM normalization, the legacy SSL-pointer exporter and independent tests;
+  `OpenSSL::SSL` / `OpenSSL::Crypto` are its compatibility CMake target names.
+  See [migration limits](arch-en.md#gmssl-migration-boundary) for supported
+  identities/ciphers and outstanding qualification.
 - Remote SDP must provide one valid SHA-256 DTLS fingerprint for every active
   media section. A bundled transport must use consistent ICE credentials and
   fingerprint values across those sections.

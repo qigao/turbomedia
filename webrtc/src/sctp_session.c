@@ -120,7 +120,7 @@ int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, 
 
     int written = dtls_write_application_data(peer, data, length);
     if (written <= 0) {
-        TLOG_ERRORF("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
+        TLOG_ERRORF("SCTP outbound DTLS write failed bytes={} ret={} errno={}",
                    length, written, errno);
         dc_peer_release(peer);
         return -1;

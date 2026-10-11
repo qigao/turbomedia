@@ -55,4 +55,3 @@ int srtp_derive_keys_from_dtls(void *ssl_ptr,
 
     return 0;
 }
-

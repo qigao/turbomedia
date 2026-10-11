@@ -119,7 +119,7 @@ DataChannel API
     ↓
 SCTP (usrsctp) - Reliable/unreliable messaging
     ↓
-DTLS (BoringSSL) - Encryption
+DTLS 1.2 (GmSSL primitives) - Encryption
     ↓
 Transport: UDP / TCP / KCP / ICE
 ```

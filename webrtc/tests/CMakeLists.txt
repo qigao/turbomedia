@@ -47,9 +47,18 @@ target_link_libraries(turbo_media_test_gmssl_dtls PRIVATE OpenSSL::SSL GmSSL::Gm
 if(NOT ANDROID)
   set_tests_properties(turbo_media_test_gmssl_dtls PROPERTIES TIMEOUT 60)
 endif()
-turbo_media_add_webrtc_test(turbo_media_test_dtls_concurrency test_dtls_concurrency.c)
-target_link_libraries(turbo_media_test_dtls_concurrency PRIVATE
-  Salts::CNet unofficial::usrsctp::usrsctp roaring::roaring)
+# Internal ownership barriers require private engine/admission functions, which
+# are intentionally absent from the Windows DLL ABI. Compile the production
+# source list into this formal test; public integration tests still use the DLL.
+turbo_media_add_webrtc_base_test(turbo_media_test_dtls_concurrency test_dtls_concurrency.c)
+foreach(_dc_source IN LISTS TURBO_MEDIA_DATACHANNEL_SOURCES)
+  target_sources(turbo_media_test_dtls_concurrency PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
+endforeach()
+get_target_property(_dc_test_libraries turbo_media_datachannel LINK_LIBRARIES)
+target_link_libraries(turbo_media_test_dtls_concurrency PRIVATE ${_dc_test_libraries})
+unset(_dc_test_libraries)
+unset(_dc_source)
 if(NOT ANDROID)
   set_tests_properties(turbo_media_test_dtls_concurrency PROPERTIES TIMEOUT 30)
 endif()

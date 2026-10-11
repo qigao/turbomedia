@@ -386,7 +386,10 @@ ICE 收包保持原线程。worker 持有 peer 租约，但不在 peer-list mute
 生产不再使用 BoringSSL BIO；独立互通测试对端保留 packet BIO。生产回归保留
 小 MTU、SRTP 一致、最终 flight 丢包恢复、一次 CONNECTED、事务串行化、销毁
 等待和定时器回调重入。ready 服务端收到已认证重复 Finished 后重发保留 flight，
-不依赖应用写入。#160 缺少历史报文追踪，回归通过不能单独证明旧失败原因。
+不依赖应用写入。第一次已认证重试立即回复，后续每秒最多一次，避免客户端更早
+启动的 RTO 被服务端发送时刻的限流压制；可控传输延迟用例覆盖此边界和重放限流。
+私有并发测试直接编译生产源码清单，保持 Windows DLL ABI 私有边界；公开集成
+测试仍链接正式共享库。#160 缺少历史报文追踪，回归通过不能单独证明旧失败原因。
 候选方案和取舍见 [DTLS operation ownership](arch-en.md#dtls-operation-ownership)。
 
 **GmSSL 迁移与兼容边界：**

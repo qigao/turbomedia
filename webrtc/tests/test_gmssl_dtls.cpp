@@ -493,7 +493,7 @@ suite("GmSSL DTLS-SRTP independent interoperability") {
 suite("GmSSL DTLS-SRTP paired owner contracts") {
     static turbo_gdtls_context *contexts[2];
     static turbo_gdtls *sessions[2];
-    static tstr certificate, key, packet;
+    static tstr certificate, key, packet, repeated_finished;
     before_each() {
         clock_ms = 1000000;
         for (auto &context : contexts) {
@@ -512,6 +512,72 @@ suite("GmSSL DTLS-SRTP paired owner contracts") {
         tstr_free(key); key = nullptr;
         tstr_free(certificate); certificate = nullptr;
         tstr_free(packet); packet = nullptr;
+        tstr_free(repeated_finished); repeated_finished = nullptr;
+    }
+    it("recovers the first final-flight retry despite transit delay and limits later replays") {
+        constexpr uint16_t profile = 1;
+        for (int i = 0; i < 2; ++i) {
+            uint8_t pin[32];
+            check_equal(turbo_gdtls_context_fingerprint(contexts[1 - i], pin), 0);
+            sessions[i] = turbo_gdtls_create(contexts[i], i, 300, pin, &profile, 1);
+            check_not_null(sessions[i]);
+            check_equal(turbo_gdtls_start(sessions[i], clock_ms), 0);
+        }
+        uint64_t client_retry = 0, server_ready_at = 0;
+        for (unsigned step = 0; step < 20 && !turbo_gdtls_ready(sessions[1]); ++step) {
+            clock_ms += 20;
+            while ((packet = turbo_gdtls_take_datagram(sessions[0])) != nullptr) {
+                if (static_cast<uint8_t>(packet[0]) == 22 && packet[4] == 1) {
+                    client_retry = turbo_gdtls_deadline(sessions[0]);
+                    clock_ms += 50; // Client's RTO is already running in transit.
+                }
+                check_equal(turbo_gdtls_receive(sessions[1], packet, tstr_len(packet), clock_ms), 0);
+                tstr_free(packet); packet = nullptr;
+            }
+            if (turbo_gdtls_ready(sessions[1])) server_ready_at = clock_ms;
+            while ((packet = turbo_gdtls_take_datagram(sessions[1])) != nullptr) {
+                // Drop the entire final server flight, including CCS.
+                if (!server_ready_at)
+                    check_equal(turbo_gdtls_receive(sessions[0], packet, tstr_len(packet), clock_ms), 0);
+                tstr_free(packet); packet = nullptr;
+            }
+        }
+        check_true(turbo_gdtls_ready(sessions[1]));
+        check_false(turbo_gdtls_ready(sessions[0]));
+        check_greater(client_retry, server_ready_at);
+        check_less(client_retry - server_ready_at, uint64_t{1000});
+        clock_ms = client_retry;
+        check_equal(turbo_gdtls_poll(sessions[0], clock_ms), 0);
+        while ((packet = turbo_gdtls_take_datagram(sessions[0])) != nullptr) {
+            if (static_cast<uint8_t>(packet[0]) == 22 && packet[4] == 1) {
+                repeated_finished = tstr_new_len(packet, tstr_len(packet));
+                check_not_null(repeated_finished);
+            }
+            check_equal(turbo_gdtls_receive(sessions[1], packet, tstr_len(packet), clock_ms), 0);
+            tstr_free(packet); packet = nullptr;
+        }
+        check_not_null(repeated_finished);
+        unsigned replies = 0;
+        while ((packet = turbo_gdtls_take_datagram(sessions[1])) != nullptr) {
+            ++replies;
+            check_equal(turbo_gdtls_receive(sessions[0], packet, tstr_len(packet), clock_ms), 0);
+            tstr_free(packet); packet = nullptr;
+        }
+        check_greater(replies, 0u);
+        check_true(turbo_gdtls_ready(sessions[0]));
+        for (unsigned i = 0; i < 10; ++i)
+            check_equal(turbo_gdtls_receive(sessions[1], repeated_finished,
+                tstr_len(repeated_finished), clock_ms), 0);
+        check_null(turbo_gdtls_take_datagram(sessions[1]));
+        clock_ms += 999;
+        check_equal(turbo_gdtls_receive(sessions[1], repeated_finished,
+            tstr_len(repeated_finished), clock_ms), 0);
+        check_null(turbo_gdtls_take_datagram(sessions[1]));
+        ++clock_ms;
+        check_equal(turbo_gdtls_receive(sessions[1], repeated_finished,
+            tstr_len(repeated_finished), clock_ms), 0);
+        packet = turbo_gdtls_take_datagram(sessions[1]);
+        check_not_null(packet);
     }
     it("negotiates server preference, exports matching keys and retires the retained final flight") {
         constexpr uint16_t profiles[2][4] = {{1, 2, 7, 8}, {8, 7, 2, 1}};

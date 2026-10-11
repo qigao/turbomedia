@@ -82,7 +82,7 @@ typedef struct {
     int is_server;            /* TRUE if this is the server/answerer side */
     turbo_dc_transport_t transport;  /* Transport type (default = UDP) */
     uint16_t sctp_mtu;        /* SCTP path MTU (0 = default 1188) */
-    uint16_t dtls_mtu;        /* DTLS MTU (0 = default 1280) */
+    uint16_t dtls_mtu;        /* DTLS datagram MTU, >= 256 (0 = default 1280) */
     int disable_sctp;         /* TRUE for DTLS-only transport without SCTP/DataChannel */
 } turbo_dc_config_t;
 

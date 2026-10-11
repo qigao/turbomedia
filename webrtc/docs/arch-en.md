@@ -419,9 +419,15 @@ Production packetization, MTU fragmentation and bounded queues now belong to the
 engine, with no stream BIO or partial output packets. The old packet BIO remains
 only in the independent test endpoint; its short-read/reset implementation is no
 longer a production contract. A ready server retains its final flight and resends
-it on authenticated repeated Finished, without application writes. Production
+it on authenticated repeated Finished, without application writes. The first
+authenticated retry is answered immediately because the client RTO starts before
+the server sends its final flight; subsequent replies are limited to one per
+second. A deterministic transit-delay test covers that boundary and replay limit. Production
 regressions retain small-MTU handshakes/export, final-flight loss, one CONNECTED
 event, transaction/export serialization, destroy draining and callback reentry.
+The private ownership test compiles the production source list to access internal
+barriers on Windows without expanding the DLL ABI. Public integration suites
+continue to link the shared DataChannel component.
 #160 lacks a packet trace; green regressions alone do not establish its old cause.
 
 ### GmSSL migration boundary
