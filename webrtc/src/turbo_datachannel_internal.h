@@ -67,8 +67,8 @@ typedef struct {
     int stopped;
     /* Admission is protected by operation_mutex; SSL/BIO state by busy. */
     int busy;
-    int timer_started;
-    cmeta_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
+    int handshake_started;
+    int timer_active;
 } dtls_session_t;
 
 /* SCTP session state */
@@ -101,6 +101,7 @@ struct turbo_dc_context_s {
     int transport_stop_requested;
     int transport_command_pending;
     int transport_command_done;
+    uint32_t active_dtls_timers;     /* Protected by transport_mutex */
     dc_transport_task_fn transport_command;
     void *transport_command_arg1;
     void *transport_command_arg2;
@@ -227,9 +228,7 @@ void dc_set_context_error(turbo_dc_context_t *ctx, turbo_dc_error_code_t code, c
  * ============================================================================ */
 
 int dtls_session_init(turbo_dc_peer_t *peer);
-int dtls_session_init_timer(turbo_dc_peer_t *peer);
-
-void dtls_session_cleanup(turbo_dc_peer_t *peer);
+void dtls_session_poll_timeout(turbo_dc_peer_t *peer);
 void dtls_send_output(turbo_dc_peer_t *peer);
 void dtls_process_handshake(turbo_dc_peer_t *peer);
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len);

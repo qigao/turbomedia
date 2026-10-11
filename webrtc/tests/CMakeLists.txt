@@ -39,6 +39,9 @@ turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
 turbo_media_add_webrtc_test(turbo_media_test_dtls_concurrency test_dtls_concurrency.c)
 target_link_libraries(turbo_media_test_dtls_concurrency PRIVATE
   Salts::CNet unofficial::usrsctp::usrsctp OpenSSL::SSL roaring::roaring)
+# The test installs BoringSSL's message hook directly; BoringSSL is C++ even
+# though its public hook and this test are C.
+set_target_properties(turbo_media_test_dtls_concurrency PROPERTIES LINKER_LANGUAGE CXX)
 if(NOT ANDROID)
   set_tests_properties(turbo_media_test_dtls_concurrency PROPERTIES TIMEOUT 30)
 endif()

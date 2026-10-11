@@ -342,6 +342,19 @@ free(peer);
 - 公开生命周期 API 通过内部同步投递协议串行化传输操作
 - 回调中不得重入销毁其所属 peer
 
+**DTLS 并发与重传：**
+- peer 的操作计数只保护存活期。SSL/BIO、握手完成与停止标志通过独立的
+  串行准入保护；SCTP、状态回调和 transport 发送在准入释放后执行，避免重入锁环。
+- context worker 观察 BoringSSL 的重传截止时间，因此 ICE context 也创建一个
+  worker。ICE 收包和普通调用保持原线程；没有在途握手时 worker 等待条件变量，
+  握手期间按 10ms 间隔检查，直接 CNet 仍沿用 1ms poll。协议超时值不变。
+- worker 持有 peer 操作租约，但在执行传输或应用回调前释放 peer-list mutex。
+  销毁先拒绝新操作并排空租约，再释放 SSL；context 最后停止并 join worker。
+  不再依赖原生 timer 自重排与销毁之间的隐含同步。
+- 取舍是每个 ICE context 增加一个 worker；没有宣称性能收益。此协议不保证
+  任意并发 channel 修改、transport 替换或上层 peer-connection 字段访问安全。
+  背景、候选方案与回滚边界见 [DTLS operation ownership](arch-en.md#dtls-operation-ownership)。
+
 ---
 
 ## 错误处理

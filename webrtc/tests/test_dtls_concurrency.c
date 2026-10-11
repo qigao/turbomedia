@@ -1,4 +1,4 @@
-/* Exercise real SSL transactions and native timer callbacks, without an SFU. */
+/* Exercise real SSL transactions and timer-owner callbacks, without an SFU. */
 #include "turbo_datachannel_internal.h"
 #include "turbo_srtp_defs.h"
 #include "tinytest.h"
@@ -180,7 +180,7 @@ spec("DTLS concurrent entry and timer drain") {
         check_equal(fixture.exported_profile, (uint16_t)0);
     }
 
-    it("drains the live handshake before destroying SSL and its timer") {
+    it("drains the live handshake before destroying SSL") {
         start_paused_handshake();
         start_other(destroy_peer);
         int destruction_admitted = 0;
@@ -200,7 +200,7 @@ spec("DTLS concurrent entry and timer drain") {
         check_equal(turbo_dc_peer_connect(fixture.peer), 0);
         check_true(wait_flag(&fixture.retransmit_entered));
         start_other(close_peer);
-        /* close must not wait for the native callback: that callback may be
+        /* close must not wait for the timer-owner callback: it may be
          * waiting on the caller's transport owner, as it is here. */
         check_true(wait_flag(&fixture.other_done));
         check_true(fixture.callback_export_returned);

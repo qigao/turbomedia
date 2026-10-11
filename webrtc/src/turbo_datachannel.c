@@ -138,6 +138,7 @@ enum {
     DC_CNET_MAX_SEND_BYTES = 64 * 1024,
     DC_CNET_RECEIVE_BYTES = 64 * 1024,
     DC_CNET_POLL_INTERVAL_MS = 1,
+    DC_DTLS_POLL_INTERVAL_MS = 10,
     DC_CNET_STOP_TIMEOUT_MS = 5000,
     DC_CNET_LISTENER_BACKLOG = 128,
     DC_CNET_DATAGRAM_SEND_CAPACITY = 64,
@@ -410,8 +411,7 @@ static void dc_stream_state_cb(void *user, cnet_connection connection,
     (void)connection;
     if (!peer) return;
     if (state == CNET_CONNECTION_CONNECTED) {
-        if (dtls_session_init_timer(peer) != 0 ||
-            cnet_receive(&peer->stream_client, peer->stream_connection, 1u) != SALTS_OK) {
+        if (cnet_receive(&peer->stream_client, peer->stream_connection, 1u) != SALTS_OK) {
             dc_fail_peer(peer, TURBO_DC_ERROR_CREATE_TRANSPORT,
                          "failed to initialize CNet stream receive");
             return;
@@ -683,10 +683,6 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                     return;
                 }
                 peer->transport_ops = &g_direct_ops;
-                if (dtls_session_init_timer(peer) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to create DTLS timer");
-                    return;
-                }
                 dc_notify_state(peer, TURBO_DC_STATE_CONNECTING);
                 if (status) *status = 0;
             } else {
@@ -702,10 +698,6 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
                     return;
                 }
                 peer->transport_ops = &g_direct_ops;
-                if (dtls_session_init_timer(peer) != 0) {
-                    dc_set_peer_error(peer, TURBO_DC_ERROR_CREATE_TRANSPORT, "failed to create DTLS timer");
-                    return;
-                }
                 dc_notify_state(peer, TURBO_DC_STATE_CONNECTING);
                 dtls_process_handshake(peer);
                 if (status) *status = 0;
@@ -717,7 +709,7 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
 
 static void dc_poll_direct_peer(turbo_dc_peer_t *peer) {
     size_t events = 0;
-    if (!peer || peer->destroying) return;
+    if (!peer) return;
     if (peer->listener_initialized && peer->stream_connection.generation == 0u) {
         int ready = 0;
         if (cnet_listener_wait(&peer->listener, 0u, &ready) == SALTS_OK && ready) {
@@ -749,8 +741,15 @@ static void dc_transport_thread_main(void *arg) {
 
         cmeta_mutex_lock(&ctx->transport_mutex);
         if (!ctx->transport_stop_requested && !ctx->transport_command_pending) {
-            (void)cmeta_cond_timedwait(&ctx->transport_cond, &ctx->transport_mutex,
-                                       DC_CNET_POLL_INTERVAL_NS);
+            if (ctx->transport == TURBO_DC_TRANSPORT_ICE && ctx->active_dtls_timers == 0) {
+                cmeta_cond_wait(&ctx->transport_cond, &ctx->transport_mutex);
+            } else {
+                uint64_t interval = ctx->transport == TURBO_DC_TRANSPORT_ICE
+                    ? (uint64_t)DC_DTLS_POLL_INTERVAL_MS * UINT64_C(1000000)
+                    : DC_CNET_POLL_INTERVAL_NS;
+                (void)cmeta_cond_timedwait(&ctx->transport_cond, &ctx->transport_mutex,
+                                           interval);
+            }
         }
         if (ctx->transport_stop_requested) {
             cmeta_mutex_unlock(&ctx->transport_mutex);
@@ -773,8 +772,24 @@ static void dc_transport_thread_main(void *arg) {
         }
 
         cmeta_mutex_lock(&ctx->peer_mutex);
-        for (peer = ctx->peers_head; peer; peer = peer->next_in_context)
-            dc_poll_direct_peer(peer);
+        peer = ctx->peers_head;
+        while (peer) {
+            turbo_dc_peer_t *next;
+            if (dc_peer_acquire(peer) == 0) {
+                /* Keep this node linked, but never hold the list mutex across
+                 * transport/SCTP/application callbacks. Destruction drains the
+                 * lease before unlinking, so next is read from a live node. */
+                cmeta_mutex_unlock(&ctx->peer_mutex);
+                dc_poll_direct_peer(peer);
+                dtls_session_poll_timeout(peer);
+                cmeta_mutex_lock(&ctx->peer_mutex);
+                next = peer->next_in_context;
+                dc_peer_release(peer);
+            } else {
+                next = peer->next_in_context;
+            }
+            peer = next;
+        }
         cmeta_mutex_unlock(&ctx->peer_mutex);
     }
     g_dc_transport_owner = NULL;
@@ -944,13 +959,13 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
     cmeta_mutex_init(&ctx->peer_mutex);
     ctx->peer_mutex_initialized = 1;
 
-    if (ctx->transport != TURBO_DC_TRANSPORT_ICE) {
+    {
         cmeta_mutex_init(&ctx->transport_mutex);
         cmeta_cond_init(&ctx->transport_cond);
         ctx->transport_sync_initialized = 1;
         if (cmeta_thread_create(&ctx->transport_thread, dc_transport_thread_main, ctx) != 0) {
             dc_set_context_error(ctx, TURBO_DC_ERROR_CREATE_TRANSPORT,
-                                 "failed to start CNet transport owner");
+                                 "failed to start transport/DTLS owner");
             cmeta_cond_destroy(&ctx->transport_cond);
             cmeta_mutex_destroy(&ctx->transport_mutex);
             ctx->transport_sync_initialized = 0;
@@ -1129,7 +1144,6 @@ peer_create_fail:
         usrsctp_deregister_address(peer);
         peer->sctp_address_registered = 0;
     }
-    dtls_session_cleanup(peer);
     if (peer->dtls.ssl) {
         SSL_free(peer->dtls.ssl);
         peer->dtls.ssl = NULL;
@@ -1251,7 +1265,7 @@ int turbo_dc_peer_set_remote_fingerprint(
 int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
     if (!peer || dc_peer_acquire(peer) != 0) return -1;
     dtls_session_lock(peer);
-    if (peer->state != TURBO_DC_STATE_NEW || peer->dtls.timer_started ||
+    if (peer->state != TURBO_DC_STATE_NEW || peer->dtls.handshake_started ||
         peer->dtls.handshake_done || peer->dtls.stopped) {
         dtls_session_unlock(peer);
         dc_peer_release(peer);
@@ -1277,11 +1291,6 @@ int turbo_dc_peer_is_dtls_server(const turbo_dc_peer_t *peer) {
 int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
                                          void *transport,
                                          turbo_dc_transport_send_cb send_cb) {
-    int rc;
-    void *old_transport;
-    turbo_dc_transport_send_cb old_send;
-    const dc_transport_ops_t *old_ops;
-
     if (!peer) {
         return -1;
     }
@@ -1309,21 +1318,12 @@ int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
         return -2;
     }
 
-    old_transport = peer->external_transport;
-    old_send = peer->external_transport_send;
-    old_ops = peer->transport_ops;
     peer->external_transport = transport;
     peer->external_transport_send = send_cb;
     peer->transport_ops = &g_external_transport_ops;
 
-    rc = dtls_session_init_timer(peer);
-    if (rc != 0) {
-        peer->external_transport = old_transport;
-        peer->external_transport_send = old_send;
-        peer->transport_ops = old_ops;
-    }
     dc_peer_release(peer);
-    return rc;
+    return 0;
 }
 
 void turbo_dc_peer_feed_transport_data(turbo_dc_peer_t *peer,
@@ -1443,9 +1443,6 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
     if (!peer || dc_peer_begin_destroy(peer) != 0) return;
 
     dc_peer_close_impl(peer);
-
-    /* Clean up DTLS timer before freeing SSL */
-    dtls_session_cleanup(peer);
 
     if (peer->dtls.ssl) {
         SSL_free(peer->dtls.ssl);
