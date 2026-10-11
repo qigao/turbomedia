@@ -98,7 +98,30 @@ struct Fixture {
             tstr_free(owned_packet); owned_packet = nullptr;
         }
         if (early_application && !early_sent && turbo_gdtls_ready(reference)) {
+            // The engine emits CCS and Finished as separate datagrams. Hold
+            // the complete final flight so application data really arrives
+            // before Finished, regardless of the peer's packet grouping.
+            reference_held_packet = tstr_new_len(nullptr, 65535);
+            if (!reference_held_packet) return false;
+            size_t flight_size = 0;
+            while ((owned_packet = turbo_gdtls_take_datagram(reference)) != nullptr) {
+                size_t size = tstr_len(owned_packet);
+                if (size > tstr_len(reference_held_packet) - flight_size) return false;
+                memcpy(reference_held_packet + flight_size, owned_packet, size);
+                flight_size += size;
+                tstr_free(owned_packet); owned_packet = nullptr;
+            }
+            if (!flight_size || !tstr_set_len_checked(reference_held_packet, flight_size)) return false;
             if (turbo_gdtls_write(reference, "early", 5)) return false;
+            owned_packet = turbo_gdtls_take_datagram(reference);
+            if (!owned_packet || turbo_gdtls_ready(session)) return false;
+            gm_error = receive_owned();
+            if (gm_error) return false;
+            tstr_free(owned_packet); owned_packet = turbo_gdtls_take_plaintext(session);
+            if (owned_packet) return false; // Early data must not be published.
+            gm_error = turbo_gdtls_receive(session, reference_held_packet, flight_size, clock_ms);
+            tstr_free(reference_held_packet); reference_held_packet = nullptr;
+            if (gm_error) return false;
             early_sent = true;
         }
         while ((owned_packet = turbo_gdtls_take_datagram(reference)) != nullptr) {
