@@ -297,6 +297,10 @@ typedef struct {
     deque_t outgoing;
     size_t max_packet;
     unsigned packets;
+    unsigned ready_packets;
+    unsigned dropped_packets;
+    unsigned connected_events;
+    int drop_first_ready_packet;
     int send_failed;
 } packet_endpoint_t;
 
@@ -307,15 +311,34 @@ static void queue_packet(void *transport, const void *data, size_t len) {
     /* A transport callback may reenter SSL APIs; production must release
      * admission before invoking it. Do not assert on a worker thread. */
     srtp_keying_material_t keys;
-    (void)turbo_dc_peer_get_srtp_keys(endpoint->peer, &keys);
+    uint16_t profile = turbo_dc_peer_get_srtp_keys(endpoint->peer, &keys);
     tstr packet = tstr_new_len(data, len);
     cmeta_mutex_lock(&endpoint->mutex);
     if (len > endpoint->max_packet) endpoint->max_packet = len;
     ++endpoint->packets;
+    if (profile) ++endpoint->ready_packets;
+    /* The server publishes readiness before sending its final flight. Drop
+     * that first ready packet once, without parsing or modifying DTLS bytes. */
+    if (profile && endpoint->drop_first_ready_packet && !endpoint->dropped_packets) {
+        ++endpoint->dropped_packets;
+        tstr_free(packet);
+        cmeta_mutex_unlock(&endpoint->mutex);
+        return;
+    }
     if (!packet || deque_push_back(&endpoint->outgoing, &packet) != STL_OK) {
         endpoint->send_failed = 1;
         tstr_free(packet);
     }
+    cmeta_mutex_unlock(&endpoint->mutex);
+}
+
+static void record_packet_endpoint_state(turbo_dc_peer_t *peer,
+                                         turbo_dc_state_t old_state,
+                                         turbo_dc_state_t state, void *user) {
+    packet_endpoint_t *endpoint = user;
+    (void)peer; (void)old_state;
+    cmeta_mutex_lock(&endpoint->mutex);
+    if (state == TURBO_DC_STATE_CONNECTED) ++endpoint->connected_events;
     cmeta_mutex_unlock(&endpoint->mutex);
 }
 
@@ -333,8 +356,9 @@ static void setup_packet_endpoints(void) {
                     _Alignof(tstr), DTLS_BIO_MAX_PACKETS), STL_OK);
         endpoint->context = turbo_dc_context_create(&config);
         check_not_null(endpoint->context);
-        endpoint->peer = turbo_dc_peer_create(endpoint->context, NULL, 0, NULL);
+        endpoint->peer = turbo_dc_peer_create(endpoint->context, NULL, 0, endpoint);
         check_not_null(endpoint->peer);
+        turbo_dc_peer_on_state(endpoint->peer, record_packet_endpoint_state);
         check_equal(turbo_dc_peer_set_external_transport(
                     endpoint->peer, endpoint, queue_packet), 0);
     }
@@ -377,6 +401,58 @@ static void deliver_packets(int sender) {
 spec("DTLS datagram transport handshake") {
     before_each() { setup_packet_endpoints(); }
     after_each() { cleanup_packet_endpoints(); }
+
+    it("recovers a lost final server flight after the server has become ready") {
+        srtp_keying_material_t keys[2] = {0};
+        uint16_t profiles[2] = {0};
+        cmeta_mutex_lock(&endpoints[1].mutex);
+        endpoints[1].drop_first_ready_packet = 1;
+        cmeta_mutex_unlock(&endpoints[1].mutex);
+        check_equal(turbo_dc_peer_connect(endpoints[1].peer), 0);
+        check_equal(turbo_dc_peer_connect(endpoints[0].peer), 0);
+        deliver_packets(0); /* ClientHello. */
+        deliver_packets(1); /* Server authentication flight. */
+        deliver_packets(0); /* Client authentication/Finished; server reply lost. */
+        cmeta_mutex_lock(&endpoints[1].mutex);
+        unsigned dropped = endpoints[1].dropped_packets;
+        cmeta_mutex_unlock(&endpoints[1].mutex);
+        check_equal(dropped, 1u);
+        check_equal(turbo_dc_peer_get_state(endpoints[1].peer), TURBO_DC_STATE_CONNECTED);
+        check_not_equal(turbo_dc_peer_get_srtp_keys(endpoints[1].peer, &keys[1]), (uint16_t)0);
+        check_equal(turbo_dc_peer_get_srtp_keys(endpoints[0].peer, &keys[0]), (uint16_t)0);
+
+        /* Let BoringSSL's existing client deadline generate the retry. The
+         * ready server has no active handshake timer or application writes. */
+        uint64_t deadline = cmeta_monotonic_ms() + 3000;
+        do {
+            deliver_packets(0);
+            deliver_packets(1);
+            for (int i = 0; i < 2; ++i)
+                profiles[i] = turbo_dc_peer_get_srtp_keys(endpoints[i].peer, &keys[i]);
+            if (profiles[0] && profiles[1]) break;
+            cmeta_sleep_ms(1);
+        } while (cmeta_monotonic_ms() < deadline);
+
+        check_not_equal(profiles[0], (uint16_t)0);
+        check_equal(profiles[0], profiles[1]);
+        check_equal(keys[0].key_len, keys[1].key_len);
+        check_equal(keys[0].salt_len, keys[1].salt_len);
+        check_equal(memcmp(keys[0].client_key, keys[1].client_key, keys[0].key_len), 0);
+        check_equal(memcmp(keys[0].server_key, keys[1].server_key, keys[0].key_len), 0);
+        check_equal(memcmp(keys[0].client_salt, keys[1].client_salt, keys[0].salt_len), 0);
+        check_equal(memcmp(keys[0].server_salt, keys[1].server_salt, keys[0].salt_len), 0);
+        for (int i = 0; i < 2; ++i) {
+            cmeta_mutex_lock(&endpoints[i].mutex);
+            unsigned connected = endpoints[i].connected_events;
+            unsigned ready_packets = endpoints[i].ready_packets;
+            int failed = endpoints[i].send_failed;
+            cmeta_mutex_unlock(&endpoints[i].mutex);
+            check_false(failed);
+            check_equal(connected, 1u);
+            check_equal(turbo_dc_peer_get_state(endpoints[i].peer), TURBO_DC_STATE_CONNECTED);
+            if (i == 1) check_true(ready_packets >= 2);
+        }
+    }
 
     it("preserves small-MTU flights through authenticated handshake and SRTP export") {
         srtp_keying_material_t keys[2] = {0};
