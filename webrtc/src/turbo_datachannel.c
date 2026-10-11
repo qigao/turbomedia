@@ -250,6 +250,7 @@ void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char 
 
     if (!peer) return;
 
+    dtls_session_shutdown(peer);
     dc_set_peer_error(peer, code, detail);
     message = detail ? detail : turbo_dc_error_string(code);
 
@@ -267,6 +268,7 @@ void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char 
 
 static void dc_notify_closed(turbo_dc_peer_t *peer) {
     if (!peer || peer->state == TURBO_DC_STATE_CLOSED) return;
+    dtls_session_shutdown(peer);
     dc_notify_state(peer, TURBO_DC_STATE_CLOSED);
 }
 
@@ -1444,6 +1446,9 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
 
     dc_peer_close_impl(peer);
 
+    /* A transport can have reported CLOSED before explicit close. Always
+     * remove its deadline registration, including that already-closed path. */
+    dtls_session_shutdown(peer);
     if (peer->dtls.ssl) {
         SSL_free(peer->dtls.ssl);
     }

@@ -158,9 +158,9 @@ int dtls_session_init(turbo_dc_peer_t *peer) {
 
 void dtls_session_shutdown(turbo_dc_peer_t *peer) {
     dtls_session_lock(peer);
+    if (!peer->dtls.stopped && peer->dtls.ssl) SSL_shutdown(peer->dtls.ssl);
     peer->dtls.stopped = 1;
     dtls_set_timer_active(peer, 0);
-    if (peer->dtls.ssl) SSL_shutdown(peer->dtls.ssl);
     dtls_session_unlock(peer);
 }
 
