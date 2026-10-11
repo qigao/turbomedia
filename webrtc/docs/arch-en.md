@@ -489,8 +489,8 @@ Full WebRTC provider replacement is blocked by the current central
 The patched `tls_ctx_init` accepts TLS 1.2, TLS 1.3 and TLCP only. DTLS constants
 and trace names do not implement datagram records, handshake fragmentation,
 retransmission or DTLS-SRTP negotiation. Stream TLS/exporter support cannot
-replace that contract. DataChannel/RTC still use BoringSSL, and the libsrtp
-overlay still requires its crypto backend, including existing AEAD profiles.
+replace that contract. DataChannel/RTC still use BoringSSL for DTLS. The libsrtp
+overlay is independently migrated to GmSSL while retaining existing AEAD profiles.
 
 Replacing library names or disabling profiles would break browser interop.
 The next prerequisite is a qualified DTLS-SRTP-capable provider in the central
@@ -499,6 +499,31 @@ loss recovery and browser interop. Until then, keep this dependency explicit;
 do not present the auth migration as complete BoringSSL removal. Existing
 cache-only restoration remains in use. The auth change can be rolled back
 independently without changing tokens or the public API.
+
+The libSRTP provider lives in the existing product overlay. It keeps libSRTP's
+packet policy, key derivation and replay state, and adapts its cipher/auth tables
+to GmSSL AES-CTR, AES-GCM and HMAC-SHA1. All existing
+AES-CM and GCM profiles remain available, including AES-256-GCM. Replacing the
+whole SRTP stack or disabling AEAD is rejected. DTLS remains a separate blocker.
+
+Each libSRTP cipher/auth context exclusively owns its GmSSL state under the
+existing session's serialization contract. ICM retains the unused bytes of the
+last CTR block between calls. GCM copies successive AAD inputs because SRTCP
+passes a temporary trailer separately; storage is owned until context teardown,
+reused between packets, and bounded by INT_MAX (libSRTP's packet-length domain).
+Growth checks the sum before allocation and preserves old storage on failure.
+No partial input is accepted on allocation failure. IV reset clears per-packet
+AAD/tag state; authentication must complete before plaintext becomes visible.
+Context destruction wipes key schedules, HMAC state and retained AAD storage.
+This requires no new dependency or public API. It may add an allocation when a
+session first sees a larger authenticated header; no speedup is claimed.
+
+Qualification must include libSRTP's built-in cipher/auth known-answer tests
+(run by initialization), all four public profiles for RTP/SRTCP, wrong-key and
+damaged-tag rejection, and the existing DTLS/WebRTC suites through CTest. Cache
+publication precedes consumer CI; do not add a consumer source-build fallback.
+Rollback restores the prior overlay and its cache recipe without changing keys,
+SDP, tokens or packet formats.
 
 ---
 

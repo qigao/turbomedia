@@ -399,9 +399,16 @@ free(peer);
 Salts Core 的 GmSSL 后端，Base64 复用 Core 的 libbase64；认证 target 不再直接链接
 OpenSSL::Crypto。Salts 保持 2.3.0-rc.10，token 格式、校验规则与公开接口不变。
 中央缓存 GmSSL 3.2.0#9 的 `tls_ctx_init` 只接受 TLS 1.2、TLS 1.3 和 TLCP，
-DTLS 常量并不代表已实现 DTLS-SRTP。DataChannel/RTC 与 libsrtp 仍需 BoringSSL；
+DTLS 常量并不代表已实现 DTLS-SRTP。DataChannel/RTC 的 DTLS 仍需 BoringSSL；
 完整替换须先提供经过互通验证的 DTLS-SRTP 后端，不能靠替换库名或禁用 AEAD
 完成。证据、取舍、验证与回滚见 [GmSSL migration boundary](arch-en.md#gmssl-migration-boundary)。
+
+libsrtp 的现有 overlay 独立改用 GmSSL AES-CTR、AES-GCM 和 HMAC-SHA1，保留
+四种公开 profile、密钥派生、重放保护与 RTP/SRTCP 行为。ICM 保留跨调用的剩余
+密钥流；GCM 复制并复用 AAD 存储以覆盖 SRTCP 的临时 trailer，容量受 libsrtp 的
+INT_MAX 报文长度域限制，分配失败不接纳部分输入。每个上下文独占其状态，沿用
+原有 session 串行调用约束；销毁时擦除密钥和保留存储。正式验证包含库初始化时
+的已知向量、双向 RTP/SRTCP、错误密钥和损坏标签拒绝，以及后续合法报文恢复。
 
 ---
 
