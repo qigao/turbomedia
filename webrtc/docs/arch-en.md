@@ -415,6 +415,21 @@ benefit is claimed.
 
 ### DTLS datagram boundary
 
+Context admission validates SCTP's configured AF_CONN MTU against one DTLS-GCM
+record: SCTP MTU + 12 bytes must fit `min(dtls_mtu - 37, 16384)`, and the enabled
+SCTP MTU must be at least 512. Zero retains the 1188/1280 SCTP/DTLS defaults.
+The socket now receives the configured SCTP MTU rather than an unconditional
+1188. AF_CONN's setting excludes the SCTP common header, as defined by
+[usrsctp](https://github.com/sctplab/usrsctp/blob/0.9.5.0/usrsctplib/netinet/sctp_usrreq.c).
+Invalid combinations fail context creation; there is no automatic clamping.
+DTLS-only contexts retain the 256-byte minimum without SCTP constraints.
+The formal DataChannel tests cover configuration boundaries, and the paired
+owner test checks the live socket setting and exchanges 4 KiB binary messages
+in both directions with SCTP MTU 1000 and DTLS MTU 1200. Transport callbacks copy
+borrowed datagrams into the existing bounded test queue; the peer owns channels
+and teardown drains callbacks before releasing the queue.
+
+
 Production packetization, MTU fragmentation and bounded queues now belong to the
 engine, with no stream BIO or partial output packets. The old packet BIO remains
 only in the independent test endpoint; its short-read/reset implementation is no

@@ -29,6 +29,7 @@ extern "C" {
 #define MAX_LABEL_LEN 256
 #define MAX_PROTOCOL_LEN 256
 #define SCTP_MTU_DEFAULT 1188
+#define SCTP_MTU_MIN 512 /* usrsctp SCTP_SMALLEST_PMTU, excluding common header */
 #define DTLS_MTU_DEFAULT 1280
 #define MAX_CHANNELS 65536u
 #define SCTP_ASSOCIATION_PORT 5000

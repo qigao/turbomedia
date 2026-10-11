@@ -34,6 +34,10 @@ turbo_gdtls_context *turbo_gdtls_context_create(const void *chain, size_t chain_
 void turbo_gdtls_context_destroy(turbo_gdtls_context *ctx);
 int turbo_gdtls_context_fingerprint(const turbo_gdtls_context *ctx, uint8_t out[32]);
 
+/* Application bytes that fit one GCM record at this datagram MTU; zero for an
+ * unsupported MTU. Shared by context admission and the private record owner. */
+size_t turbo_gdtls_plaintext_capacity(size_t mtu);
+
 /* Expected SHA-256 leaf fingerprint is mandatory. Profiles are RFC 5764/7714
  * IDs, in preference order, at most four; MTU is the complete UDP payload.
  * aes_key_bits is 0 (both supported sizes), 128 or 256. Production uses 0;

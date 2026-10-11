@@ -194,7 +194,7 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
  * SCTP Socket Configuration
  * ============================================================================ */
 
-static int configure_sctp_socket(struct socket *sock) {
+static int configure_sctp_socket(struct socket *sock, uint16_t mtu) {
     struct linger linger_opt = { .l_onoff = 1, .l_linger = 0 };
     if (usrsctp_setsockopt(sock, SOL_SOCKET, SO_LINGER, &linger_opt, sizeof(linger_opt)) != 0) {
         return -1;
@@ -245,7 +245,7 @@ static int configure_sctp_socket(struct socket *sock) {
         memset(&params, 0, sizeof(params));
         params.spp_assoc_id = 0;
         params.spp_flags = SPP_PMTUD_DISABLE;
-        params.spp_pathmtu = SCTP_MTU_DEFAULT;
+        params.spp_pathmtu = mtu;
         if (usrsctp_setsockopt(sock, IPPROTO_SCTP, SCTP_PEER_ADDR_PARAMS,
                                &params, sizeof(params)) != 0) {
             return -1;
@@ -290,7 +290,7 @@ int sctp_session_init(turbo_dc_peer_t *peer) {
     usrsctp_register_address(peer);
     peer->sctp_address_registered = 1;
 
-    if (configure_sctp_socket(sock) != 0) {
+    if (configure_sctp_socket(sock, peer->ctx->sctp_mtu) != 0) {
         if (peer->sctp_address_registered) {
             usrsctp_deregister_address(peer);
             peer->sctp_address_registered = 0;

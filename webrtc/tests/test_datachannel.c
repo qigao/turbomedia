@@ -96,6 +96,46 @@ void test_context_destroy_null(void) {
     turbo_dc_context_destroy(NULL);
 }
 
+spec("DataChannel MTU admission") {
+    static turbo_dc_context_t *context;
+    before_each() { context = NULL; }
+    after_each() { turbo_dc_context_destroy(context); context = NULL; }
+
+    it("rejects enabled SCTP settings that cannot fit one DTLS record") {
+        const uint16_t invalid[][2] = {
+            {511, 1280}, {1000, 1048}, {0, 1200}, {16373, 65535}, {0, 255}
+        };
+        for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+            turbo_dc_config_t config = {0};
+            config.sctp_mtu = invalid[i][0];
+            config.dtls_mtu = invalid[i][1];
+            context = turbo_dc_context_create(&config);
+            check_null(context);
+        }
+    }
+
+    it("accepts defaults and exact SCTP plus DTLS overhead boundaries") {
+        const uint16_t valid[][2] = {{0, 0}, {512, 561}, {1000, 1049}, {16372, 16421}};
+        for (size_t i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i) {
+            turbo_dc_config_t config = {0};
+            config.sctp_mtu = valid[i][0];
+            config.dtls_mtu = valid[i][1];
+            context = turbo_dc_context_create(&config);
+            check_not_null(context);
+            turbo_dc_context_destroy(context); context = NULL;
+        }
+    }
+
+    it("does not impose SCTP limits on a DTLS-only context") {
+        turbo_dc_config_t config = {0};
+        config.disable_sctp = 1;
+        config.dtls_mtu = 256;
+        config.sctp_mtu = 1;
+        context = turbo_dc_context_create(&config);
+        check_not_null(context);
+    }
+}
+
 /* ============================================================================
  * Peer Tests
  * ============================================================================ */

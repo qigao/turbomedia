@@ -83,7 +83,10 @@ typedef struct {
                               * SEC1, PKCS#1 and encrypted keys are rejected. */
     int is_server;            /* TRUE if this is the server/answerer side */
     turbo_dc_transport_t transport;  /* Transport type (default = UDP) */
-    uint16_t sctp_mtu;        /* SCTP path MTU (0 = default 1188) */
+    uint16_t sctp_mtu;        /* usrsctp AF_CONN MTU excluding the 12-byte SCTP header.
+                              * 0 = default 1188; otherwise >= 512 when SCTP enabled.
+                              * SCTP MTU + 12 must fit min(dtls_mtu - 37, 16384).
+                              * Incompatible MTUs fail context creation, without clamping. */
     uint16_t dtls_mtu;        /* DTLS datagram MTU, >= 256 (0 = default 1280) */
     int disable_sctp;         /* TRUE for DTLS-only transport without SCTP/DataChannel */
 } turbo_dc_config_t;

@@ -366,13 +366,19 @@ int turbo_gdtls_context_fingerprint(const turbo_gdtls_context *ctx, uint8_t out[
     if (!ctx || !out) return TURBO_GDTLS_INVALID;
     memcpy(out, ctx->fingerprint, 32); return 0;
 }
+size_t turbo_gdtls_plaintext_capacity(size_t mtu) {
+    if (mtu < 256 || mtu > MAX_DATAGRAM) return 0;
+    size_t capacity = mtu - RECORD_HEADER - GCM_OVERHEAD;
+    return capacity < MAX_PLAIN ? capacity : MAX_PLAIN;
+}
+
 turbo_gdtls *turbo_gdtls_create(const turbo_gdtls_context *ctx, int server,
                               size_t mtu, const uint8_t expected_sha256[32],
                               const uint16_t *profiles, size_t profile_count,
                               unsigned aes_key_bits) {
     if (!ctx || !expected_sha256 || !profiles || !profile_count || profile_count > 4 ||
         (aes_key_bits != 0 && aes_key_bits != 128 && aes_key_bits != 256) ||
-        mtu < 256 || mtu > MAX_DATAGRAM || (server != 0 && server != 1)) return NULL;
+        !turbo_gdtls_plaintext_capacity(mtu) || (server != 0 && server != 1)) return NULL;
     for (size_t i = 0; i < profile_count; ++i) {
         if (profiles[i] != 1 && profiles[i] != 2 && profiles[i] != 7 && profiles[i] != 8) return NULL;
         for (size_t j = 0; j < i; ++j) if (profiles[i] == profiles[j]) return NULL;

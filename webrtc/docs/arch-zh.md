@@ -393,6 +393,15 @@ ICE 收包保持原线程。worker 持有 peer 租约，但不在 peer-list mute
 候选方案和取舍见 [DTLS operation ownership](arch-en.md#dtls-operation-ownership)。
 
 **GmSSL 迁移与兼容边界：**
+
+SCTP socket 使用配置的 `sctp_mtu`，不再固定为 1188。该 AF_CONN 参数不含 12 字节
+SCTP 公共头；启用 SCTP 时至少为 512，且 `sctp_mtu + 12` 必须能装入
+`min(dtls_mtu - 37, 16384)`。零值仍使用 1188/1280 默认值，不兼容的组合在创建
+context 时失败，不自动压低配置。DTLS-only 保留 256 字节下限，不受 SCTP 配置限制。
+正式测试核对配置边界与真实 socket 值，并以 SCTP 1000、DTLS 1200 双向传输
+4 KiB 二进制消息，检查完整交付和报文上限。AF_CONN 语义依据见
+[DTLS datagram boundary](arch-en.md#dtls-datagram-boundary)。
+
 认证使用 Salts Core 的 SHA-256、HMAC-SHA256、常量时间比较，Base64 复用
 libbase64。Salts 保持 2.3.0-rc.10。临时身份以 GmSSL 生成并直接导入 DER/PKCS#8，
 保留 v3、CN、365 天有效期和 SHA-256 指纹，私钥临时存储在导入后或失败时擦除。

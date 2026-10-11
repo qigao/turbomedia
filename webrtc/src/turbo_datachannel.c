@@ -819,7 +819,10 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
     ctx->dtls_mtu = config->dtls_mtu ? config->dtls_mtu : DTLS_MTU_DEFAULT;
     ctx->disable_sctp = config->disable_sctp ? 1 : 0;
 
-    if (ctx->dtls_mtu < 256 ||
+    size_t plaintext_capacity = turbo_gdtls_plaintext_capacity(ctx->dtls_mtu);
+    if (!plaintext_capacity || (!ctx->disable_sctp &&
+        (ctx->sctp_mtu < SCTP_MTU_MIN ||
+         (size_t)ctx->sctp_mtu + sizeof(struct sctp_common_header) > plaintext_capacity)) ||
         turbo_dc_identity_create(config->cert_pem, config->key_pem,
                                   &ctx->dtls_context, &ctx->local_fingerprint) != 0) {
         free(ctx);
