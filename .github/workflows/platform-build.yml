@@ -446,6 +446,16 @@ jobs:
               & ctest --preset ci-platform-test
             }
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
+            # Diagnose #191 without hiding intermittent ICE/E2E failures:
+            # the first crash stops the exact test-only repetition gate.
+            # This is independent from the dead-SFU WHIP teardown gate below.
+            if ("${{ matrix.platform }}" -eq "Windows" -and
+                $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+              & ctest --preset ci-platform-test -R "^turbo_media_test_webrtc_e2e$" --repeat "until-fail:5" --output-on-failure --timeout 90
+              if ($LASTEXITCODE -ne 0) {
+                throw "Windows WebRTC ICE E2E repeat conformance failed"
+              }
+            }
             # Draft diagnostics only: two additional source-identical real
             # SFU restarts must both pass. No skipped tests, wider production
             # deadlines, application replay or automatic settlement retry.
