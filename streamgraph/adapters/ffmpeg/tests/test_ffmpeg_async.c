@@ -462,7 +462,89 @@ static void test_cancel_before_worker_admission(void) {
     assert(tm_pc_destroy(portal)==TM_PC_OK);
     assert(tm_ffa_destroy(decoder)==TM_FF_OK);
 }
+
+/* M15a foundation: independent Codec state and cancellation per instance.
+ * Both real FFmpeg decodes have entered their wake tails concurrently.
+ * Cancel A while B remains publishable. No extra scheduler is introduced. */
+static void test_two_independent_active_decoders(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_pc_config_v1 pc=TM_PC_CONFIG_V1_INIT;
+    tm_ffa_decoder *a=NULL,*b=NULL;
+    tm_pc_portal *pa=NULL,*pb=NULL;
+    tm_pc_ticket_v1 ta={0},tb={0},taken={0};
+    tm_pc_result_v1 ra=TM_PC_RESULT_V1_INIT;
+    tm_pc_result_v1 rb=TM_PC_RESULT_V1_INIT;
+    tm_ffa_stats_v1 sa=TM_FFA_STATS_V1_INIT;
+    tm_ffa_stats_v1 sb=TM_FFA_STATS_V1_INIT;
+    codec_fixture enc={0};
+    worker wa={0},wb={0};
+    pthread_t thread_a,thread_b;
+    uint8_t luma[LUMA];
+    size_t n=0u;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=MAX_PACKET;
+    assert(tm_ffa_create(&cfg,&a)==TM_FF_OK);
+    assert(tm_ffa_create(&cfg,&b)==TM_FF_OK);
+    assert(a!=b);
+    pc.capacity=1u;pc.provider_generation=71u;
+    assert(tm_pc_create(&pc,&pa)==TM_PC_OK);
+    pc.provider_generation=72u;
+    assert(tm_pc_create(&pc,&pb)==TM_PC_OK);
+    encoder_init(&enc);
+    wa.decode=a;wa.portal=pa;
+    wb.decode=b;wb.portal=pb;
+    wa.count=make_packet(&enc,41u,wa.compressed,sizeof(wa.compressed));
+    wb.count=make_packet(&enc,183u,wb.compressed,sizeof(wb.compressed));
+    atomic_init(&wa.woke,0u);atomic_init(&wa.release,0u);
+    atomic_init(&wb.woke,0u);atomic_init(&wb.release,0u);
+    assert(tm_pc_begin(pa,7101u,&ta)==TM_PC_OK);
+    assert(tm_pc_begin(pb,7201u,&tb)==TM_PC_OK);
+    wa.ticket=ta;wb.ticket=tb;
+    assert(pthread_create(&thread_a,NULL,worker_run,&wa)==0);
+    assert(pthread_create(&thread_b,NULL,worker_run,&wb)==0);
+    await_wake(&wa);await_wake(&wb);
+    assert(tm_ffa_destroy(a)==TM_FF_ESTATE);
+    assert(tm_ffa_destroy(b)==TM_FF_ESTATE);
+    /* A has already completed; a late owner cancel discards A's slot
+     * without changing its recorded completion or B's independent state. */
+    assert(tm_ffa_owner_cancel(a)==TM_FF_OK);
+    assert(tm_ffa_owner_accept(a,ta)==TM_FF_ESTALE);
+    assert(tm_ffa_owner_accept(a,tb)==TM_FF_ESTALE);
+    assert(tm_ffa_owner_accept(b,ta)==TM_FF_ESTALE);
+    assert(tm_ffa_owner_accept(b,tb)==TM_FF_OK);
+    assert(tm_ffa_owner_next_luma(b,luma,sizeof(luma),&n)==TM_EX_SOURCE_FRAME);
+    assert(n==LUMA);
+    assert(abs((int)luma[0]-183)<=7);
+    assert(luma[0]==luma[LUMA-1u]);
+    assert(tm_ffa_owner_next_luma(b,luma,sizeof(luma),&n)==TM_EX_SOURCE_FAILED);
+    assert(tm_pc_take(pa,&taken,&ra)==TM_PC_OK);
+    assert(ra.correlation==7101u && ra.provider_generation==71u &&
+           ra.outcome==TM_PC_COMPLETED);
+    assert(tm_pc_settle(pa,taken)==TM_PC_OK);
+    assert(tm_pc_take(pb,&taken,&rb)==TM_PC_OK);
+    assert(rb.correlation==7201u && rb.provider_generation==72u &&
+           rb.outcome==TM_PC_COMPLETED);
+    assert(tm_pc_settle(pb,taken)==TM_PC_OK);
+    assert(tm_ffa_stats(a,&sa)==TM_FF_OK);
+    assert(tm_ffa_stats(b,&sb)==TM_FF_OK);
+    assert(sa.decoded==1u && sa.discarded==1u && sa.delivered==0u);
+    assert(sb.decoded==1u && sb.discarded==0u && sb.delivered==1u);
+    assert(sa.worker_active && sb.worker_active);
+    atomic_store_explicit(&wa.release,1u,memory_order_release);
+    atomic_store_explicit(&wb.release,1u,memory_order_release);
+    assert(pthread_join(thread_a,NULL)==0);
+    assert(pthread_join(thread_b,NULL)==0);
+    assert(wa.result==TM_FF_OK && wb.result==TM_FF_OK);
+    assert(tm_pc_seal(pa)==TM_PC_OK);
+    assert(tm_pc_seal(pb)==TM_PC_OK);
+    assert(tm_pc_destroy(pa)==TM_PC_OK);
+    assert(tm_pc_destroy(pb)==TM_PC_OK);
+    assert(tm_ffa_destroy(a)==TM_FF_OK);
+    assert(tm_ffa_destroy(b)==TM_FF_OK);
+    encoder_destroy(&enc);
+}
+
 int main(void) {
+    test_two_independent_active_decoders();
     test_real_async_provider_and_credits();
     test_cancel_before_worker_admission();
     test_complete_then_explicit_discard();
