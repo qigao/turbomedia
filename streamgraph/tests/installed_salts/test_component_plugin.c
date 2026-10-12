@@ -1,6 +1,7 @@
 #include "provider_contract.h"
 #include <salts/component_plugin.h>
 #include <turbo_streamgraph_provider_completion.h>
+#include <turbo_streamgraph_owner_dispatch.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -111,28 +112,133 @@ static tm_pc_portal *make_portal(uint64_t generation) {
     assert(tm_pc_create(&c,&portal)==TM_PC_OK);
     return portal;
 }
-static void settle_terminal(tm_pc_portal *p,uint64_t correlation,
+/* Real Salts Provider terminal acceptance must cross the existing
+ * StreamGraph Media Owner, NOT a second scheduler or direct test-local take. */
+typedef struct terminal_owner {
+    tm_sg_program *program;
+    tm_fs_store *store;
+    tm_ex_owner *executor;
+    tm_ho_inbox *inbox;
+    tm_od_owner *dispatcher;
+    uint64_t expected_correlation;
+    uint64_t expected_generation;
+    uint32_t expected_outcome;
+    int32_t expected_status;
+    unsigned delivered;
+} terminal_owner;
+
+static tm_ex_source_result unused_source(
+    void *ctx,uint8_t *dst,size_t cap,size_t *size) {
+    (void)ctx;(void)dst;(void)cap;(void)size;
+    return TM_EX_SOURCE_EOS;
+}
+static int unused_visit(void *ctx,const tm_fs_frame_ref_v1 *ref,
+                        const tm_fs_cpu_view_v1 *frame) {
+    (void)ctx;(void)ref;(void)frame;
+    return 0;
+}
+static tm_sg_port_v1 owner_port(const char *name,uint32_t direction) {
+    tm_sg_port_v1 p=TM_SG_PORT_V1_INIT;
+    p.name=name; p.direction=direction;p.kind=TM_SG_VIDEO_FRAME;
+    p.format_id=1u;p.memory_domain=TM_SG_MEMORY_CPU;
+    p.timebase_num=1u;p.timebase_den=30u;
+    return p;
+}
+static int accept_terminal(void *ctx,const tm_pc_result_v1 *terminal) {
+    terminal_owner *o=(terminal_owner *)ctx;
+    tm_pc_result_v1 recursive=TM_PC_RESULT_V1_INIT;
+    assert(terminal->correlation==o->expected_correlation);
+    assert(terminal->provider_generation==o->expected_generation);
+    assert(terminal->outcome==o->expected_outcome);
+    assert(terminal->provider_status==o->expected_status);
+    assert(terminal->completion_observed==1u);
+    assert(tm_od_step_completion(o->dispatcher,&recursive)==TM_OD_EBUSY);
+    ++o->delivered;
+    return 0; /* Downstream accepted exactly one terminal result. */
+}
+static void owner_init(terminal_owner *o,tm_pc_portal *portal,uint64_t store_id) {
+    tm_sg_port_v1 source_port=owner_port("out",TM_SG_OUTPUT);
+    tm_sg_port_v1 processor_ports[2]={
+        {0}, {0}
+    };
+    tm_sg_port_v1 sink_port=owner_port("in",TM_SG_INPUT);
+    tm_sg_node_v1 nodes[3];
+    tm_sg_edge_v1 edges[2];
+    tm_fs_config_v1 fs=TM_FS_CONFIG_V1_INIT;
+    tm_ex_config_v1 ec=TM_EX_CONFIG_V1_INIT;
+    tm_ex_binding_v1 binding[3];
+    tm_ho_config_v1 queue=TM_HO_CONFIG_V1_INIT;
+    tm_od_config_v1 dc=TM_OD_CONFIG_V1_INIT;
+    const char *names[3]={"source","processor","sink"};
+    uint32_t i;
+    processor_ports[0]=owner_port("in",TM_SG_INPUT);
+    processor_ports[1]=owner_port("out",TM_SG_OUTPUT);
+    for(i=0u;i<3u;++i) {
+        nodes[i]=(tm_sg_node_v1)TM_SG_NODE_V1_INIT;
+        nodes[i].id=names[i];
+        nodes[i].kind=i==0u?TM_SG_SOURCE:
+                      i==1u?TM_SG_PROCESSOR:TM_SG_SINK;
+        nodes[i].port_count=i==1u?2u:1u;
+        nodes[i].ports=i==0u?&source_port:
+                       i==1u?processor_ports:&sink_port;
+        binding[i]=(tm_ex_binding_v1)TM_EX_BINDING_V1_INIT;
+        binding[i].node_id=names[i];
+        binding[i].ctx=NULL;
+    }
+    edges[0]=(tm_sg_edge_v1)TM_SG_EDGE_V1_INIT;
+    edges[0].source_node="source";edges[0].source_port="out";
+    edges[0].target_node="processor";edges[0].target_port="in";
+    edges[1]=(tm_sg_edge_v1)TM_SG_EDGE_V1_INIT;
+    edges[1].source_node="processor";edges[1].source_port="out";
+    edges[1].target_node="sink";edges[1].target_port="in";
+    assert(tm_sg_compile(nodes,3u,edges,2u,NULL,&o->program,NULL)==TM_SG_OK);
+    fs.store_id=store_id;
+    fs.slot_capacity=2u;fs.max_frame_bytes=16u;
+    fs.max_pins=4u;fs.max_leases=4u;fs.max_retained_bytes=32u;
+    assert(tm_fs_create(&fs,&o->store)==TM_FS_OK);
+    ec.max_frame_bytes=16u;
+    ec.source_session_generation=1u;
+    ec.display_generation=1u;
+    ec.fanout.branch_count=1u;
+    ec.fanout.branches[0]=(tm_fo_branch_config_v1)TM_FO_BRANCH_CONFIG_V1_INIT;
+    ec.fanout.branches[0].policy=TM_FO_ORDERED_LOSSLESS;
+    ec.fanout.branches[0].queue_depth=1u;
+    binding[0].source_next=unused_source;
+    binding[1].visit=unused_visit;
+    binding[2].visit=unused_visit;
+    assert(tm_ex_create(o->program,o->store,&ec,binding,3u,&o->executor)
+           ==TM_EX_OK);
+    queue.capacity=2u;
+    assert(tm_ho_create(&queue,&o->inbox)==TM_HO_OK);
+    assert(tm_od_create(o->inbox,o->executor,o->store,&dc,&o->dispatcher)
+           ==TM_OD_OK);
+    assert(tm_od_bind_completion(o->dispatcher,portal,accept_terminal,o)
+           ==TM_OD_OK);
+}
+static void owner_drain(terminal_owner *o) {
+    assert(tm_ho_seal(o->inbox)==TM_HO_OK);
+    assert(tm_od_destroy(o->dispatcher)==TM_OD_OK);
+    assert(tm_ho_destroy(o->inbox)==TM_HO_OK);
+    assert(tm_ex_stop(o->executor)==TM_EX_OK);
+    assert(tm_ex_destroy(o->executor)==TM_EX_OK);
+    assert(tm_fs_seal(o->store)==TM_FS_OK);
+    assert(tm_fs_destroy(o->store)==TM_FS_OK);
+    tm_sg_program_destroy(o->program);
+}
+static void settle_terminal(terminal_owner *o,uint64_t correlation,
                             uint32_t outcome,int32_t status,
                             uint64_t generation) {
-    tm_pc_ticket_v1 taken={0};
-    tm_pc_result_v1 terminal=TM_PC_RESULT_V1_INIT;
-    assert(tm_pc_take(p,&taken,&terminal)==TM_PC_OK);
-    assert(terminal.outcome==outcome && terminal.correlation==correlation);
-    assert(terminal.provider_status==status);
-    assert(terminal.provider_generation==generation);
-    assert(terminal.completion_observed==1u);
-    assert(tm_pc_settle(p,taken)==TM_PC_OK);
-    assert(tm_pc_settle(p,taken)==TM_PC_ESTALE);
-}
-static void drain_plugin(cmeta_plugin_registry *registry,cmeta_plugin_ref ref) {
-    cmeta_plugin_lifecycle_info info;
-    bool quiet=false;
-    assert(cmeta_plugin_registry_get_lifecycle(registry,ref,&info)==CMETA_PLUGIN_OK);
-    assert(info.active_leases==0u);
-    assert(cmeta_plugin_registry_request_stop(registry,ref)==CMETA_PLUGIN_OK);
-    assert(cmeta_plugin_registry_poll_quiescent(registry,ref,&quiet)==CMETA_PLUGIN_OK);
-    assert(quiet);
-    assert(cmeta_plugin_registry_unload(registry,ref)==CMETA_PLUGIN_OK);
+    tm_pc_result_v1 result=TM_PC_RESULT_V1_INIT;
+    o->expected_correlation=correlation;
+    o->expected_outcome=outcome;
+    o->expected_status=status;
+    o->expected_generation=generation;
+    assert(tm_od_step_completion(o->dispatcher,&result)==TM_OD_OK);
+    assert(result.correlation==correlation);
+    assert(result.outcome==outcome);
+    assert(result.provider_generation==generation);
+    assert(o->delivered==1u);
+    assert(tm_od_step_completion(o->dispatcher,&result)==TM_OD_EMPTY);
 }
 
 int main(int argc,char **argv) {
@@ -147,6 +253,7 @@ int main(int argc,char **argv) {
     salts_component_plugin_scope copied=SALTS_COMPONENT_PLUGIN_SCOPE_INIT;
     tm_test_provider value_n,value_n1;
     tm_pc_portal *portal_n,*portal_n1;
+    terminal_owner delivery_n={0},delivery_n1={0};
     provider_worker work_n={0},work_n1={0};
     worker_thread thread_n,thread_n1;
     cmeta_plugin_lifecycle_info info;
@@ -174,6 +281,7 @@ int main(int argc,char **argv) {
            ==SALTS_COMPONENT_PLUGIN_INVALID_STATE);
 
     portal_n=make_portal(101u);
+    owner_init(&delivery_n,portal_n,10101u);
     assert(tm_pc_begin(portal_n,501u,&work_n.ticket)==TM_PC_OK);
     work_n.service=value_n;
     work_n.completion=portal_n;
@@ -203,6 +311,7 @@ int main(int argc,char **argv) {
     assert(salts_component_plugin_scope_generation_id(&scope_n1)==102u);
     value_n1=find_provider(&scope_n1);
     portal_n1=make_portal(102u);
+    owner_init(&delivery_n1,portal_n1,10202u);
     assert(tm_pc_begin(portal_n1,601u,&work_n1.ticket)==TM_PC_OK);
     work_n1.service=value_n1;
     work_n1.completion=portal_n1;
@@ -214,7 +323,8 @@ int main(int argc,char **argv) {
     assert(atomic_load_explicit(&work_n1.returned,memory_order_acquire)==1u);
     assert(work_n1.result==102);
     assert(tm_pc_seal(portal_n1)==TM_PC_OK);
-    settle_terminal(portal_n1,601u,TM_PC_COMPLETED,102,102u);
+    settle_terminal(&delivery_n1,601u,TM_PC_COMPLETED,102,102u);
+    owner_drain(&delivery_n1);
     assert(tm_pc_destroy(portal_n1)==TM_PC_OK);
 
     assert(salts_component_plugin_runtime_close(&runtime,&previous)
@@ -239,7 +349,8 @@ int main(int argc,char **argv) {
     join_worker(&thread_n);
     assert(work_n.result==101);
     assert(tm_pc_destroy(portal_n)==TM_PC_EBUSY);
-    settle_terminal(portal_n,501u,TM_PC_CANCELLED,101,101u);
+    settle_terminal(&delivery_n,501u,TM_PC_CANCELLED,101,101u);
+    owner_drain(&delivery_n);
     assert(tm_pc_destroy(portal_n)==TM_PC_OK);
     assert(salts_component_plugin_generation_drain(&runtime,&n.generation)
            ==SALTS_COMPONENT_PLUGIN_BUSY);
