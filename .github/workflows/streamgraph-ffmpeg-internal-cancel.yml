@@ -62,7 +62,8 @@ jobs:
               --disable-avdevice --disable-avfilter --disable-avformat \
               --disable-postproc --disable-swresample --disable-swscale \
               --enable-avcodec --enable-avutil --enable-pthreads \
-              --enable-decoder=mjpeg --enable-encoder=mjpeg
+              --enable-decoder=mjpeg --enable-encoder=mjpeg \
+              --enable-decoder=mpeg2video --enable-encoder=mpeg2video
             make -j4
             make install
           )
