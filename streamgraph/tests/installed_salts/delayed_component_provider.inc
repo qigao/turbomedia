@@ -11,7 +11,7 @@ typedef struct tm_delayed_component {
     size_t bytes;
     int64_t pts;
     tm_pc_ticket_v1 ticket;
-    unsigned ready;
+    unsigned ready,destroying; /* protected by fixture_instances_lock */
     _Atomic unsigned active,cancelled;
 } tm_delayed_component;
 static tm_delayed_component delayed_instances[TM_DELAYED_INSTANCE_CAPACITY];
@@ -33,7 +33,7 @@ static tm_delayed_component *delayed_acquire(uint64_t id) {
     unsigned i;
     fixture_instances_enter();
     for(i=0u;i<TM_DELAYED_INSTANCE_CAPACITY;++i)
-        if(delayed_instances[i].id==id &&
+        if(delayed_instances[i].id==id && !delayed_instances[i].destroying &&
            !atomic_exchange_explicit(&delayed_instances[i].active,1u,
                                      memory_order_acq_rel)) {
             result=&delayed_instances[i];
@@ -66,6 +66,7 @@ static int delayed_create(void *self,const tm_test_instance_request *req) {
     delayed_instances[free_slot].id=req->instance_id;
     delayed_instances[free_slot].bytes=0u;
     delayed_instances[free_slot].ready=0u;
+    delayed_instances[free_slot].destroying=0u;
     atomic_store_explicit(&delayed_instances[free_slot].cancelled,0u,
                           memory_order_release);
     rc=0;
@@ -73,24 +74,41 @@ done:
     fixture_instances_leave();
     return rc;
 }
+/* Reserve a noncopyable closing slot while freeing the real Codec OUTSIDE
+ * the tiny metadata lock. Racing submit/cancel/take cannot obtain that slot,
+ * and no active Worker can be inside FFmpeg when exclusive destroy begins. */
 static int delayed_destroy(void *self,const tm_test_instance_request *req) {
+    tm_delayed_component *slot=NULL;
+    tm_ff_status status;
     unsigned i;
-    int rc=-2;
     if(!delayed_identity(self,req))return -1;
     fixture_instances_enter();
     for(i=0u;i<TM_DELAYED_INSTANCE_CAPACITY;++i) {
-        tm_delayed_component *slot=&delayed_instances[i];
-        if(slot->id!=req->instance_id)continue;
-        if(atomic_load_explicit(&slot->active,memory_order_acquire) ||
-           slot->ready) {rc=-4;break;}
-        if(tm_ffd_destroy(slot->decoder)!=TM_FF_OK){rc=-4;break;}
+        if(delayed_instances[i].id!=req->instance_id)continue;
+        slot=&delayed_instances[i];
+        break;
+    }
+    if(!slot) {fixture_instances_leave();return -2;}
+    if(slot->destroying || slot->ready ||
+       atomic_exchange_explicit(&slot->active,1u,memory_order_acq_rel)) {
+        fixture_instances_leave();
+        return -4;
+    }
+    slot->destroying=1u;
+    fixture_instances_leave();
+
+    status=tm_ffd_destroy(slot->decoder);
+
+    fixture_instances_enter();
+    if(status==TM_FF_OK) {
         slot->decoder=NULL;slot->id=0u;slot->bytes=0u;
         memset(&slot->ticket,0,sizeof(slot->ticket));
         atomic_store_explicit(&slot->cancelled,0u,memory_order_release);
-        rc=0;break;
     }
+    slot->destroying=0u;
+    atomic_store_explicit(&slot->active,0u,memory_order_release);
     fixture_instances_leave();
-    return rc;
+    return status==TM_FF_OK?0:-4;
 }
 static int delayed_cancel(void *self,const tm_test_instance_request *req) {
     unsigned i;
@@ -100,6 +118,7 @@ static int delayed_cancel(void *self,const tm_test_instance_request *req) {
     for(i=0u;i<TM_DELAYED_INSTANCE_CAPACITY;++i) {
         tm_delayed_component *slot=&delayed_instances[i];
         if(slot->id!=req->instance_id)continue;
+        if(slot->destroying){rc=-4;break;}
         atomic_store_explicit(&slot->cancelled,1u,memory_order_release);
         slot->ready=0u;slot->bytes=0u;
         /* If the Worker is in libavcodec, do NOT touch the Codec. The
@@ -163,7 +182,13 @@ static int delayed_step(void *self,const tm_test_delayed_step_request *req) {
     if(!slot)return -4;
     /* One previously accepted CPU frame must be consumed/discarded before
      * a new Codec step. Never overwrite a retaining frame for progress. */
-    if(slot->ready){delayed_release(slot);return -4;}
+    {
+        unsigned pending;
+        fixture_instances_enter();
+        pending=slot->ready;
+        fixture_instances_leave();
+        if(pending){delayed_release(slot);return -4;}
+    }
     status=atomic_load_explicit(&slot->cancelled,memory_order_acquire)
         ? TM_FF_ESTATE:
           tm_ffd_next_luma(slot->decoder,slot->luma,sizeof(slot->luma),
