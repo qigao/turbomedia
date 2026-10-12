@@ -643,8 +643,13 @@ int main(int argc,char **argv) {
                     assert(avcodec_tm_test_send_packet_state()==2u);
                 }
                 assert(tm_test_provider_destroy_instance(&value_n1,&first)==-4);
+                /* Published N+1 is not DRAINING: drain must reject as
+                 * INVALID_STATE, not BUSY. Only the already-retired N or
+                 * explicitly closed N+1 may validly return BUSY. The real
+                 * Plugin loader must still reject unloading its live DSO. */
                 assert(salts_component_plugin_generation_drain(
-                    &runtime,&n1.generation)==SALTS_COMPONENT_PLUGIN_BUSY);
+                    &runtime,&n1.generation)==SALTS_COMPONENT_PLUGIN_INVALID_STATE);
+                assert(salts_component_plugin_scope_generation_id(&scope_n1)==102u);
                 assert(cmeta_plugin_registry_unload(&registry,ref_n1)==CMETA_PLUGIN_BUSY);
                 start_worker(&th2,&w2);
                 join_worker(&th2);
