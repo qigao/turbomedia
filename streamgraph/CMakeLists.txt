@@ -11,7 +11,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 add_library(turbo_media_streamgraph SHARED src/turbo_streamgraph.c src/turbo_frame_store.c
   src/turbo_streamgraph_fanout.c src/turbo_streamgraph_executor.c
-  src/turbo_streamgraph_handoff.c)
+  src/turbo_streamgraph_handoff.c src/turbo_streamgraph_owner_dispatch.c)
 target_include_directories(turbo_media_streamgraph
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/include>
@@ -35,6 +35,7 @@ if(_TM_SG_ISOLATED)
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_fanout.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_executor.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_handoff.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_owner_dispatch.h
           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   install(EXPORT TurboMediaStreamGraphTargets FILE TurboMediaStreamGraphTargets.cmake
           NAMESPACE TurboMedia:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TurboMediaStreamGraph)
@@ -68,4 +69,7 @@ if(_TM_SG_ISOLATED OR NOT CMAKE_CROSSCOMPILING)
     target_compile_options(streamgraph_handoff_test PRIVATE /experimental:c11atomics)
   endif()
   add_test(NAME streamgraph_handoff COMMAND streamgraph_handoff_test)
+  add_executable(streamgraph_owner_dispatch_test tests/test_owner_dispatch.c)
+  target_link_libraries(streamgraph_owner_dispatch_test PRIVATE turbo_media_streamgraph)
+  add_test(NAME streamgraph_owner_dispatch COMMAND streamgraph_owner_dispatch_test)
 endif()
