@@ -89,6 +89,8 @@ if(_TM_SG_ISOLATED OR NOT CMAKE_CROSSCOMPILING)
   target_compile_definitions(streamgraph_test_provider_n1
     PRIVATE TM_PROVIDER_GENERATION=102)
   add_executable(streamgraph_native_provider_dso_test tests/test_native_provider_dso.c)
+  add_dependencies(streamgraph_native_provider_dso_test
+    streamgraph_test_provider_n streamgraph_test_provider_n1)
   target_link_libraries(streamgraph_native_provider_dso_test PRIVATE
     turbo_media_streamgraph Threads::Threads ${CMAKE_DL_LIBS})
   if(MSVC)
