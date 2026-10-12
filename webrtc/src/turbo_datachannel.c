@@ -1319,11 +1319,10 @@ static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
 
     dc_notify_state(peer, TURBO_DC_STATE_DISCONNECTING);
 
-    if (peer->sctp.socket) {
-        usrsctp_shutdown(peer->sctp.socket, SHUT_RDWR);
-        usrsctp_close(peer->sctp.socket);
-        peer->sctp.socket = NULL;
-    }
+    /* A peer operation lease does not guard ordinary Socket close. First
+     * reject new STATUS queries, wait for already-admitted native queries,
+     * then shutdown/close outside the operation mutex. */
+    sctp_session_close_socket(peer, 1);
 
     dtls_session_shutdown(peer);
 
@@ -1351,11 +1350,9 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
      * remove its deadline registration, including that already-closed path. */
     dtls_session_shutdown(peer);
 
-    /* Close SCTP socket before deregistering address */
-    if (peer->sctp.socket) {
-        usrsctp_close(peer->sctp.socket);
-        peer->sctp.socket = NULL;
-    }
+    /* Also drain native STATUS borrows if CLOSED was signaled without a
+     * prior public close. Physical close is idempotent via socket detach. */
+    sctp_session_close_socket(peer, 0);
 
     /* AF_CONN addresses remain process-global until explicitly deregistered. */
     if (peer->sctp_address_registered) {
