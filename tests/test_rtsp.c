@@ -847,6 +847,8 @@ typedef struct rtsp_cnet_pending_fixture {
      * deferred without early recycled request slots / session storage. */
     cnet_client *owner;
     unsigned close_on_receive,close_issued,inside_receive,closed_inside_receive;
+    /* Test-only callback order: receive must precede the nonrecursive CLOSED. */
+    unsigned callback_sequence,receive_order,closed_order;
     int inline_close_status;
     size_t bytes;
     char reply[1024];
@@ -863,6 +865,7 @@ static void rtsp_cnet_pending_state(void *user,cnet_connection conn,
     }
     if(state==CNET_CONNECTION_CONNECTED)++f->connected;
     else if(state==CNET_CONNECTION_CLOSED) {
+        f->closed_order=++f->callback_sequence;
         ++f->closed;
         if(f->inside_receive)++f->closed_inside_receive;
     } else if(state==CNET_CONNECTION_FAILED)++f->failed;
@@ -874,6 +877,7 @@ static void rtsp_cnet_pending_receive(void *user,cnet_connection conn,
         ++f->wrong_identity;
         return;
     }
+    f->receive_order=++f->callback_sequence;
     ++f->received;
     if(!view || !view->data || view->size>sizeof(f->reply)-1u-f->bytes) {
         ++f->overflow;
@@ -1079,6 +1083,9 @@ static void rtsp_test_cnet_receive_callback_requests_close(void) {
     check_equal(retired.received,1u);
     check_equal(retired.closed,1u);
     check_equal(retired.closed_inside_receive,0u);
+    check_equal(retired.callback_sequence,2u);
+    check_equal(retired.receive_order,1u);
+    check_equal(retired.closed_order,2u);
     check_equal(retired.wrong_identity,0u);
     check_equal(retired.failed,0u);
     check_equal(retired.overflow,0u);
@@ -1122,6 +1129,7 @@ static void rtsp_test_cnet_receive_callback_requests_close(void) {
     check_equal(current.wrong_identity,0u);
     check_equal(retired.received,1u);
     check_equal(retired.closed,1u);
+    check_equal(retired.callback_sequence,2u);
     check_equal(retired.wrong_identity,0u);
     check_equal(rtsp_test_read(&state,&state.options_count),2);
     check_equal(cnet_close(&owner,new_handle),SALTS_OK);
