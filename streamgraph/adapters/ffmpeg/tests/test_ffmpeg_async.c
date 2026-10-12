@@ -153,6 +153,7 @@ typedef struct worker {
     tm_pc_ticket_v1 ticket;
     uint8_t compressed[MAX_PACKET];
     size_t count;
+    unsigned eof_operation;
     _Atomic unsigned woke;
     _Atomic unsigned release;
     int wake_status;
@@ -167,8 +168,10 @@ static int wake_callback(void *context) {
 }
 static void *worker_run(void *context) {
     worker *w=(worker *)context;
-    w->result=tm_ffa_run_mjpeg(w->decode,w->compressed,w->count,
-                              w->portal,w->ticket,wake_callback,w);
+    w->result=w->eof_operation
+        ? tm_ffa_run_eof(w->decode,w->portal,w->ticket,wake_callback,w)
+        : tm_ffa_run_mjpeg(w->decode,w->compressed,w->count,
+                          w->portal,w->ticket,wake_callback,w);
     return NULL;
 }
 static void await_wake(worker *w) {
@@ -546,7 +549,78 @@ static void test_two_independent_active_decoders(void) {
     encoder_destroy(&enc);
 }
 
+
+/* M15c one-shot MJPEG EOF is a genuine Worker -> Portal -> wake receipt,
+ * including a positive successful-EOF terminal, not just cancellation. */
+static void test_async_eof_exactly_once(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_pc_config_v1 pc=TM_PC_CONFIG_V1_INIT;
+    tm_ffa_decoder *decoder=NULL;
+    tm_pc_portal *portal=NULL;
+    tm_pc_ticket_v1 decoded_ticket={0},eof_ticket={0},taken={0};
+    tm_pc_result_v1 receipt=TM_PC_RESULT_V1_INIT;
+    tm_ff_codec_activity_v1 activity=TM_FF_CODEC_ACTIVITY_V1_INIT;
+    codec_fixture encoder={0};
+    worker packet={0},eof={0};
+    pthread_t thread;
+    uint8_t pixels[LUMA];
+    size_t copied=0u;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=MAX_PACKET;
+    pc.capacity=1u;pc.provider_generation=194u;
+    assert(tm_ffa_create(&cfg,&decoder)==TM_FF_OK);
+    assert(tm_pc_create(&pc,&portal)==TM_PC_OK);
+    encoder_init(&encoder);
+    packet.decode=decoder;packet.portal=portal;
+    packet.count=make_packet(&encoder,107u,packet.compressed,
+                             sizeof(packet.compressed));
+    atomic_init(&packet.woke,0u);atomic_init(&packet.release,1u);
+    assert(tm_pc_begin(portal,19401u,&decoded_ticket)==TM_PC_OK);
+    packet.ticket=decoded_ticket;
+    assert(pthread_create(&thread,NULL,worker_run,&packet)==0);
+    assert(pthread_join(thread,NULL)==0);
+    assert(packet.result==TM_FF_OK);
+    assert(atomic_load_explicit(&packet.woke,memory_order_acquire)==1u);
+    assert(tm_pc_take(portal,&taken,&receipt)==TM_PC_OK);
+    assert(receipt.correlation==19401u &&
+           receipt.outcome==TM_PC_COMPLETED &&
+           receipt.provider_status==TM_FF_OK);
+    assert(tm_pc_settle(portal,taken)==TM_PC_OK);
+    assert(tm_ffa_owner_accept(decoder,decoded_ticket)==TM_FF_OK);
+    assert(tm_ffa_owner_next_luma(decoder,pixels,sizeof(pixels),&copied)
+           ==TM_EX_SOURCE_FRAME);
+    assert(copied==LUMA && abs((int)pixels[0]-107)<=7);
+
+    eof.decode=decoder;eof.portal=portal;eof.eof_operation=1u;
+    atomic_init(&eof.woke,0u);atomic_init(&eof.release,1u);
+    assert(tm_pc_begin(portal,19402u,&eof_ticket)==TM_PC_OK);
+    assert(eof_ticket.generation!=decoded_ticket.generation);
+    eof.ticket=eof_ticket;
+    assert(pthread_create(&thread,NULL,worker_run,&eof)==0);
+    assert(pthread_join(thread,NULL)==0);
+    assert(eof.result==TM_FF_EOF);
+    assert(atomic_load_explicit(&eof.woke,memory_order_acquire)==1u);
+    receipt=(tm_pc_result_v1)TM_PC_RESULT_V1_INIT;
+    assert(tm_pc_take(portal,&taken,&receipt)==TM_PC_OK);
+    assert(receipt.correlation==19402u &&
+           receipt.outcome==TM_PC_COMPLETED &&
+           receipt.completion_observed==1u &&
+           receipt.provider_status==TM_FF_EOF);
+    assert(tm_pc_settle(portal,taken)==TM_PC_OK);
+    assert(tm_ffa_run_eof(decoder,portal,eof_ticket,NULL,NULL)==TM_FF_ESTATE);
+    assert(tm_ffa_run_mjpeg(decoder,packet.compressed,packet.count,
+                            portal,eof_ticket,NULL,NULL)==TM_FF_ESTATE);
+    assert(tm_pc_take(portal,&taken,&receipt)!=TM_PC_OK);
+    assert(tm_ffa_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.packet_calls==1u && activity.flush_calls==1u &&
+           activity.in_call==0u);
+    assert(tm_pc_seal(portal)==TM_PC_OK);
+    assert(tm_pc_destroy(portal)==TM_PC_OK);
+    assert(tm_ffa_destroy(decoder)==TM_FF_OK);
+    encoder_destroy(&encoder);
+}
+
 int main(void) {
+    test_async_eof_exactly_once();
     test_two_independent_active_decoders();
     test_real_async_provider_and_credits();
     test_cancel_before_worker_admission();
