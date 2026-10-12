@@ -458,9 +458,22 @@ static int configure_sctp_socket(struct socket *sock, uint16_t mtu) {
 }
 
 int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id) {
-    if (!peer) return -1;
+    if (!peer || !peer->operation_sync_initialized) return -1;
     struct socket *socket = sctp_native_borrow(peer);
-    if (!socket) return -1;
+    if (!socket) {
+        /* No raw Socket read outside the native Owner mutex. A terminal
+         * admission gate makes channel reset unnecessary, not a send error.
+         * A live owner-capacity/token rejection remains a real failure and
+         * must not be silently accepted as a successful reset. */
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int terminal = peer->destroying || peer->sctp.native_close_requested ||
+                       peer->sctp.socket == NULL;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        return terminal ? 1 : -1;
+    }
+    /* Stream-list payload is variable-length, but the struct header needs
+     * its required alignment on C11 and across ARM/MSVC/Clang targets. */
+    _Alignas(struct sctp_reset_streams)
     uint8_t reset_buffer[sizeof(struct sctp_reset_streams) + sizeof(uint16_t)];
     struct sctp_reset_streams *reset_request =
         (struct sctp_reset_streams *)reset_buffer;
