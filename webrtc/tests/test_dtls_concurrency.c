@@ -102,6 +102,23 @@ static void export_keys(void *arg) {
     cmeta_mutex_unlock(&f->mutex);
 }
 
+/* Simulate an ICE owner delivering its first DTLS record while the poll
+ * owner is still inside the handshake admission. This is the historical
+ * #160 collision shape, but the input here is deliberately non-mutating: the
+ * test proves serial admission, not the root cause of the old flaky run. */
+static void deliver_initial_dtls(void *arg) {
+    dtls_fixture_t *f = (dtls_fixture_t *)arg;
+    static const uint8_t empty_handshake_record[13] = {
+        22, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+    turbo_dc_peer_feed_transport_data(
+        f->peer, empty_handshake_record, sizeof(empty_handshake_record));
+    cmeta_mutex_lock(&f->mutex);
+    f->other_done = 1;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->mutex);
+}
+
 static void close_peer(void *arg) {
     dtls_fixture_t *f = (dtls_fixture_t *)arg;
     turbo_dc_peer_close(f->peer);
@@ -228,6 +245,35 @@ spec("DTLS concurrent entry and timer drain") {
         release_handshake();
         check_true(wait_flag(&fixture.other_done));
         check_equal(fixture.exported_profile, (uint16_t)0);
+    }
+
+    it("serializes first ICE datagram delivery behind an admitted handshake") {
+        start_paused_handshake();
+        start_other(deliver_initial_dtls);
+        int both_admitted = 0;
+        for (int i = 0; i < 3000 && !both_admitted; ++i) {
+            cmeta_mutex_lock(&fixture.peer->operation_mutex);
+            both_admitted = fixture.peer->active_operations == 2;
+            cmeta_mutex_unlock(&fixture.peer->operation_mutex);
+            if (!both_admitted) cmeta_sleep_ms(1);
+        }
+        check_true(both_admitted);
+        cmeta_mutex_lock(&fixture.mutex);
+        int completed_early = fixture.other_done;
+        cmeta_mutex_unlock(&fixture.mutex);
+        check_false(completed_early);
+        release_handshake();
+        check_true(wait_flag(&fixture.other_done));
+        /* A datagram from the ICE owner must not overwrite a concurrent
+         * handshake, produce keys or fail an otherwise live peer. */
+        dtls_session_lock(fixture.peer);
+        int live = fixture.peer->dtls.handshake_started &&
+                   !fixture.peer->dtls.stopped &&
+                   fixture.peer->dtls.engine != NULL;
+        dtls_session_unlock(fixture.peer);
+        check_true(live);
+        srtp_keying_material_t keys;
+        check_equal(turbo_dc_peer_get_srtp_keys(fixture.peer, &keys), (uint16_t)0);
     }
 
     it("drains the live handshake before destroying the engine") {
