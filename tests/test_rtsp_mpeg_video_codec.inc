@@ -180,7 +180,9 @@ static int rtsp_mpv_admit_wire(tm_ffd_decoder *d,uint64_t expected_epoch,
         return -1;
     packet.data=video.es;packet.bytes=video.es_len;
     packet.pts=(int64_t)(rtp.timestamp/3000u);
-    packet.dts=(int64_t)(seq-RTSP_MPV_RTP_SEQUENCE);
+    /* RFC2250 carries presentation timestamps, NOT decode timestamps.
+     * Never invent a DTS from transport sequence or arrival order. */
+    packet.dts=AV_NOPTS_VALUE;
     return (int)tm_ffd_submit(d,&packet);
 }
 static void rtsp_mpv_drain(tm_ffd_decoder *decoder,rtsp_mpv_fixture *fixture,
