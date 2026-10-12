@@ -61,7 +61,7 @@ int main(void) {
     server_config.send_queue_capacity = 16u;
     server_config.send_queue_bytes = 512u * 1024u;
     handlers.on_options = installed_options;
-    handlers.on_close = installed_close;
+    handlers.on_session_close = installed_close;
 
     client_config.host = "127.0.0.1";
     client_config.port = TM_INSTALLED_RTSP_PORT;
