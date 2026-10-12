@@ -1,10 +1,10 @@
 # TurboMedia::StreamGraph — typed graph compilation M0
 
-**Development slice** [#163](https://github.com/qigao/turbomedia/issues/163), under [StreamGraph v2 #162](https://github.com/qigao/turbomedia/issues/162). This is **compile-only immutable graph preflight**. It is **not** an executable media graph.
+**Development slices** [#163](https://github.com/qigao/turbomedia/issues/163), [#164](https://github.com/qigao/turbomedia/issues/164), and [#165](https://github.com/qigao/turbomedia/issues/165), under [StreamGraph v2 #162](https://github.com/qigao/turbomedia/issues/162). Typed graph preflight, a same-process CPU FrameStore, bounded Fanout and a narrowly scoped synthetic owner-driven Executor now exist on **stacked Draft branches**. This is **not** a fully general, released or production-qualified StreamGraph runtime.
 
 The platform-neutral C11 header `turbo_streamgraph.h` models Source/Processor/Sink, six typed Port kinds and explicit edges. `tm_sg_compile()` deep-copies all IDs, Port descriptors and Edges, checks capacities, port direction, DAG cycle, schema, timebase, memory domain, media format, connectedness and fanout, and produces a read-only topology plan. Views remain borrowed until `tm_sg_program_destroy()`.
 
-**Not implemented:** provider selection and exact capabilities, codec/model loading, FrameStore/FrameLease (#164), GPU synchronization, stream execution and QoS (#165), Observation serialization (#167), FFmpeg adapters (#166) or Android Capture. `format_id == 0` and memory `ANY` are unconstrained *proposals* requiring future explicit provider negotiation, not implicit conversion or a production capability claim.
+**Still missing:** provider selection and exact capabilities, codec/model loading, GPU synchronization, general DAG scheduling, true cross-owner handoff/TSan, Observation serialization (#167), FFmpeg adapters (#166) and Android Capture. The M1/M2 constrained CPU components below do not satisfy these requirements. `format_id == 0` and memory `ANY` are unconstrained *proposals* requiring future explicit provider negotiation, not implicit conversion or a production capability claim.
 
 `TurboMedia::StreamGraph` is a shared platform component, unlike desktop-only Pipeline. The small standalone CMake build supports fast conformance independent of a complete Salts/FFmpeg toolchain; its **test-only** installed `TurboMediaStreamGraph` CMake package does not prove the full TurboMedia package is usable.
 
@@ -58,9 +58,7 @@ This is **not** yet the full execution scheduler: no Source/Processor factory in
 
 `turbo_streamgraph_executor.h` connects a compiled `tm_sg_program` to actual
 Source/Processor/Sink callbacks and the CPU FrameStore + bounded Fanout. The
-first **explicitly supported** topology is one Source, one Processor and 1–8
-Sink nodes connected through typed CPU VideoFrame ports with resolved, nonzero
-format and timebase. An unrecognized DAG, GPU/ANY memory domain, missing
+explicitly supported topology in the latest Draft is one Source, **1–8 ordered read-only Processors**, and 1–8 Sink nodes connected through typed CPU VideoFrame ports with resolved, nonzero format and timebase. An unrecognized DAG, GPU/ANY memory domain, missing
 binding, or unsupported port is rejected rather than run partially.
 
 The embedding caller owns **every** call and callback, including Source polls,
@@ -87,3 +85,11 @@ does not implement async callback completion, true cross-owner handoff, GPU
 fences, FFmpeg Flush/Drain or plugin generation leases. Those are separate
 qualification gates under [#165](https://github.com/qigao/turbomedia/issues/165)
 and [#166](https://github.com/qigao/turbomedia/issues/166).
+
+## M3 linear multi-Processor slice (Draft PR #174)
+
+The synthetic owner-driven Executor now supports `Source -> Processor[1..8] -> Sink[1..8]` as a **single-owner CPU read-only visitor chain**. The Compiler's topological node order determines the callback sequence; the same FrameLease is borrowed by each Processor only during its callback. It does not mutate the pixel buffer, allocate an extra frame copy, create a scheduler thread or accept arbitrary DAGs.
+
+Preflight rejects intermediate fan-out, skipped or ambiguous processors, non-matching Port kinds/formats/timebases, missing or duplicate Provider bindings and a chain longer than the finite Processor limit. The final Processor alone fans out through existing ordered-lossless, sample or latest branch policies. An error in any Processor stops further execution and invokes the existing safe stop/retire path.
+
+The `streamgraph_multi_processor` CTest verifies two exact-order Processors and two Sinks, lossless backpressure without duplicate callback, rejection of intermediate-Processor branches and a failing second Processor. [PR #174](https://github.com/qigao/turbomedia/pull/174) qualifies this **narrow slice only**. A general Source/Processor/Sink execution DAG, per-node mutable outputs, cross-owner bounded asynchronous delivery, true TSan concurrency, EOS/flush across codecs and FFmpeg lowering remain separately outstanding under #165/#166.
