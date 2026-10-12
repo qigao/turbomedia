@@ -2,9 +2,8 @@
 #include <salts/plugin_decl.h>
 #include <stdatomic.h>
 #ifdef TM_TEST_FFMPEG_DSO
-#include <libavcodec/avcodec.h>
-#include <libavutil/pixfmt.h>
-#include <string.h>
+#include <salts/error_codes.h>
+#include <turbo_streamgraph_ffmpeg_async.h>
 #endif
 
 #ifndef TM_TEST_DSO_GENERATION
@@ -34,57 +33,82 @@ static int fixture_release(void *self) {
     return 0;
 }
 #ifdef TM_TEST_FFMPEG_DSO
-/* Invoked on the real Provider DSO worker stack. Libavcodec state never
- * escapes this call or crosses into the StreamGraph public C11 ABI.
- * The caller supplies a 16x16 luma output valid through this callback.
- * Hold the DSO call stack after a genuine libavcodec decode so N->N+1
- * cancellation exercises actual codec-then-callback DSO ownership. */
-static int fixture_decode_mjpeg(
-    void *self,const uint8_t *bytes,size_t size,
-    uint8_t *out,size_t capacity) {
-    const AVCodec *codec;
-    AVCodecContext *decoder=NULL;
-    AVPacket *packet=NULL;
-    AVFrame *frame=NULL;
-    int result=-1,rc;
-    unsigned y;
-    if(!self || !bytes || !size || size>UINT32_C(65536) ||
-       !out || capacity<256u) return -1;
-    codec=avcodec_find_decoder(AV_CODEC_ID_MJPEG);
-    if(!codec)return -2;
-    decoder=avcodec_alloc_context3(codec);
-    packet=av_packet_alloc();
-    frame=av_frame_alloc();
-    if(!decoder || !packet || !frame)goto exit;
-    decoder->thread_count=1u;
-    if(avcodec_open2(decoder,codec,NULL)<0 ||
-       av_new_packet(packet,(int)size)<0)goto exit;
-    memcpy(packet->data,bytes,size);
-    rc=avcodec_send_packet(decoder,packet);
-    if(rc<0 || avcodec_receive_frame(decoder,frame)<0)goto exit;
-    if(frame->width!=16 || frame->height!=16 ||
-       (frame->format!=AV_PIX_FMT_YUVJ420P &&
-        frame->format!=AV_PIX_FMT_YUV420P &&
-        frame->format!=AV_PIX_FMT_GRAY8) ||
-       !frame->data[0] || frame->linesize[0]<16)goto exit;
-    for(y=0;y<16u;++y)
-        memcpy(out+y*16u,frame->data[0]+(size_t)y*(size_t)frame->linesize[0],16u);
-    result=*(int *)self;
+/* One address-stable production-style decoder per test Provider DSO.
+ * Allocated through the actual tm_ffa_* API, NOT private copied libavcodec
+ * logic. The Module Scope keeps the DSO code and borrowed service valid. */
+static tm_ffa_decoder *fixture_decoder=NULL;
+static _Atomic int fixture_last_wake=SALTS_EINVAL;
+
+/* This callback executes on the REAL Provider DSO call stack AFTER
+ * tm_ffa_run_mjpeg publishes its exact terminal to the Portal. N can be
+ * cancelled/retired while the DSO remains on this stack. */
+static int fixture_wake(void *context) {
+    cnet_client *client=(cnet_client *)context;
+    int rc=cnet_client_wake(client);
+    atomic_store_explicit(&fixture_last_wake,rc,memory_order_release);
     atomic_store_explicit(&in_get,1u,memory_order_release);
     while(!atomic_load_explicit(&permit_return,memory_order_acquire)) {
-        /* This is a REAL held FFmpeg codec entry on the Salts-loaded DSO. */
+        /* deterministic DSO callback + wake quiescence barrier */
     }
-exit:
-    av_frame_free(&frame);
-    av_packet_free(&packet);
-    avcodec_free_context(&decoder);
-    return result;
+    return rc==SALTS_OK ? 0 : -1;
+}
+
+static int fixture_run_decode(void *self,const tm_test_decode_request *job) {
+    tm_ff_config_v1 config=TM_FF_CONFIG_V1_INIT;
+    tm_ff_status rc;
+    if(!self || !job || job->size!=sizeof(*job) ||
+       !job->packet || !job->packet_size || job->packet_size>65536u ||
+       !job->portal || !job->ticket.incarnation ||
+       !job->ticket.generation || !job->wake_client ||
+       fixture_decoder!=NULL)return -1;
+    config.width=16u;
+    config.height=16u;
+    config.max_packet_bytes=65536u;
+    rc=tm_ffa_create(&config,&fixture_decoder);
+    if(rc!=TM_FF_OK)return -2;
+    rc=tm_ffa_run_mjpeg(fixture_decoder,job->packet,job->packet_size,
+                        job->portal,job->ticket,fixture_wake,job->wake_client);
+    return rc==TM_FF_OK ? *(int *)self : -3;
+}
+
+static int fixture_take_luma(void *self,const tm_test_take_request *request) {
+    tm_ff_status rc;
+    tm_ex_source_result got;
+    if(!self || !request || request->size!=sizeof(*request) ||
+       !request->luma || !request->out_bytes || !fixture_decoder)return -1;
+    *request->out_bytes=0u;
+    rc=tm_ffa_owner_accept(fixture_decoder,request->ticket);
+    if(rc!=TM_FF_OK)return -2;
+    got=tm_ffa_owner_next_luma(fixture_decoder,request->luma,
+                               request->capacity,request->out_bytes);
+    return got==TM_EX_SOURCE_FRAME && *request->out_bytes==256u ? 256 : -3;
+}
+
+/* Only the Media Owner calls this AFTER callback-thread join, terminal
+ * settlement, and any retained decoded frame has been consumed/discarded.
+ * No ComponentPlugin Scope is acquired/released by tm_ffa_destroy itself. */
+static int fixture_finish_decode(void *self) {
+    tm_ff_status rc;
+    if(!self || !fixture_decoder)return -1;
+    rc=tm_ffa_owner_cancel(fixture_decoder);
+    if(rc!=TM_FF_OK)return -2;
+    rc=tm_ffa_destroy(fixture_decoder);
+    if(rc!=TM_FF_OK)return -3;
+    fixture_decoder=NULL;
+    return 0;
+}
+static int fixture_wake_status(void *self) {
+    if(!self)return SALTS_EINVAL;
+    return atomic_load_explicit(&fixture_last_wake,memory_order_acquire);
 }
 CMETA_IMPLEMENTS(tm_test_provider, tm_test_impl, 0u,
                   .get=fixture_get,
                   .entered=fixture_entered,
                   .release=fixture_release,
-                  .decode_mjpeg=fixture_decode_mjpeg);
+                  .run_decode=fixture_run_decode,
+                  .take_luma=fixture_take_luma,
+                  .finish_decode=fixture_finish_decode,
+                  .wake_status=fixture_wake_status);
 #else
 CMETA_IMPLEMENTS(tm_test_provider, tm_test_impl, 0u,
                   .get=fixture_get,
