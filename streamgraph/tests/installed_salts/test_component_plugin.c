@@ -241,6 +241,18 @@ static void settle_terminal(terminal_owner *o,uint64_t correlation,
     assert(tm_od_step_completion(o->dispatcher,&result)==TM_OD_EMPTY);
 }
 
+
+static void drain_plugin(cmeta_plugin_registry *registry,cmeta_plugin_ref ref) {
+    cmeta_plugin_lifecycle_info info;
+    bool quiet=false;
+    assert(cmeta_plugin_registry_get_lifecycle(registry,ref,&info)==CMETA_PLUGIN_OK);
+    assert(info.active_leases==0u);
+    assert(cmeta_plugin_registry_request_stop(registry,ref)==CMETA_PLUGIN_OK);
+    assert(cmeta_plugin_registry_poll_quiescent(registry,ref,&quiet)==CMETA_PLUGIN_OK);
+    assert(quiet);
+    assert(cmeta_plugin_registry_unload(registry,ref)==CMETA_PLUGIN_OK);
+}
+
 int main(int argc,char **argv) {
     const cmeta_plugin_registry_config registry_config={2};
     cmeta_plugin_registry registry={0};
