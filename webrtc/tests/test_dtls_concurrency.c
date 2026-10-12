@@ -461,12 +461,21 @@ spec("DTLS datagram transport handshake") {
         cmeta_mutex_unlock(&endpoints[1].mutex);
         check_equal(turbo_dc_peer_connect(endpoints[1].peer), 0);
         check_equal(turbo_dc_peer_connect(endpoints[0].peer), 0);
-        /* Includes the cookie exchange; do not couple this ownership test to
-         * a provider-specific number of handshake flights. */
-        for (int step = 0; step < 8; ++step) {
+        /* Includes the cookie exchange and asynchronous DTLS timer owner.
+         * Eight immediate deque drains can outrun that owner on macOS;
+         * rendezvous on the actual one-packet drop, without relaxing the
+         * dropped-flight, identity, SRTP or retry assertions below. This is
+         * test-only scheduling and does not alter protocol timeouts. */
+        uint64_t initial_deadline = cmeta_monotonic_ms() + 1000;
+        while (cmeta_monotonic_ms() < initial_deadline) {
             deliver_packets(0);
             deliver_packets(1);
-            if (turbo_dc_peer_get_srtp_keys(endpoints[1].peer, &keys[1])) break;
+            cmeta_mutex_lock(&endpoints[1].mutex);
+            unsigned observed_drop = endpoints[1].dropped_packets;
+            cmeta_mutex_unlock(&endpoints[1].mutex);
+            if (observed_drop == 1u &&
+                turbo_dc_peer_get_srtp_keys(endpoints[1].peer, &keys[1])) break;
+            cmeta_sleep_ms(1);
         }
         cmeta_mutex_lock(&endpoints[1].mutex);
         unsigned dropped = endpoints[1].dropped_packets;
