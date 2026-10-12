@@ -167,6 +167,8 @@ struct IndependentPair {
     bool wrong_fingerprint;
     bool disable_ems;
     bool duplicate_ems;
+    bool tamper_peer_finished;
+    bool peer_finished_tampered = false;
     unsigned duplicated_hello_records = 0;
     tstr gm_certificate = nullptr, gm_private_key = nullptr;
     tstr external_certificate = nullptr, external_private_key = nullptr;
@@ -182,10 +184,12 @@ struct IndependentPair {
     unsigned last_gm_record_type = 0, last_gm_handshake_type = 0;
 
     IndependentPair(bool server, uint16_t id, bool rsa, bool wrong_pin = false,
-                    bool no_ems = false, bool duplicate_ems_extension = false)
+                    bool no_ems = false, bool duplicate_ems_extension = false,
+                    bool tamper_finished = false)
         : gm_server(server), profile(id), rsa_identity(rsa),
           wrong_fingerprint(wrong_pin), disable_ems(no_ems),
-          duplicate_ems(duplicate_ems_extension) {}
+          duplicate_ems(duplicate_ems_extension),
+          tamper_peer_finished(tamper_finished) {}
 
     ~IndependentPair() {
         SSL_free(ssl);
@@ -336,6 +340,48 @@ struct IndependentPair {
                     return failure("duplicate-EMS-hello-mutation");
                 if (mutation == HelloMutation::changed) ++duplicated_hello_records;
             }
+            if (tamper_peer_finished && !peer_finished_tampered) {
+                // The independent OpenSSL provider produces encrypted DTLS
+                // Finished; find a complete epoch-1 handshake record without
+                // looking inside its encrypted content or logging its bytes.
+                size_t at = 0, finished_end = 0;
+                while (at + 13 <= len) {
+                    size_t record_size = 13 + (size_t(packet[at + 11]) << 8) +
+                                         packet[at + 12];
+                    if (record_size > len - at)
+                        return failure("OpenSSL-Finished-record-framing");
+                    if (packet[at] == 22 && packet[at + 3] == 0 &&
+                        packet[at + 4] == 1 && record_size >= 13 + 24 + 12) {
+                        finished_end = at + record_size;
+                        break;
+                    }
+                    at += record_size;
+                }
+                if (at != len && !finished_end && at + 13 > len)
+                    return failure("OpenSSL-Finished-truncated-datagram");
+                if (finished_end) {
+                    if (turbo_gdtls_ready(gm))
+                        return failure("GmSSL-ready-before-authenticated-Finished");
+                    uint8_t forged[65535];
+                    memcpy(forged, packet, len);
+                    forged[finished_end - 1] ^= 0x20; // encrypted Finished tag
+                    if (turbo_gdtls_receive(gm, forged, len, clock_ms) !=
+                        TURBO_GDTLS_OK)
+                        return failure("tampered-peer-Finished-not-dropped");
+                    uint8_t key_material[88] = {};
+                    size_t exported = sizeof(key_material);
+                    bool denied = !turbo_gdtls_ready(gm) &&
+                        turbo_gdtls_srtp_profile(gm) == 0 &&
+                        turbo_gdtls_export_srtp(gm, key_material,
+                            sizeof(key_material), &exported) == TURBO_GDTLS_AUTH &&
+                        exported == 0 &&
+                        turbo_gdtls_take_plaintext(gm) == nullptr;
+                    OPENSSL_cleanse(key_material, sizeof(key_material));
+                    if (!denied)
+                        return failure("tampered-Finished-admitted-export-or-plaintext");
+                    peer_finished_tampered = true;
+                }
+            }
             int status = turbo_gdtls_receive(gm, packet, len, clock_ms);
             if (status != TURBO_GDTLS_OK) return failure("GmSSL-receive");
         }
@@ -368,6 +414,8 @@ struct IndependentPair {
             int result = turbo_gdtls_poll(gm, clock_ms);
             if (result != TURBO_GDTLS_OK) return failure("GmSSL-timer");
             if (openssl_ready && turbo_gdtls_ready(gm)) {
+                if (tamper_peer_finished && !peer_finished_tampered)
+                    return failure("test-did-not-inject-encrypted-peer-Finished");
                 if (!pump_gm_output()) return false;
                 return true;
             }
@@ -811,6 +859,24 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                 check_true(fixture.handshake());
                 check_true(fixture.qualify_exporter());
                 check_true(fixture.qualify_authenticated_close_notify());
+            }
+        }
+    }
+    /* A real external-provider encrypted Finished with an invalid GCM
+     * authentication tag must not complete the handshake, expose keying
+     * material or consume its record sequence. Delivering the unmodified
+     * Finished afterwards must allow authenticated admission.
+     */
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        for (int server = 0; server < 2; ++server) {
+            it("GmSSL server=%d RSA=%d authenticates independently generated peer Finished",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0,
+                                        false, false, false, true);
+                check_true(fixture.init());
+                check_true(fixture.handshake());
+                check_true(fixture.qualify_exporter());
+                check_true(fixture.exchange_application());
             }
         }
     }
