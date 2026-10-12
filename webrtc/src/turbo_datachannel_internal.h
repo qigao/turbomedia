@@ -92,11 +92,20 @@ typedef struct {
     unsigned receive_buffers;
     int receive_stopped;
 
-    /* Native STATUS query ownership, bounded by admitted peer operations.
-     * Both are protected by peer->operation_mutex; close waits on
-     * peer->operation_cond before freeing the usrsctp socket. */
-    unsigned status_borrows;
-    int status_close_requested;
+    /* One bounded ownership protocol for every native usrsctp operation.
+     * Under peer->operation_mutex; callbacks always run outside that mutex.
+     * Thread tokens let reentrant close defer physical release until its
+     * own admitted native operation unwinds. */
+    unsigned native_borrows;
+    int native_close_requested;
+    int native_shutdown_requested;
+    int native_closing;
+    int native_closed;
+    const void *native_closer_token;
+    struct {
+        const void *thread;
+        unsigned depth;
+    } native_owners[16];
 } sctp_session_t;
 
 /* Data channel context - internal */
@@ -321,30 +330,131 @@ static inline uint16_t get_be16(const uint8_t *buf) {
     return (uint16_t)((buf[0] << 8) | buf[1]);
 }
 
-/* A Socket-status borrow is distinct from the peer's lifetime lease:
- * public peer close can run while another Owner holds a peer operation.
- * No operation_mutex may be held across usrsctp_getsockopt or callbacks. */
-static inline struct socket *sctp_status_borrow(turbo_dc_peer_t *peer) {
-    struct socket *socket = NULL;
+/* Native operations borrow the usrsctp socket under one Owner-admission
+ * protocol. At most 16 distinct threads and 256 concurrent/nested native
+ * borrows per peer are admitted. A full registry fails closed, never bypasses
+ * the socket ownership barrier. */
+static inline struct socket *sctp_native_borrow(turbo_dc_peer_t *peer) {
     if (!peer || !peer->operation_sync_initialized) return NULL;
+    const void *token = cmeta_thread_current_token();
+    if (!token) return NULL;
     cmeta_mutex_lock(&peer->operation_mutex);
-    if (!peer->destroying && !peer->sctp.status_close_requested &&
-        peer->sctp.socket) {
-        socket = peer->sctp.socket;
-        ++peer->sctp.status_borrows;
+    struct socket *sock = NULL;
+    if (!peer->destroying && !peer->sctp.native_close_requested &&
+        peer->sctp.socket && peer->sctp.native_borrows < 256u) {
+        int idx = -1;
+        int available = -1;
+        for (size_t i = 0; i < 16u; ++i) {
+            if (peer->sctp.native_owners[i].thread == token) {
+                idx = (int)i;
+                break;
+            }
+            if (!peer->sctp.native_owners[i].thread && available < 0)
+                available = (int)i;
+        }
+        if (idx < 0) idx = available;
+        if (idx >= 0) {
+            peer->sctp.native_owners[idx].thread = token;
+            ++peer->sctp.native_owners[idx].depth;
+            ++peer->sctp.native_borrows;
+            sock = peer->sctp.socket;
+        }
     }
     cmeta_mutex_unlock(&peer->operation_mutex);
-    return socket;
+    return sock;
 }
 
-static inline void sctp_status_return(turbo_dc_peer_t *peer) {
+/* Owner-close is permitted to reenter from within conninput/on_message. The
+ * native handle is detached and released exactly once, after the *last*
+ * admitted native operation finishes; no background thread is introduced. */
+static inline void sctp_native_finish_close(turbo_dc_peer_t *peer,
+                                            struct socket *socket,
+                                            int shutdown) {
+    if (shutdown) (void)usrsctp_shutdown(socket, SHUT_RDWR);
+    (void)usrsctp_close(socket);
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->sctp.native_closing = 0;
+    peer->sctp.native_closed = 1;
+    cmeta_cond_broadcast(&peer->operation_cond);
+    cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+static inline void sctp_native_return(turbo_dc_peer_t *peer) {
+    if (!peer || !peer->operation_sync_initialized) return;
+    const void *token = cmeta_thread_current_token();
+    struct socket *last_socket = NULL;
+    int last_shutdown = 0;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    for (size_t i = 0; i < 16u; ++i) {
+        if (peer->sctp.native_owners[i].thread == token &&
+            peer->sctp.native_owners[i].depth > 0) {
+            if (--peer->sctp.native_owners[i].depth == 0)
+                peer->sctp.native_owners[i].thread = NULL;
+            if (peer->sctp.native_borrows > 0)
+                --peer->sctp.native_borrows;
+            break;
+        }
+    }
+    if (peer->sctp.native_borrows == 0 &&
+        peer->sctp.native_close_requested &&
+        !peer->sctp.native_closing && peer->sctp.socket) {
+        peer->sctp.native_closing = 1;
+        peer->sctp.native_closer_token = token;
+        last_socket = peer->sctp.socket;
+        last_shutdown = peer->sctp.native_shutdown_requested;
+        peer->sctp.socket = NULL;
+    }
+    cmeta_cond_broadcast(&peer->operation_cond);
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (last_socket)
+        sctp_native_finish_close(peer, last_socket, last_shutdown);
+}
+
+static inline void sctp_native_request_close(turbo_dc_peer_t *peer, int shutdown) {
     if (!peer || !peer->operation_sync_initialized) return;
     cmeta_mutex_lock(&peer->operation_mutex);
-    if (peer->sctp.status_borrows > 0)
-        --peer->sctp.status_borrows;
-    if (peer->sctp.status_borrows == 0)
-        cmeta_cond_broadcast(&peer->operation_cond);
+    peer->sctp.native_close_requested = 1;
+    if (shutdown) peer->sctp.native_shutdown_requested = 1;
+    cmeta_cond_broadcast(&peer->operation_cond);
     cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+static inline void sctp_native_close_socket(turbo_dc_peer_t *peer, int shutdown) {
+    if (!peer || !peer->operation_sync_initialized) return;
+    const void *token = cmeta_thread_current_token();
+    struct socket *socket = NULL;
+    int perform_shutdown = 0;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->sctp.native_close_requested = 1;
+    if (shutdown) peer->sctp.native_shutdown_requested = 1;
+    /* A callback nested inside its own conninput/sendv must not deadlock
+     * waiting for itself. The last native return will finalize close. */
+    for (size_t i = 0; i < 16u; ++i) {
+        if (peer->sctp.native_owners[i].thread == token &&
+            peer->sctp.native_owners[i].depth > 0) {
+            cmeta_mutex_unlock(&peer->operation_mutex);
+            return;
+        }
+    }
+    /* Likewise, an outbound callback from usrsctp_close on this very
+     * thread cannot recursively wait on the closing owner. */
+    if (peer->sctp.native_closing &&
+        peer->sctp.native_closer_token == token) {
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        return;
+    }
+    while (peer->sctp.native_borrows != 0 || peer->sctp.native_closing)
+        cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+    if (peer->sctp.socket) {
+        peer->sctp.native_closing = 1;
+        peer->sctp.native_closer_token = token;
+        socket = peer->sctp.socket;
+        perform_shutdown = peer->sctp.native_shutdown_requested;
+        peer->sctp.socket = NULL;
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (socket)
+        sctp_native_finish_close(peer, socket, perform_shutdown);
 }
 
 /* ============================================================================
