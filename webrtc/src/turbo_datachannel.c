@@ -1301,9 +1301,7 @@ void turbo_dc_peer_poll(turbo_dc_peer_t *peer) {
         return;
     }
 
-    if (peer->sctp.socket) {
-        sctp_poll_status(peer, "peer-poll");
-    }
+    sctp_poll_status(peer, "peer-poll");
     dc_peer_release(peer);
 }
 
@@ -1311,39 +1309,20 @@ turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer) {
     return peer ? peer->state : TURBO_DC_STATE_CLOSED;
 }
 
-/* Socket close is a peer owner operation. No new public or private DLL
- * export: retain a bounded number of already-admitted STATUS queries and
- * drain them before the native usrsctp socket can be released. No locks are
- * held while executing usrsctp shutdown or user callbacks. */
-static void sctp_session_close_socket(turbo_dc_peer_t *peer, int shutdown) {
-    if (!peer || !peer->operation_sync_initialized) return;
-    cmeta_mutex_lock(&peer->operation_mutex);
-    peer->sctp.status_close_requested = 1;
-    cmeta_cond_broadcast(&peer->operation_cond);
-    while (peer->sctp.status_borrows != 0)
-        cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
-    struct socket *socket = peer->sctp.socket;
-    peer->sctp.socket = NULL;
-    cmeta_mutex_unlock(&peer->operation_mutex);
-
-    if (socket) {
-        if (shutdown) (void)usrsctp_shutdown(socket, SHUT_RDWR);
-        (void)usrsctp_close(socket);
-    }
-}
-
 static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
-    if (peer) sctp_receive_stop(peer);
-    if (!peer || peer->state == TURBO_DC_STATE_CLOSED) {
+    if (!peer) return;
+    sctp_receive_stop(peer);
+    if (peer->state == TURBO_DC_STATE_CLOSED) {
+        sctp_native_close_socket(peer, 0);
         return;
     }
 
+    /* The terminal native admission runs before DISCONNECTING; any
+     * pre-existing STATUS callback finishes before we notify the
+     * application that its socket is being closed. If invoked reentrantly
+     * from conninput/on_message, defer native release to its last borrow. */
+    sctp_native_close_socket(peer, 1);
     dc_notify_state(peer, TURBO_DC_STATE_DISCONNECTING);
-
-    /* A peer operation lease does not guard ordinary Socket close. First
-     * reject new STATUS queries, wait for already-admitted native queries,
-     * then shutdown/close outside the operation mutex. */
-    sctp_session_close_socket(peer, 1);
 
     dtls_session_shutdown(peer);
 
@@ -1371,9 +1350,8 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
      * remove its deadline registration, including that already-closed path. */
     dtls_session_shutdown(peer);
 
-    /* Also drain native STATUS borrows if CLOSED was signaled without a
-     * prior public close. Physical close is idempotent via socket detach. */
-    sctp_session_close_socket(peer, 0);
+    /* Always settle native close, including the remote-CLOSED path. */
+    sctp_native_close_socket(peer, 0);
 
     /* AF_CONN addresses remain process-global until explicitly deregistered. */
     if (peer->sctp_address_registered) {
@@ -1626,11 +1604,6 @@ int turbo_dc_channel_send(
     }
 
     turbo_dc_peer_t *peer = channel->peer;
-    if (!peer->sctp.socket) {
-        dc_set_peer_error(peer, TURBO_DC_ERROR_INVALID_PEER_STATE, NULL);
-        return -1;
-    }
-
     uint32_t ppid;
     if (len == 0) {
         ppid = is_binary ? SCTP_PPID_BINARY_EMPTY : SCTP_PPID_STRING_EMPTY;
@@ -1674,9 +1647,15 @@ int turbo_dc_channel_send(
     const uint8_t empty_payload = 0;
     const void *payload = len ? data : &empty_payload;
     size_t payload_len = len ? len : sizeof(empty_payload);
-    ssize_t sent = usrsctp_sendv(peer->sctp.socket, payload, payload_len,
-                                  NULL, 0, &spa, sizeof(spa),
-                                  SCTP_SENDV_SPA, 0);
+    struct socket *socket = sctp_native_borrow(peer);
+    if (!socket) {
+        dc_set_peer_error(peer, TURBO_DC_ERROR_INVALID_PEER_STATE, NULL);
+        return -1;
+    }
+    ssize_t sent = usrsctp_sendv(socket, payload, payload_len,
+                                 NULL, 0, &spa, sizeof(spa),
+                                 SCTP_SENDV_SPA, 0);
+    sctp_native_return(peer);
 
     if (sent < 0) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, NULL);
