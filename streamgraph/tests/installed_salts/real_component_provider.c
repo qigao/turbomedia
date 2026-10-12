@@ -105,6 +105,10 @@ static int fixture_instance_destroy(void *self,const tm_test_instance_request *r
     return result;
 }
 static int fixture_wake(void *context);
+/* Shared DSO CMeta service includes a separate, bounded MPEG-2 Instance
+ * family; all operations use the installed FFmpeg addon, not copied Codec
+ * implementation. The single canonical Salts Scope still guards both. */
+#include "delayed_component_provider.inc"
 static int fixture_instance_cancel(void *self,const tm_test_instance_request *req) {
     unsigned i;
     int rc=-2;
@@ -270,6 +274,14 @@ CMETA_IMPLEMENTS(tm_test_provider, tm_test_impl, 0u,
                   .cancel_instance=fixture_instance_cancel, 
                   .run_decode=fixture_run_decode,
                   .run_eof=fixture_run_eof,
+                  .create_delayed=delayed_create,
+                  .destroy_delayed=delayed_destroy,
+                  .cancel_delayed=delayed_cancel,
+                  .finish_delayed=delayed_finish,
+                  .submit_delayed=delayed_submit,
+                  .step_delayed=delayed_step,
+                  .take_delayed=delayed_take,
+                  .stats_delayed=delayed_stats,
                   .take_luma=fixture_take_luma,
                   .finish_decode=fixture_finish_decode,
                   .wake_status=fixture_wake_status);
