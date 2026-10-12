@@ -124,6 +124,46 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
       TurboMediaFFmpeg::avcodec TurboMediaFFmpeg::avutil)
   endif()
   
+  # Actual, installed-Salts CMeta/ComponentPlugin DSO lifecycle gate,
+  # Linux-only until the joint cross-platform RTSP+FFmpeg+DLOpen profile
+  # has its own independent installed SDK conformance. The production
+  # RTSP and optional tm_ffd Sources are UNMODIFIED; the canonical
+  # Salts Plugin loader and ComponentPlugin Scope own both generations.
+  if(TEST_NAME STREQUAL "test_rtsp" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    foreach(_tm_generation IN ITEMS 101 102)
+      add_library(tm_rtsp_component_provider_${_tm_generation} SHARED
+        ${PROJECT_SOURCE_DIR}/streamgraph/tests/installed_salts/real_component_provider.c
+        ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg.c
+        ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_async.c
+        ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c)
+      target_include_directories(tm_rtsp_component_provider_${_tm_generation} PRIVATE
+        ${PROJECT_SOURCE_DIR}/streamgraph/tests/installed_salts
+        ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/include
+        ${PROJECT_SOURCE_DIR}/streamgraph/include
+        ${PROJECT_SOURCE_DIR}/media/include)
+      target_compile_definitions(tm_rtsp_component_provider_${_tm_generation}
+        PRIVATE TM_TEST_DSO_GENERATION=${_tm_generation}
+                TM_TEST_FFMPEG_DSO=1 SHARED_CXX)
+      target_link_libraries(tm_rtsp_component_provider_${_tm_generation} PRIVATE
+        Salts::ComponentPluginABI Salts::PluginABI Salts::CNet
+        turbo_media_streamgraph
+        TurboMediaFFmpeg::avcodec TurboMediaFFmpeg::avutil)
+      target_compile_options(tm_rtsp_component_provider_${_tm_generation} PRIVATE
+        -Wall -Wextra -Werror -Wno-unused-function)
+      set_target_properties(tm_rtsp_component_provider_${_tm_generation}
+        PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+      add_dependencies(${TEST_TARGET_NAME}
+        tm_rtsp_component_provider_${_tm_generation})
+    endforeach()
+    target_include_directories(${TEST_TARGET_NAME} PRIVATE
+      ${PROJECT_SOURCE_DIR}/streamgraph/tests/installed_salts)
+    target_compile_definitions(${TEST_TARGET_NAME} PRIVATE
+      TM_TEST_RTSP_MPEG2_PROVIDER_DSO=1 TM_TEST_FFMPEG_DSO=1)
+    target_link_libraries(${TEST_TARGET_NAME} PRIVATE
+      Salts::ComponentPlugin Salts::Plugin Salts::CNet
+      turbo_media_streamgraph Threads::Threads)
+  endif()
+
   # 设置目标属性
   set_target_properties(${TEST_TARGET_NAME} PROPERTIES 
     FOLDER "turbomedia/tests"
@@ -136,6 +176,11 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
+    if(TEST_NAME STREQUAL "test_rtsp" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
+        ENVIRONMENT
+          "TM_RTSP_TEST_DSO_101=$<TARGET_FILE:tm_rtsp_component_provider_101>;TM_RTSP_TEST_DSO_102=$<TARGET_FILE:tm_rtsp_component_provider_102>")
+    endif()
     if(TEST_NAME STREQUAL "test_benchmark")
       set_tests_properties(${TEST_TARGET_NAME} PROPERTIES LABELS performance)
     endif()
