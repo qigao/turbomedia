@@ -48,13 +48,18 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
     struct sctp_status status;
     socklen_t status_len = sizeof(status);
 
-    if (!peer || !peer->sctp.socket || !dtls_session_is_ready(peer)) {
-        return;
-    }
+    if (!peer || !dtls_session_is_ready(peer)) return;
+    /* On the ICE Owner, this status query may overlap application close.
+     * Pin the native usrsctp socket until getsockopt returns, independently
+     * of the peer lease. No native API or application callback under mutex. */
+    struct socket *socket = sctp_status_borrow(peer);
+    if (!socket) return;
 
     memset(&status, 0, sizeof(status));
-    if (usrsctp_getsockopt(peer->sctp.socket, IPPROTO_SCTP, SCTP_STATUS,
-                           &status, &status_len) != 0) {
+    int result = usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS,
+                                   &status, &status_len);
+    sctp_status_return(peer);
+    if (result != 0) {
         TLOG_WARNF("SCTP status poll failed reason='{}' errno={}",
                   reason ? reason : "", errno);
         return;
@@ -71,6 +76,29 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
           status.sstat_instrms > 0))) {
         peer->sctp.connected = 1;
         dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+    }
+}
+
+/* Detach the native socket only after *all* already-admitted STATUS
+ * queries have returned; later queries are rejected at admission.
+ * A separate peer operation lease keeps the enclosing peer alive while the
+ * closing thread executes shutdown/close outside operation_mutex.
+ *
+ * This does not alter the ICE consent or SCTP retry deadlines. */
+void sctp_session_close_socket(turbo_dc_peer_t *peer, int shutdown) {
+    if (!peer || !peer->operation_sync_initialized) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->sctp.status_close_requested = 1;
+    cmeta_cond_broadcast(&peer->operation_cond);
+    while (peer->sctp.status_borrows != 0)
+        cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+    struct socket *socket = peer->sctp.socket;
+    peer->sctp.socket = NULL;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+
+    if (socket) {
+        if (shutdown) (void)usrsctp_shutdown(socket, SHUT_RDWR);
+        (void)usrsctp_close(socket);
     }
 }
 
