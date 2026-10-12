@@ -47,8 +47,10 @@ foreach(_generation IN ITEMS 101 102)
     target_compile_options(tm_installed_provider_${_generation}
       PRIVATE /experimental:c11atomics /W4 /WX)
   else()
+    # Salts CMETA_IMPLEMENTS emits optional static adapter helpers.
+    # This fixture exercises the public typed vtable directly.
     target_compile_options(tm_installed_provider_${_generation}
-      PRIVATE -Wall -Wextra -Werror)
+      PRIVATE -Wall -Wextra -Werror -Wno-unused-function)
   endif()
 endforeach()
 
