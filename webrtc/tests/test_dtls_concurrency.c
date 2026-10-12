@@ -1015,6 +1015,18 @@ typedef struct {
 
 static sctp_status_close_fixture_t status_close_fixture;
 
+static struct sockaddr_conn native_close_fixture_address(turbo_dc_peer_t *peer) {
+    struct sockaddr_conn addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sconn_family = AF_CONN;
+    addr.sconn_port = htons(SCTP_ASSOCIATION_PORT);
+    addr.sconn_addr = peer;
+#ifdef HAVE_SCONN_LEN
+    addr.sconn_len = sizeof(addr);
+#endif
+    return addr;
+}
+
 static void status_borrow_worker(void *arg) {
     sctp_status_close_fixture_t *f = arg;
     struct socket *socket = NULL;
@@ -1052,6 +1064,35 @@ static void status_borrow_worker(void *arg) {
                                              MSG_NOTIFICATION, f->peer);
                 f->notification_dispatched = 1;
             }
+        } else if (f->operation == 3) {
+            /* Native sendv may legitimately reject an unconnected Socket.
+             * Only its validity under terminal close is asserted. */
+            uint8_t payload = 0x5a;
+            struct sctp_sndinfo info = {0};
+            info.snd_sid = 0;
+            info.snd_ppid = htonl(SCTP_PPID_BINARY);
+            (void)usrsctp_sendv(socket, &payload, sizeof(payload), NULL, 0,
+                                &info, sizeof(info), SCTP_SENDV_SNDINFO, 0);
+        } else if (f->operation == 4) {
+            _Alignas(struct sctp_reset_streams)
+            uint8_t bytes[sizeof(struct sctp_reset_streams) +
+                          sizeof(uint16_t)] = {0};
+            struct sctp_reset_streams *reset =
+                (struct sctp_reset_streams *)bytes;
+            reset->srs_assoc_id = SCTP_ALL_ASSOC;
+            reset->srs_flags = SCTP_STREAM_RESET_OUTGOING;
+            reset->srs_number_streams = 1;
+            reset->srs_stream_list[0] = 0;
+            (void)usrsctp_setsockopt(socket, IPPROTO_SCTP, SCTP_RESET_STREAMS,
+                                     bytes, sizeof(bytes));
+        } else if (f->operation == 5 || f->operation == 6) {
+            struct sockaddr_conn addr = native_close_fixture_address(f->peer);
+            if (f->operation == 5)
+                (void)usrsctp_bind(socket, (struct sockaddr *)&addr,
+                                   sizeof(addr));
+            else
+                (void)usrsctp_connect(socket, (struct sockaddr *)&addr,
+                                      sizeof(addr));
         } else {
             struct sctp_status status = {0};
             socklen_t len = sizeof(status);
@@ -1114,6 +1155,24 @@ static void run_sctp_status_close_interleaving(int operation) {
         ? turbo_dc_channel_create(f->peer, "close-after-native-gate", NULL) : NULL;
     int channel_created = operation != 2 || close_channel != NULL;
 
+    /* Real usrsctp_connect requires a bound socket. Satisfy only that
+     * prerequisite before terminal close; the actual connect call remains
+     * in the held worker after the close gate is published. */
+    if (operation == 6) {
+        struct socket *native = sctp_native_borrow(f->peer);
+        struct sockaddr_conn addr = native_close_fixture_address(f->peer);
+        int prebound = native &&
+            usrsctp_bind(native, (struct sockaddr *)&addr,
+                         sizeof(addr)) == 0;
+        if (native) sctp_native_return(f->peer);
+        if (!prebound) {
+            check_true(prebound);
+            cmeta_cond_destroy(&f->cond);
+            cmeta_mutex_destroy(&f->lock);
+            return;
+        }
+    }
+
     cmeta_thread_t query_thread = NULL;
     cmeta_thread_t closer_thread = NULL;
     int query_created = cmeta_thread_create(&query_thread,
@@ -1141,6 +1200,12 @@ static void run_sctp_status_close_interleaving(int operation) {
         socket_live = f->peer->sctp.socket != NULL;
         cmeta_mutex_unlock(&f->peer->operation_mutex);
     }
+
+    /* The terminal gate rejects any new native borrow, including from this
+     * separate test owner, even as an older borrow keeps the handle alive. */
+    struct socket *late = gate_observed ? sctp_native_borrow(f->peer) : NULL;
+    int late_admission_rejected = gate_observed && late == NULL;
+    if (late) sctp_native_return(f->peer);
 
     /* An admitted native Socket is still live, but terminal admission is
      * already sealed. Closing its channel must not attempt a fresh reset or
@@ -1178,12 +1243,21 @@ static void run_sctp_status_close_interleaving(int operation) {
     check_true(gate_observed);
     check_equal(held_count, 1);
     check_true(socket_live);
+    check_true(late_admission_rejected);
     check_false(prematurely_closed);
     check_true(f->status_attempted);
     check_true(f->worker_completed);
     check_true(f->close_finished);
-    check_null(f->peer->sctp.socket);
-    check_equal(f->peer->sctp.native_borrows, 0u);
+    cmeta_mutex_lock(&f->peer->operation_mutex);
+    int physically_closed = f->peer->sctp.native_closed;
+    int still_closing = f->peer->sctp.native_closing;
+    struct socket *remaining_socket = f->peer->sctp.socket;
+    unsigned remaining_borrows = f->peer->sctp.native_borrows;
+    cmeta_mutex_unlock(&f->peer->operation_mutex);
+    check_true(physically_closed);
+    check_false(still_closing);
+    check_null(remaining_socket);
+    check_equal(remaining_borrows, 0u);
     if (operation == 2) {
         check_true(channel_created);
         /* RED: old channel-close reads peer->sctp.socket without its owner
@@ -1208,7 +1282,7 @@ static void run_sctp_status_close_interleaving(int operation) {
     cmeta_mutex_destroy(&f->lock);
 }
 
-spec("SCTP native STATUS close admission") {
+spec("SCTP native API close admission") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
 
@@ -1222,6 +1296,22 @@ spec("SCTP native STATUS close admission") {
 
     it("skips Stream Reset cleanly after native close admission is sealed") {
         run_sctp_status_close_interleaving(2);
+    }
+
+    it("retains native sendv across a foreign terminal close") {
+        run_sctp_status_close_interleaving(3);
+    }
+
+    it("retains native SCTP_RESET_STREAMS across a foreign terminal close") {
+        run_sctp_status_close_interleaving(4);
+    }
+
+    it("retains native bind across a foreign terminal close") {
+        run_sctp_status_close_interleaving(5);
+    }
+
+    it("retains native connect across a foreign terminal close") {
+        run_sctp_status_close_interleaving(6);
     }
 }
 
