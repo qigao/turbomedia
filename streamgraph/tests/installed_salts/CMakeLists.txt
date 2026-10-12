@@ -25,7 +25,7 @@ find_package(TurboMediaStreamGraph CONFIG REQUIRED
   PATHS "$ENV{TM_SG_SDK_ROOT}" NO_DEFAULT_PATH
   NO_CMAKE_FIND_ROOT_PATH)
 foreach(_required IN ITEMS Salts::ComponentPlugin Salts::ComponentPluginABI
-                           Salts::Plugin Salts::PluginABI
+                           Salts::Plugin Salts::PluginABI Salts::CNet
                            TurboMedia::StreamGraph)
   if(NOT TARGET ${_required})
     message(FATAL_ERROR "Installed SDK lacks required target: ${_required}")
@@ -58,7 +58,7 @@ add_executable(tm_installed_salts_generation_test test_component_plugin.c)
 target_include_directories(tm_installed_salts_generation_test PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(tm_installed_salts_generation_test PRIVATE
-  Salts::ComponentPlugin Salts::Plugin TurboMedia::StreamGraph Threads::Threads)
+  Salts::ComponentPlugin Salts::Plugin Salts::CNet TurboMedia::StreamGraph Threads::Threads)
 add_dependencies(tm_installed_salts_generation_test
   tm_installed_provider_101 tm_installed_provider_102)
 if(MSVC)
