@@ -1377,31 +1377,41 @@ turbo_peer_connection_t *turbo_peer_connection_create(
 void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
     if (!pc) return;
 
+    /* Opt-in numeric-only diagnostic; lifetime/owner barriers are unchanged. */
+    const char *trace_env = getenv("TURBOMEDIA_IVR_STOP_TRACE");
+    const int trace = trace_env && strcmp(trace_env, "1") == 0;
+    const uint64_t start_ms = trace ? cmeta_monotonic_ms() : 0;
+
     cmeta_mutex_lock(&pc->ice_mutex);
     pc->destroying = 1;
     pc->ice_stop_requested = 1;
     cmeta_cond_broadcast(&pc->ice_cond);
     cmeta_mutex_unlock(&pc->ice_mutex);
+    const uint64_t admitted_ms = trace ? cmeta_monotonic_ms() : 0;
 
     /* Cancel blocking ICE commands before joining their submitting worker.
      * Keep ICE, DC and media alive until every admitted callback has returned. */
     if (pc->ice_owner) turbo_ice_owner_close(pc->ice_owner);
+    const uint64_t closed_ms = trace ? cmeta_monotonic_ms() : 0;
     if (pc->ice_worker_started) {
         cmeta_thread_join(&pc->ice_worker);
         cmeta_thread_destroy(&pc->ice_worker);
         pc->ice_worker_started = 0;
     }
+    const uint64_t joined_ms = trace ? cmeta_monotonic_ms() : 0;
     cmeta_mutex_lock(&pc->ice_mutex);
     while (pc->active_callbacks != 0) {
         cmeta_cond_wait(&pc->ice_cond, &pc->ice_mutex);
     }
     pc->state = TURBO_PEER_STATE_CLOSED;
     cmeta_mutex_unlock(&pc->ice_mutex);
+    const uint64_t callbacks_ms = trace ? cmeta_monotonic_ms() : 0;
 
     if (pc->media_ctx) {
         turbo_media_destroy(pc->media_ctx);
         pc->media_ctx = NULL;
     }
+    const uint64_t media_ms = trace ? cmeta_monotonic_ms() : 0;
 
     if (pc->dc_peer) {
         /* Registered callbacks reject admission until DC's own drain finishes.
@@ -1409,25 +1419,49 @@ void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
         turbo_dc_peer_destroy(pc->dc_peer);
         pc->dc_peer = NULL;
     }
+    const uint64_t dc_peer_ms = trace ? cmeta_monotonic_ms() : 0;
     
     if (pc->ice_owner) {
         turbo_ice_owner_destroy(pc->ice_owner);
         pc->ice_owner = NULL;
     }
+    const uint64_t ice_owner_ms = trace ? cmeta_monotonic_ms() : 0;
     if (pc->dc_ctx) {
         turbo_dc_context_destroy(pc->dc_ctx);
     }
+    const uint64_t dc_context_ms = trace ? cmeta_monotonic_ms() : 0;
     if (pc->ice_sync_initialized) {
         cmeta_cond_destroy(&pc->ice_cond);
         cmeta_mutex_destroy(&pc->ice_mutex);
         pc->ice_sync_initialized = 0;
     }
+    const uint64_t sync_ms = trace ? cmeta_monotonic_ms() : 0;
     
     tstr_free(pc->local_ufrag);
     tstr_free(pc->local_pwd);
     tstr_free(pc->remote_fingerprint);
     tstr_free(pc->remote_ufrag);
     tstr_free(pc->remote_pwd);
+    if (trace) {
+        const uint64_t end_ms = cmeta_monotonic_ms();
+        fprintf(stderr,
+                "[peer-destroy-stage] admission_ms=%llu ice_close_ms=%llu "
+                "ice_worker_ms=%llu callbacks_ms=%llu media_ms=%llu "
+                "dc_peer_ms=%llu ice_owner_ms=%llu dc_context_ms=%llu "
+                "sync_ms=%llu strings_ms=%llu total_ms=%llu\n",
+                (unsigned long long)(start_ms - start_ms),
+                (unsigned long long)(admitted_ms - admitted_ms),
+                (unsigned long long)(closed_ms - closed_ms),
+                (unsigned long long)(joined_ms - joined_ms),
+                (unsigned long long)(callbacks_ms - callbacks_ms),
+                (unsigned long long)(media_ms - media_ms),
+                (unsigned long long)(dc_peer_ms - dc_peer_ms),
+                (unsigned long long)(ice_owner_ms - ice_owner_ms),
+                (unsigned long long)(dc_context_ms - dc_context_ms),
+                (unsigned long long)(sync_ms - sync_ms),
+                (unsigned long long)(end_ms - start_ms));
+    }
+
     
     free(pc);
 }

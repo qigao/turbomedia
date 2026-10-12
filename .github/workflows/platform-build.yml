@@ -451,6 +451,7 @@ jobs:
             # deadlines, application replay or automatic settlement retry.
             if ("${{ matrix.platform }}" -eq "Windows" -and
                 $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+              $peerDestroyStageCount = 0
               # CTest normally hides successful test stdout. Capture only the
               # schema-validated numeric timing and redacted failure counters;
               # never print verbose SFU/SDP, Authorization or raw test logs.
@@ -463,6 +464,10 @@ jobs:
                     Write-Host $Matches[0]
                   } elseif ($line -match '\[whip-restart-terminal-events\] whip_since_kill_ms=\d+ whep_since_kill_ms=\d+') {
                     Write-Host $Matches[0]
+                  } elseif ($line -match '\[peer-destroy-stage\] admission_ms=\d+ ice_close_ms=\d+ ice_worker_ms=\d+ callbacks_ms=\d+ media_ms=\d+ dc_peer_ms=\d+ ice_owner_ms=\d+ dc_context_ms=\d+ sync_ms=\d+ strings_ms=\d+ total_ms=\d+') {
+                    # Emit only numeric durations, never SDP, peer IDs or Authorization.
+                    Write-Host $Matches[0]
+                    $peerDestroyStageCount++
                   } elseif ($line -match '\[ivr-stop-stage\] transport=(?:whip|whep) join_ms=\d+ delete_ms=\d+ peer_destroy_ms=\d+ result=-?\d+') {
                     # Redact by schema: only stop-phase numeric counters are
                     # printed, never HTTP locations, SDP or bearer tokens.
@@ -478,6 +483,9 @@ jobs:
                 }
               if ($LASTEXITCODE -ne 0) {
                 throw "Windows SFU/WHIP restart repeatability gate failed"
+              }
+              if ($peerDestroyStageCount -lt 4) {
+                throw "Windows SFU/WHIP peer destruction phase diagnostics missing"
               }
             }
           }
