@@ -103,6 +103,23 @@
                 "exclude": {
                     "label": "performance"
                 }
+            },
+            "execution": {
+                "timeout": 180
+            }
+        },
+        {
+            "name": "ci-platform-production-contract",
+            "inherits": "base-test",
+            "configurePreset": "ci-platform-release",
+            "filter": {
+                "include": {
+                    "name": "^turbo_media_test_(http_flv_local|transport_http)$"
+                }
+            },
+            "execution": {
+                "noTestsAction": "error",
+                "timeout": 180
             }
         },
         {

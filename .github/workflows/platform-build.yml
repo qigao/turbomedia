@@ -538,8 +538,11 @@ jobs:
             if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
             $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
           }
-          & ctest --preset ci-platform-test
-          if ($LASTEXITCODE -ne 0) { throw "production CTest failed for ${{ matrix.platform }}" }
+          # The first pass already exercises the entire native graph, including
+          # Windows WHIP/SFU. Only Streamer/HTTP is requalified after disabling
+          # fault injection; never install the instrumented test library.
+          & ctest --preset ci-platform-production-contract
+          if ($LASTEXITCODE -ne 0) { throw "production HTTP-FLV CTest failed for ${{ matrix.platform }}" }
 
       - name: Install
         shell: pwsh
