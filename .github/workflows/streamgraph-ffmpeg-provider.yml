@@ -89,5 +89,4 @@ jobs:
           set -euo pipefail
           if [ "${{ matrix.mode }}" = "asan-ubsan" ]; then export ASAN_OPTIONS=detect_leaks=1; fi
           ctest --test-dir "streamgraph/build/ffmpeg-${{ matrix.mode }}" \
-            -R '^streamgraph_ffmpeg_(decode|async)
- --no-tests=error --output-on-failure --timeout 60
+            -R 'streamgraph_ffmpeg_' --no-tests=error --output-on-failure --timeout 60
