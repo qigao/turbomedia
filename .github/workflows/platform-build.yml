@@ -517,7 +517,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & cmake --preset ci-platform-release "-DTURBO_MEDIA_TEST_FAULT_INJECTION=OFF"
+          & cmake --preset ci-platform-release "-DTURBO_MEDIA_TEST_FAULT_INJECTION:BOOL=OFF"
           if ($LASTEXITCODE -ne 0) { throw "production configure failed for ${{ matrix.platform }}" }
           $build = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform"
           $cache = Join-Path $build "CMakeCache.txt"
