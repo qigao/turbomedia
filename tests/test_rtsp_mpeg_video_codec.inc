@@ -176,7 +176,7 @@ static int rtsp_mpv_admit_wire(tm_ffd_decoder *d,uint64_t expected_epoch,
        rtp.timestamp%3000u || rtp.extension ||
        turbo_rtsp_mpeg_video_payload_parse(rtp.payload,rtp.payload_len,
                                            &video)!=0 ||
-       !video.begins_slice || !video.ends_slice)
+       turbo_rtsp_mpeg_video_one_picture_validate(&video,rtp.marker)!=0)
         return -1;
     packet.data=video.es;packet.bytes=video.es_len;
     packet.pts=(int64_t)(rtp.timestamp/3000u);
@@ -356,6 +356,19 @@ static void rtsp_test_mpeg2_video_real_rtp_to_delayed_codec(void) {
                             second_ssrc),-1);
             memcpy(modified,wire,bytes);
             modified[TURBO_RTSP_RTP_HEADER_SIZE+2u] &= (uint8_t)~0x10u;
+            check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
+                            1u,modified,bytes,RTSP_MPV_RTP_SEQUENCE,
+                            second_ssrc),-1);
+            memcpy(modified,wire,bytes);
+            /* Parser can recognize slices, but it MUST cross-check the
+             * elementary Picture Header's actual TR/Picture Type before
+             * granting bounded Codec ingress. */
+            modified[TURBO_RTSP_RTP_HEADER_SIZE+1u] ^= 0x01u;
+            check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
+                            1u,modified,bytes,RTSP_MPV_RTP_SEQUENCE,
+                            second_ssrc),-1);
+            memcpy(modified,wire,bytes);
+            modified[TURBO_RTSP_RTP_HEADER_SIZE+2u] ^= 0x01u;
             check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
                             1u,modified,bytes,RTSP_MPV_RTP_SEQUENCE,
                             second_ssrc),-1);
