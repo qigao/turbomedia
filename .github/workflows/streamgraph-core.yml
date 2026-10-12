@@ -65,7 +65,7 @@ jobs:
           ASAN_OPTIONS=detect_leaks=1 ctest --preset asan-ubsan
 
   thread-sanitizer:
-    name: Linux TSan MPSC handoff
+    name: Linux TSan Owner and Provider races
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -79,5 +79,5 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
-          cmake --build streamgraph/build/tsan --target streamgraph_handoff_test streamgraph_owner_dispatch_test
-          ctest --test-dir streamgraph/build/tsan -R 'streamgraph_(handoff|owner_dispatch)' --output-on-failure
+          cmake --build streamgraph/build/tsan --target streamgraph_handoff_test streamgraph_owner_dispatch_test streamgraph_provider_completion_test
+          ctest --test-dir streamgraph/build/tsan -R 'streamgraph_(handoff|owner_dispatch|provider_completion)' --output-on-failure
