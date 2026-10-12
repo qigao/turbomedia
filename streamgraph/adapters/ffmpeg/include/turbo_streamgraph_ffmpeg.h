@@ -35,7 +35,18 @@ typedef struct tm_ff_stats_v1 {
 } tm_ff_stats_v1;
 #define TM_FF_STATS_V1_INIT {sizeof(tm_ff_stats_v1),TM_FF_ABI_V1,0u,0u,0u,0u,0u,0u,0u,0}
 
+/* First-party call-site observability: the in_call flag spans the actual
+ * synchronous FFmpeg invocation, not a pre-call admission barrier.
+ * This does not independently prove observation while inside FFmpeg. */
+typedef struct tm_ff_codec_activity_v1 {
+    uint32_t size,version,in_call,reserved;
+    uint64_t packet_calls,flush_calls;
+} tm_ff_codec_activity_v1;
+#define TM_FF_CODEC_ACTIVITY_V1_INIT {sizeof(tm_ff_codec_activity_v1),TM_FF_ABI_V1,0u,0u,0u,0u}
+
 typedef struct tm_ff_source tm_ff_source;
+TURBO_MEDIA_API tm_ff_status tm_ff_codec_activity(
+    tm_ff_source *source,tm_ff_codec_activity_v1 *out);
 
 /* First qualified profile: MJPEG compressed video -> planar 8-bit luma
  * (width*height bytes); native FFmpeg decoder is used, not a custom decoder.
