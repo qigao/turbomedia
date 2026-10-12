@@ -315,6 +315,7 @@ typedef struct {
     unsigned ready_packets;
     unsigned dropped_packets;
     unsigned connected_events;
+    unsigned failed_events;
     int drop_first_ready_packet;
     int send_failed;
     turbo_dc_channel_t *channel; /* Borrowed from the peer. */
@@ -364,6 +365,7 @@ static void record_packet_endpoint_state(turbo_dc_peer_t *peer,
     (void)peer; (void)old_state;
     cmeta_mutex_lock(&endpoint->mutex);
     if (state == TURBO_DC_STATE_CONNECTED) ++endpoint->connected_events;
+    if (state == TURBO_DC_STATE_FAILED) ++endpoint->failed_events;
     cmeta_mutex_unlock(&endpoint->mutex);
 }
 
@@ -440,10 +442,21 @@ spec("DTLS datagram transport handshake") {
         check_equal(turbo_dc_peer_set_remote_fingerprint(endpoints[0].peer, "sha-256", wrong), 0);
         check_equal(turbo_dc_peer_connect(endpoints[1].peer), 0);
         check_equal(turbo_dc_peer_connect(endpoints[0].peer), 0);
-        for (int step = 0; step < 8; ++step) {
+        /* DTLS owner callbacks may complete after the immediate deque
+         * drains. Rendezvous on the *actual* FAILED state callback instead
+         * of treating eight fast polling turns as a scheduling oracle.
+         * Never relax the expected fingerprint error or key rejection. */
+        int fingerprint_rejected = 0;
+        uint64_t deadline = cmeta_monotonic_ms() + 2000u;
+        while (!fingerprint_rejected && cmeta_monotonic_ms() < deadline) {
             deliver_packets(0);
             deliver_packets(1);
+            cmeta_mutex_lock(&endpoints[0].mutex);
+            fingerprint_rejected = endpoints[0].failed_events != 0;
+            cmeta_mutex_unlock(&endpoints[0].mutex);
+            if (!fingerprint_rejected) cmeta_sleep_ms(1);
         }
+        check_true(fingerprint_rejected);
         check_equal(turbo_dc_peer_get_state(endpoints[0].peer), TURBO_DC_STATE_FAILED);
         check_equal(turbo_dc_peer_get_error(endpoints[0].peer).code, TURBO_DC_ERROR_DTLS_FINGERPRINT);
         srtp_keying_material_t keys, sentinel;

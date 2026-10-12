@@ -288,6 +288,9 @@ int dtls_write_application_data(turbo_dc_peer_t *peer, const void *data, size_t 
 
 int sctp_global_init(void);
 void sctp_global_cleanup(void);
+/* Advance no-thread usrsctp timers by monotonic elapsed time once per
+ * process, serialized across callers and safe from synchronous reentry. */
+void sctp_global_poll_timers(void);
 
 int sctp_session_init(turbo_dc_peer_t *peer);
 int sctp_start_association(turbo_dc_peer_t *peer);
