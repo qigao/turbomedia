@@ -120,43 +120,8 @@ void dc_peer_release(turbo_dc_peer_t *peer) {
     cmeta_mutex_unlock(&peer->operation_mutex);
 }
 
-/* Callback admission is bounded by active SCTP/DCEP transactions, never
- * by a detached lifetime or global callback queue. All map accesses use the
- * existing peer operation_mutex, while user callbacks run outside it. */
-turbo_dc_channel_t *dc_channel_admit(turbo_dc_peer_t *peer, uint16_t id) {
-    if (!peer || !peer->operation_sync_initialized) return NULL;
-    cmeta_mutex_lock(&peer->operation_mutex);
-    turbo_dc_channel_t *channel = !peer->destroying && peer->channels_initialized
-        ? peer_get_channel(peer, id) : NULL;
-    if (channel && !channel->closing) {
-        ++channel->callback_refs;
-    } else {
-        channel = NULL;
-    }
-    cmeta_mutex_unlock(&peer->operation_mutex);
-    return channel;
-}
-
-void dc_channel_release(turbo_dc_channel_t *channel) {
-    if (!channel || !channel->peer) return;
-    turbo_dc_peer_t *peer = channel->peer;
-    int reclaim = 0;
-    cmeta_mutex_lock(&peer->operation_mutex);
-    if (channel->callback_refs > 0)
-        --channel->callback_refs;
-    if (channel->closing && channel->callback_refs == 0) {
-        /* Hold the stream ID until all previously admitted callbacks drain;
-         * a concurrent OPEN cannot alias an old callback's stream. */
-        peer_free_channel_id(peer, channel->id);
-        reclaim = 1;
-    }
-    cmeta_mutex_unlock(&peer->operation_mutex);
-    if (reclaim) {
-        tstr_free(channel->label);
-        tstr_free(channel->protocol);
-        free(channel);
-    }
-}
+/* Per-channel lease admission and final reclamation are internal inline
+ * helpers shared with the DCEP and SCTP modules in the private header. */
 
 static int dc_peer_begin_destroy(turbo_dc_peer_t *peer) {
     if (!peer || !peer->operation_sync_initialized) {
