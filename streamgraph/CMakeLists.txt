@@ -121,6 +121,29 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
     PUBLIC turbo_media_streamgraph
     PRIVATE PkgConfig::TM_SG_AVCODEC PkgConfig::TM_SG_AVUTIL)
   target_compile_definitions(turbo_media_streamgraph_ffmpeg PRIVATE SHARED_CXX)
+  if(_TM_SG_ISOLATED)
+    set_target_properties(turbo_media_streamgraph_ffmpeg
+      PROPERTIES EXPORT_NAME StreamGraphFFmpeg)
+    add_library(TurboMedia::StreamGraphFFmpeg ALIAS turbo_media_streamgraph_ffmpeg)
+    install(TARGETS turbo_media_streamgraph_ffmpeg
+      EXPORT TurboMediaStreamGraphFFmpegTargets
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(FILES
+      ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include/turbo_streamgraph_ffmpeg.h
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    install(EXPORT TurboMediaStreamGraphFFmpegTargets
+      FILE TurboMediaStreamGraphFFmpegTargets.cmake
+      NAMESPACE TurboMedia::
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TurboMediaStreamGraphFFmpeg)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaStreamGraphFFmpegConfig.cmake"
+      "include(CMakeFindDependencyMacro)\n"
+      "find_dependency(TurboMediaStreamGraph CONFIG)\n"
+      "include(\"\${CMAKE_CURRENT_LIST_DIR}/TurboMediaStreamGraphFFmpegTargets.cmake\")\n")
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaStreamGraphFFmpegConfig.cmake"
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TurboMediaStreamGraphFFmpeg)
+  endif()
   if(MSVC)
     target_compile_options(turbo_media_streamgraph_ffmpeg PRIVATE /W4 /WX)
   else()
