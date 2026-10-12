@@ -267,6 +267,9 @@ int main(int argc,char **argv) {
         take.out_bytes=&count;take.out_pts=&pts;
         assert(tm_test_provider_take_delayed(&service_n,&take)==-2);
         assert(count==0u && pts==INT64_MIN);
+        /* Without EOS or explicit Cancel, destroy is not authorized
+         * even if this single EAGAIN worker already quiesced. */
+        assert(tm_test_provider_destroy_delayed(&service_n,&a)==-4);
         assert(tm_pc_settle(portal,taken)==TM_PC_OK);
         ++saw_eagain;
     }
@@ -320,6 +323,9 @@ int main(int argc,char **argv) {
         take.luma=luma;take.capacity=sizeof(luma);
         take.out_bytes=&copied;take.out_pts=&pts;
         if(got==TM_FF_OK) {
+            /* A pending decoded frame is a retaining Owner credit.
+             * DSO teardown must reject until exact ticket acceptance. */
+            assert(tm_test_provider_destroy_delayed(&service_n,&a)==-4);
             tm_test_delayed_take_request stale=take;
             stale.ticket.generation++;
             assert(tm_test_provider_take_delayed(&service_n,&stale)==-2);
