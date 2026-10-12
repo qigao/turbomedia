@@ -167,6 +167,27 @@ struct IndependentPair {
         if (!ssl || !bio) {
             BIO_free(bio); return failure("OpenSSL-datagram-BIO");
         }
+        /* The OS socket is already connected, but BIO_new_dgram does not
+         * infer that mode. Without BIO_CTRL_DGRAM_SET_CONNECTED the OpenSSL
+         * DTLS client may try an unconnected sendto and fail before emitting
+         * its first ClientHello. Use an explicit peer BIO_ADDR and keep the
+         * test socket's fixed peer immutable for the entire association.
+         */
+        sockaddr_in remote = {};
+        socklen_t remote_size = sizeof(remote);
+        BIO_ADDR *peer_address = BIO_ADDR_new();
+        if (!peer_address ||
+            getpeername(socket_fd[1], reinterpret_cast<sockaddr *>(&remote),
+                        &remote_size) != 0 ||
+            remote.sin_family != AF_INET ||
+            BIO_ADDR_rawmake(peer_address, AF_INET, &remote.sin_addr,
+                             sizeof(remote.sin_addr), ntohs(remote.sin_port)) != 1 ||
+            BIO_ctrl_set_connected(bio, peer_address) != 1) {
+            BIO_ADDR_free(peer_address);
+            BIO_free(bio);
+            return failure("OpenSSL-connected-datagram-BIO");
+        }
+        BIO_ADDR_free(peer_address);
         SSL_set_bio(ssl, bio, bio);
         if (SSL_set_mtu(ssl, MTU) <= 0) return failure("OpenSSL-MTU");
         if (gm_server) SSL_set_connect_state(ssl);
