@@ -5,11 +5,13 @@ name: StreamGraph instrumented FFmpeg in-send cancellation
     paths:
       - 'streamgraph/adapters/ffmpeg/**'
       - 'streamgraph/CMakeLists.txt'
+      - 'streamgraph/tests/installed_salts/**'
       - '.github/workflows/streamgraph-ffmpeg-internal-cancel.yml'
   pull_request:
     paths:
       - 'streamgraph/adapters/ffmpeg/**'
       - 'streamgraph/CMakeLists.txt'
+      - 'streamgraph/tests/installed_salts/**'
       - '.github/workflows/streamgraph-ffmpeg-internal-cancel.yml'
   workflow_dispatch:
 
@@ -91,3 +93,71 @@ jobs:
             -R '^streamgraph_ffmpeg_instrumented_cancel$' \
             --repeat until-fail:10 --no-tests=error --output-on-failure --timeout 60
           echo "10/10 in-libavcodec cancellation gate runs, pinned FFmpeg 6.1.1" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fetch and verify immutable Salts.Native candidate for real DSO gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=2.3.0-rc.14
+          release_sha=c8a1a3d5e259a89ad42e75f1e4c3142e6b106ee1
+          filename="Salts.Native.$version.nupkg"
+          base="https://github.com/qigao/salts/releases/download/v$version"
+          curl --retry 8 --retry-all-errors --retry-delay 5 -fLsS "$base/$filename" -o "$RUNNER_TEMP/$filename"
+          curl --retry 8 --retry-all-errors --retry-delay 5 -fLsS "$base/SHA256SUMS" -o "$RUNNER_TEMP/SHA256SUMS"
+          python3 - "$RUNNER_TEMP/$filename" "$RUNNER_TEMP/SHA256SUMS" "$RUNNER_TEMP/salts-exact" \
+                    linux-x64 "$release_sha" "$version" <<'PY'
+          import hashlib, pathlib, sys, zipfile
+          pkg, check, root, rid, commit, version = sys.argv[1:]
+          digest = hashlib.sha256(pathlib.Path(pkg).read_bytes()).hexdigest()
+          sums = pathlib.Path(check).read_text().splitlines()
+          assert len(sums)==1 and sums[0].split()[0].lower()==digest, "wrong SDK checksum"
+          with zipfile.ZipFile(pkg) as z:
+              manifest=f'sdk/{rid}/salts-sdk-manifest.txt'
+              assert manifest in z.namelist(), "SDK missing expected RID"
+              fields=dict(row.split('=',1) for row in
+                          z.read(manifest).decode('utf-8-sig').splitlines() if '=' in row)
+              assert fields['commit']==commit and fields['version']==version
+              assert fields['profile']=='release', "wrong SDK build profile"
+              assert f'sdk/{rid}/include/salts/component_plugin.h' in z.namelist()
+              z.extractall(root,[m for m in z.infolist() if m.filename.startswith(f'sdk/{rid}/')])
+          print(f"Salts SDK exact pin: {commit}, sha256={digest}")
+          PY
+          echo "TM_SALTS_SDK_ROOT=$RUNNER_TEMP/salts-exact/sdk/linux-x64" >> "$GITHUB_ENV"
+      - name: Build independently installed StreamGraph FFmpeg SDK against instrumented Codec
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="$TM_FF_INSTRUMENTED_PREFIX/lib/pkgconfig"
+          export LD_LIBRARY_PATH="$TM_FF_INSTRUMENTED_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+          cmake -S streamgraph -B "$RUNNER_TEMP/sg-installed-instrumented-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON
+          cmake --build "$RUNNER_TEMP/sg-installed-instrumented-build" \
+            --target turbo_media_streamgraph_ffmpeg
+          cmake --install "$RUNNER_TEMP/sg-installed-instrumented-build" \
+            --prefix "$RUNNER_TEMP/sg-instrumented-sdk"
+          test -f "$RUNNER_TEMP/sg-instrumented-sdk/lib/cmake/TurboMediaStreamGraphFFmpeg/TurboMediaStreamGraphFFmpegConfig.cmake"
+          echo "TM_SG_SDK_ROOT=$RUNNER_TEMP/sg-instrumented-sdk" >> "$GITHUB_ENV"
+      - name: Real Salts ComponentPlugin Generation Scope while inside libavcodec
+        shell: bash
+        env:
+          TM_TEST_FFMPEG_DSO: '1'
+          TM_TEST_FFMPEG_INNER_GATE: '1'
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="$TM_FF_INSTRUMENTED_PREFIX/lib/pkgconfig"
+          export PATH="$TM_SALTS_SDK_ROOT/bin:$TM_SG_SDK_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$TM_FF_INSTRUMENTED_PREFIX/lib:$TM_SALTS_SDK_ROOT/lib:$TM_SG_SDK_ROOT/lib:${LD_LIBRARY_PATH:-}"
+          cmake -S streamgraph/tests/installed_salts \
+            -B "$RUNNER_TEMP/sg-salts-inside-codec" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE \
+            -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE
+          cmake --build "$RUNNER_TEMP/sg-salts-inside-codec"
+          ldd "$RUNNER_TEMP/sg-salts-inside-codec/tm_installed_salts_generation_test" \
+            | tee "$RUNNER_TEMP/salts-inside-linked.txt"
+          grep -F "$TM_FF_INSTRUMENTED_PREFIX/lib/libavcodec.so" "$RUNNER_TEMP/salts-inside-linked.txt"
+          ctest --test-dir "$RUNNER_TEMP/sg-salts-inside-codec" \
+            -R '^installed_salts_component_plugin_dso$' \
+            --repeat until-fail:10 --no-tests=error --output-on-failure --timeout 90
+          echo "10/10 actual Salts ComponentPlugin DSO + instrumented libavcodec gate" >> "$GITHUB_STEP_SUMMARY"
