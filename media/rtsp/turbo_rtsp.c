@@ -995,6 +995,13 @@ static turbo_rtsp_session_t *turbo_rtsp_server_session_allocate(
     turbo_rtsp_session_t *session = NULL;
 
     cmeta_mutex_lock(&server->mutex);
+    /* Linearize the final admission against server_stop. The caller's
+     * earlier stop check can succeed just before the Owner closes; no
+     * new Session may acquire a slot after that shutdown fence. */
+    if (server->stopping) {
+        cmeta_mutex_unlock(&server->mutex);
+        return NULL;
+    }
     for (i = 0; i < server->connection_capacity; ++i) {
         if (!server->sessions[i].active) {
             uint32_t generation = server->sessions[i].generation + 1u;
@@ -1577,6 +1584,15 @@ static void turbo_rtsp_server_worker(void *arg) {
             break;
         }
     }
+
+    /* Worker-side failure is also a terminal Source state. Stop any
+     * cross-owner send or new Session admission before freeing NativeIO
+     * resources; the same mutex protects the stop, enqueue and DSO
+     * callback boundaries. */
+    cmeta_mutex_lock(&server->mutex);
+    server->stopping = 1;
+    server->started = 0;
+    cmeta_mutex_unlock(&server->mutex);
 
     if (server->listener_initialized) {
         (void)cnet_listener_close(&server->listener);
