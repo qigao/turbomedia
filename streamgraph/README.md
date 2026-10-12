@@ -42,3 +42,14 @@ cross-Graph scheduler or source adapters. A C11 local atomic is used only to
 generate process-local Store incarnations. Frame identities are never persisted.
 [FrameStore issue #164](https://github.com/qigao/turbomedia/issues/164)
 remains open until full domain qualification.
+
+## M2 bounded FrameStore fan-out (Draft implementation #165)
+
+The new `turbo_streamgraph_fanout.h` is a **single-owner-lane** bounded branch admission contract above FrameStore. Branch storage is preallocated with explicitly finite capacity. Every admitted consumer gets a separate Store pin; copying a FrameRef/ticket does not copy its lifetime right. No frame pixel bytes are copied by fan-out.
+
+- **ordered.lossless**: full queues reject the entire new frame *before* any preview eviction; no implicit drop or retry.
+- **latest**: may evict only oldest unclaimed READY entries, never TAKEN/leased frames.
+- **sample**: admits deterministic source-frame IDs 1, 1+n, 1+2n; skipped inputs do not consume credits.
+- **owner APIs**: submit, take, acquire temporary FrameLease, settle, seal, discard-ready and destroy. Destroy refuses unreturned TAKEN pins; FrameStore lives longer than Fanout Owner.
+
+This is **not** yet the full execution scheduler: no Source/Processor factory invocation, codec flush/EOF, multi-thread MPSC admission, timers, GPU Fence, cross-process Shared Memory, or FFmpeg migration. All calls are serialized by the embedding Media Owner; no hidden executor. Tests prove three-branch ordering/backpressure, pin-credit rollback, stale ticket rejection and safe drain. [#165](https://github.com/qigao/turbomedia/issues/165) remains open.
