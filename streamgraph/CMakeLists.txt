@@ -80,4 +80,23 @@ if(_TM_SG_ISOLATED OR NOT CMAKE_CROSSCOMPILING)
     target_compile_options(streamgraph_provider_completion_test PRIVATE /experimental:c11atomics)
   endif()
   add_test(NAME streamgraph_provider_completion COMMAND streamgraph_provider_completion_test)
+  # Real native dynamic libraries for test-only DSO quiescence qualification.
+  # These are NOT alternate production Plugin loaders or providers.
+  add_library(streamgraph_test_provider_n MODULE tests/fixtures/native_provider_dso.c)
+  add_library(streamgraph_test_provider_n1 MODULE tests/fixtures/native_provider_dso.c)
+  target_compile_definitions(streamgraph_test_provider_n
+    PRIVATE TM_PROVIDER_GENERATION=101)
+  target_compile_definitions(streamgraph_test_provider_n1
+    PRIVATE TM_PROVIDER_GENERATION=102)
+  add_executable(streamgraph_native_provider_dso_test tests/test_native_provider_dso.c)
+  target_link_libraries(streamgraph_native_provider_dso_test PRIVATE
+    turbo_media_streamgraph Threads::Threads ${CMAKE_DL_LIBS})
+  if(MSVC)
+    target_compile_options(streamgraph_native_provider_dso_test PRIVATE
+      /experimental:c11atomics)
+  endif()
+  add_test(NAME streamgraph_native_provider_dso
+    COMMAND streamgraph_native_provider_dso_test
+      "$<TARGET_FILE:streamgraph_test_provider_n>"
+      "$<TARGET_FILE:streamgraph_test_provider_n1>")
 endif()
