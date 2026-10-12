@@ -18,13 +18,51 @@
 
 static atomic_int g_context_count = 0;
 static cmeta_once_t g_sctp_once = SALTS_ONCE_INIT;
-static int g_sctp_init_result = -1;
+static atomic_int g_sctp_init_result = ATOMIC_VAR_INIT(-1);
+/* In no-thread mode the native timer queue belongs to the process, not to a
+ * peer. Serialize timer dispatch across callers; a synchronous user callback
+ * can reenter the public pump without recursively acquiring this mutex. */
+static cmeta_mutex_t g_sctp_timer_mutex;
+static uint64_t g_sctp_timer_last_ms;
+static SALTS_THREAD_LOCAL int g_sctp_timer_dispatching = 0;
 
 static void sctp_global_init_once(void) {
+    cmeta_mutex_init(&g_sctp_timer_mutex);
+    g_sctp_timer_last_ms = cmeta_monotonic_ms();
     usrsctp_init_nothreads(0, sctp_outbound_packet_cb, NULL);
     usrsctp_sysctl_set_sctp_ecn_enable(0);
     usrsctp_sysctl_set_sctp_nr_outgoing_streams_default(SCTP_MAX_STREAMS);
-    g_sctp_init_result = 0;
+    atomic_store_explicit(&g_sctp_init_result, 0, memory_order_release);
+}
+
+/* The public no-argument timer pump supplies real elapsed milliseconds to
+ * usrsctp_handle_timers(). Passing zero leaves the native tick counter
+ * unchanged, so SCTP retransmission and shutdown timers never expire.
+ *
+ * Each elapsed slice is accounted for exactly once under a process-global
+ * mutex. A callback reentering this same function returns immediately; the
+ * outer dispatch owns the clock until it finishes. No new thread/scheduler,
+ * fallback transport or automatic replay is introduced. */
+void sctp_global_poll_timers(void) {
+    if (g_sctp_timer_dispatching ||
+        atomic_load_explicit(&g_sctp_init_result, memory_order_acquire) != 0)
+        return;
+
+    cmeta_mutex_lock(&g_sctp_timer_mutex);
+    g_sctp_timer_dispatching = 1;
+    uint64_t now = cmeta_monotonic_ms();
+    if (now > g_sctp_timer_last_ms) {
+        uint64_t remaining = now - g_sctp_timer_last_ms;
+        while (remaining != 0) {
+            uint32_t step = remaining > UINT32_MAX
+                ? UINT32_MAX : (uint32_t)remaining;
+            g_sctp_timer_last_ms += step;
+            remaining -= step;
+            usrsctp_handle_timers(step);
+        }
+    }
+    g_sctp_timer_dispatching = 0;
+    cmeta_mutex_unlock(&g_sctp_timer_mutex);
 }
 
 static const char *sctp_assoc_state_name(uint16_t state) {
@@ -83,7 +121,7 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
 int sctp_global_init(void) {
     atomic_fetch_add_explicit(&g_context_count, 1, memory_order_relaxed);
     cmeta_once(&g_sctp_once, sctp_global_init_once);
-    if (g_sctp_init_result != 0) {
+    if (atomic_load_explicit(&g_sctp_init_result, memory_order_acquire) != 0) {
         atomic_fetch_sub_explicit(&g_context_count, 1, memory_order_relaxed);
         return -1;
     }
