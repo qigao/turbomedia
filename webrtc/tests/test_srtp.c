@@ -473,6 +473,38 @@ spec("SRTP crypto provider compatibility") {
     }
   }
 
+  it("authenticates payload-free SRTCP receiver reports with GCM in both directions") {
+    /* RFC 3550 Receiver Report, RC=0, PT=201, length=1 (eight bytes).
+     * There is no encrypted RTCP payload after the unencrypted header/SSRC.
+     * libSRTP must still generate and verify the GCM tag and SRTCP index.
+     */
+    static const uint8_t report[8] = {
+        0x80, 201, 0x00, 0x01, 0x12, 0x34, 0x56, 0x78
+    };
+    static const uint16_t profiles[] = {
+        SRTP_PROFILE_AEAD_AES_128_GCM,
+        SRTP_PROFILE_AEAD_AES_256_GCM
+    };
+    for (size_t p = 0; p < sizeof(profiles) / sizeof(profiles[0]); ++p) {
+      for (int client = 0; client < 2; ++client) {
+        uint8_t packet[64] = {0}, damaged[64] = {0};
+        size_t length = sizeof(report);
+        provider_setup(profiles[p], client);
+        memcpy(packet, report, sizeof(report));
+        check_equal(turbo_srtcp_protect(provider_sender, packet, &length, sizeof(packet)), 0);
+        check_equal(length, sizeof(report) + 20u);
+        memcpy(damaged, packet, length);
+        damaged[length - 5] ^= 1; /* GCM tag: followed by the 4-byte index. */
+        size_t bad_length = length;
+        check_not_equal(turbo_srtcp_unprotect(provider_receiver, damaged, &bad_length), 0);
+        check_equal(turbo_srtcp_unprotect(provider_receiver, packet, &length), 0);
+        check_equal(length, sizeof(report));
+        check_equal(memcmp(packet, report, sizeof(report)), 0);
+        provider_cleanup();
+      }
+    }
+  }
+
   it("rejects wrong keys and damaged tags without consuming valid packet replay state") {
     for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
       for (int rtcp = 0; rtcp < 2; ++rtcp) {
