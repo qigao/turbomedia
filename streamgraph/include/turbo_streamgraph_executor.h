@@ -10,9 +10,11 @@
 extern "C" {
 #endif
 
-/* First executable owner-driven CPU VideoFrame profile:
- * Source -> Processor -> 1..8 Sinks. Not a generic FFmpeg/RTC scheduler. */
+/* Owner-driven CPU VideoFrame profile:
+ * Source -> 1..8 ordered read-only Processors -> 1..8 Sinks.
+ * Actual media transforms and concurrent execution are not yet supported. */
 #define TM_EX_ABI_V1 1u
+#define TM_EX_MAX_PROCESSORS 8u
 typedef enum tm_ex_status {
     TM_EX_OK=0, TM_EX_EINVAL=-1, TM_EX_EVERSION=-2,
     TM_EX_EGRAPH=-3, TM_EX_ENOMEM=-4, TM_EX_EFULL=-5,

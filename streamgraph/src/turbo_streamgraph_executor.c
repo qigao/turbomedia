@@ -6,7 +6,8 @@ struct tm_ex_owner {
     const tm_sg_program *program;
     tm_fs_store *store;
     tm_fo_owner *fanout;
-    tm_ex_binding_v1 source,processor,sinks[TM_FO_MAX_BRANCHES];
+    tm_ex_binding_v1 source,processors[TM_EX_MAX_PROCESSORS],sinks[TM_FO_MAX_BRANCHES];
+    uint32_t processor_count;
     uint32_t sink_count;
     uint8_t *scratch;
     size_t scratch_capacity,pending_bytes;
@@ -41,38 +42,54 @@ static int valid_port(const tm_sg_port_v1 *p){
 }
 /* Only a shape that this first owner runtime can execute is accepted.
  * Unknown DAGs must fail rather than silently skip a node. */
-static int graph_shape(const tm_sg_program *p,uint32_t *sink_count){
-    uint32_t i,j,sources=0,processors=0,sinks=0,srcproc=0,procsink=0;
-    const tm_sg_node_v1 *source=NULL,*processor=NULL;
-    for(i=0;i<tm_sg_program_node_count(p);++i){
+/* One owner-driven linear CPU visit chain. Explicitly reject intermediate
+ * forks, dangling processors and unbound topology (no silent node skipping). */
+static int graph_shape(const tm_sg_program *p,uint32_t *sink_count,
+                       uint32_t *processor_count,
+                       const tm_sg_node_v1 *ordered[TM_EX_MAX_PROCESSORS]){
+    uint32_t i,j,sources=0u,processors=0u,sinks=0u;
+    const tm_sg_node_v1 *source=NULL;
+    for(i=0u;i<tm_sg_program_node_count(p);++i){
         const tm_sg_node_v1 *n=NULL;
-        if(tm_sg_program_node_at(p,i,&n)!=TM_SG_OK)return 0;
+        uint32_t ins=0u,outs=0u;
+        if(tm_sg_program_node_at(p,i,&n)!=TM_SG_OK || !n->port_count)return 0;
         if(n->kind==TM_SG_SOURCE){
             if(++sources!=1u || n->port_count!=1u)return 0;
             source=n;
         }else if(n->kind==TM_SG_PROCESSOR){
-            if(++processors!=1u || n->port_count!=2u)return 0;
-            processor=n;
+            if(processors==TM_EX_MAX_PROCESSORS || n->port_count!=2u)return 0;
+            ordered[processors++]=n;
         }else if(n->kind==TM_SG_SINK){
             if(++sinks>TM_FO_MAX_BRANCHES || n->port_count!=1u)return 0;
         }else return 0;
-        for(j=0;j<n->port_count;++j)if(!valid_port(&n->ports[j]))return 0;
+        for(j=0u;j<n->port_count;++j){
+            if(!valid_port(&n->ports[j]))return 0;
+            if(n->ports[j].direction==TM_SG_INPUT)++ins;
+            if(n->ports[j].direction==TM_SG_OUTPUT)++outs;
+        }
+        if((n->kind==TM_SG_SOURCE && (ins!=0u || outs!=1u)) ||
+           (n->kind==TM_SG_PROCESSOR && (ins!=1u || outs!=1u)) ||
+           (n->kind==TM_SG_SINK && (ins!=1u || outs!=0u)))return 0;
     }
-    if(sources!=1u || processors!=1u || !sinks ||
-       tm_sg_program_edge_count(p)!=sinks+1u)return 0;
-    for(i=0;i<tm_sg_program_edge_count(p);++i){
+    if(sources!=1u || !processors || !sinks ||
+       tm_sg_program_edge_count(p)!=processors+sinks)return 0;
+    for(i=0u;i<tm_sg_program_edge_count(p);++i){
         const tm_sg_edge_v1 *e=NULL;
+        const tm_sg_node_v1 *target=NULL;
+        int matched=0;
         if(tm_sg_program_edge_at(p,i,&e)!=TM_SG_OK)return 0;
         if(strcmp(e->source_node,source->id)==0 &&
-           strcmp(e->target_node,processor->id)==0)++srcproc;
-        else if(strcmp(e->source_node,processor->id)==0){
-            const tm_sg_node_v1 *sink=node_named(p,e->target_node);
-            if(!sink || sink->kind!=TM_SG_SINK)return 0;
-            ++procsink;
-        }else return 0;
+           strcmp(e->target_node,ordered[0]->id)==0)matched=1;
+        for(j=0u;j+1u<processors;++j)
+            if(strcmp(e->source_node,ordered[j]->id)==0 &&
+               strcmp(e->target_node,ordered[j+1u]->id)==0)matched=1;
+        target=node_named(p,e->target_node);
+        if(strcmp(e->source_node,ordered[processors-1u]->id)==0 &&
+           target && target->kind==TM_SG_SINK)matched=1;
+        if(!matched)return 0;
     }
-    if(srcproc!=1u || procsink!=sinks)return 0;
     *sink_count=sinks;
+    *processor_count=processors;
     return 1;
 }
 static int binding_valid(const tm_ex_binding_v1 *b){
@@ -83,14 +100,15 @@ tm_ex_status tm_ex_create(const tm_sg_program *p,tm_fs_store *store,
     const tm_ex_config_v1 *cfg,const tm_ex_binding_v1 *bindings,
     size_t binding_count,tm_ex_owner **out){
     tm_ex_owner *o;
-    uint32_t sinks=0,i,k=0;
+    uint32_t sinks=0,processors=0,i,k=0;
+    const tm_sg_node_v1 *ordered[TM_EX_MAX_PROCESSORS]={0};
     if(!out || *out || !p || !store || !cfg || !bindings ||
        !cfg->source_session_generation || !cfg->display_generation ||
        cfg->reserved || !cfg->max_frame_bytes ||
        cfg->max_frame_bytes>TM_FS_MAX_FRAME_BYTES)return TM_EX_EINVAL;
     if(cfg->version!=TM_EX_ABI_V1)return TM_EX_EVERSION;
-    if(cfg->size!=sizeof(*cfg) || !graph_shape(p,&sinks) ||
-       cfg->fanout.branch_count!=sinks || binding_count!=sinks+2u)
+    if(cfg->size!=sizeof(*cfg) || !graph_shape(p,&sinks,&processors,ordered) ||
+       cfg->fanout.branch_count!=sinks || binding_count!=(size_t)sinks+processors+1u)
         return TM_EX_EGRAPH;
     for(i=0;i<binding_count;++i){
         const tm_sg_node_v1 *n;
@@ -109,11 +127,19 @@ tm_ex_status tm_ex_create(const tm_sg_program *p,tm_fs_store *store,
     o->source_session_generation=cfg->source_session_generation;
     o->display_generation=cfg->display_generation;
     o->program=p; o->store=store; o->sink_count=sinks;
+    o->processor_count=processors;
     o->stats.size=sizeof(o->stats); o->stats.version=TM_EX_ABI_V1;
     for(i=0;i<binding_count;++i){
         const tm_sg_node_v1 *n=node_named(p,bindings[i].node_id);
         if(n->kind==TM_SG_SOURCE)o->source=bindings[i];
-        else if(n->kind==TM_SG_PROCESSOR)o->processor=bindings[i];
+        else if(n->kind==TM_SG_PROCESSOR){
+            uint32_t j;
+            for(j=0u;j<processors;++j)
+                if(strcmp(ordered[j]->id,n->id)==0){
+                    o->processors[j]=bindings[i];
+                    break;
+                }
+        }
     }
     for(i=0;i<tm_sg_program_edge_count(p);++i){
         const tm_sg_edge_v1 *e=NULL;
@@ -182,7 +208,12 @@ tm_ex_status tm_ex_pump_source(tm_ex_owner *o){
     }
     o->in_callback=1;
     {
-        int result=o->processor.visit(o->processor.ctx,&o->pending,&view);
+        int result=0;
+        uint32_t i;
+        for(i=0u;i<o->processor_count;++i){
+            result=o->processors[i].visit(o->processors[i].ctx,&o->pending,&view);
+            if(result!=0)break;
+        }
         o->in_callback=0;
         (void)tm_fs_release_lease(o->store,&lease);
         if(result!=0){(void)tm_ex_stop(o);return TM_EX_EPROVIDER;}
