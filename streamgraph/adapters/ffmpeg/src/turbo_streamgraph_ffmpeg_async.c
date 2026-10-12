@@ -171,6 +171,13 @@ tm_ff_status tm_ffa_owner_cancel(tm_ffa_decoder *d) {
     ffa_unlock(d);
     return TM_FF_OK;
 }
+tm_ff_status tm_ffa_codec_activity(tm_ffa_decoder *d,
+                                    tm_ff_codec_activity_v1 *out) {
+    if(!d || !out)return TM_FF_EINVAL;
+    /* Only atomic counters are accessed in the underlying Source. The
+     * Media Owner retains a live decoder until the worker joins. */
+    return tm_ff_codec_activity(d->codec,out);
+}
 tm_ff_status tm_ffa_stats(tm_ffa_decoder *d,tm_ffa_stats_v1 *out) {
     if(!d || !out)return TM_FF_EINVAL;
     if(out->version!=TM_FFA_ABI_V1)return TM_FF_EVERSION;
