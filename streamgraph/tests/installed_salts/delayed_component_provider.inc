@@ -189,6 +189,17 @@ static int delayed_step(void *self,const tm_test_delayed_step_request *req) {
         fixture_instances_leave();
         if(pending){delayed_release(slot);return -4;}
     }
+    /* Test-only gate inside the ACTUAL installed-Salts CMeta DSO call,
+     * after bounded Instance acquisition and before Codec invocation.
+     * This does NOT simulate an in-libavcodec instruction race. */
+    if(req->test_gate) {
+        atomic_store_explicit(&req->test_gate->entered,1u,
+                              memory_order_release);
+        while(!atomic_load_explicit(&req->test_gate->release,
+                                    memory_order_acquire)) {
+            /* Host must release the gate, including on failed checks. */
+        }
+    }
     status=atomic_load_explicit(&slot->cancelled,memory_order_acquire)
         ? TM_FF_ESTATE:
           tm_ffd_next_luma(slot->decoder,slot->luma,sizeof(slot->luma),
@@ -218,6 +229,9 @@ static int delayed_step(void *self,const tm_test_delayed_step_request *req) {
     wake_rc=fixture_wake(req->wake_client);
     (void)wake_rc;
     delayed_release(slot);
+    if(req->test_gate)
+        atomic_store_explicit(&req->test_gate->exited,1u,
+                              memory_order_release);
     return (int)status;
 }
 static int delayed_take(void *self,const tm_test_delayed_take_request *req) {

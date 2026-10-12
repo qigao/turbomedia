@@ -8,6 +8,7 @@
 #if defined(TM_TEST_FFMPEG_DSO)
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <cnet/cnet.h>
 #include <turbo_streamgraph_ffmpeg_async.h>
 #include <turbo_streamgraph_ffmpeg_delayed.h>
@@ -45,12 +46,19 @@ typedef struct tm_test_delayed_packet_request {
     uint64_t instance_id,provider_generation;
     tm_ffd_packet_v1 packet;
 } tm_test_delayed_packet_request;
+/* Optional test-only pre-Codec barrier. The Host keeps this storage
+ * and the real Salts Generation Scope alive until the DSO caller joins.
+ * Entry is signalled only after the original Instance becomes active. */
+typedef struct tm_test_delayed_step_gate {
+    _Atomic unsigned entered,release,exited;
+} tm_test_delayed_step_gate;
 typedef struct tm_test_delayed_step_request {
     size_t size;
     uint64_t instance_id,provider_generation;
     tm_pc_portal *portal;
     tm_pc_ticket_v1 ticket;
     cnet_client *wake_client;
+    tm_test_delayed_step_gate *test_gate; /* borrowed, opt-in test only */
 } tm_test_delayed_step_request;
 typedef struct tm_test_delayed_take_request {
     size_t size;

@@ -11,6 +11,7 @@
  */
 #include <salts/component_plugin.h>
 #include <cnet/cnet.h>
+#include <pthread.h>
 #include "provider_contract.h"
 
 typedef struct rtsp_mpv_gen_fixture {
@@ -167,6 +168,22 @@ static void rtsp_mpv_step_dso(
     check_equal(tm_pc_complete(portal,ticket,TM_FF_ESTATE),TM_PC_ESTALE);
     check_true(tm_pc_take(portal,&taken,&receipt)!=TM_PC_OK);
 }
+/* Test-owned caller thread: no new dispatcher, no CNet progress, no
+ * Portal settlement or lifetime authority. All effects remain with the
+ * original Media Owner after this borrowed Scope-bound call joins. */
+typedef struct rtsp_mpv_step_worker {
+    tm_test_provider service;
+    tm_test_delayed_step_request request;
+    int status;
+    _Atomic unsigned done;
+} rtsp_mpv_step_worker;
+static void *rtsp_mpv_step_thread(void *context) {
+    rtsp_mpv_step_worker *w=(rtsp_mpv_step_worker *)context;
+    w->status=tm_test_provider_step_delayed(&w->service,&w->request);
+    atomic_store_explicit(&w->done,1u,memory_order_release);
+    return NULL;
+}
+
 static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
     const char *path101=getenv("TM_RTSP_TEST_DSO_101");
     const char *path102=getenv("TM_RTSP_TEST_DSO_102");
@@ -326,11 +343,32 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         tm_pc_result_v1 receipt=TM_PC_RESULT_V1_INIT;
         tm_test_delayed_step_request request={0};
         tm_test_delayed_take_request take={0};
+        tm_test_delayed_step_gate gate={0};
+        rtsp_mpv_step_worker worker={0};
+        pthread_t worker_thread;
+        int worker_create_rc;
         uint8_t luma[RTSP_MPV_LUMA];
         size_t out_bytes=13u;
         int64_t pts=13;
         check_equal(tm_pc_begin(p102,30001u,&ticket),TM_PC_OK);
         rtsp_mpv_assert_portal_credits(p102,1u,0u,0u,0u);
+        /* Actual CMeta DSO method holds the old Codec Instance, Portal
+         * Ticket and Salts Scope while real RTSP/CNet RTP arrives. */
+        request.size=sizeof(request);
+        request.instance_id=second.instance_id;
+        request.provider_generation=second.provider_generation;
+        request.portal=p102;request.ticket=ticket;request.wake_client=&wake;
+        request.test_gate=&gate;
+        worker.service=service102;worker.request=request;
+        atomic_init(&worker.done,0u);
+        worker_create_rc=pthread_create(&worker_thread,NULL,
+                                        rtsp_mpv_step_thread,&worker);
+        check_equal(worker_create_rc,0);
+        if(worker_create_rc!=0)goto cleanup;
+        check_true(rtsp_test_wait_for_callback(&gate.entered));
+        check_equal(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
+        rtsp_mpv_assert_portal_credits(p102,1u,0u,0u,0u);
+        check_equal(tm_test_provider_destroy_delayed(&service102,&second),-4);
         {
             uint8_t pending_rtp[RTSP_MPV_MAX_PACKET]={0};
             size_t pending_bytes=0u;
@@ -362,9 +400,16 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
                         &registry,ref102),CMETA_PLUGIN_BUSY);
             check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_OK);
             rtsp_mpv_assert_portal_credits(p102,0u,1u,0u,0u);
-            /* The original RTSP Client Owner closes NativeIO while the
-             * server callback is STILL on its old borrowed stack.
-             * Only after CNet callback exit does the Host touch Codec. */
+            /* Owner cancellation is metadata-only while this real DSO
+             * call owns the active Codec Instance. Destroy must refuse. */
+            check_equal(tm_test_provider_cancel_delayed(
+                        &service102,&second),0);
+            check_equal(tm_test_provider_destroy_delayed(
+                        &service102,&second),-4);
+            check_equal(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
+            /* Close one CNet Owner while both its peer's RTSP callback
+             * and the independently owned Codec DSO worker are live.
+             * No two threads progress the same CNet Client object. */
             turbo_rtsp_client_close(client);
             atomic_store_explicit(&state.interleaved_release,1u,
                                   memory_order_release);
@@ -373,8 +418,8 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
             check_true(callback_exited);
             atomic_store_explicit(&state.hold_interleaved,0u,
                                   memory_order_release);
-            check_equal(tm_test_provider_cancel_delayed(
-                        &service102,&second),0);
+            check_equal(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
+            rtsp_mpv_assert_portal_credits(p102,0u,1u,0u,0u);
             /* Portal still owns the cancelled original Ticket until
              * its one authoritative DSO completion is settled. */
             check_equal(salts_component_plugin_generation_drain(
@@ -382,16 +427,22 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
             check_equal(cmeta_plugin_registry_unload(
                         &registry,ref102),CMETA_PLUGIN_BUSY);
         }
-        request.size=sizeof(request);
-        request.instance_id=second.instance_id;
-        request.provider_generation=second.provider_generation;
-        request.portal=p102;request.ticket=ticket;request.wake_client=&wake;
-        check_equal(tm_test_provider_step_delayed(
-                    &service102,&request),TM_FF_ESTATE);
+        /* Release the DSO test gate only AFTER the NativeIO callback
+         * has exited. Original worker must observe cancellation, commit
+         * exactly one Portal terminal and finish its CNet wake tail. */
+        atomic_store_explicit(&gate.release,1u,memory_order_release);
+        check_equal(pthread_join(worker_thread,NULL),0);
+        check_equal(atomic_load_explicit(&worker.done,memory_order_acquire),1u);
+        check_equal(atomic_load_explicit(&gate.exited,memory_order_acquire),1u);
+        check_equal(worker.status,TM_FF_ESTATE);
         rtsp_mpv_assert_portal_credits(p102,0u,0u,1u,0u);
+        /* Only after thread join may Host ask to destroy Portal. */
+        check_equal(tm_pc_seal(p102),TM_PC_OK);
+        check_equal(tm_pc_destroy(p102),TM_PC_EBUSY);
         check_equal(tm_test_provider_wake_status(&service102),SALTS_OK);
         check_equal(tm_pc_take(p102,&taken,&receipt),TM_PC_OK);
         rtsp_mpv_assert_portal_credits(p102,0u,0u,0u,1u);
+        check_equal(tm_pc_destroy(p102),TM_PC_EBUSY);
         check_equal(receipt.outcome,TM_PC_CANCELLED);
         check_equal(receipt.completion_observed,1u);
         check_equal(receipt.correlation,30001u);
