@@ -117,6 +117,11 @@ if(_TM_TEST_FFMPEG)
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_compile_definitions(tm_installed_salts_delayed_test
     PRIVATE TM_TEST_FFMPEG_DSO=1)
+  if(DEFINED ENV{TM_TEST_FFMPEG_INNER_GATE} AND
+     "$ENV{TM_TEST_FFMPEG_INNER_GATE}" STREQUAL "1")
+    target_compile_definitions(tm_installed_salts_delayed_test
+      PRIVATE TM_TEST_FFMPEG_INNER_GATE=1)
+  endif()
   target_link_libraries(tm_installed_salts_delayed_test PRIVATE
     Salts::ComponentPlugin Salts::Plugin Salts::CNet
     TurboMedia::StreamGraph Threads::Threads
