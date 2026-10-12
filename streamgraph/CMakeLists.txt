@@ -10,7 +10,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(_TM_SG_ISOLATED TRUE)
 endif()
 add_library(turbo_media_streamgraph SHARED src/turbo_streamgraph.c src/turbo_frame_store.c
-  src/turbo_streamgraph_fanout.c)
+  src/turbo_streamgraph_fanout.c src/turbo_streamgraph_executor.c)
 target_include_directories(turbo_media_streamgraph
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/include>
@@ -32,6 +32,7 @@ if(_TM_SG_ISOLATED)
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_frame_store.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_fanout.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph_executor.h
           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   install(EXPORT TurboMediaStreamGraphTargets FILE TurboMediaStreamGraphTargets.cmake
           NAMESPACE TurboMedia:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TurboMediaStreamGraph)
@@ -52,4 +53,7 @@ if(_TM_SG_ISOLATED OR NOT CMAKE_CROSSCOMPILING)
   add_executable(streamgraph_fanout_test tests/test_fanout.c)
   target_link_libraries(streamgraph_fanout_test PRIVATE turbo_media_streamgraph)
   add_test(NAME streamgraph_fanout COMMAND streamgraph_fanout_test)
+  add_executable(streamgraph_executor_test tests/test_executor.c)
+  target_link_libraries(streamgraph_executor_test PRIVATE turbo_media_streamgraph)
+  add_test(NAME streamgraph_executor COMMAND streamgraph_executor_test)
 endif()
