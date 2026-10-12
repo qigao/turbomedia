@@ -15,11 +15,11 @@
 | SCXML state | TurboSCXML Session/Host | StreamGraph status observer | status does not own media resource |
 | Android device effects | TurboInteract Action Owner | Media Graph | no input effects from vision callbacks |
 
-\`FrameRef\` is a **locator**, not a resource grant. \`FramePin\` is a **quota-backed lifetime obligation**. \`FrameLease\` is a scoped **map/use authorization**. These are never interchangeable.
+`FrameRef` is a **locator**, not a resource grant. `FramePin` is a **quota-backed lifetime obligation**. `FrameLease` is a scoped **map/use authorization**. These are never interchangeable.
 
 ## 2. Pin and frame lifecycle
 
-\`\`\`mermaid
+```mermaid
 stateDiagram-v2
     [*] --> FREE
     FREE --> WRITING : writer reserves slot
@@ -30,13 +30,13 @@ stateDiagram-v2
     LEASED --> READY : last active lease released
     READY --> RETIRING : seal new admission
     RETIRING --> FREE : all pins and leases released; fences complete
-\`\`\`
+```
 
-State labels here abstract concurrent pin/lease counts; an implementation **cannot** use a single \`LEASED\` enum to represent multiple active leases. Retiring forbids new pins but does not revoke valid leases. Cancellation of the last task is not itself proof that a GPU fence has completed.
+State labels here abstract concurrent pin/lease counts; an implementation **cannot** use a single `LEASED` enum to represent multiple active leases. Retiring forbids new pins but does not revoke valid leases. Cancellation of the last task is not itself proof that a GPU fence has completed.
 
 ### Deterministic race schedule
 
-\`\`\`mermaid
+```mermaid
 sequenceDiagram
     autonumber
     participant Producer as Media Producer
@@ -60,9 +60,9 @@ sequenceDiagram
     Consumer->>Store: release lease, settle pin
     Store-->>Shutdown: terminal drain is now possible
     Shutdown->>Store: destroy after quiescence
-\`\`\`
+```
 
-On a failed \`pin_release\` the transfer owner retains a visible obligation; it must not mark the row FREE or retry automatically. A full message queue rejects before commit; no hidden spill or dropping of accepted Action/Analysis control effects.
+On a failed `pin_release` the transfer owner retains a visible obligation; it must not mark the row FREE or retry automatically. A full message queue rejects before commit; no hidden spill or dropping of accepted Action/Analysis control effects.
 
 ## 3. Explicit limits and negative conditions
 
@@ -75,11 +75,11 @@ For each ExecutionPlan validate finite:
 - context, thread/worker and codec/model instance caps;
 - plugin/callback generation and shutdown bounds.
 
-Required negative diagnostics must identify \`graph_id\`, \`node_id\`, \`port_id\`, \`error_stage\`, \`reason\`. Unsupported format/domain or provider is **not** a reason to silently substitute CPU, FFmpeg, another codec or a different media Source.
+Required negative diagnostics must identify `graph_id`, `node_id`, `port_id`, `error_stage`, `reason`. Unsupported format/domain or provider is **not** a reason to silently substitute CPU, FFmpeg, another codec or a different media Source.
 
 ## 4. Owner, drain, cancellation and reconfiguration
 
-\`\`\`mermaid
+```mermaid
 stateDiagram-v2
     [*] --> CREATED
     CREATED --> COMPILED : typed plan passes admission
@@ -93,7 +93,7 @@ stateDiagram-v2
     RUNNING --> FAILED : unrecoverable provider failure
     FAILED --> DRAINING : terminal cleanup
     STOPPED --> [*]
-\`\`\`
+```
 
 This is conceptual, not a promise that every backend has precisely these enums. Graph/FrameStore destruction requires all producers joined, callback lanes quiescent, pending commitments settled and no GPU fences/pin/lease holders. Host stop/cancel **never** blindly destroys the CNet/RTC/FFmpeg owner.
 
@@ -117,19 +117,19 @@ Hot-reconfigure has its own [#49](https://github.com/qigao/turbomedia/issues/49)
 | P1 | Sanitizers | ASan/UBSan + selected TSan true concurrency interleavings |
 | P2 | Cross-process broker | OS handle passing/crash recovery separately designed/qualified |
 
-Metrics collected per graph, branch and provider: frame count, frame loss reason, max retained bytes, pin/lease count, queue high-water, p50/p95/p99 stage latency, CPU copy count, GPU copy/transfer, process shutdown/drain, stale event rejections and native allocation lifetime. Do not claim 0-copy when only \`FrameRef\` control messages are zero-sized pixel payloads.
+Metrics collected per graph, branch and provider: frame count, frame loss reason, max retained bytes, pin/lease count, queue high-water, p50/p95/p99 stage latency, CPU copy count, GPU copy/transfer, process shutdown/drain, stale event rejections and native allocation lifetime. Do not claim 0-copy when only `FrameRef` control messages are zero-sized pixel payloads.
 
 ## 6. Unresolved design decisions: required before freeze
 
 - [ ] Decide exact C11 status/error namespace, struct size/version and public FrameRef representation; component names in architecture are proposed.
 - [ ] Decide single-process FrameStore broker identity and wrap/recycle policies; one Store per Graph or shared across Graph generations.
-- [ ] Define CPU pool alignment/planes and GPU device/fence capability interface without leaking \`AVFrame*\`.
+- [ ] Define CPU pool alignment/planes and GPU device/fence capability interface without leaking `AVFrame*`.
 - [ ] Prove ownership of async provider completions, wake sequencing and DSO generation lease through cancel/close.
 - [ ] Qualify explicit connection/RTC Source adapter ownership; do not add a second CNet poller or hidden event loop.
 - [ ] Define Port caps/timebase/clock negotiation when RTP/RTC/capture clocks differ; show deterministic examples.
-- [ ] Define time-bound v1 parser retirement and \`TurboMedia::Pipeline\` public target migration; no permanent dual scheduler.
-- [ ] Resolve \`TurboMedia::StreamGraph\` packaging and shared component dependency graph on Android/iOS/Linux/Windows/macOS.
+- [ ] Define time-bound v1 parser retirement and `TurboMedia::Pipeline` public target migration; no permanent dual scheduler.
+- [ ] Resolve `TurboMedia::StreamGraph` packaging and shared component dependency graph on Android/iOS/Linux/Windows/macOS.
 
 ### Cross-repository traceability
 
-TurboInteract [#3](https://github.com/qigao/turbo-interact/issues/3) uses an injected **fake Store** for one-owner GraphBridge conformance. That is not proof that TurboMedia supplies a production CPU/GPU FrameStore. TurboInteract [#4](https://github.com/qigao/turbo-interact/issues/4) remains **blocked** until installed \`TurboMedia::StreamGraph\` and FrameStore API pass this ledger. TurboInteract GraphBridge remains downstream and does not move into TurboMedia runtime.
+TurboInteract [#3](https://github.com/qigao/turbo-interact/issues/3) uses an injected **fake Store** for one-owner GraphBridge conformance. That is not proof that TurboMedia supplies a production CPU/GPU FrameStore. TurboInteract [#4](https://github.com/qigao/turbo-interact/issues/4) remains **blocked** until installed `TurboMedia::StreamGraph` and FrameStore API pass this ledger. TurboInteract GraphBridge remains downstream and does not move into TurboMedia runtime.
