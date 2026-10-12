@@ -490,7 +490,10 @@ jobs:
 
       # Fault-injection tests exercise the CI build, never the installed SDK.
       # Rebuild and retest with injection disabled before installation.
+      # Android omits streamer and the HTTP-FLV test-only hook. Avoid
+      # reconfiguring the exact native cross-build without its NDK args.
       - name: Qualify production library without test fault injection
+        if: matrix.platform != 'Android'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
