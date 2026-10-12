@@ -9,6 +9,12 @@
  * 5. DataChannel messaging
  */
 
+/* The Windows E2E fixture records a sanitized crash signature only.
+ * The handler returns CONTINUE_SEARCH: crashes must still FAIL CTest. */
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#endif
 #include "tinytest.h"
 #include "turbo_datachannel.h"
 #include "turbo_media_engine.h"
@@ -17,6 +23,141 @@
 #include <salts/thread.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
+
+#ifdef _WIN32
+static volatile LONG g_e2e_diag_phase = 0;
+static volatile LONG g_e2e_last_main_phase = 0;
+static volatile LONG g_e2e_poll_iteration = 0;
+static DWORD g_e2e_main_thread_id = 0;
+static volatile LONG g_e2e_fault_logged = 0;
+
+/* Return only a sanitized module basename and module-relative offset.
+ * Never emit absolute addresses, stack bytes, SDP, tokens or media. */
+static void e2e_module_rva(const void *pc, char module_name[64],
+                           unsigned long long *rva) {
+    HMODULE module = NULL;
+    strcpy(module_name, "unknown");
+    *rva = 0;
+    if (!pc || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (LPCSTR)pc, &module))
+        return;
+
+    char file[MAX_PATH];
+    DWORD len = GetModuleFileNameA(module, file, (DWORD)sizeof(file));
+    if (len > 0 && len < (DWORD)sizeof(file)) {
+        DWORD base = 0;
+        for (DWORD i = 0; i < len; ++i)
+            if (file[i] == '\\' || file[i] == '/')
+                base = i + 1;
+        size_t n = 0;
+        for (DWORD i = base; i < len && n < 63; ++i) {
+            const char c = file[i];
+            module_name[n++] =
+                (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'
+                    ? c : '_';
+        }
+        module_name[n] = '\0';
+    }
+    *rva = (unsigned long long)((uintptr_t)pc - (uintptr_t)module);
+}
+
+/* Walk the *faulting* CONTEXT, not the filter's own call stack. This avoids
+ * full memory dumps and symbol servers while retaining module/RVA evidence.
+ * RtlVirtualUnwind is supported on the Windows x64 MSVC CI target. */
+static void e2e_emit_fault_frames(const EXCEPTION_POINTERS *ep, HANDLE err) {
+#if defined(_M_X64)
+    if (!ep || !ep->ContextRecord || !err || err == INVALID_HANDLE_VALUE)
+        return;
+    CONTEXT context = *ep->ContextRecord;
+    for (unsigned depth = 0; depth < 12 && context.Rip; ++depth) {
+        const DWORD64 pc = context.Rip;
+        const DWORD64 sp = context.Rsp;
+        char module_name[64];
+        unsigned long long rva = 0;
+        e2e_module_rva((const void *)(uintptr_t)pc, module_name, &rva);
+        char line[176];
+        int len = snprintf(line, sizeof(line),
+                           "[webrtc-e2e-frame] depth=%u module=%s rva=%llu\n",
+                           depth, module_name, rva);
+        if (len > 0 && len < (int)sizeof(line)) {
+            DWORD written = 0;
+            (void)WriteFile(err, line, (DWORD)len, &written, NULL);
+        }
+
+        DWORD64 image_base = 0;
+        PRUNTIME_FUNCTION function =
+            RtlLookupFunctionEntry(pc, &image_base, NULL);
+        if (function) {
+            PVOID handler_data = NULL;
+            DWORD64 establisher_frame = 0;
+            (void)RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, pc,
+                                   function, &context, &handler_data,
+                                   &establisher_frame, NULL);
+        } else {
+            DWORD64 caller = 0;
+            SIZE_T bytes = 0;
+            if (sp < 65536u ||
+                !ReadProcessMemory(GetCurrentProcess(),
+                                   (const void *)(uintptr_t)sp,
+                                   &caller, sizeof(caller), &bytes) ||
+                bytes != sizeof(caller))
+                break;
+            context.Rip = caller;
+            context.Rsp = sp + sizeof(caller);
+        }
+        if ((context.Rip == pc && context.Rsp <= sp) ||
+            context.Rsp <= sp)
+            break;
+    }
+#else
+    (void)ep;
+    (void)err;
+#endif
+}
+
+/* First-fatal-exception-only diagnostics: never suppress the CTest crash. */
+static LONG WINAPI e2e_unhandled_exception(EXCEPTION_POINTERS *p) {
+    const EXCEPTION_RECORD *rec = p ? p->ExceptionRecord : NULL;
+    if (!rec || InterlockedCompareExchange(&g_e2e_fault_logged, 1, 0) != 0)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    char module_name[64];
+    unsigned long long rva = 0;
+    e2e_module_rva(rec->ExceptionAddress, module_name, &rva);
+
+    const unsigned kind = rec->NumberParameters > 0
+                              ? (unsigned)rec->ExceptionInformation[0] : 9u;
+    const int near_null = rec->NumberParameters > 1 &&
+                          rec->ExceptionInformation[1] < 65536u;
+    char line[256];
+    int len = snprintf(line, sizeof(line),
+                       "[webrtc-e2e-exception] code=%lu phase=%ld main_phase=%ld "
+                       "module=%s rva=%llu kind=%u near_null=%d "
+                       "main_thread=%d poll_iteration=%ld\n",
+                       (unsigned long)rec->ExceptionCode,
+                       (long)InterlockedCompareExchange(&g_e2e_diag_phase, 0, 0),
+                       (long)InterlockedCompareExchange(&g_e2e_last_main_phase, 0, 0),
+                       module_name, rva, kind, near_null,
+                       GetCurrentThreadId() == g_e2e_main_thread_id ? 1 : 0,
+                       (long)InterlockedCompareExchange(&g_e2e_poll_iteration, 0, 0));
+    if (len > 0 && len < (int)sizeof(line)) {
+        DWORD written = 0;
+        HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+        if (err && err != INVALID_HANDLE_VALUE) {
+            (void)WriteFile(err, line, (DWORD)len, &written, NULL);
+            e2e_emit_fault_frames(p, err);
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#define E2E_DIAG_PHASE(value) \
+    ((void)InterlockedExchange(&g_e2e_diag_phase, (LONG)(value)))
+#else
+#define E2E_DIAG_PHASE(value) ((void)0)
+#endif
 
 #define TEST_TIMEOUT_MS 30000
 #define MESSAGE_COUNT 10
@@ -101,7 +242,7 @@ static void on_message_b(turbo_dc_channel_t *channel, const void *data, size_t l
 static void on_candidate_a(const char *candidate_sdp, void *user_data) {
     (void)user_data;
     
-    printf("Peer A candidate: %s\n", candidate_sdp);
+    printf("Peer A ICE candidate captured\n");
     
     if (g_ctx.candidate_count_a < ICE_MAX_CANDIDATES) {
         snprintf(g_ctx.candidates_a[g_ctx.candidate_count_a],
@@ -113,7 +254,7 @@ static void on_candidate_a(const char *candidate_sdp, void *user_data) {
 static void on_candidate_b(const char *candidate_sdp, void *user_data) {
     (void)user_data;
     
-    printf("Peer B candidate: %s\n", candidate_sdp);
+    printf("Peer B ICE candidate captured\n");
     
     if (g_ctx.candidate_count_b < ICE_MAX_CANDIDATES) {
         snprintf(g_ctx.candidates_b[g_ctx.candidate_count_b],
@@ -301,82 +442,118 @@ static void on_incoming_channel_b(turbo_dc_peer_t *peer, turbo_dc_channel_t *cha
  * ============================================================================ */
 
 void setUp(void) {
+#ifdef _WIN32
+    InterlockedExchange(&g_e2e_fault_logged, 0);
+    E2E_DIAG_PHASE(0);
+    InterlockedExchange(&g_e2e_last_main_phase, 0);
+    InterlockedExchange(&g_e2e_poll_iteration, 0);
+    g_e2e_main_thread_id = GetCurrentThreadId();
+    (void)SetUnhandledExceptionFilter(e2e_unhandled_exception);
+#endif
     memset(&g_ctx, 0, sizeof(g_ctx));
 }
 
 void tearDown(void) {
+#ifdef _WIN32
+    /* Save which test step reached tearDown, even on an early assertion. */
+    InterlockedExchange(&g_e2e_last_main_phase,
+                        InterlockedCompareExchange(&g_e2e_diag_phase, 0, 0));
+#endif
+    E2E_DIAG_PHASE(90); /* channel A close */
     /* Cleanup channels */
     if (g_ctx.channel_a) {
         turbo_dc_channel_close(g_ctx.channel_a);
         g_ctx.channel_a = NULL;
     }
+    E2E_DIAG_PHASE(91); /* channel B close */
     if (g_ctx.channel_b) {
         turbo_dc_channel_close(g_ctx.channel_b);
         g_ctx.channel_b = NULL;
     }
 
+    E2E_DIAG_PHASE(92); /* media A destroy */
     if (g_ctx.media_a) {
         turbo_media_destroy(g_ctx.media_a);
         g_ctx.media_a = NULL;
     }
 
     /* Quiesce DTLS/SCTP before tearing down ICE underneath it. */
+    E2E_DIAG_PHASE(93); /* peer A close */
     if (g_ctx.peer_a) {
         turbo_dc_peer_close(g_ctx.peer_a);
     }
+    E2E_DIAG_PHASE(94); /* peer B close */
     if (g_ctx.peer_b) {
         turbo_dc_peer_close(g_ctx.peer_b);
     }
+    E2E_DIAG_PHASE(95); /* post-close peer/ICE poll */
     for (int i = 0; i < 10; i++) {
+#ifdef _WIN32
+        InterlockedExchange(&g_e2e_poll_iteration, (LONG)i);
+#endif
+        E2E_DIAG_PHASE(950); /* peer A status poll */
         if (g_ctx.peer_a) turbo_dc_peer_poll(g_ctx.peer_a);
+        E2E_DIAG_PHASE(951); /* peer B status poll */
         if (g_ctx.peer_b) turbo_dc_peer_poll(g_ctx.peer_b);
+        E2E_DIAG_PHASE(952); /* ICE A wake */
         if (g_ctx.ice_a) {
             ice_integration_poll(g_ctx.ice_a);
         }
+        E2E_DIAG_PHASE(953); /* ICE B wake */
         if (g_ctx.ice_b) {
             ice_integration_poll(g_ctx.ice_b);
         }
+        E2E_DIAG_PHASE(954); /* owner callback scheduling gap */
         cmeta_sleep_ms(1);
     }
     
     /* Clear ICE agent references from peers BEFORE destroying ICE
      * This prevents use-after-free when peer tries to send via destroyed agent */
+    E2E_DIAG_PHASE(96); /* peer A transport detach */
     if (g_ctx.peer_a) {
         turbo_dc_peer_set_external_transport(g_ctx.peer_a, NULL, NULL);
     }
+    E2E_DIAG_PHASE(97); /* peer B transport detach */
     if (g_ctx.peer_b) {
         turbo_dc_peer_set_external_transport(g_ctx.peer_b, NULL, NULL);
     }
     
     /* Cleanup ICE */
+    E2E_DIAG_PHASE(98); /* ICE A destroy */
     if (g_ctx.ice_a) {
         ice_integration_destroy(g_ctx.ice_a);
         g_ctx.ice_a = NULL;
     }
+    E2E_DIAG_PHASE(99); /* ICE B destroy */
     if (g_ctx.ice_b) {
         ice_integration_destroy(g_ctx.ice_b);
         g_ctx.ice_b = NULL;
     }
     
     /* Cleanup peers */
+    E2E_DIAG_PHASE(100); /* DC peer A destroy */
     if (g_ctx.peer_a) {
         turbo_dc_peer_destroy(g_ctx.peer_a);
         g_ctx.peer_a = NULL;
     }
+    E2E_DIAG_PHASE(101); /* DC peer B destroy */
     if (g_ctx.peer_b) {
         turbo_dc_peer_destroy(g_ctx.peer_b);
         g_ctx.peer_b = NULL;
     }
     
     /* Cleanup contexts */
+    E2E_DIAG_PHASE(102); /* DC context A destroy */
     if (g_ctx.ctx_a) {
         turbo_dc_context_destroy(g_ctx.ctx_a);
         g_ctx.ctx_a = NULL;
     }
+    E2E_DIAG_PHASE(103); /* DC context B destroy */
     if (g_ctx.ctx_b) {
         turbo_dc_context_destroy(g_ctx.ctx_b);
         g_ctx.ctx_b = NULL;
     }
+    E2E_DIAG_PHASE(104); /* cleanup finished */
     
 }
 
@@ -385,6 +562,7 @@ void tearDown(void) {
  * ============================================================================ */
 
 void test_e2e_p2p_connection(void) {
+    E2E_DIAG_PHASE(1); /* peer and context setup */
     uint64_t deadline = cmeta_monotonic_ms() + TEST_TIMEOUT_MS;
     /* Create peer A (offerer) */
     turbo_dc_config_t config_a = {
@@ -413,6 +591,7 @@ void test_e2e_p2p_connection(void) {
     turbo_dc_peer_on_state(g_ctx.peer_b, on_peer_state_b);
     turbo_dc_peer_on_channel(g_ctx.peer_b, on_incoming_channel_b);
     
+    E2E_DIAG_PHASE(2); /* ICE integration setup */
     /* Create ICE integration (no STUN servers for local testing) */
     g_ctx.ice_a = ice_integration_create(
         g_ctx.peer_a, NULL,
@@ -460,6 +639,7 @@ void test_e2e_p2p_connection(void) {
     
     /* Gather sequentially so synchronous candidate callbacks never create a
      * cross-owner AB/BA wait in this single-process test harness. */
+    E2E_DIAG_PHASE(3); /* gathering A */
     check_equal(ice_integration_start_gathering(g_ctx.ice_a), 0);
     while (!ice_integration_is_gathering_complete(g_ctx.ice_a) &&
            cmeta_monotonic_ms() < deadline) {
@@ -467,6 +647,7 @@ void test_e2e_p2p_connection(void) {
     }
     check_true(ice_integration_is_gathering_complete(g_ctx.ice_a));
 
+    E2E_DIAG_PHASE(4); /* gathering B */
     check_equal(ice_integration_start_gathering(g_ctx.ice_b), 0);
     while (!ice_integration_is_gathering_complete(g_ctx.ice_b) &&
            cmeta_monotonic_ms() < deadline) {
@@ -474,6 +655,7 @@ void test_e2e_p2p_connection(void) {
     }
     check_true(ice_integration_is_gathering_complete(g_ctx.ice_b));
 
+    E2E_DIAG_PHASE(5); /* remote candidate exchange */
     for (int i = 0; i < g_ctx.candidate_count_a; ++i) {
         check_equal(
             ice_integration_add_remote_candidate(
@@ -489,6 +671,7 @@ void test_e2e_p2p_connection(void) {
     ice_integration_end_of_candidates(g_ctx.ice_a);
     ice_integration_end_of_candidates(g_ctx.ice_b);
     
+    E2E_DIAG_PHASE(6); /* connection and media progress */
     /* Set channel callbacks */
     /* Run event loop until test completes */
     while (!g_ctx.test_complete) {
@@ -504,6 +687,7 @@ void test_e2e_p2p_connection(void) {
         cmeta_sleep_ms(10);
     }
     
+    E2E_DIAG_PHASE(7); /* completed handshake validation */
     /* Verify test passed */
     if (!g_ctx.test_passed) {
         check(0, "%s", (g_ctx.error_message));
@@ -538,6 +722,7 @@ void test_e2e_p2p_connection(void) {
         };
         turbo_media_track_t *track;
 
+        E2E_DIAG_PHASE(8); /* media setup */
         g_ctx.media_a = turbo_media_create(g_ctx.peer_a, NULL);
         check_not_null(g_ctx.media_a);
         check_equal((int)(turbo_media_setup_srtp(g_ctx.media_a)), (int)(0));

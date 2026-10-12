@@ -793,3 +793,34 @@ spec("test_media_engine") {
   it("test_peer_connection_answers_remote_ice_restart") { test_peer_connection_answers_remote_ice_restart(); };
   it("test_peer_connection_applies_trickle_ice_sdpfrag_restart") { test_peer_connection_applies_trickle_ice_sdpfrag_restart(); };
 }
+
+spec("PeerConnection local DataChannel receive capacity") {
+  static turbo_peer_connection_t *peer;
+  before_each() {
+    turbo_peer_config_t config = {.allow_loopback = 1};
+    peer = turbo_peer_connection_create(&config, NULL);
+    check_not_null(peer);
+  }
+  after_each() { turbo_peer_connection_destroy(peer); peer = NULL; }
+
+  it("advertises local capacity independently of a larger remote receive limit") {
+    static const char offer[] =
+        "v=0\r\n"
+        "o=- 1 1 IN IP4 127.0.0.1\r\n"
+        "s=-\r\n"
+        "t=0 0\r\n"
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
+        "c=IN IP4 0.0.0.0\r\n"
+        "a=mid:data\r\n"
+        "a=ice-ufrag:test\r\n"
+        "a=ice-pwd:test-remote-password-123\r\n"
+        "a=fingerprint:sha-256 " TEST_SHA256_FINGERPRINT "\r\n"
+        "a=setup:actpass\r\n"
+        "a=sctp-port:5000\r\n"
+        "a=max-message-size:1048576\r\n";
+    char answer[8192];
+    check_equal(turbo_peer_connection_set_remote_description(peer, "offer", offer), 0);
+    check_greater(turbo_peer_connection_create_answer(peer, answer, sizeof(answer)), 0);
+    check_not_null(strstr(answer, "a=max-message-size:262144\r\n"));
+  }
+}

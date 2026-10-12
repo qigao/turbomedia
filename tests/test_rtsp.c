@@ -252,6 +252,9 @@ static int rtsp_test_options(
     static const turbo_rtsp_header_t digest_challenge = {
         "WWW-Authenticate",
         "Digest realm=\"TurboMedia\", nonce=\"rtsp-test-nonce\", algorithm=MD5, qop=\"auth\""};
+    static const turbo_rtsp_header_t digest_vector_challenge = {
+        "WWW-Authenticate",
+        "Digest realm=\"TurboMedia\", nonce=\"rtsp-test-nonce\", algorithm=MD5"};
     rtsp_test_state_t *state = (rtsp_test_state_t *)user;
     const turbo_rtsp_message_t *message = turbo_rtsp_session_get_last_message(session);
     const turbo_rtsp_header_view_t *authorization =
@@ -267,8 +270,22 @@ static int rtsp_test_options(
         response->status_code = 401;
         response->reason = "Unauthorized";
         response->headers = state->auth_digest ? &digest_challenge : &basic_challenge;
+        if (state->auth_digest == 2) response->headers = &digest_vector_challenge;
         response->header_count = 1;
         return 0;
+    }
+    if (state->auth_digest == 2) {
+        /* MD5(MD5("alice:TurboMedia:secret") + ":rtsp-test-nonce:" +
+         * MD5("OPTIONS:rtsp://127.0.0.1/live")), fixed independently of Core. */
+        static const char expected[] = "response=\"eef88b1b474f4c7a194f53f8747dd48a\"";
+        int matched = 0;
+        for (size_t i = 0; i + sizeof(expected) - 1 <= authorization->value_len; ++i) {
+            if (memcmp(authorization->value + i, expected, sizeof(expected) - 1) == 0) {
+                matched = 1;
+                break;
+            }
+        }
+        if (!matched) return turbo_rtsp_response_status(response, 403, "Forbidden");
     }
     if ((state->auth_digest && authorization->value_len >= 7u &&
          memcmp(authorization->value, "Digest ", 7u) == 0) ||
@@ -741,6 +758,9 @@ suite("TurboMedia RTSP over Salts") {
 
     it("retries Digest authentication after a 401 challenge") {
         rtsp_test_auth(1);
+    }
+    it("matches the RTSP Digest MD5 known response after a 401 challenge") {
+        rtsp_test_auth(2);
     }
 
     it("negotiates an RTP/AVP UDP track") {

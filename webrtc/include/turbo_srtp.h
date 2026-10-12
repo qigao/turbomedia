@@ -54,6 +54,10 @@ TURBO_MEDIA_API void srtp_lib_shutdown(void);
  * Create SRTP session
  *
  * @param config    Session configuration with keying material
+ *                  Borrowed for this call; keys are copied on success. key_len
+ *                  and salt_len must exactly match the selected profile (bytes):
+ *                  AES128_CM_SHA1_80/32: 16/14; AES_128_GCM: 16/12;
+ *                  AES_256_GCM: 32/12. Mismatched lengths are rejected.
  * @return          Session handle, or NULL on error
  */
 TURBO_MEDIA_API srtp_session_t *srtp_session_create(const srtp_session_config_t *config);
@@ -70,6 +74,8 @@ TURBO_MEDIA_API void srtp_session_destroy(srtp_session_t *session);
  * @param packet    RTP packet buffer (in-place modification)
  * @param len       Input: packet length, Output: protected packet length
  * @param max_len   Maximum buffer size (must allow for auth tag)
+ *                  Reserve SRTP_MAX_TRAILER_LEN bytes beyond the RTP packet.
+ *                  Insufficient capacity is rejected before packet mutation.
  * @return          0 on success, -1 on error
  */
 TURBO_MEDIA_API int turbo_srtp_protect(srtp_session_t *session, uint8_t *packet, size_t *len,
@@ -92,6 +98,8 @@ TURBO_MEDIA_API int turbo_srtp_unprotect(srtp_session_t *session, uint8_t *packe
  * @param packet    RTCP packet buffer (in-place modification)
  * @param len       Input: packet length, Output: protected packet length
  * @param max_len   Maximum buffer size
+ *                  Reserve SRTP_MAX_TRAILER_LEN + 4 bytes beyond the RTCP packet.
+ *                  Insufficient capacity is rejected before packet mutation.
  * @return          0 on success, -1 on error
  */
 TURBO_MEDIA_API int turbo_srtcp_protect(srtp_session_t *session, uint8_t *packet, size_t *len,

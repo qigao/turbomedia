@@ -32,7 +32,7 @@ TurboNet 的 WebRTC DataChannel 实现提供了点对点数据通信，支持多
 │  - 加密/解密                         │
 │  - 证书验证                          │
 │  - 握手                              │
-│  (BoringSSL)                        │
+│  (GmSSL)                            │
 └──────────────┬──────────────────────┘
                │
        ┌───────┴────────┬─────────┬──────────┐
@@ -217,6 +217,28 @@ int send_cb(void *addr, void *data, size_t len, ...) {
 
 ---
 
+## PeerConnection 回调生命周期
+
+PeerConnection 拥有 ICE owner、DC peer 和媒体 context。内部 ICE/DC 回调通过
+现有 ICE mutex/condition 登记进入和退出；回调借用这些资源，不转移所有权。
+销毁先关闭回调入口、请求取消 ICE 操作并 join 协调 worker，再等待已进入的回调
+返回。此时三个依赖均保持存活。随后排空媒体传输回调，释放媒体，排空并销毁 DC，
+最后 join 并销毁 ICE owner。锁不跨越外部回调、owner 命令或线程 join；没有新增
+队列、复制或线程。不返回的回调会阻止销毁完成。
+
+跨线程状态标志使用 C11 原子操作；ICE→DC 绑定在开始 gathering 前安装一次，
+重启与销毁时不再改写。原子标志不等于 SDP/track 多字段事务：应用仍须协调信令
+和 track 修改，在销毁前停止自身 poll/control/media 操作，且不能从本对象的回调
+中销毁它。公开签名与报文语义不变；仅设置 closing 或清空回调指针不能代替排空。
+设计与回滚约束见 [PeerConnection callback lifetime](arch-en.md#peerconnection-callback-lifetime)。
+
+CONNECTED 要求 ICE pair 可用、DTLS 已建立、SRTP 与接收 track 初始化成功。
+DTLS 标志继续保护已协商的远端指纹；媒体就绪单独记录，仅在初始化成功后发布。
+ICE restart 保留成功的媒体就绪状态，DC 失败或关闭则使其失效。ICE 恢复不能把
+媒体初始化失败变成 CONNECTED，也不能重启已经建立的 DTLS。相关标志更新与
+CONNECTED 条件的状态提交共用 ICE mutex，用户回调仍在锁外执行；不承诺回调
+全局排序或任意并发信令/track 修改。
+
 ## DTLS 集成
 
 ### 会话创建
@@ -342,6 +364,97 @@ free(peer);
 - 公开生命周期 API 通过内部同步投递协议串行化传输操作
 - 回调中不得重入销毁其所属 peer
 
+**DTLS 生产接入与归属：**
+DataChannel 已接入基于缓存 GmSSL primitives 的私有 DTLS 1.2 引擎。
+context 独占不可变身份；peer 在信令提供角色和 SHA-256 指纹后创建会话。
+操作租约保活，现有 mutex/condition 准入串行化引擎调用。握手后更换指纹
+返回 -5，重复设置同一指纹仍成功；更换身份须新建关联。
+
+context worker 观察重传、60 秒握手有效期及服务端完成后 120 秒最终 flight
+退役期限。有期限时按 10ms 检查，直接 CNet 保留 1ms poll；否则等待条件变量。
+ICE 收包保持原线程。worker 持有 peer 租约，但不在 peer-list mutex 或 DTLS
+准入内调用 transport、SCTP、用户回调。输入在调用内借用；引擎有界保存
+重组、暂存密文、flight、transcript。输出和明文以拥有型 tstr 转移，回调
+仅借用，返回后释放并擦除明文。输出/明文队列各最多 256 报文、256 KiB。
+
+只选举一次握手完成者，SCTP 启动后排空应用数据。显式本地关闭沿用不发送
+网络回调的行为，注销期限并销毁引擎，立即清除未完成握手秘密。已认证远端
+关闭撤销导出、排空已认证尾包并回复后通知 CLOSED。销毁先拒绝新操作并排空
+租约，context 最后 join worker、释放身份。回调内重入销毁仍不支持；channel
+修改、transport 替换及上层状态访问仍须遵守原 owner 约束。
+
+生产和测试均移除 BoringSSL；协议测试改用 GmSSL 双端。生产回归保留
+小 MTU、SRTP 一致、最终 flight 丢包恢复、一次 CONNECTED、事务串行化、销毁
+等待和定时器回调重入。ready 服务端收到已认证重复 Finished 后重发保留 flight，
+不依赖应用写入。第一次已认证重试立即回复，后续每秒最多一次，避免客户端更早
+启动的 RTO 被服务端发送时刻的限流压制；可控传输延迟用例覆盖此边界和重放限流。
+私有并发测试直接编译生产源码清单，保持 Windows DLL ABI 私有边界；公开集成
+测试仍链接正式共享库。#160 缺少历史报文追踪，回归通过不能单独证明旧失败原因。
+候选方案和取舍见 [DTLS operation ownership](arch-en.md#dtls-operation-ownership)。
+
+**GmSSL 迁移与兼容边界：**
+
+SCTP socket 使用配置的 `sctp_mtu`，不再固定为 1188。该 AF_CONN 参数不含 12 字节
+SCTP 公共头；启用 SCTP 时至少为 512，且 `sctp_mtu + 12` 必须能装入
+`min(dtls_mtu - 37, 16384)`。零值仍使用 1188/1280 默认值，不兼容的组合在创建
+context 时失败，不自动压低配置。DTLS-only 保留 256 字节下限，不受 SCTP 配置限制。
+正式测试核对配置边界与真实 socket 值，并以 SCTP 1000、DTLS 1200 双向传输
+4 KiB 二进制消息，检查完整交付和报文上限。AF_CONN 语义依据见
+[DTLS datagram boundary](arch-en.md#dtls-datagram-boundary)。
+
+认证使用 Salts Core 的 SHA-256、HMAC-SHA256、常量时间比较，Base64 复用
+libbase64。Salts 保持 2.3.0-rc.10。临时身份以 GmSSL 生成并直接导入 DER/PKCS#8，
+保留 v3、CN、365 天有效期和 SHA-256 指纹，私钥临时存储在导入后或失败时擦除。
+
+支持 DTLS 1.2、P-256 ECDHE、P-256 ECDSA/RSA SHA-256 签名、AES-128/256-GCM、
+强制 EMS（Extended Master Secret）和四种 SRTP profile。若 ClientHello 或 ServerHello
+未协商 EMS，握手在派生密钥前失败，不保留传统 master-secret 兼容路径。
+RSA 身份至少 2048 位。不支持恢复、重协商、DTLS
+1.0/1.3、其他 EC 身份曲线、有限域 DHE、ChaCha20。仅支持旧算法组合的对端会
+明确失败，不自动降级。Finished、CertificateVerify 和指纹通过后才发布 ready/export。
+
+BoringSSL 已从 manifest、包发现、链接、生产适配和测试中移除，不保留备用后端。
+保留仅用于 PEM/测试的依赖仍不满足移除要求，引入其他 provider 会增加依赖；因此
+改用 GmSSL 原生 PEM 和双端测试，并明确接受独立互通覆盖的缺口。
+
+`dc_identity.cpp` 直接读取叶证书 `CERTIFICATE` 和未加密 PKCS#8 `PRIVATE KEY`。
+移除 SEC1 EC、PKCS#1 RSA 转换；加密私钥也不支持，升级前须准备 PKCS#8 文件。
+证书/密钥路径必须同时提供，不可读、不匹配、格式错误或不支持的身份直接失败，
+不回退生成身份。保持单叶证书语义，未增加链文件或密码配置。
+每个解码对象最多 16 KiB，同步工厂独占文件和 tstr 存储；失败保留完整长度用于
+清理，成功先擦除未用尾部再缩短。私钥在导入后或失败时擦除，准入前不发布输出。
+
+已删除公开 `srtp_derive_keys_from_dtls(void *ssl, ...)` 声明及实现，没有别名或
+空实现。这会破坏使用该函数的外部调用方源码/二进制兼容性，须重编译并改用
+`turbo_dc_peer_get_srtp_keys`，其非零返回值是协商 profile，零表示未就绪或错误；
+仓库内无旧接口调用。
+RTSP Digest MD5 改用 Salts Core，保持摘要行为；清理 RoomService/test 旧链接和
+未使用的 RTMP OpenSSL 分支。
+
+引擎保持私有且不安装。GmSSL 3.2.0#9 不提供现成 DTLS-SRTP owner；状态机
+复用成熟密码算法且无新依赖，代价是维护分片/重传并验证收窄的算法范围。
+GmSSL 双端保留两种 AES 记录密钥长度、四种 profile、混合身份、损坏标签、重放、
+容量、关闭和超时测试。P-256 临时生成，RSA 使用公开的 .NET 测试专用夹具；
+provider 没有 RSA 生成入口。当前不再执行独立 provider 互通，历史结果不能替代
+新提交的验证。双端测试不能替代生产 SCTP、WHIP 和平台回归，不代表浏览器、移动端运行或
+TSAN 已验证。回滚须成套恢复旧 owner、证书导入和测试，并保留此前准入、
+数据报边界和最终 flight 修复。SRTP/auth 可独立回滚，缓存只读恢复不变。
+容量、一手资料及迁移边界见 [GmSSL migration boundary](arch-en.md#gmssl-migration-boundary)。
+
+libsrtp 的现有 overlay 独立改用 GmSSL AES-CTR、AES-GCM 和 HMAC-SHA1，保留
+四种公开 profile、密钥派生、重放保护与 RTP/SRTCP 行为。ICM 保留跨调用的剩余
+密钥流；GCM 复制并复用 AAD 存储以覆盖 SRTCP 的临时 trailer，容量受 libsrtp 的
+INT_MAX 报文长度域限制，分配失败不接纳部分输入。每个上下文独占其状态，沿用
+原有 session 串行调用约束；销毁时擦除密钥和保留存储。正式验证包含库初始化时
+的已知向量、双向 RTP/SRTCP、错误密钥和损坏标签拒绝，以及后续合法报文恢复。
+
+SRTP session 在获取库引用前按 libSRTP profile helper 严格校验 key/salt 长度。
+固定策略的会话在创建时查询并保存 RTP/SRTCP 尾部长度；protect 在修改调用方拥有的
+报文前拒绝容量不足或输出长度超过 `INT_MAX`。公开 RTP 尾部预留改为 16 字节以覆盖
+GCM 标签，SRTCP 另需 4 字节索引；使用旧 14 字节预留的调用方须重编译或扩大缓冲区。
+未配置 MKI。正式测试覆盖四种 profile、恰好容量、拒绝时输入不变、错误长度修正后
+重新创建及报文往返；这些修复不证明 #160 的历史根因。
+
 ---
 
 ## 错误处理
@@ -401,3 +514,31 @@ on_state(FAILED) 回调
 - [ ] 带宽估计
 - [ ] 拥塞控制调优
 - [ ] 多宿主 SCTP 支持
+
+### SCTP 完整消息交付
+
+usrsctp 回调可能只交付消息片段；适配层仅在 `MSG_EOR` 后发布完整消息，
+依据 [RFC 6458](https://www.rfc-editor.org/rfc/rfc6458.html#section-8.1.20)。
+片段复制到 peer 拥有的 `tstr`，按流号、SSN、关联、PPID 和有序性区分。
+DCEP 同样先重组再创建通道；空消息 PPID 在消息结束时才归一化为零长度。
+
+`TURBO_DC_MAX_MESSAGE_SIZE` 统一既有的 256 KiB 本地接收上限和 SDP 声明。
+Answer 声明本地接收能力，不复制远端接收上限；发送方仍须遵守远端声明。
+每个 peer 最多接纳 8 个重组缓冲区，首片段按消息上限一次分配，最多保留
+2 MiB 载荷，另加 tstr 元数据和 8 条固定记录；DCEP 沿用 512 字节上限。
+预算不包含 usrsctp 自身的 socket 存储。单次完整回调不增加适配层复制。
+
+operation mutex 保护重组状态，peer operation lease 覆盖回调处理。
+完整缓冲区在应用回调前移交给本次调用，回调在锁外执行，直到返回才归还预算。
+取消或流重置释放未完成消息；本地通道关闭释放存储并丢弃旧消息至 EOR。
+peer 失败、关闭和销毁停止接纳并清理片段。超长、消息身份变化、预算耗尽或
+分配失败报告 `TURBO_DC_ERROR_SCTP_RECEIVE` 并使 peer 失败，不发布消息前缀。
+
+单个关联缓冲区无法支持流间交错，无界通道缓存则缺少内存上限，因此使用有界
+流记录。没有新增配置字段；opaque handle 的公开布局不变。依赖超长消息或无限
+并行片段的调用方需按 SDP 限制拆分消息。任意并发通道修改、回调内销毁 peer
+仍不受支持。回滚应同时撤销重组器、SDP/头文件及测试，且会恢复原部分交付缺陷。
+
+正式测试覆盖流间交错、DCEP、空消息、256 KiB 精确边界、容量超限、取消和关闭；
+双端 GmSSL 测试降低 SCTP 部分交付阈值，观察中间状态并验证双向 64 KiB 完整消息。
+ASan/UBSan 只覆盖第一方代码，缓存的 usrsctp/GmSSL 二进制不重新插桩。

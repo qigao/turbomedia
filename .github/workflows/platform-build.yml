@@ -147,7 +147,7 @@ jobs:
             ninja-build pkg-config nasm autoconf automake libtool
           if [ "${{ matrix.platform }}" = "Linux" ]; then
             sudo apt-get install -y --no-install-recommends \
-              libpipewire-0.3-dev libx11-dev libxext-dev
+              libpipewire-0.3-dev libx11-dev libxext-dev libssl-dev
           else
             test -n "${ANDROID_NDK_HOME:-}"
             test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
@@ -207,14 +207,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid "${{ matrix.rid }}"
 
-      # Draft-only exact-source SaltsNet/CHttp candidates. Salts and
-      # SaltsUtils always come from the official paired RC releases.
-      # Do not publish or permanently pin these downstream candidates.
+      # Only qualified SaltsNet/CHttp SDK candidates are overlaid here on
+      # Draft branches. Salts/SaltsUtils always use the released paired RCs;
+      # never publish or permanently pin these downstream candidates.
       - name: Stage qualified ACE/CNet candidate consumers
         if: >-
           github.event_name == 'pull_request' &&
           (github.head_ref == 'feature/ace-cnet-owner-transport' ||
-           github.head_ref == 'fix/http-flv-owner-drain-recovery')
+           github.head_ref == 'fix/http-flv-owner-drain-recovery' ||
+           github.head_ref == 'diagnostics/whip-sfu-restart-windows')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -225,9 +226,11 @@ jobs:
             @{
               name = "SaltsNet"
               repo = "qigao/salts-net"
-              run = "37952520605"
+              # Exact six-RID artifact from SaltsNet ICE-close Draft #54.
+              # Not a published SDK; never resolve a different candidate.
+              run = "38264634750"
               artifact = "saltsnet-sdk-$rid"
-              expected = "a74b3a8ed8a7f297a57307aac99d541c63dd0c7c"
+              expected = "c55153e38cc9ad4a6bf418eca9bb35de90985217"
               manifest = "saltsnet-sdk-manifest.txt"
               config = "lib/cmake/SaltsNet/SaltsNetConfig.cmake"
               root = "SALTSNET_ROOT"
@@ -243,7 +246,8 @@ jobs:
               root = "CHTTP_ROOT"
             }
           )
-          # Salts/SaltsUtils are restored from paired official releases on every RID.
+          # Salts and SaltsUtils always come from the verified paired
+          # official published SDKs restored above on every RID.
           foreach ($candidate in $candidates) {
             $details = & gh api "repos/$($candidate.repo)/actions/runs/$($candidate.run)" --jq "{head_sha: .head_sha, conclusion: .conclusion}"
             if ($LASTEXITCODE -ne 0) { throw "$($candidate.name): GitHub Actions run metadata unavailable" }
@@ -335,6 +339,8 @@ jobs:
           }
       - name: Configure
         shell: pwsh
+        env:
+          TURBOMEDIA_CI_HEAD_REF: ${{ github.head_ref }}
         run: |
           $ErrorActionPreference = "Stop"
           foreach ($directory in @("build/ci-platform", "stage/ci-platform")) {
@@ -351,8 +357,26 @@ jobs:
               "-DANDROID_STL=c++_shared"
             )
           }
+          if ("${{ matrix.platform }}" -eq "Linux" -and
+              $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+            $args += "-DTURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON"
+          }
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
+          if ("${{ matrix.platform }}" -eq "Linux" -and
+              $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+            $cache = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform/CMakeCache.txt"
+            if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON$" -Quiet)) {
+              throw "Independent OpenSSL DTLS qualification is not enabled on the Linux Draft CI"
+            }
+            # A green default suite without this named CTest is not external
+            # protocol acceptance. Fail the job before the expensive build.
+            $names = & ctest --test-dir (Join-Path $env:GITHUB_WORKSPACE "build/ci-platform") -N -R "^turbo_media_test_dtls_openssl_interop$"
+            if ($LASTEXITCODE -ne 0 -or
+                -not ($names | Select-String -Pattern "Test #[0-9]+: turbo_media_test_dtls_openssl_interop" -Quiet)) {
+              throw "Independent DTLS CTest registration is missing"
+            }
+          }
 
       # Diagnostics only: the released macOS TinyTest archive currently
       # produces an undefined _ttest_active_config__ in test_speech. Do not
@@ -373,6 +397,8 @@ jobs:
 
       - name: Build and test
         shell: pwsh
+        env:
+          TURBOMEDIA_CI_HEAD_REF: ${{ github.head_ref }}
         run: |
           $ErrorActionPreference = "Stop"
           # Only emits bounded stage/status codes on HTTP-FLV upload failure.
@@ -412,8 +438,85 @@ jobs:
           & ccache --show-stats
           if ($LASTEXITCODE -ne 0) { throw "ccache stats failed" }
           if ("${{ matrix.platform }}" -ne "Android") {
-            & ctest --preset ci-platform-test
+            # Parallelize independent tests only on Windows. CTest honors
+            # RUN_SERIAL on the real WHIP/SFU restart test and existing
+            # RESOURCE_LOCK properties on tests sharing fixed ports.
+            # Never overlap SFU generation shutdown/restart with another test.
+            if ("${{ matrix.platform }}" -eq "Windows") {
+              & ctest --preset ci-platform-test --parallel 4
+            } else {
+              & ctest --preset ci-platform-test
+            }
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
+            # Diagnose #191 with 50 independent E2E processes to exercise
+            # callback/Owner teardown under real Windows scheduling.
+            # First crash fails immediately; no passes after failure can hide it.
+            # This is independent from the dead-SFU WHIP teardown gate below.
+            if ("${{ matrix.platform }}" -eq "Windows" -and
+                $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+              & ctest --preset ci-platform-test -R "^turbo_media_test_webrtc_e2e$" --repeat "until-fail:50" --output-on-failure --timeout 90
+              if ($LASTEXITCODE -ne 0) {
+                throw "Windows WebRTC ICE E2E repeat conformance failed"
+              }
+            }
+            # Draft diagnostics only: two additional source-identical real
+            # SFU restarts must both pass. No skipped tests, wider production
+            # deadlines, application replay or automatic settlement retry.
+            if ("${{ matrix.platform }}" -eq "Windows" -and
+                $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+              $peerDestroyStageCount = 0
+              $whepPeerDestroyMs = [System.Collections.Generic.List[long]]::new()
+              # CTest normally hides successful test stdout. Capture only the
+              # schema-validated numeric timing and redacted failure counters;
+              # never print verbose SFU/SDP, Authorization or raw test logs.
+              & ctest --preset ci-platform-test -R "^test_ivr_whip_transport$" --repeat "until-fail:2" --output-on-failure --timeout 180 -V 2>&1 |
+                ForEach-Object {
+                  $line = [string]$_
+                  if ($line -match '\[whip-restart-timing\] initial_ms=\d+ shutdown_ms=\d+ terminal_ms=\d+ restart_ms=\d+ whip_ms=\d+ whep_ms=\d+ rtp_ms=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[whip-restart-subtiming\] whip_terminal_ms=\d+ whep_terminal_ms=\d+ whep_stop_ms=\d+ whip_stop_ms=\d+ spawn_ms=\d+ room_ms=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[whip-restart-terminal-events\] whip_since_kill_ms=\d+ whep_since_kill_ms=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[peer-destroy-stage\] admission_ms=\d+ ice_close_ms=\d+ ice_worker_ms=\d+ callbacks_ms=\d+ media_ms=\d+ dc_peer_ms=\d+ ice_owner_ms=\d+ dc_context_ms=\d+ sync_ms=\d+ strings_ms=\d+ total_ms=\d+') {
+                    # Emit only numeric durations, never SDP, peer IDs or Authorization.
+                    Write-Host $Matches[0]
+                    $peerDestroyStageCount++
+                  } elseif ($line -match '\[ivr-stop-stage\] transport=(?:whip|whep) join_ms=\d+ delete_ms=\d+ peer_destroy_ms=\d+ result=-?\d+') {
+                    # Redact by schema: only stop-phase numeric counters are
+                    # printed, never HTTP locations, SDP or bearer tokens.
+                    $safeStopLine = $Matches[0]
+                    Write-Host $safeStopLine
+                    if ($safeStopLine -match '\[ivr-stop-stage\] transport=whep join_ms=\d+ delete_ms=\d+ peer_destroy_ms=(\d+) result=-?\d+') {
+                      $whepPeerDestroyMs.Add([long]$Matches[1])
+                    }
+                  } elseif ($line -match '\[whip-restart\] stage=(?:initial-whip|initial-whep|initial-rtp|post-sfu-restart|post-sfu-restart-whep|post-sfu-restart-rtp|post-sfu-stop-whip-terminal|post-sfu-stop-whep-terminal|post-sfu-restart-room) sfu_generation=\d+ child_alive=[01] whip_connected_now=[01] whep_connected_now=[01] whip_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} whep_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} child_log_lines=\d+ ice=\d+ dtls=\d+ errors=\d+') {
+                    # Only the schema-validated, token-free counters can escape.
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[sfu-log-summary\] available=[01] chunks=\d+ ice=\d+ dtls=\d+ errors=\d+') {
+                    Write-Host $Matches[0]
+                  } elseif ($line -match '\[sfu-provision\] attach_failed=1 attempts=10 status_class=[0-5]') {
+                    Write-Host $Matches[0]
+                  }
+                }
+              if ($LASTEXITCODE -ne 0) {
+                throw "Windows SFU/WHIP restart repeatability gate failed"
+              }
+              if ($peerDestroyStageCount -lt 4) {
+                throw "Windows SFU/WHIP peer destruction phase diagnostics missing"
+              }
+              # SaltsNet #53: active ICE Owner checks must drain without waiting
+              # for their 12s connectivity deadline after close admission.
+              # Preserve RFC 7675 consent and the ordinary HTTP DELETE result.
+              if ($whepPeerDestroyMs.Count -ne 2) {
+                throw "Windows WHEP teardown duration evidence missing"
+              }
+              foreach ($durationMs in $whepPeerDestroyMs) {
+                if ($durationMs -gt 2000) {
+                  throw "Windows WHEP ICE Owner shutdown exceeded 2s teardown gate"
+                }
+              }
+            }
           }
 
       # Separate test-only build: compile TurboMedia wrappers with ASan/UBSan
@@ -423,7 +526,8 @@ jobs:
         if: >-
           matrix.platform == 'Linux' &&
           github.event_name == 'pull_request' &&
-          github.head_ref == 'fix/http-flv-owner-drain-recovery'
+          (github.head_ref == 'fix/http-flv-owner-drain-recovery' ||
+           github.head_ref == 'diagnostics/whip-sfu-restart-windows')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -453,12 +557,10 @@ jobs:
           & ctest --preset ci-platform-linux-asan-ubsan
           if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan native tests failed" }
 
-      # Run fail-drain fault tests in the CI build, but never install that
-      # instrumented library. Reconfigure the *same exact SDK graph* without
-      # fault injection, rebuild and rerun the affected HTTP-FLV/Transport
-      # contract only. The first pass already ran the full CTest suite.
-      # Android excludes streamer in the component graph, so has no HTTP-FLV
-      # fault seam to remove. Preserve its qualified NDK cross-build unchanged.
+      # Fault-injection tests exercise the CI build, never the installed SDK.
+      # Rebuild and retest with injection disabled before installation.
+      # Android omits streamer and the HTTP-FLV test-only hook. Avoid
+      # reconfiguring the exact native cross-build without its NDK args.
       - name: Qualify production library without test fault injection
         if: matrix.platform != 'Android'
         shell: pwsh
@@ -505,9 +607,9 @@ jobs:
             if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
             $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
           }
-          # The first CTest pass exercised the entire instrumented graph.
-          # Only Streamer/HTTP consumers change in the production reconfigure.
-          # Do not rerun costly SFU/WHIP and unrelated codec tests a second time.
+          # The first pass already exercises the entire native graph, including
+          # Windows WHIP/SFU. Only Streamer/HTTP is requalified after disabling
+          # fault injection; never install the instrumented test library.
           & ctest --preset ci-platform-production-contract
           if ($LASTEXITCODE -ne 0) { throw "production HTTP-FLV CTest failed for ${{ matrix.platform }}" }
 

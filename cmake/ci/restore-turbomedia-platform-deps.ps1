@@ -30,6 +30,57 @@ dotnet nuget add source https://nuget.pkg.github.com/qigao/index.json `
   --configfile $config
 if ($LASTEXITCODE -ne 0) { throw "failed to configure GitHub Packages source" }
 
+# Resolve only complete official releases; historical rc.sha packages sort
+# above numeric rc.N, yet may ship only a Linux SDK. This policy stays floating.
+function Resolve-OfficialNativeRelease([string]$Repository, [string]$PackageId,
+                                       [string]$Cycle) {
+  $payload = (& gh api "repos/$Repository/releases?per_page=100") -join "`n"
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($payload)) {
+    throw "failed to query published releases for $PackageId"
+  }
+  $releases = @(ConvertFrom-Json -InputObject $payload)
+  $rcPattern = '^v' + [regex]::Escape($Cycle) + '-rc\.([1-9][0-9]*)$'
+  $winner = $null
+  $rankBest = -1
+  foreach ($release in $releases) {
+    if ($release.draft) { continue }
+    $tag = [string]$release.tag_name
+    if ($tag -ceq "v$Cycle" -and -not $release.prerelease) {
+      $rank = 1000000000
+    } elseif ($tag -cmatch $rcPattern -and $release.prerelease) {
+      $rank = [int]$Matches[1]
+    } else { continue }
+    $version = $tag.Substring(1)
+    $assetName = "$PackageId.$version.nupkg"
+    $complete = $false
+    foreach ($asset in @($release.assets)) {
+      if ($asset.name -ceq $assetName -and [int64]$asset.size -gt 0) {
+        $complete = $true
+        break
+      }
+    }
+    if ($complete -and $rank -gt $rankBest) {
+      $winner = $version
+      $rankBest = $rank
+    }
+  }
+  if (-not $winner) { throw "no official full $PackageId $Cycle RC/stable release" }
+  return $winner
+}
+
+$saltsVersion = Resolve-OfficialNativeRelease "qigao/salts" "Salts.Native" "2.3.0"
+$saltsUtilsVersion = Resolve-OfficialNativeRelease "qigao/salts-utils" "SaltsUtils.Native" "4.3.0"
+# RC sequences belong to each package, not to a shared release counter.
+# For example, Salts 2.3.0-rc.10 and SaltsUtils 4.3.0-rc.7 are the current
+# official releases. Keep both post-cutover; installed package contracts and
+# the native build/CTest graph qualify their actual compatibility.
+foreach ($version in @($saltsVersion, $saltsUtilsVersion)) {
+  if ($version -match '-rc\.([1-9][0-9]*)$' -and [int]$Matches[1] -lt 2) {
+    throw "Unicode owner cutover requires rc.2+ SDK releases: $version"
+  }
+}
+Write-Host "Official SDKs: Salts.Native $saltsVersion, SaltsUtils.Native $saltsUtilsVersion"
+
 $desktopServices = $Rid -eq "linux-x64" -or $Rid -eq "windows-x64"
 $desktopReference = if ($desktopServices) {
 @'
@@ -45,8 +96,8 @@ $desktopReference = if ($desktopServices) {
     <TargetFramework>net8.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Salts.Native" Version="2.3.0-*" />
-    <PackageReference Include="SaltsUtils.Native" Version="4.3.0-*" />
+    <PackageReference Include="Salts.Native" Version="$saltsVersion" />
+    <PackageReference Include="SaltsUtils.Native" Version="$saltsUtilsVersion" />
     <PackageReference Include="SaltsNet.Native" Version="*" />
     <PackageReference Include="CHttp.Native" Version="*" />
 $desktopReference
@@ -54,7 +105,7 @@ $desktopReference
 </Project>
 "@ | Set-Content -LiteralPath $project -Encoding utf8
 
-dotnet restore $project --configfile $config --packages $packages
+dotnet restore $project --configfile $config --packages $packages --no-cache --force-evaluate
 if ($LASTEXITCODE -ne 0) { throw "platform SDK restore failed" }
 
 function Resolve-SdkRoot([string]$PackageId, [string]$SdkRid = "") {
@@ -68,6 +119,14 @@ function Resolve-SdkRoot([string]$PackageId, [string]$SdkRid = "") {
   $versions = @(Get-ChildItem -LiteralPath $packageRoot -Directory)
   if ($versions.Count -ne 1) {
     throw "expected exactly one restored version for $PackageId, found $($versions.Count)"
+  }
+  $expectedVersion = switch ($PackageId) {
+    "Salts.Native" { $saltsVersion }
+    "SaltsUtils.Native" { $saltsUtilsVersion }
+    default { $null }
+  }
+  if ($expectedVersion -and $versions[0].Name -cne $expectedVersion) {
+    throw "restored unexpected $PackageId version $($versions[0].Name) (expected $expectedVersion)"
   }
   $root = Join-Path $versions[0].FullName "sdk/$SdkRid"
   if (-not (Test-Path -LiteralPath $root -PathType Container)) {
@@ -85,6 +144,21 @@ $roots = [ordered]@{
 if ($desktopServices) {
   $roots["RULES_FORGE_ROOT"] = Resolve-SdkRoot "RulesForge.Native"
 }
+
+# Fail before CMake configuration if published SDK target ownership is wrong.
+$saltsTargets = Join-Path $roots.SALTS_ROOT "lib/cmake/Salts/SaltsTargets.cmake"
+$utilsTargets = Join-Path $roots.SALTS_UTILS_ROOT "lib/cmake/SaltsUtils/SaltsUtilsTargets.cmake"
+if (-not (Test-Path -LiteralPath $saltsTargets -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $utilsTargets -PathType Leaf)) {
+  throw "paired SDK target exports are missing"
+}
+if (-not (Select-String -LiteralPath $saltsTargets -SimpleMatch "add_library(Salts::Unicode" -Quiet)) {
+  throw "Salts.Native must own Salts::Unicode in its installed CMake export"
+}
+if (Select-String -LiteralPath $utilsTargets -SimpleMatch "add_library(Salts::Unicode" -Quiet) {
+  throw "SaltsUtils.Native cannot duplicate Salts::Unicode"
+}
+Write-Host "Verified single Salts::Unicode owner in paired published SDK exports"
 
 $saltsUtilsHostRoot = $null
 if ($Rid -eq "android-arm64-v8a") {

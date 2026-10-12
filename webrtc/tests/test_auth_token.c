@@ -513,6 +513,26 @@ void test_auth_token_bounds_revocation_list_cardinality(void) {
 }
 
 spec("test_auth_token") {
+    it("preserves the HS256 token wire format across crypto providers") {
+        /* Independently computed with Python's standard-library HMAC-SHA256
+         * and URL-safe Base64, using the fixed claims below. */
+        static const char expected[] =
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6InR1cmJvbWVkaWEtYXV0aCtqd3QiLCJraWQiOiJhY3RpdmUtMjAyNi0wNyJ9."
+            "eyJpc3MiOiJ0dXJib21lZGlhLXRlc3QiLCJzdWIiOiJyb29tLXNlcnZpY2UiLCJhdWQiOiJ0dXJib21lZGlhLXNmdS1tZWRpYSIsInNjb3BlIjoic2Z1Lm1lZGlhLnB1Ymxpc2giLCJyb29tX2lkIjoicm9vbS1hIiwicGFydGljaXBhbnRfaWQiOiJhbGljZSIsImlhdCI6MjAwMDAwMDAwMCwiZXhwIjoyMDAwMDAwMTIwfQ."
+            "yQ4pYGCdVfnIUBCBVREkneon2DuqYe3TysJgQM7zdoM";
+        char *token = issue_token(
+            &active_config, "sfu.media.publish", "room-a", "alice",
+            TEST_NOW_SECONDS, TEST_NOW_SECONDS + 120);
+        check_not_null(token);
+        check_equal(strcmp(token, expected), 0);
+        char *authorization = authorization_for(expected);
+        check_equal(authorize(authorization, &active_config,
+                              "sfu.media.publish", "room-a", "alice",
+                              TEST_NOW_SECONDS + 1),
+                    TURBO_MEDIA_AUTH_SIGNED_TOKEN);
+        free(authorization);
+        free(token);
+    };
     it("test_auth_token_accepts_exact_scope_and_resource") { test_auth_token_accepts_exact_scope_and_resource(); };
     it("test_auth_token_tenant_binding_is_exact_and_unbound_is_not_global") { test_auth_token_tenant_binding_is_exact_and_unbound_is_not_global(); };
     it("test_auth_token_rejects_invalid_or_inconsistent_tenant_identity") { test_auth_token_rejects_invalid_or_inconsistent_tenant_identity(); };

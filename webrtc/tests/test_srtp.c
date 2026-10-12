@@ -307,3 +307,234 @@ spec("test_srtp") {
   it("test_srtp_shutdown_waits_for_active_sessions") { test_srtp_shutdown_waits_for_active_sessions(); };
   it("test_srtp_rejects_oversized_and_insufficient_buffers") { test_srtp_rejects_oversized_and_insufficient_buffers(); };
 }
+
+/* These tests also exercise libSRTP's cipher/auth known-answer self-tests via
+ * session initialization. Packet round trips alone cannot establish that a
+ * replacement provider preserves the standard cipher output. */
+static const uint16_t provider_profiles[] = {
+    SRTP_PROFILE_AES128_CM_SHA1_80,
+    SRTP_PROFILE_AES128_CM_SHA1_32,
+    SRTP_PROFILE_AEAD_AES_128_GCM,
+    SRTP_PROFILE_AEAD_AES_256_GCM
+};
+static srtp_session_t *provider_sender, *provider_receiver, *provider_wrong_key;
+
+static void provider_cleanup(void) {
+  srtp_session_destroy(provider_wrong_key);
+  srtp_session_destroy(provider_receiver);
+  srtp_session_destroy(provider_sender);
+  provider_wrong_key = provider_receiver = provider_sender = NULL;
+}
+
+static void provider_setup(uint16_t profile, int client_sender) {
+  srtp_keying_material_t keys;
+  fill_keying_material(&keys);
+  keys.key_len = profile == SRTP_PROFILE_AEAD_AES_256_GCM ? 32 : 16;
+  keys.salt_len = profile == SRTP_PROFILE_AEAD_AES_128_GCM ||
+                  profile == SRTP_PROFILE_AEAD_AES_256_GCM ? 12 : 14;
+  for (size_t i = 0; i < keys.key_len; ++i) {
+    keys.client_key[i] = (uint8_t)(0x10 + i);
+    keys.server_key[i] = (uint8_t)(0x80 + i);
+  }
+  srtp_session_config_t config = {
+      .is_sender = 1, .is_dtls_client = client_sender,
+      .profile = profile, .keys = &keys
+  };
+  provider_sender = srtp_session_create(&config);
+  check_not_null(provider_sender);
+  config.is_sender = 0;
+  config.is_dtls_client = !client_sender;
+  provider_receiver = srtp_session_create(&config);
+  check_not_null(provider_receiver);
+  keys.client_key[0] ^= 1;
+  keys.server_key[0] ^= 1;
+  provider_wrong_key = srtp_session_create(&config);
+  check_not_null(provider_wrong_key);
+}
+
+spec("SRTP crypto provider compatibility") {
+  before_each() {
+    provider_sender = provider_receiver = provider_wrong_key = NULL;
+  }
+  after_each() { provider_cleanup(); }
+
+  it("requires the profile's exact key and salt lengths before creating a session") {
+    for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
+      srtp_keying_material_t keys;
+      fill_keying_material(&keys);
+      const size_t key_length = provider_profiles[p] == SRTP_PROFILE_AEAD_AES_256_GCM ? 32 : 16;
+      const size_t salt_length = p < 2 ? 14 : 12;
+      const size_t invalid_lengths[][2] = {
+          {0, salt_length}, {key_length, 0},
+          {key_length - 1, salt_length}, {key_length + 1, salt_length},
+          {key_length, salt_length - 1}, {key_length, salt_length + 1},
+          /* Equal combined sizes must not permit a different key/salt split. */
+          {key_length - 1, salt_length + 1}, {key_length + 1, salt_length - 1},
+          {SIZE_MAX, salt_length}, {key_length, SIZE_MAX}
+      };
+      srtp_session_config_t config = {
+          .is_sender = 1, .is_dtls_client = 1,
+          .profile = provider_profiles[p], .keys = &keys
+      };
+      for (size_t i = 0; i < sizeof(invalid_lengths) / sizeof(invalid_lengths[0]); ++i) {
+        keys.key_len = invalid_lengths[i][0];
+        keys.salt_len = invalid_lengths[i][1];
+        srtp_keying_material_t original;
+        memcpy(&original, &keys, sizeof(original));
+        provider_sender = srtp_session_create(&config);
+        check_null(provider_sender);
+        check_equal(memcmp(&keys, &original, sizeof(keys)), 0);
+      }
+      keys.key_len = key_length;
+      keys.salt_len = salt_length;
+      provider_sender = srtp_session_create(&config);
+      check_not_null(provider_sender);
+      provider_cleanup();
+      config.profile = UINT16_MAX;
+      provider_sender = srtp_session_create(&config);
+      check_null(provider_sender);
+    }
+  }
+
+  it("checks exact RTP and SRTCP trailer capacity before changing the packet") {
+    static const size_t rtp_trailers[] = {10, 4, 16, 16};
+    static const size_t rtcp_trailers[] = {14, 14, 20, 20};
+    for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
+      for (int rtcp = 0; rtcp < 2; ++rtcp) {
+        /* Storage is deliberately larger than the declared capacity. These
+         * assertions check rejection and immutability without an out-of-bounds write. */
+        uint8_t packet[256] = {0}, original[256];
+        provider_setup(provider_profiles[p], 1);
+        size_t length = rtcp ? build_test_rtcp_packet(packet, sizeof(packet))
+                            : build_test_rtp_packet(packet, sizeof(packet), 1, 90000, 0x12345678);
+        size_t original_length = length;
+        size_t trailer = rtcp ? rtcp_trailers[p] : rtp_trailers[p];
+        check_less_equal(trailer, (size_t)SRTP_MAX_TRAILER_LEN + (rtcp ? 4 : 0));
+        memcpy(original, packet, sizeof(packet));
+        for (size_t available = 0; available < trailer; ++available) {
+          check_equal(rtcp ? turbo_srtcp_protect(provider_sender, packet, &length, length + available)
+                           : turbo_srtp_protect(provider_sender, packet, &length, length + available), -1);
+          check_equal(length, original_length);
+          check_equal(memcmp(packet, original, sizeof(packet)), 0);
+        }
+        check_equal(rtcp ? turbo_srtcp_protect(provider_sender, packet, &length, length + trailer)
+                         : turbo_srtp_protect(provider_sender, packet, &length, length + trailer), 0);
+        check_equal(length, original_length + trailer);
+        check_equal(rtcp ? turbo_srtcp_unprotect(provider_receiver, packet, &length)
+                         : turbo_srtp_unprotect(provider_receiver, packet, &length), 0);
+        check_equal(length, original_length);
+        check_equal(memcmp(packet, original, length), 0);
+
+        length = (size_t)INT_MAX - trailer + 1;
+        size_t rejected_length = length;
+        check_equal(rtcp ? turbo_srtcp_protect(provider_sender, packet, &length, SIZE_MAX)
+                         : turbo_srtp_protect(provider_sender, packet, &length, SIZE_MAX), -1);
+        check_equal(length, rejected_length);
+        provider_cleanup();
+      }
+    }
+  }
+
+  it("preserves RTP bytes for every profile and both DTLS key directions") {
+    for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
+      for (int client = 0; client < 2; ++client) {
+        uint8_t packet[256], original[256];
+        provider_setup(provider_profiles[p], client);
+        for (uint16_t seq = 1; seq <= 3; ++seq) {
+          size_t length = build_test_rtp_packet(packet, sizeof(packet), seq, 90000, 0x12345678);
+          size_t original_length = length;
+          memcpy(original, packet, length);
+          check_equal(turbo_srtp_protect(provider_sender, packet, &length, sizeof(packet)), 0);
+          check_equal(turbo_srtp_unprotect(provider_receiver, packet, &length), 0);
+          check_equal(length, original_length);
+          check_equal(memcmp(packet, original, length), 0);
+        }
+        provider_cleanup();
+      }
+    }
+  }
+
+  it("preserves SRTCP bytes and successive AAD contributions for every profile") {
+    for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
+      for (int client = 0; client < 2; ++client) {
+        uint8_t packet[256], original[256];
+        provider_setup(provider_profiles[p], client);
+        for (int repeat = 0; repeat < 3; ++repeat) {
+          size_t length = build_test_rtcp_packet(packet, sizeof(packet));
+          size_t original_length = length;
+          memcpy(original, packet, length);
+          check_equal(turbo_srtcp_protect(provider_sender, packet, &length, sizeof(packet)), 0);
+          check_equal(turbo_srtcp_unprotect(provider_receiver, packet, &length), 0);
+          check_equal(length, original_length);
+          check_equal(memcmp(packet, original, length), 0);
+        }
+        provider_cleanup();
+      }
+    }
+  }
+
+  it("authenticates payload-free SRTCP receiver reports with GCM in both directions") {
+    /* RFC 3550 Receiver Report, RC=0, PT=201, length=1 (eight bytes).
+     * There is no encrypted RTCP payload after the unencrypted header/SSRC.
+     * libSRTP must still generate and verify the GCM tag and SRTCP index.
+     */
+    static const uint8_t report[8] = {
+        0x80, 201, 0x00, 0x01, 0x12, 0x34, 0x56, 0x78
+    };
+    static const uint16_t profiles[] = {
+        SRTP_PROFILE_AEAD_AES_128_GCM,
+        SRTP_PROFILE_AEAD_AES_256_GCM
+    };
+    for (size_t p = 0; p < sizeof(profiles) / sizeof(profiles[0]); ++p) {
+      for (int client = 0; client < 2; ++client) {
+        uint8_t packet[64] = {0}, damaged[64] = {0};
+        size_t length = sizeof(report);
+        provider_setup(profiles[p], client);
+        memcpy(packet, report, sizeof(report));
+        check_equal(turbo_srtcp_protect(provider_sender, packet, &length, sizeof(packet)), 0);
+        check_equal(length, sizeof(report) + 20u);
+        memcpy(damaged, packet, length);
+        damaged[length - 5] ^= 1; /* GCM tag: followed by the 4-byte index. */
+        size_t bad_length = length;
+        check_not_equal(turbo_srtcp_unprotect(provider_receiver, damaged, &bad_length), 0);
+        check_equal(turbo_srtcp_unprotect(provider_receiver, packet, &length), 0);
+        check_equal(length, sizeof(report));
+        check_equal(memcmp(packet, report, sizeof(report)), 0);
+        provider_cleanup();
+      }
+    }
+  }
+
+  it("rejects wrong keys and damaged tags without consuming valid packet replay state") {
+    for (size_t p = 0; p < sizeof(provider_profiles) / sizeof(provider_profiles[0]); ++p) {
+      for (int rtcp = 0; rtcp < 2; ++rtcp) {
+        uint8_t packet[256], original[256], damaged[256];
+        provider_setup(provider_profiles[p], 1);
+        size_t length = rtcp ? build_test_rtcp_packet(packet, sizeof(packet))
+                            : build_test_rtp_packet(packet, sizeof(packet), 1, 90000, 0x12345678);
+        size_t original_length = length;
+        memcpy(original, packet, length);
+        check_equal(rtcp ? turbo_srtcp_protect(provider_sender, packet, &length, sizeof(packet))
+                         : turbo_srtp_protect(provider_sender, packet, &length, sizeof(packet)), 0);
+        size_t rejected_length = length;
+        memcpy(damaged, packet, length);
+        check_not_equal(rtcp ? turbo_srtcp_unprotect(provider_wrong_key, damaged, &rejected_length)
+                             : turbo_srtp_unprotect(provider_wrong_key, damaged, &rejected_length), 0);
+        rejected_length = length;
+        memcpy(damaged, packet, length);
+        /* For AEAD SRTCP the four-byte index follows the authentication tag. */
+        size_t tag_end = length;
+        if (rtcp && (provider_profiles[p] == SRTP_PROFILE_AEAD_AES_128_GCM ||
+                     provider_profiles[p] == SRTP_PROFILE_AEAD_AES_256_GCM)) tag_end -= 4;
+        damaged[tag_end - 1] ^= 1;
+        check_not_equal(rtcp ? turbo_srtcp_unprotect(provider_receiver, damaged, &rejected_length)
+                             : turbo_srtp_unprotect(provider_receiver, damaged, &rejected_length), 0);
+        check_equal(rtcp ? turbo_srtcp_unprotect(provider_receiver, packet, &length)
+                         : turbo_srtp_unprotect(provider_receiver, packet, &length), 0);
+        check_equal(length, original_length);
+        check_equal(memcmp(packet, original, length), 0);
+        provider_cleanup();
+      }
+    }
+  }
+}

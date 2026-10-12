@@ -112,6 +112,7 @@ foreach(_turbomedia_package IN ITEMS Salts SaltsUtils)
 endforeach()
 find_package(Salts 2.3 CONFIG REQUIRED
              PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+# SaltsNet/CHttp link Salts::Crypto; its installed component owns provider lookup.
 find_package(SaltsUtils 4.3 CONFIG REQUIRED COMPONENTS Crypto
              PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
@@ -137,7 +138,7 @@ if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
                PATHS "$ENV{RULES_FORGE_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 endif()
  
-find_package(OpenSSL REQUIRED)
+find_package(GmSSL CONFIG REQUIRED)
 find_package(libSRTP CONFIG REQUIRED)
 find_package(unofficial-usrsctp CONFIG REQUIRED)
 find_package(roaring CONFIG REQUIRED)

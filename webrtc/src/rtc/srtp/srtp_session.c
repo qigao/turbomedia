@@ -24,6 +24,8 @@ struct srtp_session_s {
   int is_sender;
   int is_dtls_client;
   uint16_t profile;
+  uint32_t rtp_trailer_len;
+  uint32_t rtcp_trailer_len;
   uint8_t rtp_master_key[SRTP_MAX_KEY_LEN + SRTP_MAX_SALT_LEN];
   uint8_t srtcp_send_master_key[SRTP_MAX_KEY_LEN + SRTP_MAX_SALT_LEN];
   uint8_t srtcp_recv_master_key[SRTP_MAX_KEY_LEN + SRTP_MAX_SALT_LEN];
@@ -164,6 +166,13 @@ void srtp_lib_shutdown(void) {
 srtp_session_t *srtp_session_create(const srtp_session_config_t *config) {
   if (!config || !config->keys) return NULL;
 
+  srtp_policy_t policy;
+  if (srtp_init_policy_for_profile(config->profile, &policy) != 0 ||
+      config->keys->key_len != srtp_profile_get_master_key_length((srtp_profile_t)config->profile) ||
+      config->keys->salt_len != srtp_profile_get_master_salt_length((srtp_profile_t)config->profile)) {
+    return NULL;
+  }
+
   if (srtp_session_acquire() != 0) return NULL;
 
   srtp_session_t *session = (srtp_session_t *)calloc(1, sizeof(srtp_session_t));
@@ -182,13 +191,6 @@ srtp_session_t *srtp_session_create(const srtp_session_config_t *config) {
                                 : 0;
   int rtcp_send_uses_client_key = config->is_dtls_client ? 1 : 0;
   int rtcp_recv_uses_client_key = rtcp_send_uses_client_key ? 0 : 1;
-  srtp_policy_t policy;
-  if (srtp_init_policy_for_profile(config->profile, &policy) != 0) {
-    free(session);
-    srtp_session_release();
-    return NULL;
-  }
-
   /* Create SRTP context */
   if (srtp_build_master_key(config->keys, rtp_uses_client_key, session->rtp_master_key,
                             sizeof(session->rtp_master_key)) != 0) {
@@ -247,6 +249,16 @@ srtp_session_t *srtp_session_create(const srtp_session_config_t *config) {
     return NULL;
   }
 
+  /* Policies never change after creation. Query the provider once, including
+   * the SRTCP index, before publishing this session to packet callers. */
+  if (srtp_get_protect_trailer_length(session->srtp_ctx, 0, 0,
+                                      &session->rtp_trailer_len) != srtp_err_status_ok ||
+      srtp_get_protect_rtcp_trailer_length(session->srtcp_send_ctx, 0, 0,
+                                           &session->rtcp_trailer_len) != srtp_err_status_ok) {
+    srtp_session_destroy(session);
+    return NULL;
+  }
+
   return session;
 }
 
@@ -269,8 +281,9 @@ void srtp_session_destroy(srtp_session_t *session) {
 
 int turbo_srtp_protect(srtp_session_t *session, uint8_t *packet, size_t *len, size_t max_len) {
   if (!session || !packet || !len) return -1;
-  if (*len > (size_t)INT_MAX || max_len < *len ||
-      max_len - *len < SRTP_MAX_TRAILER_LEN) {
+  if (session->rtp_trailer_len > INT_MAX ||
+      *len > (size_t)INT_MAX - session->rtp_trailer_len || max_len < *len ||
+      max_len - *len < session->rtp_trailer_len) {
     return -1;
   }
 
@@ -300,9 +313,10 @@ int turbo_srtp_unprotect(srtp_session_t *session, uint8_t *packet, size_t *len) 
 
 int turbo_srtcp_protect(srtp_session_t *session, uint8_t *packet, size_t *len, size_t max_len) {
   if (!session || !packet || !len) return -1;
-  if (*len > (size_t)INT_MAX || max_len < *len ||
-      max_len - *len < SRTP_MAX_TRAILER_LEN + 4) {
-    return -1; /* RTCP has extra index */
+  if (session->rtcp_trailer_len > INT_MAX ||
+      *len > (size_t)INT_MAX - session->rtcp_trailer_len || max_len < *len ||
+      max_len - *len < session->rtcp_trailer_len) {
+    return -1;
   }
 
   int pkt_len = (int)*len;

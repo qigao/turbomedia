@@ -21,7 +21,7 @@ extern "C" {
 #define SRTP_MAX_KEY_LEN        32
 #define SRTP_MAX_SALT_LEN       14
 #define SRTP_AUTH_TAG_LEN       10      /* HMAC-SHA1-80 */
-#define SRTP_MAX_TRAILER_LEN    (SRTP_AUTH_TAG_LEN + 4)  /* Tag + potential MKI */
+#define SRTP_MAX_TRAILER_LEN    16      /* Largest supported RTP tag (GCM); no MKI */
 
 /* SRTP Profiles (RFC 5764) */
 #define SRTP_PROFILE_AES128_CM_SHA1_80      0x0001
@@ -54,19 +54,6 @@ typedef struct {
  * SRTP profile negotiation label for DTLS extension
  */
 #define DTLS_SRTP_PROFILE_LABEL "EXTRACTOR-dtls_srtp"
-
-/**
- * Derive SRTP keys from DTLS session
- * Called after DTLS handshake completes
- *
- * @param ssl           BoringSSL SSL pointer
- * @param keys          Output keying material
- * @param profile       Negotiated SRTP profile
- * @return              0 on success, -1 on error
- */
-int srtp_derive_keys_from_dtls(void *ssl,
-                               srtp_keying_material_t *keys,
-                               uint16_t profile);
 
 /**
  * Get SRTP key length for profile

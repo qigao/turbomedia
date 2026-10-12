@@ -15,7 +15,7 @@
 #include <salts/clock.h>
 #include <salts/error_codes.h>
 #include <salts/thread.h>
-#include <openssl/evp.h>
+#include <cmeta_crypto.h>
 
 #include <ctype.h>
 #include <limits.h>
@@ -2434,7 +2434,6 @@ static int turbo_rtsp_client_auth_configured(const turbo_rtsp_client_t *client) 
 
 static int turbo_rtsp_md5_hex(const char *value, char hex[TURBO_RTSP_MD5_HEX_LEN + 1]) {
     uint8_t digest[TURBO_RTSP_MD5_DIGEST_LEN];
-    unsigned int digest_len = 0;
     static const char digits[] = "0123456789abcdef";
     size_t i = 0;
 
@@ -2442,14 +2441,7 @@ static int turbo_rtsp_md5_hex(const char *value, char hex[TURBO_RTSP_MD5_HEX_LEN
         return -1;
     }
 
-    if (EVP_Digest(
-            value,
-            strlen(value),
-            digest,
-            &digest_len,
-            EVP_md5(),
-            NULL) != 1 ||
-        digest_len != TURBO_RTSP_MD5_DIGEST_LEN) {
+    if (cmeta_md5(value, strlen(value), digest) != SALTS_OK) {
         return -1;
     }
 

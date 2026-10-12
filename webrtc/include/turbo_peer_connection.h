@@ -58,7 +58,9 @@ TURBO_MEDIA_API turbo_peer_connection_t *turbo_peer_connection_create(
 
 
 /**
- * Destroy PeerConnection
+ * Destroy PeerConnection after stopping application poll/control/media calls.
+ * Waits for in-flight internal callbacks before releasing their dependencies.
+ * Must not be called from this PeerConnection's callbacks.
  */
 TURBO_MEDIA_API void turbo_peer_connection_destroy(turbo_peer_connection_t *pc);
 

@@ -28,7 +28,7 @@ target_include_directories(
   turbo_media_auth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/auth)
 target_link_libraries(
   turbo_media_auth
-  PRIVATE Salts::JsonParser OpenSSL::Crypto Salts::Core)
+  PRIVATE Salts::JsonParser Salts::Core)
 set_target_properties(turbo_media_auth PROPERTIES FOLDER "turbomedia/components")
 
 add_library(
@@ -81,7 +81,9 @@ target_link_libraries(turbo_media_sdp PRIVATE Salts::Core)
 
 set(TURBO_MEDIA_DATACHANNEL_SOURCES
     src/turbo_datachannel.c
-    src/dc_certificate.cpp
+    src/dc_identity.cpp
+    src/gmssl_dtls.c
+    src/dc_certificate_gmssl.cpp
     src/turbo_datachannel_errors.c
     src/turbo_dc_msg.c
     src/dcep_protocol.c
@@ -106,8 +108,7 @@ target_link_libraries(
           Salts::Core
           Salts::CSTL
           unofficial::usrsctp::usrsctp
-          OpenSSL::SSL
-          OpenSSL::Crypto
+          GmSSL::GmSSL
           roaring::roaring)
 
 if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
@@ -187,8 +188,6 @@ target_link_libraries(
           Salts::CNet
           Salts::Core
           Salts::CSTL
-          OpenSSL::SSL
-          OpenSSL::Crypto
           libSRTP::srtp2)
 target_compile_definitions(turbo_media_rtc PUBLIC TURBO_MEDIA_HAS_RTC)
 target_link_libraries(turbo_media_rtc PRIVATE Salts::Capture)

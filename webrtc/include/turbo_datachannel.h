@@ -8,7 +8,7 @@
  *       ↓
  *   SCTP (usrsctp) - reliable/unreliable messaging
  *       ↓
- *   DTLS (BoringSSL) - encryption
+ *   DTLS 1.2 (GmSSL primitives) - encryption
  *       ↓
  *   Transport: CNet (UDP/TCP/KCP) or SaltsNet ICE (NAT traversal)
  *
@@ -25,6 +25,10 @@
 #include <turbo_export.h>
 #include <stdint.h>
 #include <stddef.h>
+
+/* Local receive limit advertised in SDP. Applications must also respect the
+ * remote endpoint's advertised limit when sending. */
+#define TURBO_DC_MAX_MESSAGE_SIZE 262144u
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,12 +80,18 @@ typedef struct {
 
 /* Context configuration */
 typedef struct {
-    const char *cert_pem;     /* Optional: PEM certificate for DTLS */
-    const char *key_pem;      /* Optional: PEM private key for DTLS */
+    const char *cert_pem;     /* Optional PEM certificate file; supply with key_pem.
+                              * Identity: P-256 ECDSA or RSA >= 2048 bits. */
+    const char *key_pem;      /* Unencrypted PKCS#8 PRIVATE KEY PEM matching cert_pem.
+                              * Each decoded PEM object is limited to 16 KiB.
+                              * SEC1, PKCS#1 and encrypted keys are rejected. */
     int is_server;            /* TRUE if this is the server/answerer side */
     turbo_dc_transport_t transport;  /* Transport type (default = UDP) */
-    uint16_t sctp_mtu;        /* SCTP path MTU (0 = default 1188) */
-    uint16_t dtls_mtu;        /* DTLS MTU (0 = default 1280) */
+    uint16_t sctp_mtu;        /* usrsctp AF_CONN MTU excluding the 12-byte SCTP header.
+                              * 0 = default 1188; otherwise >= 512 when SCTP enabled.
+                              * SCTP MTU + 12 must fit min(dtls_mtu - 37, 16384).
+                              * Incompatible MTUs fail context creation, without clamping. */
+    uint16_t dtls_mtu;        /* DTLS datagram MTU, >= 256 (0 = default 1280) */
     int disable_sctp;         /* TRUE for DTLS-only transport without SCTP/DataChannel */
 } turbo_dc_config_t;
 
@@ -110,7 +120,11 @@ typedef void (*turbo_dc_open_cb)(
     void *user_data
 );
 
-/* Called when message received on data channel */
+/* Called once per complete message, never for an SCTP partial delivery. Data is
+ * borrowed only for the callback duration; len is zero for empty messages.
+ * Receive limit: TURBO_DC_MAX_MESSAGE_SIZE. A peer admits eight simultaneous
+ * reassembly buffers (including callbacks holding completed buffers); excess
+ * size/capacity or allocation failure fails the peer with SCTP_RECEIVE. */
 typedef void (*turbo_dc_message_cb)(
     turbo_dc_channel_t *channel,
     const void *data,
@@ -210,9 +224,12 @@ TURBO_MEDIA_API void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_erro
  * @param fingerprint Hex fingerprint string
  *
  * Only SHA-256 fingerprints in colon-separated hexadecimal form are accepted.
+ * Set before starting DTLS. Once started, only the identical pin may be reapplied;
+ * replacing the remote identity requires a new peer association.
  *
  * @return 0 on success, -1 for invalid arguments, -2 for an unsupported hash,
- *         -3 for a malformed fingerprint, or -4 on allocation failure
+ *         -3 for a malformed fingerprint, -4 on allocation failure, or -5 when
+ *         changing the pin after DTLS starts or stops
  */
 TURBO_MEDIA_API int turbo_dc_peer_set_remote_fingerprint(
     turbo_dc_peer_t *peer,
@@ -318,6 +335,7 @@ TURBO_MEDIA_API void turbo_dc_peer_destroy(turbo_dc_peer_t *peer);
 
 /**
  * Get negotiated SRTP keys from DTLS session
+ * The handshake and remote fingerprint verification must both have succeeded.
  *
  * @param peer      Peer handle
  * @param material  Output buffer for keys
@@ -381,8 +399,9 @@ TURBO_MEDIA_API void *turbo_dc_channel_get_user_data(turbo_dc_channel_t *channel
  * Send data on channel
  *
  * @param channel Channel handle
- * @param data Data to send
- * @param len Data length
+ * @param data Data to send; must be non-NULL even when len is zero.
+ *             Borrowed for the duration of this call.
+ * @param len Data length; zero sends an empty text or binary message.
  * @param is_binary TRUE for binary, FALSE for text
  * @return 0 on success, negative on error
  */

@@ -12,3 +12,21 @@ The components below retain their upstream license terms.
 
 Dependencies downloaded by vcpkg or another package manager are not relicensed
 by TurboMedia and remain governed by their respective upstream licenses.
+
+GmSSL is a static provider dependency of the installed SaltsUtils Crypto
+component used by SaltsNet/CHttp. It is restored through the existing vcpkg
+manifest and shared cache, not vendored here. [GmSSL](https://github.com/guanzhi/GmSSL)
+uses Apache-2.0; the shared [GmSSL port](https://github.com/qigao/vcpkg-cache/tree/master/ports/gmssl)
+records its source revision, local patches and packaged license. The current
+provider recipe is 3.2.0 port revision 9.
+DataChannel also uses this package for ephemeral P-256 X.509 identities and the
+private DTLS-SRTP engine and native PKCS#8 PEM loading. TurboMedia no longer
+depends on BoringSSL, including in its formal test targets. The public test-only
+RSA identity in `webrtc/tests/dtls_rsa_fixture.h` was generated locally with .NET
+RSA-2048/SHA-256; it is test data, never a deployment identity.
+
+The libSRTP 2.8.0 overlay also uses that GmSSL provider for AES-CTR, AES-GCM and
+HMAC-SHA1. [libSRTP](https://github.com/cisco/libsrtp) retains its BSD-3-Clause
+license, installed by the port; the project-maintained adapter and patch history
+are recorded in `vcpkg-overlays/libsrtp/README.md`. The upstream cipher/auth
+known-answer vectors remain part of libSRTP and retain their original notices.

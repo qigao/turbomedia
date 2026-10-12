@@ -2,7 +2,7 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 80a0554..acdc7b1 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -84,38 +84,6 @@ set(ENABLE_DEBUG_LOGGING OFF CACHE BOOL "Enable debug logging in all modules")
+@@ -84,38 +84,5 @@ set(ENABLE_DEBUG_LOGGING OFF CACHE BOOL "Enable debug logging in all modules")
 -set(ENABLE_OPENSSL OFF CACHE BOOL "Enable OpenSSL crypto engine")
 -set(ENABLE_MBEDTLS OFF CACHE BOOL "Enable MbedTLS crypto engine")
 -set(ENABLE_NSS OFF CACHE BOOL "Enable NSS crypto engine")
@@ -17,7 +17,7 @@ index 80a0554..acdc7b1 100644
 -  if(ENABLE_NSS OR ENABLE_MBEDTLS)
 -    message(FATAL_ERROR "ssl conflict. can not enable openssl and mbedtls or nss simultaneously.")
 -  endif()
--  find_package(OpenSSL REQUIRED)
+-  find_package(OpenSSL 1.1.0 REQUIRED)
 -  set(OPENSSL ${ENABLE_OPENSSL} CACHE BOOL INTERNAL)
 -  set(GCM ${ENABLE_OPENSSL} CACHE BOOL INTERNAL)
 -endif()
@@ -40,12 +40,11 @@ index 80a0554..acdc7b1 100644
 -  set(GCM ${ENABLE_NSS} CACHE BOOL INTERNAL)
 -endif()
 +set(USE_EXTERNAL_CRYPTO TRUE)
-+find_package(OpenSSL REQUIRED)
-+set(OPENSSL ON CACHE BOOL INTERNAL)
++find_package(GmSSL CONFIG REQUIRED)
 +set(GCM ON CACHE BOOL INTERNAL)
  
  set(CONFIG_FILE_DIR ${CMAKE_CURRENT_BINARY_DIR})
-@@ -147,26 +115,9 @@ set(CIPHERS_SOURCES_C
+@@ -147,26 +115,8 @@ set(CIPHERS_SOURCES_C
    crypto/cipher/null_cipher.c
  )
  
@@ -71,12 +70,11 @@ index 80a0554..acdc7b1 100644
 -  )
 -endif()
 +list(APPEND CIPHERS_SOURCES_C
-+  crypto/cipher/aes_icm_ossl.c
-+  crypto/cipher/aes_gcm_ossl.c
++  crypto/cipher/gmssl_crypto.c
 +)
  
  set(HASHES_SOURCES_C
-@@ -176,23 +127,6 @@ set(HASHES_SOURCES_C
+@@ -176,23 +127,5 @@ set(HASHES_SOURCES_C
    crypto/hash/null_auth.c
  )
  
@@ -98,10 +96,9 @@ index 80a0554..acdc7b1 100644
 -    crypto/hash/sha1.c
 -  )
 -endif()
-+list(APPEND HASHES_SOURCES_C crypto/hash/hmac_ossl.c)
  
  set(KERNEL_SOURCES_C
-@@ -286,13 +222,5 @@ target_include_directories(srtp2 PUBLIC
+@@ -286,13 +222,4 @@ target_include_directories(srtp2 PUBLIC
    $<INSTALL_INTERFACE:include>
  )
 -if(ENABLE_OPENSSL)
@@ -114,10 +111,9 @@ index 80a0554..acdc7b1 100644
 -  target_include_directories(srtp2 PRIVATE ${NSS_INCLUDE_DIRS})
 -  target_link_libraries(srtp2 ${NSS_LIBRARIES})
 -endif()
-+target_include_directories(srtp2 PRIVATE ${OPENSSL_INCLUDE_DIR})
-+target_link_libraries(srtp2 PRIVATE OpenSSL::Crypto)
++target_link_libraries(srtp2 PRIVATE GmSSL::GmSSL)
  if(WIN32)
-@@ -447,10 +375,4 @@ if(LIBSRTP_TEST_APPS)
+@@ -447,10 +375,3 @@ if(LIBSRTP_TEST_APPS)
              AS_ERRORS
              ${ENABLE_WARNINGS_AS_ERRORS})
 -    if(ENABLE_OPENSSL)
@@ -127,7 +123,6 @@ index 80a0554..acdc7b1 100644
 -    elseif(ENABLE_NSS)
 -      target_include_directories(test_srtp PRIVATE ${NSS_INCLUDE_DIRS})
 -    endif()
-+    target_include_directories(test_srtp PRIVATE ${OPENSSL_INCLUDE_DIR})
      target_link_libraries(test_srtp srtp2)
 diff --git a/Config.cmake.in b/Config.cmake.in
 index c9ce5a7..dfc6b12 100644
@@ -141,6 +136,14 @@ index c9ce5a7..dfc6b12 100644
 -    find_dependency(OpenSSL)
 -endif()
 +include(CMakeFindDependencyMacro)
-+find_dependency(OpenSSL)
++find_dependency(GmSSL CONFIG)
  
  include ( "${CMAKE_CURRENT_LIST_DIR}/libSRTPTargets.cmake" )
+diff --git a/crypto/include/cipher_types.h b/crypto/include/cipher_types.h
+--- a/crypto/include/cipher_types.h
++++ b/crypto/include/cipher_types.h
+@@ -74,3 +74,3 @@
+-#if defined(OPENSSL) || defined(MBEDTLS) || defined(NSS)
++#ifdef GCM
+ extern srtp_debug_module_t srtp_mod_aes_gcm;
+ #endif
