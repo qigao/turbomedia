@@ -207,7 +207,7 @@ static tm_sg_program *graph(void) {
     assert(tm_sg_compile(nodes,4u,edges,3u,NULL,&out,NULL)==TM_SG_OK);
     return out;
 }
-static void run_graph(fixture *f) {
+static void run_graph(fixture *f,unsigned stop_early) {
     tm_ffd_decoder *decoder=NULL;
     tm_ffd_config_v1 cfg=config();
     provider_source source={0};
@@ -225,7 +225,7 @@ static void run_graph(fixture *f) {
     unsigned i,step,calls;
     assert(tm_ffd_create(&cfg,&decoder)==TM_FF_OK);
     source.decoder=decoder;source.encoded=f;
-    fs.store_id=190194u;
+    fs.store_id=stop_early?190195u:190194u;
     fs.slot_capacity=2u;fs.max_frame_bytes=LUMA;
     fs.max_pins=8u;fs.max_leases=8u;fs.max_retained_bytes=2u*LUMA;
     assert(tm_fs_create(&fs,&store)==TM_FS_OK);
@@ -250,7 +250,36 @@ static void run_graph(fixture *f) {
     assert(source.seen==2u);
     assert(tm_ex_pump_source(exec)==TM_EX_EFULL);
     assert(source.source_calls==calls);
-    assert(tm_ex_pump_sink(exec,0u)==TM_EX_OK);
+    if(stop_early) {
+        uint8_t scratch[LUMA];
+        size_t bytes=1u;
+        int64_t pts=0;
+        uint64_t sent_before;
+        assert(!source.finished && source.next_input<f->count);
+        assert(tm_ffd_stats(decoder,&stats)==TM_FF_OK);
+        sent_before=stats.packets_sent;
+        assert(sent_before<f->count && stats.flush_sends==0u);
+        /* Owner Stop drops its pending frame and the two independent
+         * retaining Sink credits. NO additional Codec receive, packet
+         * submission or implicit NULL Flush may occur. */
+        assert(tm_ex_stop(exec)==TM_EX_OK);
+        assert(tm_ex_pump_source(exec)==TM_EX_EOS);
+        assert(tm_ex_discard_ready(exec,0u)==TM_EX_OK);
+        assert(tm_ex_discard_ready(exec,1u)==TM_EX_OK);
+        assert(tm_ffd_cancel(decoder)==TM_FF_OK);
+        assert(tm_ffd_next_luma(decoder,scratch,sizeof(scratch),
+                                &bytes,&pts)==TM_FF_ESTATE);
+        assert(bytes==0u && pts==INT64_MIN);
+        assert(tm_ffd_stats(decoder,&stats)==TM_FF_OK);
+        assert(stats.packets_sent==sent_before && stats.flush_sends==0u &&
+               stats.queued==0u && stats.cancelled==1u &&
+               stats.frames_decoded==2u);
+        assert(visits[0].seen==2u);
+        assert(visits[1].seen==0u && visits[2].seen==0u);
+        assert(tm_ex_stats(exec,&exstats)==TM_EX_OK);
+        assert(exstats.stopped==1u && exstats.delivered==0u);
+    } else {
+        assert(tm_ex_pump_sink(exec,0u)==TM_EX_OK);
     assert(tm_ex_pump_sink(exec,1u)==TM_EX_OK);
     for(step=0u;step<NFRAMES*5u;++step) {
         status=tm_ex_pump_source(exec);
@@ -274,6 +303,7 @@ static void run_graph(fixture *f) {
     assert(exstats.sourced==NFRAMES && exstats.processed==NFRAMES &&
            exstats.delivered==2u*NFRAMES &&
            exstats.submitted==NFRAMES && exstats.backpressure>=1u);
+    }
     assert(tm_ex_destroy(exec)==TM_EX_OK);
     assert(tm_fs_seal(store)==TM_FS_OK);
     assert(tm_fs_destroy(store)==TM_FS_OK);
@@ -315,7 +345,8 @@ int main(void) {
     fixture f={0};
     make_packets(&f);
     run_admission_cancel(&f);
-    run_graph(&f);
+    run_graph(&f,0u);
+    run_graph(&f,1u);
     destroy_packets(&f);
     puts("installed-style delayed MPEG-2 packet/frame Provider and graph: PASS");
     return 0;
