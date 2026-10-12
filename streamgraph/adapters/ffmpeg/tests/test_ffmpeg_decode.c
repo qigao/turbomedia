@@ -176,6 +176,7 @@ static void test_real_mjpeg_backpressure_flush(void) {
     tm_fs_store *s=store();
     tm_ex_owner *e;
     tm_ff_stats_v1 fs=TM_FF_STATS_V1_INIT;
+    tm_ff_codec_activity_v1 activity=TM_FF_CODEC_ACTIVITY_V1_INIT;
     tm_ex_stats_v1 es=TM_EX_STATS_V1_INIT;
     test_visit visits[4]={{0}};
     const uint8_t levels[]={48u,96u,160u};
@@ -220,8 +221,12 @@ static void test_real_mjpeg_backpressure_flush(void) {
     assert(tm_ex_pump_sink(e,0u)==TM_EX_OK);
     assert(tm_ex_pump_sink(e,1u)==TM_EX_OK);
 
+    assert(tm_ff_codec_activity(d,&activity)==TM_FF_OK);
+    assert(activity.in_call==0u && activity.packet_calls==3u && activity.flush_calls==0u);
     assert(tm_ff_finish(d)==TM_FF_OK);
     assert(tm_ex_pump_source(e)==TM_EX_EOS);
+    assert(tm_ff_codec_activity(d,&activity)==TM_FF_OK);
+    assert(activity.in_call==0u && activity.packet_calls==3u && activity.flush_calls==1u);
     assert(tm_ex_stats(e,&es)==TM_EX_OK);
     assert(es.sourced==3u && es.processed==3u &&
            es.submitted==3u && es.delivered==6u && es.backpressure>=3u);
