@@ -121,6 +121,15 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
     PUBLIC turbo_media_streamgraph
     PRIVATE PkgConfig::TM_SG_AVCODEC PkgConfig::TM_SG_AVUTIL)
   target_compile_definitions(turbo_media_streamgraph_ffmpeg PRIVATE SHARED_CXX)
+  # Installed desktop adapter must find the base StreamGraph library next to
+  # itself, including when loaded from an unrelated consumer build directory.
+  if(APPLE)
+    set_target_properties(turbo_media_streamgraph_ffmpeg PROPERTIES
+      INSTALL_RPATH "@loader_path")
+  elseif(UNIX)
+    set_target_properties(turbo_media_streamgraph_ffmpeg PROPERTIES
+      INSTALL_RPATH "$ORIGIN")
+  endif()
   if(_TM_SG_ISOLATED)
     set_target_properties(turbo_media_streamgraph_ffmpeg
       PROPERTIES EXPORT_NAME StreamGraphFFmpeg)
