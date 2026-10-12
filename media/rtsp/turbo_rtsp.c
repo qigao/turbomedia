@@ -9,6 +9,7 @@
 #include "disruptor.h"
 #include "platform.h"
 #include "turbo_cnet_send_internal.h"
+#include "turbo_network_port_internal.h"
 
 #include <http_client/http.h>
 #include <http_server/http.h>
@@ -3852,14 +3853,14 @@ static int turbo_rtsp_resolve_packet_peer(
         const struct sockaddr_in *address =
             (const struct sockaddr_in *)result->ai_addr;
         peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
-        peer->port = ntohs(address->sin_port);
+        peer->port = turbo_media_socket_port_host(&address->sin_port);
         memcpy(peer->address, &address->sin_addr, sizeof(address->sin_addr));
         *bind_host = "0.0.0.0";
     } else if (result->ai_family == AF_INET6) {
         const struct sockaddr_in6 *address =
             (const struct sockaddr_in6 *)result->ai_addr;
         peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
-        peer->port = ntohs(address->sin6_port);
+        peer->port = turbo_media_socket_port_host(&address->sin6_port);
         peer->scope_id = address->sin6_scope_id;
         memcpy(peer->address, &address->sin6_addr, sizeof(address->sin6_addr));
         *bind_host = "::";
