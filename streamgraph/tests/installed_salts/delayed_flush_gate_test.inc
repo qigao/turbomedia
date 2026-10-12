@@ -67,6 +67,35 @@ static void check_delayed_flush_under_scope(
                    terminal.provider_status==TM_FF_ESTATE);
             assert(tm_pc_settle(portal,taken)==TM_PC_OK);
             assert(tm_pc_take(portal,&taken,&terminal)!=TM_PC_OK);
+            /* No stale pixel may be taken after the original cancelled
+             * terminal; wrong ticket identity must also remain rejected. */
+            {
+                tm_test_delayed_take_request take={0};
+                tm_test_delayed_stats_request stats_request={0};
+                tm_ffd_stats_v1 codec_stats=TM_FFD_STATS_V1_INIT;
+                uint8_t pixels[LUMA];
+                size_t bytes=99u;
+                int64_t pts=99;
+                take.size=sizeof(take);
+                take.instance_id=instance.instance_id;
+                take.provider_generation=instance.provider_generation;
+                take.ticket=ticket;
+                take.luma=pixels;take.capacity=sizeof(pixels);
+                take.out_bytes=&bytes;take.out_pts=&pts;
+                assert(tm_test_provider_take_delayed(service,&take)==-2);
+                assert(bytes==0u && pts==INT64_MIN);
+                take.ticket.generation++;
+                assert(tm_test_provider_take_delayed(service,&take)==-2);
+                stats_request.size=sizeof(stats_request);
+                stats_request.instance_id=instance.instance_id;
+                stats_request.provider_generation=instance.provider_generation;
+                stats_request.out=&codec_stats;
+                assert(tm_test_provider_stats_delayed(service,&stats_request)==TM_FF_OK);
+                assert(codec_stats.cancelled==1u);
+                assert(codec_stats.queued==0u);
+                assert(codec_stats.frames_decoded<=1u);
+                assert(codec_stats.flush_sends==1u);
+            }
             cancelled=1u;
             break;
         }
