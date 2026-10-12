@@ -291,6 +291,9 @@ void sctp_global_cleanup(void);
 
 int sctp_session_init(turbo_dc_peer_t *peer);
 int sctp_start_association(turbo_dc_peer_t *peer);
+/* Native Stream Reset outcome: 0 submitted; +1 skipped because Socket
+ * teardown is terminal; -1 native call or live bounded-owner admission
+ * failed. The caller must not treat terminal refusal as a send error. */
 int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
 void sctp_receive_stop(turbo_dc_peer_t *peer);
 void sctp_receive_discard_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
