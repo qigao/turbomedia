@@ -65,6 +65,12 @@ TURBO_MEDIA_API tm_ex_source_result tm_ffa_owner_next_luma(
 TURBO_MEDIA_API tm_ff_status tm_ffa_owner_cancel(tm_ffa_decoder *decoder);
 TURBO_MEDIA_API tm_ff_status tm_ffa_stats(
     tm_ffa_decoder *decoder,tm_ffa_stats_v1 *out);
+/* Atomic call-site snapshot of the underlying FFmpeg source. Safe to query
+ * while a worker owns the decoder, provided its host-held lifecycle lease
+ * prevents destruction. An in_call observation alone is NOT evidence of
+ * deterministic overlap with third-party libavcodec instructions. */
+TURBO_MEDIA_API tm_ff_status tm_ffa_codec_activity(
+    tm_ffa_decoder *decoder,tm_ff_codec_activity_v1 *out);
 /* Exclusive lifecycle, after worker join AND portal terminal settlement.
  * Returns ESTATE while any worker callback/wake is active or a frame awaits
  * Owner acceptance; never silently discards a retaining frame. */
