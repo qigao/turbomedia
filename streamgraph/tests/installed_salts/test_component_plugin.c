@@ -125,6 +125,8 @@ typedef struct terminal_owner {
     uint32_t expected_outcome;
     int32_t expected_status;
     unsigned delivered;
+    unsigned reject_once;
+    unsigned rejections;
 } terminal_owner;
 
 static tm_ex_source_result unused_source(
@@ -154,6 +156,11 @@ static int accept_terminal(void *ctx,const tm_pc_result_v1 *terminal) {
     assert(terminal->completion_observed==1u);
     assert(tm_od_step_completion(o->dispatcher,&recursive)==TM_OD_EBUSY);
     ++o->delivered;
+    if (o->reject_once) {
+        o->reject_once=0u;
+        ++o->rejections;
+        return -1; /* External acceptance is ambiguous: retain the credit. */
+    }
     return 0; /* Downstream accepted exactly one terminal result. */
 }
 static void owner_init(terminal_owner *o,tm_pc_portal *portal,uint64_t store_id) {
@@ -241,6 +248,39 @@ static void settle_terminal(terminal_owner *o,uint64_t correlation,
     assert(tm_od_step_completion(o->dispatcher,&result)==TM_OD_EMPTY);
 }
 
+
+/* An ambiguous external result never gets an implicit retry. The real
+ * ComponentPlugin Scope stays live while the Media Owner's terminal credit
+ * remains TAKEN. Host reconciliation is explicit before Scope release. */
+static void reconcile_cancelled_terminal(
+    terminal_owner *o, salts_component_plugin_runtime *runtime,
+    salts_component_plugin_generation *generation,
+    cmeta_plugin_registry *registry, cmeta_plugin_ref plugin) {
+    tm_pc_result_v1 result=TM_PC_RESULT_V1_INIT;
+    o->expected_correlation=501u;
+    o->expected_outcome=TM_PC_CANCELLED;
+    o->expected_status=101;
+    o->expected_generation=101u;
+    o->reject_once=1u;
+    assert(tm_ho_seal(o->inbox)==TM_HO_OK);
+    assert(tm_od_step_completion(o->dispatcher,&result)==TM_OD_EDELIVERY);
+    assert(result.correlation==501u && result.outcome==TM_PC_CANCELLED);
+    assert(o->delivered==1u && o->rejections==1u);
+    assert(tm_od_pending_completion(o->dispatcher,&result)==TM_OD_OK);
+    assert(result.correlation==501u && result.provider_generation==101u);
+    assert(tm_od_step_completion(o->dispatcher,&result)==TM_OD_EBUSY);
+    assert(o->delivered==1u); /* No duplicated native effect. */
+    assert(tm_od_destroy(o->dispatcher)==TM_OD_EBUSY);
+    assert(salts_component_plugin_generation_drain(runtime,generation)
+           ==SALTS_COMPONENT_PLUGIN_BUSY);
+    assert(cmeta_plugin_registry_unload(registry,plugin)==CMETA_PLUGIN_BUSY);
+    /* The Host has explicitly reconciled the ambiguous downstream effect;
+     * settlement does not claim success or call the provider a second time. */
+    assert(tm_od_settle_pending_completion(o->dispatcher)==TM_OD_OK);
+    assert(tm_od_settle_pending_completion(o->dispatcher)==TM_OD_EMPTY);
+    assert(tm_od_pending_completion(o->dispatcher,&result)==TM_OD_EMPTY);
+    assert(o->delivered==1u);
+ }
 
 static void drain_plugin(cmeta_plugin_registry *registry,cmeta_plugin_ref ref) {
     cmeta_plugin_lifecycle_info info;
@@ -361,7 +401,12 @@ int main(int argc,char **argv) {
     join_worker(&thread_n);
     assert(work_n.result==101);
     assert(tm_pc_destroy(portal_n)==TM_PC_EBUSY);
-    settle_terminal(&delivery_n,501u,TM_PC_CANCELLED,101,101u);
+    reconcile_cancelled_terminal(&delivery_n,&runtime,&n.generation,
+                                 &registry,ref_n);
+    {
+        tm_pc_snapshot_v1 after=TM_PC_SNAPSHOT_V1_INIT;
+        assert(tm_pc_snapshot(portal_n,&after)==TM_PC_OK && after.drained);
+    }
     owner_drain(&delivery_n);
     assert(tm_pc_destroy(portal_n)==TM_PC_OK);
     assert(salts_component_plugin_generation_drain(&runtime,&n.generation)
