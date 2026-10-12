@@ -70,6 +70,11 @@ function Resolve-OfficialNativeRelease([string]$Repository, [string]$PackageId,
 
 $saltsVersion = Resolve-OfficialNativeRelease "qigao/salts" "Salts.Native" "2.3.0"
 $saltsUtilsVersion = Resolve-OfficialNativeRelease "qigao/salts-utils" "SaltsUtils.Native" "4.3.0"
+$saltsNetVersion = Resolve-OfficialNativeRelease "qigao/salts-net" "SaltsNet.Native" "1.1.0"
+$chttpVersion = Resolve-OfficialNativeRelease "qigao/chttp" "CHttp.Native" "2.1.0"
+$rulesForgeVersion = if ($Rid -eq "linux-x64" -or $Rid -eq "windows-x64") {
+  Resolve-OfficialNativeRelease "qigao/RulesForge" "RulesForge.Native" "0.9.3"
+} else { $null }
 # RC sequences belong to each package, not to a shared release counter.
 # For example, Salts 2.3.0-rc.10 and SaltsUtils 4.3.0-rc.7 are the current
 # official releases. Keep both post-cutover; installed package contracts and
@@ -79,12 +84,12 @@ foreach ($version in @($saltsVersion, $saltsUtilsVersion)) {
     throw "Unicode owner cutover requires rc.2+ SDK releases: $version"
   }
 }
-Write-Host "Official SDKs: Salts.Native $saltsVersion, SaltsUtils.Native $saltsUtilsVersion"
+Write-Host "Official SDK graph: Salts.Native $saltsVersion, SaltsUtils.Native $saltsUtilsVersion, SaltsNet.Native $saltsNetVersion, CHttp.Native $chttpVersion, RulesForge.Native $rulesForgeVersion"
 
 $desktopServices = $Rid -eq "linux-x64" -or $Rid -eq "windows-x64"
 $desktopReference = if ($desktopServices) {
 @'
-    <PackageReference Include="RulesForge.Native" Version="*" />
+    <PackageReference Include="RulesForge.Native" Version="$rulesForgeVersion" />
 '@
 } else {
   ""
@@ -98,8 +103,8 @@ $desktopReference = if ($desktopServices) {
   <ItemGroup>
     <PackageReference Include="Salts.Native" Version="$saltsVersion" />
     <PackageReference Include="SaltsUtils.Native" Version="$saltsUtilsVersion" />
-    <PackageReference Include="SaltsNet.Native" Version="*" />
-    <PackageReference Include="CHttp.Native" Version="*" />
+    <PackageReference Include="SaltsNet.Native" Version="$saltsNetVersion" />
+    <PackageReference Include="CHttp.Native" Version="$chttpVersion" />
 $desktopReference
   </ItemGroup>
 </Project>
@@ -123,6 +128,9 @@ function Resolve-SdkRoot([string]$PackageId, [string]$SdkRid = "") {
   $expectedVersion = switch ($PackageId) {
     "Salts.Native" { $saltsVersion }
     "SaltsUtils.Native" { $saltsUtilsVersion }
+    "SaltsNet.Native" { $saltsNetVersion }
+    "CHttp.Native" { $chttpVersion }
+    "RulesForge.Native" { $rulesForgeVersion }
     default { $null }
   }
   if ($expectedVersion -and $versions[0].Name -cne $expectedVersion) {
