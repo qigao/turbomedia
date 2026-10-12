@@ -27,6 +27,7 @@
 
 #ifdef _WIN32
 static volatile LONG g_e2e_diag_phase = 0;
+static volatile LONG g_e2e_last_main_phase = 0;
 static volatile LONG g_e2e_fault_logged = 0;
 
 /* One process-local, first-fatal-exception signature; no SDP, IP, pointer,
@@ -70,10 +71,11 @@ static LONG WINAPI e2e_unhandled_exception(EXCEPTION_POINTERS *p) {
                           rec->ExceptionInformation[1] < 65536u;
     char line[256];
     int len = snprintf(line, sizeof(line),
-                       "[webrtc-e2e-exception] code=%lu phase=%ld "
+                       "[webrtc-e2e-exception] code=%lu phase=%ld main_phase=%ld "
                        "module=%s rva=%llu kind=%u near_null=%d\n",
                        (unsigned long)rec->ExceptionCode,
                        (long)InterlockedCompareExchange(&g_e2e_diag_phase, 0, 0),
+                       (long)InterlockedCompareExchange(&g_e2e_last_main_phase, 0, 0),
                        module_name, rva, kind, near_null);
     if (len > 0 && len < (int)sizeof(line)) {
         DWORD written = 0;
@@ -375,35 +377,46 @@ void setUp(void) {
 #ifdef _WIN32
     InterlockedExchange(&g_e2e_fault_logged, 0);
     E2E_DIAG_PHASE(0);
+    InterlockedExchange(&g_e2e_last_main_phase, 0);
     (void)SetUnhandledExceptionFilter(e2e_unhandled_exception);
 #endif
     memset(&g_ctx, 0, sizeof(g_ctx));
 }
 
 void tearDown(void) {
-    E2E_DIAG_PHASE(9); /* teardown */
+#ifdef _WIN32
+    /* Save which test step reached tearDown, even on an early assertion. */
+    InterlockedExchange(&g_e2e_last_main_phase,
+                        InterlockedCompareExchange(&g_e2e_diag_phase, 0, 0));
+#endif
+    E2E_DIAG_PHASE(90); /* channel A close */
     /* Cleanup channels */
     if (g_ctx.channel_a) {
         turbo_dc_channel_close(g_ctx.channel_a);
         g_ctx.channel_a = NULL;
     }
+    E2E_DIAG_PHASE(91); /* channel B close */
     if (g_ctx.channel_b) {
         turbo_dc_channel_close(g_ctx.channel_b);
         g_ctx.channel_b = NULL;
     }
 
+    E2E_DIAG_PHASE(92); /* media A destroy */
     if (g_ctx.media_a) {
         turbo_media_destroy(g_ctx.media_a);
         g_ctx.media_a = NULL;
     }
 
     /* Quiesce DTLS/SCTP before tearing down ICE underneath it. */
+    E2E_DIAG_PHASE(93); /* peer A close */
     if (g_ctx.peer_a) {
         turbo_dc_peer_close(g_ctx.peer_a);
     }
+    E2E_DIAG_PHASE(94); /* peer B close */
     if (g_ctx.peer_b) {
         turbo_dc_peer_close(g_ctx.peer_b);
     }
+    E2E_DIAG_PHASE(95); /* post-close peer/ICE poll */
     for (int i = 0; i < 10; i++) {
         if (g_ctx.peer_a) turbo_dc_peer_poll(g_ctx.peer_a);
         if (g_ctx.peer_b) turbo_dc_peer_poll(g_ctx.peer_b);
@@ -418,42 +431,51 @@ void tearDown(void) {
     
     /* Clear ICE agent references from peers BEFORE destroying ICE
      * This prevents use-after-free when peer tries to send via destroyed agent */
+    E2E_DIAG_PHASE(96); /* peer A transport detach */
     if (g_ctx.peer_a) {
         turbo_dc_peer_set_external_transport(g_ctx.peer_a, NULL, NULL);
     }
+    E2E_DIAG_PHASE(97); /* peer B transport detach */
     if (g_ctx.peer_b) {
         turbo_dc_peer_set_external_transport(g_ctx.peer_b, NULL, NULL);
     }
     
     /* Cleanup ICE */
+    E2E_DIAG_PHASE(98); /* ICE A destroy */
     if (g_ctx.ice_a) {
         ice_integration_destroy(g_ctx.ice_a);
         g_ctx.ice_a = NULL;
     }
+    E2E_DIAG_PHASE(99); /* ICE B destroy */
     if (g_ctx.ice_b) {
         ice_integration_destroy(g_ctx.ice_b);
         g_ctx.ice_b = NULL;
     }
     
     /* Cleanup peers */
+    E2E_DIAG_PHASE(100); /* DC peer A destroy */
     if (g_ctx.peer_a) {
         turbo_dc_peer_destroy(g_ctx.peer_a);
         g_ctx.peer_a = NULL;
     }
+    E2E_DIAG_PHASE(101); /* DC peer B destroy */
     if (g_ctx.peer_b) {
         turbo_dc_peer_destroy(g_ctx.peer_b);
         g_ctx.peer_b = NULL;
     }
     
     /* Cleanup contexts */
+    E2E_DIAG_PHASE(102); /* DC context A destroy */
     if (g_ctx.ctx_a) {
         turbo_dc_context_destroy(g_ctx.ctx_a);
         g_ctx.ctx_a = NULL;
     }
+    E2E_DIAG_PHASE(103); /* DC context B destroy */
     if (g_ctx.ctx_b) {
         turbo_dc_context_destroy(g_ctx.ctx_b);
         g_ctx.ctx_b = NULL;
     }
+    E2E_DIAG_PHASE(104); /* cleanup finished */
     
 }
 
