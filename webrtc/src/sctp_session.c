@@ -10,11 +10,6 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <errno.h>
-#ifdef _WIN32
-#include <winsock2.h>
-#else
-#include <sys/socket.h>
-#endif
 #include "tlog.h"
 
 /* ============================================================================
@@ -81,29 +76,6 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
           status.sstat_instrms > 0))) {
         peer->sctp.connected = 1;
         dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
-    }
-}
-
-/* Detach the native socket only after *all* already-admitted STATUS
- * queries have returned; later queries are rejected at admission.
- * A separate peer operation lease keeps the enclosing peer alive while the
- * closing thread executes shutdown/close outside operation_mutex.
- *
- * This does not alter the ICE consent or SCTP retry deadlines. */
-void sctp_session_close_socket(turbo_dc_peer_t *peer, int shutdown) {
-    if (!peer || !peer->operation_sync_initialized) return;
-    cmeta_mutex_lock(&peer->operation_mutex);
-    peer->sctp.status_close_requested = 1;
-    cmeta_cond_broadcast(&peer->operation_cond);
-    while (peer->sctp.status_borrows != 0)
-        cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
-    struct socket *socket = peer->sctp.socket;
-    peer->sctp.socket = NULL;
-    cmeta_mutex_unlock(&peer->operation_mutex);
-
-    if (socket) {
-        if (shutdown) (void)usrsctp_shutdown(socket, SHUT_RDWR);
-        (void)usrsctp_close(socket);
     }
 }
 
