@@ -5,9 +5,18 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+static void yield_owner(void) { Sleep(0); }
+#else
+#include <pthread.h>
+#include <sched.h>
+static void yield_owner(void) { sched_yield(); }
+#endif
 
 typedef struct fixture {
     unsigned calls, processed, recorded, previewed, noticed, nested_checks;
+    unsigned unlimited_source;
     tm_od_owner *dispatcher;
     tm_ho_inbox *inbox;
     tm_fs_store *store;
@@ -57,7 +66,7 @@ static tm_ex_source_result source(void *ctx,uint8_t *dst,size_t cap,size_t *n) {
         f->nested_checks++;
     }
     f->calls++;
-    if(f->calls>=3u) return TM_EX_SOURCE_EOS;
+    if(!f->unlimited_source && f->calls>=3u) return TM_EX_SOURCE_EOS;
     dst[0]=(uint8_t)f->calls;
     *n=1u;
     return TM_EX_SOURCE_FRAME;
@@ -234,9 +243,112 @@ static void test_frame_pin_scope_and_stop(void) {
     assert(r.outcome==TM_OD_COMPLETED);
     cleanup(d,q,ex,s,g);
 }
+#define OWNER_THREADS 4u
+#define OWNER_COMMANDS 90u
+typedef struct concurrent_producer {
+    tm_ho_inbox *queue;
+    unsigned producer_id;
+} concurrent_producer;
+
+#ifdef _WIN32
+static DWORD WINAPI dispatch_producer(LPVOID ptr)
+#else
+static void *dispatch_producer(void *ptr)
+#endif
+{
+    concurrent_producer *p=(concurrent_producer *)ptr;
+    unsigned i;
+    for(i=0u;i<OWNER_COMMANDS;++i) {
+        tm_ho_ticket_v1 ticket={0};
+        tm_ho_command_v1 cmd=TM_HO_COMMAND_V1_INIT;
+        tm_ho_status rc;
+        cmd.kind=(i%3u)==0u?TM_HO_PUMP_SOURCE:TM_HO_PUMP_SINK;
+        cmd.branch=cmd.kind==TM_HO_PUMP_SINK?(i%3u)-1u:0u;
+        cmd.correlation=10000u+(uint64_t)p->producer_id*OWNER_COMMANDS+i;
+        do {
+            rc=tm_ho_reserve(p->queue,&ticket);
+            if(rc==TM_HO_EFULL) yield_owner();
+        } while(rc==TM_HO_EFULL);
+        assert(rc==TM_HO_OK);
+        assert(tm_ho_publish(p->queue,ticket,&cmd)==TM_HO_OK);
+    }
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+static void test_multithread_producers_and_real_executor(void) {
+    fixture f={0};
+    tm_sg_program *g=program();
+    tm_fs_store *s=store();
+    tm_ho_inbox *q=inbox();
+    tm_ex_owner *ex=executor(g,s,&f);
+    tm_od_owner *d=NULL;
+    tm_od_config_v1 config=TM_OD_CONFIG_V1_INIT;
+    concurrent_producer args[OWNER_THREADS];
+    unsigned char observed[OWNER_THREADS][OWNER_COMMANDS]={{0}};
+    unsigned n=0u,i;
+#ifdef _WIN32
+    HANDLE threads[OWNER_THREADS]={0};
+#else
+    pthread_t threads[OWNER_THREADS];
+#endif
+    f.unlimited_source=1u;
+    assert(tm_od_create(q,ex,s,&config,&d)==TM_OD_OK);
+    f.dispatcher=d; f.inbox=q; f.store=s;
+    for(i=0u;i<OWNER_THREADS;++i) {
+        args[i].queue=q;
+        args[i].producer_id=i;
+#ifdef _WIN32
+        threads[i]=CreateThread(NULL,0,dispatch_producer,&args[i],0,NULL);
+        assert(threads[i]!=NULL);
+#else
+        assert(pthread_create(&threads[i],NULL,dispatch_producer,&args[i])==0);
+#endif
+    }
+    while(n<OWNER_THREADS*OWNER_COMMANDS) {
+        tm_od_receipt_v1 receipt=TM_OD_RECEIPT_V1_INIT;
+        tm_od_status rc=tm_od_step(d,&receipt);
+        if(rc==TM_OD_EMPTY) { yield_owner(); continue; }
+        assert(rc==TM_OD_OK);
+        assert(receipt.correlation>=10000u);
+        {
+            uint64_t id=receipt.correlation-10000u;
+            unsigned worker=(unsigned)(id/OWNER_COMMANDS);
+            unsigned sequence=(unsigned)(id%OWNER_COMMANDS);
+            assert(worker<OWNER_THREADS && sequence<OWNER_COMMANDS);
+            assert(observed[worker][sequence]==0u);
+            observed[worker][sequence]=1u;
+        }
+        assert(receipt.outcome==TM_OD_COMPLETED ||
+               receipt.outcome==TM_OD_BACKPRESSURE);
+        ++n;
+    }
+    for(i=0u;i<OWNER_THREADS;++i) {
+        unsigned j;
+#ifdef _WIN32
+        assert(WaitForSingleObject(threads[i],INFINITE)==WAIT_OBJECT_0);
+        CloseHandle(threads[i]);
+#else
+        assert(pthread_join(threads[i],NULL)==0);
+#endif
+        for(j=0u;j<OWNER_COMMANDS;++j)assert(observed[i][j]==1u);
+    }
+    {
+        tm_ho_snapshot_v1 snapshot=TM_HO_SNAPSHOT_V1_INIT;
+        assert(tm_ho_snapshot(q,&snapshot)==TM_HO_OK);
+        assert(snapshot.drained==1u && snapshot.sealed==0u);
+    }
+    assert(send(q,d,TM_HO_STOP,0u,999999u,NULL).outcome==TM_OD_COMPLETED);
+    assert(tm_ex_discard_ready(ex,0u)==TM_EX_OK);
+    assert(tm_ex_discard_ready(ex,1u)==TM_EX_OK);
+    cleanup(d,q,ex,s,g);
+}
 int main(void) {
     test_executor_backpressure_and_eos();
     test_frame_pin_scope_and_stop();
+    test_multithread_producers_and_real_executor();
     puts("StreamGraph owner dispatcher / retained frame visit: PASS");
     return 0;
 }
