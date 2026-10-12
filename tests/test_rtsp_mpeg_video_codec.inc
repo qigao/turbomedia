@@ -248,6 +248,38 @@ static int rtsp_mpv_begin_record(turbo_rtsp_client_t *client) {
            turbo_rtsp_client_setup_interleaved(client,&track)==0 &&
            turbo_rtsp_client_record(client)==0;
 }
+/* The real ANNOUNCE request is parsed through the existing SDP
+ * parser on the server's actual RTSP/CNet control callback. Rejecting
+ * H.264 PT96 or TS PT33 is mandatory before any Codec admission. */
+static void rtsp_mpv_reject_bad_announce(rtsp_test_state_t *state,int port) {
+    static const char sdp_h264[]=
+        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=bad-h264\r\nt=0 0\r\n"
+        "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
+        "a=control:trackID=0\r\n";
+    static const char sdp_ts[]=
+        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=bad-ts\r\nt=0 0\r\n"
+        "m=video 0 RTP/AVP 33\r\na=rtpmap:33 MP2T/90000\r\n"
+        "a=control:trackID=0\r\n";
+    const char *bad[]={sdp_h264,sdp_ts};
+    turbo_rtsp_client_t *client=NULL;
+    unsigned i;
+    for(i=0u;i<2u;++i) {
+        turbo_rtsp_push_announce_t a={0};
+        client=rtsp_test_client_connect(
+            TURBO_RTSP_CONTROL_TRANSPORT_TCP,port,NULL);
+        check_not_null(client);
+        if(!client)return;
+        a.uri="rtsp://127.0.0.1/live/mpeg2-es";
+        a.sdp=bad[i];a.sdp_len=strlen(bad[i]);
+        check_true(turbo_rtsp_client_announce(client,&a)!=0);
+        check_equal(rtsp_test_read(state,&state->rejected_mpvideo_sdp),
+                    (int)(i+1u));
+        check_equal(rtsp_test_read(state,&state->accepted_mpvideo_sdp),0);
+        check_equal(rtsp_test_read(state,&state->record_count),0);
+        turbo_rtsp_client_destroy(client);client=NULL;
+    }
+}
+
 static void rtsp_mpv_wire_exchange(turbo_rtsp_client_t *client,
                                     const AVPacket *encoded,uint16_t seq,
                                     uint32_t ssrc,
@@ -279,11 +311,13 @@ static void rtsp_test_mpeg2_video_real_rtp_to_delayed_codec(void) {
     const uint32_t first_ssrc=0x11223344u,second_ssrc=0x55667788u;
 
     rtsp_test_state_init(&state);
+    state.require_mpvideo_sdp=1;
     rtsp_mpv_fixture_make(&fixture);
     server=rtsp_test_server_start(&state,TURBO_RTSP_CONTROL_TRANSPORT_TCP,
                                   20562,NULL);
     check_not_null(server);
     if(!server)goto cleanup;
+    rtsp_mpv_reject_bad_announce(&state,20562);
     client=rtsp_test_client_connect(TURBO_RTSP_CONTROL_TRANSPORT_TCP,
                                     20562,NULL);
     check_not_null(client);
@@ -416,6 +450,8 @@ static void rtsp_test_mpeg2_video_real_rtp_to_delayed_codec(void) {
     decoder=NULL;
     check_equal(rtsp_test_read(&state,&state.record_count),2);
     check_equal(rtsp_test_read(&state,&state.teardown_count),1);
+    check_equal(rtsp_test_read(&state,&state.accepted_mpvideo_sdp),2);
+    check_equal(rtsp_test_read(&state,&state.rejected_mpvideo_sdp),2);
 cleanup:
     if(decoder) {
         (void)tm_ffd_cancel(decoder);
