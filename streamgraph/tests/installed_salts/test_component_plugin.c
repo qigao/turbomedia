@@ -585,15 +585,14 @@ int main(int argc,char **argv) {
 #endif
     assert(atomic_load_explicit(&work_n1.returned,memory_order_acquire)==1u);
     assert(work_n1.result==102);
-#ifdef TM_TEST_FFMPEG_DSO
-    /* Pixel content originates from the actual MJPEG encoder/decoder,
-     * rather than reconstructing a synthetic frame from Provider generation. */
-    assert(abs((int)work_n1.luma[0]-102)<=7);
-    assert(work_n1.luma[0]==work_n1.luma[TM_LUMA_BYTES-1u]);
-#endif
     assert(tm_pc_seal(portal_n1)==TM_PC_OK);
 #ifdef TM_TEST_FFMPEG_DSO
     settle_terminal(&delivery_n1,601u,TM_PC_COMPLETED,TM_FF_OK,102u);
+    /* Only Media Owner's accepted terminal may retrieve the decoded bytes
+     * through the real CMeta Provider method. No premature cross-thread read. */
+    assert(work_n1.luma_bytes==TM_LUMA_BYTES);
+    assert(abs((int)work_n1.luma[0]-102)<=7);
+    assert(work_n1.luma[0]==work_n1.luma[TM_LUMA_BYTES-1u]);
 #else
     settle_terminal(&delivery_n1,601u,TM_PC_COMPLETED,102,102u);
 #endif
@@ -631,10 +630,9 @@ int main(int argc,char **argv) {
 #endif
     assert(work_n.result==101);
 #ifdef TM_TEST_FFMPEG_DSO
-    assert(abs((int)work_n.luma[0]-101)<=7);
-    assert(work_n.luma[0]==work_n.luma[TM_LUMA_BYTES-1u]);
-    /* Old Generation decoded a genuine frame but may not publish pixels
-     * after its cancelled terminal was refused. Its Scope stays retained. */
+    /* Old Generation decoded into its private decoder object but cannot
+     * transfer or publish the pixels of a cancelled/rejected terminal. */
+    assert(work_n.luma_bytes==0u);
     assert(delivery_n.frame_visited==0u);
 #endif
     assert(tm_pc_destroy(portal_n)==TM_PC_EBUSY);
