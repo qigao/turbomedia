@@ -108,7 +108,34 @@ else()
     PRIVATE -Wall -Wextra -Werror)
 endif()
 
+# Linux optional real FFmpeg DSO gate: separate from the longstanding
+# MJPEG generation test. Both use the EXACT same installed Salts SDK and
+# canonical cmeta_plugin_registry, never a private dlopen host.
+if(_TM_TEST_FFMPEG)
+  add_executable(tm_installed_salts_delayed_test test_delayed_component_plugin.c)
+  target_include_directories(tm_installed_salts_delayed_test
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_compile_definitions(tm_installed_salts_delayed_test
+    PRIVATE TM_TEST_FFMPEG_DSO=1)
+  target_link_libraries(tm_installed_salts_delayed_test PRIVATE
+    Salts::ComponentPlugin Salts::Plugin Salts::CNet
+    TurboMedia::StreamGraph Threads::Threads
+    PkgConfig::TM_TEST_LIBAVCODEC PkgConfig::TM_TEST_LIBAVUTIL)
+  add_dependencies(tm_installed_salts_delayed_test
+    tm_installed_provider_101 tm_installed_provider_102)
+  target_compile_options(tm_installed_salts_delayed_test PRIVATE
+    -Wall -Wextra -Werror)
+endif()
+
 enable_testing()
+if(_TM_TEST_FFMPEG)
+  add_test(NAME installed_salts_delayed_component_plugin_dso
+    COMMAND tm_installed_salts_delayed_test
+      "$<TARGET_FILE:tm_installed_provider_101>"
+      "$<TARGET_FILE:tm_installed_provider_102>")
+  set_tests_properties(installed_salts_delayed_component_plugin_dso
+    PROPERTIES TIMEOUT 90)
+endif()
 add_test(NAME installed_salts_component_plugin_dso
   COMMAND tm_installed_salts_generation_test
     "$<TARGET_FILE:tm_installed_provider_101>"
