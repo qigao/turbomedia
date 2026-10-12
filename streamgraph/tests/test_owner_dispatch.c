@@ -147,7 +147,7 @@ static tm_ho_inbox *inbox(void) {
     assert(tm_ho_create(&config,&q)==TM_HO_OK);
     return q;
 }
-static tm_od_receipt_v1 send(tm_ho_inbox *q,tm_od_owner *owner,
+static tm_od_receipt_v1 dispatch_command(tm_ho_inbox *q,tm_od_owner *owner,
                              uint32_t kind,uint32_t branch,uint64_t correlation,
                              const tm_fs_frame_ref_v1 *frame) {
     tm_ho_ticket_v1 t={0};
@@ -187,23 +187,23 @@ static void test_executor_backpressure_and_eos(void) {
     assert(tm_od_create(q,ex,s,&config,&d)==TM_OD_OK);
     f.dispatcher=d;f.inbox=q;f.store=s;
     assert(tm_od_step(d,&r)==TM_OD_EMPTY);
-    r=send(q,d,TM_HO_PUMP_SOURCE,0u,1u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SOURCE,0u,1u,NULL);
     assert(r.outcome==TM_OD_COMPLETED && f.calls==1u && f.processed==1u);
-    r=send(q,d,TM_HO_PUMP_SOURCE,0u,2u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SOURCE,0u,2u,NULL);
     assert(r.outcome==TM_OD_BACKPRESSURE && f.calls==2u && f.processed==2u);
-    r=send(q,d,TM_HO_PUMP_SOURCE,0u,3u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SOURCE,0u,3u,NULL);
     assert(r.outcome==TM_OD_BACKPRESSURE && f.calls==2u);
-    r=send(q,d,TM_HO_PUMP_SINK,0u,4u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SINK,0u,4u,NULL);
     assert(r.outcome==TM_OD_COMPLETED && f.recorded==1u);
-    r=send(q,d,TM_HO_PUMP_SINK,1u,5u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SINK,1u,5u,NULL);
     assert(r.outcome==TM_OD_COMPLETED && f.previewed==1u);
-    r=send(q,d,TM_HO_PUMP_SOURCE,0u,6u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SOURCE,0u,6u,NULL);
     assert(r.outcome==TM_OD_COMPLETED && f.calls==2u);
-    r=send(q,d,TM_HO_PUMP_SINK,0u,7u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SINK,0u,7u,NULL);
     assert(r.outcome==TM_OD_COMPLETED && f.recorded==2u);
-    r=send(q,d,TM_HO_PUMP_SINK,1u,8u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SINK,1u,8u,NULL);
     assert(r.outcome==TM_OD_COMPLETED && f.previewed==2u);
-    r=send(q,d,TM_HO_PUMP_SOURCE,0u,9u,NULL);
+    r=dispatch_command(q,d,TM_HO_PUMP_SOURCE,0u,9u,NULL);
     assert(r.outcome==TM_OD_EOS && f.calls==3u && f.nested_checks==3u);
     assert(tm_od_step(d,&r)==TM_OD_EMPTY);
     cleanup(d,q,ex,s,g);
@@ -226,10 +226,10 @@ static void test_frame_pin_scope_and_stop(void) {
     f.dispatcher=d;f.inbox=q;f.store=s;
     assert(tm_fs_publish_cpu(s,&value,1u,2u,3u,&stale)==TM_FS_OK);
     assert(tm_fs_retire(s,&stale)==TM_FS_OK);
-    r=send(q,d,TM_HO_FRAME_NOTICE,0u,20u,&stale);
+    r=dispatch_command(q,d,TM_HO_FRAME_NOTICE,0u,20u,&stale);
     assert(r.outcome==TM_OD_STALE_FRAME && f.noticed==0u);
     assert(tm_fs_publish_cpu(s,&value,1u,2u,3u,&valid)==TM_FS_OK);
-    r=send(q,d,TM_HO_FRAME_NOTICE,0u,21u,&valid);
+    r=dispatch_command(q,d,TM_HO_FRAME_NOTICE,0u,21u,&valid);
     assert(r.outcome==TM_OD_COMPLETED && f.noticed==1u);
     /* The callback requested retirement while the owner-held Pin/Lease
      * was active. Its final release auto-retires the slot. No second
@@ -239,7 +239,7 @@ static void test_frame_pin_scope_and_stop(void) {
         tm_fs_lease_v1 old_lease={0};
         assert(tm_fs_acquire_weak(s,&valid,&old_lease)==TM_FS_ESTALE);
     }
-    r=send(q,d,TM_HO_STOP,0u,22u,NULL);
+    r=dispatch_command(q,d,TM_HO_STOP,0u,22u,NULL);
     assert(r.outcome==TM_OD_COMPLETED);
     cleanup(d,q,ex,s,g);
 }
@@ -340,7 +340,7 @@ static void test_multithread_producers_and_real_executor(void) {
         assert(tm_ho_snapshot(q,&snapshot)==TM_HO_OK);
         assert(snapshot.drained==1u && snapshot.sealed==0u);
     }
-    assert(send(q,d,TM_HO_STOP,0u,999999u,NULL).outcome==TM_OD_COMPLETED);
+    assert(dispatch_command(q,d,TM_HO_STOP,0u,999999u,NULL).outcome==TM_OD_COMPLETED);
     assert(tm_ex_discard_ready(ex,0u)==TM_EX_OK);
     assert(tm_ex_discard_ready(ex,1u)==TM_EX_OK);
     cleanup(d,q,ex,s,g);
