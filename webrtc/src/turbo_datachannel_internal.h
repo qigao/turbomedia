@@ -286,7 +286,6 @@ int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
 void sctp_receive_stop(turbo_dc_peer_t *peer);
 void sctp_receive_discard_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
 void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason);
-void sctp_session_close_socket(turbo_dc_peer_t *peer, int shutdown);
 
 /* SCTP callbacks (called by usrsctp) */
 int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, uint8_t set_df);
