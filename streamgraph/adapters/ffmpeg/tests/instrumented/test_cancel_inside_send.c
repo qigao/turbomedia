@@ -24,6 +24,9 @@
 extern int avcodec_tm_test_arm_send_packet(void);
 extern unsigned avcodec_tm_test_send_packet_state(void);
 extern int avcodec_tm_test_release_send_packet(void);
+extern int avcodec_tm_test_arm_flush(void);
+extern unsigned avcodec_tm_test_flush_state(void);
+extern int avcodec_tm_test_release_flush(void);
 
 enum { WIDTH=16, HEIGHT=16, LUMA=WIDTH*HEIGHT, MAX_PACKET=65536 };
 typedef struct encoder {
@@ -78,6 +81,7 @@ typedef struct worker {
     tm_pc_ticket_v1 ticket;
     uint8_t packet[MAX_PACKET];
     size_t bytes;
+    unsigned eof_operation; /* one-shot NULL flush instead of MJPEG packet */
     _Atomic unsigned wake_count;
     tm_ff_status outcome;
 } worker;
@@ -88,8 +92,10 @@ static int on_wake(void *ctx) {
 }
 static void *run(void *ctx) {
     worker *w=(worker *)ctx;
-    w->outcome=tm_ffa_run_mjpeg(w->decoder,w->packet,w->bytes,
-                               w->portal,w->ticket,on_wake,w);
+    w->outcome=w->eof_operation
+        ? tm_ffa_run_eof(w->decoder,w->portal,w->ticket,on_wake,w)
+        : tm_ffa_run_mjpeg(w->decoder,w->packet,w->bytes,
+                          w->portal,w->ticket,on_wake,w);
     return NULL;
 }
 static tm_pc_portal *portal(void) {
@@ -99,6 +105,154 @@ static tm_pc_portal *portal(void) {
     assert(tm_pc_create(&cfg,&out)==TM_PC_OK);
     return out;
 }
+
+/* M15c: the Owner cancels AFTER real avcodec_send_packet(NULL) has
+ * changed libavcodec's draining state, but BEFORE that call returns.
+ * First decode an actual MJPEG frame so the EOF is not a synthetic
+ * empty-stream-only case. No concurrent tm_ff_cancel of the Codec owner.
+ */
+static void test_cancel_inside_null_flush(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_ffa_decoder *decoder=NULL;
+    tm_pc_portal *p=NULL;
+    tm_pc_ticket_v1 packet_ticket={0},flush_ticket={0},taken={0};
+    tm_pc_result_v1 receipt=TM_PC_RESULT_V1_INIT;
+    tm_ff_codec_activity_v1 activity=TM_FF_CODEC_ACTIVITY_V1_INIT;
+    tm_ffa_stats_v1 stats=TM_FFA_STATS_V1_INIT;
+    encoder enc={0};
+    worker packet_job={0},flush_job={0};
+    pthread_t packet_thread,flush_thread;
+    uint8_t pixels[LUMA];
+    size_t copied=0u;
+    unsigned i;
+
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=MAX_PACKET;
+    assert(tm_ffa_create(&cfg,&decoder)==TM_FF_OK);
+    p=portal();
+    encoder_init(&enc);
+    packet_job.decoder=decoder;packet_job.portal=p;
+    packet_job.bytes=encode(&enc,119u,packet_job.packet,
+                            sizeof(packet_job.packet));
+    atomic_init(&packet_job.wake_count,0u);
+    assert(tm_pc_begin(p,19001u,&packet_ticket)==TM_PC_OK);
+    packet_job.ticket=packet_ticket;
+    assert(pthread_create(&packet_thread,NULL,run,&packet_job)==0);
+    assert(pthread_join(packet_thread,NULL)==0);
+    assert(packet_job.outcome==TM_FF_OK);
+    assert(atomic_load_explicit(&packet_job.wake_count,
+                                memory_order_acquire)==1u);
+    assert(tm_pc_take(p,&taken,&receipt)==TM_PC_OK);
+    assert(receipt.correlation==19001u && receipt.outcome==TM_PC_COMPLETED &&
+           receipt.provider_status==TM_FF_OK);
+    assert(tm_pc_settle(p,taken)==TM_PC_OK);
+    assert(tm_ffa_owner_accept(decoder,packet_ticket)==TM_FF_OK);
+    assert(tm_ffa_owner_next_luma(decoder,pixels,sizeof(pixels),&copied)
+           ==TM_EX_SOURCE_FRAME);
+    assert(copied==LUMA && abs((int)pixels[0]-119)<=7);
+
+    assert(tm_pc_begin(p,19002u,&flush_ticket)==TM_PC_OK);
+    assert(flush_ticket.generation!=packet_ticket.generation);
+    flush_job.decoder=decoder;flush_job.portal=p;
+    flush_job.ticket=flush_ticket;flush_job.eof_operation=1u;
+    atomic_init(&flush_job.wake_count,0u);
+    assert(avcodec_tm_test_arm_flush()==0);
+    assert(pthread_create(&flush_thread,NULL,run,&flush_job)==0);
+    for(i=0u;i<5000000u && avcodec_tm_test_flush_state()!=2u;++i)
+        sched_yield();
+    assert(avcodec_tm_test_flush_state()==2u);
+    assert(tm_ffa_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.in_call==1u && activity.packet_calls==1u &&
+           activity.flush_calls==0u);
+    assert(tm_ffa_destroy(decoder)==TM_FF_ESTATE);
+    assert(tm_pc_request_cancel(p,flush_ticket)==TM_PC_OK);
+    assert(tm_ffa_owner_cancel(decoder)==TM_FF_OK);
+    assert(tm_ffa_destroy(decoder)==TM_FF_ESTATE);
+    assert(tm_ffa_owner_accept(decoder,flush_ticket)==TM_FF_ESTALE);
+    /* Only libavcodec's test-only release ends this real FFmpeg call.
+     * The Owner never mutates its AVCodecContext concurrently. */
+    assert(avcodec_tm_test_flush_state()==2u);
+    assert(avcodec_tm_test_release_flush()==0);
+    assert(pthread_join(flush_thread,NULL)==0);
+    assert(avcodec_tm_test_flush_state()==4u);
+    assert(flush_job.outcome==TM_FF_ESTATE);
+    assert(atomic_load_explicit(&flush_job.wake_count,
+                                memory_order_acquire)==1u);
+    activity=(tm_ff_codec_activity_v1)TM_FF_CODEC_ACTIVITY_V1_INIT;
+    assert(tm_ffa_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.in_call==0u && activity.packet_calls==1u &&
+           activity.flush_calls==1u);
+    receipt=(tm_pc_result_v1)TM_PC_RESULT_V1_INIT;
+    assert(tm_pc_take(p,&taken,&receipt)==TM_PC_OK);
+    assert(receipt.correlation==19002u &&
+           receipt.outcome==TM_PC_CANCELLED &&
+           receipt.completion_observed==1u &&
+           receipt.provider_status==TM_FF_ESTATE);
+    assert(tm_pc_settle(p,taken)==TM_PC_OK);
+    assert(tm_pc_take(p,&taken,&receipt)!=TM_PC_OK);
+    assert(tm_ffa_run_eof(decoder,p,flush_ticket,NULL,NULL)==TM_FF_ESTATE);
+    assert(tm_ffa_stats(decoder,&stats)==TM_FF_OK);
+    assert(stats.decoded==1u && stats.delivered==1u &&
+           stats.worker_active==0u && stats.cancelled==1u &&
+           stats.notifications_failed==0u);
+    assert(tm_pc_seal(p)==TM_PC_OK);
+    assert(tm_pc_destroy(p)==TM_PC_OK);
+    assert(tm_ffa_destroy(decoder)==TM_FF_OK);
+    encoder_destroy(&enc);
+}
+/* Positive terminal control: a normally completed EOF carries TM_FF_EOF,
+ * not CANCELLED, then one-shot re-admission refuses without another wake. */
+static void test_completed_null_flush_exactly_once(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_ffa_decoder *decoder=NULL;
+    tm_pc_portal *p=NULL;
+    tm_pc_ticket_v1 packet_ticket={0},eof_ticket={0},taken={0};
+    tm_pc_result_v1 receipt=TM_PC_RESULT_V1_INIT;
+    tm_ff_codec_activity_v1 activity=TM_FF_CODEC_ACTIVITY_V1_INIT;
+    encoder enc={0};
+    worker packet_job={0},eof_job={0};
+    uint8_t pixels[LUMA];
+    size_t n=0u;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=MAX_PACKET;
+    assert(tm_ffa_create(&cfg,&decoder)==TM_FF_OK);
+    p=portal();
+    encoder_init(&enc);
+    packet_job.decoder=decoder;packet_job.portal=p;
+    packet_job.bytes=encode(&enc,78u,packet_job.packet,sizeof(packet_job.packet));
+    atomic_init(&packet_job.wake_count,0u);
+    assert(tm_pc_begin(p,19101u,&packet_ticket)==TM_PC_OK);
+    packet_job.ticket=packet_ticket;
+    assert(run(&packet_job)==NULL);
+    assert(packet_job.outcome==TM_FF_OK);
+    assert(tm_pc_take(p,&taken,&receipt)==TM_PC_OK);
+    assert(tm_pc_settle(p,taken)==TM_PC_OK);
+    assert(tm_ffa_owner_accept(decoder,packet_ticket)==TM_FF_OK);
+    assert(tm_ffa_owner_next_luma(decoder,pixels,sizeof(pixels),&n)
+           ==TM_EX_SOURCE_FRAME && n==LUMA);
+
+    assert(tm_pc_begin(p,19102u,&eof_ticket)==TM_PC_OK);
+    eof_job.decoder=decoder;eof_job.portal=p;
+    eof_job.ticket=eof_ticket;eof_job.eof_operation=1u;
+    atomic_init(&eof_job.wake_count,0u);
+    assert(run(&eof_job)==NULL);
+    assert(eof_job.outcome==TM_FF_EOF);
+    assert(atomic_load_explicit(&eof_job.wake_count,memory_order_acquire)==1u);
+    receipt=(tm_pc_result_v1)TM_PC_RESULT_V1_INIT;
+    assert(tm_pc_take(p,&taken,&receipt)==TM_PC_OK);
+    assert(receipt.correlation==19102u && receipt.outcome==TM_PC_COMPLETED &&
+           receipt.completion_observed==1u &&
+           receipt.provider_status==TM_FF_EOF);
+    assert(tm_pc_settle(p,taken)==TM_PC_OK);
+    assert(tm_ffa_run_eof(decoder,p,eof_ticket,NULL,NULL)==TM_FF_ESTATE);
+    assert(tm_ffa_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.packet_calls==1u && activity.flush_calls==1u &&
+           activity.in_call==0u);
+    assert(tm_pc_take(p,&taken,&receipt)!=TM_PC_OK);
+    assert(tm_pc_seal(p)==TM_PC_OK);
+    assert(tm_pc_destroy(p)==TM_PC_OK);
+    assert(tm_ffa_destroy(decoder)==TM_FF_OK);
+    encoder_destroy(&enc);
+}
+
 int main(void) {
     tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
     tm_ffa_decoder *a=NULL,*b=NULL;
@@ -198,6 +352,8 @@ int main(void) {
     assert(tm_ffa_destroy(a)==TM_FF_OK);
     assert(tm_ffa_destroy(b)==TM_FF_OK);
     encoder_destroy(&e);
-    puts("instrumented FFmpeg in-send cancellation and independent B: PASS");
+    test_cancel_inside_null_flush();
+    test_completed_null_flush_exactly_once();
+    puts("instrumented FFmpeg in-packet / in-NULL-flush cancellation: PASS");
     return 0;
 }
