@@ -731,7 +731,7 @@ static void rtsp_test_cancel_with_pending_interleaved_and_reopen(void) {
     check_equal(turbo_rtsp_client_recv_interleaved_frame(
                     client,&channel,payload,sizeof(payload),&count),0);
     check_equal(channel,1u);
-    check_equal(count,sizeof(current_payload));
+    check_equal((int)count,(int)sizeof(current_payload));
     check_equal(memcmp(payload,current_payload,sizeof(current_payload)),0);
     check_equal(turbo_rtsp_client_teardown(client),0);
     check_equal(rtsp_test_read(&state,&state.announce_count),2);
