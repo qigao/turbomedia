@@ -170,11 +170,13 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
     check_not_null(path101);check_not_null(path102);
     if(!path101 || !path102)return;
     rtsp_test_state_init(&state);
+    state.require_mpvideo_sdp=1;
     rtsp_mpv_fixture_make(&f);
     server=rtsp_test_server_start(&state,TURBO_RTSP_CONTROL_TRANSPORT_TCP,
                                   20564,NULL);
     check_not_null(server);
     if(!server)goto cleanup;
+    rtsp_mpv_reject_bad_announce(&state,20564);
     client=rtsp_test_client_connect(TURBO_RTSP_CONTROL_TRANSPORT_TCP,
                                     20564,NULL);
     check_not_null(client);
@@ -340,6 +342,8 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
     check_equal(tm_pc_destroy(p102),TM_PC_OK);p102=NULL;
     check_equal(rtsp_test_read(&state,&state.record_count),2);
     check_equal(rtsp_test_read(&state,&state.teardown_count),1);
+    check_equal(rtsp_test_read(&state,&state.accepted_mpvideo_sdp),2);
+    check_equal(rtsp_test_read(&state,&state.rejected_mpvideo_sdp),2);
     check_equal(salts_component_plugin_runtime_close(
                 &runtime,&prior),SALTS_COMPONENT_PLUGIN_OK);
     check_true(prior==&gen102.generation);
