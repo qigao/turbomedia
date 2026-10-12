@@ -484,6 +484,80 @@ struct IndependentPair {
         return true;
     }
 
+    bool reject_tampered_aead_tag_and_record_replay() {
+        /* OpenSSL generates a real authenticated epoch-1 application record.
+         * A bad AEAD tag must be silently discarded WITHOUT advancing the
+         * 64-record replay window; the unchanged authenticated record then
+         * arrives once, its exact duplicate is ignored, and a fresh higher
+         * sequence still succeeds on the same live DTLS association. */
+        stage = "independent-aead-and-replay";
+        static constexpr char first[] = "first independent application record";
+        if (SSL_write(ssl, first, sizeof(first)) !=
+                static_cast<int>(sizeof(first)))
+            return failure("OpenSSL-first-write");
+        uint8_t authentic[65535], damaged[65535];
+        ssize_t got = recv(socket_fd[0], authentic, sizeof(authentic), 0);
+        if (got <= 13 + 24) return failure("missing-independent-GCM-record");
+        const size_t n = static_cast<size_t>(got);
+        const size_t body_length = (static_cast<size_t>(authentic[11]) << 8) |
+                                   authentic[12];
+        if (authentic[0] != 23 || authentic[3] != 0 || authentic[4] != 1 ||
+            body_length + 13 != n)
+            return failure("expected-single-authenticated-app-record");
+        memcpy(damaged, authentic, n);
+        damaged[n - 1] ^= 0x01;  // Corrupt one bit of the AEAD authentication tag.
+        if (turbo_gdtls_receive(gm, damaged, n, clock_ms) != TURBO_GDTLS_OK)
+            return failure("damaged-GCM-record-was-not-dropped");
+        tstr leaked = turbo_gdtls_take_plaintext(gm);
+        if (leaked) {
+            cmeta_crypto_clear(leaked, tstr_len(leaked));
+            tstr_free(leaked);
+            return failure("damaged-GCM-record-published-plaintext");
+        }
+        if (!turbo_gdtls_ready(gm) || turbo_gdtls_srtp_profile(gm) != profile)
+            return failure("damaged-GCM-record-changed-association");
+
+        if (turbo_gdtls_receive(gm, authentic, n, clock_ms) != TURBO_GDTLS_OK)
+            return failure("authentic-record-rejected-after-bad-tag");
+        tstr plaintext = turbo_gdtls_take_plaintext(gm);
+        const bool correct = plaintext &&
+            tstr_len(plaintext) == sizeof(first) &&
+            memcmp(plaintext, first, sizeof(first)) == 0;
+        if (plaintext) {
+            cmeta_crypto_clear(plaintext, tstr_len(plaintext));
+            tstr_free(plaintext);
+        }
+        if (!correct) return failure("authentic-record-not-delivered-exactly-once");
+
+        if (turbo_gdtls_receive(gm, authentic, n, clock_ms) != TURBO_GDTLS_OK)
+            return failure("authenticated-replay-not-discarded");
+        leaked = turbo_gdtls_take_plaintext(gm);
+        if (leaked) {
+            cmeta_crypto_clear(leaked, tstr_len(leaked));
+            tstr_free(leaked);
+            return failure("authenticated-replay-published-twice");
+        }
+
+        static constexpr char second[] = "fresh independent application record";
+        if (SSL_write(ssl, second, sizeof(second)) !=
+                static_cast<int>(sizeof(second)) ||
+            !receive_gm())
+            return failure("subsequent-authenticated-record-failed");
+        plaintext = turbo_gdtls_take_plaintext(gm);
+        const bool fresh = plaintext &&
+            tstr_len(plaintext) == sizeof(second) &&
+            memcmp(plaintext, second, sizeof(second)) == 0;
+        if (plaintext) {
+            cmeta_crypto_clear(plaintext, tstr_len(plaintext));
+            tstr_free(plaintext);
+        }
+        if (!fresh || !turbo_gdtls_ready(gm) ||
+            turbo_gdtls_srtp_profile(gm) != profile ||
+            turbo_gdtls_take_plaintext(gm) != nullptr)
+            return failure("replay-or-bad-tag-poisoned-next-packet");
+        return true;
+    }
+
     bool exchange_application() {
         stage = "application-datagrams";
         static constexpr char from_openssl[] = "from OpenSSL";
@@ -526,6 +600,23 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                     check_true(fixture.qualify_exporter());
                     check_true(fixture.exchange_application());
                 }
+            }
+        }
+    }
+    /* Cross-provider AEAD forgery/replay resistance: test-only ciphertext
+     * from the OpenSSL socket, no direct GmSSL peer or local loopback mock. */
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        for (int server = 0; server < 2; ++server) {
+            it("GmSSL server=%d RSA=%d discards tampered OpenSSL GCM tags and authenticated replay",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0);
+                check_true(fixture.init());
+                check_true(fixture.handshake());
+                check_true(fixture.qualify_exporter());
+                check_true(fixture.reject_tampered_aead_tag_and_record_replay());
+                // The previously negotiated exporter must remain unchanged
+                // after a forged record, a valid record and a replay.
+                check_true(fixture.qualify_exporter());
             }
         }
     }
