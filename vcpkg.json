@@ -19,6 +19,7 @@
         "xml2"
       ]
     },
+    "gmssl",
     "boringssl",
     "libsrtp",
     "roaring",
