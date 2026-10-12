@@ -473,10 +473,40 @@ jobs:
           }
           & cmake --build --preset ci-platform-build
           if ($LASTEXITCODE -ne 0) { throw "production build failed for ${{ matrix.platform }}" }
-          if ("${{ matrix.platform }}" -ne "Android") {
-            & ctest --preset ci-platform-test
-            if ($LASTEXITCODE -ne 0) { throw "production CTest failed for ${{ matrix.platform }}" }
+          # A distinct GitHub Actions step does not retain the first CTest's
+          # DYLD_LIBRARY_PATH/LD_LIBRARY_PATH/PATH. Restore the exact installed
+          # SDK and vcpkg runtime locations before the production CTest gate.
+          $runtimeDirs = @()
+          foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
+            $root = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("bin", "lib")) {
+              $candidate = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $candidate -PathType Container) {
+                $runtimeDirs += $candidate
+              }
+            }
           }
+          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/${{ matrix.triplet }}"
+          foreach ($leaf in @("bin", "lib")) {
+            $candidate = Join-Path $vcpkgRuntime $leaf
+            if (Test-Path -LiteralPath $candidate -PathType Container) {
+              $runtimeDirs += $candidate
+            }
+          }
+          if ($IsWindows) {
+            $env:PATH = ($runtimeDirs + $env:PATH) -join [IO.Path]::PathSeparator
+          } elseif ($IsMacOS) {
+            $parts = @($runtimeDirs)
+            if (-not [string]::IsNullOrWhiteSpace($env:DYLD_LIBRARY_PATH)) { $parts += $env:DYLD_LIBRARY_PATH }
+            $env:DYLD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          } else {
+            $parts = @($runtimeDirs)
+            if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
+            $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          }
+          & ctest --preset ci-platform-test
+          if ($LASTEXITCODE -ne 0) { throw "production CTest failed for ${{ matrix.platform }}" }
 
       - name: Install
         shell: pwsh
