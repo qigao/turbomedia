@@ -1,4 +1,5 @@
 #include <turbo_streamgraph_ffmpeg.h>
+#include <turbo_streamgraph_ffmpeg_async.h>
 #include <assert.h>
 
 int main(void) {
@@ -15,5 +16,12 @@ int main(void) {
     if (tm_ff_stats(source,&stats)!=TM_FF_OK || stats.frames_decoded) return 5;
     if (tm_ff_cancel(source)!=TM_FF_OK ||
         tm_ff_destroy(source)!=TM_FF_OK) return 6;
+    {
+        tm_ffa_decoder *async=NULL;
+        tm_ffa_stats_v1 a=TM_FFA_STATS_V1_INIT;
+        if (tm_ffa_create(&config,&async)!=TM_FF_OK) return 7;
+        if (tm_ffa_stats(async,&a)!=TM_FF_OK || a.decoded || a.worker_active) return 8;
+        if (tm_ffa_destroy(async)!=TM_FF_OK) return 9;
+    }
     return 0;
 }
