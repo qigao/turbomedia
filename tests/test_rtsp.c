@@ -940,6 +940,19 @@ static int rtsp_cnet_poll_to(cnet_client *owner,unsigned *counter) {
     }
     return 1;
 }
+/* A CNet send is owner-queued. Never spin only on the server callback
+ * after cnet_send_buffer: the Client Owner must poll to actually transmit
+ * the RTSP control bytes. This wait advances only the correct owner. */
+static int rtsp_cnet_poll_until_callback(cnet_client *owner,
+                                         _Atomic unsigned *entered) {
+    const uint64_t start=cmeta_monotonic_ms();
+    while(!atomic_load_explicit(entered,memory_order_acquire)) {
+        size_t events=0u;
+        if(cnet_client_poll(owner,10u,&events)!=SALTS_OK)return 0;
+        if(cmeta_monotonic_ms()-start>=RTSP_TEST_TIMEOUT_MS)return 0;
+    }
+    return 1;
+}
 static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     static const char uri[]="tcp://127.0.0.1:20560";
     static const char retired_request[]=
@@ -957,7 +970,7 @@ static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     rtsp_cnet_pending_fixture old={0},current={0};
     mem_buffer_t *send_buffer=NULL;
     int client_initialized=0;
-    int result;
+    int result=SALTS_OK;
     size_t events=0u;
 
     rtsp_test_state_init(&state);
@@ -1002,8 +1015,11 @@ static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     mem_buffer_release(send_buffer);send_buffer=NULL;
     check_equal(result,SALTS_OK);
     if(result!=SALTS_OK)goto cleanup;
-    if(!rtsp_test_wait_for_callback(&state.options_entered)) {
-        check_true(0);goto cleanup;
+    if(!rtsp_cnet_poll_until_callback(&client,&state.options_entered)) {
+        /* On a failed handshake, release the real server callback before
+         * TinyTest can jump out of the stack frame. */
+        result=SALTS_ETIMEDOUT;
+        goto cleanup;
     }
     check_equal(old.received,0u);
     /* Only the Client Owner operates this CNet instance. NativeIO is
@@ -1018,7 +1034,8 @@ static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     check_equal(old.overflow,0u);
     atomic_store_explicit(&state.options_release,1u,memory_order_release);
     if(!rtsp_test_wait_for_callback(&state.options_exited)) {
-        check_true(0);goto cleanup;
+        result=SALTS_ETIMEDOUT;
+        goto cleanup;
     }
     check_equal(atomic_load_explicit(&state.options_timed_out,
                                     memory_order_acquire),0u);
@@ -1072,6 +1089,10 @@ cleanup:
     }
     if(server)turbo_rtsp_server_destroy(server);
     rtsp_test_state_destroy(&state);
+    /* Report timeout only after both CNet and server callback owners
+     * are fully stopped; a fatal TinyTest assertion while a callback holds
+     * the stack would let that callback reach a returned fixture. */
+    check_equal(result,SALTS_OK);
 }
 
 
