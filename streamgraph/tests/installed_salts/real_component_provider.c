@@ -104,6 +104,7 @@ static int fixture_instance_destroy(void *self,const tm_test_instance_request *r
     fixture_instances_leave();
     return result;
 }
+static int fixture_wake(void *context);
 static int fixture_instance_cancel(void *self,const tm_test_instance_request *req) {
     unsigned i;
     int rc=-2;
