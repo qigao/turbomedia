@@ -53,3 +53,37 @@ The new `turbo_streamgraph_fanout.h` is a **single-owner-lane** bounded branch a
 - **owner APIs**: submit, take, acquire temporary FrameLease, settle, seal, discard-ready and destroy. Destroy refuses unreturned TAKEN pins; FrameStore lives longer than Fanout Owner.
 
 This is **not** yet the full execution scheduler: no Source/Processor factory invocation, codec flush/EOF, multi-thread MPSC admission, timers, GPU Fence, cross-process Shared Memory, or FFmpeg migration. All calls are serialized by the embedding Media Owner; no hidden executor. Tests prove three-branch ordering/backpressure, pin-credit rollback, stale ticket rejection and safe drain. [#165](https://github.com/qigao/turbomedia/issues/165) remains open.
+
+## M2 executable synthetic graph (Draft; owner-driven)
+
+`turbo_streamgraph_executor.h` connects a compiled `tm_sg_program` to actual
+Source/Processor/Sink callbacks and the CPU FrameStore + bounded Fanout. The
+first **explicitly supported** topology is one Source, one Processor and 1–8
+Sink nodes connected through typed CPU VideoFrame ports with resolved, nonzero
+format and timebase. An unrecognized DAG, GPU/ANY memory domain, missing
+binding, or unsupported port is rejected rather than run partially.
+
+The embedding caller owns **every** call and callback, including Source polls,
+Sink visits, stop and destroy. There are no threads, pollers, implicit retries,
+codec contexts or FFmpeg dependency. A Source copies at most one frame into a
+bounded scratch buffer, then FrameStore owns a single CPU copy; Processor and
+Sinks borrow short FrameLease views. For backpressure, the executor retains
+at most one uncommitted FrameRef or producer-filled scratch frame and does **not**
+poll Source again. This preserves an admitted recording frame when a branch or
+FrameStore has no space. The Sink policy is implemented by the existing
+`ordered.lossless`, `sample`, or `latest` Fanout Owner.
+
+EOS seals Fanout admission but leaves queued Sink work deliverable. A requested
+stop discards only an uncommitted frame; READY items require explicit
+`discard_ready` or delivery, and destroy returns BUSY while credits remain.
+Consumer callback failures are terminal for this slice; no action replay or
+automatic retry is introduced.
+
+`streamgraph_executor` CTest exercises synthetic Source/Processor/two Sink
+execution, ordered recording vs latest preview, full lossless and FrameStore
+backpressure, one pending frame with exactly-once Source progression, EOS,
+cancellation and failed Sink cleanup. It is **not** a generic graph executor,
+does not implement async callback completion, true cross-owner handoff, GPU
+fences, FFmpeg Flush/Drain or plugin generation leases. Those are separate
+qualification gates under [#165](https://github.com/qigao/turbomedia/issues/165)
+and [#166](https://github.com/qigao/turbomedia/issues/166).
