@@ -50,6 +50,7 @@ enum { TM_INSTANCE_CAPACITY=2 };
 typedef struct tm_fixture_instance {
     uint64_t id;
     tm_ffa_decoder *decoder;
+    _Atomic unsigned active;
 } tm_fixture_instance;
 static tm_fixture_instance fixture_instances[TM_INSTANCE_CAPACITY];
 static atomic_flag fixture_instances_lock=ATOMIC_FLAG_INIT;
@@ -92,7 +93,8 @@ static int fixture_instance_destroy(void *self,const tm_test_instance_request *r
         if(fixture_instances[i].id!=req->instance_id)continue;
         /* destroy is exclusive after owner-controlled join and settlement.
          * No auto-retry; an active Codec retains the slot and DSO Scope. */
-        if(tm_ffa_destroy(fixture_instances[i].decoder)!=TM_FF_OK) {
+        if(atomic_load_explicit(&fixture_instances[i].active,memory_order_acquire) ||
+           tm_ffa_destroy(fixture_instances[i].decoder)!=TM_FF_OK) {
             result=-4;break;
         }
         fixture_instances[i].decoder=NULL;
@@ -101,6 +103,68 @@ static int fixture_instance_destroy(void *self,const tm_test_instance_request *r
     }
     fixture_instances_leave();
     return result;
+}
+static int fixture_instance_cancel(void *self,const tm_test_instance_request *req) {
+    unsigned i;
+    int rc=-2;
+    if(!self || !req || req->size!=sizeof(*req) || !req->instance_id ||
+       req->provider_generation!=(uint64_t)*(int *)self)return -1;
+    fixture_instances_enter();
+    for(i=0u;i<TM_INSTANCE_CAPACITY;++i)
+        if(fixture_instances[i].id==req->instance_id) {
+            rc=tm_ffa_owner_cancel(fixture_instances[i].decoder)==TM_FF_OK?0:-3;
+            break;
+        }
+    fixture_instances_leave();
+    return rc;
+}
+static tm_fixture_instance *fixture_instance_acquire(uint64_t id) {
+    unsigned i;
+    tm_fixture_instance *slot=NULL;
+    fixture_instances_enter();
+    for(i=0u;i<TM_INSTANCE_CAPACITY;++i)
+        if(fixture_instances[i].id==id &&
+           !atomic_exchange_explicit(&fixture_instances[i].active,1u,
+                                     memory_order_acq_rel)) {
+            slot=&fixture_instances[i];
+            break;
+        }
+    fixture_instances_leave();
+    return slot;
+}
+static void fixture_instance_release(tm_fixture_instance *slot) {
+    atomic_store_explicit(&slot->active,0u,memory_order_release);
+}
+/* The instance call retains an active lease through the actual Codec call,
+ * Portal completion, and wake callback. Destroy refuses while it is active. */
+static int fixture_run_instance(void *self,const tm_test_decode_request *job) {
+    tm_fixture_instance *slot;
+    tm_ff_status rc;
+    if(!self || !job || job->size!=sizeof(*job) || !job->instance_id ||
+       !job->packet || !job->packet_size || job->packet_size>65536u ||
+       !job->portal || !job->wake_client || !job->ticket.incarnation ||
+       !job->ticket.generation)return -1;
+    slot=fixture_instance_acquire(job->instance_id);
+    if(!slot)return -4;
+    rc=tm_ffa_run_mjpeg(slot->decoder,job->packet,job->packet_size,
+                        job->portal,job->ticket,fixture_wake,job->wake_client);
+    fixture_instance_release(slot);
+    return rc==TM_FF_OK?*(int *)self:-3;
+}
+static int fixture_take_instance(void *self,const tm_test_take_request *req) {
+    tm_fixture_instance *slot;
+    tm_ff_status rc;
+    tm_ex_source_result got;
+    if(!self || !req || req->size!=sizeof(*req) || !req->instance_id ||
+       !req->luma || !req->out_bytes)return -1;
+    *req->out_bytes=0u;
+    slot=fixture_instance_acquire(req->instance_id);
+    if(!slot)return -4;
+    rc=tm_ffa_owner_accept(slot->decoder,req->ticket);
+    if(rc!=TM_FF_OK) { fixture_instance_release(slot);return -2; }
+    got=tm_ffa_owner_next_luma(slot->decoder,req->luma,req->capacity,req->out_bytes);
+    fixture_instance_release(slot);
+    return got==TM_EX_SOURCE_FRAME && *req->out_bytes==256u?256:-3;
 }
 /* This callback executes on the REAL Provider DSO call stack AFTER
  * tm_ffa_run_mjpeg publishes its exact terminal to the Portal. N can be
@@ -115,6 +179,7 @@ static int fixture_wake(void *context) {
 static int fixture_run_decode(void *self,const tm_test_decode_request *job) {
     tm_ff_config_v1 config=TM_FF_CONFIG_V1_INIT;
     tm_ff_status rc;
+    if(job && job->instance_id)return fixture_run_instance(self,job);
     if(!self || !job || job->size!=sizeof(*job) ||
        !job->packet || !job->packet_size || job->packet_size>65536u ||
        !job->portal || !job->ticket.incarnation ||
@@ -147,6 +212,7 @@ static int fixture_run_decode(void *self,const tm_test_decode_request *job) {
 static int fixture_take_luma(void *self,const tm_test_take_request *request) {
     tm_ff_status rc;
     tm_ex_source_result got;
+    if(request && request->instance_id)return fixture_take_instance(self,request);
     if(!self || !request || request->size!=sizeof(*request) ||
        !request->luma || !request->out_bytes || !fixture_decoder)return -1;
     *request->out_bytes=0u;
@@ -181,7 +247,8 @@ CMETA_IMPLEMENTS(tm_test_provider, tm_test_impl, 0u,
                   .entered=fixture_entered,
                   .release=fixture_release,
                   .create_instance=fixture_instance_create, 
-                  .destroy_instance=fixture_instance_destroy, 
+                  .destroy_instance=fixture_instance_destroy,
+                  .cancel_instance=fixture_instance_cancel, 
                   .run_decode=fixture_run_decode,
                   .take_luma=fixture_take_luma,
                   .finish_decode=fixture_finish_decode,
