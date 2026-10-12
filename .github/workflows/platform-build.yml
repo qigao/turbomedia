@@ -226,9 +226,11 @@ jobs:
             @{
               name = "SaltsNet"
               repo = "qigao/salts-net"
-              run = "38130946558"
+              # Exact six-RID artifact from SaltsNet ICE-close Draft #54.
+              # Not a published SDK; never resolve a different candidate.
+              run = "38264634750"
               artifact = "saltsnet-sdk-$rid"
-              expected = "c5f1f1a0d458eaabc263b4c975bcd18c9311af39"
+              expected = "c55153e38cc9ad4a6bf418eca9bb35de90985217"
               manifest = "saltsnet-sdk-manifest.txt"
               config = "lib/cmake/SaltsNet/SaltsNetConfig.cmake"
               root = "SALTSNET_ROOT"
@@ -462,6 +464,7 @@ jobs:
             if ("${{ matrix.platform }}" -eq "Windows" -and
                 $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
               $peerDestroyStageCount = 0
+              $whepPeerDestroyMs = [System.Collections.Generic.List[long]]::new()
               # CTest normally hides successful test stdout. Capture only the
               # schema-validated numeric timing and redacted failure counters;
               # never print verbose SFU/SDP, Authorization or raw test logs.
@@ -481,7 +484,11 @@ jobs:
                   } elseif ($line -match '\[ivr-stop-stage\] transport=(?:whip|whep) join_ms=\d+ delete_ms=\d+ peer_destroy_ms=\d+ result=-?\d+') {
                     # Redact by schema: only stop-phase numeric counters are
                     # printed, never HTTP locations, SDP or bearer tokens.
-                    Write-Host $Matches[0]
+                    $safeStopLine = $Matches[0]
+                    Write-Host $safeStopLine
+                    if ($safeStopLine -match '\[ivr-stop-stage\] transport=whep join_ms=\d+ delete_ms=\d+ peer_destroy_ms=(\d+) result=-?\d+') {
+                      $whepPeerDestroyMs.Add([long]$Matches[1])
+                    }
                   } elseif ($line -match '\[whip-restart\] stage=(?:initial-whip|initial-whep|initial-rtp|post-sfu-restart|post-sfu-restart-whep|post-sfu-restart-rtp|post-sfu-stop-whip-terminal|post-sfu-stop-whep-terminal|post-sfu-restart-room) sfu_generation=\d+ child_alive=[01] whip_connected_now=[01] whep_connected_now=[01] whip_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} whep_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} child_log_lines=\d+ ice=\d+ dtls=\d+ errors=\d+') {
                     # Only the schema-validated, token-free counters can escape.
                     Write-Host $Matches[0]
@@ -496,6 +503,17 @@ jobs:
               }
               if ($peerDestroyStageCount -lt 4) {
                 throw "Windows SFU/WHIP peer destruction phase diagnostics missing"
+              }
+              # SaltsNet #53: active ICE Owner checks must drain without waiting
+              # for their 12s connectivity deadline after close admission.
+              # Preserve RFC 7675 consent and the ordinary HTTP DELETE result.
+              if ($whepPeerDestroyMs.Count -ne 2) {
+                throw "Windows WHEP teardown duration evidence missing"
+              }
+              foreach ($durationMs in $whepPeerDestroyMs) {
+                if ($durationMs -gt 2000) {
+                  throw "Windows WHEP ICE Owner shutdown exceeded 2s teardown gate"
+                }
               }
             }
           }
