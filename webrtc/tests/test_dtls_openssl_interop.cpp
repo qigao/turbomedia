@@ -109,7 +109,7 @@ struct IndependentPair {
     }
 
     bool init() {
-        if (OpenSSL_version_major() != 3 || !srtp_name(profile))
+        if (OPENSSL_version_major() != 3 || !srtp_name(profile))
             return failure("unsupported-reference-version-or-profile");
         if (dtls_test_identity(rsa_identity, &gm_certificate, &gm_private_key) ||
             dtls_test_identity(rsa_identity, &external_certificate, &external_private_key))
