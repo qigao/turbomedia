@@ -18,7 +18,7 @@
 
 static atomic_int g_context_count = 0;
 static cmeta_once_t g_sctp_once = SALTS_ONCE_INIT;
-static atomic_int g_sctp_init_result = ATOMIC_VAR_INIT(-1);
+static atomic_int g_sctp_initialized = 0;
 /* In no-thread mode the native timer queue belongs to the process, not to a
  * peer. Serialize timer dispatch across callers; a synchronous user callback
  * can reenter the public pump without recursively acquiring this mutex. */
@@ -32,7 +32,7 @@ static void sctp_global_init_once(void) {
     usrsctp_init_nothreads(0, sctp_outbound_packet_cb, NULL);
     usrsctp_sysctl_set_sctp_ecn_enable(0);
     usrsctp_sysctl_set_sctp_nr_outgoing_streams_default(SCTP_MAX_STREAMS);
-    atomic_store_explicit(&g_sctp_init_result, 0, memory_order_release);
+    atomic_store_explicit(&g_sctp_initialized, 1, memory_order_release);
 }
 
 /* The public no-argument timer pump supplies real elapsed milliseconds to
@@ -45,7 +45,7 @@ static void sctp_global_init_once(void) {
  * fallback transport or automatic replay is introduced. */
 void sctp_global_poll_timers(void) {
     if (g_sctp_timer_dispatching ||
-        atomic_load_explicit(&g_sctp_init_result, memory_order_acquire) != 0)
+        atomic_load_explicit(&g_sctp_initialized, memory_order_acquire) == 0)
         return;
 
     cmeta_mutex_lock(&g_sctp_timer_mutex);
@@ -121,7 +121,7 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
 int sctp_global_init(void) {
     atomic_fetch_add_explicit(&g_context_count, 1, memory_order_relaxed);
     cmeta_once(&g_sctp_once, sctp_global_init_once);
-    if (atomic_load_explicit(&g_sctp_init_result, memory_order_acquire) != 0) {
+    if (atomic_load_explicit(&g_sctp_initialized, memory_order_acquire) == 0) {
         atomic_fetch_sub_explicit(&g_context_count, 1, memory_order_relaxed);
         return -1;
     }
