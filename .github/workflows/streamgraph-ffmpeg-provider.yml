@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [native, asan-ubsan]
+        mode: [native, asan-ubsan, tsan]
     steps:
       - uses: actions/checkout@v4
       - name: Install desktop libavcodec development dependencies
@@ -40,6 +40,11 @@ jobs:
             opts+=(-DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer")
             opts+=(-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined")
             opts+=(-DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined")
+          elif [ "${{ matrix.mode }}" = "tsan" ]; then
+            opts+=(-DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer")
+            opts+=(-DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer")
+            opts+=(-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread")
+            opts+=(-DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread")
           fi
           cmake -S streamgraph -B "streamgraph/build/ffmpeg-${{ matrix.mode }}" -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -47,7 +52,7 @@ jobs:
             -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON \
             "${opts[@]}"
           cmake --build "streamgraph/build/ffmpeg-${{ matrix.mode }}" \
-            --target streamgraph_ffmpeg_decode_test
+            --target streamgraph_ffmpeg_decode_test streamgraph_ffmpeg_async_test
       - name: Independently install and consume FFmpeg adapter SDK
         shell: bash
         run: |
@@ -69,6 +74,10 @@ jobs:
             cmake_opts+=(-DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer")
             cmake_opts+=(-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined")
             export ASAN_OPTIONS=detect_leaks=1
+          elif [ "${{ matrix.mode }}" = "tsan" ]; then
+            cmake_opts+=(-DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer")
+            cmake_opts+=(-DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer")
+            cmake_opts+=(-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread")
           fi
           cmake "${cmake_opts[@]}"
           cmake --build "$RUNNER_TEMP/ffmpeg-independent-${{ matrix.mode }}"
@@ -80,4 +89,5 @@ jobs:
           set -euo pipefail
           if [ "${{ matrix.mode }}" = "asan-ubsan" ]; then export ASAN_OPTIONS=detect_leaks=1; fi
           ctest --test-dir "streamgraph/build/ffmpeg-${{ matrix.mode }}" \
-            -R '^streamgraph_ffmpeg_decode$' --no-tests=error --output-on-failure --timeout 60
+            -R '^streamgraph_ffmpeg_(decode|async)
+ --no-tests=error --output-on-failure --timeout 60
