@@ -1,5 +1,6 @@
 #include "turbo_rtsp.h"
 #include "turbo_rtsp_rtp.h"
+#include "turbo_rtsp_sdp.h"
 
 #include <http_client/http.h>
 #include <http_server/http.h>
@@ -204,6 +205,8 @@ typedef struct {
     int teardown_count;
     int interleaved_count;
     int close_count;
+    int require_mpvideo_sdp; /* immutable test-server policy before start */
+    int accepted_mpvideo_sdp,rejected_mpvideo_sdp;
     /* M15d test-only: one actual CNet RTSP handler remains on the server's
      * callback stack until the Media Owner closes the old client Session.
      * These flags do not replace or modify CNet's original completion. */
@@ -318,15 +321,38 @@ static int rtsp_test_describe(
     return turbo_rtsp_response_describe(response, sdp, sizeof(sdp) - 1u);
 }
 
+/* Test-only strict profile negotiation at the REAL RTSP control plane.
+ * RFC2250 PT32 MPEG Video ES is never interchangeable with H264 or
+ * MPEG2-TS PT33. This gate runs on the server's live CNet callback, before
+ * the host admits any RTP bytes to a bounded tm_ffd Codec Instance. */
 static int rtsp_test_announce(
     turbo_rtsp_session_t *session,
     const turbo_rtsp_request_t *request,
     turbo_rtsp_response_t *response,
     void *user) {
     rtsp_test_state_t *state = (rtsp_test_state_t *)user;
-    (void)session;
     (void)request;
     rtsp_test_increment(state, &state->announce_count);
+    if(state->require_mpvideo_sdp) {
+        const turbo_rtsp_message_t *message=
+            turbo_rtsp_session_get_last_message(session);
+        turbo_rtsp_sdp_description_t parsed;
+        int good=message && message->body && message->body_len &&
+            turbo_rtsp_sdp_parse(message->body,message->body_len,&parsed)==0 &&
+            parsed.media_count==1u &&
+            strcmp(parsed.media[0].media,"video")==0 &&
+            strcmp(parsed.media[0].proto,"RTP/AVP")==0 &&
+            parsed.media[0].payload_type==32 &&
+            strcmp(parsed.media[0].encoding_name,"MPV")==0 &&
+            parsed.media[0].clock_rate==90000;
+        if(!good) {
+            rtsp_test_increment(state,&state->rejected_mpvideo_sdp);
+            response->status_code=415;
+            response->reason="Unsupported Media Type";
+            return 0;
+        }
+        rtsp_test_increment(state,&state->accepted_mpvideo_sdp);
+    }
     return turbo_rtsp_response_announce(response);
 }
 
