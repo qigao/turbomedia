@@ -128,24 +128,29 @@ typedef struct provider_worker {
     uint8_t compressed[TM_ENCODED_CAPACITY];
     size_t compressed_size;
     uint8_t luma[TM_LUMA_BYTES];
+    size_t luma_bytes;
 #endif
 } provider_worker;
 static thread_result THREAD_CALL invoke_provider(void *context) {
     provider_worker *worker=(provider_worker *)context;
     /* This is a REAL method call into the Salts-loaded Provider DSO. */
 #ifdef TM_TEST_FFMPEG_DSO
-    worker->result=tm_test_provider_decode_mjpeg(
-        &worker->service,worker->compressed,worker->compressed_size,
-        worker->luma,sizeof(worker->luma));
+    tm_test_decode_request job={0};
+    job.size=sizeof(job);
+    job.packet=worker->compressed;
+    job.packet_size=worker->compressed_size;
+    job.portal=worker->completion;
+    job.ticket=worker->ticket;
+    job.wake_client=worker->wake_owner;
+    /* The actual tm_ffa_run_mjpeg inside this Plugin DSO publishes and
+     * wakes; the wrapper must NOT complete or wake a second time. */
+    worker->result=tm_test_provider_run_decode(&worker->service,&job);
 #else
     worker->result=tm_test_provider_get(&worker->service);
-#endif
     assert(tm_pc_complete(worker->completion,worker->ticket,worker->result)
            ==TM_PC_OK);
-    /* Submit the terminal value BEFORE waking its fixed Media/CNet Owner.
-     * Wake is not a completion ACK or license to release the old DSO Scope.
-     * This is the sole CNet operation permitted on Provider callback thread. */
     worker->wake_status=cnet_client_wake(worker->wake_owner);
+#endif
     atomic_store_explicit(&worker->returned,1u,memory_order_release);
 #if defined(_WIN32)
     return 0;
@@ -238,6 +243,7 @@ typedef struct terminal_owner {
     unsigned rejections;
 #ifdef TM_TEST_FFMPEG_DSO
     provider_worker *decoded;
+    tm_test_provider service;
     unsigned frame_ready,frame_visited,frame_sink_visited;
 #endif
 } terminal_owner;
@@ -302,6 +308,16 @@ static int accept_terminal(void *ctx,const tm_pc_result_v1 *terminal) {
     }
 #ifdef TM_TEST_FFMPEG_DSO
     assert(o->decoded!=NULL);
+    {
+        tm_test_take_request request={0};
+        request.size=sizeof(request);
+        request.ticket=o->decoded->ticket;
+        request.luma=o->decoded->luma;
+        request.capacity=sizeof(o->decoded->luma);
+        request.out_bytes=&o->decoded->luma_bytes;
+        assert(tm_test_provider_take_luma(&o->service,&request)==TM_LUMA_BYTES);
+        assert(o->decoded->luma_bytes==TM_LUMA_BYTES);
+    }
     o->frame_ready=1u;
     assert(tm_ex_pump_source(o->executor)==TM_EX_OK);
     assert(tm_ex_pump_sink(o->executor,0u)==TM_EX_OK);
@@ -422,7 +438,11 @@ static void reconcile_cancelled_terminal(
     tm_pc_result_v1 result=TM_PC_RESULT_V1_INIT;
     o->expected_correlation=501u;
     o->expected_outcome=TM_PC_CANCELLED;
+#ifdef TM_TEST_FFMPEG_DSO
+    o->expected_status=TM_FF_OK;
+#else
     o->expected_status=101;
+#endif
     o->expected_generation=101u;
     o->reject_once=1u;
     assert(tm_ho_seal(o->inbox)==TM_HO_OK);
@@ -513,6 +533,7 @@ int main(int argc,char **argv) {
     work_n.compressed_size=tm_make_mjpeg(
         &encoder,101u,work_n.compressed,sizeof(work_n.compressed));
     delivery_n.decoded=&work_n;
+    delivery_n.service=value_n;
 #endif
     atomic_init(&work_n.returned,0u);
     start_worker(&thread_n,&work_n);
@@ -549,6 +570,7 @@ int main(int argc,char **argv) {
     work_n1.compressed_size=tm_make_mjpeg(
         &encoder,102u,work_n1.compressed,sizeof(work_n1.compressed));
     delivery_n1.decoded=&work_n1;
+    delivery_n1.service=value_n1;
 #endif
     atomic_init(&work_n1.returned,0u);
     start_worker(&thread_n1,&work_n1);
@@ -556,7 +578,11 @@ int main(int argc,char **argv) {
     assert(tm_test_provider_release(&value_n1)==0);
     advance_after_provider_wake(&wake_client);
     join_worker(&thread_n1);
+#ifdef TM_TEST_FFMPEG_DSO
+    assert(tm_test_provider_wake_status(&value_n1)==SALTS_OK);
+#else
     assert(work_n1.wake_status==SALTS_OK);
+#endif
     assert(atomic_load_explicit(&work_n1.returned,memory_order_acquire)==1u);
     assert(work_n1.result==102);
 #ifdef TM_TEST_FFMPEG_DSO
@@ -566,9 +592,16 @@ int main(int argc,char **argv) {
     assert(work_n1.luma[0]==work_n1.luma[TM_LUMA_BYTES-1u]);
 #endif
     assert(tm_pc_seal(portal_n1)==TM_PC_OK);
+#ifdef TM_TEST_FFMPEG_DSO
+    settle_terminal(&delivery_n1,601u,TM_PC_COMPLETED,TM_FF_OK,102u);
+#else
     settle_terminal(&delivery_n1,601u,TM_PC_COMPLETED,102,102u);
+#endif
     owner_drain(&delivery_n1);
     assert(tm_pc_destroy(portal_n1)==TM_PC_OK);
+#ifdef TM_TEST_FFMPEG_DSO
+    assert(tm_test_provider_finish_decode(&value_n1)==0);
+#endif
 
     assert(salts_component_plugin_runtime_close(&runtime,&previous)
            ==SALTS_COMPONENT_PLUGIN_OK);
@@ -591,7 +624,11 @@ int main(int argc,char **argv) {
     assert(tm_test_provider_release(&value_n)==0);
     advance_after_provider_wake(&wake_client);
     join_worker(&thread_n);
+#ifdef TM_TEST_FFMPEG_DSO
+    assert(tm_test_provider_wake_status(&value_n)==SALTS_OK);
+#else
     assert(work_n.wake_status==SALTS_OK);
+#endif
     assert(work_n.result==101);
 #ifdef TM_TEST_FFMPEG_DSO
     assert(abs((int)work_n.luma[0]-101)<=7);
@@ -609,6 +646,9 @@ int main(int argc,char **argv) {
     }
     owner_drain(&delivery_n);
     assert(tm_pc_destroy(portal_n)==TM_PC_OK);
+#ifdef TM_TEST_FFMPEG_DSO
+    assert(tm_test_provider_finish_decode(&value_n)==0);
+#endif
     assert(salts_component_plugin_generation_drain(&runtime,&n.generation)
            ==SALTS_COMPONENT_PLUGIN_BUSY);
     assert(salts_component_plugin_scope_release(&scope_n)
