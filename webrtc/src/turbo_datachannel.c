@@ -1705,9 +1705,14 @@ void turbo_dc_channel_close(turbo_dc_channel_t *channel) {
     cmeta_mutex_unlock(&peer->operation_mutex);
 
     sctp_receive_discard_stream(peer, id);
-    /* Reset stream outside operation_mutex: usrsctp may synchronously invoke
-     * transport or application code that needs this same admission lock. */
-    if (peer->sctp.socket && sctp_reset_channel_stream(peer, id) != 0)
+    /* Never read peer->sctp.socket outside native Owner admission: foreign
+     * peer close clears that pointer under operation_mutex. Reset returns
+     * positive if the terminal gate has already sealed new operations;
+     * this is a normal close, not an SCTP send error. A real live-admission
+     * failure or native setsockopt failure still reports an error. No user
+     * or transport callback is invoked under operation_mutex. */
+    int reset_result = sctp_reset_channel_stream(peer, id);
+    if (reset_result < 0)
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, "stream reset failed");
     if (on_close)
         on_close(channel, user_data);
