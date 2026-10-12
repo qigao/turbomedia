@@ -186,6 +186,7 @@ typedef struct terminal_delivery {
     uint64_t correlation;
     tm_ex_status expected_pump;
     uint32_t delivered;
+    uint32_t reject_once,refused;
 } terminal_delivery;
 static int deliver_to_graph(void *ctx,const tm_pc_result_v1 *terminal) {
     terminal_delivery *o=(terminal_delivery *)ctx;
@@ -197,6 +198,11 @@ static int deliver_to_graph(void *ctx,const tm_pc_result_v1 *terminal) {
     assert(terminal->completion_observed==1u);
     assert(terminal->provider_status==TM_FF_OK);
     assert(tm_od_step_completion(o->owner,&recursive)==TM_OD_EBUSY);
+    if(o->reject_once) {
+        --o->reject_once;
+        ++o->refused;
+        return -1; /* Portal TAKEN + luma buffer both remain unresolved. */
+    }
     assert(tm_ffa_owner_accept(o->decoder,o->ticket)==TM_FF_OK);
     pumped=tm_ex_pump_source(o->executor);
     assert(pumped==o->expected_pump);
@@ -353,6 +359,82 @@ static void test_complete_then_explicit_discard(void) {
     assert(tm_ffa_destroy(decoder)==TM_FF_OK);
     encoder_destroy(&encoder);
 }
+static void test_rejected_terminal_keeps_real_decoded_credit(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_pc_config_v1 pc=TM_PC_CONFIG_V1_INIT;
+    tm_ho_config_v1 hc=TM_HO_CONFIG_V1_INIT;
+    tm_od_config_v1 oc=TM_OD_CONFIG_V1_INIT;
+    tm_ffa_decoder *decoder=NULL;
+    tm_pc_portal *portal=NULL;
+    tm_ho_inbox *inbox=NULL;
+    tm_od_owner *owner=NULL;
+    tm_sg_program *g=graph();
+    tm_fs_store *s=store();
+    tm_ex_owner *ex;
+    codec_fixture encoder={0};
+    observed visits[3]={0};
+    terminal_delivery delivery={0};
+    tm_ffa_stats_v1 stats=TM_FFA_STATS_V1_INIT;
+    tm_pc_snapshot_v1 snapshot=TM_PC_SNAPSHOT_V1_INIT;
+    tm_pc_result_v1 result=TM_PC_RESULT_V1_INIT;
+    worker w={0};
+    pthread_t thread;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=MAX_PACKET;
+    pc.capacity=1u;pc.provider_generation=44u;
+    hc.capacity=1u;
+    assert(tm_ffa_create(&cfg,&decoder)==TM_FF_OK);
+    assert(tm_pc_create(&pc,&portal)==TM_PC_OK);
+    encoder_init(&encoder);
+    ex=executor(g,s,decoder,visits);
+    assert(tm_ho_create(&hc,&inbox)==TM_HO_OK);
+    assert(tm_od_create(inbox,ex,s,&oc,&owner)==TM_OD_OK);
+    delivery.owner=owner;delivery.executor=ex;delivery.decoder=decoder;
+    delivery.reject_once=1u;delivery.correlation=2001u;
+    delivery.expected_pump=TM_EX_OK;
+    assert(tm_od_bind_completion(owner,portal,deliver_to_graph,&delivery)==TM_OD_OK);
+    w.decode=decoder;w.portal=portal;
+    w.count=make_packet(&encoder,123u,w.compressed,sizeof(w.compressed));
+    atomic_init(&w.woke,0u);atomic_init(&w.release,0u);
+    assert(tm_pc_begin(portal,2001u,&w.ticket)==TM_PC_OK);
+    delivery.ticket=w.ticket;
+    assert(pthread_create(&thread,NULL,worker_run,&w)==0);
+    await_wake(&w);
+    assert(tm_od_step_completion(owner,&result)==TM_OD_EDELIVERY);
+    assert(result.outcome==TM_PC_COMPLETED && result.correlation==2001u);
+    assert(delivery.refused==1u && delivery.delivered==0u);
+    assert(tm_od_pending_completion(owner,&result)==TM_OD_OK);
+    assert(tm_od_step_completion(owner,&result)==TM_OD_EBUSY);
+    assert(delivery.refused==1u); /* Strictly no automatic re-emission. */
+    assert(tm_od_destroy(owner)==TM_OD_EBUSY);
+    assert(tm_pc_snapshot(portal,&snapshot)==TM_PC_OK);
+    assert(snapshot.taken==1u && !snapshot.drained);
+    assert(tm_ffa_stats(decoder,&stats)==TM_FF_OK);
+    assert(stats.state==2u && stats.decoded==1u && stats.delivered==0u);
+    assert(tm_ffa_destroy(decoder)==TM_FF_ESTATE);
+    /* Host explicitly reconciles the unknown downstream acceptance and
+     * discards the frame; no FFmpeg decoder retry or duplicate graph effect. */
+    assert(tm_ffa_owner_cancel(decoder)==TM_FF_OK);
+    assert(tm_od_settle_pending_completion(owner)==TM_OD_OK);
+    assert(tm_od_settle_pending_completion(owner)==TM_OD_EMPTY);
+    atomic_store_explicit(&w.release,1u,memory_order_release);
+    assert(pthread_join(thread,NULL)==0);
+    assert(w.result==TM_FF_OK);
+    assert(tm_ffa_stats(decoder,&stats)==TM_FF_OK);
+    assert(stats.discarded==1u && stats.delivered==0u &&
+           stats.worker_active==0u);
+    assert(tm_pc_seal(portal)==TM_PC_OK);
+    assert(tm_ho_seal(inbox)==TM_HO_OK);
+    assert(tm_od_destroy(owner)==TM_OD_OK);
+    assert(tm_ho_destroy(inbox)==TM_HO_OK);
+    assert(tm_ex_stop(ex)==TM_EX_OK);
+    assert(tm_ex_destroy(ex)==TM_EX_OK);
+    assert(tm_pc_destroy(portal)==TM_PC_OK);
+    assert(tm_ffa_destroy(decoder)==TM_FF_OK);
+    encoder_destroy(&encoder);
+    assert(tm_fs_seal(s)==TM_FS_OK);
+    assert(tm_fs_destroy(s)==TM_FS_OK);
+    tm_sg_program_destroy(g);
+}
 static void test_cancel_before_worker_admission(void) {
     tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
     tm_pc_config_v1 pc=TM_PC_CONFIG_V1_INIT;
@@ -384,6 +466,7 @@ int main(void) {
     test_real_async_provider_and_credits();
     test_cancel_before_worker_admission();
     test_complete_then_explicit_discard();
+    test_rejected_terminal_keeps_real_decoded_credit();
     puts("Real FFmpeg async worker -> typed Portal -> Media Owner FrameStore: PASS");
     return 0;
 }
