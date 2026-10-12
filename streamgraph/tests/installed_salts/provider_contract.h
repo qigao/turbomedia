@@ -29,8 +29,8 @@ typedef struct tm_test_take_request {
     size_t capacity;
     size_t *out_bytes;
 } tm_test_take_request;
-#define TM_TEST_PROVIDER_FFMPEG_METHOD(X, I) \
-    X(I, R1, int, run_decode, const tm_test_decode_request *, request) \
+typedef struct tm_test_instance_request {\n    size_t size;\n    uint64_t instance_id;\n    uint64_t provider_generation;\n} tm_test_instance_request;\n#define TM_TEST_PROVIDER_FFMPEG_METHOD(X, I) \
+    X(I, R1, int, create_instance, const tm_test_instance_request *, request) \\\n    X(I, R1, int, destroy_instance, const tm_test_instance_request *, request) \\\n    X(I, R1, int, run_decode, const tm_test_decode_request *, request) \
     X(I, R1, int, take_luma, const tm_test_take_request *, request) \
     X(I, R0, int, finish_decode, _) \
     X(I, R0, int, wake_status, _)
