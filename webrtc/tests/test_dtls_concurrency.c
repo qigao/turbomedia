@@ -316,6 +316,8 @@ typedef struct {
     unsigned dropped_packets;
     unsigned connected_events;
     unsigned failed_events;
+    int nested_timer_armed;
+    unsigned nested_timer_calls;
     int drop_first_ready_packet;
     int send_failed;
     turbo_dc_channel_t *channel; /* Borrowed from the peer. */
@@ -329,6 +331,9 @@ typedef struct {
 } packet_endpoint_t;
 
 static packet_endpoint_t endpoints[2];
+/* Set only while the test itself calls the real native timer pump. An
+ * observed callback with this flag belongs to usrsctp_handle_timers(). */
+static SALTS_THREAD_LOCAL int g_test_timer_dispatching = 0;
 
 static void queue_packet(void *transport, const void *data, size_t len) {
     packet_endpoint_t *endpoint = transport;
@@ -337,6 +342,7 @@ static void queue_packet(void *transport, const void *data, size_t len) {
     srtp_keying_material_t keys;
     uint16_t profile = turbo_dc_peer_get_srtp_keys(endpoint->peer, &keys);
     tstr packet = tstr_new_len(data, len);
+    int nested_timer_call = 0;
     cmeta_mutex_lock(&endpoint->mutex);
     if (len > endpoint->max_packet) endpoint->max_packet = len;
     if (len && ((const uint8_t *)data)[0] == 23 && len > endpoint->max_application_packet)
@@ -355,7 +361,16 @@ static void queue_packet(void *transport, const void *data, size_t len) {
         endpoint->send_failed = 1;
         tstr_free(packet);
     }
+    if (g_test_timer_dispatching && endpoint->nested_timer_armed &&
+        endpoint->nested_timer_calls == 0) {
+        ++endpoint->nested_timer_calls;
+        nested_timer_call = 1;
+    }
     cmeta_mutex_unlock(&endpoint->mutex);
+    /* An actual usrsctp timer-triggered transport callback reenters the
+     * exported pump on its own thread, after releasing all fixture locks.
+     * The outer pump must not try to recursively lock the global queue. */
+    if (nested_timer_call) turbo_dc_handle_timers();
 }
 
 static void record_packet_endpoint_state(turbo_dc_peer_t *peer,
@@ -668,6 +683,9 @@ spec("SCTP manual timer elapsed progression") {
         unsigned first_send = endpoints[0].packets;
         cmeta_mutex_unlock(&endpoints[0].mutex);
         check_true(first_send > before);
+        cmeta_mutex_lock(&endpoints[0].mutex);
+        endpoints[0].nested_timer_armed = 1;
+        cmeta_mutex_unlock(&endpoints[0].mutex);
 
         /* Do not deliver the DATA packet or call send again. Only a native
          * SCTP timer can produce another outbound packet for this peer.
@@ -676,13 +694,19 @@ spec("SCTP manual timer elapsed progression") {
         uint64_t deadline = cmeta_monotonic_ms() + 4000u;
         unsigned later = first_send;
         while (later <= first_send && cmeta_monotonic_ms() < deadline) {
+            g_test_timer_dispatching = 1;
             turbo_dc_handle_timers();
+            g_test_timer_dispatching = 0;
             cmeta_mutex_lock(&endpoints[0].mutex);
             later = endpoints[0].packets;
             cmeta_mutex_unlock(&endpoints[0].mutex);
             if (later <= first_send) cmeta_sleep_ms(10);
         }
         check_true(later > first_send);
+        cmeta_mutex_lock(&endpoints[0].mutex);
+        unsigned nested = endpoints[0].nested_timer_calls;
+        cmeta_mutex_unlock(&endpoints[0].mutex);
+        check_equal(nested, 1u);
     }
 }
 
