@@ -363,6 +363,10 @@ jobs:
               $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195")) {
             $args += "-DTURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON"
           }
+          if ("${{ matrix.platform }}" -eq "Windows" -and
+              $env:TURBOMEDIA_CI_HEAD_REF -eq "fix/dc-channel-callback-leases-195") {
+            $args += "-DTURBO_MEDIA_TEST_WINDOWS_LINK_MAP:BOOL=ON"
+          }
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
           if ("${{ matrix.platform }}" -eq "Linux" -and
@@ -437,6 +441,60 @@ jobs:
           }
           & cmake --build --preset ci-platform-build
           if ($LASTEXITCODE -ne 0) { throw "build failed for ${{ matrix.platform }}" }
+
+          # Private test-only symbolization of the *previous* confirmed
+          # background-fault RVAs. MSVC /MAP is linker metadata, not a new
+          # runtime code path. Never print absolute virtual addresses,
+          # stack contents, credentials, SDP, or a complete symbol table.
+          if ("${{ matrix.platform }}" -eq "Windows" -and
+              $env:TURBOMEDIA_CI_HEAD_REF -eq "fix/dc-channel-callback-leases-195") {
+            $mapJobs = @(
+              @{ module = "datachannel"
+                 file = (Join-Path $build "turbo_media_datachannel.map")
+                 rvas = @(142375, 127190, 54509, 49664, 16946) },
+              @{ module = "webrtc"
+                 file = (Join-Path $build "turbo_media_webrtc.map")
+                 rvas = @(18106, 35948) }
+            )
+            foreach ($job in $mapJobs) {
+              if (-not (Test-Path -LiteralPath $job.file -PathType Leaf)) {
+                throw "Required Windows private symbol map missing for $($job.module)"
+              }
+              $preferred = [UInt64]0
+              $symbols = [System.Collections.Generic.List[object]]::new()
+              foreach ($mapLine in [IO.File]::ReadLines($job.file)) {
+                if ($mapLine -match 'Preferred load address is\s+([0-9a-fA-F]+)') {
+                  $preferred = [Convert]::ToUInt64($Matches[1], 16)
+                }
+                if ($mapLine -match '^\s*[0-9a-fA-F]{4}:[0-9a-fA-F]{8,16}\s+(\S+)\s+([0-9a-fA-F]{8,16})\s+f\s+') {
+                  $symbols.Add(@{name=$Matches[1]; va=[Convert]::ToUInt64($Matches[2],16)})
+                }
+              }
+              if ($preferred -eq 0 -or $symbols.Count -eq 0) {
+                throw "Missing public code symbols in $($job.module) link map"
+              }
+              foreach ($rva in $job.rvas) {
+                $closest = $null
+                $nearestRva = [UInt64]0
+                foreach ($sym in $symbols) {
+                  if ($sym.va -lt $preferred) { continue }
+                  $symbolRva = $sym.va - $preferred
+                  if ($symbolRva -le [UInt64]$rva -and
+                      ($null -eq $closest -or $symbolRva -gt $nearestRva)) {
+                    $closest = $sym
+                    $nearestRva = $symbolRva
+                  }
+                }
+                if ($closest) {
+                  $safe = [string]$closest.name -replace '[^A-Za-z0-9_@.?$:-]', '_'
+                  $within = [UInt64]$rva - $nearestRva
+                  Write-Host "[stack-symbol] module=$($job.module) rva=$rva symbol=$safe offset=$within"
+                } else {
+                  Write-Host "[stack-symbol] module=$($job.module) rva=$rva symbol=unknown offset=0"
+                }
+              }
+            }
+          }
           & ccache --show-stats
           if ($LASTEXITCODE -ne 0) { throw "ccache stats failed" }
           if ("${{ matrix.platform }}" -ne "Android") {
