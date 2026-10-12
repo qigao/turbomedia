@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'docs/design/streamgraph-v2-*.md'
+      - 'docs/design/streamgraph-provider-dso-salts-gate.md'
       - '.github/workflows/streamgraph-diagrams.yml'
   pull_request:
     paths:
       - 'docs/design/streamgraph-v2-*.md'
+      - 'docs/design/streamgraph-provider-dso-salts-gate.md'
       - '.github/workflows/streamgraph-diagrams.yml'
   workflow_dispatch:
 
@@ -28,6 +30,7 @@ jobs:
           files: |
             docs/design/streamgraph-v2-architecture.md
             docs/design/streamgraph-v2-ownership-conformance.md
+            docs/design/streamgraph-provider-dso-salts-gate.md
           fail-on-warning: 'true'
           comment-on-pr: 'false'
       - name: Require architecture and lifecycle coverage
