@@ -436,7 +436,15 @@ jobs:
           & ccache --show-stats
           if ($LASTEXITCODE -ne 0) { throw "ccache stats failed" }
           if ("${{ matrix.platform }}" -ne "Android") {
-            & ctest --preset ci-platform-test
+            # Parallelize independent tests only on Windows. CTest honors
+            # RUN_SERIAL on the real WHIP/SFU restart test and existing
+            # RESOURCE_LOCK properties on tests sharing fixed ports.
+            # Never overlap SFU generation shutdown/restart with another test.
+            if ("${{ matrix.platform }}" -eq "Windows") {
+              & ctest --preset ci-platform-test --parallel 4
+            } else {
+              & ctest --preset ci-platform-test
+            }
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
             # Draft diagnostics only: two additional source-identical real
             # SFU restarts must both pass. No skipped tests, wider production

@@ -296,9 +296,14 @@ if(WIN32)
 endif()
 add_test(NAME test_ivr_whip_transport COMMAND test_ivr_whip_transport)
 set(TEST_IVR_WHIP_TRANSPORT_TIMEOUT_SECONDS 240)
+# SFU termination, terminal callbacks and same-port restart are lifecycle
+# conformance checks, not parallel load tests. Keep this full real-SFU case
+# exclusive even when the Windows CTest matrix runs other tests in parallel.
+# The two additional explicit Windows restart repetitions remain unchanged.
 set_tests_properties(test_ivr_whip_transport PROPERTIES
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  TIMEOUT ${TEST_IVR_WHIP_TRANSPORT_TIMEOUT_SECONDS})
+  TIMEOUT ${TEST_IVR_WHIP_TRANSPORT_TIMEOUT_SECONDS}
+  RUN_SERIAL TRUE)
 set_target_properties(test_ivr_whip_transport PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   OUTPUT_NAME "test_ivr_whip_transport"
