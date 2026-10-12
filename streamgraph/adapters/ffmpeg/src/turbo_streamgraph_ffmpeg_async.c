@@ -14,7 +14,7 @@ struct tm_ffa_decoder {
     size_t frame_bytes;
     _Atomic uint32_t lock;
     _Atomic uint32_t worker_active;
-    uint32_t state,armed,cancelled;
+    uint32_t state,armed,cancelled,eof_admitted;
     tm_pc_ticket_v1 ticket;
     uint64_t decoded,delivered,discarded,notifications_failed;
 };
@@ -73,7 +73,7 @@ tm_ff_status tm_ffa_run_mjpeg(
     if(atomic_exchange_explicit(&d->worker_active,1u,memory_order_acq_rel))
         return TM_FF_EFULL;
     ffa_lock(d);
-    if(d->state!=FFA_EMPTY || d->cancelled) {
+    if(d->state!=FFA_EMPTY || d->cancelled || d->eof_admitted) {
         ffa_unlock(d);
         atomic_store_explicit(&d->worker_active,0u,memory_order_release);
         return TM_FF_ESTATE;
@@ -127,6 +127,63 @@ tm_ff_status tm_ffa_run_mjpeg(
     atomic_store_explicit(&d->worker_active,0u,memory_order_release);
     return committed;
 }
+
+/* The normal packet path and this one-shot EOF path share the SAME
+ * worker_active owner gate and authoritative Portal. In particular,
+ * cancellation never calls tm_ff_cancel() from the Media Owner while
+ * libavcodec uses tm_ff_source on the Worker thread. */
+tm_ff_status tm_ffa_run_eof(
+    tm_ffa_decoder *d,tm_pc_portal *portal,tm_pc_ticket_v1 ticket,
+    tm_ffa_wake_fn wake,void *wake_context) {
+    tm_ff_status status=TM_FF_OK;
+    tm_ex_source_result decoded=TM_EX_SOURCE_FAILED;
+    tm_pc_status terminal;
+    size_t out_bytes=0u;
+    int notify_rc=0;
+    if(!d || !portal || !ticket.incarnation || !ticket.generation)
+        return TM_FF_EINVAL;
+    if(atomic_exchange_explicit(&d->worker_active,1u,memory_order_acq_rel))
+        return TM_FF_EFULL;
+    ffa_lock(d);
+    if(d->state!=FFA_EMPTY || d->cancelled || d->eof_admitted) {
+        ffa_unlock(d);
+        atomic_store_explicit(&d->worker_active,0u,memory_order_release);
+        return TM_FF_ESTATE; /* no second terminal for rejected admission */
+    }
+    d->state=FFA_DECODING;
+    d->eof_admitted=1u;
+    d->ticket=ticket;
+    ffa_unlock(d);
+
+    /* On this explicit worker, FFmpeg first receives a NULL packet and
+     * yields actual Codec EOF. No Media Owner FFmpeg calls can interleave. */
+    status=tm_ff_finish(d->codec);
+    if(status==TM_FF_OK) {
+        decoded=tm_ff_next_cpu_luma(d->codec,d->work,d->frame_bytes,&out_bytes);
+        if(decoded==TM_EX_SOURCE_EOS && out_bytes==0u)
+            status=TM_FF_EOF;
+        else
+            status=TM_FF_ECODEC; /* MJPEG-only: delayed output not admitted */
+    }
+    ffa_lock(d);
+    d->state=FFA_EMPTY;
+    if(d->cancelled)status=TM_FF_ESTATE;
+    ffa_unlock(d);
+
+    /* The one Portal completion is always AFTER the worker-owned codec
+     * call, even if the Owner won cancellation while inside libavcodec. */
+    terminal=tm_pc_complete(portal,ticket,(int32_t)status);
+    if(terminal!=TM_PC_OK)status=TM_FF_ESTATE;
+    if(wake)notify_rc=wake(wake_context);
+    if(notify_rc!=0) {
+        ffa_lock(d);
+        d->notifications_failed++;
+        ffa_unlock(d);
+    }
+    atomic_store_explicit(&d->worker_active,0u,memory_order_release);
+    return status;
+}
+
 tm_ff_status tm_ffa_owner_accept(tm_ffa_decoder *d,tm_pc_ticket_v1 ticket) {
     tm_ff_status rc=TM_FF_ESTALE;
     if(!d || !ticket.incarnation || !ticket.generation)return TM_FF_EINVAL;
