@@ -552,13 +552,15 @@ static int turbo_rtsp_server_enqueue(
     if (close_after) {
         session->close_after_flush = 1;
     }
-    cmeta_mutex_unlock(&server->mutex);
-
+    /* Wake is the only cross-owner CNet call. Keep the admission mutex
+     * until the wake has completed so shutdown cannot begin teardown
+     * between testing the live endpoint and signaling it. */
     if (session->io_kind == TURBO_RTSP_IO_STREAM && server->network_initialized) {
         (void)cnet_client_wake(&server->network);
     } else if (session->io_kind == TURBO_RTSP_IO_PACKET && server->packet_initialized) {
         (void)cnet_packet_wake(&server->packet_endpoint);
     }
+    cmeta_mutex_unlock(&server->mutex);
     return 0;
 }
 
@@ -1356,7 +1358,7 @@ static int turbo_rtsp_server_websocket_open(
     chttp_server_response *response) {
     turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)user;
     turbo_rtsp_session_t *session;
-    if (!server || server->stopping) {
+    if (!server || turbo_rtsp_server_is_stopping(server)) {
         return SALTS_ESHUTDOWN;
     }
     session = turbo_rtsp_server_session_allocate(server, TURBO_RTSP_IO_WEBSOCKET);
@@ -1496,10 +1498,23 @@ static int turbo_rtsp_server_packet_init(turbo_rtsp_server_t *server) {
     }
 }
 
+/* The stop flag is shared with the calling thread and all callbacks. A
+ * plain read here races the mutex-protected shutdown write under TSan. */
+static int turbo_rtsp_server_is_stopping(turbo_rtsp_server_t *server) {
+    int stopping;
+    cmeta_mutex_lock(&server->mutex);
+    stopping = server->stopping;
+    cmeta_mutex_unlock(&server->mutex);
+    return stopping;
+}
+
 static void turbo_rtsp_server_stream_accept(turbo_rtsp_server_t *server) {
     int ready = 0;
-    while (!server->stopping &&
+    while (!turbo_rtsp_server_is_stopping(server) &&
            cnet_listener_wait(&server->listener, 0u, &ready) == SALTS_OK && ready) {
+        /* Stop may arrive while the kernel readiness check was running.
+         * Never admit another session after that fence is visible. */
+        if (turbo_rtsp_server_is_stopping(server)) return;
         turbo_rtsp_session_t *session =
             turbo_rtsp_server_session_allocate(server, TURBO_RTSP_IO_STREAM);
         cnet_observer observer;
@@ -1564,19 +1579,25 @@ static void turbo_rtsp_server_worker(void *arg) {
         (void)cnet_listener_close(&server->listener);
     }
     if (server->network_initialized) {
+        /* Remove wake admission before destroying the NativeIO owner.
+         * Stop and cross-owner Send both check this flag under mutex. */
+        cmeta_mutex_lock(&server->mutex);
+        server->network_initialized = 0;
+        cmeta_mutex_unlock(&server->mutex);
         (void)cnet_client_stop(&server->network, TURBO_RTSP_SERVER_STOP_TIMEOUT_MS);
         (void)cnet_client_destroy(&server->network);
-        server->network_initialized = 0;
     }
     if (server->listener_initialized) {
         (void)cnet_listener_destroy(&server->listener);
         server->listener_initialized = 0;
     }
     if (server->packet_initialized) {
+        cmeta_mutex_lock(&server->mutex);
+        server->packet_initialized = 0;
+        cmeta_mutex_unlock(&server->mutex);
         (void)cnet_packet_endpoint_stop(
             &server->packet_endpoint, TURBO_RTSP_SERVER_STOP_TIMEOUT_MS);
         (void)cnet_packet_endpoint_destroy(&server->packet_endpoint);
-        server->packet_initialized = 0;
     }
 }
 
@@ -1806,13 +1827,15 @@ void turbo_rtsp_server_stop(turbo_rtsp_server_t *server) {
     cmeta_mutex_lock(&server->mutex);
     server->stopping = 1;
     server->started = 0;
-    cmeta_mutex_unlock(&server->mutex);
+    /* Synchronize with the worker's pre-destroy wake-admission fence.
+     * No wake may overlap a NativeIO endpoint teardown. */
     if (server->network_initialized) {
         (void)cnet_client_wake(&server->network);
     }
     if (server->packet_initialized) {
         (void)cnet_packet_wake(&server->packet_endpoint);
     }
+    cmeta_mutex_unlock(&server->mutex);
     if (server->worker_started) {
         (void)cmeta_thread_join(&server->worker);
         cmeta_thread_destroy(&server->worker);
