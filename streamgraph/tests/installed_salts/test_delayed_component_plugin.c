@@ -183,6 +183,10 @@ static int submit(tm_test_provider *p,tm_test_instance_request identity,
     free(temporary);
     return rc;
 }
+#ifdef TM_TEST_FFMPEG_INNER_GATE
+#include "delayed_flush_gate_test.inc"
+#endif
+
 int main(int argc,char **argv) {
     const cmeta_plugin_registry_config config={2};
     cmeta_plugin_registry registry={0};
@@ -395,9 +399,16 @@ int main(int argc,char **argv) {
         assert(quiet);
         assert(cmeta_plugin_registry_unload(&registry,ref_n)==CMETA_PLUGIN_OK);
     }
+#ifdef TM_TEST_FFMPEG_INNER_GATE
+    /* Exercise cancellation INSIDE the real delayed MPEG-2 Codec's NULL
+     * flush, under the original N+1 Scope and canonical Plugin loader. */
+    check_delayed_flush_under_scope(&service_n1,&runtime,&n1.generation,
+                                    &registry,ref_n1,&wake,input.packet[0]);
+#else
     assert(salts_component_plugin_runtime_close(&runtime,&previous)
            ==SALTS_COMPONENT_PLUGIN_OK);
     assert(previous==&n1.generation);
+#endif
     assert(salts_component_plugin_generation_drain(
                &runtime,&n1.generation)==SALTS_COMPONENT_PLUGIN_BUSY);
     assert(salts_component_plugin_scope_release(&scope_n1)
