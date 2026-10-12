@@ -407,7 +407,9 @@ libbase64。Salts 保持 2.3.0-rc.10。临时身份以 GmSSL 生成并直接导�
 保留 v3、CN、365 天有效期和 SHA-256 指纹，私钥临时存储在导入后或失败时擦除。
 
 支持 DTLS 1.2、P-256 ECDHE、P-256 ECDSA/RSA SHA-256 签名、AES-128/256-GCM、
-EMS 和四种 SRTP profile。RSA 身份至少 2048 位。不支持恢复、重协商、DTLS
+强制 EMS（Extended Master Secret）和四种 SRTP profile。若 ClientHello 或 ServerHello
+未协商 EMS，握手在派生密钥前失败，不保留传统 master-secret 兼容路径。
+RSA 身份至少 2048 位。不支持恢复、重协商、DTLS
 1.0/1.3、其他 EC 身份曲线、有限域 DHE、ChaCha20。仅支持旧算法组合的对端会
 明确失败，不自动降级。Finished、CertificateVerify 和指纹通过后才发布 ready/export。
 
