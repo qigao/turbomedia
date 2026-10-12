@@ -111,6 +111,16 @@ target_link_libraries(
           GmSSL::GmSSL
           roaring::roaring)
 
+# Opt-in Windows CI map for matching already-sanitized DLL RVAs to
+# symbols. Link-map output stays in the build tree, outside installed SDKs.
+# It does not change public ABI, code generation or protocol behavior.
+option(TURBO_MEDIA_TEST_WINDOWS_LINK_MAP
+       "Emit Windows-only private linker maps for teardown diagnosis" OFF)
+if(MSVC AND TURBO_MEDIA_TEST_WINDOWS_LINK_MAP)
+  target_link_options(turbo_media_datachannel PRIVATE
+                      "/MAP:${CMAKE_BINARY_DIR}/turbo_media_datachannel.map")
+endif()
+
 if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   add_library(turbo_media_webrtc SHARED)
   turbo_media_configure_component(turbo_media_webrtc WebRTC)
@@ -130,6 +140,10 @@ if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
     PUBLIC TurboMedia::Core TurboMedia::Server TurboMedia::DataChannel SaltsNet::ICE
     PRIVATE TurboMedia::RTC TurboMedia::SDP Salts::Core)
   target_compile_definitions(turbo_media_webrtc PUBLIC TURBO_MEDIA_HAS_WEBRTC)
+  if(MSVC AND TURBO_MEDIA_TEST_WINDOWS_LINK_MAP)
+    target_link_options(turbo_media_webrtc PRIVATE
+                        "/MAP:${CMAKE_BINARY_DIR}/turbo_media_webrtc.map")
+  endif()
 endif()
 
 add_library(turbo_media_webrtc_signaling SHARED)
