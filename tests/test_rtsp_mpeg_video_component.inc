@@ -83,6 +83,22 @@ static tm_pc_portal *rtsp_mpv_portal(uint64_t gen) {
     check_equal(tm_pc_create(&c,&p),TM_PC_OK);
     return p;
 }
+/* One original Portal slot/credit is retained until the Media Owner
+ * settles the *real* Provider terminal. A drained snapshot by itself is
+ * never authority to unload the DSO: the ComponentPlugin Scope is separate. */
+static void rtsp_mpv_assert_portal_credits(
+    tm_pc_portal *portal,unsigned inflight,unsigned cancel_pending,
+    unsigned ready,unsigned taken) {
+    tm_pc_snapshot_v1 snap=TM_PC_SNAPSHOT_V1_INIT;
+    check_equal(tm_pc_snapshot(portal,&snap),TM_PC_OK);
+    check_equal(snap.capacity,1u);
+    check_equal(snap.inflight,inflight);
+    check_equal(snap.cancel_pending,cancel_pending);
+    check_equal(snap.ready,ready);
+    check_equal(snap.taken,taken);
+    check_equal(snap.drained,(inflight+cancel_pending+ready+taken)==0u);
+}
+
 static void rtsp_mpv_step_dso(
     tm_test_provider *service,tm_test_instance_request identity,
     cnet_client *wake,tm_pc_portal *portal,
@@ -96,6 +112,7 @@ static void rtsp_mpv_step_dso(
     int64_t pts=INT64_MIN;
     int result;
     check_equal(tm_pc_begin(portal,correlation,&ticket),TM_PC_OK);
+    rtsp_mpv_assert_portal_credits(portal,1u,0u,0u,0u);
     req.size=sizeof(req);
     req.instance_id=identity.instance_id;
     req.provider_generation=identity.provider_generation;
@@ -104,7 +121,9 @@ static void rtsp_mpv_step_dso(
     check_true(result==TM_FF_OK || result==TM_FF_EAGAIN ||
                result==TM_FF_EOF);
     check_equal(tm_test_provider_wake_status(service),SALTS_OK);
+    rtsp_mpv_assert_portal_credits(portal,0u,0u,1u,0u);
     check_equal(tm_pc_take(portal,&taken,&receipt),TM_PC_OK);
+    rtsp_mpv_assert_portal_credits(portal,0u,0u,0u,1u);
     check_equal(receipt.correlation,correlation);
     check_equal(receipt.provider_generation,identity.provider_generation);
     check_equal(receipt.outcome,TM_PC_COMPLETED);
@@ -143,6 +162,7 @@ static void rtsp_mpv_step_dso(
         else ++f->eagain;
     }
     check_equal(tm_pc_settle(portal,taken),TM_PC_OK);
+    rtsp_mpv_assert_portal_credits(portal,0u,0u,0u,0u);
     check_equal(tm_pc_request_cancel(portal,ticket),TM_PC_ESTALE);
     check_equal(tm_pc_complete(portal,ticket,TM_FF_ESTATE),TM_PC_ESTALE);
     check_true(tm_pc_take(portal,&taken,&receipt)!=TM_PC_OK);
@@ -310,6 +330,7 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         size_t out_bytes=13u;
         int64_t pts=13;
         check_equal(tm_pc_begin(p102,30001u,&ticket),TM_PC_OK);
+        rtsp_mpv_assert_portal_credits(p102,1u,0u,0u,0u);
         {
             uint8_t pending_rtp[RTSP_MPV_MAX_PACKET]={0};
             size_t pending_bytes=0u;
@@ -340,6 +361,7 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
             check_equal(cmeta_plugin_registry_unload(
                         &registry,ref102),CMETA_PLUGIN_BUSY);
             check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_OK);
+            rtsp_mpv_assert_portal_credits(p102,0u,1u,0u,0u);
             /* The original RTSP Client Owner closes NativeIO while the
              * server callback is STILL on its old borrowed stack.
              * Only after CNet callback exit does the Host touch Codec. */
@@ -366,8 +388,10 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         request.portal=p102;request.ticket=ticket;request.wake_client=&wake;
         check_equal(tm_test_provider_step_delayed(
                     &service102,&request),TM_FF_ESTATE);
+        rtsp_mpv_assert_portal_credits(p102,0u,0u,1u,0u);
         check_equal(tm_test_provider_wake_status(&service102),SALTS_OK);
         check_equal(tm_pc_take(p102,&taken,&receipt),TM_PC_OK);
+        rtsp_mpv_assert_portal_credits(p102,0u,0u,0u,1u);
         check_equal(receipt.outcome,TM_PC_CANCELLED);
         check_equal(receipt.completion_observed,1u);
         check_equal(receipt.correlation,30001u);
@@ -388,6 +412,7 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         check_equal(out_bytes,0u);
         check_equal(pts,INT64_MIN);
         check_equal(tm_pc_settle(p102,taken),TM_PC_OK);
+        rtsp_mpv_assert_portal_credits(p102,0u,0u,0u,0u);
         check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_ESTALE);
         check_equal(tm_pc_complete(p102,ticket,TM_FF_OK),TM_PC_ESTALE);
         check_true(tm_pc_take(p102,&taken,&receipt)!=TM_PC_OK);
