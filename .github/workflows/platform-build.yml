@@ -455,8 +455,8 @@ jobs:
 
       # Run fail-drain fault tests in the CI build, but never install that
       # instrumented library. Reconfigure the *same exact SDK graph* without
-      # fault injection, rebuild changed targets and re-run ordinary tests
-      # before the platform install qualification.
+      # fault injection, rebuild and rerun the affected HTTP-FLV/Transport
+      # contract only. The first pass already ran the full CTest suite.
       # Android excludes streamer in the component graph, so has no HTTP-FLV
       # fault seam to remove. Preserve its qualified NDK cross-build unchanged.
       - name: Qualify production library without test fault injection
@@ -505,8 +505,11 @@ jobs:
             if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
             $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
           }
-          & ctest --preset ci-platform-test
-          if ($LASTEXITCODE -ne 0) { throw "production CTest failed for ${{ matrix.platform }}" }
+          # The first CTest pass exercised the entire instrumented graph.
+          # Only Streamer/HTTP consumers change in the production reconfigure.
+          # Do not rerun costly SFU/WHIP and unrelated codec tests a second time.
+          & ctest --preset ci-platform-production-contract
+          if ($LASTEXITCODE -ne 0) { throw "production HTTP-FLV CTest failed for ${{ matrix.platform }}" }
 
       - name: Install
         shell: pwsh
