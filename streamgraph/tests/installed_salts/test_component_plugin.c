@@ -11,6 +11,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #ifdef TM_TEST_FFMPEG_DSO
 #include <libavcodec/avcodec.h>
@@ -558,6 +559,12 @@ int main(int argc,char **argv) {
     assert(work_n1.wake_status==SALTS_OK);
     assert(atomic_load_explicit(&work_n1.returned,memory_order_acquire)==1u);
     assert(work_n1.result==102);
+#ifdef TM_TEST_FFMPEG_DSO
+    /* Pixel content originates from the actual MJPEG encoder/decoder,
+     * rather than reconstructing a synthetic frame from Provider generation. */
+    assert(abs((int)work_n1.luma[0]-102)<=7);
+    assert(work_n1.luma[0]==work_n1.luma[TM_LUMA_BYTES-1u]);
+#endif
     assert(tm_pc_seal(portal_n1)==TM_PC_OK);
     settle_terminal(&delivery_n1,601u,TM_PC_COMPLETED,102,102u);
     owner_drain(&delivery_n1);
@@ -586,6 +593,13 @@ int main(int argc,char **argv) {
     join_worker(&thread_n);
     assert(work_n.wake_status==SALTS_OK);
     assert(work_n.result==101);
+#ifdef TM_TEST_FFMPEG_DSO
+    assert(abs((int)work_n.luma[0]-101)<=7);
+    assert(work_n.luma[0]==work_n.luma[TM_LUMA_BYTES-1u]);
+    /* Old Generation decoded a genuine frame but may not publish pixels
+     * after its cancelled terminal was refused. Its Scope stays retained. */
+    assert(delivery_n.frame_visited==0u);
+#endif
     assert(tm_pc_destroy(portal_n)==TM_PC_EBUSY);
     reconcile_cancelled_terminal(&delivery_n,&runtime,&n.generation,
                                  &registry,ref_n);
