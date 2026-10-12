@@ -222,7 +222,8 @@ jobs:
            github.head_ref == 'feature/sctp-native-operation-owner-201' ||
            github.head_ref == 'test/sctp-late-comm-up-red-201' ||
            github.head_ref == 'fix/sctp-comm-up-native-owner-201' ||
-           github.head_ref == 'test/sctp-channel-reset-close-red-201')
+           github.head_ref == 'test/sctp-channel-reset-close-red-201' ||
+           github.head_ref == 'fix/sctp-channel-reset-owner-201')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -365,7 +366,7 @@ jobs:
             )
           }
           if ("${{ matrix.platform }}" -eq "Linux" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201")) {
             $args += "-DTURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON"
           }
           if ("${{ matrix.platform }}" -eq "Windows" -and
@@ -375,7 +376,7 @@ jobs:
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
           if ("${{ matrix.platform }}" -eq "Linux" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201")) {
             $cache = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform/CMakeCache.txt"
             if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON$" -Quiet)) {
               throw "Independent OpenSSL DTLS qualification is not enabled on the Linux Draft CI"
@@ -518,7 +519,7 @@ jobs:
             # First crash fails immediately; no passes after failure can hide it.
             # This is independent from the dead-SFU WHIP teardown gate below.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201")) {
+                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201")) {
               & ctest --preset ci-platform-test -R "^turbo_media_test_webrtc_e2e$" --repeat "until-fail:50" --output-on-failure --timeout 90
               if ($LASTEXITCODE -ne 0) {
                 throw "Windows WebRTC ICE E2E repeat conformance failed"
@@ -528,7 +529,7 @@ jobs:
             # SFU restarts must both pass. No skipped tests, wider production
             # deadlines, application replay or automatic settlement retry.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201")) {
+                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201")) {
               $peerDestroyStageCount = 0
               $whepPeerDestroyMs = [System.Collections.Generic.List[long]]::new()
               # CTest normally hides successful test stdout. Capture only the
@@ -599,7 +600,8 @@ jobs:
            github.head_ref == 'feature/sctp-native-operation-owner-201' ||
            github.head_ref == 'test/sctp-late-comm-up-red-201' ||
            github.head_ref == 'fix/sctp-comm-up-native-owner-201' ||
-           github.head_ref == 'test/sctp-channel-reset-close-red-201')
+           github.head_ref == 'test/sctp-channel-reset-close-red-201' ||
+           github.head_ref == 'fix/sctp-channel-reset-owner-201')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
