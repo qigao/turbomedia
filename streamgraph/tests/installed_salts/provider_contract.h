@@ -41,6 +41,7 @@ typedef struct tm_test_instance_request {
     X(I, R1, int, destroy_instance, const tm_test_instance_request *, request) \
     X(I, R1, int, cancel_instance, const tm_test_instance_request *, request) \
     X(I, R1, int, run_decode, const tm_test_decode_request *, request) \
+    X(I, R1, int, run_eof, const tm_test_decode_request *, request) \
     X(I, R1, int, take_luma, const tm_test_take_request *, request) \
     X(I, R0, int, finish_decode, _) \
     X(I, R0, int, wake_status, _)
