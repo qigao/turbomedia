@@ -46,10 +46,6 @@ static int fixture_wake(void *context) {
     cnet_client *client=(cnet_client *)context;
     int rc=cnet_client_wake(client);
     atomic_store_explicit(&fixture_last_wake,rc,memory_order_release);
-    atomic_store_explicit(&in_get,1u,memory_order_release);
-    while(!atomic_load_explicit(&permit_return,memory_order_acquire)) {
-        /* deterministic DSO callback + wake quiescence barrier */
-    }
     return rc==SALTS_OK ? 0 : -1;
 }
 
@@ -66,6 +62,14 @@ static int fixture_run_decode(void *self,const tm_test_decode_request *job) {
     config.max_packet_bytes=65536u;
     rc=tm_ffa_create(&config,&fixture_decoder);
     if(rc!=TM_FF_OK)return -2;
+    /* Admission is now inside the actual Plugin DSO; this deterministic
+     * gate allows the owner to publish N+1 and CANCEL the old Portal ticket
+     * BEFORE the old codec call commits a completion. The late real FFmpeg
+     * decode must still execute under the retained old Scope, but its
+     * completed pixels may not leak into a cancelled StreamGraph branch.
+     * Not a proof of cancellation during libavcodec's inner instructions. */
+    atomic_store_explicit(&in_get,1u,memory_order_release);
+    while(!atomic_load_explicit(&permit_return,memory_order_acquire)) {}
     rc=tm_ffa_run_mjpeg(fixture_decoder,job->packet,job->packet_size,
                         job->portal,job->ticket,fixture_wake,job->wake_client);
     return rc==TM_FF_OK ? *(int *)self : -3;
