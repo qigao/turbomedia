@@ -1736,5 +1736,5 @@ turbo_dc_channel_config_t turbo_dc_default_channel_config(void) {
 }
 
 void turbo_dc_handle_timers(void) {
-    usrsctp_handle_timers(0);
+    sctp_global_poll_timers();
 }
