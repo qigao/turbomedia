@@ -29,7 +29,7 @@ stateDiagram-v2
     READY --> LEASED : acquire lease
     LEASED --> READY : last active lease released
     READY --> RETIRING : seal new admission
-    RETIRING --> FREE : all pins and leases released; fences complete
+    RETIRING --> FREE : all pins and leases released and fences complete
 ```
 
 State labels here abstract concurrent pin/lease counts; an implementation **cannot** use a single `LEASED` enum to represent multiple active leases. Retiring forbids new pins but does not revoke valid leases. Cancellation of the last task is not itself proof that a GPU fence has completed.
@@ -56,7 +56,7 @@ sequenceDiagram
     Consumer->>Store: acquire lease with pin
     Store-->>Consumer: valid FrameLease
     Shutdown->>Store: ask destroy
-    Store-->>Shutdown: BUSY; pin and lease remain
+    Store-->>Shutdown: BUSY while pin and lease remain
     Consumer->>Store: release lease, settle pin
     Store-->>Shutdown: terminal drain is now possible
     Shutdown->>Store: destroy after quiescence
