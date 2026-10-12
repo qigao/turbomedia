@@ -316,6 +316,42 @@ int turbo_rtsp_mp4a_latm_payload_parse(
     return 0;
 }
 
+/* RFC 2250 MPEG Video elementary stream payload, intentionally not
+ * compatible with the 188-byte MPEG Transport Stream RTP mode (PT 33).
+ * Zero-copy parsing alone cannot make a fragmented picture admissible
+ * to a bounded FFmpeg Decoder: the Media Owner must gate B/E+marker. */
+int turbo_rtsp_mpeg_video_payload_parse(
+    const uint8_t *payload,
+    size_t payload_len,
+    turbo_rtsp_mpeg_video_payload_t *video) {
+    uint8_t picture_type;
+    if (!payload || !video ||
+        payload_len <= TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE)
+        return -1;
+    /* RFC 2250 MBZ is five high bits of byte 0. T=1 optionally carries
+     * MPEG-2 picture extensions; not supported by this narrow profile.
+     * Reject instead of accidentally decoding extension bytes as ES. */
+    if ((payload[0] & 0xf8u) != 0u || (payload[0] & 0x04u) != 0u)
+        return -1;
+    /* N is meaningful only while AN is set. Invalid reserved-use N must
+     * never bypass the complete-picture admission boundary. */
+    if ((payload[2] & 0x40u) != 0u && (payload[2] & 0x80u) == 0u)
+        return -1;
+    picture_type=(uint8_t)(payload[2] & 0x07u);
+    if (picture_type < 1u || picture_type > 3u)
+        return -1;
+    memset(video,0,sizeof(*video));
+    video->temporal_reference=(uint16_t)(((uint16_t)(payload[0] & 0x03u)<<8) |
+                                         (uint16_t)payload[1]);
+    video->sequence_header=(uint8_t)((payload[2] >> 5) & 1u);
+    video->begins_slice=(uint8_t)((payload[2] >> 4) & 1u);
+    video->ends_slice=(uint8_t)((payload[2] >> 3) & 1u);
+    video->picture_type=picture_type;
+    video->es=payload + TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE;
+    video->es_len=payload_len - TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE;
+    return 0;
+}
+
 int turbo_rtsp_mpeg2_ts_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
