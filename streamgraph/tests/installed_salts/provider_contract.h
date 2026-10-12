@@ -18,6 +18,7 @@ typedef struct tm_test_decode_request {
     size_t size;
     const uint8_t *packet;
     size_t packet_size;
+    uint64_t instance_id; /* zero selects the legacy M14 fixture */
     tm_pc_portal *portal;
     tm_pc_ticket_v1 ticket;
     cnet_client *wake_client;
@@ -25,6 +26,7 @@ typedef struct tm_test_decode_request {
 typedef struct tm_test_take_request {
     size_t size;
     tm_pc_ticket_v1 ticket;
+    uint64_t instance_id;
     uint8_t *luma;
     size_t capacity;
     size_t *out_bytes;
@@ -37,6 +39,7 @@ typedef struct tm_test_instance_request {
 #define TM_TEST_PROVIDER_FFMPEG_METHOD(X, I) \
     X(I, R1, int, create_instance, const tm_test_instance_request *, request) \
     X(I, R1, int, destroy_instance, const tm_test_instance_request *, request) \
+    X(I, R1, int, cancel_instance, const tm_test_instance_request *, request) \
     X(I, R1, int, run_decode, const tm_test_decode_request *, request) \
     X(I, R1, int, take_luma, const tm_test_take_request *, request) \
     X(I, R0, int, finish_decode, _) \
