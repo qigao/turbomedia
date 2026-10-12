@@ -4,6 +4,7 @@
 #include <libavutil/error.h>
 #include <libavutil/pixfmt.h>
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,6 +18,8 @@ struct tm_ff_source {
     uint64_t packets_submitted,frames_decoded,bytes_decoded;
     int32_t last_error;
     int finishing,flushed,cancelled,eof;
+    _Atomic uint32_t codec_in_call;
+    _Atomic uint64_t codec_packet_calls,codec_flush_calls;
 };
 
 tm_ff_status tm_ff_create(const tm_ff_config_v1 *c,tm_ff_source **out) {
@@ -98,7 +101,10 @@ tm_ex_source_result tm_ff_next_cpu_luma(void *ctx,uint8_t *dst,
         /* Non-owning packet bytes remain live through synchronous decode. */
         s->packet->data=s->encoded;
         s->packet->size=(int)s->pending_bytes;
+        atomic_store_explicit(&s->codec_in_call,1u,memory_order_release);
         rc=avcodec_send_packet(s->decoder,s->packet);
+        atomic_fetch_add_explicit(&s->codec_packet_calls,1u,memory_order_relaxed);
+        atomic_store_explicit(&s->codec_in_call,0u,memory_order_release);
         av_packet_unref(s->packet);
         if (rc<0) {
             s->last_error=rc;
@@ -106,7 +112,10 @@ tm_ex_source_result tm_ff_next_cpu_luma(void *ctx,uint8_t *dst,
         }
         s->pending_bytes=0u;
     } else if (s->finishing && !s->flushed) {
+        atomic_store_explicit(&s->codec_in_call,1u,memory_order_release);
         rc=avcodec_send_packet(s->decoder,NULL);
+        atomic_fetch_add_explicit(&s->codec_flush_calls,1u,memory_order_relaxed);
+        atomic_store_explicit(&s->codec_in_call,0u,memory_order_release);
         if (rc<0 && rc!=AVERROR_EOF) {
             s->last_error=rc;return TM_EX_SOURCE_FAILED;
         }
@@ -145,6 +154,16 @@ tm_ex_source_result tm_ff_next_cpu_luma(void *ctx,uint8_t *dst,
     s->bytes_decoded+=*size_bytes;
     av_frame_unref(s->frame);
     return TM_EX_SOURCE_FRAME;
+}
+tm_ff_status tm_ff_codec_activity(tm_ff_source *s,tm_ff_codec_activity_v1 *out) {
+    if(!s || !out)return TM_FF_EINVAL;
+    if(out->version!=TM_FF_ABI_V1)return TM_FF_EVERSION;
+    if(out->size!=sizeof(*out))return TM_FF_EINVAL;
+    out->reserved=0u;
+    out->in_call=atomic_load_explicit(&s->codec_in_call,memory_order_acquire);
+    out->packet_calls=atomic_load_explicit(&s->codec_packet_calls,memory_order_relaxed);
+    out->flush_calls=atomic_load_explicit(&s->codec_flush_calls,memory_order_relaxed);
+    return TM_FF_OK;
 }
 tm_ff_status tm_ff_stats(tm_ff_source *s,tm_ff_stats_v1 *out) {
     if (!s || !out) return TM_FF_EINVAL;
