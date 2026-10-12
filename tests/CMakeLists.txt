@@ -107,6 +107,23 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   # 链接库
   target_link_libraries(${TEST_TARGET_NAME} PRIVATE ${TEST_LINK_LIBS})
   
+  # M15d: desktop-only real CNet RTSP/RFC2250 MPEG-2 RTP -> bounded
+  # FFmpeg delayed Codec conformance. Compile the EXACT existing optional
+  # adapter source into the test executable; no second production Provider,
+  # decoder, scheduler or mobile SDK dependency is introduced. The deployed
+  # FFmpeg addon remains independently installed and qualified on #187.
+  if(TEST_NAME STREQUAL "test_rtsp" AND NOT ANDROID)
+    target_sources(${TEST_TARGET_NAME} PRIVATE
+      ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c)
+    target_include_directories(${TEST_TARGET_NAME} PRIVATE
+      ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/include
+      ${PROJECT_SOURCE_DIR}/streamgraph/include)
+    target_compile_definitions(${TEST_TARGET_NAME} PRIVATE
+      TM_TEST_RTSP_MPEG2_CODEC_GATE=1)
+    target_link_libraries(${TEST_TARGET_NAME} PRIVATE
+      TurboMediaFFmpeg::avcodec TurboMediaFFmpeg::avutil)
+  endif()
+  
   # 设置目标属性
   set_target_properties(${TEST_TARGET_NAME} PROPERTIES 
     FOLDER "turbomedia/tests"
