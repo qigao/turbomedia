@@ -306,6 +306,53 @@ static void test_real_async_provider_and_credits(void) {
     assert(tm_fs_destroy(s)==TM_FS_OK);
     tm_sg_program_destroy(g);
 }
+/* Completion wins before a late cancel: the Portal result remains
+ * COMPLETED. The owner may explicitly discard the ready CPU buffer, but
+ * may not forge a CANCELLED terminal or unload across a wake tail. */
+static void test_complete_then_explicit_discard(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_pc_config_v1 pc=TM_PC_CONFIG_V1_INIT;
+    tm_ffa_decoder *decoder=NULL;
+    tm_pc_portal *portal=NULL;
+    tm_pc_ticket_v1 ticket={0},taken={0};
+    tm_pc_result_v1 result=TM_PC_RESULT_V1_INIT;
+    tm_ffa_stats_v1 stats=TM_FFA_STATS_V1_INIT;
+    codec_fixture encoder={0};
+    worker w={0};
+    pthread_t thread;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=MAX_PACKET;
+    pc.capacity=1u;pc.provider_generation=46u;
+    assert(tm_ffa_create(&cfg,&decoder)==TM_FF_OK);
+    assert(tm_pc_create(&pc,&portal)==TM_PC_OK);
+    encoder_init(&encoder);
+    w.decode=decoder;w.portal=portal;
+    w.count=make_packet(&encoder,83u,w.compressed,sizeof(w.compressed));
+    atomic_init(&w.woke,0u);
+    atomic_init(&w.release,0u);
+    assert(tm_pc_begin(portal,1002u,&ticket)==TM_PC_OK);
+    w.ticket=ticket;
+    assert(pthread_create(&thread,NULL,worker_run,&w)==0);
+    await_wake(&w);
+    assert(tm_pc_request_cancel(portal,ticket)==TM_PC_EALREADY);
+    assert(tm_ffa_owner_cancel(decoder)==TM_FF_OK);
+    assert(tm_ffa_owner_accept(decoder,ticket)==TM_FF_ESTALE);
+    assert(tm_pc_take(portal,&taken,&result)==TM_PC_OK);
+    assert(result.outcome==TM_PC_COMPLETED &&
+           result.completion_observed==1u &&
+           result.provider_status==TM_FF_OK);
+    assert(tm_ffa_stats(decoder,&stats)==TM_FF_OK);
+    assert(stats.decoded==1u && stats.discarded==1u &&
+           stats.delivered==0u && stats.worker_active);
+    assert(tm_ffa_destroy(decoder)==TM_FF_ESTATE);
+    assert(tm_pc_settle(portal,taken)==TM_PC_OK);
+    atomic_store_explicit(&w.release,1u,memory_order_release);
+    assert(pthread_join(thread,NULL)==0);
+    assert(w.result==TM_FF_OK);
+    assert(tm_pc_seal(portal)==TM_PC_OK);
+    assert(tm_pc_destroy(portal)==TM_PC_OK);
+    assert(tm_ffa_destroy(decoder)==TM_FF_OK);
+    encoder_destroy(&encoder);
+}
 static void test_cancel_before_worker_admission(void) {
     tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
     tm_pc_config_v1 pc=TM_PC_CONFIG_V1_INIT;
@@ -336,6 +383,7 @@ static void test_cancel_before_worker_admission(void) {
 int main(void) {
     test_real_async_provider_and_credits();
     test_cancel_before_worker_admission();
+    test_complete_then_explicit_discard();
     puts("Real FFmpeg async worker -> typed Portal -> Media Owner FrameStore: PASS");
     return 0;
 }
