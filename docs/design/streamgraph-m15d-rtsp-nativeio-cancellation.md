@@ -67,6 +67,25 @@ The abort control establishes a new real RTSP Session and Decoder generation, re
 
 A true source/codec bridge must accept actual RTP payloads with an explicitly negotiated supported depacketizer and Codec profile. Bind CNet completion identities to one RTSP Session Generation and one bounded Codec Instance. Reject mixed/unsupported codec/profile before RTP admission. Hold the original Scope through worker and CNet close quiescence. Test both graceful EOS (all delayed frames under two ordered-lossless sinks and single NULL flush) and abort (drop undecoded input, no flush, no frame effect). Add a deterministic barrier for a NativeIO completion racing with cancel, not a sleep-based surrogate. Add installed SDK consumer and sanitizer jobs against **actual RTSP/FFmpeg** execution, not merely a syntax contract.
 
+
+## Next executable gate: actual NativeIO completion versus cancellation (NOT YET IMPLEMENTED)
+
+This section is a test specification, **not** evidence of a passing test. The current callback-held RTP and pending-demand-close tests cannot be used to mark the OS-completion race complete.
+
+Use a real localhost CNet NativeIO connection and the actual single-slot client connection handle. Keep all `cnet_client_poll`, close, receive-demand, and handler admission on the designated **one CNet Owner thread**. A peer server thread may write real bytes; it must not concurrently call methods on the Client. Instrument an optional **test-only NativeIO completion-dispatch seam**, after the platform kernel has returned the completion but before the owner dispatches the matching callback, preserving the exact request/connection/slot/generation identity. Never replace the completion with a fabricated callback or use sleeps as ordering evidence.
+
+| Gate | Forced happens-before | Required assertions |
+| --- | --- | --- |
+| completion-before-cancel | peer sends actual RTSP bytes → kernel NativeIO completion observed for request R → hold dispatch → Owner enqueues cancellation/close intent → resume ordered dispatch | Original request R settles exactly once; either real completion wins according to CNet's documented ordering or cancellation wins if not yet admitted; never both; callback borrow ends before release |
+| cancel-before-completion | receive request R pending → Owner closes/cancels R and observes its terminal → peer attempts late send / old completion arrives | R never publishes bytes after terminal; no duplicate CLOSED/receive terminal; late completion is discarded by exact request generation |
+| same-slot reuse | old R reaches terminal → recycle capacity=1 slot → new connection with distinct generation R2 receives OPTIONS response | old handle rejected; no old bytes, callback, wake, Portal ticket or codec admission reaches R2 |
+
+For every gate, record the request ID, old/new connection generation, completion type, terminal count, callback entry/exit count, and outstanding lease count in test-only assertions. Fail on timeouts instead of assuming success; keep watchdogs bounded. Test the ordering for TCP receive and, where supported, queued send completion. Do not assume cross-platform NativeIO dispatch semantics are identical: identify and qualify epoll, IOCP and kqueue independently, and document unsupported seams explicitly rather than silently skipping them.
+
+The Media Owner shall only cancel Codec after NativeIO callback quiescence, then settle the **original** Portal ticket once, release retained Scope after worker/wake tails, verify early Generation drain/unload returns BUSY, and finally drain/unload after all leases end. A separate instrumented test is still required for cancellation **inside** delayed MPEG-2 `avcodec_send_packet(NULL)`; this NativeIO seam does not qualify it.
+
+Release evidence must include same-HEAD native Linux/Windows/macOS runs, isolated installed SDK runtime Provider/DSO N→N+1 unload, ASan+UBSan, and first-party TSan, with precompiled Salts/FFmpeg coverage limitations disclosed. Keep #192 OPEN, #187/#193 Draft/DO NOT MERGE, master unchanged until the executable evidence exists.
+
 ## Release claims excluded
 
 The RTSP test here does not prove real media depacketization, live FFmpeg RTSP demux, RTSP receive callback concurrently in progress during close, or GmSSL TLS/RTSPS. Do not mark M15d complete until those gates are present. #165/#166/#180/#190/#192 stay Open; all stacked PRs stay Draft and `master` remains unchanged.
