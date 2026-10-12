@@ -152,6 +152,24 @@ static int fixture_run_instance(void *self,const tm_test_decode_request *job) {
     fixture_instance_release(slot);
     return rc==TM_FF_OK?*(int *)self:-3;
 }
+/* Only the actual independent Instance can flush its worker-owned Codec.
+ * The host retains the same installed Salts Generation Scope through this
+ * CMeta method, its Portal completion and its native CNet wake tail.
+ * A NULL packet never goes through the old one-shot singleton path. */
+static int fixture_run_eof(void *self,const tm_test_decode_request *job) {
+    tm_fixture_instance *slot;
+    tm_ff_status rc;
+    if(!self || !job || job->size!=sizeof(*job) ||
+       !job->instance_id || job->packet || job->packet_size ||
+       !job->portal || !job->wake_client || !job->ticket.incarnation ||
+       !job->ticket.generation)return -1;
+    slot=fixture_instance_acquire(job->instance_id);
+    if(!slot)return -4;
+    rc=tm_ffa_run_eof(slot->decoder,job->portal,job->ticket,
+                      fixture_wake,job->wake_client);
+    fixture_instance_release(slot);
+    return (int)rc;
+}
 static int fixture_take_instance(void *self,const tm_test_take_request *req) {
     tm_fixture_instance *slot;
     tm_ff_status rc;
@@ -251,6 +269,7 @@ CMETA_IMPLEMENTS(tm_test_provider, tm_test_impl, 0u,
                   .destroy_instance=fixture_instance_destroy,
                   .cancel_instance=fixture_instance_cancel, 
                   .run_decode=fixture_run_decode,
+                  .run_eof=fixture_run_eof,
                   .take_luma=fixture_take_luma,
                   .finish_decode=fixture_finish_decode,
                   .wake_status=fixture_wake_status);
