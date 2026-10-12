@@ -322,15 +322,19 @@ struct IndependentPair {
 } // namespace
 
 suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
-    for (int server = 0; server < 2; ++server) {
-        for (uint16_t profile : {uint16_t{1}, uint16_t{2}, uint16_t{7}, uint16_t{8}}) {
-            it("GmSSL server=%d profile=%u negotiates OpenSSL DTLS and identical SRTP exporter",
-               server, static_cast<unsigned>(profile)) {
-                IndependentPair fixture(server != 0, profile, false);
-                check_true(fixture.init());
-                check_true(fixture.handshake());
-                check_true(fixture.qualify_exporter());
-                check_true(fixture.exchange_application());
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        for (int server = 0; server < 2; ++server) {
+            for (uint16_t profile : {uint16_t{1}, uint16_t{2}, uint16_t{7}, uint16_t{8}}) {
+                it("GmSSL server=%d RSA=%d profile=%u negotiates independent OpenSSL and identical SRTP exporter",
+                   server, rsa, static_cast<unsigned>(profile)) {
+                    // RSA uses a published test-only 2048-bit identity; ECDSA
+                    // generates independent ephemeral P-256 identities.
+                    IndependentPair fixture(server != 0, profile, rsa != 0);
+                    check_true(fixture.init());
+                    check_true(fixture.handshake());
+                    check_true(fixture.qualify_exporter());
+                    check_true(fixture.exchange_application());
+                }
             }
         }
     }
