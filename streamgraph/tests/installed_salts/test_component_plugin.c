@@ -21,6 +21,9 @@
 extern int avcodec_tm_test_arm_send_packet(void);
 extern unsigned avcodec_tm_test_send_packet_state(void);
 extern int avcodec_tm_test_release_send_packet(void);
+extern int avcodec_tm_test_arm_flush(void);
+extern unsigned avcodec_tm_test_flush_state(void);
+extern int avcodec_tm_test_release_flush(void);
 #endif
 #endif
 
@@ -134,6 +137,7 @@ typedef struct provider_worker {
     uint8_t compressed[TM_ENCODED_CAPACITY];
     size_t compressed_size;
     uint64_t instance_id;
+    unsigned eof_operation;
     _Atomic unsigned *start_barrier;
     uint8_t luma[TM_LUMA_BYTES];
     size_t luma_bytes;
@@ -151,14 +155,16 @@ static thread_result THREAD_CALL invoke_provider(void *context) {
         while(atomic_load_explicit(worker->start_barrier,memory_order_acquire)<2u)
             yield_worker();
     }
-    job.packet=worker->compressed;
-    job.packet_size=worker->compressed_size;
+    job.packet=worker->eof_operation?NULL:worker->compressed;
+    job.packet_size=worker->eof_operation?0u:worker->compressed_size;
     job.portal=worker->completion;
     job.ticket=worker->ticket;
     job.wake_client=worker->wake_owner;
     /* The actual tm_ffa_run_mjpeg inside this Plugin DSO publishes and
      * wakes; the wrapper must NOT complete or wake a second time. */
-    worker->result=tm_test_provider_run_decode(&worker->service,&job);
+    worker->result=worker->eof_operation
+        ? tm_test_provider_run_eof(&worker->service,&job)
+        : tm_test_provider_run_decode(&worker->service,&job);
 #else
     worker->result=tm_test_provider_get(&worker->service);
     assert(tm_pc_complete(worker->completion,worker->ticket,worker->result)
@@ -708,6 +714,56 @@ int main(int argc,char **argv) {
             assert(tm_pc_seal(p2)==TM_PC_OK);
             assert(tm_pc_destroy(p1)==TM_PC_OK);
             assert(tm_pc_destroy(p2)==TM_PC_OK);
+#ifdef TM_TEST_FFMPEG_INNER_GATE
+            /* N+1 admission was already closed while the original packet
+             * raced with cancellation. The retained Scope now authorizes
+             * the terminal flush of the previously admitted B Instance.
+             * A second new Provider/Codec factory is NOT created here. */
+            {
+                tm_pc_portal *ep=make_portal(102u);
+                tm_pc_ticket_v1 et={0},taken_eof={0};
+                tm_pc_result_v1 terminal=TM_PC_RESULT_V1_INIT;
+                provider_worker ew={0};
+                worker_thread eth;
+                unsigned spins=0u;
+                assert(tm_pc_begin(ep,9022u,&et)==TM_PC_OK);
+                ew.service=value_n1;
+                ew.completion=ep;
+                ew.ticket=et;
+                ew.wake_owner=&wake_client;
+                ew.instance_id=second.instance_id;
+                ew.eof_operation=1u;
+                atomic_init(&ew.returned,0u);
+                assert(avcodec_tm_test_arm_flush()==0);
+                start_worker(&eth,&ew);
+                while(avcodec_tm_test_flush_state()!=2u &&
+                      ++spins<5000000u)yield_worker();
+                assert(avcodec_tm_test_flush_state()==2u);
+                assert(tm_test_provider_destroy_instance(&value_n1,&second)==-4);
+                assert(salts_component_plugin_generation_drain(
+                    &runtime,&n1.generation)==SALTS_COMPONENT_PLUGIN_BUSY);
+                assert(cmeta_plugin_registry_unload(&registry,ref_n1)==CMETA_PLUGIN_BUSY);
+                assert(tm_pc_request_cancel(ep,et)==TM_PC_OK);
+                assert(tm_test_provider_cancel_instance(&value_n1,&second)==0);
+                assert(tm_test_provider_destroy_instance(&value_n1,&second)==-4);
+                assert(avcodec_tm_test_release_flush()==0);
+                join_worker(&eth);
+                assert(avcodec_tm_test_flush_state()==4u);
+                assert(ew.result==TM_FF_ESTATE);
+                assert(atomic_load_explicit(&ew.returned,memory_order_acquire)==1u);
+                assert(tm_test_provider_wake_status(&value_n1)==SALTS_OK);
+                assert(tm_pc_take(ep,&taken_eof,&terminal)==TM_PC_OK);
+                assert(terminal.correlation==9022u &&
+                       terminal.provider_generation==102u &&
+                       terminal.outcome==TM_PC_CANCELLED &&
+                       terminal.completion_observed==1u &&
+                       terminal.provider_status==TM_FF_ESTATE);
+                assert(tm_pc_settle(ep,taken_eof)==TM_PC_OK);
+                assert(tm_pc_take(ep,&taken_eof,&terminal)!=TM_PC_OK);
+                assert(tm_pc_seal(ep)==TM_PC_OK);
+                assert(tm_pc_destroy(ep)==TM_PC_OK);
+            }
+#endif
         }
         assert(tm_test_provider_destroy_instance(&value_n1,&stale)==-1);
         assert(tm_test_provider_destroy_instance(&value_n1,&first)==0);
