@@ -233,6 +233,43 @@ static HelloMutation replace_srtp_in_hello(
     return record == size ? HelloMutation::skipped : HelloMutation::malformed;
 }
 
+/* Downgrade only the version inside an authentic OpenSSL ClientHello or
+ * ServerHello handshake body from DTLS 1.2 (FEFD) to DTLS 1.0 (FEFF).
+ * The DTLS record header and all record/handshake lengths remain intact.
+ * A compliant GmSSL DTLS 1.2 association must reject the body version;
+ * an alert, timeout or unrelated framing error is not a qualifying result.
+ */
+static HelloMutation downgrade_hello_version(uint8_t *packet, size_t size,
+                                             uint8_t hello_type) {
+    auto get16 = [](const uint8_t *p) -> size_t {
+        return (size_t(p[0]) << 8) | p[1];
+    };
+    auto get24 = [](const uint8_t *p) -> size_t {
+        return (size_t(p[0]) << 16) | (size_t(p[1]) << 8) | p[2];
+    };
+    size_t record = 0;
+    while (record + 13 <= size) {
+        const size_t record_length = 13 + get16(packet + record + 11);
+        if (record_length > size - record)
+            return HelloMutation::malformed;
+        if (packet[record] == 22 && packet[record + 3] == 0 &&
+            packet[record + 4] == 0 && record_length >= 25 + 34 &&
+            packet[record + 13] == hello_type) {
+            const size_t handshake_len = get24(packet + record + 14);
+            if (handshake_len + 25 != record_length ||
+                get24(packet + record + 19) != 0 ||
+                get24(packet + record + 22) != handshake_len ||
+                packet[record + 25] != 0xfe ||
+                packet[record + 26] != 0xfd)
+                return HelloMutation::malformed;
+            packet[record + 26] = 0xff; // DTLS 1.0, deliberately disallowed
+            return HelloMutation::changed;
+        }
+        record += record_length;
+    }
+    return record == size ? HelloMutation::skipped : HelloMutation::malformed;
+}
+
 /* Tamper precisely one signature byte, preserving the complete DTLS record
  * and handshake framing. ServerKeyExchange (12) is the signed message when
  * GmSSL is a client; CertificateVerify (15) is signed by the OpenSSL client
@@ -296,7 +333,9 @@ struct IndependentPair {
     bool disable_ems;
     bool duplicate_ems;
     bool disjoint_srtp_profile;
+    bool downgrade_dtls_version;
     unsigned altered_srtp_hellos = 0;
+    unsigned downgraded_hellos = 0;
     bool tamper_peer_finished;
     bool corrupt_peer_signature;
     bool peer_finished_tampered = false;
@@ -318,11 +357,13 @@ struct IndependentPair {
     IndependentPair(bool server, uint16_t id, bool rsa, bool wrong_pin = false,
                     bool no_ems = false, bool duplicate_ems_extension = false,
                     bool tamper_finished = false, bool wrong_signature = false,
-                    bool unsupported_srtp = false)
+                    bool unsupported_srtp = false,
+                    bool downgrade_version = false)
         : gm_server(server), profile(id), rsa_identity(rsa),
           wrong_fingerprint(wrong_pin), disable_ems(no_ems),
           duplicate_ems(duplicate_ems_extension),
           disjoint_srtp_profile(unsupported_srtp),
+          downgrade_dtls_version(downgrade_version),
           tamper_peer_finished(tamper_finished),
           corrupt_peer_signature(wrong_signature) {}
 
@@ -567,12 +608,15 @@ struct IndependentPair {
         if (static_cast<int>(wrong_fingerprint) +
             static_cast<int>(disable_ems) +
             static_cast<int>(duplicate_ems) +
-            static_cast<int>(disjoint_srtp_profile) != 1)
+            static_cast<int>(disjoint_srtp_profile) +
+            static_cast<int>(downgrade_dtls_version) != 1)
             return failure("negative-test-requires-one-invalid-policy");
         const int expected = wrong_fingerprint ? TURBO_GDTLS_AUTH : TURBO_GDTLS_PROTOCOL;
         stage = wrong_fingerprint ? "reject-mismatched-fingerprint" :
             disable_ems ? "reject-missing-EMS" :
-            duplicate_ems ? "reject-duplicate-EMS" : "reject-disjoint-SRTP-profile";
+            duplicate_ems ? "reject-duplicate-EMS" :
+            disjoint_srtp_profile ? "reject-disjoint-SRTP-profile" :
+            "reject-DTLS10-Hello-downgrade";
         bool openssl_terminal = false;
         for (unsigned step = 0; step < 3500; ++step) {
             clock_ms += 10;
@@ -614,12 +658,22 @@ struct IndependentPair {
                     if (mutation == HelloMutation::changed)
                         ++altered_srtp_hellos;
                 }
+                if (downgrade_dtls_version) {
+                    HelloMutation mutation = downgrade_hello_version(
+                        packet, packet_size, gm_server ? 1 : 2);
+                    if (mutation == HelloMutation::malformed)
+                        return failure("DTLS10-Hello-wire-mutation");
+                    if (mutation == HelloMutation::changed)
+                        ++downgraded_hellos;
+                }
                 int rc = turbo_gdtls_receive(gm, packet, packet_size, clock_ms);
                 if (rc == expected) {
                     if (duplicate_ems && !duplicated_hello_records)
                         return failure("duplicate-EMS-not-exercised");
                     if (disjoint_srtp_profile && !altered_srtp_hellos)
                         return failure("disjoint-SRTP-not-exercised");
+                    if (downgrade_dtls_version && !downgraded_hellos)
+                        return failure("DTLS10-Hello-downgrade-not-exercised");
                     uint8_t exported[88] = {};
                     size_t exported_size = sizeof(exported);
                     bool denied = !turbo_gdtls_ready(gm) &&
@@ -1142,6 +1196,13 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                server, rsa) {
                 IndependentPair fixture(server != 0, 7, rsa != 0,
                                         false, false, false, false, false, true);
+                check_true(fixture.init());
+                check_true(fixture.reject_untrusted_peer());
+            }
+            it("GmSSL server=%d RSA=%d rejects independent DTLS 1.0 Hello downgrade",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0,
+                                        false, false, false, false, false, false, true);
                 check_true(fixture.init());
                 check_true(fixture.reject_untrusted_peer());
             }
