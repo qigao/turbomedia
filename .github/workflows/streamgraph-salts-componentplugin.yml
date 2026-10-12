@@ -89,7 +89,7 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then
             cmake --preset native-ci -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           else
-            cmake --preset native-ci
+            cmake --preset native-ci -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON
           fi
           cmake --build --preset native-ci
           cmake --install build/native-ci --prefix "$RUNNER_TEMP/sg-installed"

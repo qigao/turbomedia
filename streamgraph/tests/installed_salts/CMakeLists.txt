@@ -41,6 +41,12 @@ if(DEFINED ENV{TM_TEST_FFMPEG_DSO} AND "$ENV{TM_TEST_FFMPEG_DSO}" STREQUAL "1")
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(TM_TEST_LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec)
   pkg_check_modules(TM_TEST_LIBAVUTIL REQUIRED IMPORTED_TARGET libavutil)
+  find_package(TurboMediaStreamGraphFFmpeg CONFIG REQUIRED
+    PATHS "$ENV{TM_SG_SDK_ROOT}" NO_DEFAULT_PATH
+    NO_CMAKE_FIND_ROOT_PATH)
+  if(NOT TARGET TurboMedia::StreamGraphFFmpeg)
+    message(FATAL_ERROR "Installed StreamGraphFFmpeg Provider SDK missing")
+  endif()
   set(_TM_TEST_FFMPEG TRUE)
 endif()
 
@@ -56,7 +62,7 @@ foreach(_generation IN ITEMS 101 102)
     target_compile_definitions(tm_installed_provider_${_generation}
       PRIVATE TM_TEST_FFMPEG_DSO=1)
     target_link_libraries(tm_installed_provider_${_generation}
-      PRIVATE PkgConfig::TM_TEST_LIBAVCODEC PkgConfig::TM_TEST_LIBAVUTIL)
+      PRIVATE TurboMedia::StreamGraphFFmpeg)
   endif()
   target_link_libraries(tm_installed_provider_${_generation} PRIVATE
     Salts::ComponentPluginABI Salts::PluginABI)
