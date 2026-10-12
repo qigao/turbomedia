@@ -1002,6 +1002,7 @@ typedef struct {
     cmeta_mutex_t lock;
     cmeta_cond_t cond;
     turbo_dc_peer_t *peer;
+    int operation;
     int borrowed;
     int allow_query;
     int query_authorized;
@@ -1031,11 +1032,34 @@ static void status_borrow_worker(void *arg) {
      * have freed the socket already. Do not intentionally dereference an
      * invalid handle merely to prove a missing close-admission barrier. */
     if (socket && authorized) {
-        struct sctp_status status = {0};
-        socklen_t len = sizeof(status);
-        /* A real native query must remain safe while close is admitted.
-         * Unconnected test sockets may return a normal SCTP error. */
-        (void)usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS, &status, &len);
+        /* All cases deliberately use the same admitted native Socket after
+         * a foreign close requested terminal admission. An unconnected test
+         * association may return a legitimate SCTP error; the lifetime and
+         * close ordering, not SCTP link readiness, are the conformance gate. */
+        if (f->operation == 0) {
+            struct sctp_status status = {0};
+            socklen_t len = sizeof(status);
+            (void)usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS,
+                                     &status, &len);
+        } else if (f->operation == 1) {
+            uint8_t payload = 0x5a;
+            struct sctp_sndinfo info = {0};
+            info.snd_sid = 0;
+            info.snd_ppid = htonl(SCTP_PPID_BINARY);
+            (void)usrsctp_sendv(socket, &payload, sizeof(payload), NULL, 0,
+                                &info, sizeof(info), SCTP_SENDV_SNDINFO, 0);
+        } else if (f->operation == 2) {
+            uint8_t bytes[sizeof(struct sctp_reset_streams) +
+                          sizeof(uint16_t)] = {0};
+            struct sctp_reset_streams *reset =
+                (struct sctp_reset_streams *)bytes;
+            reset->srs_assoc_id = SCTP_ALL_ASSOC;
+            reset->srs_flags = SCTP_STREAM_RESET_OUTGOING;
+            reset->srs_number_streams = 1;
+            reset->srs_stream_list[0] = 0;
+            (void)usrsctp_setsockopt(socket, IPPROTO_SCTP, SCTP_RESET_STREAMS,
+                                     bytes, sizeof(bytes));
+        }
     }
     if (socket) sctp_native_return(f->peer);
     if (acquired) dc_peer_release(f->peer);
@@ -1076,12 +1100,13 @@ static int wait_status_fixture_flag(int *flag) {
     return found;
 }
 
-static void run_sctp_status_close_interleaving(void) {
+static void run_sctp_native_close_interleaving(int operation) {
     sctp_status_close_fixture_t *f = &status_close_fixture;
     memset(f, 0, sizeof(*f));
     cmeta_mutex_init(&f->lock);
     cmeta_cond_init(&f->cond);
     f->peer = endpoints[0].peer;
+    f->operation = operation;
 
     cmeta_thread_t query_thread = NULL;
     cmeta_thread_t closer_thread = NULL;
@@ -1150,7 +1175,15 @@ spec("SCTP native STATUS close admission") {
     after_each() { cleanup_packet_endpoints(); }
 
     it("retains a STATUS socket borrow until concurrent peer close drains it") {
-        run_sctp_status_close_interleaving();
+        run_sctp_native_close_interleaving(0);
+    }
+
+    it("retains a native sendv borrow across foreign close without UAF") {
+        run_sctp_native_close_interleaving(1);
+    }
+
+    it("retains a native stream-reset borrow across foreign close without UAF") {
+        run_sctp_native_close_interleaving(2);
     }
 }
 
