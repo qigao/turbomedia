@@ -12,6 +12,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef TM_TEST_FFMPEG_DSO
+#include <libavcodec/avcodec.h>
+#include <libavutil/pixfmt.h>
+#endif
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -24,6 +28,57 @@ typedef DWORD thread_result;
 static void yield_worker(void) { sched_yield(); }
 typedef void *thread_result;
 #define THREAD_CALL
+#endif
+
+#ifdef TM_TEST_FFMPEG_DSO
+enum { TM_LUMA_BYTES=16*16, TM_ENCODED_CAPACITY=65536 };
+typedef struct tm_mjpeg_encoder_fixture {
+    AVCodecContext *codec;
+    AVFrame *frame;
+    AVPacket *packet;
+} tm_mjpeg_encoder_fixture;
+static void tm_mjpeg_encoder_init(tm_mjpeg_encoder_fixture *e) {
+    const AVCodec *codec=avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+    assert(codec!=NULL);
+    e->codec=avcodec_alloc_context3(codec);
+    assert(e->codec);
+    e->codec->width=16;e->codec->height=16;
+    e->codec->pix_fmt=AV_PIX_FMT_YUVJ420P;
+    e->codec->color_range=AVCOL_RANGE_JPEG;
+    e->codec->time_base=(AVRational){1,30};
+    e->codec->thread_count=1;
+    assert(avcodec_open2(e->codec,codec,NULL)==0);
+    e->frame=av_frame_alloc();e->packet=av_packet_alloc();
+    assert(e->frame && e->packet);
+    e->frame->width=16;e->frame->height=16;
+    e->frame->format=AV_PIX_FMT_YUVJ420P;
+    assert(av_frame_get_buffer(e->frame,32)==0);
+}
+static size_t tm_make_mjpeg(tm_mjpeg_encoder_fixture *e,unsigned luma,
+                             uint8_t *out,size_t capacity) {
+    size_t n;
+    int y;
+    assert(av_frame_make_writable(e->frame)==0);
+    for(y=0;y<16;++y)
+        memset(e->frame->data[0]+(size_t)y*e->frame->linesize[0],(int)luma,16u);
+    for(y=0;y<8;++y) {
+        memset(e->frame->data[1]+(size_t)y*e->frame->linesize[1],128,8u);
+        memset(e->frame->data[2]+(size_t)y*e->frame->linesize[2],128,8u);
+    }
+    e->frame->pts++;
+    assert(avcodec_send_frame(e->codec,e->frame)==0);
+    assert(avcodec_receive_packet(e->codec,e->packet)==0);
+    n=(size_t)e->packet->size;
+    assert(n>0u && n<=capacity);
+    memcpy(out,e->packet->data,n);
+    av_packet_unref(e->packet);
+    return n;
+}
+static void tm_mjpeg_encoder_destroy(tm_mjpeg_encoder_fixture *e) {
+    av_frame_free(&e->frame);
+    av_packet_free(&e->packet);
+    avcodec_free_context(&e->codec);
+}
 #endif
 
 /* Real Salts Generation bundles: stable storage must outlive all Scope users. */
@@ -68,11 +123,22 @@ typedef struct provider_worker {
     int wake_status;
     _Atomic unsigned returned;
     int result;
+#ifdef TM_TEST_FFMPEG_DSO
+    uint8_t compressed[TM_ENCODED_CAPACITY];
+    size_t compressed_size;
+    uint8_t luma[TM_LUMA_BYTES];
+#endif
 } provider_worker;
 static thread_result THREAD_CALL invoke_provider(void *context) {
     provider_worker *worker=(provider_worker *)context;
     /* This is a REAL method call into the Salts-loaded Provider DSO. */
+#ifdef TM_TEST_FFMPEG_DSO
+    worker->result=tm_test_provider_decode_mjpeg(
+        &worker->service,worker->compressed,worker->compressed_size,
+        worker->luma,sizeof(worker->luma));
+#else
     worker->result=tm_test_provider_get(&worker->service);
+#endif
     assert(tm_pc_complete(worker->completion,worker->ticket,worker->result)
            ==TM_PC_OK);
     /* Submit the terminal value BEFORE waking its fixed Media/CNet Owner.
@@ -169,8 +235,37 @@ typedef struct terminal_owner {
     unsigned delivered;
     unsigned reject_once;
     unsigned rejections;
+#ifdef TM_TEST_FFMPEG_DSO
+    provider_worker *decoded;
+    unsigned frame_ready,frame_visited,frame_sink_visited;
+#endif
 } terminal_owner;
 
+#ifdef TM_TEST_FFMPEG_DSO
+static tm_ex_source_result owner_decoded_source(
+    void *ctx,uint8_t *dst,size_t cap,size_t *size) {
+    terminal_owner *o=(terminal_owner *)ctx;
+    if(!o || !o->decoded || !o->frame_ready || !dst || !size ||
+       cap<TM_LUMA_BYTES)return TM_EX_SOURCE_FAILED;
+    memcpy(dst,o->decoded->luma,TM_LUMA_BYTES);
+    *size=TM_LUMA_BYTES;
+    o->frame_ready=0u; /* one copy to Executor, never call DSO twice */
+    return TM_EX_SOURCE_FRAME;
+}
+static int verify_decoded_frame(void *ctx,const tm_fs_frame_ref_v1 *ref,
+                                const tm_fs_cpu_view_v1 *frame) {
+    terminal_owner *o=(terminal_owner *)ctx;
+    unsigned i;
+    if(!o || !o->decoded || !ref || !ref->frame_id || !frame ||
+       frame->size_bytes!=TM_LUMA_BYTES || !frame->data)return -1;
+    for(i=0u;i<TM_LUMA_BYTES;++i)
+        if(frame->data[i]!=o->decoded->luma[i])return -1;
+    /* one read-only Processor visit and one Sink visit */
+    if(o->frame_visited==0u)o->frame_visited++;
+    else o->frame_sink_visited++;
+    return 0;
+}
+#else
 static tm_ex_source_result unused_source(
     void *ctx,uint8_t *dst,size_t cap,size_t *size) {
     (void)ctx;(void)dst;(void)cap;(void)size;
@@ -181,6 +276,7 @@ static int unused_visit(void *ctx,const tm_fs_frame_ref_v1 *ref,
     (void)ctx;(void)ref;(void)frame;
     return 0;
 }
+#endif
 static tm_sg_port_v1 owner_port(const char *name,uint32_t direction) {
     tm_sg_port_v1 p=TM_SG_PORT_V1_INIT;
     p.name=name; p.direction=direction;p.kind=TM_SG_VIDEO_FRAME;
@@ -203,6 +299,13 @@ static int accept_terminal(void *ctx,const tm_pc_result_v1 *terminal) {
         ++o->rejections;
         return -1; /* External acceptance is ambiguous: retain the credit. */
     }
+#ifdef TM_TEST_FFMPEG_DSO
+    assert(o->decoded!=NULL);
+    o->frame_ready=1u;
+    assert(tm_ex_pump_source(o->executor)==TM_EX_OK);
+    assert(tm_ex_pump_sink(o->executor,0u)==TM_EX_OK);
+    assert(o->frame_visited==1u && o->frame_sink_visited==1u);
+#endif
     return 0; /* Downstream accepted exactly one terminal result. */
 }
 static void owner_init(terminal_owner *o,tm_pc_portal *portal,uint64_t store_id) {
@@ -242,19 +345,31 @@ static void owner_init(terminal_owner *o,tm_pc_portal *portal,uint64_t store_id)
     edges[1].target_node="sink";edges[1].target_port="in";
     assert(tm_sg_compile(nodes,3u,edges,2u,NULL,&o->program,NULL)==TM_SG_OK);
     fs.store_id=store_id;
-    fs.slot_capacity=2u;fs.max_frame_bytes=16u;
+    fs.slot_capacity=2u;
+#ifdef TM_TEST_FFMPEG_DSO
+    fs.max_frame_bytes=TM_LUMA_BYTES;
+#else
+    fs.max_frame_bytes=16u;
+#endif
     fs.max_pins=4u;fs.max_leases=4u;fs.max_retained_bytes=32u;
     assert(tm_fs_create(&fs,&o->store)==TM_FS_OK);
-    ec.max_frame_bytes=16u;
+    ec.max_frame_bytes=fs.max_frame_bytes;
     ec.source_session_generation=1u;
     ec.display_generation=1u;
     ec.fanout.branch_count=1u;
     ec.fanout.branches[0]=(tm_fo_branch_config_v1)TM_FO_BRANCH_CONFIG_V1_INIT;
     ec.fanout.branches[0].policy=TM_FO_ORDERED_LOSSLESS;
     ec.fanout.branches[0].queue_depth=1u;
+#ifdef TM_TEST_FFMPEG_DSO
+    binding[0].source_next=owner_decoded_source;
+    binding[0].ctx=o;
+    binding[1].visit=verify_decoded_frame;binding[1].ctx=o;
+    binding[2].visit=verify_decoded_frame;binding[2].ctx=o;
+#else
     binding[0].source_next=unused_source;
     binding[1].visit=unused_visit;
     binding[2].visit=unused_visit;
+#endif
     assert(tm_ex_create(o->program,o->store,&ec,binding,3u,&o->executor)
            ==TM_EX_OK);
     queue.capacity=2u;
@@ -353,8 +468,14 @@ int main(int argc,char **argv) {
     cmeta_plugin_lifecycle_info info;
     tm_pc_snapshot_v1 snapshot=TM_PC_SNAPSHOT_V1_INIT;
     cnet_client wake_client={0};
+#ifdef TM_TEST_FFMPEG_DSO
+    tm_mjpeg_encoder_fixture encoder={0};
+#endif
 
     assert(argc==3);
+#ifdef TM_TEST_FFMPEG_DSO
+    tm_mjpeg_encoder_init(&encoder);
+#endif
     init_wake_client(&wake_client);
     assert(cmeta_plugin_registry_init(&registry,&registry_config)==CMETA_PLUGIN_OK);
     assert(cmeta_plugin_registry_load(&registry,argv[1],&ref_n)==CMETA_PLUGIN_OK);
@@ -382,6 +503,11 @@ int main(int argc,char **argv) {
     work_n.service=value_n;
     work_n.completion=portal_n;
     work_n.wake_owner=&wake_client;
+#ifdef TM_TEST_FFMPEG_DSO
+    work_n.compressed_size=tm_make_mjpeg(
+        &encoder,101u,work_n.compressed,sizeof(work_n.compressed));
+    delivery_n.decoded=&work_n;
+#endif
     atomic_init(&work_n.returned,0u);
     start_worker(&thread_n,&work_n);
     wait_entered(&value_n);
@@ -413,6 +539,11 @@ int main(int argc,char **argv) {
     work_n1.service=value_n1;
     work_n1.completion=portal_n1;
     work_n1.wake_owner=&wake_client;
+#ifdef TM_TEST_FFMPEG_DSO
+    work_n1.compressed_size=tm_make_mjpeg(
+        &encoder,102u,work_n1.compressed,sizeof(work_n1.compressed));
+    delivery_n1.decoded=&work_n1;
+#endif
     atomic_init(&work_n1.returned,0u);
     start_worker(&thread_n1,&work_n1);
     wait_entered(&value_n1);
@@ -479,6 +610,15 @@ int main(int argc,char **argv) {
      * client. The Owner alone performs terminal CNet stop and destroy. */
     assert(cnet_client_stop(&wake_client,1000u)==SALTS_OK);
     assert(cnet_client_destroy(&wake_client)==SALTS_OK);
+#ifdef TM_TEST_FFMPEG_DSO
+    /* N+1 is a real decoded FFmpeg frame, not a fabricated generation byte.
+     * Cancelled old N must never publish a frame after rejection. */
+    assert(delivery_n1.frame_visited==1u);
+    assert(delivery_n1.frame_sink_visited==1u);
+    assert(delivery_n.frame_visited==0u);
+    assert(delivery_n.frame_sink_visited==0u);
+    tm_mjpeg_encoder_destroy(&encoder);
+#endif
     puts("installed Salts ComponentPlugin true N->N+1 DSO cancellation/drain: PASS");
     return 0;
 }
