@@ -71,6 +71,7 @@ struct IndependentPair {
     uint16_t profile;
     bool rsa_identity;
     bool wrong_fingerprint;
+    bool disable_ems;
     tstr gm_certificate = nullptr, gm_private_key = nullptr;
     tstr external_certificate = nullptr, external_private_key = nullptr;
     turbo_gdtls_context *gm_context = nullptr;
@@ -84,9 +85,10 @@ struct IndependentPair {
     unsigned gm_out_packets = 0, openssl_in_packets = 0;
     unsigned last_gm_record_type = 0, last_gm_handshake_type = 0;
 
-    IndependentPair(bool server, uint16_t id, bool rsa, bool wrong_pin = false)
+    IndependentPair(bool server, uint16_t id, bool rsa, bool wrong_pin = false,
+                    bool no_ems = false)
         : gm_server(server), profile(id), rsa_identity(rsa),
-          wrong_fingerprint(wrong_pin) {}
+          wrong_fingerprint(wrong_pin), disable_ems(no_ems) {}
 
     ~IndependentPair() {
         SSL_free(ssl);
@@ -157,7 +159,12 @@ struct IndependentPair {
         X509_free(cert); EVP_PKEY_free(key);
         if (!configured) return failure("OpenSSL-context-policy");
         SSL_CTX_set_read_ahead(openssl_context, 1);
-        SSL_CTX_set_options(openssl_context, SSL_OP_NO_TICKET | SSL_OP_NO_COMPRESSION);
+        SSL_CTX_set_options(openssl_context,
+            SSL_OP_NO_TICKET | SSL_OP_NO_COMPRESSION |
+            (disable_ems ? SSL_OP_NO_EXTENDED_MASTER_SECRET : 0));
+        if (disable_ems && !(SSL_CTX_get_options(openssl_context) &
+                             SSL_OP_NO_EXTENDED_MASTER_SECRET))
+            return failure("OpenSSL-disable-EMS-not-enforced");
         SSL_CTX_set_verify(openssl_context, SSL_VERIFY_PEER |
             (gm_server ? 0 : SSL_VERIFY_FAIL_IF_NO_PEER_CERT), trust_test_certificate);
         gm = turbo_gdtls_create(gm_context, gm_server ? 1 : 0, MTU,
@@ -263,13 +270,17 @@ struct IndependentPair {
         return failure("bounded-handshake-timeout");
     }
 
-    bool reject_mismatched_fingerprint() {
-        /* This is a real independent-provider handshake, not a locally
-         * injected protocol return code. Only the expected pin is changed.
-         * The GmSSL owner must reject the peer X.509 certificate before
-         * accepting any SRTP identity or exposing authenticated media. */
-        if (!wrong_fingerprint) return failure("negative-pin-case-not-configured");
-        stage = "reject-mismatched-fingerprint";
+    bool reject_untrusted_peer() {
+        /* Both cases use a real independent OpenSSL DTLS 1.2 handshake:
+         *  - Wrong leaf certificate fingerprint must be AUTH.
+         *  - RFC7627 EMS omitted by the peer must be PROTOCOL.
+         * Fail closed: neither can admit media or export SRTP secrets.
+         * Do not treat a timeout, unrelated error, or silent drop as success.
+         */
+        if (wrong_fingerprint == disable_ems)
+            return failure("negative-test-requires-one-invalid-policy");
+        const int expected = wrong_fingerprint ? TURBO_GDTLS_AUTH : TURBO_GDTLS_PROTOCOL;
+        stage = wrong_fingerprint ? "reject-mismatched-fingerprint" : "reject-missing-EMS";
         bool openssl_terminal = false;
         for (unsigned step = 0; step < 3500; ++step) {
             clock_ms += 10;
@@ -296,7 +307,7 @@ struct IndependentPair {
                 ++openssl_in_packets;
                 int rc = turbo_gdtls_receive(gm, packet,
                                              static_cast<size_t>(got), clock_ms);
-                if (rc == TURBO_GDTLS_AUTH) {
+                if (rc == expected) {
                     uint8_t exported[88] = {};
                     size_t exported_size = sizeof(exported);
                     bool denied = !turbo_gdtls_ready(gm) &&
@@ -308,19 +319,19 @@ struct IndependentPair {
                         turbo_gdtls_take_plaintext(gm) == nullptr;
                     OPENSSL_cleanse(exported, sizeof(exported));
                     if (!denied)
-                        return failure("negative-pin-exposed-media-or-keys");
+                        return failure("negative-policy-exposed-media-or-keys");
                     return true;
                 }
                 if (rc != TURBO_GDTLS_OK)
-                    return failure("negative-pin-wrong-DTLS-error");
+                    return failure("negative-policy-wrong-DTLS-error");
                 if (turbo_gdtls_ready(gm))
-                    return failure("negative-pin-accepted-unauthenticated-peer");
+                    return failure("negative-policy-accepted-untrusted-peer");
             }
             int rc = turbo_gdtls_poll(gm, clock_ms);
             if (rc != TURBO_GDTLS_OK)
-                return failure("negative-pin-unexpected-timer-error");
+                return failure("negative-policy-unexpected-timer-error");
         }
-        return failure("negative-pin-no-authentication-rejection");
+        return failure("negative-policy-no-explicit-rejection");
     }
 
     bool qualify_exporter() {
@@ -410,7 +421,13 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                server, rsa) {
                 IndependentPair fixture(server != 0, 7, rsa != 0, true);
                 check_true(fixture.init());
-                check_true(fixture.reject_mismatched_fingerprint());
+                check_true(fixture.reject_untrusted_peer());
+            }
+            it("GmSSL server=%d RSA=%d rejects independent OpenSSL DTLS without RFC7627 EMS",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0, false, true);
+                check_true(fixture.init());
+                check_true(fixture.reject_untrusted_peer());
             }
         }
     }
