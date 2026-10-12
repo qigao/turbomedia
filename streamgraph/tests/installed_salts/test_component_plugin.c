@@ -127,6 +127,8 @@ typedef struct provider_worker {
 #ifdef TM_TEST_FFMPEG_DSO
     uint8_t compressed[TM_ENCODED_CAPACITY];
     size_t compressed_size;
+    uint64_t instance_id;
+    _Atomic unsigned *start_barrier;
     uint8_t luma[TM_LUMA_BYTES];
     size_t luma_bytes;
 #endif
@@ -137,6 +139,12 @@ static thread_result THREAD_CALL invoke_provider(void *context) {
 #ifdef TM_TEST_FFMPEG_DSO
     tm_test_decode_request job={0};
     job.size=sizeof(job);
+    job.instance_id=worker->instance_id;
+    if(worker->start_barrier) {
+        atomic_fetch_add_explicit(worker->start_barrier,1u,memory_order_acq_rel);
+        while(atomic_load_explicit(worker->start_barrier,memory_order_acquire)<2u)
+            yield_worker();
+    }
     job.packet=worker->compressed;
     job.packet_size=worker->compressed_size;
     job.portal=worker->completion;
@@ -588,7 +596,6 @@ int main(int argc,char **argv) {
             tm_pc_portal *p1=make_portal(102u),*p2=make_portal(102u);
             tm_pc_ticket_v1 t1={0},t2={0},taken={0};
             tm_pc_result_v1 receipt=TM_PC_RESULT_V1_INIT;
-            tm_test_decode_request j1={0},j2={0};
             tm_test_take_request take={0};
             uint8_t packet1[TM_ENCODED_CAPACITY],packet2[TM_ENCODED_CAPACITY];
             uint8_t frame[TM_LUMA_BYTES];
@@ -597,14 +604,31 @@ int main(int argc,char **argv) {
             size_t frame_bytes=0u;
             assert(tm_pc_begin(p1,9011u,&t1)==TM_PC_OK);
             assert(tm_pc_begin(p2,9021u,&t2)==TM_PC_OK);
-            j1.size=sizeof(j1);j1.packet=packet1;j1.packet_size=count1;
-            j1.portal=p1;j1.ticket=t1;j1.instance_id=first.instance_id;
-            j1.wake_client=&wake_client;
-            j2.size=sizeof(j2);j2.packet=packet2;j2.packet_size=count2;
-            j2.portal=p2;j2.ticket=t2;j2.instance_id=second.instance_id;
-            j2.wake_client=&wake_client;
-            assert(tm_test_provider_run_decode(&value_n1,&j1)==102);
-            assert(tm_test_provider_run_decode(&value_n1,&j2)==102);
+            {
+                provider_worker w1={0},w2={0};
+                worker_thread th1,th2;
+                _Atomic unsigned gate=0u;
+                w1.service=value_n1;w2.service=value_n1;
+                w1.completion=p1;w2.completion=p2;
+                w1.ticket=t1;w2.ticket=t2;
+                w1.wake_owner=&wake_client;w2.wake_owner=&wake_client;
+                w1.instance_id=first.instance_id;
+                w2.instance_id=second.instance_id;
+                w1.start_barrier=&gate;w2.start_barrier=&gate;
+                memcpy(w1.compressed,packet1,count1);
+                memcpy(w2.compressed,packet2,count2);
+                w1.compressed_size=count1;w2.compressed_size=count2;
+                atomic_init(&w1.returned,0u);
+                atomic_init(&w2.returned,0u);
+                start_worker(&th1,&w1);
+                start_worker(&th2,&w2);
+                join_worker(&th1);
+                join_worker(&th2);
+                assert(atomic_load_explicit(&gate,memory_order_acquire)==2u);
+                assert(w1.result==102 && w2.result==102);
+                assert(atomic_load_explicit(&w1.returned,memory_order_acquire)==1u);
+                assert(atomic_load_explicit(&w2.returned,memory_order_acquire)==1u);
+            }
             assert(tm_pc_take(p1,&taken,&receipt)==TM_PC_OK);
             assert(receipt.correlation==9011u && receipt.outcome==TM_PC_COMPLETED);
             assert(tm_pc_settle(p1,taken)==TM_PC_OK);
