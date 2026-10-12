@@ -4,6 +4,7 @@
 #include <turbo_streamgraph_executor.h>
 #include <turbo_streamgraph_handoff.h>
 #include <turbo_streamgraph_owner_dispatch.h>
+#include <turbo_streamgraph_provider_completion.h>
 #include <assert.h>
 int main(void) {
     tm_sg_port_v1 p = TM_SG_PORT_V1_INIT;
@@ -59,6 +60,21 @@ int main(void) {
            receipt.version!=TM_OD_ABI_V1 ||
            tm_od_create(NULL,NULL,store,&dispatch_cfg,&dispatcher)!=TM_OD_EINVAL ||
            dispatcher!=NULL) return 12;
+    }
+    {
+        tm_pc_config_v1 pc_cfg=TM_PC_CONFIG_V1_INIT;
+        tm_pc_portal *portal=NULL;
+        tm_pc_ticket_v1 ticket={0},taken={0};
+        tm_pc_result_v1 result=TM_PC_RESULT_V1_INIT;
+        pc_cfg.capacity=2u; pc_cfg.provider_generation=7u;
+        if (tm_pc_create(&pc_cfg,&portal)!=TM_PC_OK) return 13;
+        if (tm_pc_begin(portal,67u,&ticket)!=TM_PC_OK) return 14;
+        if (tm_pc_complete(portal,ticket,0)!=TM_PC_OK) return 15;
+        if (tm_pc_take(portal,&taken,&result)!=TM_PC_OK ||
+            result.correlation!=67u || result.outcome!=TM_PC_COMPLETED) return 16;
+        if (tm_pc_settle(portal,taken)!=TM_PC_OK) return 17;
+        if (tm_pc_seal(portal)!=TM_PC_OK ||
+            tm_pc_destroy(portal)!=TM_PC_OK) return 18;
     }
     if (tm_fs_seal(store) != TM_FS_OK) return 2;
     return tm_fs_destroy(store) == TM_FS_OK ? 0 : 3;

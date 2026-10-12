@@ -4,6 +4,7 @@
 #include <turbo_streamgraph_executor.h>
 #include <turbo_streamgraph_handoff.h>
 #include <turbo_streamgraph_owner_dispatch.h>
+#include <turbo_streamgraph_provider_completion.h>
 #include <type_traits>
 static_assert(std::is_standard_layout<tm_sg_port_v1>::value, "public C ABI");
 static_assert(std::is_trivially_copyable<tm_sg_edge_v1>::value, "no runtime ownership in Edge");
@@ -17,4 +18,7 @@ static_assert(std::is_trivially_copyable<tm_ho_ticket_v1>::value, "handoff ticke
 static_assert(std::is_standard_layout<tm_od_config_v1>::value, "owner dispatcher config is C ABI");
 static_assert(std::is_trivially_copyable<tm_od_receipt_v1>::value, "owner receipt is a value");
 static_assert(std::is_trivially_copyable<tm_ex_binding_v1>::value, "callback table is POD");
+static_assert(std::is_standard_layout<tm_pc_config_v1>::value, "completion config is C ABI");
+static_assert(std::is_trivially_copyable<tm_pc_ticket_v1>::value, "completion ticket is a value");
+static_assert(std::is_trivially_copyable<tm_pc_result_v1>::value, "completion result is a value");
 int main() { tm_sg_limits_v1 l = TM_SG_LIMITS_V1_INIT; return l.version == TM_SG_ABI_VERSION ? 0 : 1; }
