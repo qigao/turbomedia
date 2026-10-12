@@ -91,6 +91,12 @@ typedef struct {
     sctp_receive_message_t receive[SCTP_RECEIVE_SLOTS];
     unsigned receive_buffers;
     int receive_stopped;
+
+    /* Native STATUS query ownership, bounded by admitted peer operations.
+     * Both are protected by peer->operation_mutex; close waits on
+     * peer->operation_cond before freeing the usrsctp socket. */
+    unsigned status_borrows;
+    int status_close_requested;
 } sctp_session_t;
 
 /* Data channel context - internal */
@@ -280,6 +286,7 @@ int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
 void sctp_receive_stop(turbo_dc_peer_t *peer);
 void sctp_receive_discard_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
 void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason);
+void sctp_session_close_socket(turbo_dc_peer_t *peer, int shutdown);
 
 /* SCTP callbacks (called by usrsctp) */
 int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, uint8_t set_df);
@@ -313,6 +320,32 @@ static inline void put_be16(uint8_t *buf, uint16_t val) {
 
 static inline uint16_t get_be16(const uint8_t *buf) {
     return (uint16_t)((buf[0] << 8) | buf[1]);
+}
+
+/* A Socket-status borrow is distinct from the peer's lifetime lease:
+ * public peer close can run while another Owner holds a peer operation.
+ * No operation_mutex may be held across usrsctp_getsockopt or callbacks. */
+static inline struct socket *sctp_status_borrow(turbo_dc_peer_t *peer) {
+    struct socket *socket = NULL;
+    if (!peer || !peer->operation_sync_initialized) return NULL;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (!peer->destroying && !peer->sctp.status_close_requested &&
+        peer->sctp.socket) {
+        socket = peer->sctp.socket;
+        ++peer->sctp.status_borrows;
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    return socket;
+}
+
+static inline void sctp_status_return(turbo_dc_peer_t *peer) {
+    if (!peer || !peer->operation_sync_initialized) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (peer->sctp.status_borrows > 0)
+        --peer->sctp.status_borrows;
+    if (peer->sctp.status_borrows == 0)
+        cmeta_cond_broadcast(&peer->operation_cond);
+    cmeta_mutex_unlock(&peer->operation_mutex);
 }
 
 /* ============================================================================
