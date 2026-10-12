@@ -33,6 +33,10 @@ typedef struct turbo_rtsp_rtp_udp_pair_s turbo_rtsp_rtp_udp_pair_t;
 #define TURBO_RTSP_MPEG4_GENERIC_AAC_HBR_INDEX_LENGTH 3
 #define TURBO_RTSP_MPEG4_GENERIC_AAC_HBR_MAX_AU_SIZE 8191
 #define TURBO_RTSP_MP4A_LATM_MAX_LENGTH_INFO_SIZE 40
+/* RFC 2250 MPEG Video ES (RTP/AVP PT 32), NOT MPEG-2 Transport Stream.
+ * A minimum 4-byte video-specific header follows the fixed RTP header. */
+#define TURBO_RTSP_MPEG_VIDEO_RTP_PAYLOAD_TYPE 32u
+#define TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE 4u
 #define TURBO_RTSP_MPEG2_TS_PACKET_SIZE 188
 #define TURBO_RTSP_MPEG2_TS_SYNC_BYTE 0x47
 #define TURBO_RTSP_RTP_H264_RECEIVE_REORDER_CAPACITY 4
@@ -166,6 +170,23 @@ typedef struct {
     size_t packets_len;
     size_t packet_count;
 } turbo_rtsp_mpeg2_ts_payload_t;
+
+/* RFC 2250 Section 3.4: MPEG Video elementary stream packet view.
+ * This conservative initial profile does NOT accept optional MPEG-2
+ * picture-extension headers (T=1). Slices/fragments may be parsed but
+ * MUST NOT be submitted as a complete Codec packet unless both B/E
+ * flags and RTP marker have been independently checked by the Host.
+ * The ES view is borrowed until the caller returns. No ownership is
+ * transferred by this parser. PTS lives in the RTP header's 90-kHz clock. */
+typedef struct {
+    const uint8_t *es;
+    size_t es_len;
+    uint16_t temporal_reference;
+    uint8_t picture_type; /* 1=I, 2=P, 3=B */
+    uint8_t sequence_header;
+    uint8_t begins_slice;
+    uint8_t ends_slice;
+} turbo_rtsp_mpeg_video_payload_t;
 
 typedef struct {
     const uint8_t *payload;
@@ -389,6 +410,15 @@ TURBO_MEDIA_C_API int turbo_rtsp_mpeg2_ts_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
     turbo_rtsp_mpeg2_ts_payload_t *ts);
+
+/* Parse MPEG-1/2 Video ES RTP header, not MPEG-TS. Rejects unsupported
+ * RFC 2250 T=1 extension, reserved P types and malformed MBZ/AN/N.
+ * Full-picture admission (one RTP packet per picture) is a separate
+ * explicit Media Owner policy, not implied by a successful parse. */
+TURBO_MEDIA_C_API int turbo_rtsp_mpeg_video_payload_parse(
+    const uint8_t *payload,
+    size_t payload_len,
+    turbo_rtsp_mpeg_video_payload_t *video);
 
 TURBO_MEDIA_C_API int turbo_rtsp_h264_payload_parse(
     const uint8_t *payload,
