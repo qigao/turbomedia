@@ -287,9 +287,12 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
                     TM_FF_OK);
         memset(wire,0,bytes);
     }
-    /* Transport abort first; Owner explicitly marks original Ticket
-     * cancelled before the selected DSO Worker observes it. */
-    turbo_rtsp_client_close(client);
+    /* Deterministic triple ownership crossover: one live RTSP/CNet
+     * server callback still borrows the original Session, while the real
+     * N+1 ComponentPlugin Scope and one exact original Portal Ticket
+     * remain retained. Only the fixed Host/Media Owner cancels; no
+     * concurrent progress on one CNet Client and no Codec method may
+     * race with an in-libavcodec worker in this particular gate. */
     p102=rtsp_mpv_portal(102u);
     {
         tm_pc_ticket_v1 ticket={0},taken={0};
@@ -300,9 +303,56 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         size_t out_bytes=13u;
         int64_t pts=13;
         check_equal(tm_pc_begin(p102,30001u,&ticket),TM_PC_OK);
-        check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_OK);
-        check_equal(tm_test_provider_cancel_delayed(
-                    &service102,&second),0);
+        {
+            uint8_t pending_rtp[RTSP_MPV_MAX_PACKET]={0};
+            size_t pending_bytes=0u;
+            unsigned callback_entered,callback_exited;
+            /* A THIRD real RTP packet is intentionally stopped inside
+             * the server's actual CNet on_interleaved_frame callback.
+             * It is not admitted to the Codec, and cannot leak from the
+             * cancelled Session into the next Generation. */
+            check_equal(rtsp_mpv_make_rtp(f.packets[2],
+                        (uint16_t)(RTSP_MPV_RTP_SEQUENCE+2u),ssrc102,
+                        pending_rtp,sizeof(pending_rtp),&pending_bytes),0);
+            atomic_store_explicit(&state.hold_interleaved,1u,
+                                  memory_order_release);
+            check_equal(turbo_rtsp_client_send_interleaved_frame(
+                        client,0u,pending_rtp,pending_bytes),0);
+            callback_entered=(unsigned)rtsp_test_wait_for_callback(
+                &state.interleaved_entered);
+            check_true(callback_entered);
+            /* The CNet callback is alive with old Session storage.
+             * Retire N+1 publication while its canonical DSO Scope
+             * and original cancellation Ticket are still live.
+             * Early drain and DSO unload MUST observe BUSY. */
+            check_equal(salts_component_plugin_runtime_close(
+                        &runtime,&prior),SALTS_COMPONENT_PLUGIN_OK);
+            check_true(prior==&gen102.generation);
+            check_equal(salts_component_plugin_generation_drain(
+                        &runtime,&gen102.generation),SALTS_COMPONENT_PLUGIN_BUSY);
+            check_equal(cmeta_plugin_registry_unload(
+                        &registry,ref102),CMETA_PLUGIN_BUSY);
+            check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_OK);
+            /* The original RTSP Client Owner closes NativeIO while the
+             * server callback is STILL on its old borrowed stack.
+             * Only after CNet callback exit does the Host touch Codec. */
+            turbo_rtsp_client_close(client);
+            atomic_store_explicit(&state.interleaved_release,1u,
+                                  memory_order_release);
+            callback_exited=(unsigned)rtsp_test_wait_for_callback(
+                &state.interleaved_exited);
+            check_true(callback_exited);
+            atomic_store_explicit(&state.hold_interleaved,0u,
+                                  memory_order_release);
+            check_equal(tm_test_provider_cancel_delayed(
+                        &service102,&second),0);
+            /* Portal still owns the cancelled original Ticket until
+             * its one authoritative DSO completion is settled. */
+            check_equal(salts_component_plugin_generation_drain(
+                        &runtime,&gen102.generation),SALTS_COMPONENT_PLUGIN_BUSY);
+            check_equal(cmeta_plugin_registry_unload(
+                        &registry,ref102),CMETA_PLUGIN_BUSY);
+        }
         request.size=sizeof(request);
         request.instance_id=second.instance_id;
         request.provider_generation=second.provider_generation;
@@ -344,8 +394,9 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
     check_equal(rtsp_test_read(&state,&state.teardown_count),1);
     check_equal(rtsp_test_read(&state,&state.accepted_mpvideo_sdp),2);
     check_equal(rtsp_test_read(&state,&state.rejected_mpvideo_sdp),2);
-    check_equal(salts_component_plugin_runtime_close(
-                &runtime,&prior),SALTS_COMPONENT_PLUGIN_OK);
+    /* Runtime was already retired while the original CNet callback was
+     * still in flight; after Portal settlement the old Scope still
+     * prevents premature unload until its final explicit release. */
     check_true(prior==&gen102.generation);
     check_equal(salts_component_plugin_generation_drain(
                 &runtime,&gen102.generation),SALTS_COMPONENT_PLUGIN_BUSY);
@@ -362,6 +413,9 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
     check_equal(cnet_client_stop(&wake,1000u),SALTS_OK);
     check_equal(cnet_client_destroy(&wake),SALTS_OK);
 cleanup:
+    /* A failed assertion must not strand the real server callback at
+     * its test-only gate while server destroy awaits quiescence. */
+    atomic_store_explicit(&state.interleaved_release,1u,memory_order_release);
     if(p101)(void)tm_pc_destroy(p101);
     if(p102)(void)tm_pc_destroy(p102);
     if(client)turbo_rtsp_client_destroy(client);
