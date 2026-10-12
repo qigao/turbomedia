@@ -1,4 +1,5 @@
 #include <turbo_streamgraph_ffmpeg_async.h>
+#include <turbo_streamgraph_owner_dispatch.h>
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -177,12 +178,44 @@ static void await_wake(worker *w) {
         sched_yield();
     }
 }
+typedef struct terminal_delivery {
+    tm_ffa_decoder *decoder;
+    tm_ex_owner *executor;
+    tm_od_owner *owner;
+    tm_pc_ticket_v1 ticket;
+    uint64_t correlation;
+    tm_ex_status expected_pump;
+    uint32_t delivered;
+} terminal_delivery;
+static int deliver_to_graph(void *ctx,const tm_pc_result_v1 *terminal) {
+    terminal_delivery *o=(terminal_delivery *)ctx;
+    tm_pc_result_v1 recursive=TM_PC_RESULT_V1_INIT;
+    tm_ex_status pumped;
+    assert(terminal->correlation==o->correlation);
+    assert(terminal->provider_generation==44u);
+    assert(terminal->outcome==TM_PC_COMPLETED);
+    assert(terminal->completion_observed==1u);
+    assert(terminal->provider_status==TM_FF_OK);
+    assert(tm_od_step_completion(o->owner,&recursive)==TM_OD_EBUSY);
+    assert(tm_ffa_owner_accept(o->decoder,o->ticket)==TM_FF_OK);
+    pumped=tm_ex_pump_source(o->executor);
+    assert(pumped==o->expected_pump);
+    ++o->delivered;
+    /* Successful delivery means the Executor either owns the new FrameRef
+     * or its explicit bounded pending frame. No codec redo is authorized. */
+    return 0;
+}
 static void test_real_async_provider_and_credits(void) {
     const uint8_t levels[]={47u,95u,161u};
     tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
     tm_ffa_decoder *decoder=NULL;
     tm_pc_config_v1 pc=TM_PC_CONFIG_V1_INIT;
     tm_pc_portal *portal=NULL;
+    tm_ho_inbox *inbox=NULL;
+    tm_od_owner *owner=NULL;
+    tm_ho_config_v1 hcfg=TM_HO_CONFIG_V1_INIT;
+    tm_od_config_v1 ocfg=TM_OD_CONFIG_V1_INIT;
+    terminal_delivery delivery={0};
     tm_sg_program *g=graph();
     tm_fs_store *s=store();
     tm_ex_owner *ex;
@@ -198,8 +231,14 @@ static void test_real_async_provider_and_credits(void) {
     for(i=0u;i<3u;++i)memcpy(visits[i].levels,levels,sizeof(levels));
     encoder_init(&encoder);
     ex=executor(g,s,decoder,visits);
+    hcfg.capacity=2u;
+    assert(tm_ho_create(&hcfg,&inbox)==TM_HO_OK);
+    assert(tm_od_create(inbox,ex,s,&ocfg,&owner)==TM_OD_OK);
+    delivery.decoder=decoder;
+    delivery.executor=ex;
+    delivery.owner=owner;
+    assert(tm_od_bind_completion(owner,portal,deliver_to_graph,&delivery)==TM_OD_OK);
     for(i=0u;i<3u;++i) {
-        tm_pc_ticket_v1 taken={0};
         tm_pc_result_v1 result=TM_PC_RESULT_V1_INIT;
         tm_pc_ticket_v1 wrong;
         worker w={0};
@@ -213,16 +252,18 @@ static void test_real_async_provider_and_credits(void) {
         assert(pthread_create(&thread,NULL,worker_run,&w)==0);
         await_wake(&w);
         assert(tm_ffa_destroy(decoder)==TM_FF_ESTATE);
-        assert(tm_pc_take(portal,&taken,&result)==TM_PC_OK);
+        delivery.ticket=w.ticket;
+        delivery.correlation=900u+i;
+        delivery.expected_pump=i==1u?TM_EX_EFULL:TM_EX_OK;
+        wrong=w.ticket;wrong.generation++;
+        assert(tm_ffa_owner_accept(decoder,wrong)==TM_FF_ESTALE);
+        assert(tm_od_step_completion(owner,&result)==TM_OD_OK);
         assert(result.correlation==900u+i &&
                result.provider_generation==44u &&
                result.outcome==TM_PC_COMPLETED &&
                result.provider_status==TM_FF_OK);
-        wrong=w.ticket;wrong.generation++;
-        assert(tm_ffa_owner_accept(decoder,wrong)==TM_FF_ESTALE);
-        assert(tm_ffa_owner_accept(decoder,w.ticket)==TM_FF_OK);
-        assert(tm_ffa_owner_accept(decoder,w.ticket)==TM_FF_ESTATE);
-        assert(tm_ex_pump_source(ex)==(i==1u?TM_EX_EFULL:TM_EX_OK));
+        assert(delivery.delivered==i+1u);
+        assert(tm_od_step_completion(owner,&result)==TM_OD_EMPTY);
         assert(visits[0].count==i+1u);
         /* Source callback has copied a released pixel buffer once; another
          * source pump under backpressure cannot re-decode packet #2. */
@@ -230,8 +271,7 @@ static void test_real_async_provider_and_credits(void) {
             assert(tm_ex_pump_source(ex)==TM_EX_EFULL);
             assert(visits[0].count==2u);
         }
-        assert(tm_pc_settle(portal,taken)==TM_PC_OK);
-        assert(tm_pc_settle(portal,taken)==TM_PC_ESTALE);
+        assert(tm_pc_settle(portal,w.ticket)==TM_PC_ESTALE);
         atomic_store_explicit(&w.release,1u,memory_order_release);
         assert(pthread_join(thread,NULL)==0);
         assert(w.result==TM_FF_OK);
@@ -253,9 +293,12 @@ static void test_real_async_provider_and_credits(void) {
     assert(fstats.decoded==3u && fstats.delivered==3u &&
            fstats.discarded==0u && fstats.notifications_failed==1u &&
            fstats.worker_active==0u && fstats.state==0u);
+    assert(tm_ho_seal(inbox)==TM_HO_OK);
+    assert(tm_pc_seal(portal)==TM_PC_OK);
+    assert(tm_od_destroy(owner)==TM_OD_OK);
+    assert(tm_ho_destroy(inbox)==TM_HO_OK);
     assert(tm_ex_stop(ex)==TM_EX_OK);
     assert(tm_ex_destroy(ex)==TM_EX_OK);
-    assert(tm_pc_seal(portal)==TM_PC_OK);
     assert(tm_pc_destroy(portal)==TM_PC_OK);
     assert(tm_ffa_destroy(decoder)==TM_FF_OK);
     encoder_destroy(&encoder);
