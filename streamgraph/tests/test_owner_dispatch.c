@@ -345,10 +345,157 @@ static void test_multithread_producers_and_real_executor(void) {
     assert(tm_ex_discard_ready(ex,1u)==TM_EX_OK);
     cleanup(d,q,ex,s,g);
 }
+
+/* Real asynchronous Provider callback -> Portal -> existing Media Owner.
+ * The worker touches only the Portal; all delivery happens on owner lane. */
+typedef struct terminal_fixture {
+    tm_od_owner *owner;
+    uint32_t calls;
+    uint32_t rejections;
+    uint32_t fail_once;
+    uint64_t correlations[128];
+} terminal_fixture;
+static int terminal_emit(void *context, const tm_pc_result_v1 *terminal) {
+    terminal_fixture *f=(terminal_fixture *)context;
+    tm_pc_result_v1 recursive=TM_PC_RESULT_V1_INIT;
+    assert(tm_od_step_completion(f->owner,&recursive)==TM_OD_EBUSY);
+    assert(terminal->provider_generation==78u);
+    assert(terminal->correlation>0u);
+    assert(f->calls<128u);
+    f->correlations[f->calls++]=terminal->correlation;
+    if (f->fail_once) {
+        f->fail_once=0u;
+        f->rejections++;
+        return -1; /* Downstream acceptance is unresolved; no auto replay. */
+    }
+    return 0;
+}
+typedef struct provider_worker_args {
+    tm_pc_portal *portal;
+    tm_pc_ticket_v1 tickets[96];
+    uint32_t count;
+} provider_worker_args;
+#ifdef _WIN32
+static DWORD WINAPI provider_worker(LPVOID ptr)
+#else
+static void *provider_worker(void *ptr)
+#endif
+{
+    provider_worker_args *work=(provider_worker_args *)ptr;
+    uint32_t i;
+    for (i=0u;i<work->count;++i)
+        assert(tm_pc_complete(work->portal,work->tickets[i],(int32_t)i)==TM_PC_OK);
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+static void test_provider_terminal_on_owner(void) {
+    fixture f={0};
+    terminal_fixture receiver={0};
+    tm_sg_program *g=program();
+    tm_fs_store *s=store();
+    tm_ho_inbox *q=inbox();
+    tm_ex_owner *ex=executor(g,s,&f);
+    tm_od_owner *d=NULL;
+    tm_od_config_v1 cfg=TM_OD_CONFIG_V1_INIT;
+    tm_pc_config_v1 pcfg=TM_PC_CONFIG_V1_INIT;
+    tm_pc_portal *portal=NULL;
+    tm_pc_ticket_v1 ticket={0};
+    tm_pc_result_v1 result=TM_PC_RESULT_V1_INIT;
+    provider_worker_args work={0};
+    uint32_t i;
+#ifdef _WIN32
+    HANDLE thread;
+#else
+    pthread_t thread;
+#endif
+    pcfg.capacity=100u;
+    pcfg.provider_generation=78u;
+    assert(tm_pc_create(&pcfg,&portal)==TM_PC_OK);
+    assert(tm_od_create(q,ex,s,&cfg,&d)==TM_OD_OK);
+    receiver.owner=d;
+    assert(tm_od_bind_completion(d,portal,terminal_emit,&receiver)==TM_OD_OK);
+    assert(tm_od_bind_completion(d,portal,terminal_emit,&receiver)==TM_OD_EBUSY);
+    assert(tm_od_step_completion(d,&result)==TM_OD_EMPTY);
+    /* A failed output is retained as TAKEN, not delivered twice. */
+    receiver.fail_once=1u;
+    assert(tm_pc_begin(portal,901u,&ticket)==TM_PC_OK);
+    assert(tm_pc_complete(portal,ticket,42)==TM_PC_OK);
+    assert(tm_od_step_completion(d,&result)==TM_OD_EDELIVERY);
+    assert(result.correlation==901u && result.provider_status==42);
+    assert(receiver.calls==1u && receiver.rejections==1u);
+    assert(tm_od_pending_completion(d,&result)==TM_OD_OK);
+    assert(result.correlation==901u);
+    assert(tm_od_step_completion(d,&result)==TM_OD_EBUSY);
+    assert(receiver.calls==1u);
+    assert(tm_od_destroy(d)==TM_OD_EBUSY);
+    /* Host has now reconciled its external delivery obligation and elects
+     * explicit settlement, not automatic callback replay. */
+    assert(tm_od_settle_pending_completion(d)==TM_OD_OK);
+    assert(tm_od_settle_pending_completion(d)==TM_OD_EMPTY);
+    assert(tm_od_pending_completion(d,&result)==TM_OD_EMPTY);
+    assert(tm_pc_begin(portal,902u,&ticket)==TM_PC_OK);
+    assert(tm_pc_request_cancel(portal,ticket)==TM_PC_OK);
+    assert(tm_pc_complete(portal,ticket,99)==TM_PC_OK);
+    assert(tm_od_step_completion(d,&result)==TM_OD_OK);
+    assert(result.outcome==TM_PC_CANCELLED &&
+           result.completion_observed==1u &&
+           receiver.correlations[1]==902u);
+    /* Real callback thread races the owner polling the same portal. */
+    work.portal=portal;work.count=96u;
+    for (i=0u;i<work.count;++i)
+        assert(tm_pc_begin(portal,(uint64_t)i+1000u,&work.tickets[i])==TM_PC_OK);
+#ifdef _WIN32
+    thread=CreateThread(NULL,0,provider_worker,&work,0,NULL);
+    assert(thread!=NULL);
+#else
+    assert(pthread_create(&thread,NULL,provider_worker,&work)==0);
+#endif
+    i=0u;
+    while(i<work.count) {
+        tm_od_status rc=tm_od_step_completion(d,&result);
+        if (rc==TM_OD_EMPTY) {yield_owner();continue;}
+        assert(rc==TM_OD_OK);
+        assert(result.outcome==TM_PC_COMPLETED);
+        assert(result.correlation>=1000u && result.correlation<1096u);
+        ++i;
+    }
+#ifdef _WIN32
+    assert(WaitForSingleObject(thread,INFINITE)==WAIT_OBJECT_0);
+    CloseHandle(thread);
+#else
+    assert(pthread_join(thread,NULL)==0);
+#endif
+    assert(receiver.calls==98u);
+    for(i=0u;i<work.count;++i)
+        assert(receiver.correlations[2u+i]==(uint64_t)i+1000u);
+    assert(tm_od_step_completion(d,&result)==TM_OD_EMPTY);
+    /* Closing the command side alone is insufficient: an attached Portal
+     * requires its own seal, drain, callback-join, and generation quiescence. */
+    assert(tm_ho_seal(q)==TM_HO_OK);
+    assert(tm_od_destroy(d)==TM_OD_EBUSY);
+    assert(tm_pc_seal(portal)==TM_PC_OK);
+    {
+        tm_pc_snapshot_v1 snap=TM_PC_SNAPSHOT_V1_INIT;
+        assert(tm_pc_snapshot(portal,&snap)==TM_PC_OK && snap.drained);
+    }
+    assert(tm_od_destroy(d)==TM_OD_OK);
+    assert(tm_pc_destroy(portal)==TM_PC_OK);
+    assert(tm_ho_destroy(q)==TM_HO_OK);
+    assert(tm_ex_stop(ex)==TM_EX_OK);
+    assert(tm_ex_destroy(ex)==TM_EX_OK);
+    assert(tm_fs_seal(s)==TM_FS_OK);
+    assert(tm_fs_destroy(s)==TM_FS_OK);
+    tm_sg_program_destroy(g);
+}
+
 int main(void) {
     test_executor_backpressure_and_eos();
     test_frame_pin_scope_and_stop();
     test_multithread_producers_and_real_executor();
+    test_provider_terminal_on_owner();
     puts("StreamGraph owner dispatcher / retained frame visit: PASS");
     return 0;
 }
