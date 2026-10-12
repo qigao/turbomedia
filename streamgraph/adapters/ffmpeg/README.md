@@ -41,6 +41,19 @@ cmake --build streamgraph/build/ffmpeg --target streamgraph_ffmpeg_decode_test
 ctest --test-dir streamgraph/build/ffmpeg -R streamgraph_ffmpeg_decode --output-on-failure
 ```
 
+## Independent installed adapter SDK
+
+When `TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON` is selected in the isolated desktop build, CMake installs a **separate** `TurboMediaStreamGraphFFmpeg` package with the imported `TurboMedia::StreamGraphFFmpeg` target. Its config depends on the independently exported base `TurboMediaStreamGraph` package, so the original `TurboMedia::StreamGraph` ABI remains unchanged and consumers opt in explicitly.
+
+After `cmake --install streamgraph/build/ffmpeg --prefix /path/to/sg-sdk`, a standalone application can use:
+
+```cmake
+find_package(TurboMediaStreamGraphFFmpeg CONFIG REQUIRED)
+target_link_libraries(my_desktop_app PRIVATE TurboMedia::StreamGraphFFmpeg)
+```
+
+The FFmpeg runtime shared libraries remain desktop Provider dependencies; no `AVFrame` or `AVPacket` appears in installed public headers. The dedicated workflow builds a separate C11 and C++17 installed SDK consumer, executes it independently, and rejects a missing package export. This is **not** a production media-provider version/release claim.
+
 ## Still missing
 
 This test is **Owner-driven synchronous decode**, not a real threaded FFmpeg I/O callback. It does not qualify live RTSP/HLS demux, encoded audio, scaler/intermediate data conversion, FFmpeg filter/encoder/mux output, a native Provider DSO containing libavcodec, or a CNet/NativeIO request-cancel-unload race. It does **not** retire `turbo.media.pipeline/v1` and must not introduce a fallback scheduler; migration requires the separate [#166](https://github.com/qigao/turbomedia/issues/166) exit gates. Also see [#165](https://github.com/qigao/turbomedia/issues/165) for final owner-wide drain/failure domain conformance.
