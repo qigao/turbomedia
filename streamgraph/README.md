@@ -4,7 +4,7 @@
 
 The platform-neutral C11 header `turbo_streamgraph.h` models Source/Processor/Sink, six typed Port kinds and explicit edges. `tm_sg_compile()` deep-copies all IDs, Port descriptors and Edges, checks capacities, port direction, DAG cycle, schema, timebase, memory domain, media format, connectedness and fanout, and produces a read-only topology plan. Views remain borrowed until `tm_sg_program_destroy()`.
 
-**Still missing:** provider selection and exact capabilities, codec/model loading, GPU synchronization, general DAG scheduling, true cross-owner handoff/TSan, Observation serialization (#167), FFmpeg adapters (#166) and Android Capture. The M1/M2 constrained CPU components below do not satisfy these requirements. `format_id == 0` and memory `ANY` are unconstrained *proposals* requiring future explicit provider negotiation, not implicit conversion or a production capability claim.
+**Still missing:** provider selection and exact capabilities, codec/model loading, GPU synchronization, general DAG scheduling, full asynchronous FramePin ownership handoff, Observation serialization (#167), FFmpeg adapters (#166) and Android Capture. The M1/M2 constrained CPU components below do not satisfy these requirements. `format_id == 0` and memory `ANY` are unconstrained *proposals* requiring future explicit provider negotiation, not implicit conversion or a production capability claim.
 
 `TurboMedia::StreamGraph` is a shared platform component, unlike desktop-only Pipeline. The small standalone CMake build supports fast conformance independent of a complete Salts/FFmpeg toolchain; its **test-only** installed `TurboMediaStreamGraph` CMake package does not prove the full TurboMedia package is usable.
 
@@ -93,3 +93,29 @@ The synthetic owner-driven Executor now supports `Source -> Processor[1..8] -> S
 Preflight rejects intermediate fan-out, skipped or ambiguous processors, non-matching Port kinds/formats/timebases, missing or duplicate Provider bindings and a chain longer than the finite Processor limit. The final Processor alone fans out through existing ordered-lossless, sample or latest branch policies. An error in any Processor stops further execution and invokes the existing safe stop/retire path.
 
 The `streamgraph_multi_processor` CTest verifies two exact-order Processors and two Sinks, lossless backpressure without duplicate callback, rejection of intermediate-Processor branches and a failing second Processor. [PR #174](https://github.com/qigao/turbomedia/pull/174) qualifies this **narrow slice only**. A general Source/Processor/Sink execution DAG, per-node mutable outputs, cross-owner bounded asynchronous delivery, true TSan concurrency, EOS/flush across codecs and FFmpeg lowering remain separately outstanding under #165/#166.
+
+## M4 concurrent Owner command inbox (Draft stacked slice)
+
+The separate `turbo_streamgraph_handoff.h` provides a bounded **multiple-producer / single-consuming Media Owner** control inbox. Producers may execute `reserve`, `publish`, `abort`, and `snapshot` concurrently; the Media Owner alone calls `take` and `settle`. All slots and command storage are allocated upfront. Under a short atomic lock the inbox transitions RESERVED -> READY -> TAKEN -> FREE. Tokens contain an inbox incarnation and a slot generation, so copying an old token cannot reproduce a capacity credit.
+
+Supported command values are `PUMP_SOURCE`, `PUMP_SINK`, `STOP` and `FRAME_NOTICE`. Each is a small, pointer-free envelope. **FRAME_NOTICE holds a weak FrameRef only**, not a FramePin or a pixel lease; the Media Owner must validate the target Store generation and reserve an actual Pin before any separate async request commits. The inbox never invokes `tm_fs_*` or `tm_ex_*` under its lock and does not add a worker/poller or hidden retry. The host must progress/wake the Media Owner, execute the command and settle the row.
+
+```mermaid
+sequenceDiagram
+    participant P as Concurrent Producer
+    participant H as Bounded Handoff
+    participant O as Media Owner
+    participant F as FrameStore
+    P->>H: reserve capacity ticket
+    P->>H: publish copied command
+    H-->>O: take ready command
+    O->>F: validate optional weak FrameRef
+    O->>O: invoke owner-local operation
+    O->>H: settle consumed credit
+    P->>H: seal on shutdown
+    Note over P,O: Producer join and owner quiescence precede destroy
+```
+
+`seal` blocks new reservations/publications but requires already-reserved tickets to be aborted. READY commands may still drain and TAKEN credits must settle before `destroy` succeeds. **A drained snapshot does not establish concurrency quiescence:** callers must stop/join all producers including post-publish wake tails and ensure no owner access before destruction.
+
+`streamgraph_handoff` CTest uses four actual producer threads racing with a single owner reader (600 command deliveries) plus deterministic seal-vs-reserved and stale-incarnation tests. Native CI qualifies MSVC, Clang and GCC; Linux TSan is a distinct instrumented gate. This does **not yet** integrate a complete Graph Executor scheduler, pin-retaining analysis requests, GPU FrameStore, FFmpeg, native CNet wake or asynchronous Provider callbacks. [#165](https://github.com/qigao/turbomedia/issues/165) remains OPEN.
