@@ -1,4 +1,7 @@
 #include <turbo_streamgraph_fanout.h>
+#ifdef NDEBUG
+#undef NDEBUG /* exercise assertions even in optimized Release CTests */
+#endif
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
