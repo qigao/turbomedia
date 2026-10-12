@@ -47,6 +47,29 @@ target_link_libraries(turbo_media_test_gmssl_dtls PRIVATE GmSSL::GmSSL)
 if(NOT ANDROID)
   set_tests_properties(turbo_media_test_gmssl_dtls PROPERTIES TIMEOUT 60)
 endif()
+
+# Test-only independent provider, isolated to the Linux CTest graph. No
+# OpenSSL reference target is exported or linked by any production component.
+option(TURBO_MEDIA_TEST_INDEPENDENT_DTLS
+       "Qualify private GmSSL DTLS against system OpenSSL 3.x over UDP" OFF)
+if(TURBO_MEDIA_TEST_INDEPENDENT_DTLS)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "Independent DTLS qualification is Linux host only")
+  endif()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(OPENSSL_INTEROP REQUIRED IMPORTED_TARGET openssl>=3.0)
+  if(NOT OPENSSL_INTEROP_VERSION VERSION_LESS 4.0)
+    message(FATAL_ERROR "Test peer requires OpenSSL 3.x, found ${OPENSSL_INTEROP_VERSION}")
+  endif()
+  turbo_media_add_webrtc_base_test(turbo_media_test_dtls_openssl_interop
+    test_dtls_openssl_interop.cpp ../src/gmssl_dtls.c
+    ../src/dc_certificate_gmssl.cpp)
+  target_link_libraries(turbo_media_test_dtls_openssl_interop
+    PRIVATE GmSSL::GmSSL PkgConfig::OPENSSL_INTEROP)
+  set_tests_properties(turbo_media_test_dtls_openssl_interop PROPERTIES
+    TIMEOUT 60 LABELS "independent-dtls")
+  message(STATUS "Independent DTLS peer: system OpenSSL ${OPENSSL_INTEROP_VERSION}")
+endif()
 # Internal ownership barriers require private engine/admission functions, which
 # are intentionally absent from the Windows DLL ABI. Compile the production
 # source list into this formal test; public integration tests still use the DLL.

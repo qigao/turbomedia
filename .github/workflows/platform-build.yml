@@ -147,7 +147,7 @@ jobs:
             ninja-build pkg-config nasm autoconf automake libtool
           if [ "${{ matrix.platform }}" = "Linux" ]; then
             sudo apt-get install -y --no-install-recommends \
-              libpipewire-0.3-dev libx11-dev libxext-dev
+              libpipewire-0.3-dev libx11-dev libxext-dev libssl-dev
           else
             test -n "${ANDROID_NDK_HOME:-}"
             test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
@@ -352,6 +352,10 @@ jobs:
               "-DANDROID_PLATFORM=android-26",
               "-DANDROID_STL=c++_shared"
             )
+          }
+          if ("${{ matrix.platform }}" -eq "Linux" -and
+              $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+            $args += "-DTURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON"
           }
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
