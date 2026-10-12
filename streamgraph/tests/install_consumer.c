@@ -2,6 +2,7 @@
 #include <turbo_frame_store.h>
 #include <turbo_streamgraph_fanout.h>
 #include <turbo_streamgraph_executor.h>
+#include <turbo_streamgraph_handoff.h>
 #include <assert.h>
 int main(void) {
     tm_sg_port_v1 p = TM_SG_PORT_V1_INIT;
@@ -29,6 +30,25 @@ int main(void) {
         fc.branches[0] = bc;
         if (tm_fo_create(store, &fc, &fanout) != TM_FO_OK) return 4;
         if (tm_fo_seal(fanout) != TM_FO_OK || tm_fo_destroy(fanout) != TM_FO_OK) return 5;
+    }
+    {
+        tm_ho_inbox *inbox = NULL;
+        tm_ho_config_v1 ic = TM_HO_CONFIG_V1_INIT;
+        tm_ho_ticket_v1 prepared={0},taken={0};
+        tm_ho_command_v1 send = TM_HO_COMMAND_V1_INIT, received={0};
+        tm_ho_snapshot_v1 snapshot = TM_HO_SNAPSHOT_V1_INIT;
+        ic.capacity = 2u;
+        send.kind = TM_HO_PUMP_SOURCE;
+        send.correlation = 16u;
+        if (tm_ho_create(&ic,&inbox)!=TM_HO_OK) return 6;
+        if (tm_ho_reserve(inbox,&prepared)!=TM_HO_OK) return 7;
+        if (tm_ho_publish(inbox,prepared,&send)!=TM_HO_OK) return 8;
+        if (tm_ho_take(inbox,&taken,&received)!=TM_HO_OK ||
+            received.kind!=TM_HO_PUMP_SOURCE || received.correlation!=16u) return 9;
+        if (tm_ho_settle(inbox,taken)!=TM_HO_OK) return 10;
+        if (tm_ho_seal(inbox)!=TM_HO_OK ||
+            tm_ho_snapshot(inbox,&snapshot)!=TM_HO_OK || !snapshot.drained ||
+            tm_ho_destroy(inbox)!=TM_HO_OK) return 11;
     }
     if (tm_fs_seal(store) != TM_FS_OK) return 2;
     return tm_fs_destroy(store) == TM_FS_OK ? 0 : 3;
