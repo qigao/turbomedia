@@ -1,5 +1,6 @@
 #include <turbo_streamgraph_ffmpeg.h>
 #include <turbo_streamgraph_ffmpeg_async.h>
+#include <turbo_streamgraph_ffmpeg_delayed.h>
 #include <assert.h>
 
 static int count_wake(void *ctx) {
@@ -58,6 +59,25 @@ int main(void) {
                tm_pc_destroy(portal)!=TM_PC_OK)return 19;
         }
         if (tm_ffa_destroy(async)!=TM_FF_OK) return 9;
+    }
+    {
+        tm_ffd_config_v1 dc=TM_FFD_CONFIG_V1_INIT;
+        tm_ffd_decoder *delayed=NULL;
+        tm_ffd_stats_v1 ds=TM_FFD_STATS_V1_INIT;
+        uint8_t scratch[16u*16u];
+        size_t copied=1u;
+        int64_t pts=0;
+        dc.width=16u;dc.height=16u;
+        dc.queue_capacity=2u;dc.max_packet_bytes=4096u;
+        if(tm_ffd_create(&dc,&delayed)!=TM_FF_OK)return 20;
+        if(tm_ffd_next_luma(delayed,scratch,sizeof(scratch),&copied,&pts)
+           !=TM_FF_EAGAIN || copied!=0u || pts!=INT64_MIN)return 21;
+        if(tm_ffd_stats(delayed,&ds)!=TM_FF_OK || ds.queued ||
+           ds.packets_sent || ds.flush_sends)return 22;
+        if(tm_ffd_cancel(delayed)!=TM_FF_OK)return 23;
+        if(tm_ffd_next_luma(delayed,scratch,sizeof(scratch),&copied,&pts)
+           !=TM_FF_ESTATE)return 24;
+        if(tm_ffd_destroy(delayed)!=TM_FF_OK)return 25;
     }
     return 0;
 }
