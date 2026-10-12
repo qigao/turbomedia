@@ -119,7 +119,8 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
   pkg_check_modules(TM_SG_AVUTIL REQUIRED IMPORTED_TARGET libavutil)
   add_library(turbo_media_streamgraph_ffmpeg SHARED
     adapters/ffmpeg/src/turbo_streamgraph_ffmpeg.c
-    adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_async.c)
+    adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_async.c
+    adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c)
   target_include_directories(turbo_media_streamgraph_ffmpeg
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include>
            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -149,6 +150,7 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
     install(FILES
       ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include/turbo_streamgraph_ffmpeg.h
       ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include/turbo_streamgraph_ffmpeg_async.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include/turbo_streamgraph_ffmpeg_delayed.h
       DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
     install(EXPORT TurboMediaStreamGraphFFmpegTargets
       FILE TurboMediaStreamGraphFFmpegTargets.cmake
@@ -197,6 +199,15 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
       PRIVATE -Wall -Wextra -Werror -pedantic)
     add_test(NAME streamgraph_ffmpeg_delayed_drain
       COMMAND streamgraph_ffmpeg_delayed_drain_test)
+    add_executable(streamgraph_ffmpeg_delayed_provider_test
+      adapters/ffmpeg/tests/test_ffmpeg_delayed_provider.c)
+    target_link_libraries(streamgraph_ffmpeg_delayed_provider_test PRIVATE
+      turbo_media_streamgraph_ffmpeg
+      PkgConfig::TM_SG_AVCODEC PkgConfig::TM_SG_AVUTIL)
+    target_compile_options(streamgraph_ffmpeg_delayed_provider_test
+      PRIVATE -Wall -Wextra -Werror -pedantic)
+    add_test(NAME streamgraph_ffmpeg_delayed_provider
+      COMMAND streamgraph_ffmpeg_delayed_provider_test)
     if(TM_STREAMGRAPH_FFMPEG_INSTRUMENTED_CONFORMANCE)
       if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
         message(FATAL_ERROR "Instrumented FFmpeg source gate is Linux-only")
