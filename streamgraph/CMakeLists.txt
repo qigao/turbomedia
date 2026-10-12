@@ -107,6 +107,12 @@ endif()
 # or change Android/mobile SDK transitive dependencies.
 option(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER
        "Build FFmpeg MJPEG desktop Source adapter and executable gate" OFF)
+option(TM_STREAMGRAPH_FFMPEG_INSTRUMENTED_CONFORMANCE
+       "Build Linux conformance test requiring the patched FFmpeg 6.1.1 send gate" OFF)
+if(TM_STREAMGRAPH_FFMPEG_INSTRUMENTED_CONFORMANCE
+   AND NOT TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
+  message(FATAL_ERROR "Instrumented FFmpeg conformance requires FFmpeg provider")
+endif()
 if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(TM_SG_AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
@@ -180,5 +186,19 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
       PRIVATE -Wall -Wextra -Werror -pedantic)
     add_test(NAME streamgraph_ffmpeg_async
              COMMAND streamgraph_ffmpeg_async_test)
+    if(TM_STREAMGRAPH_FFMPEG_INSTRUMENTED_CONFORMANCE)
+      if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "Instrumented FFmpeg source gate is Linux-only")
+      endif()
+      add_executable(streamgraph_ffmpeg_instrumented_cancel_test
+        adapters/ffmpeg/tests/instrumented/test_cancel_inside_send.c)
+      target_link_libraries(streamgraph_ffmpeg_instrumented_cancel_test PRIVATE
+        turbo_media_streamgraph_ffmpeg Threads::Threads
+        PkgConfig::TM_SG_AVCODEC PkgConfig::TM_SG_AVUTIL)
+      target_compile_options(streamgraph_ffmpeg_instrumented_cancel_test
+        PRIVATE -Wall -Wextra -Werror -pedantic)
+      add_test(NAME streamgraph_ffmpeg_instrumented_cancel
+        COMMAND streamgraph_ffmpeg_instrumented_cancel_test)
+    endif()
   endif()
 endif()
