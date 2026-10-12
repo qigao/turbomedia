@@ -219,6 +219,12 @@ struct turbo_dc_channel_s {
     int dcep_sent;
     size_t buffered_amount;
 
+    /* Per-channel callback admission; protected by peer->operation_mutex.
+     * An admitted application callback retains the object even if another
+     * thread or the callback itself closes/unpublishes this channel. */
+    unsigned callback_refs;
+    int closing;
+
     /* Callbacks */
     turbo_dc_open_cb on_open;
     turbo_dc_message_cb on_message;
@@ -234,6 +240,11 @@ void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state);
 void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail);
 int dc_peer_acquire(turbo_dc_peer_t *peer);
 void dc_peer_release(turbo_dc_peer_t *peer);
+
+/* Internal bounded channel lifetime lease: never invoke application code
+ * under operation_mutex. Release the final close+callback lease to reclaim. */
+turbo_dc_channel_t *dc_channel_admit(turbo_dc_peer_t *peer, uint16_t id);
+void dc_channel_release(turbo_dc_channel_t *channel);
 
 /* Legacy - for context-level errors during creation (before peer exists) */
 void dc_set_context_error(turbo_dc_context_t *ctx, turbo_dc_error_code_t code, const char *detail);
@@ -322,6 +333,8 @@ static inline int peer_alloc_channel_id(turbo_dc_peer_t *peer, uint16_t *out_id)
     return -1;  /* No free IDs */
 }
 
+/* Channel-map and ID-bitmap helpers require peer->operation_mutex on
+ * every path that may race with SCTP receive or channel close. */
 static inline turbo_dc_channel_t *peer_get_channel(turbo_dc_peer_t *peer,
                                                     uint16_t id) {
     turbo_dc_channel_t **channel;
