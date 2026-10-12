@@ -23,6 +23,7 @@
 #include <salts/thread.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #ifdef _WIN32
 static volatile LONG g_e2e_diag_phase = 0;
@@ -70,7 +71,7 @@ static LONG WINAPI e2e_unhandled_exception(EXCEPTION_POINTERS *p) {
     char line[256];
     int len = snprintf(line, sizeof(line),
                        "[webrtc-e2e-exception] code=%lu phase=%ld "
-                       "module=%s rva=%llu kind=%u near_null=%d\\n",
+                       "module=%s rva=%llu kind=%u near_null=%d\n",
                        (unsigned long)rec->ExceptionCode,
                        (long)InterlockedCompareExchange(&g_e2e_diag_phase, 0, 0),
                        module_name, rva, kind, near_null);
