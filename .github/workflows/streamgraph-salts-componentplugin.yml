@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-2022, macos-15-arm64]
+        os: [ubuntu-latest, windows-2022, macos-15]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
