@@ -52,7 +52,7 @@ jobs:
             -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON \
             "${opts[@]}"
           cmake --build "streamgraph/build/ffmpeg-${{ matrix.mode }}" \
-            --target streamgraph_ffmpeg_decode_test streamgraph_ffmpeg_async_test streamgraph_ffmpeg_delayed_drain_test
+            --target streamgraph_ffmpeg_decode_test streamgraph_ffmpeg_async_test streamgraph_ffmpeg_delayed_drain_test streamgraph_ffmpeg_delayed_provider_test
       - name: Independently install and consume FFmpeg adapter SDK
         shell: bash
         run: |
