@@ -640,9 +640,12 @@ int main(int argc,char **argv) {
             take.ticket=t2;take.luma=frame;take.capacity=sizeof(frame);
             take.out_bytes=&frame_bytes;
             assert(tm_test_provider_take_luma(&value_n1,&take)==-2);
+            /* Cancel A after its completed terminal but before frame take:
+             * its ready pixels must be discarded, and B must survive. */
+            assert(tm_test_provider_cancel_instance(&value_n1,&first)==0);
             take.ticket=t1;
-            assert(tm_test_provider_take_luma(&value_n1,&take)==TM_LUMA_BYTES);
-            assert(abs((int)frame[0]-38)<=7);
+            assert(tm_test_provider_take_luma(&value_n1,&take)==-2);
+            assert(frame_bytes==0u);
             take.instance_id=second.instance_id;take.ticket=t2;
             assert(tm_test_provider_take_luma(&value_n1,&take)==TM_LUMA_BYTES);
             assert(abs((int)frame[0]-191)<=7);
