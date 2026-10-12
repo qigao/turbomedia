@@ -16,6 +16,12 @@
 #ifdef TM_TEST_FFMPEG_DSO
 #include <libavcodec/avcodec.h>
 #include <libavutil/pixfmt.h>
+#ifdef TM_TEST_FFMPEG_INNER_GATE
+/* Implemented only by the pinned, deliberately patched FFmpeg library. */
+extern int avcodec_tm_test_arm_send_packet(void);
+extern unsigned avcodec_tm_test_send_packet_state(void);
+extern int avcodec_tm_test_release_send_packet(void);
+#endif
 #endif
 
 #if defined(_WIN32)
@@ -607,30 +613,69 @@ int main(int argc,char **argv) {
             {
                 provider_worker w1={0},w2={0};
                 worker_thread th1,th2;
+#ifndef TM_TEST_FFMPEG_INNER_GATE
                 _Atomic unsigned gate=0u;
+#endif
                 w1.service=value_n1;w2.service=value_n1;
                 w1.completion=p1;w2.completion=p2;
                 w1.ticket=t1;w2.ticket=t2;
                 w1.wake_owner=&wake_client;w2.wake_owner=&wake_client;
                 w1.instance_id=first.instance_id;
                 w2.instance_id=second.instance_id;
+#ifndef TM_TEST_FFMPEG_INNER_GATE
                 w1.start_barrier=&gate;w2.start_barrier=&gate;
+#endif
                 memcpy(w1.compressed,packet1,count1);
                 memcpy(w2.compressed,packet2,count2);
                 w1.compressed_size=count1;w2.compressed_size=count2;
                 atomic_init(&w1.returned,0u);
                 atomic_init(&w2.returned,0u);
+#ifdef TM_TEST_FFMPEG_INNER_GATE
+                /* A is stopped AFTER actual av_packet_ref inside the
+                 * instrumented libavcodec, but remains on the live DSO
+                 * worker stack and under its real Generation Scope. */
+                assert(avcodec_tm_test_arm_send_packet()==0);
+                start_worker(&th1,&w1);
+                {
+                    unsigned spins=0u;
+                    while(avcodec_tm_test_send_packet_state()!=2u &&
+                          ++spins<5000000u)yield_worker();
+                    assert(avcodec_tm_test_send_packet_state()==2u);
+                }
+                assert(tm_test_provider_destroy_instance(&value_n1,&first)==-4);
+                assert(salts_component_plugin_generation_drain(
+                    &runtime,&n1.generation)==SALTS_COMPONENT_PLUGIN_BUSY);
+                assert(cmeta_plugin_registry_unload(&registry,ref_n1)==CMETA_PLUGIN_BUSY);
+                start_worker(&th2,&w2);
+                join_worker(&th2);
+                assert(w2.result==102);
+                assert(avcodec_tm_test_send_packet_state()==2u);
+                assert(tm_pc_request_cancel(p1,t1)==TM_PC_OK);
+                assert(tm_test_provider_cancel_instance(&value_n1,&first)==0);
+                assert(tm_test_provider_destroy_instance(&value_n1,&first)==-4);
+                assert(avcodec_tm_test_release_send_packet()==0);
+                join_worker(&th1);
+                assert(avcodec_tm_test_send_packet_state()==4u);
+                assert(w1.result==-3);
+#else
                 start_worker(&th1,&w1);
                 start_worker(&th2,&w2);
                 join_worker(&th1);
                 join_worker(&th2);
                 assert(atomic_load_explicit(&gate,memory_order_acquire)==2u);
                 assert(w1.result==102 && w2.result==102);
+#endif
                 assert(atomic_load_explicit(&w1.returned,memory_order_acquire)==1u);
                 assert(atomic_load_explicit(&w2.returned,memory_order_acquire)==1u);
             }
             assert(tm_pc_take(p1,&taken,&receipt)==TM_PC_OK);
+#ifdef TM_TEST_FFMPEG_INNER_GATE
+            assert(receipt.correlation==9011u && receipt.outcome==TM_PC_CANCELLED &&
+                   receipt.completion_observed==1u &&
+                   receipt.provider_status==TM_FF_ESTATE);
+#else
             assert(receipt.correlation==9011u && receipt.outcome==TM_PC_COMPLETED);
+#endif
             assert(tm_pc_settle(p1,taken)==TM_PC_OK);
             receipt=(tm_pc_result_v1)TM_PC_RESULT_V1_INIT;
             assert(tm_pc_take(p2,&taken,&receipt)==TM_PC_OK);
@@ -642,7 +687,9 @@ int main(int argc,char **argv) {
             assert(tm_test_provider_take_luma(&value_n1,&take)==-2);
             /* Cancel A after its completed terminal but before frame take:
              * its ready pixels must be discarded, and B must survive. */
+#ifndef TM_TEST_FFMPEG_INNER_GATE
             assert(tm_test_provider_cancel_instance(&value_n1,&first)==0);
+#endif
             take.ticket=t1;
             assert(tm_test_provider_take_luma(&value_n1,&take)==-2);
             assert(frame_bytes==0u);
