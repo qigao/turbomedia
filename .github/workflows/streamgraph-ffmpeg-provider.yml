@@ -48,6 +48,22 @@ jobs:
             "${opts[@]}"
           cmake --build "streamgraph/build/ffmpeg-${{ matrix.mode }}" \
             --target streamgraph_ffmpeg_decode_test
+      - name: Independently install and consume FFmpeg adapter SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/streamgraph-ffmpeg-sdk"
+          cmake --install "streamgraph/build/ffmpeg-${{ matrix.mode }}" --prefix "$prefix"
+          test -f "$prefix/include/turbo_streamgraph_ffmpeg.h"
+          test -f "$prefix/lib/cmake/TurboMediaStreamGraphFFmpeg/TurboMediaStreamGraphFFmpegConfig.cmake"
+          cmake -S streamgraph/adapters/ffmpeg/tests/install_consumer \
+            -B "$RUNNER_TEMP/ffmpeg-independent-${{ matrix.mode }}" -G Ninja \
+            -DCMAKE_PREFIX_PATH="$prefix" \
+            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE \
+            -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE
+          cmake --build "$RUNNER_TEMP/ffmpeg-independent-${{ matrix.mode }}"
+          ctest --test-dir "$RUNNER_TEMP/ffmpeg-independent-${{ matrix.mode }}" \
+            --no-tests=error --output-on-failure --timeout 60
       - name: Test owner decoded-frame lifetime, QoS and EOF
         shell: bash
         run: |
