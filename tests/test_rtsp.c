@@ -214,6 +214,13 @@ typedef struct {
     _Atomic unsigned interleaved_entered;
     _Atomic unsigned interleaved_release;
     _Atomic unsigned interleaved_exited;
+    /* Old CNet Client receive is cancelled AFTER real server OPTIONS
+     * admission, but BEFORE the server generates its response. */
+    _Atomic unsigned hold_options;
+    _Atomic unsigned options_entered;
+    _Atomic unsigned options_release;
+    _Atomic unsigned options_exited;
+    _Atomic unsigned options_timed_out;
     int auth_required;
     int auth_digest;
     int auth_accepted;
@@ -225,6 +232,11 @@ static void rtsp_test_state_init(rtsp_test_state_t *state) {
     atomic_init(&state->interleaved_entered,0u);
     atomic_init(&state->interleaved_release,0u);
     atomic_init(&state->interleaved_exited,0u);
+    atomic_init(&state->hold_options,0u);
+    atomic_init(&state->options_entered,0u);
+    atomic_init(&state->options_release,0u);
+    atomic_init(&state->options_exited,0u);
+    atomic_init(&state->options_timed_out,0u);
     cmeta_mutex_init(&state->mutex);
     state->mutex_initialized = 1;
 }
@@ -277,6 +289,21 @@ static int rtsp_test_options(
     (void)request;
 
     rtsp_test_increment(state, &state->options_count);
+    if (atomic_load_explicit(&state->hold_options,memory_order_acquire)) {
+        uint64_t started=cmeta_monotonic_ms();
+        /* Reached only with bytes delivered through the actual RTSP/CNet
+         * receive pipeline, never through a fabricated completion. */
+        atomic_store_explicit(&state->options_entered,1u,memory_order_release);
+        while(!atomic_load_explicit(&state->options_release,memory_order_acquire)) {
+            if(cmeta_monotonic_ms()-started>=RTSP_TEST_TIMEOUT_MS) {
+                atomic_store_explicit(&state->options_timed_out,1u,
+                                      memory_order_release);
+                break;
+            }
+            cmeta_thread_yield();
+        }
+        atomic_store_explicit(&state->options_exited,1u,memory_order_release);
+    }
     if (!state->auth_required) {
         return turbo_rtsp_response_options(response, NULL);
     }
@@ -915,6 +942,9 @@ static int rtsp_cnet_poll_to(cnet_client *owner,unsigned *counter) {
 }
 static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     static const char uri[]="tcp://127.0.0.1:20560";
+    static const char retired_request[]=
+        "OPTIONS rtsp://127.0.0.1/live/retired RTSP/1.0\r\n"
+        "CSeq: 193\r\n\r\n";
     static const char request[]=
         "OPTIONS rtsp://127.0.0.1/live RTSP/1.0\r\n"
         "CSeq: 194\r\n\r\n";
@@ -931,6 +961,7 @@ static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     size_t events=0u;
 
     rtsp_test_state_init(&state);
+    atomic_store_explicit(&state.hold_options,1u,memory_order_release);
     server=rtsp_test_server_start(&state,TURBO_RTSP_CONTROL_TRANSPORT_TCP,
                                   20560,NULL);
     check_not_null(server);
@@ -959,6 +990,24 @@ static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     check_equal(cnet_set_receive_slice_handler(
         &client,old_handle,rtsp_cnet_pending_owned_probe,&old),SALTS_EBUSY);
     check_equal(old.received,0u);
+    /* The real RTSP server receives the old OPTIONS request and stops
+     * INSIDE its server callback before any old response is generated. */
+    send_buffer=mem_get_buffer(mem_global(),sizeof(retired_request)-1u);
+    check_not_null(send_buffer);
+    if(!send_buffer)goto cleanup;
+    memcpy(mem_buffer_data(send_buffer),retired_request,
+           sizeof(retired_request)-1u);
+    mem_set_used(send_buffer,sizeof(retired_request)-1u);
+    result=cnet_send_buffer(&client,old_handle,send_buffer);
+    mem_buffer_release(send_buffer);send_buffer=NULL;
+    check_equal(result,SALTS_OK);
+    if(result!=SALTS_OK)goto cleanup;
+    if(!rtsp_test_wait_for_callback(&state.options_entered)) {
+        check_true(0);goto cleanup;
+    }
+    check_equal(old.received,0u);
+    /* Only the Client Owner operates this CNet instance. NativeIO is
+     * cancelled while the server still owns the old request callback. */
     check_equal(cnet_close(&client,old_handle),SALTS_OK);
     if(!rtsp_cnet_poll_to(&client,&old.closed)) {
         check_true(0);goto cleanup;
@@ -967,6 +1016,13 @@ static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     check_equal(old.received,0u);
     check_equal(old.wrong_identity,0u);
     check_equal(old.overflow,0u);
+    atomic_store_explicit(&state.options_release,1u,memory_order_release);
+    if(!rtsp_test_wait_for_callback(&state.options_exited)) {
+        check_true(0);goto cleanup;
+    }
+    check_equal(atomic_load_explicit(&state.options_timed_out,
+                                    memory_order_acquire),0u);
+    atomic_store_explicit(&state.hold_options,0u,memory_order_release);
     /* Reuse the ONE CNet connection slot; this is a different checked
      * Generation, never an old packet delivered to a new observer. */
     options.observer.user=&current;
@@ -997,7 +1053,7 @@ static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     }
     check_true(current.bytes>=strlen("RTSP/1.0 200 OK"));
     check_true(strstr(current.reply,"RTSP/1.0 200 OK")==current.reply);
-    check_equal(rtsp_test_read(&state,&state.options_count),1);
+    check_equal(rtsp_test_read(&state,&state.options_count),2);
     check_equal(old.received,0u);
     check_equal(current.failed,0u);
     check_equal(current.wrong_identity,0u);
@@ -1006,6 +1062,8 @@ static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
     if(!rtsp_cnet_poll_to(&client,&current.closed))check_true(0);
     check_equal(current.closed,1u);
 cleanup:
+    /* No blocked server callback may survive owner/fixture destruction. */
+    atomic_store_explicit(&state.options_release,1u,memory_order_release);
     if(send_buffer)mem_buffer_release(send_buffer);
     if(client_initialized) {
         /* Stop drives concrete terminal progress before freeing observers. */
@@ -1250,7 +1308,7 @@ suite("TurboMedia RTSP over Salts") {
     it("abandons pending interleaved RTP on CNet close and fences reconnection") {
         rtsp_test_cancel_with_pending_interleaved_and_reopen();
     }
-    it("cancels real pending CNet receive demand and fences reused generation") {
+    it("cancels CNet receive before delayed real RTSP server response and fences reused generation") {
         rtsp_test_same_cnet_owner_pending_receive_cancel();
     }
     it("closes from real CNet receive callback before generation reuse") {
