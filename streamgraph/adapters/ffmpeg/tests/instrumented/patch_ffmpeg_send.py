@@ -21,7 +21,7 @@ signature = (
 )
 if original.count(signature) != 1:
     raise SystemExit("unsupported FFmpeg version: expected one exact 6.1.1 signature")
-if "avcodec_tm_test_arm_send_packet" in original:
+if "avcodec_tm_test_arm_send_packet" in original or "avcodec_tm_test_arm_flush" in original:
     raise SystemExit("FFmpeg source already instrumented")
 gate = """
 /* TurboMedia test-only probe. THIS CODE RUNS INSIDE LIBAVCODEC.
@@ -47,6 +47,25 @@ int avcodec_tm_test_release_send_packet(void) {
     return atomic_compare_exchange_strong_explicit(&tm_ffmpeg_send_gate,
         &expected, 3u, memory_order_acq_rel, memory_order_acquire) ? 0 : -1;
 }
+/* Separate arm for avcodec_send_packet(NULL). State is independent of the
+ * normal packet gate so this cannot break M15b's packet cancellation test. */
+static atomic_uint tm_ffmpeg_flush_gate = ATOMIC_VAR_INIT(0u);
+int avcodec_tm_test_arm_flush(void);
+unsigned avcodec_tm_test_flush_state(void);
+int avcodec_tm_test_release_flush(void);
+int avcodec_tm_test_arm_flush(void) {
+    unsigned expected = 0u;
+    return atomic_compare_exchange_strong_explicit(&tm_ffmpeg_flush_gate,
+        &expected, 1u, memory_order_acq_rel, memory_order_acquire) ? 0 : -1;
+}
+unsigned avcodec_tm_test_flush_state(void) {
+    return atomic_load_explicit(&tm_ffmpeg_flush_gate, memory_order_acquire);
+}
+int avcodec_tm_test_release_flush(void) {
+    unsigned expected = 2u;
+    return atomic_compare_exchange_strong_explicit(&tm_ffmpeg_flush_gate,
+        &expected, 3u, memory_order_acq_rel, memory_order_acquire) ? 0 : -1;
+}
 """
 pause = """
     /* Instrumented-only: a successful 1->2 transition can only happen from
@@ -61,6 +80,20 @@ pause = """
                 /* Conformance watchdog is enforced by the CTest timeout. */
             }
             atomic_store_explicit(&tm_ffmpeg_send_gate, 4u,
+                                  memory_order_release);
+        }
+    }
+    /* NULL packet has already set FFmpeg's draining_started state here.
+     * This is INSIDE libavcodec, not the TurboMedia call-site wrapper. */
+    if (avpkt == NULL) {
+        unsigned expected = 1u;
+        if (atomic_compare_exchange_strong_explicit(&tm_ffmpeg_flush_gate,
+                &expected, 2u, memory_order_acq_rel, memory_order_acquire)) {
+            while (atomic_load_explicit(&tm_ffmpeg_flush_gate,
+                                        memory_order_acquire) != 3u) {
+                /* The test runner enforces a finite CTest watchdog. */
+            }
+            atomic_store_explicit(&tm_ffmpeg_flush_gate, 4u,
                                   memory_order_release);
         }
     }
@@ -83,4 +116,4 @@ patched = patched.replace(
     ),
 )
 path.write_text(patched, encoding="utf-8")
-print(f"Instrumented avcodec_send_packet AFTER av_packet_ref in {path}")
+print(f"Instrumented avcodec_send_packet AFTER av_packet_ref and inside NULL flush in {path}")
