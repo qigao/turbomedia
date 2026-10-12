@@ -35,7 +35,13 @@ target_link_libraries(
   turbo_media_test_salts_ice_owner PRIVATE SaltsNet::ICE)
 
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
-turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
+# Compile the DCEP parser into this private conformance executable so it can
+# inject a valid OPEN without exporting private DLL internals or bypassing the
+# production protocol implementation. Uses the same source as DataChannel.
+turbo_media_add_webrtc_test(turbo_media_test_datachannel
+  test_datachannel.c ../src/dcep_protocol.c)
+target_link_libraries(turbo_media_test_datachannel PRIVATE
+  unofficial::usrsctp::usrsctp roaring::roaring)
 turbo_media_add_webrtc_base_test(turbo_media_test_dc_certificate
   test_dc_certificate.cpp ../src/dc_certificate_gmssl.cpp
   ../src/dc_identity.cpp ../src/gmssl_dtls.c)
