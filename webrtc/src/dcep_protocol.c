@@ -147,7 +147,7 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
 
 int dcep_send_open(turbo_dc_channel_t *channel) {
     turbo_dc_peer_t *peer = channel->peer;
-    if (!peer || !peer->sctp.socket) return -1;
+    if (!peer) return -1;
 
     size_t label_len = tstr_len(channel->label);
     size_t proto_len = tstr_len(channel->protocol);
@@ -197,9 +197,12 @@ int dcep_send_open(turbo_dc_channel_t *channel) {
     spa.sendv_sndinfo.snd_sid = channel->id;
     spa.sendv_sndinfo.snd_ppid = htonl(SCTP_PPID_DCEP);
 
-    ssize_t sent = usrsctp_sendv(peer->sctp.socket, packet, packet_len,
-                                  NULL, 0, &spa, sizeof(spa),
-                                  SCTP_SENDV_SPA, 0);
+    struct socket *socket = sctp_native_borrow(peer);
+    if (!socket) return -1;
+    ssize_t sent = usrsctp_sendv(socket, packet, packet_len,
+                                 NULL, 0, &spa, sizeof(spa),
+                                 SCTP_SENDV_SPA, 0);
+    sctp_native_return(peer);
 
     TLOG_INFOF("DCEP OPEN send sid={} bytes={} ret={} errno={}",
               channel->id, packet_len, (int)sent, errno);
@@ -208,7 +211,7 @@ int dcep_send_open(turbo_dc_channel_t *channel) {
 }
 
 int dcep_send_ack(turbo_dc_peer_t *peer, uint16_t stream_id) {
-    if (!peer || !peer->sctp.socket) return -1;
+    if (!peer) return -1;
 
     uint8_t packet[1] = { DCEP_DATA_CHANNEL_ACK };
 
@@ -218,9 +221,12 @@ int dcep_send_ack(turbo_dc_peer_t *peer, uint16_t stream_id) {
     spa.sendv_sndinfo.snd_sid = stream_id;
     spa.sendv_sndinfo.snd_ppid = htonl(SCTP_PPID_DCEP);
 
-    ssize_t sent = usrsctp_sendv(peer->sctp.socket, packet, 1,
-                                  NULL, 0, &spa, sizeof(spa),
-                                  SCTP_SENDV_SPA, 0);
+    struct socket *socket = sctp_native_borrow(peer);
+    if (!socket) return -1;
+    ssize_t sent = usrsctp_sendv(socket, packet, 1,
+                                 NULL, 0, &spa, sizeof(spa),
+                                 SCTP_SENDV_SPA, 0);
+    sctp_native_return(peer);
 
     TLOG_INFOF("DCEP ACK send sid={} ret={} errno={}", stream_id, (int)sent, errno);
 
