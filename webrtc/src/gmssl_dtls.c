@@ -425,7 +425,8 @@ static int hello_extensions(turbo_gdtls *s, writer *w, int server) {
     if (!write_bytes(&profiles, &empty, 1) ||
         !extension(w, EXT_SRTP, sr, profiles.size) ||
         !extension(w, EXT_RENEGOTIATION, &empty, 1)) return 0;
-    if ((!server || s->ems) && !extension(w, EXT_EMS, NULL, 0)) return 0;
+    /* Never advertise or accept a legacy non-EMS key schedule. */
+    if (!extension(w, EXT_EMS, NULL, 0)) return 0;
     const uint8_t points[] = {1, 0};
     if (!extension(w, EXT_POINTS, points, sizeof(points))) return 0;
     if (!server) {
@@ -488,7 +489,9 @@ static int parse_extensions(turbo_gdtls *s, reader input, int server_hello) {
         if (bit && (seen & bit)) return TURBO_GDTLS_PROTOCOL;
         seen |= bit;
     }
-    if (!selected || (!server_hello && (!curve || !signature))) return TURBO_GDTLS_PROTOCOL;
+    /* Fail closed before deriving secrets: no legacy master-secret fallback. */
+    if (!selected || !ems || (!server_hello && (!curve || !signature)))
+        return TURBO_GDTLS_PROTOCOL;
     s->selected_profile = selected; s->ems = ems;
     return 0;
 }
@@ -582,13 +585,9 @@ static int derive_keys(turbo_gdtls *s) {
     size_t hash_size = 0;
     int result = TURBO_GDTLS_AUTH;
     if (secp256r1_ecdh(&s->ephemeral, s->peer_ephemeral, pre_master) != 1) goto cleanup;
-    if (s->ems) {
-        if (transcript_hash(s, hash, &hash_size) ||
-            tls_prf(prf_digest(s), pre_master, sizeof(pre_master), "extended master secret",
-                     hash, hash_size, NULL, 0, sizeof(s->master), s->master) != 1) goto cleanup;
-    } else if (tls_prf(prf_digest(s), pre_master, sizeof(pre_master), "master secret",
-                        s->client_random, 32, s->server_random, 32,
-                        sizeof(s->master), s->master) != 1) goto cleanup;
+    if (!s->ems || transcript_hash(s, hash, &hash_size) ||
+        tls_prf(prf_digest(s), pre_master, sizeof(pre_master), "extended master secret",
+                hash, hash_size, NULL, 0, sizeof(s->master), s->master) != 1) goto cleanup;
     size_t key_size = prf_digest(s) == DIGEST_sha384() ? 32 : 16;
     if (tls_prf(prf_digest(s), s->master, sizeof(s->master), "key expansion",
                 s->server_random, 32, s->client_random, 32, 2 * key_size + 8, key_block) != 1)
