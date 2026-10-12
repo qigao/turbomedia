@@ -582,6 +582,51 @@ int main(int argc,char **argv) {
         assert(tm_test_provider_create_instance(&value_n1,&second)==0);
         assert(tm_test_provider_create_instance(&value_n1,&first)==-2);
         assert(tm_test_provider_create_instance(&value_n1,&overflow)==-4);
+        /* Exercise actual instance-addressed Codec/Portal/wake/luma paths
+         * before destroying either instance, within the SAME loaded DSO. */
+        {
+            tm_pc_portal *p1=make_portal(102u),*p2=make_portal(102u);
+            tm_pc_ticket_v1 t1={0},t2={0},taken={0};
+            tm_pc_result_v1 receipt=TM_PC_RESULT_V1_INIT;
+            tm_test_decode_request j1={0},j2={0};
+            tm_test_take_request take={0};
+            uint8_t packet1[TM_ENCODED_CAPACITY],packet2[TM_ENCODED_CAPACITY];
+            uint8_t frame[TM_LUMA_BYTES];
+            size_t count1=tm_make_mjpeg(&encoder,38u,packet1,sizeof(packet1));
+            size_t count2=tm_make_mjpeg(&encoder,191u,packet2,sizeof(packet2));
+            size_t frame_bytes=0u;
+            assert(tm_pc_begin(p1,9011u,&t1)==TM_PC_OK);
+            assert(tm_pc_begin(p2,9021u,&t2)==TM_PC_OK);
+            j1.size=sizeof(j1);j1.packet=packet1;j1.packet_size=count1;
+            j1.portal=p1;j1.ticket=t1;j1.instance_id=first.instance_id;
+            j1.wake_client=&wake_client;
+            j2.size=sizeof(j2);j2.packet=packet2;j2.packet_size=count2;
+            j2.portal=p2;j2.ticket=t2;j2.instance_id=second.instance_id;
+            j2.wake_client=&wake_client;
+            assert(tm_test_provider_run_decode(&value_n1,&j1)==102);
+            assert(tm_test_provider_run_decode(&value_n1,&j2)==102);
+            assert(tm_pc_take(p1,&taken,&receipt)==TM_PC_OK);
+            assert(receipt.correlation==9011u && receipt.outcome==TM_PC_COMPLETED);
+            assert(tm_pc_settle(p1,taken)==TM_PC_OK);
+            receipt=(tm_pc_result_v1)TM_PC_RESULT_V1_INIT;
+            assert(tm_pc_take(p2,&taken,&receipt)==TM_PC_OK);
+            assert(receipt.correlation==9021u && receipt.outcome==TM_PC_COMPLETED);
+            assert(tm_pc_settle(p2,taken)==TM_PC_OK);
+            take.size=sizeof(take);take.instance_id=first.instance_id;
+            take.ticket=t2;take.luma=frame;take.capacity=sizeof(frame);
+            take.out_bytes=&frame_bytes;
+            assert(tm_test_provider_take_luma(&value_n1,&take)==-2);
+            take.ticket=t1;
+            assert(tm_test_provider_take_luma(&value_n1,&take)==TM_LUMA_BYTES);
+            assert(abs((int)frame[0]-38)<=7);
+            take.instance_id=second.instance_id;take.ticket=t2;
+            assert(tm_test_provider_take_luma(&value_n1,&take)==TM_LUMA_BYTES);
+            assert(abs((int)frame[0]-191)<=7);
+            assert(tm_pc_seal(p1)==TM_PC_OK);
+            assert(tm_pc_seal(p2)==TM_PC_OK);
+            assert(tm_pc_destroy(p1)==TM_PC_OK);
+            assert(tm_pc_destroy(p2)==TM_PC_OK);
+        }
         assert(tm_test_provider_destroy_instance(&value_n1,&stale)==-1);
         assert(tm_test_provider_destroy_instance(&value_n1,&first)==0);
         assert(tm_test_provider_destroy_instance(&value_n1,&first)==-2);
