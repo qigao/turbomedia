@@ -420,6 +420,22 @@ TURBO_MEDIA_C_API int turbo_rtsp_mpeg_video_payload_parse(
     size_t payload_len,
     turbo_rtsp_mpeg_video_payload_t *video);
 
+/* Strict opt-in ONE-picture-per-packet admission profile.
+ * RFC2250 B/E mark SLICE boundaries, not picture completeness. This
+ * predicate additionally requires the RTP marker, exactly one MPEG
+ * Picture Header, at least one Slice start code and agreement of
+ * temporal-reference/Picture Type and Sequence-header S bit with the
+ * actual ES bytes. Payload is borrowed; no Codec admission occurs.
+ *
+ * It intentionally rejects fragments without a Picture Header, even if
+ * B/E are set. Only a caller enforcing contiguous RTP sequence numbers,
+ * one SSRC, explicit Session Generation and bounded packet memory may
+ * use this predicate to authorize a copied Codec packet.
+ */
+TURBO_MEDIA_C_API int turbo_rtsp_mpeg_video_one_picture_validate(
+    const turbo_rtsp_mpeg_video_payload_t *video,
+    uint8_t rtp_marker);
+
 TURBO_MEDIA_C_API int turbo_rtsp_h264_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
