@@ -88,9 +88,9 @@ Write-Host "Official SDK graph: Salts.Native $saltsVersion, SaltsUtils.Native $s
 
 $desktopServices = $Rid -eq "linux-x64" -or $Rid -eq "windows-x64"
 $desktopReference = if ($desktopServices) {
-@'
+@"
     <PackageReference Include="RulesForge.Native" Version="$rulesForgeVersion" />
-'@
+"@
 } else {
   ""
 }
