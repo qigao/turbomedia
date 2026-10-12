@@ -104,9 +104,20 @@ static tm_ffd_config_v1 config(void) {
 }
 static tm_ff_status admit(tm_ffd_decoder *d,const AVPacket *p) {
     tm_ffd_packet_v1 input=TM_FFD_PACKET_V1_INIT;
-    input.data=p->data;input.bytes=(size_t)p->size;
+    tm_ff_status result;
+    uint8_t *temporary;
+    assert(p->size>0 && p->size<=PACKET_BYTES);
+    temporary=(uint8_t *)malloc((size_t)p->size);
+    assert(temporary!=NULL);
+    memcpy(temporary,p->data,(size_t)p->size);
+    input.data=temporary;input.bytes=(size_t)p->size;
     input.pts=p->pts;input.dts=p->dts;
-    return tm_ffd_submit(d,&input);
+    result=tm_ffd_submit(d,&input);
+    /* The Host invalidates its entire borrowed packet immediately:
+     * the production session MUST decode only the bounded private COPY. */
+    memset(temporary,0,(size_t)p->size);
+    free(temporary);
+    return result;
 }
 static tm_ex_source_result source_next(void *ctx,uint8_t *dst,
                                        size_t capacity,size_t *out_bytes) {
