@@ -558,6 +558,98 @@ struct IndependentPair {
         return true;
     }
 
+    bool qualify_replay_window_boundary() {
+        /* Capture authentic AEAD records from the separately linked OpenSSL
+         * provider, never a second copy of the private GmSSL implementation.
+         * Deliver index 68 first, so 5 is exactly 63 positions behind (still
+         * admitted) and 4 is 64 behind (too old). A forged higher-sequence
+         * record must NOT advance this 64-slot replay window.
+         */
+        stage = "independent-64-slot-replay-boundary";
+        constexpr unsigned COUNT = 71;
+        uint8_t packets[COUNT][256] = {};
+        size_t lengths[COUNT] = {};
+        uint64_t prior_sequence = 0;
+        for (unsigned i = 0; i < COUNT; ++i) {
+            char payload[32];
+            int len = snprintf(payload, sizeof(payload), "window:%02u", i);
+            if (len <= 0 || len + 1 > static_cast<int>(sizeof(payload)) ||
+                SSL_write(ssl, payload, len + 1) != len + 1)
+                return failure("OpenSSL-replay-window-write");
+            ssize_t bytes = recv(socket_fd[0], packets[i], sizeof(packets[i]), 0);
+            if (bytes <= 13 + 24)
+                return failure("OpenSSL-replay-window-datagram-missing");
+            lengths[i] = static_cast<size_t>(bytes);
+            if (packets[i][0] != 23 || packets[i][3] != 0 || packets[i][4] != 1 ||
+                lengths[i] != 13 + ((size_t(packets[i][11]) << 8) | packets[i][12]))
+                return failure("OpenSSL-replay-window-not-one-epoch-one-record");
+            uint64_t sequence = 0;
+            for (unsigned k = 5; k < 11; ++k)
+                sequence = (sequence << 8) | packets[i][k];
+            if (i != 0 && sequence != prior_sequence + 1)
+                return failure("OpenSSL-replay-window-sequences-not-contiguous");
+            prior_sequence = sequence;
+        }
+
+        auto deliver = [&](unsigned index, bool expected) -> bool {
+            if (turbo_gdtls_receive(gm, packets[index],
+                                    lengths[index], clock_ms) != TURBO_GDTLS_OK)
+                return failure("replay-window-record-returned-terminal");
+            tstr plain = turbo_gdtls_take_plaintext(gm);
+            char original[32];
+            int n = snprintf(original, sizeof(original), "window:%02u", index);
+            const bool matches = plain && n > 0 &&
+                tstr_len(plain) == static_cast<size_t>(n + 1) &&
+                memcmp(plain, original, static_cast<size_t>(n + 1)) == 0;
+            if (plain) {
+                cmeta_crypto_clear(plain, tstr_len(plain));
+                tstr_free(plain);
+            }
+            if (matches != expected || (plain && !expected))
+                return failure(expected ? "admitted-window-packet-lost" :
+                                          "expired-or-replayed-packet-delivered");
+            return true;
+        };
+        if (!deliver(68, true)) return false;
+
+        uint8_t forged[256];
+        memcpy(forged, packets[70], lengths[70]);
+        forged[lengths[70] - 1] ^= 0x80; // invalid GCM tag at a higher sequence
+        if (turbo_gdtls_receive(gm, forged, lengths[70], clock_ms) != TURBO_GDTLS_OK)
+            return failure("forged-higher-sequence-record-not-dropped");
+        tstr unwanted = turbo_gdtls_take_plaintext(gm);
+        if (unwanted) {
+            cmeta_crypto_clear(unwanted, tstr_len(unwanted));
+            tstr_free(unwanted);
+            return failure("forged-higher-sequence-record-exposed-media");
+        }
+        if (!deliver(5, true) ||   // 63 behind authenticated top: still in window
+            !deliver(4, false) || // 64 behind top: expired
+            !deliver(5, false) || // already authenticated, replay
+            !deliver(69, true) || !deliver(70, true))
+            return false;
+
+        /* The same independently negotiated DTLS session must remain usable
+         * after the forgery, out-of-order delivery and expired/replayed data.
+         */
+        static constexpr char fresh[] = "window:fresh";
+        if (SSL_write(ssl, fresh, sizeof(fresh)) !=
+            static_cast<int>(sizeof(fresh)) || !receive_gm())
+            return failure("post-window-fresh-record-missing");
+        tstr final = turbo_gdtls_take_plaintext(gm);
+        bool matches = final && tstr_len(final) == sizeof(fresh) &&
+                       memcmp(final, fresh, sizeof(fresh)) == 0;
+        if (final) {
+            cmeta_crypto_clear(final, tstr_len(final));
+            tstr_free(final);
+        }
+        if (!matches || !turbo_gdtls_ready(gm) ||
+            turbo_gdtls_srtp_profile(gm) != profile ||
+            turbo_gdtls_take_plaintext(gm) != nullptr)
+            return failure("post-window-session-or-exact-delivery-failed");
+        return true;
+    }
+
     bool exchange_application() {
         stage = "application-datagrams";
         static constexpr char from_openssl[] = "from OpenSSL";
@@ -616,6 +708,23 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                 check_true(fixture.reject_tampered_aead_tag_and_record_replay());
                 // The previously negotiated exporter must remain unchanged
                 // after a forged record, a valid record and a replay.
+                check_true(fixture.qualify_exporter());
+            }
+        }
+    }
+    /* The 64-slot authenticated replay window is verified with real
+     * OpenSSL AES-GCM datagrams and bounded out-of-order delivery, not just
+     * an immediate repeated ciphertext.
+     */
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        for (int server = 0; server < 2; ++server) {
+            it("GmSSL server=%d RSA=%d preserves the 64-record replay window under independent OpenSSL traffic",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0);
+                check_true(fixture.init());
+                check_true(fixture.handshake());
+                check_true(fixture.qualify_exporter());
+                check_true(fixture.qualify_replay_window_boundary());
                 check_true(fixture.qualify_exporter());
             }
         }
