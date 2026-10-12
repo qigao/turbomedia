@@ -17,7 +17,7 @@ extern "C" {
 typedef enum tm_ff_status {
     TM_FF_OK=0, TM_FF_EINVAL=-1, TM_FF_EVERSION=-2,
     TM_FF_ENOMEM=-3, TM_FF_EFULL=-4, TM_FF_ESTATE=-5,
-    TM_FF_ECODEC=-6, TM_FF_EUNSUPPORTED=-7
+    TM_FF_ECODEC=-6, TM_FF_EUNSUPPORTED=-7, TM_FF_ESTALE=-8
 } tm_ff_status;
 
 typedef struct tm_ff_config_v1 {
