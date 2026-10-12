@@ -3,6 +3,7 @@
 #include <turbo_streamgraph_fanout.h>
 #include <turbo_streamgraph_executor.h>
 #include <turbo_streamgraph_handoff.h>
+#include <turbo_streamgraph_owner_dispatch.h>
 #include <assert.h>
 int main(void) {
     tm_sg_port_v1 p = TM_SG_PORT_V1_INIT;
@@ -49,6 +50,15 @@ int main(void) {
         if (tm_ho_seal(inbox)!=TM_HO_OK ||
             tm_ho_snapshot(inbox,&snapshot)!=TM_HO_OK || !snapshot.drained ||
             tm_ho_destroy(inbox)!=TM_HO_OK) return 11;
+    }
+    {
+        tm_od_config_v1 dispatch_cfg=TM_OD_CONFIG_V1_INIT;
+        tm_od_receipt_v1 receipt=TM_OD_RECEIPT_V1_INIT;
+        tm_od_owner *dispatcher=NULL;
+        if(dispatch_cfg.size!=sizeof(dispatch_cfg) ||
+           receipt.version!=TM_OD_ABI_V1 ||
+           tm_od_create(NULL,NULL,store,&dispatch_cfg,&dispatcher)!=TM_OD_EINVAL ||
+           dispatcher!=NULL) return 12;
     }
     if (tm_fs_seal(store) != TM_FS_OK) return 2;
     return tm_fs_destroy(store) == TM_FS_OK ? 0 : 3;
