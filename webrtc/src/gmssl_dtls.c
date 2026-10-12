@@ -992,7 +992,14 @@ static int receive_record(turbo_gdtls *s, const uint8_t *record, size_t size, in
         memcpy(aad, record + 3, 8); memcpy(aad + 8, record, 3);
         store16(aad + 11, (uint16_t)plaintext_size);
         if (aes_gcm_decrypt(&s->read_key, nonce, sizeof(nonce), aad, sizeof(aad),
-                body + 8, plaintext_size, body + 8 + plaintext_size, 16, plain) != 1) return 0;
+                body + 8, plaintext_size, body + 8 + plaintext_size, 16, plain) != 1) {
+            /* AEAD providers may write candidate plaintext before verifying
+             * the authentication tag. A rejected record must not retain that
+             * material on the native stack, even though replay state and the
+             * application queue remain unchanged. */
+            cmeta_crypto_clear(plain, sizeof(plain));
+            return 0;
+        }
         if (!duplicate) accept_sequence(s, sequence);
         body = plain; body_size = plaintext_size;
     } else if (s->state == READY || s->read_epoch) return 0;
