@@ -77,6 +77,8 @@ static salts_component_provider provider = {
       TM_TEST_PROVIDER_EXPORT_ID, SALTS_COMPONENT_PROVIDER_CONTRACT_ID, \
       SALTS_COMPONENT_PROVIDER_CONTRACT_VERSION, 0)
 
+#define TM_TEST_STRINGIZE_I(x) #x
+#define TM_TEST_STRINGIZE(x) TM_TEST_STRINGIZE_I(x)
 CMETA_PLUGIN_DECLARE(streamgraph_real_component_fixture,
-    "tm.streamgraph.component.provider", (1,0,0),
+    "tm.streamgraph.component.provider.gen" TM_TEST_STRINGIZE(TM_TEST_DSO_GENERATION), (1,0,0),
     TM_TEST_EXPORTS, CMETA_PLUGIN_PASSIVE());

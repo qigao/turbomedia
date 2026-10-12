@@ -136,7 +136,7 @@ static void drain_plugin(cmeta_plugin_registry *registry,cmeta_plugin_ref ref) {
 }
 
 int main(int argc,char **argv) {
-    const cmeta_plugin_registry_config registry_config={1};
+    const cmeta_plugin_registry_config registry_config={2};
     cmeta_plugin_registry registry={0};
     cmeta_plugin_ref ref_n={0},ref_n1={0};
     generation_fixture n={0},n1={0};
