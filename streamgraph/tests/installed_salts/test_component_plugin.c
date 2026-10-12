@@ -569,6 +569,27 @@ int main(int argc,char **argv) {
            ==SALTS_COMPONENT_PLUGIN_OK);
     assert(salts_component_plugin_scope_generation_id(&scope_n1)==102u);
     value_n1=find_provider(&scope_n1);
+#ifdef TM_TEST_FFMPEG_DSO
+    /* Two actual tm_ffa_decoder allocations in the SAME loaded N+1 DSO.
+     * Scope stays live until both have been explicitly destroyed. */
+    {
+        tm_test_instance_request first={sizeof(first),901u,102u};
+        tm_test_instance_request second={sizeof(second),902u,102u};
+        tm_test_instance_request overflow={sizeof(overflow),903u,102u};
+        tm_test_instance_request stale={sizeof(stale),904u,101u};
+        assert(tm_test_provider_create_instance(&value_n1,&stale)==-1);
+        assert(tm_test_provider_create_instance(&value_n1,&first)==0);
+        assert(tm_test_provider_create_instance(&value_n1,&second)==0);
+        assert(tm_test_provider_create_instance(&value_n1,&first)==-2);
+        assert(tm_test_provider_create_instance(&value_n1,&overflow)==-4);
+        assert(tm_test_provider_destroy_instance(&value_n1,&stale)==-1);
+        assert(tm_test_provider_destroy_instance(&value_n1,&first)==0);
+        assert(tm_test_provider_destroy_instance(&value_n1,&first)==-2);
+        assert(tm_test_provider_create_instance(&value_n1,&overflow)==0);
+        assert(tm_test_provider_destroy_instance(&value_n1,&second)==0);
+        assert(tm_test_provider_destroy_instance(&value_n1,&overflow)==0);
+    }
+#endif
     portal_n1=make_portal(102u);
     owner_init(&delivery_n1,portal_n1,10202u);
     assert(tm_pc_begin(portal_n1,601u,&work_n1.ticket)==TM_PC_OK);
