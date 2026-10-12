@@ -1311,6 +1311,27 @@ turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer) {
     return peer ? peer->state : TURBO_DC_STATE_CLOSED;
 }
 
+/* Socket close is a peer owner operation. No new public or private DLL
+ * export: retain a bounded number of already-admitted STATUS queries and
+ * drain them before the native usrsctp socket can be released. No locks are
+ * held while executing usrsctp shutdown or user callbacks. */
+static void sctp_session_close_socket(turbo_dc_peer_t *peer, int shutdown) {
+    if (!peer || !peer->operation_sync_initialized) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->sctp.status_close_requested = 1;
+    cmeta_cond_broadcast(&peer->operation_cond);
+    while (peer->sctp.status_borrows != 0)
+        cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+    struct socket *socket = peer->sctp.socket;
+    peer->sctp.socket = NULL;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+
+    if (socket) {
+        if (shutdown) (void)usrsctp_shutdown(socket, SHUT_RDWR);
+        (void)usrsctp_close(socket);
+    }
+}
+
 static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
     if (peer) sctp_receive_stop(peer);
     if (!peer || peer->state == TURBO_DC_STATE_CLOSED) {
