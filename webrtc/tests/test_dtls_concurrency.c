@@ -941,6 +941,7 @@ typedef struct {
     turbo_dc_peer_t *peer;
     int borrowed;
     int allow_query;
+    int query_authorized;
     int status_attempted;
     int worker_completed;
     int close_started;
@@ -960,20 +961,24 @@ static void status_borrow_worker(void *arg) {
     cmeta_cond_broadcast(&f->cond);
     while (!f->allow_query)
         cmeta_cond_wait(&f->cond, &f->lock);
+    int authorized = f->query_authorized;
     cmeta_mutex_unlock(&f->lock);
 
-    if (socket) {
+    /* In a RED control without a terminal close gate, the old close may
+     * have freed the socket already. Do not intentionally dereference an
+     * invalid handle merely to prove a missing close-admission barrier. */
+    if (socket && authorized) {
         struct sctp_status status = {0};
         socklen_t len = sizeof(status);
         /* A real native query must remain safe while close is admitted.
          * Unconnected test sockets may return a normal SCTP error. */
         (void)usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS, &status, &len);
-        sctp_status_return(f->peer);
     }
+    if (socket) sctp_status_return(f->peer);
     if (acquired) dc_peer_release(f->peer);
 
     cmeta_mutex_lock(&f->lock);
-    f->status_attempted = socket != NULL;
+    f->status_attempted = socket != NULL && authorized;
     f->worker_completed = 1;
     cmeta_cond_broadcast(&f->cond);
     cmeta_mutex_unlock(&f->lock);
@@ -1045,6 +1050,7 @@ static void run_sctp_status_close_interleaving(void) {
 
     cmeta_mutex_lock(&f->lock);
     int prematurely_closed = f->close_finished;
+    f->query_authorized = gate_observed && !prematurely_closed;
     f->allow_query = 1;
     cmeta_cond_broadcast(&f->cond);
     cmeta_mutex_unlock(&f->lock);
