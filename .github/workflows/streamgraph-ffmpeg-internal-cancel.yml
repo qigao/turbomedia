@@ -1,0 +1,93 @@
+name: StreamGraph instrumented FFmpeg in-send cancellation
+
+'on':
+  push:
+    paths:
+      - 'streamgraph/adapters/ffmpeg/**'
+      - 'streamgraph/CMakeLists.txt'
+      - '.github/workflows/streamgraph-ffmpeg-internal-cancel.yml'
+  pull_request:
+    paths:
+      - 'streamgraph/adapters/ffmpeg/**'
+      - 'streamgraph/CMakeLists.txt'
+      - '.github/workflows/streamgraph-ffmpeg-internal-cancel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ffmpeg-inside-send-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-libavcodec-gate:
+    name: Actual libavcodec function body cancellation (linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install minimal native build tools (no prebuilt Codec SDK)
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config ninja-build ccache
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: linux-ffmpeg-6.1.1-insend-${{ hashFiles('streamgraph/adapters/ffmpeg/tests/instrumented/patch_ffmpeg_send.py') }}
+      - name: Build exact pinned FFmpeg 6.1.1 with gate INSIDE avcodec_send_packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$RUNNER_TEMP/ffmpeg-exact-src"
+          prefix="$RUNNER_TEMP/ffmpeg-instrumented"
+          # Annotated tag n6.1.1 resolves to this immutable release commit.
+          expected=e38092ef9395d7049f871ef4d5411eb410e283e0
+          git clone --depth 1 --branch n6.1.1 https://github.com/FFmpeg/FFmpeg "$source_dir"
+          test "$(git -C "$source_dir" rev-parse HEAD)" = "$expected"
+          python3 streamgraph/adapters/ffmpeg/tests/instrumented/patch_ffmpeg_send.py \
+            "$source_dir/libavcodec/decode.c"
+          (
+            cd "$source_dir"
+            ./configure \
+              --prefix="$prefix" --libdir="$prefix/lib" \
+              --cc='ccache gcc' --disable-autodetect --disable-asm \
+              --disable-everything --enable-shared --disable-static \
+              --disable-programs --disable-doc --disable-network \
+              --disable-avdevice --disable-avfilter --disable-avformat \
+              --disable-postproc --disable-swresample --disable-swscale \
+              --enable-avcodec --enable-avutil --enable-pthreads \
+              --enable-decoder=mjpeg --enable-encoder=mjpeg
+            make -j4
+            make install
+          )
+          test -f "$prefix/lib/pkgconfig/libavcodec.pc"
+          nm -D --defined-only "$prefix/lib/libavcodec.so" | grep -q avcodec_tm_test_arm_send_packet
+          echo "TM_FF_INSTRUMENTED_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "FFmpeg commit: $expected, deliberately patched test-only libavcodec" >> "$GITHUB_STEP_SUMMARY"
+      - name: Compile and repeat the real in-function cancellation gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="$TM_FF_INSTRUMENTED_PREFIX/lib/pkgconfig"
+          export LD_LIBRARY_PATH="$TM_FF_INSTRUMENTED_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+          pkg-config --modversion libavcodec libavutil
+          test "$(pkg-config --variable=prefix libavcodec)" = "$TM_FF_INSTRUMENTED_PREFIX"
+          cmake -S streamgraph -B "$RUNNER_TEMP/sg-ffmpeg-instrumented" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DBUILD_TESTING=ON \
+            -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON \
+            -DTM_STREAMGRAPH_FFMPEG_INSTRUMENTED_CONFORMANCE=ON
+          cmake --build "$RUNNER_TEMP/sg-ffmpeg-instrumented" \
+            --target streamgraph_ffmpeg_instrumented_cancel_test
+          binary="$RUNNER_TEMP/sg-ffmpeg-instrumented/streamgraph_ffmpeg_instrumented_cancel_test"
+          ldd "$binary" | tee "$RUNNER_TEMP/instrumented-linked.txt"
+          grep -F "$TM_FF_INSTRUMENTED_PREFIX/lib/libavcodec.so" "$RUNNER_TEMP/instrumented-linked.txt"
+          ctest --test-dir "$RUNNER_TEMP/sg-ffmpeg-instrumented" \
+            -R '^streamgraph_ffmpeg_instrumented_cancel$' \
+            --repeat until-fail:10 --no-tests=error --output-on-failure --timeout 60
+          echo "10/10 in-libavcodec cancellation gate runs, pinned FFmpeg 6.1.1" >> "$GITHUB_STEP_SUMMARY"
