@@ -487,7 +487,7 @@ static void test_two_independent_active_decoders(void) {
     assert(a!=b);
     pc.capacity=1u;pc.provider_generation=71u;
     assert(tm_pc_create(&pc,&pa)==TM_PC_OK);
-    pc.provider_generation=72u;
+    pc.provider_generation=71u;
     assert(tm_pc_create(&pc,&pb)==TM_PC_OK);
     encoder_init(&enc);
     wa.decode=a;wa.portal=pa;
@@ -498,6 +498,9 @@ static void test_two_independent_active_decoders(void) {
     atomic_init(&wb.woke,0u);atomic_init(&wb.release,0u);
     assert(tm_pc_begin(pa,7101u,&ta)==TM_PC_OK);
     assert(tm_pc_begin(pb,7201u,&tb)==TM_PC_OK);
+    /* Same Provider generation, but Portal incarnation still fences slots. */
+    assert(ta.incarnation!=tb.incarnation);
+    assert(ta.generation==tb.generation && ta.slot==tb.slot);
     wa.ticket=ta;wb.ticket=tb;
     assert(pthread_create(&thread_a,NULL,worker_run,&wa)==0);
     assert(pthread_create(&thread_b,NULL,worker_run,&wb)==0);
@@ -521,7 +524,7 @@ static void test_two_independent_active_decoders(void) {
            ra.outcome==TM_PC_COMPLETED);
     assert(tm_pc_settle(pa,taken)==TM_PC_OK);
     assert(tm_pc_take(pb,&taken,&rb)==TM_PC_OK);
-    assert(rb.correlation==7201u && rb.provider_generation==72u &&
+    assert(rb.correlation==7201u && rb.provider_generation==71u &&
            rb.outcome==TM_PC_COMPLETED);
     assert(tm_pc_settle(pb,taken)==TM_PC_OK);
     assert(tm_ffa_stats(a,&sa)==TM_FF_OK);
