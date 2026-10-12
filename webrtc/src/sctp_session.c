@@ -290,8 +290,27 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
                       assoc->sac_inbound_streams,
                       assoc->sac_error);
             if (assoc->sac_state == SCTP_COMM_UP) {
-                peer->sctp.connected = 1;
-                dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+                /* A native timer or conninput may deliver a delayed COMM_UP.
+                 * Admit notification delivery under the same bounded Socket
+                 * owner as STATUS, sendv and stream reset. A foreign close
+                 * cannot publish DISCONNECTING while this borrow remains,
+                 * and an already sealed admission gate rejects promotion. */
+                struct socket *native = sctp_native_borrow(peer);
+                if (native) {
+                    int promote = 0;
+                    cmeta_mutex_lock(&peer->operation_mutex);
+                    if (!peer->sctp.native_close_requested &&
+                        !peer->sctp.connected) {
+                        peer->sctp.connected = 1;
+                        promote = 1;
+                    }
+                    cmeta_mutex_unlock(&peer->operation_mutex);
+                    /* Application callbacks can close this peer reentrantly;
+                     * never invoke them while holding operation_mutex. */
+                    if (promote)
+                        dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+                    sctp_native_return(peer);
+                }
             } else if (assoc->sac_state == SCTP_RESTART || assoc->sac_state == SCTP_COMM_LOST ||
                        assoc->sac_state == SCTP_SHUTDOWN_COMP) {
                 sctp_receive_abort(peer, UINT32_MAX);
