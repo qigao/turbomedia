@@ -18,6 +18,7 @@ enum {
     RTSP_TEST_KCP_PORT = 20556,
     RTSP_TEST_AUTH_PORT = 20557,
     RTSP_TEST_UDP_PORT = 20558,
+    RTSP_TEST_RECONNECT_PORT = 20559,
     RTSP_TEST_TIMEOUT_MS = 5000
 };
 
@@ -659,6 +660,92 @@ static void rtsp_test_udp_setup(void) {
     rtsp_test_state_destroy(&state);
 }
 
+/* M15d real CNet NativeIO session-retirement preflight.
+ * The first RTSP RECORD session has an outstanding interleaved echo; close
+ * without receiving it. The same client storage then re-connects as a fresh
+ * connection and must not observe bytes from the retired session.
+ *
+ * The test uses the ACTUAL RTSP TCP server/client and CNet receive path,
+ * not an in-memory packet or mocked Socket. This does not yet prove a
+ * concurrent RTSP request/cancel crossover or Source -> Codec drain.
+ */
+static void rtsp_test_cancel_with_pending_interleaved_and_reopen(void) {
+    static const char sdp[] =
+        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=cancel\r\nt=0 0\r\n"
+        "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
+        "a=control:trackID=0\r\n";
+    static const uint8_t retired_payload[] =
+        {0x80,0x60,0x10,0x01,0x31,0x32,0x33,0x34};
+    static const uint8_t current_payload[] =
+        {0x80,0x60,0x20,0x02,0xa1,0xa2,0xa3,0xa4};
+    turbo_rtsp_push_announce_t announce;
+    turbo_rtsp_push_track_t track;
+    rtsp_test_state_t state;
+    turbo_rtsp_server_t *server=NULL;
+    turbo_rtsp_client_t *client=NULL;
+    uint8_t payload[64]={0};
+    uint8_t channel=0xffu;
+    size_t count=0u;
+
+    rtsp_test_state_init(&state);
+    server=rtsp_test_server_start(&state,TURBO_RTSP_CONTROL_TRANSPORT_TCP,
+                                  RTSP_TEST_RECONNECT_PORT,NULL);
+    check_not_null(server);
+    if(!server)goto cleanup;
+    client=rtsp_test_client_connect(TURBO_RTSP_CONTROL_TRANSPORT_TCP,
+                                    RTSP_TEST_RECONNECT_PORT,NULL);
+    check_not_null(client);
+    if(!client)goto cleanup;
+    announce.uri="rtsp://127.0.0.1/live/cancel";
+    announce.sdp=sdp;announce.sdp_len=sizeof(sdp)-1u;
+    track.control_uri="rtsp://127.0.0.1/live/cancel/trackID=0";
+    track.rtp_channel=0u;track.rtcp_channel=1u;
+
+    check_equal(turbo_rtsp_client_announce(client,&announce),0);
+    check_equal(turbo_rtsp_client_setup_interleaved(client,&track),0);
+    check_equal(turbo_rtsp_client_record(client),0);
+    check_equal(turbo_rtsp_client_send_interleaved_frame(
+                    client,0u,retired_payload,sizeof(retired_payload)),0);
+    /* NativeIO may have queued an echo, but the old transport may not
+     * deliver a callback after this original session is closed. There is
+     * intentionally no TEARDOWN/Codec Flush on abort. The old response
+     * is explicitly abandoned rather than retried or consumed. */
+    turbo_rtsp_client_close(client);
+    count=0u;
+    check_equal(turbo_rtsp_client_recv_interleaved_frame(
+                    client,&channel,payload,sizeof(payload),&count),-1);
+    check_equal(turbo_rtsp_client_send_interleaved_frame(
+                    client,0u,current_payload,sizeof(current_payload)),-1);
+    check_equal(turbo_rtsp_client_teardown(client),-1);
+
+    /* Fresh real CNet connection on the SAME client storage. New
+     * RTSP Setup/Record is a distinct NativeIO session, not a retry
+     * of the old RTP frame or an implicit Codec continuation. */
+    check_equal(turbo_rtsp_client_connect(client),0);
+    check_equal(turbo_rtsp_client_announce(client,&announce),0);
+    check_equal(turbo_rtsp_client_setup_interleaved(client,&track),0);
+    check_equal(turbo_rtsp_client_record(client),0);
+    check_equal(turbo_rtsp_client_send_interleaved_frame(
+                    client,0u,current_payload,sizeof(current_payload)),0);
+    count=0u;
+    check_equal(turbo_rtsp_client_recv_interleaved_frame(
+                    client,&channel,payload,sizeof(payload),&count),0);
+    check_equal(channel,1u);
+    check_equal(count,sizeof(current_payload));
+    check_equal(memcmp(payload,current_payload,sizeof(current_payload)),0);
+    check_equal(turbo_rtsp_client_teardown(client),0);
+    check_equal(rtsp_test_read(&state,&state.announce_count),2);
+    check_equal(rtsp_test_read(&state,&state.record_count),2);
+cleanup:
+    if(client) {
+        turbo_rtsp_client_close(client);
+        turbo_rtsp_client_destroy(client);
+    }
+    if(server)turbo_rtsp_server_destroy(server);
+    if(server)check(rtsp_test_read(&state,&state.close_count)>=1);
+    rtsp_test_state_destroy(&state);
+}
+
 static void rtsp_test_restart_and_drain(void) {
     rtsp_test_state_t state;
     turbo_rtsp_server_t *server;
@@ -753,6 +840,9 @@ suite("TurboMedia RTSP over Salts") {
 
     it("stops active sessions and restarts cleanly") {
         rtsp_test_restart_and_drain();
+    }
+    it("abandons pending interleaved RTP on CNet close and fences reconnection") {
+        rtsp_test_cancel_with_pending_interleaved_and_reopen();
     }
 
     it("parses RTSP URLs") {
