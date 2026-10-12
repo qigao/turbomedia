@@ -161,15 +161,17 @@ static int rtsp_mpv_make_rtp(const AVPacket *pkt,uint16_t seq,uint32_t ssrc,
  * transfers one copied packet into the actual bounded tm_ffd implementation.
  * A TS (PT=33), H.264 (PT=96), fragment or different Session Generation is
  * never admitted; no hidden depacketizer/reassembly fallback is present. */
-static int rtsp_mpv_admit_wire(tm_ffd_decoder *d,uint64_t expected_epoch,
-                               uint64_t epoch,uint8_t channel,
-                               const uint8_t *wire,size_t length,
-                               uint16_t seq,uint32_t ssrc) {
+/* One admission gate shared by the direct owner and the actual
+ * ComponentPlugin DSO caller. No RTP payload or Codec data is materialized
+ * until the entire explicit identity + picture profile is validated. */
+static int rtsp_mpv_prepare_packet(uint64_t expected_epoch,uint64_t epoch,
+                                   uint8_t channel,const uint8_t *wire,
+                                   size_t length,uint16_t seq,uint32_t ssrc,
+                                   tm_ffd_packet_v1 *out) {
     turbo_rtsp_rtp_header_t rtp;
     turbo_rtsp_mpeg_video_payload_t video;
-    tm_ffd_packet_v1 packet=TM_FFD_PACKET_V1_INIT;
     size_t header_size=0u;
-    if(epoch!=expected_epoch || channel!=1u || !d ||
+    if(!out || epoch!=expected_epoch || channel!=1u ||
        turbo_rtsp_rtp_parse_header(wire,length,&rtp,&header_size)!=0 ||
        rtp.payload_type!=TURBO_RTSP_MPEG_VIDEO_RTP_PAYLOAD_TYPE ||
        rtp.sequence_number!=seq || rtp.ssrc!=ssrc || !rtp.marker ||
@@ -178,11 +180,21 @@ static int rtsp_mpv_admit_wire(tm_ffd_decoder *d,uint64_t expected_epoch,
                                            &video)!=0 ||
        turbo_rtsp_mpeg_video_one_picture_validate(&video,rtp.marker)!=0)
         return -1;
-    packet.data=video.es;packet.bytes=video.es_len;
-    packet.pts=(int64_t)(rtp.timestamp/3000u);
-    /* RFC2250 carries presentation timestamps, NOT decode timestamps.
-     * Never invent a DTS from transport sequence or arrival order. */
-    packet.dts=AV_NOPTS_VALUE;
+    *out=(tm_ffd_packet_v1)TM_FFD_PACKET_V1_INIT;
+    out->data=video.es;out->bytes=video.es_len;
+    out->pts=(int64_t)(rtp.timestamp/3000u);
+    /* RTP carries PTS, never infer decode time from packet order. */
+    out->dts=AV_NOPTS_VALUE;
+    return 0;
+}
+static int rtsp_mpv_admit_wire(tm_ffd_decoder *d,uint64_t expected_epoch,
+                               uint64_t epoch,uint8_t channel,
+                               const uint8_t *wire,size_t length,
+                               uint16_t seq,uint32_t ssrc) {
+    tm_ffd_packet_v1 packet=TM_FFD_PACKET_V1_INIT;
+    if(!d || rtsp_mpv_prepare_packet(expected_epoch,epoch,channel,wire,
+                                    length,seq,ssrc,&packet)!=0)
+        return -1;
     return (int)tm_ffd_submit(d,&packet);
 }
 static void rtsp_mpv_drain(tm_ffd_decoder *decoder,rtsp_mpv_fixture *fixture,
