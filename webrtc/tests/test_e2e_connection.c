@@ -32,40 +32,101 @@ static volatile LONG g_e2e_poll_iteration = 0;
 static DWORD g_e2e_main_thread_id = 0;
 static volatile LONG g_e2e_fault_logged = 0;
 
-/* One process-local, first-fatal-exception signature; no SDP, IP, pointer,
- * token, memory dump or full filesystem path can escape this handler. */
+/* Return only a sanitized module basename and module-relative offset.
+ * Never emit absolute addresses, stack bytes, SDP, tokens or media. */
+static void e2e_module_rva(const void *pc, char module_name[64],
+                           unsigned long long *rva) {
+    HMODULE module = NULL;
+    strcpy(module_name, "unknown");
+    *rva = 0;
+    if (!pc || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (LPCSTR)pc, &module))
+        return;
+
+    char file[MAX_PATH];
+    DWORD len = GetModuleFileNameA(module, file, (DWORD)sizeof(file));
+    if (len > 0 && len < (DWORD)sizeof(file)) {
+        DWORD base = 0;
+        for (DWORD i = 0; i < len; ++i)
+            if (file[i] == '\\' || file[i] == '/')
+                base = i + 1;
+        size_t n = 0;
+        for (DWORD i = base; i < len && n < 63; ++i) {
+            const char c = file[i];
+            module_name[n++] =
+                (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'
+                    ? c : '_';
+        }
+        module_name[n] = '\0';
+    }
+    *rva = (unsigned long long)((uintptr_t)pc - (uintptr_t)module);
+}
+
+/* Walk the *faulting* CONTEXT, not the filter's own call stack. This avoids
+ * full memory dumps and symbol servers while retaining module/RVA evidence.
+ * RtlVirtualUnwind is supported on the Windows x64 MSVC CI target. */
+static void e2e_emit_fault_frames(const EXCEPTION_POINTERS *ep, HANDLE err) {
+#if defined(_M_X64)
+    if (!ep || !ep->ContextRecord || !err || err == INVALID_HANDLE_VALUE)
+        return;
+    CONTEXT context = *ep->ContextRecord;
+    for (unsigned depth = 0; depth < 12 && context.Rip; ++depth) {
+        const DWORD64 pc = context.Rip;
+        const DWORD64 sp = context.Rsp;
+        char module_name[64];
+        unsigned long long rva = 0;
+        e2e_module_rva((const void *)(uintptr_t)pc, module_name, &rva);
+        char line[176];
+        int len = snprintf(line, sizeof(line),
+                           "[webrtc-e2e-frame] depth=%u module=%s rva=%llu\n",
+                           depth, module_name, rva);
+        if (len > 0 && len < (int)sizeof(line)) {
+            DWORD written = 0;
+            (void)WriteFile(err, line, (DWORD)len, &written, NULL);
+        }
+
+        DWORD64 image_base = 0;
+        PRUNTIME_FUNCTION function =
+            RtlLookupFunctionEntry(pc, &image_base, NULL);
+        if (function) {
+            PVOID handler_data = NULL;
+            DWORD64 establisher_frame = 0;
+            (void)RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, pc,
+                                   function, &context, &handler_data,
+                                   &establisher_frame, NULL);
+        } else {
+            DWORD64 caller = 0;
+            SIZE_T bytes = 0;
+            if (sp < 65536u ||
+                !ReadProcessMemory(GetCurrentProcess(),
+                                   (const void *)(uintptr_t)sp,
+                                   &caller, sizeof(caller), &bytes) ||
+                bytes != sizeof(caller))
+                break;
+            context.Rip = caller;
+            context.Rsp = sp + sizeof(caller);
+        }
+        if ((context.Rip == pc && context.Rsp <= sp) ||
+            context.Rsp <= sp)
+            break;
+    }
+#else
+    (void)ep;
+    (void)err;
+#endif
+}
+
+/* First-fatal-exception-only diagnostics: never suppress the CTest crash. */
 static LONG WINAPI e2e_unhandled_exception(EXCEPTION_POINTERS *p) {
     const EXCEPTION_RECORD *rec = p ? p->ExceptionRecord : NULL;
     if (!rec || InterlockedCompareExchange(&g_e2e_fault_logged, 1, 0) != 0)
         return EXCEPTION_CONTINUE_SEARCH;
 
-    HMODULE module = NULL;
-    char module_name[64] = "unknown";
+    char module_name[64];
     unsigned long long rva = 0;
-    if (rec->ExceptionAddress &&
-        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCSTR)rec->ExceptionAddress, &module)) {
-        char file[MAX_PATH];
-        DWORD len = GetModuleFileNameA(module, file, (DWORD)sizeof(file));
-        if (len > 0 && len < (DWORD)sizeof(file)) {
-            DWORD base = 0;
-            for (DWORD i = 0; i < len; ++i)
-                if (file[i] == '\\' || file[i] == '/')
-                    base = i + 1;
-            size_t n = 0;
-            for (DWORD i = base; i < len && n < sizeof(module_name) - 1; ++i) {
-                const char c = file[i];
-                module_name[n++] =
-                    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                    (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'
-                        ? c : '_';
-            }
-            module_name[n] = '\0';
-        }
-        rva = (unsigned long long)((uintptr_t)rec->ExceptionAddress -
-                                  (uintptr_t)module);
-    }
+    e2e_module_rva(rec->ExceptionAddress, module_name, &rva);
 
     const unsigned kind = rec->NumberParameters > 0
                               ? (unsigned)rec->ExceptionInformation[0] : 9u;
@@ -85,8 +146,10 @@ static LONG WINAPI e2e_unhandled_exception(EXCEPTION_POINTERS *p) {
     if (len > 0 && len < (int)sizeof(line)) {
         DWORD written = 0;
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-        if (err && err != INVALID_HANDLE_VALUE)
+        if (err && err != INVALID_HANDLE_VALUE) {
             (void)WriteFile(err, line, (DWORD)len, &written, NULL);
+            e2e_emit_fault_frames(p, err);
+        }
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
