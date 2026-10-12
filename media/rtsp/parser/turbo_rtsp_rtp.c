@@ -1,4 +1,5 @@
 #include "turbo_rtsp_rtp.h"
+#include "turbo_network_port_internal.h"
 
 #ifdef TURBO_MEDIA_HAS_RTSP
 
@@ -3917,14 +3918,14 @@ static int turbo_rtsp_sockaddr_to_peer(
     if (addr->ss_family == AF_INET) {
         const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
         peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
-        peer->port = ntohs(in->sin_port);
+        peer->port = turbo_media_socket_port_host(&in->sin_port);
         memcpy(peer->address, &in->sin_addr, sizeof(in->sin_addr));
         return 0;
     }
     if (addr->ss_family == AF_INET6) {
         const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)addr;
         peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
-        peer->port = ntohs(in6->sin6_port);
+        peer->port = turbo_media_socket_port_host(&in6->sin6_port);
         peer->scope_id = in6->sin6_scope_id;
         memcpy(peer->address, &in6->sin6_addr, sizeof(in6->sin6_addr));
         return 0;
