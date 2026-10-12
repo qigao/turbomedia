@@ -28,6 +28,8 @@
 #ifdef _WIN32
 static volatile LONG g_e2e_diag_phase = 0;
 static volatile LONG g_e2e_last_main_phase = 0;
+static volatile LONG g_e2e_poll_iteration = 0;
+static DWORD g_e2e_main_thread_id = 0;
 static volatile LONG g_e2e_fault_logged = 0;
 
 /* One process-local, first-fatal-exception signature; no SDP, IP, pointer,
@@ -72,11 +74,14 @@ static LONG WINAPI e2e_unhandled_exception(EXCEPTION_POINTERS *p) {
     char line[256];
     int len = snprintf(line, sizeof(line),
                        "[webrtc-e2e-exception] code=%lu phase=%ld main_phase=%ld "
-                       "module=%s rva=%llu kind=%u near_null=%d\n",
+                       "module=%s rva=%llu kind=%u near_null=%d "
+                       "main_thread=%d poll_iteration=%ld\n",
                        (unsigned long)rec->ExceptionCode,
                        (long)InterlockedCompareExchange(&g_e2e_diag_phase, 0, 0),
                        (long)InterlockedCompareExchange(&g_e2e_last_main_phase, 0, 0),
-                       module_name, rva, kind, near_null);
+                       module_name, rva, kind, near_null,
+                       GetCurrentThreadId() == g_e2e_main_thread_id ? 1 : 0,
+                       (long)InterlockedCompareExchange(&g_e2e_poll_iteration, 0, 0));
     if (len > 0 && len < (int)sizeof(line)) {
         DWORD written = 0;
         HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
@@ -378,6 +383,8 @@ void setUp(void) {
     InterlockedExchange(&g_e2e_fault_logged, 0);
     E2E_DIAG_PHASE(0);
     InterlockedExchange(&g_e2e_last_main_phase, 0);
+    InterlockedExchange(&g_e2e_poll_iteration, 0);
+    g_e2e_main_thread_id = GetCurrentThreadId();
     (void)SetUnhandledExceptionFilter(e2e_unhandled_exception);
 #endif
     memset(&g_ctx, 0, sizeof(g_ctx));
@@ -418,14 +425,22 @@ void tearDown(void) {
     }
     E2E_DIAG_PHASE(95); /* post-close peer/ICE poll */
     for (int i = 0; i < 10; i++) {
+#ifdef _WIN32
+        InterlockedExchange(&g_e2e_poll_iteration, (LONG)i);
+#endif
+        E2E_DIAG_PHASE(950); /* peer A status poll */
         if (g_ctx.peer_a) turbo_dc_peer_poll(g_ctx.peer_a);
+        E2E_DIAG_PHASE(951); /* peer B status poll */
         if (g_ctx.peer_b) turbo_dc_peer_poll(g_ctx.peer_b);
+        E2E_DIAG_PHASE(952); /* ICE A wake */
         if (g_ctx.ice_a) {
             ice_integration_poll(g_ctx.ice_a);
         }
+        E2E_DIAG_PHASE(953); /* ICE B wake */
         if (g_ctx.ice_b) {
             ice_integration_poll(g_ctx.ice_b);
         }
+        E2E_DIAG_PHASE(954); /* owner callback scheduling gap */
         cmeta_sleep_ms(1);
     }
     
