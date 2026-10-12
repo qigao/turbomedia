@@ -467,11 +467,16 @@ static int whep_stop_impl(ivr_whep_transport_t *transport) {
     transport->pc = NULL;
     transport->audio_track = NULL;
     ivr_mutex_unlock(&transport->lock);
+    const char *trace_value = getenv("TURBOMEDIA_IVR_STOP_TRACE");
+    const int trace = trace_value && strcmp(trace_value, "1") == 0;
+    const uint64_t start_ms = trace ? cmeta_monotonic_ms() : 0;
     if (transport->poll_started) {
         ivr_thread_join(&transport->poll_thread);
         transport->poll_started = 0;
     }
+    const uint64_t joined_ms = trace ? cmeta_monotonic_ms() : 0;
     int delete_status = whep_delete_session(transport, location);
+    const uint64_t deleted_ms = trace ? cmeta_monotonic_ms() : 0;
     if (pc) {
         turbo_peer_connection_destroy(pc);
     }
@@ -481,6 +486,15 @@ static int whep_stop_impl(ivr_whep_transport_t *transport) {
     transport->session_location[0] = '\0';
     transport->session_etag[0] = '\0';
     ivr_mutex_unlock(&transport->lock);
+    if (trace && delete_status != 0) {
+        const uint64_t finished_ms = cmeta_monotonic_ms();
+        fprintf(stderr,
+                "[ivr-stop-stage] transport=whep join_ms=%llu delete_ms=%llu "
+                "peer_destroy_ms=%llu result=%d\n",
+                (unsigned long long)(joined_ms - start_ms),
+                (unsigned long long)(deleted_ms - joined_ms),
+                (unsigned long long)(finished_ms - deleted_ms), delete_status);
+    }
     return delete_status;
 }
 

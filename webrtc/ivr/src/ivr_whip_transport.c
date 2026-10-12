@@ -3,6 +3,7 @@
 #include "ivr_internal.h"
 #include "ivr_thread.h"
 #include "turbo_peer_connection.h"
+#include "platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -372,13 +373,31 @@ static int whip_stop_impl(ivr_whip_transport_t *t) {
     t->audio_track = NULL;
     whip_clear_call(t);
     ivr_mutex_unlock(&t->lock);
+    /* Only the real Windows SFU restart acceptance enables this numerical
+     * stop-phase trace. Never log a location, token, SDP or media bytes.
+     * It measures the *same* mandatory join/DELETE/destroy operations without
+     * replacing, skipping, retrying or shortening any of them. */
+    const char *trace_value = getenv("TURBOMEDIA_IVR_STOP_TRACE");
+    const int trace = trace_value && strcmp(trace_value, "1") == 0;
+    const uint64_t start_ms = trace ? cmeta_monotonic_ms() : 0;
     if (t->poll_started) {
         ivr_thread_join(&t->poll_thread);
         t->poll_started = 0;
     }
+    const uint64_t joined_ms = trace ? cmeta_monotonic_ms() : 0;
     int delete_status = whip_delete_session(t, location);
+    const uint64_t deleted_ms = trace ? cmeta_monotonic_ms() : 0;
     if (pc) {
         turbo_peer_connection_destroy(pc);
+    }
+    if (trace && delete_status != 0) {
+        const uint64_t finished_ms = cmeta_monotonic_ms();
+        fprintf(stderr,
+                "[ivr-stop-stage] transport=whip join_ms=%llu delete_ms=%llu "
+                "peer_destroy_ms=%llu result=%d\n",
+                (unsigned long long)(joined_ms - start_ms),
+                (unsigned long long)(deleted_ms - joined_ms),
+                (unsigned long long)(finished_ms - deleted_ms), delete_status);
     }
     return delete_status;
 }

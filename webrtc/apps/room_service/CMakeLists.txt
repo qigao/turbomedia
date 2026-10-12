@@ -304,6 +304,13 @@ set_tests_properties(test_ivr_whip_transport PROPERTIES
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   TIMEOUT ${TEST_IVR_WHIP_TRANSPORT_TIMEOUT_SECONDS}
   RUN_SERIAL TRUE)
+if(WIN32)
+  # Print only numeric stage timings when the SFU is already dead, to
+  # distinguish bounded HTTP DELETE from poll join and peer destruction.
+  # Also applies to the two explicit Windows repeatability CTest invocations.
+  set_property(TEST test_ivr_whip_transport APPEND PROPERTY ENVIRONMENT
+               "TURBOMEDIA_IVR_STOP_TRACE=1")
+endif()
 set_target_properties(test_ivr_whip_transport PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
   OUTPUT_NAME "test_ivr_whip_transport"

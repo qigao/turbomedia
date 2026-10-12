@@ -463,6 +463,10 @@ jobs:
                     Write-Host $Matches[0]
                   } elseif ($line -match '\[whip-restart-terminal-events\] whip_since_kill_ms=\d+ whep_since_kill_ms=\d+') {
                     Write-Host $Matches[0]
+                  } elseif ($line -match '\[ivr-stop-stage\] transport=(?:whip|whep) join_ms=\d+ delete_ms=\d+ peer_destroy_ms=\d+ result=-?\d+') {
+                    # Redact by schema: only stop-phase numeric counters are
+                    # printed, never HTTP locations, SDP or bearer tokens.
+                    Write-Host $Matches[0]
                   } elseif ($line -match '\[whip-restart\] stage=(?:initial-whip|initial-whep|initial-rtp|post-sfu-restart|post-sfu-restart-whep|post-sfu-restart-rtp|post-sfu-stop-whip-terminal|post-sfu-stop-whep-terminal|post-sfu-restart-room) sfu_generation=\d+ child_alive=[01] whip_connected_now=[01] whep_connected_now=[01] whip_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} whep_states=\{connecting:\d+,connected:\d+,disconnected:\d+,failed:\d+,closed:\d+,identity_invalid:\d+,attempt:\d+,state:-?\d+,error:-?\d+\} child_log_lines=\d+ ice=\d+ dtls=\d+ errors=\d+') {
                     # Only the schema-validated, token-free counters can escape.
                     Write-Host $Matches[0]
