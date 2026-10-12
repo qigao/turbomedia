@@ -327,6 +327,42 @@ suite("GmSSL DTLS-SRTP paired protocol regression") {
             check_equal(turbo_gdtls_export_srtp(fixture.session, keys, sizeof(keys), &size), TURBO_GDTLS_AUTH);
             check_equal(size, size_t{0});
         }
+        it("role=%d ignores malformed DTLS records without poisoning the valid handshake", server) {
+            check_true(fixture.init(server != 0, 1));
+            // A record truncated before its complete 13-byte header.
+            const uint8_t truncated[] = {22, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+            // Complete header claims one body byte that is not present.
+            const uint8_t missing_body[] = {22, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+            // Invalid DTLS wire version and unknown content type.
+            const uint8_t wrong_version[] = {22, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+            const uint8_t wrong_type[] = {19, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+            // A formally complete handshake fragment with an impossible
+            // 65537-byte total (the engine's per-message budget is 65536).
+            const uint8_t oversized_fragment[] = {
+                22, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12,
+                1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0
+            };
+            const uint8_t invalid_offset[] = {
+                22, 0xfe, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12,
+                1, 0, 0, 10, 0, 0, 0, 0, 0, 11, 0, 0
+            };
+            const struct { const uint8_t *data; size_t size; } invalid[] = {
+                {truncated, sizeof(truncated)},
+                {missing_body, sizeof(missing_body)},
+                {wrong_version, sizeof(wrong_version)},
+                {wrong_type, sizeof(wrong_type)},
+                {oversized_fragment, sizeof(oversized_fragment)},
+                {invalid_offset, sizeof(invalid_offset)}
+            };
+            for (const auto &record : invalid) {
+                check_equal(turbo_gdtls_receive(fixture.session, record.data, record.size, clock_ms), 0);
+                check_false(turbo_gdtls_ready(fixture.session));
+                check_null(turbo_gdtls_take_plaintext(fixture.session));
+            }
+            // Untrusted input cannot consume the valid session's handshake
+            // admission. Both sides must still agree on the SRTP exporter.
+            check_pair(1);
+        }
         it("role=%d rejects an incorrect peer fingerprint before key export", server) {
             check_true(fixture.init(server != 0, 1, false, true));
             check_false(fixture.handshake());
