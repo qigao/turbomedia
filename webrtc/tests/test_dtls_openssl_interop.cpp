@@ -70,6 +70,7 @@ struct IndependentPair {
     bool gm_server;
     uint16_t profile;
     bool rsa_identity;
+    bool wrong_fingerprint;
     tstr gm_certificate = nullptr, gm_private_key = nullptr;
     tstr external_certificate = nullptr, external_private_key = nullptr;
     turbo_gdtls_context *gm_context = nullptr;
@@ -83,8 +84,9 @@ struct IndependentPair {
     unsigned gm_out_packets = 0, openssl_in_packets = 0;
     unsigned last_gm_record_type = 0, last_gm_handshake_type = 0;
 
-    IndependentPair(bool server, uint16_t id, bool rsa)
-        : gm_server(server), profile(id), rsa_identity(rsa) {}
+    IndependentPair(bool server, uint16_t id, bool rsa, bool wrong_pin = false)
+        : gm_server(server), profile(id), rsa_identity(rsa),
+          wrong_fingerprint(wrong_pin) {}
 
     ~IndependentPair() {
         SSL_free(ssl);
@@ -139,6 +141,7 @@ struct IndependentPair {
         bool pin_ok = X509_digest(cert, EVP_sha256(), expected, &pin_size) == 1 &&
                       pin_size == 32 &&
                       turbo_gdtls_context_fingerprint(gm_context, gm_pin) == 0;
+        if (pin_ok && wrong_fingerprint) expected[0] ^= 0x01;
         openssl_context = SSL_CTX_new(DTLS_method());
         bool configured = pin_ok && openssl_context &&
             SSL_CTX_set_min_proto_version(openssl_context, DTLS1_2_VERSION) == 1 &&
@@ -260,6 +263,66 @@ struct IndependentPair {
         return failure("bounded-handshake-timeout");
     }
 
+    bool reject_mismatched_fingerprint() {
+        /* This is a real independent-provider handshake, not a locally
+         * injected protocol return code. Only the expected pin is changed.
+         * The GmSSL owner must reject the peer X.509 certificate before
+         * accepting any SRTP identity or exposing authenticated media. */
+        if (!wrong_fingerprint) return failure("negative-pin-case-not-configured");
+        stage = "reject-mismatched-fingerprint";
+        bool openssl_terminal = false;
+        for (unsigned step = 0; step < 3500; ++step) {
+            clock_ms += 10;
+            if (!pump_gm_output()) return false;
+            if (!openssl_terminal) {
+                int result = SSL_do_handshake(ssl);
+                if (result == 1)
+                    openssl_terminal = true;
+                else {
+                    int status = SSL_get_error(ssl, result);
+                    if (status != SSL_ERROR_WANT_READ &&
+                        status != SSL_ERROR_WANT_WRITE)
+                        openssl_terminal = true;
+                }
+            }
+            uint8_t packet[65535];
+            for (;;) {
+                ssize_t got = recv(socket_fd[0], packet, sizeof(packet), 0);
+                if (got < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                    return failure("negative-UDP-receive");
+                }
+                if (got == 0) continue;
+                ++openssl_in_packets;
+                int rc = turbo_gdtls_receive(gm, packet,
+                                             static_cast<size_t>(got), clock_ms);
+                if (rc == TURBO_GDTLS_AUTH) {
+                    uint8_t exported[88] = {};
+                    size_t exported_size = sizeof(exported);
+                    bool denied = !turbo_gdtls_ready(gm) &&
+                        turbo_gdtls_srtp_profile(gm) == 0 &&
+                        turbo_gdtls_export_srtp(gm, exported,
+                            sizeof(exported), &exported_size) ==
+                            TURBO_GDTLS_AUTH &&
+                        exported_size == 0 &&
+                        turbo_gdtls_take_plaintext(gm) == nullptr;
+                    OPENSSL_cleanse(exported, sizeof(exported));
+                    if (!denied)
+                        return failure("negative-pin-exposed-media-or-keys");
+                    return true;
+                }
+                if (rc != TURBO_GDTLS_OK)
+                    return failure("negative-pin-wrong-DTLS-error");
+                if (turbo_gdtls_ready(gm))
+                    return failure("negative-pin-accepted-unauthenticated-peer");
+            }
+            int rc = turbo_gdtls_poll(gm, clock_ms);
+            if (rc != TURBO_GDTLS_OK)
+                return failure("negative-pin-unexpected-timer-error");
+        }
+        return failure("negative-pin-no-authentication-rejection");
+    }
+
     bool qualify_exporter() {
         stage = "authenticated-exporter";
         if (!SSL_is_init_finished(ssl) || !turbo_gdtls_ready(gm) ||
@@ -335,6 +398,19 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                     check_true(fixture.qualify_exporter());
                     check_true(fixture.exchange_application());
                 }
+            }
+        }
+    }
+    /* One AEAD SRTP profile per identity/role is sufficient for the
+     * fingerprint rejection contract: the signature algorithms and
+     * CertificateRequest paths differ, not the SRTP profile. */
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        for (int server = 0; server < 2; ++server) {
+            it("GmSSL server=%d RSA=%d rejects independently supplied wrong SHA-256 pin",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0, true);
+                check_true(fixture.init());
+                check_true(fixture.reject_mismatched_fingerprint());
             }
         }
     }
