@@ -1145,6 +1145,9 @@ static void rtsp_test_restart_and_drain(void) {
 
 #ifdef TM_TEST_RTSP_MPEG2_CODEC_GATE
 #include "test_rtsp_mpeg_video_codec.inc"
+#ifdef TM_TEST_RTSP_MPEG2_PROVIDER_DSO
+#include "test_rtsp_mpeg_video_component.inc"
+#endif
 #endif
 
 suite("TurboMedia RTSP over Salts") {
@@ -1223,6 +1226,11 @@ suite("TurboMedia RTSP over Salts") {
     it("decodes real RFC2250 MPEG-2 RTSP RTP and aborts without Codec flush") {
         rtsp_test_mpeg2_video_real_rtp_to_delayed_codec();
     }
+#ifdef TM_TEST_RTSP_MPEG2_PROVIDER_DSO
+    it("settles real RTSP MPEG-2 packets through Salts CMeta DSO Portal Generations") {
+        rtsp_test_mpeg2_real_rtp_to_salts_generation();
+    }
+#endif
 #endif
 
     it("parses RTSP URLs") {
