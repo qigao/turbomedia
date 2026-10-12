@@ -10,9 +10,12 @@ typedef struct {
     unsigned next,calls,processed,sink_calls[2];
     unsigned char output[2][10];
     int fail_source,fail_sink;
+    tm_ex_owner *executor;
 } fixture;
 static tm_ex_source_result source(void *ctx,uint8_t *dst,size_t cap,size_t *n){
     fixture *f=(fixture *)ctx;f->calls++;
+    /* The owner guard must reject reentrancy from arbitrary Source callbacks. */
+    if(f->executor) assert(tm_ex_pump_source(f->executor)==TM_EX_EINVAL);
     if(f->fail_source || cap<1u)return TM_EX_SOURCE_FAILED;
     if(f->next>=3u)return TM_EX_SOURCE_EOS;
     dst[0]=(uint8_t)++f->next;*n=1u;return TM_EX_SOURCE_FRAME;
@@ -95,7 +98,11 @@ static tm_ex_owner *make_executor(tm_sg_program *p,tm_fs_store *s,fixture *f){
     }
     b[0].source_next=source;b[1].visit=process;
     b[2].visit=record;b[3].visit=preview;
-    assert(tm_ex_create(p,s,&c,b,4u,&o)==TM_EX_OK);return o;
+    /* Preflight of an invalid binding must not create a partial executor. */
+    assert(tm_ex_create(p,s,&c,b,3u,&o)==TM_EX_EGRAPH && o==NULL);
+    assert(tm_ex_create(p,s,&c,b,4u,&o)==TM_EX_OK);
+    f->executor=o;
+    return o;
 }
 static void finish(tm_ex_owner *o,tm_fs_store *s,tm_sg_program *p){
     assert(tm_ex_destroy(o)==TM_EX_OK);
