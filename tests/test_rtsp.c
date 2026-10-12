@@ -4,6 +4,8 @@
 #include <http_client/http.h>
 #include <http_server/http.h>
 #include <salts/thread.h>
+#include <salts/clock.h>
+#include <stdatomic.h>
 #include <tinytest.h>
 
 #include <stdint.h>
@@ -201,6 +203,13 @@ typedef struct {
     int teardown_count;
     int interleaved_count;
     int close_count;
+    /* M15d test-only: one actual CNet RTSP handler remains on the server's
+     * callback stack until the Media Owner closes the old client Session.
+     * These flags do not replace or modify CNet's original completion. */
+    _Atomic unsigned hold_interleaved;
+    _Atomic unsigned interleaved_entered;
+    _Atomic unsigned interleaved_release;
+    _Atomic unsigned interleaved_exited;
     int auth_required;
     int auth_digest;
     int auth_accepted;
@@ -208,6 +217,10 @@ typedef struct {
 
 static void rtsp_test_state_init(rtsp_test_state_t *state) {
     memset(state, 0, sizeof(*state));
+    atomic_init(&state->hold_interleaved,0u);
+    atomic_init(&state->interleaved_entered,0u);
+    atomic_init(&state->interleaved_release,0u);
+    atomic_init(&state->interleaved_exited,0u);
     cmeta_mutex_init(&state->mutex);
     state->mutex_initialized = 1;
 }
@@ -397,9 +410,23 @@ static int rtsp_test_interleaved(
     size_t payload_len,
     void *user) {
     rtsp_test_state_t *state = (rtsp_test_state_t *)user;
+    int result;
     rtsp_test_increment(state, &state->interleaved_count);
-    return turbo_rtsp_session_send_interleaved_frame(
+    if(atomic_load_explicit(&state->hold_interleaved,memory_order_acquire)) {
+        /* This executes AFTER real CNet packet reception, while the
+         * original RTSP handler still borrows the old Session. It is NOT
+         * merely a pre-receive gate or fabricated RTP callback. */
+        atomic_store_explicit(&state->interleaved_entered,1u,memory_order_release);
+        while(!atomic_load_explicit(&state->interleaved_release,
+                                    memory_order_acquire)) {
+            cmeta_thread_yield();
+        }
+    }
+    result=turbo_rtsp_session_send_interleaved_frame(
         session, (uint8_t)(channel + 1u), payload, payload_len);
+    if(atomic_load_explicit(&state->hold_interleaved,memory_order_acquire))
+        atomic_store_explicit(&state->interleaved_exited,1u,memory_order_release);
+    return result;
 }
 
 static void rtsp_test_close(turbo_rtsp_session_t *session, void *user) {
@@ -669,6 +696,17 @@ static void rtsp_test_udp_setup(void) {
  * not an in-memory packet or mocked Socket. This does not yet prove a
  * concurrent RTSP request/cancel crossover or Source -> Codec drain.
  */
+/* The monotonic deadline only bounds a failed test. The interleaving
+ * itself is established by the two explicit atomic handshake flags. */
+static int rtsp_test_wait_for_callback(_Atomic unsigned *flag) {
+    uint64_t start=cmeta_monotonic_ms();
+    while(!atomic_load_explicit(flag,memory_order_acquire)) {
+        if(cmeta_monotonic_ms()-start>=RTSP_TEST_TIMEOUT_MS)return 0;
+        cmeta_thread_yield();
+    }
+    return 1;
+}
+
 static void rtsp_test_cancel_with_pending_interleaved_and_reopen(void) {
     static const char sdp[] =
         "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=cancel\r\nt=0 0\r\n"
@@ -688,6 +726,7 @@ static void rtsp_test_cancel_with_pending_interleaved_and_reopen(void) {
     size_t count=0u;
 
     rtsp_test_state_init(&state);
+    atomic_store_explicit(&state.hold_interleaved,1u,memory_order_release);
     server=rtsp_test_server_start(&state,TURBO_RTSP_CONTROL_TRANSPORT_TCP,
                                   RTSP_TEST_RECONNECT_PORT,NULL);
     check_not_null(server);
@@ -706,17 +745,32 @@ static void rtsp_test_cancel_with_pending_interleaved_and_reopen(void) {
     check_equal(turbo_rtsp_client_record(client),0);
     check_equal(turbo_rtsp_client_send_interleaved_frame(
                     client,0u,retired_payload,sizeof(retired_payload)),0);
-    /* NativeIO may have queued an echo, but the old transport may not
-     * deliver a callback after this original session is closed. There is
-     * intentionally no TEARDOWN/Codec Flush on abort. The old response
-     * is explicitly abandoned rather than retried or consumed. */
+    /* Actual CNet server callback MUST have entered with the old RTP
+     * bytes. Hold its stack while the Owner closes the old client. The
+     * callback's eventual echo (whether queued or rejected) belongs only
+     * to that retired Session, never to the next connection. */
+    if(!rtsp_test_wait_for_callback(&state.interleaved_entered)) {
+        atomic_store_explicit(&state.interleaved_release,1u,memory_order_release);
+        check_true(0);
+        goto cleanup;
+    }
+    check_equal(rtsp_test_read(&state,&state.interleaved_count),1);
     turbo_rtsp_client_close(client);
+    atomic_store_explicit(&state.interleaved_release,1u,memory_order_release);
+    if(!rtsp_test_wait_for_callback(&state.interleaved_exited)) {
+        check_true(0);
+        goto cleanup;
+    }
+    /* Abort does not trigger TEARDOWN or a hidden Codec Flush. RTSP
+     * client receive/send on the closed NativeIO session must refuse. */
     count=0u;
     check_equal(turbo_rtsp_client_recv_interleaved_frame(
                     client,&channel,payload,sizeof(payload),&count),-1);
     check_equal(turbo_rtsp_client_send_interleaved_frame(
                     client,0u,current_payload,sizeof(current_payload)),-1);
     check_equal(turbo_rtsp_client_teardown(client),-1);
+    atomic_store_explicit(&state.hold_interleaved,0u,memory_order_release);
+    check_equal(rtsp_test_read(&state,&state.interleaved_count),1);
 
     /* Fresh real CNet connection on the SAME client storage. New
      * RTSP Setup/Record is a distinct NativeIO session, not a retry
@@ -736,7 +790,10 @@ static void rtsp_test_cancel_with_pending_interleaved_and_reopen(void) {
     check_equal(turbo_rtsp_client_teardown(client),0);
     check_equal(rtsp_test_read(&state,&state.announce_count),2);
     check_equal(rtsp_test_read(&state,&state.record_count),2);
+    check_equal(rtsp_test_read(&state,&state.interleaved_count),2);
 cleanup:
+    /* Always release a blocked handler before destroying its owner. */
+    atomic_store_explicit(&state.interleaved_release,1u,memory_order_release);
     if(client) {
         turbo_rtsp_client_close(client);
         turbo_rtsp_client_destroy(client);
