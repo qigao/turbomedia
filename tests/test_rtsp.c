@@ -5,6 +5,7 @@
 #include <http_server/http.h>
 #include <salts/thread.h>
 #include <salts/clock.h>
+#include <cmeta_buffer.h>
 #include <stdatomic.h>
 #include <tinytest.h>
 
@@ -803,6 +804,171 @@ cleanup:
     rtsp_test_state_destroy(&state);
 }
 
+
+/* A separate real CNet owner exercises the actual pending receive DEMAND
+ * against the real RTSP server. No CNet operation overlaps another on this
+ * owner. The receipt from the CNet pending-demand API proves outstanding
+ * demand before the Owner submits close; time only bounds terminal polling.
+ *
+ * This is stronger than an idle TCP socket smoke, but it is NOT a
+ * concurrent same-CNet-object poll/close race: that is disallowed by CNet.
+ */
+typedef struct rtsp_cnet_pending_fixture {
+    cnet_connection handle;
+    unsigned connected,closed,failed,received,wrong_identity,overflow;
+    size_t bytes;
+    char reply[1024];
+} rtsp_cnet_pending_fixture;
+
+static void rtsp_cnet_pending_state(void *user,cnet_connection conn,
+                                    cnet_connection_state state,
+                                    const cnet_error *error) {
+    rtsp_cnet_pending_fixture *f=(rtsp_cnet_pending_fixture *)user;
+    (void)error;
+    if(conn.slot!=f->handle.slot || conn.generation!=f->handle.generation) {
+        ++f->wrong_identity;
+        return;
+    }
+    if(state==CNET_CONNECTION_CONNECTED)++f->connected;
+    else if(state==CNET_CONNECTION_CLOSED)++f->closed;
+    else if(state==CNET_CONNECTION_FAILED)++f->failed;
+}
+static void rtsp_cnet_pending_receive(void *user,cnet_connection conn,
+                                      const cnet_receive_view *view) {
+    rtsp_cnet_pending_fixture *f=(rtsp_cnet_pending_fixture *)user;
+    if(conn.slot!=f->handle.slot || conn.generation!=f->handle.generation) {
+        ++f->wrong_identity;
+        return;
+    }
+    ++f->received;
+    if(!view || !view->data || view->size>sizeof(f->reply)-1u-f->bytes) {
+        ++f->overflow;
+        return;
+    }
+    memcpy(f->reply+f->bytes,view->data,view->size);
+    f->bytes+=view->size;
+    f->reply[f->bytes]='\0';
+}
+static void rtsp_cnet_pending_owned_probe(void *user,cnet_connection conn,
+                                           mem_slice_t slice,
+                                           cnet_message_kind kind) {
+    /* No callback is allowed: replacing an in-flight demand must fail
+     * SALTS_EBUSY. Release defensively if a broken implementation calls it. */
+    (void)user;(void)conn;(void)kind;
+    mem_slice_release(&slice);
+}
+static int rtsp_cnet_poll_to(cnet_client *owner,unsigned *counter) {
+    uint64_t start=cmeta_monotonic_ms();
+    while(!*counter) {
+        size_t events=0u;
+        if(cnet_client_poll(owner,10u,&events)!=SALTS_OK)return 0;
+        if(cmeta_monotonic_ms()-start>=RTSP_TEST_TIMEOUT_MS)return 0;
+    }
+    return 1;
+}
+static void rtsp_test_same_cnet_owner_pending_receive_cancel(void) {
+    static const char uri[]="tcp://127.0.0.1:20560";
+    static const char request[]=
+        "OPTIONS rtsp://127.0.0.1/live RTSP/1.0\r\n"
+        "CSeq: 194\r\n\r\n";
+    rtsp_test_state_t state;
+    turbo_rtsp_server_t *server=NULL;
+    cnet_client client={0};
+    cnet_client_config cfg;
+    cnet_connect_options options={0};
+    cnet_connection old_handle={0},new_handle={0};
+    rtsp_cnet_pending_fixture old={0},current={0};
+    mem_buffer_t *send_buffer=NULL;
+    int client_initialized=0;
+    int result;
+    size_t events=0u;
+
+    rtsp_test_state_init(&state);
+    server=rtsp_test_server_start(&state,TURBO_RTSP_CONTROL_TRANSPORT_TCP,
+                                  20560,NULL);
+    check_not_null(server);
+    if(!server)goto cleanup;
+    cfg=rtsp_test_chttp_network(1u);
+    result=cnet_client_init(&client,&cfg);
+    check_equal(result,SALTS_OK);
+    if(result!=SALTS_OK)goto cleanup;
+    client_initialized=1;
+    options.uri=uri;
+    options.observer.on_state=rtsp_cnet_pending_state;
+    options.observer.on_receive=rtsp_cnet_pending_receive;
+    options.observer.user=&old;
+    result=cnet_connect(&client,&options,&old_handle);
+    check_equal(result,SALTS_OK);
+    if(result!=SALTS_OK)goto cleanup;
+    old.handle=old_handle;
+    if(!rtsp_cnet_poll_to(&client,&old.connected)) {
+        check_true(0);goto cleanup;
+    }
+    check_equal(old.failed,0u);
+    /* An accepted receive request with no remote response is truly
+     * outstanding: CNet refuses changing its handler while demand exists. */
+    check_equal(cnet_receive(&client,old_handle,1u),SALTS_OK);
+    check_equal(cnet_client_poll(&client,0u,&events),SALTS_OK);
+    check_equal(cnet_set_receive_slice_handler(
+        &client,old_handle,rtsp_cnet_pending_owned_probe,&old),SALTS_EBUSY);
+    check_equal(old.received,0u);
+    check_equal(cnet_close(&client,old_handle),SALTS_OK);
+    if(!rtsp_cnet_poll_to(&client,&old.closed)) {
+        check_true(0);goto cleanup;
+    }
+    check_equal(old.closed,1u);
+    check_equal(old.received,0u);
+    check_equal(old.wrong_identity,0u);
+    check_equal(old.overflow,0u);
+    /* Reuse the ONE CNet connection slot; this is a different checked
+     * Generation, never an old packet delivered to a new observer. */
+    options.observer.user=&current;
+    result=cnet_connect(&client,&options,&new_handle);
+    check_equal(result,SALTS_OK);
+    if(result!=SALTS_OK)goto cleanup;
+    current.handle=new_handle;
+    check_equal(new_handle.slot,old_handle.slot);
+    check_true(new_handle.generation!=old_handle.generation);
+    if(!rtsp_cnet_poll_to(&client,&current.connected)) {
+        check_true(0);goto cleanup;
+    }
+    check_equal(cnet_receive(&client,old_handle,1u),SALTS_ENOENT);
+    check_equal(cnet_close(&client,old_handle),SALTS_ENOENT);
+
+    check_equal(cnet_receive(&client,new_handle,1u),SALTS_OK);
+    send_buffer=mem_get_buffer(mem_global(),sizeof(request)-1u);
+    check_not_null(send_buffer);
+    if(!send_buffer)goto cleanup;
+    memcpy(mem_buffer_data(send_buffer),request,sizeof(request)-1u);
+    mem_set_used(send_buffer,sizeof(request)-1u);
+    result=cnet_send_buffer(&client,new_handle,send_buffer);
+    mem_buffer_release(send_buffer);send_buffer=NULL;
+    check_equal(result,SALTS_OK);
+    if(result!=SALTS_OK)goto cleanup;
+    if(!rtsp_cnet_poll_to(&client,&current.received)) {
+        check_true(0);goto cleanup;
+    }
+    check_true(current.bytes>=strlen("RTSP/1.0 200 OK"));
+    check_true(strstr(current.reply,"RTSP/1.0 200 OK")==current.reply);
+    check_equal(rtsp_test_read(&state,&state.options_count),1);
+    check_equal(old.received,0u);
+    check_equal(current.failed,0u);
+    check_equal(current.wrong_identity,0u);
+    check_equal(current.overflow,0u);
+    check_equal(cnet_close(&client,new_handle),SALTS_OK);
+    if(!rtsp_cnet_poll_to(&client,&current.closed))check_true(0);
+    check_equal(current.closed,1u);
+cleanup:
+    if(send_buffer)mem_buffer_release(send_buffer);
+    if(client_initialized) {
+        /* Stop drives concrete terminal progress before freeing observers. */
+        check_equal(cnet_client_stop(&client,RTSP_TEST_TIMEOUT_MS),SALTS_OK);
+        check_equal(cnet_client_destroy(&client),SALTS_OK);
+    }
+    if(server)turbo_rtsp_server_destroy(server);
+    rtsp_test_state_destroy(&state);
+}
+
 static void rtsp_test_restart_and_drain(void) {
     rtsp_test_state_t state;
     turbo_rtsp_server_t *server;
@@ -900,6 +1066,9 @@ suite("TurboMedia RTSP over Salts") {
     }
     it("abandons pending interleaved RTP on CNet close and fences reconnection") {
         rtsp_test_cancel_with_pending_interleaved_and_reopen();
+    }
+    it("cancels real pending CNet receive demand and fences reused generation") {
+        rtsp_test_same_cnet_owner_pending_receive_cancel();
     }
 
     it("parses RTSP URLs") {
