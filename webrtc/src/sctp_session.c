@@ -10,6 +10,11 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
 #include "tlog.h"
 
 /* ============================================================================
