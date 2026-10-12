@@ -1351,6 +1351,9 @@ static void turbo_rtsp_server_packet_error(
     }
 }
 
+/* Used by the WebSocket callback and the NativeIO accept Owner. */
+static int turbo_rtsp_server_is_stopping(turbo_rtsp_server_t *server);
+
 static int turbo_rtsp_server_websocket_open(
     void *user,
     chttp_websocket *websocket,
