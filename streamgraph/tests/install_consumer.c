@@ -76,6 +76,13 @@ int main(void) {
         if (tm_pc_seal(portal)!=TM_PC_OK ||
             tm_pc_destroy(portal)!=TM_PC_OK) return 18;
     }
+    {
+        tm_pc_result_v1 terminal=TM_PC_RESULT_V1_INIT;
+        if (tm_od_step_completion(NULL,&terminal)!=TM_OD_EINVAL) return 19;
+        if (tm_od_bind_completion(NULL,NULL,NULL,NULL)!=TM_OD_EINVAL) return 20;
+        if (tm_od_pending_completion(NULL,&terminal)!=TM_OD_EINVAL) return 21;
+        if (tm_od_settle_pending_completion(NULL)!=TM_OD_EINVAL) return 22;
+    }
     if (tm_fs_seal(store) != TM_FS_OK) return 2;
     return tm_fs_destroy(store) == TM_FS_OK ? 0 : 3;
 }

@@ -21,4 +21,5 @@ static_assert(std::is_trivially_copyable<tm_ex_binding_v1>::value, "callback tab
 static_assert(std::is_standard_layout<tm_pc_config_v1>::value, "completion config is C ABI");
 static_assert(std::is_trivially_copyable<tm_pc_ticket_v1>::value, "completion ticket is a value");
 static_assert(std::is_trivially_copyable<tm_pc_result_v1>::value, "completion result is a value");
+static_assert(std::is_pointer<tm_od_terminal_emit_fn>::value, "terminal emitter has C function pointer ABI");
 int main() { tm_sg_limits_v1 l = TM_SG_LIMITS_V1_INIT; return l.version == TM_SG_ABI_VERSION ? 0 : 1; }
