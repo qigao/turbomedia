@@ -110,6 +110,11 @@ static void rtsp_mpv_step_dso(
     check_equal(receipt.outcome,TM_PC_COMPLETED);
     check_equal(receipt.completion_observed,1u);
     check_equal(receipt.provider_status,result);
+    /* Completion won the actual DSO step before a later Media Owner
+     * cancel. The original Portal outcome is immutable: neither a
+     * late cancel nor a duplicate complete may rewrite the receipt. */
+    check_equal(tm_pc_request_cancel(portal,ticket),TM_PC_EALREADY);
+    check_equal(tm_pc_complete(portal,ticket,TM_FF_ESTATE),TM_PC_EALREADY);
 
     take.size=sizeof(take);
     take.instance_id=identity.instance_id;
@@ -138,6 +143,8 @@ static void rtsp_mpv_step_dso(
         else ++f->eagain;
     }
     check_equal(tm_pc_settle(portal,taken),TM_PC_OK);
+    check_equal(tm_pc_request_cancel(portal,ticket),TM_PC_ESTALE);
+    check_equal(tm_pc_complete(portal,ticket,TM_FF_ESTATE),TM_PC_ESTALE);
     check_true(tm_pc_take(portal,&taken,&receipt)!=TM_PC_OK);
 }
 static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
@@ -365,6 +372,12 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         check_equal(receipt.completion_observed,1u);
         check_equal(receipt.correlation,30001u);
         check_equal(receipt.provider_status,TM_FF_ESTATE);
+        /* In this real RTP/NativeIO/DSO crossover cancel won first.
+         * A second cancel or completion cannot convert the original
+         * authoritative CANCELLED result into COMPLETED. */
+        check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_EALREADY);
+        check_equal(tm_pc_complete(p102,ticket,TM_FF_OK),TM_PC_EALREADY);
+        check_equal(tm_pc_cancel_quiesced(p102,ticket),TM_PC_EALREADY);
         take.size=sizeof(take);
         take.instance_id=second.instance_id;
         take.provider_generation=second.provider_generation;
@@ -375,6 +388,8 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         check_equal(out_bytes,0u);
         check_equal(pts,INT64_MIN);
         check_equal(tm_pc_settle(p102,taken),TM_PC_OK);
+        check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_ESTALE);
+        check_equal(tm_pc_complete(p102,ticket,TM_FF_OK),TM_PC_ESTALE);
         check_true(tm_pc_take(p102,&taken,&receipt)!=TM_PC_OK);
     }
     stats=(tm_ffd_stats_v1)TM_FFD_STATS_V1_INIT;
