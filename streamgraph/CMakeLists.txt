@@ -9,14 +9,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
   set(_TM_SG_ISOLATED TRUE)
 endif()
-add_library(turbo_media_streamgraph SHARED src/turbo_streamgraph.c)
+add_library(turbo_media_streamgraph SHARED src/turbo_streamgraph.c src/turbo_frame_store.c)
 target_include_directories(turbo_media_streamgraph
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
          $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/include>
          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(turbo_media_streamgraph PRIVATE SHARED_CXX)
 if(MSVC)
-  target_compile_options(turbo_media_streamgraph PRIVATE /W4 /WX)
+  target_compile_options(turbo_media_streamgraph PRIVATE /W4 /WX /experimental:c11atomics)
 else()
   target_compile_options(turbo_media_streamgraph PRIVATE -Wall -Wextra -Werror -pedantic)
 endif()
@@ -29,6 +29,7 @@ if(_TM_SG_ISOLATED)
           RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
   install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../media/include/turbo_export.h
                 ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_streamgraph.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/include/turbo_frame_store.h
           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   install(EXPORT TurboMediaStreamGraphTargets FILE TurboMediaStreamGraphTargets.cmake
           NAMESPACE TurboMedia:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TurboMediaStreamGraph)
@@ -43,4 +44,7 @@ if(_TM_SG_ISOLATED OR NOT CMAKE_CROSSCOMPILING)
   add_executable(streamgraph_contract_test tests/test_contract.c)
   target_link_libraries(streamgraph_contract_test PRIVATE turbo_media_streamgraph)
   add_test(NAME streamgraph_contract COMMAND streamgraph_contract_test)
+  add_executable(streamgraph_frame_store_test tests/test_frame_store.c)
+  target_link_libraries(streamgraph_frame_store_test PRIVATE turbo_media_streamgraph)
+  add_test(NAME streamgraph_frame_store COMMAND streamgraph_frame_store_test)
 endif()
