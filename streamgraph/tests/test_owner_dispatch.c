@@ -222,7 +222,14 @@ static void test_frame_pin_scope_and_stop(void) {
     assert(tm_fs_publish_cpu(s,&value,1u,2u,3u,&valid)==TM_FS_OK);
     r=send(q,d,TM_HO_FRAME_NOTICE,0u,21u,&valid);
     assert(r.outcome==TM_OD_COMPLETED && f.noticed==1u);
-    assert(tm_fs_retire(s,&valid)==TM_FS_OK);
+    /* The callback requested retirement while the owner-held Pin/Lease
+     * was active. Its final release auto-retires the slot. No second
+     * retirement is needed or permitted for the now-stale identity. */
+    assert(tm_fs_retire(s,&valid)==TM_FS_ESTALE);
+    {
+        tm_fs_lease_v1 old_lease={0};
+        assert(tm_fs_acquire_weak(s,&valid,&old_lease)==TM_FS_ESTALE);
+    }
     r=send(q,d,TM_HO_STOP,0u,22u,NULL);
     assert(r.outcome==TM_OD_COMPLETED);
     cleanup(d,q,ex,s,g);
