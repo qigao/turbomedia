@@ -90,6 +90,16 @@ if(_TM_TEST_FFMPEG)
   target_link_libraries(tm_installed_salts_generation_test PRIVATE
     PkgConfig::TM_TEST_LIBAVCODEC PkgConfig::TM_TEST_LIBAVUTIL)
 endif()
+# Opt-in Linux-only host gate: symbols are exported by the deliberately
+# instrumented FFmpeg build. Never enable it for an ordinary system codec.
+if(DEFINED ENV{TM_TEST_FFMPEG_INNER_GATE} AND
+   "$ENV{TM_TEST_FFMPEG_INNER_GATE}" STREQUAL "1")
+  if(NOT _TM_TEST_FFMPEG OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "In-libavcodec gate needs exact Linux FFmpeg fixture")
+  endif()
+  target_compile_definitions(tm_installed_salts_generation_test
+    PRIVATE TM_TEST_FFMPEG_INNER_GATE=1)
+endif()
 if(MSVC)
   target_compile_options(tm_installed_salts_generation_test
     PRIVATE /experimental:c11atomics /W4 /WX)
