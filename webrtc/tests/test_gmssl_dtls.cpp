@@ -17,6 +17,76 @@ bool contains_finished_record(const void *data, size_t size) {
     return false;
 }
 
+
+/* Remove precisely the EMS extension from a complete epoch-0 hello record.
+ * Preserve all other extensions and fix the record, handshake and vector
+ * lengths. The negative test exercises a syntactically valid non-EMS peer,
+ * not a malformed packet or an unknown-extension rejection.
+ */
+bool strip_ems_extension(tstr packet, uint8_t handshake_type) {
+    auto *p = reinterpret_cast<uint8_t *>(packet);
+    const size_t size = tstr_len(packet);
+    if (size < 25 || p[0] != 22 || p[3] != 0 || p[4] != 0 ||
+        p[13] != handshake_type || (handshake_type != 1 && handshake_type != 2))
+        return false;
+    auto get16 = [&](size_t at) -> size_t { return (size_t(p[at]) << 8) | p[at + 1]; };
+    auto get24 = [&](size_t at) -> size_t {
+        return (size_t(p[at]) << 16) | (size_t(p[at + 1]) << 8) | p[at + 2];
+    };
+    auto put16 = [&](size_t at, size_t n) {
+        p[at] = static_cast<uint8_t>(n >> 8);
+        p[at + 1] = static_cast<uint8_t>(n);
+    };
+    auto put24 = [&](size_t at, size_t n) {
+        p[at] = static_cast<uint8_t>(n >> 16);
+        p[at + 1] = static_cast<uint8_t>(n >> 8);
+        p[at + 2] = static_cast<uint8_t>(n);
+    };
+    const size_t record_length = get16(11);
+    const size_t hello_length = get24(14);
+    if (record_length + 13 != size || hello_length + 12 != record_length ||
+        get24(19) != 0 || get24(22) != hello_length) return false;
+    size_t offset = 25;
+    if (size - offset < 34) return false; // DTLS version + random
+    offset += 34;
+    auto skip_vector = [&](unsigned width) -> bool {
+        if (size - offset < width) return false;
+        size_t n = width == 1 ? p[offset] : get16(offset);
+        offset += width;
+        if (n > size - offset) return false;
+        offset += n;
+        return true;
+    };
+    if (!skip_vector(1)) return false; // session ID
+    if (handshake_type == 1) {
+        if (!skip_vector(1) || !skip_vector(2) || !skip_vector(1))
+            return false; // cookie, cipher suites, compression
+    } else {
+        if (size - offset < 3) return false; // cipher suite + compression
+        offset += 3;
+    }
+    if (size - offset < 2) return false;
+    const size_t ext_length_at = offset;
+    const size_t ext_length = get16(offset);
+    offset += 2;
+    if (ext_length != size - offset) return false;
+    while (offset < size) {
+        if (size - offset < 4) return false;
+        const size_t type = get16(offset), n = get16(offset + 2);
+        if (n > size - offset - 4) return false;
+        if (type == 23 && n == 0) {
+            memmove(p + offset, p + offset + 4, size - offset - 4);
+            put16(ext_length_at, ext_length - 4);
+            put16(11, record_length - 4);
+            put24(14, hello_length - 4);
+            put24(22, hello_length - 4);
+            return tstr_set_len_checked(packet, size - 4);
+        }
+        offset += 4 + n;
+    }
+    return false;
+}
+
 struct Fixture {
     turbo_gdtls_context *reference_context = nullptr, *context = nullptr;
     turbo_gdtls *reference = nullptr, *session = nullptr;
@@ -26,6 +96,7 @@ struct Fixture {
     bool server = false;
     bool drop_first = false, drop_final = false, reorder = false, dropped = false;
     bool reorder_reference = false, early_application = false, early_sent = false;
+    bool strip_reference_ems = false, stripped_reference_ems = false;
     int gm_error = 0, reference_error = 0;
     uint8_t reference_plain[16384]{};
     size_t reference_plain_size = 0;
@@ -125,6 +196,8 @@ struct Fixture {
             early_sent = true;
         }
         while ((owned_packet = turbo_gdtls_take_datagram(reference)) != nullptr) {
+            if (strip_reference_ems && strip_ems_extension(owned_packet, server ? 1 : 2))
+                stripped_reference_ems = true;
             bool encrypted_handshake = contains_finished_record(owned_packet, tstr_len(owned_packet));
             if (!dropped && drop_final && !server && encrypted_handshake) dropped = true;
             else if (reorder_reference && !reference_held_packet) {
@@ -242,6 +315,17 @@ suite("GmSSL DTLS-SRTP paired protocol regression") {
             check_true(fixture.init(server != 0, 8));
             fixture.reorder_reference = true;
             check_pair(8);
+        }
+        it("role=%d rejects a syntactically valid peer hello without EMS", server) {
+            check_true(fixture.init(server != 0, 1));
+            fixture.strip_reference_ems = true;
+            check_false(fixture.handshake());
+            check_true(fixture.stripped_reference_ems);
+            check_equal(fixture.gm_error, TURBO_GDTLS_PROTOCOL);
+            check_false(turbo_gdtls_ready(fixture.session));
+            uint8_t keys[88]; size_t size = 123;
+            check_equal(turbo_gdtls_export_srtp(fixture.session, keys, sizeof(keys), &size), TURBO_GDTLS_AUTH);
+            check_equal(size, size_t{0});
         }
         it("role=%d rejects an incorrect peer fingerprint before key export", server) {
             check_true(fixture.init(server != 0, 1, false, true));
