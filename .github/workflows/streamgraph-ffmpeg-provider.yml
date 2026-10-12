@@ -56,11 +56,21 @@ jobs:
           cmake --install "streamgraph/build/ffmpeg-${{ matrix.mode }}" --prefix "$prefix"
           test -f "$prefix/include/turbo_streamgraph_ffmpeg.h"
           test -f "$prefix/lib/cmake/TurboMediaStreamGraphFFmpeg/TurboMediaStreamGraphFFmpegConfig.cmake"
-          cmake -S streamgraph/adapters/ffmpeg/tests/install_consumer \
-            -B "$RUNNER_TEMP/ffmpeg-independent-${{ matrix.mode }}" -G Ninja \
-            -DCMAKE_PREFIX_PATH="$prefix" \
-            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE \
+          cmake_opts=(
+            -S streamgraph/adapters/ffmpeg/tests/install_consumer
+            -B "$RUNNER_TEMP/ffmpeg-independent-${{ matrix.mode }}"
+            -G Ninja
+            -DCMAKE_PREFIX_PATH="$prefix"
+            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE
             -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE
+          )
+          if [ "${{ matrix.mode }}" = "asan-ubsan" ]; then
+            cmake_opts+=(-DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer")
+            cmake_opts+=(-DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer")
+            cmake_opts+=(-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined")
+            export ASAN_OPTIONS=detect_leaks=1
+          fi
+          cmake "${cmake_opts[@]}"
           cmake --build "$RUNNER_TEMP/ffmpeg-independent-${{ matrix.mode }}"
           ctest --test-dir "$RUNNER_TEMP/ffmpeg-independent-${{ matrix.mode }}" \
             --no-tests=error --output-on-failure --timeout 60
