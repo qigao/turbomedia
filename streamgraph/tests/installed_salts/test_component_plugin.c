@@ -643,12 +643,15 @@ int main(int argc,char **argv) {
                     assert(avcodec_tm_test_send_packet_state()==2u);
                 }
                 assert(tm_test_provider_destroy_instance(&value_n1,&first)==-4);
-                /* Published N+1 is not DRAINING: drain must reject as
-                 * INVALID_STATE, not BUSY. Only the already-retired N or
-                 * explicitly closed N+1 may validly return BUSY. The real
-                 * Plugin loader must still reject unloading its live DSO. */
+                /* Close admission to N+1 WHILE Worker A is executing
+                 * inside actual libavcodec. Existing Scope remains live,
+                 * so generation_drain must be BUSY (not INVALID_STATE),
+                 * and real Plugin unload must also refuse this DSO. */
+                assert(salts_component_plugin_runtime_close(
+                    &runtime,&previous)==SALTS_COMPONENT_PLUGIN_OK);
+                assert(previous==&n1.generation);
                 assert(salts_component_plugin_generation_drain(
-                    &runtime,&n1.generation)==SALTS_COMPONENT_PLUGIN_INVALID_STATE);
+                    &runtime,&n1.generation)==SALTS_COMPONENT_PLUGIN_BUSY);
                 assert(salts_component_plugin_scope_generation_id(&scope_n1)==102u);
                 assert(cmeta_plugin_registry_unload(&registry,ref_n1)==CMETA_PLUGIN_BUSY);
                 start_worker(&th2,&w2);
@@ -759,9 +762,11 @@ int main(int argc,char **argv) {
     assert(tm_test_provider_finish_decode(&value_n1)==0);
 #endif
 
+#ifndef TM_TEST_FFMPEG_INNER_GATE
     assert(salts_component_plugin_runtime_close(&runtime,&previous)
            ==SALTS_COMPONENT_PLUGIN_OK);
     assert(previous==&n1.generation);
+#endif
     assert(salts_component_plugin_generation_drain(&runtime,&n1.generation)
            ==SALTS_COMPONENT_PLUGIN_BUSY);
     assert(salts_component_plugin_scope_release(&scope_n1)
