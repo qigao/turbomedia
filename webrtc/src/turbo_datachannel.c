@@ -120,6 +120,9 @@ void dc_peer_release(turbo_dc_peer_t *peer) {
     cmeta_mutex_unlock(&peer->operation_mutex);
 }
 
+/* Per-channel lease admission and final reclamation are internal inline
+ * helpers shared with the DCEP and SCTP modules in the private header. */
+
 static int dc_peer_begin_destroy(turbo_dc_peer_t *peer) {
     if (!peer || !peer->operation_sync_initialized) {
         return -1;
@@ -1451,25 +1454,32 @@ turbo_dc_channel_t *turbo_dc_channel_create(
     const char *label,
     const turbo_dc_channel_config_t *config
 ) {
-    if (!peer || !label) {
+    if (!peer || !label || dc_peer_acquire(peer) != 0)
         return NULL;
-    }
     if (peer->ctx && peer->ctx->disable_sctp) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_INVALID_PEER_STATE,
                           "data channels are disabled for this DTLS transport");
+        dc_peer_release(peer);
         return NULL;
     }
 
     uint16_t channel_id;
-    if (peer_alloc_channel_id(peer, &channel_id) != 0) {
+    cmeta_mutex_lock(&peer->operation_mutex);
+    int allocated = peer_alloc_channel_id(peer, &channel_id) == 0;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (!allocated) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_ALLOC_CHANNEL, "no free channel IDs");
+        dc_peer_release(peer);
         return NULL;
     }
 
     turbo_dc_channel_t *channel = calloc(1, sizeof(*channel));
     if (!channel) {
+        cmeta_mutex_lock(&peer->operation_mutex);
         peer_free_channel_id(peer, channel_id);
+        cmeta_mutex_unlock(&peer->operation_mutex);
         dc_set_peer_error(peer, TURBO_DC_ERROR_ALLOC_CHANNEL, NULL);
+        dc_peer_release(peer);
         return NULL;
     }
 
@@ -1480,29 +1490,45 @@ turbo_dc_channel_t *turbo_dc_channel_create(
     if (config) {
         if (config->max_retransmits < 0 || config->max_lifetime_ms < 0 ||
             (config->max_retransmits > 0 && config->max_lifetime_ms > 0)) {
-            peer_free_channel_id(peer, channel_id);
-            free(channel);
             dc_set_peer_error(peer, TURBO_DC_ERROR_INVALID_PEER_STATE,
                               "invalid partial reliability configuration");
-            return NULL;
+            goto channel_create_fail;
         }
         channel->config = *config;
-        if (config->protocol) {
+        if (config->protocol)
             channel->protocol = tstr_dup(config->protocol);
-        }
     } else {
         channel->config = turbo_dc_default_channel_config();
     }
+    if (!channel->label || (config && config->protocol && !channel->protocol)) {
+        dc_set_peer_error(peer, TURBO_DC_ERROR_ALLOC_CHANNEL, NULL);
+        goto channel_create_fail;
+    }
 
-    if (peer_set_channel(peer, channel->id, channel) != 0) {
-        peer_free_channel_id(peer, channel_id);
+    cmeta_mutex_lock(&peer->operation_mutex);
+    int published = peer_set_channel(peer, channel->id, channel) == 0;
+    if (!published) peer_free_channel_id(peer, channel_id);
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (!published) {
+        dc_set_peer_error(peer, TURBO_DC_ERROR_ALLOC_CHANNEL, "channel map is full");
         tstr_free(channel->label);
         tstr_free(channel->protocol);
         free(channel);
-        dc_set_peer_error(peer, TURBO_DC_ERROR_ALLOC_CHANNEL, "channel map is full");
+        dc_peer_release(peer);
         return NULL;
     }
+    dc_peer_release(peer);
     return channel;
+
+channel_create_fail:
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer_free_channel_id(peer, channel_id);
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    tstr_free(channel->label);
+    tstr_free(channel->protocol);
+    free(channel);
+    dc_peer_release(peer);
+    return NULL;
 }
 
 int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
@@ -1531,19 +1557,31 @@ int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
 }
 
 void turbo_dc_channel_on_open(turbo_dc_channel_t *channel, turbo_dc_open_cb cb) {
-    if (channel) channel->on_open = cb;
+    if (!channel || !channel->peer) return;
+    cmeta_mutex_lock(&channel->peer->operation_mutex);
+    if (!channel->closing) channel->on_open = cb;
+    cmeta_mutex_unlock(&channel->peer->operation_mutex);
 }
 
 void turbo_dc_channel_on_message(turbo_dc_channel_t *channel, turbo_dc_message_cb cb) {
-    if (channel) channel->on_message = cb;
+    if (!channel || !channel->peer) return;
+    cmeta_mutex_lock(&channel->peer->operation_mutex);
+    if (!channel->closing) channel->on_message = cb;
+    cmeta_mutex_unlock(&channel->peer->operation_mutex);
 }
 
 void turbo_dc_channel_on_close(turbo_dc_channel_t *channel, turbo_dc_close_cb cb) {
-    if (channel) channel->on_close = cb;
+    if (!channel || !channel->peer) return;
+    cmeta_mutex_lock(&channel->peer->operation_mutex);
+    if (!channel->closing) channel->on_close = cb;
+    cmeta_mutex_unlock(&channel->peer->operation_mutex);
 }
 
 void turbo_dc_channel_set_user_data(turbo_dc_channel_t *channel, void *user_data) {
-    if (channel) channel->user_data = user_data;
+    if (!channel || !channel->peer) return;
+    cmeta_mutex_lock(&channel->peer->operation_mutex);
+    if (!channel->closing) channel->user_data = user_data;
+    cmeta_mutex_unlock(&channel->peer->operation_mutex);
 }
 
 void *turbo_dc_channel_get_user_data(turbo_dc_channel_t *channel) {
@@ -1647,36 +1685,38 @@ size_t turbo_dc_channel_buffered_amount(turbo_dc_channel_t *channel) {
 }
 
 void turbo_dc_channel_close(turbo_dc_channel_t *channel) {
-    if (!channel) return;
-
+    if (!channel || !channel->peer) return;
     turbo_dc_peer_t *peer = channel->peer;
-    uint16_t id = channel->id;
+    if (dc_peer_acquire(peer) != 0) return;
 
-    /* Mark as closed first */
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (channel->closing) {
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        dc_peer_release(peer);
+        return;
+    }
+    channel->closing = 1;
     channel->is_open = 0;
-    if (peer) sctp_receive_discard_stream(peer, id);
-
-    /* Reset the SCTP stream before detaching the local channel. */
-    if (peer && peer->sctp.socket) {
-        if (sctp_reset_channel_stream(peer, id) != 0) {
-            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, "stream reset failed");
-        }
-    }
-
-    /* Remove from peer before callback (prevents use-after-free in callback) */
-    if (peer) {
+    /* A close lease keeps storage live through reset and on_close.
+     * Admitted on_message/on_open callbacks keep their independent leases. */
+    ++channel->callback_refs;
+    uint16_t id = channel->id;
+    if (peer_get_channel(peer, id) == channel)
         peer_remove_channel(peer, id);
-        peer_free_channel_id(peer, id);
-    }
+    turbo_dc_close_cb on_close = channel->on_close;
+    void *user_data = channel->user_data;
+    cmeta_mutex_unlock(&peer->operation_mutex);
 
-    /* Callback after removal - channel pointer still valid but detached */
-    if (channel->on_close) {
-        channel->on_close(channel, channel->user_data);
-    }
+    sctp_receive_discard_stream(peer, id);
+    /* Reset stream outside operation_mutex: usrsctp may synchronously invoke
+     * transport or application code that needs this same admission lock. */
+    if (peer->sctp.socket && sctp_reset_channel_stream(peer, id) != 0)
+        dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, "stream reset failed");
+    if (on_close)
+        on_close(channel, user_data);
 
-    tstr_free(channel->label);
-    tstr_free(channel->protocol);
-    free(channel);
+    dc_channel_release(channel);
+    dc_peer_release(peer);
 }
 
 /* ============================================================================

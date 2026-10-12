@@ -6,6 +6,7 @@
 
 #include "turbo_datachannel.h"
 #include "turbo_datachannel_errors.h"
+#include "turbo_datachannel_internal.h"
 #include "tinytest.h"
 #include <cmeta_thread.h>
 #include <string.h>
@@ -524,6 +525,59 @@ void test_channel_send_not_open(void) {
     turbo_dc_channel_close(channel);
     turbo_dc_peer_destroy(peer);
     turbo_dc_context_destroy(ctx);
+}
+
+/* ============================================================================ 
+ * Channel close while a DCEP callback is admitted: baseline RED for #195
+ * ============================================================================ */
+
+static unsigned g_dcep_close_admitted;
+static unsigned g_dcep_open_after_close;
+
+static void dcep_open_after_close(turbo_dc_channel_t *channel, void *user_data) {
+    (void)channel;
+    (void)user_data;
+    ++g_dcep_open_after_close;
+}
+
+static void dcep_close_inside_on_channel(turbo_dc_peer_t *peer,
+                                         turbo_dc_channel_t *channel,
+                                         void *user_data) {
+    (void)peer;
+    (void)user_data;
+    ++g_dcep_close_admitted;
+    /* DCEP holds an admitted callback that must keep this channel live,
+     * even if application code closes it before DCEP OPEN unwinds. */
+    turbo_dc_channel_on_open(channel, dcep_open_after_close);
+    turbo_dc_channel_close(channel);
+}
+
+spec("DataChannel DCEP close ownership") {
+    it("does not deliver on_open after reentrant on_channel close") {
+        turbo_dc_config_t config = {0};
+        config.is_server = 1;
+        config.transport = TURBO_DC_TRANSPORT_ICE;
+        turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
+        check_not_null(ctx);
+        turbo_dc_peer_t *peer = turbo_dc_peer_create(ctx, NULL, 0, NULL);
+        check_not_null(peer);
+        g_dcep_close_admitted = 0;
+        g_dcep_open_after_close = 0;
+        turbo_dc_peer_on_channel(peer, dcep_close_inside_on_channel);
+        /* One valid DCEP OPEN message for remote-allocated SID 0: ACK
+         * admission is independent of a live external ICE connection. */
+        const uint8_t open[] = {
+            DCEP_DATA_CHANNEL_OPEN, DCEP_CHANNEL_RELIABLE_ORDERED,
+            0, 0, 0, 0, 0, 0,
+            0, 1, 0, 0, 'x'
+        };
+        dcep_handle_message(peer, 0, open, sizeof(open));
+        check_equal(g_dcep_close_admitted, 1u);
+        check_equal(g_dcep_open_after_close, 0u);
+        check_null(peer_get_channel(peer, 0));
+        turbo_dc_peer_destroy(peer);
+        turbo_dc_context_destroy(ctx);
+    }
 }
 
 /* ============================================================================

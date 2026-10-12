@@ -332,14 +332,25 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
     if (ppid == SCTP_PPID_DCEP) {
         dcep_handle_message(peer, stream_id, (const uint8_t *)payload, datalen);
     } else {
-        turbo_dc_channel_t *channel = peer_get_channel(peer, stream_id);
-        if (channel && channel->on_message && channel->is_open) {
-            int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
-            /* Empty-message PPIDs describe the application length independently
-             * of the SCTP placeholder payload (RFC 8831 section 6.6). */
-            if (ppid == SCTP_PPID_STRING_EMPTY || ppid == SCTP_PPID_BINARY_EMPTY)
-                datalen = 0;
-            channel->on_message(channel, payload, datalen, is_binary, channel->user_data);
+        /* The peer operation lease does not own individual channel storage.
+         * Hold a separate bounded channel lease across the application
+         * callback so a concurrent channel_close cannot unmap and free it. */
+        turbo_dc_channel_t *channel = dc_channel_admit(peer, stream_id);
+        if (channel) {
+            cmeta_mutex_lock(&peer->operation_mutex);
+            turbo_dc_message_cb callback = !channel->closing && channel->is_open
+                ? channel->on_message : NULL;
+            void *callback_data = channel->user_data;
+            cmeta_mutex_unlock(&peer->operation_mutex);
+            if (callback) {
+                int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
+                /* Empty-message PPIDs describe the application length independently
+                 * of the SCTP placeholder payload (RFC 8831 section 6.6). */
+                if (ppid == SCTP_PPID_STRING_EMPTY || ppid == SCTP_PPID_BINARY_EMPTY)
+                    datalen = 0;
+                callback(channel, payload, datalen, is_binary, callback_data);
+            }
+            dc_channel_release(channel);
         }
     }
 

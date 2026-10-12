@@ -17,6 +17,7 @@
 #include "gmssl_dtls.h"
 #include <usrsctp.h>
 #include <roaring/roaring.h>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -219,6 +220,12 @@ struct turbo_dc_channel_s {
     int dcep_sent;
     size_t buffered_amount;
 
+    /* Per-channel callback admission; protected by peer->operation_mutex.
+     * An admitted application callback retains the object even if another
+     * thread or the callback itself closes/unpublishes this channel. */
+    unsigned callback_refs;
+    int closing;
+
     /* Callbacks */
     turbo_dc_open_cb on_open;
     turbo_dc_message_cb on_message;
@@ -234,6 +241,11 @@ void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state);
 void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail);
 int dc_peer_acquire(turbo_dc_peer_t *peer);
 void dc_peer_release(turbo_dc_peer_t *peer);
+
+/* Internal bounded channel lifetime lease: never invoke application code
+ * under operation_mutex. Release the final close+callback lease to reclaim. */
+static inline turbo_dc_channel_t *dc_channel_admit(turbo_dc_peer_t *peer, uint16_t id);
+static inline void dc_channel_release(turbo_dc_channel_t *channel);
 
 /* Legacy - for context-level errors during creation (before peer exists) */
 void dc_set_context_error(turbo_dc_context_t *ctx, turbo_dc_error_code_t code, const char *detail);
@@ -322,6 +334,8 @@ static inline int peer_alloc_channel_id(turbo_dc_peer_t *peer, uint16_t *out_id)
     return -1;  /* No free IDs */
 }
 
+/* Channel-map and ID-bitmap helpers require peer->operation_mutex on
+ * every path that may race with SCTP receive or channel close. */
 static inline turbo_dc_channel_t *peer_get_channel(turbo_dc_peer_t *peer,
                                                     uint16_t id) {
     turbo_dc_channel_t **channel;
@@ -350,6 +364,41 @@ static inline void peer_free_channel_id(turbo_dc_peer_t *peer, uint16_t id) {
 
 static inline void peer_mark_channel_id(turbo_dc_peer_t *peer, uint16_t id) {
     roaring_bitmap_add(peer->channel_ids, id);
+}
+
+/* Inline internal helpers are shared by the production DCEP/SCTP modules and
+ * the standalone conformance parser, without exporting new DLL symbols. */
+static inline turbo_dc_channel_t *dc_channel_admit(turbo_dc_peer_t *peer, uint16_t id) {
+    if (!peer || !peer->operation_sync_initialized) return NULL;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    turbo_dc_channel_t *channel = !peer->destroying && peer->channels_initialized
+        ? peer_get_channel(peer, id) : NULL;
+    if (channel && !channel->closing) {
+        ++channel->callback_refs;
+    } else {
+        channel = NULL;
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    return channel;
+}
+
+static inline void dc_channel_release(turbo_dc_channel_t *channel) {
+    if (!channel || !channel->peer) return;
+    turbo_dc_peer_t *peer = channel->peer;
+    int reclaim = 0;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (channel->callback_refs > 0)
+        --channel->callback_refs;
+    if (channel->closing && channel->callback_refs == 0) {
+        peer_free_channel_id(peer, channel->id);
+        reclaim = 1;
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (reclaim) {
+        tstr_free(channel->label);
+        tstr_free(channel->protocol);
+        free(channel);
+    }
 }
 
 #ifdef __cplusplus
