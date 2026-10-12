@@ -1143,6 +1143,10 @@ static void rtsp_test_restart_and_drain(void) {
     rtsp_test_state_destroy(&state);
 }
 
+#ifdef TM_TEST_RTSP_MPEG2_CODEC_GATE
+#include "test_rtsp_mpeg_video_codec.inc"
+#endif
+
 suite("TurboMedia RTSP over Salts") {
     it("runs the complete play control flow over CNet TCP") {
         rtsp_test_play_flow();
@@ -1215,6 +1219,11 @@ suite("TurboMedia RTSP over Salts") {
     it("closes from real CNet receive callback before generation reuse") {
         rtsp_test_cnet_receive_callback_requests_close();
     }
+#ifdef TM_TEST_RTSP_MPEG2_CODEC_GATE
+    it("decodes real RFC2250 MPEG-2 RTSP RTP and aborts without Codec flush") {
+        rtsp_test_mpeg2_video_real_rtp_to_delayed_codec();
+    }
+#endif
 
     it("parses RTSP URLs") {
         turbo_rtsp_url_t parsed;
