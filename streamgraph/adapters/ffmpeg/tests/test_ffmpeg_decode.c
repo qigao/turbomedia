@@ -340,11 +340,75 @@ static void test_empty_stream_null_flush_exactly_once(void) {
     assert(tm_ff_destroy(decoder)==TM_FF_OK);
 }
 
+
+/* M15c cancel-wins: EOF was requested, but the pending compressed packet
+ * never entered libavcodec. Cancel must suppress both packet send and the
+ * NULL flush, with stable subsequent EOS and no stale decoded pixels. */
+static void test_cancel_pending_packet_after_finish(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_ff_source *decoder=NULL;
+    encoder_fixture encoder={0};
+    tm_ff_codec_activity_v1 activity=TM_FF_CODEC_ACTIVITY_V1_INIT;
+    tm_ff_stats_v1 stats=TM_FF_STATS_V1_INIT;
+    uint8_t encoded[PACKET_MAX],pixels[LUMA_BYTES]={0};
+    size_t count,frame_bytes=17u;
+    int ready=0;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=PACKET_MAX;
+    assert(tm_ff_create(&cfg,&decoder)==TM_FF_OK);
+    encoder_init(&encoder);
+    count=make_mjpeg(&encoder,87u,encoded,sizeof(encoded));
+    assert(tm_ff_submit_mjpeg(decoder,encoded,count)==TM_FF_OK);
+    assert(tm_ff_finish(decoder)==TM_FF_OK);
+    assert(tm_ff_cancel(decoder)==TM_FF_OK);
+    assert(tm_ff_cancel(decoder)==TM_FF_OK);
+    assert(tm_ff_finish(decoder)==TM_FF_ESTATE);
+    assert(tm_ff_submit_mjpeg(decoder,encoded,count)==TM_FF_ESTATE);
+    assert(tm_ff_ready(decoder,&ready)==TM_FF_OK && ready);
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&frame_bytes)
+           ==TM_EX_SOURCE_EOS);
+    assert(frame_bytes==0u);
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&frame_bytes)
+           ==TM_EX_SOURCE_EOS);
+    assert(frame_bytes==0u);
+    assert(tm_ff_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.packet_calls==0u && activity.flush_calls==0u &&
+           activity.in_call==0u);
+    assert(tm_ff_stats(decoder,&stats)==TM_FF_OK);
+    assert(stats.packets_submitted==1u && stats.frames_decoded==0u &&
+           stats.pending_packet==0u && stats.draining && stats.cancelled &&
+           stats.eof && stats.ffmpeg_error==0);
+    encoder_destroy(&encoder);
+    assert(tm_ff_destroy(decoder)==TM_FF_OK);
+}
+/* Completion of NULL flush is terminal: an owner cancel after EOF may
+ * not send another flush or re-open source admission. */
+static void test_cancel_after_completed_flush(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_ff_source *decoder=NULL;
+    tm_ff_codec_activity_v1 activity=TM_FF_CODEC_ACTIVITY_V1_INIT;
+    uint8_t pixels[LUMA_BYTES]={0};
+    size_t n=0u;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=PACKET_MAX;
+    assert(tm_ff_create(&cfg,&decoder)==TM_FF_OK);
+    assert(tm_ff_finish(decoder)==TM_FF_OK);
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&n)
+           ==TM_EX_SOURCE_EOS);
+    assert(tm_ff_cancel(decoder)==TM_FF_OK);
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&n)
+           ==TM_EX_SOURCE_EOS);
+    assert(tm_ff_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.packet_calls==0u && activity.flush_calls==1u &&
+           activity.in_call==0u);
+    assert(tm_ff_destroy(decoder)==TM_FF_OK);
+}
+
 int main(void) {
     test_real_mjpeg_backpressure_flush();
     test_explicit_cancel_and_bounds();
     test_pending_packet_then_exactly_once_eof();
     test_empty_stream_null_flush_exactly_once();
+    test_cancel_pending_packet_after_finish();
+    test_cancel_after_completed_flush();
     puts("Native FFmpeg MJPEG decode -> StreamGraph FrameStore/fanout: PASS");
     return 0;
 }
