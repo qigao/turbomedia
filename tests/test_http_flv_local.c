@@ -104,6 +104,17 @@ static void http_flv_test_fail_first_drain(int enabled) {
     else (void)unsetenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_ONCE");
 #endif
 }
+/* Only the test-enabled Streamer library recognizes this fault.
+ * It rejects attempt generations zero and one, with no automatic retries.
+ */
+static void http_flv_test_fail_two_drains(int enabled) {
+#if defined(_WIN32)
+    (void)_putenv_s("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_TWICE", enabled ? "1" : "");
+#else
+    if (enabled) (void)setenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_TWICE", "1", 1);
+    else (void)unsetenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_TWICE");
+#endif
+}
 static void http_flv_test_fail_after_real_terminal(int enabled) {
 #if defined(_WIN32)
     (void)_putenv_s("TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE",
@@ -280,6 +291,44 @@ suite("local HTTP-FLV chunked push") {
      */
     check_equal(turbo_streamer_destroy(streamer), 0);
     http_flv_test_fail_first_drain(0);
+    turbo_streamer_registry_shutdown();
+  }
+
+  it("preserves owner recovery across two explicit failed settlements") {
+    cnet_tls_client_config bad_tls = {0};
+    turbo_streamer_config_t config = {0};
+    turbo_stream_info_t info = {0};
+    turbo_streamer_t *streamer;
+    int stream_id = -1;
+
+    config.protocol = TURBO_STREAMER_HTTP_FLV;
+    config.url = "https://127.0.0.1:20920/live.flv";
+    config.buffer_size = HTTP_FLV_TEST_QUEUE_CAPACITY;
+    config.network_tls = &bad_tls;
+    turbo_streamer_registry_init();
+    streamer = turbo_streamer_create(&config);
+    check_not_null(streamer);
+    info.type = TURBO_CODEC_TYPE_AUDIO;
+    info.codec_name = "pcmu";
+    info.sample_rate = 8000;
+    info.channels = 1;
+    check_equal(turbo_streamer_add_stream(streamer, &info, &stream_id), 0);
+
+    http_flv_test_fail_two_drains(1);
+    /* The failed admission runs exactly one attempted original-owner drain.
+     * No implicit second attempt is permitted by connect().
+     */
+    check_equal(turbo_streamer_connect(streamer), -EIO);
+    /* First explicit destroy requests attempt 1, which also fails. The
+     * wrapper, Manager, and original thread must remain live and retryable.
+     * The public registry returns -1 without freeing the streamer.
+     */
+    check_equal(turbo_streamer_destroy(streamer), -1);
+    /* The next explicit API call requests attempt 2, settles the retained
+     * Manager on the same owner and only then releases outer storage.
+     */
+    check_equal(turbo_streamer_destroy(streamer), 0);
+    http_flv_test_fail_two_drains(0);
     turbo_streamer_registry_shutdown();
   }
 
