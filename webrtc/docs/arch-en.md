@@ -505,8 +505,10 @@ is callback-scoped borrowing. Reassembly, retained flights and output queues own
 their bytes. Destruction drains these objects and wipes session secrets.
 
 Initial scope is DTLS 1.2, ECDHE with P-256, ECDSA/RSA SHA-256 signatures,
-AES-128/256-GCM record protection, Extended Master Secret and all four existing
-SRTP profiles. No resumption, renegotiation, DTLS 1.0/1.3, finite-field DHE or
+AES-128/256-GCM record protection, mandatory Extended Master Secret (EMS) and all four existing
+SRTP profiles. Both ClientHello and ServerHello must negotiate EMS; missing EMS
+is rejected before key derivation. The legacy non-EMS master-secret schedule is
+removed rather than retained as a compatibility fallback. No resumption, renegotiation, DTLS 1.0/1.3, finite-field DHE or
 ChaCha20 is claimed. EC identities must use P-256; RSA requires at least 2048
 bits. This narrows the former identity/cipher set: other-curve, DTLS-1.0-only,
 DHE-only or ChaCha-only peers cannot connect. Unsupported negotiation fails; it never downgrades to an
