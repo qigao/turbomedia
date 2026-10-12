@@ -779,9 +779,166 @@ static void setup_receive_channel(void) {
     turbo_dc_channel_on_message(endpoints[0].channel, record_channel_message);
 }
 
+/* An accepted SCTP callback may outlive an application's close call.
+ * Explicit condition rendezvous is used instead of a sleep-based ordering
+ * oracle: the callback holds its channel while a different thread closes it. */
+typedef struct {
+    cmeta_mutex_t mutex;
+    cmeta_cond_t cond;
+    turbo_dc_peer_t *peer;
+    turbo_dc_channel_t *channel;
+    uint16_t sid;
+    int callback_entered;
+    int callback_release;
+    int callback_finished;
+    int callback_valid;
+    unsigned callback_count;
+    int close_started;
+    int close_completed;
+    int inbound_done;
+    int inbound_result;
+} channel_close_race_fixture_t;
+
+static channel_close_race_fixture_t channel_close_race;
+
+static int wait_channel_close_flag(int *flag) {
+    int ready;
+    const uint64_t until = cmeta_monotonic_ms() + 2000u;
+    cmeta_mutex_lock(&channel_close_race.mutex);
+    while (!*flag && cmeta_monotonic_ms() < until) {
+        (void)cmeta_cond_timedwait(&channel_close_race.cond,
+                                    &channel_close_race.mutex,
+                                    UINT64_C(10000000));
+    }
+    ready = *flag;
+    cmeta_mutex_unlock(&channel_close_race.mutex);
+    return ready;
+}
+
+static void held_channel_message(turbo_dc_channel_t *channel, const void *data,
+                                 size_t len, int binary, void *user_data) {
+    channel_close_race_fixture_t *race = user_data;
+    cmeta_mutex_lock(&race->mutex);
+    ++race->callback_count;
+    race->callback_entered = 1;
+    cmeta_cond_broadcast(&race->cond);
+    while (!race->callback_release)
+        cmeta_cond_wait(&race->cond, &race->mutex);
+    cmeta_mutex_unlock(&race->mutex);
+
+    /* The callback was admitted before close. Its channel label must stay
+     * readable until it finishes even after another thread returned close. */
+    const char *label = turbo_dc_channel_get_label(channel);
+    int valid = label && strcmp(label, "partial") == 0 &&
+                len == 1 && ((const uint8_t *)data)[0] == 0x5a && binary;
+    cmeta_mutex_lock(&race->mutex);
+    race->callback_valid = valid;
+    race->callback_finished = 1;
+    cmeta_cond_broadcast(&race->cond);
+    cmeta_mutex_unlock(&race->mutex);
+}
+
+static void feed_held_sctp_message(void *arg) {
+    channel_close_race_fixture_t *race = arg;
+    struct sctp_rcvinfo info = {0};
+    union sctp_sockstore address = {0};
+    uint8_t *data = malloc(1);
+    if (data) {
+        data[0] = 0x5a;
+        info.rcv_sid = race->sid;
+        info.rcv_ppid = htonl(SCTP_PPID_BINARY);
+    }
+    int rc = data ? sctp_inbound_packet_cb(
+        NULL, address, data, 1, info, MSG_EOR, race->peer) : -1;
+    cmeta_mutex_lock(&race->mutex);
+    race->inbound_result = rc;
+    race->inbound_done = 1;
+    cmeta_cond_broadcast(&race->cond);
+    cmeta_mutex_unlock(&race->mutex);
+}
+
+static void close_held_sctp_channel(void *arg) {
+    channel_close_race_fixture_t *race = arg;
+    cmeta_mutex_lock(&race->mutex);
+    race->close_started = 1;
+    cmeta_cond_broadcast(&race->cond);
+    cmeta_mutex_unlock(&race->mutex);
+
+    turbo_dc_channel_close(race->channel);
+
+    cmeta_mutex_lock(&race->mutex);
+    race->close_completed = 1;
+    cmeta_cond_broadcast(&race->cond);
+    cmeta_mutex_unlock(&race->mutex);
+}
+
+static void verify_held_sctp_close_interleaving(void) {
+    channel_close_race_fixture_t *race = &channel_close_race;
+    memset(race, 0, sizeof(*race));
+    cmeta_mutex_init(&race->mutex);
+    cmeta_cond_init(&race->cond);
+    race->peer = endpoints[0].peer;
+    race->channel = endpoints[0].channel;
+    race->sid = turbo_dc_channel_get_id(race->channel);
+    turbo_dc_channel_set_user_data(race->channel, race);
+    turbo_dc_channel_on_message(race->channel, held_channel_message);
+
+    cmeta_thread_t inbound = NULL;
+    cmeta_thread_t closer = NULL;
+    int inbound_created = cmeta_thread_create(&inbound, feed_held_sctp_message, race) == 0;
+    int entered = inbound_created && wait_channel_close_flag(&race->callback_entered);
+    int close_created = entered &&
+        cmeta_thread_create(&closer, close_held_sctp_channel, race) == 0;
+    int close_started = close_created && wait_channel_close_flag(&race->close_started);
+    int close_completed = close_started && wait_channel_close_flag(&race->close_completed);
+
+    if (close_completed) {
+        /* No new callback may be admitted after the close publication, even
+         * while the previously admitted application callback is still held. */
+        const uint8_t after = 0x5b;
+        feed_sctp_fragment(race->sid, 1, SCTP_PPID_BINARY,
+                           &after, sizeof(after), MSG_EOR);
+        endpoints[0].channel = NULL;
+    }
+    cmeta_mutex_lock(&race->mutex);
+    race->callback_release = 1;
+    cmeta_cond_broadcast(&race->cond);
+    cmeta_mutex_unlock(&race->mutex);
+
+    if (inbound_created) {
+        (void)cmeta_thread_join(&inbound);
+        cmeta_thread_destroy(&inbound);
+    }
+    if (close_created) {
+        (void)cmeta_thread_join(&closer);
+        cmeta_thread_destroy(&closer);
+        /* Closing thread ran to completion, even if it required releasing
+         * the callback after a failed bounded-close check. */
+        endpoints[0].channel = NULL;
+    }
+
+    check_true(inbound_created);
+    check_true(entered);
+    check_true(close_created);
+    check_true(close_started);
+    check_true(close_completed);
+    check_true(race->inbound_done);
+    check_equal(race->inbound_result, 1);
+    check_equal(race->callback_count, 1u);
+    check_true(race->callback_finished);
+    check_true(race->callback_valid);
+    check_null(peer_get_channel(race->peer, race->sid));
+    cmeta_cond_destroy(&race->cond);
+    cmeta_mutex_destroy(&race->mutex);
+}
+
 spec("SCTP complete-message receive adapter") {
     before_each() { setup_receive_channel(); }
     after_each() { cleanup_packet_endpoints(); }
+
+    it("retains a borrowed channel across concurrent on_message and close") {
+        verify_held_sctp_close_interleaving();
+    }
 
     it("waits for EOR and isolates interleaved streams") {
         const uint8_t first[] = {1, 2}, last[] = {3, 4};
