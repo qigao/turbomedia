@@ -79,19 +79,24 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
             channel->config.max_lifetime_ms = get_be16(data + 4);
         }
 
-        /* Check if channel already exists (duplicate OPEN) */
-        if (peer_get_channel(peer, stream_id) != NULL) {
-            tstr_free(channel->label);
-            tstr_free(channel->protocol);
-            free(channel);
-            return;
+        /* Publish under the same lock used for SCTP message lookup and
+         * channel close. Keep one admission lease across both user callbacks:
+         * on_channel is allowed to call channel_close reentrantly. */
+        int published = 0;
+        cmeta_mutex_lock(&peer->operation_mutex);
+        if (!peer->destroying && !peer->sctp.receive_stopped &&
+            !roaring_bitmap_contains(peer->channel_ids, stream_id) &&
+            peer_get_channel(peer, stream_id) == NULL) {
+            peer_mark_channel_id(peer, stream_id);
+            if (peer_set_channel(peer, stream_id, channel) == 0) {
+                channel->callback_refs = 1;
+                published = 1;
+            } else {
+                peer_free_channel_id(peer, stream_id);
+            }
         }
-
-        /* Mark this ID as used (remote-initiated channel) */
-        peer_mark_channel_id(peer, stream_id);
-
-        if (peer_set_channel(peer, stream_id, channel) != 0) {
-            peer_free_channel_id(peer, stream_id);
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        if (!published) {
             tstr_free(channel->label);
             tstr_free(channel->protocol);
             free(channel);
@@ -102,31 +107,40 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
                   channel->label ? channel->label : "",
                   channel->protocol ? channel->protocol : "");
 
-        /* Send ACK */
+        /* Send ACK outside admission: a transport callback may reenter DCEP. */
         dcep_send_ack(peer, stream_id);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        if (!channel->closing) channel->is_open = 1;
+        cmeta_mutex_unlock(&peer->operation_mutex);
 
-        channel->is_open = 1;
-
-        /* Notify application */
-        if (peer->on_channel) {
+        /* Application callbacks execute without holding operation_mutex. */
+        if (peer->on_channel)
             peer->on_channel(peer, channel, peer->user_data);
-        }
-        if (channel->on_open) {
-            channel->on_open(channel, channel->user_data);
-        }
+
+        cmeta_mutex_lock(&peer->operation_mutex);
+        turbo_dc_open_cb callback = !channel->closing ? channel->on_open : NULL;
+        void *callback_data = channel->user_data;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        if (callback)
+            callback(channel, callback_data);
+        dc_channel_release(channel);
     }
     else if (msg_type == DCEP_DATA_CHANNEL_ACK) {
         TLOG_INFOF("DCEP ACK received sid={}", stream_id);
-        turbo_dc_channel_t *channel = NULL;
-        if (stream_id < MAX_CHANNELS) {
-            channel = peer_get_channel(peer, stream_id);
-        }
-
-        if (channel && !channel->is_open) {
-            channel->is_open = 1;
-            if (channel->on_open) {
-                channel->on_open(channel, channel->user_data);
+        turbo_dc_channel_t *channel = dc_channel_admit(peer, stream_id);
+        if (channel) {
+            cmeta_mutex_lock(&peer->operation_mutex);
+            turbo_dc_open_cb callback = NULL;
+            void *callback_data = NULL;
+            if (!channel->closing && !channel->is_open) {
+                channel->is_open = 1;
+                callback = channel->on_open;
+                callback_data = channel->user_data;
             }
+            cmeta_mutex_unlock(&peer->operation_mutex);
+            if (callback)
+                callback(channel, callback_data);
+            dc_channel_release(channel);
         }
     }
 }
