@@ -217,7 +217,8 @@ jobs:
            github.head_ref == 'fix/http-flv-owner-drain-recovery' ||
            github.head_ref == 'diagnostics/whip-sfu-restart-windows' ||
            github.head_ref == 'diagnostics/dc-channel-close-red-195' ||
-           github.head_ref == 'fix/dc-channel-callback-leases-195')
+           github.head_ref == 'fix/dc-channel-callback-leases-195' ||
+           github.head_ref == 'diagnostics/sctp-status-close-red-198')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -589,7 +590,8 @@ jobs:
           (github.head_ref == 'fix/http-flv-owner-drain-recovery' ||
            github.head_ref == 'diagnostics/whip-sfu-restart-windows' ||
            github.head_ref == 'diagnostics/dc-channel-close-red-195' ||
-           github.head_ref == 'fix/dc-channel-callback-leases-195')
+           github.head_ref == 'fix/dc-channel-callback-leases-195' ||
+           github.head_ref == 'diagnostics/sctp-status-close-red-198')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
