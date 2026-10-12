@@ -1108,6 +1108,12 @@ static void run_sctp_status_close_interleaving(int operation) {
     f->peer = endpoints[0].peer;
     f->operation = operation;
 
+    /* The Stream Reset RED case must retain a genuine channel on the live
+     * peer before a foreign close seals SCTP native admission. */
+    turbo_dc_channel_t *close_channel = operation == 2
+        ? turbo_dc_channel_create(f->peer, "close-after-native-gate", NULL) : NULL;
+    int channel_created = operation != 2 || close_channel != NULL;
+
     cmeta_thread_t query_thread = NULL;
     cmeta_thread_t closer_thread = NULL;
     int query_created = cmeta_thread_create(&query_thread,
@@ -1134,6 +1140,19 @@ static void run_sctp_status_close_interleaving(int operation) {
         held_count = (int)f->peer->sctp.native_borrows;
         socket_live = f->peer->sctp.socket != NULL;
         cmeta_mutex_unlock(&f->peer->operation_mutex);
+    }
+
+    /* An admitted native Socket is still live, but terminal admission is
+     * already sealed. Closing its channel must not attempt a fresh reset or
+     * manufacture SCTP_SEND errors. This is deterministic even on an
+     * unconnected association: no Socket memory is intentionally freed. */
+    int reset_skipped_cleanly = 0;
+    if (operation == 2 && close_channel) {
+        turbo_dc_error_code_t before = turbo_dc_peer_get_error(f->peer).code;
+        turbo_dc_channel_close(close_channel);
+        close_channel = NULL;
+        turbo_dc_error_code_t after = turbo_dc_peer_get_error(f->peer).code;
+        reset_skipped_cleanly = before == after;
     }
 
     cmeta_mutex_lock(&f->lock);
@@ -1165,6 +1184,14 @@ static void run_sctp_status_close_interleaving(int operation) {
     check_true(f->close_finished);
     check_null(f->peer->sctp.socket);
     check_equal(f->peer->sctp.native_borrows, 0u);
+    if (operation == 2) {
+        check_true(channel_created);
+        /* RED: old channel-close reads peer->sctp.socket without its owner
+         * lock, then diagnoses a terminal-gate borrow refusal as a native
+         * stream-reset failure. Terminal close is not a send error. */
+        check_true(reset_skipped_cleanly);
+        check_equal(turbo_dc_peer_get_state(f->peer), TURBO_DC_STATE_CLOSED);
+    }
     if (operation == 1) {
         cmeta_mutex_lock(&endpoints[0].mutex);
         unsigned connected_after_gate = endpoints[0].connected_events;
@@ -1191,6 +1218,10 @@ spec("SCTP native STATUS close admission") {
 
     it("rejects delayed SCTP COMM_UP after foreign close seals native admission") {
         run_sctp_status_close_interleaving(1);
+    }
+
+    it("skips Stream Reset cleanly after native close admission is sealed") {
+        run_sctp_status_close_interleaving(2);
     }
 }
 
