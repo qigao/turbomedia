@@ -337,6 +337,8 @@ jobs:
           }
       - name: Configure
         shell: pwsh
+        env:
+          TURBOMEDIA_CI_HEAD_REF: ${{ github.head_ref }}
         run: |
           $ErrorActionPreference = "Stop"
           foreach ($directory in @("build/ci-platform", "stage/ci-platform")) {
@@ -359,6 +361,20 @@ jobs:
           }
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
+          if ("${{ matrix.platform }}" -eq "Linux" -and
+              $env:TURBOMEDIA_CI_HEAD_REF -eq "diagnostics/whip-sfu-restart-windows") {
+            $cache = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform/CMakeCache.txt"
+            if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON$" -Quiet)) {
+              throw "Independent OpenSSL DTLS qualification is not enabled on the Linux Draft CI"
+            }
+            # A green default suite without this named CTest is not external
+            # protocol acceptance. Fail the job before the expensive build.
+            $names = & ctest --test-dir (Join-Path $env:GITHUB_WORKSPACE "build/ci-platform") -N -R "^turbo_media_test_dtls_openssl_interop$"
+            if ($LASTEXITCODE -ne 0 -or
+                -not ($names | Select-String -Pattern "Test #[0-9]+: turbo_media_test_dtls_openssl_interop" -Quiet)) {
+              throw "Independent DTLS CTest registration is missing"
+            }
+          }
 
       # Diagnostics only: the released macOS TinyTest archive currently
       # produces an undefined _ttest_active_config__ in test_speech. Do not
