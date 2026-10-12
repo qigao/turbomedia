@@ -265,9 +265,86 @@ static void test_explicit_cancel_and_bounds(void) {
     encoder_destroy(&encoder);
     cleanup(e,s,d,g);
 }
+
+/* M15c/MJPEG: EOF owns one NULL-packet flush, never an implicit retry.
+ * Real libavcodec remains the decoder; this does NOT qualify delayed codecs. */
+static void test_pending_packet_then_exactly_once_eof(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_ff_source *decoder=NULL;
+    encoder_fixture encoder={0};
+    tm_ff_stats_v1 stats=TM_FF_STATS_V1_INIT;
+    tm_ff_codec_activity_v1 activity=TM_FF_CODEC_ACTIVITY_V1_INIT;
+    uint8_t compressed[PACKET_MAX],pixels[LUMA_BYTES];
+    size_t encoded_bytes,frame_bytes=0u;
+    int ready=0;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=PACKET_MAX;
+    assert(tm_ff_create(&cfg,&decoder)==TM_FF_OK);
+    encoder_init(&encoder);
+    encoded_bytes=make_mjpeg(&encoder,143u,compressed,sizeof(compressed));
+    assert(tm_ff_submit_mjpeg(decoder,compressed,encoded_bytes)==TM_FF_OK);
+    assert(tm_ff_finish(decoder)==TM_FF_OK);
+    assert(tm_ff_finish(decoder)==TM_FF_OK);
+    assert(tm_ff_submit_mjpeg(decoder,compressed,encoded_bytes)==TM_FF_ESTATE);
+    assert(tm_ff_ready(decoder,&ready)==TM_FF_OK && ready);
+    /* The input packet is still pending: do NOT issue a NULL flush first. */
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&frame_bytes)
+           ==TM_EX_SOURCE_FRAME);
+    assert(frame_bytes==LUMA_BYTES);
+    assert(abs((int)pixels[0]-143)<=7);
+    assert(pixels[0]==pixels[LUMA_BYTES-1u]);
+    assert(tm_ff_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.packet_calls==1u && activity.flush_calls==0u &&
+           activity.in_call==0u);
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&frame_bytes)
+           ==TM_EX_SOURCE_EOS);
+    assert(frame_bytes==0u);
+    assert(tm_ff_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.packet_calls==1u && activity.flush_calls==1u &&
+           activity.in_call==0u);
+    /* Repeated EOS is stable; neither a second send(NULL) nor a new frame. */
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&frame_bytes)
+           ==TM_EX_SOURCE_EOS);
+    assert(frame_bytes==0u);
+    assert(tm_ff_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.flush_calls==1u);
+    assert(tm_ff_stats(decoder,&stats)==TM_FF_OK);
+    assert(stats.packets_submitted==1u && stats.frames_decoded==1u &&
+           stats.bytes_decoded==LUMA_BYTES && stats.pending_packet==0u &&
+           stats.draining==1u && stats.eof==1u && stats.ffmpeg_error==0);
+    assert(tm_ff_submit_mjpeg(decoder,compressed,encoded_bytes)==TM_FF_ESTATE);
+    encoder_destroy(&encoder);
+    assert(tm_ff_destroy(decoder)==TM_FF_OK);
+}
+static void test_empty_stream_null_flush_exactly_once(void) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_ff_source *decoder=NULL;
+    tm_ff_codec_activity_v1 activity=TM_FF_CODEC_ACTIVITY_V1_INIT;
+    tm_ff_stats_v1 stats=TM_FF_STATS_V1_INIT;
+    uint8_t pixels[LUMA_BYTES]={0};
+    size_t frame_bytes=25u;
+    cfg.width=WIDTH;cfg.height=HEIGHT;cfg.max_packet_bytes=PACKET_MAX;
+    assert(tm_ff_create(&cfg,&decoder)==TM_FF_OK);
+    assert(tm_ff_finish(decoder)==TM_FF_OK);
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&frame_bytes)
+           ==TM_EX_SOURCE_EOS);
+    assert(frame_bytes==0u);
+    assert(tm_ff_next_cpu_luma(decoder,pixels,sizeof(pixels),&frame_bytes)
+           ==TM_EX_SOURCE_EOS);
+    assert(frame_bytes==0u);
+    assert(tm_ff_codec_activity(decoder,&activity)==TM_FF_OK);
+    assert(activity.packet_calls==0u && activity.flush_calls==1u &&
+           !activity.in_call);
+    assert(tm_ff_stats(decoder,&stats)==TM_FF_OK);
+    assert(stats.packets_submitted==0u && stats.frames_decoded==0u &&
+           stats.draining && stats.eof && !stats.ffmpeg_error);
+    assert(tm_ff_destroy(decoder)==TM_FF_OK);
+}
+
 int main(void) {
     test_real_mjpeg_backpressure_flush();
     test_explicit_cancel_and_bounds();
+    test_pending_packet_then_exactly_once_eof();
+    test_empty_stream_null_flush_exactly_once();
     puts("Native FFmpeg MJPEG decode -> StreamGraph FrameStore/fanout: PASS");
     return 0;
 }
