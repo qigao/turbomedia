@@ -245,7 +245,7 @@ jobs:
           & cmake --build $build --parallel 2
           if ($LASTEXITCODE -ne 0) { throw "build failed for ${{ matrix.platform }}" }
           if ("${{ matrix.platform }}" -ne "Android") {
-            & ctest --test-dir $build --no-tests=error --output-on-failure -LE performance
+            & ctest --test-dir $build --no-tests=error --output-on-failure --timeout 120 -LE performance
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }
 
