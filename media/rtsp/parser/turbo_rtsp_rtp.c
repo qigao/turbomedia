@@ -352,6 +352,52 @@ int turbo_rtsp_mpeg_video_payload_parse(
     return 0;
 }
 
+/* A conservative one-RTP-packet/one-MPEG-picture bridge policy.
+ * RFC2250 B/E are slice, not picture, boundaries. Verify the actual
+ * MPEG ES picture start and fields before granting Decoder admission.
+ * This does not reassemble or recover missing RTP fragments. */
+int turbo_rtsp_mpeg_video_one_picture_validate(
+    const turbo_rtsp_mpeg_video_payload_t *video,
+    uint8_t rtp_marker) {
+    size_t i;
+    unsigned picture_count=0u,slice_count=0u,has_sequence=0u;
+    uint16_t temporal_reference=0u;
+    uint8_t picture_type=0u;
+    if(!video || !video->es || video->es_len<10u || rtp_marker!=1u ||
+       video->picture_type<1u || video->picture_type>3u ||
+       video->begins_slice!=1u || video->ends_slice!=1u)
+        return -1;
+    for(i=0u;i+3u<video->es_len;++i) {
+        uint8_t code;
+        if(video->es[i] || video->es[i+1u] ||
+           video->es[i+2u]!=1u)continue;
+        code=video->es[i+3u];
+        if(code==0xb3u) {
+            /* A new Sequence Header after the Picture Header is a
+             * different picture boundary, not supported here. */
+            if(picture_count)return -1;
+            has_sequence=1u;
+        } else if(code==0u) {
+            if(++picture_count!=1u || i+5u>=video->es_len)
+                return -1;
+            temporal_reference=(uint16_t)(((uint16_t)video->es[i+4u]<<2u) |
+                                            ((uint16_t)video->es[i+5u]>>6u));
+            picture_type=(uint8_t)((video->es[i+5u]>>3u)&7u);
+        } else if(code>=1u && code<=0xafu) {
+            /* A Slice before Picture Header means earlier data is
+             * missing even if the RTP B flag claimed it was complete. */
+            if(!picture_count)return -1;
+            ++slice_count;
+        }
+    }
+    if(picture_count!=1u || !slice_count ||
+       temporal_reference!=video->temporal_reference ||
+       picture_type!=video->picture_type ||
+       has_sequence!=video->sequence_header)
+        return -1;
+    return 0;
+}
+
 int turbo_rtsp_mpeg2_ts_payload_parse(
     const uint8_t *payload,
     size_t payload_len,
