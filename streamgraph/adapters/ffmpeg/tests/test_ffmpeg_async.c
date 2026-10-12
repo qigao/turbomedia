@@ -187,7 +187,7 @@ static void test_real_async_provider_and_credits(void) {
     tm_fs_store *s=store();
     tm_ex_owner *ex;
     codec_fixture encoder={0};
-    observed visits[3]={{0}};
+    observed visits[3]={0};
     tm_ffa_stats_v1 fstats=TM_FFA_STATS_V1_INIT;
     tm_ex_stats_v1 estats=TM_EX_STATS_V1_INIT;
     uint32_t i;
