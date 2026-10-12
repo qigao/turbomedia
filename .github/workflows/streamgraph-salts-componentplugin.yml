@@ -90,15 +90,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          args=()
-          if [ "$RUNNER_OS" = Windows ]; then
-            args+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
-          fi
-          cmake -S streamgraph/tests/installed_salts \
-            -B "$RUNNER_TEMP/real-componentplugin" -G Ninja "${args[@]}" \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE \
+          cmake_args=(
+            -S streamgraph/tests/installed_salts
+            -B "$RUNNER_TEMP/real-componentplugin"
+            -G Ninja
+            -DCMAKE_BUILD_TYPE=Debug
+            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE
             -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE
+          )
+          if [ "$RUNNER_OS" = Windows ]; then
+            cmake_args+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+          fi
+          cmake "${cmake_args[@]}"
           cmake --build "$RUNNER_TEMP/real-componentplugin"
           export PATH="$TM_SALTS_SDK_ROOT/bin:$TM_SG_SDK_ROOT/bin:$PATH"
           export LD_LIBRARY_PATH="$TM_SALTS_SDK_ROOT/lib:$TM_SG_SDK_ROOT/lib:${LD_LIBRARY_PATH:-}"
