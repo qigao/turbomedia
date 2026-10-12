@@ -236,15 +236,11 @@ static void test_real_async_provider_and_credits(void) {
         assert(pthread_join(thread,NULL)==0);
         assert(w.result==TM_FF_OK);
         if(i==1u) {
+            /* #1 retires first; #2 then leaves the Executor's pending
+             * FrameRef and is submitted exactly once after credits free. */
             for(j=0u;j<2u;++j)assert(tm_ex_pump_sink(ex,j)==TM_EX_OK);
             assert(tm_ex_pump_source(ex)==TM_EX_OK);
-        }
-        if(i==0u || i==2u) {
-            /* On packet #1 leave both branches full to force #2 backpressure.
-             * For #3, retire the previous #2 branch before taking current. */
-            if(i==2u) {
-                for(j=0u;j<2u;++j)assert(tm_ex_pump_sink(ex,j)==TM_EX_OK);
-            }
+            for(j=0u;j<2u;++j)assert(tm_ex_pump_sink(ex,j)==TM_EX_OK);
         }
     }
     for(i=0u;i<2u;++i)assert(tm_ex_pump_sink(ex,i)==TM_EX_OK);
