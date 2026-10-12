@@ -79,5 +79,6 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
-          cmake --build streamgraph/build/tsan --target streamgraph_handoff_test
-          ctest --test-dir streamgraph/build/tsan -R '^streamgraph_handoff$' --output-on-failure
+          cmake --build streamgraph/build/tsan --target streamgraph_handoff_test streamgraph_owner_dispatch_test
+          ctest --test-dir streamgraph/build/tsan -R '^(streamgraph_handoff|streamgraph_owner_dispatch)
+ --output-on-failure
