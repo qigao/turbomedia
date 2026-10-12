@@ -79,6 +79,9 @@ struct IndependentPair {
     int socket_fd[2] = {-1, -1};
     uint64_t clock_ms = START_MS;
     const char *stage = "initialize";
+    int last_ssl_error = 0, last_ssl_result = 0;
+    unsigned gm_out_packets = 0, openssl_in_packets = 0;
+    unsigned last_gm_record_type = 0, last_gm_handshake_type = 0;
 
     IndependentPair(bool server, uint16_t id, bool rsa)
         : gm_server(server), profile(id), rsa_identity(rsa) {}
@@ -101,10 +104,13 @@ struct IndependentPair {
     bool failure(const char *reason) const {
         unsigned long detail = ERR_peek_last_error();
         fprintf(stderr,
-                "[independent-dtls] provider=OpenSSL-%s role=%s profile=%u rsa=%d stage=%s reason=%s openssl=%s\n",
+                "[independent-dtls] provider=OpenSSL-%s role=%s profile=%u rsa=%d stage=%s reason=%s openssl=%s ssl_error=%d ssl_result=%d state=%s gm_ready=%d gm_out=%u peer_in=%u last_gm_record=%u last_gm_handshake=%u\n",
                 OpenSSL_version(OPENSSL_VERSION), gm_server ? "GmSSL-server" : "GmSSL-client",
                 static_cast<unsigned>(profile), rsa_identity ? 1 : 0, stage, reason,
-                detail ? ERR_reason_error_string(detail) : "none");
+                detail ? ERR_reason_error_string(detail) : "none", last_ssl_error, last_ssl_result,
+                ssl ? SSL_state_string_long(ssl) : "no-session",
+                turbo_gdtls_ready(gm), gm_out_packets, openssl_in_packets,
+                last_gm_record_type, last_gm_handshake_type);
         return false;
     }
 
@@ -170,6 +176,12 @@ struct IndependentPair {
 
     bool pump_gm_output() {
         for (tstr packet; (packet = turbo_gdtls_take_datagram(gm)) != nullptr;) {
+            ++gm_out_packets;
+            if (tstr_len(packet) >= 13) {
+                last_gm_record_type = static_cast<uint8_t>(packet[0]);
+                last_gm_handshake_type = last_gm_record_type == 22 && tstr_len(packet) > 13
+                    ? static_cast<uint8_t>(packet[13]) : 0;
+            }
             ssize_t sent = send(socket_fd[0], packet, tstr_len(packet), 0);
             bool ok = sent >= 0 && static_cast<size_t>(sent) == tstr_len(packet);
             tstr_free(packet);
@@ -187,6 +199,7 @@ struct IndependentPair {
                 return failure("UDP-receive");
             }
             if (n == 0) continue;
+            ++openssl_in_packets;
             int status = turbo_gdtls_receive(gm, packet, static_cast<size_t>(n), clock_ms);
             if (status != TURBO_GDTLS_OK) return failure("GmSSL-receive");
         }
@@ -208,8 +221,11 @@ struct IndependentPair {
                 if (result == 1) openssl_ready = true;
                 else {
                     int error = SSL_get_error(ssl, result);
-                    if (error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
+                    if (error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE) {
+                        last_ssl_error = error;
+                        last_ssl_result = result;
                         return failure("OpenSSL-handshake");
+                    }
                 }
             }
             if (!receive_gm()) return false;
