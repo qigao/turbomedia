@@ -370,7 +370,11 @@ static void run_stop_before_delayed_flush(void) {
     assert(tm_ex_stats(exec,&stats)==TM_EX_OK);
     assert(stats.stopped==1u);
     assert(tm_ex_destroy(exec)==TM_EX_OK);
-    for(i=0u;i<3u;++i)assert(visits[i].visits==0u);
+    /* Processor has visited both decoded frames already, but the two
+     * retaining Sinks saw neither: first is explicitly discarded and the
+     * second pending FrameRef is retired by stop without downstream effects. */
+    assert(visits[0].visits==2u);
+    assert(visits[1].visits==0u && visits[2].visits==0u);
     assert(tm_fs_seal(store)==TM_FS_OK);
     assert(tm_fs_destroy(store)==TM_FS_OK);
     tm_sg_program_destroy(graph);
