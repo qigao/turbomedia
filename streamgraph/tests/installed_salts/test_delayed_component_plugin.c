@@ -228,6 +228,48 @@ int main(int argc,char **argv) {
     assert(tm_test_provider_create_delayed(&service_n,&a)==-2);
     assert(tm_test_provider_create_delayed(&service_n,&third)==-4);
     portal=make_portal(101u);
+    /* Deterministic no-input admission: MPEG-2 may produce its first frame
+     * before a two-packet queue exhausts, so never assume a scheduler race
+     * will happen to emit EAGAIN during ordinary decoding. */
+    {
+        tm_pc_ticket_v1 ticket={0},taken={0};
+        tm_pc_result_v1 receipt=TM_PC_RESULT_V1_INIT;
+        tm_test_delayed_step_request request={0};
+        tm_test_delayed_take_request take={0};
+        step_worker worker={0};
+        pthread_t thread;
+        uint8_t pixels[LUMA];
+        size_t count=0u;
+        int64_t pts=INT64_MIN;
+        assert(tm_pc_begin(portal,11999u,&ticket)==TM_PC_OK);
+        request.size=sizeof(request);
+        request.instance_id=a.instance_id;
+        request.provider_generation=a.provider_generation;
+        request.portal=portal;request.ticket=ticket;request.wake_client=&wake;
+        worker.service=service_n;worker.request=request;
+        atomic_init(&worker.done,0u);
+        assert(pthread_create(&thread,NULL,run_step,&worker)==0);
+        assert(pthread_join(thread,NULL)==0);
+        assert(worker.rc==TM_FF_EAGAIN);
+        assert(atomic_load_explicit(&worker.done,memory_order_acquire)==1u);
+        assert(tm_test_provider_wake_status(&service_n)==SALTS_OK);
+        drain_wake(&wake);
+        assert(tm_pc_take(portal,&taken,&receipt)==TM_PC_OK);
+        assert(receipt.correlation==11999u &&
+               receipt.outcome==TM_PC_COMPLETED &&
+               receipt.provider_status==TM_FF_EAGAIN &&
+               receipt.completion_observed==1u);
+        take.size=sizeof(take);
+        take.instance_id=a.instance_id;
+        take.provider_generation=a.provider_generation;
+        take.ticket=ticket;
+        take.luma=pixels;take.capacity=sizeof(pixels);
+        take.out_bytes=&count;take.out_pts=&pts;
+        assert(tm_test_provider_take_delayed(&service_n,&take)==-2);
+        assert(count==0u && pts==INT64_MIN);
+        assert(tm_pc_settle(portal,taken)==TM_PC_OK);
+        ++saw_eagain;
+    }
     for(step=0u;step<FRAME_COUNT*6u;++step) {
         tm_pc_ticket_v1 ticket={0},taken={0};
         tm_pc_result_v1 receipt=TM_PC_RESULT_V1_INIT;
