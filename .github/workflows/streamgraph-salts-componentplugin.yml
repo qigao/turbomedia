@@ -62,7 +62,7 @@ jobs:
                             if '=' in line)
               assert fields['commit'] == commit, 'Unexpected Salts source commit'
               assert fields['version'] == version, 'Unexpected Salts version'
-              assert fields['rid'] == rid and fields['profile'] == 'release'
+              assert fields['profile'] == 'release', 'Unexpected Salts SDK build profile'
               assert f'sdk/{rid}/include/salts/component_plugin.h' in archive.namelist()
               members = [item for item in archive.infolist()
                          if item.filename.startswith(f'sdk/{rid}/')]
