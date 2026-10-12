@@ -315,6 +315,12 @@ static int accept_terminal(void *ctx,const tm_pc_result_v1 *terminal) {
         request.luma=o->decoded->luma;
         request.capacity=sizeof(o->decoded->luma);
         request.out_bytes=&o->decoded->luma_bytes;
+        {
+            tm_test_take_request stale=request;
+            stale.ticket.generation++;
+            assert(tm_test_provider_take_luma(&o->service,&stale)==-2);
+            assert(o->decoded->luma_bytes==0u);
+        }
         assert(tm_test_provider_take_luma(&o->service,&request)==TM_LUMA_BYTES);
         assert(o->decoded->luma_bytes==TM_LUMA_BYTES);
     }
@@ -538,6 +544,9 @@ int main(int argc,char **argv) {
     atomic_init(&work_n.returned,0u);
     start_worker(&thread_n,&work_n);
     wait_entered(&value_n);
+#ifdef TM_TEST_FFMPEG_DSO
+    assert(tm_test_provider_finish_decode(&value_n)==-4);
+#endif
 
     /* Real DSO N method is still on the worker's native call stack.
      * Close its admission by publishing N+1 without revoking its Scope. */
@@ -575,6 +584,9 @@ int main(int argc,char **argv) {
     atomic_init(&work_n1.returned,0u);
     start_worker(&thread_n1,&work_n1);
     wait_entered(&value_n1);
+#ifdef TM_TEST_FFMPEG_DSO
+    assert(tm_test_provider_finish_decode(&value_n1)==-4);
+#endif
     assert(tm_test_provider_release(&value_n1)==0);
     advance_after_provider_wake(&wake_client);
     join_worker(&thread_n1);

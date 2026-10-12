@@ -38,6 +38,10 @@ static int fixture_release(void *self) {
  * logic. The Module Scope keeps the DSO code and borrowed service valid. */
 static tm_ffa_decoder *fixture_decoder=NULL;
 static _Atomic int fixture_last_wake=SALTS_EINVAL;
+/* Includes the deterministic admission barrier BEFORE tm_ffa_run_mjpeg,
+ * not only its internal worker_active flag. A scope/decoder may not be
+ * retired while any CMeta DSO method still owns the native call stack. */
+static _Atomic unsigned fixture_call_active=0u;
 
 /* This callback executes on the REAL Provider DSO call stack AFTER
  * tm_ffa_run_mjpeg publishes its exact terminal to the Portal. N can be
@@ -57,11 +61,16 @@ static int fixture_run_decode(void *self,const tm_test_decode_request *job) {
        !job->portal || !job->ticket.incarnation ||
        !job->ticket.generation || !job->wake_client ||
        fixture_decoder!=NULL)return -1;
+    if(atomic_exchange_explicit(&fixture_call_active,1u,
+                                memory_order_acq_rel)!=0u)return -4;
     config.width=16u;
     config.height=16u;
     config.max_packet_bytes=65536u;
     rc=tm_ffa_create(&config,&fixture_decoder);
-    if(rc!=TM_FF_OK)return -2;
+    if(rc!=TM_FF_OK) {
+        atomic_store_explicit(&fixture_call_active,0u,memory_order_release);
+        return -2;
+    }
     /* Admission is now inside the actual Plugin DSO; this deterministic
      * gate allows the owner to publish N+1 and CANCEL the old Portal ticket
      * BEFORE the old codec call commits a completion. The late real FFmpeg
@@ -72,6 +81,7 @@ static int fixture_run_decode(void *self,const tm_test_decode_request *job) {
     while(!atomic_load_explicit(&permit_return,memory_order_acquire)) {}
     rc=tm_ffa_run_mjpeg(fixture_decoder,job->packet,job->packet_size,
                         job->portal,job->ticket,fixture_wake,job->wake_client);
+    atomic_store_explicit(&fixture_call_active,0u,memory_order_release);
     return rc==TM_FF_OK ? *(int *)self : -3;
 }
 
@@ -94,6 +104,8 @@ static int fixture_take_luma(void *self,const tm_test_take_request *request) {
 static int fixture_finish_decode(void *self) {
     tm_ff_status rc;
     if(!self || !fixture_decoder)return -1;
+    if(atomic_load_explicit(&fixture_call_active,memory_order_acquire))
+        return -4; /* cannot release a decoder during DSO callback tail */
     rc=tm_ffa_owner_cancel(fixture_decoder);
     if(rc!=TM_FF_OK)return -2;
     rc=tm_ffa_destroy(fixture_decoder);
