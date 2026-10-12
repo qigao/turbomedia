@@ -1002,6 +1002,7 @@ typedef struct {
     cmeta_mutex_t lock;
     cmeta_cond_t cond;
     turbo_dc_peer_t *peer;
+    int operation;
     int borrowed;
     int allow_query;
     int query_authorized;
@@ -1012,6 +1013,19 @@ typedef struct {
 } sctp_status_close_fixture_t;
 
 static sctp_status_close_fixture_t status_close_fixture;
+
+/* Match the address used by the production association bind/connect path. */
+static struct sockaddr_conn native_close_fixture_address(turbo_dc_peer_t *peer) {
+    struct sockaddr_conn address;
+    memset(&address, 0, sizeof(address));
+    address.sconn_family = AF_CONN;
+    address.sconn_port = htons(SCTP_ASSOCIATION_PORT);
+    address.sconn_addr = peer;
+#ifdef HAVE_SCONN_LEN
+    address.sconn_len = sizeof(address);
+#endif
+    return address;
+}
 
 static void status_borrow_worker(void *arg) {
     sctp_status_close_fixture_t *f = arg;
@@ -1031,11 +1045,44 @@ static void status_borrow_worker(void *arg) {
      * have freed the socket already. Do not intentionally dereference an
      * invalid handle merely to prove a missing close-admission barrier. */
     if (socket && authorized) {
-        struct sctp_status status = {0};
-        socklen_t len = sizeof(status);
-        /* A real native query must remain safe while close is admitted.
-         * Unconnected test sockets may return a normal SCTP error. */
-        (void)usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS, &status, &len);
+        /* All cases deliberately use the same admitted native Socket after
+         * a foreign close requested terminal admission. An unconnected test
+         * association may return a legitimate SCTP error; the lifetime and
+         * close ordering, not SCTP link readiness, are the conformance gate. */
+        if (f->operation == 0) {
+            struct sctp_status status = {0};
+            socklen_t len = sizeof(status);
+            (void)usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS,
+                                     &status, &len);
+        } else if (f->operation == 1) {
+            uint8_t payload = 0x5a;
+            struct sctp_sndinfo info = {0};
+            info.snd_sid = 0;
+            info.snd_ppid = htonl(SCTP_PPID_BINARY);
+            (void)usrsctp_sendv(socket, &payload, sizeof(payload), NULL, 0,
+                                &info, sizeof(info), SCTP_SENDV_SNDINFO, 0);
+        } else if (f->operation == 2) {
+            _Alignas(struct sctp_reset_streams)
+            uint8_t bytes[sizeof(struct sctp_reset_streams) +
+                          sizeof(uint16_t)] = {0};
+            struct sctp_reset_streams *reset =
+                (struct sctp_reset_streams *)bytes;
+            reset->srs_assoc_id = SCTP_ALL_ASSOC;
+            reset->srs_flags = SCTP_STREAM_RESET_OUTGOING;
+            reset->srs_number_streams = 1;
+            reset->srs_stream_list[0] = 0;
+            (void)usrsctp_setsockopt(socket, IPPROTO_SCTP, SCTP_RESET_STREAMS,
+                                     bytes, sizeof(bytes));
+        } else if (f->operation == 3 || f->operation == 4) {
+            struct sockaddr_conn address = native_close_fixture_address(f->peer);
+            if (f->operation == 3) {
+                (void)usrsctp_bind(socket, (struct sockaddr *)&address,
+                                   sizeof(address));
+            } else {
+                (void)usrsctp_connect(socket, (struct sockaddr *)&address,
+                                      sizeof(address));
+            }
+        }
     }
     if (socket) sctp_native_return(f->peer);
     if (acquired) dc_peer_release(f->peer);
@@ -1076,12 +1123,31 @@ static int wait_status_fixture_flag(int *flag) {
     return found;
 }
 
-static void run_sctp_status_close_interleaving(void) {
+static void run_sctp_native_close_interleaving(int operation) {
     sctp_status_close_fixture_t *f = &status_close_fixture;
     memset(f, 0, sizeof(*f));
     cmeta_mutex_init(&f->lock);
     cmeta_cond_init(&f->cond);
     f->peer = endpoints[0].peer;
+    f->operation = operation;
+
+    /* connect requires a previously bound native socket. Establish only
+     * that prerequisite while the peer is live; the connect operation itself
+     * runs under the held borrow AFTER foreign close closes admission. */
+    if (operation == 4) {
+        struct socket *socket = sctp_native_borrow(f->peer);
+        struct sockaddr_conn address = native_close_fixture_address(f->peer);
+        int prepared = socket != NULL &&
+            usrsctp_bind(socket, (struct sockaddr *)&address,
+                         sizeof(address)) == 0;
+        if (socket) sctp_native_return(f->peer);
+        if (!prepared) {
+            check_true(prepared);
+            cmeta_cond_destroy(&f->cond);
+            cmeta_mutex_destroy(&f->lock);
+            return;
+        }
+    }
 
     cmeta_thread_t query_thread = NULL;
     cmeta_thread_t closer_thread = NULL;
@@ -1111,6 +1177,12 @@ static void run_sctp_status_close_interleaving(void) {
         cmeta_mutex_unlock(&f->peer->operation_mutex);
     }
 
+    /* Even while an older operation still owns the native Socket, the
+     * terminal gate must reject new admission from an unrelated thread. */
+    struct socket *late_socket = gate_observed ? sctp_native_borrow(f->peer) : NULL;
+    int late_borrow_rejected = gate_observed && late_socket == NULL;
+    if (late_socket) sctp_native_return(f->peer);
+
     cmeta_mutex_lock(&f->lock);
     int prematurely_closed = f->close_finished;
     f->query_authorized = gate_observed && !prematurely_closed;
@@ -1134,23 +1206,48 @@ static void run_sctp_status_close_interleaving(void) {
     check_true(gate_observed);
     check_equal(held_count, 1);
     check_true(socket_live);
+    check_true(late_borrow_rejected);
     check_false(prematurely_closed);
     check_true(f->status_attempted);
     check_true(f->worker_completed);
     check_true(f->close_finished);
-    check_null(f->peer->sctp.socket);
-    check_equal(f->peer->sctp.native_borrows, 0u);
+    cmeta_mutex_lock(&f->peer->operation_mutex);
+    int physically_closed = f->peer->sctp.native_closed;
+    int close_in_flight = f->peer->sctp.native_closing;
+    unsigned remaining_borrows = f->peer->sctp.native_borrows;
+    struct socket *remaining_socket = f->peer->sctp.socket;
+    cmeta_mutex_unlock(&f->peer->operation_mutex);
+    check_true(physically_closed);
+    check_false(close_in_flight);
+    check_null(remaining_socket);
+    check_equal(remaining_borrows, 0u);
 
     cmeta_cond_destroy(&f->cond);
     cmeta_mutex_destroy(&f->lock);
 }
 
-spec("SCTP native STATUS close admission") {
+spec("SCTP native API close admission") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
 
     it("retains a STATUS socket borrow until concurrent peer close drains it") {
-        run_sctp_status_close_interleaving();
+        run_sctp_native_close_interleaving(0);
+    }
+
+    it("retains a native sendv borrow across foreign close without UAF") {
+        run_sctp_native_close_interleaving(1);
+    }
+
+    it("retains a native stream-reset borrow across foreign close without UAF") {
+        run_sctp_native_close_interleaving(2);
+    }
+
+    it("retains a native bind borrow across foreign close without UAF") {
+        run_sctp_native_close_interleaving(3);
+    }
+
+    it("retains a native connect borrow across foreign close without UAF") {
+        run_sctp_native_close_interleaving(4);
     }
 }
 
