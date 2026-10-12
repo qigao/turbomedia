@@ -1002,6 +1002,8 @@ typedef struct {
     cmeta_mutex_t lock;
     cmeta_cond_t cond;
     turbo_dc_peer_t *peer;
+    int operation;
+    int notification_dispatched;
     int borrowed;
     int allow_query;
     int query_authorized;
@@ -1031,11 +1033,33 @@ static void status_borrow_worker(void *arg) {
      * have freed the socket already. Do not intentionally dereference an
      * invalid handle merely to prove a missing close-admission barrier. */
     if (socket && authorized) {
-        struct sctp_status status = {0};
-        socklen_t len = sizeof(status);
-        /* A real native query must remain safe while close is admitted.
-         * Unconnected test sockets may return a normal SCTP error. */
-        (void)usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS, &status, &len);
+        if (f->operation == 1) {
+            /* A COMM_UP notification is invoked synchronously from within
+             * an already-admitted native conninput operation. Deliver the
+             * real notification handler after foreign close has published
+             * the terminal native gate, but before its borrower exits. The
+             * user callback cannot create a fresh native borrow here. */
+            struct sctp_assoc_change *notification =
+                calloc(1, sizeof(*notification));
+            if (notification) {
+                union sctp_sockstore address = {0};
+                struct sctp_rcvinfo rcv = {0};
+                notification->sac_type = SCTP_ASSOC_CHANGE;
+                notification->sac_length = sizeof(*notification);
+                notification->sac_state = SCTP_COMM_UP;
+                (void)sctp_inbound_packet_cb(socket, address, notification,
+                                             sizeof(*notification), rcv,
+                                             MSG_NOTIFICATION, f->peer);
+                f->notification_dispatched = 1;
+            }
+        } else {
+            struct sctp_status status = {0};
+            socklen_t len = sizeof(status);
+            /* An unconnected native Socket may report a normal SCTP error;
+             * only the borrow/close ordering is the contract. */
+            (void)usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS,
+                                     &status, &len);
+        }
     }
     if (socket) sctp_native_return(f->peer);
     if (acquired) dc_peer_release(f->peer);
@@ -1076,12 +1100,13 @@ static int wait_status_fixture_flag(int *flag) {
     return found;
 }
 
-static void run_sctp_status_close_interleaving(void) {
+static void run_sctp_status_close_interleaving(int operation) {
     sctp_status_close_fixture_t *f = &status_close_fixture;
     memset(f, 0, sizeof(*f));
     cmeta_mutex_init(&f->lock);
     cmeta_cond_init(&f->cond);
     f->peer = endpoints[0].peer;
+    f->operation = operation;
 
     cmeta_thread_t query_thread = NULL;
     cmeta_thread_t closer_thread = NULL;
@@ -1140,6 +1165,17 @@ static void run_sctp_status_close_interleaving(void) {
     check_true(f->close_finished);
     check_null(f->peer->sctp.socket);
     check_equal(f->peer->sctp.native_borrows, 0u);
+    if (operation == 1) {
+        cmeta_mutex_lock(&endpoints[0].mutex);
+        unsigned connected_after_gate = endpoints[0].connected_events;
+        cmeta_mutex_unlock(&endpoints[0].mutex);
+        check_true(f->notification_dispatched);
+        /* A delayed COMM_UP must not resurrect CONNECTED after the terminal
+         * native admission gate. This fails RED if the association callback
+         * ignores native_close_requested. */
+        check_equal(connected_after_gate, 0u);
+        check_equal(turbo_dc_peer_get_state(f->peer), TURBO_DC_STATE_CLOSED);
+    }
 
     cmeta_cond_destroy(&f->cond);
     cmeta_mutex_destroy(&f->lock);
@@ -1150,7 +1186,11 @@ spec("SCTP native STATUS close admission") {
     after_each() { cleanup_packet_endpoints(); }
 
     it("retains a STATUS socket borrow until concurrent peer close drains it") {
-        run_sctp_status_close_interleaving();
+        run_sctp_status_close_interleaving(0);
+    }
+
+    it("rejects delayed SCTP COMM_UP after foreign close seals native admission") {
+        run_sctp_status_close_interleaving(1);
     }
 }
 
