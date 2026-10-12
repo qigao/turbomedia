@@ -9,6 +9,11 @@ struct tm_od_owner {
     tm_fs_store *store;
     tm_od_frame_visit_fn visitor;
     void *visitor_context;
+    tm_pc_portal *completion_portal;
+    tm_od_terminal_emit_fn terminal_emit;
+    void *terminal_context;
+    tm_pc_ticket_v1 pending_completion;
+    tm_pc_result_v1 pending_terminal;
     uint32_t in_step;
     uint32_t source_ended;
     uint32_t owner_failed;
@@ -151,14 +156,96 @@ tm_od_status tm_od_step(tm_od_owner *o, tm_od_receipt_v1 *receipt) {
     o->in_step=0u;
     return TM_OD_OK;
 }
+tm_od_status tm_od_bind_completion(tm_od_owner *o, tm_pc_portal *portal,
+                                   tm_od_terminal_emit_fn emit, void *context) {
+    if (!o || !portal || !emit) return TM_OD_EINVAL;
+    if (o->in_step) return TM_OD_EBUSY;
+    if (o->completion_portal) return TM_OD_EBUSY;
+    o->completion_portal=portal;
+    o->terminal_emit=emit;
+    o->terminal_context=context;
+    return TM_OD_OK;
+}
+
+tm_od_status tm_od_pending_completion(tm_od_owner *o, tm_pc_result_v1 *result) {
+    if (!o || !result) return TM_OD_EINVAL;
+    if (result->version!=TM_PC_ABI_V1) return TM_OD_EVERSION;
+    if (result->size!=sizeof(*result)) return TM_OD_EINVAL;
+    if (o->in_step) return TM_OD_EBUSY;
+    if (!o->pending_completion.incarnation) return TM_OD_EMPTY;
+    *result=o->pending_terminal;
+    return TM_OD_OK;
+}
+
+tm_od_status tm_od_settle_pending_completion(tm_od_owner *o) {
+    if (!o) return TM_OD_EINVAL;
+    if (o->in_step) return TM_OD_EBUSY;
+    if (!o->pending_completion.incarnation) return TM_OD_EMPTY;
+    if (tm_pc_settle(o->completion_portal,o->pending_completion)!=TM_PC_OK)
+        return TM_OD_EPORTAL;
+    memset(&o->pending_completion,0,sizeof(o->pending_completion));
+    memset(&o->pending_terminal,0,sizeof(o->pending_terminal));
+    return TM_OD_OK;
+}
+
+tm_od_status tm_od_step_completion(tm_od_owner *o, tm_pc_result_v1 *result) {
+    tm_pc_ticket_v1 ticket={0};
+    tm_pc_result_v1 terminal=TM_PC_RESULT_V1_INIT;
+    tm_pc_status rc;
+    int emitted;
+    if (!o || !result) return TM_OD_EINVAL;
+    if (result->version!=TM_PC_ABI_V1) return TM_OD_EVERSION;
+    if (result->size!=sizeof(*result)) return TM_OD_EINVAL;
+    if (!o->completion_portal || !o->terminal_emit) return TM_OD_EINVAL;
+    if (o->in_step || o->pending_completion.incarnation)
+        return TM_OD_EBUSY;
+    o->in_step=1u;
+    rc=tm_pc_take(o->completion_portal,&ticket,&terminal);
+    if (rc==TM_PC_EBUSY) {
+        o->in_step=0u;
+        return TM_OD_EMPTY;
+    }
+    if (rc!=TM_PC_OK) {
+        o->in_step=0u;
+        return TM_OD_EPORTAL;
+    }
+    /* Own a TAKEN portal credit before invoking foreign code. */
+    o->pending_completion=ticket;
+    o->pending_terminal=terminal;
+    *result=terminal;
+    emitted=o->terminal_emit(o->terminal_context,&terminal);
+    if (emitted!=0) {
+        /* The downstream outcome is ambiguous, so do not auto-reemit or
+         * release credit; an explicit Host reconciliation is required. */
+        o->in_step=0u;
+        return TM_OD_EDELIVERY;
+    }
+    rc=tm_pc_settle(o->completion_portal,ticket);
+    if (rc!=TM_PC_OK) {
+        o->in_step=0u;
+        return TM_OD_EPORTAL;
+    }
+    memset(&o->pending_completion,0,sizeof(o->pending_completion));
+    memset(&o->pending_terminal,0,sizeof(o->pending_terminal));
+    o->in_step=0u;
+    return TM_OD_OK;
+}
+
 tm_od_status tm_od_destroy(tm_od_owner *o) {
     tm_ho_snapshot_v1 snapshot=TM_HO_SNAPSHOT_V1_INIT;
     if (!o) return TM_OD_EINVAL;
-    if (o->in_step) return TM_OD_EBUSY;
+    if (o->in_step || o->pending_completion.incarnation) return TM_OD_EBUSY;
     if (tm_ho_snapshot(o->inbox,&snapshot)!=TM_HO_OK)
         return TM_OD_EQUEUE;
     if (!snapshot.sealed || !snapshot.drained)
         return TM_OD_EBUSY;
+    if (o->completion_portal) {
+        tm_pc_snapshot_v1 completions=TM_PC_SNAPSHOT_V1_INIT;
+        if (tm_pc_snapshot(o->completion_portal,&completions)!=TM_PC_OK)
+            return TM_OD_EPORTAL;
+        if (!completions.sealed || !completions.drained)
+            return TM_OD_EBUSY;
+    }
     /* Host must independently join producers, stop callbacks and drain
      * the borrowed Executor before destroying any of these owners. */
     free(o);
