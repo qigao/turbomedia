@@ -1,0 +1,163 @@
+name: M15d RTSP Codec Sanitizers
+
+'on':
+  pull_request:
+    paths:
+      - '.github/workflows/streamgraph-rtsp-sanitizers.yml'
+      - 'tests/**'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'streamgraph/**'
+      - 'CMakeLists.txt'
+      - 'tests/CMakeLists.txt'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+
+concurrency:
+  group: m15d-rtsp-sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  first-party-rtsp:
+    name: RTSP NativeIO + Codec + ComponentPlugin (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [asan-ubsan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Prepare native desktop tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool ccache \
+            libpipewire-0.3-dev libx11-dev libxext-dev
+
+      - name: Restore exact released platform SDKs
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid linux-x64
+
+      - name: Restore binary-only media dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg"
+          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+          & $vcpkg install "--x-manifest-root=." "--x-install-root=$installed" "--triplet=x64-linux" --only-binarycaching
+          if ($LASTEXITCODE -ne 0) { throw "cache-only vcpkg restore failed" }
+
+      - name: Build real first-party RTSP and Provider DSOs with Sanitizer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/rtsp-san-${{ matrix.mode }}"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          $san = if ("${{ matrix.mode }}" -eq "asan-ubsan") { "address,undefined" } else { "thread" }
+          $flags = "-O1 -g -fsanitize=$san -fno-omit-frame-pointer"
+          $args = @(
+            "-S", ".", "-B", $build, "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Debug",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
+            "-DVCPKG_TARGET_TRIPLET=x64-linux",
+            "-DVCPKG_MANIFEST_MODE=OFF",
+            "-DVCPKG_INSTALLED_DIR=$installed",
+            "-DCMAKE_C_FLAGS=$flags",
+            "-DCMAKE_CXX_FLAGS=$flags",
+            "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=$san",
+            "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=$san",
+            "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+            "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          )
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw "sanitizer configure failed" }
+          & cmake --build $build --target turbo_media_test_rtsp --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw "RTSP+Provider sanitizer build failed" }
+
+      - name: Verify first-party compile commands actually contain Sanitizer
+        shell: bash
+        env:
+          SAN_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          path = f"build/rtsp-san-{os.environ['SAN_MODE']}/compile_commands.json"
+          with open(path, encoding="utf-8") as f:
+              entries = json.load(f)
+          sanitizer = "-fsanitize=" + ("address,undefined" if os.environ["SAN_MODE"] == "asan-ubsan" else "thread")
+          required = (
+              "/tests/test_rtsp.c",
+              "/media/rtsp/turbo_rtsp.c",
+              "/network/transport_cnet.c",
+              "/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c",
+              "/streamgraph/tests/installed_salts/real_component_provider.c",
+          )
+          for suffix in required:
+              matches = [entry for entry in entries
+                         if entry["file"].replace("\\", "/").endswith(suffix)]
+              if not matches:
+                  raise SystemExit(f"Required RTSP/Codec/DSO first-party unit was NOT compiled: {suffix}")
+              for entry in matches:
+                  command = entry.get("command", " ".join(entry.get("arguments", ())))
+                  if sanitizer not in command or "-fno-omit-frame-pointer" not in command:
+                      raise SystemExit(f"Missing real {sanitizer} instrumentation: {suffix}")
+              print(f"Instrumented: {suffix} ({len(matches)} compile unit(s))")
+          PY
+          echo "First-party source instrumentation checked: ${{ matrix.mode }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Released Salts and external FFmpeg DSOs are NOT fully source-instrumented by this job." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Execute actual RTSP NativeIO + delayed Codec + DSO runtime gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/rtsp-san-${{ matrix.mode }}"
+          $runtimeDirs = @()
+          foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
+            $root = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("bin", "lib")) {
+              $candidate = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
+            }
+          }
+          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/x64-linux"
+          foreach ($leaf in @("bin", "lib")) {
+            $candidate = Join-Path $vcpkgRuntime $leaf
+            if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) {
+            $runtimeDirs += $env:LD_LIBRARY_PATH
+          }
+          $env:LD_LIBRARY_PATH = $runtimeDirs -join [IO.Path]::PathSeparator
+          if ("${{ matrix.mode }}" -eq "asan-ubsan") {
+            $env:ASAN_OPTIONS = "detect_leaks=1:halt_on_error=1:abort_on_error=1"
+            $env:UBSAN_OPTIONS = "halt_on_error=1:print_stacktrace=1"
+          } else {
+            $env:TSAN_OPTIONS = "halt_on_error=1"
+          }
+          & ctest --test-dir $build -R '^turbo_media_test_rtsp$' --no-tests=error --output-on-failure --timeout 120
+          if ($LASTEXITCODE -ne 0) { throw "RTSP/DSO first-party Sanitizer conformance failed" }
