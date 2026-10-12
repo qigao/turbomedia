@@ -650,6 +650,75 @@ struct IndependentPair {
         return true;
     }
 
+    bool qualify_authenticated_close_notify() {
+        /* The OpenSSL peer generates a genuine encrypted DTLS close_notify.
+         * An unauthenticated AEAD-tag mutation must not cause local shutdown,
+         * leak plaintext, revoke exporter access or consume replay state.
+         * The original alert then closes the session exactly once and
+         * immediately revokes the GmSSL private SRTP exporter.
+         */
+        stage = "independent-authenticated-close";
+        const int shutdown_result = SSL_shutdown(ssl);
+        if (shutdown_result != 0 && shutdown_result != 1)
+            return failure("OpenSSL-close-notify-send");
+        uint8_t authentic[256], damaged[256];
+        ssize_t received = recv(socket_fd[0], authentic, sizeof(authentic), 0);
+        if (received < 13 + 24 + 2)
+            return failure("missing-OpenSSL-encrypted-close-notify");
+        const size_t size = static_cast<size_t>(received);
+        const size_t body_size = (size_t(authentic[11]) << 8) | authentic[12];
+        if (authentic[0] != 21 || authentic[3] != 0 ||
+            authentic[4] != 1 || body_size + 13 != size)
+            return failure("OpenSSL-close-notify-was-not-one-encrypted-alert");
+        memcpy(damaged, authentic, size);
+        damaged[size - 1] ^= 0x40;  // One invalid bit in the GCM tag.
+        if (turbo_gdtls_receive(gm, damaged, size, clock_ms) != TURBO_GDTLS_OK ||
+            !turbo_gdtls_ready(gm) ||
+            turbo_gdtls_srtp_profile(gm) != profile)
+            return failure("forged-close-notify-changed-DTLS-readiness");
+        tstr leaked = turbo_gdtls_take_plaintext(gm);
+        if (leaked) {
+            cmeta_crypto_clear(leaked, tstr_len(leaked));
+            tstr_free(leaked);
+            return failure("forged-close-notify-published-plaintext");
+        }
+        if (!qualify_exporter())
+            return failure("forged-close-notify-revoked-valid-exporter");
+        if (turbo_gdtls_receive(gm, authentic, size, clock_ms) != TURBO_GDTLS_CLOSED)
+            return failure("authenticated-close-notify-was-not-terminal");
+
+        uint8_t exporter[88] = {};
+        size_t exporter_size = sizeof(exporter);
+        const bool revoked =
+            !turbo_gdtls_ready(gm) &&
+            turbo_gdtls_srtp_profile(gm) == 0 &&
+            turbo_gdtls_export_srtp(gm, exporter, sizeof(exporter),
+                                    &exporter_size) == TURBO_GDTLS_AUTH &&
+            exporter_size == 0 &&
+            turbo_gdtls_write(gm, "x", 1) == TURBO_GDTLS_CLOSED &&
+            turbo_gdtls_take_plaintext(gm) == nullptr;
+        OPENSSL_cleanse(exporter, sizeof(exporter));
+        if (!revoked) return failure("close-notify-did-not-revoke-secrets");
+
+        /* Only an authenticated alert may solicit an encrypted close
+         * response; local output is owned and securely released by the test.
+         */
+        tstr response = turbo_gdtls_take_datagram(gm);
+        const bool response_ok = response && tstr_len(response) >= 13 + 24 + 2 &&
+            static_cast<uint8_t>(response[0]) == 21 &&
+            static_cast<uint8_t>(response[3]) == 0 &&
+            static_cast<uint8_t>(response[4]) == 1 &&
+            turbo_gdtls_take_datagram(gm) == nullptr;
+        if (response) {
+            cmeta_crypto_clear(response, tstr_len(response));
+            tstr_free(response);
+        }
+        if (!response_ok) return failure("missing-or-duplicate-close-response");
+        if (turbo_gdtls_receive(gm, authentic, size, clock_ms) != TURBO_GDTLS_CLOSED)
+            return failure("closed-association-accepted-replayed-alert");
+        return true;
+    }
+
     bool exchange_application() {
         stage = "application-datagrams";
         static constexpr char from_openssl[] = "from OpenSSL";
@@ -726,6 +795,22 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                 check_true(fixture.qualify_exporter());
                 check_true(fixture.qualify_replay_window_boundary());
                 check_true(fixture.qualify_exporter());
+            }
+        }
+    }
+    /* Independent authenticated close admission and exporter revocation.
+     * The production engine must not treat an unauthenticated DTLS alert as
+     * a local close, or preserve SRTP keys after authenticated close_notify.
+     */
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        for (int server = 0; server < 2; ++server) {
+            it("GmSSL server=%d RSA=%d authenticates independent OpenSSL close_notify",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0);
+                check_true(fixture.init());
+                check_true(fixture.handshake());
+                check_true(fixture.qualify_exporter());
+                check_true(fixture.qualify_authenticated_close_notify());
             }
         }
     }
