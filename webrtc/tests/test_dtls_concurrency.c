@@ -619,6 +619,60 @@ static void open_packet_channel(void) {
     check_true(turbo_dc_channel_is_open(endpoints[1].channel));
 }
 
+/* Issue #208: usrsctp_init_nothreads requires a caller to advance native
+ * SCTP elapsed time explicitly. Do not use sleep as a thread ordering oracle:
+ * this fixture asserts functional retransmission liveness when an actual
+ * SCTP DATA packet is intentionally withheld from the receiver. */
+spec("SCTP manual timer elapsed progression") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("advances the native retransmission clock without replaying application data") {
+        /* Make a future association's initial RTO short but nonzero so this
+         * liveness test is bounded without changing production deadlines.
+         * SCTP_RTOINFO is applied before association creation. */
+        struct socket *socket = sctp_native_borrow(endpoints[0].peer);
+        check_not_null(socket);
+        struct sctp_rtoinfo rto = {0};
+        rto.srto_assoc_id = SCTP_FUTURE_ASSOC;
+        rto.srto_initial = 250;
+        rto.srto_min = 200;
+        rto.srto_max = 1000;
+        int configured = socket
+            ? usrsctp_setsockopt(socket, IPPROTO_SCTP, SCTP_RTOINFO,
+                                 &rto, sizeof(rto)) : -1;
+        if (socket) sctp_native_return(endpoints[0].peer);
+        check_equal(configured, 0);
+
+        open_packet_channel();
+        const uint8_t payload = 0xa7;
+        cmeta_mutex_lock(&endpoints[0].mutex);
+        unsigned before = endpoints[0].packets;
+        cmeta_mutex_unlock(&endpoints[0].mutex);
+        check_equal(turbo_dc_channel_send(endpoints[0].channel,
+                                         &payload, sizeof(payload), 1), 0);
+        cmeta_mutex_lock(&endpoints[0].mutex);
+        unsigned first_send = endpoints[0].packets;
+        cmeta_mutex_unlock(&endpoints[0].mutex);
+        check_true(first_send > before);
+
+        /* Do not deliver the DATA packet or call send again. Only a native
+         * SCTP timer can produce another outbound packet for this peer.
+         * The 10 ms sleep provides real elapsed time, never sequencing of
+         * concurrent operations. CI must see retransmission by 4 seconds. */
+        uint64_t deadline = cmeta_monotonic_ms() + 4000u;
+        unsigned later = first_send;
+        while (later <= first_send && cmeta_monotonic_ms() < deadline) {
+            turbo_dc_handle_timers();
+            cmeta_mutex_lock(&endpoints[0].mutex);
+            later = endpoints[0].packets;
+            cmeta_mutex_unlock(&endpoints[0].mutex);
+            if (later <= first_send) cmeta_sleep_ms(10);
+        }
+        check_true(later > first_send);
+    }
+}
+
 static void expect_packet_messages(unsigned count, const void *payload, size_t size, int binary) {
     uint64_t deadline = cmeta_monotonic_ms() + 5000;
     int received;
