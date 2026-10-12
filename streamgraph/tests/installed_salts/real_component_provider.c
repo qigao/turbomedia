@@ -43,6 +43,65 @@ static _Atomic int fixture_last_wake=SALTS_EINVAL;
  * retired while any CMeta DSO method still owns the native call stack. */
 static _Atomic unsigned fixture_call_active=0u;
 
+/* M15a bounded independent instance factory, in addition to the original
+ * M14 one-request fixture. Each slot owns an actual tm_ffa_decoder.
+ * Host must destroy all slots under the original live Generation Scope. */
+enum { TM_INSTANCE_CAPACITY=2 };
+typedef struct tm_fixture_instance {
+    uint64_t id;
+    tm_ffa_decoder *decoder;
+} tm_fixture_instance;
+static tm_fixture_instance fixture_instances[TM_INSTANCE_CAPACITY];
+static atomic_flag fixture_instances_lock=ATOMIC_FLAG_INIT;
+static void fixture_instances_enter(void) {
+    while(atomic_flag_test_and_set_explicit(&fixture_instances_lock,
+                                            memory_order_acquire)) {}
+}
+static void fixture_instances_leave(void) {
+    atomic_flag_clear_explicit(&fixture_instances_lock,memory_order_release);
+}
+static int fixture_instance_create(void *self,const tm_test_instance_request *req) {
+    tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
+    tm_ffa_decoder *decoder=NULL;
+    unsigned i,free_slot=TM_INSTANCE_CAPACITY;
+    int result=-4;
+    if(!self || !req || req->size!=sizeof(*req) || !req->instance_id ||
+       req->provider_generation!=(uint64_t)*(int *)self)return -1;
+    fixture_instances_enter();
+    for(i=0u;i<TM_INSTANCE_CAPACITY;++i) {
+        if(fixture_instances[i].id==req->instance_id) { result=-2;goto done; }
+        if(!fixture_instances[i].id && free_slot==TM_INSTANCE_CAPACITY)free_slot=i;
+    }
+    if(free_slot==TM_INSTANCE_CAPACITY)goto done;
+    cfg.width=16u;cfg.height=16u;cfg.max_packet_bytes=65536u;
+    if(tm_ffa_create(&cfg,&decoder)!=TM_FF_OK) { result=-3;goto done; }
+    fixture_instances[free_slot].decoder=decoder;
+    fixture_instances[free_slot].id=req->instance_id;
+    result=0;
+done:
+    fixture_instances_leave();
+    return result;
+}
+static int fixture_instance_destroy(void *self,const tm_test_instance_request *req) {
+    unsigned i;
+    int result=-2;
+    if(!self || !req || req->size!=sizeof(*req) || !req->instance_id ||
+       req->provider_generation!=(uint64_t)*(int *)self)return -1;
+    fixture_instances_enter();
+    for(i=0u;i<TM_INSTANCE_CAPACITY;++i) {
+        if(fixture_instances[i].id!=req->instance_id)continue;
+        /* destroy is exclusive after owner-controlled join and settlement.
+         * No auto-retry; an active Codec retains the slot and DSO Scope. */
+        if(tm_ffa_destroy(fixture_instances[i].decoder)!=TM_FF_OK) {
+            result=-4;break;
+        }
+        fixture_instances[i].decoder=NULL;
+        fixture_instances[i].id=0u;
+        result=0;break;
+    }
+    fixture_instances_leave();
+    return result;
+}
 /* This callback executes on the REAL Provider DSO call stack AFTER
  * tm_ffa_run_mjpeg publishes its exact terminal to the Portal. N can be
  * cancelled/retired while the DSO remains on this stack. */
@@ -121,7 +180,7 @@ CMETA_IMPLEMENTS(tm_test_provider, tm_test_impl, 0u,
                   .get=fixture_get,
                   .entered=fixture_entered,
                   .release=fixture_release,
-                  .run_decode=fixture_run_decode,
+                  .create_instance=fixture_instance_create,\n                  .destroy_instance=fixture_instance_destroy,\n                  .run_decode=fixture_run_decode,
                   .take_luma=fixture_take_luma,
                   .finish_decode=fixture_finish_decode,
                   .wake_status=fixture_wake_status);
