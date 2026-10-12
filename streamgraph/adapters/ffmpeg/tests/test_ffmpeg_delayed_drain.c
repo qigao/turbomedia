@@ -317,8 +317,71 @@ static void run_delayed_drain(void) {
     for(i=0u;i<source.packet_count;++i)av_packet_free(&source.packets[i]);
 }
 
+
+/* Owner-stop failure domain: branch credits may already hold a real
+ * decoded MPEG-2 frame and the Executor may retain one pending FrameRef.
+ * Stop must not re-enter Codec, implicitly flush or publish more frames.
+ * Host then explicitly discards each branch's retaining credit. */
+static void run_stop_before_delayed_flush(void) {
+    delayed_source source={0};
+    sink_observer visits[3]={{0}};
+    tm_sg_program *graph=make_graph();
+    tm_fs_config_v1 fs=TM_FS_CONFIG_V1_INIT;
+    tm_fs_store *store=NULL;
+    tm_ex_config_v1 cfg=TM_EX_CONFIG_V1_INIT;
+    tm_ex_binding_v1 binds[4];
+    tm_ex_owner *exec=NULL;
+    tm_ex_stats_v1 stats=TM_EX_STATS_V1_INIT;
+    const char *ids[]={"source","processor","record","preview"};
+    unsigned produced,sent,i;
+    make_delayed_fixture(&source);
+    fs.store_id=190191u;fs.slot_capacity=2u;
+    fs.max_frame_bytes=LUMA;fs.max_retained_bytes=2u*LUMA;
+    fs.max_leases=8u;fs.max_pins=8u;
+    assert(tm_fs_create(&fs,&store)==TM_FS_OK);
+    cfg.max_frame_bytes=LUMA;
+    cfg.source_session_generation=192u;cfg.display_generation=193u;
+    cfg.fanout.branch_count=2u;
+    for(i=0u;i<2u;++i) {
+        cfg.fanout.branches[i]=(tm_fo_branch_config_v1)TM_FO_BRANCH_CONFIG_V1_INIT;
+        cfg.fanout.branches[i].policy=TM_FO_ORDERED_LOSSLESS;
+        cfg.fanout.branches[i].queue_depth=1u;
+    }
+    for(i=0u;i<4u;++i) {
+        binds[i]=(tm_ex_binding_v1)TM_EX_BINDING_V1_INIT;
+        binds[i].node_id=ids[i];
+        binds[i].ctx=i==0u?(void *)&source:(void *)&visits[i-1u];
+        binds[i].visit=i==0u?NULL:observe;
+    }
+    binds[0].source_next=delayed_next;
+    assert(tm_ex_create(graph,store,&cfg,binds,4u,&exec)==TM_EX_OK);
+    assert(tm_ex_pump_source(exec)==TM_EX_OK);
+    assert(tm_ex_pump_source(exec)==TM_EX_EFULL);
+    produced=source.frames_returned;sent=source.packets_sent;
+    assert(produced==2u && sent<source.packet_count && !source.flush_sends);
+    assert(tm_ex_pump_source(exec)==TM_EX_EFULL);
+    assert(source.frames_returned==produced);
+    assert(tm_ex_stop(exec)==TM_EX_OK);
+    assert(tm_ex_pump_source(exec)==TM_EX_EOS);
+    assert(source.frames_returned==produced && source.packets_sent==sent);
+    assert(source.flush_sends==0u);
+    assert(tm_ex_discard_ready(exec,0u)==TM_EX_OK);
+    assert(tm_ex_discard_ready(exec,1u)==TM_EX_OK);
+    assert(tm_ex_stats(exec,&stats)==TM_EX_OK);
+    assert(stats.stopped==1u);
+    assert(tm_ex_destroy(exec)==TM_EX_OK);
+    for(i=0u;i<3u;++i)assert(visits[i].visits==0u);
+    assert(tm_fs_seal(store)==TM_FS_OK);
+    assert(tm_fs_destroy(store)==TM_FS_OK);
+    tm_sg_program_destroy(graph);
+    av_frame_free(&source.frame);
+    avcodec_free_context(&source.decoder);
+    for(i=0u;i<source.packet_count;++i)av_packet_free(&source.packets[i]);
+}
+
 int main(void) {
     run_delayed_drain();
+    run_stop_before_delayed_flush();
     puts("Real MPEG2 B-frame reorder -> bounded StreamGraph drain: PASS");
     return 0;
 }
