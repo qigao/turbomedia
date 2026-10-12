@@ -351,7 +351,12 @@ static void owner_init(terminal_owner *o,tm_pc_portal *portal,uint64_t store_id)
 #else
     fs.max_frame_bytes=16u;
 #endif
-    fs.max_pins=4u;fs.max_leases=4u;fs.max_retained_bytes=32u;
+    fs.max_pins=4u;fs.max_leases=4u;
+#ifdef TM_TEST_FFMPEG_DSO
+    fs.max_retained_bytes=2u*TM_LUMA_BYTES;
+#else
+    fs.max_retained_bytes=32u;
+#endif
     assert(tm_fs_create(&fs,&o->store)==TM_FS_OK);
     ec.max_frame_bytes=fs.max_frame_bytes;
     ec.source_session_generation=1u;

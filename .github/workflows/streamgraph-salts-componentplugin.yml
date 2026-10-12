@@ -73,6 +73,14 @@ jobs:
           test -f "$sdk/lib/cmake/Salts/SaltsConfig.cmake"
           test -f "$sdk/include/salts/component_plugin.h"
           echo "TM_SALTS_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
+      - name: Install only Linux FFmpeg development dependencies for real DSO gate
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libavcodec-dev libavutil-dev pkg-config
+          pkg-config --modversion libavcodec libavutil
+          echo "TM_TEST_FFMPEG_DSO=1" >> "$GITHUB_ENV"
       - name: Build and install the real StreamGraph target (no fallback SDK)
         shell: bash
         run: |
