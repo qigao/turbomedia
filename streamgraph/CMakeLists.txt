@@ -102,3 +102,40 @@ if(_TM_SG_ISOLATED OR NOT CMAKE_CROSSCOMPILING)
       "$<TARGET_FILE:streamgraph_test_provider_n>"
       "$<TARGET_FILE:streamgraph_test_provider_n1>")
 endif()
+
+# Desktop-only, explicit opt-in: do not introduce FFmpeg into StreamGraph Core
+# or change Android/mobile SDK transitive dependencies.
+option(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER
+       "Build FFmpeg MJPEG desktop Source adapter and executable gate" OFF)
+if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(TM_SG_AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
+  pkg_check_modules(TM_SG_AVUTIL REQUIRED IMPORTED_TARGET libavutil)
+  add_library(turbo_media_streamgraph_ffmpeg SHARED
+    adapters/ffmpeg/src/turbo_streamgraph_ffmpeg.c)
+  target_include_directories(turbo_media_streamgraph_ffmpeg
+    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include>
+           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/include>)
+  target_link_libraries(turbo_media_streamgraph_ffmpeg
+    PUBLIC turbo_media_streamgraph
+    PRIVATE PkgConfig::TM_SG_AVCODEC PkgConfig::TM_SG_AVUTIL)
+  target_compile_definitions(turbo_media_streamgraph_ffmpeg PRIVATE SHARED_CXX)
+  if(MSVC)
+    target_compile_options(turbo_media_streamgraph_ffmpeg PRIVATE /W4 /WX)
+  else()
+    target_compile_options(turbo_media_streamgraph_ffmpeg
+      PRIVATE -Wall -Wextra -Werror -pedantic)
+  endif()
+  if(_TM_SG_ISOLATED OR NOT CMAKE_CROSSCOMPILING)
+    add_executable(streamgraph_ffmpeg_decode_test
+      adapters/ffmpeg/tests/test_ffmpeg_decode.c)
+    target_link_libraries(streamgraph_ffmpeg_decode_test PRIVATE
+      turbo_media_streamgraph_ffmpeg
+      PkgConfig::TM_SG_AVCODEC PkgConfig::TM_SG_AVUTIL)
+    target_compile_options(streamgraph_ffmpeg_decode_test
+      PRIVATE -Wall -Wextra -Werror -pedantic)
+    add_test(NAME streamgraph_ffmpeg_decode
+             COMMAND streamgraph_ffmpeg_decode_test)
+  endif()
+endif()
