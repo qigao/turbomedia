@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Patch the pinned FFmpeg 6.1.1 source ONLY for a Linux conformance build.
 
-This inserts a test gate INSIDE the real avcodec_send_packet() function,
+This inserts a test gate AFTER FFmpeg references the packet inside avcodec_send_packet(),
 not in TurboMedia before or after the library call. Never distribute this
 patched library as a production codec or link it into the normal SDK.
 """
@@ -65,7 +65,22 @@ pause = """
         }
     }
 """
-replacement = gate + "\n" + signature + pause
-patched = original.replace(signature, replacement)
+# Place the pause only AFTER FFmpeg validated the decoder packet and took
+# its own av_packet_ref, but BEFORE its internal decode attempt. This is
+# materially stronger than a wrapper or a probe at the function entrance.
+after_packet_ref = (
+    "    } else\\n"
+    "        dc->draining_started = 1;\\n\\n"
+    "    if (!avci->buffer_frame->buf[0] && !dc->draining_started) {"
+)
+if original.count(after_packet_ref) != 1:
+    raise SystemExit("unsupported FFmpeg version: exact packet ownership site missing")
+patched = original.replace(signature, gate + "\n" + signature)
+patched = patched.replace(
+    after_packet_ref,
+    after_packet_ref.replace(
+        "    if (!avci->buffer_frame", pause + "    if (!avci->buffer_frame"
+    ),
+)
 path.write_text(patched, encoding="utf-8")
-print(f"Instrumented exact avcodec_send_packet entry in {path}")
+print(f"Instrumented avcodec_send_packet AFTER av_packet_ref in {path}")
