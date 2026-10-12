@@ -18,12 +18,12 @@ permissions:
 
 jobs:
   native:
-    name: ${{matrix.os} C11 and installed C/C++17
+    name: ${{ matrix.os }} C11 and installed C/C++17
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-2022, macos-latest]
-    runs-on: ${{matrix.os}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
