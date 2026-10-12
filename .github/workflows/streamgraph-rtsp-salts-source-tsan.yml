@@ -19,7 +19,7 @@ permissions:
 env:
   X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
   TSAN_OPTIONS: halt_on_error=1:exitcode=66
-  SALTS_SOURCE_COMMIT: 8f30c35cfd4121d5c21981b95467e1be7cef65b1
+  SALTS_SOURCE_COMMIT: 21bdb1145fbb2b39ee3fa644173ec037adba7b87
 
 concurrency:
   group: m15d-source-salts-tsan-${{ github.ref }}
@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   rtsp-original-salts:
-    name: RTSP real CNet + original Salts allocator source TSan
+    name: RTSP real CNet + release-tag Salts allocator source TSan
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -36,13 +36,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # Immutable unpublished source conformance, not a replacement release
+      # Immutable official release-tag source conformance, not a replacement release
       # or a second CNet implementation. Tracks Salts Draft #1171/#1170.
-      - name: Checkout exact Salts original-source allocator test HEAD
+      - name: Checkout exact released Salts 2.3.0-rc.15 source commit
         uses: actions/checkout@v4
         with:
           repository: qigao/salts
-          ref: 8f30c35cfd4121d5c21981b95467e1be7cef65b1
+          ref: 21bdb1145fbb2b39ee3fa644173ec037adba7b87
           path: build/m15d-salts-source
           persist-credentials: false
 
@@ -66,7 +66,7 @@ jobs:
           mkdir -p build/m15d-salts-tsan-evidence
           {
             printf 'turbomedia_pr_head=%s\n' "$(git rev-parse HEAD)"
-            printf 'salts_unpublished_source=%s\n' "$SALTS_SOURCE_COMMIT"
+            printf 'salts_release_tag_source=%s\n' "$SALTS_SOURCE_COMMIT"
             printf 'qualification=full-source-salts-tsan+first-party-turbomedia-tsan\n'
             printf 'published_salts_sdk_used=false\n'
             printf 'third_party_libraries_source_tsan=false\n'
@@ -88,7 +88,7 @@ jobs:
           & $vcpkg install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=x64-linux' --only-binarycaching
           if ($LASTEXITCODE -ne 0) { throw 'binary-only media dependencies unavailable' }
 
-      - name: Build and install exact original Salts Core / CNet with TSan
+      - name: Build and install exact release-tag Salts Core / CNet with TSan
         shell: bash
         run: |
           set -euo pipefail
@@ -129,7 +129,7 @@ jobs:
               print(f'SOURCE TSAN Salts {src}: {len(matches)} compile unit(s)')
           PY
 
-      - name: Build original RTSP NativeIO and Provider against source Salts SDK
+      - name: Build original RTSP NativeIO and Provider against release-tag Salts SDK
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -157,7 +157,7 @@ jobs:
           & cmake --build $build --target turbo_media_test_rtsp --parallel 2
           if ($LASTEXITCODE -ne 0) { throw 'source-Salts RTSP TSan build failed' }
 
-      - name: Prove exact original Salts runtime is linked and RTSP units instrumented
+      - name: Prove exact release-tag Salts runtime is linked and RTSP units instrumented
         shell: bash
         run: |
           set -euo pipefail
@@ -190,7 +190,7 @@ jobs:
           salts=[line for line in lines if 'libsalts.so.2.3' in line]
           if not salts or any(root not in line for line in salts):
               raise SystemExit('RTSP host is not using exact source-instrumented Salts SO')
-          print('Verified libsalts.so.2.3 resolved to original source SDK')
+          print('Verified libsalts.so.2.3 resolved to exact rc.15 tag source SDK')
           PY
 
       - name: Run real CNet RTSP / delayed Codec / Provider DSO under source TSan
