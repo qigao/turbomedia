@@ -143,11 +143,9 @@ static tm_ex_source_result source_next(void *ctx,uint8_t *dst,
             return TM_EX_SOURCE_EOS;
         }
         if(rc!=TM_FF_EAGAIN)return TM_EX_SOURCE_FAILED;
-        if(s->next_input==s->encoded->count && s->finished) {
-            /* A no-progress response with all input drained would be a
-             * nonterminating hidden scheduler. Reject, do not retry. */
-            return TM_EX_SOURCE_FAILED;
-        }
+        /* An explicit nonterminal no-frame result is NOT EOS. More
+         * queued packets may still be in the finite decoder ring. The
+         * bounded loop, not an implicit scheduler, controls progress. */
     }
     return TM_EX_SOURCE_FAILED;
 }
