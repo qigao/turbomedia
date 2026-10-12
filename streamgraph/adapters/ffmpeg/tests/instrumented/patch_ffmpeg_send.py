@@ -69,8 +69,8 @@ pause = """
 # its own av_packet_ref, but BEFORE its internal decode attempt. This is
 # materially stronger than a wrapper or a probe at the function entrance.
 after_packet_ref = (
-    "    } else\\n"
-    "        dc->draining_started = 1;\\n\\n"
+    "    } else\n"
+    "        dc->draining_started = 1;\n\n"
     "    if (!avci->buffer_frame->buf[0] && !dc->draining_started) {"
 )
 if original.count(after_packet_ref) != 1:
