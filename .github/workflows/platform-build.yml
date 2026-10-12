@@ -509,6 +509,28 @@ jobs:
           & ctest --preset ci-platform-linux-asan-ubsan
           if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan native tests failed" }
 
+      # Run fail-drain fault tests in the CI build, but never install that
+      # instrumented library. Reconfigure the *same exact SDK graph* without
+      # fault injection, rebuild changed targets and re-run ordinary tests
+      # before the platform install qualification.
+      - name: Qualify production library without test fault injection
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cmake --preset ci-platform-release "-DTURBO_MEDIA_TEST_FAULT_INJECTION=OFF"
+          if ($LASTEXITCODE -ne 0) { throw "production configure failed for ${{ matrix.platform }}" }
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform"
+          $cache = Join-Path $build "CMakeCache.txt"
+          if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_FAULT_INJECTION:BOOL=OFF$" -Quiet)) {
+            throw "production build still enables HTTP-FLV fault injection"
+          }
+          & cmake --build --preset ci-platform-build
+          if ($LASTEXITCODE -ne 0) { throw "production build failed for ${{ matrix.platform }}" }
+          if ("${{ matrix.platform }}" -ne "Android") {
+            & ctest --preset ci-platform-test
+            if ($LASTEXITCODE -ne 0) { throw "production CTest failed for ${{ matrix.platform }}" }
+          }
+
       - name: Install
         shell: pwsh
         run: |
