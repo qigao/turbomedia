@@ -1449,16 +1449,16 @@ void turbo_peer_connection_destroy(turbo_peer_connection_t *pc) {
                 "ice_worker_ms=%llu callbacks_ms=%llu media_ms=%llu "
                 "dc_peer_ms=%llu ice_owner_ms=%llu dc_context_ms=%llu "
                 "sync_ms=%llu strings_ms=%llu total_ms=%llu\n",
-                (unsigned long long)(start_ms - start_ms),
-                (unsigned long long)(admitted_ms - admitted_ms),
-                (unsigned long long)(closed_ms - closed_ms),
-                (unsigned long long)(joined_ms - joined_ms),
-                (unsigned long long)(callbacks_ms - callbacks_ms),
-                (unsigned long long)(media_ms - media_ms),
-                (unsigned long long)(dc_peer_ms - dc_peer_ms),
-                (unsigned long long)(ice_owner_ms - ice_owner_ms),
-                (unsigned long long)(dc_context_ms - dc_context_ms),
-                (unsigned long long)(sync_ms - sync_ms),
+                (unsigned long long)(admitted_ms - start_ms),
+                (unsigned long long)(closed_ms - admitted_ms),
+                (unsigned long long)(joined_ms - closed_ms),
+                (unsigned long long)(callbacks_ms - joined_ms),
+                (unsigned long long)(media_ms - callbacks_ms),
+                (unsigned long long)(dc_peer_ms - media_ms),
+                (unsigned long long)(ice_owner_ms - dc_peer_ms),
+                (unsigned long long)(dc_context_ms - ice_owner_ms),
+                (unsigned long long)(sync_ms - dc_context_ms),
+                (unsigned long long)(end_ms - sync_ms),
                 (unsigned long long)(end_ms - start_ms));
     }
 
