@@ -44,6 +44,27 @@ TURBO_MEDIA_API tm_ff_status tm_ffa_run_mjpeg(
     tm_pc_portal *portal,tm_pc_ticket_v1 ticket,
     tm_ffa_wake_fn wake,void *wake_context);
 
+/* Host-owned Provider worker EOF operation for the existing MJPEG Codec
+ * instance. Admit only after every decoded frame was explicitly transferred
+ * or discarded. This drives ONE avcodec_send_packet(NULL) through the
+ * worker-owned tm_ff_source and observes real EOS, without adding a thread
+ * or scheduler. The exact Portal ticket is reserved by the Host.
+ *
+ * After a successful admission, reports exactly one terminal and calls
+ * wake exactly once after the completion is published. Normal terminal
+ * provider_status is TM_FF_EOF; owner cancellation while the worker is
+ * inside libavcodec results in TM_FF_ESTATE (CANCELLED Portal outcome
+ * when the Owner has requested cancellation on that original ticket).
+ *
+ * One-shot EOF: duplicate calls return ESTATE without settling a new ticket.
+ * The media Owner must retain the outer DSO Scope until worker join, Portal
+ * settlement and any post-wake tail have all quiesced.
+ */
+TURBO_MEDIA_API tm_ff_status tm_ffa_run_eof(
+    tm_ffa_decoder *decoder,tm_pc_portal *portal,tm_pc_ticket_v1 ticket,
+    tm_ffa_wake_fn wake,void *wake_context);
+
+
 /* Media Owner alone admits a completed packet to Source->FrameStore.
  * Must match the SAME portal ticket whose terminal was delivered. A wrong
  * generation can never steal the next frame; no raw pointer is returned.
