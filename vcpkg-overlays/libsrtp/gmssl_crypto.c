@@ -248,12 +248,8 @@ static srtp_err_status_t gcm_get_tag(void *opaque, uint8_t *tag, uint32_t *lengt
     gmssl_gcm_t *state = opaque;
     /* Authentication-only SRTCP calls get_tag without encrypting a payload. */
     if (!state->tag_ready) {
-        /* Authentication-only SRTCP has zero encrypted payload. Pass an
-         * addressable empty buffer instead of a NULL provider argument. */
-        uint8_t empty_payload = 0;
         unsigned int empty = 0;
-        srtp_err_status_t status = gcm_encrypt(state, &empty_payload, &empty);
-        gmssl_secure_clear(&empty_payload, sizeof(empty_payload));
+        srtp_err_status_t status = gcm_encrypt(state, NULL, &empty);
         if (status != srtp_err_status_ok) return status;
     }
     memcpy(tag, state->tag, state->tag_length);
