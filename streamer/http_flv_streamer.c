@@ -327,8 +327,14 @@ static void http_flv_upload_thread(void *arg) {
             /* A deterministic once-only fault for the test-enabled shared
              * library. The production library has no injected failure path.
              */
-            if (attempt == 0u &&
-                getenv("TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE") != NULL) {
+            if (attempt <= 1u &&
+                getenv("TURBOMEDIA_HTTP_FLV_TEST_FAIL_DRAIN_TWICE") != NULL) {
+                /* Two explicit fail-closed cleanup refusals. The living
+                 * original owner acknowledges each request generation, and
+                 * only the third caller-triggered attempt may retire it. */
+                cleanup_status = -1;
+            } else if (attempt == 0u &&
+                       getenv("TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE") != NULL) {
                 /* First really drive CNet CLOSED + Manager recycle on its
                  * original owner. Report a simulated post-drain refusal
                  * before destroying the wrapper. Explicit retry must finish
