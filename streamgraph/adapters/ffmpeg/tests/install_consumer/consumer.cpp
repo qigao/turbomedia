@@ -1,5 +1,6 @@
 #include <turbo_streamgraph_ffmpeg.h>
 #include <turbo_streamgraph_ffmpeg_async.h>
+#include <turbo_streamgraph_ffmpeg_delayed.h>
 #include <type_traits>
 static_assert(std::is_standard_layout<tm_ff_config_v1>::value, "C ABI config");
 static_assert(std::is_trivially_copyable<tm_ff_stats_v1>::value, "POD stats");
@@ -9,6 +10,10 @@ static_assert(std::is_trivially_copyable<tm_pc_ticket_v1>::value, "portal ticket
 static_assert(std::is_pointer<decltype(&tm_ffa_run_eof)>::value, "one-shot EOF exported C ABI");
 static_assert(std::is_trivially_copyable<tm_ff_codec_activity_v1>::value, "atomic snapshot POD ABI");
 static_assert(TM_FF_EOF==1, "one-shot terminal EOF status");
+static_assert(TM_FF_EAGAIN==2, "nonterminal codec need-input status");
+static_assert(std::is_standard_layout<tm_ffd_config_v1>::value, "delayed config ABI");
+static_assert(std::is_trivially_copyable<tm_ffd_packet_v1>::value, "delayed packet ABI");
+static_assert(std::is_pointer<decltype(&tm_ffd_next_luma)>::value, "delayed API exported");
 int main() {
     tm_ff_config_v1 cfg=TM_FF_CONFIG_V1_INIT;
     return cfg.version==TM_FF_ABI_V1 ? 0 : 1;
