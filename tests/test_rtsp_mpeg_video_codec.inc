@@ -334,6 +334,43 @@ static void rtsp_test_mpeg2_video_real_rtp_to_delayed_codec(void) {
                                        0u,wire,bytes,
                                        (uint16_t)(RTSP_MPV_RTP_SEQUENCE+i),
                                        second_ssrc),-1);
+        if(i==0u) {
+            uint8_t modified[RTSP_MPV_MAX_PACKET];
+            tm_ffd_stats_v1 before=TM_FFD_STATS_V1_INIT;
+            memcpy(modified,wire,bytes);
+            /* The admitted MPEG-2 ES Source may not accept TS PT33,
+             * H.264 PT96, incomplete picture fragments, optional
+             * unsupported RFC2250 extensions or wrong SSRC. */
+            modified[1]=(uint8_t)((modified[1]&0x80u)|33u);
+            check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
+                            1u,modified,bytes,RTSP_MPV_RTP_SEQUENCE,
+                            second_ssrc),-1);
+            modified[1]=(uint8_t)((modified[1]&0x80u)|96u);
+            check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
+                            1u,modified,bytes,RTSP_MPV_RTP_SEQUENCE,
+                            second_ssrc),-1);
+            memcpy(modified,wire,bytes);
+            modified[1]=(uint8_t)(modified[1]&0x7fu); /* no marker */
+            check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
+                            1u,modified,bytes,RTSP_MPV_RTP_SEQUENCE,
+                            second_ssrc),-1);
+            memcpy(modified,wire,bytes);
+            modified[TURBO_RTSP_RTP_HEADER_SIZE+2u] &= (uint8_t)~0x10u;
+            check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
+                            1u,modified,bytes,RTSP_MPV_RTP_SEQUENCE,
+                            second_ssrc),-1);
+            memcpy(modified,wire,bytes);
+            modified[TURBO_RTSP_RTP_HEADER_SIZE] |= 0x04u; /* T=1 */
+            check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
+                            1u,modified,bytes,RTSP_MPV_RTP_SEQUENCE,
+                            second_ssrc),-1);
+            check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
+                            1u,wire,bytes,RTSP_MPV_RTP_SEQUENCE,
+                            first_ssrc),-1);
+            check_equal(tm_ffd_stats(decoder,&before),TM_FF_OK);
+            check_equal(before.packets_admitted,0u);
+            check_equal(before.flush_sends,0u);
+        }
         check_equal(rtsp_mpv_admit_wire(decoder,second_epoch,second_epoch,
                                        1u,wire,bytes,
                                        (uint16_t)(RTSP_MPV_RTP_SEQUENCE+i),
