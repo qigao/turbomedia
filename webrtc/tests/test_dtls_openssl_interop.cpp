@@ -160,6 +160,79 @@ static HelloMutation duplicate_ems_in_hello(
     return offset == *packet_size ? HelloMutation::skipped : HelloMutation::malformed;
 }
 
+/* Replace the single negotiated/offered RFC 5764 use_srtp profile on
+ * real OpenSSL ClientHello or ServerHello wire data. The record remains
+ * structurally valid; the now-disjoint offer/selection must be explicitly
+ * rejected by GmSSL before any key exporter is accessible. */
+static HelloMutation replace_srtp_in_hello(
+    uint8_t *packet, size_t size, uint8_t hello_type, uint16_t replacement) {
+    auto get16 = [](const uint8_t *p) -> size_t {
+        return (size_t(p[0]) << 8) | p[1];
+    };
+    auto get24 = [](const uint8_t *p) -> size_t {
+        return (size_t(p[0]) << 16) | (size_t(p[1]) << 8) | p[2];
+    };
+    size_t record = 0;
+    while (record + 13 <= size) {
+        const size_t record_size = 13 + get16(packet + record + 11);
+        if (record_size > size - record) return HelloMutation::malformed;
+        const size_t end = record + record_size;
+        if (record_size < 25 || packet[record] != 22 ||
+            packet[record + 3] != 0 || packet[record + 4] != 0 ||
+            packet[record + 13] != hello_type) {
+            record = end; continue;
+        }
+        const size_t handshake_length = get24(packet + record + 14);
+        if (get24(packet + record + 19) != 0 ||
+            get24(packet + record + 22) != handshake_length ||
+            handshake_length + 25 != record_size)
+            return HelloMutation::malformed;
+        size_t at = record + 25;
+        auto skip_vector = [&](size_t width) -> bool {
+            if (end - at < width) return false;
+            const size_t length = width == 1 ? packet[at] : get16(packet + at);
+            at += width;
+            if (length > end - at) return false;
+            at += length;
+            return true;
+        };
+        if (end - at < 34) return HelloMutation::malformed;
+        at += 34; // version, random
+        if (!skip_vector(1)) return HelloMutation::malformed;
+        if (hello_type == 1) {
+            if (!skip_vector(1) || !skip_vector(2) || !skip_vector(1))
+                return HelloMutation::malformed;
+        } else {
+            if (end - at < 3) return HelloMutation::malformed;
+            at += 3;
+        }
+        if (end - at < 2) return HelloMutation::malformed;
+        const size_t extensions_size = get16(packet + at);
+        at += 2;
+        if (extensions_size != end - at) return HelloMutation::malformed;
+        while (at < end) {
+            if (end - at < 4) return HelloMutation::malformed;
+            const size_t type = get16(packet + at), length = get16(packet + at + 2);
+            at += 4;
+            if (length > end - at) return HelloMutation::malformed;
+            if (type == 14) {
+                if (length < 5 || get16(packet + at) != 2 ||
+                    length != 2 + 2 + 1 || packet[at + 4] != 0)
+                    return HelloMutation::malformed;
+                const size_t original = get16(packet + at + 2);
+                if (original == replacement)
+                    return HelloMutation::malformed;
+                packet[at + 2] = static_cast<uint8_t>(replacement >> 8);
+                packet[at + 3] = static_cast<uint8_t>(replacement);
+                return HelloMutation::changed;
+            }
+            at += length;
+        }
+        return HelloMutation::malformed;
+    }
+    return record == size ? HelloMutation::skipped : HelloMutation::malformed;
+}
+
 /* Tamper precisely one signature byte, preserving the complete DTLS record
  * and handshake framing. ServerKeyExchange (12) is the signed message when
  * GmSSL is a client; CertificateVerify (15) is signed by the OpenSSL client
@@ -222,6 +295,8 @@ struct IndependentPair {
     bool wrong_fingerprint;
     bool disable_ems;
     bool duplicate_ems;
+    bool disjoint_srtp_profile;
+    unsigned altered_srtp_hellos = 0;
     bool tamper_peer_finished;
     bool corrupt_peer_signature;
     bool peer_finished_tampered = false;
@@ -242,10 +317,12 @@ struct IndependentPair {
 
     IndependentPair(bool server, uint16_t id, bool rsa, bool wrong_pin = false,
                     bool no_ems = false, bool duplicate_ems_extension = false,
-                    bool tamper_finished = false, bool wrong_signature = false)
+                    bool tamper_finished = false, bool wrong_signature = false,
+                    bool unsupported_srtp = false)
         : gm_server(server), profile(id), rsa_identity(rsa),
           wrong_fingerprint(wrong_pin), disable_ems(no_ems),
           duplicate_ems(duplicate_ems_extension),
+          disjoint_srtp_profile(unsupported_srtp),
           tamper_peer_finished(tamper_finished),
           corrupt_peer_signature(wrong_signature) {}
 
@@ -489,11 +566,13 @@ struct IndependentPair {
          */
         if (static_cast<int>(wrong_fingerprint) +
             static_cast<int>(disable_ems) +
-            static_cast<int>(duplicate_ems) != 1)
+            static_cast<int>(duplicate_ems) +
+            static_cast<int>(disjoint_srtp_profile) != 1)
             return failure("negative-test-requires-one-invalid-policy");
         const int expected = wrong_fingerprint ? TURBO_GDTLS_AUTH : TURBO_GDTLS_PROTOCOL;
         stage = wrong_fingerprint ? "reject-mismatched-fingerprint" :
-            disable_ems ? "reject-missing-EMS" : "reject-duplicate-EMS";
+            disable_ems ? "reject-missing-EMS" :
+            duplicate_ems ? "reject-duplicate-EMS" : "reject-disjoint-SRTP-profile";
         bool openssl_terminal = false;
         for (unsigned step = 0; step < 3500; ++step) {
             clock_ms += 10;
@@ -527,10 +606,20 @@ struct IndependentPair {
                     if (mutation == HelloMutation::changed)
                         ++duplicated_hello_records;
                 }
+                if (disjoint_srtp_profile) {
+                    HelloMutation mutation = replace_srtp_in_hello(
+                        packet, packet_size, gm_server ? 1 : 2, 1);
+                    if (mutation == HelloMutation::malformed)
+                        return failure("disjoint-SRTP-wire-mutation");
+                    if (mutation == HelloMutation::changed)
+                        ++altered_srtp_hellos;
+                }
                 int rc = turbo_gdtls_receive(gm, packet, packet_size, clock_ms);
                 if (rc == expected) {
                     if (duplicate_ems && !duplicated_hello_records)
                         return failure("duplicate-EMS-not-exercised");
+                    if (disjoint_srtp_profile && !altered_srtp_hellos)
+                        return failure("disjoint-SRTP-not-exercised");
                     uint8_t exported[88] = {};
                     size_t exported_size = sizeof(exported);
                     bool denied = !turbo_gdtls_ready(gm) &&
@@ -1046,6 +1135,13 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
             it("GmSSL server=%d RSA=%d rejects duplicate RFC7627 EMS extensions from OpenSSL wire",
                server, rsa) {
                 IndependentPair fixture(server != 0, 7, rsa != 0, false, false, true);
+                check_true(fixture.init());
+                check_true(fixture.reject_untrusted_peer());
+            }
+            it("GmSSL server=%d RSA=%d rejects independent OpenSSL disjoint SRTP profile selection",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0,
+                                        false, false, false, false, false, true);
                 check_true(fixture.init());
                 check_true(fixture.reject_untrusted_peer());
             }
