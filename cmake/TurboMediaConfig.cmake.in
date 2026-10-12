@@ -23,7 +23,7 @@ unset(_TurboMedia_root)
 
 find_dependency(Salts 2.3 CONFIG REQUIRED
                 PATHS "$ENV{SALTS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-find_dependency(SaltsUtils 4.3 CONFIG REQUIRED
+find_dependency(SaltsUtils 4.3 CONFIG REQUIRED COMPONENTS Crypto
                 PATHS "$ENV{SALTS_UTILS_ROOT}" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(NOT TARGET Salts::Capture OR NOT TARGET Salts::Playback)
   set(TurboMedia_FOUND FALSE)

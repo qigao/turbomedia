@@ -207,11 +207,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid "${{ matrix.rid }}"
 
-      # Only this Draft branch can consume unpublished, exact-source CI
-      # artifacts. Never publish these packages or ship their SHA as a
-      # permanent dependency: released SDK restores remain authoritative.
+      # Draft-only exact-source SaltsNet/CHttp candidates. Salts and
+      # SaltsUtils always come from the official paired RC releases.
+      # Do not publish or permanently pin these downstream candidates.
       - name: Stage qualified ACE/CNet candidate consumers
-        if: github.event_name == 'pull_request' && github.head_ref == 'feature/ace-cnet-owner-transport'
+        if: >-
+          github.event_name == 'pull_request' &&
+          (github.head_ref == 'feature/ace-cnet-owner-transport' ||
+           github.head_ref == 'fix/http-flv-owner-drain-recovery')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -240,37 +243,7 @@ jobs:
               root = "CHTTP_ROOT"
             }
           )
-          # The published Salts.Native 2.3.0-rc.1 macOS archive uses GCC
-          # emulated TLS, incompatible with AppleClang C11 TinyTest consumers.
-          # The canonical master CI at this exact source SHA independently
-          # installed, compiled and ran the native-TLS C11 smoke. This is a
-          # macOS-only, draft-only test artifact; NEVER a release substitute.
-          if ($rid -eq "macos-arm64") {
-            $candidates += @{
-              name = "Salts"
-              repo = "qigao/salts"
-              run = "37963767058"
-              artifact = "salts-sdk-macos-tinytest-candidate"
-              expected = "10c17c9c2b0d558addf2490c93cc13aa430906b0"
-              manifest = "salts-sdk-manifest.txt"
-              config = "lib/cmake/Salts/SaltsConfig.cmake"
-              root = "SALTS_ROOT"
-            }
-            # The old SaltsUtils.Native 4.3.0-rc.1 exports another
-            # Salts::Unicode, which CMake correctly rejects. This paired
-            # macOS candidate removed the duplicate and independently passed
-            # 235/235 native CTests plus 2/2 installed C11/C++17 consumers.
-            $candidates += @{
-              name = "SaltsUtils"
-              repo = "qigao/salts-utils"
-              run = "37967646451"
-              artifact = "saltsutils-sdk-macos-unicode-candidate"
-              expected = "997b2768a8f0ffaad48108dbd9c68863f250a270"
-              manifest = "salts-utils-sdk-manifest.txt"
-              config = "lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
-              root = "SALTS_UTILS_ROOT"
-            }
-          }
+          # Salts/SaltsUtils are restored from paired official releases on every RID.
           foreach ($candidate in $candidates) {
             $details = & gh api "repos/$($candidate.repo)/actions/runs/$($candidate.run)" --jq "{head_sha: .head_sha, conclusion: .conclusion}"
             if ($LASTEXITCODE -ne 0) { throw "$($candidate.name): GitHub Actions run metadata unavailable" }
@@ -293,32 +266,6 @@ jobs:
             $expectedLine = "commit=$($candidate.expected)"
             if ($manifestText -notmatch "(?m)^$([regex]::Escape($expectedLine))\r?$") {
               throw "$($candidate.name): SDK install commit differs from its exact source"
-            }
-            if ($candidate.name -eq "Salts") {
-              foreach ($required in @("os=macos", "arch=ARM64", "profile=release")) {
-                if ($manifestText -notmatch "(?m)^$([regex]::Escape($required))\r?$") {
-                  throw "Salts: candidate SDK identity mismatch: $required"
-                }
-              }
-              if (-not (Test-Path -LiteralPath (Join-Path $root "lib/libtinytest.a") -PathType Leaf)) {
-                throw "Salts: native TinyTest archive absent from qualified macOS candidate"
-              }
-            }
-            if ($candidate.name -eq "SaltsUtils") {
-              $qualifiedSalts = "salts_sha=10c17c9c2b0d558addf2490c93cc13aa430906b0"
-              foreach ($required in @($qualifiedSalts, "os=macos", "arch=ARM64",
-                                       "profile=release", "release_qualified=false")) {
-                if ($manifestText -notmatch "(?m)^$([regex]::Escape($required))\r?$") {
-                  throw "SaltsUtils: paired SDK identity mismatch: $required"
-                }
-              }
-              $targets = Join-Path $root "lib/cmake/SaltsUtils/SaltsUtilsTargets.cmake"
-              if (-not (Test-Path -LiteralPath $targets -PathType Leaf)) {
-                throw "SaltsUtils: installed CMake target export absent"
-              }
-              if (Select-String -LiteralPath $targets -SimpleMatch "add_library(Salts::Unicode") {
-                throw "SaltsUtils: duplicate Unicode target remains in candidate export"
-              }
             }
             $root = $root.Replace('\', '/')
             "$($candidate.root)=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -468,6 +415,101 @@ jobs:
             & ctest --preset ci-platform-test
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }
+
+      # Separate test-only build: compile TurboMedia wrappers with ASan/UBSan
+      # against the same exact installed candidate SDK graph. Build targets,
+      # test selection and sanitizer flags are CMake Preset owned.
+      - name: Linux ACE owner ASan and UBSan
+        if: >-
+          matrix.platform == 'Linux' &&
+          github.event_name == 'pull_request' &&
+          github.head_ref == 'fix/http-flv-owner-drain-recovery'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runtimeDirs = @()
+          foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
+            $root = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("bin", "lib")) {
+              $candidate = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
+            }
+          }
+          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/${{ matrix.triplet }}"
+          foreach ($leaf in @("bin", "lib")) {
+            $candidate = Join-Path $vcpkgRuntime $leaf
+            if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
+          }
+          $parts = @($runtimeDirs)
+          if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
+          $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          $env:ASAN_OPTIONS = "detect_leaks=1:halt_on_error=1:abort_on_error=1"
+          $env:UBSAN_OPTIONS = "halt_on_error=1:print_stacktrace=1"
+          & cmake --preset ci-platform-linux-asan-ubsan
+          if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan configure failed" }
+          & cmake --build --preset ci-platform-linux-asan-ubsan-build
+          if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan build failed" }
+          & ctest --preset ci-platform-linux-asan-ubsan
+          if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan native tests failed" }
+
+      # Run fail-drain fault tests in the CI build, but never install that
+      # instrumented library. Reconfigure the *same exact SDK graph* without
+      # fault injection, rebuild and rerun the affected HTTP-FLV/Transport
+      # contract only. The first pass already ran the full CTest suite.
+      # Android excludes streamer in the component graph, so has no HTTP-FLV
+      # fault seam to remove. Preserve its qualified NDK cross-build unchanged.
+      - name: Qualify production library without test fault injection
+        if: matrix.platform != 'Android'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cmake --preset ci-platform-release "-DTURBO_MEDIA_TEST_FAULT_INJECTION:BOOL=OFF"
+          if ($LASTEXITCODE -ne 0) { throw "production configure failed for ${{ matrix.platform }}" }
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform"
+          $cache = Join-Path $build "CMakeCache.txt"
+          if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_FAULT_INJECTION:BOOL=OFF$" -Quiet)) {
+            throw "production build still enables HTTP-FLV fault injection"
+          }
+          & cmake --build --preset ci-platform-build
+          if ($LASTEXITCODE -ne 0) { throw "production build failed for ${{ matrix.platform }}" }
+          # A distinct GitHub Actions step does not retain the first CTest's
+          # DYLD_LIBRARY_PATH/LD_LIBRARY_PATH/PATH. Restore the exact installed
+          # SDK and vcpkg runtime locations before the production CTest gate.
+          $runtimeDirs = @()
+          foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
+            $root = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("bin", "lib")) {
+              $candidate = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $candidate -PathType Container) {
+                $runtimeDirs += $candidate
+              }
+            }
+          }
+          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/${{ matrix.triplet }}"
+          foreach ($leaf in @("bin", "lib")) {
+            $candidate = Join-Path $vcpkgRuntime $leaf
+            if (Test-Path -LiteralPath $candidate -PathType Container) {
+              $runtimeDirs += $candidate
+            }
+          }
+          if ($IsWindows) {
+            $env:PATH = ($runtimeDirs + $env:PATH) -join [IO.Path]::PathSeparator
+          } elseif ($IsMacOS) {
+            $parts = @($runtimeDirs)
+            if (-not [string]::IsNullOrWhiteSpace($env:DYLD_LIBRARY_PATH)) { $parts += $env:DYLD_LIBRARY_PATH }
+            $env:DYLD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          } else {
+            $parts = @($runtimeDirs)
+            if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
+            $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          }
+          # The first CTest pass exercised the entire instrumented graph.
+          # Only Streamer/HTTP consumers change in the production reconfigure.
+          # Do not rerun costly SFU/WHIP and unrelated codec tests a second time.
+          & ctest --preset ci-platform-production-contract
+          if ($LASTEXITCODE -ne 0) { throw "production HTTP-FLV CTest failed for ${{ matrix.platform }}" }
 
       - name: Install
         shell: pwsh

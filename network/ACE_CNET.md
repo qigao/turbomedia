@@ -49,3 +49,36 @@ The next phase audits the real owner topology for RTSP acceptors and WebRTC/SFU/
 ## Qualification
 
 Build/test on the **exact** unified Salts 2.3 installed SDK with no legacy fallback. Re-run external-owner shared connection, reconnect, terminal/recycle, TCP/TLS, and cross-platform link gates. Temporary dependency blockers are [Salts #1089](https://github.com/qigao/salts/issues/1089) (wrong floating candidate selected) and [SaltsNet #45](https://github.com/qigao/salts-net/issues/45) (old native ABI admission). Track the broader design in [TurboMedia #153](https://github.com/qigao/turbomedia/issues/153). No performance speedup is claimed without benchmarks.
+
+### HTTP-FLV original-owner recovery after an unsuccessful drain
+
+The upload worker remains the unique ACE/CNet Manager owner through
+`RUNNING → CLOSE_REQUESTED → OWNER_DRAINING → DRAINED`. If a bounded
+cleanup reports failure, it transitions to `OWNER_RETAINED_FAILURE` and
+**parks** with its owner thread still alive. The caller's first
+`disconnect()` reports `-EIO` without joining or dropping observer storage.
+Only a subsequent explicit `disconnect()` / `destroy()` call can request
+**one additional** drain attempt from the same original owner thread. Each
+attempt has a separate acknowledged sequence; no automatic retry, timer,
+application-data replay, owner migration or foreign-thread destroy exists.
+
+The CI native regression uses an opt-in one-shot fault under
+`TURBO_MEDIA_TEST_FAULT_INJECTION` (enabled by the test CI preset only).
+Production builds default to disabled and compile no test hook. This verifies
+the owner parking and command/acknowledgment protocol; it does not yet assert
+recovery from every underlying NativeIO error.
+
+An additional CI-only `TURBOMEDIA_HTTP_FLV_TEST_PARTIAL_DRAIN_ONCE` case first performs **real** `turbo_transport_disconnect()` (CNet terminal + Manager recycle) on the owner, then simulates a post-drain wrapper-destroy refusal. A separate explicit caller close must complete that retained wrapper on the same worker. This supplements, rather than replaces, the prior early refusal test.
+
+### Linux ACE owner ASan+UBSan qualification
+
+The stacked owner-recovery Draft runs an additional **CMake Preset owned** Linux
+ASan+UBSan build against the same exact-source installed SDKs; it compiles the
+TurboMedia graph with `-fsanitize=address,undefined` and runs only
+`turbo_media_test_http_flv_local` and `turbo_media_test_transport_http`
+under leak detection and fail-fast undefined-behavior checks. This gate is
+Draft-only and does not alter production flags. NativeIO/third-party binaries
+remain externally compiled SDKs; the sanitizer result primarily covers the
+instrumented TurboMedia wrappers and test code.
+
+On a request/protocol error that has nonetheless reached `OWNER_DRAINED`, the outer streamer `destroy()` may free its own context: a failed response is **not** a live native callback lease. Only `connected`, `upload_thread_started`, or a non-NULL transport after a failed native drain causes fail-closed retention. The test suite exercises a rejected TLS admission followed by caller-explicit destruction after the first owner cleanup refusal.
