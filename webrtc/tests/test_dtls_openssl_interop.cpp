@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <climits>
+#include <vector>
 
 namespace {
 constexpr uint64_t START_MS = 1000000;
@@ -334,6 +335,8 @@ struct IndependentPair {
     bool duplicate_ems;
     bool disjoint_srtp_profile;
     bool downgrade_dtls_version;
+    bool fragment_external_hello = false;
+    unsigned fragmented_external_hellos = 0;
     unsigned altered_srtp_hellos = 0;
     unsigned downgraded_hellos = 0;
     bool tamper_peer_finished;
@@ -498,6 +501,105 @@ struct IndependentPair {
         return true;
     }
 
+    bool inject_reordered_hello_fragments(const uint8_t *data, size_t size,
+                                          uint8_t handshake_type, bool *handled) {
+        /* Take a *complete* epoch-0 OpenSSL ClientHello or ServerHello and
+         * reframe its original bytes into two legal DTLS handshake fragments.
+         * Send the upper half first, then a conflicting retransmission of
+         * that upper half, then the lower half. That disagreement must never
+         * poison reassembly or admit media; the complete canonical handshake
+         * must still agree with the independently maintained OpenSSL
+         * transcript and ultimately yield the same SRTP exporter.
+         */
+        *handled = false;
+        auto get16 = [](const uint8_t *p) -> size_t {
+            return (size_t(p[0]) << 8) | p[1];
+        };
+        auto get24 = [](const uint8_t *p) -> size_t {
+            return (size_t(p[0]) << 16) | (size_t(p[1]) << 8) | p[2];
+        };
+        auto set16 = [](uint8_t *p, size_t n) {
+            p[0] = static_cast<uint8_t>(n >> 8);
+            p[1] = static_cast<uint8_t>(n);
+        };
+        auto set24 = [](uint8_t *p, size_t n) {
+            p[0] = static_cast<uint8_t>(n >> 16);
+            p[1] = static_cast<uint8_t>(n >> 8);
+            p[2] = static_cast<uint8_t>(n);
+        };
+        auto receive = [&](const uint8_t *bytes, size_t count) {
+            return turbo_gdtls_receive(gm, bytes, count, clock_ms) == TURBO_GDTLS_OK;
+        };
+        size_t at = 0;
+        while (at + 13 <= size) {
+            size_t record_len = 13 + get16(data + at + 11);
+            if (record_len > size - at)
+                return failure("independent-fragmented-Hello-record-length");
+            const size_t end = at + record_len;
+            if (record_len >= 25 + 8 &&
+                data[at] == 22 && data[at + 3] == 0 && data[at + 4] == 0 &&
+                data[at + 13] == handshake_type) {
+                const size_t full_len = get24(data + at + 14);
+                if (full_len + 25 != record_len ||
+                    get24(data + at + 19) != 0 ||
+                    get24(data + at + 22) != full_len ||
+                    full_len < 8)
+                    return failure("independent-Hello-must-be-complete");
+                const size_t first_size = full_len / 2;
+                const size_t second_size = full_len - first_size;
+                if (!first_size || !second_size)
+                    return failure("independent-Hello-unsplittable");
+                auto fragment = [&](size_t offset, size_t length) {
+                    std::vector<uint8_t> output(25 + length);
+                    memcpy(output.data(), data + at, 25);
+                    set16(output.data() + 11, 12 + length);
+                    set24(output.data() + 19, offset);
+                    set24(output.data() + 22, length);
+                    memcpy(output.data() + 25, data + at + 25 + offset, length);
+                    return output;
+                };
+                auto high = fragment(first_size, second_size);
+                auto low = fragment(0, first_size);
+                /* Each synthetic epoch-0 record has a distinct 48-bit record
+                 * sequence. They share the original *handshake message*
+                 * sequence as required for DTLS 1.2 reassembly. */
+                high[5] ^= 0x40;
+                if (at && !receive(data, at))
+                    return failure("independent-Hello-prefix-rejected");
+                if (!receive(high.data(), high.size()))
+                    return failure("independent-out-of-order-upper-fragment");
+                if (turbo_gdtls_ready(gm) || turbo_gdtls_srtp_profile(gm))
+                    return failure("independent-Hello-fragment-admitted-early");
+                uint8_t key_material[88] = {};
+                size_t material_length = sizeof(key_material);
+                const bool forbidden =
+                    turbo_gdtls_export_srtp(gm, key_material,
+                        sizeof(key_material), &material_length) == TURBO_GDTLS_AUTH &&
+                    material_length == 0 && turbo_gdtls_take_plaintext(gm) == nullptr;
+                OPENSSL_cleanse(key_material, sizeof(key_material));
+                if (!forbidden)
+                    return failure("independent-partial-Hello-exported-secret");
+
+                auto conflicting = high;
+                conflicting[25 + second_size / 2] ^= 0x01;
+                conflicting[5] ^= 0x20; // distinct epoch-0 record sequence
+                if (!receive(conflicting.data(), conflicting.size()))
+                    return failure("independent-overlap-conflict-not-dropped");
+                if (!receive(low.data(), low.size()))
+                    return failure("independent-out-of-order-Hello-not-reassembled");
+                if (end < size && !receive(data + end, size - end))
+                    return failure("independent-Hello-trailing-record-rejected");
+                ++fragmented_external_hellos;
+                *handled = true;
+                return true;
+            }
+            at = end;
+        }
+        if (at != size)
+            return failure("independent-Hello-trailing-record-truncated");
+        return true;
+    }
+
     bool receive_gm() {
         uint8_t packet[65535];
         for (;;) {
@@ -558,6 +660,13 @@ struct IndependentPair {
                     peer_finished_tampered = true;
                 }
             }
+            if (fragment_external_hello && !fragmented_external_hellos) {
+                bool handled = false;
+                if (!inject_reordered_hello_fragments(
+                        packet, len, gm_server ? 1 : 2, &handled))
+                    return false;
+                if (handled) continue;
+            }
             int status = turbo_gdtls_receive(gm, packet, len, clock_ms);
             if (status != TURBO_GDTLS_OK) return failure("GmSSL-receive");
         }
@@ -592,6 +701,8 @@ struct IndependentPair {
             if (openssl_ready && turbo_gdtls_ready(gm)) {
                 if (tamper_peer_finished && !peer_finished_tampered)
                     return failure("test-did-not-inject-encrypted-peer-Finished");
+                if (fragment_external_hello && fragmented_external_hellos != 1)
+                    return failure("test-did-not-fragment-independent-peer-Hello");
                 if (!pump_gm_output()) return false;
                 return true;
             }
@@ -1166,6 +1277,23 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                                         false, false, false, false, true);
                 check_true(fixture.init());
                 check_true(fixture.reject_corrupted_peer_signature());
+            }
+        }
+    }
+    /* Reassemble genuine OpenSSL Hello transcript bytes from adversarial
+     * DTLS 1.2 fragment offset ordering while preserving the bounded owner.
+     * A conflicting overlap is rejected; the authentic fragments recover.
+     */
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        for (int server = 0; server < 2; ++server) {
+            it("GmSSL server=%d RSA=%d accepts independent fragmented reordered Hello after overlap rejection",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0);
+                fixture.fragment_external_hello = true;
+                check_true(fixture.init());
+                check_true(fixture.handshake());
+                check_true(fixture.qualify_exporter());
+                check_true(fixture.exchange_application());
             }
         }
     }
