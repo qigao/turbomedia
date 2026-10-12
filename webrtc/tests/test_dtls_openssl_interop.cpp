@@ -160,6 +160,61 @@ static HelloMutation duplicate_ems_in_hello(
     return offset == *packet_size ? HelloMutation::skipped : HelloMutation::malformed;
 }
 
+/* Tamper precisely one signature byte, preserving the complete DTLS record
+ * and handshake framing. ServerKeyExchange (12) is the signed message when
+ * GmSSL is a client; CertificateVerify (15) is signed by the OpenSSL client
+ * after GmSSL's CertificateRequest. The sender's genuine OpenSSL signature
+ * is altered on the wire, not synthesized by the private GmSSL test engine.
+ */
+enum class SignatureMutation { skipped, changed, malformed };
+
+static SignatureMutation corrupt_signed_handshake(
+    uint8_t *packet, size_t packet_size, uint8_t target_type) {
+    auto get16 = [](const uint8_t *p) -> size_t {
+        return (size_t(p[0]) << 8) | p[1];
+    };
+    auto get24 = [](const uint8_t *p) -> size_t {
+        return (size_t(p[0]) << 16) | (size_t(p[1]) << 8) | p[2];
+    };
+    size_t record = 0;
+    while (record + 13 <= packet_size) {
+        size_t record_body = get16(packet + record + 11);
+        size_t end = record + 13 + record_body;
+        if (end > packet_size) return SignatureMutation::malformed;
+        if (packet[record] == 22 && packet[record + 3] == 0 &&
+            packet[record + 4] == 0) {
+            size_t hs = record + 13;
+            while (hs + 12 <= end) {
+                uint8_t type = packet[hs];
+                size_t declared = get24(packet + hs + 1);
+                size_t offset = get24(packet + hs + 6);
+                size_t fragment = get24(packet + hs + 9);
+                if (fragment > end - hs - 12 || offset > declared ||
+                    fragment > declared - offset)
+                    return SignatureMutation::malformed;
+                if (type == target_type) {
+                    if (offset != 0 || fragment != declared)
+                        return SignatureMutation::malformed;
+                    size_t base = target_type == 12 ? 69 : 0;
+                    size_t length_at = hs + 12 + base + 2;
+                    if (fragment < base + 5 || length_at + 2 > hs + 12 + fragment)
+                        return SignatureMutation::malformed;
+                    const size_t signature_size = get16(packet + length_at);
+                    if (!signature_size || declared != base + 4 + signature_size)
+                        return SignatureMutation::malformed;
+                    packet[hs + 12 + declared - 1] ^= 0x01;
+                    return SignatureMutation::changed;
+                }
+                hs += 12 + fragment;
+            }
+            if (hs != end) return SignatureMutation::malformed;
+        }
+        record = end;
+    }
+    return record == packet_size ? SignatureMutation::skipped :
+                                   SignatureMutation::malformed;
+}
+
 struct IndependentPair {
     bool gm_server;
     uint16_t profile;
@@ -168,7 +223,9 @@ struct IndependentPair {
     bool disable_ems;
     bool duplicate_ems;
     bool tamper_peer_finished;
+    bool corrupt_peer_signature;
     bool peer_finished_tampered = false;
+    bool peer_signature_corrupted = false;
     unsigned duplicated_hello_records = 0;
     tstr gm_certificate = nullptr, gm_private_key = nullptr;
     tstr external_certificate = nullptr, external_private_key = nullptr;
@@ -185,11 +242,12 @@ struct IndependentPair {
 
     IndependentPair(bool server, uint16_t id, bool rsa, bool wrong_pin = false,
                     bool no_ems = false, bool duplicate_ems_extension = false,
-                    bool tamper_finished = false)
+                    bool tamper_finished = false, bool wrong_signature = false)
         : gm_server(server), profile(id), rsa_identity(rsa),
           wrong_fingerprint(wrong_pin), disable_ems(no_ems),
           duplicate_ems(duplicate_ems_extension),
-          tamper_peer_finished(tamper_finished) {}
+          tamper_peer_finished(tamper_finished),
+          corrupt_peer_signature(wrong_signature) {}
 
     ~IndependentPair() {
         SSL_free(ssl);
@@ -497,6 +555,78 @@ struct IndependentPair {
                 return failure("negative-policy-unexpected-timer-error");
         }
         return failure("negative-policy-no-explicit-rejection");
+    }
+
+    bool reject_corrupted_peer_signature() {
+        /* The independent peer really performs the signed DTLS 1.2
+         * handshake. Only the signature's last byte is changed in transit:
+         * no malformed record framing, altered identities or local mocks.
+         * The GmSSL owner must reject with AUTH and never publish media.
+         */
+        if (!corrupt_peer_signature || wrong_fingerprint || disable_ems ||
+            duplicate_ems || tamper_peer_finished)
+            return failure("signed-handshake-negative-not-isolated");
+        stage = gm_server ? "invalid-peer-CertificateVerify" :
+                            "invalid-peer-ServerKeyExchange";
+        bool openssl_terminal = false;
+        for (unsigned step = 0; step < 3500; ++step) {
+            clock_ms += 10;
+            if (!pump_gm_output()) return false;
+            if (!openssl_terminal) {
+                const int result = SSL_do_handshake(ssl);
+                if (result == 1) openssl_terminal = true;
+                else {
+                    const int error = SSL_get_error(ssl, result);
+                    if (error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE)
+                        openssl_terminal = true;
+                }
+            }
+            uint8_t packet[65535];
+            for (;;) {
+                const ssize_t n = recv(socket_fd[0], packet, sizeof(packet), 0);
+                if (n < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                    return failure("signed-handshake-UDP-receive");
+                }
+                if (n == 0) continue;
+                ++openssl_in_packets;
+                const size_t packet_size = static_cast<size_t>(n);
+                SignatureMutation mutation = corrupt_signed_handshake(
+                    packet, packet_size, gm_server ? 15 : 12);
+                if (mutation == SignatureMutation::malformed)
+                    return failure("signed-handshake-record-not-complete");
+                if (mutation == SignatureMutation::changed) {
+                    if (peer_signature_corrupted)
+                        return failure("signed-handshake-mutated-more-than-once");
+                    peer_signature_corrupted = true;
+                }
+                int result = turbo_gdtls_receive(gm, packet, packet_size, clock_ms);
+                if (result == TURBO_GDTLS_AUTH) {
+                    if (!peer_signature_corrupted)
+                        return failure("signature-rejection-without-mutation");
+                    uint8_t exported[88] = {};
+                    size_t exported_size = sizeof(exported);
+                    bool rejected = !turbo_gdtls_ready(gm) &&
+                        turbo_gdtls_srtp_profile(gm) == 0 &&
+                        turbo_gdtls_export_srtp(gm, exported, sizeof(exported),
+                                                &exported_size) == TURBO_GDTLS_AUTH &&
+                        exported_size == 0 &&
+                        turbo_gdtls_take_plaintext(gm) == nullptr &&
+                        turbo_gdtls_write(gm, "x", 1) == TURBO_GDTLS_CLOSED;
+                    OPENSSL_cleanse(exported, sizeof(exported));
+                    if (!rejected)
+                        return failure("signature-rejection-exposed-media-or-keys");
+                    return true;
+                }
+                if (result != TURBO_GDTLS_OK)
+                    return failure("signed-handshake-wrong-terminal-error");
+                if (turbo_gdtls_ready(gm))
+                    return failure("signed-handshake-accepted-invalid-signature");
+            }
+            if (turbo_gdtls_poll(gm, clock_ms) != TURBO_GDTLS_OK)
+                return failure("signed-handshake-timer-instead-of-rejection");
+        }
+        return failure("invalid-signed-handshake-not-rejected");
     }
 
     bool qualify_exporter() {
@@ -877,6 +1007,22 @@ suite("OpenSSL 3.x independent DTLS 1.2 interop (#171)") {
                 check_true(fixture.handshake());
                 check_true(fixture.qualify_exporter());
                 check_true(fixture.exchange_application());
+            }
+        }
+    }
+    /* Verify actual OpenSSL ECDSA and RSA handshake signatures are required:
+     * - GmSSL client validates OpenSSL ServerKeyExchange
+     * - GmSSL server validates OpenSSL client CertificateVerify
+     * A one-bit signature mutation must yield AUTH, not timeout or readiness.
+     */
+    for (int rsa = 0; rsa < 2; ++rsa) {
+        for (int server = 0; server < 2; ++server) {
+            it("GmSSL server=%d RSA=%d rejects tampered independent peer handshake signature",
+               server, rsa) {
+                IndependentPair fixture(server != 0, 7, rsa != 0,
+                                        false, false, false, false, true);
+                check_true(fixture.init());
+                check_true(fixture.reject_corrupted_peer_signature());
             }
         }
     }
