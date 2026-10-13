@@ -186,6 +186,9 @@ static int submit(tm_test_provider *p,tm_test_instance_request identity,
 #ifdef TM_TEST_FFMPEG_INNER_GATE
 #include "delayed_flush_gate_test.inc"
 #endif
+#ifdef TM_TEST_RTSP_PROVIDER
+#include "installed_rtsp_overlap_test.inc"
+#endif
 
 int main(int argc,char **argv) {
     const cmeta_plugin_registry_config config={2};
@@ -399,6 +402,14 @@ int main(int argc,char **argv) {
         assert(quiet);
         assert(cmeta_plugin_registry_unload(&registry,ref_n)==CMETA_PLUGIN_OK);
     }
+#ifdef TM_TEST_RTSP_PROVIDER
+    /* Unlike the build-tree RTSP suite this is an unrelated installed-SDK
+     * C11 host: real Salts Plugin DSO plus installed TurboMedia::RTSP
+     * CNet callback and original pending Portal Ticket coexist on stack. */
+    tm_installed_rtsp_cancel_under_scope(
+        &service_n1,&runtime,&n1.generation,&registry,ref_n1,
+        &wake,input.packet[0]);
+#endif
 #ifdef TM_TEST_FFMPEG_INNER_GATE
     /* Exercise cancellation INSIDE the real delayed MPEG-2 Codec's NULL
      * flush, under the original N+1 Scope and canonical Plugin loader. */
