@@ -95,6 +95,11 @@ jobs:
           build="$GITHUB_WORKSPACE/build/m15d-rtsp"
           export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
+          # Host generators (salts-idlc) are real executables from the
+          # immutable released SaltsUtils SDK. Resolve their exact Salts
+          # dynamic dependency BEFORE CMake invokes any code generation.
+          export LD_LIBRARY_PATH="$prefix/lib:$SALTS_ROOT/lib:$SALTS_UTILS_ROOT/lib:$SALTSNET_ROOT/lib:$CHTTP_ROOT/lib:$RULES_FORGE_ROOT/lib:$installed/x64-linux/lib"
+          test -f "$SALTS_ROOT/lib/libsalts.so.2.3"
           test "$(pkg-config --variable=prefix libavcodec)" = "$prefix"
           cmake -S . -B "$build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
