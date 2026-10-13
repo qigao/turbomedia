@@ -1,0 +1,184 @@
+name: M15d RTSP kernel completion and Owner cancellation #192
+'on':
+  pull_request:
+    paths:
+      - '.github/workflows/streamgraph-rtsp-kernel-dispatch.yml'
+      - 'tests/rtsp_nativeio_kernel_dispatch.c'
+      - 'tests/CMakeLists.txt'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'CMakeLists.txt'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+env:
+  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+  SALTS_KERNEL_TEST_SHA: 8f448202367c93c04b8981085ee3f07c538ac330
+concurrency:
+  group: m15d-rtsp-kernel-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  real-rtsp-kernel:
+    name: RTSP/CNet real epoll Owner cancellation (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [release, asan-ubsan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout exact Salts Draft #1176 private kernel backend source
+        uses: actions/checkout@v4
+        with:
+          repository: qigao/salts
+          ref: 8f448202367c93c04b8981085ee3f07c538ac330
+          path: build/m15d-private-nativeio
+          persist-credentials: false
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Prepare test-only original NativeIO and real RTSP dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool ccache python3 \
+            libpipewire-0.3-dev libx11-dev libxext-dev
+          test "$(git -C build/m15d-private-nativeio rev-parse HEAD)" = "$SALTS_KERNEL_TEST_SHA"
+          grep -F 'SALTS_NATIVE_IO_KERNEL_TEST_HOOK' \
+            build/m15d-private-nativeio/native-io/src/native_io_readiness.c
+          echo "Exact private NativeIO source SHA: $SALTS_KERNEL_TEST_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Restore exact published Salts RTSP/CNet SDK graph
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid linux-x64
+      - name: Restore media dependencies cache only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
+          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+          & (Join-Path $env:VCPKG_ROOT 'vcpkg') install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=x64-linux' --only-binarycaching
+          if ($LASTEXITCODE -ne 0) { throw 'cache-only media dependency restore failed' }
+      - name: Build original epoll backend and actual RTSP/CNet consumer
+        shell: bash
+        env:
+          SAN_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          build="$GITHUB_WORKSPACE/build/m15d-rtsp-kernel-$SAN_MODE"
+          args=()
+          if [ "$SAN_MODE" = asan-ubsan ]; then
+            flags='-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer'
+            args=(
+              "-DCMAKE_C_FLAGS=$flags"
+              "-DCMAKE_CXX_FLAGS=$flags"
+              -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined
+              -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined)
+          fi
+          cmake -S . -B "$build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            "-DCMAKE_TOOLCHAIN_FILE=$QIGAO_VCPKG_TOOLCHAIN_FILE" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_MANIFEST_MODE=OFF \
+            "-DVCPKG_INSTALLED_DIR=$GITHUB_WORKSPACE/vcpkg_installed" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            "-DTM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT=$GITHUB_WORKSPACE/build/m15d-private-nativeio" \
+            "${args[@]}"
+          cmake --build "$build" --target turbo_media_rtsp_nativeio_kernel_dispatch --parallel 2
+      - name: Prove genuine Salts source copy and local hook, not an installed ABI
+        shell: bash
+        env:
+          SAN_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          build="build/m15d-rtsp-kernel-$SAN_MODE"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          cmds=json.loads((Path('build/m15d-rtsp-kernel-' + os.environ['SAN_MODE']) /
+                           'compile_commands.json').read_text())
+          for suffix in (
+              '/tests/rtsp_nativeio_kernel_dispatch.c',
+              '/native-io/src/native_io.c',
+              '/native-io/src/native_io_epoll.c',
+              '/native-io/src/native_io_readiness.c',
+          ):
+              matched=[c for c in cmds if c['file'].replace('\\','/').endswith(suffix)]
+              if not matched:
+                  raise SystemExit('NativeIO source not compiled: ' + suffix)
+              for entry in matched:
+                  cmd=entry.get('command',' '.join(entry.get('arguments',())))
+                  if '-DSALTS_NATIVE_IO_KERNEL_TEST_HOOK=1' not in cmd:
+                      raise SystemExit('Private kernel hook not actually compiled: '+suffix)
+                  if os.environ['SAN_MODE']=='asan-ubsan' and '-fsanitize=address,undefined' not in cmd:
+                      raise SystemExit('Not source ASan/UBSan instrumented: '+suffix)
+              print('Exact private native kernel source compiled: '+suffix)
+          PY
+          binary="$build/bin/turbo_media_rtsp_nativeio_kernel_dispatch"
+          test -x "$binary"
+          if nm -D --defined-only "$binary" | grep -E ' native_io_backend_'; then
+            echo 'Private native backend leaked a publicly interposing symbol' >&2
+            exit 1
+          fi
+      - name: Repeat real RTSP receive/cancel kernel order and Generation fence
+        shell: bash
+        env:
+          SAN_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          build="$GITHUB_WORKSPACE/build/m15d-rtsp-kernel-$SAN_MODE"
+          for key in SALTS_ROOT SALTS_UTILS_ROOT SALTSNET_ROOT CHTTP_ROOT RULES_FORGE_ROOT; do
+            root="${!key:-}"
+            if [ -n "$root" ]; then
+              for sub in lib bin; do
+                if [ -d "$root/$sub" ]; then
+                  export LD_LIBRARY_PATH="$root/$sub:${LD_LIBRARY_PATH:-}"
+                fi
+              done
+            fi
+          done
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/lib:${LD_LIBRARY_PATH:-}"
+          binary="$build/bin/turbo_media_rtsp_nativeio_kernel_dispatch"
+          ldd "$binary" | tee "$build/sdk-ldd.txt"
+          grep -F "$SALTS_ROOT/lib/libcnet.so.2.3" "$build/sdk-ldd.txt"
+          grep -F 'libturbo_media_rtsp.so.2' "$build/sdk-ldd.txt"
+          if grep -F 'not found' "$build/sdk-ldd.txt"; then
+            echo 'Released RTSP/CNet runtime graph has unresolved dependency' >&2
+            exit 1
+          fi
+          if [ "$SAN_MODE" = asan-ubsan ]; then
+            export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1
+            export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+          fi
+          ctest --test-dir "$build" \
+            -R '^turbo_media_rtsp_nativeio_kernel_dispatch$' \
+            --repeat until-fail:12 --no-tests=error --output-on-failure --timeout 90 |
+            tee "$build/nativeio-kernel-results.txt"
+          grep -F '100% tests passed' "$build/nativeio-kernel-results.txt"
+          echo "Real RTSP Server/CNet + original test-only epoll after-kernel dispatch ($SAN_MODE): 12 × 12 request-generation cases PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo 'No fabricated event, cross-Owner backend API, scheduler or installed NativeIO ABI change.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Archive original kernel conformance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m15d-rtsp-kernel-${{ matrix.mode }}
+          path: |
+            build/m15d-rtsp-kernel-${{ matrix.mode }}/sdk-ldd.txt
+            build/m15d-rtsp-kernel-${{ matrix.mode }}/nativeio-kernel-results.txt
+            build/m15d-rtsp-kernel-${{ matrix.mode }}/Testing/Temporary/LastTest.log
+            build/m15d-rtsp-kernel-${{ matrix.mode }}/compile_commands.json
+          if-no-files-found: warn
+          retention-days: 14
