@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   installed-salts-dso:
-    name: Exact Salts 2.3.0-rc.14 Provider DSO (${{ matrix.os }})
+    name: Exact Salts 2.3.0-rc.15 Provider DSO (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -32,8 +32,8 @@ jobs:
       - name: Fetch and attest the public immutable Salts.Native candidate
         shell: bash
         env:
-          SALTS_RELEASE_SHA: c8a1a3d5e259a89ad42e75f1e4c3142e6b106ee1
-          SALTS_RELEASE_VERSION: 2.3.0-rc.14
+          SALTS_RELEASE_SHA: 21bdb1145fbb2b39ee3fa644173ec037adba7b87
+          SALTS_RELEASE_VERSION: 2.3.0-rc.15
         run: |
           set -euo pipefail
           case "$RUNNER_OS" in
