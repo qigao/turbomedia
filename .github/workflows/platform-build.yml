@@ -228,7 +228,8 @@ jobs:
            github.head_ref == 'test/sctp-manual-timer-elapsed-red-208' ||
            github.head_ref == 'fix/sctp-monotonic-timer-pump-208' ||
            github.head_ref == 'test/sctp-timer-reentrant-callback-208' ||
-           github.head_ref == 'test/sctp-real-timer-foreign-close-208')
+           github.head_ref == 'test/sctp-real-timer-foreign-close-208' ||
+           github.head_ref == 'ci/sctp-real-timer-tsan-208')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -371,7 +372,7 @@ jobs:
             )
           }
           if ("${{ matrix.platform }}" -eq "Linux" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "ci/sctp-real-timer-tsan-208")) {
             $args += "-DTURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON"
           }
           if ("${{ matrix.platform }}" -eq "Windows" -and
@@ -381,7 +382,7 @@ jobs:
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
           if ("${{ matrix.platform }}" -eq "Linux" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "ci/sctp-real-timer-tsan-208")) {
             $cache = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform/CMakeCache.txt"
             if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON$" -Quiet)) {
               throw "Independent OpenSSL DTLS qualification is not enabled on the Linux Draft CI"
@@ -524,7 +525,7 @@ jobs:
             # First crash fails immediately; no passes after failure can hide it.
             # This is independent from the dead-SFU WHIP teardown gate below.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208")) {
+                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "ci/sctp-real-timer-tsan-208")) {
               & ctest --preset ci-platform-test -R "^turbo_media_test_webrtc_e2e$" --repeat "until-fail:50" --output-on-failure --timeout 90
               if ($LASTEXITCODE -ne 0) {
                 throw "Windows WebRTC ICE E2E repeat conformance failed"
@@ -534,7 +535,7 @@ jobs:
             # SFU restarts must both pass. No skipped tests, wider production
             # deadlines, application replay or automatic settlement retry.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208")) {
+                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "ci/sctp-real-timer-tsan-208")) {
               $peerDestroyStageCount = 0
               $whepPeerDestroyMs = [System.Collections.Generic.List[long]]::new()
               # CTest normally hides successful test stdout. Capture only the
@@ -611,7 +612,8 @@ jobs:
            github.head_ref == 'test/sctp-manual-timer-elapsed-red-208' ||
            github.head_ref == 'fix/sctp-monotonic-timer-pump-208' ||
            github.head_ref == 'test/sctp-timer-reentrant-callback-208' ||
-           github.head_ref == 'test/sctp-real-timer-foreign-close-208')
+           github.head_ref == 'test/sctp-real-timer-foreign-close-208' ||
+           github.head_ref == 'ci/sctp-real-timer-tsan-208')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -640,6 +642,81 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan build failed" }
           & ctest --preset ci-platform-linux-asan-ubsan
           if ($LASTEXITCODE -ne 0) { throw "Linux ACE ASan/UBSan native tests failed" }
+
+      # Independent first-party ThreadSanitizer gate. Audit actual object files
+      # and compile commands. Installed SDK dependencies are not instrumented.
+      - name: Linux first-party SCTP TSAN compile and runtime
+        if: >-
+          matrix.platform == 'Linux' &&
+          github.event_name == 'pull_request' &&
+          github.head_ref == 'ci/sctp-real-timer-tsan-208'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runtimeDirs = @()
+          foreach ($name in @("SALTS_ROOT", "SALTS_UTILS_ROOT", "SALTSNET_ROOT", "CHTTP_ROOT", "RULES_FORGE_ROOT")) {
+            $root = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("bin", "lib")) {
+              $candidate = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
+            }
+          }
+          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/\${{ matrix.triplet }}"
+          foreach ($leaf in @("bin", "lib")) {
+            $candidate = Join-Path $vcpkgRuntime $leaf
+            if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
+          }
+          $parts = @($runtimeDirs)
+          if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
+          $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
+          $env:TSAN_OPTIONS = "halt_on_error=1:exitcode=66:history_size=7"
+          & cmake --preset ci-platform-linux-tsan
+          if ($LASTEXITCODE -ne 0) { throw "Linux SCTP TSan configure failed" }
+          & cmake --build --preset ci-platform-linux-tsan-build --target turbo_media_test_dtls_concurrency
+          if ($LASTEXITCODE -ne 0) { throw "Linux SCTP TSan compiled target failed" }
+
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform-linux-tsan"
+          $database = Join-Path $build "compile_commands.json"
+          if (-not (Test-Path -LiteralPath $database -PathType Leaf)) {
+            throw "SCTP TSan compile_commands.json not exported"
+          }
+          $entries = @(Get-Content -LiteralPath $database -Raw | ConvertFrom-Json)
+          $required = @(
+            "test_dtls_concurrency.c",
+            "turbo_datachannel.c",
+            "dc_identity.cpp",
+            "gmssl_dtls.c",
+            "dc_certificate_gmssl.cpp",
+            "turbo_datachannel_errors.c",
+            "turbo_dc_msg.c",
+            "dcep_protocol.c",
+            "dtls_session.c",
+            "sctp_session.c",
+            "stb_sprintf.c"
+          )
+          foreach ($unit in $required) {
+            $found = @($entries | Where-Object {
+              $_.command.Contains("webrtc/tests/CMakeFiles/turbo_media_test_dtls_concurrency.dir/") -and
+              $_.file.Replace([char]92, [char]47).EndsWith("/$unit")
+            })
+            if ($found.Count -ne 1) { throw "SCTP TSan translation unit missing/ambiguous: $unit count=$($found.Count)" }
+            $command = $found[0].command
+            if (-not $command.Contains("-fsanitize=thread") -or
+                -not $command.Contains("-fno-omit-frame-pointer")) {
+              throw "SCTP TSan flags absent in actual command: $unit"
+            }
+            $objectMatch = [regex]::Match($command, '\s-o\s+(\S+)')
+            if (-not $objectMatch.Success) { throw "SCTP TSan object path not found: $unit" }
+            $object = Join-Path $build $objectMatch.Groups[1].Value.Trim('"')
+            if (-not (Test-Path -LiteralPath $object -PathType Leaf)) {
+              throw "SCTP TSan instrumentation was configured but not compiled: $unit"
+            }
+            Write-Host "SCTP first-party TSan verified: $unit"
+          }
+          Write-Host "SCTP first-party TSan objects $($required.Count)/$($required.Count) compiled and instrumented"
+          & ctest --preset ci-platform-linux-tsan --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Linux SCTP first-party TSan runtime failed" }
 
       # Fault-injection tests exercise the CI build, never the installed SDK.
       # Rebuild and retest with injection disabled before installation.
