@@ -1344,20 +1344,41 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
 
     if (!peer || dc_peer_begin_destroy(peer) != 0) return;
 
+    /* dc_peer_begin_destroy has published terminal peer admission and
+     * drained every admitted callback. Native Socket borrows made by direct
+     * Channel calls still have a separate bounded lifetime: drain them
+     * BEFORE taking the process-global timer mutex. No thread can admit
+     * another borrow after destroying became true. */
+    sctp_receive_stop(peer);
+    sctp_native_wait_quiescent(peer);
+
+    /* usrsctp 0.9.5.0 removes an expired callout from its queue and unlocks
+     * before c_func(c_arg). A dequeued callback may therefore still carry
+     * the raw AF_CONN peer address BEFORE dc_peer_acquire can own it. Hold
+     * the already-existing timer-pump mutex across native socket retirement
+     * and AF_CONN deregistration so the peer cannot be reclaimed across
+     * this pre-admission gap. The lock is released before any transport or
+     * DTLS teardown callbacks, preserving their normal reentrancy. */
+    int timer_fence_acquired = sctp_global_timer_retirement_begin();
+    sctp_native_close_socket(peer,
+                             peer->state == TURBO_DC_STATE_CLOSED ? 0 : 1);
+    if (peer->sctp_address_registered) {
+        usrsctp_deregister_address(peer);
+        peer->sctp_address_registered = 0;
+    }
+    sctp_global_timer_retirement_end(timer_fence_acquired);
+
+    /* These paths may invoke transport/user callbacks, so they run outside
+     * the process-global timer mutex. The Socket and AF_CONN registration
+     * have already been retired exactly once. */
     dc_peer_close_impl(peer);
 
     /* A transport can have reported CLOSED before explicit close. Always
      * remove its deadline registration, including that already-closed path. */
     dtls_session_shutdown(peer);
 
-    /* Always settle native close, including the remote-CLOSED path. */
+    /* Idempotent native close (also covers a remote-CLOSED branch). */
     sctp_native_close_socket(peer, 0);
-
-    /* AF_CONN addresses remain process-global until explicitly deregistered. */
-    if (peer->sctp_address_registered) {
-        usrsctp_deregister_address(peer);
-        peer->sctp_address_registered = 0;
-    }
 
     if (peer->transport_ops && peer->transport_ops->destroy) {
         peer->transport_ops->destroy(peer);
