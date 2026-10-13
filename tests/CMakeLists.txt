@@ -177,9 +177,25 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
     if(TEST_NAME STREQUAL "test_rtsp" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      # The original and fault-injection tests use the SAME two real
+      # installed-Salts ComponentPlugin DSOs and fixed localhost RTSP port.
+      # Prevent simultaneous CTest invocations from competing for them.
+      set(_rtsp_dso_fixture_env
+        "TM_RTSP_TEST_DSO_101=$<TARGET_FILE:tm_rtsp_component_provider_101>;TM_RTSP_TEST_DSO_102=$<TARGET_FILE:tm_rtsp_component_provider_102>")
       set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
-        ENVIRONMENT
-          "TM_RTSP_TEST_DSO_101=$<TARGET_FILE:tm_rtsp_component_provider_101>;TM_RTSP_TEST_DSO_102=$<TARGET_FILE:tm_rtsp_component_provider_102>")
+        ENVIRONMENT "${_rtsp_dso_fixture_env}"
+        RESOURCE_LOCK tm_rtsp_cnet_ports)
+
+      # Deliberately fail a NONFATAL predicate with the original NativeIO
+      # callback and real Provider DSO worker both on stack. The assertion
+      # is checked after callbacks join and the original Ticket is settled.
+      add_test(NAME turbo_media_test_rtsp_deferred_check_cleanup
+        COMMAND ${TEST_TARGET_NAME})
+      set_tests_properties(turbo_media_test_rtsp_deferred_check_cleanup PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+        ENVIRONMENT "${_rtsp_dso_fixture_env};TM_RTSP_INJECT_DEFERRED_CHECK=1"
+        RESOURCE_LOCK tm_rtsp_cnet_ports
+        TIMEOUT 120)
     endif()
     if(TEST_NAME STREQUAL "test_benchmark")
       set_tests_properties(${TEST_TARGET_NAME} PROPERTIES LABELS performance)

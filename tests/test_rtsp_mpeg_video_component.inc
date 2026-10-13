@@ -223,6 +223,8 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
     size_t bytes=0u;
     const uint32_t ssrc101=0x77776666u,ssrc102=0x88889999u;
     unsigned next=0u,round=0u,finished=0u,eof=0u,published=0u;
+    const char *forced=getenv("TM_RTSP_INJECT_DEFERRED_CHECK");
+    const unsigned inject_deferred_check=forced && strcmp(forced,"1")==0 ? 1u : 0u;
 
     check_not_null(path101);check_not_null(path102);
     if(!path101 || !path102)return;
@@ -426,6 +428,12 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
             callback_entered=(unsigned)rtsp_test_wait_for_callback(
                 &state.interleaved_entered);
             RTSP_MPV_LIVE_TRUE(callback_entered);
+            /* Deliberately fail ONE predicate with both real RTSP and
+             * CMeta/Codec stacks borrowed. The test MUST proceed through
+             * original cancel, callback release, join and Ticket settlement
+             * before checking that the failure was recorded. */
+            if(inject_deferred_check)
+                RTSP_MPV_LIVE_TRUE(0u);
             /* The CNet callback is alive with old Session storage.
              * Retire N+1 publication while its canonical DSO Scope
              * and original cancellation Ticket are still live.
@@ -523,7 +531,7 @@ overlap_release:
         check_true(tm_pc_take(p102,&taken,&receipt)!=TM_PC_OK);
         /* This fatal assertion happens only after RTSP callback exit,
          * Codec worker join, and settlement of the original Ticket. */
-        check_equal(gate_failures,0u);
+        check_equal(gate_failures,inject_deferred_check);
     }
     stats=(tm_ffd_stats_v1)TM_FFD_STATS_V1_INIT;
     stats_request.instance_id=second.instance_id;

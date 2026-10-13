@@ -214,7 +214,7 @@ jobs:
           if ($env:LD_LIBRARY_PATH) { $dirs += $env:LD_LIBRARY_PATH }
           $env:LD_LIBRARY_PATH = $dirs -join [IO.Path]::PathSeparator
           $env:TSAN_OPTIONS = 'halt_on_error=1:exitcode=66'
-          & ctest --test-dir $build -R '^turbo_media_test_rtsp$' --no-tests=error --output-on-failure --timeout 120
+          & ctest --test-dir $build -R '^(turbo_media_test_rtsp|turbo_media_test_rtsp_deferred_check_cleanup)$' --no-tests=error --output-on-failure --timeout 120
           if ($LASTEXITCODE -ne 0) { throw 'real source-Salts+RTSP/DSO TSan gate failed' }
 
       - name: Preserve exact source provenance and TSan evidence

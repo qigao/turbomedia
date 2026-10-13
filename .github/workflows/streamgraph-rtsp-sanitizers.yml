@@ -160,5 +160,5 @@ jobs:
           } else {
             $env:TSAN_OPTIONS = "halt_on_error=1"
           }
-          & ctest --test-dir $build -R '^turbo_media_test_rtsp$' --no-tests=error --output-on-failure --timeout 120
+          & ctest --test-dir $build -R '^(turbo_media_test_rtsp|turbo_media_test_rtsp_deferred_check_cleanup)$' --no-tests=error --output-on-failure --timeout 120
           if ($LASTEXITCODE -ne 0) { throw "RTSP/DSO first-party Sanitizer conformance failed" }
