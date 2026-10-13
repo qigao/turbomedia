@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   real-rtsp-kernel:
-    name: RTSP/CNet real epoll Owner cancellation (${{ matrix.mode }})
+    name: RTSP/CNet real kernel cancellation (${{ matrix.os }}, ${{ matrix.mode }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -95,7 +95,9 @@ jobs:
         run: |
           set -euo pipefail
           build="$GITHUB_WORKSPACE/build/m15d-rtsp-kernel-$SAN_MODE"
-          args=()
+          # macOS ships Bash 3.2: an empty array under set -u makes
+          # "${args[@]}" an unbound variable. Always pass one benign arg.
+          args=(-DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
           if [ "$SAN_MODE" = asan-ubsan ]; then
             flags='-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer'
             args=(
