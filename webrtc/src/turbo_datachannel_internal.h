@@ -291,6 +291,12 @@ void sctp_global_cleanup(void);
 /* Advance no-thread usrsctp timers by monotonic elapsed time once per
  * process, serialized across callers and safe from synchronous reentry. */
 void sctp_global_poll_timers(void);
+/* Foreign peer destruction serializes its native Socket close and AF_CONN
+ * deregistration with the global timer pump. begin() returns whether it
+ * acquired that mutex; pass the same result to end(). Call only after all
+ * previously admitted per-peer operations/Socket borrows have settled. */
+int sctp_global_timer_retirement_begin(void);
+void sctp_global_timer_retirement_end(int acquired);
 
 int sctp_session_init(turbo_dc_peer_t *peer);
 int sctp_start_association(turbo_dc_peer_t *peer);
@@ -414,6 +420,19 @@ static inline void sctp_native_return(turbo_dc_peer_t *peer) {
     cmeta_mutex_unlock(&peer->operation_mutex);
     if (last_socket)
         sctp_native_finish_close(peer, last_socket, last_shutdown);
+}
+
+/* Called only after peer->destroying has sealed both peer and Socket
+ * admissions. Drain all earlier native borrows / in-progress physical close
+ * BEFORE acquiring the process-global timer retirement fence, so no
+ * borrowed native operation can wait on the global timer mutex while the
+ * destroying owner is waiting for that borrow to return. */
+static inline void sctp_native_wait_quiescent(turbo_dc_peer_t *peer) {
+    if (!peer || !peer->operation_sync_initialized) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    while (peer->sctp.native_borrows != 0 || peer->sctp.native_closing)
+        cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
+    cmeta_mutex_unlock(&peer->operation_mutex);
 }
 
 static inline void sctp_native_request_close(turbo_dc_peer_t *peer, int shutdown) {
