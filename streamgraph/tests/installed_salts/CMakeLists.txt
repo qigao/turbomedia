@@ -21,9 +21,34 @@ endif()
 find_package(Salts 2.3.0 EXACT CONFIG REQUIRED
   PATHS "$ENV{TM_SALTS_SDK_ROOT}" NO_DEFAULT_PATH
   NO_CMAKE_FIND_ROOT_PATH)
-find_package(TurboMediaStreamGraph CONFIG REQUIRED
-  PATHS "$ENV{TM_SG_SDK_ROOT}" NO_DEFAULT_PATH
-  NO_CMAKE_FIND_ROOT_PATH)
+# M15d opt-in: import the actual installed RTSP plus format-neutral
+# StreamGraph and the FFmpeg add-on from the SAME installed SDK closure.
+# Ordinary standalone StreamGraph consumers retain their original contract.
+if(DEFINED ENV{TM_TEST_RTSP_PROVIDER} AND
+   "$ENV{TM_TEST_RTSP_PROVIDER}" STREQUAL "1")
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+     NOT DEFINED ENV{TM_RTSP_SDK_ROOT} OR
+     NOT IS_DIRECTORY "$ENV{TM_RTSP_SDK_ROOT}" OR
+     NOT "$ENV{TM_RTSP_SDK_ROOT}" STREQUAL "$ENV{TM_SG_SDK_ROOT}")
+    message(FATAL_ERROR
+      "Installed RTSP + DSO gate requires exact shared Linux SDK root")
+  endif()
+  find_package(TurboMedia CONFIG REQUIRED
+    COMPONENTS RTSP StreamGraph StreamGraphFFmpeg
+    PATHS "$ENV{TM_RTSP_SDK_ROOT}" NO_DEFAULT_PATH
+    NO_CMAKE_FIND_ROOT_PATH)
+  foreach(_rtsp_required IN ITEMS TurboMedia::RTSP
+        TurboMedia::StreamGraph TurboMedia::StreamGraphFFmpeg)
+    if(NOT TARGET ${_rtsp_required})
+      message(FATAL_ERROR "Exact installed SDK lacks ${_rtsp_required}")
+    endif()
+  endforeach()
+  set(_TM_TEST_RTSP TRUE)
+else()
+  find_package(TurboMediaStreamGraph CONFIG REQUIRED
+    PATHS "$ENV{TM_SG_SDK_ROOT}" NO_DEFAULT_PATH
+    NO_CMAKE_FIND_ROOT_PATH)
+endif()
 foreach(_required IN ITEMS Salts::ComponentPlugin Salts::ComponentPluginABI
                            Salts::Plugin Salts::PluginABI Salts::CNet
                            TurboMedia::StreamGraph)
@@ -41,9 +66,11 @@ if(DEFINED ENV{TM_TEST_FFMPEG_DSO} AND "$ENV{TM_TEST_FFMPEG_DSO}" STREQUAL "1")
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(TM_TEST_LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec)
   pkg_check_modules(TM_TEST_LIBAVUTIL REQUIRED IMPORTED_TARGET libavutil)
-  find_package(TurboMediaStreamGraphFFmpeg CONFIG REQUIRED
-    PATHS "$ENV{TM_SG_SDK_ROOT}" NO_DEFAULT_PATH
-    NO_CMAKE_FIND_ROOT_PATH)
+  if(NOT _TM_TEST_RTSP)
+    find_package(TurboMediaStreamGraphFFmpeg CONFIG REQUIRED
+      PATHS "$ENV{TM_SG_SDK_ROOT}" NO_DEFAULT_PATH
+      NO_CMAKE_FIND_ROOT_PATH)
+  endif()
   if(NOT TARGET TurboMedia::StreamGraphFFmpeg)
     message(FATAL_ERROR "Installed StreamGraphFFmpeg Provider SDK missing")
   endif()
@@ -117,6 +144,12 @@ if(_TM_TEST_FFMPEG)
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_compile_definitions(tm_installed_salts_delayed_test
     PRIVATE TM_TEST_FFMPEG_DSO=1)
+  if(_TM_TEST_RTSP)
+    target_compile_definitions(tm_installed_salts_delayed_test PRIVATE
+      TM_TEST_RTSP_PROVIDER=1)
+    target_link_libraries(tm_installed_salts_delayed_test PRIVATE
+      TurboMedia::RTSP)
+  endif()
   if(DEFINED ENV{TM_TEST_FFMPEG_INNER_GATE} AND
      "$ENV{TM_TEST_FFMPEG_INNER_GATE}" STREQUAL "1")
     target_compile_definitions(tm_installed_salts_delayed_test
