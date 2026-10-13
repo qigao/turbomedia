@@ -295,8 +295,17 @@ void sctp_global_poll_timers(void);
  * deregistration with the global timer pump. begin() returns whether it
  * acquired that mutex; pass the same result to end(). Call only after all
  * previously admitted per-peer operations/Socket borrows have settled. */
-int sctp_global_timer_retirement_begin(void);
-void sctp_global_timer_retirement_end(int acquired);
+/* These functions are used only between private DataChannel translation
+ * units. Keep them out of the installed shared-library symbol interface on
+ * ELF/Mach-O; Windows exports only explicit public declarations. */
+#if !defined(_WIN32) && (defined(__GNUC__) || defined(__clang__))
+#define TURBO_MEDIA_SCTP_PRIVATE __attribute__((visibility("hidden")))
+#else
+#define TURBO_MEDIA_SCTP_PRIVATE
+#endif
+TURBO_MEDIA_SCTP_PRIVATE int sctp_global_timer_retirement_begin(void);
+TURBO_MEDIA_SCTP_PRIVATE void sctp_global_timer_retirement_end(int acquired);
+#undef TURBO_MEDIA_SCTP_PRIVATE
 
 int sctp_session_init(turbo_dc_peer_t *peer);
 int sctp_start_association(turbo_dc_peer_t *peer);
