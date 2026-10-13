@@ -318,6 +318,17 @@ typedef struct {
     unsigned failed_events;
     int nested_timer_armed;
     unsigned nested_timer_calls;
+    /* Held real native timer-output callback across foreign close/destroy.
+     * Both mutex and condition are per test endpoint, never global owners. */
+    cmeta_cond_t timer_cond;
+    int hold_timer_callback;
+    int timer_callback_entered;
+    int timer_callback_release;
+    int timer_callback_finished;
+    unsigned timer_callback_count;
+    int timer_pump_finished;
+    int lifecycle_started;
+    int lifecycle_finished;
     int drop_first_ready_packet;
     int send_failed;
     turbo_dc_channel_t *channel; /* Borrowed from the peer. */
@@ -366,6 +377,19 @@ static void queue_packet(void *transport, const void *data, size_t len) {
         ++endpoint->nested_timer_calls;
         nested_timer_call = 1;
     }
+    if (g_test_timer_dispatching && endpoint->hold_timer_callback) {
+        /* sctp_outbound_packet_cb has acquired a real peer lease BEFORE this
+         * GmSSL transport callback. Signal only after native timer dispatch
+         * has entered application transport code, and keep the callback
+         * admitted until the foreign owner has published close/destroy. */
+        ++endpoint->timer_callback_count;
+        endpoint->timer_callback_entered = 1;
+        cmeta_cond_broadcast(&endpoint->timer_cond);
+        while (!endpoint->timer_callback_release)
+            cmeta_cond_wait(&endpoint->timer_cond, &endpoint->mutex);
+        endpoint->timer_callback_finished = 1;
+        cmeta_cond_broadcast(&endpoint->timer_cond);
+    }
     cmeta_mutex_unlock(&endpoint->mutex);
     /* An actual usrsctp timer-triggered transport callback reenters the
      * exported pump on its own thread, after releasing all fixture locks.
@@ -386,7 +410,10 @@ static void record_packet_endpoint_state(turbo_dc_peer_t *peer,
 
 static void setup_packet_endpoints(int disable_sctp, uint16_t dtls_mtu, uint16_t sctp_mtu) {
     memset(endpoints, 0, sizeof(endpoints));
-    for (int i = 0; i < 2; ++i) cmeta_mutex_init(&endpoints[i].mutex);
+    for (int i = 0; i < 2; ++i) {
+        cmeta_mutex_init(&endpoints[i].mutex);
+        cmeta_cond_init(&endpoints[i].timer_cond);
+    }
     for (int i = 0; i < 2; ++i) {
         packet_endpoint_t *endpoint = &endpoints[i];
         turbo_dc_config_t config = {0};
@@ -424,6 +451,7 @@ static void cleanup_packet_endpoints(void) {
         while (deque_pop_front(&endpoints[i].outgoing, &packet) == STL_OK)
             tstr_free(packet);
         deque_destroy(&endpoints[i].outgoing);
+        cmeta_cond_destroy(&endpoints[i].timer_cond);
         cmeta_mutex_destroy(&endpoints[i].mutex);
     }
 }
@@ -707,6 +735,215 @@ spec("SCTP manual timer elapsed progression") {
         unsigned nested = endpoints[0].nested_timer_calls;
         cmeta_mutex_unlock(&endpoints[0].mutex);
         check_equal(nested, 1u);
+    }
+}
+
+/* Issue #208: run the real SCTP timer engine on one thread, and hold an
+ * admitted outbound application transport callback while a DIFFERENT owner
+ * closes or destroys the peer. This does not insert a fake usrsctp timer or
+ * bypass the installed native library. It is the "callback admitted first"
+ * half of the global timer retirement contract, NOT proof that a callback
+ * dequeued but still before dc_peer_acquire can safely reference userdata. */
+typedef struct {
+    packet_endpoint_t *endpoint;
+    turbo_dc_peer_t *peer;
+    int destroy;
+} timer_foreign_lifecycle_fixture_t;
+
+static int wait_real_timer_flag(packet_endpoint_t *endpoint, int *flag,
+                                uint64_t timeout_ms) {
+    uint64_t until = cmeta_monotonic_ms() + timeout_ms;
+    int ready;
+    cmeta_mutex_lock(&endpoint->mutex);
+    while (!*flag && cmeta_monotonic_ms() < until)
+        (void)cmeta_cond_timedwait(&endpoint->timer_cond, &endpoint->mutex,
+                                   UINT64_C(10000000));
+    ready = *flag;
+    cmeta_mutex_unlock(&endpoint->mutex);
+    return ready;
+}
+
+static void pump_until_real_timer_callback(void *arg) {
+    timer_foreign_lifecycle_fixture_t *fixture = arg;
+    packet_endpoint_t *endpoint = fixture->endpoint;
+    uint64_t until = cmeta_monotonic_ms() + 4000u;
+    for (;;) {
+        g_test_timer_dispatching = 1;
+        turbo_dc_handle_timers();
+        g_test_timer_dispatching = 0;
+        cmeta_mutex_lock(&endpoint->mutex);
+        int entered = endpoint->timer_callback_entered;
+        cmeta_mutex_unlock(&endpoint->mutex);
+        if (entered || cmeta_monotonic_ms() >= until) break;
+        /* Permit a real monotonic interval to elapse; not an ordering
+         * oracle. The callback and closing owner use condition variables. */
+        cmeta_sleep_ms(10);
+    }
+    cmeta_mutex_lock(&endpoint->mutex);
+    endpoint->timer_pump_finished = 1;
+    cmeta_cond_broadcast(&endpoint->timer_cond);
+    cmeta_mutex_unlock(&endpoint->mutex);
+}
+
+static void close_or_destroy_real_timer_peer(void *arg) {
+    timer_foreign_lifecycle_fixture_t *fixture = arg;
+    packet_endpoint_t *endpoint = fixture->endpoint;
+    cmeta_mutex_lock(&endpoint->mutex);
+    endpoint->lifecycle_started = 1;
+    cmeta_cond_broadcast(&endpoint->timer_cond);
+    cmeta_mutex_unlock(&endpoint->mutex);
+    if (fixture->destroy)
+        turbo_dc_peer_destroy(fixture->peer);
+    else
+        turbo_dc_peer_close(fixture->peer);
+    cmeta_mutex_lock(&endpoint->mutex);
+    endpoint->lifecycle_finished = 1;
+    cmeta_cond_broadcast(&endpoint->timer_cond);
+    cmeta_mutex_unlock(&endpoint->mutex);
+}
+
+static void test_admitted_real_timer_vs_foreign_close(int destroy) {
+    packet_endpoint_t *endpoint = &endpoints[0];
+    struct socket *native = sctp_native_borrow(endpoint->peer);
+    check_not_null(native);
+    struct sctp_rtoinfo rto = {0};
+    rto.srto_assoc_id = SCTP_FUTURE_ASSOC;
+    rto.srto_initial = 250;
+    rto.srto_min = 200;
+    rto.srto_max = 1000;
+    int configured = native
+        ? usrsctp_setsockopt(native, IPPROTO_SCTP, SCTP_RTOINFO,
+                             &rto, sizeof(rto)) : -1;
+    if (native) sctp_native_return(endpoint->peer);
+    check_equal(configured, 0);
+    open_packet_channel();
+
+    const uint8_t payload = 0xa7;
+    cmeta_mutex_lock(&endpoint->mutex);
+    unsigned before = endpoint->packets;
+    cmeta_mutex_unlock(&endpoint->mutex);
+    check_equal(turbo_dc_channel_send(endpoint->channel,
+                                      &payload, sizeof(payload), 1), 0);
+    cmeta_mutex_lock(&endpoint->mutex);
+    int sent_one = endpoint->packets > before;
+    endpoint->hold_timer_callback = 1;
+    cmeta_mutex_unlock(&endpoint->mutex);
+    check_true(sent_one);
+
+    timer_foreign_lifecycle_fixture_t fixture = {
+        .endpoint = endpoint, .peer = endpoint->peer, .destroy = destroy
+    };
+    cmeta_thread_t timer_thread = NULL, lifecycle_thread = NULL;
+    int timer_created = cmeta_thread_create(&timer_thread,
+        pump_until_real_timer_callback, &fixture) == 0;
+    int entered = timer_created &&
+        wait_real_timer_flag(endpoint, &endpoint->timer_callback_entered, 4000u);
+    int lifecycle_created = entered && cmeta_thread_create(&lifecycle_thread,
+        close_or_destroy_real_timer_peer, &fixture) == 0;
+    int lifecycle_started = lifecycle_created &&
+        wait_real_timer_flag(endpoint, &endpoint->lifecycle_started, 2000u);
+
+    /* The genuine outbound callback keeps an already-admitted peer lease.
+     * The destroy path MUST NOT reclaim peer storage while this callback
+     * remains held. The ordinary close path instead seals native admission.
+     * Observe that exact gate under its actual operation mutex. */
+    int terminal_observed = 0, prior_operations = 0, close_early = 0;
+    if (lifecycle_started) {
+        uint64_t until = cmeta_monotonic_ms() + 2000u;
+        cmeta_mutex_lock(&fixture.peer->operation_mutex);
+        while (cmeta_monotonic_ms() < until) {
+            terminal_observed = destroy
+                ? fixture.peer->destroying
+                : fixture.peer->sctp.native_close_requested;
+            if (terminal_observed) break;
+            (void)cmeta_cond_timedwait(&fixture.peer->operation_cond,
+                &fixture.peer->operation_mutex, UINT64_C(10000000));
+        }
+        prior_operations = (int)fixture.peer->active_operations;
+        cmeta_mutex_unlock(&fixture.peer->operation_mutex);
+        cmeta_mutex_lock(&endpoint->mutex);
+        close_early = endpoint->lifecycle_finished;
+        cmeta_mutex_unlock(&endpoint->mutex);
+    }
+
+    /* On failed barriers, unblock the timer anyway so CTest can report a
+     * bounded assertion instead of hanging with a test-held callback. */
+    cmeta_mutex_lock(&endpoint->mutex);
+    endpoint->timer_callback_release = 1;
+    cmeta_cond_broadcast(&endpoint->timer_cond);
+    cmeta_mutex_unlock(&endpoint->mutex);
+
+    if (timer_created) {
+        (void)cmeta_thread_join(&timer_thread);
+        cmeta_thread_destroy(&timer_thread);
+    }
+    if (lifecycle_created) {
+        (void)cmeta_thread_join(&lifecycle_thread);
+        cmeta_thread_destroy(&lifecycle_thread);
+    }
+    if (destroy) {
+        /* The peer has been reclaimed only after its admitted callback
+         * returns. Prevent fixture cleanup from destroying it twice. */
+        if (lifecycle_created) {
+            endpoint->peer = NULL;
+            endpoint->channel = NULL;
+        }
+    }
+
+    int pump_done, callback_finished, lifecycle_finished;
+    unsigned callbacks_before;
+    cmeta_mutex_lock(&endpoint->mutex);
+    pump_done = endpoint->timer_pump_finished;
+    callback_finished = endpoint->timer_callback_finished;
+    lifecycle_finished = endpoint->lifecycle_finished;
+    callbacks_before = endpoint->timer_callback_count;
+    cmeta_mutex_unlock(&endpoint->mutex);
+
+    /* No still-live timer callback may be published for this peer after its
+     * final close/destroy. Run the PUBLIC timer pump again in a new elapsed
+     * interval; do not inspect any freed socket or peer pointer. */
+    cmeta_sleep_ms(300);
+    g_test_timer_dispatching = 1;
+    turbo_dc_handle_timers();
+    g_test_timer_dispatching = 0;
+    cmeta_mutex_lock(&endpoint->mutex);
+    unsigned callbacks_after = endpoint->timer_callback_count;
+    cmeta_mutex_unlock(&endpoint->mutex);
+
+    check_true(timer_created);
+    check_true(entered);
+    check_true(lifecycle_created);
+    check_true(lifecycle_started);
+    check_true(terminal_observed);
+    check_true(prior_operations > 0);
+    if (destroy) check_false(close_early);
+    check_true(pump_done);
+    check_true(callback_finished);
+    check_true(lifecycle_finished);
+    check_true(callbacks_before > 0u);
+    check_equal(callbacks_after, callbacks_before);
+    if (!destroy) {
+        check_equal(turbo_dc_peer_get_state(endpoint->peer),
+                    TURBO_DC_STATE_CLOSED);
+        cmeta_mutex_lock(&endpoint->peer->operation_mutex);
+        int native_closed = endpoint->peer->sctp.native_closed;
+        unsigned remaining = endpoint->peer->sctp.native_borrows;
+        cmeta_mutex_unlock(&endpoint->peer->operation_mutex);
+        check_true(native_closed);
+        check_equal(remaining, 0u);
+    }
+}
+
+spec("SCTP real timer callback versus foreign peer lifetime") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("keeps a timer-admitted transport callback alive while foreign close runs") {
+        test_admitted_real_timer_vs_foreign_close(0);
+    }
+
+    it("blocks foreign destroy until timer-admitted transport callback completes") {
+        test_admitted_real_timer_vs_foreign_close(1);
     }
 }
 
