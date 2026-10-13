@@ -196,31 +196,31 @@ jobs:
           grep -F "$stage/lib/libturbo_media_rtsp.so" "$RUNNER_TEMP/installed-consumer-ldd.txt"
           if [ "$TM_M15D_MODE" = "asan-ubsan" ]; then
             python3 - "$GITHUB_WORKSPACE/build/m15d-rtsp/compile_commands.json" "$build/compile_commands.json" <<'PY'
-import json, sys
-files = [
-    (sys.argv[1], (
-        "/media/rtsp/turbo_rtsp.c",
-        "/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c",
-    )),
-    (sys.argv[2], (
-        "/streamgraph/tests/installed_salts/real_component_provider.c",
-        "/streamgraph/tests/installed_salts/test_delayed_component_plugin.c",
-    )),
-]
-for path, required in files:
-    with open(path, encoding="utf-8") as source:
-        entries = json.load(source)
-    for suffix in required:
-        matched = [entry for entry in entries
-                   if entry["file"].replace("\\", "/").endswith(suffix)]
-        if not matched:
-            raise SystemExit(f"Missing actual compiled unit: {suffix}")
-        for entry in matched:
-            command = entry.get("command", " ".join(entry.get("arguments", ())))
-            if "-fsanitize=address,undefined" not in command:
-                raise SystemExit(f"Missing actual ASan+UBSan instrumentation: {suffix}")
-        print(f"Source-instrumented ASan+UBSan: {suffix} ({len(matched)} units)")
-PY
+          import json, sys
+          files = [
+              (sys.argv[1], (
+                  "/media/rtsp/turbo_rtsp.c",
+                  "/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c",
+              )),
+              (sys.argv[2], (
+                  "/streamgraph/tests/installed_salts/real_component_provider.c",
+                  "/streamgraph/tests/installed_salts/test_delayed_component_plugin.c",
+              )),
+          ]
+          for path, required in files:
+              with open(path, encoding="utf-8") as source:
+                  entries = json.load(source)
+              for suffix in required:
+                  matched = [entry for entry in entries
+                             if entry["file"].replace("\\", "/").endswith(suffix)]
+                  if not matched:
+                      raise SystemExit(f"Missing actual compiled unit: {suffix}")
+                  for entry in matched:
+                      command = entry.get("command", " ".join(entry.get("arguments", ())))
+                      if "-fsanitize=address,undefined" not in command:
+                          raise SystemExit(f"Missing actual ASan+UBSan instrumentation: {suffix}")
+                  print(f"Source-instrumented ASan+UBSan: {suffix} ({len(matched)} units)")
+          PY
             export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=1"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
