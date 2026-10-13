@@ -147,10 +147,19 @@ void sctp_global_cleanup(void) {
  * SCTP Callbacks (called by usrsctp)
  * ============================================================================ */
 
+/* Test-only: hold real native timer output just before first Peer lease.
+ * A RED regression exits before dereferencing potentially freed userdata. */
+#ifdef TURBO_MEDIA_TEST_SCTP_PRE_ADMISSION
+extern int turbo_media_test_sctp_before_peer_admission(void *peer_address);
+#endif
 int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, uint8_t set_df) {
     (void)tos;
     (void)set_df;
 
+#ifdef TURBO_MEDIA_TEST_SCTP_PRE_ADMISSION
+    if (turbo_media_test_sctp_before_peer_admission(addr))
+        return -1;
+#endif
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)addr;
     if (!peer || dc_peer_acquire(peer) != 0) {
         return -1;
