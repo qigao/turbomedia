@@ -1339,10 +1339,19 @@ void turbo_dc_peer_close(turbo_dc_peer_t *peer) {
     dc_peer_release(peer);
 }
 
+/* Test-only publication rendezvous for a real native timer callback
+ * paused before dc_peer_acquire. This private executable hook never enters
+ * an installed DataChannel shared library or exposes its peer to callers. */
+#ifdef TURBO_MEDIA_TEST_SCTP_PRE_ADMISSION
+extern void turbo_media_test_sctp_destroy_admitted(void *peer_address);
+#endif
 void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
     size_t slot;
 
     if (!peer || dc_peer_begin_destroy(peer) != 0) return;
+#ifdef TURBO_MEDIA_TEST_SCTP_PRE_ADMISSION
+    turbo_media_test_sctp_destroy_admitted(peer);
+#endif
 
     /* dc_peer_begin_destroy has published terminal peer admission and
      * drained every admitted callback. Native Socket borrows made by direct
