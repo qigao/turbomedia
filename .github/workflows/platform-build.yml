@@ -196,6 +196,10 @@ jobs:
             "-DVCPKG_INSTALLED_DIR=$installed",
             "-DCMAKE_INSTALL_PREFIX=$stage"
           )
+          if ("${{ matrix.platform }}" -eq "Linux") {
+            # Explicit desktop FFmpeg add-on only in the Linux SDK profile.
+            $args += "-DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON"
+          }
           if ("${{ matrix.platform }}" -eq "Android") {
             $args += @(
               "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$env:ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake",
@@ -312,3 +316,54 @@ jobs:
           }
           & ctest --test-dir $build --no-tests=error --output-on-failure --timeout 60
           if ($LASTEXITCODE -ne 0) { throw "independent installed RTSP ABI conformance failed" }
+      - name: Independently validate installed RTSP and real Codec Provider DSO (Linux)
+        if: matrix.platform == 'Linux'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # All RTSP, StreamGraph and optional FFmpeg addon targets must resolve
+          # exclusively from the installed stage; no build-tree dependency.
+          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/platform-Linux"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          $triplet = "x64-linux"
+          $pc = Join-Path $installed "$triplet/lib/pkgconfig"
+          if (-not (Test-Path -LiteralPath (Join-Path $pc "libavcodec.pc"))) {
+            throw "Exact vcpkg libavcodec.pc is required"
+          }
+          $env:PKG_CONFIG_PATH = $pc
+          $env:TM_SALTS_SDK_ROOT = $env:SALTS_ROOT
+          $env:TM_SG_SDK_ROOT = $stage
+          $env:TM_RTSP_SDK_ROOT = $stage
+          $env:TM_TEST_FFMPEG_DSO = "1"
+          $env:TM_TEST_RTSP_PROVIDER = "1"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/installed-rtsp-provider-Linux"
+          $args = @(
+            "-S", "streamgraph/tests/installed_salts",
+            "-B", $build, "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
+            "-DVCPKG_TARGET_TRIPLET=$triplet",
+            "-DVCPKG_INSTALLED_DIR=$installed",
+            "-DVCPKG_MANIFEST_MODE=OFF",
+            "-DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE",
+            "-DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE"
+          )
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw "installed RTSP/DSO configure failed" }
+          & cmake --build $build --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw "installed RTSP/DSO build failed" }
+          $runtimeDirs = @()
+          foreach ($root in @($stage, $env:SALTS_ROOT, $env:SALTS_UTILS_ROOT,
+              $env:SALTSNET_ROOT, $env:CHTTP_ROOT, (Join-Path $installed $triplet))) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("lib","bin")) {
+              $candidate = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $candidate -PathType Container) {
+                $runtimeDirs += $candidate
+              }
+            }
+          }
+          $env:LD_LIBRARY_PATH = ($runtimeDirs + @($env:LD_LIBRARY_PATH)) -join [IO.Path]::PathSeparator
+          & ctest --test-dir $build --no-tests=error --output-on-failure --timeout 120 -R '^installed_salts_delayed_component_plugin_dso$'
+          if ($LASTEXITCODE -ne 0) { throw "installed RTSP + Codec DSO lifecycle failed" }
+          "Installed SDK RTSP/CNet + CMeta MPEG-2 DSO Scope N->N+1 PASS" >> $env:GITHUB_STEP_SUMMARY
