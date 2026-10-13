@@ -208,3 +208,53 @@ endforeach()
 # 打印测试摘要
 list(LENGTH TEST_SOURCES TEST_COUNT)
 message(STATUS "Total tests configured: ${TEST_COUNT}")
+
+# M15d / Salts #1168: opt-in PRIVATE source-copy of original NativeIO.
+# The after-real-epoll-wait hook belongs only to this test executable.
+# Production TurboMedia::RTSP continues to link released Salts::CNet.
+set(TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT "" CACHE PATH
+    "Exact Salts #1176 private NativeIO test source checkout (Linux only)")
+if(TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR
+      "M15d NativeIO kernel dispatch consumer is Linux host-only")
+  endif()
+  set(_tm_native_root "${TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT}/native-io")
+  foreach(_tm_kernel_source IN ITEMS
+      src/native_io.c src/native_io_accept_escrow.c
+      src/native_io_linux.c src/native_io_epoll.c src/native_io_io_uring.c
+      src/native_io_readiness.c src/native_io_readiness.h)
+    if(NOT EXISTS "${_tm_native_root}/${_tm_kernel_source}")
+      message(FATAL_ERROR "Exact private NativeIO source missing: ${_tm_kernel_source}")
+    endif()
+  endforeach()
+  file(STRINGS "${_tm_native_root}/src/native_io_readiness.c"
+    _tm_kernel_hook REGEX "SALTS_NATIVE_IO_KERNEL_TEST_HOOK")
+  if(NOT _tm_kernel_hook)
+    message(FATAL_ERROR
+      "Salts #1168 real-after-epoll dispatch hook absent; no fallback")
+  endif()
+  add_executable(turbo_media_rtsp_nativeio_kernel_dispatch
+    rtsp_nativeio_kernel_dispatch.c
+    "${_tm_native_root}/src/native_io.c"
+    "${_tm_native_root}/src/native_io_accept_escrow.c"
+    "${_tm_native_root}/src/native_io_linux.c"
+    "${_tm_native_root}/src/native_io_epoll.c"
+    "${_tm_native_root}/src/native_io_io_uring.c"
+    "${_tm_native_root}/src/native_io_readiness.c")
+  target_include_directories(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+    "${_tm_native_root}/include" "${_tm_native_root}/src")
+  target_compile_definitions(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+    SALTS_NATIVE_IO_KERNEL_TEST_HOOK=1)
+  target_link_libraries(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+    TurboMedia::RTSP Salts::Platform Salts::Coroutine Threads::Threads)
+  target_compile_options(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+    -Wall -Wextra -Werror -Wno-unused-parameter)
+  set_target_properties(turbo_media_rtsp_nativeio_kernel_dispatch PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    C_VISIBILITY_PRESET hidden)
+  add_test(NAME turbo_media_rtsp_nativeio_kernel_dispatch
+    COMMAND turbo_media_rtsp_nativeio_kernel_dispatch)
+  set_tests_properties(turbo_media_rtsp_nativeio_kernel_dispatch PROPERTIES
+    TIMEOUT 90 RESOURCE_LOCK tm_rtsp_kernel_port)
+endif()
