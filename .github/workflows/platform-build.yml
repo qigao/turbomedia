@@ -673,6 +673,11 @@ jobs:
           $env:TSAN_OPTIONS = "halt_on_error=1:exitcode=66:history_size=7"
           & cmake --preset ci-platform-linux-tsan
           if ($LASTEXITCODE -ne 0) { throw "Linux SCTP TSan configure failed" }
+          $cache = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform-linux-tsan/CMakeCache.txt"
+          if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION:BOOL=ON$" -Quiet)) {
+            throw "Focused SCTP TSan target is not isolated from uninstrumented Salts async logging"
+          }
+          Write-Host "Salts.Native rc.15 logger isolated only in TSan test; no runtime TSan suppressions"
           & cmake --build --preset ci-platform-linux-tsan-build --target turbo_media_test_dtls_concurrency
           if ($LASTEXITCODE -ne 0) { throw "Linux SCTP TSan compiled target failed" }
 
