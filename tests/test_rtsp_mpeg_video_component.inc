@@ -100,6 +100,19 @@ static void rtsp_mpv_assert_portal_credits(
     check_equal(snap.drained,(inflight+cancel_pending+ready+taken)==0u);
 }
 
+/* This non-asserting snapshot can run while borrowed RTSP and Provider
+ * callbacks still own their stacks. TinyTest C can longjmp, so mismatches
+ * are reported only AFTER the original callback and worker have joined. */
+static int rtsp_mpv_credits_match(
+    tm_pc_portal *p,unsigned inflight,unsigned pending,
+    unsigned ready,unsigned taken) {
+    tm_pc_snapshot_v1 x=TM_PC_SNAPSHOT_V1_INIT;
+    if(tm_pc_snapshot(p,&x)!=TM_PC_OK)return 0;
+    return x.capacity==1u && x.inflight==inflight &&
+        x.cancel_pending==pending && x.ready==ready &&
+        x.taken==taken && x.drained==((inflight+pending+ready+taken)==0u);
+}
+
 static void rtsp_mpv_step_dso(
     tm_test_provider *service,tm_test_instance_request identity,
     cnet_client *wake,tm_pc_portal *portal,
@@ -347,6 +360,8 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         rtsp_mpv_step_worker worker={0};
         pthread_t worker_thread;
         int worker_create_rc;
+        unsigned gate_failures=0u;
+        unsigned callback_quiesced=0u;
         uint8_t luma[RTSP_MPV_LUMA];
         size_t out_bytes=13u;
         int64_t pts=13;
@@ -363,12 +378,36 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         atomic_init(&worker.done,0u);
         worker_create_rc=pthread_create(&worker_thread,NULL,
                                         rtsp_mpv_step_thread,&worker);
-        check_equal(worker_create_rc,0);
-        if(worker_create_rc!=0)goto cleanup;
-        check_true(rtsp_test_wait_for_callback(&gate.entered));
-        check_equal(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
-        rtsp_mpv_assert_portal_credits(p102,1u,0u,0u,0u);
-        check_equal(tm_test_provider_destroy_delayed(&service102,&second),-4);
+        if(worker_create_rc!=0) {
+            /* No async DSO call was admitted; its original Ticket must
+             * have a terminal before returning from this test fixture. */
+            (void)tm_pc_fail_start(p102,ticket,TM_FF_ESTATE);
+            check_equal(worker_create_rc,0);
+            goto cleanup;
+        }
+        /* Do not invoke TinyTest while the Codec worker or real NativeIO
+         * callback holds borrowed stack storage; defer failures instead. */
+#define RTSP_MPV_LIVE_EQ(actual,expected) do { \
+    if((actual)!=(expected))++gate_failures; \
+} while(0)
+#define RTSP_MPV_LIVE_TRUE(value) do { \
+    if(!(value))++gate_failures; \
+} while(0)
+#define RTSP_MPV_LIVE_CREDITS(p,inflight,pending,ready,taken) do { \
+    if(!rtsp_mpv_credits_match((p),(inflight),(pending),(ready),(taken))) \
+        ++gate_failures; \
+} while(0)
+        if(!rtsp_test_wait_for_callback(&gate.entered)) {
+            ++gate_failures;
+            /* A slow or failed worker entry must still be reconciled,
+             * not allowed to strand an original Portal/Scope credit. */
+            (void)tm_pc_request_cancel(p102,ticket);
+            (void)tm_test_provider_cancel_delayed(&service102,&second);
+            goto overlap_release;
+        }
+        RTSP_MPV_LIVE_EQ(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
+        RTSP_MPV_LIVE_CREDITS(p102,1u,0u,0u,0u);
+        RTSP_MPV_LIVE_EQ(tm_test_provider_destroy_delayed(&service102,&second),-4);
         {
             uint8_t pending_rtp[RTSP_MPV_MAX_PACKET]={0};
             size_t pending_bytes=0u;
@@ -377,36 +416,36 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
              * the server's actual CNet on_interleaved_frame callback.
              * It is not admitted to the Codec, and cannot leak from the
              * cancelled Session into the next Generation. */
-            check_equal(rtsp_mpv_make_rtp(f.packets[2],
+            RTSP_MPV_LIVE_EQ(rtsp_mpv_make_rtp(f.packets[2],
                         (uint16_t)(RTSP_MPV_RTP_SEQUENCE+2u),ssrc102,
                         pending_rtp,sizeof(pending_rtp),&pending_bytes),0);
             atomic_store_explicit(&state.hold_interleaved,1u,
                                   memory_order_release);
-            check_equal(turbo_rtsp_client_send_interleaved_frame(
+            RTSP_MPV_LIVE_EQ(turbo_rtsp_client_send_interleaved_frame(
                         client,0u,pending_rtp,pending_bytes),0);
             callback_entered=(unsigned)rtsp_test_wait_for_callback(
                 &state.interleaved_entered);
-            check_true(callback_entered);
+            RTSP_MPV_LIVE_TRUE(callback_entered);
             /* The CNet callback is alive with old Session storage.
              * Retire N+1 publication while its canonical DSO Scope
              * and original cancellation Ticket are still live.
              * Early drain and DSO unload MUST observe BUSY. */
-            check_equal(salts_component_plugin_runtime_close(
+            RTSP_MPV_LIVE_EQ(salts_component_plugin_runtime_close(
                         &runtime,&prior),SALTS_COMPONENT_PLUGIN_OK);
-            check_true(prior==&gen102.generation);
-            check_equal(salts_component_plugin_generation_drain(
+            RTSP_MPV_LIVE_TRUE(prior==&gen102.generation);
+            RTSP_MPV_LIVE_EQ(salts_component_plugin_generation_drain(
                         &runtime,&gen102.generation),SALTS_COMPONENT_PLUGIN_BUSY);
-            check_equal(cmeta_plugin_registry_unload(
+            RTSP_MPV_LIVE_EQ(cmeta_plugin_registry_unload(
                         &registry,ref102),CMETA_PLUGIN_BUSY);
-            check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_OK);
-            rtsp_mpv_assert_portal_credits(p102,0u,1u,0u,0u);
+            RTSP_MPV_LIVE_EQ(tm_pc_request_cancel(p102,ticket),TM_PC_OK);
+            RTSP_MPV_LIVE_CREDITS(p102,0u,1u,0u,0u);
             /* Owner cancellation is metadata-only while this real DSO
              * call owns the active Codec Instance. Destroy must refuse. */
-            check_equal(tm_test_provider_cancel_delayed(
+            RTSP_MPV_LIVE_EQ(tm_test_provider_cancel_delayed(
                         &service102,&second),0);
-            check_equal(tm_test_provider_destroy_delayed(
+            RTSP_MPV_LIVE_EQ(tm_test_provider_destroy_delayed(
                         &service102,&second),-4);
-            check_equal(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
+            RTSP_MPV_LIVE_EQ(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
             /* Close one CNet Owner while both its peer's RTSP callback
              * and the independently owned Codec DSO worker are live.
              * No two threads progress the same CNet Client object. */
@@ -415,23 +454,38 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
                                   memory_order_release);
             callback_exited=(unsigned)rtsp_test_wait_for_callback(
                 &state.interleaved_exited);
-            check_true(callback_exited);
+            callback_quiesced=callback_exited;
+            RTSP_MPV_LIVE_TRUE(callback_exited);
             atomic_store_explicit(&state.hold_interleaved,0u,
                                   memory_order_release);
-            check_equal(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
-            rtsp_mpv_assert_portal_credits(p102,0u,1u,0u,0u);
+            RTSP_MPV_LIVE_EQ(atomic_load_explicit(&gate.exited,memory_order_acquire),0u);
+            RTSP_MPV_LIVE_CREDITS(p102,0u,1u,0u,0u);
             /* Portal still owns the cancelled original Ticket until
              * its one authoritative DSO completion is settled. */
-            check_equal(salts_component_plugin_generation_drain(
+            RTSP_MPV_LIVE_EQ(salts_component_plugin_generation_drain(
                         &runtime,&gen102.generation),SALTS_COMPONENT_PLUGIN_BUSY);
-            check_equal(cmeta_plugin_registry_unload(
+            RTSP_MPV_LIVE_EQ(cmeta_plugin_registry_unload(
                         &registry,ref102),CMETA_PLUGIN_BUSY);
         }
         /* Release the DSO test gate only AFTER the NativeIO callback
          * has exited. Original worker must observe cancellation, commit
          * exactly one Portal terminal and finish its CNet wake tail. */
+overlap_release:
+        /* Both callbacks are released on success and failure. If the
+         * remote server callback did not acknowledge its exit, the real
+         * server stop joins it BEFORE TinyTest can unwind stack storage. */
+        atomic_store_explicit(&state.interleaved_release,1u,
+                              memory_order_release);
+        atomic_store_explicit(&state.hold_interleaved,0u,
+                              memory_order_release);
+        if(!callback_quiesced && server)
+            turbo_rtsp_server_stop(server);
         atomic_store_explicit(&gate.release,1u,memory_order_release);
-        check_equal(pthread_join(worker_thread,NULL),0);
+        if(pthread_join(worker_thread,NULL)!=0)
+            abort(); /* Never unwind a borrowed, still-running DSO call. */
+#undef RTSP_MPV_LIVE_EQ
+#undef RTSP_MPV_LIVE_TRUE
+#undef RTSP_MPV_LIVE_CREDITS
         check_equal(atomic_load_explicit(&worker.done,memory_order_acquire),1u);
         check_equal(atomic_load_explicit(&gate.exited,memory_order_acquire),1u);
         check_equal(worker.status,TM_FF_ESTATE);
@@ -467,6 +521,9 @@ static void rtsp_test_mpeg2_real_rtp_to_salts_generation(void) {
         check_equal(tm_pc_request_cancel(p102,ticket),TM_PC_ESTALE);
         check_equal(tm_pc_complete(p102,ticket,TM_FF_OK),TM_PC_ESTALE);
         check_true(tm_pc_take(p102,&taken,&receipt)!=TM_PC_OK);
+        /* This fatal assertion happens only after RTSP callback exit,
+         * Codec worker join, and settlement of the original Ticket. */
+        check_equal(gate_failures,0u);
     }
     stats=(tm_ffd_stats_v1)TM_FFD_STATS_V1_INIT;
     stats_request.instance_id=second.instance_id;
