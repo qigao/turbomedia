@@ -263,8 +263,12 @@ static void tm_installed_rtsp_cancel_under_scope(
     assert(pthread_create(&thread,NULL,run_step,&worker)==0);
     assert(tm_installed_wait(&gate.entered));
     assert(atomic_load_explicit(&rtsp.exited,memory_order_acquire)==0u);
+    /* N+1 is still the PUBLISHED ACTIVE Generation: Salts rejects any
+     * drain attempt with INVALID_STATE before inspecting scope leases.
+     * Only after runtime_close transitions N+1 to DRAINING can the
+     * true retained Scope cause drain BUSY (checked by the in-Codec gate). */
     assert(salts_component_plugin_generation_drain(
-               runtime,generation)==SALTS_COMPONENT_PLUGIN_BUSY);
+               runtime,generation)==SALTS_COMPONENT_PLUGIN_INVALID_STATE);
     assert(cmeta_plugin_registry_unload(registry,plugin)==CMETA_PLUGIN_BUSY);
     assert(tm_pc_request_cancel(portal,ticket)==TM_PC_OK);
     assert(tm_test_provider_cancel_delayed(service,&instance)==0);
@@ -300,7 +304,9 @@ static void tm_installed_rtsp_cancel_under_scope(
     assert(tm_test_provider_destroy_delayed(service,&instance)==0);
     assert(tm_pc_seal(portal)==TM_PC_OK);
     assert(tm_pc_destroy(portal)==TM_PC_OK);
+    /* Pending tickets have settled, but this Generation remains current
+     * and its original Scope must not be released by this helper. */
     assert(salts_component_plugin_generation_drain(
-               runtime,generation)==SALTS_COMPONENT_PLUGIN_BUSY);
+               runtime,generation)==SALTS_COMPONENT_PLUGIN_INVALID_STATE);
     assert(cmeta_plugin_registry_unload(registry,plugin)==CMETA_PLUGIN_BUSY);
 }
