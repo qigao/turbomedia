@@ -947,6 +947,86 @@ spec("SCTP real timer callback versus foreign peer lifetime") {
     }
 }
 
+/* Issue #208: the opposite ordering of the admitted-timer fixture.
+ * Start a real SCTP retransmission timer, but fully close/destroy the peer
+ * BEFORE the RTO expires. Subsequent public timer pumping must never issue
+ * another outbound callback for the terminal peer. This does not prove the
+ * dequeued-but-not-yet-admitted concurrent callback race. */
+static void test_terminal_peer_before_native_timer_expiry(int destroy) {
+    packet_endpoint_t *endpoint = &endpoints[0];
+    struct socket *native = sctp_native_borrow(endpoint->peer);
+    check_not_null(native);
+    struct sctp_rtoinfo rto = {0};
+    rto.srto_assoc_id = SCTP_FUTURE_ASSOC;
+    rto.srto_initial = 250;
+    rto.srto_min = 200;
+    rto.srto_max = 1000;
+    int configured = native ? usrsctp_setsockopt(native, IPPROTO_SCTP,
+                          SCTP_RTOINFO, &rto, sizeof(rto)) : -1;
+    if (native) sctp_native_return(endpoint->peer);
+    check_equal(configured, 0);
+    open_packet_channel();
+
+    const uint8_t payload = 0x8c;
+    cmeta_mutex_lock(&endpoint->mutex);
+    unsigned before = endpoint->packets;
+    cmeta_mutex_unlock(&endpoint->mutex);
+    check_equal(turbo_dc_channel_send(endpoint->channel,
+                                     &payload, sizeof(payload), 1), 0);
+    cmeta_mutex_lock(&endpoint->mutex);
+    unsigned after_data = endpoint->packets;
+    cmeta_mutex_unlock(&endpoint->mutex);
+    check_true(after_data > before);
+    /* No receiver delivery: the native DATA/RTO timer remains pending. */
+    if (destroy) {
+        turbo_dc_peer_destroy(endpoint->peer);
+        endpoint->peer = NULL;
+        endpoint->channel = NULL;
+    } else {
+        turbo_dc_peer_close(endpoint->peer);
+        check_equal(turbo_dc_peer_get_state(endpoint->peer),
+                    TURBO_DC_STATE_CLOSED);
+        cmeta_mutex_lock(&endpoint->peer->operation_mutex);
+        int closed = endpoint->peer->sctp.native_closed;
+        struct socket *remaining_socket = endpoint->peer->sctp.socket;
+        cmeta_mutex_unlock(&endpoint->peer->operation_mutex);
+        check_true(closed);
+        check_null(remaining_socket);
+    }
+    cmeta_mutex_lock(&endpoint->mutex);
+    unsigned after_terminal = endpoint->packets;
+    cmeta_mutex_unlock(&endpoint->mutex);
+
+    /* Advance the REAL globally-owned usrsctp clock past the original
+     * test-only 250ms RTO, rather than faking a native timer expiration.
+     * A callback referencing destroyed app userdata would be diagnosed by
+     * the Linux ASan target; do not dereference a freed peer in this test. */
+    cmeta_sleep_ms(300);
+    for (unsigned attempt = 0; attempt < 4u; ++attempt) {
+        g_test_timer_dispatching = 1;
+        turbo_dc_handle_timers();
+        g_test_timer_dispatching = 0;
+        cmeta_sleep_ms(10);
+    }
+    cmeta_mutex_lock(&endpoint->mutex);
+    unsigned after_pump = endpoint->packets;
+    cmeta_mutex_unlock(&endpoint->mutex);
+    check_equal(after_pump, after_terminal);
+}
+
+spec("SCTP native timer expiry after terminal peer teardown") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("does not deliver a late retransmission after ordinary peer close") {
+        test_terminal_peer_before_native_timer_expiry(0);
+    }
+
+    it("does not retain application userdata after peer destroy") {
+        test_terminal_peer_before_native_timer_expiry(1);
+    }
+}
+
 static void expect_packet_messages(unsigned count, const void *payload, size_t size, int binary) {
     uint64_t deadline = cmeta_monotonic_ms() + 5000;
     int received;
