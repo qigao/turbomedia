@@ -377,6 +377,12 @@ typedef struct {
     int destroy_admitted;
     int destroy_finished;
     int timer_finished;
+    /* Real reclaim barrier, observed BEFORE the production peer mutex and
+     * condvar are destroyed. Any RED loser is held here until the native
+     * timer callback exits, so no test intentionally dereferences freed peer. */
+    int reclaim_entered;
+    int reclaim_before_timer_release;
+    int reclaim_release;
 } timer_pre_admission_fixture_t;
 static timer_pre_admission_fixture_t pre_admission_fixture;
 static atomic_int g_pre_admission_hook_live;
@@ -414,6 +420,27 @@ void turbo_media_test_sctp_destroy_admitted(void *peer_address) {
     if (peer_address == f->peer) {
         f->destroy_admitted = 1;
         cmeta_cond_broadcast(&f->cond);
+    }
+    cmeta_mutex_unlock(&f->mutex);
+}
+
+/* A second test-only hook at the LAST stage before cmeta sync teardown and
+ * free(peer), shared byte-for-byte by RED and GREEN controls. The hook uses
+ * only fixture-owned memory. The RED thread waits here without freeing peer
+ * until the timer callback is released; the GREEN thread cannot reach this
+ * stage until the global timer retirement fence has drained. */
+void turbo_media_test_sctp_before_peer_reclaim(void *peer_address) {
+    if (atomic_load_explicit(&g_pre_admission_hook_live,
+                             memory_order_acquire) == 0)
+        return;
+    timer_pre_admission_fixture_t *f = &pre_admission_fixture;
+    cmeta_mutex_lock(&f->mutex);
+    if (peer_address == f->peer) {
+        f->reclaim_entered = 1;
+        if (!f->hook_release) f->reclaim_before_timer_release = 1;
+        cmeta_cond_broadcast(&f->cond);
+        while (!f->reclaim_release)
+            cmeta_cond_wait(&f->cond, &f->mutex);
     }
     cmeta_mutex_unlock(&f->mutex);
 }
@@ -1201,16 +1228,29 @@ spec("SCTP dequeued timer callback before peer admission") {
         int destroy_admitted = destroy_created &&
             wait_pre_admission_flag(&f->destroy_admitted, 2000u);
 
+        /* The earlier test sampled destroy_finished immediately after its
+         * admission signal, making the assertion dependent on scheduling.
+         * Wait for the ACTUAL final reclaim stage instead. The 1s timeout
+         * bounds an absent event; it is not used to order any two workers. */
+        int reclaim_before_release = destroy_admitted &&
+            wait_pre_admission_flag(&f->reclaim_entered, 1000u);
         cmeta_mutex_lock(&f->mutex);
-        int destroy_early = f->destroy_finished;
+        int destroyed_prematurely = f->destroy_finished;
+        int reclaim_early = f->reclaim_before_timer_release;
         f->hook_release = 1;
         cmeta_cond_broadcast(&f->cond);
         cmeta_mutex_unlock(&f->mutex);
 
+        /* Keep the RED reclaim hook parked until the native timer has
+         * safely returned, regardless of the expected rejection result. */
         if (timer_created) {
             (void)cmeta_thread_join(&timer_thread);
             cmeta_thread_destroy(&timer_thread);
         }
+        cmeta_mutex_lock(&f->mutex);
+        f->reclaim_release = 1;
+        cmeta_cond_broadcast(&f->cond);
+        cmeta_mutex_unlock(&f->mutex);
         if (destroy_created) {
             (void)cmeta_thread_join(&destroy_thread);
             cmeta_thread_destroy(&destroy_thread);
@@ -1223,13 +1263,19 @@ spec("SCTP dequeued timer callback before peer admission") {
         cmeta_mutex_lock(&f->mutex);
         int timer_finished = f->timer_finished;
         int destroy_finished = f->destroy_finished;
+        int reclaim_observed = f->reclaim_entered;
         cmeta_mutex_unlock(&f->mutex);
         check_true(timer_created);
         check_true(callback_entered);
         check_true(destroy_created);
         check_true(destroy_admitted);
-        check_false(destroy_early);
+        /* The controlled timer callback was STILL paused before acquiring
+         * its first Peer lease during the negative observation window. */
+        check_false(reclaim_before_release);
+        check_false(reclaim_early);
+        check_false(destroyed_prematurely);
         check_true(timer_finished);
+        check_true(reclaim_observed);
         check_true(destroy_finished);
         cmeta_cond_destroy(&f->cond);
         cmeta_mutex_destroy(&f->mutex);
