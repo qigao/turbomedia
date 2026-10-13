@@ -165,7 +165,27 @@ if(_TM_TEST_FFMPEG)
     -Wall -Wextra -Werror)
 endif()
 
+# M16 #225: independent C++17 consumer built strictly from the exported
+# installed Salts rc.15 and StreamGraph targets, never test/source includes.
+# C11 DSOs above retain ownership of actual N->N+1 runtime conformance.
+add_executable(tm_installed_cpp17_sdk_test
+  test_installed_cpp17_sdk.cpp)
+target_compile_features(tm_installed_cpp17_sdk_test PRIVATE cxx_std_17)
+set_target_properties(tm_installed_cpp17_sdk_test PROPERTIES
+  CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+target_link_libraries(tm_installed_cpp17_sdk_test PRIVATE
+  Salts::ComponentPlugin Salts::Plugin Salts::CNet TurboMedia::StreamGraph)
+if(MSVC)
+  target_compile_options(tm_installed_cpp17_sdk_test PRIVATE /W4 /WX)
+else()
+  target_compile_options(tm_installed_cpp17_sdk_test PRIVATE
+    -Wall -Wextra -Werror -pedantic)
+endif()
+
 enable_testing()
+add_test(NAME installed_salts_cpp17_sdk_contract
+  COMMAND tm_installed_cpp17_sdk_test)
+set_tests_properties(installed_salts_cpp17_sdk_contract PROPERTIES TIMEOUT 30)
 if(_TM_TEST_FFMPEG)
   add_test(NAME installed_salts_delayed_component_plugin_dso
     COMMAND tm_installed_salts_delayed_test
