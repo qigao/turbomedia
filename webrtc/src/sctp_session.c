@@ -304,12 +304,27 @@ done:
     return complete;
 }
 
+/* A private test-only hook for real native timer notifications. This is
+ * entered AFTER pinned usrsctp 0.9.5.0 sctp_invoke_recv_callback has released
+ * SCTP_TCB_LOCK, but BEFORE the first application Peer operation lease.
+ * The test callback may safely reject without dereferencing retired userdata. */
+#ifdef TURBO_MEDIA_TEST_SCTP_PRE_ADMISSION
+extern int turbo_media_test_sctp_before_recv_admission(
+    void *peer_address, const void *data, size_t length, int flags);
+#endif
 int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
                            void *data, size_t datalen,
                            struct sctp_rcvinfo rcv, int flags, void *ulp_info) {
     (void)sock;
     (void)addr;
 
+#ifdef TURBO_MEDIA_TEST_SCTP_PRE_ADMISSION
+    if (turbo_media_test_sctp_before_recv_admission(
+            ulp_info, data, datalen, flags)) {
+        if (data) free(data);
+        return 1;
+    }
+#endif
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)ulp_info;
     if (!peer || dc_peer_acquire(peer) != 0) {
         if (data) free(data);
