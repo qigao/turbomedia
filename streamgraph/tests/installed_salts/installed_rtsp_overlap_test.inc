@@ -19,6 +19,7 @@ enum {
 typedef struct tm_installed_live_rtsp {
     turbo_rtsp_server_t *server;
     turbo_rtsp_client_t *client;
+    unsigned client_closed; /* accessed only by the RTSP Client Owner */
     _Atomic unsigned entered,release,exited;
     unsigned channel;
     size_t wire_len;
@@ -191,11 +192,20 @@ static void tm_installed_rtsp_open(
     (void)tm_installed_rtsp_received_packet(f,packet);
 }
 
-/* Call while the original Provider DSO Scope remains retained. Closing
- * the distinct client Owner cannot release the borrowed server callback. */
+/* The distinct Client Owner retires admission while the server callback
+ * and the original Codec Worker remain borrowed on two other stacks. */
+static void tm_installed_rtsp_cancel_client(tm_installed_live_rtsp *f) {
+    assert(f->client!=NULL);
+    if(!f->client_closed) {
+        turbo_rtsp_client_close(f->client);
+        f->client_closed=1u;
+    }
+}
+/* A borrowed server callback must actually exit before any RTSP session,
+ * Plugin Scope, or Fixture memory is released. No double Client close. */
 static void tm_installed_rtsp_close(tm_installed_live_rtsp *f) {
     assert(f->client!=NULL && f->server!=NULL);
-    turbo_rtsp_client_close(f->client);
+    tm_installed_rtsp_cancel_client(f);
     atomic_store_explicit(&f->release,1u,memory_order_release);
     assert(tm_installed_wait(&f->exited));
     turbo_rtsp_client_destroy(f->client);
