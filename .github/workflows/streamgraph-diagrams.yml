@@ -3,11 +3,13 @@ name: StreamGraph architecture diagrams
 on:
   push:
     paths:
+      - 'cmake/ci/m16-sdk-lock.json'
       - 'docs/design/streamgraph-v2-*.md'
       - 'docs/design/streamgraph-provider-dso-salts-gate.md'
       - '.github/workflows/streamgraph-diagrams.yml'
   pull_request:
     paths:
+      - 'cmake/ci/m16-sdk-lock.json'
       - 'docs/design/streamgraph-v2-*.md'
       - 'docs/design/streamgraph-provider-dso-salts-gate.md'
       - '.github/workflows/streamgraph-diagrams.yml'
@@ -22,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Parse Mermaid diagrams in design contracts
         uses: sgerrand/mermaid-validation-action@31f8eed257dbbbadad3332c83694866903e92b0e # v0.2.0
         id: validate

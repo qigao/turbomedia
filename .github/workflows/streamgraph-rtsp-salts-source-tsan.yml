@@ -3,6 +3,7 @@ name: M15d RTSP Salts full-source TSan #1170
 'on':
   pull_request:
     paths:
+      - 'cmake/ci/m16-sdk-lock.json'
       - '.github/workflows/streamgraph-rtsp-salts-source-tsan.yml'
       - 'tests/**'
       - 'media/rtsp/**'
@@ -32,25 +33,25 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout the M15d RTSP consumer
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
 
       # Immutable official release-tag source conformance, not a replacement release
       # or a second CNet implementation. Tracks Salts Draft #1171/#1170.
       - name: Checkout exact released Salts 2.3.0-rc.15 source commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: qigao/salts
           ref: 21bdb1145fbb2b39ee3fa644173ec037adba7b87
           path: build/m15d-salts-source
           persist-credentials: false
 
-      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
         with:
           mode: read
-      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
-      - uses: actions/setup-dotnet@v4
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: '8.0.x'
 
@@ -219,7 +220,7 @@ jobs:
 
       - name: Preserve exact source provenance and TSan evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: m15d-rtsp-full-source-salts-tsan
           path: |

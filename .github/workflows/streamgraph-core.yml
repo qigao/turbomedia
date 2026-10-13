@@ -3,11 +3,13 @@ name: StreamGraph typed core contracts
 on:
   push:
     paths:
+      - 'cmake/ci/m16-sdk-lock.json'
       - 'streamgraph/**'
       - '.github/workflows/streamgraph-core.yml'
       - 'CMakeLists.txt'
   pull_request:
     paths:
+      - 'cmake/ci/m16-sdk-lock.json'
       - 'streamgraph/**'
       - '.github/workflows/streamgraph-core.yml'
       - 'CMakeLists.txt'
@@ -26,8 +28,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         if: runner.os == 'Windows'
       - name: Configure, compile and test C11 contracts
         shell: bash
@@ -56,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Configure and test sanitizers
         run: |
           cd streamgraph
@@ -69,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Build instrumented handoff and run actual concurrent producers
         shell: bash
         run: |

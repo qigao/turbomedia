@@ -3,10 +3,12 @@ name: StreamGraph native FFmpeg decode provider
 'on':
   push:
     paths:
+      - 'cmake/ci/m16-sdk-lock.json'
       - 'streamgraph/**'
       - '.github/workflows/streamgraph-ffmpeg-provider.yml'
   pull_request:
     paths:
+      - 'cmake/ci/m16-sdk-lock.json'
       - 'streamgraph/**'
       - '.github/workflows/streamgraph-ffmpeg-provider.yml'
   workflow_dispatch:
@@ -24,7 +26,7 @@ jobs:
       matrix:
         mode: [native, asan-ubsan, tsan]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Install desktop libavcodec development dependencies
         shell: bash
         run: |
