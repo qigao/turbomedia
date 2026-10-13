@@ -16,8 +16,24 @@ static void check_delayed_flush_under_scope(
     tm_pc_portal *portal=make_portal(102u);
     unsigned i,cancelled=0u;
     salts_component_plugin_generation *closed=NULL;
+#ifdef TM_TEST_RTSP_PROVIDER
+    tm_installed_live_rtsp rtsp={0};
+    tm_test_delayed_packet_request from_rtsp={0};
+    /* TRUE combined gate: an actual installed RTSP Server Worker borrows
+     * the MPEG2 RTP callback while the original DSO Worker later pauses
+     * INSIDE avcodec_send_packet(NULL). No pre-call approximation. */
+    tm_installed_rtsp_open(&rtsp,packet);
+#endif
     assert(tm_test_provider_create_delayed(service,&instance)==0);
+#ifdef TM_TEST_RTSP_PROVIDER
+    from_rtsp.size=sizeof(from_rtsp);
+    from_rtsp.instance_id=instance.instance_id;
+    from_rtsp.provider_generation=instance.provider_generation;
+    from_rtsp.packet=tm_installed_rtsp_received_packet(&rtsp,packet);
+    assert(tm_test_provider_submit_delayed(service,&from_rtsp)==TM_FF_OK);
+#else
     assert(submit(service,instance,packet)==TM_FF_OK);
+#endif
     assert(tm_test_provider_finish_delayed(service,&instance)==TM_FF_OK);
     assert(avcodec_tm_test_arm_flush()==0);
     for(i=0u;i<12u;++i) {
@@ -42,6 +58,14 @@ static void check_delayed_flush_under_scope(
             /* Actual libavcodec is now executing its NULL-packet function.
              * Destroy, DSO unload and Generation drain must not win this
              * previously admitted Codec operation. */
+#ifdef TM_TEST_RTSP_PROVIDER
+            assert(atomic_load_explicit(&rtsp.entered,memory_order_acquire)==1u);
+            assert(atomic_load_explicit(&rtsp.exited,memory_order_acquire)==0u);
+            /* Stop original transport admission DURING the real Codec
+             * instruction, while the peer RTSP handler still borrows its
+             * original NativeIO CNet Session. */
+            tm_installed_rtsp_cancel_client(&rtsp);
+#endif
             assert(tm_test_provider_destroy_delayed(service,&instance)==-4);
             assert(salts_component_plugin_runtime_close(
                        runtime,&closed)==SALTS_COMPONENT_PLUGIN_OK);
@@ -67,6 +91,17 @@ static void check_delayed_flush_under_scope(
                    terminal.provider_status==TM_FF_ESTATE);
             assert(tm_pc_settle(portal,taken)==TM_PC_OK);
             assert(tm_pc_take(portal,&taken,&terminal)!=TM_PC_OK);
+#ifdef TM_TEST_RTSP_PROVIDER
+            /* The Codec Worker has now joined and its original Terminal
+             * was settled; only NOW may the borrowed RTSP callback exit
+             * and its client/server storage be destroyed. The Salts
+             * Generation Scope itself is still retained by the caller. */
+            tm_installed_rtsp_close(&rtsp);
+            assert(salts_component_plugin_generation_drain(
+                       runtime,generation)==SALTS_COMPONENT_PLUGIN_BUSY);
+            assert(cmeta_plugin_registry_unload(
+                       registry,plugin)==CMETA_PLUGIN_BUSY);
+#endif
             /* No stale pixel may be taken after the original cancelled
              * terminal; wrong ticket identity must also remain rejected. */
             {
