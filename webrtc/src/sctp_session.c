@@ -25,6 +25,11 @@ static atomic_int g_sctp_initialized = 0;
 static cmeta_mutex_t g_sctp_timer_mutex;
 static uint64_t g_sctp_timer_last_ms;
 static SALTS_THREAD_LOCAL int g_sctp_timer_dispatching = 0;
+/* A foreign destroy uses the same existing process-global timer mutex to
+ * retire native callouts before freeing application peer userdata. Track
+ * ownership on this thread so callbacks synchronously reentering the public
+ * timer pump during usrsctp_close cannot deadlock on their own lock. */
+static SALTS_THREAD_LOCAL unsigned g_sctp_timer_retirement_depth = 0;
 
 static void sctp_global_init_once(void) {
     cmeta_mutex_init(&g_sctp_timer_mutex);
@@ -44,7 +49,7 @@ static void sctp_global_init_once(void) {
  * outer dispatch owns the clock until it finishes. No new thread/scheduler,
  * fallback transport or automatic replay is introduced. */
 void sctp_global_poll_timers(void) {
-    if (g_sctp_timer_dispatching ||
+    if (g_sctp_timer_dispatching || g_sctp_timer_retirement_depth != 0 ||
         atomic_load_explicit(&g_sctp_initialized, memory_order_acquire) == 0)
         return;
 
@@ -63,6 +68,37 @@ void sctp_global_poll_timers(void) {
     }
     g_sctp_timer_dispatching = 0;
     cmeta_mutex_unlock(&g_sctp_timer_mutex);
+}
+
+/* Source-level callback retirement fence for usrsctp's no-thread timer
+ * pump. The native 0.9.5.0 callout queue lock is dropped before an expired
+ * callback executes. Peer destruction therefore must not reclaim the raw
+ * application address while ANY globally dispatched timer callback might
+ * still enter its first dc_peer_acquire().
+ *
+ * The caller has already published peer->destroying, drained admitted peer
+ * operations and native Socket borrows BEFORE taking this mutex. It then
+ * closes/deregisters SCTP under the same mutex that owns timer dispatch, and
+ * releases it before asynchronous transport/DTLS teardown. This is not a
+ * second scheduler, lease registry, or retry path. */
+int sctp_global_timer_retirement_begin(void) {
+    if (atomic_load_explicit(&g_sctp_initialized, memory_order_acquire) == 0)
+        return 0;
+    if (g_sctp_timer_dispatching || g_sctp_timer_retirement_depth != 0) {
+        /* This thread already owns the global timer dispatch lock. */
+        ++g_sctp_timer_retirement_depth;
+        return 0;
+    }
+    cmeta_mutex_lock(&g_sctp_timer_mutex);
+    g_sctp_timer_retirement_depth = 1;
+    return 1;
+}
+
+void sctp_global_timer_retirement_end(int acquired) {
+    if (g_sctp_timer_retirement_depth != 0)
+        --g_sctp_timer_retirement_depth;
+    if (acquired)
+        cmeta_mutex_unlock(&g_sctp_timer_mutex);
 }
 
 static const char *sctp_assoc_state_name(uint16_t state) {
