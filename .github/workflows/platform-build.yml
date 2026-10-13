@@ -662,7 +662,7 @@ jobs:
               if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
             }
           }
-          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/\${{ matrix.triplet }}"
+          $vcpkgRuntime = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed/${{ matrix.triplet }}"
           foreach ($leaf in @("bin", "lib")) {
             $candidate = Join-Path $vcpkgRuntime $leaf
             if (Test-Path -LiteralPath $candidate -PathType Container) { $runtimeDirs += $candidate }
