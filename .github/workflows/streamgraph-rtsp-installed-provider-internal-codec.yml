@@ -18,11 +18,16 @@ concurrency:
   cancel-in-progress: true
 jobs:
   installed-rtsp-codec:
-    name: Exact RTSP SDK + real CNet + DSO + inside MPEG2 flush
+    name: Exact installed RTSP + DSO + in-libavcodec (${{ matrix.mode }})
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [release, asan-ubsan]
     env:
       X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+      TM_M15D_MODE: ${{ matrix.mode }}
       TM_FF_SOURCE_SHA: e38092ef9395d7049f871ef4d5411eb410e283e0
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +74,12 @@ jobs:
           python3 streamgraph/adapters/ffmpeg/tests/instrumented/patch_ffmpeg_send.py "$source/libavcodec/decode.c"
           (
             cd "$source"
+            ff_san_args=()
+            if [ "$TM_M15D_MODE" = "asan-ubsan" ]; then
+              ff_san_args=(
+                "--extra-cflags=-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+                "--extra-ldflags=-fsanitize=address,undefined")
+            fi
             ./configure --prefix="$prefix" --libdir="$prefix/lib" \
               --cc='ccache gcc' --disable-autodetect --disable-asm \
               --disable-everything --enable-shared --disable-static \
@@ -77,12 +88,17 @@ jobs:
               --disable-postproc --disable-swresample --disable-swscale \
               --enable-avcodec --enable-avutil --enable-pthreads \
               --enable-decoder=mjpeg --enable-encoder=mjpeg \
-              --enable-decoder=mpeg2video --enable-encoder=mpeg2video
+              --enable-decoder=mpeg2video --enable-encoder=mpeg2video \
+              "${ff_san_args[@]}"
             make -j4
             make install
           )
           test -f "$prefix/lib/pkgconfig/libavcodec.pc"
           nm -D --defined-only "$prefix/lib/libavcodec.so" | grep -q avcodec_tm_test_arm_flush
+          if [ "$TM_M15D_MODE" = "asan-ubsan" ]; then
+            readelf -d "$prefix/lib/libavcodec.so" | grep -F 'libasan.so'
+            readelf -d "$prefix/lib/libavcodec.so" | grep -F 'libubsan.so'
+          fi
           echo "TM_FF_INSTRUMENTED_PREFIX=$prefix" >> "$GITHUB_ENV"
           echo "Patched libavcodec commit: $TM_FF_SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
 
@@ -107,6 +123,17 @@ jobs:
             exit 1
           fi
           test "$(pkg-config --variable=prefix libavcodec)" = "$prefix"
+          cmake_san_args=()
+          if [ "$TM_M15D_MODE" = "asan-ubsan" ]; then
+            san_flags="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+            cmake_san_args=(
+              -DCMAKE_BUILD_TYPE=Debug
+              "-DCMAKE_C_FLAGS=$san_flags"
+              "-DCMAKE_CXX_FLAGS=$san_flags"
+              -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined
+              -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
+          fi
           cmake -S . -B "$build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$QIGAO_VCPKG_TOOLCHAIN_FILE" \
@@ -116,7 +143,8 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_INSTALL_PREFIX="$stage" \
-            -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON
+            -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON \
+            "${cmake_san_args[@]}"
           cmake --build "$build" --parallel 4
           cmake --install "$build"
           test -f "$stage/lib/cmake/TurboMedia/TurboMediaConfig.cmake"
@@ -143,6 +171,16 @@ jobs:
           export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
           export LD_LIBRARY_PATH="$prefix/lib:$stage/lib:$SALTS_ROOT/lib:$SALTS_UTILS_ROOT/lib:$SALTSNET_ROOT/lib:$CHTTP_ROOT/lib:$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/lib"
+          cmake_san_args=()
+          if [ "$TM_M15D_MODE" = "asan-ubsan" ]; then
+            san_flags="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer"
+            cmake_san_args=(
+              "-DCMAKE_C_FLAGS=$san_flags"
+              "-DCMAKE_CXX_FLAGS=$san_flags"
+              -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined
+              -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
+          fi
           cmake -S streamgraph/tests/installed_salts -B "$build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_TOOLCHAIN_FILE="$QIGAO_VCPKG_TOOLCHAIN_FILE" \
@@ -150,12 +188,43 @@ jobs:
             -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed" \
             -DVCPKG_MANIFEST_MODE=OFF \
             -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE \
-            -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE
+            -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE \
+            "${cmake_san_args[@]}"
           cmake --build "$build" --parallel 2
           ldd "$build/tm_installed_salts_delayed_test" | tee "$RUNNER_TEMP/installed-consumer-ldd.txt"
           grep -F "$prefix/lib/libavcodec.so" "$RUNNER_TEMP/installed-consumer-ldd.txt"
           grep -F "$stage/lib/libturbo_media_rtsp.so" "$RUNNER_TEMP/installed-consumer-ldd.txt"
+          if [ "$TM_M15D_MODE" = "asan-ubsan" ]; then
+            python3 - "$GITHUB_WORKSPACE/build/m15d-rtsp/compile_commands.json" "$build/compile_commands.json" <<'PY'
+import json, sys
+files = [
+    (sys.argv[1], (
+        "/media/rtsp/turbo_rtsp.c",
+        "/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c",
+    )),
+    (sys.argv[2], (
+        "/streamgraph/tests/installed_salts/real_component_provider.c",
+        "/streamgraph/tests/installed_salts/test_delayed_component_plugin.c",
+    )),
+]
+for path, required in files:
+    with open(path, encoding="utf-8") as source:
+        entries = json.load(source)
+    for suffix in required:
+        matched = [entry for entry in entries
+                   if entry["file"].replace("\\", "/").endswith(suffix)]
+        if not matched:
+            raise SystemExit(f"Missing actual compiled unit: {suffix}")
+        for entry in matched:
+            command = entry.get("command", " ".join(entry.get("arguments", ())))
+            if "-fsanitize=address,undefined" not in command:
+                raise SystemExit(f"Missing actual ASan+UBSan instrumentation: {suffix}")
+        print(f"Source-instrumented ASan+UBSan: {suffix} ({len(matched)} units)")
+PY
+            export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=1"
+            export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
+          fi
           ctest --test-dir "$build" -R '^installed_salts_delayed_component_plugin_dso$' \
             --repeat until-fail:3 --no-tests=error --output-on-failure --timeout 120
-          echo "3/3 exact installed RTSP/DSO/in-libavcodec cancellation PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "3/3 exact installed RTSP/DSO/in-libavcodec ($TM_M15D_MODE) PASS" >> "$GITHUB_STEP_SUMMARY"
           echo "Prebuilt Salts/CHttp binaries are not fully source-sanitized" >> "$GITHUB_STEP_SUMMARY"
