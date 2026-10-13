@@ -1,0 +1,150 @@
+name: M15d installed RTSP DSO inside libavcodec
+'on':
+  pull_request:
+    paths:
+      - '.github/workflows/streamgraph-rtsp-installed-provider-internal-codec.yml'
+      - 'streamgraph/tests/installed_salts/**'
+      - 'streamgraph/adapters/ffmpeg/**'
+      - 'streamgraph/CMakeLists.txt'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'CMakeLists.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: m15d-installed-rtsp-codec-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  installed-rtsp-codec:
+    name: Exact RTSP SDK + real CNet + DSO + inside MPEG2 flush
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+      TM_FF_SOURCE_SHA: e38092ef9395d7049f871ef4d5411eb410e283e0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Prepare native build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool ccache \
+            libpipewire-0.3-dev libx11-dev libxext-dev
+          test "$(uname -m)" = x86_64
+      - name: Restore exact published host SDK graph
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid linux-x64
+      - name: Restore unrelated vcpkg packages cache only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+          & (Join-Path $env:VCPKG_ROOT "vcpkg") install "--x-manifest-root=." "--x-install-root=$installed" "--triplet=x64-linux" --only-binarycaching
+          if ($LASTEXITCODE -ne 0) { throw "cache-only dependency restore failed" }
+
+      - name: Build exact shared FFmpeg 6.1.1 with in-function gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$RUNNER_TEMP/ffmpeg-n611-source"
+          prefix="$RUNNER_TEMP/m15d-shared-ffmpeg"
+          git clone --depth 1 --branch n6.1.1 https://github.com/FFmpeg/FFmpeg "$source"
+          test "$(git -C "$source" rev-parse HEAD)" = "$TM_FF_SOURCE_SHA"
+          python3 streamgraph/adapters/ffmpeg/tests/instrumented/patch_ffmpeg_send.py "$source/libavcodec/decode.c"
+          (
+            cd "$source"
+            ./configure --prefix="$prefix" --libdir="$prefix/lib" \
+              --cc='ccache gcc' --disable-autodetect --disable-asm \
+              --disable-everything --enable-shared --disable-static \
+              --disable-programs --disable-doc --disable-network \
+              --disable-avdevice --disable-avfilter --disable-avformat \
+              --disable-postproc --disable-swresample --disable-swscale \
+              --enable-avcodec --enable-avutil --enable-pthreads \
+              --enable-decoder=mjpeg --enable-encoder=mjpeg \
+              --enable-decoder=mpeg2video --enable-encoder=mpeg2video
+            make -j4
+            make install
+          )
+          test -f "$prefix/lib/pkgconfig/libavcodec.pc"
+          nm -D --defined-only "$prefix/lib/libavcodec.so" | grep -q avcodec_tm_test_arm_flush
+          echo "TM_FF_INSTRUMENTED_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "Patched libavcodec commit: $TM_FF_SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and install SAME-HEAD TurboMedia RTSP SDK with shared FFmpeg addon
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$TM_FF_INSTRUMENTED_PREFIX"
+          stage="$GITHUB_WORKSPACE/stage/m15d-rtsp"
+          build="$GITHUB_WORKSPACE/build/m15d-rtsp"
+          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
+          test "$(pkg-config --variable=prefix libavcodec)" = "$prefix"
+          cmake -S . -B "$build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$QIGAO_VCPKG_TOOLCHAIN_FILE" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_MANIFEST_MODE=OFF \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX="$stage" \
+            -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON
+          cmake --build "$build" --parallel 4
+          cmake --install "$build"
+          test -f "$stage/lib/cmake/TurboMedia/TurboMediaConfig.cmake"
+          test -f "$stage/lib/libturbo_media_streamgraph_ffmpeg.so.2"
+          export LD_LIBRARY_PATH="$prefix/lib:$stage/lib:$SALTS_ROOT/lib:$SALTS_UTILS_ROOT/lib:$CHTTP_ROOT/lib:$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/lib"
+          ldd "$stage/lib/libturbo_media_streamgraph_ffmpeg.so.2" | tee "$RUNNER_TEMP/installed-ffmpeg-ldd.txt"
+          grep -F "$prefix/lib/libavcodec.so" "$RUNNER_TEMP/installed-ffmpeg-ldd.txt"
+          grep -F "$prefix/lib/libavutil.so" "$RUNNER_TEMP/installed-ffmpeg-ldd.txt"
+          echo "TM_RTSP_INSTALLED_ROOT=$stage" >> "$GITHUB_ENV"
+
+      - name: Qualify installed real RTSP RTP and in-libavcodec CMeta DSO cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$TM_RTSP_INSTALLED_ROOT"
+          prefix="$TM_FF_INSTRUMENTED_PREFIX"
+          build="$GITHUB_WORKSPACE/build/m15d-consumer"
+          export TM_SALTS_SDK_ROOT="$SALTS_ROOT"
+          export TM_SG_SDK_ROOT="$stage"
+          export TM_RTSP_SDK_ROOT="$stage"
+          export TM_TEST_FFMPEG_DSO=1
+          export TM_TEST_RTSP_PROVIDER=1
+          export TM_TEST_FFMPEG_INNER_GATE=1
+          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
+          export LD_LIBRARY_PATH="$prefix/lib:$stage/lib:$SALTS_ROOT/lib:$SALTS_UTILS_ROOT/lib:$SALTSNET_ROOT/lib:$CHTTP_ROOT/lib:$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/lib"
+          cmake -S streamgraph/tests/installed_salts -B "$build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_TOOLCHAIN_FILE="$QIGAO_VCPKG_TOOLCHAIN_FILE" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_INSTALLED_DIR="$GITHUB_WORKSPACE/vcpkg_installed" \
+            -DVCPKG_MANIFEST_MODE=OFF \
+            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE \
+            -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE
+          cmake --build "$build" --parallel 2
+          ldd "$build/tm_installed_salts_delayed_test" | tee "$RUNNER_TEMP/installed-consumer-ldd.txt"
+          grep -F "$prefix/lib/libavcodec.so" "$RUNNER_TEMP/installed-consumer-ldd.txt"
+          grep -F "$stage/lib/libturbo_media_rtsp.so" "$RUNNER_TEMP/installed-consumer-ldd.txt"
+          ctest --test-dir "$build" -R '^installed_salts_delayed_component_plugin_dso$' \
+            --repeat until-fail:3 --no-tests=error --output-on-failure --timeout 120
+          echo "3/3 exact installed RTSP/DSO/in-libavcodec cancellation PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "Prebuilt Salts/CHttp binaries are not fully source-sanitized" >> "$GITHUB_STEP_SUMMARY"
