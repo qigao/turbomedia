@@ -98,8 +98,14 @@ jobs:
           # Host generators (salts-idlc) are real executables from the
           # immutable released SaltsUtils SDK. Resolve their exact Salts
           # dynamic dependency BEFORE CMake invokes any code generation.
-          export LD_LIBRARY_PATH="$prefix/lib:$SALTS_ROOT/lib:$SALTS_UTILS_ROOT/lib:$SALTSNET_ROOT/lib:$CHTTP_ROOT/lib:$RULES_FORGE_ROOT/lib:$installed/x64-linux/lib"
+          export LD_LIBRARY_PATH="$prefix/lib:$SALTS_ROOT/lib:$SALTS_UTILS_ROOT/lib:$SALTSNET_ROOT/lib:$CHTTP_ROOT/lib:$RULES_FORGE_ROOT/lib:$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/lib:${LD_LIBRARY_PATH:-}"
           test -f "$SALTS_ROOT/lib/libsalts.so.2.3"
+          test -x "$SALTS_UTILS_ROOT/bin/salts-idlc"
+          ldd "$SALTS_UTILS_ROOT/bin/salts-idlc" | tee "$RUNNER_TEMP/m15d-idlc-host-ldd.txt"
+          if grep -q "not found" "$RUNNER_TEMP/m15d-idlc-host-ldd.txt"; then
+            echo "Installed salts-idlc missing exact host shared dependency" >&2
+            exit 1
+          fi
           test "$(pkg-config --variable=prefix libavcodec)" = "$prefix"
           cmake -S . -B "$build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
