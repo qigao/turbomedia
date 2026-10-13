@@ -1,0 +1,161 @@
+name: M15d real RTSP Windows IOCP dequeue cancellation #192
+'on':
+  pull_request:
+    paths:
+      - '.github/workflows/streamgraph-rtsp-iocp-kernel-dispatch.yml'
+      - 'tests/rtsp_nativeio_iocp_dispatch.c'
+      - 'tests/CMakeLists.txt'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'CMakeLists.txt'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: m15d-rtsp-real-iocp-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+  SALTS_KERNEL_TEST_SHA: 8f448202367c93c04b8981085ee3f07c538ac330
+jobs:
+  windows-kernel:
+    name: Genuine GQCS IOCP Owner vs released CNet RTSP Server
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout same HEAD TurboMedia
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout exact Salts Draft #1176 private IOCP backend
+        uses: actions/checkout@v4
+        with:
+          repository: qigao/salts
+          ref: 8f448202367c93c04b8981085ee3f07c538ac330
+          path: build/m15d-private-nativeio
+          persist-credentials: false
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@master
+        with:
+          mode: read
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Prepare Windows x64 MSVC native build tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install ninja nasm strawberryperl -y --no-progress
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vs)) { throw 'MSVC x64 missing' }
+          $canonicalVcpkgRoot = $env:VCPKG_ROOT
+          $vsdev = Join-Path $vs 'Common7/Tools/VsDevCmd.bat'
+          $command = 'call "' + $vsdev + '" -arch=x64 -host_arch=x64 >nul && set'
+          $lines = & cmd.exe /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed' }
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          "VCPKG_ROOT=$canonicalVcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $source = & git -C build/m15d-private-nativeio rev-parse HEAD
+          if ($source.Trim() -ne $env:SALTS_KERNEL_TEST_SHA) {
+            throw 'Private original IOCP source SHA does not match Salts #1176'
+          }
+          Select-String -LiteralPath build/m15d-private-nativeio/native-io/src/native_io_iocp.c -SimpleMatch 'SALTS_NATIVE_IO_KERNEL_TEST_HOOK' | Out-Null
+          "Actual test-only Salts NativeIO SHA: $source" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Restore exact published Windows RTSP/CNet platform SDKs
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid windows-x64
+
+      - name: Restore unrelated third-party packages cache-only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
+          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+          $vcpkg = Join-Path $env:VCPKG_ROOT 'vcpkg.exe'
+          & $vcpkg install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=x64-windows' --only-binarycaching
+          if ($LASTEXITCODE -ne 0) { throw 'Cache-only Windows media dependency restore failed' }
+
+      - name: Compile original private IOCP backend against real RTSP/CNet Server
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-rtsp-iocp'
+          $original = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-private-nativeio'
+          $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
+          $cmakeArgs = @('-S', '.', '-B', $build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON', "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE", '-DVCPKG_TARGET_TRIPLET=x64-windows', '-DVCPKG_MANIFEST_MODE=OFF', "-DVCPKG_INSTALLED_DIR=$installed", "-DTM_M15D_IOCP_KERNEL_SOURCE_ROOT=$original")
+          & cmake @cmakeArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Exact private IOCP configure failed' }
+          & cmake --build $build --target turbo_media_rtsp_nativeio_iocp_dispatch --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Actual IOCP consumer compile/link failed' }
+
+      - name: Verify actual private NativeIO source and no fallback
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-rtsp-iocp'
+          $commands = Get-Content -LiteralPath (Join-Path $build 'compile_commands.json') -Raw | ConvertFrom-Json
+          foreach ($suffix in @('/tests/rtsp_nativeio_iocp_dispatch.c','/native-io/src/native_io.c','/native-io/src/native_io_accept_escrow.c','/native-io/src/native_io_iocp.c')) {
+            $units = @($commands | Where-Object { ($_.file -replace '\\','/').EndsWith($suffix) })
+            if ($units.Count -eq 0) { throw "Original private IOCP source not compiled: $suffix" }
+            foreach ($unit in $units) {
+              if ([string]$unit.command -notmatch 'SALTS_NATIVE_IO_KERNEL_TEST_HOOK') {
+                throw "Original source hook not compiled: $suffix"
+              }
+            }
+            "Original private NativeIO compiled: $suffix" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      - name: Run real Windows GQCS dequeue versus Owner cancel 12 times
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-rtsp-iocp'
+          $runtimeDirs = @()
+          foreach ($key in @('SALTS_ROOT','SALTS_UTILS_ROOT','SALTSNET_ROOT','CHTTP_ROOT','RULES_FORGE_ROOT')) {
+            $root = [Environment]::GetEnvironmentVariable($key)
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @('bin','lib')) {
+              $dir = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $dir -PathType Container) { $runtimeDirs += $dir }
+            }
+          }
+          $triplet = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed/x64-windows'
+          foreach ($leaf in @('bin','lib')) {
+            $dir = Join-Path $triplet $leaf
+            if (Test-Path -LiteralPath $dir -PathType Container) { $runtimeDirs += $dir }
+          }
+          $runtimeDirs += (Join-Path $build 'bin')
+          $env:PATH = ($runtimeDirs -join [IO.Path]::PathSeparator) + [IO.Path]::PathSeparator + $env:PATH
+          $binary = Join-Path $build 'bin/turbo_media_rtsp_nativeio_iocp_dispatch.exe'
+          if (-not (Test-Path -LiteralPath $binary)) { throw 'Actual IOCP executable absent' }
+          & $binary
+          if ($LASTEXITCODE -ne 0) { throw 'Initial true Windows IOCP RTSP run failed' }
+          $log = Join-Path $build 'iocp-kernel-results.txt'
+          & ctest --test-dir $build -R '^turbo_media_rtsp_nativeio_iocp_dispatch$' --repeat until-fail:12 --no-tests=error --output-on-failure --timeout 90 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'Original IOCP kernel/cancel repetitions failed' }
+          $passed = @(Select-String -Path $log -Pattern 'turbo_media_rtsp_nativeio_iocp_dispatch.*Passed').Count
+          if ($passed -ne 12) { throw "Expected 12/12 original IOCP CTests, observed $passed" }
+          'True Windows IOCP GQCS with released Salts CNet RTSP Server: 12/12 CTest repetitions x 12 original request generations PASS' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Preserve real Windows IOCP kernel test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m15d-rtsp-iocp-windows-x64
+          path: |
+            build/m15d-rtsp-iocp/iocp-kernel-results.txt
+            build/m15d-rtsp-iocp/Testing/Temporary/LastTest.log
+            build/m15d-rtsp-iocp/compile_commands.json
+          if-no-files-found: warn
+          retention-days: 14
