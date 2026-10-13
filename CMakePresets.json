@@ -63,6 +63,21 @@
                 "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
                 "TURBO_MEDIA_TEST_FAULT_INJECTION": "ON"
             }
+        },
+        {
+            "name": "ci-platform-linux-tsan",
+            "inherits": "ci-platform-release",
+            "description": "Draft-only first-party SCTP/DTLS Owner ThreadSanitizer acceptance",
+            "binaryDir": "${sourceDir}/build/ci-platform-linux-tsan",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_C_FLAGS_RELEASE": "-O1 -g -DNDEBUG -fno-omit-frame-pointer -fsanitize=thread",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O1 -g -DNDEBUG -fno-omit-frame-pointer -fsanitize=thread",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread -pie",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "TURBO_MEDIA_TEST_FAULT_INJECTION": "ON"
+            }
         }
     ],
     "testPresets": [
@@ -135,6 +150,21 @@
                 "noTestsAction": "error",
                 "timeout": 180
             }
+        },
+        {
+            "name": "ci-platform-linux-tsan",
+            "inherits": "base-test",
+            "configurePreset": "ci-platform-linux-tsan",
+            "filter": {
+                "include": {
+                    "name": "^turbo_media_test_dtls_concurrency$"
+                }
+            },
+            "execution": {
+                "noTestsAction": "error",
+                "stopOnFailure": true,
+                "timeout": 60
+            }
         }
     ],
     "buildPresets": [
@@ -146,6 +176,11 @@
         {
             "name": "ci-platform-linux-asan-ubsan-build",
             "configurePreset": "ci-platform-linux-asan-ubsan",
+            "jobs": 2
+        },
+        {
+            "name": "ci-platform-linux-tsan-build",
+            "configurePreset": "ci-platform-linux-tsan",
             "jobs": 2
         }
     ]
