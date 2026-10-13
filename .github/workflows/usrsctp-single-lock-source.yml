@@ -1,0 +1,120 @@
+name: usrsctp pinned single-lock source preflight
+
+# An isolated, source-only qualification. This does not change TurboMedia's
+# installed 0.9.5.0#6 usrsctp dependency, SDK graph or normal platform CI.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/usrsctp-single-lock-source.yml
+
+permissions:
+  contents: read
+
+jobs:
+  single-lock-source:
+    if: ${{ github.head_ref == 'ci/usrsctp-single-lock-source-222' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Immutable upstream candidate: follows the TCB_SEND-lock removal
+      # 0586533 and removes the unused mutex field in b6b96d3.
+      USRSCTP_SOURCE_SHA: b6b96d387db78550b6997625b051744e8e7949ce
+    steps:
+      - name: Checkout source-qualified TurboMedia branch
+        uses: actions/checkout@v4
+
+      - name: Fetch immutable upstream source and record archive checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="$RUNNER_TEMP/usrsctp-pinned.tar.gz"
+          source_root="$RUNNER_TEMP/usrsctp-single-lock"
+          curl --fail --location --retry 3 --max-time 120 \
+            "https://codeload.github.com/sctplab/usrsctp/tar.gz/${USRSCTP_SOURCE_SHA}" \
+            --output "$snapshot"
+          test "$(stat -c%s "$snapshot")" -gt 100000
+          mkdir -p "$source_root"
+          tar --extract --gzip --file "$snapshot" \
+            --directory "$source_root" --strip-components=1
+          echo "source_sha=${USRSCTP_SOURCE_SHA}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "archive_sha512=$(sha512sum "$snapshot" | cut -d' ' -f1)" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "USRSCTP_SOURCE_ROOT=$source_root" >> "$GITHUB_ENV"
+
+      - name: Check removal of second native TCB/SEND mutex
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_root="$USRSCTP_SOURCE_ROOT"
+          for path in \
+            usrsctplib/netinet/sctp_input.c \
+            usrsctplib/netinet/sctputil.c \
+            usrsctplib/netinet/sctp_pcb.h \
+            usrsctplib/netinet/sctp_lock_userspace.h; do
+            if grep --extended-regexp 'SCTP_TCB_SEND_LOCK|tcb_send_mtx' \
+                    "$source_root/$path"; then
+              echo "::error::$path still contains a retired send-lock primitive"
+              exit 1
+            fi
+          done
+          grep --fixed-strings 'SCTP_TCB_LOCK_ASSERT(stcb);' \
+            "$source_root/usrsctplib/netinet/sctp_input.c" >/dev/null
+          grep --fixed-strings 'sctp_report_all_outbound(stcb, error, so_locked);' \
+            "$source_root/usrsctplib/netinet/sctputil.c" >/dev/null
+          echo 'Single TCB locking verified at immutable upstream source commit' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build native source without changing the installed SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S "$USRSCTP_SOURCE_ROOT" \
+            -B "$RUNNER_TEMP/usrsctp-single-lock-build" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -Dsctp_build_programs=OFF \
+            -Dsctp_build_shared_lib=OFF \
+            -Dsctp_werror=OFF
+          cmake --build "$RUNNER_TEMP/usrsctp-single-lock-build" --parallel 2
+
+      - name: Compile and run real no-thread public API smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find "$RUNNER_TEMP/usrsctp-single-lock-build" \
+            -type f -name 'libusrsctp.a' -print -quit)"
+          test -n "$archive"
+          nm --defined-only --extern-only "$archive" \
+            | grep --fixed-strings 'usrsctp_handle_timers'
+          cat > "$RUNNER_TEMP/usrsctp-single-lock-smoke.c" <<'EOF'
+          #include <stdint.h>
+          #include <stddef.h>
+          #include <sys/socket.h>
+          #include <netinet/in.h>
+          #include <usrsctp.h>
+
+          static int packet_output(void *address, void *bytes, size_t n,
+                                   uint8_t tos, uint8_t dont_fragment) {
+              (void)address; (void)bytes; (void)n;
+              (void)tos; (void)dont_fragment;
+              return 0;
+          }
+
+          int main(void) {
+              usrsctp_init_nothreads(0, packet_output, NULL);
+              usrsctp_handle_timers(1);
+              struct socket *socket = usrsctp_socket(
+                  AF_CONN, SOCK_STREAM, IPPROTO_SCTP,
+                  NULL, NULL, 0, NULL);
+              if (!socket) return 2;
+              usrsctp_close(socket);
+              return 0;
+          }
+          EOF
+          cc -std=c11 -Wall -Wextra -Werror \
+            -I"$USRSCTP_SOURCE_ROOT/usrsctplib" \
+            "$RUNNER_TEMP/usrsctp-single-lock-smoke.c" \
+            "$archive" -pthread -o "$RUNNER_TEMP/usrsctp-single-lock-smoke"
+          "$RUNNER_TEMP/usrsctp-single-lock-smoke"
+          echo 'Pinned source compiled and passed public C11 SCTP no-thread smoke' \
+            >> "$GITHUB_STEP_SUMMARY"
