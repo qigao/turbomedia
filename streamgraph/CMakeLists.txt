@@ -124,7 +124,8 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
   target_include_directories(turbo_media_streamgraph_ffmpeg
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include>
            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/include>)
+           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../media/include>
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_link_libraries(turbo_media_streamgraph_ffmpeg
     PUBLIC turbo_media_streamgraph
     PRIVATE PkgConfig::TM_SG_AVCODEC PkgConfig::TM_SG_AVUTIL)
@@ -162,6 +163,17 @@ if(TM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER)
       "include(\"\${CMAKE_CURRENT_LIST_DIR}/TurboMediaStreamGraphFFmpegTargets.cmake\")\n")
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/TurboMediaStreamGraphFFmpegConfig.cmake"
       DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/TurboMediaStreamGraphFFmpeg)
+  else()
+    # Optional installed desktop Provider: when the parent TurboMedia build
+    # selects FFmpeg, export the SAME add-on as a real package component.
+    # The default build remains format-neutral and does not include FFmpeg.
+    turbo_media_configure_component(turbo_media_streamgraph_ffmpeg
+      StreamGraphFFmpeg)
+    install(FILES
+      ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include/turbo_streamgraph_ffmpeg.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include/turbo_streamgraph_ffmpeg_async.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/adapters/ffmpeg/include/turbo_streamgraph_ffmpeg_delayed.h
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
   endif()
   if(MSVC)
     target_compile_options(turbo_media_streamgraph_ffmpeg PRIVATE /W4 /WX)
