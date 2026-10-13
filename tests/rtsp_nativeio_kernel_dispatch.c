@@ -1,6 +1,6 @@
 /* M15d/#192: a REAL RTSP/CNet server supplies bytes to a separate,
  * PRIVATE-source Salts NativeIO endpoint. The private hook runs on the
- * original NativeIO Owner AFTER epoll_wait returned genuine readiness,
+ * original NativeIO Owner AFTER epoll_wait/kevent returned genuine readiness,
  * BEFORE NativeIO dispatches the original receive terminal.
  *
  * This is a test-only linkage to Salts #1168/#1176, never a public hook in
@@ -163,13 +163,18 @@ int main(void) {
     unsigned round;
     int result;
 
+    /* Same POSIX contract, independently qualified on real epoll/kqueue. */
+#if defined(__APPLE__)
+    backend_config.kind = NATIVE_IO_BACKEND_KQUEUE;
+#else
     backend_config.kind = NATIVE_IO_BACKEND_EPOLL;
+#endif
     backend_config.endpoint_capacity = 1u;
     backend_config.request_capacity = 1u;
     backend_config.completion_batch_capacity = 1u;
     result = native_io_backend_init(&backend, &backend_config);
     if (result != SALTS_OK)
-        return fail(__LINE__, 0u, "native_io_backend_init(EPOLL)", result);
+        return fail(__LINE__, 0u, "native_io_backend_init(real POSIX kernel backend)", result);
 
     for (round = 0u; round < M15D_ROUNDS; ++round) {
         rtsp_fixture fixture = {0};
@@ -330,7 +335,9 @@ end_round:
     result = native_io_backend_destroy(&backend);
     if (result != SALTS_OK)
         return fail(__LINE__, M15D_ROUNDS, "native_io_backend_destroy", result);
-    printf("M15d real RTSP/CNet server + original NativeIO epoll dispatch: "
-           "%u real request-generation rounds PASS\n", (unsigned)M15D_ROUNDS);
+    printf("M15d real RTSP/CNet server + original NativeIO %s dispatch: "
+           "%u real request-generation rounds PASS\n",
+           backend_config.kind == NATIVE_IO_BACKEND_EPOLL ? "epoll" : "kqueue",
+           (unsigned)M15D_ROUNDS);
     return 0;
 }

@@ -22,12 +22,24 @@ concurrency:
 jobs:
   real-rtsp-kernel:
     name: RTSP/CNet real epoll Owner cancellation (${{ matrix.mode }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        mode: [release, asan-ubsan]
+        include:
+          - os: ubuntu-24.04
+            mode: release
+            rid: linux-x64
+            triplet: x64-linux
+          - os: ubuntu-24.04
+            mode: asan-ubsan
+            rid: linux-x64
+            triplet: x64-linux
+          - os: macos-15
+            mode: release
+            rid: macos-arm64
+            triplet: arm64-osx
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,10 +62,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ninja-build pkg-config nasm autoconf automake libtool ccache python3 \
-            libpipewire-0.3-dev libx11-dev libxext-dev
+          if [ "$(uname -s)" = Darwin ]; then
+            test "$(uname -m)" = arm64
+            brew install ninja nasm autoconf automake libtool pkg-config ccache
+          else
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              ninja-build pkg-config nasm autoconf automake libtool ccache python3 \
+              libpipewire-0.3-dev libx11-dev libxext-dev
+          fi
           test "$(git -C build/m15d-private-nativeio rev-parse HEAD)" = "$SALTS_KERNEL_TEST_SHA"
           grep -F 'SALTS_NATIVE_IO_KERNEL_TEST_HOOK' \
             build/m15d-private-nativeio/native-io/src/native_io_readiness.c
@@ -62,14 +79,14 @@ jobs:
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid linux-x64
+        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid "${{ matrix.rid }}"
       - name: Restore media dependencies cache only
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
           Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
-          & (Join-Path $env:VCPKG_ROOT 'vcpkg') install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=x64-linux' --only-binarycaching
+          & (Join-Path $env:VCPKG_ROOT 'vcpkg') install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=${{ matrix.triplet }}' --only-binarycaching
           if ($LASTEXITCODE -ne 0) { throw 'cache-only media dependency restore failed' }
       - name: Build original epoll backend and actual RTSP/CNet consumer
         shell: bash
@@ -90,7 +107,7 @@ jobs:
           cmake -S . -B "$build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             "-DCMAKE_TOOLCHAIN_FILE=$QIGAO_VCPKG_TOOLCHAIN_FILE" \
-            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
             -DVCPKG_MANIFEST_MODE=OFF \
             "-DVCPKG_INSTALLED_DIR=$GITHUB_WORKSPACE/vcpkg_installed" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -129,7 +146,11 @@ jobs:
           PY
           binary="$build/bin/turbo_media_rtsp_nativeio_kernel_dispatch"
           test -x "$binary"
-          if nm -D --defined-only "$binary" | grep -E ' native_io_backend_'; then
+          if [ "$(uname -s)" = Darwin ]; then
+            # Darwin's private_extern is proved by compiler arguments, not
+            # by GNU nm -D (unsupported on macOS).
+            grep -q -- '-fvisibility=hidden' "$build/compile_commands.json"
+          elif nm -D --defined-only "$binary" | grep -E ' native_io_backend_'; then
             echo 'Private native backend leaked a publicly interposing symbol' >&2
             exit 1
           fi
@@ -150,14 +171,21 @@ jobs:
               done
             fi
           done
-          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/lib:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/vcpkg_installed/${{ matrix.triplet }}/lib:${LD_LIBRARY_PATH:-}"
           binary="$build/bin/turbo_media_rtsp_nativeio_kernel_dispatch"
-          ldd "$binary" | tee "$build/sdk-ldd.txt"
-          grep -F "$SALTS_ROOT/lib/libcnet.so.2.3" "$build/sdk-ldd.txt"
-          grep -F 'libturbo_media_rtsp.so.2' "$build/sdk-ldd.txt"
-          if grep -F 'not found' "$build/sdk-ldd.txt"; then
-            echo 'Released RTSP/CNet runtime graph has unresolved dependency' >&2
-            exit 1
+          if [ "$(uname -s)" = Darwin ]; then
+            export DYLD_LIBRARY_PATH="$LD_LIBRARY_PATH:${DYLD_LIBRARY_PATH:-}"
+            otool -L "$binary" | tee "$build/sdk-ldd.txt"
+            grep -F 'libcnet' "$build/sdk-ldd.txt"
+            grep -F 'libturbo_media_rtsp' "$build/sdk-ldd.txt"
+          else
+            ldd "$binary" | tee "$build/sdk-ldd.txt"
+            grep -F "$SALTS_ROOT/lib/libcnet.so.2.3" "$build/sdk-ldd.txt"
+            grep -F 'libturbo_media_rtsp.so.2' "$build/sdk-ldd.txt"
+            if grep -F 'not found' "$build/sdk-ldd.txt"; then
+              echo 'Released RTSP/CNet runtime graph has unresolved dependency' >&2
+              exit 1
+            fi
           fi
           if [ "$SAN_MODE" = asan-ubsan ]; then
             export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1
@@ -174,7 +202,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: m15d-rtsp-kernel-${{ matrix.mode }}
+          name: m15d-rtsp-kernel-${{ matrix.rid }}-${{ matrix.mode }}
           path: |
             build/m15d-rtsp-kernel-${{ matrix.mode }}/sdk-ldd.txt
             build/m15d-rtsp-kernel-${{ matrix.mode }}/nativeio-kernel-results.txt

@@ -215,15 +215,24 @@ message(STATUS "Total tests configured: ${TEST_COUNT}")
 set(TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT "" CACHE PATH
     "Exact Salts #1176 private NativeIO test source checkout (Linux only)")
 if(TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT)
-  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_CROSSCOMPILING)
+  if((NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT APPLE) OR
+     CMAKE_CROSSCOMPILING)
     message(FATAL_ERROR
-      "M15d NativeIO kernel dispatch consumer is Linux host-only")
+      "M15d NativeIO kernel dispatch consumer is Linux epoll / macOS kqueue host-only")
   endif()
   set(_tm_native_root "${TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT}/native-io")
+  set(_tm_private_native_platform)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _tm_private_native_platform
+      src/native_io_linux.c src/native_io_epoll.c src/native_io_io_uring.c)
+  else()
+    list(APPEND _tm_private_native_platform
+      src/native_io_bsd.c src/native_io_kqueue.c)
+  endif()
   foreach(_tm_kernel_source IN ITEMS
       src/native_io.c src/native_io_accept_escrow.c
-      src/native_io_linux.c src/native_io_epoll.c src/native_io_io_uring.c
-      src/native_io_readiness.c src/native_io_readiness.h)
+      src/native_io_readiness.c src/native_io_readiness.h
+      ${_tm_private_native_platform})
     if(NOT EXISTS "${_tm_native_root}/${_tm_kernel_source}")
       message(FATAL_ERROR "Exact private NativeIO source missing: ${_tm_kernel_source}")
     endif()
@@ -238,14 +247,19 @@ if(TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT)
     rtsp_nativeio_kernel_dispatch.c
     "${_tm_native_root}/src/native_io.c"
     "${_tm_native_root}/src/native_io_accept_escrow.c"
-    "${_tm_native_root}/src/native_io_linux.c"
-    "${_tm_native_root}/src/native_io_epoll.c"
-    "${_tm_native_root}/src/native_io_io_uring.c"
     "${_tm_native_root}/src/native_io_readiness.c")
+  foreach(_tm_platform_file IN LISTS _tm_private_native_platform)
+    target_sources(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+      "${_tm_native_root}/${_tm_platform_file}")
+  endforeach()
   target_include_directories(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
     "${_tm_native_root}/include" "${_tm_native_root}/src")
   target_compile_definitions(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
     SALTS_NATIVE_IO_KERNEL_TEST_HOOK=1)
+  if(APPLE)
+    target_compile_definitions(turbo_media_rtsp_nativeio_kernel_dispatch
+      PRIVATE _DARWIN_C_SOURCE=1)
+  endif()
   target_link_libraries(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
     TurboMedia::RTSP Salts::Platform Salts::Coroutine Threads::Threads)
   target_compile_options(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
