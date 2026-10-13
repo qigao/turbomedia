@@ -1148,7 +1148,7 @@ spec("SCTP dequeued timer callback before peer admission") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
 
-    it("keeps raw AF_CONN peer alive until timer callback can reject admission") {
+    it("retires a dequeued native callback before freeing raw AF_CONN userdata") {
         packet_endpoint_t *endpoint = &endpoints[0];
         struct socket *native = sctp_native_borrow(endpoint->peer);
         check_not_null(native);
