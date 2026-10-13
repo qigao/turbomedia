@@ -176,7 +176,11 @@ set_target_properties(tm_installed_cpp17_sdk_test PROPERTIES
 target_link_libraries(tm_installed_cpp17_sdk_test PRIVATE
   Salts::ComponentPlugin Salts::Plugin Salts::CNet TurboMedia::StreamGraph)
 if(MSVC)
-  target_compile_options(tm_installed_cpp17_sdk_test PRIVATE /W4 /WX)
+  # MSVC defaults __cplusplus to 199711L even in /std:c++17 unless
+  # /Zc:__cplusplus is enabled. Require the actual standard macro to match
+  # the configured C++17 installed-SDK contract, not a weaker conditional.
+  target_compile_options(tm_installed_cpp17_sdk_test PRIVATE
+    /W4 /WX /Zc:__cplusplus)
 else()
   target_compile_options(tm_installed_cpp17_sdk_test PRIVATE
     -Wall -Wextra -Werror -pedantic)
