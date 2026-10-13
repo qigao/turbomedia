@@ -1414,6 +1414,14 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
      * in-flight peer destruction for an empty peer list. */
     dc_peer_unlink_from_context(peer);
 
+    /* Private test-only final reclamation rendezvous. The test may pause a
+     * raw Peer free until a dequeued real usrsctp callout exits, so even
+     * the unprotected RED control never deliberately invokes a freed Peer.
+     * No production DLL has this diagnostic hook. */
+#ifdef TURBO_MEDIA_TEST_SCTP_PRE_ADMISSION
+    extern void turbo_media_test_sctp_before_peer_reclaim(void *peer_address);
+    turbo_media_test_sctp_before_peer_reclaim(peer);
+#endif
     cmeta_cond_destroy(&peer->operation_cond);
     cmeta_mutex_destroy(&peer->operation_mutex);
 
