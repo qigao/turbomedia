@@ -183,11 +183,11 @@ static int submit(tm_test_provider *p,tm_test_instance_request identity,
     free(temporary);
     return rc;
 }
-#ifdef TM_TEST_FFMPEG_INNER_GATE
-#include "delayed_flush_gate_test.inc"
-#endif
 #ifdef TM_TEST_RTSP_PROVIDER
 #include "installed_rtsp_overlap_test.inc"
+#endif
+#ifdef TM_TEST_FFMPEG_INNER_GATE
+#include "delayed_flush_gate_test.inc"
 #endif
 
 int main(int argc,char **argv) {
