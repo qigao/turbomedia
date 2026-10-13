@@ -1,6 +1,17 @@
 name: M15d RTSP Salts full-source TSan #1170
 
 'on':
+  push:
+    branches: [master]
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - '.github/workflows/streamgraph-rtsp-salts-source-tsan.yml'
+      - 'tests/**'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'streamgraph/**'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'CMakeLists.txt'
   pull_request:
     paths:
       - 'cmake/ci/m16-sdk-lock.json'

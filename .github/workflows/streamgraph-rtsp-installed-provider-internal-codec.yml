@@ -1,5 +1,16 @@
 name: M15d installed RTSP DSO inside libavcodec
 'on':
+  push:
+    branches: [master]
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - '.github/workflows/streamgraph-rtsp-installed-provider-internal-codec.yml'
+      - 'streamgraph/tests/installed_salts/**'
+      - 'streamgraph/adapters/ffmpeg/**'
+      - 'streamgraph/CMakeLists.txt'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'CMakeLists.txt'
   pull_request:
     paths:
       - 'cmake/ci/m16-sdk-lock.json'

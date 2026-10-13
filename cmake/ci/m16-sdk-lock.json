@@ -45,5 +45,11 @@
     "sgerrand/mermaid-validation-action": "31f8eed257dbbbadad3332c83694866903e92b0e"
   },
   "vcpkg_scripts_revision": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
-  "vcpkg_tool_version": "2026-07-27-98d7cb0cf1f4686a3e43aa5672b6230c1d56bce8"
+  "vcpkg_tool_version": "2026-07-27-98d7cb0cf1f4686a3e43aa5672b6230c1d56bce8",
+  "integration_qualification": {
+    "purpose": "Enable exact-master Phase C acceptance for integrated M16 stack; code already fast-forwarded",
+    "preintegration_master_sha": "69216a91ac4d6f8032561fe0224efcf9a0bfd55e",
+    "integrated_stack_source_sha": "e978ac66060c7bc2f42faca97f7c14712d2c0815",
+    "expect_all_11_m16_workflows_on_master_push": true
+  }
 }

@@ -1,5 +1,16 @@
 name: M15d real RTSP Windows IOCP dequeue cancellation #192
 'on':
+  push:
+    branches: [master]
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - '.github/workflows/streamgraph-rtsp-iocp-kernel-dispatch.yml'
+      - 'tests/rtsp_nativeio_iocp_dispatch.c'
+      - 'tests/CMakeLists.txt'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'CMakeLists.txt'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
   pull_request:
     paths:
       - 'cmake/ci/m16-sdk-lock.json'

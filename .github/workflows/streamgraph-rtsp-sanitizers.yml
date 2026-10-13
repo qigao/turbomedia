@@ -1,6 +1,19 @@
 name: M15d RTSP released-SDK sanitizers and TSan evidence
 
 'on':
+  push:
+    branches: [master]
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - '.github/workflows/streamgraph-rtsp-sanitizers.yml'
+      - 'tests/**'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'tools/lemon/**'
+      - 'streamgraph/**'
+      - 'CMakeLists.txt'
+      - 'tests/CMakeLists.txt'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
   pull_request:
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
