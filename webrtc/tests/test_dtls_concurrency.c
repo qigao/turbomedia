@@ -373,6 +373,7 @@ typedef struct {
     turbo_dc_peer_t *peer;
     int hook_entered;
     int hook_release;
+    int destroy_planned;
     int destroy_admitted;
     int destroy_finished;
     int timer_finished;
@@ -395,9 +396,13 @@ int turbo_media_test_sctp_before_peer_admission(void *peer_address) {
     cmeta_cond_broadcast(&f->cond);
     while (!f->hook_release)
         cmeta_cond_wait(&f->cond, &f->mutex);
-    int abort_unsafe_reentry = f->destroy_finished;
+    /* Once a foreign destroy has been scheduled, terminate this controlled
+     * test callback BEFORE any peer dereference, even if the destroy worker
+     * has not reached its admission hook yet. A broken retirement fence can
+     * therefore fail the test without intentionally triggering a UAF. */
+    int abort_before_peer_deref = f->destroy_planned;
     cmeta_mutex_unlock(&f->mutex);
-    return abort_unsafe_reentry;
+    return abort_before_peer_deref;
 }
 
 void turbo_media_test_sctp_destroy_admitted(void *peer_address) {
@@ -1183,6 +1188,11 @@ spec("SCTP dequeued timer callback before peer admission") {
             &timer_thread, pump_until_native_pre_admission, f) == 0;
         int callback_entered = timer_created &&
             wait_pre_admission_flag(&f->hook_entered, 6000u);
+        if (callback_entered) {
+            cmeta_mutex_lock(&f->mutex);
+            f->destroy_planned = 1;
+            cmeta_mutex_unlock(&f->mutex);
+        }
         int destroy_created = callback_entered &&
             cmeta_thread_create(&destroy_thread,
                                 destroy_native_pre_admission_peer, f) == 0;
