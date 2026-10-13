@@ -129,10 +129,13 @@ jobs:
           from pathlib import Path
           cmds=json.loads((Path('build/m15d-rtsp-kernel-' + os.environ['SAN_MODE']) /
                            'compile_commands.json').read_text())
+          kernel_backend = ('/native-io/src/native_io_kqueue.c'
+                            if os.uname().sysname == 'Darwin'
+                            else '/native-io/src/native_io_epoll.c')
           for suffix in (
               '/tests/rtsp_nativeio_kernel_dispatch.c',
               '/native-io/src/native_io.c',
-              '/native-io/src/native_io_epoll.c',
+              kernel_backend,
               '/native-io/src/native_io_readiness.c',
           ):
               matched=[c for c in cmds if c['file'].replace('\\','/').endswith(suffix)]
