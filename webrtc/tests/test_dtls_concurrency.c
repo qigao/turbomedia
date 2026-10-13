@@ -318,6 +318,15 @@ typedef struct {
     unsigned failed_events;
     int nested_timer_armed;
     unsigned nested_timer_calls;
+    /* Per-endpoint handoff for a genuine native timer callback held across
+     * a foreign peer_destroy. All flags use mutex/timer_cond. */
+    cmeta_cond_t timer_cond;
+    int hold_timer_callback;
+    int timer_callback_entered;
+    int release_timer_callback;
+    int timer_pump_exited;
+    int timer_destroy_started;
+    int timer_destroy_finished;
     int drop_first_ready_packet;
     int send_failed;
     turbo_dc_channel_t *channel; /* Borrowed from the peer. */
@@ -366,6 +375,13 @@ static void queue_packet(void *transport, const void *data, size_t len) {
         ++endpoint->nested_timer_calls;
         nested_timer_call = 1;
     }
+    if (g_test_timer_dispatching && endpoint->hold_timer_callback &&
+        !endpoint->timer_callback_entered) {
+        endpoint->timer_callback_entered = 1;
+        cmeta_cond_broadcast(&endpoint->timer_cond);
+        while (!endpoint->release_timer_callback)
+            cmeta_cond_wait(&endpoint->timer_cond, &endpoint->mutex);
+    }
     cmeta_mutex_unlock(&endpoint->mutex);
     /* An actual usrsctp timer-triggered transport callback reenters the
      * exported pump on its own thread, after releasing all fixture locks.
@@ -386,7 +402,10 @@ static void record_packet_endpoint_state(turbo_dc_peer_t *peer,
 
 static void setup_packet_endpoints(int disable_sctp, uint16_t dtls_mtu, uint16_t sctp_mtu) {
     memset(endpoints, 0, sizeof(endpoints));
-    for (int i = 0; i < 2; ++i) cmeta_mutex_init(&endpoints[i].mutex);
+    for (int i = 0; i < 2; ++i) {
+        cmeta_mutex_init(&endpoints[i].mutex);
+        cmeta_cond_init(&endpoints[i].timer_cond);
+    }
     for (int i = 0; i < 2; ++i) {
         packet_endpoint_t *endpoint = &endpoints[i];
         turbo_dc_config_t config = {0};
@@ -424,6 +443,7 @@ static void cleanup_packet_endpoints(void) {
         while (deque_pop_front(&endpoints[i].outgoing, &packet) == STL_OK)
             tstr_free(packet);
         deque_destroy(&endpoints[i].outgoing);
+        cmeta_cond_destroy(&endpoints[i].timer_cond);
         cmeta_mutex_destroy(&endpoints[i].mutex);
     }
 }
@@ -707,6 +727,145 @@ spec("SCTP manual timer elapsed progression") {
         unsigned nested = endpoints[0].nested_timer_calls;
         cmeta_mutex_unlock(&endpoints[0].mutex);
         check_equal(nested, 1u);
+    }
+}
+
+/* Issue #208: real usrsctp timer callback vs foreign peer destruction.
+ * Unlike test-only synthetic notifications, the callback is initiated from
+ * usrsctp_handle_timers() following a real unacknowledged SCTP DATA send. */
+static void pump_native_timer_until_held(void *arg) {
+    packet_endpoint_t *endpoint = arg;
+    uint64_t deadline = cmeta_monotonic_ms() + 6000u;
+    int entered = 0;
+    while (!entered && cmeta_monotonic_ms() < deadline) {
+        g_test_timer_dispatching = 1;
+        turbo_dc_handle_timers();
+        g_test_timer_dispatching = 0;
+        cmeta_mutex_lock(&endpoint->mutex);
+        entered = endpoint->timer_callback_entered;
+        cmeta_mutex_unlock(&endpoint->mutex);
+        if (!entered) cmeta_sleep_ms(10);
+    }
+    cmeta_mutex_lock(&endpoint->mutex);
+    endpoint->timer_pump_exited = 1;
+    cmeta_cond_broadcast(&endpoint->timer_cond);
+    cmeta_mutex_unlock(&endpoint->mutex);
+}
+
+static void destroy_peer_during_native_timer(void *arg) {
+    packet_endpoint_t *endpoint = arg;
+    cmeta_mutex_lock(&endpoint->mutex);
+    endpoint->timer_destroy_started = 1;
+    cmeta_cond_broadcast(&endpoint->timer_cond);
+    cmeta_mutex_unlock(&endpoint->mutex);
+
+    turbo_dc_peer_destroy(endpoint->peer);
+
+    cmeta_mutex_lock(&endpoint->mutex);
+    endpoint->timer_destroy_finished = 1;
+    cmeta_cond_broadcast(&endpoint->timer_cond);
+    cmeta_mutex_unlock(&endpoint->mutex);
+}
+
+static int wait_native_timer_fixture_flag(packet_endpoint_t *endpoint, int *flag) {
+    uint64_t deadline = cmeta_monotonic_ms() + 6000u;
+    cmeta_mutex_lock(&endpoint->mutex);
+    while (!*flag && cmeta_monotonic_ms() < deadline)
+        (void)cmeta_cond_timedwait(&endpoint->timer_cond, &endpoint->mutex,
+                                   UINT64_C(10000000));
+    int observed = *flag;
+    cmeta_mutex_unlock(&endpoint->mutex);
+    return observed;
+}
+
+spec("SCTP native timer admitted callback versus foreign destroy") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("drains a real held timer callback before reclaiming its peer") {
+        packet_endpoint_t *endpoint = &endpoints[0];
+        struct socket *socket = sctp_native_borrow(endpoint->peer);
+        check_not_null(socket);
+        struct sctp_rtoinfo rto = {0};
+        rto.srto_assoc_id = SCTP_FUTURE_ASSOC;
+        rto.srto_initial = 250;
+        rto.srto_min = 200;
+        rto.srto_max = 1000;
+        int configured = socket
+            ? usrsctp_setsockopt(socket, IPPROTO_SCTP, SCTP_RTOINFO,
+                                 &rto, sizeof(rto)) : -1;
+        if (socket) sctp_native_return(endpoint->peer);
+        check_equal(configured, 0);
+
+        open_packet_channel();
+        const uint8_t payload = 0xb4;
+        cmeta_mutex_lock(&endpoint->mutex);
+        unsigned before = endpoint->packets;
+        cmeta_mutex_unlock(&endpoint->mutex);
+        check_equal(turbo_dc_channel_send(endpoint->channel, &payload,
+                                         sizeof(payload), 1), 0);
+        cmeta_mutex_lock(&endpoint->mutex);
+        int first_sent = endpoint->packets > before;
+        endpoint->hold_timer_callback = 1;
+        cmeta_mutex_unlock(&endpoint->mutex);
+        check_true(first_sent);
+
+        cmeta_thread_t timer_thread = NULL, destroy_thread = NULL;
+        int timer_created = cmeta_thread_create(
+            &timer_thread, pump_native_timer_until_held, endpoint) == 0;
+        int callback_entered = timer_created &&
+            wait_native_timer_fixture_flag(endpoint, &endpoint->timer_callback_entered);
+        int destroy_created = callback_entered &&
+            cmeta_thread_create(&destroy_thread,
+                                destroy_peer_during_native_timer, endpoint) == 0;
+        int destroy_started = destroy_created &&
+            wait_native_timer_fixture_flag(endpoint, &endpoint->timer_destroy_started);
+
+        /* Observe the real peer destruction gate. Never infer sequencing
+         * from a sleep: this bit is published under operation_mutex, and the
+         * outstanding admitted native callback holds its peer lease. */
+        int destroying_observed = 0;
+        uint64_t deadline = cmeta_monotonic_ms() + 2000u;
+        if (destroy_started) {
+            while (!destroying_observed && cmeta_monotonic_ms() < deadline) {
+                cmeta_mutex_lock(&endpoint->peer->operation_mutex);
+                destroying_observed = endpoint->peer->destroying;
+                cmeta_mutex_unlock(&endpoint->peer->operation_mutex);
+                if (!destroying_observed) cmeta_sleep_ms(1);
+            }
+        }
+
+        cmeta_mutex_lock(&endpoint->mutex);
+        int destroyed_prematurely = endpoint->timer_destroy_finished;
+        endpoint->release_timer_callback = 1;
+        cmeta_cond_broadcast(&endpoint->timer_cond);
+        cmeta_mutex_unlock(&endpoint->mutex);
+
+        if (timer_created) {
+            (void)cmeta_thread_join(&timer_thread);
+            cmeta_thread_destroy(&timer_thread);
+        }
+        if (destroy_created) {
+            (void)cmeta_thread_join(&destroy_thread);
+            cmeta_thread_destroy(&destroy_thread);
+            /* That worker now owns and has reclaimed the peer. Prevent the
+             * ordinary endpoint teardown from destroying it a second time. */
+            endpoint->peer = NULL;
+            endpoint->channel = NULL;
+        }
+
+        cmeta_mutex_lock(&endpoint->mutex);
+        int callback_pump_exited = endpoint->timer_pump_exited;
+        int destroy_finished = endpoint->timer_destroy_finished;
+        cmeta_mutex_unlock(&endpoint->mutex);
+        check_true(timer_created);
+        check_true(callback_entered);
+        check_true(destroy_created);
+        check_true(destroy_started);
+        check_true(destroying_observed);
+        check_false(destroyed_prematurely);
+        check_true(callback_pump_exited);
+        check_true(destroy_finished);
     }
 }
 
