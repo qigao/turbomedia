@@ -5,6 +5,21 @@
 #include <cstl/deque.h>
 #include <string.h>
 #include <stdlib.h>
+#ifdef TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION
+#include <tlog.h>
+/* Only the dedicated focused TSAN executable uses this test configuration.
+ * Salts.Native rc.15 ships as an UNSANITIZED binary. Its async logger
+ * transfers buffers with release/acquire atomics, but those SDK-internal
+ * synchronization edges are invisible to the consumer's TSan runtime.
+ * Keep all SCTP/DTLS assertions and the real provider unchanged; suppress
+ * only nonfatal log *generation* for this test process, not any TSan report. */
+static void isolate_uninstrumented_salts_logger(void) {
+    tlog_t *logger = tlog_get_default();
+    if (logger) tlog_set_level(logger, SALTS_LOG_LEVEL_FATAL);
+}
+#else
+static void isolate_uninstrumented_salts_logger(void) {}
+#endif
 
 typedef struct {
     turbo_dc_context_t *context;
@@ -137,6 +152,7 @@ static void destroy_peer(void *arg) {
 }
 
 static void setup_fixture(void) {
+    isolate_uninstrumented_salts_logger();
     turbo_dc_config_t config = {0};
     memset(&fixture, 0, sizeof(fixture));
     cmeta_mutex_init(&fixture.mutex);
@@ -409,6 +425,7 @@ static void record_packet_endpoint_state(turbo_dc_peer_t *peer,
 }
 
 static void setup_packet_endpoints(int disable_sctp, uint16_t dtls_mtu, uint16_t sctp_mtu) {
+    isolate_uninstrumented_salts_logger();
     memset(endpoints, 0, sizeof(endpoints));
     for (int i = 0; i < 2; ++i) {
         cmeta_mutex_init(&endpoints[i].mutex);
