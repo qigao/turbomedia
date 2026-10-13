@@ -83,6 +83,15 @@ foreach(_dc_source IN LISTS TURBO_MEDIA_DATACHANNEL_SOURCES)
   target_sources(turbo_media_test_dtls_concurrency PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
 endforeach()
+# Only a TSan-built, first-party test binary may silence nonfatal output
+# from the uninstrumented Salts.Native rc.15 async logger. Regular Release,
+# ASan/UBSan, installed SDK and production binaries keep all logging.
+option(TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION
+       "Isolate unsanitized Salts async logger in focused SCTP TSan test" OFF)
+if(TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION)
+  target_compile_definitions(turbo_media_test_dtls_concurrency PRIVATE
+    TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION=1)
+endif()
 get_target_property(_dc_test_libraries turbo_media_datachannel LINK_LIBRARIES)
 target_link_libraries(turbo_media_test_dtls_concurrency PRIVATE ${_dc_test_libraries})
 unset(_dc_test_libraries)
