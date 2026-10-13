@@ -91,23 +91,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: Linux
-            os: ubuntu-24.04
-            rid: linux-x64
-            triplet: x64-linux
-          - platform: Windows
-            os: windows-2022
-            rid: windows-x64
-            triplet: x64-windows
-          - platform: Android
-            os: ubuntu-24.04
-            rid: android-arm64-v8a
-            triplet: arm64-android-api26
-          - platform: macOS
-            os: macos-15
-            rid: macos-arm64
-            triplet: arm64-osx
+        # The experimental source-built native package is Linux-only until
+        # exactly versioned binaries are qualified and cached for other RIDs.
+        # Every ordinary PR and master push keeps the unchanged 4-RID matrix.
+        include: ${{ fromJSON(github.event_name == 'pull_request' && github.head_ref == 'ci/usrsctp-single-lock-integration-222' && '[{"platform":"Linux","os":"ubuntu-24.04","rid":"linux-x64","triplet":"x64-linux"}]' || '[{"platform":"Linux","os":"ubuntu-24.04","rid":"linux-x64","triplet":"x64-linux"},{"platform":"Windows","os":"windows-2022","rid":"windows-x64","triplet":"x64-windows"},{"platform":"Android","os":"ubuntu-24.04","rid":"android-arm64-v8a","triplet":"arm64-android-api26"},{"platform":"macOS","os":"macos-15","rid":"macos-arm64","triplet":"arm64-osx"}]') }}
 
     steps:
       - uses: actions/checkout@v7
@@ -232,7 +219,8 @@ jobs:
            github.head_ref == 'test/sctp-timer-close-before-expiry-208' ||
            github.head_ref == 'ci/sctp-timer-retirement-unified-208' ||
            github.head_ref == 'fix/sctp-timer-peer-retirement-fence-208' ||
-           github.head_ref == 'test/sctp-timer-pre-admission-fence-208')
+           github.head_ref == 'test/sctp-timer-pre-admission-fence-208' ||
+           github.head_ref == 'ci/usrsctp-single-lock-integration-222')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -306,8 +294,18 @@ jobs:
           $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
           $vcpkg = Join-Path $env:VCPKG_ROOT $(if ($IsWindows) { "vcpkg.exe" } else { "vcpkg" })
           Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
-          & $vcpkg install "--x-manifest-root=." "--x-install-root=$installed" "--triplet=${{ matrix.triplet }}" --only-binarycaching
-          if ($LASTEXITCODE -ne 0) { throw "cache-only vcpkg restore failed" }
+          $installArgs = @("--x-manifest-root=.", "--x-install-root=$installed", "--triplet=${{ matrix.triplet }}")
+          if ("${{ github.head_ref }}" -eq "ci/usrsctp-single-lock-integration-222") {
+            # The immutable new upstream b6b96d3 archive lacks a published
+            # qigao/vcpkg-cache artifact. Build this one experimental port
+            # from its SHA512-verified source without changing cache-only
+            # policy for normal branches or the 3 other official RIDs.
+            & $vcpkg install @installArgs
+            if ($LASTEXITCODE -ne 0) { throw "Pinned single-TCB usrsctp candidate source restore failed" }
+          } else {
+            & $vcpkg install @installArgs --only-binarycaching
+            if ($LASTEXITCODE -ne 0) { throw "cache-only vcpkg restore failed" }
+          }
 
       # Independent installed-ABI gate: this can compile/test Salts::CNet 2.3
       # even while older SaltsNet/CHttp binary SDKs block the full media graph.
@@ -375,7 +373,7 @@ jobs:
             )
           }
           if ("${{ matrix.platform }}" -eq "Linux" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "test/sctp-timer-close-before-expiry-208", "ci/sctp-timer-retirement-unified-208", "fix/sctp-timer-peer-retirement-fence-208", "test/sctp-timer-pre-admission-fence-208")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "test/sctp-timer-close-before-expiry-208", "ci/sctp-timer-retirement-unified-208", "fix/sctp-timer-peer-retirement-fence-208", "test/sctp-timer-pre-admission-fence-208", "ci/usrsctp-single-lock-integration-222")) {
             $args += "-DTURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON"
           }
           if ("${{ matrix.platform }}" -eq "Windows" -and
@@ -385,7 +383,7 @@ jobs:
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
           if ("${{ matrix.platform }}" -eq "Linux" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "test/sctp-timer-close-before-expiry-208", "ci/sctp-timer-retirement-unified-208", "fix/sctp-timer-peer-retirement-fence-208", "test/sctp-timer-pre-admission-fence-208")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "test/sctp-timer-close-before-expiry-208", "ci/sctp-timer-retirement-unified-208", "fix/sctp-timer-peer-retirement-fence-208", "test/sctp-timer-pre-admission-fence-208", "ci/usrsctp-single-lock-integration-222")) {
             $cache = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform/CMakeCache.txt"
             if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON$" -Quiet)) {
               throw "Independent OpenSSL DTLS qualification is not enabled on the Linux Draft CI"
@@ -528,7 +526,7 @@ jobs:
             # First crash fails immediately; no passes after failure can hide it.
             # This is independent from the dead-SFU WHIP teardown gate below.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "test/sctp-timer-close-before-expiry-208", "ci/sctp-timer-retirement-unified-208", "fix/sctp-timer-peer-retirement-fence-208", "test/sctp-timer-pre-admission-fence-208")) {
+                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "test/sctp-timer-close-before-expiry-208", "ci/sctp-timer-retirement-unified-208", "fix/sctp-timer-peer-retirement-fence-208", "test/sctp-timer-pre-admission-fence-208", "ci/usrsctp-single-lock-integration-222")) {
               & ctest --preset ci-platform-test -R "^turbo_media_test_webrtc_e2e$" --repeat "until-fail:50" --output-on-failure --timeout 90
               if ($LASTEXITCODE -ne 0) {
                 throw "Windows WebRTC ICE E2E repeat conformance failed"
@@ -538,7 +536,7 @@ jobs:
             # SFU restarts must both pass. No skipped tests, wider production
             # deadlines, application replay or automatic settlement retry.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "test/sctp-timer-close-before-expiry-208", "ci/sctp-timer-retirement-unified-208", "fix/sctp-timer-peer-retirement-fence-208", "test/sctp-timer-pre-admission-fence-208")) {
+                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "fix/sctp-status-close-drain-198", "feature/sctp-native-operation-owner-201", "test/sctp-late-comm-up-red-201", "fix/sctp-comm-up-native-owner-201", "test/sctp-channel-reset-close-red-201", "fix/sctp-channel-reset-owner-201", "test/sctp-native-owner-consolidated-201", "test/sctp-manual-timer-elapsed-red-208", "fix/sctp-monotonic-timer-pump-208", "test/sctp-timer-reentrant-callback-208", "test/sctp-real-timer-foreign-close-208", "test/sctp-timer-close-before-expiry-208", "ci/sctp-timer-retirement-unified-208", "fix/sctp-timer-peer-retirement-fence-208", "test/sctp-timer-pre-admission-fence-208", "ci/usrsctp-single-lock-integration-222")) {
               $peerDestroyStageCount = 0
               $whepPeerDestroyMs = [System.Collections.Generic.List[long]]::new()
               # CTest normally hides successful test stdout. Capture only the
@@ -619,7 +617,8 @@ jobs:
            github.head_ref == 'test/sctp-timer-close-before-expiry-208' ||
            github.head_ref == 'ci/sctp-timer-retirement-unified-208' ||
            github.head_ref == 'fix/sctp-timer-peer-retirement-fence-208' ||
-           github.head_ref == 'test/sctp-timer-pre-admission-fence-208')
+           github.head_ref == 'test/sctp-timer-pre-admission-fence-208' ||
+           github.head_ref == 'ci/usrsctp-single-lock-integration-222')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -655,7 +654,7 @@ jobs:
         if: >-
           matrix.platform == 'Linux' &&
           github.event_name == 'pull_request' &&
-          github.head_ref == 'test/sctp-timer-pre-admission-fence-208'
+          github.head_ref == 'ci/usrsctp-single-lock-integration-222'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
