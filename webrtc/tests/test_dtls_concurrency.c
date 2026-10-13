@@ -5,6 +5,7 @@
 #include <cstl/deque.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #ifdef TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION
 #include <tlog.h>
 /* Only the dedicated focused TSAN executable uses this test configuration.
@@ -361,6 +362,127 @@ static packet_endpoint_t endpoints[2];
 /* Set only while the test itself calls the real native timer pump. An
  * observed callback with this flag belongs to usrsctp_handle_timers(). */
 static SALTS_THREAD_LOCAL int g_test_timer_dispatching = 0;
+
+/* Only this private test executable defines the two SCTP source hooks.
+ * A genuine no-thread usrsctp timer callback can be held BEFORE it derefs
+ * the AF_CONN application peer or enters dc_peer_acquire. The hook's RED
+ * abort path never dereferences retired userdata. */
+typedef struct {
+    cmeta_mutex_t mutex;
+    cmeta_cond_t cond;
+    turbo_dc_peer_t *peer;
+    int hook_mode; /* 1=outbound; 2=real T3 local-abort receive notification */
+    int hook_entered;
+    int hook_release;
+    int destroy_planned;
+    int destroy_admitted;
+    int destroy_finished;
+    int timer_finished;
+    /* Real reclaim barrier, observed BEFORE the production peer mutex and
+     * condvar are destroyed. Any RED loser is held here until the native
+     * timer callback exits, so no test intentionally dereferences freed peer. */
+    int reclaim_entered;
+    int reclaim_before_timer_release;
+    int reclaim_release;
+} timer_pre_admission_fixture_t;
+static timer_pre_admission_fixture_t pre_admission_fixture;
+static atomic_int g_pre_admission_hook_live;
+
+int turbo_media_test_sctp_before_peer_admission(void *peer_address) {
+    if (!g_test_timer_dispatching ||
+        atomic_load_explicit(&g_pre_admission_hook_live,
+                             memory_order_acquire) == 0)
+        return 0;
+    timer_pre_admission_fixture_t *f = &pre_admission_fixture;
+    cmeta_mutex_lock(&f->mutex);
+    if (peer_address != f->peer || f->hook_entered || f->hook_mode != 1) {
+        cmeta_mutex_unlock(&f->mutex);
+        return 0;
+    }
+    f->hook_entered = 1;
+    cmeta_cond_broadcast(&f->cond);
+    while (!f->hook_release)
+        cmeta_cond_wait(&f->cond, &f->mutex);
+    /* Once a foreign destroy has been scheduled, terminate this controlled
+     * test callback BEFORE any peer dereference, even if the destroy worker
+     * has not reached its admission hook yet. A broken retirement fence can
+     * therefore fail the test without intentionally triggering a UAF. */
+    int abort_before_peer_deref = f->destroy_planned;
+    cmeta_mutex_unlock(&f->mutex);
+    return abort_before_peer_deref;
+}
+
+/* Pinned usrsctp 0.9.5.0: local T3 threshold exhaustion invokes
+ * sctp_abort_an_association -> sctp_abort_notification ->
+ * sctp_notify_assoc_change -> sctp_add_to_readq ->
+ * sctp_invoke_recv_callback, which unlocks the native TCB and INP-read
+ * locks immediately before calling this real application callback.
+ * Instrument only actual timer-sourced COMM_LOST notifications, not
+ * synthetic notifications or ordinary conninput traffic. */
+int turbo_media_test_sctp_before_recv_admission(
+    void *peer_address, const void *data, size_t length, int flags) {
+    if (!g_test_timer_dispatching ||
+        atomic_load_explicit(&g_pre_admission_hook_live,
+                             memory_order_acquire) == 0 ||
+        !(flags & MSG_NOTIFICATION) ||
+        !data || length < sizeof(struct sctp_assoc_change))
+        return 0;
+    const struct sctp_assoc_change *assoc = data;
+    if (assoc->sac_type != SCTP_ASSOC_CHANGE ||
+        assoc->sac_state != SCTP_COMM_LOST)
+        return 0;
+
+    timer_pre_admission_fixture_t *f = &pre_admission_fixture;
+    cmeta_mutex_lock(&f->mutex);
+    if (peer_address != f->peer || f->hook_entered || f->hook_mode != 2) {
+        cmeta_mutex_unlock(&f->mutex);
+        return 0;
+    }
+    f->hook_entered = 1;
+    cmeta_cond_broadcast(&f->cond);
+    while (!f->hook_release)
+        cmeta_cond_wait(&f->cond, &f->mutex);
+    /* Never access the raw peer after foreign destroy was planned, even
+     * on the unprotected control branch. The hook still belongs to a
+     * real native callout; TSan/ASan stays active. */
+    int abort_before_peer_deref = f->destroy_planned;
+    cmeta_mutex_unlock(&f->mutex);
+    return abort_before_peer_deref;
+}
+
+void turbo_media_test_sctp_destroy_admitted(void *peer_address) {
+    if (atomic_load_explicit(&g_pre_admission_hook_live,
+                             memory_order_acquire) == 0)
+        return;
+    timer_pre_admission_fixture_t *f = &pre_admission_fixture;
+    cmeta_mutex_lock(&f->mutex);
+    if (peer_address == f->peer) {
+        f->destroy_admitted = 1;
+        cmeta_cond_broadcast(&f->cond);
+    }
+    cmeta_mutex_unlock(&f->mutex);
+}
+
+/* A second test-only hook at the LAST stage before cmeta sync teardown and
+ * free(peer), shared byte-for-byte by RED and GREEN controls. The hook uses
+ * only fixture-owned memory. The RED thread waits here without freeing peer
+ * until the timer callback is released; the GREEN thread cannot reach this
+ * stage until the global timer retirement fence has drained. */
+void turbo_media_test_sctp_before_peer_reclaim(void *peer_address) {
+    if (atomic_load_explicit(&g_pre_admission_hook_live,
+                             memory_order_acquire) == 0)
+        return;
+    timer_pre_admission_fixture_t *f = &pre_admission_fixture;
+    cmeta_mutex_lock(&f->mutex);
+    if (peer_address == f->peer) {
+        f->reclaim_entered = 1;
+        if (!f->hook_release) f->reclaim_before_timer_release = 1;
+        cmeta_cond_broadcast(&f->cond);
+        while (!f->reclaim_release)
+            cmeta_cond_wait(&f->cond, &f->mutex);
+    }
+    cmeta_mutex_unlock(&f->mutex);
+}
 
 static void queue_packet(void *transport, const void *data, size_t len) {
     packet_endpoint_t *endpoint = transport;
@@ -1041,6 +1163,183 @@ spec("SCTP native timer expiry after terminal peer teardown") {
 
     it("does not retain application userdata after peer destroy") {
         test_terminal_peer_before_native_timer_expiry(1);
+    }
+}
+
+/* The timer queue lock is released before an expired usrsctp callout
+ * invokes its callback. This test holds the REAL outbound timer callback
+ * before the application's first dc_peer_acquire, where the existing peer
+ * operation lease cannot yet protect raw userdata. */
+static int wait_pre_admission_flag(int *flag, uint64_t timeout_ms) {
+    timer_pre_admission_fixture_t *f = &pre_admission_fixture;
+    const uint64_t deadline = cmeta_monotonic_ms() + timeout_ms;
+    cmeta_mutex_lock(&f->mutex);
+    while (!*flag && cmeta_monotonic_ms() < deadline)
+        (void)cmeta_cond_timedwait(&f->cond, &f->mutex,
+                                   UINT64_C(10000000));
+    int observed = *flag;
+    cmeta_mutex_unlock(&f->mutex);
+    return observed;
+}
+
+static void pump_until_native_pre_admission(void *arg) {
+    timer_pre_admission_fixture_t *f = arg;
+    const uint64_t deadline = cmeta_monotonic_ms() + 6000u;
+    int entered = 0;
+    while (!entered && cmeta_monotonic_ms() < deadline) {
+        g_test_timer_dispatching = 1;
+        turbo_dc_handle_timers();
+        g_test_timer_dispatching = 0;
+        cmeta_mutex_lock(&f->mutex);
+        entered = f->hook_entered;
+        cmeta_mutex_unlock(&f->mutex);
+        if (!entered) cmeta_sleep_ms(10);
+    }
+    cmeta_mutex_lock(&f->mutex);
+    f->timer_finished = 1;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->mutex);
+}
+
+static void destroy_native_pre_admission_peer(void *arg) {
+    timer_pre_admission_fixture_t *f = arg;
+    turbo_dc_peer_destroy(f->peer);
+    cmeta_mutex_lock(&f->mutex);
+    f->destroy_finished = 1;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->mutex);
+}
+
+/* One byte-identical interleaving across test modes: mode 1 exercises
+ * native T3 outbound while SCTP_TCB_LOCK is held; mode 2 exercises real
+ * T3-failure COMM_LOST inbound callback with native TCB unlocked. */
+static void test_native_timer_before_peer_lease(int mode) {
+        packet_endpoint_t *endpoint = &endpoints[0];
+        struct socket *native = sctp_native_borrow(endpoint->peer);
+        check_not_null(native);
+        struct sctp_rtoinfo rto = {0};
+        rto.srto_assoc_id = SCTP_FUTURE_ASSOC;
+        rto.srto_initial = 250;
+        rto.srto_min = 200;
+        rto.srto_max = 1000;
+        int configured = native
+            ? usrsctp_setsockopt(native, IPPROTO_SCTP, SCTP_RTOINFO,
+                                 &rto, sizeof(rto)) : -1;
+        int retries_configured = 0;
+        if (native && mode == 2) {
+            struct sctp_assocparams retries = {0};
+            retries.sasoc_assoc_id = SCTP_FUTURE_ASSOC;
+            retries.sasoc_asocmaxrxt = 1;
+            retries_configured = usrsctp_setsockopt(
+                native, IPPROTO_SCTP, SCTP_ASSOCINFO,
+                &retries, sizeof(retries)) == 0;
+        }
+        if (native) sctp_native_return(endpoint->peer);
+        check_equal(configured, 0);
+        if (mode == 2) check_true(retries_configured);
+        open_packet_channel();
+
+        const uint8_t payload = 0xb7;
+        cmeta_mutex_lock(&endpoint->mutex);
+        unsigned before = endpoint->packets;
+        cmeta_mutex_unlock(&endpoint->mutex);
+        check_equal(turbo_dc_channel_send(endpoint->channel,
+                                         &payload, sizeof(payload), 1), 0);
+        cmeta_mutex_lock(&endpoint->mutex);
+        int first_sent = endpoint->packets > before;
+        cmeta_mutex_unlock(&endpoint->mutex);
+        check_true(first_sent);
+
+        timer_pre_admission_fixture_t *f = &pre_admission_fixture;
+        memset(f, 0, sizeof(*f));
+        cmeta_mutex_init(&f->mutex);
+        cmeta_cond_init(&f->cond);
+        f->peer = endpoint->peer;
+        f->hook_mode = mode;
+        atomic_store_explicit(&g_pre_admission_hook_live, 1,
+                              memory_order_release);
+
+        cmeta_thread_t timer_thread = NULL, destroy_thread = NULL;
+        int timer_created = cmeta_thread_create(
+            &timer_thread, pump_until_native_pre_admission, f) == 0;
+        int callback_entered = timer_created &&
+            wait_pre_admission_flag(&f->hook_entered, 6000u);
+        if (callback_entered) {
+            cmeta_mutex_lock(&f->mutex);
+            f->destroy_planned = 1;
+            cmeta_mutex_unlock(&f->mutex);
+        }
+        int destroy_created = callback_entered &&
+            cmeta_thread_create(&destroy_thread,
+                                destroy_native_pre_admission_peer, f) == 0;
+        /* This signal comes from the real dc_peer_begin_destroy success
+         * path, not a thread-start or time-based assumption. */
+        int destroy_admitted = destroy_created &&
+            wait_pre_admission_flag(&f->destroy_admitted, 2000u);
+
+        /* The earlier test sampled destroy_finished immediately after its
+         * admission signal, making the assertion dependent on scheduling.
+         * Wait for the ACTUAL final reclaim stage instead. The 1s timeout
+         * bounds an absent event; it is not used to order any two workers. */
+        int reclaim_before_release = destroy_admitted &&
+            wait_pre_admission_flag(&f->reclaim_entered, 1000u);
+        cmeta_mutex_lock(&f->mutex);
+        int destroyed_prematurely = f->destroy_finished;
+        int reclaim_early = f->reclaim_before_timer_release;
+        f->hook_release = 1;
+        cmeta_cond_broadcast(&f->cond);
+        cmeta_mutex_unlock(&f->mutex);
+
+        /* Keep the RED reclaim hook parked until the native timer has
+         * safely returned, regardless of the expected rejection result. */
+        if (timer_created) {
+            (void)cmeta_thread_join(&timer_thread);
+            cmeta_thread_destroy(&timer_thread);
+        }
+        cmeta_mutex_lock(&f->mutex);
+        f->reclaim_release = 1;
+        cmeta_cond_broadcast(&f->cond);
+        cmeta_mutex_unlock(&f->mutex);
+        if (destroy_created) {
+            (void)cmeta_thread_join(&destroy_thread);
+            cmeta_thread_destroy(&destroy_thread);
+            endpoint->peer = NULL;
+            endpoint->channel = NULL;
+        }
+        atomic_store_explicit(&g_pre_admission_hook_live, 0,
+                              memory_order_release);
+
+        cmeta_mutex_lock(&f->mutex);
+        int timer_finished = f->timer_finished;
+        int destroy_finished = f->destroy_finished;
+        int reclaim_observed = f->reclaim_entered;
+        cmeta_mutex_unlock(&f->mutex);
+        check_true(timer_created);
+        check_true(callback_entered);
+        check_true(destroy_created);
+        check_true(destroy_admitted);
+        /* The controlled timer callback was STILL paused before acquiring
+         * its first Peer lease during the negative observation window. */
+        check_false(reclaim_before_release);
+        check_false(reclaim_early);
+        check_false(destroyed_prematurely);
+        check_true(timer_finished);
+        check_true(reclaim_observed);
+        check_true(destroy_finished);
+        cmeta_cond_destroy(&f->cond);
+        cmeta_mutex_destroy(&f->mutex);
+}
+
+spec("SCTP dequeued timer callback before peer admission") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("retires native T3 outbound callback before raw AF_CONN peer free") {
+        test_native_timer_before_peer_lease(1);
+    }
+
+    it("retires real T3 COMM_LOST receive notification before first peer lease") {
+        test_native_timer_before_peer_lease(2);
     }
 }
 
