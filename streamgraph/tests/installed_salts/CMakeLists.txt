@@ -49,7 +49,8 @@ else()
     PATHS "$ENV{TM_SG_SDK_ROOT}" NO_DEFAULT_PATH
     NO_CMAKE_FIND_ROOT_PATH)
 endif()
-foreach(_required IN ITEMS Salts::ComponentPlugin Salts::ComponentPluginABI
+foreach(_required IN ITEMS Salts::Core
+                           Salts::ComponentPlugin Salts::ComponentPluginABI
                            Salts::Plugin Salts::PluginABI Salts::CNet
                            TurboMedia::StreamGraph)
   if(NOT TARGET ${_required})
@@ -174,7 +175,8 @@ target_compile_features(tm_installed_cpp17_sdk_test PRIVATE cxx_std_17)
 set_target_properties(tm_installed_cpp17_sdk_test PROPERTIES
   CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_link_libraries(tm_installed_cpp17_sdk_test PRIVATE
-  Salts::ComponentPlugin Salts::Plugin Salts::CNet TurboMedia::StreamGraph)
+  Salts::Core Salts::ComponentPlugin Salts::Plugin
+  Salts::CNet TurboMedia::StreamGraph)
 if(MSVC)
   # MSVC defaults __cplusplus to 199711L even in /std:c++17 unless
   # /Zc:__cplusplus is enabled. Require the actual standard macro to match
