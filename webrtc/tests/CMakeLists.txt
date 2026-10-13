@@ -83,6 +83,11 @@ foreach(_dc_source IN LISTS TURBO_MEDIA_DATACHANNEL_SOURCES)
   target_sources(turbo_media_test_dtls_concurrency PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
 endforeach()
+# Never compile the pre-admission test hook into the installed DLL; this
+# private production-source test binary alone can pause a genuine usrsctp
+# callback before dc_peer_acquire without dereferencing released userdata.
+target_compile_definitions(turbo_media_test_dtls_concurrency PRIVATE
+  TURBO_MEDIA_TEST_SCTP_PRE_ADMISSION=1)
 # Only a TSan-built, first-party test binary may silence nonfatal output
 # from the uninstrumented Salts.Native rc.15 async logger. Regular Release,
 # ASan/UBSan, installed SDK and production binaries keep all logging.
