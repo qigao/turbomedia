@@ -197,7 +197,14 @@ jobs:
             "-DCMAKE_INSTALL_PREFIX=$stage"
           )
           if ("${{ matrix.platform }}" -eq "Linux") {
-            # Explicit desktop FFmpeg add-on only in the Linux SDK profile.
+            # The Linux DSO gate must consume precisely the binary-cached
+            # FFmpeg from this triplet, never a host pkg-config fallback.
+            $pkgdir = Join-Path $installed "${{ matrix.triplet }}/lib/pkgconfig"
+            if (-not (Test-Path -LiteralPath (Join-Path $pkgdir "libavcodec.pc"))) {
+              throw "Binary-cached FFmpeg libavcodec.pc is unavailable"
+            }
+            $existingPkg = $env:PKG_CONFIG_PATH
+            $env:PKG_CONFIG_PATH = (@($pkgdir) + @($existingPkg)) -join [IO.Path]::PathSeparator
             $args += "-DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON"
           }
           if ("${{ matrix.platform }}" -eq "Android") {
