@@ -158,7 +158,7 @@
             "configurePreset": "ci-platform-linux-tsan",
             "filter": {
                 "include": {
-                    "name": "^turbo_media_test_dtls_concurrency$"
+                    "name": "^turbo_media_test_(dtls_concurrency|dcep_ack_fault)$"
                 }
             },
             "execution": {

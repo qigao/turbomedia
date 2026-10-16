@@ -15,6 +15,19 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION
+#include <tlog.h>
+/* Only the separately built TSan test isolates the unsanitized Salts.Native
+ * rc.15 async logger. Never suppress TSan reports, native SCTP work, or
+ * logging in the normal Release/ASan/installed/production targets. */
+static void tm_fault_isolate_uninstrumented_logger(void) {
+    tlog_t *logger = tlog_get_default();
+    if (logger) tlog_set_level(logger, SALTS_LOG_LEVEL_FATAL);
+}
+#else
+static void tm_fault_isolate_uninstrumented_logger(void) {}
+#endif
+
 static unsigned g_send_calls;
 static unsigned g_invalid_send_shape;
 static int g_injected_errno;
@@ -97,6 +110,7 @@ static void tm_fault_on_channel(turbo_dc_peer_t *peer,
 
 spec("DCEP native sendv EAGAIN admission #232") {
     it("rejects native EAGAIN without callbacks or retained channel IDs") {
+        tm_fault_isolate_uninstrumented_logger();
         turbo_dc_config_t cfg = {0};
         tm_dcep_fault_observer obs = {0};
         cfg.is_server = 1;
@@ -186,6 +200,7 @@ static int tm_ack_wait_until(tm_ack_send_close_race *race, int *flag) {
 
 spec("DCEP sendv failure versus foreign native peer close #201 #232") {
     it("drains borrowed ACK sendv before closing and never publishes OPEN") {
+        tm_fault_isolate_uninstrumented_logger();
         turbo_dc_config_t cfg = {0};
         tm_dcep_fault_observer obs = {0};
         cfg.is_server = 1;

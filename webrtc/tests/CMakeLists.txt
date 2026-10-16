@@ -105,6 +105,10 @@ option(TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION
 if(TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION)
   target_compile_definitions(turbo_media_test_dtls_concurrency PRIVATE
                              TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION=1)
+  # Private ACK/EAGAIN conformance also executes concurrent native
+  # Borrow/Close under first-party TSan, with no shipped API changes.
+  target_compile_definitions(turbo_media_test_dcep_ack_fault PRIVATE
+                             TURBO_MEDIA_TEST_TSAN_LOG_ISOLATION=1)
 endif()
 get_target_property(_dc_test_libraries turbo_media_datachannel LINK_LIBRARIES)
 target_link_libraries(turbo_media_test_dtls_concurrency PRIVATE ${_dc_test_libraries})
