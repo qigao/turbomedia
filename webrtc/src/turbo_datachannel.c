@@ -164,44 +164,80 @@ static void dc_peer_unlink_from_context(turbo_dc_peer_t *peer) {
     cmeta_mutex_unlock(&ctx->peer_mutex);
 }
 
+/* State is a peer-Owner datum. Always take the existing operation_mutex
+ * to read or publish it; application callbacks stay outside the lock so
+ * on_state/on_error may reenter public Peer Close. */
+static turbo_dc_state_t dc_peer_state_snapshot(turbo_dc_peer_t *peer) {
+    if (!peer || !peer->operation_sync_initialized) return TURBO_DC_STATE_CLOSED;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    turbo_dc_state_t result = peer->state;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    return result;
+}
+
 void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state) {
-    turbo_dc_state_t old_state;
-
-    if (!peer) return;
-    old_state = peer->state;
-    if (old_state == new_state) return;
-
-    peer->state = new_state;
-    if (peer->on_state) {
-        peer->on_state(peer, old_state, new_state, peer->user_data);
+    if (!peer || !peer->operation_sync_initialized) return;
+    turbo_dc_state_cb callback = NULL;
+    void *callback_data = NULL;
+    turbo_dc_state_t previous;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    previous = peer->state;
+    /* A native terminal admission is stronger than an in-flight CONNECTED
+     * observation. Reject late success after native close, public close or
+     * destroy, without rejecting terminal DISCONNECTING/CLOSED retirement. */
+    int terminal = peer->close_started || peer->sctp.native_close_requested ||
+                   peer->destroying;
+    if (previous == new_state ||
+        previous == TURBO_DC_STATE_CLOSED ||
+        (previous == TURBO_DC_STATE_FAILED &&
+         new_state != TURBO_DC_STATE_CLOSED) ||
+        (previous == TURBO_DC_STATE_DISCONNECTING &&
+         new_state != TURBO_DC_STATE_CLOSED) ||
+        (terminal && new_state != TURBO_DC_STATE_DISCONNECTING &&
+         new_state != TURBO_DC_STATE_CLOSED)) {
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        return;
     }
+    peer->state = new_state;
+    callback = peer->on_state;
+    callback_data = peer->user_data;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (callback) callback(peer, previous, new_state, callback_data);
 }
 
 void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail) {
-    const char *message;
-    turbo_dc_state_t old_state;
-
     if (!peer) return;
-
     sctp_receive_stop(peer);
     dtls_session_shutdown(peer);
     dc_set_peer_error(peer, code, detail);
-    message = detail ? detail : turbo_dc_error_string(code);
+    const char *message = detail ? detail : turbo_dc_error_string(code);
 
-    if (peer->state != TURBO_DC_STATE_FAILED) {
-        old_state = peer->state;
+    turbo_dc_error_cb on_error = NULL;
+    turbo_dc_state_cb on_state = NULL;
+    void *user_data = NULL;
+    turbo_dc_state_t previous = TURBO_DC_STATE_FAILED;
+    int admitted = 0;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (peer->state != TURBO_DC_STATE_FAILED &&
+        peer->state != TURBO_DC_STATE_CLOSED &&
+        peer->state != TURBO_DC_STATE_DISCONNECTING &&
+        !peer->close_started && !peer->sctp.native_close_requested &&
+        !peer->destroying) {
+        previous = peer->state;
         peer->state = TURBO_DC_STATE_FAILED;
-        if (peer->on_error) {
-            peer->on_error(peer, code, message, peer->user_data);
-        }
-        if (peer->on_state) {
-            peer->on_state(peer, old_state, TURBO_DC_STATE_FAILED, peer->user_data);
-        }
+        on_error = peer->on_error;
+        on_state = peer->on_state;
+        user_data = peer->user_data;
+        admitted = 1;
     }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (!admitted) return;
+    if (on_error) on_error(peer, code, message, user_data);
+    if (on_state) on_state(peer, previous, TURBO_DC_STATE_FAILED, user_data);
 }
 
 static void dc_notify_closed(turbo_dc_peer_t *peer) {
-    if (!peer || peer->state == TURBO_DC_STATE_CLOSED) return;
+    if (!peer || dc_peer_state_snapshot(peer) == TURBO_DC_STATE_CLOSED) return;
     sctp_receive_stop(peer);
     dtls_session_shutdown(peer);
     dc_notify_state(peer, TURBO_DC_STATE_CLOSED);
@@ -1062,7 +1098,11 @@ peer_create_fail:
 }
 
 void turbo_dc_peer_on_state(turbo_dc_peer_t *peer, turbo_dc_state_cb cb) {
-    if (peer) peer->on_state = cb;
+    if (!peer || dc_peer_acquire(peer) != 0) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->on_state = cb;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    dc_peer_release(peer);
 }
 
 void turbo_dc_peer_on_channel(turbo_dc_peer_t *peer, turbo_dc_channel_cb cb) {
@@ -1070,8 +1110,12 @@ void turbo_dc_peer_on_channel(turbo_dc_peer_t *peer, turbo_dc_channel_cb cb) {
 }
 
 void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_error_cb cb) {
-     if (peer) peer->on_error = cb;
- }
+    if (!peer || dc_peer_acquire(peer) != 0) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->on_error = cb;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    dc_peer_release(peer);
+}
  
 static int dc_ascii_equal_ignore_case(const char *left, const char *right) {
     unsigned char a;
@@ -1172,7 +1216,7 @@ int turbo_dc_peer_set_remote_fingerprint(
 int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
     if (!peer || dc_peer_acquire(peer) != 0) return -1;
     dtls_session_lock(peer);
-    if (peer->state != TURBO_DC_STATE_NEW || peer->dtls.handshake_started ||
+    if (dc_peer_state_snapshot(peer) != TURBO_DC_STATE_NEW || peer->dtls.handshake_started ||
         peer->dtls.handshake_done || peer->dtls.stopped) {
         dtls_session_unlock(peer);
         dc_peer_release(peer);
@@ -1260,9 +1304,17 @@ int turbo_dc_peer_connect(turbo_dc_peer_t *peer) {
     if (peer->external_transport) {
         TLOG_INFO("DC peer connect via ICE");
         dtls_session_lock(peer);
-        if (!peer->dtls.handshake_done && !peer->dtls.stopped)
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int terminal = peer->close_started || peer->destroying ||
+                       peer->sctp.native_close_requested;
+        if (!terminal && !peer->dtls.handshake_done && !peer->dtls.stopped)
             peer->state = TURBO_DC_STATE_CONNECTING;
+        cmeta_mutex_unlock(&peer->operation_mutex);
         dtls_session_unlock(peer);
+        if (terminal) {
+            dc_peer_release(peer);
+            return -1;
+        }
 
         /* Start DTLS handshake - the ICE agent should already be connected */
         /* Use dtls_process_handshake to properly schedule retransmit timer */
@@ -1306,7 +1358,10 @@ void turbo_dc_peer_poll(turbo_dc_peer_t *peer) {
 }
 
 turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer) {
-    return peer ? peer->state : TURBO_DC_STATE_CLOSED;
+    if (!peer || dc_peer_acquire(peer) != 0) return TURBO_DC_STATE_CLOSED;
+    turbo_dc_state_t result = dc_peer_state_snapshot(peer);
+    dc_peer_release(peer);
+    return result;
 }
 
 static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
@@ -1548,8 +1603,9 @@ int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
         return -1;
     }
 
-    if (channel->peer->state != TURBO_DC_STATE_CONNECTED) {
-        TLOG_INFOF("DCEP OPEN deferred sid={} peer_state={}", channel->id, (int)channel->peer->state);
+    const turbo_dc_state_t peer_state = dc_peer_state_snapshot(channel->peer);
+    if (peer_state != TURBO_DC_STATE_CONNECTED) {
+        TLOG_INFOF("DCEP OPEN deferred sid={} peer_state={}", channel->id, (int)peer_state);
         dc_set_peer_error(channel->peer, TURBO_DC_ERROR_PEER_NOT_CONNECTED, NULL);
         return -1;
     }
