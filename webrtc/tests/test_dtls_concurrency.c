@@ -650,6 +650,85 @@ static void expect_packet_messages(unsigned count, const void *payload, size_t s
     }
 }
 
+/* #195 / #232 positive control on real GmSSL/DTLS + native usrsctp.
+ * In contrast to the old synthetic parser-only test, the actual association
+ * must be connected and its DCEP ACK admitted before on_channel is called. */
+static unsigned real_dcep_reentrant_close_count;
+static unsigned real_dcep_open_after_close;
+static unsigned real_dcep_channel_open_before_close;
+
+static void real_dcep_should_not_open_after_close(turbo_dc_channel_t *channel,
+                                                   void *user_data) {
+    (void)channel; (void)user_data;
+    ++real_dcep_open_after_close;
+}
+
+static void real_dcep_close_in_on_channel(turbo_dc_peer_t *peer,
+                                          turbo_dc_channel_t *channel,
+                                          void *user_data) {
+    (void)peer; (void)user_data;
+    ++real_dcep_reentrant_close_count;
+    if (turbo_dc_channel_is_open(channel))
+        ++real_dcep_channel_open_before_close;
+    turbo_dc_channel_on_open(channel, real_dcep_should_not_open_after_close);
+    /* Native Stream Reset plus channel map removal may reenter SCTP.
+     * #195's existing callback lease must keep storage alive until return. */
+    turbo_dc_channel_close(channel);
+}
+
+spec("DCEP ACK-admitted native receive and reentrant #195 close") {
+    before_each() {
+        setup_packet_endpoints(0, 1200, 1000);
+        real_dcep_reentrant_close_count = 0;
+        real_dcep_open_after_close = 0;
+        real_dcep_channel_open_before_close = 0;
+    }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("admits a real native ACK before publication, then suppresses on_open after reentrant close") {
+        turbo_dc_peer_on_channel(endpoints[1].peer, real_dcep_close_in_on_channel);
+        check_equal(turbo_dc_peer_connect(endpoints[1].peer), 0);
+        check_equal(turbo_dc_peer_connect(endpoints[0].peer), 0);
+        uint64_t deadline = cmeta_monotonic_ms() + 5000;
+        int connected = 0;
+        do {
+            deliver_packets(0);
+            deliver_packets(1);
+            connected = 1;
+            for (int i = 0; i < 2; ++i) {
+                cmeta_mutex_lock(&endpoints[i].mutex);
+                connected &= endpoints[i].connected_events != 0;
+                cmeta_mutex_unlock(&endpoints[i].mutex);
+            }
+            if (connected) break;
+            cmeta_sleep_ms(1);
+        } while (cmeta_monotonic_ms() < deadline);
+        check_true(connected);
+
+        endpoints[0].channel = turbo_dc_channel_create(
+            endpoints[0].peer, "reentrant-close", NULL);
+        check_not_null(endpoints[0].channel);
+        check_equal(turbo_dc_channel_open(endpoints[0].channel), 0);
+        deadline = cmeta_monotonic_ms() + 5000;
+        do {
+            deliver_packets(0);
+            deliver_packets(1);
+            if (real_dcep_reentrant_close_count) break;
+            cmeta_sleep_ms(1);
+        } while (cmeta_monotonic_ms() < deadline);
+
+        check_equal(real_dcep_reentrant_close_count, 1u);
+        check_equal(real_dcep_channel_open_before_close, 1u);
+        check_equal(real_dcep_open_after_close, 0u);
+        cmeta_mutex_lock(&endpoints[1].peer->operation_mutex);
+        int channel_present = peer_get_channel(endpoints[1].peer, 0) != NULL;
+        cmeta_mutex_unlock(&endpoints[1].peer->operation_mutex);
+        check_false(channel_present);
+        check_not_equal(turbo_dc_peer_get_error(endpoints[1].peer).code,
+                        TURBO_DC_ERROR_DCEP_SEND_ACK);
+    }
+}
+
 spec("SCTP over GmSSL configured datagram limits") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
