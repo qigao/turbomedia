@@ -128,7 +128,7 @@
             "configurePreset": "ci-platform-linux-asan-ubsan",
             "filter": {
                 "include": {
-                    "name": "^turbo_media_test_(http_flv_local|transport_http|datachannel|dcep_ack_admission|dc_certificate|dtls_concurrency|gmssl_dtls|srtp|peer_connection_lifecycle|peer_connection_readiness)$"
+                    "name": "^turbo_media_test_(http_flv_local|transport_http|datachannel|dcep_ack_admission|dcep_ack_fault|dc_certificate|dtls_concurrency|gmssl_dtls|srtp|peer_connection_lifecycle|peer_connection_readiness)$"
                 }
             },
             "execution": {

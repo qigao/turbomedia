@@ -49,6 +49,13 @@ turbo_media_add_webrtc_test(turbo_media_test_dcep_ack_admission
   ../src/turbo_datachannel_errors.c)
 target_link_libraries(turbo_media_test_dcep_ack_admission PRIVATE
   unofficial::usrsctp::usrsctp roaring::roaring)
+# #232: test-only native EAGAIN gate. test_dcep_ack_fault.c includes the
+# unchanged production DCEP parser with only usrsctp_sendv renamed locally;
+# no fake successful ACK and no production runtime/ABI modification.
+turbo_media_add_webrtc_test(turbo_media_test_dcep_ack_fault
+  test_dcep_ack_fault.c ../src/turbo_datachannel_errors.c)
+target_link_libraries(turbo_media_test_dcep_ack_fault PRIVATE
+  unofficial::usrsctp::usrsctp roaring::roaring)
 turbo_media_add_webrtc_base_test(turbo_media_test_dc_certificate
   test_dc_certificate.cpp ../src/dc_certificate_gmssl.cpp
   ../src/dc_identity.cpp ../src/gmssl_dtls.c)
