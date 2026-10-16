@@ -107,8 +107,22 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
                   channel->label ? channel->label : "",
                   channel->protocol ? channel->protocol : "");
 
-        /* Send ACK outside admission: a transport callback may reenter DCEP. */
-        dcep_send_ack(peer, stream_id);
+        /* Send ACK outside admission: a native SCTP/DTLS callback can
+         * reenter DCEP. Admission success means the native engine accepted
+         * the ACK for sending; it does not assert remote delivery. */
+        if (dcep_send_ack(peer, stream_id) != 0) {
+            /* Do not notify applications of an OPEN that was never ACKed.
+             * Reuse the canonical Channel close/ID retirement path from
+             * #195: its already-held DCEP lease keeps 'channel' alive while
+             * close unpublishes it and requests a native Stream Reset. No
+             * user-visible Channel was published before this point, so
+             * there is no on_close callback to emit for this rejection. */
+            turbo_dc_channel_close(channel);
+            dc_channel_release(channel);
+            dc_set_peer_error(peer, TURBO_DC_ERROR_DCEP_SEND_ACK,
+                              "incoming DCEP OPEN ACK was not admitted");
+            return;
+        }
         cmeta_mutex_lock(&peer->operation_mutex);
         if (!channel->closing) channel->is_open = 1;
         cmeta_mutex_unlock(&peer->operation_mutex);
