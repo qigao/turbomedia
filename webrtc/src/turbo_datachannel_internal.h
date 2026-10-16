@@ -100,6 +100,10 @@ typedef struct {
     int native_close_requested;
     int native_shutdown_requested;
     int native_closing;
+    /* A foreign public close is waiting for an admitted native operation.
+     * In that case the close caller, not its last borrower, performs actual
+     * shutdown/close. Managed only under operation_mutex. */
+    int native_foreign_close_waiting;
     int native_closed;
     const void *native_closer_token;
     struct {
@@ -397,6 +401,7 @@ static inline void sctp_native_return(turbo_dc_peer_t *peer) {
     }
     if (peer->sctp.native_borrows == 0 &&
         peer->sctp.native_close_requested &&
+        !peer->sctp.native_foreign_close_waiting &&
         !peer->sctp.native_closing && peer->sctp.socket) {
         peer->sctp.native_closing = 1;
         peer->sctp.native_closer_token = token;
@@ -443,6 +448,14 @@ static inline void sctp_native_close_socket(turbo_dc_peer_t *peer, int shutdown)
         cmeta_mutex_unlock(&peer->operation_mutex);
         return;
     }
+    /* A foreign close caller is already admitted, and waits for outstanding
+     * native borrows to drain. Reserve physical close for such a caller:
+     * a last borrower must not run usrsctp_shutdown/close inside the DCEP
+     * sendv callback while a different thread is blocked here. Reentrant
+     * close above remains deferred to the last return, since it has no
+     * waiting foreign caller. All transitions occur under the same mutex. */
+    if (peer->sctp.native_borrows != 0)
+        peer->sctp.native_foreign_close_waiting = 1;
     while (peer->sctp.native_borrows != 0 || peer->sctp.native_closing)
         cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
     if (peer->sctp.socket) {
@@ -452,6 +465,10 @@ static inline void sctp_native_close_socket(turbo_dc_peer_t *peer, int shutdown)
         perform_shutdown = peer->sctp.native_shutdown_requested;
         peer->sctp.socket = NULL;
     }
+    /* If other close callers woke at the same time, native_closing keeps
+     * them behind this one physical release. No borrower can be admitted
+     * after the terminal native_close_requested bit was published. */
+    peer->sctp.native_foreign_close_waiting = 0;
     cmeta_mutex_unlock(&peer->operation_mutex);
     if (socket)
         sctp_native_finish_close(peer, socket, perform_shutdown);
