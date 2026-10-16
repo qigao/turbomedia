@@ -227,7 +227,8 @@ jobs:
            github.head_ref == 'test/sctp-native-owner-api-matrix-201' ||
            github.head_ref == 'test/sctp-native-borrow-capacity-201' ||
            github.head_ref == 'test/sctp-owner-thread-token-capacity-201' ||
-           github.head_ref == 'test/dcep-ack-sendv-foreign-close-201-232')
+           github.head_ref == 'test/dcep-ack-sendv-foreign-close-201-232' ||
+           github.head_ref == 'diagnostics/dcep-sendv-close-win-stage-201')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -370,17 +371,17 @@ jobs:
             )
           }
           if ("${{ matrix.platform }}" -eq "Linux" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "test/dcep-ack-admission-red-232", "fix/dcep-ack-admission-232", "test/dcep-ack-asan-ubsan-232", "test/dcep-native-sendv-eagain-232", "test/dcep-firstparty-tsan-232", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "test/dcep-ack-admission-red-232", "fix/dcep-ack-admission-232", "test/dcep-ack-asan-ubsan-232", "test/dcep-native-sendv-eagain-232", "test/dcep-firstparty-tsan-232", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232", "diagnostics/dcep-sendv-close-win-stage-201")) {
             $args += "-DTURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON"
           }
           if ("${{ matrix.platform }}" -eq "Windows" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("fix/dc-channel-callback-leases-195", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("fix/dc-channel-callback-leases-195", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232", "diagnostics/dcep-sendv-close-win-stage-201")) {
             $args += "-DTURBO_MEDIA_TEST_WINDOWS_LINK_MAP:BOOL=ON"
           }
           & cmake --preset ci-platform-release @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
           if ("${{ matrix.platform }}" -eq "Linux" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "test/dcep-ack-admission-red-232", "fix/dcep-ack-admission-232", "test/dcep-ack-asan-ubsan-232", "test/dcep-native-sendv-eagain-232", "test/dcep-firstparty-tsan-232", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "test/dcep-ack-admission-red-232", "fix/dcep-ack-admission-232", "test/dcep-ack-asan-ubsan-232", "test/dcep-native-sendv-eagain-232", "test/dcep-firstparty-tsan-232", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232", "diagnostics/dcep-sendv-close-win-stage-201")) {
             $cache = Join-Path $env:GITHUB_WORKSPACE "build/ci-platform/CMakeCache.txt"
             if (-not (Select-String -LiteralPath $cache -Pattern "^TURBO_MEDIA_TEST_INDEPENDENT_DTLS:BOOL=ON$" -Quiet)) {
               throw "Independent OpenSSL DTLS qualification is not enabled on the Linux Draft CI"
@@ -457,7 +458,7 @@ jobs:
           # runtime code path. Never print absolute virtual addresses,
           # stack contents, credentials, SDP, or a complete symbol table.
           if ("${{ matrix.platform }}" -eq "Windows" -and
-              $env:TURBOMEDIA_CI_HEAD_REF -in @("fix/dc-channel-callback-leases-195", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232")) {
+              $env:TURBOMEDIA_CI_HEAD_REF -in @("fix/dc-channel-callback-leases-195", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232", "diagnostics/dcep-sendv-close-win-stage-201")) {
             $mapJobs = @(
               @{ module = "datachannel"
                  file = (Join-Path $build "turbo_media_datachannel.map")
@@ -523,7 +524,7 @@ jobs:
             # First crash fails immediately; no passes after failure can hide it.
             # This is independent from the dead-SFU WHIP teardown gate below.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "test/dcep-ack-admission-red-232", "fix/dcep-ack-admission-232", "test/dcep-ack-asan-ubsan-232", "test/dcep-native-sendv-eagain-232", "test/dcep-firstparty-tsan-232", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232")) {
+                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "test/dcep-ack-admission-red-232", "fix/dcep-ack-admission-232", "test/dcep-ack-asan-ubsan-232", "test/dcep-native-sendv-eagain-232", "test/dcep-firstparty-tsan-232", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232", "diagnostics/dcep-sendv-close-win-stage-201")) {
               & ctest --preset ci-platform-test -R "^turbo_media_test_webrtc_e2e$" --repeat "until-fail:50" --output-on-failure --timeout 90
               if ($LASTEXITCODE -ne 0) {
                 throw "Windows WebRTC ICE E2E repeat conformance failed"
@@ -533,7 +534,7 @@ jobs:
             # SFU restarts must both pass. No skipped tests, wider production
             # deadlines, application replay or automatic settlement retry.
             if ("${{ matrix.platform }}" -eq "Windows" -and
-                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "test/dcep-ack-admission-red-232", "fix/dcep-ack-admission-232", "test/dcep-ack-asan-ubsan-232", "test/dcep-native-sendv-eagain-232", "test/dcep-firstparty-tsan-232", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232")) {
+                $env:TURBOMEDIA_CI_HEAD_REF -in @("diagnostics/whip-sfu-restart-windows", "fix/dc-channel-callback-leases-195", "test/dcep-ack-admission-red-232", "fix/dcep-ack-admission-232", "test/dcep-ack-asan-ubsan-232", "test/dcep-native-sendv-eagain-232", "test/dcep-firstparty-tsan-232", "feature/sctp-native-owner-dcep-232-201", "test/sctp-native-owner-api-matrix-201", "test/sctp-native-borrow-capacity-201", "test/sctp-owner-thread-token-capacity-201", "test/dcep-ack-sendv-foreign-close-201-232", "diagnostics/dcep-sendv-close-win-stage-201")) {
               $peerDestroyStageCount = 0
               $whepPeerDestroyMs = [System.Collections.Generic.List[long]]::new()
               # CTest normally hides successful test stdout. Capture only the
@@ -609,7 +610,8 @@ jobs:
            github.head_ref == 'test/sctp-native-owner-api-matrix-201' ||
            github.head_ref == 'test/sctp-native-borrow-capacity-201' ||
            github.head_ref == 'test/sctp-owner-thread-token-capacity-201' ||
-           github.head_ref == 'test/dcep-ack-sendv-foreign-close-201-232')
+           github.head_ref == 'test/dcep-ack-sendv-foreign-close-201-232' ||
+           github.head_ref == 'diagnostics/dcep-sendv-close-win-stage-201')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -650,7 +652,8 @@ jobs:
            github.head_ref == 'test/sctp-native-owner-api-matrix-201' ||
            github.head_ref == 'test/sctp-native-borrow-capacity-201' ||
            github.head_ref == 'test/sctp-owner-thread-token-capacity-201' ||
-           github.head_ref == 'test/dcep-ack-sendv-foreign-close-201-232')
+           github.head_ref == 'test/dcep-ack-sendv-foreign-close-201-232' ||
+           github.head_ref == 'diagnostics/dcep-sendv-close-win-stage-201')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
