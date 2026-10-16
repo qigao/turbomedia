@@ -74,3 +74,65 @@ spec("DCEP ACK admission rejection #232 RED") {
     }
 }
 
+
+/* #201/#232 cross-contract. Terminal admission must prevent ACK publication
+ * even when the native Socket has not yet been physically reclaimed.
+ * The real #202 Owner gate performs the rejection; no send stub or fake
+ * successful native operation exists in this test. */
+spec("DCEP terminal native close gate #201 #232") {
+    it("rejects DCEP OPEN with live Socket after native close admission") {
+        turbo_dc_config_t config = {0};
+        config.transport = TURBO_DC_TRANSPORT_ICE;
+        config.is_server = 1;
+        dcep_ack_reject_observation obs = {0};
+        turbo_dc_context_t *ctx = turbo_dc_context_create(&config);
+        check_not_null(ctx);
+        turbo_dc_peer_t *peer = turbo_dc_peer_create(ctx, NULL, 0, &obs);
+        check_not_null(peer);
+        check_not_null(peer->sctp.socket);
+        turbo_dc_peer_on_channel(peer, dcep_unexpected_channel);
+
+        const uint8_t open[] = {
+            DCEP_DATA_CHANNEL_OPEN, DCEP_CHANNEL_RELIABLE_ORDERED,
+            0, 0, 0, 0, 0, 0,
+            0, 1, 0, 0, 'x'
+        };
+        struct socket *initial_socket = peer->sctp.socket;
+        /* A real native terminal admission request, not a NULL Socket or a
+         * mocked send, closes the only Owner gate before callback entry. */
+        sctp_native_request_close(peer, 0);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int gate_closed = peer->sctp.native_close_requested;
+        int socket_still_owned = peer->sctp.socket == initial_socket;
+        unsigned borrowed = peer->sctp.native_borrows;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+
+        const int ack_rc = dcep_send_ack(peer, 0);
+        dcep_handle_message(peer, 0, open, sizeof(open));
+
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int retained_channel = peer_get_channel(peer, 0) != NULL;
+        int retained_sid = roaring_bitmap_contains(peer->channel_ids, 0);
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        turbo_dc_error_code_t error_code = turbo_dc_peer_get_error(peer).code;
+        const unsigned channel_events = obs.on_channel;
+        const unsigned open_events = obs.on_open;
+        const unsigned false_open_events = obs.observed_false_open;
+
+        /* Teardown must settle the owned, previously live native Socket
+         * through the same Owner, with no borrowed callbacks in flight. */
+        turbo_dc_peer_destroy(peer);
+        turbo_dc_context_destroy(ctx);
+
+        check_true(gate_closed);
+        check_true(socket_still_owned);
+        check_equal(borrowed, 0u);
+        check_equal(ack_rc, -1);
+        check_equal(channel_events, 0u);
+        check_equal(open_events, 0u);
+        check_equal(false_open_events, 0u);
+        check_false(retained_channel);
+        check_false(retained_sid);
+        check_equal(error_code, TURBO_DC_ERROR_DCEP_SEND_ACK);
+    }
+}
