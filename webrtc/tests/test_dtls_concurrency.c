@@ -1322,6 +1322,74 @@ static void run_sctp_native_close_interleaving(int operation) {
     cmeta_mutex_destroy(&f->lock);
 }
 
+/* #201 bounded admission: the native Socket Owner is not merely safe
+ * under close races; it also rejects the 257th nested request and returns
+ * every prior credit before a terminal peer close. The same current thread
+ * token deliberately occupies exactly one of the 16 bounded owner slots. */
+spec("SCTP native borrow budget") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("rejects the 257th nested native borrow and drains before terminal close") {
+        turbo_dc_peer_t *peer = endpoints[0].peer;
+        unsigned accepted = 0;
+        for (unsigned i = 0; i < 256u; ++i) {
+            if (!sctp_native_borrow(peer)) break;
+            ++accepted;
+        }
+        /* Cleanup precedes assertions even on an unexpected admission:
+         * never leak a native borrow and make teardown hang on a failing test. */
+        struct socket *overflow = sctp_native_borrow(peer);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        unsigned peak = peer->sctp.native_borrows;
+        unsigned active_slots = 0;
+        unsigned token_depth = 0;
+        for (size_t i = 0; i < 16u; ++i) {
+            if (peer->sctp.native_owners[i].thread) {
+                ++active_slots;
+                token_depth = peer->sctp.native_owners[i].depth;
+            }
+        }
+        cmeta_mutex_unlock(&peer->operation_mutex);
+
+        if (overflow) sctp_native_return(peer);
+        for (unsigned i = 0; i < accepted; ++i)
+            sctp_native_return(peer);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        unsigned residual = peer->sctp.native_borrows;
+        unsigned residual_slots = 0;
+        for (size_t i = 0; i < 16u; ++i)
+            residual_slots += peer->sctp.native_owners[i].thread != NULL;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+
+        /* Exercise the same *public* close path as installed DataChannel.
+         * No new native borrow is allowed after the terminal close gate. */
+        turbo_dc_peer_close(peer);
+        struct socket *late = sctp_native_borrow(peer);
+        if (late) sctp_native_return(peer);
+        turbo_dc_peer_close(peer); /* repeated terminal close is idempotent */
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int closed = peer->sctp.native_closed;
+        int closing = peer->sctp.native_closing;
+        struct socket *remaining = peer->sctp.socket;
+        unsigned terminal_borrows = peer->sctp.native_borrows;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+
+        check_equal(accepted, 256u);
+        check_null(overflow);
+        check_equal(peak, 256u);
+        check_equal(active_slots, 1u);
+        check_equal(token_depth, 256u);
+        check_equal(residual, 0u);
+        check_equal(residual_slots, 0u);
+        check_null(late);
+        check_true(closed);
+        check_false(closing);
+        check_null(remaining);
+        check_equal(terminal_borrows, 0u);
+    }
+}
+
 spec("SCTP native API close admission") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
