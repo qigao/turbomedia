@@ -30,46 +30,12 @@ dotnet nuget add source https://nuget.pkg.github.com/qigao/index.json `
   --configfile $config
 if ($LASTEXITCODE -ne 0) { throw "failed to configure GitHub Packages source" }
 
-# Resolve only complete official releases; historical rc.sha packages sort
-# above numeric rc.N, yet may ship only a Linux SDK. This policy stays floating.
-function Resolve-OfficialNativeRelease([string]$Repository, [string]$PackageId,
-                                       [string]$Cycle) {
-  $payload = (& gh api "repos/$Repository/releases?per_page=100") -join "`n"
-  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($payload)) {
-    throw "failed to query published releases for $PackageId"
-  }
-  $releases = @(ConvertFrom-Json -InputObject $payload)
-  $rcPattern = '^v' + [regex]::Escape($Cycle) + '-rc\.([1-9][0-9]*)$'
-  $winner = $null
-  $rankBest = -1
-  foreach ($release in $releases) {
-    if ($release.draft) { continue }
-    $tag = [string]$release.tag_name
-    if ($tag -ceq "v$Cycle" -and -not $release.prerelease) {
-      $rank = 1000000000
-    } elseif ($tag -cmatch $rcPattern -and $release.prerelease) {
-      $rank = [int]$Matches[1]
-    } else { continue }
-    $version = $tag.Substring(1)
-    $assetName = "$PackageId.$version.nupkg"
-    $complete = $false
-    foreach ($asset in @($release.assets)) {
-      if ($asset.name -ceq $assetName -and [int64]$asset.size -gt 0) {
-        $complete = $true
-        break
-      }
-    }
-    if ($complete -and $rank -gt $rankBest) {
-      $winner = $version
-      $rankBest = $rank
-    }
-  }
-  if (-not $winner) { throw "no official full $PackageId $Cycle RC/stable release" }
-  return $winner
-}
-
-$saltsVersion = Resolve-OfficialNativeRelease "qigao/salts" "Salts.Native" "2.3.0"
-$saltsUtilsVersion = Resolve-OfficialNativeRelease "qigao/salts-utils" "SaltsUtils.Native" "4.3.0"
+# Exact historical #197 RED/GREEN consumer graph. Both are immutable
+# published release tags, not mutable 'latest' RC selections. The matching
+# public nupkg byte digests are verified immediately after restore below.
+# This is diagnostic branch scope only; do not switch master or add fallback.
+$saltsVersion = "2.3.0-rc.15"
+$saltsUtilsVersion = "4.3.0-rc.10"
 # RC sequences belong to each package, not to a shared release counter.
 # For example, Salts 2.3.0-rc.10 and SaltsUtils 4.3.0-rc.7 are the current
 # official releases. Keep both post-cutover; installed package contracts and
@@ -107,6 +73,25 @@ $desktopReference
 
 dotnet restore $project --configfile $config --packages $packages --no-cache --force-evaluate
 if ($LASTEXITCODE -ne 0) { throw "platform SDK restore failed" }
+# Verify restored bytes, not only versions. Do not allow NuGet or a moving
+# tag to change the exact historical ABI basis of this test candidate.
+$expectedDigest = @{
+  "Salts.Native" = "fa73229c7b2506b393fe779bb56f8d42c387a79d30db54c0cf17b408b7ba7ad1"
+  "SaltsUtils.Native" = "b4e5207b9e1f49fab6bddfcd36a4f27d9e99cabe09c28b41913c26f20e366491"
+}
+foreach ($id in @("Salts.Native", "SaltsUtils.Native")) {
+  $version = if ($id -ceq "Salts.Native") { $saltsVersion } else { $saltsUtilsVersion }
+  $name = "$($id.ToLowerInvariant()).$version.nupkg"
+  $file = Join-Path (Join-Path (Join-Path $packages $id.ToLowerInvariant()) $version) $name
+  if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+    throw "exact historical nupkg not restored: $file"
+  }
+  $digest = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($digest -cne $expectedDigest[$id]) {
+    throw "historical ABI nupkg checksum mismatch: $id $version expected=$($expectedDigest[$id]) actual=$digest"
+  }
+  Write-Host "Attested #232 historical SDK: $id $version sha256=$digest"
+}
 
 function Resolve-SdkRoot([string]$PackageId, [string]$SdkRid = "") {
   if ([string]::IsNullOrWhiteSpace($SdkRid)) {

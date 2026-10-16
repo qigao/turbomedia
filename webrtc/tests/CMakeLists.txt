@@ -38,8 +38,16 @@ turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 # Conformance reuses the exact production DCEP source without exporting a
 # private DLL symbol, allowing targeted close callback reentrancy injection.
 turbo_media_add_webrtc_test(turbo_media_test_datachannel
-  test_datachannel.c ../src/dcep_protocol.c)
+  test_datachannel.c ../src/dcep_protocol.c
+  ../src/turbo_datachannel_errors.c)
 target_link_libraries(turbo_media_test_datachannel PRIVATE
+  unofficial::usrsctp::usrsctp roaring::roaring)
+# Exact-source RED/GREEN #232 fixture: compile the same production DCEP
+# translation unit directly without exporting private DLL symbols.
+turbo_media_add_webrtc_test(turbo_media_test_dcep_ack_admission
+  test_dcep_ack_admission.c ../src/dcep_protocol.c
+  ../src/turbo_datachannel_errors.c)
+target_link_libraries(turbo_media_test_dcep_ack_admission PRIVATE
   unofficial::usrsctp::usrsctp roaring::roaring)
 turbo_media_add_webrtc_base_test(turbo_media_test_dc_certificate
   test_dc_certificate.cpp ../src/dc_certificate_gmssl.cpp
