@@ -1047,14 +1047,19 @@ spec("SCTP complete-message receive adapter") {
         check_equal(endpoints[0].message_binary, 0);
     }
 
-    it("assembles DCEP before publishing an incoming channel") {
+    it("assembles fragmented DCEP but rejects OPEN when native ACK cannot be admitted") {
         const uint8_t open[] = {3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 'x'};
+        /* Parser-only fixture has no established SCTP association. A
+         * complete OPEN may reach ACK admission, but must not publish
+         * an application Channel on native send failure. The distinct
+         * connected GmSSL/SCTP test verifies the true success path. */
         feed_sctp_fragment(1, 0, SCTP_PPID_DCEP, open, 6, 0);
         check_null(peer_get_channel(endpoints[0].peer, 1));
         feed_sctp_fragment(1, 0, SCTP_PPID_DCEP, open + 6, sizeof(open) - 6, MSG_EOR);
-        turbo_dc_channel_t *channel = peer_get_channel(endpoints[0].peer, 1);
-        check_not_null(channel);
-        check_equal(turbo_dc_channel_get_label(channel), "x");
+        check_null(peer_get_channel(endpoints[0].peer, 1));
+        check_false(roaring_bitmap_contains(endpoints[0].peer->channel_ids, 1));
+        check_equal(turbo_dc_peer_get_error(endpoints[0].peer).code,
+                    TURBO_DC_ERROR_DCEP_SEND_ACK);
         check_equal(endpoints[0].peer->sctp.receive_buffers, 0u);
     }
 
