@@ -15,6 +15,18 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <stdio.h>
+/* Test-process-only breadcrumbs: constant phase names, never addresses,
+ * stack memory, ICE credentials, SDP, network packets or raw dumps. */
+static void tm_ack_stage(const char *stage) {
+    fprintf(stderr, "[dcep-ack-close-phase] %s\n", stage);
+    fflush(stderr);
+}
+#else
+static void tm_ack_stage(const char *stage) { (void)stage; }
+#endif
+
 static unsigned g_send_calls;
 static unsigned g_invalid_send_shape;
 static int g_injected_errno;
@@ -57,12 +69,14 @@ static ssize_t tm_test_sendv_eagain(struct socket *socket,
     if (race) {
         cmeta_mutex_lock(&race->mutex);
         race->send_entered = 1;
+        tm_ack_stage("sendv-entered");
         cmeta_cond_broadcast(&race->cond);
         /* This actual borrowed-Socket ACK sendv cannot complete until the
          * foreign close thread has published terminal native admission. */
         while (!race->send_release)
             cmeta_cond_wait(&race->cond, &race->mutex);
         cmeta_mutex_unlock(&race->mutex);
+        tm_ack_stage("sendv-resumed-for-eagain");
     }
     errno = EAGAIN;
     g_injected_errno = errno;
@@ -148,7 +162,9 @@ static void tm_ack_receiving_worker(void *ctx) {
         0, 0, 0, 0, 0, 0,
         0, 1, 0, 0, 'x'
     };
+    tm_ack_stage("parser-enter");
     dcep_handle_message(race->peer, 0, open, sizeof(open));
+    tm_ack_stage("parser-return");
     cmeta_mutex_lock(&race->mutex);
     race->parser_done = 1;
     cmeta_cond_broadcast(&race->cond);
@@ -163,7 +179,9 @@ static void tm_ack_foreign_close_worker(void *ctx) {
     cmeta_mutex_unlock(&race->mutex);
 
     /* This is the original public peer close, not a test-only retirement. */
+    tm_ack_stage("close-enter");
     turbo_dc_peer_close(race->peer);
+    tm_ack_stage("close-return");
     cmeta_mutex_lock(&race->mutex);
     race->close_finished = 1;
     cmeta_cond_broadcast(&race->cond);
@@ -195,6 +213,7 @@ spec("DCEP sendv failure versus foreign native peer close #201 #232") {
         turbo_dc_peer_t *peer = turbo_dc_peer_create(ctx, NULL, 0, &obs);
         check_not_null(peer);
         check_not_null(peer->sctp.socket);
+        tm_ack_stage("peer-created");
         turbo_dc_peer_on_channel(peer, tm_fault_on_channel);
 
         tm_ack_send_close_race race = {0};
@@ -210,6 +229,7 @@ spec("DCEP sendv failure versus foreign native peer close #201 #232") {
         cmeta_thread_t closing = NULL;
         int sender_created = cmeta_thread_create(
             &sending, tm_ack_receiving_worker, &race) == 0;
+        tm_ack_stage("sender-started");
         int entered = sender_created &&
             tm_ack_wait_until(&race, &race.send_entered);
         int close_created = entered && cmeta_thread_create(
@@ -234,6 +254,7 @@ spec("DCEP sendv failure versus foreign native peer close #201 #232") {
             cmeta_mutex_unlock(&peer->operation_mutex);
         }
 
+        tm_ack_stage("owner-gate-sampled");
         cmeta_mutex_lock(&race.mutex);
         int prematurely_closed = race.close_finished;
         race.send_release = 1;
@@ -251,6 +272,7 @@ spec("DCEP sendv failure versus foreign native peer close #201 #232") {
             cmeta_thread_destroy(&closing);
         }
         g_ack_send_close_race = NULL;
+        tm_ack_stage("all-workers-joined");
 
         cmeta_mutex_lock(&race.mutex);
         int parser_done = race.parser_done;
@@ -265,7 +287,9 @@ spec("DCEP sendv failure versus foreign native peer close #201 #232") {
         int sid_reserved = roaring_bitmap_contains(peer->channel_ids, 0);
         cmeta_mutex_unlock(&peer->operation_mutex);
         turbo_dc_error_t reported = turbo_dc_peer_get_error(peer);
+        tm_ack_stage("peer-destroy-enter");
         turbo_dc_peer_destroy(peer);
+        tm_ack_stage("peer-destroy-exit");
         turbo_dc_context_destroy(ctx);
         cmeta_cond_destroy(&race.cond);
         cmeta_mutex_destroy(&race.mutex);
