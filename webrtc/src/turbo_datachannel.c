@@ -1310,9 +1310,25 @@ turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer) {
 }
 
 static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
-    if (!peer) return;
+    if (!peer || !peer->operation_sync_initialized) return;
+
+    /* Concurrent callers and callbacks may all request close, but only one
+     * caller owns the terminal transition and cleanup. Admit it once under
+     * the existing peer Owner mutex; never hold that mutex while draining
+     * SCTP, notifying applications, or shutting down DTLS/transport.
+     * A reentrant or foreign repeated call is a no-op. Peer destruction
+     * still waits for all public peer operations to settle before freeing. */
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (peer->close_started) {
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        return;
+    }
+    peer->close_started = 1;
+    int was_closed = peer->state == TURBO_DC_STATE_CLOSED;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+
     sctp_receive_stop(peer);
-    if (peer->state == TURBO_DC_STATE_CLOSED) {
+    if (was_closed) {
         sctp_native_close_socket(peer, 0);
         return;
     }
