@@ -79,9 +79,8 @@ $expectedDigest = @{
   "Salts.Native" = "fa73229c7b2506b393fe779bb56f8d42c387a79d30db54c0cf17b408b7ba7ad1"
   "SaltsUtils.Native" = "b4e5207b9e1f49fab6bddfcd36a4f27d9e99cabe09c28b41913c26f20e366491"
 }
-foreach ($entry in @(@("Salts.Native", $saltsVersion), @("SaltsUtils.Native", $saltsUtilsVersion))) {
-  $id = [string]$entry[0]
-  $version = [string]$entry[1]
+foreach ($id in @("Salts.Native", "SaltsUtils.Native")) {
+  $version = if ($id -ceq "Salts.Native") { $saltsVersion } else { $saltsUtilsVersion }
   $name = "$($id.ToLowerInvariant()).$version.nupkg"
   $file = Join-Path (Join-Path (Join-Path $packages $id.ToLowerInvariant()) $version) $name
   if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
