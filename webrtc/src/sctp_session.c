@@ -47,31 +47,37 @@ static const char *sctp_assoc_state_name(uint16_t state) {
 void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
     struct sctp_status status;
     socklen_t status_len = sizeof(status);
+    if (!peer || !dtls_session_is_ready(peer)) return;
 
-    if (!peer || !peer->sctp.socket || !dtls_session_is_ready(peer)) {
-        return;
-    }
-
+    struct socket *socket = sctp_native_borrow(peer);
+    if (!socket) return;
     memset(&status, 0, sizeof(status));
-    if (usrsctp_getsockopt(peer->sctp.socket, IPPROTO_SCTP, SCTP_STATUS,
-                           &status, &status_len) != 0) {
+    int result = usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS,
+                                    &status, &status_len);
+    if (result != 0) {
+        sctp_native_return(peer);
         TLOG_WARNF("SCTP status poll failed reason='{}' errno={}",
-                  reason ? reason : "", errno);
+                   reason ? reason : "", errno);
         return;
     }
 
-    /* Some usrsctp builds keep SCTP_STATUS at COOKIE_ECHOED while the stream
-     * negotiation is already complete and the socket is usable for DCEP/data.
-     * Promote the peer once the association is established or the socket has
-     * negotiated both stream directions. */
-    if (!peer->sctp.connected &&
+    /* The native borrow also serializes the CONNECTED notification against
+     * foreign close: close must not publish DISCONNECTING until every old
+     * native-status callback has completed. Reentrant close from on_state
+     * defers physical teardown until this scope exits. */
+    int promote = 0;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (!peer->sctp.native_close_requested && !peer->sctp.connected &&
         (status.sstat_state == SCTP_ESTABLISHED ||
          (status.sstat_state == SCTP_COOKIE_ECHOED &&
-          status.sstat_outstrms > 0 &&
-          status.sstat_instrms > 0))) {
+          status.sstat_outstrms > 0 && status.sstat_instrms > 0))) {
         peer->sctp.connected = 1;
-        dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+        promote = 1;
     }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (promote)
+        dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+    sctp_native_return(peer);
 }
 
 int sctp_global_init(void) {
@@ -433,22 +439,21 @@ static int configure_sctp_socket(struct socket *sock, uint16_t mtu) {
 }
 
 int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id) {
+    if (!peer) return -1;
+    struct socket *socket = sctp_native_borrow(peer);
+    if (!socket) return -1;
     uint8_t reset_buffer[sizeof(struct sctp_reset_streams) + sizeof(uint16_t)];
     struct sctp_reset_streams *reset_request =
         (struct sctp_reset_streams *)reset_buffer;
-
-    if (!peer || !peer->sctp.socket) {
-        return -1;
-    }
-
     memset(reset_buffer, 0, sizeof(reset_buffer));
     reset_request->srs_assoc_id = SCTP_ALL_ASSOC;
     reset_request->srs_flags = SCTP_STREAM_RESET_OUTGOING;
     reset_request->srs_number_streams = 1;
     reset_request->srs_stream_list[0] = stream_id;
-
-    return usrsctp_setsockopt(peer->sctp.socket, IPPROTO_SCTP, SCTP_RESET_STREAMS,
-                              reset_buffer, sizeof(reset_buffer));
+    int result = usrsctp_setsockopt(socket, IPPROTO_SCTP, SCTP_RESET_STREAMS,
+                                    reset_buffer, sizeof(reset_buffer));
+    sctp_native_return(peer);
+    return result;
 }
 
 /* ============================================================================
@@ -482,8 +487,11 @@ int sctp_session_init(turbo_dc_peer_t *peer) {
 }
 
 int sctp_start_association(turbo_dc_peer_t *peer) {
-    struct sockaddr_conn local_addr, remote_addr;
+    if (!peer) return -1;
+    struct socket *socket = sctp_native_borrow(peer);
+    if (!socket) return -1;
 
+    struct sockaddr_conn local_addr, remote_addr;
     memset(&local_addr, 0, sizeof(local_addr));
     local_addr.sconn_family = AF_CONN;
     local_addr.sconn_port = htons(SCTP_ASSOCIATION_PORT);
@@ -500,22 +508,26 @@ int sctp_start_association(turbo_dc_peer_t *peer) {
     remote_addr.sconn_len = sizeof(remote_addr);
 #endif
 
-    if (usrsctp_bind(peer->sctp.socket, (struct sockaddr *)&local_addr, sizeof(local_addr)) != 0) {
+    int rc = 0;
+    if (usrsctp_bind(socket, (struct sockaddr *)&local_addr, sizeof(local_addr)) != 0) {
         TLOG_ERRORF("SCTP bind failed errno={}", errno);
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_BIND, NULL);
-        return -1;
+        rc = -1;
+    } else {
+        int ret = usrsctp_connect(socket, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
+        if (ret < 0 && errno != EINPROGRESS) {
+            TLOG_ERRORF("SCTP connect failed ret={} errno={}", ret, errno);
+            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_CONNECT, NULL);
+            rc = -1;
+        }
     }
-
-    int ret = usrsctp_connect(peer->sctp.socket, (struct sockaddr *)&remote_addr, sizeof(remote_addr));
-    if (ret < 0 && errno != EINPROGRESS) {
-        TLOG_ERRORF("SCTP connect failed ret={} errno={}", ret, errno);
-        dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_CONNECT, NULL);
-        return -1;
+    if (!rc) {
+        /* Only the native owner can publish this state; close owns the same
+         * terminal gate, so late connect cannot rewrite it after close. */
+        cmeta_mutex_lock(&peer->operation_mutex);
+        if (!peer->sctp.native_close_requested) peer->sctp.connected = 0;
+        cmeta_mutex_unlock(&peer->operation_mutex);
     }
-
-    peer->sctp.connected = 0;
-    /* Some usrsctp builds are unstable if SCTP_STATUS is queried immediately
-     * after connect() while the association is still being instantiated.
-     * Let notifications or later explicit polls observe readiness instead. */
-    return 0;
+    sctp_native_return(peer);
+    return rc;
 }

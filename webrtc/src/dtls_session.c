@@ -133,8 +133,16 @@ static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
         dtls_session_unlock(peer);
         if (!plaintext) return;
         if (!peer->ctx->disable_sctp) {
-            usrsctp_conninput(peer, plaintext, tstr_len(plaintext), 0);
-            sctp_poll_status(peer, "post-conninput");
+            /* usrsctp_conninput may synchronously invoke on_message and
+             * application code may close this very peer reentrantly.
+             * The native borrow defers physical Socket destruction until
+             * this call has returned, without holding the peer mutex. */
+            struct socket *socket = sctp_native_borrow(peer);
+            if (socket) {
+                usrsctp_conninput(peer, plaintext, tstr_len(plaintext), 0);
+                sctp_native_return(peer);
+                sctp_poll_status(peer, "post-conninput");
+            }
         }
         cmeta_crypto_clear(plaintext, tstr_len(plaintext));
         tstr_free(plaintext);
