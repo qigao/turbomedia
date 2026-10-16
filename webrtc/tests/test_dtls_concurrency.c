@@ -802,6 +802,69 @@ spec("SCTP over GmSSL configured datagram limits") {
     }
 }
 
+/* Reentrant application close under real usrsctp_conninput. The Socket
+ * cannot be physically freed while conninput still owns the native operation,
+ * even when close happens synchronously on that same ICE/message Owner. */
+static unsigned g_reentrant_native_messages;
+static int g_reentrant_native_deferred;
+static int g_reentrant_native_socket_live;
+
+static void close_peer_during_sctp_ingress(turbo_dc_channel_t *channel,
+                                            const void *data, size_t size,
+                                            int binary, void *user) {
+    packet_endpoint_t *endpoint = user;
+    (void)channel;
+    if (!endpoint || size != 1 || ((const uint8_t *)data)[0] != 0x5a || !binary)
+        return;
+    ++g_reentrant_native_messages;
+    turbo_dc_peer_close(endpoint->peer);
+
+    cmeta_mutex_lock(&endpoint->peer->operation_mutex);
+    g_reentrant_native_deferred =
+        endpoint->peer->sctp.native_close_requested &&
+        endpoint->peer->sctp.native_borrows != 0;
+    g_reentrant_native_socket_live = endpoint->peer->sctp.socket != NULL;
+    cmeta_mutex_unlock(&endpoint->peer->operation_mutex);
+}
+
+spec("SCTP native socket reentrant close") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("defers physical native Socket close from within on_message conninput") {
+        open_packet_channel();
+        g_reentrant_native_messages = 0;
+        g_reentrant_native_deferred = 0;
+        g_reentrant_native_socket_live = 0;
+        turbo_dc_channel_on_message(endpoints[1].channel,
+                                    close_peer_during_sctp_ingress);
+
+        const uint8_t payload = 0x5a;
+        check_equal(turbo_dc_channel_send(endpoints[0].channel,
+                                         &payload, 1, 1), 0);
+        uint64_t deadline = cmeta_monotonic_ms() + 3000u;
+        while (!g_reentrant_native_messages &&
+               cmeta_monotonic_ms() < deadline) {
+            deliver_packets(0);
+            deliver_packets(1);
+            cmeta_sleep_ms(1);
+        }
+        check_equal(g_reentrant_native_messages, 1u);
+        check_true(g_reentrant_native_deferred);
+        check_true(g_reentrant_native_socket_live);
+        check_equal(turbo_dc_peer_get_state(endpoints[1].peer),
+                    TURBO_DC_STATE_CLOSED);
+        cmeta_mutex_lock(&endpoints[1].peer->operation_mutex);
+        unsigned remaining = endpoints[1].peer->sctp.native_borrows;
+        int closed = endpoints[1].peer->sctp.native_closed;
+        struct socket *live = endpoints[1].peer->sctp.socket;
+        cmeta_mutex_unlock(&endpoints[1].peer->operation_mutex);
+        check_equal(remaining, 0u);
+        check_true(closed);
+        check_null(live);
+    }
+}
+
 spec("SCTP over GmSSL empty messages") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
@@ -1026,6 +1089,165 @@ static void verify_held_sctp_close_interleaving(void) {
     check_null(peer_get_channel(race->peer, race->sid));
     cmeta_cond_destroy(&race->cond);
     cmeta_mutex_destroy(&race->mutex);
+}
+
+/* ============================================================================
+ * Deterministic native SCTP STATUS query vs peer close (Issue #198)
+ * ============================================================================ */
+typedef struct {
+    cmeta_mutex_t lock;
+    cmeta_cond_t cond;
+    turbo_dc_peer_t *peer;
+    int borrowed;
+    int allow_query;
+    int query_authorized;
+    int status_attempted;
+    int worker_completed;
+    int close_started;
+    int close_finished;
+} sctp_status_close_fixture_t;
+
+static sctp_status_close_fixture_t status_close_fixture;
+
+static void status_borrow_worker(void *arg) {
+    sctp_status_close_fixture_t *f = arg;
+    struct socket *socket = NULL;
+    int acquired = dc_peer_acquire(f->peer) == 0;
+    if (acquired) socket = sctp_native_borrow(f->peer);
+
+    cmeta_mutex_lock(&f->lock);
+    f->borrowed = socket != NULL;
+    cmeta_cond_broadcast(&f->cond);
+    while (!f->allow_query)
+        cmeta_cond_wait(&f->cond, &f->lock);
+    int authorized = f->query_authorized;
+    cmeta_mutex_unlock(&f->lock);
+
+    /* In a RED control without a terminal close gate, the old close may
+     * have freed the socket already. Do not intentionally dereference an
+     * invalid handle merely to prove a missing close-admission barrier. */
+    if (socket && authorized) {
+        struct sctp_status status = {0};
+        socklen_t len = sizeof(status);
+        /* A real native query must remain safe while close is admitted.
+         * Unconnected test sockets may return a normal SCTP error. */
+        (void)usrsctp_getsockopt(socket, IPPROTO_SCTP, SCTP_STATUS, &status, &len);
+    }
+    if (socket) sctp_native_return(f->peer);
+    if (acquired) dc_peer_release(f->peer);
+
+    cmeta_mutex_lock(&f->lock);
+    f->status_attempted = socket != NULL && authorized;
+    f->worker_completed = 1;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->lock);
+}
+
+static void status_close_worker(void *arg) {
+    sctp_status_close_fixture_t *f = arg;
+    cmeta_mutex_lock(&f->lock);
+    f->close_started = 1;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->lock);
+
+    turbo_dc_peer_close(f->peer);
+
+    cmeta_mutex_lock(&f->lock);
+    f->close_finished = 1;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->lock);
+}
+
+static int wait_status_fixture_flag(int *flag) {
+    int found;
+    const uint64_t deadline = cmeta_monotonic_ms() + 2000u;
+    cmeta_mutex_lock(&status_close_fixture.lock);
+    while (!*flag && cmeta_monotonic_ms() < deadline) {
+        (void)cmeta_cond_timedwait(&status_close_fixture.cond,
+                                   &status_close_fixture.lock,
+                                   UINT64_C(10000000));
+    }
+    found = *flag;
+    cmeta_mutex_unlock(&status_close_fixture.lock);
+    return found;
+}
+
+static void run_sctp_status_close_interleaving(void) {
+    sctp_status_close_fixture_t *f = &status_close_fixture;
+    memset(f, 0, sizeof(*f));
+    cmeta_mutex_init(&f->lock);
+    cmeta_cond_init(&f->cond);
+    f->peer = endpoints[0].peer;
+
+    cmeta_thread_t query_thread = NULL;
+    cmeta_thread_t closer_thread = NULL;
+    int query_created = cmeta_thread_create(&query_thread,
+                                            status_borrow_worker, f) == 0;
+    int held = query_created && wait_status_fixture_flag(&f->borrowed);
+    int close_created = held &&
+        cmeta_thread_create(&closer_thread, status_close_worker, f) == 0;
+    int closing_started = close_created &&
+        wait_status_fixture_flag(&f->close_started);
+
+    /* Wait on the *actual close admission bit* (condition-variable signal),
+     * not an arbitrary sleep. This is the deterministic pre-release barrier. */
+    int gate_observed = 0, held_count = 0, socket_live = 0;
+    const uint64_t deadline = cmeta_monotonic_ms() + 2000u;
+    if (closing_started) {
+        cmeta_mutex_lock(&f->peer->operation_mutex);
+        while (!f->peer->sctp.native_close_requested &&
+               cmeta_monotonic_ms() < deadline) {
+            (void)cmeta_cond_timedwait(&f->peer->operation_cond,
+                                       &f->peer->operation_mutex,
+                                       UINT64_C(10000000));
+        }
+        gate_observed = f->peer->sctp.native_close_requested;
+        held_count = (int)f->peer->sctp.native_borrows;
+        socket_live = f->peer->sctp.socket != NULL;
+        cmeta_mutex_unlock(&f->peer->operation_mutex);
+    }
+
+    cmeta_mutex_lock(&f->lock);
+    int prematurely_closed = f->close_finished;
+    f->query_authorized = gate_observed && !prematurely_closed;
+    f->allow_query = 1;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->lock);
+
+    if (query_created) {
+        (void)cmeta_thread_join(&query_thread);
+        cmeta_thread_destroy(&query_thread);
+    }
+    if (close_created) {
+        (void)cmeta_thread_join(&closer_thread);
+        cmeta_thread_destroy(&closer_thread);
+    }
+
+    check_true(query_created);
+    check_true(held);
+    check_true(close_created);
+    check_true(closing_started);
+    check_true(gate_observed);
+    check_equal(held_count, 1);
+    check_true(socket_live);
+    check_false(prematurely_closed);
+    check_true(f->status_attempted);
+    check_true(f->worker_completed);
+    check_true(f->close_finished);
+    check_null(f->peer->sctp.socket);
+    check_equal(f->peer->sctp.native_borrows, 0u);
+
+    cmeta_cond_destroy(&f->cond);
+    cmeta_mutex_destroy(&f->lock);
+}
+
+spec("SCTP native STATUS close admission") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("retains a STATUS socket borrow until concurrent peer close drains it") {
+        run_sctp_status_close_interleaving();
+    }
 }
 
 spec("SCTP complete-message receive adapter") {
