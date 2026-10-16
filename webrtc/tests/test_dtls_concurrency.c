@@ -1539,6 +1539,113 @@ spec("SCTP native distinct-thread owner admission capacity") {
     }
 }
 
+/* Two foreign public closers racing one admitted native Socket borrow.
+ * The last borrower must hand physical shutdown/close to a waiting closer.
+ * Both closes use the production peer Owner; no test-only native engine. */
+typedef struct sctp_dual_close {
+    cmeta_mutex_t mutex;
+    cmeta_cond_t cond;
+    turbo_dc_peer_t *peer;
+    unsigned entered;
+    unsigned returned;
+} sctp_dual_close;
+
+static void dual_close_worker(void *arg) {
+    sctp_dual_close *f = arg;
+    cmeta_mutex_lock(&f->mutex);
+    ++f->entered;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->mutex);
+    turbo_dc_peer_close(f->peer);
+    cmeta_mutex_lock(&f->mutex);
+    ++f->returned;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->mutex);
+}
+
+spec("SCTP two foreign closers one native retirement") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("admits one physical close after the final foreign-held borrow") {
+        turbo_dc_peer_t *peer = endpoints[0].peer;
+        sctp_dual_close f = {0};
+        f.peer = peer;
+        cmeta_mutex_init(&f.mutex);
+        cmeta_cond_init(&f.cond);
+        struct socket *original = sctp_native_borrow(peer);
+        cmeta_thread_t workers[2] = {NULL, NULL};
+        unsigned created = 0;
+        if (original) {
+            for (unsigned i = 0; i < 2; ++i) {
+                if (cmeta_thread_create(&workers[i], dual_close_worker, &f) != 0)
+                    break;
+                ++created;
+            }
+        }
+        const uint64_t until = cmeta_monotonic_ms() + 5000u;
+        cmeta_mutex_lock(&f.mutex);
+        while (f.entered < created && cmeta_monotonic_ms() < until)
+            (void)cmeta_cond_timedwait(&f.cond, &f.mutex, UINT64_C(10000000));
+        unsigned entered = f.entered;
+        cmeta_mutex_unlock(&f.mutex);
+
+        int terminal = 0, waiter = 0, live = 0;
+        unsigned held = 0;
+        if (created == 2 && entered == 2) {
+            cmeta_mutex_lock(&peer->operation_mutex);
+            while ((!peer->sctp.native_close_requested ||
+                    !peer->sctp.native_foreign_close_waiting) &&
+                   cmeta_monotonic_ms() < until)
+                (void)cmeta_cond_timedwait(&peer->operation_cond,
+                                           &peer->operation_mutex,
+                                           UINT64_C(10000000));
+            terminal = peer->sctp.native_close_requested;
+            waiter = peer->sctp.native_foreign_close_waiting;
+            live = peer->sctp.socket == original;
+            held = peer->sctp.native_borrows;
+            cmeta_mutex_unlock(&peer->operation_mutex);
+        }
+        /* Complete all cleanup BEFORE assertions even if an admission
+         * boundary was not reached, to avoid stranding a native borrow. */
+        if (original) sctp_native_return(peer);
+        for (unsigned i = 0; i < created; ++i) {
+            (void)cmeta_thread_join(&workers[i]);
+            cmeta_thread_destroy(&workers[i]);
+        }
+        cmeta_mutex_lock(&f.mutex);
+        unsigned returned = f.returned;
+        cmeta_mutex_unlock(&f.mutex);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int closed = peer->sctp.native_closed;
+        int closing = peer->sctp.native_closing;
+        int pending = peer->sctp.native_foreign_close_waiting;
+        unsigned remains = peer->sctp.native_borrows;
+        struct socket *socket = peer->sctp.socket;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        struct socket *late = sctp_native_borrow(peer);
+        if (late) sctp_native_return(peer);
+        turbo_dc_peer_close(peer); /* terminal close must be idempotent */
+        cmeta_cond_destroy(&f.cond);
+        cmeta_mutex_destroy(&f.mutex);
+
+        check_not_null(original);
+        check_equal(created, 2u);
+        check_equal(entered, 2u);
+        check_true(terminal);
+        check_true(waiter);
+        check_true(live);
+        check_equal(held, 1u);
+        check_equal(returned, 2u);
+        check_true(closed);
+        check_false(closing);
+        check_false(pending);
+        check_equal(remains, 0u);
+        check_null(socket);
+        check_null(late);
+    }
+}
+
 spec("SCTP native API close admission") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
