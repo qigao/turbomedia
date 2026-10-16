@@ -1705,10 +1705,26 @@ void turbo_dc_channel_close(turbo_dc_channel_t *channel) {
     cmeta_mutex_unlock(&peer->operation_mutex);
 
     sctp_receive_discard_stream(peer, id);
-    /* Reset stream outside operation_mutex: usrsctp may synchronously invoke
-     * transport or application code that needs this same admission lock. */
-    if (peer->sctp.socket && sctp_reset_channel_stream(peer, id) != 0)
-        dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, "stream reset failed");
+    /* Do not read the native Socket pointer outside the Owner mutex: peer
+     * close may detach it on a foreign thread. The reset routine must
+     * borrow the Socket through the same native admission gate; never call
+     * usrsctp directly from this Channel lifetime path. */
+    int reset_result = sctp_reset_channel_stream(peer, id);
+    if (reset_result != 0) {
+        /* A reset rejected by terminal Owner admission is expected during
+         * a concurrent peer close. Preserve real SCTP error reporting when
+         * the native Socket is still active (including capacity rejection),
+         * without racy reads or a second owner/retry/fallback. */
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int reset_owner_active = !peer->destroying &&
+            !peer->sctp.native_close_requested &&
+            !peer->sctp.native_closed &&
+            peer->sctp.socket != NULL;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        if (reset_owner_active)
+            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND,
+                              "stream reset failed");
+    }
     if (on_close)
         on_close(channel, user_data);
 
