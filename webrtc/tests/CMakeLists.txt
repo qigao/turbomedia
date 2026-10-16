@@ -44,7 +44,8 @@ turbo_media_add_webrtc_base_test(
   sctp_c11_contract/test_sctp_c11_contract.c
   sctp_c11_contract/sctp_c11_contract.c)
 target_include_directories(turbo_media_test_sctp_c11_contract
-                           PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sctp_c11_contract)
+                           PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/sctp_c11_contract
+                                   ${PROJECT_SOURCE_DIR}/media/include)
 set_target_properties(turbo_media_test_sctp_c11_contract PROPERTIES
                       C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
