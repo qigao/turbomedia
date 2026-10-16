@@ -1646,6 +1646,150 @@ spec("SCTP two foreign closers one native retirement") {
     }
 }
 
+/* #201 PEER STATE RED controls. Peer Owner must serialize every state read
+ * with publication, and must never publish CONNECTED after terminal native
+ * admission or an explicit public Close. The same actual C11 source and
+ * source-instrumented TSan target execute these tests. */
+typedef struct {
+    turbo_dc_peer_t *peer;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t cond;
+    unsigned ready;
+    int start;
+    unsigned finished;
+    unsigned invalid_observations;
+} state_owner_test_fixture_t;
+
+static void state_owner_test_ready(state_owner_test_fixture_t *f) {
+    cmeta_mutex_lock(&f->mutex);
+    ++f->ready;
+    cmeta_cond_broadcast(&f->cond);
+    while (!f->start)
+        cmeta_cond_wait(&f->cond, &f->mutex);
+    cmeta_mutex_unlock(&f->mutex);
+}
+
+static void state_owner_test_finished(state_owner_test_fixture_t *f) {
+    cmeta_mutex_lock(&f->mutex);
+    ++f->finished;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->mutex);
+}
+
+static void state_owner_publish_worker(void *arg) {
+    state_owner_test_fixture_t *f = arg;
+    int admitted = dc_peer_acquire(f->peer) == 0;
+    state_owner_test_ready(f);
+    if (admitted) {
+        /* Alternating states makes a getter/notification data race observable
+         * under the exact first-party TSan instrumented C11 source. */
+        for (unsigned i = 0; i < 8192u; ++i) {
+            dc_notify_state(f->peer, TURBO_DC_STATE_CONNECTING);
+            dc_notify_state(f->peer, TURBO_DC_STATE_NEW);
+        }
+        dc_peer_release(f->peer);
+    }
+    state_owner_test_finished(f);
+}
+
+static void state_owner_snapshot_worker(void *arg) {
+    state_owner_test_fixture_t *f = arg;
+    int admitted = dc_peer_acquire(f->peer) == 0;
+    unsigned invalid = 0;
+    state_owner_test_ready(f);
+    if (admitted) {
+        for (unsigned i = 0; i < 16384u; ++i) {
+            turbo_dc_state_t s = turbo_dc_peer_get_state(f->peer);
+            if (s != TURBO_DC_STATE_NEW && s != TURBO_DC_STATE_CONNECTING)
+                ++invalid;
+        }
+        dc_peer_release(f->peer);
+    } else {
+        invalid = 1;
+    }
+    cmeta_mutex_lock(&f->mutex);
+    f->invalid_observations += invalid;
+    cmeta_mutex_unlock(&f->mutex);
+    state_owner_test_finished(f);
+}
+
+spec("DataChannel Peer state owner publication #201") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("rejects stale CONNECTED after native terminal gate and public close") {
+        turbo_dc_peer_t *peer = endpoints[0].peer;
+        check_equal(turbo_dc_peer_get_state(peer), TURBO_DC_STATE_NEW);
+
+        /* Real Native Owner terminal admission; Socket still exists, so
+         * rejecting a stale status callback must not depend on NULL Socket. */
+        sctp_native_request_close(peer, 0);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int terminal_admitted = peer->sctp.native_close_requested;
+        int socket_still_live = peer->sctp.socket != NULL;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+
+        dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+        turbo_dc_state_t after_terminal = turbo_dc_peer_get_state(peer);
+        turbo_dc_peer_close(peer);
+        dc_notify_state(peer, TURBO_DC_STATE_CONNECTED);
+        turbo_dc_state_t after_close = turbo_dc_peer_get_state(peer);
+
+        check_true(terminal_admitted);
+        check_true(socket_still_live);
+        check_equal(after_terminal, TURBO_DC_STATE_NEW);
+        check_equal(after_close, TURBO_DC_STATE_CLOSED);
+    }
+
+    it("takes safe concurrent public snapshots during state publication") {
+        turbo_dc_peer_t *peer = endpoints[0].peer;
+        /* No uninstrumented asynchronous test logger or callback updates:
+         * the two actual source-side state accessors remain under test. */
+        turbo_dc_peer_on_state(peer, NULL);
+        state_owner_test_fixture_t f = {0};
+        f.peer = peer;
+        cmeta_mutex_init(&f.mutex);
+        cmeta_cond_init(&f.cond);
+        cmeta_thread_t publisher = NULL;
+        cmeta_thread_t reader = NULL;
+        int p = cmeta_thread_create(&publisher, state_owner_publish_worker, &f) == 0;
+        int r = cmeta_thread_create(&reader, state_owner_snapshot_worker, &f) == 0;
+
+        /* Do not use sleep as an interleaving oracle. Both workers begin at
+         * one explicit rendezvous; a failed create still releases all live
+         * workers before any assertion can abort the fixture. */
+        unsigned expected = (unsigned)(p + r);
+        const uint64_t deadline = cmeta_monotonic_ms() + 5000u;
+        cmeta_mutex_lock(&f.mutex);
+        while (f.ready < expected && cmeta_monotonic_ms() < deadline)
+            (void)cmeta_cond_timedwait(&f.cond, &f.mutex, UINT64_C(10000000));
+        unsigned ready = f.ready;
+        f.start = 1;
+        cmeta_cond_broadcast(&f.cond);
+        cmeta_mutex_unlock(&f.mutex);
+
+        if (p) {
+            (void)cmeta_thread_join(&publisher);
+            cmeta_thread_destroy(&publisher);
+        }
+        if (r) {
+            (void)cmeta_thread_join(&reader);
+            cmeta_thread_destroy(&reader);
+        }
+        unsigned finished = f.finished;
+        unsigned invalid = f.invalid_observations;
+        cmeta_cond_destroy(&f.cond);
+        cmeta_mutex_destroy(&f.mutex);
+
+        check_true(p);
+        check_true(r);
+        check_equal(ready, 2u);
+        check_equal(finished, 2u);
+        check_equal(invalid, 0u);
+        check_equal(turbo_dc_peer_get_state(peer), TURBO_DC_STATE_NEW);
+    }
+}
+
 spec("SCTP native API close admission") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
