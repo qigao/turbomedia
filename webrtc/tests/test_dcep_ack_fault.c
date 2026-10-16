@@ -83,11 +83,45 @@ static ssize_t tm_test_sendv_eagain(struct socket *socket,
     return -1;
 }
 
-/* This macro applies only to this test's compilation of the exact source.
- * The native usrsctp.h has already been included above, and the production
- * CMake target compiles dcep_protocol.c normally without this macro. */
+/* Windows test-only wrappers around the *same* native/Channel functions:
+ * no changed return values, mock success, or alternate ownership. These
+ * constants identify the exact function interval if the native process
+ * fails after sendv EAGAIN and before DCEP parser return. */
+static void tm_trace_native_return(turbo_dc_peer_t *peer) {
+    if (g_ack_send_close_race) tm_ack_stage("native-return-enter");
+    sctp_native_return(peer);
+    if (g_ack_send_close_race) tm_ack_stage("native-return-exit");
+}
+static void tm_trace_channel_close(turbo_dc_channel_t *channel) {
+    if (g_ack_send_close_race) tm_ack_stage("channel-close-enter");
+    turbo_dc_channel_close(channel);
+    if (g_ack_send_close_race) tm_ack_stage("channel-close-exit");
+}
+static void tm_trace_channel_release(turbo_dc_channel_t *channel) {
+    if (g_ack_send_close_race) tm_ack_stage("channel-release-enter");
+    dc_channel_release(channel);
+    if (g_ack_send_close_race) tm_ack_stage("channel-release-exit");
+}
+static void tm_trace_peer_error(turbo_dc_peer_t *peer,
+                                turbo_dc_error_code_t code,
+                                const char *detail) {
+    if (g_ack_send_close_race) tm_ack_stage("peer-error-enter");
+    dc_set_peer_error(peer, code, detail);
+    if (g_ack_send_close_race) tm_ack_stage("peer-error-exit");
+}
+/* These macros affect only the included original production DCEP TU.
+ * The real call graph, native Socket Borrow, user callbacks, and public
+ * product/SDK linkage are entirely unchanged. */
 #define usrsctp_sendv tm_test_sendv_eagain
+#define sctp_native_return tm_trace_native_return
+#define turbo_dc_channel_close tm_trace_channel_close
+#define dc_channel_release tm_trace_channel_release
+#define dc_set_peer_error tm_trace_peer_error
 #include "../src/dcep_protocol.c"
+#undef dc_set_peer_error
+#undef dc_channel_release
+#undef turbo_dc_channel_close
+#undef sctp_native_return
 #undef usrsctp_sendv
 
 typedef struct tm_dcep_fault_observer {
