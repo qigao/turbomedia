@@ -222,8 +222,7 @@ jobs:
            github.head_ref == 'fix/dcep-ack-admission-232' ||
            github.head_ref == 'test/dcep-ack-asan-ubsan-232' ||
            github.head_ref == 'test/dcep-native-sendv-eagain-232' ||
-           (github.head_ref == 'test/dcep-firstparty-tsan-232' ||
-           github.head_ref == 'feature/sctp-native-owner-dcep-232-201') ||
+           github.head_ref == 'test/dcep-firstparty-tsan-232' ||
            github.head_ref == 'feature/sctp-native-owner-dcep-232-201')
         shell: pwsh
         env:
@@ -638,7 +637,8 @@ jobs:
         if: >-
           matrix.platform == 'Linux' &&
           github.event_name == 'pull_request' &&
-          github.head_ref == 'test/dcep-firstparty-tsan-232'
+          (github.head_ref == 'test/dcep-firstparty-tsan-232' ||
+           github.head_ref == 'feature/sctp-native-owner-dcep-232-201')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
