@@ -168,6 +168,11 @@ struct turbo_dc_peer_s {
     cmeta_cond_t operation_cond;
     int operation_sync_initialized;
     int destroying;
+    /* One-way, per-peer terminal Close admission. Only its first caller
+     * may publish DISCONNECTING/CLOSED or run transport/native cleanup.
+     * Protected by operation_mutex; reentrant and foreign repeated Close
+     * calls are idempotent without holding the lock across callbacks. */
+    int close_started;
     uint32_t active_operations;
 
     /* Transport (unified via ops) */
