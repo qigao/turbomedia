@@ -1322,6 +1322,223 @@ static void run_sctp_native_close_interleaving(int operation) {
     cmeta_mutex_destroy(&f->lock);
 }
 
+/* #201 bounded admission: the native Socket Owner is not merely safe
+ * under close races; it also rejects the 257th nested request and returns
+ * every prior credit before a terminal peer close. The same current thread
+ * token deliberately occupies exactly one of the 16 bounded owner slots. */
+spec("SCTP native borrow budget") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("rejects the 257th nested native borrow and drains before terminal close") {
+        turbo_dc_peer_t *peer = endpoints[0].peer;
+        unsigned accepted = 0;
+        for (unsigned i = 0; i < 256u; ++i) {
+            if (!sctp_native_borrow(peer)) break;
+            ++accepted;
+        }
+        /* Cleanup precedes assertions even on an unexpected admission:
+         * never leak a native borrow and make teardown hang on a failing test. */
+        struct socket *overflow = sctp_native_borrow(peer);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        unsigned peak = peer->sctp.native_borrows;
+        unsigned active_slots = 0;
+        unsigned token_depth = 0;
+        for (size_t i = 0; i < 16u; ++i) {
+            if (peer->sctp.native_owners[i].thread) {
+                ++active_slots;
+                token_depth = peer->sctp.native_owners[i].depth;
+            }
+        }
+        cmeta_mutex_unlock(&peer->operation_mutex);
+
+        if (overflow) sctp_native_return(peer);
+        for (unsigned i = 0; i < accepted; ++i)
+            sctp_native_return(peer);
+        cmeta_mutex_lock(&peer->operation_mutex);
+        unsigned residual = peer->sctp.native_borrows;
+        unsigned residual_slots = 0;
+        for (size_t i = 0; i < 16u; ++i)
+            residual_slots += peer->sctp.native_owners[i].thread != NULL;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+
+        /* Exercise the same *public* close path as installed DataChannel.
+         * No new native borrow is allowed after the terminal close gate. */
+        turbo_dc_peer_close(peer);
+        struct socket *late = sctp_native_borrow(peer);
+        if (late) sctp_native_return(peer);
+        turbo_dc_peer_close(peer); /* repeated terminal close is idempotent */
+        cmeta_mutex_lock(&peer->operation_mutex);
+        int closed = peer->sctp.native_closed;
+        int closing = peer->sctp.native_closing;
+        struct socket *remaining = peer->sctp.socket;
+        unsigned terminal_borrows = peer->sctp.native_borrows;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+
+        check_equal(accepted, 256u);
+        check_null(overflow);
+        check_equal(peak, 256u);
+        check_equal(active_slots, 1u);
+        check_equal(token_depth, 256u);
+        check_equal(residual, 0u);
+        check_equal(residual_slots, 0u);
+        check_null(late);
+        check_true(closed);
+        check_false(closing);
+        check_null(remaining);
+        check_equal(terminal_borrows, 0u);
+    }
+}
+
+/* #201 Native Owner: exactly 16 DISTINCT Salts thread tokens can retain
+ * one real unconnected SCTP Socket concurrently. The 17th caller is the
+ * CTest main thread, so the fail-closed check cannot pass by incrementing
+ * the same token's nested depth. Condition variables, not sleeps, hold
+ * the 16 borrowed calls until both the reject and re-admit are inspected.
+ * Every spawned worker is joined before the fixture or Peer is destroyed. */
+typedef struct {
+    turbo_dc_peer_t *peer;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t cond;
+    unsigned ready;
+    unsigned finished;
+    int release_first;
+    int release_all;
+    int accepted[16];
+    int released[16];
+} sctp_token_capacity_fixture_t;
+
+typedef struct {
+    sctp_token_capacity_fixture_t *state;
+    unsigned index;
+} sctp_token_capacity_worker_arg_t;
+
+static void sctp_token_capacity_worker(void *opaque) {
+    sctp_token_capacity_worker_arg_t *arg = opaque;
+    sctp_token_capacity_fixture_t *f = arg->state;
+    struct socket *borrowed = sctp_native_borrow(f->peer);
+    cmeta_mutex_lock(&f->mutex);
+    f->accepted[arg->index] = borrowed != NULL;
+    ++f->ready;
+    cmeta_cond_broadcast(&f->cond);
+    while (!f->release_all && !(arg->index == 0u && f->release_first))
+        cmeta_cond_wait(&f->cond, &f->mutex);
+    cmeta_mutex_unlock(&f->mutex);
+
+    if (borrowed) sctp_native_return(f->peer);
+    cmeta_mutex_lock(&f->mutex);
+    f->released[arg->index] = 1;
+    ++f->finished;
+    cmeta_cond_broadcast(&f->cond);
+    cmeta_mutex_unlock(&f->mutex);
+}
+
+static int wait_sctp_token_capacity(sctp_token_capacity_fixture_t *f,
+                                    unsigned required, int wait_first_release) {
+    const uint64_t deadline = cmeta_monotonic_ms() + 5000u;
+    cmeta_mutex_lock(&f->mutex);
+    while ((wait_first_release ? !f->released[0] : f->ready < required) &&
+           cmeta_monotonic_ms() < deadline) {
+        (void)cmeta_cond_timedwait(&f->cond, &f->mutex, UINT64_C(10000000));
+    }
+    int ready = wait_first_release ? f->released[0] != 0 : f->ready == required;
+    cmeta_mutex_unlock(&f->mutex);
+    return ready;
+}
+
+spec("SCTP native distinct-thread owner admission capacity") {
+    before_each() { setup_packet_endpoints(0, 1200, 1000); }
+    after_each() { cleanup_packet_endpoints(); }
+
+    it("admits 16 separate tokens, rejects a 17th and readmits after one retires") {
+        sctp_token_capacity_fixture_t f = {0};
+        f.peer = endpoints[0].peer;
+        cmeta_mutex_init(&f.mutex);
+        cmeta_cond_init(&f.cond);
+        cmeta_thread_t threads[16] = {0};
+        sctp_token_capacity_worker_arg_t args[16] = {0};
+        unsigned created = 0;
+
+        for (unsigned i = 0; i < 16u; ++i) {
+            args[i].state = &f;
+            args[i].index = i;
+            if (cmeta_thread_create(&threads[i], sctp_token_capacity_worker,
+                                    &args[i]) != 0)
+                break;
+            ++created;
+        }
+        int all_ready = wait_sctp_token_capacity(&f, created, 0);
+        cmeta_mutex_lock(&f.mutex);
+        unsigned admitted = 0;
+        for (unsigned i = 0; i < created; ++i)
+            admitted += f.accepted[i] != 0;
+        cmeta_mutex_unlock(&f.mutex);
+
+        /* Main CTest thread owns a DIFFERENT Salts token, hence requests a
+         * 17th distinct slot rather than a 257th nested borrow. */
+        struct socket *overflow = (created == 16u && all_ready)
+            ? sctp_native_borrow(f.peer) : NULL;
+        cmeta_mutex_lock(&f.peer->operation_mutex);
+        unsigned at_capacity = f.peer->sctp.native_borrows;
+        unsigned filled_slots = 0;
+        for (size_t i = 0; i < 16u; ++i)
+            filled_slots += f.peer->sctp.native_owners[i].thread != NULL;
+        cmeta_mutex_unlock(&f.peer->operation_mutex);
+        if (overflow) sctp_native_return(f.peer);
+
+        cmeta_mutex_lock(&f.mutex);
+        f.release_first = 1;
+        cmeta_cond_broadcast(&f.cond);
+        cmeta_mutex_unlock(&f.mutex);
+        int first_retired = created && wait_sctp_token_capacity(&f, created, 1);
+
+        struct socket *readmitted = (created == 16u && all_ready && first_retired)
+            ? sctp_native_borrow(f.peer) : NULL;
+        cmeta_mutex_lock(&f.peer->operation_mutex);
+        unsigned refill_borrows = f.peer->sctp.native_borrows;
+        unsigned refill_slots = 0;
+        for (size_t i = 0; i < 16u; ++i)
+            refill_slots += f.peer->sctp.native_owners[i].thread != NULL;
+        cmeta_mutex_unlock(&f.peer->operation_mutex);
+
+        /* Release all workers before asserting anything; a broken capacity
+         * rule must not strand any thread waiting during a failed CTest. */
+        cmeta_mutex_lock(&f.mutex);
+        f.release_all = 1;
+        cmeta_cond_broadcast(&f.cond);
+        cmeta_mutex_unlock(&f.mutex);
+        for (unsigned i = 0; i < created; ++i) {
+            (void)cmeta_thread_join(&threads[i]);
+            cmeta_thread_destroy(&threads[i]);
+        }
+        if (readmitted) sctp_native_return(f.peer);
+
+        cmeta_mutex_lock(&f.peer->operation_mutex);
+        unsigned residual_borrows = f.peer->sctp.native_borrows;
+        unsigned residual_tokens = 0;
+        for (size_t i = 0; i < 16u; ++i)
+            residual_tokens += f.peer->sctp.native_owners[i].thread != NULL;
+        cmeta_mutex_unlock(&f.peer->operation_mutex);
+        const unsigned completed = f.finished;
+        cmeta_cond_destroy(&f.cond);
+        cmeta_mutex_destroy(&f.mutex);
+
+        check_equal(created, 16u);
+        check_true(all_ready);
+        check_equal(admitted, 16u);
+        check_equal(at_capacity, 16u);
+        check_equal(filled_slots, 16u);
+        check_null(overflow);
+        check_true(first_retired);
+        check_not_null(readmitted);
+        check_equal(refill_borrows, 16u);
+        check_equal(refill_slots, 16u);
+        check_equal(completed, created);
+        check_equal(residual_borrows, 0u);
+        check_equal(residual_tokens, 0u);
+    }
+}
+
 spec("SCTP native API close admission") {
     before_each() { setup_packet_endpoints(0, 1200, 1000); }
     after_each() { cleanup_packet_endpoints(); }
