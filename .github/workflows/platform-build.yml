@@ -111,7 +111,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: qigao/salts
-          ref: feature/cnet-sctp-c11-wire-m1
+          # Pin the test-only prototype source so a moving branch cannot silently
+          # change cross-repository conformance coverage between CI runs.
+          ref: 89fd59d0fb05cdd0bff0ff1e0272ee32714496be
           path: salts-sctp-prototype
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
