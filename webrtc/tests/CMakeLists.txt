@@ -183,12 +183,15 @@ target_link_libraries(turbo_media_test_simulcast PRIVATE TurboMedia::Codec)
 # The checked-out Salts source is compiled directly into this executable: no
 # private prototype target is installed, exported, or linked into production.
 if(DEFINED SALTS_SCTP_SOURCE_DIR AND
-   EXISTS "${SALTS_SCTP_SOURCE_DIR}/tests/assoc_data_test.c")
-  set(_salts_sctp_src "${SALTS_SCTP_SOURCE_DIR}/src")
-  set(_salts_sctp_inc "${SALTS_SCTP_SOURCE_DIR}/include")
+   EXISTS "${_salts_sctp_root}/tests/assoc_data_test.c")
+  # Normalize Windows paths before passing them as CMake source arguments:
+  # backslashes in D:\\a\\... are parsed as escapes (for example, \\a).
+  file(TO_CMAKE_PATH "${SALTS_SCTP_SOURCE_DIR}" _salts_sctp_root)
+  set(_salts_sctp_src "${_salts_sctp_root}/src")
+  set(_salts_sctp_inc "${_salts_sctp_root}/include")
   turbo_media_add_webrtc_base_test(
     turbo_media_test_salts_c11_sctp_private_handoff
-    "${SALTS_SCTP_SOURCE_DIR}/tests/assoc_data_test.c"
+    "${_salts_sctp_root}/tests/assoc_data_test.c"
     "${_salts_sctp_src}/sctp_wire.c"
     "${_salts_sctp_src}/sctp_init_params.c"
     "${_salts_sctp_src}/sctp_collision.c"
