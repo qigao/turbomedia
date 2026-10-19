@@ -349,8 +349,52 @@ static void test_bundled_data_atomic_retry(void) {
   assert(cnet_sctp_assoc_destroy(&b) == CNET_SCTP_ASSOC_OK);
 }
 
+static void test_stale_callback_after_replacement(void) {
+  cnet_sctp_assoc replacement = {0};
+  fixture_provider provider = {UINT32_C(0x778899aa), 1200u,
+                               UINT32_C(0x2468ace0), 1};
+  const uint64_t old_generation = UINT64_C(0x200000001);
+  const uint64_t new_generation = UINT64_C(0x200000002);
+  cnet_sctp_assoc_config config = fixture_config(5000u, &provider, 9u);
+  dtls_sctp_handoff current = {&replacement, new_generation, 1, &provider};
+  uint8_t stale_packet[16] = {0x13u, 0x37u};
+  uint8_t output[32];
+  size_t output_size = 77u;
+  cnet_sctp_assoc_state state_before;
+  uint32_t cumulative_before;
+  size_t buffered_before;
+
+  assert(cnet_sctp_assoc_init(&replacement, &config, 0u) ==
+         CNET_SCTP_ASSOC_OK);
+  state_before = replacement.state;
+  cumulative_before = replacement.data.cumulative_rx;
+  buffered_before = replacement.data.buffered_rx;
+  memset(output, 0xa5, sizeof(output));
+
+  /* The handoff now represents a replacement association/generation.
+   * A callback captured by the retired generation must not reach the new
+   * association, even if its payload is otherwise untrusted or malformed. */
+  assert(handoff_inject(&current, old_generation, 1, 1u,
+      stale_packet, sizeof(stale_packet), output, sizeof(output),
+      &output_size) == HANDOFF_REJECTED && output_size == 0u);
+  assert(replacement.state == state_before &&
+      replacement.data.cumulative_rx == cumulative_before &&
+      replacement.data.buffered_rx == buffered_before);
+  for (size_t i = 0u; i < sizeof(output); ++i) assert(output[i] == 0xa5u);
+
+  output_size = 77u;
+  assert(handoff_pull(&current, old_generation, 1u, 0u, 51u,
+      stale_packet, sizeof(stale_packet), output, sizeof(output),
+      &output_size) == HANDOFF_REJECTED && output_size == 0u);
+  assert(replacement.state == state_before &&
+      replacement.data.cumulative_rx == cumulative_before &&
+      replacement.data.buffered_rx == buffered_before);
+  assert(cnet_sctp_assoc_destroy(&replacement) == CNET_SCTP_ASSOC_OK);
+}
+
 int main(void) {
   test_handoff_generation_capacity_close();
+  test_stale_callback_after_replacement();
   test_bundled_data_atomic_retry();
   puts("C11 SCTP test-only DTLS handoff contract PASS");
   return 0;
