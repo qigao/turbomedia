@@ -136,8 +136,8 @@ static void test_handoff_generation_capacity_close(void) {
                          UINT32_C(0x13579bdf), 1};
   const uint64_t ga = UINT64_C(0x100000001);
   const uint64_t gb = UINT64_C(0x100000002);
-  cnet_sctp_assoc_config ac = fixture_config(5000u, &pa, ga);
-  cnet_sctp_assoc_config bc = fixture_config(5001u, &pb, gb);
+  cnet_sctp_assoc_config ac = fixture_config(5000u, &pa, UINT64_C(0x5a5a5a5a));
+  cnet_sctp_assoc_config bc = fixture_config(5001u, &pb, UINT64_C(0x5a5a5a5a));
   dtls_sctp_handoff ha = {&a, ga, 1, &pa};
   dtls_sctp_handoff hb = {&b, gb, 1, &pb};
   uint8_t init[1200], ack[1200], echo[1200], final_ack[1200];
