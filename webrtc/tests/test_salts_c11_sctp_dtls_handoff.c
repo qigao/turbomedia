@@ -168,9 +168,14 @@ static void test_handoff_generation_capacity_close(void) {
       reply, sizeof(reply), &nr) == HANDOFF_REJECTED && nr == 0u);
   assert(handoff_inject(&hb, gb, 0, 6u, init, ni,
       reply, sizeof(reply), &nr) == HANDOFF_REJECTED && nr == 0u);
+  assert(handoff_inject(&hb, gb, 1, 6u, NULL, 1u,
+      reply, sizeof(reply), &nr) == CNET_SCTP_ASSOC_INVALID && nr == 0u);
   pb.owner = 0;
   assert(handoff_inject(&hb, gb, 1, 6u, init, ni,
       reply, sizeof(reply), &nr) == CNET_SCTP_ASSOC_OWNER && nr == 0u);
+  nw = 77u;
+  assert(handoff_pull(&hb, gb, 6u, 0u, 51u, message, sizeof(message),
+      wire, sizeof(wire), &nw) == CNET_SCTP_ASSOC_OWNER && nw == 0u);
   pb.owner = 1;
 
   /* Capacity refusal is atomic; the same payload remains sendable. */
