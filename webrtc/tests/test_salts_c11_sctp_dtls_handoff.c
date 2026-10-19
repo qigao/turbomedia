@@ -389,6 +389,7 @@ static void test_stale_callback_after_replacement(void) {
   assert(replacement.state == state_before &&
       replacement.data.cumulative_rx == cumulative_before &&
       replacement.data.buffered_rx == buffered_before);
+  assert(cnet_sctp_assoc_stop(&replacement) == CNET_SCTP_ASSOC_OK);
   assert(cnet_sctp_assoc_destroy(&replacement) == CNET_SCTP_ASSOC_OK);
 }
 
