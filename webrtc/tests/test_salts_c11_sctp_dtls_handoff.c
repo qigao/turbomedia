@@ -247,10 +247,12 @@ static void test_handoff_generation_capacity_close(void) {
   assert(nr <= sizeof(deferred_packet));
   memcpy(deferred_packet, reply, nr);
   deferred_size = nr;
+  handoff_close(&ha);
+  /* Closing legitimately changes association state; snapshot only after the
+   * close barrier so this assertion isolates the delayed callback. */
   state_before_close = a.state;
   cumulative_before_close = a.data.cumulative_rx;
   buffered_before_close = a.data.buffered_rx;
-  handoff_close(&ha);
   assert(handoff_inject(&ha, ga, 1, 9u, deferred_packet, deferred_size,
       wire, sizeof(wire), &nw) == CNET_SCTP_ASSOC_CLOSED_ERROR && nw == 0u);
   assert(a.state == state_before_close &&
