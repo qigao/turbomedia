@@ -216,9 +216,17 @@ static void test_handoff_generation_capacity_close(void) {
    * state or enqueue payload; retrying the same packet must deliver once. */
   rx_before = b.data.cumulative_rx;
   buffered_before = b.data.buffered_rx;
-  nr = 77u;
-  assert(handoff_inject(&hb, gb, 1, 7u, wire, nw,
-      reply, 8u, &nr) == CNET_SCTP_ASSOC_CAPACITY && nr == 0u);
+  {
+    static const uint8_t sentinel[8] =
+        {0xa5u, 0x5au, 0xc3u, 0x3cu, 0x96u, 0x69u, 0xf0u, 0x0fu};
+    memcpy(reply, sentinel, sizeof(sentinel));
+    nr = 77u;
+    assert(handoff_inject(&hb, gb, 1, 7u, wire, nw,
+        reply, sizeof(sentinel), &nr) == CNET_SCTP_ASSOC_CAPACITY &&
+        nr == 0u);
+    /* Capacity preflight must not partially publish a SACK either. */
+    assert(memcmp(reply, sentinel, sizeof(sentinel)) == 0);
+  }
   assert(b.data.cumulative_rx == rx_before &&
          b.data.buffered_rx == buffered_before);
   assert(handoff_inject(&hb, gb, 1, 7u, wire, nw,
