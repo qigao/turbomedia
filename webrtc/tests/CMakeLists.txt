@@ -177,3 +177,33 @@ turbo_media_add_rtc_test(turbo_media_test_recognition_integration
                          test_recognition_integration.c)
 turbo_media_add_rtc_test(turbo_media_test_simulcast test_simulcast.c)
 target_link_libraries(turbo_media_test_simulcast PRIVATE TurboMedia::Codec)
+
+# Opt-in research seam: compile the private Salts C11 SCTP sources directly
+# into a test executable. Never link these internals into DataChannel or export
+# them as an SDK target. The source checkout is supplied explicitly by CI.
+if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TEST_SEAM)
+  set(_salts_sctp_src "${SALTS_SCTP_SOURCE_DIR}/src")
+  turbo_media_add_webrtc_base_test(
+    turbo_media_test_salts_c11_sctp_seam
+    test_salts_c11_sctp_seam.c
+    "${_salts_sctp_src}/sctp_wire.c"
+    "${_salts_sctp_src}/sctp_assoc.c"
+    "${_salts_sctp_src}/sctp_init_params.c"
+    "${_salts_sctp_src}/sctp_collision.c"
+    "${_salts_sctp_src}/sctp_data.c"
+    "${_salts_sctp_src}/sctp_dcep.c")
+  target_include_directories(
+    turbo_media_test_salts_c11_sctp_seam
+    PRIVATE "${_salts_sctp_src}")
+  if(MSVC)
+    target_compile_options(turbo_media_test_salts_c11_sctp_seam
+                           PRIVATE /W4 /WX)
+  else()
+    target_compile_options(turbo_media_test_salts_c11_sctp_seam
+                           PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  set_target_properties(
+    turbo_media_test_salts_c11_sctp_seam
+    PROPERTIES FOLDER "turbomedia/tests/webrtc")
+  unset(_salts_sctp_src)
+endif()
