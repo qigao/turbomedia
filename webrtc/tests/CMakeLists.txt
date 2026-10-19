@@ -195,7 +195,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR AND
     "${_salts_sctp_src}/sctp_data.c"
     "${_salts_sctp_src}/sctp_assoc.c"
     "${_salts_sctp_src}/sctp_dcep.c"
-    "${_salts_sctp_src}/sctp_webrtc.c"
+    "${_salts_sctp_src}/sctp_webrtc.c")
   target_include_directories(
     turbo_media_test_salts_c11_sctp_private_handoff
     PRIVATE "${_salts_sctp_inc}" "${_salts_sctp_src}")
