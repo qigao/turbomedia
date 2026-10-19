@@ -105,6 +105,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
+      # Test-only source checkout for the private C11 SCTP conformance harness.
+      # This source is compiled only into a test executable; it is not installed
+      # and is not linked into TurboMedia's production DataChannel target.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: qigao/salts
+          ref: feature/cnet-sctp-c11-wire-m1
+          path: salts-sctp-prototype
+
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
         with:
           mode: read
@@ -196,7 +205,8 @@ jobs:
             "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}",
             "-DVCPKG_MANIFEST_MODE=OFF",
             "-DVCPKG_INSTALLED_DIR=$installed",
-            "-DCMAKE_INSTALL_PREFIX=$stage"
+            "-DCMAKE_INSTALL_PREFIX=$stage",
+            "-DSALTS_SCTP_SOURCE_DIR=$env:GITHUB_WORKSPACE/salts-sctp-prototype/cnet/sctp"
           )
           if ("${{ matrix.platform }}" -eq "Android") {
             $args += @(
