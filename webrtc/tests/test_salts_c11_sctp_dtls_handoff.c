@@ -141,12 +141,15 @@ static void test_handoff_generation_capacity_close(void) {
   dtls_sctp_handoff ha = {&a, ga, 1, &pa};
   dtls_sctp_handoff hb = {&b, gb, 1, &pb};
   uint8_t init[1200], ack[1200], echo[1200], final_ack[1200];
-  uint8_t wire[1200], reply[1200], received[32];
+  uint8_t wire[1200], reply[1200], received[32], deferred_packet[1200];
   const uint8_t message[] = {'d','t','l','s','-','s','c','t','p'};
   cnet_sctp_data_message meta = {0};
-  size_t ni=0, na=0, ne=0, nf=0, nw=0, nr=0, nmsg=0;
+  size_t ni=0, na=0, ne=0, nf=0, nw=0, nr=0, nmsg=0, deferred_size=0;
   uint32_t rx_before=0;
   size_t buffered_before=0;
+  cnet_sctp_assoc_state state_before_close;
+  uint32_t cumulative_before_close;
+  size_t buffered_before_close;
 
   assert(cnet_sctp_assoc_init(&a, &ac, 0u) == CNET_SCTP_ASSOC_OK);
   assert(cnet_sctp_assoc_init(&b, &bc, 0u) == CNET_SCTP_ASSOC_OK);
@@ -238,7 +241,21 @@ static void test_handoff_generation_capacity_close(void) {
   assert(handoff_inject(&ha, ga, 1, 8u, reply, nr,
       wire, sizeof(wire), &nw) == CNET_SCTP_ASSOC_OK);
 
+  /* Model a packet callback captured before close but dispatched only
+   * after the Owner's close/drain barrier. The copied packet is deliberately
+   * held by the test; no concurrent association call is made. */
+  assert(nr <= sizeof(deferred_packet));
+  memcpy(deferred_packet, reply, nr);
+  deferred_size = nr;
+  state_before_close = a.state;
+  cumulative_before_close = a.data.cumulative_rx;
+  buffered_before_close = a.data.buffered_rx;
   handoff_close(&ha);
+  assert(handoff_inject(&ha, ga, 1, 9u, deferred_packet, deferred_size,
+      wire, sizeof(wire), &nw) == CNET_SCTP_ASSOC_CLOSED_ERROR && nw == 0u);
+  assert(a.state == state_before_close &&
+      a.data.cumulative_rx == cumulative_before_close &&
+      a.data.buffered_rx == buffered_before_close);
   assert(handoff_inject(&ha, ga, 1, 9u, reply, nr,
       wire, sizeof(wire), &nw) == CNET_SCTP_ASSOC_CLOSED_ERROR && nw == 0u);
   assert(handoff_pull(&ha, ga, 9u, 0u, 51u, message, sizeof(message),
