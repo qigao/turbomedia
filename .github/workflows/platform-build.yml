@@ -103,7 +103,15 @@ jobs:
             triplet: arm64-osx
 
     steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # Private C11 SCTP prototype checkout is used only by the opt-in test
+      # seam. Production SDK dependencies and DataChannel linkage stay unchanged.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: qigao/salts
+          ref: feature/cnet-sctp-c11-wire-m1
+          path: external/salts
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
         with:
@@ -196,7 +204,9 @@ jobs:
             "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}",
             "-DVCPKG_MANIFEST_MODE=OFF",
             "-DVCPKG_INSTALLED_DIR=$installed",
-            "-DCMAKE_INSTALL_PREFIX=$stage"
+            "-DCMAKE_INSTALL_PREFIX=$stage",
+            "-DTURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TEST_SEAM=ON",
+            "-DSALTS_SCTP_SOURCE_DIR=$env:GITHUB_WORKSPACE/external/salts/cnet/sctp"
           )
           if ("${{ matrix.platform }}" -eq "Android") {
             $args += @(
