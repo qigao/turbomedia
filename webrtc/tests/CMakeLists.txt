@@ -182,13 +182,13 @@ target_link_libraries(turbo_media_test_simulcast PRIVATE TurboMedia::Codec)
 # Cross-repository C11 SCTP prototype integration is opt-in and test-only.
 # The checked-out Salts source is compiled directly into this executable: no
 # private prototype target is installed, exported, or linked into production.
-if(DEFINED SALTS_SCTP_SOURCE_DIR AND
-   EXISTS "${_salts_sctp_root}/tests/assoc_data_test.c")
-  # Normalize Windows paths before passing them as CMake source arguments:
-  # backslashes in D:\\a\\... are parsed as escapes (for example, \\a).
+if(DEFINED SALTS_SCTP_SOURCE_DIR)
+  # Normalize before any EXISTS check or source-list use. Windows paths such as
+  # D:\\a\\... must not be interpreted as CMake string escapes.
   file(TO_CMAKE_PATH "${SALTS_SCTP_SOURCE_DIR}" _salts_sctp_root)
   set(_salts_sctp_src "${_salts_sctp_root}/src")
   set(_salts_sctp_inc "${_salts_sctp_root}/include")
+  if(EXISTS "${_salts_sctp_root}/tests/assoc_data_test.c")
   turbo_media_add_webrtc_base_test(
     turbo_media_test_salts_c11_sctp_private_handoff
     "${_salts_sctp_root}/tests/assoc_data_test.c"
@@ -214,7 +214,8 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR AND
       turbo_media_test_salts_c11_sctp_private_handoff
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
-elseif(DEFINED SALTS_SCTP_SOURCE_DIR)
-  message(FATAL_ERROR
-    "SALTS_SCTP_SOURCE_DIR must point at the Salts cnet/sctp source tree")
+  else()
+    message(FATAL_ERROR
+      "SALTS_SCTP_SOURCE_DIR must point at the Salts cnet/sctp source tree")
+  endif()
 endif()
