@@ -194,7 +194,8 @@ if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TEST_SEAM)
     "${_salts_sctp_src}/sctp_dcep.c")
   target_include_directories(
     turbo_media_test_salts_c11_sctp_seam
-    PRIVATE "${_salts_sctp_src}")
+    PRIVATE "${_salts_sctp_src}"
+            "${SALTS_SCTP_SOURCE_DIR}/include")
   if(MSVC)
     target_compile_options(turbo_media_test_salts_c11_sctp_seam
                            PRIVATE /W4 /WX)
