@@ -145,6 +145,8 @@ static void test_handoff_generation_capacity_close(void) {
   const uint8_t message[] = {'d','t','l','s','-','s','c','t','p'};
   cnet_sctp_data_message meta = {0};
   size_t ni=0, na=0, ne=0, nf=0, nw=0, nr=0, nmsg=0;
+  uint32_t rx_before=0;
+  size_t buffered_before=0;
 
   assert(cnet_sctp_assoc_init(&a, &ac, 0u) == CNET_SCTP_ASSOC_OK);
   assert(cnet_sctp_assoc_init(&b, &bc, 0u) == CNET_SCTP_ASSOC_OK);
@@ -210,6 +212,15 @@ static void test_handoff_generation_capacity_close(void) {
       wire, sizeof(wire), &nw) == HANDOFF_REJECTED && nw == 0u);
   assert(handoff_pull(&ha, ga, 6u, 0u, 51u, message, sizeof(message),
       wire, sizeof(wire), &nw) == CNET_SCTP_ASSOC_OK && nw != 0u);
+  /* A DATA packet whose SACK cannot fit must not consume receive TSN
+   * state or enqueue payload; retrying the same packet must deliver once. */
+  rx_before = b.data.cumulative_rx;
+  buffered_before = b.data.buffered_rx;
+  nr = 77u;
+  assert(handoff_inject(&hb, gb, 1, 7u, wire, nw,
+      reply, 8u, &nr) == CNET_SCTP_ASSOC_CAPACITY && nr == 0u);
+  assert(b.data.cumulative_rx == rx_before &&
+         b.data.buffered_rx == buffered_before);
   assert(handoff_inject(&hb, gb, 1, 7u, wire, nw,
       reply, sizeof(reply), &nr) == CNET_SCTP_ASSOC_OK && nr != 0u);
   assert(cnet_sctp_assoc_take_message(&b, &meta, received,
