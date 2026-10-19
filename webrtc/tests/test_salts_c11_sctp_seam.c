@@ -102,8 +102,8 @@ static void establish_pair(cnet_sctp_assoc *client, cnet_sctp_assoc *server,
       UINT32_C(0xfffffffe), UINT32_C(0x13579bdf), 1};
   *server_owner = (seam_owner){UINT32_C(0x55667788),
       UINT32_C(1000), UINT32_C(0x13579bdf), 1};
-  client_config = make_config(5000u, client_owner);
-  server_config = make_config(5001u, server_owner);
+  client_config = make_config(5000u, &client_owner);
+  server_config = make_config(5001u, &server_owner);
 
   assert(cnet_sctp_assoc_init(client, &client_config, 0u) ==
          CNET_SCTP_ASSOC_OK);
