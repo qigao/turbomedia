@@ -248,8 +248,79 @@ static void test_handoff_generation_capacity_close(void) {
   assert(cnet_sctp_assoc_destroy(&b) == CNET_SCTP_ASSOC_OK);
 }
 
+static void test_bundled_data_atomic_retry(void) {
+  cnet_sctp_assoc a = {0}, b = {0};
+  fixture_provider pa = {UINT32_C(0x11223344), UINT32_C(0xfffffffe),
+                         UINT32_C(0x13579bdf), 1};
+  fixture_provider pb = {UINT32_C(0x55667788), 1000u,
+                         UINT32_C(0x13579bdf), 1};
+  cnet_sctp_assoc_config ac = fixture_config(5000u, &pa, 7u);
+  cnet_sctp_assoc_config bc = fixture_config(5001u, &pb, 7u);
+  uint8_t init[1200], ack[1200], echo[1200], final_ack[1200];
+  uint8_t frame[2][1200], bundle[1200], sack[1200], reply[1200], out[8];
+  const uint8_t bytes[2] = {'a', 'b'};
+  cnet_sctp_wire_header header = {0};
+  cnet_sctp_wire_decoder decoder = {0};
+  cnet_sctp_wire_chunk chunk[2], malformed[2];
+  cnet_sctp_data_message meta = {0};
+  size_t ni=0u, na=0u, ne=0u, nf=0u, sizes[2], n=0u, ns=0u, nr=0u, i;
+  uint32_t cumulative;
+  size_t buffered;
+
+  assert(cnet_sctp_assoc_init(&a, &ac, 0u) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_init(&b, &bc, 0u) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_start(&a, 1u, init, sizeof(init), &ni) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_input(&b, 2u, init, ni, ack, sizeof(ack), &na) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_input(&a, 3u, ack, na, echo, sizeof(echo), &ne) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_input(&b, 4u, echo, ne, final_ack, sizeof(final_ack), &nf) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_input(&a, 5u, final_ack, nf, reply, sizeof(reply), &nr) == CNET_SCTP_ASSOC_OK);
+  assert(nr == 0u && a.data_ready && b.data_ready);
+
+  for (i=0u; i<2u; ++i) {
+    assert(cnet_sctp_assoc_send_message(&a, 6u+i, 0u, 53u, 0,
+        &bytes[i], 1u, frame[i], sizeof(frame[i]), &sizes[i]) == CNET_SCTP_ASSOC_OK);
+    assert(cnet_sctp_wire_decode(frame[i], sizes[i], &header, &decoder) == CNET_SCTP_WIRE_OK);
+    assert(header.chunk_count == 1u);
+    assert(cnet_sctp_wire_next_chunk(&decoder, &chunk[i]) == CNET_SCTP_WIRE_OK);
+    assert(chunk[i].type == 0u);
+  }
+  cumulative = b.data.cumulative_rx;
+  buffered = b.data.buffered_rx;
+  memcpy(malformed, chunk, sizeof(malformed));
+  malformed[1].flags = 0x80u;
+  assert(cnet_sctp_wire_encode(a.config.local_port, a.config.remote_port,
+      a.peer_tag, malformed, 2u, bundle, sizeof(bundle), &n) == CNET_SCTP_WIRE_OK);
+  memset(sack, 0xa5, sizeof(sack));
+  assert(cnet_sctp_assoc_input(&b, 10u, bundle, n,
+      sack, sizeof(sack), &ns) == CNET_SCTP_ASSOC_PROTOCOL);
+  assert(ns == 0u && b.data.cumulative_rx == cumulative &&
+      b.data.buffered_rx == buffered && sack[0] == 0xa5u);
+  assert(cnet_sctp_assoc_take_message(&b, &meta, out, sizeof(out), &nr) == CNET_SCTP_ASSOC_EMPTY);
+
+  assert(cnet_sctp_wire_encode(a.config.local_port, a.config.remote_port,
+      a.peer_tag, chunk, 2u, bundle, sizeof(bundle), &n) == CNET_SCTP_WIRE_OK);
+  assert(cnet_sctp_assoc_input(&b, 10u, bundle, n,
+      sack, 8u, &ns) == CNET_SCTP_ASSOC_CAPACITY);
+  assert(ns == 0u && b.data.cumulative_rx == cumulative &&
+      b.data.buffered_rx == buffered);
+  assert(cnet_sctp_assoc_take_message(&b, &meta, out, sizeof(out), &nr) == CNET_SCTP_ASSOC_EMPTY);
+
+  assert(cnet_sctp_assoc_input(&b, 10u, bundle, n,
+      sack, sizeof(sack), &ns) == CNET_SCTP_ASSOC_OK);
+  for (i=0u; i<2u; ++i) {
+    assert(cnet_sctp_assoc_take_message(&b, &meta, out, sizeof(out), &nr) == CNET_SCTP_ASSOC_OK);
+    assert(nr == 1u && out[0] == bytes[i] && meta.stream_sequence == (uint16_t)i);
+  }
+  assert(cnet_sctp_assoc_take_message(&b, &meta, out, sizeof(out), &nr) == CNET_SCTP_ASSOC_EMPTY);
+  assert(cnet_sctp_assoc_stop(&a) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_stop(&b) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_destroy(&a) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_destroy(&b) == CNET_SCTP_ASSOC_OK);
+}
+
 int main(void) {
   test_handoff_generation_capacity_close();
+  test_bundled_data_atomic_retry();
   puts("C11 SCTP test-only DTLS handoff contract PASS");
   return 0;
 }
