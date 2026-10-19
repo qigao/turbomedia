@@ -103,7 +103,7 @@ jobs:
             triplet: arm64-osx
 
     steps:
-            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       # Private C11 SCTP prototype checkout is used only by the opt-in test
       # seam. Production SDK dependencies and DataChannel linkage stay unchanged.
