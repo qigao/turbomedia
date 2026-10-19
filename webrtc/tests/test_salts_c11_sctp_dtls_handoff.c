@@ -150,10 +150,27 @@ static void test_handoff_generation_capacity_close(void) {
   assert(cnet_sctp_assoc_init(&b, &bc, 0u) == CNET_SCTP_ASSOC_OK);
   assert(cnet_sctp_assoc_start(&a, 1u, init, sizeof(init), &ni) ==
          CNET_SCTP_ASSOC_OK);
+
+  /* An INIT ACK that cannot fit must not commit responder state or sign a
+   * cookie. Retrying the same packet at the same logical time must work. */
+  na = 77u;
+  assert(handoff_inject(&hb, gb, 1, 2u, init, ni,
+      ack, 8u, &na) == CNET_SCTP_ASSOC_CAPACITY && na == 0u);
+  assert(b.state == CNET_SCTP_ASSOC_CLOSED && !b.data_ready);
   assert(handoff_inject(&hb, gb, 1, 2u, init, ni,
       ack, sizeof(ack), &na) == CNET_SCTP_ASSOC_OK);
+  /* A too-small COOKIE ECHO response buffer must not publish ESTABLISHED
+   * or retain a partially initialized DATA engine; same-time retry succeeds. */
+  ne = 77u;
+  assert(handoff_inject(&ha, ga, 1, 3u, ack, na,
+      echo, 8u, &ne) == CNET_SCTP_ASSOC_CAPACITY && ne == 0u);
+  assert(a.state == CNET_SCTP_ASSOC_COOKIE_WAIT && !a.data_ready);
   assert(handoff_inject(&ha, ga, 1, 3u, ack, na,
       echo, sizeof(echo), &ne) == CNET_SCTP_ASSOC_OK);
+  nf = 77u;
+  assert(handoff_inject(&hb, gb, 1, 4u, echo, ne,
+      final_ack, 8u, &nf) == CNET_SCTP_ASSOC_CAPACITY && nf == 0u);
+  assert(b.state == CNET_SCTP_ASSOC_CLOSED && !b.data_ready);
   assert(handoff_inject(&hb, gb, 1, 4u, echo, ne,
       final_ack, sizeof(final_ack), &nf) == CNET_SCTP_ASSOC_OK);
   assert(handoff_inject(&ha, ga, 1, 5u, final_ack, nf,
