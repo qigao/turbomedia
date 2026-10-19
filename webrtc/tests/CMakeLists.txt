@@ -214,6 +214,34 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       turbo_media_test_salts_c11_sctp_private_handoff
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
+  # Separate handoff-contract executable: unlike the conformance suite above,
+  # this exercises stale-generation rejection, explicit authenticated-plaintext
+  # gating, bounded packet pull, Owner rejection, and close interleaving.
+  turbo_media_add_webrtc_base_test(
+    turbo_media_test_salts_c11_sctp_dtls_handoff
+    test_salts_c11_sctp_dtls_handoff.c
+    "${_salts_sctp_src}/sctp_wire.c"
+    "${_salts_sctp_src}/sctp_init_params.c"
+    "${_salts_sctp_src}/sctp_collision.c"
+    "${_salts_sctp_src}/sctp_data.c"
+    "${_salts_sctp_src}/sctp_assoc.c"
+    "${_salts_sctp_src}/sctp_dcep.c"
+    "${_salts_sctp_src}/sctp_webrtc.c")
+  target_include_directories(
+    turbo_media_test_salts_c11_sctp_dtls_handoff
+    PRIVATE "${_salts_sctp_inc}" "${_salts_sctp_src}")
+  set_target_properties(
+    turbo_media_test_salts_c11_sctp_dtls_handoff
+    PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+               FOLDER "turbomedia/tests/webrtc")
+  if(MSVC)
+    target_compile_options(
+      turbo_media_test_salts_c11_sctp_dtls_handoff PRIVATE /W4 /WX)
+  else()
+    target_compile_options(
+      turbo_media_test_salts_c11_sctp_dtls_handoff
+      PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
   else()
     message(FATAL_ERROR
       "SALTS_SCTP_SOURCE_DIR must point at the Salts cnet/sctp source tree")
