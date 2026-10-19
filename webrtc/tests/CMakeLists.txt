@@ -216,7 +216,8 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
   endif()
   # Separate handoff-contract executable: unlike the conformance suite above,
   # this exercises stale-generation rejection, explicit authenticated-plaintext
-  # gating, bounded packet pull, Owner rejection, and close interleaving.
+  # gating, bounded packet pull, Owner rejection, and sequential post-close rejection.
+  # This is not a concurrent close/drain interleaving test.
   turbo_media_add_webrtc_base_test(
     turbo_media_test_salts_c11_sctp_dtls_handoff
     test_salts_c11_sctp_dtls_handoff.c
