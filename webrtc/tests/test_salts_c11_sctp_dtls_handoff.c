@@ -7,6 +7,7 @@
  * and close behavior without touching the production usrsctp path.
  */
 #include "sctp_assoc_internal.h"
+#include "sctp_dcep_internal.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -393,8 +394,57 @@ static void test_stale_callback_after_replacement(void) {
   assert(cnet_sctp_assoc_destroy(&replacement) == CNET_SCTP_ASSOC_OK);
 }
 
+static void test_dcep_open_ack_capacity_atomicity(void) {
+  cnet_sctp_dcep d = {0};
+  fixture_provider provider = {UINT32_C(0xabcddcba), 1200u,
+                               UINT32_C(0x13572468), 1};
+  uint8_t local_open[CNET_SCTP_DCEP_OPEN_MAX];
+  uint8_t remote_open[12] = {3u, 0u, 0u, 0u, 0u, 0u,
+                             0u, 0u, 0u, 0u, 0u, 0u};
+  uint8_t reply[2] = {0xa5u, 0x5au};
+  size_t written = 99u;
+
+  assert(cnet_sctp_dcep_init(&d, CNET_SCTP_DCEP_STREAMS, 1,
+      fixture_is_owner, &provider) == CNET_SCTP_DCEP_OK);
+
+  /* Local OPEN capacity refusal must not reserve the SID. Retrying with
+   * sufficient output capacity must produce the complete OPEN exactly once. */
+  assert(cnet_sctp_dcep_open(&d, 0u, 0u, 0u, 0u, NULL, 0u, NULL, 0u,
+      local_open, 1u, &written) == CNET_SCTP_DCEP_CAPACITY);
+  assert(written == 0u && d.channels[0].state == 0u);
+  assert(cnet_sctp_dcep_open(&d, 0u, 0u, 0u, 0u, NULL, 0u, NULL, 0u,
+      local_open, sizeof(local_open), &written) == CNET_SCTP_DCEP_OK);
+  assert(written == 12u && local_open[0] == 3u && d.channels[0].state == 1u);
+  written = 99u;
+  assert(cnet_sctp_dcep_input(&d, 0u, (const uint8_t[]){2u}, 1u,
+      reply, sizeof(reply), &written) == CNET_SCTP_DCEP_OK);
+  assert(written == 0u && cnet_sctp_dcep_ready(&d, 0u));
+
+  /* Remote OPEN capacity refusal must not reserve the SID or expose an ACK.
+   * The same OPEN must be retryable; ACK is exactly one byte and only then
+   * is the remote channel marked open. */
+  written = 99u;
+  assert(cnet_sctp_dcep_input(&d, 1u, remote_open, sizeof(remote_open),
+      reply, 0u, &written) == CNET_SCTP_DCEP_CAPACITY);
+  assert(written == 0u && d.channels[1].state == 0u &&
+      reply[0] == 0xa5u && reply[1] == 0x5au);
+  assert(cnet_sctp_dcep_input(&d, 1u, remote_open, sizeof(remote_open),
+      reply, sizeof(reply), &written) == CNET_SCTP_DCEP_OK);
+  assert(written == 1u && reply[0] == 2u &&
+      d.channels[1].state == 2u && cnet_sctp_dcep_ready(&d, 1u));
+
+  /* An ACK cannot open a peer-initiated channel. */
+  written = 99u;
+  assert(cnet_sctp_dcep_input(&d, 1u, (const uint8_t[]){2u}, 1u,
+      reply, sizeof(reply), &written) == CNET_SCTP_DCEP_PROTOCOL);
+  assert(written == 0u && d.channels[1].state == 2u);
+  assert(cnet_sctp_dcep_stop(&d) == CNET_SCTP_DCEP_OK);
+}
+
 int main(void) {
   test_handoff_generation_capacity_close();
+  test_stale_callback_after_replacement();
+  test_dcep_open_ack_capacity_atomicity();
   test_stale_callback_after_replacement();
   test_bundled_data_atomic_retry();
   puts("C11 SCTP test-only DTLS handoff contract PASS");
