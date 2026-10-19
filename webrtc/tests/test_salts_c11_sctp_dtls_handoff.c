@@ -294,15 +294,18 @@ static void test_bundled_data_atomic_retry(void) {
   assert(cnet_sctp_assoc_input(&b, 10u, bundle, n,
       sack, sizeof(sack), &ns) == CNET_SCTP_ASSOC_PROTOCOL);
   assert(ns == 0u && b.data.cumulative_rx == cumulative &&
-      b.data.buffered_rx == buffered && sack[0] == 0xa5u);
+      b.data.buffered_rx == buffered);
+  for (i=0u; i<sizeof(sack); ++i) assert(sack[i] == 0xa5u);
   assert(cnet_sctp_assoc_take_message(&b, &meta, out, sizeof(out), &nr) == CNET_SCTP_ASSOC_EMPTY);
 
   assert(cnet_sctp_wire_encode(a.config.local_port, a.config.remote_port,
       a.peer_tag, chunk, 2u, bundle, sizeof(bundle), &n) == CNET_SCTP_WIRE_OK);
+  memset(sack, 0xa5, sizeof(sack));
   assert(cnet_sctp_assoc_input(&b, 10u, bundle, n,
       sack, 8u, &ns) == CNET_SCTP_ASSOC_CAPACITY);
   assert(ns == 0u && b.data.cumulative_rx == cumulative &&
       b.data.buffered_rx == buffered);
+  for (i=0u; i<sizeof(sack); ++i) assert(sack[i] == 0xa5u);
   assert(cnet_sctp_assoc_take_message(&b, &meta, out, sizeof(out), &nr) == CNET_SCTP_ASSOC_EMPTY);
 
   assert(cnet_sctp_assoc_input(&b, 10u, bundle, n,
