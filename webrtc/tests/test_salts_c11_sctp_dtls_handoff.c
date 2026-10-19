@@ -263,8 +263,10 @@ static void test_bundled_data_atomic_retry(void) {
   cnet_sctp_wire_decoder decoder = {0};
   cnet_sctp_wire_chunk chunk[2], malformed[2];
   cnet_sctp_data_message meta = {0};
+  cnet_sctp_data_rx rx_before[CNET_SCTP_DATA_RX_SLOTS];
+  uint16_t rx_ssn_before[CNET_SCTP_DATA_STREAMS];
   size_t ni=0u, na=0u, ne=0u, nf=0u, sizes[2], n=0u, ns=0u, nr=0u, i;
-  uint32_t cumulative;
+  uint32_t cumulative, rx_gaps;
   size_t buffered;
 
   assert(cnet_sctp_assoc_init(&a, &ac, 0u) == CNET_SCTP_ASSOC_OK);
@@ -286,6 +288,9 @@ static void test_bundled_data_atomic_retry(void) {
   }
   cumulative = b.data.cumulative_rx;
   buffered = b.data.buffered_rx;
+  rx_gaps = b.data.rx_gaps;
+  memcpy(rx_before, b.data.rx, sizeof(rx_before));
+  memcpy(rx_ssn_before, b.data.rx_ssn, sizeof(rx_ssn_before));
   memcpy(malformed, chunk, sizeof(malformed));
   malformed[1].flags = 0x80u;
   assert(cnet_sctp_wire_encode(a.config.local_port, a.config.remote_port,
@@ -294,7 +299,9 @@ static void test_bundled_data_atomic_retry(void) {
   assert(cnet_sctp_assoc_input(&b, 10u, bundle, n,
       sack, sizeof(sack), &ns) == CNET_SCTP_ASSOC_PROTOCOL);
   assert(ns == 0u && b.data.cumulative_rx == cumulative &&
-      b.data.buffered_rx == buffered);
+      b.data.buffered_rx == buffered && b.data.rx_gaps == rx_gaps);
+  assert(memcmp(b.data.rx, rx_before, sizeof(rx_before)) == 0);
+  assert(memcmp(b.data.rx_ssn, rx_ssn_before, sizeof(rx_ssn_before)) == 0);
   for (i=0u; i<sizeof(sack); ++i) assert(sack[i] == 0xa5u);
   assert(cnet_sctp_assoc_take_message(&b, &meta, out, sizeof(out), &nr) == CNET_SCTP_ASSOC_EMPTY);
 
@@ -304,7 +311,9 @@ static void test_bundled_data_atomic_retry(void) {
   assert(cnet_sctp_assoc_input(&b, 10u, bundle, n,
       sack, 8u, &ns) == CNET_SCTP_ASSOC_CAPACITY);
   assert(ns == 0u && b.data.cumulative_rx == cumulative &&
-      b.data.buffered_rx == buffered);
+      b.data.buffered_rx == buffered && b.data.rx_gaps == rx_gaps);
+  assert(memcmp(b.data.rx, rx_before, sizeof(rx_before)) == 0);
+  assert(memcmp(b.data.rx_ssn, rx_ssn_before, sizeof(rx_ssn_before)) == 0);
   for (i=0u; i<sizeof(sack); ++i) assert(sack[i] == 0xa5u);
   assert(cnet_sctp_assoc_take_message(&b, &meta, out, sizeof(out), &nr) == CNET_SCTP_ASSOC_EMPTY);
 
