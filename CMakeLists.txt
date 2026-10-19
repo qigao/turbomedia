@@ -187,6 +187,22 @@ if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
     turbo_media_server_rtsp PUBLIC TurboMedia::Server TurboMedia::RTSP)
 endif()
 
+# Optional same-checkout integration probe for the private Salts C11 SCTP
+# prototype. It is OFF by default and never changes the production DataChannel
+# target or installs/exports the private prototype targets.
+option(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TEST_SEAM
+       "Build test-only integration against a Salts SCTP source checkout" OFF)
+set(SALTS_SCTP_SOURCE_DIR "" CACHE PATH
+    "Path to Salts/cnet/sctp source tree (test seam only)")
+if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TEST_SEAM)
+  if(NOT IS_DIRECTORY "${SALTS_SCTP_SOURCE_DIR}/src" OR
+     NOT EXISTS "${SALTS_SCTP_SOURCE_DIR}/src/sctp_assoc.c" OR
+     NOT EXISTS "${SALTS_SCTP_SOURCE_DIR}/src/sctp_dcep.c")
+    message(FATAL_ERROR
+      "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TEST_SEAM requires SALTS_SCTP_SOURCE_DIR to point at Salts/cnet/sctp")
+  endif()
+endif()
+
 add_subdirectory(webrtc)
 add_subdirectory(examples)
 add_subdirectory(tests)
