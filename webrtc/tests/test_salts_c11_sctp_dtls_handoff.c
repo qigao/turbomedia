@@ -178,6 +178,14 @@ static void test_handoff_generation_capacity_close(void) {
       wire, sizeof(wire), &nw) == CNET_SCTP_ASSOC_OWNER && nw == 0u);
   pb.owner = 1;
 
+  /* Outbound pointer/length pairs are validated before touching SCTP state. */
+  nw = 77u;
+  assert(handoff_pull(&ha, ga, 6u, 0u, 51u, NULL, sizeof(message),
+      wire, sizeof(wire), &nw) == CNET_SCTP_ASSOC_INVALID && nw == 0u);
+  nw = 77u;
+  assert(handoff_pull(&ha, ga, 6u, 0u, 51u, message, sizeof(message),
+      NULL, sizeof(wire), &nw) == CNET_SCTP_ASSOC_INVALID && nw == 0u);
+
   /* Capacity refusal is atomic; the same payload remains sendable. */
   assert(handoff_pull(&ha, ga, 6u, 0u, 51u, message, sizeof(message),
       wire, 8u, &nw) == CNET_SCTP_ASSOC_CAPACITY && nw == 0u);
