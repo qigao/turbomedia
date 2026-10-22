@@ -201,8 +201,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     "${_salts_sctp_src}/sctp_data.c"
     "${_salts_sctp_src}/sctp_assoc.c"
     "${_salts_sctp_src}/sctp_dcep.c"
-    "${_salts_sctp_src}/sctp_webrtc.c"
-    "${_salts_sctp_src}/sctp_gmssl_mac.c")
+    "${_salts_sctp_src}/sctp_webrtc.c")
   target_include_directories(
     turbo_media_test_salts_c11_sctp_private_handoff
     PRIVATE "${_salts_sctp_inc}" "${_salts_sctp_src}")
@@ -308,7 +307,6 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
             unofficial::usrsctp::usrsctp
             OpenSSL::SSL
             OpenSSL::Crypto
-            GmSSL::GmSSL
             roaring::roaring)
   set_target_properties(
     turbo_media_test_datachannel_peer_destroy_drain
@@ -334,7 +332,8 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     "${_salts_sctp_src}/sctp_data.c"
     "${_salts_sctp_src}/sctp_assoc.c"
     "${_salts_sctp_src}/sctp_dcep.c"
-    "${_salts_sctp_src}/sctp_webrtc.c")
+    "${_salts_sctp_src}/sctp_webrtc.c"
+    "${_salts_sctp_src}/sctp_gmssl_mac.c")
   target_include_directories(
     turbo_media_test_c11_sctp_peer_bridge
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src"
@@ -352,6 +351,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
             unofficial::usrsctp::usrsctp
             OpenSSL::SSL
             OpenSSL::Crypto
+            GmSSL::GmSSL
             roaring::roaring)
   set_target_properties(
     turbo_media_test_c11_sctp_peer_bridge
