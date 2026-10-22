@@ -40,6 +40,9 @@ static void transport_data_callback(void *opaque, const uint8_t *data,
   assert(data != NULL && len == 4u);
   assert(data[0] == 0x80u && data[1] == 0x60u);
 
+  /* Deregistering from inside the callback must not wait for itself. */
+  turbo_dc_peer_set_transport_data_handler(gate->peer, NULL, NULL);
+
   cmeta_mutex_lock(&gate->mutex);
   gate->callback_entered = 1;
   cmeta_cond_broadcast(&gate->changed);
