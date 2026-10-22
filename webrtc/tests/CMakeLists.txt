@@ -179,6 +179,9 @@ turbo_media_add_rtc_test(turbo_media_test_simulcast test_simulcast.c)
 target_link_libraries(turbo_media_test_simulcast PRIVATE TurboMedia::Codec)
 
 
+option(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN
+       "Run the private C11 SCTP handoff test with ThreadSanitizer (Linux only)" OFF)
+
 # Cross-repository C11 SCTP prototype integration is opt-in and test-only.
 # The checked-out Salts source is compiled directly into this executable: no
 # private prototype target is installed, exported, or linked into production.
@@ -243,8 +246,33 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       turbo_media_test_salts_c11_sctp_dtls_handoff
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
+  if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      message(FATAL_ERROR
+        "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN is supported only on Linux")
+    endif()
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+      message(FATAL_ERROR
+        "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN requires GCC or Clang")
+    endif()
+    target_compile_options(
+      turbo_media_test_salts_c11_sctp_dtls_handoff
+      PRIVATE -fsanitize=thread -fno-omit-frame-pointer -g)
+    target_link_options(
+      turbo_media_test_salts_c11_sctp_dtls_handoff
+      PRIVATE -fsanitize=thread)
+    set_tests_properties(
+      turbo_media_test_salts_c11_sctp_dtls_handoff
+      PROPERTIES ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1:exitcode=66"
+                 TIMEOUT 30)
+  endif()
   else()
     message(FATAL_ERROR
       "SALTS_SCTP_SOURCE_DIR must point at the Salts cnet/sctp source tree")
   endif()
+endif()
+if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN AND
+   NOT TARGET turbo_media_test_salts_c11_sctp_dtls_handoff)
+  message(FATAL_ERROR
+    "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN requires SALTS_SCTP_SOURCE_DIR")
 endif()
