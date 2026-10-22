@@ -244,6 +244,14 @@ static void dc_peer_unlink_from_context(turbo_dc_peer_t *peer) {
     cmeta_mutex_unlock(&ctx->peer_mutex);
 }
 
+static int dc_peer_callbacks_allowed(turbo_dc_peer_t *peer) {
+    int allowed;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    allowed = !peer->deferred_destroy;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    return allowed;
+}
+
 void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state) {
     turbo_dc_state_t old_state;
 
@@ -252,7 +260,7 @@ void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state) {
     if (old_state == new_state) return;
 
     peer->state = new_state;
-    if (peer->on_state && !peer->deferred_destroy) {
+    if (peer->on_state && dc_peer_callbacks_allowed(peer)) {
         peer->on_state(peer, old_state, new_state, peer->user_data);
     }
 }
@@ -269,10 +277,10 @@ void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char 
     if (peer->state != TURBO_DC_STATE_FAILED) {
         old_state = peer->state;
         peer->state = TURBO_DC_STATE_FAILED;
-        if (peer->on_error && !peer->deferred_destroy) {
+        if (peer->on_error && dc_peer_callbacks_allowed(peer)) {
             peer->on_error(peer, code, message, peer->user_data);
         }
-        if (peer->on_state && !peer->deferred_destroy) {
+        if (peer->on_state && dc_peer_callbacks_allowed(peer)) {
             peer->on_state(peer, old_state, TURBO_DC_STATE_FAILED, peer->user_data);
         }
     }

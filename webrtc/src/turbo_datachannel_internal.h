@@ -144,7 +144,7 @@ struct turbo_dc_peer_s {
     int operation_sync_initialized;
     int destroying;
     uint32_t active_operations;
-    int deferred_destroy;  /* Owner callback requested destruction; reap after unwind. */
+    int deferred_destroy;  /* operation_mutex; owner reaps after callback unwind. */
     int dtls_retransmit_pending;  /* operation_mutex; bounded timer-to-owner handoff. */
 
     /* Transport (unified via ops) */
