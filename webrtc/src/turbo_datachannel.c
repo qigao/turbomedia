@@ -1646,20 +1646,43 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
     free(peer);
 }
 
-uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material) {
-    if (!peer || !peer->dtls.ssl || !material) return 0;
-    if (!SSL_is_init_finished(peer->dtls.ssl)) return 0;
- 
-    /* Get negotiated SRTP profile */
-    const SRTP_PROTECTION_PROFILE *profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
-    if (!profile) return 0;
- 
-    /* Derive keys */
-    if (srtp_derive_keys_from_dtls(peer->dtls.ssl, (srtp_keying_material_t *)material, (uint16_t)profile->id) != 0) {
-        return 0;
+typedef struct dc_peer_srtp_keys_command_s {
+    turbo_dc_peer_t *peer;
+    void *material;
+    uint16_t profile;
+} dc_peer_srtp_keys_command_t;
+
+static void dc_peer_get_srtp_keys_owner_task(void *arg1, void *arg2) {
+    dc_peer_srtp_keys_command_t *command =
+        (dc_peer_srtp_keys_command_t *)arg1;
+    turbo_dc_peer_t *peer;
+    const SRTP_PROTECTION_PROFILE *profile;
+    (void)arg2;
+    if (!command || !command->peer || !command->material) return;
+    peer = command->peer;
+    if (!peer->dtls.ssl || !SSL_is_init_finished(peer->dtls.ssl)) return;
+
+    profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
+    if (!profile) return;
+    if (srtp_derive_keys_from_dtls(
+            peer->dtls.ssl, (srtp_keying_material_t *)command->material,
+            (uint16_t)profile->id) != 0) {
+        return;
     }
- 
-    return (uint16_t)profile->id;
+    command->profile = (uint16_t)profile->id;
+}
+
+uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material) {
+    dc_peer_srtp_keys_command_t command;
+    int status;
+    if (!peer || !material || dc_peer_acquire(peer) != 0) return 0;
+    command.peer = peer;
+    command.material = material;
+    command.profile = 0;
+    status = dc_peer_post_owner_sync(peer, dc_peer_get_srtp_keys_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.profile : 0;
 }
 
 /* ============================================================================
