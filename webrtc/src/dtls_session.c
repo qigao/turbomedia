@@ -95,8 +95,23 @@ static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
     decrypted = (char *)alloca(buf_size);
 
     while ((decrypted_len = SSL_read(peer->dtls.ssl, decrypted, (int)buf_size)) > 0) {
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+        /* The private test executable must explicitly install a C11 handler;
+         * fail closed rather than silently sending the packet into usrsctp. */
+        if (!peer->test_dtls_application_handler) {
+            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_INIT,
+                              "private C11 DTLS bridge handler is not installed");
+            dc_fail_peer(peer, TURBO_DC_ERROR_SCTP_INIT,
+                         "private C11 DTLS bridge handler is not installed");
+            return;
+        }
+        peer->test_dtls_application_handler(
+            peer, (const uint8_t *)decrypted, (size_t)decrypted_len,
+            peer->test_dtls_application_user_data);
+#else
         usrsctp_conninput(peer, decrypted, decrypted_len, 0);
         sctp_poll_status(peer, "post-conninput");
+#endif
     }
 
     if (decrypted_len < 0) {
@@ -189,6 +204,23 @@ void dtls_session_cleanup(turbo_dc_peer_t *peer) {
 /* ============================================================================
  * DTLS Helpers
  * ============================================================================ */
+
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+int dtls_test_write_application_data(turbo_dc_peer_t *peer,
+                                     const void *data, size_t len) {
+    int written;
+    if (!peer || !data || len == 0 || len > INT_MAX || !peer->dtls.ssl ||
+        !peer->dtls.handshake_done || !dc_peer_is_on_transport_owner(peer)) {
+        return -1;
+    }
+    written = SSL_write(peer->dtls.ssl, data, (int)len);
+    if (written != (int)len) {
+        return -1;
+    }
+    dtls_send_output(peer);
+    return 0;
+}
+#endif
 
 void dtls_send_output(turbo_dc_peer_t *peer) {
     /* Buffer must be large enough to hold the largest possible DTLS record.
