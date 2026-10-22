@@ -462,6 +462,180 @@ static void test_native_timer_does_not_wait_for_owner(void) {
   turbo_dc_context_destroy(ctx);
 }
 
+typedef struct channel_lease_probe {
+  cmeta_mutex_t mutex;
+  cmeta_cond_t changed;
+  turbo_dc_peer_t *peer;
+  turbo_dc_channel_t *channel;
+  uint16_t sid;
+  unsigned channels;
+  unsigned opens;
+  unsigned closes;
+  unsigned messages;
+  int entered;
+  int release;
+  int read_after_close;
+} channel_lease_probe;
+
+static void receive_test_packet(channel_lease_probe *probe, uint32_t ppid,
+                                 const uint8_t *bytes, size_t length) {
+  union sctp_sockstore address;
+  struct sctp_rcvinfo info;
+  void *packet = malloc(length);
+  assert(packet != NULL);
+  memcpy(packet, bytes, length);
+  memset(&address, 0, sizeof(address));
+  memset(&info, 0, sizeof(info));
+  info.rcv_sid = probe->sid;
+  info.rcv_ppid = htonl(ppid);
+  assert(sctp_inbound_packet_cb(NULL, address, packet, length, info,
+                                0, probe->peer) == 1);
+}
+
+static void channel_open_probe(turbo_dc_channel_t *channel, void *opaque) {
+  channel_lease_probe *probe = (channel_lease_probe *)opaque;
+  (void)channel;
+  ++probe->opens;
+}
+
+static void channel_close_probe(turbo_dc_channel_t *channel, void *opaque) {
+  channel_lease_probe *probe = (channel_lease_probe *)opaque;
+  ++probe->closes;
+  assert(strcmp(turbo_dc_channel_get_label(channel), "x") == 0);
+  /* Closing from on_close must not issue another reset/callback/free. */
+  turbo_dc_channel_close(channel);
+}
+
+static void close_during_dcep(turbo_dc_peer_t *peer,
+                               turbo_dc_channel_t *channel, void *opaque) {
+  channel_lease_probe *probe = (channel_lease_probe *)opaque;
+  ++probe->channels;
+  turbo_dc_channel_set_user_data(channel, probe);
+  turbo_dc_channel_on_open(channel, channel_open_probe);
+  turbo_dc_channel_on_close(channel, channel_close_probe);
+  turbo_dc_channel_close(channel);
+  assert(strcmp(channel->label, "x") == 0);
+  cmeta_mutex_lock(&peer->operation_mutex);
+  assert(peer_get_channel(peer, channel->id) == NULL);
+  assert(roaring_bitmap_contains(peer->channel_ids, channel->id));
+  cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+static void dcep_close_owner_task(void *arg1, void *arg2) {
+  static const uint8_t open[] = {
+    DCEP_DATA_CHANNEL_OPEN, DCEP_CHANNEL_RELIABLE_ORDERED,
+    0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 'x'
+  };
+  (void)arg2;
+  receive_test_packet((channel_lease_probe *)arg1, SCTP_PPID_DCEP,
+                       open, sizeof(open));
+}
+
+static void test_dcep_reentrant_close_keeps_channel_until_return(void) {
+  turbo_dc_config_t config = {0};
+  channel_lease_probe probe = {0};
+  turbo_dc_context_t *ctx;
+  config.is_server = 1;
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+  turbo_dc_peer_on_channel(probe.peer, close_during_dcep);
+  assert(dc_peer_acquire(probe.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe.peer, dcep_close_owner_task,
+                                 &probe, NULL) == SALTS_OK);
+  assert(probe.channels == 1u && probe.opens == 0u && probe.closes == 1u);
+  cmeta_mutex_lock(&probe.peer->operation_mutex);
+  assert(peer_get_channel(probe.peer, probe.sid) == NULL);
+  assert(!roaring_bitmap_contains(probe.peer->channel_ids, probe.sid));
+  cmeta_mutex_unlock(&probe.peer->operation_mutex);
+  dc_peer_release(probe.peer);
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
+static void held_channel_message(turbo_dc_channel_t *channel,
+                                  const void *data, size_t length,
+                                  int binary, void *opaque) {
+  channel_lease_probe *probe = (channel_lease_probe *)opaque;
+  assert(!binary && length == 3u && memcmp(data, "abc", 3u) == 0);
+  cmeta_mutex_lock(&probe->mutex);
+  ++probe->messages;
+  probe->entered = 1;
+  cmeta_cond_broadcast(&probe->changed);
+  while (!probe->release)
+    cmeta_cond_wait(&probe->changed, &probe->mutex);
+  /* The real SCTP callback still owns the unlinked channel allocation. */
+  assert(strcmp(channel->label, "borrowed") == 0);
+  probe->read_after_close = 1;
+  cmeta_mutex_unlock(&probe->mutex);
+}
+
+static void channel_receive_worker(void *opaque) {
+  static const uint8_t bytes[] = {'a', 'b', 'c'};
+  receive_test_packet((channel_lease_probe *)opaque, SCTP_PPID_STRING,
+                       bytes, sizeof(bytes));
+}
+
+static void open_channel_on_owner(void *arg1, void *arg2) {
+  channel_lease_probe *probe = (channel_lease_probe *)arg1;
+  static const uint8_t ack[] = {DCEP_DATA_CHANNEL_ACK};
+  (void)arg2;
+  receive_test_packet(probe, SCTP_PPID_DCEP, ack, sizeof(ack));
+}
+
+static void test_sctp_callback_retains_closed_channel(void) {
+  turbo_dc_config_t config = {0};
+  channel_lease_probe probe = {0};
+  cmeta_thread_t receiver = NULL;
+  turbo_dc_context_t *ctx;
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  cmeta_mutex_init(&probe.mutex);
+  cmeta_cond_init(&probe.changed);
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+  probe.channel = turbo_dc_channel_create(probe.peer, "borrowed", NULL);
+  assert(probe.channel != NULL);
+  probe.sid = turbo_dc_channel_get_id(probe.channel);
+  turbo_dc_channel_set_user_data(probe.channel, &probe);
+  turbo_dc_channel_on_message(probe.channel, held_channel_message);
+  assert(dc_peer_acquire(probe.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe.peer, open_channel_on_owner,
+                                 &probe, NULL) == SALTS_OK);
+  dc_peer_release(probe.peer);
+  assert(cmeta_thread_create(&receiver, channel_receive_worker, &probe) == 0);
+  cmeta_mutex_lock(&probe.mutex);
+  while (!probe.entered)
+    cmeta_cond_wait(&probe.changed, &probe.mutex);
+  cmeta_mutex_unlock(&probe.mutex);
+
+  /* Close must return while the native receive worker is held in user code. */
+  turbo_dc_channel_close(probe.channel);
+  cmeta_mutex_lock(&probe.peer->operation_mutex);
+  assert(peer_get_channel(probe.peer, probe.sid) == NULL);
+  assert(probe.channel->closing && probe.channel->callback_refs == 1u);
+  assert(roaring_bitmap_contains(probe.peer->channel_ids, probe.sid));
+  cmeta_mutex_unlock(&probe.peer->operation_mutex);
+  channel_receive_worker(&probe); /* No new callback after unpublish. */
+  cmeta_mutex_lock(&probe.mutex);
+  assert(probe.messages == 1u);
+  probe.release = 1;
+  cmeta_cond_broadcast(&probe.changed);
+  cmeta_mutex_unlock(&probe.mutex);
+  assert(cmeta_thread_join(&receiver) == 0);
+  assert(probe.read_after_close);
+  cmeta_mutex_lock(&probe.peer->operation_mutex);
+  assert(!roaring_bitmap_contains(probe.peer->channel_ids, probe.sid));
+  cmeta_mutex_unlock(&probe.peer->operation_mutex);
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+  cmeta_cond_destroy(&probe.changed);
+  cmeta_mutex_destroy(&probe.mutex);
+}
+
 int main(void) {
   /* Match the Peer bridge fixture: the installed Salts logger DSO is not
    * TSan-instrumented, so its async queue's synchronization is not visible
@@ -476,6 +650,8 @@ int main(void) {
   test_destroy_from_owner_callback(1u);
   test_destroy_from_owner_callback(2u);
   test_native_timer_does_not_wait_for_owner();
+  test_dcep_reentrant_close_keeps_channel_until_return();
+  test_sctp_callback_retains_closed_channel();
   puts("Production DataChannel Peer owner/drain contract PASS");
   return 0;
 }
