@@ -728,7 +728,12 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
 
 static void dc_poll_direct_peer(turbo_dc_peer_t *peer) {
     size_t events = 0;
-    if (!peer || peer->destroying) return;
+    int destroying;
+    if (!peer) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    destroying = peer->destroying;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (destroying) return;
     if (peer->listener_initialized && peer->stream_connection.generation == 0u) {
         int ready = 0;
         if (cnet_listener_wait(&peer->listener, 0u, &ready) == SALTS_OK && ready) {
