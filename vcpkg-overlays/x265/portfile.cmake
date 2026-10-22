@@ -41,6 +41,15 @@ if(VCPKG_TARGET_IS_ANDROID AND VCPKG_LIBRARY_LINKAGE STREQUAL "static")
     list(APPEND OPTIONS "-DENABLE_ASSEMBLY=OFF")
 endif()
 
+# x265 compiles ARM assembly through a custom command that invokes
+# CMAKE_CXX_COMPILER with only ARM_ARGS, bypassing CMake's Apple sysroot and
+# deployment flags. The resulting archive contains host-macOS objects on iOS.
+# Disable this optional assembly path for static iOS builds; normal C/C++ NEON
+# primitives remain available and the package is target-correct.
+if(VCPKG_TARGET_IS_IOS AND VCPKG_LIBRARY_LINKAGE STREQUAL "static")
+    list(APPEND OPTIONS "-DENABLE_ASSEMBLY=OFF")
+endif()
+
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" ENABLE_SHARED)
 
 vcpkg_cmake_configure(

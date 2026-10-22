@@ -112,6 +112,14 @@ jobs:
             os: macos-15
             rid: macos-arm64
             triplet: arm64-osx
+          - platform: iOS device
+            os: macos-15
+            rid: ios-arm64
+            triplet: arm64-ios
+          - platform: iOS simulator
+            os: macos-15
+            rid: ios-simulator-arm64
+            triplet: arm64-ios-simulator
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -182,7 +190,7 @@ jobs:
           test "$(uname -m)" = "arm64"
           brew install ninja nasm autoconf automake libtool
 
-      - name: Restore latest platform SDKs
+      - name: Restore locked platform SDKs
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -227,6 +235,19 @@ jobs:
               "-DANDROID_ABI=arm64-v8a",
               "-DANDROID_PLATFORM=android-26",
               "-DANDROID_STL=c++_shared"
+            )
+          }
+          if ("${{ matrix.platform }}" -like "iOS*") {
+            $iosSysroot = if ("${{ matrix.platform }}" -eq "iOS simulator") {
+              "iphonesimulator"
+            } else {
+              "iphoneos"
+            }
+            $args += @(
+              "-DCMAKE_SYSTEM_NAME=iOS",
+              "-DCMAKE_OSX_SYSROOT=$iosSysroot",
+              "-DCMAKE_OSX_ARCHITECTURES=arm64",
+              "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
             )
           }
           if ("${{ matrix.platform }}" -eq "Linux") {
@@ -386,7 +407,8 @@ jobs:
           }
           & cmake --build $build --parallel 2
           if ($LASTEXITCODE -ne 0) { throw "build failed for ${{ matrix.platform }}" }
-          if ("${{ matrix.platform }}" -ne "Android") {
+          if ("${{ matrix.platform }}" -ne "Android" -and
+              "${{ matrix.platform }}" -notlike "iOS*") {
             & ctest --test-dir $build --no-tests=error --output-on-failure --timeout 120 -LE performance
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }
@@ -422,7 +444,7 @@ jobs:
           }
 
       - name: Independently consume installed RTSP RFC2250 C11/C++17 SDK
-        if: matrix.platform != 'Android'
+        if: matrix.platform != 'Android' && !startsWith(matrix.platform, 'iOS')
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
