@@ -2126,11 +2126,9 @@ static int dc_channel_send_owner_impl(
                           "retransmit and lifetime limits are mutually exclusive");
         return -1;
     }
-    if (channel->config.max_retransmits > UINT32_MAX ||
-        channel->config.max_lifetime_ms > UINT32_MAX) {
-        dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, "partial reliability limit is too large");
-        return -1;
-    }
+    /* Both limits are signed int fields. Negative values were rejected above,
+     * so every remaining value is representable as uint32_t; comparing an int
+     * against UINT32_MAX is an always-false check on supported targets. */
     if (channel->config.max_retransmits > 0) {
         spa.sendv_flags |= SCTP_SEND_PRINFO_VALID;
         spa.sendv_prinfo.pr_policy = SCTP_PR_SCTP_RTX;
