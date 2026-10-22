@@ -287,6 +287,27 @@ jobs:
               ),
           )
           verify_target(
+              "turbo_media_test_c11_sctp_peer_bridge.dir",
+              (
+                  "/webrtc/tests/test_c11_sctp_peer_bridge.c",
+                  "/webrtc/src/turbo_datachannel.c",
+                  "/webrtc/src/dc_certificate.cpp",
+                  "/webrtc/src/turbo_datachannel_errors.c",
+                  "/webrtc/src/turbo_dc_msg.c",
+                  "/webrtc/src/dcep_protocol.c",
+                  "/webrtc/src/dtls_session.c",
+                  "/webrtc/src/sctp_session.c",
+                  "/webrtc/src/stb_sprintf.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_wire.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_init_params.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_collision.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_data.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_assoc.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_dcep.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_webrtc.c",
+              ),
+          )
+          verify_target(
               "turbo_media_test_datachannel_peer_destroy_drain.dir",
               (
                   "/webrtc/tests/test_datachannel_peer_destroy_drain.c",
@@ -349,13 +370,13 @@ jobs:
         run: |
           set -euo pipefail
           build="$GITHUB_WORKSPACE/build/platform-Linux"
-          for name in turbo_media_test_salts_c11_sctp_dtls_handoff turbo_media_test_c11_sctp_dtls_records turbo_media_test_datachannel_peer_destroy_drain; do
+          for name in turbo_media_test_salts_c11_sctp_dtls_handoff turbo_media_test_c11_sctp_dtls_records turbo_media_test_c11_sctp_peer_bridge turbo_media_test_datachannel_peer_destroy_drain; do
             binary="$build/bin/$name"
             test -x "$binary"
             ldd "$binary" | tee "$build/$name-ldd.txt"
             grep -q "libtsan" "$build/$name-ldd.txt"
           done
-          TSAN_OPTIONS="halt_on_error=1:exitcode=66" ctest --test-dir "$build" -R "^(turbo_media_test_salts_c11_sctp_dtls_handoff|turbo_media_test_c11_sctp_dtls_records|turbo_media_test_datachannel_peer_destroy_drain)$" --repeat until-fail:20 --no-tests=error --output-on-failure --timeout 30
+          TSAN_OPTIONS="halt_on_error=1:exitcode=66" ctest --test-dir "$build" -R "^(turbo_media_test_salts_c11_sctp_dtls_handoff|turbo_media_test_c11_sctp_dtls_records|turbo_media_test_c11_sctp_peer_bridge|turbo_media_test_datachannel_peer_destroy_drain)$" --repeat until-fail:20 --no-tests=error --output-on-failure --timeout 30
 
       - name: Install
         shell: pwsh
