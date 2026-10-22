@@ -450,12 +450,171 @@ static void test_dcep_open_ack_capacity_atomicity(void) {
   assert(cnet_sctp_dcep_stop(&d) == CNET_SCTP_DCEP_OK);
 }
 
+
+/* Deterministic cross-thread lease/drain fixture. This validates the adapter's
+ * lifetime protocol, not a real DTLS engine or the production Peer itself.
+ * All shared lifecycle fields are guarded by the OS-backed Salts mutex/cond. */
+#include <salts/thread.h>
+
+typedef struct handoff_lease_lifecycle {
+  cmeta_mutex_t mutex;
+  cmeta_cond_t changed;
+  cmeta_thread_t callback_thread;
+  cmeta_thread_t close_thread;
+  cnet_sctp_assoc *association;
+  uint64_t generation;
+  unsigned active_leases;
+  int accepting;
+  int callback_entered;
+  int allow_callback_return;
+  int callback_returned;
+  int close_requested;
+  int new_admission_rejected;
+  int drain_waiting;
+  int drained;
+  int association_destroyed;
+  int provider_loaded;
+} handoff_lease_lifecycle;
+
+static int lifecycle_try_acquire(handoff_lease_lifecycle *life,
+                                 uint64_t generation) {
+  int admitted;
+  cmeta_mutex_lock(&life->mutex);
+  admitted = life->accepting && generation == life->generation;
+  if (admitted) ++life->active_leases;
+  cmeta_mutex_unlock(&life->mutex);
+  return admitted;
+}
+
+static void lifecycle_release(handoff_lease_lifecycle *life) {
+  cmeta_mutex_lock(&life->mutex);
+  assert(life->active_leases > 0u);
+  --life->active_leases;
+  if (life->active_leases == 0u) cmeta_cond_broadcast(&life->changed);
+  cmeta_mutex_unlock(&life->mutex);
+}
+
+static void lifecycle_callback_thread(void *opaque) {
+  handoff_lease_lifecycle *life = (handoff_lease_lifecycle *)opaque;
+  assert(lifecycle_try_acquire(life, life->generation));
+  cmeta_mutex_lock(&life->mutex);
+  life->callback_entered = 1;
+  cmeta_cond_broadcast(&life->changed);
+  while (!life->allow_callback_return)
+    cmeta_cond_wait(&life->changed, &life->mutex);
+
+  /* This represents the last provider/Association access inside an admitted
+   * callback. Teardown must not have crossed the lease barrier yet. */
+  assert(life->provider_loaded);
+  assert(!life->association_destroyed);
+  assert(life->association != NULL);
+  life->callback_returned = 1;
+  cmeta_cond_broadcast(&life->changed);
+  cmeta_mutex_unlock(&life->mutex);
+
+  /* No lifecycle or provider state may be accessed after lease release. */
+  lifecycle_release(life);
+}
+
+static void lifecycle_close_thread(void *opaque) {
+  handoff_lease_lifecycle *life = (handoff_lease_lifecycle *)opaque;
+  cmeta_mutex_lock(&life->mutex);
+  while (!life->callback_entered)
+    cmeta_cond_wait(&life->changed, &life->mutex);
+  life->accepting = 0;
+  life->close_requested = 1;
+  cmeta_cond_broadcast(&life->changed);
+  cmeta_mutex_unlock(&life->mutex);
+
+  /* Cancellation must reject any newly arriving/stale callback immediately. */
+  assert(!lifecycle_try_acquire(life, life->generation));
+  cmeta_mutex_lock(&life->mutex);
+  life->new_admission_rejected = 1;
+  while (life->active_leases != 0u) {
+    life->drain_waiting = 1;
+    cmeta_cond_broadcast(&life->changed);
+    cmeta_cond_wait(&life->changed, &life->mutex);
+  }
+  assert(life->callback_returned);
+  life->drained = 1;
+  cmeta_cond_broadcast(&life->changed);
+  cmeta_mutex_unlock(&life->mutex);
+}
+
+static void test_concurrent_handoff_lease_drain(void) {
+  handoff_lease_lifecycle life = {0};
+  cnet_sctp_assoc association = {0};
+  fixture_provider provider = {UINT32_C(0xabcddcba), 1200u,
+                               UINT32_C(0x13572468), 1};
+  cnet_sctp_assoc_config config = fixture_config(5000u, &provider, 77u);
+
+  assert(cnet_sctp_assoc_init(&association, &config, 0u) ==
+         CNET_SCTP_ASSOC_OK);
+  life.association = &association;
+  life.generation = UINT64_C(0x700000001);
+  life.accepting = 1;
+  life.provider_loaded = 1;
+  cmeta_mutex_init(&life.mutex);
+  cmeta_cond_init(&life.changed);
+  assert(life.mutex != NULL && life.changed != NULL);
+
+  assert(cmeta_thread_create(&life.callback_thread,
+      lifecycle_callback_thread, &life) == 0);
+  cmeta_mutex_lock(&life.mutex);
+  while (!life.callback_entered)
+    cmeta_cond_wait(&life.changed, &life.mutex);
+  assert(life.active_leases == 1u);
+  cmeta_mutex_unlock(&life.mutex);
+
+  assert(cmeta_thread_create(&life.close_thread,
+      lifecycle_close_thread, &life) == 0);
+
+  /* Wait until the closer has stopped admission and is blocked on the live
+   * lease. Inspect under the same mutex to avoid a test-side data race. */
+  cmeta_mutex_lock(&life.mutex);
+  while (!life.drain_waiting)
+    cmeta_cond_wait(&life.changed, &life.mutex);
+  assert(life.close_requested && life.new_admission_rejected);
+  assert(!life.accepting && life.active_leases == 1u);
+  assert(!life.drained && !life.association_destroyed && life.provider_loaded);
+  cmeta_mutex_unlock(&life.mutex);
+
+  /* Allow the already-admitted callback to return. The closer may proceed
+   * only after lifecycle_release publishes active_leases == 0. */
+  cmeta_mutex_lock(&life.mutex);
+  life.allow_callback_return = 1;
+  cmeta_cond_broadcast(&life.changed);
+  cmeta_mutex_unlock(&life.mutex);
+
+  assert(cmeta_thread_join(&life.callback_thread) == 0);
+  assert(cmeta_thread_join(&life.close_thread) == 0);
+
+  cmeta_mutex_lock(&life.mutex);
+  assert(life.callback_returned && life.drained);
+  assert(life.active_leases == 0u && !life.accepting);
+  assert(!life.association_destroyed && life.provider_loaded);
+  cmeta_mutex_unlock(&life.mutex);
+
+  /* The Owner performs actual SCTP destruction only after the lease drain.
+   * Provider unload is the final operation, after Association destruction. */
+  assert(cnet_sctp_assoc_stop(&association) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_destroy(&association) == CNET_SCTP_ASSOC_OK);
+  cmeta_mutex_lock(&life.mutex);
+  life.association_destroyed = 1;
+  life.provider_loaded = 0;
+  cmeta_mutex_unlock(&life.mutex);
+
+  cmeta_cond_destroy(&life.changed);
+  cmeta_mutex_destroy(&life.mutex);
+}
+
 int main(void) {
   test_handoff_generation_capacity_close();
   test_stale_callback_after_replacement();
   test_dcep_open_ack_capacity_atomicity();
   test_stale_callback_after_replacement();
   test_bundled_data_atomic_retry();
+  test_concurrent_handoff_lease_drain();
   puts("C11 SCTP test-only DTLS handoff contract PASS");
   return 0;
 }
