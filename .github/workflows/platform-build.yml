@@ -113,7 +113,7 @@ jobs:
           repository: qigao/salts
           # Pin the test-only prototype source so a moving branch cannot silently
           # change cross-repository conformance coverage between CI runs.
-          ref: afd2bcbd6cbf5ce1e28edef1132a150523e49db8
+          ref: 1ebec510a7928864a74307a98aaa18a310abd0de
           path: salts-sctp-prototype
 
       - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
