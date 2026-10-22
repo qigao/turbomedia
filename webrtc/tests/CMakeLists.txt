@@ -272,7 +272,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
             roaring::roaring)
   set_target_properties(
     turbo_media_test_datachannel_peer_destroy_drain
-    PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
                CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
                FOLDER "turbomedia/tests/webrtc")
 
