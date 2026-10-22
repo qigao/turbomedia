@@ -171,6 +171,10 @@ static void test_real_peer_dtls_c11_roundtrip(void) {
   assert(turbo_dc_peer_set_external_transport(peer_b,&b,send_datagram)==0);
   assert(dc_peer_post_owner_sync(peer_a,init_assoc,&a,&init_result)==0 && init_result==0);
   init_result=-1;assert(dc_peer_post_owner_sync(peer_b,init_assoc,&b,&init_result)==0 && init_result==0);
+  /* Each Association owns an independent GmSSL cookie key. */
+  assert(a.cookie_mac.active == 1u && b.cookie_mac.active == 1u);
+  assert(memcmp(a.cookie_mac.key, b.cookie_mac.key,
+                sizeof(a.cookie_mac.key)) != 0);
   turbo_dc_peer_on_state(peer_a,state_cb);turbo_dc_peer_on_state(peer_b,state_cb);
   assert(turbo_dc_peer_connect(peer_a)==0);
   for (unsigned i=0;i<5000u;i++) {
@@ -195,6 +199,10 @@ static void test_real_peer_dtls_c11_roundtrip(void) {
   assert(atomic_load_explicit(&a.acked,memory_order_acquire));
   assert(dc_peer_post_owner_sync(peer_a,cleanup_assoc,&a,&cleanup_result)==0 && cleanup_result==0);
   cleanup_result=-1;assert(dc_peer_post_owner_sync(peer_b,cleanup_assoc,&b,&cleanup_result)==0 && cleanup_result==0);
+  /* The MAC provider is wiped only after Association stop/destroy completes. */
+  assert(a.cookie_mac.active == 0u && b.cookie_mac.active == 0u);
+  assert(memcmp(a.cookie_mac.key, (uint8_t[32]){0}, sizeof(a.cookie_mac.key)) == 0);
+  assert(memcmp(b.cookie_mac.key, (uint8_t[32]){0}, sizeof(b.cookie_mac.key)) == 0);
   turbo_dc_peer_destroy(peer_a);turbo_dc_peer_destroy(peer_b);
   turbo_dc_context_destroy(ctx_a);turbo_dc_context_destroy(ctx_b);
   cmeta_mutex_destroy(&q.mutex);
