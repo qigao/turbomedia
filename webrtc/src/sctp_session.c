@@ -10,6 +10,8 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
 #include "tlog.h"
 
 /* ============================================================================
@@ -103,32 +105,73 @@ void sctp_global_cleanup(void) {
  * SCTP Callbacks (called by usrsctp)
  * ============================================================================ */
 
-int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, uint8_t set_df) {
+typedef struct sctp_outbound_owner_command_s {
+    turbo_dc_peer_t *peer;
+    uint8_t *packet;
+    size_t length;
+    int result;
+} sctp_outbound_owner_command_t;
+
+static void sctp_outbound_owner_task(void *arg1, void *arg2) {
+    sctp_outbound_owner_command_t *command =
+        (sctp_outbound_owner_command_t *)arg1;
+    turbo_dc_peer_t *peer;
+    int written;
+    (void)arg2;
+
+    if (!command || !command->peer || !command->packet ||
+        command->length == 0 || command->length > INT_MAX) {
+        return;
+    }
+    peer = command->peer;
+    command->result = -1;
+    if (!peer->dtls.ssl || !peer->dtls.handshake_done) {
+        return;
+    }
+
+    written = SSL_write(peer->dtls.ssl, command->packet, (int)command->length);
+    if (written != (int)command->length) {
+        TLOG_ERRORF("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
+                    command->length, written, errno);
+        return;
+    }
+
+    dtls_send_output(peer);
+    command->result = 0;
+}
+
+int sctp_outbound_packet_cb(void *addr, void *data, size_t length,
+                            uint8_t tos, uint8_t set_df) {
     (void)tos;
     (void)set_df;
 
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)addr;
-    if (!peer || dc_peer_acquire(peer) != 0) {
-        return -1;
-    }
-    if (!peer->dtls.handshake_done) {
-        TLOG_WARNF("SCTP outbound dropped before DTLS handshake: bytes={}",
-                  length);
-        dc_peer_release(peer);
+    sctp_outbound_owner_command_t command;
+    int dispatch_status;
+
+    if (!peer || !data || length == 0 || length > UINT16_MAX ||
+        dc_peer_acquire(peer) != 0) {
         return -1;
     }
 
-    int written = SSL_write(peer->dtls.ssl, data, (int)length);
-    if (written <= 0) {
-        TLOG_ERRORF("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
-                   length, written, errno);
+    /* usrsctp may emit packets from its timer pump as well as sendv(). Copy
+     * callback-owned bytes before synchronously dispatching SSL/BIO work to
+     * the Peer owner. The packet is bounded to one SCTP wire packet. */
+    command.packet = (uint8_t *)malloc(length);
+    if (!command.packet) {
         dc_peer_release(peer);
         return -1;
     }
+    memcpy(command.packet, data, length);
+    command.peer = peer;
+    command.length = length;
+    command.result = -1;
 
-    dtls_send_output(peer);
+    dispatch_status = dc_peer_post_owner_sync(
+        peer, sctp_outbound_owner_task, &command, NULL);
+    free(command.packet);
     dc_peer_release(peer);
-    return 0;
+    return dispatch_status == SALTS_OK ? command.result : -1;
 }
 
 int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,

@@ -117,10 +117,9 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
     }
     else if (msg_type == DCEP_DATA_CHANNEL_ACK) {
         TLOG_INFOF("DCEP ACK received sid={}", stream_id);
-        turbo_dc_channel_t *channel = NULL;
-        if (stream_id < MAX_CHANNELS) {
-            channel = peer_get_channel(peer, stream_id);
-        }
+        /* stream_id is uint16_t and MAX_CHANNELS spans the full uint16_t
+         * domain; peer_get_channel safely returns NULL for an absent stream. */
+        turbo_dc_channel_t *channel = peer_get_channel(peer, stream_id);
 
         if (channel && !channel->is_open) {
             channel->is_open = 1;

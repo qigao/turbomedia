@@ -16,6 +16,31 @@
  * ============================================================================ */
 
 static void dtls_handle_error(turbo_dc_peer_t *peer, int ret);
+static void on_dtls_retransmit_timer(cmeta_timer_t *timer);
+
+static void dtls_retransmit_owner_task(void *arg1, void *arg2) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
+    cmeta_timer_t *timer = (cmeta_timer_t *)arg2;
+    if (!peer || !timer) return;
+
+    if (peer->dtls.handshake_done || !peer->dtls.ssl) {
+        cmeta_timer_stop(timer);
+        return;
+    }
+
+    /* SSL/BIO state is mutated only on the DataChannel owner thread. */
+    (void)DTLSv1_handle_timeout(peer->dtls.ssl);
+    dtls_send_output(peer);
+
+    if (!peer->dtls.handshake_done) {
+        struct timeval tv;
+        if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
+            uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+            if (timeout_ms == 0) timeout_ms = 1;
+            cmeta_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
+        }
+    }
+}
 
 static void on_dtls_retransmit_timer(cmeta_timer_t *timer) {
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)cmeta_timer_get_data(timer);
@@ -24,26 +49,12 @@ static void on_dtls_retransmit_timer(cmeta_timer_t *timer) {
         return;
     }
 
-    if (peer->dtls.handshake_done) {
+    /* Timer callbacks may run on a timer thread. Hold a Peer lease while the
+     * synchronous command is queued so destroy cannot free the Peer first. */
+    if (dc_peer_post_owner_sync(peer, dtls_retransmit_owner_task,
+                                peer, timer) != SALTS_OK) {
         cmeta_timer_stop(timer);
-        dc_peer_release(peer);
-        return;
     }
-
-    /* Handle DTLS timeout - triggers retransmission */
-    DTLSv1_handle_timeout(peer->dtls.ssl);
-    dtls_send_output(peer);
-
-    /* Schedule next timeout if handshake still in progress */
-    if (!peer->dtls.handshake_done) {
-        struct timeval tv;
-        if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-            uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-            if (timeout_ms == 0) timeout_ms = 1;  /* Minimum 1ms */
-            cmeta_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
-        }
-    }
-
     dc_peer_release(peer);
 }
 
@@ -84,8 +95,23 @@ static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
     decrypted = (char *)alloca(buf_size);
 
     while ((decrypted_len = SSL_read(peer->dtls.ssl, decrypted, (int)buf_size)) > 0) {
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+        /* The private test executable must explicitly install a C11 handler;
+         * fail closed rather than silently sending the packet into usrsctp. */
+        if (!peer->test_dtls_application_handler) {
+            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_INIT,
+                              "private C11 DTLS bridge handler is not installed");
+            dc_fail_peer(peer, TURBO_DC_ERROR_SCTP_INIT,
+                         "private C11 DTLS bridge handler is not installed");
+            return;
+        }
+        peer->test_dtls_application_handler(
+            peer, (const uint8_t *)decrypted, (size_t)decrypted_len,
+            peer->test_dtls_application_user_data);
+#else
         usrsctp_conninput(peer, decrypted, decrypted_len, 0);
         sctp_poll_status(peer, "post-conninput");
+#endif
     }
 
     if (decrypted_len < 0) {
@@ -178,6 +204,23 @@ void dtls_session_cleanup(turbo_dc_peer_t *peer) {
 /* ============================================================================
  * DTLS Helpers
  * ============================================================================ */
+
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+int dtls_test_write_application_data(turbo_dc_peer_t *peer,
+                                     const void *data, size_t len) {
+    int written;
+    if (!peer || !data || len == 0 || len > INT_MAX || !peer->dtls.ssl ||
+        !peer->dtls.handshake_done || !dc_peer_is_on_transport_owner(peer)) {
+        return -1;
+    }
+    written = SSL_write(peer->dtls.ssl, data, (int)len);
+    if (written != (int)len) {
+        return -1;
+    }
+    dtls_send_output(peer);
+    return 0;
+}
+#endif
 
 void dtls_send_output(turbo_dc_peer_t *peer) {
     /* Buffer must be large enough to hold the largest possible DTLS record.
