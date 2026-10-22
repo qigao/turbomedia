@@ -168,6 +168,7 @@ static void test_peer_destroy_waits_for_inflight_transport_callback(void) {
 typedef struct handshake_owner_probe {
   turbo_dc_peer_t *peer;
   unsigned sends;
+  unsigned state_callbacks;
 } handshake_owner_probe;
 
 static void observe_owner_send(void *opaque, const void *data, size_t len) {
@@ -176,6 +177,18 @@ static void observe_owner_send(void *opaque, const void *data, size_t len) {
   assert(data != NULL && len > 0u);
   assert(dc_peer_is_on_transport_owner(probe->peer));
   ++probe->sends;
+}
+
+static void observe_owner_state(turbo_dc_peer_t *peer,
+                                turbo_dc_state_t old_state,
+                                turbo_dc_state_t new_state,
+                                void *opaque) {
+  handshake_owner_probe *probe = (handshake_owner_probe *)opaque;
+  (void)old_state;
+  (void)new_state;
+  assert(probe != NULL && probe->peer == peer);
+  assert(dc_peer_is_on_transport_owner(peer));
+  ++probe->state_callbacks;
 }
 
 static void test_external_dtls_handshake_runs_on_owner(void) {
@@ -187,8 +200,9 @@ static void test_external_dtls_handshake_runs_on_owner(void) {
   config.disable_sctp = 1;
   ctx = turbo_dc_context_create(&config);
   assert(ctx != NULL);
-  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
   assert(probe.peer != NULL);
+  turbo_dc_peer_on_state(probe.peer, observe_owner_state);
   assert(turbo_dc_peer_set_dtls_role(probe.peer, 0) == 0);
   assert(turbo_dc_peer_is_dtls_server(probe.peer) == 0);
   assert(turbo_dc_peer_set_external_transport(
@@ -198,14 +212,79 @@ static void test_external_dtls_handshake_runs_on_owner(void) {
    * and the external send callback must nevertheless execute on the owner. */
   assert(turbo_dc_peer_connect(probe.peer) == 0);
   assert(probe.sends > 0u);
+  turbo_dc_peer_close(probe.peer);
+  assert(probe.state_callbacks >= 1u);
 
   turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
+static void unused_channel_open(turbo_dc_channel_t *channel, void *opaque) {
+  (void)channel;
+  (void)opaque;
+}
+
+static void unused_channel_message(turbo_dc_channel_t *channel,
+                                   const void *data, size_t len,
+                                   int is_binary, void *opaque) {
+  (void)channel;
+  (void)data;
+  (void)len;
+  (void)is_binary;
+  (void)opaque;
+}
+
+static void unused_channel_close(turbo_dc_channel_t *channel, void *opaque) {
+  (void)channel;
+  (void)opaque;
+}
+
+static void unused_peer_channel(turbo_dc_peer_t *peer,
+                                turbo_dc_channel_t *channel, void *opaque) {
+  (void)peer;
+  (void)channel;
+  (void)opaque;
+}
+
+static void unused_peer_error(turbo_dc_peer_t *peer, int error_code,
+                              const char *error_message, void *opaque) {
+  (void)peer;
+  (void)error_code;
+  (void)error_message;
+  (void)opaque;
+}
+
+static void test_channel_callback_metadata_is_owner_dispatched(void) {
+  turbo_dc_config_t config = {0};
+  turbo_dc_context_t *ctx;
+  turbo_dc_peer_t *peer;
+  turbo_dc_channel_t *channel;
+  int marker = 42;
+
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  peer = turbo_dc_peer_create(ctx, NULL, 0u, NULL);
+  assert(peer != NULL);
+  turbo_dc_peer_on_channel(peer, unused_peer_channel);
+  turbo_dc_peer_on_error(peer, unused_peer_error);
+
+  channel = turbo_dc_channel_create(peer, "owner-contract", NULL);
+  assert(channel != NULL);
+  turbo_dc_channel_on_open(channel, unused_channel_open);
+  turbo_dc_channel_on_message(channel, unused_channel_message);
+  turbo_dc_channel_on_close(channel, unused_channel_close);
+  turbo_dc_channel_set_user_data(channel, &marker);
+  assert(turbo_dc_channel_get_user_data(channel) == &marker);
+
+  turbo_dc_peer_destroy(peer);
   turbo_dc_context_destroy(ctx);
 }
 
 int main(void) {
   test_peer_destroy_waits_for_inflight_transport_callback();
   test_external_dtls_handshake_runs_on_owner();
+  test_channel_callback_metadata_is_owner_dispatched();
   puts("Production DataChannel Peer owner/drain contract PASS");
   return 0;
 }
