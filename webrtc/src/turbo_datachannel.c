@@ -1116,11 +1116,27 @@ void turbo_dc_global_cleanup(void) {
      char *fingerprint,
      size_t fp_len
  ) {
-     if (!ctx || !hash || !fingerprint) return -1;
-     if (!ctx->local_fingerprint || !ctx->local_fingerprint[0]) return -2;
- 
-     strncpy(hash, ctx->local_fingerprint_hash, hash_len);
-     strncpy(fingerprint, ctx->local_fingerprint, fp_len);
+     size_t hash_size;
+     size_t fingerprint_size;
+     if (!ctx || !hash || !fingerprint || hash_len == 0u || fp_len == 0u) {
+         return -1;
+     }
+     hash[0] = '\0';
+     fingerprint[0] = '\0';
+     if (!ctx->local_fingerprint || !ctx->local_fingerprint[0] ||
+         !ctx->local_fingerprint_hash || !ctx->local_fingerprint_hash[0]) {
+         return -2;
+     }
+
+     hash_size = strlen(ctx->local_fingerprint_hash);
+     fingerprint_size = strlen(ctx->local_fingerprint);
+     /* Fail atomically on undersized output buffers; never return a truncated
+      * fingerprint that could later be mistaken for an identity. */
+     if (hash_size >= hash_len || fingerprint_size >= fp_len) {
+         return -3;
+     }
+     memcpy(hash, ctx->local_fingerprint_hash, hash_size + 1u);
+     memcpy(fingerprint, ctx->local_fingerprint, fingerprint_size + 1u);
      return 0;
  }
 
