@@ -192,6 +192,9 @@ void dc_peer_release(turbo_dc_peer_t *peer) {
     cmeta_mutex_unlock(&peer->operation_mutex);
 }
 
+static void dc_peer_finish_destroy(turbo_dc_peer_t *peer);
+static void dc_reap_deferred_peers(turbo_dc_context_t *ctx);
+
 static int dc_peer_begin_destroy(turbo_dc_peer_t *peer) {
     if (!peer || !peer->operation_sync_initialized) {
         return -1;
@@ -203,6 +206,13 @@ static int dc_peer_begin_destroy(turbo_dc_peer_t *peer) {
         return -1;
     }
     peer->destroying = 1;
+    if (dc_is_on_transport_thread(peer->ctx)) {
+        /* The caller may hold a lease while waiting for this callback/task.
+         * Close admission now, but leave storage intact until owner unwind. */
+        peer->deferred_destroy = 1;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        return 1;
+    }
     while (peer->active_operations != 0 ||
            peer->transport_data_callbacks != 0) {
         cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
@@ -241,7 +251,7 @@ void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state) {
     if (old_state == new_state) return;
 
     peer->state = new_state;
-    if (peer->on_state) {
+    if (peer->on_state && !peer->deferred_destroy) {
         peer->on_state(peer, old_state, new_state, peer->user_data);
     }
 }
@@ -258,10 +268,10 @@ void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char 
     if (peer->state != TURBO_DC_STATE_FAILED) {
         old_state = peer->state;
         peer->state = TURBO_DC_STATE_FAILED;
-        if (peer->on_error) {
+        if (peer->on_error && !peer->deferred_destroy) {
             peer->on_error(peer, code, message, peer->user_data);
         }
-        if (peer->on_state) {
+        if (peer->on_state && !peer->deferred_destroy) {
             peer->on_state(peer, old_state, TURBO_DC_STATE_FAILED, peer->user_data);
         }
     }
@@ -775,6 +785,7 @@ static void dc_poll_direct_peer(turbo_dc_peer_t *peer) {
     destroying = peer->destroying;
     cmeta_mutex_unlock(&peer->operation_mutex);
     if (destroying) return;
+    dtls_poll_retransmit(peer);
     if (peer->listener_initialized && peer->stream_connection.generation == 0u) {
         int ready = 0;
         if (cnet_listener_wait(&peer->listener, 0u, &ready) == SALTS_OK && ready) {
@@ -804,6 +815,7 @@ static void dc_transport_thread_main(void *arg) {
         void *arg2 = NULL;
         turbo_dc_peer_t *peer;
 
+        dc_reap_deferred_peers(ctx);
         cmeta_mutex_lock(&ctx->transport_mutex);
         if (!ctx->transport_stop_requested && !ctx->transport_command_pending) {
             (void)cmeta_cond_timedwait(&ctx->transport_cond, &ctx->transport_mutex,
@@ -1025,7 +1037,7 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
     {
         /* This thread owns DTLS/SCTP state for direct and externally-owned
          * transports alike. ICE owns only its agent; packet ingress and DTLS
-         * timers are synchronously marshalled here. */
+         * timers publish a bounded pending flag consumed here. */
         cmeta_mutex_init(&ctx->transport_mutex);
         cmeta_cond_init(&ctx->transport_cond);
         ctx->transport_sync_initialized = 1;
@@ -1791,8 +1803,7 @@ void turbo_dc_peer_close(turbo_dc_peer_t *peer) {
     dc_peer_release(peer);
 }
 
-void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
-    if (!peer || dc_peer_begin_destroy(peer) != 0) return;
+static void dc_peer_finish_destroy(turbo_dc_peer_t *peer) {
 
     /* Keep the Peer linked until all cleanup that can touch its context is
      * complete. The owner task performs protocol/transport teardown; unlinking
@@ -1808,6 +1819,30 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
     cmeta_cond_destroy(&peer->operation_cond);
     cmeta_mutex_destroy(&peer->operation_mutex);
     free(peer);
+}
+
+/* Called only between owner tasks/poll batches, never from a user callback. */
+static void dc_reap_deferred_peers(turbo_dc_context_t *ctx) {
+    for (;;) {
+        turbo_dc_peer_t *peer;
+        cmeta_mutex_lock(&ctx->peer_mutex);
+        for (peer = ctx->peers_head; peer; peer = peer->next_in_context) {
+            int ready;
+            cmeta_mutex_lock(&peer->operation_mutex);
+            ready = peer->deferred_destroy && peer->active_operations == 0 &&
+                    peer->transport_data_callbacks == 0;
+            cmeta_mutex_unlock(&peer->operation_mutex);
+            if (ready) break;
+        }
+        cmeta_mutex_unlock(&ctx->peer_mutex);
+        if (!peer) return;
+        dc_peer_finish_destroy(peer);
+    }
+}
+
+void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
+    if (!peer || dc_peer_begin_destroy(peer) != 0) return;
+    dc_peer_finish_destroy(peer);
 }
 
 typedef struct dc_peer_srtp_keys_command_s {

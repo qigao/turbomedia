@@ -143,6 +143,8 @@ struct turbo_dc_peer_s {
     int operation_sync_initialized;
     int destroying;
     uint32_t active_operations;
+    int deferred_destroy;  /* Owner callback requested destruction; reap after unwind. */
+    int dtls_retransmit_pending;  /* operation_mutex; bounded timer-to-owner handoff. */
 
     /* Transport (unified via ops) */
     cnet_client stream_client;
@@ -246,6 +248,7 @@ int dtls_session_init(turbo_dc_peer_t *peer);
 int dtls_session_init_timer(turbo_dc_peer_t *peer);
 
 void dtls_session_cleanup(turbo_dc_peer_t *peer);
+void dtls_poll_retransmit(turbo_dc_peer_t *peer);
 void dtls_send_output(turbo_dc_peer_t *peer);
 void dtls_process_handshake(turbo_dc_peer_t *peer);
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len);

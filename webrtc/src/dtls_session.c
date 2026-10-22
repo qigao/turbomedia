@@ -18,63 +18,57 @@
 static void dtls_handle_error(turbo_dc_peer_t *peer, int ret);
 static void on_dtls_retransmit_timer(cmeta_timer_t *timer);
 
-static void dtls_retransmit_owner_task(void *arg1, void *arg2) {
-    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
-    cmeta_timer_t *timer = (cmeta_timer_t *)arg2;
-    if (!peer || !timer) return;
-
-    if (peer->dtls.handshake_done || !peer->dtls.ssl) {
-        cmeta_timer_stop(timer);
-        return;
-    }
-
-    /* SSL/BIO state is mutated only on the DataChannel owner thread. */
-    (void)DTLSv1_handle_timeout(peer->dtls.ssl);
-    dtls_send_output(peer);
-
-    if (!peer->dtls.handshake_done) {
-        struct timeval tv;
-        if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-            uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-            if (timeout_ms == 0) timeout_ms = 1;
-            cmeta_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
-        }
-    }
-}
-
 static void on_dtls_retransmit_timer(cmeta_timer_t *timer) {
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)cmeta_timer_get_data(timer);
-    if (!peer || dc_peer_acquire(peer) != 0) {
-        cmeta_timer_stop(timer);
-        return;
-    }
+    if (!peer) return;
 
-    /* Timer callbacks may run on a timer thread. Hold a Peer lease while the
-     * synchronous command is queued so destroy cannot free the Peer first. */
-    if (dc_peer_post_owner_sync(peer, dtls_retransmit_owner_task,
-                                peer, timer) != SALTS_OK) {
-        cmeta_timer_stop(timer);
-    }
-    dc_peer_release(peer);
-}
-
-static void dtls_schedule_retransmit(turbo_dc_peer_t *peer) {
-    if (!peer->dtls.retransmit_timer || peer->dtls.handshake_done) {
-        return;
-    }
-
-    struct timeval tv;
-    if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-        uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-        if (timeout_ms == 0) timeout_ms = 1;
-        cmeta_timer_start(peer->dtls.retransmit_timer, on_dtls_retransmit_timer, timeout_ms, 0);
-    }
+    /* Never wait for the owner here: Windows timer stop/rearm waits for this
+     * callback. Timer destruction drains callbacks before Peer reclamation. */
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (!peer->destroying) peer->dtls_retransmit_pending = 1;
+    cmeta_cond_broadcast(&peer->operation_cond);
+    cmeta_mutex_unlock(&peer->operation_mutex);
 }
 
 static void dtls_stop_retransmit_timer(turbo_dc_peer_t *peer) {
     if (peer->dtls.retransmit_timer) {
         cmeta_timer_stop(peer->dtls.retransmit_timer);
     }
+    /* Clear only after stop has drained the old callback. */
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->dtls_retransmit_pending = 0;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+static void dtls_schedule_retransmit(turbo_dc_peer_t *peer) {
+    struct timeval tv;
+    if (!peer->dtls.retransmit_timer || peer->dtls.handshake_done) return;
+    if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
+        uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+        if (timeout_ms == 0) timeout_ms = 1;
+        dtls_stop_retransmit_timer(peer);
+        cmeta_timer_start(peer->dtls.retransmit_timer,
+                          on_dtls_retransmit_timer, timeout_ms, 0);
+    }
+}
+
+void dtls_poll_retransmit(turbo_dc_peer_t *peer) {
+    int pending;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    pending = peer->dtls_retransmit_pending && !peer->destroying;
+    peer->dtls_retransmit_pending = 0;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (!pending) return;
+    if (peer->dtls.handshake_done || !peer->dtls.ssl ||
+        peer->state == TURBO_DC_STATE_CLOSED ||
+        peer->state == TURBO_DC_STATE_FAILED) {
+        dtls_stop_retransmit_timer(peer);
+        return;
+    }
+    /* Only the existing DataChannel owner touches SSL/BIO or rearms timers. */
+    (void)DTLSv1_handle_timeout(peer->dtls.ssl);
+    dtls_send_output(peer);
+    dtls_schedule_retransmit(peer);
 }
 
 static void dtls_drain_application_data(turbo_dc_peer_t *peer) {

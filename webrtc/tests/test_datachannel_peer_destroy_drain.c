@@ -300,10 +300,175 @@ static void test_channel_callback_metadata_is_owner_dispatched(void) {
   turbo_dc_context_destroy(ctx);
 }
 
+typedef struct callback_destroy_probe {
+  cmeta_mutex_t mutex;
+  cmeta_cond_t changed;
+  turbo_dc_peer_t *peer;
+  unsigned callbacks;
+  int callback_returned;
+  int retired;
+} callback_destroy_probe;
+
+static void request_callback_destroy(callback_destroy_probe *probe) {
+  turbo_dc_peer_t *peer = probe->peer;
+  assert(dc_peer_is_on_transport_owner(peer));
+  ++probe->callbacks;
+  turbo_dc_peer_destroy(peer);
+  turbo_dc_peer_destroy(peer); /* Reentrant repeat is idempotent. */
+  assert(dc_peer_acquire(peer) != 0); /* Admission closes immediately. */
+  assert(peer->dtls.ssl != NULL);    /* Callback still owns live storage. */
+  probe->callback_returned = 1;
+}
+
+static void destroy_from_state(turbo_dc_peer_t *peer,
+                               turbo_dc_state_t old_state,
+                               turbo_dc_state_t new_state, void *opaque) {
+  (void)peer;
+  (void)old_state;
+  (void)new_state;
+  request_callback_destroy((callback_destroy_probe *)opaque);
+}
+
+static void destroy_from_error(turbo_dc_peer_t *peer, int code,
+                               const char *message, void *opaque) {
+  (void)peer;
+  (void)code;
+  (void)message;
+  request_callback_destroy((callback_destroy_probe *)opaque);
+}
+
+static void destroy_from_transport(void *opaque, const uint8_t *data,
+                                   size_t len) {
+  (void)data;
+  (void)len;
+  request_callback_destroy((callback_destroy_probe *)opaque);
+}
+
+static void observe_retirement(turbo_dc_peer_t *peer) {
+  callback_destroy_probe *probe = (callback_destroy_probe *)peer->user_data;
+  assert(dc_peer_is_on_transport_owner(peer));
+  assert(probe->callback_returned);
+  assert(peer->active_operations == 0u);
+  assert(peer->transport_data_callbacks == 0u);
+  cmeta_mutex_lock(&probe->mutex);
+  probe->retired = 1;
+  cmeta_cond_broadcast(&probe->changed);
+  cmeta_mutex_unlock(&probe->mutex);
+}
+
+static void trigger_error(void *arg1, void *arg2) {
+  (void)arg2;
+  dc_fail_peer((turbo_dc_peer_t *)arg1, TURBO_DC_ERROR_DTLS_HANDSHAKE,
+               "callback destruction regression");
+}
+
+static void test_destroy_from_owner_callback(unsigned kind) {
+  static const dc_transport_ops_t ops = {NULL, NULL, observe_retirement};
+  static const uint8_t rtp[4] = {0x80u, 0x60u, 0u, 0u};
+  turbo_dc_config_t config = {0};
+  callback_destroy_probe probe = {0};
+  turbo_dc_context_t *ctx;
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  config.disable_sctp = 1;
+  cmeta_mutex_init(&probe.mutex);
+  cmeta_cond_init(&probe.changed);
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+  /* Configure before publication to the active owner. */
+  assert(dc_peer_acquire(probe.peer) == 0);
+  probe.peer->transport_ops = &ops;
+  if (kind == 0u) {
+    turbo_dc_peer_on_state(probe.peer, destroy_from_state);
+    turbo_dc_peer_close(probe.peer);
+  } else if (kind == 1u) {
+    turbo_dc_peer_on_error(probe.peer, destroy_from_error);
+    turbo_dc_peer_on_state(probe.peer, destroy_from_state);
+    assert(dc_peer_post_owner_sync(probe.peer, trigger_error,
+                                   probe.peer, NULL) == SALTS_OK);
+  } else {
+    turbo_dc_peer_set_transport_data_handler(probe.peer,
+                                             destroy_from_transport, &probe);
+    turbo_dc_peer_feed_transport_data(probe.peer, rtp, sizeof(rtp));
+  }
+  assert(probe.callback_returned);
+  assert(probe.callbacks == 1u); /* No later callback after destroy request. */
+  cmeta_mutex_lock(&probe.mutex);
+  assert(!probe.retired); /* An independent admitted lease still holds it. */
+  cmeta_mutex_unlock(&probe.mutex);
+  dc_peer_release(probe.peer);
+  cmeta_mutex_lock(&probe.mutex);
+  while (!probe.retired)
+    assert(cmeta_cond_timedwait(&probe.changed, &probe.mutex,
+                               UINT64_C(5000000000)) == 0);
+  cmeta_mutex_unlock(&probe.mutex);
+  /* Context destruction also waits for unlink/free after the observer fires. */
+  turbo_dc_context_destroy(ctx);
+  cmeta_cond_destroy(&probe.changed);
+  cmeta_mutex_destroy(&probe.mutex);
+}
+
+static void retransmit_while_owner_busy(void *arg1, void *arg2) {
+  handshake_owner_probe *probe = (handshake_owner_probe *)arg1;
+  turbo_dc_peer_t *peer = probe->peer;
+  unsigned sends;
+  (void)arg2;
+  assert(dc_peer_is_on_transport_owner(peer));
+  assert(turbo_dc_peer_connect(peer) == 0);
+  sends = probe->sends;
+  assert(sends > 0u && peer->dtls.retransmit_timer != NULL);
+
+  /* Hold the actual owner while the actual native timer expires. The timer
+   * must publish and return without waiting for this owner task. */
+  cmeta_mutex_lock(&peer->operation_mutex);
+  while (!peer->dtls_retransmit_pending)
+    assert(cmeta_cond_timedwait(&peer->operation_cond, &peer->operation_mutex,
+                               UINT64_C(5000000000)) == 0);
+  cmeta_mutex_unlock(&peer->operation_mutex);
+  dtls_poll_retransmit(peer); /* Real timeout retransmission and timer rearm. */
+  assert(probe->sends > sends);
+  cmeta_mutex_lock(&peer->operation_mutex);
+  while (!peer->dtls_retransmit_pending)
+    assert(cmeta_cond_timedwait(&peer->operation_cond, &peer->operation_mutex,
+                               UINT64_C(5000000000)) == 0);
+  cmeta_mutex_unlock(&peer->operation_mutex);
+  peer->dtls.handshake_done = 1;
+  dtls_poll_retransmit(peer); /* Completion stops the native timer on owner. */
+  assert(!peer->dtls_retransmit_pending);
+  dtls_session_cleanup(peer);
+  assert(peer->dtls.retransmit_timer == NULL);
+}
+
+static void test_native_timer_does_not_wait_for_owner(void) {
+  turbo_dc_config_t config = {0};
+  handshake_owner_probe probe = {0};
+  turbo_dc_context_t *ctx;
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  config.disable_sctp = 1;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+  assert(turbo_dc_peer_set_dtls_role(probe.peer, 0) == 0);
+  assert(turbo_dc_peer_set_external_transport(
+      probe.peer, &probe, observe_owner_send) == 0);
+  assert(dc_peer_acquire(probe.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe.peer, retransmit_while_owner_busy,
+                                 &probe, NULL) == SALTS_OK);
+  dc_peer_release(probe.peer);
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
 int main(void) {
   test_peer_destroy_waits_for_inflight_transport_callback();
   test_external_dtls_handshake_runs_on_owner();
   test_channel_callback_metadata_is_owner_dispatched();
+  test_destroy_from_owner_callback(0u);
+  test_destroy_from_owner_callback(1u);
+  test_destroy_from_owner_callback(2u);
+  test_native_timer_does_not_wait_for_owner();
   puts("Production DataChannel Peer owner/drain contract PASS");
   return 0;
 }
