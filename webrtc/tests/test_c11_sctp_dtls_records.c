@@ -221,11 +221,13 @@ static void test_real_dtls_records_carry_c11_sctp(void) {
   uint8_t init[TEST_PACKET_CAPACITY], init_ack[TEST_PACKET_CAPACITY];
   uint8_t cookie_echo[TEST_PACKET_CAPACITY], cookie_ack[TEST_PACKET_CAPACITY];
   uint8_t data_packet[TEST_PACKET_CAPACITY], sack[TEST_PACKET_CAPACITY];
+  uint8_t ack_reply[TEST_PACKET_CAPACITY];
   uint8_t plaintext[TEST_PLAINTEXT_CAPACITY], received[64];
   const uint8_t message[] = {'r','e','a','l','-','d','t','l','s','-','s','c','t','p'};
   cnet_sctp_data_message metadata = {0};
   size_t init_size = 0, init_ack_size = 0, cookie_echo_size = 0;
   size_t cookie_ack_size = 0, data_packet_size = 0, sack_size = 0;
+  size_t ack_reply_size = 0;
   size_t plaintext_size = 0, received_size = 0;
 
   assert(RAND_bytes(client_provider.key, sizeof(client_provider.key)) == 1);
@@ -310,6 +312,18 @@ static void test_real_dtls_records_carry_c11_sctp(void) {
   assert(metadata.stream_id == 0u && metadata.ppid == 51u);
   assert(received_size == sizeof(message));
   assert(memcmp(received, message, sizeof(message)) == 0);
+
+  /* Carry the generated SACK back through a real encrypted DTLS record and
+   * prove the sender releases the DATA bytes retained for retransmission. */
+  received_size = dtls_roundtrip(server, client, sack, sack_size,
+                                 plaintext, sizeof(plaintext));
+  assert(received_size == sack_size &&
+         memcmp(plaintext, sack, sack_size) == 0);
+  assert(cnet_sctp_assoc_input(&client_assoc, 8u, plaintext, received_size,
+                               ack_reply, sizeof(ack_reply),
+                               &ack_reply_size) == CNET_SCTP_ASSOC_OK);
+  assert(ack_reply_size == 0u);
+  assert(client_assoc.data.in_flight == 0u);
 
   assert(cnet_sctp_assoc_stop(&client_assoc) == CNET_SCTP_ASSOC_OK);
   assert(cnet_sctp_assoc_stop(&server_assoc) == CNET_SCTP_ASSOC_OK);
