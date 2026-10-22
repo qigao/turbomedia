@@ -246,6 +246,36 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       turbo_media_test_salts_c11_sctp_dtls_handoff
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
+  # Compile the production Peer/DTLS/SCTP implementation directly into a
+  # private lifecycle test executable. This lets the Linux opt-in TSan gate
+  # instrument the first-party Peer destroy barrier instead of testing only a
+  # synthetic lease fixture or an uninstrumented shared library.
+  set(_dc_peer_drain_sources)
+  foreach(_dc_source IN LISTS TURBO_MEDIA_DATACHANNEL_SOURCES)
+    list(APPEND _dc_peer_drain_sources
+         "${CMAKE_CURRENT_SOURCE_DIR}/../${_dc_source}")
+  endforeach()
+  turbo_media_add_webrtc_base_test(
+    turbo_media_test_datachannel_peer_destroy_drain
+    test_datachannel_peer_destroy_drain.c
+    ${_dc_peer_drain_sources})
+  target_link_libraries(
+    turbo_media_test_datachannel_peer_destroy_drain
+    PRIVATE TurboMedia::SDP
+            Salts::LtvParser
+            turbo_media_cnet_adapter
+            Salts::CNet
+            SaltsNet::ICE
+            unofficial::usrsctp::usrsctp
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            roaring::roaring)
+  set_target_properties(
+    turbo_media_test_datachannel_peer_destroy_drain
+    PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+               CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+               FOLDER "turbomedia/tests/webrtc")
+
   if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
       message(FATAL_ERROR
@@ -255,16 +285,17 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       message(FATAL_ERROR
         "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN requires GCC or Clang")
     endif()
-    target_compile_options(
-      turbo_media_test_salts_c11_sctp_dtls_handoff
-      PRIVATE -fsanitize=thread -fno-omit-frame-pointer -g)
-    target_link_options(
-      turbo_media_test_salts_c11_sctp_dtls_handoff
-      PRIVATE -fsanitize=thread)
-    set_tests_properties(
-      turbo_media_test_salts_c11_sctp_dtls_handoff
-      PROPERTIES ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1:exitcode=66"
-                 TIMEOUT 30)
+    foreach(_tsan_target IN ITEMS
+        turbo_media_test_salts_c11_sctp_dtls_handoff
+        turbo_media_test_datachannel_peer_destroy_drain)
+      target_compile_options(
+        ${_tsan_target} PRIVATE -fsanitize=thread -fno-omit-frame-pointer -g)
+      target_link_options(${_tsan_target} PRIVATE -fsanitize=thread)
+      set_tests_properties(
+        ${_tsan_target}
+        PROPERTIES ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1:exitcode=66"
+                   TIMEOUT 30)
+    endforeach()
   endif()
   else()
     message(FATAL_ERROR
