@@ -1,20 +1,23 @@
-// TurboMedia IVR v1 canonical schema.
+// TurboMedia IVR schema major 2 canonical schema.
 //
-// This file is the single source of truth for the current IVR wire contract.
-// TEXT (compact UTF-8 JSON) and BIN are representations of the same schema
-// objects; no second hand-written wire struct set exists. BIN layout is
-// canonical TBE field order: fixed-width fields first, then variable data.
-// Old declaration-order wire layouts are intentionally unsupported.
+// This file is the single source of truth for the IVR wire contract. TEXT
+// (compact UTF-8 JSON) and BIN are representations of the same schema objects;
+// no second hand-written wire struct set exists. Message ids below are the published
+// schema_type_id values and match the versioned constant table in
+// webrtc/ivr/src/ivr_frame.c. Published ids are never reused.
 //
-// Codegen (release gate): `salts-idlc turbomedia_ivr_v1.schema --lang c
+// Codegen (release gate): `salts-idlc turbomedia_ivr_v2.schema --lang c
 // --output ... --source-output ...` renders owning .h/.c bound to the same
 // schema; the runtime DataBind object API used by tests shares this schema.
 
-schema TurboMediaIvrV1 [id(21001), byte_order(little)];
+schema TurboMediaIvrV2 [id(21002), byte_order(little)];
+
+// Schema major 1 is retired. Major 2 uses fixed fields before strings;
+// message names retain their semantic revision, with new IDs for the new wire layout.
 
 // ---- commands (kind=command) ----
 
-[id(1001)]
+[id(11001)]
 message ConferenceJoinCommandV1 {
   uint64 call_generation;
   uint64 expected_room_version;
@@ -25,7 +28,7 @@ message ConferenceJoinCommandV1 {
   string participant_role;
 }
 
-[id(1002)]
+[id(11002)]
 message ConferenceLeaveCommandV1 {
   uint64 call_generation;
   uint64 expected_room_version;
@@ -35,7 +38,7 @@ message ConferenceLeaveCommandV1 {
   string call_id;
 }
 
-[id(1003)]
+[id(11003)]
 message TransferCommandV1 {
   uint64 call_generation;
   uint64 expected_room_version;
@@ -46,13 +49,13 @@ message TransferCommandV1 {
   string queue_id;
 }
 
-[id(1004)]
+[id(11004)]
 message WorkerSyncCommandV1 {
   string message_id;
   string worker_id;
 }
 
-[id(1005)]
+[id(11005)]
 message GetSnapshotCommandV1 {
   uint64 call_generation;
   string message_id;
@@ -61,7 +64,7 @@ message GetSnapshotCommandV1 {
   string call_id;
 }
 
-[id(1006)]
+[id(11006)]
 message CallDispatchCommandV1 {
   uint64 call_generation;
   uint64 expected_room_version;
@@ -72,7 +75,7 @@ message CallDispatchCommandV1 {
   string content_package;   // e.g. "conference-greeting"
 }
 
-[id(1007)]
+[id(11007)]
 message WorkerSyncCommandV2 {
   uint64 connection_generation;
   uint32 max_sessions;
@@ -88,7 +91,7 @@ message WorkerSyncCommandV2 {
   string capabilities;
 }
 
-[id(1008)]
+[id(11008)]
 message WorkerHeartbeatV1 {
   uint64 connection_generation;
   uint32 max_sessions;
@@ -104,7 +107,7 @@ message WorkerHeartbeatV1 {
   string capabilities;
 }
 
-[id(1009)]
+[id(11009)]
 message CallReleaseCommandV1 {
   uint64 call_generation;
   string message_id;
@@ -114,7 +117,7 @@ message CallReleaseCommandV1 {
   string reason;
 }
 
-[id(1010)]
+[id(11010)]
 message CallDispatchCommandV2 {
   uint64 worker_connection_generation;
   uint64 call_generation;
@@ -133,7 +136,7 @@ message CallDispatchCommandV2 {
 
 // Iris-owned media commands. These messages contain no content package or
 // workflow state; the worker executes exactly one media operation.
-[id(1011)]
+[id(11011)]
 message MediaSessionOpenCommandV1 {
   uint64 call_generation;
   uint64 operation_generation;
@@ -147,7 +150,7 @@ message MediaSessionOpenCommandV1 {
   string call_id;
 }
 
-[id(1012)]
+[id(11012)]
 message MediaPlayCommandV1 {
   uint64 call_generation;
   uint64 operation_generation;
@@ -162,7 +165,7 @@ message MediaPlayCommandV1 {
   string text;
 }
 
-[id(1013)]
+[id(11013)]
 message MediaInputStartCommandV1 {
   uint64 call_generation;
   uint64 operation_generation;
@@ -178,7 +181,7 @@ message MediaInputStartCommandV1 {
   string input_id;
 }
 
-[id(1014)]
+[id(11014)]
 message MediaInputStopCommandV1 {
   uint64 call_generation;
   uint64 operation_generation;
@@ -194,7 +197,7 @@ message MediaInputStopCommandV1 {
   string input_id;
 }
 
-[id(1015)]
+[id(11015)]
 message MediaCancelCommandV1 {
   uint64 call_generation;
   uint64 operation_generation;
@@ -208,7 +211,7 @@ message MediaCancelCommandV1 {
   string call_id;
 }
 
-[id(1016)]
+[id(11016)]
 message MediaSessionCloseCommandV1 {
   uint64 call_generation;
   uint64 operation_generation;
@@ -226,7 +229,7 @@ message MediaSessionCloseCommandV1 {
 // RoomService control-plane query for the media resources still owned by one
 // authenticated worker. expected_revision=0 begins a snapshot; subsequent
 // pages must echo the returned revision.
-[id(1017)]
+[id(11017)]
 message WorkerMediaInventoryQueryV1 {
   uint32 inventory_version;
   uint64 expected_revision;
@@ -236,9 +239,9 @@ message WorkerMediaInventoryQueryV1 {
   string worker_id;
 }
 
-// V2 fences cancellation to one exact input incarnation. The active runtime
-// accepts only the canonical current contract; no legacy wire fallback exists.
-[id(1018)]
+// Replaces MediaCancelCommandV1. V2 fences cancellation to one exact input
+// incarnation; workers intentionally do not accept V1 as a fallback.
+[id(11018)]
 message MediaCancelCommandV2 {
   uint64 call_generation;
   uint64 operation_generation;
@@ -254,9 +257,10 @@ message MediaCancelCommandV2 {
   string input_id;
 }
 
-// Dispatch acceptance/rejection is a separate result frame in the current
-// canonical control contract.
-[id(2004)]
+// Dispatch acceptance/rejection is a separate result frame. It does not
+// change CallDispatchCommandV1, so existing workers can continue decoding the
+// command while newer workers report the post-create session outcome.
+[id(12004)]
 message CallDispatchResultV1 {
   uint64 call_generation;
   int32 status_code;         // 0 = accepted, negative = rejected
@@ -268,7 +272,7 @@ message CallDispatchResultV1 {
   string error_message;
 }
 
-[id(2005)]
+[id(12005)]
 message CallReleaseResultV1 {
   uint64 call_generation;
   int32 status_code;
@@ -280,7 +284,7 @@ message CallReleaseResultV1 {
   string error_message;
 }
 
-[id(2006)]
+[id(12006)]
 message CallDispatchResultV2 {
   uint64 worker_connection_generation;
   uint64 call_generation;
@@ -298,7 +302,7 @@ message CallDispatchResultV2 {
   string error_message;
 }
 
-[id(2007)]
+[id(12007)]
 message MediaCommandResultV1 {
   uint64 call_generation;
   uint64 operation_generation;
@@ -317,7 +321,7 @@ message MediaCommandResultV1 {
 // `records_json` is a bounded JSON array because the current DataBind schema
 // language has no repeated message field. Its exact item schema is versioned
 // by inventory_version and validated before the page reaches RoomService.
-[id(2008)]
+[id(12008)]
 message WorkerMediaInventoryPageV1 {
   uint32 inventory_version;
   uint64 revision;
@@ -336,7 +340,7 @@ message WorkerMediaInventoryPageV1 {
 
 // Item schema used inside WorkerMediaInventoryPageV1.records_json. It is not
 // sent as a standalone TIVR frame; the id reserves its generated binding.
-[id(4001)]
+[id(14001)]
 message WorkerMediaInventoryRecordV1 {
   uint64 workerEpoch;
   uint64 callGeneration;
@@ -352,7 +356,7 @@ message WorkerMediaInventoryRecordV1 {
   string state;
 }
 
-[id(4002)]
+[id(14002)]
 message WorkerMediaInventoryRecordV2 {
   uint64 workerEpoch;
   uint64 callGeneration;
@@ -373,7 +377,7 @@ message WorkerMediaInventoryRecordV2 {
 
 // ---- results (kind=result) ----
 
-[id(2001)]
+[id(12001)]
 message IvrCommandResultV1 {
   uint64 call_generation;
   int32 status_code;
@@ -387,7 +391,7 @@ message IvrCommandResultV1 {
   string error_message;
 }
 
-[id(2002)]
+[id(12002)]
 message WorkerSyncResultV1 {
   int32 status_code;
   string message_id;
@@ -396,7 +400,7 @@ message WorkerSyncResultV1 {
   string error_message;
 }
 
-[id(2003)]
+[id(12003)]
 message RoomSnapshotV1 {
   uint64 call_generation;
   uint64 room_version;
@@ -409,7 +413,7 @@ message RoomSnapshotV1 {
 
 // ---- domain events (kind=event) ----
 
-[id(3001)]
+[id(13001)]
 message ConferenceParticipantJoinedEventV1 {
   uint64 call_generation;
   uint64 room_version;
@@ -424,7 +428,7 @@ message ConferenceParticipantJoinedEventV1 {
   string participant_role;
 }
 
-[id(3002)]
+[id(13002)]
 message DtmfFinalEventV1 {
   uint64 call_generation;
   uint64 occurred_at_ms;
@@ -434,7 +438,7 @@ message DtmfFinalEventV1 {
   string input_value;
 }
 
-[id(3003)]
+[id(13003)]
 message AsrFinalEventV1 {
   uint64 call_generation;
   uint64 occurred_at_ms;
@@ -444,7 +448,7 @@ message AsrFinalEventV1 {
   string input_value;
 }
 
-[id(3004)]
+[id(13004)]
 message InputTimeoutEventV1 {
   uint64 call_generation;
   uint64 occurred_at_ms;
@@ -453,7 +457,7 @@ message InputTimeoutEventV1 {
   string input_id;
 }
 
-[id(3005)]
+[id(13005)]
 message PlaybackFinishedEventV1 {
   uint64 call_generation;
   uint64 occurred_at_ms;
@@ -461,7 +465,7 @@ message PlaybackFinishedEventV1 {
   string call_id;
 }
 
-[id(3006)]
+[id(13006)]
 message IvrWorkerLostEventV1 {
   uint64 call_generation;
   uint64 room_version;
@@ -475,7 +479,7 @@ message IvrWorkerLostEventV1 {
   string reason;
 }
 
-[id(3007)]
+[id(13007)]
 message MediaEventV1 {
   uint64 call_generation;
   uint64 sequence;

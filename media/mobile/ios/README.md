@@ -18,6 +18,12 @@ then configure/build/install the normal TurboMedia graph. Cross-built target
 tests are compiled but are not executed on the macOS host. There is no separate
 iOS build script or universal x86_64 compatibility path.
 
+The matrix uses `cmake/ci/m16-sdk-lock.json` without floating SDK versions.
+Qualification remains blocked until all locked packages publish the simulator
+RID. The SHA256-verified Salts 2.3.0-rc.15 and SaltsUtils 4.3.0-rc.10 packages
+contain `ios-arm64` but lack `ios-simulator-arm64`; device payloads cannot be
+used for simulator builds. The macOS SaltsUtils payload supplies `salts-idlc`.
+
 The native target is:
 
 ```

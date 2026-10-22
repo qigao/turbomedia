@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <salts_error.h>
+#include <cmeta_error.h>
 
 static int container_io_fail(turbo_container_io_t *io, int error) {
     if (io && io->error == SALTS_OK) io->error = error;
@@ -19,7 +19,7 @@ static int container_io_file_read(turbo_container_io_t *io, void *data,
 
     while (remaining > 0) {
         size_t chunk = remaining > INT_MAX ? INT_MAX : remaining;
-        int result = salts_fs_read(io->file, (char *)cursor, chunk);
+        int result = cmeta_fs_read(io->file, (char *)cursor, chunk);
         if (result < 0) return container_io_fail(io, result);
         if (result == 0) return container_io_fail(io, SALTS_EOF);
         cursor += (size_t)result;
@@ -35,7 +35,7 @@ static int container_io_file_write(turbo_container_io_t *io, const void *data,
 
     while (remaining > 0) {
         size_t chunk = remaining > INT_MAX ? INT_MAX : remaining;
-        int result = salts_fs_write(io->file, (const char *)cursor, chunk);
+        int result = cmeta_fs_write(io->file, (const char *)cursor, chunk);
         if (result < 0) return container_io_fail(io, result);
         if (result == 0) return container_io_fail(io, SALTS_EIO);
         cursor += (size_t)result;
@@ -52,7 +52,7 @@ int turbo_container_io_open_reader(turbo_container_io_t *io, const char *path,
     io->file = SALTS_INVALID_FILE;
     io->error = SALTS_OK;
     if (path) {
-        io->file = salts_fs_open(path, SALTS_FS_O_RDONLY, 0);
+        io->file = cmeta_fs_open(path, SALTS_FS_O_RDONLY, 0);
         if (io->file == SALTS_INVALID_FILE) return SALTS_EIO;
         io->mode = TURBO_CONTAINER_IO_FILE;
     } else {
@@ -71,7 +71,7 @@ int turbo_container_io_open_writer(turbo_container_io_t *io, const char *path) {
     io->file = SALTS_INVALID_FILE;
     io->error = SALTS_OK;
     if (path) {
-        io->file = salts_fs_open(path, SALTS_FS_O_RDWR | SALTS_FS_O_CREAT |
+        io->file = cmeta_fs_open(path, SALTS_FS_O_RDWR | SALTS_FS_O_CREAT |
                                            SALTS_FS_O_TRUNC,
                                  SALTS_FS_DEFAULT_MODE);
         if (io->file == SALTS_INVALID_FILE) return SALTS_EIO;
@@ -89,7 +89,7 @@ int turbo_container_io_open_writer(turbo_container_io_t *io, const char *path) {
 void turbo_container_io_close(turbo_container_io_t *io) {
     if (!io) return;
     if (io->file != SALTS_INVALID_FILE) {
-        (void)salts_fs_close(io->file);
+        (void)cmeta_fs_close(io->file);
     }
     if (io->mode == TURBO_CONTAINER_IO_MEMORY_WRITE) {
         vec_destroy(&io->output);
@@ -104,7 +104,7 @@ int turbo_container_io_flush(turbo_container_io_t *io) {
     if (!io) return SALTS_EINVAL;
     if (io->error != SALTS_OK) return io->error;
     if (io->mode != TURBO_CONTAINER_IO_FILE) return SALTS_OK;
-    result = salts_fs_fsync(io->file);
+    result = cmeta_fs_fsync(io->file);
     return result == SALTS_OK ? SALTS_OK : container_io_fail(io, result);
 }
 
@@ -152,7 +152,7 @@ int turbo_container_io_read_some(turbo_container_io_t *io, void *data,
 
     if (io->mode == TURBO_CONTAINER_IO_FILE) {
         size_t chunk = capacity > INT_MAX ? INT_MAX : capacity;
-        int result = salts_fs_read(io->file, (char *)data, chunk);
+        int result = cmeta_fs_read(io->file, (char *)data, chunk);
         if (result < 0) return container_io_fail(io, result);
         *bytes_read = (size_t)result;
         return SALTS_OK;
@@ -217,7 +217,7 @@ int turbo_container_io_seek(void *param, int64_t offset) {
 
     if (!io) return SALTS_EINVAL;
     if (io->mode == TURBO_CONTAINER_IO_FILE) {
-        result = salts_fs_seek(io->file, offset,
+        result = cmeta_fs_seek(io->file, offset,
                                offset >= 0 ? SEEK_SET : SEEK_END);
         if (result < 0) return container_io_fail(io, (int)result);
         return SALTS_OK;
@@ -257,7 +257,7 @@ int64_t turbo_container_io_tell(void *param) {
         if (io->position > INT64_MAX) return container_io_fail(io, SALTS_EFBIG);
         return (int64_t)io->position;
     }
-    result = salts_fs_tell(io->file);
+    result = cmeta_fs_tell(io->file);
     if (result < 0) container_io_fail(io, (int)result);
     return result;
 }
@@ -278,11 +278,11 @@ int64_t turbo_container_io_size(turbo_container_io_t *io) {
     }
     if (io->mode != TURBO_CONTAINER_IO_FILE) return SALTS_EINVAL;
 
-    current = salts_fs_tell(io->file);
+    current = cmeta_fs_tell(io->file);
     if (current < 0) return container_io_fail(io, (int)current);
-    size = salts_fs_seek(io->file, 0, SEEK_END);
+    size = cmeta_fs_seek(io->file, 0, SEEK_END);
     if (size < 0) return container_io_fail(io, (int)size);
-    if (salts_fs_seek(io->file, current, SEEK_SET) < 0)
+    if (cmeta_fs_seek(io->file, current, SEEK_SET) < 0)
         return container_io_fail(io, SALTS_EIO);
     return size;
 }

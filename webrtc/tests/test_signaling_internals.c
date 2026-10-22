@@ -17,7 +17,7 @@ static const char *const TEST_PREVIOUS_SECRET =
 
 static void init_test_server(webrtc_signaling_server_t *server) {
   memset(server, 0, sizeof(*server));
-  salts_mutex_init(&server->mutex);
+  cmeta_mutex_init(&server->mutex);
   check_equal(
       hash_map_init_bytes(
           &server->local_peers, sizeof(tstr), CMETA_ALIGNOF(tstr),
@@ -106,7 +106,7 @@ static void destroy_test_server(webrtc_signaling_server_t *server) {
   hash_map_destroy(&server->local_peers);
   hash_map_destroy(&server->local_rooms);
   destroy_source_states(server);
-  salts_mutex_destroy(&server->mutex);
+  cmeta_mutex_destroy(&server->mutex);
 }
 
 static void init_test_peer(webrtc_signaling_server_t *server,
@@ -654,7 +654,7 @@ void test_message_rate_violation_closes_peer_and_reports_rejection(void) {
   server.config.messages_per_second = 1;
   server.config.message_burst = 1;
   peer.server = &server;
-  peer.rate_last_refill_ms = salts_monotonic_ms();
+  peer.rate_last_refill_ms = cmeta_monotonic_ms();
   peer.rate_tokens = SIGNALING_RATE_TOKEN_UNITS;
 
   handle_message(&server, &peer, message, strlen(message));
@@ -897,7 +897,7 @@ void test_trusted_proxy_admission_runs_before_active_binding(void) {
   source->rate_tokens = 0U;
   check_equal(
       (int)bind_source_connection_locked(
-          &server, &forwarded_key, salts_monotonic_ms()),
+          &server, &forwarded_key, cmeta_monotonic_ms()),
       (int)SIGNALING_SOURCE_ADMITTED);
   check_equal((size_t)source->active_connections, (size_t)1);
 
@@ -906,7 +906,7 @@ void test_trusted_proxy_admission_runs_before_active_binding(void) {
       signaling_http_admission(&server, &request, &decision), SALTS_OK);
   check_equal((int)decision.status_code, 429);
   release_source_key_locked(
-      &server, &forwarded_key, salts_monotonic_ms());
+      &server, &forwarded_key, cmeta_monotonic_ms());
 
   request.peer_certificate_sha256 =
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

@@ -12,7 +12,7 @@
 #include "turbo_datachannel.h"
 #include "ice_integration.h"
 #include "turbo_sdp.h"
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -395,7 +395,7 @@ int main(int argc, char **argv) {
 
     printf("[ICE] Waiting for candidate gathering to complete...\n");
     while (g_running && !ice_integration_is_gathering_complete(g_ice)) {
-        salts_sleep_ms(50u);
+        cmeta_sleep_ms(50u);
         ice_integration_poll(g_ice);
     }
     
@@ -441,7 +441,7 @@ int main(int argc, char **argv) {
             
             /* Run event loop */
             while (g_running) {
-                salts_sleep_ms(50u);
+                cmeta_sleep_ms(50u);
                 ice_integration_poll(g_ice);
             }
         }

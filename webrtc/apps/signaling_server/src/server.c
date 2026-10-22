@@ -20,8 +20,8 @@ struct signaling_server_s {
     signaling_server_config_t config;
     webrtc_signaling_server_t *ws_server;
     http_api_server_t *http_server;
-    salts_mutex_t mutex;
-    salts_cond_t stopped;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t stopped;
     int running;
 };
 
@@ -30,8 +30,8 @@ struct signaling_server_s {
  */
 static char *generate_node_id(void) {
     static char node_id[64];
-    uint64_t timestamp = salts_monotonic_ms();
-    int pid = salts_getpid();
+    uint64_t timestamp = cmeta_monotonic_ms();
+    int pid = cmeta_getpid();
     
     snprintf(node_id, sizeof(node_id), "node-%d-%llu", pid, 
              (unsigned long long)timestamp);
@@ -67,8 +67,8 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         TLOG_INFOF("Generated node ID: {}", server->config.node_id);
     }
     
-    salts_mutex_init(&server->mutex);
-    salts_cond_init(&server->stopped);
+    cmeta_mutex_init(&server->mutex);
+    cmeta_cond_init(&server->stopped);
     
     /* Create WebRTC signaling server */
     webrtc_signaling_config_t ws_config = {
@@ -115,8 +115,8 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
     server->ws_server = webrtc_signaling_create(NULL, &ws_config);
     if (!server->ws_server) {
         TLOG_ERROR("Failed to create WebRTC signaling server");
-        salts_cond_destroy(&server->stopped);
-        salts_mutex_destroy(&server->mutex);
+        cmeta_cond_destroy(&server->stopped);
+        cmeta_mutex_destroy(&server->mutex);
         free(server);
         return NULL;
     }
@@ -127,8 +127,8 @@ signaling_server_t *signaling_server_create(const signaling_server_config_t *con
         TLOG_ERROR("Failed to initialize tenant quota projection");
         webrtc_signaling_destroy(server->ws_server);
         server->ws_server = NULL;
-        salts_cond_destroy(&server->stopped);
-        salts_mutex_destroy(&server->mutex);
+        cmeta_cond_destroy(&server->stopped);
+        cmeta_mutex_destroy(&server->mutex);
         free(server);
         return NULL;
     }
@@ -155,9 +155,9 @@ int signaling_server_start(signaling_server_t *server) {
         return -1;
     }
     
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     server->running = 1;
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     
     TLOG_INFOF("WebSocket server listening on {}:{}",
               server->config.ws_host, 
@@ -195,10 +195,10 @@ int signaling_server_start(signaling_server_t *server) {
             http_api_destroy(server->http_server);
             server->http_server = NULL;
             webrtc_signaling_stop(server->ws_server);
-            salts_mutex_lock(&server->mutex);
+            cmeta_mutex_lock(&server->mutex);
             server->running = 0;
-            salts_cond_broadcast(&server->stopped);
-            salts_mutex_unlock(&server->mutex);
+            cmeta_cond_broadcast(&server->stopped);
+            cmeta_mutex_unlock(&server->mutex);
             return -1;
         }
         TLOG_INFOF("{} API server started on {}:{}",
@@ -223,11 +223,11 @@ int signaling_server_run(signaling_server_t *server) {
     }
     
     TLOG_INFO("Waiting for shutdown...");
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     while (server->running) {
-        salts_cond_wait(&server->stopped, &server->mutex);
+        cmeta_cond_wait(&server->stopped, &server->mutex);
     }
-    salts_mutex_unlock(&server->mutex);
+    cmeta_mutex_unlock(&server->mutex);
     TLOG_INFO("Shutdown requested");
     return 0;
 }
@@ -242,10 +242,10 @@ void signaling_server_stop(signaling_server_t *server) {
     
     TLOG_INFO("Stopping signaling server...");
     
-    salts_mutex_lock(&server->mutex);
+    cmeta_mutex_lock(&server->mutex);
     server->running = 0;
-    salts_cond_broadcast(&server->stopped);
-    salts_mutex_unlock(&server->mutex);
+    cmeta_cond_broadcast(&server->stopped);
+    cmeta_mutex_unlock(&server->mutex);
     
     /* Stop WebSocket server */
     if (server->ws_server) {
@@ -287,8 +287,8 @@ void signaling_server_destroy(signaling_server_t *server) {
         server->http_server = NULL;
     }
     
-    salts_cond_destroy(&server->stopped);
-    salts_mutex_destroy(&server->mutex);
+    cmeta_cond_destroy(&server->stopped);
+    cmeta_mutex_destroy(&server->mutex);
     
     /* Free server */
     free(server);

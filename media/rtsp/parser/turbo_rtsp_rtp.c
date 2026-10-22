@@ -1,4 +1,5 @@
 #include "turbo_rtsp_rtp.h"
+#include "turbo_network_port_internal.h"
 
 #ifdef TURBO_MEDIA_HAS_RTSP
 
@@ -313,6 +314,88 @@ int turbo_rtsp_mp4a_latm_payload_parse(
     latm->fragment = payload + offset;
     latm->fragment_len = payload_len - offset;
     latm->complete = latm->fragment_len == payload_length ? 1 : 0;
+    return 0;
+}
+
+/* RFC 2250 MPEG Video elementary stream payload, intentionally not
+ * compatible with the 188-byte MPEG Transport Stream RTP mode (PT 33).
+ * Zero-copy parsing alone cannot make a fragmented picture admissible
+ * to a bounded FFmpeg Decoder: the Media Owner must gate B/E+marker. */
+int turbo_rtsp_mpeg_video_payload_parse(
+    const uint8_t *payload,
+    size_t payload_len,
+    turbo_rtsp_mpeg_video_payload_t *video) {
+    uint8_t picture_type;
+    if (!payload || !video ||
+        payload_len <= TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE)
+        return -1;
+    /* RFC 2250 MBZ is five high bits of byte 0. T=1 optionally carries
+     * MPEG-2 picture extensions; not supported by this narrow profile.
+     * Reject instead of accidentally decoding extension bytes as ES. */
+    if ((payload[0] & 0xf8u) != 0u || (payload[0] & 0x04u) != 0u)
+        return -1;
+    /* N is meaningful only while AN is set. Invalid reserved-use N must
+     * never bypass the complete-picture admission boundary. */
+    if ((payload[2] & 0x40u) != 0u && (payload[2] & 0x80u) == 0u)
+        return -1;
+    picture_type=(uint8_t)(payload[2] & 0x07u);
+    if (picture_type < 1u || picture_type > 3u)
+        return -1;
+    memset(video,0,sizeof(*video));
+    video->temporal_reference=(uint16_t)(((uint16_t)(payload[0] & 0x03u)<<8) |
+                                         (uint16_t)payload[1]);
+    video->sequence_header=(uint8_t)((payload[2] >> 5) & 1u);
+    video->begins_slice=(uint8_t)((payload[2] >> 4) & 1u);
+    video->ends_slice=(uint8_t)((payload[2] >> 3) & 1u);
+    video->picture_type=picture_type;
+    video->es=payload + TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE;
+    video->es_len=payload_len - TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE;
+    return 0;
+}
+
+/* A conservative one-RTP-packet/one-MPEG-picture bridge policy.
+ * RFC2250 B/E are slice, not picture, boundaries. Verify the actual
+ * MPEG ES picture start and fields before granting Decoder admission.
+ * This does not reassemble or recover missing RTP fragments. */
+int turbo_rtsp_mpeg_video_one_picture_validate(
+    const turbo_rtsp_mpeg_video_payload_t *video,
+    uint8_t rtp_marker) {
+    size_t i;
+    unsigned picture_count=0u,slice_count=0u,has_sequence=0u;
+    uint16_t temporal_reference=0u;
+    uint8_t picture_type=0u;
+    if(!video || !video->es || video->es_len<10u || rtp_marker!=1u ||
+       video->picture_type<1u || video->picture_type>3u ||
+       video->begins_slice!=1u || video->ends_slice!=1u)
+        return -1;
+    for(i=0u;i+3u<video->es_len;++i) {
+        uint8_t code;
+        if(video->es[i] || video->es[i+1u] ||
+           video->es[i+2u]!=1u)continue;
+        code=video->es[i+3u];
+        if(code==0xb3u) {
+            /* A new Sequence Header after the Picture Header is a
+             * different picture boundary, not supported here. */
+            if(picture_count)return -1;
+            has_sequence=1u;
+        } else if(code==0u) {
+            if(++picture_count!=1u || i+5u>=video->es_len)
+                return -1;
+            temporal_reference=(uint16_t)(((uint16_t)video->es[i+4u]<<2u) |
+                                            ((uint16_t)video->es[i+5u]>>6u));
+            picture_type=(uint8_t)((video->es[i+5u]>>3u)&7u);
+        } else if(code>=1u && code<=0xafu) {
+            /* A Slice before Picture Header means earlier data is
+             * missing even if the RTP B flag claimed it was complete. */
+            if(!picture_count)return -1;
+            ++slice_count;
+        }
+    }
+    if(picture_count!=1u || !slice_count ||
+       temporal_reference!=video->temporal_reference ||
+       picture_type!=video->picture_type ||
+       has_sequence!=video->sequence_header)
+        return -1;
     return 0;
 }
 
@@ -3835,14 +3918,14 @@ static int turbo_rtsp_sockaddr_to_peer(
     if (addr->ss_family == AF_INET) {
         const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
         peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
-        peer->port = ntohs(in->sin_port);
+        peer->port = turbo_media_socket_port_host(&in->sin_port);
         memcpy(peer->address, &in->sin_addr, sizeof(in->sin_addr));
         return 0;
     }
     if (addr->ss_family == AF_INET6) {
         const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)addr;
         peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
-        peer->port = ntohs(in6->sin6_port);
+        peer->port = turbo_media_socket_port_host(&in6->sin6_port);
         peer->scope_id = in6->sin6_scope_id;
         memcpy(peer->address, &in6->sin6_addr, sizeof(in6->sin6_addr));
         return 0;
@@ -4069,7 +4152,7 @@ static int turbo_rtsp_rtp_udp_pair_send(
     uint64_t timeout_ms,
     const uint8_t *packet,
     size_t packet_len) {
-    const uint64_t started_ms = salts_monotonic_ms();
+    const uint64_t started_ms = cmeta_monotonic_ms();
     uint64_t tag;
     int status;
 
@@ -4087,7 +4170,7 @@ static int turbo_rtsp_rtp_udp_pair_send(
     status = cnet_datagram_send(
         &channel->socket, &channel->peer, packet, packet_len, tag);
     while (status == SALTS_OK && !channel->send_done) {
-        const uint64_t elapsed_ms = salts_monotonic_ms() - started_ms;
+        const uint64_t elapsed_ms = cmeta_monotonic_ms() - started_ms;
         size_t events = 0;
         uint32_t wait_ms;
         if (elapsed_ms >= timeout_ms) {
@@ -4135,7 +4218,7 @@ static int turbo_rtsp_rtp_udp_pair_recv(
     uint8_t *buffer,
     size_t buffer_size,
     size_t *packet_len) {
-    const uint64_t started_ms = salts_monotonic_ms();
+    const uint64_t started_ms = cmeta_monotonic_ms();
     int status;
 
     if (!channel || !channel->initialized || !buffer || buffer_size == 0 || !packet_len) {
@@ -4149,7 +4232,7 @@ static int turbo_rtsp_rtp_udp_pair_recv(
     channel->receive_status = SALTS_EIO;
     status = cnet_datagram_receive(&channel->socket, 1u);
     while (status == SALTS_OK && !channel->receive_done) {
-        const uint64_t elapsed_ms = salts_monotonic_ms() - started_ms;
+        const uint64_t elapsed_ms = cmeta_monotonic_ms() - started_ms;
         size_t events = 0;
         uint32_t wait_ms;
         if (elapsed_ms >= timeout_ms) {

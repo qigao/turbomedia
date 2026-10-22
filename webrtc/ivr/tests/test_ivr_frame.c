@@ -105,7 +105,7 @@ void test_unknown_schema_version(void) {
     info.schema_major = IVR_SCHEMA_MAJOR;
     info.schema_minor = IVR_SCHEMA_MINOR;
     ivr_frame_encode(buf, &info);
-    buf[10] = 2; /* unknown major */
+    buf[10] = 1; /* retired major: reject before payload decoding */
     check_equal(ivr_frame_decode(buf, sizeof(buf), NULL), IVR_EVERSION);
     buf[10] = IVR_SCHEMA_MAJOR;
     buf[11] = 1; /* unknown minor */

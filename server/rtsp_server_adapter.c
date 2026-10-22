@@ -4,7 +4,7 @@
 
 #include "turbo_rtsp_sdp.h"
 #include <tstr.h>
-#include "salts_uuid.h"
+#include "cmeta_uuid.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -119,7 +119,7 @@ static turbo_media_rtsp_adapter_session_t *turbo_media_rtsp_adapter_get_binding(
     const char *uri) {
     size_t i;
     turbo_media_rtsp_adapter_session_t *binding;
-    salts_uuid_t uuid;
+    cmeta_uuid_t uuid;
     char uuid_text[SALTS_UUID_STRING_SIZE];
 
     binding = turbo_media_rtsp_adapter_find_binding(adapter, session);
@@ -137,8 +137,8 @@ static turbo_media_rtsp_adapter_session_t *turbo_media_rtsp_adapter_get_binding(
                          "%s",
                          uri);
             }
-            if (salts_uuid_v4_generate(&uuid) != SALTS_OK ||
-                salts_uuid_format(&uuid, uuid_text, sizeof(uuid_text)) != SALTS_OK) {
+            if (cmeta_uuid_v4_generate(&uuid) != SALTS_OK ||
+                cmeta_uuid_format(&uuid, uuid_text, sizeof(uuid_text)) != SALTS_OK) {
                 memset(binding, 0, sizeof(*binding));
                 return NULL;
             }

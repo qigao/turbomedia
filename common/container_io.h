@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <salts_fs.h>
+#include <cmeta_fs.h>
 #include <cstl/vec.h>
 
 typedef enum {
@@ -16,7 +16,7 @@ typedef enum {
 
 typedef struct {
     turbo_container_io_mode_t mode;
-    salts_file_t file;
+    cmeta_file_t file;
     const uint8_t *input;
     size_t input_size;
     vec_t output;

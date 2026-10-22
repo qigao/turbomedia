@@ -323,7 +323,7 @@ int main(int argc, char **argv) {
     }
     
     /* Initialize logging */
-    tlog_set_level(tlog_get_default(), salts_log_level_from_name(config.log_level));
+    tlog_set_level(tlog_get_default(), cmeta_log_level_from_name(config.log_level));
     
     /* Print startup banner */
     TLOG_INFO("=================================================");

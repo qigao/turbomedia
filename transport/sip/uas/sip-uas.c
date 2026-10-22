@@ -44,12 +44,12 @@ int sip_uas_link_transaction(struct sip_agent_t* sip, struct sip_uas_transaction
 	assert(sip->ref > 0);
 	sip_atomic_increment(&sip->ref); // ref by transaction
 
-	salts_mutex_lock(&sip->locker);
+	cmeta_mutex_lock(&sip->locker);
 	assert(!t->linked);
 	result = vec_push(&sip->uas, &t);
 	if (result == STL_OK)
 		t->linked = 1;
-	salts_mutex_unlock(&sip->locker);
+	cmeta_mutex_unlock(&sip->locker);
 
 	if (result != STL_OK)
 	{
@@ -65,10 +65,10 @@ int sip_uas_unlink_transaction(struct sip_agent_t* sip, struct sip_uas_transacti
 	struct sip_uas_transaction_t **candidate;
 
 	assert(sip->ref > 0);
-	salts_mutex_lock(&sip->locker);
+	cmeta_mutex_lock(&sip->locker);
 	if (!t->linked)
 	{
-		salts_mutex_unlock(&sip->locker);
+		cmeta_mutex_unlock(&sip->locker);
 		return 0;
 	}
 
@@ -99,7 +99,7 @@ int sip_uas_unlink_transaction(struct sip_agent_t* sip, struct sip_uas_transacti
 	//	}
 	//}
 
-	salts_mutex_unlock(&sip->locker);
+	cmeta_mutex_unlock(&sip->locker);
 	sip_uas_transaction_release(t);
 	sip_agent_destroy(sip); // unref by transaction
 	return 0;
@@ -250,7 +250,7 @@ static int sip_uas_input_with_transaction(struct sip_agent_t* sip, const struct 
 	if (0 != r)
 		return r;
 
-	salts_mutex_lock(&t->locker);
+	cmeta_mutex_lock(&t->locker);
 
 	// 4. handle
 	if (sip_message_isinvite(msg) || sip_message_isack(msg))
@@ -264,7 +264,7 @@ static int sip_uas_input_with_transaction(struct sip_agent_t* sip, const struct 
 	// 3. A stateless UAS MUST ignore ACK requests.
 	// 4. A stateless UAS MUST ignore CANCEL requests.
 
-	salts_mutex_unlock(&t->locker);
+	cmeta_mutex_unlock(&t->locker);
 	return r;
 }
 
@@ -274,25 +274,25 @@ int sip_uas_input(struct sip_agent_t* sip, const struct sip_message_t* msg, void
 	struct sip_uas_transaction_t* t;
 
 	// find transaction
-	salts_mutex_lock(&sip->locker);
+	cmeta_mutex_lock(&sip->locker);
 	t = sip_uas_find_transaction(sip, msg, 1);
 	if (!t)
 	{
 		if (sip_message_isack(msg))
 		{
-			salts_mutex_unlock(&sip->locker);
+			cmeta_mutex_unlock(&sip->locker);
 			return 0; // invalid ack, discard, TODO: add log here
 		}
 
 		t = sip_uas_transaction_create(sip, msg, NULL, param);
 		if (!t)
 		{
-			salts_mutex_unlock(&sip->locker);
+			cmeta_mutex_unlock(&sip->locker);
 			return -1;
 		}
 		assert(t->ref == 3); // +2 linker with timer H
 	}
-	salts_mutex_unlock(&sip->locker);
+	cmeta_mutex_unlock(&sip->locker);
 
     r = sip_uas_input_with_transaction(sip, msg, t, param);
 	sip_uas_transaction_release(t);
@@ -302,7 +302,7 @@ int sip_uas_input(struct sip_agent_t* sip, const struct sip_message_t* msg, void
 int sip_uas_reply(struct sip_uas_transaction_t* t, int code, const void* data, int bytes, void* param)
 {
     int r;
-    salts_mutex_lock(&t->locker);
+    cmeta_mutex_lock(&t->locker);
     
     // Contact: <sip:bob@192.0.2.4>
     if (200 <= code && code < 300 && 0 == sip_contacts_count(&t->reply->contacts) &&
@@ -336,17 +336,17 @@ int sip_uas_reply(struct sip_uas_transaction_t* t, int code, const void* data, i
 	{
 		r = sip_uas_transaction_noninvite_reply(t, code, data, bytes, param);
 	}
-    salts_mutex_unlock(&t->locker);
+    cmeta_mutex_unlock(&t->locker);
     return r;
 }
 
 //int sip_uas_discard(struct sip_uas_transaction_t* t)
 //{
-//	salts_mutex_lock(&t->locker);
+//	cmeta_mutex_lock(&t->locker);
 //	assert(t->ref > 0);
 //	if(SIP_UAS_TRANSACTION_TERMINATED != t->status)
 //		sip_uas_transaction_terminated();
-//	salts_mutex_unlock(&t->locker);
+//	cmeta_mutex_unlock(&t->locker);
 //	
 //	return sip_uas_transaction_release(t);
 //}

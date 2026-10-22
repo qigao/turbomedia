@@ -36,7 +36,7 @@ struct turbo_client_processing_s {
     turbo_client_processing_config_t config;
     atomic_int state;
     atomic_uint lifecycle_flags;
-    salts_mutex_t frame_mutex;
+    cmeta_mutex_t frame_mutex;
     turbo_client_processing_video_slot_t *frame_slots;
     uint8_t *frame_storage;
     size_t frame_head;
@@ -47,7 +47,7 @@ struct turbo_client_processing_s {
     uint64_t admitted_frames;
     uint64_t rejected_frames;
 
-    salts_mutex_t audio_mutex;
+    cmeta_mutex_t audio_mutex;
     turbo_client_processing_audio_capture_config_t audio_config;
     turbo_client_processing_audio_slot_t *audio_slots;
     uint8_t *audio_storage;

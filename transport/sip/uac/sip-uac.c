@@ -6,7 +6,7 @@
 #include "sip-dialog.h"
 #include "sip-message.h"
 #include "sip-transport.h"
-#include <salts_error.h>
+#include <cmeta_error.h>
 #include <stdio.h>
 #include <errno.h>
 
@@ -18,12 +18,12 @@ int sip_uac_link_transaction(struct sip_agent_t* sip, struct sip_uac_transaction
 	sip_atomic_increment(&sip->ref); // ref by transaction
 	assert(sip->ref > 0);
 
-	salts_mutex_lock(&sip->locker);
+	cmeta_mutex_lock(&sip->locker);
 	assert(!t->linked);
 	result = vec_push(&sip->uac, &t);
 	if (result == STL_OK)
 		t->linked = 1;
-	salts_mutex_unlock(&sip->locker);
+	cmeta_mutex_unlock(&sip->locker);
 
 	if (result != STL_OK)
 	{
@@ -39,10 +39,10 @@ int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transacti
 	struct sip_uac_transaction_t **candidate;
 
 	assert(sip->ref > 0);
-	salts_mutex_lock(&sip->locker);
+	cmeta_mutex_lock(&sip->locker);
 	if (!t->linked)
 	{
-		salts_mutex_unlock(&sip->locker);
+		cmeta_mutex_unlock(&sip->locker);
 		return 0;
 	}
 
@@ -73,7 +73,7 @@ int sip_uac_unlink_transaction(struct sip_agent_t* sip, struct sip_uac_transacti
 	//	}
 	//}
 
-	salts_mutex_unlock(&sip->locker);
+	cmeta_mutex_unlock(&sip->locker);
 	sip_uac_transaction_release(t);
 	sip_agent_destroy(sip);
 	return 0;
@@ -167,9 +167,9 @@ int sip_uac_input(struct sip_agent_t* sip, struct sip_message_t* reply)
 		return 0;
 
 	// 1. fetch transaction
-	salts_mutex_lock(&sip->locker);
+	cmeta_mutex_lock(&sip->locker);
 	t = sip_uac_find_transaction(&sip->uac, reply);
-	salts_mutex_unlock(&sip->locker);
+	cmeta_mutex_unlock(&sip->locker);
 	if (!t)
 	{
 		// timeout response, discard
@@ -198,14 +198,14 @@ int sip_uac_input(struct sip_agent_t* sip, struct sip_message_t* reply)
 	default:  break;
 	}
 
-	salts_mutex_lock(&t->locker);
+	cmeta_mutex_lock(&t->locker);
 
 	if (sip_message_isinvite(reply))
 		r = sip_uac_transaction_invite_input(t, reply);
 	else
 		r = sip_uac_transaction_noninvite_input(t, reply);
 
-	salts_mutex_unlock(&t->locker);
+	cmeta_mutex_unlock(&t->locker);
 	sip_uac_transaction_release(t);
 	return r;
 }

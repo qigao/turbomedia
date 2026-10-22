@@ -2,7 +2,7 @@
 
 #include <tinytest.h>
 #include <turbo_codec.h>
-#include <salts_fs.h>
+#include <cmeta_fs.h>
 #include <turbo_player.h>
 #include <turbo_recognition.h>
 #include <turbo_streamer.h>
@@ -237,7 +237,7 @@ static void test_hls_fmp4_round_trip(const char *codec_name) {
     check_contains(playlist, "segment_1.m4s");
     check_contains(playlist, "#EXT-X-ENDLIST");
 
-    result = salts_fs_path_join(playlist_path, sizeof(playlist_path), output_dir,
+    result = cmeta_fs_path_join(playlist_path, sizeof(playlist_path), output_dir,
                                 "playlist.m3u8");
     check_equal(result, 0);
     if (result != 0) goto cleanup;

@@ -1,14 +1,14 @@
-/* test_ivr_schema_typed.c - Gate A: tbe_compiler-generated owning structs.
+/* test_ivr_schema_typed.c - Gate A: salts-idlc-generated owning structs.
  * Uses the typed API (Type_from_json/to_bin/...) instead of the dynamic
  * DataBindObject API; both bind the same canonical schema. */
-#include "turbomedia_ivr_v1.h"
+#include "turbomedia_ivr_v2.h"
 #include "tinytest.h"
 #include <string.h>
 
 void test_typed_conference_join_roundtrip(void) {
     DataBindError err = DATA_BIND_ERROR_INIT;
     DataBind *codec = NULL;
-    check_equal(TurboMediaIvrV1_codec_create(&codec, &err), DATA_BIND_OK);
+    check_equal(TurboMediaIvrV2_codec_create(&codec, &err), DATA_BIND_OK);
     check_not_null(codec);
 
     const char *json =
@@ -25,6 +25,8 @@ void test_typed_conference_join_roundtrip(void) {
     check_equal((uint64_t)(cmd.call_generation), (uint64_t)(7u));
     check_equal((uint64_t)(cmd.expected_room_version), (uint64_t)(42u));
 
+    /* Both endpoints use the same fixed-first major 2 contract. Verify the
+       generated owning route and dynamic decoder agree on the binary payload. */
     static const uint8_t expected_bin[] = {
         0x07,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
         0x2A,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
@@ -34,26 +36,29 @@ void test_typed_conference_join_roundtrip(void) {
         0x02,0x00,0x00,0x00,0x63,0x31,
         0x07,0x00,0x00,0x00,0x69,0x76,0x72,0x2D,0x62,0x6F,0x74
     };
-    uint8_t *bin = NULL;
-    size_t bin_len = 0;
+    uint8_t *binary = NULL;
+    size_t binary_len = 0;
+    DataBindObject *dynamic = NULL;
     ConferenceJoinCommandV1_t decoded;
     ConferenceJoinCommandV1_init(&decoded);
-    check_equal(ConferenceJoinCommandV1_to_bin(
-                    &cmd, &bin, &bin_len, &err),
+    check_equal(ConferenceJoinCommandV1_to_bin(codec, &cmd, &binary,
+                                              &binary_len, &err), DATA_BIND_OK);
+    check_equal(binary_len, sizeof(expected_bin));
+    check_equal(binary, expected_bin, sizeof(expected_bin));
+    check_equal(ConferenceJoinCommandV1_from_bin(codec, &decoded, binary,
+                                                binary_len, &err), DATA_BIND_OK);
+    check_equal(decoded.message_id, "m-1");
+    check_equal(decoded.call_generation, (uint64_t)7);
+    check_equal(decoded.expected_room_version, (uint64_t)42);
+    check_equal(decoded.participant_role, "ivr-bot");
+    check_equal(data_bind_object_from_bin(codec, "ConferenceJoinCommandV1",
+                                          binary, binary_len, &dynamic, &err),
                 DATA_BIND_OK);
-    check_equal(bin_len, sizeof(expected_bin));
-    if (bin != NULL && bin_len == sizeof(expected_bin))
-        check_equal(bin, expected_bin, sizeof(expected_bin));
-    check_equal(ConferenceJoinCommandV1_from_bin(
-                    codec, &decoded, bin, bin_len, &err),
-                DATA_BIND_OK);
-    check_equal(decoded.call_generation, UINT64_C(7));
-    check_equal(decoded.expected_room_version, UINT64_C(42));
-    check_equal(strcmp(decoded.message_id, "m-1"), 0);
-    check_equal(strcmp(decoded.participant_role, "ivr-bot"), 0);
-    tbe_typed_serialized_free(bin);
+    check_equal(data_bind_value_as_string(data_bind_value_get(
+                    data_bind_object_value(dynamic), "participant_role")), "ivr-bot");
+    data_bind_object_free(dynamic);
     ConferenceJoinCommandV1_clear(&decoded);
-
+    TurboMediaIvrV2_schema_codec()->free_output(binary);
     char *out = NULL;
     size_t out_len = 0;
     check_equal(ConferenceJoinCommandV1_to_json(
@@ -61,7 +66,7 @@ void test_typed_conference_join_roundtrip(void) {
                 DATA_BIND_OK);
     check_not_null(out);
     check_true(strstr(out, "ivr-bot") != NULL);
-    tbe_typed_serialized_free(out);
+    TurboMediaIvrV2_schema_codec()->free_output(out);
 
     ConferenceJoinCommandV1_clear(&cmd);
     data_bind_free(codec);
@@ -70,7 +75,7 @@ void test_typed_conference_join_roundtrip(void) {
 void test_typed_result_int32(void) {
     DataBindError err = DATA_BIND_ERROR_INIT;
     DataBind *codec = NULL;
-    check_equal(TurboMediaIvrV1_codec_create(&codec, &err), DATA_BIND_OK);
+    check_equal(TurboMediaIvrV2_codec_create(&codec, &err), DATA_BIND_OK);
     IvrCommandResultV1_t res;
     IvrCommandResultV1_init(&res);
     const char *json =
@@ -82,7 +87,7 @@ void test_typed_result_int32(void) {
                                                    strlen(json), &err), DATA_BIND_OK);
     check_equal(res.status_code, -3);
     check_equal((uint64_t)(res.sequence), (uint64_t)(9u));
-    check_equal(strcmp(res.error_code, ""), 0);
+    check_true(tstr_empty(res.error_code));
     IvrCommandResultV1_clear(&res);
     data_bind_free(codec);
 }

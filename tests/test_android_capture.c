@@ -3,7 +3,7 @@
 
 #include <tinytest.h>
 #include <salts_capture.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 
 enum {
     CAPTURE_WAIT_STEP_MS = 20,
@@ -72,7 +72,7 @@ static void on_state(salts_capture_t *capture,
 static int wait_for_data(capture_observer_t *observer, int steps) {
     for (int i = 0; i < steps; ++i) {
         if (atomic_load(&observer->data_callbacks) > 0) return 1;
-        salts_sleep_ms(CAPTURE_WAIT_STEP_MS);
+        cmeta_sleep_ms(CAPTURE_WAIT_STEP_MS);
     }
     return atomic_load(&observer->data_callbacks) > 0;
 }

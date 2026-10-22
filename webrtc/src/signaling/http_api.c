@@ -13,7 +13,7 @@
 #include <http_server/http.h>
 #include <json_parser.h>
 #include <salts/error_codes.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 #include <tlog.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -67,7 +67,7 @@ typedef enum http_api_state_e {
 struct http_api_server_s {
     http_api_config_t config;
     webrtc_signaling_server_t *signaling;
-    salts_mutex_t lifecycle_mutex;
+    cmeta_mutex_t lifecycle_mutex;
     chttp_server http;
     int http_initialized;
     int revocation_enabled;
@@ -836,7 +836,7 @@ http_api_server_t *http_api_create(
             return NULL;
         }
     }
-    salts_mutex_init(&server->lifecycle_mutex);
+    cmeta_mutex_init(&server->lifecycle_mutex);
     server->state = HTTP_API_STOPPED;
     return server;
 }
@@ -849,13 +849,13 @@ int http_api_start(http_api_server_t *server) {
     if (!server) {
         return -1;
     }
-    salts_mutex_lock(&server->lifecycle_mutex);
+    cmeta_mutex_lock(&server->lifecycle_mutex);
     if (server->state == HTTP_API_RUNNING) {
-        salts_mutex_unlock(&server->lifecycle_mutex);
+        cmeta_mutex_unlock(&server->lifecycle_mutex);
         return 0;
     }
     if (server->state != HTTP_API_STOPPED || server->http_initialized) {
-        salts_mutex_unlock(&server->lifecycle_mutex);
+        cmeta_mutex_unlock(&server->lifecycle_mutex);
         return -1;
     }
     server->state = HTTP_API_STARTING;
@@ -883,13 +883,13 @@ int http_api_start(http_api_server_t *server) {
         }
         server->http_initialized = 0;
         server->state = HTTP_API_STOPPED;
-        salts_mutex_unlock(&server->lifecycle_mutex);
+        cmeta_mutex_unlock(&server->lifecycle_mutex);
         TLOG_ERRORF("Failed to start HTTP management API on {}:{}: {}",
                     server->config.host, server->config.port, status);
         return -1;
     }
     server->state = HTTP_API_RUNNING;
-    salts_mutex_unlock(&server->lifecycle_mutex);
+    cmeta_mutex_unlock(&server->lifecycle_mutex);
     TLOG_INFOF("{} management API listening on {}:{}",
                server->config.use_tls ? "HTTPS" : "HTTP",
                server->config.host, server->config.port);
@@ -903,9 +903,9 @@ void http_api_stop(http_api_server_t *server) {
     if (!server) {
         return;
     }
-    salts_mutex_lock(&server->lifecycle_mutex);
+    cmeta_mutex_lock(&server->lifecycle_mutex);
     if (server->state == HTTP_API_STOPPED) {
-        salts_mutex_unlock(&server->lifecycle_mutex);
+        cmeta_mutex_unlock(&server->lifecycle_mutex);
         return;
     }
     server->state = HTTP_API_STOPPING;
@@ -917,7 +917,7 @@ void http_api_stop(http_api_server_t *server) {
                          : SALTS_OK;
     server->http_initialized = 0;
     server->state = HTTP_API_STOPPED;
-    salts_mutex_unlock(&server->lifecycle_mutex);
+    cmeta_mutex_unlock(&server->lifecycle_mutex);
     if (stop_status != SALTS_OK || destroy_status != SALTS_OK) {
         TLOG_ERRORF("Failed to stop HTTP management API: stop={}, destroy={}",
                     stop_status, destroy_status);
@@ -930,6 +930,6 @@ void http_api_destroy(http_api_server_t *server) {
     }
     http_api_stop(server);
     http_api_free_config_strings(&server->config);
-    salts_mutex_destroy(&server->lifecycle_mutex);
+    cmeta_mutex_destroy(&server->lifecycle_mutex);
     free(server);
 }

@@ -115,12 +115,12 @@ turbo_client_processing_status_t turbo_client_processing_create(
     processing->frame_slots = (turbo_client_processing_video_slot_t *)calloc(
         config->frame_queue_capacity, sizeof(*processing->frame_slots));
     processing->frame_storage = (uint8_t *)malloc(config->frame_queue_max_bytes);
-    salts_mutex_init(&processing->frame_mutex);
-    salts_mutex_init(&processing->audio_mutex);
+    cmeta_mutex_init(&processing->frame_mutex);
+    cmeta_mutex_init(&processing->audio_mutex);
     if (processing->frame_slots == NULL || processing->frame_storage == NULL ||
         processing->frame_mutex == NULL || processing->audio_mutex == NULL) {
-        salts_mutex_destroy(&processing->audio_mutex);
-        salts_mutex_destroy(&processing->frame_mutex);
+        cmeta_mutex_destroy(&processing->audio_mutex);
+        cmeta_mutex_destroy(&processing->frame_mutex);
         free(processing->frame_storage);
         free(processing->frame_slots);
         free(processing);
@@ -309,12 +309,12 @@ turbo_client_processing_status_t turbo_client_processing_drain(
         return TURBO_CLIENT_PROCESSING_ESTATE;
     }
 
-    salts_mutex_lock(&processing->frame_mutex);
+    cmeta_mutex_lock(&processing->frame_mutex);
     turbo_client_processing_queue_clear_locked(processing);
-    salts_mutex_unlock(&processing->frame_mutex);
-    salts_mutex_lock(&processing->audio_mutex);
+    cmeta_mutex_unlock(&processing->frame_mutex);
+    cmeta_mutex_lock(&processing->audio_mutex);
     turbo_client_processing_audio_clear_locked(processing);
-    salts_mutex_unlock(&processing->audio_mutex);
+    cmeta_mutex_unlock(&processing->audio_mutex);
     turbo_client_processing_file_runtime_clear(processing);
     turbo_client_processing_state_set(processing, TURBO_CLIENT_PROCESSING_STOPPED);
     return TURBO_CLIENT_PROCESSING_OK;
@@ -334,7 +334,7 @@ turbo_client_processing_status_t turbo_client_processing_snapshot(
         processing->config.frame_queue_max_bytes;
     snapshot->frame_queue_max_duration_us =
         processing->config.frame_queue_max_duration_us;
-    salts_mutex_lock((salts_mutex_t *)&processing->frame_mutex);
+    cmeta_mutex_lock((cmeta_mutex_t *)&processing->frame_mutex);
     snapshot->queued_frames = processing->queued_frames;
     snapshot->queued_bytes = processing->queued_bytes;
     snapshot->queued_duration_us = processing->queued_duration_us;
@@ -342,7 +342,7 @@ turbo_client_processing_status_t turbo_client_processing_snapshot(
     snapshot->rejected_frames = processing->rejected_frames;
     snapshot->lifecycle_flags =
         turbo_client_processing_lifecycle_flags_get(processing);
-    salts_mutex_unlock((salts_mutex_t *)&processing->frame_mutex);
+    cmeta_mutex_unlock((cmeta_mutex_t *)&processing->frame_mutex);
     return TURBO_CLIENT_PROCESSING_OK;
 }
 
@@ -358,14 +358,14 @@ turbo_client_processing_status_t turbo_client_processing_destroy(
     }
     turbo_client_processing_file_runtime_clear(processing);
     turbo_client_processing_file_plan_clear(processing);
-    salts_mutex_lock(&processing->frame_mutex);
+    cmeta_mutex_lock(&processing->frame_mutex);
     turbo_client_processing_queue_clear_locked(processing);
-    salts_mutex_unlock(&processing->frame_mutex);
-    salts_mutex_destroy(&processing->frame_mutex);
-    salts_mutex_lock(&processing->audio_mutex);
+    cmeta_mutex_unlock(&processing->frame_mutex);
+    cmeta_mutex_destroy(&processing->frame_mutex);
+    cmeta_mutex_lock(&processing->audio_mutex);
     turbo_client_processing_audio_clear_locked(processing);
-    salts_mutex_unlock(&processing->audio_mutex);
-    salts_mutex_destroy(&processing->audio_mutex);
+    cmeta_mutex_unlock(&processing->audio_mutex);
+    cmeta_mutex_destroy(&processing->audio_mutex);
     free(processing->audio_storage);
     free(processing->audio_slots);
     free(processing->frame_storage);

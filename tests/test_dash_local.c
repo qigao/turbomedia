@@ -2,7 +2,7 @@
 
 #include <tinytest.h>
 #include <turbo_codec.h>
-#include <salts_fs.h>
+#include <cmeta_fs.h>
 #include <turbo_streamer.h>
 
 #include <stdint.h>
@@ -132,7 +132,7 @@ static void test_dash_h264_pipeline(void) {
     check_equal(result, 0);
     if (result != 0) goto cleanup;
 
-    result = salts_fs_path_join(manifest_path, sizeof(manifest_path), output_dir,
+    result = cmeta_fs_path_join(manifest_path, sizeof(manifest_path), output_dir,
                                 "manifest.mpd");
     check_equal(result, 0);
     if (result != 0) goto cleanup;
@@ -150,16 +150,16 @@ static void test_dash_h264_pipeline(void) {
     check_contains(manifest, "<S t=\"1000\"");
     check_contains(manifest, "d=\"500\"");
 
-    result = salts_fs_path_join(init_path, sizeof(init_path), output_dir,
+    result = cmeta_fs_path_join(init_path, sizeof(init_path), output_dir,
                                 "video-init.m4v");
     check_equal(result, 0);
     if (result == 0)
-        check_equal(salts_fs_access(init_path, SALTS_FS_ACCESS_EXISTS), 0);
-    result = salts_fs_path_join(segment_path, sizeof(segment_path), output_dir,
+        check_equal(cmeta_fs_access(init_path, SALTS_FS_ACCESS_EXISTS), 0);
+    result = cmeta_fs_path_join(segment_path, sizeof(segment_path), output_dir,
                                 "video-1000.m4v");
     check_equal(result, 0);
     if (result == 0)
-        check_equal(salts_fs_access(segment_path, SALTS_FS_ACCESS_EXISTS), 0);
+        check_equal(cmeta_fs_access(segment_path, SALTS_FS_ACCESS_EXISTS), 0);
 
 cleanup:
     if (connected && streamer) turbo_streamer_disconnect(streamer);

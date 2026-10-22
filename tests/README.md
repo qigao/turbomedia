@@ -2,6 +2,29 @@
 
 全面的 TDD/BDD 测试套件，基于 TinyTest 框架构建。
 
+Windows Release 使用 `win-release-user` 的 configure/build/test
+preset，须在 VS 开发环境中执行。Salts、SaltsUtils、CHttp 与 SaltsNet 的
+运行库应来自匹配的 SDK；旧 `SaltsICE.dll` 对旧 Core/CNet 的依赖不能通过
+复制旧 DLL 到新 build 目录解决。
+
+TLS 用例使用 `webrtc/tests/fixtures/tls/localhost-cert.pem` 中的 localhost
+叶证书及测试根 CA 链，配套密钥仅用于测试。证书具有显式 BasicConstraints、
+KeyUsage、serverAuth 与仅含 localhost 的 SAN，有效期为 2026-03-01 至
+2036-03-01。更新 fixture 时需保留未配置可信 CA 时拒绝连接、显式信任与
+正确 server name 时连接成功的断言，不关闭生产证书验证。
+
+Windows 发布 profile 使用 `win-release-user`。在 VS x64 环境执行：
+
+```powershell
+cmake --preset win-release-user
+cmake --build --preset win-release-user
+ctest --preset win-release-user --output-on-failure
+```
+
+IVR 协议专项可用 `-R "^test_ivr_(frame|protocol|schema|schema_typed)$"`，
+覆盖新 envelope/二进制字节、旧主版本拒绝和 generated/dynamic 互通。
+Iris/ORM 模块及对应 PostgreSQL live gate 已随主线退役，不属于当前测试图。
+
 ## 测试文件概览
 
 ### 核心功能测试
@@ -29,37 +52,24 @@
 
 ## 构建和运行测试
 
-### 构建所有测试
+### 构建所有 Windows 测试
 
-```bash
-# 配置项目（Release 模式）
-cmake --preset release
+在 VS x64 开发环境执行：
 
-# 构建测试
-cmake --build build/release --target all
-
-# 或只构建测试目标
-cmake --build build/release --target turbo_media_codec_tests
-cmake --build build/release --target turbo_media_capture_tests
-cmake --build build/release --target turbo_media_playback_tests
+```powershell
+cmake --preset win-release-user
+cmake --build --preset win-release-user
 ```
 
 ### 运行测试
 
-```bash
-# 运行所有测试
-ctest --test-dir build/release
-
-# 运行特定测试
-./build/release/bin/turbo_media_codec_tests
-./build/release/bin/turbo_media_capture_tests
-./build/release/bin/turbo_media_playback_tests
-./build/release/bin/turbo_media_integration_tests
-./build/release/bin/turbo_media_benchmark_tests
-
-# 详细输出
-ctest --test-dir build/release --verbose
+```powershell
+ctest --preset win-release-user --output-on-failure
+ctest --preset win-release-user -R "^turbo_media_test_(transport_http|auth_token|signaling_lifecycle)$" --output-on-failure
 ```
+
+平台能力与 SDK 迁移边界见
+[依赖迁移设计](../docs/superpowers/specs/2026-09-05-salts-dependency-refactor-design.md)。
 
 ### 添加新测试
 

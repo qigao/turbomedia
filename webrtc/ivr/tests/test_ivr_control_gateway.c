@@ -1,11 +1,11 @@
 /* test_ivr_control.c - CHTTP H1 WebSocket client encoding + lifecycle.
  * The pure frame encoder is verified against the generated schema (decode the
  * BIN payload back and compare typed fields); no live server peer is needed.
- * Requires TURBO_MEDIA_HAS_CONTROL_WS (CHTTP H1 WebSocket + tbe_compiler present). */
+ * Requires TURBO_MEDIA_HAS_CONTROL_WS (CHTTP H1 WebSocket + salts-idlc present). */
 #include "ivr_control_gateway.h"
 #include "ivr_frame.h"
 #include "ivr_room_bridge.h"
-#include "turbomedia_ivr_v1.h"
+#include "turbomedia_ivr_v2.h"
 #include "tinytest.h"
 #include <string.h>
 
@@ -13,7 +13,7 @@ static DataBind *g_codec = NULL;
 
 void setUp(void) {
     DataBindError err = DATA_BIND_ERROR_INIT;
-    check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
+    check_equal(TurboMediaIvrV2_codec_create(&g_codec, &err), DATA_BIND_OK);
 }
 
 void tearDown(void) {

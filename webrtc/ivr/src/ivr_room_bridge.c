@@ -3,7 +3,7 @@
 #include "ivr_thread.h"
 #include "ivr_internal.h"
 #include "ivr_control_ws.h"
-#include "turbomedia_ivr_v1.h"
+#include "turbomedia_ivr_v2.h"
 #include <json_parser.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,7 +34,7 @@ typedef struct {
 
 static uint64_t ivr_dedup_default_now(void *ctx) {
     (void)ctx;
-    return salts_monotonic_ms();
+    return cmeta_monotonic_ms();
 }
 
 static uint64_t ivr_dedup_now(const ivr_dedup_t *d) {
@@ -2584,7 +2584,7 @@ ivr_status_t ivr_room_bridge_create(const ivr_room_bridge_config_t *config,
         return IVR_ENOSPC;
     }
     DataBindError err = DATA_BIND_ERROR_INIT;
-    if (TurboMediaIvrV1_codec_create(&b->codec, &err) != DATA_BIND_OK ||
+    if (TurboMediaIvrV2_codec_create(&b->codec, &err) != DATA_BIND_OK ||
         ivr_dedup_init(&b->dedup, config->dedup_capacity,
                                   config->dedup_retention_ms, config->now_ms,
                                   config->now_ctx) != 0 ||

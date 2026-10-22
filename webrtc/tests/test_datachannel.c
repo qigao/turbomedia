@@ -7,7 +7,7 @@
 #include "turbo_datachannel.h"
 #include "turbo_datachannel_errors.h"
 #include "tinytest.h"
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 #include <string.h>
 
 #define TEST_SHA256_FINGERPRINT \
@@ -37,6 +37,32 @@ void test_context_create_default(void) {
     check_not_null(ctx);
 
     turbo_dc_context_destroy(ctx);
+}
+
+void test_generated_certificate_fingerprint(void) {
+    turbo_dc_config_t config = {0};
+    turbo_dc_context_t *first = turbo_dc_context_create(&config);
+    turbo_dc_context_t *second = turbo_dc_context_create(&config);
+    char hash[16], fingerprint[96], other_hash[16], other_fingerprint[96];
+    size_t i;
+    check_not_null(first);
+    check_not_null(second);
+    if (first && second) {
+        check_equal(turbo_dc_context_get_local_fingerprint(
+            first, hash, sizeof(hash), fingerprint, sizeof(fingerprint)), 0);
+        check_equal(turbo_dc_context_get_local_fingerprint(
+            second, other_hash, sizeof(other_hash), other_fingerprint,
+            sizeof(other_fingerprint)), 0);
+        check_equal(strcmp(hash, "sha-256"), 0);
+        check_equal(strlen(fingerprint), (size_t)95);
+        for (i = 0; i < 95; ++i) {
+            if (i % 3 == 2) check_equal(fingerprint[i], ':');
+            else check_true(strchr("0123456789ABCDEF", fingerprint[i]) != NULL);
+        }
+        check_true(strcmp(fingerprint, other_fingerprint) != 0);
+    }
+    turbo_dc_context_destroy(second);
+    turbo_dc_context_destroy(first);
 }
 
 void test_context_create_client_mode(void) {
@@ -172,8 +198,8 @@ void test_context_destroy_reclaims_live_peer(void) {
 }
 
 typedef struct {
-    salts_mutex_t mutex;
-    salts_cond_t cond;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t cond;
     int callback_entered;
     int release_callback;
     int detach_entered;
@@ -187,13 +213,13 @@ static void blocking_transport_data_callback(void *user_data, const uint8_t *dat
     (void)data;
     (void)len;
 
-    salts_mutex_lock(&context->mutex);
+    cmeta_mutex_lock(&context->mutex);
     context->callback_entered = 1;
-    salts_cond_broadcast(&context->cond);
+    cmeta_cond_broadcast(&context->cond);
     while (!context->release_callback) {
-        salts_cond_wait(&context->cond, &context->mutex);
+        cmeta_cond_wait(&context->cond, &context->mutex);
     }
-    salts_mutex_unlock(&context->mutex);
+    cmeta_mutex_unlock(&context->mutex);
 }
 
 static void feed_transport_data_thread(void *arg) {
@@ -209,17 +235,17 @@ static void detach_transport_data_thread(void *arg) {
     transport_detach_test_context_t *context =
         (transport_detach_test_context_t *)arg;
 
-    salts_mutex_lock(&context->mutex);
+    cmeta_mutex_lock(&context->mutex);
     context->detach_entered = 1;
-    salts_cond_broadcast(&context->cond);
-    salts_mutex_unlock(&context->mutex);
+    cmeta_cond_broadcast(&context->cond);
+    cmeta_mutex_unlock(&context->mutex);
 
     turbo_dc_peer_set_transport_data_handler(context->peer, NULL, NULL);
 
-    salts_mutex_lock(&context->mutex);
+    cmeta_mutex_lock(&context->mutex);
     context->detach_completed = 1;
-    salts_cond_broadcast(&context->cond);
-    salts_mutex_unlock(&context->mutex);
+    cmeta_cond_broadcast(&context->cond);
+    cmeta_mutex_unlock(&context->mutex);
 }
 
 void test_transport_data_handler_detach_waits_for_callback(void) {
@@ -229,43 +255,43 @@ void test_transport_data_handler_detach_waits_for_callback(void) {
     };
     transport_detach_test_context_t test_context = {0};
     turbo_dc_context_t *dc = turbo_dc_context_create(&config);
-    salts_thread_t feed_thread;
-    salts_thread_t detach_thread;
+    cmeta_thread_t feed_thread;
+    cmeta_thread_t detach_thread;
 
     check_not_null(dc);
     test_context.peer = turbo_dc_peer_create(dc, NULL, 0, NULL);
     check_not_null(test_context.peer);
-    salts_mutex_init(&test_context.mutex);
-    salts_cond_init(&test_context.cond);
+    cmeta_mutex_init(&test_context.mutex);
+    cmeta_cond_init(&test_context.cond);
     turbo_dc_peer_set_transport_data_handler(
         test_context.peer, blocking_transport_data_callback, &test_context);
 
-    check_equal((int)(salts_thread_create(
+    check_equal((int)(cmeta_thread_create(
         &feed_thread, feed_transport_data_thread, &test_context)), (int)(0));
 
-    salts_mutex_lock(&test_context.mutex);
+    cmeta_mutex_lock(&test_context.mutex);
     while (!test_context.callback_entered) {
-        salts_cond_wait(&test_context.cond, &test_context.mutex);
+        cmeta_cond_wait(&test_context.cond, &test_context.mutex);
     }
-    salts_mutex_unlock(&test_context.mutex);
+    cmeta_mutex_unlock(&test_context.mutex);
 
-    check_equal((int)(salts_thread_create(
+    check_equal((int)(cmeta_thread_create(
         &detach_thread, detach_transport_data_thread, &test_context)), (int)(0));
-    salts_mutex_lock(&test_context.mutex);
+    cmeta_mutex_lock(&test_context.mutex);
     while (!test_context.detach_entered) {
-        salts_cond_wait(&test_context.cond, &test_context.mutex);
+        cmeta_cond_wait(&test_context.cond, &test_context.mutex);
     }
     check_equal((int)(test_context.detach_completed), (int)(0));
     test_context.release_callback = 1;
-    salts_cond_broadcast(&test_context.cond);
-    salts_mutex_unlock(&test_context.mutex);
+    cmeta_cond_broadcast(&test_context.cond);
+    cmeta_mutex_unlock(&test_context.mutex);
 
-    check_equal((int)(salts_thread_join(&feed_thread)), (int)(0));
-    check_equal((int)(salts_thread_join(&detach_thread)), (int)(0));
+    check_equal((int)(cmeta_thread_join(&feed_thread)), (int)(0));
+    check_equal((int)(cmeta_thread_join(&detach_thread)), (int)(0));
     check_equal((int)(test_context.detach_completed), (int)(1));
 
-    salts_cond_destroy(&test_context.cond);
-    salts_mutex_destroy(&test_context.mutex);
+    cmeta_cond_destroy(&test_context.cond);
+    cmeta_mutex_destroy(&test_context.mutex);
     turbo_dc_peer_destroy(test_context.peer);
     turbo_dc_context_destroy(dc);
 }
@@ -484,6 +510,7 @@ spec("test_datachannel") {
   it("test_peer_callbacks_null_peer") { test_peer_callbacks_null_peer(); };
   it("test_peer_close_null") { test_peer_close_null(); };
   it("test_peer_destroy_null") { test_peer_destroy_null(); };
+  it("generates distinct SHA-256 DTLS fingerprints") { test_generated_certificate_fingerprint(); };
   it("test_peer_remote_fingerprint_validation") { test_peer_remote_fingerprint_validation(); };
   it("test_transport_data_handler_detach_waits_for_callback") { test_transport_data_handler_detach_waits_for_callback(); };
 

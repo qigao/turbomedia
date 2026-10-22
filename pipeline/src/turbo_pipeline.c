@@ -12,8 +12,8 @@
 #include <rtp-packet.h>
 #include <rtp-payload.h>
 #include <turbo_media_server.h>
-#include <cyaml/cyaml.h>
-#include <salts_thread.h>
+#include <cyaml.h>
+#include <cmeta_thread.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavfilter/avfilter.h>
@@ -212,8 +212,8 @@ typedef struct pipeline_runtime_rtp {
     int output_source_created;
     int output_source_committed;
     atomic_int async_status;
-    salts_mutex_t mutex;
-    salts_cond_t available;
+    cmeta_mutex_t mutex;
+    cmeta_cond_t available;
     pipeline_runtime_track_t tracks[PIPELINE_RUNTIME_TRACK_COUNT];
 } pipeline_runtime_rtp_t;
 
@@ -1624,11 +1624,11 @@ static int pipeline_runtime_on_frame(turbo_media_source_t *source,
     runtime = &pipeline->runtime_rtp;
     if (!pipeline_runtime_find_track(runtime, frame->track_id))
         return TURBO_MEDIA_OK;
-    salts_mutex_lock(&runtime->mutex);
+    cmeta_mutex_lock(&runtime->mutex);
     if (!runtime->accepting ||
         atomic_load_explicit(&pipeline->stop_requested,
                              memory_order_acquire)) {
-        salts_mutex_unlock(&runtime->mutex);
+        cmeta_mutex_unlock(&runtime->mutex);
         return TURBO_MEDIA_ERR_STATE;
     }
     if (frame->size == 0 || frame->size > runtime->max_packet_bytes ||
@@ -1636,8 +1636,8 @@ static int pipeline_runtime_on_frame(turbo_media_source_t *source,
         atomic_store_explicit(&runtime->async_status,
                               TURBO_PIPELINE_EBACKPRESSURE,
                               memory_order_release);
-        salts_cond_signal(&runtime->available);
-        salts_mutex_unlock(&runtime->mutex);
+        cmeta_cond_signal(&runtime->available);
+        cmeta_mutex_unlock(&runtime->mutex);
         return TURBO_MEDIA_ERR_FULL;
     }
     entry = &runtime->entries[runtime->tail];
@@ -1648,8 +1648,8 @@ static int pipeline_runtime_on_frame(turbo_media_source_t *source,
     entry->slot = runtime->tail;
     runtime->tail = (runtime->tail + 1u) % runtime->queue_capacity;
     runtime->count++;
-    salts_cond_signal(&runtime->available);
-    salts_mutex_unlock(&runtime->mutex);
+    cmeta_cond_signal(&runtime->available);
+    cmeta_mutex_unlock(&runtime->mutex);
     return TURBO_MEDIA_OK;
 }
 
@@ -1836,8 +1836,8 @@ static int pipeline_runtime_prepare(turbo_pipeline_t *pipeline,
                            "cannot allocate bounded Runtime input queue");
         return 0;
     }
-    salts_mutex_init(&runtime->mutex);
-    salts_cond_init(&runtime->available);
+    cmeta_mutex_init(&runtime->mutex);
+    cmeta_cond_init(&runtime->available);
     runtime->sync_initialized = 1;
     atomic_init(&runtime->async_status, TURBO_PIPELINE_OK);
     track_count = turbo_media_source_track_count(runtime->input_source);
@@ -1905,10 +1905,10 @@ static void pipeline_runtime_release(turbo_pipeline_t *pipeline) {
     runtime = &pipeline->runtime_rtp;
     server_runtime = runtime->server_runtime;
     if (runtime->sync_initialized) {
-        salts_mutex_lock(&runtime->mutex);
+        cmeta_mutex_lock(&runtime->mutex);
         runtime->accepting = 0;
-        salts_cond_broadcast(&runtime->available);
-        salts_mutex_unlock(&runtime->mutex);
+        cmeta_cond_broadcast(&runtime->available);
+        cmeta_mutex_unlock(&runtime->mutex);
     }
     if (runtime->subscription_id && runtime->input_source) {
         (void)turbo_media_source_unsubscribe(runtime->input_source,
@@ -1928,8 +1928,8 @@ static void pipeline_runtime_release(turbo_pipeline_t *pipeline) {
             server_runtime, &runtime->output_key);
     }
     if (runtime->sync_initialized) {
-        salts_cond_destroy(&runtime->available);
-        salts_mutex_destroy(&runtime->mutex);
+        cmeta_cond_destroy(&runtime->available);
+        cmeta_mutex_destroy(&runtime->mutex);
     }
     free(runtime->entries);
     free(runtime->packet_slots);
@@ -3136,20 +3136,20 @@ static turbo_pipeline_status_t pipeline_run_runtime_rtp(
     for (;;) {
         turbo_media_frame_t frame;
         int rc;
-        salts_mutex_lock(&runtime->mutex);
+        cmeta_mutex_lock(&runtime->mutex);
         while (runtime->count == 0 &&
                !atomic_load_explicit(&pipeline->stop_requested,
                                      memory_order_acquire) &&
                atomic_load_explicit(&runtime->async_status,
                                     memory_order_acquire) ==
                    TURBO_PIPELINE_OK)
-            salts_cond_wait(&runtime->available, &runtime->mutex);
+            cmeta_cond_wait(&runtime->available, &runtime->mutex);
         status = (turbo_pipeline_status_t)atomic_load_explicit(
             &runtime->async_status, memory_order_acquire);
         if (status != TURBO_PIPELINE_OK) {
             runtime->accepting = 0;
             runtime->count = 0;
-            salts_mutex_unlock(&runtime->mutex);
+            cmeta_mutex_unlock(&runtime->mutex);
             break;
         }
         if (atomic_load_explicit(&pipeline->stop_requested,
@@ -3157,18 +3157,18 @@ static turbo_pipeline_status_t pipeline_run_runtime_rtp(
             runtime->accepting = 0;
             runtime->count = 0;
             stopped = 1;
-            salts_mutex_unlock(&runtime->mutex);
+            cmeta_mutex_unlock(&runtime->mutex);
             break;
         }
         frame = runtime->entries[runtime->head].frame;
-        salts_mutex_unlock(&runtime->mutex);
+        cmeta_mutex_unlock(&runtime->mutex);
 
         rc = pipeline_runtime_process_packet(pipeline, &frame, error);
 
-        salts_mutex_lock(&runtime->mutex);
+        cmeta_mutex_lock(&runtime->mutex);
         runtime->head = (runtime->head + 1u) % runtime->queue_capacity;
         runtime->count--;
-        salts_mutex_unlock(&runtime->mutex);
+        cmeta_mutex_unlock(&runtime->mutex);
         atomic_fetch_add_explicit(&pipeline->packets_read, 1,
                                   memory_order_relaxed);
         atomic_fetch_add_explicit(&pipeline->bytes_read,
@@ -3334,10 +3334,10 @@ turbo_pipeline_status_t turbo_pipeline_request_stop(turbo_pipeline_t *pipeline) 
     atomic_store_explicit(&pipeline->stop_requested, 1, memory_order_release);
     if (pipeline->execution_mode == PIPELINE_EXECUTION_RUNTIME_RTP &&
         pipeline->runtime_rtp.sync_initialized) {
-        salts_mutex_lock(&pipeline->runtime_rtp.mutex);
+        cmeta_mutex_lock(&pipeline->runtime_rtp.mutex);
         pipeline->runtime_rtp.accepting = 0;
-        salts_cond_broadcast(&pipeline->runtime_rtp.available);
-        salts_mutex_unlock(&pipeline->runtime_rtp.mutex);
+        cmeta_cond_broadcast(&pipeline->runtime_rtp.available);
+        cmeta_mutex_unlock(&pipeline->runtime_rtp.mutex);
     }
     if (state == TURBO_PIPELINE_STATE_RUNNING) {
         expected = TURBO_PIPELINE_STATE_RUNNING;

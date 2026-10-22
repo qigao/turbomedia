@@ -7,7 +7,7 @@
 #include "signaling_source_identity.h"
 #include "turbo_media_auth.h"
 #include "turbo_media_tenant_quota.h"
-#include <salts_fs.h>
+#include <cmeta_fs.h>
 #include <toml.h>
 #include <tlog.h>
 #include <limits.h>
@@ -747,7 +747,7 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
         "auth", "tenant_quota", "redis", "logging"
     };
     enum { SIGNALING_TOML_ERROR_SIZE = 200 };
-    salts_fs_buf_t file = {0};
+    cmeta_fs_buf_t file = {0};
     char parse_error[SIGNALING_TOML_ERROR_SIZE] = {0};
     toml_table_t *root = NULL;
     toml_table_t *server = NULL;
@@ -782,7 +782,7 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
         goto cleanup;
     }
 
-    if (salts_fs_read_file(filename, &file) != 0) {
+    if (cmeta_fs_read_file(filename, &file) != 0) {
         TLOG_ERRORF("Failed to open configuration file: {}", filename);
         goto cleanup;
     }
@@ -828,7 +828,7 @@ int signaling_server_config_load(signaling_server_config_t *config, const char *
 cleanup:
     toml_free(root);
     root = NULL;
-    salts_fs_buf_free(&file);
+    cmeta_fs_buf_free(&file);
     config_storage_destroy(storage);
     return result;
 }

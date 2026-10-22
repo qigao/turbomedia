@@ -81,6 +81,7 @@ target_link_libraries(turbo_media_sdp PRIVATE Salts::Core)
 
 set(TURBO_MEDIA_DATACHANNEL_SOURCES
     src/turbo_datachannel.c
+    src/dc_certificate.cpp
     src/turbo_datachannel_errors.c
     src/turbo_dc_msg.c
     src/dcep_protocol.c
@@ -107,7 +108,6 @@ target_link_libraries(
           unofficial::usrsctp::usrsctp
           OpenSSL::SSL
           OpenSSL::Crypto
-          SaltsNet::Asn1Parser
           roaring::roaring)
 
 if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)

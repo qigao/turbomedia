@@ -6,7 +6,7 @@
 #include "ivr_room_bridge.h"
 #include "ivr_frame.h"
 #include "ivr_thread.h"
-#include "turbomedia_ivr_v1.h"
+#include "turbomedia_ivr_v2.h"
 #include "tinytest.h"
 #include <string.h>
 
@@ -112,7 +112,7 @@ static void send_join(const char *message_id, uint64_t expected_version) {
 
 void test_replay_within_window_is_idempotent(void) {
     DataBindError err = DATA_BIND_ERROR_INIT;
-    check_equal(TurboMediaIvrV1_codec_create(&g_codec, &err), DATA_BIND_OK);
+    check_equal(TurboMediaIvrV2_codec_create(&g_codec, &err), DATA_BIND_OK);
     ivr_mutex_init(&g_reply_lock);
     g_reply_ready = 0;
     g_reply_len = 0;

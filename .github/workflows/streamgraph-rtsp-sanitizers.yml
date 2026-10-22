@@ -1,0 +1,237 @@
+name: M15d RTSP released-SDK sanitizers and TSan evidence
+
+'on':
+  push:
+    branches: [master]
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - '.github/workflows/streamgraph-rtsp-sanitizers.yml'
+      - 'tests/**'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'tools/lemon/**'
+      - 'streamgraph/**'
+      - 'CMakeLists.txt'
+      - 'tests/CMakeLists.txt'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+  pull_request:
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - '.github/workflows/streamgraph-rtsp-sanitizers.yml'
+      - 'tests/**'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'tools/lemon/**'
+      - 'streamgraph/**'
+      - 'CMakeLists.txt'
+      - 'tests/CMakeLists.txt'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+
+concurrency:
+  group: m15d-rtsp-sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  first-party-rtsp:
+    name: RTSP NativeIO + Codec + ComponentPlugin (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # TSan with precompiled released Salts is an OBSERVATION, not
+        # first-party source-TSan acceptance (separate workflow).
+        mode: [asan-ubsan, tsan-diagnostic]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
+        with:
+          mode: read
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Prepare native desktop tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool ccache \
+            libpipewire-0.3-dev libx11-dev libxext-dev
+
+      - name: Restore exact released platform SDKs
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid linux-x64
+
+      - name: Restore binary-only media dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          $vcpkg = Join-Path $env:VCPKG_ROOT "vcpkg"
+          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+          & $vcpkg install "--x-manifest-root=." "--x-install-root=$installed" "--triplet=x64-linux" --only-binarycaching
+          if ($LASTEXITCODE -ne 0) { throw "cache-only vcpkg restore failed" }
+
+      - name: Build real first-party RTSP and Provider DSOs with Sanitizer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/rtsp-san-${{ matrix.mode }}"
+          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          $san = if ("${{ matrix.mode }}" -eq "asan-ubsan") { "address,undefined" } else { "thread" }
+          $flags = "-O1 -g -fsanitize=$san -fno-omit-frame-pointer"
+          $args = @(
+            "-S", ".", "-B", $build, "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Debug",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
+            "-DVCPKG_TARGET_TRIPLET=x64-linux",
+            "-DVCPKG_MANIFEST_MODE=OFF",
+            "-DVCPKG_INSTALLED_DIR=$installed",
+            "-DCMAKE_C_FLAGS=$flags",
+            "-DCMAKE_CXX_FLAGS=$flags",
+            "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=$san",
+            "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=$san",
+            "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
+            "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          )
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw "sanitizer configure failed" }
+          & cmake --build $build --target turbo_media_test_rtsp --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw "RTSP+Provider sanitizer build failed" }
+
+      - name: Verify first-party compile commands actually contain Sanitizer
+        shell: bash
+        env:
+          SAN_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          path = f"build/rtsp-san-{os.environ['SAN_MODE']}/compile_commands.json"
+          with open(path, encoding="utf-8") as f:
+              entries = json.load(f)
+          sanitizer = "-fsanitize=" + ("address,undefined" if os.environ["SAN_MODE"] == "asan-ubsan" else "thread")
+          required = (
+              "/tests/test_rtsp.c",
+              "/media/rtsp/turbo_rtsp.c",
+              "/network/transport_cnet.c",
+              "/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c",
+              "/streamgraph/tests/installed_salts/real_component_provider.c",
+          )
+          for suffix in required:
+              matches = [entry for entry in entries
+                         if entry["file"].replace("\\", "/").endswith(suffix)]
+              if not matches:
+                  raise SystemExit(f"Required RTSP/Codec/DSO first-party unit was NOT compiled: {suffix}")
+              for entry in matches:
+                  command = entry.get("command", " ".join(entry.get("arguments", ())))
+                  if sanitizer not in command or "-fno-omit-frame-pointer" not in command:
+                      raise SystemExit(f"Missing real {sanitizer} instrumentation: {suffix}")
+              print(f"Instrumented: {suffix} ({len(matches)} compile unit(s))")
+          PY
+          echo "First-party source instrumentation checked: ${{ matrix.mode }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Released Salts and external FFmpeg DSOs are NOT fully source-instrumented by this job." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Execute ASan+UBSan acceptance or published-binary TSan OBSERVATION
+        shell: bash
+        env:
+          SAN_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          build="$GITHUB_WORKSPACE/build/rtsp-san-$SAN_MODE"
+          for var in SALTS_ROOT SALTS_UTILS_ROOT SALTSNET_ROOT CHTTP_ROOT RULES_FORGE_ROOT; do
+            root="${!var:-}"
+            if [ -n "$root" ]; then
+              for dir in "$root/lib" "$root/bin"; do
+                if [ -d "$dir" ]; then export LD_LIBRARY_PATH="$dir:${LD_LIBRARY_PATH:-}"; fi
+              done
+            fi
+          done
+          for dir in "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/lib" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux/bin"; do
+            if [ -d "$dir" ]; then export LD_LIBRARY_PATH="$dir:${LD_LIBRARY_PATH:-}"; fi
+          done
+          pattern='^(turbo_media_test_rtsp|turbo_media_test_rtsp_deferred_check_cleanup)$'
+          if [ "$SAN_MODE" = asan-ubsan ]; then
+            export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1
+            export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+            ctest --test-dir "$build" -R "$pattern" --no-tests=error --output-on-failure --timeout 120
+            echo 'ASan+UBSan actual RTSP/Codec/Provider DSO acceptance: QUALIFIED PASS' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Salts.Native 2.3.0-rc.15 is the exact released but uninstrumented
+          # binary. Its internal allocator release/acquire cannot be observed
+          # by TSan compiled only into this consumer. NO TSan suppression.
+          # We archive the raw report and reject any *other* failure or race;
+          # a classified observation is NEVER labeled TSan-qualified.
+          test "$SAN_MODE" = tsan-diagnostic
+          export TSAN_OPTIONS=halt_on_error=1:exitcode=66
+          log="$build/published-salts-tsan-observation.log"
+          set +e
+          ctest --test-dir "$build" -R "$pattern" --no-tests=error --output-on-failure --timeout 120 > "$log" 2>&1
+          rc=$?
+          set -e
+          cat "$log"
+          python3 - "$log" "$rc" <<'PY'
+          import re, sys
+          from pathlib import Path
+          raw = Path(sys.argv[1]).read_text(encoding='utf-8', errors='replace')
+          exitcode = int(sys.argv[2])
+          required_cases = {'turbo_media_test_rtsp', 'turbo_media_test_rtsp_deferred_check_cleanup'}
+          pieces = re.split(r'(?m)^\s*Start \d+: ', raw)
+          seen = set()
+          observed = []
+          required = (
+              'WARNING: ThreadSanitizer: data race',
+              'SUMMARY: ThreadSanitizer: data race',
+              'turbo_media_cnet_send_copy',
+              'turbo_rtsp_server_drain_sends',
+              'turbo_rtsp_client_send_bytes',
+              'libsalts.so.2.3',
+              'in memcpy',
+          )
+          for piece in pieces[1:]:
+              name = piece.splitlines()[0].strip()
+              if name not in required_cases or name in seen:
+                  raise SystemExit(f'Unexpected or duplicated published-SDK CTest: {name}')
+              seen.add(name)
+              if '***Failed' in piece:
+                  missing = [marker for marker in required if marker not in piece]
+                  if missing or 'AddressSanitizer' in piece or 'runtime error:' in piece:
+                      raise SystemExit(f'{name} has NEW failure, not known Salts TSan visibility report: {missing}')
+                  observed.append(name)
+                  print(f'UNQUALIFIED TSan released-binary OBSERVATION: {name} (known allocator memcpy stack)')
+              elif 'Passed' in piece and 'WARNING: ThreadSanitizer' not in piece:
+                  print(f'Published binary runtime test passed without TSan warning in this run: {name}')
+              else:
+                  raise SystemExit(f'{name} failed without recognized TSan stack or has incomplete output')
+          if seen != required_cases or (exitcode == 0) == bool(observed):
+              raise SystemExit(f'Inconsistent CTest observations: rc={exitcode}, seen={seen}, warnings={observed}')
+          print('OBSERVATION ONLY: released Salts binary is NOT source-TSan-qualified.')
+          PY
+          echo '::warning title=Published Salts SDK TSan NOT QUALIFIED::Raw diagnostic archived. This is not a concurrency conformance pass; use the exact rc.15 source-TSan workflow.'
+          echo 'Published Salts.Native 2.3.0-rc.15 TSan: **UNQUALIFIED DIAGNOSTIC** (NOT a TSan pass)' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No suppression. Known released binary allocator memcpy observation only; any new race/failure stops this job.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Archive raw published-Salts TSan diagnostic
+        if: ${{ always() && matrix.mode == 'tsan-diagnostic' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m15d-published-salts-tsan-unqualified
+          path: build/rtsp-san-tsan-diagnostic/published-salts-tsan-observation.log
+          if-no-files-found: warn
+          retention-days: 14

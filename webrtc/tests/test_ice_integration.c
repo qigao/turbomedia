@@ -8,7 +8,7 @@
 #include "turbo_datachannel.h"
 #include "ice_integration.h"
 #include <ice/salts_ice.h>
-#include <salts_thread.h>
+#include <cmeta_thread.h>
 #include <string.h>
 
 /* Test context */
@@ -95,7 +95,7 @@ void tearDown(void) {
     for (int i = 0; i < 50; i++) {
         ice_integration_poll(g_test_ctx.ice_a);
         ice_integration_poll(g_test_ctx.ice_b);
-        salts_sleep_ms(1);
+        cmeta_sleep_ms(1);
     }
 }
 
@@ -349,7 +349,7 @@ void test_ice_integration_with_stun(void) {
     /* This gives time for async operations to finish before tearDown */
     for (int i = 0; i < 100; i++) {
         ice_integration_poll(g_test_ctx.ice_a);
-        salts_sleep_ms(10);
+        cmeta_sleep_ms(10);
     }
 }
 

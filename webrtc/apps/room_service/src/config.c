@@ -174,7 +174,7 @@ static int room_service_scope_valid(const char *scope) {
 
 static int room_service_control_identities_valid(
     const room_service_app_config_t *config) {
-    uint64_t now_ms = salts_realtime_ms();
+    uint64_t now_ms = cmeta_realtime_ms();
     int i;
     int j;
     if (config->control_ws_worker_identity_count <= 0 ||

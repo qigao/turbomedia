@@ -398,7 +398,7 @@ static int live_run_publish(const live_options_t *options) {
                 goto cleanup;
             }
         }
-        salts_sleep_ms(LIVE_POLL_SLEEP_MS);
+        cmeta_sleep_ms(LIVE_POLL_SLEEP_MS);
     }
 
     result = 0;
@@ -524,7 +524,7 @@ static int live_run_subscribe(const live_options_t *options) {
         if (live_subscriber_poll_transport(subscriber) != 0) {
             goto cleanup;
         }
-        salts_sleep_ms(LIVE_POLL_SLEEP_MS);
+        cmeta_sleep_ms(LIVE_POLL_SLEEP_MS);
     }
 
     result = 0;

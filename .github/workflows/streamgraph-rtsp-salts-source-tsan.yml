@@ -1,0 +1,241 @@
+name: M15d RTSP Salts full-source TSan #1170
+
+'on':
+  push:
+    branches: [master]
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - '.github/workflows/streamgraph-rtsp-salts-source-tsan.yml'
+      - 'tests/**'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'streamgraph/**'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'CMakeLists.txt'
+  pull_request:
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - '.github/workflows/streamgraph-rtsp-salts-source-tsan.yml'
+      - 'tests/**'
+      - 'media/rtsp/**'
+      - 'network/**'
+      - 'streamgraph/**'
+      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'CMakeLists.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+  TSAN_OPTIONS: halt_on_error=1:exitcode=66
+  SALTS_SOURCE_COMMIT: 21bdb1145fbb2b39ee3fa644173ec037adba7b87
+
+concurrency:
+  group: m15d-source-salts-tsan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rtsp-original-salts:
+    name: RTSP real CNet + release-tag Salts allocator source TSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout the M15d RTSP consumer
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      # Immutable official release-tag source conformance, not a replacement release
+      # or a second CNet implementation. Tracks Salts Draft #1171/#1170.
+      - name: Checkout exact released Salts 2.3.0-rc.15 source commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: qigao/salts
+          ref: 21bdb1145fbb2b39ee3fa644173ec037adba7b87
+          path: build/m15d-salts-source
+          persist-credentials: false
+
+      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
+        with:
+          mode: read
+      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Prepare source build tools and immutable provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config nasm autoconf automake libtool ccache python3 \
+            libpipewire-0.3-dev libx11-dev libxext-dev
+          test "$(git -C build/m15d-salts-source rev-parse HEAD)" = "$SALTS_SOURCE_COMMIT"
+          mkdir -p build/m15d-salts-tsan-evidence
+          {
+            printf 'turbomedia_pr_head=%s\n' "$(git rev-parse HEAD)"
+            printf 'salts_release_tag_source=%s\n' "$SALTS_SOURCE_COMMIT"
+            printf 'qualification=full-source-salts-tsan+first-party-turbomedia-tsan\n'
+            printf 'published_salts_sdk_used=false\n'
+            printf 'third_party_libraries_source_tsan=false\n'
+          } | tee build/m15d-salts-tsan-evidence/provenance.txt
+
+      - name: Restore exactly published *other* platform SDKs
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid linux-x64
+
+      - name: Restore TurboMedia third-party binary packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
+          $vcpkg = Join-Path $env:VCPKG_ROOT 'vcpkg'
+          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
+          & $vcpkg install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=x64-linux' --only-binarycaching
+          if ($LASTEXITCODE -ne 0) { throw 'binary-only media dependencies unavailable' }
+
+      - name: Build and install exact release-tag Salts Core / CNet with TSan
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$GITHUB_WORKSPACE/build/m15d-salts-source"
+          build="$GITHUB_WORKSPACE/build/m15d-salts-source-build"
+          stage="$RUNNER_TEMP/m15d-original-salts-tsan-sdk"
+          cmake --preset linux-tsan-ci -S "$src" -B "$build" \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_INSTALL_PREFIX="$stage" \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF \
+            -DENABLE_SANITIZER_ADDRESS=OFF -DENABLE_SANITIZER_THREAD=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build "$build" --parallel 2
+          cmake --install "$build"
+          test -f "$stage/lib/cmake/Salts/SaltsConfig.cmake"
+          test -f "$stage/lib/libsalts.so.2.3"
+          echo "SALTS_SOURCE_TSAN_ROOT=$stage" >> "$GITHUB_ENV"
+
+      - name: Verify no uninstrumented original Salts allocator / CNet objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee build/m15d-salts-tsan-evidence/salts-instrumentation.txt
+          import json
+          from pathlib import Path
+          commands=json.loads(Path('build/m15d-salts-source-build/compile_commands.json').read_text())
+          for src in (
+              '/utils/src/cmeta_buffer.c',
+              '/utils/src/cmeta_thread.c',
+              '/cnet/src/cnet_client.c',
+              '/cnet/src/cnet_owner.c',
+          ):
+              matches=[x for x in commands if x['file'].replace('\\','/').endswith(src)]
+              if not matches or any('-fsanitize=thread' not in
+                  x.get('command', ' '.join(x.get('arguments', ()))) for x in matches):
+                  raise SystemExit(f'Uninstrumented source Salts dependency: {src}')
+              print(f'SOURCE TSAN Salts {src}: {len(matches)} compile unit(s)')
+          PY
+
+      - name: Build original RTSP NativeIO and Provider against release-tag Salts SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:SALTS_ROOT = $env:SALTS_SOURCE_TSAN_ROOT
+          $build = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-rtsp-source-salts-tsan'
+          $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
+          $flags = '-O1 -g -fsanitize=thread -fno-omit-frame-pointer'
+          $args = @(
+            '-S', '.', '-B', $build, '-G', 'Ninja',
+            '-DCMAKE_BUILD_TYPE=Debug',
+            '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
+            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
+            '-DVCPKG_TARGET_TRIPLET=x64-linux',
+            '-DVCPKG_MANIFEST_MODE=OFF',
+            "-DVCPKG_INSTALLED_DIR=$installed",
+            "-DCMAKE_C_FLAGS=$flags",
+            "-DCMAKE_CXX_FLAGS=$flags",
+            '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread',
+            '-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread',
+            '-DCMAKE_C_COMPILER_LAUNCHER=ccache',
+            '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache'
+          )
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw 'source-Salts RTSP TSan configure failed' }
+          & cmake --build $build --target turbo_media_test_rtsp --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'source-Salts RTSP TSan build failed' }
+
+      - name: Prove exact release-tag Salts runtime is linked and RTSP units instrumented
+        shell: bash
+        run: |
+          set -euo pipefail
+          build=build/m15d-rtsp-source-salts-tsan
+          stage="$SALTS_SOURCE_TSAN_ROOT"
+          grep -Fx "Salts_DIR:PATH=$stage/lib/cmake/Salts" "$build/CMakeCache.txt"
+          python3 - <<'PY' | tee build/m15d-salts-tsan-evidence/rtsp-instrumentation.txt
+          import json
+          from pathlib import Path
+          cmds=json.loads(Path('build/m15d-rtsp-source-salts-tsan/compile_commands.json').read_text())
+          for suffix in (
+              '/tests/test_rtsp.c',
+              '/network/internal/turbo_cnet_send_internal.c',
+              '/media/rtsp/turbo_rtsp.c',
+              '/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c',
+              '/streamgraph/tests/installed_salts/real_component_provider.c',
+          ):
+              found=[x for x in cmds if x['file'].replace('\\','/').endswith(suffix)]
+              if not found or any('-fsanitize=thread' not in
+                  x.get('command', ' '.join(x.get('arguments', ()))) for x in found):
+                  raise SystemExit(f'First-party RTSP source not TSan-instrumented: {suffix}')
+              print(f'SOURCE TSAN TurboMedia {suffix}: {len(found)} compile unit(s)')
+          PY
+          export LD_LIBRARY_PATH="$stage/lib:$stage/bin:${LD_LIBRARY_PATH:-}"
+          ldd "$build/bin/turbo_media_test_rtsp" | tee build/m15d-salts-tsan-evidence/ldd.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          root=str(Path(__import__('os').environ['SALTS_SOURCE_TSAN_ROOT']).resolve())
+          lines=Path('build/m15d-salts-tsan-evidence/ldd.txt').read_text().splitlines()
+          salts=[line for line in lines if 'libsalts.so.2.3' in line]
+          if not salts or any(root not in line for line in salts):
+              raise SystemExit('RTSP host is not using exact source-instrumented Salts SO')
+          print('Verified libsalts.so.2.3 resolved to exact rc.15 tag source SDK')
+          PY
+
+      - name: Run real CNet RTSP / delayed Codec / Provider DSO under source TSan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-rtsp-source-salts-tsan'
+          $roots = @($env:SALTS_SOURCE_TSAN_ROOT)
+          foreach ($key in @('SALTS_UTILS_ROOT','SALTSNET_ROOT','CHTTP_ROOT','RULES_FORGE_ROOT')) {
+            $root = [Environment]::GetEnvironmentVariable($key)
+            if (-not [string]::IsNullOrWhiteSpace($root)) { $roots += $root }
+          }
+          $roots += (Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed/x64-linux')
+          $dirs = @()
+          foreach ($root in $roots) {
+            foreach ($leaf in @('lib','bin')) {
+              $d = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $d -PathType Container) { $dirs += $d }
+            }
+          }
+          if ($env:LD_LIBRARY_PATH) { $dirs += $env:LD_LIBRARY_PATH }
+          $env:LD_LIBRARY_PATH = $dirs -join [IO.Path]::PathSeparator
+          $env:TSAN_OPTIONS = 'halt_on_error=1:exitcode=66'
+          & ctest --test-dir $build -R '^(turbo_media_test_rtsp|turbo_media_test_rtsp_deferred_check_cleanup)$' --no-tests=error --output-on-failure --timeout 120
+          if ($LASTEXITCODE -ne 0) { throw 'real source-Salts+RTSP/DSO TSan gate failed' }
+
+      - name: Preserve exact source provenance and TSan evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m15d-rtsp-full-source-salts-tsan
+          path: |
+            build/m15d-salts-tsan-evidence/
+            build/m15d-rtsp-source-salts-tsan/Testing/Temporary/LastTest.log
+            build/m15d-rtsp-source-salts-tsan/Testing/Temporary/CTestCostData.txt
+          retention-days: 14

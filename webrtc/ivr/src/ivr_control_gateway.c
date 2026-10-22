@@ -2,7 +2,7 @@
 #include "ivr_internal.h"
 #include "ivr_frame.h"
 #include "ivr_control_ws.h"
-#include "turbomedia_ivr_v1.h"
+#include "turbomedia_ivr_v2.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1437,7 +1437,7 @@ ivr_status_t ivr_control_gateway_create(const ivr_control_gateway_config_t *conf
     }
     snprintf(g->worker_id, sizeof(g->worker_id), "%s", config->worker_id);
     DataBindError err = DATA_BIND_ERROR_INIT;
-    if (TurboMediaIvrV1_codec_create(&g->codec, &err) != DATA_BIND_OK) {
+    if (TurboMediaIvrV2_codec_create(&g->codec, &err) != DATA_BIND_OK) {
         free(g);
         return IVR_ENOSPC;
     }

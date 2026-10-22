@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include <tlog.h>
-#include <salts_fs.h>
+#include <cmeta_fs.h>
 #include <toml.h>
 
 enum { RTC_APP_TOML_ERROR_SIZE = 200 };
@@ -18,7 +18,7 @@ typedef struct rtc_app_config_storage_s {
 } rtc_app_config_storage_t;
 
 typedef struct rtc_app_toml_document_s {
-    salts_fs_buf_t file;
+    cmeta_fs_buf_t file;
     toml_table_t *root;
 } rtc_app_toml_document_t;
 
@@ -296,7 +296,7 @@ static inline int rtc_app_toml_document_open(
     char parse_error[RTC_APP_TOML_ERROR_SIZE] = {0};
 
     memset(document, 0, sizeof(*document));
-    if (salts_fs_read_file(filename, &document->file) != 0) {
+    if (cmeta_fs_read_file(filename, &document->file) != 0) {
         TLOG_ERRORF("Failed to open configuration file: {}", filename);
         return -1;
     }
@@ -305,7 +305,7 @@ static inline int rtc_app_toml_document_open(
     if (!document->root) {
         TLOG_ERRORF("Failed to parse TOML configuration file {}: {}", filename,
                     parse_error);
-        salts_fs_buf_free(&document->file);
+        cmeta_fs_buf_free(&document->file);
         return -1;
     }
     return 0;
@@ -318,7 +318,7 @@ static inline void rtc_app_toml_document_close(
     }
     toml_free(document->root);
     document->root = NULL;
-    salts_fs_buf_free(&document->file);
+    cmeta_fs_buf_free(&document->file);
 }
 
 static inline int rtc_app_config_string_in_set(

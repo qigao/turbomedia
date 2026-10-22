@@ -2327,6 +2327,143 @@ suite("turbo_rtsp_lib") {
           -1);
     }
 
+    it("parses narrow RFC2250 MPEG video ES with I/P/B picture identity") {
+      /* MBZ=0, T=0, TR=0x123, AN=0, N=0, S=B=E=1.
+       * Picture type I/P/B lives in low three bits of byte 2. */
+      uint8_t payload[]={0x01,0x23,0x39,0x00,
+                         0x00,0x00,0x01,0x00,0x78};
+      turbo_rtsp_mpeg_video_payload_t picture;
+      memset(&picture,0,sizeof(picture));
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),0);
+      check_equal(picture.temporal_reference,0x123);
+      check_equal(picture.picture_type,1);
+      check_equal(picture.sequence_header,1);
+      check_equal(picture.begins_slice,1);
+      check_equal(picture.ends_slice,1);
+      check(picture.es==payload+TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE);
+      check_equal(picture.es_len,5);
+      check_equal(picture.es[3],0x00);
+      payload[2]=0x1a;
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),0);
+      check_equal(picture.picture_type,2);
+      payload[2]=0x1b;
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),0);
+      check_equal(picture.picture_type,3);
+    }
+
+    it("rejects malformed and unsupported RFC2250 MPEG video headers") {
+      uint8_t payload[]={0x00,0x00,0x19,0x00,0xaa};
+      turbo_rtsp_mpeg_video_payload_t picture;
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          NULL,sizeof(payload),&picture),-1);
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),NULL),-1);
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,TURBO_RTSP_MPEG_VIDEO_HEADER_SIZE,&picture),-1);
+      payload[0]=0x80; /* non-zero reserved MBZ */
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),-1);
+      payload[0]=0x04; /* optional MPEG-2 T extension unsupported */
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),-1);
+      payload[0]=0x00;
+      payload[2]=0x40|0x01; /* N without AN */
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),-1);
+      payload[2]=0x80|0x40|0x01; /* AN authorizes N */
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),0);
+      payload[2]=0x00; /* reserved picture type */
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),-1);
+      payload[2]=0x04; /* MPEG D picture outside supported profile */
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),-1);
+      payload[2]=0x05; /* reserved P type */
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          payload,sizeof(payload),&picture),-1);
+    }
+
+    it("accepts exactly one RFC2250 MPEG ES picture matching TR and type") {
+      /* One Sequence Header, one MPEG Picture Header (TR=0x123, P=2),
+       * one Slice. B/E and RTP marker describe the outer boundaries,
+       * but are NOT enough without examining the ES picture header. */
+      const uint8_t wire[]={
+          0x01,0x23,0x3a,0x00, /* RFC2250: S=1 B=1 E=1 P=2 */
+          0x00,0x00,0x01,0xb3,0x11,0x22,0x33,0x44,
+          0x00,0x00,0x01,0x00,0x48,0xd0,0xaa,0xbb,
+          0x00,0x00,0x01,0x01,0xde,0xad,0xbe,0xef
+      };
+      turbo_rtsp_mpeg_video_payload_t pic;
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          wire,sizeof(wire),&pic),0);
+      check_equal(pic.temporal_reference,0x123);
+      check_equal(pic.picture_type,2);
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&pic,1u),0);
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&pic,0u),-1);
+      pic.begins_slice=0u;
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&pic,1u),-1);
+      pic.begins_slice=1u;pic.ends_slice=0u;
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&pic,1u),-1);
+      pic.ends_slice=1u;pic.picture_type=3u;
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&pic,1u),-1);
+      pic.picture_type=2u;pic.temporal_reference=0x122u;
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&pic,1u),-1);
+      pic.temporal_reference=0x123u;pic.sequence_header=0u;
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&pic,1u),-1);
+    }
+
+    it("rejects missing, repeated or truncated MPEG picture headers") {
+      const uint8_t missing_picture[]={
+          0x00,0x00,0x19,0x00, /* B/E but only a Slice present */
+          0x00,0x00,0x01,0x01,0xab,0xcd,0xef,0xff
+      };
+      const uint8_t repeated_picture[]={
+          0x00,0x03,0x1b,0x00,
+          0x00,0x00,0x01,0x00,0x00,0xd8,
+          0x00,0x00,0x01,0x00,0x00,0xd8,
+          0x00,0x00,0x01,0x01,0x18,0x29
+      };
+      const uint8_t picture_no_slice[]={
+          0x00,0x03,0x1b,0x00,
+          0x00,0x00,0x01,0x00,0x00,0xd8,0x11,0x22,0x33,0x44
+      };
+      const uint8_t slice_before_picture[]={
+          0x00,0x03,0x1b,0x00,
+          0x00,0x00,0x01,0x01,0x18,0x29,
+          0x00,0x00,0x01,0x00,0x00,0xd8
+      };
+      turbo_rtsp_mpeg_video_payload_t picture;
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          missing_picture,sizeof(missing_picture),&picture),0);
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&picture,1u),-1);
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          repeated_picture,sizeof(repeated_picture),&picture),0);
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&picture,1u),-1);
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          picture_no_slice,sizeof(picture_no_slice),&picture),0);
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&picture,1u),-1);
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          slice_before_picture,sizeof(slice_before_picture),&picture),0);
+      check_equal(turbo_rtsp_mpeg_video_one_picture_validate(&picture,1u),-1);
+    }
+
+    it("keeps RFC2250 video fragments separate from complete Codec packets") {
+      const uint8_t fragment[]={0x00,0x00,0x01,0x00,0x55,0x66};
+      turbo_rtsp_mpeg_video_payload_t picture;
+      /* Parsing a fragment is allowed: B/E bits are both zero. Host
+       * MUST require B=E=RTP marker=1 before submitting to tm_ffd.
+       * There is no unsupported silent reassembly or hidden buffer. */
+      check_equal(turbo_rtsp_mpeg_video_payload_parse(
+          fragment,sizeof(fragment),&picture),0);
+      check_equal(picture.begins_slice,0);
+      check_equal(picture.ends_slice,0);
+      check_equal(picture.es_len,2);
+    }
+
     it("parses MPEG2 TS RTP payloads on TS packet boundaries") {
       static uint8_t ts_data[TURBO_RTSP_MPEG2_TS_PACKET_SIZE * 2];
       static turbo_rtsp_mpeg2_ts_payload_t ts;

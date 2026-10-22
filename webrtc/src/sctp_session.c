@@ -10,6 +10,8 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
 #include "tlog.h"
 
 /* ============================================================================
@@ -17,7 +19,7 @@
  * ============================================================================ */
 
 static atomic_int g_context_count = 0;
-static salts_once_t g_sctp_once = SALTS_ONCE_INIT;
+static cmeta_once_t g_sctp_once = SALTS_ONCE_INIT;
 static int g_sctp_init_result = -1;
 
 static void sctp_global_init_once(void) {
@@ -76,7 +78,7 @@ void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason) {
 
 int sctp_global_init(void) {
     atomic_fetch_add_explicit(&g_context_count, 1, memory_order_relaxed);
-    salts_once(&g_sctp_once, sctp_global_init_once);
+    cmeta_once(&g_sctp_once, sctp_global_init_once);
     if (g_sctp_init_result != 0) {
         atomic_fetch_sub_explicit(&g_context_count, 1, memory_order_relaxed);
         return -1;
@@ -103,32 +105,73 @@ void sctp_global_cleanup(void) {
  * SCTP Callbacks (called by usrsctp)
  * ============================================================================ */
 
-int sctp_outbound_packet_cb(void *addr, void *data, size_t length, uint8_t tos, uint8_t set_df) {
+typedef struct sctp_outbound_owner_command_s {
+    turbo_dc_peer_t *peer;
+    uint8_t *packet;
+    size_t length;
+    int result;
+} sctp_outbound_owner_command_t;
+
+static void sctp_outbound_owner_task(void *arg1, void *arg2) {
+    sctp_outbound_owner_command_t *command =
+        (sctp_outbound_owner_command_t *)arg1;
+    turbo_dc_peer_t *peer;
+    int written;
+    (void)arg2;
+
+    if (!command || !command->peer || !command->packet ||
+        command->length == 0 || command->length > INT_MAX) {
+        return;
+    }
+    peer = command->peer;
+    command->result = -1;
+    if (!peer->dtls.ssl || !peer->dtls.handshake_done) {
+        return;
+    }
+
+    written = SSL_write(peer->dtls.ssl, command->packet, (int)command->length);
+    if (written != (int)command->length) {
+        TLOG_ERRORF("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
+                    command->length, written, errno);
+        return;
+    }
+
+    dtls_send_output(peer);
+    command->result = 0;
+}
+
+int sctp_outbound_packet_cb(void *addr, void *data, size_t length,
+                            uint8_t tos, uint8_t set_df) {
     (void)tos;
     (void)set_df;
 
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)addr;
-    if (!peer || dc_peer_acquire(peer) != 0) {
-        return -1;
-    }
-    if (!peer->dtls.handshake_done) {
-        TLOG_WARNF("SCTP outbound dropped before DTLS handshake: bytes={}",
-                  length);
-        dc_peer_release(peer);
+    sctp_outbound_owner_command_t command;
+    int dispatch_status;
+
+    if (!peer || !data || length == 0 || length > UINT16_MAX ||
+        dc_peer_acquire(peer) != 0) {
         return -1;
     }
 
-    int written = SSL_write(peer->dtls.ssl, data, (int)length);
-    if (written <= 0) {
-        TLOG_ERRORF("SCTP outbound SSL_write failed bytes={} ret={} errno={}",
-                   length, written, errno);
+    /* usrsctp may emit packets from its timer pump as well as sendv(). Copy
+     * callback-owned bytes before synchronously dispatching SSL/BIO work to
+     * the Peer owner. The packet is bounded to one SCTP wire packet. */
+    command.packet = (uint8_t *)malloc(length);
+    if (!command.packet) {
         dc_peer_release(peer);
         return -1;
     }
+    memcpy(command.packet, data, length);
+    command.peer = peer;
+    command.length = length;
+    command.result = -1;
 
-    dtls_send_output(peer);
+    dispatch_status = dc_peer_post_owner_sync(
+        peer, sctp_outbound_owner_task, &command, NULL);
+    free(command.packet);
     dc_peer_release(peer);
-    return 0;
+    return dispatch_status == SALTS_OK ? command.result : -1;
 }
 
 int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
@@ -178,12 +221,20 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         return 1;
     }
 
-    turbo_dc_channel_t *channel = NULL;
-    channel = peer_get_channel(peer, stream_id);
-
-    if (channel && channel->on_message && channel->is_open) {
-        int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
-        channel->on_message(channel, data, datalen, is_binary, channel->user_data);
+    turbo_dc_channel_t *channel = dc_channel_admit(peer, stream_id);
+    if (channel) {
+        turbo_dc_message_cb callback = NULL;
+        void *callback_data;
+        cmeta_mutex_lock(&peer->operation_mutex);
+        if (!channel->closing && channel->is_open && !peer->destroying)
+            callback = channel->on_message;
+        callback_data = channel->user_data;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        if (callback) {
+            int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
+            callback(channel, data, datalen, is_binary, callback_data);
+        }
+        dc_channel_release(channel);
     }
 
     free(data);

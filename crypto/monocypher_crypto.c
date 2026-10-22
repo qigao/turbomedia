@@ -18,7 +18,7 @@ int turbo_media_x25519_keypair_generate(
 
   if (!private_key || !public_key || private_key == public_key) return SALTS_EINVAL;
 
-  rc = salts_secure_random(generated_private, sizeof(generated_private));
+  rc = cmeta_secure_random(generated_private, sizeof(generated_private));
   if (rc != SALTS_OK) return rc;
 
   crypto_x25519_public_key(generated_public, generated_private);
@@ -66,13 +66,13 @@ int turbo_media_x25519_shared_secret(
 
 int turbo_media_xchacha20_key_generate(uint8_t key[TURBO_MEDIA_XCHACHA20_KEY_SIZE]) {
   if (!key) return SALTS_EINVAL;
-  return salts_secure_random(key, TURBO_MEDIA_XCHACHA20_KEY_SIZE);
+  return cmeta_secure_random(key, TURBO_MEDIA_XCHACHA20_KEY_SIZE);
 }
 
 int turbo_media_xchacha20_nonce_generate(
     uint8_t nonce[TURBO_MEDIA_XCHACHA20_NONCE_SIZE]) {
   if (!nonce) return SALTS_EINVAL;
-  return salts_secure_random(nonce, TURBO_MEDIA_XCHACHA20_NONCE_SIZE);
+  return cmeta_secure_random(nonce, TURBO_MEDIA_XCHACHA20_NONCE_SIZE);
 }
 
 int turbo_media_xchacha20poly1305_encrypt(

@@ -6,7 +6,7 @@
 #include <string.h>
 
 #ifndef IVR_TEST_SCHEMA_PATH
-#define IVR_TEST_SCHEMA_PATH "turbomedia_ivr_v1.schema"
+#define IVR_TEST_SCHEMA_PATH "turbomedia_ivr_v2.schema"
 #endif
 
 static DataBind *g_codec;
@@ -73,6 +73,9 @@ static void assert_roundtrip(uint8_t format) {
     check_equal(ivr_protocol_encode(g_codec, &info, source, frame,
                                           sizeof(frame), &frame_len), IVR_OK);
     check_true(frame_len > IVR_FRAME_HEADER_SIZE);
+    const uint8_t expected_header[] = {
+        'T', 'I', 'V', 'R', 1, format, 1, 0, 0xf9, 0x2a, 2, 0};
+    check_equal(frame, expected_header, sizeof(expected_header));
     check_equal(ivr_protocol_decode(g_codec, frame, frame_len, &decoded,
                                           &decoded_info), IVR_OK);
     check_equal(data_bind_object_type_name(decoded), "ConferenceJoinCommandV1");
@@ -85,6 +88,25 @@ static void assert_roundtrip(uint8_t format) {
 void test_bin_roundtrip(void) { assert_roundtrip(IVR_FMT_BIN); }
 
 void test_text_roundtrip(void) { assert_roundtrip(IVR_FMT_TEXT); }
+
+void test_retired_schema_rejected_before_payload(void) {
+    /* A published major 1 header, including its old type ID. The deliberately
+       invalid payload must never reach either decoder. */
+    uint8_t frame[] = {'T', 'I', 'V', 'R', 1, 1, 1, 0, 0xe9, 0x03, 1, 0, 0xff};
+    for (uint8_t format = IVR_FMT_BIN; format <= IVR_FMT_TEXT; ++format) {
+        DataBindObject *decoded = (DataBindObject *)1;
+        frame[5] = format;
+        check_equal(ivr_protocol_decode(g_codec, frame, sizeof(frame),
+                                        &decoded, NULL), IVR_EVERSION);
+        check_null(decoded);
+    }
+    /* Relabeling an old type as major 2 is also invalid. */
+    frame[10] = IVR_SCHEMA_MAJOR;
+    DataBindObject *decoded = (DataBindObject *)1;
+    check_equal(ivr_protocol_decode(g_codec, frame, sizeof(frame),
+                                    &decoded, NULL), IVR_EINVAL);
+    check_null(decoded);
+}
 
 void test_text_is_compact_json(void) {
     uint8_t frame[1024];
@@ -152,6 +174,7 @@ spec("test_ivr_protocol") {
 
   it("test_bin_roundtrip") { test_bin_roundtrip(); };
   it("test_text_roundtrip") { test_text_roundtrip(); };
+  it("test_retired_schema_rejected_before_payload") { test_retired_schema_rejected_before_payload(); };
   it("test_text_is_compact_json") { test_text_is_compact_json(); };
   it("test_malformed_text_rejected") { test_malformed_text_rejected(); };
   it("test_object_type_mismatch_rejected") { test_object_type_mismatch_rejected(); };

@@ -86,7 +86,7 @@ struct turbo_media_context_s {
   turbo_dc_peer_t *peer;
   void *user_data;
   srtp_session_t *rtcp_session;
-  salts_mutex_t srtp_mutex;
+  cmeta_mutex_t srtp_mutex;
   int srtp_mutex_initialized;
 
   /* Tracks */
@@ -108,7 +108,7 @@ struct turbo_media_context_s {
 
 #define MEDIA_RTP_PAYLOAD_MTU 1100
 
-static uint64_t get_time_ms(void) { return salts_monotonic_ms(); }
+static uint64_t get_time_ms(void) { return cmeta_monotonic_ms(); }
 
 static uint32_t read_u32(const uint8_t *p) {
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
@@ -253,13 +253,13 @@ static int media_track_srtp_protect(turbo_media_track_t *track, uint8_t *packet,
 
   if (!track || !track->ctx || !packet || !len) return -1;
   ctx = track->ctx;
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   if (!track->srtp_send_session) {
-    salts_mutex_unlock(&ctx->srtp_mutex);
+    cmeta_mutex_unlock(&ctx->srtp_mutex);
     return -1;
   }
   result = turbo_srtp_protect(track->srtp_send_session, packet, len, max_len);
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
   return result;
 }
 
@@ -270,13 +270,13 @@ static int media_track_srtp_unprotect(turbo_media_track_t *track, uint8_t *packe
 
   if (!track || !track->ctx || !packet || !len) return -1;
   ctx = track->ctx;
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   if (!track->srtp_recv_session) {
-    salts_mutex_unlock(&ctx->srtp_mutex);
+    cmeta_mutex_unlock(&ctx->srtp_mutex);
     return -1;
   }
   result = turbo_srtp_unprotect(track->srtp_recv_session, packet, len);
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
   return result;
 }
 
@@ -285,13 +285,13 @@ static int media_srtcp_protect(turbo_media_context_t *ctx, uint8_t *packet, size
   int result;
 
   if (!ctx || !packet || !len) return -1;
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   if (!ctx->rtcp_session) {
-    salts_mutex_unlock(&ctx->srtp_mutex);
+    cmeta_mutex_unlock(&ctx->srtp_mutex);
     return -1;
   }
   result = turbo_srtcp_protect(ctx->rtcp_session, packet, len, max_len);
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
   return result;
 }
 
@@ -299,13 +299,13 @@ static int media_srtcp_unprotect(turbo_media_context_t *ctx, uint8_t *packet, si
   int result;
 
   if (!ctx || !packet || !len) return -1;
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   if (!ctx->rtcp_session) {
-    salts_mutex_unlock(&ctx->srtp_mutex);
+    cmeta_mutex_unlock(&ctx->srtp_mutex);
     return -1;
   }
   result = turbo_srtcp_unprotect(ctx->rtcp_session, packet, len);
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
   return result;
 }
 
@@ -351,9 +351,9 @@ static int media_setup_new_track_srtp_if_ready(turbo_media_track_t *track) {
 
   if (!track || !track->ctx) return -1;
   ctx = track->ctx;
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   srtp_ready = ctx->rtcp_session != NULL;
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
   if (!srtp_ready) return 0;
 
   profile = turbo_dc_peer_get_srtp_keys(ctx->peer, &material);
@@ -364,16 +364,16 @@ static int media_setup_new_track_srtp_if_ready(turbo_media_track_t *track) {
     return -1;
   }
 
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   if (!ctx->rtcp_session) {
-    salts_mutex_unlock(&ctx->srtp_mutex);
+    cmeta_mutex_unlock(&ctx->srtp_mutex);
     if (send_session) srtp_session_destroy(send_session);
     if (recv_session) srtp_session_destroy(recv_session);
     return -1;
   }
   track->srtp_send_session = send_session;
   track->srtp_recv_session = recv_session;
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
   return 0;
 }
 
@@ -402,12 +402,12 @@ turbo_media_context_t *turbo_media_create(turbo_dc_peer_t *peer, void *user_data
   ctx->peer = peer;
   ctx->user_data = user_data;
   ctx->rtcp_interval_ms = 5000; /* Default 5 second RTCP interval */
-  salts_mutex_init(&ctx->srtp_mutex);
+  cmeta_mutex_init(&ctx->srtp_mutex);
   ctx->srtp_mutex_initialized = 1;
 
   /* Initialize SRTP library */
   if (srtp_lib_init() != 0) {
-    salts_mutex_destroy(&ctx->srtp_mutex);
+    cmeta_mutex_destroy(&ctx->srtp_mutex);
     free(ctx);
     return NULL;
   }
@@ -435,15 +435,15 @@ void turbo_media_destroy(turbo_media_context_t *ctx) {
     turbo_media_remove_track(track);
   }
 
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   if (ctx->rtcp_session) {
     srtp_session_destroy(ctx->rtcp_session);
     ctx->rtcp_session = NULL;
   }
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
 
   if (ctx->srtp_mutex_initialized) {
-    salts_mutex_destroy(&ctx->srtp_mutex);
+    cmeta_mutex_destroy(&ctx->srtp_mutex);
   }
   free(ctx);
 }
@@ -481,7 +481,7 @@ int turbo_media_setup_srtp(turbo_media_context_t *ctx) {
       goto fail;
   }
 
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   if (ctx->rtcp_session) srtp_session_destroy(ctx->rtcp_session);
   ctx->rtcp_session = new_rtcp;
   new_rtcp = NULL;
@@ -495,7 +495,7 @@ int turbo_media_setup_srtp(turbo_media_context_t *ctx) {
     new_send[i] = NULL;
     new_recv[i] = NULL;
   }
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
 
   return 0;
 
@@ -1389,7 +1389,7 @@ void turbo_media_remove_track(turbo_media_track_t *track) {
   if (track->jitter) {
     jitter_buffer_destroy(track->jitter);
   }
-  salts_mutex_lock(&ctx->srtp_mutex);
+  cmeta_mutex_lock(&ctx->srtp_mutex);
   if (track->srtp_send_session) {
     srtp_session_destroy(track->srtp_send_session);
     track->srtp_send_session = NULL;
@@ -1398,7 +1398,7 @@ void turbo_media_remove_track(turbo_media_track_t *track) {
     srtp_session_destroy(track->srtp_recv_session);
     track->srtp_recv_session = NULL;
   }
-  salts_mutex_unlock(&ctx->srtp_mutex);
+  cmeta_mutex_unlock(&ctx->srtp_mutex);
   if (track->twcc_tracker) {
     twcc_tracker_destroy(track->twcc_tracker);
   }
