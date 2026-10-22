@@ -24,6 +24,7 @@ struct endpoint {
   turbo_dc_peer_t *peer, *remote;
   uint16_t local_port, remote_port;
   int client, assoc_initialized, started, data_sent;
+  int rotated_cookie_key, rotation_while_previous_retained_rejected;
   cnet_sctp_gmssl_mac cookie_mac;
   uint64_t now;
   cnet_sctp_assoc assoc;
@@ -116,6 +117,36 @@ static void app_data(turbo_dc_peer_t *peer, const uint8_t *data, size_t len, voi
   st=cnet_sctp_assoc_input(&e->assoc,++e->now,data,len,out,sizeof(out),&out_n);
   if (st!=CNET_SCTP_ASSOC_OK) { fail(e,(int)st); return; }
   if (out_n && dtls_test_write_application_data(peer,out,out_n)!=0) { fail(e,-6); return; }
+  /* Rotate immediately after the server creates/encrypts INIT-ACK. Its Cookie
+   * was signed with the previous key; COOKIE-ECHO must still validate while
+   * that explicitly retained epoch is live. This executes on the server Peer
+   * owner, not from the test-driving thread. */
+  if (!e->client && !e->rotated_cookie_key && len >= 13u && data[12] == 1u) {
+    uint8_t replacement[CNET_SCTP_GMSSL_KEY_BYTES] = {0};
+    uint8_t blocked_replacement[CNET_SCTP_GMSSL_KEY_BYTES] = {0};
+    int rotate_status = -1;
+    if (rand_bytes(replacement, sizeof(replacement)) == 1) {
+      rotate_status = cnet_sctp_gmssl_mac_rotate(&e->cookie_mac,
+          replacement, sizeof(replacement));
+    }
+    wipe_key(replacement, sizeof(replacement));
+    if (rotate_status != 0 ||
+        rand_bytes(blocked_replacement, sizeof(blocked_replacement)) != 1) {
+      wipe_key(blocked_replacement, sizeof(blocked_replacement));
+      fail(e, -14);
+      return;
+    }
+    e->rotated_cookie_key = 1;
+    e->rotation_while_previous_retained_rejected =
+        cnet_sctp_gmssl_mac_rotate(&e->cookie_mac, blocked_replacement,
+                                   sizeof(blocked_replacement)) == -1;
+    wipe_key(blocked_replacement, sizeof(blocked_replacement));
+    if (!e->rotation_while_previous_retained_rejected ||
+        e->cookie_mac.previous_active != 1u) {
+      fail(e, -15);
+      return;
+    }
+  }
   if (!e->client && e->assoc.state==CNET_SCTP_ASSOC_ESTABLISHED) {
     cnet_sctp_data_message meta={0}; uint8_t got[64]; size_t got_n=0;
     st=cnet_sctp_assoc_take_message(&e->assoc,&meta,got,sizeof(got),&got_n);
@@ -197,12 +228,17 @@ static void test_real_peer_dtls_c11_roundtrip(void) {
   assert(!queue_failed(&q));
   assert(atomic_load_explicit(&b.received,memory_order_acquire));
   assert(atomic_load_explicit(&a.acked,memory_order_acquire));
+  assert(b.rotated_cookie_key);
+  assert(b.rotation_while_previous_retained_rejected);
+  assert(b.cookie_mac.previous_active == 1u);
   assert(dc_peer_post_owner_sync(peer_a,cleanup_assoc,&a,&cleanup_result)==0 && cleanup_result==0);
   cleanup_result=-1;assert(dc_peer_post_owner_sync(peer_b,cleanup_assoc,&b,&cleanup_result)==0 && cleanup_result==0);
   /* The MAC provider is wiped only after Association stop/destroy completes. */
   assert(a.cookie_mac.active == 0u && b.cookie_mac.active == 0u);
+  assert(a.cookie_mac.previous_active == 0u && b.cookie_mac.previous_active == 0u);
   assert(memcmp(a.cookie_mac.key, (uint8_t[32]){0}, sizeof(a.cookie_mac.key)) == 0);
   assert(memcmp(b.cookie_mac.key, (uint8_t[32]){0}, sizeof(b.cookie_mac.key)) == 0);
+  assert(memcmp(b.cookie_mac.previous_key, (uint8_t[32]){0}, sizeof(b.cookie_mac.previous_key)) == 0);
   turbo_dc_peer_destroy(peer_a);turbo_dc_peer_destroy(peer_b);
   turbo_dc_context_destroy(ctx_a);turbo_dc_context_destroy(ctx_b);
   cmeta_mutex_destroy(&q.mutex);
