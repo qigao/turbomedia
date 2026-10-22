@@ -353,11 +353,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
                CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
                FOLDER "turbomedia/tests/webrtc")
   if(MSVC)
-    # CRoaring's external inline container implementation emits C4702 under
-    # /O2 when instantiated by this directly compiled Peer translation unit.
-    # Keep /W4 /WX for our code and suppress only that dependency warning.
-    target_compile_options(turbo_media_test_c11_sctp_peer_bridge
-      PRIVATE /W4 /WX /wd4702)
+    target_compile_options(turbo_media_test_c11_sctp_peer_bridge PRIVATE /W4 /WX)
   else()
     target_compile_options(turbo_media_test_c11_sctp_peer_bridge
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
