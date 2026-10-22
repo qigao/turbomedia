@@ -270,6 +270,7 @@ jobs:
                   "/salts-sctp-prototype/cnet/sctp/src/sctp_assoc.c",
                   "/salts-sctp-prototype/cnet/sctp/src/sctp_dcep.c",
                   "/salts-sctp-prototype/cnet/sctp/src/sctp_webrtc.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_gmssl_mac.c",
               ),
           )
           verify_target(
