@@ -77,6 +77,11 @@ struct turbo_dc_peer_s;
 
 typedef void (*dc_transport_task_fn)(void *arg1, void *arg2);
 
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+typedef void (*dc_test_dtls_application_data_fn)(
+    turbo_dc_peer_t *peer, const uint8_t *data, size_t len, void *user_data);
+#endif
+
 struct turbo_dc_context_s {
     SSL_CTX *ssl_ctx;
     int is_server;
@@ -146,6 +151,12 @@ struct turbo_dc_peer_s {
 
     /* DTLS */
     dtls_session_t dtls;
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+    /* Private test target only: redirect authenticated DTLS application data
+     * to the C11 Association without changing the production usrsctp path. */
+    dc_test_dtls_application_data_fn test_dtls_application_handler;
+    void *test_dtls_application_user_data;
+#endif
 
     /* SCTP */
     sctp_session_t sctp;
@@ -265,6 +276,14 @@ int dc_peer_post_owner_sync(turbo_dc_peer_t *peer,
                             dc_transport_task_fn task,
                             void *arg1, void *arg2);
 int dc_peer_is_on_transport_owner(const turbo_dc_peer_t *peer);
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+int dc_peer_set_test_dtls_application_handler(
+    turbo_dc_peer_t *peer,
+    dc_test_dtls_application_data_fn handler,
+    void *user_data);
+int dtls_test_write_application_data(turbo_dc_peer_t *peer,
+                                     const void *data, size_t len);
+#endif
 int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
                                          void *transport,
                                          turbo_dc_transport_send_cb send_cb);
