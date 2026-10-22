@@ -203,6 +203,7 @@ jobs:
             "-B", $build,
             "-G", "Ninja",
             "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
             "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
             "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}",
             "-DVCPKG_MANIFEST_MODE=OFF",
@@ -220,7 +221,47 @@ jobs:
             )
           }
           & cmake @args
+          if ("${{ matrix.platform }}" -eq "Linux") {
+            $args += @("-DTURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN=ON")
+          }
+          & cmake @args
           if ($LASTEXITCODE -ne 0) { throw "configure failed for ${{ matrix.platform }}" }
+
+      - name: Verify C11 handoff sources are TSan-instrumented
+        if: matrix.platform == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("build/platform-Linux/compile_commands.json")
+          commands = json.loads(path.read_text())
+          suffixes = (
+              "/webrtc/tests/test_salts_c11_sctp_dtls_handoff.c",
+              "/salts-sctp-prototype/cnet/sctp/src/sctp_wire.c",
+              "/salts-sctp-prototype/cnet/sctp/src/sctp_init_params.c",
+              "/salts-sctp-prototype/cnet/sctp/src/sctp_collision.c",
+              "/salts-sctp-prototype/cnet/sctp/src/sctp_data.c",
+              "/salts-sctp-prototype/cnet/sctp/src/sctp_assoc.c",
+              "/salts-sctp-prototype/cnet/sctp/src/sctp_dcep.c",
+              "/salts-sctp-prototype/cnet/sctp/src/sctp_webrtc.c",
+          )
+          target = "turbo_media_test_salts_c11_sctp_dtls_handoff.dir"
+          for suffix in suffixes:
+              matches = [
+                  item for item in commands
+                  if item["file"].replace("\\\\", "/").endswith(suffix)
+                  and target in item.get("command", " ".join(item.get("arguments", ())))
+              ]
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected one compile unit for {suffix}, found {len(matches)}")
+              command = matches[0].get("command", " ".join(matches[0].get("arguments", ())))
+              if "-fsanitize=thread" not in command or "-fno-omit-frame-pointer" not in command:
+                  raise SystemExit(f"TSan flags missing from {suffix}: {command}")
+              print(f"TSAN SOURCE OK {suffix}")
+          PY
 
       - name: Build and test
         shell: pwsh
@@ -262,6 +303,83 @@ jobs:
             & ctest --test-dir $build --no-tests=error --output-on-failure --timeout 120 -LE performance
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }
+
+      - name: Repeat C11 SCTP handoff under ThreadSanitizer
+        if: matrix.platform == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          build="$GITHUB_WORKSPACE/build/platform-Linux"
+          binary="$build/bin/turbo_media_test_salts_c11_sctp_dtls_handoff"
+          test -x "$binary"
+          ldd "$binary" | tee "$build/c11-handoff-ldd.txt"
+          grep -q 'libtsan' "$build/c11-handoff-ldd.txt"
+          TSAN_OPTIONS='halt_on_error=1:exitcode=66' ctest \
+            --test-dir "$build" \
+            -R '^turbo_media_test_salts_c11_sctp_dtls_handoff        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/platform-${{ matrix.platform }}"
+          & cmake --install $build
+          if ($LASTEXITCODE -ne 0) { throw "install failed for ${{ matrix.platform }}" }
+          $config = Join-Path $stage "lib/cmake/TurboMedia/TurboMediaConfig.cmake"
+          if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
+            throw "missing installed TurboMediaConfig.cmake"
+          }
+          if (Select-String -LiteralPath $config -SimpleMatch "TurboMedia_PRODUCT") {
+            throw "installed package still exposes obsolete product identity"
+          }
+
+      - name: Independently consume installed RTSP RFC2250 C11/C++17 SDK
+        if: matrix.platform != 'Android'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = Join-Path $env:GITHUB_WORKSPACE "stage/platform-${{ matrix.platform }}"
+          $build = Join-Path $env:GITHUB_WORKSPACE "build/independent-rtsp-${{ matrix.platform }}"
+          $vcpkgInstalled = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
+          $args = @(
+            "-S", "tests/rtsp_package_consumer",
+            "-B", $build, "-G", "Ninja",
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_PREFIX_PATH=$stage",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
+            "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}",
+            "-DVCPKG_INSTALLED_DIR=$vcpkgInstalled",
+            "-DVCPKG_MANIFEST_MODE=OFF",
+            "-DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE",
+            "-DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE"
+          )
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { throw "independent RTSP SDK configure failed" }
+          & cmake --build $build --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw "independent RTSP SDK compile/link failed" }
+          $runtimeDirs = @()
+          foreach ($root in @($stage,
+              $env:SALTS_ROOT, $env:SALTS_UTILS_ROOT, $env:SALTSNET_ROOT,
+              $env:CHTTP_ROOT, (Join-Path $vcpkgInstalled "${{ matrix.triplet }}"))) {
+            if ([string]::IsNullOrWhiteSpace($root)) { continue }
+            foreach ($leaf in @("bin", "lib")) {
+              $dir = Join-Path $root $leaf
+              if (Test-Path -LiteralPath $dir -PathType Container) {
+                $runtimeDirs += $dir
+              }
+            }
+          }
+          if ($IsWindows) {
+            $env:PATH = ($runtimeDirs + $env:PATH) -join [IO.Path]::PathSeparator
+          } elseif ($IsMacOS) {
+            $env:DYLD_LIBRARY_PATH =
+              ($runtimeDirs + @($env:DYLD_LIBRARY_PATH)) -join [IO.Path]::PathSeparator
+          } else {
+            $env:LD_LIBRARY_PATH =
+              ($runtimeDirs + @($env:LD_LIBRARY_PATH)) -join [IO.Path]::PathSeparator
+          }
+          & ctest --test-dir $build --no-tests=error --output-on-failure --timeout 60
+          if ($LASTEXITCODE -ne 0) { throw "independent installed RTSP ABI conformance failed" }
+ \
+            --repeat until-fail:20 --no-tests=error --output-on-failure --timeout 30
 
       - name: Install
         shell: pwsh
