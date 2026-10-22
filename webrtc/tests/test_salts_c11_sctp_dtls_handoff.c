@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <salts/thread.h>
 
 enum { HANDOFF_OK = 0, HANDOFF_REJECTED = -100 };
 
@@ -454,8 +455,6 @@ static void test_dcep_open_ack_capacity_atomicity(void) {
 /* Deterministic cross-thread lease/drain fixture. This validates the adapter's
  * lifetime protocol, not a real DTLS engine or the production Peer itself.
  * All shared lifecycle fields are guarded by the OS-backed Salts mutex/cond. */
-#include <salts/thread.h>
-
 typedef struct handoff_lease_lifecycle {
   cmeta_mutex_t mutex;
   cmeta_cond_t changed;
