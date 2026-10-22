@@ -16,6 +16,7 @@
  * ============================================================================ */
 
 static void dtls_handle_error(turbo_dc_peer_t *peer, int ret);
+static void on_dtls_retransmit_timer(cmeta_timer_t *timer);
 
 static void dtls_retransmit_owner_task(void *arg1, void *arg2) {
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
