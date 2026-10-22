@@ -246,6 +246,44 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       turbo_media_test_salts_c11_sctp_dtls_handoff
       PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
+  # Real DTLS record integration for the private C11 Association. This
+  # exercises an actual DTLS handshake and carries SCTP control/DATA packets
+  # through encrypted application records; the production usrsctp backend is
+  # not replaced or enabled differently by this test.
+  turbo_media_add_webrtc_base_test(
+    turbo_media_test_c11_sctp_dtls_records
+    test_c11_sctp_dtls_records.c
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src/dc_certificate.cpp"
+    "${_salts_sctp_src}/sctp_wire.c"
+    "${_salts_sctp_src}/sctp_init_params.c"
+    "${_salts_sctp_src}/sctp_collision.c"
+    "${_salts_sctp_src}/sctp_data.c"
+    "${_salts_sctp_src}/sctp_assoc.c"
+    "${_salts_sctp_src}/sctp_dcep.c"
+    "${_salts_sctp_src}/sctp_webrtc.c")
+  target_include_directories(
+    turbo_media_test_c11_sctp_dtls_records
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+            "${_salts_sctp_inc}" "${_salts_sctp_src}")
+  target_link_libraries(
+    turbo_media_test_c11_sctp_dtls_records
+    PRIVATE TurboMedia::SDP
+            OpenSSL::SSL
+            OpenSSL::Crypto)
+  set_target_properties(
+    turbo_media_test_c11_sctp_dtls_records
+    PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+               CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+               FOLDER "turbomedia/tests/webrtc")
+  if(MSVC)
+    target_compile_options(
+      turbo_media_test_c11_sctp_dtls_records PRIVATE /W4 /WX)
+  else()
+    target_compile_options(
+      turbo_media_test_c11_sctp_dtls_records
+      PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+
   # Compile the production Peer/DTLS/SCTP implementation directly into a
   # private lifecycle test executable. This lets the Linux opt-in TSan gate
   # instrument the first-party Peer destroy barrier instead of testing only a
@@ -287,6 +325,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     endif()
     foreach(_tsan_target IN ITEMS
         turbo_media_test_salts_c11_sctp_dtls_handoff
+        turbo_media_test_c11_sctp_dtls_records
         turbo_media_test_datachannel_peer_destroy_drain)
       target_compile_options(
         ${_tsan_target} PRIVATE -fsanitize=thread -fno-omit-frame-pointer -g)
