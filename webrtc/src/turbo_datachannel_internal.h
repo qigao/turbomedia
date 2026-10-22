@@ -260,6 +260,11 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
  * Transport Helper (internal)
  * ============================================================================ */
 
+/* Serialize DTLS/SCTP state operations on the DataChannel owner thread. */
+int dc_peer_post_owner_sync(turbo_dc_peer_t *peer,
+                            dc_transport_task_fn task,
+                            void *arg1, void *arg2);
+int dc_peer_is_on_transport_owner(const turbo_dc_peer_t *peer);
 void dc_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len);
 
 /* ============================================================================
