@@ -1227,7 +1227,7 @@ static int dc_is_sha256_fingerprint(const char *fingerprint) {
     return 1;
 }
 
-int turbo_dc_peer_set_remote_fingerprint(
+static int dc_peer_set_remote_fingerprint_impl(
     turbo_dc_peer_t *peer,
     const char *hash,
     const char *fingerprint
@@ -1259,22 +1259,104 @@ int turbo_dc_peer_set_remote_fingerprint(
     return 0;
 }
 
-int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
-    if (!peer || !peer->dtls.ssl) return -1;
-    if (peer->state != TURBO_DC_STATE_NEW) return -2;
+typedef struct dc_peer_fingerprint_command_s {
+    turbo_dc_peer_t *peer;
+    const char *hash;
+    const char *fingerprint;
+    int status;
+} dc_peer_fingerprint_command_t;
 
-    peer->is_dtls_server = is_server ? 1 : 0;
+static void dc_peer_set_fingerprint_owner_task(void *arg1, void *arg2) {
+    dc_peer_fingerprint_command_t *command =
+        (dc_peer_fingerprint_command_t *)arg1;
+    (void)arg2;
+    if (!command) return;
+    command->status = dc_peer_set_remote_fingerprint_impl(
+        command->peer, command->hash, command->fingerprint);
+}
+
+int turbo_dc_peer_set_remote_fingerprint(
+    turbo_dc_peer_t *peer,
+    const char *hash,
+    const char *fingerprint
+) {
+    dc_peer_fingerprint_command_t command;
+    int status;
+    if (!peer || !hash || !fingerprint || dc_peer_acquire(peer) != 0) {
+        return -1;
+    }
+    command.peer = peer;
+    command.hash = hash;
+    command.fingerprint = fingerprint;
+    command.status = -1;
+    status = dc_peer_post_owner_sync(peer, dc_peer_set_fingerprint_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.status : -1;
+}
+
+typedef struct dc_peer_role_command_s {
+    turbo_dc_peer_t *peer;
+    int is_server;
+    int status;
+} dc_peer_role_command_t;
+
+static void dc_peer_set_role_owner_task(void *arg1, void *arg2) {
+    dc_peer_role_command_t *command = (dc_peer_role_command_t *)arg1;
+    turbo_dc_peer_t *peer;
+    (void)arg2;
+    if (!command || !command->peer) return;
+    peer = command->peer;
+    command->status = -1;
+    if (!peer->dtls.ssl) return;
+    if (peer->state != TURBO_DC_STATE_NEW) {
+        command->status = -2;
+        return;
+    }
+    peer->is_dtls_server = command->is_server ? 1 : 0;
     if (peer->is_dtls_server) {
         SSL_set_accept_state(peer->dtls.ssl);
     } else {
         SSL_set_connect_state(peer->dtls.ssl);
     }
+    command->status = 0;
+}
 
-    return 0;
+int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
+    dc_peer_role_command_t command;
+    int status;
+    if (!peer || dc_peer_acquire(peer) != 0) return -1;
+    command.peer = peer;
+    command.is_server = is_server;
+    command.status = -1;
+    status = dc_peer_post_owner_sync(peer, dc_peer_set_role_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.status : -1;
+}
+
+typedef struct dc_peer_role_query_s {
+    turbo_dc_peer_t *peer;
+    int is_server;
+} dc_peer_role_query_t;
+
+static void dc_peer_get_role_owner_task(void *arg1, void *arg2) {
+    dc_peer_role_query_t *query = (dc_peer_role_query_t *)arg1;
+    (void)arg2;
+    if (query && query->peer) query->is_server = query->peer->is_dtls_server;
 }
 
 int turbo_dc_peer_is_dtls_server(const turbo_dc_peer_t *peer) {
-    return peer ? peer->is_dtls_server : 0;
+    dc_peer_role_query_t query;
+    int status;
+    if (!peer || dc_peer_acquire((turbo_dc_peer_t *)peer) != 0) return 0;
+    query.peer = (turbo_dc_peer_t *)peer;
+    query.is_server = 0;
+    status = dc_peer_post_owner_sync((turbo_dc_peer_t *)peer,
+                                     dc_peer_get_role_owner_task,
+                                     &query, NULL);
+    dc_peer_release((turbo_dc_peer_t *)peer);
+    return status == SALTS_OK ? query.is_server : 0;
 }
 
 int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
