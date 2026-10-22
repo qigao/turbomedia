@@ -149,6 +149,9 @@ enum {
     ((uint64_t)DC_CNET_POLL_INTERVAL_MS * UINT64_C(1000000))
 
 static SALTS_THREAD_LOCAL turbo_dc_context_t *g_dc_transport_owner = NULL;
+/* Allows a transport-data callback to deregister itself without waiting for
+ * its own in-flight callback count to reach zero. */
+static SALTS_THREAD_LOCAL turbo_dc_peer_t *g_dc_transport_data_callback_peer = NULL;
 
 static int dc_is_ipv6_host(const char *host) {
     return host && strchr(host, ':') != NULL;
@@ -302,6 +305,51 @@ static int dc_post_sync(turbo_dc_context_t *ctx, dc_transport_task_fn fn,
     return ctx->transport_stop_requested ? SALTS_ESHUTDOWN : SALTS_OK;
 }
 
+int dc_peer_post_owner_sync(turbo_dc_peer_t *peer,
+                            dc_transport_task_fn task,
+                            void *arg1, void *arg2) {
+    if (!peer || !peer->ctx) return SALTS_EINVAL;
+    return dc_post_sync(peer->ctx, task, arg1, arg2);
+}
+
+int dc_peer_is_on_transport_owner(const turbo_dc_peer_t *peer) {
+    return peer && peer->ctx && g_dc_transport_owner == peer->ctx;
+}
+
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+typedef struct dc_test_dtls_handler_command_s {
+    turbo_dc_peer_t *peer;
+    dc_test_dtls_application_data_fn handler;
+    void *user_data;
+} dc_test_dtls_handler_command_t;
+
+static void dc_peer_set_test_dtls_handler_owner_task(void *arg1, void *arg2) {
+    dc_test_dtls_handler_command_t *command =
+        (dc_test_dtls_handler_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->peer) return;
+    command->peer->test_dtls_application_handler = command->handler;
+    command->peer->test_dtls_application_user_data = command->user_data;
+}
+
+int dc_peer_set_test_dtls_application_handler(
+    turbo_dc_peer_t *peer,
+    dc_test_dtls_application_data_fn handler,
+    void *user_data) {
+    dc_test_dtls_handler_command_t command;
+    int status;
+    if (!peer || dc_peer_acquire(peer) != 0) return -1;
+    command.peer = peer;
+    command.handler = handler;
+    command.user_data = user_data;
+    status = dc_peer_post_owner_sync(peer,
+                                     dc_peer_set_test_dtls_handler_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? 0 : -1;
+}
+#endif
+
 static int dc_resolve_datagram_peer(const char *host, uint16_t port,
                                     cnet_datagram_peer *out_peer) {
     struct addrinfo hints;
@@ -390,7 +438,11 @@ static void dc_handle_incoming_packet(turbo_dc_peer_t *peer, const void *data, s
         cmeta_mutex_unlock(&peer->operation_mutex);
 
         if (callback) {
+            turbo_dc_peer_t *previous_callback_peer =
+                g_dc_transport_data_callback_peer;
+            g_dc_transport_data_callback_peer = peer;
             callback(user_data, bytes, len);
+            g_dc_transport_data_callback_peer = previous_callback_peer;
             cmeta_mutex_lock(&peer->operation_mutex);
             if (peer->transport_data_callbacks > 0) {
                 peer->transport_data_callbacks--;
@@ -717,7 +769,12 @@ static void dc_start_transport_task(void *arg1, void *arg2) {
 
 static void dc_poll_direct_peer(turbo_dc_peer_t *peer) {
     size_t events = 0;
-    if (!peer || peer->destroying) return;
+    int destroying;
+    if (!peer) return;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    destroying = peer->destroying;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (destroying) return;
     if (peer->listener_initialized && peer->stream_connection.generation == 0u) {
         int ready = 0;
         if (cnet_listener_wait(&peer->listener, 0u, &ready) == SALTS_OK && ready) {
@@ -817,13 +874,34 @@ static void ice_agent_transport_send(void *transport,
  * Transport Helper
  * ============================================================================ */
 
-TURBO_MEDIA_C_API void turbo_dc_peer_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len) {
-    if (!peer || dc_peer_acquire(peer) != 0) {
+TURBO_MEDIA_C_API typedef struct dc_transport_send_command_s {
+    turbo_dc_peer_t *peer;
+    const void *data;
+    size_t len;
+} dc_transport_send_command_t;
+
+static void dc_transport_send_owner_task(void *arg1, void *arg2) {
+    dc_transport_send_command_t *command = (dc_transport_send_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->peer || !command->data || command->len == 0) {
         return;
     }
-    if (peer->transport_ops && peer->transport_ops->send) {
-        peer->transport_ops->send(peer, data, len);
+    if (command->peer->transport_ops && command->peer->transport_ops->send) {
+        command->peer->transport_ops->send(command->peer, command->data,
+                                           command->len);
     }
+}
+
+void turbo_dc_peer_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len) {
+    dc_transport_send_command_t command;
+    if (!peer || !data || len == 0 || dc_peer_acquire(peer) != 0) {
+        return;
+    }
+    command.peer = peer;
+    command.data = data;
+    command.len = len;
+    (void)dc_peer_post_owner_sync(peer, dc_transport_send_owner_task,
+                                  &command, NULL);
     dc_peer_release(peer);
 }
 
@@ -843,7 +921,7 @@ TURBO_MEDIA_C_API void turbo_dc_peer_set_transport_data_handler(
     cmeta_mutex_lock(&peer->operation_mutex);
     peer->on_transport_data = cb;
     peer->transport_data_user_data = user_data;
-    if (!cb) {
+    if (!cb && g_dc_transport_data_callback_peer != peer) {
         while (peer->transport_data_callbacks != 0) {
             cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
         }
@@ -944,7 +1022,10 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
     cmeta_mutex_init(&ctx->peer_mutex);
     ctx->peer_mutex_initialized = 1;
 
-    if (ctx->transport != TURBO_DC_TRANSPORT_ICE) {
+    {
+        /* This thread owns DTLS/SCTP state for direct and externally-owned
+         * transports alike. ICE owns only its agent; packet ingress and DTLS
+         * timers are synchronously marshalled here. */
         cmeta_mutex_init(&ctx->transport_mutex);
         cmeta_cond_init(&ctx->transport_cond);
         ctx->transport_sync_initialized = 1;
@@ -1035,11 +1116,27 @@ void turbo_dc_global_cleanup(void) {
      char *fingerprint,
      size_t fp_len
  ) {
-     if (!ctx || !hash || !fingerprint) return -1;
-     if (!ctx->local_fingerprint || !ctx->local_fingerprint[0]) return -2;
- 
-     strncpy(hash, ctx->local_fingerprint_hash, hash_len);
-     strncpy(fingerprint, ctx->local_fingerprint, fp_len);
+     size_t hash_size;
+     size_t fingerprint_size;
+     if (!ctx || !hash || !fingerprint || hash_len == 0u || fp_len == 0u) {
+         return -1;
+     }
+     hash[0] = '\0';
+     fingerprint[0] = '\0';
+     if (!ctx->local_fingerprint || !ctx->local_fingerprint[0] ||
+         !ctx->local_fingerprint_hash || !ctx->local_fingerprint_hash[0]) {
+         return -2;
+     }
+
+     hash_size = strlen(ctx->local_fingerprint_hash);
+     fingerprint_size = strlen(ctx->local_fingerprint);
+     /* Fail atomically on undersized output buffers; never return a truncated
+      * fingerprint that could later be mistaken for an identity. */
+     if (hash_size >= hash_len || fingerprint_size >= fp_len) {
+         return -3;
+     }
+     memcpy(hash, ctx->local_fingerprint_hash, hash_size + 1u);
+     memcpy(fingerprint, ctx->local_fingerprint, fingerprint_size + 1u);
      return 0;
  }
 
@@ -1151,17 +1248,65 @@ peer_create_fail:
     return NULL;
 }
 
+typedef enum dc_peer_callback_kind_e {
+    DC_PEER_CALLBACK_STATE,
+    DC_PEER_CALLBACK_CHANNEL,
+    DC_PEER_CALLBACK_ERROR
+} dc_peer_callback_kind_t;
+
+typedef struct dc_peer_callback_command_s {
+    turbo_dc_peer_t *peer;
+    dc_peer_callback_kind_t kind;
+    turbo_dc_state_cb on_state;
+    turbo_dc_channel_cb on_channel;
+    turbo_dc_error_cb on_error;
+} dc_peer_callback_command_t;
+
+static void dc_peer_callback_owner_task(void *arg1, void *arg2) {
+    dc_peer_callback_command_t *command = (dc_peer_callback_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->peer) return;
+    switch (command->kind) {
+        case DC_PEER_CALLBACK_STATE:
+            command->peer->on_state = command->on_state;
+            break;
+        case DC_PEER_CALLBACK_CHANNEL:
+            command->peer->on_channel = command->on_channel;
+            break;
+        case DC_PEER_CALLBACK_ERROR:
+            command->peer->on_error = command->on_error;
+            break;
+    }
+}
+
+static void dc_peer_set_callback(turbo_dc_peer_t *peer,
+                                 dc_peer_callback_kind_t kind,
+                                 turbo_dc_state_cb on_state,
+                                 turbo_dc_channel_cb on_channel,
+                                 turbo_dc_error_cb on_error) {
+    dc_peer_callback_command_t command;
+    if (!peer || dc_peer_acquire(peer) != 0) return;
+    command.peer = peer;
+    command.kind = kind;
+    command.on_state = on_state;
+    command.on_channel = on_channel;
+    command.on_error = on_error;
+    (void)dc_peer_post_owner_sync(peer, dc_peer_callback_owner_task,
+                                  &command, NULL);
+    dc_peer_release(peer);
+}
+
 void turbo_dc_peer_on_state(turbo_dc_peer_t *peer, turbo_dc_state_cb cb) {
-    if (peer) peer->on_state = cb;
+    dc_peer_set_callback(peer, DC_PEER_CALLBACK_STATE, cb, NULL, NULL);
 }
 
 void turbo_dc_peer_on_channel(turbo_dc_peer_t *peer, turbo_dc_channel_cb cb) {
-    if (peer) peer->on_channel = cb;
+    dc_peer_set_callback(peer, DC_PEER_CALLBACK_CHANNEL, NULL, cb, NULL);
 }
 
 void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_error_cb cb) {
-     if (peer) peer->on_error = cb;
- }
+    dc_peer_set_callback(peer, DC_PEER_CALLBACK_ERROR, NULL, NULL, cb);
+}
  
 static int dc_ascii_equal_ignore_case(const char *left, const char *right) {
     unsigned char a;
@@ -1208,7 +1353,7 @@ static int dc_is_sha256_fingerprint(const char *fingerprint) {
     return 1;
 }
 
-int turbo_dc_peer_set_remote_fingerprint(
+static int dc_peer_set_remote_fingerprint_impl(
     turbo_dc_peer_t *peer,
     const char *hash,
     const char *fingerprint
@@ -1240,56 +1385,125 @@ int turbo_dc_peer_set_remote_fingerprint(
     return 0;
 }
 
-int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
-    if (!peer || !peer->dtls.ssl) return -1;
-    if (peer->state != TURBO_DC_STATE_NEW) return -2;
+typedef struct dc_peer_fingerprint_command_s {
+    turbo_dc_peer_t *peer;
+    const char *hash;
+    const char *fingerprint;
+    int status;
+} dc_peer_fingerprint_command_t;
 
-    peer->is_dtls_server = is_server ? 1 : 0;
+static void dc_peer_set_fingerprint_owner_task(void *arg1, void *arg2) {
+    dc_peer_fingerprint_command_t *command =
+        (dc_peer_fingerprint_command_t *)arg1;
+    (void)arg2;
+    if (!command) return;
+    command->status = dc_peer_set_remote_fingerprint_impl(
+        command->peer, command->hash, command->fingerprint);
+}
+
+int turbo_dc_peer_set_remote_fingerprint(
+    turbo_dc_peer_t *peer,
+    const char *hash,
+    const char *fingerprint
+) {
+    dc_peer_fingerprint_command_t command;
+    int status;
+    if (!peer || !hash || !fingerprint || dc_peer_acquire(peer) != 0) {
+        return -1;
+    }
+    command.peer = peer;
+    command.hash = hash;
+    command.fingerprint = fingerprint;
+    command.status = -1;
+    status = dc_peer_post_owner_sync(peer, dc_peer_set_fingerprint_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.status : -1;
+}
+
+typedef struct dc_peer_role_command_s {
+    turbo_dc_peer_t *peer;
+    int is_server;
+    int status;
+} dc_peer_role_command_t;
+
+static void dc_peer_set_role_owner_task(void *arg1, void *arg2) {
+    dc_peer_role_command_t *command = (dc_peer_role_command_t *)arg1;
+    turbo_dc_peer_t *peer;
+    (void)arg2;
+    if (!command || !command->peer) return;
+    peer = command->peer;
+    command->status = -1;
+    if (!peer->dtls.ssl) return;
+    if (peer->state != TURBO_DC_STATE_NEW) {
+        command->status = -2;
+        return;
+    }
+    peer->is_dtls_server = command->is_server ? 1 : 0;
     if (peer->is_dtls_server) {
         SSL_set_accept_state(peer->dtls.ssl);
     } else {
         SSL_set_connect_state(peer->dtls.ssl);
     }
+    command->status = 0;
+}
 
-    return 0;
+int turbo_dc_peer_set_dtls_role(turbo_dc_peer_t *peer, int is_server) {
+    dc_peer_role_command_t command;
+    int status;
+    if (!peer || dc_peer_acquire(peer) != 0) return -1;
+    command.peer = peer;
+    command.is_server = is_server;
+    command.status = -1;
+    status = dc_peer_post_owner_sync(peer, dc_peer_set_role_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.status : -1;
+}
+
+typedef struct dc_peer_role_query_s {
+    turbo_dc_peer_t *peer;
+    int is_server;
+} dc_peer_role_query_t;
+
+static void dc_peer_get_role_owner_task(void *arg1, void *arg2) {
+    dc_peer_role_query_t *query = (dc_peer_role_query_t *)arg1;
+    (void)arg2;
+    if (query && query->peer) query->is_server = query->peer->is_dtls_server;
 }
 
 int turbo_dc_peer_is_dtls_server(const turbo_dc_peer_t *peer) {
-    return peer ? peer->is_dtls_server : 0;
+    dc_peer_role_query_t query;
+    int status;
+    if (!peer || dc_peer_acquire((turbo_dc_peer_t *)peer) != 0) return 0;
+    query.peer = (turbo_dc_peer_t *)peer;
+    query.is_server = 0;
+    status = dc_peer_post_owner_sync((turbo_dc_peer_t *)peer,
+                                     dc_peer_get_role_owner_task,
+                                     &query, NULL);
+    dc_peer_release((turbo_dc_peer_t *)peer);
+    return status == SALTS_OK ? query.is_server : 0;
 }
 
-int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
-                                         void *transport,
-                                         turbo_dc_transport_send_cb send_cb) {
+static int dc_peer_set_external_transport_owner_impl(
+    turbo_dc_peer_t *peer, void *transport,
+    turbo_dc_transport_send_cb send_cb) {
     int rc;
     void *old_transport;
     turbo_dc_transport_send_cb old_send;
     const dc_transport_ops_t *old_ops;
 
-    if (!peer) {
-        return -1;
-    }
-
-    if (dc_peer_acquire(peer) != 0) {
-        return -1;
-    }
-
+    if (!peer) return -1;
     if (!transport) {
         peer->external_transport = NULL;
         peer->external_transport_send = NULL;
         if (peer->transport_ops == &g_external_transport_ops) {
             peer->transport_ops = NULL;
         }
-        dc_peer_release(peer);
         return 0;
     }
-
-    if (!send_cb) {
-        dc_peer_release(peer);
-        return -1;
-    }
+    if (!send_cb) return -1;
     if (peer->transport_ops && peer->transport_ops != &g_external_transport_ops) {
-        dc_peer_release(peer);
         return -2;
     }
 
@@ -1306,17 +1520,85 @@ int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
         peer->external_transport_send = old_send;
         peer->transport_ops = old_ops;
     }
-    dc_peer_release(peer);
     return rc;
+}
+
+typedef struct dc_external_transport_command_s {
+    turbo_dc_peer_t *peer;
+    void *transport;
+    turbo_dc_transport_send_cb send_cb;
+    int result;
+} dc_external_transport_command_t;
+
+static void dc_peer_set_external_transport_owner_task(void *arg1, void *arg2) {
+    dc_external_transport_command_t *command =
+        (dc_external_transport_command_t *)arg1;
+    (void)arg2;
+    if (!command) return;
+    command->result = dc_peer_set_external_transport_owner_impl(
+        command->peer, command->transport, command->send_cb);
+}
+
+int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
+                                         void *transport,
+                                         turbo_dc_transport_send_cb send_cb) {
+    dc_external_transport_command_t command;
+    int status;
+    if (!peer || dc_peer_acquire(peer) != 0) return -1;
+    command.peer = peer;
+    command.transport = transport;
+    command.send_cb = send_cb;
+    command.result = -1;
+    status = dc_peer_post_owner_sync(peer,
+                                     dc_peer_set_external_transport_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.result : -1;
+}
+
+typedef struct dc_incoming_packet_command_s {
+    turbo_dc_peer_t *peer;
+    const void *data;
+    size_t len;
+} dc_incoming_packet_command_t;
+
+static void dc_incoming_packet_task(void *arg1, void *arg2) {
+    dc_incoming_packet_command_t *command =
+        (dc_incoming_packet_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->peer || !command->data || command->len == 0) {
+        return;
+    }
+    dc_handle_incoming_packet(command->peer, command->data, command->len);
 }
 
 void turbo_dc_peer_feed_transport_data(turbo_dc_peer_t *peer,
                                        const void *data,
                                        size_t len) {
+    dc_incoming_packet_command_t command;
     if (!peer || !data || len == 0 || dc_peer_acquire(peer) != 0) return;
 
-    dc_handle_incoming_packet(peer, data, len);
+    command.peer = peer;
+    command.data = data;
+    command.len = len;
+    (void)dc_peer_post_owner_sync(peer, dc_incoming_packet_task, &command, NULL);
     dc_peer_release(peer);
+}
+
+static void dc_external_handshake_task(void *arg1, void *arg2) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
+    int *status = (int *)arg2;
+    if (status) *status = -1;
+    if (!peer) return;
+    peer->state = TURBO_DC_STATE_CONNECTING;
+    dtls_process_handshake(peer);
+    if (status) *status = 0;
+}
+
+static void dc_peer_poll_task(void *arg1, void *arg2) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
+    (void)arg2;
+    if (peer && peer->sctp.socket) sctp_poll_status(peer, "peer-poll");
 }
 
 int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct salts_ice_agent_s *ice_agent) {
@@ -1340,15 +1622,17 @@ int turbo_dc_peer_connect(turbo_dc_peer_t *peer) {
     }
 
     if (peer->external_transport) {
-        TLOG_INFO("DC peer connect via ICE");
-        peer->state = TURBO_DC_STATE_CONNECTING;
+        TLOG_INFO("DC peer connect via external datagram transport");
 
-        /* Start DTLS handshake - the ICE agent should already be connected */
-        /* Use dtls_process_handshake to properly schedule retransmit timer */
-        dtls_process_handshake(peer);
-
+        /* ICE callbacks may arrive on the ICE owner thread, while the public
+         * connect API is called by signaling/application code. Keep DTLS
+         * handshake state on the DataChannel owner in both cases. */
+        if (dc_peer_post_owner_sync(peer, dc_external_handshake_task,
+                                    peer, &status) != SALTS_OK) {
+            status = -1;
+        }
         dc_peer_release(peer);
-        return 0;
+        return status;
     }
 
     /* ICE transport requires ICE agent to be set first */
@@ -1380,14 +1664,31 @@ void turbo_dc_peer_poll(turbo_dc_peer_t *peer) {
         return;
     }
 
-    if (peer->sctp.socket) {
-        sctp_poll_status(peer, "peer-poll");
-    }
+    (void)dc_peer_post_owner_sync(peer, dc_peer_poll_task, peer, NULL);
     dc_peer_release(peer);
 }
 
+typedef struct dc_peer_state_query_s {
+    turbo_dc_peer_t *peer;
+    turbo_dc_state_t state;
+} dc_peer_state_query_t;
+
+static void dc_peer_state_query_owner_task(void *arg1, void *arg2) {
+    dc_peer_state_query_t *query = (dc_peer_state_query_t *)arg1;
+    (void)arg2;
+    if (query && query->peer) query->state = query->peer->state;
+}
+
 turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer) {
-    return peer ? peer->state : TURBO_DC_STATE_CLOSED;
+    dc_peer_state_query_t query;
+    int status;
+    if (!peer || dc_peer_acquire(peer) != 0) return TURBO_DC_STATE_CLOSED;
+    query.peer = peer;
+    query.state = TURBO_DC_STATE_CLOSED;
+    status = dc_peer_post_owner_sync(peer, dc_peer_state_query_owner_task,
+                                     &query, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? query.state : TURBO_DC_STATE_CLOSED;
 }
 
 static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
@@ -1414,33 +1715,30 @@ static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
     dc_notify_closed(peer);
 }
 
-void turbo_dc_peer_close(turbo_dc_peer_t *peer) {
-    if (!peer || dc_peer_acquire(peer) != 0) return;
-    dc_peer_close_impl(peer);
-    dc_peer_release(peer);
+static void dc_peer_close_owner_task(void *arg1, void *arg2) {
+    (void)arg2;
+    dc_peer_close_impl((turbo_dc_peer_t *)arg1);
 }
 
-void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
+static void dc_peer_destroy_resources_owner_task(void *arg1, void *arg2) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
     size_t slot;
+    (void)arg2;
+    if (!peer) return;
 
-    if (!peer || dc_peer_begin_destroy(peer) != 0) return;
-
+    /* All protocol/transport teardown runs after admission is closed and all
+     * active leases have drained, on the same owner as DTLS/SCTP state. */
     dc_peer_close_impl(peer);
-
-    /* Clean up DTLS timer before freeing SSL */
     dtls_session_cleanup(peer);
-
     if (peer->dtls.ssl) {
         SSL_free(peer->dtls.ssl);
+        peer->dtls.ssl = NULL;
     }
 
-    /* Close SCTP socket before deregistering address */
     if (peer->sctp.socket) {
         usrsctp_close(peer->sctp.socket);
         peer->sctp.socket = NULL;
     }
-
-    /* AF_CONN addresses remain process-global until explicitly deregistered. */
     if (peer->sctp_address_registered) {
         usrsctp_deregister_address(peer);
         peer->sctp_address_registered = 0;
@@ -1450,8 +1748,6 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
         peer->transport_ops->destroy(peer);
     }
 
-    /* Clean up channels.  The map is bounded by the uint16_t stream-id
-     * space, without imposing a 512 KiB pointer array on every peer. */
     while (peer->channels_initialized &&
            !hash_map_empty(&peer->channels)) {
         int removed = 0;
@@ -1470,57 +1766,94 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
                 break;
             }
         }
-        if (!removed) {
-            break;
-        }
+        if (!removed) break;
     }
-
     if (peer->channels_initialized) {
         hash_map_destroy(&peer->channels);
         peer->channels_initialized = 0;
     }
-
-    /* Free channel ID bitmap */
     if (peer->channel_ids) {
         roaring_bitmap_free(peer->channel_ids);
+        peer->channel_ids = NULL;
     }
- 
+
     tstr_free(peer->remote_host);
+    peer->remote_host = NULL;
     tstr_free(peer->remote_fingerprint);
+    peer->remote_fingerprint = NULL;
     tstr_free(peer->remote_fingerprint_hash);
+    peer->remote_fingerprint_hash = NULL;
+}
 
-    /* Keep the peer linked until every cleanup path that can touch ctx has
-     * completed.  A concurrent context destroy therefore cannot mistake an
-     * in-flight peer destruction for an empty peer list. */
+void turbo_dc_peer_close(turbo_dc_peer_t *peer) {
+    if (!peer || dc_peer_acquire(peer) != 0) return;
+    (void)dc_peer_post_owner_sync(peer, dc_peer_close_owner_task, peer, NULL);
+    dc_peer_release(peer);
+}
+
+void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
+    if (!peer || dc_peer_begin_destroy(peer) != 0) return;
+
+    /* Keep the Peer linked until all cleanup that can touch its context is
+     * complete. The owner task performs protocol/transport teardown; unlinking
+     * and freeing the synchronization object happen only after it returns. */
+    if (dc_peer_post_owner_sync(peer,
+                                dc_peer_destroy_resources_owner_task,
+                                peer, NULL) != SALTS_OK) {
+        TLOG_ERROR("failed to dispatch Peer destruction to DataChannel owner");
+        return;
+    }
+
     dc_peer_unlink_from_context(peer);
-
     cmeta_cond_destroy(&peer->operation_cond);
     cmeta_mutex_destroy(&peer->operation_mutex);
-
     free(peer);
 }
- 
-uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material) {
-    if (!peer || !peer->dtls.ssl || !material) return 0;
-    if (!SSL_is_init_finished(peer->dtls.ssl)) return 0;
- 
-    /* Get negotiated SRTP profile */
-    const SRTP_PROTECTION_PROFILE *profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
-    if (!profile) return 0;
- 
-    /* Derive keys */
-    if (srtp_derive_keys_from_dtls(peer->dtls.ssl, (srtp_keying_material_t *)material, (uint16_t)profile->id) != 0) {
-        return 0;
+
+typedef struct dc_peer_srtp_keys_command_s {
+    turbo_dc_peer_t *peer;
+    void *material;
+    uint16_t profile;
+} dc_peer_srtp_keys_command_t;
+
+static void dc_peer_get_srtp_keys_owner_task(void *arg1, void *arg2) {
+    dc_peer_srtp_keys_command_t *command =
+        (dc_peer_srtp_keys_command_t *)arg1;
+    turbo_dc_peer_t *peer;
+    const SRTP_PROTECTION_PROFILE *profile;
+    (void)arg2;
+    if (!command || !command->peer || !command->material) return;
+    peer = command->peer;
+    if (!peer->dtls.ssl || !SSL_is_init_finished(peer->dtls.ssl)) return;
+
+    profile = SSL_get_selected_srtp_profile(peer->dtls.ssl);
+    if (!profile) return;
+    if (srtp_derive_keys_from_dtls(
+            peer->dtls.ssl, (srtp_keying_material_t *)command->material,
+            (uint16_t)profile->id) != 0) {
+        return;
     }
- 
-    return (uint16_t)profile->id;
+    command->profile = (uint16_t)profile->id;
+}
+
+uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material) {
+    dc_peer_srtp_keys_command_t command;
+    int status;
+    if (!peer || !material || dc_peer_acquire(peer) != 0) return 0;
+    command.peer = peer;
+    command.material = material;
+    command.profile = 0;
+    status = dc_peer_post_owner_sync(peer, dc_peer_get_srtp_keys_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.profile : 0;
 }
 
 /* ============================================================================
  * Channel API
  * ============================================================================ */
 
-turbo_dc_channel_t *turbo_dc_channel_create(
+static turbo_dc_channel_t *dc_channel_create_owner_impl(
     turbo_dc_peer_t *peer,
     const char *label,
     const turbo_dc_channel_config_t *config
@@ -1579,7 +1912,40 @@ turbo_dc_channel_t *turbo_dc_channel_create(
     return channel;
 }
 
-int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
+typedef struct dc_channel_create_command_s {
+    turbo_dc_peer_t *peer;
+    const char *label;
+    const turbo_dc_channel_config_t *config;
+    turbo_dc_channel_t *channel;
+} dc_channel_create_command_t;
+
+static void dc_channel_create_owner_task(void *arg1, void *arg2) {
+    dc_channel_create_command_t *command = (dc_channel_create_command_t *)arg1;
+    (void)arg2;
+    if (!command) return;
+    command->channel = dc_channel_create_owner_impl(
+        command->peer, command->label, command->config);
+}
+
+turbo_dc_channel_t *turbo_dc_channel_create(
+    turbo_dc_peer_t *peer,
+    const char *label,
+    const turbo_dc_channel_config_t *config
+) {
+    dc_channel_create_command_t command;
+    int status;
+    if (!peer || !label || dc_peer_acquire(peer) != 0) return NULL;
+    command.peer = peer;
+    command.label = label;
+    command.config = config;
+    command.channel = NULL;
+    status = dc_peer_post_owner_sync(peer, dc_channel_create_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.channel : NULL;
+}
+
+static int dc_channel_open_owner_impl(turbo_dc_channel_t *channel) {
     if (!channel || !channel->peer) {
         return -1;
     }
@@ -1604,27 +1970,131 @@ int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
     return 0;
 }
 
-void turbo_dc_channel_on_open(turbo_dc_channel_t *channel, turbo_dc_open_cb cb) {
-    if (channel) channel->on_open = cb;
+typedef struct dc_channel_int_command_s {
+    turbo_dc_channel_t *channel;
+    int result;
+} dc_channel_int_command_t;
+
+static void dc_channel_open_owner_task(void *arg1, void *arg2) {
+    dc_channel_int_command_t *command = (dc_channel_int_command_t *)arg1;
+    (void)arg2;
+    if (!command) return;
+    command->result = dc_channel_open_owner_impl(command->channel);
 }
 
-void turbo_dc_channel_on_message(turbo_dc_channel_t *channel, turbo_dc_message_cb cb) {
-    if (channel) channel->on_message = cb;
+int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
+    dc_channel_int_command_t command;
+    turbo_dc_peer_t *peer;
+    int status;
+    if (!channel || !channel->peer) return -1;
+    peer = channel->peer;
+    if (dc_peer_acquire(peer) != 0) return -1;
+    command.channel = channel;
+    command.result = -1;
+    status = dc_peer_post_owner_sync(peer, dc_channel_open_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.result : -1;
+}
+
+typedef enum dc_channel_callback_kind_e {
+    DC_CHANNEL_CALLBACK_OPEN,
+    DC_CHANNEL_CALLBACK_MESSAGE,
+    DC_CHANNEL_CALLBACK_CLOSE,
+    DC_CHANNEL_CALLBACK_SET_USER_DATA,
+    DC_CHANNEL_CALLBACK_GET_USER_DATA
+} dc_channel_callback_kind_t;
+
+typedef struct dc_channel_callback_command_s {
+    turbo_dc_channel_t *channel;
+    dc_channel_callback_kind_t kind;
+    turbo_dc_open_cb on_open;
+    turbo_dc_message_cb on_message;
+    turbo_dc_close_cb on_close;
+    void *user_data;
+    void *result_user_data;
+} dc_channel_callback_command_t;
+
+static void dc_channel_callback_owner_task(void *arg1, void *arg2) {
+    dc_channel_callback_command_t *command =
+        (dc_channel_callback_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->channel) return;
+    switch (command->kind) {
+        case DC_CHANNEL_CALLBACK_OPEN:
+            command->channel->on_open = command->on_open;
+            break;
+        case DC_CHANNEL_CALLBACK_MESSAGE:
+            command->channel->on_message = command->on_message;
+            break;
+        case DC_CHANNEL_CALLBACK_CLOSE:
+            command->channel->on_close = command->on_close;
+            break;
+        case DC_CHANNEL_CALLBACK_SET_USER_DATA:
+            command->channel->user_data = command->user_data;
+            break;
+        case DC_CHANNEL_CALLBACK_GET_USER_DATA:
+            command->result_user_data = command->channel->user_data;
+            break;
+    }
+}
+
+static void dc_channel_update(turbo_dc_channel_t *channel,
+                              dc_channel_callback_kind_t kind,
+                              turbo_dc_open_cb on_open,
+                              turbo_dc_message_cb on_message,
+                              turbo_dc_close_cb on_close,
+                              void *user_data,
+                              void **result_user_data) {
+    dc_channel_callback_command_t command;
+    turbo_dc_peer_t *peer;
+    if (!channel || !channel->peer) return;
+    peer = channel->peer;
+    if (dc_peer_acquire(peer) != 0) return;
+    command.channel = channel;
+    command.kind = kind;
+    command.on_open = on_open;
+    command.on_message = on_message;
+    command.on_close = on_close;
+    command.user_data = user_data;
+    command.result_user_data = NULL;
+    if (dc_peer_post_owner_sync(peer, dc_channel_callback_owner_task,
+                                &command, NULL) == SALTS_OK &&
+        result_user_data) {
+        *result_user_data = command.result_user_data;
+    }
+    dc_peer_release(peer);
+}
+
+void turbo_dc_channel_on_open(turbo_dc_channel_t *channel, turbo_dc_open_cb cb) {
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_OPEN, cb, NULL, NULL,
+                      NULL, NULL);
+}
+
+void turbo_dc_channel_on_message(turbo_dc_channel_t *channel,
+                                 turbo_dc_message_cb cb) {
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_MESSAGE, NULL, cb, NULL,
+                      NULL, NULL);
 }
 
 void turbo_dc_channel_on_close(turbo_dc_channel_t *channel, turbo_dc_close_cb cb) {
-    if (channel) channel->on_close = cb;
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_CLOSE, NULL, NULL, cb,
+                      NULL, NULL);
 }
 
 void turbo_dc_channel_set_user_data(turbo_dc_channel_t *channel, void *user_data) {
-    if (channel) channel->user_data = user_data;
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_SET_USER_DATA, NULL, NULL,
+                      NULL, user_data, NULL);
 }
 
 void *turbo_dc_channel_get_user_data(turbo_dc_channel_t *channel) {
-    return channel ? channel->user_data : NULL;
+    void *result = NULL;
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_GET_USER_DATA, NULL, NULL,
+                      NULL, NULL, &result);
+    return result;
 }
 
-int turbo_dc_channel_send(
+static int dc_channel_send_owner_impl(
     turbo_dc_channel_t *channel,
     const void *data,
     size_t len,
@@ -1672,11 +2142,9 @@ int turbo_dc_channel_send(
                           "retransmit and lifetime limits are mutually exclusive");
         return -1;
     }
-    if (channel->config.max_retransmits > UINT32_MAX ||
-        channel->config.max_lifetime_ms > UINT32_MAX) {
-        dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, "partial reliability limit is too large");
-        return -1;
-    }
+    /* Both limits are signed int fields. Negative values were rejected above,
+     * so every remaining value is representable as uint32_t; comparing an int
+     * against UINT32_MAX is an always-false check on supported targets. */
     if (channel->config.max_retransmits > 0) {
         spa.sendv_flags |= SCTP_SEND_PRINFO_VALID;
         spa.sendv_prinfo.pr_policy = SCTP_PR_SCTP_RTX;
@@ -1699,23 +2167,126 @@ int turbo_dc_channel_send(
     return 0;
 }
 
+typedef struct dc_channel_send_command_s {
+    turbo_dc_channel_t *channel;
+    const void *data;
+    size_t len;
+    int is_binary;
+    int result;
+} dc_channel_send_command_t;
+
+static void dc_channel_send_owner_task(void *arg1, void *arg2) {
+    dc_channel_send_command_t *command = (dc_channel_send_command_t *)arg1;
+    (void)arg2;
+    if (!command) return;
+    command->result = dc_channel_send_owner_impl(
+        command->channel, command->data, command->len, command->is_binary);
+}
+
+int turbo_dc_channel_send(
+    turbo_dc_channel_t *channel,
+    const void *data,
+    size_t len,
+    int is_binary
+) {
+    dc_channel_send_command_t command;
+    turbo_dc_peer_t *peer;
+    int status;
+    if (!channel || !channel->peer) return -1;
+    peer = channel->peer;
+    if (dc_peer_acquire(peer) != 0) return -1;
+    command.channel = channel;
+    command.data = data;
+    command.len = len;
+    command.is_binary = is_binary;
+    command.result = -1;
+    status = dc_peer_post_owner_sync(peer, dc_channel_send_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? command.result : -1;
+}
+
+typedef enum dc_channel_query_kind_e {
+    DC_CHANNEL_QUERY_LABEL,
+    DC_CHANNEL_QUERY_ID,
+    DC_CHANNEL_QUERY_IS_OPEN,
+    DC_CHANNEL_QUERY_BUFFERED_AMOUNT
+} dc_channel_query_kind_t;
+
+typedef struct dc_channel_query_command_s {
+    turbo_dc_channel_t *channel;
+    dc_channel_query_kind_t kind;
+    const char *label;
+    uint16_t id;
+    int is_open;
+    size_t buffered_amount;
+} dc_channel_query_command_t;
+
+static void dc_channel_query_owner_task(void *arg1, void *arg2) {
+    dc_channel_query_command_t *query = (dc_channel_query_command_t *)arg1;
+    (void)arg2;
+    if (!query || !query->channel) return;
+    switch (query->kind) {
+        case DC_CHANNEL_QUERY_LABEL:
+            query->label = query->channel->label;
+            break;
+        case DC_CHANNEL_QUERY_ID:
+            query->id = query->channel->id;
+            break;
+        case DC_CHANNEL_QUERY_IS_OPEN:
+            query->is_open = query->channel->is_open;
+            break;
+        case DC_CHANNEL_QUERY_BUFFERED_AMOUNT:
+            query->buffered_amount = query->channel->buffered_amount;
+            break;
+    }
+}
+
+static int dc_channel_query(turbo_dc_channel_t *channel,
+                            dc_channel_query_kind_t kind,
+                            dc_channel_query_command_t *query) {
+    turbo_dc_peer_t *peer;
+    int status;
+    if (!channel || !channel->peer || !query) return -1;
+    peer = channel->peer;
+    if (dc_peer_acquire(peer) != 0) return -1;
+    query->channel = channel;
+    query->kind = kind;
+    query->label = NULL;
+    query->id = 0;
+    query->is_open = 0;
+    query->buffered_amount = 0;
+    status = dc_peer_post_owner_sync(peer, dc_channel_query_owner_task,
+                                     query, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? 0 : -1;
+}
+
 const char *turbo_dc_channel_get_label(turbo_dc_channel_t *channel) {
-    return channel ? channel->label : NULL;
+    dc_channel_query_command_t query;
+    return dc_channel_query(channel, DC_CHANNEL_QUERY_LABEL, &query) == 0
+               ? query.label : NULL;
 }
 
 uint16_t turbo_dc_channel_get_id(turbo_dc_channel_t *channel) {
-    return channel ? channel->id : 0;
+    dc_channel_query_command_t query;
+    return dc_channel_query(channel, DC_CHANNEL_QUERY_ID, &query) == 0
+               ? query.id : 0;
 }
 
 int turbo_dc_channel_is_open(turbo_dc_channel_t *channel) {
-    return channel ? channel->is_open : 0;
+    dc_channel_query_command_t query;
+    return dc_channel_query(channel, DC_CHANNEL_QUERY_IS_OPEN, &query) == 0
+               ? query.is_open : 0;
 }
 
 size_t turbo_dc_channel_buffered_amount(turbo_dc_channel_t *channel) {
-    return channel ? channel->buffered_amount : 0;
+    dc_channel_query_command_t query;
+    return dc_channel_query(channel, DC_CHANNEL_QUERY_BUFFERED_AMOUNT, &query) == 0
+               ? query.buffered_amount : 0;
 }
 
-void turbo_dc_channel_close(turbo_dc_channel_t *channel) {
+static void dc_channel_close_owner_impl(turbo_dc_channel_t *channel) {
     if (!channel) return;
 
     turbo_dc_peer_t *peer = channel->peer;
@@ -1745,6 +2316,21 @@ void turbo_dc_channel_close(turbo_dc_channel_t *channel) {
     tstr_free(channel->label);
     tstr_free(channel->protocol);
     free(channel);
+}
+
+static void dc_channel_close_owner_task(void *arg1, void *arg2) {
+    (void)arg2;
+    dc_channel_close_owner_impl((turbo_dc_channel_t *)arg1);
+}
+
+void turbo_dc_channel_close(turbo_dc_channel_t *channel) {
+    turbo_dc_peer_t *peer;
+    if (!channel || !channel->peer) return;
+    peer = channel->peer;
+    if (dc_peer_acquire(peer) != 0) return;
+    (void)dc_peer_post_owner_sync(peer, dc_channel_close_owner_task,
+                                  channel, NULL);
+    dc_peer_release(peer);
 }
 
 /* ============================================================================
