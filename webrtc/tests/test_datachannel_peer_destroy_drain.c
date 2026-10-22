@@ -189,6 +189,8 @@ static void test_external_dtls_handshake_runs_on_owner(void) {
   assert(ctx != NULL);
   probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, NULL);
   assert(probe.peer != NULL);
+  assert(turbo_dc_peer_set_dtls_role(probe.peer, 0) == 0);
+  assert(turbo_dc_peer_is_dtls_server(probe.peer) == 0);
   assert(turbo_dc_peer_set_external_transport(
       probe.peer, &probe, observe_owner_send) == 0);
 
