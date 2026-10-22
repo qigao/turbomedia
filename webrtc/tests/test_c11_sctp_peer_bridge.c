@@ -9,9 +9,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <openssl/crypto.h>
-#include <openssl/hmac.h>
-#include <openssl/rand.h>
+#include "sctp_gmssl_mac_internal.h"
+#include <gmssl/rand.h>
 #include <salts/thread.h>
 #include <tlog.h>
 
@@ -25,7 +24,7 @@ struct endpoint {
   turbo_dc_peer_t *peer, *remote;
   uint16_t local_port, remote_port;
   int client, assoc_initialized, started, data_sent;
-  uint8_t cookie_key[32];
+  cnet_sctp_gmssl_mac cookie_mac;
   uint64_t now;
   cnet_sctp_assoc assoc;
   atomic_int failure, received, acked;
@@ -37,18 +36,36 @@ static int owner(void *p) {
   endpoint *e = (endpoint *)p;
   return e && dc_peer_is_on_transport_owner(e->peer);
 }
+static void wipe_key(void *memory, size_t length) {
+  volatile uint8_t *bytes = (volatile uint8_t *)memory;
+  while (length != 0u) { *bytes++ = 0u; --length; }
+}
 static int entropy(void *p, uint8_t *out, size_t n) {
-  (void)p; return out && n <= INT32_MAX && RAND_bytes(out, (int)n) == 1 ? 0 : -1;
+  (void)p;
+  return out && rand_bytes(out, n) == 1 ? 0 : -1;
 }
-static int mac(void *p, const uint8_t *msg, size_t n, uint8_t out[CNET_SCTP_ASSOC_MAC_BYTES]) {
-  endpoint *e = (endpoint *)p; unsigned int written = 0;
-  if (!e || (!msg && n) || !out || n > INT32_MAX) return -1;
-  if (!HMAC(EVP_sha256(), e->cookie_key, (int)sizeof(e->cookie_key), msg, n, out, &written)) return -1;
-  return written == CNET_SCTP_ASSOC_MAC_BYTES ? 0 : -1;
+static int mac(void *p, const uint8_t *msg, size_t n,
+               uint8_t out[CNET_SCTP_ASSOC_MAC_BYTES]) {
+  endpoint *e = (endpoint *)p;
+  if (!e) return -1;
+  return cnet_sctp_gmssl_mac_sign(&e->cookie_mac, msg, n, out);
 }
-static int verify_mac(void *p, const uint8_t *msg, size_t n, const uint8_t claimed[CNET_SCTP_ASSOC_MAC_BYTES]) {
-  uint8_t expected[CNET_SCTP_ASSOC_MAC_BYTES];
-  return claimed && mac(p, msg, n, expected) == 0 && CRYPTO_memcmp(expected, claimed, sizeof(expected)) == 0 ? 0 : -1;
+static int verify_mac(void *p, const uint8_t *msg, size_t n,
+                      const uint8_t claimed[CNET_SCTP_ASSOC_MAC_BYTES]) {
+  endpoint *e = (endpoint *)p;
+  if (!e) return -1;
+  return cnet_sctp_gmssl_mac_verify(&e->cookie_mac, msg, n, claimed);
+}
+static int init_cookie_mac(endpoint *e) {
+  uint8_t key[CNET_SCTP_GMSSL_KEY_BYTES] = {0};
+  int status;
+  if (!e || rand_bytes(key, sizeof(key)) != 1) {
+    wipe_key(key, sizeof(key));
+    return -1;
+  }
+  status = cnet_sctp_gmssl_mac_init(&e->cookie_mac, key, sizeof(key));
+  wipe_key(key, sizeof(key));
+  return status;
 }
 static void send_datagram(void *p, const void *data, size_t len) {
   endpoint *e = (endpoint *)p; packet_queue *q; size_t tail;
@@ -71,11 +88,16 @@ static void init_assoc(void *p, void *result_ptr) {
   endpoint *e = (endpoint *)p; int *result = (int *)result_ptr; cnet_sctp_assoc_config c = {0};
   if (result) *result = -1;
   if (!e || !owner(e)) { fail(e, -3); return; }
+  if (init_cookie_mac(e) != 0) { fail(e, -13); return; }
   c.local_port=e->local_port; c.remote_port=e->remote_port; c.receive_window=8192u;
   c.outbound_streams=4u; c.inbound_streams=4u; c.t1_ms=100u; c.t1_max_ms=400u;
   c.cookie_lifetime_ms=5000u; c.peer_binding=((uint64_t)e->local_port<<32)|e->remote_port;
   c.max_retransmits=3u; c.is_owner=owner; c.entropy=entropy; c.mac=mac; c.verify_mac=verify_mac; c.provider_context=e;
-  if (cnet_sctp_assoc_init(&e->assoc, &c, 0u) != CNET_SCTP_ASSOC_OK) { fail(e,-4); return; }
+  if (cnet_sctp_assoc_init(&e->assoc, &c, 0u) != CNET_SCTP_ASSOC_OK) {
+    cnet_sctp_gmssl_mac_retire(&e->cookie_mac);
+    fail(e,-4);
+    return;
+  }
   e->assoc_initialized=1; if (result) *result=0;
 }
 static void cleanup_assoc(void *p, void *result_ptr) {
@@ -83,7 +105,9 @@ static void cleanup_assoc(void *p, void *result_ptr) {
   if (!e || !owner(e) || !e->assoc_initialized) return;
   if (cnet_sctp_assoc_stop(&e->assoc)!=CNET_SCTP_ASSOC_OK) return;
   if (cnet_sctp_assoc_destroy(&e->assoc)!=CNET_SCTP_ASSOC_OK) return;
-  e->assoc_initialized=0; if (result) *result=0;
+  e->assoc_initialized=0;
+  cnet_sctp_gmssl_mac_retire(&e->cookie_mac);
+  if (result) *result=0;
 }
 static void app_data(turbo_dc_peer_t *peer, const uint8_t *data, size_t len, void *p) {
   endpoint *e=(endpoint *)p; uint8_t out[PCAP]; size_t out_n=0; cnet_sctp_assoc_status st;
@@ -125,8 +149,6 @@ static void test_real_peer_dtls_c11_roundtrip(void) {
   b.local_port=5001u;b.remote_port=5000u;b.client=0;
   atomic_init(&a.failure,0);atomic_init(&a.received,0);atomic_init(&a.acked,0);
   atomic_init(&b.failure,0);atomic_init(&b.received,0);atomic_init(&b.acked,0);
-  assert(RAND_bytes(a.cookie_key,sizeof(a.cookie_key))==1);
-  assert(RAND_bytes(b.cookie_key,sizeof(b.cookie_key))==1);
   ca.transport=cb.transport=TURBO_DC_TRANSPORT_ICE; ca.disable_sctp=cb.disable_sctp=1;
   ctx_a=turbo_dc_context_create(&ca);ctx_b=turbo_dc_context_create(&cb);assert(ctx_a&&ctx_b);
   {
