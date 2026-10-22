@@ -245,18 +245,47 @@ jobs:
               "/salts-sctp-prototype/cnet/sctp/src/sctp_webrtc.c",
           )
           target = "turbo_media_test_salts_c11_sctp_dtls_handoff.dir"
-          for suffix in suffixes:
-              matches = [
-                  item for item in commands
-                  if item["file"].replace("\\", "/").endswith(suffix)
-                  and target in item.get("command", " ".join(item.get("arguments", ())))
-              ]
-              if len(matches) != 1:
-                  raise SystemExit(f"Expected one compile unit for {suffix}, found {len(matches)}")
-              command = matches[0].get("command", " ".join(matches[0].get("arguments", ())))
-              if "-fsanitize=thread" not in command or "-fno-omit-frame-pointer" not in command:
-                  raise SystemExit(f"TSan flags missing from {suffix}")
-              print(f"TSAN SOURCE OK {suffix}")
+          def verify_target(target, suffixes):
+              for suffix in suffixes:
+                  matches = [
+                      item for item in commands
+                      if item["file"].replace("\\", "/").endswith(suffix)
+                      and target in item.get("command", " ".join(item.get("arguments", ())))
+                  ]
+                  if len(matches) != 1:
+                      raise SystemExit(f"Expected one compile unit for {target} {suffix}, found {len(matches)}")
+                  command = matches[0].get("command", " ".join(matches[0].get("arguments", ())))
+                  if "-fsanitize=thread" not in command or "-fno-omit-frame-pointer" not in command:
+                      raise SystemExit(f"TSan flags missing from {target} {suffix}")
+                  print(f"TSAN SOURCE OK {target} {suffix}")
+
+          verify_target(
+              "turbo_media_test_salts_c11_sctp_dtls_handoff.dir",
+              (
+                  "/webrtc/tests/test_salts_c11_sctp_dtls_handoff.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_wire.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_init_params.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_collision.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_data.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_assoc.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_dcep.c",
+                  "/salts-sctp-prototype/cnet/sctp/src/sctp_webrtc.c",
+              ),
+          )
+          verify_target(
+              "turbo_media_test_datachannel_peer_destroy_drain.dir",
+              (
+                  "/webrtc/tests/test_datachannel_peer_destroy_drain.c",
+                  "/webrtc/src/turbo_datachannel.c",
+                  "/webrtc/src/dc_certificate.cpp",
+                  "/webrtc/src/turbo_datachannel_errors.c",
+                  "/webrtc/src/turbo_dc_msg.c",
+                  "/webrtc/src/dcep_protocol.c",
+                  "/webrtc/src/dtls_session.c",
+                  "/webrtc/src/sctp_session.c",
+                  "/webrtc/src/stb_sprintf.c",
+              ),
+          )
           PY
 
       - name: Build and test
@@ -306,11 +335,13 @@ jobs:
         run: |
           set -euo pipefail
           build="$GITHUB_WORKSPACE/build/platform-Linux"
-          binary="$build/bin/turbo_media_test_salts_c11_sctp_dtls_handoff"
-          test -x "$binary"
-          ldd "$binary" | tee "$build/c11-handoff-ldd.txt"
-          grep -q "libtsan" "$build/c11-handoff-ldd.txt"
-          TSAN_OPTIONS="halt_on_error=1:exitcode=66" ctest --test-dir "$build" -R "^turbo_media_test_salts_c11_sctp_dtls_handoff$" --repeat until-fail:20 --no-tests=error --output-on-failure --timeout 30
+          for name in turbo_media_test_salts_c11_sctp_dtls_handoff turbo_media_test_datachannel_peer_destroy_drain; do
+            binary="$build/bin/$name"
+            test -x "$binary"
+            ldd "$binary" | tee "$build/$name-ldd.txt"
+            grep -q "libtsan" "$build/$name-ldd.txt"
+          done
+          TSAN_OPTIONS="halt_on_error=1:exitcode=66" ctest --test-dir "$build" -R "^(turbo_media_test_salts_c11_sctp_dtls_handoff|turbo_media_test_datachannel_peer_destroy_drain)$" --repeat until-fail:20 --no-tests=error --output-on-failure --timeout 30
 
       - name: Install
         shell: pwsh
