@@ -201,7 +201,8 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     "${_salts_sctp_src}/sctp_data.c"
     "${_salts_sctp_src}/sctp_assoc.c"
     "${_salts_sctp_src}/sctp_dcep.c"
-    "${_salts_sctp_src}/sctp_webrtc.c")
+    "${_salts_sctp_src}/sctp_webrtc.c"
+    "${_salts_sctp_src}/sctp_gmssl_mac.c")
   target_include_directories(
     turbo_media_test_salts_c11_sctp_private_handoff
     PRIVATE "${_salts_sctp_inc}" "${_salts_sctp_src}")
@@ -307,12 +308,17 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
             unofficial::usrsctp::usrsctp
             OpenSSL::SSL
             OpenSSL::Crypto
+            GmSSL::GmSSL
             roaring::roaring)
   set_target_properties(
     turbo_media_test_datachannel_peer_destroy_drain
     PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
                CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
                FOLDER "turbomedia/tests/webrtc")
+
+  # The bridge now exercises the exact private GmSSL SM3-HMAC cookie
+  # provider used by the C11 SCTP prototype, not a test-only substitute.
+  find_package(GmSSL CONFIG REQUIRED)
 
   # Test-only end-to-end bridge: compile the real Peer/DTLS sources with
   # a private application-record handler and feed its authenticated plaintext
