@@ -313,7 +313,10 @@ jobs:
           test -x "$binary"
           ldd "$binary" | tee "$build/c11-handoff-ldd.txt"
           grep -q 'libtsan' "$build/c11-handoff-ldd.txt"
-          TSAN_OPTIONS='halt_on_error=1:exitcode=66' ctest --test-dir "$build" -R '^turbo_media_test_salts_c11_sctp_dtls_handoff
+          TSAN_OPTIONS='halt_on_error=1:exitcode=66' ctest --test-dir "$build" -R '^turbo_media_test_salts_c11_sctp_dtls_handoff$' --repeat until-fail:20 --no-tests=error --output-on-failure --timeout 30
+
+      - name: Install
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
