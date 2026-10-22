@@ -17,7 +17,17 @@
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
 #include <usrsctp.h>
+/* CRoaring's optimized inline containers trigger MSVC C4702 inside the
+ * dependency header. Keep project translation units at /W4 /WX and scope the
+ * suppression strictly to the third-party include body. */
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4702)
+#endif
 #include <roaring/roaring.h>
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
