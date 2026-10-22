@@ -34,7 +34,8 @@ static void dtls_stop_retransmit_timer(turbo_dc_peer_t *peer) {
     if (peer->dtls.retransmit_timer) {
         cmeta_timer_stop(peer->dtls.retransmit_timer);
     }
-    /* Clear only after stop has drained the old callback. */
+    /* Clear the queued hint. A POSIX callback already claimed before stop
+     * may still publish one last hint; DTLS checks its own timeout on owner. */
     cmeta_mutex_lock(&peer->operation_mutex);
     peer->dtls_retransmit_pending = 0;
     cmeta_mutex_unlock(&peer->operation_mutex);
@@ -44,7 +45,7 @@ static void dtls_schedule_retransmit(turbo_dc_peer_t *peer) {
     struct timeval tv;
     if (!peer->dtls.retransmit_timer || peer->dtls.handshake_done) return;
     if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-        uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+        uint64_t timeout_ms = tv.tv_sec * 1000 + (tv.tv_usec + 999) / 1000;
         if (timeout_ms == 0) timeout_ms = 1;
         dtls_stop_retransmit_timer(peer);
         cmeta_timer_start(peer->dtls.retransmit_timer,

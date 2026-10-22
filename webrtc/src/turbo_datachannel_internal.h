@@ -115,6 +115,7 @@ struct turbo_dc_context_s {
     void *transport_command_arg1;
     void *transport_command_arg2;
     cmeta_mutex_t peer_mutex;
+    cmeta_cond_t peers_drained;
     int peer_mutex_initialized;
     int destroying;
     struct turbo_dc_peer_s *peers_head;

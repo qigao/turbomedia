@@ -236,6 +236,7 @@ static void dc_peer_unlink_from_context(turbo_dc_peer_t *peer) {
         if (*cursor == peer) {
             *cursor = peer->next_in_context;
             peer->next_in_context = NULL;
+            cmeta_cond_broadcast(&ctx->peers_drained);
             break;
         }
         cursor = &(*cursor)->next_in_context;
@@ -1032,6 +1033,7 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
     }
 
     cmeta_mutex_init(&ctx->peer_mutex);
+    cmeta_cond_init(&ctx->peers_drained);
     ctx->peer_mutex_initialized = 1;
 
     {
@@ -1047,6 +1049,7 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
             cmeta_cond_destroy(&ctx->transport_cond);
             cmeta_mutex_destroy(&ctx->transport_mutex);
             ctx->transport_sync_initialized = 0;
+            cmeta_cond_destroy(&ctx->peers_drained);
             cmeta_mutex_destroy(&ctx->peer_mutex);
             ctx->peer_mutex_initialized = 0;
             sctp_global_cleanup();
@@ -1061,8 +1064,18 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
     return ctx;
 }
 
-void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
+static void dc_context_close_peer_admission(void *arg1, void *arg2) {
+    turbo_dc_context_t *ctx = (turbo_dc_context_t *)arg1;
     turbo_dc_peer_t *peer;
+    (void)arg2;
+    cmeta_mutex_lock(&ctx->peer_mutex);
+    /* Owner requests only: physical teardown happens after this task exits. */
+    for (peer = ctx->peers_head; peer; peer = peer->next_in_context)
+        turbo_dc_peer_destroy(peer);
+    cmeta_mutex_unlock(&ctx->peer_mutex);
+}
+
+void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
 
     if (!ctx) return;
 
@@ -1074,15 +1087,13 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
         ctx->destroying = 1;
         cmeta_mutex_unlock(&ctx->peer_mutex);
 
-        for (;;) {
-            cmeta_mutex_lock(&ctx->peer_mutex);
-            peer = ctx->peers_head;
-            cmeta_mutex_unlock(&ctx->peer_mutex);
-            if (!peer) {
-                break;
-            }
-            turbo_dc_peer_destroy(peer);
-        }
+        /* Do not take an unretained Peer snapshot: deferred owner retirement
+         * can unlink/free it before a foreign destroy call reaches the Peer. */
+        (void)dc_post_sync(ctx, dc_context_close_peer_admission, ctx, NULL);
+        cmeta_mutex_lock(&ctx->peer_mutex);
+        while (ctx->peers_head)
+            cmeta_cond_wait(&ctx->peers_drained, &ctx->peer_mutex);
+        cmeta_mutex_unlock(&ctx->peer_mutex);
     }
 
     if (ctx->transport_sync_initialized && ctx->transport_thread_started) {
@@ -1111,6 +1122,7 @@ void turbo_dc_context_destroy(turbo_dc_context_t *ctx) {
     tstr_free(ctx->local_fingerprint);
     tstr_free(ctx->local_fingerprint_hash);
     if (ctx->peer_mutex_initialized) {
+        cmeta_cond_destroy(&ctx->peers_drained);
         cmeta_mutex_destroy(&ctx->peer_mutex);
         ctx->peer_mutex_initialized = 0;
     }
