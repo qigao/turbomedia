@@ -35,6 +35,8 @@ static void transport_data_callback(void *opaque, const uint8_t *data,
                                     size_t len) {
   peer_destroy_gate *gate = (peer_destroy_gate *)opaque;
   assert(gate != NULL);
+  /* External/ICE ingress is marshalled to the DataChannel state owner. */
+  assert(dc_peer_is_on_transport_owner(gate->peer));
   assert(data != NULL && len == 4u);
   assert(data[0] == 0x80u && data[1] == 0x60u);
 
