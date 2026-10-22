@@ -297,6 +297,10 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     turbo_media_test_datachannel_peer_destroy_drain
     test_datachannel_peer_destroy_drain.c
     ${_dc_peer_drain_sources})
+  if(NOT ANDROID)
+    set_tests_properties(turbo_media_test_datachannel_peer_destroy_drain
+                         PROPERTIES TIMEOUT 30)
+  endif()
   target_link_libraries(
     turbo_media_test_datachannel_peer_destroy_drain
     PRIVATE TurboMedia::SDP
