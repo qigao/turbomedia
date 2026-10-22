@@ -2,6 +2,7 @@
 #include "turbo_transport.h"
 #include "transport_internal.h"
 #include "turbo_cnet_send_internal.h"
+#include "turbo_network_port_internal.h"
 
 #include <salts/clock.h>
 #include <salts/error_codes.h>
@@ -201,13 +202,13 @@ static int resolve_datagram_peer(const char *host, uint16_t port,
     if (result->ai_family == AF_INET) {
         const struct sockaddr_in *address = (const struct sockaddr_in *)result->ai_addr;
         out_peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
-        out_peer->port = ntohs(address->sin_port);
+        out_peer->port = turbo_media_socket_port_host(&address->sin_port);
         memcpy(out_peer->address, &address->sin_addr, sizeof(address->sin_addr));
         status = SALTS_OK;
     } else if (result->ai_family == AF_INET6) {
         const struct sockaddr_in6 *address = (const struct sockaddr_in6 *)result->ai_addr;
         out_peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
-        out_peer->port = ntohs(address->sin6_port);
+        out_peer->port = turbo_media_socket_port_host(&address->sin6_port);
         out_peer->scope_id = address->sin6_scope_id;
         memcpy(out_peer->address, &address->sin6_addr, sizeof(address->sin6_addr));
         status = SALTS_OK;

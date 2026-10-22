@@ -160,6 +160,7 @@ include(TurboMediaFFmpegTargets)
 add_subdirectory(vendor/monocypher EXCLUDE_FROM_ALL)
 add_subdirectory(common)
 add_subdirectory(core)
+add_subdirectory(streamgraph) # Shared platform C11 typed-graph component (no FFmpeg dependency)
 add_subdirectory(crypto)
 add_subdirectory(speech)
 add_subdirectory(codec)
@@ -189,6 +190,11 @@ endif()
 add_subdirectory(webrtc)
 add_subdirectory(examples)
 add_subdirectory(tests)
+
+install(
+  DIRECTORY streamgraph/include/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  FILES_MATCHING PATTERN "*.h")
 
 install(
   DIRECTORY core/include/ crypto/include/ speech/include/ recognition/include/

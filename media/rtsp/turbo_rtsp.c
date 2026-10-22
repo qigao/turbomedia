@@ -9,6 +9,7 @@
 #include "disruptor.h"
 #include "platform.h"
 #include "turbo_cnet_send_internal.h"
+#include "turbo_network_port_internal.h"
 
 #include <http_client/http.h>
 #include <http_server/http.h>
@@ -551,13 +552,15 @@ static int turbo_rtsp_server_enqueue(
     if (close_after) {
         session->close_after_flush = 1;
     }
-    cmeta_mutex_unlock(&server->mutex);
-
+    /* Wake is the only cross-owner CNet call. Keep the admission mutex
+     * until the wake has completed so shutdown cannot begin teardown
+     * between testing the live endpoint and signaling it. */
     if (session->io_kind == TURBO_RTSP_IO_STREAM && server->network_initialized) {
         (void)cnet_client_wake(&server->network);
     } else if (session->io_kind == TURBO_RTSP_IO_PACKET && server->packet_initialized) {
         (void)cnet_packet_wake(&server->packet_endpoint);
     }
+    cmeta_mutex_unlock(&server->mutex);
     return 0;
 }
 
@@ -992,6 +995,13 @@ static turbo_rtsp_session_t *turbo_rtsp_server_session_allocate(
     turbo_rtsp_session_t *session = NULL;
 
     cmeta_mutex_lock(&server->mutex);
+    /* Linearize the final admission against server_stop. The caller's
+     * earlier stop check can succeed just before the Owner closes; no
+     * new Session may acquire a slot after that shutdown fence. */
+    if (server->stopping) {
+        cmeta_mutex_unlock(&server->mutex);
+        return NULL;
+    }
     for (i = 0; i < server->connection_capacity; ++i) {
         if (!server->sessions[i].active) {
             uint32_t generation = server->sessions[i].generation + 1u;
@@ -1348,6 +1358,9 @@ static void turbo_rtsp_server_packet_error(
     }
 }
 
+/* Used by the WebSocket callback and the NativeIO accept Owner. */
+static int turbo_rtsp_server_is_stopping(turbo_rtsp_server_t *server);
+
 static int turbo_rtsp_server_websocket_open(
     void *user,
     chttp_websocket *websocket,
@@ -1355,7 +1368,7 @@ static int turbo_rtsp_server_websocket_open(
     chttp_server_response *response) {
     turbo_rtsp_server_t *server = (turbo_rtsp_server_t *)user;
     turbo_rtsp_session_t *session;
-    if (!server || server->stopping) {
+    if (!server || turbo_rtsp_server_is_stopping(server)) {
         return SALTS_ESHUTDOWN;
     }
     session = turbo_rtsp_server_session_allocate(server, TURBO_RTSP_IO_WEBSOCKET);
@@ -1495,10 +1508,23 @@ static int turbo_rtsp_server_packet_init(turbo_rtsp_server_t *server) {
     }
 }
 
+/* The stop flag is shared with the calling thread and all callbacks. A
+ * plain read here races the mutex-protected shutdown write under TSan. */
+static int turbo_rtsp_server_is_stopping(turbo_rtsp_server_t *server) {
+    int stopping;
+    cmeta_mutex_lock(&server->mutex);
+    stopping = server->stopping;
+    cmeta_mutex_unlock(&server->mutex);
+    return stopping;
+}
+
 static void turbo_rtsp_server_stream_accept(turbo_rtsp_server_t *server) {
     int ready = 0;
-    while (!server->stopping &&
+    while (!turbo_rtsp_server_is_stopping(server) &&
            cnet_listener_wait(&server->listener, 0u, &ready) == SALTS_OK && ready) {
+        /* Stop may arrive while the kernel readiness check was running.
+         * Never admit another session after that fence is visible. */
+        if (turbo_rtsp_server_is_stopping(server)) return;
         turbo_rtsp_session_t *session =
             turbo_rtsp_server_session_allocate(server, TURBO_RTSP_IO_STREAM);
         cnet_observer observer;
@@ -1559,23 +1585,38 @@ static void turbo_rtsp_server_worker(void *arg) {
         }
     }
 
+    /* Worker-side failure is also a terminal Source state. Stop any
+     * cross-owner send or new Session admission before freeing NativeIO
+     * resources; the same mutex protects the stop, enqueue and DSO
+     * callback boundaries. */
+    cmeta_mutex_lock(&server->mutex);
+    server->stopping = 1;
+    server->started = 0;
+    cmeta_mutex_unlock(&server->mutex);
+
     if (server->listener_initialized) {
         (void)cnet_listener_close(&server->listener);
     }
     if (server->network_initialized) {
+        /* Remove wake admission before destroying the NativeIO owner.
+         * Stop and cross-owner Send both check this flag under mutex. */
+        cmeta_mutex_lock(&server->mutex);
+        server->network_initialized = 0;
+        cmeta_mutex_unlock(&server->mutex);
         (void)cnet_client_stop(&server->network, TURBO_RTSP_SERVER_STOP_TIMEOUT_MS);
         (void)cnet_client_destroy(&server->network);
-        server->network_initialized = 0;
     }
     if (server->listener_initialized) {
         (void)cnet_listener_destroy(&server->listener);
         server->listener_initialized = 0;
     }
     if (server->packet_initialized) {
+        cmeta_mutex_lock(&server->mutex);
+        server->packet_initialized = 0;
+        cmeta_mutex_unlock(&server->mutex);
         (void)cnet_packet_endpoint_stop(
             &server->packet_endpoint, TURBO_RTSP_SERVER_STOP_TIMEOUT_MS);
         (void)cnet_packet_endpoint_destroy(&server->packet_endpoint);
-        server->packet_initialized = 0;
     }
 }
 
@@ -1805,13 +1846,15 @@ void turbo_rtsp_server_stop(turbo_rtsp_server_t *server) {
     cmeta_mutex_lock(&server->mutex);
     server->stopping = 1;
     server->started = 0;
-    cmeta_mutex_unlock(&server->mutex);
+    /* Synchronize with the worker's pre-destroy wake-admission fence.
+     * No wake may overlap a NativeIO endpoint teardown. */
     if (server->network_initialized) {
         (void)cnet_client_wake(&server->network);
     }
     if (server->packet_initialized) {
         (void)cnet_packet_wake(&server->packet_endpoint);
     }
+    cmeta_mutex_unlock(&server->mutex);
     if (server->worker_started) {
         (void)cmeta_thread_join(&server->worker);
         cmeta_thread_destroy(&server->worker);
@@ -3852,14 +3895,14 @@ static int turbo_rtsp_resolve_packet_peer(
         const struct sockaddr_in *address =
             (const struct sockaddr_in *)result->ai_addr;
         peer->family = CNET_DATAGRAM_ADDRESS_IPV4;
-        peer->port = ntohs(address->sin_port);
+        peer->port = turbo_media_socket_port_host(&address->sin_port);
         memcpy(peer->address, &address->sin_addr, sizeof(address->sin_addr));
         *bind_host = "0.0.0.0";
     } else if (result->ai_family == AF_INET6) {
         const struct sockaddr_in6 *address =
             (const struct sockaddr_in6 *)result->ai_addr;
         peer->family = CNET_DATAGRAM_ADDRESS_IPV6;
-        peer->port = ntohs(address->sin6_port);
+        peer->port = turbo_media_socket_port_host(&address->sin6_port);
         peer->scope_id = address->sin6_scope_id;
         memcpy(peer->address, &address->sin6_addr, sizeof(address->sin6_addr));
         *bind_host = "::";

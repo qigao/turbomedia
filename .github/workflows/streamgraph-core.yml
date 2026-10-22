@@ -1,0 +1,85 @@
+name: StreamGraph typed core contracts
+
+on:
+  push:
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - 'streamgraph/**'
+      - '.github/workflows/streamgraph-core.yml'
+      - 'CMakeLists.txt'
+  pull_request:
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - 'streamgraph/**'
+      - '.github/workflows/streamgraph-core.yml'
+      - 'CMakeLists.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.os }} C11 and installed C/C++17
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        if: runner.os == 'Windows'
+      - name: Configure, compile and test C11 contracts
+        shell: bash
+        run: |
+          cd streamgraph
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --preset native-ci -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          else
+            cmake --preset native-ci
+          fi
+          cmake --build --preset native-ci
+          ctest --preset native-ci
+      - name: Install and independently consume exported SDK
+        shell: bash
+        run: |
+          cmake --install streamgraph/build/native-ci --prefix "$RUNNER_TEMP/sg-sdk"
+          cmake -S streamgraph/tests/install_consumer -B "$RUNNER_TEMP/sg-consumer" -G Ninja -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sg-sdk"
+          cmake --build "$RUNNER_TEMP/sg-consumer"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp "$RUNNER_TEMP/sg-sdk/bin/"*.dll "$RUNNER_TEMP/sg-consumer/"
+          fi
+          ctest --test-dir "$RUNNER_TEMP/sg-consumer" --output-on-failure
+
+  sanitizers:
+    name: Linux ASan and UBSan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Configure and test sanitizers
+        run: |
+          cd streamgraph
+          cmake --preset asan-ubsan
+          cmake --build --preset asan-ubsan
+          ASAN_OPTIONS=detect_leaks=1 ctest --preset asan-ubsan
+
+  thread-sanitizer:
+    name: Linux TSan Owner and native Provider races
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build instrumented handoff and run actual concurrent producers
+        shell: bash
+        run: |
+          cmake -S streamgraph -B streamgraph/build/tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+          cmake --build streamgraph/build/tsan --target streamgraph_handoff_test streamgraph_owner_dispatch_test streamgraph_provider_completion_test streamgraph_native_provider_dso_test
+          ctest --test-dir streamgraph/build/tsan -R 'streamgraph_(handoff|owner_dispatch|provider_completion|native_provider_dso)' --output-on-failure

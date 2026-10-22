@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.20)
+project(TurboMediaIndependentRTSPConsumer LANGUAGES C CXX)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Exact installed SDK component, never build-tree header/library fallback.
+find_package(TurboMedia CONFIG REQUIRED COMPONENTS RTSP)
+if(NOT TARGET TurboMedia::RTSP)
+  message(FATAL_ERROR "Installed TurboMedia::RTSP CMake export is missing")
+endif()
+
+add_executable(tm_installed_rtsp_c11 consumer.c)
+target_link_libraries(tm_installed_rtsp_c11 PRIVATE TurboMedia::RTSP)
+add_executable(tm_installed_rtsp_cpp17 consumer.cpp)
+target_link_libraries(tm_installed_rtsp_cpp17 PRIVATE TurboMedia::RTSP)
+# Independent SDK runtime: real localhost RTSP/CNet NativeIO and
+# repeated worker stop/start; not the separate ComponentPlugin DSO gate.
+add_executable(tm_installed_rtsp_runtime_c11 runtime.c)
+target_link_libraries(tm_installed_rtsp_runtime_c11 PRIVATE TurboMedia::RTSP)
+if(NOT MSVC)
+  target_compile_options(tm_installed_rtsp_c11 PRIVATE -Wall -Wextra -Werror -pedantic)
+  target_compile_options(tm_installed_rtsp_cpp17 PRIVATE -Wall -Wextra -Werror -pedantic)
+  target_compile_options(tm_installed_rtsp_runtime_c11 PRIVATE -Wall -Wextra -Werror -pedantic)
+endif()
+enable_testing()
+add_test(NAME installed_rtsp_rfc2250_c11 COMMAND tm_installed_rtsp_c11)
+add_test(NAME installed_rtsp_rfc2250_cpp17 COMMAND tm_installed_rtsp_cpp17)
+
+add_test(NAME installed_rtsp_nativeio_runtime_c11 COMMAND tm_installed_rtsp_runtime_c11)
+set_tests_properties(installed_rtsp_nativeio_runtime_c11 PROPERTIES
+  TIMEOUT 30 RESOURCE_LOCK tm_rtsp_installed_nativeio_port)

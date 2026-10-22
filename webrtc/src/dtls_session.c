@@ -16,54 +16,60 @@
  * ============================================================================ */
 
 static void dtls_handle_error(turbo_dc_peer_t *peer, int ret);
+static void on_dtls_retransmit_timer(cmeta_timer_t *timer);
 
 static void on_dtls_retransmit_timer(cmeta_timer_t *timer) {
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)cmeta_timer_get_data(timer);
-    if (!peer || dc_peer_acquire(peer) != 0) {
-        cmeta_timer_stop(timer);
-        return;
-    }
+    if (!peer) return;
 
-    if (peer->dtls.handshake_done) {
-        cmeta_timer_stop(timer);
-        dc_peer_release(peer);
-        return;
-    }
-
-    /* Handle DTLS timeout - triggers retransmission */
-    DTLSv1_handle_timeout(peer->dtls.ssl);
-    dtls_send_output(peer);
-
-    /* Schedule next timeout if handshake still in progress */
-    if (!peer->dtls.handshake_done) {
-        struct timeval tv;
-        if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-            uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-            if (timeout_ms == 0) timeout_ms = 1;  /* Minimum 1ms */
-            cmeta_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
-        }
-    }
-
-    dc_peer_release(peer);
-}
-
-static void dtls_schedule_retransmit(turbo_dc_peer_t *peer) {
-    if (!peer->dtls.retransmit_timer || peer->dtls.handshake_done) {
-        return;
-    }
-
-    struct timeval tv;
-    if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-        uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-        if (timeout_ms == 0) timeout_ms = 1;
-        cmeta_timer_start(peer->dtls.retransmit_timer, on_dtls_retransmit_timer, timeout_ms, 0);
-    }
+    /* Never wait for the owner here: Windows timer stop/rearm waits for this
+     * callback. Timer destruction drains callbacks before Peer reclamation. */
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (!peer->destroying) peer->dtls_retransmit_pending = 1;
+    cmeta_cond_broadcast(&peer->operation_cond);
+    cmeta_mutex_unlock(&peer->operation_mutex);
 }
 
 static void dtls_stop_retransmit_timer(turbo_dc_peer_t *peer) {
     if (peer->dtls.retransmit_timer) {
         cmeta_timer_stop(peer->dtls.retransmit_timer);
     }
+    /* Clear the queued hint. A POSIX callback already claimed before stop
+     * may still publish one last hint; DTLS checks its own timeout on owner. */
+    cmeta_mutex_lock(&peer->operation_mutex);
+    peer->dtls_retransmit_pending = 0;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+}
+
+static void dtls_schedule_retransmit(turbo_dc_peer_t *peer) {
+    struct timeval tv;
+    if (!peer->dtls.retransmit_timer || peer->dtls.handshake_done) return;
+    if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
+        uint64_t timeout_ms = tv.tv_sec * 1000 + (tv.tv_usec + 999) / 1000;
+        if (timeout_ms == 0) timeout_ms = 1;
+        dtls_stop_retransmit_timer(peer);
+        cmeta_timer_start(peer->dtls.retransmit_timer,
+                          on_dtls_retransmit_timer, timeout_ms, 0);
+    }
+}
+
+void dtls_poll_retransmit(turbo_dc_peer_t *peer) {
+    int pending;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    pending = peer->dtls_retransmit_pending && !peer->destroying;
+    peer->dtls_retransmit_pending = 0;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (!pending) return;
+    if (peer->dtls.handshake_done || !peer->dtls.ssl ||
+        peer->state == TURBO_DC_STATE_CLOSED ||
+        peer->state == TURBO_DC_STATE_FAILED) {
+        dtls_stop_retransmit_timer(peer);
+        return;
+    }
+    /* Only the existing DataChannel owner touches SSL/BIO or rearms timers. */
+    (void)DTLSv1_handle_timeout(peer->dtls.ssl);
+    dtls_send_output(peer);
+    dtls_schedule_retransmit(peer);
 }
 
 static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
@@ -84,8 +90,23 @@ static void dtls_drain_application_data(turbo_dc_peer_t *peer) {
     decrypted = (char *)alloca(buf_size);
 
     while ((decrypted_len = SSL_read(peer->dtls.ssl, decrypted, (int)buf_size)) > 0) {
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+        /* The private test executable must explicitly install a C11 handler;
+         * fail closed rather than silently sending the packet into usrsctp. */
+        if (!peer->test_dtls_application_handler) {
+            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_INIT,
+                              "private C11 DTLS bridge handler is not installed");
+            dc_fail_peer(peer, TURBO_DC_ERROR_SCTP_INIT,
+                         "private C11 DTLS bridge handler is not installed");
+            return;
+        }
+        peer->test_dtls_application_handler(
+            peer, (const uint8_t *)decrypted, (size_t)decrypted_len,
+            peer->test_dtls_application_user_data);
+#else
         usrsctp_conninput(peer, decrypted, decrypted_len, 0);
         sctp_poll_status(peer, "post-conninput");
+#endif
     }
 
     if (decrypted_len < 0) {
@@ -178,6 +199,23 @@ void dtls_session_cleanup(turbo_dc_peer_t *peer) {
 /* ============================================================================
  * DTLS Helpers
  * ============================================================================ */
+
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+int dtls_test_write_application_data(turbo_dc_peer_t *peer,
+                                     const void *data, size_t len) {
+    int written;
+    if (!peer || !data || len == 0 || len > INT_MAX || !peer->dtls.ssl ||
+        !peer->dtls.handshake_done || !dc_peer_is_on_transport_owner(peer)) {
+        return -1;
+    }
+    written = SSL_write(peer->dtls.ssl, data, (int)len);
+    if (written != (int)len) {
+        return -1;
+    }
+    dtls_send_output(peer);
+    return 0;
+}
+#endif
 
 void dtls_send_output(turbo_dc_peer_t *peer) {
     /* Buffer must be large enough to hold the largest possible DTLS record.

@@ -107,6 +107,63 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
   # 链接库
   target_link_libraries(${TEST_TARGET_NAME} PRIVATE ${TEST_LINK_LIBS})
   
+  # M15d: desktop-only real CNet RTSP/RFC2250 MPEG-2 RTP -> bounded
+  # FFmpeg delayed Codec conformance. Compile the EXACT existing optional
+  # adapter source into the test executable; no second production Provider,
+  # decoder, scheduler or mobile SDK dependency is introduced. The deployed
+  # FFmpeg addon remains independently installed and qualified on #187.
+  if(TEST_NAME STREQUAL "test_rtsp" AND NOT ANDROID)
+    target_sources(${TEST_TARGET_NAME} PRIVATE
+      ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c)
+    target_include_directories(${TEST_TARGET_NAME} PRIVATE
+      ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/include
+      ${PROJECT_SOURCE_DIR}/streamgraph/include)
+    target_compile_definitions(${TEST_TARGET_NAME} PRIVATE
+      TM_TEST_RTSP_MPEG2_CODEC_GATE=1)
+    target_link_libraries(${TEST_TARGET_NAME} PRIVATE
+      TurboMediaFFmpeg::avcodec TurboMediaFFmpeg::avutil)
+  endif()
+  
+  # Actual, installed-Salts CMeta/ComponentPlugin DSO lifecycle gate,
+  # Linux-only until the joint cross-platform RTSP+FFmpeg+DLOpen profile
+  # has its own independent installed SDK conformance. The production
+  # RTSP and optional tm_ffd Sources are UNMODIFIED; the canonical
+  # Salts Plugin loader and ComponentPlugin Scope own both generations.
+  if(TEST_NAME STREQUAL "test_rtsp" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    foreach(_tm_generation IN ITEMS 101 102)
+      add_library(tm_rtsp_component_provider_${_tm_generation} SHARED
+        ${PROJECT_SOURCE_DIR}/streamgraph/tests/installed_salts/real_component_provider.c
+        ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg.c
+        ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_async.c
+        ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/src/turbo_streamgraph_ffmpeg_delayed.c)
+      target_include_directories(tm_rtsp_component_provider_${_tm_generation} PRIVATE
+        ${PROJECT_SOURCE_DIR}/streamgraph/tests/installed_salts
+        ${PROJECT_SOURCE_DIR}/streamgraph/adapters/ffmpeg/include
+        ${PROJECT_SOURCE_DIR}/streamgraph/include
+        ${PROJECT_SOURCE_DIR}/media/include)
+      target_compile_definitions(tm_rtsp_component_provider_${_tm_generation}
+        PRIVATE TM_TEST_DSO_GENERATION=${_tm_generation}
+                TM_TEST_FFMPEG_DSO=1 SHARED_CXX)
+      target_link_libraries(tm_rtsp_component_provider_${_tm_generation} PRIVATE
+        Salts::ComponentPluginABI Salts::PluginABI Salts::CNet
+        turbo_media_streamgraph
+        TurboMediaFFmpeg::avcodec TurboMediaFFmpeg::avutil)
+      target_compile_options(tm_rtsp_component_provider_${_tm_generation} PRIVATE
+        -Wall -Wextra -Werror -Wno-unused-function)
+      set_target_properties(tm_rtsp_component_provider_${_tm_generation}
+        PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+      add_dependencies(${TEST_TARGET_NAME}
+        tm_rtsp_component_provider_${_tm_generation})
+    endforeach()
+    target_include_directories(${TEST_TARGET_NAME} PRIVATE
+      ${PROJECT_SOURCE_DIR}/streamgraph/tests/installed_salts)
+    target_compile_definitions(${TEST_TARGET_NAME} PRIVATE
+      TM_TEST_RTSP_MPEG2_PROVIDER_DSO=1 TM_TEST_FFMPEG_DSO=1)
+    target_link_libraries(${TEST_TARGET_NAME} PRIVATE
+      Salts::ComponentPlugin Salts::Plugin Salts::CNet
+      turbo_media_streamgraph Threads::Threads)
+  endif()
+
   # 设置目标属性
   set_target_properties(${TEST_TARGET_NAME} PROPERTIES 
     FOLDER "turbomedia/tests"
@@ -119,6 +176,27 @@ foreach(TEST_SOURCE ${TEST_SOURCES})
     set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
+    if(TEST_NAME STREQUAL "test_rtsp" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      # The original and fault-injection tests use the SAME two real
+      # installed-Salts ComponentPlugin DSOs and fixed localhost RTSP port.
+      # Prevent simultaneous CTest invocations from competing for them.
+      set(_rtsp_dso_fixture_env
+        "TM_RTSP_TEST_DSO_101=$<TARGET_FILE:tm_rtsp_component_provider_101>;TM_RTSP_TEST_DSO_102=$<TARGET_FILE:tm_rtsp_component_provider_102>")
+      set_tests_properties(${TEST_TARGET_NAME} PROPERTIES
+        ENVIRONMENT "${_rtsp_dso_fixture_env}"
+        RESOURCE_LOCK tm_rtsp_cnet_ports)
+
+      # Deliberately fail a NONFATAL predicate with the original NativeIO
+      # callback and real Provider DSO worker both on stack. The assertion
+      # is checked after callbacks join and the original Ticket is settled.
+      add_test(NAME turbo_media_test_rtsp_deferred_check_cleanup
+        COMMAND ${TEST_TARGET_NAME})
+      set_tests_properties(turbo_media_test_rtsp_deferred_check_cleanup PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+        ENVIRONMENT "${_rtsp_dso_fixture_env};TM_RTSP_INJECT_DEFERRED_CHECK=1"
+        RESOURCE_LOCK tm_rtsp_cnet_ports
+        TIMEOUT 120)
+    endif()
     if(TEST_NAME STREQUAL "test_benchmark")
       set_tests_properties(${TEST_TARGET_NAME} PROPERTIES LABELS performance)
     endif()
@@ -130,3 +208,113 @@ endforeach()
 # 打印测试摘要
 list(LENGTH TEST_SOURCES TEST_COUNT)
 message(STATUS "Total tests configured: ${TEST_COUNT}")
+
+# M15d / Salts #1168: opt-in PRIVATE source-copy of original NativeIO.
+# The after-real-epoll-wait hook belongs only to this test executable.
+# Production TurboMedia::RTSP continues to link released Salts::CNet.
+set(TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT "" CACHE PATH
+    "Exact Salts #1176 private NativeIO test source checkout (Linux only)")
+if(TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT)
+  if((NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT APPLE) OR
+     CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR
+      "M15d NativeIO kernel dispatch consumer is Linux epoll / macOS kqueue host-only")
+  endif()
+  set(_tm_native_root "${TM_M15D_NATIVE_IO_KERNEL_SOURCE_ROOT}/native-io")
+  set(_tm_private_native_platform)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _tm_private_native_platform
+      src/native_io_linux.c src/native_io_epoll.c src/native_io_io_uring.c)
+  else()
+    list(APPEND _tm_private_native_platform
+      src/native_io_bsd.c src/native_io_kqueue.c)
+  endif()
+  foreach(_tm_kernel_source IN ITEMS
+      src/native_io.c src/native_io_accept_escrow.c
+      src/native_io_readiness.c src/native_io_readiness.h
+      ${_tm_private_native_platform})
+    if(NOT EXISTS "${_tm_native_root}/${_tm_kernel_source}")
+      message(FATAL_ERROR "Exact private NativeIO source missing: ${_tm_kernel_source}")
+    endif()
+  endforeach()
+  file(STRINGS "${_tm_native_root}/src/native_io_readiness.c"
+    _tm_kernel_hook REGEX "SALTS_NATIVE_IO_KERNEL_TEST_HOOK")
+  if(NOT _tm_kernel_hook)
+    message(FATAL_ERROR
+      "Salts #1168 real-after-epoll dispatch hook absent; no fallback")
+  endif()
+  add_executable(turbo_media_rtsp_nativeio_kernel_dispatch
+    rtsp_nativeio_kernel_dispatch.c
+    "${_tm_native_root}/src/native_io.c"
+    "${_tm_native_root}/src/native_io_accept_escrow.c"
+    "${_tm_native_root}/src/native_io_readiness.c")
+  foreach(_tm_platform_file IN LISTS _tm_private_native_platform)
+    target_sources(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+      "${_tm_native_root}/${_tm_platform_file}")
+  endforeach()
+  target_include_directories(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+    "${_tm_native_root}/include" "${_tm_native_root}/src")
+  target_compile_definitions(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+    SALTS_NATIVE_IO_KERNEL_TEST_HOOK=1)
+  if(APPLE)
+    target_compile_definitions(turbo_media_rtsp_nativeio_kernel_dispatch
+      PRIVATE _DARWIN_C_SOURCE=1)
+  endif()
+  target_link_libraries(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+    TurboMedia::RTSP Salts::Platform Salts::Coroutine Threads::Threads)
+  target_compile_options(turbo_media_rtsp_nativeio_kernel_dispatch PRIVATE
+    -Wall -Wextra -Werror -Wno-unused-parameter)
+  set_target_properties(turbo_media_rtsp_nativeio_kernel_dispatch PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+    C_VISIBILITY_PRESET hidden)
+  add_test(NAME turbo_media_rtsp_nativeio_kernel_dispatch
+    COMMAND turbo_media_rtsp_nativeio_kernel_dispatch)
+  set_tests_properties(turbo_media_rtsp_nativeio_kernel_dispatch PROPERTIES
+    TIMEOUT 90 RESOURCE_LOCK tm_rtsp_kernel_port)
+endif()
+
+# M15d / Salts #1168: independent Windows-only REAL GQCS receive gate.
+# Original IOCP source is copied privately with test-only after-kernel hook;
+# production RTSP continues to use the exact published Salts CNet DLL.
+set(TM_M15D_IOCP_KERNEL_SOURCE_ROOT "" CACHE PATH
+    "Exact Salts #1176 private Windows IOCP source checkout")
+if(TM_M15D_IOCP_KERNEL_SOURCE_ROOT)
+  if(NOT WIN32 OR CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "M15d RTSP private IOCP gate requires native Windows host")
+  endif()
+  set(_tm_iocp_root "${TM_M15D_IOCP_KERNEL_SOURCE_ROOT}/native-io")
+  foreach(_tm_io_src IN ITEMS
+      src/native_io.c src/native_io_accept_escrow.c src/native_io_iocp.c
+      src/native_io_internal.h include/salts/native_io.h)
+    if(NOT EXISTS "${_tm_iocp_root}/${_tm_io_src}")
+      message(FATAL_ERROR "Exact private IOCP source missing: ${_tm_io_src}")
+    endif()
+  endforeach()
+  file(STRINGS "${_tm_iocp_root}/src/native_io_iocp.c"
+    _tm_iocp_hook REGEX "SALTS_NATIVE_IO_KERNEL_TEST_HOOK")
+  if(NOT _tm_iocp_hook)
+    message(FATAL_ERROR "Salts #1168 GQCS source hook absent; no fallback")
+  endif()
+  add_executable(turbo_media_rtsp_nativeio_iocp_dispatch
+    rtsp_nativeio_iocp_dispatch.c
+    "${_tm_iocp_root}/src/native_io.c"
+    "${_tm_iocp_root}/src/native_io_accept_escrow.c"
+    "${_tm_iocp_root}/src/native_io_iocp.c")
+  target_include_directories(turbo_media_rtsp_nativeio_iocp_dispatch PRIVATE
+    "${_tm_iocp_root}/include" "${_tm_iocp_root}/src")
+  target_compile_definitions(turbo_media_rtsp_nativeio_iocp_dispatch PRIVATE
+    SALTS_NATIVE_IO_KERNEL_TEST_HOOK=1
+    WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0600)
+  target_link_libraries(turbo_media_rtsp_nativeio_iocp_dispatch PRIVATE
+    TurboMedia::RTSP Salts::Platform Salts::Coroutine ws2_32)
+  if(MSVC)
+    target_compile_options(turbo_media_rtsp_nativeio_iocp_dispatch PRIVATE
+      /W4 /experimental:c11atomics)
+  endif()
+  set_target_properties(turbo_media_rtsp_nativeio_iocp_dispatch PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+  add_test(NAME turbo_media_rtsp_nativeio_iocp_dispatch
+    COMMAND turbo_media_rtsp_nativeio_iocp_dispatch)
+  set_tests_properties(turbo_media_rtsp_nativeio_iocp_dispatch PROPERTIES
+    TIMEOUT 90 RESOURCE_LOCK tm_rtsp_kernel_iocp_port)
+endif()

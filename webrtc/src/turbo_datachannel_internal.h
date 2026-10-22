@@ -17,7 +17,18 @@
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
 #include <usrsctp.h>
+#include <stdlib.h>
+/* CRoaring's optimized inline containers trigger MSVC C4702 inside the
+ * dependency header. Keep project translation units at /W4 /WX and scope the
+ * suppression strictly to the third-party include body. */
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4702)
+#endif
 #include <roaring/roaring.h>
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,6 +88,11 @@ struct turbo_dc_peer_s;
 
 typedef void (*dc_transport_task_fn)(void *arg1, void *arg2);
 
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+typedef void (*dc_test_dtls_application_data_fn)(
+    turbo_dc_peer_t *peer, const uint8_t *data, size_t len, void *user_data);
+#endif
+
 struct turbo_dc_context_s {
     SSL_CTX *ssl_ctx;
     int is_server;
@@ -100,6 +116,7 @@ struct turbo_dc_context_s {
     void *transport_command_arg1;
     void *transport_command_arg2;
     cmeta_mutex_t peer_mutex;
+    cmeta_cond_t peers_drained;
     int peer_mutex_initialized;
     int destroying;
     struct turbo_dc_peer_s *peers_head;
@@ -128,6 +145,8 @@ struct turbo_dc_peer_s {
     int operation_sync_initialized;
     int destroying;
     uint32_t active_operations;
+    int deferred_destroy;  /* operation_mutex; owner reaps after callback unwind. */
+    int dtls_retransmit_pending;  /* operation_mutex; bounded timer-to-owner handoff. */
 
     /* Transport (unified via ops) */
     cnet_client stream_client;
@@ -146,6 +165,12 @@ struct turbo_dc_peer_s {
 
     /* DTLS */
     dtls_session_t dtls;
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+    /* Private test target only: redirect authenticated DTLS application data
+     * to the C11 Association without changing the production usrsctp path. */
+    dc_test_dtls_application_data_fn test_dtls_application_handler;
+    void *test_dtls_application_user_data;
+#endif
 
     /* SCTP */
     sctp_session_t sctp;
@@ -198,6 +223,10 @@ struct turbo_dc_channel_s {
     int dcep_sent;
     size_t buffered_amount;
 
+    /* operation_mutex; closing unpublishes, final callback returns storage. */
+    uint32_t callback_refs;
+    int closing;
+
     /* Callbacks */
     turbo_dc_open_cb on_open;
     turbo_dc_message_cb on_message;
@@ -225,6 +254,7 @@ int dtls_session_init(turbo_dc_peer_t *peer);
 int dtls_session_init_timer(turbo_dc_peer_t *peer);
 
 void dtls_session_cleanup(turbo_dc_peer_t *peer);
+void dtls_poll_retransmit(turbo_dc_peer_t *peer);
 void dtls_send_output(turbo_dc_peer_t *peer);
 void dtls_process_handshake(turbo_dc_peer_t *peer);
 void dtls_handle_incoming(turbo_dc_peer_t *peer, const void *data, size_t len);
@@ -260,6 +290,22 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
  * Transport Helper (internal)
  * ============================================================================ */
 
+/* Serialize DTLS/SCTP state operations on the DataChannel owner thread. */
+int dc_peer_post_owner_sync(turbo_dc_peer_t *peer,
+                            dc_transport_task_fn task,
+                            void *arg1, void *arg2);
+int dc_peer_is_on_transport_owner(const turbo_dc_peer_t *peer);
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+int dc_peer_set_test_dtls_application_handler(
+    turbo_dc_peer_t *peer,
+    dc_test_dtls_application_data_fn handler,
+    void *user_data);
+int dtls_test_write_application_data(turbo_dc_peer_t *peer,
+                                     const void *data, size_t len);
+#endif
+int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
+                                         void *transport,
+                                         turbo_dc_transport_send_cb send_cb);
 void dc_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len);
 
 /* ============================================================================
@@ -322,6 +368,42 @@ static inline void peer_free_channel_id(turbo_dc_peer_t *peer, uint16_t id) {
 
 static inline void peer_mark_channel_id(turbo_dc_peer_t *peer, uint16_t id) {
     roaring_bitmap_add(peer->channel_ids, id);
+}
+
+/* The caller holds a Peer operation lease across admission and release.
+ * Every channel-map/ID access that can race with receive uses this mutex. */
+static inline turbo_dc_channel_t *dc_channel_admit(turbo_dc_peer_t *peer,
+                                                   uint16_t id) {
+    turbo_dc_channel_t *channel;
+    if (!peer || !peer->operation_sync_initialized) return NULL;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    channel = !peer->destroying && peer->channels_initialized
+                  ? peer_get_channel(peer, id) : NULL;
+    if (channel && !channel->closing && channel->callback_refs < UINT32_MAX - 1u)
+        ++channel->callback_refs;
+    else
+        channel = NULL;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    return channel;
+}
+
+static inline void dc_channel_release(turbo_dc_channel_t *channel) {
+    turbo_dc_peer_t *peer;
+    int reclaim = 0;
+    if (!channel || !channel->peer) return;
+    peer = channel->peer;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (channel->callback_refs > 0) --channel->callback_refs;
+    if (channel->closing && channel->callback_refs == 0) {
+        peer_free_channel_id(peer, channel->id);
+        reclaim = 1;
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (reclaim) {
+        tstr_free(channel->label);
+        tstr_free(channel->protocol);
+        free(channel);
+    }
 }
 
 #ifdef __cplusplus

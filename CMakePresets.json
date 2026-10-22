@@ -6,6 +6,24 @@
     ],
     "configurePresets": [
         {
+            "name": "ci-platform-release",
+            "displayName": "Platform CI (Release)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/platform-$env{TURBOMEDIA_CI_PLATFORM}",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+                "CMAKE_TOOLCHAIN_FILE": "$env{QIGAO_VCPKG_TOOLCHAIN_FILE}",
+                "VCPKG_TARGET_TRIPLET": "$env{TURBOMEDIA_CI_TRIPLET}",
+                "VCPKG_MANIFEST_MODE": false,
+                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+                "CMAKE_INSTALL_PREFIX": "${sourceDir}/stage/platform-$env{TURBOMEDIA_CI_PLATFORM}",
+                "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+                "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+                "CMAKE_OBJC_COMPILER_LAUNCHER": "ccache"
+            }
+        },
+        {
             "name": "base-win-dev-user",
             "hidden": true,
             "displayName": "Developer Build (Windows, Base)",
@@ -31,26 +49,29 @@
                 "dev-linux-ninja",
                 "pkg-vcpkg"
             ]
-        },
+        }
+    ],
+    "buildPresets": [
         {
-            "name": "ci-platform-release",
-            "displayName": "CI platform Release (installed SDKs and compiler cache)",
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/ci-platform",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_TOOLCHAIN_FILE": "$env{QIGAO_VCPKG_TOOLCHAIN_FILE}",
-                "VCPKG_TARGET_TRIPLET": "$env{TURBOMEDIA_CI_TRIPLET}",
-                "VCPKG_MANIFEST_MODE": "OFF",
-                "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
-                "CMAKE_INSTALL_PREFIX": "${sourceDir}/stage/ci-platform",
-                "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-                "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
-                "CMAKE_OBJC_COMPILER_LAUNCHER": "ccache"
-            }
+            "name": "ci-platform-build",
+            "configurePreset": "ci-platform-release",
+            "jobs": 2
         }
     ],
     "testPresets": [
+        {
+            "name": "ci-platform-test",
+            "inherits": "base-test",
+            "configurePreset": "ci-platform-release",
+            "filter": {
+                "exclude": {
+                    "label": "performance"
+                }
+            },
+            "execution": {
+                "timeout": 120
+            }
+        },
         {
             "name": "base-test",
             "hidden": true,
@@ -79,23 +100,6 @@
                 "rhs": "Darwin"
             },
             "configurePreset": "release-mac-ninja"
-        },
-        {
-            "name": "ci-platform-test",
-            "inherits": "base-test",
-            "configurePreset": "ci-platform-release",
-            "filter": {
-                "exclude": {
-                    "label": "performance"
-                }
-            }
-        }
-    ],
-    "buildPresets": [
-        {
-            "name": "ci-platform-build",
-            "configurePreset": "ci-platform-release",
-            "jobs": 2
         }
     ]
 }

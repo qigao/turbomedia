@@ -1,0 +1,125 @@
+name: StreamGraph exact Salts ComponentPlugin SDK
+
+'on':
+  push:
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - 'streamgraph/tests/installed_salts/**'
+      - '.github/workflows/streamgraph-salts-componentplugin.yml'
+  pull_request:
+    paths:
+      - 'cmake/ci/m16-sdk-lock.json'
+      - 'streamgraph/tests/installed_salts/**'
+      - '.github/workflows/streamgraph-salts-componentplugin.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed-salts-dso:
+    name: Exact Salts 2.3.0-rc.15 Provider DSO (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022, macos-15]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        if: runner.os == 'Windows'
+      - name: Fetch and attest the public immutable Salts.Native candidate
+        shell: bash
+        env:
+          SALTS_RELEASE_SHA: 21bdb1145fbb2b39ee3fa644173ec037adba7b87
+          SALTS_RELEASE_VERSION: 2.3.0-rc.15
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            Linux) rid=linux-x64; test "$(uname -m)" = x86_64 ;;
+            Windows) rid=windows-x64 ;;
+            macOS) rid=macos-arm64; test "$(uname -m)" = arm64 ;;
+            *) echo "unsupported host $RUNNER_OS" >&2; exit 1 ;;
+          esac
+          name="Salts.Native.${SALTS_RELEASE_VERSION}.nupkg"
+          root="https://github.com/qigao/salts/releases/download/v${SALTS_RELEASE_VERSION}"
+          curl --retry 3 --retry-all-errors -fLsS "$root/$name" -o "$RUNNER_TEMP/$name"
+          curl --retry 3 --retry-all-errors -fLsS "$root/SHA256SUMS" -o "$RUNNER_TEMP/SHA256SUMS"
+          python3 - "$RUNNER_TEMP/$name" "$RUNNER_TEMP/SHA256SUMS" \
+                    "$RUNNER_TEMP/salts-exact" "$rid" "$SALTS_RELEASE_SHA" "$SALTS_RELEASE_VERSION" <<'PY'
+          import hashlib, json, pathlib, sys, zipfile
+          pkg, check, root, rid, commit, version = sys.argv[1:]
+          digest = hashlib.sha256(pathlib.Path(pkg).read_bytes()).hexdigest()
+          sums = pathlib.Path(check).read_text().splitlines()
+          assert len(sums) == 1, 'Expected a single exact package checksum'
+          assert sums[0].split()[0].lower() == digest, 'Salts release digest mismatch'
+          pin = json.loads(pathlib.Path('cmake/ci/m16-sdk-lock.json').read_text())['packages']['Salts.Native']
+          assert version == pin['version'] and commit == pin['tag_commit'], 'M16 exact Salts source/version drift'
+          assert digest == pin['sha256'], 'M16 exact Salts package digest drift'
+          with zipfile.ZipFile(pkg) as archive:
+              manifest = f'sdk/{rid}/salts-sdk-manifest.txt'
+              assert manifest in archive.namelist(), 'Exact host RID missing from Salts SDK'
+              fields = dict(line.split('=', 1) for line in
+                            archive.read(manifest).decode('utf-8-sig').splitlines()
+                            if '=' in line)
+              assert fields['commit'] == commit, 'Unexpected Salts source commit'
+              assert fields['version'] == version, 'Unexpected Salts version'
+              assert fields['profile'] == 'release', 'Unexpected Salts SDK build profile'
+              assert f'sdk/{rid}/include/salts/component_plugin.h' in archive.namelist()
+              members = [item for item in archive.infolist()
+                         if item.filename.startswith(f'sdk/{rid}/')]
+              archive.extractall(root, members)
+          print(f"Exact installed Salts SDK: {version}, {commit}, {rid}, sha256={digest}")
+          PY
+          sdk="$RUNNER_TEMP/salts-exact/sdk/$rid"
+          test -f "$sdk/lib/cmake/Salts/SaltsConfig.cmake"
+          test -f "$sdk/include/salts/component_plugin.h"
+          echo "TM_SALTS_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
+      - name: Install only Linux FFmpeg development dependencies for real DSO gate
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libavcodec-dev libavutil-dev pkg-config
+          pkg-config --modversion libavcodec libavutil
+          echo "TM_TEST_FFMPEG_DSO=1" >> "$GITHUB_ENV"
+      - name: Build and install the real StreamGraph target (no fallback SDK)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd streamgraph
+          if [ "$RUNNER_OS" = Windows ]; then
+            cmake --preset native-ci -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          elif [ "$RUNNER_OS" = Linux ]; then
+            cmake --preset native-ci -DTM_STREAMGRAPH_ENABLE_FFMPEG_PROVIDER=ON
+          else
+            cmake --preset native-ci
+          fi
+          cmake --build --preset native-ci
+          cmake --install build/native-ci --prefix "$RUNNER_TEMP/sg-installed"
+          echo "TM_SG_SDK_ROOT=$RUNNER_TEMP/sg-installed" >> "$GITHUB_ENV"
+      - name: Compile genuine Salts Plugin/ComponentPlugin DSO and run integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake_args=(
+            -S streamgraph/tests/installed_salts
+            -B "$RUNNER_TEMP/real-componentplugin"
+            -G Ninja
+            -DCMAKE_BUILD_TYPE=Debug
+            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE
+            -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=FALSE
+          )
+          if [ "$RUNNER_OS" = Windows ]; then
+            cmake_args+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+          fi
+          cmake "${cmake_args[@]}"
+          cmake --build "$RUNNER_TEMP/real-componentplugin"
+          export PATH="$TM_SALTS_SDK_ROOT/bin:$TM_SG_SDK_ROOT/bin:$PATH"
+          export LD_LIBRARY_PATH="$TM_SALTS_SDK_ROOT/lib:$TM_SG_SDK_ROOT/lib:${LD_LIBRARY_PATH:-}"
+          export DYLD_LIBRARY_PATH="$TM_SALTS_SDK_ROOT/lib:$TM_SG_SDK_ROOT/lib:${DYLD_LIBRARY_PATH:-}"
+          ctest --test-dir "$RUNNER_TEMP/real-componentplugin" \
+            --no-tests=error --output-on-failure --timeout 90

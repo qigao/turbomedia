@@ -1,0 +1,161 @@
+# TurboMedia::StreamGraph — bounded C11 media runtime
+
+**Integrated mainline status (2026-10-13):** The 19 M0–M15d implementation PR commit layers were integrated into `master`; the exact integrated HEAD is [`a3441009`](https://github.com/qigao/turbomedia/commit/a3441009d8523d1c6793934387237ff84b18750e). All [11/11 M16 master-push workflows](https://github.com/qigao/turbomedia/issues/226) passed on that SHA, including the four-platform build, native installed-SDK consumers, StreamGraph Core, Linux FFmpeg Provider, real RTSP/Codec/DSO cancellation, and first-party source-instrumented TSan. This qualifies the **specified CPU/Provider integration slices**, not a general media DAG runtime or a published release. M16 scope, exact SDK provenance and release-decision work are tracked in [#226](https://github.com/qigao/turbomedia/issues/226); upstream ComponentPlugin alignment is tracked in [#225](https://github.com/qigao/turbomedia/issues/225).
+
+The versioned C11 `turbo_streamgraph.h` compiles typed Source/Processor/Sink plans. `turbo_frame_store.h`, bounded Fanout, owner-driven Executor, Handoff, Owner Dispatch and Provider Completion supply **same-process CPU** FrameRef/Pin/Lease, generation identity, backpressure, cancellation and explicit terminal settlement. Real installed Salts ComponentPlugin Generation/Scope + DSO and the bounded Linux FFmpeg decode/RTSP-to-Codec test profiles have separate qualification; these are not proof of arbitrary source/codec/provider combinations.
+
+**Not yet qualified:** arbitrary DAG execution or dynamic reconfiguration, GPU FrameStore/fences/zero-copy, general provider capability negotiation, complete asynchronous cross-Graph FramePin transfer, full Pipeline/v1 migration, general RTP fragmentation/reordering/loss recovery, installed FFmpeg add-ons on every platform, Android/iOS on-device runtime, browser/TURN production interoperability, or GmSSL-only WebRTC. No RC/tag/release was approved by the M16 integration. The CPU Executor's public contract remains **one Source, 1–8 ordered read-only Processors and 1–8 Sinks**; unsupported shapes fail rather than silently falling back.
+
+**Historical development notes:** the M1–M8 sections below preserve their original staged-conformance explanations; references to "Draft" and "not integrated" there describe the **earlier work-in-progress stage**, not the current `master` merge status. Read the current [M16 qualification record](https://github.com/qigao/turbomedia/issues/226) together with each section's explicit capability limitations.
+
+The platform-neutral C11 header models typed edges, schema/timebase/format preflight and an immutable compiled topology plan. FrameRef values are identities, **not** retention or GPU access rights. `format_id == 0` and memory `ANY` are unresolved proposals requiring explicit provider negotiation, not implicit conversion.
+
+`TurboMedia::StreamGraph` is a shared platform component, unlike desktop-only Pipeline. The standalone `streamgraph/` CMake build below provides focused conformance and an isolated install package; **root TurboMedia** installed C11/C++17 consumer tests were separately qualified on the integrated mainline SHA. Standalone success alone never proves the complete TurboMedia SDK dependency closure.
+
+```bash
+cd streamgraph
+cmake --preset native-ci
+cmake --build --preset native-ci
+ctest --preset native-ci
+```
+
+The existing Pipeline v1 is unchanged; v2 execution migration will be tracked separately and cannot silently fall back to the legacy scheduler.
+
+## M1: CPU FrameStore (new constrained slice)
+
+The companion `turbo_frame_store.h` declares an explicitly **owner-serialized,
+same-process CPU-only** frame store with upfront bounded allocation and
+generation-fenced `FrameRef` lookup. The initial `tm_fs_publish_cpu()` takes
+a **copy** of the bytes into owned storage; do **not** advertise end-to-end
+zero-copy or GPU surfaces. A `FrameRef` is a value identity, not a retention
+claim. The Store issues one independently charged `tm_fs_pin_v1` per admitted
+consumer; acquiring a `tm_fs_lease_v1` temporarily retains the slot while
+`tm_fs_map_cpu()` exposes a borrowed read-only view.
+
+A slot cannot be reused until it is explicitly retired and all pins/leases
+settle. Duplicate pin/lease release is stale. The process-local Store
+generation changes upon recreation; stale FrameRefs are rejected after Store
+and slot reuse. `tm_fs_seal()` stops new publication/pin admission but
+allows previously pinned work to settle; `destroy` returns BUSY for
+outstanding credits. All operations must be serialized by the embedding
+Media Owner; this does not create a second executor.
+
+**Not provided:** GPU FrameLease, external zero-copy buffers, asynchronous
+cross-thread/MPSC credit transfer, IPC broker, GPU fences, model inference,
+cross-Graph scheduler or source adapters. A C11 local atomic is used only to
+generate process-local Store incarnations. Frame identities are never persisted.
+[FrameStore issue #164](https://github.com/qigao/turbomedia/issues/164)
+remains open until full domain qualification.
+
+## M2 bounded FrameStore fan-out (Draft implementation #165)
+
+The new `turbo_streamgraph_fanout.h` is a **single-owner-lane** bounded branch admission contract above FrameStore. Branch storage is preallocated with explicitly finite capacity. Every admitted consumer gets a separate Store pin; copying a FrameRef/ticket does not copy its lifetime right. No frame pixel bytes are copied by fan-out.
+
+- **ordered.lossless**: full queues reject the entire new frame *before* any preview eviction; no implicit drop or retry.
+- **latest**: may evict only oldest unclaimed READY entries, never TAKEN/leased frames.
+- **sample**: admits deterministic source-frame IDs 1, 1+n, 1+2n; skipped inputs do not consume credits.
+- **owner APIs**: submit, take, acquire temporary FrameLease, settle, seal, discard-ready and destroy. Destroy refuses unreturned TAKEN pins; FrameStore lives longer than Fanout Owner.
+
+This is **not** yet the full execution scheduler: no Source/Processor factory invocation, codec flush/EOF, multi-thread MPSC admission, timers, GPU Fence, cross-process Shared Memory, or FFmpeg migration. All calls are serialized by the embedding Media Owner; no hidden executor. Tests prove three-branch ordering/backpressure, pin-credit rollback, stale ticket rejection and safe drain. [#165](https://github.com/qigao/turbomedia/issues/165) remains open.
+
+## M2 executable synthetic graph (Draft; owner-driven)
+
+`turbo_streamgraph_executor.h` connects a compiled `tm_sg_program` to actual
+Source/Processor/Sink callbacks and the CPU FrameStore + bounded Fanout. The
+explicitly supported topology in the latest Draft is one Source, **1–8 ordered read-only Processors**, and 1–8 Sink nodes connected through typed CPU VideoFrame ports with resolved, nonzero format and timebase. An unrecognized DAG, GPU/ANY memory domain, missing
+binding, or unsupported port is rejected rather than run partially.
+
+The embedding caller owns **every** call and callback, including Source polls,
+Sink visits, stop and destroy. There are no threads, pollers, implicit retries,
+codec contexts or FFmpeg dependency. A Source copies at most one frame into a
+bounded scratch buffer, then FrameStore owns a single CPU copy; Processor and
+Sinks borrow short FrameLease views. For backpressure, the executor retains
+at most one uncommitted FrameRef or producer-filled scratch frame and does **not**
+poll Source again. This preserves an admitted recording frame when a branch or
+FrameStore has no space. The Sink policy is implemented by the existing
+`ordered.lossless`, `sample`, or `latest` Fanout Owner.
+
+EOS seals Fanout admission but leaves queued Sink work deliverable. A requested
+stop discards only an uncommitted frame; READY items require explicit
+`discard_ready` or delivery, and destroy returns BUSY while credits remain.
+Consumer callback failures are terminal for this slice; no action replay or
+automatic retry is introduced.
+
+`streamgraph_executor` CTest exercises synthetic Source/Processor/two Sink
+execution, ordered recording vs latest preview, full lossless and FrameStore
+backpressure, one pending frame with exactly-once Source progression, EOS,
+cancellation and failed Sink cleanup. It is **not** a generic graph executor,
+does not implement async callback completion, true cross-owner handoff, GPU
+fences, FFmpeg Flush/Drain or plugin generation leases. Those are separate
+qualification gates under [#165](https://github.com/qigao/turbomedia/issues/165)
+and [#166](https://github.com/qigao/turbomedia/issues/166).
+
+## M3 linear multi-Processor slice (Draft PR #174)
+
+The synthetic owner-driven Executor now supports `Source -> Processor[1..8] -> Sink[1..8]` as a **single-owner CPU read-only visitor chain**. The Compiler's topological node order determines the callback sequence; the same FrameLease is borrowed by each Processor only during its callback. It does not mutate the pixel buffer, allocate an extra frame copy, create a scheduler thread or accept arbitrary DAGs.
+
+Preflight rejects intermediate fan-out, skipped or ambiguous processors, non-matching Port kinds/formats/timebases, missing or duplicate Provider bindings and a chain longer than the finite Processor limit. The final Processor alone fans out through existing ordered-lossless, sample or latest branch policies. An error in any Processor stops further execution and invokes the existing safe stop/retire path.
+
+The `streamgraph_multi_processor` CTest verifies two exact-order Processors and two Sinks, lossless backpressure without duplicate callback, rejection of intermediate-Processor branches and a failing second Processor. [PR #174](https://github.com/qigao/turbomedia/pull/174) qualifies this **narrow slice only**. A general Source/Processor/Sink execution DAG, per-node mutable outputs, cross-owner bounded asynchronous delivery, true TSan concurrency, EOS/flush across codecs and FFmpeg lowering remain separately outstanding under #165/#166.
+
+## M4 concurrent Owner command inbox (Draft stacked slice)
+
+The separate `turbo_streamgraph_handoff.h` provides a bounded **multiple-producer / single-consuming Media Owner** control inbox. Producers may execute `reserve`, `publish`, `abort`, and `snapshot` concurrently; the Media Owner alone calls `take` and `settle`. All slots and command storage are allocated upfront. Under a short atomic lock the inbox transitions RESERVED -> READY -> TAKEN -> FREE. Tokens contain an inbox incarnation and a slot generation, so copying an old token cannot reproduce a capacity credit.
+
+Supported command values are `PUMP_SOURCE`, `PUMP_SINK`, `STOP` and `FRAME_NOTICE`. Each is a small, pointer-free envelope. **FRAME_NOTICE holds a weak FrameRef only**, not a FramePin or a pixel lease; the Media Owner must validate the target Store generation and reserve an actual Pin before any separate async request commits. The inbox never invokes `tm_fs_*` or `tm_ex_*` under its lock and does not add a worker/poller or hidden retry. The host must progress/wake the Media Owner, execute the command and settle the row.
+
+```mermaid
+sequenceDiagram
+    participant P as Concurrent Producer
+    participant H as Bounded Handoff
+    participant O as Media Owner
+    participant F as FrameStore
+    P->>H: reserve capacity ticket
+    P->>H: publish copied command
+    H-->>O: take ready command
+    O->>F: validate optional weak FrameRef
+    O->>O: invoke owner-local operation
+    O->>H: settle consumed credit
+    P->>H: seal on shutdown
+    Note over P,O: Producer join and owner quiescence precede destroy
+```
+
+`seal` blocks new reservations/publications but requires already-reserved tickets to be aborted. READY commands may still drain and TAKEN credits must settle before `destroy` succeeds. **A drained snapshot does not establish concurrency quiescence:** callers must stop/join all producers including post-publish wake tails and ensure no owner access before destruction.
+
+`streamgraph_handoff` CTest uses four actual producer threads racing with a single owner reader (600 command deliveries) plus deterministic seal-vs-reserved and stale-incarnation tests. Native CI qualifies MSVC, Clang and GCC; Linux TSan is a distinct instrumented gate. This does **not yet** integrate a complete Graph Executor scheduler, pin-retaining analysis requests, GPU FrameStore, FFmpeg, native CNet wake or asynchronous Provider callbacks. [#165](https://github.com/qigao/turbomedia/issues/165) remains OPEN.
+
+## M5 Owner Dispatch integration (Draft stacked slice)
+
+The new `turbo_streamgraph_owner_dispatch.h` binds a **borrowed** MPSC Handoff Inbox, StreamGraph Executor and FrameStore to one caller-driven Media Owner. Producers publish only immutable commands; on `tm_od_step()`, the Owner takes at most one command, calls the existing `tm_ex_pump_source`, `tm_ex_pump_sink` or `tm_ex_stop` and settles the reserved Inbox row. The `tm_od_receipt_v1` reports the original correlation plus a typed `COMPLETED`, `BACKPRESSURE`, `EOS`, `REJECTED` or `FAILED` outcome.
+
+**No automatic retry:** `BACKPRESSURE` settles the original command; a host may explicitly submit a new command after Sink or FrameStore progress. Source's own bounded scratch/FrameRef remains pending within the Executor and cannot be polled again until its backpressure is cleared. A STOP command seals future Inbox admission but already queued Sink work can be delivered or explicitly discarded before Executor teardown.
+
+A `FRAME_NOTICE` is weak while queued. The owner attempts `tm_fs_reserve_pin` and `tm_fs_acquire_pinned`, maps a read-only CPU view during one callback, then releases Lease and Pin before returning its result. A frame reclaimed before owner take yields `STALE_FRAME`, never another slot's bytes. A callback may request retirement while leased; Store returns BUSY and automatically retires once its last Lease/Pin settles. No raw pixel pointer may leave the callback.
+
+The `streamgraph_owner_dispatch` test exercises Source/Processor/Sink backpressure, explicit retry, EOS, STOP, stale vs live frame notice, callback reentrancy rejection, and multiple producer threads submitting real commands while one Media Owner services the Executor. [TSan workflow](../.github/workflows/streamgraph-core.yml) instruments both Handoff and this integrated path. The Dispatcher does not own its borrowed Executor/Store/Inbox. This still does **not** implement remote FrameRef, a long-lived pin transfer to TurboInteract, wake/poller integration with CNet, arbitrary media DAG execution, codec flush or FFmpeg lowering; #165 and #166 remain Open.
+
+## M6 asynchronous Provider completion and cancellation barrier (Draft)
+
+The new `turbo_streamgraph_provider_completion.h` is a bounded, versioned C11 registry for asynchronous Provider callbacks. The Media Owner calls `tm_pc_begin()` and reserves one in-flight credit **before** starting a Provider. A Provider callback thread calls `tm_pc_complete()` with that ticket. Only the Media Owner calls `tm_pc_take()` and `tm_pc_settle()`. No callback executes Graph operations or releases a Provider DSO from inside the portal's short atomic lock.
+
+Concurrent cancellation is explicit: `request_cancel` fences the operation but does not pretend the callback has ended. If cancellation wins first and the Provider subsequently completes, the one terminal result remains `CANCELLED` and records `completion_observed=1`. If completion wins, cancellation returns ALREADY and the completed result remains authoritative. A Provider may call `cancel_quiesced` only **after** it has proved that no callback for that request can subsequently occur; doing so earlier violates the lifecycle contract. A synchronous Provider start failure uses `fail_start` only if no callback can arrive. Either terminal condition retains credit until the Media Owner settles it.
+
+`seal` prevents new begin/admission but accepts an already-admitted callback's terminal completion, allowing safe Drain. `destroy` refuses outstanding in-flight, cancel-pending, READY or TAKEN rows; **all** producer threads/callbacks and borrowed Provider/DSO generations must be quiescent before destruction, independent of snapshot status.
+
+Deterministic qualification checks version/identity/ABA, cancel-before-complete, complete-before-cancel, duplicate result rejection, shutdown settlement and capacity. Concurrent tests execute 160 cancellation/completion races and 320 genuine callbacks over four threads, now included in the Linux TSan, Windows/Linux/macOS and ASan/UBSan native gates. Installed C11/C++17 SDK consumers cover the new public symbols. This is a **Provider completion registry**, not yet a concrete FFmpeg/RTC Provider adapter, a CNet wake mechanism, async GPU frame retention, DSO lease manager or arbitrary DAG executor. #165 remains OPEN and the next integration must route terminal results into the Media Owner's event loop.
+
+## M7 Media Owner terminal-result delivery (Draft PR #178)
+
+The existing `tm_od_owner` now has an optional **borrowed** Provider Completion Portal binding, without introducing another scheduler. Only the Media Owner calls `tm_od_step_completion()`, takes an already completed or cancelled Provider ticket, and invokes the configured `tm_od_terminal_emit_fn` on the owner lane. The result keeps exact `correlation`, `provider_generation`, `outcome`, `completion_observed` and `provider_status`. This callback is a narrow *acceptance/effect boundary*: `return 0` means the downstream consumer has accepted/committed the result; it does **not** prove external side effects beyond that boundary.
+
+If the emitter returns nonzero, the TAKEN Portal credit and exact terminal result stay with the owner. There is **no automatic retry or duplicate emission**: `tm_od_pending_completion()` lets the Host inspect what failed, and `tm_od_settle_pending_completion()` is an explicit reconciliation choice by the Host. While a result is pending, another `step_completion` returns BUSY and destroy rejects. If Portal settlement itself fails, the same credit remains visible and requires explicit handling. The callbacks cannot reenter the dispatcher.
+
+The Portal is a borrowed dependency; `tm_od_destroy()` now also requires an attached Portal to be sealed and drained, in addition to the command Inbox. The Host must externally join Provider callback threads and keep their code/data/DSO generation scope valid until they have quiesced and all terminal outcomes are settled. **No ComponentPlugin lease API or actual DSO loader has been integrated.** This is a typed owner-delivery and lifetime-*admission* contract, not a hot-unload proof.
+
+The extended `streamgraph_owner_dispatch` test covers failing downstream delivery, no repeated callback, explicit reconciliation, cancelled terminal propagation and a real asynchronous Provider callback worker racing with the Media Owner for 96 correlated completions. The Linux TSan build already instruments this test, alongside Portal and Handoff tests. The installed C11/C++17 consumers check the additional public ABI surface. Remaining work: actual CMeta ComponentPlugin generation lease, callback cancellation and DSO unload, CNet owner wake and installed FFmpeg/RTC Provider integration (#165/#166).
+
+## M8 native dual-DSO callback/drain smoke test (Draft)
+
+The `streamgraph_native_provider_dso` test now loads two actual OS dynamic libraries (Generation N and N+1). A callback remains inside N's native library while the Media Owner requests cancellation and seals its Provider Completion Portal. The **test host** checks that N cannot be unloaded before callback thread join **and** terminal-credit settlement. N+1 may execute and unload independently. A final `dlclose` / `FreeLibrary` happens only after the host verifies both conditions. The test is enabled on supported native Windows/Linux/macOS platforms, with ASan/UBSan and TSan where supported.
+
+This **does not** establish production `Salts::ComponentPlugin` lease ownership. The dynamic loader and unload gate in this test are test-only; a production StreamGraph Provider must use the canonical Salts ComponentPlugin runtime, stable noncopyable Generation Scope and Plugin loader. See [exact Salts integration requirements](../docs/design/streamgraph-provider-dso-salts-gate.md). The installed Salts ComponentPlugin integration/real Provider DSO conformance remains open under #165.
