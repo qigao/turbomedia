@@ -220,7 +220,6 @@ jobs:
               "-DANDROID_STL=c++_shared"
             )
           }
-          & cmake @args
           if ("${{ matrix.platform }}" -eq "Linux") {
             $args += @("-DTURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN=ON")
           }
@@ -252,7 +251,7 @@ jobs:
           for suffix in suffixes:
               matches = [
                   item for item in commands
-                  if item["file"].replace("\\\\", "/").endswith(suffix)
+                  if item["file"].replace("\\", "/").endswith(suffix)
                   and target in item.get("command", " ".join(item.get("arguments", ())))
               ]
               if len(matches) != 1:
