@@ -265,6 +265,9 @@ int dc_peer_post_owner_sync(turbo_dc_peer_t *peer,
                             dc_transport_task_fn task,
                             void *arg1, void *arg2);
 int dc_peer_is_on_transport_owner(const turbo_dc_peer_t *peer);
+int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
+                                         void *transport,
+                                         turbo_dc_transport_send_cb send_cb);
 void dc_send_transport_data(turbo_dc_peer_t *peer, const void *data, size_t len);
 
 /* ============================================================================
