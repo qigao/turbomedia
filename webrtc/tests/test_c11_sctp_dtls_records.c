@@ -133,6 +133,30 @@ static size_t transfer_dtls_records(SSL *from, SSL *to) {
   return total;
 }
 
+static void verify_peer_fingerprint(SSL *session, const char *expected) {
+  X509 *certificate;
+  uint8_t digest[EVP_MAX_MD_SIZE];
+  unsigned int digest_size = 0;
+  char actual[EVP_MAX_MD_SIZE * 3];
+  static const char hex[] = "0123456789ABCDEF";
+  size_t position = 0;
+  unsigned int i;
+
+  assert(session != NULL && expected != NULL);
+  certificate = SSL_get_peer_certificate(session);
+  assert(certificate != NULL);
+  assert(X509_digest(certificate, EVP_sha256(), digest, &digest_size) == 1);
+  X509_free(certificate);
+  assert(digest_size == 32u);
+  for (i = 0; i < digest_size; ++i) {
+    actual[position++] = hex[(digest[i] >> 4) & 0x0fu];
+    actual[position++] = hex[digest[i] & 0x0fu];
+    if (i + 1u != digest_size) actual[position++] = ':';
+  }
+  actual[position] = '\0';
+  assert(strcmp(actual, expected) == 0);
+}
+
 static void drive_dtls_handshake(SSL *client, SSL *server) {
   unsigned attempt;
   for (attempt = 0; attempt < 100u; ++attempt) {
@@ -185,7 +209,8 @@ static void test_real_dtls_records_carry_c11_sctp(void) {
   SSL *server = NULL;
   tstr client_fingerprint = NULL;
   tstr server_fingerprint = NULL;
-  test_mac_provider provider = {{0}};
+  test_mac_provider client_provider = {{0}};
+  test_mac_provider server_provider = {{0}};
   cnet_sctp_assoc client_assoc = {0};
   cnet_sctp_assoc server_assoc = {0};
   cnet_sctp_assoc_config client_config;
@@ -200,7 +225,8 @@ static void test_real_dtls_records_carry_c11_sctp(void) {
   size_t cookie_ack_size = 0, data_packet_size = 0, sack_size = 0;
   size_t plaintext_size = 0, received_size = 0;
 
-  assert(RAND_bytes(provider.key, sizeof(provider.key)) == 1);
+  assert(RAND_bytes(client_provider.key, sizeof(client_provider.key)) == 1);
+  assert(RAND_bytes(server_provider.key, sizeof(server_provider.key)) == 1);
   client_context = create_dtls_context(&client_fingerprint);
   server_context = create_dtls_context(&server_fingerprint);
   client = create_dtls_session(client_context, 0);
@@ -210,9 +236,12 @@ static void test_real_dtls_records_carry_c11_sctp(void) {
   assert(SSL_is_init_finished(server));
   assert(client_fingerprint != NULL && server_fingerprint != NULL);
   assert(strcmp(client_fingerprint, server_fingerprint) != 0);
+  verify_peer_fingerprint(client, server_fingerprint);
+  verify_peer_fingerprint(server, client_fingerprint);
 
-  client_config = test_assoc_config(5000u, 5001u, &provider);
-  server_config = test_assoc_config(5001u, 5000u, &provider);
+  /* Cookie MAC providers are endpoint-local, like production key ownership. */
+  client_config = test_assoc_config(5000u, 5001u, &client_provider);
+  server_config = test_assoc_config(5001u, 5000u, &server_provider);
   assert(cnet_sctp_assoc_init(&client_assoc, &client_config, 0u) ==
          CNET_SCTP_ASSOC_OK);
   assert(cnet_sctp_assoc_init(&server_assoc, &server_config, 0u) ==
