@@ -165,8 +165,45 @@ static void test_peer_destroy_waits_for_inflight_transport_callback(void) {
   cmeta_mutex_destroy(&gate.mutex);
 }
 
+typedef struct handshake_owner_probe {
+  turbo_dc_peer_t *peer;
+  unsigned sends;
+} handshake_owner_probe;
+
+static void observe_owner_send(void *opaque, const void *data, size_t len) {
+  handshake_owner_probe *probe = (handshake_owner_probe *)opaque;
+  assert(probe != NULL && probe->peer != NULL);
+  assert(data != NULL && len > 0u);
+  assert(dc_peer_is_on_transport_owner(probe->peer));
+  ++probe->sends;
+}
+
+static void test_external_dtls_handshake_runs_on_owner(void) {
+  turbo_dc_config_t config = {0};
+  handshake_owner_probe probe = {0};
+  turbo_dc_context_t *ctx;
+
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  config.disable_sctp = 1;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, NULL);
+  assert(probe.peer != NULL);
+  assert(turbo_dc_peer_set_external_transport(
+      probe.peer, &probe, observe_owner_send) == 0);
+
+  /* The public caller is not the DataChannel owner. ClientHello generation
+   * and the external send callback must nevertheless execute on the owner. */
+  assert(turbo_dc_peer_connect(probe.peer) == 0);
+  assert(probe.sends > 0u);
+
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
 int main(void) {
   test_peer_destroy_waits_for_inflight_transport_callback();
-  puts("Production DataChannel Peer destroy-drain contract PASS");
+  test_external_dtls_handshake_runs_on_owner();
+  puts("Production DataChannel Peer owner/drain contract PASS");
   return 0;
 }
