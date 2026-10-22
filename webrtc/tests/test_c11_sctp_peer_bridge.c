@@ -13,6 +13,7 @@
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
 #include <salts/thread.h>
+#include <tlog.h>
 
 /* Private test target only: production still routes DTLS plaintext to usrsctp. */
 enum { QCAP = 32, DCAP = 4096, PCAP = CNET_SCTP_ASSOC_MAX_PACKET };
@@ -177,6 +178,13 @@ static void test_real_peer_dtls_c11_roundtrip(void) {
   cmeta_mutex_destroy(&q.mutex);
 }
 int main(void) {
+  /* This target links the installed Salts logger DSO, which is not itself
+   * TSan-instrumented. Its async producer/consumer synchronization therefore
+   * is invisible to TSan and can look like a race in the logger's copied
+   * message buffer. Keep routine handshake DEBUG/INFO traffic out of this
+   * lifecycle test; failures remain visible at ERROR level. Set this before
+   * creating either Peer or its transport thread. */
+  tlog_set_level(tlog_get_default(), SALTS_LOG_LEVEL_ERROR);
   test_real_peer_dtls_c11_roundtrip();
   puts("Real TurboMedia Peer DTLS <-> private C11 SCTP bridge PASS");
   return 0;
