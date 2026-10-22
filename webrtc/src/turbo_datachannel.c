@@ -1170,17 +1170,65 @@ peer_create_fail:
     return NULL;
 }
 
+typedef enum dc_peer_callback_kind_e {
+    DC_PEER_CALLBACK_STATE,
+    DC_PEER_CALLBACK_CHANNEL,
+    DC_PEER_CALLBACK_ERROR
+} dc_peer_callback_kind_t;
+
+typedef struct dc_peer_callback_command_s {
+    turbo_dc_peer_t *peer;
+    dc_peer_callback_kind_t kind;
+    turbo_dc_state_cb on_state;
+    turbo_dc_channel_cb on_channel;
+    turbo_dc_error_cb on_error;
+} dc_peer_callback_command_t;
+
+static void dc_peer_callback_owner_task(void *arg1, void *arg2) {
+    dc_peer_callback_command_t *command = (dc_peer_callback_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->peer) return;
+    switch (command->kind) {
+        case DC_PEER_CALLBACK_STATE:
+            command->peer->on_state = command->on_state;
+            break;
+        case DC_PEER_CALLBACK_CHANNEL:
+            command->peer->on_channel = command->on_channel;
+            break;
+        case DC_PEER_CALLBACK_ERROR:
+            command->peer->on_error = command->on_error;
+            break;
+    }
+}
+
+static void dc_peer_set_callback(turbo_dc_peer_t *peer,
+                                 dc_peer_callback_kind_t kind,
+                                 turbo_dc_state_cb on_state,
+                                 turbo_dc_channel_cb on_channel,
+                                 turbo_dc_error_cb on_error) {
+    dc_peer_callback_command_t command;
+    if (!peer || dc_peer_acquire(peer) != 0) return;
+    command.peer = peer;
+    command.kind = kind;
+    command.on_state = on_state;
+    command.on_channel = on_channel;
+    command.on_error = on_error;
+    (void)dc_peer_post_owner_sync(peer, dc_peer_callback_owner_task,
+                                  &command, NULL);
+    dc_peer_release(peer);
+}
+
 void turbo_dc_peer_on_state(turbo_dc_peer_t *peer, turbo_dc_state_cb cb) {
-    if (peer) peer->on_state = cb;
+    dc_peer_set_callback(peer, DC_PEER_CALLBACK_STATE, cb, NULL, NULL);
 }
 
 void turbo_dc_peer_on_channel(turbo_dc_peer_t *peer, turbo_dc_channel_cb cb) {
-    if (peer) peer->on_channel = cb;
+    dc_peer_set_callback(peer, DC_PEER_CALLBACK_CHANNEL, NULL, cb, NULL);
 }
 
 void turbo_dc_peer_on_error(turbo_dc_peer_t *peer, turbo_dc_error_cb cb) {
-     if (peer) peer->on_error = cb;
- }
+    dc_peer_set_callback(peer, DC_PEER_CALLBACK_ERROR, NULL, NULL, cb);
+}
  
 static int dc_ascii_equal_ignore_case(const char *left, const char *right) {
     unsigned char a;
@@ -1833,24 +1881,101 @@ int turbo_dc_channel_open(turbo_dc_channel_t *channel) {
     return status == SALTS_OK ? command.result : -1;
 }
 
-void turbo_dc_channel_on_open(turbo_dc_channel_t *channel, turbo_dc_open_cb cb) {
-    if (channel) channel->on_open = cb;
+typedef enum dc_channel_callback_kind_e {
+    DC_CHANNEL_CALLBACK_OPEN,
+    DC_CHANNEL_CALLBACK_MESSAGE,
+    DC_CHANNEL_CALLBACK_CLOSE,
+    DC_CHANNEL_CALLBACK_SET_USER_DATA,
+    DC_CHANNEL_CALLBACK_GET_USER_DATA
+} dc_channel_callback_kind_t;
+
+typedef struct dc_channel_callback_command_s {
+    turbo_dc_channel_t *channel;
+    dc_channel_callback_kind_t kind;
+    turbo_dc_open_cb on_open;
+    turbo_dc_message_cb on_message;
+    turbo_dc_close_cb on_close;
+    void *user_data;
+    void *result_user_data;
+} dc_channel_callback_command_t;
+
+static void dc_channel_callback_owner_task(void *arg1, void *arg2) {
+    dc_channel_callback_command_t *command =
+        (dc_channel_callback_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->channel) return;
+    switch (command->kind) {
+        case DC_CHANNEL_CALLBACK_OPEN:
+            command->channel->on_open = command->on_open;
+            break;
+        case DC_CHANNEL_CALLBACK_MESSAGE:
+            command->channel->on_message = command->on_message;
+            break;
+        case DC_CHANNEL_CALLBACK_CLOSE:
+            command->channel->on_close = command->on_close;
+            break;
+        case DC_CHANNEL_CALLBACK_SET_USER_DATA:
+            command->channel->user_data = command->user_data;
+            break;
+        case DC_CHANNEL_CALLBACK_GET_USER_DATA:
+            command->result_user_data = command->channel->user_data;
+            break;
+    }
 }
 
-void turbo_dc_channel_on_message(turbo_dc_channel_t *channel, turbo_dc_message_cb cb) {
-    if (channel) channel->on_message = cb;
+static void dc_channel_update(turbo_dc_channel_t *channel,
+                              dc_channel_callback_kind_t kind,
+                              turbo_dc_open_cb on_open,
+                              turbo_dc_message_cb on_message,
+                              turbo_dc_close_cb on_close,
+                              void *user_data,
+                              void **result_user_data) {
+    dc_channel_callback_command_t command;
+    turbo_dc_peer_t *peer;
+    if (!channel || !channel->peer) return;
+    peer = channel->peer;
+    if (dc_peer_acquire(peer) != 0) return;
+    command.channel = channel;
+    command.kind = kind;
+    command.on_open = on_open;
+    command.on_message = on_message;
+    command.on_close = on_close;
+    command.user_data = user_data;
+    command.result_user_data = NULL;
+    if (dc_peer_post_owner_sync(peer, dc_channel_callback_owner_task,
+                                &command, NULL) == SALTS_OK &&
+        result_user_data) {
+        *result_user_data = command.result_user_data;
+    }
+    dc_peer_release(peer);
+}
+
+void turbo_dc_channel_on_open(turbo_dc_channel_t *channel, turbo_dc_open_cb cb) {
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_OPEN, cb, NULL, NULL,
+                      NULL, NULL);
+}
+
+void turbo_dc_channel_on_message(turbo_dc_channel_t *channel,
+                                 turbo_dc_message_cb cb) {
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_MESSAGE, NULL, cb, NULL,
+                      NULL, NULL);
 }
 
 void turbo_dc_channel_on_close(turbo_dc_channel_t *channel, turbo_dc_close_cb cb) {
-    if (channel) channel->on_close = cb;
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_CLOSE, NULL, NULL, cb,
+                      NULL, NULL);
 }
 
 void turbo_dc_channel_set_user_data(turbo_dc_channel_t *channel, void *user_data) {
-    if (channel) channel->user_data = user_data;
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_SET_USER_DATA, NULL, NULL,
+                      NULL, user_data, NULL);
 }
 
 void *turbo_dc_channel_get_user_data(turbo_dc_channel_t *channel) {
-    return channel ? channel->user_data : NULL;
+    void *result = NULL;
+    dc_channel_update(channel, DC_CHANNEL_CALLBACK_GET_USER_DATA, NULL, NULL,
+                      NULL, NULL, &result);
+    return result;
 }
 
 static int dc_channel_send_owner_impl(
