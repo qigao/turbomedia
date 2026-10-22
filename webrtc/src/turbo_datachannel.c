@@ -149,6 +149,9 @@ enum {
     ((uint64_t)DC_CNET_POLL_INTERVAL_MS * UINT64_C(1000000))
 
 static SALTS_THREAD_LOCAL turbo_dc_context_t *g_dc_transport_owner = NULL;
+/* Allows a transport-data callback to deregister itself without waiting for
+ * its own in-flight callback count to reach zero. */
+static SALTS_THREAD_LOCAL turbo_dc_peer_t *g_dc_transport_data_callback_peer = NULL;
 
 static int dc_is_ipv6_host(const char *host) {
     return host && strchr(host, ':') != NULL;
@@ -401,7 +404,11 @@ static void dc_handle_incoming_packet(turbo_dc_peer_t *peer, const void *data, s
         cmeta_mutex_unlock(&peer->operation_mutex);
 
         if (callback) {
+            turbo_dc_peer_t *previous_callback_peer =
+                g_dc_transport_data_callback_peer;
+            g_dc_transport_data_callback_peer = peer;
             callback(user_data, bytes, len);
+            g_dc_transport_data_callback_peer = previous_callback_peer;
             cmeta_mutex_lock(&peer->operation_mutex);
             if (peer->transport_data_callbacks > 0) {
                 peer->transport_data_callbacks--;
@@ -880,7 +887,7 @@ TURBO_MEDIA_C_API void turbo_dc_peer_set_transport_data_handler(
     cmeta_mutex_lock(&peer->operation_mutex);
     peer->on_transport_data = cb;
     peer->transport_data_user_data = user_data;
-    if (!cb) {
+    if (!cb && g_dc_transport_data_callback_peer != peer) {
         while (peer->transport_data_callbacks != 0) {
             cmeta_cond_wait(&peer->operation_cond, &peer->operation_mutex);
         }
