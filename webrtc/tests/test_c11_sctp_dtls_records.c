@@ -89,10 +89,21 @@ static cnet_sctp_assoc_config test_assoc_config(
   return config;
 }
 
+static int accept_self_signed_certificate(int preverify_ok,
+                                           X509_STORE_CTX *store) {
+  /* Mirror TurboMedia's DTLS policy: exchange certificates, then apply the
+   * WebRTC SHA-256 fingerprint check explicitly after the handshake. */
+  (void)preverify_ok;
+  (void)store;
+  return 1;
+}
+
 static SSL_CTX *create_dtls_context(tstr *fingerprint) {
   SSL_CTX *context = SSL_CTX_new(DTLS_method());
   assert(context != NULL);
-  SSL_CTX_set_verify(context, SSL_VERIFY_NONE, NULL);
+  SSL_CTX_set_verify(context,
+                     SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                     accept_self_signed_certificate);
   assert(turbo_dc_generate_identity(context, fingerprint) == 0);
   assert(*fingerprint != NULL);
   return context;
