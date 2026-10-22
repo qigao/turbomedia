@@ -205,11 +205,23 @@ static void test_external_dtls_handshake_runs_on_owner(void) {
   turbo_dc_peer_on_state(probe.peer, observe_owner_state);
   assert(turbo_dc_peer_set_dtls_role(probe.peer, 0) == 0);
   assert(turbo_dc_peer_is_dtls_server(probe.peer) == 0);
+  assert(turbo_dc_peer_set_remote_fingerprint(
+      probe.peer, "sha-256",
+      "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:"
+      "AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA:AA") == 0);
   assert(turbo_dc_peer_set_external_transport(
       probe.peer, &probe, observe_owner_send) == 0);
 
-  /* The public caller is not the DataChannel owner. ClientHello generation
-   * and the external send callback must nevertheless execute on the owner. */
+  /* The public caller is not the DataChannel owner. External sends, the
+   * ClientHello, state callbacks, and SRTP-key queries use the owner. */
+  {
+    static const uint8_t probe_packet[2] = {0x16u, 0xfeu};
+    uint8_t key_material[64] = {0};
+    turbo_dc_peer_send_transport_data(probe.peer, probe_packet,
+                                      sizeof(probe_packet));
+    assert(probe.sends == 1u);
+    assert(turbo_dc_peer_get_srtp_keys(probe.peer, key_material) == 0);
+  }
   assert(turbo_dc_peer_connect(probe.peer) == 0);
   assert(probe.sends > 0u);
   turbo_dc_peer_close(probe.peer);
@@ -276,6 +288,10 @@ static void test_channel_callback_metadata_is_owner_dispatched(void) {
   turbo_dc_channel_on_close(channel, unused_channel_close);
   turbo_dc_channel_set_user_data(channel, &marker);
   assert(turbo_dc_channel_get_user_data(channel) == &marker);
+  assert(strcmp(turbo_dc_channel_get_label(channel), "owner-contract") == 0);
+  assert(turbo_dc_channel_get_id(channel) == channel->id);
+  assert(turbo_dc_channel_is_open(channel) == 0);
+  assert(turbo_dc_channel_buffered_amount(channel) == 0u);
 
   turbo_dc_peer_destroy(peer);
   turbo_dc_context_destroy(ctx);
