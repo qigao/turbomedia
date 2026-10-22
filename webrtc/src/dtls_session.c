@@ -17,6 +17,30 @@
 
 static void dtls_handle_error(turbo_dc_peer_t *peer, int ret);
 
+static void dtls_retransmit_owner_task(void *arg1, void *arg2) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
+    cmeta_timer_t *timer = (cmeta_timer_t *)arg2;
+    if (!peer || !timer) return;
+
+    if (peer->dtls.handshake_done || !peer->dtls.ssl) {
+        cmeta_timer_stop(timer);
+        return;
+    }
+
+    /* SSL/BIO state is mutated only on the DataChannel owner thread. */
+    (void)DTLSv1_handle_timeout(peer->dtls.ssl);
+    dtls_send_output(peer);
+
+    if (!peer->dtls.handshake_done) {
+        struct timeval tv;
+        if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
+            uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+            if (timeout_ms == 0) timeout_ms = 1;
+            cmeta_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
+        }
+    }
+}
+
 static void on_dtls_retransmit_timer(cmeta_timer_t *timer) {
     turbo_dc_peer_t *peer = (turbo_dc_peer_t *)cmeta_timer_get_data(timer);
     if (!peer || dc_peer_acquire(peer) != 0) {
@@ -24,26 +48,12 @@ static void on_dtls_retransmit_timer(cmeta_timer_t *timer) {
         return;
     }
 
-    if (peer->dtls.handshake_done) {
+    /* Timer callbacks may run on a timer thread. Hold a Peer lease while the
+     * synchronous command is queued so destroy cannot free the Peer first. */
+    if (dc_peer_post_owner_sync(peer, dtls_retransmit_owner_task,
+                                peer, timer) != SALTS_OK) {
         cmeta_timer_stop(timer);
-        dc_peer_release(peer);
-        return;
     }
-
-    /* Handle DTLS timeout - triggers retransmission */
-    DTLSv1_handle_timeout(peer->dtls.ssl);
-    dtls_send_output(peer);
-
-    /* Schedule next timeout if handshake still in progress */
-    if (!peer->dtls.handshake_done) {
-        struct timeval tv;
-        if (DTLSv1_get_timeout(peer->dtls.ssl, &tv)) {
-            uint64_t timeout_ms = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-            if (timeout_ms == 0) timeout_ms = 1;  /* Minimum 1ms */
-            cmeta_timer_start(timer, on_dtls_retransmit_timer, timeout_ms, 0);
-        }
-    }
-
     dc_peer_release(peer);
 }
 
