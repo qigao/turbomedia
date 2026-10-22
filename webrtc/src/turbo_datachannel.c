@@ -316,6 +316,40 @@ int dc_peer_is_on_transport_owner(const turbo_dc_peer_t *peer) {
     return peer && peer->ctx && g_dc_transport_owner == peer->ctx;
 }
 
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+typedef struct dc_test_dtls_handler_command_s {
+    turbo_dc_peer_t *peer;
+    dc_test_dtls_application_data_fn handler;
+    void *user_data;
+} dc_test_dtls_handler_command_t;
+
+static void dc_peer_set_test_dtls_handler_owner_task(void *arg1, void *arg2) {
+    dc_test_dtls_handler_command_t *command =
+        (dc_test_dtls_handler_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->peer) return;
+    command->peer->test_dtls_application_handler = command->handler;
+    command->peer->test_dtls_application_user_data = command->user_data;
+}
+
+int dc_peer_set_test_dtls_application_handler(
+    turbo_dc_peer_t *peer,
+    dc_test_dtls_application_data_fn handler,
+    void *user_data) {
+    dc_test_dtls_handler_command_t command;
+    int status;
+    if (!peer || dc_peer_acquire(peer) != 0) return -1;
+    command.peer = peer;
+    command.handler = handler;
+    command.user_data = user_data;
+    status = dc_peer_post_owner_sync(peer,
+                                     dc_peer_set_test_dtls_handler_owner_task,
+                                     &command, NULL);
+    dc_peer_release(peer);
+    return status == SALTS_OK ? 0 : -1;
+}
+#endif
+
 static int dc_resolve_datagram_peer(const char *host, uint16_t port,
                                     cnet_datagram_peer *out_peer) {
     struct addrinfo hints;
