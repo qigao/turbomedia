@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <salts/thread.h>
+#include <tlog.h>
 
 typedef struct peer_destroy_gate {
   cmeta_mutex_t mutex;
@@ -462,6 +463,12 @@ static void test_native_timer_does_not_wait_for_owner(void) {
 }
 
 int main(void) {
+  /* Match the Peer bridge fixture: the installed Salts logger DSO is not
+   * TSan-instrumented, so its async queue's synchronization is not visible
+   * to this source-instrumented Peer test. Exclude routine handshake traffic
+   * before starting workers; ERROR/FATAL diagnostics and every lifecycle
+   * assertion remain enabled. This does not qualify the external logger. */
+  tlog_set_level(tlog_get_default(), SALTS_LOG_LEVEL_ERROR);
   test_peer_destroy_waits_for_inflight_transport_callback();
   test_external_dtls_handshake_runs_on_owner();
   test_channel_callback_metadata_is_owner_dispatched();
