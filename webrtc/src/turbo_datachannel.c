@@ -302,6 +302,17 @@ static int dc_post_sync(turbo_dc_context_t *ctx, dc_transport_task_fn fn,
     return ctx->transport_stop_requested ? SALTS_ESHUTDOWN : SALTS_OK;
 }
 
+int dc_peer_post_owner_sync(turbo_dc_peer_t *peer,
+                            dc_transport_task_fn task,
+                            void *arg1, void *arg2) {
+    if (!peer || !peer->ctx) return SALTS_EINVAL;
+    return dc_post_sync(peer->ctx, task, arg1, arg2);
+}
+
+int dc_peer_is_on_transport_owner(const turbo_dc_peer_t *peer) {
+    return peer && peer->ctx && g_dc_transport_owner == peer->ctx;
+}
+
 static int dc_resolve_datagram_peer(const char *host, uint16_t port,
                                     cnet_datagram_peer *out_peer) {
     struct addrinfo hints;
@@ -944,7 +955,10 @@ turbo_dc_context_t *turbo_dc_context_create(const turbo_dc_config_t *config) {
     cmeta_mutex_init(&ctx->peer_mutex);
     ctx->peer_mutex_initialized = 1;
 
-    if (ctx->transport != TURBO_DC_TRANSPORT_ICE) {
+    {
+        /* This thread owns DTLS/SCTP state for direct and externally-owned
+         * transports alike. ICE owns only its agent; packet ingress and DTLS
+         * timers are synchronously marshalled here. */
         cmeta_mutex_init(&ctx->transport_mutex);
         cmeta_cond_init(&ctx->transport_cond);
         ctx->transport_sync_initialized = 1;
@@ -1310,13 +1324,49 @@ int turbo_dc_peer_set_external_transport(turbo_dc_peer_t *peer,
     return rc;
 }
 
+typedef struct dc_incoming_packet_command_s {
+    turbo_dc_peer_t *peer;
+    const void *data;
+    size_t len;
+} dc_incoming_packet_command_t;
+
+static void dc_incoming_packet_task(void *arg1, void *arg2) {
+    dc_incoming_packet_command_t *command =
+        (dc_incoming_packet_command_t *)arg1;
+    (void)arg2;
+    if (!command || !command->peer || !command->data || command->len == 0) {
+        return;
+    }
+    dc_handle_incoming_packet(command->peer, command->data, command->len);
+}
+
 void turbo_dc_peer_feed_transport_data(turbo_dc_peer_t *peer,
                                        const void *data,
                                        size_t len) {
+    dc_incoming_packet_command_t command;
     if (!peer || !data || len == 0 || dc_peer_acquire(peer) != 0) return;
 
-    dc_handle_incoming_packet(peer, data, len);
+    command.peer = peer;
+    command.data = data;
+    command.len = len;
+    (void)dc_peer_post_owner_sync(peer, dc_incoming_packet_task, &command, NULL);
     dc_peer_release(peer);
+}
+
+static void dc_external_handshake_task(void *arg1, void *arg2) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
+    int *status = (int *)arg2;
+    if (status) *status = -1;
+    if (!peer) return;
+    peer->state = TURBO_DC_STATE_CONNECTING;
+    dtls_process_handshake(peer);
+    if (status) *status = 0;
+}
+
+static void dc_peer_poll_task(void *arg1, void *arg2) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
+    (void)arg2;
+    if (peer && peer->sctp.socket) sctp_poll_status(peer, "peer-poll");
 }
 
 int turbo_dc_peer_set_ice_agent(turbo_dc_peer_t *peer, struct salts_ice_agent_s *ice_agent) {
@@ -1340,15 +1390,17 @@ int turbo_dc_peer_connect(turbo_dc_peer_t *peer) {
     }
 
     if (peer->external_transport) {
-        TLOG_INFO("DC peer connect via ICE");
-        peer->state = TURBO_DC_STATE_CONNECTING;
+        TLOG_INFO("DC peer connect via external datagram transport");
 
-        /* Start DTLS handshake - the ICE agent should already be connected */
-        /* Use dtls_process_handshake to properly schedule retransmit timer */
-        dtls_process_handshake(peer);
-
+        /* ICE callbacks may arrive on the ICE owner thread, while the public
+         * connect API is called by signaling/application code. Keep DTLS
+         * handshake state on the DataChannel owner in both cases. */
+        if (dc_peer_post_owner_sync(peer, dc_external_handshake_task,
+                                    peer, &status) != SALTS_OK) {
+            status = -1;
+        }
         dc_peer_release(peer);
-        return 0;
+        return status;
     }
 
     /* ICE transport requires ICE agent to be set first */
@@ -1380,9 +1432,7 @@ void turbo_dc_peer_poll(turbo_dc_peer_t *peer) {
         return;
     }
 
-    if (peer->sctp.socket) {
-        sctp_poll_status(peer, "peer-poll");
-    }
+    (void)dc_peer_post_owner_sync(peer, dc_peer_poll_task, peer, NULL);
     dc_peer_release(peer);
 }
 
