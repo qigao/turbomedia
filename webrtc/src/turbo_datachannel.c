@@ -1464,33 +1464,30 @@ static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
     dc_notify_closed(peer);
 }
 
-void turbo_dc_peer_close(turbo_dc_peer_t *peer) {
-    if (!peer || dc_peer_acquire(peer) != 0) return;
-    dc_peer_close_impl(peer);
-    dc_peer_release(peer);
+static void dc_peer_close_owner_task(void *arg1, void *arg2) {
+    (void)arg2;
+    dc_peer_close_impl((turbo_dc_peer_t *)arg1);
 }
 
-void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
+static void dc_peer_destroy_resources_owner_task(void *arg1, void *arg2) {
+    turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
     size_t slot;
+    (void)arg2;
+    if (!peer) return;
 
-    if (!peer || dc_peer_begin_destroy(peer) != 0) return;
-
+    /* All protocol/transport teardown runs after admission is closed and all
+     * active leases have drained, on the same owner as DTLS/SCTP state. */
     dc_peer_close_impl(peer);
-
-    /* Clean up DTLS timer before freeing SSL */
     dtls_session_cleanup(peer);
-
     if (peer->dtls.ssl) {
         SSL_free(peer->dtls.ssl);
+        peer->dtls.ssl = NULL;
     }
 
-    /* Close SCTP socket before deregistering address */
     if (peer->sctp.socket) {
         usrsctp_close(peer->sctp.socket);
         peer->sctp.socket = NULL;
     }
-
-    /* AF_CONN addresses remain process-global until explicitly deregistered. */
     if (peer->sctp_address_registered) {
         usrsctp_deregister_address(peer);
         peer->sctp_address_registered = 0;
@@ -1500,8 +1497,6 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
         peer->transport_ops->destroy(peer);
     }
 
-    /* Clean up channels.  The map is bounded by the uint16_t stream-id
-     * space, without imposing a 512 KiB pointer array on every peer. */
     while (peer->channels_initialized &&
            !hash_map_empty(&peer->channels)) {
         int removed = 0;
@@ -1520,36 +1515,50 @@ void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
                 break;
             }
         }
-        if (!removed) {
-            break;
-        }
+        if (!removed) break;
     }
-
     if (peer->channels_initialized) {
         hash_map_destroy(&peer->channels);
         peer->channels_initialized = 0;
     }
-
-    /* Free channel ID bitmap */
     if (peer->channel_ids) {
         roaring_bitmap_free(peer->channel_ids);
+        peer->channel_ids = NULL;
     }
- 
+
     tstr_free(peer->remote_host);
+    peer->remote_host = NULL;
     tstr_free(peer->remote_fingerprint);
+    peer->remote_fingerprint = NULL;
     tstr_free(peer->remote_fingerprint_hash);
+    peer->remote_fingerprint_hash = NULL;
+}
 
-    /* Keep the peer linked until every cleanup path that can touch ctx has
-     * completed.  A concurrent context destroy therefore cannot mistake an
-     * in-flight peer destruction for an empty peer list. */
+void turbo_dc_peer_close(turbo_dc_peer_t *peer) {
+    if (!peer || dc_peer_acquire(peer) != 0) return;
+    (void)dc_peer_post_owner_sync(peer, dc_peer_close_owner_task, peer, NULL);
+    dc_peer_release(peer);
+}
+
+void turbo_dc_peer_destroy(turbo_dc_peer_t *peer) {
+    if (!peer || dc_peer_begin_destroy(peer) != 0) return;
+
+    /* Keep the Peer linked until all cleanup that can touch its context is
+     * complete. The owner task performs protocol/transport teardown; unlinking
+     * and freeing the synchronization object happen only after it returns. */
+    if (dc_peer_post_owner_sync(peer,
+                                dc_peer_destroy_resources_owner_task,
+                                peer, NULL) != SALTS_OK) {
+        TLOG_ERROR("failed to dispatch Peer destruction to DataChannel owner");
+        return;
+    }
+
     dc_peer_unlink_from_context(peer);
-
     cmeta_cond_destroy(&peer->operation_cond);
     cmeta_mutex_destroy(&peer->operation_mutex);
-
     free(peer);
 }
- 
+
 uint16_t turbo_dc_peer_get_srtp_keys(turbo_dc_peer_t *peer, void *material) {
     if (!peer || !peer->dtls.ssl || !material) return 0;
     if (!SSL_is_init_finished(peer->dtls.ssl)) return 0;
