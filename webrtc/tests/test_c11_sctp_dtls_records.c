@@ -133,7 +133,7 @@ static size_t transfer_dtls_records(SSL *from, SSL *to) {
   return total;
 }
 
-static void verify_peer_fingerprint(SSL *session, const char *expected) {
+static int peer_fingerprint_matches(SSL *session, const char *expected) {
   X509 *certificate;
   uint8_t digest[EVP_MAX_MD_SIZE];
   unsigned int digest_size = 0;
@@ -142,19 +142,22 @@ static void verify_peer_fingerprint(SSL *session, const char *expected) {
   size_t position = 0;
   unsigned int i;
 
-  assert(session != NULL && expected != NULL);
+  if (!session || !expected) return 0;
   certificate = SSL_get_peer_certificate(session);
-  assert(certificate != NULL);
-  assert(X509_digest(certificate, EVP_sha256(), digest, &digest_size) == 1);
+  if (!certificate) return 0;
+  if (X509_digest(certificate, EVP_sha256(), digest, &digest_size) != 1) {
+    X509_free(certificate);
+    return 0;
+  }
   X509_free(certificate);
-  assert(digest_size == 32u);
+  if (digest_size != 32u) return 0;
   for (i = 0; i < digest_size; ++i) {
     actual[position++] = hex[(digest[i] >> 4) & 0x0fu];
     actual[position++] = hex[digest[i] & 0x0fu];
     if (i + 1u != digest_size) actual[position++] = ':';
   }
   actual[position] = '\0';
-  assert(strcmp(actual, expected) == 0);
+  return strcmp(actual, expected) == 0;
 }
 
 static void drive_dtls_handshake(SSL *client, SSL *server) {
@@ -236,8 +239,14 @@ static void test_real_dtls_records_carry_c11_sctp(void) {
   assert(SSL_is_init_finished(server));
   assert(client_fingerprint != NULL && server_fingerprint != NULL);
   assert(strcmp(client_fingerprint, server_fingerprint) != 0);
-  verify_peer_fingerprint(client, server_fingerprint);
-  verify_peer_fingerprint(server, client_fingerprint);
+  assert(peer_fingerprint_matches(client, server_fingerprint));
+  assert(peer_fingerprint_matches(server, client_fingerprint));
+  {
+    char wrong_fingerprint[96];
+    memcpy(wrong_fingerprint, server_fingerprint, sizeof(wrong_fingerprint));
+    wrong_fingerprint[0] = wrong_fingerprint[0] == '0' ? '1' : '0';
+    assert(!peer_fingerprint_matches(client, wrong_fingerprint));
+  }
 
   /* Cookie MAC providers are endpoint-local, like production key ownership. */
   client_config = test_assoc_config(5000u, 5001u, &client_provider);
