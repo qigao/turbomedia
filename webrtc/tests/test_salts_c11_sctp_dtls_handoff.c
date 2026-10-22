@@ -430,8 +430,12 @@ static void test_dcep_open_ack_capacity_atomicity(void) {
       reply[0] == 0xa5u && reply[1] == 0x5au);
   assert(cnet_sctp_dcep_input(&d, 1u, remote_open, sizeof(remote_open),
       reply, sizeof(reply), &written) == CNET_SCTP_DCEP_OK);
+  /* Input only prepares ACK_PENDING. The channel becomes open only after
+   * the caller confirms the ACK was admitted to reliable ordered SCTP DATA. */
   assert(written == 1u && reply[0] == 2u &&
-      d.channels[1].state == 2u && cnet_sctp_dcep_ready(&d, 1u));
+      d.channels[1].state == 3u && !cnet_sctp_dcep_ready(&d, 1u));
+  assert(cnet_sctp_dcep_ack_admitted(&d, 1u) == CNET_SCTP_DCEP_OK);
+  assert(d.channels[1].state == 2u && cnet_sctp_dcep_ready(&d, 1u));
 
   /* An ACK cannot open a peer-initiated channel. */
   written = 99u;
