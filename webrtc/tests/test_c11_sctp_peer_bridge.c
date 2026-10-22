@@ -128,6 +128,13 @@ static void test_real_peer_dtls_c11_roundtrip(void) {
   assert(RAND_bytes(b.cookie_key,sizeof(b.cookie_key))==1);
   ca.transport=cb.transport=TURBO_DC_TRANSPORT_ICE; ca.disable_sctp=cb.disable_sctp=1;
   ctx_a=turbo_dc_context_create(&ca);ctx_b=turbo_dc_context_create(&cb);assert(ctx_a&&ctx_b);
+  {
+    char short_hash[2] = {'X','X'};
+    char short_fingerprint[8] = {'X','X','X','X','X','X','X','X'};
+    assert(turbo_dc_context_get_local_fingerprint(ctx_a, short_hash,
+        sizeof(short_hash), short_fingerprint, sizeof(short_fingerprint)) == -3);
+    assert(short_hash[0] == '\0' && short_fingerprint[0] == '\0');
+  }
   assert(turbo_dc_context_get_local_fingerprint(ctx_a,hash_a,sizeof(hash_a),fp_a,sizeof(fp_a))==0);
   assert(turbo_dc_context_get_local_fingerprint(ctx_b,hash_b,sizeof(hash_b),fp_b,sizeof(fp_b))==0);
   peer_a=turbo_dc_peer_create(ctx_a,NULL,0u,&a);peer_b=turbo_dc_peer_create(ctx_b,NULL,0u,&b);assert(peer_a&&peer_b);
