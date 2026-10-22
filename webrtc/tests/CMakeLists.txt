@@ -314,6 +314,51 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
                CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
                FOLDER "turbomedia/tests/webrtc")
 
+  # Test-only end-to-end bridge: compile the real Peer/DTLS sources with
+  # a private application-record handler and feed its authenticated plaintext
+  # into the private C11 Association. The production library is not compiled
+  # with TURBO_MEDIA_TEST_C11_SCTP_BRIDGE and retains its usrsctp path.
+  turbo_media_add_webrtc_base_test(
+    turbo_media_test_c11_sctp_peer_bridge
+    test_c11_sctp_peer_bridge.c
+    ${_dc_peer_drain_sources}
+    "${_salts_sctp_src}/sctp_wire.c"
+    "${_salts_sctp_src}/sctp_init_params.c"
+    "${_salts_sctp_src}/sctp_collision.c"
+    "${_salts_sctp_src}/sctp_data.c"
+    "${_salts_sctp_src}/sctp_assoc.c"
+    "${_salts_sctp_src}/sctp_dcep.c"
+    "${_salts_sctp_src}/sctp_webrtc.c")
+  target_include_directories(
+    turbo_media_test_c11_sctp_peer_bridge
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+            "${_salts_sctp_inc}" "${_salts_sctp_src}")
+  target_compile_definitions(
+    turbo_media_test_c11_sctp_peer_bridge
+    PRIVATE TURBO_MEDIA_TEST_C11_SCTP_BRIDGE=1)
+  target_link_libraries(
+    turbo_media_test_c11_sctp_peer_bridge
+    PRIVATE TurboMedia::SDP
+            Salts::LtvParser
+            turbo_media_cnet_adapter
+            Salts::CNet
+            SaltsNet::ICE
+            unofficial::usrsctp::usrsctp
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            roaring::roaring)
+  set_target_properties(
+    turbo_media_test_c11_sctp_peer_bridge
+    PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
+               CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
+               FOLDER "turbomedia/tests/webrtc")
+  if(MSVC)
+    target_compile_options(turbo_media_test_c11_sctp_peer_bridge PRIVATE /W4 /WX)
+  else()
+    target_compile_options(turbo_media_test_c11_sctp_peer_bridge
+      PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+
   if(TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
       message(FATAL_ERROR
@@ -326,6 +371,7 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     foreach(_tsan_target IN ITEMS
         turbo_media_test_salts_c11_sctp_dtls_handoff
         turbo_media_test_c11_sctp_dtls_records
+        turbo_media_test_c11_sctp_peer_bridge
         turbo_media_test_datachannel_peer_destroy_drain)
       target_compile_options(
         ${_tsan_target} PRIVATE -fsanitize=thread -fno-omit-frame-pointer -g)
