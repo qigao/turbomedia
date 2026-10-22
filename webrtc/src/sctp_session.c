@@ -221,12 +221,20 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         return 1;
     }
 
-    turbo_dc_channel_t *channel = NULL;
-    channel = peer_get_channel(peer, stream_id);
-
-    if (channel && channel->on_message && channel->is_open) {
-        int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
-        channel->on_message(channel, data, datalen, is_binary, channel->user_data);
+    turbo_dc_channel_t *channel = dc_channel_admit(peer, stream_id);
+    if (channel) {
+        turbo_dc_message_cb callback = NULL;
+        void *callback_data;
+        cmeta_mutex_lock(&peer->operation_mutex);
+        if (!channel->closing && channel->is_open && !peer->destroying)
+            callback = channel->on_message;
+        callback_data = channel->user_data;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        if (callback) {
+            int is_binary = (ppid == SCTP_PPID_BINARY || ppid == SCTP_PPID_BINARY_EMPTY);
+            callback(channel, data, datalen, is_binary, callback_data);
+        }
+        dc_channel_release(channel);
     }
 
     free(data);

@@ -256,7 +256,7 @@ jobs:
               "/salts-sctp-prototype/cnet/sctp/src/sctp_webrtc.c",
           )
           target = "turbo_media_test_salts_c11_sctp_dtls_handoff.dir"
-          def verify_target(target, suffixes):
+          def verify_target(target, suffixes, sanitizer="-fsanitize=thread"):
               for suffix in suffixes:
                   matches = [
                       item for item in commands
@@ -266,9 +266,9 @@ jobs:
                   if len(matches) != 1:
                       raise SystemExit(f"Expected one compile unit for {target} {suffix}, found {len(matches)}")
                   command = matches[0].get("command", " ".join(matches[0].get("arguments", ())))
-                  if "-fsanitize=thread" not in command or "-fno-omit-frame-pointer" not in command:
-                      raise SystemExit(f"TSan flags missing from {target} {suffix}")
-                  print(f"TSAN SOURCE OK {target} {suffix}")
+                  if sanitizer not in command or "-fno-omit-frame-pointer" not in command:
+                      raise SystemExit(f"{sanitizer} flags missing from {target} {suffix}")
+                  print(f"SANITIZER SOURCE OK {sanitizer} {target} {suffix}")
 
           verify_target(
               "turbo_media_test_salts_c11_sctp_dtls_handoff.dir",
@@ -332,6 +332,21 @@ jobs:
                   "/webrtc/src/sctp_session.c",
                   "/webrtc/src/stb_sprintf.c",
               ),
+          )
+          verify_target(
+              "turbo_media_test_datachannel_channel_leases_asan.dir",
+              (
+                  "/webrtc/tests/test_datachannel_peer_destroy_drain.c",
+                  "/webrtc/src/turbo_datachannel.c",
+                  "/webrtc/src/dc_certificate.cpp",
+                  "/webrtc/src/turbo_datachannel_errors.c",
+                  "/webrtc/src/turbo_dc_msg.c",
+                  "/webrtc/src/dcep_protocol.c",
+                  "/webrtc/src/dtls_session.c",
+                  "/webrtc/src/sctp_session.c",
+                  "/webrtc/src/stb_sprintf.c",
+              ),
+              "-fsanitize=address,undefined",
           )
           PY
 

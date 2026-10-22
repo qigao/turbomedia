@@ -378,6 +378,31 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       message(FATAL_ERROR
         "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN requires GCC or Clang")
     endif()
+    # One additional executable in the same Linux job checks actual channel
+    # storage reclamation with ASan/UBSan; TSan stays on the original target.
+    turbo_media_add_webrtc_base_test(
+      turbo_media_test_datachannel_channel_leases_asan
+      test_datachannel_peer_destroy_drain.c
+      ${_dc_peer_drain_sources})
+    target_link_libraries(
+      turbo_media_test_datachannel_channel_leases_asan
+      PRIVATE TurboMedia::SDP Salts::LtvParser turbo_media_cnet_adapter
+              Salts::CNet SaltsNet::ICE unofficial::usrsctp::usrsctp
+              OpenSSL::SSL OpenSSL::Crypto roaring::roaring)
+    set_target_properties(
+      turbo_media_test_datachannel_channel_leases_asan
+      PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON
+                 CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(
+      turbo_media_test_datachannel_channel_leases_asan
+      PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    target_link_options(turbo_media_test_datachannel_channel_leases_asan
+                        PRIVATE -fsanitize=address,undefined)
+    set_tests_properties(
+      turbo_media_test_datachannel_channel_leases_asan
+      PROPERTIES TIMEOUT 30
+                 ENVIRONMENT "ASAN_OPTIONS=halt_on_error=1:detect_leaks=1;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1")
+
     foreach(_tsan_target IN ITEMS
         turbo_media_test_salts_c11_sctp_dtls_handoff
         turbo_media_test_c11_sctp_dtls_records

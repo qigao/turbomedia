@@ -17,6 +17,7 @@
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
 #include <usrsctp.h>
+#include <stdlib.h>
 /* CRoaring's optimized inline containers trigger MSVC C4702 inside the
  * dependency header. Keep project translation units at /W4 /WX and scope the
  * suppression strictly to the third-party include body. */
@@ -222,6 +223,10 @@ struct turbo_dc_channel_s {
     int dcep_sent;
     size_t buffered_amount;
 
+    /* operation_mutex; closing unpublishes, final callback returns storage. */
+    uint32_t callback_refs;
+    int closing;
+
     /* Callbacks */
     turbo_dc_open_cb on_open;
     turbo_dc_message_cb on_message;
@@ -363,6 +368,42 @@ static inline void peer_free_channel_id(turbo_dc_peer_t *peer, uint16_t id) {
 
 static inline void peer_mark_channel_id(turbo_dc_peer_t *peer, uint16_t id) {
     roaring_bitmap_add(peer->channel_ids, id);
+}
+
+/* The caller holds a Peer operation lease across admission and release.
+ * Every channel-map/ID access that can race with receive uses this mutex. */
+static inline turbo_dc_channel_t *dc_channel_admit(turbo_dc_peer_t *peer,
+                                                   uint16_t id) {
+    turbo_dc_channel_t *channel;
+    if (!peer || !peer->operation_sync_initialized) return NULL;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    channel = !peer->destroying && peer->channels_initialized
+                  ? peer_get_channel(peer, id) : NULL;
+    if (channel && !channel->closing && channel->callback_refs < UINT32_MAX - 1u)
+        ++channel->callback_refs;
+    else
+        channel = NULL;
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    return channel;
+}
+
+static inline void dc_channel_release(turbo_dc_channel_t *channel) {
+    turbo_dc_peer_t *peer;
+    int reclaim = 0;
+    if (!channel || !channel->peer) return;
+    peer = channel->peer;
+    cmeta_mutex_lock(&peer->operation_mutex);
+    if (channel->callback_refs > 0) --channel->callback_refs;
+    if (channel->closing && channel->callback_refs == 0) {
+        peer_free_channel_id(peer, channel->id);
+        reclaim = 1;
+    }
+    cmeta_mutex_unlock(&peer->operation_mutex);
+    if (reclaim) {
+        tstr_free(channel->label);
+        tstr_free(channel->protocol);
+        free(channel);
+    }
 }
 
 #ifdef __cplusplus
