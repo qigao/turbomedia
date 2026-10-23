@@ -260,11 +260,11 @@ async function main() {
 
     const offerParts = await waitFor(async () => {
       const result = await cdp.send('Runtime.evaluate', {
-        expression: \`(() => ({
+        expression: `(() => ({
           sdp: document.getElementById('localSdp').value,
           candidates: Array.from(document.querySelectorAll('#localCandidates .log-entry')).map((entry) => entry.textContent),
           debug: document.getElementById('debugLog').innerText
-        }))()\`,
+        }))()`,
         returnByValue: true,
       });
       const value = result?.result?.value;
