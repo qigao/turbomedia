@@ -120,6 +120,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
+      - name: Validate public browser smoke harness syntax
+        if: matrix.platform == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check webrtc/examples/browser_interop_smoke.js
+
       # Test-only source checkout for the private C11 SCTP conformance harness.
       # The source is compiled only into tests and never linked into production.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
