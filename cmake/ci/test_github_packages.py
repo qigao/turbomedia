@@ -16,6 +16,7 @@ from unittest.mock import patch
 import zipfile
 
 import github_packages as gp
+from verify_nuget_upload import request_body
 
 
 class PackagesTest(unittest.TestCase):
@@ -80,6 +81,16 @@ class PackagesTest(unittest.TestCase):
             self.assertEqual(os.environ["NUGET_API_KEY"], "fake-token")
             self.assertEqual(os.environ["VCPKG_NUGET_REPOSITORY"], "https://github.com/qigao/turbomedia")
             self.assertEqual(os.environ["VCPKG_BINARY_SOURCES"], f"clear;nugetconfig,{config},write")
+
+    def test_native_nuget_chunked_upload_body(self):
+        headers = {"Transfer-Encoding": "chunked"}
+        encoded = b"4\r\nPK\x03\x04\r\n7;extension=ok\r\npayload\r\n0\r\n\r\n"
+        self.assertEqual(request_body(io.BytesIO(encoded), headers), b"PK\x03\x04payload")
+        for truncated in (b"4", b"4\r\nPK", b"4\r\nPK\x03\x04!!"):
+            with self.assertRaises(ValueError):
+                request_body(io.BytesIO(truncated), headers)
+        with self.assertRaises(ValueError):
+            request_body(io.BytesIO(b"100001\r\n"), headers)
 
     def test_rejected_upload_stops_a_running_producer_before_more_builds(self):
         marker = self.root / "unwanted-build"

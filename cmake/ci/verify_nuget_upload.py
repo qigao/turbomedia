@@ -19,6 +19,34 @@ import zipfile
 from github_packages import publish_config
 
 
+def request_body(stream, headers, limit=1024 * 1024):
+    """NuGet 7.9 explicitly sends chunked multipart PUTs, without a length."""
+    if headers.get("Transfer-Encoding", "").lower() == "chunked":
+        body = bytearray()
+        while True:
+            line = stream.readline(8192)
+            if not line.endswith(b"\r\n"):
+                raise ValueError("truncated chunk header")
+            size = int(line.split(b";", 1)[0], 16)
+            if size < 0 or len(body) + size > limit:
+                raise ValueError("fixture upload exceeds body limit")
+            if size == 0:
+                if stream.readline(8192) != b"\r\n":
+                    raise ValueError("unexpected chunk trailer")
+                return bytes(body)
+            chunk = stream.read(size)
+            if len(chunk) != size or stream.read(2) != b"\r\n":
+                raise ValueError("truncated chunk body")
+            body.extend(chunk)
+    size = int(headers.get("Content-Length", "0"))
+    if size < 0 or size > limit:
+        raise ValueError("fixture upload exceeds body limit")
+    body = stream.read(size)
+    if len(body) != size:
+        raise ValueError("truncated upload body")
+    return body
+
+
 def verify(nuget):
     token = "loopback-upload-fixture-only"
     auth = "Basic " + base64.b64encode(f"qigao:{token}".encode()).decode()
@@ -54,7 +82,13 @@ def verify(nuget):
             ]}).encode())
 
         def do_PUT(self):
-            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.connection.settimeout(10)
+            try:
+                body = request_body(self.rfile, self.headers)
+            except (ValueError, OSError) as error:
+                failures.append(str(error))
+                self.respond(400)
+                return
             if self.path != "/qigao/":
                 failures.append("unexpected publish endpoint")
             if self.headers.get("X-NuGet-ApiKey") != token:
@@ -62,7 +96,8 @@ def verify(nuget):
             if ("multipart/form-data" not in self.headers.get("Content-Type", "") or
                     b"package.nupkg" not in body or b"PK\x03\x04" not in body):
                 failures.append("invalid NuGet multipart package body")
-            evidence.add("publish-put-api-key-multipart")
+            if not failures:
+                evidence.add("publish-put-api-key-multipart")
             self.respond(403 if failures else 201)
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Feed) as server:
