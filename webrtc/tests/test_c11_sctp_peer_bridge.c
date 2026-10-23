@@ -17,13 +17,20 @@
 /* Private test target only: production still routes DTLS plaintext to usrsctp. */
 enum { QCAP = 32, DCAP = 4096, PCAP = CNET_SCTP_ASSOC_MAX_PACKET };
 typedef struct endpoint endpoint;
-typedef struct { turbo_dc_peer_t *dst; size_t len; uint8_t bytes[DCAP]; } datagram;
+typedef struct {
+  turbo_dc_peer_t *dst;
+  size_t len;
+  int deadline_probe;
+  uint8_t bytes[DCAP];
+} datagram;
 typedef struct { cmeta_mutex_t mutex; datagram q[QCAP]; size_t head, count; int failed; } packet_queue;
 struct endpoint {
   packet_queue *queue;
   turbo_dc_peer_t *peer, *remote;
   uint16_t local_port, remote_port;
   int client, assoc_initialized, started, data_sent;
+  int mark_deadline_probe;
+  int deadline_advanced;
   int rotated_cookie_key, rotation_while_previous_retained_rejected;
   cnet_sctp_gmssl_mac cookie_mac;
   uint64_t now;
@@ -74,6 +81,8 @@ static void send_datagram(void *p, const void *data, size_t len) {
   q = e->queue; cmeta_mutex_lock(&q->mutex);
   if (q->count == QCAP) { q->failed = 1; cmeta_mutex_unlock(&q->mutex); fail(e, -2); return; }
   tail = (q->head + q->count) % QCAP; q->q[tail].dst = e->remote; q->q[tail].len = len;
+  q->q[tail].deadline_probe = e->mark_deadline_probe;
+  e->mark_deadline_probe = 0;
   memcpy(q->q[tail].bytes, data, len); q->count++; cmeta_mutex_unlock(&q->mutex);
 }
 static int pop_packet(packet_queue *q, datagram *d) {
@@ -167,14 +176,51 @@ static void state_cb(turbo_dc_peer_t *peer,turbo_dc_state_t old,turbo_dc_state_t
   endpoint *e=(endpoint *)p; uint8_t packet[PCAP]; size_t n=0; cnet_sctp_assoc_status st; (void)old;
   if (!e || peer!=e->peer || !owner(e)) { fail(e,-9); return; }
   if (!e->client || state!=TURBO_DC_STATE_CONNECTED || e->started) return;
-  e->started=1; st=cnet_sctp_assoc_start(&e->assoc,++e->now,packet,sizeof(packet),&n);
+  e->started=1; e->mark_deadline_probe=1;
+  st=cnet_sctp_assoc_start(&e->assoc,++e->now,packet,sizeof(packet),&n);
   if (st!=CNET_SCTP_ASSOC_OK || !n || dtls_test_write_application_data(peer,packet,n)!=0) fail(e,st==CNET_SCTP_ASSOC_OK?-10:(int)st);
+}
+
+typedef struct deadline_advance_result {
+  cnet_sctp_assoc_status deadline_status;
+  cnet_sctp_assoc_status advance_status;
+  uint64_t deadline;
+  int has_deadline;
+  size_t packet_size;
+} deadline_advance_result;
+
+static void advance_assoc_deadline(void *p, void *result_ptr) {
+  endpoint *e = (endpoint *)p;
+  deadline_advance_result *result = (deadline_advance_result *)result_ptr;
+  uint8_t packet[PCAP];
+  if (!e || !result || !owner(e)) { fail(e, -16); return; }
+  memset(result, 0, sizeof(*result));
+  result->deadline_status = cnet_sctp_assoc_next_deadline(
+      &e->assoc, &result->deadline, &result->has_deadline);
+  if (result->deadline_status != CNET_SCTP_ASSOC_OK ||
+      !result->has_deadline) {
+    fail(e, -17);
+    return;
+  }
+  e->now = result->deadline;
+  result->advance_status = cnet_sctp_assoc_advance(
+      &e->assoc, e->now, packet, sizeof(packet), &result->packet_size);
+  if (result->advance_status != CNET_SCTP_ASSOC_OK ||
+      result->packet_size == 0u ||
+      dtls_test_write_application_data(e->peer, packet,
+                                       result->packet_size) != 0) {
+    fail(e, -18);
+    return;
+  }
+  e->deadline_advanced = 1;
 }
 static void test_real_peer_dtls_c11_roundtrip(void) {
   packet_queue q={0}; endpoint a={0}, b={0}; turbo_dc_config_t ca={0}, cb={0};
   turbo_dc_context_t *ctx_a,*ctx_b; turbo_dc_peer_t *peer_a,*peer_b;
   char hash_a[32]={0},hash_b[32]={0},fp_a[128]={0},fp_b[128]={0};
   int init_result=-1, cleanup_result=-1; unsigned idle=0; datagram d;
+  int dropped_deadline_probe=0;
+  deadline_advance_result deadline_result={0};
   cmeta_mutex_init(&q.mutex); a.queue=b.queue=&q;
   a.local_port=5000u;a.remote_port=5001u;a.client=1;
   b.local_port=5001u;b.remote_port=5000u;b.client=0;
@@ -217,7 +263,39 @@ static void test_real_peer_dtls_c11_roundtrip(void) {
     if (atomic_load_explicit(&a.failure,memory_order_acquire) ||
         atomic_load_explicit(&b.failure,memory_order_acquire) || queue_failed(&q)) break;
     if (pop_packet(&q,&d)) {
-      idle=0;turbo_dc_peer_feed_transport_data(d.dst,d.bytes,d.len);
+      idle=0;
+      if (d.deadline_probe) {
+        uint64_t foreign_deadline=UINT64_C(0x1111111111111111);
+        int foreign_has_deadline=23;
+        uint8_t foreign_packet[PCAP]={0};
+        size_t foreign_packet_size=99u;
+        assert(!dropped_deadline_probe);
+        dropped_deadline_probe=1;
+        /* The private Association has no hidden scheduler: a foreign thread
+         * cannot query or advance T1, and rejected advance zeroes only its
+         * explicit output count without mutating the retained INIT ticket. */
+        assert(cnet_sctp_assoc_next_deadline(&a.assoc, &foreign_deadline,
+                                             &foreign_has_deadline) ==
+               CNET_SCTP_ASSOC_OWNER);
+        assert(foreign_deadline == UINT64_C(0x1111111111111111));
+        assert(foreign_has_deadline == 23);
+        assert(cnet_sctp_assoc_advance(&a.assoc, UINT64_MAX, foreign_packet,
+                                       sizeof(foreign_packet),
+                                       &foreign_packet_size) ==
+               CNET_SCTP_ASSOC_OWNER);
+        assert(foreign_packet_size == 0u);
+        assert(a.assoc.retransmits == 0u);
+        assert(dc_peer_post_owner_sync(peer_a, advance_assoc_deadline,
+                                       &a, &deadline_result) == 0);
+        assert(deadline_result.deadline_status == CNET_SCTP_ASSOC_OK);
+        assert(deadline_result.advance_status == CNET_SCTP_ASSOC_OK);
+        assert(deadline_result.has_deadline);
+        assert(deadline_result.deadline == 101u);
+        assert(deadline_result.packet_size != 0u);
+        assert(a.assoc.retransmits == 1u);
+        continue;
+      }
+      turbo_dc_peer_feed_transport_data(d.dst,d.bytes,d.len);
     } else {
       if (++idle>1000u) break;
       cmeta_sleep_ms(1);
@@ -228,6 +306,8 @@ static void test_real_peer_dtls_c11_roundtrip(void) {
   assert(!queue_failed(&q));
   assert(atomic_load_explicit(&b.received,memory_order_acquire));
   assert(atomic_load_explicit(&a.acked,memory_order_acquire));
+  assert(dropped_deadline_probe);
+  assert(a.deadline_advanced);
   assert(b.rotated_cookie_key);
   assert(b.rotation_while_previous_retained_rejected);
   assert(b.cookie_mac.previous_active == 1u);
