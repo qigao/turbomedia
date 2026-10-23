@@ -22,6 +22,7 @@ Options:
   --timeout <ms>      Overall wait budget per phase (default: 30000)
   --debug-port <n>    Chrome DevTools port (default: 9226)
   --with-stun         Run native example without --no-stun override
+  --require-srflx      Require public Google STUN srflx candidates from both peers
   --help              Show this help
 `);
 }
@@ -33,6 +34,7 @@ function parseArgs(argv) {
     timeoutMs: 30000,
     debugPort: 9226,
     useStun: false,
+    requireSrflx: false,
   };
 
   for (let i = 0; i < argv.length; ++i) {
@@ -42,6 +44,11 @@ function parseArgs(argv) {
       process.exit(0);
     }
     if (arg === '--with-stun') {
+      options.useStun = true;
+      continue;
+    }
+    if (arg === '--require-srflx') {
+      options.requireSrflx = true;
       options.useStun = true;
       continue;
     }
@@ -170,14 +177,12 @@ class CdpClient {
   }
 }
 
-function synthesizeOffer(localSdp, candidateLines) {
+function synthesizeOffer(localSdp) {
   const base = localSdp.replace(/\r?\n/g, '\r\n').replace(/\r\n*$/, '\r\n');
-  const candidates = candidateLines
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => `a=${line.replace(/^a=/, '')}\r\n`)
-    .join('');
-  return `${base}${candidates}a=end-of-candidates\r\n`;
+  // localDescription already contains gathered candidates once ICE gathering
+  // completes. Do not append the DOM candidate log a second time.
+  if (/^a=end-of-candidates\r?$/m.test(base)) return base;
+  return base + 'a=end-of-candidates\r\n';
 }
 
 async function main() {
@@ -255,17 +260,27 @@ async function main() {
 
     const offerParts = await waitFor(async () => {
       const result = await cdp.send('Runtime.evaluate', {
-        expression: `(() => ({
+        expression: \`(() => ({
           sdp: document.getElementById('localSdp').value,
-          candidates: Array.from(document.querySelectorAll('#localCandidates .log-entry')).map((entry) => entry.textContent)
-        }))()`,
+          candidates: Array.from(document.querySelectorAll('#localCandidates .log-entry')).map((entry) => entry.textContent),
+          debug: document.getElementById('debugLog').innerText
+        }))()\`,
         returnByValue: true,
       });
       const value = result?.result?.value;
-      return value && value.sdp && value.candidates && value.candidates.length > 0 ? value : null;
-    }, options.timeoutMs, 'browser offer and candidates');
+      return value && value.sdp && value.candidates && value.candidates.length > 0 &&
+        value.debug.includes('ICE gathering complete') ? value : null;
+    }, options.timeoutMs, 'complete browser ICE gathering');
 
-    native.stdin.write(synthesizeOffer(offerParts.sdp, offerParts.candidates).replace(/\r\n/g, '\n'));
+    if (options.requireSrflx &&
+        !offerParts.candidates.some((line) => /\btyp srflx\b/i.test(line))) {
+      throw new Error('public Google STUN did not produce a browser srflx candidate');
+    }
+    if (options.requireSrflx && !/\btyp srflx\b/i.test(nativeStdout)) {
+      throw new Error('public Google STUN did not produce a native srflx candidate');
+    }
+
+    native.stdin.write(synthesizeOffer(offerParts.sdp).replace(/\r\n/g, '\n'));
     native.stdin.write('\n');
 
     const answer = await waitFor(() => {
@@ -294,7 +309,9 @@ async function main() {
         returnByValue: true,
       });
       const value = result?.result?.value;
-      return value && value.dc === 'open' ? value : null;
+      return value && value.dc === 'open' &&
+        (value.ice === 'connected' || value.ice === 'completed') &&
+        value.conn === 'connected' ? value : null;
     }, options.timeoutMs, 'browser datachannel open');
 
     const stats = await cdp.send('Runtime.evaluate', {
@@ -304,6 +321,8 @@ async function main() {
         return out.filter((value) =>
           value.type === 'candidate-pair' ||
           value.type === 'transport' ||
+          value.type === 'local-candidate' ||
+          value.type === 'remote-candidate' ||
           value.type === 'data-channel'
         );
       }) : null)()`,
@@ -313,10 +332,34 @@ async function main() {
 
     console.log('\n=== Browser Snapshot ===');
     console.log(JSON.stringify(snapshot, null, 2));
+    const browserStats = stats?.result?.value || [];
+    const succeededPairs = browserStats.filter((value) =>
+      value.type === 'candidate-pair' && value.state === 'succeeded');
+    if (succeededPairs.length === 0) {
+      throw new Error('DataChannel opened without a succeeded ICE candidate pair in getStats()');
+    }
+    const selectedPairIds = new Set(browserStats
+      .filter((value) => value.type === 'transport' && value.selectedCandidatePairId)
+      .map((value) => value.selectedCandidatePairId));
+    const selectedPair = browserStats.find((value) =>
+      value.type === 'candidate-pair' && selectedPairIds.has(value.id));
+    const pair = selectedPair || succeededPairs.find((value) => value.nominated) || succeededPairs[0];
+    const candidatesById = new Map(browserStats
+      .filter((value) => value.type === 'local-candidate' || value.type === 'remote-candidate')
+      .map((value) => [value.id, value]));
     console.log('\n=== Browser Stats ===');
-    console.log(JSON.stringify(stats?.result?.value || [], null, 2));
+    console.log(JSON.stringify(browserStats, null, 2));
+    console.log('\n=== Selected/Succeeded ICE Pair ===');
+    console.log(JSON.stringify({
+      selected: Boolean(selectedPair),
+      state: pair.state,
+      localCandidateType: candidatesById.get(pair.localCandidateId)?.candidateType || null,
+      remoteCandidateType: candidatesById.get(pair.remoteCandidateId)?.candidateType || null,
+      bytesSent: pair.bytesSent,
+      bytesReceived: pair.bytesReceived
+    }, null, 2));
 
-    if (!snapshot.messages.includes('Hello from TurboNet!')) {
+    if (!snapshot.messages.includes('Hello from Salts!')) {
       throw new Error('data channel opened but expected native greeting was not observed');
     }
     if (!snapshot.messages.includes('Hello from browser!')) {
@@ -327,7 +370,9 @@ async function main() {
       console.log(nativeStderr.trim());
     }
 
-    console.log('\nRESULT: browser interop smoke passed');
+    console.log(options.requireSrflx
+      ? '\nRESULT: Chrome DataChannel + public Google STUN candidate smoke passed (production usrsctp)'
+      : '\nRESULT: browser interop smoke passed (production usrsctp)');
   } finally {
     if (native && !native.killed) {
       try {
