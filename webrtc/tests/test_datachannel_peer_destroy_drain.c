@@ -760,7 +760,7 @@ typedef struct dcep_receive_command {
   size_t length;
 } dcep_receive_command;
 
-static void receive_dcep_open_on_owner(void *arg1, void *arg2) {
+static void receive_dcep_message_on_owner(void *arg1, void *arg2) {
   dcep_receive_command *command = (dcep_receive_command *)arg1;
   (void)arg2;
   assert(command != NULL);
@@ -769,14 +769,20 @@ static void receive_dcep_open_on_owner(void *arg1, void *arg2) {
                         command->packet, command->length);
 }
 
-static void deliver_dcep_open(channel_lease_probe *lease, uint16_t stream_id,
-                              const uint8_t *packet, size_t length) {
+static void deliver_dcep_message(channel_lease_probe *lease,
+                                 uint16_t stream_id,
+                                 const uint8_t *packet, size_t length) {
   dcep_receive_command command = {lease, stream_id, packet, length};
   assert(lease != NULL && lease->peer != NULL);
   assert(dc_peer_acquire(lease->peer) == 0);
-  assert(dc_peer_post_owner_sync(lease->peer, receive_dcep_open_on_owner,
+  assert(dc_peer_post_owner_sync(lease->peer, receive_dcep_message_on_owner,
                                  &command, NULL) == SALTS_OK);
   dc_peer_release(lease->peer);
+}
+
+static void deliver_dcep_open(channel_lease_probe *lease, uint16_t stream_id,
+                              const uint8_t *packet, size_t length) {
+  deliver_dcep_message(lease, stream_id, packet, length);
 }
 
 static void test_incoming_dcep_uses_full_reliability_parameter(void) {
@@ -1188,6 +1194,9 @@ static void open_channel_on_owner(void *arg1, void *arg2) {
   channel_lease_probe *probe = (channel_lease_probe *)arg1;
   static const uint8_t ack[] = {DCEP_DATA_CHANNEL_ACK};
   (void)arg2;
+  assert(probe != NULL && probe->channel != NULL);
+  if (!probe->channel->dcep_sent)
+    assert(dcep_send_open(probe->channel) == 0);
   receive_test_packet(probe, SCTP_PPID_DCEP, ack, sizeof(ack));
 }
 
@@ -1253,6 +1262,8 @@ static void test_local_dcep_text_validation(void) {
 
 static void test_outgoing_dcep_and_prinfo_use_full_policy(void) {
   static const uint8_t payload[] = {'p'};
+  static const uint8_t ack[] = {DCEP_DATA_CHANNEL_ACK};
+  static const uint8_t malformed_ack[] = {DCEP_DATA_CHANNEL_ACK, 0u};
   turbo_dc_config_t config = {0};
   turbo_dc_channel_config_t channel_config = {0};
   channel_lease_probe probe = {0};
@@ -1272,6 +1283,16 @@ static void test_outgoing_dcep_and_prinfo_use_full_policy(void) {
   retransmit = turbo_dc_channel_create(probe.peer, "retransmit",
                                        &channel_config);
   assert(retransmit != NULL);
+  probe.channel = retransmit;
+  probe.sid = retransmit->id;
+  turbo_dc_channel_set_user_data(retransmit, &probe);
+  turbo_dc_channel_on_open(retransmit, channel_open_probe);
+
+  /* A channel allocation alone is not DCEP WAIT_ACK state. Neither a
+   * premature ACK nor an ACK with trailing bytes can publish OPEN. */
+  deliver_dcep_message(&probe, retransmit->id, ack, sizeof(ack));
+  assert(!turbo_dc_channel_is_open(retransmit));
+  assert(probe.opens == 0u);
   command.channel = retransmit;
   command.result = -1;
 #ifdef TURBO_MEDIA_TEST_DCEP_SENDV
@@ -1280,6 +1301,7 @@ static void test_outgoing_dcep_and_prinfo_use_full_policy(void) {
   assert(dc_peer_post_owner_sync(probe.peer, send_dcep_open_on_owner,
                                  &command, NULL) == SALTS_OK);
   assert(command.result == 0);
+  assert(retransmit->dcep_sent);
 #ifdef TURBO_MEDIA_TEST_DCEP_SENDV
   assert(g_dcep_send_calls == 1u);
   assert(g_dcep_send_sid == retransmit->id);
@@ -1291,11 +1313,15 @@ static void test_outgoing_dcep_and_prinfo_use_full_policy(void) {
   assert(get_be16(g_dcep_send_bytes + 8u) == 10u);
   assert(get_be16(g_dcep_send_bytes + 10u) == 0u);
 #endif
-  probe.channel = retransmit;
-  probe.sid = retransmit->id;
-  assert(dc_peer_post_owner_sync(probe.peer, open_channel_on_owner,
-                                 &probe, NULL) == SALTS_OK);
+  deliver_dcep_message(&probe, retransmit->id, malformed_ack,
+                       sizeof(malformed_ack));
+  assert(!turbo_dc_channel_is_open(retransmit));
+  assert(probe.opens == 0u);
+  deliver_dcep_message(&probe, retransmit->id, ack, sizeof(ack));
   assert(turbo_dc_channel_is_open(retransmit));
+  assert(probe.opens == 1u);
+  deliver_dcep_message(&probe, retransmit->id, ack, sizeof(ack));
+  assert(probe.opens == 1u);
 #ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
   g_channel_send_calls = 0u;
 #endif
