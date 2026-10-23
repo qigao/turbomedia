@@ -1,7 +1,9 @@
 """Transport/format regressions: no live credentials or package writes."""
 import contextlib
+import base64
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -24,6 +26,8 @@ class PackagesTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        gp.package_base.cache_clear()
+        self.addCleanup(gp.package_base.cache_clear)
         self.abi_info = b"portfile 123\ntriplet 456\n"
         self.abi = hashlib.sha256(self.abi_info).hexdigest()
         self.package_id = "vcpkg-cache_example_x64-linux"
@@ -177,25 +181,60 @@ Path(sys.argv[1]).write_text('must not reach another build')
 
         def fake_curl(args, **kwargs):
             seen.append((args, kwargs))
-            Path(args[args.index("--output") + 1]).write_bytes(b"package")
+            output = Path(args[args.index("--output") + 1])
+            if args[-1] == gp.FEED + "/index.json":
+                output.write_text(json.dumps({"resources": [
+                    {"@type": "PackageBaseAddress/3.0.0", "@id": gp.FEED + "/content/"}
+                ]}))
+            else:
+                output.write_bytes(b"package")
             return subprocess.CompletedProcess(args, 0, "200", "")
 
-        with patch.dict(os.environ, GITHUB_TOKEN="test-secret"), patch.object(gp.subprocess, "run", side_effect=fake_curl):
+        with patch.dict(os.environ, GITHUB_TOKEN="test-secret", GITHUB_ACTOR="test-actor"), patch.object(gp.subprocess, "run", side_effect=fake_curl):
             output = self.root / "package.nupkg"
             self.assertTrue(gp.download("Example", "1.2.3", output))
             self.assertEqual(output.read_bytes(), b"package")
-        args, kwargs = seen[0]
-        self.assertNotIn("test-secret", " ".join(args))
-        self.assertIn("Authorization: Basic", kwargs["input"])
-        self.assertEqual(args[0], "curl")
-        self.assertIn("https://nuget.pkg.github.com/qigao/download/example/1.2.3/example.1.2.3.nupkg", args)
+            self.assertTrue(gp.download("Other", "2.0.0", output))
+        self.assertEqual(len(seen), 3)  # index is reused for the second package
+        for args, kwargs in seen:
+            self.assertNotIn("test-secret", " ".join(args))
+            self.assertIn(base64.b64encode(b"test-actor:test-secret").decode(), kwargs["input"])
+            self.assertEqual(args[0], "curl")
+            self.assertIn("--retry-max-time", args)
+        self.assertEqual(seen[1][0][-1], gp.FEED + "/content/example/1.2.3/example.1.2.3.nupkg")
         self.assertFalse(output.with_suffix(".partial").exists())
+
+    def test_service_index_rejects_untrusted_or_ambiguous_content_endpoints(self):
+        for bases in ([], [gp.FEED + "/a", gp.FEED + "/b"],
+                      ["http://nuget.pkg.github.com/qigao/download/"],
+                      ["https://example.com/qigao/download/"],
+                      ["https://nuget.pkg.github.com/other/download/"],
+                      [gp.FEED + "/../other/"], [gp.FEED + "/download/?token=x"]):
+            with self.subTest(bases=bases):
+                gp.package_base.cache_clear()
+
+                def index_download(url, output, *_):
+                    Path(output).write_text(json.dumps({"resources": [
+                        {"@type": "PackageBaseAddress/3.0.0", "@id": base} for base in bases
+                    ]}))
+                    return True
+
+                with patch.object(gp, "curl_get", side_effect=index_download):
+                    with self.assertRaises(ValueError):
+                        gp.package_base("fake-token", "fake-actor")
+
+    def test_service_index_404_is_fatal_even_for_producer(self):
+        with patch.dict(os.environ, GITHUB_TOKEN="secret"), patch.object(
+                gp.subprocess, "run", return_value=subprocess.CompletedProcess([], 22, "404", "")):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+                gp.download("example", "1.0.0", self.root / "missing", allow_missing=True)
 
     def test_only_explicit_producer_can_accept_404(self):
         for status, code in (("404", 22), ("401", 22), ("403", 22), ("500", 22), ("000", 28)):
             for producer in (False, True):
                 with self.subTest(status=status, producer=producer), patch.dict(os.environ, GITHUB_TOKEN="secret"):
-                    with patch.object(gp.subprocess, "run", return_value=subprocess.CompletedProcess([], code, status, "")):
+                    with patch.object(gp, "package_base", return_value=gp.FEED + "/content"), patch.object(
+                            gp.subprocess, "run", return_value=subprocess.CompletedProcess([], code, status, "")):
                         if producer and status == "404":
                             self.assertFalse(gp.download("example", "1.0.0", self.root / "missing", allow_missing=True))
                         else:

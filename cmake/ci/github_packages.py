@@ -6,6 +6,7 @@ computes package IDs/versions/ABIs via its dry-run packages.config output.
 """
 import argparse
 import base64
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -84,16 +85,9 @@ def run_producer(args):
             reader.join(timeout=2)
 
 
-def download(package_id, version, output, *, allow_missing=False):
-    """Only an explicit producer may treat HTTP 404 as a cache miss."""
-    if not IDENTITY.fullmatch(package_id) or not IDENTITY.fullmatch(version):
-        raise ValueError("invalid package identity")
-    token = os.environ["GITHUB_TOKEN"]
-    if not token:
-        raise ValueError("GITHUB_TOKEN is empty")
-    auth = base64.b64encode(f"qigao:{token}".encode()).decode()
-    package_id, version = package_id.lower(), version.lower()
-    url = f"{FEED}/download/{package_id}/{version}/{package_id}.{version}.nupkg"
+def curl_get(url, output, token, actor, *, allow_missing=False):
+    """Authenticated atomic GET; only package downloads may accept a 404."""
+    auth = base64.b64encode(f"{actor}:{token}".encode()).decode()
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     partial = output.with_suffix(".partial")
@@ -103,6 +97,7 @@ def download(package_id, version, output, *, allow_missing=False):
         result = subprocess.run([
             "curl", "--disable", "--config", "-", "--fail", "--location",
             "--proto", "=https", "--proto-redir", "=https", "--silent", "--show-error",
+            "--retry", "3", "--retry-max-time", "120",
             "--connect-timeout", "30", "--max-time", "1800",
             "--output", str(partial), "--write-out", "%{http_code}", url,
         ], input=f'header = "Authorization: Basic {auth}"\n',
@@ -112,15 +107,46 @@ def download(package_id, version, output, *, allow_missing=False):
             if allow_missing and result.returncode == 22 and status == "404":
                 return False
             # curl stderr can contain server responses; report only status/code.
-            raise RuntimeError(f"curl download failed: {package_id}/{version} "
-                               f"HTTP {status}, exit {result.returncode}")
+            raise RuntimeError(f"curl download failed: HTTP {status}, exit {result.returncode}")
         if status != "200":
             raise RuntimeError(f"unexpected package HTTP status: {status}")
         partial.replace(output)
-        print(f"curl downloaded {package_id}/{version}", flush=True)
         return True
     finally:
         partial.unlink(missing_ok=True)
+
+
+@lru_cache(maxsize=1)
+def package_base(token, actor):
+    """Resolve once per invocation, as in qigao/stun#242; trust only this feed."""
+    with tempfile.TemporaryDirectory(prefix="tm-nuget-index-") as tmp:
+        index = Path(tmp) / "index.json"
+        curl_get(f"{FEED}/index.json", index, token, actor)
+        resources = json.loads(index.read_text(encoding="utf-8"))["resources"]
+    bases = {r["@id"] for r in resources if r.get("@type") == "PackageBaseAddress/3.0.0"}
+    if len(bases) != 1:
+        raise ValueError("missing or ambiguous GitHub Packages content endpoint")
+    base = bases.pop()
+    if not isinstance(base, str) or not re.fullmatch(re.escape(FEED) + r"/[A-Za-z0-9/_-]*", base):
+        raise ValueError("unexpected GitHub Packages content endpoint")
+    return base.rstrip("/")
+
+
+def download(package_id, version, output, *, allow_missing=False):
+    """Only an explicit producer may treat a package HTTP 404 as a cache miss."""
+    if not IDENTITY.fullmatch(package_id) or not IDENTITY.fullmatch(version):
+        raise ValueError("invalid package identity")
+    token = os.environ["GITHUB_TOKEN"]
+    if not token:
+        raise ValueError("GITHUB_TOKEN is empty")
+    actor = os.environ.get("GITHUB_ACTOR") or "qigao"
+    base = package_base(token, actor)
+    package_id, version = package_id.lower(), version.lower()
+    found = curl_get(f"{base}/{package_id}/{version}/{package_id}.{version}.nupkg",
+                     output, token, actor, allow_missing=allow_missing)
+    if found:
+        print(f"curl downloaded {package_id}/{version}", flush=True)
+    return found
 
 
 def members(archive):

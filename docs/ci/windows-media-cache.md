@@ -45,7 +45,13 @@ contract hash and canonical overlay paths. It does not execute the upstream
 action steps that install Mono or prewarm NuGet.exe.
 
 `cmake/ci/github_packages.py` downloads SDKs, re2c, and media cache packages
-from the authenticated `nuget.pkg.github.com/qigao/download` endpoint using curl.
+using curl. Following [Stun #242](https://github.com/qigao/stun/pull/242), it
+resolves `PackageBaseAddress/3.0.0` from the authenticated
+`https://nuget.pkg.github.com/qigao/index.json` service index once per invocation.
+The discovered URL must stay within the same HTTPS GitHub Packages owner path;
+missing or ambiguous endpoints fail. Downloads use `GITHUB_ACTOR:GITHUB_TOKEN`
+authentication and bounded transient-error retries. Index errors, including
+HTTP 404, are always fatal; only an explicit producer may accept a package 404.
 SDK source-tag/release provenance, original nupkg SHA256, CMake ownership and
 RID contract checks remain enforced. SDK nuspec dependencies must fit the
 locked graph; re2c is now explicitly pinned to the previously resolved 4.6.4.
