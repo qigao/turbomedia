@@ -313,6 +313,9 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     set_tests_properties(turbo_media_test_datachannel_peer_destroy_drain
                          PROPERTIES TIMEOUT 30)
   endif()
+  target_compile_definitions(
+    turbo_media_test_datachannel_peer_destroy_drain
+    PRIVATE TURBO_MEDIA_TEST_DCEP_SENDV=1)
   target_link_libraries(
     turbo_media_test_datachannel_peer_destroy_drain
     PRIVATE TurboMedia::SDP
