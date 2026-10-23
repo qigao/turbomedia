@@ -46,6 +46,11 @@ extern "C" {
 #define SCTP_ASSOCIATION_PORT 5000
 #define SCTP_MAX_STREAMS 65535u
 #define DCEP_MAX_PACKET_SIZE 512
+/* Match the private Salts legacy-DATA gate: complete user records are bounded
+ * to 24 KiB. Slots bound simultaneous usrsctp partial-delivery records; this
+ * does not claim RFC 8260 I-DATA interleaving support. */
+#define SCTP_REASSEMBLY_MESSAGE_MAX (24u * 1024u)
+#define SCTP_REASSEMBLY_SLOTS 8u
 
 /* SCTP PPIDs */
 #define SCTP_PPID_DCEP 50
@@ -77,10 +82,26 @@ typedef struct {
     cmeta_timer_t *retransmit_timer;  /* DTLS retransmission timer (NULL if no loop) */
 } dtls_session_t;
 
+/* One usrsctp callback record under bounded partial delivery. The buffer is
+ * owned by the Peer until EOR, abort/reset, or session cleanup. */
+typedef struct {
+    uint8_t *data;
+    size_t length;
+    uint16_t stream_id;
+    uint16_t stream_sequence;
+    uint32_t ppid;
+    sctp_assoc_t association_id;
+    uint8_t unordered;
+    uint8_t discarding;
+    uint8_t used;
+} sctp_reassembly_slot_t;
+
 /* SCTP session state */
 typedef struct {
     struct socket *socket;
     int connected;
+    int reassembly_blocked;
+    sctp_reassembly_slot_t reassembly[SCTP_REASSEMBLY_SLOTS];
 } sctp_session_t;
 
 /* Data channel context - internal */
@@ -267,6 +288,7 @@ int sctp_global_init(void);
 void sctp_global_cleanup(void);
 
 int sctp_session_init(turbo_dc_peer_t *peer);
+void sctp_session_cleanup(turbo_dc_peer_t *peer);
 int sctp_start_association(turbo_dc_peer_t *peer);
 int sctp_reset_channel_stream(turbo_dc_peer_t *peer, uint16_t stream_id);
 void sctp_poll_status(turbo_dc_peer_t *peer, const char *reason);

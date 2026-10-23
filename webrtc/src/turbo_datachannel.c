@@ -1757,9 +1757,12 @@ turbo_dc_state_t turbo_dc_peer_get_state(turbo_dc_peer_t *peer) {
 }
 
 static void dc_peer_close_impl(turbo_dc_peer_t *peer) {
-    if (!peer || peer->state == TURBO_DC_STATE_CLOSED) {
-        return;
-    }
+    if (!peer) return;
+
+    /* Partial-delivery storage belongs to this Peer and must not outlive any
+     * terminal path, including a Peer that reached CLOSED before destroy. */
+    sctp_session_cleanup(peer);
+    if (peer->state == TURBO_DC_STATE_CLOSED) return;
 
     dc_notify_state(peer, TURBO_DC_STATE_DISCONNECTING);
 
