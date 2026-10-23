@@ -36,6 +36,18 @@ target_link_libraries(
 
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
+
+# Compile the exact production DCEP source in a private test translation unit.
+# Inject native sendv EAGAIN and observe the private reset call locally because
+# that symbol is not exported from the Windows DLL. Production ABI is unchanged.
+turbo_media_add_webrtc_test(
+  turbo_media_test_dcep_ack_fault
+  test_dcep_ack_fault.c
+  ../src/turbo_datachannel_errors.c)
+target_link_libraries(
+  turbo_media_test_dcep_ack_fault
+  PRIVATE unofficial::usrsctp::usrsctp roaring::roaring)
+
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
 
@@ -301,6 +313,9 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
     set_tests_properties(turbo_media_test_datachannel_peer_destroy_drain
                          PROPERTIES TIMEOUT 30)
   endif()
+  target_compile_definitions(
+    turbo_media_test_datachannel_peer_destroy_drain
+    PRIVATE TURBO_MEDIA_TEST_DCEP_SENDV=1)
   target_link_libraries(
     turbo_media_test_datachannel_peer_destroy_drain
     PRIVATE TurboMedia::SDP
@@ -378,12 +393,28 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       message(FATAL_ERROR
         "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN requires GCC or Clang")
     endif()
+
+    # The exact-source ACK rejection fixture includes production DCEP in its
+    # translation unit, so these flags instrument the exercised failure path.
+    target_compile_options(
+      turbo_media_test_dcep_ack_fault
+      PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    target_link_options(
+      turbo_media_test_dcep_ack_fault PRIVATE -fsanitize=address,undefined)
+    set_tests_properties(
+      turbo_media_test_dcep_ack_fault
+      PROPERTIES TIMEOUT 30
+                 ENVIRONMENT "ASAN_OPTIONS=halt_on_error=1:detect_leaks=1;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1")
+
     # One additional executable in the same Linux job checks actual channel
     # storage reclamation with ASan/UBSan; TSan stays on the original target.
     turbo_media_add_webrtc_base_test(
       turbo_media_test_datachannel_channel_leases_asan
       test_datachannel_peer_destroy_drain.c
       ${_dc_peer_drain_sources})
+    target_compile_definitions(
+      turbo_media_test_datachannel_channel_leases_asan
+      PRIVATE TURBO_MEDIA_TEST_DCEP_SENDV=1)
     target_link_libraries(
       turbo_media_test_datachannel_channel_leases_asan
       PRIVATE TurboMedia::SDP Salts::LtvParser turbo_media_cnet_adapter

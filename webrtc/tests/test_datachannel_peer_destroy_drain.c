@@ -462,6 +462,28 @@ static void test_native_timer_does_not_wait_for_owner(void) {
   turbo_dc_context_destroy(ctx);
 }
 
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+static unsigned g_dcep_ack_admissions;
+
+ssize_t turbo_media_test_dcep_sendv(
+    struct socket *socket, const void *data, size_t length,
+    struct sockaddr *address, int address_count, void *info,
+    socklen_t info_length, unsigned int info_type, int flags) {
+  const struct sctp_sendv_spa *spa = (const struct sctp_sendv_spa *)info;
+  assert(socket != NULL);
+  assert(data != NULL && length == 1u);
+  assert(((const uint8_t *)data)[0] == DCEP_DATA_CHANNEL_ACK);
+  assert(address == NULL && address_count == 0);
+  assert(spa != NULL && info_length == sizeof(*spa));
+  assert(info_type == SCTP_SENDV_SPA && flags == 0);
+  assert((spa->sendv_flags & SCTP_SEND_SNDINFO_VALID) != 0);
+  assert(spa->sendv_sndinfo.snd_sid == 0u);
+  assert(ntohl(spa->sendv_sndinfo.snd_ppid) == SCTP_PPID_DCEP);
+  ++g_dcep_ack_admissions;
+  return (ssize_t)length;
+}
+#endif
+
 typedef struct channel_lease_probe {
   cmeta_mutex_t mutex;
   cmeta_cond_t changed;
@@ -543,8 +565,14 @@ static void test_dcep_reentrant_close_keeps_channel_until_return(void) {
   assert(probe.peer != NULL);
   turbo_dc_peer_on_channel(probe.peer, close_during_dcep);
   assert(dc_peer_acquire(probe.peer) == 0);
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  g_dcep_ack_admissions = 0u;
+#endif
   assert(dc_peer_post_owner_sync(probe.peer, dcep_close_owner_task,
                                  &probe, NULL) == SALTS_OK);
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  assert(g_dcep_ack_admissions == 1u);
+#endif
   assert(probe.channels == 1u && probe.opens == 0u && probe.closes == 1u);
   cmeta_mutex_lock(&probe.peer->operation_mutex);
   assert(peer_get_channel(probe.peer, probe.sid) == NULL);

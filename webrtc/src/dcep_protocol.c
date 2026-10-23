@@ -12,6 +12,13 @@
 #include <tstr.h>
 #include <string.h>
 #include <errno.h>
+
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+ssize_t turbo_media_test_dcep_sendv(
+    struct socket *socket, const void *data, size_t length,
+    struct sockaddr *address, int address_count, void *info,
+    socklen_t info_length, unsigned int info_type, int flags);
+#endif
 #include "tlog.h"
 
 /* DCEP header offsets */
@@ -106,8 +113,36 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
                   channel->label ? channel->label : "",
                   channel->protocol ? channel->protocol : "");
 
-        /* Send ACK */
-        dcep_send_ack(peer, stream_id);
+        /* Commit the application-visible OPEN only after the SCTP engine
+         * accepts the reliable ordered DCEP ACK for sending. Admission is
+         * not evidence of remote delivery. This mirrors the upstream C11
+         * cnet_sctp_dcep_input()/cnet_sctp_dcep_ack_admitted() contract. */
+        if (dcep_send_ack(peer, stream_id) != 0) {
+            /* The Channel was reserved only to reject duplicate OPEN while
+             * admitting the ACK. Roll it back inside the already admitted
+             * DCEP operation: a public Close could itself be rejected after
+             * Peer destruction begins and would leave this private record
+             * published. No application callback has observed the Channel. */
+            int reset_stream = 0;
+            cmeta_mutex_lock(&peer->operation_mutex);
+            if (!channel->closing) {
+                channel->closing = 1;
+                channel->is_open = 0;
+                if (peer_get_channel(peer, stream_id) == channel)
+                    peer_remove_channel(peer, stream_id);
+                reset_stream = !peer->destroying && peer->sctp.socket != NULL;
+            }
+            cmeta_mutex_unlock(&peer->operation_mutex);
+            if (reset_stream &&
+                sctp_reset_channel_stream(peer, stream_id) != 0) {
+                dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND,
+                                  "rejected DCEP stream reset failed");
+            }
+            dc_channel_release(channel);
+            dc_set_peer_error(peer, TURBO_DC_ERROR_DCEP_SEND_ACK,
+                              "incoming DCEP OPEN ACK was not admitted");
+            return;
+        }
 
         turbo_dc_channel_cb on_channel = NULL;
         turbo_dc_open_cb on_open = NULL;
@@ -220,9 +255,15 @@ int dcep_send_ack(turbo_dc_peer_t *peer, uint16_t stream_id) {
     spa.sendv_sndinfo.snd_sid = stream_id;
     spa.sendv_sndinfo.snd_ppid = htonl(SCTP_PPID_DCEP);
 
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+    ssize_t sent = turbo_media_test_dcep_sendv(
+        peer->sctp.socket, packet, 1, NULL, 0, &spa, sizeof(spa),
+        SCTP_SENDV_SPA, 0);
+#else
     ssize_t sent = usrsctp_sendv(peer->sctp.socket, packet, 1,
                                   NULL, 0, &spa, sizeof(spa),
                                   SCTP_SENDV_SPA, 0);
+#endif
 
     TLOG_INFOF("DCEP ACK send sid={} ret={} errno={}", stream_id, (int)sent, errno);
 

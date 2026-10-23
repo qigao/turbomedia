@@ -337,6 +337,13 @@ jobs:
               ),
           )
           verify_target(
+              "turbo_media_test_dcep_ack_fault.dir",
+              (
+                  "/webrtc/tests/test_dcep_ack_fault.c",
+              ),
+              "-fsanitize=address,undefined",
+          )
+          verify_target(
               "turbo_media_test_datachannel_channel_leases_asan.dir",
               (
                   "/webrtc/tests/test_datachannel_peer_destroy_drain.c",
