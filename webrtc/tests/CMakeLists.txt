@@ -412,6 +412,9 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       turbo_media_test_datachannel_channel_leases_asan
       test_datachannel_peer_destroy_drain.c
       ${_dc_peer_drain_sources})
+    target_compile_definitions(
+      turbo_media_test_datachannel_channel_leases_asan
+      PRIVATE TURBO_MEDIA_TEST_DCEP_SENDV=1)
     target_link_libraries(
       turbo_media_test_datachannel_channel_leases_asan
       PRIVATE TurboMedia::SDP Salts::LtvParser turbo_media_cnet_adapter
