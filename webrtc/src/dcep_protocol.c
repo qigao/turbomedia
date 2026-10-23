@@ -12,6 +12,13 @@
 #include <tstr.h>
 #include <string.h>
 #include <errno.h>
+
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+ssize_t turbo_media_test_dcep_sendv(
+    struct socket *socket, const void *data, size_t length,
+    struct sockaddr *address, int address_count, void *info,
+    socklen_t info_length, unsigned int info_type, int flags);
+#endif
 #include "tlog.h"
 
 /* DCEP header offsets */
@@ -248,9 +255,15 @@ int dcep_send_ack(turbo_dc_peer_t *peer, uint16_t stream_id) {
     spa.sendv_sndinfo.snd_sid = stream_id;
     spa.sendv_sndinfo.snd_ppid = htonl(SCTP_PPID_DCEP);
 
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+    ssize_t sent = turbo_media_test_dcep_sendv(
+        peer->sctp.socket, packet, 1, NULL, 0, &spa, sizeof(spa),
+        SCTP_SENDV_SPA, 0);
+#else
     ssize_t sent = usrsctp_sendv(peer->sctp.socket, packet, 1,
                                   NULL, 0, &spa, sizeof(spa),
                                   SCTP_SENDV_SPA, 0);
+#endif
 
     TLOG_INFOF("DCEP ACK send sid={} ret={} errno={}", stream_id, (int)sent, errno);
 
