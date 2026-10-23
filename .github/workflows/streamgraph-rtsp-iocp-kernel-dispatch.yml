@@ -10,7 +10,8 @@ name: M15d real RTSP Windows IOCP dequeue cancellation #192
       - 'media/rtsp/**'
       - 'network/**'
       - 'CMakeLists.txt'
-      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'cmake/ci/**'
+      - '.github/actions/setup-native-deps/**'
   pull_request:
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
@@ -20,7 +21,8 @@ name: M15d real RTSP Windows IOCP dequeue cancellation #192
       - 'media/rtsp/**'
       - 'network/**'
       - 'CMakeLists.txt'
-      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'cmake/ci/**'
+      - '.github/actions/setup-native-deps/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -48,13 +50,7 @@ jobs:
           ref: 8f448202367c93c04b8981085ee3f07c538ac330
           path: build/m15d-private-nativeio
           persist-credentials: false
-      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
-        with:
-          mode: read
-      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
-        with:
-          dotnet-version: '8.0.x'
+      - uses: ./.github/actions/setup-native-deps
 
       - name: Prepare Windows x64 MSVC native build tools
         shell: pwsh
@@ -90,12 +86,12 @@ jobs:
 
       - name: Restore unrelated third-party packages cache-only
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
           $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
-          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
-          $vcpkg = Join-Path $env:VCPKG_ROOT 'vcpkg.exe'
-          & $vcpkg install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=x64-windows' --only-binarycaching
+          python cmake/ci/github_packages.py media --triplet x64-windows --installed "$installed"
           if ($LASTEXITCODE -ne 0) { throw 'Cache-only Windows media dependency restore failed' }
 
       - name: Compile original private IOCP backend against real RTSP/CNet Server

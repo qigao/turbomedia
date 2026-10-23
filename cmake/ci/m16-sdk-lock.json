@@ -36,7 +36,6 @@
   },
   "actions": {
     "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
-    "actions/setup-dotnet": "67a3573c9a986a3f9c594539f4ab511d57bb3ce9",
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
     "actions/cache": "0057852bfaa89a56745cba8c7296529d2fc39830",
     "ilammy/msvc-dev-cmd": "0b201ec74fa43914dc39ae48a89fd1d8cb592756",
@@ -51,5 +50,6 @@
     "preintegration_master_sha": "69216a91ac4d6f8032561fe0224efcf9a0bfd55e",
     "integrated_stack_source_sha": "e978ac66060c7bc2f42faca97f7c14712d2c0815",
     "expect_all_11_m16_workflows_on_master_push": true
-  }
+  },
+  "re2c_version": "4.6.4"
 }

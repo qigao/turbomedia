@@ -8,7 +8,7 @@ The separate `Windows media binary cache` workflow owns production of this
 repository's media dependency closure. This follows the infrastructure
 repository's [product-owned producer policy](https://github.com/qigao/vcpkg-cache/blob/2e214ae44a3e3244eded5db6361194576356fc9e/README.md#product-owned-cache-production).
 It uses this repository's
-manifest, overlays and triplet, and the same locked shared Action, vcpkg scripts
+manifest, overlays and triplet, and the same locked shared infrastructure snapshot, vcpkg scripts
 and executable as Platform Build. Only this producer job has `packages: write`.
 It does not produce or publish a TurboMedia SDK.
 
@@ -16,7 +16,7 @@ Run this Windows-only workflow when a runner image changes the required package
 ABIs. It records the exact recipe commit, image version, compiler file digest,
 MSVC/Windows SDK versions and shared cache contract. After production it removes
 the local binary cache and restores into a fresh installation using
-`--only-binarycaching`; a source build or missing NuGet restore fails validation.
+`--only-binarycaching`; all packages must download from GitHub Packages with curl and restore successfully.
 Then rerun only the failed Windows Platform Build job on the same product SHA.
 Successful production alone does not qualify the product build or runtime tests.
 
@@ -35,3 +35,32 @@ For example, `vcpkg-cmake-config` changed from
 `3aba26ccdb0348ba29399deb355b75cebc2743335efe52795797298db5a2f466`.
 The logs establish image/ABI drift and a cache miss, not a TurboMedia test
 failure or proof of the precise compiler/tool input that changed.
+
+## curl package transport
+
+All native dependency setup in this repository uses the local
+`.github/actions/setup-native-deps` composite. It bootstraps the exact shared
+vcpkg scripts/tool pins from `cmake/ci/m16-sdk-lock.json`, preserving the shared
+contract hash and canonical overlay paths. It does not execute the upstream
+action steps that install Mono or prewarm NuGet.exe.
+
+`cmake/ci/github_packages.py` downloads SDKs, re2c, and media cache packages
+from the authenticated `nuget.pkg.github.com/qigao/download` endpoint using curl.
+SDK source-tag/release provenance, original nupkg SHA256, CMake ownership and
+RID contract checks remain enforced. SDK nuspec dependencies must fit the
+locked graph; re2c is now explicitly pinned to the previously resolved 4.6.4.
+There is no alternate feed or release-asset download fallback.
+
+For media libraries, vcpkg's `--dry-run --x-write-nuget-packages-config` supplies
+the exact package IDs, normalized versions and ABIs. The helper validates
+nuspec identity and hashes each package's `share/<port>/vcpkg_abi_info.txt`,
+then converts the payload to vcpkg's native `<abi[:2]>/<abi>.zip` file cache.
+The real install still uses `--only-binarycaching`. Download credentials go to
+curl over stdin, not process arguments or a persisted NuGet configuration.
+
+Only the explicit Windows producer allows HTTP 404 cache misses and source
+builds. Its native Windows NuGet client is used for upload only; downloads use
+curl. The temporary upload configuration is removed when the helper exits.
+Authentication, network, identity and ABI errors are fatal in both modes.
+The final producer check deletes the file cache and downloads the entire plan
+again, proving remote publication rather than reusing locally built archives.

@@ -5,6 +5,8 @@ name: Windows media binary cache
     paths:
       - '.github/workflows/windows-media-cache.yml'
       - 'docs/ci/windows-media-cache.md'
+      - 'cmake/ci/**'
+      - '.github/actions/setup-native-deps/**'
   workflow_dispatch:
 
 permissions:
@@ -12,7 +14,7 @@ permissions:
 
 concurrency:
   group: windows-media-cache-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   produce:
@@ -32,9 +34,9 @@ jobs:
           ref: ${{ env.TM_RECIPE_SHA }}
           persist-credentials: false
 
-      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
+      - uses: ./.github/actions/setup-native-deps
         with:
-          mode: readwrite
+          re2c: 'false'
 
       - name: Prepare the same Windows tools as Platform Build
         shell: pwsh
@@ -84,39 +86,19 @@ jobs:
 
       - name: Produce the product media ABI closure
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $vcpkg = Join-Path $env:VCPKG_ROOT 'vcpkg.exe'
-          $installed = Join-Path $env:RUNNER_TEMP 'turbomedia-windows-produced'
-          foreach ($path in @($installed, $env:VCPKG_BINARY_CACHE)) {
-            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
-          }
-          New-Item -ItemType Directory -Force -Path $env:VCPKG_BINARY_CACHE | Out-Null
-          $installArgs = @('install', "--x-manifest-root=$env:GITHUB_WORKSPACE",
-            "--x-install-root=$installed", '--triplet=x64-windows')
-          & $vcpkg @installArgs
+          python cmake/ci/github_packages.py media --triplet x64-windows --installed "$env:RUNNER_TEMP/turbomedia-windows-produced" --produce
           if ($LASTEXITCODE -ne 0) { throw 'Windows media cache production/publication failed' }
 
-      - name: Verify clean central L2 restore with source builds forbidden
+      - name: Verify clean curl L2 restore with source builds forbidden
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $vcpkg = Join-Path $env:VCPKG_ROOT 'vcpkg.exe'
-          $installed = Join-Path $env:RUNNER_TEMP 'turbomedia-windows-clean'
-          $restoreLog = Join-Path $env:RUNNER_TEMP 'turbomedia-windows-clean.log'
-          foreach ($path in @($installed, $env:VCPKG_BINARY_CACHE)) {
-            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
-          }
-          New-Item -ItemType Directory -Force -Path $env:VCPKG_BINARY_CACHE | Out-Null
-          $installArgs = @('install', "--x-manifest-root=$env:GITHUB_WORKSPACE",
-            "--x-install-root=$installed", '--triplet=x64-windows', '--only-binarycaching')
-          & $vcpkg @installArgs 2>&1 | Tee-Object -FilePath $restoreLog
+          python cmake/ci/github_packages.py media --triplet x64-windows --installed "$env:RUNNER_TEMP/turbomedia-windows-clean"
           if ($LASTEXITCODE -ne 0) { throw 'Clean central L2 cache-only restore failed' }
-          $log = Get-Content -LiteralPath $restoreLog -Raw
-          if ($log -match '(?m)^Building ') { throw 'Clean L2 qualification compiled a package' }
-          if ($log -notmatch 'Restored [1-9][0-9]* package\(s\) from NuGet') {
-            throw 'Clean restore did not obtain packages from NuGet L2'
-          }
           Add-Content $env:GITHUB_STEP_SUMMARY "Recipe: $env:TM_RECIPE_SHA"
           Add-Content $env:GITHUB_STEP_SUMMARY "Runner image: $env:ImageVersion; triplet: x64-windows"
-          Add-Content $env:GITHUB_STEP_SUMMARY 'Media packages produced and restored with an empty L1 cache and --only-binarycaching.'
+          Add-Content $env:GITHUB_STEP_SUMMARY 'Media packages downloaded with curl and restored with an empty L1 cache and --only-binarycaching.'
