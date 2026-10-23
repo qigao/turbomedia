@@ -693,6 +693,8 @@ static void test_dcep_reentrant_close_keeps_channel_until_return(void) {
   turbo_dc_context_destroy(ctx);
 }
 
+static void open_channel_on_owner(void *arg1, void *arg2);
+
 typedef struct webrtc_receive_command {
   channel_lease_probe *probe;
   uint32_t ppid;
