@@ -27,6 +27,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 FEED = "https://nuget.pkg.github.com/qigao"
 WINDOWS_MEDIA_PREFIX = "turbomedia-media"
+SHARED_MEDIA_PREFIX = "vcpkg-cache"
 PRODUCER_REPOSITORY = "qigao/turbomedia"
 IDENTITY = re.compile(r"[a-zA-Z0-9_.+-]+\Z")
 
@@ -367,9 +368,9 @@ def media_manifest(scope, destination):
 def media(triplet, installed, producer=False, scope="media"):
     if producer and (os.name != "nt" or triplet != "x64-windows"):
         raise ValueError("the explicit media producer requires x64-windows on Windows")
-    # Windows production and consumption share this repository's own packages.
-    # Other platforms continue to read the existing shared packages only.
-    prefix = WINDOWS_MEDIA_PREFIX if triplet == "x64-windows" else "vcpkg-cache"
+    # Windows writes only this repository's package IDs, but may reuse the
+    # existing read-only shared cache. Other platforms use the shared IDs.
+    prefix = WINDOWS_MEDIA_PREFIX if triplet == "x64-windows" else SHARED_MEDIA_PREFIX
     os.environ["X_VCPKG_NUGET_ID_PREFIX"] = prefix
     cache = Path(os.environ["VCPKG_BINARY_CACHE"])
     shutil.rmtree(installed, ignore_errors=True)
@@ -401,9 +402,18 @@ def media(triplet, installed, producer=False, scope="media"):
             # package's complete identity and ABI when staging its payload.
             if not re.fullmatch(re.escape(prefix) + r"_[a-z0-9-]+_[a-z0-9-]+", package_id):
                 raise ValueError(f"unexpected vcpkg cache namespace: {package_id}")
-            package = tmp / f"{package_id}.{version}.nupkg"
-            if download(package_id, version, package, allow_missing=producer):
-                to_file_cache(package, cache, package_id, version)
+            candidates = [package_id]
+            if prefix == WINDOWS_MEDIA_PREFIX:
+                candidates.append(SHARED_MEDIA_PREFIX + package_id[len(prefix):])
+            for index, candidate in enumerate(candidates):
+                package = tmp / f"{candidate}.{version}.nupkg"
+                # An own-package 404 selects the read-only shared fallback.
+                # The final 404 remains fatal for consumers; only a producer
+                # may convert it into a source build and own-package upload.
+                if download(candidate, version, package,
+                            allow_missing=index < len(candidates) - 1 or producer):
+                    to_file_cache(package, cache, candidate, version)
+                    break
         if producer:
             # The existing native Windows NuGet client is used ONLY to publish.
             # All reads use curl; Linux/macOS never invoke NuGet.exe or Mono.

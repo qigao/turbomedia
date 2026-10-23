@@ -1,7 +1,8 @@
 # Windows media binary cache production
 
-`Platform Build` consumes `turbomedia-media_*` packages on Windows and the
-existing shared `vcpkg-cache_*` packages on other platforms, read-only with
+`Platform Build` first consumes `turbomedia-media_*` packages on Windows and
+falls back to existing shared `vcpkg-cache_*` packages read-only. Other
+platforms consume the shared packages read-only with
 `--only-binarycaching`. Missing ABI packages fail before configuration;
 normal builds do not compile dependencies or publish cache entries.
 
@@ -33,11 +34,15 @@ producer uses the `turbomedia-media` ID prefix and
 are associated with the repository whose workflow token publishes them.
 The account-level NuGet feed URL remains unchanged. Existing `vcpkg-cache_*`
 packages belong to the shared repository and are never pushed by this producer.
-The historical shared-package publication probe has been removed.
+An own-package 404 selects the shared package with the same exact vcpkg ABI; a
+final shared-package 404 is fatal for consumers and permits a source build only
+in the explicit producer. The historical shared-package publication probe has
+been removed.
 
-The initial producer must build and publish the product-owned Windows closure;
-there is no read fallback to shared Windows packages. Namespace selection does
-not change the locked build recipe or ABI validation. A rejected publication
+If neither namespace contains an exact ABI, the producer builds and publishes
+it under the product-owned namespace. The read fallback never grants write
+access to shared Windows packages. Namespace selection does not change the
+locked build recipe or ABI validation. A rejected publication
 or cache-only restore remains a failure, and normal builds never produce
 dependencies. Only a successful clean L2 restore qualifies publication.
 
@@ -79,7 +84,8 @@ resolves `PackageBaseAddress/3.0.0` from the authenticated
 The discovered URL must stay within the same HTTPS GitHub Packages owner path;
 missing or ambiguous endpoints fail. Downloads use `GITHUB_ACTOR:GITHUB_TOKEN`
 authentication and bounded transient-error retries. Index errors, including
-HTTP 404, are always fatal; only an explicit producer may accept a package 404.
+HTTP 404, are always fatal. A Windows own-package 404 selects the shared read
+fallback; only an explicit producer may accept a final shared-package 404.
 SDK source-tag/release provenance, original nupkg SHA256, CMake ownership and
 RID contract checks remain enforced. SDK nuspec dependencies must fit the
 locked graph; re2c is now explicitly pinned to the previously resolved 4.6.4.
@@ -95,8 +101,8 @@ then converts the payload to vcpkg's native `<abi[:2]>/<abi>.zip` file cache.
 The real install still uses `--only-binarycaching`. Download credentials go to
 curl over stdin, not process arguments or a persisted NuGet configuration.
 
-Only the explicit Windows producer allows HTTP 404 cache misses and source
-builds. Its native Windows NuGet client is used for upload only; downloads use
+Only the explicit Windows producer converts a miss in both namespaces into a
+source build. Its native Windows NuGet client is used for upload only; downloads use
 curl. The temporary upload configuration is removed when the helper exits.
 Authentication, network, identity and ABI errors are fatal in both modes.
 The final producer check deletes the file cache and downloads the entire plan

@@ -156,7 +156,7 @@ Path(sys.argv[1]).write_text('must not reach another build')
 
         def fetch(package_id, version, destination, **kwargs):
             self.assertEqual((package_id, version), (self.package_id, self.version))
-            self.assertFalse(kwargs["allow_missing"])
+            self.assertEqual(kwargs["allow_missing"], prefix == gp.WINDOWS_MEDIA_PREFIX)
             shutil.copyfile(package, destination)
             return True
 
@@ -215,9 +215,44 @@ Path(sys.argv[1]).write_text('must not reach another build')
                 gp.media("x64-windows", self.root / "installed", producer=True)
                 self.assertEqual(native.call_count, 1)
                 producer.assert_called_once()
-                fetch.assert_called_once()
-                self.assertEqual(fetch.call_args.args[:2], (package_id, self.version))
-                self.assertTrue(fetch.call_args.kwargs["allow_missing"])
+                self.assertEqual(fetch.call_count, 2)
+                self.assertEqual([call.args[:2] for call in fetch.call_args_list],
+                                 [(package_id, self.version),
+                                  ("vcpkg-cache_example_x64-windows", self.version)])
+                self.assertTrue(all(call.kwargs["allow_missing"]
+                                    for call in fetch.call_args_list))
+
+    def test_windows_consumer_falls_back_to_read_only_shared_package(self):
+        own_id = "turbomedia-media_example_x64-windows"
+        shared_id = "vcpkg-cache_example_x64-windows"
+        self.package_id = shared_id
+        package = self.package()
+        cache = self.root / "cache"
+        downloads = []
+
+        def native(args, **kwargs):
+            if "--dry-run" in args:
+                path = Path(next(str(a).split("=", 1)[1] for a in args
+                                 if str(a).startswith("--x-write-nuget-packages-config=")))
+                path.write_text(f'<packages><package id="{own_id}" version="{self.version}" /></packages>')
+            else:
+                self.assertIn("--only-binarycaching", args)
+                self.assertTrue((cache / self.abi[:2] / f"{self.abi}.zip").is_file())
+
+        def fetch(package_id, version, destination, **kwargs):
+            downloads.append((package_id, kwargs["allow_missing"]))
+            if package_id == own_id:
+                return False
+            self.assertEqual(package_id, shared_id)
+            shutil.copyfile(package, destination)
+            return True
+
+        with patch.dict(os.environ, VCPKG_BINARY_CACHE=str(cache),
+                        VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root)):
+            with patch.object(gp, "run", side_effect=native), patch.object(
+                    gp, "download", side_effect=fetch):
+                gp.media("x64-windows", self.root / "installed")
+        self.assertEqual(downloads, [(own_id, True), (shared_id, False)])
 
     def test_windows_consumer_rejects_shared_plan_before_download(self):
         def plan(args, **_):
