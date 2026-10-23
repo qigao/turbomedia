@@ -71,10 +71,12 @@ def members(archive):
     """Validate the entire ZIP before materializing any files, on every OS."""
     seen = set()
     for info in archive.infolist():
-        name = info.filename
+        # ZipInfo normalizes Windows backslashes and truncates NULs in filename;
+        # validate the original archive name before either transformation.
+        name = info.orig_filename
         path = PurePosixPath(name)
         mode = info.external_attr >> 16
-        if ("\\" in name or ":" in name or path.is_absolute() or
+        if ("\\" in name or "\0" in name or ":" in name or path.is_absolute() or
                 not path.parts or any(p in ("", "..", ".") or p.endswith((" ", "."))
                                       for p in name.rstrip("/").split("/")) or
                 stat.S_ISLNK(mode) or (stat.S_IFMT(mode) not in
@@ -250,7 +252,7 @@ def media(triplet, installed, producer=False):
             raise ValueError("empty vcpkg restore plan")
         for entry in entries:
             package_id, version = entry.attrib["id"], entry.attrib["version"]
-            if not package_id.startswith("vcpkg-cache_"):
+            if not re.fullmatch(r"vcpkg-cache[a-z0-9-]+_[a-z0-9-]+", package_id):
                 raise ValueError(f"unexpected vcpkg cache namespace: {package_id}")
             package = tmp / f"{package_id}.{version}.nupkg"
             if download(package_id, version, package, allow_missing=producer):

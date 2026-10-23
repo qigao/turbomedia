@@ -2,6 +2,7 @@
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -19,7 +20,7 @@ class PackagesTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.abi_info = b"portfile 123\ntriplet 456\n"
         self.abi = hashlib.sha256(self.abi_info).hexdigest()
-        self.package_id = "vcpkg-cache_example_x64-linux"
+        self.package_id = "vcpkg-cacheexample_x64-linux"
         self.version = f"1.2.3-vcpkg{self.abi}"
 
     def package(self, extra=(), abi_info=None, dep=""):
@@ -35,6 +36,10 @@ class PackagesTest(unittest.TestCase):
             tool.external_attr = (stat.S_IFREG | 0o755) << 16
             archive.writestr(tool, b"executable")
             for name, value in extra:
+                if isinstance(name, str):
+                    raw = zipfile.ZipInfo(name)
+                    raw.filename = name  # keep malformed separators on Windows
+                    name = raw
                 archive.writestr(name, value)
         return path
 
@@ -53,6 +58,31 @@ class PackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ABI mismatch"):
             gp.to_file_cache(self.package(abi_info=b"wrong"), self.root / "cache", self.package_id, self.version)
         self.assertFalse(list((self.root / "cache").rglob("*.zip")))
+
+    def test_vcpkg_plan_identity_download_and_cache_only_install(self):
+        package = self.package()
+        calls = []
+        cache = self.root / "cache"
+
+        def native(args):
+            calls.append(args)
+            if "--dry-run" in args:
+                plan = Path(next(a.split("=", 1)[1] for a in args if str(a).startswith("--x-write-nuget-packages-config=")))
+                plan.write_text(f'<packages><package id="{self.package_id}" version="{self.version}" /></packages>')
+            else:
+                self.assertIn("--only-binarycaching", args)
+                self.assertTrue((cache / self.abi[:2] / f"{self.abi}.zip").is_file())
+
+        def fetch(package_id, version, destination, **kwargs):
+            self.assertEqual((package_id, version), (self.package_id, self.version))
+            self.assertFalse(kwargs["allow_missing"])
+            shutil.copyfile(package, destination)
+            return True
+
+        with patch.dict(os.environ, VCPKG_BINARY_CACHE=str(cache), VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root)):
+            with patch.object(gp, "run", side_effect=native), patch.object(gp, "download", side_effect=fetch):
+                gp.media("x64-linux", self.root / "installed")
+        self.assertEqual(len(calls), 2)
 
     def test_identity_and_sha256_checked_before_extraction(self):
         package = self.package()

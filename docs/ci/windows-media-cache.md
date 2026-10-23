@@ -1,6 +1,6 @@
 # Windows media binary cache production
 
-`Platform Build` consumes the shared `vcpkg-cache_*` NuGet namespace read-only
+`Platform Build` consumes the shared `vcpkg-cache` NuGet ID prefix read-only
 with `--only-binarycaching`. Missing ABI packages fail before configuration;
 normal builds do not compile dependencies or publish cache entries.
 
