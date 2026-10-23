@@ -2063,6 +2063,13 @@ static int dc_channel_open_owner_impl(turbo_dc_channel_t *channel) {
         return -1;
     }
 
+    /* A peer-created channel is already open after its ACK is admitted. Do
+     * not send a local OPEN on the remote role's SID if application code
+     * calls Open reentrantly from on_channel. */
+    if (channel->is_open) {
+        return 0;
+    }
+
     if (channel->peer->state != TURBO_DC_STATE_CONNECTED) {
         TLOG_INFOF("DCEP OPEN deferred sid={} peer_state={}", channel->id, (int)channel->peer->state);
         dc_set_peer_error(channel->peer, TURBO_DC_ERROR_PEER_NOT_CONNECTED, NULL);

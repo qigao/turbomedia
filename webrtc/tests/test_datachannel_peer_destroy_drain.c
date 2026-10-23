@@ -750,7 +750,17 @@ static void observe_dcep_policy(turbo_dc_peer_t *peer,
   probe->stream_ids[index] = channel->id;
   probe->configs[index] = channel->config;
   ++probe->channels;
+  /* A peer-created channel is already open. Reentrant Open is idempotent and
+   * must not emit a second DCEP OPEN on the remote role's SID. */
+  assert(turbo_dc_channel_open(channel) == 0);
   turbo_dc_channel_close(channel);
+}
+
+static void set_peer_connected_on_owner(void *arg1, void *arg2) {
+  turbo_dc_peer_t *peer = (turbo_dc_peer_t *)arg1;
+  (void)arg2;
+  assert(peer != NULL);
+  peer->state = TURBO_DC_STATE_CONNECTED;
 }
 
 typedef struct dcep_receive_command {
@@ -802,6 +812,8 @@ static void test_incoming_dcep_uses_full_reliability_parameter(void) {
   lease.peer = turbo_dc_peer_create(ctx, NULL, 0u, &policy);
   assert(lease.peer != NULL);
   turbo_dc_peer_on_channel(lease.peer, observe_dcep_policy);
+  assert(dc_peer_post_owner_sync(lease.peer, set_peer_connected_on_owner,
+                                 lease.peer, NULL) == SALTS_OK);
 
 #ifdef TURBO_MEDIA_TEST_DCEP_SENDV
   g_dcep_ack_admissions = 0u;
