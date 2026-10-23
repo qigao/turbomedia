@@ -62,6 +62,7 @@ jobs:
           "VCPKG_ROOT=$canonicalVcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Attest recipe and locked toolchain identities
+        id: contract
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -83,8 +84,9 @@ jobs:
           Write-Host "Recipe=$actual ImageVersion=$env:ImageVersion"
           Write-Host "MSVC=$env:VCToolsVersion SDK=$env:WindowsSDKVersion cl_sha256=$compilerHash"
           Write-Host "vcpkg_scripts=$env:VCPKG_SCRIPTS_REVISION vcpkg_tool=$env:VCPKG_TOOL_REVISION contract=$env:VCPKG_CACHE_REVISION"
+          Add-Content $env:GITHUB_OUTPUT "image=$env:ImageVersion"
 
-      - name: Produce the product media ABI closure
+      - name: Produce the product media ABI closure (${{ steps.contract.outputs.image }})
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,7 +94,7 @@ jobs:
           python cmake/ci/github_packages.py media --triplet x64-windows --installed "$env:RUNNER_TEMP/turbomedia-windows-produced" --produce
           if ($LASTEXITCODE -ne 0) { throw 'Windows media cache production/publication failed' }
 
-      - name: Verify clean curl L2 restore with source builds forbidden
+      - name: Verify clean curl L2 restore with source builds forbidden (${{ steps.contract.outputs.image }})
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

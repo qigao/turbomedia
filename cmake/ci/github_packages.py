@@ -268,15 +268,18 @@ def media(triplet, installed, producer=False):
             # All reads use curl; Linux/macOS never invoke NuGet.exe or Mono.
             config = tmp / "publish.config"
             root = ET.Element("configuration")
+            # vcpkg's nugetconfig provider passes -ConfigFile, not -Source.
+            # packageSources alone does not select the publication destination.
+            settings = ET.SubElement(root, "config")
+            ET.SubElement(settings, "add", key="defaultPushSource", value=f"{FEED}/index.json")
             sources = ET.SubElement(root, "packageSources")
             ET.SubElement(sources, "clear")
             ET.SubElement(sources, "add", key="github", value=f"{FEED}/index.json")
             creds = ET.SubElement(ET.SubElement(root, "packageSourceCredentials"), "github")
             ET.SubElement(creds, "add", key="Username", value="qigao")
             ET.SubElement(creds, "add", key="ClearTextPassword", value=os.environ["GITHUB_TOKEN"])
-            keys = ET.SubElement(root, "apiKeys")
-            ET.SubElement(keys, "add", key=FEED, value=os.environ["GITHUB_TOKEN"])
-            ET.SubElement(keys, "add", key=f"{FEED}/index.json", value=os.environ["GITHUB_TOKEN"])
+            # Pinned NuGet 7.9 reads NUGET_API_KEY directly. Do not write a
+            # plaintext value into the encrypted-only <apikeys> config section.
             ET.ElementTree(root).write(config, encoding="utf-8", xml_declaration=True)
             os.environ["NUGET_API_KEY"] = os.environ["GITHUB_TOKEN"]
             os.environ["VCPKG_NUGET_REPOSITORY"] = "https://github.com/qigao/vcpkg-cache"
