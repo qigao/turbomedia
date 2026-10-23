@@ -410,7 +410,7 @@ jobs:
           set -euo pipefail
           test -x "$BROWSER_INTEROP_BIN"
           node --version
-          for root in "$SALTS_ROOT" "$SALTS_UTILS_ROOT" "$SALTSNET_ROOT" "$CHTTP_ROOT" "$RULES_FORGE_ROOT" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux"; do
+          for root in "${SALTS_ROOT:-}" "${SALTS_UTILS_ROOT:-}" "${SALTSNET_ROOT:-}" "${CHTTP_ROOT:-}" "${RULES_FORGE_ROOT:-}" "$GITHUB_WORKSPACE/vcpkg_installed/x64-linux"; do
             [[ -n "$root" ]] || continue
             [[ ! -d "$root/lib" ]] || export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             [[ ! -d "$root/bin" ]] || export LD_LIBRARY_PATH="$root/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
