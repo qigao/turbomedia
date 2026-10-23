@@ -332,6 +332,7 @@ def media(triplet, installed, producer=False):
         entries = ET.parse(plan).getroot().findall("package")
         if not entries:
             raise ValueError("empty vcpkg restore plan")
+        cached_header = None
         for entry in entries:
             package_id, version = entry.attrib["id"], entry.attrib["version"]
             if not re.fullmatch(r"vcpkg-cache_[a-z0-9-]+_[a-z0-9-]+", package_id):
@@ -339,6 +340,8 @@ def media(triplet, installed, producer=False):
             package = tmp / f"{package_id}.{version}.nupkg"
             if download(package_id, version, package, allow_missing=producer):
                 to_file_cache(package, cache, package_id, version)
+                if package_id == "vcpkg-cache_vcpkg-cmake-config_x64-windows":
+                    cached_header = package
         if producer:
             if os.name != "nt":
                 raise ValueError("the explicit media producer is Windows-only")
@@ -351,6 +354,18 @@ def media(triplet, installed, producer=False):
             # Pinned NuGet 7.9 reads NUGET_API_KEY directly. Do not write a
             # plaintext value into the encrypted-only <apikeys> config section.
             producer_environment(config)
+            if cached_header is not None:
+                # Cache hits otherwise never exercise publication. Push the
+                # exact validated, immutable header package without modifying
+                # its bytes or identity. A duplicate is accepted; 401/403 fail
+                # before any expensive source builds. This does not qualify
+                # publication of a missing ABI version.
+                fetched = subprocess.check_output([str(vcpkg), "fetch", "nuget"], text=True)
+                nuget = fetched.strip().splitlines()[-1].strip('"')
+                print("Verify existing immutable cache publication with actual workflow token", flush=True)
+                run([nuget, "push", "-ForceEnglishOutput", "-NonInteractive", cached_header,
+                     "-Timeout", "100", "-ConfigFile", config, "-SkipDuplicate", "-NoSymbols"],
+                    timeout=130)
         if producer:
             run_producer(args)
         else:
