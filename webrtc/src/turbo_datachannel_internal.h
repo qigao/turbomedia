@@ -314,6 +314,7 @@ int dcep_send_open(turbo_dc_channel_t *channel);
 int dcep_send_ack(turbo_dc_peer_t *peer, uint16_t stream_id);
 void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
                          const uint8_t *data, size_t len);
+int dcep_text_valid(const uint8_t *text, size_t length);
 
 /* ============================================================================
  * Transport Helper (internal)

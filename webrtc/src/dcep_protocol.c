@@ -28,6 +28,43 @@ ssize_t turbo_media_test_dcep_sendv(
 #define DCEP_PROTO_LEN_OFFSET 10
 #define DCEP_LABEL_OFFSET     12
 
+/* Strict UTF-8: reject overlong forms, isolated continuation code points,
+ * UTF-16 surrogate ranges and values beyond Unicode scalar U+10FFFF. */
+int dcep_text_valid(const uint8_t *text, size_t length) {
+    size_t index = 0u;
+    if (!text && length != 0u) return 0;
+    while (index < length) {
+        unsigned int continuation_count;
+        uint8_t first = text[index];
+        if (first <= 0x7fu) {
+            ++index;
+            continue;
+        }
+        if (first >= 0xc2u && first <= 0xdfu) continuation_count = 1u;
+        else if (first >= 0xe0u && first <= 0xefu) continuation_count = 2u;
+        else if (first >= 0xf0u && first <= 0xf4u) continuation_count = 3u;
+        else return 0;
+        if (continuation_count >= length - index) return 0;
+        if (text[index + 1u] < 0x80u || text[index + 1u] > 0xbfu) return 0;
+        if (continuation_count >= 2u) {
+            if (text[index + 2u] < 0x80u || text[index + 2u] > 0xbfu)
+                return 0;
+            if ((first == 0xe0u && text[index + 1u] < 0xa0u) ||
+                (first == 0xedu && text[index + 1u] > 0x9fu))
+                return 0;
+        }
+        if (continuation_count == 3u) {
+            if (text[index + 3u] < 0x80u || text[index + 3u] > 0xbfu)
+                return 0;
+            if ((first == 0xf0u && text[index + 1u] < 0x90u) ||
+                (first == 0xf4u && text[index + 1u] > 0x8fu))
+                return 0;
+        }
+        index += continuation_count + 1u;
+    }
+    return 1;
+}
+
 /* ============================================================================
  * DCEP Message Handling
  * ============================================================================ */
@@ -46,6 +83,11 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
 
         if (label_len > MAX_LABEL_LEN || proto_len > MAX_PROTOCOL_LEN ||
             len != (size_t)(DCEP_HEADER_LENGTH + label_len + proto_len)) {
+            return;
+        }
+        if (!dcep_text_valid(data + DCEP_LABEL_OFFSET, label_len) ||
+            !dcep_text_valid(data + DCEP_LABEL_OFFSET + label_len,
+                             proto_len)) {
             return;
         }
 

@@ -784,7 +784,7 @@ static void test_incoming_dcep_uses_full_reliability_parameter(void) {
   channel_lease_probe lease = {0};
   dcep_policy_probe policy = {0};
   turbo_dc_context_t *ctx;
-  uint8_t packet[14];
+  uint8_t packet[16];
   size_t length;
   unsigned sends;
 
@@ -841,6 +841,11 @@ static void test_incoming_dcep_uses_full_reliability_parameter(void) {
   length = make_dcep_open(packet, sizeof(packet), DCEP_CHANNEL_REXMIT,
                           UINT32_C(0x80000000), 'o');
   deliver_dcep_open(&lease, 4u, packet, length);
+  length = make_dcep_open(packet, sizeof(packet),
+                          DCEP_CHANNEL_RELIABLE_ORDERED, 0u, 0xc0u);
+  put_be16(packet + 8u, 2u);
+  packet[13] = 0xafu; /* Overlong UTF-8 form. */
+  deliver_dcep_open(&lease, 4u, packet, length + 1u);
   assert(policy.channels == 2u);
 #ifdef TURBO_MEDIA_TEST_DCEP_SENDV
   assert(g_dcep_send_calls == sends);
@@ -1198,6 +1203,54 @@ static void send_dcep_open_on_owner(void *arg1, void *arg2) {
   command->result = dcep_send_open(command->channel);
 }
 
+static void test_local_dcep_text_validation(void) {
+  static const char invalid_overlong[] = {(char)0xc0, (char)0xaf, '\0'};
+  static const char invalid_surrogate[] = {
+      (char)0xed, (char)0xa0, (char)0x80, '\0'};
+  static const char valid_scalar[] = {
+      (char)0xf0, (char)0x9f, (char)0x98, (char)0x80, '\0'};
+  turbo_dc_config_t config = {0};
+  turbo_dc_channel_config_t channel_config = {0};
+  turbo_dc_context_t *ctx;
+  turbo_dc_peer_t *peer;
+  turbo_dc_channel_t *channel;
+  char label[MAX_LABEL_LEN + 2u];
+  char protocol[MAX_PROTOCOL_LEN + 2u];
+
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  channel_config.ordered = 1;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  peer = turbo_dc_peer_create(ctx, NULL, 0u, NULL);
+  assert(peer != NULL);
+
+  assert(turbo_dc_channel_create(peer, invalid_overlong,
+                                 &channel_config) == NULL);
+  channel_config.protocol = invalid_surrogate;
+  assert(turbo_dc_channel_create(peer, "valid", &channel_config) == NULL);
+
+  memset(label, 'l', sizeof(label));
+  label[MAX_LABEL_LEN + 1u] = '\0';
+  channel_config.protocol = NULL;
+  assert(turbo_dc_channel_create(peer, label, &channel_config) == NULL);
+  memset(protocol, 'p', sizeof(protocol));
+  protocol[MAX_PROTOCOL_LEN + 1u] = '\0';
+  channel_config.protocol = protocol;
+  assert(turbo_dc_channel_create(peer, "valid", &channel_config) == NULL);
+
+  /* Both configured limits are inclusive and valid four-byte Unicode scalar
+   * values remain accepted. Failed validation above must not consume SID 0. */
+  label[MAX_LABEL_LEN] = '\0';
+  channel_config.protocol = valid_scalar;
+  channel = turbo_dc_channel_create(peer, label, &channel_config);
+  assert(channel != NULL);
+  assert(channel->id == 0u);
+  turbo_dc_channel_close(channel);
+
+  turbo_dc_peer_destroy(peer);
+  turbo_dc_context_destroy(ctx);
+}
+
 static void test_outgoing_dcep_and_prinfo_use_full_policy(void) {
   static const uint8_t payload[] = {'p'};
   turbo_dc_config_t config = {0};
@@ -1371,6 +1424,7 @@ int main(void) {
   test_incoming_dcep_uses_full_reliability_parameter();
   test_webrtc_empty_ppid_framing();
   test_sctp_partial_delivery_reassembly();
+  test_local_dcep_text_validation();
   test_outgoing_dcep_and_prinfo_use_full_policy();
   test_sctp_callback_retains_closed_channel();
   puts("Production DataChannel Peer owner/drain contract PASS");
