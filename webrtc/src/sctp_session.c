@@ -470,8 +470,16 @@ int sctp_inbound_packet_cb(struct socket *sock, union sctp_sockstore addr,
         return 1;
     }
     if (reassembly == SCTP_REASSEMBLY_REJECTED) {
-        dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_RECEIVE,
-                          reassembly_detail);
+        int blocked;
+        cmeta_mutex_lock(&peer->operation_mutex);
+        blocked = peer->sctp.reassembly_blocked;
+        cmeta_mutex_unlock(&peer->operation_mutex);
+        if (blocked)
+            dc_fail_peer(peer, TURBO_DC_ERROR_SCTP_RECEIVE,
+                         reassembly_detail);
+        else
+            dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_RECEIVE,
+                              reassembly_detail);
         free(data);
         dc_peer_release(peer);
         return 1;
