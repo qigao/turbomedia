@@ -155,14 +155,18 @@ Path(sys.argv[1]).write_text('must not reach another build')
             shutil.copyfile(package, destination)
             return True
 
-        for triplet, prefix in (("x64-linux", "vcpkg-cache"), ("x64-windows", "turbomedia-media")):
-            self.package_id = f"{prefix}_example_{triplet}"
+        for triplet, prefix, package_triplet in (
+                ("x64-linux", "vcpkg-cache", "x64-linux"),
+                ("x64-windows", "turbomedia-media", "x64-windows"),
+                ("arm64-android-api26", "vcpkg-cache", "x64-linux"),
+                ("arm64-android-api26", "vcpkg-cache", "arm64-android-api26")):
+            self.package_id = f"{prefix}_example_{package_triplet}"
             package = self.package()
-            with self.subTest(triplet=triplet), patch.dict(
+            with self.subTest(triplet=triplet, package_triplet=package_triplet), patch.dict(
                     os.environ, VCPKG_BINARY_CACHE=str(cache), VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root)):
                 with patch.object(gp, "run", side_effect=native), patch.object(gp, "download", side_effect=fetch):
                     gp.media(triplet, self.root / "installed")
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 8)
 
     def test_windows_producer_only_requests_and_publishes_product_packages(self):
         package_id = "turbomedia-media_example_x64-windows"

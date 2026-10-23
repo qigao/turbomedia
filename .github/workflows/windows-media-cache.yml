@@ -14,7 +14,9 @@ permissions:
 
 concurrency:
   group: windows-media-cache-${{ github.ref }}
-  cancel-in-progress: true
+  # Complete the active immutable-package closure before the next recipe runs.
+  # Consumer/helper fixes must not discard an expensive first-time warmup.
+  cancel-in-progress: false
 
 jobs:
   produce:

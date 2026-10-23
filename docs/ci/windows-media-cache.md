@@ -20,6 +20,8 @@ the local binary cache and restores into a fresh installation using
 `--only-binarycaching`; all packages must download from GitHub Packages with curl and restore successfully.
 Then rerun only the failed Windows Platform Build job on the same product SHA.
 Successful production alone does not qualify the product build or runtime tests.
+Producer runs are serialized per branch without cancelling an active build;
+the next recipe waits for the current immutable-package warmup to complete.
 
 Publication is restricted to this repository's own packages. The Windows
 producer uses the `turbomedia-media` ID prefix and
@@ -69,6 +71,9 @@ There is no alternate feed or release-asset download fallback.
 
 For media libraries, vcpkg's `--dry-run --x-write-nuget-packages-config` supplies
 the exact package IDs, normalized versions and ABIs. The helper validates
+both target packages and the host tools included in cross-compilation plans
+(for example, Linux tools needed to build Android). It checks the selected
+namespace for every entry, then validates each downloaded package's full
 nuspec identity and hashes each package's `share/<port>/vcpkg_abi_info.txt`,
 then converts the payload to vcpkg's native `<abi[:2]>/<abi>.zip` file cache.
 The real install still uses `--only-binarycaching`. Download credentials go to

@@ -371,7 +371,11 @@ def media(triplet, installed, producer=False):
             raise ValueError("empty vcpkg restore plan")
         for entry in entries:
             package_id, version = entry.attrib["id"], entry.attrib["version"]
-            if not re.fullmatch(re.escape(prefix) + r"_[a-z0-9-]+_" + re.escape(triplet), package_id):
+            # Cross-compilation plans also contain host tools (for example,
+            # x64-linux vcpkg-cmake-config in an Android plan). vcpkg supplies
+            # both identities; enforce our namespace, then validate each
+            # package's complete identity and ABI when staging its payload.
+            if not re.fullmatch(re.escape(prefix) + r"_[a-z0-9-]+_[a-z0-9-]+", package_id):
                 raise ValueError(f"unexpected vcpkg cache namespace: {package_id}")
             package = tmp / f"{package_id}.{version}.nupkg"
             if download(package_id, version, package, allow_missing=producer):
