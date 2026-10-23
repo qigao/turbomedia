@@ -753,6 +753,32 @@ static void observe_dcep_policy(turbo_dc_peer_t *peer,
   turbo_dc_channel_close(channel);
 }
 
+typedef struct dcep_receive_command {
+  channel_lease_probe *lease;
+  uint16_t stream_id;
+  const uint8_t *packet;
+  size_t length;
+} dcep_receive_command;
+
+static void receive_dcep_open_on_owner(void *arg1, void *arg2) {
+  dcep_receive_command *command = (dcep_receive_command *)arg1;
+  (void)arg2;
+  assert(command != NULL);
+  receive_test_fragment(command->lease, command->stream_id, 0u, 0u,
+                        SCTP_PPID_DCEP, 0u, MSG_EOR,
+                        command->packet, command->length);
+}
+
+static void deliver_dcep_open(channel_lease_probe *lease, uint16_t stream_id,
+                              const uint8_t *packet, size_t length) {
+  dcep_receive_command command = {lease, stream_id, packet, length};
+  assert(lease != NULL && lease->peer != NULL);
+  assert(dc_peer_acquire(lease->peer) == 0);
+  assert(dc_peer_post_owner_sync(lease->peer, receive_dcep_open_on_owner,
+                                 &command, NULL) == SALTS_OK);
+  dc_peer_release(lease->peer);
+}
+
 static void test_incoming_dcep_uses_full_reliability_parameter(void) {
   turbo_dc_config_t config = {0};
   channel_lease_probe lease = {0};
@@ -777,8 +803,7 @@ static void test_incoming_dcep_uses_full_reliability_parameter(void) {
 #endif
   length = make_dcep_open(packet, sizeof(packet), DCEP_CHANNEL_REXMIT,
                           70000u, 'r');
-  receive_test_fragment(&lease, 0u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
-                        packet, length);
+  deliver_dcep_open(&lease, 0u, packet, length);
   assert(policy.channels == 1u);
   assert(policy.stream_ids[0] == 0u);
   assert(policy.configs[0].ordered);
@@ -789,8 +814,7 @@ static void test_incoming_dcep_uses_full_reliability_parameter(void) {
                           DCEP_CHANNEL_RELIABLE_UNORDERED |
                               DCEP_CHANNEL_TIMED,
                           70001u, 't');
-  receive_test_fragment(&lease, 2u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
-                        packet, length);
+  deliver_dcep_open(&lease, 2u, packet, length);
   assert(policy.channels == 2u);
   assert(policy.stream_ids[1] == 2u);
   assert(!policy.configs[1].ordered);
@@ -811,15 +835,12 @@ static void test_incoming_dcep_uses_full_reliability_parameter(void) {
 #endif
   length = make_dcep_open(packet, sizeof(packet), DCEP_CHANNEL_REXMIT,
                           3u, 'p');
-  receive_test_fragment(&lease, 1u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
-                        packet, length);
+  deliver_dcep_open(&lease, 1u, packet, length);
   packet[length] = 0u;
-  receive_test_fragment(&lease, 4u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
-                        packet, length + 1u);
+  deliver_dcep_open(&lease, 4u, packet, length + 1u);
   length = make_dcep_open(packet, sizeof(packet), DCEP_CHANNEL_REXMIT,
                           UINT32_C(0x80000000), 'o');
-  receive_test_fragment(&lease, 4u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
-                        packet, length);
+  deliver_dcep_open(&lease, 4u, packet, length);
   assert(policy.channels == 2u);
 #ifdef TURBO_MEDIA_TEST_DCEP_SENDV
   assert(g_dcep_send_calls == sends);
