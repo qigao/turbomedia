@@ -36,6 +36,18 @@ target_link_libraries(
 
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
+
+# Compile the exact production DCEP source in a private test translation unit
+# and inject only a native sendv EAGAIN result. Production symbols and ABI are
+# unchanged; the fixture verifies failed ACK admission cannot publish OPEN.
+turbo_media_add_webrtc_test(
+  turbo_media_test_dcep_ack_fault
+  test_dcep_ack_fault.c
+  ../src/turbo_datachannel_errors.c)
+target_link_libraries(
+  turbo_media_test_dcep_ack_fault
+  PRIVATE unofficial::usrsctp::usrsctp roaring::roaring)
+
 turbo_media_add_webrtc_test(turbo_media_test_dc_msg test_dc_msg.c)
 target_link_libraries(turbo_media_test_dc_msg PRIVATE Salts::LtvParser)
 
