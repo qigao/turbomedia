@@ -350,6 +350,18 @@ static inline uint16_t get_be16(const uint8_t *buf) {
     return (uint16_t)((buf[0] << 8) | buf[1]);
 }
 
+static inline void put_be32(uint8_t *buf, uint32_t val) {
+    buf[0] = (uint8_t)(val >> 24);
+    buf[1] = (uint8_t)(val >> 16);
+    buf[2] = (uint8_t)(val >> 8);
+    buf[3] = (uint8_t)val;
+}
+
+static inline uint32_t get_be32(const uint8_t *buf) {
+    return ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
+           ((uint32_t)buf[2] << 8) | (uint32_t)buf[3];
+}
+
 /* ============================================================================
  * Channel ID Allocation (roaring bitmap)
  * ============================================================================ */

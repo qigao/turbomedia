@@ -12,6 +12,7 @@
 #include <tstr.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
 
 #ifdef TURBO_MEDIA_TEST_DCEP_SENDV
 ssize_t turbo_media_test_dcep_sendv(
@@ -41,11 +42,17 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
     if (msg_type == DCEP_DATA_CHANNEL_OPEN && len >= DCEP_HEADER_LENGTH) {
         uint16_t label_len = get_be16(data + DCEP_LABEL_LEN_OFFSET);
         uint16_t proto_len = get_be16(data + DCEP_PROTO_LEN_OFFSET);
+        uint32_t reliability_parameter = get_be32(data + 4);
 
         if (label_len > MAX_LABEL_LEN || proto_len > MAX_PROTOCOL_LEN ||
-            len < (size_t)(DCEP_HEADER_LENGTH + label_len + proto_len)) {
+            len != (size_t)(DCEP_HEADER_LENGTH + label_len + proto_len)) {
             return;
         }
+
+        /* RFC 8832 assigns even SIDs to the DTLS client and odd SIDs to the
+         * DTLS server. This Peer is the receiver, so the remote role is the
+         * opposite of peer->is_dtls_server. */
+        if (((stream_id & 1u) == 0u) != (peer->is_dtls_server != 0)) return;
 
         /* Create incoming channel */
         turbo_dc_channel_t *channel = calloc(1, sizeof(*channel));
@@ -81,9 +88,21 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         }
         channel->config.ordered = !(channel_type & DCEP_CHANNEL_RELIABLE_UNORDERED);
         if (reliability == DCEP_CHANNEL_REXMIT) {
-            channel->config.max_retransmits = get_be16(data + 4);
+            if (reliability_parameter > (uint32_t)INT_MAX) {
+                tstr_free(channel->label);
+                tstr_free(channel->protocol);
+                free(channel);
+                return;
+            }
+            channel->config.max_retransmits = (int)reliability_parameter;
         } else if (reliability == DCEP_CHANNEL_TIMED) {
-            channel->config.max_lifetime_ms = get_be16(data + 4);
+            if (reliability_parameter > (uint32_t)INT_MAX) {
+                tstr_free(channel->label);
+                tstr_free(channel->protocol);
+                free(channel);
+                return;
+            }
+            channel->config.max_lifetime_ms = (int)reliability_parameter;
         }
 
         /* Reserve one callback lease before publication. on_channel may
@@ -207,15 +226,12 @@ int dcep_send_open(turbo_dc_channel_t *channel) {
     if (channel->config.max_retransmits < 0 || channel->config.max_lifetime_ms < 0 ||
         (channel->config.max_retransmits > 0 && channel->config.max_lifetime_ms > 0)) {
         return -1;
-    } else if (channel->config.max_retransmits > UINT16_MAX ||
-               channel->config.max_lifetime_ms > UINT16_MAX) {
-        return -1;
     } else if (channel->config.max_retransmits > 0) {
         packet[1] |= DCEP_CHANNEL_REXMIT;
-        put_be16(packet + 4, (uint16_t)channel->config.max_retransmits);
+        put_be32(packet + 4, (uint32_t)channel->config.max_retransmits);
     } else if (channel->config.max_lifetime_ms > 0) {
         packet[1] |= DCEP_CHANNEL_TIMED;
-        put_be16(packet + 4, (uint16_t)channel->config.max_lifetime_ms);
+        put_be32(packet + 4, (uint32_t)channel->config.max_lifetime_ms);
     }
 
     put_be16(packet + DCEP_LABEL_LEN_OFFSET, (uint16_t)label_len);
@@ -234,14 +250,20 @@ int dcep_send_open(turbo_dc_channel_t *channel) {
     spa.sendv_sndinfo.snd_sid = channel->id;
     spa.sendv_sndinfo.snd_ppid = htonl(SCTP_PPID_DCEP);
 
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+    ssize_t sent = turbo_media_test_dcep_sendv(
+        peer->sctp.socket, packet, packet_len, NULL, 0, &spa, sizeof(spa),
+        SCTP_SENDV_SPA, 0);
+#else
     ssize_t sent = usrsctp_sendv(peer->sctp.socket, packet, packet_len,
-                                  NULL, 0, &spa, sizeof(spa),
-                                  SCTP_SENDV_SPA, 0);
+                                 NULL, 0, &spa, sizeof(spa),
+                                 SCTP_SENDV_SPA, 0);
+#endif
 
     TLOG_INFOF("DCEP OPEN send sid={} bytes={} ret={} errno={}",
               channel->id, packet_len, (int)sent, errno);
 
-    return (sent > 0) ? 0 : -1;
+    return sent == (ssize_t)packet_len ? 0 : -1;
 }
 
 int dcep_send_ack(turbo_dc_peer_t *peer, uint16_t stream_id) {
