@@ -410,6 +410,87 @@ static void test_destroy_from_owner_callback(unsigned kind) {
   cmeta_mutex_destroy(&probe.mutex);
 }
 
+typedef struct state_reentry_probe {
+  turbo_dc_peer_t *peer;
+  unsigned errors;
+  unsigned failed;
+  unsigned disconnecting;
+  unsigned closed;
+  unsigned connected;
+  int close_from_error;
+} state_reentry_probe;
+
+static void observe_terminal_state(turbo_dc_peer_t *peer,
+                                   turbo_dc_state_t old_state,
+                                   turbo_dc_state_t new_state, void *opaque) {
+  state_reentry_probe *probe = (state_reentry_probe *)opaque;
+  (void)old_state;
+  assert(probe != NULL && probe->peer == peer);
+  assert(dc_peer_is_on_transport_owner(peer));
+  if (new_state == TURBO_DC_STATE_FAILED) ++probe->failed;
+  if (new_state == TURBO_DC_STATE_DISCONNECTING) ++probe->disconnecting;
+  if (new_state == TURBO_DC_STATE_CLOSED) ++probe->closed;
+  if (new_state == TURBO_DC_STATE_CONNECTED) ++probe->connected;
+}
+
+static void close_from_terminal_error(turbo_dc_peer_t *peer, int code,
+                                      const char *message, void *opaque) {
+  state_reentry_probe *probe = (state_reentry_probe *)opaque;
+  assert(probe != NULL && probe->peer == peer);
+  assert(code == TURBO_DC_ERROR_DTLS_HANDSHAKE);
+  assert(message != NULL);
+  assert(dc_peer_is_on_transport_owner(peer));
+  assert(peer->state == TURBO_DC_STATE_FAILED);
+  ++probe->errors;
+  if (probe->close_from_error) turbo_dc_peer_close(peer);
+}
+
+static void fail_then_publish_connected(void *arg1, void *arg2) {
+  state_reentry_probe *probe = (state_reentry_probe *)arg1;
+  (void)arg2;
+  assert(probe != NULL && probe->peer != NULL);
+  assert(dc_peer_is_on_transport_owner(probe->peer));
+  dc_fail_peer(probe->peer, TURBO_DC_ERROR_DTLS_HANDSHAKE,
+               "terminal state publication regression");
+  dc_notify_state(probe->peer, TURBO_DC_STATE_CONNECTED);
+}
+
+static void test_terminal_state_publication(int close_from_error) {
+  turbo_dc_config_t config = {0};
+  state_reentry_probe probe = {0};
+  turbo_dc_context_t *ctx;
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  config.disable_sctp = 1;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+  probe.close_from_error = close_from_error;
+  turbo_dc_peer_on_state(probe.peer, observe_terminal_state);
+  turbo_dc_peer_on_error(probe.peer, close_from_terminal_error);
+  assert(dc_peer_acquire(probe.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe.peer, fail_then_publish_connected,
+                                 &probe, NULL) == SALTS_OK);
+  dc_peer_release(probe.peer);
+
+  assert(probe.errors == 1u);
+  assert(probe.connected == 0u);
+  if (close_from_error) {
+    assert(probe.failed == 0u);
+    assert(probe.disconnecting == 1u);
+    assert(probe.closed == 1u);
+    assert(turbo_dc_peer_get_state(probe.peer) == TURBO_DC_STATE_CLOSED);
+  } else {
+    assert(probe.failed == 1u);
+    assert(probe.disconnecting == 0u);
+    assert(probe.closed == 0u);
+    assert(turbo_dc_peer_get_state(probe.peer) == TURBO_DC_STATE_FAILED);
+  }
+
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
 static void retransmit_while_owner_busy(void *arg1, void *arg2) {
   handshake_owner_probe *probe = (handshake_owner_probe *)arg1;
   turbo_dc_peer_t *peer = probe->peer;
@@ -677,6 +758,8 @@ int main(void) {
   test_destroy_from_owner_callback(0u);
   test_destroy_from_owner_callback(1u);
   test_destroy_from_owner_callback(2u);
+  test_terminal_state_publication(0);
+  test_terminal_state_publication(1);
   test_native_timer_does_not_wait_for_owner();
   test_dcep_reentrant_close_keeps_channel_until_return();
   test_sctp_callback_retains_closed_channel();
