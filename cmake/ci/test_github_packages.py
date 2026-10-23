@@ -20,7 +20,7 @@ class PackagesTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.abi_info = b"portfile 123\ntriplet 456\n"
         self.abi = hashlib.sha256(self.abi_info).hexdigest()
-        self.package_id = "vcpkg-cacheexample_x64-linux"
+        self.package_id = "vcpkg-cache_example_x64-linux"
         self.version = f"1.2.3-vcpkg{self.abi}"
 
     def package(self, extra=(), abi_info=None, dep=""):
@@ -64,9 +64,10 @@ class PackagesTest(unittest.TestCase):
         calls = []
         cache = self.root / "cache"
 
-        def native(args):
+        def native(args, **kwargs):
             calls.append(args)
             if "--dry-run" in args:
+                self.assertEqual(kwargs["env"]["X_VCPKG_NUGET_ID_PREFIX"], "vcpkg-cache_")
                 plan = Path(next(a.split("=", 1)[1] for a in args if str(a).startswith("--x-write-nuget-packages-config=")))
                 plan.write_text(f'<packages><package id="{self.package_id}" version="{self.version}" /></packages>')
             else:

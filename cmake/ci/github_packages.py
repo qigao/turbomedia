@@ -246,13 +246,17 @@ def media(triplet, installed, producer=False):
     with tempfile.TemporaryDirectory(prefix="tm-media-", dir=os.environ["RUNNER_TEMP"]) as tmp:
         tmp = Path(tmp)
         plan = tmp / "packages.config"
-        run([*args, "--dry-run", f"--x-write-nuget-packages-config={plan}"])
+        # This pinned tool's NuGet provider appends '_' to the configured prefix,
+        # while packages.config generation takes the raw prefix unchanged.
+        # Normalize for the dry-run only; publication keeps the original prefix.
+        run([*args, "--dry-run", f"--x-write-nuget-packages-config={plan}"],
+            env={**os.environ, "X_VCPKG_NUGET_ID_PREFIX": "vcpkg-cache_"})
         entries = ET.parse(plan).getroot().findall("package")
         if not entries:
             raise ValueError("empty vcpkg restore plan")
         for entry in entries:
             package_id, version = entry.attrib["id"], entry.attrib["version"]
-            if not re.fullmatch(r"vcpkg-cache[a-z0-9-]+_[a-z0-9-]+", package_id):
+            if not re.fullmatch(r"vcpkg-cache_[a-z0-9-]+_[a-z0-9-]+", package_id):
                 raise ValueError(f"unexpected vcpkg cache namespace: {package_id}")
             package = tmp / f"{package_id}.{version}.nupkg"
             if download(package_id, version, package, allow_missing=producer):
