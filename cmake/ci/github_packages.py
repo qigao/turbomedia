@@ -332,7 +332,6 @@ def media(triplet, installed, producer=False):
         entries = ET.parse(plan).getroot().findall("package")
         if not entries:
             raise ValueError("empty vcpkg restore plan")
-        cached_header = None
         for entry in entries:
             package_id, version = entry.attrib["id"], entry.attrib["version"]
             if not re.fullmatch(r"vcpkg-cache_[a-z0-9-]+_[a-z0-9-]+", package_id):
@@ -340,8 +339,6 @@ def media(triplet, installed, producer=False):
             package = tmp / f"{package_id}.{version}.nupkg"
             if download(package_id, version, package, allow_missing=producer):
                 to_file_cache(package, cache, package_id, version)
-                if package_id == "vcpkg-cache_vcpkg-cmake-config_x64-windows":
-                    cached_header = package
         if producer:
             if os.name != "nt":
                 raise ValueError("the explicit media producer is Windows-only")
@@ -354,18 +351,25 @@ def media(triplet, installed, producer=False):
             # Pinned NuGet 7.9 reads NUGET_API_KEY directly. Do not write a
             # plaintext value into the encrypted-only <apikeys> config section.
             producer_environment(config)
-            if cached_header is not None:
-                # Cache hits otherwise never exercise publication. Push the
-                # exact validated, immutable header package without modifying
-                # its bytes or identity. A duplicate is accepted; 401/403 fail
-                # before any expensive source builds. This does not qualify
-                # publication of a missing ABI version.
-                fetched = subprocess.check_output([str(vcpkg), "fetch", "nuget"], text=True)
-                nuget = fetched.strip().splitlines()[-1].strip('"')
-                print("Verify existing immutable cache publication with actual workflow token", flush=True)
-                run([nuget, "push", "-ForceEnglishOutput", "-NonInteractive", cached_header,
-                     "-Timeout", "100", "-ConfigFile", config, "-SkipDuplicate", "-NoSymbols"],
-                    timeout=130)
+            # This historical header was independently restored on the old
+            # runner. It is a publication control, never an install input:
+            # verify it in a separate throwaway cache, then push the original
+            # bytes. Its fixed identity lets even a wholly missing current ABI
+            # graph test the actual token before expensive compilation.
+            probe_id = "vcpkg-cache_vcpkg-cmake-config_x64-windows"
+            probe_abi = "54cb9c70ca64f19271062b63dba4fb536a3e92c62c5652fa2e77a74ed5d85fc9"
+            probe_version = f"2024.5.23-vcpkg{probe_abi}"
+            probe = tmp / "publication-control.nupkg"
+            download(probe_id, probe_version, probe)
+            to_file_cache(probe, tmp / "publication-control-cache", probe_id, probe_version)
+            fetched = subprocess.check_output([str(vcpkg), "fetch", "nuget"], text=True)
+            nuget = fetched.strip().splitlines()[-1].strip('"')
+            print("Verify existing immutable cache publication with actual workflow token", flush=True)
+            # Only a duplicate is accepted; 401/403 remain fatal. Acceptance
+            # here does not qualify publication of a missing ABI version.
+            run([nuget, "push", "-ForceEnglishOutput", "-NonInteractive", probe,
+                 "-Timeout", "100", "-ConfigFile", config, "-SkipDuplicate", "-NoSymbols"],
+                timeout=130)
         if producer:
             run_producer(args)
         else:
