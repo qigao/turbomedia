@@ -543,6 +543,32 @@ static void test_native_timer_does_not_wait_for_owner(void) {
   turbo_dc_context_destroy(ctx);
 }
 
+#ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
+static unsigned g_channel_send_calls;
+static uint16_t g_channel_send_sid;
+static uint32_t g_channel_send_ppid;
+static size_t g_channel_send_length;
+static uint8_t g_channel_send_first_byte;
+
+ssize_t turbo_media_test_channel_sendv(
+    struct socket *socket, const void *data, size_t length,
+    struct sockaddr *address, int address_count, void *info,
+    socklen_t info_length, unsigned int info_type, int flags) {
+  const struct sctp_sendv_spa *spa = (const struct sctp_sendv_spa *)info;
+  assert(socket != NULL && data != NULL && length > 0u);
+  assert(address == NULL && address_count == 0);
+  assert(spa != NULL && info_length == sizeof(*spa));
+  assert(info_type == SCTP_SENDV_SPA && flags == 0);
+  assert((spa->sendv_flags & SCTP_SEND_SNDINFO_VALID) != 0);
+  ++g_channel_send_calls;
+  g_channel_send_sid = spa->sendv_sndinfo.snd_sid;
+  g_channel_send_ppid = ntohl(spa->sendv_sndinfo.snd_ppid);
+  g_channel_send_length = length;
+  g_channel_send_first_byte = ((const uint8_t *)data)[0];
+  return (ssize_t)length;
+}
+#endif
+
 #ifdef TURBO_MEDIA_TEST_DCEP_SENDV
 static unsigned g_dcep_ack_admissions;
 
@@ -575,6 +601,9 @@ typedef struct channel_lease_probe {
   unsigned opens;
   unsigned closes;
   unsigned messages;
+  size_t last_length;
+  int last_binary;
+  uint8_t last_byte;
   int entered;
   int release;
   int read_after_close;
@@ -660,6 +689,110 @@ static void test_dcep_reentrant_close_keeps_channel_until_return(void) {
   assert(!roaring_bitmap_contains(probe.peer->channel_ids, probe.sid));
   cmeta_mutex_unlock(&probe.peer->operation_mutex);
   dc_peer_release(probe.peer);
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
+static void open_channel_on_owner(void *arg1, void *arg2);
+
+typedef struct webrtc_receive_command {
+  channel_lease_probe *probe;
+  uint32_t ppid;
+  const uint8_t *bytes;
+  size_t length;
+} webrtc_receive_command;
+
+static void observe_webrtc_message(turbo_dc_channel_t *channel,
+                                   const void *data, size_t length,
+                                   int binary, void *opaque) {
+  channel_lease_probe *probe = (channel_lease_probe *)opaque;
+  assert(channel == probe->channel);
+  ++probe->messages;
+  probe->last_length = length;
+  probe->last_binary = binary;
+  probe->last_byte = length ? ((const uint8_t *)data)[0] : 0u;
+}
+
+static void receive_webrtc_message_on_owner(void *arg1, void *arg2) {
+  webrtc_receive_command *command = (webrtc_receive_command *)arg1;
+  (void)arg2;
+  receive_test_packet(command->probe, command->ppid,
+                      command->bytes, command->length);
+}
+
+static void deliver_webrtc_message(channel_lease_probe *probe, uint32_t ppid,
+                                   const uint8_t *bytes, size_t length) {
+  webrtc_receive_command command = {probe, ppid, bytes, length};
+  assert(dc_peer_acquire(probe->peer) == 0);
+  assert(dc_peer_post_owner_sync(probe->peer,
+                                 receive_webrtc_message_on_owner,
+                                 &command, NULL) == SALTS_OK);
+  dc_peer_release(probe->peer);
+}
+
+static void test_webrtc_empty_ppid_framing(void) {
+  static const uint8_t zero[] = {0u};
+  static const uint8_t malformed[] = {1u};
+  static const uint8_t text[] = {'x'};
+  turbo_dc_config_t config = {0};
+  channel_lease_probe probe = {0};
+  turbo_dc_context_t *ctx;
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+  probe.channel = turbo_dc_channel_create(probe.peer, "webrtc-ppid", NULL);
+  assert(probe.channel != NULL);
+  probe.sid = turbo_dc_channel_get_id(probe.channel);
+  turbo_dc_channel_set_user_data(probe.channel, &probe);
+  turbo_dc_channel_on_message(probe.channel, observe_webrtc_message);
+  assert(dc_peer_acquire(probe.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe.peer, open_channel_on_owner,
+                                 &probe, NULL) == SALTS_OK);
+  dc_peer_release(probe.peer);
+  assert(turbo_dc_channel_is_open(probe.channel));
+
+#ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
+  g_channel_send_calls = 0u;
+  assert(turbo_dc_channel_send(probe.channel, zero, 0u, 0) == 0);
+  assert(g_channel_send_calls == 1u);
+  assert(g_channel_send_sid == probe.sid);
+  assert(g_channel_send_ppid == SCTP_PPID_STRING_EMPTY);
+  assert(g_channel_send_length == 1u && g_channel_send_first_byte == 0u);
+
+  assert(turbo_dc_channel_send(probe.channel, zero, 0u, 1) == 0);
+  assert(g_channel_send_calls == 2u);
+  assert(g_channel_send_ppid == SCTP_PPID_BINARY_EMPTY);
+  assert(g_channel_send_length == 1u && g_channel_send_first_byte == 0u);
+
+  assert(turbo_dc_channel_send(probe.channel, text, sizeof(text), 0) == 0);
+  assert(g_channel_send_calls == 3u);
+  assert(g_channel_send_ppid == SCTP_PPID_STRING);
+  assert(g_channel_send_length == 1u && g_channel_send_first_byte == 'x');
+#endif
+
+  deliver_webrtc_message(&probe, SCTP_PPID_STRING_EMPTY, zero, sizeof(zero));
+  assert(probe.messages == 1u && probe.last_length == 0u &&
+         probe.last_binary == 0);
+  deliver_webrtc_message(&probe, SCTP_PPID_BINARY_EMPTY, zero, sizeof(zero));
+  assert(probe.messages == 2u && probe.last_length == 0u &&
+         probe.last_binary == 1);
+  deliver_webrtc_message(&probe, SCTP_PPID_STRING, text, sizeof(text));
+  assert(probe.messages == 3u && probe.last_length == 1u &&
+         probe.last_binary == 0 && probe.last_byte == 'x');
+
+  deliver_webrtc_message(&probe, SCTP_PPID_STRING_EMPTY,
+                          malformed, sizeof(malformed));
+  assert(probe.messages == 3u);
+  assert(turbo_dc_peer_get_error(probe.peer).code ==
+         TURBO_DC_ERROR_SCTP_RECEIVE);
+  deliver_webrtc_message(&probe, 52u, zero, sizeof(zero));
+  assert(probe.messages == 3u);
+  assert(turbo_dc_peer_get_error(probe.peer).code ==
+         TURBO_DC_ERROR_SCTP_RECEIVE);
+
+  turbo_dc_channel_close(probe.channel);
   turbo_dc_peer_destroy(probe.peer);
   turbo_dc_context_destroy(ctx);
 }
@@ -762,6 +895,7 @@ int main(void) {
   test_terminal_state_publication(1);
   test_native_timer_does_not_wait_for_owner();
   test_dcep_reentrant_close_keeps_channel_until_return();
+  test_webrtc_empty_ppid_framing();
   test_sctp_callback_retains_closed_channel();
   puts("Production DataChannel Peer owner/drain contract PASS");
   return 0;

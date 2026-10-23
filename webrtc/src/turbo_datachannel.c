@@ -32,6 +32,13 @@
 #include "ice/salts_ice.h"
 #include "turbo_srtp_defs.h"
 
+#ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
+ssize_t turbo_media_test_channel_sendv(
+    struct socket *socket, const void *data, size_t length,
+    struct sockaddr *address, int address_count, void *info,
+    socklen_t info_length, unsigned int info_type, int flags);
+#endif
+
 /* Ephemeral DTLS identity backed by BoringSSL. */
 #include "dc_certificate.h"
 
@@ -2210,9 +2217,16 @@ static int dc_channel_send_owner_impl(
         return -1;
     }
 
+    uint8_t empty_payload = 0;
+    const void *wire_data = data;
+    size_t wire_len = len;
     uint32_t ppid;
     if (len == 0) {
+        /* RFC 8831 section 6.6 represents an empty logical message as one
+         * zero octet with PPID 56/57; zero-length SCTP user data is invalid. */
         ppid = is_binary ? SCTP_PPID_BINARY_EMPTY : SCTP_PPID_STRING_EMPTY;
+        wire_data = &empty_payload;
+        wire_len = 1u;
     } else {
         ppid = is_binary ? SCTP_PPID_BINARY : SCTP_PPID_STRING;
     }
@@ -2246,11 +2260,17 @@ static int dc_channel_send_owner_impl(
         spa.sendv_prinfo.pr_value = (uint32_t)channel->config.max_lifetime_ms;
     }
 
-    ssize_t sent = usrsctp_sendv(peer->sctp.socket, data, len,
+#ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
+    ssize_t sent = turbo_media_test_channel_sendv(
+        peer->sctp.socket, wire_data, wire_len, NULL, 0, &spa, sizeof(spa),
+        SCTP_SENDV_SPA, 0);
+#else
+    ssize_t sent = usrsctp_sendv(peer->sctp.socket, wire_data, wire_len,
                                   NULL, 0, &spa, sizeof(spa),
                                   SCTP_SENDV_SPA, 0);
+#endif
 
-    if (sent < 0) {
+    if (sent < 0 || (size_t)sent != wire_len) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND, NULL);
         return -1;
     }
