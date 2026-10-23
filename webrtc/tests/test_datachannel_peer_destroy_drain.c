@@ -604,13 +604,16 @@ typedef struct channel_lease_probe {
   size_t last_length;
   int last_binary;
   uint8_t last_byte;
+  uint8_t last_data[8];
   int entered;
   int release;
   int read_after_close;
 } channel_lease_probe;
 
-static void receive_test_packet(channel_lease_probe *probe, uint32_t ppid,
-                                 const uint8_t *bytes, size_t length) {
+static void receive_test_fragment(
+    channel_lease_probe *probe, uint16_t stream_id, uint16_t stream_sequence,
+    sctp_assoc_t association_id, uint32_t ppid, uint16_t receive_flags,
+    int callback_flags, const uint8_t *bytes, size_t length) {
   union sctp_sockstore address;
   struct sctp_rcvinfo info;
   void *packet = malloc(length);
@@ -618,10 +621,19 @@ static void receive_test_packet(channel_lease_probe *probe, uint32_t ppid,
   memcpy(packet, bytes, length);
   memset(&address, 0, sizeof(address));
   memset(&info, 0, sizeof(info));
-  info.rcv_sid = probe->sid;
+  info.rcv_sid = stream_id;
+  info.rcv_ssn = stream_sequence;
+  info.rcv_flags = receive_flags;
   info.rcv_ppid = htonl(ppid);
+  info.rcv_assoc_id = association_id;
   assert(sctp_inbound_packet_cb(NULL, address, packet, length, info,
-                                0, probe->peer) == 1);
+                                callback_flags, probe->peer) == 1);
+}
+
+static void receive_test_packet(channel_lease_probe *probe, uint32_t ppid,
+                                 const uint8_t *bytes, size_t length) {
+  receive_test_fragment(probe, probe->sid, 0u, 0u, ppid, 0u, MSG_EOR,
+                        bytes, length);
 }
 
 static void channel_open_probe(turbo_dc_channel_t *channel, void *opaque) {
@@ -697,7 +709,12 @@ static void open_channel_on_owner(void *arg1, void *arg2);
 
 typedef struct webrtc_receive_command {
   channel_lease_probe *probe;
+  uint16_t stream_id;
+  uint16_t stream_sequence;
+  sctp_assoc_t association_id;
   uint32_t ppid;
+  uint16_t receive_flags;
+  int callback_flags;
   const uint8_t *bytes;
   size_t length;
 } webrtc_receive_command;
@@ -711,23 +728,49 @@ static void observe_webrtc_message(turbo_dc_channel_t *channel,
   probe->last_length = length;
   probe->last_binary = binary;
   probe->last_byte = length ? ((const uint8_t *)data)[0] : 0u;
+  memset(probe->last_data, 0, sizeof(probe->last_data));
+  if (length != 0u) {
+    size_t copied = length < sizeof(probe->last_data) ?
+        length : sizeof(probe->last_data);
+    memcpy(probe->last_data, data, copied);
+  }
 }
 
 static void receive_webrtc_message_on_owner(void *arg1, void *arg2) {
   webrtc_receive_command *command = (webrtc_receive_command *)arg1;
   (void)arg2;
-  receive_test_packet(command->probe, command->ppid,
-                      command->bytes, command->length);
+  receive_test_fragment(
+      command->probe, command->stream_id, command->stream_sequence,
+      command->association_id, command->ppid, command->receive_flags,
+      command->callback_flags, command->bytes, command->length);
 }
 
-static void deliver_webrtc_message(channel_lease_probe *probe, uint32_t ppid,
-                                   const uint8_t *bytes, size_t length) {
-  webrtc_receive_command command = {probe, ppid, bytes, length};
+static void deliver_webrtc_fragment(
+    channel_lease_probe *probe, uint16_t stream_id, uint16_t stream_sequence,
+    sctp_assoc_t association_id, uint32_t ppid, uint16_t receive_flags,
+    int callback_flags, const uint8_t *bytes, size_t length) {
+  webrtc_receive_command command;
+  memset(&command, 0, sizeof(command));
+  command.probe = probe;
+  command.stream_id = stream_id;
+  command.stream_sequence = stream_sequence;
+  command.association_id = association_id;
+  command.ppid = ppid;
+  command.receive_flags = receive_flags;
+  command.callback_flags = callback_flags;
+  command.bytes = bytes;
+  command.length = length;
   assert(dc_peer_acquire(probe->peer) == 0);
   assert(dc_peer_post_owner_sync(probe->peer,
                                  receive_webrtc_message_on_owner,
                                  &command, NULL) == SALTS_OK);
   dc_peer_release(probe->peer);
+}
+
+static void deliver_webrtc_message(channel_lease_probe *probe, uint32_t ppid,
+                                   const uint8_t *bytes, size_t length) {
+  deliver_webrtc_fragment(probe, probe->sid, 0u, 0u, ppid, 0u, MSG_EOR,
+                           bytes, length);
 }
 
 static void test_webrtc_empty_ppid_framing(void) {
@@ -789,6 +832,163 @@ static void test_webrtc_empty_ppid_framing(void) {
          TURBO_DC_ERROR_SCTP_RECEIVE);
   deliver_webrtc_message(&probe, 52u, zero, sizeof(zero));
   assert(probe.messages == 3u);
+  assert(turbo_dc_peer_get_error(probe.peer).code ==
+         TURBO_DC_ERROR_SCTP_RECEIVE);
+
+  turbo_dc_channel_close(probe.channel);
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
+
+typedef struct sctp_notification_command {
+  turbo_dc_peer_t *peer;
+  const void *bytes;
+  size_t length;
+} sctp_notification_command;
+
+static void receive_sctp_notification_on_owner(void *arg1, void *arg2) {
+  sctp_notification_command *command = (sctp_notification_command *)arg1;
+  union sctp_sockstore address;
+  struct sctp_rcvinfo info;
+  void *packet = malloc(command->length);
+  (void)arg2;
+  assert(packet != NULL);
+  memcpy(packet, command->bytes, command->length);
+  memset(&address, 0, sizeof(address));
+  memset(&info, 0, sizeof(info));
+  assert(sctp_inbound_packet_cb(NULL, address, packet, command->length, info,
+                                MSG_NOTIFICATION, command->peer) == 1);
+}
+
+static void deliver_sctp_notification(turbo_dc_peer_t *peer,
+                                      const void *bytes, size_t length) {
+  sctp_notification_command command = {peer, bytes, length};
+  assert(dc_peer_acquire(peer) == 0);
+  assert(dc_peer_post_owner_sync(peer, receive_sctp_notification_on_owner,
+                                 &command, NULL) == SALTS_OK);
+  dc_peer_release(peer);
+}
+
+static void abort_partial_delivery(turbo_dc_peer_t *peer,
+                                   sctp_assoc_t association_id,
+                                   uint16_t stream_id,
+                                   uint16_t stream_sequence) {
+  struct sctp_pdapi_event event;
+  memset(&event, 0, sizeof(event));
+  event.pdapi_type = SCTP_PARTIAL_DELIVERY_EVENT;
+  event.pdapi_length = sizeof(event);
+  event.pdapi_indication = SCTP_PARTIAL_DELIVERY_ABORTED;
+  event.pdapi_stream = stream_id;
+  event.pdapi_seq = stream_sequence;
+  event.pdapi_assoc_id = association_id;
+  deliver_sctp_notification(peer, &event, sizeof(event));
+}
+
+static void reset_incoming_stream(turbo_dc_peer_t *peer,
+                                  sctp_assoc_t association_id,
+                                  uint16_t stream_id) {
+  uint8_t bytes[sizeof(struct sctp_stream_reset_event) + sizeof(uint16_t)];
+  struct sctp_stream_reset_event event;
+  memset(&event, 0, sizeof(event));
+  event.strreset_type = SCTP_STREAM_RESET_EVENT;
+  event.strreset_flags = SCTP_STREAM_RESET_INCOMING_SSN;
+  event.strreset_length = sizeof(bytes);
+  event.strreset_assoc_id = association_id;
+  memcpy(bytes, &event, sizeof(event));
+  memcpy(bytes + sizeof(event), &stream_id, sizeof(stream_id));
+  deliver_sctp_notification(peer, bytes, sizeof(bytes));
+}
+
+static void test_sctp_partial_delivery_reassembly(void) {
+  static const uint8_t first[] = {'a', 'b'};
+  static const uint8_t last[] = {'c', 'd'};
+  static const uint8_t one[] = {'x'};
+  static const uint8_t two[] = {'y'};
+  static const uint8_t valid[] = {'v'};
+  const sctp_assoc_t association_id = 77u;
+  turbo_dc_config_t config = {0};
+  channel_lease_probe probe = {0};
+  turbo_dc_context_t *ctx;
+  uint8_t *limit;
+  unsigned i;
+
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+  probe.channel = turbo_dc_channel_create(probe.peer, "fragmented", NULL);
+  assert(probe.channel != NULL);
+  probe.sid = turbo_dc_channel_get_id(probe.channel);
+  turbo_dc_channel_set_user_data(probe.channel, &probe);
+  turbo_dc_channel_on_message(probe.channel, observe_webrtc_message);
+  assert(dc_peer_acquire(probe.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe.peer, open_channel_on_owner,
+                                 &probe, NULL) == SALTS_OK);
+  dc_peer_release(probe.peer);
+  assert(turbo_dc_channel_is_open(probe.channel));
+
+  deliver_webrtc_fragment(&probe, probe.sid, 11u, association_id,
+                           SCTP_PPID_STRING, 0u, 0, first, sizeof(first));
+  assert(probe.messages == 0u);
+  deliver_webrtc_fragment(&probe, probe.sid, 11u, association_id,
+                           SCTP_PPID_STRING, 0u, MSG_EOR, last, sizeof(last));
+  assert(probe.messages == 1u && probe.last_length == 4u);
+  assert(memcmp(probe.last_data, "abcd", 4u) == 0);
+
+  /* PPID and other record identity are immutable until EOR. A mismatch drops
+   * the partial record and cannot contaminate the next complete message. */
+  deliver_webrtc_fragment(&probe, probe.sid, 12u, association_id,
+                           SCTP_PPID_STRING, 0u, 0, one, sizeof(one));
+  deliver_webrtc_fragment(&probe, probe.sid, 12u, association_id,
+                           SCTP_PPID_BINARY, 0u, MSG_EOR, two, sizeof(two));
+  assert(probe.messages == 1u);
+  assert(turbo_dc_peer_get_error(probe.peer).code ==
+         TURBO_DC_ERROR_SCTP_RECEIVE);
+  deliver_webrtc_fragment(&probe, probe.sid, 12u, association_id,
+                           SCTP_PPID_STRING, 0u, MSG_EOR,
+                           valid, sizeof(valid));
+  assert(probe.messages == 2u && probe.last_byte == 'v');
+
+  deliver_webrtc_fragment(&probe, probe.sid, 13u, association_id,
+                           SCTP_PPID_STRING, 0u, 0, one, sizeof(one));
+  abort_partial_delivery(probe.peer, association_id, probe.sid, 13u);
+  deliver_webrtc_fragment(&probe, probe.sid, 13u, association_id,
+                           SCTP_PPID_STRING, 0u, MSG_EOR, two, sizeof(two));
+  assert(probe.messages == 3u && probe.last_length == 1u &&
+         probe.last_byte == 'y');
+
+  deliver_webrtc_fragment(&probe, probe.sid, 14u, association_id,
+                           SCTP_PPID_STRING, 0u, 0, one, sizeof(one));
+  reset_incoming_stream(probe.peer, association_id, probe.sid);
+  deliver_webrtc_fragment(&probe, probe.sid, 14u, association_id,
+                           SCTP_PPID_STRING, 0u, MSG_EOR, two, sizeof(two));
+  assert(probe.messages == 4u && probe.last_length == 1u &&
+         probe.last_byte == 'y');
+
+  limit = (uint8_t *)malloc(SCTP_REASSEMBLY_MESSAGE_MAX);
+  assert(limit != NULL);
+  memset(limit, 'z', SCTP_REASSEMBLY_MESSAGE_MAX);
+  deliver_webrtc_fragment(&probe, probe.sid, 15u, association_id,
+                           SCTP_PPID_STRING, 0u, 0, limit,
+                           SCTP_REASSEMBLY_MESSAGE_MAX);
+  deliver_webrtc_fragment(&probe, probe.sid, 15u, association_id,
+                           SCTP_PPID_STRING, 0u, MSG_EOR, one, sizeof(one));
+  free(limit);
+  assert(probe.messages == 4u);
+  assert(turbo_dc_peer_get_error(probe.peer).code ==
+         TURBO_DC_ERROR_SCTP_RECEIVE);
+
+  /* Fill every bounded slot. The ninth record is rejected, and Peer teardown
+   * must release all eight retained 24 KiB buffers (covered again by ASan). */
+  for (i = 0u; i < SCTP_REASSEMBLY_SLOTS; ++i) {
+    deliver_webrtc_fragment(&probe, (uint16_t)(100u + i), (uint16_t)i,
+                             association_id, SCTP_PPID_STRING, 0u, 0,
+                             one, sizeof(one));
+  }
+  deliver_webrtc_fragment(&probe, 200u, 200u, association_id,
+                           SCTP_PPID_STRING, 0u, 0, one, sizeof(one));
   assert(turbo_dc_peer_get_error(probe.peer).code ==
          TURBO_DC_ERROR_SCTP_RECEIVE);
 
@@ -896,6 +1096,7 @@ int main(void) {
   test_native_timer_does_not_wait_for_owner();
   test_dcep_reentrant_close_keeps_channel_until_return();
   test_webrtc_empty_ppid_framing();
+  test_sctp_partial_delivery_reassembly();
   test_sctp_callback_retains_closed_channel();
   puts("Production DataChannel Peer owner/drain contract PASS");
   return 0;
