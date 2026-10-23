@@ -549,6 +549,10 @@ static uint16_t g_channel_send_sid;
 static uint32_t g_channel_send_ppid;
 static size_t g_channel_send_length;
 static uint8_t g_channel_send_first_byte;
+static uint16_t g_channel_send_snd_flags;
+static unsigned int g_channel_sendv_flags;
+static uint16_t g_channel_send_pr_policy;
+static uint32_t g_channel_send_pr_value;
 
 ssize_t turbo_media_test_channel_sendv(
     struct socket *socket, const void *data, size_t length,
@@ -565,12 +569,20 @@ ssize_t turbo_media_test_channel_sendv(
   g_channel_send_ppid = ntohl(spa->sendv_sndinfo.snd_ppid);
   g_channel_send_length = length;
   g_channel_send_first_byte = ((const uint8_t *)data)[0];
+  g_channel_send_snd_flags = spa->sendv_sndinfo.snd_flags;
+  g_channel_sendv_flags = spa->sendv_flags;
+  g_channel_send_pr_policy = spa->sendv_prinfo.pr_policy;
+  g_channel_send_pr_value = spa->sendv_prinfo.pr_value;
   return (ssize_t)length;
 }
 #endif
 
 #ifdef TURBO_MEDIA_TEST_DCEP_SENDV
 static unsigned g_dcep_ack_admissions;
+static unsigned g_dcep_send_calls;
+static uint16_t g_dcep_send_sid;
+static size_t g_dcep_send_length;
+static uint8_t g_dcep_send_bytes[DCEP_MAX_PACKET_SIZE];
 
 ssize_t turbo_media_test_dcep_sendv(
     struct socket *socket, const void *data, size_t length,
@@ -578,15 +590,18 @@ ssize_t turbo_media_test_dcep_sendv(
     socklen_t info_length, unsigned int info_type, int flags) {
   const struct sctp_sendv_spa *spa = (const struct sctp_sendv_spa *)info;
   assert(socket != NULL);
-  assert(data != NULL && length == 1u);
-  assert(((const uint8_t *)data)[0] == DCEP_DATA_CHANNEL_ACK);
+  assert(data != NULL && length > 0u && length <= sizeof(g_dcep_send_bytes));
   assert(address == NULL && address_count == 0);
   assert(spa != NULL && info_length == sizeof(*spa));
   assert(info_type == SCTP_SENDV_SPA && flags == 0);
   assert((spa->sendv_flags & SCTP_SEND_SNDINFO_VALID) != 0);
-  assert(spa->sendv_sndinfo.snd_sid == 0u);
   assert(ntohl(spa->sendv_sndinfo.snd_ppid) == SCTP_PPID_DCEP);
-  ++g_dcep_ack_admissions;
+  ++g_dcep_send_calls;
+  g_dcep_send_sid = spa->sendv_sndinfo.snd_sid;
+  g_dcep_send_length = length;
+  memcpy(g_dcep_send_bytes, data, length);
+  if (length == 1u && ((const uint8_t *)data)[0] == DCEP_DATA_CHANNEL_ACK)
+    ++g_dcep_ack_admissions;
   return (ssize_t)length;
 }
 #endif
@@ -702,6 +717,117 @@ static void test_dcep_reentrant_close_keeps_channel_until_return(void) {
   cmeta_mutex_unlock(&probe.peer->operation_mutex);
   dc_peer_release(probe.peer);
   turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
+typedef struct dcep_policy_probe {
+  unsigned channels;
+  uint16_t stream_ids[2];
+  turbo_dc_channel_config_t configs[2];
+} dcep_policy_probe;
+
+static size_t make_dcep_open(uint8_t *packet, size_t capacity,
+                             uint8_t channel_type, uint32_t reliability,
+                             uint8_t label) {
+  assert(packet != NULL && capacity >= 13u);
+  memset(packet, 0, 13u);
+  packet[0] = DCEP_DATA_CHANNEL_OPEN;
+  packet[1] = channel_type;
+  put_be32(packet + 4u, reliability);
+  put_be16(packet + 8u, 1u);
+  packet[12] = label;
+  return 13u;
+}
+
+static void observe_dcep_policy(turbo_dc_peer_t *peer,
+                                turbo_dc_channel_t *channel, void *opaque) {
+  dcep_policy_probe *probe = (dcep_policy_probe *)opaque;
+  unsigned index;
+  assert(peer != NULL && channel != NULL && probe != NULL);
+  assert(dc_peer_is_on_transport_owner(peer));
+  index = probe->channels;
+  assert(index < 2u);
+  probe->stream_ids[index] = channel->id;
+  probe->configs[index] = channel->config;
+  ++probe->channels;
+  turbo_dc_channel_close(channel);
+}
+
+static void test_incoming_dcep_uses_full_reliability_parameter(void) {
+  turbo_dc_config_t config = {0};
+  channel_lease_probe lease = {0};
+  dcep_policy_probe policy = {0};
+  turbo_dc_context_t *ctx;
+  uint8_t packet[14];
+  size_t length;
+  unsigned sends;
+
+  /* Local DTLS server receives even SIDs from the remote DTLS client. */
+  config.is_server = 1;
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  lease.peer = turbo_dc_peer_create(ctx, NULL, 0u, &policy);
+  assert(lease.peer != NULL);
+  turbo_dc_peer_on_channel(lease.peer, observe_dcep_policy);
+
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  g_dcep_ack_admissions = 0u;
+  g_dcep_send_calls = 0u;
+#endif
+  length = make_dcep_open(packet, sizeof(packet), DCEP_CHANNEL_REXMIT,
+                          70000u, 'r');
+  receive_test_fragment(&lease, 0u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
+                        packet, length);
+  assert(policy.channels == 1u);
+  assert(policy.stream_ids[0] == 0u);
+  assert(policy.configs[0].ordered);
+  assert(policy.configs[0].max_retransmits == 70000);
+  assert(policy.configs[0].max_lifetime_ms == 0);
+
+  length = make_dcep_open(packet, sizeof(packet),
+                          DCEP_CHANNEL_RELIABLE_UNORDERED |
+                              DCEP_CHANNEL_TIMED,
+                          70001u, 't');
+  receive_test_fragment(&lease, 2u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
+                        packet, length);
+  assert(policy.channels == 2u);
+  assert(policy.stream_ids[1] == 2u);
+  assert(!policy.configs[1].ordered);
+  assert(policy.configs[1].max_retransmits == 0);
+  assert(policy.configs[1].max_lifetime_ms == 70001);
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  assert(g_dcep_ack_admissions == 2u);
+  assert(g_dcep_send_calls == 2u);
+  assert(g_dcep_send_sid == 2u);
+#endif
+
+  /* Wrong DTLS-role parity, trailing bytes, and a value the public signed-int
+   * config cannot represent are rejected before ACK or publication. */
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  sends = g_dcep_send_calls;
+#else
+  sends = 0u;
+#endif
+  length = make_dcep_open(packet, sizeof(packet), DCEP_CHANNEL_REXMIT,
+                          3u, 'p');
+  receive_test_fragment(&lease, 1u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
+                        packet, length);
+  packet[length] = 0u;
+  receive_test_fragment(&lease, 4u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
+                        packet, length + 1u);
+  length = make_dcep_open(packet, sizeof(packet), DCEP_CHANNEL_REXMIT,
+                          UINT32_C(0x80000000), 'o');
+  receive_test_fragment(&lease, 4u, 0u, 0u, SCTP_PPID_DCEP, 0u, MSG_EOR,
+                        packet, length);
+  assert(policy.channels == 2u);
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  assert(g_dcep_send_calls == sends);
+#else
+  (void)sends;
+#endif
+
+  turbo_dc_peer_destroy(lease.peer);
   turbo_dc_context_destroy(ctx);
 }
 
@@ -1039,6 +1165,120 @@ static void open_channel_on_owner(void *arg1, void *arg2) {
   receive_test_packet(probe, SCTP_PPID_DCEP, ack, sizeof(ack));
 }
 
+typedef struct dcep_open_command {
+  turbo_dc_channel_t *channel;
+  int result;
+} dcep_open_command;
+
+static void send_dcep_open_on_owner(void *arg1, void *arg2) {
+  dcep_open_command *command = (dcep_open_command *)arg1;
+  (void)arg2;
+  assert(command != NULL && command->channel != NULL);
+  command->result = dcep_send_open(command->channel);
+}
+
+static void test_outgoing_dcep_and_prinfo_use_full_policy(void) {
+  static const uint8_t payload[] = {'p'};
+  turbo_dc_config_t config = {0};
+  turbo_dc_channel_config_t channel_config = {0};
+  channel_lease_probe probe = {0};
+  dcep_open_command command = {0};
+  turbo_dc_context_t *ctx;
+  turbo_dc_channel_t *retransmit;
+  turbo_dc_channel_t *timed;
+
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  probe.peer = turbo_dc_peer_create(ctx, NULL, 0u, &probe);
+  assert(probe.peer != NULL);
+
+  channel_config.ordered = 0;
+  channel_config.max_retransmits = 70000;
+  retransmit = turbo_dc_channel_create(probe.peer, "retransmit",
+                                       &channel_config);
+  assert(retransmit != NULL);
+  command.channel = retransmit;
+  command.result = -1;
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  g_dcep_send_calls = 0u;
+#endif
+  assert(dc_peer_post_owner_sync(probe.peer, send_dcep_open_on_owner,
+                                 &command, NULL) == SALTS_OK);
+  assert(command.result == 0);
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  assert(g_dcep_send_calls == 1u);
+  assert(g_dcep_send_sid == retransmit->id);
+  assert(g_dcep_send_length == 22u);
+  assert(g_dcep_send_bytes[0] == DCEP_DATA_CHANNEL_OPEN);
+  assert(g_dcep_send_bytes[1] ==
+         (DCEP_CHANNEL_RELIABLE_UNORDERED | DCEP_CHANNEL_REXMIT));
+  assert(get_be32(g_dcep_send_bytes + 4u) == 70000u);
+  assert(get_be16(g_dcep_send_bytes + 8u) == 10u);
+  assert(get_be16(g_dcep_send_bytes + 10u) == 0u);
+#endif
+  probe.channel = retransmit;
+  probe.sid = retransmit->id;
+  assert(dc_peer_post_owner_sync(probe.peer, open_channel_on_owner,
+                                 &probe, NULL) == SALTS_OK);
+  assert(turbo_dc_channel_is_open(retransmit));
+#ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
+  g_channel_send_calls = 0u;
+#endif
+  assert(turbo_dc_channel_send(retransmit, payload, sizeof(payload), 0) == 0);
+#ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
+  assert(g_channel_send_calls == 1u);
+  assert(g_channel_send_sid == retransmit->id);
+  assert((g_channel_send_snd_flags & SCTP_UNORDERED) != 0u);
+  assert((g_channel_sendv_flags & SCTP_SEND_PRINFO_VALID) != 0u);
+  assert(g_channel_send_pr_policy == SCTP_PR_SCTP_RTX);
+  assert(g_channel_send_pr_value == 70000u);
+#endif
+
+  memset(&channel_config, 0, sizeof(channel_config));
+  channel_config.ordered = 1;
+  channel_config.max_lifetime_ms = 70001;
+  timed = turbo_dc_channel_create(probe.peer, "timed", &channel_config);
+  assert(timed != NULL);
+  command.channel = timed;
+  command.result = -1;
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  g_dcep_send_calls = 0u;
+#endif
+  assert(dc_peer_post_owner_sync(probe.peer, send_dcep_open_on_owner,
+                                 &command, NULL) == SALTS_OK);
+  assert(command.result == 0);
+#ifdef TURBO_MEDIA_TEST_DCEP_SENDV
+  assert(g_dcep_send_calls == 1u);
+  assert(g_dcep_send_sid == timed->id);
+  assert(g_dcep_send_length == 17u);
+  assert(g_dcep_send_bytes[1] == DCEP_CHANNEL_TIMED);
+  assert(get_be32(g_dcep_send_bytes + 4u) == 70001u);
+#endif
+  probe.channel = timed;
+  probe.sid = timed->id;
+  assert(dc_peer_post_owner_sync(probe.peer, open_channel_on_owner,
+                                 &probe, NULL) == SALTS_OK);
+  assert(turbo_dc_channel_is_open(timed));
+#ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
+  g_channel_send_calls = 0u;
+#endif
+  assert(turbo_dc_channel_send(timed, payload, sizeof(payload), 1) == 0);
+#ifdef TURBO_MEDIA_TEST_CHANNEL_SENDV
+  assert(g_channel_send_calls == 1u);
+  assert(g_channel_send_sid == timed->id);
+  assert((g_channel_send_snd_flags & SCTP_UNORDERED) == 0u);
+  assert((g_channel_sendv_flags & SCTP_SEND_PRINFO_VALID) != 0u);
+  assert(g_channel_send_pr_policy == SCTP_PR_SCTP_TTL);
+  assert(g_channel_send_pr_value == 70001u);
+#endif
+  turbo_dc_channel_close(retransmit);
+  turbo_dc_channel_close(timed);
+
+  turbo_dc_peer_destroy(probe.peer);
+  turbo_dc_context_destroy(ctx);
+}
+
 static void test_sctp_callback_retains_closed_channel(void) {
   turbo_dc_config_t config = {0};
   channel_lease_probe probe = {0};
@@ -1107,8 +1347,10 @@ int main(void) {
   test_terminal_state_publication(1);
   test_native_timer_does_not_wait_for_owner();
   test_dcep_reentrant_close_keeps_channel_until_return();
+  test_incoming_dcep_uses_full_reliability_parameter();
   test_webrtc_empty_ppid_framing();
   test_sctp_partial_delivery_reassembly();
+  test_outgoing_dcep_and_prinfo_use_full_policy();
   test_sctp_callback_retains_closed_channel();
   puts("Production DataChannel Peer owner/drain contract PASS");
   return 0;
