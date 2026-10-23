@@ -2078,7 +2078,6 @@ static int dc_channel_open_owner_impl(turbo_dc_channel_t *channel) {
         return -1;
     }
 
-    channel->dcep_sent = 1;
     TLOG_INFOF("DCEP OPEN queued sid={} label='{}'", channel->id, channel->label ? channel->label : "");
     return 0;
 }

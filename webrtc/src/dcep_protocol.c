@@ -225,13 +225,17 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
         if (on_open) on_open(channel, callback_data);
         dc_channel_release(channel);
     }
-    else if (msg_type == DCEP_DATA_CHANNEL_ACK) {
+    else if (msg_type == DCEP_DATA_CHANNEL_ACK && len == 1u) {
         turbo_dc_channel_t *channel = dc_channel_admit(peer, stream_id);
         if (channel) {
             turbo_dc_open_cb on_open = NULL;
             void *callback_data;
             cmeta_mutex_lock(&peer->operation_mutex);
-            if (!channel->closing && !peer->destroying && !channel->is_open) {
+            /* RFC 8832 ACK is valid only for a locally initiated channel
+             * whose OPEN was accepted by SCTP. A channel merely allocated in
+             * the public map is not yet waiting for an ACK. */
+            if (!channel->closing && !peer->destroying &&
+                channel->dcep_sent && !channel->is_open) {
                 channel->is_open = 1;
                 on_open = channel->on_open;
             }
@@ -305,7 +309,9 @@ int dcep_send_open(turbo_dc_channel_t *channel) {
     TLOG_INFOF("DCEP OPEN send sid={} bytes={} ret={} errno={}",
               channel->id, packet_len, (int)sent, errno);
 
-    return sent == (ssize_t)packet_len ? 0 : -1;
+    if (sent != (ssize_t)packet_len) return -1;
+    channel->dcep_sent = 1;
+    return 0;
 }
 
 int dcep_send_ack(turbo_dc_peer_t *peer, uint16_t stream_id) {
