@@ -112,9 +112,25 @@ void dcep_handle_message(turbo_dc_peer_t *peer, uint16_t stream_id,
          * cnet_sctp_dcep_input()/cnet_sctp_dcep_ack_admitted() contract. */
         if (dcep_send_ack(peer, stream_id) != 0) {
             /* The Channel was reserved only to reject duplicate OPEN while
-             * admitting the ACK. Reuse the canonical close/lease path to
-             * unpublish it and retire the SID without exposing callbacks. */
-            turbo_dc_channel_close(channel);
+             * admitting the ACK. Roll it back inside the already admitted
+             * DCEP operation: a public Close could itself be rejected after
+             * Peer destruction begins and would leave this private record
+             * published. No application callback has observed the Channel. */
+            int reset_stream = 0;
+            cmeta_mutex_lock(&peer->operation_mutex);
+            if (!channel->closing) {
+                channel->closing = 1;
+                channel->is_open = 0;
+                if (peer_get_channel(peer, stream_id) == channel)
+                    peer_remove_channel(peer, stream_id);
+                reset_stream = !peer->destroying && peer->sctp.socket != NULL;
+            }
+            cmeta_mutex_unlock(&peer->operation_mutex);
+            if (reset_stream &&
+                sctp_reset_channel_stream(peer, stream_id) != 0) {
+                dc_set_peer_error(peer, TURBO_DC_ERROR_SCTP_SEND,
+                                  "rejected DCEP stream reset failed");
+            }
             dc_channel_release(channel);
             dc_set_peer_error(peer, TURBO_DC_ERROR_DCEP_SEND_ACK,
                               "incoming DCEP OPEN ACK was not admitted");
