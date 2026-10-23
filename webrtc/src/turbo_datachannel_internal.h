@@ -92,6 +92,7 @@ typedef struct {
     uint32_t ppid;
     sctp_assoc_t association_id;
     uint8_t unordered;
+    uint8_t discarding;
     uint8_t used;
 } sctp_reassembly_slot_t;
 
@@ -99,6 +100,7 @@ typedef struct {
 typedef struct {
     struct socket *socket;
     int connected;
+    int reassembly_blocked;
     sctp_reassembly_slot_t reassembly[SCTP_REASSEMBLY_SLOTS];
 } sctp_session_t;
 
