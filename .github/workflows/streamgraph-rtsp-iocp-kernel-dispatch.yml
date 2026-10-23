@@ -10,7 +10,9 @@ name: M15d real RTSP Windows IOCP dequeue cancellation #192
       - 'media/rtsp/**'
       - 'network/**'
       - 'CMakeLists.txt'
-      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'cmake/TurboMediaIOCPKernelTest.cmake'
+      - 'cmake/ci/**'
+      - '.github/actions/setup-native-deps/**'
   pull_request:
     paths:
       - 'cmake/ci/m16-sdk-lock.json'
@@ -20,7 +22,9 @@ name: M15d real RTSP Windows IOCP dequeue cancellation #192
       - 'media/rtsp/**'
       - 'network/**'
       - 'CMakeLists.txt'
-      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'cmake/TurboMediaIOCPKernelTest.cmake'
+      - 'cmake/ci/**'
+      - '.github/actions/setup-native-deps/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -29,13 +33,13 @@ concurrency:
   group: m15d-rtsp-real-iocp-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 env:
-  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+  X_VCPKG_NUGET_ID_PREFIX: turbomedia-media
   SALTS_KERNEL_TEST_SHA: 8f448202367c93c04b8981085ee3f07c538ac330
 jobs:
   windows-kernel:
     name: Genuine GQCS IOCP Owner vs released CNet RTSP Server
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 20
     steps:
       - name: Checkout same HEAD TurboMedia
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -48,19 +52,16 @@ jobs:
           ref: 8f448202367c93c04b8981085ee3f07c538ac330
           path: build/m15d-private-nativeio
           persist-credentials: false
-      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
-        with:
-          mode: read
-      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
-        with:
-          dotnet-version: '8.0.x'
+      - uses: ./.github/actions/setup-native-deps
 
       - name: Prepare Windows x64 MSVC native build tools
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          choco install ninja nasm strawberryperl -y --no-progress
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Ninja installation failed' }
+          }
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vs)) { throw 'MSVC x64 missing' }
@@ -88,24 +89,26 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./cmake/ci/restore-turbomedia-platform-deps.ps1 -Rid windows-x64
 
-      - name: Restore unrelated third-party packages cache-only
+      - name: Restore only RTSP dependencies cache-only
+        timeout-minutes: 5
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
           $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
-          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
-          $vcpkg = Join-Path $env:VCPKG_ROOT 'vcpkg.exe'
-          & $vcpkg install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=x64-windows' --only-binarycaching
+          python cmake/ci/github_packages.py media --triplet x64-windows --scope rtsp-iocp --installed "$installed"
           if ($LASTEXITCODE -ne 0) { throw 'Cache-only Windows media dependency restore failed' }
 
       - name: Compile original private IOCP backend against real RTSP/CNet Server
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $build = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-rtsp-iocp'
           $original = Join-Path $env:GITHUB_WORKSPACE 'build/m15d-private-nativeio'
           $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
-          $cmakeArgs = @('-S', '.', '-B', $build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON', "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE", '-DVCPKG_TARGET_TRIPLET=x64-windows', '-DVCPKG_MANIFEST_MODE=OFF', "-DVCPKG_INSTALLED_DIR=$installed", "-DTM_M15D_IOCP_KERNEL_SOURCE_ROOT=$original")
+          $cmakeArgs = @('-S', '.', '-B', $build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON', "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE", '-DVCPKG_TARGET_TRIPLET=x64-windows', '-DVCPKG_MANIFEST_MODE=OFF', "-DVCPKG_INSTALLED_DIR=$installed", '-DTM_M15D_IOCP_KERNEL_ONLY=ON', "-DTM_M15D_IOCP_KERNEL_SOURCE_ROOT=$original")
           & cmake @cmakeArgs
           if ($LASTEXITCODE -ne 0) { throw 'Exact private IOCP configure failed' }
           & cmake --build $build --target turbo_media_rtsp_nativeio_iocp_dispatch --parallel 2
@@ -129,6 +132,7 @@ jobs:
           }
 
       - name: Run real Windows GQCS dequeue versus Owner cancel 12 times
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'

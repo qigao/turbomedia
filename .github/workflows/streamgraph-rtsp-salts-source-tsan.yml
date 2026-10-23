@@ -10,7 +10,8 @@ name: M15d RTSP Salts full-source TSan #1170
       - 'media/rtsp/**'
       - 'network/**'
       - 'streamgraph/**'
-      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'cmake/ci/**'
+      - '.github/actions/setup-native-deps/**'
       - 'CMakeLists.txt'
   pull_request:
     paths:
@@ -20,7 +21,8 @@ name: M15d RTSP Salts full-source TSan #1170
       - 'media/rtsp/**'
       - 'network/**'
       - 'streamgraph/**'
-      - 'cmake/ci/restore-turbomedia-platform-deps.ps1'
+      - 'cmake/ci/**'
+      - '.github/actions/setup-native-deps/**'
       - 'CMakeLists.txt'
   workflow_dispatch:
 
@@ -58,13 +60,7 @@ jobs:
           path: build/m15d-salts-source
           persist-credentials: false
 
-      - uses: qigao/vcpkg-cache/.github/actions/setup-vcpkg-cache@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
-        with:
-          mode: read
-      - uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@d4afc8cd2f5ed3585c1e26469e379a087ce9ecf3
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
-        with:
-          dotnet-version: '8.0.x'
+      - uses: ./.github/actions/setup-native-deps
 
       - name: Prepare source build tools and immutable provenance
         shell: bash
@@ -92,12 +88,12 @@ jobs:
 
       - name: Restore TurboMedia third-party binary packages
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Stop'
           $installed = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
-          $vcpkg = Join-Path $env:VCPKG_ROOT 'vcpkg'
-          Remove-Item -LiteralPath $installed -Recurse -Force -ErrorAction SilentlyContinue
-          & $vcpkg install '--x-manifest-root=.' "--x-install-root=$installed" '--triplet=x64-linux' --only-binarycaching
+          python cmake/ci/github_packages.py media --triplet x64-linux --installed "$installed"
           if ($LASTEXITCODE -ne 0) { throw 'binary-only media dependencies unavailable' }
 
       - name: Build and install exact release-tag Salts Core / CNet with TSan

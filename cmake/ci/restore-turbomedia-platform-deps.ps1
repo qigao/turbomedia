@@ -12,23 +12,7 @@ foreach ($required in @("GITHUB_TOKEN", "RUNNER_TEMP", "GITHUB_ENV", "GITHUB_PAT
   }
 }
 
-$config = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk.config"
-$project = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk.csproj"
 $packages = Join-Path $env:RUNNER_TEMP "turbomedia-platform-sdk-packages"
-if (Test-Path -LiteralPath $packages) {
-  Remove-Item -LiteralPath $packages -Recurse -Force
-}
-
-'<configuration><packageSources><clear /></packageSources></configuration>' |
-  Set-Content -LiteralPath $config -Encoding utf8
-
-dotnet nuget add source https://nuget.pkg.github.com/qigao/index.json `
-  --name github `
-  --username qigao `
-  --password $env:GITHUB_TOKEN `
-  --store-password-in-clear-text `
-  --configfile $config
-if ($LASTEXITCODE -ne 0) { throw "failed to configure GitHub Packages source" }
 
 # M16: enforce the observed release graph, not the latest mutable RC.
 # The checked-in lock is review-candidate scoped; updating it needs a new
@@ -141,31 +125,8 @@ foreach ($version in @($saltsVersion, $saltsUtilsVersion)) {
 Write-Host "Official SDK graph: Salts.Native $saltsVersion, SaltsUtils.Native $saltsUtilsVersion, SaltsNet.Native $saltsNetVersion, CHttp.Native $chttpVersion, RulesForge.Native $rulesForgeVersion"
 
 $desktopServices = $Rid -eq "linux-x64" -or $Rid -eq "windows-x64"
-$desktopReference = if ($desktopServices) {
-@"
-    <PackageReference Include="RulesForge.Native" Version="[$rulesForgeVersion]" />
-"@
-} else {
-  ""
-}
-
-@"
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-  </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="Salts.Native" Version="[$saltsVersion]" />
-    <PackageReference Include="SaltsUtils.Native" Version="[$saltsUtilsVersion]" />
-    <PackageReference Include="SaltsNet.Native" Version="[$saltsNetVersion]" />
-    <PackageReference Include="CHttp.Native" Version="[$chttpVersion]" />
-$desktopReference
-  </ItemGroup>
-</Project>
-"@ | Set-Content -LiteralPath $project -Encoding utf8
-
-dotnet restore $project --configfile $config --packages $packages --no-cache --force-evaluate
-if ($LASTEXITCODE -ne 0) { throw "platform SDK restore failed" }
+& python (Join-Path $PSScriptRoot "github_packages.py") sdk --rid $Rid
+if ($LASTEXITCODE -ne 0) { throw "curl platform SDK restore failed" }
 
 # Byte-for-byte NuGet provenance: reject registry or package re-packing,
 # transitive version drift, missing original nupkg, or stale cache copies.

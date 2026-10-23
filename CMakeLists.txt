@@ -9,6 +9,13 @@ project(
   VERSION 2.0.0
   LANGUAGES C CXX)
 
+option(TM_M15D_IOCP_KERNEL_ONLY
+       "Build only the real RTSP/CNet and private IOCP conformance graph" OFF)
+if(TM_M15D_IOCP_KERNEL_ONLY AND
+   (NOT WIN32 OR CMAKE_CROSSCOMPILING OR NOT TM_M15D_IOCP_KERNEL_SOURCE_ROOT))
+  message(FATAL_ERROR "Focused IOCP qualification requires native Windows and exact private source")
+endif()
+
 # Server/service targets are a desktop platform capability, not a product
 # profile selected by the caller.
 set(TURBO_MEDIA_HAS_DESKTOP_SERVICES OFF)
@@ -131,6 +138,13 @@ find_package(Chttp CONFIG REQUIRED
 if(NOT TARGET CHttp::Client OR NOT TARGET CHttp::Server)
   message(FATAL_ERROR
           "TurboMedia requires CHttp Client and Server targets")
+endif()
+if(TM_M15D_IOCP_KERNEL_ONLY)
+  find_package(OpenSSL REQUIRED)
+  add_subdirectory(network)
+  add_subdirectory(media/rtsp)
+  include("${PROJECT_SOURCE_DIR}/cmake/TurboMediaIOCPKernelTest.cmake")
+  return()
 endif()
 if(TURBO_MEDIA_HAS_DESKTOP_SERVICES)
   find_package(RulesForge CONFIG REQUIRED
