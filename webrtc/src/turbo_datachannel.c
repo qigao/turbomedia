@@ -1959,10 +1959,22 @@ static turbo_dc_channel_t *dc_channel_create_owner_impl(
     const turbo_dc_channel_config_t *config) {
     turbo_dc_channel_t *channel;
     uint16_t channel_id;
+    size_t label_length;
+    size_t protocol_length = 0u;
     if (!peer || !label) return NULL;
     if (peer->ctx && peer->ctx->disable_sctp) {
         dc_set_peer_error(peer, TURBO_DC_ERROR_INVALID_PEER_STATE,
                           "data channels are disabled for this DTLS transport");
+        return NULL;
+    }
+    label_length = strlen(label);
+    if (config && config->protocol) protocol_length = strlen(config->protocol);
+    if (label_length > MAX_LABEL_LEN || protocol_length > MAX_PROTOCOL_LEN ||
+        !dcep_text_valid((const uint8_t *)label, label_length) ||
+        !dcep_text_valid((const uint8_t *)(config ? config->protocol : NULL),
+                         protocol_length)) {
+        dc_set_peer_error(peer, TURBO_DC_ERROR_INVALID_PEER_STATE,
+                          "invalid data channel label or protocol");
         return NULL;
     }
     cmeta_mutex_lock(&peer->operation_mutex);
