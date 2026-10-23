@@ -342,7 +342,29 @@ def producer_environment(config):
     os.environ["VCPKG_BINARY_SOURCES"] += f";nugetconfig,{config},write"
 
 
-def media(triplet, installed, producer=False):
+def media_manifest(scope, destination):
+    """A focused test inherits the product's baseline, overrides and overlays."""
+    if scope == "media":
+        return REPO
+    if scope != "rtsp-iocp":
+        raise ValueError(f"unknown media scope: {scope}")
+    product = json.loads((REPO / "vcpkg.json").read_text())
+    required = {"boringssl", "gmssl", "llhttp"}
+    product["dependencies"] = [d for d in product["dependencies"]
+                               if (d if isinstance(d, str) else d["name"]) in required]
+    if {d if isinstance(d, str) else d["name"] for d in product["dependencies"]} != required:
+        raise ValueError("product manifest lacks an RTSP dependency")
+    config = json.loads((REPO / "vcpkg-configuration.json").read_text())
+    for key in ("overlay-ports", "overlay-triplets"):
+        if key in config:
+            config[key] = [str((REPO / path).resolve()) for path in config[key]]
+    destination.mkdir()
+    (destination / "vcpkg.json").write_text(json.dumps(product), encoding="utf-8")
+    (destination / "vcpkg-configuration.json").write_text(json.dumps(config), encoding="utf-8")
+    return destination
+
+
+def media(triplet, installed, producer=False, scope="media"):
     if producer and (os.name != "nt" or triplet != "x64-windows"):
         raise ValueError("the explicit media producer requires x64-windows on Windows")
     # Windows production and consumption share this repository's own packages.
@@ -355,11 +377,13 @@ def media(triplet, installed, producer=False):
     shutil.rmtree(cache, ignore_errors=True)
     cache.mkdir(parents=True)
     vcpkg = Path(os.environ["VCPKG_ROOT"]) / ("vcpkg.exe" if os.name == "nt" else "vcpkg")
-    args = [vcpkg, "install", f"--x-manifest-root={REPO}",
-            f"--x-install-root={installed}", f"--triplet={triplet}"]
     os.environ["VCPKG_BINARY_SOURCES"] = f"clear;files,{cache},readwrite"
     with tempfile.TemporaryDirectory(prefix="tm-media-", dir=os.environ["RUNNER_TEMP"]) as tmp:
         tmp = Path(tmp)
+        manifest = media_manifest(scope, tmp / "manifest")
+        args = [vcpkg, "install", f"--x-manifest-root={manifest}",
+                f"--x-install-root={installed}", f"--triplet={triplet}"]
+        print(f"Restore scope={scope}; namespace={prefix}; producer={producer}", flush=True)
         plan = tmp / "packages.config"
         # This pinned tool's NuGet provider appends '_' to the configured prefix,
         # while packages.config generation takes the raw prefix unchanged.
@@ -394,7 +418,7 @@ def media(triplet, installed, producer=False):
             run_producer(args)
         else:
             run([*args, "--only-binarycaching"])
-    print(f"Media closure: {len(entries)} exact ABI packages; producer={producer}", flush=True)
+    print(f"Media closure: {len(entries)} exact ABI packages; scope={scope}; producer={producer}", flush=True)
 
 
 def main():
@@ -407,13 +431,14 @@ def main():
     native.add_argument("--triplet", required=True)
     native.add_argument("--installed", type=Path, required=True)
     native.add_argument("--produce", action="store_true")
+    native.add_argument("--scope", choices=("media", "rtsp-iocp"), default="media")
     args = parser.parse_args()
     if args.command == "sdk":
         restore_sdks(args.rid)
     elif args.command == "re2c":
         restore_re2c()
     else:
-        media(args.triplet, args.installed, args.produce)
+        media(args.triplet, args.installed, args.produce, args.scope)
 
 
 if __name__ == "__main__":

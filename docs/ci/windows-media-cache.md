@@ -6,7 +6,11 @@ existing shared `vcpkg-cache_*` packages on other platforms, read-only with
 normal builds do not compile dependencies or publish cache entries.
 
 The separate `Windows media binary cache` workflow owns production of this
-repository's media dependency closure. This follows the infrastructure
+repository's dependency closures. PR runs produce and independently restore
+only the focused `rtsp-iocp` closure: BoringSSL, GmSSL, llhttp and their build
+tools. Use `workflow_dispatch` with `scope=media` to produce the full 27-package
+media closure needed by Platform Build. A focused success does not qualify
+the full media cache or Platform Build. This follows the infrastructure
 repository's [product-owned producer policy](https://github.com/qigao/vcpkg-cache/blob/2e214ae44a3e3244eded5db6361194576356fc9e/README.md#product-owned-cache-production).
 It uses this repository's
 manifest, overlays and triplet, and the same locked shared infrastructure snapshot, vcpkg scripts
@@ -36,6 +40,18 @@ there is no read fallback to shared Windows packages. Namespace selection does
 not change the locked build recipe or ABI validation. A rejected publication
 or cache-only restore remains a failure, and normal builds never produce
 dependencies. Only a successful clean L2 restore qualifies publication.
+
+## Focused Windows IOCP qualification
+
+The IOCP job restores only `--scope rtsp-iocp`, derived from the product
+manifest with the same baseline, dependency versions, overrides and absolute
+overlay paths. It configures `TM_M15D_IOCP_KERNEL_ONLY=ON` to build the real
+RTSP component, CNet adapter and private original IOCP test target. The shared
+test definition is used by both focused and full builds. Codec/FFmpeg/SRTP
+discovery and the rest of the product graph are excluded from this job.
+The exact Salts source check, compile-command hook checks and all 12 real
+GQCS/cancellation repetitions remain required. The job has a 20-minute bound;
+dependency restore, build and runtime test steps each have a 5-minute bound.
 
 The motivating failure is Platform Build `39888884262`, Windows job
 `120203565530`, on master `3897002ffa1aea8fe76e18b74a265b88f91c64a9`.

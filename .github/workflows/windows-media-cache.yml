@@ -8,6 +8,14 @@ name: Windows media binary cache
       - 'cmake/ci/**'
       - '.github/actions/setup-native-deps/**'
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Dependency closure to publish and independently restore
+        type: choice
+        default: rtsp-iocp
+        options:
+          - rtsp-iocp
+          - media
 
 permissions:
   contents: read
@@ -20,16 +28,17 @@ concurrency:
 
 jobs:
   produce:
-    name: Produce and independently restore x64-windows media
+    name: Produce and independently restore x64-windows ${{ inputs.scope || 'rtsp-iocp' }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-2022
-    timeout-minutes: 180
+    timeout-minutes: ${{ inputs.scope == 'media' && 180 || 20 }}
     permissions:
       contents: read
       packages: write
     env:
       X_VCPKG_NUGET_ID_PREFIX: turbomedia-media
       TM_RECIPE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      TM_CACHE_SCOPE: ${{ inputs.scope || 'rtsp-iocp' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -94,12 +103,12 @@ jobs:
           python cmake/ci/verify_nuget_upload.py
           if ($LASTEXITCODE -ne 0) { throw 'NuGet upload authentication transport failed' }
 
-      - name: Produce the product media ABI closure (${{ steps.contract.outputs.image }})
+      - name: Produce ${{ env.TM_CACHE_SCOPE }} ABI closure (${{ steps.contract.outputs.image }})
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python cmake/ci/github_packages.py media --triplet x64-windows --installed "$env:RUNNER_TEMP/turbomedia-windows-produced" --produce
+          python cmake/ci/github_packages.py media --triplet x64-windows --scope "$env:TM_CACHE_SCOPE" --installed "$env:RUNNER_TEMP/turbomedia-windows-produced" --produce
           if ($LASTEXITCODE -ne 0) { throw 'Windows media cache production/publication failed' }
 
       - name: Verify clean curl L2 restore with source builds forbidden (${{ steps.contract.outputs.image }})
@@ -107,8 +116,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python cmake/ci/github_packages.py media --triplet x64-windows --installed "$env:RUNNER_TEMP/turbomedia-windows-clean"
+          python cmake/ci/github_packages.py media --triplet x64-windows --scope "$env:TM_CACHE_SCOPE" --installed "$env:RUNNER_TEMP/turbomedia-windows-clean"
           if ($LASTEXITCODE -ne 0) { throw 'Clean central L2 cache-only restore failed' }
           Add-Content $env:GITHUB_STEP_SUMMARY "Recipe: $env:TM_RECIPE_SHA"
-          Add-Content $env:GITHUB_STEP_SUMMARY "Runner image: $env:ImageVersion; triplet: x64-windows"
+          Add-Content $env:GITHUB_STEP_SUMMARY "Runner image: $env:ImageVersion; triplet: x64-windows; scope: $env:TM_CACHE_SCOPE"
           Add-Content $env:GITHUB_STEP_SUMMARY 'Media packages downloaded with curl and restored with an empty L1 cache and --only-binarycaching.'

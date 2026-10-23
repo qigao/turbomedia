@@ -143,6 +143,11 @@ Path(sys.argv[1]).write_text('must not reach another build')
             calls.append(args)
             if "--dry-run" in args:
                 self.assertEqual(kwargs["env"]["X_VCPKG_NUGET_ID_PREFIX"], prefix + "_")
+                if scope == "rtsp-iocp":
+                    manifest_root = Path(next(str(a).split("=", 1)[1] for a in args
+                                              if str(a).startswith("--x-manifest-root=")))
+                    self.assertEqual(set(json.loads((manifest_root / "vcpkg.json").read_text())["dependencies"]),
+                                     {"boringssl", "gmssl", "llhttp"})
                 plan = Path(next(a.split("=", 1)[1] for a in args if str(a).startswith("--x-write-nuget-packages-config=")))
                 plan.write_text(f'<packages><package id="{self.package_id}" version="{self.version}" /></packages>')
             else:
@@ -155,18 +160,35 @@ Path(sys.argv[1]).write_text('must not reach another build')
             shutil.copyfile(package, destination)
             return True
 
-        for triplet, prefix, package_triplet in (
-                ("x64-linux", "vcpkg-cache", "x64-linux"),
-                ("x64-windows", "turbomedia-media", "x64-windows"),
-                ("arm64-android-api26", "vcpkg-cache", "x64-linux"),
-                ("arm64-android-api26", "vcpkg-cache", "arm64-android-api26")):
+        for triplet, prefix, package_triplet, scope in (
+                ("x64-linux", "vcpkg-cache", "x64-linux", "media"),
+                ("x64-windows", "turbomedia-media", "x64-windows", "media"),
+                ("arm64-android-api26", "vcpkg-cache", "x64-linux", "media"),
+                ("arm64-android-api26", "vcpkg-cache", "arm64-android-api26", "media"),
+                ("x64-windows", "turbomedia-media", "x64-windows", "rtsp-iocp")):
             self.package_id = f"{prefix}_example_{package_triplet}"
             package = self.package()
             with self.subTest(triplet=triplet, package_triplet=package_triplet), patch.dict(
                     os.environ, VCPKG_BINARY_CACHE=str(cache), VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root)):
                 with patch.object(gp, "run", side_effect=native), patch.object(gp, "download", side_effect=fetch):
-                    gp.media(triplet, self.root / "installed")
-        self.assertEqual(len(calls), 8)
+                    gp.media(triplet, self.root / "installed", scope=scope)
+        self.assertEqual(len(calls), 10)
+
+    def test_focused_manifest_preserves_recipe_and_excludes_unrelated_codecs(self):
+        product = json.loads((gp.REPO / "vcpkg.json").read_text())
+        config = json.loads((gp.REPO / "vcpkg-configuration.json").read_text())
+        root = gp.media_manifest("rtsp-iocp", self.root / "manifest")
+        focused = json.loads((root / "vcpkg.json").read_text())
+        self.assertEqual(set(focused["dependencies"]), {"boringssl", "gmssl", "llhttp"})
+        self.assertEqual({k: v for k, v in focused.items() if k != "dependencies"},
+                         {k: v for k, v in product.items() if k != "dependencies"})
+        resolved = json.loads((root / "vcpkg-configuration.json").read_text())
+        for key in ("overlay-ports", "overlay-triplets"):
+            self.assertEqual(resolved[key], [str((gp.REPO / p).resolve()) for p in config[key]])
+        self.assertEqual(gp.media_manifest("media", self.root / "unused"), gp.REPO)
+        self.assertFalse((self.root / "unused").exists())
+        with self.assertRaises(ValueError):
+            gp.media_manifest("unknown", self.root / "bad")
 
     def test_windows_producer_only_requests_and_publishes_product_packages(self):
         package_id = "turbomedia-media_example_x64-windows"
