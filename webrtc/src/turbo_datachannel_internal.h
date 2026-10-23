@@ -270,6 +270,10 @@ void dc_notify_state(turbo_dc_peer_t *peer, turbo_dc_state_t new_state);
 void dc_fail_peer(turbo_dc_peer_t *peer, turbo_dc_error_code_t code, const char *detail);
 int dc_peer_acquire(turbo_dc_peer_t *peer);
 void dc_peer_release(turbo_dc_peer_t *peer);
+void dc_channel_handle_stream_reset(turbo_dc_peer_t *peer, uint16_t stream_id,
+                                    int reset_outgoing);
+void dc_channel_handle_all_streams_reset(turbo_dc_peer_t *peer,
+                                         int reset_outgoing);
 
 /* Legacy - for context-level errors during creation (before peer exists) */
 void dc_set_context_error(turbo_dc_context_t *ctx, turbo_dc_error_code_t code, const char *detail);

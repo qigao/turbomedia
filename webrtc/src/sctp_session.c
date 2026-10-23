@@ -392,12 +392,26 @@ static void sctp_handle_stream_reset_event(
         (event.strreset_flags & SCTP_STREAM_RESET_INCOMING_SSN) == 0u)
         return;
     count = (event.strreset_length - sizeof(event)) / sizeof(uint16_t);
+    if (count == 0u) {
+        /* RFC 6525 section 6.1.1: an empty list identifies every stream. */
+        sctp_reassembly_clear_all(peer);
+        dc_channel_handle_all_streams_reset(
+            peer,
+            (event.strreset_flags & SCTP_STREAM_RESET_OUTGOING_SSN) == 0u);
+        return;
+    }
     for (i = 0; i < count; ++i) {
         uint16_t stream_id;
         memcpy(&stream_id,
                (const uint8_t *)data + sizeof(event) + i * sizeof(stream_id),
                sizeof(stream_id));
         sctp_reassembly_clear_stream(peer, event.strreset_assoc_id, stream_id);
+        /* RFC 8831 section 6.7: answer a peer's incoming reset with an
+         * outgoing reset. If both directions already completed, only retire
+         * the application channel. */
+        dc_channel_handle_stream_reset(
+            peer, stream_id,
+            (event.strreset_flags & SCTP_STREAM_RESET_OUTGOING_SSN) == 0u);
     }
 }
 
