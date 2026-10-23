@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
@@ -80,11 +81,23 @@ class PackagesTest(unittest.TestCase):
         self.assertEqual({x.attrib["key"]: x.attrib["value"] for x in creds},
                          {"Username": "qigao", "ClearTextPassword": 'fake<&"token'})
         self.assertIsNone(root.find("apikeys"))
-        with patch.dict(os.environ, GITHUB_TOKEN="fake-token", VCPKG_BINARY_SOURCES="clear"):
+        with patch.dict(os.environ, GITHUB_TOKEN="fake-token", VCPKG_BINARY_SOURCES="clear",
+                        GITHUB_REPOSITORY="qigao/turbomedia", X_VCPKG_NUGET_ID_PREFIX="turbomedia-media"):
             gp.producer_environment(config)
             self.assertEqual(os.environ["NUGET_API_KEY"], "fake-token")
             self.assertEqual(os.environ["VCPKG_NUGET_REPOSITORY"], "https://github.com/qigao/turbomedia")
             self.assertEqual(os.environ["VCPKG_BINARY_SOURCES"], f"clear;nugetconfig,{config},write")
+
+    def test_publication_rejects_other_repository_or_shared_namespace(self):
+        for repo, prefix in (("qigao/vcpkg-cache", "turbomedia-media"),
+                             ("qigao/turbomedia", "vcpkg-cache"),
+                             ("", "turbomedia-media")):
+            with self.subTest(repo=repo, prefix=prefix), patch.dict(
+                    os.environ, GITHUB_REPOSITORY=repo, X_VCPKG_NUGET_ID_PREFIX=prefix,
+                    GITHUB_TOKEN="fake-token", VCPKG_BINARY_SOURCES="clear"):
+                with self.assertRaises(ValueError):
+                    gp.producer_environment(self.root / "publish.config")
+                self.assertEqual(os.environ["VCPKG_BINARY_SOURCES"], "clear")
 
     def test_native_nuget_chunked_upload_body(self):
         headers = {"Transfer-Encoding": "chunked"}
@@ -129,7 +142,7 @@ Path(sys.argv[1]).write_text('must not reach another build')
         def native(args, **kwargs):
             calls.append(args)
             if "--dry-run" in args:
-                self.assertEqual(kwargs["env"]["X_VCPKG_NUGET_ID_PREFIX"], "vcpkg-cache_")
+                self.assertEqual(kwargs["env"]["X_VCPKG_NUGET_ID_PREFIX"], prefix + "_")
                 plan = Path(next(a.split("=", 1)[1] for a in args if str(a).startswith("--x-write-nuget-packages-config=")))
                 plan.write_text(f'<packages><package id="{self.package_id}" version="{self.version}" /></packages>')
             else:
@@ -142,10 +155,56 @@ Path(sys.argv[1]).write_text('must not reach another build')
             shutil.copyfile(package, destination)
             return True
 
-        with patch.dict(os.environ, VCPKG_BINARY_CACHE=str(cache), VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root)):
-            with patch.object(gp, "run", side_effect=native), patch.object(gp, "download", side_effect=fetch):
-                gp.media("x64-linux", self.root / "installed")
-        self.assertEqual(len(calls), 2)
+        for triplet, prefix in (("x64-linux", "vcpkg-cache"), ("x64-windows", "turbomedia-media")):
+            self.package_id = f"{prefix}_example_{triplet}"
+            package = self.package()
+            with self.subTest(triplet=triplet), patch.dict(
+                    os.environ, VCPKG_BINARY_CACHE=str(cache), VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root)):
+                with patch.object(gp, "run", side_effect=native), patch.object(gp, "download", side_effect=fetch):
+                    gp.media(triplet, self.root / "installed")
+        self.assertEqual(len(calls), 4)
+
+    def test_windows_producer_only_requests_and_publishes_product_packages(self):
+        package_id = "turbomedia-media_example_x64-windows"
+
+        def plan(args, **kwargs):
+            self.assertIn("--dry-run", args)
+            self.assertEqual(kwargs["env"]["X_VCPKG_NUGET_ID_PREFIX"], "turbomedia-media_")
+            path = Path(next(str(a).split("=", 1)[1] for a in args
+                             if str(a).startswith("--x-write-nuget-packages-config=")))
+            path.write_text(f'<packages><package id="{package_id}" version="{self.version}" /></packages>')
+
+        def produce(args):
+            self.assertNotIn("--only-binarycaching", args)
+            self.assertEqual(os.environ["X_VCPKG_NUGET_ID_PREFIX"], "turbomedia-media")
+            self.assertEqual(os.environ["VCPKG_NUGET_REPOSITORY"], "https://github.com/qigao/turbomedia")
+
+        with patch.dict(os.environ, VCPKG_BINARY_CACHE=str(self.root / "cache"),
+                        VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root),
+                        GITHUB_REPOSITORY="qigao/turbomedia", GITHUB_TOKEN="fake-token"):
+            with patch.object(gp, "os", SimpleNamespace(name="nt", environ=os.environ)), patch.object(
+                    gp, "run", side_effect=plan) as native, patch.object(
+                    gp, "download", return_value=False) as fetch, patch.object(
+                    gp, "run_producer", side_effect=produce) as producer:
+                gp.media("x64-windows", self.root / "installed", producer=True)
+                self.assertEqual(native.call_count, 1)
+                producer.assert_called_once()
+                fetch.assert_called_once()
+                self.assertEqual(fetch.call_args.args[:2], (package_id, self.version))
+                self.assertTrue(fetch.call_args.kwargs["allow_missing"])
+
+    def test_windows_consumer_rejects_shared_plan_before_download(self):
+        def plan(args, **_):
+            path = Path(next(str(a).split("=", 1)[1] for a in args
+                             if str(a).startswith("--x-write-nuget-packages-config=")))
+            path.write_text(f'<packages><package id="vcpkg-cache_example_x64-windows" version="{self.version}" /></packages>')
+
+        with patch.dict(os.environ, VCPKG_BINARY_CACHE=str(self.root / "cache"),
+                        VCPKG_ROOT=str(self.root), RUNNER_TEMP=str(self.root)):
+            with patch.object(gp, "run", side_effect=plan), patch.object(gp, "download") as fetch:
+                with self.assertRaisesRegex(ValueError, "namespace"):
+                    gp.media("x64-windows", self.root / "installed")
+                fetch.assert_not_called()
 
     def test_identity_and_sha256_checked_before_extraction(self):
         package = self.package()

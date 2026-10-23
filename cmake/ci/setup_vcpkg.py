@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 
-from github_packages import HERE, REPO, export, run
+from github_packages import HERE, REPO, WINDOWS_MEDIA_PREFIX, export, run
 
 
 def output(args):
@@ -77,7 +77,7 @@ def setup(infrastructure):
             "QIGAO_VCPKG_WINDOWS_TRIPLET": "qigao-x64-windows-v145",
             "QIGAO_VCPKG_WINDOWS_HOST_TRIPLET": "qigao-x64-windows-v145",
             "QIGAO_VCPKG_TOOLCHAIN_FILE": toolchain, "VCPKG_BINARY_CACHE": cache,
-            "X_VCPKG_NUGET_ID_PREFIX": "vcpkg-cache",
+            "X_VCPKG_NUGET_ID_PREFIX": WINDOWS_MEDIA_PREFIX if os.name == "nt" else "vcpkg-cache",
             "VCPKG_BINARY_SOURCES": f"clear;files,{cache},readwrite"})
     print(f"Locked vcpkg contract v{version}: {revision}", flush=True)
 

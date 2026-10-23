@@ -79,10 +79,6 @@ permissions:
   contents: read
   packages: read
 
-env:
-  # Consume the shared binary namespace; product cache production is a separate job.
-  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
-
 concurrency:
   group: platform-build-${{ github.ref }}
   cancel-in-progress: true

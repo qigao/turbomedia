@@ -26,6 +26,8 @@ import zipfile
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 FEED = "https://nuget.pkg.github.com/qigao"
+WINDOWS_MEDIA_PREFIX = "turbomedia-media"
+PRODUCER_REPOSITORY = "qigao/turbomedia"
 IDENTITY = re.compile(r"[a-zA-Z0-9_.+-]+\Z")
 
 
@@ -330,14 +332,23 @@ def publish_config(path, token, feed=FEED):
 
 
 def producer_environment(config):
-    # This metadata links the published package to the building repository.
-    # A product GITHUB_TOKEN must not claim the shared infrastructure repo.
+    # Publish only product-owned IDs associated with this workflow repository.
+    if os.environ.get("GITHUB_REPOSITORY") != PRODUCER_REPOSITORY:
+        raise ValueError("media publication requires the TurboMedia workflow repository")
+    if os.environ.get("X_VCPKG_NUGET_ID_PREFIX") != WINDOWS_MEDIA_PREFIX:
+        raise ValueError("media publication requires the TurboMedia package namespace")
     os.environ["NUGET_API_KEY"] = os.environ["GITHUB_TOKEN"]
-    os.environ["VCPKG_NUGET_REPOSITORY"] = "https://github.com/qigao/turbomedia"
+    os.environ["VCPKG_NUGET_REPOSITORY"] = f"https://github.com/{PRODUCER_REPOSITORY}"
     os.environ["VCPKG_BINARY_SOURCES"] += f";nugetconfig,{config},write"
 
 
 def media(triplet, installed, producer=False):
+    if producer and (os.name != "nt" or triplet != "x64-windows"):
+        raise ValueError("the explicit media producer requires x64-windows on Windows")
+    # Windows production and consumption share this repository's own packages.
+    # Other platforms continue to read the existing shared packages only.
+    prefix = WINDOWS_MEDIA_PREFIX if triplet == "x64-windows" else "vcpkg-cache"
+    os.environ["X_VCPKG_NUGET_ID_PREFIX"] = prefix
     cache = Path(os.environ["VCPKG_BINARY_CACHE"])
     shutil.rmtree(installed, ignore_errors=True)
     # Always download this plan afresh, including the independent producer check.
@@ -354,20 +365,18 @@ def media(triplet, installed, producer=False):
         # while packages.config generation takes the raw prefix unchanged.
         # Normalize for the dry-run only; publication keeps the original prefix.
         run([*args, "--dry-run", f"--x-write-nuget-packages-config={plan}"],
-            env={**os.environ, "X_VCPKG_NUGET_ID_PREFIX": "vcpkg-cache_"})
+            env={**os.environ, "X_VCPKG_NUGET_ID_PREFIX": prefix + "_"})
         entries = ET.parse(plan).getroot().findall("package")
         if not entries:
             raise ValueError("empty vcpkg restore plan")
         for entry in entries:
             package_id, version = entry.attrib["id"], entry.attrib["version"]
-            if not re.fullmatch(r"vcpkg-cache_[a-z0-9-]+_[a-z0-9-]+", package_id):
+            if not re.fullmatch(re.escape(prefix) + r"_[a-z0-9-]+_" + re.escape(triplet), package_id):
                 raise ValueError(f"unexpected vcpkg cache namespace: {package_id}")
             package = tmp / f"{package_id}.{version}.nupkg"
             if download(package_id, version, package, allow_missing=producer):
                 to_file_cache(package, cache, package_id, version)
         if producer:
-            if os.name != "nt":
-                raise ValueError("the explicit media producer is Windows-only")
             # The existing native Windows NuGet client is used ONLY to publish.
             # All reads use curl; Linux/macOS never invoke NuGet.exe or Mono.
             config = tmp / "publish.config"
@@ -377,25 +386,6 @@ def media(triplet, installed, producer=False):
             # Pinned NuGet 7.9 reads NUGET_API_KEY directly. Do not write a
             # plaintext value into the encrypted-only <apikeys> config section.
             producer_environment(config)
-            # This historical header was independently restored on the old
-            # runner. It is a publication control, never an install input:
-            # verify it in a separate throwaway cache, then push the original
-            # bytes. Its fixed identity lets even a wholly missing current ABI
-            # graph test the actual token before expensive compilation.
-            probe_id = "vcpkg-cache_vcpkg-cmake-config_x64-windows"
-            probe_abi = "54cb9c70ca64f19271062b63dba4fb536a3e92c62c5652fa2e77a74ed5d85fc9"
-            probe_version = f"2024.5.23-vcpkg{probe_abi}"
-            probe = tmp / "publication-control.nupkg"
-            download(probe_id, probe_version, probe)
-            to_file_cache(probe, tmp / "publication-control-cache", probe_id, probe_version)
-            fetched = subprocess.check_output([str(vcpkg), "fetch", "nuget"], text=True)
-            nuget = fetched.strip().splitlines()[-1].strip('"')
-            print("Verify existing immutable cache publication with actual workflow token", flush=True)
-            # Only a duplicate is accepted; 401/403 remain fatal. Acceptance
-            # here does not qualify publication of a missing ABI version.
-            run([nuget, "push", "-ForceEnglishOutput", "-NonInteractive", probe,
-                 "-Timeout", "100", "-ConfigFile", config, "-SkipDuplicate", "-NoSymbols"],
-                timeout=130)
         if producer:
             run_producer(args)
         else:

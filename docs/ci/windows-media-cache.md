@@ -1,7 +1,8 @@
 # Windows media binary cache production
 
-`Platform Build` consumes the shared `vcpkg-cache` NuGet ID prefix read-only
-with `--only-binarycaching`. Missing ABI packages fail before configuration;
+`Platform Build` consumes `turbomedia-media_*` packages on Windows and the
+existing shared `vcpkg-cache_*` packages on other platforms, read-only with
+`--only-binarycaching`. Missing ABI packages fail before configuration;
 normal builds do not compile dependencies or publish cache entries.
 
 The separate `Windows media binary cache` workflow owns production of this
@@ -20,10 +21,19 @@ the local binary cache and restores into a fresh installation using
 Then rerun only the failed Windows Platform Build job on the same product SHA.
 Successful production alone does not qualify the product build or runtime tests.
 
-GitHub Packages must grant the producer token write access to the existing
-namespace. A rejected publication or cache-only restore remains a failure; do
-not rename the namespace, relax ABI checks, or make normal builds produce their
-own dependencies to bypass it.
+Publication is restricted to this repository's own packages. The Windows
+producer uses the `turbomedia-media` ID prefix and
+`VCPKG_NUGET_REPOSITORY=https://github.com/qigao/turbomedia`, so new packages
+are associated with the repository whose workflow token publishes them.
+The account-level NuGet feed URL remains unchanged. Existing `vcpkg-cache_*`
+packages belong to the shared repository and are never pushed by this producer.
+The historical shared-package publication probe has been removed.
+
+The initial producer must build and publish the product-owned Windows closure;
+there is no read fallback to shared Windows packages. Namespace selection does
+not change the locked build recipe or ABI validation. A rejected publication
+or cache-only restore remains a failure, and normal builds never produce
+dependencies. Only a successful clean L2 restore qualifies publication.
 
 The motivating failure is Platform Build `39888884262`, Windows job
 `120203565530`, on master `3897002ffa1aea8fe76e18b74a265b88f91c64a9`.

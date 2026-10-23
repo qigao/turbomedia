@@ -31,7 +31,7 @@ concurrency:
   group: m15d-rtsp-real-iocp-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 env:
-  X_VCPKG_NUGET_ID_PREFIX: vcpkg-cache
+  X_VCPKG_NUGET_ID_PREFIX: turbomedia-media
   SALTS_KERNEL_TEST_SHA: 8f448202367c93c04b8981085ee3f07c538ac330
 jobs:
   windows-kernel:
