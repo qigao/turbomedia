@@ -4,7 +4,9 @@
  * The exact production dcep_protocol.c is compiled into this test translation
  * unit. Only its usrsctp_sendv call is redirected to a deterministic
  * -1/EAGAIN result. The production library, ABI and native SCTP provider are
- * unchanged, and the fixture never fabricates a successful ACK.
+ * unchanged, and the fixture never fabricates a successful ACK. The private
+ * stream-reset call is observed locally because that symbol is not exported
+ * from the production Windows DLL.
  */
 #include "turbo_datachannel_internal.h"
 #include "tinytest.h"
@@ -15,6 +17,8 @@
 
 static unsigned g_send_calls;
 static unsigned g_invalid_send_shape;
+static unsigned g_reset_calls;
+static unsigned g_invalid_reset_shape;
 static int g_injected_errno;
 
 static ssize_t tm_test_sendv_eagain(struct socket *socket,
@@ -43,10 +47,20 @@ static ssize_t tm_test_sendv_eagain(struct socket *socket,
     return -1;
 }
 
-/* The macro applies only to this test's compilation of the production source.
- * usrsctp.h was included above, so native declarations retain their types. */
+static int tm_test_reset_stream(turbo_dc_peer_t *peer, uint16_t stream_id) {
+    ++g_reset_calls;
+    if (!peer || !peer->sctp.socket || stream_id != 0)
+        ++g_invalid_reset_shape;
+    return 0;
+}
+
+/* These macros apply only to this test's compilation of production DCEP.
+ * The ACK admission is rejected, while the internal reset call is observed
+ * without requiring a private non-exported Windows DLL symbol. */
 #define usrsctp_sendv tm_test_sendv_eagain
+#define sctp_reset_channel_stream tm_test_reset_stream
 #include "../src/dcep_protocol.c"
+#undef sctp_reset_channel_stream
 #undef usrsctp_sendv
 
 typedef struct tm_dcep_fault_observer {
@@ -92,6 +106,8 @@ spec("DCEP native ACK admission") {
         };
         g_send_calls = 0;
         g_invalid_send_shape = 0;
+        g_reset_calls = 0;
+        g_invalid_reset_shape = 0;
         g_injected_errno = 0;
 
         dcep_handle_message(peer, 0, open, sizeof(open));
@@ -107,6 +123,8 @@ spec("DCEP native ACK admission") {
 
         check_equal(g_send_calls, 1u);
         check_equal(g_invalid_send_shape, 0u);
+        check_equal(g_reset_calls, 1u);
+        check_equal(g_invalid_reset_shape, 0u);
         check_equal(g_injected_errno, EAGAIN);
         check_equal(observation.on_channel, 0u);
         check_equal(observation.on_open, 0u);
