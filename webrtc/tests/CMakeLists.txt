@@ -390,6 +390,19 @@ if(DEFINED SALTS_SCTP_SOURCE_DIR)
       message(FATAL_ERROR
         "TURBO_MEDIA_ENABLE_SALTS_C11_SCTP_TSAN requires GCC or Clang")
     endif()
+
+    # The exact-source ACK rejection fixture includes production DCEP in its
+    # translation unit, so these flags instrument the exercised failure path.
+    target_compile_options(
+      turbo_media_test_dcep_ack_fault
+      PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    target_link_options(
+      turbo_media_test_dcep_ack_fault PRIVATE -fsanitize=address,undefined)
+    set_tests_properties(
+      turbo_media_test_dcep_ack_fault
+      PROPERTIES TIMEOUT 30
+                 ENVIRONMENT "ASAN_OPTIONS=halt_on_error=1:detect_leaks=1;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1")
+
     # One additional executable in the same Linux job checks actual channel
     # storage reclamation with ASan/UBSan; TSan stays on the original target.
     turbo_media_add_webrtc_base_test(
