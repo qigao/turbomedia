@@ -4,6 +4,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const EXAMPLES_DIR = __dirname;
 const REPO_ROOT = path.resolve(EXAMPLES_DIR, '..', '..');
@@ -204,7 +205,7 @@ async function main() {
       '--no-default-browser-check',
       '--allow-file-access-from-files',
       '--autoplay-policy=no-user-gesture-required',
-      `file:///${HTML_PATH.replace(/\\/g, '/')}`,
+      pathToFileURL(HTML_PATH).href,
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     chrome.stderr.on('data', (data) => process.stderr.write(data.toString()));
 
