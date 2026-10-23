@@ -214,6 +214,228 @@ static void advance_assoc_deadline(void *p, void *result_ptr) {
   }
   e->deadline_advanced = 1;
 }
+
+typedef struct cancel_drain_probe {
+  endpoint endpoint;
+  cmeta_mutex_t mutex;
+  cmeta_cond_t changed;
+  int owner_entered;
+  int release_owner;
+  int owner_returned;
+  int destroy_started;
+  int destroy_returned;
+  int destroy_hook_called;
+  int ssl_alive_at_destroy;
+  uint64_t deadline;
+} cancel_drain_probe;
+
+static void hold_owner_with_pending_deadline(void *p, void *result_ptr) {
+  cancel_drain_probe *probe = (cancel_drain_probe *)p;
+  endpoint *e;
+  uint8_t packet[PCAP];
+  size_t packet_size = 0u;
+  int has_deadline = 0;
+  int *result = (int *)result_ptr;
+  if (result) *result = -1;
+  assert(probe != NULL);
+  e = &probe->endpoint;
+  assert(owner(e));
+  assert(cnet_sctp_assoc_start(&e->assoc, ++e->now, packet,
+                               sizeof(packet), &packet_size) ==
+         CNET_SCTP_ASSOC_OK);
+  assert(packet_size != 0u);
+  assert(cnet_sctp_assoc_next_deadline(&e->assoc, &probe->deadline,
+                                       &has_deadline) ==
+         CNET_SCTP_ASSOC_OK);
+  assert(has_deadline && probe->deadline == 101u);
+
+  cmeta_mutex_lock(&probe->mutex);
+  probe->owner_entered = 1;
+  cmeta_cond_broadcast(&probe->changed);
+  while (!probe->release_owner)
+    cmeta_cond_wait(&probe->changed, &probe->mutex);
+  cmeta_mutex_unlock(&probe->mutex);
+  if (result) *result = 0;
+}
+
+static void cancel_drain_owner_thread(void *p) {
+  cancel_drain_probe *probe = (cancel_drain_probe *)p;
+  int result = -1;
+  assert(probe != NULL);
+  assert(dc_peer_acquire(probe->endpoint.peer) == 0);
+  assert(dc_peer_post_owner_sync(probe->endpoint.peer,
+                                 hold_owner_with_pending_deadline,
+                                 probe, &result) == 0);
+  assert(result == 0);
+  dc_peer_release(probe->endpoint.peer);
+  cmeta_mutex_lock(&probe->mutex);
+  probe->owner_returned = 1;
+  cmeta_cond_broadcast(&probe->changed);
+  cmeta_mutex_unlock(&probe->mutex);
+}
+
+static void cancel_drain_destroy_thread(void *p) {
+  cancel_drain_probe *probe = (cancel_drain_probe *)p;
+  turbo_dc_peer_t *peer;
+  assert(probe != NULL);
+  peer = probe->endpoint.peer;
+  cmeta_mutex_lock(&probe->mutex);
+  probe->destroy_started = 1;
+  cmeta_cond_broadcast(&probe->changed);
+  cmeta_mutex_unlock(&probe->mutex);
+  turbo_dc_peer_destroy(peer);
+  cmeta_mutex_lock(&probe->mutex);
+  probe->destroy_returned = 1;
+  cmeta_cond_broadcast(&probe->changed);
+  cmeta_mutex_unlock(&probe->mutex);
+}
+
+static void destroy_pending_assoc_on_owner(turbo_dc_peer_t *peer,
+                                           void *user_data) {
+  cancel_drain_probe *probe = (cancel_drain_probe *)user_data;
+  endpoint *e;
+  uint64_t deadline = 0u;
+  int has_deadline = 0;
+  assert(probe != NULL);
+  e = &probe->endpoint;
+  assert(peer == e->peer);
+  assert(dc_peer_is_on_transport_owner(peer));
+  cmeta_mutex_lock(&peer->operation_mutex);
+  assert(peer->destroying);
+  assert(peer->active_operations == 0u);
+  assert(peer->transport_data_callbacks == 0u);
+  cmeta_mutex_unlock(&peer->operation_mutex);
+  assert(e->assoc_initialized);
+  assert(e->assoc.state == CNET_SCTP_ASSOC_COOKIE_WAIT);
+  assert(e->assoc.retransmits == 0u);
+  assert(cnet_sctp_assoc_next_deadline(&e->assoc, &deadline,
+                                       &has_deadline) ==
+         CNET_SCTP_ASSOC_OK);
+  assert(has_deadline && deadline == probe->deadline);
+  assert(peer->dtls.ssl != NULL);
+  probe->ssl_alive_at_destroy = 1;
+  assert(cnet_sctp_assoc_stop(&e->assoc) == CNET_SCTP_ASSOC_OK);
+  assert(cnet_sctp_assoc_drained(&e->assoc));
+  assert(cnet_sctp_assoc_destroy(&e->assoc) == CNET_SCTP_ASSOC_OK);
+  e->assoc_initialized = 0;
+  cnet_sctp_gmssl_mac_retire(&e->cookie_mac);
+  cmeta_mutex_lock(&probe->mutex);
+  ++probe->destroy_hook_called;
+  cmeta_cond_broadcast(&probe->changed);
+  cmeta_mutex_unlock(&probe->mutex);
+}
+
+static void install_pending_destroy_hook(void *p, void *result_ptr) {
+  cancel_drain_probe *probe = (cancel_drain_probe *)p;
+  int *result = (int *)result_ptr;
+  if (result) *result = -1;
+  assert(probe != NULL && probe->endpoint.peer != NULL);
+  assert(owner(&probe->endpoint));
+  probe->endpoint.peer->test_c11_sctp_destroy =
+      destroy_pending_assoc_on_owner;
+  probe->endpoint.peer->test_c11_sctp_destroy_user_data = probe;
+  if (result) *result = 0;
+}
+
+static void test_pending_deadline_cancel_drains_on_peer_owner(void) {
+  cancel_drain_probe probe = {0};
+  endpoint *e = &probe.endpoint;
+  turbo_dc_config_t config = {0};
+  turbo_dc_context_t *ctx;
+  cmeta_thread_t owner_thread = NULL;
+  cmeta_thread_t destroy_thread = NULL;
+  unsigned attempt;
+  int init_result = -1;
+  int saw_destroying = 0;
+  uint8_t late_packet[PCAP] = {0};
+  size_t late_packet_size = 77u;
+
+  config.transport = TURBO_DC_TRANSPORT_ICE;
+  config.disable_sctp = 1;
+  cmeta_mutex_init(&probe.mutex);
+  cmeta_cond_init(&probe.changed);
+  assert(probe.mutex != NULL && probe.changed != NULL);
+  ctx = turbo_dc_context_create(&config);
+  assert(ctx != NULL);
+  e->local_port = 5000u;
+  e->remote_port = 5001u;
+  e->client = 1;
+  atomic_init(&e->failure, 0);
+  atomic_init(&e->received, 0);
+  atomic_init(&e->acked, 0);
+  e->peer = turbo_dc_peer_create(ctx, NULL, 0u, e);
+  assert(e->peer != NULL);
+  assert(dc_peer_post_owner_sync(e->peer, init_assoc, e, &init_result) == 0);
+  assert(init_result == 0);
+  init_result = -1;
+  assert(dc_peer_post_owner_sync(e->peer, install_pending_destroy_hook,
+                                 &probe, &init_result) == 0);
+  assert(init_result == 0);
+
+  assert(cmeta_thread_create(&owner_thread, cancel_drain_owner_thread,
+                             &probe) == 0);
+  cmeta_mutex_lock(&probe.mutex);
+  while (!probe.owner_entered)
+    cmeta_cond_wait(&probe.changed, &probe.mutex);
+  cmeta_mutex_unlock(&probe.mutex);
+
+  assert(cmeta_thread_create(&destroy_thread, cancel_drain_destroy_thread,
+                             &probe) == 0);
+  cmeta_mutex_lock(&probe.mutex);
+  while (!probe.destroy_started)
+    cmeta_cond_wait(&probe.changed, &probe.mutex);
+  cmeta_mutex_unlock(&probe.mutex);
+
+  /* The Owner command is deliberately held, so observing `destroying` does
+   * not schedule the race with a sleep and the Peer cannot be freed here. */
+  for (attempt = 0u; attempt < 5000u; ++attempt) {
+    int destroying;
+    uint32_t active_operations;
+    cmeta_mutex_lock(&e->peer->operation_mutex);
+    destroying = e->peer->destroying;
+    active_operations = e->peer->active_operations;
+    cmeta_mutex_unlock(&e->peer->operation_mutex);
+    if (destroying) {
+      assert(active_operations == 1u);
+      saw_destroying = 1;
+      break;
+    }
+    cmeta_sleep_ms(1u);
+  }
+  assert(saw_destroying);
+  assert(cnet_sctp_assoc_advance(&e->assoc, probe.deadline, late_packet,
+                                 sizeof(late_packet), &late_packet_size) ==
+         CNET_SCTP_ASSOC_OWNER);
+  assert(late_packet_size == 0u);
+  assert(e->assoc.retransmits == 0u);
+  cmeta_mutex_lock(&probe.mutex);
+  assert(!probe.owner_returned);
+  assert(!probe.destroy_hook_called);
+  assert(!probe.destroy_returned);
+  probe.release_owner = 1;
+  cmeta_cond_broadcast(&probe.changed);
+  cmeta_mutex_unlock(&probe.mutex);
+
+  assert(cmeta_thread_join(&owner_thread) == 0);
+  assert(cmeta_thread_join(&destroy_thread) == 0);
+  assert(probe.owner_returned);
+  assert(probe.destroy_returned);
+  assert(probe.destroy_hook_called == 1);
+  assert(probe.ssl_alive_at_destroy);
+  assert(!e->assoc_initialized);
+  assert(e->assoc.magic == 0u);
+  assert(e->cookie_mac.active == 0u);
+  assert(e->cookie_mac.previous_active == 0u);
+  late_packet_size = 77u;
+  assert(cnet_sctp_assoc_advance(&e->assoc, UINT64_MAX, late_packet,
+                                 sizeof(late_packet), &late_packet_size) ==
+         CNET_SCTP_ASSOC_INVALID);
+  assert(late_packet_size == 0u);
+
+  turbo_dc_context_destroy(ctx);
+  cmeta_cond_destroy(&probe.changed);
+  cmeta_mutex_destroy(&probe.mutex);
+}
 static void test_real_peer_dtls_c11_roundtrip(void) {
   packet_queue q={0}; endpoint a={0}, b={0}; turbo_dc_config_t ca={0}, cb={0};
   turbo_dc_context_t *ctx_a,*ctx_b; turbo_dc_peer_t *peer_a,*peer_b;
@@ -332,6 +554,7 @@ int main(void) {
    * creating either Peer or its transport thread. */
   tlog_set_level(tlog_get_default(), SALTS_LOG_LEVEL_ERROR);
   test_real_peer_dtls_c11_roundtrip();
+  test_pending_deadline_cancel_drains_on_peer_owner();
   puts("Real TurboMedia Peer DTLS <-> private C11 SCTP bridge PASS");
   return 0;
 }

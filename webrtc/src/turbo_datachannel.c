@@ -1797,6 +1797,16 @@ static void dc_peer_destroy_resources_owner_task(void *arg1, void *arg2) {
     /* All protocol/transport teardown runs after admission is closed and all
      * active leases have drained, on the same owner as DTLS/SCTP state. */
     dc_peer_close_impl(peer);
+#ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
+    if (peer->test_c11_sctp_destroy) {
+        dc_test_c11_sctp_destroy_fn destroy = peer->test_c11_sctp_destroy;
+        void *user_data = peer->test_c11_sctp_destroy_user_data;
+        /* Revoke before entry so a reentrant teardown cannot run twice. */
+        peer->test_c11_sctp_destroy = NULL;
+        peer->test_c11_sctp_destroy_user_data = NULL;
+        destroy(peer, user_data);
+    }
+#endif
     dtls_session_cleanup(peer);
     if (peer->dtls.ssl) {
         SSL_free(peer->dtls.ssl);

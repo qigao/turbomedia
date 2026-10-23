@@ -112,6 +112,8 @@ typedef void (*dc_transport_task_fn)(void *arg1, void *arg2);
 #ifdef TURBO_MEDIA_TEST_C11_SCTP_BRIDGE
 typedef void (*dc_test_dtls_application_data_fn)(
     turbo_dc_peer_t *peer, const uint8_t *data, size_t len, void *user_data);
+typedef void (*dc_test_c11_sctp_destroy_fn)(
+    turbo_dc_peer_t *peer, void *user_data);
 #endif
 
 struct turbo_dc_context_s {
@@ -191,6 +193,11 @@ struct turbo_dc_peer_s {
      * to the C11 Association without changing the production usrsctp path. */
     dc_test_dtls_application_data_fn test_dtls_application_handler;
     void *test_dtls_application_user_data;
+    /* Private lifecycle probe. A future adapter must stop/drain/destroy its
+     * Association on this owner, after Peer admission/leases drain and before
+     * DTLS/provider storage is released. This hook is absent from production. */
+    dc_test_c11_sctp_destroy_fn test_c11_sctp_destroy;
+    void *test_c11_sctp_destroy_user_data;
 #endif
 
     /* SCTP */
