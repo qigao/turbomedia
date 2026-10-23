@@ -37,9 +37,9 @@ target_link_libraries(
 turbo_media_add_webrtc_test(turbo_media_test_sdp_parser test_sdp_parser.c)
 turbo_media_add_webrtc_test(turbo_media_test_datachannel test_datachannel.c)
 
-# Compile the exact production DCEP source in a private test translation unit
-# and inject only a native sendv EAGAIN result. Production symbols and ABI are
-# unchanged; the fixture verifies failed ACK admission cannot publish OPEN.
+# Compile the exact production DCEP source in a private test translation unit.
+# Inject native sendv EAGAIN and observe the private reset call locally because
+# that symbol is not exported from the Windows DLL. Production ABI is unchanged.
 turbo_media_add_webrtc_test(
   turbo_media_test_dcep_ack_fault
   test_dcep_ack_fault.c
