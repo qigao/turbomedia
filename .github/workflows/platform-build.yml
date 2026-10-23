@@ -92,6 +92,14 @@ jobs:
     name: ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      TURBOMEDIA_CI_PLATFORM: ${{ matrix.platform }}
+      TURBOMEDIA_CI_TRIPLET: ${{ matrix.triplet }}
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_COMPRESS: "true"
+      CCACHE_MAXSIZE: 500M
     strategy:
       fail-fast: false
       matrix:
@@ -142,7 +150,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ninja-build pkg-config nasm autoconf automake libtool
+            ninja-build pkg-config nasm autoconf automake libtool ccache
           if [ "${{ matrix.platform }}" = "Linux" ]; then
             sudo apt-get install -y --no-install-recommends \
               libpipewire-0.3-dev libx11-dev libxext-dev
@@ -156,7 +164,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          choco install ninja nasm strawberryperl -y --no-progress
+          choco install ninja nasm strawberryperl ccache -y --no-progress
           $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
           $vs = & $vswhere -latest -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($vs)) {
@@ -180,7 +188,24 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = "arm64"
-          brew install ninja nasm autoconf automake libtool
+          brew install ninja nasm autoconf automake libtool ccache
+
+      - name: Restore compiler cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.triplet }}-${{ hashFiles('cmake/ci/m16-sdk-lock.json', 'CMakePresets.json', '.github/workflows/platform-build.yml', 'vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**', 'vcpkg-triplets/**') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.triplet }}-${{ hashFiles('cmake/ci/m16-sdk-lock.json', 'CMakePresets.json', '.github/workflows/platform-build.yml', 'vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-overlays/**', 'vcpkg-triplets/**') }}-
+
+      - name: Initialize compiler cache statistics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & ccache --version
+          if ($LASTEXITCODE -ne 0) { throw "ccache is missing" }
+          & ccache --zero-stats
+          if ($LASTEXITCODE -ne 0) { throw "ccache statistics reset failed" }
 
       - name: Restore latest platform SDKs
         shell: pwsh
@@ -204,20 +229,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           $build = Join-Path $env:GITHUB_WORKSPACE "build/platform-${{ matrix.platform }}"
           $stage = Join-Path $env:GITHUB_WORKSPACE "stage/platform-${{ matrix.platform }}"
-          $installed = Join-Path $env:GITHUB_WORKSPACE "vcpkg_installed"
           Remove-Item -LiteralPath $build -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
           $args = @(
-            "-S", ".",
-            "-B", $build,
-            "-G", "Ninja",
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-            "-DCMAKE_TOOLCHAIN_FILE=$env:QIGAO_VCPKG_TOOLCHAIN_FILE",
-            "-DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}",
-            "-DVCPKG_MANIFEST_MODE=OFF",
-            "-DVCPKG_INSTALLED_DIR=$installed",
-            "-DCMAKE_INSTALL_PREFIX=$stage",
+            "--preset", "ci-platform-release",
             "-DSALTS_SCTP_SOURCE_DIR=$env:GITHUB_WORKSPACE/salts-sctp-prototype/cnet/sctp"
           )
           if ("${{ matrix.platform }}" -eq "Android") {
@@ -384,12 +399,19 @@ jobs:
             if (-not [string]::IsNullOrWhiteSpace($env:LD_LIBRARY_PATH)) { $parts += $env:LD_LIBRARY_PATH }
             $env:LD_LIBRARY_PATH = $parts -join [IO.Path]::PathSeparator
           }
-          & cmake --build $build --parallel 2
+          & cmake --build --preset ci-platform-build
           if ($LASTEXITCODE -ne 0) { throw "build failed for ${{ matrix.platform }}" }
           if ("${{ matrix.platform }}" -ne "Android") {
-            & ctest --test-dir $build --no-tests=error --output-on-failure --timeout 120 -LE performance
+            & ctest --preset ci-platform-test
             if ($LASTEXITCODE -ne 0) { throw "CTest failed for ${{ matrix.platform }}" }
           }
+
+      - name: Compiler cache statistics
+        if: always()
+        shell: pwsh
+        run: |
+          & ccache --show-stats
+          if ($LASTEXITCODE -ne 0) { throw "ccache statistics failed" }
 
       - name: Repeat C11 SCTP handoff under ThreadSanitizer
         if: matrix.platform == 'Linux'
