@@ -86,6 +86,12 @@ jobs:
           Write-Host "vcpkg_scripts=$env:VCPKG_SCRIPTS_REVISION vcpkg_tool=$env:VCPKG_TOOL_REVISION contract=$env:VCPKG_CACHE_REVISION"
           Add-Content $env:GITHUB_OUTPUT "image=$env:ImageVersion"
 
+      - name: Verify actual NuGet upload authentication with loopback fake credentials
+        shell: pwsh
+        run: |
+          python cmake/ci/verify_nuget_upload.py
+          if ($LASTEXITCODE -ne 0) { throw 'NuGet upload authentication transport failed' }
+
       - name: Produce the product media ABI closure (${{ steps.contract.outputs.image }})
         shell: pwsh
         env:

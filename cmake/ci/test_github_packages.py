@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 import zipfile
 
@@ -62,6 +63,23 @@ class PackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ABI mismatch"):
             gp.to_file_cache(self.package(abi_info=b"wrong"), self.root / "cache", self.package_id, self.version)
         self.assertFalse(list((self.root / "cache").rglob("*.zip")))
+
+    def test_upload_config_matches_source_and_escapes_credentials(self):
+        config = self.root / "publish.config"
+        gp.publish_config(config, 'fake<&"token')
+        root = ET.parse(config).getroot()
+        source = root.find("packageSources/add").attrib["value"]
+        self.assertEqual(source, root.find("config/add").attrib["value"])
+        self.assertEqual(source, gp.FEED + "/index.json")
+        creds = root.find("packageSourceCredentials/github")
+        self.assertEqual({x.attrib["key"]: x.attrib["value"] for x in creds},
+                         {"Username": "qigao", "ClearTextPassword": 'fake<&"token'})
+        self.assertIsNone(root.find("apikeys"))
+        with patch.dict(os.environ, GITHUB_TOKEN="fake-token", VCPKG_BINARY_SOURCES="clear"):
+            gp.producer_environment(config)
+            self.assertEqual(os.environ["NUGET_API_KEY"], "fake-token")
+            self.assertEqual(os.environ["VCPKG_NUGET_REPOSITORY"], "https://github.com/qigao/turbomedia")
+            self.assertEqual(os.environ["VCPKG_BINARY_SOURCES"], f"clear;nugetconfig,{config},write")
 
     def test_rejected_upload_stops_a_running_producer_before_more_builds(self):
         marker = self.root / "unwanted-build"

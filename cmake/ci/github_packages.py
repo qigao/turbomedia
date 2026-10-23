@@ -289,6 +289,28 @@ def export(values):
     os.environ.update({key: str(value) for key, value in values.items()})
 
 
+def publish_config(path, token, feed=FEED):
+    """Use one matching source URL for push resolution and HTTP credentials."""
+    root = ET.Element("configuration")
+    settings = ET.SubElement(root, "config")
+    ET.SubElement(settings, "add", key="defaultPushSource", value=f"{feed}/index.json")
+    sources = ET.SubElement(root, "packageSources")
+    ET.SubElement(sources, "clear")
+    ET.SubElement(sources, "add", key="github", value=f"{feed}/index.json")
+    creds = ET.SubElement(ET.SubElement(root, "packageSourceCredentials"), "github")
+    ET.SubElement(creds, "add", key="Username", value="qigao")
+    ET.SubElement(creds, "add", key="ClearTextPassword", value=token)
+    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+
+
+def producer_environment(config):
+    # This metadata links the published package to the building repository.
+    # A product GITHUB_TOKEN must not claim the shared infrastructure repo.
+    os.environ["NUGET_API_KEY"] = os.environ["GITHUB_TOKEN"]
+    os.environ["VCPKG_NUGET_REPOSITORY"] = "https://github.com/qigao/turbomedia"
+    os.environ["VCPKG_BINARY_SOURCES"] += f";nugetconfig,{config},write"
+
+
 def media(triplet, installed, producer=False):
     cache = Path(os.environ["VCPKG_BINARY_CACHE"])
     shutil.rmtree(installed, ignore_errors=True)
@@ -323,23 +345,12 @@ def media(triplet, installed, producer=False):
             # The existing native Windows NuGet client is used ONLY to publish.
             # All reads use curl; Linux/macOS never invoke NuGet.exe or Mono.
             config = tmp / "publish.config"
-            root = ET.Element("configuration")
             # vcpkg's nugetconfig provider passes -ConfigFile, not -Source.
             # packageSources alone does not select the publication destination.
-            settings = ET.SubElement(root, "config")
-            ET.SubElement(settings, "add", key="defaultPushSource", value=f"{FEED}/index.json")
-            sources = ET.SubElement(root, "packageSources")
-            ET.SubElement(sources, "clear")
-            ET.SubElement(sources, "add", key="github", value=f"{FEED}/index.json")
-            creds = ET.SubElement(ET.SubElement(root, "packageSourceCredentials"), "github")
-            ET.SubElement(creds, "add", key="Username", value="qigao")
-            ET.SubElement(creds, "add", key="ClearTextPassword", value=os.environ["GITHUB_TOKEN"])
+            publish_config(config, os.environ["GITHUB_TOKEN"])
             # Pinned NuGet 7.9 reads NUGET_API_KEY directly. Do not write a
             # plaintext value into the encrypted-only <apikeys> config section.
-            ET.ElementTree(root).write(config, encoding="utf-8", xml_declaration=True)
-            os.environ["NUGET_API_KEY"] = os.environ["GITHUB_TOKEN"]
-            os.environ["VCPKG_NUGET_REPOSITORY"] = "https://github.com/qigao/vcpkg-cache"
-            os.environ["VCPKG_BINARY_SOURCES"] += f";nugetconfig,{config},write"
+            producer_environment(config)
         if producer:
             run_producer(args)
         else:
