@@ -66,10 +66,10 @@ function decodeMappedAddress(packet) {
 }
 
 async function probeStun(server) {
-  const started = process.hrtime.bigint();
   let socket;
   try {
     const resolved = await dns.lookup(server.host, { family: 4 });
+    const started = process.hrtime.bigint();
     const txid = crypto.randomBytes(12);
     const request = makeBindingRequest(txid);
     const result = await new Promise((resolve, reject) => {
